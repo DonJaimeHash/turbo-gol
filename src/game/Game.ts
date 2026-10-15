@@ -151,6 +151,8 @@ export interface GameOptions {
   /** 1v1 compatibility: the one red car (ignored when `carIds` is given). */
   botCarId?: number;
   difficulty?: Difficulty;
+  /** The player picked the quality tier in the menu (GamePrefs.qualitySet); persisted with the prefs. */
+  qualitySet?: boolean;
   /** Regulation length in seconds (0 = unlimited). */
   matchLengthSeconds?: number;
   /** Text shown in the menu footer (backend, version...). */
@@ -161,6 +163,11 @@ export interface GamePrefs {
   difficulty: Difficulty;
   quality: Quality;
   mode: GameMode;
+  /**
+   * The player picked the quality in the menu. Phones and tablets (coarse pointer) start on the
+   * light tier (1) and only keep a saved tier the player chose, not one saved under the old default.
+   */
+  qualitySet: boolean;
 }
 
 /**
@@ -287,7 +294,8 @@ const TEAM_LABEL: readonly [string, string] = ['Blue', 'Red'];
 
 /** Read the saved difficulty / quality / mode (falls back to defaults when storage is unavailable). */
 export function loadPrefs(): GamePrefs {
-  const prefs: GamePrefs = { difficulty: 'medium', quality: 0, mode: '1v1' };
+  const touch = hasCoarsePointer();
+  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 1 : 0, mode: '1v1', qualitySet: false };
   try {
     const raw = window.localStorage.getItem(PREFS_KEY);
     if (raw !== null) {
@@ -295,7 +303,8 @@ export function loadPrefs(): GamePrefs {
       if (parsed.difficulty === 'easy' || parsed.difficulty === 'medium' || parsed.difficulty === 'hard') {
         prefs.difficulty = parsed.difficulty;
       }
-      if (parsed.quality === 0 || parsed.quality === 1) prefs.quality = parsed.quality;
+      prefs.qualitySet = parsed.qualitySet === true;
+      if ((parsed.quality === 0 || parsed.quality === 1) && (!touch || prefs.qualitySet)) prefs.quality = parsed.quality;
       if (isGameMode(parsed.mode)) prefs.mode = parsed.mode;
     }
   } catch {
@@ -330,6 +339,16 @@ function zeroControls(c: CarControls): void {
   c.jump = false;
   c.boost = false;
   c.handbrake = false;
+}
+
+/** A phone or tablet: the primary pointer is a finger (it starts on the light quality tier). */
+function hasCoarsePointer(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  try {
+    return window.matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return false;
+  }
 }
 
 /** Pointer lock only makes sense with a mouse / trackpad (touch devices never get the hint). */
@@ -397,6 +416,8 @@ export class Game implements P2PGameHooks {
 
   paused = false;
   quality: Quality;
+  /** The player picked the quality in the menu (GamePrefs.qualitySet). */
+  private qualitySet: boolean;
   difficulty: Difficulty;
   /** Smoothed frames per second (updated 4x/s). */
   fps = 0;
@@ -526,6 +547,7 @@ export class Game implements P2PGameHooks {
     this.mode = opts.mode ?? '1v1';
     this.quality = opts.renderer.quality;
     this.difficulty = opts.difficulty ?? 'medium';
+    this.qualitySet = opts.qualitySet ?? false;
     this.info = opts.info ?? '';
 
     const sim = this.sim;
@@ -1588,6 +1610,7 @@ export class Game implements P2PGameHooks {
   setQuality(q: Quality): void {
     if (q === this.quality) return;
     this.quality = q;
+    this.qualitySet = true; // only the menu calls this: the player chose (loadPrefs keeps it on phones)
     this.renderer.setQuality(q);
     this.disposeViews();
     this.buildViews(q);
@@ -1634,7 +1657,7 @@ export class Game implements P2PGameHooks {
   }
 
   private persistPrefs(): void {
-    savePrefs({ difficulty: this.difficulty, quality: this.quality, mode: this.mode });
+    savePrefs({ difficulty: this.difficulty, quality: this.quality, mode: this.mode, qualitySet: this.qualitySet });
   }
 
   setPaused(p: boolean): void {

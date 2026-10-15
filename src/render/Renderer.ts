@@ -82,6 +82,8 @@ export const CAMERA_FAR = 40000;
 const SKY_RADIUS = 32000;
 /** Drawing-buffer pixel budget at quality 0 (a dpr-2 1080p laptop renders at ~1.7x instead of 2x). */
 const PIXEL_BUDGET_Q0 = 6e6;
+/** Phones and tablets render quality 0 at most at this pixel ratio (their DPR of 3+ costs ~2x the pixels). */
+const MAX_TOUCH_PIXEL_RATIO = 2;
 /** Sky horizon colour (linear); also the fog and clear colour so distant tiers blend into the sky. */
 const HORIZON = { r: 0.11, g: 0.15, b: 0.27 };
 const SUN_COLOR = 0xfff3e2;
@@ -350,7 +352,8 @@ export class Renderer {
     const h = Math.max(1, this.canvas.clientHeight || window.innerHeight);
     let pr = 1;
     if (this.quality === 0) {
-      const dpr = window.devicePixelRatio || 1;
+      let dpr = window.devicePixelRatio || 1;
+      if (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) dpr = Math.min(dpr, MAX_TOUCH_PIXEL_RATIO);
       pr = Math.min(dpr, Math.max(1, Math.sqrt(PIXEL_BUDGET_Q0 / (w * h))));
     }
     this.gpu.setPixelRatio(pr);
