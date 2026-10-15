@@ -8,6 +8,10 @@
  * The lobby socket stays open during the match (it hibernates on the server: no cost), so the
  * player comes back to the same lobby afterwards (`back()`); a ping every PING_MS keeps proxies from
  * dropping the idle socket (answered by the server's auto-response, without waking it).
+ *
+ * A refused request (AccountError) or a lobby socket 'error' (onError) carries the player's text:
+ * the error.lobby.* text of the server's code (serverText, src/i18n.ts), else the server's message,
+ * else a generic one (error.server with the status; error.lobby.start_failed on the socket).
  */
 import { WS_SUBPROTOCOL, WS_TICKET_PREFIX } from './protocol';
 import type { QueueResult } from './protocol';
@@ -16,7 +20,7 @@ import type { LobbyClientMsg, LobbyServerMsg, LobbySettings, LobbyState, LobbySu
 import { AccountError } from './AccountClient';
 import { resolveWsUrl } from './NetClient';
 import type { FetchLike, ResponseLike, WebSocketFactory, WebSocketLike } from './NetClient';
-import { t } from '../i18n';
+import { serverText, t } from '../i18n';
 
 const PING_MS = 25_000;
 
@@ -64,6 +68,7 @@ export class LobbyClient {
   onState: ((s: LobbyState) => void) | null = null;
   /** The host started: this member's queue result. */
   onMatch: ((r: QueueResult | QueueResultP2p) => void) | null = null;
+  /** The server refused something in the lobby: its code and the player's text for it. */
   onError: ((code: string, message: string) => void) | null = null;
   onClosed: ((reason: string) => void) | null = null;
 
@@ -112,19 +117,21 @@ export class LobbyClient {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch {
-      throw new AccountError(t('net.lobby.network'), 0, 'network');
+      throw new AccountError(t('error.network'), 0, 'network');
     }
     if (!res.ok) {
       let code = 'http';
-      let message = `Error del servidor (${res.status})`;
+      let serverMessage = '';
       try {
         const b = (await res.json()) as { error?: unknown; message?: unknown };
         if (typeof b.error === 'string') code = b.error;
-        if (typeof b.message === 'string' && b.message !== b.error) message = b.message;
+        if (typeof b.message === 'string' && b.message !== b.error) serverMessage = b.message;
       } catch {
         /* no body */
       }
-      throw new AccountError(message, res.status, code);
+      // Never an empty fallback: a code the Spanish server details but sent bare (a lobby list
+      // rate_limited, a create refused with matchmaking_off) keeps the generic text in Spanish, as before.
+      throw new AccountError(serverText('lobby', code, serverMessage || t('error.server', { status: res.status })), res.status, code);
     }
     return (await res.json()) as T;
   }
@@ -188,7 +195,9 @@ export class LobbyClient {
       } else if (m.t === 'match') {
         if (this.onMatch) this.onMatch(m.result as QueueResult | QueueResultP2p);
       } else if (m.t === 'error') {
-        if (this.onError) this.onError(m.code, m.message);
+        // Every refusal of a lobby action has a server text; a bare code is a start the matchmaker refused.
+        const serverMessage = typeof m.message === 'string' && m.message !== m.code ? m.message : '';
+        if (this.onError) this.onError(m.code, serverText('lobby', m.code, serverMessage || t('error.lobby.start_failed')));
       } else if (m.t === 'closed') {
         this.finish(m.reason);
       }

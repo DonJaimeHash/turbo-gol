@@ -34,7 +34,8 @@
  * noShowStatus(retryAfterMs). A room socket that closes before the welcome (the room refused the
  * upgrade: browsers only show 1006; e.g. 403 'left' for a join that got there after the no-show
  * grace, or an expired ticket) releases the lock and queues again by itself, once per quickMatch
- * (STATUS.requeue); a second one fails to the menu ('Sala cerrada (...)').
+ * (STATUS.requeue); a second one fails to the menu (p2p.roomClosed, 'Room closed (...)').
+ * Any other failed queue request reads as netErrorText (src/net/netErrorText.ts).
  *
  * Debug: `log` (P2PLog, 256-entry ring, window.__game.p2p.log) gets one line per event from the
  * session, the RoomClient and the Mesh (queue result, welcome, signals, ICE states, ready / start,
@@ -99,6 +100,7 @@ import {
 import { Match, type MatchEvent } from '../../game/Match';
 import { TICK_MS } from '../ClockSync';
 import { NetClient, NetError, type ServerAssignment, type P2pAssignment } from '../NetClient';
+import { netErrorText } from '../netErrorText';
 import {
   NET_STATS_MAX_PEERS,
   PEER_STATE_CONNECTED,
@@ -109,7 +111,8 @@ import {
   type NetStatsView,
 } from '../NetStats';
 import { fnv1a32 } from '../protocol';
-import { ONLINE_STATUS, type ClockMode } from '../../render/Hud';
+import type { ClockMode } from '../../render/Hud';
+import { duration, language, t } from '../../i18n';
 import { P2PLog } from './DebugLog';
 import { Mesh, assembleGamePacket, type MeshOptions } from './Mesh';
 import {
@@ -195,36 +198,39 @@ export const CHECKPOINT_FLOATS = CHECKPOINT_HDR + Match.STATE_FLOATS + 2 * BotTe
 // ---- status strings (pure, for the menu / HUD) --------------------------------------------------
 
 export function queueStatus(waiting: number): string {
-  return `Buscando rival (${waiting} esperando)…`;
+  return t('p2p.queueWaiting', { count: waiting });
 }
 
 export function connectingStatus(connected: number, total: number): string {
-  return `Conectando con jugadores… ${connected}/${total}`;
+  return t('p2p.connecting', { connected, total });
 }
 
 export function waitingStatus(name: string): string {
-  return `Esperando a ${name}…`;
+  return t('p2p.waiting', { name });
 }
 
-/** The menu line for a 429 'no_show' (P2P queues refused for `retryAfterMs`; a server match still works). */
+/**
+ * The menu line for a 429 'no_show' (P2P queues refused for `retryAfterMs`; a server match still
+ * works). The wait is in seconds below two minutes ('90 sec', Spanish '90 s'), in whole minutes from there.
+ */
 export function noShowStatus(retryAfterMs: number): string {
   const s = Math.max(1, Math.ceil(retryAfterMs / 1000));
-  const left = s >= 120 ? `${Math.ceil(s / 60)} min` : `${s} s`;
-  return `Partidas P2P bloqueadas ${left}: dejaste varias salas sin conectarte (las partidas en servidor siguen disponibles)`;
+  const time = s >= 120 ? duration(s * 1000) : new Intl.NumberFormat(language(), { style: 'unit', unit: 'second', unitDisplay: 'short' }).format(s);
+  return t('error.queue.no_show', { time });
 }
 
 export const STATUS = {
-  queue: 'Buscando rival…',
-  room: 'Entrando a la sala…',
-  readyWait: 'Esperando a los demás jugadores…',
-  fallback: 'No se pudo conectar con los jugadores: partida en servidor',
-  nobodyLeft: 'Los demás jugadores se fueron: partida en servidor',
-  serverAnswer: 'Sin rivales P2P ahora: partida en servidor',
-  desync: 'Desincronización con los otros jugadores: partida anulada',
-  droppedMe: 'La sala te dio por desconectado',
-  requeue: 'No se pudo entrar a la sala: buscando otra…',
-  lostRoom: 'Se perdió la conexión con la sala y con un jugador',
-  reload: 'Hay una versión nueva del juego: recargá la página',
+  queue: t('p2p.queue'),
+  room: t('p2p.room'),
+  readyWait: t('p2p.readyWait'),
+  fallback: t('p2p.fallback'),
+  nobodyLeft: t('p2p.nobodyLeft'),
+  serverAnswer: t('p2p.serverAnswer'),
+  desync: t('p2p.desync'),
+  droppedMe: t('p2p.droppedMe'),
+  requeue: t('p2p.requeue'),
+  lostRoom: t('p2p.lostRoom'),
+  reload: t('error.queue.reload_required'),
 } as const;
 
 /** Tick expected at local time `nowMs` when tick 0 is at `startAtLocalMs` (negative before the start). */
@@ -411,15 +417,19 @@ interface CheckpointRef {
   len: number;
 }
 
+/** User-facing text for a failure: the P2P lock with its own wait format, any other NetError by netErrorText. */
 function describe(err: unknown): string {
   if (err instanceof NetError) {
-    if (err.code === 'turnstile') return err.status === 503 ? ONLINE_STATUS.turnstileUnconfigured : ONLINE_STATUS.turnstileFailed;
     if (err.serverCode === P2P_ERROR_NO_SHOW) return noShowStatus(err.retryAfterMs);
-    if (err.serverCode === P2P_ERROR_RELOAD) return STATUS.reload;
-    return err.message;
+    return netErrorText(err);
   }
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** The developer text of a failure, for the debug log (a NetError's message keeps the status and the server's code). */
+function logText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function zeroPacked(out: Int8Array, off: number): void {
@@ -737,7 +747,7 @@ export class P2PSession {
             this.status = '';
             return;
           }
-          this.log.push('queue.error', describe(err));
+          this.log.push('queue.error', logText(err));
           this.fail(describe(err));
         },
       );
@@ -1378,17 +1388,17 @@ export class P2PSession {
     }
     const slots = w.slots.slice().sort((a, b) => a.slot - b.slot);
     if (slots.length === 0 || slots.length > MAX_CARS || slots.length > NET_STATS_MAX_PEERS) {
-      this.fail(`Sala con ${slots.length} slots`);
+      this.fail(t('p2p.badSlots', { count: slots.length }));
       return;
     }
     for (let i = 0; i < slots.length; i++) {
       if (slots[i].slot !== i) {
-        this.fail(`Sala con slots no contiguos`);
+        this.fail(t('p2p.slotGap'));
         return;
       }
     }
     if (w.you.slot < 0 || w.you.slot >= slots.length || slots[w.you.slot].kind !== 'peer') {
-      this.fail(`Slot propio ${w.you.slot} inválido`);
+      this.fail(t('p2p.badSlot', { slot: w.you.slot }));
       return;
     }
     try {
@@ -1466,7 +1476,7 @@ export class P2PSession {
     try {
       engine = this.engineFactory(sim, slots.length, this.humanSlots, this.mySlot, hooks, { inputDelay: this.inputDelay, window, hashEvery: this.hashEvery });
     } catch (err) {
-      this.fail(`Motor: ${describe(err)}`);
+      this.fail(t('p2p.engine', { message: describe(err) }));
       return;
     }
     if (engine.onDesync !== undefined) engine.onDesync = hooks.onDesync;
@@ -1623,7 +1633,7 @@ export class P2PSession {
       return;
     }
     if (this.state === 'signaling' || this.state === 'connecting') {
-      this.fail(`Sala cerrada (${code}${reason.length > 0 ? `: ${reason}` : ''})`);
+      this.fail(t('p2p.roomClosed', { detail: `${code}${reason.length > 0 ? `: ${reason}` : ''}` }));
       return;
     }
     // Mid-match the room is only needed for drops: the mesh keeps the match going, unless a drop
@@ -1783,7 +1793,7 @@ export class P2PSession {
       this.log.push('release', 'POST /api/leave (room lock)');
       void this.client.leaveMatch().then(
         (released) => this.log.push('release.done', released ? 'lock released' : 'nothing to release'),
-        (err: unknown) => this.log.push('release.error', describe(err)),
+        (err: unknown) => this.log.push('release.error', logText(err)),
       );
     }
     this.engine = null;

@@ -106,7 +106,7 @@ export function passwordIssue(pw: unknown, username: string): AccountIssue | nul
   return null;
 }
 
-/** Spanish text of each issue: the server's bad_username message and AccountClient's local errors. */
+/** Spanish text of each issue: the server's bad_username message (the client shows account.issue.* texts). */
 const ISSUE_SPANISH: Readonly<Record<AccountIssueCode, string>> = {
   usernameMissing: 'Elegí un nombre de usuario',
   usernameLength: `El usuario tiene que tener entre ${USERNAME_MIN} y ${USERNAME_MAX} caracteres`,
