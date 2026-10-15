@@ -100,7 +100,13 @@ src/input/
                         (the capturing click is masked), one pad poll per frame (beginFrame),
                         latchEdges for menu hand-off, rebind capture (startRebind: armed on the
                         next macrotask, Esc cancels on both devices, wheel only over the cell),
-                        presets, vibration
+                        presets, vibration; an optional TouchSource (setTouchSource: read once per
+                        sample, clamped to 0..1, summed into the keyboard column, so touch drives
+                        the same modifiers and edges, never padActions or the camera look)
+  touchState.ts         on-screen touch state, pure (no DOM, no CSS, node tests import it):
+                        TouchState = Input's TouchSource (stick + per-button finger count and tap
+                        latch, releaseAll), stickVector (radial deadzone + gain, up = +y),
+                        hitCircle, the TB buttons → actions mapping (copied from DEFAULT_KBM)
 src/settings.ts         Settings { controls, camera, bindings }: defaults, ranges,
                         validation, localStorage load / save. One live object shared by Input,
                         ChaseCamera and the Hud; Game.applySettings() persists and re-applies
@@ -250,12 +256,14 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         one-slot team == standalone Bot), headless 100 s bot matches per mode
                         (bot-match: dead ball / out of arena / own-goal guards via
                         smoke-match.mjs), match rules, chase camera (swivel / rear view), input
-                        (bindings, mouse, pad, rebinding), HUD menu helpers (incl. GAME_MODES ==
-                        constants.MODES), sim-state (save / load / hash / packed controls, the
-                        wasmModule load path), net-prediction + net-client (fake sim / fake
-                        fetch + socket), net-rollback-wasm and net-roomhost-wasm (RoomHost host
-                        sim + client RollbackPredictor on the real wasm: hash per snapshot, replay
-                        of the applied inputs between snapshots)
+                        (bindings, mouse, pad, rebinding), touch (TouchState, stickVector, the
+                        TouchSource hook; without a source Input matches a golden recorded before
+                        touch support), HUD menu helpers (incl. GAME_MODES == constants.MODES),
+                        sim-state (save / load / hash / packed controls, the wasmModule load
+                        path), net-prediction + net-client (fake sim / fake fetch + socket),
+                        net-rollback-wasm and net-roomhost-wasm (RoomHost host sim + client
+                        RollbackPredictor on the real wasm: hash per snapshot, replay of the
+                        applied inputs between snapshots)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
