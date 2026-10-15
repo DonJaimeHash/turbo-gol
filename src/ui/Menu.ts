@@ -14,10 +14,12 @@ import type { Child } from './dom';
 import { FocusNav, isEditable, trackFocusClass } from './nav';
 import type { NavDir } from './nav';
 import { rankBadge, tierById } from './badges';
+import { playlistName, regionName, tierName } from './names';
+import { t } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
 import type { PopulationAnswer, RegionId } from '../net/account';
-import { PLAYLIST_NAMES, REGIONS, isRegion } from '../net/account';
+import { REGIONS, isRegion } from '../net/account';
 import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
@@ -93,6 +95,8 @@ export interface MenuPrefs {
 const PREFS_KEY = STORAGE_PREFIX + 'menu.v1';
 const POPULATION_EVERY_MS = 10_000;
 const TICK_MS = 250;
+/** The navigation keys in the hint line (key names stay untranslated). */
+const NAV_KEYS = { moveKeys: '↑↓←→ / D-pad', selectKeys: 'Enter / A', backKeys: 'Esc / B' };
 
 function loadPrefs(): MenuPrefs {
   const d: MenuPrefs = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'p2p', leaderboardPlaylist: '2v2' };
@@ -175,9 +179,9 @@ export class Menu {
     this.banner = h('div.mn-banner', { hidden: true });
     this.hints = h('div.mn-hints');
     // AGPL-3.0 section 13: a network game offers its source to the players.
-    const source = h('a.mn-source', { href: SOURCE_URL, target: '_blank', rel: 'noopener', title: 'Código fuente (' + LICENSE_NAME + ')' }, 'Código fuente');
-    const discord = h('a.mn-source', { href: DISCORD_URL, target: '_blank', rel: 'noopener', title: 'Comunidad en Discord (en inglés)' }, 'Discord');
-    const bottom = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, host.info, ' · ', source, ' · ', h('a.mn-source', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener' }, 'Licencias'), ' · ', discord));
+    const source = h('a.mn-source', { href: SOURCE_URL, target: '_blank', rel: 'noopener', title: t('menu.sourceTitle', { license: LICENSE_NAME }) }, t('menu.source'));
+    const discord = h('a.mn-source', { href: DISCORD_URL, target: '_blank', rel: 'noopener', title: t('menu.discordTitle') }, 'Discord');
+    const bottom = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, host.info, ' · ', source, ' · ', h('a.mn-source', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener' }, t('menu.licenses')), ' · ', discord));
     this.toasts = h('div.mn-toasts');
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
     this.root = h('div.mn', { hidden: true }, top, this.stage, bottom, this.toasts, this.modalLayer);
@@ -237,7 +241,8 @@ export class Menu {
   get regionLabel(): string {
     const id = this.prefs.region ?? (isRegion(this.cfg?.autoRegion) ? this.cfg?.autoRegion : null);
     const r = REGIONS.find((x) => x.id === id);
-    return this.prefs.region === null ? `Auto${r ? ' · ' + r.name : ''}` : (r?.name ?? '?');
+    if (this.prefs.region !== null) return r ? regionName(r.id) : '?';
+    return r ? t('menu.regionAutoNamed', { region: regionName(r.id) }) : t('menu.regionAuto');
   }
 
   /** Show the menus (the screen on top stays: back from a match lands where the search started). */
@@ -298,12 +303,12 @@ export class Menu {
   }
 
   private mount(): void {
-    const t = this.top();
-    if (!t) return;
-    setChildren(this.stage, t.el);
+    const top = this.top();
+    if (!top) return;
+    setChildren(this.stage, top.el);
     setChildren(this.crumbs, ...this.stack.slice(1).flatMap((s, i) => [i > 0 ? h('span.mn-crumb-sep', null, '›') : null, h('span.mn-crumb', null, s.title)]));
-    this.hints.textContent = this.stack.length > 1 ? '↑↓←→ / D-pad  mover   ·   Enter / A  elegir   ·   Esc / B  volver' : '↑↓←→ / D-pad  mover   ·   Enter / A  elegir';
-    t.show?.();
+    this.hints.textContent = t(this.stack.length > 1 ? 'menu.hintsBack' : 'menu.hints', NAV_KEYS);
+    top.show?.();
     this.refreshChrome();
     requestAnimationFrame(() => this.nav.first());
   }
@@ -374,12 +379,13 @@ export class Menu {
       best = placed[0]?.tier ?? null;
     }
     if (acc.signedIn && acc.account) {
-      setChildren(this.chip, rankBadge(tierById(best), 30), h('span.mn-chip-text', null, h('b', null, acc.account.name), h('small', null, best ? tierById(best)?.name : 'Cuenta')));
+      const bestTier = tierById(best);
+      setChildren(this.chip, rankBadge(bestTier, 30), h('span.mn-chip-text', null, h('b', null, acc.account.name), h('small', null, best ? bestTier && tierName(bestTier) : t('menu.account'))));
     } else {
-      setChildren(this.chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, this.host.guestName()), h('small', null, 'Invitado · Iniciar sesión')));
+      setChildren(this.chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, this.host.guestName()), h('small', null, t('menu.guestSignIn'))));
     }
     const p = this.population;
-    setChildren(this.online, h('span.mn-dot', { class: p ? 'on' : '' }), h('span', null, this.regionLabel), p ? h('small', null, `${p.playing} jugando`) : null);
+    setChildren(this.online, h('span.mn-dot', { class: p ? 'on' : '' }), h('span', null, this.regionLabel), p ? h('small', null, t('menu.playing', { count: p.playing })) : null);
   }
 
   private async pollPopulation(): Promise<void> {
@@ -426,11 +432,11 @@ export class Menu {
       setChildren(
         this.banner,
         h('span.mn-spinner'),
-        h('span.mn-banner-kind', null, v.kind === 'ranked' ? 'COMPETITIVO' : 'CASUAL'),
-        h('span.mn-banner-modes', null, v.modes.map((m) => PLAYLIST_NAMES[m]).join(' · ')),
+        h('span.mn-banner-kind', null, v.kind === 'ranked' ? t('menu.searchRanked') : t('menu.searchCasual')),
+        h('span.mn-banner-modes', null, v.modes.map((m) => playlistName(m)).join(' · ')),
         h('span.mn-banner-time'),
         h('span.mn-banner-text'),
-        h('button.mn-banner-cancel', { type: 'button', 'data-nav': true, onclick: () => this.host.cancelSearch() }, 'CANCELAR'),
+        h('button.mn-banner-cancel', { type: 'button', 'data-nav': true, onclick: () => this.host.cancelSearch() }, t('menu.searchCancel')),
       );
     }
     this.banner.hidden = false;

@@ -16,6 +16,7 @@ import type { LobbyClientMsg, LobbyServerMsg, LobbySettings, LobbyState, LobbySu
 import { AccountError } from './AccountClient';
 import { resolveWsUrl } from './NetClient';
 import type { FetchLike, ResponseLike, WebSocketFactory, WebSocketLike } from './NetClient';
+import { t } from '../i18n';
 
 const PING_MS = 25_000;
 
@@ -35,20 +36,20 @@ export interface LobbyCreate {
   region: RegionId | null;
 }
 
-/** Spanish text for a lobby socket close / error the menu shows. */
+/** The player's text for a lobby socket close / error the menu shows. */
 export function lobbyCloseText(reason: string): string {
   switch (reason) {
     case 'kicked':
-      return 'El anfitrión te sacó de la sala';
+      return t('net.lobby.closedKicked');
     case 'idle':
     case 'empty':
-      return 'La sala se cerró';
+      return t('net.lobby.closedEnded');
     case 'expired':
-      return 'La sala expiró';
+      return t('net.lobby.closedExpired');
     case 'replaced':
-      return 'Abriste la sala en otra pestaña';
+      return t('net.lobby.closedReplaced');
     default:
-      return 'Se perdió la conexión con la sala';
+      return t('net.lobby.closedLost');
   }
 }
 
@@ -100,7 +101,7 @@ export class LobbyClient {
       try {
         headers.authorization = 'Bearer ' + (await this.bearer());
       } catch (e) {
-        throw e instanceof AccountError ? e : new AccountError('No se pudo crear la sesión de invitado', 0, 'session');
+        throw e instanceof AccountError ? e : new AccountError(t('net.lobby.sessionFailed'), 0, 'session');
       }
     }
     let res: ResponseLike;
@@ -111,7 +112,7 @@ export class LobbyClient {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch {
-      throw new AccountError('No hay conexión con el servidor', 0, 'network');
+      throw new AccountError(t('net.lobby.network'), 0, 'network');
     }
     if (!res.ok) {
       let code = 'http';
@@ -135,7 +136,7 @@ export class LobbyClient {
 
   async create(c: LobbyCreate): Promise<void> {
     this.leave();
-    const t = await this.call<LobbyTicketAnswer>('/api/lobbies', {
+    const answer = await this.call<LobbyTicketAnswer>('/api/lobbies', {
       name: c.settings.name,
       mode: c.settings.mode,
       visibility: c.settings.visibility,
@@ -145,21 +146,21 @@ export class LobbyClient {
       region: c.region ?? undefined,
     });
     this.password = c.password;
-    this.open(t);
+    this.open(answer);
   }
 
   async join(code: string, password: string | null): Promise<void> {
     this.leave();
-    const t = await this.call<LobbyTicketAnswer>('/api/lobbies/join', { code, password: password ?? undefined });
+    const answer = await this.call<LobbyTicketAnswer>('/api/lobbies/join', { code, password: password ?? undefined });
     this.password = password;
-    this.open(t);
+    this.open(answer);
   }
 
-  private open(t: LobbyTicketAnswer): void {
-    this.lobbyId = t.lobbyId;
-    this.code = t.code;
+  private open(answer: LobbyTicketAnswer): void {
+    this.lobbyId = answer.lobbyId;
+    this.code = answer.code;
     this.status = 'connecting';
-    const ws = this.makeWs(resolveWsUrl(t.wsUrl), [WS_SUBPROTOCOL, WS_TICKET_PREFIX + t.ticket]);
+    const ws = this.makeWs(resolveWsUrl(answer.wsUrl), [WS_SUBPROTOCOL, WS_TICKET_PREFIX + answer.ticket]);
     this.ws = ws;
     ws.onopen = () => {
       if (ws !== this.ws) return;

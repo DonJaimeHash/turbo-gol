@@ -60,27 +60,75 @@ export function usernameKey(name: string): string {
 }
 
 /**
- * Null when `name` is a valid username: 3-16 chars of ASCII letters, digits, '_', '-', '.', starting
- * with a letter or digit, not reserved, not 'guest-…'. Otherwise a Spanish message for the form.
+ * Why a username or password is refused: a machine code plus the numbers its text shows.
+ * usernameIssue / passwordIssue are the only copy of the rules. The menus show
+ * t('account.issue.<code>', params) (src/i18n.ts); usernameProblem / passwordProblem turn the same
+ * codes into the Spanish text the Worker sends (this file is shared with it: no i18n import here).
  */
-export function usernameProblem(name: unknown): string | null {
-  if (typeof name !== 'string') return 'Elegí un nombre de usuario';
-  if (name.length < USERNAME_MIN || name.length > USERNAME_MAX) return `El usuario tiene que tener entre ${USERNAME_MIN} y ${USERNAME_MAX} caracteres`;
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) return 'Usá solo letras, números, "_", "-" o "." (empezando con letra o número)';
+export type AccountIssueCode =
+  | 'usernameMissing'
+  | 'usernameLength'
+  | 'usernameChars'
+  | 'usernameReserved'
+  | 'passwordShort'
+  | 'passwordLong'
+  | 'passwordCommon'
+  | 'passwordHasUsername'
+  | 'passwordRepeated';
+
+export interface AccountIssue {
+  code: AccountIssueCode;
+  /** { min, max } for usernameLength, { count } for passwordShort / passwordLong. */
+  params?: Record<string, number>;
+}
+
+/**
+ * Null when `name` is a valid username: 3-16 chars of ASCII letters, digits, '_', '-', '.', starting
+ * with a letter or digit, not reserved, not 'guest-…'. Otherwise what is wrong with it.
+ */
+export function usernameIssue(name: unknown): AccountIssue | null {
+  if (typeof name !== 'string') return { code: 'usernameMissing' };
+  if (name.length < USERNAME_MIN || name.length > USERNAME_MAX) return { code: 'usernameLength', params: { min: USERNAME_MIN, max: USERNAME_MAX } };
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) return { code: 'usernameChars' };
   const k = usernameKey(name);
-  if (RESERVED.has(k) || k.startsWith('guest') || k.startsWith('bot')) return 'Ese nombre está reservado';
+  if (RESERVED.has(k) || k.startsWith('guest') || k.startsWith('bot')) return { code: 'usernameReserved' };
   return null;
 }
 
-/** Null when `pw` is acceptable for `username`; otherwise a Spanish message. */
-export function passwordProblem(pw: unknown, username: string): string | null {
-  if (typeof pw !== 'string' || pw.length < PASSWORD_MIN) return `La contraseña tiene que tener al menos ${PASSWORD_MIN} caracteres`;
-  if (pw.length > PASSWORD_MAX) return `La contraseña puede tener hasta ${PASSWORD_MAX} caracteres`;
+/** Null when `pw` is acceptable for `username`; otherwise what is wrong with it. */
+export function passwordIssue(pw: unknown, username: string): AccountIssue | null {
+  if (typeof pw !== 'string' || pw.length < PASSWORD_MIN) return { code: 'passwordShort', params: { count: PASSWORD_MIN } };
+  if (pw.length > PASSWORD_MAX) return { code: 'passwordLong', params: { count: PASSWORD_MAX } };
   const k = pw.toLowerCase();
-  if (WEAK_PASSWORDS.has(k)) return 'Esa contraseña es demasiado común';
-  if (username.length > 0 && k.includes(usernameKey(username))) return 'La contraseña no puede contener tu usuario';
-  if (/^(.)\1+$/.test(pw)) return 'La contraseña no puede ser un solo carácter repetido';
+  if (WEAK_PASSWORDS.has(k)) return { code: 'passwordCommon' };
+  if (username.length > 0 && k.includes(usernameKey(username))) return { code: 'passwordHasUsername' };
+  if (/^(.)\1+$/.test(pw)) return { code: 'passwordRepeated' };
   return null;
+}
+
+/** Spanish text of each issue: the server's bad_username message and AccountClient's local errors. */
+const ISSUE_SPANISH: Readonly<Record<AccountIssueCode, string>> = {
+  usernameMissing: 'Elegí un nombre de usuario',
+  usernameLength: `El usuario tiene que tener entre ${USERNAME_MIN} y ${USERNAME_MAX} caracteres`,
+  usernameChars: 'Usá solo letras, números, "_", "-" o "." (empezando con letra o número)',
+  usernameReserved: 'Ese nombre está reservado',
+  passwordShort: `La contraseña tiene que tener al menos ${PASSWORD_MIN} caracteres`,
+  passwordLong: `La contraseña puede tener hasta ${PASSWORD_MAX} caracteres`,
+  passwordCommon: 'Esa contraseña es demasiado común',
+  passwordHasUsername: 'La contraseña no puede contener tu usuario',
+  passwordRepeated: 'La contraseña no puede ser un solo carácter repetido',
+};
+
+/** usernameIssue as a Spanish message (the Worker sends it as the bad_username message), null when valid. */
+export function usernameProblem(name: unknown): string | null {
+  const issue = usernameIssue(name);
+  return issue === null ? null : ISSUE_SPANISH[issue.code];
+}
+
+/** passwordIssue as a Spanish message, null when acceptable. */
+export function passwordProblem(pw: unknown, username: string): string | null {
+  const issue = passwordIssue(pw, username);
+  return issue === null ? null : ISSUE_SPANISH[issue.code];
 }
 
 function hex(bytes: Uint8Array): string {

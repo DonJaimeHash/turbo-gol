@@ -2,20 +2,58 @@
  * Home, the Play hub and the queue screens: Casual (several playlists at once, region, P2P or
  * server), Competitive (accounts only: rank per playlist, placement, abandon ban) and Friendly
  * (offline against the AI). Play -> Casual / Competitive / Custom lobbies / Friendly; Training
- * lives next to Play.
+ * lives next to Play. The home screen also holds the language picker (src/i18n.ts).
  */
 import { h, setChildren, clock } from '../dom';
-import { PLAYLISTS, PLAYLIST_NAMES } from '../../net/account';
+import { PLAYLISTS } from '../../net/account';
 import type { Playlist } from '../../net/account';
 import { MODES } from '../../sim/constants';
 import type { GameMode } from '../../sim/constants';
 import { DIFFICULTIES } from '../../render/Hud';
 import type { Difficulty } from '../../render/Hud';
+import { LOCALES, language, savedLanguage, setLanguage, systemLanguage, t } from '../../i18n';
+import type { LanguageCode } from '../../i18n';
+import { difficultyName, playlistName, tierName } from '../names';
 import { rankBadge, ratingCard, tierById } from '../badges';
 import type { Menu, Screen } from '../Menu';
 import { cycler, primary, regionCycler, screenHead, secondary, section, tile } from './common';
 
-const DIFFICULTY_LABELS: Readonly<Record<Difficulty, string>> = { easy: 'Fácil', medium: 'Normal', hard: 'Difícil' };
+/**
+ * The language list: automatic (the system's language) first, then every shipped language by its
+ * own name; the saved choice is marked. A change reloads the page (setLanguage), which would drop
+ * a search or a lobby, so then the picker only explains why.
+ */
+function openLanguagePicker(menu: Menu): void {
+  const busy = (): boolean => menu.host.searchView().active || menu.host.lobby.inLobby;
+  if (busy()) {
+    menu.toast(t('lang.busy'));
+    return;
+  }
+  const saved = savedLanguage();
+  let close = (): void => undefined;
+  const choose = (code: LanguageCode | null): void => {
+    if (code === saved) close();
+    else if (busy()) {
+      close();
+      menu.toast(t('lang.busy'));
+    } else setLanguage(code);
+  };
+  const option = (code: LanguageCode | null, label: string): HTMLButtonElement => {
+    const on = code === saved;
+    return h(
+      `button.mn-btn${on ? '.mn-btn-primary' : ''}` as 'button',
+      { type: 'button', 'data-nav': true, 'data-autofocus': on, 'aria-current': on ? 'true' : undefined, lang: code ?? undefined, onclick: () => choose(code) },
+      on ? h('span', { 'aria-hidden': 'true' }, '✓ ') : null,
+      label,
+    );
+  };
+  const codes = Object.keys(LOCALES) as LanguageCode[];
+  close = menu.modal({
+    title: t('lang.title'),
+    body: h('div.mn-oauth.mn-lang-list', null, option(null, t('lang.auto', { language: LOCALES[systemLanguage()].name })), ...codes.map((c) => option(c, LOCALES[c].name))),
+    actions: [{ label: t('lang.cancel'), onClick: () => true }],
+  });
+}
 
 export function homeScreen(menu: Menu): Screen {
   const side = h('aside.mn-home-side');
@@ -25,32 +63,34 @@ export function homeScreen(menu: Menu): Screen {
     h(
       'div.mn-home-tiles',
       null,
-      tile('mn-tile-hero', '▶', 'JUGAR', 'Casual · Competitivo · Salas · Amistoso', () => menu.open('play'), null),
-      tile('', '◎', 'ENTRENAMIENTO', 'Práctica libre y packs de tiros', () => menu.open('training')),
-      tile('', '▲', 'CLASIFICACIÓN', 'Los mejores de la temporada', () => menu.open('leaderboard')),
-      tile('', '◆', 'PERFIL', 'Cuenta, rangos y estadísticas', () => menu.open('profile')),
-      tile('', '⚙', 'CONFIGURACIÓN', 'Controles, cámara y gráficos', () => menu.host.openSettings(() => menu.refocus())),
+      tile('mn-tile-hero', '▶', t('home.play'), t('home.playSub'), () => menu.open('play'), null),
+      tile('', '◎', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
+      tile('', '▲', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
+      tile('', '◆', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
+      tile('', '⚙', t('home.settings'), t('home.settingsSub'), () => menu.host.openSettings(() => menu.refocus())),
+      // Static: render() rebuilds only `side`, so keyboard / controller focus here survives a refresh.
+      tile('mn-tile-lang', '🌐', t('home.language'), LOCALES[language()].name, () => openLanguagePicker(menu)),
     ),
     side,
   );
   const render = (): void => {
     const acc = menu.host.accounts;
     if (acc.signedIn && acc.me) {
-      setChildren(side, h('div.mn-side-title', null, `Temporada ${acc.me.season}`), ...acc.me.ratings.map((r) => ratingCard(r)));
+      setChildren(side, h('div.mn-side-title', null, t('home.season', { season: acc.me.season })), ...acc.me.ratings.map((r) => ratingCard(r)));
     } else if (acc.signedIn) {
-      setChildren(side, h('div.mn-side-title', null, 'Cargando tu perfil…'));
+      setChildren(side, h('div.mn-side-title', null, t('home.loadingProfile')));
     } else {
       setChildren(
         side,
-        h('div.mn-side-title', null, 'Jugá Competitivo'),
-        h('p.mn-side-text', null, `Creá una cuenta para tener tu rango en ${PLAYLIST_NAMES['1v1']}, ${PLAYLIST_NAMES['2v2']} y ${PLAYLIST_NAMES['3v3']}. Como invitado podés jugar Casual, salas y entrenamiento.`),
-        secondary('INICIAR SESIÓN / CREAR CUENTA', () => menu.open('profile')),
+        h('div.mn-side-title', null, t('home.guestTitle')),
+        h('p.mn-side-text', null, t('home.guestText', { playlist1: playlistName('1v1'), playlist2: playlistName('2v2'), playlist3: playlistName('3v3') })),
+        secondary(t('home.signIn'), () => menu.open('profile')),
       );
     }
   };
   return {
     id: 'home',
-    title: 'Inicio',
+    title: t('home.title'),
     el,
     show: () => {
       render();
@@ -64,29 +104,30 @@ export function playScreen(menu: Menu): Screen {
   const rankedSub = h('span');
   const customSub = h('span');
   const rankedTag = h('span');
+  const locked = t('play.accountLocked');
   const el = h(
     'div.mn-play',
     null,
-    screenHead('JUGAR'),
+    screenHead(t('home.play')),
     h(
       'div.mn-play-tiles',
       null,
-      tile('mn-tile-casual', '◐', 'CASUAL', 'Sin rango · P2P o servidor', () => menu.open('casual'), casualSub),
-      tile('mn-tile-ranked', '★', 'COMPETITIVO', 'Rango por playlist · servidor', () => menu.open('ranked'), rankedTag),
-      tile('mn-tile-custom', '⌂', 'PARTIDAS PERSONALIZADAS', 'Salas públicas y privadas', () => menu.open('custom'), customSub),
-      tile('mn-tile-offline', '◇', 'AMISTOSO', 'Offline contra la IA', () => menu.open('friendly')),
+      tile('mn-tile-casual', '◐', t('play.casual'), t('play.casualSub'), () => menu.open('casual'), casualSub),
+      tile('mn-tile-ranked', '★', t('play.ranked'), t('play.rankedSub'), () => menu.open('ranked'), rankedTag),
+      tile('mn-tile-custom', '⌂', t('play.custom'), t('play.customSub'), () => menu.open('custom'), customSub),
+      tile('mn-tile-offline', '◇', t('play.friendly'), t('play.friendlySub'), () => menu.open('friendly')),
     ),
     h('div.mn-play-foot', null, rankedSub),
   );
   const tick = (): void => {
     const p = menu.population;
     const sum = (r: Record<Playlist, number>): number => r['1v1'] + r['2v2'] + r['3v3'];
-    casualSub.textContent = p ? `${sum(p.casual)} buscando` : '';
-    customSub.textContent = p ? `${p.lobbies} salas` : '';
-    rankedTag.textContent = menu.host.accounts.signedIn ? (p ? `${sum(p.ranked)} buscando` : '') : '🔒 Cuenta';
-    rankedSub.textContent = p ? `${menu.regionLabel} · ${p.playing} jugando ahora` : '';
+    casualSub.textContent = p ? t('play.searching', { count: sum(p.casual) }) : '';
+    customSub.textContent = p ? t('play.lobbies', { count: p.lobbies }) : '';
+    rankedTag.textContent = menu.host.accounts.signedIn ? (p ? t('play.searching', { count: sum(p.ranked) }) : '') : locked;
+    rankedSub.textContent = p ? t('play.playingNow', { region: menu.regionLabel, count: p.playing }) : '';
   };
-  return { id: 'play', title: 'Jugar', el, show: tick, tick };
+  return { id: 'play', title: t('play.title'), el, show: tick, tick };
 }
 
 /** Toggle cards for the playlists; at least one stays selected. `extra(p)` adds the per-playlist line. */
@@ -106,8 +147,8 @@ function playlistPicker(get: () => GameMode[], set: (m: GameMode[]) => void, ext
       'button.mn-pl',
       { type: 'button', 'data-nav': true, 'aria-pressed': 'false' },
       h('span.mn-pl-check', { 'aria-hidden': 'true' }),
-      h('span.mn-pl-name', null, PLAYLIST_NAMES[p]),
-      h('span.mn-pl-size', null, `${p} · ${MODES[p] * 2} autos`),
+      h('span.mn-pl-name', null, playlistName(p)),
+      h('span.mn-pl-size', null, t('play.playlistCars', { playlist: p, count: MODES[p] * 2 })),
       h('span.mn-pl-extra'),
     );
     c.addEventListener('click', () => {
@@ -123,9 +164,12 @@ function playlistPicker(get: () => GameMode[], set: (m: GameMode[]) => void, ext
   return { el: wrap, refresh };
 }
 
-/** The search button: BUSCAR while idle, CANCELAR while this kind of search runs. */
+/** The search button: FIND MATCH while idle, CANCEL while this kind of search runs. */
 function searchButton(menu: Menu, kind: 'casual' | 'ranked', start: () => void): { el: HTMLButtonElement; refresh: () => void } {
-  const el = primary('BUSCAR PARTIDA', () => {
+  const idle = t('play.search');
+  const cancel = t('play.cancelSearch');
+  const cancelOther = t('play.cancelOtherSearch');
+  const el = primary(idle, () => {
     const v = menu.host.searchView();
     if (v.active) menu.host.cancelSearch();
     else start();
@@ -133,7 +177,7 @@ function searchButton(menu: Menu, kind: 'casual' | 'ranked', start: () => void):
   });
   const refresh = (): void => {
     const v = menu.host.searchView();
-    el.textContent = v.active ? (v.kind === kind ? 'CANCELAR BÚSQUEDA' : 'CANCELAR LA OTRA BÚSQUEDA') : 'BUSCAR PARTIDA';
+    el.textContent = v.active ? (v.kind === kind ? cancel : cancelOther) : idle;
     el.classList.toggle('mn-btn-cancel', v.active);
   };
   return { el, refresh };
@@ -146,14 +190,14 @@ export function casualScreen(menu: Menu): Screen {
       menu.prefs.casualModes = m;
       menu.savePrefs();
     },
-    (p) => (menu.population ? h('span', null, `${menu.population.casual[p]} buscando`) : null),
+    (p) => (menu.population ? h('span', null, t('play.searching', { count: menu.population.casual[p] })) : null),
   );
   const region = regionCycler(menu);
   const net = cycler<'p2p' | 'server'>(
-    'Conexión',
+    t('play.connection'),
     [
-      { value: 'p2p', label: 'P2P (recomendada)' },
-      { value: 'server', label: 'Servidor' },
+      { value: 'p2p', label: t('play.netP2p') },
+      { value: 'server', label: t('play.netServer') },
     ],
     () => menu.prefs.net,
     (v) => {
@@ -167,14 +211,14 @@ export function casualScreen(menu: Menu): Screen {
   const el = h(
     'div.mn-queue',
     null,
-    screenHead('CASUAL', 'Partidas rápidas sin rango. Elegí una o varias playlists: entrás en la primera que arme partido.'),
-    section('PLAYLISTS', picker.el),
-    section('OPCIONES', region.el, net.el, h('p.mn-note', null, 'P2P: los autos se sincronizan entre ustedes (menos lag en la misma región). Si nadie más busca, jugás contra bots en un servidor.')),
+    screenHead(t('play.casual'), t('play.casualIntro')),
+    section(t('play.playlists'), picker.el),
+    section(t('play.options'), region.el, net.el, h('p.mn-note', null, t('play.casualNote'))),
     h('div.mn-actions', null, go.el),
   );
   return {
     id: 'casual',
-    title: 'Casual',
+    title: t('play.casualTitle'),
     el,
     show: () => {
       picker.refresh();
@@ -201,14 +245,20 @@ export function rankedScreen(menu: Menu): Screen {
     },
     (p) => {
       const r = acc.me?.ratings.find((x) => x.playlist === p);
-      const waiting = menu.population ? `${menu.population.ranked[p]} buscando` : '';
+      const waiting = menu.population ? t('play.searching', { count: menu.population.ranked[p] }) : '';
       if (!r) return h('span', null, waiting);
       const tier = tierById(r.tier);
       return h(
         'span.mn-pl-rank',
         null,
         rankBadge(tier, 34),
-        h('span', null, h('b', null, r.placementLeft > 0 ? 'Sin clasificar' : (tier?.name ?? '')), h('small', null, r.placementLeft > 0 ? `Clasificación ${r.games}/${r.games + r.placementLeft}` : `${r.mmr} MMR`), h('small', null, waiting)),
+        h(
+          'span',
+          null,
+          h('b', null, r.placementLeft > 0 ? t('play.unranked') : tier ? tierName(tier) : ''),
+          h('small', null, r.placementLeft > 0 ? t('play.placement', { games: r.games, total: r.games + r.placementLeft }) : t('play.mmr', { mmr: r.mmr })),
+          h('small', null, waiting),
+        ),
       );
     },
   );
@@ -218,19 +268,19 @@ export function rankedScreen(menu: Menu): Screen {
     'div',
     null,
     ban,
-    section('PLAYLISTS', picker.el),
-    section('OPCIONES', region.el, h('p.mn-note', null, 'Competitivo se juega en servidor con autoridad. Las primeras 5 partidas de cada playlist son de clasificación. Abandonar una partida cuenta como derrota y bloquea Competitivo (5 min, 15 min, 1 h, 24 h).')),
+    section(t('play.playlists'), picker.el),
+    section(t('play.options'), region.el, h('p.mn-note', null, t('play.rankedNote'))),
     h('div.mn-actions', null, go.el),
   );
   const guestView = h(
     'div.mn-locked',
     null,
     h('div.mn-locked-icon', { 'aria-hidden': 'true' }, '🔒'),
-    h('div.mn-locked-title', null, 'Competitivo necesita una cuenta'),
-    h('p', null, 'Los invitados no tienen rango. Creá una cuenta gratis (usuario y contraseña, o Google / Discord si están habilitados) y empezá tus partidas de clasificación.'),
-    h('div.mn-actions', null, primary('INICIAR SESIÓN / CREAR CUENTA', () => menu.open('profile'))),
+    h('div.mn-locked-title', null, t('play.rankedNeedsAccount')),
+    h('p', null, t('play.rankedGuestText')),
+    h('div.mn-actions', null, primary(t('home.signIn'), () => menu.open('profile'))),
   );
-  const el = h('div.mn-queue', null, screenHead('COMPETITIVO', 'Un rango por playlist. El MMR sube o baja según a quién le ganás.'), body);
+  const el = h('div.mn-queue', null, screenHead(t('play.ranked'), t('play.rankedIntro')), body);
   let lastSigned: boolean | null = null;
   const render = (): void => {
     const signed = acc.signedIn;
@@ -245,12 +295,12 @@ export function rankedScreen(menu: Menu): Screen {
     const until = acc.me?.rankedBanUntil ?? 0;
     const left = until - Date.now();
     ban.hidden = left <= 0;
-    if (left > 0) ban.textContent = `Competitivo bloqueado por abandonar partidas: ${clock(left)}`;
+    if (left > 0) ban.textContent = t('play.rankedBan', { time: clock(left) });
     go.el.disabled = left > 0 && !menu.host.searchView().active;
   };
   return {
     id: 'ranked',
-    title: 'Competitivo',
+    title: t('play.rankedTitle'),
     el,
     show: () => {
       lastSigned = null;
@@ -266,22 +316,22 @@ export function friendlyScreen(menu: Menu): Screen {
   let mode: GameMode = menu.host.mode;
   let difficulty: Difficulty = menu.host.difficulty;
   const modeC = cycler<GameMode>(
-    'Modo',
-    PLAYLISTS.map((p) => ({ value: p, label: `${PLAYLIST_NAMES[p]} (${p})` })),
+    t('friendly.mode'),
+    PLAYLISTS.map((p) => ({ value: p, label: `${playlistName(p)} (${p})` })),
     () => mode,
     (v) => (mode = v),
   );
   const diffC = cycler<Difficulty>(
-    'Dificultad de la IA',
-    DIFFICULTIES.map((d) => ({ value: d, label: DIFFICULTY_LABELS[d] })),
+    t('friendly.difficulty'),
+    DIFFICULTIES.map((d) => ({ value: d, label: difficultyName(d) })),
     () => difficulty,
     (v) => (difficulty = v),
   );
   const quality = cycler<0 | 1>(
-    'Calidad gráfica',
+    t('friendly.quality'),
     [
-      { value: 0, label: 'Alta' },
-      { value: 1, label: 'Rendimiento' },
+      { value: 0, label: t('friendly.qualityHigh') },
+      { value: 1, label: t('friendly.qualityPerformance') },
     ],
     () => menu.host.quality,
     (v) => menu.host.setQuality(v),
@@ -289,13 +339,13 @@ export function friendlyScreen(menu: Menu): Screen {
   const el = h(
     'div.mn-queue',
     null,
-    screenHead('AMISTOSO', 'Un partido offline de 5 minutos contra la IA. Tus compañeros, si los hay, también son bots.'),
-    section('PARTIDO', modeC.el, diffC.el, quality.el),
-    h('div.mn-actions', null, primary('JUGAR', () => menu.host.playFriendly(mode, difficulty), { 'data-autofocus': true })),
+    screenHead(t('play.friendly'), t('friendly.intro')),
+    section(t('friendly.match'), modeC.el, diffC.el, quality.el),
+    h('div.mn-actions', null, primary(t('friendly.play'), () => menu.host.playFriendly(mode, difficulty), { 'data-autofocus': true })),
   );
   return {
     id: 'friendly',
-    title: 'Amistoso',
+    title: t('friendly.title'),
     el,
     show: () => {
       mode = menu.host.mode;

@@ -43,7 +43,7 @@ test('parseAuthHash / oauthErrorText', () => {
   assert.deepEqual(AC.parseAuthHash('#auth=error:already_linked'), { kind: 'error', code: 'already_linked' });
   assert.equal(AC.parseAuthHash('#nancheck'), null);
   assert.equal(AC.parseAuthHash(''), null);
-  assert.match(AC.oauthErrorText('cancelled'), /Cancelaste/);
+  assert.match(AC.oauthErrorText('cancelled'), /You cancelled the sign-in/);
 });
 
 function memStorage() {
@@ -221,7 +221,7 @@ test('LobbyClient: a server close reports the reason once (kicked)', async () =>
   ws.onclose({ code: 4003, reason: '' });
   assert.deepEqual(reasons, ['kicked']);
   assert.equal(lc.inLobby, false);
-  assert.match(LC.lobbyCloseText('kicked'), /sacó/);
+  assert.match(LC.lobbyCloseText('kicked'), /kicked you from the lobby/);
 });
 
 test('LobbyClient: the public list needs no session (browsing never registers a guest)', async () => {
