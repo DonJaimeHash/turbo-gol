@@ -5,6 +5,10 @@
  * live in src/ui/screens/*; this file owns navigation (keyboard, controller through `action`, mouse),
  * the shared preferences (region, playlists, connection), population polling, toasts and modals.
  *
+ * Touch mode (`tg-touch` on <html>, src/input/TouchControls.ts: the last input used was a finger)
+ * adds a '‹' back button to the top bar and drops the key hints and focus rings (menu.css); the
+ * menus then focus nothing by themselves (`autoFocus`), so no text field pops up the keyboard.
+ *
  * The Game implements MenuHost (what the menus can ask of it) and calls show() / hide() /
  * action(); the menu never touches the sim or the renderer. Styling: src/ui/menu.css (`mn-`).
  */
@@ -98,6 +102,11 @@ const TICK_MS = 250;
 /** The navigation keys in the hint line (key names stay untranslated). */
 const NAV_KEYS = { moveKeys: '↑↓←→ / D-pad', selectKeys: 'Enter / A', backKeys: 'Esc / B' };
 
+/** Touch mode: the last input used was a finger (`tg-touch` on <html>, set by src/input/TouchControls.ts). */
+function touchMode(): boolean {
+  return document.documentElement.classList.contains('tg-touch');
+}
+
 function loadPrefs(): MenuPrefs {
   const d: MenuPrefs = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'p2p', leaderboardPlaylist: '2v2' };
   try {
@@ -151,6 +160,7 @@ export class Menu {
   private readonly stage: HTMLElement;
   private readonly crumbs: HTMLElement;
   private readonly chip: HTMLElement;
+  private readonly backButton: HTMLButtonElement;
   private readonly online: HTMLElement;
   private readonly banner: HTMLElement;
   private readonly hints: HTMLElement;
@@ -174,14 +184,18 @@ export class Menu {
     this.crumbs = h('div.mn-crumbs');
     this.online = h('button.mn-online', { type: 'button', 'data-nav': true, onclick: () => this.open('play') });
     this.chip = h('button.mn-chip', { type: 'button', 'data-nav': true, onclick: () => this.open('profile') });
-    const top = h('header.mn-top', null, h('div.mn-brand', null, h('span.mn-brand-a', null, 'TURBO'), h('span.mn-brand-b', null, 'GOL')), this.crumbs, h('div.mn-top-right', null, this.online, this.chip));
+    // Touch mode only (menu.css): a finger has no Esc / B. On the home screen it is hidden but keeps
+    // its place (mount), so the brand does not move when a screen opens.
+    this.backButton = h('button.mn-back', { type: 'button', title: t('menu.back'), 'aria-label': t('menu.back'), onclick: () => this.back() }, '‹');
+    const top = h('header.mn-top', null, this.backButton, h('div.mn-brand', null, h('span.mn-brand-a', null, 'TURBO'), h('span.mn-brand-b', null, 'GOL')), this.crumbs, h('div.mn-top-right', null, this.online, this.chip));
     this.stage = h('main.mn-stage');
     this.banner = h('div.mn-banner', { hidden: true });
     this.hints = h('div.mn-hints');
     // AGPL-3.0 section 13: a network game offers its source to the players.
     const source = h('a.mn-source', { href: SOURCE_URL, target: '_blank', rel: 'noopener', title: t('menu.sourceTitle', { license: LICENSE_NAME }) }, t('menu.source'));
     const discord = h('a.mn-source', { href: DISCORD_URL, target: '_blank', rel: 'noopener', title: t('menu.discordTitle') }, 'Discord');
-    const bottom = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, host.info, ' · ', source, ' · ', h('a.mn-source', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener' }, t('menu.licenses')), ' · ', discord));
+    // Narrow screens drop the build line (.mn-info-build), never the source link.
+    const bottom = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, h('span.mn-info-build', null, host.info, ' · '), source, ' · ', h('a.mn-source', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener' }, t('menu.licenses')), ' · ', discord));
     this.toasts = h('div.mn-toasts');
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
     this.root = h('div.mn', { hidden: true }, top, this.stage, bottom, this.toasts, this.modalLayer);
@@ -306,17 +320,34 @@ export class Menu {
     const top = this.top();
     if (!top) return;
     setChildren(this.stage, top.el);
+    // A screen opens at its top. With the keyboard / pad the first control's focus scrolls there
+    // (autoFocus); touch mode focuses nothing, and the stage would keep the last screen's offset.
+    if (touchMode()) this.stage.scrollTop = 0;
     setChildren(this.crumbs, ...this.stack.slice(1).flatMap((s, i) => [i > 0 ? h('span.mn-crumb-sep', null, '›') : null, h('span.mn-crumb', null, s.title)]));
     this.hints.textContent = t(this.stack.length > 1 ? 'menu.hintsBack' : 'menu.hints', NAV_KEYS);
+    this.backButton.classList.toggle('mn-back-off', this.stack.length <= 1);
     top.show?.();
     this.refreshChrome();
-    requestAnimationFrame(() => this.nav.first());
+    this.autoFocus();
   }
 
   /** Refocus the first control of the current screen (after it rebuilt its content). */
   refocus(): void {
+    this.autoFocus(true);
+  }
+
+  /**
+   * On the next frame, focus the first control of the modal or the screen on top (`ifNone`: only
+   * when nothing there has the focus), where the keyboard and the controller start from. Not in
+   * touch mode: a focused text field would pop up the phone's keyboard and a finger needs no focus
+   * ring. The controller still gets one there: FocusNav focuses the first control on its first
+   * press (and a pad press leaves touch mode).
+   */
+  private autoFocus(ifNone = false): void {
     requestAnimationFrame(() => {
-      if (this.nav.current === null) this.nav.first();
+      if (touchMode()) return;
+      if (ifNone && this.nav.current !== null) return;
+      this.nav.first();
     });
   }
 
@@ -479,7 +510,7 @@ export class Menu {
     this.modalDismiss = spec.dismissable === false ? () => undefined : close;
     setChildren(this.modalLayer, box);
     this.modalLayer.hidden = false;
-    requestAnimationFrame(() => this.nav.first());
+    this.autoFocus();
     return close;
   }
 

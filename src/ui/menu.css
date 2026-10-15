@@ -198,6 +198,7 @@
   text-overflow: ellipsis;
 }
 .mn-info {
+  margin-left: auto; /* right-aligned when the hints are hidden */
   opacity: 0.6;
   white-space: nowrap;
 }
@@ -1318,8 +1319,14 @@
   .mn-teams {
     grid-template-columns: 1fr;
   }
+  /* The footer keeps its links (AGPL-3.0: the source link stays at every width) and drops the build
+     line; next to a search banner they take a line of their own. */
+  .mn-bottom {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
   .mn-crumbs,
-  .mn-info,
+  .mn-info-build,
   .mn-online small {
     display: none;
   }
@@ -1390,6 +1397,55 @@
   .mn-banner-modes {
     display: none;
   }
+}
+
+/* ---- touch mode -------------------------------------------------------------------------------
+   html.tg-touch (src/input/TouchControls.ts): the last input used was a finger. The top bar gets a
+   back button, the key hints and focus rings go (Menu focuses nothing by itself then), and the menus
+   pan but never zoom (pan-x pan-y: manipulation would keep the pinch zoom on Android). */
+.mn-back {
+  display: none;
+}
+.tg-touch .mn-back {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0 0 4px;
+  font: inherit;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+  background: var(--mn-card);
+  border: 1px solid var(--mn-edge);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.tg-touch .mn-back:active {
+  background: var(--mn-card-hi);
+  border-color: var(--mn-edge-hi);
+}
+/* Home: nothing to go back to, but the button keeps its place so the brand does not jump. */
+.tg-touch .mn-back.mn-back-off {
+  visibility: hidden;
+}
+.tg-touch .mn {
+  touch-action: pan-x pan-y;
+}
+.tg-touch .mn-hints {
+  display: none;
+}
+.tg-touch .mn .mn-focus,
+.tg-touch .mn [data-nav]:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+/* body blocks selection with -webkit-user-select: none, and iOS then refuses to type in the field. */
+.tg-touch .mn-input {
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 /* Footer links (source code: AGPL-3.0; third-party licenses; Discord). */

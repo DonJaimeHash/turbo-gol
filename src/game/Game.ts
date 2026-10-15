@@ -22,7 +22,7 @@
  * roster entry 0. The mode
  * can only change from the menu (`setMode`): the bots are removed from the sim and re-added.
  * A running match reaches the menu through the pause screen (`quitToMenu`: Backspace / pad B
- * while paused) or the return after the final whistle.
+ * while paused, or its QUIT button in touch mode) or the return after the final whistle.
  *
  * Settings (src/settings.ts: controls, camera, bindings) are one live object shared by Input (reads
  * bindings / sensitivities, mutates them from the settings screen), ChaseCamera (reads `camera` by
@@ -33,6 +33,12 @@
  * requests it (that click is masked so it does not boost / jump), opening the menu / pausing / the
  * final whistle / losing focus release it, and losing it from the browser side (Esc) pauses the
  * game like an Esc menu. A click on the paused game resumes it and recaptures in one action.
+ *
+ * Touch screens (navigator.maxTouchPoints > 0) also get the on-screen controls (`touch`,
+ * src/input/TouchControls.ts), Input's touch source: shown while a match is played in touch mode
+ * (the last input used was a finger), which also drops the pointer-lock hint; a tap on the paused
+ * game resumes it without a phantom boost, and turning a phone to portrait pauses an offline match.
+ * Without a touch screen none of it exists.
  *
  * Online sessions: the Game hosts one GameSession at a time (`session`): the phase 1 OnlineSession
  * (`online`, a Durable Object host, menu "Partida en servidor") or the phase 2 P2PSession (`p2p`,
@@ -57,6 +63,7 @@ import type { Difficulty } from '../ai/Bot';
 import { BotTeam } from '../ai/Team';
 import { Audio, type AudioState } from '../audio/Audio';
 import { Input } from '../input/Input';
+import { TouchControls, hasTouchScreen } from '../input/TouchControls';
 import type { ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
 import { LobbyClient } from '../net/LobbyClient';
@@ -371,6 +378,8 @@ export class Game implements P2PGameHooks {
   readonly mates: BotTeam;
   readonly match: Match;
   readonly hud: Hud;
+  /** On-screen touch controls; null without a touch screen (no DOM, no listeners). Debug: window.__game.touch. */
+  readonly touch: TouchControls | null;
   readonly audio: Audio;
   readonly chase: ChaseCamera;
   /** Live settings shared with Input (bindings, controls), ChaseCamera (camera) and the Hud. */
@@ -480,6 +489,8 @@ export class Game implements P2PGameHooks {
   private fpsFrames = 0;
   private fpsWindowStart = 0;
   private gestureListening = false;
+  /** (orientation: portrait) on a phone; touch screens only (the rotate-screen pause in render). */
+  private readonly portraitQuery: MediaQueryList | null;
   /** Frames left that render the normally hidden meshes so their pipelines compile (see warmUp). */
   private warmFrames = 0;
   /** While true (goal pause / after the final whistle) the ball is held at pinPos.xy each tick. */
@@ -518,6 +529,9 @@ export class Game implements P2PGameHooks {
    * The HUD overlay is a sibling of the canvas, so clicks on PLAY or the menu never get here.
    */
   private readonly onCanvasPointerDown = (e: PointerEvent): void => {
+    // A finger / pen on a touch screen: no compatibility mousedown, which Input would read as a
+    // click (a boost tick on resume). Without a touch screen a pen keeps acting as a mouse.
+    if (this.touch !== null && e.pointerType !== 'mouse') e.preventDefault();
     if (this.canResumeByPointer) this.setPaused(false);
     if (e.pointerType !== 'mouse' || this.canvas === null || !this.canPointerLock) return;
     if (!this.playing || this.input.pointerLocked) return;
@@ -537,6 +551,16 @@ export class Game implements P2PGameHooks {
       return;
     }
     this.audio.resume();
+  };
+
+  /**
+   * A mouse press on the touch controls (a touch laptop with them up): they cover the canvas, so
+   * it is the canvas click that captures the mouse (and masks its button). Touch mode is already
+   * off by then (TouchControls listens on window, capture phase). Fingers are not forwarded: one
+   * landing in the frame after a PAUSE tap, before the controls hide, would resume the game.
+   */
+  private readonly onTouchLayerPointerDown = (e: PointerEvent): void => {
+    if (e.pointerType === 'mouse') this.onCanvasPointerDown(e);
   };
 
   constructor(opts: GameOptions) {
@@ -575,6 +599,13 @@ export class Game implements P2PGameHooks {
     sim.setCarDodgeDeadzone(this.playerCarId, settings.controls.dodgeDeadzone);
     this.match = new Match({ lengthSeconds: opts.matchLengthSeconds ?? 300 });
     this.hud = new Hud(opts.hudContainer);
+    // The pause screen's touch-mode buttons: what Esc / Start and Backspace / B do there (processActions).
+    this.hud.onPauseResume = () => this.setPaused(false);
+    this.hud.onPauseQuit = () => this.quitToMenu();
+    // Touch screens only: the controls layer goes right after the Hud root and drives Input like a keyboard.
+    this.touch = hasTouchScreen() ? new TouchControls(this.hud.root, { kbm: () => settings.bindings.kbm }) : null;
+    if (this.touch !== null) this.input.setTouchSource(this.touch.state);
+    this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse)') : null;
     this.audio = new Audio();
 
     // Initial snapshots so the first frame renders the kickoff state.
@@ -1517,8 +1548,10 @@ export class Game implements P2PGameHooks {
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('blur', this.onBlur);
     if (this.canvas !== null) this.canvas.addEventListener('pointerdown', this.onCanvasPointerDown);
+    if (this.touch !== null) this.touch.root.addEventListener('pointerdown', this.onTouchLayerPointerDown);
     this.addGestureListeners();
     this.hud.setCameraMode(this.chase.ballCam);
+    if (this.touch !== null) this.touch.setBallCam(this.chase.ballCam);
     this.showMenu();
     this.lastTime = -1;
     this.raf = requestAnimationFrame(this.frame);
@@ -1531,6 +1564,7 @@ export class Game implements P2PGameHooks {
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('blur', this.onBlur);
     if (this.canvas !== null) this.canvas.removeEventListener('pointerdown', this.onCanvasPointerDown);
+    if (this.touch !== null) this.touch.root.removeEventListener('pointerdown', this.onTouchLayerPointerDown);
     this.removeGestureListeners();
     this.input.exitPointerLock();
   }
@@ -1589,6 +1623,10 @@ export class Game implements P2PGameHooks {
     if (this.online !== null) this.online.dispose();
     this.disposeViews();
     this.input.dispose();
+    if (this.touch !== null) {
+      this.input.setTouchSource(null);
+      this.touch.dispose();
+    }
     if (this.trainingHud !== null) this.trainingHud.dispose();
     this.hud.dispose();
     this.audio.dispose();
@@ -1663,7 +1701,7 @@ export class Game implements P2PGameHooks {
   setPaused(p: boolean): void {
     if (this.paused === p) return;
     this.paused = p;
-    this.hud.setPaused(p);
+    this.hud.setPaused(p, this.onlineActive);
     if (p) {
       this.acc = 0;
       // A hidden tab stops requestAnimationFrame, so render() (the only driver of the continuous
@@ -1892,6 +1930,7 @@ export class Game implements P2PGameHooks {
       if (a.toggleBallCam) {
         this.chase.toggle();
         hud.setCameraMode(this.chase.ballCam);
+        if (this.touch !== null) this.touch.setBallCam(this.chase.ballCam);
       }
       // No kickoff reset online: the host owns the state. Training has its own resets.
       if (this.training !== null) {
@@ -2016,8 +2055,23 @@ export class Game implements P2PGameHooks {
     hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
     if (this.training !== null) this.updateTrainingHud();
     this.updateScoreboard(inMenu);
-    // Mouse look needs the pointer lock; pad players (a controller connected) are not nagged.
-    hud.showHint(this.canPointerLock && !this.input.pointerLocked && !this.input.hasGamepad && this.playing ? POINTER_LOCK_HINT : null);
+    // On-screen controls (touch screens): up while a match is played in touch mode, the HUD in its
+    // touch layout while that match is on screen (paused too). The last input used sets the mode; a
+    // gamepad press turns it off (Input counts them, hasGamepad only says connected).
+    const touch = this.touch;
+    let touchMode = false;
+    if (touch !== null) {
+      touch.notePadPresses(this.input.gamepadPresses);
+      touchMode = touch.touchMode;
+      // Portrait in touch mode: the rotate screen covers the game (src/input/touch.css), so an
+      // offline match pauses, whether the phone turned or touch mode came on while upright. Online
+      // it goes on (a pause only takes the input away there).
+      const q = this.portraitQuery;
+      if (touchMode && this.playing && !this.onlineActive && q !== null && q.matches) this.setPaused(true);
+      touch.setVisible(this.playing && touchMode, this.training !== null, touchMode && (this.playing || this.canResumeByPointer));
+    }
+    // Mouse look needs the pointer lock; pad players (a controller connected) and fingers are not nagged.
+    hud.showHint(this.canPointerLock && !this.input.pointerLocked && !this.input.hasGamepad && this.playing && !touchMode ? POINTER_LOCK_HINT : null);
     if (this.goCaptionUntil >= 0 && this.time >= this.goCaptionUntil) {
       this.goCaptionUntil = -1;
       hud.showCountdown(null);

@@ -66,6 +66,8 @@ export default {
   'menu.searchCasual': 'CASUAL',
   // Matchmaking banner button that stops the search
   'menu.searchCancel': 'CANCEL',
+  // Tooltip / screen-reader name of the top-bar '‹' button (touch screens): back to the previous screen
+  'menu.back': 'Back',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   // Rank badge tooltip and rating card while placement matches are still left
@@ -577,6 +579,25 @@ export default {
   'board.leftBanned': 'You left: it counts as a loss and Competitive is locked for {time}.',
   // Dialog button, uppercase
   'board.continue': 'CONTINUE',
+
+  // On-screen touch controls (src/input/TouchControls.ts): short labels on round buttons, uppercase
+  // Holds jump: one tap jumps, a second one in the air double jumps or dodges
+  'touch.jump': 'JUMP',
+  'touch.boost': 'BOOST',
+  // Powerslide on the ground, air roll in the air (while held)
+  'touch.drift': 'DRIFT',
+  // Toggles the ball camera (camera locked on the ball); keep it to about 4 letters
+  'touch.cam': 'CAM',
+  // Full-screen notice on a phone held upright: the game is played in landscape
+  'touch.rotate': 'Turn your phone sideways to play',
+
+  // Pause screen buttons on a touch screen (src/render/Hud.ts), under the PAUSED title, uppercase
+  // Back to the match
+  'pause.resume': 'RESUME',
+  // Leave the match for the menus
+  'pause.quit': 'QUIT',
+  // The QUIT button after one tap in an online match: a second tap leaves it (may count as an abandon)
+  'pause.quitConfirm': 'LEAVE MATCH?',
 
   // Training screen and packs (src/ui/screens/training.ts, src/game/trainingPacks.ts)
   // Screen title (top bar / history)

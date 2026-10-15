@@ -51,6 +51,17 @@ body {
   -webkit-font-smoothing: antialiased;
   user-select: none;
   -webkit-user-select: none;
+  /* Touch: no grey flash on a tapped element, no long-press callout (link / image preview). */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+/* Phones and tablets: a swipe at the page edge is not a pull-to-refresh or a history swipe. */
+@media (pointer: coarse) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
 }
 
 #app {
@@ -515,6 +526,66 @@ body {
   letter-spacing: 0.08em;
 }
 
+/* Touch mode (html.tg-touch, src/input/TouchControls.ts): RESUME / QUIT take the place of the key
+   line, which means nothing to a finger. The veil keeps ignoring the pointer (a tap on it reaches
+   the canvas and resumes); only the buttons take it. Training has its own pause panel
+   (training.css .trn-pause). */
+.hud-paused-actions {
+  display: none;
+  justify-content: center;
+  gap: clamp(12px, 2.4vw, 20px);
+  margin-top: clamp(14px, 3.4vh, 28px);
+}
+
+.tg-touch .hud-paused-actions {
+  display: flex;
+}
+
+.tg-touch .hud-paused-sub,
+.tg-touch .trn-on .hud-paused-actions {
+  display: none;
+}
+
+.hud-paused-btn {
+  pointer-events: auto;
+  touch-action: none;
+  min-width: clamp(124px, 20vw, 172px);
+  min-height: 48px;
+  padding: 10px 22px;
+  font: inherit;
+  font-size: clamp(15px, 2.6vh, 19px);
+  font-weight: 800;
+  font-style: italic;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  text-shadow: var(--shadow);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.hud-paused-btn:active {
+  transform: scale(0.96);
+}
+
+.hud-paused-resume {
+  color: var(--brand-ink);
+  text-shadow: none;
+  border-color: var(--brand);
+  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+}
+
+.hud-paused-quit {
+  border-color: rgba(255, 77, 94, 0.6);
+}
+
+/* Online, after the first tap: the second one leaves the match. */
+.hud-paused-quit.hud-paused-armed {
+  border-color: rgb(255, 77, 94);
+  background: rgba(255, 77, 94, 0.32);
+}
+
 /* ---- Start menu ------------------------------------------------------------------------- */
 
 .hud-menu {
@@ -534,6 +605,11 @@ body {
 /* The settings screen alone, over the front-end menus (Hud.openSettingsScreen). */
 .hud-menu.hud-menu-settings-only {
   z-index: 60;
+}
+
+/* Touch mode: it pans but never zooms (manipulation would keep the pinch zoom on Android). */
+.tg-touch .hud-menu {
+  touch-action: pan-x pan-y;
 }
 
 .hud-menu-panel {
@@ -927,6 +1003,7 @@ body {
 .hud-menu-panel.hud-settings-panel {
   width: min(100%, 760px);
   max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 32px);
+  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 32px);
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -964,6 +1041,13 @@ body {
 
 .hud-settings-back:hover {
   background: rgba(255, 255, 255, 0.16);
+}
+
+/* Touch mode: a thumb-sized target. */
+.tg-touch .hud-settings-back {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px 16px;
 }
 
 .hud-settings-title {
@@ -1517,6 +1601,7 @@ body {
   .hud-menu-panel.hud-settings-panel {
     width: 100%;
     max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 12px);
+    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 12px);
     border-radius: 8px;
   }
   .hud-settings-head {

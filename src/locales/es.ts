@@ -47,6 +47,7 @@ export default {
   'menu.searchRanked': 'COMPETITIVO',
   'menu.searchCasual': 'CASUAL',
   'menu.searchCancel': 'CANCELAR',
+  'menu.back': 'Volver',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   'badge.unranked': 'Sin clasificar',
@@ -413,6 +414,18 @@ export default {
   'board.left': 'Abandonaste: cuenta como derrota.',
   'board.leftBanned': 'Abandonaste: cuenta como derrota y Competitivo queda bloqueado {time}.',
   'board.continue': 'CONTINUAR',
+
+  // On-screen touch controls (src/input/TouchControls.ts)
+  'touch.jump': 'SALTO',
+  'touch.boost': 'BOOST',
+  'touch.drift': 'DERRAPE',
+  'touch.cam': 'CAM',
+  'touch.rotate': 'Girá el teléfono para jugar',
+
+  // Pause screen buttons on a touch screen (src/render/Hud.ts)
+  'pause.resume': 'REANUDAR',
+  'pause.quit': 'SALIR',
+  'pause.quitConfirm': '¿ABANDONAR?',
 
   // Training screen and packs (src/ui/screens/training.ts, src/game/trainingPacks.ts)
   'training.screenTitle': 'Entrenamiento',

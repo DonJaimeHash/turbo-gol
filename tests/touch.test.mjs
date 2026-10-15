@@ -893,3 +893,255 @@ test("Input's own release (page hidden, focus lost) also releases the touch sour
   assert.equal(sample().boost, true);
   input.dispose();
 });
+
+// ---- Input.gamepadPresses (touch mode turns off on a pad press) ----------------------------
+
+test('gamepadPresses counts button rising edges, once per press, without changing the output', () => {
+  const pad = makePad();
+  const { input, sample } = setup({ pad, touch: false });
+  sample();
+  assert.equal(input.gamepadPresses, 0, 'a connected pad alone is no press');
+  pad.axes[0] = 0.9;
+  sample();
+  assert.equal(input.gamepadPresses, 0, 'sticks are not presses');
+  pad.axes[0] = 0;
+  press(pad, GP.A);
+  const out = sample();
+  assert.equal(input.gamepadPresses, 1);
+  assert.equal(out.jump, true, 'the press still drives as before');
+  sample();
+  sample();
+  assert.equal(input.gamepadPresses, 1, 'held: no new press');
+  release(pad, GP.A);
+  sample();
+  press(pad, GP.B);
+  press(pad, GP.START);
+  sample();
+  assert.equal(input.gamepadPresses, 3, 'one per button');
+  input.dispose();
+});
+
+// ---- TouchRouter (src/input/touchRouter.ts) ------------------------------------------------
+
+const { TouchRouter, HIT_SLOP, STICK_EDGE_REACH, emptyLayout } = await import('../src/input/touchRouter.ts');
+
+/** A landscape phone, 800 x 400: the stick zone on the left half, the buttons bottom / top right. */
+function routerSetup() {
+  const ts = new TouchState();
+  const layout = emptyLayout();
+  layout.bounds = { left: 0, top: 0, right: 800, bottom: 400 };
+  layout.zone = { left: 30, top: 72, right: 400, bottom: 400 };
+  layout.stickRadius = 60;
+  const set = (b, cx, cy, r) => Object.assign(layout.buttons[b], { cx, cy, r });
+  set(TB.BOOST, 690, 320, 50);
+  set(TB.JUMP, 575, 330, 40);
+  set(TB.DRIFT, 690, 220, 32);
+  set(TB.PAUSE, 740, 50, 26);
+  set(TB.CAM, 670, 50, 26);
+  set(TB.RESET, 600, 50, 0); // hidden outside training
+  const router = new TouchRouter(ts, layout);
+  return { ts, router, layout };
+}
+
+test('router: a finger in the zone floats the stick at its landing point; the offset is the deflection', () => {
+  const { ts, router } = routerSetup();
+  router.down(1, 150, 250);
+  assert.equal(router.stickActive, true);
+  assert.deepEqual([router.stickX, router.stickY], [150, 250]);
+  assert.deepEqual(readMap(ts), {}, 'no deflection at the landing point');
+  router.move(1, 150, 190); // 60 px up = the radius
+  near(ts.stickY, stickVector(0, -60, 60).y);
+  near(ts.stickX, 0);
+  assert.equal(readMap(ts).throttle, 1);
+  router.move(1, 450, 250); // far right: the knob stops at the radius
+  near(router.knobX, 60);
+  near(router.knobY, 0);
+  near(ts.stickX, 1);
+  router.up(1, 450, 250);
+  assert.equal(router.stickActive, false);
+  assert.deepEqual([ts.stickX, ts.stickY, router.knobX, router.knobY], [0, 0, 0, 0]);
+  assert.deepEqual(readMap(ts), {});
+});
+
+test('router: the stick centre stays inside the screen: a landing in the bottom-left corner reaches full left and full reverse', () => {
+  const { ts, router, layout } = routerSetup();
+  const reach = STICK_EDGE_REACH * layout.stickRadius;
+  router.down(1, 34, 396); // 4 px inside the zone's left edge and above the screen's bottom
+  assert.deepEqual([router.stickX, router.stickY], [reach, 400 - reach], 'the centre moved in');
+  router.move(1, 0, 400 - reach); // the screen's left edge
+  assert.equal(ts.stickX, -1, 'full left');
+  near(ts.stickY, 0);
+  let m = readMap(ts);
+  assert.equal(m.steerLeft, 1);
+  assert.equal(m.yawLeft, 1);
+  router.move(1, reach, 400); // the screen's bottom edge
+  assert.equal(ts.stickY, -1, 'full reverse / pitch up');
+  m = readMap(ts);
+  assert.equal(m.reverse, 1);
+  assert.equal(m.pitchUp, 1);
+  router.up(1, reach, 400);
+  router.down(2, 150, 250); // away from the edges: the landing point, no deflection
+  assert.deepEqual([router.stickX, router.stickY], [150, 250]);
+  assert.deepEqual(readMap(ts), {});
+  router.up(2, 150, 250);
+  layout.bounds = { left: 0, top: 0, right: 0, bottom: 0 }; // not measured: no limit
+  router.down(3, 34, 396);
+  assert.deepEqual([router.stickX, router.stickY], [34, 396]);
+});
+
+test('router: one stick at a time; the left edge strip and the top strip start nothing', () => {
+  const { ts, router } = routerSetup();
+  router.down(1, 150, 250);
+  router.down(2, 300, 300); // a second thumb in the zone
+  router.move(2, 360, 300);
+  assert.equal(ts.stickX, 0);
+  assert.deepEqual([router.stickX, router.stickY], [150, 250]);
+  router.up(1, 150, 250);
+  router.move(2, 300, 200);
+  assert.equal(router.stickActive, false, 'it does not take the stick over either');
+  router.up(2, 300, 200);
+  router.down(3, 12, 250); // the back-gesture edge
+  router.down(4, 150, 40); // the top strip (scorebug)
+  router.move(3, 200, 250);
+  router.move(4, 150, 200);
+  assert.equal(router.stickActive, false);
+  assert.deepEqual(readMap(ts), {});
+  assert.equal(router.fingerCount, 2, 'tracked so their lift is seen, holding nothing');
+});
+
+test('router: big buttons hold; a slide switches; BOOST stays held once held; the gap keeps the button', () => {
+  const { ts, router } = routerSetup();
+  router.down(1, 575, 330);
+  assert.deepEqual(readMap(ts), { jump: 1 });
+  router.move(1, 628, 330); // the gap between JUMP (r 40) and BOOST (r 50): no switch, no flicker
+  assert.deepEqual(readMap(ts), { jump: 1 });
+  router.move(1, 660, 325); // into BOOST
+  assert.deepEqual(readMap(ts), { boost: 1 }, 'from JUMP: jump released');
+  router.move(1, 575, 330); // back to JUMP: BOOST stays held by this finger
+  assert.deepEqual(readMap(ts), { jump: 1, boost: 1 });
+  router.move(1, 690, 220); // DRIFT: jump released, boost kept
+  assert.deepEqual(readMap(ts), { boost: 1, powerslide: 1, airRoll: 1 });
+  router.move(1, 690, 320); // back on BOOST: no second press of it
+  assert.deepEqual(readMap(ts), { boost: 1 });
+  router.up(1, 690, 320);
+  assert.deepEqual(readMap(ts), {});
+  assert.equal(ts.isHeld(TB.BOOST), false, 'every press released exactly once');
+});
+
+test('router: a landing hits within HIT_SLOP radii, a slide needs the button itself; the right half starts empty', () => {
+  const { ts, router } = routerSetup();
+  router.down(1, 690 - 50 * (HIT_SLOP - 0.05), 320); // just off BOOST's edge, inside the slop
+  assert.deepEqual(readMap(ts), { boost: 1 });
+  router.up(1, 690, 320);
+  router.down(2, 500, 200); // right half, off every button: holds nothing
+  assert.deepEqual(readMap(ts), {});
+  router.move(2, 575 - 40 * 1.1, 330); // within JUMP's slop but outside its circle: not yet
+  assert.deepEqual(readMap(ts), {});
+  router.move(2, 575, 330);
+  assert.deepEqual(readMap(ts), { jump: 1 }, 'sliding onto a button presses it');
+  router.move(2, 740, 50); // a slide never reaches a tap button
+  router.up(2, 740, 50);
+  assert.deepEqual(readMap(ts), {});
+});
+
+test('router: tap buttons fire once on a lift over them; sliding away or a cancel does not; hidden ones never hit', () => {
+  const { ts, router } = routerSetup();
+  router.down(1, 740, 50);
+  assert.equal(router.pendingTaps, 1 << TB.PAUSE);
+  assert.deepEqual(readMap(ts), {}, 'nothing until the lift');
+  router.up(1, 742, 52);
+  assert.equal(router.pendingTaps, 0);
+  assert.deepEqual(readMap(ts), { pause: 1 }, 'one read');
+  assert.deepEqual(readMap(ts), {});
+  router.down(2, 670, 50);
+  router.move(2, 670, 150); // slid away
+  router.move(2, 670, 50); // and back: still cancelled
+  router.up(2, 670, 50);
+  assert.deepEqual(readMap(ts), {});
+  router.down(3, 670, 50);
+  router.up(3, 670, 50, true); // pointercancel / lost capture
+  assert.deepEqual(readMap(ts), {});
+  router.down(4, 600, 50); // RESET hidden (r 0)
+  router.up(4, 600, 50);
+  assert.deepEqual(readMap(ts), {});
+  router.down(5, 740, 50); // two fingers on PAUSE: pending until the last one lifts or slides off
+  router.down(6, 744, 52);
+  router.up(5, 740, 50, true);
+  assert.equal(router.pendingTaps, 1 << TB.PAUSE);
+  router.move(6, 740, 200);
+  assert.equal(router.pendingTaps, 0);
+  router.up(6, 740, 200);
+  assert.equal(router.pendingTaps, 0);
+  router.down(7, 670, 50);
+  router.releaseAll();
+  assert.equal(router.pendingTaps, 0);
+  assert.deepEqual(readMap(ts), {});
+});
+
+test('router: fingers are counted; releaseAll forgets them and their late lifts drop nothing', () => {
+  const { ts, router } = routerSetup();
+  router.down(1, 690, 320);
+  router.down(2, 700, 330);
+  router.up(1, 690, 320);
+  assert.equal(ts.isHeld(TB.BOOST), true, 'the other finger still holds it');
+  router.up(1, 690, 320); // a second lift of the same finger (pointerup, then lostpointercapture)
+  assert.equal(ts.isHeld(TB.BOOST), true);
+  router.down(3, 150, 250);
+  router.move(3, 150, 200);
+  router.releaseAll();
+  assert.equal(router.fingerCount, 0);
+  assert.equal(router.stickActive, false);
+  assert.deepEqual(readMap(ts), {});
+  router.down(4, 690, 320);
+  router.up(2, 700, 330); // a finger forgotten by releaseAll lifts now
+  assert.equal(ts.isHeld(TB.BOOST), true, 'the new hold survives');
+  router.down(4, 575, 330); // the same id landing again (missed lift): its old hold goes first
+  assert.equal(ts.isHeld(TB.BOOST), false);
+  assert.equal(ts.isHeld(TB.JUMP), true);
+});
+
+test('router through Input: one thumb on BOOST sliding to JUMP takes off with boost', () => {
+  const { sample, ts, input } = setup();
+  const router = new TouchRouter(ts, routerSetup().layout);
+  router.down(1, 690, 320);
+  assert.equal(sample().boost, true);
+  router.move(1, 575, 330);
+  const out = sample();
+  assert.equal(out.boost, true);
+  assert.equal(out.jump, true);
+  router.up(1, 575, 330);
+  const after = sample();
+  assert.equal(after.boost, false);
+  assert.equal(after.jump, false);
+  input.dispose();
+});
+
+// ---- Touch mode decisions (src/input/touchMode.ts) ---------------------------------------
+
+const { keyLeavesTouchMode, pointerTouchMode, MENU_KEYS } = await import('../src/input/touchMode.ts');
+const { DEFAULT_KBM, KEYBOARD_ONLY_KBM } = await import('../src/input/bindings.ts');
+
+test('touch mode: a menu key or a bound key leaves it; volume / media keys, code "", unbound keys and text fields do not', () => {
+  for (const code of ['AudioVolumeUp', 'AudioVolumeDown', 'AudioVolumeMute', 'MediaPlayPause', 'MediaTrackNext', 'LaunchApp1', 'BrowserBack', '', undefined, 7]) {
+    assert.equal(keyLeavesTouchMode(code, false, DEFAULT_KBM), false, String(code));
+  }
+  for (const code of MENU_KEYS) assert.equal(keyLeavesTouchMode(code, false, DEFAULT_KBM), true, code);
+  for (const code of ['Escape', 'Enter', 'Backspace', 'ArrowUp', 'KeyW', 'Space', 'Tab']) assert.ok(MENU_KEYS.has(code), code);
+  assert.equal(keyLeavesTouchMode('ShiftLeft', false, DEFAULT_KBM), true, 'powerslide / air roll');
+  assert.equal(keyLeavesTouchMode('KeyQ', false, DEFAULT_KBM), true, 'air roll left');
+  assert.equal(keyLeavesTouchMode('KeyZ', false, DEFAULT_KBM), false, 'unbound in the default layout');
+  assert.equal(keyLeavesTouchMode('KeyZ', false, KEYBOARD_ONLY_KBM), true, 'bound in the keyboard-only layout');
+  const rebound = { ...DEFAULT_KBM, boost: { kind: 'key', code: 'KeyF' } };
+  assert.equal(keyLeavesTouchMode('KeyF', false, rebound), true, 'the live profile counts');
+  assert.equal(keyLeavesTouchMode('KeyF', false, DEFAULT_KBM), false);
+  assert.equal(keyLeavesTouchMode('KeyW', true, DEFAULT_KBM), false, 'typed into a text field');
+  assert.equal(keyLeavesTouchMode('ShiftLeft', true, DEFAULT_KBM), false);
+});
+
+test('touch mode: a finger or a pen turns it on, a mouse off, an unknown pointer leaves it', () => {
+  assert.equal(pointerTouchMode('touch'), true);
+  assert.equal(pointerTouchMode('pen'), true);
+  assert.equal(pointerTouchMode('mouse'), false);
+  assert.equal(pointerTouchMode(''), null);
+  assert.equal(pointerTouchMode('kinect'), null);
+});
