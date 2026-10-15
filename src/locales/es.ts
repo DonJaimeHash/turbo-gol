@@ -421,6 +421,7 @@ export default {
   'touch.drift': 'DERRAPE',
   'touch.cam': 'CAM',
   'touch.rotate': 'Girá el teléfono para jugar',
+  'touch.installHint': 'Jugá en pantalla completa: tocá Compartir › Agregar a inicio',
 
   // Pause screen buttons on a touch screen (src/render/Hud.ts)
   'pause.resume': 'REANUDAR',
