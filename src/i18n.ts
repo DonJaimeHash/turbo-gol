@@ -4,8 +4,9 @@
  *
  *   t(key, params)   the text in the current language, `{name}` placeholders filled from params;
  *                    a plural text picks its form with Intl.PluralRules from params.count
- *   duration(ms)     "5 min", "30 s"... in the current language (Intl.NumberFormat units)
+ *   duration(ms)     "5 min", "30 sec" ("30 s" in Spanish)... in the current language (Intl.NumberFormat units)
  *   serverText(...)  a server error by its machine code, or the server's own message
+ *                    (hasServerText: the client has a text for that code)
  *   setLanguage(c)   save the choice (null = follow the system) and reload the page
  *
  * The language is fixed for the page's lifetime: a saved choice (localStorage), else the first
@@ -164,7 +165,7 @@ export function t(key: Key, params?: Params): string {
   return textIn(LOCALES[current].messages, current, key, params);
 }
 
-/** A wait or a ban length, rounded up to whole seconds, minutes or hours: "45 s", "5 min", "24 h". */
+/** A wait or a ban length, rounded up to whole seconds, minutes or hours: "45 sec", "5 min", "24 hr" ("45 s", "24 h" in Spanish). */
 export function duration(ms: number): string {
   const s = Math.max(0, Math.ceil(ms / 1000));
   const unit = s < 60 ? 'second' : s < 3600 ? 'minute' : 'hour';
@@ -172,17 +173,30 @@ export function duration(ms: number): string {
   return new Intl.NumberFormat(current, { style: 'unit', unit, unitDisplay: 'short' }).format(value);
 }
 
-/** Server error codes whose server message carries details the translations cannot (Spanish servers only). */
-const SERVER_DETAIL_CODES: ReadonlySet<string> = new Set(['bad_password', 'busy', 'not_host', 'member_busy', 'rate_limited']);
+/**
+ * Server error codes whose server message carries details the translations cannot (Spanish servers
+ * only): one code, several server texts (which limit was hit, which name rule failed, the player
+ * still in a match...), so the client's text for them is a generic one. Also matchmaking_off: the
+ * lobby routes send it bare and Spanish keeps the generic text it had there (LobbyClient's fallback,
+ * 'Error del servidor (503)'); a bare one on the queue (no fallback) still gets its error.queue text.
+ */
+const SERVER_DETAIL_CODES: ReadonlySet<string> = new Set(['bad_password', 'busy', 'not_host', 'member_busy', 'rate_limited', 'bad_username', 'bad_name', 'matchmaking_off']);
+
+/** Where a server error is shown: the account forms, the custom lobbies, the matchmaking searches. */
+export type ServerSurface = 'account' | 'lobby' | 'queue';
+
+/** The client has a text for the server's `code` on `surface` (an error.<surface>.<code> key). */
+export function hasServerText(surface: ServerSurface, code: string): boolean {
+  return Object.prototype.hasOwnProperty.call(en, `error.${surface}.${code}`);
+}
 
 /**
  * A server error for the player: the `error.<surface>.<code>` text when the client has one, else
  * the server's own message. The server writes its messages in Spanish, so for the few codes it
  * fills with details (SERVER_DETAIL_CODES) Spanish players keep the server's message.
  */
-export function serverText(surface: 'account' | 'lobby' | 'queue', code: string, fallback: string, params?: Params): string {
-  const key = `error.${surface}.${code}`;
-  if (!Object.prototype.hasOwnProperty.call(en, key)) return fallback;
+export function serverText(surface: ServerSurface, code: string, fallback: string, params?: Params): string {
+  if (!hasServerText(surface, code)) return fallback;
   if (current === 'es' && SERVER_DETAIL_CODES.has(code) && fallback.length > 0) return fallback;
-  return t(key as Key, params);
+  return t(`error.${surface}.${code}` as Key, params);
 }

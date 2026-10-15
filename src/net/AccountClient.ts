@@ -10,13 +10,17 @@
  * spend a refresh request. NetClient asks `sessionForQueue()` before using its guest session: a
  * signed-in player queues, joins lobbies and plays under the account.
  *
+ * Errors reject with AccountError, its message already the player's text: a server error code by
+ * its error.account.* text (serverText, src/i18n.ts), else the server's message, else
+ * error.server with the status; a username / password refused here by its account.issue.* text.
+ *
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
-import { clientPasswordKey, passwordProblem, usernameProblem } from './account';
-import type { AccountSession, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
+import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
+import type { AccountIssue, AccountSession, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { STORAGE_PREFIX } from '../brand';
-import { t } from '../i18n';
+import { serverText, t } from '../i18n';
 
 export const ACCOUNT_HINT_KEY = STORAGE_PREFIX + 'account';
 /** Refresh when less than this is left on the Bearer session. */
@@ -35,6 +39,11 @@ export class AccountError extends Error {
     this.code = code;
     this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** A username / password the client refuses before any request (the same rules as the server). */
+function issueError(issue: AccountIssue, code: 'bad_username' | 'bad_password'): AccountError {
+  return new AccountError(t(`account.issue.${issue.code}`, issue.params), 400, code);
 }
 
 /** What `#auth=...` in the URL says after an OAuth round trip (consumed once). */
@@ -146,23 +155,24 @@ export class AccountClient {
     try {
       return await this.fetchFn(this.apiBase + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
     } catch {
-      throw new AccountError(t('auth.network'), 0, 'network');
+      throw new AccountError(t('error.network'), 0, 'network');
     }
   }
 
   private async fail(res: ResponseLike): Promise<never> {
     let code = 'http';
-    let message = `Error del servidor (${res.status})`;
+    let serverMessage = '';
     let retry = 0;
     try {
       const b = (await res.json()) as { error?: unknown; message?: unknown; retryAfterMs?: unknown };
       if (typeof b.error === 'string') code = b.error;
-      if (typeof b.message === 'string' && b.message !== b.error) message = b.message;
+      if (typeof b.message === 'string' && b.message !== b.error) serverMessage = b.message;
       if (typeof b.retryAfterMs === 'number') retry = b.retryAfterMs;
     } catch {
       /* no JSON body */
     }
-    if (code === 'rate_limited' && message.startsWith('Error')) message = 'Demasiados intentos, esperá un minuto';
+    // A code without a server text (a sign-in rate_limited...) still gets its own text when the client has one.
+    const message = serverText('account', code, serverMessage) || t('error.server', { status: res.status });
     throw new AccountError(message, res.status, code, retry);
   }
 
@@ -221,10 +231,10 @@ export class AccountClient {
   }
 
   async register(username: string, password: string): Promise<RegisterAnswer> {
-    const u = usernameProblem(username);
-    if (u !== null) throw new AccountError(u, 400, 'bad_username');
-    const p = passwordProblem(password, username);
-    if (p !== null) throw new AccountError(p, 400, 'bad_password');
+    const u = usernameIssue(username);
+    if (u !== null) throw issueError(u, 'bad_username');
+    const p = passwordIssue(password, username);
+    if (p !== null) throw issueError(p, 'bad_password');
     let token: string | null;
     try {
       token = await this.antiBot();
@@ -247,8 +257,8 @@ export class AccountClient {
   }
 
   async recover(username: string, code: string, newPassword: string): Promise<AccountSession & { codesLeft: number }> {
-    const p = passwordProblem(newPassword, username);
-    if (p !== null) throw new AccountError(p, 400, 'bad_password');
+    const p = passwordIssue(newPassword, username);
+    if (p !== null) throw issueError(p, 'bad_password');
     const res = await this.call('/api/auth/recover', { username: username.trim(), code, password: await clientPasswordKey(username.trim(), newPassword) });
     const s = await this.jsonOrFail<AccountSession & { codesLeft: number }>(res);
     this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt });
@@ -280,8 +290,8 @@ export class AccountClient {
 
   async changePassword(oldPassword: string | null, newPassword: string): Promise<void> {
     const name = this.account?.name ?? '';
-    const p = passwordProblem(newPassword, name);
-    if (p !== null) throw new AccountError(p, 400, 'bad_password');
+    const p = passwordIssue(newPassword, name);
+    if (p !== null) throw issueError(p, 'bad_password');
     const body: Record<string, string> = { password: await clientPasswordKey(name, newPassword) };
     if (oldPassword !== null) body.oldPassword = await clientPasswordKey(name, oldPassword);
     await this.jsonOrFail(await this.call('/api/auth/password', body, await this.bearer()));
@@ -301,8 +311,8 @@ export class AccountClient {
    * key of the new one (other devices are signed out). An OAuth-only account passes null.
    */
   async rename(username: string, password: string | null): Promise<AccountSession> {
-    const u = usernameProblem(username);
-    if (u !== null) throw new AccountError(u, 400, 'bad_username');
+    const u = usernameIssue(username);
+    if (u !== null) throw issueError(u, 'bad_username');
     const body: Record<string, string> = { username };
     if (password !== null) {
       body.password = await clientPasswordKey(this.account?.name ?? '', password);

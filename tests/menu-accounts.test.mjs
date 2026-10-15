@@ -93,21 +93,38 @@ test('AccountClient: login sends the client key (never the password), adopts the
   await assert.rejects(a.login('', ''), (e) => e instanceof AC.AccountError && e.code === 'empty');
 });
 
-test('AccountClient: server errors become AccountError with the Spanish message and code; register validates first and sends the anti-bot token', async () => {
+test("AccountClient: server errors become AccountError with the code and the player's text for it; register validates first and sends the anti-bot token", async () => {
   const srv = fakeServer({
     '/api/auth/login': () => res(401, { error: 'bad_credentials', message: 'Usuario o contraseña incorrectos' }),
     '/api/auth/register': (b) => (b.turnstileToken === 'tok' ? res(200, { ...SESSION(b.username, Date.now() + 3600_000), recoveryCodes: ['AAAA-BBBB'] }) : res(403, { error: 'turnstile_failed' })),
   });
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, antiBot: async () => 'tok' });
-  await assert.rejects(a.login('x', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Usuario o contraseña incorrectos');
-  await assert.rejects(a.register('ab', 'a fine password'), (e) => e.code === 'bad_username');
-  await assert.rejects(a.register('Mariana', 'short'), (e) => e.code === 'bad_password');
+  // The client's text for the code (English outside a browser; src/locales/es.ts has the server's Spanish).
+  await assert.rejects(a.login('x', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Wrong username or password');
+  await assert.rejects(a.register('ab', 'a fine password'), (e) => e.code === 'bad_username' && e.message === 'The username must be 3 to 16 characters long');
+  await assert.rejects(a.register('Mariana', 'short'), (e) => e.code === 'bad_password' && e.message === 'The password must be at least 8 characters');
   const n = srv.calls.length;
   assert.equal(n, 1, 'invalid input never reaches the server');
   const r = await a.register('Mariana', 'a fine password');
   assert.deepEqual(r.recoveryCodes, ['AAAA-BBBB']);
   assert.equal(srv.calls.at(-1).body.turnstileToken, 'tok');
   assert.equal(a.account.name, 'Mariana');
+});
+
+test("AccountClient: a code without a server text still gets the client's text; an unknown code keeps the server's message; no body: the generic one", async () => {
+  let answer = res(429, { error: 'rate_limited', message: 'rate_limited' });
+  const srv = fakeServer({ '/api/auth/login': () => answer });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
+  const rejects = (check) => assert.rejects(a.login('Tomi', 'a fine password'), (e) => e instanceof AC.AccountError && check(e));
+  await rejects((e) => e.code === 'rate_limited' && e.status === 429 && e.message === 'Too many attempts, wait a minute');
+  answer = res(429, { error: 'throttled', message: 'Demasiados intentos, esperá un momento', retryAfterMs: 5000 });
+  await rejects((e) => e.code === 'throttled' && e.retryAfterMs === 5000 && e.message === 'Too many attempts, wait a moment');
+  answer = res(400, { error: 'new_code', message: 'A server text' });
+  await rejects((e) => e.code === 'new_code' && e.message === 'A server text');
+  answer = res(400, { error: 'bad_request', message: 'bad_request' });
+  await rejects((e) => e.code === 'bad_request' && e.message === 'Server error (400)');
+  answer = { ok: false, status: 502, json: async () => JSON.parse('<html>') };
+  await rejects((e) => e.code === 'http' && e.status === 502 && e.message === 'Server error (502)');
 });
 
 test('AccountClient: sessionForQueue refreshes near expiry (one request for concurrent callers); a 401 refresh signs out', async () => {
@@ -197,6 +214,19 @@ test('LobbyClient: create -> socket with the ticket -> state -> match -> leave',
   assert.equal(lc.isHost, true);
   lc.start();
   assert.deepEqual(JSON.parse(ws.sent.at(-1)), { t: 'start' });
+  // Socket refusals reach onError with the client's text for the code (a bare code: a refused start).
+  const errors = [];
+  lc.onError = (code, message) => errors.push([code, message]);
+  ws.receive({ t: 'error', code: 'team_full', message: 'Ese equipo está completo' });
+  ws.receive({ t: 'error', code: 'not_host', message: 'Solo el anfitrión inicia la partida' });
+  ws.receive({ t: 'error', code: 'new_code', message: 'A server text' });
+  ws.receive({ t: 'error', code: 'unavailable', message: 'unavailable' });
+  assert.deepEqual(errors, [
+    ['team_full', 'That team is full'],
+    ['not_host', 'Only the host can do that'],
+    ['new_code', 'A server text'],
+    ['unavailable', "Couldn't start the match, try again"],
+  ]);
   ws.receive({ t: 'match', result: { status: 'matched', kind: 'p2p', roomId: 'r', ticket: 't', wsUrl: 'ws://x/room/r' } });
   assert.equal(matches[0].roomId, 'r');
   lc.updateSettings({ mode: '3v3' }, null);
@@ -207,7 +237,23 @@ test('LobbyClient: create -> socket with the ticket -> state -> match -> leave',
   assert.deepEqual(JSON.parse(ws.sent.at(-1)), { t: 'leave' });
   assert.equal(closed, null, 'leave() is silent');
   assert.equal(lc.status, 'idle');
-  await assert.rejects(lc.join('ABC234', 'nope'), (e) => e.code === 'bad_password' && e.message === 'Contraseña incorrecta');
+  await assert.rejects(lc.join('ABC234', 'nope'), (e) => e.code === 'bad_password' && e.message === 'Invalid password');
+});
+
+test("LobbyClient: a refused request carries the client's text for the code, else the server's message, else the generic one", async () => {
+  let answer = res(404, { error: 'no_lobby', message: 'No existe una sala con ese código' });
+  const srv = fakeServer({ '/api/lobbies/join': () => answer });
+  const lc = new LC.LobbyClient({ fetchFn: srv.fetchFn, webSocketFactory: (u, p) => new FakeWs(u, p), bearer: async () => 'b' });
+  const rejects = (check) => assert.rejects(lc.join('ABC234', null), (e) => e instanceof AC.AccountError && check(e));
+  await rejects((e) => e.code === 'no_lobby' && e.status === 404 && e.message === "There's no lobby with that code");
+  answer = res(429, { error: 'rate_limited', message: 'Demasiados intentos, esperá un minuto' });
+  await rejects((e) => e.code === 'rate_limited' && e.message === 'Too many attempts, wait a minute');
+  answer = res(400, { error: 'new_code', message: 'A server text' });
+  await rejects((e) => e.code === 'new_code' && e.message === 'A server text');
+  answer = res(503, { error: 'matchmaking_off', message: 'matchmaking_off' });
+  await rejects((e) => e.code === 'matchmaking_off' && e.message === 'Matchmaking is paused, try again later');
+  answer = res(401, { error: 'unauthorized', message: 'unauthorized' });
+  await rejects((e) => e.code === 'unauthorized' && e.message === 'Server error (401)');
 });
 
 test('LobbyClient: a server close reports the reason once (kicked)', async () => {

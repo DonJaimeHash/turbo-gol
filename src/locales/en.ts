@@ -388,8 +388,6 @@ export default {
   'auth.oauthExpired': 'The sign-in expired, try again',
   // Any other OAuth error code
   'auth.oauthFailed': "Couldn't sign in, try again",
-  // Account request could not reach the server (fetch threw)
-  'auth.network': 'No connection to the server',
   // The Turnstile challenge failed before sign-up
   'auth.antiBotFailed': 'Anti-bot check failed, try again',
   // Sign-in with an empty username or password
@@ -410,8 +408,130 @@ export default {
   'net.lobby.closedLost': 'Lost connection to the lobby',
   // Creating / joining a lobby needs a guest session and it could not be created
   'net.lobby.sessionFailed': "Couldn't create the guest session",
-  // Lobby request could not reach the server (fetch threw). Same text as auth.network
-  'net.lobby.network': 'No connection to the server',
+
+  // Failed requests with no text of their own (accounts, lobbies, matchmaking)
+  // A server error without a text for its code; {status} is the HTTP status (429, 503...)
+  'error.server': 'Server error ({status})',
+  // A request could not reach the server (offline, server down)
+  'error.network': 'No connection to the server',
+  // The server answered something this page does not understand
+  'error.protocol': 'Unexpected response from the server',
+  // Anything else that failed on this side
+  'error.unexpected': 'Something went wrong, try again',
+
+  // Server errors by code (src/i18n.ts serverText): error.<surface>.<code> is the text for the code
+  // the server sends. The Spanish file keeps the server's own messages. "Generic" marks a code the
+  // server sends with several texts (Spanish players see the server's one): keep those texts general.
+  // Account forms: sign-up, sign-in, recovery, password, rename (server/src/accountRoutes.ts, AccountsDO.ts)
+  // Generic: the server says which limit was hit
+  'error.account.rate_limited': 'Too many attempts, wait a minute',
+  // Generic: the server says which username rule failed
+  'error.account.bad_username': 'Invalid username',
+  'error.account.bad_password': 'Invalid password',
+  'error.account.bad_credentials': 'Wrong username or password',
+  // The account was created with Google / Discord and has no password
+  'error.account.no_password': 'This account signs in with Google or Discord',
+  'error.account.banned': 'Account suspended',
+  'error.account.account_required': 'You need an account (not a guest)',
+  // Renaming an account that has a password
+  'error.account.password_required': 'Enter your password to change your name',
+  'error.account.username_taken': 'That username is taken',
+  // Too many failed sign-ins; the profile screen adds the seconds left (profile.retryAfter)
+  'error.account.throttled': 'Too many attempts, wait a moment',
+  'error.account.bad_recovery': 'Wrong username or recovery code',
+  'error.account.rename_too_soon': 'You can change your name once every 30 days',
+  // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
+  // Generic: the server says what was attempted too often
+  'error.lobby.rate_limited': 'Too many attempts, wait a minute',
+  // Generic: the server says what is wrong with the name
+  'error.lobby.bad_name': 'The lobby name must be 3 to 24 characters',
+  // Same text as custom.codeInvalid
+  'error.lobby.bad_code': 'The code is 6 letters or numbers',
+  'error.lobby.no_lobby': "There's no lobby with that code",
+  'error.lobby.closed': 'That lobby no longer exists',
+  'error.lobby.kicked': 'The host kicked you from this lobby',
+  // Generic: a wrong password to join, or one of the wrong length (1 to 32) in the settings
+  'error.lobby.bad_password': 'Invalid password',
+  'error.lobby.full': 'The lobby is full',
+  // Generic: the match is running, has started, or some players are still in the last one
+  'error.lobby.busy': 'Wait for the match to end',
+  'error.lobby.bad_team': 'Invalid team',
+  'error.lobby.team_full': 'That team is full',
+  // Generic: changing the settings, kicking or starting
+  'error.lobby.not_host': 'Only the host can do that',
+  // Changing to a mode with fewer slots than players in the lobby
+  'error.lobby.too_many': 'Too many players for that mode',
+  'error.lobby.start_failed': "Couldn't start the match, try again",
+  // Generic: the server names the player
+  'error.lobby.member_busy': 'A player is still in another match',
+  'error.lobby.capacity': 'All servers are busy, try again in a minute',
+  // The server switched matchmaking off (creating a lobby). Same text as error.queue.matchmaking_off
+  // (Spanish players keep the generic error.server line here: src/i18n.ts SERVER_DETAIL_CODES)
+  'error.lobby.matchmaking_off': 'Matchmaking is paused, try again later',
+  // Matchmaking: Casual and Competitive searches (POST /api/queue, /api/rejoin, the guest session)
+  'error.queue.rate_limited': 'Too many attempts, wait a minute',
+  'error.queue.account_required': 'Sign in to play Competitive',
+  // {time}: what is left of the lock, in the page language ('5 min', '24 hr')
+  'error.queue.ranked_ban': 'Competitive locked for leaving matches: {time}',
+  // The server still holds a match of this player that the game could not free
+  'error.queue.active_match': "You're still in another match, try again in a moment",
+  // {time}: what is left of the lock, in the page language ('5 min', '43 sec'). The player was placed in P2P matches and never joined them
+  'error.queue.no_show': 'P2P matches locked for {time}: you skipped several matches you were placed in (server matches still work)',
+  'error.queue.capacity': 'All servers are busy, try again in a minute',
+  // The page is older than the server (after an update)
+  'error.queue.reload_required': "There's a new version of the game: reload the page",
+  // The server switched matchmaking off
+  'error.queue.matchmaking_off': 'Matchmaking is paused, try again later',
+  // The server switched new online matches off
+  'error.queue.do_disabled': 'Online matches are paused, try again later',
+  // The Turnstile anti-bot check failed (or could not run) before the search
+  'error.queue.turnstile_failed': 'Anti-bot check failed, try again',
+  'error.queue.turnstile_unconfigured': "The server's anti-bot check isn't set up, try again later",
+
+  // Server match status lines (src/game/OnlineSession.ts), shown in the menu search banner
+  'online.queue': 'Finding a match…',
+  // count: players waiting in the queue
+  'online.queueWaiting': { one: 'Finding a match… ({count} waiting)', other: 'Finding a match… ({count} waiting)' },
+  'online.connecting': 'Connecting…',
+  'online.waitingHost': 'Waiting for the host…',
+  'online.reconnecting': 'Reconnecting…',
+  // While the Turnstile anti-bot check runs (src/render/Hud.ts ONLINE_STATUS)
+  'online.verifying': 'Checking that you are human…',
+  // A server search answered with a P2P match (should never happen)
+  'online.p2pAnswer': 'The server answered a server search with a P2P match',
+  'online.cancelledDodge': 'Match cancelled: a player left before the start',
+  'online.cancelledNoShow': "Match cancelled: a player didn't connect in time",
+  // {detail}: the socket close code and reason, not translated ('1006', '1011: overload')
+  'online.connectionLost': 'Connection lost ({detail})',
+  // {reason}: the server's reason, not translated ('rate')
+  'online.kicked': 'Kicked: {reason}',
+
+  // P2P match status lines (src/net/p2p/P2PSession.ts), shown in the menu search banner and toasts
+  'p2p.queue': 'Finding a match…',
+  // count: players waiting in the queue
+  'p2p.queueWaiting': { one: 'Finding a match… ({count} waiting)', other: 'Finding a match… ({count} waiting)' },
+  'p2p.room': 'Joining the match…',
+  // {connected} of {total} other players linked
+  'p2p.connecting': 'Connecting to players… {connected}/{total}',
+  'p2p.readyWait': 'Waiting for the other players…',
+  // In-match hint: the player whose moves are late
+  'p2p.waiting': 'Waiting for {name}…',
+  // The P2P match could not start and a server match replaces it (fallback, nobodyLeft, serverAnswer)
+  'p2p.fallback': "Couldn't connect to the players: playing on a server",
+  'p2p.nobodyLeft': 'The other players left: playing on a server',
+  'p2p.serverAnswer': 'No P2P opponents right now: playing on a server',
+  'p2p.desync': 'Out of sync with the other players: match cancelled',
+  'p2p.droppedMe': 'The match dropped you as disconnected',
+  'p2p.requeue': "Couldn't join the match: finding another…",
+  'p2p.lostRoom': 'Lost connection to the server and to a player',
+  // Rare failures in the match setup, for bug reports (badSlots, slotGap, badSlot)
+  'p2p.badSlots': { one: 'Room with {count} slot', other: 'Room with {count} slots' },
+  'p2p.slotGap': 'Room with non-contiguous slots',
+  'p2p.badSlot': 'Invalid player slot {slot}',
+  // {message}: the engine's error, not translated
+  'p2p.engine': 'Engine: {message}',
+  // {detail}: the socket close code and reason, not translated ('1006')
+  'p2p.roomClosed': 'Room closed ({detail})',
 
   // Leaderboard and the Competitive result dialog (src/ui/screens/leaderboard.ts)
   // Screen title (top bar / history)

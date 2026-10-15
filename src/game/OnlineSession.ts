@@ -31,10 +31,12 @@
 import { TICK_MS, LeadAdjuster, computeLead } from '../net/ClockSync';
 import { assembleInputs, INPUT_MAX_PER_PACKET } from '../net/InputRing';
 import { NetClient, NetError, type MatchAssignment, type NetClientOptions } from '../net/NetClient';
+import { netErrorText } from '../net/netErrorText';
 import { RateMeter, newNetStatsView, resetNetStatsView, type NetStatsView } from '../net/NetStats';
 import { RollbackPredictor, type RollbackSim } from '../net/Prediction';
 import { TICK_RATE, type MatchEvent, type SnapshotPacket, type Welcome } from '../net/protocol';
 import { ONLINE_STATUS, type ClockMode } from '../render/Hud';
+import { t } from '../i18n';
 import type { GameMode } from '../sim/constants';
 import type { RocketSim } from '../sim/RocketSimBridge';
 import { MAX_CARS, MAX_STATE_BYTES, PACKED_INPUT_BYTES, TICK_DT, packControls, type CarControls } from '../sim/types';
@@ -77,14 +79,10 @@ const MAX_FRAME_DT = 0.1;
 /** Input packet cadence: a packet goes out once this many ticks were stepped since the last one. */
 const SEND_EVERY = 2;
 const STATS_INTERVAL_MS = 250;
-const QUEUE_STATUS = 'Buscando partido...';
 
-/** User-facing text for a failure (NetError 'turnstile' gets the Hud's readable strings). */
+/** User-facing text for a failure (a NetError by its server code or kind, netErrorText). */
 function describe(err: unknown): string {
-  if (err instanceof NetError) {
-    if (err.code === 'turnstile') return err.status === 503 ? ONLINE_STATUS.turnstileUnconfigured : ONLINE_STATUS.turnstileFailed;
-    return err.message;
-  }
+  if (err instanceof NetError) return netErrorText(err);
   if (err instanceof Error) return err.message;
   return String(err);
 }
@@ -233,24 +231,24 @@ export class OnlineSession {
     this.error = null;
     this.notice = notice;
     this.state = 'queue';
-    this.status = QUEUE_STATUS;
+    this.status = t('online.queue');
     this.matchId = null;
     this.lost = false;
     this.ranked = kind === 'ranked';
     const attempt = ++this.attempt;
     this.client
       .queue(mode, kind, (waiting) => {
-        if (attempt === this.attempt && this.state === 'queue') this.status = `Buscando partido... (${waiting} esperando)`;
+        if (attempt === this.attempt && this.state === 'queue') this.status = t('online.queueWaiting', { count: waiting });
       })
       .then(
         (m) => {
           if (attempt !== this.attempt || this.state !== 'queue') return;
           if (m.kind !== 'server') {
-            this.fail('El servidor respondió con una sala P2P a una búsqueda de servidor');
+            this.fail(t('online.p2pAnswer'));
             return;
           }
           this.state = 'connecting';
-          this.status = 'Conectando...';
+          this.status = t('online.connecting');
           this.matchId = m.matchId;
           this.ranked = m.ranked === true || kind === 'ranked';
           this.client.connect(m.wsUrl, m.ticket);
@@ -279,7 +277,7 @@ export class OnlineSession {
     this.notice = notice;
     this.attempt++;
     this.state = 'connecting';
-    this.status = 'Conectando...';
+    this.status = t('online.connecting');
     this.matchId = m.matchId;
     this.lost = false;
     this.client.connect(m.wsUrl, m.ticket);
@@ -475,7 +473,7 @@ export class OnlineSession {
       this.frozen = true;
       this.overtime = false;
       this.winner = -1;
-      this.status = 'Esperando al host...';
+      this.status = t('online.waitingHost');
     } else {
       // Same match after a rejoin: the next snapshot resyncs the state; forget the stale ring.
       existing.reset();
@@ -550,7 +548,7 @@ export class OnlineSession {
         // A ranked match that never started (someone did not connect): nothing to rejoin, the
         // server freed our lock; back to the menu with the reason.
         this.game.onOnlineEvent(e);
-        this.error = e.reason === 'dodge' ? 'Partida cancelada: un jugador salió antes de empezar' : 'Partida cancelada: un jugador no se conectó a tiempo';
+        this.error = e.reason === 'dodge' ? t('online.cancelledDodge') : t('online.cancelledNoShow');
         this.lost = false;
         this.game.onOnlineDisconnected(this.error);
         return;
@@ -563,23 +561,24 @@ export class OnlineSession {
   /** The anti-bot challenge brackets the guest registration at the start of the queue step. */
   private handleTurnstile(active: boolean): void {
     if (this.state !== 'queue') return;
-    this.status = active ? ONLINE_STATUS.verifying : QUEUE_STATUS;
+    this.status = active ? ONLINE_STATUS.verifying : t('online.queue');
   }
 
   private handleClose(code: number, reason: string, reconnecting: boolean): void {
     if (!this.active) return;
     if (reconnecting) {
-      this.status = 'Reconectando...';
+      this.status = t('online.reconnecting');
       return;
     }
     if (this.state === 'ended') return; // the whistle already scheduled the menu
-    this.disconnect(`Conexión perdida (${code}${reason.length > 0 ? `: ${reason}` : ''})`);
+    this.disconnect(t('online.connectionLost', { detail: `${code}${reason.length > 0 ? `: ${reason}` : ''}` }));
   }
 
   private handleError(code: string, message: string): void {
     if (code === 'kick') {
-      if (this.active) this.disconnect(`Expulsado: ${message}`);
-      else this.fail(`Expulsado: ${message}`);
+      const text = t('online.kicked', { reason: message });
+      if (this.active) this.disconnect(text);
+      else this.fail(text);
       return;
     }
     if (this.state === 'connecting' || this.state === 'queue') {

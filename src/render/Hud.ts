@@ -38,6 +38,7 @@ import {
 } from '../settings';
 import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/NetStats';
 import { MODES, type GameMode } from '../sim/constants';
+import { t } from '../i18n';
 import type { CameraSettings } from './Camera';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -62,14 +63,12 @@ export const ONLINE_KIND_LABELS: Readonly<Record<OnlineKind, string>> = {
 };
 
 /**
- * Menu status strings of the online flow's anti-bot step (Turnstile in front of POST /api/guest):
- * OnlineSession shows `verifying` while the widget is up and maps NetError 'turnstile' to the
- * other two (403 turnstile_failed / client-side failure vs 503 turnstile_unconfigured).
+ * Menu status string of the online flow's anti-bot step (Turnstile in front of POST /api/guest):
+ * OnlineSession shows `verifying` while the widget is up. A failed check (NetError 'turnstile')
+ * reads as error.queue.turnstile_* (src/net/netErrorText.ts).
  */
 export const ONLINE_STATUS = {
-  verifying: 'Verificando que sos humano…',
-  turnstileFailed: 'Verificación anti-bots falló, reintentá',
-  turnstileUnconfigured: 'Verificación anti-bots no configurada en el servidor, reintentá más tarde',
+  verifying: t('online.verifying'),
 } as const;
 
 /**

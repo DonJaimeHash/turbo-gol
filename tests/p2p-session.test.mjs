@@ -3,7 +3,7 @@
 //   node --test tests/p2p-session.test.mjs
 // Covers: the queue -> room -> mesh -> start flow, the server-kind queue answer, the start time ->
 // expected tick mapping through the room clock offset, the input send cadence / acks, stall
-// handling (hint 'Esperando a <name>…'), the 10 s mesh fallback, drops (engine.drop + the bot
+// handling (hint 'Waiting for <name>…'), the 10 s mesh fallback, drops (engine.drop + the bot
 // hook taking the slot from atTick), confirmed-timeline match events / kickoff seeds, timesync
 // skips, desync -> StateRequest -> resync, and leave().
 import { test } from 'node:test';
@@ -433,9 +433,11 @@ async function startedSession(slots = SLOTS_1V1, mySlot = 0, startDelayMs = 200)
 // ---- pure helpers -------------------------------------------------------------------------
 
 test('status strings and the start time -> expected tick mapping', () => {
-  assert.equal(queueStatus(2), 'Buscando rival (2 esperando)…');
-  assert.equal(connectingStatus(1, 3), 'Conectando con jugadores… 1/3');
-  assert.equal(waitingStatus('Ana'), 'Esperando a Ana…');
+  // English outside a browser (src/i18n.ts); src/locales/es.ts keeps the Spanish lines.
+  assert.equal(queueStatus(2), 'Finding a match… (2 waiting)');
+  assert.equal(queueStatus(1), 'Finding a match… (1 waiting)');
+  assert.equal(connectingStatus(1, 3), 'Connecting to players… 1/3');
+  assert.equal(waitingStatus('Ana'), 'Waiting for Ana…');
   assert.equal(expectedTickAt(1000, 1000), 0);
   assert.equal(expectedTickAt(1000 + 3 * TICK_MS + 0.1, 1000), 3);
   assert.equal(expectedTickAt(999, 1000), -1, 'before the start');
@@ -506,7 +508,7 @@ test('queue -> room -> welcome builds the roster, seeds the kickoff / engine / m
   assert.equal(session.busy, true);
   assert.equal(session.statusText, STATUS.queue);
   client.queued[0].onWaiting(3);
-  assert.equal(session.statusText, 'Buscando rival (3 esperando)…');
+  assert.equal(session.statusText, 'Finding a match… (3 waiting)');
   client.queued[0].resolve({ kind: 'p2p', roomId: 'room1', ticket: 'TICKET', wsUrl: '/room/room1' });
   await flush();
   assert.equal(session.state, 'signaling');
@@ -529,7 +531,7 @@ test('queue -> room -> welcome builds the roster, seeds the kickoff / engine / m
   assert.deepEqual(env.mesh.opts.iceServers, [{ urls: 'stun:stun.example:3478' }]);
   env.mesh.opts.signal(0, { candidate: null });
   assert.deepEqual(env.room.sent.at(-1), { type: 'signal', to: 0, data: { candidate: null } }, 'mesh signals go through the room');
-  assert.equal(session.statusText, 'Conectando con jugadores… 0/1');
+  assert.equal(session.statusText, 'Connecting to players… 0/1');
   assert.equal(session.frozen, true);
 
   session.advance(0);
@@ -640,7 +642,7 @@ test('stall: canAdvance false stops the ticks, keeps resending, and after 250 ms
   const sentBefore = mesh.sentGame.length;
   env.t += STALL_HINT_MS + 1;
   session.advance(0);
-  assert.equal(session.hint, 'Esperando a Ana…', 'the human peer whose inputs are the oldest');
+  assert.equal(session.hint, 'Waiting for Ana…', 'the human peer whose inputs are the oldest');
   assert.ok(mesh.sentGame.length > sentBefore, 'our newest inputs are repeated during the stall');
   engine.canAdvanceValue = true;
   env.t += TICK_MS;
@@ -691,7 +693,7 @@ test('cancel while connecting restores the offline roster; a room error / close 
   env.room.onClose(1006, '');
   assert.equal(session.state, 'idle');
   assert.equal(session.statusIsError, true);
-  assert.ok(session.statusText.startsWith('Sala cerrada (1006'));
+  assert.ok(session.statusText.startsWith('Room closed (1006'));
   assert.equal(client.queued.length, 2, 'no automatic queue after the welcome');
 });
 
@@ -723,7 +725,7 @@ test('a room socket closed before the welcome (the upgrade was refused, e.g. 403
   assert.notEqual(env.room, first);
   env.room.onClose(1006, '');
   assert.equal(session.state, 'idle');
-  assert.ok(session.statusText.startsWith('Sala cerrada (1006'));
+  assert.ok(session.statusText.startsWith('Room closed (1006'));
   assert.equal(client.queued.length, 2, 'once per quick match');
   assert.equal(client.leaves, 2);
   assert.deepEqual(game.log, [], 'no handover, no roster');
@@ -1123,7 +1125,7 @@ test('welcome: out-of-range room parameters fall back to the defaults; a throwin
   await flush();
   env2.room.onWelcome(welcomeFor(0, SLOTS_1V1));
   assert.equal(bad.state, 'idle');
-  assert.ok(bad.statusText.startsWith('Motor: window 1000'));
+  assert.ok(bad.statusText.startsWith('Engine: window 1000'));
   assert.deepEqual(env2.game.log.at(-1), ['restore'], 'the arena had been replaced: offline roster back');
   assert.ok(env2.room.disposed);
   void game;
@@ -1703,26 +1705,37 @@ test('the fallback window outlasts the room no-show grace with a margin for the 
   assert.ok(SESSION.FALLBACK_MARGIN_MS >= 3000, `FALLBACK_MS ${FALLBACK_MS} vs no-show ${P.P2P_NO_SHOW_MS}`);
 });
 
-test('queue refusals with a server code get a clear menu line: 429 no_show (retryAfterMs) and 426 reload_required', async () => {
+test('queue refusals with a server code get a clear menu line: 429 no_show (retryAfterMs), 426 reload_required, 503 capacity; without one a generic line', async () => {
   const env = makeSession();
   const { session, client } = env;
+  const unit = (n, u) => new Intl.NumberFormat('en', { style: 'unit', unit: u, unitDisplay: 'short' }).format(n);
   session.quickMatch('1v1');
   client.queued[0].reject(new NetError('http', 'queue failed (429 no_show: 3 room tickets)', 429, { code: 'no_show', message: '3 room tickets', retryAfterMs: 299_500 }));
   await flush();
   assert.equal(session.state, 'idle');
   assert.equal(session.statusText, SESSION.noShowStatus(299_500));
-  assert.match(session.statusText, /bloqueadas 5 min/);
+  assert.match(session.statusText, new RegExp(`^P2P matches locked for ${unit(5, 'minute')}:`));
   assert.equal(session.statusIsError, true);
-  assert.match(SESSION.noShowStatus(42_100), /bloqueadas 43 s/);
+  assert.match(SESSION.noShowStatus(42_100), new RegExp(`locked for ${unit(43, 'second')}:`));
+  assert.match(SESSION.noShowStatus(90_000), new RegExp(`locked for ${unit(90, 'second')}:`), 'seconds below two minutes');
   session.quickMatch('1v1');
   client.queued[1].reject(new NetError('http', 'queue failed (426 reload_required: reload)', 426, { code: 'reload_required', message: 'reload the page', retryAfterMs: 0 }));
   await flush();
   assert.equal(session.statusText, STATUS.reload);
-  // Without a server code the message is shown as it is.
   session.quickMatch('1v1');
-  client.queued[2].reject(new NetError('http', 'queue failed (503 capacity)', 503));
+  client.queued[2].reject(new NetError('http', 'queue failed (503 capacity: all rooms are busy, try again in a minute)', 503, { code: 'capacity', message: 'all rooms are busy, try again in a minute', retryAfterMs: 0 }));
   await flush();
-  assert.equal(session.statusText, 'queue failed (503 capacity)');
+  assert.equal(session.statusText, 'All servers are busy, try again in a minute');
+  // Without a server code: the generic line for the kind of failure, never the developer message.
+  session.quickMatch('1v1');
+  client.queued[3].reject(new NetError('http', 'queue failed (503)', 503));
+  await flush();
+  assert.equal(session.statusText, 'Server error (503)');
+  session.quickMatch('1v1');
+  client.queued[4].reject(new NetError('network', 'queue request failed: TypeError: fetch failed'));
+  await flush();
+  assert.equal(session.statusText, 'No connection to the server');
+  assert.ok(session.log.text().includes('queue request failed'), 'the debug log keeps the developer message');
 });
 
 test("a welcome of another P2P protocol: RoomClient fails with 'reload_required' and the session shows STATUS.reload", async () => {

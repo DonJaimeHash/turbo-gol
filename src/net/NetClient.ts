@@ -34,8 +34,9 @@
  *                   match tagged `ranked` (rated by the server; AccountClient.waitRankedResult)
  *   errors          every failed API call rejects with NetError: `status`, `serverCode` = the
  *                   body's `error` code (callers branch on it, never on the message text: 410
- *                   p2p_room, 429 no_show, 426 reload_required, 403 turnstile_failed...) and
- *                   `retryAfterMs` (429 no_show)
+ *                   p2p_room, 429 no_show, 426 reload_required, 403 turnstile_failed...),
+ *                   `serverMessage` and `retryAfterMs` (429 no_show); the message itself is
+ *                   developer text (logs), the menus show netErrorText (src/net/netErrorText.ts)
  *   leaveMatch      POST /api/leave after a P2P room (P2PSession.teardown, no matchId: a server
  *                   lock is kept) or with the matchId of a server match the player quits
  *                   (OnlineSession.leave: the lock is freed, the slot goes to the host's bots, no
@@ -164,6 +165,8 @@ export class NetError extends Error {
   readonly status: number;
   /** The server's `error` code ('' when the failure did not come with one): callers branch on this, never on the message text. */
   readonly serverCode: string;
+  /** The server's `message` ('' when absent; the code itself when the server gave no text). */
+  readonly serverMessage: string;
   /** The server's `retryAfterMs` (0 when absent). */
   readonly retryAfterMs: number;
 
@@ -173,6 +176,7 @@ export class NetError extends Error {
     this.code = code;
     this.status = status;
     this.serverCode = server !== undefined ? server.code : '';
+    this.serverMessage = server !== undefined ? server.message : '';
     this.retryAfterMs = server !== undefined ? server.retryAfterMs : 0;
   }
 }
