@@ -1,0 +1,10 @@
+# Local secrets for `wrangler dev` (copy to .dev.vars; never committed). Production: `npx wrangler secret put <NAME>`.
+# Signs sessions, match tickets and the Worker <-> Durable Object internal header: a long random string.
+JWT_SECRET=change-me-to-a-long-random-string
+# Required outside local dev (POST /api/guest answers 503 'turnstile_unconfigured' without it on a deploy).
+# TURNSTILE_SECRET=
+# Comma-separated browser origins allowed for CORS and WebSocket upgrades (unset = '*' / any Origin, dev only).
+# VITE_ORIGINS=https://your-game.example
+# Local OAuth testing only: the origin the provider redirects back to (the Vite page, which proxies
+# /api to this Worker), e.g. http://localhost:5173. Production uses the request's own origin.
+# PUBLIC_ORIGIN=http://localhost:5173

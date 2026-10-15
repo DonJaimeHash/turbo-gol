@@ -1,0 +1,10 @@
+node_modules/
+.wrangler/
+*.log
+# Local secrets for wrangler dev (JWT_SECRET, ...): never commit them; copy .dev.vars.example instead.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example

@@ -1,0 +1,15 @@
+# Normalise line endings in the repository to LF (contributors on any OS get consistent diffs).
+* text=auto eol=lf
+
+# Windows scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# Binary and generated files.
+*.wasm binary
+*.png binary
+*.jpg binary
+*.ico binary
+src/sim/wasm/rocketsim.js linguist-generated=true
+package-lock.json linguist-generated=true
+server/package-lock.json linguist-generated=true

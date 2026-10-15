@@ -1,0 +1,57 @@
+{
+  "name": "turbogol",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Turbogol: a fast physics car-soccer game for the browser. Rigid-body physics in WebAssembly (RocketSim), three.js WebGPU renderer, procedural assets, bots, training, peer-to-peer and server-hosted online play.",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://turbo-gol.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DonJaimeHash/turbo-gol.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DonJaimeHash/turbo-gol/issues"
+  },
+  "keywords": [
+    "game",
+    "browser-game",
+    "car-soccer",
+    "webgpu",
+    "threejs",
+    "webassembly",
+    "physics",
+    "multiplayer",
+    "webrtc",
+    "cloudflare-workers"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/copy-notices.mjs && tsc --noEmit && vite build",
+    "build:client": "node scripts/copy-notices.mjs && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "build:wasm": "powershell -ExecutionPolicy Bypass -File native/build.ps1",
+    "test:sim": "node --test \"tests/*.test.mjs\"",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "smoke:sim": "node scripts/smoke-sim.mjs",
+    "smoke:match": "node scripts/smoke-match.mjs",
+    "dev:api": "cd server && npm run dev",
+    "typecheck:server": "tsc --noEmit -p server",
+    "test:server": "cd server && npm test",
+    "smoke:online": "node server/test/smoke.mjs",
+    "smoke:remote": "node server/test/smoke.mjs",
+    "deploy": "npm run build && node scripts/deploy.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Turbogol</title>
+  <!-- Turbogol mark: the match ball (white and grey halves split by the lime seam band, a
+       graphite T) leaving three lime speed lines behind it, on a graphite tile. -->
+  <rect width="64" height="64" rx="14" fill="#11151d"/>
+  <g stroke="#c6ff2e" stroke-width="4.5" stroke-linecap="round">
+    <path d="M7 22h11M4 32h12M7 42h11"/>
+  </g>
+  <clipPath id="ball"><circle cx="40" cy="32" r="18"/></clipPath>
+  <g clip-path="url(#ball)">
+    <rect x="20" y="12" width="40" height="40" fill="#b3bcc9"/>
+    <path d="M20 12H60V20C47 33 32 28 20 45Z" fill="#f3f5f8"/>
+    <path d="M20 45C32 28 47 33 60 20" fill="none" stroke="#1b2230" stroke-width="9"/>
+    <path d="M20 45C32 28 47 33 60 20" fill="none" stroke="#c6ff2e" stroke-width="6"/>
+  </g>
+  <circle cx="40" cy="32" r="18" fill="none" stroke="#11151d" stroke-width="1.5"/>
+  <path d="M38 37h13v3.5h-4.75v7h-3.5v-7H38z" fill="#1b2230"/>
+</svg>

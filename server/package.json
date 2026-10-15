@@ -1,0 +1,24 @@
+{
+  "name": "turbogol-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Turbogol online backend on Cloudflare Workers + Durable Objects: guest and account sessions, matchmaking, P2P signaling rooms, authoritative server matches, ranked ratings and custom lobbies.",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "predev": "node -e \"require('node:fs').mkdirSync('../dist', { recursive: true })\"",
+    "dev": "wrangler dev --port 8787",
+    "deploy": "cd .. && npm run deploy",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --test \"test/*.test.mjs\"",
+    "smoke": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261014.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.150.0"
+  }
+}

@@ -1,0 +1,53 @@
+# Continuous integration: the same checks CONTRIBUTING.md asks for before a pull request.
+# The physics engine ships prebuilt (src/sim/wasm), so no C++ toolchain is needed here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client:
+    name: Client (typecheck, tests, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  server:
+    name: Server (typecheck, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      # The server imports the shared client modules (protocol, sim, rating, bots): install the
+      # root packages too so their types resolve.
+      - run: npm ci
+        working-directory: .
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

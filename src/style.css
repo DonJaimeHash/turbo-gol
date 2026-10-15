@@ -1,0 +1,1614 @@
+/* Turbogol: full-screen canvas + the DOM HUD (see src/render/Hud.ts). */
+
+:root {
+  /* Teams: azure (0) and crimson (1). Far apart in hue AND in lightness (CIE L* ~63 vs ~46), so
+     red-green colour-blind players still tell them apart; the HUD also labels them BLU / RED.
+     -hi = the light tint for text on dark panels, -deep = the dark end of a team gradient. */
+  --blue: #3a9bff;
+  --blue-deep: #1450b8;
+  --blue-hi: #9ccfff;
+  --red: #d42039;
+  --red-deep: #6e0c1c;
+  --red-hi: #ff8c9b;
+  /* Brand accent, "volt" lime: boost, primary actions, focus, the GOL of the wordmark.
+     --brand-ink is the text colour on it. */
+  --brand: #c6ff2e;
+  --brand-deep: #7fc41a;
+  --brand-ink: #0d1600;
+  --brand-glow: rgba(198, 255, 46, 0.45);
+  --amber: #ffd166;
+  --ink: #05070d;
+  --panel: rgba(7, 10, 20, 0.74);
+  --panel-edge: rgba(205, 218, 240, 0.18);
+  --text: #f4f7ff;
+  --muted: rgba(244, 247, 255, 0.62);
+  /* Condensed DIN-like display stack (Bahnschrift ships with Windows 10+; degrades gracefully). */
+  --font: 'Bahnschrift', 'Segoe UI Variable Display', 'Arial Narrow', Impact, system-ui, 'Segoe UI', Roboto, sans-serif;
+  --shadow: 0 2px 10px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.95);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--font);
+  font-stretch: condensed;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+#game-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  outline: none;
+}
+
+#hud,
+#overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ---- HUD root --------------------------------------------------------------------------- */
+
+.hud-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  text-shadow: var(--shadow);
+}
+
+.hud-root [hidden] {
+  display: none !important;
+}
+
+/* ---- Scorebug (top left): [BLU 2] [RED 1] [4:32], a lime accent along its top ----------- */
+
+.hud-top {
+  position: absolute;
+  top: calc(var(--safe-top) + clamp(10px, 2vh, 20px));
+  left: calc(var(--safe-left) + clamp(12px, 2vw, 28px));
+  display: flex;
+}
+
+.hud-score {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: clamp(36px, 5.6vh, 52px);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  overflow: hidden;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.hud-score::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--brand);
+  z-index: 1;
+}
+
+.hud-score-team {
+  display: flex;
+  align-items: stretch;
+}
+
+.hud-score-team + .hud-score-team,
+.hud-clock {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.hud-score-tag {
+  display: flex;
+  align-items: center;
+  padding: 3px clamp(7px, 1.1vh, 11px) 0;
+  font-size: clamp(11px, 1.6vh, 15px);
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: #fff;
+}
+
+.hud-score-team.hud-blue .hud-score-tag {
+  background: linear-gradient(180deg, var(--blue), var(--blue-deep));
+}
+
+.hud-score-team.hud-red .hud-score-tag {
+  background: linear-gradient(180deg, var(--red), var(--red-deep));
+}
+
+.hud-score-goals {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: clamp(34px, 5vh, 50px);
+  padding: 3px clamp(7px, 1.1vh, 12px) 0;
+  font-size: clamp(22px, 3.8vh, 36px);
+  font-weight: 900;
+  line-height: 1;
+  color: #fff;
+}
+
+.hud-clock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: clamp(64px, 10vh, 100px);
+  padding: 3px clamp(9px, 1.4vh, 14px) 0;
+  font-size: clamp(18px, 3vh, 28px);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.hud-clock.hud-clock-low {
+  color: var(--amber);
+}
+
+/* Overtime: '+m:ss' in lime, blinking (red would read as a team colour). */
+.hud-clock.hud-overtime {
+  color: var(--brand);
+  animation: hud-blink 1s steps(2, start) infinite;
+}
+
+/* ---- Debug readouts (F3): fps / draw calls / GPU time top right, speed above the boost ---- */
+
+.hud-fps,
+.hud-speed {
+  display: none;
+}
+
+.hud-root.hud-debug .hud-fps {
+  display: flex;
+}
+
+.hud-root.hud-debug .hud-speed {
+  display: flex;
+}
+
+.hud-fps {
+  position: absolute;
+  top: calc(var(--safe-top) + 8px);
+  right: calc(var(--safe-right) + 10px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted);
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-fps-value {
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ---- Camera mode (bottom centre) -------------------------------------------------------- */
+
+.hud-cam {
+  position: absolute;
+  bottom: calc(var(--safe-bottom) + clamp(10px, 2vh, 20px));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-edge);
+  background: var(--panel);
+  font-size: clamp(10px, 1.4vh, 13px);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--brand);
+}
+
+.hud-cam.hud-cam-off {
+  color: var(--muted);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* ---- Speed (bottom left, above the boost bar; debug only) -------------------------------- */
+
+.hud-speed {
+  position: absolute;
+  left: calc(var(--safe-left) + clamp(14px, 2.4vw, 32px));
+  bottom: calc(var(--safe-bottom) + clamp(66px, 10.5vh, 96px));
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hud-speed-value {
+  min-width: 2.2ch;
+  font-size: clamp(22px, 4vh, 36px);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  text-align: right;
+  transition: color 0.15s;
+}
+
+.hud-speed-unit {
+  font-size: clamp(12px, 1.8vh, 16px);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.hud-speed.hud-supersonic .hud-speed-value {
+  color: var(--brand);
+  text-shadow: 0 0 12px var(--brand-glow), var(--shadow);
+}
+
+/* ---- Boost (bottom left): slanted bar of ten segments + the amount ----------------------- */
+
+.hud-boost {
+  position: absolute;
+  left: calc(var(--safe-left) + clamp(14px, 2.4vw, 32px));
+  bottom: calc(var(--safe-bottom) + clamp(12px, 2.4vh, 26px));
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas:
+    'label .'
+    'bar value';
+  align-items: end;
+  column-gap: clamp(8px, 1.2vw, 14px);
+  row-gap: 4px;
+}
+
+.hud-boost-label {
+  grid-area: label;
+  padding-left: 4px;
+  font-size: clamp(10px, 1.4vh, 12px);
+  font-weight: 800;
+  letter-spacing: 0.26em;
+  color: var(--muted);
+}
+
+.hud-boost-bar {
+  grid-area: bar;
+  position: relative;
+  width: clamp(150px, 22vw, 280px);
+  height: clamp(14px, 2.3vh, 20px);
+  margin-bottom: 0.15em;
+  transform: skewX(-20deg);
+  background: rgba(4, 6, 12, 0.55) linear-gradient(rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.hud-boost-fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--brand-deep), var(--brand));
+  transform-origin: left center;
+  transform: scaleX(0.33);
+  transition: transform 0.08s linear;
+}
+
+/* The segment gaps: nine cuts at every 10 % (the tenth falls on the right edge). */
+.hud-boost-segs {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 3px), rgba(4, 6, 12, 0.92) calc(10% - 3px) 10%);
+}
+
+.hud-boost-value {
+  grid-area: value;
+  min-width: 3ch;
+  font-size: clamp(26px, 4.6vh, 42px);
+  font-weight: 900;
+  line-height: 0.9;
+  color: var(--brand);
+  text-shadow: 0 0 14px rgba(198, 255, 46, 0.3), var(--shadow);
+}
+
+.hud-boost.hud-boost-full .hud-boost-bar {
+  border-color: var(--brand);
+  box-shadow: 0 0 14px var(--brand-glow), 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.hud-boost.hud-boost-low .hud-boost-fill {
+  background: linear-gradient(90deg, #b8860b, var(--amber));
+}
+
+.hud-boost.hud-boost-low .hud-boost-value {
+  color: var(--amber);
+  text-shadow: var(--shadow);
+}
+
+.hud-boost.hud-boost-empty .hud-boost-value {
+  color: var(--muted);
+  text-shadow: var(--shadow);
+}
+
+/* ---- Off-screen ball indicator (ball glyph + arrow pinned to the screen edge) ------------ */
+
+.hud-ball-ind {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  opacity: 0.75;
+  will-change: transform;
+}
+
+.hud-ball-ind-dot {
+  position: absolute;
+  left: -14px;
+  top: -14px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  /* The match ball in miniature: white and grey halves split by the lime band. */
+  background: linear-gradient(150deg, #f3f5f8 0 40%, #1b2230 40% 43%, var(--brand) 43% 57%, #1b2230 57% 60%, #b3bcc9 60%);
+  box-shadow: 0 0 0 2px rgba(4, 6, 12, 0.85), 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+.hud-ball-ind-arrow {
+  position: absolute;
+  left: -6px;
+  top: -8px;
+  width: 0;
+  height: 0;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-left: 12px solid #fff;
+  filter: drop-shadow(0 0 2px rgba(4, 6, 12, 0.9));
+  transform-origin: 6px 8px;
+}
+
+.hud-ball-ind-dist {
+  position: absolute;
+  left: -24px;
+  top: 16px;
+  width: 48px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+
+/* ---- Countdown / banner (centre) -------------------------------------------------------- */
+
+.hud-countdown {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: clamp(72px, 18vh, 180px);
+  font-weight: 900;
+  font-style: italic;
+  line-height: 1;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 0 24px rgba(255, 255, 255, 0.35), var(--shadow);
+}
+
+.hud-countdown.hud-countdown-go {
+  color: var(--brand);
+  text-shadow: 0 0 28px var(--brand-glow), var(--shadow);
+}
+
+.hud-banner {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  padding: clamp(10px, 1.8vh, 18px) clamp(26px, 5vw, 60px);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+
+.hud-banner.hud-blue {
+  border-color: var(--blue);
+  box-shadow: 0 0 30px rgba(58, 155, 255, 0.45);
+}
+
+.hud-banner.hud-red {
+  border-color: var(--red);
+  box-shadow: 0 0 30px rgba(212, 32, 57, 0.5);
+}
+
+.hud-banner-title {
+  font-size: clamp(34px, 7vh, 72px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  line-height: 1.05;
+  text-transform: uppercase;
+}
+
+.hud-banner.hud-blue .hud-banner-title {
+  color: var(--blue-hi);
+}
+
+.hud-banner.hud-red .hud-banner-title {
+  color: var(--red-hi);
+}
+
+.hud-banner-sub {
+  margin-top: 4px;
+  font-size: clamp(13px, 2.2vh, 20px);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.hud-pop {
+  animation: hud-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+/* ---- Pause overlay ---------------------------------------------------------------------- */
+
+.hud-paused {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  background: rgba(4, 6, 12, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.hud-paused-title {
+  font-size: clamp(40px, 8vh, 80px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.12em;
+}
+
+.hud-paused-title::after {
+  content: '';
+  display: block;
+  width: 72px;
+  height: 4px;
+  margin: 6px auto 0;
+  border-radius: 2px;
+  background: var(--brand);
+  box-shadow: 0 0 12px var(--brand-glow);
+}
+
+.hud-paused-sub {
+  margin-top: 6px;
+  font-size: clamp(13px, 2vh, 18px);
+  color: var(--muted);
+  letter-spacing: 0.08em;
+}
+
+/* ---- Start menu ------------------------------------------------------------------------- */
+
+.hud-menu {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: calc(var(--safe-top) + 16px) 16px calc(var(--safe-bottom) + 16px);
+  background:
+    radial-gradient(120% 90% at 50% 110%, rgba(58, 155, 255, 0.18), transparent 60%),
+    radial-gradient(120% 90% at 50% -10%, rgba(198, 255, 46, 0.12), transparent 60%),
+    rgba(4, 6, 12, 0.8);
+  pointer-events: auto;
+  overflow: auto;
+}
+
+/* The settings screen alone, over the front-end menus (Hud.openSettingsScreen). */
+.hud-menu.hud-menu-settings-only {
+  z-index: 60;
+}
+
+.hud-menu-panel {
+  width: min(92vw, 520px);
+  padding: clamp(18px, 3vh, 32px) clamp(18px, 3vw, 36px);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.hud-menu-title {
+  display: inline-block;
+  font-size: clamp(34px, 7vh, 64px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  padding-right: 0.12em;
+  background: linear-gradient(90deg, var(--text) 0 57%, var(--brand) 66%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: none;
+}
+
+.hud-menu-subtitle {
+  margin-top: 8px;
+  font-size: clamp(11px, 1.6vh, 14px);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hud-menu-play {
+  margin-top: clamp(16px, 3vh, 28px);
+  width: 100%;
+  padding: 14px 0;
+  font: inherit;
+  font-size: clamp(20px, 3.2vh, 28px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.18em;
+  color: var(--brand-ink);
+  background: linear-gradient(90deg, var(--brand), #e4ff8a);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  text-shadow: none;
+  transition: transform 0.1s, filter 0.1s;
+}
+
+.hud-menu-play:hover,
+.hud-menu-play:focus-visible {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  outline: none;
+}
+
+.hud-menu-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+/* ---- Online (phase 1): quick match button, status line, guest name ------------------------ */
+
+.hud-menu-online {
+  margin-top: 10px;
+  width: 100%;
+  padding: 10px 0;
+  font: inherit;
+  font-size: clamp(14px, 2.2vh, 18px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.16em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  cursor: pointer;
+  text-shadow: var(--shadow);
+  transition: transform 0.1s, filter 0.1s, background 0.1s;
+}
+
+.hud-menu-online:hover,
+.hud-menu-online.hud-focus {
+  background: rgba(198, 255, 46, 0.12);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand), 0 0 14px rgba(198, 255, 46, 0.25);
+  transform: translateY(-1px);
+}
+
+.hud-menu-status {
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: #e9ffc0;
+  background: rgba(198, 255, 46, 0.08);
+  border: 1px solid rgba(198, 255, 46, 0.3);
+  border-radius: 6px;
+  animation: hud-blink 1.6s steps(2, start) infinite;
+}
+
+.hud-menu-status.hud-error {
+  color: #ffb3b3;
+  background: rgba(255, 90, 90, 0.12);
+  border-color: rgba(255, 90, 90, 0.4);
+  animation: none;
+}
+
+/* ONLINE submenu (phase 2): Quick match (P2P) / Partida en servidor under the ONLINE button. */
+.hud-menu-online.hud-active {
+  background: rgba(198, 255, 46, 0.12);
+  border-color: var(--brand);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.hud-menu-online-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(198, 255, 46, 0.05);
+  border: 1px solid rgba(198, 255, 46, 0.35);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+}
+.hud-menu-online-opt {
+  width: 100%;
+  padding: 9px 0;
+  font: inherit;
+  font-size: clamp(12px, 1.9vh, 15px);
+  font-weight: 800;
+  font-style: italic;
+  letter-spacing: 0.14em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  cursor: pointer;
+  text-shadow: var(--shadow);
+  transition: transform 0.1s, filter 0.1s, background 0.1s;
+}
+.hud-menu-online-opt:hover,
+.hud-menu-online-opt.hud-focus {
+  background: rgba(198, 255, 46, 0.12);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand), 0 0 12px rgba(198, 255, 46, 0.25);
+  transform: translateY(-1px);
+}
+
+/* In-match wait line (a P2P stall: 'Esperando a <name>…'), top centre. */
+.hud-netwait {
+  position: absolute;
+  top: calc(var(--safe-top) + 24px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #e9ffc0;
+  background: var(--panel);
+  border: 1px solid rgba(198, 255, 46, 0.4);
+  border-radius: 999px;
+  text-shadow: var(--shadow);
+  animation: hud-blink 1.6s steps(2, start) infinite;
+  pointer-events: none;
+}
+
+/* Turnstile widget slot (NetClient.ensureGuest): `hidden` (display none via .hud-root [hidden])
+   unless a challenge is rendered; the 300x65 'normal' widget is centred, and with appearance
+   'interaction-only' it stays blank until Cloudflare needs a click. */
+.hud-menu-turnstile {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
+  min-height: 0;
+}
+
+.hud-menu-turnstile iframe {
+  max-width: 100%;
+}
+
+.hud-menu-name {
+  flex: 0 1 180px;
+  min-width: 0;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: right;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.hud-menu-name:focus {
+  border-color: var(--brand);
+  background: rgba(198, 255, 46, 0.1);
+}
+
+/* ---- Network panel (F4 / #net): top left, under the scorebug ------------------------------ */
+
+.hud-net {
+  position: absolute;
+  top: calc(var(--safe-top) + clamp(56px, 9vh, 84px));
+  left: calc(var(--safe-left) + 10px);
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  opacity: 0.92;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.hud-net-title {
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--text);
+}
+
+.hud-net-body {
+  margin: 0;
+  font-family: 'Cascadia Mono', 'Consolas', 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  white-space: pre;
+  color: var(--text);
+}
+
+.hud-menu-rows {
+  margin-top: clamp(14px, 2.4vh, 22px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hud-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hud-menu-row-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hud-menu-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-menu-value {
+  min-width: 7ch;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.hud-menu-arrow,
+.hud-menu-toggle {
+  font: inherit;
+  font-weight: 800;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-menu-arrow {
+  width: 30px;
+  height: 30px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.hud-menu-toggle {
+  padding: 6px 12px;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+}
+
+.hud-menu-arrow:hover,
+.hud-menu-toggle:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hud-menu-controls {
+  margin-top: clamp(14px, 2.4vh, 22px);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  text-align: left;
+}
+
+.hud-menu-control {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hud-menu-control-action {
+  color: var(--muted);
+}
+
+.hud-menu-control-keys {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.hud-menu-info {
+  margin-top: 12px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.hud-menu-settings {
+  margin-top: 10px;
+  width: 100%;
+  padding: 10px 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-menu-settings:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* Keyboard / gamepad focus (main menu rows and buttons): the brand lime. */
+.hud-menu-row.hud-focus,
+.hud-menu-settings.hud-focus {
+  border-color: var(--brand);
+  background: rgba(198, 255, 46, 0.1);
+  box-shadow: 0 0 0 1px var(--brand), 0 0 14px rgba(198, 255, 46, 0.25);
+}
+
+.hud-menu-play.hud-focus {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: 0 0 0 2px #fff, 0 0 18px var(--brand-glow);
+}
+
+/* ---- Controls & settings screen (same panel look, wider, scrolls inside) ------------------ */
+
+.hud-menu-panel.hud-settings-panel {
+  width: min(100%, 760px);
+  max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 32px);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  text-align: left;
+  overflow: hidden;
+}
+
+/* Header, tab strip and footer keep their size; only the body scrolls. */
+.hud-settings-head,
+.hud-settings-tabs,
+.hud-settings-foot {
+  flex: 0 0 auto;
+}
+
+.hud-settings-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px 10px;
+}
+
+.hud-settings-back {
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-settings-back:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hud-settings-title {
+  font-size: clamp(18px, 3vh, 26px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  color: var(--text);
+  text-shadow: none;
+  border-left: 4px solid var(--brand);
+  padding-left: 10px;
+}
+
+.hud-settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--panel-edge);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.hud-settings-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.hud-settings-tab {
+  flex: 1 0 auto;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-settings-tab:hover {
+  color: var(--text);
+}
+
+.hud-settings-tab.hud-active {
+  color: var(--text);
+  border-bottom-color: var(--brand);
+}
+
+.hud-settings-tabs.hud-focus .hud-settings-tab.hud-active {
+  background: rgba(198, 255, 46, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(198, 255, 46, 0.6);
+}
+
+.hud-settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 14px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+.hud-settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hud-settings-device {
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--blue-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-settings-device.hud-pad-missing {
+  color: var(--muted);
+}
+
+.hud-settings-group {
+  margin: 10px 10px 3px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hud-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.hud-settings-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.hud-settings-row.hud-focus {
+  background: rgba(198, 255, 46, 0.08);
+  border-color: rgba(198, 255, 46, 0.7);
+}
+
+.hud-settings-label {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.hud-settings-ctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.hud-slider-row .hud-settings-ctl {
+  flex: 1 1 55%;
+  max-width: 320px;
+}
+
+.hud-bind-cell {
+  min-width: 128px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-bind-cell:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hud-bind-cell.hud-capturing {
+  color: #ffd166;
+  border-color: #ffd166;
+  background: rgba(255, 209, 102, 0.12);
+  animation: hud-blink 1s steps(2, start) infinite;
+}
+
+.hud-bind-row.hud-unbound .hud-bind-cell {
+  color: var(--muted);
+}
+
+.hud-bind-clear {
+  width: 26px;
+  height: 26px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-bind-clear:hover {
+  color: #ff5a5a;
+  border-color: rgba(255, 90, 90, 0.5);
+}
+
+.hud-bind-row.hud-unbound .hud-bind-clear {
+  visibility: hidden;
+}
+
+.hud-bind-clear.hud-bind-locked {
+  visibility: hidden;
+}
+
+/* While a capture waits for a key / button, nothing else in the panel reacts to the pointer... */
+.hud-settings-panel.hud-settings-capturing .hud-settings-head,
+.hud-settings-panel.hud-settings-capturing .hud-settings-tabs,
+.hud-settings-panel.hud-settings-capturing .hud-settings-body,
+.hud-settings-panel.hud-settings-capturing .hud-settings-foot {
+  pointer-events: none;
+}
+
+/* ...except BACK and the capturing cell, which cancel it (a wheel over the cell binds the wheel). */
+.hud-settings-panel.hud-settings-capturing .hud-settings-back,
+.hud-settings-panel.hud-settings-capturing .hud-bind-cell.hud-capturing {
+  pointer-events: auto;
+}
+
+.hud-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 4px;
+  margin: 0;
+  border-radius: 2px;
+  outline: none;
+  background: linear-gradient(90deg, var(--brand) var(--p, 0%), rgba(255, 255, 255, 0.18) var(--p, 0%));
+  cursor: pointer;
+}
+
+.hud-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--brand);
+  box-shadow: 0 0 6px var(--brand-glow);
+}
+
+.hud-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--brand);
+  box-shadow: 0 0 6px var(--brand-glow);
+}
+
+.hud-slider::-moz-range-track {
+  background: transparent;
+}
+
+.hud-slider-value {
+  min-width: 5ch;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-toggle {
+  min-width: 64px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-toggle.hud-on {
+  color: var(--brand-ink);
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.hud-settings-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--panel-edge);
+}
+
+.hud-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px;
+  border-radius: 8px;
+}
+
+.hud-settings-action {
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-settings-action:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hud-settings-actions.hud-focus .hud-settings-action.hud-focus {
+  border-color: var(--brand);
+  background: rgba(198, 255, 46, 0.12);
+  box-shadow: 0 0 0 1px var(--brand), 0 0 12px rgba(198, 255, 46, 0.4);
+}
+
+.hud-settings-keys {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* ---- Scoreboard (held Tab / Back) ------------------------------------------------------- */
+
+.hud-scoreboard {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 6, 12, 0.35);
+}
+
+.hud-sb-panel {
+  width: min(92vw, 560px);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.hud-sb-head {
+  display: flex;
+  align-items: stretch;
+}
+
+.hud-sb-head {
+  border-top: 3px solid var(--brand);
+}
+
+.hud-sb-score {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  font-size: clamp(30px, 5.5vh, 52px);
+  font-weight: 900;
+  color: #fff;
+}
+
+.hud-sb-score.hud-blue {
+  background: linear-gradient(90deg, var(--blue-deep), var(--blue));
+}
+
+.hud-sb-score.hud-red {
+  background: linear-gradient(90deg, var(--red), var(--red-deep));
+}
+
+.hud-sb-clock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 110px;
+  padding: 0 14px;
+  font-size: clamp(18px, 3vh, 28px);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: rgba(2, 4, 10, 0.55);
+}
+
+.hud-sb-teams {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.hud-sb-team {
+  padding: 10px 14px 12px;
+}
+
+.hud-sb-team + .hud-sb-team {
+  border-left: 1px solid var(--panel-edge);
+}
+
+.hud-sb-team-name {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.hud-sb-team.hud-blue .hud-sb-team-name {
+  color: var(--blue-hi);
+}
+
+.hud-sb-team.hud-red .hud-sb-team-name {
+  color: var(--red-hi);
+}
+
+/* One row per car (1v1: one, 3v3: three per team); the human's row is a touch brighter. */
+.hud-sb-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-sb-row {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.hud-sb-row.hud-sb-you {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.hud-sb-tag {
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+  text-shadow: none;
+}
+
+.hud-sb-tag.hud-you {
+  background: var(--brand);
+  color: var(--brand-ink);
+}
+
+.hud-sb-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-sb-foot {
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--panel-edge);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* ---- Pointer-lock hint (bottom centre, above the camera mode pill) ------------------------ */
+
+.hud-hint {
+  position: absolute;
+  bottom: calc(var(--safe-bottom) + clamp(44px, 7vh, 64px));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-edge);
+  background: var(--panel);
+  font-size: clamp(11px, 1.5vh, 13px);
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  color: var(--muted);
+  animation: hud-fade-in 0.3s ease both;
+}
+
+/* ---- Animations / responsive ------------------------------------------------------------ */
+
+@keyframes hud-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hud-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes hud-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (max-height: 480px), (max-width: 560px) {
+  .hud-fps-info {
+    display: none;
+  }
+  .hud-menu-controls {
+    display: none;
+  }
+  .hud-cam {
+    bottom: calc(var(--safe-bottom) + 4px);
+  }
+  .hud-hint {
+    bottom: calc(var(--safe-bottom) + 34px);
+  }
+  .hud-settings-keys {
+    display: none;
+  }
+  .hud-boost-bar {
+    width: clamp(110px, 34vw, 180px);
+  }
+  .hud-speed {
+    bottom: calc(var(--safe-bottom) + 58px);
+  }
+}
+
+@media (max-width: 560px) {
+  /* Phones: the boost bar takes the bottom left, so the camera pill moves to the bottom right
+     and the pointer-lock hint sits above both. */
+  .hud-cam {
+    left: auto;
+    right: calc(var(--safe-right) + 12px);
+    bottom: calc(var(--safe-bottom) + 14px);
+    transform: none;
+  }
+  .hud-hint {
+    bottom: calc(var(--safe-bottom) + 84px);
+    max-width: calc(100vw - 32px);
+    white-space: normal;
+    text-align: center;
+  }
+  .hud-netwait {
+    top: calc(var(--safe-top) + clamp(56px, 9vh, 84px));
+    max-width: calc(100vw - 32px);
+  }
+  .hud-menu {
+    padding: calc(var(--safe-top) + 6px) 6px calc(var(--safe-bottom) + 6px);
+  }
+  .hud-menu-panel.hud-settings-panel {
+    width: 100%;
+    max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 12px);
+    border-radius: 8px;
+  }
+  .hud-settings-head {
+    padding: 10px 12px 8px;
+  }
+  .hud-settings-body {
+    padding: 6px 8px 10px;
+  }
+  .hud-settings-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .hud-slider-row .hud-settings-ctl {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  .hud-bind-cell {
+    min-width: 96px;
+    font-size: 12px;
+  }
+  .hud-sb-teams {
+    grid-template-columns: 1fr;
+  }
+  .hud-sb-team + .hud-sb-team {
+    border-left: 0;
+    border-top: 1px solid var(--panel-edge);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-pop,
+  .hud-hint,
+  .hud-clock.hud-overtime,
+  .hud-bind-cell.hud-capturing {
+    animation: none;
+  }
+}
+
+/* ---- Boot overlay (src/main.ts): progress text and the renderer / wasm error page --------- */
+
+#overlay.overlay-blocking {
+  pointer-events: auto;
+  background: var(--ink);
+}
+
+.overlay-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  text-shadow: var(--shadow);
+}
+
+/* The TURBOGOL wordmark as one string: heavy italic, white fading into lime where GOL starts. */
+.overlay-title {
+  padding-right: 0.14em;
+  font-size: clamp(32px, 6vw, 64px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  line-height: 1.1;
+  background: linear-gradient(90deg, var(--text) 0 57%, var(--brand) 66%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: none;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
+}
+
+.overlay-line {
+  font-size: clamp(14px, 1.6vw, 18px);
+  color: var(--muted);
+  max-width: 60ch;
+}
+
+.overlay-error .overlay-title {
+  font-style: normal;
+  letter-spacing: 0.08em;
+  background: none;
+  color: #ff6b6b;
+}
+
+.overlay-detail {
+  margin-top: 12px;
+  max-width: min(90vw, 900px);
+  max-height: 40vh;
+  overflow: auto;
+  padding: 12px 16px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  text-align: left;
+  white-space: pre-wrap;
+  user-select: text;
+}

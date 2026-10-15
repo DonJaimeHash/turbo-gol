@@ -1,0 +1,401 @@
+/*
+ * Training HUD (src/render/TrainingHud.ts). Every class is prefixed `trn-`; the palette, font and
+ * text shadow come from the custom properties in src/style.css (:root). The overlay ignores the
+ * pointer except its buttons, so a click on the game still reaches the canvas (mouse capture /
+ * resume after a pause).
+ */
+
+.trn-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  text-shadow: var(--shadow);
+  color: var(--text);
+  --trn-pass: #37d67a;
+  --trn-fail: #ff4d5e;
+}
+
+.trn-root[hidden],
+.trn-root [hidden] {
+  display: none !important;
+}
+
+/* The match score / clock make no sense in training. */
+.trn-on .hud-top {
+  display: none !important;
+}
+
+/* ---- Pack panel (top left) ------------------------------------------------------------- */
+
+.trn-panel {
+  position: absolute;
+  top: calc(var(--safe-top) + clamp(8px, 1.6vh, 18px));
+  left: calc(var(--safe-left) + clamp(10px, 2vw, 24px));
+  min-width: min(260px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+
+.trn-title {
+  font-size: clamp(15px, 2.4vh, 22px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trn-shot {
+  margin-top: 2px;
+  font-size: clamp(13px, 1.9vh, 17px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.trn-attempts,
+.trn-boost {
+  margin-top: 2px;
+  font-size: clamp(12px, 1.6vh, 14px);
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.trn-boost {
+  color: var(--brand);
+}
+
+.trn-boost.trn-boost-off {
+  color: var(--muted);
+}
+
+/* ---- Shot dots ------------------------------------------------------------------------- */
+
+.trn-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.trn-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(244, 247, 255, 0.18);
+  border: 1px solid rgba(244, 247, 255, 0.35);
+  box-sizing: border-box;
+}
+
+.trn-dot.trn-dot-pass {
+  background: var(--trn-pass);
+  border-color: var(--trn-pass);
+}
+
+.trn-dot.trn-dot-fail {
+  background: var(--trn-fail);
+  border-color: var(--trn-fail);
+}
+
+.trn-dot.trn-dot-current {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* ---- Shot timer ------------------------------------------------------------------------ */
+
+.trn-timer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.trn-timer-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(244, 247, 255, 0.14);
+}
+
+.trn-timer-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--brand-deep), var(--brand));
+  transform-origin: left center;
+  will-change: transform;
+}
+
+.trn-timer.trn-timer-low .trn-timer-fill {
+  background: linear-gradient(90deg, var(--amber), var(--trn-fail));
+}
+
+.trn-timer.trn-timer-idle .trn-timer-fill {
+  opacity: 0.45;
+}
+
+.trn-timer-text {
+  min-width: 2ch;
+  text-align: right;
+  font-size: clamp(16px, 2.4vh, 22px);
+  font-weight: 800;
+}
+
+/* ---- Start prompt, result banner ------------------------------------------------------- */
+
+.trn-start {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + clamp(84px, 13vh, 130px)); /* above the boost bar's row */
+  transform: translateX(-50%);
+  padding: 6px 16px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  font-size: clamp(13px, 2vh, 18px);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  animation: trn-breathe 1.6s ease-in-out infinite;
+}
+
+.trn-banner {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: calc(100vw - 32px);
+  text-align: center;
+  padding: clamp(10px, 1.8vh, 18px) clamp(26px, 5vw, 60px);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+
+.trn-banner.trn-pass {
+  border-color: var(--trn-pass);
+  box-shadow: 0 0 30px rgba(55, 214, 122, 0.45);
+}
+
+.trn-banner.trn-fail {
+  border-color: var(--trn-fail);
+  box-shadow: 0 0 30px rgba(255, 77, 94, 0.45);
+}
+
+.trn-banner-title {
+  font-size: clamp(34px, 7vh, 72px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  line-height: 1.05;
+  text-transform: uppercase;
+}
+
+.trn-banner.trn-pass .trn-banner-title {
+  color: #9af0bd;
+}
+
+.trn-banner.trn-fail .trn-banner-title {
+  color: #ffa3ad;
+}
+
+.trn-banner-sub {
+  margin-top: 4px;
+  font-size: clamp(13px, 2.2vh, 20px);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+/* ---- Key hints (panel footer, one binding per line) -------------------------------------- */
+
+.trn-keys {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-edge);
+  font-size: clamp(11px, 1.5vh, 13px);
+  line-height: 1.45;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  white-space: pre-line;
+}
+
+.trn-paused .trn-keys,
+.trn-paused .trn-start {
+  display: none;
+}
+
+/* Paused under the summary (tab hidden): the summary's own buttons stay the only ones. */
+.trn-summary-on .trn-pause {
+  display: none !important;
+}
+
+/* ---- Pause entries (under the Hud's PAUSED title) ---------------------------------------- */
+
+.trn-pause {
+  position: absolute;
+  top: calc(58% + 12px); /* clear of the PAUSED title's lime underline */
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: min(560px, calc(100vw - 32px));
+}
+
+.trn-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+  font-size: clamp(13px, 1.9vh, 16px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+  text-shadow: var(--shadow);
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-edge);
+  background: var(--panel);
+}
+
+.trn-btn:hover {
+  border-color: rgba(198, 255, 46, 0.6);
+  background: rgba(24, 32, 20, 0.85);
+}
+
+.trn-btn.trn-btn-primary {
+  color: var(--brand-ink);
+  text-shadow: none;
+  border-color: var(--brand);
+  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+}
+
+.trn-btn.trn-btn-primary:hover {
+  filter: brightness(1.08);
+}
+
+.trn-btn.trn-btn-quit {
+  border-color: rgba(255, 77, 94, 0.6);
+}
+
+/* ---- Pack summary ---------------------------------------------------------------------- */
+
+.trn-summary {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(4, 6, 12, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.trn-summary-card {
+  pointer-events: auto;
+  width: min(440px, 100%);
+  box-sizing: border-box;
+  padding: clamp(16px, 3vh, 28px) clamp(18px, 4vw, 34px);
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 10px;
+}
+
+.trn-summary-pack {
+  font-size: clamp(13px, 1.9vh, 16px);
+  color: var(--muted);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.trn-summary-title {
+  margin-top: 4px;
+  font-size: clamp(24px, 4.4vh, 40px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trn-summary-score {
+  margin-top: 6px;
+  font-size: clamp(44px, 9vh, 84px);
+  font-weight: 900;
+  line-height: 1;
+}
+
+.trn-summary-best {
+  margin-top: 6px;
+  font-size: clamp(13px, 2vh, 18px);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.trn-summary-best.trn-new-best {
+  color: var(--brand);
+}
+
+.trn-summary-dots {
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.trn-summary-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.trn-summary-hint {
+  margin-top: 12px;
+  font-size: clamp(11px, 1.5vh, 13px);
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+
+/* ---- Animations ------------------------------------------------------------------------- */
+
+.trn-pop {
+  animation: trn-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+@keyframes trn-pop {
+  from {
+    opacity: 0;
+    scale: 0.85;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes trn-breathe {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trn-pop,
+  .trn-start {
+    animation: none;
+  }
+}

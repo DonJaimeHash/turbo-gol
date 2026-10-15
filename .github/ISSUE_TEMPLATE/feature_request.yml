@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an idea for Turbogol
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does it solve?
+      description: Describe the situation or the player need behind the idea.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: checkboxes
+    id: original
+    attributes:
+      label: Originality
+      options:
+        - label: The idea does not require copying names, art, layouts or measurements from another game.
+          required: true
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to work on this myself.

@@ -1,0 +1,75 @@
+// Cloudflare Workers config for the Turbogol online backend (phase 1: Durable Object matches;
+// phase 2: peer-to-peer signaling rooms). Local dev needs no account: `npm run dev` (= wrangler dev
+// --port 8787) runs everything in workerd/miniflare, including the Durable Objects and a fake KV namespace.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "turbogol",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // The public game: a Workers Custom Domain on the turbo-gol.com zone (Cloudflare creates the DNS
+  // record and the certificate on deploy). The workers.dev and preview URLs are off, so the game has
+  // exactly one origin. Forks: put your own domain here (and in vars.VITE_ORIGINS), or remove "routes"
+  // and set "workers_dev": true.
+  "routes": [{ "pattern": "turbo-gol.com", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  // Without this, `wrangler dev` infers the request host from the route above: request.url would read
+  // http://turbo-gol.com/..., socket URLs would point at production and the loopback exemptions
+  // (origins, Turnstile) would stop applying. Pinned to the local address instead.
+  "dev": { "port": 8787, "host": "127.0.0.1:8787" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "MATCH", "class_name": "MatchDO" },
+      { "name": "MATCHMAKER", "class_name": "MatchmakerDO" },
+      // Phase 2: one hibernating signaling room per P2P match (RoomDO.ts).
+      { "name": "ROOM", "class_name": "RoomDO" },
+      // Accounts, ratings and ranked results (AccountsDO.ts, one SQLite object for everything).
+      { "name": "ACCOUNTS", "class_name": "AccountsDO" },
+      // Custom-match lobbies (LobbyDO.ts, one per lobby, hibernating) and their directory (codes + public list).
+      { "name": "LOBBY", "class_name": "LobbyDO" },
+      { "name": "LOBBY_DIR", "class_name": "LobbyDirectoryDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MatchDO", "MatchmakerDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["RoomDO"] },
+    { "tag": "v3", "new_sqlite_classes": ["AccountsDO", "LobbyDO", "LobbyDirectoryDO"] }
+  ],
+  // The game itself: the Vite build (`npm run build` at the repo root -> ../dist) is uploaded with
+  // the Worker and served from the same origin, so one URL is game + API + match sockets and the
+  // client needs no CORS. Only /api/*, /ws/*, /room/* and /lobby/* reach the Worker code (run_worker_first);
+  // every other path is answered by the asset layer (unknown paths fall back to index.html: SPA).
+  // The Worker still falls back to env.ASSETS.fetch() for anything else it receives. The directory
+  // must exist when wrangler starts: `npm run dev` here creates an empty ../dist if needed (in
+  // dev the game is served by Vite on 5173, which proxies /api, /ws and /room to this port).
+  "assets": {
+    "directory": "../dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/ws/*", "/room/*", "/lobby/*"]
+  },
+  // Feature flags (matchmaking_off, do_disabled). The id is the official deployment's namespace; forks
+  // create their own with `npx wrangler kv namespace create FLAGS` (any id works under wrangler dev).
+  "kv_namespaces": [{ "binding": "FLAGS", "id": "61764fc794934a359008a53682efd9c3" }],
+  "vars": {
+    "MATCH_LENGTH_SECONDS": 300,
+    "REGION_OVERRIDE": "",
+    // TURNSTILE_SITEKEY: the public Turnstile sitekey paired with the TURNSTILE_SECRET secret
+    // (GET /api/config hands it to the browser). VITE_ORIGINS: comma-separated browser origins allowed
+    // for CORS / WebSocket Origin (empty = any origin); a loopback page is always allowed while the
+    // Worker itself runs under wrangler dev, so local development is unaffected. OAuth redirect URIs
+    // use the request's own origin (https://turbo-gol.com in production); set PUBLIC_ORIGIN in
+    // .dev.vars only to test OAuth locally.
+    "TURNSTILE_SITEKEY": "0x4AAAAAAFWoRVBMSY6b0YY8",
+    // The anti-bot check is OFF ("1") until the Turnstile widget lists turbo-gol.com and the Worker has
+    // TURNSTILE_SECRET; then set "0": guests and new accounts need a Turnstile token (widget in the menus).
+    "TURNSTILE_DISABLED": "1",
+    // `npm run deploy` (scripts/deploy.mjs) overrides it with a VITE_ORIGINS environment variable when set.
+    "VITE_ORIGINS": "https://turbo-gol.com"
+  },
+  // The shared ../src/sim/wasm/rocketsim.wasm is imported as a WebAssembly.Module.
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  // A 3v3 tick costs ~0.1 ms of CPU; a 5 min match with overtime stays far below this.
+  "limits": { "cpu_ms": 30000 },
+  "observability": { "enabled": true }
+}
