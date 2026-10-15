@@ -258,11 +258,13 @@ test('login throttle: free failures, then a doubling lock capped at 15 min; a ne
 
 test('oauthIdentity: code exchange with PKCE + client secret, then the user endpoint (Google sub, Discord id)', async () => {
   const calls = [];
+  // Discord API v10 user object (pomelo usernames: discriminator "0", global_name nullable).
+  let discordUser = { id: '80351110224678912', username: 'ana_d', discriminator: '0', global_name: null, avatar: null };
   const fake = async (url, init) => {
     calls.push({ url, init });
     if (url.includes('token')) return new Response(JSON.stringify({ access_token: 'AT' }), { status: 200 });
     if (url.includes('googleapis')) return new Response(JSON.stringify({ sub: 'g1', name: 'Ana Gómez', given_name: 'Ana' }), { status: 200 });
-    return new Response(JSON.stringify({ id: 'd1', username: 'ana_d', global_name: null }), { status: 200 });
+    return new Response(JSON.stringify(discordUser), { status: 200 });
   };
   const env = { GOOGLE_CLIENT_ID: 'gid', GOOGLE_CLIENT_SECRET: 'gs', DISCORD_CLIENT_ID: 'did', DISCORD_CLIENT_SECRET: 'ds' };
   assert.deepEqual(A.enabledProviders(env), ['google', 'discord']);
@@ -275,7 +277,12 @@ test('oauthIdentity: code exchange with PKCE + client secret, then the user endp
   assert.equal(form.get('redirect_uri'), 'https://x/cb');
   assert.equal(calls[1].init.headers.authorization, 'Bearer AT');
   const d = await A.oauthIdentity(A.providerConfig(env, 'discord'), 'discord', 'C', 'V', 'https://x/cb', fake);
-  assert.deepEqual(d, { id: 'd1', name: 'ana_d' });
+  assert.deepEqual(d, { id: '80351110224678912', name: 'ana_d' });
+  assert.equal(calls[2].url, 'https://discord.com/api/v10/oauth2/token', 'versioned API, not the unversioned (v6) default');
+  assert.equal(calls[3].url, 'https://discord.com/api/v10/users/@me');
+  discordUser = { ...discordUser, global_name: 'Ana D.' };
+  const named = await A.oauthIdentity(A.providerConfig(env, 'discord'), 'discord', 'C', 'V', 'https://x/cb', fake);
+  assert.deepEqual(named, { id: '80351110224678912', name: 'Ana D.' }, 'the display name wins over the username');
   const bad = await A.oauthIdentity(A.providerConfig(env, 'google'), 'google', 'C', 'V', 'u', async () => new Response('no', { status: 400 }));
   assert.equal(bad, null);
 });

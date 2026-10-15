@@ -426,8 +426,8 @@ export function providerConfig(env: Env, p: OAuthProvider): ProviderConfig | nul
     clientId: env.DISCORD_CLIENT_ID,
     clientSecret: env.DISCORD_CLIENT_SECRET,
     authorize: 'https://discord.com/oauth2/authorize',
-    token: 'https://discord.com/api/oauth2/token',
-    user: 'https://discord.com/api/users/@me',
+    token: 'https://discord.com/api/v10/oauth2/token',
+    user: 'https://discord.com/api/v10/users/@me',
     scope: 'identify',
   };
 }
