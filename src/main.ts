@@ -138,6 +138,7 @@ async function boot(): Promise<void> {
     playerCarId,
     carIds,
     difficulty: prefs.difficulty,
+    qualitySet: prefs.qualitySet,
     info: `${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · RocketSim ${sim.version} · 120 Hz`,
   });
   // One synchronous render with every normally hidden mesh visible: compiles all pipelines
