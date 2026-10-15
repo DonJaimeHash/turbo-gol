@@ -709,17 +709,23 @@ body {
   pointer-events: none;
 }
 
-/* Turnstile widget slot (NetClient.ensureGuest): `hidden` (display none via .hud-root [hidden])
-   unless a challenge is rendered; the 300x65 'normal' widget is centred, and with appearance
-   'interaction-only' it stays blank until Cloudflare needs a click. */
-.hud-menu-turnstile {
+/* Turnstile widget slot (Hud.turnstileContainer, NetClient's anti-bot challenge): `hidden` (display
+   none via .hud-root [hidden]) unless a challenge is rendered. Above every menu layer (src/ui menus
+   z-index 40, the settings-only screen 60); with appearance 'interaction-only' it stays blank until
+   Cloudflare needs a click, then the 300x65 widget shows centred near the bottom. */
+.hud-turnstile {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + 24px);
+  z-index: 70;
   display: flex;
   justify-content: center;
-  margin-top: 8px;
-  min-height: 0;
+  max-width: calc(100% - 32px);
+  transform: translateX(-50%);
+  pointer-events: auto;
 }
 
-.hud-menu-turnstile iframe {
+.hud-turnstile iframe {
   max-width: 100%;
 }
 

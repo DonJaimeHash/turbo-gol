@@ -25,7 +25,7 @@ export const TURNSTILE_LOAD_TIMEOUT_MS = 20_000;
 /** A challenge that produced no token within this time is abandoned. */
 export const TURNSTILE_TOKEN_TIMEOUT_MS = 60_000;
 /** Name of the global callback api.js invokes once it is ready (?onload=). */
-const ONLOAD_CALLBACK = '__carSoccerTurnstileOnload';
+const ONLOAD_CALLBACK = '__turbogolTurnstileOnload';
 
 // ---- Minimal typing of the Turnstile API (https://developers.cloudflare.com/turnstile/) -------
 

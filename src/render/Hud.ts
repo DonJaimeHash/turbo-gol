@@ -380,7 +380,7 @@ export class Hud {
   private readonly onlineKindItems: FocusItem[] = [];
   private onlineSubOpen = false;
   private menuStatus: HTMLElement | null = null;
-  private turnstileBox: HTMLElement | null = null;
+  private readonly turnstileBox: HTMLElement;
   private nameRow: HTMLElement | null = null;
   private nameInput: HTMLInputElement | null = null;
   private onlineItem: FocusItem | null = null;
@@ -505,6 +505,13 @@ export class Hud {
   constructor(container: HTMLElement) {
     this.root = el('div', 'hud-root');
     container.appendChild(this.root);
+
+    // Turnstile widget slot: the online client renders the anti-bot widget here while it registers a
+    // guest or an account (appearance 'interaction-only': nothing shows unless Cloudflare asks for a
+    // click). It sits on the root, above every menu layer (the src/ui front-end and the settings screen).
+    this.turnstileBox = el('div', 'hud-turnstile');
+    this.turnstileBox.hidden = true;
+    this.root.appendChild(this.turnstileBox);
 
     // Scorebug (top left): [BLU 0] [RED 0] [5:00]. The three-letter tags keep the teams apart
     // without relying on colour alone.
@@ -711,10 +718,10 @@ export class Hud {
   }
 
   /**
-   * Slot under the status line for the Turnstile widget (NetClient.ensureGuest renders into it
-   * and unhides it only while a challenge lives). null until the menu is first shown.
+   * Slot for the Turnstile widget, above every menu layer (NetClient renders into it and unhides it
+   * only while a challenge lives).
    */
-  get turnstileContainer(): HTMLElement | null {
+  get turnstileContainer(): HTMLElement {
     return this.turnstileBox;
   }
 
@@ -1151,12 +1158,6 @@ export class Hud {
     this.menuStatus = el('div', 'hud-menu-status');
     this.menuStatus.hidden = true;
     panel.appendChild(this.menuStatus);
-    // Turnstile widget slot: the online client renders the anti-bot widget here while it registers
-    // a guest (appearance 'interaction-only': nothing shows unless Cloudflare asks for a click).
-    const turnstileBox = el('div', 'hud-menu-turnstile');
-    turnstileBox.hidden = true;
-    this.turnstileBox = turnstileBox;
-    panel.appendChild(turnstileBox);
     this.menuHint = el('div', 'hud-menu-hint', 'Press Enter / A to play');
     panel.appendChild(this.menuHint);
 

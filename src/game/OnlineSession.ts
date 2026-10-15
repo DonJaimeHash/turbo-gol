@@ -166,7 +166,7 @@ export class OnlineSession {
   constructor(game: Game, opts: OnlineSessionOptions = {}) {
     this.game = game;
     this.now = opts.now ?? (() => performance.now());
-    // The Turnstile widget (guest registration behind a sitekey) renders into the Hud's menu slot.
+    // The Turnstile widget (guest / account registration behind a sitekey) renders into the Hud's slot.
     this.client = opts.client ?? new NetClient({ turnstileContainer: () => game.hud.turnstileContainer, ...opts.clientOptions });
     const c = this.client;
     c.onTurnstile = (active) => this.handleTurnstile(active);

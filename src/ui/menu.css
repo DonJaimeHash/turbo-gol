@@ -29,8 +29,9 @@
 }
 
 /* The in-game HUD (score, clock, boost...) stays out of sight while the menus are up; the Hud's
-   settings screen (.hud-menu) lives in the same root and stays visible. */
-.mn-open .hud-root > :not(.hud-menu) {
+   settings screen (.hud-menu) and the Turnstile slot (.hud-turnstile: the anti-bot widget a guest or
+   account registration from these menus may need to click) live in the same root and stay visible. */
+.mn-open .hud-root > :not(.hud-menu):not(.hud-turnstile) {
   visibility: hidden;
 }
 
