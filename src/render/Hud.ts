@@ -38,7 +38,7 @@ import {
 } from '../settings';
 import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/NetStats';
 import { MODES, type GameMode } from '../sim/constants';
-import { t } from '../i18n';
+import { language, t } from '../i18n';
 import type { CameraSettings } from './Camera';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -322,6 +322,9 @@ class FocusRing {
 
 export class Hud {
   readonly root: HTMLElement;
+  /** The pause screen's RESUME / QUIT buttons (touch mode only, see the constructor); set by the Game. */
+  onPauseResume: (() => void) | null = null;
+  onPauseQuit: (() => void) | null = null;
 
   private readonly scoreBlue: HTMLElement;
   private readonly scoreRed: HTMLElement;
@@ -343,6 +346,11 @@ export class Hud {
   private readonly bannerSub: HTMLElement;
   private readonly paused: HTMLElement;
   private readonly pausedSub: HTMLElement;
+  private readonly pauseQuit: HTMLButtonElement;
+  /** QUIT takes a second tap (setPaused: an online match, where leaving may count as an abandon). */
+  private quitConfirm = false;
+  /** QUIT was tapped once and asks for the second tap. */
+  private quitArmed = false;
   private readonly hint: HTMLElement;
 
   // Scoreboard (Tab).
@@ -603,7 +611,22 @@ export class Hud {
 
     this.paused = el('div', 'hud-paused');
     this.pausedSub = el('div', 'hud-paused-sub', 'Esc / Start to resume  ·  Backspace / B to quit');
-    this.paused.append(el('div', 'hud-paused-title', 'PAUSED'), this.pausedSub);
+    // Touch mode only (style.css, html.tg-touch): a finger has no Esc / Backspace, so RESUME and
+    // QUIT take the key line's place. Only the buttons take the pointer: a tap on the veil still
+    // reaches the canvas (resume). Training hides them for its own pause panel. Online, QUIT asks
+    // for a second tap: a mis-tap next to RESUME would leave the match (an abandon in ranked).
+    const pauseActions = el('div', 'hud-paused-actions');
+    pauseActions.lang = language(); // translated, unlike the rest of the Hud
+    const resume = button('hud-paused-btn hud-paused-resume', t('pause.resume'));
+    resume.addEventListener('click', () => this.onPauseResume?.());
+    const quit = button('hud-paused-btn hud-paused-quit', t('pause.quit'));
+    quit.addEventListener('click', () => {
+      if (this.quitConfirm && !this.quitArmed) this.armQuit(true);
+      else this.onPauseQuit?.();
+    });
+    this.pauseQuit = quit;
+    pauseActions.append(resume, quit);
+    this.paused.append(el('div', 'hud-paused-title', 'PAUSED'), this.pausedSub, pauseActions);
     this.paused.hidden = true;
     this.root.appendChild(this.paused);
 
@@ -885,8 +908,19 @@ export class Hud {
     this.banner.hidden = true;
   }
 
-  setPaused(paused: boolean): void {
+  /** Show or hide the pause screen; `confirmQuit` (an online match): its QUIT button takes a second tap. */
+  setPaused(paused: boolean, confirmQuit = false): void {
     this.paused.hidden = !paused;
+    this.quitConfirm = paused && confirmQuit;
+    this.armQuit(false);
+  }
+
+  /** QUIT's second-tap state: its label asks to confirm while armed. */
+  private armQuit(on: boolean): void {
+    if (on === this.quitArmed) return;
+    this.quitArmed = on;
+    this.pauseQuit.textContent = t(on ? 'pause.quitConfirm' : 'pause.quit');
+    this.pauseQuit.classList.toggle('hud-paused-armed', on);
   }
 
   /**

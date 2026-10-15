@@ -404,6 +404,8 @@ export class Input {
   private readonly stick = new Float64Array(GP_MAX_AXES);
   private prevNavX = 0;
   private prevNavY = 0;
+  /** Gamepad button presses seen so far (see gamepadPresses). */
+  private padPresses = 0;
 
   /** Per-action values of this sample: keyboard/mouse digital, mouse-axis (look only), gamepad. */
   private readonly kd = new Float64Array(N);
@@ -627,6 +629,15 @@ export class Input {
   /** True while a controller is connected. */
   get hasGamepad(): boolean {
     return this.padIndex >= 0;
+  }
+
+  /**
+   * Gamepad button presses (rising edges of any button) seen by `sample()` so far. A change means
+   * the pad is being used, which `hasGamepad` (merely connected) cannot tell; the touch controls
+   * turn touch mode off on it.
+   */
+  get gamepadPresses(): number {
+    return this.padPresses;
   }
 
   /** True while the game owns the mouse (document.pointerLockElement is set). */
@@ -1253,6 +1264,7 @@ export class Input {
     for (let i = 0; i < nb; i++) {
       const now = buttonPressed(gp, i) ? 1 : 0;
       if (now === 1 && prev[i] === 0) {
+        this.padPresses++;
         const cap = this.capture;
         if (cap !== null) {
           if (cap.armed && cap.target.device === 'pad') this.endCapture({ kind: 'gpButton', index: i });

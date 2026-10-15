@@ -1,0 +1,329 @@
+/*
+ * On-screen touch controls (src/input/TouchControls.ts). Every class is prefixed `tc-`; the palette,
+ * font, shadow and safe-area insets come from the custom properties in src/style.css (:root).
+ *
+ * The layer is in #hud right after the Hud root and shows only with `tc-show` (a match played in
+ * touch mode). The rules under `.tc-on` (on #hud while that match is on screen in touch mode,
+ * played or paused, so the HUD does not reshuffle behind the pause screen) move or hide the parts
+ * of the match / training HUD the controls replace, so a phone driven by a pad keeps the usual
+ * HUD. Sizes follow the viewport height (dvh, vh where dvh is missing) with px clamps; insets add
+ * the safe areas. Only transforms move anything, and nothing uses backdrop-filter (expensive on
+ * phone GPUs).
+ *
+ * The TouchControls root routes every finger itself (hit tests on the measured circles), so its
+ * children never take the pointer.
+ *
+ * Touch mode (`tg-touch` on <html>) rules of other components live with them: the menus' back
+ * button, hints and focus rings in src/ui/menu.css, the pause screen's RESUME / QUIT in
+ * src/style.css, the training panels in src/render/training.css.
+ */
+
+.tc-root {
+  --tc-edge: 24px;
+  --tc-gap: clamp(10px, 3vh, 20px);
+  --tc-boost: clamp(84px, 27vh, 136px);
+  --tc-jump: clamp(72px, 22vh, 116px);
+  --tc-drift: clamp(56px, 17vh, 88px);
+  --tc-small: clamp(48px, 12vh, 60px);
+  --tc-stick: clamp(104px, 34vh, 168px);
+  /* The stick never starts this close to the left edge (Android's back gesture lives there). */
+  --tc-left: max(28px, calc(var(--safe-left) + 20px));
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-stretch: condensed;
+  text-shadow: var(--shadow);
+}
+
+@supports (height: 1dvh) {
+  .tc-root {
+    --tc-gap: clamp(10px, 3dvh, 20px);
+    --tc-boost: clamp(84px, 27dvh, 136px);
+    --tc-jump: clamp(72px, 22dvh, 116px);
+    --tc-drift: clamp(56px, 17dvh, 88px);
+    --tc-small: clamp(48px, 12dvh, 60px);
+    --tc-stick: clamp(104px, 34dvh, 168px);
+  }
+}
+
+.tc-root.tc-show {
+  display: block;
+}
+
+.tc-root * {
+  pointer-events: none;
+}
+
+/* ---- Stick: its start area (the left half under the top strip) and the floating stick ------- */
+
+.tc-zone {
+  position: absolute;
+  left: var(--tc-left);
+  top: 18%;
+  right: 50%;
+  bottom: 0;
+}
+
+/* Resting faintly at the bottom left; a finger in the zone moves it under the finger (transform). */
+.tc-stick {
+  position: absolute;
+  left: calc(var(--tc-left) + clamp(12px, 5vw, 72px));
+  bottom: calc(var(--safe-bottom) + clamp(16px, 7vh, 48px));
+  width: var(--tc-stick);
+  height: var(--tc-stick);
+  border: 2px solid rgba(255, 255, 255, 0.24);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(7, 10, 20, 0.12) 0 45%, rgba(7, 10, 20, 0.42));
+  opacity: 0.45;
+  will-change: transform;
+}
+
+.tc-stick.tc-stick-on {
+  opacity: 0.95;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.tc-knob {
+  position: absolute;
+  left: 30%;
+  top: 30%;
+  width: 40%;
+  height: 40%;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  background: rgba(244, 247, 255, 0.45);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  will-change: transform;
+}
+
+/* ---- Buttons: BOOST bottom right (the biggest), JUMP to its left, DRIFT above it ------------- */
+
+.tc-btn {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(255, 255, 255, 0.32);
+  border-radius: 50%;
+  background: rgba(7, 10, 20, 0.4);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    transform 0.06s,
+    background-color 0.06s,
+    border-color 0.06s;
+}
+
+.tc-btn.tc-down {
+  transform: scale(0.92);
+  border-color: #fff;
+  background: rgba(244, 247, 255, 0.26);
+}
+
+.tc-boost {
+  right: calc(var(--safe-right) + var(--tc-edge));
+  bottom: calc(var(--safe-bottom) + var(--tc-edge));
+  width: var(--tc-boost);
+  height: var(--tc-boost);
+  border-color: rgba(198, 255, 46, 0.75);
+  color: var(--brand);
+  font-size: clamp(14px, 4vh, 20px);
+}
+
+.tc-boost.tc-down {
+  border-color: var(--brand);
+  background: rgba(198, 255, 46, 0.3);
+}
+
+.tc-jump {
+  right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
+  bottom: calc(var(--safe-bottom) + var(--tc-edge));
+  width: var(--tc-jump);
+  height: var(--tc-jump);
+  font-size: clamp(13px, 3.6vh, 18px);
+}
+
+.tc-drift {
+  right: calc(var(--safe-right) + var(--tc-edge) + (var(--tc-boost) - var(--tc-drift)) / 2);
+  bottom: calc(var(--safe-bottom) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
+  width: var(--tc-drift);
+  height: var(--tc-drift);
+  border-color: rgba(156, 207, 255, 0.6);
+  color: var(--blue-hi);
+  font-size: clamp(11px, 3vh, 15px);
+  letter-spacing: 0.04em;
+}
+
+/* ---- Small tap buttons, top right: PAUSE, CAM, RESET (training only) ------------------------- */
+
+.tc-small {
+  top: calc(var(--safe-top) + clamp(16px, 4vh, 24px));
+  width: var(--tc-small);
+  height: var(--tc-small);
+  font-size: clamp(11px, 3vh, 14px);
+}
+
+.tc-pause {
+  right: calc(var(--safe-right) + var(--tc-edge));
+}
+
+.tc-cam {
+  right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-small) + var(--tc-gap));
+  color: var(--muted);
+}
+
+/* Ball cam on: lit like the Hud's camera pill. */
+.tc-cam.tc-cam-on {
+  border-color: rgba(198, 255, 46, 0.75);
+  color: var(--brand);
+}
+
+.tc-reset {
+  right: calc(var(--safe-right) + var(--tc-edge) + 2 * (var(--tc-small) + var(--tc-gap)));
+}
+
+.tc-root:not(.tc-train) .tc-reset {
+  display: none;
+}
+
+.tc-btn svg {
+  width: 44%;
+  height: 44%;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+}
+
+/* ---- The HUD while the controls are up ------------------------------------------------------- */
+
+/* The CAM button shows the camera mode; the bottom centre belongs to the thumbs. */
+.tc-on .hud-cam {
+  display: none;
+}
+
+/* The boost meter leaves the stick's corner for a compact spot under the scorebug. */
+.tc-on .hud-boost {
+  top: calc(var(--safe-top) + clamp(10px, 2vh, 20px) + clamp(36px, 5.6vh, 52px) + 8px);
+  bottom: auto;
+}
+
+.tc-on .hud-boost-bar {
+  width: clamp(96px, 18vw, 170px);
+  height: clamp(10px, 2vh, 16px);
+}
+
+.tc-on .hud-boost-value {
+  font-size: clamp(20px, 4vh, 32px);
+}
+
+/* Training hides the scorebug and puts its wide panel there: the meter goes to the bottom centre,
+   between the resting stick and JUMP (the "drive to start" line sits above it). */
+.tc-on.trn-on .hud-boost {
+  top: auto;
+  bottom: calc(var(--safe-bottom) + clamp(12px, 2.4vh, 26px));
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Training paused: its pause entries (training.css .trn-pause) take the bottom centre on a short
+   screen; the meter is back on resume. */
+.tc-on.trn-on:has(.trn-paused) .hud-boost {
+  visibility: hidden;
+}
+
+/* Debug readouts (F3) under the small buttons. Without debug the fps readout stays hidden here
+   (style.css's later `.hud-fps` display wins over its own `display: none`, and the readout would
+   show through the PAUSE button). */
+.tc-on .hud-root:not(.hud-debug) .hud-fps {
+  display: none;
+}
+
+.tc-on .hud-fps {
+  top: calc(var(--safe-top) + clamp(16px, 4vh, 24px) + clamp(48px, 12vh, 60px) + 8px);
+}
+
+/* Key hints mean nothing to a finger. */
+.tc-on .trn-keys {
+  display: none;
+}
+
+/* The pack summary is up while no match is played (the controls are down), so this one follows
+   touch mode itself. */
+.tg-touch .trn-summary-hint {
+  display: none;
+}
+
+/* ---- Rotate your phone: portrait on a phone or tablet in touch mode covers everything --------
+   (the Game pauses an offline match on the same turn; a pad player keeps the portrait view). */
+
+.tc-rotate {
+  position: absolute;
+  inset: 0;
+  z-index: 80; /* above the menus (40), the settings screen (60) and the Turnstile slot (70) */
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: calc(var(--safe-top) + 24px) calc(var(--safe-right) + 24px) calc(var(--safe-bottom) + 24px) calc(var(--safe-left) + 24px);
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-shadow: var(--shadow);
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  .tg-touch .tc-rotate {
+    display: flex;
+  }
+}
+
+.tc-rotate-phone {
+  width: 46px;
+  height: 78px;
+  border: 3px solid var(--text);
+  border-radius: 10px;
+  box-shadow: inset 0 -8px 0 -5px var(--brand);
+  animation: tc-rotate 2.4s ease-in-out infinite;
+}
+
+.tc-rotate-text {
+  max-width: 22ch;
+  line-height: 1.35;
+}
+
+@keyframes tc-rotate {
+  0%,
+  25% {
+    transform: rotate(0deg);
+  }
+  55%,
+  100% {
+    transform: rotate(-90deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tc-rotate-phone {
+    animation: none;
+    transform: rotate(-90deg);
+  }
+  .tc-btn {
+    transition: none;
+  }
+}
