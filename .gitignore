@@ -7,6 +7,10 @@ native/build/
 .env
 .env.*
 !.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.wrangler/
 
 # Maintainer-only notes and research (never published).
 private/

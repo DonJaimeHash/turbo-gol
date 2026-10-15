@@ -86,7 +86,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `GET /room/:roomId` | same, with a role `peer` ticket whose `mid` is the room id | 101 to the RoomDO: first message `RoomWelcome` (JSON; see `src/net/p2p/protocol.ts`) |
 | `GET /api/health` | | `{ ok, version, protocol }` |
 | `GET /api/time` | | `{ now }` |
-| `GET /api/config` | | public client configuration: `{ turnstileSiteKey, protocol, version, region }` (the sitekey is `null` when Turnstile is off) |
+| `GET /api/config` | | public client configuration: `{ turnstileSiteKey, protocol, version, region, autoRegion, regions, oauth, accounts }` (the sitekey is `null` when Turnstile is off; `oauth` lists the configured sign-in providers) |
 | `GET /api/where` | | `{ edgeColo, country, city?, asn?, ip }`: the Cloudflare colo (IATA code) that served the request and the client address masked to /24 (IPv6 /48), from `request.cf`; for the deploy measurements. The colo the *match* runs in is `Welcome.hostColo` (the MatchDO reads it once per isolate from `cloudflare.com/cdn-cgi/trace`, 5 s cap, `unknown` on failure) |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 

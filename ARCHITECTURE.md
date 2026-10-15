@@ -64,7 +64,7 @@ src/sim/
                         ball prediction (entries anchored to predTick so readers add the age)
   wasm/                 build output of native/build.ps1 (rocketsim.js, rocketsim.wasm, .d.ts)
 src/render/
-  coords.ts             RL→three mapping helpers (tiny, shared)
+  coords.ts             sim→three coordinate mapping helpers (tiny, shared)
   materials.ts          palette, HDR helpers and the bloom contract (glowMrt / noGlowMrt)
   Renderer.ts           WebGPURenderer, scene, lights, sky, PMREM environment, RenderPipeline
                         (HDR scene pass with MRT output+emissive → bloom from emissive → vignette

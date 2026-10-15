@@ -1,0 +1,11 @@
+# Response headers for the static files (Workers Static Assets reads this file from dist/; it is
+# not served itself). The API routes (/api, /ws, /room, /lobby) run the Worker and are unaffected.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+# Vite content-hashes every file under /assets: a new build gets new names.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

@@ -130,8 +130,8 @@ test('1. load, version, arena, add car, car config', () => {
   near(cfg.backWheelOffset[0], -33.75);
   near(cfg.backWheelOffset[1], 29.5);
   near(cfg.dodgeDeadzone, 0.5);
-  const merc = sim.getCarConfig(T.CarPreset.Tall);
-  near(merc.hitboxSize[2], 44.1591);
+  const tall = sim.getCarConfig(T.CarPreset.Tall);
+  near(tall.hitboxSize[2], 44.1591);
 });
 
 test('2. throttle: drives forward along +x, reaches ~1410 uu/s in 2 s', () => {

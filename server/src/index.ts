@@ -684,7 +684,7 @@ export default {
       else res = error(404, 'not_found');
     } catch (e) {
       console.error('api error', e);
-      res = error(500, 'internal', String(e));
+      res = error(500, 'internal');
     }
     return withCors(res, cors);
   },

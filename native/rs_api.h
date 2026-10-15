@@ -24,7 +24,7 @@ int rs_init_arena_mesh(const float* vertices, int numVertices, const int32_t* tr
 //       |ball.y| > goalLineY + ball radius
 //   [4..6] broadphase min, [7..9] broadphase max (RocketSim's grid bounds; must enclose the field
 //       and both goal chambers)
-//   then nKick (1..8) followed by nKick x (x, y, yaw): BLUE kickoff spots (orange mirrored: x, y
+//   then nKick (1..8) followed by nKick x (x, y, yaw): BLUE kickoff spots (red mirrored: x, y
 //       negated, yaw + pi)
 //   then nResp (1..8) followed by nResp x (x, y, yaw): BLUE demolition respawn spots (mirrored)
 //   then nPads (must equal the state buffer's pad slots, NUM_BOOST_PADS in types.ts) followed by
@@ -39,7 +39,7 @@ int rs_arena_create(float tickRate);
 void rs_arena_destroy(void);
 
 // ---- Cars --------------------------------------------------------------------------------
-// team: 0 blue, 1 orange. preset: see CarPreset in types.ts. Returns the car id (>0) or 0 on error.
+// team: 0 blue, 1 red. preset: see CarPreset in types.ts. Returns the car id (>0) or 0 on error.
 // The new car stands on a respawn spot of its team (the k-th car of the team on spot k % nResp,
 // stacked 250 uu further upfield per round), not on a random one.
 int rs_add_car(int team, int preset);

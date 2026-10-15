@@ -91,7 +91,7 @@ namespace F {
 constexpr float VERSION = 1.f;
 constexpr int MAX_SPOTS = 8;
 struct Spot {
-  float x, y, yaw;  // blue team; orange is mirrored (x, y negated, yaw + pi)
+  float x, y, yaw;  // blue team; red is mirrored (x, y negated, yaw + pi)
 };
 struct Layout {
   bool ready = false;
@@ -233,7 +233,7 @@ static void ApplyFieldPlanes(Arena* arena) {
   }
 }
 
-// Fresh car state on a spot (blue frame; orange mirrored) at height z, `upfield` uu further toward
+// Fresh car state on a spot (blue frame; red mirrored) at height z, `upfield` uu further toward
 // midfield, with `boost`: what a kickoff / respawn gives a car (no jump / flip / demo timers).
 static void PlaceOnSpot(Car* car, const F::Spot& spot, float z, float upfield, float boost) {
   const bool blue = car->team == Team::BLUE;
@@ -809,6 +809,7 @@ RS_API int rs_add_car(int team, int preset) {
   if (!g_arena) return 0;
   if ((int)g_cars.size() >= L::MAX_CARS) return 0;  // full: the bridge turns this into a throw
   if (preset < 0 || preset > 5) preset = 0;
+  // Team::ORANGE is RocketSim's API name for its second team: Turbogol's Red (team 1).
   Car* car = g_arena->AddCar(team == 0 ? Team::BLUE : Team::ORANGE, *CAR_PRESETS[preset]);
   if (!car) return 0;
   g_cars.push_back(car);
@@ -1066,7 +1067,7 @@ RS_API float* rs_state_ptr(void) { return g_state; }
 
 // Kickoff on OUR spots (RocketSim's ResetToRandomKickoff only knows its built-in ones). The seed
 // shuffles the spot list once; the k-th car of each team in CREATION order (g_cars) takes spot
-// order[k], so blue car k and orange car k stand on mirrored spots and a seed alone fixes the
+// order[k], so blue car k and red car k stand on mirrored spots and a seed alone fixes the
 // line-up. (RocketSim's own deal follows the iteration order of its unordered_set<Car*>; with the
 // default pointer hash that was heap-address order, which made the same seeded 3v3 run differ
 // between processes, see README.) A team with more cars than kickoff spots puts the rest on the
