@@ -280,8 +280,8 @@ export function friendlyScreen(menu: Menu): Screen {
   const quality = cycler<0 | 1>(
     'Calidad gráfica',
     [
-      { value: 1, label: 'Alta' },
-      { value: 0, label: 'Rendimiento' },
+      { value: 0, label: 'Alta' },
+      { value: 1, label: 'Rendimiento' },
     ],
     () => menu.host.quality,
     (v) => menu.host.setQuality(v),
