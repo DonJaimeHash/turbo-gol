@@ -39,7 +39,7 @@ Inicio ── JUGAR ── Casual            (playlists Mano a mano / Parejas / 
 | Contraseña | Nunca sale del navegador: se manda PBKDF2-SHA256 (200.000 iteraciones, sal = usuario). El servidor guarda PBKDF2 de eso con sal aleatoria (100.000, el máximo de Workers) |
 | Sesión | JWT de 1 h para las llamadas; refresh token de 30 días en cookie `__Host-` HttpOnly, Secure, SameSite=Strict, que rota en cada uso |
 | Recuperación | 8 códigos `XXXX-XXXX` al registrarse; cada uno sirve una vez. No hay email |
-| Fuerza bruta | 5 fallos por usuario → espera de 30 s que se duplica hasta 15 min; 30 por IP; 5 registros por minuto por IP; Turnstile en el registro cuando se reactive |
+| Fuerza bruta | 5 fallos por usuario → espera de 30 s que se duplica hasta 15 min; 30 por IP; 5 registros por minuto por IP; Turnstile en el registro (activo en el despliegue oficial) |
 | Almacenamiento | Un Durable Object con SQLite (`AccountsDO`): 25.000 cuentas ocupan pocos MB |
 | Invitados | Siguen igual: Casual, salas y entrenamiento. No tienen rango ni aparecen en la clasificación |
 

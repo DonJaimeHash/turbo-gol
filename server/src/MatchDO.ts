@@ -307,7 +307,7 @@ export class MatchDO extends DurableObject<Env> {
       this.hostPromise = null;
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
-      return error(500, 'host_init_failed', String(e));
+      return error(500, 'host_init_failed');
     }
     return json({ ok: true, matchId: rec.matchId });
   }
@@ -437,7 +437,7 @@ export class MatchDO extends DurableObject<Env> {
       [host, hostColo] = await Promise.all([pending, this.coloPromise ?? Promise.resolve(this.hostColo)]);
     } catch (e) {
       console.error('MatchDO: host init failed', e);
-      return error(500, 'host_init_failed', String(e));
+      return error(500, 'host_init_failed');
     }
     // ensureHost is an outgoing promise, not a storage op, so the input gate did not hold other
     // events (timers, other upgrades for this slot) while it was pending: re-check the room.

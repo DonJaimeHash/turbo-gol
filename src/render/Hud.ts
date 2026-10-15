@@ -504,6 +504,8 @@ export class Hud {
 
   constructor(container: HTMLElement) {
     this.root = el('div', 'hud-root');
+    // The in-game HUD, pause overlay and settings screen are still in English (the page is lang="es").
+    this.root.lang = 'en';
     container.appendChild(this.root);
 
     // Turnstile widget slot: the online client renders the anti-bot widget here while it registers a

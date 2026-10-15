@@ -615,6 +615,8 @@ export class Game implements P2PGameHooks {
   private hideMenus(): void {
     this.menu.hide();
     this.hud.hideMenu();
+    // A Turnstile widget left from the menus (a lobby join, a sign-up) cannot be solved in a match.
+    if (this.online !== null) this.online.client.cancelChallenge();
   }
 
   private menuHost(): MenuHost {

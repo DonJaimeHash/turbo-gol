@@ -93,18 +93,21 @@ export class LobbyClient {
     return this.me?.host === true;
   }
 
-  private async call<T>(path: string, body?: unknown): Promise<T> {
-    let bearer: string;
-    try {
-      bearer = await this.bearer();
-    } catch (e) {
-      throw e instanceof AccountError ? e : new AccountError('No se pudo crear la sesión de invitado', 0, 'session');
+  /** `auth` false: no session (GET /api/lobbies is public, so browsing never registers a guest). */
+  private async call<T>(path: string, body?: unknown, auth = true): Promise<T> {
+    const headers: Record<string, string> = body === undefined ? {} : { 'content-type': 'application/json' };
+    if (auth) {
+      try {
+        headers.authorization = 'Bearer ' + (await this.bearer());
+      } catch (e) {
+        throw e instanceof AccountError ? e : new AccountError('No se pudo crear la sesión de invitado', 0, 'session');
+      }
     }
     let res: ResponseLike;
     try {
       res = await this.fetchFn(this.apiBase + path, {
         method: body === undefined ? 'GET' : 'POST',
-        headers: { authorization: 'Bearer ' + bearer, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        headers,
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch {
@@ -126,7 +129,7 @@ export class LobbyClient {
   }
 
   async list(region: RegionId | null): Promise<LobbySummary[]> {
-    const r = await this.call<{ lobbies: LobbySummary[] }>('/api/lobbies' + (region ? '?region=' + region : ''));
+    const r = await this.call<{ lobbies: LobbySummary[] }>('/api/lobbies' + (region ? '?region=' + region : ''), undefined, false);
     return r.lobbies;
   }
 

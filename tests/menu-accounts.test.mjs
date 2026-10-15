@@ -223,3 +223,25 @@ test('LobbyClient: a server close reports the reason once (kicked)', async () =>
   assert.equal(lc.inLobby, false);
   assert.match(LC.lobbyCloseText('kicked'), /sacó/);
 });
+
+test('LobbyClient: the public list needs no session (browsing never registers a guest)', async () => {
+  const srv = fakeServer({
+    '/api/lobbies': (b, h) => {
+      assert.equal(h.authorization, undefined);
+      return res(200, { lobbies: [{ id: 'L1' }] });
+    },
+  });
+  let bearers = 0;
+  const lc = new LC.LobbyClient({
+    fetchFn: srv.fetchFn,
+    webSocketFactory: (u, p) => new FakeWs(u, p),
+    bearer: async () => {
+      bearers++;
+      return 'guest-jwt';
+    },
+  });
+  assert.deepEqual(await lc.list('SA'), [{ id: 'L1' }]);
+  assert.equal(bearers, 0);
+  assert.equal(srv.calls[0].path, '/api/lobbies?region=SA');
+  assert.equal(srv.calls[0].method, 'GET');
+});

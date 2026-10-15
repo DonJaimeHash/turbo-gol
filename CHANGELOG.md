@@ -8,15 +8,23 @@ All notable changes to Turbogol are documented here. The format follows
 
 ### Fixed
 - The anti-bot check (Turnstile) had no place to render in the new menus, so a first visit could
-  not create a guest or an account while the check is on; it now shows above every menu.
-- Unexpected server errors no longer echo the exception text to the client.
+  not create a guest or an account while the check is on; it now shows above every menu, one
+  challenge at a time, and closes when the menus close into a match.
+- Browsing the public lobby list no longer registers a guest.
 - Third-party notices point to the script that applies the physics-library patches.
 
 ### Changed
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
 
-## [0.1.0] - 2026-10-15 - first public release
+### Security
+- Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
+  Permissions-Policy headers; /.well-known/security.txt points to private vulnerability reporting.
+- Unexpected server errors (API routes and match sockets) no longer echo the exception text.
+
+## [0.1.0] - 2026-10-15
+
+First public release.
 
 ### Added
 - Physics car soccer at 120 Hz in the browser: rigid-body physics in WebAssembly, three.js WebGPU

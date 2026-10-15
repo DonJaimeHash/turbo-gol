@@ -988,3 +988,92 @@ test('resetNetStatsView puts a used view back to its idle values in place', asyn
   assert.deepEqual(used, fresh);
   assert.equal(used.snapshotAgeMs, -1);
 });
+
+// ---- One anti-bot flow at a time (the Hud has a single Turnstile slot) ------------------------
+
+function turnstileClient() {
+  const container = { hidden: true };
+  const pending = [];
+  const api = fakeTurnstile((opts) => pending.push(opts)); // answered by hand
+  const h = makeClient(
+    {
+      '/api/config': () => jsonResponse(200, { turnstileSiteKey: 'sk-1', protocol: P.PROTOCOL_VERSION, version: '0.1.0', region: 'EZE' }),
+      '/api/guest': () => jsonResponse(200, GUEST),
+    },
+    { turnstileContainer: () => container, turnstileLoader: async () => api },
+  );
+  h.client.setName('Tester');
+  return { ...h, container, pending, api };
+}
+
+const ticks = async (n = 5) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+test('guest: concurrent ensureGuest calls share one challenge and one registration', async () => {
+  const { client, calls, container, pending, api } = turnstileClient();
+  const a = client.ensureGuest();
+  const b = client.ensureGuest();
+  await ticks();
+  assert.equal(api.rendered.length, 1, 'one widget while the first registration runs');
+  pending[0].callback('tok-1');
+  const [ga, gb] = await Promise.all([a, b]);
+  assert.equal(ga.session, gb.session);
+  assert.equal(calls.filter((c) => c.url === '/api/guest').length, 1, 'the caller that waited reuses the session');
+  assert.equal(api.rendered.length, 1);
+  assert.equal(container.hidden, true);
+});
+
+test('anti-bot: a sign-up challenge waits for the guest one (one widget in the slot at a time)', async () => {
+  const { client, container, pending, api } = turnstileClient();
+  const g = client.ensureGuest();
+  const t = client.antiBotToken();
+  await ticks();
+  assert.equal(api.rendered.length, 1);
+  pending[0].callback('tok-guest');
+  await g;
+  await ticks();
+  assert.equal(api.rendered.length, 2, 'the second widget renders once the first one is gone');
+  assert.deepEqual(api.removed, ['w1']);
+  assert.equal(container.hidden, false, 'the second widget keeps the slot visible');
+  pending[1].callback('tok-signup');
+  assert.equal(await t, 'tok-signup');
+  assert.equal(container.hidden, true);
+});
+
+test('cancelChallenge removes the widget on screen and drops the flows waiting for it', async () => {
+  const { client, calls, container, pending, api } = turnstileClient();
+  const g = client.ensureGuest();
+  const t = client.antiBotToken();
+  await ticks();
+  assert.equal(api.rendered.length, 1);
+  client.cancelChallenge();
+  await assert.rejects(g, (err) => err instanceof NetError && err.code === 'cancelled');
+  await assert.rejects(t, (err) => err instanceof NetError && err.code === 'cancelled');
+  assert.equal(api.rendered.length, 1, 'the waiting flow never rendered a widget');
+  assert.deepEqual(api.removed, ['w1']);
+  assert.equal(container.hidden, true);
+  assert.equal(calls.some((c) => c.url === '/api/guest'), false);
+  // Flows started afterwards run normally.
+  const again = client.ensureGuest();
+  await ticks();
+  assert.equal(api.rendered.length, 2);
+  pending[1].callback('tok-2');
+  assert.equal((await again).session, GUEST.session);
+});
+
+test('a queue cancelled while waiting for another challenge gives up without rendering', async () => {
+  const { client, calls, pending, api } = turnstileClient();
+  const signup = client.antiBotToken();
+  await ticks();
+  const q = client.queue('1v1');
+  await ticks();
+  assert.equal(api.rendered.length, 1, 'the queue waits for the sign-up widget');
+  client.cancelQueue();
+  await assert.rejects(q, (err) => err instanceof NetError && err.code === 'cancelled');
+  pending[0].callback('tok-signup');
+  assert.equal(await signup, 'tok-signup');
+  await ticks();
+  assert.equal(api.rendered.length, 1, 'the cancelled queue never rendered');
+  assert.equal(calls.some((c) => c.url === '/api/guest' || c.url === '/api/queue'), false);
+});

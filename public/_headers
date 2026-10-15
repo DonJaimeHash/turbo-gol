@@ -6,6 +6,6 @@
   X-Frame-Options: DENY
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
 
-# Vite content-hashes every file under /assets: a new build gets new names.
-/assets/*
-  Cache-Control: public, max-age=31536000, immutable
+# No long-lived Cache-Control on /assets/* although Vite content-hashes them: a request for a missing
+# asset (an old tab during a deploy) gets the SPA fallback index.html, and _headers rules match the
+# path, so that HTML would be cached as immutable. ETag revalidation (304) stays cheap.

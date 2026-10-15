@@ -348,6 +348,20 @@ function defaultNow(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
+/** Resolves once `p` settled; rejects with NetError 'cancelled' if `signal` aborts first. */
+function untilSettled(p: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (signal === undefined) return p;
+  if (signal.aborted) return Promise.reject(new NetError('cancelled', 'queue cancelled'));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => reject(new NetError('cancelled', 'queue cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void p.then(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    });
+  });
+}
+
 function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -443,6 +457,17 @@ export class NetClient {
   onError: ((code: string, message: string) => void) | null = null;
   /** A Turnstile challenge started (true) / finished (false), for the menu's status line. */
   onTurnstile: ((active: boolean) => void) | null = null;
+
+  /**
+   * Anti-bot flows run one at a time (exclusive): the Hud has a single widget slot that
+   * Turnstile.getToken hides on exit, and a caller that waited reuses the guest the one before it
+   * registered instead of solving a second challenge.
+   */
+  private antiBotTail: Promise<void> = Promise.resolve();
+  /** Bumped by cancelChallenge: flows queued before it give up instead of rendering a widget. */
+  private antiBotEpoch = 0;
+  /** Aborts the challenge on screen (cancelChallenge). */
+  private challengeAbort: AbortController | null = null;
 
   private readonly apiBase: string;
   private readonly fetchFn: FetchLike;
@@ -569,9 +594,26 @@ export class NetClient {
         return a;
       }
     }
+    const g = this.storedGuest();
+    if (g !== null) return g;
+    // A lobby join, a queue and a sign-up can ask together: one registration (and one widget) at a
+    // time; whoever waited re-checks and reuses the session registered before it.
+    return this.exclusive(signal, () => {
+      const again = this.storedGuest();
+      return again !== null ? Promise.resolve(again) : this.registerGuest(signal);
+    });
+  }
+
+  /** The stored guest session when it is still valid for the current name (and remembered as the bearer). */
+  private storedGuest(): GuestSession | null {
     const g = this.guest;
-    if (sessionValid(g) && g.name === this.name) this.lastBearer = g.session;
-    if (sessionValid(g) && g.name === this.name) return g;
+    if (!sessionValid(g) || g.name !== this.name) return null;
+    this.lastBearer = g.session;
+    return g;
+  }
+
+  /** POST /api/guest, with a Turnstile token first when the config has a sitekey. Run under exclusive(). */
+  private async registerGuest(signal?: AbortSignal): Promise<GuestSession> {
     const cfg = await this.config();
     const req: GuestRequest = { name: this.name };
     if (cfg.turnstileSiteKey !== null) req.turnstileToken = await this.challenge(cfg.turnstileSiteKey, signal);
@@ -597,21 +639,62 @@ export class NetClient {
    * registration (AccountClient) goes through the same anti-bot check as guests.
    */
   async antiBotToken(signal?: AbortSignal): Promise<string | null> {
-    const cfg = await this.config();
-    return cfg.turnstileSiteKey === null ? null : this.challenge(cfg.turnstileSiteKey, signal);
+    const siteKey = (await this.config()).turnstileSiteKey;
+    return siteKey === null ? null : this.exclusive(signal, () => this.challenge(siteKey, signal));
   }
 
-  /** One Turnstile challenge in the Hud's container; onTurnstile brackets it for the status line. */
+  /**
+   * Ends the anti-bot challenge on screen and drops the flows waiting for the widget (the menus
+   * closed into a match: nobody is there to solve it). They reject with NetError 'cancelled'.
+   */
+  cancelChallenge(): void {
+    this.antiBotEpoch++;
+    if (this.challengeAbort !== null) this.challengeAbort.abort();
+  }
+
+  /**
+   * Run `fn` after every anti-bot flow queued before it settled. `signal` (or a cancelChallenge
+   * meanwhile) gives up the wait with NetError 'cancelled'; the next flow still waits for the ones
+   * before this one.
+   */
+  private async exclusive<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+    const prev = this.antiBotTail;
+    let release!: () => void;
+    this.antiBotTail = new Promise<void>((r) => (release = r));
+    const epoch = this.antiBotEpoch;
+    let running = false;
+    try {
+      await untilSettled(prev, signal);
+      if (epoch !== this.antiBotEpoch) throw new NetError('cancelled', 'challenge cancelled');
+      running = true;
+      return await fn();
+    } finally {
+      if (running) release();
+      else void prev.then(release);
+    }
+  }
+
+  /** One Turnstile challenge in the Hud's container; onTurnstile brackets it for the status line. Run under exclusive(). */
   private async challenge(siteKey: string, signal?: AbortSignal): Promise<string> {
     const container = this.turnstileContainer();
     if (container === null) throw new NetError('turnstile', 'no element to render the Turnstile widget into');
+    const ctrl = new AbortController();
+    const onAbort = (): void => ctrl.abort();
+    if (signal !== undefined) {
+      if (signal.aborted) ctrl.abort();
+      else signal.addEventListener('abort', onAbort);
+    }
+    this.challengeAbort = ctrl;
     if (this.onTurnstile) this.onTurnstile(true);
     try {
-      return await turnstileToken(siteKey, container, { load: this.turnstileLoader, signal });
+      return await turnstileToken(siteKey, container, { load: this.turnstileLoader, signal: ctrl.signal });
     } catch (err) {
       if (signal !== undefined && signal.aborted) throw new NetError('cancelled', 'queue cancelled');
+      if (ctrl.signal.aborted) throw new NetError('cancelled', 'challenge cancelled');
       throw new NetError('turnstile', describe(err));
     } finally {
+      if (signal !== undefined) signal.removeEventListener('abort', onAbort);
+      if (this.challengeAbort === ctrl) this.challengeAbort = null;
       if (this.onTurnstile) this.onTurnstile(false);
     }
   }
