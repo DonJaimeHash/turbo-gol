@@ -114,7 +114,7 @@ import {
   type CarControls,
 } from '../sim/types';
 import { Match, type MatchEvent } from './Match';
-import { GAME_NAME, STORAGE_PREFIX } from '../brand';
+import { STORAGE_PREFIX } from '../brand';
 import { OnlineSession } from './OnlineSession';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
 import {
@@ -257,7 +257,6 @@ const PAD_SOUND_DIST = 320;
  */
 const UNLOCK_PAUSE_WINDOW = 0.12;
 /** The menus' title when no result is pending. */
-const MENU_TITLE = GAME_NAME.toUpperCase();
 const POINTER_LOCK_HINT = 'Click to capture the mouse (mouse look)';
 /**
  * Online: the wrapper's bump counter is not part of the state blob, so a bump inside a replayed
@@ -453,8 +452,10 @@ export class Game implements P2PGameHooks {
   /** The menu search in progress (banner): its kind, playlists and start time. */
   private searchReq: SearchRequest | null = null;
   private searchSince = 0;
-  private menuTitle = MENU_TITLE;
-  private menuSubtitle: string | undefined;
+  /** The last match's result, shown as a toast when the menu comes back (null = none). */
+  private lastResult: { winner: 0 | 1 | null; blue: number; red: number } | null = null;
+  /** A message for that toast instead of the score (a disconnect reason...), or alone without a result. */
+  private menuNotice: string | undefined;
   private fpsFrames = 0;
   private fpsWindowStart = 0;
   private gestureListening = false;
@@ -660,8 +661,8 @@ export class Game implements P2PGameHooks {
         if (game.session !== null && game.session.busy) game.session.cancel();
         game.setDifficulty(difficulty);
         game.setMode(mode);
-        game.menuTitle = MENU_TITLE;
-        game.menuSubtitle = undefined;
+        game.lastResult = null;
+        game.menuNotice = undefined;
         game.startMatch();
       },
       startTraining: (id) => {
@@ -1007,8 +1008,7 @@ export class Game implements P2PGameHooks {
       case 'ended': {
         const title = `${TEAM_NAME[e.winner]} WINS`;
         hud.showBanner(title, `${blue} – ${red}`, 0, e.winner);
-        this.menuTitle = title;
-        this.menuSubtitle = `${blue} – ${red}  ·  play again?`;
+        this.lastResult = { winner: e.winner, blue, red };
         this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
         this.input.exitPointerLock();
         break;
@@ -1035,7 +1035,7 @@ export class Game implements P2PGameHooks {
   p2pHandover(mode: GameMode, assignment: ServerAssignment | null, notice: string): void {
     const online = this.online;
     if (online === null || online.state !== 'idle') {
-      this.menuSubtitle = notice;
+      this.menuNotice = notice;
       return;
     }
     this.setSession(online);
@@ -1123,8 +1123,7 @@ export class Game implements P2PGameHooks {
         const team: 0 | 1 | null = w === 0 || w === 1 ? w : null;
         const title = team === null ? 'DRAW' : `${TEAM_NAME[team]} WINS`;
         hud.showBanner(title, `${e.blue} – ${e.red}`, 0, team);
-        this.menuTitle = title;
-        this.menuSubtitle = `${e.blue} – ${e.red}  ·  play again?`;
+        this.lastResult = { winner: team, blue: e.blue, red: e.red };
         this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
         this.input.exitPointerLock();
         break;
@@ -1151,8 +1150,8 @@ export class Game implements P2PGameHooks {
 
   /** The connection is gone for good: back to the menu with the reason as subtitle. */
   onSessionDisconnected(message: string): void {
-    this.menuTitle = MENU_TITLE;
-    this.menuSubtitle = message;
+    this.lastResult = null;
+    this.menuNotice = message;
     if (!this.menuShown) this.showMenu();
     else if (this.session !== null) this.session.leave();
   }
@@ -1211,8 +1210,8 @@ export class Game implements P2PGameHooks {
   stopTraining(): void {
     if (this.training === null) return;
     this.endTraining();
-    this.menuTitle = MENU_TITLE;
-    this.menuSubtitle = undefined;
+    this.lastResult = null;
+    this.menuNotice = undefined;
     this.showMenu();
   }
 
@@ -1730,8 +1729,8 @@ export class Game implements P2PGameHooks {
       this.resetToKickoff();
     }
     this.goCaptionUntil = -1;
-    this.menuTitle = MENU_TITLE;
-    this.menuSubtitle = undefined;
+    this.lastResult = null;
+    this.menuNotice = undefined;
     this.showMenu();
   }
 
@@ -2154,13 +2153,14 @@ export class Game implements P2PGameHooks {
     this.hud.hideBanner(); // the "X WINS" banner is sticky and would bleed through the menu backdrop
     this.hud.showCountdown(null);
     // The last match's result (score / disconnect reason) as a toast over the menus.
-    if (this.menuTitle !== MENU_TITLE) {
-      const who = this.menuTitle === 'BLUE WINS' ? 'Ganó Azul' : this.menuTitle === 'RED WINS' ? 'Ganó Rojo' : this.menuTitle === 'DRAW' ? 'Empate' : this.menuTitle;
-      this.menu.toast(`${who}  ·  ${(this.menuSubtitle ?? '').replace(/\s*·\s*play again\?$/, '')}`, 'info');
+    const result = this.lastResult;
+    if (result !== null) {
+      const who = result.winner === 0 ? 'Ganó Azul' : result.winner === 1 ? 'Ganó Rojo' : 'Empate';
+      this.menu.toast(`${who}  ·  ${this.menuNotice ?? `${result.blue} – ${result.red}`}`, 'info');
     }
-    else if (this.menuSubtitle !== undefined && this.menuSubtitle.length > 0) this.menu.toast(this.menuSubtitle, 'info');
-    this.menuTitle = MENU_TITLE;
-    this.menuSubtitle = undefined;
+    else if (this.menuNotice !== undefined && this.menuNotice.length > 0) this.menu.toast(this.menuNotice, 'info');
+    this.lastResult = null;
+    this.menuNotice = undefined;
     this.hud.hideMenu();
     this.menu.show();
     // A ranked match just ended: show its rating change once AccountsDO has it.
@@ -2202,8 +2202,7 @@ export class Game implements P2PGameHooks {
       case 'ended': {
         const s = this.match.score;
         hud.showBanner(`${TEAM_NAME[e.winner]} WINS`, `${s.blue} – ${s.red}`, 0, e.winner);
-        this.menuTitle = `${TEAM_NAME[e.winner]} WINS`;
-        this.menuSubtitle = `${s.blue} – ${s.red}  ·  play again?`;
+        this.lastResult = { winner: e.winner, blue: s.blue, red: s.red };
         this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
         this.input.exitPointerLock();
         break;
