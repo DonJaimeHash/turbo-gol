@@ -51,6 +51,11 @@
  * camera. Movement is only read while the pointer is locked (`requestPointerLock(canvas)`).
  * With `controls.mouseSteering` the mouse feeds steer / yaw (X) and pitch (Y) instead, through a
  * similar quickly-decaying stick, and `look` stays at 0.
+ *
+ * Touch: an optional `TouchSource` (`setTouchSource`, src/input/touchState.ts) adds one 0..1
+ * value per action to the keyboard + mouse column each sample, so on-screen controls drive the
+ * same actions, modifiers and edges as the keyboard (their edges never reach `padActions`).
+ * Without a source the output is exactly what it is without touch support.
  */
 import type { CarControls } from '../sim/types';
 import { TICK_DT, emptyControls } from '../sim/types';
@@ -110,6 +115,25 @@ export interface InputOptions {
   onChange?: () => void;
   /** Defaults to the global `document` when there is one. */
   document?: DocumentLike | null;
+}
+
+/**
+ * On-screen touch controls (TouchState in src/input/touchState.ts). `read` is called once per
+ * `sample()`, before the actions are resolved, and must write every index of `out` (one value
+ * in 0..1 per ACTION_IDS index, 0 for the actions it does not drive) without allocating. Input
+ * clamps each value to 0..1 (NaN = 0), so a faulty source can add at most one full press per
+ * action and never cancels the keyboard or the pad. The values are summed into the keyboard +
+ * mouse column, so they count as keyboard input for the edges (`actions`, never
+ * `padActions`); the camera look actions ignore them.
+ */
+export interface TouchSource {
+  read(out: Float64Array): void;
+  /**
+   * Optional: forget every finger. Called with Input's own release (window blur, page hidden,
+   * `dispose`), so a finger down when focus is lost does not stay pressed. The overlay still
+   * releases on its own pointer events.
+   */
+  releaseAll?(): void;
 }
 
 /** What `startRebind` is currently waiting for. */
@@ -387,6 +411,9 @@ export class Input {
   private readonly pv = new Float64Array(N);
   private readonly prevKd = new Uint8Array(N);
   private readonly prevPv = new Uint8Array(N);
+  /** Touch values of this sample, one per action (all 0 without a touch source). */
+  private readonly tv = new Float64Array(N);
+  private touch: TouchSource | null = null;
 
   private lookVX = 0;
   private lookVY = 0;
@@ -670,6 +697,14 @@ export class Input {
   // ---- Sampling -----------------------------------------------------------------------------
 
   /**
+   * Plug in the on-screen touch controls, or remove them with null. Every `sample()` reads the
+   * source once and sums it into the keyboard + mouse column (see TouchSource).
+   */
+  setTouchSource(src: TouchSource | null): void {
+    this.touch = src;
+  }
+
+  /**
    * Poll the gamepad once for this animation frame; every `sample()` until the next
    * `beginFrame()` reuses the snapshot (navigator.getGamepads() allocates a fresh array / pad
    * objects per call, and pad state only changes once per frame). Call at the top of the frame,
@@ -683,8 +718,8 @@ export class Input {
   /**
    * Sample the current control state into `out`, and update `actions` / `padActions` edges,
    * `held`, `look` and `lookSource`. Call once per sim tick. Analog values are keyboard + mouse +
-   * gamepad, clamped to ±1; booleans are OR-ed. While a rebind capture is pending every driving
-   * output is zero and no one-shot action fires. No allocations.
+   * touch + gamepad, clamped to ±1; booleans are OR-ed. While a rebind capture is pending every
+   * driving output is zero and no one-shot action fires. No allocations.
    */
   sample(out: CarControls): void {
     const gp = this.framePadValid ? this.framePad : this.pollGamepad();
@@ -720,6 +755,11 @@ export class Input {
     const mouseBits = (this.mouseHeld | this.mouseTapped) & ~this.mouseMask;
     const wheelTaps = this.wheelTaps;
     const kLook = this.kLook;
+    // Touch (setTouchSource): read once, joins the keyboard + mouse column below.
+    const tv = this.tv;
+    const touch = this.touch;
+    if (touch !== null) touch.read(tv);
+    else tv.fill(0);
     for (let i = 0; i < N; i++) {
       const action = ACTION_IDS[i];
       let d = 0;
@@ -749,7 +789,8 @@ export class Input {
         kd[i] = d;
         km[i] = m; // look: mouse travel goes through the virtual stick below
       } else {
-        kd[i] = d + m;
+        const t = tv[i]; // touch counts as keyboard (edges bit 1), clamped to 0..1 (NaN = 0)
+        kd[i] = d + m + (t > 0 ? (t < 1 ? t : 1) : 0);
         km[i] = 0;
       }
       let p = 0;
@@ -1148,8 +1189,9 @@ export class Input {
     cap.resolve(b);
   }
 
-  /** Forget every held key / button / mouse delta (focus lost, hidden, disposed). */
+  /** Forget every held key / button / mouse delta / touch (focus lost, hidden, disposed). */
   private releaseAll(): void {
+    this.touch?.releaseAll?.();
     this.keys.clear();
     this.tapped.clear();
     this.mouseHeld = 0;
