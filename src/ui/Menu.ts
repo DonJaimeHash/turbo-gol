@@ -22,7 +22,7 @@ import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
 import type { Difficulty } from '../render/Hud';
-import { LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
+import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 
 export type SearchKind = 'casual' | 'ranked';
 
@@ -176,7 +176,8 @@ export class Menu {
     this.hints = h('div.mn-hints');
     // AGPL-3.0 section 13: a network game offers its source to the players.
     const source = h('a.mn-source', { href: SOURCE_URL, target: '_blank', rel: 'noopener', title: 'Código fuente (' + LICENSE_NAME + ')' }, 'Código fuente');
-    const bottom = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, host.info, ' · ', source, ' · ', h('a.mn-source', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener' }, 'Licencias')));
+    const discord = h('a.mn-source', { href: DISCORD_URL, target: '_blank', rel: 'noopener', title: 'Comunidad en Discord (en inglés)' }, 'Discord');
+    const bottom = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, host.info, ' · ', source, ' · ', h('a.mn-source', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener' }, 'Licencias'), ' · ', discord));
     this.toasts = h('div.mn-toasts');
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
     this.root = h('div.mn', { hidden: true }, top, this.stage, bottom, this.toasts, this.modalLayer);

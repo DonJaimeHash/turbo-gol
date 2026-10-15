@@ -18,6 +18,8 @@ and what we expect from a pull request. By participating you agree to follow our
 - **Propose a feature:** open a *Feature request* or start a Discussion before writing a big change,
   so we can agree on the design first.
 - **Translate:** the UI is in Spanish today; help with an English (or any) translation is welcome.
+- **Chat with us:** join the [Turbogol Discord](https://discord.gg/sPyf787aHP) to ask questions, find
+  people to playtest with and talk about ideas. Bugs and feature requests still go through Issues.
 
 ## Development setup
 

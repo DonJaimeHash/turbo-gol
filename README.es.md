@@ -5,7 +5,7 @@ volás con el boost y metés goles en 1v1, 2v2 o 3v3, contra bots o contra otras
 lo que ves y escuchás (la cancha, los autos, la pelota, el estadio, el cielo, los sonidos) se genera
 con código: no se descarga ningún asset.
 
-**Jugalo ya: [turbo-gol.com](https://turbo-gol.com)**
+**Jugalo ya: [turbo-gol.com](https://turbo-gol.com)** · Comunidad: [Discord](https://discord.gg/sPyf787aHP) (en inglés)
 
 [Read in English](README.md) · [Cómo contribuir](CONTRIBUTING.md) · [Arquitectura](ARCHITECTURE.md) · Licencia: [AGPL-3.0](LICENSE)
 

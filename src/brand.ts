@@ -9,4 +9,6 @@ export const STORAGE_PREFIX = 'turbogol.';
 /** Where the official game is played. */
 export const SITE_URL = 'https://turbo-gol.com';
 export const SOURCE_URL = 'https://github.com/DonJaimeHash/turbo-gol';
+/** Permanent invite to the official community server (English), shown next to SOURCE_URL. */
+export const DISCORD_URL = 'https://discord.gg/sPyf787aHP';
 export const LICENSE_NAME = 'AGPL-3.0';

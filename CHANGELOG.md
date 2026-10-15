@@ -6,6 +6,10 @@ All notable changes to Turbogol are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
+  new-issue page.
+
 ### Fixed
 - The anti-bot check (Turnstile) had no place to render in the new menus, so a first visit could
   not create a guest or an account while the check is on; it now shows above every menu, one

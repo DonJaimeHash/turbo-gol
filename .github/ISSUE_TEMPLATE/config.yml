@@ -3,6 +3,9 @@ contact_links:
   - name: Questions and ideas
     url: https://github.com/DonJaimeHash/turbo-gol/discussions
     about: Ask questions, share clips and discuss ideas before opening an issue.
+  - name: Chat and help on Discord
+    url: https://discord.gg/sPyf787aHP
+    about: Chat with players and contributors. Bugs and feature requests still go through the issue forms.
   - name: Report a security vulnerability
     url: https://github.com/DonJaimeHash/turbo-gol/security/advisories/new
     about: Please report security problems privately.
