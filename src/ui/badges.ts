@@ -1,13 +1,14 @@
 /**
  * Rank badges and labels (CSS-drawn, no image assets): a shield in the tier family's colours with
- * the division pips (I / II / III), plus the "Sin clasificar" badge during placement. Colours live
+ * the division pips (I / II / III), plus the unranked badge during placement. Colours live
  * in menu.css (`.mn-badge-<family>`).
  */
 import { TIERS, tierOf } from '../net/rating';
 import type { Tier } from '../net/rating';
-import { PLAYLIST_NAMES } from '../net/account';
-import type { Playlist, PlaylistRating } from '../net/account';
+import type { PlaylistRating } from '../net/account';
 import { h } from './dom';
+import { playlistName, tierName } from './names';
+import { t } from '../i18n';
 
 export function tierById(id: string | null): Tier | null {
   if (id === null) return null;
@@ -26,7 +27,8 @@ export function rankBadge(tier: Tier | null, size = 56): HTMLElement {
   const d = tier ? division(tier) : 0;
   const pips = h('div.mn-badge-pips');
   for (let i = 0; i < d; i++) pips.appendChild(h('span'));
-  const b = h(`div.mn-badge.mn-badge-${fam}`, { title: tier ? tier.name : 'Sin clasificar', 'aria-label': tier ? tier.name : 'Sin clasificar' }, h('div.mn-badge-gem'), pips);
+  const name = tier ? tierName(tier) : t('badge.unranked');
+  const b = h(`div.mn-badge.mn-badge-${fam}`, { title: name, 'aria-label': name }, h('div.mn-badge-gem'), pips);
   b.style.setProperty('--badge', `${size}px`);
   return b;
 }
@@ -43,22 +45,13 @@ export function ratingCard(r: PlaylistRating, extra?: Node | null): HTMLElement 
     h(
       'div.mn-rating-text',
       null,
-      h('div.mn-rating-playlist', null, `${PLAYLIST_NAMES[r.playlist]} · ${r.playlist}`),
-      h('div.mn-rating-tier', null, placed && tier ? tier.name : 'Sin clasificar'),
-      h('div.mn-rating-sub', null, placed ? `${r.mmr} MMR` : `Partidas de clasificación: ${r.games} / ${r.games + r.placementLeft}`),
-      h('div.mn-rating-sub', null, games > 0 ? `${r.wins} G · ${r.losses} P` : 'Sin partidas'),
+      h('div.mn-rating-playlist', null, `${playlistName(r.playlist)} · ${r.playlist}`),
+      h('div.mn-rating-tier', null, placed && tier ? tierName(tier) : t('badge.unranked')),
+      h('div.mn-rating-sub', null, placed ? t('badge.mmr', { mmr: r.mmr }) : t('badge.placement', { played: r.games, total: r.games + r.placementLeft })),
+      h('div.mn-rating-sub', null, games > 0 ? t('badge.record', { wins: r.wins, losses: r.losses }) : t('badge.noGames')),
     ),
     extra ?? null,
   );
-}
-
-/** "Oro II" or "Sin clasificar" for a tier id. */
-export function tierName(id: string | null): string {
-  return tierById(id)?.name ?? 'Sin clasificar';
-}
-
-export function playlistLabel(p: Playlist): string {
-  return `${PLAYLIST_NAMES[p]} (${p})`;
 }
 
 export { tierOf };

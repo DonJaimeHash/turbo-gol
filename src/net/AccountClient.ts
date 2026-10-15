@@ -16,6 +16,7 @@ import { clientPasswordKey, passwordProblem, usernameProblem } from './account';
 import type { AccountSession, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { STORAGE_PREFIX } from '../brand';
+import { t } from '../i18n';
 
 export const ACCOUNT_HINT_KEY = STORAGE_PREFIX + 'account';
 /** Refresh when less than this is left on the Bearer session. */
@@ -47,19 +48,19 @@ export function parseAuthHash(hash: string): AuthHashResult | null {
   return null;
 }
 
-/** Spanish text for an OAuth error code coming back in the hash. */
+/** The player's text for an OAuth error code coming back in the hash. */
 export function oauthErrorText(code: string): string {
   switch (code) {
     case 'cancelled':
-      return 'Cancelaste el inicio de sesión';
+      return t('auth.oauthCancelled');
     case 'already_linked':
-      return 'Esa cuenta ya está vinculada a otro usuario';
+      return t('auth.oauthAlreadyLinked');
     case 'provider_disabled':
-      return 'Ese método de inicio de sesión no está habilitado';
+      return t('auth.oauthDisabled');
     case 'bad_state':
-      return 'El inicio de sesión expiró, probá de nuevo';
+      return t('auth.oauthExpired');
     default:
-      return 'No se pudo iniciar sesión, probá de nuevo';
+      return t('auth.oauthFailed');
   }
 }
 
@@ -145,7 +146,7 @@ export class AccountClient {
     try {
       return await this.fetchFn(this.apiBase + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
     } catch {
-      throw new AccountError('No hay conexión con el servidor', 0, 'network');
+      throw new AccountError(t('auth.network'), 0, 'network');
     }
   }
 
@@ -228,7 +229,7 @@ export class AccountClient {
     try {
       token = await this.antiBot();
     } catch {
-      throw new AccountError('Verificación anti-bots falló, reintentá', 403, 'turnstile_failed');
+      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
     }
     const body: Record<string, string> = { username, password: await clientPasswordKey(username, password) };
     if (token !== null) body.turnstileToken = token;
@@ -239,7 +240,7 @@ export class AccountClient {
   }
 
   async login(username: string, password: string): Promise<AccountSession> {
-    if (username.trim().length === 0 || password.length === 0) throw new AccountError('Completá usuario y contraseña', 400, 'empty');
+    if (username.trim().length === 0 || password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
     const res = await this.call('/api/auth/login', { username: username.trim(), password: await clientPasswordKey(username.trim(), password) });
     const s = await this.jsonOrFail<AccountSession>(res);
     return this.adopt(s);
@@ -273,7 +274,7 @@ export class AccountClient {
 
   private async bearer(): Promise<string> {
     const s = await this.sessionForQueue();
-    if (s === null) throw new AccountError('Iniciá sesión primero', 401, 'unauthorized');
+    if (s === null) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
     return s.session;
   }
 

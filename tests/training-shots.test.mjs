@@ -62,14 +62,14 @@ test('catalogue: 9 packs = 3 categories x 3 difficulties, ids, 6-8 named shots, 
   }
   assert.equal(ids.size, 9);
   assert.equal(P.FREEPLAY_ID, 'freeplay');
-  assert.equal(P.FREEPLAY_NAME, 'Práctica libre');
+  assert.equal(P.FREEPLAY_NAME, 'Free play');
   assert.deepEqual([...P.TRAINING_CATEGORIES], ['shooting', 'saving', 'aerial']);
   assert.deepEqual([...P.TRAINING_DIFFICULTIES], ['easy', 'medium', 'hard']);
-  assert.deepEqual(P.CATEGORY_LABELS, { shooting: 'Definición', saving: 'Atajadas', aerial: 'Aéreos' });
-  assert.deepEqual(P.DIFFICULTY_LABELS, { easy: 'Principiante', medium: 'Intermedio', hard: 'Experto' });
-  assert.equal(P.packById('shooting-easy').name, 'Definición · Principiante');
-  assert.equal(P.packById('saving-hard').name, 'Atajadas · Experto');
-  assert.equal(P.packById('aerial-medium').name, 'Aéreos · Intermedio');
+  assert.deepEqual(P.CATEGORY_LABELS, { shooting: 'Shooting', saving: 'Saving', aerial: 'Aerials' });
+  assert.deepEqual(P.DIFFICULTY_LABELS, { easy: 'Beginner', medium: 'Intermediate', hard: 'Expert' });
+  assert.equal(P.packById('shooting-easy').name, 'Shooting · Beginner');
+  assert.equal(P.packById('saving-hard').name, 'Saving · Expert');
+  assert.equal(P.packById('aerial-medium').name, 'Aerials · Intermediate');
   // The free-play car starts on the blue keeper kickoff spot.
   const keeper = K.KICKOFF_SPAWNS[K.KICKOFF_SPAWNS.length - 1];
   assert.deepEqual([P.FREEPLAY_CAR_SPAWN.pos[0], P.FREEPLAY_CAR_SPAWN.pos[1]], [keeper[0], keeper[1]]);

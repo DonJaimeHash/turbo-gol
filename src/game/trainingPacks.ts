@@ -1,8 +1,11 @@
 /**
- * Training content: the free-play id and the nine shot packs (Definición / Atajadas / Aéreos x
- * Principiante / Intermedio / Experto; ids `shooting` / `saving` / `aerial` x `easy` / `medium` /
+ * Training content: the free-play id and the nine shot packs (Shooting / Saving / Aerials x
+ * Beginner / Intermediate / Expert; ids `shooting` / `saving` / `aerial` x `easy` / `medium` /
  * `hard`). Pure data + tiny pure helpers, no DOM, no three.js: node-importable (the shot validity
  * test runs every shot through the real wasm, tests/training-shots.test.mjs).
+ *
+ * Names (free play, categories, difficulties, packs, shots) are translated once at module load
+ * (src/i18n.ts, 'training.*' keys); ids and the records keyed by them never change.
  *
  * Every shot is our own design, placed on our field (constants.ts: goal lines at y = +-5600, side
  * walls at x = +-4400, 2000 x 720 goals). A shot is the car pose (position on the floor, heading,
@@ -25,6 +28,7 @@
  * ball rolls toward the red goal (it would get there by itself).
  */
 import { BALL, GRAVITY_Z, KICKOFF_SPAWNS, CAR_STANDARD } from '../sim/constants';
+import { t } from '../i18n';
 
 export type TrainingCategory = 'shooting' | 'saving' | 'aerial';
 export type TrainingDifficulty = 'easy' | 'medium' | 'hard';
@@ -52,7 +56,7 @@ export interface TrainingBallState {
 }
 
 export interface TrainingShot {
-  /** Short label for the HUD ("Arco libre", "Rodando al palo izquierdo"...). */
+  /** Short label for the HUD ("Open goal", "Rolling to the left post"...), in the current language. */
   readonly name: string;
   readonly car: TrainingCarPose;
   readonly ball: TrainingBallState;
@@ -61,6 +65,7 @@ export interface TrainingShot {
 export interface TrainingPack {
   /** `${category}-${difficulty}`, e.g. 'shooting-easy'. Also the records key. */
   id: string;
+  /** Display name in the current language ('Shooting · Beginner'). */
   name: string;
   category: TrainingCategory;
   difficulty: TrainingDifficulty;
@@ -72,12 +77,12 @@ export interface TrainingPack {
 
 /** `Game.startTraining(FREEPLAY_ID)`: only the player's car and the ball, no clock, unlimited boost. */
 export const FREEPLAY_ID = 'freeplay';
-export const FREEPLAY_NAME = 'Práctica libre';
+export const FREEPLAY_NAME = t('training.freePlay');
 
 export const TRAINING_CATEGORIES: readonly TrainingCategory[] = ['shooting', 'saving', 'aerial'];
 export const TRAINING_DIFFICULTIES: readonly TrainingDifficulty[] = ['easy', 'medium', 'hard'];
-export const CATEGORY_LABELS: Readonly<Record<TrainingCategory, string>> = { shooting: 'Definición', saving: 'Atajadas', aerial: 'Aéreos' };
-export const DIFFICULTY_LABELS: Readonly<Record<TrainingDifficulty, string>> = { easy: 'Principiante', medium: 'Intermedio', hard: 'Experto' };
+export const CATEGORY_LABELS: Readonly<Record<TrainingCategory, string>> = { shooting: t('training.catShooting'), saving: t('training.catSaving'), aerial: t('training.catAerial') };
+export const DIFFICULTY_LABELS: Readonly<Record<TrainingDifficulty, string>> = { easy: t('training.levelEasy'), medium: t('training.levelMedium'), hard: t('training.levelHard') };
 
 /**
  * When the timer runs out with the ball still in the air (or, in a saving shot, still heading for
@@ -163,99 +168,100 @@ function shot(name: string, c: TrainingCarPose, b: TrainingBallState): TrainingS
 // ---- Definición (shooting): score in the red goal (+y) ---------------------------------------
 
 const SHOOTING_EASY: readonly TrainingShot[] = [
-  shot('Arco libre', car(0, 440, 90, 100), still(0, 2410)),
-  shot('Carril izquierdo', carFacing(-1610, 770, -1180, 2950, 100), still(-1180, 2950)),
-  shot('Carril derecho', carFacing(1610, 770, 1180, 2950, 100), still(1180, 2950)),
-  shot('Pelota que pica', car(0, 1310, 90, 100), still(0, 3280, 600)),
-  shot('Pelota que vuelve', carFacing(-750, 1310, 0, 2840, 100), rolling(0, 3940, 0, -490)),
-  shot('Centro lento', car(-640, 1420, 80, 100), rolling(-2580, 3500, 480, 0)),
-  shot('Ángulo cerrado', carFacing(-2470, 1750, -2040, 3830, 100), still(-2040, 3830)),
-  shot('Desde mitad de cancha', car(0, -1750, 90, 100), still(0, 330)),
+  shot(t('training.shotOpenGoal'), car(0, 440, 90, 100), still(0, 2410)),
+  shot(t('training.shotLeftLane'), carFacing(-1610, 770, -1180, 2950, 100), still(-1180, 2950)),
+  shot(t('training.shotRightLane'), carFacing(1610, 770, 1180, 2950, 100), still(1180, 2950)),
+  shot(t('training.shotBouncingBall'), car(0, 1310, 90, 100), still(0, 3280, 600)),
+  shot(t('training.shotComingBack'), carFacing(-750, 1310, 0, 2840, 100), rolling(0, 3940, 0, -490)),
+  shot(t('training.shotSlowCross'), car(-640, 1420, 80, 100), rolling(-2580, 3500, 480, 0)),
+  shot(t('training.shotTightAngle'), carFacing(-2470, 1750, -2040, 3830, 100), still(-2040, 3830)),
+  shot(t('training.shotFromMidfield'), car(0, -1750, 90, 100), still(0, 330)),
 ];
 
 const SHOOTING_MEDIUM: readonly TrainingShot[] = [
-  shot('Centro desde la izquierda', car(0, 1640, 90, 66), rolling(-3440, 3610, 970, 0)),
-  shot('Centro desde la derecha', car(0, 1970, 95, 66), rolling(3440, 3940, -970, -110)),
-  shot('Globito', carFacing(970, 1200, 0, 3170, 66), flying(0, 3170, BALL.restZ, 0, 0, 900)),
-  shot('Pase de vuelta', car(970, 1420, 110, 66), rolling(540, 4590, -160, -870)),
-  shot('Pase picado', carFacing(1930, 660, 1070, 2840, 66), flying(1500, 2840, 800, -380, 0, 0)),
-  shot('Media vuelta', car(0, 3500, -90, 66), still(0, 1750)),
-  shot('Caída de la pared', car(2360, 550, 70, 66), still(4000, 3060, 700)),
+  shot(t('training.shotCrossLeft'), car(0, 1640, 90, 66), rolling(-3440, 3610, 970, 0)),
+  shot(t('training.shotCrossRight'), car(0, 1970, 95, 66), rolling(3440, 3940, -970, -110)),
+  shot(t('training.shotPopUp'), carFacing(970, 1200, 0, 3170, 66), flying(0, 3170, BALL.restZ, 0, 0, 900)),
+  shot(t('training.shotReturnPass'), car(970, 1420, 110, 66), rolling(540, 4590, -160, -870)),
+  shot(t('training.shotBouncePass'), carFacing(1930, 660, 1070, 2840, 66), flying(1500, 2840, 800, -380, 0, 0)),
+  shot(t('training.shotTurnaround'), car(0, 3500, -90, 66), still(0, 1750)),
+  shot(t('training.shotOffTheWall'), car(2360, 550, 70, 66), still(4000, 3060, 700)),
 ];
 
 const SHOOTING_HARD: readonly TrainingShot[] = [
-  shot('Centro rápido', car(320, 1750, 90, 50), flying(-3540, 3940, BALL.restZ, 1400, 0, 250)),
-  shot('Pique alto', car(210, 440, 90, 50), flying(-750, 2840, 1300, 160, 0, 0)),
-  shot('Caída del fondo', carFacing(-210, 2410, 1720, 5030, 50), still(1720, 5030, 1400)),
-  shot('Pelota que se escapa', car(-1720, 2630, 20, 50), rolling(1930, 4700, -270, -1310)),
-  shot('Globo desde la banda', car(-640, 1310, 60, 50), flying(-3220, 2190, 300, 970, 0, 900)),
-  shot('Salida en movimiento', car(0, -550, 90, 50, [0, 1310, 0]), rolling(-1610, 3060, 750, 0)),
+  shot(t('training.shotFastCross'), car(320, 1750, 90, 50), flying(-3540, 3940, BALL.restZ, 1400, 0, 250)),
+  shot(t('training.shotHighBounce'), car(210, 440, 90, 50), flying(-750, 2840, 1300, 160, 0, 0)),
+  shot(t('training.shotBackDrop'), carFacing(-210, 2410, 1720, 5030, 50), still(1720, 5030, 1400)),
+  shot(t('training.shotRunawayBall'), car(-1720, 2630, 20, 50), rolling(1930, 4700, -270, -1310)),
+  shot(t('training.shotLobFromWing'), car(-640, 1310, 60, 50), flying(-3220, 2190, 300, 970, 0, 900)),
+  shot(t('training.shotMovingStart'), car(0, -550, 90, 50, [0, 1310, 0]), rolling(-1610, 3060, 750, 0)),
 ];
 
 // ---- Atajadas (saving): keep the ball out of the blue goal (-y) ----------------------------------
 
 const SAVING_EASY: readonly TrainingShot[] = [
-  shot('Rodando al medio', car(-700, -5470, 90, 100), rolling(0, -2620, 0, -1420)),
-  shot('Rodando al palo izquierdo', car(590, -5470, 90, 100), rollToward(970, -2840, -480, -6020, 1420)),
-  shot('Rodando al palo derecho', car(-590, -5470, 90, 100), rollToward(-970, -2840, 480, -6020, 1420)),
-  shot('Picando', car(590, -5470, 90, 100), flying(0, -2840, 700, 0, -1200, 0)),
-  shot('Globo suave', car(540, -5470, 90, 100), lob([0, -2190, 150], [-270, -6020, 280], 2.6)),
-  shot('Rodando desde la banda', car(640, -5470, 90, 100), rollToward(-2580, -3500, 270, -6020, 1530)),
-  shot('Remate bajo', car(-590, -5470, 90, 100), rollToward(1720, -2410, -320, -6020, 1640)),
-  shot('Saltito por el medio', car(640, -5470, 90, 100), flying(0, -1750, BALL.restZ, 0, -1310, 600)),
+  shot(t('training.shotRollingMiddle'), car(-700, -5470, 90, 100), rolling(0, -2620, 0, -1420)),
+  shot(t('training.shotRollingLeftPost'), car(590, -5470, 90, 100), rollToward(970, -2840, -480, -6020, 1420)),
+  shot(t('training.shotRollingRightPost'), car(-590, -5470, 90, 100), rollToward(-970, -2840, 480, -6020, 1420)),
+  shot(t('training.shotBouncingIn'), car(590, -5470, 90, 100), flying(0, -2840, 700, 0, -1200, 0)),
+  shot(t('training.shotSoftLob'), car(540, -5470, 90, 100), lob([0, -2190, 150], [-270, -6020, 280], 2.6)),
+  shot(t('training.shotRollingFromWing'), car(640, -5470, 90, 100), rollToward(-2580, -3500, 270, -6020, 1530)),
+  shot(t('training.shotLowShot'), car(-590, -5470, 90, 100), rollToward(1720, -2410, -320, -6020, 1640)),
+  shot(t('training.shotHopMiddle'), car(640, -5470, 90, 100), flying(0, -1750, BALL.restZ, 0, -1310, 600)),
 ];
 
 const SAVING_MEDIUM: readonly TrainingShot[] = [
-  shot('Rodando fuerte', car(480, -5140, 90, 66), rollToward(540, -1970, -540, -6020, 2080)),
-  shot('Globo al ángulo', car(-430, -5360, 90, 66), lob([-540, -2190, 200], [700, -6020, 510], 2.2)),
-  shot('Remate desde la banda', car(320, -5030, 90, 66), rollToward(-3220, -3060, 540, -6020, 2190)),
-  shot('Tiro picado', car(-540, -5360, 90, 66), flying(0, -2410, 900, 320, -1420, -200)),
-  shot('Vaselina', car(540, -5250, 90, 66), lob([0, -1640, BALL.restZ], [-430, -6020, 340], 1.9)),
-  shot('Palo lejano', car(-210, -5360, 60, 66), lob([-2360, -2840, 200], [640, -6020, 390], 2.0)),
-  shot('Caída tardía', car(0, -4810, 90, 66), lob([640, -1310, 300], [-320, -6020, 230], 2.5)),
+  shot(t('training.shotHardRoller'), car(480, -5140, 90, 66), rollToward(540, -1970, -540, -6020, 2080)),
+  shot(t('training.shotLobTopCorner'), car(-430, -5360, 90, 66), lob([-540, -2190, 200], [700, -6020, 510], 2.2)),
+  shot(t('training.shotShotFromWing'), car(320, -5030, 90, 66), rollToward(-3220, -3060, 540, -6020, 2190)),
+  shot(t('training.shotBouncingShot'), car(-540, -5360, 90, 66), flying(0, -2410, 900, 320, -1420, -200)),
+  shot(t('training.shotChip'), car(540, -5250, 90, 66), lob([0, -1640, BALL.restZ], [-430, -6020, 340], 1.9)),
+  shot(t('training.shotFarPost'), car(-210, -5360, 60, 66), lob([-2360, -2840, 200], [640, -6020, 390], 2.0)),
+  shot(t('training.shotLateDrop'), car(0, -4810, 90, 66), lob([640, -1310, 300], [-320, -6020, 230], 2.5)),
 ];
 
 const SAVING_HARD: readonly TrainingShot[] = [
-  shot('Mano a mano', car(-1610, -3940, -45, 50), rollToward(-430, -1640, 320, -6020, 2190)),
-  shot('Al ángulo', car(0, -5360, 90, 50), lob([1070, -2730, 300], [-700, -6120, 370], 1.8)),
-  shot('Globo largo', car(0, -3830, 90, 50), lob([0, 0, 200], [320, -6020, 450], 3.2)),
-  shot('Volea cruzada', car(640, -5360, 120, 50), lob([-3010, -3280, 500], [320, -6230, 280], 1.7)),
-  shot('Rápido y bajo', car(-320, -4920, 90, 50), rollToward(1290, -2620, -210, -6020, 2630)),
-  shot('Fuera de posición', car(1500, -4700, 200, 50), lob([-1290, -1090, 300], [540, -6120, 280], 2.3)),
+  shot(t('training.shotBreakaway'), car(-1610, -3940, -45, 50), rollToward(-430, -1640, 320, -6020, 2190)),
+  shot(t('training.shotTopCorner'), car(0, -5360, 90, 50), lob([1070, -2730, 300], [-700, -6120, 370], 1.8)),
+  shot(t('training.shotLongLob'), car(0, -3830, 90, 50), lob([0, 0, 200], [320, -6020, 450], 3.2)),
+  shot(t('training.shotCrossingVolley'), car(640, -5360, 120, 50), lob([-3010, -3280, 500], [320, -6230, 280], 1.7)),
+  shot(t('training.shotFastLow'), car(-320, -4920, 90, 50), rollToward(1290, -2620, -210, -6020, 2630)),
+  shot(t('training.shotOutOfPosition'), car(1500, -4700, 200, 50), lob([-1290, -1090, 300], [540, -6120, 280], 2.3)),
 ];
 
 // ---- Aéreos: the ball is in the air; score in the red goal -----------------------------------
 
 const AERIAL_EASY: readonly TrainingShot[] = [
-  shot('Flotante', car(0, 2080, 90, 100), flying(0, 3830, 200, 0, 0, 1150)),
-  shot('Flotante a la izquierda', carFacing(-750, 2080, -540, 3940, 100), flying(-540, 3940, 200, 0, 0, 1050)),
-  shot('Flotante a la derecha', carFacing(750, 2080, 540, 3940, 100), flying(540, 3940, 200, 0, 0, 1050)),
-  shot('Caída', car(0, 1860, 90, 100), still(0, 3610, 1200)),
-  shot('Pelota que retrocede', carFacing(-540, 2300, 0, 3940, 100), flying(0, 4380, 200, 0, -270, 1100)),
-  shot('Flotante cruzada', car(-640, 1860, 80, 100), flying(-1500, 3610, 200, 270, 0, 1100)),
-  shot('Flotante alta', carFacing(320, 1640, 0, 3500, 100), flying(0, 3500, 300, 0, 0, 1400)),
-  shot('Globito cerca', car(0, 2840, 90, 100), flying(320, 4480, 150, 0, -160, 1000)),
+  shot(t('training.shotFloater'), car(0, 2080, 90, 100), flying(0, 3830, 200, 0, 0, 1150)),
+  shot(t('training.shotLeftFloater'), carFacing(-750, 2080, -540, 3940, 100), flying(-540, 3940, 200, 0, 0, 1050)),
+  shot(t('training.shotRightFloater'), carFacing(750, 2080, 540, 3940, 100), flying(540, 3940, 200, 0, 0, 1050)),
+  shot(t('training.shotFallingBall'), car(0, 1860, 90, 100), still(0, 3610, 1200)),
+  shot(t('training.shotDriftingBack'), carFacing(-540, 2300, 0, 3940, 100), flying(0, 4380, 200, 0, -270, 1100)),
+  shot(t('training.shotCrossingFloater'), car(-640, 1860, 80, 100), flying(-1500, 3610, 200, 270, 0, 1100)),
+  shot(t('training.shotHighFloater'), carFacing(320, 1640, 0, 3500, 100), flying(0, 3500, 300, 0, 0, 1400)),
+  shot(t('training.shotClosePopUp'), car(0, 2840, 90, 100), flying(320, 4480, 150, 0, -160, 1000)),
 ];
 
 const AERIAL_MEDIUM: readonly TrainingShot[] = [
-  shot('Centro flotante', car(0, 1970, 90, 100), flying(-2690, 3940, 300, 750, 0, 1100)),
-  shot('Caída del techo', carFacing(-320, 1530, 0, 3280, 100), still(0, 3280, 1800)),
-  shot('Flotante al fondo', car(0, 2730, 90, 100), flying(-640, 4920, 300, 0, -110, 1300)),
-  shot('Globito alto', carFacing(640, 1310, 540, 3060, 100), flying(540, 3060, 200, -110, 0, 1450)),
-  shot('Pase desde la esquina', carFacing(-860, 2190, 1610, 4050, 100), flying(3440, 4380, 300, -970, -330, 1000)),
-  shot('En retroceso', car(0, 1640, 90, 100), flying(0, 4700, 300, 0, -660, 1200)),
-  shot('Doble caída', car(-970, 1090, 90, 100), flying(-970, 3390, 1500, 210, 0, 0)),
+  shot(t('training.shotFloatingCross'), car(0, 1970, 90, 100), flying(-2690, 3940, 300, 750, 0, 1100)),
+  shot(t('training.shotCeilingDrop'), carFacing(-320, 1530, 0, 3280, 100), still(0, 3280, 1800)),
+  shot(t('training.shotDeepFloater'), car(0, 2730, 90, 100), flying(-640, 4920, 300, 0, -110, 1300)),
+  shot(t('training.shotHighPopUp'), carFacing(640, 1310, 540, 3060, 100), flying(540, 3060, 200, -110, 0, 1450)),
+  shot(t('training.shotCornerPass'), carFacing(-860, 2190, 1610, 4050, 100), flying(3440, 4380, 300, -970, -330, 1000)),
+  shot(t('training.shotRetreating'), car(0, 1640, 90, 100), flying(0, 4700, 300, 0, -660, 1200)),
+  shot(t('training.shotDoubleDrop'), car(-970, 1090, 90, 100), flying(-970, 3390, 1500, 210, 0, 0)),
 ];
 
 const AERIAL_HARD: readonly TrainingShot[] = [
-  shot('Pelota de techo', car(0, 880, 90, 100), still(0, 2730, 1850)),
-  shot('Centro rápido', car(540, 1750, 90, 100), flying(-3540, 4160, 400, 1290, -110, 1100)),
-  shot('Flotante al palo lejano', carFacing(-1070, 2410, 1500, 4700, 100), flying(1930, 4700, 300, -540, 0, 1300)),
-  shot('Alta al fondo', car(0, 3060, 90, 100), flying(0, 5250, 1500, 0, -220, 300)),
-  shot('De lejos', car(0, -550, 90, 100), flying(0, 1640, 300, 0, 0, 1450)),
-  shot('Globo desde la esquina', carFacing(0, 2190, -2150, 4160, 100), flying(-3650, 4590, 200, 860, -440, 1300)),
+  shot(t('training.shotCeilingBall'), car(0, 880, 90, 100), still(0, 2730, 1850)),
+  shot(t('training.shotFastCross'), car(540, 1750, 90, 100), flying(-3540, 4160, 400, 1290, -110, 1100)),
+  shot(t('training.shotFarPostFloater'), carFacing(-1070, 2410, 1500, 4700, 100), flying(1930, 4700, 300, -540, 0, 1300)),
+  shot(t('training.shotHighDeep'), car(0, 3060, 90, 100), flying(0, 5250, 1500, 0, -220, 300)),
+  shot(t('training.shotLongRange'), car(0, -550, 90, 100), flying(0, 1640, 300, 0, 0, 1450)),
+  shot(t('training.shotLobFromCorner'), carFacing(0, 2190, -2150, 4160, 100), flying(-3650, 4590, 200, 860, -440, 1300)),
 ];
 
+/** `description` is never displayed (kept in Spanish, not translated yet). */
 function pack(
   category: TrainingCategory,
   difficulty: TrainingDifficulty,
@@ -265,7 +271,7 @@ function pack(
 ): TrainingPack {
   return {
     id: `${category}-${difficulty}`,
-    name: `${CATEGORY_LABELS[category]} · ${DIFFICULTY_LABELS[difficulty]}`,
+    name: t('training.packName', { category: CATEGORY_LABELS[category], difficulty: DIFFICULTY_LABELS[difficulty] }),
     category,
     difficulty,
     description,

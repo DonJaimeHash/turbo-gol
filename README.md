@@ -105,11 +105,12 @@ Before deploying a fork, change the Worker name, the custom domain (`routes`), t
 the Turnstile site key and `VITE_ORIGINS` in `server/wrangler.jsonc`, and set the secrets with
 `cd server && npx wrangler secret put JWT_SECRET` (plus `TURNSTILE_SECRET`, the optional OAuth secrets
 from `docs/online/ACCOUNTS.md` and the optional `TURN_KEY_ID` / `TURN_KEY_TOKEN` relay pair). The AGPL asks public servers running modified code to offer that source
-to their players: keep the "Código fuente" link in the menu pointing at your fork.
+to their players: keep the menu's "Source code" link (`SOURCE_URL` in `src/brand.ts`; the text is
+`menu.source` in every locale, "Código fuente" in Spanish) pointing at your fork.
 
 ## Contributing
 
-Bug reports, ideas, code, translations and playtesting are welcome: start with
+Bug reports, ideas, code, translations ([add your language](CONTRIBUTING.md#translating)) and playtesting are welcome: start with
 [CONTRIBUTING.md](CONTRIBUTING.md) and the issues labelled `good first issue`. Please keep the game
 original: no names, art, layouts or measurements taken from commercial games.
 

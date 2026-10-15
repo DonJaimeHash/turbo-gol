@@ -8,6 +8,8 @@ import { onNavSide } from '../nav';
 import { REGIONS } from '../../net/account';
 import type { RegionId } from '../../net/account';
 import type { Menu } from '../Menu';
+import { regionName } from '../names';
+import { t } from '../../i18n';
 
 /** A big menu tile: icon glyph, title, subtitle, optional corner tag. */
 export function tile(cls: string, glyph: string, title: string, sub: string, onClick: () => void, tag?: Child): HTMLButtonElement {
@@ -70,12 +72,12 @@ export function field(label: string, opts: { type?: string; placeholder?: string
 export function regionCycler(menu: Menu): { el: HTMLElement; refresh: () => void } {
   // The automatic region's name arrives with the server config, maybe after this screen was built.
   const autoLabel = (): string => {
-    const n = REGIONS.find((r) => r.id === menu.cfg?.autoRegion)?.name;
-    return n ? `Automática (${n})` : 'Automática';
+    const r = REGIONS.find((x) => x.id === menu.cfg?.autoRegion);
+    return r ? t('common.regionAutoNamed', { region: regionName(r.id) }) : t('common.regionAuto');
   };
-  const options: CycleOption<RegionId | null>[] = [{ value: null, label: autoLabel() }, ...REGIONS.map((r) => ({ value: r.id as RegionId | null, label: r.name }))];
+  const options: CycleOption<RegionId | null>[] = [{ value: null, label: autoLabel() }, ...REGIONS.map((r) => ({ value: r.id as RegionId | null, label: regionName(r.id) }))];
   const c = cycler(
-    'Región',
+    t('common.region'),
     options,
     () => menu.prefs.region,
     (v) => {

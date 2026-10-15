@@ -17,7 +17,7 @@ and what we expect from a pull request. By participating you agree to follow our
 - **Pick an issue:** look for the labels `good first issue` and `help wanted`.
 - **Propose a feature:** open a *Feature request* or start a Discussion before writing a big change,
   so we can agree on the design first.
-- **Translate:** the UI is in Spanish today; help with an English (or any) translation is welcome.
+- **Translate:** add your language in one file, see [Translating](#translating) below.
 - **Chat with us:** join the [Turbogol Discord](https://discord.gg/sPyf787aHP) to ask questions, find
   people to playtest with and talk about ideas. Bugs and feature requests still go through Issues.
 
@@ -41,6 +41,29 @@ npm run dev            # wrangler dev on http://127.0.0.1:8787; Vite proxies /ap
 
 The physics engine is prebuilt (`src/sim/wasm/rocketsim.wasm` is committed). You only need the
 Emscripten SDK if you change the C++ wrapper or the physics library: see `native/README.md`.
+
+## Translating
+
+The game follows the player's system language when it ships it, and falls back to English. Every
+text lives in `src/locales/`: `en.ts` is the source of truth, `es.ts` is Spanish. To add a
+language (say French, code `fr`):
+
+1. Copy `src/locales/en.ts` to `src/locales/fr.ts`. Replace its header import with
+   `import type { Translation } from '../i18n';` and change the last line to
+   `} satisfies Translation;` (see `es.ts`). A locale file may only use `import type`.
+2. Translate the values. Keep every key and every `{placeholder}` as it is. Delete the lines you do
+   not translate yet: they fall back to English, so a partial translation is fine.
+3. Plurals are objects: give the forms your language uses from
+   [Intl.PluralRules](https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html)
+   (`one`, `few`, `many`, `other`...); `other` is always required.
+4. Keep texts short: the menus must fit a 375 px wide phone.
+5. Register the language with one line in `LOCALES` in `src/i18n.ts`, using its own name:
+   `fr: { name: 'Français', messages: fr },` (plus the `import fr from './locales/fr';` next to the others).
+6. Run `npm run typecheck && npm test`, try it with your browser set to that language (or pick it
+   in the menu), and open a pull request.
+
+Names from commercial games (game titles, studios, mode names) must not appear in translations
+either; see [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Before you open a pull request
 

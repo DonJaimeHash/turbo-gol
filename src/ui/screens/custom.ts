@@ -6,22 +6,24 @@
  * Game plays it; back in the menu the member reports `back` and the lobby opens again.
  */
 import { h, setChildren, copyText, navButton } from '../dom';
-import { LOBBY_LENGTHS, PLAYLISTS, PLAYLIST_NAMES } from '../../net/account';
+import { LOBBY_LENGTHS, PLAYLISTS } from '../../net/account';
 import type { LobbyMember, LobbySettings, LobbyState, LobbySummary, Playlist } from '../../net/account';
 import { AccountError } from '../../net/AccountClient';
 import { lobbyCloseText } from '../../net/LobbyClient';
 import { MODES } from '../../sim/constants';
+import { t } from '../../i18n';
+import { playlistName } from '../names';
 import type { Menu, Screen } from '../Menu';
 import { cycler, field, primary, screenHead, secondary, section } from './common';
 
 const REFRESH_MS = 5_000;
 
 function lengthLabel(s: number): string {
-  return s === 0 ? 'Sin límite' : `${s / 60} min`;
+  return s === 0 ? t('custom.noLimit') : t('custom.minutes', { count: s / 60 });
 }
 
 function netLabel(n: 'p2p' | 'server'): string {
-  return n === 'p2p' ? 'P2P' : 'Servidor';
+  return n === 'p2p' ? t('custom.netP2p') : t('custom.netServer');
 }
 
 function errText(e: unknown): string {
@@ -38,7 +40,7 @@ async function joinFlow(menu: Menu, code: string, locked: boolean): Promise<void
       return true;
     } catch (e) {
       if (e instanceof AccountError && e.code === 'bad_password') {
-        menu.toast('Contraseña incorrecta', 'error');
+        menu.toast(t('custom.wrongPassword'), 'error');
         return false;
       }
       menu.toast(errText(e), 'error');
@@ -49,14 +51,14 @@ async function joinFlow(menu: Menu, code: string, locked: boolean): Promise<void
     await attempt(null);
     return;
   }
-  const pw = field('Contraseña de la sala', { type: 'password', maxLength: 32, autocomplete: 'off' });
+  const pw = field(t('custom.joinPassword'), { type: 'password', maxLength: 32, autocomplete: 'off' });
   pw.input.setAttribute('data-autofocus', '');
   const close = menu.modal({
-    title: `Sala ${code}`,
-    body: [h('p', null, 'Esta sala tiene contraseña.'), pw.el],
+    title: t('custom.joinTitle', { code }),
+    body: [h('p', null, t('custom.joinLocked')), pw.el],
     actions: [
-      { label: 'UNIRSE', primary: true, onClick: () => attempt(pw.input.value) },
-      { label: 'CANCELAR', onClick: () => true },
+      { label: t('custom.join'), primary: true, onClick: () => attempt(pw.input.value) },
+      { label: t('custom.cancel'), onClick: () => true },
     ],
   });
   pw.input.addEventListener('keydown', (e) => {
@@ -67,12 +69,12 @@ async function joinFlow(menu: Menu, code: string, locked: boolean): Promise<void
 export function customScreen(menu: Menu): Screen {
   const list = h('div.mn-lobbies');
   const status = h('div.mn-lobbies-status');
-  const code = field('Código', { placeholder: 'ABC234', maxLength: 7 });
+  const code = field(t('custom.codeField'), { placeholder: 'ABC234', maxLength: 7 });
   code.input.classList.add('mn-code-input');
   const join = (): void => {
     const c = code.input.value.trim();
     if (c.length < 6) {
-      code.error('El código tiene 6 letras o números');
+      code.error(t('custom.codeInvalid'));
       return;
     }
     code.error(null);
@@ -86,11 +88,11 @@ export function customScreen(menu: Menu): Screen {
   const row = (l: LobbySummary): HTMLElement =>
     navButton('mn-lobby-row', [
       h('span.mn-lobby-name', null, l.locked ? '🔒 ' : '', l.name),
-      h('span.mn-lobby-mode', null, `${PLAYLIST_NAMES[l.mode]} ${l.mode}`),
+      h('span.mn-lobby-mode', null, `${playlistName(l.mode)} ${l.mode}`),
       h('span.mn-lobby-players', null, `${l.players}/${l.max}`),
       h('span.mn-lobby-host', null, l.host),
       h('span.mn-lobby-net', null, netLabel(l.net)),
-      h('span.mn-lobby-state', null, l.inGame ? 'En juego' : l.players >= l.max ? 'Llena' : 'Abierta'),
+      h('span.mn-lobby-state', null, l.inGame ? t('custom.rowInGame') : l.players >= l.max ? t('custom.rowFull') : t('custom.rowOpen')),
     ], () => void joinFlow(menu, l.code, l.locked), { 'data-code': l.code, disabled: l.players >= l.max });
   const load = async (): Promise<void> => {
     if (loading) return;
@@ -98,8 +100,8 @@ export function customScreen(menu: Menu): Screen {
     try {
       const lobbies = await menu.host.lobby.list(menu.prefs.region);
       const focusedCode = (document.activeElement as HTMLElement | null)?.getAttribute?.('data-code') ?? null;
-      setChildren(list, ...(lobbies.length > 0 ? lobbies.map(row) : [h('div.mn-empty', null, `No hay salas públicas en ${menu.regionLabel}. ¡Creá una!`)]));
-      status.textContent = `${lobbies.length} salas · ${menu.regionLabel}`;
+      setChildren(list, ...(lobbies.length > 0 ? lobbies.map(row) : [h('div.mn-empty', null, t('custom.noLobbies', { region: menu.regionLabel }))]));
+      status.textContent = t('custom.lobbyCount', { count: lobbies.length, region: menu.regionLabel });
       if (focusedCode) (list.querySelector(`[data-code="${focusedCode}"]`) as HTMLElement | null)?.focus();
     } catch (e) {
       status.textContent = errText(e);
@@ -110,25 +112,34 @@ export function customScreen(menu: Menu): Screen {
   const el = h(
     'div.mn-custom',
     null,
-    screenHead('PARTIDAS PERSONALIZADAS', 'Salas públicas de tu región o privadas por código. No suman ni restan rango.'),
+    screenHead(t('custom.heading'), t('custom.subtitle')),
     h(
       'div.mn-custom-bar',
       null,
-      primary('CREAR SALA', () => menu.open('lobby-create'), { 'data-autofocus': true }),
-      h('div.mn-join', null, code.el, secondary('UNIRSE', join)),
-      secondary('ACTUALIZAR', () => void load()),
+      primary(t('custom.createLobby'), () => menu.open('lobby-create'), { 'data-autofocus': true }),
+      h('div.mn-join', null, code.el, secondary(t('custom.join'), join)),
+      secondary(t('custom.refresh'), () => void load()),
     ),
-    h('div.mn-lobby-head', null, h('span', null, 'Nombre'), h('span', null, 'Modo'), h('span', null, 'Jugadores'), h('span', null, 'Anfitrión'), h('span', null, 'Red'), h('span', null, 'Estado')),
+    h(
+      'div.mn-lobby-head',
+      null,
+      h('span', null, t('custom.colName')),
+      h('span', null, t('custom.colMode')),
+      h('span', null, t('custom.colPlayers')),
+      h('span', null, t('custom.colHost')),
+      h('span', null, t('custom.colNet')),
+      h('span', null, t('custom.colState')),
+    ),
     list,
     status,
   );
   return {
     id: 'custom',
-    title: 'Personalizadas',
+    title: t('custom.screenTitle'),
     el,
     show: () => {
       refreshAt = 0;
-      setChildren(list, h('div.mn-empty', null, 'Cargando salas…'));
+      setChildren(list, h('div.mn-empty', null, t('custom.loading')));
     },
     tick: (now) => {
       if (now < refreshAt) return;
@@ -141,22 +152,22 @@ export function customScreen(menu: Menu): Screen {
 /** The settings controls shared by "create" and the host's "configure" dialog. */
 function settingsControls(s: LobbySettings): HTMLElement[] {
   return [
-    cycler<Playlist>('Modo', PLAYLISTS.map((p) => ({ value: p, label: `${PLAYLIST_NAMES[p]} (${p})` })), () => s.mode, (v) => (s.mode = v)).el,
-    cycler<'public' | 'private'>('Visibilidad', [{ value: 'public', label: 'Pública (en la lista)' }, { value: 'private', label: 'Privada (solo con código)' }], () => s.visibility, (v) => (s.visibility = v)).el,
-    cycler<'p2p' | 'server'>('Conexión', [{ value: 'p2p', label: 'P2P (recomendada)' }, { value: 'server', label: 'Servidor' }], () => s.net, (v) => (s.net = v)).el,
-    cycler<number>('Duración', LOBBY_LENGTHS.map((l) => ({ value: l, label: lengthLabel(l) })), () => s.matchLengthSeconds, (v) => (s.matchLengthSeconds = v)).el,
+    cycler<Playlist>(t('custom.settingMode'), PLAYLISTS.map((p) => ({ value: p, label: `${playlistName(p)} (${p})` })), () => s.mode, (v) => (s.mode = v)).el,
+    cycler<'public' | 'private'>(t('custom.settingVisibility'), [{ value: 'public', label: t('custom.visibilityPublicListed') }, { value: 'private', label: t('custom.visibilityPrivateCode') }], () => s.visibility, (v) => (s.visibility = v)).el,
+    cycler<'p2p' | 'server'>(t('custom.settingNet'), [{ value: 'p2p', label: t('custom.netP2pRecommended') }, { value: 'server', label: t('custom.netServer') }], () => s.net, (v) => (s.net = v)).el,
+    cycler<number>(t('custom.settingLength'), LOBBY_LENGTHS.map((l) => ({ value: l, label: lengthLabel(l) })), () => s.matchLengthSeconds, (v) => (s.matchLengthSeconds = v)).el,
   ];
 }
 
 export function lobbyCreateScreen(menu: Menu): Screen {
   const s: LobbySettings = { name: '', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 };
-  const name = field('Nombre de la sala', { maxLength: 24 });
-  const pw = field('Contraseña (opcional)', { type: 'password', maxLength: 32, placeholder: 'Sin contraseña' });
+  const name = field(t('custom.nameField'), { maxLength: 24 });
+  const pw = field(t('custom.passwordOptional'), { type: 'password', maxLength: 32, placeholder: t('custom.noPassword') });
   const controls = h('div');
-  const create = primary('CREAR', async () => {
+  const create = primary(t('custom.create'), async () => {
     const n = name.input.value.trim();
     if (n.length < 3) {
-      name.error('Entre 3 y 24 caracteres');
+      name.error(t('custom.nameLength'));
       return;
     }
     name.error(null);
@@ -171,14 +182,15 @@ export function lobbyCreateScreen(menu: Menu): Screen {
       create.disabled = false;
     }
   });
-  const el = h('div.mn-queue', null, screenHead('CREAR SALA', 'Vos sos el anfitrión: elegís equipos, modo y cuándo empieza. Los lugares libres los ocupan bots.'), section('SALA', name.el, controls, pw.el), h('div.mn-actions', null, create));
+  const el = h('div.mn-queue', null, screenHead(t('custom.createLobby'), t('custom.createSubtitle')), section(t('custom.lobbySection'), name.el, controls, pw.el), h('div.mn-actions', null, create));
   return {
     id: 'lobby-create',
-    title: 'Crear sala',
+    title: t('custom.createTitle'),
     el,
     show: () => {
       const who = menu.host.accounts.account?.name ?? menu.host.guestName();
-      if (name.input.value.length === 0) name.input.value = `Sala de ${who}`.slice(0, 24);
+      // Every translation must survive the server's name sanitizer (tests/i18n-lobby-name.test.mjs).
+      if (name.input.value.length === 0) name.input.value = t('custom.defaultName', { name: who }).slice(0, 24);
       setChildren(controls, ...settingsControls(s));
     },
   };
@@ -200,27 +212,27 @@ export function lobbyScreen(menu: Menu): Screen {
       `div.mn-member${m.id === s.you ? '.mn-member-you' : ''}` as 'div',
       null,
       h('span.mn-member-name', null, m.host ? '♛ ' : '', m.name),
-      m.guest ? h('span.mn-tag', null, 'INVITADO') : null,
-      m.inGame ? h('span.mn-tag.mn-tag-live', null, 'EN PARTIDA') : null,
-      meHost && m.id !== s.you ? navButton('mn-kick', 'Sacar', () => lobby.kick(m.id)) : null,
+      m.guest ? h('span.mn-tag', null, t('custom.tagGuest')) : null,
+      m.inGame ? h('span.mn-tag.mn-tag-live', null, t('custom.tagInMatch')) : null,
+      meHost && m.id !== s.you ? navButton('mn-kick', t('custom.kick'), () => lobby.kick(m.id)) : null,
     );
   };
 
   const configure = (s: LobbyState): void => {
     const draft: LobbySettings = { ...s.settings };
-    const name = field('Nombre de la sala', { maxLength: 24, value: draft.name });
-    const pw = field(s.hasPassword ? 'Nueva contraseña (vacío = sin contraseña)' : 'Contraseña (opcional)', { type: 'password', maxLength: 32 });
+    const name = field(t('custom.nameField'), { maxLength: 24, value: draft.name });
+    const pw = field(s.hasPassword ? t('custom.newPassword') : t('custom.passwordOptional'), { type: 'password', maxLength: 32 });
     menu.modal({
-      title: 'Configurar sala',
+      title: t('custom.configureTitle'),
       body: [name.el, ...settingsControls(draft), pw.el],
       actions: [
         {
-          label: 'GUARDAR',
+          label: t('custom.save'),
           primary: true,
           onClick: () => {
             const n = name.input.value.trim();
             if (n.length < 3) {
-              name.error('Entre 3 y 24 caracteres');
+              name.error(t('custom.nameLength'));
               return false;
             }
             draft.name = n;
@@ -228,7 +240,7 @@ export function lobbyScreen(menu: Menu): Screen {
             return true;
           },
         },
-        { label: 'CANCELAR', onClick: () => true },
+        { label: t('custom.cancel'), onClick: () => true },
       ],
     });
   };
@@ -236,39 +248,46 @@ export function lobbyScreen(menu: Menu): Screen {
   const render = (): void => {
     const s = lobby.state;
     if (!s) {
-      setChildren(teams, h('div.mn-empty', null, lobby.status === 'connecting' ? 'Entrando a la sala…' : 'No estás en ninguna sala'));
-      setChildren(actions, secondary('VOLVER', () => menu.open('custom')));
+      setChildren(teams, h('div.mn-empty', null, lobby.status === 'connecting' ? t('custom.joining') : t('custom.notInLobby')));
+      setChildren(actions, secondary(t('custom.back'), () => menu.open('custom')));
       return;
     }
     (el.querySelector('.mn-lobby-title') as HTMLElement).textContent = s.settings.name;
-    info.textContent = `${PLAYLIST_NAMES[s.settings.mode]} ${s.settings.mode} · ${netLabel(s.settings.net)} · ${lengthLabel(s.settings.matchLengthSeconds)} · ${s.settings.visibility === 'public' ? 'Pública' : 'Privada'}${s.hasPassword ? ' · 🔒' : ''}`;
-    setChildren(codeEl, h('span.mn-lobby-code-label', null, 'CÓDIGO'), h('span.mn-lobby-code-value', null, s.code), navButton('mn-btn mn-btn-small', 'COPIAR', () => void copyText(s.code).then((ok) => menu.toast(ok ? 'Código copiado' : 'No se pudo copiar', ok ? 'ok' : 'error'))));
+    info.textContent = t('custom.info', {
+      playlist: playlistName(s.settings.mode),
+      mode: s.settings.mode,
+      net: netLabel(s.settings.net),
+      length: lengthLabel(s.settings.matchLengthSeconds),
+      visibility: s.settings.visibility === 'public' ? t('custom.public') : t('custom.private'),
+      lock: s.hasPassword ? ' · 🔒' : '',
+    });
+    setChildren(codeEl, h('span.mn-lobby-code-label', null, t('custom.codeLabel')), h('span.mn-lobby-code-value', null, s.code), navButton('mn-btn mn-btn-small', t('custom.copy'), () => void copyText(s.code).then((ok) => menu.toast(ok ? t('custom.copied') : t('custom.copyFailed'), ok ? 'ok' : 'error'))));
     const per = MODES[s.settings.mode];
     const col = (team: 0 | 1): HTMLElement => {
       const ms = s.members.filter((m) => m.team === team);
       const slots: HTMLElement[] = ms.map((m) => memberRow(m, s));
-      for (let i = ms.length; i < per; i++) slots.push(h('div.mn-member.mn-member-bot', null, h('span.mn-member-name', null, 'Bot (lugar libre)')));
-      return h(`div.mn-team.mn-team-${team === 0 ? 'blue' : 'red'}` as 'div', null, h('div.mn-team-title', null, team === 0 ? 'AZUL' : 'ROJO'), ...slots);
+      for (let i = ms.length; i < per; i++) slots.push(h('div.mn-member.mn-member-bot', null, h('span.mn-member-name', null, t('custom.botSlot'))));
+      return h(`div.mn-team.mn-team-${team === 0 ? 'blue' : 'red'}` as 'div', null, h('div.mn-team-title', null, team === 0 ? t('custom.teamBlue') : t('custom.teamRed')), ...slots);
     };
     setChildren(teams, col(0), col(1));
     const me = s.members.find((m) => m.id === s.you);
     const isHost = me?.host === true;
     statusLine.textContent =
-      s.status === 'in_game' ? 'Partida en curso: la sala se abre cuando vuelvan todos' : s.status === 'starting' ? 'Iniciando partida…' : isHost ? 'Sos el anfitrión. Cuando estén todos, iniciá la partida.' : 'Esperando que el anfitrión inicie la partida…';
+      s.status === 'in_game' ? t('custom.statusInGame') : s.status === 'starting' ? t('custom.statusStarting') : isHost ? t('custom.statusHost') : t('custom.statusWaiting');
     const other = me ? (me.team === 0 ? 1 : 0) : 0;
     const otherFull = s.members.filter((m) => m.team === other).length >= per;
     const focused = (document.activeElement as HTMLElement | null)?.textContent ?? '';
     setChildren(
       actions,
-      isHost ? primary('INICIAR PARTIDA', () => lobby.start(), { disabled: s.status !== 'open' }) : null,
-      secondary(otherFull ? 'EL OTRO EQUIPO ESTÁ LLENO' : 'CAMBIAR DE EQUIPO', () => lobby.setTeam(other), { disabled: otherFull || s.status !== 'open' }),
-      isHost ? secondary('CONFIGURAR', () => configure(s), { disabled: s.status !== 'open' }) : null,
-      secondary('SALIR DE LA SALA', () => {
+      isHost ? primary(t('custom.start'), () => lobby.start(), { disabled: s.status !== 'open' }) : null,
+      secondary(otherFull ? t('custom.otherTeamFull') : t('custom.switchTeam'), () => lobby.setTeam(other), { disabled: otherFull || s.status !== 'open' }),
+      isHost ? secondary(t('custom.configure'), () => configure(s), { disabled: s.status !== 'open' }) : null,
+      secondary(t('custom.leaveLobby'), () => {
         lobby.leave();
         menu.open('custom');
       }),
     );
-    // Keep the controller's place across re-renders.
+    // Keep the controller's place across re-renders (by the button's text: the language is fixed for the page).
     const again = Array.from(el.querySelectorAll<HTMLElement>('[data-nav]')).find((b) => b.textContent === focused);
     if (again) again.focus({ preventScroll: true });
     else menu.refocus();
@@ -286,7 +305,7 @@ export function lobbyScreen(menu: Menu): Screen {
 
   return {
     id: 'lobby',
-    title: 'Sala',
+    title: t('custom.lobbyTitle'),
     el,
     show: () => {
       shown = true;
@@ -299,18 +318,18 @@ export function lobbyScreen(menu: Menu): Screen {
     back: () => {
       if (!lobby.inLobby) return false;
       menu.modal({
-        title: '¿Salir de la sala?',
-        body: h('p', null, lobby.isHost ? 'Sos el anfitrión: la sala pasa al jugador que más tiempo lleva.' : 'Podés volver a entrar con el código mientras la sala exista.'),
+        title: t('custom.leaveTitle'),
+        body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
         actions: [
           {
-            label: 'SALIR',
+            label: t('custom.leave'),
             primary: true,
             onClick: () => {
               lobby.leave();
               menu.open('custom');
             },
           },
-          { label: 'QUEDARME', onClick: () => true },
+          { label: t('custom.stay'), onClick: () => true },
         ],
       });
       return true;

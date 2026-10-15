@@ -47,7 +47,7 @@ npm run dev
 
 ## Contribuir
 
-Reportes, ideas, código, traducciones y pruebas son bienvenidos: empezá por
+Reportes, ideas, código, traducciones ([sumá tu idioma](CONTRIBUTING.md#translating)) y pruebas son bienvenidos: empezá por
 [CONTRIBUTING.md](CONTRIBUTING.md) (en inglés) y los issues `good first issue`. Mantengamos el juego
 original: nada de nombres, arte, diseños ni medidas sacados de juegos comerciales.
 
