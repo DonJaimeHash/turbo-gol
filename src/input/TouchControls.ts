@@ -26,13 +26,21 @@
  *   - nothing here calls stopPropagation: the Game's audio unlock listens on window;
  *   - every finger is released on pointerup / pointercancel / lostpointercapture, window blur,
  *     the page going hidden and when the overlay hides.
+ *
+ * Phone platform helpers (their decisions are in ./touchMode.ts), used by the Game on touch
+ * screens only:
+ *   - `autoFullscreen`: on Android a finger tap outside the controls goes fullscreen in landscape;
+ *   - `installHintDue` / `noteInstallHintShown`: the iPhone's one-time add-to-home-screen hint;
+ *   - while the controls exist, iOS Safari's pinch zoom (gesturestart) is cancelled. Never without
+ *     a touch screen: on a Mac it would block the trackpad's pinch zoom.
  */
 import './touch.css';
+import { STORAGE_PREFIX } from '../brand';
 import { t } from '../i18n';
 import type { BindingProfile } from './bindings';
 import { TB, TOUCH_BUTTON_COUNT, TouchState, type TouchButton } from './touchState';
 import { TouchRouter, emptyLayout, type TouchLayout } from './touchRouter';
-import { keyLeavesTouchMode, pointerTouchMode } from './touchMode';
+import { keyLeavesTouchMode, pointerTouchMode, shouldAutoFullscreen, shouldShowInstallHint, type PlatformEnv } from './touchMode';
 
 /** The device has a touch screen (phone, tablet, touch laptop): the Game then creates the controls. */
 export function hasTouchScreen(): boolean {
@@ -84,13 +92,110 @@ function isClickControl(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('button, a') !== null;
 }
 
-/** The primary pointer is a finger (phones, tablets): touch mode starts on. */
-function coarsePointer(): boolean {
+function mediaMatches(query: string): boolean {
   if (typeof window.matchMedia !== 'function') return false;
   try {
-    return window.matchMedia('(pointer: coarse)').matches;
+    return window.matchMedia(query).matches;
   } catch {
     return false;
+  }
+}
+
+/** The primary pointer is a finger (phones, tablets): touch mode starts on. */
+function coarsePointer(): boolean {
+  return mediaMatches('(pointer: coarse)');
+}
+
+/** The browser's side of the phone platform decisions (touchMode.ts). */
+export function platformEnv(): PlatformEnv {
+  // Typed as always there; Safari before 16.4 lacks it.
+  const orientation: ScreenOrientation | undefined = screen.orientation;
+  const root = document.documentElement;
+  return {
+    coarse: coarsePointer(),
+    orientationLock: orientation !== undefined && typeof orientation.lock === 'function',
+    elementFullscreen: document.fullscreenEnabled === true && typeof root.requestFullscreen === 'function',
+    fullscreen: document.fullscreenElement != null,
+    standalone: mediaMatches('(display-mode: standalone)') || (navigator as Navigator & { standalone?: boolean }).standalone === true,
+  };
+}
+
+/**
+ * Taps that never go fullscreen: on the controls (mid-match), a link (a new tab), a text field or
+ * a field's label (it focuses the field: the keyboard).
+ */
+const NO_FULLSCREEN_TARGETS = '.tc-root, a, input, textarea, select, label';
+/** How long after its pointerup a tap's click may still ask for the fullscreen (ms). */
+const FULLSCREEN_CLICK_MS = 1000;
+/** timeStamp of the finger's pointerup that left the request to its click (see autoFullscreen); -Infinity: none. */
+let fullscreenClickFrom = -Infinity;
+
+/**
+ * Android phones (shouldAutoFullscreen): a finger lifted anywhere but on the controls, a link or a
+ * text field (or its label) goes fullscreen without the navigation bar and locks landscape. The
+ * Game listens with it on window while it runs: pointerup (capture phase, passive) and click
+ * (bubble phase, passive). requestFullscreen needs the user activation of that very event, so it
+ * is called right here, never from a later callback; only the orientation lock waits for the
+ * fullscreen.
+ *
+ * Firefox may not count a touch pointerup as an activation: when navigator.userActivation says
+ * there is none, the pointerup decides (target, gate) and leaves the request to that tap's own
+ * click (after touchend, which is one): a trusted click within FULLSCREEN_CLICK_MS, so a
+ * programmatic element.click() (the pad's FocusNav accept) or a tap with no click (a long press)
+ * never asks later. That click is heard in the bubble phase: the tapped control's own handler uses
+ * the activation first (the clipboard needs it; requestFullscreen consumes it).
+ */
+export function autoFullscreen(e: MouseEvent): void {
+  if (e.type === 'click') {
+    const due = e.isTrusted && e.timeStamp - fullscreenClickFrom <= FULLSCREEN_CLICK_MS;
+    fullscreenClickFrom = -Infinity;
+    if (due && document.fullscreenElement == null) requestLandscapeFullscreen();
+    return;
+  }
+  fullscreenClickFrom = -Infinity;
+  const pointerType = (e as PointerEvent).pointerType;
+  if (pointerType !== 'touch' && pointerType !== 'pen') return;
+  if (document.fullscreenElement != null) return;
+  if (e.target instanceof Element && e.target.closest(NO_FULLSCREEN_TARGETS) !== null) return;
+  if (!shouldAutoFullscreen(platformEnv())) return;
+  const activation: UserActivation | undefined = navigator.userActivation;
+  if (activation !== undefined && !activation.isActive) {
+    fullscreenClickFrom = e.timeStamp;
+    return;
+  }
+  requestLandscapeFullscreen();
+}
+
+/** Called only inside an input event's own listener (autoFullscreen): it needs its user activation. */
+function requestLandscapeFullscreen(): void {
+  document.documentElement
+    .requestFullscreen({ navigationUI: 'hide' })
+    .then(() => screen.orientation.lock('landscape'))
+    .catch(() => undefined);
+}
+
+const INSTALL_HINT_KEY = STORAGE_PREFIX + 'installHint';
+
+/**
+ * The iPhone's add-to-home-screen hint is due (shouldShowInstallHint): not shown in this browser
+ * yet. Storage that cannot be read counts as shown: it could not remember, so it never nags.
+ */
+export function installHintDue(): boolean {
+  let shown = true;
+  try {
+    shown = window.localStorage.getItem(INSTALL_HINT_KEY) !== null;
+  } catch {
+    /* private mode / storage disabled */
+  }
+  return shouldShowInstallHint(platformEnv(), shown);
+}
+
+/** The hint was shown: never again in this browser. */
+export function noteInstallHintShown(): void {
+  try {
+    window.localStorage.setItem(INSTALL_HINT_KEY, '1');
+  } catch {
+    /* ignore */
   }
 }
 
@@ -168,6 +273,11 @@ export class TouchControls {
   };
 
   private readonly onContextMenu = (e: Event): void => {
+    e.preventDefault();
+  };
+
+  /** iOS Safari's pinch zoom (it ignores user-scalable=no): the page never zooms (document, not passive). */
+  private readonly onGestureStart = (e: Event): void => {
     e.preventDefault();
   };
 
@@ -266,6 +376,8 @@ export class TouchControls {
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('resize', this.onResize);
     document.addEventListener('visibilitychange', this.onVisibility);
+    // Only here, with a touch screen: on a Mac it would also block the trackpad's pinch zoom.
+    document.addEventListener('gesturestart', this.onGestureStart, { passive: false });
 
     this.setTouchMode(coarsePointer());
   }
@@ -341,6 +453,7 @@ export class TouchControls {
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    document.removeEventListener('gesturestart', this.onGestureStart);
     this.router.releaseAll();
     this.container.classList.remove('tc-on');
     document.documentElement.classList.remove('tg-touch');

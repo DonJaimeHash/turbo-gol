@@ -91,6 +91,16 @@ export class Audio {
   }
 
   /**
+   * The context exists but is held: not unlocked yet, or taken away by the system after it ran
+   * (iOS: a call, an app switch or a locked screen leave it 'interrupted' or 'suspended' until a
+   * resume() from a gesture). False before the first resume() and once closed (dispose).
+   */
+  get suspended(): boolean {
+    const state = this.ctx !== null ? this.ctx.state : 'closed';
+    return state === 'suspended' || state === 'interrupted';
+  }
+
+  /**
    * Create the graph (first call) and resume the context. Call from a user gesture. Idempotent and
    * cheap when already running; callers must RETRY it on later gestures until `running` is true:
    * the first attempt legitimately fails when the gesture carried no user activation (Escape, a

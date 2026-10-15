@@ -38,7 +38,12 @@
  * src/input/TouchControls.ts), Input's touch source: shown while a match is played in touch mode
  * (the last input used was a finger), which also drops the pointer-lock hint; a tap on the paused
  * game resumes it without a phantom boost, and turning a phone to portrait pauses an offline match.
- * Without a touch screen none of it exists.
+ * On Android a finger tap outside the controls goes fullscreen in landscape (autoFullscreen) and
+ * leaving fullscreen mid-match pauses it; an iPhone (no element fullscreen) gets a one-time
+ * add-to-home-screen toast in the menus. Without a touch screen none of it exists.
+ *
+ * Audio unlocks on the first gesture with a user activation (onGesture); the listeners go once the
+ * context runs and come back when the system takes it away (iOS after a call or an app switch).
  *
  * Online sessions: the Game hosts one GameSession at a time (`session`): the phase 1 OnlineSession
  * (`online`, a Durable Object host, menu "Partida en servidor") or the phase 2 P2PSession (`p2p`,
@@ -63,7 +68,8 @@ import type { Difficulty } from '../ai/Bot';
 import { BotTeam } from '../ai/Team';
 import { Audio, type AudioState } from '../audio/Audio';
 import { Input } from '../input/Input';
-import { TouchControls, hasTouchScreen } from '../input/TouchControls';
+import { TouchControls, autoFullscreen, hasTouchScreen, installHintDue, noteInstallHintShown } from '../input/TouchControls';
+import { t } from '../i18n';
 import type { ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
 import { LobbyClient } from '../net/LobbyClient';
@@ -491,6 +497,8 @@ export class Game implements P2PGameHooks {
   private gestureListening = false;
   /** (orientation: portrait) on a phone; touch screens only (the rotate-screen pause in render). */
   private readonly portraitQuery: MediaQueryList | null;
+  /** The iPhone's add-to-home-screen toast is still due (touch screens only, see updateInstallHint). */
+  private installHint: boolean;
   /** Frames left that render the normally hidden meshes so their pipelines compile (see warmUp). */
   private warmFrames = 0;
   /** While true (goal pause / after the final whistle) the ball is held at pinPos.xy each tick. */
@@ -563,6 +571,15 @@ export class Game implements P2PGameHooks {
     if (e.pointerType === 'mouse') this.onCanvasPointerDown(e);
   };
 
+  /**
+   * Fullscreen left (Android's back gesture) while a match is played in touch mode: pause, like a
+   * hidden tab (the viewport changes under the thumbs). The RESUME tap goes fullscreen again.
+   */
+  private readonly onFullscreenChange = (): void => {
+    if (document.fullscreenElement != null || this.touch === null || !this.touch.touchMode) return;
+    if (this.playing) this.setPaused(true);
+  };
+
   constructor(opts: GameOptions) {
     this.sim = opts.sim;
     this.renderer = opts.renderer;
@@ -606,6 +623,7 @@ export class Game implements P2PGameHooks {
     this.touch = hasTouchScreen() ? new TouchControls(this.hud.root, { kbm: () => settings.bindings.kbm }) : null;
     if (this.touch !== null) this.input.setTouchSource(this.touch.state);
     this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse)') : null;
+    this.installHint = this.touch !== null && installHintDue();
     this.audio = new Audio();
 
     // Initial snapshots so the first frame renders the kickoff state.
@@ -1548,7 +1566,15 @@ export class Game implements P2PGameHooks {
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('blur', this.onBlur);
     if (this.canvas !== null) this.canvas.addEventListener('pointerdown', this.onCanvasPointerDown);
-    if (this.touch !== null) this.touch.root.addEventListener('pointerdown', this.onTouchLayerPointerDown);
+    if (this.touch !== null) {
+      this.touch.root.addEventListener('pointerdown', this.onTouchLayerPointerDown);
+      // Android phones: a finger tap goes fullscreen (in the event itself: it needs its user
+      // activation); the click is Firefox's fallback, in the bubble phase so the tapped control
+      // uses the activation first. autoFullscreen applies the gate.
+      window.addEventListener('pointerup', autoFullscreen, { capture: true, passive: true });
+      window.addEventListener('click', autoFullscreen, { passive: true });
+      document.addEventListener('fullscreenchange', this.onFullscreenChange);
+    }
     this.addGestureListeners();
     this.hud.setCameraMode(this.chase.ballCam);
     if (this.touch !== null) this.touch.setBallCam(this.chase.ballCam);
@@ -1564,7 +1590,12 @@ export class Game implements P2PGameHooks {
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('blur', this.onBlur);
     if (this.canvas !== null) this.canvas.removeEventListener('pointerdown', this.onCanvasPointerDown);
-    if (this.touch !== null) this.touch.root.removeEventListener('pointerdown', this.onTouchLayerPointerDown);
+    if (this.touch !== null) {
+      this.touch.root.removeEventListener('pointerdown', this.onTouchLayerPointerDown);
+      window.removeEventListener('pointerup', autoFullscreen, { capture: true });
+      window.removeEventListener('click', autoFullscreen);
+      document.removeEventListener('fullscreenchange', this.onFullscreenChange);
+    }
     this.removeGestureListeners();
     this.input.exitPointerLock();
   }
@@ -2207,7 +2238,12 @@ export class Game implements P2PGameHooks {
     this.fps = this.fpsFrames / elapsed;
     this.fpsFrames = 0;
     this.fpsWindowStart = now;
-    if (this.gestureListening && this.audio.running) this.removeGestureListeners();
+    // Audio unlock: the gesture listeners go once the context runs and come back when the system
+    // takes it away (they only go after it ran, so a held context now was interrupted).
+    if (this.gestureListening) {
+      if (this.audio.running) this.removeGestureListeners();
+    } else if (this.audio.suspended) this.addGestureListeners();
+    if (this.installHint) this.updateInstallHint();
     const stats = this.renderer.stats();
     // GPU frame time when the renderer exposes it (timestamp queries); guarded so either renderer works.
     const gpuMs = (this.renderer as unknown as { gpuTimeMs?: number }).gpuTimeMs;
@@ -2215,6 +2251,21 @@ export class Game implements P2PGameHooks {
     // Gamepad input never unlocks audio (no user activation): tell pad-only players what to press.
     const soundHint = !this.audio.running && this.input.hasGamepad && !this.menuShown ? ' · press a key or click for sound' : '';
     this.hud.setFps(this.fps, `${this.renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · ${stats.drawCalls} draws${gpuInfo}${soundHint}`);
+  }
+
+  /**
+   * The iPhone's add-to-home-screen toast (installHintDue), once: as soon as the menus are on
+   * screen and not under the settings screen or the rotate-your-phone screen, where it would go
+   * unseen (most phones open the page upright).
+   */
+  private updateInstallHint(): void {
+    const touch = this.touch;
+    if (touch === null || !this.menu.visible || this.hud.menuVisible) return;
+    const q = this.portraitQuery;
+    if (touch.touchMode && q !== null && q.matches) return;
+    this.installHint = false;
+    noteInstallHintShown();
+    this.menu.toast(t('touch.installHint'), 'info');
   }
 
   // ---- menu ------------------------------------------------------------------------------

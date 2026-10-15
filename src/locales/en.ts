@@ -590,6 +590,9 @@ export default {
   'touch.cam': 'CAM',
   // Full-screen notice on a phone held upright: the game is played in landscape
   'touch.rotate': 'Turn your phone sideways to play',
+  // One-time menu toast on an iPhone, whose browser cannot go full screen: Safari's Share button,
+  // then its "Add to Home Screen" item (use Safari's own names in your language); › joins the two steps
+  'touch.installHint': 'Play full screen: tap Share › Add to Home Screen',
 
   // Pause screen buttons on a touch screen (src/render/Hud.ts), under the PAUSED title, uppercase
   // Back to the match

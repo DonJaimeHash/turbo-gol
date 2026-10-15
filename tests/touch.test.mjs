@@ -1145,3 +1145,39 @@ test('touch mode: a finger or a pen turns it on, a mouse off, an unknown pointer
   assert.equal(pointerTouchMode(''), null);
   assert.equal(pointerTouchMode('kinect'), null);
 });
+
+// ---- Phone platform decisions (src/input/touchMode.ts) -----------------------------------
+
+const { shouldAutoFullscreen, shouldShowInstallHint } = await import('../src/input/touchMode.ts');
+
+/** Browsers as TouchControls.platformEnv() reads them. */
+const PLATFORMS = {
+  androidPhone: { coarse: true, orientationLock: true, elementFullscreen: true, fullscreen: false, standalone: false },
+  iPhone: { coarse: true, orientationLock: false, elementFullscreen: false, fullscreen: false, standalone: false },
+  iPhoneHomeScreen: { coarse: true, orientationLock: false, elementFullscreen: false, fullscreen: false, standalone: true },
+  iPad: { coarse: true, orientationLock: false, elementFullscreen: true, fullscreen: false, standalone: false },
+  // An app's WebView that does not handle fullscreen (or an iframe without allowfullscreen) reports fullscreenEnabled false.
+  androidWebView: { coarse: true, orientationLock: true, elementFullscreen: false, fullscreen: false, standalone: false },
+  // Desktop Chrome has screen.orientation.lock (it rejects); a touch laptop / Chromebook has a fine primary pointer.
+  desktopChrome: { coarse: false, orientationLock: true, elementFullscreen: true, fullscreen: false, standalone: false },
+  touchLaptop: { coarse: false, orientationLock: true, elementFullscreen: true, fullscreen: false, standalone: false },
+  macSafari: { coarse: false, orientationLock: false, elementFullscreen: true, fullscreen: false, standalone: false },
+};
+
+test('auto fullscreen: only a finger device that locks the orientation (Android), never desktops, touch laptops or iPads', () => {
+  assert.equal(shouldAutoFullscreen(PLATFORMS.androidPhone), true);
+  for (const name of ['iPhone', 'iPhoneHomeScreen', 'iPad', 'androidWebView', 'desktopChrome', 'touchLaptop', 'macSafari']) {
+    assert.equal(shouldAutoFullscreen(PLATFORMS[name]), false, name);
+  }
+  assert.equal(shouldAutoFullscreen({ ...PLATFORMS.androidPhone, fullscreen: true }), false, 'already fullscreen');
+  assert.equal(shouldAutoFullscreen({ ...PLATFORMS.androidPhone, elementFullscreen: false }), false, 'no element fullscreen');
+  assert.equal(shouldAutoFullscreen({ ...PLATFORMS.androidPhone, coarse: false }), false, 'a mouse / trackpad first');
+});
+
+test('install hint: an iPhone in a browser tab, once; never at home screen, on Android, with element fullscreen or without a finger', () => {
+  assert.equal(shouldShowInstallHint(PLATFORMS.iPhone, false), true);
+  assert.equal(shouldShowInstallHint(PLATFORMS.iPhone, true), false, 'shown before');
+  for (const name of ['iPhoneHomeScreen', 'androidPhone', 'androidWebView', 'iPad', 'desktopChrome', 'touchLaptop', 'macSafari']) {
+    assert.equal(shouldShowInstallHint(PLATFORMS[name], false), false, name);
+  }
+});
