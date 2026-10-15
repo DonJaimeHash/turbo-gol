@@ -61,9 +61,10 @@
     // use the request's own origin (https://turbo-gol.com in production); set PUBLIC_ORIGIN in
     // .dev.vars only to test OAuth locally.
     "TURNSTILE_SITEKEY": "0x4AAAAAAFWoRVBMSY6b0YY8",
-    // The anti-bot check is OFF ("1") until the Turnstile widget lists turbo-gol.com and the Worker has
-    // TURNSTILE_SECRET; then set "0": guests and new accounts need a Turnstile token (widget in the menus).
-    "TURNSTILE_DISABLED": "1",
+    // "0" = the anti-bot check is on: guests and new accounts need a Turnstile token (widget in the
+    // menus; the widget lists turbo-gol.com, the Worker has TURNSTILE_SECRET). "1" switches it off
+    // everywhere (pre-production only). On localhost it only runs if .dev.vars sets TURNSTILE_SECRET.
+    "TURNSTILE_DISABLED": "0",
     // `npm run deploy` (scripts/deploy.mjs) overrides it with a VITE_ORIGINS environment variable when set.
     "VITE_ORIGINS": "https://turbo-gol.com"
   },
