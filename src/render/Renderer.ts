@@ -256,6 +256,16 @@ export class Renderer {
   private nanFrame = 0;
   private nanBusy = false;
   private readonly onWindowResize = (): void => this.resize();
+  /**
+   * Re-measures whenever the canvas' CSS box changes, after layout. Window 'resize' alone is not
+   * enough: iOS (rotation, a page opened from the home screen) can fire it before the new layout
+   * settles, which left the drawing buffer and the camera at a stale aspect and stretched the 3D
+   * view while the DOM HUD looked right.
+   */
+  private readonly sizeObserver: ResizeObserver | null = typeof ResizeObserver === 'function' ? new ResizeObserver(() => this.resize()) : null;
+  /** The canvas' CSS size at the last resize: render() re-measures when it differs (a backstop for the observer). */
+  private cssW = -1;
+  private cssH = -1;
 
   private constructor(gpu: THREE.WebGPURenderer, canvas: HTMLCanvasElement, quality: Quality, timing: boolean) {
     this.gpu = gpu;
@@ -318,6 +328,7 @@ export class Renderer {
     this.scene.add(this.sky);
 
     window.addEventListener('resize', this.onWindowResize);
+    if (this.sizeObserver !== null) this.sizeObserver.observe(canvas);
     this.applyQuality(quality);
   }
 
@@ -343,13 +354,15 @@ export class Renderer {
   }
 
   /**
-   * Match the drawing buffer to the canvas' CSS size (call on window resize; also called by
-   * setQuality). Quality 0 keeps the device pixel ratio up to a pixel budget, never below 1:1;
-   * quality 1 renders at CSS resolution.
+   * Match the drawing buffer to the canvas' CSS size (window resize, the canvas' ResizeObserver and
+   * render() when the size changed; also called by setQuality). Quality 0 keeps the device pixel
+   * ratio up to a pixel budget, never below 1:1; quality 1 renders at CSS resolution.
    */
   resize(): void {
-    const w = Math.max(1, this.canvas.clientWidth || window.innerWidth);
-    const h = Math.max(1, this.canvas.clientHeight || window.innerHeight);
+    this.cssW = this.canvas.clientWidth;
+    this.cssH = this.canvas.clientHeight;
+    const w = Math.max(1, this.cssW || window.innerWidth);
+    const h = Math.max(1, this.cssH || window.innerHeight);
     let pr = 1;
     if (this.quality === 0) {
       let dpr = window.devicePixelRatio || 1;
@@ -369,6 +382,9 @@ export class Renderer {
    * the glow-tagged materials against the renderer's unnamed internal framebuffer and fail.
    */
   render(): void {
+    // ResizeObserver callbacks wait for the next rendering update; checking here as well means the
+    // frame about to be drawn never uses a stale aspect (two layout reads, no allocation).
+    if (this.canvas.clientWidth !== this.cssW || this.canvas.clientHeight !== this.cssH) this.resize();
     this.gpu.info.reset();
     if (this.pipeline !== null) this.pipeline.render();
     if (this.nanReport !== null && ++this.nanFrame % NANCHECK_EVERY === 0 && !this.nanBusy) void this.runNanCheck();
@@ -401,6 +417,7 @@ export class Renderer {
 
   dispose(): void {
     window.removeEventListener('resize', this.onWindowResize);
+    if (this.sizeObserver !== null) this.sizeObserver.disconnect();
     this.teardownPipeline();
     if (this.envTarget !== null) {
       this.envTarget.dispose();
