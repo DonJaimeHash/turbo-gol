@@ -1,9 +1,11 @@
 /**
  * Boot: renderer (WebGPU, WebGL2 fallback) → RocketSim wasm → analytic arena mesh → arena +
  * the cars of the saved game mode (1v1 / 2v2 / 3v3) → Game. Progress is written to #overlay; a
- * readable error page replaces it when the GPU or the wasm cannot be initialised.
+ * readable error page replaces it when the GPU or the wasm cannot be initialised. Both are in the
+ * page's language (boot.* texts); the error details (stack) stay as the browser wrote them.
  */
 import { Game, addRoster, loadPrefs } from './game/Game';
+import { t } from './i18n';
 import type { GameMode } from './sim/constants';
 import { Renderer } from './render/Renderer';
 import { loadSettings } from './settings';
@@ -68,7 +70,7 @@ async function boot(): Promise<void> {
   // Controls / camera / bindings (Settings > Controls & Camera), persisted by the Game on change.
   const settings = loadSettings();
 
-  setProgress('Starting renderer…');
+  setProgress(t('boot.renderer'));
   // The wasm fetch + compile starts now, concurrently with the GPU adapter / device request (the
   // two longest async steps of the boot). Its outcome is captured so each failure keeps its own
   // error page and a renderer failure never leaves an unhandled rejection behind.
@@ -80,24 +82,19 @@ async function boot(): Promise<void> {
   try {
     renderer = await Renderer.create(canvas, { quality: prefs.quality });
   } catch (err) {
-    showError(
-      'Could not start the renderer',
-      'This game needs WebGPU (Chrome / Edge 113+, Firefox 141+, Safari 26+) or at least WebGL2. ' +
-        'Make sure hardware acceleration is enabled in the browser settings.',
-      err,
-    );
+    showError(t('boot.rendererFailed'), t('boot.rendererHint'), err);
     return;
   }
 
-  setProgress(`Loading physics (RocketSim)… [${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'}]`);
+  setProgress(t('boot.physics', { backend: renderer.isWebGPU ? 'WebGPU' : 'WebGL2' }));
   const loaded = await simLoad;
   if (loaded.sim === null) {
-    showError('Could not load the physics module', 'The WebAssembly module (rocketsim.wasm) failed to load or instantiate.', loaded.err);
+    showError(t('boot.physicsFailed'), t('boot.physicsHint'), loaded.err);
     return;
   }
   const sim = loaded.sim;
 
-  setProgress('Building arena…');
+  setProgress(t('boot.arena'));
   const mesh = buildArenaMesh();
   sim.initArena(mesh.physics);
   sim.createArena(TICK_RATE);
@@ -117,7 +114,7 @@ async function boot(): Promise<void> {
   sim.resetKickoff();
   sim.sync();
 
-  setProgress('Building scene…');
+  setProgress(t('boot.scene'));
   // Let the progress text paint before the (synchronous, ~50 ms) scene build. rAF does not fire
   // in a hidden tab, so a timer fallback keeps the boot going in the background.
   await new Promise<void>((resolve) => {
@@ -150,5 +147,5 @@ async function boot(): Promise<void> {
 }
 
 boot().catch((err: unknown) => {
-  showError('Failed to start', 'Something went wrong while starting the game.', err);
+  showError(t('boot.failed'), t('boot.failedHint'), err);
 });

@@ -1,6 +1,7 @@
 /**
  * Control bindings model + the DEFAULT layouts for keyboard/mouse and controller.
  * Pure data (no DOM): shared by Input.ts (reads), Hud.ts (rebind UI) and settings.ts (persist).
+ * Never imported by the Worker, so the action labels come from src/i18n.ts (action.* keys).
  *
  * Defaults (the common layout of car-ball games, every action rebindable): PC jump = right mouse button, boost = left mouse button, powerslide and
  * air roll share Left Shift, ball cam ("focus on ball") = Space, rear view = middle mouse, scoreboard
@@ -16,6 +17,7 @@
  *   previous shot       ←           D-pad ←     reset car     ↓    D-pad ↑   (free play)
  *   unlimited boost     ↑           LB          (free play toggle)
  */
+import { t } from '../i18n';
 
 /** Everything a player can bind. Axis-like actions are split into a +/- pair for digital sources. */
 export type ActionId =
@@ -256,36 +258,39 @@ export function actionsSharingBinding(profile: Readonly<BindingProfile>, b: Bind
   return out;
 }
 
-/** Display order + labels for the controls screen. */
+/**
+ * Display order + labels for the controls screen. The labels are in the page's language (action.*
+ * texts, resolved once at import: the language is fixed for the page); key and button names are not.
+ */
 export const ACTION_ROWS: ReadonlyArray<{ action: ActionId; label: string; group: 'driving' | 'air' | 'camera' | 'game' }> = [
-  { action: 'throttle', label: 'Throttle', group: 'driving' },
-  { action: 'reverse', label: 'Reverse', group: 'driving' },
-  { action: 'steerLeft', label: 'Steer left', group: 'driving' },
-  { action: 'steerRight', label: 'Steer right', group: 'driving' },
-  { action: 'jump', label: 'Jump', group: 'driving' },
-  { action: 'boost', label: 'Boost', group: 'driving' },
-  { action: 'powerslide', label: 'Powerslide', group: 'driving' },
-  { action: 'pitchUp', label: 'Air pitch up', group: 'air' },
-  { action: 'pitchDown', label: 'Air pitch down', group: 'air' },
-  { action: 'yawLeft', label: 'Air yaw left', group: 'air' },
-  { action: 'yawRight', label: 'Air yaw right', group: 'air' },
-  { action: 'airRoll', label: 'Air roll (hold)', group: 'air' },
-  { action: 'airRollLeft', label: 'Air roll left', group: 'air' },
-  { action: 'airRollRight', label: 'Air roll right', group: 'air' },
-  { action: 'ballCam', label: 'Ball cam', group: 'camera' },
-  { action: 'rearView', label: 'Rear view', group: 'camera' },
-  { action: 'lookLeft', label: 'Camera swivel left', group: 'camera' },
-  { action: 'lookRight', label: 'Camera swivel right', group: 'camera' },
-  { action: 'lookUp', label: 'Camera swivel up', group: 'camera' },
-  { action: 'lookDown', label: 'Camera swivel down', group: 'camera' },
-  { action: 'scoreboard', label: 'Scoreboard (hold)', group: 'game' },
-  { action: 'pause', label: 'Pause / menu', group: 'game' },
-  { action: 'reset', label: 'Reset to kickoff', group: 'game' },
-  { action: 'trainingReset', label: 'Training: reset shot / ball', group: 'game' },
-  { action: 'trainingPrev', label: 'Training: previous shot', group: 'game' },
-  { action: 'trainingNext', label: 'Training: next shot', group: 'game' },
-  { action: 'trainingResetCar', label: 'Practice: reset car', group: 'game' },
-  { action: 'trainingBoost', label: 'Practice: unlimited boost', group: 'game' },
+  { action: 'throttle', label: t('action.throttle'), group: 'driving' },
+  { action: 'reverse', label: t('action.reverse'), group: 'driving' },
+  { action: 'steerLeft', label: t('action.steerLeft'), group: 'driving' },
+  { action: 'steerRight', label: t('action.steerRight'), group: 'driving' },
+  { action: 'jump', label: t('action.jump'), group: 'driving' },
+  { action: 'boost', label: t('action.boost'), group: 'driving' },
+  { action: 'powerslide', label: t('action.powerslide'), group: 'driving' },
+  { action: 'pitchUp', label: t('action.pitchUp'), group: 'air' },
+  { action: 'pitchDown', label: t('action.pitchDown'), group: 'air' },
+  { action: 'yawLeft', label: t('action.yawLeft'), group: 'air' },
+  { action: 'yawRight', label: t('action.yawRight'), group: 'air' },
+  { action: 'airRoll', label: t('action.airRoll'), group: 'air' },
+  { action: 'airRollLeft', label: t('action.airRollLeft'), group: 'air' },
+  { action: 'airRollRight', label: t('action.airRollRight'), group: 'air' },
+  { action: 'ballCam', label: t('action.ballCam'), group: 'camera' },
+  { action: 'rearView', label: t('action.rearView'), group: 'camera' },
+  { action: 'lookLeft', label: t('action.lookLeft'), group: 'camera' },
+  { action: 'lookRight', label: t('action.lookRight'), group: 'camera' },
+  { action: 'lookUp', label: t('action.lookUp'), group: 'camera' },
+  { action: 'lookDown', label: t('action.lookDown'), group: 'camera' },
+  { action: 'scoreboard', label: t('action.scoreboard'), group: 'game' },
+  { action: 'pause', label: t('action.pause'), group: 'game' },
+  { action: 'reset', label: t('action.reset'), group: 'game' },
+  { action: 'trainingReset', label: t('action.trainingReset'), group: 'game' },
+  { action: 'trainingPrev', label: t('action.trainingPrev'), group: 'game' },
+  { action: 'trainingNext', label: t('action.trainingNext'), group: 'game' },
+  { action: 'trainingResetCar', label: t('action.trainingResetCar'), group: 'game' },
+  { action: 'trainingBoost', label: t('action.trainingBoost'), group: 'game' },
 ];
 
 const KEY_LABELS: Readonly<Record<string, string>> = {

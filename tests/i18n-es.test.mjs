@@ -139,3 +139,23 @@ test('status lines: the Spanish of before (three dots on the server search, the 
   assert.equal(P2P.STATUS.serverAnswer, 'Sin rivales P2P ahora: partida en servidor');
   assert.equal(P2P.STATUS.reload, 'Hay una versión nueva del juego: recargá la página');
 });
+
+test('match banners and toasts: the Spanish Game.ts wrote before the translations', () => {
+  assert.equal(I.t('game.playerDisconnected', { name: 'Pepe' }), 'Pepe se desconectó');
+  assert.equal(I.t('game.botTakeover'), 'Su auto pasa a la IA');
+  assert.equal(I.t('game.resultWin', { team: I.t('game.teamBlue'), detail: '2 – 1' }), 'Ganó Azul  ·  2 – 1');
+  assert.equal(I.t('game.resultDraw', { detail: '1 – 1' }), 'Empate  ·  1 – 1');
+  assert.equal(I.t('game.welcomeNew', { name: 'Pepe' }), '¡Bienvenido, Pepe! Podés cambiar tu nombre en el perfil.');
+  assert.equal(I.t('game.accountLinked'), 'Cuenta vinculada');
+  assert.equal(I.t('profile.hello', { name: 'Pepe' }), 'Hola, Pepe');
+  assert.equal(I.t('game.guestName'), 'Invitado');
+});
+
+test('HUD and controls: Spanish labels, key names kept as they are', async () => {
+  const { ACTION_ROWS } = await import('../src/input/bindings.ts');
+  assert.equal(ACTION_ROWS.find((r) => r.action === 'throttle').label, 'Acelerar');
+  assert.equal(I.t('hud.go'), '¡YA!');
+  assert.equal(I.t('pause.hint', { resumeKeys: 'Esc / Start', quitKeys: 'Backspace / B' }), 'Esc / Start o clic para reanudar  ·  Backspace / B para salir');
+  assert.equal(I.t('trainingHud.attempts', { count: 1 }), '1 intento');
+  assert.equal(I.t('trainingHud.attempts', { count: 3 }), '3 intentos');
+});

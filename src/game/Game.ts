@@ -276,8 +276,8 @@ const PAD_SOUND_DIST = 320;
  * never dropped.
  */
 const UNLOCK_PAUSE_WINDOW = 0.12;
-/** The menus' title when no result is pending. */
-const POINTER_LOCK_HINT = 'Click to capture the mouse (mouse look)';
+/** The in-match hint while mouse look is available but the pointer is not captured (built once: shown per frame). */
+const POINTER_LOCK_HINT = t('game.pointerLockHint');
 /**
  * Online: the wrapper's bump counter is not part of the state blob, so a bump inside a replayed
  * window is counted again on every rollback that covers it; bump sounds are spaced by this many
@@ -295,15 +295,25 @@ const _ind = new THREE.Vector3();
 
 /** Training result banner titles (the sub line names the shot). */
 const TRAINING_RESULT_TITLE: Readonly<Record<ResultReason, string>> = {
-  goal: 'GOAL!',
-  save: 'SAVED!',
-  ownGoal: 'OWN GOAL',
-  conceded: 'CONCEDED',
-  timeout: 'TIME UP',
+  goal: t('game.goal'),
+  save: t('game.trainingSave'),
+  ownGoal: t('game.trainingOwnGoal'),
+  conceded: t('game.trainingConceded'),
+  timeout: t('game.trainingTimeUp'),
 };
 
-const TEAM_NAME: readonly [string, string] = ['BLUE', 'RED'];
-const TEAM_LABEL: readonly [string, string] = ['Blue', 'Red'];
+/** Team names for the banners and toasts: upper case in the titles ('BLUE WINS'), as written in the sub lines. */
+const TEAM_NAME: readonly [string, string] = [t('game.teamBlueUpper'), t('game.teamRedUpper')];
+const TEAM_LABEL: readonly [string, string] = [t('game.teamBlue'), t('game.teamRed')];
+
+/** The scoreboard footer's difficulty value, built once (the scoreboard is refreshed every frame while held). */
+const SCOREBOARD_DIFFICULTY: Readonly<Record<Difficulty, string>> = {
+  easy: t('game.scoreboardEasy'),
+  medium: t('game.scoreboardMedium'),
+  hard: t('game.scoreboardHard'),
+};
+const SCOREBOARD_ONLINE = t('game.scoreboardOnline');
+const SCOREBOARD_ONLINE_P2P = t('game.scoreboardOnlineP2p');
 
 /** Read the saved difficulty / quality / mode (falls back to defaults when storage is unavailable). */
 export function loadPrefs(): GamePrefs {
@@ -464,7 +474,7 @@ export class Game implements P2PGameHooks {
   /** One row per roster entry ('You', 'Bot 1'...), rebuilt by applyRoster(); the Hud diffs them. */
   private readonly sbRows: ScoreboardRow[] = [];
   /** Reused by the Tab scoreboard; `clock` is rebuilt only when the displayed second changes. */
-  private readonly scoreboardData: ScoreboardData = { blue: 0, red: 0, clock: '5:00', difficulty: 'medium', mode: '1v1', rows: this.sbRows };
+  private readonly scoreboardData: ScoreboardData = { blue: 0, red: 0, clock: '5:00', difficulty: SCOREBOARD_DIFFICULTY.medium, mode: '1v1', rows: this.sbRows };
   private sbClockSec = -1;
   private sbClockOvertime = false;
   /** Loop time at which losing the pointer lock paused the game (see UNLOCK_PAUSE_WINDOW). */
@@ -670,7 +680,7 @@ export class Game implements P2PGameHooks {
       if (auth === null) return;
       if (auth.kind === 'error') this.menu.toast(oauthErrorText(auth.code), 'error');
       else if (a !== null) {
-        this.menu.toast(auth.kind === 'new' ? `¡Bienvenido, ${a.name}! Podés cambiar tu nombre en el perfil.` : auth.kind === 'linked' ? 'Cuenta vinculada' : `Hola, ${a.name}`, 'ok');
+        this.menu.toast(auth.kind === 'new' ? t('game.welcomeNew', { name: a.name }) : auth.kind === 'linked' ? t('game.accountLinked') : t('profile.hello', { name: a.name }), 'ok');
         if (auth.kind === 'new') this.menu.open('profile');
       }
       void this.accounts.fetchMe().catch(() => undefined);
@@ -706,7 +716,7 @@ export class Game implements P2PGameHooks {
         const c = await net.config();
         return { regions: REGIONS, autoRegion: c.autoRegion ?? '', oauth: c.oauth ?? [], online: true };
       },
-      guestName: () => (game.online !== null ? game.online.name : 'Invitado'),
+      guestName: () => (game.online !== null ? game.online.name : t('game.guestName')),
       setGuestName: (name) => {
         if (game.online !== null) game.online.setName(name);
         if (game.p2p !== null) game.p2p.setName(name);
@@ -911,7 +921,7 @@ export class Game implements P2PGameHooks {
     rows.length = 0;
     for (let i = 0; i < roster.length; i++) {
       const r = roster[i];
-      rows.push({ name: i === w.slot ? `${r.name} (You)` : r.name, team: r.team, you: i === w.slot, bot: r.kind === 'bot' });
+      rows.push({ name: i === w.slot ? t('game.nameYou', { name: r.name }) : r.name, team: r.team, you: i === w.slot, bot: r.kind === 'bot' });
     }
     this.installSessionRoster(ids, w.slot);
   }
@@ -939,7 +949,7 @@ export class Game implements P2PGameHooks {
     rows.length = 0;
     for (let i = 0; i < roster.length; i++) {
       const r = roster[i];
-      rows.push({ name: i === me ? `${r.name} (You)` : r.name, team: r.team, you: i === me, bot: r.kind === 'bot' });
+      rows.push({ name: i === me ? t('game.nameYou', { name: r.name }) : r.name, team: r.team, you: i === me, bot: r.kind === 'bot' });
     }
     this.installSessionRoster(ids, me);
   }
@@ -1062,7 +1072,7 @@ export class Game implements P2PGameHooks {
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         break;
       case 'goal': {
-        hud.showBanner('GOAL!', `${TEAM_LABEL[e.team]} scores  ·  ${e.blue} – ${e.red}`, 2500, e.team);
+        hud.showBanner(t('game.goal'), t('game.teamScores', { team: TEAM_LABEL[e.team], blue: e.blue, red: e.red }), 2500, e.team);
         const b = this.cur;
         const p = this.hitPos;
         p[0] = b[BALL_OFFSET + B_POS];
@@ -1074,10 +1084,10 @@ export class Game implements P2PGameHooks {
         break;
       }
       case 'overtime':
-        hud.showBanner('OVERTIME', 'Next goal wins', 3000);
+        hud.showBanner(t('game.overtime'), t('game.nextGoalWins'), 3000);
         break;
       case 'ended': {
-        const title = `${TEAM_NAME[e.winner]} WINS`;
+        const title = t('game.teamWins', { team: TEAM_NAME[e.winner] });
         hud.showBanner(title, `${blue} – ${red}`, 0, e.winner);
         this.lastResult = { winner: e.winner, blue, red };
         this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
@@ -1099,7 +1109,7 @@ export class Game implements P2PGameHooks {
   p2pSlotDropped(slot: number, name: string): void {
     const row = this.sbRows[slot];
     if (row !== undefined) row.bot = true; // the Hud diffs the rows by content: the BOT tag appears
-    this.hud.showBanner(`${name} se desconectó`, 'Su auto pasa a la IA', 2000);
+    this.hud.showBanner(t('game.playerDisconnected', { name }), t('game.botTakeover'), 2000);
   }
 
   /** P2PGameHooks: the P2P queue answered with a server match (or the mesh never closed): phase 1 takes over. */
@@ -1175,7 +1185,7 @@ export class Game implements P2PGameHooks {
         hud.showCountdown(null);
         break;
       case 'goal': {
-        hud.showBanner('GOAL!', `${TEAM_LABEL[e.team]} scores  ·  ${e.blue} – ${e.red}`, 2500, e.team);
+        hud.showBanner(t('game.goal'), t('game.teamScores', { team: TEAM_LABEL[e.team], blue: e.blue, red: e.red }), 2500, e.team);
         const b = this.cur;
         const p = this.hitPos;
         p[0] = b[BALL_OFFSET + B_POS];
@@ -1187,12 +1197,12 @@ export class Game implements P2PGameHooks {
         break;
       }
       case 'overtime':
-        hud.showBanner('OVERTIME', 'Next goal wins', 3000);
+        hud.showBanner(t('game.overtime'), t('game.nextGoalWins'), 3000);
         break;
       case 'ended': {
         const w = e.winner;
         const team: 0 | 1 | null = w === 0 || w === 1 ? w : null;
-        const title = team === null ? 'DRAW' : `${TEAM_NAME[team]} WINS`;
+        const title = team === null ? t('game.draw') : t('game.teamWins', { team: TEAM_NAME[team] });
         hud.showBanner(title, `${e.blue} – ${e.red}`, 0, team);
         this.lastResult = { winner: team, blue: e.blue, red: e.red };
         this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
@@ -1200,18 +1210,18 @@ export class Game implements P2PGameHooks {
         break;
       }
       case 'playerJoined':
-        hud.showBanner(`${e.name} joined`, '', 1200);
+        hud.showBanner(t('game.playerJoined', { name: e.name }), '', 1200);
         break;
       case 'playerLeft': {
         const row = this.sbRows[e.slot];
-        hud.showBanner(`${row !== undefined ? row.name : `Player ${e.slot}`} left`, '', 1500);
+        hud.showBanner(t('game.playerLeft', { name: row !== undefined ? row.name : t('game.playerSlot', { slot: e.slot }) }), '', 1500);
         break;
       }
       case 'botTakeover': {
         // The player quit for good: the host's bot drives that car now (it keeps moving on screen).
         const row = this.sbRows[e.slot];
         if (row !== undefined) row.bot = true; // the Hud diffs the rows by content: the BOT tag appears
-        hud.showBanner(`${row !== undefined ? row.name : `Player ${e.slot}`} left`, 'Su auto pasa a la IA', 2000);
+        hud.showBanner(t('game.playerLeft', { name: row !== undefined ? row.name : t('game.playerSlot', { slot: e.slot }) }), t('game.botTakeover'), 2000);
         break;
       }
       default:
@@ -1459,7 +1469,7 @@ export class Game implements P2PGameHooks {
     const th = this.trainingHud;
     if (tr === null || th === null) return;
     const attempts = tr.attempts[index];
-    th.showResult(pass, TRAINING_RESULT_TITLE[reason], `Shot ${index + 1} / ${tr.shotCount}  ·  attempt ${attempts}`, RESULT_SECONDS * 1000);
+    th.showResult(pass, TRAINING_RESULT_TITLE[reason], t('game.trainingShot', { shot: index + 1, total: tr.shotCount, attempt: attempts }), RESULT_SECONDS * 1000);
     // Goals already played the goal sound (onSimGoal); a save / timeout gets a short cue.
     if (reason === 'save') this.audio.playGo();
     else if (reason === 'timeout') this.audio.playCountdownTick();
@@ -1474,7 +1484,7 @@ export class Game implements P2PGameHooks {
   }
 
   private trainingFreeplayGoal(): void {
-    if (this.trainingHud !== null) this.trainingHud.showResult(true, 'GOAL!', '', FREEPLAY_GOAL_PAUSE_SECONDS * 1000);
+    if (this.trainingHud !== null) this.trainingHud.showResult(true, TRAINING_RESULT_TITLE.goal, '', FREEPLAY_GOAL_PAUSE_SECONDS * 1000);
   }
 
   /** TrainingHooks.freeplayReset: car to the centre-back spawn and / or ball to the centre spot, at rest. */
@@ -2153,7 +2163,7 @@ export class Game implements P2PGameHooks {
     if (session !== null) {
       d.blue = session.score.blue;
       d.red = session.score.red;
-      d.difficulty = session.kind === 'p2p' ? 'online (P2P)' : 'online';
+      d.difficulty = session.kind === 'p2p' ? SCOREBOARD_ONLINE_P2P : SCOREBOARD_ONLINE;
       d.mode = this.mode;
       const sec = session.displaySeconds;
       const overtime = session.overtime;
@@ -2168,7 +2178,7 @@ export class Game implements P2PGameHooks {
     const match = this.match;
     d.blue = match.score.blue;
     d.red = match.score.red;
-    d.difficulty = this.difficulty;
+    d.difficulty = SCOREBOARD_DIFFICULTY[this.difficulty];
     d.mode = this.mode;
     const sec = match.displaySeconds;
     const overtime = match.overtime;
@@ -2283,8 +2293,8 @@ export class Game implements P2PGameHooks {
     // The last match's result (score / disconnect reason) as a toast over the menus.
     const result = this.lastResult;
     if (result !== null) {
-      const who = result.winner === 0 ? 'Ganó Azul' : result.winner === 1 ? 'Ganó Rojo' : 'Empate';
-      this.menu.toast(`${who}  ·  ${this.menuNotice ?? `${result.blue} – ${result.red}`}`, 'info');
+      const detail = this.menuNotice ?? `${result.blue} – ${result.red}`;
+      this.menu.toast(result.winner === null ? t('game.resultDraw', { detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], detail }), 'info');
     }
     else if (this.menuNotice !== undefined && this.menuNotice.length > 0) this.menu.toast(this.menuNotice, 'info');
     this.lastResult = null;
@@ -2322,14 +2332,14 @@ export class Game implements P2PGameHooks {
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         break;
       case 'goal':
-        hud.showBanner('GOAL!', `${TEAM_LABEL[e.team]} scores  ·  ${e.blue} – ${e.red}`, 2500, e.team);
+        hud.showBanner(t('game.goal'), t('game.teamScores', { team: TEAM_LABEL[e.team], blue: e.blue, red: e.red }), 2500, e.team);
         break;
       case 'overtime':
-        hud.showBanner('OVERTIME', 'Next goal wins', 3000);
+        hud.showBanner(t('game.overtime'), t('game.nextGoalWins'), 3000);
         break;
       case 'ended': {
         const s = this.match.score;
-        hud.showBanner(`${TEAM_NAME[e.winner]} WINS`, `${s.blue} – ${s.red}`, 0, e.winner);
+        hud.showBanner(t('game.teamWins', { team: TEAM_NAME[e.winner] }), `${s.blue} – ${s.red}`, 0, e.winner);
         this.lastResult = { winner: e.winner, blue: s.blue, red: s.red };
         this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
         this.input.exitPointerLock();
@@ -2525,15 +2535,15 @@ export class Game implements P2PGameHooks {
       offs.push(sim.carOffset(slot));
       const team = i === 0 ? Team.Blue : sim.teamOf(slot);
       if (i === 0) {
-        rows.push({ name: 'You', team: Team.Blue, you: true });
+        rows.push({ name: t('game.you'), team: Team.Blue, you: true });
       } else if (team === Team.Red) {
         this.redSlots.push(slot);
         this.redOuts.push(this.controls[i]);
-        rows.push({ name: `Bot ${++redBots}`, team, you: false });
+        rows.push({ name: t('game.botName', { number: ++redBots }), team, you: false });
       } else {
         this.blueSlots.push(slot);
         this.blueOuts.push(this.controls[i]);
-        rows.push({ name: `Bot ${++blueBots}`, team, you: false });
+        rows.push({ name: t('game.botName', { number: ++blueBots }), team, you: false });
       }
     }
     this.playerSlot = slots[0];

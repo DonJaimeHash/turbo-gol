@@ -305,6 +305,7 @@ export default {
   'profile.username': 'Username',
   'profile.password': 'Password',
   'profile.signIn': 'SIGN IN',
+  // Toast after signing in (password, Google or Discord: also src/game/Game.ts); {name} is the account name
   'profile.hello': 'Hi, {name}',
   // Placeholder of the username field: length and allowed characters
   'profile.usernameHint': '{min} to {max}: letters, numbers, _ - .',
@@ -594,13 +595,165 @@ export default {
   // then its "Add to Home Screen" item (use Safari's own names in your language); › joins the two steps
   'touch.installHint': 'Play full screen: tap Share › Add to Home Screen',
 
-  // Pause screen buttons on a touch screen (src/render/Hud.ts), under the PAUSED title, uppercase
+  // In-match HUD (src/render/Hud.ts). Short: it shares a 375 px phone screen with the touch controls.
+  // Scorebug team tags (top left, next to the score), uppercase, about 3 letters
+  'hud.tagBlue': 'BLU',
+  'hud.tagRed': 'RED',
+  // Label over the boost bar (bottom left), uppercase
+  'hud.boost': 'BOOST',
+  // Camera pill at the bottom of the screen, uppercase: the camera stays on the ball
+  'hud.ballCam': 'BALL CAM',
+  // The same pill when the camera looks where the car goes
+  'hud.carCam': 'CAR CAM',
+  // Last step of the kickoff countdown (3, 2, 1, GO), huge, uppercase
+  'hud.go': 'GO',
+  // Team column headers of the scoreboard (held Tab / Back)
+  'hud.teamBlue': 'Blue',
+  'hud.teamRed': 'Red',
+  // Scoreboard tag before a name, uppercase, about 3 letters: the player's own car
+  'hud.you': 'YOU',
+  // Scoreboard tag before a name: a car driven by the AI
+  'hud.bot': 'BOT',
+  // Scoreboard footer; {difficulty} is game.scoreboardEasy / Medium / Hard offline, game.scoreboardOnline / OnlineP2p online
+  'hud.botDifficulty': 'Bot difficulty · {difficulty}',
+
+  // Pause screen (src/render/Hud.ts)
+  // Title, huge, uppercase
+  'pause.title': 'PAUSED',
+  // Line under the title; {resumeKeys} and {quitKeys} are key names (Esc / Start, Backspace / B), not translated. Keep the spacing.
+  'pause.hintDefault': '{resumeKeys} to resume  ·  {quitKeys} to quit',
+  // The same line with the player's pause keys; a mouse click on the game also resumes
+  'pause.hint': '{resumeKeys} or click to resume  ·  {quitKeys} to quit',
+  // Buttons on a touch screen, in place of that line, uppercase
   // Back to the match
   'pause.resume': 'RESUME',
   // Leave the match for the menus
   'pause.quit': 'QUIT',
   // The QUIT button after one tap in an online match: a second tap leaves it (may count as an abandon)
   'pause.quitConfirm': 'LEAVE MATCH?',
+
+  // Controls & settings screen, opened from the pause screen and the menus (src/render/Hud.ts)
+  // Top-left button that closes the screen, uppercase (shown after a ‹ arrow)
+  'settings.back': 'BACK',
+  // Screen title, uppercase
+  'settings.title': 'CONTROLS & SETTINGS',
+  // Tab: key bindings for keyboard and mouse
+  'settings.tabKbm': 'Keyboard & Mouse',
+  // Tab: button bindings for a gamepad
+  'settings.tabPad': 'Controller',
+  'settings.tabCamera': 'Camera',
+  // Tab: sensitivities, deadzones and other control options
+  'settings.tabGameplay': 'Gameplay',
+  // Group titles of the binding lists (shown uppercase by the style)
+  'settings.groupDriving': 'Driving',
+  // Car controls while flying
+  'settings.groupAir': 'Air',
+  'settings.groupCamera': 'Camera',
+  // Scoreboard, pause, reset and training shortcuts
+  'settings.groupGame': 'Game',
+  // One line over the keyboard & mouse list (cut with … when the screen is narrow)
+  'settings.mouseNote': 'Mouse buttons and wheel are bindable · mouse movement swivels the camera',
+  // Tooltip of a binding cell
+  'settings.rebindTitle': 'Click to rebind',
+  // Tooltip of the disabled × next to the pause binding
+  'settings.pauseLockedTitle': 'Pause cannot be unbound',
+  // Tooltip of the × next to a binding; {key} is the Delete key name (Del)
+  'settings.unbindTitle': 'Unbind ({key})',
+  // Inside the binding cell while it waits for the new key, lowercase; {cancelKey} is a key name (Esc)
+  'settings.pressKey': 'press a key… ({cancelKey} cancels)',
+  // The same on the controller tab
+  'settings.pressButton': 'press a button… ({cancelKey} cancels)',
+  // Footer button of the binding tabs: restore the standard bindings
+  'settings.defaultLayout': 'Default layout',
+  // Footer button of the keyboard tab: a bindings preset that uses no mouse buttons
+  'settings.keyboardOnly': 'Keyboard only',
+  // Controller tab status line; {name} is the browser's name for the gamepad
+  'settings.padNamed': 'Controller: {name}',
+  // The same when the browser gives no name
+  'settings.padConnected': 'Controller: connected',
+  // Browsers only report a gamepad after one of its buttons is pressed
+  'settings.padMissing': 'No controller detected (press any button)',
+  // Camera tab: line over the sliders (the camera behind the car)
+  'settings.cameraNote': 'Chase camera',
+  // Camera slider labels
+  'settings.cameraFov': 'Field of view',
+  'settings.cameraDistance': 'Distance',
+  'settings.cameraHeight': 'Height',
+  'settings.cameraAngle': 'Angle',
+  // How tightly the camera follows the car
+  'settings.cameraStiffness': 'Stiffness',
+  // How fast the camera turns when you look around
+  'settings.cameraSwivelSpeed': 'Swivel speed',
+  // How fast it switches between ball cam and car cam
+  'settings.cameraTransitionSpeed': 'Transition speed',
+  // Camera preset buttons; {values} is field of view / distance / height (110/270/100)
+  'settings.presetWide': 'Wide ({values})',
+  'settings.presetClassic': 'Classic ({values})',
+  // Gameplay tab: line over the rows
+  'settings.gameplayNote': 'Sensitivities and deadzones',
+  // Gameplay tab rows
+  'settings.steeringSensitivity': 'Steering sensitivity',
+  'settings.aerialSensitivity': 'Aerial sensitivity',
+  // Stick movement ignored around the centre
+  'settings.controllerDeadzone': 'Controller deadzone',
+  // Stick tilt needed for a second jump to become a dodge (flip) instead of a double jump
+  'settings.dodgeDeadzone': 'Dodge deadzone',
+  'settings.mouseSensitivity': 'Mouse sensitivity',
+  // On / off: steer the car with the mouse
+  'settings.mouseSteering': 'Mouse steering',
+  'settings.mouseSteeringSensitivity': 'Mouse steering sensitivity',
+  // On / off: swap nose up / nose down while flying
+  'settings.invertAirPitch': 'Invert air pitch',
+  // On / off
+  'settings.vibration': 'Controller vibration',
+  // Gameplay tab footer button: restore every row
+  'settings.resetGameplay': 'Reset gameplay',
+  // On / off switch of a row, uppercase (also in trainingHud.boost*)
+  'settings.on': 'ON',
+  'settings.off': 'OFF',
+  // Key hints at the bottom (hidden on phones). The {...Keys} are key names (↑ ↓, ← →, Enter / A, Del, Q E / X, Esc / B) and are not translated. Keep the spacing.
+  'settings.keys': '{navKeys} navigate   ·   {adjustKeys} adjust   ·   {selectKeys} select   ·   {clearKeys} clear   ·   {tabKeys} tabs   ·   {backKeys} back',
+
+  // Bindable actions, one row each on the controls screen under the settings.group* titles
+  // (src/input/bindings.ts ACTION_ROWS). Key and button names are never translated. Keep them short:
+  // on a 375 px phone a label shares its row with a 128 px binding cell.
+  'action.throttle': 'Throttle',
+  'action.reverse': 'Reverse',
+  'action.steerLeft': 'Steer left',
+  'action.steerRight': 'Steer right',
+  'action.jump': 'Jump',
+  'action.boost': 'Boost',
+  // The same action as the touch button touch.drift
+  'action.powerslide': 'Powerslide',
+  // In the air: nose up (stick pulled back)
+  'action.pitchUp': 'Air pitch up',
+  // In the air: nose down (stick forward)
+  'action.pitchDown': 'Air pitch down',
+  'action.yawLeft': 'Air yaw left',
+  'action.yawRight': 'Air yaw right',
+  // (hold): works while the key is held; the steer keys then roll the car instead of yawing
+  'action.airRoll': 'Air roll (hold)',
+  'action.airRollLeft': 'Air roll left',
+  'action.airRollRight': 'Air roll right',
+  // The camera that keeps the ball in view
+  'action.ballCam': 'Ball cam',
+  'action.rearView': 'Rear view',
+  'action.lookLeft': 'Camera swivel left',
+  'action.lookRight': 'Camera swivel right',
+  'action.lookUp': 'Camera swivel up',
+  'action.lookDown': 'Camera swivel down',
+  'action.scoreboard': 'Scoreboard (hold)',
+  'action.pause': 'Pause / menu',
+  'action.reset': 'Reset to kickoff',
+  // Training only: resets the shot in a pack, the ball in free play
+  'action.trainingReset': 'Training: reset shot / ball',
+  // Training packs only
+  'action.trainingPrev': 'Training: previous shot',
+  'action.trainingNext': 'Training: next shot',
+  // Free play only: the car goes back to its spawn
+  'action.trainingResetCar': 'Practice: reset car',
+  // Free play only: turns unlimited boost on and off
+  'action.trainingBoost': 'Practice: unlimited boost',
 
   // Training screen and packs (src/ui/screens/training.ts, src/game/trainingPacks.ts)
   // Screen title (top bar / history)
@@ -704,4 +857,136 @@ export default {
   'training.shotHighDeep': 'High and deep',
   'training.shotLongRange': 'Long range',
   'training.shotLobFromCorner': 'Lob from the corner',
+
+  // Training HUD: shot panel, pause panel, pack summary (src/render/TrainingHud.ts)
+  // Prompt while a shot waits for the first car input (one line, no wrap; on a phone it sits between
+  // the touch stick and the JUMP button, so keep it no longer than the English)
+  'trainingHud.start': 'Drive to start the shot',
+  // Pause panel button: back to the shot
+  'trainingHud.resume': 'Resume',
+  // Pause panel button (shot packs): restart the current shot
+  'trainingHud.resetShot': 'Reset shot',
+  // Pause panel buttons (shot packs)
+  'trainingHud.prevShot': 'Previous shot',
+  'trainingHud.nextShot': 'Next shot',
+  // Pause panel button (free play): the ball back to the centre spot
+  'trainingHud.resetBall': 'Reset ball',
+  // Pause panel button (free play): the car back to its spawn
+  'trainingHud.resetCar': 'Reset car',
+  // Pause panel toggle button (free play) while unlimited boost is on; ON / OFF as in settings.on / settings.off
+  'trainingHud.boostButtonOn': 'Unlimited boost: ON',
+  // The same button while unlimited boost is off
+  'trainingHud.boostButtonOff': 'Unlimited boost: OFF',
+  // Pause panel button: leave training for the menu
+  'trainingHud.quit': 'Quit training',
+  // Pack summary title
+  'trainingHud.packComplete': 'Pack complete',
+  // Pack summary button: play the pack again
+  'trainingHud.retryPack': 'Retry pack',
+  // Pack summary button
+  'trainingHud.backToMenu': 'Back to menu',
+  // Key hints in the panel, one line each. {key} is a key/button name and is not translated. Keep the spacing.
+  'trainingHud.keyResetBall': '{key}  reset ball',
+  'trainingHud.keyResetCar': '{key}  reset car',
+  // Toggles unlimited boost (free play)
+  'trainingHud.keyBoost': '{key}  unlimited boost',
+  'trainingHud.keyPause': '{key}  pause',
+  'trainingHud.keyResetShot': '{key}  reset shot',
+  // {prev} and {next} are key/button names
+  'trainingHud.keyPrevNext': '{prev} / {next}  previous / next shot',
+  // Key hints under the pack summary. The {...} are key/button names and are not translated. Keep the spacing.
+  'trainingHud.summaryHint': '{accept} / {reset}  retry pack   ·   {back}  back to menu   ·   {prev} / {next}  pick a shot',
+  // Panel: current shot number out of the pack's shots, then the shot's name (training.shot* keys)
+  'trainingHud.shot': 'Shot {index} / {total}  ·  {name}',
+  // Panel: tries at the current shot so far
+  'trainingHud.attempts': { one: '{count} attempt', other: '{count} attempts' },
+  // Panel status line (free play) while unlimited boost is on. Keep the spacing.
+  'trainingHud.boostLineOn': 'Unlimited boost  ON',
+  // The same line while unlimited boost is off
+  'trainingHud.boostLineOff': 'Unlimited boost  OFF',
+  // Pack summary: this run beat the saved best score
+  'trainingHud.newBest': 'New best!',
+  // Pack summary: saved best score, shots passed out of the pack's total. Keep the spacing.
+  'trainingHud.best': 'Best  {best} / {total}',
+
+  // Match banners, scoreboard rows and menu toasts (src/game/Game.ts)
+  // In-match hint while mouse look is available but the mouse is not captured (pointer lock)
+  'game.pointerLockHint': 'Click to capture the mouse (mouse look)',
+  // Goal banner title in a match, and the training result title for a scored shot / free-play goal
+  'game.goal': 'GOAL!',
+  // Training result title: the shot was saved (saving packs)
+  'game.trainingSave': 'SAVED!',
+  // Training result title: the player put the ball in their own goal
+  'game.trainingOwnGoal': 'OWN GOAL',
+  // Training result title: the shot went into the player's goal (saving packs)
+  'game.trainingConceded': 'CONCEDED',
+  // Training result title: the shot's time limit ran out
+  'game.trainingTimeUp': 'TIME UP',
+  // Training result sub line: shot number of the pack's total, and which attempt this was (an ordinal, not a count). Keep the spacing.
+  'game.trainingShot': 'Shot {shot} / {total}  ·  attempt {attempt}',
+  // Team names inside sentences ({team} in game.teamScores and game.resultWin)
+  'game.teamBlue': 'Blue',
+  'game.teamRed': 'Red',
+  // Team names in the uppercase end-of-match banner ({team} in game.teamWins)
+  'game.teamBlueUpper': 'BLUE',
+  'game.teamRedUpper': 'RED',
+  // Goal banner sub line: {team} is game.teamBlue / game.teamRed, then the new score blue – red. Keep the spacing.
+  'game.teamScores': '{team} scores  ·  {blue} – {red}',
+  // End-of-match banner title; {team} is game.teamBlueUpper / game.teamRedUpper
+  'game.teamWins': '{team} WINS',
+  // End-of-match banner title when nobody won (server matches)
+  'game.draw': 'DRAW',
+  // Banner title when regulation time ends tied
+  'game.overtime': 'OVERTIME',
+  // Overtime banner sub line
+  'game.nextGoalWins': 'Next goal wins',
+  // Banner when a player joins a server match; {name} is the player's name
+  'game.playerJoined': '{name} joined',
+  // Banner when a player leaves a server match; {name} is the player's name or game.playerSlot
+  'game.playerLeft': '{name} left',
+  // Name of a player whose name is unknown; {slot} is the slot number
+  'game.playerSlot': 'Player {slot}',
+  // Banner when a peer-to-peer player drops out; {name} is the player's name
+  'game.playerDisconnected': '{name} disconnected',
+  // Sub line under game.playerDisconnected / game.playerLeft: a bot now drives that player's car
+  'game.botTakeover': 'The AI takes over their car',
+  // Scoreboard row of the local player in an online match; {name} is their name
+  'game.nameYou': '{name} (You)',
+  // Scoreboard row name of the local player in an offline match
+  'game.you': 'You',
+  // Scoreboard row name of an offline bot; {number} counts the bots of that team from 1
+  'game.botName': 'Bot {number}',
+  // Scoreboard footer values ({difficulty} in hud.botDifficulty), lowercase: the AI difficulty offline...
+  'game.scoreboardEasy': 'easy',
+  'game.scoreboardMedium': 'medium',
+  'game.scoreboardHard': 'hard',
+  // ...a server match
+  'game.scoreboardOnline': 'online',
+  // ...a peer-to-peer match
+  'game.scoreboardOnlineP2p': 'online (P2P)',
+  // Menu toast after a match; {team} is game.teamBlue / game.teamRed, {detail} the final score (blue – red) or the disconnect reason. Keep the spacing.
+  'game.resultWin': '{team} wins  ·  {detail}',
+  // Menu toast after a drawn match; {detail} as in game.resultWin
+  'game.resultDraw': 'Draw  ·  {detail}',
+  // Toast after creating an account with Google / Discord; {name} is the new account name. The profile opens right after
+  'game.welcomeNew': 'Welcome, {name}! You can change your name in your profile.',
+  // Toast after linking a Google / Discord login to the signed-in account
+  'game.accountLinked': 'Account linked',
+  // Guest name in the menus when the game runs without an online server (online guests get a generated name like Guest123, which is never translated)
+  'game.guestName': 'Guest',
+
+  // Boot progress and error page on the loading screen, before the menus (src/main.ts). The title
+  // above them (TURBOGOL) and the error details (stack) are not translated.
+  'boot.renderer': 'Starting renderer…',
+  'boot.rendererFailed': 'Could not start the renderer',
+  // Keep the browser names and versions as they are
+  'boot.rendererHint': 'This game needs WebGPU (Chrome / Edge 113+, Firefox 141+, Safari 26+) or at least WebGL2. Make sure hardware acceleration is enabled in the browser settings.',
+  // {backend} is WebGPU or WebGL2 (not translated)
+  'boot.physics': 'Loading physics (RocketSim)… [{backend}]',
+  'boot.physicsFailed': 'Could not load the physics module',
+  'boot.physicsHint': 'The WebAssembly module (rocketsim.wasm) failed to load or instantiate.',
+  'boot.arena': 'Building arena…',
+  'boot.scene': 'Building scene…',
+  'boot.failed': 'Failed to start',
+  'boot.failedHint': 'Something went wrong while starting the game.',
 } satisfies Messages;
