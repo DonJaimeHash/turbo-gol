@@ -38,7 +38,7 @@ import {
 } from '../settings';
 import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/NetStats';
 import { MODES, type GameMode } from '../sim/constants';
-import { language, t } from '../i18n';
+import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -191,41 +191,61 @@ export const MENU_CONTROL_ROWS = ACTION_ROWS.filter(
   (r) => r.group === 'driving' || r.action === 'ballCam' || r.action === 'rearView' || r.action === 'pause',
 );
 
-const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: string }> = [
-  { id: 'kbm', label: 'Keyboard & Mouse' },
-  { id: 'pad', label: 'Controller' },
-  { id: 'camera', label: 'Camera' },
-  { id: 'gameplay', label: 'Gameplay' },
+// The settings screen's tables hold text keys: t() runs when the screen is built (once per page).
+// The language is fixed for the page, so resolving them at import would work too (ACTION_ROWS does).
+const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: Key }> = [
+  { id: 'kbm', label: 'settings.tabKbm' },
+  { id: 'pad', label: 'settings.tabPad' },
+  { id: 'camera', label: 'settings.tabCamera' },
+  { id: 'gameplay', label: 'settings.tabGameplay' },
 ];
 
-const GROUP_TITLES: Readonly<Record<'driving' | 'air' | 'camera' | 'game', string>> = {
-  driving: 'Driving',
-  air: 'Air',
-  camera: 'Camera',
-  game: 'Game',
+const GROUP_TITLES: Readonly<Record<'driving' | 'air' | 'camera' | 'game', Key>> = {
+  driving: 'settings.groupDriving',
+  air: 'settings.groupAir',
+  camera: 'settings.groupCamera',
+  game: 'settings.groupGame',
 };
 
-const CAMERA_SLIDERS: ReadonlyArray<{ key: keyof CameraSettings; label: string; suffix: string }> = [
-  { key: 'fov', label: 'Field of view', suffix: '°' },
-  { key: 'distance', label: 'Distance', suffix: '' },
-  { key: 'height', label: 'Height', suffix: '' },
-  { key: 'angle', label: 'Angle', suffix: '°' },
-  { key: 'stiffness', label: 'Stiffness', suffix: '' },
-  { key: 'swivelSpeed', label: 'Swivel speed', suffix: '' },
-  { key: 'transitionSpeed', label: 'Transition speed', suffix: '' },
+const CAMERA_SLIDERS: ReadonlyArray<{ key: keyof CameraSettings; label: Key; suffix: string }> = [
+  { key: 'fov', label: 'settings.cameraFov', suffix: '°' },
+  { key: 'distance', label: 'settings.cameraDistance', suffix: '' },
+  { key: 'height', label: 'settings.cameraHeight', suffix: '' },
+  { key: 'angle', label: 'settings.cameraAngle', suffix: '°' },
+  { key: 'stiffness', label: 'settings.cameraStiffness', suffix: '' },
+  { key: 'swivelSpeed', label: 'settings.cameraSwivelSpeed', suffix: '' },
+  { key: 'transitionSpeed', label: 'settings.cameraTransitionSpeed', suffix: '' },
 ];
 
-const GAMEPLAY_ROWS: ReadonlyArray<{ key: keyof ControlSettings; label: string }> = [
-  { key: 'steeringSensitivity', label: 'Steering sensitivity' },
-  { key: 'aerialSensitivity', label: 'Aerial sensitivity' },
-  { key: 'controllerDeadzone', label: 'Controller deadzone' },
-  { key: 'dodgeDeadzone', label: 'Dodge deadzone' },
-  { key: 'mouseSensitivity', label: 'Mouse sensitivity' },
-  { key: 'mouseSteering', label: 'Mouse steering' },
-  { key: 'mouseSteeringSensitivity', label: 'Mouse steering sensitivity' },
-  { key: 'invertAirPitch', label: 'Invert air pitch' },
-  { key: 'vibration', label: 'Controller vibration' },
+const GAMEPLAY_ROWS: ReadonlyArray<{ key: keyof ControlSettings; label: Key }> = [
+  { key: 'steeringSensitivity', label: 'settings.steeringSensitivity' },
+  { key: 'aerialSensitivity', label: 'settings.aerialSensitivity' },
+  { key: 'controllerDeadzone', label: 'settings.controllerDeadzone' },
+  { key: 'dodgeDeadzone', label: 'settings.dodgeDeadzone' },
+  { key: 'mouseSensitivity', label: 'settings.mouseSensitivity' },
+  { key: 'mouseSteering', label: 'settings.mouseSteering' },
+  { key: 'mouseSteeringSensitivity', label: 'settings.mouseSteeringSensitivity' },
+  { key: 'invertAirPitch', label: 'settings.invertAirPitch' },
+  { key: 'vibration', label: 'settings.vibration' },
 ];
+
+/** Key names shown in the settings screen's texts: never translated, passed as {placeholders}. */
+const SETTINGS_KEYS = {
+  nav: '↑ ↓',
+  adjust: '← →',
+  select: 'Enter / A',
+  clear: 'Del',
+  tabs: 'Q E / X',
+  back: 'Esc / B',
+  cancel: 'Esc',
+} as const;
+
+/** The pause overlay's quit keys (fixed: Game handles Backspace / pad B while paused). */
+const PAUSE_QUIT_KEYS = 'Backspace / B';
+
+/** The camera presets' values (field of view / distance / height), shown after their names. */
+const PRESET_WIDE_VALUES = '110/270/100';
+const PRESET_CLASSIC_VALUES = '90/270/100';
 
 /** Decimal places implied by a slider step (1 → 0, 0.5 → 1, 0.05 → 2). */
 export function stepDecimals(step: number): number {
@@ -325,6 +345,13 @@ export class Hud {
   /** The pause screen's RESUME / QUIT buttons (touch mode only, see the constructor); set by the Game. */
   onPauseResume: (() => void) | null = null;
   onPauseQuit: (() => void) | null = null;
+
+  /** Labels the per-frame / per-event setters swap in, translated once here (never t() per frame). */
+  private readonly labelBallCam = t('hud.ballCam');
+  private readonly labelCarCam = t('hud.carCam');
+  private readonly labelGo = t('hud.go');
+  private readonly labelYou = t('hud.you');
+  private readonly labelBot = t('hud.bot');
 
   private readonly scoreBlue: HTMLElement;
   private readonly scoreRed: HTMLElement;
@@ -511,8 +538,6 @@ export class Hud {
 
   constructor(container: HTMLElement) {
     this.root = el('div', 'hud-root');
-    // The in-game HUD, pause overlay and settings screen are still in English (the page is lang="es").
-    this.root.lang = 'en';
     container.appendChild(this.root);
 
     // Turnstile widget slot: the online client renders the anti-bot widget here while it registers a
@@ -528,10 +553,10 @@ export class Hud {
     const board = el('div', 'hud-score');
     const blue = el('div', 'hud-score-team hud-blue');
     this.scoreBlue = el('span', 'hud-score-goals', '0');
-    blue.append(el('span', 'hud-score-tag', 'BLU'), this.scoreBlue);
+    blue.append(el('span', 'hud-score-tag', t('hud.tagBlue')), this.scoreBlue);
     const red = el('div', 'hud-score-team hud-red');
     this.scoreRed = el('span', 'hud-score-goals', '0');
-    red.append(el('span', 'hud-score-tag', 'RED'), this.scoreRed);
+    red.append(el('span', 'hud-score-tag', t('hud.tagRed')), this.scoreRed);
     this.clock = el('div', 'hud-clock', '5:00');
     board.append(blue, red, this.clock);
     top.appendChild(board);
@@ -543,7 +568,7 @@ export class Hud {
     fpsBox.append(this.fps, this.fpsInfo);
     this.root.appendChild(fpsBox);
 
-    this.camMode = el('div', 'hud-cam', 'BALL CAM');
+    this.camMode = el('div', 'hud-cam', this.labelBallCam);
     this.root.appendChild(this.camMode);
 
     this.hint = el('div', 'hud-hint');
@@ -563,7 +588,7 @@ export class Hud {
     this.boostFill = el('div', 'hud-boost-fill');
     boostBar.append(this.boostFill, el('div', 'hud-boost-segs'));
     this.boostValue = el('div', 'hud-boost-value', '33');
-    this.boostBox.append(el('div', 'hud-boost-label', 'BOOST'), boostBar, this.boostValue);
+    this.boostBox.append(el('div', 'hud-boost-label', t('hud.boost')), boostBar, this.boostValue);
     this.root.appendChild(this.boostBox);
 
     // Off-screen ball indicator: a ball glyph pinned to the screen edge with an arrow and distance.
@@ -597,10 +622,10 @@ export class Hud {
     const sbTeams = el('div', 'hud-sb-teams');
     const blueCol = el('div', 'hud-sb-team hud-blue');
     const blueRows = el('div', 'hud-sb-rows');
-    blueCol.append(el('div', 'hud-sb-team-name', 'Blue'), blueRows);
+    blueCol.append(el('div', 'hud-sb-team-name', t('hud.teamBlue')), blueRows);
     const redCol = el('div', 'hud-sb-team hud-red');
     const redRows = el('div', 'hud-sb-rows');
-    redCol.append(el('div', 'hud-sb-team-name', 'Red'), redRows);
+    redCol.append(el('div', 'hud-sb-team-name', t('hud.teamRed')), redRows);
     this.sbRowsEl = [blueRows, redRows];
     sbTeams.append(blueCol, redCol);
     this.sbFoot = el('div', 'hud-sb-foot', '');
@@ -610,13 +635,12 @@ export class Hud {
     this.root.appendChild(this.scoreboard);
 
     this.paused = el('div', 'hud-paused');
-    this.pausedSub = el('div', 'hud-paused-sub', 'Esc / Start to resume  ·  Backspace / B to quit');
+    this.pausedSub = el('div', 'hud-paused-sub', t('pause.hintDefault', { resumeKeys: 'Esc / Start', quitKeys: PAUSE_QUIT_KEYS }));
     // Touch mode only (style.css, html.tg-touch): a finger has no Esc / Backspace, so RESUME and
     // QUIT take the key line's place. Only the buttons take the pointer: a tap on the veil still
     // reaches the canvas (resume). Training hides them for its own pause panel. Online, QUIT asks
     // for a second tap: a mis-tap next to RESUME would leave the match (an abandon in ranked).
     const pauseActions = el('div', 'hud-paused-actions');
-    pauseActions.lang = language(); // translated, unlike the rest of the Hud
     const resume = button('hud-paused-btn hud-paused-resume', t('pause.resume'));
     resume.addEventListener('click', () => this.onPauseResume?.());
     const quit = button('hud-paused-btn hud-paused-quit', t('pause.quit'));
@@ -626,7 +650,7 @@ export class Hud {
     });
     this.pauseQuit = quit;
     pauseActions.append(resume, quit);
-    this.paused.append(el('div', 'hud-paused-title', 'PAUSED'), this.pausedSub, pauseActions);
+    this.paused.append(el('div', 'hud-paused-title', t('pause.title')), this.pausedSub, pauseActions);
     this.paused.hidden = true;
     this.root.appendChild(this.paused);
 
@@ -823,7 +847,7 @@ export class Hud {
   setCameraMode(ballCam: boolean): void {
     if (ballCam === this.lastBallCam) return;
     this.lastBallCam = ballCam;
-    this.camMode.textContent = ballCam ? 'BALL CAM' : 'CAR CAM';
+    this.camMode.textContent = ballCam ? this.labelBallCam : this.labelCarCam;
     this.camMode.classList.toggle('hud-cam-off', !ballCam);
   }
 
@@ -863,9 +887,9 @@ export class Hud {
     }
   }
 
-  /** Kickoff countdown: 3, 2, 1, 'GO'; null hides it. */
+  /** Kickoff countdown: 3, 2, 1, 'GO' (a token: shown as hud.go); null hides it. */
   showCountdown(n: number | 'GO' | null): void {
-    const text = n === null ? null : String(n);
+    const text = n === null ? null : n === 'GO' ? this.labelGo : String(n);
     if (text === this.lastCountdown) return;
     this.lastCountdown = text;
     if (text === null) {
@@ -959,7 +983,8 @@ export class Hud {
     if (data.difficulty !== this.lastSbDifficulty || data.mode !== this.lastSbMode) {
       this.lastSbDifficulty = data.difficulty;
       this.lastSbMode = data.mode;
-      this.sbFoot.textContent = `${data.mode !== undefined ? `${data.mode}  ·  ` : ''}Bot difficulty · ${data.difficulty}`;
+      const difficulty = t('hud.botDifficulty', { difficulty: data.difficulty });
+      this.sbFoot.textContent = data.mode !== undefined ? `${data.mode}  ·  ${difficulty}` : difficulty;
     }
   }
 
@@ -986,7 +1011,7 @@ export class Hud {
       const r = rows[i];
       const bot = r.bot !== false;
       const row = el('div', r.you ? 'hud-sb-row hud-sb-you' : 'hud-sb-row');
-      row.append(el('span', r.you ? 'hud-sb-tag hud-you' : 'hud-sb-tag', r.you ? 'YOU' : bot ? 'BOT' : ''), el('span', 'hud-sb-name', r.name));
+      row.append(el('span', r.you ? 'hud-sb-tag hud-you' : 'hud-sb-tag', r.you ? this.labelYou : bot ? this.labelBot : ''), el('span', 'hud-sb-name', r.name));
       cols[r.team === 1 ? 1 : 0].appendChild(row);
       shown.push({ name: r.name, team: r.team, you: r.you, bot });
     }
@@ -1153,6 +1178,11 @@ export class Hud {
 
   // ---- main menu ---------------------------------------------------------------------------
 
+  /**
+   * The overlay plus the legacy main panel. Nothing shows that panel any more (showMenu has no
+   * caller; openSettingsScreen hides it behind the settings panel), so its texts stay in English,
+   * like modeInfo's.
+   */
   private buildMenu(): void {
     const menu = el('div', 'hud-menu');
     // Keep DOM focus off the buttons so Enter / Space never fire a native click on top of the
@@ -1442,7 +1472,10 @@ export class Hud {
   private refreshPausedSub(): void {
     const input = this.menuOptions?.input;
     if (input === undefined) return;
-    this.pausedSub.textContent = `${input.getLabel('pause', 'kbm')} / ${input.getLabel('pause', 'pad')} or click to resume  ·  Backspace / B to quit`;
+    this.pausedSub.textContent = t('pause.hint', {
+      resumeKeys: `${input.getLabel('pause', 'kbm')} / ${input.getLabel('pause', 'pad')}`,
+      quitKeys: PAUSE_QUIT_KEYS,
+    });
   }
 
   private stopPadPoll(): void {
@@ -1456,16 +1489,16 @@ export class Hud {
     const panel = el('div', 'hud-menu-panel hud-settings-panel');
 
     const head = el('div', 'hud-settings-head');
-    const back = button('hud-settings-back', '‹ BACK');
+    const back = button('hud-settings-back', `‹ ${t('settings.back')}`);
     back.addEventListener('click', () => this.closeSettings());
-    head.append(back, el('div', 'hud-settings-title', 'CONTROLS & SETTINGS'));
+    head.append(back, el('div', 'hud-settings-title', t('settings.title')));
     panel.appendChild(head);
 
     const tabs = el('div', 'hud-settings-tabs');
     const tabsItem: FocusItem = { el: tabs, left: () => this.cycleTab(-1), right: () => this.cycleTab(1) };
-    for (const t of SETTINGS_TABS) {
-      const b = button('hud-settings-tab', t.label);
-      b.addEventListener('click', () => this.selectTab(t.id));
+    for (const tab of SETTINGS_TABS) {
+      const b = button('hud-settings-tab', t(tab.label));
+      b.addEventListener('click', () => this.selectTab(tab.id));
       this.tabButtons.push(b);
       tabs.appendChild(b);
     }
@@ -1482,8 +1515,13 @@ export class Hud {
 
     const foot = el('div', 'hud-settings-foot');
     foot.append(kbm.actions, pad.actions, camera.actions, gameplay.actions);
+    const k = SETTINGS_KEYS;
     foot.appendChild(
-      el('div', 'hud-settings-keys', '↑ ↓ navigate   ·   ← → adjust   ·   Enter / A select   ·   Del clear   ·   Q E / X tabs   ·   Esc / B back'),
+      el(
+        'div',
+        'hud-settings-keys',
+        t('settings.keys', { navKeys: k.nav, adjustKeys: k.adjust, selectKeys: k.select, clearKeys: k.clear, tabKeys: k.tabs, backKeys: k.back }),
+      ),
     );
     panel.appendChild(foot);
 
@@ -1506,19 +1544,23 @@ export class Hud {
     const items: FocusItem[] = [];
     const status = el('div', 'hud-settings-device');
     if (device === 'pad') this.padStatus = status;
-    else status.textContent = 'Mouse buttons and wheel are bindable · mouse movement swivels the camera';
+    else status.textContent = t('settings.mouseNote');
     page.appendChild(status);
 
+    // Built once per page: the same texts for every row.
+    const rebindTitle = t('settings.rebindTitle');
+    const pauseLockedTitle = t('settings.pauseLockedTitle');
+    const unbindTitle = t('settings.unbindTitle', { key: SETTINGS_KEYS.clear });
     let group: string | null = null;
     for (const row of ACTION_ROWS) {
       if (row.group !== group) {
         group = row.group;
-        page.appendChild(el('div', 'hud-settings-group', GROUP_TITLES[row.group]));
+        page.appendChild(el('div', 'hud-settings-group', t(GROUP_TITLES[row.group])));
       }
       const r = el('div', 'hud-settings-row hud-bind-row');
       r.appendChild(el('span', 'hud-settings-label', row.label));
       const cell = button('hud-bind-cell', '—');
-      cell.title = 'Click to rebind';
+      cell.title = rebindTitle;
       const clear = button('hud-bind-clear', '×');
       const ctl = el('span', 'hud-settings-ctl');
       ctl.append(cell, clear);
@@ -1529,9 +1571,9 @@ export class Hud {
         // Pause stays bound (it can never be unbound): nothing could resume a paused game.
         clear.classList.add('hud-bind-locked');
         clear.disabled = true;
-        clear.title = 'Pause cannot be unbound';
+        clear.title = pauseLockedTitle;
       } else {
-        clear.title = 'Unbind (Del)';
+        clear.title = unbindTitle;
         clear.addEventListener('click', () => this.clearBinding(bind));
         item.clear = () => this.clearBinding(bind);
       }
@@ -1544,11 +1586,11 @@ export class Hud {
     }
 
     const buttons: HTMLButtonElement[] = [];
-    const std = button('hud-settings-action', 'Default layout');
+    const std = button('hud-settings-action', t('settings.defaultLayout'));
     std.addEventListener('click', () => this.resetBindings(device, 'standard'));
     buttons.push(std);
     if (device === 'kbm') {
-      const ko = button('hud-settings-action', 'Keyboard only');
+      const ko = button('hud-settings-action', t('settings.keyboardOnly'));
       ko.addEventListener('click', () => this.resetBindings(device, 'keyboardOnly'));
       buttons.push(ko);
     }
@@ -1560,11 +1602,11 @@ export class Hud {
   private buildCameraPage(): PageBuild {
     const page = el('div', 'hud-settings-page');
     const items: FocusItem[] = [];
-    page.appendChild(el('div', 'hud-settings-device', 'Chase camera'));
+    page.appendChild(el('div', 'hud-settings-device', t('settings.cameraNote')));
     for (const s of CAMERA_SLIDERS) {
       const key = s.key;
       const built = this.sliderRow(
-        s.label,
+        t(s.label),
         CAMERA_RANGES[key],
         s.suffix,
         () => {
@@ -1581,9 +1623,9 @@ export class Hud {
       items.push(built.item);
       page.appendChild(built.row);
     }
-    const def = button('hud-settings-action', 'Wide (110/270/100)');
+    const def = button('hud-settings-action', t('settings.presetWide', { values: PRESET_WIDE_VALUES }));
     def.addEventListener('click', () => this.applyCameraPreset('default'));
-    const classic = button('hud-settings-action', 'Classic (90/270/100)');
+    const classic = button('hud-settings-action', t('settings.presetClassic', { values: PRESET_CLASSIC_VALUES }));
     classic.addEventListener('click', () => this.applyCameraPreset('classic'));
     const buttons = [def, classic];
     const actions = el('div', 'hud-settings-actions');
@@ -1594,19 +1636,19 @@ export class Hud {
   private buildGameplayPage(): PageBuild {
     const page = el('div', 'hud-settings-page');
     const items: FocusItem[] = [];
-    page.appendChild(el('div', 'hud-settings-device', 'Sensitivities and deadzones'));
+    page.appendChild(el('div', 'hud-settings-device', t('settings.gameplayNote')));
     for (const g of GAMEPLAY_ROWS) {
       const key = g.key;
       const range = CONTROL_RANGES[key];
       const built =
         range === null
           ? this.toggleRow(
-              g.label,
+              t(g.label),
               () => this.controlFlag(key),
               (v) => this.setControl(key, v),
             )
           : this.sliderRow(
-              g.label,
+              t(g.label),
               range,
               '',
               () => this.controlNumber(key),
@@ -1615,7 +1657,7 @@ export class Hud {
       items.push(built.item);
       page.appendChild(built.row);
     }
-    const reset = button('hud-settings-action', 'Reset gameplay');
+    const reset = button('hud-settings-action', t('settings.resetGameplay'));
     reset.addEventListener('click', () => {
       const st = this.liveSettings;
       if (st === null) return;
@@ -1700,12 +1742,14 @@ export class Hud {
     const row = el('div', 'hud-settings-row hud-toggle-row');
     row.appendChild(el('span', 'hud-settings-label', label));
     const ctl = el('span', 'hud-settings-ctl');
-    const btn = button('hud-toggle', 'OFF');
+    const onLabel = t('settings.on');
+    const offLabel = t('settings.off');
+    const btn = button('hud-toggle', offLabel);
     ctl.appendChild(btn);
     row.appendChild(ctl);
     const refresh = (): void => {
       const on = get();
-      btn.textContent = on ? 'ON' : 'OFF';
+      btn.textContent = on ? onLabel : offLabel;
       btn.classList.toggle('hud-on', on);
     };
     const flip = (): void => {
@@ -1803,7 +1847,7 @@ export class Hud {
     if (input === undefined || this.captureRow !== null || !this.settingsOpen) return;
     this.captureRow = bind;
     this.settingsRing.focusItem(this.findItem(bind.row));
-    bind.cell.textContent = bind.device === 'pad' ? 'press a button… (Esc cancels)' : 'press a key… (Esc cancels)';
+    bind.cell.textContent = t(bind.device === 'pad' ? 'settings.pressButton' : 'settings.pressKey', { cancelKey: SETTINGS_KEYS.cancel });
     bind.cell.classList.add('hud-capturing');
     bind.row.classList.remove('hud-unbound');
     if (this.settingsPanel !== null) this.settingsPanel.classList.add('hud-settings-capturing');
@@ -1872,7 +1916,11 @@ export class Hud {
     if (present === this.lastPadPresent && name === this.lastPadName) return;
     this.lastPadPresent = present;
     this.lastPadName = name;
-    status.textContent = present ? `Controller: ${name ?? 'connected'}` : 'No controller detected (press any button)';
+    status.textContent = present
+      ? name !== null
+        ? t('settings.padNamed', { name })
+        : t('settings.padConnected')
+      : t('settings.padMissing');
     status.classList.toggle('hud-pad-missing', !present);
   }
 }

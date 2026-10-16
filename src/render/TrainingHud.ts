@@ -19,6 +19,7 @@
  */
 import './training.css';
 import type { ShotOutcome, TrainingSummary } from '../game/TrainingSession';
+import { t } from '../i18n';
 
 /** What the overlay's buttons do (the Game wires them to the session). */
 export interface TrainingHudActions {
@@ -106,6 +107,8 @@ export class TrainingHud {
   private readonly sumBest: HTMLElement;
   private readonly sumDots: HTMLElement;
   private readonly sumHint: HTMLElement;
+  /** The unlimited boost texts (panel line and pause button), built once. */
+  private readonly boostText: { lineOn: string; lineOff: string; buttonOn: string; buttonOff: string };
 
   private open = false;
   private freeplay = false;
@@ -133,6 +136,12 @@ export class TrainingHud {
     this.actions = actions;
     this.root = el('div', 'trn-root');
     this.root.hidden = true;
+    this.boostText = {
+      lineOn: t('trainingHud.boostLineOn'),
+      lineOff: t('trainingHud.boostLineOff'),
+      buttonOn: t('trainingHud.boostButtonOn'),
+      buttonOff: t('trainingHud.boostButtonOff'),
+    };
 
     this.panel = el('div', 'trn-panel');
     this.title = el('div', 'trn-title', '');
@@ -149,7 +158,7 @@ export class TrainingHud {
     this.keys = el('div', 'trn-keys', '');
     this.panel.append(this.title, this.shotLine, this.attemptsLine, this.dots, this.timer, this.boostLine, this.keys);
 
-    this.start = el('div', 'trn-start', 'Drive to start the shot');
+    this.start = el('div', 'trn-start', t('trainingHud.start'));
     this.start.hidden = true;
 
     this.banner = el('div', 'trn-banner');
@@ -160,14 +169,14 @@ export class TrainingHud {
 
     // Pause panel: shown under the Hud's PAUSED title while paused.
     this.pausePanel = el('div', 'trn-pause');
-    const resume = button('trn-btn trn-btn-primary', 'Resume', () => this.actions.onResume());
-    const reset = button('trn-btn', 'Reset shot', () => this.actions.onReset());
-    const prev = button('trn-btn', 'Previous shot', () => this.actions.onPrev());
-    const next = button('trn-btn', 'Next shot', () => this.actions.onNext());
-    const resetBall = button('trn-btn', 'Reset ball', () => this.actions.onReset());
-    const resetCar = button('trn-btn', 'Reset car', () => this.actions.onResetCar());
-    this.boostButton = button('trn-btn', 'Unlimited boost: ON', () => this.actions.onToggleBoost());
-    const quit = button('trn-btn trn-btn-quit', 'Quit training', () => this.actions.onQuit());
+    const resume = button('trn-btn trn-btn-primary', t('trainingHud.resume'), () => this.actions.onResume());
+    const reset = button('trn-btn', t('trainingHud.resetShot'), () => this.actions.onReset());
+    const prev = button('trn-btn', t('trainingHud.prevShot'), () => this.actions.onPrev());
+    const next = button('trn-btn', t('trainingHud.nextShot'), () => this.actions.onNext());
+    const resetBall = button('trn-btn', t('trainingHud.resetBall'), () => this.actions.onReset());
+    const resetCar = button('trn-btn', t('trainingHud.resetCar'), () => this.actions.onResetCar());
+    this.boostButton = button('trn-btn', this.boostText.buttonOn, () => this.actions.onToggleBoost());
+    const quit = button('trn-btn trn-btn-quit', t('trainingHud.quit'), () => this.actions.onQuit());
     this.packButtons.push(reset, prev, next);
     this.freeButtons.push(resetBall, resetCar, this.boostButton);
     this.pausePanel.append(resume, reset, prev, next, resetBall, resetCar, this.boostButton, quit);
@@ -177,14 +186,14 @@ export class TrainingHud {
     this.summary = el('div', 'trn-summary');
     const card = el('div', 'trn-summary-card');
     this.sumPack = el('div', 'trn-summary-pack', '');
-    const done = el('div', 'trn-summary-title', 'Pack complete');
+    const done = el('div', 'trn-summary-title', t('trainingHud.packComplete'));
     this.sumScore = el('div', 'trn-summary-score', '');
     this.sumBest = el('div', 'trn-summary-best', '');
     this.sumDots = el('div', 'trn-dots trn-summary-dots');
     const row = el('div', 'trn-summary-buttons');
     row.append(
-      button('trn-btn trn-btn-primary', 'Retry pack', () => this.actions.onRetryPack()),
-      button('trn-btn', 'Back to menu', () => this.actions.onQuit()),
+      button('trn-btn trn-btn-primary', t('trainingHud.retryPack'), () => this.actions.onRetryPack()),
+      button('trn-btn', t('trainingHud.backToMenu'), () => this.actions.onQuit()),
     );
     this.sumHint = el('div', 'trn-summary-hint', '');
     card.append(this.sumPack, done, this.sumScore, this.sumBest, this.sumDots, row, this.sumHint);
@@ -240,21 +249,28 @@ export class TrainingHud {
     this.hideSummary();
   }
 
-  /** Key hints (panel footer, one per line) and the summary's accept / back line; rebuilt only when a label changed. */
+  /**
+   * Key hints (panel footer, one per line) and the summary's accept / back line; rewritten only
+   * when a label changed. Not per frame: the Game calls it when the device in use changes.
+   */
   setHints(h: TrainingHints): void {
     const text = this.freeplay
-      ? `${h.reset}  reset ball
-${h.resetCar}  reset car
-${h.boost}  unlimited boost
-${h.pause}  pause`
-      : `${h.reset}  reset shot
-${h.prev} / ${h.next}  previous / next shot
-${h.pause}  pause`;
+      ? [
+          t('trainingHud.keyResetBall', { key: h.reset }),
+          t('trainingHud.keyResetCar', { key: h.resetCar }),
+          t('trainingHud.keyBoost', { key: h.boost }),
+          t('trainingHud.keyPause', { key: h.pause }),
+        ].join('\n')
+      : [
+          t('trainingHud.keyResetShot', { key: h.reset }),
+          t('trainingHud.keyPrevNext', { prev: h.prev, next: h.next }),
+          t('trainingHud.keyPause', { key: h.pause }),
+        ].join('\n');
     if (text !== this.lastHints) {
       this.lastHints = text;
       this.keys.textContent = text;
     }
-    const sum = `${h.accept} / ${h.reset}  retry pack   ·   ${h.back}  back to menu   ·   ${h.prev} / ${h.next}  pick a shot`;
+    const sum = t('trainingHud.summaryHint', { accept: h.accept, reset: h.reset, back: h.back, prev: h.prev, next: h.next });
     if (sum !== this.lastSumHint) {
       this.lastSumHint = sum;
       this.sumHint.textContent = sum;
@@ -266,11 +282,11 @@ ${h.pause}  pause`;
     if (index !== this.lastIndex || name !== this.lastName) {
       this.lastIndex = index;
       this.lastName = name;
-      this.shotLine.textContent = `Shot ${index + 1} / ${this.shotCount}  ·  ${name}`;
+      this.shotLine.textContent = t('trainingHud.shot', { index: index + 1, total: this.shotCount, name });
     }
     if (attempts !== this.lastAttempts) {
       this.lastAttempts = attempts;
-      this.attemptsLine.textContent = attempts === 1 ? '1 attempt' : `${attempts} attempts`;
+      this.attemptsLine.textContent = t('trainingHud.attempts', { count: attempts });
     }
     this.syncDots(this.dotEls, results, index);
   }
@@ -309,9 +325,10 @@ ${h.pause}  pause`;
   setBoostUnlimited(on: boolean): void {
     if (on === this.lastBoost) return;
     this.lastBoost = on;
-    this.boostLine.textContent = on ? 'Unlimited boost  ON' : 'Unlimited boost  OFF';
+    const b = this.boostText;
+    this.boostLine.textContent = on ? b.lineOn : b.lineOff;
     this.boostLine.classList.toggle('trn-boost-off', !on);
-    this.boostButton.textContent = on ? 'Unlimited boost: ON' : 'Unlimited boost: OFF';
+    this.boostButton.textContent = on ? b.buttonOn : b.buttonOff;
   }
 
   /** Success / fail banner for `ms` milliseconds (pass = green, fail = red). */
@@ -342,7 +359,7 @@ ${h.pause}  pause`;
     this.setWaiting(false);
     this.sumPack.textContent = packName;
     this.sumScore.textContent = `${s.passed} / ${s.total}`;
-    this.sumBest.textContent = s.newBest ? 'New best!' : `Best  ${s.best} / ${s.total}`;
+    this.sumBest.textContent = s.newBest ? t('trainingHud.newBest') : t('trainingHud.best', { best: s.best, total: s.total });
     this.sumBest.classList.toggle('trn-new-best', s.newBest);
     const els: HTMLElement[] = [];
     this.buildDots(this.sumDots, els, results.length);
