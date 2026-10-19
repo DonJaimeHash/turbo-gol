@@ -25,24 +25,28 @@ Cada etapa necesita todo lo de la anterior.
   repo, con su propio `.gitignore` y un trabajo de CI que corre su chequeo de tipos y sus pruebas.
 - [x] **Elegir qué documentos se publican.** Se publican todos: ninguno tiene secretos, y el
   presupuesto ya era público en `docs/online/DECISIONS.md`.
-- [ ] **Respaldar `.keys/` fuera de esta PC.** Las claves de control y de releases siguen solo en
-  la carpeta privada de la PC del mantenedor, fuera del repo. Guardar una copia en un gestor de
+- [ ] **Respaldar `.keys/` fuera de la PC del mantenedor.** Las claves de control y de releases
+  siguen solo en su carpeta privada, fuera del repo. Guardar una copia en un gestor de
   contraseñas.
 - [ ] **Tratar la clave de releases actual como clave de desarrollo.** La release 0.1.0 se firmó
-  en esta PC (`npm run build` usa `--sign .keys/release.json`). Antes de la primera release real:
-  una clave nueva (M5) que viva en un entorno de CI con aprobación manual (M6), y los instaladores
-  armados con su mitad pública (P12). Ver la etapa 1.
+  en la PC del mantenedor (`npm run build` usa `--sign .keys/release.json`). Antes de la primera
+  release real: una clave nueva (M5) que viva en un entorno de CI con aprobación manual (M6), y
+  los instaladores armados con su mitad pública (P12). Ver la etapa 1.
 
 ## Etapa 1: beta con el VPS de São Paulo
 
 Objetivo: el VPS del proyecto hostea partidas por WebSocket (el cliente actual ya sabe
 conectarse) y verifica. Sin PCs hogareñas todavía, así que no hacen falta TURN ni el adaptador
 WebRTC. El VPS es de confianza y no gana puntos, así que el ledger y la tienda esperan a la
-etapa 2. Ningún jugador nota un cambio hasta que un flag de KV prende los nodos.
+etapa 2. Ningún jugador nota un cambio hasta que un flag de KV prende los nodos, salvo lo que ya
+pasa con cualquier deploy del Worker: reinicia las partidas en curso de `MatchDO`, y sus jugadores
+reciben `410 match_reset` (`server/README.md:195`, `server/src/MatchDO.ts:223-230`). Por eso cada
+deploy de esta etapa va a una hora tranquila.
 
-El trabajo está partido en ocho PR, [1] a [8]. Adentro de cada uno, P2 a P30 son sus piezas; M1 a
-M16, las acciones que solo puede hacer el mantenedor; las D, las propuestas de "Decisiones
-pendientes del mantenedor", al final. Las líneas citadas son del commit `dead8ec` (19/10/2026).
+El trabajo está partido en ocho PR, [1] a [8]. Cada PR agrupa piezas, de P1 a P30. Las acciones
+M1 a M16, que solo puede hacer el mantenedor, están en la tabla "Acciones del mantenedor"; las
+propuestas D, en "Decisiones pendientes del mantenedor", al final. Las líneas citadas son del
+commit `dead8ec` (19/10/2026).
 
 ### El VPS
 
@@ -53,12 +57,12 @@ pendientes del mantenedor", al final. Las líneas citadas son del commit `dead8e
   actualizaciones de seguridad sin reinicios automáticos.
 - [x] **Con nombre y certificado** (M3): `sp1.turbo-gol.com`, registros A y AAAA solo DNS, y un
   certificado de Let's Encrypt en Caddy.
-- [x] **Medido:** las pruebas de `nodes/` pasan en el VPS; el benchmark da de 52 a 77 partidas por
-  CPU; 12 partidas de 3 minutos grabadas en la PC del mantenedor y en el VPS verifican igual en
-  las dos máquinas, en los dos sentidos.
+- [x] **Medido:** las pruebas de `nodes/` pasan en el VPS; el benchmark da de 52 a 77 partidas
+  con el 60 % de un núcleo; 12 partidas de 3 minutos grabadas en la PC del mantenedor y en el VPS
+  verifican igual en las dos máquinas, en los dos sentidos (`nodes/scripts/determinism.mjs`).
 - [ ] **(Opcional) medir el camino por el proxy de Cloudflare** antes de confirmar D4.
-- [ ] **La CPU bajo carga sostenida,** unos días antes de abrir: los créditos de CPU de Hostinger
-  pueden frenarla.
+- [ ] **La CPU bajo carga sostenida,** antes de instalar el nodo: los créditos de CPU de Hostinger
+  pueden frenarla, y el resultado decide el `--matches` de la instalación (D20).
 - [ ] **Instalar el nodo** cuando estén [1], [6] y la release 0.2.0, y respaldar su `node.json`
   (M11, M12).
 
@@ -116,7 +120,7 @@ le dé al Worker lo que necesita. Depende de: nada.
   no le dice al Worker si liberar el lock; `matchStatus` para verificar los locks; `hostsOnline`;
   y `channelChanged()`, porque hoy el `minimum` del canal solo se mira cuando un nodo saluda
   (`:405`) y para un verificador con la actualización en espera (`:1203`).
-- [ ] **P6. Volver a chequear el alcance:** un nodo alcanzable nunca se vuelve a probar
+- [ ] **P6. Volver a comprobar el alcance:** un nodo alcanzable nunca se vuelve a probar
   (`controlPlane.ts:499`; `reachableAt` solo se borra si cambia la URL,
   `control-plane/registry.ts:308-312`). Con un certificado vencido o Caddy caído, el VPS seguiría
   recibiendo ranked que nadie puede abrir. Cada 5 minutos; después de 3 fallas seguidas, fuera de
@@ -146,8 +150,8 @@ release 0.2.0: el instalador se publica junto con ella.
   (`install/install.sh:107-115`): no se actualiza solo.
 - [ ] **P10. Caddy para un nombre DNS:**
   - El perfil `shortlived` solo para una IP. Hoy va siempre (`install/install.sh:138-144`), y con
-    un nombre da certificados de unos 6 días en lugar de 90. Caddy ≥ 2.10 solo cuando lo pide:
-    hoy acepta cualquier `caddy` (`:89`).
+    un nombre da certificados de unos 6 días en lugar de 90. Exigir Caddy ≥ 2.10 solo cuando se
+    escribe el perfil `shortlived`: hoy acepta cualquier `caddy` (`:89`).
   - `stream_close_delay 30m`, para que recargar Caddy no corte partidas.
   - Caddy antes del registro, con `caddy validate` y los puertos 80 y 443 libres, para no gastar
     el token en vano.
@@ -164,9 +168,6 @@ release 0.2.0: el instalador se publica junto con ella.
     devolvería la IPv6 (`install/install.sh:121`).
   - `--matches <n>` en el registro y en la corrida, y dentro de la clave del caché del benchmark
     (`node/main.ts:65`): hoy cambiarlo pide borrar `bench.json`.
-- [ ] **El script de determinismo entre máquinas,** en `nodes/scripts/`, con la tabla de
-  resultados esperados: el que grabó y verificó las 12 partidas el 19/10/2026. Para repetir la
-  prueba después de cambiar de Node o de máquina.
 
 #### [3] cliente: partidas en nodos (P27-P30)
 
@@ -194,12 +195,15 @@ un nodo. Depende de: nada. Desplegado antes del canary.
 
 #### [4] docs
 
-Objetivo: que los documentos digan lo que hace el código hoy. Los cambios de diseño se documentan
-con el PR que los construye.
+Objetivo: que los documentos digan lo que hace el código hoy, y que la prueba de determinismo del
+VPS quede en el repo. Los cambios de diseño se documentan con el PR que los construye.
 
 - [x] **P1.** Este plan, el manual del VPS real (`VPS-SAO-PAULO.md`), las correcciones de
   `INTEGRACION.md`, `ARQUITECTURA.md` y `BOT.md`, y el precio real del VPS en
   `docs/online/DECISIONS.md`.
+- [x] **El script de determinismo entre máquinas** (`nodes/scripts/determinism.mjs`): el que grabó
+  y verificó las 12 partidas el 19/10/2026, con los resultados de ese día para comparar. Para
+  repetir la prueba después de cambiar de Node o de máquina.
 
 #### [5] releases: clave, firma, workflow y compuerta de deploy (P12-P16, P21)
 
@@ -239,6 +243,11 @@ para P16. P21 antes del primer deploy con nodos (M10).
   - Antes de `wrangler deploy`, compara el wasm, el protocolo y los archivos que entran al nodo
     con la release publicada. Si algo cambió, exige una release nueva firmada desde los mismos
     archivos, o `--nodes-off` (los nodos no reciben partidas hasta la release).
+  - Sin canal publicado todavía (antes de M10): si la release de `nodes/package.json` ya está en
+    R2, escribe el canal y despliega (eso es M10); si no, exige `--nodes-off`, como cualquier
+    deploy sin su release. Un bucket que todavía no existe (antes de M7) cuenta como canal
+    ausente; cualquier otro error al leer R2 frena el deploy. Así [5] se puede mergear antes que
+    [6]: hasta M10, cada deploy del juego va con `npm run deploy -- --nodes-off`.
   - Mueve el canal **antes** del deploy: cada deploy corta las conexiones de los nodos, y al
     volver cada uno se compara con el `minimum` nuevo (`control-plane/controlPlane.ts:405`).
   - Sube `minimum` cuando cambian el wasm, el protocolo **o el JavaScript del juego que va en el
@@ -253,8 +262,9 @@ para P16. P21 antes del primer deploy con nodos (M10).
 #### [6] servidor: NodeRegistryDO y rutas /nodes (P17-P20)
 
 Objetivo: el plano de control corre en el Worker con su estado guardado, y el VPS se puede
-instalar; ningún jugador nota nada. Depende de: [1]. M7 antes del deploy: sin los buckets, el
-deploy falla.
+instalar. No cambia nada del matchmaking, pero su deploy reinicia las partidas en curso de
+`MatchDO`, como cualquier deploy: a una hora tranquila. Depende de: [1]. M7 antes del deploy: sin
+los buckets, el deploy falla.
 
 - [ ] **P17. El hash del wasm como constante,** con una prueba que la compara con el archivo. El
   Worker importa el wasm ya compilado y no puede calcular su hash (`server/src/wasm.ts:9`), pero
@@ -282,7 +292,8 @@ deploy falla.
     gracia. No alcanza con "mientras haya nodos conectados": el barrido es lo único que anula las
     partidas de un nodo caído (`control-plane/controlPlane.ts:1185-1200`).
   - Si falta `channel.json` o está roto, usa el último bueno y avisa: `maybeUpdate` fallaría en
-    cada `hello` (`:530`, `shared/controlProtocol.ts:373`).
+    cada `hello`, sin canal en `control-plane/controlPlane.ts:530` y sin `minimum` en
+    `shared/controlProtocol.ts:374`.
   - Verifica la firma de una subida de replay antes de calcular el hash del cuerpo (hoy lo calcula
     primero, `control-plane/controlPlane.ts:789-791`), y pone un tope a los sockets sin
     autenticar.
@@ -296,6 +307,14 @@ deploy falla.
   - `tokens`, con la sesión de cuenta: 403 `not_trusted` para una cuenta que no es de confianza.
     Hoy `Registry.createToken` solo valida la región (`control-plane/registry.ts:173-176`): con la
     ruta abierta, cualquier cuenta pondría un nodo y vería las IP de los jugadores.
+  - En la etapa 1, una cuenta de confianza tiene como mucho 2 nodos: el VPS y uno de reemplazo.
+    Hoy el tope es 10 para cualquier operador (`MAX_NODES_PER_OPERATOR`,
+    `control-plane/registry.ts:36`, `:198`), y un nodo de confianza entra activo
+    (`control-plane/registry.ts:371-372`): con la contraseña de la cuenta del proyecto, alguien
+    pondría hasta 9 nodos que verifican sus propias ranked antes de que nadie lea el `ALERT` de
+    P24. El tope va en el registro, que también lo aplica a tokens creados antes. Dejar el nodo
+    nuevo en `pending` hasta que el mantenedor lo active no alcanza: las rutas de P25 usan la
+    misma cuenta.
   - Los topes de 5 registros por IP por hora y 10 tokens por cuenta por día viven en el DO: el
     limitador del Worker cuenta por isolate, en ventanas de 60 s (`server/src/index.ts:78`,
     `:100-109`). Topes por IP para las subidas de replays y para `connect`.
@@ -314,7 +333,7 @@ funcionan con ellas. Depende de: [6] y P5. Con el flag apagado, todo sigue igual
   - Un canary que no toca a los demás: "nodos prendidos para este jugador" se decide por estar en
     la lista, en `index.ts` y en `join()`.
   - El tope de salas no frena a los nodos. `MAX_ACTIVE_ROOMS = 20` (`MatchmakerDO.ts:88`) se
-    chequea al entrar a la cola (`:598`), al arrancar una sala privada (`:874`) y antes de
+    comprueba al entrar a la cola (`:598`), al arrancar una sala privada (`:874`) y antes de
     `formMatch` (`:1034`); las partidas en nodos no cuentan para ese tope. `do_disabled` hoy
     rechaza toda cola (`server/src/index.ts:346`); con nodos, solo omite el `MatchDO`.
   - `queue()` no reescribe la `wsUrl` de una partida de nodo (`server/src/index.ts:392`).
@@ -347,8 +366,8 @@ la alerta de alcance, de P6. Antes del canary (M15).
   24 horas; un nodo inalcanzable (P6). Y **cada token creado y cada nodo registrado**: con la
   contraseña de la cuenta del proyecto alcanza para crear un nodo de confianza.
 - [ ] **P25. Rutas de mantenedor** `/nodes/admin/*`, para una cuenta de confianza: ver los nodos,
-  cambiar el estado de uno, drenarlo, avisar un cambio de canal y volver a chequear su alcance. Un
-  drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): volver pide
+  cambiar el estado de uno, drenarlo, avisar un cambio de canal y volver a comprobar su alcance.
+  Un drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): volver pide
   `systemctl restart turbogol-node` en la máquina. El VPS es de confianza: una verificación
   fallida no lo suspende ni congela nada (`onVerified` en `control-plane/registry.ts`), solo anula
   la partida y deja un `ALERT`.
@@ -365,19 +384,19 @@ la alerta de alcance, de P6. Antes del canary (M15).
 | M1 | **Hecho (19/10/2026).** El VPS: sistema revisado (Ubuntu 26.04.1), clave SSH de root, huella de la clave del host | — | Todo lo del VPS |
 | M2 | **Hecho.** Aprobar los cambios de sshd y ufw | — | El endurecimiento |
 | M3 | **Hecho.** DNS de `sp1.turbo-gol.com`: A y AAAA, solo DNS | — | El certificado y la instalación |
+| M16 | Confirmar las propuestas de "Decisiones pendientes del mantenedor" (D1 a D20). El precio real del VPS ya está en `docs/online/DECISIONS.md` ([4]) | Antes de mergear [1] | [1], [5], [6] |
 | M4 | Crear la cuenta del proyecto en turbo-gol.com, con una contraseña fuerte y única (con ella se crean nodos de confianza), y dos cuentas de prueba que nunca registren nodos. El id, desde la consola de una pestaña de turbo-gol.com con esa sesión: `(await (await fetch('/api/auth/refresh',{method:'POST'})).json()).playerId` (la cookie es SameSite=Strict, `server/src/accountRoutes.ts:263-272`) | Antes de M7 | M7, las pruebas de [6], el canary |
-| M5 | En `nodes/`, confirmar que no existe `.keys/` (si existe, `npm run keys` se queda con las claves de desarrollo, `scripts/keys.mjs:14-22`), correr `npm run keys` y ver que las dos líneas digan `public key`. Guardar las dos mitades privadas en el gestor de contraseñas. La pública de releases va a P12 | Antes de abrir [5] | P12, el deploy de [6] |
-| M6 | GitHub: el entorno `releases` (revisor DonJaimeHash, solo desde tags `node-v*`, sin bypass de administrador), con los secretos `TGN_RELEASE_PRIVATE_KEY` y `CLOUDFLARE_R2_TOKEN` (R2 Edit) y la variable `CLOUDFLARE_ACCOUNT_ID`; una regla para los tags `refs/tags/node-v*`; 2FA o passkey en la cuenta. Después, borrar del disco el archivo de la clave de releases | Antes de mergear P14 | P14, la primera release |
-| M7 | Cloudflare: los buckets `turbogol-node-replays` (con una regla de ciclo de vida de 30 días) y `turbogol-node-releases`; los secretos `NODE_CONTROL_PRIVATE_KEY` (la mitad PKCS#8 de control de M5) y `NODE_TRUSTED_OPERATORS` (el id de M4). Con `wrangler versions secret put`, que no despliega: `wrangler secret put` publica una versión nueva, y un deploy reinicia las partidas en curso (`server/README.md:195`). Si no, como un deploy: a una hora tranquila y todos juntos | Antes del primer deploy de [6] | P19, P20 |
-| M8 | Aprobar el deploy de [6] (sin efecto en los jugadores) | Después del merge | La instalación |
+| M5 | En `nodes/`, confirmar que no existe `.keys/` (si existe, `npm run keys` se queda con las claves que encuentra, `scripts/keys.mjs:14-22`), correr `npm run keys` y ver que las dos líneas digan `public key`. Copiar al gestor de contraseñas los dos archivos, `.keys/control.json` y `.keys/release.json`: las mitades privadas son sus campos `privateKey` (el comando solo imprime las públicas). Enseguida, borrar `.keys/`: si no, `npm run build` firma con la clave de producción (`nodes/package.json:19`). Un `npm run keys` más crea claves nuevas, de desarrollo, para los builds locales. La `public key` de releases va a P12 (`nodes/release-key.pub`) y la de control, a `NODE_CONTROL_PUBLIC_KEY` (P19); las privadas, a M6 y M7 | Antes de abrir [5] | P12, el deploy de [6] |
+| M6 | GitHub: el entorno `releases` (revisor DonJaimeHash, solo desde tags `node-v*`, sin bypass de administrador), con los secretos `TGN_RELEASE_PRIVATE_KEY` (la `privateKey` de releases de M5, desde el gestor de contraseñas) y `CLOUDFLARE_R2_TOKEN` (R2 Edit) y la variable `CLOUDFLARE_ACCOUNT_ID`; una regla para los tags `refs/tags/node-v*`; 2FA o passkey en la cuenta. La clave de releases no vuelve al disco: vive en el gestor y en el entorno | Antes de mergear P14 | P14, la primera release |
+| M7 | Cloudflare: los buckets `turbogol-node-replays` (con una regla de ciclo de vida de 30 días) y `turbogol-node-releases`; los secretos `NODE_CONTROL_PRIVATE_KEY` (la `privateKey` de control de M5, en PKCS#8) y `NODE_TRUSTED_OPERATORS` (el id de M4). Con `wrangler versions secret put`, que no despliega: `wrangler secret put` publica una versión nueva, y un deploy reinicia las partidas en curso (`server/README.md:195`). Si no, como un deploy: a una hora tranquila y todos juntos | Antes del primer deploy de [6] | P19, P20 |
+| M8 | Aprobar el deploy de [6], y el de [3] cuando se mergee. Cada deploy reinicia las partidas en curso de `MatchDO`: a una hora tranquila. Con [5] ya mergeado, hasta M10 cada deploy va con `npm run deploy -- --nodes-off` (P21) | Después de cada merge | La instalación ([6]), el canary ([3]) |
 | M9 | El tag `node-v0.2.0` en el commit del merge, y aprobar la corrida de `releases` | Con [1], [2] y [5] mergeados y P14 activo | M10 |
-| M10 | El primer `npm run deploy` con la compuerta (P21): escribe el canal en 0.2.0/0.2.0 y despliega. Comprobar con los `curl` de `VPS-SAO-PAULO.md` | Justo después de M9 | M11 |
-| M11 | El token de registro, desde una pestaña de turbo-gol.com con la sesión de la cuenta del proyecto: `POST /nodes/tokens` con `{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer. Pegarlo en la línea de instalación: vale una hora y una sola vez | Justo antes de instalar | La instalación |
+| M10 | El primer deploy que escribe el canal (P21): `npm run deploy` escribe el canal en 0.2.0/0.2.0 y despliega. Comprobar con los comandos del paso 4 de "Antes de instalar el nodo", en `VPS-SAO-PAULO.md` | Después de M9, a una hora tranquila | M11 |
+| M11 | El token de registro, con la línea de consola de "Instalar el nodo" en `VPS-SAO-PAULO.md`, desde una pestaña de turbo-gol.com con la sesión de la cuenta del proyecto: refresca la sesión y hace `POST /nodes/tokens` con `{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer. Pegarlo en la línea de instalación: vale una hora y una sola vez | Justo antes de instalar | La instalación |
 | M12 | Copiar `node.json` al gestor de contraseñas (el mantenedor, a mano, sin dejar una copia en la PC) y tomar una instantánea del VPS | Justo después de instalar | — |
 | M13 | El webhook de un canal de Discord solo del equipo, y el secreto `NODE_ALERT_WEBHOOK` (también con `wrangler versions secret put`) | Antes del deploy de [8] | El canary |
-| M14 | Aprobar el deploy de [7] (el flag sigue apagado) | Cuando la instalación pasa sus chequeos | El canary |
+| M14 | Aprobar los deploys de [7] y de [8] (el flag sigue apagado; [8], después de M13), a una hora tranquila | Cuando la instalación pasa sus comprobaciones | El canary |
 | M15 | Canary: `npx wrangler kv key put nodes_on "<id1>,<id2>" --binding FLAGS --remote` con las dos cuentas de prueba, las pruebas de abajo, y después `nodes_on` en `1`. `vm_disabled` queda como interruptor | Después de M14, con P6 y [8] desplegados | La apertura |
-| M16 | El precio real del VPS: **hecho** en [4] (`docs/online/DECISIONS.md`). Falta confirmar las propuestas de "Decisiones pendientes del mantenedor" | Esta semana | [1], [5], [6] |
 
 ### Pruebas antes de abrir la beta
 
@@ -416,8 +435,8 @@ aviso.
 - **La cuenta del proyecto.** Con su contraseña se crea un nodo de confianza: entra activo
   (`control-plane/registry.ts:371-372`), verifica sus propias ranked
   (`control-plane/scheduler.ts:96`) y sus cancelaciones cuentan como las informa
-  (`control-plane/controlPlane.ts:859-861`). Contraseña fuerte y única, y un `ALERT` por cada
-  token y cada registro (P24).
+  (`control-plane/controlPlane.ts:859-861`). Contraseña fuerte y única, un `ALERT` por cada
+  token y cada registro (P24) y un tope de 2 nodos para esa cuenta (P20).
 - **Un solo DO para todo.** Quien juega en un nodo conoce el id de la partida y el del nodo. Sin
   topes, subidas de replays o conexiones sin autenticar pueden trabar el DO, y con 15 s sin
   heartbeats se anulan partidas en curso (P19, P20).
@@ -691,55 +710,68 @@ también tienen que cambiar.
 
 ## Decisiones pendientes del mantenedor
 
-Las marcadas **Propuesta** son los valores por defecto del plan de la etapa 1, con su número (D1,
-D4...). El trabajo avanza con ellas, pero ninguna está confirmada: esperan el visto bueno del
-mantenedor (M16).
+### Propuestas de la etapa 1
 
-1. **Modo de relay:** la recomendación es ocultar al anfitrión desde la etapa 2 y a los jugadores
-   por defecto al abrir. Pasar de unas 900 horas de 2v2 por mes con relay pide subir el
-   presupuesto.
-2. **Casuales en nodos comunitarios:** sí o no, y cómo se elige.
-3. **Cerrar la pestaña en una ranked de nodo: cómo se sanciona.** **Propuesta (D6):** en los nodos
-   de confianza, la regla de `MatchDO`: quien no tiene conexión al pitazo cuenta como abandono, con
-   el dato del nodo (`connectedAtEnd`, P7). Sin una salida al cerrar la pestaña (`pagehide`):
-   convertiría cada recarga en un abandono, y hoy recargar y volver a entrar funciona. Tampoco
-   `VerifyVerdict.goneTicks`: cuenta el último tramo de controles en cero
-   (`shared/verify.ts:153-163`), así que un jugador conectado que no toca nada al final saldría
-   como abandono.
-4. **El nombre del VPS de São Paulo: con o sin el proxy de Cloudflare.** **Propuesta (D4):** solo
-   DNS durante la beta. Pasarlo por el proxy más adelante solo si el chequeo del Worker y los
-   WebSocket funcionan por ahí y la latencia extra desde Argentina queda por debajo de unos 10 ms;
-   entonces, con SSL "Full (strict)" y un certificado de origen. Para la beta se aparta de la
-   decisión 3 de `docs/online/DECISIONS.md`: sin proxy, la IP del VPS que verifica todo queda a la
-   vista.
-5. **Intervalo de heartbeat.** **Propuesta (D1):** 5 s, con 15 s de tope
-   (`shared/controlProtocol.ts:38-40`) y la alarma cada 5 s. Así el DO nunca hiberna: un DO solo
-   hiberna tras 10 s sin eventos. Son unos 324.000 GB-s por mes (0,125 GB durante todo el mes), el
-   81 % de los 400.000 incluidos en Workers Paid, compartidos con las partidas en `MatchDO`; aun
-   si todo fuera excedente, US$ 4,05 por mes (US$ 12,50 por millón de GB-s). Las solicitudes (la
-   alarma suma unas 518.000 por mes) cuestan menos de US$ 0,10 por mes pasado el millón incluido
-   (developers.cloudflare.com/durable-objects, páginas de precios y ciclo de vida, 2026). Es un
-   costo fijo que no crece con los nodos. Pasar a 30 s pide una release del nodo (`HEARTBEAT_MS`
-   se usa en el nodo, `node/agent.ts:131`) y una alarma de 30 s, y detectar un nodo caído pasaría
-   de 15-20 s a unos 90 s.
-6. **Segundo verificador:** cuándo se levanta el de Hetzner.
-7. **El primer auto:** cuál es. El precio ya está decidido en 1.500 puntos.
-8. **Cómo se prenden los nodos.** **Propuesta (D8):** una clave nueva de KV, `nodes_on`. Sin ella,
-   apagados; con `1`, para todos; con una lista de ids de cuenta separados por coma, para un
-   canary. `vm_disabled` queda como interruptor de emergencia. Ningún jugador nota un cambio
-   hasta que se prende.
-9. **Dónde vive `NODE_TRUSTED_OPERATORS`.** **Propuesta (D13):** un secreto del Worker, no una
-   variable en el repo. Sobrevive a los deploys, el id de la cuenta no queda público y un fork sin
-   el secreto no confía en nadie.
-10. **La clave de releases.** **Propuesta (D15):** en el entorno `releases` de GitHub, con un
-    revisor obligatorio, solo desde tags y sin bypass de administrador, más una copia sin conexión
-    en el gestor de contraseñas. La firma corre en un paso que solo usa `node:crypto` (P13). Nunca
-    la clave de desarrollo que firmó la 0.1.0.
-11. **El tope de tráfico del VPS.** **Propuesta (D19):** `--egress-cap-gb 3800`. El contador del
-    nodo solo cuenta lo que mandan las partidas que terminan (`node/runtime.ts:514-519`), por mes
-    calendario UTC (`:617-620`); con 3800, dos meses UTC parciales siguen entrando en los 8 TB del
-    plan. Subirlo cuando el panel de Hostinger confirme qué día se reinicia la transferencia.
-12. **La capacidad declarada del VPS.** **Propuesta (D20):** `floor(cpu × 0,6 / 2)`, con el `cpu`
-    del benchmark más conservador: hoy, 15 partidas. El 0,6 por los créditos de CPU; el 2 porque
-    la verificación corre en el mismo hilo que las partidas. Se revisa cuando una semana de
-    heartbeats muestre margen.
+Cada propuesta lleva el número D con que la citan los PR de arriba. El trabajo avanza con ellas,
+pero ninguna está confirmada: esperan el visto bueno del mantenedor (M16). Los números que faltan
+(D2, D3, D5 y los demás) son valores por defecto que ya quedaron escritos en las piezas de los PR,
+como la gracia de 90 s de P4 o los 12 intentos de P8, y se revisan con cada PR.
+
+- **D1. Intervalo de heartbeat.** **Propuesta:** 5 s, con 15 s de tope
+  (`shared/controlProtocol.ts:38-40`) y la alarma cada 5 s. Así el DO nunca hiberna: un DO solo
+  hiberna tras 10 s sin eventos. Son unos 324.000 GB-s por mes (0,125 GB durante todo el mes), el
+  81 % de los 400.000 incluidos en Workers Paid, compartidos con las partidas en `MatchDO`; aun
+  si todo fuera excedente, US$ 4,05 por mes (US$ 12,50 por millón de GB-s). Las solicitudes (la
+  alarma suma unas 518.000 por mes) cuestan menos de US$ 0,10 por mes pasado el millón incluido
+  (developers.cloudflare.com/durable-objects, páginas de precios y ciclo de vida, 2026). Es un
+  costo fijo que no crece con los nodos. Pasar a 30 s pide una release del nodo (`HEARTBEAT_MS`
+  se usa en el nodo, `node/agent.ts:131`) y una alarma de 30 s, y detectar un nodo caído pasaría
+  de 15-20 s a unos 90 s.
+- **D4. El nombre del VPS de São Paulo: con o sin el proxy de Cloudflare.** **Propuesta:** solo
+  DNS durante la beta. Pasarlo por el proxy más adelante solo si el chequeo del Worker y los
+  WebSocket funcionan por ahí y la latencia extra desde Argentina queda por debajo de unos 10 ms;
+  entonces, con SSL "Full (strict)" y un certificado de origen. Para la beta se aparta de la
+  decisión 3 de `docs/online/DECISIONS.md`: sin proxy, la IP del VPS que verifica todo queda a la
+  vista.
+- **D6. Cerrar la pestaña en una ranked de nodo: cómo se sanciona.** **Propuesta:** en los nodos
+  de confianza, la regla de `MatchDO`: quien no tiene conexión al pitazo cuenta como abandono, con
+  el dato del nodo (`connectedAtEnd`, P7). Sin una salida al cerrar la pestaña (`pagehide`):
+  convertiría cada recarga en un abandono, y hoy recargar y volver a entrar funciona. Tampoco
+  `VerifyVerdict.goneTicks`: cuenta el último tramo de controles en cero
+  (`shared/verify.ts:153-163`), así que un jugador conectado que no toca nada al final saldría
+  como abandono.
+- **D8. Cómo se prenden los nodos.** **Propuesta:** una clave nueva de KV, `nodes_on`. Sin ella,
+  apagados; con `1`, para todos; con una lista de ids de cuenta separados por coma, para un
+  canary. `vm_disabled` queda como interruptor de emergencia. Ningún jugador nota un cambio
+  hasta que se prende.
+- **D13. Dónde vive `NODE_TRUSTED_OPERATORS`.** **Propuesta:** un secreto del Worker, no una
+  variable en el repo. Sobrevive a los deploys, el id de la cuenta no queda público y un fork sin
+  el secreto no confía en nadie.
+- **D15. La clave de releases.** **Propuesta:** en el entorno `releases` de GitHub, con un
+  revisor obligatorio, solo desde tags y sin bypass de administrador, más una copia sin conexión
+  en el gestor de contraseñas. La firma corre en un paso que solo usa `node:crypto` (P13). Nunca
+  la clave de desarrollo que firmó la 0.1.0.
+- **D19. El tope de tráfico del VPS.** **Propuesta:** `--egress-cap-gb 3800`. El contador del
+  nodo solo cuenta lo que mandan las partidas que terminan (`node/runtime.ts:514-519`), por mes
+  calendario UTC (`:617-620`); con 3800, dos meses UTC parciales siguen entrando en los 8 TB del
+  plan. Subirlo cuando el panel de Hostinger confirme qué día se reinicia la transferencia.
+- **D20. La capacidad declarada del VPS.** **Propuesta:** `floor(cpu × 0,6 / 2)`, con el `cpu`
+  más conservador del benchmark: hoy, 15 partidas. Ese `cpu` ya cuenta con el 60 % de un núcleo
+  (600 ms de CPU por segundo de reloj, `node/bench.ts:77`), para dejar margen. El 0,6 extra es
+  por los créditos de CPU: si se acaban, Hostinger deja cada vCPU en su base del 60 %, y con el
+  0,6 las partidas siguen usando el 60 % de lo que queda (un 36 % del núcleo). El 2, porque la
+  verificación corre en el mismo hilo que las partidas (`node/runtime.ts:540-567`) y cuesta otra
+  simulación por ranked. Si la prueba de CPU bajo carga no muestra freno, el 0,6 sobra:
+  `floor(cpu / 2)`, 26 con las mediciones de hoy. Se revisa cuando una semana de heartbeats
+  muestre margen.
+
+### Para las etapas siguientes
+
+Sin número D: no frenan la etapa 1.
+
+- **Modo de relay:** la recomendación es ocultar al anfitrión desde la etapa 2 y a los jugadores
+  por defecto al abrir. Pasar de unas 900 horas de 2v2 por mes con relay pide subir el
+  presupuesto.
+- **Casuales en nodos comunitarios:** sí o no, y cómo se elige.
+- **Segundo verificador:** cuándo se levanta el de Hetzner.
+- **El primer auto:** cuál es. El precio ya está decidido en 1.500 puntos.

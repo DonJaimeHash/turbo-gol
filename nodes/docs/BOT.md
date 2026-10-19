@@ -17,9 +17,13 @@
    la release (`github/workflows/node-release.yml`, una plantilla que todavía no corre: se activa
    en la etapa 1 de `PRODUCCION.md`), y un mantenedor mueve el canal a mano. Subir `stable` hace
    que cada nodo tome la versión nueva cuando reinicia; subir también `minimum` obliga a los que
-   están corriendo: drenan sus partidas y se actualizan. Hoy no hay un canal canary que funcione:
-   el campo existe en el protocolo pero el lanzador no lo lee. Para probar una versión antes, se la instala a mano en una
-   máquina del proyecto.
+   están corriendo a drenar sus partidas y actualizarse, pero solo cuando vuelven a conectarse: el
+   plano de control compara un nodo con `minimum` cuando el nodo saluda
+   (`control-plane/controlPlane.ts:405`), y el lanzador no mira el canal mientras el nodo corre.
+   Un deploy del Worker los reconecta a todos; el aviso sin reconexión llega con
+   `channelChanged()` (P5 de `PRODUCCION.md`). Hoy no hay un canal canary que funcione: el campo
+   existe en el protocolo pero el lanzador no lo lee. Para probar una versión antes, se la instala
+   a mano en una máquina del proyecto.
 
 ## Por qué nunca hay merge automático
 

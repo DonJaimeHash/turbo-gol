@@ -17,10 +17,12 @@ CI corre su chequeo de tipos y sus pruebas en cada PR.
 Un Durable Object nuevo, una sola instancia (`nodes-v1`), que envuelve `ControlPlane`, `Registry`,
 `Ledger` y `Shop` de `control-plane/`:
 
-- **Persistencia:** nodos, tokens, partidas sin terminar y cola de verificación van a su SQLite,
-  con el mismo patrón que `AccountsDO`. Los asientos del ledger, los canjes y los inventarios se
-  suman en la etapa 2, cuando haya nodos que ganan puntos. Las clases separan lógica y
-  almacenamiento: hace falta cargar al arrancar y guardar en cada cambio.
+- **Persistencia:** nodos, tokens y partidas van a su SQLite, con el mismo patrón que
+  `AccountsDO`: las sin terminar, las que esperan su verificación y las terminadas con su
+  resultado, más la bandeja de salida de esos resultados hasta entregarlos. Los asientos del
+  ledger, los canjes y los inventarios se suman en la etapa 2, cuando haya nodos que ganan puntos.
+  Las clases separan lógica y almacenamiento: hace falta cargar al arrancar y guardar en cada
+  cambio.
 - **Conexiones de nodos:** con la Hibernation API (`ctx.acceptWebSocket`), como `RoomDO`. Las
   sesiones de `ControlPlane` viven en memoria (`control-plane/controlPlane.ts:320`): un DO que
   despierta de una hibernación conserva los sockets pero no sabe de qué nodo es cada uno, así que
@@ -53,6 +55,8 @@ Bindings, secretos y variables nuevos:
 | `NODE_CONTROL_PRIVATE_KEY` | secreto | PKCS#8 de la clave de control (`npm run keys`) |
 | `NODE_CONTROL_PUBLIC_KEY` | var | su mitad pública |
 | `NODE_TRUSTED_OPERATORS` | var (propuesta D13 de `PRODUCCION.md`: secreto) | ids de cuenta del proyecto, separados por coma: sus nodos son de confianza |
+| `NODES_PUBLIC_BASE` | var | `https://turbo-gol.com`: la base de las URL que el plano de control da a los nodos y de la línea de instalación (P19, P20 de `PRODUCCION.md`) |
+| `NODE_ALERT_WEBHOOK` | secreto | el webhook del canal de alertas del equipo, adonde van las líneas `ALERT` (P24 y M13 de `PRODUCCION.md`) |
 
 ## 2. Worker: rutas `/nodes/*` en `server/src/index.ts`
 
@@ -176,8 +180,8 @@ new NetClient({ ...opciones, webSocketFactory: nodeAwareSocketFactory() })
 
 - Alertas cuando una verificación falla: hoy queda en el log como `ALERT`. Conviene un webhook.
 - Endpoint de administración para `setStatus`, `drain`, `shop.unfreeze` y el catálogo. Un
-  drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): el nodo vuelve a tomar partidas
-  recién cuando se reinicia.
+  drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): el nodo solo vuelve a tomar
+  partidas cuando se reinicia.
 - Releases: `github/workflows/node-release.yml`, una plantilla que GitHub no corre: solo corre lo
   que está en `.github/workflows/` del repo. El canal se mueve a mano: `stable` llega a cada nodo
   cuando reinicia, `minimum` obliga a los que están corriendo a drenar y actualizarse. Pero el

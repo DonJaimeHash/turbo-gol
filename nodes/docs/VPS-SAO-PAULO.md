@@ -50,12 +50,22 @@ ssh -i ~/.ssh/turbogol_vps root@sp1.turbo-gol.com
 
 - Si la clave se pierde: el panel de Hostinger puede agregar otra clave SSH, y su terminal en el
   navegador sigue disponible.
-- Si la clave no tiene frase de paso, ponle una (`ssh-keygen -p -f ~/.ssh/turbogol_vps`) y
-  cárgala en el agente de SSH de Windows: con root en esta máquina se controla el verificador de
-  confianza, que decide los resultados ranked de las partidas que hostea.
+- Si la clave no tiene frase de paso, ponle una y cárgala en el agente de SSH de Windows: con root
+  en esta máquina se controla el verificador de confianza, que decide los resultados ranked de las
+  partidas que hostea. En PowerShell, con la ruta completa: Windows PowerShell no expande `~` en
+  los argumentos, y `ssh-keygen` tampoco (`ssh -i` sí). El servicio `ssh-agent` viene
+  desactivado: la primera línea va en un PowerShell de administrador.
+
+```powershell
+Set-Service ssh-agent -StartupType Automatic; Start-Service ssh-agent
+ssh-keygen -p -f "$env:USERPROFILE\.ssh\turbogol_vps"
+ssh-add "$env:USERPROFILE\.ssh\turbogol_vps"
+```
+
 - El usuario `tgtest` tiene una copia del repo (`main` en `dead8ec`) para pruebas y benchmarks. No
-  es parte de la instalación ni corre servicios; se puede borrar después de la prueba de CPU bajo
-  carga (ver "Antes de instalar el nodo") con `deluser --remove-home tgtest`.
+  es parte de la instalación ni corre servicios. La usan la prueba de CPU bajo carga (ver "Antes
+  de instalar el nodo") y la prueba de determinismo de la ventana mensual: si se borra
+  (`deluser --remove-home tgtest`), esa prueba pide clonar el repo de nuevo.
 
 ## Endurecimiento aplicado
 
@@ -96,8 +106,8 @@ Dos detalles del SSH:
 | Qué | Resultado |
 |---|---|
 | Pruebas de `nodes/` | 96 de 96, en 83 s |
-| Benchmark de capacidad (`node/main.ts bench`, 3v3 con seis bots) | 11,4 ms de CPU por segundo de partida en 10 s de corrida, 9,5 ms en 30 s y 7,7 ms en 60 s; 8 MB por partida. La fórmula de `node/bench.ts:77-78` da de 52 a 77 partidas por CPU y 646 por memoria. La PC del mantenedor (Ryzen 7 2700) es más o menos el doble de lenta por núcleo |
-| Determinismo entre máquinas | 12 partidas completas de 3 minutos (1v1, 2v2 y 3v3; humanos simulados por las pruebas, bots fáciles, medios y difíciles, una toma de control por un bot y un lugar inactivo), grabadas en la PC del mantenedor (Windows 11, Ryzen 7 2700, Node 24.14.0) y en el VPS (Linux, EPYC 9355P, Node 24.22.0), las dos con V8 13.6.233.17. El mismo hash de estado final, el mismo marcador y el mismo tick final en las dos; cada máquina verifica los 12 replays de la otra |
+| Benchmark de capacidad (`node/main.ts bench`, 3v3 con seis bots) | 11,4 ms de CPU por segundo de partida en 10 s de corrida, 9,5 ms en 30 s y 7,7 ms en 60 s; 8 MB por partida. La fórmula de `node/bench.ts:77-78` da de 52 a 77 partidas con el 60 % de un núcleo (600 ms de CPU por segundo: es el `cpu` que imprime el benchmark) y 646 por memoria. La PC del mantenedor (Ryzen 7 2700) es más o menos el doble de lenta por núcleo |
+| Determinismo entre máquinas (`nodes/scripts/determinism.mjs`) | 12 partidas completas de 3 minutos (1v1, 2v2 y 3v3; humanos simulados por las pruebas, bots fáciles, medios y difíciles, una toma de control por un bot y un lugar inactivo), grabadas en la PC del mantenedor (Windows 11, Ryzen 7 2700, Node 24.14.0) y en el VPS (Linux, EPYC 9355P, Node 24.22.0), las dos con V8 13.6.233.17. El mismo hash de estado final, el mismo marcador y el mismo tick final en las dos; cada máquina verifica los 12 replays de la otra |
 | Verificación | Un 3v3 de 3 minutos con bots, alrededor de 1 s en el VPS (2 s en la PC); un 1v1, alrededor de 0,45 s |
 | Tamaño de los replays | De 2,3 a 2,8 KB si solo juegan bots (no se graban: se recalculan); de 60 a 403 KB con humanos simulados |
 | Ping desde la PC del mantenedor (Córdoba, Argentina) | De 40 a 51 ms, 42 ms de promedio. HTTPS a sp1 en frío: conexión TCP en 0,13 s, TLS listo en 0,38 s |
@@ -114,23 +124,38 @@ Dos detalles del SSH:
    registra de nuevo encima de su identidad sin `--force` (`node/main.ts:85-88`).
 2. **La release 0.2.0,** firmada con la clave de producción, y el canal en 0.2.0: los PR [2] y
    [5], y las acciones M5, M6, M9 y M10.
-3. **La cuenta del proyecto en `NODE_TRUSTED_OPERATORS`** (M4 y M7). Sin eso, el registro con
-   `--roles host,verify` falla con `verify_reserved` (`control-plane/registry.ts:205-207`). No
+3. **La cuenta del proyecto en `NODE_TRUSTED_OPERATORS`** (M4 y M7). Sin eso, el
+   `POST /nodes/tokens` de M11 responde 403 `not_trusted` (P20), y el registro tampoco aceptaría
+   `--roles host,verify`: falla con `verify_reserved` (`control-plane/registry.ts:205-207`). No
    juegues ranked con esa cuenta: el scheduler nunca pone una ranked en el nodo de un operador que
    la juega (`control-plane/scheduler.ts:57`), y la partida cae en un `MatchDO` sin aviso.
-4. **Comprobar lo publicado,** desde cualquier máquina:
+4. **Comprobar lo publicado.** En el VPS por SSH, o en cualquier Linux:
 
 ```bash
-curl -fsS https://turbo-gol.com/nodes/releases/channel                          # {"stable":"0.2.0","minimum":"0.2.0"}
-curl -fsS https://turbo-gol.com/nodes/releases/install.sh | grep -c __RELEASE_  # 0
-curl -sI https://turbo-gol.com/nodes/releases/0.2.0/rocketsim.wasm              # content-type: application/wasm
-getent ahosts sp1.turbo-gol.com                                                  # las dos direcciones del VPS
+curl -fsS https://turbo-gol.com/nodes/releases/channel                                     # {"stable":"0.2.0","minimum":"0.2.0"}
+curl -fsS https://turbo-gol.com/nodes/releases/install.sh | grep -c __RELEASE_PUBLIC_KEY_  # 0
+curl -sI https://turbo-gol.com/nodes/releases/0.2.0/rocketsim.wasm                         # content-type: application/wasm
+getent ahosts sp1.turbo-gol.com                                                             # las dos direcciones del VPS
 ```
 
-5. **La CPU bajo carga sostenida,** unos días antes de abrir: con `stress-ng --cpu 1 --cpu-load
-   100 --timeout 40m` corriendo (`apt-get install stress-ng`), repite el benchmark cada 5 minutos
-   y mira la columna `st` de `vmstat 5`. Si los milisegundos por segundo de partida suben, los
-   créditos de CPU de Hostinger frenan la máquina: declara menos partidas.
+   En la PC del mantenedor, con PowerShell: `curl.exe`, porque en Windows PowerShell `curl` es
+   otro comando, y sin `grep` ni `getent`.
+
+```powershell
+curl.exe -fsS https://turbo-gol.com/nodes/releases/channel
+(curl.exe -fsS https://turbo-gol.com/nodes/releases/install.sh | Select-String -SimpleMatch __RELEASE_PUBLIC_KEY_).Count   # 0
+curl.exe -sI https://turbo-gol.com/nodes/releases/0.2.0/rocketsim.wasm
+Resolve-DnsName sp1.turbo-gol.com
+```
+
+   En la segunda línea, un instalador armado sin la clave da 2: sus marcadores
+   (`install/install.sh:32-33`). Buscar solo `__RELEASE_` no sirve: las comprobaciones de
+   `:64-65` quedan en el instalador armado y dan 2 aunque esté bien.
+5. **La CPU bajo carga sostenida,** antes de instalar, porque el resultado decide `--matches`:
+   con `stress-ng --cpu 1 --cpu-load 100 --timeout 40m` corriendo (`apt-get install stress-ng`),
+   repite el benchmark cada 5 minutos y mira la columna `st` de `vmstat 5`. Si los milisegundos
+   por segundo de partida suben, los créditos de CPU de Hostinger frenan la máquina: declara menos
+   partidas. Si no suben, el 0,6 de D20 sobra (ver `--matches` más abajo).
 
 ```bash
 su - tgtest -c 'cd ~/turbo-gol/nodes && node --expose-gc --import ./dev/ts-resolve.mjs node/main.ts bench --seconds 30'
@@ -138,10 +163,17 @@ su - tgtest -c 'cd ~/turbo-gol/nodes && node --expose-gc --import ./dev/ts-resol
 
 ## Instalar el nodo
 
-El token lo genera el mantenedor justo antes (M11): con la sesión de la cuenta del proyecto
-iniciada en una pestaña de turbo-gol.com, `POST /nodes/tokens` con
-`{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer de la sesión. Vence en una hora y sirve
-una sola vez (`control-plane/registry.ts:28`). Después, como root en el VPS:
+El token lo genera el mantenedor justo antes (M11), en la consola de una pestaña de turbo-gol.com
+con la sesión de la cuenta del proyecto iniciada. La línea refresca la sesión, que trae el Bearer
+en `session` (`server/src/accountRoutes.ts:182`); tiene que correr en esa pestaña porque la cookie
+es SameSite=Strict (`:263-272`). Después pide el token:
+
+```js
+const s = await (await fetch('/api/auth/refresh', { method: 'POST' })).json(); await (await fetch('/nodes/tokens', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + s.session }, body: JSON.stringify({ region: 'SA', name: 'sao-paulo-1' }) })).json()
+```
+
+El token vence en una hora y sirve una sola vez (`control-plane/registry.ts:28`). Después, como
+root en el VPS:
 
 ```bash
 curl -fsSL https://turbo-gol.com/nodes/releases/install.sh -o /tmp/turbogol-install.sh
@@ -159,12 +191,15 @@ bash /tmp/turbogol-install.sh --control https://turbo-gol.com --token '<tgn1_...
   (`node/runtime.ts:514-519`), por mes calendario UTC (`:617-620`), y el scheduler deja de
   mandarle partidas al 95 % del tope (`control-plane/scheduler.ts:55`). Con 3800, dos meses UTC
   parciales entran en los 8 TB del plan aunque el mes de Hostinger empiece otro día (D19).
-- **`--matches <n>`:** la capacidad declarada (D20): `floor(cpu × 0,6 / 2)`, con el `cpu` del
-  benchmark más conservador. El 0,6 es la base de los créditos de CPU; el 2, porque la
-  verificación corre en el mismo hilo que las partidas (`node/runtime.ts:540-567`) y cuesta otra
-  simulación por ranked. Con las mediciones de hoy (52): **15**. Esta opción llega con el
-  instalador de la 0.2.0 (PR [2]); el de hoy rechaza toda opción que no conoce
-  (`install/install.sh:53`).
+- **`--matches <n>`:** la capacidad declarada (D20): `floor(cpu × 0,6 / 2)`, con el `cpu` más
+  conservador del benchmark. Ese `cpu` ya cuenta con el 60 % de un núcleo (600 ms de CPU por
+  segundo, `node/bench.ts:77`), para dejar margen. El 0,6 extra es por los créditos de CPU: si se
+  acaban, Hostinger deja cada vCPU en su base del 60 %, y con el 0,6 las partidas siguen usando el
+  60 % de lo que queda. El 2, porque la verificación corre en el mismo hilo que las partidas
+  (`node/runtime.ts:540-567`) y cuesta otra simulación por ranked. Con las mediciones de hoy
+  (52): **15**; si la prueba de CPU bajo carga no muestra freno, `floor(cpu / 2)`: 26. Esta
+  opción llega con el instalador de la 0.2.0 (PR [2]); el de hoy rechaza toda opción que no
+  conoce (`install/install.sh:53`). Para cambiarla después, ver "Cambiar la capacidad declarada".
 - Node 24 y Caddy ya están: el instalador no los vuelve a instalar (`install/install.sh:77-82`,
   `:89`), pero sí reescribe `/etc/caddy/Caddyfile` (`:136`) y reinicia Caddy (`:151`). Revisa el
   Caddyfile que quedó: tiene que conservar `servers { protocols h1 h2 }` y no pedir el perfil
@@ -209,8 +244,8 @@ apt-mark hold nodejs caddy
 
 - `journalctl -u turbogol-node -f`
 - `curl -s https://sp1.turbo-gol.com/healthz | jq '{ok,version,active,capacity,draining}'`
-- Las líneas `ALERT` del plano de control: hoy van solo al log del Worker; el webhook a Discord
-  llega con el PR [8].
+- Las líneas `ALERT` del plano de control: van solo al log (en el Worker, desde el PR [6]); el
+  webhook a Discord llega con el PR [8].
 
 ### Drenar y apagar
 
@@ -235,9 +270,22 @@ ventana. Una vez por mes, a una hora tranquila:
 1. `systemctl stop --no-block turbogol-node` y esperar `drained: stopping`.
 2. `apt-get update && apt-get full-upgrade`. Node y Caddy siguen retenidos; para actualizarlos a
    propósito, `apt-mark unhold nodejs caddy`. Después de cambiar Node, repetir la prueba de
-   determinismo entre máquinas (el script llega con el PR [2]).
+   determinismo entre máquinas antes del paso 3. Pide una copia del repo al día en el VPS: la de
+   `tgtest` después de un `git pull`, o una nueva si se borró. Desde su `nodes/`,
+   `node scripts/determinism.mjs record <carpeta>` compara con los resultados del 19/10/2026; si
+   el juego cambió desde entonces, esa comparación no sirve: grabar también en la PC del
+   mantenedor y verificar cada carpeta en la otra máquina (`verify <carpeta>`).
 3. `reboot`. El servicio arranca solo.
 4. `journalctl -u turbogol-node -n 20`: tiene que volver a `status active`.
+
+### Cambiar la capacidad declarada
+
+Con el instalador de la 0.2.0 (P11, PR [2]): volver a correr el comando de "Instalar el nodo" con
+otro `--matches` y sin token. Con `node.json` presente es una actualización: reescribe la unidad y
+reinicia el servicio, que primero drena sus partidas (hasta 30 minutos): a una hora tranquila. El
+instalador de hoy no tiene `--matches`, y la capacidad queda guardada en `bench.json`, cuya clave
+no incluye el valor declarado (`node/main.ts:65`): cambiarla pediría editar la unidad y borrar
+`bench.json`.
 
 ### Interruptor de emergencia
 
@@ -264,7 +312,7 @@ del PR [7]: los jugadores con un lock de partida de nodo quedarían trabados has
 - Las ranked de Sudamérica vuelven a `MatchDO`, como hoy, mientras no haya otro verificador: una
   ranked solo va a un nodo si alguien puede re-simularla (`control-plane/controlPlane.ts:637`).
 - Las partidas terminadas esperan su verificación hasta 6 horas
-  (`control-plane/controlPlane.ts:81`) y después se anulan sin penalizar a nadie. Eso vale recién
+  (`control-plane/controlPlane.ts:81`) y después se anulan sin penalizar a nadie. Eso vale solo
   cuando el plano de control guarde su estado (PR [1]): hoy un deploy del Worker las borraría.
 - Más adelante conviene un segundo verificador de confianza. `docs/online/DECISIONS.md` lo pone
   en Hetzner, Ashburn o Falkenstein.

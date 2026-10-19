@@ -19,7 +19,7 @@ propuestos en los informes, que quedan vigentes salvo cambio explícito.
 | # | Decisión | Elegido |
 |---|---|---|
 | 1 | Topología casual (unranked, salas privadas) | **P2P con rollback determinista en malla de inputs** entre los 2–6 navegadores (estilo GGPO). Cero costo de servidor por partida. (confirmada) |
-| 2 | Topología ranked | **Autoridad en servidor**: VPS en **São Paulo** (~US$ 7/mes: Hostinger / Linode / Vultr) para SAM; **Hetzner** (Ashburn o Falkenstein, ~US$ 6–12/mes) para NA/EU. Hetzner además corre el coturn de respaldo y el verificador de replays. (confirmada) |
+| 2 | Topología ranked | **Autoridad en servidor**: VPS en **São Paulo** (~~unos US$ 7/mes: Hostinger / Linode / Vultr~~ → **actualizada 2026-10-19**: Hostinger KVM 2 en Campinas, con el precio real en el presupuesto de abajo) para SAM; **Hetzner** (Ashburn o Falkenstein, ~US$ 6–12/mes) para NA/EU. Hetzner además corre el coturn de respaldo y el verificador de replays. (confirmada) |
 | 3 | Transporte | **WebRTC DataChannel** `{ordered:false, maxRetransmits:0}` para inputs/estado + canal confiable para eventos; **fallback WebSocket** al mismo endpoint (DO o servidor vía proxy de Cloudflare). (confirmada) |
 | 4 | Fases | **Fase 1**: autoridad en Durable Object + WebSocket para tener online en días y medir (RTT/jitter desde Argentina, jitter de `setInterval` en DO, determinismo por hash). **Fase 2**: P2P rollback en malla. **Fase 3**: VPS São Paulo + Hetzner (ranked, coturn, verificador). **Fase 4**: NA/EU, WebTransport, espectadores vía SFU. (confirmada) |
 | 5 | Cuentas | ~~Solo invitados~~ → **actualizada 2026-10-15**: invitados para casual / salas / entrenamiento; **cuentas registradas** (usuario + contraseña, y Google / Discord cuando estén sus secretos) obligatorias para ranked y con MMR por playlist. Guardadas en un Durable Object con SQLite (`AccountsDO`) en vez de D1 (sin permisos ni recursos extra). Detalle: `ACCOUNTS.md`. (confirmada) |
@@ -33,7 +33,7 @@ propuestos en los informes, que quedan vigentes salvo cambio explícito.
 | Workers Paid (base) | 5 |
 | Hetzner (NA/EU ranked + coturn + verificador) | 6–12 |
 | VPS São Paulo (ranked SAM): Hostinger KVM 2 en Campinas, 24 meses pagados por adelantado (US$ 210,96, hasta 2028-10-19); renueva a US$ 14,99 / mes | 8,79 + impuestos (con tarjeta argentina, 21 % de IVA: ≈ 10,64) |
-| Reserva para uso de Durable Objects (fase 1 y plan B) y TURN sobre los 1.000 GB gratis | 26–32 |
+| Reserva para uso de Durable Objects (fase 1 y plan B) y TURN sobre los 1.000 GB gratis: lo que queda hasta el tope (con Hetzner en 12, 22; en 6, 28) | 22–28 |
 | **Total** | **≤ 50** |
 
 ## Netcode (defaults de los informes)
