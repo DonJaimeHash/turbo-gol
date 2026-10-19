@@ -364,7 +364,7 @@ async function queue(request: Request, env: Env): Promise<Response> {
   if (kind === 'ranked') {
     // Ranked: accounts only; the ban, the one-ranked-match-at-a-time lock (every region) and the
     // ratings the matchmaker pairs by come from AccountsDO, never from the client.
-    if (session.acct !== 1) return error(403, 'account_required', 'Iniciá sesión para jugar Competitivo');
+    if (session.acct !== 1) return error(403, 'account_required', 'Inicia sesión para jugar Competitivo');
     const chk = await accountsCall(env, '/ranked-check', { userId: session.sub, playlists: modes });
     if (!chk.ok) return new Response(chk.body, chk);
     const c = (await chk.json()) as RankedCheck;
@@ -450,7 +450,7 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
   if (await flag(env, 'matchmaking_off')) return error(503, 'matchmaking_off');
-  if (rateLimited('lc:' + session.sub, LIMIT_LOBBY_CREATE_PER_PLAYER, Date.now())) return error(429, 'rate_limited', 'Creaste demasiadas salas, esperá un minuto');
+  if (rateLimited('lc:' + session.sub, LIMIT_LOBBY_CREATE_PER_PLAYER, Date.now())) return error(429, 'rate_limited', 'Creaste demasiadas salas, espera un minuto');
   const b = await readJson<{ name?: unknown; password?: unknown; mode?: unknown; visibility?: unknown; net?: unknown; matchLengthSeconds?: unknown; region?: unknown }>(request);
   if (!b) return error(400, 'bad_request');
   if (b.region !== undefined && !isRegion(b.region)) return error(400, 'bad_region');
@@ -485,7 +485,7 @@ async function joinLobby(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
   if (rateLimited('lj:' + session.sub, LIMIT_LOBBY_JOIN_PER_PLAYER, Date.now()) || rateLimited('ljip:' + clientIp(request), LIMIT_LOBBY_JOIN_PER_PLAYER * 3, Date.now())) {
-    return error(429, 'rate_limited', 'Demasiados intentos, esperá un minuto');
+    return error(429, 'rate_limited', 'Demasiados intentos, espera un minuto');
   }
   const b = await readJson<{ code?: unknown; password?: unknown }>(request);
   const code = normalizeCode(b?.code);

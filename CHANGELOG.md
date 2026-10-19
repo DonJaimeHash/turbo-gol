@@ -20,6 +20,8 @@ All notable changes to Turbogol are documented here. The format follows
 ### Changed
 - Matches last 3 minutes (was 5): offline, casual, ranked, P2P and server matches. Custom lobbies
   start at 3 minutes and the host can still pick 5, 10 or no limit.
+- Spanish is neutral Latin American Spanish (tú) instead of rioplatense, in the game, the server's
+  messages and README.es.md.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
 

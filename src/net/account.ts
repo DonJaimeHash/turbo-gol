@@ -108,9 +108,9 @@ export function passwordIssue(pw: unknown, username: string): AccountIssue | nul
 
 /** Spanish text of each issue: the server's bad_username message (the client shows account.issue.* texts). */
 const ISSUE_SPANISH: Readonly<Record<AccountIssueCode, string>> = {
-  usernameMissing: 'Elegí un nombre de usuario',
+  usernameMissing: 'Elige un nombre de usuario',
   usernameLength: `El usuario tiene que tener entre ${USERNAME_MIN} y ${USERNAME_MAX} caracteres`,
-  usernameChars: 'Usá solo letras, números, "_", "-" o "." (empezando con letra o número)',
+  usernameChars: 'Usa solo letras, números, "_", "-" o "." (empezando con letra o número)',
   usernameReserved: 'Ese nombre está reservado',
   passwordShort: `La contraseña tiene que tener al menos ${PASSWORD_MIN} caracteres`,
   passwordLong: `La contraseña puede tener hasta ${PASSWORD_MAX} caracteres`,

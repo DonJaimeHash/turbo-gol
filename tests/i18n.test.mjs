@@ -102,12 +102,12 @@ test("serverText: the client's text for a known code of that surface, with its p
   assert.equal(I.serverText('account', 'bad_credentials', 'Usuario o contraseña incorrectos'), en['error.account.bad_credentials']);
   assert.equal(I.serverText('lobby', 'full', 'La sala está llena'), en['error.lobby.full']);
   // One code, a text per surface: account_required on the account forms, the Competitive queue, never a lobby.
-  assert.equal(I.serverText('account', 'account_required', 'Necesitás una cuenta (no invitado)'), en['error.account.account_required']);
-  assert.equal(I.serverText('queue', 'account_required', 'Iniciá sesión para jugar Competitivo'), en['error.queue.account_required']);
+  assert.equal(I.serverText('account', 'account_required', 'Necesitas una cuenta (no de invitado)'), en['error.account.account_required']);
+  assert.equal(I.serverText('queue', 'account_required', 'Inicia sesión para jugar Competitivo'), en['error.queue.account_required']);
   assert.notEqual(en['error.account.account_required'], en['error.queue.account_required']);
   assert.equal(I.serverText('lobby', 'account_required', 'x'), 'x', 'no lobby text: the server message');
   // A code the Spanish server details: other languages get the client's generic text.
-  assert.equal(I.serverText('lobby', 'rate_limited', 'Creaste demasiadas salas, esperá un minuto'), en['error.lobby.rate_limited']);
+  assert.equal(I.serverText('lobby', 'rate_limited', 'Creaste demasiadas salas, espera un minuto'), en['error.lobby.rate_limited']);
   assert.equal(I.serverText('queue', 'ranked_ban', 'Competitivo bloqueado por abandonar partidas', { time: '5 min' }), 'Competitive locked for leaving matches: 5 min');
 });
 

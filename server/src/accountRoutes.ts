@@ -204,7 +204,7 @@ export interface RouteContext {
 }
 
 async function register(c: RouteContext): Promise<Response> {
-  if (c.limited('reg:' + ipOf(c.request), 5)) return error(429, 'rate_limited', 'Demasiados registros desde tu red, probá en un rato');
+  if (c.limited('reg:' + ipOf(c.request), 5)) return error(429, 'rate_limited', 'Demasiados registros desde tu red, inténtalo más tarde');
   const b = await readJson<{ username?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
   if (!b) return error(400, 'bad_request');
   const blocked = await c.antiBot(b.turnstileToken);
@@ -293,7 +293,7 @@ async function recover(c: RouteContext): Promise<Response> {
 
 function requireAccount(c: RouteContext): SessionClaims | Response {
   if (!c.session) return error(401, 'unauthorized');
-  if (c.session.acct !== 1) return error(403, 'account_required', 'Necesitás una cuenta (no invitado)');
+  if (c.session.acct !== 1) return error(403, 'account_required', 'Necesitas una cuenta (no de invitado)');
   return c.session;
 }
 
@@ -342,7 +342,7 @@ async function rename(c: RouteContext): Promise<Response> {
   let pw: PasswordRecord | null = null;
   if (me.data.hasPassword) {
     // The stored hash is of clientKey(oldName, password): check it, and store the new name's key.
-    if (!isClientKey(b?.password) || !isClientKey(b?.newPassword)) return error(400, 'password_required', 'Ingresá tu contraseña para cambiar el nombre');
+    if (!isClientKey(b?.password) || !isClientKey(b?.newPassword)) return error(400, 'password_required', 'Ingresa tu contraseña para cambiar el nombre');
     const chk = await checkCredentials(c, me.data.name, b.password);
     if (!chk.ok) return chk.res;
     pw = await newPasswordRecord(b.newPassword);
