@@ -18,21 +18,14 @@ All notable changes to Turbogol are documented here. The format follows
   and re-simulates the replays before any rating is written (every ranked match; casual matches by
   sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
   Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
-- Community nodes: the control plane's registry writes its registration tokens and nodes to a store
-  as they change (never on heartbeats) and loads them back after a restart, re-reading which
-  operators are trusted, so a deploy will not orphan a registered node. One token registers one node
-  even when two registrations race, and every token or node of a trusted operator logs an ALERT
-  line.
-- Community nodes: the control plane writes every change of a match to the store before anything
-  that depends on it goes out, and after a deploy it gives the nodes 90 seconds to reconnect before
-  voiding anything, so a match running through a deploy is still rated, with its leavers. A project
-  node whose control link drops for less than a minute keeps its matches too. A host's public
-  address is checked again every five minutes: one that fails three checks in a row gets no matches
-  until it answers again, with an ALERT line. In a ranked match on a project node, a player with no
-  connection at the final whistle is rated as a leaver, as on the game's own servers.
-- Community nodes: the control plane keeps a match's result through a failed storage write (the
-  node's report is taken again), lets nodes log in while idle connections crowd the door, refuses a
-  forged replay upload before reading its body, and keeps a node's own text out of its ALERT lines.
+- Community nodes: the control plane keeps its state through a restart. Registered nodes, tokens
+  and running matches are written to a store before anything that depends on them goes out, and
+  after a deploy the nodes get 90 seconds to reconnect, so a match played through a deploy is still
+  rated. A project node keeps its matches through a control link drop of under a minute; hosts are
+  checked again every five minutes and one that stops answering gets no matches; in a ranked match
+  on a project node, a player with no connection at the final whistle is rated as a leaver, as on
+  the game's own servers. One token registers one node, a forged replay upload is refused before
+  its body is read, and every token or node of a trusted operator logs an ALERT line.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
