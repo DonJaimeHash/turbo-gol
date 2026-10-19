@@ -112,6 +112,7 @@ import {
   C_IS_ON_GROUND,
   C_IS_SUPERSONIC,
   C_POS,
+  C_ROT,
   C_VEL,
   C_WHEEL_SUSPENSION,
   MAX_CARS,
@@ -470,7 +471,7 @@ export class Game implements P2PGameHooks {
   private readonly lastHitTick = new Float32Array(MAX_CARS).fill(-1e9);
   private readonly hitPos: [number, number, number] = [0, 0, 0];
   private readonly camState: CameraCarState = { grounded: true, speed: 0, supersonic: false };
-  private readonly audioState: AudioState = { speed: 0, boosting: false, supersonic: false, grounded: true, throttle: 0 };
+  private readonly audioState: AudioState = { speed: 0, forwardSpeed: 0, boosting: false, supersonic: false, grounded: true, throttle: 0 };
   private readonly menuLook = new THREE.Vector3(0, 200, 0);
   /** One row per roster entry ('You', 'Bot 1'...), rebuilt by applyRoster(); the Hud diffs them. */
   private readonly sbRows: ScoreboardRow[] = [];
@@ -2136,12 +2137,16 @@ export class Game implements P2PGameHooks {
     const as = this.audioState;
     if (inMenu || this.paused) {
       as.speed = 0;
+      as.forwardSpeed = 0;
       as.boosting = false;
       as.supersonic = false;
       as.grounded = true;
       as.throttle = 0;
     } else {
       as.speed = this.camState.speed;
+      const v = po + C_VEL;
+      const f = po + C_ROT;
+      as.forwardSpeed = cur[v] * cur[f] + cur[v + 1] * cur[f + 1] + cur[v + 2] * cur[f + 2];
       as.boosting = cur[po + C_IS_BOOSTING] > 0.5;
       as.supersonic = cur[po + C_IS_SUPERSONIC] > 0.5;
       as.grounded = cur[po + C_IS_ON_GROUND] > 0.5;
