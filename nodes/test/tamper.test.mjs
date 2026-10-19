@@ -100,7 +100,9 @@ test('a node that forges a score is caught by the re-simulation and suspended', 
     const p = await cp.place({ mode: '1v1', region: 'SA', ranked: false, humans, matchLengthSeconds: 10, kickoffCountdownSeconds: 1, goalPauseSeconds: 1 });
     assert.ok(p, 'placed');
     const a = cp.matches.get(p.matchId).assign;
-    const m = await playRecordedMatch({ roster: a.roster, seed: a.kickoffSeed, matchId: a.matchId, nodeId, lengthSeconds: 10, region: 'SA', ranked: false });
+    // A deterministic ending whatever the (random) kickoff seed does: the rules by tick 1500, or
+    // everybody gone ('empty', proven by 200 ticks of zero controls).
+    const m = await playRecordedMatch({ roster: a.roster, seed: a.kickoffSeed, matchId: a.matchId, nodeId, lengthSeconds: 10, region: 'SA', ranked: false, stopAt: 1500, endReason: 'empty', idleSlots: { 0: 1300 } });
     let bytes = m.bytes;
     let end = m.end;
     if (forge) ({ bytes, end } = forgeScore(m.bytes, 2));
