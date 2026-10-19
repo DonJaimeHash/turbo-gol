@@ -58,7 +58,7 @@ Otros comandos:
 | `npm run keys` | Genera las claves de control y de releases en `.keys/` |
 | `npm run build` | Arma una release firmada en `dist/releases/` con los tres instaladores |
 | `npm run build:web` | Arma el arnés de prueba del navegador, servido en `/web/rtc-harness.html` |
-| `node scripts/determinism.mjs record <carpeta>` y `verify <carpeta>` | Graba 12 partidas completas y verifica las que grabó otra máquina: comprueba que dos máquinas simulan igual |
+| `npm run xmachine -- record <carpeta>` y `verify <carpeta>` | Graba 12 partidas completas y verifica las que grabó otra máquina: comprueba que dos máquinas simulan igual. `record` también compara con una referencia grabada en la PC del proyecto |
 
 `.keys/`, `dist/`, `data/` y `node_modules/` están en `nodes/.gitignore`. **Nunca subas `.keys/` a
 ningún lado**: guarda una copia en un gestor de contraseñas.

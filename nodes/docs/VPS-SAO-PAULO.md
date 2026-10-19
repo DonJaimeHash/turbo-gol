@@ -107,7 +107,7 @@ Dos detalles del SSH:
 |---|---|
 | Pruebas de `nodes/` | 96 de 96, en 83 s |
 | Benchmark de capacidad (`node/main.ts bench`, 3v3 con seis bots) | 11,4 ms de CPU por segundo de partida en 10 s de corrida, 9,5 ms en 30 s y 7,7 ms en 60 s; 8 MB por partida. La fórmula de `node/bench.ts:77-78` da de 52 a 77 partidas con el 60 % de un núcleo (600 ms de CPU por segundo: es el `cpu` que imprime el benchmark) y 646 por memoria. La PC del mantenedor (Ryzen 7 2700) es más o menos el doble de lenta por núcleo |
-| Determinismo entre máquinas (`nodes/scripts/determinism.mjs`) | 12 partidas completas de 3 minutos (1v1, 2v2 y 3v3; humanos simulados por las pruebas, bots fáciles, medios y difíciles, una toma de control por un bot y un lugar inactivo), grabadas en la PC del mantenedor (Windows 11, Ryzen 7 2700, Node 24.14.0) y en el VPS (Linux, EPYC 9355P, Node 24.22.0), las dos con V8 13.6.233.17. El mismo hash de estado final, el mismo marcador y el mismo tick final en las dos; cada máquina verifica los 12 replays de la otra |
+| Determinismo entre máquinas (`nodes/scripts/xmachine.mjs`) | 12 partidas completas de 3 minutos (1v1, 2v2 y 3v3; humanos simulados por las pruebas, bots fáciles, medios y difíciles, una toma de control por un bot y un lugar inactivo), grabadas en la PC del mantenedor (Windows 11, Ryzen 7 2700, Node 24.14.0) y en el VPS (Linux, EPYC 9355P, Node 24.22.0), las dos con V8 13.6.233.17. El mismo hash de estado final, el mismo marcador y el mismo tick final en las dos; cada máquina verifica los 12 replays de la otra |
 | Verificación | Un 3v3 de 3 minutos con bots, alrededor de 1 s en el VPS (2 s en la PC); un 1v1, alrededor de 0,45 s |
 | Tamaño de los replays | De 2,3 a 2,8 KB si solo juegan bots (no se graban: se recalculan); de 60 a 403 KB con humanos simulados |
 | Ping desde la PC del mantenedor (Córdoba, Argentina) | De 40 a 51 ms, 42 ms de promedio. HTTPS a sp1 en frío: conexión TCP en 0,13 s, TLS listo en 0,38 s |
@@ -149,8 +149,8 @@ Resolve-DnsName sp1.turbo-gol.com
 ```
 
    En la segunda línea, un instalador armado sin la clave da 2: sus marcadores
-   (`install/install.sh:32-33`). Buscar solo `__RELEASE_` no sirve: las comprobaciones de
-   `:64-65` quedan en el instalador armado y dan 2 aunque esté bien.
+   (`RELEASE_KEY_B64URL` y `RELEASE_KEY_PEM`). Buscar solo `__RELEASE_` no sirve: las líneas que
+   rechazan esos marcadores quedan en el instalador armado y dan 2 aunque esté bien.
 5. **La CPU bajo carga sostenida,** antes de instalar, porque el resultado decide `--matches`:
    con `stress-ng --cpu 1 --cpu-load 100 --timeout 40m` corriendo (`apt-get install stress-ng`),
    repite el benchmark cada 5 minutos y mira la columna `st` de `vmstat 5`. Si los milisegundos
@@ -178,15 +178,16 @@ root en el VPS:
 ```bash
 curl -fsSL https://turbo-gol.com/nodes/releases/install.sh -o /tmp/turbogol-install.sh
 grep -E '^RELEASE_KEY_B64URL=' /tmp/turbogol-install.sh   # la misma clave que nodes/release-key.pub
+mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-turbogol   # el de hoy, escrito a mano
 bash /tmp/turbogol-install.sh --control https://turbo-gol.com --token '<tgn1_...>' --name sao-paulo-1 \
   --roles host,verify --transport wss --public-host sp1.turbo-gol.com --egress-cap-gb 3800 --matches <n>
 ```
 
 - **`--roles host,verify`:** hostea y verifica. Los roles se fijan al registrar: cambiarlos pide
   un token nuevo.
-- **`--public-host sp1.turbo-gol.com`:** sin esto, el instalador registra la IP de
-  `/nodes/whoami` (`install/install.sh:120-122`) y el chequeo de alcance nunca pasa. Nunca le
-  pongas un puerto: todo lo que tiene `:` se toma como IPv6 (`:124`).
+- **`--public-host sp1.turbo-gol.com`:** sin esto, el instalador registra la IPv4 que ve
+  `/nodes/whoami`, y el chequeo de alcance nunca pasa: un Worker no puede pedir una IP. Nunca le
+  pongas un puerto: todo lo que tiene `:` se toma como IPv6.
 - **`--egress-cap-gb 3800`:** el nodo cuenta lo que mandan las partidas que terminan
   (`node/runtime.ts:514-519`), por mes calendario UTC (`:617-620`), y el scheduler deja de
   mandarle partidas al 95 % del tope (`control-plane/scheduler.ts:55`). Con 3800, dos meses UTC
@@ -197,14 +198,13 @@ bash /tmp/turbogol-install.sh --control https://turbo-gol.com --token '<tgn1_...
   acaban, Hostinger deja cada vCPU en su base del 60 %, y con el 0,6 las partidas siguen usando el
   60 % de lo que queda. El 2, porque la verificación corre en el mismo hilo que las partidas
   (`node/runtime.ts:540-567`) y cuesta otra simulación por ranked. Con las mediciones de hoy
-  (52): **15**; si la prueba de CPU bajo carga no muestra freno, `floor(cpu / 2)`: 26. Esta
-  opción llega con el instalador de la 0.2.0 (PR [2]); el de hoy rechaza toda opción que no
-  conoce (`install/install.sh:53`). Para cambiarla después, ver "Cambiar la capacidad declarada".
-- Node 24 y Caddy ya están: el instalador no los vuelve a instalar (`install/install.sh:77-82`,
-  `:89`), pero sí reescribe `/etc/caddy/Caddyfile` (`:136`) y reinicia Caddy (`:151`). Revisa el
-  Caddyfile que quedó: tiene que conservar `servers { protocols h1 h2 }` y no pedir el perfil
-  `shortlived`, de 6 días, que es para IP. El instalador de hoy pierde lo primero y pide lo segundo
-  siempre; los dos arreglos son del PR [2].
+  (52): **15**; si la prueba de CPU bajo carga no muestra freno, `floor(cpu / 2)`: 26. Para
+  cambiarla después, ver "Cambiar la capacidad declarada".
+- **El `mv` del Caddyfile:** Node 24 y Caddy ya están y el instalador no los vuelve a instalar,
+  pero Caddy pasa a ser del nodo: el instalador escribe su propio `/etc/caddy/Caddyfile` en cada
+  corrida (sin HTTP/3, con un certificado de 90 días para el nombre y `stream_close_delay`, para
+  que recargar Caddy no corte partidas). Antes de gastar el token se detiene si encuentra un
+  Caddyfile que no escribió él, como el que se escribió a mano el 19/10/2026: por eso el `mv`.
 
 ## Después de instalar
 
@@ -231,9 +231,10 @@ apt-mark hold nodejs caddy
   al gestor de contraseñas apenas termine la instalación (por ejemplo, con `cat` por SSH y pegar),
   sin dejar una copia en el disco de la PC, y toma una instantánea del VPS en el panel de
   Hostinger.
-- **Si se pierde:** hay que registrar la máquina de nuevo con otro token, y vuelve como un nodo
-  nuevo. Restaurar la copia pide el `--restore` del instalador de la 0.2.0 (PR [2]): el de hoy
-  siempre registra (`install/install.sh:132`).
+- **Si se pierde la máquina:** en la nueva (o en la misma reinstalada), con `sp1` ya apuntando a
+  ella, el comando de "Instalar el nodo" con `--restore node.json` en lugar de `--token` instala
+  la identidad respaldada sin registrar nada. Sin la copia, hay que registrar la máquina de nuevo
+  con otro token, y vuelve como un nodo nuevo.
 - **`/var/lib/turbogol-node/egress.json`:** el contador de tráfico del mes. Una copia vieja
   restaurada cuenta de menos.
 - El respaldo semanal de Hostinger cubre el resto del disco.
@@ -272,7 +273,7 @@ ventana. Una vez por mes, a una hora tranquila:
    propósito, `apt-mark unhold nodejs caddy`. Después de cambiar Node, repetir la prueba de
    determinismo entre máquinas antes del paso 3. Pide una copia del repo al día en el VPS: la de
    `tgtest` después de un `git pull`, o una nueva si se borró. Desde su `nodes/`,
-   `node scripts/determinism.mjs record <carpeta>` compara con los resultados del 19/10/2026; si
+   `npm run xmachine -- record <carpeta>` compara con la referencia del 19/10/2026; si
    el juego cambió desde entonces, esa comparación no sirve: grabar también en la PC del
    mantenedor y verificar cada carpeta en la otra máquina (`verify <carpeta>`).
 3. `reboot`. El servicio arranca solo.
@@ -280,12 +281,10 @@ ventana. Una vez por mes, a una hora tranquila:
 
 ### Cambiar la capacidad declarada
 
-Con el instalador de la 0.2.0 (P11, PR [2]): volver a correr el comando de "Instalar el nodo" con
-otro `--matches` y sin token. Con `node.json` presente es una actualización: reescribe la unidad y
-reinicia el servicio, que primero drena sus partidas (hasta 30 minutos): a una hora tranquila. El
-instalador de hoy no tiene `--matches`, y la capacidad queda guardada en `bench.json`, cuya clave
-no incluye el valor declarado (`node/main.ts:65`): cambiarla pediría editar la unidad y borrar
-`bench.json`.
+Volver a correr el comando de "Instalar el nodo" con otro `--matches` (o `--matches auto`, para
+volver al benchmark), sin token y sin el `mv`. Con `node.json` presente es una actualización:
+reescribe la unidad y reinicia el servicio, que primero drena sus partidas (hasta 30 minutos): a
+una hora tranquila.
 
 ### Interruptor de emergencia
 

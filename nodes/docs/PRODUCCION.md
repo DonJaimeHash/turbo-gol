@@ -59,7 +59,7 @@ commit `dead8ec` (19/10/2026).
   certificado de Let's Encrypt en Caddy.
 - [x] **Medido:** las pruebas de `nodes/` pasan en el VPS; el benchmark da de 52 a 77 partidas
   con el 60 % de un núcleo; 12 partidas de 3 minutos grabadas en la PC del mantenedor y en el VPS
-  verifican igual en las dos máquinas, en los dos sentidos (`nodes/scripts/determinism.mjs`).
+  verifican igual en las dos máquinas, en los dos sentidos (`nodes/scripts/xmachine.mjs`).
 - [ ] **(Opcional) medir el camino por el proxy de Cloudflare** antes de confirmar D4.
 - [ ] **La CPU bajo carga sostenida,** antes de instalar el nodo: los créditos de CPU de Hostinger
   pueden frenarla, y el resultado decide el `--matches` de la instalación (D20).
@@ -168,6 +168,10 @@ release 0.2.0: el instalador se publica junto con ella.
     devolvería la IPv6 (`install/install.sh:121`).
   - `--matches <n>` en el registro y en la corrida, y dentro de la clave del caché del benchmark
     (`node/main.ts:65`): hoy cambiarlo pide borrar `bench.json`.
+- [ ] **El script de determinismo entre máquinas** (`nodes/scripts/xmachine.mjs`,
+  `npm run xmachine`): el que grabó y verificó las 12 partidas el 19/10/2026. `record` compara con
+  la referencia de ese día (`scripts/xmachine-reference.json`). Para repetir la prueba después de
+  cambiar de Node o de máquina.
 
 #### [3] cliente: partidas en nodos (P27-P30)
 
@@ -201,9 +205,6 @@ VPS quede en el repo. Los cambios de diseño se documentan con el PR que los con
 - [x] **P1.** Este plan, el manual del VPS real (`VPS-SAO-PAULO.md`), las correcciones de
   `INTEGRACION.md`, `ARQUITECTURA.md` y `BOT.md`, y el precio real del VPS en
   `docs/online/DECISIONS.md`.
-- [x] **El script de determinismo entre máquinas** (`nodes/scripts/determinism.mjs`): el que grabó
-  y verificó las 12 partidas el 19/10/2026, con los resultados de ese día para comparar. Para
-  repetir la prueba después de cambiar de Node o de máquina.
 
 #### [5] releases: clave, firma, workflow y compuerta de deploy (P12-P16, P21)
 
