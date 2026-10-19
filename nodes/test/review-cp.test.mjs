@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { playRecordedMatch, testBuild } from './helpers.mjs';
 import { CAP, SPECS, human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
 
-const { MAX_UNAUTHENTICATED } = await import('../control-plane/controlPlane.ts');
+const { MAX_UNAUTHENTICATED, TRUSTED_OFFLINE_MS } = await import('../control-plane/controlPlane.ts');
 const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES } = await import('../control-plane/registry.ts');
 const { Ledger } = await import('../control-plane/ledger.ts');
 const { generateEd25519, sign, sha256Hex } = await import('../shared/edcrypto.ts');
@@ -207,6 +207,28 @@ test('a node whose socket closed loses its matches after the heartbeat timeout, 
   for (const p of ps) assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
   assert.equal(env.registry.node(env.nodeId).counters.strikes, 1, 'one outage, one strike');
   assert.equal(await env.cp.rejoinTicket(ps[0].matchId, 'a'.repeat(16)), null);
+});
+
+test('a trusted node whose control link drops keeps its matches for a minute: the same process reconnecting goes on', async () => {
+  const env = await setup({ trusted: true });
+  await wait(() => env.registry.node(env.nodeId).status === 'active');
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  env.advance(6_000);
+  await env.cp.leave(p.matchId, 'b'.repeat(16));
+  env.disconnect();
+  env.advance(TRUSTED_OFFLINE_MS - 1_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'a community node would have lost it after 15 s');
+  await env.reconnect();
+  const { entry } = await env.finish(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1) });
+  assert.equal(entry.outcome.kind, 'rated', JSON.stringify(entry.outcome));
+  assert.equal(env.registry.node(env.nodeId).counters.lost, 0);
+  // Gone for longer: void, like any node.
+  const q = await env.place([human('c'), human('d')], { ranked: true });
+  env.disconnect();
+  env.advance(TRUSTED_OFFLINE_MS + 1);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(q.matchId).outcome.reason, 'node_offline');
 });
 
 test('a restarted node (new bootId) loses the matches of its old process', async () => {

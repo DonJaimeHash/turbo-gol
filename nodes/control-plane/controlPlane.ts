@@ -121,6 +121,13 @@ const EMPTY_TOGETHER_TICKS = 240;
  * agent's backoff doubles from 1 s to a 30 s cap, +-25 %: six tries take about 76 s at worst.
  */
 export const RESTART_GRACE_MS = 90_000;
+/**
+ * A trusted node's matches outlive its silence this long (a community node's: HEARTBEAT_TIMEOUT_MS,
+ * for now). A short drop of its control link does not stop the matches it hosts: voiding them
+ * would have players finish a ranked match that already counts for nothing. If the same process
+ * reconnects in time (its backoff: 1, 2, 4, 8, 16 s) they go on; a new one voids them at its hello.
+ */
+export const TRUSTED_OFFLINE_MS = 60_000;
 
 /** A request to a node without its correlation id (distributive Omit over the request variants). */
 type RpcRequest = Extract<ToNode, { rid: string }> extends infer U ? (U extends unknown ? Omit<U, 'rid'> : never) : never;
@@ -1325,14 +1332,15 @@ export class ControlPlane {
         this.onClose(s);
       }
     }
-    // A node gone for HEARTBEAT_TIMEOUT_MS (socket closed, or silent): its running matches are void,
-    // one strike for the outage. A quick reconnect of the same process keeps them. Not while a
-    // restart waits for its nodes: they all look gone then.
+    // A node gone for HEARTBEAT_TIMEOUT_MS (socket closed, or silent), a trusted one for
+    // TRUSTED_OFFLINE_MS: its running matches are void, one strike for the outage. A quick
+    // reconnect of the same process keeps them. Not while a restart waits for its nodes: they all
+    // look gone then.
     const gone = new Set<string>();
     for (const m of this.matches.values()) {
       if (grace || m.state !== 'assigned' || gone.has(m.nodeId) || this.isOnline(m.nodeId)) continue;
       const n = this.registry.node(m.nodeId);
-      if (!n || now - n.lastSeen > HEARTBEAT_TIMEOUT_MS) gone.add(m.nodeId);
+      if (!n || now - n.lastSeen > (n.trusted ? TRUSTED_OFFLINE_MS : HEARTBEAT_TIMEOUT_MS)) gone.add(m.nodeId);
     }
     for (const id of gone) this.voidMatchesOf(id, 'node_offline', (m) => m.state === 'assigned');
     // Hosts still unproven (Caddy may have been fetching its certificate at the first hello): probe again.
