@@ -174,7 +174,7 @@ export default {
   'friendly.quality': 'Graphics quality',
   'friendly.qualityHigh': 'High',
   'friendly.qualityPerformance': 'Performance',
-  'friendly.intro': 'A 5-minute offline match against the AI. Your teammates, if any, are bots too.',
+  'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
   'friendly.match': 'MATCH',
   // Starts the friendly match
   'friendly.play': 'PLAY',

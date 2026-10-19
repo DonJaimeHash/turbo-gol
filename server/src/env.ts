@@ -1,4 +1,5 @@
 import type { IceServer } from '../../src/net/p2p/protocol';
+import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 
 /** Bindings and vars declared in wrangler.jsonc (+ secrets from .dev.vars / `wrangler secret put`). */
 export interface Env {
@@ -63,7 +64,7 @@ export const SERVER_VERSION = '0.1.0';
 
 export function matchLengthSeconds(env: Env): number {
   const n = Number(env.MATCH_LENGTH_SECONDS);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 300;
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_MATCH_SECONDS;
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };

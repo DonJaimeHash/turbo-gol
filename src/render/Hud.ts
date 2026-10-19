@@ -40,6 +40,7 @@ import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/N
 import { MODES, type GameMode } from '../sim/constants';
 import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
+import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from '../game/Match';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
 export const DIFFICULTIES: readonly Difficulty[] = ['easy', 'medium', 'hard'];
@@ -547,7 +548,7 @@ export class Hud {
     this.turnstileBox.hidden = true;
     this.root.appendChild(this.turnstileBox);
 
-    // Scorebug (top left): [BLU 0] [RED 0] [5:00]. The three-letter tags keep the teams apart
+    // Scorebug (top left): [BLU 0] [RED 0] [3:00]. The three-letter tags keep the teams apart
     // without relying on colour alone.
     const top = el('div', 'hud-top');
     const board = el('div', 'hud-score');
@@ -557,7 +558,7 @@ export class Hud {
     const red = el('div', 'hud-score-team hud-red');
     this.scoreRed = el('span', 'hud-score-goals', '0');
     red.append(el('span', 'hud-score-tag', t('hud.tagRed')), this.scoreRed);
-    this.clock = el('div', 'hud-clock', '5:00');
+    this.clock = el('div', 'hud-clock', formatClockSeconds(DEFAULT_MATCH_SECONDS));
     board.append(blue, red, this.clock);
     top.appendChild(board);
     this.root.appendChild(top);

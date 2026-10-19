@@ -217,7 +217,8 @@ test('kickoff countdown of 0 goes straight to playing; reset returns to menu', (
   m.reset();
   assert.equal(m.phase, 'menu');
   assert.deepEqual(m.score, { blue: 0, red: 0 });
-  assert.equal(m.clock, 300);
+  assert.equal(m.clock, 180); // the default regulation length (DEFAULT_MATCH_SECONDS)
+  assert.equal(m.formatClock(), '3:00');
   assert.equal(m.overtime, false);
   assert.equal(m.winner, null);
   // Queued goal event was discarded by reset(); the menu produces nothing.

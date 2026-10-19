@@ -126,7 +126,7 @@ import {
   emptyControls,
   type CarControls,
 } from '../sim/types';
-import { Match, type MatchEvent } from './Match';
+import { DEFAULT_MATCH_SECONDS, Match, formatClockSeconds, type MatchEvent } from './Match';
 import { STORAGE_PREFIX } from '../brand';
 import { OnlineSession } from './OnlineSession';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
@@ -474,7 +474,7 @@ export class Game implements P2PGameHooks {
   /** One row per roster entry ('You', 'Bot 1'...), rebuilt by applyRoster(); the Hud diffs them. */
   private readonly sbRows: ScoreboardRow[] = [];
   /** Reused by the Tab scoreboard; `clock` is rebuilt only when the displayed second changes. */
-  private readonly scoreboardData: ScoreboardData = { blue: 0, red: 0, clock: '5:00', difficulty: SCOREBOARD_DIFFICULTY.medium, mode: '1v1', rows: this.sbRows };
+  private readonly scoreboardData: ScoreboardData = { blue: 0, red: 0, clock: formatClockSeconds(DEFAULT_MATCH_SECONDS), difficulty: SCOREBOARD_DIFFICULTY.medium, mode: '1v1', rows: this.sbRows };
   private sbClockSec = -1;
   private sbClockOvertime = false;
   /** Loop time at which losing the pointer lock paused the game (see UNLOCK_PAUSE_WINDOW). */
@@ -624,7 +624,7 @@ export class Game implements P2PGameHooks {
     this.input = new Input(window, settings, { onChange: () => this.applySettings() });
     this.input.onPointerLockChange = (locked) => this.onPointerLock(locked);
     sim.setCarDodgeDeadzone(this.playerCarId, settings.controls.dodgeDeadzone);
-    this.match = new Match({ lengthSeconds: opts.matchLengthSeconds ?? 300 });
+    this.match = new Match({ lengthSeconds: opts.matchLengthSeconds ?? DEFAULT_MATCH_SECONDS });
     this.hud = new Hud(opts.hudContainer);
     // The pause screen's touch-mode buttons: what Esc / Start and Backspace / B do there (processActions).
     this.hud.onPauseResume = () => this.setPaused(false);

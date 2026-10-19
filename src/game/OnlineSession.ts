@@ -41,6 +41,7 @@ import type { GameMode } from '../sim/constants';
 import type { RocketSim } from '../sim/RocketSimBridge';
 import { MAX_CARS, MAX_STATE_BYTES, PACKED_INPUT_BYTES, TICK_DT, packControls, type CarControls } from '../sim/types';
 import type { Game } from './Game';
+import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from './Match';
 
 /**
  * The bridge as the predictor sees it. The save / load / hash / packed-controls methods are added
@@ -128,7 +129,7 @@ export class OnlineSession {
   private clockSeconds = 0;
   private clockTick = 0;
   private clockKnown = false;
-  private matchLength = 300;
+  private matchLength = DEFAULT_MATCH_SECONDS;
 
   /** Staged copy of the newest snapshot (applied at the next advance()). */
   private readonly pending: SnapshotPacket = {
@@ -438,10 +439,7 @@ export class OnlineSession {
 
   /** Allocates a string: call only when displaySeconds changed. */
   formatClock(): string {
-    const total = this.displaySeconds;
-    const m = Math.floor(total / 60);
-    const s = total - m * 60;
-    return `${this.overtime ? '+' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+    return formatClockSeconds(this.displaySeconds, this.overtime);
   }
 
   // ---- host messages ---------------------------------------------------------------------

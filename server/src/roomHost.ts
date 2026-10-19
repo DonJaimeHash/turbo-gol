@@ -23,7 +23,7 @@
  * No allocations on the per-tick path: rings, scratch controls and the packed array are
  * preallocated; events are rare (a few per second at most) and allocate.
  */
-import { Match } from '../../src/game/Match';
+import { DEFAULT_MATCH_SECONDS, Match } from '../../src/game/Match';
 import type { MatchEvent as RulesEvent } from '../../src/game/Match';
 import { BotTeam } from '../../src/ai/Team';
 import type { Difficulty } from '../../src/ai/Bot';
@@ -136,7 +136,7 @@ export class RoomHost {
     this.inputBufferTarget = opts.inputBufferTarget ?? 2;
     this.inputBufferMax = opts.inputBufferMax ?? 8;
     this.inputFutureCap = opts.inputFutureCap ?? 32;
-    this.matchLengthSeconds = opts.matchLengthSeconds ?? 300;
+    this.matchLengthSeconds = opts.matchLengthSeconds ?? DEFAULT_MATCH_SECONDS;
     this.kickoffSeed = opts.kickoffSeed ?? 1;
     this.match = new Match({
       lengthSeconds: this.matchLengthSeconds,
