@@ -172,6 +172,15 @@ cd ..
 npm run deploy      # = npm run build (notices + tsc + vite build -> dist/) && node scripts/deploy.mjs (wrangler deploy)
 ```
 
+Before `wrangler deploy`, `npm run deploy` checks the community-node release
+(`scripts/node-release-gate.mjs`): the tree must be clean and at `origin/main`, and the nodes must
+run this build's game code (the rules, bots and sim code bundled in a node release). When that code
+changed, it needs a signed node release built from the same commit and moves the nodes' release
+channel to it before deploying. It reads the channel in the R2 bucket `turbogol-node-releases` with
+the deploy's credentials, so the token needs R2 read access (and write, to move the channel). Until
+a node release is published (a fork without nodes, or before the first one), every deploy is
+`npm run deploy -- --nodes-off`.
+
 The first deploy of a Worker applies the migrations `v1`-`v3` in order (later deploys apply only new
 tags); `wrangler dev` does the same locally the first time it starts. Custom Domain deploys need a
 token (or `wrangler login`) with Workers Scripts and Workers Routes edit rights and access to the zone.

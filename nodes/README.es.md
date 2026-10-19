@@ -55,8 +55,11 @@ Otros comandos:
 | `npm run control` | Solo el plano de control de referencia |
 | `npm run node -- rtc-test --stun stun:stun.cloudflare.com:3478` | Prueba que WebRTC funciona en esta máquina. Solo con un servidor TURN (`--turn`) prueba que los jugadores pueden llegar: sin TURN pasa en cualquier máquina |
 | `npm run bench` | Mide cuántas partidas aguanta esta máquina |
-| `npm run keys` | Genera las claves de control y de releases en `.keys/` |
-| `npm run build` | Arma una release firmada en `dist/releases/` con los tres instaladores |
+| `npm run keys` | Genera las claves de control y de releases en `.keys/`. Si ya existen, las deja y avisa que no son nuevas |
+| `npm run build` | Arma una release de desarrollo en `dist/releases/` con los tres instaladores, firmada con `.keys/release.json`. Nunca se sube |
+| `node scripts/build-node.mjs` | La release de producción: sin firmar, desde un commit, con los instaladores armados con `release-key.pub`. La arma el workflow de releases |
+| `npm run sign` | Firma esa release con la clave de releases del proyecto. Solo lo corre el workflow de releases (`.github/workflows/node-release.yml`) |
+| `node scripts/channel.mjs --show` | Muestra el canal de releases publicado. `--stable` lo mueve y `--rollback` lo devuelve a `channel.prev.json` (normalmente lo mueve `npm run deploy` en la raíz) |
 | `npm run build:web` | Arma el arnés de prueba del navegador, servido en `/web/rtc-harness.html` |
 
 `.keys/`, `dist/`, `data/` y `node_modules/` están en `nodes/.gitignore`. **Nunca subas `.keys/` a
@@ -88,7 +91,8 @@ control-plane/  el plano de control
   devServer.ts    servidor de referencia y de desarrollo
 install/        VPS (install.sh), Windows, macOS y Linux de escritorio, cloud-init
 web/            la página "Pon un servidor" y el arnés WebRTC del navegador
-github/         plantillas: bot, ranking de propuestas, releases, formulario
-scripts/        demo, build de releases y del arnés, claves
+github/         plantillas: bot, ranking de propuestas, formulario (el de releases ya corre en .github/)
+scripts/        demo, build, firma y canal de releases, arnés, claves
+release-key.pub la clave pública de releases del proyecto
 test/           pruebas automáticas con el wasm real
 ```

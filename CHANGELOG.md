@@ -54,6 +54,9 @@ All notable changes to Turbogol are documented here. The format follows
   noise, and they ring briefly in a short synthetic room.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
+- `npm run deploy` checks the community-node release first and, when the game code nodes run
+  changed, moves their release channel to a signed release of the same commit; until the first node
+  release is published, deploy with `npm run deploy -- --nodes-off`.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
