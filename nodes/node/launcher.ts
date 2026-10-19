@@ -7,7 +7,8 @@
  *     release  = <data>/releases/<stable>/ (download if missing):
  *                manifest.json + manifest.sig, verified with the RELEASE public key (pinned at
  *                install time in <data>/release-key.pub, never fetched), then every file listed in
- *                the manifest with its size and SHA-256
+ *                the manifest with its size and SHA-256. A release whose manifest asks for a
+ *                newer Node.js major (nodeMajor) is refused: the installed version keeps running
  *     run        node <data>/releases/<v>/node.mjs run --data <data>   (with an IPC channel)
  *     exit 75  = drained for an update -> loop (picks up the new stable); a version that asks for
  *                an update right after starting while the channel still points to it waits
@@ -79,6 +80,21 @@ export async function verifyManifest(manifestBytes: Uint8Array, sigB64: string, 
   return m;
 }
 
+/** The Node.js major this launcher runs on; every node release runs on the same one (process.execPath). */
+const RUNNING_NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+
+/**
+ * Refuse a release built for a newer Node.js than the one running. Started anyway, it would
+ * crash (or misbehave) on this machine, so the release check fails instead and the installed
+ * version keeps running until the operator upgrades Node.js: the launcher is installed once and
+ * never updates the system's Node.js itself.
+ */
+export function checkNodeMajor(m: ReleaseManifest, running = RUNNING_NODE_MAJOR): void {
+  if (Number.isInteger(m.nodeMajor) && m.nodeMajor > running) {
+    throw new ReleaseError(`${m.version} needs Node.js ${m.nodeMajor} or newer and this machine runs Node.js ${running}: upgrade Node.js to run it`);
+  }
+}
+
 /** Check a downloaded file against its manifest entry. */
 export async function checkFile(f: ReleaseFile, bytes: Uint8Array): Promise<void> {
   if (bytes.length !== f.size) throw new ReleaseError(`${f.path}: size ${bytes.length} != ${f.size}`);
@@ -105,25 +121,32 @@ export const httpFetcher: Fetcher = {
 
 /**
  * Make sure <dataDir>/releases/<version> holds a verified copy of the release. Downloads into a
- * temporary directory and renames it into place only when everything checked out.
+ * temporary directory and renames it into place only when everything checked out. A release that
+ * needs a newer Node.js is refused (checkNodeMajor) before any of its files is downloaded.
  */
 export async function ensureRelease(control: string, dataDir: string, version: string, releaseKey: string, f: Fetcher = httpFetcher): Promise<ReleaseManifest> {
   if (!VERSION.test(version)) throw new ReleaseError('bad version');
   const dir = join(dataDir, 'releases', version);
+  let local: ReleaseManifest | null = null;
   try {
     const mb = new Uint8Array(await readFile(join(dir, 'manifest.json')));
     const sig = await readFile(join(dir, 'manifest.sig'), 'utf8');
     const m = await verifyManifest(mb, sig, releaseKey);
     for (const file of m.files) await checkFile(file, new Uint8Array(await readFile(join(dir, file.path))));
-    return m;
+    local = m;
   } catch {
     /* missing or damaged: fetch it */
+  }
+  if (local) {
+    checkNodeMajor(local);
+    return local;
   }
   const base = `${control.replace(/\/$/, '')}/nodes/releases/${version}`;
   const mb = await f.bytes(`${base}/manifest.json`);
   const sig = new TextDecoder().decode(await f.bytes(`${base}/manifest.sig`));
   const m = await verifyManifest(mb, sig, releaseKey);
   if (m.version !== version) throw new ReleaseError('manifest version differs from the channel');
+  checkNodeMajor(m);
   const tmp = join(dataDir, 'releases', `.${version}.${Date.now()}`);
   await mkdir(tmp, { recursive: true });
   try {
@@ -527,7 +550,7 @@ export class Launcher {
       return { version, lastResort, channel };
     } catch (e) {
       this.log(`release check failed: ${errText(e)}`);
-      // Offline: keep running what we have.
+      // Offline, or the release needs a newer Node.js: keep running what we have.
       return { version: offlineVersion(state, await installedVersions(o.dataDir)), lastResort: false, channel };
     }
   }

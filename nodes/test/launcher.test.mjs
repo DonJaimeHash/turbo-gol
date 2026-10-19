@@ -1,10 +1,11 @@
-// The launcher only installs what the release key signed, checks every file, and rolls back a
-// version that keeps crashing. A stop request (SIGTERM / SIGINT / <data>/stop.request) reaches the
-// node over IPC and ends the launcher, whatever the node's exit code.
+// The launcher only installs what the release key signed, checks every file, refuses a release
+// built for a newer Node.js, and rolls back a version that keeps crashing. A stop request
+// (SIGTERM / SIGINT / <data>/stop.request) reaches the node over IPC and ends the launcher,
+// whatever the node's exit code.
 import '../dev/ts-resolve.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,26 +14,33 @@ const { generateEd25519, importPrivateKey, sign, sha256Hex } = await import('../
 
 const enc = new TextEncoder();
 
-async function makeRelease(version, key, files) {
+/** `extra` patches the manifest before it is signed (a newer nodeMajor...). */
+async function makeRelease(version, key, files, extra = {}) {
   const list = [];
   for (const [path, bytes] of Object.entries(files)) list.push({ path, sha256: await sha256Hex(bytes), size: bytes.length });
-  const manifest = { name: 'turbogol-node', version, protocol: 1, wasmSha256: list[1]?.sha256 ?? 'x', nodeMajor: 24, entry: 'node.mjs', createdAt: '2026-10-15T00:00:00Z', files: list };
+  const manifest = { name: 'turbogol-node', version, protocol: 1, wasmSha256: list[1]?.sha256 ?? 'x', nodeMajor: 24, entry: 'node.mjs', createdAt: '2026-10-15T00:00:00Z', files: list, ...extra };
   const mb = enc.encode(JSON.stringify(manifest));
   return { manifest, mb, sig: await sign(key, mb), files };
 }
 
+function serveRelease(map, control, r) {
+  const base = `${control}/nodes/releases/${r.manifest.version}`;
+  map.set(`${base}/manifest.json`, r.mb);
+  map.set(`${base}/manifest.sig`, enc.encode(r.sig));
+  for (const [p, b] of Object.entries(r.files)) map.set(`${base}/${p}`, b);
+}
+
+/** A fake control plane serving `releases`; `fetched` lists every URL asked for. */
 function fetcherFor(control, releases, channel) {
   const map = new Map();
+  const fetched = [];
   map.set(`${control}/nodes/releases/channel`, enc.encode(JSON.stringify(channel)));
-  for (const r of releases) {
-    const base = `${control}/nodes/releases/${r.manifest.version}`;
-    map.set(`${base}/manifest.json`, r.mb);
-    map.set(`${base}/manifest.sig`, enc.encode(r.sig));
-    for (const [p, b] of Object.entries(r.files)) map.set(`${base}/${p}`, b);
-  }
+  for (const r of releases) serveRelease(map, control, r);
   return {
     map,
+    fetched,
     bytes: async (u) => {
+      fetched.push(u);
       if (!map.has(u)) throw new Error('404 ' + u);
       return map.get(u);
     },
@@ -143,7 +151,7 @@ async function launcherEnv(modes, channels, state, installed = []) {
   f.json = async () => channels[Math.min(calls++, channels.length - 1)];
   if (state) await writeFile(join(dir, 'launcher.json'), JSON.stringify(state));
   for (const v of installed) await L.ensureRelease('https://cp', dir, v, rk.publicKey, f);
-  return { dir, rec, releaseKey: rk.publicKey, f, runs: [] };
+  return { dir, rec, key, releaseKey: rk.publicKey, f, runs: [] };
 }
 
 async function records(rec) {
@@ -393,6 +401,57 @@ test('rollback below the minimum: a stable marked bad by a passing fault is retr
     assert.ok(run.logs.some((m) => /2\.0\.0 crashed 3 times: marked bad/.test(m)), run.logs.join('\n'));
     assert.ok(run.logs.some((m) => /no other version to run \(none here is good and at least the channel minimum 2\.0\.0\)/.test(m)), run.logs.join('\n'));
     assert.deepEqual(await messages(env), [{ t: 'stop' }]);
+  } finally {
+    await cleanup(env);
+  }
+});
+
+test('a release that needs a newer Node.js is refused before its files are downloaded; the installed version keeps running', async () => {
+  const running = Number(process.versions.node.split('.')[0]);
+  const node = { 'node.mjs': enc.encode('console.log("node")') };
+  assert.doesNotThrow(() => L.checkNodeMajor({ version: '1.0.0', nodeMajor: running }));
+  assert.doesNotThrow(() => L.checkNodeMajor({ version: '1.0.0' }), 'no nodeMajor: no requirement');
+  assert.throws(() => L.checkNodeMajor({ version: '1.0.0', nodeMajor: 25 }, 24), /1\.0\.0 needs Node\.js 25 or newer and this machine runs Node\.js 24/);
+
+  const dir = await mkdtemp(join(tmpdir(), 'tgn-launcher-'));
+  try {
+    const rk = await generateEd25519();
+    const key = await importPrivateKey(rk.privateKey);
+    const r = await makeRelease('3.0.0', key, node, { nodeMajor: 99 });
+    const f = fetcherFor('https://cp', [r], { stable: '3.0.0', minimum: '3.0.0' });
+    await assert.rejects(L.ensureRelease('https://cp', dir, '3.0.0', rk.publicKey, f), /3\.0\.0 needs Node\.js 99 or newer/);
+    assert.deepEqual(f.fetched, ['https://cp/nodes/releases/3.0.0/manifest.json', 'https://cp/nodes/releases/3.0.0/manifest.sig'], 'only the signed manifest');
+    assert.equal(await exists(join(dir, 'releases', '3.0.0')), false);
+    // A copy already on disk (downloaded by an older launcher) is refused too, offline.
+    const local = join(dir, 'releases', '3.0.0');
+    await mkdir(local, { recursive: true });
+    await writeFile(join(local, 'manifest.json'), r.mb);
+    await writeFile(join(local, 'manifest.sig'), r.sig);
+    await writeFile(join(local, 'node.mjs'), node['node.mjs']);
+    const offline = { bytes: async () => assert.fail('no network needed'), json: async () => assert.fail('no network needed') };
+    await assert.rejects(L.ensureRelease('https://cp', dir, '3.0.0', rk.publicKey, offline), /needs Node\.js 99/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  // In the loop: 1.0.0 is installed and good, the channel moves to 2.0.0 built for Node.js 99.
+  const env = await launcherEnv({ '1.0.0': 'stop0' }, [{ stable: '2.0.0', minimum: '1.0.0' }], {
+    lastGood: '1.0.0',
+    bad: [],
+    badAt: {},
+    crashes: {},
+  }, ['1.0.0']);
+  serveRelease(env.f.map, 'https://cp', await makeRelease('2.0.0', env.key, { 'node.mjs': enc.encode(fakeNode(env.rec, '2.0.0', 'stop0')) }, { nodeMajor: 99 }));
+  let run;
+  try {
+    run = launch(env);
+    await waitFor('1.0.0 to start', async () => (await starts(env)).length === 1);
+    run.l.requestStop('test');
+    assert.equal(await run.finished(), 0);
+    assert.deepEqual((await starts(env)).map((s) => s.v), ['1.0.0']);
+    assert.deepEqual(run.sleeps, [], 'no wait: it runs at once');
+    assert.ok(run.logs.some((m) => /release check failed: 2\.0\.0 needs Node\.js 99 or newer/.test(m)), run.logs.join('\n'));
+    assert.equal(await exists(join(env.dir, 'releases', '2.0.0')), false);
   } finally {
     await cleanup(env);
   }
