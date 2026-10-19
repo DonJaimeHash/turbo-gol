@@ -24,6 +24,11 @@ All notable changes to Turbogol are documented here. The format follows
 - Third-party notices point to the script that applies the physics-library patches.
 
 ### Changed
+- The goals have no right angles any more: the posts and the crossbar are rounded into the back
+  wall, the back-wall ramp wraps round the posts into the goal, and every inner edge of the
+  chamber (netting to floor, netting to roof, the back corners) is rounded like the rest of the
+  field. The goal frames glow along the rounded edges. Pages from before the change must reload
+  to play online (the client and server protocol versions went up).
 - Matches last 3 minutes (was 5): offline, casual, ranked, P2P and server matches. Custom lobbies
   start at 3 minutes and the host can still pick 5, 10 or no limit.
 - Spanish is neutral Latin American Spanish (tú) instead of rioplatense, in the game, the server's
