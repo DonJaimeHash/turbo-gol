@@ -17,8 +17,9 @@ import { PACKED_INPUT_BYTES } from '../sim/types';
 /**
  * 2: the field changed (rounded goals): a client must predict on the same collision mesh as the
  * host, so a page cached from before is refused (NetClient checks /api/config and the Welcome).
+ * 3: the bots changed (the host's bots and a client predicting them must agree).
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const TICK_RATE = 120;
 
 // A const object rather than a `const enum`: node's type stripping (the test runner) rejects

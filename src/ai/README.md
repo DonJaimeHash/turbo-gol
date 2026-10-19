@@ -180,9 +180,9 @@ mode =
   ball at (0,0) with zero velocity                 -> KICKOFF  (duty go / cheat / stay)
   car airborne                                      -> RECOVER   (AERIAL keeps itself while airborne)
   role SUPPORT                                      -> rebound / step-up ATTACK, AERIAL (beaten attacker), BOOST, else SUPPORT
-  role DEFENDER                                     -> BOOST (ball far, low boost), else DEFEND (goalie / clear)
+  role DEFENDER                                     -> AERIAL (save: fast ball at our goal, findAerial), BOOST (ball far, low boost), else DEFEND (goalie / clear)
   -- attacker / standalone --
-  hard & boost >= 25 & findAerial()                 -> AERIAL
+  aerials & boost >= 25 & findAerial()              -> AERIAL   (medium and hard)
   threat && opponent closer                         -> DEFEND
   no intercept && ball on our half                  -> DEFEND
   ball on their half && opponent much closer (x0.5) -> DEFEND   (shadow, don't double-commit)
@@ -241,12 +241,21 @@ Targets per mode:
   disappears sends the car back to its natural target.
 * **RECOVER** – airborne without a plan: PD (`aimInAir`) levels the roof to +z and points the nose
   along the horizontal velocity, throttle 1, no boost.
-* **AERIAL** (hard) – `findAerial` scans prediction entries 0.3–1.5 s ahead with ball z > 350 and
-  checks the constant acceleration `a = 2|p - x - v0 t - ½ g t²| / t²` needed after a jump
-  (`v0 = v + up*292`) is < `aerialMaxAccel` (850), the point is ahead (cos > 0.85) and the boost
-  suffices. In flight the aim direction is recomputed every tick toward `predictBallAt(tRemaining)`;
-  jump is held for the first 0.1 s, boost when the nose is within ~20° of the aim. Aborts to
-  RECOVER when the required acceleration exceeds 1400 or the ball is reached.
+* **AERIAL** (medium and hard) – `findAerial` scans prediction entries 0.3 s to `aerialMaxT` ahead
+  with ball z between 350 and `aerialMaxZ`. The car does not aim at the ball's centre but
+  `aerialHitOffset` (~140 uu) behind it on the **push direction**: toward the shot's aim point in the
+  goal we attack, or for a save (ball on our half flying at our goal) up-field and out to the
+  ball's side, so the nose sends the ball there. It checks the constant acceleration
+  `a = 2|p - x - v0 t - ½ g t²| / t²` needed after the take-off (`v0 = v + up * (292 + jump hold)`;
+  hard double-jumps for balls above 650 that are more than 0.4 s away: `2 * 292`) is below
+  `aerialMaxAccel` (boost gives ~1060 in the air, the plan keeps a margin for the take-off), that
+  the point is ahead (`aerialAheadCos`) and that the boost suffices. In flight the push point is
+  recomputed every tick from `predictBallAt(tRemaining)` (the jumps not yet applied are still
+  counted); jump is held 0.18 s (0.1 s, then a second press with the stick centred, for a double
+  jump); boost whenever the nose is within ~37° of the aim; the last 0.15 s the nose turns to the
+  push direction. Aborts to RECOVER when, after 0.3 s, the required acceleration exceeds 1250, or
+  when the ball is reached (3D distance < 150). Measured (`tests/bot-sim.test.mjs`): a lob
+  dropping from 900 uu is met at car z ~320–340 and sent toward the goal at ~1600–1900 uu/s.
 
 Non-attackers run `avoidLane()` on their positioning / boost / goalie targets (Roles). Every raw
 target is clamped to the drivable floor (`clampToField`): `|x| <= 4200`, `|y| <= 5430` and, in
@@ -340,7 +349,12 @@ While `C_IS_FLIPPING` the bot outputs zero pitch/yaw/roll (a same-sign pitch wou
 | boostMinDist  | 2000 | 1500   | 900  | |
 | dodgeProb     | 0.15 | 0.6    | 1    | chance to dodge into the ball when the shot is on |
 | jumpProb      | 0.5  | 0.8    | 1    | chance to jump for a bouncing ball |
-| aerials       | no   | no     | yes  | |
+| aerials       | no   | yes    | yes  | also the defender's saves |
+| aerialMaxT    | –    | 1.1    | 1.8  | s, longest flight it plans |
+| aerialMaxAccel| –    | 780    | 900  | uu/s², constant acceleration a plan may need |
+| aerialMaxZ    | –    | 950    | 2000 | highest ball it goes up for |
+| aerialDoubleJump | – | no     | yes  | double jump for balls above 650 |
+| aerialAheadCos| –    | 0.85   | 0.75 | how far ahead of the nose the aerial point must be |
 | steerNoise    | 0.10 | 0.05   | 0    | rad, slow random walk on the steering angle |
 | aimNoise      | 220  | 90     | 0    | uu, slow random walk on the hit point (wider misses) |
 | shadowFactor / shadowMax | 0.3 / 2000 | 0.35 / 2000 | 0.5 / 3500 | how far up the field the shadow position sits |
@@ -352,8 +366,10 @@ While `C_IS_FLIPPING` the bot outputs zero pitch/yaw/roll (a same-sign pitch wou
 `groundMaxBallZ 300`, `hitMargin 25`, `goalAimClampX 696`, `kickoffDodgeDist 500`,
 `kickoffDodgeSpeed 1800`, `dodgeBaseDist 280`, `dodgeSpeedScale 0.08`, `dodgeMaxDist 480`,
 `dodgeAlign 0.26`, `dodgeMaxBallZ 200`, `jumpMinBallZ 150`, `jumpMaxBallZ 300`, `jumpDist 400`,
-`aerialMinBallZ 350`, `aerialMinT 0.3`, `aerialMaxT 1.5`, `aerialMaxAccel 850`,
-`aerialAbortAccel 1400`, `aerialMinBoost 25`, `aerialCooldownTicks 90`, `modeMinTicks 20`,
+`aerialMinBallZ 350`, `aerialMinT 0.3`, `aerialAbortAccel 1250` (after `aerialAbortAfter 0.3` s),
+`aerialHitOffset ~138`, `aerialDoubleZ 650`, `aerialJumpHoldVel 220 / 140` (single / double),
+`aerialHoldSingle 0.18`, `aerialHoldDouble 0.1`, `aerialStrikeT 0.15`, `shotAimAway 300`,
+`aerialMinBoost 25`, `aerialCooldownTicks 90`, `modeMinTicks 20`,
 `targetSmoothing 0.35`, `targetSnapDist 800`, `shadowMinDepth 1000`, `shadowXClamp 900`,
 `airKp 3 / airKd 0.5` (pitch & yaw PD), `rollKp 3 / rollKd 0.25`, `dodgeWaitTicks 2`,
 `dodgeWaitMax 8`, `goAroundEnter -60`, `goAroundExit -450`, `goAroundMaxDist 1600`,
@@ -420,11 +436,25 @@ index (`predAge`); without that offset 3 of every 4 decisions would read a 1–3
 
 ## Known gaps
 
-* No wall play (walls are only ever driven *off*), no flip resets, no fast-aerial double jump, no
-  demo hunting, no power-slide recoveries (RECOVER only levels the car).
+* No wall play (walls are only ever driven *off*), no flip resets, no demo hunting, no power-slide
+  recoveries (RECOVER only levels the car). Aerials are planned with a constant acceleration and
+  a margin: high, far balls (most of a 700 uu floater 1500 uu away) stay out of reach.
 * The intercept model assumes the ball stops where predicted; no shot-power/direction solving
   beyond "aim through the ball toward a goal point".
 * The defence shadow never anticipates bounces off the back wall.
 * Team play: no passing plays, no explicit back-post rotation after a shot (the attacker only
   rotates when a teammate's intercept is clearly better), the lane rule only moves targets (a car
-  already inside the lane just drives out of it).
+  already inside the lane just drives out of it). Crosses to a support waiting in front of the
+  goal were tried and scored less (the ground touch cannot send a ball square accurately, and
+  the receiver's role switch makes it chase the cross); so were a boost reserve for aerials, a
+  far-post aim and a shorter go-around in the half we attack (`scripts/bot-bench.mjs`).
+
+## Bot bench (`scripts/bot-bench.mjs`)
+
+`node scripts/bot-bench.mjs [--baseline=origin/main] [--modes=1v1,2v2,3v3] [--matches=8]
+[--difficulty=hard] [--tuneA=key=value,...] [--paramsA=hard.key=value,...]`: the bots of the working
+tree (A) against those of a git revision (B), headless 3-minute matches on the real physics, A
+blue in even matches and red in odd ones. Prints A's wins / draws / losses and per match goals,
+own goals, touches, aerial touches, shots on target, passes, forward touches and how long the ball
+is high. With 40 matches a mode the win count still moves by about ±3 between equal bots: compare
+variants on 40+ matches, and use the scenario tests (`tests/bot-sim.test.mjs`) for skills.
