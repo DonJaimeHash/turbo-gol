@@ -404,7 +404,7 @@ export default {
   'board.total': { one: '{count} jugador clasificado · Temporada {season}', other: '{count} jugadores clasificados · Temporada {season}' },
   'board.unranked': 'Sin clasificar',
   'board.resultPending': 'El resultado de la partida competitiva todavía se está calculando: míralo en tu perfil.',
-  'board.resultVerifying': 'Verificando el resultado de la partida competitiva…',
+  'board.resultVerifying': 'El resultado de la partida competitiva se está verificando: va a aparecer aquí cuando esté listo.',
   'board.resultVerifyingSlow': 'El resultado de la partida competitiva todavía se está verificando: míralo en tu perfil en unos minutos.',
   'board.voided': 'No se pudo verificar la partida competitiva y no contó',
   'board.notRated': 'Esa partida no contó para el rango',

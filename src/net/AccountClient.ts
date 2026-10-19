@@ -392,10 +392,13 @@ export class AccountClient {
    * within a second of the whistle): up to `tries` x `everyMs`. A match on a community node
    * (`opts.node`) is rated only once the control plane re-simulated its replay, which can take
    * longer: still pending after the fast tries, it calls `onVerifying` once and keeps asking every
-   * 3 s up to 120 s after the first poll. Resolves the last answer.
+   * 3 s up to 120 s after the first poll. Resolves the last answer. Stops asking, still pending,
+   * once the signed-in account is no longer the one it started with (a sign-out, another
+   * account): the match is not the new one's, and AccountsDO would answer it `not_rated`.
    */
   async waitRankedResult(matchId: string, tries = 15, everyMs = 1000, opts: RankedWaitOptions = {}): Promise<RankedResultAnswer> {
     const start = this.now();
+    const who = this.account?.playerId;
     let last: RankedResultAnswer = { status: 'pending' };
     for (let i = 0; i < tries; i++) {
       try {
@@ -405,12 +408,14 @@ export class AccountClient {
       }
       if (last.status !== 'pending') break;
       await this.sleep(everyMs);
+      if (this.account?.playerId !== who) return last;
     }
     if (last.status !== 'pending' || opts.node !== true) return last;
     if (opts.onVerifying) opts.onVerifying();
     const until = start + NODE_RESULT_MAX_WAIT_MS;
     while (last.status === 'pending' && this.now() + NODE_RESULT_EVERY_MS <= until) {
       await this.sleep(NODE_RESULT_EVERY_MS);
+      if (this.account?.playerId !== who) break;
       try {
         last = await this.rankedResult(matchId);
       } catch {

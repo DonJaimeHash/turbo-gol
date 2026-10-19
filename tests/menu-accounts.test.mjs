@@ -254,6 +254,91 @@ test('showRankedResult: a node match still pending is being verified; a failed o
   ]);
 });
 
+const OTHER = (expiresAt) => ({ ...SESSION('Other', expiresAt), playerId: '0123456789abcdef' });
+
+test('AccountClient.waitRankedResult stops asking once another account is signed in: the match is not theirs', async () => {
+  const p = rankedPoller((n) => {
+    if (n === 3) p.a.account = OTHER(p.a.account.expiresAt);
+    return { status: 'pending' };
+  });
+  assert.equal((await p.a.waitRankedResult('f'.repeat(64), undefined, undefined, { node: true, onVerifying: p.onVerifying })).status, 'pending');
+  assert.equal(p.asked.length, 3, 'never asked as the other account');
+  assert.equal(p.verifying, 0);
+  // During the replay check's wait.
+  const q = rankedPoller((n) => {
+    if (n === 17) q.a.account = OTHER(q.a.account.expiresAt);
+    return { status: 'pending' };
+  });
+  await q.a.waitRankedResult('f'.repeat(64), undefined, undefined, { node: true, onVerifying: q.onVerifying });
+  assert.equal(q.asked.length, 17);
+  assert.equal(q.verifying, 1);
+});
+
+const VERIFYING = 'Your Competitive result is being verified: it will show up here once it is ready.';
+const VERIFYING_SLOW = 'Your Competitive result is still being verified: check your profile in a few minutes.';
+const VOIDED = "The Competitive match couldn't be verified and didn't count";
+
+/** A RankedResults on a rankedPoller and a fake menu that records its toasts (no DOM: no dialogs). */
+async function rankedResults(answer, onScreen = () => true) {
+  const { RankedResults } = await import('../src/ui/screens/leaderboard.ts');
+  const p = rankedPoller(answer);
+  const toasts = [];
+  const menu = { toast: (text) => toasts.push(text), modal: () => assert.fail('no dialog for these answers') };
+  return { p, toasts, results: new RankedResults({ accounts: p.a, menu, onScreen }) };
+}
+
+test('RankedResults (Game.showMenu): a node match says it is being verified once, then that it still is; a Durable Object match only waits the fast tries', async () => {
+  const node = await rankedResults(() => ({ status: 'pending' }));
+  await node.results.watch('f'.repeat(64), true);
+  assert.deepEqual(node.toasts, [VERIFYING, VERIFYING_SLOW]);
+  assert.equal(node.p.asked.length, 15 + 35, 'the whole two-minute wait');
+  const server = await rankedResults(() => ({ status: 'pending' }));
+  await server.results.watch('f'.repeat(64), false);
+  assert.deepEqual(server.toasts, ['Your Competitive result is still being calculated: check your profile.']);
+  assert.equal(server.p.asked.length, 15);
+});
+
+test('RankedResults: what comes while the menus are away waits for them, the result replacing "verifying"; another account never sees it', async () => {
+  const voided = { status: 'cancelled', reason: 'verification_failed:bad_takeover' };
+  // The player goes into another match 3 s after the menu came back; the replay check fails at about a minute.
+  let onScreen = true;
+  const away = await rankedResults((n) => {
+    if (n === 4) onScreen = false;
+    return n < 20 ? { status: 'pending' } : voided;
+  }, () => onScreen);
+  await away.results.watch('f'.repeat(64), true);
+  assert.deepEqual(away.toasts, [], 'a toast now would fade behind the match');
+  away.results.showHeld();
+  assert.deepEqual(away.toasts, []);
+  onScreen = true;
+  away.results.showHeld();
+  assert.deepEqual(away.toasts, [VOIDED], 'the result alone: "verifying" is stale by now');
+  away.results.showHeld();
+  assert.deepEqual(away.toasts, [VOIDED], 'once');
+
+  // Back in the menus while the check still runs: "verifying" then, the result when it comes.
+  let back = true;
+  const mid = await rankedResults((n) => {
+    if (n === 4) back = false;
+    if (n === 18) {
+      back = true;
+      mid.results.showHeld();
+    }
+    return n < 20 ? { status: 'pending' } : voided;
+  }, () => back);
+  await mid.results.watch('f'.repeat(64), true);
+  assert.deepEqual(mid.toasts, [VERIFYING, VOIDED]);
+
+  // Held, then another account signs in before the menus are back: dropped.
+  let shown = false;
+  const other = await rankedResults((n) => (n < 20 ? { status: 'pending' } : voided), () => shown);
+  await other.results.watch('f'.repeat(64), true);
+  other.p.a.account = OTHER(other.p.a.account.expiresAt);
+  shown = true;
+  other.results.showHeld();
+  assert.deepEqual(other.toasts, []);
+});
+
 class FakeWs {
   static last = null;
   constructor(url, protocols) {

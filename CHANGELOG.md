@@ -23,6 +23,7 @@ All notable changes to Turbogol are documented here. The format follows
   checked first), and a match that fails the check shows as not counted. The network panel names
   the node that hosts the match, and quitting such a match still works when the account's session
   would run out during it (it is renewed as the match starts, and once more if the quit is refused).
+  A result that comes in while the player is already in another match shows once the menu is back.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
