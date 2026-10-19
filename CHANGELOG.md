@@ -48,6 +48,10 @@ All notable changes to Turbogol are documented here. The format follows
   three virtual gears (it shifts as the car speeds up), free revs in the air, more growl under load
   and a few exhaust pops when the throttle is released at high rpm. The boost is a deep roar with a
   soft low hum and the supersonic wind a full, low whoosh, instead of high-pitched hiss.
+- The sound effects have body instead of sounding like a single tone: ball touches, bumps,
+  landings, jumps, flips, the explosion, the goal, the countdown, the kickoff signal and the boost
+  pads are each layered from a contact click, a pitched body with several partials and filtered
+  noise, and they ring briefly in a short synthetic room.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
 
