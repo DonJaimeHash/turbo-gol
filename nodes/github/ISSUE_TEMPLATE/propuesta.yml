@@ -1,0 +1,39 @@
+name: Propuesta
+description: Una idea o un cambio para el juego. La comunidad vota con 👍 y lo más votado se implementa.
+title: "[Propuesta] "
+labels: ["propuesta"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por proponer. Vota las propuestas de otros con 👍 en vez de duplicarlas.
+        Cada semana se ordenan por votos. Una propuesta aprobada por mantenedores la implementa un bot y la revisa una persona.
+  - type: textarea
+    id: que
+    attributes:
+      label: ¿Qué quieres que cambie?
+      description: Lo más concreto posible.
+    validations:
+      required: true
+  - type: textarea
+    id: por-que
+    attributes:
+      label: ¿Por qué?
+      description: Qué problema resuelve o qué hace más divertido.
+    validations:
+      required: true
+  - type: textarea
+    id: como
+    attributes:
+      label: ¿Cómo sabríamos que está bien hecho?
+      description: Qué tendría que pasar en el juego. Ayuda a escribir las pruebas.
+  - type: dropdown
+    id: tipo
+    attributes:
+      label: Tipo
+      options:
+        - Jugabilidad
+        - Interfaz y menús
+        - Online y servidores
+        - Rendimiento
+        - Otro

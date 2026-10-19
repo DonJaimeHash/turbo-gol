@@ -58,6 +58,7 @@ import {
   turnRadius,
   v3copy,
   v3cross,
+  v3dist,
   v3dist2D,
   v3dot,
   v3dot2D,
@@ -113,6 +114,19 @@ export interface DifficultyParams {
   jumpProb: number;
   /** Aerials allowed. */
   aerials: boolean;
+  /** Longest aerial it plans (s of flight). */
+  aerialMaxT: number;
+  /**
+   * Constant acceleration an aerial may need (uu/s^2). Boost in the air gives ~1060, but the
+   * take-off (the nose turning up) costs some: plans close to the limit fail half way.
+   */
+  aerialMaxAccel: number;
+  /** Highest ball it goes up for (uu). */
+  aerialMaxZ: number;
+  /** Double jump on take-off for high balls. */
+  aerialDoubleJump: boolean;
+  /** How far ahead an aerial target must be: cosine of the angle off the car's nose. */
+  aerialAheadCos: number;
   /** Steering noise amplitude (rad) added as a slow random walk. */
   steerNoise: number;
   /** Shot-aim noise (uu) applied sideways to the hit point as a slow random walk. */
@@ -131,6 +145,11 @@ export const DIFFICULTY_PARAMS: Readonly<Record<Difficulty, DifficultyParams>> =
     dodgeProb: 0.15,
     jumpProb: 0.5,
     aerials: false,
+    aerialMaxT: 1,
+    aerialMaxAccel: 600,
+    aerialMaxZ: 800,
+    aerialDoubleJump: false,
+    aerialAheadCos: 0.9,
     steerNoise: 0.1,
     aimNoise: 220,
     shadowFactor: 0.3,
@@ -143,7 +162,12 @@ export const DIFFICULTY_PARAMS: Readonly<Record<Difficulty, DifficultyParams>> =
     boostMinDist: 1500,
     dodgeProb: 0.6,
     jumpProb: 0.8,
-    aerials: false,
+    aerials: true,
+    aerialMaxT: 1.1,
+    aerialMaxAccel: 780,
+    aerialMaxZ: 950,
+    aerialDoubleJump: false,
+    aerialAheadCos: 0.85,
     steerNoise: 0.05,
     aimNoise: 90,
     shadowFactor: 0.35,
@@ -157,6 +181,11 @@ export const DIFFICULTY_PARAMS: Readonly<Record<Difficulty, DifficultyParams>> =
     dodgeProb: 1,
     jumpProb: 1,
     aerials: true,
+    aerialMaxT: 1.8,
+    aerialMaxAccel: 900,
+    aerialMaxZ: ARENA.height - 250,
+    aerialDoubleJump: true,
+    aerialAheadCos: 0.75,
     steerNoise: 0,
     aimNoise: 0,
     shadowFactor: 0.5,
@@ -192,9 +221,25 @@ export const TUNING = {
   jumpDist: 400,
   aerialMinBallZ: 350,
   aerialMinT: 0.3,
-  aerialMaxT: 1.5,
-  aerialMaxAccel: 850,
-  aerialAbortAccel: 1400,
+  /** In flight (after aerialAbortAfter s), give up when the acceleration needed exceeds this. */
+  aerialAbortAccel: 1250,
+  aerialAbortAfter: 0.3,
+  /** The car aims this far behind the ball on its push direction (its nose meets the ball there). */
+  aerialHitOffset: CONTACT_DIST - 30,
+  /** A double jump for a ball above this (difficulties with aerialDoubleJump). */
+  aerialDoubleZ: 650,
+  /**
+   * Upward speed (uu/s) the jump hold adds on take-off (RocketSim's jump acceleration ~1458 uu/s^2):
+   * a single jump is held aerialHoldSingle s, a double jump's first one aerialHoldDouble s.
+   */
+  aerialJumpHoldVel: 220,
+  aerialJumpHoldVelDouble: 140,
+  aerialHoldSingle: 0.18,
+  aerialHoldDouble: 0.1,
+  /** The last part of an aerial (s): the nose turns from the approach to the push direction. */
+  aerialStrikeT: 0.15,
+  /** Shots aim this far (uu) to the side away from the opponent nearest the ball. */
+  shotAimAway: 300,
   aerialMinBoost: 25,
   aerialCooldownTicks: 90,
   modeMinTicks: 20,
@@ -633,6 +678,10 @@ export class Bot {
   private aerialT = 0;
   private aerialStartTick = 0;
   private aerialCooldown = 0;
+  /** This aerial double-jumps on take-off. */
+  private aerialDouble = false;
+  /** This aerial is a save / clear (push away from our goal) rather than a shot (toward goalT). */
+  private aerialDefensive = false;
 
   // play state
   private boostPad = -1;
@@ -762,7 +811,7 @@ export class Bot {
   }
 
   /** Floats saveState writes (the bot's own memory plus its TeamContext). */
-  static readonly STATE_FLOATS = 44 + 33 + TeamContext.STATE_FLOATS;
+  static readonly STATE_FLOATS = 46 + 33 + TeamContext.STATE_FLOATS;
 
   /**
    * Write everything that persists between think() calls (mode, timers, jump sequence, held
@@ -791,6 +840,8 @@ export class Bot {
     out[o++] = this.aerialT;
     out[o++] = this.aerialStartTick;
     out[o++] = this.aerialCooldown;
+    out[o++] = this.aerialDouble ? 1 : 0;
+    out[o++] = this.aerialDefensive ? 1 : 0;
     out[o++] = this.boostPad;
     out[o++] = this.goingAround ? 1 : 0;
     out[o++] = this.shotOn ? 1 : 0;
@@ -851,6 +902,8 @@ export class Bot {
     this.aerialT = src[o++];
     this.aerialStartTick = src[o++];
     this.aerialCooldown = src[o++];
+    this.aerialDouble = src[o++] !== 0;
+    this.aerialDefensive = src[o++] !== 0;
     this.boostPad = src[o++];
     this.goingAround = src[o++] !== 0;
     this.shotOn = src[o++] !== 0;
@@ -1336,6 +1389,11 @@ export class Bot {
    * back boost while the ball is far away.
    */
   private chooseDefenderMode(state: SimStateView): BotMode {
+    const p = this.params;
+    // A high ball flying at our goal: go up for it (a save / clear in the air).
+    if (p.aerials && this.ballThreatFast() && this.aerialCooldown === 0 && this.boostAmt >= TUNING.aerialMinBoost && !this.isFlipping && this.findAerial(state)) {
+      return 'aerial';
+    }
     this.defenderSpot();
     const ballFar = this.ballToOwnGoalDist() > TUNING.defenderBoostBallDist && !this.ballTowardOurGoal();
     const urgent = this.ballThreatFast() || this.myBallDist < 1500 || !ballFar;
@@ -1413,12 +1471,19 @@ export class Bot {
     this.holdPosition = false;
   }
 
+  /**
+   * x of the shot's aim point inside the opponent goal: a little to the side away from the
+   * opponent nearest the ball (aiming further out, at the far post, missed more than it beat
+   * keepers in the bot bench).
+   */
+  private shotAimX(): number {
+    const aimX = this.hasOpp ? -Math.sign(this.oppPos[0]) * TUNING.shotAimAway : 0;
+    return clamp(aimX, -TUNING.goalAimClampX, TUNING.goalAimClampX);
+  }
+
   private attackTarget(): void {
     this.targetT = this.interceptT;
-    // aim point inside the opponent goal, away from the opponent
-    let aimX = this.hasOpp ? -Math.sign(this.oppPos[0]) * 300 : 0;
-    aimX = clamp(aimX, -TUNING.goalAimClampX, TUNING.goalAimClampX);
-    v3set(this.goalT, aimX, -this.goalDir * ARENA.extentY, 0);
+    v3set(this.goalT, this.shotAimX(), -this.goalDir * ARENA.extentY, 0);
     shotHitPoint(this.bp, this.goalT, this.hit, this.shotDir);
     this.approachTarget();
   }
@@ -2010,35 +2075,62 @@ export class Bot {
   }
 
   /**
-   * Hard only: is there a predicted ball position in the air we could reach with a jump + boost
-   * within TUNING.aerialMaxT? Stores the flight time in aerialT.
+   * The direction an aerial pushes the ball (unit, into this.shotDir): a shot toward the shot's
+   * aim point in the goal we attack (goalT), or for a save / clear (ball on our half flying at our
+   * goal) up-field and out to the ball's side. `px, py, pz` = where the ball will be met.
+   */
+  private aerialPushDir(px: number, py: number, pz: number, defensive: boolean): void {
+    const d = this.shotDir;
+    if (defensive) {
+      v3set(d, (px >= 0 ? 1 : -1) * 0.6, -this.goalDir, 0.35);
+    } else {
+      v3set(this.goalT, this.shotAimX(), -this.goalDir * ARENA.extentY, ARENA.goalHeight * 0.4);
+      v3set(d, this.goalT[0] - px, this.goalT[1] - py, this.goalT[2] - pz);
+    }
+    if (v3normalize(d, d) === 0) v3set(d, 0, -this.goalDir, 0);
+  }
+
+  /**
+   * Is there a predicted ball position in the air we could reach with a jump (and, for high balls
+   * on the difficulties that do it, a double jump) plus boost, within the difficulty's flight
+   * time, acceleration and height limits? The car aims aerialHitOffset behind the ball on the push
+   * direction (aerialPushDir), so its nose sends the ball there. Stores the flight time in aerialT.
    */
   private findAerial(state: SimStateView): boolean {
+    const p = this.params;
     const pred = state.ballPred;
     const iMin = Math.max(0, Math.round(TUNING.aerialMinT * TICK_RATE) - 1);
-    const iMax = Math.min(BALL_PRED_TICKS - 1, Math.round(TUNING.aerialMaxT * TICK_RATE) - 1);
-    const v0x = this.carVel[0] + this.carUp[0] * JUMP_IMPULSE;
-    const v0y = this.carVel[1] + this.carUp[1] * JUMP_IMPULSE;
-    const v0z = this.carVel[2] + this.carUp[2] * JUMP_IMPULSE;
+    const iMax = Math.min(BALL_PRED_TICKS - 1, Math.round(p.aerialMaxT * TICK_RATE) - 1);
     const fx = this.carFwd[0];
     const fy = this.carFwd[1];
     const age = predAge(state);
+    const defensive = this.ballOnOurHalf() && this.ballTowardOurGoal();
+    const off = TUNING.aerialHitOffset;
     for (let i = iMin; i <= iMax && i + age < BALL_PRED_TICKS; i += 6) {
       const o = (i + age) * BALL_PRED_STRIDE;
       const pz = pred[o + 2];
-      if (pz < TUNING.aerialMinBallZ || pz > ARENA.height - 250) continue;
+      if (pz < TUNING.aerialMinBallZ || pz > p.aerialMaxZ) continue;
       const t = (i + 1) * TICK_DT;
-      const dx = pred[o] - this.carPos[0] - v0x * t;
-      const dy = pred[o + 1] - this.carPos[1] - v0y * t;
-      const dz = pred[o + 2] - this.carPos[2] - v0z * t - GRAV_HALF * t * t;
+      const dbl = p.aerialDoubleJump && pz > TUNING.aerialDoubleZ && t > 0.4;
+      const jv = dbl ? 2 * JUMP_IMPULSE + TUNING.aerialJumpHoldVelDouble : JUMP_IMPULSE + TUNING.aerialJumpHoldVel;
+      this.aerialPushDir(pred[o], pred[o + 1], pz, defensive);
+      const sd = this.shotDir;
+      const tx = pred[o] - sd[0] * off;
+      const ty = pred[o + 1] - sd[1] * off;
+      const tz = pz - sd[2] * off;
+      const dx = tx - this.carPos[0] - (this.carVel[0] + this.carUp[0] * jv) * t;
+      const dy = ty - this.carPos[1] - (this.carVel[1] + this.carUp[1] * jv) * t;
+      const dz = tz - this.carPos[2] - (this.carVel[2] + this.carUp[2] * jv) * t - GRAV_HALF * t * t;
       const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const need = (2 * len) / (t * t);
-      if (need > TUNING.aerialMaxAccel) continue;
+      if (need > p.aerialMaxAccel) continue;
       const h = Math.sqrt(dx * dx + dy * dy);
-      if (h > 1 && (dx * fx + dy * fy) / h < 0.85) continue; // must be roughly ahead
+      if (h > 1 && (dx * fx + dy * fy) / h < p.aerialAheadCos) continue; // must be roughly ahead
       const boostNeeded = ((need / BOOST_ACCEL_AIR) * t + 0.3) * BOOST_PER_SECOND;
       if (boostNeeded > this.boostAmt) continue;
       this.aerialT = t;
+      this.aerialDouble = dbl;
+      this.aerialDefensive = defensive;
       return true;
     }
     return false;
@@ -2059,29 +2151,48 @@ export class Bot {
       return;
     }
     predictBallAt(state, tRem, this.pred);
-    // required constant acceleration to meet the ball: delta = p - x - v t - ½ g t²
+    // Meet the ball aerialHitOffset behind it on the push direction (recomputed: the ball moves).
+    this.aerialPushDir(this.pred[0], this.pred[1], this.pred[2], this.aerialDefensive);
+    const sd = this.shotDir;
+    const off = TUNING.aerialHitOffset;
+    // required constant acceleration to reach that point: delta = p - x - v t - ½ g t². Until the
+    // jumps have happened, count the velocity they are about to add (as findAerial did).
+    let jv = 0;
+    if (this.onGround) jv = this.aerialDouble ? 2 * JUMP_IMPULSE + TUNING.aerialJumpHoldVelDouble : JUMP_IMPULSE + TUNING.aerialJumpHoldVel;
+    else if (this.aerialDouble && !this.hasDoubleJumped) jv = JUMP_IMPULSE;
     const d = this.delta;
-    d[0] = this.pred[0] - this.carPos[0] - this.carVel[0] * tRem;
-    d[1] = this.pred[1] - this.carPos[1] - this.carVel[1] * tRem;
-    d[2] = this.pred[2] - this.carPos[2] - this.carVel[2] * tRem - GRAV_HALF * tRem * tRem;
+    d[0] = this.pred[0] - sd[0] * off - this.carPos[0] - (this.carVel[0] + this.carUp[0] * jv) * tRem;
+    d[1] = this.pred[1] - sd[1] * off - this.carPos[1] - (this.carVel[1] + this.carUp[1] * jv) * tRem;
+    d[2] = this.pred[2] - sd[2] * off - this.carPos[2] - (this.carVel[2] + this.carUp[2] * jv) * tRem - GRAV_HALF * tRem * tRem;
     const len = v3normalize(this.aim, d);
     const need = (2 * len) / (tRem * tRem);
-    const ballDist = v3dist2D(this.carPos, this.ballPos);
-    if (need > TUNING.aerialAbortAccel || (elapsed > 0.25 && ballDist < 150) || this.boostAmt <= 0) {
+    const ballDist = v3dist(this.carPos, this.ballPos); // 3D: under a high ball the 2D distance is ~0
+    // (No acceleration abort during the take-off: the nose is still turning up.)
+    if ((need > TUNING.aerialAbortAccel && elapsed > TUNING.aerialAbortAfter) || (elapsed > 0.25 && ballDist < 150) || this.boostAmt <= 0) {
       this.endAerial();
       this.recoverControl(out);
       return;
     }
     out.throttle = 1;
-    const takeoff = elapsed < 0.1;
-    out.jump = takeoff; // hold the first jump for extra height
+    const takeoff = elapsed < (this.aerialDouble ? TUNING.aerialHoldDouble : TUNING.aerialHoldSingle);
+    // Hold the first jump for extra height; a double jump presses it again with the stick centred.
+    const second = this.aerialDouble && elapsed >= 0.15 && elapsed < 0.17 && !this.hasDoubleJumped;
+    out.jump = takeoff || second;
     if (this.isFlipping) return;
+    // The last moments: the nose turns to the push direction, so the touch sends the ball along it.
+    if (tRem < TUNING.aerialStrikeT) v3copy(this.aim, sd);
     aimInAir(this.carFwd, this.carRight, this.carUp, this.carAng, this.aim, out);
+    if (second) {
+      out.pitch = 0;
+      out.yaw = 0;
+      out.roll = 0;
+    }
     if (takeoff && this.onGround) {
       // leave the ground nose-up before the controller takes over
       out.pitch = Math.max(out.pitch, 0.6);
     }
     const cosA = v3dot(this.carFwd, this.aim);
-    out.boost = elapsed > 0.03 && cosA > 0.94 && need > 120;
+    // Boost as soon as the nose is roughly on the line (the controller finishes the turn under boost).
+    out.boost = elapsed > 0.03 && cosA > 0.8 && need > 120;
   }
 }

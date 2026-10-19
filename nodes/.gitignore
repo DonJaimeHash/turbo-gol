@@ -1,0 +1,9 @@
+# Never commit keys, node identities, build outputs or local data.
+.keys/
+node_modules/
+dist/
+data/
+node.json
+bench.json
+egress.json
+*.log

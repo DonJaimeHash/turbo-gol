@@ -13,6 +13,11 @@ All notable changes to Turbogol are documented here. The format follows
 - Demolished cars explode: a fireball with flames, team-coloured sparks, falling embers, a ground
   shockwave and a flash, with its own explosion sound (quieter far from the camera). Every car,
   in every kind of match.
+- Community nodes (`nodes/`, a prototype not wired into the game yet): match servers run by the
+  community on a VPS or a home PC (WebSocket or WebRTC), a control plane that places matches on them
+  and re-simulates the replays before any rating is written (every ranked match; casual matches by
+  sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
+  Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
@@ -24,6 +29,12 @@ All notable changes to Turbogol are documented here. The format follows
 - Third-party notices point to the script that applies the physics-library patches.
 
 ### Changed
+- The bots fly: medium bots now go up for high balls too, hard ones double-jump for higher ones,
+  and both meet the ball so that it goes toward the goal (or, for a save, away from their own);
+  the defender in 3v3 saves in the air. Two old faults kept aerials from happening at all: the
+  flight was abandoned on its first tick (the jump not yet applied made the plan look impossible)
+  and, under a high ball, the 2D distance said "reached". Pages from before must reload to play
+  online (protocol versions up again).
 - The goals have no right angles any more: the posts and the crossbar are rounded into the back
   wall, the back-wall ramp wraps round the posts into the goal, and every inner edge of the
   chamber (netting to floor, netting to roof, the back corners) is rounded like the rest of the
