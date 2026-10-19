@@ -299,13 +299,14 @@ Tarda unos 2 minutos: la propagación de KV más los 60 s de `cacheTtl` con que 
 flags (`server/src/index.ts:176`). Las partidas que ya corren en el VPS siguen. Hoy ningún código
 lee ese flag, y el cron de gasto que lo prendería (`docs/online/DECISIONS.md`) no existe: es un
 interruptor manual. Para salir de un problema, usa este flag y no un rollback del Worker por debajo
-del PR [7]: los jugadores con un lock de partida de nodo quedarían trabados hasta que venza, unos
+del PR [7]: los jugadores con un lock de partida de nodo quedarían atascados hasta que venza, unos
 13 minutos.
 
 ### Si se cae
 
-- Sus partidas en curso se anulan sin penalizar a los jugadores, a los 15-20 s: 15 s sin
-  heartbeat (`shared/controlProtocol.ts:40`) más el intervalo del barrido. El nodo suma un strike,
+- Sus partidas en curso se anulan sin penalizar a los jugadores si no vuelve en unos 60 s: un
+  nodo del proyecto tiene 60 s sin heartbeat para reconectarse y conservarlas (`TRUSTED_OFFLINE_MS`
+  en `control-plane/controlPlane.ts`), más el intervalo del barrido; un nodo comunitario, 15 s. El nodo suma un strike,
   pero un nodo del proyecto no se pausa.
 - Las ranked de Sudamérica vuelven a `MatchDO`, como hoy, mientras no haya otro verificador: una
   ranked solo va a un nodo si alguien puede re-simularla (`control-plane/controlPlane.ts:637`).
