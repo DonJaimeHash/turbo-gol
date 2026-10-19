@@ -28,6 +28,13 @@ import { serverText, t } from '../i18n';
 export const ACCOUNT_HINT_KEY = STORAGE_PREFIX + 'account';
 /** Refresh when less than this is left on the Bearer session. */
 const REFRESH_MARGIN_MS = 2 * 60_000;
+/**
+ * A ranked match on a community node is rated only after the control plane re-simulated its
+ * replay: once the fast polls run out, waitRankedResult asks this often, up to this long after
+ * its first poll.
+ */
+const NODE_RESULT_EVERY_MS = 3000;
+const NODE_RESULT_MAX_WAIT_MS = 120_000;
 
 export class AccountError extends Error {
   readonly status: number;
@@ -88,8 +95,18 @@ export interface AccountClientOptions {
   /** null disables the hint (tests). */
   storage?: StorageLike | null;
   now?: () => number;
+  /** The wait between two polls of waitRankedResult (setTimeout by default; tests move a fake `now`). */
+  sleep?: (ms: number) => Promise<void>;
   /** A Turnstile token for registration when the server wants one (NetClient.antiBotToken), null = none. */
   antiBot?: () => Promise<string | null>;
+}
+
+/** waitRankedResult options. */
+export interface RankedWaitOptions {
+  /** The match ran on a community node (Welcome.hostColo 'node:<name>'): keep polling after the fast tries. */
+  node?: boolean;
+  /** Called once when a node match is still pending after the fast tries (the menu says it is being verified). */
+  onVerifying?: () => void;
 }
 
 export class AccountClient {
@@ -104,6 +121,7 @@ export class AccountClient {
   private readonly fetchFn: FetchLike;
   private readonly storage: StorageLike | null;
   private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
   private refreshing: Promise<AccountSession | null> | null = null;
   private readonly antiBot: () => Promise<string | null>;
 
@@ -113,6 +131,7 @@ export class AccountClient {
     this.fetchFn = opts.fetchFn ?? ((url, init) => fetch(url, { ...init, credentials: 'same-origin' } as RequestInit) as unknown as Promise<ResponseLike>);
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
     this.now = opts.now ?? Date.now;
+    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
   get signedIn(): boolean {
@@ -366,9 +385,13 @@ export class AccountClient {
 
   /**
    * Poll the rating change of a finished ranked match until AccountsDO has it (the MatchDO reports
-   * within a second of the whistle): up to `tries` x `everyMs`. Resolves the last answer.
+   * within a second of the whistle): up to `tries` x `everyMs`. A match on a community node
+   * (`opts.node`) is rated only once the control plane re-simulated its replay, which can take
+   * longer: still pending after the fast tries, it calls `onVerifying` once and keeps asking every
+   * 3 s up to 120 s after the first poll. Resolves the last answer.
    */
-  async waitRankedResult(matchId: string, tries = 15, everyMs = 1000): Promise<RankedResultAnswer> {
+  async waitRankedResult(matchId: string, tries = 15, everyMs = 1000, opts: RankedWaitOptions = {}): Promise<RankedResultAnswer> {
+    const start = this.now();
     let last: RankedResultAnswer = { status: 'pending' };
     for (let i = 0; i < tries; i++) {
       try {
@@ -377,7 +400,18 @@ export class AccountClient {
         /* keep polling */
       }
       if (last.status !== 'pending') break;
-      await new Promise((r) => setTimeout(r, everyMs));
+      await this.sleep(everyMs);
+    }
+    if (last.status !== 'pending' || opts.node !== true) return last;
+    if (opts.onVerifying) opts.onVerifying();
+    const until = start + NODE_RESULT_MAX_WAIT_MS;
+    while (last.status === 'pending' && this.now() + NODE_RESULT_EVERY_MS <= until) {
+      await this.sleep(NODE_RESULT_EVERY_MS);
+      try {
+        last = await this.rankedResult(matchId);
+      } catch {
+        /* keep polling */
+      }
     }
     return last;
   }

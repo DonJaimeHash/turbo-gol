@@ -34,7 +34,7 @@ import { NetClient, NetError, type MatchAssignment, type NetClientOptions } from
 import { netErrorText } from '../net/netErrorText';
 import { RateMeter, newNetStatsView, resetNetStatsView, type NetStatsView } from '../net/NetStats';
 import { RollbackPredictor, type RollbackSim } from '../net/Prediction';
-import { TICK_RATE, type MatchEvent, type SnapshotPacket, type Welcome } from '../net/protocol';
+import { TICK_RATE, isNodeHost, type MatchEvent, type SnapshotPacket, type Welcome } from '../net/protocol';
 import { ONLINE_STATUS, type ClockMode } from '../render/Hud';
 import { t } from '../i18n';
 import type { GameMode } from '../sim/constants';
@@ -105,6 +105,11 @@ export class OnlineSession {
    * change (AccountClient.waitRankedResult) and clears this. Survives the teardown.
    */
   lastRankedMatchId: string | null = null;
+  /**
+   * That match ran on a community node (isNodeHost): it is rated only after the replay check, so
+   * the menu waits longer for its result (AccountClient.waitRankedResult `node`).
+   */
+  lastRankedOnNode = false;
 
   readonly client: NetClient;
   predictor: RollbackPredictor | null = null;
@@ -539,7 +544,10 @@ export class OnlineSession {
         this.winner = e.winner;
         this.frozen = true;
         this.state = 'ended';
-        if (this.ranked && this.matchId !== null) this.lastRankedMatchId = this.matchId;
+        if (this.ranked && this.matchId !== null) {
+          this.lastRankedMatchId = this.matchId;
+          this.lastRankedOnNode = isNodeHost(this.welcome?.hostColo);
+        }
         if (this.predictor !== null) this.predictor.hold.fill(0);
         break;
       case 'cancelled':

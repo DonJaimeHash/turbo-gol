@@ -2313,12 +2313,15 @@ export class Game implements P2PGameHooks {
     this.menuNotice = undefined;
     this.hud.hideMenu();
     this.menu.show();
-    // A ranked match just ended: show its rating change once AccountsDO has it.
+    // A ranked match just ended: show its rating change once AccountsDO has it (on a community node
+    // only after the replay check: a longer wait, announced once).
     const ranked = online !== null ? online.lastRankedMatchId : null;
     if (online !== null && ranked !== null) {
       online.lastRankedMatchId = null;
-      void this.accounts.waitRankedResult(ranked).then((r) => {
-        showRankedResult(this.menu, r);
+      const node = online.lastRankedOnNode;
+      const onVerifying = (): void => this.menu.toast(t('board.resultVerifying'), 'info');
+      void this.accounts.waitRankedResult(ranked, undefined, undefined, { node, onVerifying }).then((r) => {
+        showRankedResult(this.menu, r, node);
         void this.accounts.fetchMe().catch(() => undefined);
       });
     }

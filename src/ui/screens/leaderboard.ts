@@ -7,7 +7,7 @@ import { h, setChildren, navButton, clock } from '../dom';
 import { PLAYLISTS } from '../../net/account';
 import type { LeaderboardEntry, RankedResultAnswer } from '../../net/account';
 import { tierProgress } from '../../net/rating';
-import { t } from '../../i18n';
+import { t, type Key } from '../../i18n';
 import { rankBadge, tierById } from '../badges';
 import { playlistName, tierName } from '../names';
 import type { Menu, Screen } from '../Menu';
@@ -59,14 +59,17 @@ export function leaderboardScreen(menu: Menu): Screen {
   return { id: 'leaderboard', title: t('board.screenTitle'), el, show: () => void load() };
 }
 
-/** The rating change of a finished ranked match (AccountClient.waitRankedResult's answer). */
-export function showRankedResult(menu: Menu, r: RankedResultAnswer): void {
+/**
+ * The rating change of a finished ranked match (AccountClient.waitRankedResult's answer). `node`:
+ * the match ran on a community node, whose result may still be waiting for the replay check.
+ */
+export function showRankedResult(menu: Menu, r: RankedResultAnswer, node = false): void {
   if (r.status === 'pending') {
-    menu.toast(t('board.resultPending'), 'info');
+    menu.toast(t(node ? 'board.resultVerifyingSlow' : 'board.resultPending'), 'info');
     return;
   }
   if (r.status === 'cancelled') {
-    menu.toast(r.reason === 'not_rated' ? t('board.notRated') : t('board.cancelled'), 'info');
+    menu.toast(t(cancelledKey(r.reason)), 'info');
     return;
   }
   const delta = r.mmrAfter - r.mmrBefore;
@@ -98,4 +101,14 @@ export function showRankedResult(menu: Menu, r: RankedResultAnswer): void {
     ],
     actions: [{ label: t('board.continue'), primary: true, onClick: () => true }],
   });
+}
+
+/**
+ * The toast of a cancelled ranked result. A community node's match is voided when its replay check
+ * fails ('verification_failed:<why>') or cannot run ('unverified'; nodes/control-plane).
+ */
+function cancelledKey(reason: string): Key {
+  if (reason === 'not_rated') return 'board.notRated';
+  if (reason === 'unverified' || reason.startsWith('verification_failed')) return 'board.voided';
+  return 'board.cancelled';
 }

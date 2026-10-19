@@ -174,9 +174,10 @@ class FakeSim {
 
 /**
  * An OnlineSession in the 'playing' state on a fake Game, with the fake socket and clock exposed;
- * `routes` add / override API routes; `connecting: true` stops right after the socket was created.
+ * `routes` add / override API routes; `connecting: true` stops right after the socket was created;
+ * `welcome` adds fields to the Welcome (hostColo 'node:<name>': a community node).
  */
-async function playingSession(routes = {}, { connecting = false } = {}) {
+async function playingSession(routes = {}, { connecting = false, welcome = {} } = {}) {
   const h = makeClient({
     '/api/guest': () => jsonResponse(200, GUEST),
     '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm1', ticket: 'tkt', wsUrl: '/ws/m1' }),
@@ -211,7 +212,7 @@ async function playingSession(routes = {}, { connecting = false } = {}) {
     { carId: 1, slot: 0, team: 0, name: 'Tester', kind: 'player' },
     { carId: 2, slot: 1, team: 1, name: 'Bot 1', kind: 'bot' },
   ];
-  ws.deliver(encodeJson(MsgType.Welcome, { protocol: P.PROTOCOL_VERSION, matchId: 'm1', mode: '1v1', tickRate: 120, carId: 1, slot: 0, roster, tick: 0, matchLengthSeconds: 300 }));
+  ws.deliver(encodeJson(MsgType.Welcome, { protocol: P.PROTOCOL_VERSION, matchId: 'm1', mode: '1v1', tickRate: 120, carId: 1, slot: 0, roster, tick: 0, matchLengthSeconds: 300, ...welcome }));
   assert.ok(session.predictor, 'predictor built from the Welcome');
   // First authoritative state (tick 0): the match is on screen.
   const state = new Uint8Array(sim.stateSizeMax());
@@ -456,4 +457,21 @@ test('OnlineSession.cancel while connecting quits the assigned match (/api/leave
   await flush();
   assert.equal(session.state, 'idle');
   assert.deepEqual(bodies, [{}]);
+});
+
+// ---- OnlineSession on a community node (Welcome.hostColo 'node:<name>') -----------------------
+
+const RANKED_QUEUE = { '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm1', ticket: 'tkt', wsUrl: '/ws/m1', ranked: true }) };
+const NODE_WELCOME = { welcome: { hostColo: 'node:sao-paulo-1' } };
+
+test('OnlineSession: a ranked match that ends on a community node is flagged for the longer result wait (lastRankedOnNode)', async () => {
+  const ended = encodeJson(MsgType.Event, { type: 'ended', winner: 0, blue: 1, red: 0, tick: 500 });
+  const node = await playingSession(RANKED_QUEUE, NODE_WELCOME);
+  node.ws.deliver(ended);
+  assert.equal(node.session.lastRankedMatchId, 'm1');
+  assert.equal(node.session.lastRankedOnNode, true);
+  const colo = await playingSession(RANKED_QUEUE, { welcome: { hostColo: 'GRU' } });
+  colo.ws.deliver(ended);
+  assert.equal(colo.session.lastRankedMatchId, 'm1');
+  assert.equal(colo.session.lastRankedOnNode, false);
 });

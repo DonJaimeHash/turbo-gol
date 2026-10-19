@@ -165,6 +165,75 @@ test('AccountClient.waitRankedResult polls until the result is there', async () 
   assert.match(srv.calls[0].headers.authorization, /^Bearer jwt-Tomi$/);
 });
 
+const DONE = { status: 'done', playlist: '1v1', outcome: 'win', left: false, mmrBefore: 1000, mmrAfter: 1105, tierBefore: null, tierAfter: null, placementLeft: 4, banUntil: 0 };
+
+/** An AccountClient on a fake clock that only the waits between polls move; `answer(n)` is the n-th /api/ranked/result answer. */
+function rankedPoller(answer) {
+  let t = 5_000_000;
+  const asked = [];
+  const srv = fakeServer({
+    '/api/ranked/result': () => {
+      asked.push(t);
+      return res(200, answer(asked.length));
+    },
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, now: () => t, sleep: async (ms) => void (t += ms) });
+  a.account = SESSION('Tomi', t + 3600_000);
+  const p = { a, asked, verifying: 0, onVerifying: () => p.verifying++, at: () => asked.map((x) => x - asked[0]) };
+  return p;
+}
+
+test('AccountClient.waitRankedResult on a community node: past the fast tries it says "verifying" once and asks every 3 s', async () => {
+  const p = rankedPoller((n) => (n <= 3 ? { status: 'pending' } : DONE));
+  const r = await p.a.waitRankedResult('f'.repeat(64), 2, 1000, { node: true, onVerifying: p.onVerifying });
+  assert.equal(r.status, 'done', 'three pending answers, then the result');
+  assert.equal(p.verifying, 1);
+  assert.deepEqual(p.at(), [0, 1000, 5000, 8000]);
+  // The result inside the fast tries: nothing to announce.
+  const quick = rankedPoller((n) => (n <= 3 ? { status: 'pending' } : DONE));
+  assert.equal((await quick.a.waitRankedResult('f'.repeat(64), 15, 1000, { node: true, onVerifying: quick.onVerifying })).status, 'done');
+  assert.equal(quick.verifying, 0);
+  assert.equal(quick.asked.length, 4);
+  // A Durable Object host: the fast tries are all there is.
+  const server = rankedPoller(() => ({ status: 'pending' }));
+  assert.equal((await server.a.waitRankedResult('f'.repeat(64), 2, 1000, { onVerifying: server.onVerifying })).status, 'pending');
+  assert.equal(server.verifying, 0);
+  assert.deepEqual(server.at(), [0, 1000]);
+});
+
+test('AccountClient.waitRankedResult on a community node gives up 120 s after its first poll, still pending', async () => {
+  const p = rankedPoller(() => ({ status: 'pending' }));
+  const r = await p.a.waitRankedResult('f'.repeat(64), undefined, undefined, { node: true, onVerifying: p.onVerifying });
+  assert.equal(r.status, 'pending');
+  assert.equal(p.verifying, 1);
+  const at = p.at();
+  assert.equal(at.length, 15 + 35, '15 fast polls a second apart, then one every 3 s');
+  assert.equal(at[14], 14_000);
+  assert.equal(at[15], 18_000);
+  assert.equal(at.at(-1), 120_000, 'the last poll is at the cap, none after it');
+});
+
+test('showRankedResult: a node match still pending is being verified; a failed or missing replay check voids it', async () => {
+  const { showRankedResult } = await import('../src/ui/screens/leaderboard.ts');
+  const toasts = [];
+  const menu = { toast: (text, kind) => toasts.push([text, kind]) };
+  showRankedResult(menu, { status: 'pending' });
+  showRankedResult(menu, { status: 'pending' }, true);
+  // AccountsDO keeps 32 characters of the reason: 'verification_failed:' + a cut 'bad_takeover_time'.
+  showRankedResult(menu, { status: 'cancelled', reason: 'verification_failed:bad_takeover' }, true);
+  showRankedResult(menu, { status: 'cancelled', reason: 'unverified' }, true);
+  showRankedResult(menu, { status: 'cancelled', reason: 'not_rated' });
+  showRankedResult(menu, { status: 'cancelled', reason: 'no_show' });
+  assert.deepEqual(toasts, [
+    ['Your Competitive result is still being calculated: check your profile.', 'info'],
+    ['Your Competitive result is still being verified: check your profile in a few minutes.', 'info'],
+    ["The Competitive match couldn't be verified and didn't count", 'info'],
+    ["The Competitive match couldn't be verified and didn't count", 'info'],
+    ["That match didn't count for your rank", 'info'],
+    ["The Competitive match was cancelled and didn't count", 'info'],
+  ]);
+});
+
 class FakeWs {
   static last = null;
   constructor(url, protocols) {
