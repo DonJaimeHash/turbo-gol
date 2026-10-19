@@ -81,6 +81,7 @@ export async function setup(opts = {}) {
     nodeId: '',
     session: null,
     boot: 'boot-1',
+    /** How the node answers a relayed leave: true (applied), false (refused: match_over), 'silent' (no reply). */
     leaveAnswers: true,
     /** Health probes the node answered or failed; while probeFails is a string, they fail with it. */
     probes: 0,
@@ -162,8 +163,8 @@ export async function setup(opts = {}) {
           }, 0);
         }
         if (m.t === 'assign') later({ t: 'reply', rid: m.rid, ok: true, data: { wsUrl: opts.rtc ? null : `${URL_}/m/${m.match.matchId}` } });
-        if (m.t === 'leave' && env.leaveAnswers) later({ t: 'reply', rid: m.rid, ok: true, data: { slot: 0, closed: true, already: false, ended: false } });
-        if (m.t === 'leave' && !env.leaveAnswers) later({ t: 'reply', rid: m.rid, ok: false, code: 'match_over' });
+        if (m.t === 'leave' && env.leaveAnswers === true) later({ t: 'reply', rid: m.rid, ok: true, data: { slot: 0, closed: true, already: false, ended: false } });
+        if (m.t === 'leave' && env.leaveAnswers === false) later({ t: 'reply', rid: m.rid, ok: false, code: 'match_over' });
         if (m.t === 'rtcOffer') later({ t: 'reply', rid: m.rid, ok: true, data: { sdp: 'v=0' } });
         if (m.t === 'verify') {
           void Promise.resolve(env.onVerify(m.job)).then((verdict) => {

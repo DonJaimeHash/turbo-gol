@@ -189,6 +189,24 @@ export type MatchOutcome =
 /** assigned -> (report received) reporting -> verifying -> done; or straight to done (void). */
 export type MatchState = 'assigned' | 'reporting' | 'verifying' | 'done';
 
+/**
+ * rejoin(): a fresh ticket, or why not. The Worker answers 404 for no_match and not_in_match, 410
+ * for left and match_over (it keeps the player's lock only on 'left': the match goes on without
+ * them), 503 for offline (it keeps the lock: the node may come back).
+ */
+export type RejoinAnswer = { ok: true; ticket: string; wsUrl: string } | { ok: false; code: 'no_match' | 'not_in_match' | 'left' | 'match_over' | 'offline' };
+
+/**
+ * leave() resolved: the leave is recorded (the Worker answers 200 and frees the lock), whatever
+ * the node answered. `answer` is the node's; null when the relay failed (`error`: timeout,
+ * disconnected, or the node's refusal), and then the node may or may not have applied it.
+ */
+export interface LeaveResult {
+  recorded: true;
+  answer: LeaveAnswer | null;
+  error?: string;
+}
+
 export interface MatchEntry {
   assign: MatchAssignment;
   nodeId: string;
@@ -244,6 +262,7 @@ export interface ControlPlaneOptions {
   siteBase?: string;
   /** The build the current web client runs: nodes must match it to get matches. */
   build: () => BuildId;
+  /** The release channel (channel.json in R2). Checked at every use: a bad one never throws, see channel(). */
   channel: () => ReleaseChannel;
   registry: Registry;
   ledger: Ledger;
@@ -340,6 +359,28 @@ function httpOf(wsUrl: string): string {
   return wsUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
 }
 
+/** A release version as builds carry it (validate.parseBuild's rule). */
+const VERSION = /^[0-9A-Za-z.+-]{1,32}$/;
+/** No channel known: nobody is below the minimum, so nobody is told to update. */
+const NO_CHANNEL: ReleaseChannel = { stable: '0.0.0', minimum: '0.0.0' };
+
+/** The channel the control plane can compare versions against, with nothing else in it, or null. */
+function cleanChannel(v: unknown): ReleaseChannel | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const { stable, minimum, canary } = v as Record<string, unknown>;
+  if (typeof stable !== 'string' || !VERSION.test(stable) || typeof minimum !== 'string' || !VERSION.test(minimum)) return null;
+  return { stable, minimum, ...(typeof canary === 'string' && VERSION.test(canary) ? { canary } : {}) };
+}
+
+/** A short, log-safe picture of a value. */
+function describe(v: unknown): string {
+  try {
+    return String(JSON.stringify(v)).slice(0, 80);
+  } catch {
+    return typeof v;
+  }
+}
+
 export class ControlPlane {
   readonly registry: Registry;
   readonly ledger: Ledger;
@@ -366,6 +407,9 @@ export class ControlPlane {
   private readonly restartGraceMs: number;
   /** Until then a cold start waits for its nodes: see inGrace(). */
   private graceUntil = 0;
+  /** The last valid release channel, and whether a bad one was already alerted. */
+  private goodChannel: ReleaseChannel | null = null;
+  private channelAlerted = false;
 
   constructor(o: ControlPlaneOptions) {
     this.o = o;
@@ -587,7 +631,7 @@ export class ControlPlane {
     this.sessions.set(nodeId, s);
     const iceServers = n.transports.includes('rtc') ? await this.ice('node') : [];
     if (s.closed) return;
-    s.link.send({ t: 'welcome', nodeId, status: n.status, region: n.region, channel: this.o.channel(), serverTime: this.now(), iceServers });
+    s.link.send({ t: 'welcome', nodeId, status: n.status, region: n.region, channel: this.channel(), serverTime: this.now(), iceServers });
   }
 
   private call<T>(nodeId: string, msg: RpcRequest, timeoutMs = RPC_TIMEOUT_MS): Promise<T> {
@@ -653,7 +697,7 @@ export class ControlPlane {
    */
   maybeUpdate(nodeId: string): void {
     const n = this.registry.node(nodeId);
-    const ch = this.o.channel();
+    const ch = this.channel();
     if (!n || compareVersions(n.build.version, ch.minimum) >= 0) {
       this.deferredUpdates.delete(nodeId);
       return;
@@ -665,6 +709,42 @@ export class ControlPlane {
     }
     this.deferredUpdates.delete(nodeId);
     this.notify(nodeId, { t: 'update', version: ch.stable });
+  }
+
+  /**
+   * The release channel changed (the DO re-reads channel.json): nodes below the new minimum get
+   * their 'update' now, not at their next hello. A trusted verifier with matches of its build still
+   * to verify waits, as it would at a hello.
+   */
+  channelChanged(): void {
+    for (const id of this.sessions.keys()) this.maybeUpdate(id);
+  }
+
+  /**
+   * The release channel the nodes are held to. A missing or malformed one (no channel.json in R2,
+   * a bad upload) must not break every hello: the last good one stays, or 0.0.0 (nobody is told to
+   * update), with one ALERT until a good one is back.
+   */
+  private channel(): ReleaseChannel {
+    let raw: unknown = null;
+    let threw = '';
+    try {
+      raw = this.o.channel();
+    } catch (e) {
+      threw = String(e);
+    }
+    const ch = cleanChannel(raw);
+    if (ch) {
+      this.goodChannel = ch;
+      this.channelAlerted = false;
+      return ch;
+    }
+    const use = this.goodChannel ?? NO_CHANNEL;
+    if (!this.channelAlerted) {
+      this.channelAlerted = true;
+      this.log(`ALERT release channel missing or invalid (${threw || describe(raw)}): holding the nodes to stable ${use.stable}, minimum ${use.minimum}`);
+    }
+    return use;
   }
 
   /** Someone can verify a match played on `build`: a trusted verifier on that exact release, or the in-process verifier (reference server). */
@@ -844,18 +924,48 @@ export class ControlPlane {
     return this.noPlace(req, refused, transports);
   }
 
-  /** A fresh ticket for a player rejoining a node match (POST /api/rejoin). */
-  async rejoinTicket(matchId: string, playerId: string): Promise<{ ticket: string; wsUrl: string } | null> {
+  /** A fresh ticket for a player rejoining a node match (POST /api/rejoin), or why not (checked in this order). */
+  async rejoin(matchId: string, playerId: string): Promise<RejoinAnswer> {
     const m = this.matches.get(matchId);
-    const n = m ? this.registry.node(m.nodeId) : undefined;
-    if (!m || !n || m.state !== 'assigned' || m.leaves.has(playerId)) return null;
-    // A wss node checks the ticket by itself; an rtc one needs its control link for the offer.
-    if (m.transport === 'rtc' && !this.isOnline(n.nodeId)) return null;
-    if (m.transport === 'wss' && !n.publicUrl) return null;
+    if (!m) return { ok: false, code: 'no_match' };
     const e = m.assign.roster.find((r) => r.kind === 'player' && r.playerId === playerId);
-    if (!e) return null;
+    if (!e) return { ok: false, code: 'not_in_match' };
+    if (m.leaves.has(playerId)) return { ok: false, code: 'left' };
+    if (m.state !== 'assigned') return { ok: false, code: 'match_over' };
+    // A wss node checks the ticket by itself; an rtc one needs its control link for the offer.
+    const n = this.registry.node(m.nodeId);
+    if (!n || (m.transport === 'rtc' && !this.isOnline(n.nodeId)) || (m.transport === 'wss' && !n.publicUrl)) return { ok: false, code: 'offline' };
     const ticket = await createNodeTicket(await this.key, { sub: playerId, mid: matchId, team: e.team, slot: e.slot, name: e.name, nodeId: n.nodeId }, this.now());
-    return { ticket, wsUrl: this.urlFor(n, m.transport, matchId) };
+    return { ok: true, ticket, wsUrl: this.urlFor(n, m.transport, matchId) };
+  }
+
+  /** rejoin() without the reason: null when the player cannot rejoin. */
+  async rejoinTicket(matchId: string, playerId: string): Promise<{ ticket: string; wsUrl: string } | null> {
+    const r = await this.rejoin(matchId, playerId);
+    return r.ok ? { ticket: r.ticket, wsUrl: r.wsUrl } : null;
+  }
+
+  /**
+   * A player's node match as the matchmaker's lock check sees it (GET /internal/status): the lock
+   * holds while the match is 'assigned' or 'reporting' and the player has not left. null (404)
+   * when the control plane does not know the match, or the player in it.
+   */
+  matchStatus(matchId: string, playerId: string): { state: MatchState; left: boolean } | null {
+    const m = this.matches.get(matchId);
+    if (!m || !m.assign.roster.some((r) => r.kind === 'player' && r.playerId === playerId)) return null;
+    return { state: m.state, left: m.leaves.has(playerId) };
+  }
+
+  /**
+   * Host nodes online in `region` that may take matches (probation or active): the `hosts` of
+   * POST /internal/place. While it is 0 the matchmaker stops asking for a while.
+   */
+  hostsOnline(region: string): number {
+    let n = 0;
+    for (const x of this.registry.list()) {
+      if (x.region === region && this.isOnline(x.nodeId) && x.roles.includes('host') && (x.status === 'probation' || x.status === 'active')) n++;
+    }
+    return n;
   }
 
   /**
@@ -864,8 +974,13 @@ export class ControlPlane {
    * fall in the matching tick window, so a node holding its report cannot turn a later, automatic
    * leave into an abandon. `connected: false` (the client never got into the match, e.g. a cancel
    * while connecting) is never a dodge.
+   *
+   * Throws NodeRefused before recording anything (no_match, not_in_match, match_over, offline: the
+   * Worker keeps the lock on that one, the player may still rejoin). Once recorded it resolves,
+   * even when the relay then fails: the player is out of the match from then on (rejoin answers
+   * 'left'), so the Worker must free the lock rather than strand them in it.
    */
-  async leave(matchId: string, playerId: string, opts: { connected?: boolean } = {}): Promise<LeaveAnswer> {
+  async leave(matchId: string, playerId: string, opts: { connected?: boolean } = {}): Promise<LeaveResult> {
     const m = this.matches.get(matchId);
     if (!m) throw new NodeRefused('no_match');
     if (!m.assign.roster.some((r) => r.kind === 'player' && r.playerId === playerId)) throw new NodeRefused('not_in_match');
@@ -877,10 +992,15 @@ export class ControlPlane {
     if (!m.leaveAt.has(playerId)) m.leaveAt.set(playerId, this.now());
     if (opts.connected === false) m.neverJoined.add(playerId);
     this.save(m);
-    const a = await this.call<LeaveAnswer>(m.nodeId, { t: 'leave', matchId, playerId });
+    let answer: LeaveAnswer;
+    try {
+      answer = await this.call<LeaveAnswer>(m.nodeId, { t: 'leave', matchId, playerId });
+    } catch (e) {
+      return { recorded: true, answer: null, error: e instanceof NodeRefused ? e.code : String(e) };
+    }
     m.left.add(playerId);
     this.save(m);
-    return a;
+    return { recorded: true, answer };
   }
 
   // ---- WebRTC signaling (players of rtc nodes) ----------------------------------------------

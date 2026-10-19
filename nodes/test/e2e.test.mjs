@@ -76,7 +76,8 @@ test('a community node hosts casual and ranked matches; results are verified bef
     await waitFor(() => pl.lastTick > 3 * 120, 15_000);
     const lv = await post(`${cp.url}/dev/leave`, { matchId: placed.body.matchId, playerId: casualHuman.playerId });
     assert.equal(lv.status, 200, JSON.stringify(lv.body));
-    assert.equal(lv.body.ended, true);
+    assert.equal(lv.body.recorded, true);
+    assert.equal(lv.body.answer.ended, true);
     const casual = await outcomeOf(cp.url, placed.body.matchId);
     assert.equal(casual.verdict.code, 'ok', casual.verdict.message);
     assert.equal(casual.outcome.kind, 'unrated');
@@ -108,7 +109,7 @@ test('a community node hosts casual and ranked matches; results are verified bef
     assert.equal(cp.cp.registry.node(identity.nodeId).status, 'active');
     // Beto quits for good: red has nobody left -> forfeit, blue wins.
     const q = await post(`${cp.url}/dev/leave`, { matchId: ranked.body.matchId, playerId: beto.playerId });
-    assert.equal(q.body.ended, true);
+    assert.equal(q.body.answer.ended, true);
     await waitFor(() => a.ended, 5_000);
     assert.equal(a.ended.forfeit, true);
     assert.equal(a.ended.winner, 0);

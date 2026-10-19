@@ -2,7 +2,8 @@
 // the outcome comes from the verdict, points from verified minutes, no-shows and cancels are not
 // taken on a community node's word, malformed messages never throw, leaves after the whistle are
 // refused, dead or restarted nodes lose their matches (one strike per outage), verifier-side
-// failures are retried, and a failed verification always means manual review.
+// failures are retried, and a failed verification always means manual review. Also the API the
+// Worker calls: rejoin reasons, the lock check, the hosts count, leaves and channel changes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { playRecordedMatch, testBuild } from './helpers.mjs';
@@ -532,4 +533,143 @@ test('only so many sockets wait to log in: more are closed at once; logging in, 
   assert.equal(one.closed, false, 'the node that logged in no longer counts');
   assert.equal(anon().closed, true);
   for (const s of [...waiting, one]) env.cp.onClose(s);
+});
+
+// ---- the API the Worker calls -------------------------------------------------------------------
+
+const lostReport = (matchId) => ({ t: 'report', id: 'lost:' + matchId, report: { kind: 'lost', matchId, reason: 'node_shutdown' } });
+
+test('rejoin says why not: no_match, not_in_match, left, match_over, offline', async () => {
+  const [A, B, C, D] = ['a', 'b', 'c', 'd'].map((c) => c.repeat(16));
+  const env = await setup({ status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  assert.deepEqual(await env.cp.rejoin('f'.repeat(64), A), { ok: false, code: 'no_match' });
+  assert.deepEqual(await env.cp.rejoin(p.matchId, C), { ok: false, code: 'not_in_match' });
+  const ok = await env.cp.rejoin(p.matchId, A);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.wsUrl, p.wsUrl);
+  assert.equal(typeof ok.ticket, 'string');
+  assert.deepEqual(await env.cp.rejoinTicket(p.matchId, A).then((r) => Object.keys(r)), ['ticket', 'wsUrl']);
+  await env.cp.leave(p.matchId, B);
+  assert.deepEqual(await env.cp.rejoin(p.matchId, B), { ok: false, code: 'left' });
+  assert.equal(await env.cp.rejoinTicket(p.matchId, B), null, 'rejoinTicket: null, as before');
+  await env.send(lostReport(p.matchId));
+  assert.deepEqual(await env.cp.rejoin(p.matchId, A), { ok: false, code: 'match_over' });
+  assert.deepEqual(await env.cp.rejoin(p.matchId, B), { ok: false, code: 'left' }, 'a leaver stays a leaver');
+  // A wss node checks tickets by itself, so only a missing public URL makes it unreachable.
+  const q = await env.place([human('c')]);
+  env.disconnect();
+  assert.equal((await env.cp.rejoin(q.matchId, C)).ok, true, 'wss: its control link does not matter');
+  env.registry.node(env.nodeId).publicUrl = null;
+  assert.deepEqual(await env.cp.rejoin(q.matchId, C), { ok: false, code: 'offline' });
+  // An rtc node needs its control link for the player's offer.
+  const rtc = await setup({ rtc: true, status: 'active' });
+  const r = await rtc.place([human('d')]);
+  assert.equal((await rtc.cp.rejoin(r.matchId, D)).ok, true);
+  rtc.disconnect();
+  assert.deepEqual(await rtc.cp.rejoin(r.matchId, D), { ok: false, code: 'offline' });
+});
+
+test('matchStatus backs the matchmaker’s lock check; hostsOnline counts the hosts that may take a match', async () => {
+  const [A, B, C] = ['a', 'b', 'c'].map((c) => c.repeat(16));
+  const env = await setup({ status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  assert.deepEqual(env.cp.matchStatus(p.matchId, A), { state: 'assigned', left: false });
+  assert.equal(env.cp.matchStatus(p.matchId, C), null, 'not in it');
+  assert.equal(env.cp.matchStatus('f'.repeat(64), A), null, 'unknown');
+  await env.cp.leave(p.matchId, B);
+  assert.deepEqual(env.cp.matchStatus(p.matchId, B), { state: 'assigned', left: true });
+  await env.send(lostReport(p.matchId));
+  assert.deepEqual(env.cp.matchStatus(p.matchId, A), { state: 'done', left: false });
+
+  assert.equal(env.cp.hostsOnline('SA'), 1);
+  assert.equal(env.cp.hostsOnline('EU'), 0);
+  env.registry.setStatus(env.nodeId, 'suspended', 'test');
+  assert.equal(env.cp.hostsOnline('SA'), 0, 'suspended: takes nothing');
+  env.registry.setStatus(env.nodeId, 'probation', null);
+  assert.equal(env.cp.hostsOnline('SA'), 1, 'probation: casual matches');
+  env.disconnect();
+  assert.equal(env.cp.hostsOnline('SA'), 0);
+});
+
+test('a leave is recorded before it is relayed: a failed relay still counts, an offline node records nothing', async () => {
+  const [A, B, C, D] = ['a', 'b', 'c', 'd'].map((c) => c.repeat(16));
+  const env = await setup({ status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  assert.deepEqual(await env.cp.leave(p.matchId, A), { recorded: true, answer: { slot: 0, closed: true, already: false, ended: false } });
+  // The node refuses (its match just ended there): the leave stands, the Worker frees the lock.
+  env.leaveAnswers = false;
+  assert.deepEqual(await env.cp.leave(p.matchId, B), { recorded: true, answer: null, error: 'match_over' });
+  assert.deepEqual(env.cp.matchStatus(p.matchId, B), { state: 'assigned', left: true });
+  assert.deepEqual(await env.cp.rejoin(p.matchId, B), { ok: false, code: 'left' });
+  assert.equal(env.cp.matches.get(p.matchId).left.has(B), false, 'the node never confirmed it');
+  // The node's link drops while the leave is in flight.
+  const q = await env.place([human('c'), human('d')], { ranked: true });
+  env.leaveAnswers = 'silent';
+  const pending = env.cp.leave(q.matchId, D);
+  await sleep(5);
+  env.disconnect();
+  assert.deepEqual(await pending, { recorded: true, answer: null, error: 'disconnected' });
+  assert.equal(env.cp.matchStatus(q.matchId, D).left, true);
+  // Offline before anything is recorded: an error, and the player may still rejoin.
+  await assert.rejects(env.cp.leave(q.matchId, C), (e) => e.code === 'offline');
+  assert.deepEqual(env.cp.matchStatus(q.matchId, C), { state: 'assigned', left: false });
+  assert.equal((await env.cp.rejoin(q.matchId, C)).ok, true);
+});
+
+test('a channel change reaches the connected nodes at once; a project verifier with work on its build waits', async () => {
+  const build = await testBuild();
+  let channel = { stable: build.version, minimum: '0.0.0' };
+  const env = await setup({ channel: () => channel });
+  const updates = (e) => e.toNode.filter((m) => m.t === 'update');
+  channel = { stable: '0.0.1', minimum: '0.0.1' };
+  assert.deepEqual(updates(env), [], 'nothing until the control plane hears of it');
+  env.cp.channelChanged();
+  assert.deepEqual(updates(env), [{ t: 'update', version: '0.0.1' }]);
+
+  let vch = { stable: build.version, minimum: '0.0.0' };
+  const v = await setup({ trusted: true, roles: ['host', 'verify'], channel: () => vch });
+  await wait(() => v.registry.node(v.nodeId).status === 'active');
+  const p = await v.place([human('a')]);
+  vch = { stable: '0.0.1', minimum: '0.0.1' };
+  v.cp.channelChanged();
+  assert.deepEqual(updates(v), [], 'a match on its build may still need it');
+  assert.ok(v.logs.some((l) => /^update of verifier .* deferred/.test(l)));
+  await v.send(lostReport(p.matchId));
+  v.cp.sweep();
+  assert.deepEqual(updates(v), [{ t: 'update', version: '0.0.1' }], 'once the work is done');
+});
+
+test('a missing or invalid release channel never breaks a hello: the last good one, or 0.0.0, and one ALERT', async () => {
+  const build = await testBuild();
+  let channel; // no channel.json in R2 yet
+  const env = await setup({
+    channel: () => {
+      if (channel instanceof Error) throw channel;
+      return channel;
+    },
+  });
+  const welcomes = () => env.toNode.filter((m) => m.t === 'welcome').map((m) => m.channel);
+  const alerts = () => env.logs.filter((l) => l.startsWith('ALERT release channel'));
+  assert.deepEqual(welcomes(), [{ stable: '0.0.0', minimum: '0.0.0' }]);
+  assert.deepEqual(alerts(), ['ALERT release channel missing or invalid (undefined): holding the nodes to stable 0.0.0, minimum 0.0.0']);
+  assert.equal(env.registry.node(env.nodeId).online, true, 'the hello went through');
+
+  channel = { stable: build.version, minimum: '0.0.0', note: 'x'.repeat(5000) };
+  env.disconnect();
+  await env.reconnect();
+  assert.deepEqual(welcomes().at(-1), { stable: build.version, minimum: '0.0.0' }, 'only the known fields');
+
+  channel = { stable: 5, minimum: '1.0.0' }; // a bad upload
+  env.disconnect();
+  await env.reconnect();
+  assert.deepEqual(welcomes().at(-1), { stable: build.version, minimum: '0.0.0' }, 'the last good one');
+  assert.equal(alerts().length, 2);
+  assert.match(alerts()[1], /\(\{"stable":5,"minimum":"1\.0\.0"\}\): holding the nodes to stable 0\.0\.0-test, minimum 0\.0\.0$/);
+  channel = new Error('R2 unavailable');
+  env.cp.channelChanged();
+  env.disconnect();
+  await env.reconnect();
+  assert.equal(alerts().length, 2, 'one ALERT per bad stretch');
+  assert.deepEqual(env.toNode.filter((m) => m.t === 'update'), []);
 });
