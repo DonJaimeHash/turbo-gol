@@ -8,3 +8,11 @@ JWT_SECRET=change-me-to-a-long-random-string
 # Local OAuth testing only: the origin the provider redirects back to (the Vite page, which proxies
 # /api to this Worker), e.g. http://localhost:5173. Production uses the request's own origin.
 # PUBLIC_ORIGIN=http://localhost:5173
+# Community nodes (nodes/), optional: without the control key (and the NODES binding with its R2
+# buckets) the Worker never sends a match to a node. The private half of nodes/.keys/control.json
+# (`npm run keys` in nodes/); its public half is the NODE_CONTROL_PUBLIC_KEY var.
+# NODE_CONTROL_PRIVATE_KEY=
+# The project's account ids (16 hex characters each), comma-separated: their nodes are trusted.
+# NODE_TRUSTED_OPERATORS=
+# A webhook URL the node control plane posts its ALERT lines to.
+# NODE_ALERT_WEBHOOK=

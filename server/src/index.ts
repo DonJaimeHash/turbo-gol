@@ -52,7 +52,7 @@
  * new room is created while its sockets would be refused.
  */
 import type { Env } from './env';
-import { SERVER_VERSION, error, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, readJson, sanitizeName } from './env';
+import { SERVER_VERSION, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, readJson, sanitizeName } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
 import type { RankedCheck } from './accountStore';
@@ -169,15 +169,6 @@ async function bearerSession(request: Request, env: Env): Promise<SessionClaims 
   const auth = request.headers.get('Authorization') ?? '';
   if (!auth.startsWith('Bearer ')) return null;
   return verifySession(env.JWT_SECRET, auth.slice(7).trim());
-}
-
-async function flag(env: Env, name: string): Promise<boolean> {
-  try {
-    const v = await env.FLAGS.get(name, { cacheTtl: 60 });
-    return v === '1' || v === 'true' || v === 'on';
-  } catch {
-    return false;
-  }
 }
 
 /** The continent Cloudflare sees the request from ('dev' under wrangler dev without cf data). */
