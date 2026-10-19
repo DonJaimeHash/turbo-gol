@@ -13,6 +13,9 @@
  *                             a password account sends its key for the OLD name (checked) and for the NEW
  *                             name (stored): the client key is salted with the username
  *   GET  /api/me              Bearer (account)                  -> MeInfo
+ *   POST /api/me/training     Bearer (account) { records }      -> { records }: the training records of
+ *                             src/game/trainingRecords.ts merged into the account (best per pack, the
+ *                             client's rule) and returned; invalid entries are dropped, 20 a minute
  *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
  *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
@@ -356,6 +359,20 @@ async function rename(c: RouteContext): Promise<Response> {
   return json(await accountSession(c.env, r.data));
 }
 
+const LIMIT_TRAINING_PER_ACCOUNT = 20;
+
+async function training(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('tr:' + s.sub, LIMIT_TRAINING_PER_ACCOUNT)) return error(429, 'rate_limited');
+  const b = await readJson<{ records?: unknown }>(c.request);
+  if (!b || typeof b.records !== 'object' || b.records === null || Array.isArray(b.records)) return error(400, 'bad_request');
+  const r = await accountsCall(c.env, '/training', { userId: s.sub, records: b.records });
+  const out = pass(r);
+  out.headers.set('cache-control', 'no-store');
+  return out;
+}
+
 async function me(c: RouteContext): Promise<Response> {
   const s = requireAccount(c);
   if (s instanceof Response) return s;
@@ -535,6 +552,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/password') return changePassword(c);
     if (p === '/api/auth/recovery-codes') return newRecoveryCodes(c);
     if (p === '/api/me/username') return rename(c);
+    if (p === '/api/me/training') return training(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);

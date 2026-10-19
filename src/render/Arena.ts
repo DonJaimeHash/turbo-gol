@@ -11,8 +11,12 @@
  * every kickoff spot, and per goal a 2100 uu arc around the goal centre, a goal box 2600 x 900 and
  * the goal line across the mouth with short lines up to it along the posts.
  *
- * Draw calls: floor 1, shell 1, ceiling 1, goals 1, emissive bars 1, stands 1, masts 1, halos 1,
- * truss 1, cones 1, pads 2 = 12. Per frame: one uniform write (time) plus pad-state attribute
+ * Goals: the netting (see-through square net projected from the world axes, so it runs on round
+ * the rounded edges) and a glowing tube along the middle of each rounded post / crossbar edge
+ * (ArenaMesh.goalFrames: from the floor at one post over the crossbar to the floor at the other).
+ *
+ * Draw calls: floor 1, shell 1, ceiling 1, goals 1, goal frames 2, emissive bars 1, stands 1, masts 1,
+ * halos 1, truss 1, cones 1, pads 2 = 14. Per frame: one uniform write (time) plus pad-state attribute
  * writes only while a pad changes (pickup flash / recharge).
  *
  * Bloom: see materials.ts. Every unlit material here that should glow tags its glow with
@@ -234,7 +238,8 @@ export class ArenaView {
       this.goals = goals;
     } else this.goals = null;
 
-    // ---- Emissive bars: goal frames, truss lamp heads, floodlight heads (1 draw call) ----------
+    // ---- Goal frames (2 draw calls) and emissive bars: truss lamp heads, floodlight heads (1) ----
+    for (const frame of this.buildGoalFrames(mesh.goalFrames ?? [], high)) this.group.add(frame);
     this.group.add(this.buildEmissiveBars());
 
     // ---- Roof: truss lattice + spotlight haze cones (2 draw calls) -----------------------------
@@ -345,12 +350,36 @@ export class ArenaView {
     return mesh;
   }
 
-  /** Goal frames (team HDR), 24 lamp heads under the truss (hot white) and 4 floodlight heads. */
+  /**
+   * One glowing tube per goal (team HDR) along ArenaMesh.goalFrames: the middle of the rounded post
+   * and crossbar edge, down each post's floor curve to the floor. Blue (the -y goal) first.
+   */
+  private buildGoalFrames(frames: readonly ArrayLike<number>[], high: boolean): THREE.Mesh[] {
+    const out: THREE.Mesh[] = [];
+    frames.forEach((f, i) => {
+      const pts: THREE.Vector3[] = [];
+      for (let k = 0; k + 2 < f.length; k += 3) pts.push(simToThree(new THREE.Vector3(), f[k], f[k + 1], f[k + 2]));
+      if (pts.length < 2) return;
+      const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+      const geometry = new THREE.TubeGeometry(curve, high ? 180 : 90, 12, high ? 8 : 6, false);
+      const material = new THREE.MeshBasicNodeMaterial();
+      material.color = hdrColor(i === 0 ? TEAM_BLUE : TEAM_RED, 2.2);
+      material.mrtNode = glowMrt(diffuseColor.rgb, 'none');
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = i === 0 ? 'goal-frame-blue' : 'goal-frame-red';
+      mesh.frustumCulled = false;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.matrixAutoUpdate = false;
+      this.track(geometry, material);
+      out.push(mesh);
+    });
+    return out;
+  }
+
+  /** 24 lamp heads under the truss (hot white) and 4 floodlight heads. */
   private buildEmissiveBars(): THREE.InstancedMesh {
-    const t = 24; // bar thickness (uu)
-    const gw = ARENA.goalHalfWidth;
-    const gh = ARENA.goalHeight;
-    const count = 6 + TRUSS_GIRDERS.length * LAMP_ROWS.length + 4;
+    const count = TRUSS_GIRDERS.length * LAMP_ROWS.length + 4;
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     const material = new THREE.MeshBasicNodeMaterial();
     material.mrtNode = glowMrt(diffuseColor.rgb, 'none');
@@ -364,14 +393,6 @@ export class ArenaView {
       mesh.setColorAt(i, hdrColor(hex, intensity, _c));
       i++;
     };
-    // Goal frames: two posts + crossbar per goal, set into the back wall at the edge of the mouth.
-    for (const side of [-1, 1] as const) {
-      const hex = side < 0 ? TEAM_BLUE : TEAM_RED;
-      const z = side * ARENA.extentY;
-      put(-(gw + t / 2), (gh + t) / 2, z, t, gh + t, t, hex, 2.2);
-      put(gw + t / 2, (gh + t) / 2, z, t, gh + t, t, hex, 2.2);
-      put(0, gh + t / 2, z, gw * 2 + t * 2, t, t, hex, 2.2);
-    }
     // Spotlight lamp heads at the girder / beam crossings, just under the truss.
     for (const x of TRUSS_GIRDERS) for (const z of LAMP_ROWS) put(x, LAMP_Y, z, 180, 40, 180, 0xfff4e0, 3.5);
     // Floodlight heads on the four masts, angled at the centre spot.
@@ -911,11 +932,16 @@ function buildGoalMaterial(hasUv: boolean): THREE.MeshStandardNodeMaterial {
   const p = positionWorld;
   const isRed = step(float(0), p.z);
   const tint = mix(linearVec3(TEAM_BLUE), linearVec3(TEAM_RED), isRed);
-  const planar = hasUv ? uv() : vec2(p.x, p.y.add(abs(p.z)));
+  // The net, projected along each world axis and blended by the normal (triplanar): the cells run
+  // on round the rounded posts, roof and back instead of stretching on a single planar projection.
   const cellSize = 56;
-  const strandU = lineMask(fract(planar.x.div(cellSize)).mul(cellSize).sub(cellSize / 2), 1.8);
-  const strandV = lineMask(fract(planar.y.div(cellSize)).mul(cellSize).sub(cellSize / 2), 1.8);
-  const net = max(strandU, strandV);
+  const strand = (a: Node<'float'>): Node<'float'> => lineMask(fract(a.div(cellSize)).mul(cellSize).sub(cellSize / 2), 1.8);
+  const netOf = (a: Node<'float'>, b: Node<'float'>): Node<'float'> => max(strand(a), strand(b));
+  const nw = abs(normalWorld);
+  const w = nw.mul(nw).mul(nw).mul(nw);
+  const wsum = w.x.add(w.y).add(w.z).max(1e-4);
+  const net = netOf(p.z, p.y).mul(w.x).add(netOf(p.x, p.z).mul(w.y)).add(netOf(p.x, p.y).mul(w.z)).div(wsum);
+  void hasUv; // the sim's UVs (x, height) are kept for other materials; the net is triplanar
   const lintel = smoothstep(float(ARENA.goalHeight - 60), float(ARENA.goalHeight), p.y);
   m.opacityNode = net.mul(0.85).add(0.08);
   m.colorNode = tint.mul(0.5);

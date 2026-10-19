@@ -22,6 +22,7 @@
  *   POST /ranked-cancel   { matchId, playlist, region, players, noShows, reason } -> { ok, applied }
  *   GET  /ranked-result?matchId=&userId=                             -> RankedResultAnswer
  *   GET  /leaderboard?playlist=&limit=&userId=                       -> LeaderboardAnswer
+ *   POST /training        { userId, records }                        -> { records } (merged, best per pack) | 404
  *
  * Brute force (in memory, per object = global): a username with LOGIN_FAILS_FREE failures in the
  * window is throttled with a doubling delay up to LOGIN_LOCK_MAX_MS; an IP with LOGIN_IP_MAX failures
@@ -34,6 +35,7 @@ import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
 import type { PasswordRecord, RankedResultInput } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
+import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { OAuthProvider, Playlist } from '../../src/net/account';
 
 const LOGIN_WINDOW_MS = 15 * 60_000;
@@ -245,6 +247,12 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'too_soon') return error(429, 'rename_too_soon', 'Puedes cambiar el nombre una vez cada 30 días');
         if (r === 'no_user') return error(404, 'no_user');
         return json(r);
+      }
+      case '/training': {
+        if (typeof b.userId !== 'string' || typeof b.records !== 'object' || b.records === null) return error(400, 'bad_request');
+        const r = s.mergeTraining(b.userId, parseTrainingRecords(b.records), now);
+        if (r === 'no_user') return error(404, 'no_user');
+        return json({ records: r });
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');

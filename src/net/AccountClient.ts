@@ -3,7 +3,8 @@
  * username and password (the password is turned into clientPasswordKey here and never sent),
  * Google / Discord sign-in (a full-page redirect; the server answers back to `/#auth=<result>`),
  * the short Bearer session (1 h) refreshed from the HttpOnly refresh cookie, the profile (/api/me:
- * ratings per playlist, ranked ban), the leaderboard and the rating change of a ranked match.
+ * ratings per playlist, ranked ban), the leaderboard, the rating change of a ranked match and the
+ * account's training records (/api/me/training).
  *
  * Persistence: the refresh token is an HttpOnly cookie the page cannot read; localStorage only keeps
  * a hint (ACCOUNT_HINT_KEY: "this browser was signed in as X") so a guest's page load does not
@@ -20,6 +21,8 @@ import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
 import type { AccountIssue, AccountSession, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { STORAGE_PREFIX } from '../brand';
+import { parseTrainingRecords } from '../game/trainingRecords';
+import type { TrainingRecords } from '../game/trainingRecords';
 import { serverText, t } from '../i18n';
 
 export const ACCOUNT_HINT_KEY = STORAGE_PREFIX + 'account';
@@ -336,6 +339,20 @@ export class AccountClient {
     this.me = await this.jsonOrFail<MeInfo>(res);
     this.changed();
     return this.me;
+  }
+
+  /**
+   * Merge `records` into the signed-in account's training records (the server keeps the best per
+   * pack) and resolve the account's records after the merge. Rejects for a guest or on failure.
+   */
+  async pushTraining(records: TrainingRecords): Promise<TrainingRecords> {
+    const res = await this.call('/api/me/training', { records }, await this.bearer());
+    if (res.status === 401) {
+      await this.sessionRejected();
+      throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+    }
+    const r = await this.jsonOrFail<{ records?: unknown }>(res);
+    return parseTrainingRecords(r.records);
   }
 
   async leaderboard(playlist: Playlist): Promise<LeaderboardAnswer> {

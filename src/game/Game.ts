@@ -72,6 +72,7 @@ import { TouchControls, autoFullscreen, hasTouchScreen, installHintDue, noteInst
 import { t } from '../i18n';
 import type { ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
+import { TrainingStore } from './trainingStore';
 import { LobbyClient } from '../net/LobbyClient';
 import { REGIONS, isPlaylist } from '../net/account';
 import type { RegionId } from '../net/account';
@@ -494,6 +495,8 @@ export class Game implements P2PGameHooks {
   readonly menu: Menu;
   /** Registered accounts (ranked, profile); the guest flow stays in NetClient. */
   readonly accounts: AccountClient;
+  /** Training records: this browser for a guest, the account (server + local copy) when signed in. */
+  readonly trainingStore: TrainingStore;
   /** Custom lobbies (the lobby socket lives across the lobby's matches). */
   readonly lobby: LobbyClient;
   /** The menu search in progress (banner): its kind, playlists and start time. */
@@ -661,6 +664,7 @@ export class Game implements P2PGameHooks {
     this.accounts = accounts;
     online.client.sessionProvider = () => accounts.sessionForQueue();
     online.client.onSessionRejected = () => accounts.sessionRejected();
+    this.trainingStore = new TrainingStore({ accountId: () => accounts.account?.playerId ?? null, push: (r) => accounts.pushTraining(r) });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     this.restoreAccount();
@@ -711,6 +715,9 @@ export class Game implements P2PGameHooks {
       },
       get lobby() {
         return game.lobby;
+      },
+      get training() {
+        return game.trainingStore;
       },
       config: async (): Promise<MenuConfig> => {
         if (net === null) return { regions: REGIONS, autoRegion: '', oauth: [], online: false };
@@ -1278,7 +1285,7 @@ export class Game implements P2PGameHooks {
     const th = this.ensureTrainingHud();
     th.show(pack === null ? FREEPLAY_NAME : pack.name, pack === null ? 0 : pack.shots.length, pack === null);
     this.trainingHintsPad = null;
-    this.training = new TrainingSession(pack, this.trainingHooks);
+    this.training = new TrainingSession(pack, this.trainingHooks, { records: this.trainingStore });
     this.training.start();
     this.acc = 0;
     this.snapCamera = true;
