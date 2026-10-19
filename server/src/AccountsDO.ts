@@ -22,6 +22,7 @@
  *   POST /ranked-cancel   { matchId, playlist, region, players, noShows, reason } -> { ok, applied }
  *   GET  /ranked-result?matchId=&userId=                             -> RankedResultAnswer
  *   GET  /leaderboard?playlist=&limit=&userId=                       -> LeaderboardAnswer
+ *   POST /training        { userId, records }                        -> { records } (merged, best per pack) | 404
  *
  * Brute force (in memory, per object = global): a username with LOGIN_FAILS_FREE failures in the
  * window is throttled with a doubling delay up to LOGIN_LOCK_MAX_MS; an IP with LOGIN_IP_MAX failures
@@ -34,6 +35,7 @@ import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
 import type { PasswordRecord, RankedResultInput } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
+import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { OAuthProvider, Playlist } from '../../src/net/account';
 
 const LOGIN_WINDOW_MS = 15 * 60_000;
@@ -174,7 +176,7 @@ export class AccountsDO extends DurableObject<Env> {
       case '/auth-begin': {
         if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
         const wait = this.throttled(this.failKeys(b.username, b.ip), now);
-        if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, esperá un momento', retryAfterMs: wait }, 429);
+        if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
         const c = s.credentials(b.username);
         return json(c === null ? { found: false } : { found: true, ...c });
       }
@@ -219,7 +221,7 @@ export class AccountsDO extends DurableObject<Env> {
         if (typeof b.username !== 'string' || !isHex(b.code, 64) || !isPw(b.pw) || !isHex(b.refresh, 64)) return error(400, 'bad_request');
         const keys = this.failKeys(b.username, b.ip);
         const wait = this.throttled(keys, now);
-        if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, esperá un momento', retryAfterMs: wait }, 429);
+        if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
         const r = s.recover(b.username, b.code, b.pw, b.refresh, now);
         if (r === null) {
           this.fail(keys, now);
@@ -242,9 +244,15 @@ export class AccountsDO extends DurableObject<Env> {
         if (typeof b.userId !== 'string' || typeof b.username !== 'string' || usernameProblem(b.username) !== null) return error(400, 'bad_request');
         const r = s.rename(b.userId, b.username, now);
         if (r === 'taken') return error(409, 'username_taken', 'Ese usuario ya existe');
-        if (r === 'too_soon') return error(429, 'rename_too_soon', 'Podés cambiar el nombre una vez cada 30 días');
+        if (r === 'too_soon') return error(429, 'rename_too_soon', 'Puedes cambiar el nombre una vez cada 30 días');
         if (r === 'no_user') return error(404, 'no_user');
         return json(r);
+      }
+      case '/training': {
+        if (typeof b.userId !== 'string' || typeof b.records !== 'object' || b.records === null) return error(400, 'bad_request');
+        const r = s.mergeTraining(b.userId, parseTrainingRecords(b.records), now);
+        if (r === 'no_user') return error(404, 'no_user');
+        return json({ records: r });
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');

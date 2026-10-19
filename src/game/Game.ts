@@ -72,6 +72,7 @@ import { TouchControls, autoFullscreen, hasTouchScreen, installHintDue, noteInst
 import { t } from '../i18n';
 import type { ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
+import { TrainingStore } from './trainingStore';
 import { LobbyClient } from '../net/LobbyClient';
 import { REGIONS, isPlaylist } from '../net/account';
 import type { RegionId } from '../net/account';
@@ -493,6 +494,8 @@ export class Game implements P2PGameHooks {
   readonly menu: Menu;
   /** Registered accounts (ranked, profile); the guest flow stays in NetClient. */
   readonly accounts: AccountClient;
+  /** Training records: this browser for a guest, the account (server + local copy) when signed in. */
+  readonly trainingStore: TrainingStore;
   /** Custom lobbies (the lobby socket lives across the lobby's matches). */
   readonly lobby: LobbyClient;
   /** The menu search in progress (banner): its kind, playlists and start time. */
@@ -660,6 +663,7 @@ export class Game implements P2PGameHooks {
     this.accounts = accounts;
     online.client.sessionProvider = () => accounts.sessionForQueue();
     online.client.onSessionRejected = () => accounts.sessionRejected();
+    this.trainingStore = new TrainingStore({ accountId: () => accounts.account?.playerId ?? null, push: (r) => accounts.pushTraining(r) });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     this.restoreAccount();
@@ -710,6 +714,9 @@ export class Game implements P2PGameHooks {
       },
       get lobby() {
         return game.lobby;
+      },
+      get training() {
+        return game.trainingStore;
       },
       config: async (): Promise<MenuConfig> => {
         if (net === null) return { regions: REGIONS, autoRegion: '', oauth: [], online: false };
@@ -1277,7 +1284,7 @@ export class Game implements P2PGameHooks {
     const th = this.ensureTrainingHud();
     th.show(pack === null ? FREEPLAY_NAME : pack.name, pack === null ? 0 : pack.shots.length, pack === null);
     this.trainingHintsPad = null;
-    this.training = new TrainingSession(pack, this.trainingHooks);
+    this.training = new TrainingSession(pack, this.trainingHooks, { records: this.trainingStore });
     this.training.start();
     this.acc = 0;
     this.snapCamera = true;
@@ -2393,6 +2400,21 @@ export class Game implements P2PGameHooks {
     }
   }
 
+  /**
+   * A car blew up on screen (Effects, three.js coords): the explosion sound, full volume for the
+   * player's own car, quieter with the distance from the camera for the others.
+   */
+  private onDemolition(slot: number, x: number, y: number, z: number): void {
+    if (this.menuShown) return;
+    let strength = 1;
+    if (slot !== this.playerSlot) {
+      const c = this.renderer.camera.position;
+      const d = Math.hypot(x - c.x, y - c.y, z - c.z);
+      strength = Math.min(1, Math.max(0.2, 1.15 - d / 7000));
+    }
+    this.audio.playDemolition(strength);
+  }
+
   private onSimBallHit(carId: number, relSpeed: number): void {
     // Every touch counts for the goalie save rule, however soft (before the FX filter).
     if (this.training !== null && carId === this.playerCarId) this.training.onPlayerTouch();
@@ -2463,6 +2485,7 @@ export class Game implements P2PGameHooks {
     const slots = this.carSlots;
     const cars: CarView[] = [];
     this.effects = new Effects(scene, q);
+    this.effects.onDemolition = (slot, x, y, z) => this.onDemolition(slot, x, y, z);
     for (let i = 0; i < slots.length; i++) {
       const team = sim.teamOf(slots[i]);
       cars.push(new CarView(scene, config, team, q));

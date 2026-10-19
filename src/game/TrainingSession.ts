@@ -44,6 +44,7 @@ import { ARENA } from '../sim/constants';
 import type { CarControls } from '../sim/types';
 import { TRAINING_GRACE_SECONDS, type TrainingPack, type TrainingShot } from './trainingPacks';
 import { saveTrainingResult, type StorageLike } from './trainingRecords';
+import type { TrainingRecordsView } from './trainingStore';
 
 export type TrainingPhase = 'freeplay' | 'waiting' | 'running' | 'grace' | 'result' | 'summary';
 export type ShotOutcome = 'pass' | 'fail';
@@ -128,7 +129,9 @@ export interface TrainingHooks {
 }
 
 export interface TrainingSessionOptions {
-  /** Where saveTrainingResult writes (default localStorage; null = never persist). */
+  /** Saves the completed run (the Game's TrainingStore: guest or account). Takes precedence over `storage`. */
+  records?: Pick<TrainingRecordsView, 'recordResult'>;
+  /** Where saveTrainingResult writes without `records` (default localStorage; null = never persist). */
   storage?: StorageLike | null;
   /** Clock for the record's completedAt (default Date.now). */
   now?: () => number;
@@ -157,6 +160,7 @@ export class TrainingSession {
 
   private readonly hooks: TrainingHooks;
   private readonly storage: StorageLike | null | undefined;
+  private readonly records: Pick<TrainingRecordsView, 'recordResult'> | null;
   private readonly now: () => number;
   /** `elapsed` at the player's latest touch of the current attempt, -1 before any. */
   private touchedAt = -1;
@@ -169,6 +173,7 @@ export class TrainingSession {
     this.pack = pack;
     this.hooks = hooks;
     this.storage = opts.storage;
+    this.records = opts.records ?? null;
     this.now = opts.now ?? Date.now;
     this.phase = pack === null ? 'freeplay' : 'waiting';
     const n = pack === null ? 0 : pack.shots.length;
@@ -434,7 +439,7 @@ export class TrainingSession {
     this.summaryShown = true;
     const passed = this.passedCount;
     const total = pack.shots.length;
-    const upd = saveTrainingResult(pack.id, passed, total, this.now(), this.storage);
+    const upd = this.records !== null ? this.records.recordResult(pack.id, passed, total, this.now()) : saveTrainingResult(pack.id, passed, total, this.now(), this.storage);
     const s = this.summary;
     s.passed = passed;
     s.total = total;

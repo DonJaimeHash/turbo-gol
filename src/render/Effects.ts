@@ -1,8 +1,9 @@
 /**
  * Pooled effects for the three.js WebGPU renderer: twin boost ribbons + embers (one per thruster),
  * supersonic air streaks, ball speed streak, goal explosion (particles + team / white / lime
- * confetti + double shockwave ring + fresnel shell), boost pad pickup pops and ball-contact sparks
- * with a small impact ring.
+ * confetti + double shockwave ring + fresnel shell), car demolitions (fireball, flames, team
+ * sparks, falling embers, haze, a ground shockwave and a flash shell), boost pad pickup pops and
+ * ball-contact sparks with a small impact ring.
  *
  * Meshes (all additive, none allocate per frame):
  *  - particles: ONE InstancedMesh (fixed pool of low-poly spheres). Per instance: the matrix
@@ -13,8 +14,10 @@
  *    boost, left and right streak per car, plus the ball). The CPU writes the centre line,
  *    tangent, half width, fade and colour; the vertex shader offsets each pair of vertices
  *    sideways, camera facing.
- *  - rings: ONE InstancedMesh (3 slots: two goal shockwaves, one ball-contact ring).
- *  - flash: one fresnel shell sphere, visible for half a second after a goal.
+ *  - rings: ONE InstancedMesh (5 slots: two goal shockwaves, one ball-contact ring, two demolition
+ *    shockwaves).
+ *  - flash: one fresnel shell sphere, visible for half a second after a goal; a second one for
+ *    demolitions (0.4 s).
  */
 import * as THREE from 'three/webgpu';
 import { attribute, cameraPosition, cross, diffuseColor, materialColor, normalView, positionLocal, positionViewDirection } from 'three/tsl';
@@ -60,11 +63,17 @@ const GOAL_FLASH_DURATION = 0.5;
 const FLASH_SCALE_0 = 130;
 const FLASH_SCALE_1 = 900;
 const HIT_RING_DURATION = 0.2;
+const DEMO_RING_DURATION = 0.55;
+const DEMO_FLASH_DURATION = 0.3;
+const DEMO_FLASH_SCALE_0 = 40;
+const DEMO_FLASH_SCALE_1 = 240;
 /** Ring slots in the rings InstancedMesh. */
 const RING_GOAL_A = 0;
 const RING_GOAL_B = 1;
 const RING_HIT = 2;
-const RING_SLOTS = 3;
+const RING_DEMO_A = 3;
+const RING_DEMO_B = 4;
+const RING_SLOTS = 5;
 /**
  * Bloom tags (materials.ts): fraction of each effect's own colour written to the glow target. The
  * colour is read back from `diffuseColor` (instance colour x colorNode, already evaluated in the
@@ -104,6 +113,7 @@ const _s = new THREE.Vector3();
 const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
 const _zAxis = new THREE.Vector3(0, 0, 1);
+const _up = new THREE.Vector3(0, 1, 0);
 
 function rnd(amp: number): number {
   return (Math.random() - 0.5) * 2 * amp;
@@ -205,6 +215,18 @@ export class Effects {
   // Per-car emitter state.
   private readonly slotTeam = new Int8Array(MAX_CARS).fill(-1);
   private readonly slotBoostAcc = new Float32Array(MAX_CARS);
+  /**
+   * 1 once the car has been drawn alive: a demolition explodes only after that, so a car that is
+   * already demolished when the view starts (an online join, a new roster) never explodes.
+   */
+  private readonly slotAlive = new Uint8Array(MAX_CARS);
+  /** Last live interpolated position and velocity per slot, three.js coords (x, y, z, vx, vy, vz). */
+  private readonly slotLast = new Float32Array(MAX_CARS * 6);
+  /**
+   * Called once per demolition with the car slot and the explosion point (three.js coords), from
+   * update(): the game plays the sound there (the same edge for offline, server and P2P matches).
+   */
+  onDemolition: ((slot: number, x: number, y: number, z: number) => void) | null = null;
 
   // Ribbon pool: per emitter a ring of RIBBON_CAP points (x, y, z, age).
   private readonly ribbon: THREE.Mesh;
@@ -249,11 +271,17 @@ export class Effects {
   private readonly flash: THREE.Mesh;
   private readonly flashMat: THREE.MeshBasicNodeMaterial;
   private flashT = -1;
+  // Demolition flash shell (one at a time: a second demo restarts it) and the next ring slot.
+  private readonly demoFlash: THREE.Mesh;
+  private readonly demoFlashMat: THREE.MeshBasicNodeMaterial;
+  private demoFlashT = -1;
+  private demoRing = RING_DEMO_A;
   /** Which hidden meshes a warm-up render forced visible (see setWarmUp). */
   private warmParticles = false;
   private warmRibbon = false;
   private warmRings = false;
   private warmFlash = false;
+  private warmDemoFlash = false;
 
   // Deferred ball hit (the contact offset is read from the next state buffer the view receives).
   private pendingHitSpeed = -1;
@@ -379,6 +407,15 @@ export class Effects {
     this.flash.frustumCulled = false;
     this.flash.renderOrder = 11;
     scene.add(this.flash);
+
+    this.demoFlashMat = createShellMaterial();
+    this.demoFlashMat.name = 'fx-demo-flash';
+    this.demoFlash = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 2), this.demoFlashMat);
+    this.demoFlash.name = 'fx-demo-flash';
+    this.demoFlash.visible = false;
+    this.demoFlash.frustumCulled = false;
+    this.demoFlash.renderOrder = 11;
+    scene.add(this.demoFlash);
   }
 
   /** Tell the effects which team a car slot belongs to (otherwise C_TEAM from the buffer is used). */
@@ -405,6 +442,7 @@ export class Effects {
     this.ribbonBuild();
     this.updateRings(dt);
     this.updateFlash(dt);
+    this.updateDemoFlash(dt);
     this.simulate(dt);
   }
 
@@ -509,6 +547,12 @@ export class Effects {
         this.flashMat.opacity = 0;
         this.flash.visible = true;
       }
+      this.warmDemoFlash = !this.demoFlash.visible;
+      if (this.warmDemoFlash) {
+        this.demoFlash.scale.setScalar(0.01);
+        this.demoFlashMat.opacity = 0;
+        this.demoFlash.visible = true;
+      }
     } else {
       if (this.warmParticles) {
         this.mesh.count = 0;
@@ -520,6 +564,8 @@ export class Effects {
         this.rings.visible = false;
       }
       if (this.warmFlash) this.flash.visible = false;
+      if (this.warmDemoFlash) this.demoFlash.visible = false;
+      this.warmDemoFlash = false;
       this.warmParticles = false;
       this.warmRibbon = false;
       this.warmRings = false;
@@ -534,6 +580,7 @@ export class Effects {
     this.scene.remove(this.ribbon);
     this.scene.remove(this.rings);
     this.scene.remove(this.flash);
+    this.scene.remove(this.demoFlash);
     this.mesh.geometry.dispose();
     this.mesh.dispose();
     this.material.dispose();
@@ -544,6 +591,8 @@ export class Effects {
     this.ringMat.dispose();
     this.flash.geometry.dispose();
     this.flashMat.dispose();
+    this.demoFlash.geometry.dispose();
+    this.demoFlashMat.dispose();
   }
 
   // ---- emitters ----------------------------------------------------------------------------
@@ -555,8 +604,12 @@ export class Effects {
     const fx = cur[r];
     const fy = cur[r + 1];
     const fz = cur[r + 2];
+    let team = this.slotTeam[slot];
+    if (team < 0) team = cur[off + C_TEAM] > 0.5 ? 1 : 0;
     if (cur[off + C_IS_DEMOED] > 0.5 || fx * fx + fy * fy + fz * fz < 0.5) {
       this.slotBoostAcc[slot] = 0;
+      if (this.slotAlive[slot] === 1 && cur[off + C_IS_DEMOED] > 0.5) this.explode(slot, team);
+      this.slotAlive[slot] = 0;
       return;
     }
 
@@ -568,9 +621,14 @@ export class Effects {
     const v = off + C_VEL;
     _vel.set(cur[v], cur[v + 2], cur[v + 1]);
     const speed = _vel.length();
-
-    let team = this.slotTeam[slot];
-    if (team < 0) team = cur[off + C_TEAM] > 0.5 ? 1 : 0;
+    const l6 = slot * 6;
+    this.slotLast[l6] = _p.x;
+    this.slotLast[l6 + 1] = _p.y;
+    this.slotLast[l6 + 2] = _p.z;
+    this.slotLast[l6 + 3] = _vel.x;
+    this.slotLast[l6 + 4] = _vel.y;
+    this.slotLast[l6 + 5] = _vel.z;
+    this.slotAlive[slot] = 1;
     const gi = team * 3;
     const e = slot * RIBBONS_PER_CAR;
 
@@ -624,6 +682,48 @@ export class Effects {
         this.ribbonEmit(ei, _side.x, _side.y, _side.z);
       }
     }
+  }
+
+  /**
+   * A demolished car blows up at its last live position (slotLast): a hot white core, rising
+   * orange flames, fast team-coloured sparks, embers that arc out and bounce on the floor, a few
+   * dim haze puffs (additive, so lit smoke rather than dark smoke), a ground shockwave and a flash
+   * shell. Everything inherits 30 % of the car's velocity. About 140 particles (60 at quality 1).
+   */
+  private explode(slot: number, team: number): void {
+    const l6 = slot * 6;
+    const x = this.slotLast[l6];
+    const y = this.slotLast[l6 + 1];
+    const z = this.slotLast[l6 + 2];
+    const vx = this.slotLast[l6 + 3] * 0.3;
+    const vy = this.slotLast[l6 + 4] * 0.3;
+    const vz = this.slotLast[l6 + 5] * 0.3;
+    const gi = (team === 1 ? 1 : 0) * 3;
+    const tr = this.teamGlow[gi];
+    const tg = this.teamGlow[gi + 1];
+    const tb = this.teamGlow[gi + 2];
+    const hi = this.quality === 0;
+    // Core, flames, deep red flames, sparks, embers, haze.
+    this.burst(x, y, z, hi ? 10 : 5, 2.2, 1.45, 0.6, 30, 220, 0.3, 24, 40, 0.2, 0.36, -0.1, 4, 0, 0, vx, vy, vz);
+    this.burst(x, y, z, hi ? 40 : 18, 2.0, 0.55, 0.08, 150, 650, 0.45, 14, 30, 0.45, 0.85, -0.35, 2.2, 0, 0, vx, vy, vz);
+    this.burst(x, y, z, hi ? 16 : 7, 1.1, 0.16, 0.02, 250, 500, 0.6, 20, 34, 0.6, 1.0, -0.3, 2.4, 0, 0, vx, vy, vz);
+    this.burst(x, y, z, hi ? 44 : 18, tr * 1.8, tg * 1.8, tb * 1.8, 700, 1700, 0.35, 2.5, 4.5, 0.35, 0.7, 0.8, 1.2, 30, 0, vx, vy, vz);
+    this.burst(x, y, z, hi ? 22 : 10, 1.5, 0.55, 0.12, 400, 1100, 0.7, 4, 8, 1, 1.7, 1.2, 0.4, 0, 0, vx, vy, vz);
+    this.burst(x, y + 20, z, hi ? 10 : 4, 0.22, 0.17, 0.14, 40, 160, 0.6, 55, 85, 1, 1.5, -0.08, 1.6, 0, 0, vx * 0.5, vy * 0.5, vz * 0.5);
+
+    // Ground shockwave (alternating slots so two demos in a row both show) and the flash shell.
+    _p.set(x, Math.max(y, 12), z);
+    const ring = this.demoRing;
+    this.demoRing = ring === RING_DEMO_A ? RING_DEMO_B : RING_DEMO_A;
+    this.startRing(ring, _p, _up, 40, 760, DEMO_RING_DURATION, 0, 1.7, 0.7, 0.16, 0.9);
+    this.demoFlash.position.set(x, y, z);
+    this.demoFlash.scale.setScalar(DEMO_FLASH_SCALE_0);
+    this.demoFlashMat.color.setRGB(1.3, 0.55, 0.16);
+    this.demoFlashMat.opacity = 0.45;
+    this.demoFlash.visible = true;
+    this.demoFlashT = 0;
+
+    if (this.onDemolition !== null) this.onDemolition(slot, x, y, z);
   }
 
   private updateBall(prev: Float32Array, cur: Float32Array, alpha: number, _dt: number): void {
@@ -998,12 +1098,26 @@ export class Effects {
     this.flashMat.opacity = 0.8 * (1 - ft) * (1 - ft);
   }
 
+  private updateDemoFlash(dt: number): void {
+    if (this.demoFlashT < 0) return;
+    this.demoFlashT += dt;
+    const ft = this.demoFlashT / DEMO_FLASH_DURATION;
+    if (ft >= 1) {
+      this.demoFlash.visible = false;
+      this.demoFlashT = -1;
+      return;
+    }
+    const te = 1 - (1 - ft) * (1 - ft);
+    this.demoFlash.scale.setScalar(DEMO_FLASH_SCALE_0 + (DEMO_FLASH_SCALE_1 - DEMO_FLASH_SCALE_0) * te);
+    this.demoFlashMat.opacity = 0.45 * (1 - ft) * (1 - ft);
+  }
+
   // ---- pool --------------------------------------------------------------------------------
 
   /**
    * Radial burst of `count` particles. `sparkLen` > 0 stretches particles: with `axisMode` 0 odd
    * particles become sparks along their velocity; with `axisMode` 1 every particle becomes a flake
-   * stretched along a random axis.
+   * stretched along a random axis. (bvx, bvy, bvz) is added to every particle's velocity.
    */
   private burst(
     x: number,
@@ -1024,6 +1138,9 @@ export class Effects {
     drag: number,
     sparkLen: number,
     axisMode: 0 | 1,
+    bvx = 0,
+    bvy = 0,
+    bvz = 0,
   ): void {
     for (let i = 0; i < count; i++) {
       const zz = Math.random() * 2 - 1;
@@ -1058,9 +1175,9 @@ export class Effects {
         x,
         y,
         z,
-        dx * sp,
-        dy * sp,
-        dz * sp,
+        dx * sp + bvx,
+        dy * sp + bvy,
+        dz * sp + bvz,
         r,
         g,
         b,

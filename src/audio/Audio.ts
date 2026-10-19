@@ -32,6 +32,7 @@ const MIN_GAIN = 0.0001; // exponential ramps cannot reach 0
 const BALL_HIT_MIN_INTERVAL = 0.04;
 const CAR_HIT_MIN_INTERVAL = 0.06;
 const BOOST_START_MIN_INTERVAL = 0.05;
+const DEMOLITION_MIN_INTERVAL = 0.08;
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
@@ -79,6 +80,7 @@ export class Audio {
   private lastBallHit = -1;
   private lastCarHit = -1;
   private lastBoostStart = -1;
+  private lastDemolition = -1;
   private disposed = false;
 
   constructor() {
@@ -258,6 +260,23 @@ export class Audio {
     // Impact body.
     this.noiseBurst(ctx, 'lowpass', 900, 0.7, 0.07 + 0.05 * s, 0.15 + 0.3 * s);
     this.thump(ctx, 75, 0.12, 0.1 + 0.25 * s);
+  }
+
+  /**
+   * A car blown up: a low boom, a roar whose lowpass sweeps down, a sharp crack and a mid body.
+   * `strength` 0..1 (the game lowers it with the distance from the camera).
+   */
+  playDemolition(strength: number): void {
+    const ctx = this.ready();
+    if (ctx === null) return;
+    const t = ctx.currentTime;
+    if (t - this.lastDemolition < DEMOLITION_MIN_INTERVAL) return;
+    this.lastDemolition = t;
+    const s = clamp01(strength);
+    this.thump(ctx, 46, 0.7, 0.55 * s);
+    this.noiseBurst(ctx, 'lowpass', 1400, 0.7, 0.9, 0.5 * s, 90);
+    this.noiseBurst(ctx, 'bandpass', 3200, 1.1, 0.12, 0.22 * s);
+    this.noiseBurst(ctx, 'bandpass', 900, 0.9, 0.35, 0.18 * s);
   }
 
   playJump(): void {

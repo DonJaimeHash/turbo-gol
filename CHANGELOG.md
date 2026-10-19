@@ -7,6 +7,12 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Training records follow the account: a signed-in player's best run per pack is saved on the
+  server and shows on every device; a guest's stay in the browser and move into the account at the
+  first sign-in.
+- Demolished cars explode: a fireball with flames, team-coloured sparks, falling embers, a ground
+  shockwave and a flash, with its own explosion sound (quieter far from the camera). Every car,
+  in every kind of match.
 - Community nodes (`nodes/`, a prototype not wired into the game yet): match servers run by the
   community on a VPS or a home PC (WebSocket or WebRTC), a control plane that places matches on them
   and re-simulates the replays before any rating is written (every ranked match; casual matches by
@@ -25,6 +31,8 @@ All notable changes to Turbogol are documented here. The format follows
 ### Changed
 - Matches last 3 minutes (was 5): offline, casual, ranked, P2P and server matches. Custom lobbies
   start at 3 minutes and the host can still pick 5, 10 or no limit.
+- Spanish is neutral Latin American Spanish (tú) instead of rioplatense, in the game, the server's
+  messages and README.es.md.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
 

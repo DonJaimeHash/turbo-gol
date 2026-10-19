@@ -13,6 +13,9 @@
  *                             a password account sends its key for the OLD name (checked) and for the NEW
  *                             name (stored): the client key is salted with the username
  *   GET  /api/me              Bearer (account)                  -> MeInfo
+ *   POST /api/me/training     Bearer (account) { records }      -> { records }: the training records of
+ *                             src/game/trainingRecords.ts merged into the account (best per pack, the
+ *                             client's rule) and returned; invalid entries are dropped, 20 a minute
  *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
  *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
@@ -204,7 +207,7 @@ export interface RouteContext {
 }
 
 async function register(c: RouteContext): Promise<Response> {
-  if (c.limited('reg:' + ipOf(c.request), 5)) return error(429, 'rate_limited', 'Demasiados registros desde tu red, probá en un rato');
+  if (c.limited('reg:' + ipOf(c.request), 5)) return error(429, 'rate_limited', 'Demasiados registros desde tu red, inténtalo más tarde');
   const b = await readJson<{ username?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
   if (!b) return error(400, 'bad_request');
   const blocked = await c.antiBot(b.turnstileToken);
@@ -293,7 +296,7 @@ async function recover(c: RouteContext): Promise<Response> {
 
 function requireAccount(c: RouteContext): SessionClaims | Response {
   if (!c.session) return error(401, 'unauthorized');
-  if (c.session.acct !== 1) return error(403, 'account_required', 'Necesitás una cuenta (no invitado)');
+  if (c.session.acct !== 1) return error(403, 'account_required', 'Necesitas una cuenta (no de invitado)');
   return c.session;
 }
 
@@ -342,7 +345,7 @@ async function rename(c: RouteContext): Promise<Response> {
   let pw: PasswordRecord | null = null;
   if (me.data.hasPassword) {
     // The stored hash is of clientKey(oldName, password): check it, and store the new name's key.
-    if (!isClientKey(b?.password) || !isClientKey(b?.newPassword)) return error(400, 'password_required', 'Ingresá tu contraseña para cambiar el nombre');
+    if (!isClientKey(b?.password) || !isClientKey(b?.newPassword)) return error(400, 'password_required', 'Ingresa tu contraseña para cambiar el nombre');
     const chk = await checkCredentials(c, me.data.name, b.password);
     if (!chk.ok) return chk.res;
     pw = await newPasswordRecord(b.newPassword);
@@ -354,6 +357,20 @@ async function rename(c: RouteContext): Promise<Response> {
     await accountsCall(c.env, '/password', { userId: s.sub, pw, keep: token ? await sha256Hex(token) : undefined });
   }
   return json(await accountSession(c.env, r.data));
+}
+
+const LIMIT_TRAINING_PER_ACCOUNT = 20;
+
+async function training(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('tr:' + s.sub, LIMIT_TRAINING_PER_ACCOUNT)) return error(429, 'rate_limited');
+  const b = await readJson<{ records?: unknown }>(c.request);
+  if (!b || typeof b.records !== 'object' || b.records === null || Array.isArray(b.records)) return error(400, 'bad_request');
+  const r = await accountsCall(c.env, '/training', { userId: s.sub, records: b.records });
+  const out = pass(r);
+  out.headers.set('cache-control', 'no-store');
+  return out;
 }
 
 async function me(c: RouteContext): Promise<Response> {
@@ -535,6 +552,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/password') return changePassword(c);
     if (p === '/api/auth/recovery-codes') return newRecoveryCodes(c);
     if (p === '/api/me/username') return rename(c);
+    if (p === '/api/me/training') return training(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);

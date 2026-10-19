@@ -1,11 +1,11 @@
 # Turbogol
 
-**Un juego de fútbol con autos y física, rápido, que corre en el navegador.** Manejás, saltás,
-volás con el boost y metés goles en 1v1, 2v2 o 3v3, contra bots o contra otras personas online. Todo
-lo que ves y escuchás (la cancha, los autos, la pelota, el estadio, el cielo, los sonidos) se genera
+**Un juego de fútbol con autos y física, rápido, que corre en el navegador.** Manejas, saltas,
+vuelas con el boost y anotas goles en 1v1, 2v2 o 3v3, contra bots o contra otras personas online. Todo
+lo que ves y escuchas (la cancha, los autos, la pelota, el estadio, el cielo, los sonidos) se genera
 con código: no se descarga ningún asset.
 
-**Jugalo ya: [turbo-gol.com](https://turbo-gol.com)** · Comunidad: [Discord](https://discord.gg/sPyf787aHP) (en inglés)
+**Juégalo ya: [turbo-gol.com](https://turbo-gol.com)** · Comunidad: [Discord](https://discord.gg/sPyf787aHP) (en inglés)
 
 [Read in English](README.md) · [Cómo contribuir](CONTRIBUTING.md) · [Arquitectura](ARCHITECTURE.md) · Licencia: [AGPL-3.0](LICENSE)
 
@@ -24,11 +24,11 @@ con código: no se descarga ningún asset.
 - **Cuentas y competitivo**: usuario y contraseña (Google / Discord opcionales). Competitivo da un
   rating por playlist, con partidas de clasificación, rangos, ranking y penalización por abandono.
   Los invitados pueden jugar todo menos competitivo.
-- **Controles**: teclado + mouse y joystick a la vez, todo reasignable.
+- **Controles**: teclado + mouse y control a la vez, todo reasignable.
 
 ## Probarlo
 
-Necesitás Node.js 24+ y un navegador con WebGPU (o al menos WebGL2).
+Necesitas Node.js 24+ y un navegador con WebGPU (o al menos WebGL2).
 
 ```sh
 git clone --recurse-submodules https://github.com/DonJaimeHash/turbo-gol.git
@@ -37,17 +37,17 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Para los modos online, levantá el backend local (no hace falta cuenta de Cloudflare):
+Para los modos online, inicia el backend local (no hace falta cuenta de Cloudflare):
 
 ```sh
 cd server && npm install
-cp .dev.vars.example .dev.vars   # poné cualquier texto largo y aleatorio en JWT_SECRET
+cp .dev.vars.example .dev.vars   # pon cualquier texto largo y aleatorio en JWT_SECRET
 npm run dev
 ```
 
 ## Contribuir
 
-Reportes, ideas, código, traducciones ([sumá tu idioma](CONTRIBUTING.md#translating)) y pruebas son bienvenidos: empezá por
+Reportes, ideas, código, traducciones ([agrega tu idioma](CONTRIBUTING.md#translating)) y pruebas son bienvenidos: empieza por
 [CONTRIBUTING.md](CONTRIBUTING.md) (en inglés) y los issues `good first issue`. Mantengamos el juego
 original: nada de nombres, arte, diseños ni medidas sacados de juegos comerciales.
 
