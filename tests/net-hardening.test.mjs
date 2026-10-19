@@ -475,3 +475,11 @@ test('OnlineSession: a ranked match that ends on a community node is flagged for
   assert.equal(colo.session.lastRankedMatchId, 'm1');
   assert.equal(colo.session.lastRankedOnNode, false);
 });
+
+test('OnlineSession: the network view carries the host of the Welcome (the panel names a community node), cleared after the match', async () => {
+  const s = await playingSession({}, NODE_WELCOME);
+  s.session.advance(0.01);
+  assert.equal(s.session.stats.host, 'node:sao-paulo-1');
+  s.session.leave();
+  assert.equal(s.session.stats.host, '');
+});

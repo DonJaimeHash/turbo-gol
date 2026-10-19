@@ -20,7 +20,8 @@ All notable changes to Turbogol are documented here. The format follows
   Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
 - The game is ready for matches hosted on a community node: after a Competitive match there, the
   menu says the result is being verified and waits up to two minutes for it (the node's replay is
-  checked first), and a match that fails the check shows as not counted.
+  checked first), and a match that fails the check shows as not counted. The network panel names
+  the node that hosts the match.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 

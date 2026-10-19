@@ -37,6 +37,7 @@ import {
   type Settings,
 } from '../settings';
 import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/NetStats';
+import { isNodeHost } from '../net/protocol';
 import { MODES, type GameMode } from '../sim/constants';
 import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
@@ -1992,12 +1993,16 @@ function mainKeyAction(code: string): MenuAction | null {
   }
 }
 
-/** Network panel text (NetStatsView -> a few fixed-width lines; called at most 4x/s). */
+/**
+ * Network panel text (NetStatsView -> a few fixed-width lines; called at most 4x/s). A match on a
+ * community node gets a `host` line with the node's name, so testers can tell which node they got.
+ */
 export function formatNetStats(s: NetStatsView): string {
   if (s.kind === 'p2p') return formatP2pStats(s);
   const age = s.snapshotAgeMs < 0 ? '—' : `${Math.round(s.snapshotAgeMs)} ms`;
   return (
     `state     ${s.state}\n` +
+    (isNodeHost(s.host) ? `host      ${s.host}\n` : '') +
     `ping      ${s.rttMs.toFixed(1)} ms  jitter ${s.jitterMs.toFixed(1)} ms  loss ${s.lossPct.toFixed(1)} %\n` +
     `lead      ${s.lead} ticks (adj ${s.leadAdjust >= 0 ? '+' : ''}${s.leadAdjust})  rate ${s.rateScale.toFixed(3)}x\n` +
     `tick      host ${s.hostTick}  local ${s.localTick}\n` +

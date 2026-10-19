@@ -984,6 +984,7 @@ test('resetNetStatsView puts a used view back to its idle values in place', asyn
   used.bytesOutPerSec = 2000;
   used.snapshotAgeMs = 25;
   used.reconnects = 1;
+  used.host = 'node:sao-paulo-1';
   resetNetStatsView(used);
   assert.deepEqual(used, fresh);
   assert.equal(used.snapshotAgeMs, -1);
