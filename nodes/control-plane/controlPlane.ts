@@ -71,7 +71,7 @@ import { regionFactor } from './ledger';
 import type { Ledger, LedgerEntry, LedgerPlayer } from './ledger';
 import { matchFromRow } from './persist';
 import type { MatchRow, MatchStore } from './persist';
-import { MAX_CAPACITY } from './registry';
+import { MAX_CAPACITY, usableTransports } from './registry';
 import type { Registry, NodeRecord } from './registry';
 import { ineligibility, pickNode, pickVerifier, transportFor } from './scheduler';
 import type { Shop } from './shop';
@@ -860,10 +860,16 @@ export class ControlPlane {
     for (const m of this.matches.values()) if (m.assign.region === region && (m.state === 'assigned' || m.state === 'reporting')) demand++;
     for (const u of this.unplaced) if (u.region === region && now - u.at < UNPLACED_WINDOW_MS) demand++;
     let supply = 0;
-    for (const n of this.registry.list()) {
-      if (n.region === region && this.isOnline(n.nodeId) && n.roles.includes('host') && (n.status === 'probation' || n.status === 'active')) supply += Math.max(n.capacity.matches, n.capacityMax ?? 0);
-    }
+    for (const n of this.registry.list()) if (n.region === region && this.mayHost(n)) supply += Math.max(n.capacity.matches, n.capacityMax ?? 0);
     return regionFactor(demand, supply);
+  }
+
+  /**
+   * An online host in probation or active that players can reach: one whose wss the re-probes
+   * took out (and that has no other way in) offers nothing until a probe passes again.
+   */
+  private mayHost(n: NodeRecord): boolean {
+    return this.isOnline(n.nodeId) && n.roles.includes('host') && (n.status === 'probation' || n.status === 'active') && usableTransports(n).length > 0;
   }
 
   /**
@@ -1023,14 +1029,12 @@ export class ControlPlane {
   }
 
   /**
-   * Host nodes online in `region` that may take matches (probation or active): the `hosts` of
-   * POST /internal/place. While it is 0 the matchmaker stops asking for a while.
+   * Host nodes online in `region` that may take matches (probation or active, reachable): the
+   * `hosts` of POST /internal/place. While it is 0 the matchmaker stops asking for a while.
    */
   hostsOnline(region: string): number {
     let n = 0;
-    for (const x of this.registry.list()) {
-      if (x.region === region && this.isOnline(x.nodeId) && x.roles.includes('host') && (x.status === 'probation' || x.status === 'active')) n++;
-    }
+    for (const x of this.registry.list()) if (x.region === region && this.mayHost(x)) n++;
     return n;
   }
 

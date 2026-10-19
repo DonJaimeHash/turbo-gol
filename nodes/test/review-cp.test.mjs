@@ -788,6 +788,8 @@ test('a proven host is probed again every 5 minutes: three failures in a row tak
   );
   assert.ok(env.logs.includes(`ALERT node ${n.name} unreachable at ${URL_}: Error: fetch failed`));
   assert.equal(await env.cp.place({ mode: '1v1', region: 'SA', ranked: false, humans: [human('a')], matchLengthSeconds: 10 }), null, 'no placement on it');
+  assert.equal(env.cp.hostsOnline('SA'), 0, 'the matchmaker stops asking');
+  assert.equal(env.cp.regionFactorAt('SA'), env.cp.regionFactorAt('EU'), 'and the region offers no slots');
 
   // Fixed: the unproven-host probe (every 30 s) passes.
   await sweepAfter(30_000, true); // still down: no new ALERT
@@ -795,6 +797,7 @@ test('a proven host is probed again every 5 minutes: three failures in a row tak
   assert.notEqual(n.reachableAt, null);
   assert.ok(env.logs.includes(`node ${n.name} reachable again at ${URL_}`));
   assert.equal(env.logs.filter((l) => l.startsWith('ALERT node')).length, 1);
+  assert.equal(env.cp.hostsOnline('SA'), 1);
   assert.ok(await env.place([human('b')]));
 
   // Failures must come in a row: a pass in between starts the count again.
