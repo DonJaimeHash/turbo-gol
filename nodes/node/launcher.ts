@@ -8,7 +8,10 @@
  *                manifest.json + manifest.sig, verified with the RELEASE public key (pinned at
  *                install time in <data>/release-key.pub, never fetched), then every file listed in
  *                the manifest with its size and SHA-256. A release whose manifest asks for a
- *                newer Node.js major (nodeMajor) is refused: the installed version keeps running
+ *                newer Node.js major (nodeMajor) is never started, new or already on disk: an
+ *                installed version this Node.js runs starts instead (if it is below the channel
+ *                minimum, it is told to update at once, so the node waits for a Node.js upgrade:
+ *                see exit 75)
  *     run        node <data>/releases/<v>/node.mjs run --data <data>   (with an IPC channel)
  *     exit 75  = drained for an update -> loop (picks up the new stable); a version that asks for
  *                an update right after starting while the channel still points to it waits
@@ -85,9 +88,9 @@ const RUNNING_NODE_MAJOR = Number(process.versions.node.split('.')[0]);
 
 /**
  * Refuse a release built for a newer Node.js than the one running. Started anyway, it would
- * crash (or misbehave) on this machine, so the release check fails instead and the installed
- * version keeps running until the operator upgrades Node.js: the launcher is installed once and
- * never updates the system's Node.js itself.
+ * crash (or misbehave) on this machine, so the release check fails instead and an installed
+ * version this Node.js runs is started (runnableVersions) until the operator upgrades Node.js:
+ * the launcher is installed once and never updates the system's Node.js itself.
  */
 export function checkNodeMajor(m: ReleaseManifest, running = RUNNING_NODE_MAJOR): void {
   if (Number.isInteger(m.nodeMajor) && m.nodeMajor > running) {
@@ -353,6 +356,25 @@ async function installedVersions(dataDir: string): Promise<string[]> {
   }
 }
 
+/**
+ * The installed versions this machine's Node.js can run: a copy on disk whose manifest asks for a
+ * newer major (left by a launcher from before checkNodeMajor, or Node.js went back a major) is no
+ * fallback, whether the channel cannot be reached or ensureRelease just refused it. A manifest that
+ * cannot be read stays in: starting it reports that.
+ */
+async function runnableVersions(dataDir: string): Promise<string[]> {
+  const ok: string[] = [];
+  for (const v of await installedVersions(dataDir)) {
+    try {
+      checkNodeMajor(JSON.parse(await readFile(join(dataDir, 'releases', v, 'manifest.json'), 'utf8')) as ReleaseManifest);
+    } catch (e) {
+      if (e instanceof ReleaseError) continue;
+    }
+    ok.push(v);
+  }
+  return ok;
+}
+
 const secs = (ms: number): number => Math.round(ms / 1000);
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -543,15 +565,15 @@ export class Launcher {
     let channel: ReleaseChannel | null = null;
     try {
       channel = await f.json<ReleaseChannel>(`${o.control.replace(/\/$/, '')}/nodes/releases/channel`);
-      let version = chooseVersion(state, channel, await installedVersions(o.dataDir));
+      let version = chooseVersion(state, channel, await runnableVersions(o.dataDir));
       const lastResort = !version;
       if (!version) version = channel.stable;
       await ensureRelease(o.control, o.dataDir, version, o.releaseKey, f);
       return { version, lastResort, channel };
     } catch (e) {
       this.log(`release check failed: ${errText(e)}`);
-      // Offline, or the release needs a newer Node.js: keep running what we have.
-      return { version: offlineVersion(state, await installedVersions(o.dataDir)), lastResort: false, channel };
+      // Offline, or the release needs a newer Node.js: keep running what we have and can run.
+      return { version: offlineVersion(state, await runnableVersions(o.dataDir)), lastResort: false, channel };
     }
   }
 
@@ -571,7 +593,7 @@ export class Launcher {
       if (!pick || this.stopping) return this.stopped();
       const { version, channel } = pick;
       if (!version) {
-        log(`no release available yet; retrying in ${secs(retry)} s`);
+        log(`no release this machine can run yet; retrying in ${secs(retry)} s`);
         await this.wait(retry);
         retry = Math.min(retry * 2, RETRY_MAX_MS);
         continue;

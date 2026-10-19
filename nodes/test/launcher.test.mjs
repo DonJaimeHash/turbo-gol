@@ -5,9 +5,12 @@
 import '../dev/ts-resolve.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const L = await import('../node/launcher.ts');
 const { generateEd25519, importPrivateKey, sign, sha256Hex } = await import('../shared/edcrypto.ts');
@@ -406,7 +409,16 @@ test('rollback below the minimum: a stable marked bad by a passing fault is retr
   }
 });
 
-test('a release that needs a newer Node.js is refused before its files are downloaded; the installed version keeps running', async () => {
+/** Put a signed release on disk as a launcher would have left it (one from before a check, say). */
+async function installCopy(dir, r) {
+  const local = join(dir, 'releases', r.manifest.version);
+  await mkdir(local, { recursive: true });
+  await writeFile(join(local, 'manifest.json'), r.mb);
+  await writeFile(join(local, 'manifest.sig'), r.sig);
+  for (const [p, b] of Object.entries(r.files)) await writeFile(join(local, p), b);
+}
+
+test('a release that needs a newer Node.js is refused before its files are downloaded; a channel minimum that allows the installed version keeps it serving', async () => {
   const running = Number(process.versions.node.split('.')[0]);
   const node = { 'node.mjs': enc.encode('console.log("node")') };
   assert.doesNotThrow(() => L.checkNodeMajor({ version: '1.0.0', nodeMajor: running }));
@@ -423,18 +435,16 @@ test('a release that needs a newer Node.js is refused before its files are downl
     assert.deepEqual(f.fetched, ['https://cp/nodes/releases/3.0.0/manifest.json', 'https://cp/nodes/releases/3.0.0/manifest.sig'], 'only the signed manifest');
     assert.equal(await exists(join(dir, 'releases', '3.0.0')), false);
     // A copy already on disk (downloaded by an older launcher) is refused too, offline.
-    const local = join(dir, 'releases', '3.0.0');
-    await mkdir(local, { recursive: true });
-    await writeFile(join(local, 'manifest.json'), r.mb);
-    await writeFile(join(local, 'manifest.sig'), r.sig);
-    await writeFile(join(local, 'node.mjs'), node['node.mjs']);
+    await installCopy(dir, r);
     const offline = { bytes: async () => assert.fail('no network needed'), json: async () => assert.fail('no network needed') };
     await assert.rejects(L.ensureRelease('https://cp', dir, '3.0.0', rk.publicKey, offline), /needs Node\.js 99/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 
-  // In the loop: 1.0.0 is installed and good, the channel moves to 2.0.0 built for Node.js 99.
+  // In the loop: 1.0.0 is installed and good, the channel moves to 2.0.0 built for Node.js 99 and
+  // its minimum still allows 1.0.0, so 1.0.0 serves. (The project's channel has minimum = stable:
+  // the next test.)
   const env = await launcherEnv({ '1.0.0': 'stop0' }, [{ stable: '2.0.0', minimum: '1.0.0' }], {
     lastGood: '1.0.0',
     bad: [],
@@ -452,6 +462,120 @@ test('a release that needs a newer Node.js is refused before its files are downl
     assert.deepEqual(run.sleeps, [], 'no wait: it runs at once');
     assert.ok(run.logs.some((m) => /release check failed: 2\.0\.0 needs Node\.js 99 or newer/.test(m)), run.logs.join('\n'));
     assert.equal(await exists(join(env.dir, 'releases', '2.0.0')), false);
+  } finally {
+    await cleanup(env);
+  }
+});
+
+test('a release that needs a newer Node.js, with the channel minimum at it: the installed version is told to update at once, the launcher waits 5 s doubling and never starts the new one', async () => {
+  // What scripts/build-node.mjs publishes: minimum = stable. The control plane tells 1.0.0 to
+  // update as soon as it logs in (it exits 75 at once), so the node waits, without serving, until
+  // the operator upgrades Node.js.
+  const env = await launcherEnv({ '1.0.0': 'quick75' }, [{ stable: '2.0.0', minimum: '2.0.0' }], {
+    lastGood: '1.0.0',
+    bad: [],
+    badAt: {},
+    crashes: {},
+  }, ['1.0.0']);
+  serveRelease(env.f.map, 'https://cp', await makeRelease('2.0.0', env.key, { 'node.mjs': enc.encode(fakeNode(env.rec, '2.0.0', 'stop0')) }, { nodeMajor: 99 }));
+  let run;
+  try {
+    run = launch(env, {
+      onSleep: (ms, sleeps, l) => {
+        if (sleeps.length === 4) l.requestStop('test');
+      },
+    });
+    assert.equal(await run.finished(), 0);
+    assert.deepEqual(run.sleeps, [5_000, 10_000, 20_000, 40_000]);
+    assert.deepEqual((await starts(env)).map((s) => s.v), ['1.0.0', '1.0.0', '1.0.0', '1.0.0'], 'one start per wait, never 2.0.0');
+    assert.ok(run.logs.some((m) => /release check failed: 2\.0\.0 needs Node\.js 99 or newer/.test(m)), run.logs.join('\n'));
+    assert.ok(run.logs.some((m) => /1\.0\.0 exited for an update right after starting .*below the channel minimum 2\.0\.0/.test(m)), run.logs.join('\n'));
+    assert.equal(await exists(join(env.dir, 'releases', '2.0.0')), false);
+    assert.ok(!env.f.fetched.includes('https://cp/nodes/releases/2.0.0/node.mjs'), 'its files are never downloaded');
+  } finally {
+    await cleanup(env);
+  }
+});
+
+test('launcher register: a release it cannot get or run exits 3 before the node program runs (the token is still unused)', async () => {
+  // A control plane whose stable needs Node.js 99. install.sh reads exit 3 as "the token was not
+  // used" and says so, instead of sending the operator for a new one.
+  const rk = await generateEd25519();
+  const r = await makeRelease('2.0.0', await importPrivateKey(rk.privateKey), { 'node.mjs': enc.encode('process.exit(0)') }, { nodeMajor: 99 });
+  const files = new Map();
+  serveRelease(files, '', r);
+  files.set('/nodes/releases/channel', enc.encode(JSON.stringify({ stable: '2.0.0', minimum: '2.0.0' })));
+  const asked = [];
+  const server = createServer((req, res) => {
+    asked.push(req.url);
+    const body = files.get(req.url);
+    res.writeHead(body ? 200 : 404).end(body);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dir = await mkdtemp(join(tmpdir(), 'tgn-launcher-main-'));
+  const register = async (control) => {
+    const main = fileURLToPath(new URL('../node/launcherMain.ts', import.meta.url));
+    const hook = new URL('../dev/ts-resolve.mjs', import.meta.url).href;
+    const p = spawn(process.execPath, ['--import', hook, main, 'register', '--control', control, '--data', dir, '--release-key', rk.publicKey, '--token', 'tgn1_test'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', (d) => (err += d));
+    const code = await new Promise((resolve) => p.on('close', resolve));
+    return { code, err };
+  };
+  const control = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const newer = await register(control);
+    assert.equal(newer.code, 3, newer.err);
+    assert.match(newer.err, /turbogol-launcher: 2\.0\.0 needs Node\.js 99 or newer/);
+    assert.deepEqual(asked, ['/nodes/releases/channel', '/nodes/releases/2.0.0/manifest.json', '/nodes/releases/2.0.0/manifest.sig']);
+    // No control plane at all: the same.
+    await new Promise((resolve) => server.close(resolve));
+    const down = await register(control);
+    assert.equal(down.code, 3, down.err);
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a copy on disk that needs a newer Node.js is no fallback: not as the last good version, not offline', async () => {
+  // 2.0.0 was downloaded before the launcher checked nodeMajor, ran well (lastGood) and is the
+  // channel's stable; then the release check refuses it.
+  const env = await launcherEnv({ '1.0.0': 'stop0' }, [{ stable: '2.0.0', minimum: '2.0.0' }], {
+    lastGood: '2.0.0',
+    bad: [],
+    badAt: {},
+    crashes: {},
+  }, ['1.0.0']);
+  await installCopy(env.dir, await makeRelease('2.0.0', env.key, { 'node.mjs': enc.encode(fakeNode(env.rec, '2.0.0', 'stop0')) }, { nodeMajor: 99 }));
+  try {
+    const run = launch(env);
+    await waitFor('1.0.0 to start', async () => (await starts(env)).length === 1);
+    run.l.requestStop('test');
+    assert.equal(await run.finished(), 0);
+    assert.ok(run.logs.some((m) => /release check failed: 2\.0\.0 needs Node\.js 99 or newer/.test(m)), run.logs.join('\n'));
+
+    // The channel cannot be reached: the same choice, with no release check at all.
+    env.f.json = async () => {
+      throw new Error('offline');
+    };
+    const offline = launch(env);
+    await waitFor('1.0.0 to start again', async () => (await starts(env)).length === 2);
+    offline.l.requestStop('test');
+    assert.equal(await offline.finished(), 0);
+    assert.ok(offline.logs.some((m) => /release check failed: offline/.test(m)), offline.logs.join('\n'));
+
+    // With nothing else installed, nothing starts: it waits for a release it can run.
+    await rm(join(env.dir, 'releases', '1.0.0'), { recursive: true, force: true });
+    const none = launch(env, {
+      onSleep: (ms, sleeps, l) => {
+        if (sleeps.length === 2) l.requestStop('test');
+      },
+    });
+    assert.equal(await none.finished(), 0);
+    assert.deepEqual(none.sleeps, [5_000, 10_000]);
+    assert.ok(none.logs.some((m) => /no release this machine can run yet/.test(m)), none.logs.join('\n'));
+    assert.deepEqual((await starts(env)).map((s) => s.v), ['1.0.0', '1.0.0'], '2.0.0 never started');
   } finally {
     await cleanup(env);
   }
