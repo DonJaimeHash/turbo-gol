@@ -1,9 +1,10 @@
 # Integración con el juego (no aplicada)
 
 Lo que hay que cambiar fuera de esta carpeta para que los nodos comunitarios reciban partidas de
-verdad. Nada de esto está aplicado todavía. Está ordenado para hacerlo en un
-solo PR. Las líneas citadas se revisaron contra el commit `cb157df` del repo público. El plano de
-control va en el dominio del juego: `https://turbo-gol.com/nodes/…`.
+verdad. Nada de esto está aplicado todavía. La etapa 1 lo reparte en ocho PR, con su orden y los
+ajustes a este diseño, en `PRODUCCION.md`: donde los dos no coinciden, manda esa lista. Las
+líneas citadas se revisaron contra el commit `dead8ec`. El plano de control va en el dominio del
+juego: `https://turbo-gol.com/nodes/…`.
 
 ## 0. Dónde va el código
 
@@ -16,11 +17,19 @@ CI corre su chequeo de tipos y sus pruebas en cada PR.
 Un Durable Object nuevo, una sola instancia (`nodes-v1`), que envuelve `ControlPlane`, `Registry`,
 `Ledger` y `Shop` de `control-plane/`:
 
-- **Persistencia:** nodos, tokens, partidas, cola de verificación, asientos del ledger, canjes e
-  inventarios van a su SQLite, con el mismo patrón que `AccountsDO`. Las clases separan lógica y
-  almacenamiento: hace falta cargar al arrancar y guardar en cada cambio.
-- **Conexiones de nodos:** con la Hibernation API (`ctx.acceptWebSocket`), como `RoomDO`.
-- **Barrido:** `ControlPlane.sweep()` desde una alarma cada 5 s mientras haya nodos conectados.
+- **Persistencia:** nodos, tokens y partidas van a su SQLite, con el mismo patrón que
+  `AccountsDO`: las sin terminar, las que esperan su verificación y las terminadas con su
+  resultado, más la bandeja de salida de esos resultados hasta entregarlos. Los asientos del
+  ledger, los canjes y los inventarios se suman en la etapa 2, cuando haya nodos que ganan puntos.
+  Las clases separan lógica y almacenamiento: hace falta cargar al arrancar y guardar en cada
+  cambio.
+- **Conexiones de nodos:** con la Hibernation API (`ctx.acceptWebSocket`), como `RoomDO`. Las
+  sesiones de `ControlPlane` viven en memoria (`control-plane/controlPlane.ts:320`): un DO que
+  despierta de una hibernación conserva los sockets pero no sabe de qué nodo es cada uno, así que
+  hay que guardar el nodo junto al socket y volver a asociarlo.
+- **Barrido:** `ControlPlane.sweep()` desde una alarma cada 5 s. No alcanza con correrla mientras
+  haya nodos conectados: el barrido es lo único que anula las partidas de un nodo caído
+  (`control-plane/controlPlane.ts:1185-1200`), así que sigue mientras haya partidas sin terminar.
   Con heartbeats y alarma cada 5 s, el DO nunca hiberna: ver el costo en `PRODUCCION.md`.
 - **Verificación:** solo por nodos de confianza (el VPS de São Paulo). `inlineVerify` es del
   servidor de referencia; en el DO no conviene por el tope de CPU que fija el presupuesto.
@@ -45,11 +54,13 @@ Bindings, secretos y variables nuevos:
 | Nombre | Tipo | Contenido |
 |---|---|---|
 | `NODES` | Durable Object | `NodeRegistryDO` |
-| `NODE_REPLAYS` | R2 | replays, de 7 a 30 días |
+| `NODE_REPLAYS` | R2 | replays, 30 días (una regla de ciclo de vida del bucket) |
 | `NODE_RELEASES` | R2 | releases firmadas, instaladores y `channel.json` |
 | `NODE_CONTROL_PRIVATE_KEY` | secreto | PKCS#8 de la clave de control (`npm run keys`) |
 | `NODE_CONTROL_PUBLIC_KEY` | var | su mitad pública |
-| `NODE_TRUSTED_OPERATORS` | var | ids de cuenta del proyecto, separados por coma: sus nodos son de confianza |
+| `NODE_TRUSTED_OPERATORS` | var (propuesta D13 de `PRODUCCION.md`: secreto) | ids de cuenta del proyecto, separados por coma: sus nodos son de confianza |
+| `NODES_PUBLIC_BASE` | var | `https://turbo-gol.com`: la base de las URL que el plano de control da a los nodos y de la línea de instalación (P19, P20 de `PRODUCCION.md`) |
+| `NODE_ALERT_WEBHOOK` | secreto | el webhook del canal de alertas del equipo, adonde van las líneas `ALERT` (P24 y M13 de `PRODUCCION.md`) |
 
 ## 2. Worker: rutas `/nodes/*` en `server/src/index.ts`
 
@@ -60,11 +71,13 @@ Bindings, secretos y variables nuevos:
 | `GET /nodes/whoami` | `{ ip: CF-Connecting-IP }` directo en el Worker |
 | `GET /nodes/releases/channel` | `channel.json` de R2 `NODE_RELEASES`, el mismo objeto que el plano de control lee para `minimum`. Ruta propia: el lanzador pide `channel` sin extensión |
 | `GET /nodes/releases/*` | R2 `NODE_RELEASES` |
-| `POST /nodes/tokens`, `GET /nodes/mine`, `GET /nodes/shop`, `POST /nodes/shop/claim` | `NodeRegistryDO`, con la sesión de **cuenta** en lugar de `x-dev-operator`. Los invitados no operan nodos ni canjean. |
+| `POST /nodes/tokens`, `GET /nodes/mine`, `GET /nodes/shop`, `POST /nodes/shop/claim` | `NodeRegistryDO`, con la sesión de **cuenta** en lugar de `x-dev-operator`. Los invitados no operan nodos ni canjean. En la etapa 1, `POST /nodes/tokens` responde 403 a toda cuenta que no esté en `NODE_TRUSTED_OPERATORS`, y la tienda no existe |
 | `GET /api/me/items` | el inventario de la cuenta, para que el juego desbloquee ítems |
 | `GET /nodes/status` | página pública de anfitriones |
 
-Límites: `/nodes/register` 5 por IP por hora, `/nodes/tokens` 10 por cuenta por día.
+Límites: `/nodes/register` 5 por IP por hora, `/nodes/tokens` 10 por cuenta por día. Esos topes
+los lleva el DO: el limitador del Worker cuenta por isolate, en ventanas de 60 s
+(`server/src/index.ts:78`, `:100-109`).
 
 ## 3. Matchmaker: el gancho de juego
 
@@ -79,6 +92,10 @@ Límites: `/nodes/register` 5 por IP por hora, `/nodes/tokens` 10 por cuenta por
 
 Sin `account` ni `accountAgeDays`, todos los jugadores pesan como invitados y los operadores
 ganan la cuarta parte de lo previsto.
+
+En la etapa 1 no hace falta nada de esto: el único nodo es el VPS del proyecto, que usa wss (el
+transporte que `place()` toma cuando la cola no manda ninguno,
+`control-plane/controlPlane.ts:624`) y no gana puntos. Los tres campos llegan con la etapa 2.
 
 **En `MatchmakerDO.formMatch`** (línea ~1057), después de calcular `length` y `until` y antes de
 `env.MATCH.newUniqueId()`. El roster lo arma el plano de control con los mismos equipos que hoy
@@ -115,28 +132,38 @@ if (placed) {
   traiga `node: true`.
 - **Verificación de locks** (`LOCK_VERIFY_AFTER_MS`): para un lock `node`, preguntar al registro
   si la partida sigue en estado `assigned` o `reporting`. Si el nodo se cae, el registro anula
-  sus partidas a los 15 s, así que el lock se libera solo.
-- **`POST /api/rejoin`**: si la partida es de un nodo, `ControlPlane.rejoinTicket()`.
-- **`POST /api/leave { matchId, connected }`**: si la partida es de un nodo,
-  `ControlPlane.leave(matchId, playerId, { connected })`. `connected` lo manda el cliente: `false`
-  cuando nunca recibió el `Welcome` (cancelar mientras conecta, en `OnlineSession.cancel`). Así un
-  nodo que no deja entrar a un jugador no puede convertir su cancelación en un dodge. Como
-  `MatchDO`, responde `410 match_over` después del final y no marca a nadie. Es la única forma
-  de que un jugador deje una partida de nodo: el verificador rechaza cualquier toma de control
-  por un bot que no haya pasado por aquí.
+  sus partidas a los 15-20 s (15 s sin heartbeat, `HEARTBEAT_TIMEOUT_MS`, más el intervalo del
+  barrido), así que el lock se libera solo.
+- **`POST /api/rejoin`**: si la partida es de un nodo, `ControlPlane.rejoinTicket()`. Hoy
+  devuelve `null` sin decir por qué (`control-plane/controlPlane.ts:719-730`), y el Worker
+  necesita saber si liberar el lock (la partida terminó, o el jugador no estaba en ella) o
+  mantenerlo (el nodo está caído un momento): hacen falta códigos.
+- **`POST /api/leave { matchId }`**: si la partida es de un nodo,
+  `ControlPlane.leave(matchId, playerId)`. Es la única forma de que un jugador deje una partida
+  de nodo: el verificador rechaza cualquier toma de control por un bot que no haya pasado por
+  aquí. `ControlPlane.leave` rechaza con `match_over` después del final
+  (`control-plane/controlPlane.ts:743`), pero `/api/leave` siempre responde
+  `200 { ok, left, released }` (`server/src/MatchmakerDO.ts:680`): el matchmaker traduce. El
+  cliente manda `{ matchId, region? }` (`src/net/NetClient.ts:881`). El campo `connected`
+  (`false` cuando el cliente nunca recibió el `Welcome`) solo cambia algo en un nodo comunitario:
+  en uno de confianza, una cancelación toma los `noShows` del nodo tal cual
+  (`control-plane/controlPlane.ts:859-861`). Llega con la etapa 2.
 
 ## 4. Resultados a `AccountsDO`
 
 | Outcome | Llamada |
 |---|---|
 | `rated` | `POST /ranked-result { matchId, playlist, region, winner, blue, red, players }`, el mismo cuerpo que `MatchDO.reportRanked` |
-| `void` de una ranked | `POST /ranked-cancel { matchId, playlist, region, players, noShows, reason }` |
+| `void` de una ranked | `POST /ranked-cancel { matchId, playlist, region, players, noShows, reason }`. Un outcome `void` no trae `playlist` ni `region` (`control-plane/controlPlane.ts:162`): salen de la asignación de la partida |
 | `unrated` | nada; los puntos ya quedaron en el ledger |
 | cualquiera | `POST /release` al matchmaker de la región, como `MatchDO.shutdown` |
 
 ## 5. Cliente
 
-- **Una línea** donde se crea el `NetClient`:
+- **Etapa 1 (VPS por wss):** el socket del cliente no cambia. `resolveWsUrl` deja pasar una URL
+  absoluta (`src/net/NetClient.ts:334-336`) y, sin fábrica, `NetClient` abre un WebSocket común
+  (`:527`).
+- **Etapa 2, una línea** donde se crea el `NetClient`:
 
 ```ts
 new NetClient({ ...opciones, webSocketFactory: nodeAwareSocketFactory() })
@@ -144,6 +171,8 @@ new NetClient({ ...opciones, webSocketFactory: nodeAwareSocketFactory() })
 
   `nodeAwareSocketFactory` está en `client/rtcSocket.ts`. Para las URL normales abre el WebSocket
   de siempre; para las de una PC hogareña, el adaptador WebRTC. El resto del cliente no cambia.
+  `npm run typecheck` de `nodes/` no revisa `client/`: `nodes/tsconfig.json` solo incluye
+  `shared`, `node`, `control-plane` y `types`.
 - **`POST /api/queue`** manda `transports: ['wss', 'rtc']`.
 - **Selector de autos e ítems:** lee `GET /api/me/items` y solo ofrece lo que la cuenta tiene. El
   servidor valida el ítem elegido cuando entre en el roster de la partida.
@@ -154,15 +183,23 @@ new NetClient({ ...opciones, webSocketFactory: nodeAwareSocketFactory() })
 ## 6. Operación
 
 - Alertas cuando una verificación falla: hoy queda en el log como `ALERT`. Conviene un webhook.
-- Endpoint de administración para `setStatus`, `drain`, `shop.unfreeze` y el catálogo.
-- Releases: `github/workflows/node-release.yml`. El canal se mueve a mano: `stable` llega a cada
-  nodo cuando reinicia, `minimum` obliga a los que están corriendo a drenar y actualizarse. El
-  campo `canary` del protocolo no se usa todavía.
+- Endpoint de administración para `setStatus`, `drain`, `shop.unfreeze` y el catálogo. Un
+  drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): el nodo solo vuelve a tomar
+  partidas cuando se reinicia.
+- Releases: `github/workflows/node-release.yml`, una plantilla que GitHub no corre: solo corre lo
+  que está en `.github/workflows/` del repo. El canal se mueve a mano: `stable` llega a cada nodo
+  cuando reinicia, `minimum` obliga a los que están corriendo a drenar y actualizarse. Pero el
+  plano de control solo compara un nodo con `minimum` cuando el nodo saluda
+  (`control-plane/controlPlane.ts:405`), o en cada barrido si es un verificador con la
+  actualización en espera (`:1203`): un nodo que sigue conectado no se entera hasta que se
+  reconecta. El campo `canary` del protocolo no se usa todavía.
 - Copiar `github/CODEOWNERS` a `.github/`. Activar en `main` la regla que exige la revisión de
   los dueños del código solo cuando haya un segundo mantenedor: GitHub no deja aprobar un PR
   propio, así que con un solo dueño bloquearía sus propios PR.
 - El VPS de São Paulo: `VPS-SAO-PAULO.md`.
 - Presupuesto: cada partida en un nodo es una partida menos simulada en un DO. Lo nuevo es el DO
-  de registro, que con heartbeats cada 5 s no hiberna nunca, R2 para replays de 10 a 50 KB, y el
-  TURN de las PCs hogareñas, dentro de los 1.000 GB mensuales gratis mientras no se fuerce el
-  relay de los jugadores. Los números están en `PRODUCCION.md`.
+  de registro, que con heartbeats cada 5 s no hiberna nunca; R2 para los replays, que en partidas
+  de 3 minutos medidas el 19/10/2026 ocupan unos 2,5 KB si solo juegan bots (no se graban) y de 60
+  a 403 KB con jugadores simulados por las pruebas; y el TURN de las PCs hogareñas, dentro de los
+  1.000 GB mensuales gratis mientras no se fuerce el relay de los jugadores. Los números están en
+  `PRODUCCION.md`.
