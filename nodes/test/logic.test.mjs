@@ -70,6 +70,30 @@ test('registration tokens: single use, expiry, URL rules, transports', async () 
   assert.equal(v.status, 'active');
 });
 
+test('a trusted operator registers at most two nodes, tokens minted before included, and the refusal raises an ALERT', async () => {
+  const lines = [];
+  const reg = new Registry({ trustedOperators: ['project'], log: (m) => lines.push(m) });
+  const project = { id: 'project', name: 'Proyecto' };
+  const tokens = [];
+  for (let i = 0; i < 3; i++) tokens.push((await reg.createToken(project, 'SA', 0)).token);
+  const req = async (token) => ({ token, publicKey: (await generateEd25519()).publicKey, roles: ['host', 'verify'], publicUrl: 'wss://sp1.example.org', build: BUILD, specs: SPECS, capacity: CAP });
+  assert.ok((await reg.register(await req(tokens[0]), 0)).ok);
+  assert.ok((await reg.register(await req(tokens[1]), 0)).ok, 'the VPS and its replacement');
+  lines.length = 0;
+  assert.equal(R.MAX_TRUSTED_NODES_PER_OPERATOR, 2);
+  assert.equal((await reg.register(await req(tokens[2]), 0)).code, 'too_many_nodes');
+  assert.deepEqual(lines, ['ALERT registration refused: trusted operator Proyecto (project) already has its 2 nodes']);
+  assert.equal(reg.byOperator('project').length, 2);
+  assert.equal(reg.tokenList().filter((t) => t.usedBy === null).length, 1, 'the refused token is not spent');
+  // A community operator keeps the general cap, and reaching it alerts nobody.
+  const op = { id: 'op1', name: 'Juan' };
+  for (let i = 0; i < R.MAX_NODES_PER_OPERATOR; i++) await regNode(reg, op, 0);
+  lines.length = 0;
+  const { token } = await reg.createToken(op, 'SA', 0);
+  assert.equal((await reg.register(await req(token), 0)).code, 'too_many_nodes');
+  assert.deepEqual(lines, []);
+});
+
 test('reachability: wss by probe, rtc by its self-test; trusted nodes skip probation', async () => {
   const reg = new Registry(quiet);
   const op = { id: 'op1', name: 'Juan' };
