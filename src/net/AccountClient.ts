@@ -238,11 +238,15 @@ export class AccountClient {
     return p;
   }
 
-  /** A Bearer session that is valid for a few more minutes (refreshed when needed), null for a guest. */
-  async sessionForQueue(): Promise<AccountSession | null> {
+  /**
+   * A Bearer session that is valid for a few more minutes (refreshed when needed), null for a
+   * guest. `minValidMs` asks for longer: a match on a community node is left only through
+   * POST /api/leave, with the Bearer the match started with (NetClient.refreshBearer).
+   */
+  async sessionForQueue(minValidMs = REFRESH_MARGIN_MS): Promise<AccountSession | null> {
     const a = this.account;
     if (a === null) return null;
-    if (a.expiresAt - this.now() > REFRESH_MARGIN_MS) return a;
+    if (a.expiresAt - this.now() > minValidMs) return a;
     return this.refresh();
   }
 

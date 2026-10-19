@@ -662,7 +662,7 @@ export class Game implements P2PGameHooks {
     // Accounts: a signed-in player queues / joins lobbies under the account (NetClient asks first).
     const accounts = new AccountClient({ antiBot: () => online.client.antiBotToken() });
     this.accounts = accounts;
-    online.client.sessionProvider = () => accounts.sessionForQueue();
+    online.client.sessionProvider = (minValidMs) => accounts.sessionForQueue(minValidMs);
     online.client.onSessionRejected = () => accounts.sessionRejected();
     this.trainingStore = new TrainingStore({ accountId: () => accounts.account?.playerId ?? null, push: (r) => accounts.pushTraining(r) });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });

@@ -175,9 +175,10 @@ class FakeSim {
 /**
  * An OnlineSession in the 'playing' state on a fake Game, with the fake socket and clock exposed;
  * `routes` add / override API routes; `connecting: true` stops right after the socket was created;
- * `welcome` adds fields to the Welcome (hostColo 'node:<name>': a community node).
+ * `welcome` adds fields to the Welcome (hostColo 'node:<name>': a community node); `prepare(client)`
+ * runs before the queue (an account's sessionProvider).
  */
-async function playingSession(routes = {}, { connecting = false, welcome = {} } = {}) {
+async function playingSession(routes = {}, { connecting = false, welcome = {}, prepare = null } = {}) {
   const h = makeClient({
     '/api/guest': () => jsonResponse(200, GUEST),
     '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm1', ticket: 'tkt', wsUrl: '/ws/m1' }),
@@ -202,6 +203,7 @@ async function playingSession(routes = {}, { connecting = false, welcome = {} } 
     },
   };
   const session = new OnlineSession(game, { client: h.client, now: h.now });
+  if (prepare !== null) prepare(h.client);
   session.quickMatch('1v1');
   for (let i = 0; i < 10 && h.sockets.length === 0; i++) await new Promise((r) => setTimeout(r, 0));
   assert.equal(session.state, 'connecting');
@@ -482,4 +484,59 @@ test('OnlineSession: the network view carries the host of the Welcome (the panel
   assert.equal(s.session.stats.host, 'node:sao-paulo-1');
   s.session.leave();
   assert.equal(s.session.stats.host, '');
+});
+
+/**
+ * A match played under an account session (an AccountClient on a fake clock, wired like Game.ts)
+ * with ten minutes left on its Bearer when the match starts; the first /api/leave answers 401.
+ */
+async function accountMatch(welcome) {
+  const { AccountClient } = await import('../src/net/AccountClient.ts');
+  let t = 1_000_000;
+  let issued = 0;
+  const accounts = new AccountClient({
+    storage: null,
+    now: () => t,
+    fetchFn: async (url) => {
+      assert.equal(url, '/api/auth/refresh');
+      issued++;
+      return jsonResponse(200, { kind: 'account', playerId: 'acc1', name: 'Tomi', session: `jwt-a${issued}`, expiresAt: t + 3600_000 });
+    },
+  });
+  await accounts.restore();
+  t += 50 * 60_000;
+  const auths = [];
+  const leave = (init) => {
+    auths.push(init.headers.authorization);
+    return auths.length === 1 ? jsonResponse(401, { error: 'unauthorized' }) : jsonResponse(200, { ok: true, left: true, released: true });
+  };
+  const prepare = (client) => {
+    client.sessionProvider = (minValidMs) => accounts.sessionForQueue(minValidMs);
+    client.onSessionRejected = () => accounts.sessionRejected();
+  };
+  const s = await playingSession({ '/api/leave': leave }, { welcome, prepare });
+  await flush();
+  return { ...s, auths, issued: () => issued };
+}
+
+test('OnlineSession on a community node: the first Welcome renews an account Bearer with less than 15 min left; a quit refused with 401 goes again with a fresh one', async () => {
+  const s = await accountMatch(NODE_WELCOME.welcome);
+  assert.equal(s.issued(), 2, 'the queue kept jwt-a1 (10 min left), the Welcome renewed it');
+  assert.equal(s.client.lastBearer, 'jwt-a2');
+  s.session.leave();
+  assert.deepEqual(s.auths, ['Bearer jwt-a2'], 'the first leave goes out before the socket closes');
+  await flush();
+  assert.equal(s.issued(), 3);
+  assert.deepEqual(s.auths, ['Bearer jwt-a2', 'Bearer jwt-a3']);
+  assert.equal(s.client.leaves, 2);
+});
+
+test('OnlineSession on a Durable Object: no early renewal and a refused quit is not retried (as before)', async () => {
+  const s = await accountMatch({ hostColo: 'GRU' });
+  assert.equal(s.issued(), 1);
+  assert.equal(s.client.lastBearer, 'jwt-a1');
+  s.session.leave();
+  await flush();
+  assert.equal(s.issued(), 1);
+  assert.deepEqual(s.auths, ['Bearer jwt-a1']);
 });

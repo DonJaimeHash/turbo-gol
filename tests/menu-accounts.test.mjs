@@ -152,6 +152,26 @@ test('AccountClient: sessionForQueue refreshes near expiry (one request for conc
   assert.equal(a.hintName, null);
 });
 
+test('AccountClient.sessionForQueue(minValidMs): a match on a community node asks for a Bearer that outlasts it', async () => {
+  let now = 1_000_000;
+  let refreshes = 0;
+  const srv = fakeServer({
+    '/api/auth/refresh': () => {
+      refreshes++;
+      return res(200, SESSION('Tomi', now + 3600_000));
+    },
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: memStorage(), now: () => now });
+  await a.restore();
+  now += 3600_000 - 10 * 60_000; // ten minutes left
+  assert.equal((await a.sessionForQueue()).expiresAt, 1_000_000 + 3600_000, 'enough for a queue: no refresh');
+  assert.equal(refreshes, 1);
+  assert.equal((await a.sessionForQueue(15 * 60_000)).expiresAt, now + 3600_000);
+  assert.equal(refreshes, 2);
+  assert.equal((await a.sessionForQueue(15 * 60_000)).expiresAt, now + 3600_000, 'fresh now: no second refresh');
+  assert.equal(refreshes, 2);
+});
+
 test('AccountClient.waitRankedResult polls until the result is there', async () => {
   let n = 0;
   const srv = fakeServer({
