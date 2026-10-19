@@ -11,6 +11,7 @@ import type { LobbyMember, LobbySettings, LobbyState, LobbySummary, Playlist } f
 import { AccountError } from '../../net/AccountClient';
 import { lobbyCloseText } from '../../net/LobbyClient';
 import { MODES } from '../../sim/constants';
+import { DEFAULT_MATCH_SECONDS } from '../../game/Match';
 import { t } from '../../i18n';
 import { playlistName } from '../names';
 import type { Menu, Screen } from '../Menu';
@@ -160,7 +161,7 @@ function settingsControls(s: LobbySettings): HTMLElement[] {
 }
 
 export function lobbyCreateScreen(menu: Menu): Screen {
-  const s: LobbySettings = { name: '', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 };
+  const s: LobbySettings = { name: '', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS };
   const name = field(t('custom.nameField'), { maxLength: 24 });
   const pw = field(t('custom.passwordOptional'), { type: 'password', maxLength: 32, placeholder: t('custom.noPassword') });
   const controls = h('div');

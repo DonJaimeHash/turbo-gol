@@ -123,7 +123,7 @@ export default {
   'friendly.quality': 'Calidad gráfica',
   'friendly.qualityHigh': 'Alta',
   'friendly.qualityPerformance': 'Rendimiento',
-  'friendly.intro': 'Un partido offline de 5 minutos contra la IA. Tus compañeros, si los hay, también son bots.',
+  'friendly.intro': 'Un partido offline de 3 minutos contra la IA. Tus compañeros, si los hay, también son bots.',
   'friendly.match': 'PARTIDO',
   'friendly.play': 'JUGAR',
 

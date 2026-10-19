@@ -52,7 +52,7 @@
   // create their own with `npx wrangler kv namespace create FLAGS` (any id works under wrangler dev).
   "kv_namespaces": [{ "binding": "FLAGS", "id": "61764fc794934a359008a53682efd9c3" }],
   "vars": {
-    "MATCH_LENGTH_SECONDS": 300,
+    "MATCH_LENGTH_SECONDS": 180,
     "REGION_OVERRIDE": "",
     // TURNSTILE_SITEKEY: the public Turnstile sitekey paired with the TURNSTILE_SECRET secret
     // (GET /api/config hands it to the browser). VITE_ORIGINS: comma-separated browser origins allowed

@@ -66,6 +66,7 @@ import {
 } from '../../src/net/protocol';
 import type { InputPacket, MatchEvent, Welcome } from '../../src/net/protocol';
 import { MAX_CARS, PACKED_INPUT_BYTES } from '../../src/sim/types';
+import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 
 const TICK_MS = 1000 / TICK_RATE;
 const INTERVAL_MS = 8;
@@ -290,7 +291,7 @@ export class MatchDO extends DurableObject<Env> {
       mode: body.mode ?? '1v1',
       region: typeof body.region === 'string' ? body.region : '?',
       roster: body.roster,
-      matchLengthSeconds: typeof body.matchLengthSeconds === 'number' ? body.matchLengthSeconds : 300,
+      matchLengthSeconds: typeof body.matchLengthSeconds === 'number' ? body.matchLengthSeconds : DEFAULT_MATCH_SECONDS,
       createdAt: typeof body.createdAt === 'number' ? body.createdAt : Date.now(),
       ranked: body.ranked === true,
     };

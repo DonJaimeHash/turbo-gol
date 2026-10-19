@@ -24,6 +24,7 @@ import { error, json, readJson } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret } from './auth';
 import { MODES } from '../../src/sim/constants';
 import { LOBBY_LENGTHS, isPlaylist } from '../../src/net/account';
+import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import type { LobbyClientMsg, LobbyMember, LobbyServerMsg, LobbySettings, LobbyState, LobbySummary } from '../../src/net/account';
 
 const ADMIT_TTL_MS = 90_000;
@@ -151,7 +152,7 @@ function parseSettings(v: unknown, base: LobbySettings): LobbySettings | string 
 }
 
 export function defaultLobbySettings(name: string): LobbySettings {
-  return { name, mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 };
+  return { name, mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS };
 }
 
 export { parseSettings as parseLobbySettings };

@@ -74,6 +74,7 @@ import type { GameModeId } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret, randomHex } from './auth';
 import { TICK_RATE, WS_SUBPROTOCOL } from '../../src/net/protocol';
 import { MAX_CARS } from '../../src/sim/types';
+import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 // Type-only: node's strip-only loader cannot load that module's `const enum` and
 // server/test/room.test.mjs imports this file. The numeric defaults are mirrored below and checked
 // against the protocol's literal types by tsc.
@@ -502,7 +503,7 @@ export class RoomDO extends DurableObject<Env> {
       region: typeof body.region === 'string' ? body.region : '?',
       seed: isUint32(body.seed) ? body.seed : crypto.getRandomValues(new Uint32Array(1))[0],
       slots,
-      matchLengthSeconds: typeof body.matchLengthSeconds === 'number' && body.matchLengthSeconds >= 0 ? Math.floor(body.matchLengthSeconds) : 300,
+      matchLengthSeconds: typeof body.matchLengthSeconds === 'number' && body.matchLengthSeconds >= 0 ? Math.floor(body.matchLengthSeconds) : DEFAULT_MATCH_SECONDS,
       createdAt: typeof body.createdAt === 'number' ? body.createdAt : now,
     };
     this.record = rec;

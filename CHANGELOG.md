@@ -18,6 +18,8 @@ All notable changes to Turbogol are documented here. The format follows
 - Third-party notices point to the script that applies the physics-library patches.
 
 ### Changed
+- Matches last 3 minutes (was 5): offline, casual, ranked, P2P and server matches. Custom lobbies
+  start at 3 minutes and the host can still pick 5, 10 or no limit.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
 

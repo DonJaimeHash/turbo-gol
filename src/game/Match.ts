@@ -30,8 +30,21 @@ export interface MatchConfig {
   kickoffCountdownSeconds: number;
 }
 
+/**
+ * Regulation length of every match unless a custom lobby picks another (offline, casual, ranked,
+ * P2P and server matches). The server's MATCH_LENGTH_SECONDS var defaults to the same value.
+ */
+export const DEFAULT_MATCH_SECONDS = 180;
+
+/** "3:00", "+0:12" (overtime): whole seconds as the HUD clock shows them. Allocates a string. */
+export function formatClockSeconds(total: number, overtime = false): string {
+  const m = Math.floor(total / 60);
+  const s = total - m * 60;
+  return `${overtime ? '+' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+}
+
 export const DEFAULT_MATCH_CONFIG: Readonly<MatchConfig> = {
-  lengthSeconds: 300,
+  lengthSeconds: DEFAULT_MATCH_SECONDS,
   goalPauseSeconds: 3,
   kickoffCountdownSeconds: 3,
 };
@@ -141,7 +154,7 @@ export class Match {
   }
 
   /**
-   * Whole seconds for the HUD clock: ceil of the remaining time in regulation ("5:00"
+   * Whole seconds for the HUD clock: ceil of the remaining time in regulation ("3:00"
    * until a full second has elapsed), floor of the elapsed time in overtime / unlimited matches.
    * Compare against the previous value and only reformat the string when it changes.
    */
@@ -153,11 +166,7 @@ export class Match {
 
   /** "4:59", "+0:12" in overtime, "12:34" counting up in unlimited matches. Allocates a string. */
   formatClock(): string {
-    const total = this.displaySeconds;
-    const m = Math.floor(total / 60);
-    const s = total - m * 60;
-    const prefix = this.overtime ? '+' : '';
-    return `${prefix}${m}:${s < 10 ? '0' : ''}${s}`;
+    return formatClockSeconds(this.displaySeconds, this.overtime);
   }
 
   // ---- Control --------------------------------------------------------------------------
