@@ -561,6 +561,13 @@ export default {
   // No tier yet (placement matches not finished)
   'board.unranked': 'Unranked',
   'board.resultPending': 'Your Competitive result is still being calculated: check your profile.',
+  // A match hosted on a community node is rated only after its replay is checked: shown once when
+  // the result is not there after the usual wait (the menu keeps waiting, up to two minutes, and
+  // shows it whenever the player is back in the menus), then if it still has not arrived
+  'board.resultVerifying': 'Your Competitive result is being verified: it will show up here once it is ready.',
+  'board.resultVerifyingSlow': 'Your Competitive result is still being verified: check your profile in a few minutes.',
+  // The replay check of a community-node match failed or could not run: nobody was rated
+  'board.voided': "The Competitive match couldn't be verified and didn't count",
   'board.notRated': "That match didn't count for your rank",
   'board.cancelled': "The Competitive match was cancelled and didn't count",
   // Dialog title; {playlist} is the mode name (One-on-one)
