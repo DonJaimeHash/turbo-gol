@@ -1151,8 +1151,29 @@ export class ControlPlane {
     this.voidMatch(m, 'lost:bad_report');
   }
 
-  /** A report for one of the node's matches. Returns false when it must not be acked (a copy of a report still being processed). */
+  /**
+   * A report for one of the node's matches. Returns false when it must not be acked (a copy of a
+   * report still being processed). Rejects when a store fails, and the match then waits for its
+   * report as if it had never come: the node sends it again (no ack), and that copy is judged
+   * afresh instead of being acked as a second report while the row still says 'assigned'.
+   */
   private async onReport(nodeId: string, r: MatchReport): Promise<boolean> {
+    try {
+      return await this.takeReport(nodeId, r);
+    } catch (e) {
+      // Back to waiting for the report, unless the sweep settled the match meanwhile.
+      const m = this.matches.get(r.matchId);
+      if (m && m.report === r && m.state !== 'done') {
+        m.state = 'assigned';
+        m.report = null;
+        m.reportedAt = 0;
+      }
+      throw e;
+    }
+  }
+
+  /** onReport without the way back: settle the match on its report, or queue it for verification. */
+  private async takeReport(nodeId: string, r: MatchReport): Promise<boolean> {
     const m = this.matches.get(r.matchId);
     if (m && m.nodeId === nodeId && m.state === 'reporting') return false;
     // Unknown, foreign, already settled or a second report: ack and forget.
@@ -1223,16 +1244,7 @@ export class ControlPlane {
       return true;
     }
     // Verify before anything is written.
-    let bytes: Uint8Array | null;
-    try {
-      bytes = await this.o.replays.get(m.assign.matchId);
-    } catch (e) {
-      if (m.state === 'reporting' && m.report === r) {
-        m.state = 'assigned';
-        m.report = null;
-      }
-      throw e;
-    }
+    const bytes = await this.o.replays.get(m.assign.matchId);
     const sha = bytes ? await sha256Hex(bytes) : null;
     if (m.state !== 'reporting' || m.report !== r) return true; // settled meanwhile (sweep)
     if (sha === null || sha !== r.replaySha256) {
@@ -1473,13 +1485,22 @@ export class ControlPlane {
   /**
    * Settle a match once (later calls are ignored). The store gets the settled row before anything
    * else hears of it (in the DO, with the outbox rows that deliver the outcome, in one transaction).
+   * When the store throws, the match stays as it was and the caller gets the error: the report is
+   * not acked, the sweep or the queue tries again. A match settled only in memory would never be
+   * delivered, and the purge would drop its row as if it had been.
    */
   private finish(m: MatchEntry, o: MatchOutcome): void {
     if (m.state === 'done') return;
+    const was = { state: m.state, outcome: m.outcome, doneAt: m.doneAt };
     m.state = 'done';
     m.outcome = o;
     m.doneAt = this.now();
-    this.o.store?.finished(m, o);
+    try {
+      this.o.store?.finished(m, o);
+    } catch (e) {
+      Object.assign(m, was);
+      throw e;
+    }
     this.log(`match ${m.assign.matchId.slice(0, 8)} -> ${o.kind}${o.kind === 'void' ? ' (' + o.reason + ')' : ''}${m.ledger ? `, ${m.ledger.points} pts` : ''}`);
     try {
       this.o.onOutcome?.(o, m);

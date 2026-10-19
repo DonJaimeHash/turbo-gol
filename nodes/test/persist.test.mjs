@@ -582,7 +582,7 @@ test('one outage is one strike across a restart: the last strike time comes back
 test('every write goes out before the message that depends on it', async () => {
   const log = [];
   const at = (pred) => log.findIndex(pred);
-  const env = await setup({ status: 'active', store: logged(log), onSend: (m) => log.push({ what: 'send', t: m.t }) });
+  const env = await setup({ status: 'active', store: logged(log), onSend: (m) => log.push({ what: 'send', t: m.t }), onOutcome: (o) => log.push({ what: 'outcome', kind: o.kind }) });
   log.length = 0;
   const p = await env.place([human('a'), human('b')], { ranked: true });
   log.push({ what: 'placed' });
@@ -610,12 +610,14 @@ test('every write goes out before the message that depends on it', async () => {
   const verifying = at((x) => x.what === 'save' && x.state === 'verifying');
   assert.ok(verifying >= 0 && verifying < at((x) => x.what === 'send' && x.t === 'ack'), 'queued for verification before the ack');
   assert.ok(at((x) => x.what === 'finished' && x.kind === 'rated') > verifying);
+  assert.ok(at((x) => x.what === 'finished' && x.kind === 'rated') < at((x) => x.what === 'outcome' && x.kind === 'rated'), 'settled before the outcome goes out (in the DO, its outbox rows)');
 
   log.length = 0;
   const q = await env.place([human('c')]);
   await env.send(lost(q.matchId));
   const settled = at((x) => x.what === 'finished' && x.kind === 'void');
   assert.ok(settled >= 0 && settled < at((x) => x.what === 'send' && x.t === 'ack'), 'settled before the ack');
+  assert.ok(settled < at((x) => x.what === 'outcome' && x.kind === 'void'));
 
   // rtc: the offer (the evidence a no-show is judged on) is written before it is relayed.
   const rlog = [];
@@ -645,6 +647,70 @@ test('a match settles once when the sweep voids it while its report is being rea
   assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'no_report');
   assert.equal(log.filter((x) => x.what === 'finished').length, 1);
   assert.equal(env.outcomes.filter((o) => o.matchId === p.matchId).length, 1);
+});
+
+/** A MemoryStore whose next `fail.save` saves and `fail.finished` settlements throw (a full disk). */
+function flaky() {
+  const mem = new MemoryStore();
+  const fail = { save: 0, finished: 0 };
+  const hit = (what) => {
+    if (fail[what] === 0) return;
+    fail[what]--;
+    throw new Error('SQLITE_FULL');
+  };
+  return {
+    mem,
+    fail,
+    node: (n) => mem.node(n),
+    register: (t, n) => mem.register(t, n),
+    tokens: (t) => mem.tokens(t),
+    dropTokens: (h) => mem.dropTokens(h),
+    save: (m) => (hit('save'), mem.save(m)),
+    finished: (m, o) => (hit('finished'), mem.finished(m, o)),
+    drop: (id) => mem.drop(id),
+    rows: () => mem.rows(),
+  };
+}
+
+test('a store that fails while a match settles loses nothing: the next try settles it, once', async () => {
+  const store = flaky();
+  const env = await setup({ store });
+  const acks = () => env.toNode.filter((m) => m.t === 'ack').length;
+  const row = (id) => store.mem.matchRows.get(id).state;
+  const outcomes = (id) => env.outcomes.filter((o) => o.matchId === id).length;
+
+  // A 'lost' report: not acked, and the match waits for its report again.
+  const p = await env.place([human('a')]);
+  store.fail.finished = 1;
+  await assert.rejects(env.send(lost(p.matchId)), /SQLITE_FULL/);
+  const m = env.cp.matches.get(p.matchId);
+  assert.deepEqual([m.state, m.report, m.outcome, row(p.matchId), acks(), outcomes(p.matchId)], ['assigned', null, null, 'assigned', 0, 0]);
+  await env.send(lost(p.matchId)); // the node sends it again
+  assert.deepEqual([m.state, row(p.matchId), acks(), outcomes(p.matchId)], ['done', 'done', 1, 1], 'settled by the copy, not acked and dropped');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+
+  // An 'ended' report whose queueing for verification fails: the copy is verified.
+  const q = await env.place([human('b')]);
+  const { report } = await env.upload(q);
+  store.fail.save = 1;
+  await assert.rejects(env.report(report, { waitDone: false }), /SQLITE_FULL/);
+  const e = env.cp.matches.get(q.matchId);
+  assert.deepEqual([e.state, e.report, row(q.matchId), acks()], ['assigned', null, 'assigned', 1]);
+  await env.report(report);
+  assert.equal(e.outcome.verified, true);
+  assert.deepEqual([row(q.matchId), acks(), outcomes(q.matchId)], ['done', 2, 1]);
+
+  // The sweep voiding a silent node's match: the next sweep does it.
+  const s = await env.place([human('c')]);
+  env.disconnect();
+  env.advance(16_000);
+  store.fail.finished = 1;
+  assert.throws(() => env.cp.sweep(), /SQLITE_FULL/);
+  assert.equal(env.cp.matches.get(s.matchId).state, 'assigned', 'never settled in memory only: the purge would drop its row unsent');
+  env.advance(5_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(s.matchId).outcome.reason, 'node_offline');
+  assert.deepEqual([row(s.matchId), outcomes(s.matchId)], ['done', 1]);
 });
 
 test('settled matches leave the store after the retention', async () => {

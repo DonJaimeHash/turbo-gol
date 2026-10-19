@@ -55,6 +55,7 @@ export const human = (c, extra = {}) => ({ playerId: c.repeat(16), name: c.toUpp
  *   opts.restartGraceMs   the ControlPlane's
  *   opts.channel          the ControlPlane's channel option (default stable = the build, minimum 0.0.0)
  *   opts.onSend(m)        sees every message the control plane sends the node, in order
+ *   opts.onOutcome(o)     sees every outcome as the control plane hands it on
  *   opts.noInline, opts.verify, opts.casualVerifyRate, opts.getDelay (a slow replay store)
  */
 export async function setup(opts = {}) {
@@ -121,7 +122,10 @@ export async function setup(opts = {}) {
         const nonce = new URL(url.replace(/^ws/, 'http')).searchParams.get('nonce');
         return { nodeId: env.nodeId, sig: await sign(nodeKey, reachMessage(env.nodeId, nonce)) };
       },
-      onOutcome: (o) => env.outcomes.push(o),
+      onOutcome: (o) => {
+        env.outcomes.push(o);
+        opts.onOutcome?.(o);
+      },
       store,
       restartGraceMs: opts.restartGraceMs,
       now,
