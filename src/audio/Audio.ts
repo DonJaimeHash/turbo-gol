@@ -7,14 +7,17 @@
  * running, so stale events never pile up and burst out on resume.
  *
  * Continuous layers (driven by `update()`, no allocations):
- *   engine      a virtual V8 (engine.ts: rpm through five gears, load). One oscillator at the
+ *   engine      a virtual V8 (engine.ts: rpm through three gears, load). One oscillator at the
  *               crankshaft frequency whose wave holds the engine orders (4th = firing, plus the
  *               2nd and odd orders that make the burble) + exhaust pulses (noise band-passed near
  *               the firing frequency, amplitude-modulated at it) → soft saturation (drive grows
  *               with load) → lowpass opened by rpm and load. A short dip on each upshift and a
  *               few exhaust pops when the throttle is released at high rpm.
- *   boost       looped noise → lowpass (opened by speed) → gain while boosting
- *   supersonic  looped noise → highpass, airy, fades in near max speed
+ *   boost       a deep roar (noise through two cascaded lowpasses, 24 dB/oct, 300-700 Hz) + a body
+ *               band around 150 Hz + a soft low hum (two saws a fifth apart, 58 / 87 Hz, rising a
+ *               little with speed, lowpassed) → gain while boosting
+ *   supersonic  noise through a wide band around 0.7-1.1 kHz and a lowpass (a full whoosh, no
+ *               hiss), slowly gusting, fades in near max speed
  * One-shots allocate a few nodes each (event-driven, a handful per second at most).
  */
 import type { Team } from '../sim/types';
@@ -76,9 +79,14 @@ export class Audio {
   // Boost roar
   private boostSrc: AudioBufferSourceNode | null = null;
   private boostFilter: BiquadFilterNode | null = null;
+  private boostFilter2: BiquadFilterNode | null = null;
+  private boostHumA: OscillatorNode | null = null;
+  private boostHumB: OscillatorNode | null = null;
   private boostGain: GainNode | null = null;
   // Supersonic wind
   private windSrc: AudioBufferSourceNode | null = null;
+  private windBand: BiquadFilterNode | null = null;
+  private windLfo: OscillatorNode | null = null;
   private windGain: GainNode | null = null;
 
   private volume = 0.7;
@@ -94,6 +102,8 @@ export class Audio {
   private sentEngGain = -1;
   private sentBoostGain = -1;
   private sentBoostFilter = -1;
+  private sentBoostHum = -1;
+  private sentWindBand = -1;
   private sentWind = -1;
   private lastBallHit = -1;
   private lastCarHit = -1;
@@ -221,24 +231,36 @@ export class Audio {
       if (boosting) this.playBoostStart();
       else this.playBoostStop();
     }
-    const boostLevel = boosting ? 0.26 : 0;
+    const boostLevel = boosting ? 0.24 : 0;
     if (edge || changed(boostLevel, this.sentBoostGain)) {
       this.sentBoostGain = boostLevel;
-      this.boostGain!.gain.setTargetAtTime(boostLevel, t, boosting ? 0.03 : 0.025);
+      this.boostGain!.gain.setTargetAtTime(boostLevel, t, boosting ? 0.04 : 0.03);
     }
-    const boostCut = 650 + 1400 * ratio;
+    const boostCut = 320 + 380 * ratio;
     if (changed(boostCut, this.sentBoostFilter)) {
       this.sentBoostFilter = boostCut;
       this.boostFilter!.frequency.setTargetAtTime(boostCut, t, 0.1);
+      this.boostFilter2!.frequency.setTargetAtTime(boostCut, t, 0.1);
+    }
+    const hum = 58 * (1 + 0.25 * ratio);
+    if (changed(hum, this.sentBoostHum)) {
+      this.sentBoostHum = hum;
+      this.boostHumA!.frequency.setTargetAtTime(hum, t, 0.12);
+      this.boostHumB!.frequency.setTargetAtTime(hum * 1.5, t, 0.12);
     }
 
-    // Supersonic wind: airy highpassed noise, with a hint of it from ~85% speed.
+    // Supersonic wind: a full, low whoosh, with a hint of it from ~85% speed.
     let wind = 0;
-    if (state.supersonic) wind = 0.11;
-    else if (ratio > 0.85) wind = (0.04 * (ratio - 0.85)) / 0.15;
+    if (state.supersonic) wind = 0.09;
+    else if (ratio > 0.85) wind = (0.035 * (ratio - 0.85)) / 0.15;
     if (changed(wind, this.sentWind)) {
       this.sentWind = wind;
       this.windGain!.gain.setTargetAtTime(wind, t, 0.15);
+    }
+    const windCentre = 700 + 400 * ratio;
+    if (changed(windCentre, this.sentWindBand)) {
+      this.sentWindBand = windCentre;
+      this.windBand!.frequency.setTargetAtTime(windCentre, t, 0.2);
     }
 
     this.prevBoosting = boosting;
@@ -459,11 +481,11 @@ export class Audio {
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.Q.value = 1.2;
-    filter.frequency.setValueAtTime(260, t);
-    filter.frequency.exponentialRampToValueAtTime(3200, t + 0.14);
-    filter.frequency.exponentialRampToValueAtTime(900, t + 0.32);
+    filter.frequency.setValueAtTime(220, t);
+    filter.frequency.exponentialRampToValueAtTime(1400, t + 0.14);
+    filter.frequency.exponentialRampToValueAtTime(450, t + 0.32);
     const env = ctx.createGain();
-    env.gain.setValueAtTime(0.3, t);
+    env.gain.setValueAtTime(0.32, t);
     env.gain.exponentialRampToValueAtTime(MIN_GAIN, t + 0.32);
     src.connect(filter).connect(env).connect(this.sfx!);
     src.start(t, 0.37);
@@ -488,7 +510,10 @@ export class Audio {
       this.engAm?.stop();
       this.engNoise?.stop();
       this.boostSrc?.stop();
+      this.boostHumA?.stop();
+      this.boostHumB?.stop();
       this.windSrc?.stop();
+      this.windLfo?.stop();
     } catch {
       /* already stopped */
     }
@@ -507,8 +532,13 @@ export class Audio {
     this.engGain = null;
     this.boostSrc = null;
     this.boostFilter = null;
+    this.boostFilter2 = null;
+    this.boostHumA = null;
+    this.boostHumB = null;
     this.boostGain = null;
     this.windSrc = null;
+    this.windBand = null;
+    this.windLfo = null;
     this.windGain = null;
   }
 
@@ -524,7 +554,7 @@ export class Audio {
     const ctx = new AudioContext({ latencyHint: 'interactive' });
     this.ctx = ctx;
     this.sentEngF = this.sentEngBand = this.sentEngNoise = this.sentEngDrive = this.sentEngFilter = this.sentEngGain = -1;
-    this.sentBoostGain = this.sentBoostFilter = this.sentWind = -1;
+    this.sentBoostGain = this.sentBoostFilter = this.sentBoostHum = this.sentWind = this.sentWindBand = -1;
     this.engine.reset();
 
     // Output chain: sfx → master → compressor (gentle limiter so stacked impacts do not clip).
@@ -618,37 +648,89 @@ export class Audio {
     this.engFilter = engFilter;
     this.engGain = engGain;
 
-    // Boost roar: looped noise → lowpass → gain.
+    // Boost: (deep roar + body band + low hum) → gain.
+    const boostGain = ctx.createGain();
+    boostGain.gain.value = 0;
+    boostGain.connect(sfx);
     const boostSrc = ctx.createBufferSource();
     boostSrc.buffer = noise;
     boostSrc.loop = true;
     const boostFilter = ctx.createBiquadFilter();
     boostFilter.type = 'lowpass';
-    boostFilter.frequency.value = 800;
-    boostFilter.Q.value = 0.9;
-    const boostGain = ctx.createGain();
-    boostGain.gain.value = 0;
-    boostSrc.connect(boostFilter).connect(boostGain).connect(sfx);
+    boostFilter.frequency.value = 320;
+    boostFilter.Q.value = 0.6;
+    const boostFilter2 = ctx.createBiquadFilter();
+    boostFilter2.type = 'lowpass';
+    boostFilter2.frequency.value = 320;
+    boostFilter2.Q.value = 0.6;
+    const roar = ctx.createGain();
+    roar.gain.value = 1.4;
+    boostSrc.connect(boostFilter).connect(boostFilter2).connect(roar).connect(boostGain);
+    const body = ctx.createBiquadFilter();
+    body.type = 'bandpass';
+    body.frequency.value = 150;
+    body.Q.value = 1.3;
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.value = 1.6;
+    boostSrc.connect(body).connect(bodyGain).connect(boostGain);
+    const humFilter = ctx.createBiquadFilter();
+    humFilter.type = 'lowpass';
+    humFilter.frequency.value = 260;
+    humFilter.Q.value = 0.7;
+    const humGain = ctx.createGain();
+    humGain.gain.value = 0.3;
+    humFilter.connect(humGain).connect(boostGain);
+    const humA = ctx.createOscillator();
+    humA.type = 'sawtooth';
+    humA.frequency.value = 58;
+    const humB = ctx.createOscillator();
+    humB.type = 'sawtooth';
+    humB.frequency.value = 87;
+    humB.detune.value = 4;
+    const humBGain = ctx.createGain();
+    humBGain.gain.value = 0.6;
+    humA.connect(humFilter);
+    humB.connect(humBGain).connect(humFilter);
     boostSrc.start();
+    humA.start();
+    humB.start();
     this.boostSrc = boostSrc;
     this.boostFilter = boostFilter;
+    this.boostFilter2 = boostFilter2;
+    this.boostHumA = humA;
+    this.boostHumB = humB;
     this.boostGain = boostGain;
 
-    // Supersonic wind: looped noise → highpass → gain.
+    // Supersonic wind: looped noise → wide band → lowpass → gust (0.75 ± 0.25 at 0.7 Hz) → gain.
     const windSrc = ctx.createBufferSource();
     windSrc.buffer = noise;
     windSrc.loop = true;
     windSrc.loopStart = 0.5; // offset so it does not phase-lock with the boost layer
     windSrc.loopEnd = 2;
-    const windFilter = ctx.createBiquadFilter();
-    windFilter.type = 'highpass';
-    windFilter.frequency.value = 2800;
-    windFilter.Q.value = 0.5;
+    const windBand = ctx.createBiquadFilter();
+    windBand.type = 'bandpass';
+    windBand.frequency.value = 700;
+    windBand.Q.value = 0.45;
+    const windLow = ctx.createBiquadFilter();
+    windLow.type = 'lowpass';
+    windLow.frequency.value = 1800;
+    windLow.Q.value = 0.5;
+    const gust = ctx.createGain();
+    gust.gain.value = 0.75;
+    const windLfo = ctx.createOscillator();
+    windLfo.type = 'sine';
+    windLfo.frequency.value = 0.7;
+    const gustDepth = ctx.createGain();
+    gustDepth.gain.value = 0.25;
+    windLfo.connect(gustDepth).connect(gust.gain);
     const windGain = ctx.createGain();
     windGain.gain.value = 0;
-    windSrc.connect(windFilter).connect(windGain).connect(sfx);
+    windSrc.connect(windBand).connect(windLow).connect(gust).connect(windGain).connect(sfx);
     windSrc.start(0, 0.5);
+    windLfo.start();
     this.windSrc = windSrc;
+    this.windBand = windBand;
+    this.windLfo = windLfo;
     this.windGain = windGain;
   }
 

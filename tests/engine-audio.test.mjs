@@ -31,8 +31,8 @@ test('accelerating with the throttle: the rpm climbs in each gear and drops on e
   // The throttle-only speed curve: v = 1410 (1 - e^-1.13t).
   const s = run(m, 5, (t) => 1410 * (1 - Math.exp(-1.13 * t)), 1);
   const shifts = s.filter((x) => x.shifted);
-  assert.equal(shifts.length, 3, 'three upshifts on the way to 1410 uu/s');
-  assert.equal(s[s.length - 1].gear, 3, '4th gear at the throttle-limited top speed');
+  assert.equal(shifts.length, 2, 'two upshifts on the way to 1410 uu/s');
+  assert.equal(s[s.length - 1].gear, 2, '3rd (top) gear at the throttle-limited top speed');
   for (const sh of shifts) {
     const i = s.indexOf(sh);
     const peak = s[i - 1].rpm;
@@ -41,27 +41,27 @@ test('accelerating with the throttle: the rpm climbs in each gear and drops on e
   }
   for (const x of s) assert.ok(x.rpm >= E.IDLE_RPM && x.rpm <= E.REDLINE_RPM && Number.isFinite(x.load));
   const cruise = s[s.length - 1];
-  assert.ok(cruise.rpm > 3900 && cruise.rpm < 5000, `cruise rpm ${Math.round(cruise.rpm)} (mid-range, no droning redline)`);
+  assert.ok(cruise.rpm > 3500 && cruise.rpm < 4500, `cruise rpm ${Math.round(cruise.rpm)} (low in 3rd, no droning redline)`);
   assert.ok(cruise.load < 0.75, `cruising at top speed is a light load (${cruise.load.toFixed(2)})`);
   assert.ok(Math.max(...s.slice(0, 30).map((x) => x.load)) > 0.9, 'pulling away is a full load');
 });
 
-test('boost reaches 5th gear with full load', () => {
+test('boost pulls 3rd gear toward the redline with full load', () => {
   const m = new E.EngineModel();
   const s = run(m, 3, (t) => Math.min(2300, 1410 + 900 * t), 1, true, true);
   const last = s[s.length - 1];
-  assert.equal(last.gear, 4);
+  assert.equal(last.gear, 2);
   assert.equal(last.load, 1);
   assert.ok(last.rpm > 5500);
 });
 
 test('slowing down shifts down without hunting at a gear boundary', () => {
   const m = new E.EngineModel();
-  run(m, 3, () => 1300, 1); // settle in 4th
-  assert.equal(m.gear, 3);
-  // Hover just under the 4th gear start (1250): inside the hysteresis band, no shift either way.
+  run(m, 3, () => 1300, 1); // settle in 3rd
+  assert.equal(m.gear, 2);
+  // Hover just under the 3rd gear start (1250): inside the hysteresis band, no shift either way.
   const hover = run(m, 1, (t) => 1230 + 10 * Math.sin(t * 20), 0);
-  assert.ok(hover.every((x) => x.gear === 3), 'stays in 4th inside the hysteresis band');
+  assert.ok(hover.every((x) => x.gear === 2), 'stays in 3rd inside the hysteresis band');
   run(m, 2, (t) => Math.max(0, 1100 - 600 * t), 0);
   assert.equal(m.gear, 0, 'back in 1st at a standstill');
 });

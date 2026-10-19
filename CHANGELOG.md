@@ -26,8 +26,9 @@ All notable changes to Turbogol are documented here. The format follows
 - Spanish is neutral Latin American Spanish (tú) instead of rioplatense, in the game, the server's
   messages and README.es.md.
 - The engine sounds like a combustion engine instead of an electric whine: a V8-like rumble with
-  five virtual gears (it shifts as the car speeds up), free revs in the air, more growl under load
-  and a few exhaust pops when the throttle is released at high rpm.
+  three virtual gears (it shifts as the car speeds up), free revs in the air, more growl under load
+  and a few exhaust pops when the throttle is released at high rpm. The boost is a deep roar with a
+  soft low hum and the supersonic wind a full, low whoosh, instead of high-pitched hiss.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
 

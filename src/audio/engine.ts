@@ -2,7 +2,7 @@
  * The engine-sound model: a virtual combustion engine driven by the car's speed and inputs. Pure
  * (no Web Audio, runs in node: tests/engine-audio.test.mjs); Audio.ts turns its output into sound.
  *
- * A V8-like engine with five virtual gears. On the ground the rpm follows the wheel speed through
+ * A V8-like engine with three virtual gears. On the ground the rpm follows the wheel speed through
  * the current gear and drops when it shifts up; at a standstill the throttle revs it a little
  * (clutch slip); in the air the wheels spin free, so the throttle revs it toward FREE_REV_RPM. The
  * rpm slews at a limited rate, which is what makes a shift sound like one. `load` (0..1) is how
@@ -11,8 +11,8 @@
  * is the brake (RocketSim brakes with it until the car stops): no load, no clutch slip.
  *
  * Gears are laid out so the speed most of a match is played at (MAX_DRIVE_SPEED 1410 uu/s, full
- * throttle without boost) sits mid-range in 4th (~4200 rpm) rather than at a droning redline; 5th
- * is only reached with boost. Speeds are uu/s, |speed| (reversing uses the same gears).
+ * throttle without boost) sits low in 3rd (~3900 rpm) rather than at a droning redline; boost then
+ * pulls 3rd up toward the redline. Speeds are uu/s, |speed| (reversing uses the same gears).
  */
 
 export const IDLE_RPM = 850;
@@ -36,10 +36,8 @@ const CRUISE_LOAD = 0.55;
 /** [start speed, rpm at the start, rpm at the end] per gear; each gear ends where the next starts. */
 const GEARS: readonly (readonly [number, number, number])[] = [
   [0, IDLE_RPM, 5400],
-  [500, 3300, 5600],
-  [900, 3500, 5700],
-  [1250, 3600, 5600],
-  [1800, 4200, 5900],
+  [550, 3200, 5600],
+  [1250, 3500, 5900],
 ];
 const TOP_SPEED = 2300;
 
