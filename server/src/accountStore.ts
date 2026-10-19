@@ -18,11 +18,14 @@
  *   ranked_players   per player of a ranked match: before / after, outcome, ban started
  *   abandons, bans   ranked abandon history (24 h window) and the queue ban it causes
  *   ranked_locks     a player's live ranked match (one at a time across every region matchmaker)
+ *   training         (user, pack) -> best run of a training pack (src/game/trainingRecords.ts)
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
 import { PLAYLISTS, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
+import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
+import type { TrainingRecords } from '../../src/game/trainingRecords';
 
 export type SqlValue = ArrayBuffer | string | number | null;
 export type Row = Record<string, SqlValue>;
@@ -162,6 +165,9 @@ export class AccountStore {
     s.exec('CREATE INDEX IF NOT EXISTS abandons_user ON abandons(user_id, at)');
     s.exec('CREATE TABLE IF NOT EXISTS bans (user_id TEXT PRIMARY KEY, until INTEGER NOT NULL)');
     s.exec('CREATE TABLE IF NOT EXISTS ranked_locks (user_id TEXT PRIMARY KEY, match_id TEXT NOT NULL, region TEXT NOT NULL, until INTEGER NOT NULL)');
+    s.exec(`CREATE TABLE IF NOT EXISTS training (
+      user_id TEXT NOT NULL, pack_id TEXT NOT NULL, best INTEGER NOT NULL, shots INTEGER NOT NULL,
+      completed_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, pack_id))`);
   }
 
   // ---- users ------------------------------------------------------------------------------------
@@ -536,6 +542,42 @@ export class AccountStore {
       }
     }
     return { playlist, season: SEASON, entries, you, total: num(totalRow?.n) };
+  }
+
+  // ---- training -----------------------------------------------------------------------------------
+
+  /** The account's best run per training pack ({} for an account without any). */
+  trainingRecords(userId: string): TrainingRecords {
+    const raw: Record<string, unknown> = {};
+    for (const r of this.sql.exec('SELECT pack_id, best, shots, completed_at FROM training WHERE user_id = ? ORDER BY pack_id', userId).toArray()) {
+      raw[str(r.pack_id)] = { best: num(r.best), shots: num(r.shots), completedAt: num(r.completed_at) };
+    }
+    return parseTrainingRecords(raw);
+  }
+
+  /**
+   * Merge `incoming` (already parsed) into the account's records, keeping the better record per
+   * pack (mergeTrainingRecords, the client's rule); dates from the future are clamped to `now`.
+   * Only changed packs are written. Returns the account's records after the merge, or 'no_user'.
+   */
+  mergeTraining(userId: string, incoming: TrainingRecords, now: number): TrainingRecords | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      const clamped: TrainingRecords = {};
+      for (const id of Object.keys(incoming)) {
+        const r = incoming[id];
+        clamped[id] = { best: r.best, shots: r.shots, completedAt: Math.min(now, r.completedAt ?? 0) };
+      }
+      const current = this.trainingRecords(userId);
+      const merged = mergeTrainingRecords(current, clamped);
+      for (const id of Object.keys(merged)) {
+        const a = current[id];
+        const b = merged[id];
+        if (a !== undefined && a.best === b.best && a.shots === b.shots && a.completedAt === b.completedAt) continue;
+        this.sql.exec('INSERT OR REPLACE INTO training (user_id, pack_id, best, shots, completed_at) VALUES (?, ?, ?, ?, ?)', userId, id, b.best, b.shots, b.completedAt ?? 0);
+      }
+      return merged;
+    });
   }
 
   /** Daily cleanup: expired refresh tokens, locks and bans, old abandons and ranked results. */

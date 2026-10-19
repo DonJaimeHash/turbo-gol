@@ -7,6 +7,9 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Training records follow the account: a signed-in player's best run per pack is saved on the
+  server and shows on every device; a guest's stay in the browser and move into the account at the
+  first sign-in.
 - Demolished cars explode: a fireball with flames, team-coloured sparks, falling embers, a ground
   shockwave and a flash, with its own explosion sound (quieter far from the camera). Every car,
   in every kind of match.

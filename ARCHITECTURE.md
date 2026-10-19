@@ -142,7 +142,9 @@ src/game/
                         + landing grace, judging per category (saving: cleared 1 s after the
                         last touch), attempts,
                         next / previous / reset, pack summary
-  trainingRecords.ts    best run per pack in localStorage (validated on load)
+  trainingRecords.ts    best run per pack: validation and merge rules (shared with server/), storage
+  trainingStore.ts      guest records in this browser, an account's synced with /api/me/training (local
+                        copy, guest records move into the first account)
   (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick)
 src/ui/                 the front-end menus, styled by menu.css (mn-)
   Menu.ts               controller: top bar (breadcrumb, region / players online, account chip),
@@ -178,7 +180,7 @@ src/net/
   rating.ts             Weng-Lin (OpenSkill) Bradley-Terry team rating, abandon rules, tiers,
                         placement, MMR scale, abandon ban ladder (shared with server/)
   AccountClient.ts      sign in / up / recover / OAuth redirects, 1 h Bearer refreshed from the
-                        HttpOnly cookie, /api/me, leaderboard, ranked result polling
+                        HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling
   LobbyClient.ts        custom lobbies: list / create / join by code, the lobby socket (state,
                         match result per member, back, kick, settings)
   p2p/                  phase 2: peer-to-peer deterministic rollback (docs/online/PHASE2.md)
@@ -232,7 +234,7 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         refresh tokens, ratings, ranked results / abandons / bans / locks, login
                         throttle, daily prune
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
-                        recovery codes, Google / Discord OAuth with PKCE), /api/me, leaderboard,
+                        recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training, leaderboard,
                         ranked result; server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
                         admit (password, kick list), start through the matchmaker's /custom

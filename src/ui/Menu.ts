@@ -22,6 +22,7 @@ import { playlistName, regionName, tierName } from './names';
 import { t } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
+import type { TrainingRecordsView } from '../game/trainingStore';
 import type { PopulationAnswer, RegionId } from '../net/account';
 import { REGIONS, isRegion } from '../net/account';
 import type { QueueResult } from '../net/protocol';
@@ -64,6 +65,8 @@ export interface MenuConfig {
 export interface MenuHost {
   readonly accounts: AccountClient;
   readonly lobby: LobbyClient;
+  /** Training records of the current player (guest: this browser; account: synced with the server). */
+  readonly training: TrainingRecordsView;
   config(): Promise<MenuConfig>;
   /** The guest name (online as a guest) and its setter. */
   guestName(): string;
