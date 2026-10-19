@@ -55,11 +55,13 @@ All notable changes to Turbogol are documented here. The format follows
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
 - Community nodes: the VPS installer can be run again (no token: it upgrades the launcher and keeps
-  the node's identity and settings), restores a backed-up identity with `--restore`, checks that a
-  DNS name points to the machine before spending the token, takes `--matches`, and gives a name a
-  90-day certificate (the 6-day one only for an IP) with live matches kept through a Caddy reload.
-  Replay uploads keep trying for about 75 s, and the launcher keeps the installed version when a
-  release needs a newer Node.js.
+  the node's identity and settings) and restores a backed-up identity with `--restore`. Before it
+  spends the token it checks that the public address is this machine's (a DNS name's A and AAAA
+  records included) and that the Caddy config is its own to replace. It takes `--matches` (`auto`
+  goes back to the benchmark) and gives a name a 90-day certificate (the 6-day one only for an IP)
+  with live matches kept through a Caddy reload. Replay uploads keep trying for about 75 s, and the
+  launcher never starts a release that needs a newer Node.js than the machine has: it logs why, and
+  the node does not serve until Node.js is upgraded.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and

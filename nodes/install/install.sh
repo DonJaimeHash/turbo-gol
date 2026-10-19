@@ -5,7 +5,7 @@
 #        [--name <name>] [--roles host|verify|host,verify] [--transport wss|rtc]
 #   (verify: only the project's own nodes may verify matches for now; a community token is refused)
 #        [--public-host <ip or name>] [--allow-proxied] [--uplink-mbps <n>] [--egress-cap-gb <n>]
-#        [--matches <n>]
+#        [--matches <n>|auto]
 #
 #   --transport wss (default): players connect to this machine over HTTPS (ports 80/443), on its
 #                    public IP or on the name given with --public-host.
@@ -13,9 +13,16 @@
 #                    TURN), no Caddy, no firewall changes. Home PCs use install-windows.ps1 or
 #                    install-desktop.sh instead.
 #   --public-host <name>: a DNS name for this machine. Before the token is spent, its A record must
-#                    lead to this machine's public IPv4; --allow-proxied also accepts Cloudflare's
-#                    proxy in front of it (SSL mode "Full (strict)").
-#   --matches <n>:   how many matches at a time, instead of the CPU benchmark's estimate.
+#                    lead to this machine (the public IPv4 the control plane sees, or one on its
+#                    network interfaces), and so must its AAAA record if it has one; --allow-proxied
+#                    also accepts Cloudflare's proxy in front of it (SSL mode "Full (strict)"). An
+#                    IP address given here must be one of this machine's.
+#   --matches <n>:   how many matches at a time, instead of the CPU benchmark's estimate; auto
+#                    goes back to the benchmark.
+#
+# Caddy is the node's own: the installer replaces /etc/caddy/Caddyfile on every run, and stops
+# before the token is spent when that file is one it did not write (other than the Caddy
+# package's example).
 #
 # Running it again is safe: with /var/lib/turbogol-node/node.json in place it needs no token and
 # registers nothing. It upgrades the launcher and rewrites the service and the Caddy config; when
@@ -25,6 +32,8 @@
 # node.json.
 #   --restore <node.json>: install a backed-up identity (a new machine, or a reinstalled one)
 #                    instead of registering. No token; a DNS name must point to the new machine.
+#                    An identity registered on an IP address works only on a machine with that
+#                    address: anywhere else, register again.
 #
 # What it does (and nothing else):
 #   1. Node.js 24 (NodeSource) and Caddy (official repo) if missing
@@ -44,7 +53,7 @@
 # Back up:   /var/lib/turbogol-node/node.json (the node's key) somewhere safe, for --restore.
 # Uninstall: systemctl disable --now turbogol-node (the same wait); rm -rf /opt/turbogol-node
 #            /var/lib/turbogol-node /etc/systemd/system/turbogol-node.service; userdel turbogol;
-#            (and Caddy if you do not use it for anything else)
+#            apt-get purge caddy (or keep it and write your own /etc/caddy/Caddyfile)
 set -euo pipefail
 
 # Filled in by scripts/build-node.mjs from the release key (never fetched from the network).
@@ -79,59 +88,120 @@ apt_update() {
   die "apt-get update: the package lists stayed locked for 5 minutes (another update is running)"
 }
 
+# Dotted decimal with no leading zeros: Go (Caddy) refuses 010.0.0.1, and inet_aton would read it
+# as octal.
 is_ipv4() {
   local IFS=. o
-  [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  [[ "$1" =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]] || return 1
   for o in $1; do [ "$o" -le 255 ] || return 1; done
 }
-is_ipv6() { [[ "$1" == *:*:* && "$1" =~ ^[0-9A-Fa-f:.]+$ ]]; }
+# Eight groups of 1 to 4 hex digits, or fewer around a single "::" (no dotted IPv4 tail). A typo
+# that passed would reach Caddy as a host name and the control plane as the node's address.
+is_ipv6() {
+  local a=$1 g n=0 max=8 IFS=:
+  [[ "$a" =~ ^[0-9A-Fa-f:]{2,39}$ ]] || return 1
+  case "$a" in *::*::* | *:::*) return 1 ;; esac
+  # A colon at either end only as part of "::".
+  [[ "$a" != :* || "$a" == ::* ]] && [[ "$a" != *: || "$a" == *:: ]] || return 1
+  if [[ "$a" == *::* ]]; then max=7; a=${a/::/:}; a=${a#:}; a=${a%:}; fi
+  for g in $a; do
+    [[ "$g" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+    n=$((n + 1))
+  done
+  if [ "$max" = 8 ]; then [ "$n" = 8 ]; else [ "$n" -le 7 ]; fi
+}
 is_ip() { is_ipv4 "$1" || is_ipv6 "$1"; }
+# One spelling of an IPv6 address (lower case, zeros compressed), the one `ip` and DNS answers
+# use, so that comparing them does not depend on how it was typed. Needs Node.js.
+canon_ipv6() { node -p 'new URL("http://[" + process.argv[1] + "]").hostname.slice(1, -1)' "$1"; }
 # A DNS name with at least one dot; no port, no scheme, nothing Caddy would read as syntax.
 is_dns_name() { [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; }
 
-ipv4_int() {
+# The IPv4 address $1 as a 32-bit number, in REPLY: no subshell, as it runs once per network checked.
+ipv4_num() {
   local IFS=.
   # shellcheck disable=SC2086
   set -- $1
-  echo $(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
+  REPLY=$(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
 }
 
-# Cloudflare's proxy addresses (https://www.cloudflare.com/ips-v4/): a proxied DNS record answers
-# with these instead of this machine's address.
-CLOUDFLARE_V4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18
-108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15
-104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
-is_cloudflare_v4() {
+# 0 when the IPv4 address $1 is in one of the networks $2 (CIDR, whitespace-separated).
+in_v4_nets() {
   local n net mask
-  n=$(ipv4_int "$1")
-  for net in $CLOUDFLARE_V4; do
+  ipv4_num "$1"; n=$REPLY
+  for net in $2; do
     mask=$(( (0xFFFFFFFF << (32 - ${net#*/})) & 0xFFFFFFFF ))
-    [ $(( n & mask )) -eq $(( $(ipv4_int "${net%/*}") & mask )) ] && return 0
+    ipv4_num "${net%/*}"
+    [ $(( n & mask )) -eq $(( REPLY & mask )) ] && return 0
   done
   return 1
 }
+# The same for an IPv6 address. Needs Node.js (net.BlockList does the prefix arithmetic).
+in_v6_nets() {
+  node -e '
+    const list = new (require("net").BlockList)();
+    for (const c of process.argv[2].trim().split(/\s+/)) list.addSubnet(c.split("/")[0], Number(c.split("/")[1]), "ipv6");
+    process.exit(list.check(process.argv[1], "ipv6") ? 0 : 1);
+  ' "$1" "$2"
+}
 
-# Does a name whose DNS answers are $1 (IPv4 addresses, whitespace-separated) lead to this machine,
-# whose public IPv4 is $2? Prints why not and fails. $3 = 1 (--allow-proxied) accepts Cloudflare's
-# proxy addresses too.
+# Cloudflare's proxy addresses (https://www.cloudflare.com/ips-v4/ and /ips-v6/): a proxied DNS
+# record answers with these instead of this machine's address.
+CLOUDFLARE_V4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18
+108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15
+104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
+CLOUDFLARE_V6="2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32
+2a06:98c0::/29 2c0f:f248::/32"
+is_cloudflare_v4() { in_v4_nets "$1" "$CLOUDFLARE_V4"; }
+is_cloudflare() {
+  if is_ipv4 "$1"; then is_cloudflare_v4 "$1"; else is_ipv6 "$1" && in_v6_nets "$1" "$CLOUDFLARE_V6"; fi
+}
+# Not reachable from the internet: a DNS record must not lead to these even when this machine has one.
+PRIVATE_V4="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16"
+
+# This machine's public addresses of IP version $1 (4 or 6), space-separated: $2 (the IPv4 the
+# control plane sees, if known) first, then the ones on its network interfaces, so that an extra
+# or failover address bound here counts too. Private ones (and IPv6 ULAs) are left out.
+here_ips() {
+  local a list=${2:-}
+  for a in $(ip -"$1" -o addr show scope global 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }'); do
+    if [ "$1" = 4 ]; then
+      is_ipv4 "$a" && ! in_v4_nets "$a" "$PRIVATE_V4" || continue
+    else
+      is_ipv6 "$a" && [[ ! "$a" =~ ^f[cd][0-9a-f]{2}: ]] || continue
+    fi
+    case " $list " in *" $a "*) ;; *) list="${list:+$list }$a" ;; esac
+  done
+  echo "$list"
+}
+
+# Does a name whose DNS answers are $1 (addresses of one IP version, whitespace-separated) lead to
+# this machine, whose public addresses of that version are $2 (space-separated, from here_ips)?
+# Prints why not and fails. $3 = 1 (--allow-proxied) accepts Cloudflare's proxy addresses too.
 dns_leads_here() {
-  local a other="" proxied=""
+  local a other="" proxied="" here=${2// /, }
   [ -n "$1" ] || { echo "it has no IPv4 address (A record) in DNS"; return 1; }
   for a in $1; do
-    if [ "$a" = "$2" ]; then continue; fi
-    if is_ipv4 "$a" && is_cloudflare_v4 "$a"; then proxied="$proxied $a"; else other="$other $a"; fi
+    case " $2 " in *" $a "*) continue ;; esac
+    if is_cloudflare "$a"; then proxied="$proxied $a"; else other="$other $a"; fi
   done
-  if [ -n "$other" ]; then echo "it resolves to ${other# }, not to this machine ($2)"; return 1; fi
+  if [ -n "$other" ]; then
+    if [ -n "$2" ]; then echo "it resolves to ${other# }, not to this machine ($here)"; else echo "it resolves to ${other# }, and this machine has no public address of that IP version"; fi
+    return 1
+  fi
   if [ -n "$proxied" ] && [ "$3" != 1 ]; then
-    echo "it resolves to Cloudflare's proxy (${proxied# }), not to this machine ($2): set the record to 'DNS only', or pass --allow-proxied if the proxy is meant to stay (SSL mode 'Full (strict)')"
+    echo "it resolves to Cloudflare's proxy (${proxied# }), not to this machine ($here): set the record to 'DNS only', or pass --allow-proxied if the proxy is meant to stay (SSL mode 'Full (strict)')"
     return 1
   fi
 }
 
-# The IPv4 addresses DNS gives for $1. Not /etc/hosts first: it may map this machine's own name to
-# 127.0.1.1. (Falls back to the system's usual lookup if the dns-only one is not available.)
-dns_ipv4() {
-  { getent -s dns ahostsv4 "$1" 2>/dev/null || getent ahostsv4 "$1" 2>/dev/null || true; } | awk '{ print $1 }' | sort -u
+# The addresses of IP version $1 (4 or 6) that DNS gives for the name $2, one per line; nothing
+# when it has none (getent exits 2). DNS only (-s dns): /etc/hosts may map this machine's own name
+# to 127.0.1.1, and a name only /etc/hosts knows leads nowhere for players or Let's Encrypt.
+# ahostsv6 answers a name with no AAAA record with its A records mapped (::ffff:a.b.c.d): those
+# are left out.
+dns_ips() {
+  { getent -s dns "ahostsv$1" "$2" 2>/dev/null || true; } | awk '$1 !~ /^::ffff:[0-9.]+$/ { print $1 }' | sort -u
 }
 
 # 0 when the version in $1 (the output of `caddy version`, "v2.10.2 h1:...") is at least $2.$3.
@@ -179,14 +249,27 @@ EOF
 }
 
 # What a node.json holds, on one line: "nodeId roles transports publicUrl" (lists comma-separated,
-# "-" for none). Nothing when it is not a node identity. Needs Node.js.
+# "-" for none). The transports are read as the node reads them (transportsOf, node/runtime.ts):
+# an older node.json has none, and a host's is then wss when it has a public URL, else rtc.
+# Nothing when it is not a node identity. Needs Node.js.
 identity_of() {
   node -e '
     const j = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
     const list = (a) => (Array.isArray(a) && a.length > 0 ? a.join(",") : "-");
     const ok = typeof j.nodeId === "string" && /^[A-Za-z0-9_-]+$/.test(j.nodeId) && typeof j.privateKey === "string" && Array.isArray(j.roles);
-    if (ok) console.log([j.nodeId, list(j.roles), list(j.transports), j.publicUrl || "-"].join(" "));
+    const transports = !ok || !j.roles.includes("host") ? [] : Array.isArray(j.transports) && j.transports.length > 0 ? j.transports : j.publicUrl ? ["wss"] : ["rtc"];
+    if (ok) console.log([j.nodeId, list(j.roles), list(transports), j.publicUrl || "-"].join(" "));
   ' "$1" 2>/dev/null || true
+}
+
+# 0 when the Caddyfile $1 may be replaced: there is none, this installer wrote it, or it is the
+# Caddy package's example as installed (the checksum dpkg keeps for that file).
+caddyfile_replaceable() {
+  local sum
+  [ -f "$1" ] || return 0
+  [[ "$(head -n 1 "$1")" != "# Generated by the Turbogol node installer"* ]] || return 0
+  sum=$({ dpkg-query -W -f='${Conffiles}\n' caddy 2>/dev/null || true; } | awk -v f="$1" '$1 == f { print $2 }')
+  [ -n "$sum" ] && [ "$(md5sum < "$1" | cut -d ' ' -f 1)" = "$sum" ]
 }
 
 # "verify,host" and "host,verify" are the same roles.
@@ -200,10 +283,12 @@ unit_run_arg() {
 }
 
 # Install $1 as $2 (mode $3, owner $4, root by default) when it differs from what is there; true
-# when it did. $1 is consumed either way.
+# when it did. $1 is consumed either way. install(1) unlinks $2 before it writes, so a link left
+# at $2 is replaced, not followed. Callers test the result in an `if`, where set -e stops nothing:
+# a failed write dies here.
 put_file() {
   if cmp -s "$1" "$2"; then rm -f "$1"; return 1; fi
-  install -m "$3" -o "${4:-root}" -g "${4:-root}" "$1" "$2"
+  install -m "$3" -o "${4:-root}" -g "${4:-root}" "$1" "$2" || { rm -f "$1"; die "could not write $2"; }
   rm -f "$1"
 }
 
@@ -249,7 +334,7 @@ else
 fi
 [ -z "$ROLES" ] || [[ "$ROLES" =~ ^(host|verify|host,verify|verify,host)$ ]] || die "--roles: host, verify or host,verify"
 [ -z "$TRANSPORT" ] || [[ "$TRANSPORT" =~ ^(wss|rtc)$ ]] || die "--transport: wss or rtc"
-[ -z "$MATCHES" ] || { [[ "$MATCHES" =~ ^[0-9]{1,3}$ ]] && [ "$MATCHES" -ge 1 ] && [ "$MATCHES" -le 200 ]; } || die "--matches: a whole number from 1 to 200"
+[ -z "$MATCHES" ] || [ "$MATCHES" = auto ] || { [[ "$MATCHES" =~ ^[0-9]{1,3}$ ]] && [ "$MATCHES" -ge 1 ] && [ "$MATCHES" -le 200 ]; } || die "--matches: a whole number from 1 to 200, or auto (the CPU benchmark's estimate)"
 [ -z "$UPLINK" ] || [[ "$UPLINK" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "--uplink-mbps: a number"
 [ -z "$EGRESS" ] || [[ "$EGRESS" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "--egress-cap-gb: a number"
 PUBLIC_HOST=${PUBLIC_HOST#\[}; PUBLIC_HOST=${PUBLIC_HOST%\]}
@@ -274,6 +359,7 @@ if [ "$NODE_MAJOR" -lt 24 ]; then
   curl -fsSL https://deb.nodesource.com/setup_24.x | bash - >/dev/null
   apt_get install -y -qq nodejs >/dev/null
 fi
+if is_ipv6 "$PUBLIC_HOST"; then PUBLIC_HOST=$(canon_ipv6 "$PUBLIC_HOST"); fi
 
 if [ "$REGISTER" = 1 ]; then
   ROLES=${ROLES:-host}
@@ -295,6 +381,7 @@ else
   TRANSPORT=$ID_TRANSPORT
   if [ "$ID_URL" != - ]; then
     ID_HOST=${ID_URL#wss://}; ID_HOST=${ID_HOST%%/*}; ID_HOST=${ID_HOST#\[}; ID_HOST=${ID_HOST%\]}
+    if is_ipv6 "$ID_HOST"; then ID_HOST=$(canon_ipv6 "$ID_HOST"); fi
     [ -z "$PUBLIC_HOST" ] || [ "$PUBLIC_HOST" = "$ID_HOST" ] || fixed "the public address" "$ID_URL" --public-host
     PUBLIC_HOST=$ID_HOST
   fi
@@ -308,6 +395,9 @@ else
     fi
   done
 fi
+# auto: no --matches for the node, which then goes by its CPU benchmark (a re-run drops the
+# installed value this way).
+if [ "$MATCHES" = auto ]; then MATCHES=""; fi
 
 HOSTING=0
 case "$ROLES" in *host*) HOSTING=1 ;; esac
@@ -319,19 +409,43 @@ if [ "$WSS" = 1 ]; then
   # -4: a dual-stack machine would reach the (proxied) control plane over IPv6 and get that address
   # back, while players and the A record use IPv4.
   MY_IPV4=$(curl -4 -fsS --max-time 20 "$CONTROL/nodes/whoami" 2>/dev/null | sed -n 's/.*"ip" *: *"\([^"]*\)".*/\1/p' || true)
+  is_ipv4 "$MY_IPV4" || MY_IPV4=""
   if [ -z "$PUBLIC_HOST" ]; then
-    is_ipv4 "$MY_IPV4" || die "could not detect the public IPv4 ($CONTROL/nodes/whoami): pass --public-host"
+    [ -n "$MY_IPV4" ] || die "could not detect the public IPv4 ($CONTROL/nodes/whoami): pass --public-host"
     PUBLIC_HOST=$MY_IPV4
   fi
   is_ip "$PUBLIC_HOST" || is_dns_name "$PUBLIC_HOST" || die "the public address $PUBLIC_HOST is not an IP address or a DNS name"
-  if ! is_ip "$PUBLIC_HOST"; then
+  if is_ip "$PUBLIC_HOST"; then
+    # An address must be this machine's. A restored identity, or a re-run after the provider
+    # changed the address, would otherwise keep sending players (and Let's Encrypt) to the old one.
+    if is_ipv4 "$PUBLIC_HOST"; then HERE=$(here_ips 4 "$MY_IPV4"); else HERE=$(here_ips 6); fi
+    case " $HERE " in
+      *" $PUBLIC_HOST "*) ;;
+      *)
+        [ -n "$HERE" ] || die "could not get this machine's public address (from $CONTROL/nodes/whoami or its network interfaces) to check $PUBLIC_HOST"
+        [ "$REGISTER" = 0 ] || die "--public-host $PUBLIC_HOST is not an address of this machine (${HERE// /, })"
+        die "this node's identity is bound to $PUBLIC_HOST, and this machine is ${HERE// /, }: players would be sent to the old address. Register this machine again with a new token (move $DATA/node.json away first)"
+        ;;
+    esac
+  else
     say "DNS: $PUBLIC_HOST"
-    is_ipv4 "$MY_IPV4" || die "could not get this machine's public IPv4 from $CONTROL/nodes/whoami to check $PUBLIC_HOST"
-    WHY=$(dns_leads_here "$(dns_ipv4 "$PUBLIC_HOST")" "$MY_IPV4" "$ALLOW_PROXIED") || die "$PUBLIC_HOST does not lead here: $WHY"
+    HERE=$(here_ips 4 "$MY_IPV4")
+    [ -n "$HERE" ] || die "could not get this machine's public IPv4 (from $CONTROL/nodes/whoami or its network interfaces) to check $PUBLIC_HOST"
+    WHY=$(dns_leads_here "$(dns_ips 4 "$PUBLIC_HOST")" "$HERE" "$ALLOW_PROXIED") || die "$PUBLIC_HOST does not lead here: $WHY"
+    # An AAAA record is optional, but where there is one Let's Encrypt and IPv6 players use it: it
+    # must lead here too (a stale one often still names the previous server).
+    AAAA=$(dns_ips 6 "$PUBLIC_HOST")
+    if [ -n "$AAAA" ]; then
+      WHY=$(dns_leads_here "$AAAA" "$(here_ips 6)" "$ALLOW_PROXIED") || die "$PUBLIC_HOST does not lead here over IPv6 (its AAAA record): $WHY. Delete the AAAA record, or point it to this machine"
+    fi
   fi
   case "$PUBLIC_HOST" in *:*) URL_HOST="[$PUBLIC_HOST]" ;; *) URL_HOST="$PUBLIC_HOST" ;; esac
-  # Ports 80/443 must be free, or Caddy's own (a re-run): Caddy needs them for the certificate and
-  # the players. Checked before Caddy is installed (its package starts it) and before the token is spent.
+  # Every run replaces /etc/caddy/Caddyfile: never one this installer did not write (Caddy may
+  # serve other sites here), only the package's untouched example.
+  caddyfile_replaceable /etc/caddy/Caddyfile || die "/etc/caddy/Caddyfile was not written by this installer (Caddy may serve other sites on this machine), and the node needs Caddy and ports 80/443 to itself: move that file away (mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-turbogol), then run this again"
+  # Ports 80/443 must be free, or Caddy's own (a re-run, or the package's example): Caddy needs them
+  # for the certificate and the players. Checked before Caddy is installed (its package starts it)
+  # and before the token is spent.
   BUSY=$(ss -Hltnp '( sport = :80 or sport = :443 )' 2>/dev/null | grep -v '"caddy"' || true)
   [ -z "$BUSY" ] || { printf '%s\n' "$BUSY" >&2; die "ports 80/443 are in use by another program (above): stop it, then run this again"; }
 fi
@@ -361,8 +475,12 @@ chown turbogol:turbogol "$DATA"
 chmod 700 "$DATA"
 # CHANGED: something the running service uses was replaced, so a re-run restarts it.
 CHANGED=0
-printf '%s' "$RELEASE_KEY_B64URL" > "$DATA/release-key.pub.new"
-if put_file "$DATA/release-key.pub.new" "$DATA/release-key.pub" 644 turbogol; then CHANGED=1; fi
+# Written outside $DATA, then put in place by install(1). $DATA belongs to the node's user: a
+# redirect into it as root would follow a link planted there by a compromised node (to
+# /etc/passwd, say) and overwrite its target.
+KEY_NEW=$(mktemp)
+printf '%s' "$RELEASE_KEY_B64URL" > "$KEY_NEW"
+if put_file "$KEY_NEW" "$DATA/release-key.pub" 644 turbogol; then CHANGED=1; fi
 printf '%s\n' "$RELEASE_KEY_PEM" > "$APP/release-key.pem"
 
 say "launcher (signature check)"
@@ -407,7 +525,12 @@ if [ "$REGISTER" = 1 ]; then
   [ -n "$NAME" ] && REG_ARGS+=(--name "$NAME")
   [ -n "$UPLINK" ] && REG_ARGS+=(--uplink-mbps "$UPLINK")
   [ -n "$MATCHES" ] && REG_ARGS+=(--matches "$MATCHES")
-  runuser -u turbogol -- node "$APP/launcher.mjs" register "${REG_ARGS[@]}" || die "registration failed (tokens are single use and expire after an hour: create a new one on the website)"
+  RC=0
+  runuser -u turbogol -- node "$APP/launcher.mjs" register "${REG_ARGS[@]}" || RC=$?
+  # 3: the launcher could not get or verify the node program, or it needs a newer Node.js. Nothing
+  # reached the control plane, so the token is still good.
+  [ "$RC" != 3 ] || die "the node program could not be prepared (see above). The token was not used: run this again with it once that is fixed (a token expires an hour after it was created)"
+  [ "$RC" = 0 ] || die "registration failed (see above). If the control plane refused the token, or took it, create a new one on the website: tokens are single use and expire after an hour"
 fi
 
 RUN_ARGS="--port $PORT --listen 127.0.0.1"
