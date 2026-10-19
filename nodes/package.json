@@ -17,6 +17,7 @@
     "bench": "node --import ./dev/ts-resolve.mjs node/main.ts bench",
     "keys": "node scripts/keys.mjs",
     "build": "node scripts/build-node.mjs --sign .keys/release.json",
+    "sign": "node scripts/sign-release.mjs",
     "build:web": "node scripts/build-web.mjs"
   },
   "dependencies": {
