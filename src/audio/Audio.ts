@@ -7,17 +7,24 @@
  * running, so stale events never pile up and burst out on resume.
  *
  * Continuous layers (driven by `update()`, no allocations):
- *   engine      saw + square (an octave up, detuned) → lowpass; pitch 55 → 220 Hz by speed,
- *               volume by throttle; a slow LFO adds a little vibrato
+ *   engine      a virtual V8 (engine.ts: rpm through five gears, load). One oscillator at the
+ *               crankshaft frequency whose wave holds the engine orders (4th = firing, plus the
+ *               2nd and odd orders that make the burble) + exhaust pulses (noise band-passed near
+ *               the firing frequency, amplitude-modulated at it) → soft saturation (drive grows
+ *               with load) → lowpass opened by rpm and load. A short dip on each upshift and a
+ *               few exhaust pops when the throttle is released at high rpm.
  *   boost       looped noise → lowpass (opened by speed) → gain while boosting
  *   supersonic  looped noise → highpass, airy, fades in near max speed
  * One-shots allocate a few nodes each (event-driven, a handful per second at most).
  */
 import type { Team } from '../sim/types';
+import { EngineModel, IDLE_RPM, REDLINE_RPM } from './engine';
 
 export interface AudioState {
   /** Car speed in uu/s (0..2300). */
   speed: number;
+  /** Speed along the car's nose, uu/s: negative when rolling backwards (the engine tells the brake from the throttle). */
+  forwardSpeed: number;
   boosting: boolean;
   supersonic: boolean;
   grounded: boolean;
@@ -26,8 +33,10 @@ export interface AudioState {
 }
 
 const CAR_MAX_SPEED = 2300;
-const ENGINE_IDLE_HZ = 55;
-const ENGINE_MAX_HZ = 220;
+/** Engine-order amplitudes 1..24 of the crankshaft wave (cross-plane V8: the 4th, firing, leads). */
+const ENGINE_ORDERS = [0.16, 0.42, 0.2, 1, 0.12, 0.3, 0.1, 0.6, 0.06, 0.2, 0.05, 0.34, 0.04, 0.1, 0.03, 0.2, 0.02, 0.05, 0.02, 0.1, 0.02, 0.04, 0.02, 0.08];
+/** Exhaust pops after a throttle release: at most once per this many seconds. */
+const POPS_MIN_INTERVAL = 1.2;
 const MIN_GAIN = 0.0001; // exponential ramps cannot reach 0
 const BALL_HIT_MIN_INTERVAL = 0.04;
 const CAR_HIT_MIN_INTERVAL = 0.06;
@@ -53,11 +62,17 @@ export class Audio {
   private noise: AudioBuffer | null = null;
 
   // Engine
-  private engOsc1: OscillatorNode | null = null;
-  private engOsc2: OscillatorNode | null = null;
+  private readonly engine = new EngineModel();
+  private engOsc: OscillatorNode | null = null;
+  private engAm: OscillatorNode | null = null;
+  private engNoise: AudioBufferSourceNode | null = null;
+  private engBand: BiquadFilterNode | null = null;
+  private engNoiseGain: GainNode | null = null;
+  private engDrive: GainNode | null = null;
   private engFilter: BiquadFilterNode | null = null;
   private engGain: GainNode | null = null;
-  private lfo: OscillatorNode | null = null;
+  private prevThrottle = 0;
+  private lastPops = -1;
   // Boost roar
   private boostSrc: AudioBufferSourceNode | null = null;
   private boostFilter: BiquadFilterNode | null = null;
@@ -72,6 +87,9 @@ export class Audio {
   // Last target sent to each continuous AudioParam (dead-band: skip resends that would not be
   // audible, so a steady state issues no automation events at all).
   private sentEngF = -1;
+  private sentEngBand = -1;
+  private sentEngNoise = -1;
+  private sentEngDrive = -1;
   private sentEngFilter = -1;
   private sentEngGain = -1;
   private sentBoostGain = -1;
@@ -146,23 +164,56 @@ export class Audio {
     const ratio = clamp01(this.smoothSpeed / CAR_MAX_SPEED);
     const thr = clamp01(Math.abs(state.throttle));
 
-    // Engine: pitch follows speed (plus a touch of throttle), volume follows throttle.
-    const f = ENGINE_IDLE_HZ + (ENGINE_MAX_HZ - ENGINE_IDLE_HZ) * ratio + 12 * thr;
-    if (changed(f, this.sentEngF)) {
-      this.sentEngF = f;
-      this.engOsc1!.frequency.setTargetAtTime(f, t, 0.06);
-      this.engOsc2!.frequency.setTargetAtTime(f * 2.013, t, 0.06);
+    // Engine: rpm and load from the model (engine.ts), turned into pitch, brightness and level.
+    const eng = this.engine;
+    eng.step(dt, state.forwardSpeed, state.throttle, state.grounded, boosting);
+    const crank = eng.rpm / 60;
+    const rn = clamp01((eng.rpm - IDLE_RPM) / (REDLINE_RPM - IDLE_RPM));
+    const load = eng.load;
+    if (changed(crank, this.sentEngF)) {
+      this.sentEngF = crank;
+      this.engOsc!.frequency.setTargetAtTime(crank, t, 0.02);
+      this.engAm!.frequency.setTargetAtTime(crank * 4, t, 0.02);
     }
-    const engCut = 320 + 1500 * ratio + 500 * thr;
+    const band = crank * 4 * 2.2 + 250;
+    if (changed(band, this.sentEngBand)) {
+      this.sentEngBand = band;
+      this.engBand!.frequency.setTargetAtTime(band, t, 0.03);
+    }
+    const noiseLevel = 0.25 + 0.55 * load;
+    if (changed(noiseLevel, this.sentEngNoise)) {
+      this.sentEngNoise = noiseLevel;
+      this.engNoiseGain!.gain.setTargetAtTime(noiseLevel, t, 0.05);
+    }
+    const drive = 1.2 + 2.3 * load;
+    if (changed(drive, this.sentEngDrive)) {
+      this.sentEngDrive = drive;
+      this.engDrive!.gain.setTargetAtTime(drive, t, 0.05);
+    }
+    const engCut = 260 + 1100 * rn + 1500 * load;
     if (changed(engCut, this.sentEngFilter)) {
       this.sentEngFilter = engCut;
-      this.engFilter!.frequency.setTargetAtTime(engCut, t, 0.08);
+      this.engFilter!.frequency.setTargetAtTime(engCut, t, 0.05);
     }
-    const engLevel = (0.018 + 0.07 * thr + 0.03 * ratio) * (state.grounded ? 1 : 0.7);
-    if (changed(engLevel, this.sentEngGain)) {
+    const engLevel = (0.022 + 0.05 * load + 0.022 * rn) * (state.grounded ? 1 : 0.85);
+    if (eng.shifted) {
+      // Upshift: the power cuts for a moment, then comes back.
+      this.engGain!.gain.setTargetAtTime(engLevel * 0.45, t, 0.012);
+      this.engGain!.gain.setTargetAtTime(engLevel, t + 0.07, 0.03);
       this.sentEngGain = engLevel;
-      this.engGain!.gain.setTargetAtTime(engLevel, t, 0.06);
+    } else if (changed(engLevel, this.sentEngGain)) {
+      this.sentEngGain = engLevel;
+      this.engGain!.gain.setTargetAtTime(engLevel, t, 0.05);
     }
+    // Throttle released at high rpm on the ground: a few exhaust pops.
+    if (this.prevThrottle > 0.6 && thr < 0.15 && eng.rpm > 3600 && state.grounded && t - this.lastPops > POPS_MIN_INTERVAL) {
+      this.lastPops = t;
+      const pops = 2 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < pops; i++) {
+        this.noiseBurst(ctx, 'bandpass', 1400 + Math.random() * 1600, 2.2, 0.02 + Math.random() * 0.02, 0.06 + Math.random() * 0.08, 0, 0.05 + Math.random() * 0.6);
+      }
+    }
+    this.prevThrottle = thr;
 
     // Boost roar + ignition / release one-shots on the edges (always sent on an edge frame).
     const edge = boosting !== this.prevBoosting;
@@ -202,6 +253,8 @@ export class Audio {
   silence(): void {
     this.prevBoosting = false;
     this.smoothSpeed = 0;
+    this.prevThrottle = 0;
+    this.engine.reset();
     const ctx = this.ctx;
     if (ctx === null || ctx.state !== 'running') return;
     const t = ctx.currentTime;
@@ -431,9 +484,9 @@ export class Audio {
     const ctx = this.ctx;
     if (ctx === null) return;
     try {
-      this.engOsc1?.stop();
-      this.engOsc2?.stop();
-      this.lfo?.stop();
+      this.engOsc?.stop();
+      this.engAm?.stop();
+      this.engNoise?.stop();
       this.boostSrc?.stop();
       this.windSrc?.stop();
     } catch {
@@ -444,11 +497,14 @@ export class Audio {
     this.master = null;
     this.sfx = null;
     this.noise = null;
-    this.engOsc1 = null;
-    this.engOsc2 = null;
+    this.engOsc = null;
+    this.engAm = null;
+    this.engNoise = null;
+    this.engBand = null;
+    this.engNoiseGain = null;
+    this.engDrive = null;
     this.engFilter = null;
     this.engGain = null;
-    this.lfo = null;
     this.boostSrc = null;
     this.boostFilter = null;
     this.boostGain = null;
@@ -467,7 +523,9 @@ export class Audio {
   private buildGraph(): void {
     const ctx = new AudioContext({ latencyHint: 'interactive' });
     this.ctx = ctx;
-    this.sentEngF = this.sentEngFilter = this.sentEngGain = this.sentBoostGain = this.sentBoostFilter = this.sentWind = -1;
+    this.sentEngF = this.sentEngBand = this.sentEngNoise = this.sentEngDrive = this.sentEngFilter = this.sentEngGain = -1;
+    this.sentBoostGain = this.sentBoostFilter = this.sentWind = -1;
+    this.engine.reset();
 
     // Output chain: sfx → master → compressor (gentle limiter so stacked impacts do not clip).
     const comp = ctx.createDynamicsCompressor();
@@ -492,41 +550,73 @@ export class Audio {
     for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
     this.noise = noise;
 
-    // Engine.
+    // Engine: (crank tone + exhaust pulses) → drive → saturator → lowpass → gain.
+    const idleCrank = IDLE_RPM / 60;
     const engFilter = ctx.createBiquadFilter();
     engFilter.type = 'lowpass';
     engFilter.frequency.value = 400;
-    engFilter.Q.value = 1.6;
+    engFilter.Q.value = 0.8;
     const engGain = ctx.createGain();
     engGain.gain.value = 0;
     engFilter.connect(engGain).connect(sfx);
-    const osc1 = ctx.createOscillator();
-    osc1.type = 'sawtooth';
-    osc1.frequency.value = ENGINE_IDLE_HZ;
-    osc1.connect(engFilter);
-    const osc2 = ctx.createOscillator();
-    osc2.type = 'square';
-    osc2.frequency.value = ENGINE_IDLE_HZ * 2.013;
-    const osc2Gain = ctx.createGain();
-    osc2Gain.gain.value = 0.3;
-    osc2.connect(osc2Gain).connect(engFilter);
-    // Vibrato: slow LFO into both oscillators' detune (cents).
-    const lfo = ctx.createOscillator();
-    lfo.type = 'sine';
-    lfo.frequency.value = 5.5;
-    const lfoGain = ctx.createGain();
-    lfoGain.gain.value = 6; // ±6 cents
-    lfo.connect(lfoGain);
-    lfoGain.connect(osc1.detune);
-    lfoGain.connect(osc2.detune);
-    osc1.start();
-    osc2.start();
-    lfo.start();
-    this.engOsc1 = osc1;
-    this.engOsc2 = osc2;
+    const shaper = ctx.createWaveShaper();
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < curve.length; i++) {
+      const x = (i / (curve.length - 1)) * 2 - 1;
+      curve[i] = Math.tanh(2.2 * x) / Math.tanh(2.2);
+    }
+    shaper.curve = curve;
+    shaper.oversample = '2x';
+    shaper.connect(engFilter);
+    const engDrive = ctx.createGain();
+    engDrive.gain.value = 1.2;
+    engDrive.connect(shaper);
+    // Crank tone: the engine orders as one periodic wave (fixed phases, so it never changes).
+    const real = new Float32Array(ENGINE_ORDERS.length + 1);
+    const imag = new Float32Array(ENGINE_ORDERS.length + 1);
+    for (let k = 1; k <= ENGINE_ORDERS.length; k++) {
+      const phase = (k * k * 0.7) % (Math.PI * 2);
+      real[k] = ENGINE_ORDERS[k - 1] * Math.cos(phase);
+      imag[k] = ENGINE_ORDERS[k - 1] * Math.sin(phase);
+    }
+    const engOsc = ctx.createOscillator();
+    engOsc.setPeriodicWave(ctx.createPeriodicWave(real, imag));
+    engOsc.frequency.value = idleCrank;
+    const toneGain = ctx.createGain();
+    toneGain.gain.value = 0.5;
+    engOsc.connect(toneGain).connect(engDrive);
+    // Exhaust pulses: looped noise → bandpass → pulse gain (0.6 ± 0.6 at the firing frequency) → level.
+    const engNoise = ctx.createBufferSource();
+    engNoise.buffer = noise;
+    engNoise.loop = true;
+    engNoise.loopStart = 0.9; // offset from the boost / wind layers
+    engNoise.loopEnd = 2;
+    const engBand = ctx.createBiquadFilter();
+    engBand.type = 'bandpass';
+    engBand.frequency.value = idleCrank * 4 * 2.2 + 250;
+    engBand.Q.value = 1.1;
+    const pulse = ctx.createGain();
+    pulse.gain.value = 0.6;
+    const engAm = ctx.createOscillator();
+    engAm.type = 'sine';
+    engAm.frequency.value = idleCrank * 4;
+    const amDepth = ctx.createGain();
+    amDepth.gain.value = 0.6;
+    engAm.connect(amDepth).connect(pulse.gain);
+    const engNoiseGain = ctx.createGain();
+    engNoiseGain.gain.value = 0.25;
+    engNoise.connect(engBand).connect(pulse).connect(engNoiseGain).connect(engDrive);
+    engOsc.start();
+    engAm.start();
+    engNoise.start(0, 0.9);
+    this.engOsc = engOsc;
+    this.engAm = engAm;
+    this.engNoise = engNoise;
+    this.engBand = engBand;
+    this.engNoiseGain = engNoiseGain;
+    this.engDrive = engDrive;
     this.engFilter = engFilter;
     this.engGain = engGain;
-    this.lfo = lfo;
 
     // Boost roar: looped noise → lowpass → gain.
     const boostSrc = ctx.createBufferSource();
@@ -578,10 +668,10 @@ export class Audio {
     osc.stop(t + dur);
   }
 
-  /** Filtered noise with an exponential decay. `sweepTo` optionally sweeps the filter down. */
-  private noiseBurst(ctx: AudioContext, type: BiquadFilterType, freq: number, q: number, dur: number, gain: number, sweepTo = 0): void {
+  /** Filtered noise with an exponential decay, `delay` seconds from now. `sweepTo` optionally sweeps the filter down. */
+  private noiseBurst(ctx: AudioContext, type: BiquadFilterType, freq: number, q: number, dur: number, gain: number, sweepTo = 0, delay = 0): void {
     if (gain <= MIN_GAIN) return;
-    const t = ctx.currentTime;
+    const t = ctx.currentTime + delay;
     const src = ctx.createBufferSource();
     src.buffer = this.noise!;
     const filter = ctx.createBiquadFilter();
