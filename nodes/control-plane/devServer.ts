@@ -44,9 +44,11 @@ import { verifyReplay } from '../shared/verify';
 import { errorJson, header, json, readBody, readJson, startHttp } from '../node/http';
 import type { IncomingMessage, RunningServer, ServerResponse } from '../node/http';
 import { acceptUpgrade, clientIp, rejectUpgrade } from '../node/wsServer';
+import type { WsConn } from '../node/wsServer';
 import { ControlPlane, NodeRefused } from './controlPlane';
 import type { MatchOutcome, PlaceRequest } from './controlPlane';
 import { Ledger } from './ledger';
+import { MemoryStore } from './persist';
 import { Registry, TOKEN_TTL_MS } from './registry';
 import { Shop } from './shop';
 
@@ -74,17 +76,28 @@ export interface DevServerOptions {
   publicBase?: string;
   /** Sweep period (ms). */
   sweepMs?: number;
+  /** ControlPlane restartGraceMs after restart() (default its own). */
+  restartGraceMs?: number;
   log?: (msg: string) => void;
   onOutcome?: (o: MatchOutcome) => void;
 }
 
 export interface DevControlPlane {
-  cp: ControlPlane;
+  /** The current control plane (a new one after restart()). */
+  readonly cp: ControlPlane;
   shop: Shop;
+  /** The rows the registry and the control plane write through, as the DO's SQLite would hold them. */
+  store: MemoryStore;
   port: number;
   url: string;
   keys: KeyPairB64;
   operators: Map<string, string>;
+  /**
+   * Tests only: what a Worker deploy does to the NodeRegistryDO. The node sockets drop, and a new
+   * Registry and ControlPlane load from the store (a cold start, with its grace). The replays stay
+   * (R2 in production), and so do the ledger and the shop, which nothing persists yet.
+   */
+  restart(): void;
   close(): Promise<void>;
 }
 
@@ -102,7 +115,11 @@ export async function startControlPlane(opts: DevServerOptions = {}): Promise<De
   const wasm = await loadWasm();
   const build: BuildId = opts.build ?? { version: DEFAULT_VERSION, protocol: PROTOCOL_VERSION, wasmSha256: wasm.sha256 };
   const channel: ReleaseChannel = opts.channel ?? { stable: build.version, minimum: '0.0.0' };
-  const registry = new Registry({ allowInsecure: true, trustedOperators: opts.trustedOperators ?? [], regions: REGIONS.map((r) => r.id), log });
+  const store = new MemoryStore();
+  /** Operators trusted by their dev login name: a restarted registry must trust them too. */
+  const trustedByName = new Set<string>();
+  const newRegistry = () => new Registry({ allowInsecure: true, trustedOperators: [...(opts.trustedOperators ?? []), ...trustedByName], regions: REGIONS.map((r) => r.id), store, log });
+  let registry = newRegistry();
   const ledger = new Ledger();
   const shop = new Shop(ledger);
   const replays = new Map<string, Uint8Array>();
@@ -111,37 +128,43 @@ export async function startControlPlane(opts: DevServerOptions = {}): Promise<De
   const iceServers = opts.iceServers ?? [];
   let base = opts.publicBase ?? '';
 
-  const cp = new ControlPlane({
-    controlPrivateKey: keys.privateKey,
-    controlPublicKey: keys.publicKey,
-    get controlUrl() {
-      return base.replace(/^http/, 'ws') + '/nodes/connect';
-    },
-    get httpBase() {
-      return base;
-    },
-    build: () => build,
-    channel: () => channel,
-    registry,
-    ledger,
-    shop,
-    iceServers: async () => iceServers,
-    // Without TURN (this reference server, local tests) a plain WebRTC self-test is accepted.
-    requireRelay: iceServers.some((s) => [s.urls].flat().some((u) => /^turns?:/.test(u))),
-    casualVerifyRate: opts.casualVerifyRate ?? 1,
-    replays: {
-      put: async (id, bytes) => {
-        replays.set(id, bytes);
+  const newControlPlane = () =>
+    new ControlPlane({
+      controlPrivateKey: keys.privateKey,
+      controlPublicKey: keys.publicKey,
+      get controlUrl() {
+        return base.replace(/^http/, 'ws') + '/nodes/connect';
       },
-      get: async (id) => replays.get(id) ?? null,
-    },
-    inlineVerify:
-      opts.inlineVerify === false
-        ? undefined
-        : (bytes, job) => verifyReplay(bytes, { makeSim: nodeSimFactory, wasmSha256: build.wasmSha256, protocol: build.protocol, expect: job.expect, expectNodeId: job.hostNodeId, leaves: job.leaves }),
-    onOutcome: (o) => opts.onOutcome?.(o),
-    log,
-  });
+      get httpBase() {
+        return base;
+      },
+      build: () => build,
+      channel: () => channel,
+      registry,
+      ledger,
+      shop,
+      iceServers: async () => iceServers,
+      // Without TURN (this reference server, local tests) a plain WebRTC self-test is accepted.
+      requireRelay: iceServers.some((s) => [s.urls].flat().some((u) => /^turns?:/.test(u))),
+      casualVerifyRate: opts.casualVerifyRate ?? 1,
+      replays: {
+        put: async (id, bytes) => {
+          replays.set(id, bytes);
+        },
+        get: async (id) => replays.get(id) ?? null,
+      },
+      inlineVerify:
+        opts.inlineVerify === false
+          ? undefined
+          : (bytes, job) => verifyReplay(bytes, { makeSim: nodeSimFactory, wasmSha256: build.wasmSha256, protocol: build.protocol, expect: job.expect, expectNodeId: job.hostNodeId, leaves: job.leaves }),
+      onOutcome: (o) => opts.onOutcome?.(o),
+      store,
+      restartGraceMs: opts.restartGraceMs,
+      log,
+    });
+  let cp = newControlPlane();
+  /** Open node control sockets: restart() drops them like a deploy. */
+  const nodeSockets = new Set<WsConn>();
 
   const operatorOf = (req: IncomingMessage): { id: string; name: string } | null => {
     const id = header(req, 'x-dev-operator');
@@ -266,7 +289,10 @@ export async function startControlPlane(opts: DevServerOptions = {}): Promise<De
         id = randomHexId(8);
         operators.set(id, name);
       }
-      if ((opts.trustedOperatorNames ?? []).includes(name)) registry.addTrustedOperator(id);
+      if ((opts.trustedOperatorNames ?? []).includes(name)) {
+        trustedByName.add(id);
+        registry.addTrustedOperator(id);
+      }
       return json(res, 200, { operatorId: id, name, trusted: registry.isTrusted(id) });
     }
     if (method === 'POST' && path === '/nodes/tokens') {
@@ -369,12 +395,19 @@ export async function startControlPlane(opts: DevServerOptions = {}): Promise<De
     if (path !== '/nodes/connect') return rejectUpgrade(socket, 404, 'not_found');
     const ws = acceptUpgrade(req, socket, head, { maxMessageBytes: 256 * 1024 });
     if (!ws) return;
-    const session = cp.open({ send: (m) => ws.send(JSON.stringify(m)), close: (code, reason) => ws.close(code, reason) });
+    // The control plane this socket belongs to: after a restart() its last messages go nowhere.
+    const owner = cp;
+    const session = owner.open({ send: (m) => ws.send(JSON.stringify(m)), close: (code, reason) => ws.close(code, reason) });
+    nodeSockets.add(ws);
     ws.onmessage = (data, text) => {
       if (!text) return ws.close(1003, 'text only');
-      cp.onMessage(session, new TextDecoder().decode(data)).catch((e: unknown) => log(`node message failed: ${String(e)}`));
+      if (owner !== cp) return;
+      owner.onMessage(session, new TextDecoder().decode(data)).catch((e: unknown) => log(`node message failed: ${String(e)}`));
     };
-    ws.onclose = () => cp.onClose(session);
+    ws.onclose = () => {
+      nodeSockets.delete(ws);
+      owner.onClose(session);
+    };
   }
 
   const server: RunningServer = await startHttp(opts.port ?? 8790, host, { onRequest, onUpgrade });
@@ -382,12 +415,23 @@ export async function startControlPlane(opts: DevServerOptions = {}): Promise<De
   const sweep = setInterval(() => cp.sweep(), opts.sweepMs ?? 2_000);
   log(`control plane on ${base} (build ${build.version} / wasm ${build.wasmSha256.slice(0, 12)})`);
   return {
-    cp,
+    get cp() {
+      return cp;
+    },
     shop,
+    store,
     port: server.port,
     url: base,
     keys,
     operators,
+    restart: () => {
+      for (const ws of [...nodeSockets]) ws.close(1012, 'restart');
+      nodeSockets.clear();
+      registry = newRegistry();
+      registry.restore(store.rows());
+      cp = newControlPlane();
+      cp.restore(store.rows().matches, { cold: true });
+    },
     close: async () => {
       clearInterval(sweep);
       await server.close();

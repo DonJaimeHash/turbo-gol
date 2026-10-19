@@ -1,11 +1,13 @@
-// Persistence: the rows of persist.ts and the Registry's write-through and restore (what survives a
-// Worker deploy or a Durable Object restart).
+// Persistence: the rows of persist.ts, the Registry's and the ControlPlane's write-through and
+// restore (what survives a Worker deploy or a Durable Object restart), and the restart grace.
 import '../dev/ts-resolve.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
 
 const { STATE_VERSION, MemoryStore, nodeToRow, nodeFromRow, tokenToRow, tokenFromRow, matchToRow, matchFromRow } = await import('../control-plane/persist.ts');
 const { Registry, MAX_STRIKES, STRIKE_COOLDOWN_MS, TOKEN_TTL_MS } = await import('../control-plane/registry.ts');
+const { RESTART_GRACE_MS } = await import('../control-plane/controlPlane.ts');
 const { generateEd25519 } = await import('../shared/edcrypto.ts');
 
 const BUILD = { version: '0.1.0', protocol: 1, wasmSha256: 'a'.repeat(64) };
@@ -412,4 +414,278 @@ test('ALERT lines: every token and every registration of a trusted operator', as
   assert.ok((await register(reg, token, 0)).ok);
   assert.match(lines[2], /^ALERT trusted node .* registered for Tarde \(late\)/);
   assert.equal(c.trusted, false);
+});
+
+// ---- ControlPlane write-through, restore and the restart grace ----------------------------------
+
+/** A MemoryStore whose match writes also land in `log` (shared with the messages the node gets). */
+function logged(log) {
+  const mem = new MemoryStore();
+  return {
+    mem,
+    node: (n) => mem.node(n),
+    register: (t, n) => mem.register(t, n),
+    tokens: (t) => mem.tokens(t),
+    dropTokens: (h) => mem.dropTokens(h),
+    save: (m) => {
+      log.push({ what: 'save', state: m.state, started: m.startedSeen, leaves: m.leaves.size, replay: m.replaySha !== null, offered: m.offered.size });
+      mem.save(m);
+    },
+    finished: (m, o) => {
+      log.push({ what: 'finished', matchId: m.assign.matchId, kind: o.kind });
+      mem.finished(m, o);
+    },
+    drop: (id) => mem.drop(id),
+    rows: () => mem.rows(),
+  };
+}
+
+const lost = (matchId) => ({ t: 'report', id: 'lost:' + matchId, report: { kind: 'lost', matchId, reason: 'node_shutdown' } });
+
+test('a deploy mid-match loses nothing: no void inside the grace, and the same node process gets its match rated with its leaver', async () => {
+  const store = new MemoryStore();
+  const env = await setup({ status: 'active', store });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  await env.heartbeat({ active: 1, matches: [{ matchId: p.matchId, tick: 240, phase: 'play', sockets: 2 }] });
+  env.advance(6_000);
+  const leftAt = env.now();
+  await env.cp.leave(p.matchId, B);
+  const { report } = await env.upload(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1) });
+
+  env.restart(); // the Worker is deployed before the node's report arrives
+  const m = env.cp.matches.get(p.matchId);
+  assert.equal(m.state, 'assigned');
+  assert.equal(m.startedSeen, true);
+  assert.deepEqual([...m.leaves], [B]);
+  assert.equal(m.leaveAt.get(B), leftAt, 'without it the takeover would be a bad_takeover');
+  assert.equal(m.replaySha, report.replaySha256, 'without it the report would be a no_replay strike');
+  assert.equal(env.cp.unfinished(), 1);
+  assert.equal(env.cp.inGrace(), true);
+  assert.match(env.logs.at(-1), /^restored 1 matches \(1 unfinished\): 90 s for the nodes to reconnect$/);
+
+  env.advance(20_000);
+  env.cp.sweep();
+  assert.equal(m.state, 'assigned', '20 s without the node, inside the grace: no void');
+  await env.reconnect(); // the same bootId: the same process, its match is still running
+  assert.equal(m.state, 'assigned');
+  const entry = await env.report(report); // the node sends its unacked report at the welcome
+  assert.equal(entry.verdict.code, 'ok', entry.verdict.message);
+  assert.equal(entry.outcome.kind, 'rated', JSON.stringify(entry.outcome));
+  assert.deepEqual(
+    entry.outcome.players.map((x) => x.left),
+    [false, true],
+  );
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
+  assert.equal(store.matchRows.get(p.matchId).state, 'done');
+});
+
+test('a node that never comes back after a deploy: when the grace ends its matches are void, with one strike and one outcome each', async () => {
+  const store = new MemoryStore();
+  const env = await setup({ store });
+  const ps = [await env.place([human('a')]), await env.place([human('b')])];
+  env.restart();
+  env.advance(RESTART_GRACE_MS - 1);
+  env.cp.sweep();
+  for (const p of ps) assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  env.advance(1);
+  assert.equal(env.cp.inGrace(), false);
+  env.cp.sweep();
+  env.cp.sweep();
+  for (const p of ps) {
+    assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
+    assert.equal(env.outcomes.filter((o) => o.matchId === p.matchId).length, 1);
+    assert.equal(store.matchRows.get(p.matchId).state, 'done');
+  }
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 1, 'one outage, one strike');
+});
+
+test('a new node process after a deploy voids its old matches at its hello, grace or not', async () => {
+  const env = await setup({ store: new MemoryStore() });
+  const p = await env.place([human('a')]);
+  env.restart();
+  env.boot = 'boot-2';
+  await env.reconnect();
+  assert.equal(env.cp.inGrace(), true);
+  assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_restarted');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+});
+
+test('a match waiting for its verification survives a deploy and is rated after the verifier’s hello, keeping its place in the queue', async () => {
+  // A project node verifies its own matches; until the deploy its verifier keeps failing.
+  const env = await setup({ store: new MemoryStore(), trusted: true, roles: ['host', 'verify'], noInline: true });
+  await wait(() => env.registry.node(env.nodeId).status === 'active');
+  const verify = env.onVerify;
+  env.onVerify = async () => ({ ok: false, code: 'error', message: 'busy', ticks: 0, score: { blue: 0, red: 0 }, winner: -1, finalHash: 0, cpuMs: 0 });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  env.advance(6_000);
+  await env.cp.leave(p.matchId, B);
+  const { entry } = await env.finish(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1), waitDone: false });
+  await wait(() => env.logs.some((l) => l.includes('not possible now (error)')), 'a failed attempt');
+  assert.equal(entry.state, 'verifying');
+  const queuedAt = entry.queuedAt;
+
+  env.restart();
+  const back = env.cp.matches.get(p.matchId);
+  assert.equal(back.state, 'verifying');
+  assert.equal(back.queuedAt, queuedAt, 'the 6 h wait counts from the first queueing');
+  assert.equal(back.report.kind, 'ended');
+  env.onVerify = verify;
+  env.advance(1_000);
+  await env.reconnect(); // a verifier's hello dispatches the queue at once
+  await wait(() => back.state === 'done', 'rated');
+  assert.equal(back.outcome.kind, 'rated', JSON.stringify(back.outcome));
+  assert.equal(back.verifiedBy, env.nodeId);
+  assert.deepEqual(
+    back.outcome.players.map((x) => x.left),
+    [false, true],
+  );
+});
+
+test('a report deadline that passed during the outage voids nothing inside the grace', async () => {
+  const env = await setup({ store: new MemoryStore() });
+  const a = await env.place([human('a')]);
+  const b = await env.place([human('b')]);
+  env.advance(env.cp.matches.get(a.matchId).deadline - env.now() - 1_000);
+  env.restart();
+  env.advance(2_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(a.matchId).state, 'assigned');
+  assert.equal(env.cp.matches.get(b.matchId).state, 'assigned');
+  await env.reconnect();
+  const { entry } = await env.finish(a);
+  assert.equal(entry.outcome.kind, 'unrated', 'its report came in the grace');
+  // The other one never reports: once the grace is over it is late.
+  env.advance(RESTART_GRACE_MS);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(b.matchId).outcome.reason, 'no_report');
+});
+
+test('one outage is one strike across a restart: the last strike time comes back from the node row', async () => {
+  const env = await setup({ store: new MemoryStore() });
+  const [p1, p2] = [await env.place([human('a')]), await env.place([human('b')])];
+  await env.send(lost(p1.matchId));
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+  env.restart();
+  await env.reconnect();
+  env.advance(10_000);
+  await env.send(lost(p2.matchId));
+  assert.equal(env.cp.matches.get(p2.matchId).state, 'done');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 1, 'the same outage');
+  env.advance(60_000);
+  const p3 = await env.place([human('c')]);
+  await env.send(lost(p3.matchId));
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 2, 'a later one counts');
+});
+
+test('every write goes out before the message that depends on it', async () => {
+  const log = [];
+  const at = (pred) => log.findIndex(pred);
+  const env = await setup({ status: 'active', store: logged(log), onSend: (m) => log.push({ what: 'send', t: m.t }) });
+  log.length = 0;
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  log.push({ what: 'placed' });
+  assert.ok(at((x) => x.what === 'save' && x.state === 'assigned') < at((x) => x.what === 'placed'), 'the match before its tickets');
+
+  log.length = 0;
+  for (let i = 0; i < 3; i++) await env.heartbeat({ active: 1, matches: [{ matchId: p.matchId, tick: 100 + i, phase: 'play', sockets: 2 }] });
+  assert.deepEqual(log, [{ what: 'save', state: 'assigned', started: true, leaves: 0, replay: false, offered: 0 }], 'the start once, not every heartbeat');
+
+  env.advance(6_000);
+  log.length = 0;
+  await env.cp.leave(p.matchId, B);
+  assert.deepEqual(
+    log.map((x) => (x.what === 'save' ? `save leaves=${x.leaves}` : `${x.what} ${x.t}`)),
+    ['save leaves=1', 'send leave', 'save leaves=1'],
+    'the leave is written before it is relayed',
+  );
+
+  log.length = 0;
+  const { report } = await env.upload(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1) });
+  assert.deepEqual(log, [{ what: 'save', state: 'assigned', started: true, leaves: 1, replay: true, offered: 0 }], 'the upload is written before its 200');
+
+  log.length = 0;
+  await env.report(report);
+  const verifying = at((x) => x.what === 'save' && x.state === 'verifying');
+  assert.ok(verifying >= 0 && verifying < at((x) => x.what === 'send' && x.t === 'ack'), 'queued for verification before the ack');
+  assert.ok(at((x) => x.what === 'finished' && x.kind === 'rated') > verifying);
+
+  log.length = 0;
+  const q = await env.place([human('c')]);
+  await env.send(lost(q.matchId));
+  const settled = at((x) => x.what === 'finished' && x.kind === 'void');
+  assert.ok(settled >= 0 && settled < at((x) => x.what === 'send' && x.t === 'ack'), 'settled before the ack');
+
+  // rtc: the offer (the evidence a no-show is judged on) is written before it is relayed.
+  const rlog = [];
+  const rtc = await setup({ rtc: true, status: 'active', store: logged(rlog), onSend: (m) => rlog.push({ what: 'send', t: m.t }) });
+  const r = await rtc.place([human('d'), human('e')], { ranked: true });
+  rlog.length = 0;
+  await rtc.cp.rtcOffer(rtc.nodeId, r.matchId, r.tickets[0].ticket, 'v=0');
+  assert.deepEqual(
+    rlog.map((x) => (x.what === 'save' ? `save offered=${x.offered}` : `${x.what} ${x.t}`)),
+    ['save offered=1', 'send rtcOffer'],
+  );
+});
+
+test('a match settles once when the sweep voids it while its report is being read', async () => {
+  const log = [];
+  const env = await setup({ store: logged(log), getDelay: 100 });
+  const p = await env.place([human('a')]);
+  const { report } = await env.upload(p);
+  env.advance(env.cp.matches.get(p.matchId).deadline - env.now() - 10);
+  const sent = env.report(report, { waitDone: false });
+  await sleep(20);
+  assert.equal(env.cp.matches.get(p.matchId).state, 'reporting');
+  env.advance(20);
+  env.cp.sweep();
+  await sent;
+  await sleep(150);
+  assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'no_report');
+  assert.equal(log.filter((x) => x.what === 'finished').length, 1);
+  assert.equal(env.outcomes.filter((o) => o.matchId === p.matchId).length, 1);
+});
+
+test('settled matches leave the store after the retention', async () => {
+  const store = new MemoryStore();
+  const env = await setup({ store });
+  const p = await env.place([human('a')]);
+  await env.send(lost(p.matchId));
+  assert.equal(store.matchRows.get(p.matchId).state, 'done');
+  assert.equal(env.cp.unfinished(), 0);
+  env.advance(10 * 60_000);
+  env.cp.sweep();
+  assert.ok(store.matchRows.has(p.matchId));
+  env.advance(1);
+  env.cp.sweep();
+  assert.equal(store.matchRows.has(p.matchId), false);
+  assert.equal(env.cp.matches.has(p.matchId), false);
+  // A cold start with nothing unfinished waits for nobody.
+  env.restart();
+  assert.equal(env.cp.inGrace(), false);
+});
+
+test('a socket that outlived a hibernation is adopted without a new challenge; an unknown or banned node is closed', async () => {
+  const env = await setup({ store: new MemoryStore() });
+  const p = await env.place([human('a')]);
+  env.restart({ cold: false }); // the DO woke up: its memory is new, the sockets are the same
+  assert.equal(env.cp.inGrace(), false, 'no grace: the nodes never left');
+  const sent = [];
+  const link = { send: (m) => sent.push(m), close: (code) => sent.push({ close: code }) };
+  const s = env.cp.adopt(link, env.nodeId);
+  assert.ok(s);
+  assert.equal(env.cp.isOnline(env.nodeId), true);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'a sweep before its first heartbeat voids nothing');
+  env.session = s;
+  await env.heartbeat({ active: 1, matches: [{ matchId: p.matchId, tick: 60, phase: 'play', sockets: 1 }] });
+  assert.deepEqual(sent, [], 'no challenge and no "auth first"');
+  assert.equal(env.registry.node(env.nodeId).online, true);
+  assert.equal(env.cp.matches.get(p.matchId).startedSeen, true);
+
+  const closes = [];
+  const other = { send() {}, close: (code) => closes.push(code) };
+  assert.equal(env.cp.adopt(other, 'f'.repeat(16)), null);
+  env.registry.setStatus(env.nodeId, 'banned', 'test');
+  assert.equal(env.cp.adopt(other, env.nodeId), null);
+  assert.deepEqual(closes, [4401, 4401]);
 });

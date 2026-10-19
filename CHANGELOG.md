@@ -23,6 +23,9 @@ All notable changes to Turbogol are documented here. The format follows
   operators are trusted, so a deploy will not orphan a registered node. One token registers one node
   even when two registrations race, and every token or node of a trusted operator logs an ALERT
   line.
+- Community nodes: the control plane writes every change of a match to the store before anything
+  that depends on it goes out, and after a deploy it gives the nodes 90 seconds to reconnect before
+  voiding anything, so a match running through a deploy is still rated, with its leavers.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 

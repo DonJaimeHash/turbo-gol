@@ -1,7 +1,7 @@
 // End to end on loopback: the reference control plane, one community node (NodeRuntime) and scripted
 // players speaking the real protocol. Registration with a one-time token, reachability probe,
-// casual and ranked placement, EdDSA tickets, leaves, forfeit, replay upload, verification,
-// rating outcome and reward points.
+// casual and ranked placement, EdDSA tickets, a control plane restart mid-match (a Worker deploy),
+// leaves, forfeit, replay upload, verification, rating outcome and reward points.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { P, testBuild } from './helpers.mjs';
@@ -99,6 +99,13 @@ test('a community node hosts casual and ranked matches; results are verified bef
     const a = await connectPlayer({ wsUrl: ranked.body.wsUrl, ticket: ticketOf(ana.playerId) });
     const b = await connectPlayer({ wsUrl: ranked.body.wsUrl, ticket: ticketOf(beto.playerId), steerPhase: 100 });
     await waitFor(() => a.lastTick > 3 * 120 && b.lastTick > 3 * 120, 15_000);
+    // The Worker is deployed mid-match: the node's control link drops and a new control plane
+    // loads the store. The node process reconnects and keeps its match; the players never notice.
+    cp.restart();
+    assert.equal(cp.cp.inGrace(), true);
+    await waitFor(() => cp.cp.isOnline(identity.nodeId) && cp.cp.registry.node(identity.nodeId)?.online, 10_000);
+    assert.equal(cp.cp.matches.get(ranked.body.matchId).state, 'assigned');
+    assert.equal(cp.cp.registry.node(identity.nodeId).status, 'active');
     // Beto quits for good: red has nobody left -> forfeit, blue wins.
     const q = await post(`${cp.url}/dev/leave`, { matchId: ranked.body.matchId, playerId: beto.playerId });
     assert.equal(q.body.ended, true);

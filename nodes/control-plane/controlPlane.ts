@@ -24,6 +24,11 @@
  *                 project node's.
  *   health        silent or restarted nodes: their matches are void (no penalties for players), one
  *                 strike per outage; strike suspensions lift after their cooldown
+ *   persistence   every durable change of a match is written through `store` (persist.ts) before
+ *                 the message that depends on it goes out: a Durable Object holds its outgoing
+ *                 messages only for the writes issued before the send. `restore` loads the rows back
+ *                 after a restart; a cold start (a deploy) gives the nodes `restartGraceMs` to
+ *                 reconnect before anything is voided for being silent or late.
  */
 import {
   HEARTBEAT_TIMEOUT_MS,
@@ -63,6 +68,8 @@ import { createNodeTicket, verifyNodeTicket } from '../shared/nodeTickets';
 import { TICK_RATE } from '../../src/sim/types';
 import { regionFactor } from './ledger';
 import type { Ledger, LedgerEntry, LedgerPlayer } from './ledger';
+import { matchFromRow } from './persist';
+import type { MatchRow, MatchStore } from './persist';
 import { MAX_CAPACITY } from './registry';
 import type { Registry, NodeRecord } from './registry';
 import { ineligibility, pickNode, pickVerifier, transportFor } from './scheduler';
@@ -103,6 +110,12 @@ const STALL_SLACK_S = 30;
 const LEAVE_SLACK_S = 5;
 /** A ranked 'empty' is the node's fault (a strike) only when every human vanished within this many ticks. */
 const EMPTY_TOGETHER_TICKS = 240;
+/**
+ * After a cold start with unfinished matches, nothing is voided for being silent or late this
+ * long: the nodes lost their control link with the old process and need it to reconnect. The
+ * agent's backoff doubles from 1 s to a 30 s cap, +-25 %: six tries take about 76 s at worst.
+ */
+export const RESTART_GRACE_MS = 90_000;
 
 /** A request to a node without its correlation id (distributive Omit over the request variants). */
 type RpcRequest = Extract<ToNode, { rid: string }> extends infer U ? (U extends unknown ? Omit<U, 'rid'> : never) : never;
@@ -239,6 +252,10 @@ export interface ControlPlaneOptions {
   /** Replay storage (R2 in production). */
   replays: { put(matchId: string, bytes: Uint8Array): Promise<void>; get(matchId: string): Promise<Uint8Array | null> };
   onOutcome?: (o: MatchOutcome, m: MatchEntry) => void;
+  /** Where match changes are written as they happen, each before the message that depends on it (none: memory only). */
+  store?: MatchStore;
+  /** How long a cold start with unfinished matches waits for the nodes (default RESTART_GRACE_MS). */
+  restartGraceMs?: number;
   now?: () => number;
   log?: (msg: string) => void;
 }
@@ -330,6 +347,9 @@ export class ControlPlane {
   private readonly lastStrike = new Map<string, number>();
   /** Matches the matchmaker asked for and no node could take (region, when): demand the nodes did not meet. */
   private unplaced: Array<{ region: string; at: number }> = [];
+  private readonly restartGraceMs: number;
+  /** Until then a cold start waits for its nodes: see inGrace(). */
+  private graceUntil = 0;
 
   constructor(o: ControlPlaneOptions) {
     this.o = o;
@@ -343,6 +363,54 @@ export class ControlPlane {
     this.requireRelay = o.requireRelay !== false;
     const rate = o.casualVerifyRate ?? CASUAL_VERIFY_RATE;
     this.casualVerifyRate = Number.isFinite(rate) ? Math.min(1, Math.max(0, rate)) : CASUAL_VERIFY_RATE;
+    this.restartGraceMs = o.restartGraceMs ?? RESTART_GRACE_MS;
+  }
+
+  // ---- persistence --------------------------------------------------------------------------
+
+  /** Write a match through the store. Call it before sending anything that depends on the change. */
+  private save(m: MatchEntry): void {
+    this.o.store?.save(m);
+  }
+
+  /**
+   * Load the match rows written through `store` into a fresh control plane, after its registry
+   * restored the nodes. `cold`: the process started without the nodes' sockets (a deploy or a
+   * crash drops them; a hibernation keeps them, and they are adopt()ed instead). Then, while some
+   * match is unfinished, nothing is voided for being silent or late until restartGraceMs passed:
+   * the same node process reconnects and keeps its matches; a new one voids them at its hello.
+   */
+  restore(rows: MatchRow[], opts: { cold: boolean }): void {
+    this.matches.clear();
+    for (const r of rows) {
+      const m = matchFromRow(r);
+      this.matches.set(m.assign.matchId, m);
+    }
+    // One outage is one strike across a restart too: the last strike of each node is its newest strike time.
+    this.lastStrike.clear();
+    for (const n of this.registry.list()) {
+      const last = n.strikeTimes[n.strikeTimes.length - 1];
+      if (last !== undefined) this.lastStrike.set(n.nodeId, last);
+    }
+    const open = this.unfinished();
+    this.graceUntil = opts.cold && open > 0 ? this.now() + this.restartGraceMs : 0;
+    this.log(`restored ${rows.length} matches (${open} unfinished)${this.graceUntil > 0 ? `: ${Math.round(this.restartGraceMs / 1000)} s for the nodes to reconnect` : ''}`);
+  }
+
+  /** Matches not settled yet (assigned, reporting, verifying): the DO keeps its alarm while there are any. */
+  unfinished(): number {
+    let n = 0;
+    for (const m of this.matches.values()) if (m.state !== 'done') n++;
+    return n;
+  }
+
+  /**
+   * A cold start is still waiting for its nodes: the sweep voids no match of a silent node and
+   * none past its report deadline, and the verification queue gives up on nothing. Cooldowns,
+   * probes, the purge and verification dispatch go on.
+   */
+  inGrace(): boolean {
+    return this.now() < this.graceUntil;
   }
 
   private ice(purpose: 'node' | 'player'): Promise<IceServer[]> {
@@ -358,6 +426,30 @@ export class ControlPlane {
     s.authTimer = setTimeout(() => {
       if (!s.nodeId) link.close(4401, 'auth timeout');
     }, AUTH_TIMEOUT_MS);
+    return s;
+  }
+
+  /**
+   * A node socket that outlived a hibernation of the Durable Object, logged in before it (the
+   * socket's `{ nodeId }` attachment): an authenticated session again, with no new challenge.
+   * Sessions live in memory, so without this the first message after a wake would hit 'auth
+   * first'. An unknown or banned node is closed with 4401 (null). The node's next heartbeat
+   * brings its live fields back.
+   */
+  adopt(link: NodeLink, nodeId: string): Session | null {
+    const n = this.registry.node(nodeId);
+    if (!n || n.status === 'banned') {
+      link.close(4401, 'unknown node');
+      return null;
+    }
+    const s = new Session(link);
+    s.nodeId = nodeId;
+    const old = this.sessions.get(nodeId);
+    if (old) {
+      old.link.close(4000, 'replaced');
+      this.onClose(old);
+    }
+    this.sessions.set(nodeId, s);
     return s;
   }
 
@@ -412,7 +504,10 @@ export class ControlPlane {
         this.registry.heartbeat(nodeId, hb, this.now());
         for (const x of hb.matches) {
           const m = x.tick > 0 ? this.matches.get(x.matchId) : undefined;
-          if (m && m.nodeId === nodeId) m.startedSeen = true;
+          if (m && m.nodeId === nodeId && !m.startedSeen) {
+            m.startedSeen = true;
+            this.save(m); // once per match, not per heartbeat
+          }
         }
         return;
       }
@@ -681,7 +776,7 @@ export class ControlPlane {
         tickets.push({ playerId: e.playerId, slot: e.slot, team: e.team, ticket });
       }
       const length = req.matchLengthSeconds > 0 ? req.matchLengthSeconds : 600;
-      this.matches.set(assign.matchId, {
+      const m: MatchEntry = {
         assign,
         nodeId: node.nodeId,
         transport,
@@ -709,7 +804,9 @@ export class ControlPlane {
         lastTry: 0,
         inFlight: false,
         doneAt: 0,
-      });
+      };
+      this.matches.set(assign.matchId, m);
+      this.save(m); // before the tickets go out: a restart must still know the match their players join
       return { matchId: assign.matchId, nodeId: node.nodeId, nodeName: node.name, transport, wsUrl: this.urlFor(node, transport, assign.matchId), tickets };
     }
     return this.noPlace(req, refused, transports);
@@ -742,12 +839,15 @@ export class ControlPlane {
     if (!m.assign.roster.some((r) => r.kind === 'player' && r.playerId === playerId)) throw new NodeRefused('not_in_match');
     if (m.state !== 'assigned') throw new NodeRefused('match_over');
     if (!this.isOnline(m.nodeId)) throw new NodeRefused('offline'); // nothing recorded: the player may still rejoin
-    // Before sending: the node may record the takeover even if its reply is lost.
+    // Before sending, and written: the node may record the takeover even if its reply is lost, and
+    // a restart that forgot leaveAt would turn that honest takeover into a 'bad_takeover'.
     m.leaves.add(playerId);
     if (!m.leaveAt.has(playerId)) m.leaveAt.set(playerId, this.now());
     if (opts.connected === false) m.neverJoined.add(playerId);
+    this.save(m);
     const a = await this.call<LeaveAnswer>(m.nodeId, { t: 'leave', matchId, playerId });
     m.left.add(playerId);
+    this.save(m);
     return a;
   }
 
@@ -773,7 +873,10 @@ export class ControlPlane {
   async rtcOffer(nodeId: string, matchId: string, ticket: string, sdp: string): Promise<RtcAnswer> {
     if (typeof sdp !== 'string' || sdp.length > 32 * 1024) throw new NodeRefused('bad_offer');
     const { m, playerId } = await this.rtcCheck(nodeId, matchId, ticket);
-    m.offered.add(playerId);
+    if (!m.offered.has(playerId)) {
+      m.offered.add(playerId);
+      this.save(m); // the evidence a no-show is judged on
+    }
     const iceServers = await this.ice('node');
     return this.call<RtcAnswer>(nodeId, { t: 'rtcOffer', matchId, ticket, sdp, iceServers }, RTC_OFFER_TIMEOUT_MS);
   }
@@ -792,6 +895,8 @@ export class ControlPlane {
     if (m.report || m.state !== 'assigned') return { ok: false, status: 409, code: 'already_reported' };
     await this.o.replays.put(matchId, bytes);
     m.replaySha = sha;
+    // Before the 200: a restart that forgot the upload would strike the node's honest 'ended' as 'no_replay'.
+    this.save(m);
     return { ok: true };
   }
 
@@ -931,6 +1036,9 @@ export class ControlPlane {
     m.state = 'verifying';
     m.queuedAt = this.now();
     m.lastTry = 0;
+    // Before the ack: the node forgets an acked report, so only this row keeps the match queued.
+    // ('reporting' is never written: it only lasts across the replay read above.)
+    this.save(m);
     this.pump();
     return true;
   }
@@ -938,10 +1046,12 @@ export class ControlPlane {
   /** Dispatch every queued verification that can go now (called on reports, verifier hellos and sweeps). */
   pump(force = false): void {
     const now = this.now();
+    const grace = this.inGrace();
     for (const m of this.matches.values()) {
       if (m.state !== 'verifying' || m.inFlight) continue;
       if (!force && m.lastTry !== 0 && now - m.lastTry < VERIFY_RETRY_MS) continue;
-      if (now - m.queuedAt > VERIFY_MAX_WAIT_MS) {
+      // After a restart the verifier needs its reconnect too: try, but give up on nothing yet.
+      if (now - m.queuedAt > VERIFY_MAX_WAIT_MS && !grace) {
         this.log(`ALERT match ${m.assign.matchId} could not be verified for ${VERIFY_MAX_WAIT_MS / 3_600_000} h`);
         this.voidMatch(m, 'unverified');
         continue;
@@ -1149,12 +1259,16 @@ export class ControlPlane {
     return m.assign.roster.filter((e) => e.kind === 'player' && e.playerId).map((e) => e.playerId as string);
   }
 
-  /** Settle a match once (later calls are ignored). */
+  /**
+   * Settle a match once (later calls are ignored). The store gets the settled row before anything
+   * else hears of it (in the DO, with the outbox rows that deliver the outcome, in one transaction).
+   */
   private finish(m: MatchEntry, o: MatchOutcome): void {
     if (m.state === 'done') return;
     m.state = 'done';
     m.outcome = o;
     m.doneAt = this.now();
+    this.o.store?.finished(m, o);
     this.log(`match ${m.assign.matchId.slice(0, 8)} -> ${o.kind}${o.kind === 'void' ? ' (' + o.reason + ')' : ''}${m.ledger ? `, ${m.ledger.points} pts` : ''}`);
     try {
       this.o.onOutcome?.(o, m);
@@ -1168,6 +1282,7 @@ export class ControlPlane {
   /** Call every few seconds: silent nodes go offline (their matches void), cooldowns lift, queues retry. */
   sweep(): void {
     const now = this.now();
+    const grace = this.inGrace();
     const { offline, restored } = this.registry.sweep(now);
     for (const n of restored) {
       this.log(`node ${n.name}: strike cooldown over, back to ${n.status}`);
@@ -1181,10 +1296,11 @@ export class ControlPlane {
       }
     }
     // A node gone for HEARTBEAT_TIMEOUT_MS (socket closed, or silent): its running matches are void,
-    // one strike for the outage. A quick reconnect of the same process keeps them.
+    // one strike for the outage. A quick reconnect of the same process keeps them. Not while a
+    // restart waits for its nodes: they all look gone then.
     const gone = new Set<string>();
     for (const m of this.matches.values()) {
-      if (m.state !== 'assigned' || gone.has(m.nodeId) || this.isOnline(m.nodeId)) continue;
+      if (grace || m.state !== 'assigned' || gone.has(m.nodeId) || this.isOnline(m.nodeId)) continue;
       const n = this.registry.node(m.nodeId);
       if (!n || now - n.lastSeen > HEARTBEAT_TIMEOUT_MS) gone.add(m.nodeId);
     }
@@ -1195,10 +1311,16 @@ export class ControlPlane {
         void this.probe(n.nodeId);
       }
     }
+    // No report by the deadline: void, one strike. Not in a restart's grace: a deadline that passed
+    // while the control plane was down is nobody's fault, and the node re-sends its report at the welcome.
     const late = new Set<string>();
-    for (const m of this.matches.values()) if ((m.state === 'assigned' || m.state === 'reporting') && now > m.deadline) late.add(m.nodeId);
+    for (const m of this.matches.values()) if (!grace && (m.state === 'assigned' || m.state === 'reporting') && now > m.deadline) late.add(m.nodeId);
     for (const id of late) this.voidMatchesOf(id, 'no_report', (m) => (m.state === 'assigned' || m.state === 'reporting') && now > m.deadline);
-    for (const [id, m] of this.matches) if (m.state === 'done' && now - m.doneAt > DONE_RETENTION_MS) this.matches.delete(id);
+    for (const [id, m] of this.matches) {
+      if (m.state !== 'done' || now - m.doneAt <= DONE_RETENTION_MS) continue;
+      this.matches.delete(id);
+      this.o.store?.drop(id);
+    }
     this.unplaced = this.unplaced.filter((u) => now - u.at < UNPLACED_WINDOW_MS);
     for (const id of [...this.deferredUpdates]) this.maybeUpdate(id);
     this.pump();
