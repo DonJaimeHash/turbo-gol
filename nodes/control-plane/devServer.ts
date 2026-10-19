@@ -102,7 +102,7 @@ export async function startControlPlane(opts: DevServerOptions = {}): Promise<De
   const wasm = await loadWasm();
   const build: BuildId = opts.build ?? { version: DEFAULT_VERSION, protocol: PROTOCOL_VERSION, wasmSha256: wasm.sha256 };
   const channel: ReleaseChannel = opts.channel ?? { stable: build.version, minimum: '0.0.0' };
-  const registry = new Registry({ allowInsecure: true, trustedOperators: opts.trustedOperators ?? [], regions: REGIONS.map((r) => r.id) });
+  const registry = new Registry({ allowInsecure: true, trustedOperators: opts.trustedOperators ?? [], regions: REGIONS.map((r) => r.id), log });
   const ledger = new Ledger();
   const shop = new Shop(ledger);
   const replays = new Map<string, Uint8Array>();

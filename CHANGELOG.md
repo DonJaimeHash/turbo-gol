@@ -18,6 +18,11 @@ All notable changes to Turbogol are documented here. The format follows
   and re-simulates the replays before any rating is written (every ranked match; casual matches by
   sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
   Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
+- Community nodes: the control plane's registry writes its registration tokens and nodes to a store
+  as they change (never on heartbeats) and loads them back after a restart, re-reading which
+  operators are trusted, so a deploy will not orphan a registered node. One token registers one node
+  even when two registrations race, and every token or node of a trusted operator logs an ALERT
+  line.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 

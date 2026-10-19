@@ -30,10 +30,13 @@ function online(n, now, patch = {}) {
   return n;
 }
 
+// Trusted operators' tokens and nodes log ALERT lines: keep the test output clean.
+const quiet = { log: () => undefined };
+
 const hello = (patch = {}) => ({ build: BUILD, roles: ['host'], transports: ['rtc'], publicUrl: null, rtcReady: true, specs: SPECS, capacity: CAP, draining: false, egressCapGB: null, ...patch });
 
 test('registration tokens: single use, expiry, URL rules, transports', async () => {
-  const reg = new Registry();
+  const reg = new Registry(quiet);
   const op = { id: 'op1', name: 'Juan' };
   const now = 1_000_000;
   const { token } = await reg.createToken(op, 'SA', now);
@@ -68,7 +71,7 @@ test('registration tokens: single use, expiry, URL rules, transports', async () 
 });
 
 test('reachability: wss by probe, rtc by its self-test; trusted nodes skip probation', async () => {
-  const reg = new Registry();
+  const reg = new Registry(quiet);
   const op = { id: 'op1', name: 'Juan' };
   const wss = await regNode(reg, op, 0);
   assert.equal(reg.markReachable(wss.nodeId, 1), 'probation');
@@ -87,7 +90,7 @@ test('reachability: wss by probe, rtc by its self-test; trusted nodes skip proba
 });
 
 test('status rules: verified matches -> active, failure -> suspended for review', async () => {
-  const reg = new Registry();
+  const reg = new Registry(quiet);
   const n = await regNode(reg, { id: 'op1', name: 'Juan' }, 0);
   reg.markReachable(n.nodeId, 1);
   for (let i = 0; i < PROBATION_MATCHES - 1; i++) assert.equal(reg.onVerified(n.nodeId, false, true), null);
@@ -99,7 +102,7 @@ test('status rules: verified matches -> active, failure -> suspended for review'
 });
 
 test('strikes: they expire after a week; three in a week suspend for a day, then the node is back', async () => {
-  const reg = new Registry();
+  const reg = new Registry(quiet);
   const n = await regNode(reg, { id: 'op1', name: 'Juan' }, 0, { publicUrl: null });
   reg.connected(n.nodeId, hello(), 1);
   reg.setStatus(n.nodeId, 'active', null);
@@ -127,7 +130,7 @@ test('strikes: they expire after a week; three in a week suspend for a day, then
 });
 
 test('placement: every eligibility rule, transports, least-loaded quarter, random spread', async () => {
-  const reg = new Registry();
+  const reg = new Registry(quiet);
   const now = 50_000;
   const a = online(await regNode(reg, { id: 'opA', name: 'A' }, 0), now);
   const b = online(await regNode(reg, { id: 'opB', name: 'B' }, 0), now);
@@ -165,7 +168,7 @@ test('placement: every eligibility rule, transports, least-loaded quarter, rando
 });
 
 test('verifiers: trusted only, same simulation, never the community host, its operator or an operator who played; random among the least busy', async () => {
-  const reg = new Registry();
+  const reg = new Registry(quiet);
   const now = 50_000;
   const a = online(await regNode(reg, { id: 'opA', name: 'A' }, 0), now);
   // A community verifier cannot register any more; one from before the rule is still never picked.

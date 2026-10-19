@@ -56,7 +56,8 @@ async function setup(opts = {}) {
   const ctl = await generateEd25519();
   const nodeKeys = await generateEd25519();
   const nodeKey = await importPrivateKey(nodeKeys.privateKey);
-  const registry = new Registry({ allowInsecure: true, trustedOperators: opts.trusted ? ['op1'] : [] });
+  const log = process.env.CPLOG ? (m) => console.log('[cp] ' + m) : () => undefined;
+  const registry = new Registry({ allowInsecure: true, trustedOperators: opts.trusted ? ['op1'] : [], log });
   const replays = new Map();
   const outcomes = [];
   let nodeId = '';
@@ -85,7 +86,7 @@ async function setup(opts = {}) {
     },
     onOutcome: (o) => outcomes.push(o),
     now,
-    log: process.env.CPLOG ? (m) => console.log('[cp] ' + m) : () => undefined,
+    log,
   });
   const { token } = await registry.createToken({ id: 'op1', name: 'Operador' }, 'SA', clock);
   const reg = await registry.register({ token, publicKey: nodeKeys.publicKey, roles: ['host'], ...(opts.rtc ? { publicUrl: null, transports: ['rtc'] } : { publicUrl: URL_ }), build, specs: SPECS, capacity: CAP }, clock);
@@ -400,7 +401,7 @@ test('a failed verification replaces a strike pause with manual review; project 
   reg.sweep(STRIKE_COOLDOWN_MS + 10);
   assert.equal(n.status, 'suspended', 'the cooldown no longer lifts it');
 
-  const t = new Registry({ trustedOperators: ['proj'] });
+  const t = new Registry({ trustedOperators: ['proj'], log: () => undefined });
   const k2 = await generateEd25519();
   const tok = await t.createToken({ id: 'proj', name: 'Proyecto' }, 'SA', 0);
   const v = (await t.register({ token: tok.token, publicKey: k2.publicKey, roles: ['host', 'verify'], publicUrl: 'wss://203.0.113.2', build, specs: SPECS, capacity: CAP }, 0)).node;
