@@ -28,7 +28,8 @@ All notable changes to Turbogol are documented here. The format follows
   voiding anything, so a match running through a deploy is still rated, with its leavers. A project
   node whose control link drops for less than a minute keeps its matches too. A host's public
   address is checked again every five minutes: one that fails three checks in a row gets no matches
-  until it answers again, with an ALERT line.
+  until it answers again, with an ALERT line. In a ranked match on a project node, a player with no
+  connection at the final whistle is rated as a leaver, as on the game's own servers.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 

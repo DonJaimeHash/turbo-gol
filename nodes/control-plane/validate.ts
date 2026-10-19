@@ -125,8 +125,10 @@ function parseStats(v: unknown): MatchStats | null {
     if (!isObj(s)) return null;
     const slot = int(s.slot, 0, MAX_SLOTS - 1);
     const connectedMs = num(s.connectedMs, 0, 1e10);
-    if (slot === null || connectedMs === null) return null;
-    slots.push({ slot, received: int(s.received) ?? 0, dropped: int(s.dropped) ?? 0, underruns: int(s.underruns) ?? 0, overruns: int(s.overruns) ?? 0, connectedMs });
+    // Nodes before 0.2.0 do not send it: connected, so only relayed leaves make a leaver, as before.
+    const connectedAtEnd = s.connectedAtEnd === undefined ? true : bool(s.connectedAtEnd);
+    if (slot === null || connectedMs === null || connectedAtEnd === null) return null;
+    slots.push({ slot, received: int(s.received) ?? 0, dropped: int(s.dropped) ?? 0, underruns: int(s.underruns) ?? 0, overruns: int(s.overruns) ?? 0, connectedMs, connectedAtEnd });
   }
   return { ticks, durationMs, slots, tickLagP99Ms, egressBytes };
 }

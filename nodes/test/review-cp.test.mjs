@@ -14,6 +14,7 @@ const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES, usableTransports } = aw
 const { Ledger } = await import('../control-plane/ledger.ts');
 const { generateEd25519, sign, sha256Hex } = await import('../shared/edcrypto.ts');
 const { replayRequestMessage } = await import('../shared/controlProtocol.ts');
+const { parseReport } = await import('../control-plane/validate.ts');
 
 test("the outcome comes from the replay: a report whose end reason disagrees is a failed verification", async () => {
   const env = await setup({ status: 'active' });
@@ -40,6 +41,46 @@ test('a rated result uses the verdict and flags only proven leaves', async () =>
   assert.deepEqual(entry.outcome.players.map((x) => x.left), [false, true], 'only the proven leaver');
   // A quit pressed after the whistle is refused like MatchDO's 410 and flags nobody.
   await assert.rejects(env.cp.leave(p.matchId, 'a'.repeat(16)), (e) => e.code === 'match_over');
+});
+
+test('on a project node a ranked player with no socket at the whistle is a leaver; a community node’s word on it decides nothing', async () => {
+  const stats = (gone) => ({
+    ticks: 700,
+    durationMs: 6_000,
+    tickLagP99Ms: 1,
+    egressBytes: 1,
+    slots: [0, 1].map((slot) => ({ slot, received: 700, dropped: 0, underruns: 0, overruns: 0, connectedMs: 6_000, connectedAtEnd: slot !== gone })),
+  });
+  /** A ranked forfeit (B quits), with slot `gone` disconnected at the whistle: who is rated as a leaver. */
+  const leavers = async (env, gone) => {
+    const p = await env.place([human('a'), human('b')], { ranked: true });
+    env.advance(6_000);
+    await env.cp.leave(p.matchId, 'b'.repeat(16));
+    const { entry } = await env.finish(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1), stats: stats(gone) });
+    assert.equal(entry.outcome.kind, 'rated', JSON.stringify(entry.outcome));
+    return entry.outcome.players.map((x) => x.left);
+  };
+  const project = await setup({ trusted: true });
+  await wait(() => project.registry.node(project.nodeId).status === 'active');
+  assert.deepEqual(await leavers(project, 0), [true, true], 'A closed the tab: a leaver, like on MatchDO');
+  assert.deepEqual(await leavers(project, -1), [false, true]);
+  const community = await setup({ status: 'active' });
+  assert.deepEqual(await leavers(community, 0), [false, true], 'only the leave the control plane relayed');
+});
+
+test('connectedAtEnd: absent reads as connected (nodes before 0.2.0); anything but a boolean is a bad report', () => {
+  const report = (slot) => ({
+    kind: 'ended',
+    matchId: 'm'.repeat(64),
+    result: { winner: 0, blue: 1, red: 0, endTick: 100, endReason: 'rules' },
+    replaySha256: 'a'.repeat(64),
+    replayBytes: 10,
+    stats: { ticks: 100, durationMs: 1_000, tickLagP99Ms: 1, egressBytes: 1, slots: [{ slot: 0, received: 100, dropped: 0, underruns: 0, overruns: 0, connectedMs: 1_000, ...slot }] },
+  });
+  assert.equal(parseReport(report({})).stats.slots[0].connectedAtEnd, true);
+  assert.equal(parseReport(report({ connectedAtEnd: false })).stats.slots[0].connectedAtEnd, false);
+  assert.equal(parseReport(report({ connectedAtEnd: 'no' })), null);
+  assert.equal(parseReport(report({ connectedAtEnd: 0 })), null);
 });
 
 test('a node holding its report cannot turn a later, automatic leave into an abandon', async () => {

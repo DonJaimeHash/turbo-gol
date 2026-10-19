@@ -1437,6 +1437,10 @@ export class ControlPlane {
     if (rateable) {
       const leftSlots = new Set(verdict.leftSlots ?? []);
       const roster = m.assign.roster.filter((e) => e.kind === 'player' && e.playerId);
+      // MatchDO's rule on a project node: no socket at the whistle is leaving (closing the tab
+      // escapes nothing). A community node's word on its sockets decides nothing; the replay
+      // cannot tell a gone player from one holding no input, so there only proven leaves count.
+      const goneAtEnd = (slot: number) => host.trusted && r.stats.slots.some((s) => s.slot === slot && !s.connectedAtEnd);
       return this.finish(m, {
         kind: 'rated',
         matchId,
@@ -1445,8 +1449,8 @@ export class ControlPlane {
         winner: verdict.winner,
         blue: verdict.score.blue,
         red: verdict.score.red,
-        // Only leaves the replay proves (each one went through leave() above) make a leaver.
-        players: roster.map((e) => ({ id: e.playerId as string, team: e.team, left: leftSlots.has(e.slot) })),
+        // Leaves the replay proves (each one went through leave() above) make a leaver.
+        players: roster.map((e) => ({ id: e.playerId as string, team: e.team, left: leftSlots.has(e.slot) || goneAtEnd(e.slot) })),
         nodeId: m.nodeId,
       });
     }
