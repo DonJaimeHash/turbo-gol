@@ -73,10 +73,17 @@ export interface AgentHandlers {
 export interface AgentOptions {
   heartbeatMs?: number;
   log?: (msg: string) => void;
-  /** Replay upload attempts (network errors, 5xx, 429) before the match is reported lost. */
+  /**
+   * Replay upload attempts (network errors, 5xx, 429) before the match is reported lost. The
+   * default 12, with the default waits, keeps trying for about 75 s: a match that ends while the
+   * control plane restarts (a Worker deploy) still gets its replay stored, instead of a 'lost'
+   * report, which is a strike for the node and a void for the players.
+   */
   uploadAttempts?: number;
   /** First wait between upload attempts (doubles, up to 10 s). */
   uploadRetryMs?: number;
+  /** Upload retry waits go through this when given (tests record them); stop() cuts a wait short either way. */
+  sleep?: (ms: number) => Promise<void>;
   /** While connected, re-send every this often the reports still unacknowledged... */
   resendMs?: number;
   /** ...that were last sent at least this long ago. */
@@ -104,6 +111,7 @@ export class Agent {
   private readonly resendAfterMs: number;
   private readonly staleRetries: number;
   private readonly staleWaitMs: number;
+  private readonly sleepHook: ((ms: number) => Promise<void>) | undefined;
   private key: Promise<CryptoKey>;
   private ws: WebSocket | null = null;
   private authed = false;
@@ -130,12 +138,13 @@ export class Agent {
     this.h = h;
     this.heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
     this.log = opts.log ?? ((m) => console.log(`[agent] ${m}`));
-    this.uploadAttempts = opts.uploadAttempts ?? 6;
+    this.uploadAttempts = opts.uploadAttempts ?? 12;
     this.uploadRetryMs = opts.uploadRetryMs ?? 500;
     this.resendMs = opts.resendMs ?? 20_000;
     this.resendAfterMs = opts.resendAfterMs ?? 15_000;
     this.staleRetries = opts.staleRetries ?? 2;
     this.staleWaitMs = opts.staleWaitMs ?? 30_000;
+    this.sleepHook = opts.sleep;
     this.key = importPrivateKey(id.privateKey);
   }
 
@@ -343,13 +352,15 @@ export class Agent {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const wake = (): void => {
-        clearTimeout(timer);
+        if (timer !== undefined) clearTimeout(timer);
         this.sleepers.delete(wake);
         resolve();
       };
-      const timer = setTimeout(wake, ms);
       this.sleepers.add(wake);
+      if (this.sleepHook) this.sleepHook(ms).then(wake, wake);
+      else timer = setTimeout(wake, ms);
     });
   }
 
