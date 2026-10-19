@@ -18,6 +18,8 @@ and what we expect from a pull request. By participating you agree to follow our
 - **Propose a feature:** open a *Feature request* or start a Discussion before writing a big change,
   so we can agree on the design first.
 - **Translate:** add your language in one file, see [Translating](#translating) below.
+- **Improve the bots:** there is a phased plan with measurable targets, see
+  [Working on the bots](#working-on-the-bots) below.
 - **Chat with us:** join the [Turbogol Discord](https://discord.gg/sPyf787aHP) to ask questions, find
   people to playtest with and talk about ideas. Bugs and feature requests still go through Issues.
 
@@ -65,6 +67,25 @@ language (say French, code `fr`):
 
 Names from commercial games (game titles, studios, mode names) must not appear in translations
 either; see [TRADEMARKS.md](TRADEMARKS.md).
+
+## Working on the bots
+
+The bots live in `src/ai/` ([how they decide](src/ai/README.md)); the rework plan, with the
+constraints every change must keep and the phases you can pick up, is
+[docs/bots/REWORK.md](docs/bots/REWORK.md). In short:
+
+- Bots must stay deterministic (seeded `Rng` only, all persistent state in `saveState` /
+  `loadState`), allocation-free in `think()` and within the CPU budget, because P2P peers, the
+  server and community nodes all run them and must agree tick by tick.
+- A change in bot behaviour bumps the protocol versions (the plan lists them).
+- Measure against `main` and paste the results in the pull request:
+
+  ```sh
+  node scripts/bot-skills.mjs                       # skill scenarios, under half a minute
+  node scripts/bot-bench.mjs --matches=40           # matches 1v1 / 2v2 / 3v3, about ten minutes
+  ```
+
+  A pull request must not make any skill or any mode worse ("A worse" in the bench).
 
 ## Before you open a pull request
 
