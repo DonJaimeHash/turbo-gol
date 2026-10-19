@@ -7,6 +7,9 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Demolished cars explode: a fireball with flames, team-coloured sparks, falling embers, a ground
+  shockwave and a flash, with its own explosion sound (quieter far from the camera). Every car,
+  in every kind of match.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
