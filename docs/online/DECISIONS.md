@@ -32,7 +32,7 @@ propuestos en los informes, que quedan vigentes salvo cambio explícito.
 |---|---|
 | Workers Paid (base) | 5 |
 | Hetzner (NA/EU ranked + coturn + verificador) | 6–12 |
-| VPS São Paulo (ranked SAM) | 7 |
+| VPS São Paulo (ranked SAM): Hostinger KVM 2 en Campinas, 24 meses pagados por adelantado (US$ 210,96, hasta 2028-10-19); renueva a US$ 14,99 / mes | 8,79 + impuestos (con tarjeta argentina, 21 % de IVA: ≈ 10,64) |
 | Reserva para uso de Durable Objects (fase 1 y plan B) y TURN sobre los 1.000 GB gratis | 26–32 |
 | **Total** | **≤ 50** |
 

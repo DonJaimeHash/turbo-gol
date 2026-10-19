@@ -29,152 +29,399 @@ Cada etapa necesita todo lo de la anterior.
   la carpeta privada de la PC del mantenedor, fuera del repo. Guardar una copia en un gestor de
   contraseñas.
 - [ ] **Tratar la clave de releases actual como clave de desarrollo.** La release 0.1.0 se firmó
-  en esta PC (`npm run build` usa `--sign .keys/release.json`), y `ARQUITECTURA.md` promete que
-  la clave vive en CI con aprobación manual o en una máquina sin conexión. Antes de la primera
-  release real: generar una clave nueva ahí y armar los instaladores con su mitad pública.
+  en esta PC (`npm run build` usa `--sign .keys/release.json`). Antes de la primera release real:
+  una clave nueva (M5) que viva en un entorno de CI con aprobación manual (M6), y los instaladores
+  armados con su mitad pública (P12). Ver la etapa 1.
 
 ## Etapa 1: beta con el VPS de São Paulo
 
 Objetivo: el VPS del proyecto hostea partidas por WebSocket (el cliente actual ya sabe
 conectarse) y verifica. Sin PCs hogareñas todavía, así que no hacen falta TURN ni el adaptador
 WebRTC. El VPS es de confianza y no gana puntos, así que el ledger y la tienda esperan a la
-etapa 2.
+etapa 2. Ningún jugador nota un cambio hasta que un flag de KV prende los nodos.
 
-### Plano de control en el Worker
+El trabajo está partido en ocho PR, [1] a [8]. Adentro de cada uno, P2 a P30 son sus piezas; M1 a
+M16, las acciones que solo puede hacer el mantenedor; las D, las propuestas de "Decisiones
+pendientes del mantenedor", al final. Las líneas citadas son del commit `dead8ec` (19/10/2026).
 
-- [ ] **`NodeRegistryDO` con persistencia.** Hoy todo el estado vive en memoria: nodos, tokens,
-  partidas, cola de verificación, ledger y tienda (`control-plane/registry.ts`, `ledger.ts`,
-  `shop.ts`, `controlPlane.ts`). Un deploy o un desalojo del DO lo borra todo, y las clases no
-  tienen funciones de guardar y cargar: hay que diseñarlas. Para esta etapa alcanza con guardar,
-  después de cada cambio, el registro con la clave pública de cada nodo y todas las partidas que
-  no terminaron: estados `assigned`, `reporting` y `verifying` (`MatchState` en
-  `control-plane/controlPlane.ts`).
-  Si se pierde una en `verifying`, su ranked nunca se califica. Esfuerzo: grande.
-- [ ] **Período de gracia después de un reinicio del DO.** Cada deploy del Worker corta la
-  conexión de todos los nodos. Al volver, `sweep()` anularía sus partidas y les daría un strike
-  si su último heartbeat guardado tiene más de 15 s. El DO tiene que esperar a que los nodos
-  se reconecten antes de barrer.
-- [ ] **Configuración de Wrangler.** Binding `NODES` con su migración `new_sqlite_classes`,
-  buckets R2 `NODE_REPLAYS` y `NODE_RELEASES`, el secreto `NODE_CONTROL_PRIVATE_KEY` y las
-  variables `NODE_CONTROL_PUBLIC_KEY` y `NODE_TRUSTED_OPERATORS`. Agregar `/nodes/*` a
-  `run_worker_first` (`server/wrangler.jsonc:49`): sin eso, esas rutas devuelven el `index.html`
-  del juego. Una regla de ciclo de vida en `NODE_REPLAYS` que borre los replays a los 30 días.
-  Esfuerzo: chico.
-- [ ] **El build de la partida.** `ControlPlane` necesita el SHA-256 de `rocketsim.wasm` y
-  `PROTOCOL_VERSION` para elegir nodos y verificadores. El Worker importa el wasm ya compilado y
-  no puede calcular su hash: el deploy tiene que dejarlo como constante o variable. Esfuerzo:
-  chico.
-- [ ] **Rutas `/nodes/*`** (`INTEGRACION.md` §2), con la sesión de cuenta real en lugar de
-  `x-dev-operator`, los límites documentados (registro 5 por IP por hora, tokens 10 por cuenta por
-  día, señalización 10 por IP por minuto) y sin invitados. Nada de `/dev/*`: en el servidor de
-  referencia cualquiera puede entrar como "Proyecto" (`control-plane/devServer.ts`). Incluye
-  `GET /nodes/releases/channel` como ruta propia. Sin la tienda en esta etapa: `/nodes/shop`,
-  `/nodes/shop/claim` y `/api/me/items` llegan en la etapa 2, con el ledger guardado. Esfuerzo:
-  medio.
-- [ ] **Solo el proyecto crea tokens.** `POST /nodes/tokens` responde 403 a toda cuenta que no
-  esté en `NODE_TRUSTED_OPERATORS`. Hoy `Registry.createToken` solo valida la región
-  (`control-plane/registry.ts:173`): con la ruta abierta, cualquier cuenta pondría un VPS a prueba
-  y hostearía casuales, con la IP de los jugadores a la vista y sin términos. Con este filtro no
-  hace falta otra ruta para el token del VPS de São Paulo.
-- [ ] **Un interruptor sin deploy.** Un flag de KV, `vm_disabled` como pide
-  `docs/online/DECISIONS.md`, que omite el gancho de los nodos y manda todo a `MatchDO`. Si el VPS
-  o el plano de control fallan en la beta, se apaga en un minuto. Esfuerzo: chico.
-- [ ] **Costo del DO: decidir el intervalo de heartbeat.** Las solicitudes cuestan poco: la alarma
-  de 5 s suma unas 518.000 por mes, y los mensajes de WebSocket entrantes cuentan 1 de cada 20.
-  Pasado el millón incluido, menos de US$ 0,10 por mes. Lo que sí pesa es la duración: un DO
-  solo hiberna tras 10 s sin eventos, así que con heartbeats o alarma cada 5 s nunca hiberna. Son
-  unos 324.000 GB-s por mes, el 81 % de los 400.000 incluidos en Workers Paid, compartidos con las
-  partidas en `MatchDO` (developers.cloudflare.com/durable-objects, páginas de precios y ciclo de
-  vida, 2026). Opciones: heartbeats cada 30 s con 90 s de tope, que tardan más en detectar un nodo
-  caído y en liberar los locks; o pagar esa duración.
+### El VPS
 
-### Matchmaker y resultados
+- [x] **Comprado** el 19/10/2026 por 24 meses: Hostinger KVM 2 en Campinas, Brasil (2 vCPU, 8 GB,
+  100 GB, 8 TB de transferencia por mes, Ubuntu 26.04). El precio real está en
+  `docs/online/DECISIONS.md`.
+- [x] **Endurecido** (M1, M2): acceso solo con clave, firewall con 22, 80 y 443, fail2ban,
+  actualizaciones de seguridad sin reinicios automáticos.
+- [x] **Con nombre y certificado** (M3): `sp1.turbo-gol.com`, registros A y AAAA solo DNS, y un
+  certificado de Let's Encrypt en Caddy.
+- [x] **Medido:** las pruebas de `nodes/` pasan en el VPS; el benchmark da de 52 a 77 partidas por
+  CPU; 12 partidas de 3 minutos grabadas en la PC del mantenedor y en el VPS verifican igual en
+  las dos máquinas, en los dos sentidos.
+- [ ] **(Opcional) medir el camino por el proxy de Cloudflare** antes de confirmar D4.
+- [ ] **La CPU bajo carga sostenida,** unos días antes de abrir: los créditos de CPU de Hostinger
+  pueden frenarla.
+- [ ] **Instalar el nodo** cuando estén [1], [6] y la release 0.2.0, y respaldar su `node.json`
+  (M11, M12).
 
-- [ ] **El gancho en `MatchmakerDO.formMatch`** (`server/src/MatchmakerDO.ts:1057`), como
-  describe `INTEGRACION.md` §3: equipos, `rankedLock` extraído, `issueNode`, un tipo de lock
-  `node` con su propia verificación (estados `assigned` o `reporting`). Esfuerzo: medio.
-- [ ] **El tope de salas no tiene que frenar a los nodos.** `MAX_ACTIVE_ROOMS = 20`
-  (`MatchmakerDO.ts:88`) se chequea en tres lugares: al entrar a la cola (línea 598, responde
-  `503`), al arrancar una sala privada (874) y antes de `formMatch` (1034). Al llegar al tope
-  nunca se intenta un nodo. El intento de nodo va primero, y las partidas en nodos no cuentan para
-  ese tope. Lo mismo con el flag `do_disabled`: hoy rechaza toda cola
-  (`server/src/index.ts:346`); con nodos, solo tiene que omitir el `MatchDO`.
-- [ ] **No reescribir la URL de una partida de nodo.** `queue()` cambia toda `wsUrl` por
-  `/ws/<id>` (`server/src/index.ts:392`).
-- [x] **IDs de partida de 64 caracteres.** Hecho: `randomHexId(32)` en `place()`. Las rutas del
-  Worker solo aceptan 64: el resultado ranked responde `400 bad_match_id`
-  (`server/src/accountRoutes.ts:394`), `/api/rejoin` también, y `/api/leave` ignora el id.
-- [ ] **`/api/rejoin` y `/api/leave` para partidas de nodo.** Aun con 64 caracteres, `/api/rejoin`
-  usa `env.MATCH.idFromString`, que rechaza un id que no es de un `MatchDO`: necesita su propio
-  camino hacia `ControlPlane.rejoinTicket()`. `/api/leave` lleva `{ matchId, connected }` a
-  `ControlPlane.leave()`.
-- [ ] **Resultados a `AccountsDO`**: `rated` a `/ranked-result`, `void` de una ranked a
-  `/ranked-cancel`, y `/release` al matchmaker de la región (`INTEGRACION.md` §4).
+Todo el detalle, el procedimiento de instalación y la operación: `VPS-SAO-PAULO.md`.
 
-### Cliente: cambios chicos que hacen falta de todos modos
+### Por qué este orden
 
-- [ ] **Esperar el resultado ranked más tiempo.** `waitRankedResult` prueba 15 veces, una por
-  segundo (`waitRankedResult` en `src/net/AccountClient.ts`). Un resultado de nodo llega solo después de subir el
-  replay y verificarlo. Mostrar "verificando" y seguir preguntando.
-- [ ] **Mandar `connected` en `/api/leave`.** Hoy el cliente manda solo `{ matchId }`
-  (el `post('/api/leave')` de `src/net/NetClient.ts`) y el Worker no pasa otro campo
-  (`server/src/index.ts:587`). Sin
-  `connected: false`, cancelar mientras conecta a un nodo cuenta como dodge en una ranked, aunque
-  el jugador nunca haya entrado. Esfuerzo: chico.
-- [ ] **Cerrar la pestaña en una ranked.** En `MatchDO`, un jugador desconectado al pitazo cuenta
-  como abandono. En un nodo solo cuentan las salidas que pasan por el plano de control, y el
-  cliente no avisa al cerrar la pestaña: cerrarla evita la sanción. Opciones: en nodos de
-  confianza, aceptar la regla de `MatchDO` con el dato del nodo; o que el cliente mande la salida
-  al cerrar, con `pagehide` y `fetch` con `keepalive: true`. `sendBeacon` no sirve: no puede
-  mandar el encabezado `Authorization` que pide `/api/leave`.
+- **Hoy el VPS no puede recibir jugadores.** El instalador baja primero `launcher.mjs` de
+  `/nodes/releases/` (`install/install.sh:108`), y esa URL devuelve el `index.html` del juego:
+  `/nodes/*` no está en `run_worker_first` (`server/wrangler.jsonc:49`) y el Worker manda al sitio
+  todo lo que no empieza con `/api/` (`server/src/index.ts:649`). No hay plano de control en el
+  Worker.
+- **El estado se guarda antes de instalar.** El registro vive en dos `Map` en memoria
+  (`control-plane/registry.ts:150-151`), el instalador siempre registra (`install/install.sh:132`)
+  y el nodo no se registra encima de su `node.json` sin `--force` (`node/main.ts:85-88`). Un VPS
+  registrado contra un plano de control que no guarda nada queda huérfano en el próximo deploy.
+- **Camino crítico:** [1] → [6] → la release 0.2.0 ([2], [5], M5, M6, M9, M10) → instalar el VPS →
+  [7] → [8] → canary → `nodes_on`. Unas 3 a 4 semanas para una persona. [2], [3] y [4] pueden ir
+  en paralelo desde ya, y [5] apenas existan las claves (M5). [3] tiene que estar desplegado antes
+  del canary.
 
-### Releases: antes de instalar el VPS
+### Los PR
 
-- [ ] **Publicar la primera release.** `install.sh` baja `launcher.mjs` y su firma de
-  `/nodes/releases/` antes de hacer nada (`install/install.sh:108`). Hoy la única forma de subirla
-  es `github/workflows/node-release.yml`. Si la clave nueva de la etapa 0 vive en CI, ese workflow
-  se instala en esta etapa. Si vive en una máquina sin conexión: firmar ahí y subir con
-  `wrangler r2 object put`. `channel.json` se sube aparte, siempre a mano.
-- [ ] **Bucket `NODE_RELEASES` y las rutas `/nodes/releases/*`.**
-- [ ] **Cada deploy del juego que cambie el wasm o el protocolo necesita una release del nodo.**
-  Sin ella, ningún nodo recibe partidas: elegir nodo y verificar exigen el mismo hash de wasm y la
-  misma versión de protocolo. La release se arma desde el mismo commit que se despliega, y el
-  canal se mueve en el mismo paso. Esto va a la lista de pasos de cada deploy.
-- [x] **Las pruebas de `nodes/` en CI.** Hecho: el trabajo "Community nodes (typecheck, tests)" de
-  `.github/workflows/ci.yml` corre en cada PR, así que un cambio en `MatchDO`, el protocolo o el
-  wasm que rompa los nodos frena el PR. CONTRIBUTING.md tiene el comando para correrlo local.
-- [ ] **`MatchRoom` es un port a mano de `MatchDO`.** Cada arreglo en `MatchDO` hay que llevarlo
-  también a `node/matchRoom.ts`.
+#### [1] nodes: persistencia y API del plano de control (P2-P7)
 
-### El VPS de São Paulo
+Objetivo: que el plano de control guarde su estado, pase un deploy sin anular partidas honestas y
+le dé al Worker lo que necesita. Depende de: nada.
 
-- [ ] **Darle un nombre DNS.** El chequeo de alcance hace `fetch` a `https://<publicUrl>/healthz`
-  desde el plano de control (`control-plane/controlPlane.ts`, `probe`), y un Worker no puede
-  hacer `fetch` a una IP: solo a nombres. Lo confirma la documentación de Cloudflare (Workers,
-  "Known issues", "Fetch to IP addresses", 28/09/2026). Con una IP, el VPS nunca pasa de pendiente
-  y nunca hostea. Lo más simple: un nombre como `sp1.turbo-gol.com`. El registro DNS tiene que
-  existir antes de correr el instalador.
-- [ ] **Con o sin el proxy de Cloudflare.** `docs/online/DECISIONS.md` (decisión 3, confirmada)
-  pone el servidor detrás del proxy. Sin proxy, la IP del VPS que verifica todo queda a la vista.
-  Probar las dos formas el primer día: que el chequeo de `/healthz` pase desde el Worker y cuánta
-  latencia suma el proxy desde Argentina.
-- [ ] **El instalador ya acepta un nombre:** `--public-host sp1.turbo-gol.com`
-  (`install/install.sh:50`) arma el Caddyfile para ese nombre. El perfil `shortlived` de Let's
-  Encrypt también sirve para nombres, con certificados de 6 días; sin ese bloque, salen los de
-  90 días.
-- [ ] **Instalarlo con `--roles host,verify --public-host sp1.turbo-gol.com --egress-cap-gb <GB del
-  plan>`** y respaldar `/var/lib/turbogol-node/node.json`. Sin `--public-host`, el instalador usa
-  la IP de `/nodes/whoami`. Sin `--egress-cap-gb`, nada frena al VPS antes de pasarse de la
-  transferencia incluida, como pide `docs/online/DECISIONS.md`.
-- [ ] **El plan del VPS dentro del presupuesto.** `docs/online/DECISIONS.md` le asigna US$ 7 por
-  mes, y `VPS-SAO-PAULO.md` recomienda 2 vCPU y 4 GB. Confirmar el precio en São Paulo antes de
-  alquilarlo, o corregir la línea del presupuesto. Anotar cuántas partidas da el benchmark del
-  instalador: es una medición pendiente de ese documento.
-- [ ] **Probar con un navegador real**, desde turbo-gol.com: una casual, una ranked, una salida y
-  un forfeit, y ver el resultado en la pantalla de fin de partida. Jugar con dos cuentas que no
-  sean la que registró el VPS: si juega el operador, el scheduler no usa su nodo
-  (`control-plane/scheduler.ts:57`) y la ranked cae en un `MatchDO` sin aviso. La casual, con la
-  conexión en "Servidor". Confirmar en el `Welcome` que `hostColo` dice `node:sao-paulo-1`.
+- [ ] **P2. `control-plane/persist.ts`:** funciones puras para guardar y cargar nodos, tokens y
+  partidas, con `STATE_VERSION`. No guarda lo que solo cambian los heartbeats (`online`,
+  `lastSeen`, `active`, `draining`, `tickLagP99Ms`, `egressGB`, `cpuLoad`). Una partida en
+  `reporting` vuelve como `assigned`: si no, su ack quedaría rechazado para siempre
+  (`control-plane/controlPlane.ts:845`) y el barrido la anularía con strike (`:1198-1200`). El
+  nodo reenvía sus reportes sin ack en cada `welcome` (`node/agent.ts:451`).
+- [ ] **P3. `Registry`:** guarda en cada cambio que importa, nunca en un heartbeat; carga al
+  arrancar y recalcula `trusted` desde la lista de operadores de confianza (hoy queda fijo al
+  registrar, `control-plane/registry.ts:235`). Los tokens también se guardan: vencen en una hora,
+  y un deploy entre crearlo e instalar rompería el registro. Arregla una carrera: dos `register`
+  con el mismo token pasan el chequeo de `:196` por los `await` de `:195` y `:199`.
+- [ ] **P4. `ControlPlane`:**
+  - Guarda cada partida **antes** de mandar el mensaje que depende de ella. Un `leaveAt` perdido
+    convierte una toma de control honesta en `bad_takeover`
+    (`control-plane/controlPlane.ts:1066-1069`); un `replaySha` perdido, un `ended` honesto en
+    `no_replay` (`:900-903`).
+  - Hoy `finish` llama a `onOutcome` sin esperar nada (`:1159-1163`): el resultado se guarda junto
+    con la partida terminada, y el Worker lo entrega desde una bandeja de salida.
+  - Una gracia de 90 s después de un arranque en frío con partidas sin terminar: el barrido no
+    anula por nodo fuera de línea (`:1185-1191`), por reporte vencido (`:1198-1200`) ni por las 6
+    horas (`:944-948`). 90 s porque el agente reintenta con esperas que se duplican de 1 s a 30 s,
+    ±25 % (`node/agent.ts:405-413`): seis intentos tardan unos 76 s.
+  - `adopt()` para los sockets que sobreviven a una hibernación del DO: las sesiones viven en
+    memoria (`control-plane/controlPlane.ts:320`).
+- [ ] **P5. La API para el Worker:** `rejoin` con códigos (`no_match`, `not_in_match`, `left`,
+  `match_over`, `offline`) en lugar del `null` de `rejoinTicket` (`controlPlane.ts:719-730`), que
+  no le dice al Worker si liberar el lock; `matchStatus` para verificar los locks; `hostsOnline`;
+  y `channelChanged()`, porque hoy el `minimum` del canal solo se mira cuando un nodo saluda
+  (`:405`) y para un verificador con la actualización en espera (`:1203`).
+- [ ] **P6. Volver a chequear el alcance:** un nodo alcanzable nunca se vuelve a probar
+  (`controlPlane.ts:499`; `reachableAt` solo se borra si cambia la URL,
+  `control-plane/registry.ts:308-312`). Con un certificado vencido o Caddy caído, el VPS seguiría
+  recibiendo ranked que nadie puede abrir. Cada 5 minutos; después de 3 fallas seguidas, fuera de
+  `wss` y un `ALERT`. Tiene que estar antes de `nodes_on`.
+- [ ] **P7. El abandono en nodos de confianza (`connectedAtEnd`):** `MatchDO` califica como
+  abandono a quien no tiene conexión al pitazo (`server/src/MatchDO.ts:863-872`); en un nodo solo
+  cuentan las salidas que pasan por el plano de control (`control-plane/controlPlane.ts:1121-1132`),
+  así que cerrar la pestaña evita la sanción. El nodo informa por lugar si seguía conectado al
+  final, y en un nodo de confianza eso cuenta (D6). Sale con el nodo 0.2.0.
+- [ ] **A decidir: un corte corto del enlace de control.** Con 15 s sin heartbeat, el barrido
+  anula las partidas del nodo (`:1186-1191`) aunque el nodo las siga jugando, y el `ended` que
+  llega después se descarta (`:847`): los jugadores terminan una ranked que ya no cuenta.
+  Opciones: una gracia corta para un nodo de confianza que vuelve con el mismo `bootId`, o avisarle
+  al nodo que corte las partidas ya anuladas.
+
+#### [2] nodes 0.2.0: arreglos del nodo y del instalador (P8-P11)
+
+Objetivo: el nodo y el instalador que se van a instalar en el VPS. Depende de: nada. Sale con la
+release 0.2.0: el instalador se publica junto con ella.
+
+- [ ] **P8. La subida del replay aguanta un deploy del Worker.** Hoy son 6 intentos desde 0,5 s
+  (`node/agent.ts:133-134`), unos 15 s, y una partida que termina durante un deploy se reporta
+  `lost` (`:264`): strike y anulada (`control-plane/controlPlane.ts:891-894`). Con 12 intentos son
+  unos 75 s, dentro de la gracia de 90 s.
+- [ ] **P9. El lanzador rechaza una release que pide un Node más nuevo.** `nodeMajor` está en el
+  manifiesto pero nadie lo mira (`node/launcher.ts:51`), y el lanzador se instala una sola vez
+  (`install/install.sh:107-115`): no se actualiza solo.
+- [ ] **P10. Caddy para un nombre DNS:**
+  - El perfil `shortlived` solo para una IP. Hoy va siempre (`install/install.sh:138-144`), y con
+    un nombre da certificados de unos 6 días en lugar de 90. Caddy ≥ 2.10 solo cuando lo pide:
+    hoy acepta cualquier `caddy` (`:89`).
+  - `stream_close_delay 30m`, para que recargar Caddy no corte partidas.
+  - Caddy antes del registro, con `caddy validate` y los puertos 80 y 443 libres, para no gastar
+    el token en vano.
+  - El chequeo de ufw: `:152` también encuentra "inactive".
+  - `-o DPkg::Lock::Timeout=600` en cada `apt-get`.
+  - El Caddyfile que escribe hoy (`:136`) borra el `servers { protocols h1 h2 }` que usa el VPS con
+    UDP 443 cerrado: conservarlo.
+- [ ] **P11. Volver a correr el instalador:**
+  - Si `node.json` existe, no registra y el token es opcional: es una actualización. Hoy muere con
+    un mensaje engañoso sobre el token (`:132`, `node/main.ts:85-88`).
+  - `--restore <node.json>`, para instalar una identidad respaldada.
+  - Con un nombre en `--public-host`, comprobar que resuelve a la IP de `/nodes/whoami`, y frenar
+    si es una dirección de Cloudflare. Con `curl -4`: el VPS tiene IPv4 e IPv6, y sin eso `whoami`
+    devolvería la IPv6 (`install/install.sh:121`).
+  - `--matches <n>` en el registro y en la corrida, y dentro de la clave del caché del benchmark
+    (`node/main.ts:65`): hoy cambiarlo pide borrar `bench.json`.
+- [ ] **El script de determinismo entre máquinas,** en `nodes/scripts/`, con la tabla de
+  resultados esperados: el que grabó y verificó las 12 partidas el 19/10/2026. Para repetir la
+  prueba después de cambiar de Node o de máquina.
+
+#### [3] cliente: partidas en nodos (P27-P30)
+
+Objetivo: el cliente listo para una partida en un nodo; nada cambia mientras el anfitrión no sea
+un nodo. Depende de: nada. Desplegado antes del canary.
+
+- [ ] **P27. Esperar más el resultado ranked de un nodo.** `waitRankedResult` prueba 15 veces, una
+  por segundo (`src/net/AccountClient.ts:371`), y un resultado de nodo llega después de subir el
+  replay y verificarlo. Nada puede decir "verificando": `/api/ranked/result` solo responde
+  `pending`, `cancelled` o `done` (`src/net/account.ts:233-248`,
+  `server/src/accountStore.ts:494-497`). Cuando el `hostColo` del `Welcome` empieza con `node:`:
+  seguir preguntando cada 3 s hasta 120 s, con un aviso "verificando", y avisar que no contó si se
+  anuló por no poder verificarse.
+- [ ] **P28. El anfitrión en el panel de red.** Hoy `hostColo` no aparece en ninguna pantalla,
+  solo en la consola (`window.__game.online.welcome.hostColo`, `src/game/Game.ts:672`). Una línea
+  `host` cuando es un nodo.
+- [ ] **P29. Una sesión fresca para salir de una partida de nodo.** En un nodo, `/api/leave` es la
+  única forma de salir, y `leaveMatch` usa el Bearer de cuando se encoló e ignora un 401
+  (`src/net/NetClient.ts:877-891`). Las sesiones de cuenta duran una hora
+  (`server/src/accountRoutes.ts:47`).
+- [ ] **P30 (opcional; prepara la etapa 2). Mandar `connected` en `/api/leave`.** Hoy el cliente
+  manda `{ matchId, region? }` (`src/net/NetClient.ts:881`) y el Worker no pasa otro campo
+  (`server/src/index.ts:587`). En un nodo de confianza no cambia nada: la cancelación toma los
+  `noShows` del nodo tal cual (`control-plane/controlPlane.ts:859-861`).
+
+#### [4] docs
+
+Objetivo: que los documentos digan lo que hace el código hoy. Los cambios de diseño se documentan
+con el PR que los construye.
+
+- [x] **P1.** Este plan, el manual del VPS real (`VPS-SAO-PAULO.md`), las correcciones de
+  `INTEGRACION.md`, `ARQUITECTURA.md` y `BOT.md`, y el precio real del VPS en
+  `docs/online/DECISIONS.md`.
+
+#### [5] releases: clave, firma, workflow y compuerta de deploy (P12-P16, P21)
+
+Objetivo: una release firmada con la clave de producción, publicada por CI con aprobación, y
+deploys del juego que no dejan a los nodos atrás. Depende de: M5 para P12, M6 para P14, [1] y [2]
+para P16. P21 antes del primer deploy con nodos (M10).
+
+- [ ] **P12. La clave pública de releases en el repo** (`nodes/release-key.pub`, de M5). El build
+  arma los tres instaladores con ella; hoy solo los arma cuando el mismo build firma
+  (`scripts/build-node.mjs:79-89`). En modo producción rechaza un árbol con cambios sin commitear,
+  anota el `commit` en el manifiesto, guarda la lista de archivos que entran al bundle
+  (`inputs.json`) y deja de escribir `channel.json` (`:90`), para que una subida por error no
+  mueva el canal. El modo de desarrollo (`--sign .keys/release.json`) avisa que esa release nunca
+  se publica.
+- [ ] **P13. `scripts/sign-release.mjs`:** la firma aparte, solo con `node:crypto`, para que la
+  clave nunca comparta proceso con esbuild, werift o wrangler. Hoy está en el entorno del paso que
+  corre esbuild (`github/workflows/node-release.yml:35-38`). No firma si la clave no corresponde a
+  `release-key.pub`.
+- [ ] **P14. Activar el workflow de releases.** Hoy es una plantilla
+  (`github/workflows/node-release.yml`) que nunca corre: GitHub solo corre `.github/workflows/`,
+  donde está solo `ci.yml`. Tal como está, usa un `npx wrangler` sin versión, no tiene
+  `CLOUDFLARE_ACCOUNT_ID` ni `--content-type`, puede pisar una versión ya publicada y usa otras
+  versiones de las acciones que `ci.yml`. Pasa a `.github/workflows/`: un trabajo de build sin
+  secretos y otro de publicación en el entorno `releases`, con el wrangler del lockfile de
+  `server/`, un chequeo de que la versión no existe en R2 y `manifest.json` al final. Nunca sube
+  `channel.json`.
+- [ ] **P15. El bundle sin firmar se arma en cada PR,** en el trabajo de CI de `nodes/`. Necesita
+  `npm ci` en `server/`: el build toma esbuild de ahí (`scripts/build-node.mjs:22`).
+- [ ] **P16. Versión 0.2.0** en `package.json` y `node/version.ts` (el build exige que coincidan,
+  `scripts/build-node.mjs:24-27`). No 0.1.0: ya existe, firmada con la clave de desarrollo, y cada
+  versión tiene que corresponder a un solo conjunto de bytes: la verificación compara versiones
+  (`shared/controlProtocol.ts:367-369`) y el lanzador reutiliza las que ya bajó. Desde ahora,
+  `X.Y.Z` sin sufijos: `compareVersions` los ordena mal (`:372-380`).
+- [ ] **P21. La compuerta de deploy en `npm run deploy`** (`scripts/node-release-gate.mjs` en la
+  raíz del repo, más `scripts/channel.mjs` en `nodes/` para mover el canal verificando la firma de
+  la release):
+  - Antes de `wrangler deploy`, compara el wasm, el protocolo y los archivos que entran al nodo
+    con la release publicada. Si algo cambió, exige una release nueva firmada desde los mismos
+    archivos, o `--nodes-off` (los nodos no reciben partidas hasta la release).
+  - Mueve el canal **antes** del deploy: cada deploy corta las conexiones de los nodos, y al
+    volver cada uno se compara con el `minimum` nuevo (`control-plane/controlPlane.ts:405`).
+  - Sube `minimum` cuando cambian el wasm, el protocolo **o el JavaScript del juego que va en el
+    nodo** (`server/src/roomHost.ts`, las reglas, los bots). Para elegir nodo, el build se compara
+    sin la versión (`shared/controlProtocol.ts:356-358`), y un nodo que solo ve un `stable` nuevo
+    seguiría hosteando con las reglas viejas hasta reiniciarse (`node/launcher.ts:543-549`).
+  - Si el deploy falla, imprime cómo volver: restaurar el canal anterior **y** reiniciar el nodo,
+    porque `maybeUpdate` solo actúa sobre nodos por debajo del mínimo
+    (`control-plane/controlPlane.ts:530`).
+  - Nunca crea tags.
+
+#### [6] servidor: NodeRegistryDO y rutas /nodes (P17-P20)
+
+Objetivo: el plano de control corre en el Worker con su estado guardado, y el VPS se puede
+instalar; ningún jugador nota nada. Depende de: [1]. M7 antes del deploy: sin los buckets, el
+deploy falla.
+
+- [ ] **P17. El hash del wasm como constante,** con una prueba que la compara con el archivo. El
+  Worker importa el wasm ya compilado y no puede calcular su hash (`server/src/wasm.ts:9`), pero
+  el wasm está en git; `PROTOCOL_VERSION` ya está importado (`server/src/index.ts:68`). Así
+  funcionan un `wrangler deploy` común, `wrangler dev` y los forks, sin una variable de deploy que
+  alguien pueda olvidar. Más la configuración: `nodesMode` (lee `nodes_on`, D8, y trata
+  `vm_disabled` como apagado), los ids de operadores de confianza (D13) y los tipos de la API
+  interna.
+- [ ] **P18. `server/src/nodeOutcome.ts`:** las llamadas de `MatchDO` para cada resultado. `rated`
+  va a `/ranked-result`; el `void` de una ranked, a `/ranked-cancel`, con `playlist` y `region`
+  de la asignación, porque un `void` no las trae (`control-plane/controlPlane.ts:162`); y siempre
+  `/release` al matchmaker de la región. Entregar dos veces no hace daño: `AccountsDO` ignora un
+  `match_id` que ya tiene (`server/src/accountStore.ts:447`, `:486`). Un 4xx no se reintenta: se
+  descarta con un `ALERT`.
+- [ ] **P19. `NodeRegistryDO`:**
+  - SQLite desde el primer día (migración `v4` con `new_sqlite_classes`), el binding `NODES`, los
+    buckets R2 `NODE_REPLAYS` (30 días) y `NODE_RELEASES`, y las variables
+    `NODE_CONTROL_PUBLIC_KEY` y `NODES_PUBLIC_BASE`. Si la pública no corresponde al secreto
+    `NODE_CONTROL_PRIVATE_KEY`, no pone partidas y avisa.
+  - Guarda con P2-P4, y escribe la bandeja de salida en la misma transacción que la partida
+    terminada.
+  - Distingue un deploy (sin sockets: arranque en frío, con gracia) de una hibernación (sockets
+    vivos: los adopta).
+  - La alarma de 5 s sigue mientras haya sockets, partidas sin terminar, filas en la bandeja o una
+    gracia. No alcanza con "mientras haya nodos conectados": el barrido es lo único que anula las
+    partidas de un nodo caído (`control-plane/controlPlane.ts:1185-1200`).
+  - Si falta `channel.json` o está roto, usa el último bueno y avisa: `maybeUpdate` fallaría en
+    cada `hello` (`:530`, `shared/controlProtocol.ts:373`).
+  - Verifica la firma de una subida de replay antes de calcular el hash del cuerpo (hoy lo calcula
+    primero, `control-plane/controlPlane.ts:789-791`), y pone un tope a los sockets sin
+    autenticar.
+  - Sin `inlineVerify` ni `/dev/*`.
+- [ ] **P20. Las rutas `/nodes/*`:**
+  - `/nodes/*` en `run_worker_first` (`server/wrangler.jsonc:49`), atendidas antes de que el
+    Worker mande al sitio (`server/src/index.ts:649`).
+  - `whoami`; `releases/channel`, como ruta propia porque el lanzador pide `channel` sin extensión
+    (`node/launcher.ts:522`); `releases/<archivo>`, con una lista de nombres permitidos y sin `..`;
+    `register`, `connect`, `replays/<id>`, `mine` y `status`.
+  - `tokens`, con la sesión de cuenta: 403 `not_trusted` para una cuenta que no es de confianza.
+    Hoy `Registry.createToken` solo valida la región (`control-plane/registry.ts:173-176`): con la
+    ruta abierta, cualquier cuenta pondría un nodo y vería las IP de los jugadores.
+  - Los topes de 5 registros por IP por hora y 10 tokens por cuenta por día viven en el DO: el
+    limitador del Worker cuenta por isolate, en ventanas de 60 s (`server/src/index.ts:78`,
+    `:100-109`). Topes por IP para las subidas de replays y para `connect`.
+  - Las rutas de la tienda y de WebRTC responden 404 en esta etapa.
+
+#### [7] servidor: gancho del matchmaker y rejoin/leave (P22-P23)
+
+Objetivo: el matchmaker pone partidas en el VPS cuando el flag lo permite, y rejoin y leave
+funcionan con ellas. Depende de: [6] y P5. Con el flag apagado, todo sigue igual.
+
+- [ ] **P22. El gancho en `MatchmakerDO.formMatch`** (`server/src/MatchmakerDO.ts:1057`), detrás
+  de `nodes_on` (D8):
+  - Equipos, el bloque de `ranked-lock` extraído (`:1072-1083`) e `issue()` con parámetros para
+    un lock de tipo `node`. Un error del registro o 8 s sin respuesta vuelven a `MatchDO`: los
+    nodos nunca hacen fallar una partida. Las salas privadas no van a nodos.
+  - Un canary que no toca a los demás: "nodos prendidos para este jugador" se decide por estar en
+    la lista, en `index.ts` y en `join()`.
+  - El tope de salas no frena a los nodos. `MAX_ACTIVE_ROOMS = 20` (`MatchmakerDO.ts:88`) se
+    chequea al entrar a la cola (`:598`), al arrancar una sala privada (`:874`) y antes de
+    `formMatch` (`:1034`); las partidas en nodos no cuentan para ese tope. `do_disabled` hoy
+    rechaza toda cola (`server/src/index.ts:346`); con nodos, solo omite el `MatchDO`.
+  - `queue()` no reescribe la `wsUrl` de una partida de nodo (`server/src/index.ts:392`).
+  - Los locks de tipo `node` se verifican preguntando al registro: con un id de nodo,
+    `idFromString` falla y hoy el lock contaría como tomado hasta vencer
+    (`server/src/MatchmakerDO.ts:775`, `:780-783`).
+- [ ] **P23. `/api/rejoin` y `/api/leave` para partidas de nodo:**
+  - `/api/rejoin` usa `env.MATCH.idFromString`, que rechaza un id que no es de un `MatchDO`
+    (`server/src/index.ts:529-536`): un camino propio con los códigos de P5, que libera el lock
+    si la partida ya no existe, terminó o el jugador no estaba en ella, y lo mantiene si el nodo
+    está caído un momento.
+  - `/api/leave` llama primero al nodo y mantiene el lock si el nodo no responde, para que una
+    salida que el nodo nunca registró no deje al jugador entrar a otra partida.
+  - Una salida ya registrada responde 200 aunque la respuesta del nodo no llegue, y el matchmaker
+    espera más que los 5 s del RPC al nodo (`shared/controlProtocol.ts:42`): si no, el jugador
+    queda sin poder volver ni encolar hasta que termine la partida.
+- **Regla desde este PR:** nunca volver el Worker a una versión anterior a él. Los jugadores con un
+  lock de nodo recibirían 409 hasta que venza, unos 13 minutos. Para apagar los nodos,
+  `vm_disabled`.
+
+#### [8] operación: alertas, rutas de mantenedor y chequeo de salud (P24-P26)
+
+Objetivo: enterarse a tiempo cuando algo falla y poder actuar sin entrar por SSH. Depende de: [6];
+la alerta de alcance, de P6. Antes del canary (M15).
+
+- [ ] **P24. Los `ALERT` por webhook,** a un canal de Discord solo del equipo (M13); hoy solo van
+  al log. Alertas nuevas: un nodo de confianza fuera de línea más de 2 minutos; el tráfico al 80 %
+  del tope; `tickLagP99Ms` arriba de 8 en 3 heartbeats; una verificación esperando más de 30
+  minutos; una actualización en espera más de 2 horas; una fila de la bandeja de salida con más de
+  24 horas; un nodo inalcanzable (P6). Y **cada token creado y cada nodo registrado**: con la
+  contraseña de la cuenta del proyecto alcanza para crear un nodo de confianza.
+- [ ] **P25. Rutas de mantenedor** `/nodes/admin/*`, para una cuenta de confianza: ver los nodos,
+  cambiar el estado de uno, drenarlo, avisar un cambio de canal y volver a chequear su alcance. Un
+  drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): volver pide
+  `systemctl restart turbogol-node` en la máquina. El VPS es de confianza: una verificación
+  fallida no lo suspende ni congela nada (`onVerified` en `control-plane/registry.ts`), solo anula
+  la partida y deja un `ALERT`.
+- [ ] **P26 (opcional en esta etapa). Chequeo de salud de sp1 por cron:** cada 5 minutos,
+  `https://sp1.turbo-gol.com/healthz`, con aviso si falla, si aparece `draining` sin que nadie lo
+  pidiera o si hay un error de TLS, aunque los heartbeats se vean bien. Hoy el Worker no tiene cron
+  (`server/wrangler.jsonc` no tiene `triggers`). Tampoco existe el cron de gasto que prendería
+  `vm_disabled` (`docs/online/DECISIONS.md`): hasta entonces, ese flag es manual.
+
+### Acciones del mantenedor
+
+| # | Qué | Cuándo | Destraba |
+|---|---|---|---|
+| M1 | **Hecho (19/10/2026).** El VPS: sistema revisado (Ubuntu 26.04.1), clave SSH de root, huella de la clave del host | — | Todo lo del VPS |
+| M2 | **Hecho.** Aprobar los cambios de sshd y ufw | — | El endurecimiento |
+| M3 | **Hecho.** DNS de `sp1.turbo-gol.com`: A y AAAA, solo DNS | — | El certificado y la instalación |
+| M4 | Crear la cuenta del proyecto en turbo-gol.com, con una contraseña fuerte y única (con ella se crean nodos de confianza), y dos cuentas de prueba que nunca registren nodos. El id, desde la consola de una pestaña de turbo-gol.com con esa sesión: `(await (await fetch('/api/auth/refresh',{method:'POST'})).json()).playerId` (la cookie es SameSite=Strict, `server/src/accountRoutes.ts:263-272`) | Antes de M7 | M7, las pruebas de [6], el canary |
+| M5 | En `nodes/`, confirmar que no existe `.keys/` (si existe, `npm run keys` se queda con las claves de desarrollo, `scripts/keys.mjs:14-22`), correr `npm run keys` y ver que las dos líneas digan `public key`. Guardar las dos mitades privadas en el gestor de contraseñas. La pública de releases va a P12 | Antes de abrir [5] | P12, el deploy de [6] |
+| M6 | GitHub: el entorno `releases` (revisor DonJaimeHash, solo desde tags `node-v*`, sin bypass de administrador), con los secretos `TGN_RELEASE_PRIVATE_KEY` y `CLOUDFLARE_R2_TOKEN` (R2 Edit) y la variable `CLOUDFLARE_ACCOUNT_ID`; una regla para los tags `refs/tags/node-v*`; 2FA o passkey en la cuenta. Después, borrar del disco el archivo de la clave de releases | Antes de mergear P14 | P14, la primera release |
+| M7 | Cloudflare: los buckets `turbogol-node-replays` (con una regla de ciclo de vida de 30 días) y `turbogol-node-releases`; los secretos `NODE_CONTROL_PRIVATE_KEY` (la mitad PKCS#8 de control de M5) y `NODE_TRUSTED_OPERATORS` (el id de M4). Con `wrangler versions secret put`, que no despliega: `wrangler secret put` publica una versión nueva, y un deploy reinicia las partidas en curso (`server/README.md:195`). Si no, como un deploy: a una hora tranquila y todos juntos | Antes del primer deploy de [6] | P19, P20 |
+| M8 | Aprobar el deploy de [6] (sin efecto en los jugadores) | Después del merge | La instalación |
+| M9 | El tag `node-v0.2.0` en el commit del merge, y aprobar la corrida de `releases` | Con [1], [2] y [5] mergeados y P14 activo | M10 |
+| M10 | El primer `npm run deploy` con la compuerta (P21): escribe el canal en 0.2.0/0.2.0 y despliega. Comprobar con los `curl` de `VPS-SAO-PAULO.md` | Justo después de M9 | M11 |
+| M11 | El token de registro, desde una pestaña de turbo-gol.com con la sesión de la cuenta del proyecto: `POST /nodes/tokens` con `{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer. Pegarlo en la línea de instalación: vale una hora y una sola vez | Justo antes de instalar | La instalación |
+| M12 | Copiar `node.json` al gestor de contraseñas (el mantenedor, a mano, sin dejar una copia en la PC) y tomar una instantánea del VPS | Justo después de instalar | — |
+| M13 | El webhook de un canal de Discord solo del equipo, y el secreto `NODE_ALERT_WEBHOOK` (también con `wrangler versions secret put`) | Antes del deploy de [8] | El canary |
+| M14 | Aprobar el deploy de [7] (el flag sigue apagado) | Cuando la instalación pasa sus chequeos | El canary |
+| M15 | Canary: `npx wrangler kv key put nodes_on "<id1>,<id2>" --binding FLAGS --remote` con las dos cuentas de prueba, las pruebas de abajo, y después `nodes_on` en `1`. `vm_disabled` queda como interruptor | Después de M14, con P6 y [8] desplegados | La apertura |
+| M16 | El precio real del VPS: **hecho** en [4] (`docs/online/DECISIONS.md`). Falta confirmar las propuestas de "Decisiones pendientes del mantenedor" | Esta semana | [1], [5], [6] |
+
+### Pruebas antes de abrir la beta
+
+Con las dos cuentas de prueba en el canary, nunca con la del proyecto: si juega el operador, el
+scheduler no usa su nodo (`control-plane/scheduler.ts:57`) y la ranked cae en un `MatchDO` sin
+aviso.
+
+- [ ] Una casual y una ranked desde un navegador, en turbo-gol.com, viendo el resultado en la
+  pantalla de fin de partida. La casual, con la conexión en "Servidor". El panel de red dice
+  `host node:sao-paulo-1` (P28).
+- [ ] Una salida y un forfeit.
+- [ ] Cerrar la pestaña en una ranked: cuenta como abandono, como en `MatchDO` (P7).
+- [ ] Un deploy del Worker en medio de una partida: no se anula, y se califica después de la
+  gracia.
+- [ ] Un reinicio duro del VPS desde el panel de Hostinger en medio de una partida: se anula como
+  `node_restarted` o `node_offline`, sin penalizar a los jugadores y sin no-shows. Un `reboot`
+  normal no sirve para esta prueba: primero drena las partidas.
+- [ ] Una actualización del nodo con partidas en curso: drenan y el nodo vuelve.
+- [ ] Un cambio de wasm en el juego: los nodos no reciben partidas hasta la release nueva, y la
+  cola de verificación del build viejo se vacía antes de que el verificador se actualice.
+- [ ] Cancelar mientras conecta a una ranked: cuenta como dodge, igual que en `MatchDO`
+  (`server/src/MatchDO.ts:350-356`).
+- [ ] Un corte corto del enlace de control con una partida en curso, según lo que se decida en
+  [1].
+
+### Riesgos principales
+
+- **El orden de escritura.** Guardar antes de cada mensaje (P4), o después de una caída partidas
+  honestas fallan como `bad_takeover` o `no_replay`.
+- **Un agujero negro silencioso.** Un nodo que deja de ser alcanzable sigue recibiendo partidas
+  hasta P6 y P26.
+- **Un solo verificador.** Si el VPS se cae, las ranked vuelven a `MatchDO`
+  (`control-plane/controlPlane.ts:637`) y las terminadas esperan hasta 6 horas (`:81`).
+- **Instaladores sin firma.** El token de R2 puede cambiar los scripts que las instalaciones nuevas
+  corren como root: va detrás de la misma aprobación que la clave de firma.
+- **La cuenta del proyecto.** Con su contraseña se crea un nodo de confianza: entra activo
+  (`control-plane/registry.ts:371-372`), verifica sus propias ranked
+  (`control-plane/scheduler.ts:96`) y sus cancelaciones cuentan como las informa
+  (`control-plane/controlPlane.ts:859-861`). Contraseña fuerte y única, y un `ALERT` por cada
+  token y cada registro (P24).
+- **Un solo DO para todo.** Quien juega en un nodo conoce el id de la partida y el del nodo. Sin
+  topes, subidas de replays o conexiones sin autenticar pueden trabar el DO, y con 15 s sin
+  heartbeats se anulan partidas en curso (P19, P20).
+- **Secretos que despliegan.** `wrangler secret put` reinicia las partidas en curso (M7, M13).
 
 ### Ya resuelto en el código (19/10/2026)
 
@@ -195,23 +442,21 @@ etapa 2.
   que las suyas terminen y pueda actualizarse.
 - [x] **Una casual no muestreada también tiene que tener su replay subido,** y cuenta para la
   repetición del grupo: así los puntos por muestreo dan en promedio lo mismo que verificar todo.
+- [x] **IDs de partida de 64 caracteres:** `randomHexId(32)` en `place()`
+  (`control-plane/controlPlane.ts:648`). Las rutas del Worker solo aceptan 64: el resultado ranked
+  responde `400 bad_match_id` (`server/src/accountRoutes.ts:411`), `/api/rejoin` también
+  (`server/src/index.ts:527`), y `/api/leave` descarta un id de otro largo (`:587`).
+- [x] **Las pruebas de `nodes/` en CI.** El trabajo "Community nodes (typecheck, tests)" de
+  `.github/workflows/ci.yml` corre en cada PR, así que un cambio en `MatchDO`, el protocolo o el
+  wasm que rompa los nodos frena el PR. CONTRIBUTING.md tiene el comando para correrlo local.
 
-### Operación mínima
+### Reglas que siguen
 
-- [ ] **Rutas de mantenedor:** cambiar el estado de un nodo y drenarlo. El VPS es de confianza:
-  una verificación fallida no lo suspende ni congela nada (`onVerified` en `control-plane/registry.ts`), solo
-  anula la partida y deja un `ALERT`.
-- [ ] **Alertas por webhook,** por ejemplo al Discord del proyecto. Hoy los `ALERT` solo van al
-  log.
-
-### Pruebas antes de abrir la beta
-
-- [ ] Un deploy del Worker en medio de una partida.
-- [ ] Un reinicio del VPS en medio de una partida: se anula sin penalizar a los jugadores.
-- [ ] Una actualización del nodo con partidas en curso: drena y vuelve.
-- [ ] Un cambio de wasm en el juego: los nodos dejan de recibir partidas hasta la release nueva,
-  y la cola de verificación del build viejo se vacía antes de que el verificador se actualice.
-- [ ] Cancelar mientras conecta a una ranked: no cuenta como dodge.
+- **`MatchRoom` es un port a mano de `MatchDO`.** Cada arreglo en `MatchDO` hay que llevarlo
+  también a `node/matchRoom.ts`.
+- **Cada deploy del juego que cambie el wasm, el protocolo o el JavaScript del juego que va en el
+  nodo necesita una release del nodo.** Sin ella, ningún nodo recibe partidas, o un nodo sigue con
+  las reglas viejas. La compuerta de P21 lo exige en cada deploy.
 
 ## Etapa 2: PCs de amigos
 
@@ -232,6 +477,10 @@ etapa 2.
 - [ ] **`POST /api/queue` manda `transports`**, y la cola guarda `account` y `accountAgeDays` de
   cada jugador. Sin esos dos datos, todos pesan como invitados y los anfitriones ganan la cuarta
   parte.
+- [ ] **Respetar `connected: false` en `/api/leave`** (el cliente lo manda desde P30) solo cuando
+  el nodo confirma que ese jugador nunca se conectó. Hoy `ControlPlane.leave` le cree al cliente
+  (`control-plane/controlPlane.ts:748`), y en un nodo comunitario eso decide si cancelar es un
+  dodge (`:878`).
 - [ ] **La pantalla "Poner un servidor"** en `src/ui`, a partir de `web/host.html`.
 
 ### TURN
@@ -262,7 +511,11 @@ etapa 2.
 ### Puntos
 
 - [ ] **Guardar el ledger, los canjes y los inventarios antes de dar puntos.** Si no, cada deploy
-  borra lo ganado. Solo entonces se abren las rutas de la tienda.
+  borra lo ganado. Solo entonces se abren las rutas de la tienda. En la etapa 1 el ledger vive en
+  memoria, y alcanza porque los nodos del proyecto no ganan puntos.
+- [ ] **Decidir dónde viven los inventarios.** Los documentos no coinciden:
+  `control-plane/shop.ts:13` los pone en el almacenamiento de la cuenta, `INTEGRACION.md` §1 en el
+  SQLite del `NodeRegistryDO`, y la etapa 3 de este documento en una tabla de `AccountsDO`.
 - [ ] **Rutas de mantenedor para la tienda:** descongelar los canjes de un operador, levantar la
   suspensión de su nodo y editar el catálogo. Desde esta etapa, una verificación fallida suspende
   la PC de un amigo y congela sus canjes.
@@ -276,10 +529,12 @@ etapa 2.
 ### Decisiones de producto
 
 - [ ] **El casual por defecto es P2P** (las preferencias por defecto en `src/ui/Menu.ts`, y "P2P
-  (recomendada)" en `src/locales/es.ts`). Las salas P2P nunca pasan por `formMatch`, así que nunca llegan
-  a un nodo. Las PCs en prueba solo hostean casuales y necesitan 20 verificadas para el ranked:
-  sin casuales por servidor, tardarían mucho. Hay que decidir si los nodos comunitarios toman
-  casuales, por ejemplo con una opción "servidores de la comunidad".
+  (recomendada)" en `src/locales/es.ts`). Las salas P2P nunca pasan por `formMatch`, así que nunca
+  llegan a un nodo; solo un jugador que espera solo en la cola P2P termina en el servidor contra
+  bots (`server/src/MatchmakerDO.ts:1028-1041`). Las PCs en prueba solo hostean casuales y
+  necesitan 20 verificadas para el ranked: sin casuales por servidor, tardarían mucho. Hay que
+  decidir si los nodos comunitarios toman casuales, por ejemplo con una opción "servidores de la
+  comunidad".
 - [ ] **La latencia no entra en la elección del nodo.** Las regiones son continentes y el
   scheduler elige al azar entre los menos cargados. Para la beta, preferir el VPS de São Paulo;
   después, que el cliente mida el ping a los nodos de su región.
@@ -348,7 +603,7 @@ etapa 2.
   insignia ya lo trajo en la etapa 2, se reutiliza.
 - [ ] **El protocolo:** un campo estético en el roster, que sube `PROTOCOL_VERSION` y por lo tanto
   exige una release nueva del nodo. El mismo campo va en el roster de las salas P2P, que sube
-  `P2P_PROTOCOL_VERSION` (`src/net/p2p/protocol.ts:30`): si no, el auto no se ve en el casual por
+  `P2P_PROTOCOL_VERSION` (`src/net/p2p/protocol.ts:34`): si no, el auto no se ve en el casual por
   defecto.
 - [ ] **El servidor valida que la cuenta tenga el ítem,** y el selector de autos lo ofrece.
 
@@ -362,9 +617,9 @@ etapa 2.
 
 ### Automatización de GitHub
 
-- [ ] **Instalar las plantillas** de `github/` en `.github/`: `CODEOWNERS` y los workflows del bot.
-  `node-release.yml` ya entró en la etapa 1. Alinear las versiones de las acciones con
-  `.github/workflows/ci.yml`, fijar la versión de `wrangler` y configurar `CLOUDFLARE_ACCOUNT_ID`.
+- [ ] **Instalar las plantillas** de `github/` en `.github/`: `CODEOWNERS` y los workflows del bot,
+  con las versiones de las acciones de `.github/workflows/ci.yml`. `node-release.yml` entra en la
+  etapa 1 (P14), y con él la versión fija de `wrangler` y `CLOUDFLARE_ACCOUNT_ID`.
 - [ ] **Hoy `main` pide 0 aprobaciones** (regla leída el 15/10/2026): CI en verde sí, revisión no.
   Un PR del bot entraría con un solo clic. Con un solo mantenedor, la revisión humana es que él lo
   lea antes de mergear.
@@ -436,13 +691,55 @@ también tienen que cambiar.
 
 ## Decisiones pendientes del mantenedor
 
+Las marcadas **Propuesta** son los valores por defecto del plan de la etapa 1, con su número (D1,
+D4...). El trabajo avanza con ellas, pero ninguna está confirmada: esperan el visto bueno del
+mantenedor (M16).
+
 1. **Modo de relay:** la recomendación es ocultar al anfitrión desde la etapa 2 y a los jugadores
    por defecto al abrir. Pasar de unas 900 horas de 2v2 por mes con relay pide subir el
    presupuesto.
 2. **Casuales en nodos comunitarios:** sí o no, y cómo se elige.
-3. **Cerrar la pestaña en una ranked de nodo:** cómo se sanciona.
-4. **El nombre del VPS de São Paulo:** con o sin el proxy de Cloudflare.
-5. **Intervalo de heartbeat:** 5 s, con el DO siempre despierto, o 30 s, que tarda más en
-   detectar un nodo caído.
+3. **Cerrar la pestaña en una ranked de nodo: cómo se sanciona.** **Propuesta (D6):** en los nodos
+   de confianza, la regla de `MatchDO`: quien no tiene conexión al pitazo cuenta como abandono, con
+   el dato del nodo (`connectedAtEnd`, P7). Sin una salida al cerrar la pestaña (`pagehide`):
+   convertiría cada recarga en un abandono, y hoy recargar y volver a entrar funciona. Tampoco
+   `VerifyVerdict.goneTicks`: cuenta el último tramo de controles en cero
+   (`shared/verify.ts:153-163`), así que un jugador conectado que no toca nada al final saldría
+   como abandono.
+4. **El nombre del VPS de São Paulo: con o sin el proxy de Cloudflare.** **Propuesta (D4):** solo
+   DNS durante la beta. Pasarlo por el proxy más adelante solo si el chequeo del Worker y los
+   WebSocket funcionan por ahí y la latencia extra desde Argentina queda por debajo de unos 10 ms;
+   entonces, con SSL "Full (strict)" y un certificado de origen. Para la beta se aparta de la
+   decisión 3 de `docs/online/DECISIONS.md`: sin proxy, la IP del VPS que verifica todo queda a la
+   vista.
+5. **Intervalo de heartbeat.** **Propuesta (D1):** 5 s, con 15 s de tope
+   (`shared/controlProtocol.ts:38-40`) y la alarma cada 5 s. Así el DO nunca hiberna: un DO solo
+   hiberna tras 10 s sin eventos. Son unos 324.000 GB-s por mes (0,125 GB durante todo el mes), el
+   81 % de los 400.000 incluidos en Workers Paid, compartidos con las partidas en `MatchDO`; aun
+   si todo fuera excedente, US$ 4,05 por mes (US$ 12,50 por millón de GB-s). Las solicitudes (la
+   alarma suma unas 518.000 por mes) cuestan menos de US$ 0,10 por mes pasado el millón incluido
+   (developers.cloudflare.com/durable-objects, páginas de precios y ciclo de vida, 2026). Es un
+   costo fijo que no crece con los nodos. Pasar a 30 s pide una release del nodo (`HEARTBEAT_MS`
+   se usa en el nodo, `node/agent.ts:131`) y una alarma de 30 s, y detectar un nodo caído pasaría
+   de 15-20 s a unos 90 s.
 6. **Segundo verificador:** cuándo se levanta el de Hetzner.
 7. **El primer auto:** cuál es. El precio ya está decidido en 1.500 puntos.
+8. **Cómo se prenden los nodos.** **Propuesta (D8):** una clave nueva de KV, `nodes_on`. Sin ella,
+   apagados; con `1`, para todos; con una lista de ids de cuenta separados por coma, para un
+   canary. `vm_disabled` queda como interruptor de emergencia. Ningún jugador nota un cambio
+   hasta que se prende.
+9. **Dónde vive `NODE_TRUSTED_OPERATORS`.** **Propuesta (D13):** un secreto del Worker, no una
+   variable en el repo. Sobrevive a los deploys, el id de la cuenta no queda público y un fork sin
+   el secreto no confía en nadie.
+10. **La clave de releases.** **Propuesta (D15):** en el entorno `releases` de GitHub, con un
+    revisor obligatorio, solo desde tags y sin bypass de administrador, más una copia sin conexión
+    en el gestor de contraseñas. La firma corre en un paso que solo usa `node:crypto` (P13). Nunca
+    la clave de desarrollo que firmó la 0.1.0.
+11. **El tope de tráfico del VPS.** **Propuesta (D19):** `--egress-cap-gb 3800`. El contador del
+    nodo solo cuenta lo que mandan las partidas que terminan (`node/runtime.ts:514-519`), por mes
+    calendario UTC (`:617-620`); con 3800, dos meses UTC parciales siguen entrando en los 8 TB del
+    plan. Subirlo cuando el panel de Hostinger confirme qué día se reinicia la transferencia.
+12. **La capacidad declarada del VPS.** **Propuesta (D20):** `floor(cpu × 0,6 / 2)`, con el `cpu`
+    del benchmark más conservador: hoy, 15 partidas. El 0,6 por los créditos de CPU; el 2 porque
+    la verificación corre en el mismo hilo que las partidas. Se revisa cuando una semana de
+    heartbeats muestre margen.

@@ -54,6 +54,11 @@ All notable changes to Turbogol are documented here. The format follows
   noise, and they ring briefly in a short synthetic room.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
+- Community node docs: the São Paulo VPS guide is the runbook of the real machine (a Hostinger KVM
+  2 in Campinas: access, hardening, DNS and TLS, measurements, install, backups and operations),
+  the stage 1 checklist is split into eight PRs with the maintainer's steps, the pre-beta tests
+  and the main risks, and stale facts in the other node docs are corrected. The budget shows the
+  VPS's real price.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and

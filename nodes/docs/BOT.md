@@ -14,17 +14,21 @@
    exigen CI en verde pero 0 aprobaciones (leído el 15/10/2026): la revisión humana es que el
    mantenedor lo lea. Con un segundo mantenedor se puede exigir una aprobación.
 6. **Publicar.** El merge no llega solo a los servidores. Un tag `node-vX.Y.Z` construye y firma
-   la release, y un mantenedor mueve el canal a mano. Subir `stable` hace que cada nodo tome la
-   versión nueva cuando reinicia; subir también `minimum` obliga a los que están corriendo: drenan
-   sus partidas y se actualizan. Hoy no hay un canal canary que funcione: el campo existe en el
-   protocolo pero el lanzador no lo lee. Para probar una versión antes, se la instala a mano en una
+   la release (`github/workflows/node-release.yml`, una plantilla que todavía no corre: se activa
+   en la etapa 1 de `PRODUCCION.md`), y un mantenedor mueve el canal a mano. Subir `stable` hace
+   que cada nodo tome la versión nueva cuando reinicia; subir también `minimum` obliga a los que
+   están corriendo: drenan sus partidas y se actualizan. Hoy no hay un canal canary que funcione:
+   el campo existe en el protocolo pero el lanzador no lo lee. Para probar una versión antes, se la instala a mano en una
    máquina del proyecto.
 
 ## Por qué nunca hay merge automático
 
 Los nodos de la comunidad se actualizan solos. Un PR malo mergeado sin revisión llegaría a todos
 los servidores del mundo en minutos. El bot puede escribir código; publicarlo siempre requiere a
-una persona y a la clave de releases, que vive en un entorno de CI con aprobación manual.
+una persona y a la clave de releases. Esa clave va a vivir en un entorno de CI con aprobación
+manual; todavía no: la release 0.1.0 se firmó con una clave de desarrollo en la PC del mantenedor,
+y el entorno es un paso pendiente de la etapa 1 (`PRODUCCION.md`). La clave firma el manifiesto de
+cada versión y el lanzador; los instaladores no se firman, llegan por HTTPS.
 
 ## Seguridad
 
