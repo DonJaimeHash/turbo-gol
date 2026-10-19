@@ -12,9 +12,11 @@
  *     (+-2700, +-3900)), so the outline is a rounded rectangle, no flat chamfers.
  *   - Floor ramps: radius 320 into the side walls and corners, 240 into the back walls (eased
  *     across each corner); every wall meets the ceiling through a radius 600 arc.
- *   - Goals: 2000 wide x 720 high mouths, 960 deep chambers (a box whose back edges are rounded:
- *     r 240 at the floor, a car can ride up the back of the net, and r 360 under the roof). A goal
- *     counts when the whole ball is past the goal line: |ball.y| > 5600 + ball radius.
+ *   - Goals: 2000 wide x 720 high mouths, 960 deep chambers. No edge of a goal is a right angle:
+ *     the chamber is a box with every inner edge rounded (r 240: a car can ride up the nets and the
+ *     back), the posts and the crossbar are rounded into the back wall (r 150), and the back-wall
+ *     floor ramp wraps around the posts into the chamber's floor curve. A goal counts when the
+ *     whole ball is past the goal line: |ball.y| > 5600 + ball radius.
  *   - 4 big + 28 small boost pads, mirrored in x and y (BOOST_PADS_BIG / BOOST_PADS_SMALL).
  *   - 5 kickoff spots and 4 demolition respawn spots per team (KICKOFF_SPAWNS / RESPAWN_SPOTS).
  */
@@ -44,14 +46,20 @@ export const ARENA = {
 };
 
 /**
- * Goal chamber profile (depth behind the mouth plane, height): a box 960 deep and 720 high whose
- * two back edges are rounded. The floor is RocketSim's floor plane.
+ * Goal shape (arenaMesh.ts): the chamber is a box goalHalfWidth x goalDepth x goalHeight behind
+ * the mouth plane with every inner edge rounded by edgeRadius (the floor is RocketSim's floor
+ * plane); the mouth's edge with the back wall (posts and crossbar) is rounded by postRadius. The
+ * back wall around the mouth (|x| <= moduleHalfWidth, z <= moduleTop) is built with the goal.
  */
 export const GOAL_PROFILE = {
-  /** Floor -> back of the net: a small quarter pipe a car can drive up. */
-  backBottomRadius: 240,
-  /** Back of the net -> roof. */
-  backTopRadius: 360,
+  /** Floor -> nets and back, nets -> roof, the back corners. Equal to the back-wall ramp radius. */
+  edgeRadius: 240,
+  /** Posts and crossbar into the back wall. */
+  postRadius: 150,
+  /** Half width of the back-wall panel built with each goal. */
+  moduleHalfWidth: 1450,
+  /** Top of that panel. */
+  moduleTop: 1000,
 };
 
 /**

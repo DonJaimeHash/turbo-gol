@@ -81,7 +81,7 @@ import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import type { P2P_ERROR_RELOAD, P2P_HASH_EVERY, P2P_INPUT_DELAY_DEFAULT, P2P_NO_SHOW_MS, P2P_PROTOCOL_VERSION, P2P_WINDOW_DEFAULT, ROOM_ERROR_SIGNAL_DROPPED, RoomServerMessage, RoomSlot, RoomWelcome, SignalData } from '../../src/net/p2p/protocol';
 
 /** Mirrors protocol.ts P2P_PROTOCOL_VERSION (the welcome's `protocol`; the Worker's queue gate checks the client's against it). */
-export const ROOM_PROTOCOL: typeof P2P_PROTOCOL_VERSION = 2;
+export const ROOM_PROTOCOL: typeof P2P_PROTOCOL_VERSION = 3;
 /** Mirrors protocol.ts P2P_ERROR_RELOAD: the error code of a stale page (another P2P protocol). */
 export const RELOAD_REQUIRED: typeof P2P_ERROR_RELOAD = 'reload_required';
 /** Mirrors protocol.ts P2P_NO_SHOW_MS: a peer slot not connected this long after create is declared left. */

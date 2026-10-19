@@ -17,7 +17,7 @@ registerHooks({
 });
 
 const { buildArenaMesh, computeNormals, isInsideArena, indicesAsUint32, cornerRampRadius } = await import('../src/sim/arenaMesh.ts');
-const { ARENA, BALL } = await import('../src/sim/constants.ts');
+const { ARENA, BALL, GOAL_PROFILE } = await import('../src/sim/constants.ts');
 
 const W = ARENA.extentX;
 const L = ARENA.extentY;
@@ -50,10 +50,15 @@ function faceNormal(a, b, c) {
   return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
 }
 
-/** Reference point a triangle of the given mesh region must face. */
-function referencePoint(region, cx, cy) {
-  if (region === 'goals' || (region === 'physics' && Math.abs(cy) > L + TOL)) return [0, Math.sign(cy) * (L + 0.45 * GD), GH / 2];
-  return [0, 0, H / 2];
+/**
+ * The triangle faces into the playable volume: a few uu along its normal is inside the arena
+ * (isInsideArena, tested against the geometry below); the floor faces up and the ceiling down.
+ */
+function facesInward(region, n, cx, cy, cz) {
+  if (region === 'floor') return n[2] > 0;
+  if (region === 'ceiling') return n[2] < 0;
+  const k = 6 / Math.hypot(n[0], n[1], n[2]);
+  return isInsideArena(cx + n[0] * k, cy + n[1] * k, cz + n[2] * k);
 }
 
 function validateMesh(m, region) {
@@ -78,9 +83,7 @@ function validateMesh(m, region) {
     const cx = (tri.a[0] + tri.b[0] + tri.c[0]) / 3;
     const cy = (tri.a[1] + tri.b[1] + tri.c[1]) / 3;
     const cz = (tri.a[2] + tri.b[2] + tri.c[2]) / 3;
-    const r = referencePoint(region, cx, cy);
-    const d = n[0] * (r[0] - cx) + n[1] * (r[1] - cy) + n[2] * (r[2] - cz);
-    assert.ok(d > 0, `${region}: tri ${tri.t} at (${cx.toFixed(0)}, ${cy.toFixed(0)}, ${cz.toFixed(0)}) faces outward`);
+    assert.ok(facesInward(region, n, cx, cy, cz), `${region}: tri ${tri.t} at (${cx.toFixed(0)}, ${cy.toFixed(0)}, ${cz.toFixed(0)}) faces outward`);
   }
 }
 
@@ -103,23 +106,26 @@ function assertBounds(m, region) {
   assert.ok(lo[2] >= -TOL && hi[2] <= H + TOL, `${region}: z within 0..${H} (${lo[2]}..${hi[2]})`);
 }
 
-/** True if the triangle touches the plane |y| = L and overlaps the open mouth rectangle there. */
+/**
+ * True if the triangle touches the plane |y| = L and overlaps the mouth's clear rectangle there
+ * (|x| < GW - edgeRadius: outside it the floor curves of the netting rise from the floor).
+ */
 function crossesMouth(tri) {
   const ys = [tri.a[1], tri.b[1], tri.c[1]].map(Math.abs);
   const touchesPlane = Math.max(...ys) >= L - EPS && Math.min(...ys) <= L + EPS;
   if (!touchesPlane) return false;
   const xs = [tri.a[0], tri.b[0], tri.c[0]];
   const zs = [tri.a[2], tri.b[2], tri.c[2]];
-  const overlapX = Math.min(...xs) < GW - EPS && Math.max(...xs) > -GW + EPS;
+  const clear = GW - GOAL_PROFILE.edgeRadius;
+  const overlapX = Math.min(...xs) < clear - EPS && Math.max(...xs) > -clear + EPS;
   const overlapZ = Math.min(...zs) < GH - EPS && Math.max(...zs) > EPS;
   return overlapX && overlapZ;
 }
 
 /**
  * Every edge used by exactly one triangle must lie on an open boundary that something else closes:
- * the floor plane, the ceiling plane, a goal-post line (|x| = GW, |y| = L) or a crossbar line
- * (|y| = L, z = GH). Edges keyed by quantised position so coincident vertices of different
- * sub-meshes match.
+ * the floor plane or the ceiling plane (the goals are part of the closed mesh). Edges keyed by
+ * quantised position so coincident vertices of different sub-meshes match.
  */
 function assertBoundaryEdges(m, region) {
   const key = (v) => `${Math.round(v[0] * 100)},${Math.round(v[1] * 100)},${Math.round(v[2] * 100)}`;
@@ -139,19 +145,13 @@ function assertBoundaryEdges(m, region) {
   }
   const onFloor = (v) => Math.abs(v[2]) < EPS;
   const onCeiling = (v) => Math.abs(v[2] - H) < EPS;
-  const onPost = (v) => Math.abs(Math.abs(v[0]) - GW) < EPS && Math.abs(Math.abs(v[1]) - L) < EPS;
-  const onCrossbar = (v) => Math.abs(Math.abs(v[1]) - L) < EPS && Math.abs(v[2] - GH) < EPS;
   let open = 0;
   for (const [k, e] of uses) {
     assert.ok(e.n <= 2, `${region}: edge ${k} shared by ${e.n} triangles`);
     if (e.n === 2) continue;
     open++;
-    const ok =
-      (onFloor(e.p) && onFloor(e.q)) ||
-      (onCeiling(e.p) && onCeiling(e.q)) ||
-      (onPost(e.p) && onPost(e.q)) ||
-      (onCrossbar(e.p) && onCrossbar(e.q));
-    assert.ok(ok, `${region}: open edge ${k} is not on the floor, ceiling, a goal post or a crossbar`);
+    const ok = (onFloor(e.p) && onFloor(e.q)) || (onCeiling(e.p) && onCeiling(e.q));
+    assert.ok(ok, `${region}: open edge ${k} is not on the floor or the ceiling`);
   }
   assert.ok(open > 0, `${region}: has the expected open boundaries`);
 }
@@ -199,7 +199,7 @@ for (const { name, opts } of configs) {
     for (const r of regions) assertBounds(arena[r], r);
     const g = aabb(arena.goals);
     assert.ok(g.hi[1] > L + GD - 5 && g.lo[1] < -(L + GD) + 5, 'goals reach the back of the net');
-    assert.ok(Math.abs(g.hi[2] - GH) < EPS, 'goal chambers top out at the crossbar height');
+    assert.ok(Math.abs(g.hi[2] - (GH + GOAL_PROFILE.postRadius)) < EPS, "the crossbar's rounded edge meets the wall postRadius above the mouth");
     const s = aabb(arena.shell);
     assert.ok(Math.abs(s.hi[0] - W) < EPS && Math.abs(s.lo[0] + W) < EPS, 'shell reaches the side walls');
     assert.ok(Math.abs(s.hi[1] - L) < EPS && Math.abs(s.lo[1] + L) < EPS, 'shell reaches the back walls');
@@ -208,8 +208,9 @@ for (const { name, opts } of configs) {
 
   test(`[${name}] vertex budget is a few thousand`, () => {
     const total = (arena.shell.vertices.length + arena.goals.vertices.length + arena.floor.vertices.length + arena.ceiling.vertices.length) / 3;
-    assert.ok(total < 8000, `total visual vertices ${total}`);
-    assert.ok(arena.physics.vertices.length / 3 < 8000, 'physics vertices');
+    assert.ok(total < 12000, `total visual vertices ${total}`);
+    assert.ok(arena.physics.vertices.length / 3 < 12000, 'physics vertices');
+    assert.ok(arena.physics.indices.length / 3 < 16000, 'physics triangles');
   });
 
   test(`[${name}] goal mouths are open`, () => {
@@ -238,8 +239,47 @@ for (const { name, opts } of configs) {
     assertBoundaryEdges(arena.physics, 'physics');
   });
 
+  test(`[${name}] no right angles anywhere: every crease between neighbouring triangles is one chord of an arc`, () => {
+    // The goals' posts, crossbar and chamber edges are rounded like the rest of the field: the
+    // sharpest crease is a facet of the coarsest arc (ramps, corners, the goals' edges).
+    const segs = Math.min(opts?.rampSegments ?? 12, opts?.cornerSegments ?? 12, Math.max(4, Math.round(((opts?.rampSegments ?? 12) * 2) / 3)));
+    const limit = 90 / segs + 2;
+    const m = arena.physics;
+    const key = (v) => `${Math.round(v[0] * 100)},${Math.round(v[1] * 100)},${Math.round(v[2] * 100)}`;
+    const edges = new Map();
+    const normals = [];
+    for (const tri of triangles(m)) {
+      const n = faceNormal(tri.a, tri.b, tri.c);
+      const l = Math.hypot(n[0], n[1], n[2]);
+      normals.push([n[0] / l, n[1] / l, n[2] / l]);
+      for (const [p, q] of [[tri.a, tri.b], [tri.b, tri.c], [tri.c, tri.a]]) {
+        const kp = key(p);
+        const kq = key(q);
+        const k = kp < kq ? `${kp}|${kq}` : `${kq}|${kp}`;
+        const e = edges.get(k);
+        if (e) e.push(tri.t);
+        else edges.set(k, [tri.t]);
+      }
+    }
+    let worst = 0;
+    let at = '';
+    for (const [k, ts] of edges) {
+      if (ts.length !== 2) continue;
+      const a = normals[ts[0]];
+      const b = normals[ts[1]];
+      const deg = (Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 180) / Math.PI;
+      if (deg > worst) {
+        worst = deg;
+        at = k;
+      }
+    }
+    assert.ok(worst < limit, `sharpest crease ${worst.toFixed(1)} deg at ${at} (limit ${limit.toFixed(1)})`);
+  });
+
   test(`[${name}] floor and ceiling fans are star-shaped (ceiling convex)`, () => {
-    assertStarFan(arena.floor, 'floor', 0, 12);
+    // The floor ring turns concave round each post (the ramp feet wrap into the goal), one goal-arc chord at a time.
+    const goalArcs = Math.max(4, Math.round(((opts?.rampSegments ?? 12) * 2) / 3));
+    assertStarFan(arena.floor, 'floor', 0, Math.max(12, 90 / goalArcs + 0.5));
     assertStarFan(arena.ceiling, 'ceiling', 0, 1e-6);
     const f = aabb(arena.floor);
     assert.ok(Math.abs(f.hi[1] - (L + GD)) < EPS, 'floor covers the goal floors');
@@ -337,19 +377,23 @@ test('build is deterministic', () => {
   assert.deepEqual(Array.from(a.physics.vertices), Array.from(b.physics.vertices));
 });
 
-test('no gap for the ball at the goal posts and ramp feet', () => {
-  // Every vertex of the post caps coincides with a ring vertex of the ramp (same x, y, z), so the
-  // ramp end is sealed; and the cap's top vertex sits exactly on the post line at ramp height.
-  const s = buildArenaMesh().shell;
-  const pts = new Set();
-  for (let i = 0; i < s.vertices.length; i += 3) pts.add(`${s.vertices[i].toFixed(2)},${s.vertices[i + 1].toFixed(2)},${s.vertices[i + 2].toFixed(2)}`);
+test('the goal edges are rounded: posts, crossbar, the ramp round the posts, the chamber edges', () => {
+  const P = GOAL_PROFILE.postRadius;
+  const R = GOAL_PROFILE.edgeRadius;
   for (const sy of [-1, 1]) {
-    for (const sx of [-1, 1]) {
-      assert.ok(pts.has(`${(sx * GW).toFixed(2)},${(sy * L).toFixed(2)},${(0).toFixed(2)}`), 'post corner vertex');
-      assert.ok(pts.has(`${(sx * GW).toFixed(2)},${(sy * L).toFixed(2)},${ARENA.backRampRadius.toFixed(2)}`), 'post vertex at ramp top');
-      assert.ok(pts.has(`${(sx * GW).toFixed(2)},${(sy * (L - ARENA.backRampRadius)).toFixed(2)},${(0).toFixed(2)}`), 'ramp foot at the post');
-      assert.ok(pts.has(`${(sx * GW).toFixed(2)},${(sy * L).toFixed(2)},${GH.toFixed(2)}`), 'crossbar corner vertex');
-    }
+    // Where the old square post and crossbar edges were, there is air now; a little further in, the rounded solid.
+    assert.ok(isInsideArena(GW + 5, sy * (L + 5), 400), 'the old post edge is air');
+    assert.ok(!isInsideArena(GW + 100, sy * (L + 100), 400), 'inside the rounded post');
+    assert.ok(isInsideArena(0, sy * (L + 20), GH + 20), 'the old crossbar edge is air');
+    assert.ok(!isInsideArena(0, sy * (L + 100), GH + 100), 'inside the rounded crossbar');
+    // The back-wall ramp wraps round the post into the netting's floor curve (no end cap).
+    assert.ok(!isInsideArena(GW + P + 50, sy * (L - 20), 20), 'the back-wall ramp beside the post');
+    assert.ok(!isInsideArena(GW - 20, sy * (L + 400), 20), "the netting's floor curve");
+    assert.ok(isInsideArena(GW - R - 10, sy * (L + 400), 20), 'the chamber floor inside the curve');
+    // Rounded chamber edges: the netting into the roof and the back corners.
+    assert.ok(!isInsideArena(GW - 20, sy * (L + 400), GH - 20), 'the netting-to-roof curve');
+    assert.ok(!isInsideArena(GW - 30, sy * (L + GD - 30), 400), 'the rounded back corner');
+    assert.ok(isInsideArena(GW - 30, sy * (L + 400), 400), 'against the side netting');
   }
   assert.ok(BALL.radius > 0);
 });
@@ -372,7 +416,7 @@ test('isInsideArena agrees with the geometry', () => {
   assert.ok(isInsideArena(0, -(L + 400), 300), 'inside the blue goal chamber');
   assert.ok(!isInsideArena(GW + 10, L + 400, 300), 'outside the goal width');
   assert.ok(!isInsideArena(0, L + 400, GH + 10), 'above the goal roof');
-  assert.ok(!isInsideArena(0, L + 100, GH + 5), 'above the lintel');
+  assert.ok(!isInsideArena(0, L + 200, GH + 5), 'above the roof behind the crossbar');
   assert.ok(isInsideArena(0, L + GD - 50, 400), 'against the back of the net');
   assert.ok(!isInsideArena(0, L + GD - 30, GH - 30), 'inside the rounded top-back edge solid');
   assert.ok(!isInsideArena(0, L + GD - 20, 20), 'inside the rounded bottom-back edge solid');
