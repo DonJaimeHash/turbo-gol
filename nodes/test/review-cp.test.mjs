@@ -832,3 +832,34 @@ test('a failed probe never puts the node’s own words in a log line', async () 
   await env.cp.probe(env.nodeId);
   assert.equal(env.logs.at(-1), `probe ${n.name} failed: timeout`);
 });
+
+test('a control key that does not import fails each ticket it would sign, not the process', async () => {
+  const { ControlPlane } = await import('../control-plane/controlPlane.ts');
+  const { MemoryStore } = await import('../control-plane/persist.ts');
+  const env = await setup({ status: 'active', store: new MemoryStore() });
+  const p = await env.place([human('a'), human('b')]);
+  const rejections = [];
+  const onRejection = (e) => rejections.push(e);
+  process.on('unhandledRejection', onRejection);
+  try {
+    const cp = new ControlPlane({
+      controlPrivateKey: 'not a key',
+      controlPublicKey: (await generateEd25519()).publicKey,
+      controlUrl: 'wss://cp/nodes/connect',
+      httpBase: 'https://cp',
+      build: () => env.build,
+      channel: () => ({ stable: env.build.version, minimum: '0.0.0' }),
+      registry: env.registry,
+      ledger: new Ledger(),
+      replays: { put: async () => undefined, get: async () => null },
+      log: () => undefined,
+    });
+    cp.restore(env.store.rows().matches, { cold: false });
+    await sleep(20);
+    await assert.rejects(cp.rejoin(p.matchId, 'a'.repeat(16)), /bad private key/);
+    await assert.rejects(cp.rejoin(p.matchId, 'b'.repeat(16)), /bad private key/, 'every time');
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+  assert.deepEqual(rejections, []);
+});
