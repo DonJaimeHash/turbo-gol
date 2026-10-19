@@ -215,9 +215,11 @@ export type QueueAssignment = ServerAssignment | P2pAssignment;
 /** leaveMatch options. */
 export interface LeaveOptions {
   /**
-   * false: the player never got the match's Welcome (its socket never reached the host). Sent as
-   * `connected: false` so a later server can tell a slot that never attached from a quit (stage 2
-   * of the community nodes); the Worker ignores it today. true / absent adds nothing to the body.
+   * false: no Welcome of the match was received. The socket may still have opened and the host
+   * attached the slot (its Welcome in flight), so this is only a hint: sent as `connected: false`
+   * for stage 2 of the community nodes, where the server must confirm with the node that the slot
+   * never attached before taking it for a no-show; the Worker ignores it today. true / absent adds
+   * nothing to the body.
    */
   connected?: boolean;
   /**

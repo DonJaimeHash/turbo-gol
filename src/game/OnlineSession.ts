@@ -333,8 +333,9 @@ export class OnlineSession {
    * is never rejoined. Skipped after the whistle (the match is over and frees the locks itself)
    * and once the connection was lost for good (disconnect(): the lock is kept so the next server
    * queue rejoins, as after a reload). Once per match. A quit before any Welcome adds
-   * `connected: false`: our socket never reached the host, so a community node can later tell a
-   * no-show from a leave (the Worker ignores it today).
+   * `connected: false`: no Welcome was received, but the slot may or may not have attached, so a
+   * later server must confirm with the node before taking it for a no-show (the Worker ignores it
+   * today).
    */
   private quitMatch(): void {
     const id = this.matchId;
