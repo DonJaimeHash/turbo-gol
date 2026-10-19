@@ -840,7 +840,7 @@ test('sendInputs packs the batch into one reusable buffer; snapshots / events / 
   assert.equal(client.bytesOut, P.PING_LEN + frame.length, 'the ping sent on open plus the input frame');
 
   // Welcome.
-  const welcome = { protocol: 1, matchId: 'm', mode: '1v1', tickRate: 120, carId: 1, slot: 0, roster: [{ carId: 1, slot: 0, team: 0, name: 'A', kind: 'player' }, { carId: 2, slot: 1, team: 1, name: 'Bot', kind: 'bot' }], tick: 0, matchLengthSeconds: 300 };
+  const welcome = { protocol: P.PROTOCOL_VERSION, matchId: 'm', mode: '1v1', tickRate: 120, carId: 1, slot: 0, roster: [{ carId: 1, slot: 0, team: 0, name: 'A', kind: 'player' }, { carId: 2, slot: 1, team: 1, name: 'Bot', kind: 'bot' }], tick: 0, matchLengthSeconds: 300 };
   ws.deliver(encodeJson(MsgType.Welcome, welcome));
   assert.deepEqual(got.welcome, welcome);
   assert.equal(client.welcome.matchId, 'm');

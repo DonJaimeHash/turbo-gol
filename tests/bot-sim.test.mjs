@@ -25,11 +25,13 @@ const { RocketSim } = await import('../src/sim/RocketSimBridge.ts');
 const { buildArenaMesh } = await import('../src/sim/arenaMesh.ts');
 const { Bot } = await import('../src/ai/Bot.ts');
 const T = await import('../src/sim/types.ts');
-const { ARENA } = await import('../src/sim/constants.ts');
+const { ARENA, GOAL_PROFILE } = await import('../src/sim/constants.ts');
 
 const W = ARENA.extentX;
 const L = ARENA.extentY;
 const GW = ARENA.goalHalfWidth;
+/** The car's nose (hitbox front, 74 uu ahead of its origin) at the foot of the side netting's floor curve. */
+const NOSE_AT_NETTING = GW - GOAL_PROFILE.edgeRadius - 74;
 
 const sim = await RocketSim.load();
 sim.initArena(buildArenaMesh().physics);
@@ -82,7 +84,7 @@ const onFloor = (p, up, og) => p[2] < 60 && up[2] > 0.9 && og;
 test('net: nose pressed into the side netting (deep in the blue net) with a far target -> out within 3 s', () => {
   const ballAt = [GW + 800, -(L - 1400)]; // a ball out in front of the blue goal, off to the side
   for (const d of DIFFICULTIES) {
-    const r = run(d, [ballAt[0], ballAt[1], 93.15], (id) => sim.setCarState(id, [GW - 74, -(L + 630), 17], [0, 0, 0]), outOfNet, 6 * 120);
+    const r = run(d, [ballAt[0], ballAt[1], 93.15], (id) => sim.setCarState(id, [NOSE_AT_NETTING, -(L + 630), 17], [0, 0, 0]), outOfNet, 6 * 120);
     console.log(`net [${d}]: out at ${(r.at / 120).toFixed(2)} s, throttle flips ${r.flips}, pos ${fmt(r.pos)}`);
     assert.ok(r.at >= 0 && r.at <= 3 * 120, `${d}: left the net at tick ${r.at}`);
     assert.ok(r.flips <= 3, `${d}: ${r.flips} throttle sign flips (no dithering)`);
@@ -91,7 +93,7 @@ test('net: nose pressed into the side netting (deep in the blue net) with a far 
 
 test('net: at the post line of its own goal facing the netting -> out within 3 s', () => {
   for (const d of DIFFICULTIES) {
-    const r = run(d, [0, 2000, 93.15], (id) => sim.setCarState(id, [GW - 74, L - 52, 17], [0, 0, 0]), outOfNet, 6 * 120);
+    const r = run(d, [0, 2000, 93.15], (id) => sim.setCarState(id, [NOSE_AT_NETTING, L - 52, 17], [0, 0, 0]), outOfNet, 6 * 120);
     console.log(`mouth [${d}]: out at ${(r.at / 120).toFixed(2)} s, throttle flips ${r.flips}, pos ${fmt(r.pos)}`);
     assert.ok(r.at >= 0 && r.at <= 3 * 120, `${d}: left the mouth at tick ${r.at}`);
     assert.ok(r.flips <= 3, `${d}: ${r.flips} throttle sign flips`);
