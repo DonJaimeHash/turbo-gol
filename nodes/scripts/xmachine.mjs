@@ -10,6 +10,13 @@
 // verify it there; then the other way round. <nodes dir> is the package whose code runs, this
 // script's own by default.
 //
+// With no copy at all: `record` also compares each match (final state hash, replay size, score,
+// end tick) with scripts/xmachine-reference.json, a recording made on the project's PC (Windows,
+// Node 24.14.0), whenever that reference is for the same wasm. A difference exits 1. A change to
+// the bots or the rules leaves the wasm as it is and makes the reference stale: after one, record
+// on the PC and copy its manifest.json over the reference; to tell a stale reference from a
+// machine that simulates differently, verify the copied replays as above.
+//
 // A replay carries a state hash every CHECKPOINT_EVERY ticks: verifying it re-simulates every tick
 // (physics in the wasm, bots and rules in JavaScript) and compares each hash, the score and the
 // end tick. Any cross-machine difference shows up as a hash mismatch.
@@ -28,8 +35,8 @@ const H = await imp('test/helpers.mjs'); // registers the .ts resolve hook first
 const { verifyReplay } = await imp('shared/verify.ts');
 const { nodeSimFactory } = await imp('shared/nodeArena.ts');
 
+// No host name: a manifest becomes the committed reference.
 const machine = {
-  host: os.hostname(),
   platform: `${os.platform()} ${os.release()}`,
   arch: os.arch(),
   cpu: os.cpus()[0]?.model?.trim(),
@@ -71,6 +78,25 @@ if (cmd === 'record') {
   }
   await writeFile(join(dir, 'manifest.json'), JSON.stringify(out, null, 2));
   console.log(JSON.stringify(machine));
+  const ref = await readFile(join(nodesDir, 'scripts', 'xmachine-reference.json'), 'utf8').then(JSON.parse, () => null);
+  if (!ref) {
+    console.log('no scripts/xmachine-reference.json: nothing to compare with');
+  } else if (ref.build.wasmSha256 !== out.build.wasmSha256 || ref.build.protocol !== out.build.protocol) {
+    console.log(`the reference is for another build (${ref.build.wasmSha256}/${ref.build.protocol}): not compared`);
+  } else {
+    const fields = (m) => (m ? `hash ${(m.finalHash >>> 0).toString(16)} ${m.bytes} B ${m.end.blue}-${m.end.red} ${m.end.reason} tick ${m.end.tick}` : 'none');
+    let differ = 0;
+    for (const m of out.matches) {
+      const r = ref.matches.find((x) => x.name === m.name);
+      const same = !!r && r.finalHash === m.finalHash && r.bytes === m.bytes && JSON.stringify(r.end) === JSON.stringify(m.end);
+      if (same) continue;
+      differ++;
+      console.log(`DIFFERS ${m.name}: here ${fields(m)}, reference ${fields(r)}`);
+    }
+    const on = `${ref.machine.platform}, ${ref.machine.cpu}, Node ${ref.machine.node}`;
+    console.log(differ ? `${differ} of ${out.matches.length} differ from the reference recorded on ${on}` : `all ${out.matches.length} match the reference recorded on ${on}`);
+    if (differ) process.exit(1);
+  }
 } else if (cmd === 'verify') {
   const man = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8'));
   const here = await H.testBuild();

@@ -1,0 +1,184 @@
+{
+  "machine": {
+    "platform": "win32 10.0.26200",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 7 2700 Eight-Core Processor",
+    "node": "24.14.0",
+    "v8": "13.6.233.17-node.41"
+  },
+  "build": {
+    "version": "0.0.0-test",
+    "protocol": 3,
+    "wasmSha256": "c137f952a57395e81e97a187c1a14bed0f034131418deb4bdd4a7b3fdf3f3c92"
+  },
+  "matches": [
+    {
+      "name": "1v1-human-vs-easy",
+      "file": "1v1-human-vs-easy.tgr",
+      "bytes": 61898,
+      "end": {
+        "tick": 22200,
+        "winner": 1,
+        "blue": 0,
+        "red": 2,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 1016366208
+    },
+    {
+      "name": "1v1-human-vs-medium",
+      "file": "1v1-human-vs-medium.tgr",
+      "bytes": 59773,
+      "end": {
+        "tick": 25260,
+        "winner": 1,
+        "blue": 2,
+        "red": 3,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 1676254666
+    },
+    {
+      "name": "1v1-human-vs-hard",
+      "file": "1v1-human-vs-hard.tgr",
+      "bytes": 101228,
+      "end": {
+        "tick": 30681,
+        "winner": 1,
+        "blue": 1,
+        "red": 2,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 2719648702
+    },
+    {
+      "name": "1v1-hard-vs-hard",
+      "file": "1v1-hard-vs-hard.tgr",
+      "bytes": 2329,
+      "end": {
+        "tick": 23880,
+        "winner": 1,
+        "blue": 1,
+        "red": 8,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 4054847779
+    },
+    {
+      "name": "1v1-human-vs-human",
+      "file": "1v1-human-vs-human.tgr",
+      "bytes": 134405,
+      "end": {
+        "tick": 22440,
+        "winner": 0,
+        "blue": 2,
+        "red": 1,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 2199394326
+    },
+    {
+      "name": "2v2-takeover-medium",
+      "file": "2v2-takeover-medium.tgr",
+      "bytes": 231454,
+      "end": {
+        "tick": 33341,
+        "winner": 1,
+        "blue": 0,
+        "red": 1,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 4211503285
+    },
+    {
+      "name": "2v2-bots-hard",
+      "file": "2v2-bots-hard.tgr",
+      "bytes": 2333,
+      "end": {
+        "tick": 22680,
+        "winner": 0,
+        "blue": 3,
+        "red": 1,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 3174341680
+    },
+    {
+      "name": "3v3-mixed-hard",
+      "file": "3v3-mixed-hard.tgr",
+      "bytes": 209568,
+      "end": {
+        "tick": 22200,
+        "winner": 0,
+        "blue": 2,
+        "red": 0,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 2784669696
+    },
+    {
+      "name": "3v3-bots-hard",
+      "file": "3v3-bots-hard.tgr",
+      "bytes": 2445,
+      "end": {
+        "tick": 22920,
+        "winner": 0,
+        "blue": 4,
+        "red": 1,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 2381266295
+    },
+    {
+      "name": "3v3-bots-medium",
+      "file": "3v3-bots-medium.tgr",
+      "bytes": 2834,
+      "end": {
+        "tick": 28143,
+        "winner": 0,
+        "blue": 3,
+        "red": 2,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 3704430179
+    },
+    {
+      "name": "3v3-bots-easy",
+      "file": "3v3-bots-easy.tgr",
+      "bytes": 2427,
+      "end": {
+        "tick": 22680,
+        "winner": 0,
+        "blue": 3,
+        "red": 1,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 1686810550
+    },
+    {
+      "name": "3v3-humans-idle-slot",
+      "file": "3v3-humans-idle-slot.tgr",
+      "bytes": 403043,
+      "end": {
+        "tick": 24608,
+        "winner": 1,
+        "blue": 1,
+        "red": 2,
+        "reason": "rules",
+        "forfeitTeam": -1
+      },
+      "finalHash": 2383331229
+    }
+  ]
+}
