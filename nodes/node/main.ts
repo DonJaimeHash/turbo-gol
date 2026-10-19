@@ -4,10 +4,11 @@
  *   register --control <url> --token <tgn1_...> [--transport wss|rtc] [--public-url wss://<ip>]
  *            [--roles host,verify]   'wss' = public IP with ports 80/443 (a VPS); 'rtc' = a home PC
  *            behind NAT, nothing to open (WebRTC). Default: wss when --public-url is given, else rtc.
- *            [--name <name>] [--uplink-mbps <n>] [--data <dir>]
+ *            [--name <name>] [--uplink-mbps <n>] [--matches <n>] [--data <dir>]
  *        One time. Generates this machine's Ed25519 key (it never leaves <data>/node.json), runs the
- *        capacity benchmark, trades the one-time token for a node identity.
- *   run      [--data <dir>] [--port 7350] [--listen 127.0.0.1] [--egress-cap-gb <n>]
+ *        capacity benchmark (or takes the declared --matches), trades the one-time token for a node
+ *        identity.
+ *   run      [--data <dir>] [--port 7350] [--listen 127.0.0.1] [--egress-cap-gb <n>] [--matches <n>]
  *        Serves matches / verifications until stopped. SIGTERM (or { t: 'stop' } over the IPC
  *        channel from the launcher) drains: no new matches, exit 0 when the last one ends and is
  *        reported; { t: 'stop-now' } stops at once. Exit code 75 = drained for an update (the
@@ -59,19 +60,24 @@ async function readIdentity(dir: string): Promise<NodeIdentityFile> {
   }
 }
 
-/** The benchmark result for this build + machine, re-measured when either changed. */
+/**
+ * The benchmark result for this build + machine, re-measured when either changed. A declared
+ * --matches replaces the benchmark and is part of the key too: changing it, or dropping it to go
+ * back to the benchmark, takes effect at the next start without deleting bench.json.
+ */
 async function capacityFor(dir: string, build: BuildId, uplink: number | null): Promise<NodeCapacity> {
   const specs = nodeSpecs();
-  const key = `${build.wasmSha256}|${specs.cpuModel}|${specs.cpus}|${specs.memMB}|${uplink}`;
+  const asked = arg('matches');
+  const declared = asked ? Math.max(1, Math.min(200, parseInt(asked, 10) || 1)) : null;
+  const key = `${build.wasmSha256}|${specs.cpuModel}|${specs.cpus}|${specs.memMB}|${uplink}|${declared}`;
   try {
     const saved = JSON.parse(await readFile(join(dir, 'bench.json'), 'utf8')) as { key: string; capacity: NodeCapacity };
     if (saved.key === key) return saved.capacity;
   } catch {
     /* none yet */
   }
-  const declared = arg('matches');
-  const capacity: NodeCapacity = declared
-    ? { matches: Math.max(1, Math.min(200, parseInt(declared, 10) || 1)), cpuMsPerMatchSecond: 0, memMBPerMatch: 0, uplinkMbps: uplink, source: 'declared' }
+  const capacity: NodeCapacity = declared !== null
+    ? { matches: declared, cpuMsPerMatchSecond: 0, memMBPerMatch: 0, uplinkMbps: uplink, source: 'declared' }
     : await runBench({ uplinkMbps: uplink, log: (m) => console.log(m) });
   await writeFile(join(dir, 'bench.json'), JSON.stringify({ key, capacity }, null, 2));
   return capacity;

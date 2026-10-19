@@ -170,6 +170,14 @@ test('a ranked disconnect forfeit after an event-loop stall verifies ok (forfeit
       assert.equal(res.forfeitTeam, 1);
       assert.equal(res.winner, 0);
       assert.ok(res.endTick - dcTick >= FORFEIT_DC_TICKS, `stall ${stallMs}: whistled ${res.endTick - dcTick} ticks after the disconnect`);
+      assert.deepEqual(
+        seen.ended.stats.slots.map((s) => [s.slot, s.connectedAtEnd]),
+        [
+          [0, true],
+          [1, false],
+        ],
+        `stall ${stallMs}: who had a socket at the whistle`,
+      );
       const v = await verify(seen.ended.replay, assign, build, { leaves: [] });
       assert.equal(v.code, 'ok', `stall ${stallMs}: ${v.code} ${v.message ?? ''}`);
       assert.equal(v.endReason, 'forfeit');
@@ -239,6 +247,11 @@ test("a casual 'left' ending verifies ok when leaves lists the leavers, 'bad_tak
     const res = seen.ended.result;
     assert.equal(res.endReason, 'left');
     assert.equal(res.endTick, lastTick);
+    assert.deepEqual(
+      seen.ended.stats.slots.map((s) => s.connectedAtEnd),
+      [false, false],
+      'both left before the end',
+    );
     const r = decodeReplay(seen.ended.replay);
     assert.deepEqual(
       r.takeovers.map((t) => t.slot),

@@ -42,6 +42,7 @@ function deferred() {
  * A scripted control plane. Its clock is Date.now() + st.skewMs; replay requests are checked like
  * the real one (5 minutes of tolerance -> 401 'stale', node signature), answers carry a Date
  * header on that clock. st.dropAcks: the next N reports get no ack (a report it failed to process).
+ * st.putUnavailable: while it returns true, replay uploads get a 503 (the Worker being deployed).
  * st.iceServers: the welcome's list, or a function minting one per welcome. opts.welcome: patched
  * into every welcome.
  */
@@ -52,6 +53,7 @@ async function fakeControl(opts = {}) {
     skewMs: opts.skewMs ?? 0,
     dropAcks: 0,
     putDelayMs: 0,
+    putUnavailable: null,
     iceServers: [{ urls: 'stun:stun.test:3478' }, { urls: 'turn:turn.test:3478', username: 'u', credential: 'c' }],
     /** Logins (auth accepted). */
     logins: 0,
@@ -98,6 +100,10 @@ async function fakeControl(opts = {}) {
       if ((await sha256Hex(bytes)) !== sha) {
         log(400, 'sha_mismatch');
         return json(res, 400, { error: 'sha_mismatch' }, date);
+      }
+      if (st.putUnavailable?.()) {
+        log(503, 'unavailable');
+        return json(res, 503, { error: 'unavailable' }, date);
       }
       if (st.putDelayMs > 0) await sleep(st.putDelayMs);
       st.replays.set(m[1], bytes);
@@ -324,6 +330,45 @@ test('replay requests are signed on the control plane clock; a stale answer is r
     assert.ok(Math.abs(agent.serverNow() - cp.now()) < 3_000);
     await waitFor(() => agent.backlog === 0);
     assert.equal(cp.msgsOf('report').filter((m) => m.report.kind === 'lost').length, 0);
+  } finally {
+    await agent.stop();
+    await cp.close();
+  }
+});
+
+test('a replay upload outlasts a minute of control plane errors (a Worker deploy); it gives up after about 75 s', async () => {
+  const cp = await fakeControl();
+  // The retry waits run on a virtual clock: the defaults (12 attempts, 0.5 s doubling to 10 s) are
+  // what is under test, and they add up to more than a minute.
+  let clockMs = 0;
+  const waits = [];
+  const agent = new Agent(cp.agentIdentity, stubHandlers, {
+    log: () => undefined,
+    sleep: async (ms) => {
+      waits.push(ms);
+      clockMs += ms;
+    },
+  });
+  try {
+    agent.start();
+    await agent.whenConnected();
+    cp.st.putUnavailable = () => clockMs < 60_000;
+    await agent.submitEnded('match0001', RESULT, replayBytes(1), STATS);
+    const statuses = cp.st.reqs.filter((r) => r.matchId === 'match0001').map((r) => r.status);
+    assert.deepEqual(statuses, [...Array(10).fill(503), 200], 'ten refusals over 65.5 s, then stored');
+    assert.ok(clockMs >= 60_000);
+    await waitFor(() => agent.backlog === 0);
+    assert.deepEqual(cp.msgsOf('report').map((m) => m.report.kind), ['ended']);
+
+    // The control plane never comes back: 12 attempts, about 75 s of waits, then the match is lost.
+    waits.length = 0;
+    cp.st.putUnavailable = () => true;
+    await agent.submitEnded('match0002', RESULT, replayBytes(2), STATS);
+    assert.equal(cp.st.reqs.filter((r) => r.matchId === 'match0002').length, 12);
+    assert.deepEqual(waits, [500, 1_000, 2_000, 4_000, 8_000, ...Array(6).fill(10_000)]);
+    assert.equal(waits.reduce((a, b) => a + b, 0), 75_500);
+    await waitFor(() => agent.backlog === 0);
+    assert.deepEqual(cp.msgsOf('report').map((m) => `${m.report.kind}:${m.report.matchId}`), ['ended:match0001', 'lost:match0002']);
   } finally {
     await agent.stop();
     await cp.close();

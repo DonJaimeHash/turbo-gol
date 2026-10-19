@@ -219,6 +219,12 @@ export interface SlotStatsReport {
   overruns: number;
   /** Time a socket was attached to this slot while the match ran (ms). */
   connectedMs: number;
+  /**
+   * A socket was attached to this slot at the whistle. MatchDO rates a ranked player without one
+   * as a leaver; the control plane takes this from trusted nodes only. Nodes before 0.2.0 do not
+   * send it: read as true.
+   */
+  connectedAtEnd: boolean;
 }
 
 export interface MatchStats {
