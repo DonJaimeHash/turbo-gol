@@ -58,6 +58,7 @@ Otros comandos:
 | `npm run keys` | Genera las claves de control y de releases en `.keys/` |
 | `npm run build` | Arma una release firmada en `dist/releases/` con los tres instaladores |
 | `npm run build:web` | Arma el arnés de prueba del navegador, servido en `/web/rtc-harness.html` |
+| `node scripts/determinism.mjs record <carpeta>` y `verify <carpeta>` | Graba 12 partidas completas y verifica las que grabó otra máquina: comprueba que dos máquinas simulan igual |
 
 `.keys/`, `dist/`, `data/` y `node_modules/` están en `nodes/.gitignore`. **Nunca subas `.keys/` a
 ningún lado**: guarda una copia en un gestor de contraseñas.
@@ -89,6 +90,6 @@ control-plane/  el plano de control
 install/        VPS (install.sh), Windows, macOS y Linux de escritorio, cloud-init
 web/            la página "Pon un servidor" y el arnés WebRTC del navegador
 github/         plantillas: bot, ranking de propuestas, releases, formulario
-scripts/        demo, build de releases y del arnés, claves
+scripts/        demo, build de releases y del arnés, claves, determinismo entre máquinas
 test/           pruebas automáticas con el wasm real
 ```

@@ -18,6 +18,10 @@ All notable changes to Turbogol are documented here. The format follows
   and re-simulates the replays before any rating is written (every ranked match; casual matches by
   sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
   Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
+- Community nodes: a cross-machine determinism check (`nodes/scripts/determinism.mjs`) records 12
+  full matches and verifies the replays another machine recorded, so a new machine or Node version
+  can be checked before it verifies; it compares with the results measured on 2026-10-19 on a
+  Windows PC and on the São Paulo VPS.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
