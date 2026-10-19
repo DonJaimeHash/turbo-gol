@@ -7,8 +7,9 @@
  * Responsibilities
  *   sessions      challenge / response login of nodes, one live session per node, request/reply.
  *                 Every message is shape-checked (validate.ts) before anything reads it.
- *   reachability  'wss': GET <publicUrl>/healthz?nonce= signed by the node; 'rtc': the node's
- *                 WebRTC self-test through TURN. pending -> probation (trusted -> active)
+ *   reachability  'wss': GET <publicUrl>/healthz?nonce= signed by the node, again every 5 minutes
+ *                 (failing three times in a row takes wss out of placement, with an ALERT); 'rtc':
+ *                 the node's WebRTC self-test through TURN. pending -> probation (trusted -> active)
  *   placement     scheduler.pickNode -> 'assign' -> EdDSA tickets + the URL for the transport
  *   signaling     a player's WebRTC offer relayed to an rtc node (ticket checked on both ends)
  *   leaves        a player's explicit quit relayed to the node (MatchDO /internal/leave semantics);
@@ -85,8 +86,15 @@ const AUTH_TIMEOUT_MS = 10_000;
 export const MAX_UNAUTHENTICATED = 64;
 /** A placed match with no report this long after its regulation + TTL is void. */
 const REPORT_GRACE_MS = 15 * 60_000;
-/** Unproven wss hosts are probed again this often while connected. */
+/** Unproven wss hosts are probed again this often while connected; so is a proven one after a failed re-probe. */
 const PROBE_RETRY_MS = 30_000;
+/**
+ * Proven wss hosts are probed again this often while connected: an expired certificate or a dead
+ * proxy would otherwise keep players landing on a node they cannot open (close code 1006).
+ */
+export const REPROBE_MS = 5 * 60_000;
+/** Failed re-probes in a row that take a host's wss out of placement until a probe passes again. */
+export const REPROBE_FAILURES = 3;
 /** A queued verification is retried this often while no verifier can take it. */
 const VERIFY_RETRY_MS = 15_000;
 /** Ranked results wait this long for a verifier (e.g. the Sao Paulo VPS rebooting) before the match is void. */
@@ -400,6 +408,9 @@ export class ControlPlane {
   private readonly casualVerifyRate: number;
   private readonly probing = new Set<string>();
   private readonly lastProbe = new Map<string, number>();
+  /** Failed re-probes in a row of proven hosts, and the hosts they took out (for the recovery line). */
+  private readonly probeFailures = new Map<string, number>();
+  private readonly unreachable = new Set<string>();
   private readonly deferredUpdates = new Set<string>();
   private readonly lastStrike = new Map<string, number>();
   /** Matches the matchmaker asked for and no node could take (region, when): demand the nodes did not meet. */
@@ -668,25 +679,64 @@ export class ControlPlane {
   async probe(nodeId: string): Promise<boolean> {
     const n = this.registry.node(nodeId);
     if (!n || !n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl || n.reachableAt !== null || this.probing.has(nodeId)) return n?.reachableAt != null;
-    this.probing.add(nodeId);
-    this.lastProbe.set(nodeId, this.now());
+    const error = await this.healthz(n, n.publicUrl);
+    if (error !== null) {
+      this.log(`probe ${n.name} failed: ${error}`);
+      return false;
+    }
+    const changed = this.registry.markReachable(nodeId, this.now());
+    if (changed) this.notifyStatus(nodeId, changed);
+    this.probeFailures.delete(nodeId);
+    if (this.unreachable.delete(nodeId)) this.log(`node ${n.name} reachable again at ${n.publicUrl}`);
+    else this.log(`probe ${n.name}: reachable at ${n.publicUrl}`);
+    return true;
+  }
+
+  /**
+   * Check a proven wss host again (the sweep does every REPROBE_MS; a maintainer may ask for one).
+   * REPROBE_FAILURES failures in a row take wss out of its transports (registry.markUnreachable)
+   * with an ALERT; from then on it is an unproven host again, probed every PROBE_RETRY_MS until
+   * one passes. A failure is retried after PROBE_RETRY_MS too, so a dead host is out within about
+   * a minute, not fifteen. Resolves whether wss still reaches the node.
+   */
+  async reprobe(nodeId: string): Promise<boolean> {
+    const n = this.registry.node(nodeId);
+    if (!n || !n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl || n.reachableAt === null || this.probing.has(nodeId)) return n?.reachableAt != null;
+    const url = n.publicUrl;
+    const error = await this.healthz(n, url);
+    if (error === null) {
+      this.probeFailures.delete(nodeId);
+      return true;
+    }
+    // A hello with a new address meanwhile: that one gets proven from scratch.
+    if (n.reachableAt === null || n.publicUrl !== url) return n.reachableAt !== null;
+    const failures = (this.probeFailures.get(nodeId) ?? 0) + 1;
+    this.log(`probe ${n.name} failed (${failures} of ${REPROBE_FAILURES}): ${error}`);
+    if (failures < REPROBE_FAILURES) {
+      this.probeFailures.set(nodeId, failures);
+      return true;
+    }
+    this.probeFailures.delete(nodeId);
+    this.registry.markUnreachable(nodeId);
+    this.unreachable.add(nodeId);
+    this.log(`ALERT node ${n.name} unreachable at ${url}: ${error}`);
+    return false;
+  }
+
+  /** GET <url>/healthz?nonce= and check the node signed the nonce: null when it did, or what went wrong. */
+  private async healthz(n: NodeRecord, url: string): Promise<string | null> {
+    this.probing.add(n.nodeId);
+    this.lastProbe.set(n.nodeId, this.now());
     try {
       const nonce = randomB64(18);
       const get = this.o.fetchJson ?? (async (u: string) => (await fetch(u, { signal: AbortSignal.timeout(5_000) })).json());
-      const body = (await get(`${httpOf(n.publicUrl)}/healthz?nonce=${nonce}`)) as { nodeId?: unknown; sig?: unknown };
-      if (body?.nodeId !== nodeId || typeof body.sig !== 'string' || !(await verifyWith(n.publicKey, reachMessage(nodeId, nonce), body.sig))) {
-        this.log(`probe ${n.name}: bad answer`);
-        return false;
-      }
-      const changed = this.registry.markReachable(nodeId, this.now());
-      if (changed) this.notifyStatus(nodeId, changed);
-      this.log(`probe ${n.name}: reachable at ${n.publicUrl}`);
-      return true;
+      const body = (await get(`${httpOf(url)}/healthz?nonce=${nonce}`)) as { nodeId?: unknown; sig?: unknown };
+      if (body?.nodeId !== n.nodeId || typeof body.sig !== 'string' || !(await verifyWith(n.publicKey, reachMessage(n.nodeId, nonce), body.sig))) return 'bad answer';
+      return null;
     } catch (e) {
-      this.log(`probe ${n.name} failed: ${String(e)}`);
-      return false;
+      return String(e);
     } finally {
-      this.probing.delete(nodeId);
+      this.probing.delete(n.nodeId);
     }
   }
 
@@ -1463,10 +1513,15 @@ export class ControlPlane {
       if (!n || now - n.lastSeen > (n.trusted ? TRUSTED_OFFLINE_MS : HEARTBEAT_TIMEOUT_MS)) gone.add(m.nodeId);
     }
     for (const id of gone) this.voidMatchesOf(id, 'node_offline', (m) => m.state === 'assigned');
-    // Hosts still unproven (Caddy may have been fetching its certificate at the first hello): probe again.
+    // Hosts still unproven (Caddy may have been fetching its certificate at the first hello): probe
+    // again. Proven ones: check again every REPROBE_MS, sooner after a failure.
     for (const n of this.registry.list()) {
-      if (n.reachableAt === null && n.transports.includes('wss') && this.isOnline(n.nodeId) && now - (this.lastProbe.get(n.nodeId) ?? 0) >= PROBE_RETRY_MS) {
-        void this.probe(n.nodeId);
+      if (!n.transports.includes('wss') || !this.isOnline(n.nodeId)) continue;
+      const since = now - (this.lastProbe.get(n.nodeId) ?? 0);
+      if (n.reachableAt === null) {
+        if (since >= PROBE_RETRY_MS) void this.probe(n.nodeId);
+      } else if (since >= (this.probeFailures.has(n.nodeId) ? PROBE_RETRY_MS : REPROBE_MS)) {
+        void this.reprobe(n.nodeId);
       }
     }
     // No report by the deadline: void, one strike. Not in a restart's grace: a deadline that passed

@@ -7,10 +7,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { playRecordedMatch, testBuild } from './helpers.mjs';
-import { CAP, SPECS, human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
+import { CAP, SPECS, URL_, human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
 
-const { MAX_UNAUTHENTICATED, TRUSTED_OFFLINE_MS } = await import('../control-plane/controlPlane.ts');
-const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES } = await import('../control-plane/registry.ts');
+const { MAX_UNAUTHENTICATED, REPROBE_FAILURES, REPROBE_MS, TRUSTED_OFFLINE_MS } = await import('../control-plane/controlPlane.ts');
+const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES, usableTransports } = await import('../control-plane/registry.ts');
 const { Ledger } = await import('../control-plane/ledger.ts');
 const { generateEd25519, sign, sha256Hex } = await import('../shared/edcrypto.ts');
 const { replayRequestMessage } = await import('../shared/controlProtocol.ts');
@@ -672,4 +672,63 @@ test('a missing or invalid release channel never breaks a hello: the last good o
   await env.reconnect();
   assert.equal(alerts().length, 2, 'one ALERT per bad stretch');
   assert.deepEqual(env.toNode.filter((m) => m.t === 'update'), []);
+});
+
+test('a proven host is probed again every 5 minutes: three failures in a row take its wss out with an ALERT, a passing probe brings it back', async () => {
+  const env = await setup({ status: 'active' });
+  const n = env.registry.node(env.nodeId);
+  // The checks the sweep starts, to wait for them.
+  const started = [];
+  for (const k of ['probe', 'reprobe']) {
+    const real = env.cp[k].bind(env.cp);
+    env.cp[k] = (id) => {
+      const p = real(id);
+      started.push(p);
+      return p;
+    };
+  }
+  /** One sweep `ms` later, with the host answering or not: it must check the host. */
+  const sweepAfter = async (ms, fails) => {
+    env.probeFails = fails ? 'fetch failed' : null;
+    env.advance(ms);
+    const before = started.length;
+    env.cp.sweep();
+    assert.equal(started.length, before + 1, 'the sweep checked the host');
+    await started.at(-1);
+  };
+  env.advance(REPROBE_MS - 1_000);
+  env.cp.sweep();
+  assert.equal(started.length, 0, 'not before 5 minutes');
+  await sweepAfter(1_000, false);
+  assert.notEqual(n.reachableAt, null);
+
+  // Caddy dies, or its certificate expires: retried every 30 s once it failed.
+  await sweepAfter(REPROBE_MS, true);
+  await sweepAfter(30_000, true);
+  assert.notEqual(n.reachableAt, null, 'two failures: still placed');
+  await sweepAfter(30_000, true);
+  assert.equal(n.reachableAt, null);
+  assert.equal(n.status, 'active', 'only the transport goes');
+  assert.deepEqual(usableTransports(n), []);
+  assert.deepEqual(
+    env.logs.filter((l) => l.startsWith(`probe ${n.name} failed (`)),
+    [1, 2, 3].map((i) => `probe ${n.name} failed (${i} of ${REPROBE_FAILURES}): Error: fetch failed`),
+  );
+  assert.ok(env.logs.includes(`ALERT node ${n.name} unreachable at ${URL_}: Error: fetch failed`));
+  assert.equal(await env.cp.place({ mode: '1v1', region: 'SA', ranked: false, humans: [human('a')], matchLengthSeconds: 10 }), null, 'no placement on it');
+
+  // Fixed: the unproven-host probe (every 30 s) passes.
+  await sweepAfter(30_000, true); // still down: no new ALERT
+  await sweepAfter(30_000, false);
+  assert.notEqual(n.reachableAt, null);
+  assert.ok(env.logs.includes(`node ${n.name} reachable again at ${URL_}`));
+  assert.equal(env.logs.filter((l) => l.startsWith('ALERT node')).length, 1);
+  assert.ok(await env.place([human('b')]));
+
+  // Failures must come in a row: a pass in between starts the count again.
+  await sweepAfter(REPROBE_MS, true);
+  await sweepAfter(30_000, false);
+  await sweepAfter(REPROBE_MS, true);
+  await sweepAfter(30_000, true);
+  assert.notEqual(n.reachableAt, null);
 });

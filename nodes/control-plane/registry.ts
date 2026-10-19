@@ -84,7 +84,7 @@ export interface NodeRecord {
   /** A project-run machine: skips probation, its verification verdicts are final. */
   trusted: boolean;
   createdAt: number;
-  /** When the control plane last proved publicUrl reaches this node (null = not yet / URL changed). */
+  /** When the control plane last proved publicUrl reaches this node (null = not yet / URL changed / its re-probes failed). */
   reachableAt: number | null;
   /** The node's last WebRTC self-test passed (through TURN when the control plane has TURN). */
   rtcReady: boolean;
@@ -427,6 +427,17 @@ export class Registry {
     const changed = this.reach(n, now);
     this.save(n);
     return changed;
+  }
+
+  /**
+   * A proven wss host stopped answering its re-probes: no wss placements until a probe proves it
+   * again. The status stays (a trusted node is still active): only the transport goes.
+   */
+  markUnreachable(id: string): void {
+    const n = this.nodes.get(id);
+    if (!n || n.reachableAt === null) return;
+    n.reachableAt = null;
+    this.save(n);
   }
 
   private reach(n: NodeRecord, now: number): NodeStatus | null {

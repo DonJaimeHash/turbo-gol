@@ -268,6 +268,8 @@ test('every durable change is written through: a restart at any point brings the
   const steps = [
     () => reg.connected(n.nodeId, hello({ egressCapGB: 500, capacity: { ...CAP, matches: 6 } }), 1_000),
     () => reg.markReachable(n.nodeId, 1_100),
+    () => reg.markUnreachable(n.nodeId),
+    () => reg.markReachable(n.nodeId, 1_150),
     () => reg.onAssigned(n.nodeId),
     () => reg.onVerified(n.nodeId, true, true),
     () => reg.onLost(n.nodeId, 'crash', 2_000),

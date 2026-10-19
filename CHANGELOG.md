@@ -26,7 +26,9 @@ All notable changes to Turbogol are documented here. The format follows
 - Community nodes: the control plane writes every change of a match to the store before anything
   that depends on it goes out, and after a deploy it gives the nodes 90 seconds to reconnect before
   voiding anything, so a match running through a deploy is still rated, with its leavers. A project
-  node whose control link drops for less than a minute keeps its matches too.
+  node whose control link drops for less than a minute keeps its matches too. A host's public
+  address is checked again every five minutes: one that fails three checks in a row gets no matches
+  until it answers again, with an ALERT line.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
