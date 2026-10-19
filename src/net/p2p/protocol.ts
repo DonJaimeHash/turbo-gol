@@ -27,10 +27,11 @@ import { PACKED_INPUT_BYTES } from '../../sim/types';
  *      POST /api/queue { kind: 'p2p' } carries `p2pProtocol` (QueueRequestP2p): a page cached from
  *      before a deploy is refused with 426 P2P_ERROR_RELOAD instead of taking a room seat.
  *   3: the field changed (rounded goals): every peer simulates on the same collision mesh, so a
- *      page from before is refused the same way. Bump it whenever the shared simulation changes
+ *      page from before is refused the same way.
+ *   4: the bots changed (aerials on medium, aerial fixes): every peer runs the room's bots. Bump it whenever the shared simulation changes
  *      (the field, the physics, the bots): peers on different builds would desync.
  */
-export const P2P_PROTOCOL_VERSION = 3;
+export const P2P_PROTOCOL_VERSION = 4;
 
 /**
  * Error code of a P2P protocol mismatch, on both paths: POST /api/queue { kind: 'p2p' } without

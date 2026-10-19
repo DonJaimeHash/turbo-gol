@@ -140,3 +140,59 @@ test('wall: high on the wall with the ball on the floor directly below -> comes 
   console.log(`wall above ball: floor at ${(r.at / 120).toFixed(2)} s, pos ${fmt(r.pos)}`);
   assert.ok(r.at >= 0 && r.at <= 3 * 120, `reached the floor at tick ${r.at}`);
 });
+
+/**
+ * Bot (slot 1, red: attacks -y) with full boost driving at a ball in the air ahead of it, an idle
+ * blue car far away. Returns the bot's first touch: car height, on-ground flag, ball velocity.
+ */
+function firstTouch(difficulty, carPos, carVel, ballPos, ballVel, maxTicks) {
+  sim.createArena();
+  sim.events.onGoal = undefined;
+  sim.events.onBump = undefined;
+  const idle = sim.addCar(T.Team.Blue);
+  const id = sim.addCar(T.Team.Red);
+  sim.setCarState(idle, [-3000, -(L - 1200), 17], [Math.PI / 2, 0, 0]);
+  sim.setCarState(id, carPos, [-Math.PI / 2, 0, 0], carVel);
+  sim.setCarBoost(id, 100);
+  sim.setBallState(ballPos, ballVel);
+  sim.sync();
+  let touch = null;
+  sim.events.onBallHit = (carId) => {
+    if (carId !== id || touch !== null) return;
+    const o = sim.carOffset(1);
+    touch = { tick: sim.tickCount, carZ: car(1, T.C_POS + 2), air: sim.buf[o + T.C_IS_ON_GROUND] < 0.5, vy: sim.buf[T.BALL_OFFSET + T.B_VEL + 1] };
+  };
+  const bot = new Bot({ team: T.Team.Red, difficulty, seed: 5 });
+  const ctrl = T.emptyControls();
+  for (let t = 0; t < maxTicks && touch === null; t++) {
+    if (t % 4 === 0) sim.updateBallPrediction();
+    bot.think(sim, 1, 0, ctrl);
+    sim.setControls(id, ctrl);
+    sim.step(1);
+    sim.sync();
+  }
+  sim.events.onBallHit = undefined;
+  return touch;
+}
+
+test('aerial: a high ball dropping ahead -> medium and hard fly up to it and send it toward the goal they attack; easy stays on the ground', () => {
+  // The lob falls from 900 uu; the car comes at it at 800 uu/s from 2200 uu away.
+  for (const d of DIFFICULTIES) {
+    const t = firstTouch(d, [0, 2200, 17], [0, -800, 0], [0, 0, 900], [0, 200, 0], 3 * 120);
+    console.log(`aerial [${d}]: ${t === null ? 'no touch' : `touch at ${(t.tick / 120).toFixed(2)} s, car z ${t.carZ.toFixed(0)}${t.air ? ' in the air' : ''}, ball vy ${t.vy.toFixed(0)}`}`);
+    assert.ok(t !== null, `${d}: touched the ball`);
+    if (d === 'easy') {
+      assert.ok(t.carZ < 200, `easy has no aerials (car z ${t.carZ.toFixed(0)})`);
+      continue;
+    }
+    assert.ok(t.air && t.carZ > 250, `${d}: met the ball in the air (car z ${t.carZ.toFixed(0)})`);
+    assert.ok(t.vy < -800, `${d}: sent it toward the -y goal (vy ${t.vy.toFixed(0)})`);
+  }
+});
+
+test('aerial: a high ball in front of the goal we attack -> hard goes up and pushes it goalward', () => {
+  const t = firstTouch('hard', [0, -2500, 17], [0, -800, 0], [0, -4300, 800], [0, 0, 100], 3 * 120);
+  console.log(`aerial near goal: ${t === null ? 'no touch' : `car z ${t.carZ.toFixed(0)}${t.air ? ' in the air' : ''}, ball vy ${t.vy.toFixed(0)}`}`);
+  assert.ok(t !== null && t.air && t.carZ > 250, 'met the ball in the air');
+  assert.ok(t.vy < -800, `pushed it toward the goal (vy ${t?.vy.toFixed(0)})`);
+});
