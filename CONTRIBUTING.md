@@ -73,6 +73,7 @@ Run the same checks as CI:
 ```sh
 npm run typecheck && npm test                 # client: types + node tests (sim, bots, net, menus...)
 cd server && npm run typecheck && npm test     # backend: types + unit tests
+(cd nodes && npm ci && npm run typecheck && npm test)   # community nodes (about 95 s)
 ```
 
 Online changes should also pass the end-to-end smokes against `wrangler dev`
@@ -111,7 +112,8 @@ AGPL requires you to offer its source code to its players.
 field constants), `src/game` (game loop, match rules, training), `src/render` (three.js renderer and
 HUD), `src/ai` (bots), `src/net` (online client: P2P rollback, server client, accounts, lobbies),
 `src/ui` (menus), `server/` (Cloudflare Workers backend), `native/` (C++ wrapper around the physics
-library), `tests/` (node tests).
+library), `tests/` (node tests), `nodes/` (community-run match servers, a prototype not wired into
+the game yet).
 
 ## Releases
 

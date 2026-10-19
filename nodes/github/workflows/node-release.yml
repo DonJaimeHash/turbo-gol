@@ -1,0 +1,46 @@
+# Node release: build, sign and publish a community-node release when a maintainer pushes a tag
+# `node-vX.Y.Z`. Template for the public repo (paths assume the folder moved to nodes/).
+#
+# The release private key lives ONLY in the `releases` environment, which requires a maintainer's
+# approval for every run: whoever can sign can push code to every community node.
+# Publishing does not move the channel: nodes keep running the current stable until a maintainer
+# updates channel.json by hand (stable; minimum only to force running nodes to update), so a bad
+# build never rolls out by itself.
+name: Node release
+on:
+  push:
+    tags: ["node-v*"]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci && (cd server && npm ci) && (cd nodes && npm ci)
+      - run: npm test && (cd nodes && npm test && npm run typecheck)
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: releases
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci && (cd server && npm ci) && (cd nodes && npm ci)
+      - name: Build and sign
+        env:
+          TGN_RELEASE_PRIVATE_KEY: ${{ secrets.TGN_RELEASE_PRIVATE_KEY }}
+        run: cd nodes && node scripts/build-node.mjs
+      - name: Publish to R2 (served at /nodes/releases/)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_TOKEN }}
+        run: |
+          cd nodes/dist/releases
+          for f in $(find . -type f ! -name channel.json); do
+            npx wrangler r2 object put "turbogol-node-releases/${f#./}" --file "$f" --remote
+          done
