@@ -229,7 +229,7 @@ export class LobbyDO extends DurableObject<Env> {
     if (!rec || this.closed) return error(410, 'closed', 'La sala ya no existe');
     const b = await readJson<{ playerId?: unknown; name?: unknown; guest?: unknown; password?: unknown }>(request);
     if (!b || typeof b.playerId !== 'string' || typeof b.name !== 'string') return error(400, 'bad_request');
-    if (rec.kicked.includes(b.playerId)) return error(403, 'kicked', 'El anfitrión te sacó de esta sala');
+    if (rec.kicked.includes(b.playerId)) return error(403, 'kicked', 'El anfitrión te expulsó de esta sala');
     const now = Date.now();
     const member = rec.members.find((m) => m.playerId === b.playerId);
     if (!member) {
@@ -300,7 +300,7 @@ export class LobbyDO extends DurableObject<Env> {
     const fail = (code: string, message: string): void => this.send(ws, { t: 'error', code, message });
     switch (msg.t) {
       case 'team': {
-        if (rec.status !== 'open') return fail('busy', 'Esperá a que termine la partida');
+        if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
         if (msg.team !== 0 && msg.team !== 1) return fail('bad_team', 'Equipo inválido');
         if (msg.team === me.team) return;
         if (rec.members.filter((m) => m.team === msg.team).length >= this.perTeam()) return fail('team_full', 'Ese equipo está completo');
@@ -309,7 +309,7 @@ export class LobbyDO extends DurableObject<Env> {
       }
       case 'settings': {
         if (!isHost) return fail('not_host', 'Solo el anfitrión cambia la configuración');
-        if (rec.status !== 'open') return fail('busy', 'Esperá a que termine la partida');
+        if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
         const next = parseSettings(msg.settings, rec.settings);
         if (typeof next === 'string') return fail(next, 'Configuración inválida');
         if (next.mode !== rec.settings.mode) {
@@ -326,7 +326,7 @@ export class LobbyDO extends DurableObject<Env> {
         break;
       }
       case 'kick': {
-        if (!isHost) return fail('not_host', 'Solo el anfitrión puede sacar jugadores');
+        if (!isHost) return fail('not_host', 'Solo el anfitrión puede expulsar jugadores');
         const target = rec.members.find((m) => m.id === msg.member);
         if (!target || target.id === me.id) return;
         rec.kicked.push(target.playerId);
@@ -449,7 +449,7 @@ export class LobbyDO extends DurableObject<Env> {
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
       rec.status = 'open';
-      this.send(hostWs, { t: 'error', code: body.error ?? 'start_failed', message: body.message ?? 'No se pudo iniciar la partida, probá de nuevo' });
+      this.send(hostWs, { t: 'error', code: body.error ?? 'start_failed', message: body.message ?? 'No se pudo iniciar la partida, inténtalo de nuevo' });
       await this.afterChange();
       return;
     }

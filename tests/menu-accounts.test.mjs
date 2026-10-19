@@ -117,7 +117,7 @@ test("AccountClient: a code without a server text still gets the client's text; 
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
   const rejects = (check) => assert.rejects(a.login('Tomi', 'a fine password'), (e) => e instanceof AC.AccountError && check(e));
   await rejects((e) => e.code === 'rate_limited' && e.status === 429 && e.message === 'Too many attempts, wait a minute');
-  answer = res(429, { error: 'throttled', message: 'Demasiados intentos, esperá un momento', retryAfterMs: 5000 });
+  answer = res(429, { error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: 5000 });
   await rejects((e) => e.code === 'throttled' && e.retryAfterMs === 5000 && e.message === 'Too many attempts, wait a moment');
   answer = res(400, { error: 'new_code', message: 'A server text' });
   await rejects((e) => e.code === 'new_code' && e.message === 'A server text');
@@ -246,7 +246,7 @@ test("LobbyClient: a refused request carries the client's text for the code, els
   const lc = new LC.LobbyClient({ fetchFn: srv.fetchFn, webSocketFactory: (u, p) => new FakeWs(u, p), bearer: async () => 'b' });
   const rejects = (check) => assert.rejects(lc.join('ABC234', null), (e) => e instanceof AC.AccountError && check(e));
   await rejects((e) => e.code === 'no_lobby' && e.status === 404 && e.message === "There's no lobby with that code");
-  answer = res(429, { error: 'rate_limited', message: 'Demasiados intentos, esperá un minuto' });
+  answer = res(429, { error: 'rate_limited', message: 'Demasiados intentos, espera un minuto' });
   await rejects((e) => e.code === 'rate_limited' && e.message === 'Too many attempts, wait a minute');
   answer = res(400, { error: 'new_code', message: 'A server text' });
   await rejects((e) => e.code === 'new_code' && e.message === 'A server text');

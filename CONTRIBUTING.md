@@ -45,7 +45,8 @@ Emscripten SDK if you change the C++ wrapper or the physics library: see `native
 ## Translating
 
 The game follows the player's system language when it ships it, and falls back to English. Every
-text lives in `src/locales/`: `en.ts` is the source of truth, `es.ts` is Spanish. To add a
+text lives in `src/locales/`: `en.ts` is the source of truth, `es.ts` is neutral Latin American Spanish
+(`tú`, no regional slang). To add a
 language (say French, code `fr`):
 
 1. Copy `src/locales/en.ts` to `src/locales/fr.ts`. Replace its header import with
