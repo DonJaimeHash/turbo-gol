@@ -2,8 +2,10 @@
  * Node registry: one-time registration tokens, node records and the status rules.
  *
  * Pure logic over in-memory maps. The reference control plane (devServer.ts) uses it as is; the
- * production NodeRegistryDO keeps the same records in its SQLite storage and calls the same
- * methods (see docs/INTEGRACION.md).
+ * production NodeRegistryDO calls the same methods (see docs/INTEGRACION.md) with a `store` that
+ * writes every durable change to its SQLite storage as it happens (persist.ts), and `restore`
+ * loads the rows back after a restart. Heartbeats never write: what they carry comes back with
+ * the next one.
  *
  * Lifecycle of a node (status):
  *   pending    registered with a valid token; not proven reachable yet -> no matches
@@ -24,6 +26,8 @@
 import { HEARTBEAT_TIMEOUT_MS } from '../shared/controlProtocol';
 import type { BuildId, HeartbeatData, HelloData, NodeCapacity, NodeRole, NodeSpecs, NodeStatus, NodeTransport, RegisterRequest } from '../shared/controlProtocol';
 import { isValidPublicKey, randomB64, randomHexId, sha256Hex } from '../shared/edcrypto';
+import { nodeFromRow, tokenFromRow } from './persist';
+import type { NodeRow, RegistryStore, TokenRow } from './persist';
 
 export const TOKEN_TTL_MS = 60 * 60 * 1000;
 export const TOKEN_PREFIX = 'tgn1_';
@@ -80,7 +84,7 @@ export interface NodeRecord {
   /** A project-run machine: skips probation, its verification verdicts are final. */
   trusted: boolean;
   createdAt: number;
-  /** When the control plane last proved publicUrl reaches this node (null = not yet / URL changed). */
+  /** When the control plane last proved publicUrl reaches this node (null = not yet / URL changed / its re-probes failed). */
   reachableAt: number | null;
   /** The node's last WebRTC self-test passed (through TURN when the control plane has TURN). */
   rtcReady: boolean;
@@ -117,6 +121,10 @@ export interface RegistryOptions {
   trustedOperators?: string[];
   /** Region ids the control plane knows (src/net/account.ts REGIONS). */
   regions?: string[];
+  /** Where durable changes are written as they happen (none: memory only). */
+  store?: RegistryStore;
+  /** The control plane's log (default console.log); its ALERT lines are for the maintainers. */
+  log?: (msg: string) => void;
 }
 
 function cleanName(s: unknown, fallback: string): string {
@@ -151,16 +159,37 @@ export class Registry {
   private readonly nodes = new Map<string, NodeRecord>();
   private readonly opts: RegistryOptions;
   private readonly trusted: Set<string>;
+  private readonly log: (msg: string) => void;
 
   constructor(opts: RegistryOptions = {}) {
     this.opts = opts;
     this.trusted = new Set(opts.trustedOperators ?? []);
+    this.log = opts.log ?? ((m) => console.log(`[control] ${m}`));
+  }
+
+  /**
+   * Load the rows written through `store` (a fresh registry, after a restart). `trusted` comes
+   * from this registry's trusted operators, not from the rows.
+   */
+  restore(rows: { tokens: TokenRow[]; nodes: NodeRow[] }): void {
+    this.tokens.clear();
+    this.nodes.clear();
+    for (const r of rows.tokens) this.tokens.set(r.hash, tokenFromRow(r));
+    for (const r of rows.nodes) this.nodes.set(r.nodeId, nodeFromRow(r, this.trusted));
+  }
+
+  private save(n: NodeRecord): void {
+    this.opts.store?.node(n);
   }
 
   /** Mark an operator as the project (production: NODE_TRUSTED_OPERATORS in the Worker env). */
   addTrustedOperator(id: string): void {
     this.trusted.add(id);
-    for (const n of this.nodes.values()) if (n.operatorId === id) n.trusted = true;
+    for (const n of this.nodes.values()) {
+      if (n.operatorId !== id || n.trusted) continue;
+      n.trusted = true;
+      this.save(n);
+    }
   }
 
   isTrusted(operatorId: string): boolean {
@@ -184,8 +213,24 @@ export class Registry {
       usedBy: null,
     };
     this.tokens.set(rec.hash, rec);
-    for (const [h, t] of this.tokens) if (t.expiresAt < now - TOKEN_TTL_MS) this.tokens.delete(h);
+    const pruned: string[] = [];
+    for (const [h, t] of this.tokens) {
+      if (t.expiresAt < now - TOKEN_TTL_MS) {
+        this.tokens.delete(h);
+        pruned.push(h);
+      }
+    }
+    this.opts.store?.tokens([rec]);
+    if (pruned.length > 0) this.opts.store?.dropTokens(pruned);
+    // Its node will be trusted: it verifies ranked matches, its own included. A token nobody on the
+    // team asked for means the project account is in someone else's hands.
+    if (this.trusted.has(op.id)) this.log(`ALERT registration token created for trusted operator ${op.name} (${op.id}), region ${region}`);
     return { token, expiresAt: rec.expiresAt };
+  }
+
+  /** Every token kept (unused, used, and expired ones until they are pruned). */
+  tokenList(): TokenRecord[] {
+    return [...this.tokens.values()];
   }
 
   // ---- registration ---------------------------------------------------------------------------
@@ -260,8 +305,18 @@ export class Registry {
       node.reachableAt = now;
       node.status = node.trusted ? 'active' : 'probation';
     }
+    // The awaits above let other registrations run their checks meanwhile: with this token, this
+    // key or another token of this operator. Nothing yields from here until the token is spent, so
+    // check again.
+    if (tok.usedBy !== null) return { ok: false, code: 'bad_token', message: 'unknown or already used' };
+    if (this.byOperator(tok.operatorId).length >= MAX_NODES_PER_OPERATOR) return { ok: false, code: 'too_many_nodes' };
+    for (const n of this.nodes.values()) if (n.publicKey === req.publicKey) return { ok: false, code: 'key_in_use' };
     tok.usedBy = nodeId;
     this.nodes.set(nodeId, node);
+    this.opts.store?.register(tok, node);
+    if (node.trusted) {
+      this.log(`ALERT trusted node ${node.name} (${nodeId}) registered for ${node.operatorName} (${node.operatorId}), roles ${roles.join('+')}${node.publicUrl ? ' at ' + node.publicUrl : ''}`);
+    }
     return { ok: true, node };
   }
 
@@ -312,8 +367,9 @@ export class Registry {
       }
     }
     // An rtc-only host is reachable once its self-test passed.
-    if (n.roles.includes('host') && !n.transports.includes('wss') && n.rtcReady) return this.markReachable(id, now);
-    return null;
+    const changed = n.roles.includes('host') && !n.transports.includes('wss') && n.rtcReady ? this.reach(n, now) : null;
+    this.save(n);
+    return changed;
   }
 
   /** `hb` must come from validate.parseHeartbeat. */
@@ -328,6 +384,18 @@ export class Registry {
     n.egressGB = hb.egressGB;
     n.egressCapGB = hb.egressCapGB;
     n.cpuLoad = hb.cpuLoad;
+  }
+
+  /**
+   * The node's control socket outlived a restart of the control plane (a hibernation): it is live
+   * as of `now`, so the heartbeat timeout covers it before its first heartbeat too. Not written,
+   * like a heartbeat.
+   */
+  adopted(id: string, now: number): void {
+    const n = this.nodes.get(id);
+    if (!n) return;
+    n.online = true;
+    n.lastSeen = now;
   }
 
   disconnected(id: string): void {
@@ -355,6 +423,7 @@ export class Registry {
         // The strikes keep their own 7-day window: another one this week pauses the node again.
         n.strikeTimes = n.strikeTimes.filter((t) => now - t < STRIKE_WINDOW_MS);
         n.counters.strikes = n.strikeTimes.length;
+        this.save(n);
         restored.push(n);
       }
     }
@@ -367,6 +436,23 @@ export class Registry {
   markReachable(id: string, now: number): NodeStatus | null {
     const n = this.nodes.get(id);
     if (!n) return null;
+    const changed = this.reach(n, now);
+    this.save(n);
+    return changed;
+  }
+
+  /**
+   * A proven wss host stopped answering its re-probes: no wss placements until a probe proves it
+   * again. The status stays (a trusted node is still active): only the transport goes.
+   */
+  markUnreachable(id: string): void {
+    const n = this.nodes.get(id);
+    if (!n || n.reachableAt === null) return;
+    n.reachableAt = null;
+    this.save(n);
+  }
+
+  private reach(n: NodeRecord, now: number): NodeStatus | null {
     n.reachableAt = now;
     if (n.status === 'pending') {
       n.status = n.trusted ? 'active' : 'probation';
@@ -382,30 +468,36 @@ export class Registry {
 
   onAssigned(id: string): void {
     const n = this.nodes.get(id);
-    if (n) n.counters.assigned++;
+    if (!n) return;
+    n.counters.assigned++;
+    this.save(n);
   }
 
   /** A verification verdict for a match this node hosted. Returns the new status when it changed. */
   onVerified(id: string, ranked: boolean, ok: boolean): NodeStatus | null {
     const n = this.nodes.get(id);
     if (!n) return null;
+    let changed: NodeStatus | null = null;
     if (!ok) {
       n.counters.failedVerification++;
-      if (n.trusted || n.status === 'banned') return null;
-      // Manual review, replacing any timed strike pause (which would otherwise lift by itself).
-      n.status = 'suspended';
-      n.statusReason = 'verification_failed';
-      n.suspendedUntil = null;
-      n.statusBeforeSuspension = null;
-      return 'suspended'; // always told: the reason changed even when the status did not
+      if (!n.trusted && n.status !== 'banned') {
+        // Manual review, replacing any timed strike pause (which would otherwise lift by itself).
+        n.status = 'suspended';
+        n.statusReason = 'verification_failed';
+        n.suspendedUntil = null;
+        n.statusBeforeSuspension = null;
+        changed = 'suspended'; // always told: the reason changed even when the status did not
+      }
+    } else {
+      n.counters.verified++;
+      n.counters.probationVerified = (n.counters.probationVerified ?? 0) + 1;
+      if (ranked) n.counters.rankedVerified++;
+      if (n.status === 'probation' && n.counters.probationVerified >= PROBATION_MATCHES && n.counters.failedVerification === 0) {
+        changed = this.applyStatus(n, 'active', null);
+      }
     }
-    n.counters.verified++;
-    n.counters.probationVerified = (n.counters.probationVerified ?? 0) + 1;
-    if (ranked) n.counters.rankedVerified++;
-    if (n.status === 'probation' && n.counters.probationVerified >= PROBATION_MATCHES && n.counters.failedVerification === 0) {
-      return this.setStatus(id, 'active', null);
-    }
-    return null;
+    this.save(n);
+    return changed;
   }
 
   /**
@@ -420,6 +512,7 @@ export class Registry {
     n.strikeTimes = n.strikeTimes.filter((t) => now - t < STRIKE_WINDOW_MS);
     n.strikeTimes.push(now);
     n.counters.strikes = n.strikeTimes.length;
+    let changed: NodeStatus | null = null;
     if (n.counters.strikes >= MAX_STRIKES && (n.status === 'probation' || n.status === 'active') && !n.trusted) {
       n.pauseTimes = (n.pauseTimes ?? []).filter((t) => now - t < REPEAT_PAUSE_WINDOW_MS);
       const repeated = n.pauseTimes.length > 0;
@@ -430,15 +523,22 @@ export class Registry {
       n.status = 'suspended';
       n.statusReason = 'strikes:' + reason;
       n.suspendedUntil = now + STRIKE_COOLDOWN_MS;
-      return n.status;
+      changed = n.status;
     }
-    return null;
+    this.save(n);
+    return changed;
   }
 
   /** Manual status change (admin) or a verification failure; clears any automatic cooldown. */
   setStatus(id: string, status: NodeStatus, reason: string | null): NodeStatus | null {
     const n = this.nodes.get(id);
     if (!n || n.status === status) return null;
+    this.applyStatus(n, status, reason);
+    this.save(n);
+    return status;
+  }
+
+  private applyStatus(n: NodeRecord, status: NodeStatus, reason: string | null): NodeStatus {
     n.status = status;
     n.statusReason = reason;
     n.suspendedUntil = null;

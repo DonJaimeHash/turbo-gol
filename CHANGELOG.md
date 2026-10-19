@@ -18,6 +18,14 @@ All notable changes to Turbogol are documented here. The format follows
   and re-simulates the replays before any rating is written (every ranked match; casual matches by
   sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
   Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
+- Community nodes: the control plane keeps its state through a restart. Registered nodes, tokens
+  and running matches are written to a store before anything that depends on them goes out, and
+  after a deploy the nodes get 90 seconds to reconnect, so a match played through a deploy is still
+  rated. A project node keeps its matches through a control link drop of under a minute; hosts are
+  checked again every five minutes and one that stops answering gets no matches; in a ranked match
+  on a project node, a player with no connection at the final whistle is rated as a leaver, as on
+  the game's own servers. One token registers one node, a forged replay upload is refused before
+  its body is read, and every token or node of a trusted operator logs an ALERT line.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
