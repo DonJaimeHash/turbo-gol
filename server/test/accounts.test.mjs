@@ -229,6 +229,23 @@ test('Worker crypto: client key deterministic per normalised username, server ha
   assert.equal(await A.recoveryCodeHash('ab0d-efgh'), await A.recoveryCodeHash('ABOD EFGH'), 'O read as 0');
 });
 
+test('training records: best per pack, a changed pack length takes the newer run, dates clamped, unknown user', () => {
+  const { store } = makeStore();
+  const u = store.register('Trainer', PW, [], H('r'), NOW);
+  assert.deepEqual(store.trainingRecords(u.userId), {});
+  let r = store.mergeTraining(u.userId, { 'shooting-easy': { best: 5, shots: 8, completedAt: NOW - 10 } }, NOW);
+  assert.deepEqual(r, { 'shooting-easy': { best: 5, shots: 8, completedAt: NOW - 10 } });
+  r = store.mergeTraining(u.userId, { 'shooting-easy': { best: 4, shots: 8, completedAt: NOW - 5 }, 'aerial-hard': { best: 2, shots: 10, completedAt: NOW + 99_999 } }, NOW);
+  assert.equal(r['shooting-easy'].best, 5, 'a worse run keeps the best');
+  assert.equal(r['aerial-hard'].completedAt, NOW, 'a date from the future is clamped to now');
+  r = store.mergeTraining(u.userId, { 'shooting-easy': { best: 3, shots: 10, completedAt: NOW - 1 } }, NOW);
+  assert.deepEqual(r['shooting-easy'], { best: 3, shots: 10, completedAt: NOW - 1 }, 'the pack changed length: the newer run wins');
+  assert.deepEqual(store.trainingRecords(u.userId), r, 'what is returned is what is stored');
+  const other = store.register('Other', PW, [], H('s'), NOW);
+  assert.deepEqual(store.trainingRecords(other.userId), {}, 'per account');
+  assert.equal(store.mergeTraining('ffffffffffffffff', {}, NOW), 'no_user');
+});
+
 test('username / password rules', () => {
   assert.equal(ACC.usernameProblem('Tomi_10'), null);
   assert.ok(ACC.usernameProblem('ab'));
