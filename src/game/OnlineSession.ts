@@ -332,13 +332,15 @@ export class OnlineSession {
    * closes our slot's socket if it is still open and hands the car to the host's bots; the slot
    * is never rejoined. Skipped after the whistle (the match is over and frees the locks itself)
    * and once the connection was lost for good (disconnect(): the lock is kept so the next server
-   * queue rejoins, as after a reload). Once per match.
+   * queue rejoins, as after a reload). Once per match. A quit before any Welcome adds
+   * `connected: false`: our socket never reached the host, so a community node can later tell a
+   * no-show from a leave (the Worker ignores it today).
    */
   private quitMatch(): void {
     const id = this.matchId;
     this.matchId = null;
     if (id === null || this.lost || this.state === 'ended') return;
-    void this.client.leaveMatch(id, { retryRejected: isNodeHost(this.welcome?.hostColo) });
+    void this.client.leaveMatch(id, { connected: this.welcome !== null, retryRejected: isNodeHost(this.welcome?.hostColo) });
   }
 
   dispose(): void {

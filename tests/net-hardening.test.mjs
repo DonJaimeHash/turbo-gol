@@ -431,14 +431,23 @@ test('OnlineSession: no /api/leave after the connection was lost for good (the r
   assert.deepEqual(s2.ws.closed, { code: 1000, reason: 'leave' });
 });
 
-test('OnlineSession.cancel while connecting quits the assigned match (/api/leave { matchId }); cancel while queueing only drops the waiter ({})', async () => {
+test('OnlineSession.cancel while connecting quits the assigned match (/api/leave { matchId }, connected: false before the Welcome); cancel while queueing only drops the waiter ({})', async () => {
   const rec = leaveRecorder();
   const s = await playingSession({ '/api/leave': rec.route }, { connecting: true });
   rec.ws = s.ws;
   s.session.cancel();
   assert.equal(s.session.state, 'idle');
-  assert.deepEqual(rec.seen, [{ body: { matchId: 'm1' }, auth: 'Bearer jwt-session', socketClosed: false }]);
+  assert.deepEqual(rec.seen, [{ body: { matchId: 'm1', connected: false }, auth: 'Bearer jwt-session', socketClosed: false }]);
   assert.deepEqual(s.ws.closed, { code: 1000, reason: 'cancel' });
+
+  // The Welcome came (the slot is ours on the host), the first snapshot not yet: a plain quit.
+  const rec2 = leaveRecorder();
+  const s2 = await playingSession({ '/api/leave': rec2.route }, { connecting: true });
+  s2.ws.open();
+  s2.ws.deliver(encodeJson(MsgType.Welcome, { protocol: P.PROTOCOL_VERSION, matchId: 'm1', mode: '1v1', tickRate: 120, carId: 1, slot: 0, roster: [{ carId: 1, slot: 0, team: 0, name: 'Tester', kind: 'player' }, { carId: 2, slot: 1, team: 1, name: 'Bot 1', kind: 'bot' }], tick: 0, matchLengthSeconds: 300 }));
+  assert.equal(s2.session.state, 'connecting');
+  s2.session.cancel();
+  assert.deepEqual(rec2.seen.map((r) => r.body), [{ matchId: 'm1' }]);
 
   // Still in the queue (the long-poll is pending): no match to quit, the waiter is dropped with {}.
   const bodies = [];

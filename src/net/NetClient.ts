@@ -42,8 +42,9 @@
  *                   lock is kept) or with the matchId of a server match the player quits
  *                   (OnlineSession.leave: the lock is freed, the slot goes to the host's bots, no
  *                   rejoin); the next queue() waits for it first so its join is never refused by
- *                   our own stale lock. On a community node a 401 is retried once with a
- *                   refreshed account session (`retryRejected`)
+ *                   our own stale lock. A quit before the Welcome says `connected: false`. On a
+ *                   community node a 401 is retried once with a refreshed account session
+ *                   (`retryRejected`)
  *   ice             GET /api/ice -> the STUN / TURN servers for the P2P mesh (fetchIce)
  *   match socket    new WebSocket(wsUrl, ['tg1', 'ticket.<jwt>']), binaryType 'arraybuffer';
  *                   Welcome / Snapshot / Event / Error / Kick are dispatched to the callbacks
@@ -213,6 +214,12 @@ export type QueueAssignment = ServerAssignment | P2pAssignment;
 
 /** leaveMatch options. */
 export interface LeaveOptions {
+  /**
+   * false: the player never got the match's Welcome (its socket never reached the host). Sent as
+   * `connected: false` so a later server can tell a slot that never attached from a quit (stage 2
+   * of the community nodes); the Worker ignores it today. true / absent adds nothing to the body.
+   */
+  connected?: boolean;
   /**
    * A 401 refreshes the account's session and sends the leave once more: the match is on a
    * community node, where the leave is the only way out and the Bearer of the queue may have
@@ -892,15 +899,18 @@ export class NetClient {
    * explicit quit) that match's lock is freed too and the MatchDO hands our car to its bots for
    * good (no rejoin); without one a server lock is kept (the rejoin path). Resolves with the
    * server's `released` flag (false without a session, on a network error or when there was
-   * nothing to release). The next queue() waits for it. `opts.retryRejected` (a match on a
-   * community node, which this POST is the only way out of): a 401 is retried once with a
-   * refreshed account session (leaveAgain).
+   * nothing to release). The next queue() waits for it. `opts.connected` false adds
+   * `connected: false` (no Welcome came). `opts.retryRejected` (a match on a community node, which
+   * this POST is the only way out of): a 401 is retried once with a refreshed account session
+   * (leaveAgain).
    */
   leaveMatch(matchId?: string, opts: LeaveOptions = {}): Promise<boolean> {
     const bearer = this.lastBearer ?? this.guest?.session ?? null;
     if (bearer === null) return Promise.resolve(false);
     this.leaves++;
-    const payload = this.withRegion(matchId !== undefined ? { matchId } : {});
+    const fields: { matchId?: string; connected?: false } = matchId !== undefined ? { matchId } : {};
+    if (opts.connected === false) fields.connected = false;
+    const payload = this.withRegion(fields);
     // The first POST goes out now, before the caller closes the socket; only a retry waits.
     let answer = this.post('/api/leave', payload, bearer);
     if (opts.retryRejected === true) answer = answer.then((res) => (res.status === 401 ? this.leaveAgain(payload, bearer, res) : res));

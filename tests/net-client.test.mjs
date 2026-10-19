@@ -691,7 +691,7 @@ test('queue: a SERVER queue refused by our server match (409 kind server) still 
   assert.equal(h.client.leaves, 0);
 });
 
-test('leaveMatch(matchId): POST /api/leave { matchId } (an explicit quit of a server match); without one the body stays {}', async () => {
+test('leaveMatch(matchId): POST /api/leave { matchId } (an explicit quit of a server match); without one the body stays {}; connected: false only when asked', async () => {
   const bodies = [];
   const h = makeClient({
     '/api/guest': () => jsonResponse(200, GUEST),
@@ -707,6 +707,11 @@ test('leaveMatch(matchId): POST /api/leave { matchId } (an explicit quit of a se
   const call = h.calls.find((c) => c.url === '/api/leave');
   assert.equal(call.init.headers.authorization, 'Bearer jwt-session', 'with the session');
   assert.equal(h.client.leaves, 2);
+  // `connected` goes out only as false (no Welcome came); true adds nothing.
+  bodies.length = 0;
+  await h.client.leaveMatch('e'.repeat(64), { connected: false });
+  await h.client.leaveMatch('e'.repeat(64), { connected: true });
+  assert.deepEqual(bodies, [{ matchId: 'e'.repeat(64), connected: false }, { matchId: 'e'.repeat(64) }]);
 });
 
 const ACCOUNT = (session, playerId = 'acc1') => ({ kind: 'account', playerId, name: 'Tomi', session, expiresAt: Date.now() + 3600_000 });
