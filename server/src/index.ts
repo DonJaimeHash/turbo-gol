@@ -74,6 +74,7 @@ export { RoomDO } from './RoomDO';
 export { AccountsDO } from './AccountsDO';
 export { LobbyDO } from './LobbyDO';
 export { LobbyDirectoryDO } from './LobbyDirectoryDO';
+export { NodeRegistryDO } from './NodeRegistryDO';
 
 const LIMIT_WINDOW_MS = 60_000;
 const LIMIT_QUEUE_PER_PLAYER = 20;

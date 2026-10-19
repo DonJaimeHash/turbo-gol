@@ -110,8 +110,8 @@ test('trustedOperatorIds: the account ids in NODE_TRUSTED_OPERATORS; an entry th
   assert.deepEqual(E.trustedOperatorIds({ NODE_TRUSTED_OPERATORS: `${A.toUpperCase()},${A}0,${A.slice(1)},Proyecto,*,${C}` }), new Set([C]));
 });
 
-test('nodesConfigured: the NodeRegistryDO, both buckets and both halves of the control key', () => {
-  const full = { NODES: {}, NODE_REPLAYS: {}, NODE_RELEASES: {}, NODE_CONTROL_PRIVATE_KEY: 'priv', NODE_CONTROL_PUBLIC_KEY: 'pub' };
+test('nodesConfigured: the NodeRegistryDO, both buckets, both halves of the control key and the public origin', () => {
+  const full = { NODES: {}, NODE_REPLAYS: {}, NODE_RELEASES: {}, NODE_CONTROL_PRIVATE_KEY: 'priv', NODE_CONTROL_PUBLIC_KEY: 'pub', NODES_PUBLIC_BASE: 'https://turbo-gol.com' };
   assert.equal(E.nodesConfigured(full), true);
   for (const k of Object.keys(full)) {
     const rest = { ...full };

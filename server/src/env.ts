@@ -216,14 +216,15 @@ export function trustedOperatorIds(env: Pick<Env, 'NODE_TRUSTED_OPERATORS'>): Se
 }
 
 /** An Env with everything the node control plane needs (nodesConfigured). */
-export type NodesEnv = Env & Required<Pick<Env, 'NODES' | 'NODE_REPLAYS' | 'NODE_RELEASES' | 'NODE_CONTROL_PRIVATE_KEY' | 'NODE_CONTROL_PUBLIC_KEY'>>;
+export type NodesEnv = Env & Required<Pick<Env, 'NODES' | 'NODE_REPLAYS' | 'NODE_RELEASES' | 'NODE_CONTROL_PRIVATE_KEY' | 'NODE_CONTROL_PUBLIC_KEY' | 'NODES_PUBLIC_BASE'>>;
 
 /**
- * The node control plane can run: its Durable Object, both R2 buckets and both halves of its key
+ * The node control plane can run: its Durable Object, both R2 buckets, both halves of its key and
+ * the public origin the nodes reach it at (the registration answer and the install line carry it)
  * are there. Without any of them nothing is sent to a node, whatever nodes_on says.
  */
 export function nodesConfigured(env: Env): env is NodesEnv {
-  return !!env.NODES && !!env.NODE_REPLAYS && !!env.NODE_RELEASES && !!env.NODE_CONTROL_PRIVATE_KEY && !!env.NODE_CONTROL_PUBLIC_KEY;
+  return !!env.NODES && !!env.NODE_REPLAYS && !!env.NODE_RELEASES && !!env.NODE_CONTROL_PRIVATE_KEY && !!env.NODE_CONTROL_PUBLIC_KEY && !!env.NODES_PUBLIC_BASE;
 }
 
 // ---- ICE servers (GET /api/ice and the RoomDO welcome) -------------------------------------------

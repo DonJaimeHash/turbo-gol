@@ -1,0 +1,788 @@
+// The NodeRegistryDO (server/src/NodeRegistryDO.ts, its tables in server/src/nodeStore.ts) on
+// fakes, without workerd: its SQLite on node:sqlite (the same SQL), a fake DurableObjectState with
+// hibernatable sockets, an alarm and waitUntil, R2 buckets in memory, ACCOUNTS and MATCHMAKER
+// namespaces that record what the outbox delivers, and a node played by the test (it signs the
+// challenge and its /healthz nonce, says hello, answers 'assign' and 'leave', reports). Date.now
+// is the test's clock. A "deploy" builds a new object on the same database with every socket
+// closed; a "hibernation" builds one on the same database and the same open sockets.
+// Run from server/: npm test
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
+
+const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === 'cloudflare:workers') return { url: DO_STUB, shortCircuit: true };
+    try {
+      return nextResolve(specifier, context);
+    } catch (err) {
+      const relative = specifier.startsWith('./') || specifier.startsWith('../');
+      if (relative && err && err.code === 'ERR_MODULE_NOT_FOUND') {
+        if (!/\.[a-z]+$/i.test(specifier)) return nextResolve(specifier + '.ts', context);
+        if (specifier.endsWith('.js')) return nextResolve(specifier.slice(0, -3) + '.ts', context);
+      }
+      throw err;
+    }
+  },
+});
+
+// The control plane's auth (10 s) and RPC (5 s) timers must never keep the test process alive.
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => {
+  const t = realSetTimeout(fn, ms, ...args);
+  t.unref?.();
+  return t;
+};
+
+const D = await import('../src/NodeRegistryDO.ts');
+const { NodeStore } = await import('../src/nodeStore.ts');
+const { CLIENT_BUILD } = await import('../src/nodeApi.ts');
+const { INTERNAL_HEADER, internalSecret } = await import('../src/auth.ts');
+const { generateEd25519, importPrivateKey, sign, sha256Hex } = await import('../../nodes/shared/edcrypto.ts');
+const { authMessage, reachMessage, replayRequestMessage } = await import('../../nodes/shared/controlProtocol.ts');
+const { RESTART_GRACE_MS, TRUSTED_OFFLINE_MS } = await import('../../nodes/control-plane/controlPlane.ts');
+const { STATE_VERSION } = await import('../../nodes/control-plane/persist.ts');
+
+const SECRET = 'node-registry-test-secret';
+const RealResponse = globalThis.Response;
+/** Node refuses a 101 Response: the object's upgrade answer is kept as a 200 marked `upgraded` (room.test.mjs). */
+globalThis.Response = class Response extends RealResponse {
+  constructor(body, init) {
+    if (init && init.status === 101) {
+      super(body, { ...init, status: 200 });
+      this.upgraded = true;
+      this.webSocket = init.webSocket;
+    } else super(body, init);
+  }
+};
+
+let clock = 1_800_000_000_000;
+Date.now = () => clock;
+
+/** Every line the object logged (console.log), for the ALERT checks. NODELOG=1 prints them too. */
+const lines = [];
+const realLog = console.log;
+console.log = (...args) => {
+  const line = args.map(String).join(' ');
+  lines.push(line);
+  if (process.env.NODELOG) realLog(line);
+};
+const alerts = () => lines.filter((l) => l.startsWith('[nodes] ALERT'));
+
+const PROJECT = 'a1b2c3d4e5f60718';
+const STRANGER = '0123456789abcdef';
+const A = 'aaaaaaaaaaaaaaaa';
+const B = 'bbbbbbbbbbbbbbbb';
+const BASE = 'https://turbo-gol.test';
+const NODE_URL = 'wss://sp1.turbo-gol.test';
+const SPECS = { cpus: 2, cpuModel: 'x', memMB: 4096, arch: 'x64', os: 'linux', node: '24' };
+const CAP = { matches: 4, cpuMsPerMatchSecond: 1, memMBPerMatch: 20, uplinkMbps: null, source: 'bench' };
+const NODE_BUILD = { ...CLIENT_BUILD, version: '0.2.0' };
+const CONTROL = await generateEd25519();
+const secret = await internalSecret(SECRET);
+const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms));
+
+async function waitFor(fn, what) {
+  for (let i = 0; i < 200 && !(await fn()); i++) await sleep(2);
+  assert.ok(await fn(), what);
+}
+
+// ---- fakes ---------------------------------------------------------------------------------------
+
+class FakeSocket {
+  constructor() {
+    this.readyState = 1;
+    this.sent = [];
+    this.closed = null;
+    this.att = null;
+    /** The node behind it: sees every message the control plane sends. */
+    this.onSend = null;
+  }
+  send(text) {
+    if (this.readyState !== 1) throw new Error('send on a closed socket');
+    const m = JSON.parse(text);
+    this.sent.push(m);
+    this.onSend?.(m);
+  }
+  close(code, reason) {
+    if (this.readyState === 3) throw new Error('already closed');
+    this.readyState = 3;
+    this.closed = { code, reason };
+  }
+  serializeAttachment(a) {
+    this.att = JSON.parse(JSON.stringify(a));
+  }
+  deserializeAttachment() {
+    return this.att;
+  }
+  of(t) {
+    return this.sent.filter((m) => m.t === t);
+  }
+}
+
+globalThis.WebSocketPair = class WebSocketPair {
+  constructor() {
+    this[0] = new FakeSocket();
+    this[1] = new FakeSocket();
+  }
+};
+
+/** node:sqlite behind ctx.storage.sql (exec(...).toArray()) and transactionSync, as accounts.test.mjs. */
+function sqlOf(db) {
+  const sql = {
+    exec(query, ...bindings) {
+      const stmt = db.prepare(query);
+      const rows = /^\s*(SELECT|WITH)/i.test(query) ? stmt.all(...bindings) : (stmt.run(...bindings), []);
+      return { toArray: () => rows.map((r) => ({ ...r })) };
+    },
+  };
+  let depth = 0;
+  const transactionSync = (fn) => {
+    if (depth > 0) return fn();
+    depth++;
+    db.exec('BEGIN');
+    try {
+      const out = fn();
+      db.exec('COMMIT');
+      return out;
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    } finally {
+      depth--;
+    }
+  };
+  return { sql, transactionSync };
+}
+
+class FakeCtx {
+  constructor(db = new DatabaseSync(':memory:'), sockets = []) {
+    this.db = db;
+    this.sockets = sockets;
+    this.alarm = null;
+    this.waits = [];
+    const { sql, transactionSync } = sqlOf(db);
+    this.storage = {
+      sql,
+      transactionSync,
+      getAlarm: async () => this.alarm,
+      setAlarm: async (t) => {
+        this.alarm = t;
+      },
+      deleteAlarm: async () => {
+        this.alarm = null;
+      },
+    };
+  }
+  blockConcurrencyWhile(fn) {
+    return fn();
+  }
+  acceptWebSocket(ws) {
+    this.sockets.push(ws);
+  }
+  getWebSockets() {
+    return this.sockets.filter((w) => w.readyState === 1);
+  }
+  waitUntil(p) {
+    this.waits.push(Promise.resolve(p));
+  }
+  /** Every waitUntil so far (the outbox drains it kicks), settled. */
+  async settle() {
+    while (this.waits.length > 0) await Promise.all(this.waits.splice(0));
+  }
+}
+
+/** An R2 bucket in memory. */
+function bucket(initial = {}) {
+  const objects = new Map();
+  const enc = new TextEncoder();
+  const put = (k, v) => objects.set(k, typeof v === 'string' ? enc.encode(v) : new Uint8Array(v));
+  for (const [k, v] of Object.entries(initial)) put(k, v);
+  const view = (k) => {
+    const b = objects.get(k);
+    return b ? { key: k, size: b.byteLength, httpEtag: `"${b.byteLength}-${b[0] ?? 0}"`, text: async () => new TextDecoder().decode(b), arrayBuffer: async () => b.slice().buffer } : null;
+  };
+  return {
+    objects,
+    get: async (k) => view(k),
+    head: async (k) => view(k),
+    put: async (k, v) => void put(k, v),
+  };
+}
+
+/** A DO namespace whose objects answer `answer(name, path, body)` (a Response, or an Error to throw); `calls` records each POST. */
+function namespace(answer = () => new RealResponse('{"ok":true}')) {
+  const calls = [];
+  const ns = {
+    calls,
+    /** While set, every delivery waits for it (to look at the outbox before anything is delivered). */
+    gate: null,
+    answer,
+    idFromName: (name) => ({ name }),
+    get: (id) => ({
+      fetch: async (url, init) => {
+        if (ns.gate) await ns.gate;
+        const path = new URL(url).pathname;
+        const body = JSON.parse(init.body);
+        calls.push({ name: id.name, path, body });
+        const r = ns.answer(id.name, path, body);
+        if (r instanceof Error) throw r;
+        return r;
+      },
+    }),
+  };
+  return ns;
+}
+
+function makeEnv(over = {}) {
+  return {
+    JWT_SECRET: SECRET,
+    NODES: {},
+    NODE_REPLAYS: bucket(),
+    NODE_RELEASES: bucket({ 'channel.json': JSON.stringify({ stable: '0.2.0', minimum: '0.2.0' }) }),
+    NODE_CONTROL_PRIVATE_KEY: CONTROL.privateKey,
+    NODE_CONTROL_PUBLIC_KEY: CONTROL.publicKey,
+    NODE_TRUSTED_OPERATORS: PROJECT,
+    NODES_PUBLIC_BASE: BASE + '/',
+    ACCOUNTS: namespace(),
+    MATCHMAKER: namespace(),
+    ...over,
+  };
+}
+
+/** The nodes behind the fake /healthz: host -> { nodeId, key }. */
+const hosts = new Map();
+globalThis.fetch = async (url) => {
+  const u = new URL(String(url));
+  const h = hosts.get(u.host);
+  if (u.pathname !== '/healthz' || !h) throw new Error('unexpected fetch ' + url);
+  const nonce = u.searchParams.get('nonce');
+  return new RealResponse(JSON.stringify({ nodeId: h.nodeId, sig: await sign(h.key, reachMessage(h.nodeId, nonce)) }));
+};
+
+/** A NodeRegistryDO on `ctx`, started. */
+async function boot(env, ctx = new FakeCtx()) {
+  const obj = new D.NodeRegistryDO(ctx, env);
+  await obj.ready;
+  return { obj, ctx, env };
+}
+
+async function call(h, method, path, { body, headers = {} } = {}) {
+  const res = await h.obj.fetch(
+    new Request('https://nodes' + path, {
+      method,
+      headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json', ...headers },
+      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+    }),
+  );
+  const text = await res.text();
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* not JSON */
+  }
+  return { status: res.status, json, headers: res.headers };
+}
+
+const tokenFor = (h, op = PROJECT, region = 'SA') => call(h, 'POST', '/nodes/tokens', { body: { region, name: 'sao-paulo-1' }, headers: { 'x-operator-id': op, 'x-operator-name': encodeURIComponent('Proyecto Señor') } });
+
+/** Register a node with a fresh key; `node.key` signs for it. */
+async function registerNode(h, { ip = '203.0.113.1', roles = ['host', 'verify'], publicUrl = NODE_URL, op = PROJECT } = {}) {
+  const t = await tokenFor(h, op);
+  assert.equal(t.status, 200, JSON.stringify(t.json));
+  const keys = await generateEd25519();
+  const r = await call(h, 'POST', '/nodes/register', {
+    body: { token: t.json.token, publicKey: keys.publicKey, roles, publicUrl, build: NODE_BUILD, specs: SPECS, capacity: CAP },
+    headers: { 'x-client-ip': ip },
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const node = { ...r.json, key: await importPrivateKey(keys.privateKey), publicUrl };
+  if (publicUrl) hosts.set(new URL(publicUrl).host, node);
+  return node;
+}
+
+/** The node's reflexes on a socket: it answers 'assign' and 'leave' on whatever object `h.obj` is now. */
+function answer(h, ws, node, opts = {}) {
+  ws.onSend = (m) => {
+    const reply = (data) => setImmediate(() => void h.obj.webSocketMessage(ws, JSON.stringify({ t: 'reply', rid: m.rid, ok: true, data })));
+    if (m.t === 'assign') reply({ wsUrl: `${node.publicUrl}/m/${m.match.matchId}` });
+    if (m.t === 'leave') reply({ slot: 0, closed: true, already: false, ended: false });
+    opts.onSend?.(m);
+  };
+}
+
+/** Open /nodes/connect for `node` and log in (no hello yet). */
+async function connect(h, node) {
+  const res = await h.obj.fetch(new Request('https://nodes/nodes/connect', { headers: { [INTERNAL_HEADER]: secret, Upgrade: 'websocket' } }));
+  assert.equal(res.upgraded, true, 'upgraded');
+  const ws = h.ctx.sockets.at(-1);
+  answer(h, ws, node);
+  const challenge = ws.of('challenge')[0];
+  await h.obj.webSocketMessage(ws, JSON.stringify({ t: 'auth', nodeId: node.nodeId, sig: await sign(node.key, authMessage(node.nodeId, challenge.nonce)) }));
+  assert.equal(ws.of('welcome').length, 1, 'welcome');
+  return ws;
+}
+
+const helloOf = (node, over = {}) => ({ bootId: 'boot-1', build: NODE_BUILD, roles: ['host', 'verify'], transports: ['wss'], publicUrl: node.publicUrl, rtcReady: false, specs: SPECS, capacity: CAP, draining: false, egressCapGB: null, ...over });
+const beat = (over = {}) => ({ active: 0, capacity: 4, draining: false, egressGB: 0, egressCapGB: null, tickLagP99Ms: 1, cpuLoad: 0.1, rssMB: 80, matches: [], ...over });
+const send = (h, ws, m) => h.obj.webSocketMessage(ws, JSON.stringify(m));
+
+/** A trusted node registered, connected, said hello and proven reachable (active). */
+async function liveNode(h, opts = {}) {
+  const node = await registerNode(h, opts);
+  const ws = await connect(h, node);
+  await send(h, ws, { t: 'hello', data: helloOf(node) });
+  await waitFor(() => h.obj.cp.registry.node(node.nodeId).status === 'active', 'active after its probe');
+  return { node, ws };
+}
+
+const humans = (...ids) => ids.map((id, i) => ({ playerId: id, name: 'P' + i }));
+const placeBody = (over = {}) => ({ mode: '1v1', region: 'SA', ranked: false, matchLengthSeconds: 180, humans: humans(A, B), ...over });
+
+/** The rows of a table. */
+const rows = (h, table) => h.ctx.db.prepare(`SELECT * FROM ${table}`).all();
+
+// ---- the store -------------------------------------------------------------------------------------
+
+test('migrate() is idempotent and keeps the rows; a state version this build does not read is refused', () => {
+  const db = new DatabaseSync(':memory:');
+  const { sql, transactionSync } = sqlOf(db);
+  const store = new NodeStore(sql, transactionSync);
+  store.migrate();
+  db.prepare("INSERT INTO nodes (node_id, operator_id, public_key, data) VALUES ('n', 'o', 'k', '{}')").run();
+  store.migrate();
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM nodes').get().n, 1);
+  assert.deepEqual(db.prepare('SELECT k, v FROM meta').all().map((r) => ({ ...r })), [{ k: 'state_version', v: String(STATE_VERSION) }]);
+  db.prepare("UPDATE meta SET v = ? WHERE k = 'state_version'").run(String(STATE_VERSION + 1));
+  assert.throws(() => store.migrate(), /state version 2 .*a newer build wrote them/);
+});
+
+test('a state version written by a newer build: the object starts down with an ALERT, answers 503 and touches nothing', async () => {
+  const db = new DatabaseSync(':memory:');
+  const { sql, transactionSync } = sqlOf(db);
+  new NodeStore(sql, transactionSync).migrate();
+  db.prepare("UPDATE meta SET v = '9' WHERE k = 'state_version'").run();
+  lines.length = 0;
+  const h = await boot(makeEnv(), new FakeCtx(db));
+  assert.equal(alerts().length, 1);
+  assert.match(alerts()[0], /not started, its state is left as it is: .*state version 9/);
+  const r = await call(h, 'GET', '/nodes/status');
+  assert.equal(r.status, 503);
+  assert.equal(r.json.error, 'nodes_unavailable');
+  assert.equal(h.ctx.alarm, null);
+  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'state_version'").get().v, '9', 'the rows wait for the build that wrote them');
+});
+
+test('without the node settings the object serves nothing; every route needs the internal header', async () => {
+  const h = await boot(makeEnv({ NODE_CONTROL_PRIVATE_KEY: undefined }));
+  assert.equal((await call(h, 'GET', '/nodes/status')).status, 503);
+  const ok = await boot(makeEnv());
+  const res = await ok.obj.fetch(new Request('https://nodes/nodes/status'));
+  assert.equal(res.status, 403);
+});
+
+// ---- tokens, registration ------------------------------------------------------------------------
+
+test('tokens: a trusted operator only, a known region, 10 a day; the answer carries the install line', async () => {
+  const h = await boot(makeEnv());
+  assert.deepEqual((await tokenFor(h, STRANGER)).json.error, 'not_trusted');
+  assert.equal((await tokenFor(h, STRANGER)).status, 403);
+  assert.equal((await tokenFor(h, PROJECT, 'XX')).status, 400);
+  const t = await tokenFor(h);
+  assert.equal(t.status, 200);
+  assert.match(t.json.token, /^tgn1_/);
+  assert.equal(t.json.ttlMinutes, 60);
+  assert.equal(t.json.install.linux, `curl -fsSL ${BASE}/nodes/releases/install.sh | sudo bash -s -- --control ${BASE} --token ${t.json.token}`);
+  assert.equal(t.headers.get('cache-control'), 'no-store');
+  const rec = h.obj.cp.registry.tokenList()[0];
+  assert.equal(rec.operatorName, 'Proyecto Señor', 'the name comes URL-encoded');
+  assert.equal(rows(h, 'node_tokens').length, 1, 'written through');
+  for (let i = 1; i < D.TOKENS_PER_ACCOUNT_PER_DAY; i++) assert.equal((await tokenFor(h)).status, 200);
+  assert.equal((await tokenFor(h)).status, 429);
+  clock += 24 * 3_600_000;
+  assert.equal((await tokenFor(h)).status, 200, 'a new day');
+});
+
+test('register: the control public key and the wss URL; 5 a hour per address, refused attempts included', async () => {
+  const h = await boot(makeEnv());
+  const node = await registerNode(h, { ip: '198.51.100.7' });
+  assert.equal(node.controlPublicKey, CONTROL.publicKey);
+  assert.equal(node.controlUrl, 'wss://turbo-gol.test/nodes/connect');
+  assert.equal(node.status, 'pending');
+  assert.equal(rows(h, 'nodes').length, 1);
+  const bad = { body: { token: 'tgn1_nope' }, headers: { 'x-client-ip': '198.51.100.7' } };
+  for (let i = 1; i < D.REGISTER_PER_IP_PER_HOUR; i++) assert.equal((await call(h, 'POST', '/nodes/register', bad)).status, 403);
+  assert.equal((await call(h, 'POST', '/nodes/register', bad)).status, 429);
+  assert.equal((await call(h, 'POST', '/nodes/register', { ...bad, headers: { 'x-client-ip': '198.51.100.8' } })).status, 403, 'another address');
+  clock += 3_600_000;
+  assert.equal((await call(h, 'POST', '/nodes/register', bad)).status, 403, 'an hour later');
+});
+
+test('a control public key that is not the private key’s half: ALERT, and no registration, placement or rejoin', async () => {
+  for (const over of [{ NODE_CONTROL_PUBLIC_KEY: (await generateEd25519()).publicKey }, { NODE_CONTROL_PRIVATE_KEY: 'not a key' }]) {
+    lines.length = 0;
+    const h = await boot(makeEnv(over));
+    assert.equal(alerts().length, 1, Object.keys(over)[0]);
+    assert.match(alerts()[0], /NODE_CONTROL_PUBLIC_KEY is not the public half of NODE_CONTROL_PRIVATE_KEY/);
+    const t = await tokenFor(h);
+    const keys = await generateEd25519();
+    const r = await call(h, 'POST', '/nodes/register', { body: { token: t.json.token, publicKey: keys.publicKey, roles: ['host'], publicUrl: NODE_URL, build: NODE_BUILD, specs: SPECS, capacity: CAP } });
+    assert.equal(r.status, 503);
+    assert.equal(r.json.error, 'control_key_mismatch');
+    assert.equal(h.obj.cp.registry.tokenList()[0].usedBy, null, 'the token is still good');
+    assert.deepEqual((await call(h, 'POST', '/internal/place', { body: placeBody() })).json, { placement: null, hosts: 0 });
+    assert.equal((await call(h, 'POST', '/internal/rejoin', { body: { matchId: 'ab'.repeat(32), playerId: A } })).status, 503);
+  }
+});
+
+// ---- sockets ---------------------------------------------------------------------------------------
+
+test('a node logs in, its { nodeId } is attached once, its probe makes it active, and the alarm runs from the first socket', async () => {
+  const h = await boot(makeEnv());
+  assert.equal(h.ctx.alarm, null, 'nothing to do yet');
+  const node = await registerNode(h);
+  const ws = await connect(h, node);
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS);
+  assert.deepEqual(ws.att, { nodeId: node.nodeId });
+  ws.att = 'untouched';
+  await send(h, ws, { t: 'hello', data: helloOf(node) });
+  await waitFor(() => h.obj.cp.registry.node(node.nodeId).status === 'active', 'trusted: active once reachable');
+  await send(h, ws, { t: 'heartbeat', data: beat() });
+  assert.equal(ws.att, 'untouched', 'stored once');
+  assert.equal(ws.of('welcome')[0].channel.minimum, '0.2.0', 'the channel from R2');
+  assert.equal(ws.of('update').length, 0);
+  assert.equal(ws.closed, null);
+});
+
+test('socket guards: a binary frame closes 1003, a frame over 256 KB 1009, bad JSON 1008, and each frees its session', async () => {
+  const h = await boot(makeEnv());
+  const node = await registerNode(h);
+  const open = async () => {
+    await h.obj.fetch(new Request('https://nodes/nodes/connect', { headers: { [INTERNAL_HEADER]: secret, Upgrade: 'websocket' } }));
+    return h.ctx.sockets.at(-1);
+  };
+  const plain = await h.obj.fetch(new Request('https://nodes/nodes/connect', { headers: { [INTERNAL_HEADER]: secret } }));
+  assert.equal(plain.status, 426);
+  const a = await open();
+  await h.obj.webSocketMessage(a, new ArrayBuffer(8));
+  assert.deepEqual(a.closed, { code: 1003, reason: 'text only' });
+  const b = await open();
+  await h.obj.webSocketMessage(b, 'x'.repeat(D.MAX_FRAME_CHARS + 1));
+  assert.equal(b.closed.code, 1009);
+  const c = await open();
+  await h.obj.webSocketMessage(c, '{nope');
+  assert.equal(c.closed.code, 1008);
+  // A message on a socket the object already let go is refused, not handed to the control plane.
+  await h.obj.webSocketMessage(c, JSON.stringify({ t: 'auth', nodeId: node.nodeId, sig: 'x' }));
+  assert.equal(c.closed.code, 1008);
+  const d = await open();
+  await h.obj.webSocketClose(d, 1001, 'bye', true);
+  assert.deepEqual(d.closed, { code: 1001, reason: 'bye' }, 'the close handshake is completed');
+  assert.equal(h.ctx.getWebSockets().length, 0);
+  await h.obj.alarm();
+  assert.equal(h.ctx.alarm, null, 'no socket, no match: the alarm stops');
+});
+
+test('a socket the control plane closes ends its session at once, with or without a close event', async () => {
+  const h = await boot(makeEnv());
+  const { ws } = await liveNode(h);
+  assert.equal((await call(h, 'POST', '/internal/place', { body: placeBody() })).json.hosts, 1);
+  await send(h, ws, { t: 'heartbeat', data: { active: 'lots' } });
+  assert.deepEqual(ws.closed, { code: 1008, reason: 'bad heartbeat' });
+  assert.deepEqual((await call(h, 'POST', '/internal/place', { body: placeBody() })).json, { placement: null, hosts: 0 }, 'offline now, not at its heartbeat timeout');
+});
+
+// ---- placement and the internal routes -------------------------------------------------------------
+
+test('place: the node is assigned and the row is written before the answer; rejoin, leave and status answer the contract', async () => {
+  const h = await boot(makeEnv());
+  const { node } = await liveNode(h);
+  assert.equal((await call(h, 'POST', '/internal/place', { body: { ...placeBody(), mode: '4v4' } })).status, 400);
+  const p = await call(h, 'POST', '/internal/place', { body: placeBody() });
+  assert.equal(p.status, 200, JSON.stringify(p.json));
+  const { placement, hosts } = p.json;
+  assert.equal(hosts, 1);
+  assert.equal(placement.nodeId, node.nodeId);
+  assert.equal(placement.wsUrl, `${NODE_URL}/m/${placement.matchId}`);
+  assert.match(placement.matchId, /^[0-9a-f]{64}$/);
+  assert.deepEqual(placement.tickets.map((t) => t.playerId), [A, B]);
+  assert.deepEqual(rows(h, 'node_matches').map((r) => [r.match_id, r.state]), [[placement.matchId, 'assigned']]);
+  const id = placement.matchId;
+
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${id}&playerId=${A}`)).json, { state: 'assigned', left: false });
+  assert.equal((await call(h, 'GET', `/internal/status?matchId=${id}&playerId=${STRANGER}`)).status, 404);
+  const rj = await call(h, 'POST', '/internal/rejoin', { body: { matchId: id, playerId: A } });
+  assert.equal(rj.status, 200);
+  assert.equal(rj.json.wsUrl, placement.wsUrl);
+  assert.ok(rj.json.ticket.length > 100);
+  assert.equal((await call(h, 'POST', '/internal/rejoin', { body: { matchId: 'cd'.repeat(32), playerId: A } })).json.error, 'no_match');
+  assert.equal((await call(h, 'POST', '/internal/rejoin', { body: { matchId: id, playerId: STRANGER } })).status, 404);
+
+  const lv = await call(h, 'POST', '/internal/leave', { body: { matchId: id, playerId: B, connected: false } });
+  assert.equal(lv.status, 200, JSON.stringify(lv.json));
+  assert.deepEqual(lv.json, { recorded: true, answer: { slot: 0, closed: true, already: false, ended: false } });
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${id}&playerId=${B}`)).json, { state: 'assigned', left: true });
+  const again = await call(h, 'POST', '/internal/rejoin', { body: { matchId: id, playerId: B } });
+  assert.deepEqual([again.status, again.json.error], [410, 'left']);
+  assert.equal((await call(h, 'POST', '/internal/leave', { body: { matchId: 'cd'.repeat(32), playerId: A } })).status, 404);
+  assert.equal(JSON.parse(rows(h, 'node_matches')[0].data).neverJoined[0], B, 'connected: false is kept');
+});
+
+test('a node that dropped its link: a leave is not recorded (503) and the lock stays with the player', async () => {
+  const h = await boot(makeEnv());
+  const { ws } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  await h.obj.webSocketClose(ws, 1006, '', false);
+  const lv = await call(h, 'POST', '/internal/leave', { body: { matchId: placement.matchId, playerId: A } });
+  assert.deepEqual([lv.status, lv.json.error], [503, 'offline']);
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json, { state: 'assigned', left: false });
+});
+
+// ---- settled matches and the outbox ----------------------------------------------------------------
+
+test('a ranked match the node lost: the settled row and its outbox rows exist when the ack goes out; /ranked-cancel then /release', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody({ ranked: true }) })).json;
+  let atAck = null;
+  answer(h, ws, { publicUrl: NODE_URL }, { onSend: (m) => m.t === 'ack' && (atAck = { matches: rows(h, 'node_matches').map((r) => r.state), outbox: rows(h, 'outbox').map((r) => r.path) }) });
+  let open;
+  env.ACCOUNTS.gate = env.MATCHMAKER.gate = new Promise((r) => (open = r));
+  await send(h, ws, { t: 'report', id: 'r1', report: { kind: 'lost', matchId: placement.matchId, reason: 'tick_error' } });
+  assert.deepEqual(atAck, { matches: ['done'], outbox: ['/ranked-cancel', '/release'] });
+  open();
+  env.ACCOUNTS.gate = env.MATCHMAKER.gate = null;
+  await h.ctx.settle();
+  assert.deepEqual(env.ACCOUNTS.calls.map((c) => [c.name, c.path, c.body.playlist, c.body.region, c.body.players, c.body.reason]), [['accounts-v1', '/ranked-cancel', '1v1', 'SA', [A, B], 'lost:tick_error']]);
+  assert.deepEqual(env.MATCHMAKER.calls.map((c) => [c.name, c.path, c.body]), [['mm:SA', '/release', { matchId: placement.matchId, playerIds: [A, B] }]]);
+  assert.deepEqual(rows(h, 'outbox'), [], 'delivered right away, not at the next alarm');
+});
+
+test('a casual match only frees its locks; a 5xx is tried again later, further apart, with an ALERT after a day', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  env.MATCHMAKER.answer = () => new RealResponse('down', { status: 503 });
+  await send(h, ws, { t: 'report', id: 'r1', report: { kind: 'lost', matchId: placement.matchId, reason: 'tick_error' } });
+  await h.ctx.settle();
+  assert.equal(env.ACCOUNTS.calls.length, 0, 'a casual match records nothing');
+  assert.equal(env.MATCHMAKER.calls.length, 1);
+  let [row] = rows(h, 'outbox');
+  assert.deepEqual([row.path, row.attempts, row.next_at - clock], ['/release', 1, 2_000]);
+  await h.obj.alarm();
+  assert.equal(env.MATCHMAKER.calls.length, 1, 'not due yet');
+  clock += 2_000;
+  await h.obj.alarm();
+  [row] = rows(h, 'outbox');
+  assert.deepEqual([row.attempts, row.next_at - clock], [2, 4_000]);
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'an undelivered row keeps the alarm');
+  lines.length = 0;
+  clock += 24 * 3_600_000;
+  await h.obj.alarm();
+  await h.obj.alarm();
+  assert.equal(alerts().length, 1, 'once');
+  assert.match(alerts()[0], /ALERT outbox \/release for match \w{8} \(mm:SA\) undelivered for a day, 3 tries/);
+  assert.equal(rows(h, 'outbox')[0].next_at - clock, 8_000);
+  env.MATCHMAKER.answer = () => new RealResponse('{"ok":true}');
+  clock += 300_000;
+  await h.obj.alarm();
+  assert.deepEqual(rows(h, 'outbox'), []);
+});
+
+// ---- the alarm -------------------------------------------------------------------------------------
+
+test('the alarm: re-armed while a socket, a match or a grace needs it, deleted when nothing does; a sweep that throws still re-arms', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws } = await liveNode(h);
+  await h.obj.alarm();
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'a socket');
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  await h.obj.webSocketClose(ws, 1006, '', false);
+  await h.obj.alarm();
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'no socket, but a match the sweep must still void');
+  // The store fails while the sweep voids the silent node's match: an ALERT, the match stays, the alarm too.
+  const store = h.obj.store;
+  const finished = store.finished;
+  store.finished = () => {
+    throw new Error('disk full');
+  };
+  lines.length = 0;
+  clock += TRUSTED_OFFLINE_MS + 1;
+  await h.obj.alarm();
+  assert.match(alerts()[0], /ALERT sweep failed: Error: disk full/);
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS);
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json.state, 'assigned');
+  store.finished = finished;
+  clock += D.TICK_MS;
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.equal(rows(h, 'node_matches')[0].state, 'done');
+  assert.deepEqual(env.MATCHMAKER.calls.map((c) => c.path), ['/release']);
+  await h.obj.alarm();
+  assert.equal(h.ctx.alarm, null, 'nothing left: deleted');
+});
+
+test('channel.json is read again every minute: a new minimum sends the nodes below it their update', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws } = await liveNode(h);
+  /** Time passes for a node that keeps beating. */
+  const later = async (ms) => {
+    clock += ms;
+    await send(h, ws, { t: 'heartbeat', data: beat() });
+    await h.obj.alarm();
+  };
+  await env.NODE_RELEASES.put('channel.json', JSON.stringify({ stable: '0.3.0', minimum: '0.3.0' }));
+  await later(30_000);
+  assert.equal(ws.of('update').length, 0, 'not read yet');
+  await later(D.CHANNEL_REFRESH_MS);
+  assert.deepEqual(ws.of('update'), [{ t: 'update', version: '0.3.0' }]);
+  await later(D.CHANNEL_REFRESH_MS);
+  assert.equal(ws.of('update').length, 1, 'unchanged: nothing new');
+  // A broken channel keeps the last good one, with one ALERT.
+  lines.length = 0;
+  await env.NODE_RELEASES.put('channel.json', '{"stable":');
+  await later(D.CHANNEL_REFRESH_MS);
+  assert.equal(alerts().length, 1);
+  assert.match(alerts()[0], /release channel missing or invalid .*holding the nodes to stable 0\.3\.0, minimum 0\.3\.0/);
+});
+
+// ---- deploys and hibernations ------------------------------------------------------------------------
+
+test('a deploy (no socket survives) with an unfinished match: a grace, the alarm armed, and nothing voided before it ends', async () => {
+  const env = makeEnv();
+  let h = await boot(env);
+  const { ws, node } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  ws.close(1012, 'deploy');
+  const ctx = new FakeCtx(h.ctx.db);
+  h = await boot(env, ctx);
+  assert.equal(h.obj.cp.inGrace(), true);
+  assert.equal(ctx.alarm, clock + D.TICK_MS);
+  clock += RESTART_GRACE_MS - 1_000;
+  await h.obj.alarm();
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json.state, 'assigned');
+  // The same node process comes back within the grace: its match goes on.
+  const back = await connect(h, node);
+  await send(h, back, { t: 'hello', data: helloOf(node) });
+  clock += 10_000;
+  await send(h, back, { t: 'heartbeat', data: beat({ active: 1 }) });
+  await h.obj.alarm();
+  assert.equal(h.obj.cp.inGrace(), false);
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json.state, 'assigned');
+  assert.equal(env.MATCHMAKER.calls.length, 0);
+});
+
+test('a deploy whose node never comes back: its match is void once the grace is over', async () => {
+  const env = makeEnv();
+  let h = await boot(env);
+  const { ws } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  ws.close(1012, 'deploy');
+  h = await boot(env, new FakeCtx(h.ctx.db));
+  clock += RESTART_GRACE_MS + 1_000;
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.equal(rows(h, 'node_matches')[0].state, 'done');
+  assert.deepEqual(env.MATCHMAKER.calls.map((c) => [c.path, c.body.matchId]), [['/release', placement.matchId]]);
+});
+
+test('a hibernation: the sockets are adopted without a grace, a placement uses the node before its next heartbeat, which is accepted', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws, node } = await liveNode(h);
+  const first = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json.placement;
+  // A second socket still logging in when the object slept.
+  await h.obj.fetch(new Request('https://nodes/nodes/connect', { headers: { [INTERNAL_HEADER]: secret, Upgrade: 'websocket' } }));
+  const pending = h.ctx.sockets.at(-1);
+  const ctx = h.ctx;
+  h.obj = new D.NodeRegistryDO(ctx, env); // same sockets, same database: the memory is all that went
+  await h.obj.ready;
+  assert.equal(h.obj.cp.unfinished(), 1);
+  assert.equal(h.obj.cp.inGrace(), false, 'the node never lost its link: no grace');
+  assert.deepEqual(pending.closed, { code: 4401, reason: 'log in again' });
+  assert.equal(ws.closed, null);
+  clock += 3_000;
+  const p = await call(h, 'POST', '/internal/place', { body: placeBody() });
+  assert.equal(p.json.placement?.nodeId, node.nodeId, 'adopted: online from the wake');
+  await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+  assert.equal(ws.closed, null, 'no new challenge: the heartbeat is taken');
+  assert.equal(h.obj.cp.registry.node(node.nodeId).active, 1);
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${first.matchId}&playerId=${A}`)).json.state, 'assigned');
+});
+
+// ---- replays -----------------------------------------------------------------------------------------
+
+test('a replay upload: refused before its body is read when the signature is wrong; 413 past 16 MiB; stored in R2 otherwise', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { node } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  const id = placement.matchId;
+  const bytes = new Uint8Array(4096).map((_, i) => i & 0xff);
+  const sha = await sha256Hex(bytes);
+  /** A body that counts how many chunks were pulled from it. */
+  const stream = (chunks) => {
+    const s = { pulls: 0 };
+    s.body = new ReadableStream(
+      {
+        pull(c) {
+          if (s.pulls >= chunks.length) return c.close();
+          c.enqueue(chunks[s.pulls++]);
+        },
+      },
+      { highWaterMark: 0 }, // nothing is pulled before a read
+    );
+    return s;
+  };
+  const put = async (s, sig, ts = clock) =>
+    h.obj.fetch(
+      new Request(`https://nodes/nodes/replays/${id}`, {
+        method: 'PUT',
+        duplex: 'half',
+        body: s.body,
+        headers: { [INTERNAL_HEADER]: secret, 'x-node-id': node.nodeId, 'x-node-ts': String(ts), 'x-node-sig': sig, 'x-replay-sha256': sha },
+      }),
+    );
+  const forged = stream([bytes]);
+  const other = await importPrivateKey((await generateEd25519()).privateKey);
+  const r1 = await put(forged, await sign(other, replayRequestMessage('PUT', id, sha, clock)));
+  assert.deepEqual([r1.status, (await r1.json()).error], [401, 'bad_sig']);
+  assert.equal(forged.pulls, 0, 'not a byte read');
+  const sig = await sign(node.key, replayRequestMessage('PUT', id, sha, clock));
+  const huge = stream(Array.from({ length: 20 }, () => new Uint8Array(1024 * 1024)));
+  const r2 = await put(huge, sig);
+  assert.equal(r2.status, 413);
+  assert.ok(huge.pulls <= 17, 'reading stopped at the cap');
+  const r3 = await put(stream([bytes.slice(0, 1000), bytes.slice(1000)]), sig);
+  assert.equal(r3.status, 200, await r3.clone().text());
+  assert.deepEqual(env.NODE_REPLAYS.objects.get(id), bytes);
+  assert.equal(JSON.parse(rows(h, 'node_matches')[0].data).replaySha, sha, 'written before the 200');
+  // Only the verifier the job went to may read it back.
+  const get = await h.obj.fetch(new Request(`https://nodes/nodes/replays/${id}`, { headers: { [INTERNAL_HEADER]: secret, 'x-node-id': node.nodeId, 'x-node-ts': String(clock), 'x-node-sig': sig, 'x-replay-sha256': sha } }));
+  assert.equal(get.status, 404);
+});
+
+// ---- public views ------------------------------------------------------------------------------------
+
+test('status lists the nodes without their address; mine shows the operator its own', async () => {
+  const h = await boot(makeEnv());
+  const { node } = await liveNode(h);
+  const s = await call(h, 'GET', '/nodes/status');
+  assert.equal(s.status, 200);
+  assert.deepEqual(s.json.build, CLIENT_BUILD);
+  assert.equal(s.json.nodes.length, 1);
+  assert.deepEqual([s.json.nodes[0].name, s.json.nodes[0].status, s.json.nodes[0].trusted, s.json.nodes[0].compatible], ['sao-paulo-1', 'active', true, true]);
+  assert.ok(!JSON.stringify(s.json).includes('sp1.turbo-gol.test'), 'no address');
+  assert.ok(!JSON.stringify(s.json).includes(node.nodeId), 'no node id');
+  const mine = await call(h, 'GET', '/nodes/mine', { headers: { 'x-operator-id': PROJECT } });
+  assert.deepEqual(mine.json.operator, { id: PROJECT, trusted: true });
+  assert.deepEqual(mine.json.nodes.map((n) => [n.nodeId, n.publicUrl, n.reachable]), [[node.nodeId, NODE_URL, true]]);
+  assert.deepEqual((await call(h, 'GET', '/nodes/mine', { headers: { 'x-operator-id': STRANGER } })).json.nodes, []);
+});

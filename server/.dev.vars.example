@@ -10,8 +10,13 @@ JWT_SECRET=change-me-to-a-long-random-string
 # PUBLIC_ORIGIN=http://localhost:5173
 # Community nodes (nodes/), optional: without the control key (and the NODES binding with its R2
 # buckets) the Worker never sends a match to a node. The private half of nodes/.keys/control.json
-# (`npm run keys` in nodes/); its public half is the NODE_CONTROL_PUBLIC_KEY var.
+# (`npm run keys` in nodes/); its public half is the NODE_CONTROL_PUBLIC_KEY var, so a development
+# key needs its own public half here too (a .dev.vars value overrides the committed var).
+# Production sets NODE_CONTROL_PRIVATE_KEY and NODE_TRUSTED_OPERATORS with `npx wrangler versions
+# secret put <NAME>`, never with `wrangler secret put`: that one deploys at once, and a deploy
+# resets the running matches (README, "Community nodes"). The next deploy ships them.
 # NODE_CONTROL_PRIVATE_KEY=
+# NODE_CONTROL_PUBLIC_KEY=
 # The project's account ids (16 hex characters each), comma-separated: their nodes are trusted.
 # NODE_TRUSTED_OPERATORS=
 # A webhook URL the node control plane posts its ALERT lines to.
