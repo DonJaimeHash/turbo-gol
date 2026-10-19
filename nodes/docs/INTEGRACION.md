@@ -35,6 +35,10 @@ Un Durable Object nuevo, una sola instancia (`nodes-v1`), que envuelve `ControlP
 - **Mensajes de los nodos:** `onMessage` valida todo lo que manda un nodo y nunca lanza por
   datos del nodo. Solo rechaza la promesa si falla el almacenamiento al procesar un reporte; en
   ese caso no manda el ack y el nodo lo reenvía. Envolver la llamada con `.catch` y registrar.
+- **Replays:** en `PUT /nodes/replays/<id>`, llamar a `ControlPlane.replayPutCheck` antes de leer
+  el cuerpo (hasta 16 MiB) y responder su error si lo hay; solo después leer el cuerpo y pasarlo a
+  `storeReplay`. Cualquier jugador de una partida de nodo conoce su id y el del nodo: una subida
+  falsa no debe costar ni la lectura ni el hash en el único DO por el que pasan los heartbeats.
 
 Bindings, secretos y variables nuevos:
 
