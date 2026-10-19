@@ -152,6 +152,26 @@ test('AccountClient: sessionForQueue refreshes near expiry (one request for conc
   assert.equal(a.hintName, null);
 });
 
+test('AccountClient.sessionForQueue(minValidMs): a match on a community node asks for a Bearer that outlasts it', async () => {
+  let now = 1_000_000;
+  let refreshes = 0;
+  const srv = fakeServer({
+    '/api/auth/refresh': () => {
+      refreshes++;
+      return res(200, SESSION('Tomi', now + 3600_000));
+    },
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: memStorage(), now: () => now });
+  await a.restore();
+  now += 3600_000 - 10 * 60_000; // ten minutes left
+  assert.equal((await a.sessionForQueue()).expiresAt, 1_000_000 + 3600_000, 'enough for a queue: no refresh');
+  assert.equal(refreshes, 1);
+  assert.equal((await a.sessionForQueue(15 * 60_000)).expiresAt, now + 3600_000);
+  assert.equal(refreshes, 2);
+  assert.equal((await a.sessionForQueue(15 * 60_000)).expiresAt, now + 3600_000, 'fresh now: no second refresh');
+  assert.equal(refreshes, 2);
+});
+
 test('AccountClient.waitRankedResult polls until the result is there', async () => {
   let n = 0;
   const srv = fakeServer({
@@ -163,6 +183,160 @@ test('AccountClient.waitRankedResult polls until the result is there', async () 
   assert.equal(r.status, 'done');
   assert.equal(n, 3);
   assert.match(srv.calls[0].headers.authorization, /^Bearer jwt-Tomi$/);
+});
+
+const DONE = { status: 'done', playlist: '1v1', outcome: 'win', left: false, mmrBefore: 1000, mmrAfter: 1105, tierBefore: null, tierAfter: null, placementLeft: 4, banUntil: 0 };
+
+/** An AccountClient on a fake clock that only the waits between polls move; `answer(n)` is the n-th /api/ranked/result answer. */
+function rankedPoller(answer) {
+  let t = 5_000_000;
+  const asked = [];
+  const srv = fakeServer({
+    '/api/ranked/result': () => {
+      asked.push(t);
+      return res(200, answer(asked.length));
+    },
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, now: () => t, sleep: async (ms) => void (t += ms) });
+  a.account = SESSION('Tomi', t + 3600_000);
+  const p = { a, asked, verifying: 0, onVerifying: () => p.verifying++, at: () => asked.map((x) => x - asked[0]) };
+  return p;
+}
+
+test('AccountClient.waitRankedResult on a community node: past the fast tries it says "verifying" once and asks every 3 s', async () => {
+  const p = rankedPoller((n) => (n <= 3 ? { status: 'pending' } : DONE));
+  const r = await p.a.waitRankedResult('f'.repeat(64), 2, 1000, { node: true, onVerifying: p.onVerifying });
+  assert.equal(r.status, 'done', 'three pending answers, then the result');
+  assert.equal(p.verifying, 1);
+  assert.deepEqual(p.at(), [0, 1000, 5000, 8000]);
+  // The result inside the fast tries: nothing to announce.
+  const quick = rankedPoller((n) => (n <= 3 ? { status: 'pending' } : DONE));
+  assert.equal((await quick.a.waitRankedResult('f'.repeat(64), 15, 1000, { node: true, onVerifying: quick.onVerifying })).status, 'done');
+  assert.equal(quick.verifying, 0);
+  assert.equal(quick.asked.length, 4);
+  // A Durable Object host: the fast tries are all there is.
+  const server = rankedPoller(() => ({ status: 'pending' }));
+  assert.equal((await server.a.waitRankedResult('f'.repeat(64), 2, 1000, { onVerifying: server.onVerifying })).status, 'pending');
+  assert.equal(server.verifying, 0);
+  assert.deepEqual(server.at(), [0, 1000]);
+});
+
+test('AccountClient.waitRankedResult on a community node gives up 120 s after its first poll, still pending', async () => {
+  const p = rankedPoller(() => ({ status: 'pending' }));
+  const r = await p.a.waitRankedResult('f'.repeat(64), undefined, undefined, { node: true, onVerifying: p.onVerifying });
+  assert.equal(r.status, 'pending');
+  assert.equal(p.verifying, 1);
+  const at = p.at();
+  assert.equal(at.length, 15 + 35, '15 fast polls a second apart, then one every 3 s');
+  assert.equal(at[14], 14_000);
+  assert.equal(at[15], 18_000);
+  assert.equal(at.at(-1), 120_000, 'the last poll is at the cap, none after it');
+});
+
+test('showRankedResult: a node match still pending is being verified; a failed or missing replay check voids it', async () => {
+  const { showRankedResult } = await import('../src/ui/screens/leaderboard.ts');
+  const toasts = [];
+  const menu = { toast: (text, kind) => toasts.push([text, kind]) };
+  showRankedResult(menu, { status: 'pending' });
+  showRankedResult(menu, { status: 'pending' }, true);
+  // AccountsDO keeps 32 characters of the reason: 'verification_failed:' + a cut 'bad_takeover_time'.
+  showRankedResult(menu, { status: 'cancelled', reason: 'verification_failed:bad_takeover' }, true);
+  showRankedResult(menu, { status: 'cancelled', reason: 'unverified' }, true);
+  showRankedResult(menu, { status: 'cancelled', reason: 'not_rated' });
+  showRankedResult(menu, { status: 'cancelled', reason: 'no_show' });
+  assert.deepEqual(toasts, [
+    ['Your Competitive result is still being calculated: check your profile.', 'info'],
+    ['Your Competitive result is still being verified: check your profile in a few minutes.', 'info'],
+    ["The Competitive match couldn't be verified and didn't count", 'info'],
+    ["The Competitive match couldn't be verified and didn't count", 'info'],
+    ["That match didn't count for your rank", 'info'],
+    ["The Competitive match was cancelled and didn't count", 'info'],
+  ]);
+});
+
+const OTHER = (expiresAt) => ({ ...SESSION('Other', expiresAt), playerId: '0123456789abcdef' });
+
+test('AccountClient.waitRankedResult stops asking once another account is signed in: the match is not theirs', async () => {
+  const p = rankedPoller((n) => {
+    if (n === 3) p.a.account = OTHER(p.a.account.expiresAt);
+    return { status: 'pending' };
+  });
+  assert.equal((await p.a.waitRankedResult('f'.repeat(64), undefined, undefined, { node: true, onVerifying: p.onVerifying })).status, 'pending');
+  assert.equal(p.asked.length, 3, 'never asked as the other account');
+  assert.equal(p.verifying, 0);
+  // During the replay check's wait.
+  const q = rankedPoller((n) => {
+    if (n === 17) q.a.account = OTHER(q.a.account.expiresAt);
+    return { status: 'pending' };
+  });
+  await q.a.waitRankedResult('f'.repeat(64), undefined, undefined, { node: true, onVerifying: q.onVerifying });
+  assert.equal(q.asked.length, 17);
+  assert.equal(q.verifying, 1);
+});
+
+const VERIFYING = 'Your Competitive result is being verified: it will show up here once it is ready.';
+const VERIFYING_SLOW = 'Your Competitive result is still being verified: check your profile in a few minutes.';
+const VOIDED = "The Competitive match couldn't be verified and didn't count";
+
+/** A RankedResults on a rankedPoller and a fake menu that records its toasts (no DOM: no dialogs). */
+async function rankedResults(answer, onScreen = () => true) {
+  const { RankedResults } = await import('../src/ui/screens/leaderboard.ts');
+  const p = rankedPoller(answer);
+  const toasts = [];
+  const menu = { toast: (text) => toasts.push(text), modal: () => assert.fail('no dialog for these answers') };
+  return { p, toasts, results: new RankedResults({ accounts: p.a, menu, onScreen }) };
+}
+
+test('RankedResults (Game.showMenu): a node match says it is being verified once, then that it still is; a Durable Object match only waits the fast tries', async () => {
+  const node = await rankedResults(() => ({ status: 'pending' }));
+  await node.results.watch('f'.repeat(64), true);
+  assert.deepEqual(node.toasts, [VERIFYING, VERIFYING_SLOW]);
+  assert.equal(node.p.asked.length, 15 + 35, 'the whole two-minute wait');
+  const server = await rankedResults(() => ({ status: 'pending' }));
+  await server.results.watch('f'.repeat(64), false);
+  assert.deepEqual(server.toasts, ['Your Competitive result is still being calculated: check your profile.']);
+  assert.equal(server.p.asked.length, 15);
+});
+
+test('RankedResults: what comes while the menus are away waits for them, the result replacing "verifying"; another account never sees it', async () => {
+  const voided = { status: 'cancelled', reason: 'verification_failed:bad_takeover' };
+  // The player goes into another match 3 s after the menu came back; the replay check fails at about a minute.
+  let onScreen = true;
+  const away = await rankedResults((n) => {
+    if (n === 4) onScreen = false;
+    return n < 20 ? { status: 'pending' } : voided;
+  }, () => onScreen);
+  await away.results.watch('f'.repeat(64), true);
+  assert.deepEqual(away.toasts, [], 'a toast now would fade behind the match');
+  away.results.showHeld();
+  assert.deepEqual(away.toasts, []);
+  onScreen = true;
+  away.results.showHeld();
+  assert.deepEqual(away.toasts, [VOIDED], 'the result alone: "verifying" is stale by now');
+  away.results.showHeld();
+  assert.deepEqual(away.toasts, [VOIDED], 'once');
+
+  // Back in the menus while the check still runs: "verifying" then, the result when it comes.
+  let back = true;
+  const mid = await rankedResults((n) => {
+    if (n === 4) back = false;
+    if (n === 18) {
+      back = true;
+      mid.results.showHeld();
+    }
+    return n < 20 ? { status: 'pending' } : voided;
+  }, () => back);
+  await mid.results.watch('f'.repeat(64), true);
+  assert.deepEqual(mid.toasts, [VERIFYING, VOIDED]);
+
+  // Held, then another account signs in before the menus are back: dropped.
+  let shown = false;
+  const other = await rankedResults((n) => (n < 20 ? { status: 'pending' } : voided), () => shown);
+  await other.results.watch('f'.repeat(64), true);
+  other.p.a.account = OTHER(other.p.a.account.expiresAt);
+  shown = true;
+  other.results.showHeld();
+  assert.deepEqual(other.toasts, []);
 });
 
 class FakeWs {

@@ -9,7 +9,7 @@ import { leaderboardScreen } from './screens/leaderboard';
 
 export { Menu } from './Menu';
 export type { MenuHost, MenuConfig, SearchRequest, SearchView } from './Menu';
-export { showRankedResult } from './screens/leaderboard';
+export { RankedResults } from './screens/leaderboard';
 
 export function createMenu(host: MenuHost, container: HTMLElement): Menu {
   const m = new Menu(host, container);
