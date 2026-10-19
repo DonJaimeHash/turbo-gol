@@ -1,10 +1,13 @@
 // Community nodes on the Worker's side, without workerd: the nodes config helpers of
-// server/src/env.ts on a fake KV, and the NodeRegistryDO's address and internal contract
-// (server/src/nodeApi.ts). Nothing in the Worker calls this code yet.
+// server/src/env.ts on a fake KV, the NodeRegistryDO's address and internal contract
+// (server/src/nodeApi.ts), and the outcome calls of a finished node match
+// (server/src/nodeOutcome.ts) delivered to fake namespaces and to a real AccountsDO on node:sqlite
+// (the same SQL it runs on its SQLite storage). Nothing in the Worker calls this code yet.
 // Run from server/: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 registerHooks({
@@ -25,9 +28,16 @@ registerHooks({
 
 const E = await import('../src/env.ts');
 const API = await import('../src/nodeApi.ts');
+const O = await import('../src/nodeOutcome.ts');
+const S = await import('../src/accountStore.ts');
+const ADO = await import('../src/AccountsDO.ts');
+const { INTERNAL_HEADER, internalSecret } = await import('../src/auth.ts');
 const { PROTOCOL_VERSION } = await import('../../src/net/protocol.ts');
 const { ROCKETSIM_WASM_SHA256 } = await import('../../src/sim/wasm/rocketsim.sha256.ts');
 
+const SECRET = 'nodes-test-secret';
+const RealResponse = globalThis.Response;
+const NOW = 1_800_000_000_000;
 const A = 'a1b2c3d4e5f60718';
 const B = '0123456789abcdef';
 const C = 'fedcba9876543210';
@@ -135,4 +145,225 @@ test('internal contract: refusals answer 404, 410 or 503; a node lock holds whil
     assert.equal(API.nodeLockHeld({ state, left: true }), false, state + ', left');
   }
   for (const state of ['verifying', 'done']) assert.equal(API.nodeLockHeld({ state, left: false }), false, state);
+});
+
+// ---- nodeOutcome.ts: the calls -------------------------------------------------------------------
+
+const MID = 'ab'.repeat(32);
+const IDS = [A, B, C];
+
+/** A 2v2 assignment of IDS (A and B blue, C and a bot red). */
+function assign(over = {}) {
+  const ids = over.ids ?? IDS;
+  const roster = [
+    { slot: 0, team: 0, kind: 'player', name: 'ana', playerId: ids[0] },
+    { slot: 1, team: 0, kind: 'player', name: 'beto', playerId: ids[1] },
+    { slot: 2, team: 1, kind: 'player', name: 'caro', playerId: ids[2] },
+    ids[3] ? { slot: 3, team: 1, kind: 'player', name: 'dani', playerId: ids[3] } : { slot: 3, team: 1, kind: 'bot', name: 'Bot 2' },
+  ];
+  const { ids: _, ...rest } = over;
+  return { matchId: MID, mode: '2v2', region: 'SA', ranked: true, roster, matchLengthSeconds: 180, kickoffSeed: 7, botDifficulty: 'medium', createdAt: NOW, ...rest };
+}
+
+const RATED = {
+  kind: 'rated',
+  matchId: MID,
+  playlist: '2v2',
+  region: 'SA',
+  winner: 1,
+  blue: 2,
+  red: 3,
+  players: [
+    { id: A, team: 0, left: false },
+    { id: B, team: 0, left: true },
+    { id: C, team: 1, left: false },
+  ],
+  nodeId: 'n1',
+};
+const REASON = 'verification_failed:' + 'x'.repeat(40);
+const RANKED_VOID = { kind: 'void', matchId: MID, nodeId: 'n1', ranked: true, reason: REASON, players: IDS, noShows: [C] };
+
+const parsed = (calls) => calls.map((c) => ({ ...c, body: JSON.parse(c.body) }));
+const release = (region = 'SA') => ({ matchId: MID, target: 'mm:' + region, path: '/release', body: { matchId: MID, playerIds: IDS } });
+
+test("outcomeCalls: a rated match goes to /ranked-result with MatchDO's body, then frees the locks in its region", () => {
+  const { nodeId: _, kind: __, ...body } = RATED;
+  assert.deepEqual(parsed(O.outcomeCalls(RATED, assign(), IDS)), [{ matchId: MID, target: 'accounts', path: '/ranked-result', body }, release()]);
+});
+
+test("outcomeCalls: a ranked void goes to /ranked-cancel with the assignment's playlist and region, its noShows and a reason AccountsDO keeps whole", () => {
+  const calls = parsed(O.outcomeCalls(RANKED_VOID, assign({ mode: '3v3', region: 'NA' }), IDS));
+  assert.deepEqual(calls, [
+    { matchId: MID, target: 'accounts', path: '/ranked-cancel', body: { matchId: MID, playlist: '3v3', region: 'NA', players: IDS, noShows: [C], reason: REASON.slice(0, 32) } },
+    release('NA'),
+  ]);
+  assert.equal(calls[0].body.reason.length, 32);
+});
+
+test('outcomeCalls: a casual match records nothing, void or not; it only frees the locks', () => {
+  const casual = assign({ ranked: false });
+  const outcomes = [
+    { kind: 'void', matchId: MID, nodeId: 'n1', ranked: false, reason: 'node_offline', players: IDS, noShows: [A] },
+    { kind: 'unrated', matchId: MID, nodeId: 'n1', blue: 1, red: 0, verified: true },
+    { kind: 'unrated', matchId: MID, nodeId: 'n1', blue: 0, red: 4, verified: false },
+  ];
+  for (const o of outcomes) assert.deepEqual(parsed(O.outcomeCalls(o, casual, IDS)), [release()], `${o.kind} ${o.verified ?? ''}`);
+});
+
+test('outcomeCalls: every outcome ends with exactly one /release of every human', () => {
+  for (const o of [RATED, RANKED_VOID, { ...RANKED_VOID, ranked: false }, { kind: 'unrated', matchId: MID, nodeId: 'n1', blue: 0, red: 0, verified: true }]) {
+    const calls = parsed(O.outcomeCalls(o, assign(), IDS));
+    assert.deepEqual(calls.filter((c) => c.path === '/release'), [release()]);
+    assert.equal(calls[calls.length - 1].path, '/release');
+  }
+});
+
+// ---- nodeOutcome.ts: delivery --------------------------------------------------------------------
+
+/** ACCOUNTS and MATCHMAKER whose objects answer `answer(name, path)`: a Response, or an Error to throw. `calls` records each POST. */
+function deliveryEnv(answer) {
+  const calls = [];
+  const ns = () => ({
+    idFromName: (name) => ({ name }),
+    get: (id) => ({
+      fetch: async (url, init) => {
+        calls.push({ name: id.name, url, method: init.method, headers: init.headers, body: init.body });
+        const r = answer(id.name, new URL(url).pathname);
+        if (r instanceof Error) throw r;
+        return r;
+      },
+    }),
+  });
+  return { calls, env: { JWT_SECRET: SECRET, ACCOUNTS: ns(), MATCHMAKER: ns() } };
+}
+
+const ok = () => new RealResponse('{"ok":true}', { status: 200 });
+
+test('deliverCall: a 2xx is done; each call reaches its object with the internal header and the stored body', async () => {
+  const { calls, env } = deliveryEnv(ok);
+  const lines = [];
+  const [result, rel] = O.outcomeCalls(RATED, assign(), IDS);
+  assert.equal(await O.deliverCall(env, result, (l) => lines.push(l)), 'done');
+  assert.equal(await O.deliverCall(env, rel, (l) => lines.push(l)), 'done');
+  const secret = await internalSecret(SECRET);
+  assert.deepEqual(
+    calls.map((c) => [c.name, c.url, c.method, c.headers[INTERNAL_HEADER] === secret, c.headers['content-type'], c.body]),
+    [
+      ['accounts-v1', 'https://accounts/ranked-result', 'POST', true, 'application/json', result.body],
+      ['mm:SA', 'https://matchmaker/release', 'POST', true, 'application/json', rel.body],
+    ],
+  );
+  assert.deepEqual(lines, []);
+});
+
+test('deliverCall: an answer below 500 that is not a 2xx is done too, with one ALERT line that carries the body', async () => {
+  const [result] = O.outcomeCalls(RATED, assign(), IDS);
+  for (const status of [400, 403, 404, 409]) {
+    const { env } = deliveryEnv(() => new RealResponse('{"error":"bad_request"}\n', { status }));
+    const lines = [];
+    assert.equal(await O.deliverCall(env, result, (l) => lines.push(l)), 'done', `${status}: a retry would be refused forever`);
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].startsWith(`ALERT outbox /ranked-result ${status} (match abababab, accounts)`), lines[0]);
+    assert.ok(lines[0].includes('"error":"bad_request"') && lines[0].includes(result.body), 'the answer and the body, to apply by hand');
+    assert.doesNotMatch(lines[0], /[\r\n]/);
+  }
+});
+
+test('deliverCall: a 5xx or a network error is retried, without an ALERT', async () => {
+  const [, rel] = O.outcomeCalls(RATED, assign(), IDS);
+  const answers = [() => new RealResponse('boom', { status: 500 }), () => new RealResponse('', { status: 503 }), () => new Error('Network connection lost.\nnext line')];
+  for (const answer of answers) {
+    const { calls, env } = deliveryEnv(answer);
+    const lines = [];
+    assert.equal(await O.deliverCall(env, rel, (l) => lines.push(l)), 'retry');
+    assert.equal(calls.length, 1);
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].startsWith('outbox /release '), lines[0]);
+    assert.doesNotMatch(lines[0], /[\r\n]/);
+  }
+});
+
+test('deliverCall: a row for no known object sends nothing and is dropped with an ALERT', async () => {
+  const { calls, env } = deliveryEnv(ok);
+  const lines = [];
+  const row = { matchId: MID, target: 'match', path: '/release', body: '{}' };
+  assert.equal(await O.deliverCall(env, row, (l) => lines.push(l)), 'done');
+  assert.equal(calls.length, 0);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^ALERT outbox \/release - \(match abababab, match\), dropped: unknown target/);
+});
+
+// ---- nodeOutcome.ts against a real AccountsDO ----------------------------------------------------
+
+const H = (c) => c.repeat(64).slice(0, 64);
+const PW = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
+
+/** An AccountsDO on node:sqlite, its store, and an ACCOUNTS namespace that reaches it. */
+function makeAccounts() {
+  const db = new DatabaseSync(':memory:');
+  const sql = {
+    exec(query, ...bindings) {
+      const stmt = db.prepare(query);
+      const rows = /^\s*(SELECT|WITH)/i.test(query) ? stmt.all(...bindings) : (stmt.run(...bindings), []);
+      return { toArray: () => rows.map((r) => ({ ...r })) };
+    },
+  };
+  let depth = 0;
+  const transactionSync = (fn) => {
+    if (depth > 0) return fn();
+    depth++;
+    db.exec('BEGIN');
+    try {
+      const out = fn();
+      db.exec('COMMIT');
+      return out;
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    } finally {
+      depth--;
+    }
+  };
+  const ctx = { storage: { sql, transactionSync, getAlarm: async () => NOW, setAlarm: async () => {} }, blockConcurrencyWhile: (fn) => fn() };
+  const ado = new ADO.AccountsDO(ctx, { JWT_SECRET: SECRET });
+  ado.now = () => NOW;
+  const ACCOUNTS = { idFromName: (name) => ({ name }), get: () => ({ fetch: (url, init) => ado.fetch(new Request(url, init)) }) };
+  return { store: new S.AccountStore(sql, transactionSync), ACCOUNTS };
+}
+
+test('outcome calls reach a real AccountsDO: a rated match is rated once, a ranked void abandons its no-shows, a second delivery is done and changes nothing', async () => {
+  const { store, ACCOUNTS } = makeAccounts();
+  const ids = ['ana', 'beto', 'caro', 'dani'].map((n, i) => store.register(n, PW, [], H(String(i)), NOW).userId);
+  const releases = [];
+  const MATCHMAKER = { idFromName: (name) => ({ name }), get: (id) => ({ fetch: async (_url, init) => (releases.push([id.name, JSON.parse(init.body)]), ok()) }) };
+  const env = { JWT_SECRET: SECRET, ACCOUNTS, MATCHMAKER };
+  const deliver = async (calls) => {
+    for (const c of calls) assert.equal(await O.deliverCall(env, c, (l) => assert.fail(l)), 'done');
+  };
+
+  store.rankedLock(MID, 'SA', ids, NOW + 600_000);
+  const rated = { ...RATED, winner: 0, players: ids.map((id, i) => ({ id, team: i < 2 ? 0 : 1, left: i === 3 })) };
+  const calls = O.outcomeCalls(rated, assign({ ids }), ids);
+  await deliver(calls);
+  await deliver(calls); // at least once: the outbox may send a row again
+  assert.equal(store.rankedResultFor(MID, ids[0], NOW).outcome, 'win');
+  assert.equal(store.rankedResultFor(MID, ids[3], NOW).left, true);
+  assert.equal(store.rankedCheck(ids[0], ['2v2'], NOW).ratings['2v2'].games, 1, 'rated once');
+  assert.equal(store.rankedCheck(ids[0], ['2v2'], NOW).active, null, 'the ranked lock is gone');
+
+  const MID2 = 'cd'.repeat(32);
+  const voided = O.outcomeCalls({ ...RANKED_VOID, matchId: MID2, players: ids, noShows: [ids[2]] }, assign({ ids, matchId: MID2 }), ids);
+  await deliver(voided);
+  await deliver(voided);
+  assert.deepEqual(store.rankedResultFor(MID2, ids[0], NOW), { status: 'cancelled', reason: REASON.slice(0, 32) });
+  assert.ok(store.banUntil(ids[2], NOW) > NOW, 'the no-show got an abandon');
+  assert.equal(store.banUntil(ids[1], NOW), 0, 'the others did not');
+  assert.equal(store.rankedCheck(ids[1], ['2v2'], NOW).ratings['2v2'].games, 1, 'nobody rated by the void');
+
+  assert.deepEqual(releases, [
+    ['mm:SA', { matchId: MID, playerIds: ids }],
+    ['mm:SA', { matchId: MID, playerIds: ids }],
+    ['mm:SA', { matchId: MID2, playerIds: ids }],
+    ['mm:SA', { matchId: MID2, playerIds: ids }],
+  ]);
 });
