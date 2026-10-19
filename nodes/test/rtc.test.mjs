@@ -106,7 +106,7 @@ test('a home PC hosts over WebRTC: no open port, the real NetClient plays, the r
 
     // The player quits: the node closes the channel with 1000 'left', NetClient does not reconnect.
     const lv = await post(`${cp.url}/dev/leave`, { matchId: placed.body.matchId, playerId: humans[0].playerId });
-    assert.equal(lv.body.ended, true);
+    assert.equal(lv.body.answer.ended, true);
     await waitFor(() => st.closed !== null, 5_000);
     assert.equal(st.closed.code, 1000);
     assert.equal(st.closed.reason, 'left');

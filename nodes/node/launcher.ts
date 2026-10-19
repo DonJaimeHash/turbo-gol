@@ -7,7 +7,11 @@
  *     release  = <data>/releases/<stable>/ (download if missing):
  *                manifest.json + manifest.sig, verified with the RELEASE public key (pinned at
  *                install time in <data>/release-key.pub, never fetched), then every file listed in
- *                the manifest with its size and SHA-256
+ *                the manifest with its size and SHA-256. A release whose manifest asks for a
+ *                newer Node.js major (nodeMajor) is never started, new or already on disk: an
+ *                installed version this Node.js runs starts instead (if it is below the channel
+ *                minimum, it is told to update at once, so the node waits for a Node.js upgrade:
+ *                see exit 75)
  *     run        node <data>/releases/<v>/node.mjs run --data <data>   (with an IPC channel)
  *     exit 75  = drained for an update -> loop (picks up the new stable); a version that asks for
  *                an update right after starting while the channel still points to it waits
@@ -79,6 +83,21 @@ export async function verifyManifest(manifestBytes: Uint8Array, sigB64: string, 
   return m;
 }
 
+/** The Node.js major this launcher runs on; every node release runs on the same one (process.execPath). */
+const RUNNING_NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+
+/**
+ * Refuse a release built for a newer Node.js than the one running. Started anyway, it would
+ * crash (or misbehave) on this machine, so the release check fails instead and an installed
+ * version this Node.js runs is started (runnableVersions) until the operator upgrades Node.js:
+ * the launcher is installed once and never updates the system's Node.js itself.
+ */
+export function checkNodeMajor(m: ReleaseManifest, running = RUNNING_NODE_MAJOR): void {
+  if (Number.isInteger(m.nodeMajor) && m.nodeMajor > running) {
+    throw new ReleaseError(`${m.version} needs Node.js ${m.nodeMajor} or newer and this machine runs Node.js ${running}: upgrade Node.js to run it`);
+  }
+}
+
 /** Check a downloaded file against its manifest entry. */
 export async function checkFile(f: ReleaseFile, bytes: Uint8Array): Promise<void> {
   if (bytes.length !== f.size) throw new ReleaseError(`${f.path}: size ${bytes.length} != ${f.size}`);
@@ -105,25 +124,32 @@ export const httpFetcher: Fetcher = {
 
 /**
  * Make sure <dataDir>/releases/<version> holds a verified copy of the release. Downloads into a
- * temporary directory and renames it into place only when everything checked out.
+ * temporary directory and renames it into place only when everything checked out. A release that
+ * needs a newer Node.js is refused (checkNodeMajor) before any of its files is downloaded.
  */
 export async function ensureRelease(control: string, dataDir: string, version: string, releaseKey: string, f: Fetcher = httpFetcher): Promise<ReleaseManifest> {
   if (!VERSION.test(version)) throw new ReleaseError('bad version');
   const dir = join(dataDir, 'releases', version);
+  let local: ReleaseManifest | null = null;
   try {
     const mb = new Uint8Array(await readFile(join(dir, 'manifest.json')));
     const sig = await readFile(join(dir, 'manifest.sig'), 'utf8');
     const m = await verifyManifest(mb, sig, releaseKey);
     for (const file of m.files) await checkFile(file, new Uint8Array(await readFile(join(dir, file.path))));
-    return m;
+    local = m;
   } catch {
     /* missing or damaged: fetch it */
+  }
+  if (local) {
+    checkNodeMajor(local);
+    return local;
   }
   const base = `${control.replace(/\/$/, '')}/nodes/releases/${version}`;
   const mb = await f.bytes(`${base}/manifest.json`);
   const sig = new TextDecoder().decode(await f.bytes(`${base}/manifest.sig`));
   const m = await verifyManifest(mb, sig, releaseKey);
   if (m.version !== version) throw new ReleaseError('manifest version differs from the channel');
+  checkNodeMajor(m);
   const tmp = join(dataDir, 'releases', `.${version}.${Date.now()}`);
   await mkdir(tmp, { recursive: true });
   try {
@@ -330,6 +356,25 @@ async function installedVersions(dataDir: string): Promise<string[]> {
   }
 }
 
+/**
+ * The installed versions this machine's Node.js can run: a copy on disk whose manifest asks for a
+ * newer major (left by a launcher from before checkNodeMajor, or Node.js went back a major) is no
+ * fallback, whether the channel cannot be reached or ensureRelease just refused it. A manifest that
+ * cannot be read stays in: starting it reports that.
+ */
+async function runnableVersions(dataDir: string): Promise<string[]> {
+  const ok: string[] = [];
+  for (const v of await installedVersions(dataDir)) {
+    try {
+      checkNodeMajor(JSON.parse(await readFile(join(dataDir, 'releases', v, 'manifest.json'), 'utf8')) as ReleaseManifest);
+    } catch (e) {
+      if (e instanceof ReleaseError) continue;
+    }
+    ok.push(v);
+  }
+  return ok;
+}
+
 const secs = (ms: number): number => Math.round(ms / 1000);
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -520,15 +565,15 @@ export class Launcher {
     let channel: ReleaseChannel | null = null;
     try {
       channel = await f.json<ReleaseChannel>(`${o.control.replace(/\/$/, '')}/nodes/releases/channel`);
-      let version = chooseVersion(state, channel, await installedVersions(o.dataDir));
+      let version = chooseVersion(state, channel, await runnableVersions(o.dataDir));
       const lastResort = !version;
       if (!version) version = channel.stable;
       await ensureRelease(o.control, o.dataDir, version, o.releaseKey, f);
       return { version, lastResort, channel };
     } catch (e) {
       this.log(`release check failed: ${errText(e)}`);
-      // Offline: keep running what we have.
-      return { version: offlineVersion(state, await installedVersions(o.dataDir)), lastResort: false, channel };
+      // Offline, or the release needs a newer Node.js: keep running what we have and can run.
+      return { version: offlineVersion(state, await runnableVersions(o.dataDir)), lastResort: false, channel };
     }
   }
 
@@ -548,7 +593,7 @@ export class Launcher {
       if (!pick || this.stopping) return this.stopped();
       const { version, channel } = pick;
       if (!version) {
-        log(`no release available yet; retrying in ${secs(retry)} s`);
+        log(`no release this machine can run yet; retrying in ${secs(retry)} s`);
         await this.wait(retry);
         retry = Math.min(retry * 2, RETRY_MAX_MS);
         continue;

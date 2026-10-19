@@ -18,6 +18,14 @@ All notable changes to Turbogol are documented here. The format follows
   and re-simulates the replays before any rating is written (every ranked match; casual matches by
   sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
   Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
+- Community nodes: the control plane keeps its state through a restart. Registered nodes, tokens
+  and running matches are written to a store before anything that depends on them goes out, and
+  after a deploy the nodes get 90 seconds to reconnect, so a match played through a deploy is still
+  rated. A project node keeps its matches through a control link drop of under a minute; hosts are
+  checked again every five minutes and one that stops answering gets no matches; in a ranked match
+  on a project node, a player with no connection at the final whistle is rated as a leaver, as on
+  the game's own servers. One token registers one node, a forged replay upload is refused before
+  its body is read, and every token or node of a trusted operator logs an ALERT line.
 - The game is ready for matches hosted on a community node: after a Competitive match there, the
   menu says the result is being verified and waits up to two minutes for it (the node's replay is
   checked first), and a match that fails the check shows as not counted. The network panel names
@@ -60,6 +68,14 @@ All notable changes to Turbogol are documented here. The format follows
   noise, and they ring briefly in a short synthetic room.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
+- Community nodes: the VPS installer can be run again (no token: it upgrades the launcher and keeps
+  the node's identity and settings) and restores a backed-up identity with `--restore`. Before it
+  spends the token it checks that the public address is this machine's (a DNS name's A and AAAA
+  records included) and that the Caddy config is its own to replace. It takes `--matches` (`auto`
+  goes back to the benchmark) and gives a name a 90-day certificate (the 6-day one only for an IP)
+  with live matches kept through a Caddy reload. Replay uploads keep trying for about 75 s, and the
+  launcher never starts a release that needs a newer Node.js than the machine has: it logs why, and
+  the node does not serve until Node.js is upgraded.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and

@@ -1,9 +1,10 @@
 // End to end on loopback: the reference control plane, one community node (NodeRuntime) and scripted
 // players speaking the real protocol. Registration with a one-time token, reachability probe,
-// casual and ranked placement, EdDSA tickets, leaves, forfeit, replay upload, verification,
-// rating outcome and reward points.
+// casual and ranked placement, EdDSA tickets, a control plane restart mid-match (a Worker deploy),
+// leaves, forfeit, replay upload, verification, rating outcome and reward points.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
 import { P, testBuild } from './helpers.mjs';
 import { connectPlayer, freePort, waitFor } from './player.mjs';
 
@@ -76,7 +77,8 @@ test('a community node hosts casual and ranked matches; results are verified bef
     await waitFor(() => pl.lastTick > 3 * 120, 15_000);
     const lv = await post(`${cp.url}/dev/leave`, { matchId: placed.body.matchId, playerId: casualHuman.playerId });
     assert.equal(lv.status, 200, JSON.stringify(lv.body));
-    assert.equal(lv.body.ended, true);
+    assert.equal(lv.body.recorded, true);
+    assert.equal(lv.body.answer.ended, true);
     const casual = await outcomeOf(cp.url, placed.body.matchId);
     assert.equal(casual.verdict.code, 'ok', casual.verdict.message);
     assert.equal(casual.outcome.kind, 'unrated');
@@ -99,9 +101,16 @@ test('a community node hosts casual and ranked matches; results are verified bef
     const a = await connectPlayer({ wsUrl: ranked.body.wsUrl, ticket: ticketOf(ana.playerId) });
     const b = await connectPlayer({ wsUrl: ranked.body.wsUrl, ticket: ticketOf(beto.playerId), steerPhase: 100 });
     await waitFor(() => a.lastTick > 3 * 120 && b.lastTick > 3 * 120, 15_000);
+    // The Worker is deployed mid-match: the node's control link drops and a new control plane
+    // loads the store. The node process reconnects and keeps its match; the players never notice.
+    cp.restart();
+    assert.equal(cp.cp.inGrace(), true);
+    await waitFor(() => cp.cp.isOnline(identity.nodeId) && cp.cp.registry.node(identity.nodeId)?.online, 10_000);
+    assert.equal(cp.cp.matches.get(ranked.body.matchId).state, 'assigned');
+    assert.equal(cp.cp.registry.node(identity.nodeId).status, 'active');
     // Beto quits for good: red has nobody left -> forfeit, blue wins.
     const q = await post(`${cp.url}/dev/leave`, { matchId: ranked.body.matchId, playerId: beto.playerId });
-    assert.equal(q.body.ended, true);
+    assert.equal(q.body.answer.ended, true);
     await waitFor(() => a.ended, 5_000);
     assert.equal(a.ended.forfeit, true);
     assert.equal(a.ended.winner, 0);
@@ -129,6 +138,27 @@ test('a community node hosts casual and ranked matches; results are verified bef
     assert.equal(pub.hosts[0].name, 'Juan');
   } finally {
     if (rt) await rt.stop();
+    await cp.close();
+  }
+});
+
+test('a forged replay upload is refused before its body is read', async () => {
+  const cp = await startControlPlane({ port: 0, log: () => undefined });
+  try {
+    // Anyone can claim 16 MiB for a match id they saw: the answer must not wait for them.
+    const headers = { 'content-length': String(16 * 1024 * 1024), 'x-node-id': 'f'.repeat(16), 'x-node-ts': String(Date.now()), 'x-node-sig': 'A'.repeat(86), 'x-replay-sha256': 'e'.repeat(64) };
+    const status = await new Promise((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port: cp.port, method: 'PUT', path: `/nodes/replays/${'a'.repeat(64)}`, headers }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+        req.destroy();
+      });
+      req.on('error', () => undefined);
+      req.write(Buffer.alloc(1024)); // the rest never comes
+      setTimeout(() => reject(new Error('no answer without the body')), 3_000).unref();
+    });
+    assert.equal(status, 404);
+  } finally {
     await cp.close();
   }
 });

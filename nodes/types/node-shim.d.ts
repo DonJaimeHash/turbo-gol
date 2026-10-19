@@ -14,6 +14,7 @@ declare const process: {
   execPath: string;
   versions: { node: string; [k: string]: string | undefined };
   exit(code?: number): never;
+  exitCode?: number;
   on(event: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
   off(event: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
   cpuUsage(previous?: { user: number; system: number }): { user: number; system: number };
