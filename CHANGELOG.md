@@ -26,6 +26,11 @@ All notable changes to Turbogol are documented here. The format follows
   on a project node, a player with no connection at the final whistle is rated as a leaver, as on
   the game's own servers. One token registers one node, a forged replay upload is refused before
   its body is read, and every token or node of a trusted operator logs an ALERT line.
+- Community nodes, groundwork in the Worker (nothing calls it yet): the wasm's SHA-256 is committed
+  next to it (`npm run build:wasm` rewrites it, a test checks it), the node bindings and secrets are
+  optional settings, a `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled`
+  wins) will turn the nodes on, and a node match's results will reach the accounts as the game
+  servers' do, a refused call dropped with an ALERT line and only server errors retried.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
