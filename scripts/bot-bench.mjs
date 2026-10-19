@@ -2,46 +2,23 @@
 //   node scripts/bot-bench.mjs [--baseline=origin/main] [--modes=1v1,2v2,3v3] [--matches=8]
 //                              [--difficulty=hard] [--difficultyB=<same>] [--seconds=180] [--seed=1]
 //                              [--tuneA=key=value,...] [--paramsA=difficulty.key=value,...]
+//                              [--json=results.json]
 // --tuneA / --paramsA override A's TUNING / DIFFICULTY_PARAMS values (numbers or true / false), to
-// compare variants of a change without editing the code.
+// compare variants of a change without editing the code (scripts/bot-lib.mjs).
 // Headless matches on the real physics (wasm + analytic arena), like scripts/smoke-match.mjs:
 // kickoff after every goal, ball prediction every 4 ticks. A plays blue in even matches and red in
 // odd ones, every match with its own seeds, so both sides and kickoff orders are covered.
-// B's src/ai files come from `git show <baseline>:src/ai/...` into a temporary folder (their
-// imports of src/sim point at this tree: the bench assumes the sim API did not change).
-// Per mode it prints A's wins / draws / losses and, per team and match: goals, own goals, touches,
-// aerial touches (car in the air, ball above 300 uu), shots on target (a touch that sends the ball
-// at the opponent's mouth, ballistic, within 3 s), passes (a touch within 3 s of a teammate's),
-// forward touches (% of touches leaving the ball moving toward the opponent's goal at > 500 uu/s);
-// plus the share of the match the ball spends above 500 uu.
-import { registerHooks } from 'node:module';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+// Per mode it prints A's wins / draws / losses, its score with a 95 % interval and the Elo
+// difference that implies (with 40 matches equal bots still land anywhere in about 35-65 %: only
+// "A better" / "A worse" means something), the think() cost per bot and tick for each side, and
+// per team and match: goals, own goals, touches, aerial touches (car in the air, ball above 300 uu),
+// shots on target (a touch that sends the ball at the opponent's mouth, ballistic, within 3 s),
+// passes (a touch within 3 s of a teammate's), forward touches (% of touches leaving the ball moving
+// toward the opponent's goal at > 500 uu/s); plus the share of the match the ball spends above 500 uu.
 import { performance } from 'node:perf_hooks';
+import { writeFileSync } from 'node:fs';
+import { applyOverrides, arg, loadBots, loadSim, scoreSummary } from './bot-lib.mjs';
 
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    try {
-      return nextResolve(specifier, context);
-    } catch (err) {
-      const relative = specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('file:');
-      if (relative && err && err.code === 'ERR_MODULE_NOT_FOUND') {
-        if (!/\.[a-z]+$/i.test(specifier)) return nextResolve(specifier + '.ts', context);
-        if (specifier.endsWith('.js')) return nextResolve(specifier.slice(0, -3) + '.ts', context);
-      }
-      throw err;
-    }
-  },
-});
-
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const arg = (name, def) => {
-  const a = process.argv.find((x) => x.startsWith(`--${name}=`));
-  return a === undefined ? def : a.slice(name.length + 3);
-};
 const baseline = arg('baseline', 'origin/main');
 const modes = arg('modes', '1v1,2v2,3v3').split(',');
 const matches = Number(arg('matches', '8'));
@@ -49,39 +26,14 @@ const diffA = arg('difficulty', 'hard');
 const diffB = arg('difficultyB', diffA);
 const seconds = Number(arg('seconds', '180'));
 const seed0 = Number(arg('seed', '1'));
+const jsonOut = arg('json', '');
 
-// ---- B: the baseline's src/ai, its sim imports pointed at this tree --------------------------
-const sha = execFileSync('git', ['rev-parse', '--short', baseline], { cwd: root, encoding: 'utf8' }).trim();
-const bDir = join(tmpdir(), 'turbogol-bot-bench', sha, 'ai');
-mkdirSync(bDir, { recursive: true });
-const simUrl = pathToFileURL(join(root, 'src', 'sim')).href + '/';
-for (const f of ['Bot.ts', 'Team.ts', 'math.ts']) {
-  const src = execFileSync('git', ['show', `${baseline}:src/ai/${f}`], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 24 });
-  writeFileSync(join(bDir, f), src.replace(/from '\.\.\/sim\//g, `from '${simUrl}`));
-}
-const A = await import(pathToFileURL(join(root, 'src', 'ai', 'Team.ts')).href);
-const ABot = await import(pathToFileURL(join(root, 'src', 'ai', 'Bot.ts')).href);
-const parseValue = (v) => (v === 'true' ? true : v === 'false' ? false : Number(v));
-for (const kv of arg('tuneA', '').split(',').filter(Boolean)) {
-  const [k, v] = kv.split('=');
-  if (!(k in ABot.TUNING)) throw new Error('unknown TUNING key ' + k);
-  ABot.TUNING[k] = parseValue(v);
-}
-for (const kv of arg('paramsA', '').split(',').filter(Boolean)) {
-  const [path, v] = kv.split('=');
-  const [d, k] = path.split('.');
-  if (!(d in ABot.DIFFICULTY_PARAMS) || !(k in ABot.DIFFICULTY_PARAMS[d])) throw new Error('unknown param ' + path);
-  ABot.DIFFICULTY_PARAMS[d][k] = parseValue(v);
-}
-const B = await import(pathToFileURL(join(bDir, 'Team.ts')).href);
+const A = await loadBots(null);
+applyOverrides(A, arg('tuneA', ''), arg('paramsA', ''));
+const B = await loadBots(baseline);
+const { sim, C, T } = await loadSim();
+const { MODES, ARENA } = C;
 
-const { RocketSim } = await import(pathToFileURL(join(root, 'src', 'sim', 'RocketSimBridge.ts')).href);
-const { buildArenaMesh } = await import(pathToFileURL(join(root, 'src', 'sim', 'arenaMesh.ts')).href);
-const { MODES, ARENA } = await import(pathToFileURL(join(root, 'src', 'sim', 'constants.ts')).href);
-const T = await import(pathToFileURL(join(root, 'src', 'sim', 'types.ts')).href);
-
-const sim = await RocketSim.load();
-sim.initArena(buildArenaMesh().physics);
 const PRED_EVERY = 4;
 const GOAL_PAUSE_TICKS = 30;
 const OWN_GOAL_TICKS = 60;
@@ -89,7 +41,7 @@ const PASS_TICKS = 3 * T.TICK_RATE;
 const L = ARENA.extentY;
 const GRAV = 650;
 
-/** A touch that sends the ball at the mouth of the goal at y = goalY within 2 s (ballistic, no bounces). */
+/** A touch that sends the ball at the mouth of the goal at y = goalY within 3 s (ballistic, no bounces). */
 function onTarget(goalY) {
   const o = T.BALL_OFFSET;
   const b = sim.buf;
@@ -102,12 +54,13 @@ function onTarget(goalY) {
   return Math.abs(x + vx * t) < ARENA.goalHalfWidth && zx > 0 && zx < ARENA.goalHeight + 200;
 }
 
+const emptyStats = () => ({ goals: 0, own: 0, touches: 0, aerial: 0, shots: 0, passes: 0, forward: 0, thinkMs: 0, botTicks: 0 });
+
 function playMatch(mode, aIsBlue, seed) {
   const perTeam = MODES[mode];
   sim.createArena(T.TICK_RATE);
-  const ids = [];
-  for (let i = 0; i < perTeam; i++) ids.push(sim.addCar(T.Team.Blue, T.CarPreset.Standard));
-  for (let i = 0; i < perTeam; i++) ids.push(sim.addCar(T.Team.Red, T.CarPreset.Standard));
+  for (let i = 0; i < perTeam; i++) sim.addCar(T.Team.Blue, T.CarPreset.Standard);
+  for (let i = 0; i < perTeam; i++) sim.addCar(T.Team.Red, T.CarPreset.Standard);
   let kickoffSeed = seed * 31;
   sim.resetKickoff(kickoffSeed++);
   sim.sync();
@@ -123,7 +76,7 @@ function playMatch(mode, aIsBlue, seed) {
   const blueOuts = blueSlots.map(() => T.emptyControls());
   const redOuts = redSlots.map(() => T.emptyControls());
 
-  const st = [0, 1].map(() => ({ goals: 0, own: 0, touches: 0, aerial: 0, shots: 0, passes: 0, forward: 0 }));
+  const st = [emptyStats(), emptyStats()];
   let highTicks = 0;
   let lastTouch = null;
   let pendingShot = null; // a touch whose ball direction is judged on the next tick
@@ -166,8 +119,15 @@ function playMatch(mode, aIsBlue, seed) {
     }
     const age = sim.tickCount - sim.predTick;
     if (age >= PRED_EVERY || age < 0) sim.updateBallPrediction();
+    const t0 = performance.now();
     blue.think(sim, blueOuts);
+    const t1 = performance.now();
     red.think(sim, redOuts);
+    const t2 = performance.now();
+    st[0].thinkMs += t1 - t0;
+    st[1].thinkMs += t2 - t1;
+    st[0].botTicks += blueSlots.length;
+    st[1].botTicks += redSlots.length;
     for (let i = 0; i < blueSlots.length; i++) sim.setControls(sim.carIdOf(blueSlots[i]), blueOuts[i]);
     for (let i = 0; i < redSlots.length; i++) sim.setControls(sim.carIdOf(redSlots[i]), redOuts[i]);
     const goalsBefore = st[0].goals + st[1].goals;
@@ -189,11 +149,13 @@ function playMatch(mode, aIsBlue, seed) {
 }
 
 const fmt = (x) => x.toFixed(2).padStart(6);
-console.log(`bot bench: A = working tree (${diffA}) vs B = ${baseline} ${sha} (${diffB}), ${matches} x ${seconds} s per mode${arg('tuneA', '') ? ' tuneA ' + arg('tuneA', '') : ''}${arg('paramsA', '') ? ' paramsA ' + arg('paramsA', '') : ''}`);
+const overrides = `${arg('tuneA', '') ? ' tuneA ' + arg('tuneA', '') : ''}${arg('paramsA', '') ? ' paramsA ' + arg('paramsA', '') : ''}`;
+console.log(`bot bench: A = ${A.label} (${diffA}) vs B = ${B.label} (${diffB}), ${matches} x ${seconds} s per mode${overrides}`);
 const summary = [];
+const results = { a: A.label, b: B.label, difficultyA: diffA, difficultyB: diffB, seconds, overrides: overrides.trim(), modes: {} };
 for (const mode of modes) {
   const t0 = performance.now();
-  const sum = { a: { goals: 0, own: 0, touches: 0, aerial: 0, shots: 0, passes: 0, forward: 0 }, b: { goals: 0, own: 0, touches: 0, aerial: 0, shots: 0, passes: 0, forward: 0 } };
+  const sum = { a: emptyStats(), b: emptyStats() };
   let high = 0;
   let w = 0, d = 0, l = 0;
   for (let m = 0; m < matches; m++) {
@@ -209,7 +171,17 @@ for (const mode of modes) {
     console.log(`  ${mode} #${m + 1} (A ${m % 2 === 0 ? 'blue' : 'red '}): A ${r.a.goals} - ${r.b.goals} B   shots ${r.a.shots}/${r.b.shots} aerial ${r.a.aerial}/${r.b.aerial} passes ${r.a.passes}/${r.b.passes} own ${r.a.own}/${r.b.own}`);
   }
   const per = (k, side) => sum[side][k] / matches;
-  const line = `${mode}: A won ${w}, drew ${d}, lost ${l}  |  per match A / B: goals ${fmt(per('goals', 'a'))} /${fmt(per('goals', 'b'))}  shots ${fmt(per('shots', 'a'))} /${fmt(per('shots', 'b'))}  aerial ${fmt(per('aerial', 'a'))} /${fmt(per('aerial', 'b'))}  passes ${fmt(per('passes', 'a'))} /${fmt(per('passes', 'b'))}  own ${fmt(per('own', 'a'))} /${fmt(per('own', 'b'))}  touches ${fmt(per('touches', 'a'))} /${fmt(per('touches', 'b'))}  forward% ${fmt((100 * sum.a.forward) / Math.max(1, sum.a.touches))} /${fmt((100 * sum.b.forward) / Math.max(1, sum.b.touches))}  ball high ${fmt((100 * high) / matches)}%  (${((performance.now() - t0) / 1000).toFixed(0)} s)`;
+  const us = (side) => (1000 * sum[side].thinkMs) / Math.max(1, sum[side].botTicks);
+  const s = scoreSummary(w, d, l);
+  const line =
+    `${mode}: A won ${w}, drew ${d}, lost ${l}; ${s.text}\n` +
+    `     per match A / B: goals ${fmt(per('goals', 'a'))} /${fmt(per('goals', 'b'))}  shots ${fmt(per('shots', 'a'))} /${fmt(per('shots', 'b'))}  aerial ${fmt(per('aerial', 'a'))} /${fmt(per('aerial', 'b'))}  passes ${fmt(per('passes', 'a'))} /${fmt(per('passes', 'b'))}  own ${fmt(per('own', 'a'))} /${fmt(per('own', 'b'))}  touches ${fmt(per('touches', 'a'))} /${fmt(per('touches', 'b'))}  forward% ${fmt((100 * sum.a.forward) / Math.max(1, sum.a.touches))} /${fmt((100 * sum.b.forward) / Math.max(1, sum.b.touches))}\n` +
+    `     think() per bot and tick A / B: ${us('a').toFixed(1)} / ${us('b').toFixed(1)} us   ball high ${fmt((100 * high) / matches)}%   (${((performance.now() - t0) / 1000).toFixed(0)} s)`;
   summary.push(line);
+  results.modes[mode] = { matches, won: w, drew: d, lost: l, score: s.score, scoreLo: s.lo, scoreHi: s.hi, elo: s.elo, thinkUsA: us('a'), thinkUsB: us('b'), perMatchA: Object.fromEntries(Object.keys(sum.a).map((k) => [k, per(k, 'a')])), perMatchB: Object.fromEntries(Object.keys(sum.b).map((k) => [k, per(k, 'b')])) };
 }
 console.log('\n' + summary.join('\n'));
+if (jsonOut) {
+  writeFileSync(jsonOut, JSON.stringify(results, null, 2));
+  console.log(`results written to ${jsonOut}`);
+}
