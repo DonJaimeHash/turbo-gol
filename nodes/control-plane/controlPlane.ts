@@ -393,6 +393,17 @@ function describe(v: unknown): string {
   }
 }
 
+/**
+ * Why a reachability probe failed, fit for a log line. The node writes the answer, and a JSON
+ * error quotes it (newlines and all): its words must not become lines of their own, ALERTs for
+ * the maintainers among them.
+ */
+function probeFailure(e: unknown): string {
+  if (e instanceof SyntaxError) return 'bad json';
+  if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) return 'timeout';
+  return String(e).replace(/[^\x20-\x7e]+/g, ' ').slice(0, 120);
+}
+
 export class ControlPlane {
   readonly registry: Registry;
   readonly ledger: Ledger;
@@ -750,7 +761,7 @@ export class ControlPlane {
       if (body?.nodeId !== n.nodeId || typeof body.sig !== 'string' || !(await verifyWith(n.publicKey, reachMessage(n.nodeId, nonce), body.sig))) return 'bad answer';
       return null;
     } catch (e) {
-      return String(e);
+      return probeFailure(e);
     } finally {
       this.probing.delete(n.nodeId);
     }

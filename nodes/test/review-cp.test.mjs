@@ -807,3 +807,28 @@ test('a proven host is probed again every 5 minutes: three failures in a row tak
   await sweepAfter(30_000, true);
   assert.notEqual(n.reachableAt, null);
 });
+
+test('a failed probe never puts the node’s own words in a log line', async () => {
+  const env = await setup({ status: 'active' });
+  const n = env.registry.node(env.nodeId);
+  // The node answers its /healthz with text of its choosing: the JSON error quotes it, newline and all.
+  try {
+    JSON.parse('oops\nALERT node sp1 forged');
+  } catch (e) {
+    env.probeFails = e;
+  }
+  for (let i = 0; i < REPROBE_FAILURES; i++) await env.cp.reprobe(env.nodeId);
+  assert.equal(n.reachableAt, null);
+  assert.ok(env.logs.includes(`ALERT node ${n.name} unreachable at ${URL_}: bad json`));
+  assert.ok(env.logs.every((l) => !/[\r\n]/.test(l) && !l.includes('forged')));
+  // Anything else: printable characters only, and short.
+  env.probeFails = new Error(`x\r\nALERT y${'z'.repeat(500)}`);
+  assert.equal(await env.cp.probe(env.nodeId), false);
+  assert.match(env.logs.at(-1), /^probe \S+ failed: Error: x ALERT yz+$/);
+  assert.ok(env.logs.at(-1).length < 200);
+  const timeout = new Error('The operation was aborted due to timeout');
+  timeout.name = 'TimeoutError';
+  env.probeFails = timeout;
+  await env.cp.probe(env.nodeId);
+  assert.equal(env.logs.at(-1), `probe ${n.name} failed: timeout`);
+});

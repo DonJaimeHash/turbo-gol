@@ -30,6 +30,9 @@ All notable changes to Turbogol are documented here. The format follows
   address is checked again every five minutes: one that fails three checks in a row gets no matches
   until it answers again, with an ALERT line. In a ranked match on a project node, a player with no
   connection at the final whistle is rated as a leaver, as on the game's own servers.
+- Community nodes: the control plane keeps a match's result through a failed storage write (the
+  node's report is taken again), lets nodes log in while idle connections crowd the door, refuses a
+  forged replay upload before reading its body, and keeps a node's own text out of its ALERT lines.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 

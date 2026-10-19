@@ -84,7 +84,7 @@ export async function setup(opts = {}) {
     boot: 'boot-1',
     /** How the node answers a relayed leave: true (applied), false (refused: match_over), 'silent' (no reply). */
     leaveAnswers: true,
-    /** Health probes the node answered or failed; while probeFails is a string, they fail with it. */
+    /** Health probes the node answered or failed; while probeFails is set (a message or an Error), they fail with it. */
     probes: 0,
     probeFails: null,
     /** Hellos the node sent (one per login). */
@@ -118,7 +118,7 @@ export async function setup(opts = {}) {
       casualVerifyRate: opts.casualVerifyRate,
       fetchJson: async (url) => {
         env.probes++;
-        if (env.probeFails) throw new Error(env.probeFails);
+        if (env.probeFails) throw env.probeFails instanceof Error ? env.probeFails : new Error(env.probeFails);
         const nonce = new URL(url.replace(/^ws/, 'http')).searchParams.get('nonce');
         return { nodeId: env.nodeId, sig: await sign(nodeKey, reachMessage(env.nodeId, nonce)) };
       },
