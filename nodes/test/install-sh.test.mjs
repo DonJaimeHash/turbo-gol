@@ -112,3 +112,30 @@ test('install.sh helpers: what is an IP address or a DNS name, which Caddy is ne
     '[]=ok',
   ]);
 });
+
+test('DNS preflight: a name must lead to this machine; Cloudflare\'s proxy only with --allow-proxied', { skip }, () => {
+  const out = withInstaller(`
+    for a in 104.16.0.1 172.67.10.10 131.0.75.1 1.2.3.4 104.32.0.1; do
+      if is_cloudflare_v4 "$a"; then echo "$a=cloudflare"; else echo "$a=-"; fi
+    done
+    leads() { if why=$(dns_leads_here "$1" "$2" "$3"); then echo "ok"; else echo "no: $why"; fi; }
+    leads '203.0.113.7' 203.0.113.7 0
+    leads '' 203.0.113.7 0
+    leads '198.51.100.1' 203.0.113.7 0
+    leads '203.0.113.7 198.51.100.1' 203.0.113.7 0
+    leads '104.16.0.1 104.16.0.2' 203.0.113.7 0
+    leads '104.16.0.1 104.16.0.2' 203.0.113.7 1
+    leads '104.16.0.1 198.51.100.1' 203.0.113.7 1
+  `);
+  const lines = out.trim().split('\n');
+  assert.deepEqual(lines.slice(0, 5), ['104.16.0.1=cloudflare', '172.67.10.10=cloudflare', '131.0.75.1=cloudflare', '1.2.3.4=-', '104.32.0.1=-']);
+  const leads = lines.slice(5);
+  assert.equal(leads[0], 'ok');
+  assert.match(leads[1], /^no: it has no IPv4 address/);
+  assert.equal(leads[2], 'no: it resolves to 198.51.100.1, not to this machine (203.0.113.7)');
+  assert.equal(leads[3], 'no: it resolves to 198.51.100.1, not to this machine (203.0.113.7)', 'every address must be this machine');
+  assert.match(leads[4], /^no: it resolves to Cloudflare's proxy \(104\.16\.0\.1 104\.16\.0\.2\), .*--allow-proxied/);
+  assert.equal(leads[5], 'ok', '--allow-proxied');
+  assert.match(leads[6], /^no: it resolves to 198\.51\.100\.1,/, '--allow-proxied accepts only Cloudflare');
+  assert.equal(leads.length, 7);
+});
