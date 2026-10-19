@@ -386,6 +386,18 @@ export class Registry {
     n.cpuLoad = hb.cpuLoad;
   }
 
+  /**
+   * The node's control socket outlived a restart of the control plane (a hibernation): it is live
+   * as of `now`, so the heartbeat timeout covers it before its first heartbeat too. Not written,
+   * like a heartbeat.
+   */
+  adopted(id: string, now: number): void {
+    const n = this.nodes.get(id);
+    if (!n) return;
+    n.online = true;
+    n.lastSeen = now;
+  }
+
   disconnected(id: string): void {
     const n = this.nodes.get(id);
     if (n) n.online = false;

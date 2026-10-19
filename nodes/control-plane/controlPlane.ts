@@ -418,6 +418,11 @@ export class ControlPlane {
   private readonly restartGraceMs: number;
   /** Until then a cold start waits for its nodes: see inGrace(). */
   private graceUntil = 0;
+  /**
+   * When restore() ran (0: never). A restored node's lastSeen is 0, so its silence counts from
+   * here; and a report the restart held up is judged as if it had arrived then.
+   */
+  private restoredAt = 0;
   /** The last valid release channel, and whether a bad one was already alerted. */
   private goodChannel: ReleaseChannel | null = null;
   private channelAlerted = false;
@@ -464,7 +469,8 @@ export class ControlPlane {
       if (last !== undefined) this.lastStrike.set(n.nodeId, last);
     }
     const open = this.unfinished();
-    this.graceUntil = opts.cold && open > 0 ? this.now() + this.restartGraceMs : 0;
+    this.restoredAt = this.now();
+    this.graceUntil = opts.cold && open > 0 ? this.restoredAt + this.restartGraceMs : 0;
     this.log(`restored ${rows.length} matches (${open} unfinished)${this.graceUntil > 0 ? `: ${Math.round(this.restartGraceMs / 1000)} s for the nodes to reconnect` : ''}`);
   }
 
@@ -517,8 +523,9 @@ export class ControlPlane {
    * A node socket that outlived a hibernation of the Durable Object, logged in before it (the
    * socket's `{ nodeId }` attachment): an authenticated session again, with no new challenge.
    * Sessions live in memory, so without this the first message after a wake would hit 'auth
-   * first'. An unknown or banned node is closed with 4401 (null). The node's next heartbeat
-   * brings its live fields back.
+   * first'. An unknown or banned node is closed with 4401 (null). The node is live from the
+   * adoption: placement sees it, and the heartbeat timeout closes the socket if the node behind it
+   * hung or died meanwhile. Its next heartbeat brings its live fields back.
    */
   adopt(link: NodeLink, nodeId: string): Session | null {
     const n = this.registry.node(nodeId);
@@ -534,6 +541,7 @@ export class ControlPlane {
       this.onClose(old);
     }
     this.sessions.set(nodeId, s);
+    this.registry.adopted(nodeId, this.now());
     return s;
   }
 
@@ -1203,7 +1211,11 @@ export class ControlPlane {
         this.voidMatch(m, 'lost:' + why);
         return true;
       };
-      if (since > joinMs + CANCEL_SLACK_MS || m.startedSeen) return lost('late_cancel');
+      // A cancel a deploy held up (the node sends it again at its welcome, in the grace) is late
+      // only if it was late already when the control plane restarted.
+      const heldUp = this.inGrace() && m.assign.createdAt < this.restoredAt;
+      const lateness = (heldUp ? Math.min(m.reportedAt, this.restoredAt) : m.reportedAt) - m.assign.createdAt;
+      if (lateness > joinMs + CANCEL_SLACK_MS || m.startedSeen) return lost('late_cancel');
       if (r.reason === 'dodge') {
         // A player's own leave, relayed here before the start (MatchDO: a dodge is an abandon).
         const relayed = r.noShows.filter((p) => players.includes(p) && m.leaves.has(p));
@@ -1530,12 +1542,13 @@ export class ControlPlane {
     // A node gone for HEARTBEAT_TIMEOUT_MS (socket closed, or silent), a trusted one for
     // TRUSTED_OFFLINE_MS: its running matches are void, one strike for the outage. A quick
     // reconnect of the same process keeps them. Not while a restart waits for its nodes: they all
-    // look gone then.
+    // look gone then. A restart forgot when each node was last seen: a node whose socket did not
+    // survive a hibernation gets its full window from the restore, as it would have without it.
     const gone = new Set<string>();
     for (const m of this.matches.values()) {
       if (grace || m.state !== 'assigned' || gone.has(m.nodeId) || this.isOnline(m.nodeId)) continue;
       const n = this.registry.node(m.nodeId);
-      if (!n || now - n.lastSeen > (n.trusted ? TRUSTED_OFFLINE_MS : HEARTBEAT_TIMEOUT_MS)) gone.add(m.nodeId);
+      if (!n || now - Math.max(n.lastSeen, this.restoredAt) > (n.trusted ? TRUSTED_OFFLINE_MS : HEARTBEAT_TIMEOUT_MS)) gone.add(m.nodeId);
     }
     for (const id of gone) this.voidMatchesOf(id, 'node_offline', (m) => m.state === 'assigned');
     // Hosts still unproven (Caddy may have been fetching its certificate at the first hello): probe

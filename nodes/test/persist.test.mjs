@@ -7,7 +7,7 @@ import { human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
 
 const { STATE_VERSION, MemoryStore, nodeToRow, nodeFromRow, tokenToRow, tokenFromRow, matchToRow, matchFromRow } = await import('../control-plane/persist.ts');
 const { Registry, MAX_STRIKES, STRIKE_COOLDOWN_MS, TOKEN_TTL_MS } = await import('../control-plane/registry.ts');
-const { RESTART_GRACE_MS } = await import('../control-plane/controlPlane.ts');
+const { RESTART_GRACE_MS, TRUSTED_OFFLINE_MS, VERIFY_MAX_WAIT_MS } = await import('../control-plane/controlPlane.ts');
 const { generateEd25519 } = await import('../shared/edcrypto.ts');
 
 const BUILD = { version: '0.1.0', protocol: 1, wasmSha256: 'a'.repeat(64) };
@@ -543,6 +543,26 @@ test('a match waiting for its verification survives a deploy and is rated after 
   );
 });
 
+test('the 6 h verification wait gives up on nothing inside a restart’s grace', async () => {
+  const env = await setup({ store: new MemoryStore(), trusted: true, roles: ['host', 'verify'], noInline: true });
+  await wait(() => env.registry.node(env.nodeId).status === 'active');
+  env.onVerify = async () => ({ ok: false, code: 'error', message: 'busy', ticks: 0, score: { blue: 0, red: 0 }, winner: -1, finalHash: 0, cpuMs: 0 });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  const { entry } = await env.finish(p, { waitDone: false });
+  await wait(() => env.logs.some((l) => l.includes('not possible now (error)')), 'a failed attempt');
+  env.advance(VERIFY_MAX_WAIT_MS + 1); // the verifier fails all along; the deploy comes after 6 h
+  env.restart();
+  const back = env.cp.matches.get(p.matchId);
+  assert.equal(back.queuedAt, entry.queuedAt);
+  env.cp.sweep();
+  assert.equal(back.state, 'verifying', 'its verifier must reconnect first');
+  assert.ok(!env.logs.some((l) => l.includes('could not be verified')));
+  env.advance(RESTART_GRACE_MS);
+  env.cp.sweep();
+  assert.equal(back.outcome.reason, 'unverified');
+  assert.ok(env.logs.some((l) => l.startsWith(`ALERT match ${p.matchId} could not be verified`)));
+});
+
 test('a report deadline that passed during the outage voids nothing inside the grace', async () => {
   const env = await setup({ store: new MemoryStore() });
   const a = await env.place([human('a')]);
@@ -560,6 +580,41 @@ test('a report deadline that passed during the outage voids nothing inside the g
   env.advance(RESTART_GRACE_MS);
   env.cp.sweep();
   assert.equal(env.cp.matches.get(b.matchId).outcome.reason, 'no_report');
+});
+
+test('a ranked cancel a deploy held up is judged as of the restart: on time then is on time', async () => {
+  const env = await setup({ store: new MemoryStore(), status: 'active' });
+  const cancel = (p, noShows) => ({ t: 'report', id: 'cancelled:' + p.matchId, report: { kind: 'cancelled', matchId: p.matchId, reason: 'no_show', noShows } });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  env.advance(44_000);
+  env.restart(); // the node's no_show cancel, due at 45 s, waits for its reconnect
+  env.advance(35_000); // its backoff: 1 + 2 + 4 + 8 + 16 s
+  assert.equal(env.cp.inGrace(), true);
+  await env.reconnect();
+  await env.send(cancel(p, [B]));
+  assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'no_show', '79 s after the assignment, but 44 s when the control plane went down');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
+
+  // Already late when the control plane went down: late.
+  const q = await env.place([human('c'), human('d')], { ranked: true });
+  env.advance(80_000);
+  env.restart();
+  env.advance(5_000);
+  await env.reconnect();
+  await env.send(cancel(q, ['d'.repeat(16)]));
+  assert.equal(env.cp.matches.get(q.matchId).outcome.reason, 'lost:late_cancel');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+
+  // Placed after the restart, on a node already back: the grace held nothing up.
+  await env.place([human('e')]); // unfinished, so the next restart waits for the node
+  env.advance(60_000);
+  env.restart();
+  await env.reconnect();
+  const r = await env.place([human('f'), human('g')], { ranked: true });
+  env.advance(80_000);
+  assert.equal(env.cp.inGrace(), true);
+  await env.send(cancel(r, ['g'.repeat(16)]));
+  assert.equal(env.cp.matches.get(r.matchId).outcome.reason, 'lost:late_cancel');
 });
 
 test('one outage is one strike across a restart: the last strike time comes back from the node row', async () => {
@@ -750,10 +805,71 @@ test('a socket that outlived a hibernation is adopted without a new challenge; a
   assert.equal(env.registry.node(env.nodeId).online, true);
   assert.equal(env.cp.matches.get(p.matchId).startedSeen, true);
 
+  // Another socket of the same node is adopted: it replaces the first, and the node stays online.
+  const s2 = env.cp.adopt({ send() {}, close() {} }, env.nodeId);
+  assert.deepEqual(sent, [{ close: 4000 }]);
+  assert.equal(s.closed, true);
+  assert.equal(env.cp.isOnline(env.nodeId), true);
+  assert.equal(env.registry.node(env.nodeId).online, true);
+  env.session = s2;
+  await env.heartbeat();
+  env.advance(20_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'its heartbeats go on');
+
   const closes = [];
   const other = { send() {}, close: (code) => closes.push(code) };
   assert.equal(env.cp.adopt(other, 'f'.repeat(16)), null);
   env.registry.setStatus(env.nodeId, 'banned', 'test');
   assert.equal(env.cp.adopt(other, env.nodeId), null);
   assert.deepEqual(closes, [4401, 4401]);
+});
+
+test('an adopted socket whose node never speaks again is closed by the heartbeat timeout, and its matches are void', async () => {
+  const env = await setup({ store: new MemoryStore() });
+  const p = await env.place([human('a')]);
+  env.restart({ cold: false });
+  const closes = [];
+  env.cp.adopt({ send() {}, close: (code) => closes.push(code) }, env.nodeId);
+  assert.equal(env.cp.hostsOnline('SA'), 1, 'live from the adoption, before any heartbeat');
+  // env.session stays the one closed by the restart: no heartbeats from here on.
+  env.advance(15_000);
+  env.cp.sweep();
+  assert.deepEqual(closes, []);
+  env.advance(1_000);
+  env.cp.sweep();
+  assert.deepEqual(closes, [4408]);
+  assert.equal(env.cp.isOnline(env.nodeId), false);
+  assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
+});
+
+test('after a hibernation, a node whose socket did not survive it gets its full window to come back', async () => {
+  // A project node: TRUSTED_OFFLINE_MS from the restore, and the same process reconnecting goes on.
+  const env = await setup({ store: new MemoryStore(), trusted: true });
+  await wait(() => env.registry.node(env.nodeId).status === 'active');
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  env.advance(1_000);
+  env.restart({ cold: false }); // its socket closed while the DO slept: nothing to adopt
+  env.cp.sweep();
+  const m = env.cp.matches.get(p.matchId);
+  assert.equal(m.state, 'assigned', 'its last heartbeat is forgotten, not 0');
+  env.advance(TRUSTED_OFFLINE_MS - 1_000);
+  env.cp.sweep();
+  assert.equal(m.state, 'assigned');
+  await env.reconnect();
+  env.advance(TRUSTED_OFFLINE_MS);
+  env.cp.sweep();
+  assert.equal(m.state, 'assigned');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
+
+  // A community node: HEARTBEAT_TIMEOUT_MS from the restore.
+  const c = await setup({ store: new MemoryStore() });
+  const q = await c.place([human('c')]);
+  c.restart({ cold: false });
+  c.advance(15_000);
+  c.cp.sweep();
+  assert.equal(c.cp.matches.get(q.matchId).state, 'assigned');
+  c.advance(1_000);
+  c.cp.sweep();
+  assert.equal(c.cp.matches.get(q.matchId).outcome.reason, 'node_offline');
 });
