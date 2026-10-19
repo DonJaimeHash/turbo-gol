@@ -2393,6 +2393,21 @@ export class Game implements P2PGameHooks {
     }
   }
 
+  /**
+   * A car blew up on screen (Effects, three.js coords): the explosion sound, full volume for the
+   * player's own car, quieter with the distance from the camera for the others.
+   */
+  private onDemolition(slot: number, x: number, y: number, z: number): void {
+    if (this.menuShown) return;
+    let strength = 1;
+    if (slot !== this.playerSlot) {
+      const c = this.renderer.camera.position;
+      const d = Math.hypot(x - c.x, y - c.y, z - c.z);
+      strength = Math.min(1, Math.max(0.2, 1.15 - d / 7000));
+    }
+    this.audio.playDemolition(strength);
+  }
+
   private onSimBallHit(carId: number, relSpeed: number): void {
     // Every touch counts for the goalie save rule, however soft (before the FX filter).
     if (this.training !== null && carId === this.playerCarId) this.training.onPlayerTouch();
@@ -2463,6 +2478,7 @@ export class Game implements P2PGameHooks {
     const slots = this.carSlots;
     const cars: CarView[] = [];
     this.effects = new Effects(scene, q);
+    this.effects.onDemolition = (slot, x, y, z) => this.onDemolition(slot, x, y, z);
     for (let i = 0; i < slots.length; i++) {
       const team = sim.teamOf(slots[i]);
       cars.push(new CarView(scene, config, team, q));
