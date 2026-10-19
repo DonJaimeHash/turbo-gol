@@ -114,8 +114,18 @@ const tokB = regB.json.session;
 const me = await api('/api/me', { token: tokA });
 check(me.status === 200 && me.json.name === userA && me.json.ratings.length === 3 && me.json.ratings[0].placementLeft === 5, 'GET /api/me', me.json?.ratings?.[0]);
 
+// ---- training records ----------------------------------------------------------------------------
+const tr1 = await api('/api/me/training', { body: { records: { 'shooting-easy': { best: 6, shots: 8, completedAt: 1000 }, 'bad id!': { best: 1, shots: 1 } } }, token: tokA });
+check(tr1.status === 200 && tr1.json.records?.['shooting-easy']?.best === 6 && !('bad id!' in (tr1.json.records ?? {})), 'POST /api/me/training stores a record, drops an invalid one', tr1.json);
+const tr2 = await api('/api/me/training', { body: { records: { 'shooting-easy': { best: 4, shots: 8, completedAt: 2000 }, 'saving-easy': { best: 3, shots: 8, completedAt: 2000 } } }, token: tokA });
+check(tr2.status === 200 && tr2.json.records?.['shooting-easy']?.best === 6 && tr2.json.records?.['saving-easy']?.best === 3, 'a worse run keeps the best, a new pack is added', tr2.json);
+const tr3 = await api('/api/me/training', { body: { records: {} }, token: tokB });
+check(tr3.status === 200 && Object.keys(tr3.json.records ?? { x: 1 }).length === 0, "another account does not see A's records", tr3.json);
+
 // ---- ranked --------------------------------------------------------------------------------------
 const guest = await api('/api/guest', { body: { name: 'SmokeGuest' } });
+const gtr = await api('/api/me/training', { body: { records: {} }, token: guest.json.session });
+check(gtr.status === 403 && gtr.json.error === 'account_required', 'a guest has no training records on the server', gtr.status);
 const gq = await api('/api/queue', { body: { modes: ['1v1'], kind: 'ranked', region }, token: guest.json.session });
 check(gq.status === 403 && gq.json.error === 'account_required', 'a guest cannot queue ranked', gq.status);
 const qA = api('/api/queue', { body: { modes: ['1v1', '2v2'], kind: 'ranked', region }, token: tokA });
