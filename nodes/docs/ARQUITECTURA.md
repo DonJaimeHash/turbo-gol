@@ -27,7 +27,7 @@ aceptar máquinas de cualquiera sin confiar en nadie.
 | **Railway y los referidos** | El botón. El operador le paga directo al proveedor. | Que el proyecto revenda hosting. |
 | **claude-code-action** | Un bot implementa propuestas aprobadas y abre un PR. Una persona revisa y mergea. | El merge automático. |
 | **Cierres de Hathora y Unity Multiplay (2026)** | Todo corre en una máquina común con Node. Ningún orquestador externo es imprescindible. | — |
-| **El P2P de Turbogol** | WebRTC con STUN y TURN, que ya funciona entre navegadores, ahora también entre navegador y una PC anfitriona. | La malla: acá la autoridad es el nodo. |
+| **El P2P de Turbogol** | WebRTC con STUN y TURN, que ya funciona entre navegadores, ahora también entre navegador y una PC anfitriona. | La malla: aquí la autoridad es el nodo. |
 
 ## Las piezas
 
@@ -149,7 +149,7 @@ aceptar máquinas de cualquiera sin confiar en nadie.
 Un nodo sin heartbeat por 15 s, o cuya conexión se cortó hace más de 15 s, queda fuera de línea.
 Sus partidas se anulan sin penalizar a los jugadores y el nodo suma **un** strike por corte,
 aunque tuviera varias partidas: los strikes a menos de un minuto del anterior cuentan como uno.
-Si vuelve con un proceso nuevo, sus partidas viejas se anulan igual, porque se perdieron con el
+Si vuelve con un proceso nuevo, sus partidas viejas se anulan de todos modos, porque se perdieron con el
 proceso. Los strikes vencen a los 7 días. Tres en una semana pausan el nodo 24 horas; después
 vuelve solo a su estado anterior, pero los strikes siguen contando hasta que venzan. Una segunda
 pausa en 30 días lo devuelve a prueba. Los nodos del proyecto no se pausan.
@@ -161,7 +161,7 @@ pausa en 30 días lo devuelve a prueba. Los nodos del proyecto no se pausan.
 | Inventar goles, mover la pelota o cambiar el marcador | La re-simulación diverge en el siguiente checkpoint, cada segundo. | Sí |
 | Reportar un resultado distinto del replay | Reporte contra verificación, incluido el motivo del final: nodo suspendido, canjes congelados. El resultado se toma del replay, nunca del reporte. | Sí |
 | Cortar una partida cuando le conviene | Cada final necesita su prueba: `left`, que salieron todos; `empty`, que no quedaba nadie jugando; `ttl`, que era tiempo extra y el reloj del plano de control dice que venció el plazo. Un `empty` en ranked suma strike. | Sí |
-| Cancelar una ranked que va perdiendo | Un nodo comunitario solo puede cancelar antes del inicio y por un motivo que el plano de control comprueba: un dodge que el jugador pidió acá, o un no-show cuando cierra la ventana de ingreso. Cualquier otra cancelación es una partida perdida, con strike. | Sí |
+| Cancelar una ranked que va perdiendo | Un nodo comunitario solo puede cancelar antes del inicio y por un motivo que el plano de control comprueba: un dodge que el jugador pidió aquí, o un no-show cuando cierra la ventana de ingreso. Cualquier otra cancelación es una partida perdida, con strike. | Sí |
 | Inflar los minutos para ganar puntos | Los minutos salen del replay verificado. El lag que mide el nodo solo puede restar. | Sí |
 | Hacer que un bot juegue a favor de un equipo | Los bots no se graban: el verificador los recalcula. | Sí |
 | Inventar un abandono para perjudicar a alguien | Solo cuentan los abandonos explícitos, que pasan por el plano de control: el verificador rechaza que un bot tome el lugar de un jugador que no pidió salir, y el tick de esa salida tiene que coincidir con cuándo la pidió. Así, un nodo que retiene su reporte no convierte en abandono una salida automática posterior. Un no-show de una PC hogareña solo cuenta para quien ni siquiera mandó su oferta WebRTC, y nunca antes de que cierre la ventana de ingreso; en un VPS comunitario no cuenta. | Sí |

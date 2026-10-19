@@ -119,7 +119,7 @@ if (placed) {
   nodo que no deja entrar a un jugador no puede convertir su cancelación en un dodge. Como
   `MatchDO`, responde `410 match_over` después del final y no marca a nadie. Es la única forma
   de que un jugador deje una partida de nodo: el verificador rechaza cualquier toma de control
-  por un bot que no haya pasado por acá.
+  por un bot que no haya pasado por aquí.
 
 ## 4. Resultados a `AccountsDO`
 

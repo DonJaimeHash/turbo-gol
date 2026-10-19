@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Poné un servidor · Turbogol</title>
+<title>Pon un servidor · Turbogol</title>
 <style>
   :root {
     --bg: #f6f7fb; --panel: #ffffff; --ink: #14161f; --muted: #5d6475; --line: #dfe3ec;
@@ -69,13 +69,13 @@
 </head>
 <body>
 <header>
-  <h1>Poné un servidor</h1>
-  <p>Tu máquina juega partidas de Turbogol para jugadores de tu región, sea un servidor alquilado o tu propia PC. El sitio re-simula para verificarlas todas las partidas ranked y una muestra de las casuales, así que nadie tiene que confiar en nadie. A cambio sumás puntos para canjear autos y cosas nuevas que solo tienen los anfitriones.</p>
+  <h1>Pon un servidor</h1>
+  <p>Tu máquina juega partidas de Turbogol para jugadores de tu región, sea un servidor alquilado o tu propia PC. El sitio re-simula para verificarlas todas las partidas ranked y una muestra de las casuales, así que nadie tiene que confiar en nadie. A cambio sumas puntos para canjear autos y cosas nuevas que solo tienen los anfitriones.</p>
 </header>
 <main>
   <section id="login">
-    <h2>1. Entrá con tu cuenta</h2>
-    <p class="note">Prototipo local: alcanza con un nombre. En el sitio real es tu cuenta de Turbogol, y la reputación y los puntos de tus servidores quedan atados a ella.</p>
+    <h2>1. Entra con tu cuenta</h2>
+    <p class="note">Prototipo local: basta con un nombre. En el sitio real es tu cuenta de Turbogol, y la reputación y los puntos de tus servidores quedan atados a ella.</p>
     <div class="row">
       <label>Nombre<input id="name" maxlength="24" placeholder="Juan" autocomplete="nickname"></label>
       <button id="loginBtn">Entrar</button>
@@ -84,7 +84,7 @@
   </section>
 
   <section id="setup" class="hidden">
-    <h2>2. Elegí dónde va a correr</h2>
+    <h2>2. Elige dónde va a correr</h2>
     <div class="row" style="margin-bottom:12px">
       <label>Región
         <select id="region">
@@ -98,12 +98,12 @@
       <button class="card" data-kind="pc" aria-pressed="true">
         <span class="tag">Sin abrir puertos</span>
         <h3>Mi PC</h3>
-        <span class="muted">Windows, Mac o Linux. Hostea partidas por WebRTC desde tu casa, aunque estés detrás del router o de la red de tu proveedor. Aporta mientras está prendida.</span>
+        <span class="muted">Windows, Mac o Linux. Hostea partidas por WebRTC desde tu casa, aunque estés detrás del router o de la red de tu proveedor. Aporta mientras está encendida.</span>
       </button>
       <button class="card" data-kind="vps" aria-pressed="false">
         <span class="tag">24 horas</span>
         <h3>Alquilar un VPS</h3>
-        <span class="muted">Lo pagás vos directo al proveedor. Pegás el cloud-init al crearlo y el resto es automático.</span>
+        <span class="muted">Lo pagas tú directo al proveedor. Pegas el cloud-init al crearlo y el resto es automático.</span>
       </button>
       <button class="card" data-kind="linux" aria-pressed="false">
         <h3>Ya tengo un servidor Linux</h3>
@@ -125,7 +125,7 @@
         <div class="bar"><span id="pcHint">En PowerShell, sin permisos de administrador</span><button class="ghost" data-copy="pcCmd">Copiar</button></div>
         <pre id="pcCmd"></pre>
       </div>
-      <p class="note">En Windows instala Node.js si hace falta (en macOS y Linux tiene que estar instalado: el instalador te dice cómo). Verifica la firma del programa, registra tu PC y la deja arrancando sola al iniciar sesión. Se actualiza sola y termina las partidas en curso antes de actualizar. Si apagás la PC en medio de una partida, esa partida se anula sin penalizar a los jugadores y tu servidor suma un aviso (uno por corte, aunque tuviera varias partidas); tres avisos en una semana lo pausan por un día.</p>
+      <p class="note">En Windows instala Node.js si hace falta (en macOS y Linux tiene que estar instalado: el instalador te dice cómo). Verifica la firma del programa, registra tu PC y la deja arrancando sola al iniciar sesión. Se actualiza sola y termina las partidas en curso antes de actualizar. Si apagas la PC en medio de una partida, esa partida se anula sin penalizar a los jugadores y tu servidor suma un aviso (uno por corte, aunque tuviera varias partidas); tres avisos en una semana lo pausan por un día.</p>
       <p class="note">Para apagarlo sin cortar a nadie: en Windows, la misma línea con <code>-Stop</code> en lugar de <code>-Control</code> y <code>-Token</code> (espera a que terminen las partidas, hasta 30 minutos); en Linux, <code>systemctl --user stop turbogol-node</code>; en Mac, <code>launchctl bootout gui/197609/com.turbogol.node</code>. Con <code>-Uninstall</code> o <code>--uninstall</code> se desinstala de la misma forma.</p>
     </div>
     <div id="vps" class="hidden" style="margin-top:16px; display:grid; gap:12px">
@@ -135,9 +135,9 @@
         <div class="provider"><a href="https://www.hetzner.com/cloud" target="_blank" rel="noopener">Hetzner</a><span class="note">Europa, EE.UU. y Singapur. Mucha transferencia mensual incluida.</span></div>
         <div class="provider"><a href="https://www.digitalocean.com/" target="_blank" rel="noopener">DigitalOcean</a><span class="note">Norteamérica, Europa y Asia.</span></div>
       </div>
-      <p class="note">Plan sugerido: 2 vCPU, 2 a 4 GB, Debian 12 o Ubuntu 24.04. Mirá la transferencia mensual incluida: una partida 3v3 manda unos 2 GB por hora. Los links llevarán el código de referido del proyecto.</p>
+      <p class="note">Plan sugerido: 2 vCPU, 2 a 4 GB, Debian 12 o Ubuntu 24.04. Mira la transferencia mensual incluida: una partida 3v3 manda unos 2 GB por hora. Los links llevarán el código de referido del proyecto.</p>
       <div class="codebox">
-        <div class="bar"><span>Pegalo en "User data" / "Cloud config" al crear el servidor</span><button class="ghost" data-copy="cloudInit">Copiar</button></div>
+        <div class="bar"><span>Pégalo en "User data" / "Cloud config" al crear el servidor</span><button class="ghost" data-copy="cloudInit">Copiar</button></div>
         <pre id="cloudInit"></pre>
       </div>
     </div>
@@ -159,7 +159,7 @@
     <div class="tablewrap">
       <table>
         <thead><tr><th>Servidor</th><th>Tipo</th><th>Región</th><th>Estado</th><th>Partidas</th><th>Lag p99</th><th>Verificadas</th><th>Tráfico mes</th><th>Versión</th></tr></thead>
-        <tbody id="nodes"><tr><td colspan="9" class="muted">Todavía no hay servidores. Generá un token arriba.</td></tr></tbody>
+        <tbody id="nodes"><tr><td colspan="9" class="muted">Todavía no hay servidores. Genera un token arriba.</td></tr></tbody>
       </table>
     </div>
     <p class="note">Estados: <b>pendiente</b> hasta que el sitio comprueba que los jugadores llegan a tu servidor; <b>a prueba</b> solo partidas casuales; <b>activo</b> también ranked, después de 20 partidas verificadas sin fallas.</p>
@@ -167,7 +167,7 @@
 
   <section id="shopSec" class="hidden">
     <h2>Tienda de anfitriones</h2>
-    <p class="muted" style="margin-top:-4px">Un punto por cada minuto que un jugador jugó en tu servidor, contado solo si la partida pasó la verificación. Rinde más en regiones con pocos servidores. Los puntos no son plata ni se transfieren, y estas cosas solo se consiguen poniendo un servidor.</p>
+    <p class="muted" style="margin-top:-4px">Un punto por cada minuto que un jugador jugó en tu servidor, contado solo si la partida pasó la verificación. Rinde más en regiones con pocos servidores. Los puntos no son dinero ni se transfieren, y estas cosas solo se consiguen poniendo un servidor.</p>
     <p id="shopMsg" class="note"></p>
     <div id="shop" class="shop"></div>
   </section>
@@ -187,7 +187,7 @@
   const $ = (id) => document.getElementById(id);
   const STATUS = { pending: 'pendiente', probation: 'a prueba', active: 'activo', suspended: 'pausado', banned: 'bloqueado' };
   const KIND = { car: 'Auto', paint: 'Pintura', boost: 'Estela de boost', goal: 'Explosión de gol', badge: 'Insignia', title: 'Título' };
-  const BLOCK = { insufficient: 'Te faltan puntos', requires_matches: 'Necesitás una partida verificada', frozen: 'Tu cuenta está en revisión', not_available: 'Próximamente' };
+  const BLOCK = { insufficient: 'Te faltan puntos', requires_matches: 'Necesitas una partida verificada', frozen: 'Tu cuenta está en revisión', not_available: 'Próximamente' };
   let operatorId = null;
   let kind = 'pc';
   let os = navigator.userAgent.includes('Windows') ? 'windows' : 'desktop';
@@ -255,7 +255,7 @@
       $('tokenInfo').textContent = 'Token listo: sirve una sola vez, hasta las ' + until.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) + ' h.';
       render();
     } catch (e) {
-      $('tokenErr').textContent = e.code === 'login' ? 'Entrá primero.' : 'No se pudo generar el token: ' + e.message;
+      $('tokenErr').textContent = e.code === 'login' ? 'Entra primero.' : 'No se pudo generar el token: ' + e.message;
       $('tokenErr').classList.remove('hidden');
     }
   };
@@ -263,7 +263,7 @@
   document.querySelectorAll('[data-copy]').forEach((b) => {
     b.onclick = async () => {
       const text = $(b.dataset.copy).textContent;
-      try { await navigator.clipboard.writeText(text); b.textContent = 'Copiado'; setTimeout(() => (b.textContent = 'Copiar'), 1500); } catch { b.textContent = 'Seleccioná y copiá'; }
+      try { await navigator.clipboard.writeText(text); b.textContent = 'Copiado'; setTimeout(() => (b.textContent = 'Copiar'), 1500); } catch { b.textContent = 'Selecciona y copia'; }
     };
   });
 
@@ -328,7 +328,7 @@
             <td>${fmt(n.egressGB)} GB</td>
             <td>${esc(n.version)}${n.compatible ? '' : ' <span class="err">vieja</span>'}</td>
           </tr>`).join('')
-        : '<tr><td colspan="9" class="muted">Todavía no hay servidores. Generá un token arriba.</td></tr>');
+        : '<tr><td colspan="9" class="muted">Todavía no hay servidores. Genera un token arriba.</td></tr>');
       renderShop(s);
     } catch (e) {
       if (e.code === 'login') { operatorId = null; try { localStorage.removeItem('tgn.operator'); } catch {} }

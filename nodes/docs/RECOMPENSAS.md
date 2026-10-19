@@ -4,9 +4,9 @@
 
 **Las cosas nuevas del juego son solo para quien comparte su máquina.** Un auto nuevo, una estela
 de boost o una explosión de gol se consiguen únicamente canjeando puntos de anfitrión. No se
-compran con plata, no se ganan jugando y no se intercambian entre cuentas.
+compran con dinero, no se ganan jugando y no se intercambian entre cuentas.
 
-Así lo decidió el mantenedor el 15/10/2026: sin plata, con puntos para reclamar autos nuevos y
+Así lo decidió el mantenedor el 15/10/2026: sin dinero, con puntos para reclamar autos nuevos y
 otras cosas que se van a agregar después.
 
 ## Qué tiene que lograr
@@ -71,8 +71,8 @@ arte del juego es procedural, así que producir variantes cuesta poco.
 
 ### Ejemplos de ritmo
 
-- **Una PC hogareña con lugar para una partida, una noche:** diez partidas 1v1 de 3 minutos, de a
-  una, entre cuentas establecidas y con rivales distintos. Cada partida vale 6 minutos-jugador.
+- **Una PC hogareña con lugar para una partida, una noche:** diez partidas 1v1 de 3 minutos, una
+  a la vez, entre cuentas establecidas y con rivales distintos. Cada partida vale 6 minutos-jugador.
   El factor de región es 0,5 + 1/1 = 1,5 y la calidad 1,0: 9 puntos por partida, 90 por noche. Si
   el servidor ya es activo, son en promedio dos partidas verificadas de 45 puntos. El auto de 1.500
   se canjea en unas 17 noches de aporte.

@@ -92,10 +92,10 @@ cleanup() {
 
 usage() {
   cat <<'EOF'
-Instalador de nodo comunitario de Turbogol para PCs y notebooks (macOS o Linux).
-Tu compu hostea partidas por WebRTC: no abrís puertos ni tocás el router.
+Instalador de nodo comunitario de Turbogol para PCs y laptops (macOS o Linux).
+Tu computadora hostea partidas por WebRTC: no abres puertos ni tocas el router.
 
-Uso (copiá el comando completo que te da la web en "Poné un servidor"):
+Uso (copia el comando completo que te da la web en "Pon un servidor"):
   curl -fsSL <control>/nodes/releases/install-desktop.sh | bash -s -- --control <url> --token <tgn1_...>
 
 Opciones:
@@ -142,7 +142,7 @@ parse_args() {
       --insecure) INSECURE=1 ;;
       --uninstall) UNINSTALL=1 ;;
       -h|--help) usage; exit 0 ;;
-      *) die "opción desconocida: $opt (mirá --help)" ;;
+      *) die "opción desconocida: $opt (mira --help)" ;;
     esac
     shift
   done
@@ -166,7 +166,7 @@ detect_platform() {
       if grep -qi microsoft /proc/version 2>/dev/null; then IS_WSL=1; fi
       ;;
     *)
-      die "este instalador es para macOS o Linux. En Windows usá install-windows.ps1; en un servidor Linux, install.sh."
+      die "este instalador es para macOS o Linux. En Windows usa install-windows.ps1; en un servidor Linux, install.sh."
       ;;
   esac
   # These paths end up in a systemd unit or a plist: refuse the characters that would need tricks.
@@ -186,22 +186,22 @@ check_release_key() {
   case "$RELEASE_KEY_PEM" in
     __RELEASE_*) die "este instalador no tiene la clave de releases (se arma con scripts/build-node.mjs --sign): no lo uses así." ;;
   esac
-  [[ "$RELEASE_KEY_B64URL" =~ $KEY_RE ]] || die "la clave de releases de este instalador está dañada: bajalo de nuevo desde la web."
+  [[ "$RELEASE_KEY_B64URL" =~ $KEY_RE ]] || die "la clave de releases de este instalador está dañada: bájalo de nuevo desde la web."
   case "$RELEASE_KEY_PEM" in
     "-----BEGIN PUBLIC KEY-----"*"-----END PUBLIC KEY-----") ;;
-    *) die "la clave de releases de este instalador está dañada: bajalo de nuevo desde la web." ;;
+    *) die "la clave de releases de este instalador está dañada: bájalo de nuevo desde la web." ;;
   esac
 }
 
 validate_args() {
   local from to
-  [ -n "$CONTROL" ] || die "falta --control <url> (copiá el comando completo de la web, o mirá --help)"
+  [ -n "$CONTROL" ] || die "falta --control <url> (copia el comando completo de la web, o mira --help)"
   [[ "$CONTROL" =~ $CONTROL_RE ]] || die "--control no parece una dirección válida: $CONTROL"
   case "$CONTROL" in
     https://*) ;;
     *)
-      [ "$INSECURE" = 1 ] || die "--control tiene que ser https:// (para pruebas locales con http://, agregá --insecure)"
-      warn "modo inseguro: el plano de control va por http://. Usalo solo para pruebas locales."
+      [ "$INSECURE" = 1 ] || die "--control tiene que ser https:// (para pruebas locales con http://, agrega --insecure)"
+      warn "modo inseguro: el plano de control va por http://. Úsalo solo para pruebas locales."
       CURL_PROTO="=http,https"
       ;;
   esac
@@ -234,25 +234,25 @@ validate_args() {
 
 node_missing() {
   if [ -n "$NODE_VERSION" ]; then
-    printf 'turbogol-node: tenés Node.js %s y hace falta la versión 24 o más nueva.\n' "$NODE_VERSION" >&2
+    printf 'turbogol-node: tienes Node.js %s y hace falta la versión 24 o más nueva.\n' "$NODE_VERSION" >&2
   else
     printf 'turbogol-node: falta Node.js (versión 24 o más nueva).\n' >&2
   fi
   if [ "$OS" = macos ]; then
     if [ -n "$NODE_VERSION" ]; then
-      printf '  Con Homebrew:  brew upgrade node   (o bajalo de https://nodejs.org)\n' >&2
+      printf '  Con Homebrew:  brew upgrade node   (o bájalo de https://nodejs.org)\n' >&2
     else
-      printf '  Con Homebrew:  brew install node   (o bajalo de https://nodejs.org)\n' >&2
+      printf '  Con Homebrew:  brew install node   (o bájalo de https://nodejs.org)\n' >&2
     fi
   else
     cat >&2 <<'EOF'
-  Instalalo de alguna de estas formas:
+  Instálalo de alguna de estas formas:
     - el paquete de tu distribución, si trae la 24 o más nueva (apt, dnf, pacman, zypper...)
     - NodeSource: https://github.com/nodesource/distributions
     - nvm: https://github.com/nvm-sh/nvm  y después  nvm install 24
 EOF
   fi
-  printf '  Después volvé a correr el mismo comando.\n' >&2
+  printf '  Después vuelve a ejecutar el mismo comando.\n' >&2
   exit 1
 }
 
@@ -315,8 +315,8 @@ install_launcher() {
     "$NODE_BIN" --input-type=module -e "$VERIFY_JS" </dev/null || rc=$?
   case "$rc" in
     0) ;;
-    1) die "la firma del lanzador no verifica: no instalo nada. Avisanos en la web." ;;
-    3) die "la clave de releases de este instalador no sirve: bajalo de nuevo desde la web." ;;
+    1) die "la firma del lanzador no verifica: no instalo nada. Avísanos en la web." ;;
+    3) die "la clave de releases de este instalador no sirve: bájalo de nuevo desde la web." ;;
     *) die "no pude chequear la firma del lanzador (código $rc): no instalo nada." ;;
   esac
   mv -f "$TMP_DIR/launcher.mjs" "$APP/launcher.mjs"
@@ -333,9 +333,9 @@ register_node() {
   args=(--control "$CONTROL" --data "$DATA" --token "$TOKEN" --roles host --transport rtc)
   if [ -n "$NAME" ]; then args+=(--name "$NAME"); fi
   if [ -n "$UPLINK" ]; then args+=(--uplink-mbps "$UPLINK"); fi
-  say "registro: bajo la versión actual del nodo y mido cuántas partidas aguanta esta compu (tarda unos segundos)"
+  say "registro: bajo la versión actual del nodo y mido cuántas partidas aguanta esta computadora (tarda unos segundos)"
   if ! "$NODE_BIN" "$APP/launcher.mjs" register "${args[@]}" </dev/null; then
-    die "el registro falló. Los tokens sirven una sola vez y vencen a la hora: generá uno nuevo en la web y volvé a correr el comando."
+    die "el registro falló. Los tokens sirven una sola vez y vencen a la hora: genera uno nuevo en la web y vuelve a ejecutar el comando."
   fi
   [ -f "$DATA/node.json" ] || die "el registro terminó sin dejar $DATA/node.json"
 }
@@ -365,13 +365,13 @@ print_manual_start() {
   done
   note "${1:-Para arrancarlo a mano:}"
   note "  nohup$line >> $(printf '%q' "$LOG") 2>&1 &"
-  note "Y sumalo a las aplicaciones de inicio de tu escritorio para que arranque solo."
+  note "Y agrégalo a las aplicaciones de inicio de tu escritorio para que arranque solo."
 }
 
 install_systemd() {
   local restart_ok=$1 exec_line="" a version log_lines out linger user
   if ! command -v systemctl >/dev/null 2>&1; then
-    warn "esta compu no usa systemd: el nodo no va a arrancar solo."
+    warn "esta computadora no usa systemd: el nodo no va a arrancar solo."
     print_manual_start
     AUTOSTART=manual
     return 0
@@ -418,9 +418,9 @@ EOF
 
   if ! systemctl --user show-environment >/dev/null 2>&1; then
     warn "no pude hablar con el systemd de tu usuario (pasa con su, sudo -u o algunas sesiones remotas)."
-    note "Desde una sesión normal de tu usuario corré:"
+    note "Desde una sesión normal de tu usuario ejecuta:"
     note "  systemctl --user daemon-reload && systemctl --user enable --now $UNIT_NAME"
-    print_manual_start "O arrancalo a mano:"
+    print_manual_start "O arráncalo a mano:"
     AUTOSTART=manual
     return 0
   fi
@@ -429,7 +429,7 @@ EOF
     systemctl --user enable "$UNIT_NAME" >/dev/null 2>&1 || warn "no pude habilitar $UNIT_NAME"
     if [ "$restart_ok" = 1 ]; then
       # It was running without an identity, so it had no matches: restarting cuts nothing.
-      systemctl --user restart "$UNIT_NAME" || die "systemd no pudo reiniciar el nodo: mirá  systemctl --user status $UNIT_NAME"
+      systemctl --user restart "$UNIT_NAME" || die "systemd no pudo reiniciar el nodo: mira  systemctl --user status $UNIT_NAME"
     else
       note "el nodo ya estaba corriendo: lo dejo así para no cortar partidas."
       note "Para aplicar cambios: systemctl --user restart $UNIT_NAME (espera a que terminen las partidas en curso)"
@@ -437,12 +437,12 @@ EOF
   else
     if ! out=$(systemctl --user enable --now "$UNIT_NAME" 2>&1); then
       printf '%s\n' "$out" >&2
-      die "systemd no pudo arrancar el nodo: mirá  systemctl --user status $UNIT_NAME"
+      die "systemd no pudo arrancar el nodo: mira  systemctl --user status $UNIT_NAME"
     fi
   fi
   sleep 3
   if ! systemctl --user is-active --quiet "$UNIT_NAME"; then
-    warn "el nodo no quedó corriendo. Mirá  systemctl --user status $UNIT_NAME${LOG:+  y  $LOG}"
+    warn "el nodo no quedó corriendo. Mira  systemctl --user status $UNIT_NAME${LOG:+  y  $LOG}"
   fi
   user=$(id -un 2>/dev/null || true)
   linger=$(loginctl show-user "$user" --property=Linger 2>/dev/null || true)
@@ -535,7 +535,7 @@ EOF
   info=$(launchctl list "$LABEL" 2>/dev/null || true)
   case "$info" in
     *'"PID"'*) ;;
-    *) warn "el nodo no quedó corriendo. Mirá  launchctl print gui/$uid/$LABEL  y  $LOG" ;;
+    *) warn "el nodo no quedó corriendo. Mira  launchctl print gui/$uid/$LABEL  y  $LOG" ;;
   esac
 }
 
@@ -543,9 +543,9 @@ print_summary() {
   local uid
   uid=$(id -u)
   if [ "$AUTOSTART" = on ]; then
-    say "listo: esta compu ya es un servidor comunitario de Turbogol."
+    say "listo: esta computadora ya es un servidor comunitario de Turbogol."
   else
-    say "registrado: falta arrancar el nodo (mirá las instrucciones de arriba)."
+    say "registrado: falta arrancar el nodo (mira las instrucciones de arriba)."
   fi
   note "Estado en la web: 'Mis servidores'."
   if [ -n "$LOG" ]; then
@@ -557,12 +557,12 @@ print_summary() {
     if [ "$AUTOSTART" = on ]; then note "Servicio: systemctl --user status $UNIT_NAME"; fi
   else
     note "Servicio: launchctl print gui/$uid/$LABEL"
-    note "Si macOS pregunta si \"node\" puede aceptar conexiones entrantes, aceptá: es el WebRTC de las partidas."
+    note "Si macOS pregunta si \"node\" puede aceptar conexiones entrantes, acepta: es el WebRTC de las partidas."
   fi
   if [ "$NODE_MANAGED" = 1 ]; then
-    note "Usa el Node.js de $NODE_BIN: si borrás o cambiás esa versión, volvé a correr el instalador."
+    note "Usa el Node.js de $NODE_BIN: si borras o cambias esa versión, vuelve a ejecutar el instalador."
   fi
-  note "Mientras la compu esté suspendida o apagada no recibe partidas; al volver se reconecta sola."
+  note "Mientras la computadora esté suspendida o apagada no recibe partidas; al volver se reconecta sola."
   note "Para desinstalar: curl -fsSL $CONTROL/nodes/releases/install-desktop.sh | bash -s -- --uninstall"
 }
 
@@ -695,7 +695,7 @@ uninstall() {
     else
       note "Para cortarlo ya: kill $busy   (un segundo pedido de detención corta las partidas en curso)"
     fi
-    note "Después volvé a correr este comando con --uninstall para borrar $BASE"
+    note "Después vuelve a ejecutar este comando con --uninstall para borrar $BASE"
     exit 1
   fi
 
@@ -717,14 +717,14 @@ uninstall() {
   fi
   say "desinstalado. Saqué:"
   for item in ${removed[@]+"${removed[@]}"}; do note "- $item"; done
-  note "Node.js queda instalado. Si querés, borrá también este servidor en la web ('Mis servidores')."
+  note "Node.js queda instalado. Si quieres, borra también este servidor en la web ('Mis servidores')."
 }
 
 main() {
   local registered=0
   parse_args ${1+"$@"}
   if [ "$(id -u)" = 0 ]; then
-    die "no lo corras como root ni con sudo: este instalador es para tu usuario. Para un servidor (VPS) usá install.sh."
+    die "no lo corras como root ni con sudo: este instalador es para tu usuario. Para un servidor (VPS) usa install.sh."
   fi
   detect_platform
   if [ "$UNINSTALL" = 1 ]; then
@@ -741,7 +741,7 @@ main() {
   fi
   if [ -f "$DATA/node.json" ]; then registered=1; fi
   if [ "$registered" = 0 ] && [ -z "$TOKEN" ]; then
-    die "falta --token (copiá el comando completo de la web)"
+    die "falta --token (copia el comando completo de la web)"
   fi
 
   say "Node.js $NODE_VERSION ($NODE_BIN)"
@@ -752,8 +752,8 @@ main() {
   install_launcher
 
   if [ "$registered" = 1 ]; then
-    say "esta compu ya está registrada ($DATA/node.json): no uso el token, solo reinstalo el lanzador y el arranque automático."
-    note "Para registrarla de nuevo desde cero: corré con --uninstall y después el comando de la web."
+    say "esta computadora ya está registrada ($DATA/node.json): no uso el token, solo reinstalo el lanzador y el arranque automático."
+    note "Para registrarla de nuevo desde cero: ejecuta con --uninstall y después el comando de la web."
   else
     register_node
   fi

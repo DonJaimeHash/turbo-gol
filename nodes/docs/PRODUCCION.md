@@ -2,7 +2,7 @@
 
 > Estado al 19/10/2026. El prototipo vive en `nodes/` del repo y funciona como demo local: las pruebas
 > automáticas pasan y corren en el CI de cada PR, y la demo de
-> punta a punta anda (`node --import ./dev/ts-resolve.mjs scripts/demo.mjs --once`). **No está
+> punta a punta funciona (`node --import ./dev/ts-resolve.mjs scripts/demo.mjs --once`). **No está
 > listo para jugadores reales.** Este documento lista todo lo que falta, en orden, para cada etapa.
 > Las rutas de archivos son del repo (`server/`, `src/`, `docs/online/`) o de `nodes/`
 > (`control-plane/`, `node/`, `shared/`, `client/`, `install/`). Los esfuerzos son estimaciones
@@ -77,7 +77,7 @@ etapa 2.
   y hostearía casuales, con la IP de los jugadores a la vista y sin términos. Con este filtro no
   hace falta otra ruta para el token del VPS de São Paulo.
 - [ ] **Un interruptor sin deploy.** Un flag de KV, `vm_disabled` como pide
-  `docs/online/DECISIONS.md`, que saltea el gancho de los nodos y manda todo a `MatchDO`. Si el VPS
+  `docs/online/DECISIONS.md`, que omite el gancho de los nodos y manda todo a `MatchDO`. Si el VPS
   o el plano de control fallan en la beta, se apaga en un minuto. Esfuerzo: chico.
 - [ ] **Costo del DO: decidir el intervalo de heartbeat.** Las solicitudes cuestan poco: la alarma
   de 5 s suma unas 518.000 por mes, y los mensajes de WebSocket entrantes cuentan 1 de cada 20.
@@ -98,7 +98,7 @@ etapa 2.
   `503`), al arrancar una sala privada (874) y antes de `formMatch` (1034). Al llegar al tope
   nunca se intenta un nodo. El intento de nodo va primero, y las partidas en nodos no cuentan para
   ese tope. Lo mismo con el flag `do_disabled`: hoy rechaza toda cola
-  (`server/src/index.ts:346`); con nodos, solo tiene que saltear el `MatchDO`.
+  (`server/src/index.ts:346`); con nodos, solo tiene que omitir el `MatchDO`.
 - [ ] **No reescribir la URL de una partida de nodo.** `queue()` cambia toda `wsUrl` por
   `/ws/<id>` (`server/src/index.ts:392`).
 - [x] **IDs de partida de 64 caracteres.** Hecho: `randomHexId(32)` en `place()`. Las rutas del
@@ -111,10 +111,10 @@ etapa 2.
 - [ ] **Resultados a `AccountsDO`**: `rated` a `/ranked-result`, `void` de una ranked a
   `/ranked-cancel`, y `/release` al matchmaker de la región (`INTEGRACION.md` §4).
 
-### Cliente: cambios chicos que igual hacen falta
+### Cliente: cambios chicos que hacen falta de todos modos
 
 - [ ] **Esperar el resultado ranked más tiempo.** `waitRankedResult` prueba 15 veces, una por
-  segundo (`waitRankedResult` en `src/net/AccountClient.ts`). Un resultado de nodo llega recién después de subir el
+  segundo (`waitRankedResult` en `src/net/AccountClient.ts`). Un resultado de nodo llega solo después de subir el
   replay y verificarlo. Mostrar "verificando" y seguir preguntando.
 - [ ] **Mandar `connected` en `/api/leave`.** Hoy el cliente manda solo `{ matchId }`
   (el `post('/api/leave')` de `src/net/NetClient.ts`) y el Worker no pasa otro campo
@@ -193,7 +193,7 @@ etapa 2.
   versión del nodo. Así una actualización no deja ranked sin verificar.
 - [x] **Un verificador del proyecto con la actualización pendiente no toma partidas nuevas,** para
   que las suyas terminen y pueda actualizarse.
-- [x] **Una casual no muestreada igual tiene que tener su replay subido,** y cuenta para la
+- [x] **Una casual no muestreada también tiene que tener su replay subido,** y cuenta para la
   repetición del grupo: así los puntos por muestreo dan en promedio lo mismo que verificar todo.
 
 ### Operación mínima
@@ -262,7 +262,7 @@ etapa 2.
 ### Puntos
 
 - [ ] **Guardar el ledger, los canjes y los inventarios antes de dar puntos.** Si no, cada deploy
-  borra lo ganado. Recién ahí se abren las rutas de la tienda.
+  borra lo ganado. Solo entonces se abren las rutas de la tienda.
 - [ ] **Rutas de mantenedor para la tienda:** descongelar los canjes de un operador, levantar la
   suspensión de su nodo y editar el catálogo. Desde esta etapa, una verificación fallida suspende
   la PC de un amigo y congela sus canjes.
@@ -405,7 +405,7 @@ afirmación de Cloudflare.
 
 **Recomendación:**
 1. **Ocultar la IP del anfitrión desde la etapa 2.** Cuesta casi nada y cierra un truco real:
-   tirar abajo la conexión del anfitrión para anular una ranked perdida.
+   forzar la caída de la conexión del anfitrión para anular una ranked perdida.
 2. **Jugadores con relay por defecto al abrir al público,** con una opción "conexión directa,
    menos ping" que avise que el anfitrión verá su IP. Con el tope de 900 GB, alcanza para unas 900
    horas de 2v2 por mes en PCs.
@@ -416,7 +416,7 @@ afirmación de Cloudflare.
 - [ ] `answerOffer` con un parámetro `relayOnly`. Hoy no lo tiene: en `node/rtcTransport.ts`
   solo la función interna `peer()` lo acepta, y solo el autotest lo usa, en un lado.
 - [ ] `werift` solo se limita al relay si tiene un TURN con usuario y clave: sin TURN juntaría
-  igual candidatos directos. Hay que rechazar la oferta en ese caso.
+  de todos modos candidatos directos. Hay que rechazar la oferta en ese caso.
 - [ ] Con solo relay, la respuesta tiene que esperar al menos un candidato relay. Hoy el límite es
   de 4 s, y en una red que bloquea UDP `werift` tarda unos 6,4 s en pasar a TCP.
 - [ ] El autotest tiene que probar relay contra relay, igual que en producción. Hoy solo un lado

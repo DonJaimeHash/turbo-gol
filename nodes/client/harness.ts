@@ -545,7 +545,7 @@ async function run(): Promise<void> {
     ];
     S.ok = S.checks.every((k) => k.ok);
     if (!S.ok) {
-      S.error = `fallaron chequeos: ${S.checks
+      S.error = `fallaron comprobaciones: ${S.checks
         .filter((k) => !k.ok)
         .map((k) => `${k.label} (${k.detail})`)
         .join('; ')}`;

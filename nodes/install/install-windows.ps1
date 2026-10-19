@@ -136,17 +136,17 @@ function Assert-ReleaseKey {
 }
 
 function Assert-InstallInputs($Registration) {
-  if (-not $Control) { Fail 'Falta -Control <url>: copi\u00e1 el comando completo que te muestra la web.' }
+  if (-not $Control) { Fail 'Falta -Control <url>: copia el comando completo que te muestra la web.' }
   if ($Control -notmatch '^(https?)://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$') {
     Fail '-Control no parece una URL v\u00e1lida: {0}' $Control
   }
   if ($Matches[1] -ne 'https' -and -not $Insecure) {
-    Fail '-Control tiene que empezar con https:// (para pruebas locales con http://, agreg\u00e1 -Insecure).'
+    Fail '-Control tiene que empezar con https:// (para pruebas locales con http://, agrega -Insecure).'
   }
   # Already registered: the token is not needed (and not used), but a given one must still look right.
-  if (-not $Registration -and -not $Token) { Fail 'Falta -Token: copi\u00e1 el comando completo de la web (el token empieza con tgn1_).' }
+  if (-not $Registration -and -not $Token) { Fail 'Falta -Token: copia el comando completo de la web (el token empieza con tgn1_).' }
   if ($Token -and $Token -cnotmatch '^tgn1_[A-Za-z0-9_-]{20,64}$') {
-    Fail 'El token no tiene el formato esperado (tgn1_...). Copi\u00e1 el comando completo de la web.'
+    Fail 'El token no tiene el formato esperado (tgn1_...). Copia el comando completo de la web.'
   }
   if ($Name -and $Name -notmatch '^[\p{L}\p{N} ._-]{2,32}$') {
     Fail '-Name: entre 2 y 32 caracteres, solo letras, n\u00fameros, espacios, punto, guion y guion bajo.'
@@ -160,7 +160,7 @@ function Assert-InstallInputs($Registration) {
     if (-not $ok) { Fail '-RtcPorts va como desde-hasta, por ejemplo 50000-50199 (entre 1024 y 65535).' }
   }
   if ($Registration -and $Registration.httpBase -and ("$($Registration.httpBase)".TrimEnd('/') -ne $Control)) {
-    Fail 'Esta PC ya est\u00e1 registrada con otro plano de control ({0}). Para cambiarlo, primero desinstal\u00e1 con -Uninstall.' $Registration.httpBase
+    Fail 'Esta PC ya est\u00e1 registrada con otro plano de control ({0}). Para cambiarlo, primero desinstala con -Uninstall.' $Registration.httpBase
   }
 }
 
@@ -172,7 +172,7 @@ function Get-Registration {
   try {
     return (Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json)
   } catch {
-    Fail 'No puedo leer {0} ({1}). Para empezar de cero, desinstal\u00e1 con -Uninstall.' $f, $_.Exception.Message
+    Fail 'No puedo leer {0} ({1}). Para empezar de cero, desinstala con -Uninstall.' $f, $_.Exception.Message
   }
 }
 
@@ -216,9 +216,9 @@ function Install-NodeIfNeeded {
   else { Say 'No encontr\u00e9 Node.js: instalo la versi\u00f3n LTS con winget.' }
   $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $winget) {
-    Fail 'No encuentro winget para instalar Node.js. Instal\u00e1 Node.js 24 LTS o m\u00e1s nuevo desde https://nodejs.org, abr\u00ed una terminal nueva y volv\u00e9 a correr este comando.'
+    Fail 'No encuentro winget para instalar Node.js. Instala Node.js 24 LTS o m\u00e1s nuevo desde https://nodejs.org, abre una terminal nueva y vuelve a ejecutar este comando.'
   }
-  Note 'Windows te puede pedir permiso para instalarlo: aceptalo.'
+  Note 'Windows te puede pedir permiso para instalarlo: ac\u00e9ptalo.'
   $ErrorActionPreference = 'Continue'
   # --source winget: skips the Microsoft Store source, which fails on some machines and is not needed.
   & $winget.Source install -e --id OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements | Out-Host
@@ -234,7 +234,7 @@ function Install-NodeIfNeeded {
     if ($stdInfo -and $stdInfo.Major -ge 24) { $exe = $std; $info = $stdInfo }
   }
   if (-not $info -or $info.Major -lt 24) {
-    Fail 'winget no dej\u00f3 instalado Node.js 24 o m\u00e1s nuevo (c\u00f3digo {0}). Instal\u00e1 la versi\u00f3n LTS desde https://nodejs.org, abr\u00ed una terminal nueva y volv\u00e9 a correr este comando.' $code
+    Fail 'winget no dej\u00f3 instalado Node.js 24 o m\u00e1s nuevo (c\u00f3digo {0}). Instala la versi\u00f3n LTS desde https://nodejs.org, abre una terminal nueva y vuelve a ejecutar este comando.' $code
   }
   Say 'Node.js {0} instalado ({1})' $info.Version, $exe
   $info.Exe = $exe
@@ -671,18 +671,18 @@ function Stop-NodeGracefully([bool]$ForUpdate) {
       Say 'Deteniendo el nodo ya (-StopTimeoutMinutes 0): se cortan las partidas en curso.'
     } elseif ($ForUpdate) {
       Say 'El nodo est\u00e1 corriendo: antes de actualizarlo le ped\u00ed que se detenga. No toma partidas nuevas y se cierra cuando terminan las que est\u00e1n en curso, as\u00ed no se corta a nadie.'
-      Note 'Espero hasta {0} minutos (con -StopTimeoutMinutes 0 no espera y corta las partidas). Si cerr\u00e1s esta ventana, el nodo igual se detiene cuando termina, sin actualizarse, y vuelve a arrancar al iniciar sesi\u00f3n.' $StopTimeoutMinutes
+      Note 'Espero hasta {0} minutos (con -StopTimeoutMinutes 0 no espera y corta las partidas). Si cierras esta ventana, el nodo se detiene de todos modos cuando termina, sin actualizarse, y vuelve a arrancar al iniciar sesi\u00f3n.' $StopTimeoutMinutes
     } else {
       Say 'Le ped\u00ed al nodo que se detenga: no toma partidas nuevas y se cierra cuando terminan las que est\u00e1n en curso, as\u00ed no se corta a nadie.'
-      Note 'Espero hasta {0} minutos. Si cerr\u00e1s esta ventana, el nodo igual se detiene solo cuando termina.' $StopTimeoutMinutes
+      Note 'Espero hasta {0} minutos. Si cierras esta ventana, el nodo se detiene solo de todos modos cuando termina.' $StopTimeoutMinutes
     }
     if (-not (Wait-StopPickedUp $stopFile $StopPickupSeconds $offset)) {
-      Warn 'El lanzador no tom\u00f3 el pedido en {0} s (es una versi\u00f3n vieja que no lo conoce, o est\u00e1 trabado): lo detengo de golpe, as\u00ed que se cortan las partidas en curso.' $StopPickupSeconds
+      Warn 'El lanzador no tom\u00f3 el pedido en {0} s (es una versi\u00f3n vieja que no lo conoce, o est\u00e1 atascado): lo detengo de golpe, as\u00ed que se cortan las partidas en curso.' $StopPickupSeconds
       return $procs.Count
     }
     if (-not $now) {
       if (Wait-NodeExit ($StopTimeoutMinutes * 60) $offset) { Say 'El nodo se detuvo.'; return $procs.Count }
-      Warn 'Pasaron {0} minutos y el nodo sigue con partidas: lo detengo igual (se cortan las que queden).' $StopTimeoutMinutes
+      Warn 'Pasaron {0} minutos y el nodo sigue con partidas: lo detengo de todos modos (se cortan las que queden).' $StopTimeoutMinutes
       if ($LogPath -and (Test-Path -LiteralPath $LogPath)) { $offset = (Get-Item -LiteralPath $LogPath).Length }
       Write-TextFile $stopFile 'now' $false
     }
@@ -721,7 +721,7 @@ function Invoke-Register([string]$NodeExe) {
   $p = Start-Process -FilePath $NodeExe -ArgumentList (ConvertTo-ArgString $a) -WorkingDirectory $DataDir -NoNewWindow -Wait -PassThru
   $reg = Get-Registration
   if (-not $reg -or ($null -ne $p.ExitCode -and $p.ExitCode -ne 0)) {
-    Fail 'El registro fall\u00f3 (c\u00f3digo {0}). Los tokens son de un solo uso y vencen a la hora: gener\u00e1 uno nuevo en la web y volv\u00e9 a correr el comando.' $p.ExitCode
+    Fail 'El registro fall\u00f3 (c\u00f3digo {0}). Los tokens son de un solo uso y vencen a la hora: genera uno nuevo en la web y vuelve a ejecutar el comando.' $p.ExitCode
   }
   return $reg
 }
@@ -738,7 +738,7 @@ function Register-NodeTask([string]$Execute, [string]$Arguments) {
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -MultipleInstances IgnoreNew -Priority 5 -Compatibility Win8
-  $description = Msg 'Nodo comunitario de Turbogol: hostea partidas por WebRTC en segundo plano. Lo cre\u00f3 install-windows.ps1 (para sacarlo, correlo con -Uninstall).'
+  $description = Msg 'Nodo comunitario de Turbogol: hostea partidas por WebRTC en segundo plano. Lo cre\u00f3 install-windows.ps1 (para sacarlo, ejec\u00fatalo con -Uninstall).'
   $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $description
   try {
     Register-ScheduledTask -TaskPath '\' -TaskName $TaskName -InputObject $task -Force -ErrorAction Stop | Out-Null
@@ -773,7 +773,7 @@ function Start-NodeTask {
       return
     }
   }
-  Warn 'El nodo sigue arrancando. Si en un par de minutos no aparece en la web, mir\u00e1 {0}' $LogPath
+  Warn 'El nodo sigue arrancando. Si en un par de minutos no aparece en la web, mira {0}' $LogPath
 }
 
 function Set-FirewallRuleIfAdmin([string]$Program) {
@@ -857,7 +857,7 @@ function Invoke-Install {
     $reg = Invoke-Register $nodeExe
   }
 
-  Say 'Creando la tarea programada "{0}" (arranca sola cuando inici\u00e1s sesi\u00f3n)' $TaskName
+  Say 'Creando la tarea programada "{0}" (arranca sola cuando inicias sesi\u00f3n)' $TaskName
   Register-NodeTask $execute $arguments
   Set-FirewallRuleIfAdmin $node.ExecPath
   Say 'Arrancando el nodo'
@@ -871,7 +871,7 @@ function Invoke-Install {
   Note '- Se actualiza solo, con releases firmadas. Lo ves en la web, en "Mis servidores".'
   Note '- Log: {0}' $LogPath
   Note '- Hostea por WebRTC: usa UDP saliente y, si hace falta, un relay TURN. No hay que abrir ni redirigir puertos.'
-  Note '- Si Windows pregunta si Node.js puede usar la red, permitilo en redes privadas; si cancel\u00e1s, igual funciona.'
+  Note '- Si Windows pregunta si Node.js puede usar la red, perm\u00edtelo en redes privadas; si cancelas, funciona de todos modos.'
   if ($RtcPorts -and -not (Test-IsAdmin)) {
     Note '- Opcional, para conexiones directas entrantes en {0}: en una PowerShell como administrador,' $RtcPorts
     Note "    New-NetFirewallRule -DisplayName '{0}' -Direction Inbound -Protocol UDP -LocalPort {1} -Program '{2}' -Action Allow" $FirewallRule, $RtcPorts, $node.ExecPath
@@ -947,7 +947,7 @@ function Invoke-Uninstall {
     for ($i = 0; ; $i++) {
       try { Remove-Item -LiteralPath $AppDir -Recurse -Force -ErrorAction Stop; break }
       catch {
-        if ($i -ge 4) { Fail 'No pude borrar {0} ({1}). Cerr\u00e1 lo que lo est\u00e9 usando y volv\u00e9 a correr con -Uninstall.' $AppDir, $_.Exception.Message }
+        if ($i -ge 4) { Fail 'No pude borrar {0} ({1}). Cierra lo que lo est\u00e9 usando y vuelve a ejecutar con -Uninstall.' $AppDir, $_.Exception.Message }
         Start-Sleep -Seconds 1
       }
     }
@@ -959,7 +959,7 @@ function Invoke-Uninstall {
     return
   }
   Say 'Listo, desinstalado.'
-  Note 'Node.js queda instalado: si no lo us\u00e1s para otra cosa, lo pod\u00e9s sacar desde Configuraci\u00f3n > Aplicaciones.'
+  Note 'Node.js queda instalado: si no lo usas para otra cosa, lo puedes sacar desde Configuraci\u00f3n > Aplicaciones.'
   Note 'En la web, este servidor va a figurar desconectado.'
 }
 

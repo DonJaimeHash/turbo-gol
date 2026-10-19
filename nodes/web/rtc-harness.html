@@ -111,14 +111,14 @@
   <section aria-labelledby="how-title">
     <h2 id="how-title">Cómo usarla</h2>
     <ol class="steps">
-      <li>Armá el bundle: <code>npm run build:web</code></li>
-      <li>Levantá el plano de control: <code>npm run control</code></li>
-      <li>Desde <code>/host</code>, sacá un token para la región SA y corré un nodo casero con <code>--transport rtc</code>. Esperá a que pase la prueba de WebRTC (estado en prueba).</li>
-      <li>Abrí esta página desde el plano de control (<code>/web/rtc-harness.html</code>) y tocá el botón. Con <code>?auto=1</code> arranca sola.</li>
+      <li>Arma el bundle: <code>npm run build:web</code></li>
+      <li>Levanta el plano de control: <code>npm run control</code></li>
+      <li>Desde <code>/host</code>, saca un token para la región SA y ejecuta un nodo casero con <code>--transport rtc</code>. Espera a que pase la prueba de WebRTC (estado en prueba).</li>
+      <li>Abre esta página desde el plano de control (<code>/web/rtc-harness.html</code>) y toca el botón. Con <code>?auto=1</code> arranca sola.</li>
     </ol>
     <p class="note" style="margin-top:10px">Juega unos 8 segundos, sale, y espera a que el sitio re-simule la partida para verificarla. El resumen para pruebas automáticas queda en <code>window.__harness</code> y el estado en <code>body[data-state]</code>.</p>
   </section>
 </main>
-<script type="module" src="./dist/rtc-harness.js" onerror="document.body.dataset.state='error';var e=document.getElementById('error');e.hidden=false;e.textContent='No se pudo cargar dist/rtc-harness.js: corré npm run build:web y recargá.';document.getElementById('status').textContent='Falló';document.getElementById('start').disabled=true;window.__harness={state:'error',error:'bundle missing'};"></script>
+<script type="module" src="./dist/rtc-harness.js" onerror="document.body.dataset.state='error';var e=document.getElementById('error');e.hidden=false;e.textContent='No se pudo cargar dist/rtc-harness.js: ejecuta npm run build:web y recarga.';document.getElementById('status').textContent='Falló';document.getElementById('start').disabled=true;window.__harness={state:'error',error:'bundle missing'};"></script>
 </body>
 </html>

@@ -6,12 +6,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Gracias por proponer. Votá las propuestas de otros con 👍 en vez de duplicarlas.
+        Gracias por proponer. Vota las propuestas de otros con 👍 en vez de duplicarlas.
         Cada semana se ordenan por votos. Una propuesta aprobada por mantenedores la implementa un bot y la revisa una persona.
   - type: textarea
     id: que
     attributes:
-      label: ¿Qué querés que cambie?
+      label: ¿Qué quieres que cambie?
       description: Lo más concreto posible.
     validations:
       required: true

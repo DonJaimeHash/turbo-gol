@@ -46,7 +46,7 @@ npm run demo
 La demo levanta el plano de control en el puerto 8790, el verificador del proyecto, una PC
 hogareña por WebRTC y un servidor por WebSocket en el 7350. Juega una casual con el `NetClient`
 real por WebRTC y una ranked, las verifica en el verificador, y canjea la insignia gratis. Después
-queda abierta `http://127.0.0.1:8790/host`: entrá como `Demo` o como `Proyecto`.
+queda abierta `http://127.0.0.1:8790/host`: entra como `Demo` o como `Proyecto`.
 
 Otros comandos:
 
@@ -60,14 +60,14 @@ Otros comandos:
 | `npm run build:web` | Arma el arnés de prueba del navegador, servido en `/web/rtc-harness.html` |
 
 `.keys/`, `dist/`, `data/` y `node_modules/` están en `nodes/.gitignore`. **Nunca subas `.keys/` a
-ningún lado**: guardá una copia en un gestor de contraseñas.
+ningún lado**: guarda una copia en un gestor de contraseñas.
 
 ## Qué hay
 
 ```
 shared/         lo que comparten nodo, plano de control y cliente
   replay.ts       formato y grabador del replay
-  verify.ts       re-simulación y chequeos del final
+  verify.ts       re-simulación y comprobaciones del final
   nodeTickets.ts  tickets Ed25519 atados a un nodo
   controlProtocol.ts  mensajes, transportes, señalización WebRTC
 node/           el programa del nodo
@@ -87,7 +87,7 @@ control-plane/  el plano de control
   shop.ts         saldo, catálogo, canjes, inventario
   devServer.ts    servidor de referencia y de desarrollo
 install/        VPS (install.sh), Windows, macOS y Linux de escritorio, cloud-init
-web/            la página "Poné un servidor" y el arnés WebRTC del navegador
+web/            la página "Pon un servidor" y el arnés WebRTC del navegador
 github/         plantillas: bot, ranking de propuestas, releases, formulario
 scripts/        demo, build de releases y del arnés, claves
 test/           pruebas automáticas con el wasm real
