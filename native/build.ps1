@@ -3,7 +3,8 @@
   Builds RocketSim (+ Bullet) and native/wrapper.cpp to WebAssembly with Emscripten.
 
 .DESCRIPTION
-  Output: src/sim/wasm/rocketsim.js (ES module, factory `createRocketSim`) + rocketsim.wasm.
+  Output: src/sim/wasm/rocketsim.js (ES module, factory `createRocketSim`) + rocketsim.wasm, and
+  the wasm's SHA-256 in src/sim/wasm/rocketsim.sha256.ts (commit the three together).
   Objects go to native/build/obj (incremental: a source is recompiled when it, one of the headers
   it includes, or the compile flags changed). Compiles in parallel (-Jobs, default = CPU count).
 
@@ -235,3 +236,20 @@ if (-not $needLink) {
 $wasmSize = (Get-Item $OutWasm).Length
 $jsSize = (Get-Item $OutJs).Length
 Write-Host ("rocketsim.wasm: {0:N0} bytes ({1:N1} KB)   rocketsim.js: {2:N0} bytes" -f $wasmSize, ($wasmSize / 1KB), $jsSize)
+
+# ---- Hash constant -------------------------------------------------------------------------
+# Community nodes get matches only on the wasm the web client runs, and the Worker cannot hash it
+# (it imports the wasm already compiled), so the hash is committed next to it. A wasm committed
+# without its new hash fails tests/wasm-hash.test.mjs, which also reads $HashLine from here.
+$HashLine = "export const ROCKETSIM_WASM_SHA256 = '[0-9a-f]{64}';"
+$hashFile = "$OutDir/rocketsim.sha256.ts"
+$hash = (Get-FileHash -Algorithm SHA256 $OutWasm).Hash.ToLowerInvariant()
+$hashText = [System.IO.File]::ReadAllText($hashFile)
+if ($hashText -cnotmatch $HashLine) { throw "no ROCKETSIM_WASM_SHA256 line to rewrite in $hashFile" }
+$newText = $hashText -creplace $HashLine, "export const ROCKETSIM_WASM_SHA256 = '$hash';"
+if ($newText -ceq $hashText) {
+  Write-Host "rocketsim.sha256.ts: $hash (unchanged)"
+} else {
+  [System.IO.File]::WriteAllText($hashFile, $newText) # UTF-8 without a BOM, line endings as they were
+  Write-Host "rocketsim.sha256.ts: $hash (new: commit it with the wasm)"
+}
