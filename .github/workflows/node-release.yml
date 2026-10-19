@@ -1,0 +1,138 @@
+# Node release: build, sign and publish a community-node release when a maintainer pushes a tag
+# node-vX.Y.Z, where X.Y.Z is the version in nodes/package.json (plain X.Y.Z, published only once).
+#
+# Two jobs, so the release key never shares a machine with third-party code before it signs:
+#   build    no secrets: installs, runs every typecheck and test, and builds the release unsigned
+#            (nodes/scripts/build-node.mjs fills the installers from nodes/release-key.pub), then
+#            hands it over as an artifact.
+#   publish  the `releases` environment (a maintainer approves every run; it holds the release key
+#            and the R2 token): signs in a step of its own with nodes/scripts/sign-release.mjs, which
+#            only uses node:crypto, then uploads with the wrangler locked in server/package-lock.json.
+# Publishing never moves the channel (channel.json). The deploy gate does, at the next
+# `npm run deploy` (scripts/node-release-gate.mjs), so a release reaches nodes together with the
+# Worker build it matches.
+name: Node release
+
+on:
+  push:
+    tags: ["node-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (unsigned, no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            nodes/package-lock.json
+      - run: npm ci
+      # The release build takes esbuild from server/node_modules.
+      - run: npm ci
+        working-directory: server
+      - run: npm ci
+        working-directory: nodes
+      - name: The tag names the version in nodes/package.json
+        run: |
+          version=$(node -p "require('./nodes/package.json').version")
+          if [ "$GITHUB_REF_NAME" != "node-v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match nodes/package.json ($version): the tag must be node-v$version"
+            exit 1
+          fi
+      - name: Client (typecheck, tests)
+        run: npm run typecheck && npm test
+      - name: Server (typecheck, tests)
+        working-directory: server
+        run: npm run typecheck && npm test
+      - name: Community nodes (typecheck, tests)
+        working-directory: nodes
+        run: npm run typecheck && npm test
+      - name: Build the release (unsigned)
+        working-directory: nodes
+        run: node scripts/build-node.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: node-release
+          path: nodes/dist/releases/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: releases
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: node-release
+          path: nodes/dist/releases
+      # The only step that gets the release key. Nothing is installed in this job before it, so the
+      # only code it runs is the checked-out nodes/scripts/sign-release.mjs.
+      - name: Sign
+        working-directory: nodes
+        env:
+          TGN_RELEASE_PRIVATE_KEY: ${{ secrets.TGN_RELEASE_PRIVATE_KEY }}
+        run: node scripts/sign-release.mjs
+      - name: Install the locked wrangler
+        run: npm ci --prefix server
+      - name: Publish to R2 (served at /nodes/releases/)
+        working-directory: server
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('../nodes/package.json').version")
+          dist=../nodes/dist/releases
+          bucket=turbogol-node-releases
+          wrangler=node_modules/.bin/wrangler
+          # A version is published once: launchers keep the releases they downloaded and
+          # verification compares versions, so one version must always mean the same bytes.
+          if "$wrangler" r2 object get "$bucket/$version/manifest.json" --file "$RUNNER_TEMP/published.json" --remote > "$RUNNER_TEMP/check.log" 2>&1; then
+            echo "::error::release $version is already in R2: raise the version in nodes/package.json and tag that"
+            exit 1
+          fi
+          if ! grep -q 'The specified key does not exist' "$RUNNER_TEMP/check.log"; then
+            cat "$RUNNER_TEMP/check.log"
+            echo "::error::could not check R2 for release $version"
+            exit 1
+          fi
+          # Without --remote, wrangler 4 writes to a local bucket; without --content-type, objects
+          # have no type. manifest.json goes last in its version: until it is there, nothing reads
+          # the rest.
+          put() { "$wrangler" r2 object put "$bucket/$1" --file "$dist/$1" --content-type "$2" --remote; }
+          put "$version/node.mjs" "text/javascript; charset=utf-8"
+          put "$version/rocketsim.wasm" "application/wasm"
+          put "$version/manifest.sig" "text/plain; charset=utf-8"
+          put "$version/release-key.pub" "text/plain; charset=utf-8"
+          put "$version/inputs.json" "application/json"
+          put "$version/manifest.json" "application/json"
+          put launcher.mjs "text/javascript; charset=utf-8"
+          put launcher.mjs.sig "text/plain; charset=utf-8"
+          put install.sh "text/plain; charset=utf-8"
+          put install-windows.ps1 "text/plain; charset=utf-8"
+          put install-desktop.sh "text/plain; charset=utf-8"
+          # Never channel.json: the deploy gate moves the channel.
