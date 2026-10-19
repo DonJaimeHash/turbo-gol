@@ -54,6 +54,12 @@ All notable changes to Turbogol are documented here. The format follows
   noise, and they ring briefly in a short synthetic room.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
+- Community nodes: the VPS installer can be run again (no token: it upgrades the launcher and keeps
+  the node's identity and settings), restores a backed-up identity with `--restore`, checks that a
+  DNS name points to the machine before spending the token, takes `--matches`, and gives a name a
+  90-day certificate (the 6-day one only for an IP) with live matches kept through a Caddy reload.
+  Replay uploads keep trying for about 75 s, and the launcher keeps the installed version when a
+  release needs a newer Node.js.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
