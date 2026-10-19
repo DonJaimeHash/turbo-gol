@@ -1,0 +1,25 @@
+{
+  "name": "turbogol-community-nodes",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Community-run match servers for Turbogol: the node program (host + verifier), its launcher, the reference control plane and the rewards ledger. One runtime dependency: werift (WebRTC).",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"test/*.test.mjs\"",
+    "typecheck": "node ../node_modules/typescript/bin/tsc -p .",
+    "demo": "node --import ./dev/ts-resolve.mjs scripts/demo.mjs",
+    "control": "node --import ./dev/ts-resolve.mjs control-plane/devServer.ts",
+    "node": "node --import ./dev/ts-resolve.mjs node/main.ts",
+    "bench": "node --import ./dev/ts-resolve.mjs node/main.ts bench",
+    "keys": "node scripts/keys.mjs",
+    "build": "node scripts/build-node.mjs --sign .keys/release.json",
+    "build:web": "node scripts/build-web.mjs"
+  },
+  "dependencies": {
+    "werift": "0.25.0"
+  }
+}

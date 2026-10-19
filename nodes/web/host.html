@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Poné un servidor · Turbogol</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --panel: #ffffff; --ink: #14161f; --muted: #5d6475; --line: #dfe3ec;
+    --accent: #1f6feb; --accent-ink: #ffffff; --ok: #18794e; --warn: #a15c00; --bad: #c4291c;
+    --chip: #eef1f7; --code: #0f1320; --code-ink: #e6e9f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1017; --panel: #151a24; --ink: #e8ebf3; --muted: #9aa3b5; --line: #263042;
+      --accent: #4c8dff; --accent-ink: #0b0e14; --ok: #3fb67c; --warn: #e0a03a; --bad: #f0675b;
+      --chip: #1d2433; --code: #0a0d14; --code-ink: #dfe5f2;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 28px 16px 8px; max-width: 980px; margin: 0 auto; }
+  header h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); max-width: 700px; }
+  main { max-width: 980px; margin: 0 auto; padding: 8px 16px 48px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; min-width: 0; }
+  h2 { margin: 0 0 12px; font-size: 17px; }
+  h3 { margin: 0 0 6px; font-size: 15px; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  input, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 9px 14px; cursor: pointer; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.ghost { background: var(--chip); color: var(--ink); font-weight: 500; }
+  button:disabled { opacity: .5; cursor: default; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; min-width: 0; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 8px; align-content: start; cursor: pointer; background: var(--panel); text-align: left; color: var(--ink); font-weight: 400; min-width: 0; }
+  .card[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .tag { justify-self: start; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); }
+  pre { margin: 0; background: var(--code); color: var(--code-ink); padding: 12px; border-radius: 8px; overflow-x: auto; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  .codebox { display: grid; gap: 6px; }
+  .codebox .bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .providers { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; min-width: 0; }
+  .provider { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 4px; min-width: 0; }
+  .provider a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12.5px; }
+  .tablewrap { overflow-x: auto; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--chip); }
+  .badge.active { color: var(--ok); } .badge.probation { color: var(--warn); } .badge.pending { color: var(--muted); }
+  .badge.suspended, .badge.banned { color: var(--bad); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: 1px; }
+  .dot.on { background: var(--ok); }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; min-width: 0; }
+  .kpi { background: var(--chip); border-radius: 10px; padding: 12px; min-width: 0; }
+  .kpi b { display: block; font-size: 22px; }
+  .shop { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; min-width: 0; }
+  .item { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+  .item .cost { font-weight: 700; }
+  .item.owned { border-color: var(--ok); }
+  .hidden { display: none !important; }
+  .note { font-size: 13px; color: var(--muted); }
+  .err { color: var(--bad); font-size: 13.5px; }
+  .okmsg { color: var(--ok); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Poné un servidor</h1>
+  <p>Tu máquina juega partidas de Turbogol para jugadores de tu región, sea un servidor alquilado o tu propia PC. El sitio re-simula para verificarlas todas las partidas ranked y una muestra de las casuales, así que nadie tiene que confiar en nadie. A cambio sumás puntos para canjear autos y cosas nuevas que solo tienen los anfitriones.</p>
+</header>
+<main>
+  <section id="login">
+    <h2>1. Entrá con tu cuenta</h2>
+    <p class="note">Prototipo local: alcanza con un nombre. En el sitio real es tu cuenta de Turbogol, y la reputación y los puntos de tus servidores quedan atados a ella.</p>
+    <div class="row">
+      <label>Nombre<input id="name" maxlength="24" placeholder="Juan" autocomplete="nickname"></label>
+      <button id="loginBtn">Entrar</button>
+    </div>
+    <p id="who" class="muted hidden"></p>
+  </section>
+
+  <section id="setup" class="hidden">
+    <h2>2. Elegí dónde va a correr</h2>
+    <div class="row" style="margin-bottom:12px">
+      <label>Región
+        <select id="region">
+          <option value="SA">Sudamérica</option><option value="NA">Norteamérica</option><option value="EU">Europa</option>
+          <option value="AS">Asia</option><option value="OC">Oceanía</option><option value="AF">África</option>
+        </select>
+      </label>
+      <label>Nombre del servidor (opcional)<input id="nodeName" maxlength="32" placeholder="cordoba-1"></label>
+    </div>
+    <div class="cards" role="group" aria-label="Tipo de servidor">
+      <button class="card" data-kind="pc" aria-pressed="true">
+        <span class="tag">Sin abrir puertos</span>
+        <h3>Mi PC</h3>
+        <span class="muted">Windows, Mac o Linux. Hostea partidas por WebRTC desde tu casa, aunque estés detrás del router o de la red de tu proveedor. Aporta mientras está prendida.</span>
+      </button>
+      <button class="card" data-kind="vps" aria-pressed="false">
+        <span class="tag">24 horas</span>
+        <h3>Alquilar un VPS</h3>
+        <span class="muted">Lo pagás vos directo al proveedor. Pegás el cloud-init al crearlo y el resto es automático.</span>
+      </button>
+      <button class="card" data-kind="linux" aria-pressed="false">
+        <h3>Ya tengo un servidor Linux</h3>
+        <span class="muted">Debian o Ubuntu con IP pública y los puertos 80 y 443 abiertos. Una línea como root.</span>
+      </button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="tokenBtn">Generar token de instalación</button>
+      <span id="tokenInfo" class="note"></span>
+    </div>
+    <p id="tokenErr" class="err hidden"></p>
+
+    <div id="pc" class="hidden" style="margin-top:16px; display:grid; gap:10px">
+      <div class="tabs" role="group" aria-label="Sistema operativo">
+        <button class="ghost" data-os="windows" aria-pressed="true">Windows</button>
+        <button class="ghost" data-os="desktop" aria-pressed="false">Mac o Linux</button>
+      </div>
+      <div class="codebox">
+        <div class="bar"><span id="pcHint">En PowerShell, sin permisos de administrador</span><button class="ghost" data-copy="pcCmd">Copiar</button></div>
+        <pre id="pcCmd"></pre>
+      </div>
+      <p class="note">En Windows instala Node.js si hace falta (en macOS y Linux tiene que estar instalado: el instalador te dice cómo). Verifica la firma del programa, registra tu PC y la deja arrancando sola al iniciar sesión. Se actualiza sola y termina las partidas en curso antes de actualizar. Si apagás la PC en medio de una partida, esa partida se anula sin penalizar a los jugadores y tu servidor suma un aviso (uno por corte, aunque tuviera varias partidas); tres avisos en una semana lo pausan por un día.</p>
+      <p class="note">Para apagarlo sin cortar a nadie: en Windows, la misma línea con <code>-Stop</code> en lugar de <code>-Control</code> y <code>-Token</code> (espera a que terminen las partidas, hasta 30 minutos); en Linux, <code>systemctl --user stop turbogol-node</code>; en Mac, <code>launchctl bootout gui/197609/com.turbogol.node</code>. Con <code>-Uninstall</code> o <code>--uninstall</code> se desinstala de la misma forma.</p>
+    </div>
+    <div id="vps" class="hidden" style="margin-top:16px; display:grid; gap:12px">
+      <div class="providers">
+        <div class="provider"><a href="https://www.vultr.com/" target="_blank" rel="noopener">Vultr</a><span class="note">Tiene São Paulo y Santiago, cerca del Cono Sur.</span></div>
+        <div class="provider"><a href="https://www.linode.com/" target="_blank" rel="noopener">Akamai / Linode</a><span class="note">Tiene São Paulo.</span></div>
+        <div class="provider"><a href="https://www.hetzner.com/cloud" target="_blank" rel="noopener">Hetzner</a><span class="note">Europa, EE.UU. y Singapur. Mucha transferencia mensual incluida.</span></div>
+        <div class="provider"><a href="https://www.digitalocean.com/" target="_blank" rel="noopener">DigitalOcean</a><span class="note">Norteamérica, Europa y Asia.</span></div>
+      </div>
+      <p class="note">Plan sugerido: 2 vCPU, 2 a 4 GB, Debian 12 o Ubuntu 24.04. Mirá la transferencia mensual incluida: una partida 3v3 manda unos 2 GB por hora. Los links llevarán el código de referido del proyecto.</p>
+      <div class="codebox">
+        <div class="bar"><span>Pegalo en "User data" / "Cloud config" al crear el servidor</span><button class="ghost" data-copy="cloudInit">Copiar</button></div>
+        <pre id="cloudInit"></pre>
+      </div>
+    </div>
+    <div id="linux" class="hidden codebox" style="margin-top:16px">
+      <div class="bar"><span>En tu servidor, como root</span><button class="ghost" data-copy="cmd">Copiar</button></div>
+      <pre id="cmd"></pre>
+    </div>
+  </section>
+
+  <section id="mine" class="hidden">
+    <h2>3. Mis servidores</h2>
+    <div class="kpis">
+      <div class="kpi"><span class="muted">Saldo para canjear</span><b id="kBalance">0</b></div>
+      <div class="kpi"><span class="muted">Puntos ganados en total</span><b id="kEarned">0</b></div>
+      <div class="kpi"><span class="muted">Puntos últimos 30 días</span><b id="kPoints">0</b></div>
+      <div class="kpi"><span class="muted">Partidas verificadas, 30 días</span><b id="kMatches">0</b></div>
+    </div>
+    <p id="frozen" class="err hidden"></p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Servidor</th><th>Tipo</th><th>Región</th><th>Estado</th><th>Partidas</th><th>Lag p99</th><th>Verificadas</th><th>Tráfico mes</th><th>Versión</th></tr></thead>
+        <tbody id="nodes"><tr><td colspan="9" class="muted">Todavía no hay servidores. Generá un token arriba.</td></tr></tbody>
+      </table>
+    </div>
+    <p class="note">Estados: <b>pendiente</b> hasta que el sitio comprueba que los jugadores llegan a tu servidor; <b>a prueba</b> solo partidas casuales; <b>activo</b> también ranked, después de 20 partidas verificadas sin fallas.</p>
+  </section>
+
+  <section id="shopSec" class="hidden">
+    <h2>Tienda de anfitriones</h2>
+    <p class="muted" style="margin-top:-4px">Un punto por cada minuto que un jugador jugó en tu servidor, contado solo si la partida pasó la verificación. Rinde más en regiones con pocos servidores. Los puntos no son plata ni se transfieren, y estas cosas solo se consiguen poniendo un servidor.</p>
+    <p id="shopMsg" class="note"></p>
+    <div id="shop" class="shop"></div>
+  </section>
+
+  <section>
+    <h2>Anfitriones del mes</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Anfitrión</th><th>Puntos en 30 días</th></tr></thead>
+        <tbody id="hosts"><tr><td colspan="2" class="muted">Sin datos todavía.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const STATUS = { pending: 'pendiente', probation: 'a prueba', active: 'activo', suspended: 'pausado', banned: 'bloqueado' };
+  const KIND = { car: 'Auto', paint: 'Pintura', boost: 'Estela de boost', goal: 'Explosión de gol', badge: 'Insignia', title: 'Título' };
+  const BLOCK = { insufficient: 'Te faltan puntos', requires_matches: 'Necesitás una partida verificada', frozen: 'Tu cuenta está en revisión', not_available: 'Próximamente' };
+  let operatorId = null;
+  let kind = 'pc';
+  let os = navigator.userAgent.includes('Windows') ? 'windows' : 'desktop';
+  let lastToken = null;
+  try { operatorId = localStorage.getItem('tgn.operator'); } catch {}
+
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmt = (n) => new Intl.NumberFormat('es-AR', { maximumFractionDigits: Math.abs(n) < 10 ? 2 : 1 }).format(n);
+
+  async function api(path, opts = {}) {
+    const headers = { 'content-type': 'application/json' };
+    if (operatorId) headers['x-dev-operator'] = operatorId;
+    const r = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(body.message || body.error || r.status), { code: body.error });
+    return body;
+  }
+
+  function showLoggedIn(name, trusted) {
+    $('who').textContent = 'Entraste como ' + name + (trusted ? ' (servidores del proyecto)' : '') + '.';
+    $('who').classList.remove('hidden');
+    for (const id of ['setup', 'mine', 'shopSec']) $(id).classList.remove('hidden');
+    refresh();
+  }
+
+  $('loginBtn').onclick = async () => {
+    const name = $('name').value.trim();
+    if (name.length < 2) return $('name').focus();
+    const r = await api('/dev/login', { method: 'POST', body: JSON.stringify({ name }) });
+    operatorId = r.operatorId;
+    try { localStorage.setItem('tgn.operator', operatorId); localStorage.setItem('tgn.name', r.name); } catch {}
+    showLoggedIn(r.name, r.trusted);
+  };
+
+  document.querySelectorAll('.card').forEach((c) => {
+    c.onclick = () => {
+      kind = c.dataset.kind;
+      document.querySelectorAll('.card').forEach((x) => x.setAttribute('aria-pressed', String(x === c)));
+      render();
+    };
+  });
+  document.querySelectorAll('[data-os]').forEach((b) => {
+    b.onclick = () => { os = b.dataset.os; render(); };
+  });
+
+  function render() {
+    for (const k of ['pc', 'vps', 'linux']) $(k).classList.toggle('hidden', !lastToken || k !== kind);
+    document.querySelectorAll('[data-os]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.os === os)));
+    if (!lastToken) return;
+    // Only safe characters go into a command the operator pastes into a shell.
+    const name = ($('nodeName').value.trim() || ($('region').value.toLowerCase() + '-1')).replace(/[^A-Za-z0-9._-]/g, '').slice(0, 32) || 'mi-servidor';
+    const named = (cmd, flag) => (cmd + ' ' + flag + ' ' + name);
+    $('pcCmd').textContent = os === 'windows' ? named(lastToken.install.windows.replace(/"$/, ''), '-Name') + '"' : named(lastToken.install.desktop, '--name');
+    $('pcHint').textContent = os === 'windows' ? 'En PowerShell, sin permisos de administrador' : 'En la Terminal, con tu usuario (no root)';
+    $('cloudInit').textContent = lastToken.install.cloudInit.replace(/__NAME__/g, name);
+    $('cmd').textContent = named(lastToken.install.linux, '--name');
+  }
+
+  $('tokenBtn').onclick = async () => {
+    $('tokenErr').classList.add('hidden');
+    try {
+      const t = await api('/nodes/tokens', { method: 'POST', body: JSON.stringify({ region: $('region').value, name: $('nodeName').value || undefined }) });
+      lastToken = t;
+      const until = new Date(t.expiresAt);
+      $('tokenInfo').textContent = 'Token listo: sirve una sola vez, hasta las ' + until.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) + ' h.';
+      render();
+    } catch (e) {
+      $('tokenErr').textContent = e.code === 'login' ? 'Entrá primero.' : 'No se pudo generar el token: ' + e.message;
+      $('tokenErr').classList.remove('hidden');
+    }
+  };
+
+  document.querySelectorAll('[data-copy]').forEach((b) => {
+    b.onclick = async () => {
+      const text = $(b.dataset.copy).textContent;
+      try { await navigator.clipboard.writeText(text); b.textContent = 'Copiado'; setTimeout(() => (b.textContent = 'Copiar'), 1500); } catch { b.textContent = 'Seleccioná y copiá'; }
+    };
+  });
+
+  async function claim(itemId) {
+    try {
+      await api('/nodes/shop/claim', { method: 'POST', body: JSON.stringify({ itemId }) });
+      $('shopMsg').className = 'okmsg';
+      $('shopMsg').textContent = 'Listo: ya es tuyo. Lo vas a ver en el juego.';
+    } catch (e) {
+      $('shopMsg').className = 'err';
+      $('shopMsg').textContent = BLOCK[e.code] || ('No se pudo canjear: ' + e.message);
+    }
+    refresh();
+  }
+
+  // Redraw only when something changed: a redraw every refresh would eat clicks mid-press.
+  let lastShop = '';
+  let lastNodes = '';
+  function renderShop(s) {
+    const key = JSON.stringify(s);
+    if (key === lastShop) return;
+    lastShop = key;
+    $('shop').innerHTML = s.items.map((i) => {
+      const action = i.owned ? '<span class="okmsg">Es tuyo</span>'
+        : i.claimable ? `<button data-claim="${esc(i.id)}">${i.cost === 0 ? 'Reclamar' : 'Canjear'}</button>`
+        : `<span class="note">${esc(BLOCK[i.blocked] || '')}</span>`;
+      return `<div class="item ${i.owned ? 'owned' : ''}">
+        <span class="tag">${esc(KIND[i.kind] || i.kind)}${i.status === 'soon' ? ' · próximamente' : ''}</span>
+        <h3>${esc(i.name)}</h3>
+        <span class="note">${esc(i.description)}</span>
+        <span class="cost">${i.cost === 0 ? 'Gratis' : fmt(i.cost) + ' puntos'}</span>
+        ${action}
+      </div>`;
+    }).join('');
+    $('shop').querySelectorAll('[data-claim]').forEach((b) => (b.onclick = () => claim(b.dataset.claim)));
+  }
+
+  async function refresh() {
+    try {
+      const pub = await api('/nodes/status');
+      $('hosts').innerHTML = pub.hosts.length
+        ? pub.hosts.map((h) => `<tr><td>${esc(h.name)}</td><td>${fmt(h.points)}</td></tr>`).join('')
+        : '<tr><td colspan="2" class="muted">Sin datos todavía.</td></tr>';
+      if (!operatorId) return;
+      const [m, s] = await Promise.all([api('/nodes/mine'), api('/nodes/shop')]);
+      $('kBalance').textContent = fmt(m.wallet.balance);
+      $('kEarned').textContent = fmt(m.wallet.earned);
+      $('kPoints').textContent = fmt(m.rewards.points30d);
+      $('kMatches').textContent = fmt(m.rewards.matches30d);
+      $('frozen').classList.toggle('hidden', !m.wallet.frozen);
+      $('frozen').textContent = m.wallet.frozen ? 'Tus canjes están en pausa: una partida de tus servidores no pasó la verificación y la estamos revisando.' : '';
+      const nodesKey = JSON.stringify(m.nodes);
+      if (nodesKey !== lastNodes) $('nodes').innerHTML = (lastNodes = nodesKey, m.nodes.length
+        ? m.nodes.map((n) => `<tr>
+            <td><span class="dot ${n.online ? 'on' : ''}"></span>${esc(n.name)}${n.trusted ? ' <span class="tag">proyecto</span>' : ''}</td>
+            <td>${n.roles.includes('host') ? (n.transports.includes('rtc') && !n.transports.includes('wss') ? 'PC (WebRTC)' : 'Servidor') : 'Verificador'}</td>
+            <td>${esc(n.region)}</td>
+            <td><span class="badge ${esc(n.status)}">${STATUS[n.status] || esc(n.status)}</span>${n.suspendedUntil ? ' <span class="note">hasta ' + new Date(n.suspendedUntil).toLocaleString('es-AR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) + '</span>' : ''}</td>
+            <td>${n.roles.includes('host') ? `${esc(fmt(Number(n.active)))} / ${esc(fmt(Number(n.capacity.matches)))}` : '-'}</td>
+            <td>${n.online ? fmt(n.tickLagP99Ms) + ' ms' : '-'}</td>
+            <td>${fmt(n.counters.verified)}${n.counters.failedVerification ? ` <span class="err">(${n.counters.failedVerification} fallidas)</span>` : ''}</td>
+            <td>${fmt(n.egressGB)} GB</td>
+            <td>${esc(n.version)}${n.compatible ? '' : ' <span class="err">vieja</span>'}</td>
+          </tr>`).join('')
+        : '<tr><td colspan="9" class="muted">Todavía no hay servidores. Generá un token arriba.</td></tr>');
+      renderShop(s);
+    } catch (e) {
+      if (e.code === 'login') { operatorId = null; try { localStorage.removeItem('tgn.operator'); } catch {} }
+    }
+  }
+
+  setInterval(refresh, 3000);
+  let savedName = null;
+  try { savedName = localStorage.getItem('tgn.name'); } catch {}
+  if (operatorId && savedName) showLoggedIn(savedName, false); else refresh();
+})();
+</script>
+</body>
+</html>

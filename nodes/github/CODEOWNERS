@@ -1,0 +1,26 @@
+# Template: copy to .github/CODEOWNERS in the public repo, together with a branch protection rule
+# on main ("Require review from Code Owners", "Require status checks", no bypass for bots).
+# Community nodes update themselves from signed releases, so a change in these paths reaches every
+# server in the world: a maintainer reviews it, never only the community bot's own checks.
+
+# Workflows (the bot, releases) and repo settings
+/.github/                       @DonJaimeHash
+
+# The node program: launcher, runtime, transports, match room
+/nodes/node/                    @DonJaimeHash
+# Replay format, verifier, tickets, crypto: what the trust model rests on
+/nodes/shared/                  @DonJaimeHash
+# Control plane: placement, verification queue, rewards, shop
+/nodes/control-plane/           @DonJaimeHash
+# Installers and release / key scripts
+/nodes/install/                 @DonJaimeHash
+/nodes/scripts/                 @DonJaimeHash
+/nodes/package.json             @DonJaimeHash
+/nodes/package-lock.json        @DonJaimeHash
+
+# The game code the nodes and the verifier run (room host, match rules, bots, protocol, physics)
+/server/src/roomHost.ts         @DonJaimeHash
+/src/game/Match.ts              @DonJaimeHash
+/src/ai/                        @DonJaimeHash
+/src/net/protocol.ts            @DonJaimeHash
+/src/sim/                       @DonJaimeHash

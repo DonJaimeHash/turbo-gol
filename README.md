@@ -89,6 +89,7 @@ src/ai       bots and team AI
 src/net      online client: P2P rollback, server client, accounts, lobbies
 src/ui       menus
 server/      Cloudflare Workers backend (matchmaking, signaling, server matches, accounts, lobbies)
+nodes/       community-run match servers (prototype, not wired in yet): see nodes/README.md
 native/      C++ wrapper around the physics library (RocketSim is a git submodule)
 tests/       node tests
 docs/        design notes of the online modes and accounts

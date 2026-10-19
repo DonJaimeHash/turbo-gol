@@ -1,0 +1,8 @@
+#cloud-config
+# Turbogol community node: paste this into the "User data" / "Cloud config" box when you create
+# the server (Hetzner, DigitalOcean, Vultr, Linode, OVH...). The website fills in the control URL,
+# the one-time token and the server name below; the token works once and expires after an hour.
+# Recommended: Debian 12 or Ubuntu 24.04, 2 vCPU / 2-4 GB, a plan with a large monthly transfer.
+package_update: true
+runcmd:
+  - [ bash, -c, "curl -fsSL __CONTROL__/nodes/releases/install.sh | bash -s -- --control __CONTROL__ --token __TOKEN__ --name __NAME__" ]

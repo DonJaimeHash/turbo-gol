@@ -7,6 +7,11 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Community nodes (`nodes/`, a prototype not wired into the game yet): match servers run by the
+  community on a VPS or a home PC (WebSocket or WebRTC), a control plane that places matches on them
+  and re-simulates the replays before any rating is written (every ranked match; casual matches by
+  sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
+  Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 

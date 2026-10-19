@@ -1,0 +1,37 @@
+# Weekly ranking of community proposals by votes (thumbs-up reactions). No AI involved: it only
+# sorts and labels, so it costs nothing. Maintainers read the top of the list and decide which
+# proposals get `bot:implementar`. (Host tiers' extra votes need the website's own voting page;
+# GitHub reactions cannot be weighted. See docs/BOT.md.)
+name: Top requests
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+permissions:
+  issues: write
+jobs:
+  rank:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'propuesta', per_page: 100,
+            });
+            const ranked = issues
+              .filter((i) => !i.pull_request)
+              .map((i) => ({ n: i.number, title: i.title, votes: i.reactions?.['+1'] ?? 0 }))
+              .sort((a, b) => b.votes - a.votes)
+              .slice(0, 10);
+            for (const i of issues) {
+              const top = ranked.some((r) => r.n === i.number);
+              const has = i.labels.some((l) => (typeof l === 'string' ? l : l.name) === 'top-10');
+              if (top && !has) await github.rest.issues.addLabels({ ...context.repo, issue_number: i.number, labels: ['top-10'] });
+              if (!top && has) await github.rest.issues.removeLabel({ ...context.repo, issue_number: i.number, name: 'top-10' });
+            }
+            core.summary.addHeading('Top 10 propuestas').addTable([
+              [{ data: '#', header: true }, { data: 'Propuesta', header: true }, { data: 'Votos', header: true }],
+              ...ranked.map((r) => [String(r.n), r.title, String(r.votes)]),
+            ]);
+            await core.summary.write();
