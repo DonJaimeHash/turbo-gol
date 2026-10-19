@@ -527,53 +527,84 @@ test('a replay upload is authenticated before its body is hashed', async () => {
     hashed++;
     return digest.apply(subtle, args);
   };
+  const signed = async (hash) => sign(env.nodeKey, replayRequestMessage('PUT', p.matchId, hash, ts));
   try {
     assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, 'A'.repeat(86), sha, bytes), { ok: false, status: 401, code: 'bad_sig' });
     assert.equal(hashed, 0, 'refused before hashing');
     // The node's own signature over another hash: hashed once, and refused.
     const other = 'e'.repeat(64);
-    const lie = await env.cp.storeReplay(p.matchId, env.nodeId, ts, await sign(env.nodeKey, replayRequestMessage('PUT', p.matchId, other, ts)), other, bytes);
+    const lie = await env.cp.storeReplay(p.matchId, env.nodeId, ts, await signed(other), other, bytes);
     assert.deepEqual(lie, { ok: false, status: 400, code: 'sha_mismatch' });
+    assert.equal(hashed, 1);
+    // What the Worker asks before it reads a body: the same answers, and null for a good upload.
+    assert.deepEqual(await env.cp.replayPutCheck('f'.repeat(64), env.nodeId, ts, await signed(sha), sha), { ok: false, status: 404, code: 'no_match' });
+    assert.deepEqual(await env.cp.replayPutCheck(p.matchId, env.nodeId, ts - 6 * 60_000, await signed(sha), sha), { ok: false, status: 401, code: 'stale' });
+    assert.deepEqual(await env.cp.replayPutCheck(p.matchId, env.nodeId, ts, 'A'.repeat(86), sha), { ok: false, status: 401, code: 'bad_sig' });
+    assert.equal(await env.cp.replayPutCheck(p.matchId, env.nodeId, ts, await signed(sha), sha), null);
     assert.equal(hashed, 1);
   } finally {
     delete subtle.digest;
   }
-  assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, await sign(env.nodeKey, replayRequestMessage('PUT', p.matchId, sha, ts)), sha, bytes), { ok: true });
+  assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, await signed(sha), sha, bytes), { ok: true });
   assert.equal(env.cp.matches.get(p.matchId).replaySha, sha);
+  // Once the match is reported, even the node's own signed upload is refused unhashed.
+  await env.send({ t: 'report', id: 'lost', report: { kind: 'lost', matchId: p.matchId, reason: 'node_shutdown' } });
+  hashed = 0;
+  subtle.digest = (...args) => {
+    hashed++;
+    return digest.apply(subtle, args);
+  };
+  try {
+    assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, await signed(sha), sha, bytes), { ok: false, status: 409, code: 'already_reported' });
+    assert.equal(hashed, 0);
+  } finally {
+    delete subtle.digest;
+  }
 });
 
-test('only so many sockets wait to log in: more are closed at once; logging in, closing or timing out frees a place', async (t) => {
+test('only so many sockets wait to log in: one more closes the oldest, so idle sockets cannot keep a node out', async (t) => {
   const env = await setup();
   const closes = [];
-  const anon = () => env.cp.open({ send() {}, close: (code) => closes.push(code) });
+  const opened = [];
+  const anon = () => {
+    const i = opened.length;
+    const s = env.cp.open({ send() {}, close: (code) => closes.push([i, code]) });
+    opened.push(s);
+    return s;
+  };
+  const busy = () => closes.filter(([, c]) => c === 1013).map(([i]) => i);
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const waiting = Array.from({ length: MAX_UNAUTHENTICATED }, anon);
+  for (let i = 0; i < MAX_UNAUTHENTICATED; i++) anon();
   assert.deepEqual(closes, []);
-  const refused = anon();
-  assert.equal(refused.closed, true);
-  assert.deepEqual(closes, [1013]);
-  // A refused socket gets nowhere, whatever it sends.
-  await env.cp.onMessage(refused, JSON.stringify({ t: 'auth', nodeId: env.nodeId, sig: 'x' }));
-  assert.deepEqual(closes, [1013]);
-  env.cp.onClose(waiting.pop()); // one goes away: its place is free
-  waiting.push(anon());
-  assert.deepEqual(closes, [1013]);
+  assert.equal(anon().closed, false, 'the newcomer gets its challenge');
+  assert.deepEqual(busy(), [0], 'the oldest goes');
+  assert.equal(opened[0].closed, true);
+  // A socket pushed out gets nowhere, whatever it sends.
+  await env.cp.onMessage(opened[0], JSON.stringify({ t: 'auth', nodeId: env.nodeId, sig: 'x' }));
+  assert.deepEqual(closes, [[0, 1013]]);
+  env.cp.onClose(opened[5]); // one goes away: its place is free
   anon();
-  assert.deepEqual(closes, [1013, 1013]);
-  assert.equal(env.logs.filter((l) => l.endsWith('sockets still to log in: refusing new ones')).length, 1, 'logged once a minute');
+  assert.deepEqual(busy(), [0]);
+  anon();
+  assert.deepEqual(busy(), [0, 1]);
+  assert.equal(env.logs.filter((l) => l.endsWith('sockets still to log in: closing the oldest')).length, 1, 'logged once a minute');
   // None of them logs in: each times out and frees its place, even without a close event.
   t.mock.timers.tick(10_000);
-  assert.equal(closes.filter((c) => c === 4401).length, MAX_UNAUTHENTICATED);
+  assert.equal(closes.filter(([, c]) => c === 4401).length, MAX_UNAUTHENTICATED);
   t.mock.timers.reset();
-  // The real node logs in through the same door, and leaves the count once it is in.
-  for (let i = 0; i < MAX_UNAUTHENTICATED - 1; i++) waiting.push(anon());
+  // With the cap full of idle sockets (a deploy, and somebody holding the door), the real node
+  // still logs in, and leaves the count once it is in.
+  for (let i = 0; i < MAX_UNAUTHENTICATED; i++) anon();
+  const idle = opened.length - MAX_UNAUTHENTICATED;
   env.disconnect();
   await env.reconnect();
   assert.equal(env.cp.isOnline(env.nodeId), true);
-  const one = anon();
-  assert.equal(one.closed, false, 'the node that logged in no longer counts');
-  assert.equal(anon().closed, true);
-  for (const s of [...waiting, one]) env.cp.onClose(s);
+  assert.deepEqual(busy(), [0, 1, idle], 'it pushed out the oldest idle socket');
+  anon();
+  assert.deepEqual(busy(), [0, 1, idle], 'the node that logged in no longer counts');
+  anon();
+  assert.deepEqual(busy(), [0, 1, idle, idle + 1]);
+  for (const s of opened) env.cp.onClose(s);
 });
 
 // ---- the API the Worker calls -------------------------------------------------------------------

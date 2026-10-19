@@ -226,6 +226,9 @@ export async function startControlPlane(opts: DevServerOptions = {}): Promise<De
       const sig = header(req, 'x-node-sig') ?? '';
       const sha = header(req, 'x-replay-sha256') ?? '';
       if (method === 'PUT') {
+        // Before the body is read: a forged upload costs neither the read nor the hash.
+        const refused = await cp.replayPutCheck(rm[1], nodeId, ts, sig, sha);
+        if (refused) return errorJson(res, refused.status, refused.code);
         const bytes = await readBody(req, 16 * 1024 * 1024);
         if (!bytes) return errorJson(res, 413, 'too_large');
         const r = await cp.storeReplay(rm[1], nodeId, ts, sig, sha, bytes);

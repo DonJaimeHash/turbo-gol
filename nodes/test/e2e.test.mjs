@@ -4,6 +4,7 @@
 // leaves, forfeit, replay upload, verification, rating outcome and reward points.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
 import { P, testBuild } from './helpers.mjs';
 import { connectPlayer, freePort, waitFor } from './player.mjs';
 
@@ -137,6 +138,27 @@ test('a community node hosts casual and ranked matches; results are verified bef
     assert.equal(pub.hosts[0].name, 'Juan');
   } finally {
     if (rt) await rt.stop();
+    await cp.close();
+  }
+});
+
+test('a forged replay upload is refused before its body is read', async () => {
+  const cp = await startControlPlane({ port: 0, log: () => undefined });
+  try {
+    // Anyone can claim 16 MiB for a match id they saw: the answer must not wait for them.
+    const headers = { 'content-length': String(16 * 1024 * 1024), 'x-node-id': 'f'.repeat(16), 'x-node-ts': String(Date.now()), 'x-node-sig': 'A'.repeat(86), 'x-replay-sha256': 'e'.repeat(64) };
+    const status = await new Promise((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port: cp.port, method: 'PUT', path: `/nodes/replays/${'a'.repeat(64)}`, headers }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+        req.destroy();
+      });
+      req.on('error', () => undefined);
+      req.write(Buffer.alloc(1024)); // the rest never comes
+      setTimeout(() => reject(new Error('no answer without the body')), 3_000).unref();
+    });
+    assert.equal(status, 404);
+  } finally {
     await cp.close();
   }
 });

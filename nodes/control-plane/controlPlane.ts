@@ -80,8 +80,9 @@ import { parseFromNode, parseHeartbeat, parseHello, parseReport, reportMatchId }
 const MODES: Record<GameMode, number> = { '1v1': 1, '2v2': 2, '3v3': 3 };
 const AUTH_TIMEOUT_MS = 10_000;
 /**
- * Sockets still to log in, each holding an auth timer on the one control plane: more are closed
- * at once (1013, try again later), so a flood of upgrades cannot stall the nodes' heartbeats.
+ * Sockets still to log in, each holding an auth timer on the one control plane: one more closes
+ * the oldest (1013, try again later), so a flood of upgrades cannot stall the nodes' heartbeats. A
+ * node logs in within one round trip: to push it out, a flood must open this many in that time.
  */
 export const MAX_UNAUTHENTICATED = 64;
 /** A placed match with no report this long after its regulation + TTL is void. */
@@ -214,6 +215,9 @@ export interface LeaveResult {
   answer: LeaveAnswer | null;
   error?: string;
 }
+
+/** A refused replay upload: the HTTP status and error code the Worker answers. */
+export type ReplayRefusal = { ok: false; status: number; code: string };
 
 export interface MatchEntry {
   assign: MatchAssignment;
@@ -398,7 +402,7 @@ export class ControlPlane {
   private readonly sessions = new Map<string, Session>();
   /** Sessions that have not logged in yet: at most MAX_UNAUTHENTICATED. */
   private readonly unauthenticated = new Set<Session>();
-  /** When the cap last refused a socket (logged once a minute). */
+  /** When the cap last closed a socket (logged once a minute). */
   private lastBusyLog = 0;
   private readonly key: Promise<CryptoKey>;
   private readonly pub: Promise<CryptoKey>;
@@ -500,14 +504,18 @@ export class ControlPlane {
   open(link: NodeLink): Session {
     const s = new Session(link);
     if (this.unauthenticated.size >= MAX_UNAUTHENTICATED) {
+      // The oldest goes, not the newcomer: refusing new sockets would let idle ones, reopened as
+      // they time out, keep every node from logging in (after a deploy, all of them at once).
       const now = this.now();
       if (now - this.lastBusyLog >= 60_000) {
         this.lastBusyLog = now;
-        this.log(`${MAX_UNAUTHENTICATED} sockets still to log in: refusing new ones`);
+        this.log(`${MAX_UNAUTHENTICATED} sockets still to log in: closing the oldest`);
       }
-      s.closed = true;
-      link.close(1013, 'busy');
-      return s;
+      const oldest = this.unauthenticated.values().next().value;
+      if (oldest) {
+        oldest.link.close(1013, 'busy');
+        this.onClose(oldest);
+      }
     }
     this.unauthenticated.add(s);
     link.send({ t: 'challenge', nonce: s.nonce });
@@ -562,7 +570,7 @@ export class ControlPlane {
 
   /** One text frame from a node. Never throws for anything the node sends; a storage failure while handling a report rejects (no ack: the node sends it again). */
   async onMessage(s: Session, text: string): Promise<void> {
-    if (s.closed) return; // a socket the control plane already let go (refused, replaced, timed out)
+    if (s.closed) return; // a socket the control plane already let go (pushed out by the cap, replaced, timed out)
     let raw: unknown;
     try {
       raw = JSON.parse(text);
@@ -1094,18 +1102,31 @@ export class ControlPlane {
   // ---- results ------------------------------------------------------------------------------
 
   /**
-   * PUT /nodes/replays/<matchId>: only the hosting node, signed, hash as declared. The signature
-   * covers the declared hash, so it is checked before the body is hashed: every player of a node
-   * match knows its id and the node's, and hashing 16 MB for anyone who asks would be a cheap way
-   * to stall the one control plane every node's heartbeats go through.
+   * The checks of PUT /nodes/replays/<matchId> that need no body: only the hosting node, on time,
+   * signed over the declared hash, before its report. null when the upload may go on. The Worker
+   * runs it before it reads the body (up to 16 MiB): every player of a node match knows its id
+   * and the node's, and reading or hashing 16 MiB for anyone who asks would be a cheap way to
+   * stall the one control plane every node's heartbeats go through.
    */
-  async storeReplay(matchId: string, nodeId: string, ts: number, sig: string, declaredSha: string, bytes: Uint8Array): Promise<{ ok: true } | { ok: false; status: number; code: string }> {
+  async replayPutCheck(matchId: string, nodeId: string, ts: number, sig: string, declaredSha: string): Promise<ReplayRefusal | null> {
     const m = this.matches.get(matchId);
     const n = this.registry.node(nodeId);
     if (!m || !n || m.nodeId !== nodeId) return { ok: false, status: 404, code: 'no_match' };
     if (!Number.isFinite(ts) || Math.abs(this.now() - ts) > 5 * 60_000) return { ok: false, status: 401, code: 'stale' };
     if (!(await verifyWith(n.publicKey, replayRequestMessage('PUT', matchId, declaredSha, ts), sig))) return { ok: false, status: 401, code: 'bad_sig' };
     if (m.report || m.state !== 'assigned') return { ok: false, status: 409, code: 'already_reported' };
+    return null;
+  }
+
+  /**
+   * PUT /nodes/replays/<matchId> once the body is in: replayPutCheck again (the match may have
+   * been reported while the body arrived), then the hash as declared.
+   */
+  async storeReplay(matchId: string, nodeId: string, ts: number, sig: string, declaredSha: string, bytes: Uint8Array): Promise<{ ok: true } | ReplayRefusal> {
+    const refused = await this.replayPutCheck(matchId, nodeId, ts, sig, declaredSha);
+    if (refused) return refused;
+    const m = this.matches.get(matchId);
+    if (!m) return { ok: false, status: 404, code: 'no_match' };
     const sha = await sha256Hex(bytes);
     if (sha !== declaredSha) return { ok: false, status: 400, code: 'sha_mismatch' };
     await this.o.replays.put(matchId, bytes);
