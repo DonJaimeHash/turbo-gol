@@ -78,6 +78,11 @@ import { parseFromNode, parseHeartbeat, parseHello, parseReport, reportMatchId }
 
 const MODES: Record<GameMode, number> = { '1v1': 1, '2v2': 2, '3v3': 3 };
 const AUTH_TIMEOUT_MS = 10_000;
+/**
+ * Sockets still to log in, each holding an auth timer on the one control plane: more are closed
+ * at once (1013, try again later), so a flood of upgrades cannot stall the nodes' heartbeats.
+ */
+export const MAX_UNAUTHENTICATED = 64;
 /** A placed match with no report this long after its regulation + TTL is void. */
 const REPORT_GRACE_MS = 15 * 60_000;
 /** Unproven wss hosts are probed again this often while connected. */
@@ -335,6 +340,10 @@ export class ControlPlane {
   readonly matches = new Map<string, MatchEntry>();
   private readonly o: ControlPlaneOptions;
   private readonly sessions = new Map<string, Session>();
+  /** Sessions that have not logged in yet: at most MAX_UNAUTHENTICATED. */
+  private readonly unauthenticated = new Set<Session>();
+  /** When the cap last refused a socket (logged once a minute). */
+  private lastBusyLog = 0;
   private readonly key: Promise<CryptoKey>;
   private readonly pub: Promise<CryptoKey>;
   private readonly now: () => number;
@@ -422,9 +431,22 @@ export class ControlPlane {
   /** A node opened /nodes/connect. Feed its messages to onMessage(session, text); call onClose when it goes. */
   open(link: NodeLink): Session {
     const s = new Session(link);
+    if (this.unauthenticated.size >= MAX_UNAUTHENTICATED) {
+      const now = this.now();
+      if (now - this.lastBusyLog >= 60_000) {
+        this.lastBusyLog = now;
+        this.log(`${MAX_UNAUTHENTICATED} sockets still to log in: refusing new ones`);
+      }
+      s.closed = true;
+      link.close(1013, 'busy');
+      return s;
+    }
+    this.unauthenticated.add(s);
     link.send({ t: 'challenge', nonce: s.nonce });
     s.authTimer = setTimeout(() => {
-      if (!s.nodeId) link.close(4401, 'auth timeout');
+      if (s.nodeId) return;
+      link.close(4401, 'auth timeout');
+      this.onClose(s); // its place under the cap is free even if the close event never comes
     }, AUTH_TIMEOUT_MS);
     return s;
   }
@@ -455,6 +477,7 @@ export class ControlPlane {
 
   onClose(s: Session): void {
     s.closed = true;
+    this.unauthenticated.delete(s);
     if (s.authTimer) clearTimeout(s.authTimer);
     for (const p of s.pending.values()) {
       clearTimeout(p.timer);
@@ -469,6 +492,7 @@ export class ControlPlane {
 
   /** One text frame from a node. Never throws for anything the node sends; a storage failure while handling a report rejects (no ack: the node sends it again). */
   async onMessage(s: Session, text: string): Promise<void> {
+    if (s.closed) return; // a socket the control plane already let go (refused, replaced, timed out)
     let raw: unknown;
     try {
       raw = JSON.parse(text);
@@ -546,6 +570,7 @@ export class ControlPlane {
     }
     if (s.closed) return;
     if (s.authTimer) clearTimeout(s.authTimer);
+    this.unauthenticated.delete(s);
     const old = this.sessions.get(nodeId);
     if (old && old !== s) {
       old.link.close(4000, 'replaced');
@@ -883,16 +908,21 @@ export class ControlPlane {
 
   // ---- results ------------------------------------------------------------------------------
 
-  /** PUT /nodes/replays/<matchId>: only the hosting node, signed, hash as declared. */
+  /**
+   * PUT /nodes/replays/<matchId>: only the hosting node, signed, hash as declared. The signature
+   * covers the declared hash, so it is checked before the body is hashed: every player of a node
+   * match knows its id and the node's, and hashing 16 MB for anyone who asks would be a cheap way
+   * to stall the one control plane every node's heartbeats go through.
+   */
   async storeReplay(matchId: string, nodeId: string, ts: number, sig: string, declaredSha: string, bytes: Uint8Array): Promise<{ ok: true } | { ok: false; status: number; code: string }> {
     const m = this.matches.get(matchId);
     const n = this.registry.node(nodeId);
     if (!m || !n || m.nodeId !== nodeId) return { ok: false, status: 404, code: 'no_match' };
     if (!Number.isFinite(ts) || Math.abs(this.now() - ts) > 5 * 60_000) return { ok: false, status: 401, code: 'stale' };
+    if (!(await verifyWith(n.publicKey, replayRequestMessage('PUT', matchId, declaredSha, ts), sig))) return { ok: false, status: 401, code: 'bad_sig' };
+    if (m.report || m.state !== 'assigned') return { ok: false, status: 409, code: 'already_reported' };
     const sha = await sha256Hex(bytes);
     if (sha !== declaredSha) return { ok: false, status: 400, code: 'sha_mismatch' };
-    if (!(await verifyWith(n.publicKey, replayRequestMessage('PUT', matchId, sha, ts), sig))) return { ok: false, status: 401, code: 'bad_sig' };
-    if (m.report || m.state !== 'assigned') return { ok: false, status: 409, code: 'already_reported' };
     await this.o.replays.put(matchId, bytes);
     m.replaySha = sha;
     // Before the 200: a restart that forgot the upload would strike the node's honest 'ended' as 'no_replay'.

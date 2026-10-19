@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { playRecordedMatch, testBuild } from './helpers.mjs';
 import { CAP, SPECS, human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
 
+const { MAX_UNAUTHENTICATED } = await import('../control-plane/controlPlane.ts');
 const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES } = await import('../control-plane/registry.ts');
 const { Ledger } = await import('../control-plane/ledger.ts');
 const { generateEd25519, sign, sha256Hex } = await import('../shared/edcrypto.ts');
@@ -446,4 +447,67 @@ test('an unsampled casual match still needs its replay, and still counts for the
   const L = env.cp.ledger;
   const later = L.record({ matchId: 'z', nodeId: env.nodeId, operatorId: 'op1', region: 'SA', mode: '1v1', ranked: false, verified: true, endReason: 'rules', tickLagP99Ms: 1, underrunRate: 0, at: env.now(), sampleRate: 0.2, players: [{ playerId: 'b'.repeat(16), connectedMs: 60_000, account: true, accountAgeDays: 30 }] }, 1);
   assert.equal(later.repeat, 0.5, 'the unsampled match of the same group counted');
+});
+
+test('a replay upload is authenticated before its body is hashed', async () => {
+  const env = await setup();
+  const p = await env.place([human('a')]);
+  const bytes = new Uint8Array(1 << 20);
+  const sha = await sha256Hex(bytes);
+  const ts = env.now();
+  // Every player of the match knows its id and the node's: a forged upload must cost no hashing.
+  const subtle = globalThis.crypto.subtle;
+  const digest = Object.getPrototypeOf(subtle).digest;
+  let hashed = 0;
+  subtle.digest = (...args) => {
+    hashed++;
+    return digest.apply(subtle, args);
+  };
+  try {
+    assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, 'A'.repeat(86), sha, bytes), { ok: false, status: 401, code: 'bad_sig' });
+    assert.equal(hashed, 0, 'refused before hashing');
+    // The node's own signature over another hash: hashed once, and refused.
+    const other = 'e'.repeat(64);
+    const lie = await env.cp.storeReplay(p.matchId, env.nodeId, ts, await sign(env.nodeKey, replayRequestMessage('PUT', p.matchId, other, ts)), other, bytes);
+    assert.deepEqual(lie, { ok: false, status: 400, code: 'sha_mismatch' });
+    assert.equal(hashed, 1);
+  } finally {
+    delete subtle.digest;
+  }
+  assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, await sign(env.nodeKey, replayRequestMessage('PUT', p.matchId, sha, ts)), sha, bytes), { ok: true });
+  assert.equal(env.cp.matches.get(p.matchId).replaySha, sha);
+});
+
+test('only so many sockets wait to log in: more are closed at once; logging in, closing or timing out frees a place', async (t) => {
+  const env = await setup();
+  const closes = [];
+  const anon = () => env.cp.open({ send() {}, close: (code) => closes.push(code) });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const waiting = Array.from({ length: MAX_UNAUTHENTICATED }, anon);
+  assert.deepEqual(closes, []);
+  const refused = anon();
+  assert.equal(refused.closed, true);
+  assert.deepEqual(closes, [1013]);
+  // A refused socket gets nowhere, whatever it sends.
+  await env.cp.onMessage(refused, JSON.stringify({ t: 'auth', nodeId: env.nodeId, sig: 'x' }));
+  assert.deepEqual(closes, [1013]);
+  env.cp.onClose(waiting.pop()); // one goes away: its place is free
+  waiting.push(anon());
+  assert.deepEqual(closes, [1013]);
+  anon();
+  assert.deepEqual(closes, [1013, 1013]);
+  assert.equal(env.logs.filter((l) => l.endsWith('sockets still to log in: refusing new ones')).length, 1, 'logged once a minute');
+  // None of them logs in: each times out and frees its place, even without a close event.
+  t.mock.timers.tick(10_000);
+  assert.equal(closes.filter((c) => c === 4401).length, MAX_UNAUTHENTICATED);
+  t.mock.timers.reset();
+  // The real node logs in through the same door, and leaves the count once it is in.
+  for (let i = 0; i < MAX_UNAUTHENTICATED - 1; i++) waiting.push(anon());
+  env.disconnect();
+  await env.reconnect();
+  assert.equal(env.cp.isOnline(env.nodeId), true);
+  const one = anon();
+  assert.equal(one.closed, false, 'the node that logged in no longer counts');
+  assert.equal(anon().closed, true);
+  for (const s of [...waiting, one]) env.cp.onClose(s);
 });
