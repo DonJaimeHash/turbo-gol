@@ -221,9 +221,9 @@ export interface LeaveOptions {
    */
   connected?: boolean;
   /**
-   * A 401 refreshes the account's session and sends the leave once more: the match is on a
-   * community node, where the leave is the only way out and the Bearer of the queue may have
-   * expired during the match (account sessions last 1 h).
+   * A 401 refreshes the account's session and sends the leave once more, as the same player: the
+   * match is on a community node, where the leave is the only way out and the Bearer of the queue
+   * may have expired during the match (account sessions last 1 h).
    */
   retryRejected?: boolean;
 }
@@ -907,13 +907,15 @@ export class NetClient {
   leaveMatch(matchId?: string, opts: LeaveOptions = {}): Promise<boolean> {
     const bearer = this.lastBearer ?? this.guest?.session ?? null;
     if (bearer === null) return Promise.resolve(false);
+    // Whose leave it is: lastBearer may belong to someone else by the time a retry goes out.
+    const who = this.lastBearerPlayer;
     this.leaves++;
     const fields: { matchId?: string; connected?: false } = matchId !== undefined ? { matchId } : {};
     if (opts.connected === false) fields.connected = false;
     const payload = this.withRegion(fields);
     // The first POST goes out now, before the caller closes the socket; only a retry waits.
     let answer = this.post('/api/leave', payload, bearer);
-    if (opts.retryRejected === true) answer = answer.then((res) => (res.status === 401 ? this.leaveAgain(payload, bearer, res) : res));
+    if (opts.retryRejected === true) answer = answer.then((res) => (res.status === 401 ? this.leaveAgain(payload, bearer, who, res) : res));
     const p = answer
       .then(async (res) => {
         if (!res.ok) return false;
@@ -934,34 +936,38 @@ export class NetClient {
 
   /**
    * A leave refused with 401: refresh the account's session (onSessionRejected) and POST the same
-   * body with it, once. Resolves the refusal when there is no fresh Bearer of the same player (a
-   * guest, a refresh that failed) or the retry does not get through.
+   * body with it, once. Only a fresh session of `who`, the player the leave was sent as, is used:
+   * another flow (the menu starting a queue) may have moved lastBearer to a guest or another
+   * account meanwhile. Resolves the refusal when there is none (a guest, a sign-out, a refresh
+   * that failed) or the retry does not get through.
    */
-  private async leaveAgain(body: object, bearer: string, refused: ResponseLike): Promise<ResponseLike> {
+  private async leaveAgain(body: object, bearer: string, who: string | null, refused: ResponseLike): Promise<ResponseLike> {
     if (this.onSessionRejected !== null) await this.onSessionRejected().catch(() => undefined);
-    await this.refreshBearer();
-    const fresh = this.lastBearer;
-    if (fresh === null || fresh === bearer) return refused;
+    const fresh = await this.refreshBearer();
+    if (fresh === null || fresh.playerId !== who || fresh.session === bearer) return refused;
     this.leaves++;
-    return this.post('/api/leave', body, fresh).catch(() => refused);
+    return this.post('/api/leave', body, fresh.session).catch(() => refused);
   }
 
   /**
    * Make `lastBearer` (what leave / ice / cancel send) good for `minValidMs` more: an account's
    * session is refreshed early through sessionProvider, a guest's (24 h) stays. Only a session of
-   * the same player replaces it (a sign-in since the queue must not leave as someone else). Never
-   * rejects: on a failure the old Bearer stays and a 401 on the leave asks again.
+   * the player `lastBearer` belongs to replaces it (a sign-in since the queue must not leave as
+   * someone else). Resolves the session it adopted, null when the old Bearer stays. Never rejects:
+   * on a failure the old Bearer stays and a 401 on the leave asks again.
    */
-  async refreshBearer(minValidMs?: number): Promise<void> {
+  async refreshBearer(minValidMs?: number): Promise<GuestSession | null> {
     const provider = this.sessionProvider;
-    if (provider === null) return;
+    if (provider === null) return null;
     let s: GuestSession | null;
     try {
       s = await provider(minValidMs);
     } catch {
-      return;
+      return null;
     }
-    if (s !== null && s.playerId === this.lastBearerPlayer) this.lastBearer = s.session;
+    if (s === null || s.playerId !== this.lastBearerPlayer) return null;
+    this.lastBearer = s.session;
+    return s;
   }
 
   /**

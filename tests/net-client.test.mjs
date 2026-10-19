@@ -788,6 +788,39 @@ test('leaveMatch retryRejected: the first POST goes out at once; a 401 refreshes
   assert.equal(g.calls.filter((c) => c.url === '/api/leave').length, 2);
 });
 
+test('leaveMatch retryRejected: the retry goes only as the player who left, never as whoever another flow moved lastBearer to', async () => {
+  const auths = [];
+  const h = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/leave': (init) => {
+      auths.push(init.headers.authorization);
+      return auths.length === 1 ? jsonResponse(401, { error: 'unauthorized' }) : jsonResponse(200, { ok: true, left: true, released: true });
+    },
+  });
+  let account = ACCOUNT('jwt-a1');
+  h.client.sessionProvider = async () => account;
+  await h.client.ensureGuest();
+  // The refresh signs the account out and, meanwhile, the menu starts a queue as the guest.
+  h.client.onSessionRejected = async () => {
+    account = null;
+    await h.client.ensureGuest();
+  };
+  assert.equal(await h.client.leaveMatch('e'.repeat(64), { retryRejected: true }), false);
+  assert.deepEqual(auths, ['Bearer jwt-a1']);
+  assert.equal(h.client.lastBearer, 'jwt-session', "the queue's guest Bearer stays");
+  // Another account signed in meanwhile: not retried either.
+  account = ACCOUNT('jwt-a1');
+  await h.client.ensureGuest();
+  auths.length = 0;
+  h.client.onSessionRejected = async () => {
+    account = ACCOUNT('jwt-b1', 'acc2');
+    await h.client.ensureGuest();
+  };
+  assert.equal(await h.client.leaveMatch('e'.repeat(64), { retryRejected: true }), false);
+  assert.deepEqual(auths, ['Bearer jwt-a1']);
+  assert.equal(h.client.leaves, 2);
+});
+
 test('NetError carries the server code (serverCode) and retryAfterMs; recovery branches on the code, never on the message text', async () => {
   const P2 = await import('../src/net/p2p/protocol.ts');
   // 429 no_show: the code and the retry delay ride on the error.
