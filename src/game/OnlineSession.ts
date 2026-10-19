@@ -684,7 +684,8 @@ export class OnlineSession {
     s.bytesOutPerSec = this.bytesOutMeter.sample(now, c.bytesOut);
     s.snapshotAgeMs = c.snapshotAge(now);
     s.reconnects = c.reconnects;
-    s.host = this.welcome?.hostColo ?? '';
+    const host = this.welcome?.hostColo;
+    s.host = typeof host === 'string' ? host : '';
   }
 }
 

@@ -495,6 +495,21 @@ test('OnlineSession: the network view carries the host of the Welcome (the panel
   assert.equal(s.session.stats.host, '');
 });
 
+test('OnlineSession: a hostColo that is not a string (the Welcome is not validated) is no node and breaks nothing', async () => {
+  const { formatNetStats } = await import('../src/render/Hud.ts');
+  for (const hostColo of [null, 42, { name: 'node:x' }]) {
+    const s = await playingSession(RANKED_QUEUE, { welcome: { hostColo } });
+    s.session.advance(0.01);
+    assert.equal(s.session.stats.host, '');
+    assert.doesNotThrow(() => formatNetStats(s.session.stats));
+    s.ws.deliver(encodeJson(MsgType.Event, { type: 'ended', winner: 0, blue: 1, red: 0, tick: 500 }));
+    assert.equal(s.session.lastRankedOnNode, false);
+  }
+  assert.equal(P.isNodeHost('node:sao-paulo-1'), true);
+  assert.equal(P.isNodeHost('GRU'), false);
+  assert.equal(P.isNodeHost(undefined), false);
+});
+
 /**
  * A match played under an account session (an AccountClient on a fake clock, wired like Game.ts)
  * with ten minutes left on its Bearer when the match starts; the first /api/leave answers 401.

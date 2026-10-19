@@ -64,9 +64,11 @@ export interface Welcome {
 /**
  * The match is hosted on a community node (Welcome.hostColo 'node:<name>'), not a Durable Object:
  * its ranked result waits for the replay check and POST /api/leave is the only way out of it.
+ * Anything but a string is no node: the Welcome is a plain cast of the host's JSON, and a bad
+ * value must not stop the player from readying (handleWelcome) or the network panel.
  */
-export function isNodeHost(hostColo: string | undefined): boolean {
-  return hostColo !== undefined && hostColo.startsWith('node:');
+export function isNodeHost(hostColo: unknown): boolean {
+  return typeof hostColo === 'string' && hostColo.startsWith('node:');
 }
 
 export type MatchEvent =
