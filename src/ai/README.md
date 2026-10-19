@@ -449,12 +449,23 @@ index (`predAge`); without that offset 3 of every 4 decisions would read a 1–3
   the receiver's role switch makes it chase the cross); so were a boost reserve for aerials, a
   far-post aim and a shorter go-around in the half we attack (`scripts/bot-bench.mjs`).
 
-## Bot bench (`scripts/bot-bench.mjs`)
+The plan to close these gaps (target architecture, constraints, phases with measurable targets) is
+in [docs/bots/REWORK.md](../../docs/bots/REWORK.md).
 
-`node scripts/bot-bench.mjs [--baseline=origin/main] [--modes=1v1,2v2,3v3] [--matches=8]
-[--difficulty=hard] [--tuneA=key=value,...] [--paramsA=hard.key=value,...]`: the bots of the working
-tree (A) against those of a git revision (B), headless 3-minute matches on the real physics, A
-blue in even matches and red in odd ones. Prints A's wins / draws / losses and per match goals,
-own goals, touches, aerial touches, shots on target, passes, forward touches and how long the ball
-is high. With 40 matches a mode the win count still moves by about ±3 between equal bots: compare
-variants on 40+ matches, and use the scenario tests (`tests/bot-sim.test.mjs`) for skills.
+## Measuring (`scripts/bot-skills.mjs`, `scripts/bot-bench.mjs`)
+
+Both load the bots of the working tree (A) and of a git revision (B, `--baseline=origin/main` by
+default) side by side (`scripts/bot-lib.mjs`), on the real physics, and accept
+`--tuneA=key=value,...` / `--paramsA=hard.key=value,...` to try A variants without editing code.
+
+`node scripts/bot-skills.mjs [--difficulty=medium,hard] [--only=shots,saves] [-v]`: fixed
+scenarios per skill (shots, aerials, saves, approach, recovery, kickoffs A vs B), A and B side by
+side. Under half a minute and free of match noise: the first check for any change.
+
+`node scripts/bot-bench.mjs [--modes=1v1,2v2,3v3] [--matches=8] [--difficulty=hard]
+[--json=out.json]`: headless 3-minute matches A vs B, A blue in even matches and red in odd ones.
+Prints A's wins / draws / losses with its score, a 95 % interval and the Elo it implies, and per
+match goals, own goals, touches, aerial touches, shots on target, passes, forward touches, how
+long the ball is high and the think() cost per bot and tick. With 40 matches a mode equal bots
+still land anywhere in about 35-65 %: compare variants on 40+ matches and trust only "A better" /
+"A worse"; the scenario tests (`tests/bot-sim.test.mjs`) pin individual skills.
