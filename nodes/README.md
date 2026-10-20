@@ -5,8 +5,9 @@ the project's control plane. The control plane registers them, places matches on
 results by re-simulating the match** (every ranked match, casual ones by sample) and rewards the
 people who run them with points that unlock new items in the game. En español: [README.es.md](README.es.md).
 
-**Status:** a working prototype, not wired into the game yet. What is missing before real players
-use it is listed (in Spanish) in [docs/PRODUCCION.md](docs/PRODUCCION.md).
+**Status:** a working prototype, not wired into the game yet: the control plane is in the Worker
+(`server/`), but the matchmaker does not send it matches. What is missing before real players use
+it is listed (in Spanish) in [docs/PRODUCCION.md](docs/PRODUCCION.md).
 
 ## Why it is safe to accept anyone's machine
 

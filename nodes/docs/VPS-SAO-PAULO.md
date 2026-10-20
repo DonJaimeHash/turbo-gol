@@ -115,12 +115,12 @@ Dos detalles del SSH:
 
 ## Antes de instalar el nodo
 
-1. **El plano de control en el Worker, con su estado guardado:** los PR [1] y [6] desplegados.
-   Hoy `https://turbo-gol.com/nodes/releases/launcher.mjs`, lo primero que baja el instalador
-   (`install/install.sh:108`), devuelve el `index.html` del juego: `/nodes/*` no está en
-   `run_worker_first` (`server/wrangler.jsonc:49`) y el Worker manda al sitio todo lo que no
-   empieza con `/api/` (`server/src/index.ts:649`). Y el estado tiene que vivir en el SQLite del
-   `NodeRegistryDO` ([6]): si no, el próximo deploy olvidaría el VPS registrado.
+1. **El plano de control en el Worker, con su estado guardado:** los PR [1] (#23) y [6] (#28)
+   desplegados. Antes del deploy de #28, `https://turbo-gol.com/nodes/releases/launcher.mjs`, lo
+   primero que baja el instalador (`install/install.sh:108`), devuelve el `index.html` del juego:
+   `/nodes/*` no está en `run_worker_first` (`server/wrangler.jsonc:49`) y el Worker manda al sitio
+   todo lo que no empieza con `/api/` (`server/src/index.ts:649`). Y el estado tiene que vivir en
+   el SQLite del `NodeRegistryDO` ([6], #28): si no, el próximo deploy olvidaría el VPS registrado.
 2. **La release 0.2.0,** firmada con la clave de producción, y el canal en 0.2.0: los PR [2] y
    [5], y las acciones M5, M6, M9 y M10.
 3. **La cuenta del proyecto en `NODE_TRUSTED_OPERATORS`** (M4 y M7). Sin eso, el
