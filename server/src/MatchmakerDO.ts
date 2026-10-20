@@ -35,7 +35,12 @@
  *                                               the match at once, its /release drops the capacity entry, so a guest
  *                                               that queues and quits back to back holds no rooms). Without a matchId (Esc in the
  *                                               queue, a P2P teardown) or with another id a server lock stays: a reload
- *                                               / network drop rejoins that match on 409
+ *                                               / network drop rejoins that match on 409. A node lock follows the server
+ *                                               rule, but the node goes first (/internal/leave, `connected: false` passed
+ *                                               on): the lock is freed only once the control plane recorded the leave or
+ *                                               no longer knows the match (200 / 404 / 410); a 503, an error or no answer
+ *                                               keeps it (released: false), so a leave the node never saw cannot put the
+ *                                               player in a second match
  *   POST /release { matchId, playerIds, closeRoom?, noShow? }
  *                                            -> frees the "one active match per player" locks (and cached results)
  *                                               that point at `matchId` (a MatchDO match id, a RoomDO room id, or a node
@@ -184,6 +189,8 @@ interface ActiveMatch {
 interface LeaveBody {
   playerId?: unknown;
   matchId?: unknown;
+  /** false: the client never got into the match (a cancel while connecting). Passed on to a node only. */
+  connected?: unknown;
 }
 
 /** What /internal/status of a MatchDO tells about its liveness (the fields read here). */
@@ -718,7 +725,9 @@ export class MatchmakerDO extends DurableObject<Env> {
    * (pending long-polls answer 'waiting' at once) and free its lock when the leave covers it (see
    * leaveReleases). The lock goes first (synchronously, so a join that follows this call sees it
    * gone), the room / match is told afterwards (awaited: by the time the client gets its answer
-   * the other peers have their 'peerLeft' / the match's bots drive the player's car).
+   * the other peers have their 'peerLeft' / the match's bots drive the player's car). A node match
+   * is the other way round: the node first, and the lock goes only once it took the leave
+   * (nodeLeave).
    */
   private async leave(request: Request, now: number): Promise<Response> {
     const body = await readJson<LeaveBody>(request);
@@ -737,12 +746,38 @@ export class MatchmakerDO extends DurableObject<Env> {
     const act = this.active.get(playerId);
     const named = typeof body.matchId === 'string' ? body.matchId : null;
     if (act && act.until > now && leaveReleases(roomKindOf(act), act.matchId, named)) {
-      await this.forget(playerId, act);
-      released = true;
-      if (act.kind === 'p2p') await this.leftRoom(act, playerId, now);
-      else if (act.kind !== 'node') await this.matchLeave(act.matchId, playerId);
+      if (act.kind === 'node') {
+        released = await this.nodeLeave(act.matchId, playerId, body.connected === false);
+        if (released) await this.forget(playerId, act);
+      } else {
+        await this.forget(playerId, act);
+        released = true;
+        if (act.kind === 'p2p') await this.leftRoom(act, playerId, now);
+        else await this.matchLeave(act.matchId, playerId);
+      }
     }
     return json({ ok: true, left, released });
+  }
+
+  /**
+   * Tell the node's control plane the player quits its node match, before the lock goes (D12):
+   * true when the lock may go (the leave is recorded: 200, even when the relay to the node then
+   * failed; or the control plane no longer has the player in a running match: 404, 410), false
+   * when it must stay (503 offline: nothing was recorded, the player may still rejoin; any other
+   * answer, an error, or none within nodeTimeoutMs, longer than the node's own RPC). Without the
+   * nodes configured nothing can hold the player: true.
+   */
+  private async nodeLeave(matchId: string, playerId: string, neverConnected: boolean): Promise<boolean> {
+    const env = this.env;
+    if (!nodesConfigured(env)) return true;
+    try {
+      const r = await askNodes(env, NODE_ROUTES.leave, { matchId, playerId, ...(neverConnected ? { connected: false } : {}) }, this.nodeTimeoutMs);
+      if ((r.status >= 200 && r.status < 300) || r.status === 404 || r.status === 410) return true;
+      console.error(`matchmaker: node leave -> ${r.status}: lock kept`);
+    } catch (e) {
+      console.error('matchmaker: node leave failed, lock kept', e);
+    }
+    return false;
   }
 
   /**

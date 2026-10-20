@@ -1,7 +1,7 @@
 // Matches on community nodes, the Worker's side, without workerd: the matchmaker's node hook
 // (server/src/MatchmakerDO.ts behind nodes_on: placement, the fallbacks to a MatchDO, the room cap,
-// do_disabled, the ranked lock, node locks verified with the control plane) and the Worker's
-// /api/queue around them (server/src/index.ts). The
+// do_disabled, the ranked lock, node locks verified and quit through the control plane) and the
+// Worker's /api/queue, /api/rejoin and /api/leave around them (server/src/index.ts). The
 // NodeRegistryDO is a fake answering its internal routes (server/src/nodeApi.ts); FLAGS, MATCH,
 // ROOM, ACCOUNTS and MATCHMAKER are fakes that record their calls, with a settable clock. With
 // nodes_on absent, or the nodes not configured, everything is pinned to the behaviour without
@@ -577,7 +577,53 @@ test('a node lock left over where the nodes are no longer configured holds nothi
   assert.equal(h.nodes.of('/internal/status').length + h.nodes.of('/internal/leave').length, 0);
 });
 
-// ---- the Worker: /api/queue --------------------------------------------------------------------------------
+// ---- /leave of a node match (P23) -----------------------------------------------------------------------
+
+test('/leave of a node match: the node first; recorded (200), unknown (404) or over (410) frees the lock; connected: false is passed on', async () => {
+  for (const [answer, connected] of [[{}, undefined], [{}, false], [{ status: 404, body: { error: 'no_match' } }, undefined], [{ status: 410, body: { error: 'match_over' } }, undefined]]) {
+    const h = await makeMm();
+    const [qa] = await h.pair(A, B);
+    if (answer.status) h.nodes.leave = () => answer;
+    const r = await h.call('/leave', { playerId: A, matchId: qa.json.matchId, ...(connected === false ? { connected: false } : {}) });
+    assert.deepEqual(r.json, { ok: true, left: false, released: true }, JSON.stringify(answer));
+    const leaves = h.nodes.of('/internal/leave');
+    assert.equal(leaves.length, 1);
+    assert.deepEqual(leaves[0].body, { matchId: qa.json.matchId, playerId: A, ...(connected === false ? { connected: false } : {}) });
+    const st = await h.stats();
+    assert.deepEqual([st.active, st.nodeLocks], [1, 1], 'only B is still locked');
+    assert.equal((await h.join(A, 'p2p')).json.status, 'waiting', 'A queues again at once');
+    await h.call('/leave', { playerId: A });
+  }
+});
+
+test('/leave of a node match the node did not take (503, an error, no answer): the lock stays, released: false', async () => {
+  for (const leave of [() => ({ status: 503, body: { error: 'offline' } }), () => ({ status: 500, body: { error: 'internal' } }), () => new Error('reset'), () => new Promise(() => {})]) {
+    const h = await makeMm();
+    h.mm.nodeTimeoutMs = 30;
+    const [qa] = await h.pair(A, B);
+    h.nodes.leave = leave;
+    const errors = await errorsOf(async () => {
+      const r = await h.call('/leave', { playerId: A, matchId: qa.json.matchId });
+      assert.deepEqual(r.json, { ok: true, left: false, released: false });
+    });
+    assert.ok(errors.some((l) => l.includes('lock kept')));
+    assert.equal((await h.stats()).nodeLocks, 2);
+    h.setTime(h.time() + M.LOCK_VERIFY_AFTER_MS);
+    const r = await h.join(A, 'p2p');
+    assert.deepEqual([r.status, r.json.node], [409, true], 'still in the match: no second one');
+  }
+});
+
+test('/leave without the node match’s id (Esc in a queue, a P2P teardown) or with another id keeps the node lock and never calls the node', async () => {
+  const h = await makeMm();
+  await h.pair(A, B);
+  assert.deepEqual((await h.call('/leave', { playerId: A })).json, { ok: true, left: false, released: false });
+  assert.deepEqual((await h.call('/leave', { playerId: A, matchId: 'f'.repeat(64) })).json, { ok: true, left: false, released: false });
+  assert.equal(h.nodes.of('/internal/leave').length, 0);
+  assert.equal((await h.stats()).nodeLocks, 2);
+});
+
+// ---- the Worker: /api/queue, /api/rejoin, /api/leave ----------------------------------------------------
 
 /**
  * A Worker env: the matchmaker answers every /join with `joinAnswer` and records its calls; MATCH
@@ -656,4 +702,61 @@ test('Worker /api/queue with do_disabled: 503 as before unless the nodes are on 
     }
     assert.equal(w.nodes.calls.length, 0, label);
   }
+});
+
+test('Worker /api/rejoin of a node match: a fresh node ticket and the node’s URL; the refusals free or keep the lock as for a MatchDO', async () => {
+  const token = await tokenOf(A);
+  const id = hex64();
+  let w = workerEnv();
+  let r = await post(w.env, '/api/rejoin', { matchId: id }, token);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json, { status: 'matched', matchId: id, ticket: 'node-ticket-again.' + A, wsUrl: `${NODE_URL}/m/${id}`, node: true });
+  assert.deepEqual(w.nodes.of('/internal/rejoin')[0].body, { matchId: id, playerId: A });
+  assert.equal(w.mmCalls.length, 0);
+
+  const refusals = [
+    [410, 'left', false],
+    [410, 'match_over', true],
+    [404, 'no_match', true],
+    [404, 'not_in_match', true],
+    [503, 'offline', false],
+    [503, 'nodes_unavailable', false],
+  ];
+  for (const [status, code, releases] of refusals) {
+    w = workerEnv();
+    w.nodes.rejoin = () => ({ status, body: { error: code, message: code } });
+    r = await post(w.env, '/api/rejoin', { matchId: id, region: 'SA' }, token);
+    assert.deepEqual([r.status, r.json.error], [status, code]);
+    assert.deepEqual(w.mmCalls, releases ? [{ name: 'mm:SA', path: '/release', body: { matchId: id, playerIds: [A] } }] : [], code);
+  }
+  w = workerEnv();
+  w.nodes.rejoin = () => new Error('object reset');
+  const errors = await errorsOf(async () => {
+    r = await post(w.env, '/api/rejoin', { matchId: id }, token);
+  });
+  assert.deepEqual([r.status, r.json.error], [503, 'offline'], 'no answer: as if the node were out of reach, the lock stays');
+  assert.equal(w.mmCalls.length, 0);
+  assert.ok(errors.some((l) => l.includes('node rejoin failed')));
+});
+
+test('Worker /api/rejoin of an id that is neither a MatchDO, a RoomDO nor a node match: 404 and its lock freed', async () => {
+  const token = await tokenOf(B);
+  const id = hex64();
+  const w = workerEnv({ configured: false });
+  const r = await post(w.env, '/api/rejoin', { matchId: id }, token);
+  assert.deepEqual([r.status, r.json.error], [404, 'no_match']);
+  assert.deepEqual(w.mmCalls, [{ name: 'mm:SA', path: '/release', body: { matchId: id, playerIds: [B] } }]);
+  assert.equal((await post(w.env, '/api/rejoin', { matchId: 'zz' }, token)).status, 400, 'not 64 hex: still 400');
+});
+
+test('Worker /api/leave passes connected: false on to the matchmaker, and nothing else', async () => {
+  const w = workerEnv();
+  const token = await tokenOf(C);
+  const id = hex64();
+  for (const connected of [false, true, 'false', undefined]) await post(w.env, '/api/leave', { matchId: id, ...(connected === undefined ? {} : { connected }) }, token);
+  assert.deepEqual(
+    w.mmCalls.map((c) => c.body),
+    [{ playerId: C, matchId: id, connected: false }, { playerId: C, matchId: id }, { playerId: C, matchId: id }, { playerId: C, matchId: id }],
+  );
+  assert.equal(w.nodes.calls.length, 0, 'the matchmaker calls the node, not the Worker');
 });
