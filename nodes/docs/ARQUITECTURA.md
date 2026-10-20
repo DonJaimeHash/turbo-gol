@@ -60,7 +60,7 @@ aceptar máquinas de cualquiera sin confiar en nadie.
 | Transporte WebRTC | Un DataChannel confiable y ordenado, que presenta la misma interfaz que el WebSocket. Autotest de alcance a través de TURN. | `node/rtcTransport.ts` |
 | Adaptador del jugador | Un objeto con interfaz de WebSocket que viaja por WebRTC. `NetClient` lo recibe con una fábrica y no nota la diferencia. | `client/rtcSocket.ts` |
 | Runtime y agente | Salas, temporizador único, medición de lag y tráfico, conexión saliente al plano de control. | `node/runtime.ts`, `node/agent.ts`, `node/ticker.ts` |
-| Lanzador | Baja versiones firmadas, las verifica y drena antes de actualizar. Si una versión se cae tres veces, vuelve a la última buena que no esté por debajo del mínimo del canal: con `minimum = stable`, como publica hoy `scripts/build-node.mjs`, no hay a cuál volver. | `node/launcher.ts`, `node/launcherMain.ts` |
+| Lanzador | Baja versiones firmadas, las verifica y drena antes de actualizar. Si una versión se cae tres veces, vuelve a la última buena que no esté por debajo del mínimo del canal: con `minimum = stable`, como lo deja la compuerta de deploy cuando cambia el código del juego, no hay a cuál volver. | `node/launcher.ts`, `node/launcherMain.ts` |
 | Plano de control | Registro, scheduler, señalización, cola de verificación, recompensas, tienda. Lógica independiente del transporte. | `control-plane/*.ts` |
 | Instaladores | VPS con root, Windows sin admin, macOS y Linux de escritorio sin root. | `install/` |
 | Página del operador | El botón "Poner un servidor", "Mis servidores" y la tienda. | `web/host.html` |
@@ -142,8 +142,9 @@ aceptar máquinas de cualquiera sin confiar en nadie.
   estable con esperas de 5 s a 5 min. Las marcas de versión mala vencen a las 24 horas.
 - Si una versión se cae tres veces en diez minutos, el lanzador vuelve a la última buena, siempre
   que no esté por debajo del mínimo del canal (`chooseVersion` en `node/launcher.ts`). Con
-  `minimum = stable`, que es lo que publica hoy `scripts/build-node.mjs`, no hay vuelta atrás
-  automática: el lanzador reintenta la estable cada vez más espaciado.
+  `minimum = stable`, que es lo que escribe la compuerta de deploy
+  (`scripts/node-release-gate.mjs`) cuando cambia el código del juego que corre el nodo, no hay
+  vuelta atrás automática: el lanzador reintenta la estable cada vez más espaciado.
 - **Compatibilidad:** una partida solo va a un nodo con el mismo hash de wasm y la misma versión
   de protocolo que el cliente.
 
@@ -176,12 +177,12 @@ pausa en 30 días lo devuelve a prueba. Los nodos del proyecto no se pausan.
 | Mandar mensajes rotos al plano de control | Se valida cada mensaje antes de usarlo. Un sobre, un hello o un heartbeat rotos cierran la conexión del nodo; un reporte roto de una de sus partidas la da por perdida, con strike; lo demás se ignora. | Sí |
 | Anular partidas a voluntad con cortes | Cada corte cuesta un strike. Una segunda pausa por strikes en 30 días devuelve el nodo a prueba: pierde el ranked hasta sumar otras 20 partidas verificadas. | Sí |
 | Ver las IP de los jugadores | Pasa, como en el P2P actual y en cualquier servidor comunitario. Se puede forzar TURN para ocultarlas. | — |
-| Robar la clave de releases | La de producción no va a estar en ningún servidor: va a vivir en un entorno de CI con aprobación manual (pendiente, `PRODUCCION.md` etapa 1). Hoy solo existe la clave de desarrollo que firmó la 0.1.0, en la PC del mantenedor. Los instaladores no se firman y llegan por HTTPS: el permiso de escribir en el bucket de releases se cuida igual que la clave. | — |
+| Robar la clave de releases | La de producción no está en ningún servidor: vive en el gestor de contraseñas y va al entorno `releases` de GitHub, con aprobación manual (M6 de `PRODUCCION.md`), donde firma en un trabajo que no instala nada. Los instaladores no se firman y llegan por HTTPS: el token del bucket de releases va en su propio entorno (`releases-r2`), con la misma aprobación, y la subida solo acepta los instaladores del repo con la clave. | — |
 
 | Clave | Firma | Dónde vive |
 |---|---|---|
 | De control | Tickets de partida | Secreto del Worker |
-| De releases | El manifiesto de cada versión (que lleva el hash de cada archivo) y `launcher.mjs`. Los instaladores no: llevan la mitad pública adentro | Hoy, una clave de desarrollo en la PC del mantenedor. La de producción: un entorno de CI con aprobación manual, o una máquina sin conexión (pendiente) |
+| De releases | El manifiesto de cada versión (que lleva el hash de cada archivo) y `launcher.mjs`. Los instaladores no: llevan la mitad pública adentro | La de producción, en el entorno `releases` de GitHub (M6) y en el gestor de contraseñas; su mitad pública, en `release-key.pub`. La de desarrollo, en `.keys/` de la PC del mantenedor, solo firma releases que nunca se suben |
 | De cada nodo | Su login y sus subidas | En la máquina del operador |
 
 ## Capacidad y costos (medidos)

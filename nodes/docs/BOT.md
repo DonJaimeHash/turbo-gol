@@ -13,13 +13,15 @@
 5. **Revisar y mergear.** Una persona revisa el PR antes de mergear. Hoy las reglas de `main`
    exigen CI en verde pero 0 aprobaciones (leído el 15/10/2026): la revisión humana es que el
    mantenedor lo lea. Con un segundo mantenedor se puede exigir una aprobación.
-6. **Publicar.** El merge no llega solo a los servidores. Un tag `node-vX.Y.Z` construye y firma
-   la release (`github/workflows/node-release.yml`, una plantilla que todavía no corre: se activa
-   en la etapa 1 de `PRODUCCION.md`), y un mantenedor mueve el canal a mano. Subir `stable` hace
-   que cada nodo tome la versión nueva cuando reinicia; subir también `minimum` obliga a los que
-   están corriendo a drenar sus partidas y actualizarse, pero solo cuando vuelven a conectarse: el
-   plano de control compara un nodo con `minimum` cuando el nodo saluda
-   (`control-plane/controlPlane.ts:405`), y el lanzador no mira el canal mientras el nodo corre.
+6. **Publicar.** El merge no llega solo a los servidores. Un tag `node-vX.Y.Z` en un commit de
+   `main` construye, firma y sube la release (`.github/workflows/node-release.yml`), con dos
+   aprobaciones del mantenedor: la firma y la subida. El canal lo mueve el siguiente
+   `npm run deploy` (`scripts/node-release-gate.mjs`). Subir `stable` hace que cada nodo tome la
+   versión nueva cuando reinicia; subir también `minimum` (la compuerta lo hace cuando cambia el
+   código del juego que corre el nodo) obliga a los que están corriendo a drenar sus partidas y
+   actualizarse, pero solo cuando vuelven a conectarse: el plano de control compara un nodo con
+   `minimum` cuando el nodo saluda (`control-plane/controlPlane.ts:405`), y el lanzador no mira el
+   canal mientras el nodo corre.
    Un deploy del Worker los reconecta a todos; el aviso sin reconexión llega con
    `channelChanged()` (P5 de `PRODUCCION.md`). Hoy no hay un canal canary que funcione: el campo
    existe en el protocolo pero el lanzador no lo lee. Para probar una versión antes, se la instala

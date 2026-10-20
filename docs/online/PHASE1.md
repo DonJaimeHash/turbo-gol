@@ -79,7 +79,10 @@ npx wrangler secret put JWT_SECRET          # string aleatorio largo
 npx wrangler secret put TURNSTILE_SECRET    # secret del widget Turnstile (dashboard → Turnstile → widget con el hostname del deploy)
 #   wrangler.jsonc vars: "TURNSTILE_SITEKEY": "<sitekey>", "VITE_ORIGINS": "https://<host>"
 cd ..
-npm run deploy                              # npm run build (tsc + vite build → dist/) && cd server && npx wrangler deploy
+npm run deploy -- --nodes-off               # npm run build (tsc + vite build → dist/) && node scripts/deploy.mjs (wrangler deploy)
+#   --nodes-off: sin nodos comunitarios propios. Antes de desplegar, el deploy lee el canal
+#   de releases de los nodos en R2 (R2 habilitado en la cuenta, con permiso de lectura) y
+#   exige un árbol limpio en origin/main: server/README.md
 ```
 
 Qué medir y registrar, desde cada ubicación que importe (Argentina primero; el objetivo de la fase

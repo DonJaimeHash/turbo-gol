@@ -340,8 +340,8 @@ fi
 PUBLIC_HOST=${PUBLIC_HOST#\[}; PUBLIC_HOST=${PUBLIC_HOST%\]}
 [ -z "$PUBLIC_HOST" ] || is_ip "$PUBLIC_HOST" || is_dns_name "$PUBLIC_HOST" || die "--public-host: an IP address or a DNS name, with no port or scheme"
 # Only the placeholder's own prefix: a real base64url key may well start with "__".
-case "$RELEASE_KEY_B64URL" in __RELEASE_*) die "this install.sh has no release key (build it with scripts/build-node.mjs --sign)" ;; esac
-case "$RELEASE_KEY_PEM" in __RELEASE_*) die "this install.sh has no release key (build it with scripts/build-node.mjs --sign)" ;; esac
+case "$RELEASE_KEY_B64URL" in __RELEASE_*) die "this install.sh has no release key (use the one a release publishes, or build it with scripts/build-node.mjs)" ;; esac
+case "$RELEASE_KEY_PEM" in __RELEASE_*) die "this install.sh has no release key (use the one a release publishes, or build it with scripts/build-node.mjs)" ;; esac
 [[ "$RELEASE_KEY_B64URL" =~ ^[A-Za-z0-9_-]{43}$ ]] || die "the release key in this install.sh is damaged: download it again"
 . /etc/os-release
 case "${ID:-}" in ubuntu|debian) ;; *) die "only Debian / Ubuntu for now (found ${ID:-unknown})" ;; esac

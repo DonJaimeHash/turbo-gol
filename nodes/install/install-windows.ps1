@@ -131,7 +131,7 @@ function Assert-Platform {
 function Assert-ReleaseKey {
   # A 32-byte Ed25519 key in base64url without padding is exactly 43 characters.
   if ($ReleaseKeyB64 -cnotmatch '^[A-Za-z0-9_-]{43}$' -or $ReleaseKeyPem -notmatch '-----BEGIN PUBLIC KEY-----') {
-    Fail 'Este instalador no tiene la clave de las releases (se arma con scripts/build-node.mjs --sign). No instalo nada.'
+    Fail 'Este instalador no tiene la clave de las releases (se descarga de una release o se arma con scripts/build-node.mjs). No instalo nada.'
   }
 }
 
