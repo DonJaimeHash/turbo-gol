@@ -35,10 +35,16 @@ All notable changes to Turbogol are documented here. The format follows
 - Community nodes: the control plane runs in the Worker (`NodeRegistryDO`, its state in SQLite) and
   `/nodes/*` serves the nodes and their installers (releases from R2, registration, the control
   socket, replay uploads). Only the project's accounts create node tokens, two nodes each at most.
-  A `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled` wins) will turn
-  the nodes on; matches do not go to nodes yet. A deploy now needs the two node R2 buckets; set the
-  node secrets with `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
+  A `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled` wins) turns the
+  nodes on. A deploy now needs the two node R2 buckets; set the node secrets with
+  `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
   (`npm run build:wasm` rewrites it, a test checks it).
+- Community nodes host matches: with `nodes_on` set for every player of a match, a server or
+  Competitive match (and the lone player of a P2P queue) goes to a community node when one is free,
+  and to the game's own servers otherwise, never failing because of the nodes. Node matches do not
+  count toward the 20-match cap, and rejoining and quitting work for them; a quit the node never
+  got keeps the player in that match instead of letting them start another. Without the flag
+  nothing changes.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
