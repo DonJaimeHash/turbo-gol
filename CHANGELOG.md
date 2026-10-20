@@ -31,6 +31,11 @@ All notable changes to Turbogol are documented here. The format follows
   optional settings, a `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled`
   wins) will turn the nodes on, and a node match's results will reach the accounts as the game
   servers' do, a refused call dropped with an ALERT line and only server errors retried.
+- Community nodes: the control plane runs in the Worker, its state kept in SQLite, and `/nodes/*`
+  serves the nodes and their installers (releases from R2, registration, the control socket,
+  replay uploads). Only the project's accounts create node tokens, two nodes each at most. A deploy
+  now needs the two node R2 buckets; set the node secrets with `wrangler versions secret put`.
+  Matches do not go to nodes yet.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
