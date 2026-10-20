@@ -15,7 +15,8 @@ for (const name of ['control', 'release']) {
   const file = join(dir, `${name}.json`);
   try {
     await access(file);
-    console.log(`${name}: ${file} exists, kept`);
+    // Say it plainly: a kept key is not a new key, and the production keys must be new ones.
+    console.log(`${name}: ${file} exists, kept: NOT a new key (move .keys/ away first for new ones)`);
     continue;
   } catch {
     /* create */

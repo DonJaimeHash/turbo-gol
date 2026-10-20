@@ -184,8 +184,22 @@ npx wrangler secret put TURN_KEY_ID             # optional, phase 2 (with TURN_K
 npx wrangler secret put TURN_KEY_TOKEN
 #   edit wrangler.jsonc: name, routes, kv id, vars TURNSTILE_SITEKEY and VITE_ORIGINS
 cd ..
-npm run deploy      # = npm run build (notices + tsc + vite build -> dist/) && node scripts/deploy.mjs (wrangler deploy)
+git commit -am "Deploy config" && git push origin main   # the deploy runs only from a clean tree at origin/main
+npm run deploy -- --nodes-off   # = npm run build (notices + tsc + vite build -> dist/) && node scripts/deploy.mjs (wrangler deploy); --nodes-off until a node release is published
 ```
+
+Before `wrangler deploy`, `npm run deploy` checks the community-node release
+(`scripts/node-release-gate.mjs`): the whole tree must be clean (nothing uncommitted, nothing
+untracked outside `.gitignore`) and at `origin/main`, and the nodes must run this build's game code
+(the rules, bots and sim code bundled in a node release, from the channel's minimum release up to its
+stable one). When that code changed, it needs a signed node release built from a commit of main
+with the same game code and moves the nodes' release channel to it before deploying. It reads the
+channel in the R2 bucket `turbogol-node-releases` with the deploy's credentials, every time,
+`--nodes-off` included, so the token needs R2 read access (and write, to move the channel) and the
+account needs R2 enabled.
+Until a node release is published (a fork without nodes, or before the first one), every deploy is
+`npm run deploy -- --nodes-off` (from `server/` as well). If a deploy fails after the channel moved,
+the gate prints how to check which build serves (`npx wrangler deployments status`) before going back.
 
 The first deploy of a Worker applies the migrations `v1`-`v4` in order (later deploys apply only new
 tags); `wrangler dev` does the same locally the first time it starts. Custom Domain deploys need a

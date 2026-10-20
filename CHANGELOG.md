@@ -88,6 +88,9 @@ All notable changes to Turbogol are documented here. The format follows
   the stage 1 checklist is split into eight PRs with the maintainer's steps, the pre-beta tests
   and the main risks, and stale facts in the other node docs are corrected. The budget shows the
   VPS's real price.
+- `npm run deploy` checks the community-node release first and, when the game code nodes run
+  changed, moves their release channel to a signed release built from the same game code; until the
+  first node release is published, deploy with `npm run deploy -- --nodes-off`.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
@@ -97,6 +100,9 @@ All notable changes to Turbogol are documented here. The format follows
   every per-address limit counts an IPv6 /64 as one address and replay downloads and
   `GET /nodes/mine` are limited too, a target that stops answering no longer holds up the node
   control plane's sweep or the other results, and callers are only told it is unavailable.
+- Node releases are signed in a job that installs nothing and uploaded from a separate `releases-r2`
+  environment that re-checks them and can be re-run; the deploy gate also checks the channel's
+  minimum release and that releases come from main.
 
 ## [0.1.0] - 2026-10-15
 

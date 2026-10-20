@@ -11,7 +11,7 @@
   "scripts": {
     "predev": "node -e \"require('node:fs').mkdirSync('../dist', { recursive: true })\"",
     "dev": "wrangler dev --port 8787",
-    "deploy": "cd .. && npm run deploy",
+    "deploy": "cd .. && npm run deploy --",
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test \"test/*.test.mjs\"",
     "smoke": "node test/smoke.mjs"
