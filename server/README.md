@@ -26,6 +26,8 @@ server/
   src/NodeRegistryDO.ts one object: the community nodes' control plane (../nodes/control-plane) on SQLite (src/nodeStore.ts),
                         the nodes' control sockets (hibernating), the outbox of their settled matches (src/nodeOutcome.ts)
   src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator routes
+  src/nodeAlerts.ts     its ALERT lines on the team's Discord channel (NODE_ALERT_WEBHOOK)
+  src/nodeWatch.ts      what it watches in the nodes on top of the control plane (offline, traffic, tick lag, waits)
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
@@ -79,6 +81,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `NODE_CONTROL_PUBLIC_KEY` | var | its public half, handed to every node at registration; a pair that does not match places nothing (ALERT) |
 | `NODE_TRUSTED_OPERATORS` | secret, optional | the project's account ids, comma-separated: their nodes are trusted (at most 2 each) and only they create node tokens |
 | `NODES_PUBLIC_BASE` | var | the origin the nodes and their installers reach `/nodes/*` at (`https://turbo-gol.com`) |
+| `NODE_ALERT_WEBHOOK` | secret, optional | the webhook URL of a staff-only Discord channel: every `ALERT` line of the node control plane is posted there too (see "Community nodes"); unset = only the logs |
 | `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws` and `/room` it still receives |
 
 ## HTTP / WebSocket API
@@ -220,9 +223,10 @@ npx wrangler r2 bucket create turbogol-node-replays      # plus a 30-day lifecyc
 npx wrangler r2 bucket create turbogol-node-releases     # nodes/github/workflows/node-release.yml uploads the releases here
 npx wrangler versions secret put NODE_CONTROL_PRIVATE_KEY   # the privateKey of nodes/.keys/control.json
 npx wrangler versions secret put NODE_TRUSTED_OPERATORS     # the project's account ids, comma-separated
+npx wrangler versions secret put NODE_ALERT_WEBHOOK         # optional: a staff-only Discord channel's webhook URL
 ```
 
-Set both secrets with `wrangler versions secret put`, never with `wrangler secret put`: the plain
+Set the secrets with `wrangler versions secret put`, never with `wrangler secret put`: the plain
 command deploys a new version at once, and every deploy resets the running matches. The secrets
 then go out with the next `npm run deploy`, at a quiet hour like any deploy.
 `vars.NODE_CONTROL_PUBLIC_KEY` must be the public half of that private key: the object checks it at
@@ -231,6 +235,26 @@ Without the private key (local dev, a fork that runs no nodes) no match ever goe
 every `/nodes/*` route but `whoami` and the releases answers 404. To try
 the routes under `wrangler dev`, put a development pair in `.dev.vars` (both halves: a `.dev.vars`
 value overrides the committed var).
+
+**Alerts.** The object logs `[nodes] ALERT ...` lines for what a maintainer must look at, and with
+`NODE_ALERT_WEBHOOK` set each one is also posted to that Discord channel (`src/nodeAlerts.ts`). The
+same alert (the line without its numbers and ids) goes out at most once in 10 minutes, and at most
+5 posts go out a minute (Discord refuses more at once); the logs keep every line. A post quotes
+the line in one code span, with no mention and no link preview: node names, versions and answers
+are in it. Among them:
+
+* the control key pair does not match; a token created or a node registered for a trusted operator
+  (whoever holds the project account's session can do both); an outbox call refused, or
+  undelivered for a day; a host that stopped answering its re-probes (out of `wss` placement); a
+  match that failed its verification or waited 6 hours for one; a release channel that does not read;
+* what the object watches (`src/nodeWatch.ts`), once when it starts: a trusted node in service
+  (probation or active) offline for 2 minutes, a node's traffic at 80 % of its monthly cap, its
+  `tickLagP99Ms` over 8 ms in 3 heartbeats in a row, the oldest verification waiting more than 30
+  minutes, a node below the channel's minimum for 2 hours (its update deferred, or not taken).
+
+While a trusted node in service is offline the alarm keeps running (as it does while a node is
+connected), and a restart raises its alert again: set a node taken out of service for good to
+`banned` (or `suspended`).
 
 ## Limits and cost notes
 

@@ -2,7 +2,8 @@
 // fakes, without workerd: its SQLite on node:sqlite (the same SQL), a fake DurableObjectState with
 // hibernatable sockets, an alarm and waitUntil, R2 buckets in memory, ACCOUNTS and MATCHMAKER
 // namespaces that record what the outbox delivers, and a node played by the test (it signs the
-// challenge and its /healthz nonce, says hello, answers 'assign' and 'leave', reports). Date.now
+// challenge and its /healthz nonce, says hello, answers 'assign' and 'leave', reports). The fake
+// fetch also takes the posts of the team's webhook, for the ALERTs and the watch. Date.now
 // is the test's clock. A "deploy" builds a new object on the same database with every socket
 // closed; a "hibernation" builds one on the same database and the same open sockets.
 // Run from server/: npm test
@@ -263,9 +264,18 @@ function makeEnv(over = {}) {
   };
 }
 
+/** The team's Discord webhook (NODE_ALERT_WEBHOOK) and what it got: each post's JSON body. */
+const HOOK = 'https://discord.test/api/webhooks/1/secret';
+const posts = [];
+const posted = () => posts.map((p) => p.content);
+
 /** The nodes behind the fake /healthz: host -> { nodeId, key }. */
 const hosts = new Map();
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, init = {}) => {
+  if (String(url) === HOOK) {
+    posts.push(JSON.parse(init.body));
+    return new RealResponse(null, { status: 204 });
+  }
   const u = new URL(String(url));
   const h = hosts.get(u.host);
   if (u.pathname !== '/healthz' || !h) throw new Error('unexpected fetch ' + url);
@@ -649,8 +659,9 @@ test('a casual match only frees its locks; a 5xx is tried again later, further a
   clock += 24 * 3_600_000;
   await tick();
   await tick();
-  assert.equal(alerts().length, 1, 'once');
-  assert.match(alerts()[0], /ALERT outbox \/release for match \w{8} \(mm:SA\) undelivered for a day, 3 tries/);
+  const late = alerts().filter((l) => l.includes(' outbox '));
+  assert.equal(late.length, 1, 'once');
+  assert.match(late[0], /ALERT outbox \/release for match \w{8} \(mm:SA\) undelivered for a day, 3 tries/);
   assert.equal(rows(h, 'outbox')[0].next_at - clock, 8_000);
   env.MATCHMAKER.answer = () => new RealResponse('{"ok":true}');
   clock += 300_000;
@@ -723,10 +734,10 @@ test('a read of channel.json that never answers is given up: the alarm still re-
 
 // ---- the alarm -------------------------------------------------------------------------------------
 
-test('the alarm: re-armed while a socket, a match or a grace needs it, deleted when nothing does; a sweep that throws still re-arms', async () => {
+test('the alarm: re-armed while a socket, a match, a grace or an offline trusted node needs it, deleted when nothing does; a sweep that throws still re-arms', async () => {
   const env = makeEnv();
   const h = await boot(env);
-  const { ws } = await liveNode(h);
+  const { ws, node } = await liveNode(h);
   await h.obj.alarm();
   assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'a socket');
   const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
@@ -751,6 +762,9 @@ test('the alarm: re-armed while a socket, a match or a grace needs it, deleted w
   await h.ctx.settle();
   assert.equal(rows(h, 'node_matches')[0].state, 'done');
   assert.deepEqual(env.MATCHMAKER.calls.map((c) => c.path), ['/release']);
+  await h.obj.alarm();
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'the trusted node is still offline: its ALERT needs the alarm');
+  h.obj.cp.setStatus(node.nodeId, 'suspended', 'retired');
   await h.obj.alarm();
   assert.equal(h.ctx.alarm, null, 'nothing left: deleted');
 });
@@ -898,4 +912,113 @@ test('status lists the nodes without their address; mine shows the operator its 
   assert.deepEqual(mine.json.operator, { id: PROJECT, trusted: true });
   assert.deepEqual(mine.json.nodes.map((n) => [n.nodeId, n.publicUrl, n.reachable]), [[node.nodeId, NODE_URL, true]]);
   assert.deepEqual((await call(h, 'GET', '/nodes/mine', { headers: { 'x-operator-id': STRANGER } })).json.nodes, []);
+});
+
+// ---- the team's channel and the watch ---------------------------------------------------------------
+
+const MIN = 60_000;
+
+/**
+ * A NodeRegistryDO posting its ALERTs to the fake webhook, with a live trusted node and nothing
+ * posted yet: a minute later, so the token's and the registration's posts are out of the burst window.
+ */
+async function watched(over = {}) {
+  const env = makeEnv({ NODE_ALERT_WEBHOOK: HOOK, ...over });
+  const h = await boot(env);
+  const live = await liveNode(h);
+  await h.ctx.settle();
+  clock += MIN;
+  await send(h, live.ws, { t: 'heartbeat', data: beat() });
+  posts.length = 0;
+  return { h, env, ...live };
+}
+
+test('ALERT lines go to the team’s channel, the registry’s and the outbox’s too: in a code span, no mention, each alert once in 10 minutes', async () => {
+  posts.length = 0;
+  const env = makeEnv({ NODE_ALERT_WEBHOOK: HOOK });
+  const h = await boot(env);
+  const { node, ws } = await liveNode(h);
+  await tokenFor(h); // the same alert as the first token's
+  await h.ctx.settle();
+  assert.deepEqual(posted(), [
+    '**ALERT** `registration token created for trusted operator Proyecto Señor (a1b2c3d4e5f60718), region SA`',
+    `**ALERT** \`trusted node sao-paulo-1 (${node.nodeId}) registered for Proyecto Señor (a1b2c3d4e5f60718), roles host+verify at wss://sp1.turbo-gol.test\``,
+  ]);
+  assert.deepEqual(posts[0].allowed_mentions, { parse: [] });
+  clock += 10 * MIN;
+  await send(h, ws, { t: 'heartbeat', data: beat() });
+  await tokenFor(h);
+  await h.ctx.settle();
+  assert.equal(posts.length, 3, 'ten minutes later it is posted again');
+  // A call AccountsDO refuses: the outbox drops it with an ALERT, which carries the body.
+  env.ACCOUNTS.answer = () => new RealResponse('{"error":"bad_request"}', { status: 400 });
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody({ ranked: true }) })).json;
+  await send(h, ws, { t: 'report', id: 'r1', report: { kind: 'lost', matchId: placement.matchId, reason: 'tick_error' } });
+  await h.ctx.settle();
+  assert.match(posted().at(-1), /^\*\*ALERT\*\* `outbox \/ranked-cancel 400 \(match \w{8}, accounts\), dropped: \{"error":"bad_request"\}; body \{.*\}`$/);
+  // The control key: logged while the object starts, posted all the same.
+  posts.length = 0;
+  const bad = await boot(makeEnv({ NODE_ALERT_WEBHOOK: HOOK, NODE_CONTROL_PUBLIC_KEY: (await generateEd25519()).publicKey }));
+  await bad.ctx.settle();
+  assert.deepEqual(posted(), ['**ALERT** `NODE_CONTROL_PUBLIC_KEY is not the public half of NODE_CONTROL_PRIVATE_KEY: no placement, registration or rejoin until they match`']);
+  // Without the webhook nothing is posted.
+  posts.length = 0;
+  const quiet = await boot(makeEnv());
+  await tokenFor(quiet);
+  await quiet.ctx.settle();
+  assert.deepEqual(posts, []);
+});
+
+test('a trusted node offline for 2 minutes: one ALERT, with the alarm running for it while nothing else needs it; its return is a plain line', async () => {
+  const { h, node, ws } = await watched();
+  await h.obj.webSocketClose(ws, 1006, '', false);
+  await h.obj.alarm();
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'no socket and no match: the offline node keeps the alarm');
+  clock += 2 * MIN;
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.deepEqual(posts, [], 'not yet');
+  clock += D.TICK_MS;
+  await h.obj.alarm();
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.equal(posts.length, 1, 'once');
+  assert.match(posted()[0], new RegExp(`^\\*\\*ALERT\\*\\* \`trusted node sao-paulo-1 \\(${node.nodeId}\\) offline for 2 min \\(last heartbeat \\d\\d:\\d\\d:\\d\\d UTC\\): no match goes to it\`$`));
+  lines.length = 0;
+  const back = await connect(h, node);
+  await send(h, back, { t: 'hello', data: helloOf(node) });
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.ok(lines.includes(`[nodes] trusted node sao-paulo-1 (${node.nodeId}) back online`), lines.join('\n'));
+  assert.equal(posts.length, 1, 'not an ALERT');
+});
+
+test('the watch: tick lag over 8 ms in 3 heartbeats, traffic at 80 % of the cap, a verification waiting 30 minutes, an update deferred for 2 hours', async () => {
+  const { h, env, node, ws } = await watched();
+  for (let i = 0; i < 3; i++) await send(h, ws, { t: 'heartbeat', data: beat({ tickLagP99Ms: 9.5 }) });
+  await h.ctx.settle();
+  assert.deepEqual(posted(), [`**ALERT** \`node sao-paulo-1 (${node.nodeId}): tick lag p99 9.5 ms in 3 heartbeats in a row (over 8 ms: its matches stutter)\``], 'at the third heartbeat, not at an alarm');
+  await send(h, ws, { t: 'heartbeat', data: beat({ egressGB: 850, egressCapGB: 1000 }) });
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.match(posted()[1], /has sent 850\.0 GB of its 1000 GB monthly cap \(85 %\): at the cap it takes no more matches`$/);
+  // A match its verifier has not answered for half an hour.
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  Object.assign(h.obj.cp.matches.get(placement.matchId), { state: 'verifying', report: { kind: 'ended', replaySha256: 'ab'.repeat(32) }, queuedAt: clock - 31 * MIN });
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.match(posted()[2], new RegExp(`^\\*\\*ALERT\\*\\* \`1 match waiting for verification, the oldest \\(${placement.matchId.slice(0, 8)} on sao-paulo-1\\) for 31 min: is a verifier on its build online\\?\`$`));
+  // The channel moves on; the node verifies matches of its build, so its update waits for them.
+  await env.NODE_RELEASES.put('channel.json', JSON.stringify({ stable: '0.3.0', minimum: '0.3.0' }));
+  clock += D.CHANNEL_REFRESH_MS;
+  await send(h, ws, { t: 'heartbeat', data: beat() });
+  await h.obj.alarm();
+  assert.deepEqual(ws.of('update'), [], 'deferred');
+  await h.obj.alarm();
+  clock += 2 * 60 * MIN + D.TICK_MS;
+  await send(h, ws, { t: 'heartbeat', data: beat() });
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.equal(posts.length, 4);
+  assert.match(posted()[3], new RegExp(`node sao-paulo-1 \\(${node.nodeId}\\) still on 0\\.2\\.0, below the channel's minimum 0\\.3\\.0, for 2 h: its update is deferred or it does not take it\`$`));
 });

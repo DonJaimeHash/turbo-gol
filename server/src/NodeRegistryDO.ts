@@ -36,23 +36,34 @@
  * object raises an ALERT and places nothing, registers nothing and mints no rejoin ticket; nodes
  * already registered keep reporting. A caller is only told the control plane is unavailable, as
  * when its state cannot be read: the cause is for the ALERT lines.
+ *
+ * ALERT lines, the object's and those of the control plane and the registry it runs, also go to
+ * the team's Discord channel when NODE_ALERT_WEBHOOK is set (nodeAlerts.ts: each alert at most once
+ * in 10 minutes). The alarm also watches the nodes for what nodeWatch.ts lists (a trusted node
+ * offline, traffic near its cap, tick lag, a verification or an update waiting too long), and it
+ * keeps running while a trusted node in service is offline, so that one is noticed with nothing
+ * else going on.
  */
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlane, NodeRefused } from '../../nodes/control-plane/controlPlane';
 import type { NodeLink, PlaceRequest, Session } from '../../nodes/control-plane/controlPlane';
 import { Ledger } from '../../nodes/control-plane/ledger';
 import { Registry, TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
-import type { NodeRecord } from '../../nodes/control-plane/registry';
-import type { RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
+import type { NodeRecord, RegistryOptions } from '../../nodes/control-plane/registry';
+import type { HeartbeatData, RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
 import { importPrivateKey, sign, verifyWith } from '../../nodes/shared/edcrypto';
 import { REGIONS, isRegion } from '../../src/net/account';
 import { checkInternal } from './auth';
 import { error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
+import { AlertHook } from './nodeAlerts';
+import type { FetchFn } from './nodeAlerts';
 import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeApi';
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
+import { NodeWatch, channelOf } from './nodeWatch';
+import type { WatchNote } from './nodeWatch';
 
 /** The alarm's period while anything needs it. */
 export const TICK_MS = 5_000;
@@ -141,6 +152,22 @@ function parsePlace(v: unknown): PlaceRequest | null {
   return out;
 }
 
+/** The Registry, handing each heartbeat to the object once it took it (NodeWatch counts the tick lag per heartbeat). */
+class WatchedRegistry extends Registry {
+  private readonly onBeat: (n: NodeRecord) => void;
+
+  constructor(opts: RegistryOptions, onBeat: (n: NodeRecord) => void) {
+    super(opts);
+    this.onBeat = onBeat;
+  }
+
+  override heartbeat(id: string, hb: HeartbeatData, now: number): void {
+    super.heartbeat(id, hb, now);
+    const n = this.node(id);
+    if (n) this.onBeat(n);
+  }
+}
+
 export class NodeRegistryDO extends DurableObject<Env> {
   /** The start (blockConcurrencyWhile): every handler waits for it. */
   private readonly ready: Promise<void>;
@@ -153,12 +180,20 @@ export class NodeRegistryDO extends DurableObject<Env> {
    * channel.json that takes longer is given up and tried again later (tests shorten it).
    */
   timeoutMs = DELIVERY_TIMEOUT_MS;
+  /** What the object posts to the ALERT webhook with (tests hand in a fake). */
+  fetchFn: FetchFn = (url, init) => fetch(url, init);
   /** The control key pair matches (controlKeysMatch): tickets the nodes can check. */
   private keyOk = false;
   /** channel.json as last read (parsed; its text when it is not JSON; null when missing), its text and when it was read. */
   private channel: unknown = null;
   private channelText: string | null = null;
   private channelAt = 0;
+  /** The last channel.json that read as a channel: the minimum the watch holds the nodes to. */
+  private goodChannel: { stable: string; minimum: string } | null = null;
+  private readonly alerts: AlertHook;
+  private readonly watch = new NodeWatch();
+  /** When this object started: a node it has not seen counts as offline from then. */
+  private startedAt = 0;
   private readonly sessions = new WeakMap<WebSocket, Session>();
   /** Sockets whose { nodeId } attachment is stored. */
   private readonly attached = new WeakSet<WebSocket>();
@@ -173,16 +208,29 @@ export class NodeRegistryDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.cfg = nodesConfigured(env) ? env : null;
+    this.alerts = new AlertHook({
+      url: env.NODE_ALERT_WEBHOOK,
+      waitUntil: (p) => ctx.waitUntil(p),
+      fetch: (url, init) => this.fetchFn(url, init),
+      log: (m) => console.log(`[nodes] ${m}`),
+    });
     this.ready = ctx.blockConcurrencyWhile(() => this.start());
   }
 
-  private log(msg: string): void {
+  /** A line of the object's log. One that starts with ALERT also goes to the team's channel, as `key` (nodeAlerts.ts). */
+  private log(msg: string, key?: string): void {
     console.log(`[nodes] ${msg}`);
+    if (msg.startsWith('ALERT')) this.alerts.post(msg, key);
+  }
+
+  private note(notes: Iterable<WatchNote>): void {
+    for (const n of notes) this.log(n.line, n.key);
   }
 
   private async start(): Promise<void> {
     const env = this.cfg;
     if (!env) return;
+    this.startedAt = Date.now();
     const store = new NodeStore(
       this.ctx.storage.sql,
       (fn) => this.ctx.storage.transactionSync(fn),
@@ -197,7 +245,10 @@ export class NodeRegistryDO extends DurableObject<Env> {
     try {
       store.migrate();
       const rows = store.load(Date.now());
-      const registry = new Registry({ allowInsecure: false, trustedOperators: [...trustedOperatorIds(env)], regions: REGIONS.map((r) => r.id), store, log });
+      const registry = new WatchedRegistry({ allowInsecure: false, trustedOperators: [...trustedOperatorIds(env)], regions: REGIONS.map((r) => r.id), store, log }, (n) => {
+        const note = this.watch.beat(n);
+        if (note) this.note([note]);
+      });
       registry.restore(rows);
       const cp = new ControlPlane({
         controlPrivateKey: env.NODE_CONTROL_PRIVATE_KEY,
@@ -321,6 +372,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
     } catch (e) {
       this.log(`ALERT sweep failed: ${String(e)}`);
     }
+    try {
+      this.note(this.watch.tick(Date.now(), cp.registry.list(), cp.matches.values(), this.goodChannel?.minimum ?? null, this.startedAt));
+    } catch (e) {
+      this.log(`ALERT node watch failed: ${String(e)}`);
+    }
     // The next run is set before anything waits on another object: the sweep is what closes timed
     // out sockets and voids a dead node's matches, and a slow target must not hold it back. The
     // outbox is not awaited for the same reason; each delivery has its own timeout.
@@ -329,11 +385,14 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (Date.now() - this.channelAt >= CHANNEL_REFRESH_MS) await this.refreshChannel();
   }
 
-  /** Something needs the alarm: a node's socket, a match not settled, an undelivered call, a restart's grace. */
+  /**
+   * Something needs the alarm: a node's socket, a match not settled, an undelivered call, a
+   * restart's grace, or a trusted node in service that is offline (its ALERT needs time to pass).
+   */
   private busy(): boolean {
     const cp = this.cp;
     if (!cp || !this.store) return false;
-    return this.ctx.getWebSockets().length > 0 || cp.unfinished() > 0 || cp.inGrace() || this.store.outboxSize() > 0;
+    return this.ctx.getWebSockets().length > 0 || cp.unfinished() > 0 || cp.inGrace() || this.store.outboxSize() > 0 || this.watch.watching(cp.registry.list());
   }
 
   private async rearm(): Promise<void> {
@@ -370,6 +429,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     } catch {
       this.channel = text;
     }
+    this.goodChannel = channelOf(this.channel) ?? this.goodChannel;
     this.cp?.channelChanged();
   }
 
