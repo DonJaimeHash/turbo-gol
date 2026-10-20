@@ -327,28 +327,29 @@ funcionan con ellas. Depende de: [6] y P5. Con el flag apagado, todo sigue igual
   lock de nodo recibirían 409 hasta que venza, unos 13 minutos. Para apagar los nodos,
   `vm_disabled`.
 
-#### [8] operación: alertas, rutas de mantenedor y chequeo de salud (P24-P26)
+#### [8] operación: alertas, rutas de mantenedor y chequeo de salud (P24-P26): #30
 
-Objetivo: enterarse a tiempo cuando algo falla y poder actuar sin entrar por SSH. Depende de: [6];
-la alerta de alcance, de P6. Antes del canary (M15).
+Antes del deploy: el webhook y su secreto `NODE_ALERT_WEBHOOK` (M13). Sin él, los `ALERT` solo
+quedan en el log.
 
-- [ ] **P24. Los `ALERT` por webhook,** a un canal de Discord solo del equipo (M13); hoy solo van
-  al log. Alertas nuevas: un nodo de confianza fuera de línea más de 2 minutos; el tráfico al 80 %
-  del tope; `tickLagP99Ms` arriba de 8 en 3 heartbeats; una verificación esperando más de 30
-  minutos; una actualización en espera más de 2 horas; una fila de la bandeja de salida con más de
-  24 horas; un nodo inalcanzable (P6). Y **cada token creado y cada nodo registrado**: con la
-  contraseña de la cuenta del proyecto alcanza para crear un nodo de confianza.
-- [ ] **P25. Rutas de mantenedor** `/nodes/admin/*`, para una cuenta de confianza: ver los nodos,
+- [x] **P24. Los `ALERT` a Discord:** cada línea `ALERT` del `NodeRegistryDO` (las suyas, las
+  del plano de control, del registro y de la bandeja de salida) también va al webhook, como un
+  bloque de código sin menciones ni vistas previas, cortado a 1.900 caracteres, la misma alerta
+  como mucho una vez cada 10 minutos. Alertas nuevas: un nodo de confianza en servicio fuera de
+  línea más de 2 minutos; el tráfico al 80 % del tope; `tickLagP99Ms` arriba de 8 en 3 heartbeats;
+  una verificación esperando más de 30 minutos; un nodo por debajo del `minimum` del canal más de
+  2 horas. Cada token creado y cada nodo registrado ya dejaban un `ALERT` ([1]).
+- [x] **P25. Rutas de mantenedor** `/nodes/admin/*` para una cuenta de confianza: ver los nodos,
   cambiar el estado de uno, drenarlo, avisar un cambio de canal y volver a comprobar su alcance.
-  Un drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): volver pide
-  `systemctl restart turbogol-node` en la máquina. El VPS es de confianza: una verificación
-  fallida no lo suspende ni congela nada (`onVerified` en `control-plane/registry.ts`), solo anula
-  la partida y deja un `ALERT`.
-- [ ] **P26 (opcional en esta etapa). Chequeo de salud de sp1 por cron:** cada 5 minutos,
-  `https://sp1.turbo-gol.com/healthz`, con aviso si falla, si aparece `draining` sin que nadie lo
-  pidiera o si hay un error de TLS, aunque los heartbeats se vean bien. Hoy el Worker no tiene cron
-  (`server/wrangler.jsonc` no tiene `triggers`). Tampoco existe el cron de gasto que prendería
-  `vm_disabled` (`docs/online/DECISIONS.md`): hasta entonces, ese flag es manual.
+  Cada llamada, la lista incluida, deja un `ALERT` con la cuenta que la hizo: una sesión robada se
+  ve en el canal. Un drenaje no tiene vuelta atrás: volver pide `systemctl restart turbogol-node`
+  en la máquina.
+- [x] **P26. Chequeo de salud por cron:** cada 5 minutos, el `/healthz` de los nodos de confianza
+  en servicio, con su propio TLS: avisa si no responde, si hay un error de TLS (un certificado
+  vencido, aunque los heartbeats se vean bien), si la respuesta no está firmada por el nodo o si
+  aparece `draining` sin que nadie lo pidiera. Una llamada al DO por corrida, y ninguna sin nodos
+  configurados. `vm_disabled`, `do_disabled` y `matchmaking_off` siguen siendo manuales: ningún
+  cron de gasto los prende.
 
 ### Acciones del mantenedor
 
