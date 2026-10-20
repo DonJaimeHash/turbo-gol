@@ -181,10 +181,10 @@ detect_platform() {
 check_release_key() {
   # Only the prefix: base64url keys may contain "__", and the build replaces the full placeholders.
   case "$RELEASE_KEY_B64URL" in
-    __RELEASE_*) die "este instalador no tiene la clave de releases (se arma con scripts/build-node.mjs --sign): no lo uses así." ;;
+    __RELEASE_*) die "este instalador no tiene la clave de releases (se descarga de una release o se arma con scripts/build-node.mjs): no lo uses así." ;;
   esac
   case "$RELEASE_KEY_PEM" in
-    __RELEASE_*) die "este instalador no tiene la clave de releases (se arma con scripts/build-node.mjs --sign): no lo uses así." ;;
+    __RELEASE_*) die "este instalador no tiene la clave de releases (se descarga de una release o se arma con scripts/build-node.mjs): no lo uses así." ;;
   esac
   [[ "$RELEASE_KEY_B64URL" =~ $KEY_RE ]] || die "la clave de releases de este instalador está dañada: bájalo de nuevo desde la web."
   case "$RELEASE_KEY_PEM" in

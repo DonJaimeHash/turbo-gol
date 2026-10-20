@@ -1,0 +1,170 @@
+# Node release: build, sign and publish a community-node release when a maintainer pushes a tag
+# node-vX.Y.Z on a commit of main, where X.Y.Z is the version in nodes/package.json (plain X.Y.Z,
+# published only once).
+#
+# Four jobs, each on a fresh runner. A job keeps the secrets it references in its runner's memory for
+# all of its steps, and any step can read that memory, so the release key gets a job where no
+# third-party code runs at all, before or after it signs:
+#   test     no secrets: the tag checks, then every install, typecheck and test.
+#   build    no secrets: installs only what the bundle needs (esbuild from server/, werift from
+#            nodes/), without install scripts, and builds the release unsigned
+#            (nodes/scripts/build-node.mjs fills the installers from nodes/release-key.pub). No test
+#            code runs on that runner.
+#   sign     the `releases` environment (a maintainer approves every run; it holds the release key
+#            and nothing else). Installs nothing: nodes/scripts/sign-release.mjs, which only uses
+#            node:crypto, checks the build (every file against its manifest, the wasm and the
+#            protocol against this checkout, the installers byte for byte; node.mjs is not rebuilt)
+#            and signs it.
+#   upload   the `releases-r2` environment (the R2 token and the account id; a maintainer approves it
+#            too, since the installers it uploads run as root). Installs the wrangler locked in
+#            server/package-lock.json without install scripts, then nodes/scripts/publish-release.mjs
+#            checks the signed release again and uploads it. A version is published once, but
+#            "Re-run failed jobs" finishes an upload that stopped half-way (same signed artifact,
+#            same bytes, while the artifact lasts: 7 days). Never "Re-run all jobs": the build makes
+#            another manifest.json, which the upload refuses once the first one is in R2.
+# Publishing never moves the channel (channel.json). The deploy gate does, at the next
+# `npm run deploy` (scripts/node-release-gate.mjs), so a release reaches nodes together with the
+# Worker build it matches.
+name: Node release
+
+on:
+  push:
+    tags: ["node-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Tag checks and tests (no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # Every branch's history: the tag must point at a commit of main.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            nodes/package-lock.json
+      - name: The tag names the version in nodes/package.json and a commit of main
+        run: |
+          version=$(node -p "require('./nodes/package.json').version")
+          if [ "$GITHUB_REF_NAME" != "node-v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match nodes/package.json ($version): the tag must be node-v$version"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main: tag a commit of main (after the merge)"
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm ci
+        working-directory: server
+      - run: npm ci
+        working-directory: nodes
+      - name: Client (typecheck, tests)
+        run: npm run typecheck && npm test
+      - name: Server (typecheck, tests)
+        working-directory: server
+        run: npm run typecheck && npm test
+      - name: Community nodes (typecheck, tests)
+        working-directory: nodes
+        run: npm run typecheck && npm test
+
+  build:
+    name: Build (unsigned, no secrets)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # No npm cache, here and below: one more input another job could have written.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # esbuild runs from its platform package without its install script.
+      - run: npm ci --ignore-scripts
+        working-directory: server
+      - run: npm ci --ignore-scripts
+        working-directory: nodes
+      - name: Build the release (unsigned)
+        working-directory: nodes
+        run: node scripts/build-node.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: node-release
+          path: nodes/dist/releases/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: releases
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: node-release
+          path: nodes/dist/releases
+      # The only job that gets the release key, and it installs nothing: the only code it runs is the
+      # checked-out nodes/scripts/sign-release.mjs.
+      - name: Check and sign
+        working-directory: nodes
+        env:
+          TGN_RELEASE_PRIVATE_KEY: ${{ secrets.TGN_RELEASE_PRIVATE_KEY }}
+        run: node scripts/sign-release.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: node-release-signed
+          path: nodes/dist/releases/
+          if-no-files-found: error
+          retention-days: 7
+
+  upload:
+    name: Publish to R2
+    needs: sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: releases-r2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: node-release-signed
+          path: nodes/dist/releases
+      # The locked wrangler, without install scripts: wrangler is the only third-party code this job
+      # runs, and only after publish-release.mjs has checked what it uploads.
+      - run: npm ci --ignore-scripts
+        working-directory: server
+      - name: Check and publish (served at /nodes/releases/)
+        working-directory: nodes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/publish-release.mjs

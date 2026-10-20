@@ -56,8 +56,12 @@ Otros comandos:
 | `npm run control` | Solo el plano de control de referencia |
 | `npm run node -- rtc-test --stun stun:stun.cloudflare.com:3478` | Prueba que WebRTC funciona en esta máquina. Solo con un servidor TURN (`--turn`) prueba que los jugadores pueden llegar: sin TURN pasa en cualquier máquina |
 | `npm run bench` | Mide cuántas partidas aguanta esta máquina |
-| `npm run keys` | Genera las claves de control y de releases en `.keys/` |
-| `npm run build` | Arma una release firmada en `dist/releases/` con los tres instaladores |
+| `npm run keys` | Genera las claves de control y de releases en `.keys/`. Si ya existen, las deja y avisa que no son nuevas |
+| `npm run build` | Arma una release de desarrollo en `dist/releases/` con los tres instaladores, firmada con `.keys/release.json`. Nunca se sube |
+| `node scripts/build-node.mjs` | La release de producción: sin firmar, desde un commit, con los instaladores armados con `release-key.pub`. La arma el workflow de releases |
+| `npm run sign` | Revisa esa release (cada archivo contra su manifiesto; el wasm y los instaladores byte a byte, y el protocolo, contra el checkout; `node.mjs` no se vuelve a armar) y la firma con la clave de releases del proyecto. Solo lo corre el workflow de releases (`.github/workflows/node-release.yml`), en un job que no instala nada |
+| `node scripts/publish-release.mjs` | Revisa otra vez la release firmada y la sube a R2. Una versión se publica una sola vez, pero retoma una subida que quedó a medias; `launcher.mjs` y los instaladores son siempre los de la release más nueva. Solo lo corre el workflow de releases |
+| `node scripts/channel.mjs --show` | Muestra el canal de releases publicado. `--stable` lo mueve (con el mínimo en esa misma versión, salvo que pases `--minimum`) y `--rollback` lo devuelve a `channel.prev.json` (normalmente lo mueve `npm run deploy` en la raíz) |
 | `npm run build:web` | Arma el arnés de prueba del navegador, servido en `/web/rtc-harness.html` |
 | `npm run xmachine -- record <carpeta>` y `verify <carpeta>` | Graba 12 partidas completas y verifica las que grabó otra máquina: comprueba que dos máquinas simulan igual. `record` también compara con una referencia grabada en la PC del proyecto |
 
@@ -90,7 +94,8 @@ control-plane/  el plano de control
   devServer.ts    servidor de referencia y de desarrollo
 install/        VPS (install.sh), Windows, macOS y Linux de escritorio, cloud-init
 web/            la página "Pon un servidor" y el arnés WebRTC del navegador
-github/         plantillas: bot, ranking de propuestas, releases, formulario
-scripts/        demo, build de releases y del arnés, claves, determinismo entre máquinas
+github/         plantillas: bot, ranking de propuestas, formulario (el de releases ya corre en .github/)
+scripts/        demo, build, firma y canal de releases, arnés, claves, determinismo entre máquinas
+release-key.pub la clave pública de releases del proyecto
 test/           pruebas automáticas con el wasm real
 ```
