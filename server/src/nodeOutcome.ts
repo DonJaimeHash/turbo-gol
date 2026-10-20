@@ -11,10 +11,13 @@
 import type { MatchOutcome } from '../../nodes/control-plane/controlPlane';
 import type { MatchAssignment } from '../../nodes/shared/controlProtocol';
 import { INTERNAL_HEADER, internalSecret } from './auth';
+import { withTimeout } from './env';
 import type { Env } from './env';
 
 /** The target of AccountsDO calls (its one object is 'accounts-v1'); a matchmaker's is its object name, 'mm:<region>'. */
 export const ACCOUNTS_TARGET = 'accounts';
+/** A target that has not answered in this long is tried again later: one stuck object must not hold up the outbox. */
+export const DELIVERY_TIMEOUT_MS = 10_000;
 /** AccountsDO keeps this much of a cancel's reason. */
 const REASON_MAX = 32;
 
@@ -62,10 +65,15 @@ function oneLine(s: string, max: number): string {
  * target refused the call itself (a 400 for a body AccountsDO cannot read, a 403 for an internal
  * header signed with an older JWT_SECRET), so it would refuse every retry too, and a row retried
  * forever would keep the NodeRegistryDO's alarm running for nothing. The line carries the body, so
- * a maintainer can apply the result by hand. A 5xx or a network error is retried: the target is
- * down or being deployed.
+ * a maintainer can apply the result by hand. A 5xx, a network error or no answer within
+ * `timeoutMs` is retried: the target is down, being deployed or stuck.
  */
-export async function deliverCall(env: Pick<Env, 'ACCOUNTS' | 'MATCHMAKER' | 'JWT_SECRET'>, call: OutcomeCall, log: (msg: string) => void = (msg) => console.log(msg)): Promise<Delivery> {
+export async function deliverCall(
+  env: Pick<Env, 'ACCOUNTS' | 'MATCHMAKER' | 'JWT_SECRET'>,
+  call: OutcomeCall,
+  log: (msg: string) => void = (msg) => console.log(msg),
+  timeoutMs: number = DELIVERY_TIMEOUT_MS,
+): Promise<Delivery> {
   const where = `match ${call.matchId.slice(0, 8)}, ${call.target}`;
   const dropped = (status: string, why: string) => log(`ALERT outbox ${call.path} ${status} (${where}), dropped: ${why}; body ${oneLine(call.body, 600)}`);
   const accounts = call.target === ACCOUNTS_TARGET;
@@ -73,16 +81,17 @@ export async function deliverCall(env: Pick<Env, 'ACCOUNTS' | 'MATCHMAKER' | 'JW
     dropped('-', 'unknown target');
     return 'done';
   }
+  let sent: Promise<Response> | null = null;
   let res: Response;
   try {
     const ns = accounts ? env.ACCOUNTS : env.MATCHMAKER;
     const stub = ns.get(ns.idFromName(accounts ? 'accounts-v1' : call.target));
-    res = await stub.fetch(`https://${accounts ? 'accounts' : 'matchmaker'}${call.path}`, {
-      method: 'POST',
-      headers: { [INTERNAL_HEADER]: await internalSecret(env.JWT_SECRET), 'content-type': 'application/json' },
-      body: call.body,
-    });
+    const headers = { [INTERNAL_HEADER]: await internalSecret(env.JWT_SECRET), 'content-type': 'application/json' };
+    sent = stub.fetch(`https://${accounts ? 'accounts' : 'matchmaker'}${call.path}`, { method: 'POST', headers, body: call.body });
+    res = await withTimeout(sent, timeoutMs);
   } catch (e) {
+    // An answer that comes after the timeout is not read: its body is let go.
+    void sent?.then((late) => late.body?.cancel()).catch(() => undefined);
     log(`outbox ${call.path} failed (${where}), to retry: ${oneLine(String(e), 200)}`);
     return 'retry';
   }

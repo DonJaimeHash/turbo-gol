@@ -103,18 +103,72 @@ export function error(status: number, code: string, message?: string): Response 
   return json({ error: code, message: message ?? code }, status);
 }
 
-/** Parse a JSON body (<= 4 KB) or return null. */
+/** The largest body readJson reads. */
+export const JSON_MAX_BYTES = 4096;
+
+/**
+ * The body, or null when it is longer than `max` bytes. Reading stops there: a body sent without
+ * a Content-Length (chunked, HTTP/2) is never buffered whole before it is found too big.
+ */
+export async function readCapped(request: Request, max: number): Promise<Uint8Array | null> {
+  if (Number(request.headers.get('content-length') ?? 0) > max) return null;
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value as Uint8Array;
+    size += chunk.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
+/** Parse a JSON body (<= 4 KB, readCapped) or return null. */
 export async function readJson<T>(request: Request): Promise<T | null> {
-  const len = Number(request.headers.get('content-length') ?? '0');
-  if (len > 4096) return null;
   try {
-    const text = await request.text();
-    if (text.length > 4096) return null;
-    if (text.length === 0) return {} as T;
-    return JSON.parse(text) as T;
+    const bytes = await readCapped(request, JSON_MAX_BYTES);
+    if (!bytes) return null;
+    if (bytes.byteLength === 0) return {} as T;
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
   } catch {
     return null;
   }
+}
+
+/** `p`, or a rejection once `ms` passed without it settling. The work itself goes on; nothing waits for it. */
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The key a per-address limit counts under: an IPv4 address as it is, an IPv6 one by its /64.
+ * One subscriber gets a whole /64 and picks the other 64 bits freely, so counting full IPv6
+ * addresses would give each caller as many fresh windows as it likes.
+ */
+export function limitKey(ip: string): string {
+  if (!ip.includes(':') || ip.includes('.')) return ip; // IPv4, IPv4-mapped, or 'local' under wrangler dev
+  const [head, tail] = ip.toLowerCase().split('::', 2);
+  const front = head ? head.split(':') : [];
+  const back = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? front : [...front, ...Array<string>(Math.max(0, 8 - front.length - back.length)).fill('0'), ...back];
+  return groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':') + '::/64';
 }
 
 export type GameModeId = '1v1' | '2v2' | '3v3';

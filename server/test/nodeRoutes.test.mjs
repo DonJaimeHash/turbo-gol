@@ -211,6 +211,8 @@ test('releases: only an allowed key reaches the bucket; traversal, listings and 
     '0.2/node.mjs',
     '0.2.0/sub/node.mjs',
     'x'.repeat(65),
+    '9'.repeat(5000) + '.0.0/node.mjs', // past R2's 1,024-byte key limit
+    '1234567.0.0/node.mjs',
     '%ZZ',
     'launcher.mjs%00',
     'install.sh%0A',
@@ -299,6 +301,21 @@ test('register: to nodes-v1 near São Paulo with the internal header and the cal
   for (let i = 1; i < 5; i++) assert.equal((await req(env, 'POST', '/nodes/register', { ip, body: '{}' })).status, 200);
   assert.equal((await req(env, 'POST', '/nodes/register', { ip, body: '{}' })).status, 429);
   assert.equal(env.NODES.seen.length, 5);
+  const big = await req(env, 'POST', '/nodes/register', { headers: { 'content-length': '4097' } });
+  assert.equal(big.status, 413, 'over 4 KB declared');
+  assert.equal(env.NODES.seen.length, 5, 'refused before the object');
+});
+
+test('per-address limits count an IPv6 /64 as one address: a subscriber cannot step past them with fresh addresses', async () => {
+  const env = makeEnv();
+  const in64 = (i) => `2001:db8:a:b:${i.toString(16)}::1`;
+  for (let i = 1; i <= 5; i++) assert.equal((await req(env, 'POST', '/nodes/register', { ip: in64(i), body: '{}' })).status, 200);
+  const sixth = await req(env, 'POST', '/nodes/register', { ip: in64(6), body: '{}' });
+  assert.equal(sixth.status, 429);
+  assert.equal(env.NODES.seen.at(-1).headers['x-client-ip'], in64(5), 'the object still hears the full address');
+  assert.equal((await req(env, 'POST', '/nodes/register', { ip: '2001:db8:a:c::1', body: '{}' })).status, 200, 'another /64');
+  for (let i = 1; i <= 30; i++) await req(env, 'GET', '/nodes/connect', { ip: in64(100 + i), headers: { Upgrade: 'websocket' } });
+  assert.equal((await req(env, 'GET', '/nodes/connect', { ip: in64(200), headers: { Upgrade: 'websocket' } })).status, 429);
 });
 
 test('connect: an upgrade only (426), its 101 passed through as the object made it; 30 a minute per address', async () => {
@@ -315,7 +332,7 @@ test('connect: an upgrade only (426), its 101 passed through as the object made 
   assert.equal((await req(env, 'GET', '/nodes/connect', { ip, headers: { Upgrade: 'websocket' } })).status, 429);
 });
 
-test('replays: a 64-hex id; the node’s signed headers and the body go through; 413 past 16 MiB before the object; 60 uploads a minute per address', async () => {
+test('replays: a 64-hex id; the node’s signed headers and the body go through; 413 past 16 MiB before the object; 60 uploads and 60 downloads a minute per address', async () => {
   const env = makeEnv();
   env.NODES.handler = async (r) => new RealResponse(JSON.stringify({ got: (await r.arrayBuffer()).byteLength }), { headers: { 'content-type': 'application/json' } });
   const id = 'ab'.repeat(32);
@@ -333,7 +350,11 @@ test('replays: a 64-hex id; the node’s signed headers and the body go through;
   assert.equal(env.NODES.seen[1].req.method, 'GET');
   for (let i = 1; i < 60; i++) await req(env, 'PUT', '/nodes/replays/' + id, { ip, headers: node, body: new Uint8Array(1) });
   assert.equal((await req(env, 'PUT', '/nodes/replays/' + id, { ip, headers: node, body: new Uint8Array(1) })).status, 429);
-  assert.equal((await req(env, 'GET', '/nodes/replays/' + id, { ip, headers: node })).status, 200, 'downloads are not counted');
+  assert.equal((await req(env, 'GET', '/nodes/replays/' + id, { ip, headers: node })).status, 200, 'downloads are counted apart');
+  for (let i = 2; i < 60; i++) await req(env, 'GET', '/nodes/replays/' + id, { ip, headers: node });
+  const forwarded = env.NODES.seen.length;
+  assert.equal((await req(env, 'GET', '/nodes/replays/' + id, { ip, headers: node })).status, 429, 'the 61st download in a minute');
+  assert.equal(env.NODES.seen.length, forwarded, 'stopped before the object');
 });
 
 test('tokens: 401 without a session, 403 for a guest, 403 not_trusted for another account, forwarded for a trusted one with the operator headers overwritten; CORS on every answer', async () => {
@@ -362,12 +383,16 @@ test('tokens: 401 without a session, 403 for a guest, 403 not_trusted for anothe
   assert.equal(seen.headers['x-operator-id'], PROJECT);
   assert.equal(seen.headers['x-operator-name'], encodeURIComponent('Proyecto Ñandú'));
   assert.equal(await seen.req.text(), body);
+  const big = await ask(await accountToken(PROJECT, 'Proyecto'), { 'content-length': '4097' });
+  assert.equal(big.status, 413);
+  assert.equal(big.headers.get('access-control-allow-origin'), ORIGIN);
+  assert.equal(env.NODES.seen.length, 1, 'refused before the object');
   const pre = await req(env, 'OPTIONS', '/nodes/tokens', { headers: { 'Access-Control-Request-Method': 'POST' } });
   assert.equal(pre.status, 204);
   assert.equal(pre.headers.get('access-control-allow-headers'), 'authorization, content-type');
 });
 
-test('mine: an account session, forwarded with the caller’s id; status: public and cached 10 s; both with CORS', async () => {
+test('mine: an account session, forwarded with the caller’s id, 30 a minute per account; status: public and cached 10 s; both with CORS', async () => {
   const env = makeEnv();
   env.NODES.handler = (r) => new RealResponse(JSON.stringify({ path: new URL(r.url).pathname }), { headers: { 'content-type': 'application/json' } });
   assert.equal((await req(env, 'GET', '/nodes/mine')).status, 401);
@@ -375,10 +400,14 @@ test('mine: an account session, forwarded with the caller’s id; status: public
   assert.equal(mine.status, 200);
   assert.equal(env.NODES.seen[0].headers['x-operator-id'], PLAYER);
   assert.equal(mine.headers.get('access-control-allow-origin'), ORIGIN);
+  const auth = { authorization: 'Bearer ' + (await accountToken(PLAYER, 'Jugador')) };
+  for (let i = 1; i < 30; i++) assert.equal((await req(env, 'GET', '/nodes/mine', { headers: auth })).status, 200);
+  assert.equal((await req(env, 'GET', '/nodes/mine', { headers: auth })).status, 429, 'from any address');
+  env.NODES.seen.length = 0;
   const s1 = await req(env, 'GET', '/nodes/status');
   const s2 = await req(env, 'GET', '/nodes/status');
   assert.deepEqual([await jsonOf(s1), await jsonOf(s2)], [{ path: '/nodes/status' }, { path: '/nodes/status' }]);
-  assert.equal(env.NODES.seen.length, 2, 'the second status came from the cache');
+  assert.equal(env.NODES.seen.length, 1, 'the second status came from the cache');
   assert.equal(s2.headers.get('cache-control'), 'public, max-age=10');
   assert.equal(s2.headers.get('access-control-allow-origin'), ORIGIN);
 });

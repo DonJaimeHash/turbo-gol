@@ -1,5 +1,6 @@
 // Community nodes on the Worker's side, without workerd: the nodes config helpers of
-// server/src/env.ts on a fake KV, the NodeRegistryDO's address and internal contract
+// server/src/env.ts on a fake KV (and its capped body reader and per-address limit key), the
+// NodeRegistryDO's address and internal contract
 // (server/src/nodeApi.ts), and the outcome calls of a finished node match
 // (server/src/nodeOutcome.ts) delivered to fake namespaces and to a real AccountsDO on node:sqlite
 // (the same SQL it runs on its SQLite storage). Nothing in the Worker calls this code yet.
@@ -120,6 +121,55 @@ test('nodesConfigured: the NodeRegistryDO, both buckets, both halves of the cont
   }
   assert.equal(E.nodesConfigured({ ...full, NODE_CONTROL_PRIVATE_KEY: '' }), false, 'an empty secret is no key');
   assert.equal(E.nodesConfigured({}), false, 'a fork or a test env without any of them');
+});
+
+// ---- env.ts: the body cap and the per-address limit key ------------------------------------------
+
+test('limitKey: an IPv4 address as it is, an IPv6 one by its /64 however it is written', () => {
+  for (const ip of ['203.0.113.5', 'local', 'unknown', '::ffff:192.0.2.1']) assert.equal(E.limitKey(ip), ip);
+  const cases = [
+    ['2001:db8:1:2:3:4:5:6', '2001:db8:1:2::/64'],
+    ['2001:db8:1:2::1', '2001:db8:1:2::/64'],
+    ['2001:DB8:0001:0002:aaaa::', '2001:db8:1:2::/64'],
+    ['2001:db8:1:2:ffff:ffff:ffff:ffff', '2001:db8:1:2::/64'],
+    ['2001:db8::1:2:3:4', '2001:db8:0:0::/64'],
+    ['2001:db8::5:0:0:0:1', '2001:db8:0:5::/64'],
+    ['2001:db8::', '2001:db8:0:0::/64'],
+    ['::1', '0:0:0:0::/64'],
+  ];
+  for (const [ip, key] of cases) assert.equal(E.limitKey(ip), key, ip);
+});
+
+/** A request whose body is `chunks`, streamed (no Content-Length); `pulls` counts the chunks read. */
+function streamed(chunks, headers = {}) {
+  const s = { pulls: 0 };
+  const body = new ReadableStream(
+    {
+      pull(c) {
+        if (s.pulls >= chunks.length) return c.close();
+        c.enqueue(new TextEncoder().encode(chunks[s.pulls++]));
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  s.request = new Request('https://x/', { method: 'POST', duplex: 'half', body, headers });
+  return s;
+}
+
+test('readJson: at most 4 KB, read only that far, a declared Content-Length over it not read at all; empty is {}, bad JSON null', async () => {
+  const ok = streamed(['{"name":', '"Señor"}']);
+  assert.deepEqual(await E.readJson(ok.request), { name: 'Señor' });
+  const big = streamed(['{"pad":"', ...Array.from({ length: 64 }, () => 'x'.repeat(1024)), '"}']);
+  assert.equal(await E.readJson(big.request), null);
+  assert.ok(big.pulls <= 6, `stopped at the cap: ${big.pulls} chunks of 66`);
+  const declared = streamed(['{}'], { 'content-length': '5000' });
+  assert.equal(await E.readJson(declared.request), null);
+  assert.equal(declared.pulls, 0);
+  assert.deepEqual(await E.readJson(new Request('https://x/', { method: 'POST' })), {});
+  assert.equal(await E.readJson(new Request('https://x/', { method: 'POST', body: '{nope' })), null);
+  const edge = '{"a":"' + 'x'.repeat(E.JSON_MAX_BYTES - 8) + '"}';
+  assert.equal(edge.length, E.JSON_MAX_BYTES);
+  assert.equal((await E.readJson(new Request('https://x/', { method: 'POST', body: edge }))).a.length, E.JSON_MAX_BYTES - 8, 'exactly 4 KB is read');
 });
 
 // ---- nodeApi.ts ------------------------------------------------------------------------------------
@@ -281,6 +331,21 @@ test('deliverCall: a 5xx or a network error is retried, without an ALERT', async
     assert.ok(lines[0].startsWith('outbox /release '), lines[0]);
     assert.doesNotMatch(lines[0], /[\r\n]/);
   }
+});
+
+test('deliverCall: a target that does not answer within the timeout is retried, and a late answer is let go unread', async () => {
+  const [, rel] = O.outcomeCalls(RATED, assign(), IDS);
+  assert.equal(O.DELIVERY_TIMEOUT_MS, 10_000);
+  const never = deliveryEnv(() => new Promise(() => {}));
+  const lines = [];
+  assert.equal(await O.deliverCall(never.env, rel, (l) => lines.push(l), 20), 'retry');
+  assert.deepEqual(lines, ['outbox /release failed (match abababab, mm:SA), to retry: Error: no answer in 0.02 s']);
+  let cancelled = false;
+  const body = new ReadableStream({ cancel: () => void (cancelled = true) });
+  const late = deliveryEnv(() => new Promise((r) => setTimeout(() => r(new RealResponse(body)), 40)));
+  assert.equal(await O.deliverCall(late.env, rel, () => undefined, 10), 'retry');
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(cancelled, true, 'its body cancelled');
 });
 
 test('deliverCall: a row for no known object sends nothing and is dropped with an ALERT', async () => {

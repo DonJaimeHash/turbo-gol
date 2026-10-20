@@ -10,13 +10,14 @@
  *                                     Its own route: the launcher asks for 'channel', with no extension
  *   GET|HEAD /nodes/releases/<key>    a release file: <version>/<file> (immutable) or a root file such as
  *                                     launcher.mjs or install.sh (revalidated by ETag); never a listing
- *   POST     /nodes/register          RegisterRequest -> the object, with the caller's address (x-client-ip)
+ *   POST     /nodes/register          RegisterRequest -> the object, with the caller's address (x-client-ip); 413
+ *                                     over 4 KB declared (the object reads at most that much of any body)
  *   GET      /nodes/connect           a node's control WebSocket -> the object; its 101 passes through as it is.
  *                                     No Origin check: the object's challenge is the gate
  *   PUT|GET  /nodes/replays/<id>      a replay (id: 64 hex), signed by the node -> the object, which checks the
  *                                     signature before it reads the body; 413 over 16 MiB
  *   POST     /nodes/tokens            { region, name? }, Bearer account session of a NODE_TRUSTED_OPERATORS account
- *                                     -> a one-time registration token and the Linux install line
+ *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB
  *   GET      /nodes/mine              Bearer account session -> the caller's own nodes
  *   GET      /nodes/status            the public list of nodes, cached 10 s
  * Anything else under /nodes/ is a 404: the WebRTC signaling and the shop are not open in stage 1,
@@ -28,12 +29,13 @@
  * tokens, mine and status, the routes a page calls; the rest is for nodes and curl. The limits
  * here are per isolate (index.ts rateLimited), per minute except two: registrations per address
  * per hour and tokens per account per day, the object's own limits, which only the object holds
- * across isolates. Here they keep junk from reaching it.
+ * across isolates. Here they keep junk from reaching it: every route that reaches the object has
+ * one, per address (an IPv6 address counted by its /64, env.ts limitKey) or per account.
  */
 import { requireAccount } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
-import { error, json, nodesConfigured, trustedOperatorIds } from './env';
+import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
 import { nodesStub } from './nodeApi';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
@@ -61,11 +63,17 @@ const DAY_MS = 24 * HOUR_MS;
 const LIMIT_CONNECT_PER_IP = 30;
 /** A node uploads one replay per match: a full VPS ends a few matches a minute. */
 const LIMIT_REPLAY_PUT_PER_IP = 60;
+/** A verifier downloads one replay per job; counted apart from the uploads, which the same node makes. */
+const LIMIT_REPLAY_GET_PER_IP = 60;
 const LIMIT_STATUS_PER_IP = 60;
+const LIMIT_MINE_PER_ACCOUNT = 30;
 const STATUS_TTL_MS = 10_000;
 
-/** A release key: an optional X.Y.Z/ directory, then one file name. Nothing else is ever looked up in the bucket. */
-const RELEASE_KEY = /^(?:\d+\.\d+\.\d+\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/**
+ * A release key: an optional X.Y.Z/ directory, then one file name. Nothing else is ever looked up in
+ * the bucket, and no key comes near R2's 1,024-byte limit (a longer one would make the lookup throw).
+ */
+const RELEASE_KEY = /^(?:\d{1,6}\.\d{1,6}\.\d{1,6}\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const VERSIONED = /^\d+\.\d+\.\d+\//;
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const REPLAY_PATH = /^\/nodes\/replays\/([0-9a-f]{64})$/;
@@ -126,23 +134,29 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   if ((method === 'GET' || method === 'HEAD') && path.startsWith('/nodes/releases/')) return release(c, path.slice('/nodes/releases/'.length));
   const env = c.env;
   if (!nodesConfigured(env) || !env.JWT_SECRET) return error(404, 'not_found');
+  const who = limitKey(c.ip);
   if (method === 'POST' && path === '/nodes/register') {
-    if (c.limited('nreg:' + c.ip, LIMIT_REGISTER_PER_IP, HOUR_MS)) return error(429, 'rate_limited');
+    if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
+    if (c.limited('nreg:' + who, LIMIT_REGISTER_PER_IP, HOUR_MS)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, { 'x-client-ip': c.ip });
   }
   if (method === 'GET' && path === '/nodes/connect') {
     if (c.request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'upgrade_required');
-    if (c.limited('ncon:' + c.ip, LIMIT_CONNECT_PER_IP)) return error(429, 'rate_limited');
+    if (c.limited('ncon:' + who, LIMIT_CONNECT_PER_IP)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path);
   }
   const replay = REPLAY_PATH.exec(path);
   if (replay && method === 'PUT') {
-    if (Number(c.request.headers.get('content-length') ?? 0) > REPLAY_MAX_BYTES) return error(413, 'too_large');
-    if (c.limited('nrep:' + c.ip, LIMIT_REPLAY_PUT_PER_IP)) return error(429, 'rate_limited');
+    if (declared(c.request) > REPLAY_MAX_BYTES) return error(413, 'too_large');
+    if (c.limited('nrep:' + who, LIMIT_REPLAY_PUT_PER_IP)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path);
   }
-  if (replay && method === 'GET') return toRegistry(env, c.request, path);
+  if (replay && method === 'GET') {
+    if (c.limited('nrget:' + who, LIMIT_REPLAY_GET_PER_IP)) return error(429, 'rate_limited');
+    return toRegistry(env, c.request, path);
+  }
   if (method === 'POST' && path === '/nodes/tokens') {
+    if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
     const s = requireAccount({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project creates node tokens for now');
@@ -152,10 +166,16 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   if (method === 'GET' && path === '/nodes/mine') {
     const s = requireAccount({ session: await c.session() });
     if (s instanceof Response) return s;
+    if (c.limited('nmine:' + s.sub, LIMIT_MINE_PER_ACCOUNT)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, operator(s));
   }
-  if (method === 'GET' && path === '/nodes/status') return status(c, env);
+  if (method === 'GET' && path === '/nodes/status') return status(c, env, who);
   return error(404, 'not_found');
+}
+
+/** The body length the caller declares (0 without a Content-Length: the object's own cap holds then). */
+function declared(request: Request): number {
+  return Number(request.headers.get('content-length') ?? 0);
 }
 
 /** Who asks, as the object reads it: the session's id and name (URL-encoded: header values are Latin-1). */
@@ -176,8 +196,8 @@ async function toRegistry(env: NodesEnv, request: Request, path: string, set: Re
 }
 
 /** GET /nodes/status: the object's public list, kept 10 s by each isolate and by caches on the way. */
-async function status(c: NodeRouteContext, env: NodesEnv): Promise<Response> {
-  if (c.limited('nst:' + c.ip, LIMIT_STATUS_PER_IP)) return error(429, 'rate_limited');
+async function status(c: NodeRouteContext, env: NodesEnv, who: string): Promise<Response> {
+  if (c.limited('nst:' + who, LIMIT_STATUS_PER_IP)) return error(429, 'rate_limited');
   const now = Date.now();
   if (!statusCache || now - statusCache.at > STATUS_TTL_MS) {
     const res = await toRegistry(env, c.request, '/nodes/status');

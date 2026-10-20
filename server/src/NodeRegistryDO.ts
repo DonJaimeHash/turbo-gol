@@ -4,7 +4,8 @@
  * only through the Worker (internal header): the /nodes/* routes of nodeRoutes.ts and the
  * matchmaker's internal routes.
  *
- *   POST /nodes/register         RegisterRequest, x-client-ip -> RegisterAnswer (403 <code> when refused); 5 per IP per hour
+ *   POST /nodes/register         RegisterRequest (at most 4 KB read), x-client-ip -> RegisterAnswer (403 <code> when
+ *                                refused); 5 per address per hour, an IPv6 address counted by its /64
  *   GET  /nodes/connect          WebSocket upgrade: a node's control link (Hibernation API)
  *   PUT  /nodes/replays/<id>     the hosting node's replay upload, signed (x-node-id / -ts / -sig, x-replay-sha256): the
  *                                signature is checked before the body (up to 16 MiB) is read
@@ -26,12 +27,15 @@
  * sockets: each is adopted from the { nodeId } attachment it got when it logged in, with no new
  * challenge. The alarm runs every 5 s while there is a socket, an unfinished match, an outbox row
  * or a grace: the sweep is the only thing that voids a dead node's matches, so it must run with no
- * node connected too. It also delivers the outbox and reads channel.json from R2 again every minute.
+ * node connected too. It also starts the outbox's delivery, without waiting for it (each delivery
+ * times out, and a stuck target holds back only its own rows), and reads channel.json from R2 again
+ * every minute.
  *
  * The control key: NODE_CONTROL_PUBLIC_KEY (var) must be the public half of
  * NODE_CONTROL_PRIVATE_KEY (secret), or the nodes would refuse every ticket. When they differ the
  * object raises an ALERT and places nothing, registers nothing and mints no rejoin ticket; nodes
- * already registered keep reporting.
+ * already registered keep reporting. A caller is only told the control plane is unavailable, as
+ * when its state cannot be read: the cause is for the ALERT lines.
  */
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlane, NodeRefused } from '../../nodes/control-plane/controlPlane';
@@ -43,11 +47,11 @@ import type { RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../node
 import { importPrivateKey, sign, verifyWith } from '../../nodes/shared/edcrypto';
 import { REGIONS, isRegion } from '../../src/net/account';
 import { checkInternal } from './auth';
-import { error, isHex, isMode, json, nodesConfigured, readJson, sanitizeName, trustedOperatorIds } from './env';
+import { error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
 import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeApi';
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
-import { deliverCall } from './nodeOutcome';
+import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
 
 /** The alarm's period while anything needs it. */
@@ -65,6 +69,15 @@ const DAY_MS = 24 * HOUR_MS;
 const OUTBOX_BATCH = 50;
 /** A failed delivery is tried again after 2^attempts seconds, at most this long. */
 const OUTBOX_MAX_BACKOFF_MS = 5 * 60_000;
+/** The rate limits keep at most this many windows: past it the oldest one goes. */
+export const LIMIT_KEYS_MAX = 10_000;
+/** Expired windows are swept once every this many calls, not at each one. */
+const LIMIT_PURGE_EVERY = 256;
+/**
+ * What any caller hears while the control plane cannot serve, whatever the cause: the cause is in
+ * the ALERT lines, and an anonymous caller learns nothing it could time an attack against.
+ */
+const UNAVAILABLE = 'the node control plane is not available right now: try again later';
 const REPLAY_ROUTE = /^\/nodes\/replays\/([0-9a-f]{64})$/;
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
 
@@ -87,33 +100,6 @@ function attachedNode(ws: WebSocket): string | null {
   } catch {
     return null;
   }
-}
-
-/** The body, or null when it is longer than `max` bytes (reading stops there). */
-async function readCapped(request: Request, max: number): Promise<Uint8Array | null> {
-  if (Number(request.headers.get('content-length') ?? 0) > max) return null;
-  const reader = request.body?.getReader();
-  if (!reader) return new Uint8Array(0);
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = value as Uint8Array;
-    size += chunk.byteLength;
-    if (size > max) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(chunk);
-  }
-  const out = new Uint8Array(size);
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.byteLength;
-  }
-  return out;
 }
 
 const isStr = (v: unknown, max: number): v is string => typeof v === 'string' && v.length >= 1 && v.length <= max;
@@ -162,8 +148,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private readonly cfg: NodesEnv | null;
   private store: NodeStore | null = null;
   private cp: ControlPlane | null = null;
-  /** Why the control plane is not running (a 503 says it). */
-  private down = 'starting';
+  /**
+   * How long the object waits for another object or for R2: an outbox delivery or a read of
+   * channel.json that takes longer is given up and tried again later (tests shorten it).
+   */
+  timeoutMs = DELIVERY_TIMEOUT_MS;
   /** The control key pair matches (controlKeysMatch): tickets the nodes can check. */
   private keyOk = false;
   /** channel.json as last read (parsed; its text when it is not JSON; null when missing), its text and when it was read. */
@@ -173,8 +162,9 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private readonly sessions = new WeakMap<WebSocket, Session>();
   /** Sockets whose { nodeId } attachment is stored. */
   private readonly attached = new WeakSet<WebSocket>();
-  /** Registrations per IP and tokens per account, in fixed windows (the object is one for every node: they hold globally). */
+  /** Registrations per address and tokens per account, in fixed windows (the object is one for every node: they hold globally). */
   private readonly limits = new Map<string, { n: number; resetAt: number }>();
+  private limitCalls = 0;
   private draining: Promise<void> | null = null;
   private drainAgain = false;
   /** Outbox rows already reported as a day old (once per row and process). */
@@ -192,10 +182,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
 
   private async start(): Promise<void> {
     const env = this.cfg;
-    if (!env) {
-      this.down = 'not configured';
-      return;
-    }
+    if (!env) return;
     const store = new NodeStore(
       this.ctx.storage.sql,
       (fn) => this.ctx.storage.transactionSync(fn),
@@ -244,7 +231,6 @@ export class NodeRegistryDO extends DurableObject<Env> {
     } catch (e) {
       this.store = null;
       this.cp = null;
-      this.down = 'state unreadable';
       this.log(`ALERT node control plane not started, its state is left as it is: ${String(e)}`);
       for (const ws of this.ctx.getWebSockets()) closeQuietly(ws, 1011, 'unavailable');
       return;
@@ -335,13 +321,12 @@ export class NodeRegistryDO extends DurableObject<Env> {
     } catch (e) {
       this.log(`ALERT sweep failed: ${String(e)}`);
     }
-    try {
-      await this.drain();
-    } catch (e) {
-      this.log(`ALERT outbox failed: ${String(e)}`);
-    }
-    if (Date.now() - this.channelAt >= CHANNEL_REFRESH_MS) await this.refreshChannel();
+    // The next run is set before anything waits on another object: the sweep is what closes timed
+    // out sockets and voids a dead node's matches, and a slow target must not hold it back. The
+    // outbox is not awaited for the same reason; each delivery has its own timeout.
     await this.rearm();
+    this.kickOutbox();
+    if (Date.now() - this.channelAt >= CHANNEL_REFRESH_MS) await this.refreshChannel();
   }
 
   /** Something needs the alarm: a node's socket, a match not settled, an undelivered call, a restart's grace. */
@@ -363,9 +348,9 @@ export class NodeRegistryDO extends DurableObject<Env> {
 
   /**
    * Read channel.json again. A change reaches the nodes now (ControlPlane.channelChanged: those
-   * below a new minimum are told to update), not at their next hello. A read that fails keeps the
-   * last one; a missing or malformed object is handed on as it is, and the control plane holds
-   * the nodes to the last good channel with an ALERT.
+   * below a new minimum are told to update), not at their next hello. A read that fails or takes
+   * longer than timeoutMs keeps the last one; a missing or malformed object is handed on as it
+   * is, and the control plane holds the nodes to the last good channel with an ALERT.
    */
   private async refreshChannel(): Promise<void> {
     const env = this.cfg;
@@ -373,8 +358,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     this.channelAt = Date.now();
     let text: string | null;
     try {
-      const o = await env.NODE_RELEASES.get(CHANNEL_KEY);
-      text = o ? await o.text() : null;
+      text = await withTimeout(env.NODE_RELEASES.get(CHANNEL_KEY).then((o) => (o ? o.text() : null)), this.timeoutMs);
     } catch (e) {
       this.log(`${CHANNEL_KEY} not read, keeping the last one: ${String(e)}`);
       return;
@@ -421,17 +405,22 @@ export class NodeRegistryDO extends DurableObject<Env> {
   /**
    * One pass over the due rows, oldest first. A delivered row is deleted (deliverCall: a 2xx, or a
    * refusal it reported with an ALERT); any other is tried again 2, 4, 8 ... s later, at most
-   * every 5 minutes, and a day without delivery raises an ALERT.
+   * every 5 minutes, and a day without delivery raises an ALERT. A target that failed is not
+   * asked again in the same pass: its other rows wait for the next one, and the other targets'
+   * rows do not wait behind its timeouts.
    */
   private async drainDue(): Promise<void> {
     const store = this.store;
     if (!store) return;
+    const failed = new Set<string>();
     for (const row of store.due(Date.now(), OUTBOX_BATCH)) {
-      if ((await deliverCall(this.env, row, (m) => this.log(m))) === 'done') {
+      if (failed.has(row.target)) continue;
+      if ((await deliverCall(this.env, row, (m) => this.log(m), this.timeoutMs)) === 'done') {
         store.delivered(row.id);
         this.lateRows.delete(row.id);
         continue;
       }
+      failed.add(row.target);
       const attempts = row.attempts + 1;
       const now = Date.now();
       store.retryAt(row.id, attempts, now + Math.min(1000 * 2 ** attempts, OUTBOX_MAX_BACKOFF_MS));
@@ -444,12 +433,20 @@ export class NodeRegistryDO extends DurableObject<Env> {
 
   // ---- HTTP ---------------------------------------------------------------------------------
 
-  /** Fixed window: true when `key` was hit more than `max` times in its current window. */
+  /**
+   * Fixed window: true when `key` was hit more than `max` times in its current window. Bounded,
+   * since anyone can bring new keys: expired windows are swept every LIMIT_PURGE_EVERY calls (a
+   * sweep at each call would cost every junk request the whole map, on the thread the heartbeats
+   * use), and past LIMIT_KEYS_MAX the oldest window goes, so a new caller is still let through.
+   */
   private limited(key: string, max: number, windowMs: number): boolean {
     const now = Date.now();
-    if (this.limits.size > 10_000) for (const [k, v] of this.limits) if (v.resetAt <= now) this.limits.delete(k);
+    if (++this.limitCalls % LIMIT_PURGE_EVERY === 0) for (const [k, v] of this.limits) if (v.resetAt <= now) this.limits.delete(k);
     const e = this.limits.get(key);
     if (!e || e.resetAt <= now) {
+      // Deleted and set again: a renewed window moves to the end, the Map's order stays the windows' age.
+      this.limits.delete(key);
+      if (this.limits.size >= LIMIT_KEYS_MAX) this.limits.delete(this.limits.keys().next().value as string);
       this.limits.set(key, { n: 1, resetAt: now + windowMs });
       return false;
     }
@@ -462,7 +459,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!(await checkInternal(this.env.JWT_SECRET, request))) return error(403, 'forbidden');
     const cp = this.cp;
     const env = this.cfg;
-    if (!cp || !env) return error(503, 'nodes_unavailable', `the node control plane is not running: ${this.down}`);
+    if (!cp || !env) return error(503, 'nodes_unavailable', UNAVAILABLE);
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -499,10 +496,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
   }
 
   private async register(request: Request, cp: ControlPlane, env: NodesEnv): Promise<Response> {
-    const ip = request.headers.get('x-client-ip') ?? 'unknown';
+    const ip = limitKey(request.headers.get('x-client-ip') ?? 'unknown');
     if (this.limited('register:' + ip, REGISTER_PER_IP_PER_HOUR, HOUR_MS)) return error(429, 'rate_limited', `at most ${REGISTER_PER_IP_PER_HOUR} registrations per hour from one address`);
-    // Before the token is spent: a node registered now would get a public key that fits no ticket.
-    if (!this.keyOk) return error(503, 'control_key_mismatch', 'the control plane cannot sign tickets right now: try again later, the token is still good');
+    // Before the token is spent (it stays good): a node registered now would get a public key that
+    // fits no ticket. The ALERT at the start names the cause; the caller hears what any outage says.
+    if (!this.keyOk) return error(503, 'nodes_unavailable', UNAVAILABLE);
     const body = await readJson<RegisterRequest>(request);
     if (!body) return error(400, 'bad_request');
     const r = await cp.registry.register(body, Date.now());

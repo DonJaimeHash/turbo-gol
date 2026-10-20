@@ -84,6 +84,17 @@ const CONTROL = await generateEd25519();
 const secret = await internalSecret(SECRET);
 const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms));
 
+/** `p`, or a failure once `ms` passed without it: a hang fails its test instead of stalling the file. */
+async function within(ms, p, what) {
+  let timer;
+  const late = new Promise((_, reject) => (timer = realSetTimeout(() => reject(new Error(what)), ms)));
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function waitFor(fn, what) {
   for (let i = 0; i < 200 && !(await fn()); i++) await sleep(2);
   assert.ok(await fn(), what);
@@ -339,6 +350,21 @@ async function liveNode(h, opts = {}) {
   return { node, ws };
 }
 
+/** A body that counts how many chunks were pulled from it. */
+function stream(chunks) {
+  const s = { pulls: 0 };
+  s.body = new ReadableStream(
+    {
+      pull(c) {
+        if (s.pulls >= chunks.length) return c.close();
+        c.enqueue(chunks[s.pulls++]);
+      },
+    },
+    { highWaterMark: 0 }, // nothing is pulled before a read
+  );
+  return s;
+}
+
 const humans = (...ids) => ids.map((id, i) => ({ playerId: id, name: 'P' + i }));
 const placeBody = (over = {}) => ({ mode: '1v1', region: 'SA', ranked: false, matchLengthSeconds: 180, humans: humans(A, B), ...over });
 
@@ -372,6 +398,7 @@ test('a state version written by a newer build: the object starts down with an A
   const r = await call(h, 'GET', '/nodes/status');
   assert.equal(r.status, 503);
   assert.equal(r.json.error, 'nodes_unavailable');
+  assert.doesNotMatch(r.json.message, /state|version|unreadable/, 'the cause is for the ALERT line, not for any caller');
   assert.equal(h.ctx.alarm, null);
   assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'state_version'").get().v, '9', 'the rows wait for the build that wrote them');
 });
@@ -421,6 +448,37 @@ test('register: the control public key and the wss URL; 5 a hour per address, re
   assert.equal((await call(h, 'POST', '/nodes/register', bad)).status, 403, 'an hour later');
 });
 
+test('register reads at most 4 KB of its body: a bigger one, sent without a Content-Length, is refused without being read whole', async () => {
+  const h = await boot(makeEnv());
+  // Valid JSON, so only the cap can refuse it (read whole, it would be a 403 for its token).
+  const text = new TextEncoder().encode('{"token":"tgn1_' + 'a'.repeat(64 * 1024) + '"}');
+  const big = stream(Array.from({ length: Math.ceil(text.byteLength / 1024) }, (_, i) => text.slice(i * 1024, (i + 1) * 1024)));
+  const req = new Request('https://nodes/nodes/register', { method: 'POST', duplex: 'half', body: big.body, headers: { [INTERNAL_HEADER]: secret, 'x-client-ip': '198.51.100.30' } });
+  assert.equal(req.headers.get('content-length'), null, 'a streamed body declares no length');
+  const res = await h.obj.fetch(req);
+  assert.deepEqual([res.status, (await res.json()).error], [400, 'bad_request']);
+  assert.ok(big.pulls <= 5, `reading stopped at the cap (${big.pulls} KiB of ${Math.ceil(text.byteLength / 1024)} pulled)`);
+  const declared = stream([text]);
+  const r2 = await h.obj.fetch(new Request('https://nodes/nodes/register', { method: 'POST', duplex: 'half', body: declared.body, headers: { [INTERNAL_HEADER]: secret, 'x-client-ip': '198.51.100.30', 'content-length': String(text.byteLength) } }));
+  assert.equal(r2.status, 400);
+  assert.equal(declared.pulls, 0, 'a declared length over the cap: not a byte read');
+});
+
+test('register: an IPv6 /64 is one address; the limits keep a bounded number of windows and still let a new address in', async () => {
+  const h = await boot(makeEnv());
+  const bad = (ip) => call(h, 'POST', '/nodes/register', { body: { token: 'tgn1_nope' }, headers: { 'x-client-ip': ip } });
+  for (let i = 1; i <= D.REGISTER_PER_IP_PER_HOUR; i++) assert.equal((await bad(`2001:db8:1:2::${i.toString(16)}`)).status, 403);
+  assert.equal((await bad('2001:db8:1:2:ffff:ffff:ffff:ffff')).status, 429, 'another address of the same /64');
+  assert.equal((await bad('2001:0db8:0001:0002:0:0:0:abcd')).status, 429, 'written out in full');
+  assert.equal((await bad('2001:db8:1:3::1')).status, 403, 'the next /64');
+  // A flood of fresh keys (one /64 each): the oldest windows go, the map never passes its cap.
+  for (let i = 0; i < D.LIMIT_KEYS_MAX + 500; i++) h.obj.limited(`register:2001:db8:${(i >> 16).toString(16)}:${(i & 0xffff).toString(16)}::/64`, 5, 3_600_000);
+  assert.equal(h.obj.limits.size, D.LIMIT_KEYS_MAX);
+  assert.equal(h.obj.limits.has('register:2001:db8:1:2::/64'), false, 'the oldest window went first');
+  assert.equal((await bad('203.0.113.77')).status, 403, 'a new address is still let through, not refused for a full map');
+  assert.equal(h.obj.limits.size, D.LIMIT_KEYS_MAX);
+});
+
 test('a control public key that is not the private key’s half: ALERT, and no registration, placement or rejoin', async () => {
   for (const over of [{ NODE_CONTROL_PUBLIC_KEY: (await generateEd25519()).publicKey }, { NODE_CONTROL_PRIVATE_KEY: 'not a key' }]) {
     lines.length = 0;
@@ -431,7 +489,8 @@ test('a control public key that is not the private key’s half: ALERT, and no r
     const keys = await generateEd25519();
     const r = await call(h, 'POST', '/nodes/register', { body: { token: t.json.token, publicKey: keys.publicKey, roles: ['host'], publicUrl: NODE_URL, build: NODE_BUILD, specs: SPECS, capacity: CAP } });
     assert.equal(r.status, 503);
-    assert.equal(r.json.error, 'control_key_mismatch');
+    assert.equal(r.json.error, 'nodes_unavailable', 'what any outage answers: an anonymous caller does not learn the key pair is wrong');
+    assert.doesNotMatch(r.json.message, /key|sign|ticket/);
     assert.equal(h.obj.cp.registry.tokenList()[0].usedBy, null, 'the token is still good');
     assert.deepEqual((await call(h, 'POST', '/internal/place', { body: placeBody() })).json, { placement: null, hosts: 0 });
     assert.equal((await call(h, 'POST', '/internal/rejoin', { body: { matchId: 'ab'.repeat(32), playerId: A } })).status, 503);
@@ -574,24 +633,92 @@ test('a casual match only frees its locks; a 5xx is tried again later, further a
   assert.equal(env.MATCHMAKER.calls.length, 1);
   let [row] = rows(h, 'outbox');
   assert.deepEqual([row.path, row.attempts, row.next_at - clock], ['/release', 1, 2_000]);
-  await h.obj.alarm();
+  /** An alarm and the delivery it starts (not waited for by the alarm itself). */
+  const tick = async () => {
+    await h.obj.alarm();
+    await h.ctx.settle();
+  };
+  await tick();
   assert.equal(env.MATCHMAKER.calls.length, 1, 'not due yet');
   clock += 2_000;
-  await h.obj.alarm();
+  await tick();
   [row] = rows(h, 'outbox');
   assert.deepEqual([row.attempts, row.next_at - clock], [2, 4_000]);
   assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'an undelivered row keeps the alarm');
   lines.length = 0;
   clock += 24 * 3_600_000;
-  await h.obj.alarm();
-  await h.obj.alarm();
+  await tick();
+  await tick();
   assert.equal(alerts().length, 1, 'once');
   assert.match(alerts()[0], /ALERT outbox \/release for match \w{8} \(mm:SA\) undelivered for a day, 3 tries/);
   assert.equal(rows(h, 'outbox')[0].next_at - clock, 8_000);
   env.MATCHMAKER.answer = () => new RealResponse('{"ok":true}');
   clock += 300_000;
-  await h.obj.alarm();
+  await tick();
   assert.deepEqual(rows(h, 'outbox'), []);
+});
+
+test('a target that never answers holds back neither the alarm nor the other targets; its rows are retried after the timeout, one wait per pass', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws } = await liveNode(h);
+  h.obj.timeoutMs = 200;
+  env.ACCOUNTS.gate = new Promise(() => {}); // AccountsDO is stuck: no answer, no error
+  /** A ranked match the node lost: a /ranked-cancel (AccountsDO) and a /release (the matchmaker). */
+  const lose = async () => {
+    const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody({ ranked: true }) })).json;
+    await send(h, ws, { t: 'report', id: 'r-' + placement.matchId.slice(0, 8), report: { kind: 'lost', matchId: placement.matchId, reason: 'tick_error' } });
+    return placement.matchId;
+  };
+  const first = await lose(); // its delivery starts now and waits on AccountsDO
+  h.ctx.alarm = null; // the runtime consumed the alarm that runs now
+  lines.length = 0;
+  await within(1_000, h.obj.alarm(), 'the alarm waited for a delivery that never ends');
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS, 're-armed while the delivery still waits');
+  assert.equal(rows(h, 'outbox')[0].attempts, 0, 'not given up yet: the alarm did not wait for it');
+  await within(1_000, h.obj.alarm(), 'the alarm waited for the drain in flight');
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'a second run neither');
+  await h.ctx.settle();
+  assert.deepEqual(rows(h, 'outbox').map((r) => [r.match_id, r.path, r.attempts, r.next_at - clock]), [[first, '/ranked-cancel', 1, 2_000]]);
+  assert.ok(lines.some((l) => /outbox \/ranked-cancel failed \(match \w{8}, accounts\), to retry: Error: no answer in 0\.2 s/.test(l)), lines.join('\n'));
+  assert.deepEqual(env.MATCHMAKER.calls.map((c) => c.body.matchId), [first], 'the other target was not held back');
+  const second = await lose();
+  await h.ctx.settle();
+  clock += 2_000; // both /ranked-cancel rows are due
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.deepEqual(
+    rows(h, 'outbox').map((r) => [r.match_id, r.attempts]),
+    [
+      [first, 2],
+      [second, 1],
+    ],
+    'one wait for the stuck target in that pass: its second row waited for the next one',
+  );
+  assert.deepEqual(env.MATCHMAKER.calls.map((c) => c.body.matchId), [first, second]);
+  env.ACCOUNTS.gate = null;
+  clock += 4_000;
+  await h.obj.alarm();
+  await h.ctx.settle();
+  assert.deepEqual(rows(h, 'outbox'), []);
+  assert.deepEqual(env.ACCOUNTS.calls.map((c) => [c.path, c.body.matchId]), [['/ranked-cancel', first], ['/ranked-cancel', second]]);
+});
+
+test('a read of channel.json that never answers is given up: the alarm still re-arms and the last channel is kept', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws } = await liveNode(h);
+  h.obj.timeoutMs = 50;
+  env.NODE_RELEASES.get = () => new Promise(() => {});
+  lines.length = 0;
+  clock += D.CHANNEL_REFRESH_MS;
+  await send(h, ws, { t: 'heartbeat', data: beat() });
+  h.ctx.alarm = null;
+  await within(1_000, h.obj.alarm(), 'the alarm waited for a read that never ends');
+  assert.equal(h.ctx.alarm, clock + D.TICK_MS);
+  assert.ok(lines.some((l) => l === '[nodes] channel.json not read, keeping the last one: Error: no answer in 0.05 s'), lines.join('\n'));
+  assert.equal(ws.of('update').length, 0);
+  assert.equal(ws.closed, null);
 });
 
 // ---- the alarm -------------------------------------------------------------------------------------
@@ -727,20 +854,6 @@ test('a replay upload: refused before its body is read when the signature is wro
   const id = placement.matchId;
   const bytes = new Uint8Array(4096).map((_, i) => i & 0xff);
   const sha = await sha256Hex(bytes);
-  /** A body that counts how many chunks were pulled from it. */
-  const stream = (chunks) => {
-    const s = { pulls: 0 };
-    s.body = new ReadableStream(
-      {
-        pull(c) {
-          if (s.pulls >= chunks.length) return c.close();
-          c.enqueue(chunks[s.pulls++]);
-        },
-      },
-      { highWaterMark: 0 }, // nothing is pulled before a read
-    );
-    return s;
-  };
   const put = async (s, sig, ts = clock) =>
     h.obj.fetch(
       new Request(`https://nodes/nodes/replays/${id}`, {
