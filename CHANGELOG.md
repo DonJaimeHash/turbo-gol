@@ -40,12 +40,12 @@ All notable changes to Turbogol are documented here. The format follows
   node secrets with `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
   (`npm run build:wasm` rewrites it, a test checks it).
 - Community nodes: the control plane's ALERT lines also go to a staff-only Discord channel
-  (`NODE_ALERT_WEBHOOK`, each alert at most once in 10 minutes), with new ones for a project node
-  offline for 2 minutes, a node's traffic at 80 % of its cap, tick lag, and a verification or an
-  update waiting too long. Maintainers get `/nodes/admin/*` (list the nodes, change a status,
-  drain, push the channel, probe again), each action an ALERT, and a cron checks the project
-  nodes' `/healthz` every 5 minutes, which catches an expired certificate. The KV switches,
-  `vm_disabled` included, stay manual.
+  (`NODE_ALERT_WEBHOOK`, each alert at most once in 10 minutes, every account's action each
+  time), with new ones for a project node offline for 2 minutes, a node's traffic at 80 % of its
+  cap, tick lag, and a verification or an update waiting too long. Maintainers get
+  `/nodes/admin/*` (list the nodes, change a status, drain, push the channel, probe again), each
+  action an ALERT, and a cron checks the project nodes' `/healthz` every 5 minutes, which catches
+  an expired certificate. The KV switches, `vm_disabled` included, stay manual.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
