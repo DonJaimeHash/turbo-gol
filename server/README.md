@@ -84,7 +84,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `NODE_TRUSTED_OPERATORS` | secret, optional | the project's account ids, comma-separated: their nodes are trusted (at most 2 each) and only they create node tokens |
 | `NODES_PUBLIC_BASE` | var | the origin the nodes and their installers reach `/nodes/*` at (`https://turbo-gol.com`) |
 | `NODE_ALERT_WEBHOOK` | secret, optional | the webhook URL of a staff-only Discord channel: every `ALERT` line of the node control plane is posted there too (see "Community nodes"); unset = only the logs |
-| `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws` and `/room` it still receives |
+| `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws`, `/room`, `/lobby` and `/nodes` it still receives |
 
 ## HTTP / WebSocket API
 
@@ -102,7 +102,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `GET /api/config` | | public client configuration: `{ turnstileSiteKey, protocol, version, region, autoRegion, regions, oauth, accounts }` (the sitekey is `null` when Turnstile is off; `oauth` lists the configured sign-in providers) |
 | `GET /api/where` | | `{ edgeColo, country, city?, asn?, ip }`: the Cloudflare colo (IATA code) that served the request and the client address masked to /24 (IPv6 /48), from `request.cf`; for the deploy measurements. The colo the *match* runs in is `Welcome.hostColo` (the MatchDO reads it once per isolate from `cloudflare.com/cdn-cgi/trace`, 5 s cap, `unknown` on failure) |
 | `GET /nodes/whoami` | | `{ ip }`: the address a node installer is seen from (`CF-Connecting-IP`) |
-| `GET /nodes/releases/channel`, `GET /nodes/releases/<key>` | | the node releases in R2 `NODE_RELEASES`: the channel (`{ stable, minimum }` when both read `X.Y.Z`, else 503; `no-store`), `<version>/<file>` (immutable) and the root files such as `launcher.mjs` and `install.sh` (`no-cache`, ETag); never a listing, never a key outside `src/nodeRoutes.ts`'s pattern |
+| `GET /nodes/releases/channel`, `GET /nodes/releases/<key>` | | the node releases in R2 `NODE_RELEASES`: the channel (`{ stable, minimum }` when both read `X.Y.Z`, 404 while there is none, else 503; `no-store`), `<version>/<file>` (immutable) and the root files such as `launcher.mjs` and `install.sh` (`no-cache`, ETag); never a listing, never a key outside `src/nodeRoutes.ts`'s pattern |
 | `POST /nodes/register`, `GET /nodes/connect`, `PUT` / `GET /nodes/replays/<id>` | what a node sends | to the NodeRegistryDO: registration (4 KB, 5 per address per hour), the control WebSocket, the signed replay upload (16 MiB) and its download by the verifier; every one limited per address, an IPv6 address counted by its /64 |
 | `POST /nodes/tokens` | `{ region, name? }`, Bearer account session of a `NODE_TRUSTED_OPERATORS` account | a one-time node token (1 h) and its Linux install line; 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 10 per account per day |
 | `GET /nodes/mine` | Bearer account session | the caller's own nodes (30 per account per minute) |
@@ -225,7 +225,7 @@ runs in this Worker, one SQLite object near São Paulo. Before the first deploy 
 ```sh
 npx wrangler r2 bucket create turbogol-node-replays      # plus a 30-day lifecycle rule on it
 npx wrangler r2 bucket create turbogol-node-releases     # nodes/github/workflows/node-release.yml uploads the releases here
-npx wrangler versions secret put NODE_CONTROL_PRIVATE_KEY   # the privateKey of nodes/.keys/control.json
+npx wrangler versions secret put NODE_CONTROL_PRIVATE_KEY   # the privateKey whose public half is vars.NODE_CONTROL_PUBLIC_KEY
 npx wrangler versions secret put NODE_TRUSTED_OPERATORS     # the project's account ids, comma-separated
 npx wrangler versions secret put NODE_ALERT_WEBHOOK         # optional: a staff-only Discord channel's webhook URL
 ```
@@ -233,11 +233,13 @@ npx wrangler versions secret put NODE_ALERT_WEBHOOK         # optional: a staff-
 Set the secrets with `wrangler versions secret put`, never with `wrangler secret put`: the plain
 command deploys a new version at once, and every deploy resets the running matches. The secrets
 then go out with the next `npm run deploy`, at a quiet hour like any deploy.
-`vars.NODE_CONTROL_PUBLIC_KEY` must be the public half of that private key: the object checks it at
-every start and, when the two do not match, logs an ALERT and places, registers and rejoins nothing.
-Without the private key (local dev, a fork that runs no nodes) no match ever goes to a node, and
-every `/nodes/*` route but `whoami` and the releases answers 404. To try
-the routes under `wrangler dev`, put a development pair in `.dev.vars` (both halves: a `.dev.vars`
+
+`vars.NODE_CONTROL_PUBLIC_KEY` must be the public half of that private key: the object checks the
+pair at every start and, when it does not match, logs an ALERT and places no match, registers no
+node and mints no rejoin ticket. Without the private key (local dev, a fork that runs no nodes) no
+match ever goes to a node and every `/nodes/*` route but `whoami` and the releases answers 404;
+without `NODE_TRUSTED_OPERATORS` nobody can create a node token (403 `not_trusted`). To try the
+routes under `wrangler dev`, put a development pair in `.dev.vars` (both halves: a `.dev.vars`
 value overrides the committed var).
 
 **Alerts.** The object logs `[nodes] ALERT ...` lines for what a maintainer must look at, and with
