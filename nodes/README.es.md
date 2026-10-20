@@ -62,6 +62,7 @@ Otros comandos:
 | `node scripts/publish-release.mjs` | Revisa otra vez la release firmada y la sube a R2. Una versión se publica una sola vez, pero retoma una subida que quedó a medias; `launcher.mjs` y los instaladores son siempre los de la release más nueva. Solo lo corre el workflow de releases |
 | `node scripts/channel.mjs --show` | Muestra el canal de releases publicado. `--stable` lo mueve (con el mínimo en esa misma versión, salvo que pases `--minimum`) y `--rollback` lo devuelve a `channel.prev.json` (normalmente lo mueve `npm run deploy` en la raíz) |
 | `npm run build:web` | Arma el arnés de prueba del navegador, servido en `/web/rtc-harness.html` |
+| `npm run xmachine -- record <carpeta>` y `verify <carpeta>` | Graba 12 partidas completas y verifica las que grabó otra máquina: comprueba que dos máquinas simulan igual. `record` también compara con una referencia grabada en la PC del proyecto |
 
 `.keys/`, `dist/`, `data/` y `node_modules/` están en `nodes/.gitignore`. **Nunca subas `.keys/` a
 ningún lado**: guarda una copia en un gestor de contraseñas.
@@ -93,7 +94,7 @@ control-plane/  el plano de control
 install/        VPS (install.sh), Windows, macOS y Linux de escritorio, cloud-init
 web/            la página "Pon un servidor" y el arnés WebRTC del navegador
 github/         plantillas: bot, ranking de propuestas, formulario (el de releases ya corre en .github/)
-scripts/        demo, build, firma y canal de releases, arnés, claves
+scripts/        demo, build, firma y canal de releases, arnés, claves, determinismo entre máquinas
 release-key.pub la clave pública de releases del proyecto
 test/           pruebas automáticas con el wasm real
 ```

@@ -15,7 +15,8 @@ registerHooks({
   },
 });
 
-const { formatSettingValue, stepDecimals, stepSettingValue, MENU_CONTROL_ROWS, DIFFICULTIES, GAME_MODES, modeInfo } = await import('../src/render/Hud.ts');
+const { formatSettingValue, stepDecimals, stepSettingValue, MENU_CONTROL_ROWS, DIFFICULTIES, GAME_MODES, modeInfo, formatNetStats } = await import('../src/render/Hud.ts');
+const { newNetStatsView } = await import('../src/net/NetStats.ts');
 const { CAMERA_RANGES, CONTROL_RANGES } = await import('../src/settings.ts');
 const { MODES } = await import('../src/sim/constants.ts');
 
@@ -68,4 +69,19 @@ test('the Mode row cycles through every sim mode and its info line counts the ca
   assert.deepEqual([...GAME_MODES].sort(), Object.keys(MODES).sort(), 'menu modes = constants.ts MODES');
   for (const mode of GAME_MODES) assert.equal(modeInfo(mode), `${mode} · ${MODES[mode] * 2} cars`);
   assert.equal(modeInfo('3v3'), '3v3 · 6 cars');
+});
+
+test('network panel: a host line only for a match on a community node', () => {
+  const s = newNetStatsView();
+  s.kind = 'server';
+  s.state = 'playing';
+  const lines = () => formatNetStats(s).split('\n');
+  const plain = lines();
+  assert.equal(plain[1].slice(0, 4), 'ping');
+  s.host = 'GRU'; // a Durable Object's colo: the panel stays as it was
+  assert.deepEqual(lines(), plain);
+  s.host = 'node:sao-paulo-1';
+  assert.deepEqual(lines(), [plain[0], 'host      node:sao-paulo-1', ...plain.slice(1)]);
+  s.kind = 'p2p';
+  assert.ok(!formatNetStats(s).includes('node:'), 'never on the P2P panel');
 });

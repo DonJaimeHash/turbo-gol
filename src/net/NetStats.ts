@@ -151,6 +151,8 @@ export interface NetStatsView {
   /** -1 until the first snapshot. */
   snapshotAgeMs: number;
   reconnects: number;
+  /** Welcome.hostColo of the server match ('' before it): the panel names the host only when it is a community node. */
+  host: string;
 
   // ---- P2P mesh (phase 2) ----
   /** Rows in use of the p2pPeer* arrays. */
@@ -201,6 +203,7 @@ export function resetNetStatsView(s: NetStatsView): void {
   s.bytesOutPerSec = 0;
   s.snapshotAgeMs = -1;
   s.reconnects = 0;
+  s.host = '';
   s.p2pPeers = 0;
   s.p2pPeerSlot.fill(-1);
   for (let i = 0; i < NET_STATS_MAX_PEERS; i++) s.p2pPeerName[i] = '';
@@ -240,6 +243,7 @@ export function newNetStatsView(): NetStatsView {
     bytesOutPerSec: 0,
     snapshotAgeMs: -1,
     reconnects: 0,
+    host: '',
     p2pPeers: 0,
     p2pPeerSlot: new Int32Array(NET_STATS_MAX_PEERS).fill(-1),
     p2pPeerName: names,

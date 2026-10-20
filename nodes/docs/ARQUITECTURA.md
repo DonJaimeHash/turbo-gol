@@ -60,7 +60,7 @@ aceptar máquinas de cualquiera sin confiar en nadie.
 | Transporte WebRTC | Un DataChannel confiable y ordenado, que presenta la misma interfaz que el WebSocket. Autotest de alcance a través de TURN. | `node/rtcTransport.ts` |
 | Adaptador del jugador | Un objeto con interfaz de WebSocket que viaja por WebRTC. `NetClient` lo recibe con una fábrica y no nota la diferencia. | `client/rtcSocket.ts` |
 | Runtime y agente | Salas, temporizador único, medición de lag y tráfico, conexión saliente al plano de control. | `node/runtime.ts`, `node/agent.ts`, `node/ticker.ts` |
-| Lanzador | Baja versiones firmadas, las verifica, drena antes de actualizar y vuelve atrás si una versión se cae tres veces. | `node/launcher.ts`, `node/launcherMain.ts` |
+| Lanzador | Baja versiones firmadas, las verifica y drena antes de actualizar. Si una versión se cae tres veces, vuelve a la última buena que no esté por debajo del mínimo del canal: con `minimum = stable`, como publica hoy `scripts/build-node.mjs`, no hay a cuál volver. | `node/launcher.ts`, `node/launcherMain.ts` |
 | Plano de control | Registro, scheduler, señalización, cola de verificación, recompensas, tienda. Lógica independiente del transporte. | `control-plane/*.ts` |
 | Instaladores | VPS con root, Windows sin admin, macOS y Linux de escritorio sin root. | `install/` |
 | Página del operador | El botón "Poner un servidor", "Mis servidores" y la tienda. | `web/host.html` |
@@ -140,7 +140,10 @@ aceptar máquinas de cualquiera sin confiar en nadie.
   El nodo deja de tomar partidas, termina las que tiene, reporta y sale. Un segundo pedido corta ya.
 - Si una versión anterior a la mínima es lo único que queda, el lanzador no la usa: reintenta la
   estable con esperas de 5 s a 5 min. Las marcas de versión mala vencen a las 24 horas.
-- Si una versión se cae tres veces en diez minutos, el lanzador vuelve a la última buena.
+- Si una versión se cae tres veces en diez minutos, el lanzador vuelve a la última buena, siempre
+  que no esté por debajo del mínimo del canal (`chooseVersion` en `node/launcher.ts`). Con
+  `minimum = stable`, que es lo que publica hoy `scripts/build-node.mjs`, no hay vuelta atrás
+  automática: el lanzador reintenta la estable cada vez más espaciado.
 - **Compatibilidad:** una partida solo va a un nodo con el mismo hash de wasm y la misma versión
   de protocolo que el cliente.
 
@@ -173,12 +176,12 @@ pausa en 30 días lo devuelve a prueba. Los nodos del proyecto no se pausan.
 | Mandar mensajes rotos al plano de control | Se valida cada mensaje antes de usarlo. Un sobre, un hello o un heartbeat rotos cierran la conexión del nodo; un reporte roto de una de sus partidas la da por perdida, con strike; lo demás se ignora. | Sí |
 | Anular partidas a voluntad con cortes | Cada corte cuesta un strike. Una segunda pausa por strikes en 30 días devuelve el nodo a prueba: pierde el ranked hasta sumar otras 20 partidas verificadas. | Sí |
 | Ver las IP de los jugadores | Pasa, como en el P2P actual y en cualquier servidor comunitario. Se puede forzar TURN para ocultarlas. | — |
-| Robar la clave de releases | No está en ningún servidor: vive en CI con aprobación manual. | — |
+| Robar la clave de releases | La de producción no va a estar en ningún servidor: va a vivir en un entorno de CI con aprobación manual (pendiente, `PRODUCCION.md` etapa 1). Hoy solo existe la clave de desarrollo que firmó la 0.1.0, en la PC del mantenedor. Los instaladores no se firman y llegan por HTTPS: el permiso de escribir en el bucket de releases se cuida igual que la clave. | — |
 
 | Clave | Firma | Dónde vive |
 |---|---|---|
 | De control | Tickets de partida | Secreto del Worker |
-| De releases | Versiones del nodo e instaladores | CI con aprobación manual, o una máquina sin conexión |
+| De releases | El manifiesto de cada versión (que lleva el hash de cada archivo) y `launcher.mjs`. Los instaladores no: llevan la mitad pública adentro | Hoy, una clave de desarrollo en la PC del mantenedor. La de producción: un entorno de CI con aprobación manual, o una máquina sin conexión (pendiente) |
 | De cada nodo | Su login y sus subidas | En la máquina del operador |
 
 ## Capacidad y costos (medidos)

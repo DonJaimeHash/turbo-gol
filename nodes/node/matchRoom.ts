@@ -774,7 +774,8 @@ export class MatchRoom implements Tickable {
       if (this.assign.roster[i].kind !== 'player') continue;
       const c = this.clients[i];
       const live = c && c.attached ? now - Math.max(c.attachedAt, this.startedAtWall) : 0;
-      slots.push({ slot: i, received: st[i].received, dropped: st[i].dropped, underruns: st[i].underruns, overruns: st[i].overruns, connectedMs: Math.round(this.connectedMs[i] + live) });
+      // Called before close() detaches everyone: whoever is still attached was there at the whistle.
+      slots.push({ slot: i, received: st[i].received, dropped: st[i].dropped, underruns: st[i].underruns, overruns: st[i].overruns, connectedMs: Math.round(this.connectedMs[i] + live), connectedAtEnd: c !== null && c.attached });
     }
     let egress = this.egressBytes;
     for (const c of this.clients) if (c && c.attached) egress += c.ws.bytesSent;

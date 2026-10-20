@@ -1,13 +1,15 @@
 /**
  * Leaderboard (top 100 of the season per playlist, placed players only) and the ranked result
  * dialog shown after a rated match: win / loss, MMR before -> after, the tier change, placement
- * progress and an abandon ban when there was one.
+ * progress and an abandon ban when there was one. RankedResults waits for that result and keeps
+ * what comes while the menus are away until they are back.
  */
 import { h, setChildren, navButton, clock } from '../dom';
+import type { AccountClient } from '../../net/AccountClient';
 import { PLAYLISTS } from '../../net/account';
 import type { LeaderboardEntry, RankedResultAnswer } from '../../net/account';
 import { tierProgress } from '../../net/rating';
-import { t } from '../../i18n';
+import { t, type Key } from '../../i18n';
 import { rankBadge, tierById } from '../badges';
 import { playlistName, tierName } from '../names';
 import type { Menu, Screen } from '../Menu';
@@ -59,14 +61,17 @@ export function leaderboardScreen(menu: Menu): Screen {
   return { id: 'leaderboard', title: t('board.screenTitle'), el, show: () => void load() };
 }
 
-/** The rating change of a finished ranked match (AccountClient.waitRankedResult's answer). */
-export function showRankedResult(menu: Menu, r: RankedResultAnswer): void {
+/**
+ * The rating change of a finished ranked match (AccountClient.waitRankedResult's answer). `node`:
+ * the match ran on a community node, whose result may still be waiting for the replay check.
+ */
+export function showRankedResult(menu: Pick<Menu, 'toast' | 'modal'>, r: RankedResultAnswer, node = false): void {
   if (r.status === 'pending') {
-    menu.toast(t('board.resultPending'), 'info');
+    menu.toast(t(node ? 'board.resultVerifyingSlow' : 'board.resultPending'), 'info');
     return;
   }
   if (r.status === 'cancelled') {
-    menu.toast(r.reason === 'not_rated' ? t('board.notRated') : t('board.cancelled'), 'info');
+    menu.toast(t(cancelledKey(r.reason)), 'info');
     return;
   }
   const delta = r.mmrAfter - r.mmrBefore;
@@ -98,4 +103,68 @@ export function showRankedResult(menu: Menu, r: RankedResultAnswer): void {
     ],
     actions: [{ label: t('board.continue'), primary: true, onClick: () => true }],
   });
+}
+
+/**
+ * The toast of a cancelled ranked result. A community node's match is voided when its replay check
+ * fails ('verification_failed:<why>') or cannot run ('unverified'; nodes/control-plane).
+ */
+function cancelledKey(reason: string): Key {
+  if (reason === 'not_rated') return 'board.notRated';
+  if (reason === 'unverified' || reason.startsWith('verification_failed')) return 'board.voided';
+  return 'board.cancelled';
+}
+
+/** What RankedResults needs from the Game (fakes in tests). */
+export interface RankedResultsHost {
+  readonly accounts: Pick<AccountClient, 'account' | 'waitRankedResult' | 'fetchMe'>;
+  readonly menu: Pick<Menu, 'toast' | 'modal'>;
+  /**
+   * The menus are where the player looks: on screen, not under the settings screen, no online
+   * match being set up or played.
+   */
+  onScreen(): boolean;
+}
+
+/**
+ * The rating change of each finished ranked match, over the menus (Game.showMenu starts one per
+ * match). The wait lasts up to two minutes on a community node, so the player may be in another
+ * match, in training or in the settings by the time the answer comes: a toast there would fade
+ * unseen and a modal would wait in the hidden menu, to turn up over some later match. What comes
+ * while the menus are away is held, one notice per match (its latest: the result replaces the
+ * "verifying" one), and shown by showHeld() once they are back. A notice for an account that is
+ * no longer the signed-in one is dropped.
+ */
+export class RankedResults {
+  private readonly host: RankedResultsHost;
+  /** Held notices by matchId, oldest match first. */
+  private readonly held = new Map<string, { who: string | null; show: () => void }>();
+
+  constructor(host: RankedResultsHost) {
+    this.host = host;
+  }
+
+  /** A ranked match just ended (`node`: on a community node): wait for its result and show it. */
+  async watch(matchId: string, node: boolean): Promise<void> {
+    const { accounts, menu } = this.host;
+    const who = accounts.account?.playerId ?? null;
+    const onVerifying = (): void => this.notice(matchId, who, () => menu.toast(t('board.resultVerifying'), 'info'));
+    const r = await accounts.waitRankedResult(matchId, undefined, undefined, { node, onVerifying });
+    this.notice(matchId, who, () => showRankedResult(menu, r, node));
+    void accounts.fetchMe().catch(() => undefined);
+  }
+
+  /** Show what came while the menus were away, when they are back (Game: showMenu and every few frames). */
+  showHeld(): void {
+    if (this.held.size === 0 || !this.host.onScreen()) return;
+    const who = this.host.accounts.account?.playerId ?? null;
+    const notices = [...this.held.values()];
+    this.held.clear();
+    for (const n of notices) if (n.who === who) n.show();
+  }
+
+  private notice(matchId: string, who: string | null, show: () => void): void {
+    this.held.set(matchId, { who, show });
+    this.showHeld();
+  }
 }

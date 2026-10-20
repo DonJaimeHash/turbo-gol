@@ -15,6 +15,7 @@
     "control": "node --import ./dev/ts-resolve.mjs control-plane/devServer.ts",
     "node": "node --import ./dev/ts-resolve.mjs node/main.ts",
     "bench": "node --import ./dev/ts-resolve.mjs node/main.ts bench",
+    "xmachine": "node scripts/xmachine.mjs",
     "keys": "node scripts/keys.mjs",
     "build": "node scripts/build-node.mjs --sign .keys/release.json",
     "sign": "node scripts/sign-release.mjs",

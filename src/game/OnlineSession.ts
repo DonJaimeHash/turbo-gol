@@ -26,7 +26,9 @@
  * server frees our lock at once and the host's bots take our car for good, so the next queue
  * (P2P or server) is a fresh one instead of a rejoin. A connection lost for good (the one
  * automatic rejoin failed, a kick) or a reload sends nothing: the lock stays and the next server
- * queue rejoins through its 409; after the final whistle the match frees the locks itself.
+ * queue rejoins through its 409; after the final whistle the match frees the locks itself. On a
+ * community node (Welcome.hostColo 'node:<name>') that leave is the only way out, so the first
+ * Welcome renews an account's Bearer early and a 401 on the leave is retried once.
  */
 import { TICK_MS, LeadAdjuster, computeLead } from '../net/ClockSync';
 import { assembleInputs, INPUT_MAX_PER_PACKET } from '../net/InputRing';
@@ -34,7 +36,7 @@ import { NetClient, NetError, type MatchAssignment, type NetClientOptions } from
 import { netErrorText } from '../net/netErrorText';
 import { RateMeter, newNetStatsView, resetNetStatsView, type NetStatsView } from '../net/NetStats';
 import { RollbackPredictor, type RollbackSim } from '../net/Prediction';
-import { TICK_RATE, type MatchEvent, type SnapshotPacket, type Welcome } from '../net/protocol';
+import { TICK_RATE, isNodeHost, type MatchEvent, type SnapshotPacket, type Welcome } from '../net/protocol';
 import { ONLINE_STATUS, type ClockMode } from '../render/Hud';
 import { t } from '../i18n';
 import type { GameMode } from '../sim/constants';
@@ -80,6 +82,11 @@ const MAX_FRAME_DT = 0.1;
 /** Input packet cadence: a packet goes out once this many ticks were stepped since the last one. */
 const SEND_EVERY = 2;
 const STATS_INTERVAL_MS = 250;
+/**
+ * The first Welcome of a match on a community node refreshes an account's Bearer when less than
+ * this is left on it (sessions last 1 h): a 3-minute match with a long overtime fits easily.
+ */
+const NODE_BEARER_MIN_VALID_MS = 15 * 60_000;
 
 /** User-facing text for a failure (a NetError by its server code or kind, netErrorText). */
 function describe(err: unknown): string {
@@ -105,6 +112,11 @@ export class OnlineSession {
    * change (AccountClient.waitRankedResult) and clears this. Survives the teardown.
    */
   lastRankedMatchId: string | null = null;
+  /**
+   * That match ran on a community node (isNodeHost): it is rated only after the replay check, so
+   * the menu waits longer for its result (AccountClient.waitRankedResult `node`).
+   */
+  lastRankedOnNode = false;
 
   readonly client: NetClient;
   predictor: RollbackPredictor | null = null;
@@ -320,13 +332,16 @@ export class OnlineSession {
    * closes our slot's socket if it is still open and hands the car to the host's bots; the slot
    * is never rejoined. Skipped after the whistle (the match is over and frees the locks itself)
    * and once the connection was lost for good (disconnect(): the lock is kept so the next server
-   * queue rejoins, as after a reload). Once per match.
+   * queue rejoins, as after a reload). Once per match. A quit before any Welcome adds
+   * `connected: false`: no Welcome was received, but the slot may or may not have attached, so a
+   * later server must confirm with the node before taking it for a no-show (the Worker ignores it
+   * today).
    */
   private quitMatch(): void {
     const id = this.matchId;
     this.matchId = null;
     if (id === null || this.lost || this.state === 'ended') return;
-    void this.client.leaveMatch(id);
+    void this.client.leaveMatch(id, { connected: this.welcome !== null, retryRejected: isNodeHost(this.welcome?.hostColo) });
   }
 
   dispose(): void {
@@ -472,6 +487,9 @@ export class OnlineSession {
       this.overtime = false;
       this.winner = -1;
       this.status = t('online.waitingHost');
+      // On a community node the leave is the only way out of the match and it reuses the Bearer of
+      // the queue: renew an account's now when it would not outlast a long match.
+      if (isNodeHost(w.hostColo)) void this.client.refreshBearer(NODE_BEARER_MIN_VALID_MS);
     } else {
       // Same match after a rejoin: the next snapshot resyncs the state; forget the stale ring.
       existing.reset();
@@ -539,7 +557,10 @@ export class OnlineSession {
         this.winner = e.winner;
         this.frozen = true;
         this.state = 'ended';
-        if (this.ranked && this.matchId !== null) this.lastRankedMatchId = this.matchId;
+        if (this.ranked && this.matchId !== null) {
+          this.lastRankedMatchId = this.matchId;
+          this.lastRankedOnNode = isNodeHost(this.welcome?.hostColo);
+        }
         if (this.predictor !== null) this.predictor.hold.fill(0);
         break;
       case 'cancelled':
@@ -664,6 +685,8 @@ export class OnlineSession {
     s.bytesOutPerSec = this.bytesOutMeter.sample(now, c.bytesOut);
     s.snapshotAgeMs = c.snapshotAge(now);
     s.reconnects = c.reconnects;
+    const host = this.welcome?.hostColo;
+    s.host = typeof host === 'string' ? host : '';
   }
 }
 
