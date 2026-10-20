@@ -187,7 +187,7 @@ test('CLIENT_BUILD: the protocol and the committed wasm hash of the web client',
 });
 
 test('internal contract: refusals answer 404, 410 or 503; a node lock holds while its match is played or reported and the player stays', () => {
-  assert.deepEqual(API.NODE_ROUTES, { place: '/internal/place', rejoin: '/internal/rejoin', leave: '/internal/leave', status: '/internal/status' });
+  assert.deepEqual(API.NODE_ROUTES, { place: '/internal/place', rejoin: '/internal/rejoin', leave: '/internal/leave', status: '/internal/status', health: '/internal/health' });
   assert.deepEqual(API.REJOIN_STATUS, { no_match: 404, not_in_match: 404, left: 410, match_over: 410, offline: 503 });
   assert.deepEqual(API.LEAVE_STATUS, { no_match: 404, not_in_match: 404, match_over: 410, offline: 503 });
   for (const state of ['assigned', 'reporting']) {

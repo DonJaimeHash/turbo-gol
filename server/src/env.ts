@@ -78,10 +78,7 @@ export interface Env {
    * survives deploys, keeps the ids out of the public repo, and a fork without it trusts nobody.
    */
   NODE_TRUSTED_OPERATORS?: string;
-  /**
-   * Secret, optional: declared for P24 (nodes/docs/PRODUCCION.md), the webhook of the team's alert
-   * channel. Not read yet: the control plane's ALERT lines go to the log only.
-   */
+  /** Secret, optional: a staff-only Discord channel's webhook URL the control plane posts its ALERT lines to (nodeAlerts.ts). */
   NODE_ALERT_WEBHOOK?: string;
   /** Var: the public origin the nodes and the installers reach the control plane at (https://turbo-gol.com). */
   NODES_PUBLIC_BASE?: string;

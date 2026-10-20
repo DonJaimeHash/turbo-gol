@@ -15,7 +15,15 @@
  *                                NODE_TRUSTED_OPERATORS; checked again here) -> a one-time token and its install line;
  *                                10 per account per day
  *   GET  /nodes/mine             x-operator-id -> that operator's nodes
+ *   GET  /nodes/admin/nodes      the maintainers' routes, x-operator-id / x-operator-name as for tokens (checked
+ *   POST /nodes/admin/status     again here): every node in full; { nodeId, status, reason } (ControlPlane.setStatus);
+ *   POST /nodes/admin/drain      { nodeId, reason } (one-way: the node comes back with a restart on its machine);
+ *   POST /nodes/admin/update     channel.json read again and every node below its minimum told to update;
+ *   POST /nodes/admin/reprobe    { nodeId }: its /healthz checked now. Each call is an ALERT line naming who made it
  *   POST /internal/place | /internal/rejoin | /internal/leave, GET /internal/status: the matchmaker's (nodeApi.ts)
+ *   POST /internal/health        the cron's (index.ts scheduled, every 5 minutes): /healthz of every trusted wss
+ *                                node online, or in service and seen by the object in the last hour, 5 s each
+ *                                (nodeWatch.ts healthzTargets)
  *
  * State (nodeStore.ts, SQLite): the tokens, nodes and matches the control plane writes through,
  * and the outbox of settled matches, written in the transaction that settles each one and
@@ -36,23 +44,37 @@
  * object raises an ALERT and places nothing, registers nothing and mints no rejoin ticket; nodes
  * already registered keep reporting. A caller is only told the control plane is unavailable, as
  * when its state cannot be read: the cause is for the ALERT lines.
+ *
+ * ALERT lines, the object's and those of the control plane and the registry it runs, also go to
+ * the team's Discord channel when NODE_ALERT_WEBHOOK is set (nodeAlerts.ts: each alert at most once
+ * in 10 minutes; an account's action, a maintainer's call or the registry's token and trusted node
+ * lines, every time). The alarm also watches the nodes for what nodeWatch.ts lists (a trusted node
+ * offline, traffic near its cap, tick lag, a verification or an update waiting too long), and it
+ * keeps running while a trusted node in service is offline until its ALERT goes out, so that one
+ * is noticed with nothing else going on. Which nodes got theirs is kept in meta: a restart does
+ * not raise them again, and the object can sleep while such a node stays away.
  */
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlane, NodeRefused } from '../../nodes/control-plane/controlPlane';
 import type { NodeLink, PlaceRequest, Session } from '../../nodes/control-plane/controlPlane';
 import { Ledger } from '../../nodes/control-plane/ledger';
 import { Registry, TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
-import type { NodeRecord } from '../../nodes/control-plane/registry';
-import type { RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
+import type { NodeRecord, RegistryOptions } from '../../nodes/control-plane/registry';
+import { compareVersions } from '../../nodes/shared/controlProtocol';
+import type { HeartbeatData, NodeStatus, RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
 import { importPrivateKey, sign, verifyWith } from '../../nodes/shared/edcrypto';
 import { REGIONS, isRegion } from '../../src/net/account';
 import { checkInternal } from './auth';
 import { error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
+import { AlertHook } from './nodeAlerts';
+import type { FetchFn } from './nodeAlerts';
 import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeApi';
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
+import { HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz } from './nodeWatch';
+import type { WatchNote } from './nodeWatch';
 
 /** The alarm's period while anything needs it. */
 export const TICK_MS = 5_000;
@@ -80,6 +102,14 @@ const LIMIT_PURGE_EVERY = 256;
 const UNAVAILABLE = 'the node control plane is not available right now: try again later';
 const REPLAY_ROUTE = /^\/nodes\/replays\/([0-9a-f]{64})$/;
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
+/** What a maintainer may set (pending is the control plane's: a node not proven reachable yet). */
+const ADMIN_STATUSES: readonly NodeStatus[] = ['probation', 'active', 'suspended', 'banned'];
+/** A maintainer's reason (a status change, a drain) is kept to this many characters. */
+const REASON_MAX = 200;
+/** The meta row of drainAsked. */
+const DRAINS_KEY = 'drains_asked';
+/** The meta row of the nodes whose offline ALERT went out (NodeWatch.offlineAlerted). */
+const OFFLINE_KEY = 'offline_alerted';
 
 /** NODE_CONTROL_PUBLIC_KEY is the public half of NODE_CONTROL_PRIVATE_KEY: what one signs, the other verifies. */
 export async function controlKeysMatch(privateKey: string, publicKey: string): Promise<boolean> {
@@ -141,6 +171,29 @@ function parsePlace(v: unknown): PlaceRequest | null {
   return out;
 }
 
+/** A maintainer's reason: one line, no control characters, at most REASON_MAX characters; null when there is none. */
+function reasonOf(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim().slice(0, REASON_MAX);
+  return s.length > 0 ? s : null;
+}
+
+/** The Registry, handing each heartbeat to the object once it took it (NodeWatch counts the tick lag per heartbeat). */
+class WatchedRegistry extends Registry {
+  private readonly onBeat: (n: NodeRecord) => void;
+
+  constructor(opts: RegistryOptions, onBeat: (n: NodeRecord) => void) {
+    super(opts);
+    this.onBeat = onBeat;
+  }
+
+  override heartbeat(id: string, hb: HeartbeatData, now: number): void {
+    super.heartbeat(id, hb, now);
+    const n = this.node(id);
+    if (n) this.onBeat(n);
+  }
+}
+
 export class NodeRegistryDO extends DurableObject<Env> {
   /** The start (blockConcurrencyWhile): every handler waits for it. */
   private readonly ready: Promise<void>;
@@ -153,12 +206,32 @@ export class NodeRegistryDO extends DurableObject<Env> {
    * channel.json that takes longer is given up and tried again later (tests shorten it).
    */
   timeoutMs = DELIVERY_TIMEOUT_MS;
+  /** How long the cron's probe of a node's /healthz waits (tests shorten it). */
+  healthzTimeoutMs = HEALTHZ_TIMEOUT_MS;
+  /** What the object fetches the ALERT webhook and the nodes' /healthz with (tests hand in a fake). */
+  fetchFn: FetchFn = (url, init) => fetch(url, init);
+  /** How an ALERT post waits for its turn on the webhook (nodeAlerts.ts; tests hand in one that does not wait). */
+  alertSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
   /** The control key pair matches (controlKeysMatch): tickets the nodes can check. */
   private keyOk = false;
   /** channel.json as last read (parsed; its text when it is not JSON; null when missing), its text and when it was read. */
   private channel: unknown = null;
   private channelText: string | null = null;
   private channelAt = 0;
+  /** The last channel.json that read as a channel: the minimum the watch holds the nodes to. */
+  private goodChannel: { stable: string; minimum: string } | null = null;
+  private readonly alerts: AlertHook;
+  /** Replaced at the start by one that knows the offline ALERTs already out (meta). */
+  private watch = new NodeWatch();
+  /** The offline_alerted row as last written (or read at the start). */
+  private offlineRow = '[]';
+  /** When this object started: a node it has not seen counts as offline from then. */
+  private startedAt = 0;
+  /**
+   * Nodes the control plane told to drain or update, with the process (bootId) it told: its drain
+   * is expected. Kept in meta: a node drained by hand stays drained through a deploy.
+   */
+  private drainAsked = new Map<string, string | null>();
   private readonly sessions = new WeakMap<WebSocket, Session>();
   /** Sockets whose { nodeId } attachment is stored. */
   private readonly attached = new WeakSet<WebSocket>();
@@ -173,16 +246,40 @@ export class NodeRegistryDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.cfg = nodesConfigured(env) ? env : null;
+    this.alerts = new AlertHook({
+      url: env.NODE_ALERT_WEBHOOK,
+      waitUntil: (p) => ctx.waitUntil(p),
+      fetch: (url, init) => this.fetchFn(url, init),
+      sleep: (ms) => this.alertSleep(ms),
+      log: (m) => console.log(`[nodes] ${m}`),
+    });
     this.ready = ctx.blockConcurrencyWhile(() => this.start());
   }
 
-  private log(msg: string): void {
+  /** A line of the object's log. One that starts with ALERT also goes to the team's channel, as `key` (nodeAlerts.ts). */
+  private log(msg: string, key?: string): void {
     console.log(`[nodes] ${msg}`);
+    if (msg.startsWith('ALERT')) this.alerts.post(msg, key);
+  }
+
+  /**
+   * A line about what an account did (a maintainer's call, a token, a trusted node registered). One
+   * that starts with ALERT goes to the team's channel every time (AlertHook.audit): the same call
+   * twice, or a harmful one after a few harmless ones, is never left out of it.
+   */
+  private audit(msg: string): void {
+    console.log(`[nodes] ${msg}`);
+    if (msg.startsWith('ALERT')) this.alerts.audit(msg);
+  }
+
+  private note(notes: Iterable<WatchNote>): void {
+    for (const n of notes) this.log(n.line, n.key);
   }
 
   private async start(): Promise<void> {
     const env = this.cfg;
     if (!env) return;
+    this.startedAt = Date.now();
     const store = new NodeStore(
       this.ctx.storage.sql,
       (fn) => this.ctx.storage.transactionSync(fn),
@@ -197,7 +294,15 @@ export class NodeRegistryDO extends DurableObject<Env> {
     try {
       store.migrate();
       const rows = store.load(Date.now());
-      const registry = new Registry({ allowInsecure: false, trustedOperators: [...trustedOperatorIds(env)], regions: REGIONS.map((r) => r.id), store, log });
+      this.drainAsked = drainsOf(store.meta(DRAINS_KEY));
+      this.offlineRow = store.meta(OFFLINE_KEY) ?? '[]';
+      this.watch = new NodeWatch(idsOf(this.offlineRow));
+      // Each of the registry's ALERTs is an account's action: a token or a node of a trusted operator.
+      const audit = (m: string) => this.audit(m);
+      const registry = new WatchedRegistry({ allowInsecure: false, trustedOperators: [...trustedOperatorIds(env)], regions: REGIONS.map((r) => r.id), store, log: audit }, (n) => {
+        const note = this.watch.beat(n);
+        if (note) this.note([note]);
+      });
       registry.restore(rows);
       const cp = new ControlPlane({
         controlPrivateKey: env.NODE_CONTROL_PRIVATE_KEY,
@@ -218,6 +323,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
             return o ? new Uint8Array(await o.arrayBuffer()) : null;
           },
         },
+        // Its reachability probes, through the object's fetch like the cron's.
+        fetchJson: async (u) => (await this.fetchFn(u, { signal: AbortSignal.timeout(HEALTHZ_TIMEOUT_MS) })).json(),
         store,
         now: () => Date.now(),
         log,
@@ -257,6 +364,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private link(ws: WebSocket): NodeLink {
     return {
       send: (msg) => {
+        // A node that drains after this was asked to (nodeWatch.ts: the cron's /healthz check).
+        if (msg.t === 'drain' || msg.t === 'update') this.askedToDrain(this.sessions.get(ws)?.nodeId ?? null);
         try {
           ws.send(JSON.stringify(msg));
         } catch {
@@ -321,6 +430,12 @@ export class NodeRegistryDO extends DurableObject<Env> {
     } catch (e) {
       this.log(`ALERT sweep failed: ${String(e)}`);
     }
+    try {
+      this.note(this.watch.tick(Date.now(), cp.registry.list(), cp.matches.values(), this.goodChannel?.minimum ?? null, this.startedAt));
+      this.keepOffline();
+    } catch (e) {
+      this.log(`ALERT node watch failed: ${String(e)}`);
+    }
     // The next run is set before anything waits on another object: the sweep is what closes timed
     // out sockets and voids a dead node's matches, and a slow target must not hold it back. The
     // outbox is not awaited for the same reason; each delivery has its own timeout.
@@ -329,11 +444,27 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (Date.now() - this.channelAt >= CHANNEL_REFRESH_MS) await this.refreshChannel();
   }
 
-  /** Something needs the alarm: a node's socket, a match not settled, an undelivered call, a restart's grace. */
+  /** The nodes whose offline ALERT went out, written to meta when they changed. A failed write is tried again at the next alarm. */
+  private keepOffline(): void {
+    const row = JSON.stringify(this.watch.offlineAlerted());
+    if (row === this.offlineRow) return;
+    try {
+      this.store?.setMeta(OFFLINE_KEY, row);
+      this.offlineRow = row;
+    } catch (e) {
+      this.log(`${OFFLINE_KEY} not written: ${String(e)}`);
+    }
+  }
+
+  /**
+   * Something needs the alarm: a node's socket, a match not settled, an undelivered call, a
+   * restart's grace, or a trusted node in service offline whose ALERT has not gone out yet (it
+   * needs time to pass). Once it has, the object may sleep: the node's return comes on a socket.
+   */
   private busy(): boolean {
     const cp = this.cp;
     if (!cp || !this.store) return false;
-    return this.ctx.getWebSockets().length > 0 || cp.unfinished() > 0 || cp.inGrace() || this.store.outboxSize() > 0;
+    return this.ctx.getWebSockets().length > 0 || cp.unfinished() > 0 || cp.inGrace() || this.store.outboxSize() > 0 || this.watch.watching(cp.registry.list());
   }
 
   private async rearm(): Promise<void> {
@@ -350,27 +481,30 @@ export class NodeRegistryDO extends DurableObject<Env> {
    * Read channel.json again. A change reaches the nodes now (ControlPlane.channelChanged: those
    * below a new minimum are told to update), not at their next hello. A read that fails or takes
    * longer than timeoutMs keeps the last one; a missing or malformed object is handed on as it
-   * is, and the control plane holds the nodes to the last good channel with an ALERT.
+   * is, and the control plane holds the nodes to the last good channel with an ALERT. True when
+   * it changed (and the nodes were told).
    */
-  private async refreshChannel(): Promise<void> {
+  private async refreshChannel(): Promise<boolean> {
     const env = this.cfg;
-    if (!env) return;
+    if (!env) return false;
     this.channelAt = Date.now();
     let text: string | null;
     try {
       text = await withTimeout(env.NODE_RELEASES.get(CHANNEL_KEY).then((o) => (o ? o.text() : null)), this.timeoutMs);
     } catch (e) {
       this.log(`${CHANNEL_KEY} not read, keeping the last one: ${String(e)}`);
-      return;
+      return false;
     }
-    if (text === this.channelText) return;
+    if (text === this.channelText) return false;
     this.channelText = text;
     try {
       this.channel = text === null ? null : JSON.parse(text);
     } catch {
       this.channel = text;
     }
+    this.goodChannel = channelOf(this.channel) ?? this.goodChannel;
     this.cp?.channelChanged();
+    return true;
   }
 
   // ---- outbox -------------------------------------------------------------------------------
@@ -472,10 +606,12 @@ export class NodeRegistryDO extends DurableObject<Env> {
       if (method === 'GET' && path === '/nodes/status') return this.status(cp);
       if (method === 'POST' && path === '/nodes/tokens') return await this.token(request, cp, env);
       if (method === 'GET' && path === '/nodes/mine') return this.mine(request, cp);
+      if (path.startsWith('/nodes/admin/')) return await this.admin(request, cp, path.slice('/nodes/admin/'.length));
       if (method === 'POST' && path === NODE_ROUTES.place) return await this.place(request, cp);
       if (method === 'POST' && path === NODE_ROUTES.rejoin) return await this.rejoin(request, cp);
       if (method === 'POST' && path === NODE_ROUTES.leave) return await this.leave(request, cp);
       if (method === 'GET' && path === NODE_ROUTES.status) return this.matchStatus(url, cp);
+      if (method === 'POST' && path === NODE_ROUTES.health) return await this.health(cp);
     } catch (e) {
       this.log(`${method} ${path} failed: ${String(e)}`);
       return error(500, 'internal');
@@ -641,10 +777,189 @@ export class NodeRegistryDO extends DurableObject<Env> {
     const s = cp.matchStatus(url.searchParams.get('matchId') ?? '', url.searchParams.get('playerId') ?? '');
     return s ? json(s satisfies StatusAnswer) : error(404, 'no_match');
   }
+
+  // ---- the cron's health check ------------------------------------------------------------------
+
+  /**
+   * POST /internal/health (index.ts scheduled, every 5 minutes): the /healthz of every trusted wss
+   * node online, or in service and seen by this object in the last hour (healthzTargets), all at
+   * once, 5 s each. A problem raises its ALERT when it starts (NodeWatch.health); a drain the node
+   * was asked for is no problem.
+   */
+  private async health(cp: ControlPlane): Promise<Response> {
+    const targets = healthzTargets(cp.registry.list(), Date.now());
+    const found = await Promise.all(targets.map(async (n) => ({ n, r: await probeHealthz(n, this.fetchFn, this.healthzTimeoutMs) })));
+    let problems = 0;
+    for (const { n, r } of found) {
+      const expected = this.drainExpected(n);
+      if (!r.ok || (r.draining && !expected)) problems++;
+      const note = this.watch.health(n, r, expected);
+      if (note) this.note([note]);
+    }
+    return json({ probed: targets.length, problems });
+  }
+
+  /** The control plane sent this node a drain or an update: written down with the node process it went to. */
+  private askedToDrain(nodeId: string | null): void {
+    if (nodeId === null) return;
+    const boot = this.cp?.registry.node(nodeId)?.bootId ?? null;
+    if (this.drainAsked.has(nodeId) && this.drainAsked.get(nodeId) === boot) return;
+    this.drainAsked.set(nodeId, boot);
+    try {
+      this.store?.setMeta(DRAINS_KEY, JSON.stringify(Object.fromEntries(this.drainAsked)));
+    } catch (e) {
+      this.log(`${DRAINS_KEY} not written: ${String(e)}`);
+    }
+  }
+
+  /**
+   * A drain the node was asked for: a drain or an update sent to the process now running, or a
+   * version below the channel's minimum (an update: a node also starts one itself when its welcome
+   * names a higher minimum, with no 'update' message).
+   */
+  private drainExpected(n: NodeRecord): boolean {
+    const ch = this.goodChannel;
+    if (ch && compareVersions(n.build.version, ch.minimum) < 0) return true;
+    return this.drainAsked.has(n.nodeId) && this.drainAsked.get(n.nodeId) === n.bootId;
+  }
+
+  // ---- maintainers --------------------------------------------------------------------------------
+
+  /**
+   * /nodes/admin/<what>, for an account in NODE_TRUSTED_OPERATORS (the Worker checked it; the object
+   * holds the same list and decides). Every action is an ALERT line naming who did it, the list too
+   * (it holds the nodes' addresses), posted every time (audit): a project session in the wrong hands
+   * shows in the team's channel.
+   */
+  private async admin(request: Request, cp: ControlPlane, what: string): Promise<Response> {
+    const id = request.headers.get('x-operator-id') ?? '';
+    if (!cp.registry.isTrusted(id)) return error(403, 'not_trusted', 'only the project maintains the nodes');
+    const actor = `${sanitizeName(decodeHeader(request.headers.get('x-operator-name'))) ?? id.slice(0, 6)} (${id})`;
+    if (request.method === 'GET' && what === 'nodes') return this.adminNodes(cp, actor);
+    if (request.method !== 'POST') return error(404, 'not_found');
+    if (what === 'update') return await this.adminUpdate(cp, actor);
+    if (what !== 'status' && what !== 'drain' && what !== 'reprobe') return error(404, 'not_found');
+    const b = await readJson<{ nodeId?: unknown; status?: unknown; reason?: unknown }>(request);
+    if (!b || !isHex(b.nodeId, 16)) return error(400, 'bad_node_id', 'nodeId: the 16 hex characters of a node');
+    const n = cp.registry.node(b.nodeId);
+    if (!n) return error(404, 'no_node');
+    if (what === 'status') return await this.adminStatus(cp, actor, n, b.status, reasonOf(b.reason));
+    if (what === 'drain') return this.adminDrain(cp, actor, n, reasonOf(b.reason));
+    return await this.adminReprobe(cp, actor, n);
+  }
+
+  /** GET /nodes/admin/nodes: every node with its address, counters and live state, and the matches the control plane holds for it. */
+  private adminNodes(cp: ControlPlane, actor: string): Response {
+    const open = new Map<string, number>();
+    let verifying = 0;
+    for (const m of cp.matches.values()) {
+      if (m.state === 'done') continue;
+      open.set(m.nodeId, (open.get(m.nodeId) ?? 0) + 1);
+      if (m.state === 'verifying') verifying++;
+    }
+    const nodes = cp.registry.list().map((n) => ({
+      ...mineView(cp, n),
+      operator: { id: n.operatorId, name: n.operatorName },
+      createdAt: n.createdAt,
+      lastSeen: n.lastSeen > 0 ? n.lastSeen : null,
+      draining: n.draining,
+      egressCapGB: n.egressCapGB,
+      cpuLoad: n.cpuLoad,
+      bootId: n.bootId,
+      matches: open.get(n.nodeId) ?? 0,
+    }));
+    this.audit(`ALERT admin ${actor}: listed the nodes (${nodes.length}, with their addresses)`);
+    return json({ build: CLIENT_BUILD, channel: this.goodChannel, verifying, nodes }, 200, { 'cache-control': 'no-store' });
+  }
+
+  /**
+   * POST /nodes/admin/status { nodeId, status, reason? }: ControlPlane.setStatus, and the node is
+   * told. A trusted node set to suspended or banned is out of service: no matches, no offline ALERT.
+   * Set back in service while offline, its outage is a new one: the alarm runs for its ALERT.
+   */
+  private async adminStatus(cp: ControlPlane, actor: string, n: NodeRecord, status: unknown, reason: string | null): Promise<Response> {
+    if (!ADMIN_STATUSES.includes(status as NodeStatus)) return error(400, 'bad_status', `status: ${ADMIN_STATUSES.join(', ')}`);
+    const was = n.status;
+    cp.setStatus(n.nodeId, status as NodeStatus, reason);
+    this.audit(`ALERT admin ${actor}: node ${label(n)} ${was} -> ${n.status}${was === n.status ? ' (no change)' : ''}${reason ? `: ${reason}` : ''}`);
+    this.watch.statusSet(n);
+    this.keepOffline();
+    if (this.busy()) await this.ensureAlarm();
+    return json({ nodeId: n.nodeId, name: n.name, status: n.status, was });
+  }
+
+  /**
+   * POST /nodes/admin/drain { nodeId, reason? }: the node takes no new match, plays out the ones it
+   * has and then idles. One-way (node/runtime.ts): it comes back with `sudo systemctl restart
+   * turbogol-node` on its machine. A node that is not connected is told nothing (409).
+   */
+  private adminDrain(cp: ControlPlane, actor: string, n: NodeRecord, reason: string | null): Response {
+    const why = reason ?? 'asked by a maintainer';
+    if (!cp.isOnline(n.nodeId)) {
+      this.audit(`ALERT admin ${actor}: node ${label(n)} not drained, it is offline: ${why}`);
+      return error(409, 'offline', 'the node is not connected: nothing was sent');
+    }
+    cp.drain(n.nodeId, why);
+    this.audit(`ALERT admin ${actor}: node ${label(n)} told to drain: ${why}`);
+    return json({ nodeId: n.nodeId, name: n.name, draining: true, back: 'sudo systemctl restart turbogol-node on its machine' });
+  }
+
+  /**
+   * POST /nodes/admin/update: channel.json read again now (not within the minute) and every node
+   * below its minimum told to update (ControlPlane.channelChanged; a verifier with matches of its
+   * build still to verify waits for them, as at a hello).
+   */
+  private async adminUpdate(cp: ControlPlane, actor: string): Promise<Response> {
+    if (!(await this.refreshChannel())) cp.channelChanged();
+    const ch = this.goodChannel;
+    const below = ch ? cp.registry.list().filter((n) => n.online && compareVersions(n.build.version, ch.minimum) < 0) : [];
+    this.audit(`ALERT admin ${actor}: the nodes were told the channel again (${ch ? `stable ${ch.stable}, minimum ${ch.minimum}` : 'no valid channel'}): ${below.length} online below its minimum`);
+    return json({ channel: ch, below: below.map((n) => ({ nodeId: n.nodeId, name: n.name, version: n.build.version })) });
+  }
+
+  /**
+   * POST /nodes/admin/reprobe { nodeId }: a wss host's /healthz now. The control plane's own probe
+   * runs (a host not proven reachable goes back into placement when it passes; a failure of a
+   * proven one counts toward taking it out), and the answer says what a direct probe found.
+   */
+  private async adminReprobe(cp: ControlPlane, actor: string, n: NodeRecord): Promise<Response> {
+    if (!n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl) return error(409, 'not_wss', 'only a wss host has a /healthz to probe');
+    const [, healthz] = await Promise.all([n.reachableAt === null ? cp.probe(n.nodeId) : cp.reprobe(n.nodeId), probeHealthz(n, this.fetchFn, this.healthzTimeoutMs)]);
+    const reachable = n.reachableAt !== null;
+    const found = healthz.ok ? (healthz.draining ? 'ok, draining' : 'ok') : healthz.detail;
+    this.audit(`ALERT admin ${actor}: node ${label(n)} probed: ${found}; ${reachable ? 'in' : 'out of'} wss placement`);
+    return json({ nodeId: n.nodeId, name: n.name, reachable, healthz });
+  }
 }
 
 function publicBase(env: NodesEnv): string {
   return env.NODES_PUBLIC_BASE.replace(/\/+$/, '');
+}
+
+/** The drains_asked meta row (node id -> bootId), or an empty map when it is missing or does not read. */
+function drainsOf(v: string | null): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  let o: unknown = null;
+  try {
+    o = v === null ? null : JSON.parse(v);
+  } catch {
+    /* an empty map */
+  }
+  if (typeof o === 'object' && o !== null) {
+    for (const [k, b] of Object.entries(o)) if (b === null || typeof b === 'string') out.set(k, b);
+  }
+  return out;
+}
+
+/** The offline_alerted meta row (a list of node ids), or none when it does not read. */
+function idsOf(v: string): string[] {
+  let o: unknown = null;
+  try {
+    o = JSON.parse(v);
+  } catch {
+    /* none */
+  }
+  return Array.isArray(o) ? o.filter((x): x is string => typeof x === 'string') : [];
 }
 
 /** The Worker sends the operator's name URL-encoded (header values are Latin-1). */

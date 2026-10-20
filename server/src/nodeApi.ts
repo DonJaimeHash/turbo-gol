@@ -13,6 +13,8 @@
  *                          LEAVE_STATUS[code]
  *   GET  /internal/status  ?matchId=&playerId= -> 200 StatusAnswer, or 404 when the control plane
  *                          knows neither the match nor the player in it (the lock is free)
+ *   POST /internal/health  the cron's (index.ts scheduled) -> 200 { probed, problems }: the /healthz
+ *                          of the trusted wss nodes, each problem an ALERT (nodeWatch.ts)
  */
 import type { ControlPlane, LeaveResult, PlaceRequest, Placement, RejoinAnswer } from '../../nodes/control-plane/controlPlane';
 import type { BuildId } from '../../nodes/shared/controlProtocol';
@@ -47,6 +49,7 @@ export const NODE_ROUTES = {
   rejoin: '/internal/rejoin',
   leave: '/internal/leave',
   status: '/internal/status',
+  health: '/internal/health',
 } as const;
 
 /** POST /internal/place: a match the matchmaker formed (its humans, fixed teams, length). */

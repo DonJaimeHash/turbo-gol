@@ -20,6 +20,11 @@
  *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB
  *   GET      /nodes/mine              Bearer account session -> the caller's own nodes
  *   GET      /nodes/status            the public list of nodes, cached 10 s
+ *   GET      /nodes/admin/nodes       the maintainers' routes, Bearer account session of a NODE_TRUSTED_OPERATORS
+ *   POST     /nodes/admin/status      account (401 without one, 403 for any other), 30 a minute per account, 413
+ *   POST     /nodes/admin/drain       over 4 KB: every node in full; { nodeId, status, reason }; { nodeId, reason };
+ *   POST     /nodes/admin/update      the channel read again and the nodes below its minimum told to update;
+ *   POST     /nodes/admin/reprobe     { nodeId }. Every call is an ALERT line naming the account (NodeRegistryDO.ts)
  * Anything else under /nodes/ is a 404: the WebRTC signaling and the shop are not open in stage 1,
  * and the reference server's /dev/* routes never exist here. Without the node settings
  * (nodesConfigured: a fork, local dev) every route that needs the object is a 404 too.
@@ -31,13 +36,16 @@
  * per hour and tokens per account per day, the object's own limits, which only the object holds
  * across isolates. Here they keep junk from reaching it: every route that reaches the object has
  * one, per address (an IPv6 address counted by its /64, env.ts limitKey) or per account.
+ *
+ * The cron (index.ts scheduled, every 5 minutes) calls nodeHealthCheck: one call to the object,
+ * which probes the trusted nodes' /healthz; nothing at all without the node settings.
  */
 import { requireAccount } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
-import { nodesStub } from './nodeApi';
+import { NODE_ROUTES, nodesStub } from './nodeApi';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 
 /** What the index.ts router hands over: its rate limiter, the session and its CORS headers. */
@@ -67,7 +75,10 @@ const LIMIT_REPLAY_PUT_PER_IP = 60;
 const LIMIT_REPLAY_GET_PER_IP = 60;
 const LIMIT_STATUS_PER_IP = 60;
 const LIMIT_MINE_PER_ACCOUNT = 30;
+const LIMIT_ADMIN_PER_ACCOUNT = 30;
 const STATUS_TTL_MS = 10_000;
+/** The maintainers' routes and the method of each. */
+const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST' };
 
 /**
  * A release key: an optional X.Y.Z/ directory, then one file name. Nothing else is ever looked up in
@@ -170,7 +181,32 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     return toRegistry(env, c.request, path, operator(s));
   }
   if (method === 'GET' && path === '/nodes/status') return status(c, env, who);
+  const admin = path.startsWith('/nodes/admin/') ? path.slice('/nodes/admin/'.length) : '';
+  if (Object.hasOwn(ADMIN_ROUTES, admin) && ADMIN_ROUTES[admin] === method) {
+    if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
+    const s = requireAccount({ session: await c.session() });
+    if (s instanceof Response) return s;
+    if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project maintains the nodes');
+    if (c.limited('nadm:' + s.sub, LIMIT_ADMIN_PER_ACCOUNT)) return error(429, 'rate_limited');
+    return toRegistry(env, c.request, path, operator(s));
+  }
   return error(404, 'not_found');
+}
+
+/**
+ * The cron's health check (index.ts scheduled, every 5 minutes): one call to the NodeRegistryDO,
+ * which probes the /healthz of the trusted wss nodes and raises the ALERTs (nodeWatch.ts). Without
+ * the node settings (a fork, local dev) it does nothing at all. Never throws.
+ */
+export async function nodeHealthCheck(env: Env): Promise<void> {
+  if (!nodesConfigured(env) || !env.JWT_SECRET) return;
+  try {
+    const res = await nodesStub(env).fetch(new Request('https://nodes' + NODE_ROUTES.health, { method: 'POST', headers: { [INTERNAL_HEADER]: await internalSecret(env.JWT_SECRET) } }));
+    const text = await res.text();
+    if (!res.ok) console.error(`nodes health check: ${res.status} ${text.slice(0, 200)}`);
+  } catch (e) {
+    console.error('nodes health check failed', e);
+  }
 }
 
 /** The body length the caller declares (0 without a Content-Length: the object's own cap holds then). */

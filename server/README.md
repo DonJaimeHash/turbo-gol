@@ -25,7 +25,11 @@ server/
   src/roomHost.ts       RoomHost: input buffers, bots, match rules, snapshot encoding (env-agnostic)
   src/NodeRegistryDO.ts one object: the community nodes' control plane (../nodes/control-plane) on SQLite (src/nodeStore.ts),
                         the nodes' control sockets (hibernating), the outbox of their settled matches (src/nodeOutcome.ts)
-  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator routes
+  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator and
+                        maintainer routes; the cron's health check
+  src/nodeAlerts.ts     its ALERT lines on the team's Discord channel (NODE_ALERT_WEBHOOK)
+  src/nodeWatch.ts      what it watches in the nodes on top of the control plane (offline, traffic, tick lag, waits)
+                        and the cron's /healthz probe
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
@@ -79,6 +83,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `NODE_CONTROL_PUBLIC_KEY` | var | its public half, handed to every node at registration; a pair that does not match places nothing (ALERT) |
 | `NODE_TRUSTED_OPERATORS` | secret, optional | the project's account ids, comma-separated: their nodes are trusted (at most 2 each) and only they create node tokens |
 | `NODES_PUBLIC_BASE` | var | the origin the nodes and their installers reach `/nodes/*` at (`https://turbo-gol.com`) |
+| `NODE_ALERT_WEBHOOK` | secret, optional | the webhook URL of a staff-only Discord channel: every `ALERT` line of the node control plane is posted there too (see "Community nodes"); unset = only the logs |
 | `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws`, `/room`, `/lobby` and `/nodes` it still receives |
 
 ## HTTP / WebSocket API
@@ -102,6 +107,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `POST /nodes/tokens` | `{ region, name? }`, Bearer account session of a `NODE_TRUSTED_OPERATORS` account | a one-time node token (1 h) and its Linux install line; 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 10 per account per day |
 | `GET /nodes/mine` | Bearer account session | the caller's own nodes (30 per account per minute) |
 | `GET /nodes/status` | | the public list of nodes (no addresses), cached 10 s |
+| `GET /nodes/admin/nodes`, `POST /nodes/admin/status`, `/drain`, `/update`, `/reprobe` | Bearer account session of a `NODE_TRUSTED_OPERATORS` account; `{ nodeId, status, reason? }`, `{ nodeId, reason? }`, no body, `{ nodeId }` | the maintainers' routes (see "Community nodes"): 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 30 per account per minute; every call is an `ALERT` naming the account |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 
 Rate limit: 20 `POST /api/queue` per playerId per minute (in-memory per isolate, best effort).
@@ -178,6 +184,7 @@ its first deploy (local dev works with any of them):
 | secret `TURNSTILE_SECRET` | the Turnstile **secret** of the same widget; required: without it `POST /api/guest` and `POST /api/auth/register` answer 503 outside local dev |
 | secrets `TURN_KEY_ID`, `TURN_KEY_TOKEN` | optional (phase 2): a Realtime TURN key (dashboard -> Realtime -> TURN); without them P2P pairs that need a relay cannot connect (STUN only) |
 | `wrangler.jsonc` -> `r2_buckets`, `vars.NODE_CONTROL_PUBLIC_KEY`, `vars.NODES_PUBLIC_BASE` | community nodes (see "Community nodes"): your bucket names, your control key's public half and your origin; a deploy fails while a bound bucket does not exist, so a fork that runs no nodes may drop the two buckets |
+| `wrangler.jsonc` -> `triggers` | the nodes' health check every 5 minutes; without the node settings a run does nothing, so a fork may keep it or drop it |
 
 ```sh
 cd server
@@ -239,9 +246,10 @@ npx wrangler r2 bucket create turbogol-node-replays      # plus a 30-day lifecyc
 npx wrangler r2 bucket create turbogol-node-releases     # nodes/github/workflows/node-release.yml uploads the releases here
 npx wrangler versions secret put NODE_CONTROL_PRIVATE_KEY   # the privateKey whose public half is vars.NODE_CONTROL_PUBLIC_KEY
 npx wrangler versions secret put NODE_TRUSTED_OPERATORS     # the project's account ids, comma-separated
+npx wrangler versions secret put NODE_ALERT_WEBHOOK         # optional: a staff-only Discord channel's webhook URL
 ```
 
-Set both secrets with `wrangler versions secret put`, never with `wrangler secret put`: the plain
+Set the secrets with `wrangler versions secret put`, never with `wrangler secret put`: the plain
 command deploys a new version at once, and every deploy resets the running matches. The secrets
 then go out with the next `npm run deploy`, at a quiet hour like any deploy.
 
@@ -272,6 +280,66 @@ npx wrangler kv key put vm_disabled 1 --binding FLAGS --remote            # ever
 Never roll the Worker back below the version that brought node matches: an older one cannot
 rejoin or release a node match's lock, so its players get 409 until the lock expires (about 13
 minutes). To stop the nodes, use `vm_disabled`.
+
+**Alerts.** The object logs `[nodes] ALERT ...` lines for what a maintainer must look at, and with
+`NODE_ALERT_WEBHOOK` set each one is also posted to that Discord channel (`src/nodeAlerts.ts`); the
+logs keep every line. What an account did (a maintainer action, a token created or a node
+registered for a trusted operator) is posted every time. Any other alert goes out at most once in
+10 minutes (the same line without its numbers and ids), and at most 5 of them in any minute: the
+channel is told how many it did not get, with the next post or on its own once the minute is
+over. Posts take turns, at most 4 in 3 s (Discord refuses a sixth in 2 s), and one Discord refuses
+with a 429 is tried once more. A post quotes the line in one code span, with no mention and no
+link preview: node names, versions and answers are in it. Among them:
+
+* the control key pair does not match; a token created or a node registered for a trusted operator
+  (whoever holds the project account's session can do both); an outbox call refused, or
+  undelivered for a day; a host that stopped answering its re-probes (out of `wss` placement); a
+  match that failed its verification or waited 6 hours for one; a release channel that does not read;
+* what the object watches (`src/nodeWatch.ts`), once when it starts: a trusted node in service
+  (probation or active) offline for 2 minutes, a node's traffic at 80 % of its monthly cap, its
+  `tickLagP99Ms` over 8 ms in 3 heartbeats in a row, the oldest verification waiting more than 30
+  minutes, a node below the channel's minimum for 2 hours (its update deferred, or not taken);
+* the health check below, and every maintainer action.
+
+While a trusted node in service is offline the alarm keeps running until its alert goes out (as it
+does while a node is connected); the object keeps which nodes got theirs, so a restart does not
+raise them again, and the node's return is a plain line. A node taken out of service for good is
+set to `banned` (or `suspended`) with `/nodes/admin/status`: it is not watched any more.
+
+**Maintainer routes.** `/nodes/admin/*` takes the Bearer session of an account in
+`NODE_TRUSTED_OPERATORS`. From a tab of the game with that account signed in (as for the token in
+`nodes/docs/VPS-SAO-PAULO.md`), in the DevTools console:
+
+```js
+const s = await (await fetch('/api/auth/refresh', { method: 'POST' })).json();
+const admin = (what, body) => fetch('/nodes/admin/' + what, { method: body ? 'POST' : 'GET', headers: { authorization: 'Bearer ' + s.session, 'content-type': 'application/json' }, body: body && JSON.stringify(body) }).then((r) => r.json());
+await admin('nodes');                                            // every node: address, status, live state, matches held
+await admin('status', { nodeId, status: 'suspended', reason }); // probation | active | suspended | banned; the node is told
+await admin('drain', { nodeId, reason });                       // no new matches, it idles once they end (one-way)
+await admin('update', {});                                       // channel.json read now, nodes below its minimum told to update
+await admin('reprobe', { nodeId });                              // its /healthz now; back into wss placement if it passes
+```
+
+Each call logs an `ALERT` with the account's name and id, the list too (it shows the nodes'
+addresses). A drain has no way back from here: `sudo systemctl restart turbogol-node` on the
+node's machine brings it back.
+
+**Health check.** Every 5 minutes (`triggers` in `wrangler.jsonc`, `scheduled()` in
+`src/index.ts`) the Worker makes one call to the object, which fetches the `/healthz` of every
+trusted `wss` node online, or in service and seen by the object within the hour (a restart forgets
+when: an offline node is probed again once it connects), through the node's own TLS, 5 s each. No
+answer, a TLS or network error, an answer that is not `ok` or not signed by the node, or a drain
+nobody asked for (no drain or update sent to that node process, and its version not below the
+channel's minimum) is an `ALERT`, one until the node answers again whatever the failure turns
+into: it catches an expired certificate while the node's heartbeats look fine. Without the node
+settings a run calls nothing.
+
+**The switches are manual.** `matchmaking_off`, `do_disabled` and `vm_disabled` in KV `FLAGS`
+are set by hand (`npx wrangler kv key put vm_disabled 1 --binding FLAGS --remote`; `kv key delete`
+undoes it), and a change takes a minute or two to land (KV propagation, then the Worker's 60 s
+cache). `vm_disabled` wins over `nodes_on` (`src/env.ts` `nodesMode`): with it set no new match
+goes to a node. No cron flips any of them on cost: the spend-control cron of
+`docs/online/DECISIONS.md` does not exist, and the only cron is the health check above.
 
 ## Limits and cost notes
 

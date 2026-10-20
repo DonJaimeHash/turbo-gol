@@ -86,6 +86,10 @@
     "NODE_CONTROL_PUBLIC_KEY": "MNSk5UH2jV-V35J_ZvfgW3JVyUvXCcgMgHAbvCzFJcI",
     "NODES_PUBLIC_BASE": "https://turbo-gol.com"
   },
+  // Every 5 minutes, index.ts scheduled(): the community nodes' health check (the /healthz of the
+  // project's nodes, an ALERT when one fails). One NodeRegistryDO call a run, none without the node
+  // settings. It flips no KV flag: matchmaking_off, do_disabled and vm_disabled are set by hand.
+  "triggers": { "crons": ["*/5 * * * *"] },
   // The shared ../src/sim/wasm/rocketsim.wasm is imported as a WebAssembly.Module.
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
   // A 3v3 tick costs ~0.1 ms of CPU; a 5 min match with overtime stays far below this.

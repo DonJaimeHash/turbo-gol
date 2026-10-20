@@ -35,7 +35,10 @@
  *                       request (request.cf), the client address masked to /24 (IPv6: /48); for the
  *                       deploy measurements (docs/online/PHASE1.md), no secret needed
  *   /nodes/*            -> the community nodes: their registration, control socket, replays and
- *                       releases, and the project's operator routes (nodeRoutes.ts, NodeRegistryDO.ts)
+ *                       releases, and the project's operator and maintainer routes (nodeRoutes.ts,
+ *                       NodeRegistryDO.ts)
+ *   cron                every 5 minutes (wrangler.jsonc triggers): the community nodes' health check
+ *                       (nodeRoutes.ts nodeHealthCheck), one NodeRegistryDO call; none without the node settings
  *   everything else     -> the game: Workers Assets (wrangler.jsonc `assets` = the Vite build in
  *                       ../dist, SPA fallback). Only /api/*, /ws/*, /room/*, /lobby/* and /nodes/* are
  *                       routed to this code (run_worker_first); the asset fallback below covers what
@@ -78,7 +81,7 @@ import type { SessionClaims, TicketRole } from './auth';
 import { isP2pResult } from './MatchmakerDO';
 import type { AnyQueueResult } from './MatchmakerDO';
 import { RELOAD_REQUIRED, ROOM_PROTOCOL } from './RoomDO';
-import { nodeRoute } from './nodeRoutes';
+import { nodeHealthCheck, nodeRoute } from './nodeRoutes';
 import { NODE_ROUTES, askNodes, rejoinTicketOf, replyCode } from './nodeApi';
 import type { NodesReply } from './nodeApi';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../../src/net/protocol';
@@ -749,5 +752,10 @@ export default {
       res = error(500, 'internal');
     }
     return withCors(res, cors);
+  },
+
+  /** The cron trigger (wrangler.jsonc, every 5 minutes): the community nodes' health check. */
+  async scheduled(_controller, env, ctx): Promise<void> {
+    ctx.waitUntil(nodeHealthCheck(env));
   },
 } satisfies ExportedHandler<Env>;
