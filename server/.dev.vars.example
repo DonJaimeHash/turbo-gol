@@ -19,5 +19,6 @@ JWT_SECRET=change-me-to-a-long-random-string
 # NODE_CONTROL_PUBLIC_KEY=
 # The project's account ids (16 hex characters each), comma-separated: their nodes are trusted.
 # NODE_TRUSTED_OPERATORS=
-# A webhook URL the node control plane posts its ALERT lines to.
+# Declared for P24 (nodes/docs/PRODUCCION.md), the webhook of the team's alert channel. Not read
+# yet: the node control plane's ALERT lines go to the log only.
 # NODE_ALERT_WEBHOOK=

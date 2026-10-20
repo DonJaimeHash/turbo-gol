@@ -90,7 +90,7 @@ antes de mandar al sitio. `whoami` y las releases se responden en el Worker; el 
 |---|---|
 | `GET /nodes/whoami` | `{ ip: CF-Connecting-IP }` directo en el Worker |
 | `GET`/`HEAD /nodes/releases/channel` | `channel.json` de R2 `NODE_RELEASES`, el mismo objeto que el plano de control lee para `minimum`: solo `{ stable, minimum }` cuando los dos son `X.Y.Z`, sin caché; 404 si no existe y 503 si está roto. Ruta propia (también responde a `channel.json`): el lanzador pide `channel` sin extensión |
-| `GET`/`HEAD /nodes/releases/<archivo>` | R2 `NODE_RELEASES`: `<versión>/<archivo>` o un archivo de la raíz, con una lista de nombres permitidos, sin `..` ni listados. Los de una versión, inmutables en caché; los de la raíz (`launcher.mjs`, los instaladores), revalidados con ETag. Un tipo desconocido sale como bytes |
+| `GET`/`HEAD /nodes/releases/<archivo>` | R2 `NODE_RELEASES`: `<versión>/<archivo>` o un archivo de la raíz, con un patrón de nombres que se comprueba después de decodificar (un `X.Y.Z/` opcional y un nombre de hasta 64 caracteres `A-Za-z0-9._-`), sin `..` ni listados: todo lo del bucket que encaja en el patrón es público. Los de una versión, inmutables en caché; los de la raíz (`launcher.mjs`, los instaladores), revalidados con ETag. Un tipo desconocido sale como bytes |
 | `POST /nodes/register` | `NodeRegistryDO`, con la dirección de quien llama en `x-client-ip`. 413 si declara más de 4 KB |
 | `GET /nodes/connect` | `NodeRegistryDO`: el WebSocket de control del nodo. 426 sin `Upgrade`; el 101 pasa tal cual |
 | `PUT /nodes/replays/<id>`, `GET /nodes/replays/<id>` | `NodeRegistryDO`, con los encabezados firmados del nodo; el id, de 64 hex. La subida: 413 si declara más de 16 MiB |
@@ -164,18 +164,20 @@ if (placed) {
   con `/ws/<matchId>`. Tiene que respetar la del nodo: reescribir solo cuando el resultado no
   traiga `node: true`.
 - **Verificación de locks** (`LOCK_VERIFY_AFTER_MS`): para un lock `node`, preguntar al registro
-  si la partida sigue en estado `assigned` o `reporting`. Si el nodo se cae, el registro anula
-  sus partidas a los 15-20 s (15 s sin heartbeat, `HEARTBEAT_TIMEOUT_MS`, más el intervalo del
-  barrido), así que el lock se libera solo.
-- **`POST /api/rejoin`**: si la partida es de un nodo, `ControlPlane.rejoinTicket()`. Hoy
-  devuelve `null` sin decir por qué (`control-plane/controlPlane.ts:719-730`), y el Worker
-  necesita saber si liberar el lock (la partida terminó, o el jugador no estaba en ella) o
-  mantenerlo (el nodo está caído un momento): hacen falta códigos.
-- **`POST /api/leave { matchId }`**: si la partida es de un nodo,
-  `ControlPlane.leave(matchId, playerId)`. Es la única forma de que un jugador deje una partida
-  de nodo: el verificador rechaza cualquier toma de control por un bot que no haya pasado por
-  aquí. `ControlPlane.leave` rechaza con `match_over` después del final
-  (`control-plane/controlPlane.ts:743`), pero `/api/leave` siempre responde
+  (`GET /internal/status`, y `nodeLockHeld` de `server/src/nodeApi.ts`) si la partida sigue en
+  estado `assigned` o `reporting`. Si el nodo se cae, el registro anula sus partidas a los 15-20 s
+  (15 s sin heartbeat, `HEARTBEAT_TIMEOUT_MS`, más el intervalo del barrido), así que el lock se
+  libera solo.
+- **`POST /api/rejoin`**: si la partida es de un nodo, `POST /internal/rejoin` al
+  `NodeRegistryDO` (`ControlPlane.rejoin()`, P5 de `PRODUCCION.md`). Responde un ticket nuevo y la
+  URL del nodo, o un código con el estado de `REJOIN_STATUS` (`server/src/nodeApi.ts`): 404
+  (`no_match`, `not_in_match`) y 410 `match_over` liberan el lock; 410 `left` ya lo liberó la
+  salida; 503 `offline` (el nodo está caído un momento) lo mantiene.
+- **`POST /api/leave { matchId }`**: si la partida es de un nodo, `POST /internal/leave`
+  (`ControlPlane.leave(matchId, playerId)`, con los códigos de `LEAVE_STATUS`). Es la única forma
+  de que un jugador deje una partida de nodo: el verificador rechaza cualquier toma de control por
+  un bot que no haya pasado por aquí. `ControlPlane.leave` rechaza con `match_over` después del
+  final (`control-plane/controlPlane.ts:743`), pero `/api/leave` siempre responde
   `200 { ok, left, released }` (`server/src/MatchmakerDO.ts:680`): el matchmaker traduce. El
   cliente manda `{ matchId, region? }` (`src/net/NetClient.ts:881`). El campo `connected`
   (`false` cuando el cliente nunca recibió el `Welcome`) solo cambia algo en un nodo comunitario:
@@ -228,11 +230,12 @@ new NetClient({ ...opciones, webSocketFactory: nodeAwareSocketFactory() })
   partidas cuando se reinicia.
 - Releases: `github/workflows/node-release.yml`, una plantilla que GitHub no corre: solo corre lo
   que está en `.github/workflows/` del repo. El canal se mueve a mano: `stable` llega a cada nodo
-  cuando reinicia, `minimum` obliga a los que están corriendo a drenar y actualizarse. Pero el
-  plano de control solo compara un nodo con `minimum` cuando el nodo saluda
-  (`control-plane/controlPlane.ts:405`), o en cada barrido si es un verificador con la
-  actualización en espera (`:1203`): un nodo que sigue conectado no se entera hasta que se
-  reconecta. El campo `canary` del protocolo no se usa todavía.
+  cuando reinicia, `minimum` obliga a los que están corriendo a drenar y actualizarse. Un nodo se
+  compara con `minimum` cuando saluda; además, en el Worker, el `NodeRegistryDO` relee
+  `channel.json` cada minuto mientras corre su alarma y, si cambió, manda `update` a los nodos
+  conectados por debajo del `minimum` nuevo (`ControlPlane.channelChanged()`). Un verificador de
+  confianza con partidas de su build por verificar espera, como cuando saluda, y el barrido lo
+  vuelve a probar hasta que se vacía esa cola. El campo `canary` del protocolo no se usa todavía.
 - Copiar `github/CODEOWNERS` a `.github/`. Activar en `main` la regla que exige la revisión de
   los dueños del código solo cuando haya un segundo mantenedor: GitHub no deja aprobar un PR
   propio, así que con un solo dueño bloquearía sus propios PR.

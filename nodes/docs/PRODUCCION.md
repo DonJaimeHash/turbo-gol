@@ -70,11 +70,11 @@ Todo el detalle, el procedimiento de instalación y la operación: `VPS-SAO-PAUL
 
 ### Por qué este orden
 
-- **Hoy el VPS no puede recibir jugadores.** El instalador baja primero `launcher.mjs` de
-  `/nodes/releases/` (`install/install.sh:108`), y esa URL devuelve el `index.html` del juego:
-  `/nodes/*` no está en `run_worker_first` (`server/wrangler.jsonc:49`) y el Worker manda al sitio
-  todo lo que no empieza con `/api/` (`server/src/index.ts:649`). No hay plano de control en el
-  Worker.
+- **Hasta el deploy de [6] (#28), el VPS no puede recibir jugadores.** El instalador baja primero
+  `launcher.mjs` de `/nodes/releases/` (`install/install.sh:108`), y en producción esa URL
+  devuelve el `index.html` del juego: `/nodes/*` no está en `run_worker_first`
+  (`server/wrangler.jsonc:49`) y el Worker manda al sitio todo lo que no empieza con `/api/`
+  (`server/src/index.ts:649`). Y no hay plano de control en el Worker hasta ese deploy.
 - **El estado se guarda antes de instalar.** Un VPS registrado contra un plano de control que no
   guarda nada queda huérfano en el próximo deploy. [1] ya escribe todo en un almacén; [6] lo pone
   en el SQLite del `NodeRegistryDO`.
@@ -242,16 +242,18 @@ sin `NODE_CONTROL_PRIVATE_KEY`, todo `/nodes/*` responde 404 salvo `whoami` y la
     `{ nodeId }` que guardó al entrar, sin un desafío nuevo, y el nodo puede recibir una partida
     antes de su próximo heartbeat. Un socket que todavía no había entrado se cierra con 4401.
   - Al arrancar comprueba que `NODE_CONTROL_PUBLIC_KEY` sea la mitad pública de
-    `NODE_CONTROL_PRIVATE_KEY`. Si no, deja un `ALERT` y no pone partidas (`place` responde
-    `hosts: 0`, y el matchmaker deja de preguntar un rato); el registro responde 503 antes de
-    gastar el token, que sigue sirviendo, y el rejoin, 503. Los nodos ya registrados siguen
-    reportando. Quien llama solo oye `nodes_unavailable`, igual que cuando el estado no se puede
-    leer: la causa queda en el `ALERT`.
+    `NODE_CONTROL_PRIVATE_KEY`. Si no, deja un `ALERT` y no pone partidas: `place` responde
+    `{ placement: null, hosts: 0 }`, y el matchmaker deja de preguntar un rato. El registro
+    responde 503 `nodes_unavailable`, como cuando el estado no se puede leer, antes de gastar el
+    token, que sigue sirviendo; el rejoin, 503 `offline`, que mantiene el lock. Los nodos ya
+    registrados siguen reportando. Ninguna respuesta nombra la clave: la causa queda solo en el
+    `ALERT`.
   - La alarma, cada 5 s mientras haya un socket, una partida sin terminar, una fila en la bandeja
     o una gracia; si no hay nada, se borra. Corre el barrido (si falla, deja un `ALERT` y sigue),
     se vuelve a programar antes de esperar a nadie, arranca la entrega de la bandeja sin esperarla
-    y relee `channel.json` cada minuto: si cambió, los nodos por debajo del `minimum` nuevo
-    reciben su `update` en ese momento. Si falta o está roto, el plano de control usa el último
+    y relee `channel.json` cada minuto: si cambió, los nodos conectados por debajo del `minimum`
+    nuevo reciben su `update` en ese momento (un verificador de confianza con partidas de su build
+    por verificar espera, como al saludar). Si falta o está roto, el plano de control usa el último
     bueno y avisa.
   - La bandeja se entrega apenas se escribe y después en cada alarma. Cada entrega tiene 10 s de
     tope y un destino que falló no se vuelve a probar en la misma pasada, así que un objeto trabado
@@ -267,10 +269,11 @@ sin `NODE_CONTROL_PRIVATE_KEY`, todo `/nodes/*` responde 404 salvo `whoami` y la
   - `/nodes/*` en `run_worker_first`, atendidas antes de que el Worker mande al sitio.
   - `whoami`; `releases/channel` (también `channel.json`), que devuelve solo `{ stable, minimum }`
     cuando los dos son `X.Y.Z`, sin caché (404 si no existe y 503 si está roto); y
-    `releases/<archivo>`, con una lista de nombres permitidos que se comprueba después de
-    decodificar, sin `..` ni listados: los archivos de una versión se cachean como inmutables, los
-    de la raíz se revalidan con ETag, y un tipo desconocido (un `.html`, por ejemplo) sale como
-    bytes.
+    `releases/<archivo>`, con un patrón de nombres que se comprueba después de decodificar (un
+    `X.Y.Z/` opcional y un nombre de hasta 64 caracteres `A-Za-z0-9._-`), sin `..` ni listados:
+    todo lo del bucket que encaja en el patrón es público. Los archivos de una versión se cachean
+    como inmutables, los de la raíz se revalidan con ETag, y un tipo desconocido (un `.html`, por
+    ejemplo) sale como bytes.
   - `register`, `connect` (426 sin `Upgrade`; el 101 pasa tal cual), `replays/<id>` (un id de 64
     hex), `mine` y `status` (pública, 10 s en caché). El Worker solo pasa al DO los encabezados de
     un nodo, y siempre pisa `x-client-ip`, `x-operator-id` y `x-operator-name`.

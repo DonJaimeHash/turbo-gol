@@ -493,7 +493,8 @@ test('a control public key that is not the private key’s half: ALERT, and no r
     assert.doesNotMatch(r.json.message, /key|sign|ticket/);
     assert.equal(h.obj.cp.registry.tokenList()[0].usedBy, null, 'the token is still good');
     assert.deepEqual((await call(h, 'POST', '/internal/place', { body: placeBody() })).json, { placement: null, hosts: 0 });
-    assert.equal((await call(h, 'POST', '/internal/rejoin', { body: { matchId: 'ab'.repeat(32), playerId: A } })).status, 503);
+    const rj = await call(h, 'POST', '/internal/rejoin', { body: { matchId: 'ab'.repeat(32), playerId: A } });
+    assert.deepEqual([rj.status, rj.json.error], [503, 'offline'], 'the code that keeps the lock, not nodes_unavailable');
   }
 });
 
