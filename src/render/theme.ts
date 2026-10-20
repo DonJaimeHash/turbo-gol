@@ -1,0 +1,126 @@
+/**
+ * Stadium themes: where the arena stands (a night harbour, a red canyon at sunset...). A theme is
+ * DATA only: the same generators and shaders read it, so switching theme re-bakes the sky and
+ * backdrop and rewrites uniforms, and never changes the light count or the material variants (a
+ * light-count change recompiles every lit material, several seconds on the web).
+ *
+ * This file holds the facts several views share (key lights, fill, floodlights, wetness, fog, tone
+ * mapping and grade). Each view keeps its own per-theme parameters next to its code, keyed by
+ * ThemeId: the sky and backdrop generators (world/), the stadium palette (stadium/), the turf
+ * colours (turf/). Gameplay never reads a theme: the field, the goals and the collision mesh are
+ * identical in every theme, and every player may see a different one.
+ *
+ * Axes and units are three.js world space in uu (1 uu ~ 1 cm): x across the field (side walls at
+ * +-4400), y up (ceiling 2250), z along it (goal lines at +-5600; blue goal at -z, red at +z).
+ * Colours are linear-light RGB (HDR allowed), the values shaders use.
+ */
+
+export type ThemeId = 'harbour-night' | 'harbour-day' | 'canyon-sunset' | 'city-dusk' | 'alpine-day' | 'railyard-night';
+
+/** Menu order. */
+export const THEME_IDS: readonly ThemeId[] = ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night'];
+
+export const DEFAULT_THEME: ThemeId = 'harbour-night';
+
+export type Rgb = readonly [number, number, number];
+export type Vec3Tuple = readonly [number, number, number];
+
+export interface KeyLight {
+  /** Unit vector from the field centre toward the light. */
+  readonly dir: Vec3Tuple;
+  readonly color: Rgb;
+  /** DirectionalLight intensity. */
+  readonly intensity: number;
+}
+
+export interface Floodlight {
+  /** Centre of the lamp head and the point of the pitch it is aimed at. */
+  readonly position: Vec3Tuple;
+  readonly target: Vec3Tuple;
+  readonly color: Rgb;
+  /** 1 = a standard head: scales its glow, its baked pool on the pitch and its wet streak (0 = off). */
+  readonly strength: number;
+}
+
+export interface ThemeWorld {
+  readonly id: ThemeId;
+  /** Night themes light the pitch with floodlights (pools, streaks, hot lamp heads); day themes with the sun. */
+  readonly night: boolean;
+  /**
+   * The two key lights: directional, the only shadow casters (keys[0] keeps its shadow on the low
+   * tier, keys[1] lights without one there). At night they stand for the floodlight towers.
+   */
+  readonly keys: readonly [KeyLight, KeyLight];
+  /** Hemisphere fill (sky / ground colours, intensity) and the image-based lighting intensity. */
+  readonly fill: { readonly sky: Rgb; readonly ground: Rgb; readonly intensity: number; readonly env: number };
+  /** Lamp heads round the field; the turf bakes their pools and draws their streaks on wet grass. */
+  readonly floodlights: readonly Floodlight[];
+  /** 0 dry .. 1 soaked: turf sheen and puddles, streak strength. */
+  readonly wetness: number;
+  /** Exponential distance fog (density per uu): the backdrop bake and the stadium fade into it. */
+  readonly fog: { readonly color: Rgb; readonly density: number };
+  /** Final image: tone mapping, exposure and a light colour grade (applied in HDR before the tone map). */
+  readonly toneMapping: 'neutral' | 'aces' | 'agx';
+  readonly exposure: number;
+  readonly grade: {
+    readonly contrast: number;
+    readonly saturation: number;
+    /** Added to the shadows / multiplied into the highlights. */
+    readonly lift: Rgb;
+    readonly gain: Rgb;
+    /** 0 = none; the old renderer used 0.32. */
+    readonly vignette: number;
+  };
+}
+
+/** Floodlight towers outside the side walls, heads above the cage roof (shared by every theme). */
+export const TOWER_X = 4880;
+export const TOWER_Z: readonly number[] = [-4300, -1450, 1450, 4300];
+export const HEAD_Y = 3250;
+
+function unit(x: number, y: number, z: number): Vec3Tuple {
+  const l = Math.hypot(x, y, z);
+  return [x / l, y / l, z / l];
+}
+
+/** The eight standard heads, cross-aimed: each lights the far half of the pitch, a bit toward the centre. */
+function towerFloodlights(color: Rgb, strength: number): Floodlight[] {
+  const out: Floodlight[] = [];
+  for (const sx of [-1, 1]) {
+    for (const z of TOWER_Z) {
+      out.push({ position: [sx * (TOWER_X - 240), HEAD_Y, z * 0.985], target: [-sx * 1500, 0, z * 0.72], color, strength });
+    }
+  }
+  return out;
+}
+
+const WARM_LAMP: Rgb = [1.0, 0.93, 0.82];
+
+/** Themes built so far (the themes phase of docs/visuals/REWORK.md adds the others). */
+const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
+  'harbour-night': {
+    id: 'harbour-night',
+    night: true,
+    keys: [
+      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: WARM_LAMP, intensity: 2.4 },
+      { dir: unit(TOWER_X, HEAD_Y, 2900), color: WARM_LAMP, intensity: 1.6 },
+    ],
+    fill: { sky: [0.05, 0.065, 0.12], ground: [0.03, 0.022, 0.018], intensity: 0.9, env: 0.35 },
+    floodlights: towerFloodlights(WARM_LAMP, 1),
+    wetness: 0.55,
+    fog: { color: [0.05, 0.046, 0.105], density: 1.6e-5 },
+    toneMapping: 'neutral',
+    exposure: 1.1,
+    grade: { contrast: 1.12, saturation: 1.05, lift: [0, 0, 0.004], gain: [1, 1, 1], vignette: 0.32 },
+  },
+};
+
+/** The shared world facts of a theme (unknown or not-yet-built themes fall back to the default). */
+export function themeWorld(id: ThemeId): ThemeWorld {
+  return WORLDS[id] ?? (WORLDS[DEFAULT_THEME] as ThemeWorld);
+}
+
+/** A saved theme id, or null. */
+export function parseTheme(v: unknown): ThemeId | null {
+  return typeof v === 'string' && (THEME_IDS as readonly string[]).includes(v) ? (v as ThemeId) : null;
+}
