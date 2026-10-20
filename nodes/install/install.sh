@@ -343,8 +343,10 @@ PUBLIC_HOST=${PUBLIC_HOST#\[}; PUBLIC_HOST=${PUBLIC_HOST%\]}
 case "$RELEASE_KEY_B64URL" in __RELEASE_*) die "this install.sh has no release key (use the one a release publishes, or build it with scripts/build-node.mjs)" ;; esac
 case "$RELEASE_KEY_PEM" in __RELEASE_*) die "this install.sh has no release key (use the one a release publishes, or build it with scripts/build-node.mjs)" ;; esac
 [[ "$RELEASE_KEY_B64URL" =~ ^[A-Za-z0-9_-]{43}$ ]] || die "the release key in this install.sh is damaged: download it again"
-. /etc/os-release
-case "${ID:-}" in ubuntu|debian) ;; *) die "only Debian / Ubuntu for now (found ${ID:-unknown})" ;; esac
+# Read in a subshell: /etc/os-release also defines NAME (the distribution's), which would replace
+# --name, and VERSION, which is nothing of ours either.
+OS_ID=$( { . /etc/os-release && printf '%s' "${ID:-}"; } 2>/dev/null || true )
+case "$OS_ID" in ubuntu|debian) ;; *) die "only Debian / Ubuntu for now (found ${OS_ID:-unknown})" ;; esac
 command -v systemctl >/dev/null || die "systemd is required"
 
 export DEBIAN_FRONTEND=noninteractive
