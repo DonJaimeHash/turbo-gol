@@ -15,13 +15,18 @@
  *   update    a node online below the channel's minimum for UPDATE_ALERT_MS: a verifier whose update
  *             waits for the matches of its build (ControlPlane.maybeUpdate), or a node that does not
  *             take it
+ *   healthz   the cron's probe of a trusted wss node (probeHealthz): no answer, a TLS or network
+ *             error, an answer that is not ok or not signed by the node, or a drain nobody asked for.
+ *             It catches an expired certificate while the node's heartbeats look fine.
  *
- * Node names and versions are what the node sent: each is cut (clip) before it goes into
+ * Node names, versions and answers are what the node sent: each is cut (clip) before it goes into
  * a line, and the webhook puts the whole line in a code span.
  */
 import type { MatchEntry } from '../../nodes/control-plane/controlPlane';
 import type { NodeRecord } from '../../nodes/control-plane/registry';
-import { compareVersions } from '../../nodes/shared/controlProtocol';
+import { compareVersions, reachMessage } from '../../nodes/shared/controlProtocol';
+import { randomB64, verifyWith } from '../../nodes/shared/edcrypto';
+import type { FetchFn } from './nodeAlerts';
 
 /** A trusted node's matches are void after TRUSTED_OFFLINE_MS (60 s) of silence; this long, someone should look. */
 export const OFFLINE_ALERT_MS = 2 * 60_000;
@@ -31,12 +36,18 @@ export const LAG_ALERT_MS = 8;
 export const LAG_ALERT_BEATS = 3;
 export const VERIFY_ALERT_MS = 30 * 60_000;
 export const UPDATE_ALERT_MS = 2 * 60 * 60_000;
+/** The cron probes a node online now or seen within this long. */
+export const HEALTHZ_RECENT_MS = 60 * 60_000;
+export const HEALTHZ_TIMEOUT_MS = 5_000;
 
 /** A line for the object's log; one that starts with ALERT is posted under `key` (alertKey of the line when absent). */
 export interface WatchNote {
   line: string;
   key?: string;
 }
+
+/** What the probe of a node's /healthz found. */
+export type Healthz = { ok: true; draining: boolean } | { ok: false; kind: 'timeout' | 'tls' | 'network' | 'http' | 'answer'; detail: string };
 
 /** The release channel as the control plane reads it ({ stable, minimum }, version strings), or null. */
 export function channelOf(v: unknown): { stable: string; minimum: string } | null {
@@ -57,8 +68,78 @@ export function label(n: Pick<NodeRecord, 'name' | 'nodeId'>): string {
   return `${clip(n.name)} (${n.nodeId})`;
 }
 
+/** Where players reach a wss node over HTTPS. */
+export function httpsOf(publicUrl: string): string {
+  return publicUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+}
+
 const inService = (n: NodeRecord) => n.status === 'probation' || n.status === 'active';
 const minutes = (ms: number) => Math.floor(ms / 60_000);
+
+/**
+ * The nodes the cron probes: trusted wss hosts, not taken out of service by hand, online, or in
+ * service and seen within HEALTHZ_RECENT_MS. Those are the nodes that keep the object's alarm
+ * running (a socket, NodeWatch.watching), so a problem found stays known from one run to the next
+ * and its ALERT goes out once, not at every run of a freshly started object.
+ */
+export function healthzTargets(nodes: readonly NodeRecord[], now: number): NodeRecord[] {
+  return nodes.filter(
+    (n) =>
+      n.trusted &&
+      n.roles.includes('host') &&
+      n.transports.includes('wss') &&
+      n.publicUrl !== null &&
+      n.status !== 'banned' &&
+      n.status !== 'suspended' &&
+      (n.online || (inService(n) && n.lastSeen > 0 && now - n.lastSeen <= HEALTHZ_RECENT_MS)),
+  );
+}
+
+/**
+ * GET <publicUrl>/healthz?nonce= as players reach the node (through its TLS), within `timeoutMs`:
+ * ok when it answers 200 with ok: true and the nonce signed with the node's key. A failure says
+ * what kind it is; an error that names TLS, SSL or a certificate is a TLS one, any other a network one.
+ */
+export async function probeHealthz(n: Pick<NodeRecord, 'nodeId' | 'publicKey' | 'publicUrl'>, fetchFn: FetchFn, timeoutMs: number = HEALTHZ_TIMEOUT_MS): Promise<Healthz> {
+  const nonce = randomB64(18);
+  const ctrl = new AbortController();
+  const run = async (): Promise<Healthz> => {
+    const res = await fetchFn(`${httpsOf(n.publicUrl ?? '')}/healthz?nonce=${nonce}`, { signal: ctrl.signal });
+    if (!res.ok) {
+      await res.body?.cancel();
+      if (res.status === 525 || res.status === 526) return { ok: false, kind: 'tls', detail: `HTTP ${res.status}: the TLS handshake or the certificate was refused` };
+      const proxy = res.status === 502 || res.status === 503 || res.status === 504 ? ' (the proxy answers, the node behind it does not)' : '';
+      return { ok: false, kind: 'http', detail: `HTTP ${res.status}${proxy}` };
+    }
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      return { ok: false, kind: 'answer', detail: 'an answer that is not JSON' };
+    }
+    const b = (typeof body === 'object' && body !== null ? body : {}) as { ok?: unknown; nodeId?: unknown; sig?: unknown; draining?: unknown };
+    if (b.ok !== true) return { ok: false, kind: 'answer', detail: 'an answer without ok: true' };
+    if (b.nodeId !== n.nodeId || typeof b.sig !== 'string' || !(await verifyWith(n.publicKey, reachMessage(n.nodeId, nonce), b.sig).catch(() => false))) {
+      return { ok: false, kind: 'answer', detail: 'an answer not signed by this node' };
+    }
+    return { ok: true, draining: b.draining === true };
+  };
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const late = new Promise<'late'>((resolve) => {
+    timer = setTimeout(() => resolve('late'), timeoutMs);
+  });
+  try {
+    const r = await Promise.race([run(), late]);
+    if (r !== 'late') return r;
+    ctrl.abort();
+    return { ok: false, kind: 'timeout', detail: `no answer in ${timeoutMs / 1000} s` };
+  } catch (e) {
+    const msg = clip(String(e).replace(/[^\x20-\x7e]+/g, ' '), 160);
+    return /certificate|tls|ssl|handshake|x509/i.test(msg) ? { ok: false, kind: 'tls', detail: `TLS error (an expired or invalid certificate?): ${msg}` } : { ok: false, kind: 'network', detail: `network error: ${msg}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export class NodeWatch {
   /** Trusted nodes whose offline ALERT went out (this outage). */
@@ -71,6 +152,8 @@ export class NodeWatch {
   private readonly belowSince = new Map<string, number>();
   private readonly belowAlerted = new Set<string>();
   private verifyAlerted = false;
+  /** The kind of /healthz problem each node has (its ALERT went out). */
+  private readonly healthz = new Map<string, string>();
 
   /** A trusted node in service is offline: the alarm must keep running until it is back (or taken out of service). */
   watching(nodes: readonly NodeRecord[]): boolean {
@@ -158,5 +241,26 @@ export class NodeWatch {
       this.verifyAlerted = false;
     }
     return out;
+  }
+
+  /**
+   * The cron's probe of one node. `drainExpected`: the control plane sent this node process a drain
+   * or an update, or its version is below the channel's minimum (it updates).
+   */
+  health(n: NodeRecord, r: Healthz, drainExpected: boolean): WatchNote | null {
+    const problem = !r.ok
+      ? { kind: r.kind, detail: r.detail }
+      : r.draining && !drainExpected
+        ? { kind: 'draining', detail: 'draining, and the control plane did not ask it to (no drain, no update)' }
+        : null;
+    const had = this.healthz.get(n.nodeId);
+    if (!problem) {
+      if (had === undefined) return null;
+      this.healthz.delete(n.nodeId);
+      return { line: `node ${label(n)} /healthz answers again` };
+    }
+    if (had === problem.kind) return null;
+    this.healthz.set(n.nodeId, problem.kind);
+    return { line: `ALERT node ${label(n)} /healthz at ${clip(httpsOf(n.publicUrl ?? ''), 120)}: ${problem.detail}`, key: `healthz:${n.nodeId}:${problem.kind}` };
   }
 }

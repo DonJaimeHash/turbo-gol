@@ -7,7 +7,8 @@
  * the send.
  *
  * Tables
- *   meta          k -> v; 'state_version': the persist.ts STATE_VERSION the rows were written in
+ *   meta          k -> v; 'state_version': the persist.ts STATE_VERSION the rows were written in;
+ *                 'drains_asked': the node processes the object told to drain (NodeRegistryDO)
  *   node_tokens   registration tokens (only their hash), pruned an hour after they expire
  *   nodes         every registered node
  *   node_matches  the matches the control plane keeps (settled ones until its retention ends)
@@ -85,6 +86,15 @@ export class NodeStore implements RegistryStore, MatchStore {
       .toArray()
       .map((r) => ({ matchId: r.match_id, nodeId: r.node_id, state: r.state as MatchState, doneAt: Number(r.done_at), data: r.data }));
     return { tokens, nodes, matches };
+  }
+
+  /** A meta value of the object's own (not a control plane row), or null. */
+  meta(k: string): string | null {
+    return this.sql.exec<{ v: string }>('SELECT v FROM meta WHERE k = ?', k).toArray()[0]?.v ?? null;
+  }
+
+  setMeta(k: string, v: string): void {
+    this.sql.exec('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, v);
   }
 
   // ---- RegistryStore ------------------------------------------------------------------------

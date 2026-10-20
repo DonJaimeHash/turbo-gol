@@ -16,6 +16,8 @@
  *                                10 per account per day
  *   GET  /nodes/mine             x-operator-id -> that operator's nodes
  *   POST /internal/place | /internal/rejoin | /internal/leave, GET /internal/status: the matchmaker's (nodeApi.ts)
+ *   POST /internal/health        the cron's (index.ts scheduled, every 5 minutes): /healthz of every trusted wss
+ *                                node online, or in service and seen in the last hour, 5 s each (nodeWatch.ts)
  *
  * State (nodeStore.ts, SQLite): the tokens, nodes and matches the control plane writes through,
  * and the outbox of settled matches, written in the transaction that settles each one and
@@ -50,6 +52,7 @@ import type { NodeLink, PlaceRequest, Session } from '../../nodes/control-plane/
 import { Ledger } from '../../nodes/control-plane/ledger';
 import { Registry, TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
 import type { NodeRecord, RegistryOptions } from '../../nodes/control-plane/registry';
+import { compareVersions } from '../../nodes/shared/controlProtocol';
 import type { HeartbeatData, RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
 import { importPrivateKey, sign, verifyWith } from '../../nodes/shared/edcrypto';
 import { REGIONS, isRegion } from '../../src/net/account';
@@ -62,7 +65,7 @@ import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeAp
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
-import { NodeWatch, channelOf } from './nodeWatch';
+import { HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, probeHealthz } from './nodeWatch';
 import type { WatchNote } from './nodeWatch';
 
 /** The alarm's period while anything needs it. */
@@ -91,6 +94,8 @@ const LIMIT_PURGE_EVERY = 256;
 const UNAVAILABLE = 'the node control plane is not available right now: try again later';
 const REPLAY_ROUTE = /^\/nodes\/replays\/([0-9a-f]{64})$/;
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
+/** The meta row of drainAsked. */
+const DRAINS_KEY = 'drains_asked';
 
 /** NODE_CONTROL_PUBLIC_KEY is the public half of NODE_CONTROL_PRIVATE_KEY: what one signs, the other verifies. */
 export async function controlKeysMatch(privateKey: string, publicKey: string): Promise<boolean> {
@@ -180,7 +185,9 @@ export class NodeRegistryDO extends DurableObject<Env> {
    * channel.json that takes longer is given up and tried again later (tests shorten it).
    */
   timeoutMs = DELIVERY_TIMEOUT_MS;
-  /** What the object posts to the ALERT webhook with (tests hand in a fake). */
+  /** How long the cron's probe of a node's /healthz waits (tests shorten it). */
+  healthzTimeoutMs = HEALTHZ_TIMEOUT_MS;
+  /** What the object fetches the ALERT webhook and the nodes' /healthz with (tests hand in a fake). */
   fetchFn: FetchFn = (url, init) => fetch(url, init);
   /** The control key pair matches (controlKeysMatch): tickets the nodes can check. */
   private keyOk = false;
@@ -194,6 +201,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private readonly watch = new NodeWatch();
   /** When this object started: a node it has not seen counts as offline from then. */
   private startedAt = 0;
+  /**
+   * Nodes the control plane told to drain or update, with the process (bootId) it told: its drain
+   * is expected. Kept in meta: a node drained by hand stays drained through a deploy.
+   */
+  private drainAsked = new Map<string, string | null>();
   private readonly sessions = new WeakMap<WebSocket, Session>();
   /** Sockets whose { nodeId } attachment is stored. */
   private readonly attached = new WeakSet<WebSocket>();
@@ -245,6 +257,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     try {
       store.migrate();
       const rows = store.load(Date.now());
+      this.drainAsked = drainsOf(store.meta(DRAINS_KEY));
       const registry = new WatchedRegistry({ allowInsecure: false, trustedOperators: [...trustedOperatorIds(env)], regions: REGIONS.map((r) => r.id), store, log }, (n) => {
         const note = this.watch.beat(n);
         if (note) this.note([note]);
@@ -269,6 +282,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
             return o ? new Uint8Array(await o.arrayBuffer()) : null;
           },
         },
+        // Its reachability probes, through the object's fetch like the cron's.
+        fetchJson: async (u) => (await this.fetchFn(u, { signal: AbortSignal.timeout(HEALTHZ_TIMEOUT_MS) })).json(),
         store,
         now: () => Date.now(),
         log,
@@ -308,6 +323,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private link(ws: WebSocket): NodeLink {
     return {
       send: (msg) => {
+        // A node that drains after this was asked to (nodeWatch.ts: the cron's /healthz check).
+        if (msg.t === 'drain' || msg.t === 'update') this.askedToDrain(this.sessions.get(ws)?.nodeId ?? null);
         try {
           ws.send(JSON.stringify(msg));
         } catch {
@@ -536,6 +553,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
       if (method === 'POST' && path === NODE_ROUTES.rejoin) return await this.rejoin(request, cp);
       if (method === 'POST' && path === NODE_ROUTES.leave) return await this.leave(request, cp);
       if (method === 'GET' && path === NODE_ROUTES.status) return this.matchStatus(url, cp);
+      if (method === 'POST' && path === NODE_ROUTES.health) return await this.health(cp);
     } catch (e) {
       this.log(`${method} ${path} failed: ${String(e)}`);
       return error(500, 'internal');
@@ -701,10 +719,70 @@ export class NodeRegistryDO extends DurableObject<Env> {
     const s = cp.matchStatus(url.searchParams.get('matchId') ?? '', url.searchParams.get('playerId') ?? '');
     return s ? json(s satisfies StatusAnswer) : error(404, 'no_match');
   }
+
+  // ---- the cron's health check ------------------------------------------------------------------
+
+  /**
+   * POST /internal/health (index.ts scheduled, every 5 minutes): the /healthz of every trusted wss
+   * node online, or in service and seen in the last hour (healthzTargets), all at once, 5 s each.
+   * A problem raises its ALERT when it starts (NodeWatch.health); a drain the node was asked for is
+   * no problem.
+   */
+  private async health(cp: ControlPlane): Promise<Response> {
+    const targets = healthzTargets(cp.registry.list(), Date.now());
+    const found = await Promise.all(targets.map(async (n) => ({ n, r: await probeHealthz(n, this.fetchFn, this.healthzTimeoutMs) })));
+    let problems = 0;
+    for (const { n, r } of found) {
+      const expected = this.drainExpected(n);
+      if (!r.ok || (r.draining && !expected)) problems++;
+      const note = this.watch.health(n, r, expected);
+      if (note) this.note([note]);
+    }
+    return json({ probed: targets.length, problems });
+  }
+
+  /** The control plane sent this node a drain or an update: written down with the node process it went to. */
+  private askedToDrain(nodeId: string | null): void {
+    if (nodeId === null) return;
+    const boot = this.cp?.registry.node(nodeId)?.bootId ?? null;
+    if (this.drainAsked.has(nodeId) && this.drainAsked.get(nodeId) === boot) return;
+    this.drainAsked.set(nodeId, boot);
+    try {
+      this.store?.setMeta(DRAINS_KEY, JSON.stringify(Object.fromEntries(this.drainAsked)));
+    } catch (e) {
+      this.log(`${DRAINS_KEY} not written: ${String(e)}`);
+    }
+  }
+
+  /**
+   * A drain the node was asked for: a drain or an update sent to the process now running, or a
+   * version below the channel's minimum (an update: a node also starts one itself when its welcome
+   * names a higher minimum, with no 'update' message).
+   */
+  private drainExpected(n: NodeRecord): boolean {
+    const ch = this.goodChannel;
+    if (ch && compareVersions(n.build.version, ch.minimum) < 0) return true;
+    return this.drainAsked.has(n.nodeId) && this.drainAsked.get(n.nodeId) === n.bootId;
+  }
 }
 
 function publicBase(env: NodesEnv): string {
   return env.NODES_PUBLIC_BASE.replace(/\/+$/, '');
+}
+
+/** The drains_asked meta row (node id -> bootId), or an empty map when it is missing or does not read. */
+function drainsOf(v: string | null): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  let o: unknown = null;
+  try {
+    o = v === null ? null : JSON.parse(v);
+  } catch {
+    /* an empty map */
+  }
+  if (typeof o === 'object' && o !== null) {
+    for (const [k, b] of Object.entries(o)) if (b === null || typeof b === 'string') out.set(k, b);
+  }
+  return out;
 }
 
 /** The Worker sends the operator's name URL-encoded (header values are Latin-1). */

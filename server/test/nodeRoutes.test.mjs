@@ -1,8 +1,9 @@
 // The Worker's /nodes/* routes (server/src/nodeRoutes.ts, dispatched by server/src/index.ts) without
 // workerd: the route matrix, the release keys (path traversal included), the channel, the account
-// and trust checks of the operator routes, the headers the Worker overwrites, the limits, and the
-// Worker in front of a real NodeRegistryDO on node:sqlite. 'cloudflare:workers' and MatchDO's wasm
-// are stubbed by the resolve hook (match.test.mjs). Run from server/: npm test
+// and trust checks of the operator routes, the headers the Worker overwrites, the
+// limits, the cron's one call, and the Worker in front of a real NodeRegistryDO on node:sqlite.
+// 'cloudflare:workers' and MatchDO's wasm are stubbed by the resolve hook (match.test.mjs). Run
+// from server/: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -412,6 +413,42 @@ test('mine: an account session, forwarded with the caller’s id, 30 a minute pe
   assert.equal(s2.headers.get('access-control-allow-origin'), ORIGIN);
 });
 
+// ---- the cron ----------------------------------------------------------------------------------------
+
+test('the cron: one call to the object, with the internal header; never a throw; nothing at all without the node settings', async () => {
+  const run = async (env) => {
+    const waits = [];
+    await worker.scheduled({ cron: '*/5 * * * *', scheduledTime: Date.now() }, env, { waitUntil: (p) => waits.push(p), passThroughOnException() {} });
+    await Promise.all(waits);
+  };
+  const env = makeEnv();
+  env.NODES.handler = () => new RealResponse('{"probed":1,"problems":0}', { headers: { 'content-type': 'application/json' } });
+  await run(env);
+  assert.equal(env.NODES.seen.length, 1, 'one call a run');
+  const [s] = env.NODES.seen;
+  assert.deepEqual([s.path, s.req.method, s.headers[INTERNAL_HEADER], s.id, s.opts], ['/internal/health', 'POST', secret, { name: 'nodes-v1' }, { locationHint: 'sam' }]);
+  for (const over of [{ NODE_CONTROL_PRIVATE_KEY: undefined }, { NODE_RELEASES: undefined }, { NODES_PUBLIC_BASE: undefined }, { JWT_SECRET: undefined }]) {
+    const off = makeEnv(over);
+    await run(off);
+    assert.equal(off.NODES.seen.length, 0, Object.keys(over)[0]);
+  }
+  await run(makeEnv({ NODES: undefined }));
+  const errors = [];
+  const realError = console.error;
+  console.error = (...args) => errors.push(args.map(String).join(' '));
+  try {
+    env.NODES.handler = () => new RealResponse('{"error":"nodes_unavailable"}', { status: 503 });
+    await run(env);
+    env.NODES.handler = () => {
+      throw new Error('object reset');
+    };
+    await run(env);
+  } finally {
+    console.error = realError;
+  }
+  assert.deepEqual(errors, ['nodes health check: 503 {"error":"nodes_unavailable"}', 'nodes health check failed Error: object reset']);
+});
+
 // ---- the Worker in front of a real NodeRegistryDO ----------------------------------------------------
 
 class FakeSocket {
@@ -481,4 +518,27 @@ test('end to end: a trusted account mints a token, the installer registers with 
   assert.equal(c.upgraded, true);
   assert.equal(reg.sockets.length, 1);
   assert.equal(reg.sockets[0].sent[0].t, 'challenge');
+});
+
+test('end to end: the cron’s call reaches a real NodeRegistryDO, which answers it', async () => {
+  const env = makeEnv();
+  const reg = realRegistry(env);
+  const answers = [];
+  env.NODES.handler = async (r) => {
+    const res = await reg.obj.fetch(r);
+    answers.push([res.status, await res.clone().json()]);
+    return res;
+  };
+  const errors = [];
+  const realError = console.error;
+  console.error = (...args) => errors.push(args.map(String).join(' '));
+  try {
+    const waits = [];
+    await worker.scheduled({ cron: '*/5 * * * *', scheduledTime: Date.now() }, env, { waitUntil: (p) => waits.push(p), passThroughOnException() {} });
+    await Promise.all(waits);
+  } finally {
+    console.error = realError;
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(answers, [[200, { probed: 0, problems: 0 }]], 'no node yet');
 });

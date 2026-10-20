@@ -2,8 +2,8 @@
 // (server/src/nodeAlerts.ts: the Discord message, its escaping, one post per alert in 10 minutes,
 // the burst limit, failures kept out of the logs' ALERT lines) on a fake fetch, and what the
 // NodeRegistryDO watches (server/src/nodeWatch.ts: a trusted node offline, traffic near its cap,
-// tick lag, a verification or an update waiting too long) on plain node records. Run from
-// server/: npm test
+// tick lag, a verification or an update waiting too long, and the cron's /healthz probe of a node,
+// TLS and network errors included) on plain node records. Run from server/: npm test
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -25,10 +25,14 @@ registerHooks({
 
 const AL = await import('../src/nodeAlerts.ts');
 const W = await import('../src/nodeWatch.ts');
+const { generateEd25519, importPrivateKey, sign } = await import('../../nodes/shared/edcrypto.ts');
+const { reachMessage } = await import('../../nodes/shared/controlProtocol.ts');
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
 const HOOK = 'https://discord.test/api/webhooks/1/secret-token';
+const KEYS = await generateEd25519();
+const NODE_KEY = await importPrivateKey(KEYS.privateKey);
 
 /** A node record as the Registry keeps it (the fields the watch reads). */
 const rec = (over = {}) => ({
@@ -43,6 +47,7 @@ const rec = (over = {}) => ({
   roles: ['host', 'verify'],
   transports: ['wss'],
   publicUrl: 'wss://sp1.turbo-gol.test',
+  publicKey: KEYS.publicKey,
   bootId: 'boot-1',
   build: { version: '0.2.0', protocol: 1, wasmSha256: 'a'.repeat(64) },
   egressGB: 0,
@@ -274,6 +279,86 @@ test('update: a node online below the minimum for more than 2 hours is an ALERT,
   n.build = { ...n.build, version: '0.2.9' };
   assert.deepEqual(w.tick(NOW + 3 * W.UPDATE_ALERT_MS + 1, [n], [], '0.3.0', NOW), [], 'a new wait starts');
   assert.deepEqual(new W.NodeWatch().tick(NOW + 9 * W.UPDATE_ALERT_MS, [n], [], null, NOW), [], 'no channel known: nobody is below it');
+});
+
+// ---- the cron's /healthz probe ---------------------------------------------------------------------
+
+/** A node's /healthz as Caddy serves it: `over` changes the answer; `key` signs the nonce. */
+function healthzFetch(over = {}, key = NODE_KEY) {
+  return fakeFetch(async (url) => {
+    const nonce = new URL(url).searchParams.get('nonce');
+    return new Response(JSON.stringify({ ok: true, nodeId: '0123456789abcdef', version: '0.2.0', active: 0, capacity: 4, draining: false, sig: await sign(key, reachMessage('0123456789abcdef', nonce)), ...over }));
+  });
+}
+
+test('probeHealthz: through the node’s TLS, signed with its key; draining is reported, any other answer is a failure of its kind', async () => {
+  const n = rec();
+  const f = healthzFetch();
+  assert.deepEqual(await W.probeHealthz(n, f), { ok: true, draining: false });
+  assert.match(f.calls[0].url, /^https:\/\/sp1\.turbo-gol\.test\/healthz\?nonce=[A-Za-z0-9_-]{24}$/);
+  assert.ok(f.calls[0].init.signal instanceof AbortSignal);
+  assert.deepEqual(await W.probeHealthz(n, healthzFetch({ draining: true })), { ok: true, draining: true });
+  const other = await importPrivateKey((await generateEd25519()).privateKey);
+  const answer = { ok: false, kind: 'answer' };
+  assert.deepEqual(await W.probeHealthz(n, healthzFetch({}, other)), { ...answer, detail: 'an answer not signed by this node' });
+  assert.deepEqual(await W.probeHealthz(n, healthzFetch({ nodeId: 'fedcba9876543210' })), { ...answer, detail: 'an answer not signed by this node' });
+  assert.deepEqual(await W.probeHealthz(n, healthzFetch({ ok: false })), { ...answer, detail: 'an answer without ok: true' });
+  assert.deepEqual(await W.probeHealthz(n, fakeFetch(() => new Response('<html>parked</html>'))), { ...answer, detail: 'an answer that is not JSON' });
+  assert.deepEqual(await W.probeHealthz(n, fakeFetch(() => new Response('bad gateway', { status: 502 }))), { ok: false, kind: 'http', detail: 'HTTP 502 (the proxy answers, the node behind it does not)' });
+  assert.deepEqual(await W.probeHealthz(n, fakeFetch(() => new Response('', { status: 526 }))), { ok: false, kind: 'tls', detail: 'HTTP 526: the TLS handshake or the certificate was refused' });
+  const tls = await W.probeHealthz(
+    n,
+    fakeFetch(() => {
+      throw new TypeError('fetch failed: certificate has expired');
+    }),
+  );
+  assert.deepEqual(tls, { ok: false, kind: 'tls', detail: 'TLS error (an expired or invalid certificate?): TypeError: fetch failed: certificate has expired' });
+  const net = await W.probeHealthz(
+    n,
+    fakeFetch(() => {
+      throw new TypeError('fetch failed: connect ECONNREFUSED 203.0.113.1:443\n\u202eforged');
+    }),
+  );
+  assert.equal(net.kind, 'network');
+  assert.ok(!/[\n\u202e]/.test(net.detail), 'one printable line');
+  let signal = null;
+  const hang = fakeFetch((_, init) => {
+    signal = init.signal;
+    return new Promise(() => {});
+  });
+  assert.deepEqual(await W.probeHealthz(n, hang, 30), { ok: false, kind: 'timeout', detail: 'no answer in 0.03 s' });
+  assert.equal(signal.aborted, true, 'the request is let go');
+});
+
+test('the cron probes trusted wss hosts not taken out of service: online, or in service and seen within the hour', () => {
+  const t = (over) => W.healthzTargets([rec(over)], NOW).length === 1;
+  assert.equal(t({}), true);
+  assert.equal(t({ online: false, lastSeen: NOW - 30 * MIN }), true, 'seen half an hour ago');
+  assert.equal(t({ online: false, lastSeen: NOW - 2 * 60 * MIN }), false, 'gone for two hours: its offline ALERT went out');
+  assert.equal(t({ online: false, lastSeen: 0 }), false, 'not seen since a restart');
+  assert.equal(t({ status: 'pending' }), true, 'a new node not proven yet');
+  assert.equal(t({ status: 'pending', online: false, lastSeen: NOW - 30 * MIN }), false, 'not in service: nothing keeps the object running between two runs');
+  assert.equal(t({ status: 'banned' }), false);
+  assert.equal(t({ status: 'suspended' }), false);
+  assert.equal(t({ trusted: false }), false);
+  assert.equal(t({ roles: ['verify'], transports: [], publicUrl: null }), false);
+  assert.equal(t({ transports: ['rtc'], publicUrl: null }), false);
+});
+
+test('a /healthz problem is an ALERT when it starts or changes kind, a drain nobody asked for too; a plain line when it answers again', () => {
+  const w = new W.NodeWatch();
+  const n = rec();
+  assert.equal(w.health(n, { ok: true, draining: false }, false), null);
+  const tls = { ok: false, kind: 'tls', detail: 'TLS error (an expired or invalid certificate?): x' };
+  assert.deepEqual(w.health(n, tls, false), {
+    line: 'ALERT node sao-paulo-1 (0123456789abcdef) /healthz at https://sp1.turbo-gol.test: TLS error (an expired or invalid certificate?): x',
+    key: 'healthz:0123456789abcdef:tls',
+  });
+  assert.equal(w.health(n, tls, false), null, 'while it lasts');
+  assert.equal(w.health(n, { ok: false, kind: 'timeout', detail: 'no answer in 5 s' }, false).key, 'healthz:0123456789abcdef:timeout', 'another kind');
+  assert.deepEqual(w.health(n, { ok: true, draining: false }, false), { line: 'node sao-paulo-1 (0123456789abcdef) /healthz answers again' });
+  assert.equal(w.health(n, { ok: true, draining: true }, true), null, 'a drain the control plane asked for');
+  assert.match(w.health(n, { ok: true, draining: true }, false).line, /: draining, and the control plane did not ask it to \(no drain, no update\)$/);
 });
 
 test('names and versions a node sent are cut before they reach a line', () => {

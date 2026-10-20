@@ -2,8 +2,9 @@
 // fakes, without workerd: its SQLite on node:sqlite (the same SQL), a fake DurableObjectState with
 // hibernatable sockets, an alarm and waitUntil, R2 buckets in memory, ACCOUNTS and MATCHMAKER
 // namespaces that record what the outbox delivers, and a node played by the test (it signs the
-// challenge and its /healthz nonce, says hello, answers 'assign' and 'leave', reports). The fake
-// fetch also takes the posts of the team's webhook, for the ALERTs and the watch. Date.now
+// challenge and its /healthz nonce, says hello, answers 'assign' and 'leave', reports). A fake
+// fetch answers that /healthz (or fails it as a test asks) and takes the posts of the team's
+// webhook, for the ALERTs, the watch and the cron's health check. Date.now
 // is the test's clock. A "deploy" builds a new object on the same database with every socket
 // closed; a "hibernation" builds one on the same database and the same open sockets.
 // Run from server/: npm test
@@ -269,7 +270,10 @@ const HOOK = 'https://discord.test/api/webhooks/1/secret';
 const posts = [];
 const posted = () => posts.map((p) => p.content);
 
-/** The nodes behind the fake /healthz: host -> { nodeId, key }. */
+/**
+ * The nodes behind the fake /healthz: host -> { nodeId, key, draining?, fail? } (the registered
+ * node: setting `draining` or `fail(url, init)` on it changes what its /healthz answers).
+ */
 const hosts = new Map();
 globalThis.fetch = async (url, init = {}) => {
   if (String(url) === HOOK) {
@@ -279,8 +283,9 @@ globalThis.fetch = async (url, init = {}) => {
   const u = new URL(String(url));
   const h = hosts.get(u.host);
   if (u.pathname !== '/healthz' || !h) throw new Error('unexpected fetch ' + url);
+  if (h.fail) return h.fail(u, init);
   const nonce = u.searchParams.get('nonce');
-  return new RealResponse(JSON.stringify({ nodeId: h.nodeId, sig: await sign(h.key, reachMessage(h.nodeId, nonce)) }));
+  return new RealResponse(JSON.stringify({ ok: true, nodeId: h.nodeId, draining: h.draining === true, sig: await sign(h.key, reachMessage(h.nodeId, nonce)) }));
 };
 
 /** A NodeRegistryDO on `ctx`, started. */
@@ -914,7 +919,7 @@ test('status lists the nodes without their address; mine shows the operator its 
   assert.deepEqual((await call(h, 'GET', '/nodes/mine', { headers: { 'x-operator-id': STRANGER } })).json.nodes, []);
 });
 
-// ---- the team's channel and the watch ---------------------------------------------------------------
+// ---- the team's channel, the watch, the cron's health check --------------------------------------------
 
 const MIN = 60_000;
 
@@ -1021,4 +1026,71 @@ test('the watch: tick lag over 8 ms in 3 heartbeats, traffic at 80 % of the cap,
   await h.ctx.settle();
   assert.equal(posts.length, 4);
   assert.match(posted()[3], new RegExp(`node sao-paulo-1 \\(${node.nodeId}\\) still on 0\\.2\\.0, below the channel's minimum 0\\.3\\.0, for 2 h: its update is deferred or it does not take it\`$`));
+});
+
+test('the cron’s health check: a TLS error while the heartbeats look fine is an ALERT, once; a drain nobody asked for too, not one the control plane asked for', async () => {
+  const { h, node, ws } = await watched();
+  const health = async () => (await call(h, 'POST', '/internal/health')).json;
+  assert.deepEqual(await health(), { probed: 1, problems: 0 });
+  node.fail = () => {
+    throw new TypeError('fetch failed: certificate has expired');
+  };
+  assert.deepEqual(await health(), { probed: 1, problems: 1 });
+  await send(h, ws, { t: 'heartbeat', data: beat() });
+  assert.deepEqual(await health(), { probed: 1, problems: 1 });
+  await h.ctx.settle();
+  assert.deepEqual(posted(), [`**ALERT** \`node sao-paulo-1 (${node.nodeId}) /healthz at https://sp1.turbo-gol.test: TLS error (an expired or invalid certificate?): TypeError: fetch failed: certificate has expired\``]);
+  assert.equal(h.obj.cp.registry.node(node.nodeId).online, true, 'its heartbeats look fine');
+  node.fail = null;
+  lines.length = 0;
+  assert.deepEqual(await health(), { probed: 1, problems: 0 });
+  assert.ok(lines.includes(`[nodes] node sao-paulo-1 (${node.nodeId}) /healthz answers again`));
+  node.draining = true;
+  assert.deepEqual(await health(), { probed: 1, problems: 1 });
+  await h.ctx.settle();
+  assert.match(posted().at(-1), /: draining, and the control plane did not ask it to \(no drain, no update\)`$/);
+  h.obj.cp.drain(node.nodeId, 'maintenance');
+  assert.deepEqual(ws.of('drain'), [{ t: 'drain', reason: 'maintenance' }]);
+  assert.deepEqual(await health(), { probed: 1, problems: 0 }, 'a drain the control plane asked for');
+  await send(h, ws, { t: 'hello', data: helloOf(node, { bootId: 'boot-2', draining: true }) });
+  assert.deepEqual(await health(), { probed: 1, problems: 1 }, 'a new node process that drains: nobody asked that one');
+  node.draining = false;
+  h.obj.healthzTimeoutMs = 30;
+  node.fail = () => new Promise(() => {});
+  lines.length = 0;
+  assert.deepEqual(await within(1_000, health(), 'the probe waited for a node that never answers'), { probed: 1, problems: 1 });
+  assert.ok(lines.some((l) => l.endsWith('/healthz at https://sp1.turbo-gol.test: no answer in 0.03 s')), lines.join('\n'));
+  node.fail = null;
+  await h.obj.webSocketClose(ws, 1006, '', false);
+  assert.equal((await health()).probed, 1, 'offline, but seen within the hour');
+  clock += 61 * MIN;
+  assert.deepEqual(await health(), { probed: 0, problems: 0 }, 'gone for more than an hour: its offline ALERT went out');
+});
+
+test('the cron’s health check through a deploy: a drain asked before it is still expected, and so is the drain of a node below the channel’s minimum', async () => {
+  const { h: before, env, node, ws } = await watched();
+  before.obj.cp.drain(node.nodeId, 'maintenance');
+  assert.equal(rows(before, 'meta').find((r) => r.k === 'drains_asked')?.v, JSON.stringify({ [node.nodeId]: 'boot-1' }), 'written down with the node process it went to');
+  node.draining = true;
+  // A deploy: every socket drops, and the same node process logs in again, still draining.
+  ws.close(1012, 'deploy');
+  const h = await boot(env, new FakeCtx(before.ctx.db));
+  const back = await connect(h, node);
+  await send(h, back, { t: 'hello', data: helloOf(node, { draining: true }) });
+  const health = async () => (await call(h, 'POST', '/internal/health')).json;
+  assert.deepEqual(await health(), { probed: 1, problems: 0 }, 'the drain asked before the deploy');
+  // A new node process, a match on its build, and a channel that moves on: the verifier's update
+  // waits for the match (no 'update' goes out), and the node drains by itself, as its welcome says.
+  node.draining = false;
+  await send(h, back, { t: 'hello', data: helloOf(node, { bootId: 'boot-2' }) });
+  assert.ok((await call(h, 'POST', '/internal/place', { body: placeBody() })).json.placement);
+  await env.NODE_RELEASES.put('channel.json', JSON.stringify({ stable: '0.3.0', minimum: '0.3.0' }));
+  clock += D.CHANNEL_REFRESH_MS;
+  await send(h, back, { t: 'heartbeat', data: beat({ active: 1 }) });
+  await h.obj.alarm();
+  assert.deepEqual(back.of('update'), [], 'deferred');
+  node.draining = true;
+  assert.deepEqual(await health(), { probed: 1, problems: 0 }, 'below the minimum: an update');
+  await h.ctx.settle();
+  assert.deepEqual(posts, []);
 });

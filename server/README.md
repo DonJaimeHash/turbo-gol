@@ -25,9 +25,11 @@ server/
   src/roomHost.ts       RoomHost: input buffers, bots, match rules, snapshot encoding (env-agnostic)
   src/NodeRegistryDO.ts one object: the community nodes' control plane (../nodes/control-plane) on SQLite (src/nodeStore.ts),
                         the nodes' control sockets (hibernating), the outbox of their settled matches (src/nodeOutcome.ts)
-  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator routes
+  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator routes;
+                        the cron's health check
   src/nodeAlerts.ts     its ALERT lines on the team's Discord channel (NODE_ALERT_WEBHOOK)
   src/nodeWatch.ts      what it watches in the nodes on top of the control plane (offline, traffic, tick lag, waits)
+                        and the cron's /healthz probe
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
@@ -176,6 +178,7 @@ its first deploy (local dev works with any of them):
 | secret `TURNSTILE_SECRET` | the Turnstile **secret** of the same widget; required: without it `POST /api/guest` and `POST /api/auth/register` answer 503 outside local dev |
 | secrets `TURN_KEY_ID`, `TURN_KEY_TOKEN` | optional (phase 2): a Realtime TURN key (dashboard -> Realtime -> TURN); without them P2P pairs that need a relay cannot connect (STUN only) |
 | `wrangler.jsonc` -> `r2_buckets`, `vars.NODE_CONTROL_PUBLIC_KEY`, `vars.NODES_PUBLIC_BASE` | community nodes (see "Community nodes"): your bucket names, your control key's public half and your origin; a deploy fails while a bound bucket does not exist, so a fork that runs no nodes may drop the two buckets |
+| `wrangler.jsonc` -> `triggers` | the nodes' health check every 5 minutes; without the node settings a run does nothing, so a fork may keep it or drop it |
 
 ```sh
 cd server
@@ -250,11 +253,27 @@ are in it. Among them:
 * what the object watches (`src/nodeWatch.ts`), once when it starts: a trusted node in service
   (probation or active) offline for 2 minutes, a node's traffic at 80 % of its monthly cap, its
   `tickLagP99Ms` over 8 ms in 3 heartbeats in a row, the oldest verification waiting more than 30
-  minutes, a node below the channel's minimum for 2 hours (its update deferred, or not taken).
+  minutes, a node below the channel's minimum for 2 hours (its update deferred, or not taken);
+* the health check below.
 
 While a trusted node in service is offline the alarm keeps running (as it does while a node is
 connected), and a restart raises its alert again: set a node taken out of service for good to
 `banned` (or `suspended`).
+
+**Health check.** Every 5 minutes (`triggers` in `wrangler.jsonc`, `scheduled()` in
+`src/index.ts`) the Worker makes one call to the object, which fetches the `/healthz` of every
+trusted `wss` node online, or in service and seen within the hour, through the node's own TLS, 5 s
+each. No answer, a TLS or network error, an answer that is not `ok` or not signed by the node, or a
+drain nobody asked for (no drain or update sent to that node process, and its version not below
+the channel's minimum) is an `ALERT`: it catches an expired certificate while the node's
+heartbeats look fine. Without the node settings a run calls nothing.
+
+**The switches are manual.** `matchmaking_off`, `do_disabled` and `vm_disabled` in KV `FLAGS`
+are set by hand (`npx wrangler kv key put vm_disabled 1 --binding FLAGS --remote`; `kv key delete`
+undoes it), and a change takes a minute or two to land (KV propagation, then the Worker's 60 s
+cache). `vm_disabled` wins over `nodes_on` (`src/env.ts` `nodesMode`): with it set no new match
+goes to a node. No cron flips any of them on cost: the spend-control cron of
+`docs/online/DECISIONS.md` does not exist, and the only cron is the health check above.
 
 ## Limits and cost notes
 

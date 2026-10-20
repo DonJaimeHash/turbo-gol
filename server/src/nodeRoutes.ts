@@ -31,13 +31,16 @@
  * per hour and tokens per account per day, the object's own limits, which only the object holds
  * across isolates. Here they keep junk from reaching it: every route that reaches the object has
  * one, per address (an IPv6 address counted by its /64, env.ts limitKey) or per account.
+ *
+ * The cron (index.ts scheduled, every 5 minutes) calls nodeHealthCheck: one call to the object,
+ * which probes the trusted nodes' /healthz; nothing at all without the node settings.
  */
 import { requireAccount } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
-import { nodesStub } from './nodeApi';
+import { NODE_ROUTES, nodesStub } from './nodeApi';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 
 /** What the index.ts router hands over: its rate limiter, the session and its CORS headers. */
@@ -171,6 +174,22 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   }
   if (method === 'GET' && path === '/nodes/status') return status(c, env, who);
   return error(404, 'not_found');
+}
+
+/**
+ * The cron's health check (index.ts scheduled, every 5 minutes): one call to the NodeRegistryDO,
+ * which probes the /healthz of the trusted wss nodes and raises the ALERTs (nodeWatch.ts). Without
+ * the node settings (a fork, local dev) it does nothing at all. Never throws.
+ */
+export async function nodeHealthCheck(env: Env): Promise<void> {
+  if (!nodesConfigured(env) || !env.JWT_SECRET) return;
+  try {
+    const res = await nodesStub(env).fetch(new Request('https://nodes' + NODE_ROUTES.health, { method: 'POST', headers: { [INTERNAL_HEADER]: await internalSecret(env.JWT_SECRET) } }));
+    const text = await res.text();
+    if (!res.ok) console.error(`nodes health check: ${res.status} ${text.slice(0, 200)}`);
+  } catch (e) {
+    console.error('nodes health check failed', e);
+  }
 }
 
 /** The body length the caller declares (0 without a Content-Length: the object's own cap holds then). */
