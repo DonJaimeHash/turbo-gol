@@ -58,7 +58,8 @@ Otros comandos:
 | `npm run keys` | Genera las claves de control y de releases en `.keys/`. Si ya existen, las deja y avisa que no son nuevas |
 | `npm run build` | Arma una release de desarrollo en `dist/releases/` con los tres instaladores, firmada con `.keys/release.json`. Nunca se sube |
 | `node scripts/build-node.mjs` | La release de producción: sin firmar, desde un commit, con los instaladores armados con `release-key.pub`. La arma el workflow de releases |
-| `npm run sign` | Firma esa release con la clave de releases del proyecto. Solo lo corre el workflow de releases (`.github/workflows/node-release.yml`) |
+| `npm run sign` | Revisa esa release contra el checkout (archivos, wasm, protocolo, instaladores byte a byte) y la firma con la clave de releases del proyecto. Solo lo corre el workflow de releases (`.github/workflows/node-release.yml`), en un job que no instala nada |
+| `node scripts/publish-release.mjs` | Revisa otra vez la release firmada y la sube a R2. Una versión se publica una sola vez, pero retoma una subida que quedó a medias; `launcher.mjs` y los instaladores son siempre los de la release más nueva. Solo lo corre el workflow de releases |
 | `node scripts/channel.mjs --show` | Muestra el canal de releases publicado. `--stable` lo mueve y `--rollback` lo devuelve a `channel.prev.json` (normalmente lo mueve `npm run deploy` en la raíz) |
 | `npm run build:web` | Arma el arnés de prueba del navegador, servido en `/web/rtc-harness.html` |
 

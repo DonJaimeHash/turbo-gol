@@ -10,7 +10,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runSign, signerRoot, tempDir, throwawayKey } from './release-fixtures.mjs';
 
-const { buildRelease, INSTALLERS, PLACEHOLDER } = await import('../scripts/build-node.mjs');
+const { buildRelease } = await import('../scripts/build-node.mjs');
+const { INSTALLERS } = await import('../scripts/release-check.mjs');
+const { PLACEHOLDER } = await import('../scripts/release-key.mjs');
 const L = await import('../node/launcher.ts');
 
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;

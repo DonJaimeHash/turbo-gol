@@ -12,7 +12,7 @@
 //
 // Production builds a commit (a dirty tree is refused and the manifest records the commit) and fills
 // the installers from nodes/release-key.pub, the project's release key. It never sees the private
-// half: CI signs in its own step, with a script that only uses node:crypto (scripts/sign-release.mjs).
+// half: CI signs in a job of its own, with a script that only uses node:crypto (scripts/sign-release.mjs).
 // Development signs with a key from scripts/keys.mjs (manifest.sig, launcher.mjs.sig,
 // <version>/release-key.pub) and fills the installers with that key: such a release only works with
 // launchers installed from those installers, and is never uploaded.
@@ -26,13 +26,10 @@ import { createHash, createPublicKey } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findRepoRoot } from './repo-root.mjs';
-import { privateKeyFromText, rawOf, readReleaseKey, signB64 } from './release-key.mjs';
+import { INSTALLERS } from './release-check.mjs';
+import { fillInstaller, PLACEHOLDER, privateKeyFromText, rawOf, readReleaseKey, signB64 } from './release-key.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-export const INSTALLERS = ['install.sh', 'install-windows.ps1', 'install-desktop.sh'];
-// The installers' own refusal checks only match the prefix (`__RELEASE_*`), so this is what a
-// filled installer must not contain.
-export const PLACEHOLDER = '__RELEASE_PUBLIC_KEY_';
 // compareVersions (shared/controlProtocol.ts) mis-orders prerelease suffixes.
 const PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
 
@@ -183,7 +180,7 @@ export async function buildRelease(o = {}) {
       log(`  (no install/${name} yet)`);
       continue;
     }
-    const filled = tpl.split('__RELEASE_PUBLIC_KEY_B64URL__').join(publicKey.raw).split('__RELEASE_PUBLIC_KEY_PEM__').join(publicKey.pem);
+    const filled = fillInstaller(tpl, publicKey);
     if (filled.includes(PLACEHOLDER)) throw new Error(`install/${name} still has a ${PLACEHOLDER}* placeholder`);
     await writeFile(join(out, name), filled);
   }

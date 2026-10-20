@@ -12,6 +12,17 @@ import { createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 const RAW = /^[A-Za-z0-9_-]{43}$/;
+// The installers' own refusal checks only match the prefix (`__RELEASE_*`), so this is what a
+// filled installer must not contain.
+export const PLACEHOLDER = '__RELEASE_PUBLIC_KEY_';
+
+/**
+ * An installer template (nodes/install/<name>) with the release key filled in. The build writes it,
+ * and the sign and upload steps rebuild it to compare: installers are not signed, and run as root.
+ */
+export function fillInstaller(template, publicKey) {
+  return template.split('__RELEASE_PUBLIC_KEY_B64URL__').join(publicKey.raw).split('__RELEASE_PUBLIC_KEY_PEM__').join(publicKey.pem);
+}
 
 /** A KeyObject from the 43-character raw public key (JWK OKP, then SPKI for the PEM). Throws on anything else. */
 export function publicKeyFromRaw(raw) {
