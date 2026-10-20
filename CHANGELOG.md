@@ -62,6 +62,9 @@ All notable changes to Turbogol are documented here. The format follows
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
   Permissions-Policy headers; /.well-known/security.txt points to private vulnerability reporting.
 - Unexpected server errors (API routes and match sockets) no longer echo the exception text.
+- Node releases are signed in a job that installs nothing and uploaded from a separate `releases-r2`
+  environment that re-checks them and can be re-run; the deploy gate also checks the channel's
+  minimum release and that releases come from main.
 
 ## [0.1.0] - 2026-10-15
 

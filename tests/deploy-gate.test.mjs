@@ -9,7 +9,7 @@ import { createHash, generateKeyPairSync } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { gatedDeploy, gitRunner } from '../scripts/node-release-gate.mjs';
+import { gatedDeploy, gitRunner, rollbackAdvice } from '../scripts/node-release-gate.mjs';
 import { BUCKET, moveChannel, readChannel, rollbackChannel, wranglerR2 } from '../nodes/scripts/channel.mjs';
 import { rawOf, readReleaseKey, signB64 } from '../nodes/scripts/release-key.mjs';
 
@@ -20,9 +20,9 @@ function releaseKeyPair() {
   return { privateKey, raw: rawOf(privateKey) };
 }
 
-// The node inputs a release lists (what build-node.mjs writes to inputs.json), and one file the
-// node never runs.
-const INPUTS = ['nodes/node/agent.ts', 'nodes/node/version.ts', 'nodes/package-lock.json', 'server/src/roomHost.ts', 'src/game/Match.ts', 'src/net/protocol.ts', 'src/sim/wasm/rocketsim.wasm'];
+// The node inputs a release lists (what build-node.mjs writes to inputs.json: sources, lockfiles,
+// the build configuration), and one file the node never runs.
+const INPUTS = ['nodes/node/agent.ts', 'nodes/node/version.ts', 'nodes/package-lock.json', 'nodes/package.json', 'nodes/shared/controlProtocol.ts', 'package.json', 'server/src/roomHost.ts', 'src/game/Match.ts', 'src/net/protocol.ts', 'src/sim/wasm/rocketsim.wasm', 'tsconfig.json'];
 
 /** A repo shaped like this one, as far as the gate looks, with origin/main at HEAD. */
 function makeRepo(t, releaseRaw) {
@@ -42,6 +42,7 @@ function makeRepo(t, releaseRaw) {
   const repo = {
     dir,
     env,
+    git,
     write(path, text) {
       mkdirSync(dirname(join(dir, path)), { recursive: true });
       writeFileSync(join(dir, path), text);
@@ -66,6 +67,9 @@ function makeRepo(t, releaseRaw) {
   repo.write('nodes/node/agent.ts', 'export const agent = 1;\n');
   repo.write('nodes/package-lock.json', '{}\n');
   repo.write('nodes/release-key.pub', `${releaseRaw}\n`);
+  repo.write('nodes/shared/controlProtocol.ts', 'export const wire = 1;\n');
+  repo.write('package.json', JSON.stringify({ name: 'turbogol', type: 'module', scripts: { build: 'vite build' } }, null, 2));
+  repo.write('tsconfig.json', JSON.stringify({ compilerOptions: { target: 'ES2022' } }, null, 2));
   repo.write('src/net/protocol.ts', 'export const PROTOCOL_VERSION = 7;\n');
   repo.write('src/game/Match.ts', 'export const rules = 1;\n');
   repo.write('src/ui/menu.ts', 'export const menu = 1;\n');
@@ -297,10 +301,16 @@ test('a release signed by another key is refused', (t) => {
   assert.deepEqual(channelOf(store), { stable: '0.2.0', minimum: '0.2.0' });
 });
 
-test('uncommitted changes, or a HEAD that is not origin/main, stop the deploy', (t) => {
+test('uncommitted changes anywhere in the tree, or a HEAD that is not origin/main, stop the deploy', (t) => {
   const { repo, store } = live(t);
-  repo.write('server/src/roomHost.ts', 'export const host = 3;\n');
+  // Nothing nodes run, but the Worker serves what vite copies from public/.
+  repo.write('public/robots.txt', 'User-agent: *\n');
   let r = deployOnce(repo, store);
+  assert.equal(r.status, 1);
+  assert.match(r.err, /uncommitted changes[^\n]*\n\?\? public\//);
+  rmSync(join(repo.dir, 'public'), { recursive: true });
+  repo.write('server/src/roomHost.ts', 'export const host = 3;\n');
+  r = deployOnce(repo, store);
   assert.equal(r.status, 1);
   assert.match(r.err, /uncommitted changes/);
   spawnSync('git', ['commit', '-qam', 'local only'], { cwd: repo.dir, env: repo.env });
@@ -319,6 +329,9 @@ test('a deploy that fails after the channel moved prints the way back: restore c
   const r = deployOnce(repo, store, { deployStatus: 1 });
   assert.equal(r.status, 1);
   assert.deepEqual(r.events, ['put channel.prev.json application/json', 'put channel.json application/json', 'deploy']);
+  // Wrangler may have failed after the new build went live: check before going back.
+  assert.match(r.err, /First see which build serves: {2}cd server; npx wrangler deployments status/);
+  assert.doesNotMatch(r.err, /the Worker still runs the previous build/);
   assert.match(r.err, /channel\.mjs --rollback.*channel\.prev\.json: stable 0\.2\.0, minimum 0\.2\.0/);
   assert.match(r.err, /drain or restart the node/);
   assert.match(r.err, /systemctl restart turbogol-node/);
@@ -343,4 +356,101 @@ test('channel.mjs: a move needs a signed release and minimum <= stable, and read
   // Tampered input list: its hash is in the signed manifest.
   store.set('0.2.1/inputs.json', Buffer.from('{"version":"0.2.1","files":[]}'));
   assert.throws(() => moveChannel(r2, { stable: '0.2.1', minimum: '0.2.1' }, releaseKey, () => {}), /inputs\.json does not match/);
+});
+
+test('the way back from a first channel pastes into Windows PowerShell 5.1 too (no &&)', () => {
+  const advice = rollbackAdvice({ stable: '0.2.0', minimum: '0.2.0' }, null);
+  assert.match(advice, /there was no channel before: remove it with {2}cd server; npx wrangler r2 object delete turbogol-node-releases\/channel\.json --remote; cd \.\./);
+  assert.match(advice, /wrangler deployments status/);
+  assert.ok(!advice.includes('&&'), advice);
+});
+
+test('a minimum kept below stable by hand is checked too: when its release runs other game code, it moves up', (t) => {
+  const { key, repo, store } = live(t);
+  repo.write('src/game/Match.ts', 'export const rules = 2;\n');
+  repo.setVersion('0.2.1');
+  const c = repo.commit('new rules');
+  publish(store, key, { version: '0.2.1', commit: c, wasmSha256: repo.wasmSha() });
+  // channel.mjs --stable 0.2.1 --minimum 0.2.0: nodes still on 0.2.0 keep the old rules and get matches.
+  moveChannel(wranglerR2({ run: fakeWrangler(store, []).run }), { stable: '0.2.1', minimum: '0.2.0' }, readReleaseKey(join(repo.dir, 'nodes', 'release-key.pub')), () => {});
+  const r = deployOnce(repo, store);
+  assert.equal(r.status, 0, r.err);
+  assert.deepEqual(r.events, ['put channel.prev.json application/json', 'put channel.json application/json', 'deploy']);
+  assert.deepEqual(channelOf(store), { stable: '0.2.1', minimum: '0.2.1' });
+  assert.match(r.out, /nodes on the minimum, 0\.2\.0, run other game code \(game code: src\/game\/Match\.ts\), so the minimum moves up to 0\.2\.1/);
+  assert.match(r.out, /tells nodes below 0\.2\.1 to update/);
+});
+
+test('--nodes-off counts both ends of the channel: an old minimum on this wasm would still host it with old rules', (t) => {
+  const { key, repo, store } = live(t);
+  repo.write('src/sim/wasm/rocketsim.wasm', 'wasm-2');
+  repo.setVersion('0.2.1');
+  const c = repo.commit('new wasm');
+  publish(store, key, { version: '0.2.1', commit: c, wasmSha256: repo.wasmSha() });
+  moveChannel(wranglerR2({ run: fakeWrangler(store, []).run }), { stable: '0.2.1', minimum: '0.2.0' }, readReleaseKey(join(repo.dir, 'nodes', 'release-key.pub')), () => {});
+  // Back to the first wasm, with new rules: nodes on 0.2.1 cannot host this build, nodes on 0.2.0 can.
+  repo.write('src/sim/wasm/rocketsim.wasm', 'wasm-1');
+  repo.write('src/game/Match.ts', 'export const rules = 2;\n');
+  repo.setVersion('0.2.2');
+  repo.commit('first wasm again, new rules');
+  const r = deployOnce(repo, store, { nodesOff: true });
+  assert.equal(r.status, 1);
+  assert.deepEqual(r.events, []);
+  assert.match(r.err, /--nodes-off cannot keep nodes away from this build: nodes on 0\.2\.0 would still get its matches/);
+});
+
+test('a release built from a commit that never reached main does not move the channel, even with the same game code', (t) => {
+  const { key, repo, store } = live(t);
+  repo.git('checkout', '-q', '-b', 'side');
+  repo.write('nodes/node/agent.ts', 'export const agent = "never reviewed";\n');
+  repo.setVersion('0.2.1');
+  repo.git('add', '-A');
+  repo.git('commit', '-q', '-m', 'unmerged agent');
+  const side = repo.git('rev-parse', 'HEAD');
+  repo.git('checkout', '-q', 'main');
+  publish(store, key, { version: '0.2.1', commit: side, wasmSha256: repo.wasmSha() });
+  repo.setVersion('0.2.1');
+  repo.commit('version bump on main');
+  const r = deployOnce(repo, store);
+  assert.equal(r.status, 0, r.err);
+  assert.deepEqual(r.events, ['deploy']);
+  assert.deepEqual(channelOf(store), { stable: '0.2.0', minimum: '0.2.0' });
+  assert.match(r.out, /release 0\.2\.1 is not this build \(unmerged code \(its commit [0-9a-f]{12} is not in main's history\)\), so stable does not move to it/);
+});
+
+test('nodes/shared counts as game code: the control plane on the other end of the wire is the Worker, so the minimum moves', (t) => {
+  const { key, repo, store } = live(t);
+  repo.write('nodes/shared/controlProtocol.ts', 'export const wire = 2;\n');
+  repo.setVersion('0.2.1');
+  const c = repo.commit('wire change');
+  let r = deployOnce(repo, store);
+  assert.equal(r.status, 1);
+  assert.match(r.err, /game code: nodes\/shared\/controlProtocol\.ts/);
+  publish(store, key, { version: '0.2.1', commit: c, wasmSha256: repo.wasmSha() });
+  r = deployOnce(repo, store);
+  assert.equal(r.status, 0, r.err);
+  assert.deepEqual(channelOf(store), { stable: '0.2.1', minimum: '0.2.1' });
+});
+
+test('the build configuration counts: tsconfig.json whole, package.json by the fields esbuild reads', (t) => {
+  const { repo, store } = live(t);
+  // A script and a dependency range never reach the bundle.
+  repo.write('package.json', JSON.stringify({ name: 'turbogol', type: 'module', scripts: { build: 'vite build', deploy: 'node scripts/deploy.mjs' }, devDependencies: { vite: '^9.0.0' } }, null, 2));
+  repo.commit('new script');
+  let r = deployOnce(repo, store);
+  assert.equal(r.status, 0, r.err);
+  assert.deepEqual(r.events, ['deploy']);
+
+  repo.write('package.json', JSON.stringify({ name: 'turbogol', type: 'commonjs' }, null, 2));
+  repo.commit('module type');
+  r = deployOnce(repo, store);
+  assert.equal(r.status, 1);
+  assert.match(r.err, /game code: package\.json/);
+
+  repo.write('package.json', JSON.stringify({ name: 'turbogol', type: 'module' }, null, 2));
+  repo.write('tsconfig.json', JSON.stringify({ compilerOptions: { target: 'ES2020' } }, null, 2));
+  repo.commit('older target');
+  r = deployOnce(repo, store);
+  assert.equal(r.status, 1);
+  assert.match(r.err, /game code: tsconfig\.json/);
 });

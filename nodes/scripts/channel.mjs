@@ -5,8 +5,11 @@
 // this is the same move by hand, and the way back.
 //
 //   node scripts/channel.mjs --show
-//   node scripts/channel.mjs --stable X.Y.Z [--minimum X.Y.Z]   (minimum: the current one by default)
+//   node scripts/channel.mjs --stable X.Y.Z [--minimum X.Y.Z]   (minimum: X.Y.Z itself by default)
 //   node scripts/channel.mjs --rollback                         back to channel.prev.json
+//
+// A minimum below stable keeps older nodes getting matches: pass --minimum only for a version that
+// runs the same game code as stable (the next deploy's gate checks it, and moves it up if not).
 //
 // Before writing, the stable release's manifest.json and manifest.sig must be in R2 and verify
 // against nodes/release-key.pub. The current channel is saved as channel.prev.json first (so a
@@ -215,7 +218,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.log(`Then ${restartAdvice(from)}`);
     } else if (arg('stable')) {
       const stable = arg('stable');
-      moveChannel(r2, { stable, minimum: arg('minimum') ?? current?.minimum ?? stable }, releaseKey);
+      moveChannel(r2, { stable, minimum: arg('minimum') ?? stable }, releaseKey);
       if (current && compareVersions(stable, current.stable) < 0) console.log(`Then ${restartAdvice(current.stable)}`);
     } else if (process.argv.includes('--show')) {
       console.log(`channel: ${describe(current)}`);

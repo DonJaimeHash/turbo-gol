@@ -57,6 +57,9 @@ test('production build: unsigned, with its commit and input list, installers fil
   assert.deepEqual(m.files.map((f) => f.path), ['node.mjs', 'rocketsim.wasm']);
   const inputs = JSON.parse(inputsBytes).files;
   for (const p of ['nodes/node/main.ts', 'nodes/shared/verify.ts', 'nodes/package-lock.json', 'server/src/roomHost.ts', 'src/game/Match.ts', 'src/net/protocol.ts', 'src/sim/wasm/rocketsim.wasm']) assert.ok(inputs.includes(p), p);
+  // The configuration esbuild compiles them with: the nearest tsconfig.json (server's extends the
+  // root one) and package.json of each folder.
+  for (const p of ['tsconfig.json', 'package.json', 'server/tsconfig.json', 'server/package.json', 'nodes/tsconfig.json', 'nodes/package.json']) assert.ok(inputs.includes(p), p);
   assert.ok(inputs.every((p) => !p.includes('node_modules') && !p.includes('\\')), 'repo paths only');
 
   for (const name of INSTALLERS) {

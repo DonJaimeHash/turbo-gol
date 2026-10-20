@@ -2,8 +2,9 @@
 //   dist/releases/<version>/node.mjs        the node program, one ESM bundle (esbuild), no dependencies
 //   dist/releases/<version>/rocketsim.wasm  the exact wasm the web client runs
 //   dist/releases/<version>/manifest.json   version, protocol, wasm hash, commit, files with sha256 + size
-//   dist/releases/<version>/inputs.json     the repo files node.mjs was built from (its sha256 is in the
-//                                           manifest; not in its files, so launchers never download it)
+//   dist/releases/<version>/inputs.json     the repo files node.mjs was built from, its build configuration
+//                                           included (its sha256 is in the manifest; not in its files, so
+//                                           launchers never download it)
 //   dist/releases/launcher.mjs              the launcher install.sh installs once
 //   dist/releases/install.sh, install-windows.ps1, install-desktop.sh   with the release public key filled in
 //
@@ -21,9 +22,10 @@
 // move it.
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile, copyFile, rm } from 'node:fs/promises';
 import { createHash, createPublicKey } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findRepoRoot } from './repo-root.mjs';
 import { INSTALLERS } from './release-check.mjs';
@@ -53,6 +55,36 @@ export function inputFiles(metafile) {
     if (p.startsWith('../') || p.startsWith('/') || /^[A-Za-z]:/.test(p)) throw new Error(`the bundle reads ${p}, outside the repo`);
     const i = p.indexOf('node_modules/');
     files.add(i < 0 ? p : `${p.slice(0, i)}package-lock.json`);
+  }
+  return [...files].sort();
+}
+
+/**
+ * The build configuration esbuild reads for the repo files it bundled (`sources`, repo paths): for
+ * each one, the nearest tsconfig.json (with the ones it extends) and the nearest package.json. They
+ * change the bundle without changing a source (tsconfig's target picks the class-field semantics,
+ * package.json's type the module format), so a deploy must see them like the sources.
+ */
+export function configFiles(repo, sources) {
+  const files = new Set();
+  const nearest = (dir, name) => {
+    for (let d = dir; ; d = posix.dirname(d)) {
+      const p = d === '.' ? name : `${d}/${name}`;
+      if (existsSync(join(repo, p))) return p;
+      if (d === '.') return null;
+    }
+  };
+  for (const source of sources) {
+    const dir = posix.dirname(source);
+    const pkg = nearest(dir, 'package.json');
+    if (pkg) files.add(pkg);
+    // Only extends by relative path: a package's tsconfig is pinned by its lockfile like its code.
+    for (let ts = nearest(dir, 'tsconfig.json'); ts && !files.has(ts); ) {
+      files.add(ts);
+      const ext = /"extends"\s*:\s*"(\.{1,2}\/[^"]+)"/.exec(readFileSync(join(repo, ts), 'utf8'))?.[1];
+      const next = ext ? posix.normalize(posix.join(posix.dirname(ts), ext.endsWith('.json') ? ext : `${ext}.json`)) : null;
+      ts = next && !next.startsWith('../') && existsSync(join(repo, next)) ? next : null;
+    }
   }
   return [...files].sort();
 }
@@ -138,7 +170,8 @@ export async function buildRelease(o = {}) {
   await copyFile(join(repo, 'src', 'sim', 'wasm', 'rocketsim.wasm'), join(rel, 'rocketsim.wasm'));
 
   // The wasm is copied, not bundled: list it too, so a deploy sees it like any other input.
-  const inputs = [...new Set([...inputFiles(node.metafile), 'src/sim/wasm/rocketsim.wasm'])].sort();
+  const sources = Object.keys(node.metafile.inputs).filter((p) => !p.includes('node_modules/'));
+  const inputs = [...new Set([...inputFiles(node.metafile), ...configFiles(repo, sources), 'src/sim/wasm/rocketsim.wasm'])].sort();
   const inputsBytes = Buffer.from(JSON.stringify({ version, files: inputs }, null, 2));
   await writeFile(join(rel, 'inputs.json'), inputsBytes);
 

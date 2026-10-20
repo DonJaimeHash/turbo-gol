@@ -4,37 +4,46 @@
 // and server/src/roomHost.ts, next to the wasm. The control plane picks nodes by wasm and protocol
 // only (nodes/shared/controlProtocol.ts, sameBuild), so a Worker deploy that changes any of that code
 // without the nodes following leaves them hosting matches with other rules. Before every deploy:
-//   1. The tree is clean (src server nodes scripts package.json package-lock.json) and HEAD is
-//      origin/main, so the commit names exactly what is deployed.
+//   1. The whole tree is clean (no change to a tracked file, no untracked file outside .gitignore:
+//      the Worker's assets come from index.html, public/ and vite.config.ts as well as src/) and HEAD
+//      is origin/main, so the commit names exactly what is deployed.
 //   2. The local build: the node version in nodes/package.json (the target release), the protocol,
 //      the wasm's sha256.
-//   3. The live state, from R2 through wrangler (--remote): channel.json and its stable release,
-//      checked against nodes/release-key.pub, with the commit and the input list (inputs.json) it
-//      was built from.
-//   4. The game code nodes run: the live release's inputs outside nodes/, the wasm and the protocol.
-//      Unchanged since that release's commit: deploy, and leave the channel alone; when this
-//      commit's version is already published from the same game code, only stable moves to it (a
-//      node-program fix: each node picks it up at its next restart).
+//   3. The live state, from R2 through wrangler (--remote): channel.json and the releases nodes may
+//      run (stable, and the minimum: nodes on any version from the minimum up get matches), each
+//      checked against nodes/release-key.pub, with the commit and the input list (inputs.json) it was
+//      built from. A release whose commit is not in main's history runs code main never had.
+//   4. The game code nodes run: a release's inputs outside the node's own program (nodes/node/ and
+//      its dependencies), the wasm and the protocol. The rest of what node.mjs bundles is code the
+//      Worker runs too, or will (nodes/shared/, once the control plane is in the Worker), or the
+//      configuration it is compiled with (tsconfig.json; package.json, by the fields esbuild reads).
+//      Unchanged since the stable release's commit: deploy. When this commit's version is already
+//      published from the same game code, stable moves to it (a node-program fix: each node picks it
+//      up at its next restart); when the minimum release runs other game code (a channel moved by
+//      hand), the minimum moves up to stable. Otherwise the channel stays.
 //   5. Changed: the target release must be published, signed, and built from this commit's game
 //      code. The channel then moves to stable = minimum = target BEFORE the deploy: the control
 //      plane re-reads it within 60 s and tells every node below the minimum to update, and the
 //      deploy drops the node connections, so each node is checked again when it reconnects. No such
 //      release: abort; --nodes-off deploys anyway only when the nodes cannot get matches from this
-//      build (another wasm or protocol), never when they would host it with old rules.
+//      build (another wasm or protocol, at both ends of the channel), never when they would host it
+//      with old rules.
 //   No channel yet (nothing published, or no bucket yet): a target release built from this commit's
 //   game code becomes the first channel; otherwise every deploy needs --nodes-off.
-// When the deploy fails after the channel moved, it prints the way back: restore channel.prev.json,
-// then drain or restart the node. It never creates tags.
+// When the deploy fails after the channel moved, it says how to tell whether the new build went live,
+// and the way back if it did not: restore channel.prev.json, then drain or restart the node. It never
+// creates tags.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { compareVersions, isVersion, moveChannel, readChannel, readRelease, restartAdvice } from '../nodes/scripts/channel.mjs';
+import { BUCKET, compareVersions, isVersion, moveChannel, readChannel, readRelease, restartAdvice } from '../nodes/scripts/channel.mjs';
 import { readReleaseKey } from '../nodes/scripts/release-key.mjs';
 
-export const CLEAN_PATHS = ['src', 'server', 'nodes', 'scripts', 'package.json', 'package-lock.json'];
-/** Inputs under nodes/ are the node program itself (agent, launcher, runtime, its dependencies): the Worker and the players never run them. */
-const NODE_PROGRAM = 'nodes/';
+/** Inputs only the node runs: its own program (agent, launcher, runtime) and its dependencies (werift, pinned by nodes/package-lock.json). */
+const NODE_PROGRAM = ['nodes/node/', 'nodes/package-lock.json'];
+/** The package.json fields esbuild reads for the files of its own package: scripts, dependency ranges and the version never reach the bundle. */
+const BUILD_FIELDS = ['type', 'sideEffects', 'imports', 'exports', 'main', 'module', 'browser'];
 const WASM = 'src/sim/wasm/rocketsim.wasm';
 
 export class GateError extends Error {}
@@ -73,7 +82,7 @@ export function localBuild(repo) {
  */
 export function checkNodeRelease({ repo, nodesOff = false, git, r2, log = console.log }) {
   git(['fetch', '--quiet', 'origin', 'main']);
-  const dirty = git(['status', '--porcelain', '--', ...CLEAN_PATHS]).trim();
+  const dirty = git(['status', '--porcelain']).trim();
   if (dirty) throw new GateError(`uncommitted changes (deploy a commit of main):\n${dirty.split('\n').slice(0, 10).join('\n')}`);
   const head = git(['rev-parse', 'HEAD']).trim();
   const main = git(['rev-parse', 'refs/remotes/origin/main']).trim();
@@ -83,19 +92,37 @@ export function checkNodeRelease({ repo, nodesOff = false, git, r2, log = consol
   const releaseKey = readReleaseKey(join(repo, 'nodes', 'release-key.pub'));
   const target = local.version;
 
+  /** Whether `commit` is in main's history (HEAD is origin/main); a commit this clone does not have is not. */
+  const merged = (commit) => {
+    try {
+      git(['merge-base', '--is-ancestor', commit, 'HEAD']);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /** The BUILD_FIELDS of a package.json at a commit, or null when it is not there. */
+  const buildFields = (rev, path) => {
+    try {
+      const pkg = JSON.parse(git(['show', `${rev}:${path}`]));
+      return JSON.stringify(BUILD_FIELDS.map((f) => pkg[f] ?? null));
+    } catch {
+      return null;
+    }
+  };
   /** Game files that differ between `commit` and HEAD, among a release's inputs. */
   const changedGame = (commit, inputs) => {
-    try {
-      git(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`]);
-    } catch {
-      throw new GateError(`commit ${commit} is not in this clone: git fetch origin, then deploy again`);
-    }
-    const game = inputs.filter((p) => !p.startsWith(NODE_PROGRAM));
+    const game = inputs.filter((p) => !NODE_PROGRAM.some((n) => p.startsWith(n)));
     if (game.length === 0) return [];
     return git(['--literal-pathspecs', 'diff', '--name-only', commit, 'HEAD', '--', ...game])
       .split('\n')
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((p) => {
+        if (!/(^|\/)package\.json$/.test(p)) return true;
+        const before = buildFields(commit, p);
+        return before === null || before !== buildFields('HEAD', p);
+      });
   };
   /** How a release's game code differs from this build ([] = it runs exactly this game). */
   const differences = (release) => {
@@ -105,6 +132,7 @@ export function checkNodeRelease({ repo, nodesOff = false, git, r2, log = consol
     if (wasm) out.push('the wasm');
     if (m.protocol !== local.protocol) out.push(`the protocol (${m.protocol}, here ${local.protocol})`);
     if (!/^[0-9a-f]{40}$/.test(m.commit ?? '') || !release.inputs) out.push('unknown game code (the release names no commit or input list)');
+    else if (!merged(m.commit)) out.push(`unmerged code (its commit ${m.commit.slice(0, 12)} is not in main's history)`);
     else {
       const files = changedGame(m.commit, release.inputs).filter((f) => !(wasm && f === WASM));
       if (files.length > 0) out.push(`game code: ${some(files)}`);
@@ -133,15 +161,31 @@ export function checkNodeRelease({ repo, nodesOff = false, git, r2, log = consol
   const live = readRelease(r2, channel.stable, releaseKey);
   if (!live) throw new GateError(`channel.json points to ${channel.stable}, which is not in R2: fix the channel first (node nodes/scripts/channel.mjs --stable <a published version>)`);
   const liveDiff = differences(live);
+  // Nodes on any version from the minimum up get matches. The gate keeps a minimum below stable only
+  // when both run the same game code, but a channel moved by hand (channel.mjs --minimum) may not.
+  let low = live;
+  let lowDiff = liveDiff;
+  if (channel.minimum !== channel.stable) {
+    low = readRelease(r2, channel.minimum, releaseKey);
+    lowDiff = low ? differences(low) : [`release ${channel.minimum} is not in R2`];
+  }
   const newer = compareVersions(target, channel.stable) > 0;
   if (liveDiff.length === 0) {
     const t = newer ? getTarget() : null;
-    if (t && differences(t).length === 0) {
-      log(`node release gate: the game code nodes run is unchanged; release ${target} only changes the node program, so stable moves to it (each node picks it up at its next restart) and minimum stays ${channel.minimum}`);
-      return { move: { stable: target, minimum: channel.minimum }, live: channel, releaseKey };
+    const tDiff = t ? differences(t) : null;
+    const stable = t && tDiff.length === 0 ? target : channel.stable;
+    const minimum = lowDiff.length === 0 ? channel.minimum : channel.stable;
+    const steps = [];
+    if (stable !== channel.stable) steps.push(`release ${target} only changes the node program, so stable moves to it (each node picks it up at its next restart)`);
+    else if (t) steps.push(`release ${target} is not this build (${tDiff.join('; ')}), so stable does not move to it`);
+    if (minimum !== channel.minimum) steps.push(`nodes on the minimum, ${channel.minimum}, run other game code (${lowDiff.join('; ')}), so the minimum moves up to ${minimum}`);
+    if (stable === channel.stable && minimum === channel.minimum) {
+      log(`node release gate: nodes on ${channel.stable} run this build's game code; ${[...steps, `the channel stays at stable ${channel.stable}, minimum ${channel.minimum}`].join('; ')}`);
+      return { move: null, live: channel, releaseKey };
     }
-    log(`node release gate: nodes on ${channel.stable} run this build's game code; the channel stays at stable ${channel.stable}, minimum ${channel.minimum}`);
-    return { move: null, live: channel, releaseKey };
+    if (minimum === channel.minimum) steps.push(`minimum stays ${channel.minimum}`);
+    log(`node release gate: the game code nodes on ${channel.stable} run is unchanged; ${steps.join('; ')}`);
+    return { move: { stable, minimum }, live: channel, releaseKey };
   }
 
   // The game code changed: nodes must run a release built from it as soon as this build is live.
@@ -156,26 +200,33 @@ export function checkNodeRelease({ repo, nodesOff = false, git, r2, log = consol
     : t
       ? `release ${target} is not this build (${targetDiff.join('; ')}): publish a new version from this commit`
       : `release ${target} is not published: tag node-v${target} at this commit and approve the release run`;
-  // Nodes on another wasm or protocol get no matches from this build; on the same ones they would.
-  const unplaceable = live.manifest.wasmSha256 !== local.wasmSha256 || live.manifest.protocol !== local.protocol;
-  if (nodesOff && unplaceable) {
+  // Nodes on another wasm or protocol get no matches from this build; on the same ones they would,
+  // at either end of the channel (a minimum missing from R2 counts as one that would).
+  const placeable = (release, diff) => diff.length > 0 && (!release || (release.manifest.wasmSha256 === local.wasmSha256 && release.manifest.protocol === local.protocol));
+  const exposed = [...new Set([placeable(live, liveDiff) && channel.stable, placeable(low, lowDiff) && channel.minimum].filter(Boolean))];
+  if (nodesOff && exposed.length === 0) {
     log(`node release gate: --nodes-off; nodes stay on ${channel.stable}, whose wasm or protocol differs from this build, so they get no matches until a release of it moves the channel`);
     return { move: null, live: channel, releaseKey };
   }
-  if (nodesOff) throw new GateError(`--nodes-off cannot keep nodes away from this build: ${channel.stable} has the same wasm and protocol, so the control plane would keep giving matches to nodes running other game code (${liveDiff.join('; ')}). Instead: ${need}, then deploy again`);
-  throw new GateError(`the game code nodes run changed since ${channel.stable} (${liveDiff.join('; ')}), and ${need}, then deploy again${unplaceable ? '. Or deploy with --nodes-off: nodes then get no matches until that release' : ''}`);
+  if (nodesOff) throw new GateError(`--nodes-off cannot keep nodes away from this build: nodes on ${exposed.join(' and ')} would still get its matches (same wasm and protocol) while running other game code (${liveDiff.join('; ')}). Instead: ${need}, then deploy again`);
+  throw new GateError(`the game code nodes run changed since ${channel.stable} (${liveDiff.join('; ')}), and ${need}, then deploy again${exposed.length === 0 ? '. Or deploy with --nodes-off: nodes then get no matches until that release' : ''}`);
 }
 
-/** The way back when the deploy fails after the channel moved (the Worker still runs the previous build). */
+/**
+ * What to do when the deploy fails after the channel moved. Wrangler can fail before the new build is
+ * live (bundling, auth, the upload) or after it (it uploads the Worker first, then its routes and
+ * custom domain), so the operator checks which build serves before anything goes back.
+ */
 export function rollbackAdvice(move, prev) {
-  const first = prev
+  const back = prev
     ? `node nodes/scripts/channel.mjs --rollback   (restores channel.prev.json: stable ${prev.stable}, minimum ${prev.minimum})`
-    : `there was no channel before: remove it with  cd server && npx wrangler r2 object delete turbogol-node-releases/channel.json --remote`;
+    : `there was no channel before: remove it with  cd server; npx wrangler r2 object delete ${BUCKET}/channel.json --remote; cd ..`;
   return [
-    `the deploy failed, but the channel already moved to stable ${move.stable}, minimum ${move.minimum}, and the Worker still runs the previous build. To go back:`,
-    `  1. ${first}`,
-    `  2. Then ${restartAdvice(move.stable)}`,
-    'Or fix the deploy and run it again: the channel already matches this build.',
+    `the deploy failed, but the channel already moved to stable ${move.stable}, minimum ${move.minimum}. First see which build serves:  cd server; npx wrangler deployments status; cd ..`,
+    `  - A version created by this deploy: the new build is live and the channel matches it. Fix the cause and run the deploy again to finish it (routes, custom domain).`,
+    `  - An older one: the previous build still serves. Fix the deploy and run it again (the channel already matches this build), or go back:`,
+    `      1. ${back}`,
+    `      2. Then ${restartAdvice(move.stable)}`,
   ].join('\n');
 }
 
