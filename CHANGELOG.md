@@ -77,6 +77,10 @@ All notable changes to Turbogol are documented here. The format follows
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
   Permissions-Policy headers; /.well-known/security.txt points to private vulnerability reporting.
 - Unexpected server errors (API routes and match sockets) no longer echo the exception text.
+- The server reads at most 4 KB of a JSON body, even one sent without its length; on `/nodes/*`
+  every per-address limit counts an IPv6 /64 as one address and replay downloads and
+  `GET /nodes/mine` are limited too, a target that stops answering no longer holds up the node
+  control plane's sweep or the other results, and callers are only told it is unavailable.
 
 ## [0.1.0] - 2026-10-15
 
