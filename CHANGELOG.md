@@ -56,6 +56,8 @@ All notable changes to Turbogol are documented here. The format follows
   new-issue page.
 
 ### Fixed
+- Community nodes: the VPS installer keeps the name given with `--name`; it registered nodes under
+  the Linux distribution's name, read from `/etc/os-release`.
 - The anti-bot check (Turnstile) had no place to render in the new menus, so a first visit could
   not create a guest or an account while the check is on; it now shows above every menu, one
   challenge at a time, and closes when the menus close into a match.

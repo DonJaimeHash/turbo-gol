@@ -1,8 +1,9 @@
 # El VPS de São Paulo
 
-> Estado al 19/10/2026: comprado, endurecido, con nombre DNS y certificado. El nodo todavía no
-> está instalado: faltan el plano de control en el Worker y la release 0.2.0 (ver "Antes de
-> instalar el nodo"). Este documento es el manual de la máquina. El orden del trabajo que falta
+> Estado al 20/10/2026: el nodo `sao-paulo-1` (id `acff628eb18f760a`, release 0.2.0) está
+> instalado y activo, con los roles de host y verificador, `--matches 15` y `--egress-cap-gb 3800`.
+> Todavía no recibe partidas: el flag `nodes_on` está apagado (ver el canary, M15, en
+> `PRODUCCION.md`). Este documento es el manual de la máquina. El orden del trabajo que falta
 > está en `PRODUCCION.md`, etapa 1; los números de PR ([1] a [8]) y de acción (M1 a M16) son los
 > de esa lista.
 
@@ -204,6 +205,23 @@ bash /tmp/turbogol-install.sh --control https://turbo-gol.com --token '<tgn1_...
   corrida (sin HTTP/3, con un certificado de 90 días para el nombre y `stream_close_delay`, para
   que recargar Caddy no corte partidas). Antes de gastar el token se detiene si encuentra un
   Caddyfile que no escribió él, como el que se escribió a mano el 19/10/2026: por eso el `mv`.
+
+### Lo que pasó en la instalación del 20/10/2026
+
+El instalador de la release 0.2.0 registró el nodo con el nombre "Ubuntu": después de leer
+`--name`, cargaba `/etc/os-release`, que define su propia variable `NAME` (el nombre de la
+distribución). El instalador del repo ya lo corrige; el publicado en R2 lo trae la próxima
+release. Como no había partidas, el VPS se registró de nuevo con otro token, llamando al lanzador
+a mano (el nodo detenido y su primer `node.json` apartado):
+
+```bash
+runuser -u turbogol -- node /opt/turbogol-node/launcher.mjs register --control https://turbo-gol.com \
+  --data /var/lib/turbogol-node --token '<tgn1_...>' --roles host,verify --transport wss \
+  --public-url wss://sp1.turbo-gol.com --name sao-paulo-1 --matches 15
+```
+
+El registro "Ubuntu" (`6708173c2c3dbffc`) quedó `banned` con `/nodes/admin/status`: no recibe
+partidas ni alertas, pero cuenta para el tope de 2 nodos de la cuenta del proyecto.
 
 ## Después de instalar
 

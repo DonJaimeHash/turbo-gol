@@ -269,7 +269,8 @@ async function fakeMachine() {
   const root = (await mkdtemp(join(tmpdir(), 'tgn-install-'))).replace(/\\/g, '/');
   assert.doesNotMatch(root, /\s/, 'the fake root goes unquoted into the script');
   for (const d of ['bin', 'etc/caddy', 'etc/systemd/system', 'etc/apt/sources.list.d', 'opt', 'usr/share/keyrings', 'var/lib']) await mkdir(join(root, d), { recursive: true });
-  await writeFile(join(root, 'etc/os-release'), 'ID=ubuntu\n');
+  // As Ubuntu writes it: NAME and VERSION are shell variables the installer must not pick up.
+  await writeFile(join(root, 'etc/os-release'), 'PRETTY_NAME="Ubuntu 26.04.1 LTS"\nNAME="Ubuntu"\nVERSION_ID="26.04"\nVERSION="26.04.1 LTS (Resolute Raccoon)"\nID=ubuntu\nID_LIKE=debian\n');
   for (const [name, lines] of Object.entries(STUBS)) {
     await writeFile(join(root, 'bin', name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'));
     await chmod(join(root, 'bin', name), 0o755);
@@ -392,6 +393,20 @@ describe('install.sh on a fake machine', { skip, concurrency: true }, () => {
       assert.match(full.err, /could not write \S+turbogol-node\.service/);
       assert.ok(!restarted(full) && !full.out.includes('done.'), show(full));
       assert.doesNotMatch(await execStart(m), /--matches/, 'the unit as it was');
+    } finally {
+      await m.cleanup();
+    }
+  });
+
+  test('--name reaches the registration, though /etc/os-release defines NAME too', async () => {
+    const m = await fakeMachine();
+    try {
+      const r = await m.run([...TOKEN, '--name', 'sao-paulo-1'], { FAKE_SS: 'LISTEN 0 4096 *:443 *:* users:(("caddy",pid=811,fd=7))' });
+      assert.equal(r.code, 0, show(r));
+      const reg = r.log.filter((l) => l.startsWith('runuser '));
+      assert.equal(reg.length, 1, show(r));
+      assert.match(reg[0], / --name sao-paulo-1( |$)/);
+      assert.doesNotMatch(reg[0], /Ubuntu/);
     } finally {
       await m.cleanup();
     }
