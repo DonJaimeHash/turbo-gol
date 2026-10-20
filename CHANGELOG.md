@@ -26,16 +26,19 @@ All notable changes to Turbogol are documented here. The format follows
   on a project node, a player with no connection at the final whistle is rated as a leaver, as on
   the game's own servers. One token registers one node, a forged replay upload is refused before
   its body is read, and every token or node of a trusted operator logs an ALERT line.
-- Community nodes, groundwork in the Worker (nothing calls it yet): the wasm's SHA-256 is committed
-  next to it (`npm run build:wasm` rewrites it, a test checks it), the node bindings and secrets are
-  optional settings, a `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled`
-  wins) will turn the nodes on, and a node match's results will reach the accounts as the game
-  servers' do, a refused call dropped with an ALERT line and only server errors retried.
-- Community nodes: the control plane runs in the Worker, its state kept in SQLite, and `/nodes/*`
-  serves the nodes and their installers (releases from R2, registration, the control socket,
-  replay uploads). Only the project's accounts create node tokens, two nodes each at most. A deploy
-  now needs the two node R2 buckets; set the node secrets with `wrangler versions secret put`.
-  Matches do not go to nodes yet.
+- The game is ready for matches hosted on a community node: after a Competitive match there, the
+  menu says the result is being verified and waits up to two minutes for it (the node's replay is
+  checked first), and a match that fails the check shows as not counted. The network panel names
+  the node that hosts the match, and quitting such a match still works when the account's session
+  would run out during it (it is renewed as the match starts, and once more if the quit is refused).
+  A result that comes in while the player is already in another match shows once the menu is back.
+- Community nodes: the control plane runs in the Worker (`NodeRegistryDO`, its state in SQLite) and
+  `/nodes/*` serves the nodes and their installers (releases from R2, registration, the control
+  socket, replay uploads). Only the project's accounts create node tokens, two nodes each at most.
+  A `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled` wins) will turn
+  the nodes on; matches do not go to nodes yet. A deploy now needs the two node R2 buckets; set the
+  node secrets with `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
+  (`npm run build:wasm` rewrites it, a test checks it).
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
@@ -72,6 +75,19 @@ All notable changes to Turbogol are documented here. The format follows
   noise, and they ring briefly in a short synthetic room.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
+- Community nodes: the VPS installer can be run again (no token: it upgrades the launcher and keeps
+  the node's identity and settings) and restores a backed-up identity with `--restore`. Before it
+  spends the token it checks that the public address is this machine's (a DNS name's A and AAAA
+  records included) and that the Caddy config is its own to replace. It takes `--matches` (`auto`
+  goes back to the benchmark) and gives a name a 90-day certificate (the 6-day one only for an IP)
+  with live matches kept through a Caddy reload. Replay uploads keep trying for about 75 s, and the
+  launcher never starts a release that needs a newer Node.js than the machine has: it logs why, and
+  the node does not serve until Node.js is upgraded.
+- Community node docs: the São Paulo VPS guide is the runbook of the real machine (a Hostinger KVM
+  2 in Campinas: access, hardening, DNS and TLS, measurements, install, backups and operations),
+  the stage 1 checklist is split into eight PRs with the maintainer's steps, the pre-beta tests
+  and the main risks, and stale facts in the other node docs are corrected. The budget shows the
+  VPS's real price.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and

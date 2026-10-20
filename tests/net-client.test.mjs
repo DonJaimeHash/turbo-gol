@@ -691,7 +691,7 @@ test('queue: a SERVER queue refused by our server match (409 kind server) still 
   assert.equal(h.client.leaves, 0);
 });
 
-test('leaveMatch(matchId): POST /api/leave { matchId } (an explicit quit of a server match); without one the body stays {}', async () => {
+test('leaveMatch(matchId): POST /api/leave { matchId } (an explicit quit of a server match); without one the body stays {}; connected: false only when asked', async () => {
   const bodies = [];
   const h = makeClient({
     '/api/guest': () => jsonResponse(200, GUEST),
@@ -706,6 +706,118 @@ test('leaveMatch(matchId): POST /api/leave { matchId } (an explicit quit of a se
   assert.deepEqual(bodies, [{ matchId: 'e'.repeat(64) }, {}]);
   const call = h.calls.find((c) => c.url === '/api/leave');
   assert.equal(call.init.headers.authorization, 'Bearer jwt-session', 'with the session');
+  assert.equal(h.client.leaves, 2);
+  // `connected` goes out only as false (no Welcome came); true adds nothing.
+  bodies.length = 0;
+  await h.client.leaveMatch('e'.repeat(64), { connected: false });
+  await h.client.leaveMatch('e'.repeat(64), { connected: true });
+  assert.deepEqual(bodies, [{ matchId: 'e'.repeat(64), connected: false }, { matchId: 'e'.repeat(64) }]);
+});
+
+const ACCOUNT = (session, playerId = 'acc1') => ({ kind: 'account', playerId, name: 'Tomi', session, expiresAt: Date.now() + 3600_000 });
+
+test('refreshBearer: an account session asked to last longer replaces lastBearer, only when it is the same player; failures keep the old one', async () => {
+  const h = makeClient({});
+  let next = ACCOUNT('jwt-a1');
+  const asked = [];
+  h.client.sessionProvider = async (minValidMs) => {
+    asked.push(minValidMs);
+    if (next instanceof Error) throw next;
+    return next;
+  };
+  await h.client.ensureGuest();
+  assert.equal(h.client.lastBearer, 'jwt-a1');
+  next = ACCOUNT('jwt-a2');
+  await h.client.refreshBearer(15 * 60_000);
+  assert.deepEqual(asked, [undefined, 15 * 60_000]);
+  assert.equal(h.client.lastBearer, 'jwt-a2');
+  // Signed in as someone else since the queue: the match is still left as the player who queued.
+  next = ACCOUNT('jwt-b1', 'acc2');
+  await h.client.refreshBearer(15 * 60_000);
+  assert.equal(h.client.lastBearer, 'jwt-a2');
+  next = new Error('offline');
+  await h.client.refreshBearer(15 * 60_000);
+  assert.equal(h.client.lastBearer, 'jwt-a2');
+  // A guest has nothing to renew.
+  const g = makeClient({ '/api/guest': () => jsonResponse(200, GUEST) });
+  g.client.sessionProvider = async () => null;
+  await g.client.ensureGuest();
+  await g.client.refreshBearer(15 * 60_000);
+  assert.equal(g.client.lastBearer, 'jwt-session');
+});
+
+test('leaveMatch retryRejected: the first POST goes out at once; a 401 refreshes the account session and sends the leave once more', async () => {
+  const auths = [];
+  let session = 'jwt-a1';
+  let refused = new Set(['Bearer jwt-a1']);
+  const h = makeClient({
+    '/api/leave': (init) => {
+      auths.push(init.headers.authorization);
+      return refused.has(init.headers.authorization) ? jsonResponse(401, { error: 'unauthorized' }) : jsonResponse(200, { ok: true, left: true, released: true });
+    },
+  });
+  let rejected = 0;
+  h.client.sessionProvider = async () => ACCOUNT(session);
+  h.client.onSessionRejected = async () => {
+    rejected++;
+    session = `jwt-a${rejected + 1}`;
+  };
+  await h.client.ensureGuest();
+  const leaving = h.client.leaveMatch('e'.repeat(64), { retryRejected: true });
+  assert.deepEqual(auths, ['Bearer jwt-a1'], 'sent before leaveMatch returned (the caller closes the socket next)');
+  assert.equal(await leaving, true);
+  assert.equal(rejected, 1);
+  assert.deepEqual(auths, ['Bearer jwt-a1', 'Bearer jwt-a2']);
+  assert.deepEqual(h.calls.filter((c) => c.url === '/api/leave').map((c) => c.body), [{ matchId: 'e'.repeat(64) }, { matchId: 'e'.repeat(64) }]);
+  assert.equal(h.client.leaves, 2);
+  // Refused again with the fresh Bearer: once is all.
+  refused = new Set(['Bearer jwt-a2', 'Bearer jwt-a3']);
+  auths.length = 0;
+  assert.equal(await h.client.leaveMatch('e'.repeat(64), { retryRejected: true }), false);
+  assert.deepEqual(auths, ['Bearer jwt-a2', 'Bearer jwt-a3']);
+
+  // Without retryRejected a 401 is the answer, as before; a guest has no fresh session to retry with.
+  const g = makeClient({ '/api/guest': () => jsonResponse(200, GUEST), '/api/leave': () => jsonResponse(401, { error: 'unauthorized' }) });
+  let asked = 0;
+  g.client.onSessionRejected = async () => void asked++;
+  await g.client.ensureGuest();
+  assert.equal(await g.client.leaveMatch('e'.repeat(64)), false);
+  assert.equal(asked, 0);
+  assert.equal(await g.client.leaveMatch('e'.repeat(64), { retryRejected: true }), false);
+  assert.equal(asked, 1);
+  assert.equal(g.calls.filter((c) => c.url === '/api/leave').length, 2);
+});
+
+test('leaveMatch retryRejected: the retry goes only as the player who left, never as whoever another flow moved lastBearer to', async () => {
+  const auths = [];
+  const h = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/leave': (init) => {
+      auths.push(init.headers.authorization);
+      return auths.length === 1 ? jsonResponse(401, { error: 'unauthorized' }) : jsonResponse(200, { ok: true, left: true, released: true });
+    },
+  });
+  let account = ACCOUNT('jwt-a1');
+  h.client.sessionProvider = async () => account;
+  await h.client.ensureGuest();
+  // The refresh signs the account out and, meanwhile, the menu starts a queue as the guest.
+  h.client.onSessionRejected = async () => {
+    account = null;
+    await h.client.ensureGuest();
+  };
+  assert.equal(await h.client.leaveMatch('e'.repeat(64), { retryRejected: true }), false);
+  assert.deepEqual(auths, ['Bearer jwt-a1']);
+  assert.equal(h.client.lastBearer, 'jwt-session', "the queue's guest Bearer stays");
+  // Another account signed in meanwhile: not retried either.
+  account = ACCOUNT('jwt-a1');
+  await h.client.ensureGuest();
+  auths.length = 0;
+  h.client.onSessionRejected = async () => {
+    account = ACCOUNT('jwt-b1', 'acc2');
+    await h.client.ensureGuest();
+  };
+  assert.equal(await h.client.leaveMatch('e'.repeat(64), { retryRejected: true }), false);
+  assert.deepEqual(auths, ['Bearer jwt-a1']);
   assert.equal(h.client.leaves, 2);
 });
 
@@ -984,6 +1096,7 @@ test('resetNetStatsView puts a used view back to its idle values in place', asyn
   used.bytesOutPerSec = 2000;
   used.snapshotAgeMs = 25;
   used.reconnects = 1;
+  used.host = 'node:sao-paulo-1';
   resetNetStatsView(used);
   assert.deepEqual(used, fresh);
   assert.equal(used.snapshotAgeMs, -1);
