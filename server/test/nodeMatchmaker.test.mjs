@@ -1,6 +1,7 @@
 // Matches on community nodes, the Worker's side, without workerd: the matchmaker's node hook
 // (server/src/MatchmakerDO.ts behind nodes_on: placement, the fallbacks to a MatchDO, the room cap,
-// do_disabled, the ranked lock, node locks verified and quit through the control plane) and the
+// do_disabled, the ranked lock, node locks verified and quit through the control plane, and what
+// polls, leaves and the sweep do while a placement is in flight) and the
 // Worker's /api/queue, /api/rejoin and /api/leave around them (server/src/index.ts). The
 // NodeRegistryDO is a fake answering its internal routes (server/src/nodeApi.ts); FLAGS, MATCH,
 // ROOM, ACCOUNTS and MATCHMAKER are fakes that record their calls, with a settable clock. With
@@ -217,8 +218,10 @@ async function makeMm({ flags = { nodes_on: '1' }, configured = true, region = '
     );
     return { status: res.status, json: await res.json() };
   };
-  const join = (playerId, kind = 'server', mode = '1v1') =>
-    call('/join', { playerId, name: 'P-' + playerId.slice(0, 4), mode, kind, ...(kind === 'ranked' ? { ratings: { [mode]: { mu: 25, sigma: 8 } } } : {}) });
+  /** `extra`: more join fields (doDisabled: the Worker read do_disabled set). */
+  const join = (playerId, kind = 'server', mode = '1v1', extra = {}) =>
+    call('/join', { playerId, name: 'P-' + playerId.slice(0, 4), mode, kind, ...(kind === 'ranked' ? { ratings: { [mode]: { mu: 25, sigma: 8 } } } : {}), ...extra });
+  const poll = (playerId) => call('/poll?playerId=' + playerId);
   /** Two humans of a 1v1 queue: the first waits, the second forms the match; the first collects its result by joining again. */
   const pair = async (a, b, kind = 'server') => {
     const first = await join(a, kind);
@@ -228,10 +231,42 @@ async function makeMm({ flags = { nodes_on: '1' }, configured = true, region = '
     return [qa, qb];
   };
   const stats = async () => (await call('/stats')).json;
-  return { mm, env, call, join, pair, stats, nodes, flags: flagsKv, match: matchNs, room: roomNs, accounts: accountsNs, matchStatus, setTime: (v) => (t = v), time: () => t };
+  return { mm, env, call, join, poll, pair, stats, nodes, flags: flagsKv, match: matchNs, room: roomNs, accounts: accountsNs, matchStatus, setTime: (v) => (t = v), time: () => t };
 }
 
 const created = (h) => h.match.calls.filter((c) => c.path === '/internal/create');
+
+/** A promise and its resolve: a route held open until the test lets it answer. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+const pause = (ms) => new Promise((r) => realSetTimeout(r, ms));
+
+/** Wait (real time: the sweep runs on a 500 ms timer) until `check()` holds; false after `ms`. */
+async function until(check, ms = 3000) {
+  const end = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > end) return false;
+    await pause(20);
+  }
+  return true;
+}
+
+/** Wait until `n` players of `h` are being formed (a placement or a create held open). */
+async function formingOf(h, n) {
+  assert.ok(await until(async () => (await h.stats()).forming === n), n + ' forming');
+}
+
+/** `h`'s placements wait for `gate`, then answer `answer(body)` (default: placed). */
+function holdPlace(h, gate, answer = (body) => ({ placement: placementOf(body), hosts: 1 })) {
+  h.nodes.place = async (body) => {
+    await gate.promise;
+    return { body: answer(body) };
+  };
+}
 
 // ---- nodeApi.ts: the matchmaker's half of the contract ----------------------------------------------
 
@@ -264,6 +299,15 @@ test('placementFor: a 64-hex id, the node’s wss:// URL and exactly one ticket 
     { placement: { ...p, tickets: 'all' } },
   ];
   for (const a of bad) assert.equal(API.placementFor(a, [A, B]), null, JSON.stringify(a));
+});
+
+test('rejoinTicketOf and nodeLockHeld: only a real ticket or status counts; an answer of another shape keeps the lock', () => {
+  const ok = { ticket: 't', wsUrl: `${NODE_URL}/m/x` };
+  assert.deepEqual(API.rejoinTicketOf(ok), ok);
+  const junk = [null, 'not a ticket', {}, { ticket: 't' }, { ticket: '', wsUrl: ok.wsUrl }, { ticket: 7, wsUrl: ok.wsUrl }, { ticket: 't', wsUrl: '/m/x' }, { ticket: 't', wsUrl: 'ws://sp1.turbo-gol.com/m/x' }];
+  for (const b of junk) assert.equal(API.rejoinTicketOf(b), null, JSON.stringify(b));
+  for (const s of [null, 'assigned', {}, { state: 'done' }, { left: false }, { state: 7, left: false }, { state: 'done', left: 'no' }]) assert.equal(API.nodeLockHeld(s), true, JSON.stringify(s));
+  assert.equal(API.nodeLockHeld({ state: 'done', left: false }), false);
 });
 
 test('askNodes: to nodes-v1 near São Paulo with the internal header; a GET without a body; the whole answer within the timeout', async () => {
@@ -511,16 +555,86 @@ test('the cap with a canary: a player outside it gets today’s 503; one in it w
 
 test('do_disabled with the nodes on: no MatchDO is created; the humans wait for a node and get one when it is free', async () => {
   const h = await makeMm({ flags: { nodes_on: '1', do_disabled: '1' } });
+  const off = { doDisabled: true }; // as the Worker sends it
   h.nodes.place = () => ({ body: { placement: null, hosts: 1 } });
-  assert.equal((await h.join(A)).json.status, 'waiting');
-  assert.equal((await h.join(B)).json.status, 'waiting');
+  assert.equal((await h.join(A, 'server', '1v1', off)).json.status, 'waiting');
+  assert.equal((await h.join(B, 'server', '1v1', off)).json.status, 'waiting', 'a busy node (hosts 1): wait for it');
   h.setTime(h.time() + 5_000);
-  assert.equal((await h.join(A)).json.status, 'waiting');
+  assert.equal((await h.join(A, 'server', '1v1', off)).json.status, 'waiting');
   assert.equal(created(h).length, 0, 'never a MatchDO');
   assert.equal(h.nodes.of('/internal/place').length, 2);
   h.nodes.place = (body) => ({ body: { placement: placementOf(body), hosts: 1 } });
   h.setTime(h.time() + 5_000);
-  assert.equal((await h.join(B)).json.node, true);
+  assert.equal((await h.join(B, 'server', '1v1', off)).json.node, true);
+});
+
+test('do_disabled where no node can host (hosts 0, a region the nodes do not serve): 503 as without the nodes, not a wait for nothing', async () => {
+  const h = await makeMm({ flags: { nodes_on: '1', do_disabled: '1' } });
+  const off = { doDisabled: true };
+  h.nodes.place = () => ({ body: { placement: null, hosts: 0 } });
+  assert.equal((await h.join(A, 'server', '1v1', off)).json.status, 'waiting', 'no hosts known yet');
+  let polled = null;
+  const pollA = h.poll(A).then((r) => (polled = r));
+  const rb = await h.join(B, 'server', '1v1', off); // its placement finds hosts 0
+  assert.deepEqual([rb.status, rb.json.error], [503, 'do_disabled']);
+  assert.ok(await until(() => polled !== null, 500), 'answered at once: the next join is refused');
+  assert.equal(polled.json.status, 'waiting');
+  // A newcomer is refused before any formation: none is tried with A, still queued (no do_disabled read).
+  const reads = () => h.flags.reads.filter((n) => n === 'do_disabled').length;
+  const before = reads();
+  h.setTime(h.time() + 5_000);
+  assert.equal((await h.join(C, 'server', '1v1', off)).status, 503);
+  assert.equal(reads(), before, 'no formation tried');
+  const ra = await h.join(A, 'server', '1v1', off);
+  assert.deepEqual([ra.status, ra.json.error], [503, 'do_disabled']);
+  assert.equal((await h.join(C, 'ranked', '1v1', off)).status, 503);
+  assert.equal((await h.stats()).queues['1v1:server'], 0, 'nobody left waiting');
+  assert.deepEqual([created(h).length, h.nodes.of('/internal/place').length], [0, 1]);
+  // A minute later a node may be back: they wait for one again.
+  h.setTime(h.time() + M.NO_HOSTS_BACKOFF_MS);
+  h.nodes.place = (body) => ({ body: { placement: placementOf(body), hosts: 1 } });
+  assert.equal((await h.join(A, 'server', '1v1', off)).json.status, 'waiting');
+  assert.equal((await h.join(B, 'server', '1v1', off)).json.node, true);
+
+  const dev = await makeMm({ flags: { nodes_on: '1', do_disabled: '1' }, region: 'dev' });
+  assert.equal((await dev.join(A, 'server', '1v1', off)).status, 503, 'a region the nodes do not serve');
+  assert.equal(dev.nodes.calls.length, 0);
+
+  // At the cap without do_disabled: once no node can host, new joiners get today's 503 and the
+  // waiters wait for a free room without asking again.
+  const full = await makeMm({ rooms: M.MAX_ACTIVE_ROOMS });
+  full.nodes.place = () => ({ body: { placement: null, hosts: 0 } });
+  assert.equal((await full.join(A)).json.status, 'waiting');
+  assert.equal((await full.join(B)).json.status, 'waiting');
+  const c = await full.join(C);
+  assert.deepEqual([c.status, c.json.error], [503, 'capacity']);
+  const fullReads = full.flags.reads.filter((n) => n === 'do_disabled').length;
+  full.setTime(full.time() + 5_000);
+  assert.equal((await full.join(A)).json.status, 'waiting');
+  assert.equal(full.nodes.of('/internal/place').length, 1);
+  assert.equal(full.flags.reads.filter((n) => n === 'do_disabled').length, fullReads, 'no formation tried at the cap');
+});
+
+test('a lone p2p human that finds no node and no room backs off alone: a second human still gets a P2P room at once', async () => {
+  for (const [flags, hosts] of [[{ nodes_on: A }, 1], [{ nodes_on: '1' }, 1], [{ nodes_on: '1' }, 0]]) {
+    const label = JSON.stringify({ flags, hosts });
+    const h = await makeMm({ flags, rooms: M.MAX_ACTIVE_ROOMS });
+    h.nodes.place = () => ({ body: { placement: null, hosts } });
+    assert.equal((await h.join(A, 'p2p')).json.status, 'waiting', label);
+    h.setTime(h.time() + M.P2P_FILL_WAIT + 1);
+    assert.equal((await h.join(A, 'p2p')).json.status, 'waiting', label + ': no node and no room');
+    h.setTime(h.time() + 1_000);
+    assert.equal((await h.join(A, 'p2p')).json.status, 'waiting', label);
+    assert.equal(h.nodes.of('/internal/place').length, 1, label + ': not asked again within its back-off');
+    if (hosts === 1) {
+      h.setTime(h.time() + 5_000);
+      assert.equal((await h.join(A, 'p2p')).json.status, 'waiting', label);
+      assert.equal(h.nodes.of('/internal/place').length, 2, label + ': asked again after it');
+    }
+    h.setTime(h.time() + 100);
+    const c = await h.join(C, 'p2p');
+    assert.deepEqual([c.json.status, c.json.kind], ['matched', 'p2p'], label + ': C is not held back');
+  }
 });
 
 // ---- node locks: verified with the registry ------------------------------------------------------------
@@ -536,6 +650,9 @@ test('a node lock is checked with the registry: assigned or reporting holds it; 
     [{ status: 500, body: { error: 'internal' } }, 409],
     [{ status: 503, body: { error: 'nodes_unavailable' } }, 409],
     [new Error('object reset'), 409],
+    [{ body: {} }, 409], // a 200 that is no status keeps it
+    [{ body: null }, 409],
+    [{ body: { state: 'done' } }, 409],
   ];
   for (const [answer, status] of answers) {
     h.nodes.status = () => answer;
@@ -623,6 +740,219 @@ test('/leave without the node match’s id (Esc in a queue, a P2P teardown) or w
   assert.equal((await h.stats()).nodeLocks, 2);
 });
 
+// ---- a placement in flight: polls, leaves, the sweep, the first nodes_on read -------------------------
+
+test('while a node placement is in flight, a poll of its humans waits for the outcome instead of answering at once', async () => {
+  const h = await makeMm();
+  const gate = deferred();
+  holdPlace(h, gate);
+  assert.equal((await h.join(A)).json.status, 'waiting');
+  const formingB = h.join(B); // forms the match: its placement is held open
+  await formingOf(h, 2);
+  // A between two long-polls: its join answers 'waiting' (the Worker polls next), and the poll waits
+  // (an answer at once would have the client ask again at once, into the queue rate limit).
+  assert.equal((await h.join(A)).json.status, 'waiting');
+  let polled = null;
+  const pollA = h.poll(A).then((r) => (polled = r));
+  await pause(30);
+  assert.equal(polled, null, 'no answer while the node is asked');
+  gate.resolve();
+  const rb = await formingB;
+  await pollA;
+  assert.deepEqual([polled.json.status, polled.json.node, polled.json.matchId], ['matched', true, rb.json.matchId]);
+
+  // No node and no MatchDO allowed: back in the queue, its poll still waiting, answered by the next formation.
+  const w = await makeMm({ flags: { nodes_on: '1', do_disabled: '1' } });
+  const g = deferred();
+  holdPlace(w, g, () => ({ placement: null, hosts: 1 }));
+  await w.join(A);
+  const formingB2 = w.join(B);
+  await formingOf(w, 2);
+  let polled2 = null;
+  const pollA2 = w.poll(A).then((r) => (polled2 = r));
+  g.resolve();
+  assert.equal((await formingB2).json.status, 'waiting');
+  await pause(30);
+  assert.equal(polled2, null, 'still waiting, in the queue again');
+  w.nodes.place = (body) => ({ body: { placement: placementOf(body), hosts: 1 } });
+  w.setTime(w.time() + 5_000);
+  assert.equal((await w.join(B)).json.node, true);
+  await pollA2;
+  assert.deepEqual([polled2.json.status, polled2.json.node], ['matched', true]);
+});
+
+test('a /leave while the match is being placed takes the player out: the node match is quit with connected: false, nothing is handed to it', async () => {
+  const h = await makeMm();
+  const gate = deferred();
+  holdPlace(h, gate);
+  await h.join(A);
+  const formingB = h.join(B);
+  await formingOf(h, 2);
+  assert.deepEqual((await h.call('/leave', { playerId: A })).json, { ok: true, left: true, released: false });
+  // Esc, then Play again at once: it waits for that formation's end and gets nothing of it.
+  assert.equal((await h.join(A)).json.status, 'waiting');
+  let polled = null;
+  h.poll(A).then((r) => (polled = r));
+  // The match is placed; A's leave of it is held open at the node: still nothing reaches A (no
+  // ticket from its cached result, no 409 from its lock).
+  const leaveGate = deferred();
+  const recorded = h.nodes.leave;
+  h.nodes.leave = async (body) => {
+    await leaveGate.promise;
+    return recorded(body);
+  };
+  gate.resolve();
+  assert.ok(await until(() => h.nodes.of('/internal/leave').length === 1));
+  assert.equal((await h.join(A)).json.status, 'waiting');
+  let polledLate = null;
+  h.poll(A).then((r) => (polledLate = r));
+  await pause(20);
+  assert.deepEqual([polled, polledLate], [null, null]);
+  leaveGate.resolve();
+  const rb = await formingB;
+  assert.deepEqual([rb.json.status, rb.json.node], ['matched', true]);
+  assert.ok(await until(() => polled !== null && polledLate !== null, 500), 'answered at the end of the formation');
+  assert.deepEqual([polled.json.status, polledLate.json.status], ['waiting', 'waiting']);
+  assert.deepEqual(h.nodes.of('/internal/leave').map((c) => c.body), [{ matchId: rb.json.matchId, playerId: A, connected: false }]);
+  const st = await h.stats();
+  assert.deepEqual([st.active, st.nodeLocks, st.forming, st.matched], [1, 1, 0, 1], 'only B holds the match');
+  assert.equal((await h.join(A)).json.status, 'waiting', 'a fresh waiter: no 409');
+  assert.equal((await h.stats()).queues['1v1:server'], 1);
+
+  // The node does not take that leave (offline): D12, the lock stays and the next queue gets the match.
+  const g = await makeMm();
+  const gate2 = deferred();
+  holdPlace(g, gate2);
+  g.nodes.leave = () => ({ status: 503, body: { error: 'offline' } });
+  await g.join(A);
+  const formingB2 = g.join(B);
+  await formingOf(g, 2);
+  await g.call('/leave', { playerId: A });
+  const errors = await errorsOf(async () => {
+    gate2.resolve();
+    await formingB2;
+  });
+  assert.ok(errors.some((l) => l.includes('lock kept')));
+  assert.equal((await g.stats()).nodeLocks, 2);
+  const ra = await g.join(A);
+  assert.deepEqual([ra.json.status, ra.json.node], ['matched', true]);
+});
+
+test('a /leave while the nodes are asked for a match none takes: no MatchDO is created with the player, and it is not put back in the queue', async () => {
+  for (const opts of [{}, { flags: { nodes_on: '1', do_disabled: '1' } }, { rooms: M.MAX_ACTIVE_ROOMS }]) {
+    const label = JSON.stringify(opts);
+    const h = await makeMm(opts);
+    const gate = deferred();
+    holdPlace(h, gate, () => ({ placement: null, hosts: 1 }));
+    await h.join(A);
+    const formingB = h.join(B);
+    await formingOf(h, 2);
+    assert.equal((await h.call('/leave', { playerId: A })).json.left, true, label);
+    gate.resolve();
+    assert.equal((await formingB).json.status, 'waiting', label);
+    assert.equal(created(h).length, 0, label + ': no MatchDO');
+    const st = await h.stats();
+    assert.deepEqual([st.queues['1v1:server'], st.active, st.forming], [1, 0, 0], label + ': B alone in the queue');
+    if (opts.flags === undefined && opts.rooms === undefined) {
+      // A leave is no failure: no retry back-off, B forms with the next human at once (without A).
+      h.nodes.place = () => ({ body: { placement: null, hosts: 1 } });
+      assert.equal((await h.join(C)).json.status, 'matched');
+      assert.deepEqual(created(h)[0].body.roster.filter((e) => e.kind === 'player').map((e) => e.playerId), [B, C]);
+    }
+  }
+});
+
+test('a /leave while its P2P room is being created frees that lock and tells the room (no no-show strike); a MatchDO’s lock stays, as for a leave without its id', async () => {
+  const h = await makeMm({ flags: {} });
+  const gate = deferred();
+  const calls = [];
+  h.env.ROOM = {
+    newUniqueId: () => ({ toString: hex64 }),
+    idFromString: (s) => s,
+    get: (id) => ({
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ id: String(id), path, body: JSON.parse(init.body) });
+        if (path === '/internal/create') await gate.promise;
+        return new RealResponse(JSON.stringify(path === '/internal/leave' ? { ok: true, noShow: true } : { ok: true }));
+      },
+    }),
+  };
+  await h.join(A, 'p2p');
+  const formingB = h.join(B, 'p2p');
+  await formingOf(h, 2);
+  assert.equal((await h.call('/leave', { playerId: A })).json.left, true);
+  gate.resolve();
+  const rb = await formingB;
+  assert.equal(rb.json.kind, 'p2p');
+  assert.deepEqual(calls.filter((c) => c.path === '/internal/leave').map((c) => [c.id, c.body]), [[rb.json.roomId, { playerId: A }]]);
+  const st = await h.stats();
+  assert.deepEqual([st.active, st.noShows], [1, 0], 'A unlocked, no strike: the ticket never reached it');
+  assert.equal((await h.join(A, 'p2p')).json.status, 'waiting');
+
+  const g = await makeMm({ flags: {} });
+  const mGate = deferred();
+  const realNs = g.env.MATCH;
+  g.env.MATCH = {
+    ...realNs,
+    get: (id) => ({
+      fetch: async (url, init) => {
+        if (new URL(url).pathname === '/internal/create') await mGate.promise;
+        return realNs.get(id).fetch(url, init);
+      },
+    }),
+  };
+  await g.join(A);
+  const formingB2 = g.join(B);
+  await formingOf(g, 2);
+  assert.equal((await g.call('/leave', { playerId: A })).json.left, true);
+  mGate.resolve();
+  const rb2 = await formingB2;
+  const ra = await g.join(A);
+  assert.deepEqual([ra.json.status, ra.json.matchId], ['matched', rb2.json.matchId], 'the next queue gets that match');
+  assert.equal(g.match.calls.filter((c) => c.path === '/internal/leave').length, 0);
+});
+
+test('the sweep does not wait for a slow node placement: the other queues’ timed formations go on meanwhile', async () => {
+  const h = await makeMm();
+  const gate = deferred();
+  holdPlace(h, gate);
+  assert.equal((await h.join(A)).json.status, 'waiting'); // 1v1 server: bots after BOT_FILL_MS
+  assert.equal((await h.join(B, 'p2p', '2v2')).json.status, 'waiting');
+  assert.equal((await h.join(C, 'p2p', '2v2')).json.status, 'waiting');
+  h.setTime(h.time() + M.P2P_FILL_WAIT + 1); // both due: the next sweep places A (held open) and forms B and C's room
+  // The room is issued (B and C out of `forming`) while A alone is still being placed.
+  const roomFirst = async () => {
+    const s = await h.stats();
+    return s.p2pRooms === 1 && s.forming === 1 && s.nodeLocks === 0;
+  };
+  assert.ok(await until(roomFirst), 'the 2v2 room formed while A is placed');
+  gate.resolve();
+  assert.ok(await until(async () => (await h.stats()).nodeLocks === 1));
+});
+
+test('a fresh matchmaker: joins that land while its first nodes_on read is in flight wait for it, never use the default off', async () => {
+  const h = await makeMm({ flags: { nodes_on: '1', do_disabled: '1' } });
+  const off = { doDisabled: true };
+  const gate = deferred();
+  const asked = [];
+  const get = h.env.FLAGS.get;
+  h.env.FLAGS.get = async (name) => {
+    asked.push(name);
+    if (name === 'nodes_on') await gate.promise;
+    return get(name);
+  };
+  const joinB = h.join(B, 'server', '1v1', off); // the first read: KV slow
+  assert.ok(await until(() => asked.includes('nodes_on')));
+  const joinC = h.join(C, 'server', '1v1', off);
+  await pause(20); // C is at its readNodes by now
+  gate.resolve();
+  const [rb, rc] = await Promise.all([joinB, joinC]);
+  assert.deepEqual([rb.json.status, rc.json.status, rc.json.node], ['waiting', 'matched', true]);
+  assert.equal(created(h).length, 0, 'no MatchDO while do_disabled is set');
+  assert.equal(h.flags.reads.filter((n) => n === 'nodes_on').length, 1, 'one read for both');
+});
+
 // ---- the Worker: /api/queue, /api/rejoin, /api/leave ----------------------------------------------------
 
 /**
@@ -700,6 +1030,8 @@ test('Worker /api/queue with do_disabled: 503 as before unless the nodes are on 
       assert.equal(r.json.error, 'do_disabled', label);
       assert.equal(w.mmCalls.length, 0, label + ': the matchmaker never hears of it');
     }
+    // The matchmaker refuses it itself where no node can host (doDisabled).
+    if (status === 200) assert.equal(w.mmCalls[0].body.doDisabled, flags.do_disabled ? true : undefined, label);
     assert.equal(w.nodes.calls.length, 0, label);
   }
 });
@@ -737,6 +1069,21 @@ test('Worker /api/rejoin of a node match: a fresh node ticket and the node’s U
   assert.deepEqual([r.status, r.json.error], [503, 'offline'], 'no answer: as if the node were out of reach, the lock stays');
   assert.equal(w.mmCalls.length, 0);
   assert.ok(errors.some((l) => l.includes('node rejoin failed')));
+});
+
+test('Worker /api/rejoin: a registry 200 that is no ticket (none, a relative or ws:// URL, null or not JSON) is 503 offline and the lock stays', async () => {
+  const token = await tokenOf(C); // A has used most of its rejoins per minute above
+  for (const body of [{}, { ticket: 't', wsUrl: '/m/x' }, { ticket: 't', wsUrl: 'ws://sp1.turbo-gol.com/m/x' }, { ticket: '', wsUrl: `${NODE_URL}/m/x` }, null]) {
+    const w = workerEnv();
+    w.nodes.rejoin = () => ({ body });
+    let r;
+    const errors = await errorsOf(async () => {
+      r = await post(w.env, '/api/rejoin', { matchId: hex64() }, token);
+    });
+    assert.deepEqual([r.status, r.json.error], [503, 'offline'], JSON.stringify(body));
+    assert.equal(w.mmCalls.length, 0, 'the lock stays');
+    assert.ok(errors.some((l) => l.includes('node rejoin')));
+  }
 });
 
 test('Worker /api/rejoin of an id that is neither a MatchDO, a RoomDO nor a node match: 404 and its lock freed', async () => {

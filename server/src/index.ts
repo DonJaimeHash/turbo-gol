@@ -59,7 +59,8 @@
  * (non-browser client) is let through to the ticket check.
  * Flags (KV FLAGS): matchmaking_off, do_disabled -> 503. do_disabled also stops /api/queue, so no
  * new room is created while its sockets would be refused; for a player the nodes are on for, only
- * its p2p queue (server and ranked matches then wait for a node). nodes_on (absent: off; '1':
+ * its p2p queue (server and ranked matches then wait for a node; where none can host now, the
+ * matchmaker refuses them itself: doDisabled in its /join). nodes_on (absent: off; '1':
  * everyone; a list of account ids: a canary) lets matches go to community nodes, vm_disabled turns
  * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts).
  */
@@ -78,8 +79,8 @@ import { isP2pResult } from './MatchmakerDO';
 import type { AnyQueueResult } from './MatchmakerDO';
 import { RELOAD_REQUIRED, ROOM_PROTOCOL } from './RoomDO';
 import { nodeRoute } from './nodeRoutes';
-import { NODE_ROUTES, askNodes, replyCode } from './nodeApi';
-import type { NodesReply, RejoinTicket } from './nodeApi';
+import { NODE_ROUTES, askNodes, rejoinTicketOf, replyCode } from './nodeApi';
+import type { NodesReply } from './nodeApi';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../../src/net/protocol';
 import type { GuestSession, QueueResult } from '../../src/net/protocol';
 
@@ -389,7 +390,8 @@ async function queue(request: Request, env: Env): Promise<Response> {
   let res = await stub.fetch('https://matchmaker/join', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings }),
+    // doDisabled: where no node can host now, the matchmaker refuses this queue as above (503).
+    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined }),
   });
   if (!res.ok) return new Response(res.body, res);
   let result = (await res.json()) as AnyQueueResult;
@@ -569,7 +571,8 @@ async function rejoin(request: Request, env: Env): Promise<Response> {
  * node, which the NodeRegistryDO knows, or nothing at all. 200: the node's fresh ticket and its
  * own wss:// URL. 404, or 410 other than 'left': the lock that points at the id is freed, as for a
  * MatchDO. 410 'left' (the player quit, the match goes on) and 503 (the node is out of reach for
- * now, or the control plane does not answer: it may come back) keep it. Without the nodes
+ * now, or the control plane does not answer, or answers a 200 that is no ticket for a wss:// URL:
+ * it may come back) keep it. Without the nodes
  * configured the id names nothing here: 404, and the lock goes (a lock left over from a node match
  * must not answer 409 until it expires).
  */
@@ -586,7 +589,12 @@ async function nodeRejoin(request: Request, env: Env, playerId: string, matchId:
     return error(503, 'offline', 'the node match cannot be reached right now: try again in a moment');
   }
   if (r.status === 200) {
-    const t = r.body as RejoinTicket;
+    const t = rejoinTicketOf(r.body);
+    if (t === null) {
+      // Not a ticket for the node's own wss:// URL: as if the node were out of reach, the lock stays.
+      console.error('node rejoin: the 200 is not a ticket');
+      return error(503, 'offline', 'the node match cannot be reached right now: try again in a moment');
+    }
     const out: QueueResult = { status: 'matched', matchId, ticket: t.ticket, wsUrl: t.wsUrl, node: true };
     return json(out);
   }

@@ -111,9 +111,15 @@ export type LeaveAnswer = LeaveResult;
 /** The 200 of /internal/status (ControlPlane.matchStatus). */
 export type StatusAnswer = NonNullable<ReturnType<ControlPlane['matchStatus']>>;
 
-/** A node lock still holds: the match is being played or reported, and the player has not left it. */
-export function nodeLockHeld(s: StatusAnswer): boolean {
-  return (s.state === 'assigned' || s.state === 'reporting') && !s.left;
+/**
+ * A node lock still holds: the match is being played or reported, and the player has not left it.
+ * An answer that is no status (no string `state`, no boolean `left`) holds it too: only a real
+ * status frees a lock.
+ */
+export function nodeLockHeld(s: unknown): boolean {
+  const { state, left } = (typeof s === 'object' && s !== null ? s : {}) as Partial<StatusAnswer>;
+  if (typeof state !== 'string' || typeof left !== 'boolean') return true;
+  return (state === 'assigned' || state === 'reporting') && !left;
 }
 
 /**
@@ -174,6 +180,12 @@ export function placementFor(answer: unknown, playerIds: readonly string[]): Pla
     if (typeof x.ticket !== 'string' || x.ticket.length === 0 || !Number.isInteger(x.slot) || (x.team !== 0 && x.team !== 1)) return null;
   }
   return left.size === 0 ? (p as Placement) : null;
+}
+
+/** The ticket in a 200 of POST /internal/rejoin when it is one, as placementFor checks a placement's: a non-empty ticket and the node's own wss:// URL. */
+export function rejoinTicketOf(body: unknown): RejoinTicket | null {
+  const { ticket, wsUrl } = (typeof body === 'object' && body !== null ? body : {}) as Partial<RejoinTicket>;
+  return typeof ticket === 'string' && ticket.length > 0 && isWss(wsUrl) ? { ticket, wsUrl } : null;
 }
 
 function isWss(v: unknown): v is string {
