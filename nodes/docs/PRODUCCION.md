@@ -293,36 +293,24 @@ sin `NODE_CONTROL_PRIVATE_KEY`, todo `/nodes/*` responde 404 salvo `whoami` y la
     Worker los repite por isolate, para que la basura no llegue al DO.
   - Las rutas de la tienda y de WebRTC, y cualquier otra bajo `/nodes/`, responden 404.
 
-#### [7] servidor: gancho del matchmaker y rejoin/leave (P22-P23)
+#### [7] servidor: gancho del matchmaker y rejoin/leave (P22-P23): #29
 
-Objetivo: el matchmaker pone partidas en el VPS cuando el flag lo permite, y rejoin y leave
-funcionan con ellas. Depende de: [6] y P5. Con el flag apagado, todo sigue igual.
+Con el flag `nodes_on` apagado, todo sigue exactamente igual (lo fijan pruebas, y sin nodos
+configurados ni siquiera se lee KV).
 
-- [ ] **P22. El gancho en `MatchmakerDO.formMatch`** (`server/src/MatchmakerDO.ts:1057`), detrás
-  de `nodes_on` (D8):
-  - Equipos, el bloque de `ranked-lock` extraído (`:1072-1083`) e `issue()` con parámetros para
-    un lock de tipo `node`. Un error del registro o 8 s sin respuesta vuelven a `MatchDO`: los
-    nodos nunca hacen fallar una partida. Las salas privadas no van a nodos.
-  - Un canary que no toca a los demás: "nodos prendidos para este jugador" se decide por estar en
-    la lista, en `index.ts` y en `join()`.
-  - El tope de salas no frena a los nodos. `MAX_ACTIVE_ROOMS = 20` (`MatchmakerDO.ts:88`) se
-    comprueba al entrar a la cola (`:598`), al arrancar una sala privada (`:874`) y antes de
-    `formMatch` (`:1034`); las partidas en nodos no cuentan para ese tope. `do_disabled` hoy
-    rechaza toda cola (`server/src/index.ts:346`); con nodos, solo omite el `MatchDO`.
-  - `queue()` no reescribe la `wsUrl` de una partida de nodo (`server/src/index.ts:392`).
-  - Los locks de tipo `node` se verifican preguntando al registro: con un id de nodo,
-    `idFromString` falla y hoy el lock contaría como tomado hasta vencer
-    (`server/src/MatchmakerDO.ts:775`, `:780-783`).
-- [ ] **P23. `/api/rejoin` y `/api/leave` para partidas de nodo:**
-  - `/api/rejoin` usa `env.MATCH.idFromString`, que rechaza un id que no es de un `MatchDO`
-    (`server/src/index.ts:529-536`): un camino propio con los códigos de P5, que libera el lock
-    si la partida ya no existe, terminó o el jugador no estaba en ella, y lo mantiene si el nodo
-    está caído un momento.
-  - `/api/leave` llama primero al nodo y mantiene el lock si el nodo no responde, para que una
-    salida que el nodo nunca registró no deje al jugador entrar a otra partida.
-  - Una salida ya registrada responde 200 aunque la respuesta del nodo no llegue, y el matchmaker
-    espera más que los 5 s del RPC al nodo (`shared/controlProtocol.ts:42`): si no, el jugador
-    queda sin poder volver ni encolar hasta que termine la partida.
+- [x] **P22. El gancho en `MatchmakerDO.formMatch`:** prueba un nodo primero cuando `nodes_on`
+  lo permite para todos los humanos de la partida (`1` para todos, o una lista de cuentas para el
+  canary; `vm_disabled` siempre gana). El canary se decide por jugador en `queue()`, `join()` y
+  `tryForm()`: quien no está en la lista sigue como hoy, con el 503 de capacidad y `do_disabled`.
+  Un error, 8 s sin respuesta o una respuesta que no es una ubicación válida para esos jugadores
+  vuelven a `MatchDO`, y frenan los intentos 60 s. Las partidas en nodos no cuentan para
+  `MAX_ACTIVE_ROOMS`; una ranked en un nodo toma el lock ranked con el id del nodo; las salas
+  privadas nunca van a nodos (D10); el humano solo de una cola p2p puede caer en un nodo (D11).
+- [x] **P23. `/api/rejoin` y `/api/leave` para partidas de nodo:** `rejoin` libera el lock si
+  la partida no existe, terminó o el jugador no estaba, y lo mantiene si salió (`left`) o el nodo
+  no responde; un id de 64 hex que no es nada responde 404 y libera el lock. `leave` le pregunta
+  primero al nodo, con 8 s de espera (más que los 5 s del RPC), y mantiene el lock si no
+  responde: una salida que el nodo no registró no deja al jugador entrar a otra partida (D12).
 - **Regla desde este PR:** nunca volver el Worker a una versión anterior a él. Los jugadores con un
   lock de nodo recibirían 409 hasta que venza, unos 13 minutos. Para apagar los nodos,
   `vm_disabled`.
