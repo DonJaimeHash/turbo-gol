@@ -409,7 +409,8 @@ export function decodeRtcClose(buf: Uint8Array): { code: number; reason: string 
   if (buf.length < 3 || buf[0] !== RTC_CLOSE_FRAME) return null;
   let reason = '';
   try {
-    reason = new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(3));
+    // ignoreBOM: false is the default; @cloudflare/workers-types requires it spelled out (the Worker's typecheck reaches this file).
+    reason = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(buf.subarray(3));
   } catch {
     reason = '';
   }

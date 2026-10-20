@@ -30,16 +30,21 @@
  *   GET  /api/where     -> { edgeColo, country, city?, asn?, ip }: the Cloudflare colo that served the
  *                       request (request.cf), the client address masked to /24 (IPv6: /48); for the
  *                       deploy measurements (docs/online/PHASE1.md), no secret needed
+ *   /nodes/*            -> the community nodes: their registration, control socket, replays and
+ *                       releases, and the project's operator routes (nodeRoutes.ts, NodeRegistryDO.ts)
  *   everything else     -> the game: Workers Assets (wrangler.jsonc `assets` = the Vite build in
- *                       ../dist, SPA fallback). Only /api/*, /ws/* and /room/* are routed to this code
- *                       (run_worker_first); the asset fallback below covers what still arrives.
+ *                       ../dist, SPA fallback). Only /api/*, /ws/*, /room/*, /lobby/* and /nodes/* are
+ *                       routed to this code (run_worker_first); the asset fallback below covers what
+ *                       still arrives.
  *
- * Rate limits (fixed one-minute windows, in-memory per isolate, best effort; 429 'rate_limited'):
+ * Rate limits (fixed windows, one minute unless a route says otherwise, in-memory per isolate, best
+ * effort; 429 'rate_limited'):
  *   /api/guest   10 per client IP (CF-Connecting-IP)        every guest can open a room: bound it
  *   /api/queue   20 per playerId
  *   /api/rejoin  10 per playerId and 30 per client IP      each call mints a ticket (join banner spam)
  *   /api/leave   30 per client IP
  *   /api/ice     30 per playerId                           each call may mint TURN credentials
+ *   /nodes/*     see nodeRoutes.ts (the NodeRegistryDO holds the hourly and daily ones)
  * Turnstile: outside local dev (wrangler dev on localhost / 127.0.0.1) POST /api/guest requires
  * TURNSTILE_SECRET; a deploy without it answers 503 'turnstile_unconfigured', as does one with the
  * secret but no TURNSTILE_SITEKEY var when the request carries no token (the browser only renders
@@ -52,7 +57,7 @@
  * new room is created while its sockets would be refused.
  */
 import type { Env } from './env';
-import { SERVER_VERSION, error, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, readJson, sanitizeName } from './env';
+import { SERVER_VERSION, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, readJson, sanitizeName } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
 import type { RankedCheck } from './accountStore';
@@ -65,6 +70,7 @@ import type { SessionClaims, TicketRole } from './auth';
 import { isP2pResult } from './MatchmakerDO';
 import type { AnyQueueResult } from './MatchmakerDO';
 import { RELOAD_REQUIRED, ROOM_PROTOCOL } from './RoomDO';
+import { nodeRoute } from './nodeRoutes';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../../src/net/protocol';
 import type { GuestSession, QueueResult } from '../../src/net/protocol';
 
@@ -74,6 +80,7 @@ export { RoomDO } from './RoomDO';
 export { AccountsDO } from './AccountsDO';
 export { LobbyDO } from './LobbyDO';
 export { LobbyDirectoryDO } from './LobbyDirectoryDO';
+export { NodeRegistryDO } from './NodeRegistryDO';
 
 const LIMIT_WINDOW_MS = 60_000;
 const LIMIT_QUEUE_PER_PLAYER = 20;
@@ -97,12 +104,12 @@ type SocketGate = (typeof SOCKET_GATES)[keyof typeof SOCKET_GATES];
 const rateLimits = new Map<string, { n: number; resetAt: number }>();
 let limitCalls = 0;
 
-/** Fixed-window counter: true when `key` was hit more than `max` times in the current window. */
-function rateLimited(key: string, max: number, now: number): boolean {
+/** Fixed-window counter: true when `key` was hit more than `max` times in its current window of `windowMs`. */
+function rateLimited(key: string, max: number, now: number, windowMs: number = LIMIT_WINDOW_MS): boolean {
   if (++limitCalls % 256 === 0) for (const [k, v] of rateLimits) if (v.resetAt <= now) rateLimits.delete(k);
   const e = rateLimits.get(key);
   if (!e || e.resetAt <= now) {
-    rateLimits.set(key, { n: 1, resetAt: now + LIMIT_WINDOW_MS });
+    rateLimits.set(key, { n: 1, resetAt: now + windowMs });
     return false;
   }
   return ++e.n > max;
@@ -169,15 +176,6 @@ async function bearerSession(request: Request, env: Env): Promise<SessionClaims 
   const auth = request.headers.get('Authorization') ?? '';
   if (!auth.startsWith('Bearer ')) return null;
   return verifySession(env.JWT_SECRET, auth.slice(7).trim());
-}
-
-async function flag(env: Env, name: string): Promise<boolean> {
-  try {
-    const v = await env.FLAGS.get(name, { cacheTtl: 60 });
-    return v === '1' || v === 'true' || v === 'on';
-  } catch {
-    return false;
-  }
 }
 
 /** The continent Cloudflare sees the request from ('dev' under wrangler dev without cf data). */
@@ -645,7 +643,19 @@ export default {
       if (!env.JWT_SECRET) return error(500, 'no_secret', 'JWT_SECRET is not configured (server/.dev.vars or wrangler secret put)');
       return websocket(request, env, SOCKET_GATES[prefix], path.slice(prefix.length));
     }
-    // ---- the game (Workers Assets): everything outside /api, /ws and /room ----
+    // ---- community nodes: before the assets, which would answer index.html for any of these ----
+    if (path.startsWith('/nodes/')) {
+      return nodeRoute({
+        env,
+        request,
+        url,
+        ip: clientIp(request),
+        session: () => (env.JWT_SECRET ? bearerSession(request, env) : Promise.resolve(null)),
+        limited: (key, max, windowMs) => rateLimited(key, max, Date.now(), windowMs),
+        cors: corsHeaders(request, env),
+      });
+    }
+    // ---- the game (Workers Assets): everything outside /api, /ws, /room, /lobby and /nodes ----
     if (!path.startsWith('/api/')) return serveAsset(request, env);
     const cors = corsHeaders(request, env);
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });

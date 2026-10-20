@@ -46,14 +46,16 @@ export interface KeyPairB64 {
   privateKey: string;
 }
 
+// The casts below also hold under @cloudflare/workers-types (the Worker's typecheck reaches this
+// file), where encode() and exportKey() are typed looser than in the DOM lib.
 function bytes(data: Uint8Array | string): Uint8Array<ArrayBuffer> {
-  return typeof data === 'string' ? enc.encode(data) : (data as Uint8Array<ArrayBuffer>);
+  return (typeof data === 'string' ? enc.encode(data) : data) as Uint8Array<ArrayBuffer>;
 }
 
 export async function generateEd25519(): Promise<KeyPairB64> {
   const pair = (await crypto.subtle.generateKey(ED, true, ['sign', 'verify'])) as CryptoKeyPair;
-  const pub = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
-  const priv = new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey));
+  const pub = new Uint8Array((await crypto.subtle.exportKey('raw', pair.publicKey)) as ArrayBuffer);
+  const priv = new Uint8Array((await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer);
   return { publicKey: base64urlEncode(pub), privateKey: base64urlEncode(priv) };
 }
 

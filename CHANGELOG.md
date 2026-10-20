@@ -32,6 +32,13 @@ All notable changes to Turbogol are documented here. The format follows
   the node that hosts the match, and quitting such a match still works when the account's session
   would run out during it (it is renewed as the match starts, and once more if the quit is refused).
   A result that comes in while the player is already in another match shows once the menu is back.
+- Community nodes: the control plane runs in the Worker (`NodeRegistryDO`, its state in SQLite) and
+  `/nodes/*` serves the nodes and their installers (releases from R2, registration, the control
+  socket, replay uploads). Only the project's accounts create node tokens, two nodes each at most.
+  A `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled` wins) will turn
+  the nodes on; matches do not go to nodes yet. A deploy now needs the two node R2 buckets; set the
+  node secrets with `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
+  (`npm run build:wasm` rewrites it, a test checks it).
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
@@ -86,6 +93,10 @@ All notable changes to Turbogol are documented here. The format follows
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
   Permissions-Policy headers; /.well-known/security.txt points to private vulnerability reporting.
 - Unexpected server errors (API routes and match sockets) no longer echo the exception text.
+- The server reads at most 4 KB of a JSON body, even one sent without its length; on `/nodes/*`
+  every per-address limit counts an IPv6 /64 as one address and replay downloads and
+  `GET /nodes/mine` are limited too, a target that stops answering no longer holds up the node
+  control plane's sweep or the other results, and callers are only told it is unavailable.
 
 ## [0.1.0] - 2026-10-15
 
