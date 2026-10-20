@@ -228,14 +228,19 @@ new NetClient({ ...opciones, webSocketFactory: nodeAwareSocketFactory() })
 - Endpoint de administración para `setStatus`, `drain`, `shop.unfreeze` y el catálogo. Un
   drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): el nodo solo vuelve a tomar
   partidas cuando se reinicia.
-- Releases: `github/workflows/node-release.yml`, una plantilla que GitHub no corre: solo corre lo
-  que está en `.github/workflows/` del repo. El canal se mueve a mano: `stable` llega a cada nodo
-  cuando reinicia, `minimum` obliga a los que están corriendo a drenar y actualizarse. Un nodo se
-  compara con `minimum` cuando saluda; además, en el Worker, el `NodeRegistryDO` relee
-  `channel.json` cada minuto mientras corre su alarma y, si cambió, manda `update` a los nodos
-  conectados por debajo del `minimum` nuevo (`ControlPlane.channelChanged()`). Un verificador de
-  confianza con partidas de su build por verificar espera, como cuando saluda, y el barrido lo
-  vuelve a probar hasta que se vacía esa cola. El campo `canary` del protocolo no se usa todavía.
+- Releases: `.github/workflows/node-release.yml`, con un tag `node-vX.Y.Z` en un commit de
+  `main`: arma la release sin firmar, la firma en el entorno `releases` y la sube a R2 desde el
+  entorno `releases-r2`; la firma y la subida esperan la aprobación del mantenedor (P14 y M6 de
+  `PRODUCCION.md`). Publicar no mueve el canal: lo mueve `npm run deploy` antes de desplegar
+  (`scripts/node-release-gate.mjs`), para que una release llegue a los nodos junto con el build
+  del Worker que le corresponde; `nodes/scripts/channel.mjs` lo mueve a mano y lo devuelve con
+  `--rollback`. `stable` llega a cada nodo cuando reinicia, `minimum` obliga a los que están
+  corriendo a drenar y actualizarse. Un nodo se compara con `minimum` cuando saluda; además, en el
+  Worker, el `NodeRegistryDO` relee `channel.json` cada minuto mientras corre su alarma y, si
+  cambió, manda `update` a los nodos conectados por debajo del `minimum` nuevo
+  (`ControlPlane.channelChanged()`). Un verificador de confianza con partidas de su build por
+  verificar espera, como cuando saluda, y el barrido lo vuelve a probar hasta que se vacía esa
+  cola. El campo `canary` del protocolo no se usa todavía.
 - Copiar `github/CODEOWNERS` a `.github/`. Activar en `main` la regla que exige la revisión de
   los dueños del código solo cuando haya un segundo mantenedor: GitHub no deja aprobar un PR
   propio, así que con un solo dueño bloquearía sus propios PR.

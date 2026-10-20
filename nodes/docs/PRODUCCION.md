@@ -78,7 +78,7 @@ Todo el detalle, el procedimiento de instalación y la operación: `VPS-SAO-PAUL
 - **El estado se guarda antes de instalar.** Un VPS registrado contra un plano de control que no
   guarda nada queda huérfano en el próximo deploy. [1] ya escribe todo en un almacén; [6] lo pone
   en el SQLite del `NodeRegistryDO`.
-- **Camino crítico:** [1] → [6] → la release 0.2.0 ([2], [5], M5, M6, M9, M10) → instalar el VPS →
+- **Camino crítico:** [1] → [6] → la release 0.2.0 ([2], [5] y M5 a M10) → instalar el VPS →
   [7] → [8] → canary → `nodes_on`. Unas 3 a 4 semanas para una persona. [2], [3] y [4] pueden ir
   en paralelo desde ya, y [5] apenas existan las claves (M5). [3] tiene que estar desplegado antes
   del canary.
@@ -151,67 +151,85 @@ VPS quede en el repo. Los cambios de diseño se documentan con el PR que los con
   `INTEGRACION.md`, `ARQUITECTURA.md` y `BOT.md`, y el precio real del VPS en
   `docs/online/DECISIONS.md`.
 
-#### [5] releases: clave, firma, workflow y compuerta de deploy (P12-P16, P21)
+#### [5] releases: clave, firma, workflow y compuerta de deploy (P12-P16, P21): #27
 
-Objetivo: una release firmada con la clave de producción, publicada por CI con aprobación, y
-deploys del juego que no dejan a los nodos atrás. Depende de: M5 para P12, M6 para P14, [1] y [2]
-para P16. P21 antes del primer deploy con nodos (M10).
+Desde el merge, `npm run deploy` lee el canal en R2 antes de cada deploy (el token necesita R2,
+M8), y hasta M10 cada deploy va con `npm run deploy -- --nodes-off`.
 
-- [ ] **P12. La clave pública de releases en el repo** (`nodes/release-key.pub`, de M5). El build
-  arma los tres instaladores con ella; hoy solo los arma cuando el mismo build firma
-  (`scripts/build-node.mjs:79-89`). En modo producción rechaza un árbol con cambios sin commitear,
-  anota el `commit` en el manifiesto, guarda la lista de archivos que entran al bundle
-  (`inputs.json`) y deja de escribir `channel.json` (`:90`), para que una subida por error no
-  mueva el canal. El modo de desarrollo (`--sign .keys/release.json`) avisa que esa release nunca
-  se publica.
-- [ ] **P13. `scripts/sign-release.mjs`:** la firma aparte, solo con `node:crypto`, para que la
-  clave nunca comparta proceso con esbuild, werift o wrangler. Hoy está en el entorno del paso que
-  corre esbuild (`github/workflows/node-release.yml:35-38`). No firma si la clave no corresponde a
-  `release-key.pub`.
-- [ ] **P14. Activar el workflow de releases.** Hoy es una plantilla
-  (`github/workflows/node-release.yml`) que nunca corre: GitHub solo corre `.github/workflows/`,
-  donde está solo `ci.yml`. Tal como está, usa un `npx wrangler` sin versión, no tiene
-  `CLOUDFLARE_ACCOUNT_ID` ni `--content-type`, puede pisar una versión ya publicada y usa otras
-  versiones de las acciones que `ci.yml`. Pasa a `.github/workflows/`: un trabajo de build sin
-  secretos y otro de publicación en el entorno `releases`, con el wrangler del lockfile de
-  `server/`, un chequeo de que la versión no existe en R2 y `manifest.json` al final. Nunca sube
-  `channel.json`.
-- [ ] **P15. El bundle sin firmar se arma en cada PR,** en el trabajo de CI de `nodes/`. Necesita
-  `npm ci` en `server/`: el build toma esbuild de ahí (`scripts/build-node.mjs:22`).
-- [ ] **P16. Versión 0.2.0** en `package.json` y `node/version.ts` (el build exige que coincidan,
-  `scripts/build-node.mjs:24-27`). No 0.1.0: ya existe, firmada con la clave de desarrollo, y cada
-  versión tiene que corresponder a un solo conjunto de bytes: la verificación compara versiones
-  (`shared/controlProtocol.ts:367-369`) y el lanzador reutiliza las que ya bajó. Desde ahora,
-  `X.Y.Z` sin sufijos: `compareVersions` los ordena mal (`:372-380`).
-- [ ] **P21. La compuerta de deploy en `npm run deploy`** (`scripts/node-release-gate.mjs` en la
-  raíz del repo, más `scripts/channel.mjs` en `nodes/` para mover el canal verificando la firma de
-  la release):
-  - Antes de `wrangler deploy`, compara el wasm, el protocolo y los archivos que entran al nodo
-    con la release publicada. Si algo cambió, exige una release nueva firmada desde los mismos
-    archivos, o `--nodes-off` (los nodos no reciben partidas hasta la release).
-  - Sin canal publicado todavía (antes de M10): si la release de `nodes/package.json` ya está en
-    R2, escribe el canal y despliega (eso es M10); si no, exige `--nodes-off`, como cualquier
-    deploy sin su release. Un bucket que todavía no existe (antes de M7) cuenta como canal
-    ausente; cualquier otro error al leer R2 frena el deploy. Así [5] se puede mergear antes que
-    [6]: hasta M10, cada deploy del juego va con `npm run deploy -- --nodes-off`.
-  - Mueve el canal **antes** del deploy: cada deploy corta las conexiones de los nodos, y al
-    volver cada uno se compara con el `minimum` nuevo (`control-plane/controlPlane.ts:405`).
-  - Sube `minimum` cuando cambian el wasm, el protocolo **o el JavaScript del juego que va en el
-    nodo** (`server/src/roomHost.ts`, las reglas, los bots). Para elegir nodo, el build se compara
-    sin la versión (`shared/controlProtocol.ts:356-358`), y un nodo que solo ve un `stable` nuevo
-    seguiría hosteando con las reglas viejas hasta reiniciarse (`node/launcher.ts:543-549`).
-  - Si el deploy falla, imprime cómo volver: restaurar el canal anterior **y** reiniciar el nodo,
-    porque `maybeUpdate` solo actúa sobre nodos por debajo del mínimo
-    (`control-plane/controlPlane.ts:530`).
-  - Nunca crea tags.
+- [x] **P12. La clave pública de releases en el repo** (`nodes/release-key.pub`, de M5).
+  `node scripts/build-node.mjs` arma la release sin firmar y llena los tres instaladores con esa
+  clave. Solo arma un commit: rechaza un árbol con cambios, y no corre con la clave privada en su
+  entorno. El manifiesto anota el `commit` y `inputsSha256`, el hash de `inputs.json`: los
+  archivos del repo que entran al bundle (las dependencias, por su lockfile), los `tsconfig.json`
+  y `package.json` que los configuran, y el wasm. Nunca escribe `channel.json`. `npm run build`
+  sigue firmando con `.keys/release.json` y avisa que esa release nunca se sube; los dos modos
+  rechazan una clave de desarrollo igual a `release-key.pub`.
+- [x] **P13. `nodes/scripts/sign-release.mjs`** (`npm run sign`): firma solo con `node:crypto`,
+  con la clave de `TGN_RELEASE_PRIVATE_KEY` o de `--key`. No firma si la clave no es la de
+  `release-key.pub`, ni si la release no pasa sus comprobaciones: el commit del manifiesto es el de
+  la corrida (`GITHUB_SHA`); cada archivo, contra el manifiesto, e `inputs.json`, contra su hash en
+  el manifiesto; el wasm y los instaladores, byte a byte contra el checkout, y el protocolo, contra
+  `src/net/protocol.ts`. `node.mjs`, `launcher.mjs` y la lista de `inputs.json`, que después lee
+  la compuerta (P21), no se vuelven a armar: firma lo que armó el trabajo de build, que corre sin
+  secretos en una máquina nueva.
+- [x] **P14. `.github/workflows/node-release.yml`,** con un tag `node-vX.Y.Z` igual a la versión
+  de `nodes/package.json`, en un commit de `main`. Cuatro trabajos, cada uno en una máquina nueva:
+  las pruebas; el build sin firmar, sin secretos ni scripts de instalación; la firma, en el entorno
+  `releases`, sin instalar nada; y la subida, en el entorno `releases-r2` (los dos, de M6), con el
+  wrangler del lockfile de `server/`. `nodes/scripts/publish-release.mjs` revisa la release otra
+  vez, sube `manifest.json` al final de su versión y lee de vuelta cada objeto. Una versión se
+  publica una sola vez, pero "Re-run failed jobs" termina una subida que quedó a medias: con el
+  mismo artefacto firmado, que dura 7 días, y con otra aprobación de `releases-r2`. "Re-run all
+  jobs" arma otro `manifest.json`: si el anterior ya llegó a R2, la subida lo rechaza y esa versión
+  ya no se puede publicar.
+  `launcher.mjs` y los instaladores son los de la release más nueva (`latest.json`): una versión
+  vieja publicada después no los pisa. Nunca sube `channel.json`.
+- [x] **P15.** El trabajo de `nodes/` en CI arma la release sin firmar en cada PR y falla si un
+  instalador quedó sin la clave.
+- [x] **P16. Versión 0.2.0** en `package.json`, `node/version.ts` y el lockfile. Desde ahora,
+  `X.Y.Z` sin sufijos: el build y la compuerta lo exigen.
+- [x] **P21. La compuerta de deploy** (`scripts/node-release-gate.mjs`), que `npm run deploy`
+  corre antes de `wrangler deploy`:
+  - Exige el árbol entero limpio (sin cambios ni archivos nuevos fuera de `.gitignore`) y `HEAD`
+    igual a `origin/main`, en cada deploy.
+  - Lee de R2 el canal y las releases de su `stable` y su `minimum`, con la firma verificada, y
+    compara su código del juego con el de este build: el wasm, el protocolo y los archivos de su
+    `inputs.json` (la lista del trabajo de build) fuera del programa del nodo (`nodes/node/` y su
+    lockfile). Todo lo demás de `inputs.json` es código del juego: lo que el nodo usa de `src/`
+    (`sim/`, `ai/`, `game/Match.ts` y `net/protocol.ts`), `server/src/roomHost.ts`,
+    `nodes/shared/**` y la configuración del build (los `tsconfig.json` enteros; de los
+    `package.json`, los campos que lee esbuild). Un cambio en `src/ui/` no pide release. Una
+    release de un commit que no está en `main` nunca coincide.
+  - Si cambió, exige la release de la versión de `nodes/package.json`, publicada desde este mismo
+    código del juego, y mueve el canal a `stable` = `minimum` = esa versión **antes** del deploy.
+    Sin esa release, frena, y pide subir la versión si no supera la del canal. Un cambio solo en el
+    programa del nodo no pide release; si la de la versión nueva ya está publicada, sube solo
+    `stable`. Un `minimum` que corre otro código del juego (un canal movido a mano) sube a
+    `stable`.
+  - `--nodes-off` despliega sin la release solo si ningún extremo del canal puede recibir partidas
+    de este build (otro wasm u otro protocolo); nunca si las hostearía con las reglas viejas. Sin
+    canal todavía (o sin bucket), la release de este código del juego pasa a ser el primer canal
+    (M10); sin ella, cada deploy necesita `--nodes-off`. `--nodes-off` no deja el canal quieto: con
+    la release de este código del juego publicada, el deploy la pone en el canal igual (después de
+    M9, el próximo deploy es M10). Cualquier otro error al leer R2 frena el deploy, también con
+    `--nodes-off`.
+  - Guarda el canal anterior en R2 como `channel.prev.json` y lee el nuevo de vuelta:
+    `node nodes/scripts/channel.mjs --rollback` lo restaura desde cualquier máquina, y `--show` y
+    `--stable` hacen lo demás a mano.
+  - Si el deploy falla con el canal ya movido, imprime cómo ver qué build sirve
+    (`npx wrangler deployments status`) y cómo volver: `--rollback` (o, si era el primer canal, en
+    M10, borrar `channel.json` con
+    `npx wrangler r2 object delete turbogol-node-releases/channel.json --remote`, desde `server/`),
+    y después drenar o reiniciar el nodo.
+  - Nunca crea tags, ni hace commit ni push.
 
 #### [6] servidor: NodeRegistryDO y rutas /nodes (P17-P20): #28
 
 No cambia nada del matchmaking: nada llama todavía a las rutas internas del DO, así que ninguna
 partida va a un nodo hasta [7]. Su deploy reinicia las partidas en curso de `MatchDO`, como
-cualquier deploy: a una hora tranquila. M7 antes del deploy: sin los dos buckets, el deploy falla;
-sin `NODE_CONTROL_PRIVATE_KEY`, todo `/nodes/*` responde 404 salvo `whoami` y las releases; sin
-`NODE_TRUSTED_OPERATORS`, nadie crea tokens (403 `not_trusted`).
+cualquier deploy: a una hora tranquila. M7 antes de mergear: con [6] en `main`, cada deploy falla
+sin los dos buckets; sin `NODE_CONTROL_PRIVATE_KEY`, todo `/nodes/*` responde 404 salvo `whoami` y
+las releases; sin `NODE_TRUSTED_OPERATORS`, nadie crea tokens (403 `not_trusted`).
 
 - [x] **P17. El build del cliente, sin calcular nada en el Worker:** el hash del wasm es una
   constante (`src/sim/wasm/rocketsim.sha256.ts`) que `native/build.ps1` (`npm run build:wasm`)
@@ -293,36 +311,24 @@ sin `NODE_CONTROL_PRIVATE_KEY`, todo `/nodes/*` responde 404 salvo `whoami` y la
     Worker los repite por isolate, para que la basura no llegue al DO.
   - Las rutas de la tienda y de WebRTC, y cualquier otra bajo `/nodes/`, responden 404.
 
-#### [7] servidor: gancho del matchmaker y rejoin/leave (P22-P23)
+#### [7] servidor: gancho del matchmaker y rejoin/leave (P22-P23): #29
 
-Objetivo: el matchmaker pone partidas en el VPS cuando el flag lo permite, y rejoin y leave
-funcionan con ellas. Depende de: [6] y P5. Con el flag apagado, todo sigue igual.
+Con el flag `nodes_on` apagado, todo sigue exactamente igual (lo fijan pruebas, y sin nodos
+configurados ni siquiera se lee KV).
 
-- [ ] **P22. El gancho en `MatchmakerDO.formMatch`** (`server/src/MatchmakerDO.ts:1057`), detrás
-  de `nodes_on` (D8):
-  - Equipos, el bloque de `ranked-lock` extraído (`:1072-1083`) e `issue()` con parámetros para
-    un lock de tipo `node`. Un error del registro o 8 s sin respuesta vuelven a `MatchDO`: los
-    nodos nunca hacen fallar una partida. Las salas privadas no van a nodos.
-  - Un canary que no toca a los demás: "nodos prendidos para este jugador" se decide por estar en
-    la lista, en `index.ts` y en `join()`.
-  - El tope de salas no frena a los nodos. `MAX_ACTIVE_ROOMS = 20` (`MatchmakerDO.ts:88`) se
-    comprueba al entrar a la cola (`:598`), al arrancar una sala privada (`:874`) y antes de
-    `formMatch` (`:1034`); las partidas en nodos no cuentan para ese tope. `do_disabled` hoy
-    rechaza toda cola (`server/src/index.ts:346`); con nodos, solo omite el `MatchDO`.
-  - `queue()` no reescribe la `wsUrl` de una partida de nodo (`server/src/index.ts:392`).
-  - Los locks de tipo `node` se verifican preguntando al registro: con un id de nodo,
-    `idFromString` falla y hoy el lock contaría como tomado hasta vencer
-    (`server/src/MatchmakerDO.ts:775`, `:780-783`).
-- [ ] **P23. `/api/rejoin` y `/api/leave` para partidas de nodo:**
-  - `/api/rejoin` usa `env.MATCH.idFromString`, que rechaza un id que no es de un `MatchDO`
-    (`server/src/index.ts:529-536`): un camino propio con los códigos de P5, que libera el lock
-    si la partida ya no existe, terminó o el jugador no estaba en ella, y lo mantiene si el nodo
-    está caído un momento.
-  - `/api/leave` llama primero al nodo y mantiene el lock si el nodo no responde, para que una
-    salida que el nodo nunca registró no deje al jugador entrar a otra partida.
-  - Una salida ya registrada responde 200 aunque la respuesta del nodo no llegue, y el matchmaker
-    espera más que los 5 s del RPC al nodo (`shared/controlProtocol.ts:42`): si no, el jugador
-    queda sin poder volver ni encolar hasta que termine la partida.
+- [x] **P22. El gancho en `MatchmakerDO.formMatch`:** prueba un nodo primero cuando `nodes_on`
+  lo permite para todos los humanos de la partida (`1` para todos, o una lista de cuentas para el
+  canary; `vm_disabled` siempre gana). El canary se decide por jugador en `queue()`, `join()` y
+  `tryForm()`: quien no está en la lista sigue como hoy, con el 503 de capacidad y `do_disabled`.
+  Un error, 8 s sin respuesta o una respuesta que no es una ubicación válida para esos jugadores
+  vuelven a `MatchDO`, y frenan los intentos 60 s. Las partidas en nodos no cuentan para
+  `MAX_ACTIVE_ROOMS`; una ranked en un nodo toma el lock ranked con el id del nodo; las salas
+  privadas nunca van a nodos (D10); el humano solo de una cola p2p puede caer en un nodo (D11).
+- [x] **P23. `/api/rejoin` y `/api/leave` para partidas de nodo:** `rejoin` libera el lock si
+  la partida no existe, terminó o el jugador no estaba, y lo mantiene si salió (`left`) o el nodo
+  no responde; un id de 64 hex que no es nada responde 404 y libera el lock. `leave` le pregunta
+  primero al nodo, con 8 s de espera (más que los 5 s del RPC), y mantiene el lock si no
+  responde: una salida que el nodo no registró no deja al jugador entrar a otra partida (D12).
 - **Regla desde este PR:** nunca volver el Worker a una versión anterior a él. Los jugadores con un
   lock de nodo recibirían 409 hasta que venza, unos 13 minutos. Para apagar los nodos,
   `vm_disabled`.
@@ -361,11 +367,11 @@ quedan en el log.
 | M16 | Confirmar las propuestas de "Decisiones pendientes del mantenedor" (D1 a D20). El precio real del VPS ya está en `docs/online/DECISIONS.md` ([4]) | Antes del deploy de [6] | [5], [6] |
 | M4 | **Hecho (19/10/2026)**: la cuenta del proyecto existe y entra con Discord, así que su seguridad es la de esa cuenta de Discord (verificación en dos pasos). Su id va al secreto `NODE_TRUSTED_OPERATORS` (M7), no al repo. **Falta:** dos cuentas de prueba que nunca registren nodos | Antes del canary | M7, las pruebas de [6], el canary |
 | M5 | **Hecho (19/10/2026)**: las claves de control y de releases de producción, generadas fuera de `nodes/.keys/` (que sigue siendo de desarrollo) y respaldadas en el gestor de contraseñas. La pública de releases va a P12 (`nodes/release-key.pub`) y la de control a `NODE_CONTROL_PUBLIC_KEY` (P19); las privadas, a M6 y M7, y después se borran del disco | — | P12, el deploy de [6] |
-| M6 | GitHub: el entorno `releases` (revisor DonJaimeHash, solo desde tags `node-v*`, sin bypass de administrador), con los secretos `TGN_RELEASE_PRIVATE_KEY` (la `privateKey` de releases de M5, desde el gestor de contraseñas) y `CLOUDFLARE_R2_TOKEN` (R2 Edit) y la variable `CLOUDFLARE_ACCOUNT_ID`; una regla para los tags `refs/tags/node-v*`; 2FA o passkey en la cuenta. La clave de releases no vuelve al disco: vive en el gestor y en el entorno | Antes de mergear P14 | P14, la primera release |
-| M7 | Cloudflare: los buckets `turbogol-node-replays` (con una regla de ciclo de vida de 30 días) y `turbogol-node-releases`; los secretos `NODE_CONTROL_PRIVATE_KEY` (la `privateKey` de control de M5, en PKCS#8) y `NODE_TRUSTED_OPERATORS` (el id de M4). Con `wrangler versions secret put`, que no despliega: `wrangler secret put` publica una versión nueva, y un deploy reinicia las partidas en curso (`server/README.md:195`). Si no, como un deploy: a una hora tranquila y todos juntos | Antes del primer deploy de [6] | P19, P20 |
-| M8 | Aprobar el deploy de [6], y el de [3] cuando se mergee. Cada deploy reinicia las partidas en curso de `MatchDO`: a una hora tranquila. Con [5] ya mergeado, hasta M10 cada deploy va con `npm run deploy -- --nodes-off` (P21) | Después de cada merge | La instalación ([6]), el canary ([3]) |
-| M9 | El tag `node-v0.2.0` en el commit del merge, y aprobar la corrida de `releases` | Con [1], [2] y [5] mergeados y P14 activo | M10 |
-| M10 | El primer deploy que escribe el canal (P21): `npm run deploy` escribe el canal en 0.2.0/0.2.0 y despliega. Comprobar con los comandos del paso 4 de "Antes de instalar el nodo", en `VPS-SAO-PAULO.md` | Después de M9, a una hora tranquila | M11 |
+| M6 | GitHub: dos entornos, los dos desplegables solo desde tags `node-v*`, sin bypass de administrador y con DonJaimeHash como revisor obligatorio, así que cada release pide dos aprobaciones (la firma y la subida). Sin "Prevent self-review": el mismo mantenedor empuja el tag y aprueba los dos trabajos (con un segundo mantenedor, se puede activar). `releases`, con el secreto `TGN_RELEASE_PRIVATE_KEY` (la `privateKey` de releases de M5, desde el gestor de contraseñas) y nada más; `releases-r2`, con el secreto `CLOUDFLARE_R2_TOKEN` (R2 Edit) y la variable `CLOUDFLARE_ACCOUNT_ID`. Una regla para los tags `refs/tags/node-v*`; 2FA o passkey en la cuenta. La clave de releases no vuelve al disco: vive en el gestor y en el entorno | Antes de mergear [5] (#27) | P14, la primera release |
+| M7 | Cloudflare: los buckets `turbogol-node-replays` (con una regla de ciclo de vida de 30 días) y `turbogol-node-releases`; los secretos `NODE_CONTROL_PRIVATE_KEY` (la `privateKey` de control de M5, en PKCS#8) y `NODE_TRUSTED_OPERATORS` (el id de M4). Con `wrangler versions secret put`, que no despliega: `wrangler secret put` publica una versión nueva, y un deploy reinicia las partidas en curso (`server/README.md:195`). Si no, como un deploy: a una hora tranquila y todos juntos | Antes de mergear [6] (#28): con [6] en `main`, cada `wrangler deploy` falla sin los dos buckets | P19, P20 |
+| M8 | **Antes de mergear [5]:** el token de Cloudflare que usa `npm run deploy` (`server/.env`) necesita R2 de lectura y escritura, con R2 habilitado en la cuenta: desde [5], la compuerta (P21) lee el canal en R2 en cada deploy, `--nodes-off` incluido, y en M10 lo escribe. Después, aprobar el deploy de [6] y el de [3] (#25). Cada deploy reinicia las partidas en curso de `MatchDO`: a una hora tranquila. Hasta M10, cada deploy va con `npm run deploy -- --nodes-off`, desde `main` al día y sin cambios locales. Pero `--nodes-off` no deja el canal quieto: con 0.2.0 ya publicada (M9) desde el código del juego que se despliega, cualquier deploy la pone en el canal, y ese deploy es M10. Por eso el deploy de [6] va antes de M9, o es M10 | El token, antes de mergear [5]; los deploys, después de cada merge | La instalación ([6]), el canary ([3]) |
+| M9 | El tag `node-v0.2.0` en un commit de `main` con el mismo código del juego (P21) que el que va a desplegar M10: el workflow rechaza un commit que no está en `main`, y un merge posterior que no toca el código del juego (docs, el menú) no invalida la release. Aprobar sus dos trabajos: `releases` (la firma) y `releases-r2` (la subida). Si la subida falla a medias: "Re-run failed jobs", dentro de los 7 días del artefacto y aprobando de nuevo `releases-r2`; nunca "Re-run all jobs", que arma otro `manifest.json` y puede dejar la versión sin poder publicarse (P14) | Con [1], [2], [5] y [6] mergeados, y M6. No antes de [6]: cambia `nodes/shared/`, que la compuerta cuenta como código del juego, y una versión se publica una sola vez | M10 |
+| M10 | El primer deploy que escribe el canal (P21): `npm run deploy` (`--nodes-off` ya no hace falta, y tampoco lo frena) escribe el canal en 0.2.0/0.2.0 y despliega. Comprobar con los comandos del paso 4 de "Antes de instalar el nodo", en `VPS-SAO-PAULO.md` | Después de M9, a una hora tranquila | M11 |
 | M11 | El token de registro, con la línea de consola de "Instalar el nodo" en `VPS-SAO-PAULO.md`, desde una pestaña de turbo-gol.com con la sesión de la cuenta del proyecto: refresca la sesión y hace `POST /nodes/tokens` con `{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer. Pegarlo en la línea de instalación: vale una hora y una sola vez | Justo antes de instalar | La instalación |
 | M12 | Copiar `node.json` al gestor de contraseñas (el mantenedor, a mano, sin dejar una copia en la PC) y tomar una instantánea del VPS | Justo después de instalar | — |
 | M13 | El webhook de un canal de Discord solo del equipo, y el secreto `NODE_ALERT_WEBHOOK` (también con `wrangler versions secret put`) | Antes del deploy de [8] | El canary |
@@ -405,7 +411,8 @@ aviso.
 - **Un solo verificador.** Si el VPS se cae, las ranked vuelven a `MatchDO`
   (`control-plane/controlPlane.ts:637`) y las terminadas esperan hasta 6 horas (`:81`).
 - **Instaladores sin firma.** El token de R2 puede cambiar los scripts que las instalaciones nuevas
-  corren como root: va detrás de la misma aprobación que la clave de firma.
+  corren como root: va en su propio entorno (`releases-r2`), con la misma aprobación que la clave
+  de firma, y la subida solo acepta los instaladores de `nodes/install/` con la clave del repo.
 - **La cuenta del proyecto.** Con su contraseña se crea un nodo de confianza: entra activo
   (`control-plane/registry.ts:371-372`), verifica sus propias ranked
   (`control-plane/scheduler.ts:96`) y sus cancelaciones cuentan como las informa
@@ -448,8 +455,8 @@ aviso.
 - **`MatchRoom` es un port a mano de `MatchDO`.** Cada arreglo en `MatchDO` hay que llevarlo
   también a `node/matchRoom.ts`.
 - **Cada deploy del juego que cambie el wasm, el protocolo o el JavaScript del juego que va en el
-  nodo necesita una release del nodo.** Sin ella, ningún nodo recibe partidas, o un nodo sigue con
-  las reglas viejas. La compuerta de P21 lo exige en cada deploy.
+  nodo (también `nodes/shared/`) necesita una release del nodo.** Sin ella, ningún nodo recibe
+  partidas, o un nodo sigue con las reglas viejas. La compuerta de P21 lo exige en cada deploy.
 
 ## Etapa 2: PCs de amigos
 
@@ -611,8 +618,8 @@ aviso.
 ### Automatización de GitHub
 
 - [ ] **Instalar las plantillas** de `github/` en `.github/`: `CODEOWNERS` y los workflows del bot,
-  con las versiones de las acciones de `.github/workflows/ci.yml`. `node-release.yml` entra en la
-  etapa 1 (P14), y con él la versión fija de `wrangler` y `CLOUDFLARE_ACCOUNT_ID`.
+  con las versiones de las acciones de `.github/workflows/ci.yml`. `node-release.yml` ya corre
+  desde `.github/workflows/` (P14).
 - [ ] **Hoy `main` pide 0 aprobaciones** (regla leída el 15/10/2026): CI en verde sí, revisión no.
   Un PR del bot entraría con un solo clic. Con un solo mantenedor, la revisión humana es que él lo
   lea antes de mergear.
@@ -723,8 +730,9 @@ como la gracia de 90 s de P4 o los 12 intentos de P8, y se revisan con cada PR.
   el secreto no confía en nadie.
 - **D15. La clave de releases.** **Propuesta:** en el entorno `releases` de GitHub, con un
   revisor obligatorio, solo desde tags y sin bypass de administrador, más una copia sin conexión
-  en el gestor de contraseñas. La firma corre en un paso que solo usa `node:crypto` (P13). Nunca
-  la clave de desarrollo que firmó la 0.1.0.
+  en el gestor de contraseñas. La firma corre en un trabajo propio que no instala nada y solo usa
+  `node:crypto` (P13), y el token de R2 va en otro entorno, `releases-r2` (M6). Nunca la clave de
+  desarrollo que firmó la 0.1.0.
 - **D19. El tope de tráfico del VPS.** **Propuesta:** `--egress-cap-gb 3800`. El contador del
   nodo solo cuenta lo que mandan las partidas que terminan (`node/runtime.ts:514-519`), por mes
   calendario UTC (`:617-620`); con 3800, dos meses UTC parciales siguen entrando en los 8 TB del

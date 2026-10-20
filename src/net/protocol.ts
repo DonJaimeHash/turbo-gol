@@ -295,6 +295,12 @@ export interface QueueResult {
   waiting?: number;
   /** A ranked match (kind 'ranked'): rated when it ends, GET /api/ranked/result?matchId= has the change. */
   ranked?: boolean;
+  /**
+   * The match runs on a community node (nodes/): `wsUrl` is the node's own wss:// address and
+   * `ticket` its EdDSA ticket (a rejoin answers the same). Only the HTTP shape changes: the match
+   * speaks this same protocol.
+   */
+  node?: boolean;
 }
 
 export const WS_SUBPROTOCOL = 'tg1';

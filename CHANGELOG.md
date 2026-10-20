@@ -35,10 +35,16 @@ All notable changes to Turbogol are documented here. The format follows
 - Community nodes: the control plane runs in the Worker (`NodeRegistryDO`, its state in SQLite) and
   `/nodes/*` serves the nodes and their installers (releases from R2, registration, the control
   socket, replay uploads). Only the project's accounts create node tokens, two nodes each at most.
-  A `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled` wins) will turn
-  the nodes on; matches do not go to nodes yet. A deploy now needs the two node R2 buckets; set the
-  node secrets with `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
+  A `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled` wins) turns the
+  nodes on. A deploy now needs the two node R2 buckets; set the node secrets with
+  `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
   (`npm run build:wasm` rewrites it, a test checks it).
+- Community nodes host matches: with `nodes_on` set for every player of a match, a server or
+  Competitive match (and the lone player of a P2P queue) goes to a community node when one is free,
+  and to the game's own servers otherwise, never failing because of the nodes. Node matches do not
+  count toward the 20-match cap, and rejoining and quitting work for them; a quit the node never
+  got keeps the player in that match instead of letting them start another in that region.
+  Without the flag nothing changes.
 - Community nodes: the control plane's ALERT lines also go to a staff-only Discord channel
   (`NODE_ALERT_WEBHOOK`, each alert at most once in 10 minutes, every account's action each
   time), with new ones for a project node offline for 2 minutes, a node's traffic at 80 % of its
@@ -95,6 +101,9 @@ All notable changes to Turbogol are documented here. The format follows
   the stage 1 checklist is split into eight PRs with the maintainer's steps, the pre-beta tests
   and the main risks, and stale facts in the other node docs are corrected. The budget shows the
   VPS's real price.
+- `npm run deploy` checks the community-node release first and, when the game code nodes run
+  changed, moves their release channel to a signed release built from the same game code; until the
+  first node release is published, deploy with `npm run deploy -- --nodes-off`.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
@@ -104,6 +113,9 @@ All notable changes to Turbogol are documented here. The format follows
   every per-address limit counts an IPv6 /64 as one address and replay downloads and
   `GET /nodes/mine` are limited too, a target that stops answering no longer holds up the node
   control plane's sweep or the other results, and callers are only told it is unavailable.
+- Node releases are signed in a job that installs nothing and uploaded from a separate `releases-r2`
+  environment that re-checks them and can be re-run; the deploy gate also checks the channel's
+  minimum release and that releases come from main.
 
 ## [0.1.0] - 2026-10-15
 

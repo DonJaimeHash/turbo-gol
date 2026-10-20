@@ -105,7 +105,12 @@ the match sockets (the official one runs on the custom domain [turbo-gol.com](ht
 Before deploying a fork, change the Worker name, the custom domain (`routes`), the KV namespace id,
 the Turnstile site key and `VITE_ORIGINS` in `server/wrangler.jsonc`, and set the secrets with
 `cd server && npx wrangler secret put JWT_SECRET` (plus `TURNSTILE_SECRET`, the optional OAuth secrets
-from `docs/online/ACCOUNTS.md` and the optional `TURN_KEY_ID` / `TURN_KEY_TOKEN` relay pair). The AGPL asks public servers running modified code to offer that source
+from `docs/online/ACCOUNTS.md` and the optional `TURN_KEY_ID` / `TURN_KEY_TOKEN` relay pair).
+Commit and push the `server/wrangler.jsonc` changes first: the deploy only runs from a clean tree at
+`origin/main`.
+Without community nodes of your own, deploy with `npm run deploy -- --nodes-off` (the deploy checks
+the node release first, so even then its token needs R2 read access, with R2 enabled on the account:
+`server/README.md`). The AGPL asks public servers running modified code to offer that source
 to their players: keep the menu's "Source code" link (`SOURCE_URL` in `src/brand.ts`; the text is
 `menu.source` in every locale, "Código fuente" in Spanish) pointing at your fork.
 

@@ -77,7 +77,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `MATCH_LENGTH_SECONDS` | var | regulation length (300) |
 | `REGION_OVERRIDE` | var | force a matchmaking region (empty = `request.cf.continent`, `dev` locally) |
 | `TURN_KEY_ID`, `TURN_KEY_TOKEN` | secrets, optional (both or none) | a Cloudflare Realtime TURN key: `GET /api/ice` and the room welcome then append 10-minute TURN credentials minted per request (`POST .../turn/keys/{id}/credentials/generate-ice-servers`, `{ ttl: 600 }`); unset = STUN only (`stun.cloudflare.com:3478`) |
-| `FLAGS` | KV | `matchmaking_off`, `do_disabled` (`1`/`true`/`on`) -> 503 |
+| `FLAGS` | KV | `matchmaking_off`, `do_disabled` (`1`/`true`/`on`) -> 503 (with the nodes on for a player, `do_disabled` refuses only its P2P queue: server and ranked matches wait for a node, where one can host: see "Community nodes"); `nodes_on`: absent or `0` off, `1` everyone, or a comma-separated list of account ids (a canary) whose matches may go to a community node; `vm_disabled` (`1`/`true`/`on`) turns the nodes off whatever `nodes_on` says (see "Community nodes") |
 | `NODES`, `NODE_REPLAYS`, `NODE_RELEASES` | Durable Object, R2, R2 | community nodes: the NodeRegistryDO, the replays the nodes upload, the signed releases and `channel.json` (see "Community nodes") |
 | `NODE_CONTROL_PRIVATE_KEY` | secret, optional | the Ed25519 key (PKCS#8, `npm run keys` in `nodes/`) that signs the players' node tickets; without it no match goes to a node |
 | `NODE_CONTROL_PUBLIC_KEY` | var | its public half, handed to every node at registration; a pair that does not match places nothing (ALERT) |
@@ -91,9 +91,9 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | Route | Body / headers | Result |
 |---|---|---|
 | `POST /api/guest` | `{ name?, turnstileToken? }` | `GuestSession { playerId, name, session, expiresAt }`; name 3-16 chars (letters, digits, space, `_ - .`) or `Guest-xxxx` |
-| `POST /api/queue` | `{ mode: '1v1'|'2v2'|'3v3', kind?: 'p2p'|'server' }` (default `p2p`), `Authorization: Bearer <session>` | long-poll up to 25 s: `QueueResultP2p { status: 'matched', kind: 'p2p', roomId, ticket, wsUrl: ws(s)://host/room/<roomId> }`, the phase 1 `{ status: 'matched', matchId, ticket, wsUrl: .../ws/<matchId> }` (kind `server`, or the p2p fallback of a lone human) or `{ status: 'waiting', waiting }` (call again); `409 { error: 'active_match', matchId, kind }` while a match / room of yours is alive (a room cannot be rejoined: its lock is freed when your room socket closes) |
-| `POST /api/rejoin` | `{ matchId }`, Bearer | a fresh ticket for a server match that still has you in its roster (reconnection; p2p rooms have no rejoin: 410 `p2p_room`; a match you quit with `/api/leave { matchId }`: 410 `left`, or 404 when you were its last human: your quit ended it) |
-| `POST /api/leave` | `{ matchId? }`, Bearer | `{ ok, left, released }`: drops you from the queue if you are still waiting (the menu's Esc / BACK calls it, so the bot fill does not open a room nobody joins) and frees your P2P room lock. With the `matchId` of your server match (an explicit quit: the client's menu) that lock is freed too and the MatchDO closes your socket (1000 `left`) and hands your car to its bots for good; without a `matchId` a server match is not affected (queueing for a server match again answers `409 active_match` and the client rejoins it) |
+| `POST /api/queue` | `{ mode: '1v1'|'2v2'|'3v3', kind?: 'p2p'|'server' }` (default `p2p`), `Authorization: Bearer <session>` | long-poll up to 25 s: `QueueResultP2p { status: 'matched', kind: 'p2p', roomId, ticket, wsUrl: ws(s)://host/room/<roomId> }`, the phase 1 `{ status: 'matched', matchId, ticket, wsUrl: .../ws/<matchId> }` (kind `server`, or the p2p fallback of a lone human; with the nodes on, `node: true` and the community node's own `wss://` address and ticket) or `{ status: 'waiting', waiting }` (call again); `409 { error: 'active_match', matchId, kind }` while a match / room of yours is alive (a room cannot be rejoined: its lock is freed when your room socket closes; a node match answers kind `server` with `node: true`) |
+| `POST /api/rejoin` | `{ matchId }`, Bearer | a fresh ticket for a server or node match that still has you in its roster (reconnection; p2p rooms have no rejoin: 410 `p2p_room`; a match you quit with `/api/leave { matchId }`: 410 `left`, or 404 when you were its last human: your quit ended it). A node match answers its node's ticket and `wss://` address with `node: true`, and 503 while the node is out of reach (your lock stays: try again); an id that names no match: 404, and its lock is freed |
+| `POST /api/leave` | `{ matchId?, connected? }`, Bearer | `{ ok, left, released }`: drops you from the queue if you are still waiting (the menu's Esc / BACK calls it, so the bot fill does not open a room nobody joins) and frees your P2P room lock. With the `matchId` of your server match (an explicit quit: the client's menu) that lock is freed too and the MatchDO closes your socket (1000 `left`) and hands your car to its bots for good; without a `matchId` a server match is not affected (queueing for a server match again answers `409 active_match` and the client rejoins it). A node match is quit the same way, but its node is told first: when it does not take the leave (out of reach, no answer in 8 s) the lock stays and `released` is false (like every lock, it holds only in its region; a Competitive match is also locked across regions). A leave while your match is being formed still counts: you are not put back in the queue, and a node match or P2P room formed meanwhile is left (a node one with `connected: false`). `connected: false` (you never got into the match) only goes to a node |
 | `GET /api/ice` | Bearer | `{ iceServers }` for `RTCPeerConnection`: `[{ urls: ['stun:stun.cloudflare.com:3478'] }]` plus the TURN entry when the TURN secrets are set (minted per call, 30 per player per minute) |
 | `GET /ws/:matchId` | `Sec-WebSocket-Protocol: tg1, ticket.<jwt>` (role `player`) | 101 with `Sec-WebSocket-Protocol: tg1`; 400/401/403 before any Durable Object is touched |
 | `GET /room/:roomId` | same, with a role `peer` ticket whose `mid` is the room id | 101 to the RoomDO: first message `RoomWelcome` (JSON; see `src/net/p2p/protocol.ts`) |
@@ -123,10 +123,15 @@ Matchmaking (one queue per mode and kind, in the region's MatchmakerDO):
   15 s (`P2P_FILL_WAIT_MS`) with at least two humans it forms with bots in the free slots; a lone
   human after those 15 s is moved to the server path (a MatchDO match with bots, answered in the
   phase 1 shape, so the client falls back transparently).
+* With the nodes on for every human of a server-path match (`nodes_on`, see "Community nodes"),
+  the match is offered to a community node first, and a MatchDO is created only when none takes
+  it.
 
 Humans alternate teams; slot order is blue humans, blue bots, red humans, red bots; slots
 are the sim's car creation order. Capacity: at most 20 live matches + rooms per region (503
-`capacity` for new joiners beyond that; waiters keep waiting).
+`capacity` for new joiners beyond that; waiters keep waiting). Node matches do not count, and a
+player the nodes are on for is not refused at the cap: the match waits for a node (unless no
+node can host in the region for now, see "Community nodes").
 
 P2P room lifecycle (RoomDO, Hibernation API: no timers, the object sleeps between messages):
 roster + random uint32 `seed` registered by the matchmaker -> each peer opens `/room/<id>` with
@@ -191,8 +196,22 @@ npx wrangler secret put TURN_KEY_ID             # optional, phase 2 (with TURN_K
 npx wrangler secret put TURN_KEY_TOKEN
 #   edit wrangler.jsonc: name, routes, kv id, vars TURNSTILE_SITEKEY and VITE_ORIGINS
 cd ..
-npm run deploy      # = npm run build (notices + tsc + vite build -> dist/) && node scripts/deploy.mjs (wrangler deploy)
+git commit -am "Deploy config" && git push origin main   # the deploy runs only from a clean tree at origin/main
+npm run deploy -- --nodes-off   # = npm run build (notices + tsc + vite build -> dist/) && node scripts/deploy.mjs (wrangler deploy); --nodes-off until a node release is published
 ```
+
+Before `wrangler deploy`, `npm run deploy` checks the community-node release
+(`scripts/node-release-gate.mjs`): the whole tree must be clean (nothing uncommitted, nothing
+untracked outside `.gitignore`) and at `origin/main`, and the nodes must run this build's game code
+(the rules, bots and sim code bundled in a node release, from the channel's minimum release up to its
+stable one). When that code changed, it needs a signed node release built from a commit of main
+with the same game code and moves the nodes' release channel to it before deploying. It reads the
+channel in the R2 bucket `turbogol-node-releases` with the deploy's credentials, every time,
+`--nodes-off` included, so the token needs R2 read access (and write, to move the channel) and the
+account needs R2 enabled.
+Until a node release is published (a fork without nodes, or before the first one), every deploy is
+`npm run deploy -- --nodes-off` (from `server/` as well). If a deploy fails after the channel moved,
+the gate prints how to check which build serves (`npx wrangler deployments status`) before going back.
 
 The first deploy of a Worker applies the migrations `v1`-`v4` in order (later deploys apply only new
 tags); `wrangler dev` does the same locally the first time it starts. Custom Domain deploys need a
@@ -241,6 +260,26 @@ match ever goes to a node and every `/nodes/*` route but `whoami` and the releas
 without `NODE_TRUSTED_OPERATORS` nobody can create a node token (403 `not_trusted`). To try the
 routes under `wrangler dev`, put a development pair in `.dev.vars` (both halves: a `.dev.vars`
 value overrides the committed var).
+
+Matches reach the nodes through the matchmaker, behind the KV flag `nodes_on` (absent: off). When
+the nodes are on for every human of a server or ranked match, or for the lone human of a P2P
+queue, the match is offered to a node first; when none takes it, or the control plane fails or
+does not answer within 8 s, the match goes to a MatchDO as before (after a failure, or when the
+region has no host online, the matchmaker stops asking for a minute, and meanwhile the region
+counts as without the nodes: 503 `capacity` at the cap and, with `do_disabled`, 503
+`do_disabled` for server and ranked queues instead of a wait for a node). P2P rooms and custom
+lobbies never go to a node. `nodes_on` and `vm_disabled` are read through KV's 60 s edge cache,
+so a change takes up to about two minutes to reach every matchmaker:
+
+```sh
+npx wrangler kv key put nodes_on "<id1>,<id2>" --binding FLAGS --remote   # a canary: only these accounts
+npx wrangler kv key put nodes_on 1 --binding FLAGS --remote               # everyone
+npx wrangler kv key put vm_disabled 1 --binding FLAGS --remote            # every new match back on the Worker
+```
+
+Never roll the Worker back below the version that brought node matches: an older one cannot
+rejoin or release a node match's lock, so its players get 409 until the lock expires (about 13
+minutes). To stop the nodes, use `vm_disabled`.
 
 **Alerts.** The object logs `[nodes] ALERT ...` lines for what a maintainer must look at, and with
 `NODE_ALERT_WEBHOOK` set each one is also posted to that Discord channel (`src/nodeAlerts.ts`); the
