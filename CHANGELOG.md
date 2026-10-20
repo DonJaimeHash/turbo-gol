@@ -43,8 +43,8 @@ All notable changes to Turbogol are documented here. The format follows
   Competitive match (and the lone player of a P2P queue) goes to a community node when one is free,
   and to the game's own servers otherwise, never failing because of the nodes. Node matches do not
   count toward the 20-match cap, and rejoining and quitting work for them; a quit the node never
-  got keeps the player in that match instead of letting them start another. Without the flag
-  nothing changes.
+  got keeps the player in that match instead of letting them start another in that region.
+  Without the flag nothing changes.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
