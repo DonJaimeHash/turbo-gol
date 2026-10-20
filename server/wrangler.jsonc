@@ -40,8 +40,9 @@
   ],
   // The game itself: the Vite build (`npm run build` at the repo root -> ../dist) is uploaded with
   // the Worker and served from the same origin, so one URL is game + API + match sockets and the
-  // client needs no CORS. Only /api/*, /ws/*, /room/* and /lobby/* reach the Worker code (run_worker_first);
-  // every other path is answered by the asset layer (unknown paths fall back to index.html: SPA).
+  // client needs no CORS. Only /api/*, /ws/*, /room/*, /lobby/* and /nodes/* (the community nodes' routes)
+  // reach the Worker code (run_worker_first); every other path is answered by the asset layer (unknown
+  // paths fall back to index.html: SPA; an installer asking /nodes/* for the launcher must never get it).
   // The Worker still falls back to env.ASSETS.fetch() for anything else it receives. The directory
   // must exist when wrangler starts: `npm run dev` here creates an empty ../dist if needed (in
   // dev the game is served by Vite on 5173, which proxies /api, /ws and /room to this port).
@@ -49,7 +50,7 @@
     "directory": "../dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/ws/*", "/room/*", "/lobby/*"]
+    "run_worker_first": ["/api/*", "/ws/*", "/room/*", "/lobby/*", "/nodes/*"]
   },
   // Feature flags (matchmaking_off, do_disabled). The id is the official deployment's namespace; forks
   // create their own with `npx wrangler kv namespace create FLAGS` (any id works under wrangler dev).

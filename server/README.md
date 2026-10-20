@@ -12,8 +12,8 @@ announces drops. Design: `docs/online/PHASE1.md`, `docs/online/PHASE2.md`; decis
 ```
 server/
   wrangler.jsonc        Worker + Durable Objects (MATCH -> MatchDO, MATCHMAKER -> MatchmakerDO, ROOM -> RoomDO), KV FLAGS, vars,
-                        .wasm rule, assets (../dist = the Vite build, served from the Worker's origin; only /api/*, /ws/* and
-                        /room/* run the Worker)
+                        .wasm rule, assets (../dist = the Vite build, served from the Worker's origin; only /api/*, /ws/*,
+                        /room/*, /lobby/* and /nodes/* run the Worker)
   .dev.vars             local secrets (JWT_SECRET) for wrangler dev
   src/index.ts          HTTP router + WebSocket gates (/ws and /room: ticket verified at the edge), /api/ice, /api/config,
                         /api/where, asset fallback
@@ -25,6 +25,7 @@ server/
   src/roomHost.ts       RoomHost: input buffers, bots, match rules, snapshot encoding (env-agnostic)
   src/NodeRegistryDO.ts one object: the community nodes' control plane (../nodes/control-plane) on SQLite (src/nodeStore.ts),
                         the nodes' control sockets (hibernating), the outbox of their settled matches (src/nodeOutcome.ts)
+  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator routes
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
@@ -95,6 +96,12 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `GET /api/time` | | `{ now }` |
 | `GET /api/config` | | public client configuration: `{ turnstileSiteKey, protocol, version, region, autoRegion, regions, oauth, accounts }` (the sitekey is `null` when Turnstile is off; `oauth` lists the configured sign-in providers) |
 | `GET /api/where` | | `{ edgeColo, country, city?, asn?, ip }`: the Cloudflare colo (IATA code) that served the request and the client address masked to /24 (IPv6 /48), from `request.cf`; for the deploy measurements. The colo the *match* runs in is `Welcome.hostColo` (the MatchDO reads it once per isolate from `cloudflare.com/cdn-cgi/trace`, 5 s cap, `unknown` on failure) |
+| `GET /nodes/whoami` | | `{ ip }`: the address a node installer is seen from (`CF-Connecting-IP`) |
+| `GET /nodes/releases/channel`, `GET /nodes/releases/<key>` | | the node releases in R2 `NODE_RELEASES`: the channel (`{ stable, minimum }` when both read `X.Y.Z`, else 503; `no-store`), `<version>/<file>` (immutable) and the root files such as `launcher.mjs` and `install.sh` (`no-cache`, ETag); never a listing, never a key outside `src/nodeRoutes.ts`'s pattern |
+| `POST /nodes/register`, `GET /nodes/connect`, `PUT` / `GET /nodes/replays/<id>` | what a node sends | to the NodeRegistryDO: registration (5 per address per hour), the control WebSocket, the signed replay upload (16 MiB) and its download by the verifier |
+| `POST /nodes/tokens` | `{ region, name? }`, Bearer account session of a `NODE_TRUSTED_OPERATORS` account | a one-time node token (1 h) and its Linux install line; 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 10 per account per day |
+| `GET /nodes/mine` | Bearer account session | the caller's own nodes |
+| `GET /nodes/status` | | the public list of nodes (no addresses), cached 10 s |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 
 Rate limit: 20 `POST /api/queue` per playerId per minute (in-memory per isolate, best effort).
@@ -220,7 +227,8 @@ command deploys a new version at once, and every deploy resets the running match
 then go out with the next `npm run deploy`, at a quiet hour like any deploy.
 `vars.NODE_CONTROL_PUBLIC_KEY` must be the public half of that private key: the object checks it at
 every start and, when the two do not match, logs an ALERT and places, registers and rejoins nothing.
-Without the private key (local dev, a fork that runs no nodes) no match ever goes to a node. To try
+Without the private key (local dev, a fork that runs no nodes) no match ever goes to a node, and
+every `/nodes/*` route but `whoami` and the releases answers 404. To try
 the routes under `wrangler dev`, put a development pair in `.dev.vars` (both halves: a `.dev.vars`
 value overrides the committed var).
 
