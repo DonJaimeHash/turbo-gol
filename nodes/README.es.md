@@ -4,8 +4,9 @@ Servidores de partida que pone la comunidad, sea un VPS alquilado o una PC hogar
 de control propio que los registra, les asigna partidas, **verifica los resultados
 re-simulándolos** (todas las ranked, las casuales por muestreo) y recompensa a quien los pone con
 puntos para canjear cosas nuevas del juego.
-Hoy es un prototipo en `nodes/`: todavía no está conectado al juego ni al backend. Qué falta para
-usarlo con jugadores reales está en [docs/PRODUCCION.md](docs/PRODUCCION.md).
+Hoy es un prototipo en `nodes/`: el plano de control ya está en el Worker (`server/`), pero el
+matchmaker todavía no le manda partidas. Qué falta para usarlo con jugadores reales está en
+[docs/PRODUCCION.md](docs/PRODUCCION.md).
 
 **Qué se verifica:** todas las partidas ranked, porque proteger el ranking es el objetivo. Las
 casuales, por muestreo: todas mientras un servidor está a prueba, una parte cuando ya es activo, y
@@ -17,7 +18,7 @@ ninguna en los servidores del proyecto.
 | [docs/DECISIONES.md](docs/DECISIONES.md) | Lo que decidió el mantenedor, lo decidido por defecto y lo que queda abierto |
 | [docs/RECOMPENSAS.md](docs/RECOMPENSAS.md) | Puntos, tienda de anfitriones y defensas contra el farmeo |
 | [docs/VPS-SAO-PAULO.md](docs/VPS-SAO-PAULO.md) | Cómo levantar el verificador de confianza, que también es el primer servidor ranked |
-| [docs/INTEGRACION.md](docs/INTEGRACION.md) | Los cambios exactos en el Worker y en el cliente para activarlo, no aplicados |
+| [docs/INTEGRACION.md](docs/INTEGRACION.md) | Los cambios exactos en el Worker y en el cliente para activarlo, aplicados en parte: el plano de control ([6], #28); falta el gancho del matchmaker ([7]) |
 | [docs/PRODUCCION.md](docs/PRODUCCION.md) | Todo lo que falta para usarlo con jugadores reales, por etapas, y el costo de forzar TURN |
 | [docs/BOT.md](docs/BOT.md) | Propuestas, votos y el bot que las implementa |
 

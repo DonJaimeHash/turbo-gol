@@ -27,18 +27,22 @@
       { "name": "ACCOUNTS", "class_name": "AccountsDO" },
       // Custom-match lobbies (LobbyDO.ts, one per lobby, hibernating) and their directory (codes + public list).
       { "name": "LOBBY", "class_name": "LobbyDO" },
-      { "name": "LOBBY_DIR", "class_name": "LobbyDirectoryDO" }
+      { "name": "LOBBY_DIR", "class_name": "LobbyDirectoryDO" },
+      // Community nodes: their control plane (NodeRegistryDO.ts, one SQLite object 'nodes-v1' near São Paulo).
+      { "name": "NODES", "class_name": "NodeRegistryDO" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["MatchDO", "MatchmakerDO"] },
     { "tag": "v2", "new_sqlite_classes": ["RoomDO"] },
-    { "tag": "v3", "new_sqlite_classes": ["AccountsDO", "LobbyDO", "LobbyDirectoryDO"] }
+    { "tag": "v3", "new_sqlite_classes": ["AccountsDO", "LobbyDO", "LobbyDirectoryDO"] },
+    { "tag": "v4", "new_sqlite_classes": ["NodeRegistryDO"] }
   ],
   // The game itself: the Vite build (`npm run build` at the repo root -> ../dist) is uploaded with
   // the Worker and served from the same origin, so one URL is game + API + match sockets and the
-  // client needs no CORS. Only /api/*, /ws/*, /room/* and /lobby/* reach the Worker code (run_worker_first);
-  // every other path is answered by the asset layer (unknown paths fall back to index.html: SPA).
+  // client needs no CORS. Only /api/*, /ws/*, /room/*, /lobby/* and /nodes/* (the community nodes' routes)
+  // reach the Worker code (run_worker_first); every other path is answered by the asset layer (unknown
+  // paths fall back to index.html: SPA; an installer asking /nodes/* for the launcher must never get it).
   // The Worker still falls back to env.ASSETS.fetch() for anything else it receives. The directory
   // must exist when wrangler starts: `npm run dev` here creates an empty ../dist if needed (in
   // dev the game is served by Vite on 5173, which proxies /api, /ws and /room to this port).
@@ -46,11 +50,18 @@
     "directory": "../dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/ws/*", "/room/*", "/lobby/*"]
+    "run_worker_first": ["/api/*", "/ws/*", "/room/*", "/lobby/*", "/nodes/*"]
   },
   // Feature flags (matchmaking_off, do_disabled). The id is the official deployment's namespace; forks
   // create their own with `npx wrangler kv namespace create FLAGS` (any id works under wrangler dev).
   "kv_namespaces": [{ "binding": "FLAGS", "id": "61764fc794934a359008a53682efd9c3" }],
+  // Community nodes: the replays they upload (re-simulated before a ranked result counts; a 30-day
+  // lifecycle rule on the bucket) and the signed releases, installers and channel.json the nodes
+  // and their launchers download. Both buckets must exist before a deploy (`npx wrangler r2 bucket create <name>`).
+  "r2_buckets": [
+    { "binding": "NODE_REPLAYS", "bucket_name": "turbogol-node-replays" },
+    { "binding": "NODE_RELEASES", "bucket_name": "turbogol-node-releases" }
+  ],
   "vars": {
     "MATCH_LENGTH_SECONDS": 180,
     "REGION_OVERRIDE": "",
@@ -66,7 +77,14 @@
     // everywhere (pre-production only). On localhost it only runs if .dev.vars sets TURNSTILE_SECRET.
     "TURNSTILE_DISABLED": "0",
     // `npm run deploy` (scripts/deploy.mjs) overrides it with a VITE_ORIGINS environment variable when set.
-    "VITE_ORIGINS": "https://turbo-gol.com"
+    "VITE_ORIGINS": "https://turbo-gol.com",
+    // Community nodes. NODE_CONTROL_PUBLIC_KEY: the public half of the production control key, which
+    // the nodes check their players' tickets with; its private half is the NODE_CONTROL_PRIVATE_KEY
+    // secret, and a pair that does not match places nothing (an ALERT in the logs). NODES_PUBLIC_BASE:
+    // where the nodes and their installers reach /nodes/*. Without the secret (local dev, forks) no
+    // match ever goes to a node. NODE_TRUSTED_OPERATORS is a secret too (README, "Community nodes").
+    "NODE_CONTROL_PUBLIC_KEY": "MNSk5UH2jV-V35J_ZvfgW3JVyUvXCcgMgHAbvCzFJcI",
+    "NODES_PUBLIC_BASE": "https://turbo-gol.com"
   },
   // The shared ../src/sim/wasm/rocketsim.wasm is imported as a WebAssembly.Module.
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],

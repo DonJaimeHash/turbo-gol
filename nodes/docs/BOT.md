@@ -19,13 +19,13 @@
    `npm run deploy` (`scripts/node-release-gate.mjs`). Subir `stable` hace que cada nodo tome la
    versión nueva cuando reinicia; subir también `minimum` (la compuerta lo hace cuando cambia el
    código del juego que corre el nodo) obliga a los que están corriendo a drenar sus partidas y
-   actualizarse, pero solo cuando vuelven a conectarse: el plano de control compara un nodo con
-   `minimum` cuando el nodo saluda (`control-plane/controlPlane.ts:405`), y el lanzador no mira el
-   canal mientras el nodo corre.
-   Un deploy del Worker los reconecta a todos; el aviso sin reconexión llega con
-   `channelChanged()` (P5 de `PRODUCCION.md`). Hoy no hay un canal canary que funcione: el campo
-   existe en el protocolo pero el lanzador no lo lee. Para probar una versión antes, se la instala
-   a mano en una máquina del proyecto.
+   actualizarse. El lanzador no mira el canal mientras el nodo corre: avisa el plano de control,
+   que compara un nodo con `minimum` cuando el nodo saluda y, en el Worker, relee `channel.json`
+   cada minuto y avisa a los conectados que quedaron por debajo (`channelChanged()`, P5 y P19 de
+   `PRODUCCION.md`). Un verificador del proyecto con partidas de su versión por verificar espera a
+   que se verifiquen. Hoy no hay un canal canary que funcione: el campo existe en el protocolo pero
+   el lanzador no lo lee. Para probar una versión antes, se la instala a mano en una máquina del
+   proyecto.
 
 ## Por qué nunca hay merge automático
 

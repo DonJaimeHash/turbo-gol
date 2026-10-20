@@ -8,3 +8,17 @@ JWT_SECRET=change-me-to-a-long-random-string
 # Local OAuth testing only: the origin the provider redirects back to (the Vite page, which proxies
 # /api to this Worker), e.g. http://localhost:5173. Production uses the request's own origin.
 # PUBLIC_ORIGIN=http://localhost:5173
+# Community nodes (nodes/), optional: without the control key (and the NODES binding with its R2
+# buckets) the Worker never sends a match to a node. The private half of nodes/.keys/control.json
+# (`npm run keys` in nodes/); its public half is the NODE_CONTROL_PUBLIC_KEY var, so a development
+# key needs its own public half here too (a .dev.vars value overrides the committed var).
+# Production sets NODE_CONTROL_PRIVATE_KEY and NODE_TRUSTED_OPERATORS with `npx wrangler versions
+# secret put <NAME>`, never with `wrangler secret put`: that one deploys at once, and a deploy
+# resets the running matches (README, "Community nodes"). The next deploy ships them.
+# NODE_CONTROL_PRIVATE_KEY=
+# NODE_CONTROL_PUBLIC_KEY=
+# The project's account ids (16 hex characters each), comma-separated: their nodes are trusted.
+# NODE_TRUSTED_OPERATORS=
+# Declared for P24 (nodes/docs/PRODUCCION.md), the webhook of the team's alert channel. Not read
+# yet: the node control plane's ALERT lines go to the log only.
+# NODE_ALERT_WEBHOOK=

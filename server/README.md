@@ -12,8 +12,8 @@ announces drops. Design: `docs/online/PHASE1.md`, `docs/online/PHASE2.md`; decis
 ```
 server/
   wrangler.jsonc        Worker + Durable Objects (MATCH -> MatchDO, MATCHMAKER -> MatchmakerDO, ROOM -> RoomDO), KV FLAGS, vars,
-                        .wasm rule, assets (../dist = the Vite build, served from the Worker's origin; only /api/*, /ws/* and
-                        /room/* run the Worker)
+                        .wasm rule, assets (../dist = the Vite build, served from the Worker's origin; only /api/*, /ws/*,
+                        /room/*, /lobby/* and /nodes/* run the Worker)
   .dev.vars             local secrets (JWT_SECRET) for wrangler dev
   src/index.ts          HTTP router + WebSocket gates (/ws and /room: ticket verified at the edge), /api/ice, /api/config,
                         /api/where, asset fallback
@@ -23,6 +23,9 @@ server/
   src/MatchDO.ts        one per server match: sockets, RoomHost loop, snapshots, events, TTL, shutdown
   src/RoomDO.ts         one per p2p match: hibernating signaling room (welcome, signal relay, ready -> start, unreachable -> drop, TTL)
   src/roomHost.ts       RoomHost: input buffers, bots, match rules, snapshot encoding (env-agnostic)
+  src/NodeRegistryDO.ts one object: the community nodes' control plane (../nodes/control-plane) on SQLite (src/nodeStore.ts),
+                        the nodes' control sockets (hibernating), the outbox of their settled matches (src/nodeOutcome.ts)
+  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator routes
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
@@ -71,7 +74,12 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `REGION_OVERRIDE` | var | force a matchmaking region (empty = `request.cf.continent`, `dev` locally) |
 | `TURN_KEY_ID`, `TURN_KEY_TOKEN` | secrets, optional (both or none) | a Cloudflare Realtime TURN key: `GET /api/ice` and the room welcome then append 10-minute TURN credentials minted per request (`POST .../turn/keys/{id}/credentials/generate-ice-servers`, `{ ttl: 600 }`); unset = STUN only (`stun.cloudflare.com:3478`) |
 | `FLAGS` | KV | `matchmaking_off`, `do_disabled` (`1`/`true`/`on`) -> 503 |
-| `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws` and `/room` it still receives |
+| `NODES`, `NODE_REPLAYS`, `NODE_RELEASES` | Durable Object, R2, R2 | community nodes: the NodeRegistryDO, the replays the nodes upload, the signed releases and `channel.json` (see "Community nodes") |
+| `NODE_CONTROL_PRIVATE_KEY` | secret, optional | the Ed25519 key (PKCS#8, `npm run keys` in `nodes/`) that signs the players' node tickets; without it no match goes to a node |
+| `NODE_CONTROL_PUBLIC_KEY` | var | its public half, handed to every node at registration; a pair that does not match places nothing (ALERT) |
+| `NODE_TRUSTED_OPERATORS` | secret, optional | the project's account ids, comma-separated: their nodes are trusted (at most 2 each) and only they create node tokens |
+| `NODES_PUBLIC_BASE` | var | the origin the nodes and their installers reach `/nodes/*` at (`https://turbo-gol.com`) |
+| `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws`, `/room`, `/lobby` and `/nodes` it still receives |
 
 ## HTTP / WebSocket API
 
@@ -88,6 +96,12 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `GET /api/time` | | `{ now }` |
 | `GET /api/config` | | public client configuration: `{ turnstileSiteKey, protocol, version, region, autoRegion, regions, oauth, accounts }` (the sitekey is `null` when Turnstile is off; `oauth` lists the configured sign-in providers) |
 | `GET /api/where` | | `{ edgeColo, country, city?, asn?, ip }`: the Cloudflare colo (IATA code) that served the request and the client address masked to /24 (IPv6 /48), from `request.cf`; for the deploy measurements. The colo the *match* runs in is `Welcome.hostColo` (the MatchDO reads it once per isolate from `cloudflare.com/cdn-cgi/trace`, 5 s cap, `unknown` on failure) |
+| `GET /nodes/whoami` | | `{ ip }`: the address a node installer is seen from (`CF-Connecting-IP`) |
+| `GET /nodes/releases/channel`, `GET /nodes/releases/<key>` | | the node releases in R2 `NODE_RELEASES`: the channel (`{ stable, minimum }` when both read `X.Y.Z`, 404 while there is none, else 503; `no-store`), `<version>/<file>` (immutable) and the root files such as `launcher.mjs` and `install.sh` (`no-cache`, ETag); never a listing, never a key outside `src/nodeRoutes.ts`'s pattern |
+| `POST /nodes/register`, `GET /nodes/connect`, `PUT` / `GET /nodes/replays/<id>` | what a node sends | to the NodeRegistryDO: registration (4 KB, 5 per address per hour), the control WebSocket, the signed replay upload (16 MiB) and its download by the verifier; every one limited per address, an IPv6 address counted by its /64 |
+| `POST /nodes/tokens` | `{ region, name? }`, Bearer account session of a `NODE_TRUSTED_OPERATORS` account | a one-time node token (1 h) and its Linux install line; 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 10 per account per day |
+| `GET /nodes/mine` | Bearer account session | the caller's own nodes (30 per account per minute) |
+| `GET /nodes/status` | | the public list of nodes (no addresses), cached 10 s |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 
 Rate limit: 20 `POST /api/queue` per playerId per minute (in-memory per isolate, best effort).
@@ -158,6 +172,7 @@ its first deploy (local dev works with any of them):
 | secret `JWT_SECRET` | a long random string (`openssl rand -hex 32`) |
 | secret `TURNSTILE_SECRET` | the Turnstile **secret** of the same widget; required: without it `POST /api/guest` and `POST /api/auth/register` answer 503 outside local dev |
 | secrets `TURN_KEY_ID`, `TURN_KEY_TOKEN` | optional (phase 2): a Realtime TURN key (dashboard -> Realtime -> TURN); without them P2P pairs that need a relay cannot connect (STUN only) |
+| `wrangler.jsonc` -> `r2_buckets`, `vars.NODE_CONTROL_PUBLIC_KEY`, `vars.NODES_PUBLIC_BASE` | community nodes (see "Community nodes"): your bucket names, your control key's public half and your origin; a deploy fails while a bound bucket does not exist, so a fork that runs no nodes may drop the two buckets |
 
 ```sh
 cd server
@@ -186,7 +201,7 @@ Until a node release is published (a fork without nodes, or before the first one
 `npm run deploy -- --nodes-off` (from `server/` as well). If a deploy fails after the channel moved,
 the gate prints how to check which build serves (`npx wrangler deployments status`) before going back.
 
-The first deploy of a Worker applies the migrations `v1`-`v3` in order (later deploys apply only new
+The first deploy of a Worker applies the migrations `v1`-`v4` in order (later deploys apply only new
 tags); `wrangler dev` does the same locally the first time it starts. Custom Domain deploys need a
 token (or `wrangler login`) with Workers Scripts and Workers Routes edit rights and access to the zone.
 
@@ -208,6 +223,30 @@ With Turnstile on, the smoke cannot create a guest by itself: pass a browser ses
 second-guest leave test are then skipped. Live logs: `npx wrangler tail` (your account) or the
 dashboard's observability (enabled in `wrangler.jsonc`). Redeploys reset running matches (the sim
 lives in memory): their players get `410 match_reset` and can queue again.
+
+### Community nodes
+
+The control plane of the community nodes (`src/NodeRegistryDO.ts` around `../nodes/control-plane`)
+runs in this Worker, one SQLite object near São Paulo. Before the first deploy that carries it:
+
+```sh
+npx wrangler r2 bucket create turbogol-node-replays      # plus a 30-day lifecycle rule on it
+npx wrangler r2 bucket create turbogol-node-releases     # nodes/github/workflows/node-release.yml uploads the releases here
+npx wrangler versions secret put NODE_CONTROL_PRIVATE_KEY   # the privateKey whose public half is vars.NODE_CONTROL_PUBLIC_KEY
+npx wrangler versions secret put NODE_TRUSTED_OPERATORS     # the project's account ids, comma-separated
+```
+
+Set both secrets with `wrangler versions secret put`, never with `wrangler secret put`: the plain
+command deploys a new version at once, and every deploy resets the running matches. The secrets
+then go out with the next `npm run deploy`, at a quiet hour like any deploy.
+
+`vars.NODE_CONTROL_PUBLIC_KEY` must be the public half of that private key: the object checks the
+pair at every start and, when it does not match, logs an ALERT and places no match, registers no
+node and mints no rejoin ticket. Without the private key (local dev, a fork that runs no nodes) no
+match ever goes to a node and every `/nodes/*` route but `whoami` and the releases answers 404;
+without `NODE_TRUSTED_OPERATORS` nobody can create a node token (403 `not_trusted`). To try the
+routes under `wrangler dev`, put a development pair in `.dev.vars` (both halves: a `.dev.vars`
+value overrides the committed var).
 
 ## Limits and cost notes
 

@@ -448,6 +448,9 @@ export class ControlPlane {
     this.ledger = o.ledger;
     this.shop = o.shop ?? null;
     this.key = importPrivateKey(o.controlPrivateKey);
+    // A key that does not import fails each place() and rejoin() that needs it, not the process:
+    // nothing else awaits it, and an unhandled rejection would end the reference server.
+    this.key.catch(() => undefined);
     this.pub = importPublicKey(o.controlPublicKey);
     this.now = o.now ?? Date.now;
     this.log = o.log ?? ((m) => console.log(`[control] ${m}`));

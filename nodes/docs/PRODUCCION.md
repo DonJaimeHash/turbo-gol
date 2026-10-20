@@ -70,11 +70,11 @@ Todo el detalle, el procedimiento de instalación y la operación: `VPS-SAO-PAUL
 
 ### Por qué este orden
 
-- **Hoy el VPS no puede recibir jugadores.** El instalador baja primero `launcher.mjs` de
-  `/nodes/releases/` (`install/install.sh:108`), y esa URL devuelve el `index.html` del juego:
-  `/nodes/*` no está en `run_worker_first` (`server/wrangler.jsonc:49`) y el Worker manda al sitio
-  todo lo que no empieza con `/api/` (`server/src/index.ts:649`). No hay plano de control en el
-  Worker.
+- **Hasta el deploy de [6] (#28), el VPS no puede recibir jugadores.** El instalador baja primero
+  `launcher.mjs` de `/nodes/releases/` (`install/install.sh:108`), y en producción esa URL
+  devuelve el `index.html` del juego: `/nodes/*` no está en `run_worker_first`
+  (`server/wrangler.jsonc:49`) y el Worker manda al sitio todo lo que no empieza con `/api/`
+  (`server/src/index.ts:649`). Y no hay plano de control en el Worker hasta ese deploy.
 - **El estado se guarda antes de instalar.** Un VPS registrado contra un plano de control que no
   guarda nada queda huérfano en el próximo deploy. [1] ya escribe todo en un almacén; [6] lo pone
   en el SQLite del `NodeRegistryDO`.
@@ -223,66 +223,93 @@ M8), y hasta M10 cada deploy va con `npm run deploy -- --nodes-off`.
     y después drenar o reiniciar el nodo.
   - Nunca crea tags, ni hace commit ni push.
 
-#### [6] servidor: NodeRegistryDO y rutas /nodes (P17-P20)
+#### [6] servidor: NodeRegistryDO y rutas /nodes (P17-P20): #28
 
-Objetivo: el plano de control corre en el Worker con su estado guardado, y el VPS se puede
-instalar. No cambia nada del matchmaking, pero su deploy reinicia las partidas en curso de
-`MatchDO`, como cualquier deploy: a una hora tranquila. Depende de: [1]. M7 antes de mergear: con
-[6] en `main`, cada deploy falla sin los buckets.
+No cambia nada del matchmaking: nada llama todavía a las rutas internas del DO, así que ninguna
+partida va a un nodo hasta [7]. Su deploy reinicia las partidas en curso de `MatchDO`, como
+cualquier deploy: a una hora tranquila. M7 antes de mergear: con [6] en `main`, cada deploy falla
+sin los dos buckets; sin `NODE_CONTROL_PRIVATE_KEY`, todo `/nodes/*` responde 404 salvo `whoami` y
+las releases; sin `NODE_TRUSTED_OPERATORS`, nadie crea tokens (403 `not_trusted`).
 
-- [ ] **P17. El hash del wasm como constante,** con una prueba que la compara con el archivo. El
-  Worker importa el wasm ya compilado y no puede calcular su hash (`server/src/wasm.ts:9`), pero
-  el wasm está en git; `PROTOCOL_VERSION` ya está importado (`server/src/index.ts:68`). Así
-  funcionan un `wrangler deploy` común, `wrangler dev` y los forks, sin una variable de deploy que
-  alguien pueda olvidar. Más la configuración: `nodesMode` (lee `nodes_on`, D8, y trata
-  `vm_disabled` como apagado), los ids de operadores de confianza (D13) y los tipos de la API
-  interna.
-- [ ] **P18. `server/src/nodeOutcome.ts`:** las llamadas de `MatchDO` para cada resultado. `rated`
-  va a `/ranked-result`; el `void` de una ranked, a `/ranked-cancel`, con `playlist` y `region`
-  de la asignación, porque un `void` no las trae (`control-plane/controlPlane.ts:162`); y siempre
-  `/release` al matchmaker de la región. Entregar dos veces no hace daño: `AccountsDO` ignora un
-  `match_id` que ya tiene (`server/src/accountStore.ts:447`, `:486`). Un 4xx no se reintenta: se
-  descarta con un `ALERT`.
-- [ ] **P19. `NodeRegistryDO`:**
-  - SQLite desde el primer día (migración `v4` con `new_sqlite_classes`), el binding `NODES`, los
-    buckets R2 `NODE_REPLAYS` (30 días) y `NODE_RELEASES`, y las variables
-    `NODE_CONTROL_PUBLIC_KEY` y `NODES_PUBLIC_BASE`. Si la pública no corresponde al secreto
-    `NODE_CONTROL_PRIVATE_KEY`, no pone partidas y avisa.
-  - Guarda con P2-P4, y escribe la bandeja de salida en la misma transacción que la partida
-    terminada.
-  - Distingue un deploy (sin sockets: arranque en frío, con gracia) de una hibernación (sockets
-    vivos: los adopta).
-  - La alarma de 5 s sigue mientras haya sockets, partidas sin terminar, filas en la bandeja o una
-    gracia. No alcanza con "mientras haya nodos conectados": el barrido es lo único que anula las
-    partidas de un nodo caído (`control-plane/controlPlane.ts:1185-1200`).
-  - Si falta `channel.json` o está roto, usa el último bueno y avisa: `maybeUpdate` fallaría en
-    cada `hello`, sin canal en `control-plane/controlPlane.ts:530` y sin `minimum` en
-    `shared/controlProtocol.ts:374`.
-  - Verifica la firma de una subida de replay antes de calcular el hash del cuerpo (hoy lo calcula
-    primero, `control-plane/controlPlane.ts:789-791`), y pone un tope a los sockets sin
-    autenticar.
-  - Sin `inlineVerify` ni `/dev/*`.
-- [ ] **P20. Las rutas `/nodes/*`:**
-  - `/nodes/*` en `run_worker_first` (`server/wrangler.jsonc:49`), atendidas antes de que el
-    Worker mande al sitio (`server/src/index.ts:649`).
-  - `whoami`; `releases/channel`, como ruta propia porque el lanzador pide `channel` sin extensión
-    (`node/launcher.ts:522`); `releases/<archivo>`, con una lista de nombres permitidos y sin `..`;
-    `register`, `connect`, `replays/<id>`, `mine` y `status`.
-  - `tokens`, con la sesión de cuenta: 403 `not_trusted` para una cuenta que no es de confianza.
-    Hoy `Registry.createToken` solo valida la región (`control-plane/registry.ts:173-176`): con la
-    ruta abierta, cualquier cuenta pondría un nodo y vería las IP de los jugadores.
-  - En la etapa 1, una cuenta de confianza tiene como mucho 2 nodos: el VPS y uno de reemplazo.
-    Hoy el tope es 10 para cualquier operador (`MAX_NODES_PER_OPERATOR`,
-    `control-plane/registry.ts:36`, `:198`), y un nodo de confianza entra activo
-    (`control-plane/registry.ts:371-372`): con la contraseña de la cuenta del proyecto, alguien
-    pondría hasta 9 nodos que verifican sus propias ranked antes de que nadie lea el `ALERT` de
-    P24. El tope va en el registro, que también lo aplica a tokens creados antes. Dejar el nodo
-    nuevo en `pending` hasta que el mantenedor lo active no alcanza: las rutas de P25 usan la
-    misma cuenta.
-  - Los topes de 5 registros por IP por hora y 10 tokens por cuenta por día viven en el DO: el
-    limitador del Worker cuenta por isolate, en ventanas de 60 s (`server/src/index.ts:78`,
-    `:100-109`). Topes por IP para las subidas de replays y para `connect`.
-  - Las rutas de la tienda y de WebRTC responden 404 en esta etapa.
+- [x] **P17. El build del cliente, sin calcular nada en el Worker:** el hash del wasm es una
+  constante (`src/sim/wasm/rocketsim.sha256.ts`) que `native/build.ps1` (`npm run build:wasm`)
+  reescribe en cada build, y `tests/wasm-hash.test.mjs` falla si no coincide con el archivo. Con
+  `PROTOCOL_VERSION` forma `CLIENT_BUILD` (`server/src/nodeApi.ts`), el build contra el que se
+  comparan los nodos, igual en un deploy, en `wrangler dev` y en un fork. Más la configuración de
+  `server/src/env.ts`: `nodesMode` (lee `nodes_on`, D8; `vm_disabled` gana y un valor mal escrito
+  cuenta como apagado; lo usa [7]), los ids del secreto `NODE_TRUSTED_OPERATORS` (D13) y
+  `nodesConfigured`; los tipos y los códigos de la API interna están en `server/src/nodeApi.ts`.
+- [x] **P18. `server/src/nodeOutcome.ts`:** las llamadas de `MatchDO` para cada resultado. `rated`
+  va a `/ranked-result`; el `void` de una ranked, a `/ranked-cancel`, con `playlist` y `region` de
+  la asignación; una casual no anota nada; y toda partida termina con un `/release` al matchmaker
+  de su región. Un 5xx, un error de red o 10 s sin respuesta se reintentan; cualquier otra
+  respuesta que no sea 2xx se descarta con un `ALERT` que lleva el cuerpo, para aplicarlo a mano.
+- [x] **P19. `NodeRegistryDO`** (`server/src/NodeRegistryDO.ts`, sus tablas en
+  `server/src/nodeStore.ts`):
+  - El binding `NODES` (un solo objeto, `nodes-v1`, creado cerca de São Paulo), la migración `v4`
+    con `new_sqlite_classes`, los buckets R2 `NODE_REPLAYS` (`turbogol-node-replays`) y
+    `NODE_RELEASES` (`turbogol-node-releases`) y las variables `NODE_CONTROL_PUBLIC_KEY` y
+    `NODES_PUBLIC_BASE`. `NODE_CONTROL_PRIVATE_KEY` y `NODE_TRUSTED_OPERATORS` son secretos.
+  - En SQLite, con las filas de P2: `meta` (la `STATE_VERSION` de las filas), `node_tokens` (solo
+    el hash de cada token), `nodes`, `node_matches` y `outbox`, la bandeja de salida. Escribe en
+    forma síncrona; un registro va en una transacción, y una partida terminada también, junto con
+    sus filas de la bandeja. Con filas de otra `STATE_VERSION` no arranca: deja un `ALERT`,
+    responde 503 y no las toca.
+  - Sin sockets, el arranque es en frío (un deploy los corta todos): las partidas sin terminar
+    tienen la gracia de 90 s de P4. Al despertar de una hibernación adopta cada socket con el
+    `{ nodeId }` que guardó al entrar, sin un desafío nuevo, y el nodo puede recibir una partida
+    antes de su próximo heartbeat. Un socket que todavía no había entrado se cierra con 4401.
+  - Al arrancar comprueba que `NODE_CONTROL_PUBLIC_KEY` sea la mitad pública de
+    `NODE_CONTROL_PRIVATE_KEY`. Si no, deja un `ALERT` y no pone partidas: `place` responde
+    `{ placement: null, hosts: 0 }`, y el matchmaker deja de preguntar un rato. El registro
+    responde 503 `nodes_unavailable`, como cuando el estado no se puede leer, antes de gastar el
+    token, que sigue sirviendo; el rejoin, 503 `offline`, que mantiene el lock. Los nodos ya
+    registrados siguen reportando. Ninguna respuesta nombra la clave: la causa queda solo en el
+    `ALERT`.
+  - La alarma, cada 5 s mientras haya un socket, una partida sin terminar, una fila en la bandeja
+    o una gracia; si no hay nada, se borra. Corre el barrido (si falla, deja un `ALERT` y sigue),
+    se vuelve a programar antes de esperar a nadie, arranca la entrega de la bandeja sin esperarla
+    y relee `channel.json` cada minuto: si cambió, los nodos conectados por debajo del `minimum`
+    nuevo reciben su `update` en ese momento (un verificador de confianza con partidas de su build
+    por verificar espera, como al saludar). Si falta o está roto, el plano de control usa el último
+    bueno y avisa.
+  - La bandeja se entrega apenas se escribe y después en cada alarma. Cada entrega tiene 10 s de
+    tope y un destino que falló no se vuelve a probar en la misma pasada, así que un objeto trabado
+    no frena a los demás ni al barrido. Los reintentos se espacian (2, 4, 8… s, hasta 5 minutos), y
+    una fila sin entregar después de un día deja un `ALERT`.
+  - Los sockets, con la Hibernation API: un frame binario cierra con 1003, y uno de más de 256 KB,
+    con 1009. La firma de una subida de replay se comprueba antes de leer el cuerpo, que se lee por
+    partes hasta 16 MiB; un cuerpo JSON se lee hasta 4 KB, aunque llegue sin `Content-Length`.
+  - Sin `inlineVerify`, sin `/dev/*`, sin TURN y con el ledger solo en memoria: en la etapa 1 solo
+    hostean nodos de confianza, que no ganan puntos. Las rutas internas para [7]
+    (`/internal/place`, `/internal/rejoin`, `/internal/leave` y `/internal/status`) ya responden.
+- [x] **P20. Las rutas `/nodes/*`** (`server/src/nodeRoutes.ts`):
+  - `/nodes/*` en `run_worker_first`, atendidas antes de que el Worker mande al sitio.
+  - `whoami`; `releases/channel` (también `channel.json`), que devuelve solo `{ stable, minimum }`
+    cuando los dos son `X.Y.Z`, sin caché (404 si no existe y 503 si está roto); y
+    `releases/<archivo>`, con un patrón de nombres que se comprueba después de decodificar (un
+    `X.Y.Z/` opcional y un nombre de hasta 64 caracteres `A-Za-z0-9._-`), sin `..` ni listados:
+    todo lo del bucket que encaja en el patrón es público. Los archivos de una versión se cachean
+    como inmutables, los de la raíz se revalidan con ETag, y un tipo desconocido (un `.html`, por
+    ejemplo) sale como bytes.
+  - `register`, `connect` (426 sin `Upgrade`; el 101 pasa tal cual), `replays/<id>` (un id de 64
+    hex), `mine` y `status` (pública, 10 s en caché). El Worker solo pasa al DO los encabezados de
+    un nodo, y siempre pisa `x-client-ip`, `x-operator-id` y `x-operator-name`.
+  - `tokens`, con la sesión de cuenta: 401 sin sesión, 403 `account_required` para un invitado y
+    403 `not_trusted` para una cuenta que no está en `NODE_TRUSTED_OPERATORS`; el DO lo vuelve a
+    comprobar. La respuesta trae la línea de instalación de Linux.
+  - Una cuenta de confianza tiene como mucho 2 nodos (`MAX_TRUSTED_NODES_PER_OPERATOR`,
+    `control-plane/registry.ts`): el VPS y uno de reemplazo. El tope va en el registro, así que
+    también vale para tokens creados antes; un registro rechazado (403 `too_many_nodes`) deja el
+    token sin gastar y un `ALERT`. Un operador que ya tenía más nodos al entrar a la lista los
+    conserva.
+  - Topes por dirección en el Worker, con una IPv6 contada por su /64: `connect`, 30 por minuto;
+    subidas y bajadas de replays, 60 por minuto cada una; `status`, 60; y `mine`, 30 por minuto
+    por cuenta. Un `register` o un `tokens` que declara más de 4 KB recibe 413, y una subida de
+    más de 16 MiB también, antes de llegar al DO. Los topes de 5 registros por dirección por hora y
+    10 tokens por cuenta por día los lleva el DO, en memoria: un deploy los pone en cero. El
+    Worker los repite por isolate, para que la basura no llegue al DO.
+  - Las rutas de la tienda y de WebRTC, y cualquier otra bajo `/nodes/`, responden 404.
 
 #### [7] servidor: gancho del matchmaker y rejoin/leave (P22-P23)
 

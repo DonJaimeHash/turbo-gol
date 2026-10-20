@@ -6,7 +6,8 @@
 > nodo), cada uno con su prueba. Las pruebas automáticas
 > pasan, incluidas partidas de punta a punta por WebSocket y por WebRTC con el `NetClient` real del
 > juego. Todavía no está conectado al juego: la integración con el Worker está en
-> `INTEGRACION.md` y no se aplicó.
+> `INTEGRACION.md`, aplicada en parte: el plano de control ([6] de `PRODUCCION.md`, #28); falta el
+> gancho del matchmaker ([7]), así que ninguna partida va a un nodo.
 
 ## La idea en una frase
 
@@ -209,12 +210,12 @@ instalador pregunta la subida y el benchmark la tiene en cuenta.
 
 | Hecho y probado | Falta |
 |---|---|
-| Replay y verificador con el wasm real | Integrarlo al Worker (`INTEGRACION.md`) |
+| Replay y verificador con el wasm real | Conectar el matchmaker del Worker al plano de control (`INTEGRACION.md` §3, [7] de `PRODUCCION.md`) |
 | `MatchRoom` con el protocolo de `MatchDO`, por WebSocket y por WebRTC | Probar los instaladores en máquinas reales: VPS con nombre DNS, Windows, macOS. La lista completa está en `PRODUCCION.md` |
 | Adaptador WebRTC del jugador con el `NetClient` real | TURN real en producción para nodos detrás de NAT simétrico |
 | Verificador de confianza con cola y reintentos | Atestación de inputs desde el cliente (v2) |
 | Tienda, saldo, inventario y congelamiento | Los autos nuevos en el juego y el selector que consulta el inventario |
-| Strikes que vencen y pausas de 24 horas | Registro, puntos y replays persistentes (SQLite del DO y R2) |
+| Strikes que vencen y pausas de 24 horas | Puntos persistentes: el ledger vive en memoria hasta la etapa 2 (el registro y las partidas ya van al SQLite del DO, y los replays a R2) |
 | Lanzador, releases firmadas, build con `werift` adentro | Canal sin orden para inputs y snapshots, con cambios en el cliente |
 | Apagado sin cortar partidas en Linux, macOS y Windows (`stop.request`) | Verificación en un worker thread, para que un VPS que hostea y verifica use sus dos núcleos |
 | Validación de cada mensaje de los nodos; resultados, abandonos y puntos tomados del replay | Calidad medida por los clientes (vuelve la bonificación de 1,2) |

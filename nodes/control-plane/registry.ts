@@ -38,6 +38,12 @@ export const STRIKE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 /** A second strike pause within this window sends an active node back to probation (20 verified matches again). */
 export const REPEAT_PAUSE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_NODES_PER_OPERATOR = 10;
+/**
+ * Stage 1: a trusted operator (the project) runs one VPS and keeps room for its replacement. A
+ * trusted node is active at once and verifies its own ranked matches, so whoever holds the
+ * project account's password must not be able to add more of them than this.
+ */
+export const MAX_TRUSTED_NODES_PER_OPERATOR = 2;
 export const MAX_CAPACITY = 200;
 
 export interface Operator {
@@ -235,12 +241,25 @@ export class Registry {
 
   // ---- registration ---------------------------------------------------------------------------
 
+  /** How many nodes this operator may have: fewer for a trusted one (MAX_TRUSTED_NODES_PER_OPERATOR). */
+  private nodeCap(operatorId: string): number {
+    return this.trusted.has(operatorId) ? MAX_TRUSTED_NODES_PER_OPERATOR : MAX_NODES_PER_OPERATOR;
+  }
+
+  /** The operator already has every node it may have. A trusted one at its cap gets an ALERT: a token nobody on the team used. */
+  private atCap(tok: TokenRecord): boolean {
+    const cap = this.nodeCap(tok.operatorId);
+    if (this.byOperator(tok.operatorId).length < cap) return false;
+    if (this.trusted.has(tok.operatorId)) this.log(`ALERT registration refused: trusted operator ${tok.operatorName} (${tok.operatorId}) already has its ${cap} nodes`);
+    return true;
+  }
+
   async register(req: RegisterRequest, now: number): Promise<RegisterResult> {
     if (!req || typeof req.token !== 'string' || !req.token.startsWith(TOKEN_PREFIX) || req.token.length > 80) return { ok: false, code: 'bad_token' };
     const tok = this.tokens.get(await sha256Hex(req.token));
     if (!tok || tok.usedBy !== null) return { ok: false, code: 'bad_token', message: 'unknown or already used' };
     if (tok.expiresAt < now) return { ok: false, code: 'token_expired' };
-    if (this.byOperator(tok.operatorId).length >= MAX_NODES_PER_OPERATOR) return { ok: false, code: 'too_many_nodes' };
+    if (this.atCap(tok)) return { ok: false, code: 'too_many_nodes' };
     if (!(await isValidPublicKey(req.publicKey))) return { ok: false, code: 'bad_public_key' };
     for (const n of this.nodes.values()) if (n.publicKey === req.publicKey) return { ok: false, code: 'key_in_use' };
     const roles = Array.isArray(req.roles) ? [...new Set(req.roles)].filter((r): r is NodeRole => r === 'host' || r === 'verify') : [];
@@ -309,7 +328,7 @@ export class Registry {
     // key or another token of this operator. Nothing yields from here until the token is spent, so
     // check again.
     if (tok.usedBy !== null) return { ok: false, code: 'bad_token', message: 'unknown or already used' };
-    if (this.byOperator(tok.operatorId).length >= MAX_NODES_PER_OPERATOR) return { ok: false, code: 'too_many_nodes' };
+    if (this.atCap(tok)) return { ok: false, code: 'too_many_nodes' };
     for (const n of this.nodes.values()) if (n.publicKey === req.publicKey) return { ok: false, code: 'key_in_use' };
     tok.usedBy = nodeId;
     this.nodes.set(nodeId, node);
