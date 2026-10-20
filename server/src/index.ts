@@ -5,7 +5,8 @@
  *   POST /api/queue   { mode, kind?, p2pProtocol? }  Bearer session
  *                    -> long-poll <= 25 s: QueueResultP2p (kind 'p2p', the default:
  *                       a RoomDO signaling room, wsUrl ws(s)://host/room/<roomId>) or the phase 1 QueueResult
- *                       (kind 'server', or the p2p fallback for a lone human: a MatchDO match, wsUrl /ws/<matchId>);
+ *                       (kind 'server', or the p2p fallback for a lone human: a MatchDO match, wsUrl /ws/<matchId>;
+ *                       or, with the nodes on, a match on a community node: node: true, wsUrl the node's own wss://);
  *                       426 'reload_required' for kind 'p2p' without this server's P2P protocol in p2pProtocol (a stale
  *                       page); 429 'no_show' { retryAfterMs } from the matchmaker (room tickets left unused, p2p only)
  *   POST /api/rejoin  { matchId } Bearer session        -> QueueResult with a fresh ticket (MatchDO matches only; a RoomDO
@@ -54,10 +55,13 @@
  * upgrade whose Origin is outside the list is refused (403 'bad_origin'); a request without Origin
  * (non-browser client) is let through to the ticket check.
  * Flags (KV FLAGS): matchmaking_off, do_disabled -> 503. do_disabled also stops /api/queue, so no
- * new room is created while its sockets would be refused.
+ * new room is created while its sockets would be refused; for a player the nodes are on for, only
+ * its p2p queue (server and ranked matches then wait for a node). nodes_on (absent: off; '1':
+ * everyone; a list of account ids: a canary) lets matches go to community nodes, vm_disabled turns
+ * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts).
  */
 import type { Env } from './env';
-import { SERVER_VERSION, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, readJson, sanitizeName } from './env';
+import { SERVER_VERSION, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
 import type { RankedCheck } from './accountStore';
@@ -341,12 +345,16 @@ async function queue(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
   if (await flag(env, 'matchmaking_off')) return error(503, 'matchmaking_off');
-  if (await flag(env, 'do_disabled')) return error(503, 'do_disabled'); // no new rooms while their sockets would be refused
+  // No new rooms while their sockets would be refused. With the nodes on for this player (D9) a
+  // server or ranked queue goes on: its match waits for a node, and no MatchDO is created for it.
+  const doDisabled = await flag(env, 'do_disabled');
+  if (doDisabled && !(nodesConfigured(env) && nodesAllowed(await nodesMode(env), [session.sub]))) return error(503, 'do_disabled');
   const body = await readJson<{ mode?: unknown; modes?: unknown; kind?: unknown; p2pProtocol?: unknown; region?: unknown }>(request);
   const modes: GameModeId[] | null = body && isModeList(body.modes) ? body.modes : body && isMode(body.mode) ? [body.mode] : null;
   if (!body || modes === null) return error(400, 'bad_mode', "mode must be '1v1' | '2v2' | '3v3' (or modes: a list of them)");
   if (body.kind !== undefined && !isQueueKind(body.kind)) return error(400, 'bad_kind', "kind must be 'p2p' | 'server' | 'ranked'");
   const kind = body.kind ?? 'p2p';
+  if (doDisabled && kind === 'p2p') return error(503, 'do_disabled'); // a P2P room is a RoomDO: never on a node
   if (body.region !== undefined && !isRegion(body.region)) return error(400, 'bad_region');
   // A P2P client states its P2P protocol; a page cached from before a deploy (version 1 sends
   // kind 'p2p' without it) would fail on the room's welcome after taking a seat (its partner then
@@ -387,7 +395,7 @@ async function queue(request: Request, env: Env): Promise<Response> {
   }
   if (result.status === 'matched') {
     if (isP2pResult(result)) result.wsUrl = socketUrl(request, '/room/' + result.roomId);
-    else if (result.matchId) result.wsUrl = socketUrl(request, '/ws/' + result.matchId);
+    else if (result.matchId && result.node !== true) result.wsUrl = socketUrl(request, '/ws/' + result.matchId); // a node match keeps the node's own wss:// URL
   }
   return json({ ...result, region });
 }
