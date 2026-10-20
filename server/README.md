@@ -241,11 +241,14 @@ the routes under `wrangler dev`, put a development pair in `.dev.vars` (both hal
 value overrides the committed var).
 
 **Alerts.** The object logs `[nodes] ALERT ...` lines for what a maintainer must look at, and with
-`NODE_ALERT_WEBHOOK` set each one is also posted to that Discord channel (`src/nodeAlerts.ts`). The
-same alert (the line without its numbers and ids) goes out at most once in 10 minutes, and at most
-5 posts go out a minute (Discord refuses more at once); the logs keep every line. A post quotes
-the line in one code span, with no mention and no link preview: node names, versions and answers
-are in it. Among them:
+`NODE_ALERT_WEBHOOK` set each one is also posted to that Discord channel (`src/nodeAlerts.ts`); the
+logs keep every line. What an account did (a maintainer action, a token created or a node
+registered for a trusted operator) is posted every time. Any other alert goes out at most once in
+10 minutes (the same line without its numbers and ids), and at most 5 of them in any minute: the
+channel is told how many it did not get, with the next post or on its own once the minute is
+over. Posts take turns, at most 4 in 3 s (Discord refuses a sixth in 2 s), and one Discord refuses
+with a 429 is tried once more. A post quotes the line in one code span, with no mention and no
+link preview: node names, versions and answers are in it. Among them:
 
 * the control key pair does not match; a token created or a node registered for a trusted operator
   (whoever holds the project account's session can do both); an outbox call refused, or
@@ -257,9 +260,10 @@ are in it. Among them:
   minutes, a node below the channel's minimum for 2 hours (its update deferred, or not taken);
 * the health check below, and every maintainer action.
 
-While a trusted node in service is offline the alarm keeps running (as it does while a node is
-connected), and a restart raises its alert again: set a node taken out of service for good to
-`banned` (or `suspended`) with `/nodes/admin/status`.
+While a trusted node in service is offline the alarm keeps running until its alert goes out (as it
+does while a node is connected); the object keeps which nodes got theirs, so a restart does not
+raise them again, and the node's return is a plain line. A node taken out of service for good is
+set to `banned` (or `suspended`) with `/nodes/admin/status`: it is not watched any more.
 
 **Maintainer routes.** `/nodes/admin/*` takes the Bearer session of an account in
 `NODE_TRUSTED_OPERATORS`. From a tab of the game with that account signed in (as for the token in
@@ -281,11 +285,13 @@ node's machine brings it back.
 
 **Health check.** Every 5 minutes (`triggers` in `wrangler.jsonc`, `scheduled()` in
 `src/index.ts`) the Worker makes one call to the object, which fetches the `/healthz` of every
-trusted `wss` node online, or in service and seen within the hour, through the node's own TLS, 5 s
-each. No answer, a TLS or network error, an answer that is not `ok` or not signed by the node, or a
-drain nobody asked for (no drain or update sent to that node process, and its version not below
-the channel's minimum) is an `ALERT`: it catches an expired certificate while the node's
-heartbeats look fine. Without the node settings a run calls nothing.
+trusted `wss` node online, or in service and seen by the object within the hour (a restart forgets
+when: an offline node is probed again once it connects), through the node's own TLS, 5 s each. No
+answer, a TLS or network error, an answer that is not `ok` or not signed by the node, or a drain
+nobody asked for (no drain or update sent to that node process, and its version not below the
+channel's minimum) is an `ALERT`, one until the node answers again whatever the failure turns
+into: it catches an expired certificate while the node's heartbeats look fine. Without the node
+settings a run calls nothing.
 
 **The switches are manual.** `matchmaking_off`, `do_disabled` and `vm_disabled` in KV `FLAGS`
 are set by hand (`npx wrangler kv key put vm_disabled 1 --binding FLAGS --remote`; `kv key delete`

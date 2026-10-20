@@ -288,9 +288,10 @@ globalThis.fetch = async (url, init = {}) => {
   return new RealResponse(JSON.stringify({ ok: true, nodeId: h.nodeId, draining: h.draining === true, sig: await sign(h.key, reachMessage(h.nodeId, nonce)) }));
 };
 
-/** A NodeRegistryDO on `ctx`, started. */
+/** A NodeRegistryDO on `ctx`, started. An ALERT post's turn comes at once (nodeOps.test.mjs times the turns). */
 async function boot(env, ctx = new FakeCtx()) {
   const obj = new D.NodeRegistryDO(ctx, env);
+  obj.alertSleep = () => Promise.resolve();
   await obj.ready;
   return { obj, ctx, env };
 }
@@ -925,7 +926,7 @@ const MIN = 60_000;
 
 /**
  * A NodeRegistryDO posting its ALERTs to the fake webhook, with a live trusted node and nothing
- * posted yet: a minute later, so the token's and the registration's posts are out of the burst window.
+ * posted yet: a minute later, so the token's and the registration's posts are behind every limit.
  */
 async function watched(over = {}) {
   const env = makeEnv({ NODE_ALERT_WEBHOOK: HOOK, ...over });
@@ -938,23 +939,21 @@ async function watched(over = {}) {
   return { h, env, ...live };
 }
 
-test('ALERT lines go to the team’s channel, the registry’s and the outbox’s too: in a code span, no mention, each alert once in 10 minutes', async () => {
+test('ALERT lines go to the team’s channel, the registry’s and the outbox’s too: in a code span, no mention; every token and trusted node each time', async () => {
   posts.length = 0;
   const env = makeEnv({ NODE_ALERT_WEBHOOK: HOOK });
   const h = await boot(env);
   const { node, ws } = await liveNode(h);
-  await tokenFor(h); // the same alert as the first token's
+  await tokenFor(h); // the same line as the first token's: an account's action, posted again
   await h.ctx.settle();
-  assert.deepEqual(posted(), [
-    '**ALERT** `registration token created for trusted operator Proyecto Señor (a1b2c3d4e5f60718), region SA`',
-    `**ALERT** \`trusted node sao-paulo-1 (${node.nodeId}) registered for Proyecto Señor (a1b2c3d4e5f60718), roles host+verify at wss://sp1.turbo-gol.test\``,
-  ]);
+  const token = '**ALERT** `registration token created for trusted operator Proyecto Señor (a1b2c3d4e5f60718), region SA`';
+  assert.deepEqual(posted(), [token, `**ALERT** \`trusted node sao-paulo-1 (${node.nodeId}) registered for Proyecto Señor (a1b2c3d4e5f60718), roles host+verify at wss://sp1.turbo-gol.test\``, token]);
   assert.deepEqual(posts[0].allowed_mentions, { parse: [] });
-  clock += 10 * MIN;
+  clock += 5 * MIN;
   await send(h, ws, { t: 'heartbeat', data: beat() });
   await tokenFor(h);
   await h.ctx.settle();
-  assert.equal(posts.length, 3, 'ten minutes later it is posted again');
+  assert.deepEqual(posted().slice(3), [token], 'five minutes later too');
   // A call AccountsDO refuses: the outbox drops it with an ALERT, which carries the body.
   env.ACCOUNTS.answer = () => new RealResponse('{"error":"bad_request"}', { status: 400 });
   const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody({ ranked: true }) })).json;
@@ -974,8 +973,9 @@ test('ALERT lines go to the team’s channel, the registry’s and the outbox’
   assert.deepEqual(posts, []);
 });
 
-test('a trusted node offline for 2 minutes: one ALERT, with the alarm running for it while nothing else needs it; its return is a plain line', async () => {
-  const { h, node, ws } = await watched();
+test('a trusted node offline for 2 minutes: one ALERT, the alarm running for it until then; a restart does not raise it again, its return is a plain line', async () => {
+  const { h, env, node, ws } = await watched();
+  const kept = () => rows(h, 'meta').find((r) => r.k === 'offline_alerted')?.v;
   await h.obj.webSocketClose(ws, 1006, '', false);
   await h.obj.alarm();
   assert.equal(h.ctx.alarm, clock + D.TICK_MS, 'no socket and no match: the offline node keeps the alarm');
@@ -985,17 +985,40 @@ test('a trusted node offline for 2 minutes: one ALERT, with the alarm running fo
   assert.deepEqual(posts, [], 'not yet');
   clock += D.TICK_MS;
   await h.obj.alarm();
+  assert.equal(h.ctx.alarm, null, 'its ALERT is out: nothing needs the alarm any more');
   await h.obj.alarm();
   await h.ctx.settle();
   assert.equal(posts.length, 1, 'once');
   assert.match(posted()[0], new RegExp(`^\\*\\*ALERT\\*\\* \`trusted node sao-paulo-1 \\(${node.nodeId}\\) offline for 2 min \\(last heartbeat \\d\\d:\\d\\d:\\d\\d UTC\\): no match goes to it\`$`));
+  assert.equal(kept(), JSON.stringify([node.nodeId]));
+  // A deploy, or the object evicted while it slept: the new one knows that ALERT went out.
   lines.length = 0;
-  const back = await connect(h, node);
-  await send(h, back, { t: 'hello', data: helloOf(node) });
-  await h.obj.alarm();
-  await h.ctx.settle();
+  const later = await boot(env, new FakeCtx(h.ctx.db));
+  assert.equal(later.ctx.alarm, null, 'nothing to wait for');
+  clock += 3 * MIN;
+  await later.obj.alarm();
+  assert.deepEqual(alerts(), [], 'not raised again');
+  // Its return: a plain line, and the row lets it go.
+  const back = await connect(later, node);
+  await send(later, back, { t: 'hello', data: helloOf(node) });
+  await later.obj.alarm();
+  await later.ctx.settle();
   assert.ok(lines.includes(`[nodes] trusted node sao-paulo-1 (${node.nodeId}) back online`), lines.join('\n'));
   assert.equal(posts.length, 1, 'not an ALERT');
+  assert.equal(kept(), '[]');
+  // Offline again, taken out of service, and back in service while still offline: a new outage, and the alarm runs for it.
+  const status = (s) => call(later, 'POST', '/nodes/admin/status', { body: { nodeId: node.nodeId, status: s }, headers: { 'x-operator-id': PROJECT } });
+  await later.obj.webSocketClose(back, 1006, '', false);
+  clock += 3 * MIN;
+  await later.obj.alarm();
+  assert.deepEqual([kept(), later.ctx.alarm], [JSON.stringify([node.nodeId]), null]);
+  await status('suspended');
+  assert.deepEqual([kept(), later.ctx.alarm], ['[]', null], 'out of service: not watched');
+  lines.length = 0;
+  await status('active');
+  assert.equal(later.ctx.alarm, clock + D.TICK_MS);
+  await later.obj.alarm();
+  assert.equal(alerts().filter((l) => l.includes(`trusted node sao-paulo-1 (${node.nodeId}) offline for`)).length, 1);
 });
 
 test('the watch: tick lag over 8 ms in 3 heartbeats, traffic at 80 % of the cap, a verification waiting 30 minutes, an update deferred for 2 hours', async () => {
@@ -1045,6 +1068,9 @@ test('the cron’s health check: a TLS error while the heartbeats look fine is a
   lines.length = 0;
   assert.deepEqual(await health(), { probed: 1, problems: 0 });
   assert.ok(lines.includes(`[nodes] node sao-paulo-1 (${node.nodeId}) /healthz answers again`));
+  // A new problem is a new ALERT; past 10 minutes, the channel takes this node's again.
+  clock += 10 * MIN;
+  await send(h, ws, { t: 'heartbeat', data: beat() });
   node.draining = true;
   assert.deepEqual(await health(), { probed: 1, problems: 1 });
   await h.ctx.settle();
@@ -1059,7 +1085,8 @@ test('the cron’s health check: a TLS error while the heartbeats look fine is a
   node.fail = () => new Promise(() => {});
   lines.length = 0;
   assert.deepEqual(await within(1_000, health(), 'the probe waited for a node that never answers'), { probed: 1, problems: 1 });
-  assert.ok(lines.some((l) => l.endsWith('/healthz at https://sp1.turbo-gol.test: no answer in 0.03 s')), lines.join('\n'));
+  assert.ok(lines.includes(`[nodes] node sao-paulo-1 (${node.nodeId}) /healthz at https://sp1.turbo-gol.test still fails, now: no answer in 0.03 s`), lines.join('\n'));
+  assert.deepEqual(alerts(), [], 'the same problem in another kind: no new ALERT');
   node.fail = null;
   await h.obj.webSocketClose(ws, 1006, '', false);
   assert.equal((await health()).probed, 1, 'offline, but seen within the hour');
@@ -1134,9 +1161,7 @@ test('the maintainers’ routes: a trusted account only; the list, status, drain
   assert.deepEqual(ws.of('update'), [{ t: 'update', version: '0.3.0' }], 'told once');
   assert.equal((await run('POST', 'update')).status, 200);
   assert.equal(ws.of('update').length, 2, 'asked again, told again');
-  // reprobe: the control plane's probe and a direct one (a minute on: the channel takes 5 posts a minute)
-  clock += MIN;
-  await send(h, ws, { t: 'heartbeat', data: beat() });
+  // reprobe: the control plane's probe and a direct one
   node.fail = () => {
     throw new TypeError('fetch failed: certificate has expired');
   };
@@ -1150,9 +1175,9 @@ test('the maintainers’ routes: a trusted account only; the list, status, drain
     `**ALERT** \`${actor}: node sao-paulo-1 (${node.nodeId}) suspended -> active\``,
     `**ALERT** \`${actor}: node sao-paulo-1 (${node.nodeId}) told to drain: kernel update\``,
     `**ALERT** \`${actor}: the nodes were told the channel again (stable 0.3.0, minimum 0.3.0): 1 online below its minimum\``,
+    `**ALERT** \`${actor}: the nodes were told the channel again (stable 0.3.0, minimum 0.3.0): 1 online below its minimum\``,
     `**ALERT** \`${actor}: node sao-paulo-1 (${node.nodeId}) probed: TLS error (an expired or invalid certificate?): TypeError: fetch failed: certificate has expired; in wss placement\``,
-  ]);
-  assert.equal(lines.filter((l) => l.startsWith(`[nodes] ALERT ${actor}: the nodes were told`)).length, 2, 'the second update is logged too (the channel got it once in 10 minutes)');
+  ], 'every call, the same one twice too, and more in a minute than the 5 alerts a minute');
   // A node offline is told nothing.
   await h.obj.webSocketClose(ws, 1006, '', false);
   const off = await run('POST', 'drain', { nodeId: node.nodeId });

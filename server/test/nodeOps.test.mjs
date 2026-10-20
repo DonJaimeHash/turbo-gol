@@ -1,6 +1,7 @@
 // The operations side of the community nodes, without workerd: the ALERT webhook
 // (server/src/nodeAlerts.ts: the Discord message, its escaping, one post per alert in 10 minutes,
-// the burst limit, failures kept out of the logs' ALERT lines) on a fake fetch, and what the
+// the burst limit and its count, audit lines posted every time, the posts' turns, a 429 tried
+// again, failures kept out of the logs' ALERT lines) on a fake fetch and a fake clock, and what the
 // NodeRegistryDO watches (server/src/nodeWatch.ts: a trusted node offline, traffic near its cap,
 // tick lag, a verification or an update waiting too long, and the cron's /healthz probe of a node,
 // TLS and network errors included) on plain node records. Run from server/: npm test
@@ -68,17 +69,43 @@ function fakeFetch(answer = () => new Response(null, { status: 204 })) {
   return f;
 }
 
-/** An AlertHook on a fake fetch and clock; `settle()` waits for the posts it started. */
+/**
+ * An AlertHook on a fake fetch and a fake clock: what it waits for (a post's turn, a Retry-After,
+ * the minute's count) waits on that clock. `settle()` lets what started end; `pass(ms)` moves the
+ * clock, and what was waiting for it goes out. `starts` holds when each post started.
+ */
 function hook(over = {}) {
   const waits = [];
   const logs = [];
-  const h = { now: NOW, waits, logs, fetch: fakeFetch() };
-  h.hook = new AL.AlertHook({ url: HOOK, waitUntil: (p) => waits.push(p), fetch: (u, i) => h.fetch(u, i), now: () => h.now, log: (m) => logs.push(m), ...over });
+  const timers = [];
+  const h = { now: NOW, waits, logs, starts: [], fetch: fakeFetch() };
+  const fetch = (u, i) => {
+    h.starts.push(h.now);
+    return h.fetch(u, i);
+  };
+  const sleep = (ms) => new Promise((resolve) => timers.push({ at: h.now + ms, resolve }));
+  h.hook = new AL.AlertHook({ url: HOOK, waitUntil: (p) => waits.push(p), fetch, now: () => h.now, sleep, log: (m) => logs.push(m), ...over });
   h.settle = async () => {
-    while (waits.length > 0) await Promise.all(waits.splice(0));
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  h.pass = async (ms) => {
+    const until = h.now + ms;
+    for (;;) {
+      await h.settle();
+      timers.sort((a, b) => a.at - b.at);
+      if (timers.length === 0 || timers[0].at > until) break;
+      const t = timers.shift();
+      h.now = Math.max(h.now, t.at);
+      t.resolve();
+    }
+    h.now = until;
+    await h.settle();
   };
   return h;
 }
+
+/** The most of `times` in any `ms` (a window starting at one of them). */
+const most = (times, ms) => Math.max(0, ...times.map((s) => times.filter((t) => t >= s && t < s + ms).length));
 
 const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -144,22 +171,95 @@ test('the same alert at most once in 10 minutes, whatever its numbers; an explic
   assert.equal(h.fetch.calls.length, 4);
 });
 
-test('at most 5 posts a minute (Discord takes 5 a webhook in 2 s): the rest stay in the logs and the next post counts them', async () => {
+test('at most 5 alerts in any minute: the rest stay in the logs, counted with the next post, or alone once the minute is over', async () => {
   const h = hook();
   assert.equal(AL.ALERT_BURST, 5);
-  for (let i = 0; i < AL.ALERT_BURST + 2; i++) h.hook.post(`ALERT node n${i} offline`);
+  for (let i = 0; i < AL.ALERT_BURST + 2; i++) {
+    h.hook.post(`ALERT node n${i} offline`);
+    await h.pass(1_000);
+  }
   assert.equal(h.fetch.calls.length, AL.ALERT_BURST);
-  h.now += MIN;
-  h.hook.post('ALERT node n99 offline');
+  // Nothing else comes: the count goes out alone when the first alert leaves the minute.
+  await h.pass(AL.ALERT_BURST_MS - 7_000 - 1);
+  assert.equal(h.fetch.calls.length, AL.ALERT_BURST, 'not before');
+  await h.pass(1);
+  assert.equal(h.fetch.calls.at(-1).body.content, "(2 more ALERT lines only in the Worker's logs)");
+  // A post that goes first (an audit line here: alerts wait for the minute too) carries the count, once.
+  assert.equal(h.hook.post('ALERT node m0 offline'), true, 'the minute has room for one');
+  assert.equal(h.hook.post('ALERT node m1 offline'), false);
+  h.hook.audit('ALERT admin Javi (a1b2c3d4e5f60718): listed the nodes (1, with their addresses)');
+  await h.pass(AL.ALERT_BURST_MS);
+  assert.equal(h.fetch.calls.at(-1).body.content, "**ALERT** `admin Javi (a1b2c3d4e5f60718): listed the nodes (1, with their addresses)`\n(1 more ALERT line only in the Worker's logs)");
+  h.hook.post('ALERT node m100 offline');
   await h.settle();
-  assert.equal(h.fetch.calls.length, AL.ALERT_BURST + 1);
-  assert.equal(h.fetch.calls.at(-1).body.content, "**ALERT** `node n99 offline`\n(2 more ALERT lines only in the Worker's logs)");
-  h.hook.post('ALERT node n100 offline');
-  await h.settle();
-  assert.equal(h.fetch.calls.at(-1).body.content, '**ALERT** `node n100 offline`', 'counted once');
+  assert.equal(h.fetch.calls.at(-1).body.content, '**ALERT** `node m100 offline`', 'counted once');
+  assert.equal(h.fetch.calls.filter((c) => c.body.content.startsWith('(')).length, 1, 'no count alone once a post took it');
 });
 
-test('a webhook that fails or never answers: a plain log line without its URL, never an ALERT, nothing thrown', async () => {
+test('the limit is a sliding minute, and posts take turns: never 5 in 2 s across the edge of a minute', async () => {
+  const h = hook();
+  h.hook.post('ALERT alert a');
+  await h.pass(59_900);
+  for (const c of 'bcde') assert.equal(h.hook.post(`ALERT alert ${c}`), true);
+  await h.pass(100);
+  // The first alert is a minute old: one more fits (at its turn), the other four are counted.
+  assert.deepEqual([...'fghij'].map((c) => h.hook.post(`ALERT alert ${c}`)), [true, false, false, false, false]);
+  await h.pass(2 * AL.ALERT_BURST_MS);
+  assert.equal(h.fetch.calls.length, 6);
+  assert.ok(most(h.starts, AL.ALERT_BURST_MS) <= AL.ALERT_BURST, String(h.starts));
+  assert.ok(most(h.starts, 2_000) <= AL.ALERT_PACE, String(h.starts));
+  assert.ok(most(h.starts, AL.ALERT_PACE_MS) <= AL.ALERT_PACE, String(h.starts));
+  assert.equal(h.fetch.calls.at(-1).body.content, "**ALERT** `alert f`\n(4 more ALERT lines only in the Worker's logs)", 'its turn came after them');
+});
+
+test('audit lines: every one posted, none merged with another or left out by the alerts’ limit, and in turns Discord takes', async () => {
+  const h = hook();
+  const ban1 = 'ALERT admin Javi (a1b2c3d4e5f60718): node Sao Paulo 1 (0123456789abcdef) active -> banned';
+  const ban2 = 'ALERT admin Javi (a1b2c3d4e5f60718): node Sao Paulo 2 (fedcba9876543210) active -> banned';
+  const token = 'ALERT registration token created for trusted operator Javi (a1b2c3d4e5f60718), region SA';
+  assert.equal(AL.alertKey(ban1), AL.alertKey(ban2), 'as alerts the two bans would be one');
+  // A stolen session's harmless calls and a cascade of alerts first, then what it came for, in the same minute.
+  for (const c of 'abcde') assert.equal(h.hook.audit(`ALERT admin Javi (a1b2c3d4e5f60718): node sp1 (0123456789abcdef) active -> active (no change): check ${c}`), true);
+  for (let i = 0; i < AL.ALERT_BURST; i++) assert.equal(h.hook.post(`ALERT node n${i} offline`), true, 'audit lines do not count against the alerts');
+  for (const line of [ban1, ban2, token, token]) assert.equal(h.hook.audit(line), true);
+  assert.equal(h.hook.post('ALERT node n99 offline'), false, 'the alerts are still limited');
+  await h.pass(AL.ALERT_BURST_MS - 1);
+  const got = h.fetch.calls.map((c) => c.body.content);
+  assert.equal(got.length, 5 + AL.ALERT_BURST + 4, 'all of them within the minute');
+  assert.equal(got.filter((c) => c.includes('-> banned')).length, 2);
+  assert.equal(got.filter((c) => c.includes('registration token created')).length, 2, 'the same line twice is two posts');
+  assert.ok(most(h.starts, AL.ALERT_PACE_MS) <= AL.ALERT_PACE, String(h.starts));
+  // A flood: past ALERT_QUEUE_MAX waiting, a line is counted, and the next post says so.
+  const flood = hook();
+  const n = AL.ALERT_PACE + AL.ALERT_QUEUE_MAX + 3;
+  for (let i = 0; i < n; i++) flood.hook.audit(`ALERT admin Javi (a1b2c3d4e5f60718): call ${i}`);
+  await flood.pass(AL.ALERT_BURST_MS);
+  assert.equal(flood.fetch.calls.length, AL.ALERT_PACE + AL.ALERT_QUEUE_MAX);
+  assert.ok(flood.fetch.calls[AL.ALERT_PACE].body.content.endsWith("\n(3 more ALERT lines only in the Worker's logs)"));
+  assert.equal(new AL.AlertHook({ url: undefined, waitUntil: () => {}, fetch: fakeFetch() }).audit(token), false, 'without a webhook nothing is posted');
+});
+
+test('a post Discord answers 429 is tried once more after its Retry-After; one refused again is counted, and its alert may go out again', async () => {
+  const h = hook();
+  let refuse = 1;
+  h.fetch = fakeFetch(() => (refuse-- > 0 ? new Response('{"retry_after":2}', { status: 429, headers: { 'retry-after': '2' } }) : new Response(null, { status: 204 })));
+  h.hook.post('ALERT node sp1 offline');
+  await h.pass(1_999);
+  assert.equal(h.fetch.calls.length, 1, 'not before its Retry-After');
+  await h.pass(1);
+  assert.equal(h.fetch.calls.length, 2);
+  assert.equal(h.fetch.calls[1].body.content, '**ALERT** `node sp1 offline`', 'the same post');
+  assert.deepEqual(h.logs, ['alert webhook answered 429']);
+  refuse = 2;
+  h.hook.post('ALERT node sp2 offline');
+  await h.pass(2_000);
+  assert.equal(h.fetch.calls.length, 4, 'tried twice, no more');
+  assert.equal(h.hook.post('ALERT node sp2 offline'), true, 'not delivered: not the same alert as one already out');
+  await h.settle();
+  assert.equal(h.fetch.calls.at(-1).body.content, "**ALERT** `node sp2 offline`\n(1 more ALERT line only in the Worker's logs)");
+});
+
+test('a webhook that fails or never answers: a plain log line without its URL, never an ALERT, nothing thrown; the next post counts the lines', async () => {
   const h = hook();
   h.fetch = fakeFetch(() => new Response('{"message":"Unknown Webhook"}', { status: 404 }));
   h.hook.post('ALERT one');
@@ -185,11 +285,15 @@ test('a webhook that fails or never answers: a plain log line without its URL, n
   } finally {
     mock.timers.reset();
   }
+  h.fetch = fakeFetch();
+  h.hook.post('ALERT four');
+  await h.settle();
+  assert.equal(h.fetch.calls[0].body.content, "**ALERT** `four`\n(3 more ALERT lines only in the Worker's logs)");
 });
 
 // ---- the watch -----------------------------------------------------------------------------------
 
-test('offline: a trusted node in service without a heartbeat for 2 minutes, once per outage; one never seen counts from the start', () => {
+test('offline: a trusted node in service without a heartbeat for 2 minutes, once per outage, a restart included; one never seen counts from the start', () => {
   const w = new W.NodeWatch();
   const n = rec({ online: false, lastSeen: NOW });
   assert.equal(w.watching([n]), true, 'the alarm keeps running for it');
@@ -198,12 +302,27 @@ test('offline: a trusted node in service without a heartbeat for 2 minutes, once
   assert.equal(a.key, 'offline:0123456789abcdef');
   assert.match(a.line, /^ALERT trusted node sao-paulo-1 \(0123456789abcdef\) offline for 2 min \(last heartbeat \d\d:\d\d:\d\d UTC\): no match goes to it$/);
   assert.deepEqual(w.tick(NOW + 60 * MIN, [n], [], null, NOW - MIN), [], 'once per outage');
+  assert.equal(w.watching([n]), false, 'its ALERT is out: the alarm may stop, its return comes on a socket');
+  assert.deepEqual(w.offlineAlerted(), ['0123456789abcdef']);
+  // A restart: the object kept which ALERTs went out, and does not raise this one again.
+  const after = new W.NodeWatch(w.offlineAlerted());
+  assert.equal(after.watching([n]), false);
+  assert.deepEqual(after.tick(NOW + 90 * MIN, [{ ...n, lastSeen: 0 }], [], null, NOW + 80 * MIN), []);
   n.online = true;
   assert.deepEqual(w.tick(NOW + 61 * MIN, [n], [], null, NOW - MIN), [{ line: 'trusted node sao-paulo-1 (0123456789abcdef) back online' }]);
+  assert.deepEqual(w.offlineAlerted(), []);
   assert.equal(w.watching([n]), false);
   n.online = false;
   n.lastSeen = NOW + 61 * MIN;
   assert.equal(w.tick(NOW + 64 * MIN, [n], [], null, NOW - MIN).length, 1, 'a new outage, a new ALERT');
+  // Taken out of service while offline, then back in service still offline: a new outage too.
+  n.status = 'suspended';
+  w.statusSet(n);
+  assert.deepEqual(w.offlineAlerted(), []);
+  n.status = 'active';
+  w.statusSet(n);
+  assert.equal(w.watching([n]), true);
+  assert.equal(w.tick(NOW + 65 * MIN, [n], [], null, NOW - MIN)[0].key, 'offline:0123456789abcdef');
   // After a restart nothing was seen yet: offline from the start.
   const fresh = new W.NodeWatch();
   const cold = rec({ online: false, lastSeen: 0 });
@@ -216,7 +335,7 @@ test('offline: a trusted node in service without a heartbeat for 2 minutes, once
   }
 });
 
-test('egress: 80 % of the cap is an ALERT, once, again after it went back below; no cap, nothing', () => {
+test('egress: 80 % of the cap is an ALERT, once; back below it a plain line, and again an ALERT; no cap, nothing', () => {
   const w = new W.NodeWatch();
   const n = rec({ egressCapGB: 1000, egressGB: 799.9 });
   assert.deepEqual(w.tick(NOW, [n], [], null, NOW), []);
@@ -226,9 +345,12 @@ test('egress: 80 % of the cap is an ALERT, once, again after it went back below;
   n.egressGB = 950;
   assert.deepEqual(w.tick(NOW, [n], [], null, NOW), []);
   n.egressGB = 3; // a new month
+  assert.deepEqual(w.tick(NOW, [n], [], null, NOW), [{ line: 'node sao-paulo-1 (0123456789abcdef) under 80 % of its 1000 GB monthly cap again: 3.0 GB' }]);
   assert.deepEqual(w.tick(NOW, [n], [], null, NOW), []);
   n.egressGB = 900;
   assert.equal(w.tick(NOW, [n], [], null, NOW).length, 1);
+  n.egressCapGB = null;
+  assert.deepEqual(w.tick(NOW, [n], [], null, NOW), [{ line: 'node sao-paulo-1 (0123456789abcdef) under 80 % of its monthly cap (none now) again: 900.0 GB' }]);
   assert.deepEqual(new W.NodeWatch().tick(NOW, [rec({ egressGB: 5000, egressCapGB: null })], [], null, NOW), []);
 });
 
@@ -251,7 +373,7 @@ test('tick lag: over 8 ms in 3 heartbeats in a row is an ALERT, once; a good hea
   assert.equal(w.beat(n).key, 'lag:0123456789abcdef', 'in a row again');
 });
 
-test('verifying: the oldest match waiting more than 30 minutes is one ALERT for the queue', () => {
+test('verifying: the oldest match waiting more than 30 minutes is one ALERT for the queue; a plain line once none is', () => {
   const w = new W.NodeWatch();
   const n = rec();
   const m = (id, queuedAt, state = 'verifying') => ({ state, queuedAt, nodeId: n.nodeId, assign: { matchId: id.repeat(32) } });
@@ -261,11 +383,12 @@ test('verifying: the oldest match waiting more than 30 minutes is one ALERT for 
     { line: 'ALERT 2 matches waiting for verification, the oldest (abababab on sao-paulo-1) for 30 min: is a verifier on its build online?', key: 'verifying' },
   ]);
   assert.deepEqual(w.tick(NOW + 40 * MIN, [n], queue, null, NOW), [], 'once while it lasts');
+  assert.deepEqual(w.tick(NOW + 41 * MIN, [n], [m('gh', NOW + 39 * MIN)], null, NOW), [{ line: 'no match waiting for verification for more than 30 min now (1 waiting)' }]);
   assert.deepEqual(w.tick(NOW + 41 * MIN, [n], [], null, NOW), []);
   assert.equal(w.tick(NOW + 42 * MIN, [n], queue, null, NOW).length, 1, 'again after the queue cleared');
 });
 
-test('update: a node online below the minimum for more than 2 hours is an ALERT, once; at the minimum it ends', () => {
+test('update: a node online below the minimum for more than 2 hours is an ALERT, once; at the minimum it ends with a plain line', () => {
   const w = new W.NodeWatch();
   const n = rec({ build: { version: '0.2.0', protocol: 1, wasmSha256: 'a'.repeat(64) } });
   assert.deepEqual(w.tick(NOW, [n], [], '0.3.0', NOW), []);
@@ -275,6 +398,7 @@ test('update: a node online below the minimum for more than 2 hours is an ALERT,
   ]);
   assert.deepEqual(w.tick(NOW + 3 * W.UPDATE_ALERT_MS, [n], [], '0.3.0', NOW), [], 'once');
   n.build = { ...n.build, version: '0.3.0' };
+  assert.deepEqual(w.tick(NOW + 3 * W.UPDATE_ALERT_MS, [n], [], '0.3.0', NOW), [{ line: "node sao-paulo-1 (0123456789abcdef) now on 0.3.0, no longer below the channel's minimum 0.3.0" }]);
   assert.deepEqual(w.tick(NOW + 3 * W.UPDATE_ALERT_MS, [n], [], '0.3.0', NOW), []);
   n.build = { ...n.build, version: '0.2.9' };
   assert.deepEqual(w.tick(NOW + 3 * W.UPDATE_ALERT_MS + 1, [n], [], '0.3.0', NOW), [], 'a new wait starts');
@@ -330,12 +454,12 @@ test('probeHealthz: through the node’s TLS, signed with its key; draining is r
   assert.equal(signal.aborted, true, 'the request is let go');
 });
 
-test('the cron probes trusted wss hosts not taken out of service: online, or in service and seen within the hour', () => {
+test('the cron probes trusted wss hosts not taken out of service: online, or in service and seen by the object within the hour', () => {
   const t = (over) => W.healthzTargets([rec(over)], NOW).length === 1;
   assert.equal(t({}), true);
   assert.equal(t({ online: false, lastSeen: NOW - 30 * MIN }), true, 'seen half an hour ago');
   assert.equal(t({ online: false, lastSeen: NOW - 2 * 60 * MIN }), false, 'gone for two hours: its offline ALERT went out');
-  assert.equal(t({ online: false, lastSeen: 0 }), false, 'not seen since a restart');
+  assert.equal(t({ online: false, lastSeen: 0 }), false, 'not seen since a restart: probed once it connects');
   assert.equal(t({ status: 'pending' }), true, 'a new node not proven yet');
   assert.equal(t({ status: 'pending', online: false, lastSeen: NOW - 30 * MIN }), false, 'not in service: nothing keeps the object running between two runs');
   assert.equal(t({ status: 'banned' }), false);
@@ -345,20 +469,29 @@ test('the cron probes trusted wss hosts not taken out of service: online, or in 
   assert.equal(t({ transports: ['rtc'], publicUrl: null }), false);
 });
 
-test('a /healthz problem is an ALERT when it starts or changes kind, a drain nobody asked for too; a plain line when it answers again', () => {
+test('a /healthz problem is one ALERT until the node answers again, whatever kind it turns into; a drain nobody asked for is one too', async () => {
   const w = new W.NodeWatch();
   const n = rec();
   assert.equal(w.health(n, { ok: true, draining: false }, false), null);
   const tls = { ok: false, kind: 'tls', detail: 'TLS error (an expired or invalid certificate?): x' };
   assert.deepEqual(w.health(n, tls, false), {
     line: 'ALERT node sao-paulo-1 (0123456789abcdef) /healthz at https://sp1.turbo-gol.test: TLS error (an expired or invalid certificate?): x',
-    key: 'healthz:0123456789abcdef:tls',
+    key: 'healthz:0123456789abcdef',
   });
   assert.equal(w.health(n, tls, false), null, 'while it lasts');
-  assert.equal(w.health(n, { ok: false, kind: 'timeout', detail: 'no answer in 5 s' }, false).key, 'healthz:0123456789abcdef:timeout', 'another kind');
+  assert.deepEqual(w.health(n, { ok: false, kind: 'timeout', detail: 'no answer in 5 s' }, false), { line: 'node sao-paulo-1 (0123456789abcdef) /healthz at https://sp1.turbo-gol.test still fails, now: no answer in 5 s' }, 'another kind: a plain line');
   assert.deepEqual(w.health(n, { ok: true, draining: false }, false), { line: 'node sao-paulo-1 (0123456789abcdef) /healthz answers again' });
   assert.equal(w.health(n, { ok: true, draining: true }, true), null, 'a drain the control plane asked for');
-  assert.match(w.health(n, { ok: true, draining: true }, false).line, /: draining, and the control plane did not ask it to \(no drain, no update\)$/);
+  assert.match(w.health(n, { ok: true, draining: true }, false).line, /^ALERT .*: draining, and the control plane did not ask it to \(no drain, no update\)$/);
+  // An origin that times out at one run and refuses the connection at the next, for half an hour of cron runs: one post.
+  const flap = new W.NodeWatch();
+  const h = hook();
+  for (let i = 0; i < 7; i++) {
+    const note = flap.health(n, i % 2 ? { ok: false, kind: 'network', detail: 'network error: ECONNREFUSED' } : { ok: false, kind: 'timeout', detail: 'no answer in 5 s' }, false);
+    if (note?.line.startsWith('ALERT')) h.hook.post(note.line, note.key);
+    await h.pass(5 * MIN);
+  }
+  assert.equal(h.fetch.calls.length, 1);
 });
 
 test('names and versions a node sent are cut before they reach a line', () => {
