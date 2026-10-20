@@ -9,9 +9,11 @@
 // The private key comes from $TGN_RELEASE_PRIVATE_KEY (PKCS#8 base64url: the privateKey field of a
 // scripts/keys.mjs file) or from --key <file> (such a file, or the bare key), never from the command
 // line itself. It refuses to sign unless the key's public half is nodes/release-key.pub, the key
-// installers and launchers pin, and the build is what this checkout builds (./release-check.mjs: the
-// manifest of nodes/package.json's version from the commit in $GITHUB_SHA, every file it lists, the
-// wasm, the protocol, and the installers byte for byte).
+// installers and launchers pin, and the build passes ./release-check.mjs: the manifest of
+// nodes/package.json's version, from the commit in $GITHUB_SHA; every file it lists, and inputs.json,
+// against the manifest; the wasm and the protocol against this checkout, and the installers byte
+// for byte. node.mjs, launcher.mjs and inputs.json are not rebuilt: it signs what the build job (no
+// secrets, a fresh runner) built.
 // Writes <version>/manifest.sig and launcher.mjs.sig (base64url Ed25519 over the exact bytes, as
 // node/launcher.ts and install.sh check them), verifies both back with release-key.pub, and writes
 // <version>/release-key.pub.

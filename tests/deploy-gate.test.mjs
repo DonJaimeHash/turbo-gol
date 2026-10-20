@@ -279,6 +279,24 @@ test('first deploy: without a channel (or a bucket), --nodes-off is required unt
   assert.deepEqual(channelOf(store), { stable: '0.2.0', minimum: '0.2.0' });
 });
 
+test('once the release is published, any deploy writes the first channel: --nodes-off too, and after a docs-only merge; the way back is removing channel.json', (t) => {
+  const key = releaseKeyPair();
+  const repo = makeRepo(t, key.raw);
+  const store = new Map();
+  const tagged = repo.commit('tagged');
+  publish(store, key, { version: '0.2.0', commit: tagged, wasmSha256: repo.wasmSha() });
+  repo.write('docs/x.md', 'not something nodes run\n');
+  repo.commit('docs after the tag');
+  const r = deployOnce(repo, store, { nodesOff: true, deployStatus: 1 });
+  assert.equal(r.status, 1);
+  assert.deepEqual(r.events, ['put channel.json application/json', 'deploy']);
+  assert.deepEqual(channelOf(store), { stable: '0.2.0', minimum: '0.2.0' });
+  assert.match(r.out, /release 0\.2\.0 was built from this game code and becomes the first channel/);
+  // No channel.prev.json to restore: the advice removes channel.json instead.
+  assert.match(r.err, /there was no channel before: remove it with {2}cd server; npx wrangler r2 object delete turbogol-node-releases\/channel\.json --remote/);
+  assert.throws(() => rollbackChannel(wranglerR2({ run: fakeWrangler(store, []).run }), readReleaseKey(join(repo.dir, 'nodes', 'release-key.pub')), () => {}), /there is no channel\.prev\.json/);
+});
+
 test('an R2 error other than "not found" stops the deploy, --nodes-off or not', (t) => {
   const { repo, store } = live(t);
   for (const nodesOff of [false, true]) {

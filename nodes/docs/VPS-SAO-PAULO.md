@@ -121,8 +121,8 @@ Dos detalles del SSH:
    `run_worker_first` (`server/wrangler.jsonc:49`) y el Worker manda al sitio todo lo que no
    empieza con `/api/` (`server/src/index.ts:649`). Y el estado tiene que vivir en el SQLite del
    `NodeRegistryDO` ([6]): si no, el próximo deploy olvidaría el VPS registrado.
-2. **La release 0.2.0,** firmada con la clave de producción, y el canal en 0.2.0: los PR [2] y
-   [5], y las acciones M5, M6, M9 y M10.
+2. **La release 0.2.0,** firmada con la clave de producción, y el canal en 0.2.0: los PR [2], [5]
+   y [6], y las acciones M5 a M10 (M9 después de mergear [6]).
 3. **La cuenta del proyecto en `NODE_TRUSTED_OPERATORS`** (M4 y M7). Sin eso, el
    `POST /nodes/tokens` de M11 responde 403 `not_trusted` (P20), y el registro tampoco aceptaría
    `--roles host,verify`: falla con `verify_reserved` (`control-plane/registry.ts:205-207`). No

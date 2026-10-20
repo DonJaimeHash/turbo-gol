@@ -12,14 +12,16 @@
 #            code runs on that runner.
 #   sign     the `releases` environment (a maintainer approves every run; it holds the release key
 #            and nothing else). Installs nothing: nodes/scripts/sign-release.mjs, which only uses
-#            node:crypto, checks the build against this checkout (files, wasm, protocol, installers
-#            byte for byte) and signs it.
+#            node:crypto, checks the build (every file against its manifest, the wasm and the
+#            protocol against this checkout, the installers byte for byte; node.mjs is not rebuilt)
+#            and signs it.
 #   upload   the `releases-r2` environment (the R2 token and the account id; a maintainer approves it
 #            too, since the installers it uploads run as root). Installs the wrangler locked in
 #            server/package-lock.json without install scripts, then nodes/scripts/publish-release.mjs
 #            checks the signed release again and uploads it. A version is published once, but
 #            "Re-run failed jobs" finishes an upload that stopped half-way (same signed artifact,
-#            same bytes).
+#            same bytes, while the artifact lasts: 7 days). Never "Re-run all jobs": the build makes
+#            another manifest.json, which the upload refuses once the first one is in R2.
 # Publishing never moves the channel (channel.json). The deploy gate does, at the next
 # `npm run deploy` (scripts/node-release-gate.mjs), so a release reaches nodes together with the
 # Worker build it matches.

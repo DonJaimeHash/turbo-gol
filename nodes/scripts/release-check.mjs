@@ -1,7 +1,9 @@
 // What a production node release (scripts/build-node.mjs without --sign) must be before it is signed
 // (scripts/sign-release.mjs) and again before it is uploaded (scripts/publish-release.mjs), checked
 // against this checkout. Each step runs on a runner of its own, so neither trusts the files it was
-// handed: the build ran esbuild, and the upload runs wrangler.
+// handed: the build ran esbuild, and the upload runs wrangler. Nothing is rebuilt here: node.mjs and
+// inputs.json are checked against the manifest the build job (no secrets, a fresh runner) wrote, and
+// launcher.mjs is taken as that job built it.
 //
 // Only node:crypto, node:fs and node:path (and ./release-key.mjs): scripts/sign-release.mjs imports
 // this file, and the release private key never shares a process with third-party code.

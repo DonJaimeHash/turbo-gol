@@ -82,8 +82,8 @@ All notable changes to Turbogol are documented here. The format follows
   and the main risks, and stale facts in the other node docs are corrected. The budget shows the
   VPS's real price.
 - `npm run deploy` checks the community-node release first and, when the game code nodes run
-  changed, moves their release channel to a signed release of the same commit; until the first node
-  release is published, deploy with `npm run deploy -- --nodes-off`.
+  changed, moves their release channel to a signed release built from the same game code; until the
+  first node release is published, deploy with `npm run deploy -- --nodes-off`.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
