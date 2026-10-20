@@ -1,6 +1,6 @@
 // The Worker's /nodes/* routes (server/src/nodeRoutes.ts, dispatched by server/src/index.ts) without
 // workerd: the route matrix, the release keys (path traversal included), the channel, the account
-// and trust checks of the operator routes, the headers the Worker overwrites, the
+// and trust checks of the operator and maintainer routes, the headers the Worker overwrites, the
 // limits, the cron's one call, and the Worker in front of a real NodeRegistryDO on node:sqlite.
 // 'cloudflare:workers' and MatchDO's wasm are stubbed by the resolve hook (match.test.mjs). Run
 // from server/: npm test
@@ -413,7 +413,45 @@ test('mine: an account session, forwarded with the caller’s id, 30 a minute pe
   assert.equal(s2.headers.get('access-control-allow-origin'), ORIGIN);
 });
 
-// ---- the cron ----------------------------------------------------------------------------------------
+// ---- the maintainers' routes and the cron ------------------------------------------------------------
+
+/** Another account of the project: this file's limits are one isolate's, and the admin test spends this one's. */
+const MAINTAINER = 'b1b2c3d4e5f60718';
+
+test('admin: 401 without a session, 403 for a guest and for any other account, forwarded for a trusted one with the operator headers overwritten; 30 a minute per account; no CORS', async () => {
+  const env = makeEnv({ NODE_TRUSTED_OPERATORS: `${PROJECT},${MAINTAINER}` });
+  env.NODES.handler = (r) => new RealResponse(JSON.stringify({ path: new URL(r.url).pathname, method: r.method }), { headers: { 'content-type': 'application/json' } });
+  const ask = (method, what, auth, { body, headers = {} } = {}) => req(env, method, '/nodes/admin/' + what, { body, headers: { ...(auth ? { authorization: 'Bearer ' + auth } : {}), ...headers } });
+  const guest = (await createSession(SECRET, MAINTAINER, 'Proyecto')).token;
+  for (const [auth, status, code] of [
+    [null, 401, 'unauthorized'],
+    [guest, 403, 'account_required'],
+    [await accountToken(PLAYER, 'Jugador'), 403, 'not_trusted'],
+  ]) {
+    const res = await ask('POST', 'drain', auth, { body: '{}' });
+    assert.deepEqual([res.status, (await jsonOf(res)).error], [status, code], code);
+  }
+  assert.equal(env.NODES.seen.length, 0);
+  const auth = await accountToken(MAINTAINER, 'Proyecto Ñandú');
+  const body = JSON.stringify({ nodeId: 'ab'.repeat(8), status: 'suspended', reason: 'x' });
+  for (const [m, w] of [['GET', 'nodes'], ['POST', 'status'], ['POST', 'drain'], ['POST', 'update'], ['POST', 'reprobe']]) {
+    const res = await ask(m, w, auth, { body: m === 'POST' ? body : undefined, headers: { 'x-operator-id': PLAYER, 'x-operator-name': 'Mallory' } });
+    assert.deepEqual([res.status, await jsonOf(res)], [200, { path: '/nodes/admin/' + w, method: m }], w);
+    assert.equal(res.headers.get('access-control-allow-origin'), null, 'for curl and same-origin pages: no CORS');
+  }
+  const seen = env.NODES.seen.at(-1);
+  assert.deepEqual([seen.id, seen.opts], [{ name: 'nodes-v1' }, { locationHint: 'sam' }]);
+  assert.equal(seen.headers['x-operator-id'], MAINTAINER);
+  assert.equal(seen.headers['x-operator-name'], encodeURIComponent('Proyecto Ñandú'));
+  assert.equal(seen.headers[INTERNAL_HEADER], secret);
+  assert.equal(await seen.req.text(), body);
+  const forwarded = env.NODES.seen.length;
+  for (const [m, w] of [['POST', 'nodes'], ['GET', 'drain'], ['POST', 'reboot'], ['POST', 'toString'], ['GET', '']]) assert.equal((await ask(m, w, auth)).status, 404, `${m} /nodes/admin/${w}`);
+  assert.equal((await ask('POST', 'status', auth, { body, headers: { 'content-length': '4097' } })).status, 413);
+  assert.equal(env.NODES.seen.length, forwarded, 'none of these reached the object');
+  for (let i = 5; i < 30; i++) assert.equal((await ask('GET', 'nodes', auth)).status, 200);
+  assert.equal((await ask('GET', 'nodes', auth)).status, 429, 'the 31st in a minute');
+});
 
 test('the cron: one call to the object, with the internal header; never a throw; nothing at all without the node settings', async () => {
   const run = async (env) => {
@@ -541,4 +579,16 @@ test('end to end: the cron’s call reaches a real NodeRegistryDO, which answers
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(answers, [[200, { probed: 0, problems: 0 }]], 'no node yet');
+});
+
+test('end to end: a maintainer lists the nodes through the Worker on a real NodeRegistryDO', async () => {
+  const env = makeEnv();
+  const reg = realRegistry(env);
+  env.NODES.handler = (r) => reg.obj.fetch(r);
+  const res = await req(env, 'GET', '/nodes/admin/nodes', { headers: { authorization: 'Bearer ' + (await accountToken(PROJECT)) } });
+  assert.equal(res.status, 200);
+  const list = await jsonOf(res);
+  assert.deepEqual([list.nodes, list.channel, list.verifying], [[], { stable: '0.2.0', minimum: '0.2.0' }, 0]);
+  const other = await req(env, 'GET', '/nodes/admin/nodes', { headers: { authorization: 'Bearer ' + (await accountToken(PLAYER, 'Jugador')) } });
+  assert.equal(other.status, 403);
 });

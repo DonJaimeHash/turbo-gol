@@ -7,7 +7,8 @@
  *
  *   offline   a trusted node in service (probation or active) without a heartbeat for
  *             OFFLINE_ALERT_MS. While one is offline the object's alarm keeps running, or nothing
- *             would notice the time pass. A node out of service (suspended, banned) is not watched.
+ *             would notice the time pass. A node out of service (suspended, banned) is not watched:
+ *             /nodes/admin/status takes one out.
  *   egress    a node's traffic this month at EGRESS_ALERT_SHARE of its cap (at the cap it takes no
  *             more matches)
  *   lag       a node's tickLagP99Ms over LAG_ALERT_MS in LAG_ALERT_BEATS heartbeats in a row

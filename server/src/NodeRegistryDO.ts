@@ -15,6 +15,11 @@
  *                                NODE_TRUSTED_OPERATORS; checked again here) -> a one-time token and its install line;
  *                                10 per account per day
  *   GET  /nodes/mine             x-operator-id -> that operator's nodes
+ *   GET  /nodes/admin/nodes      the maintainers' routes, x-operator-id / x-operator-name as for tokens (checked
+ *   POST /nodes/admin/status     again here): every node in full; { nodeId, status, reason } (ControlPlane.setStatus);
+ *   POST /nodes/admin/drain      { nodeId, reason } (one-way: the node comes back with a restart on its machine);
+ *   POST /nodes/admin/update     channel.json read again and every node below its minimum told to update;
+ *   POST /nodes/admin/reprobe    { nodeId }: its /healthz checked now. Each call is an ALERT line naming who made it
  *   POST /internal/place | /internal/rejoin | /internal/leave, GET /internal/status: the matchmaker's (nodeApi.ts)
  *   POST /internal/health        the cron's (index.ts scheduled, every 5 minutes): /healthz of every trusted wss
  *                                node online, or in service and seen in the last hour, 5 s each (nodeWatch.ts)
@@ -53,7 +58,7 @@ import { Ledger } from '../../nodes/control-plane/ledger';
 import { Registry, TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
 import type { NodeRecord, RegistryOptions } from '../../nodes/control-plane/registry';
 import { compareVersions } from '../../nodes/shared/controlProtocol';
-import type { HeartbeatData, RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
+import type { HeartbeatData, NodeStatus, RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
 import { importPrivateKey, sign, verifyWith } from '../../nodes/shared/edcrypto';
 import { REGIONS, isRegion } from '../../src/net/account';
 import { checkInternal } from './auth';
@@ -65,7 +70,7 @@ import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeAp
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
-import { HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, probeHealthz } from './nodeWatch';
+import { HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz } from './nodeWatch';
 import type { WatchNote } from './nodeWatch';
 
 /** The alarm's period while anything needs it. */
@@ -94,6 +99,10 @@ const LIMIT_PURGE_EVERY = 256;
 const UNAVAILABLE = 'the node control plane is not available right now: try again later';
 const REPLAY_ROUTE = /^\/nodes\/replays\/([0-9a-f]{64})$/;
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
+/** What a maintainer may set (pending is the control plane's: a node not proven reachable yet). */
+const ADMIN_STATUSES: readonly NodeStatus[] = ['probation', 'active', 'suspended', 'banned'];
+/** A maintainer's reason (a status change, a drain) is kept to this many characters. */
+const REASON_MAX = 200;
 /** The meta row of drainAsked. */
 const DRAINS_KEY = 'drains_asked';
 
@@ -155,6 +164,13 @@ function parsePlace(v: unknown): PlaceRequest | null {
     out[k] = n;
   }
   return out;
+}
+
+/** A maintainer's reason: one line, no control characters, at most REASON_MAX characters; null when there is none. */
+function reasonOf(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim().slice(0, REASON_MAX);
+  return s.length > 0 ? s : null;
 }
 
 /** The Registry, handing each heartbeat to the object once it took it (NodeWatch counts the tick lag per heartbeat). */
@@ -426,20 +442,21 @@ export class NodeRegistryDO extends DurableObject<Env> {
    * Read channel.json again. A change reaches the nodes now (ControlPlane.channelChanged: those
    * below a new minimum are told to update), not at their next hello. A read that fails or takes
    * longer than timeoutMs keeps the last one; a missing or malformed object is handed on as it
-   * is, and the control plane holds the nodes to the last good channel with an ALERT.
+   * is, and the control plane holds the nodes to the last good channel with an ALERT. True when
+   * it changed (and the nodes were told).
    */
-  private async refreshChannel(): Promise<void> {
+  private async refreshChannel(): Promise<boolean> {
     const env = this.cfg;
-    if (!env) return;
+    if (!env) return false;
     this.channelAt = Date.now();
     let text: string | null;
     try {
       text = await withTimeout(env.NODE_RELEASES.get(CHANNEL_KEY).then((o) => (o ? o.text() : null)), this.timeoutMs);
     } catch (e) {
       this.log(`${CHANNEL_KEY} not read, keeping the last one: ${String(e)}`);
-      return;
+      return false;
     }
-    if (text === this.channelText) return;
+    if (text === this.channelText) return false;
     this.channelText = text;
     try {
       this.channel = text === null ? null : JSON.parse(text);
@@ -448,6 +465,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     }
     this.goodChannel = channelOf(this.channel) ?? this.goodChannel;
     this.cp?.channelChanged();
+    return true;
   }
 
   // ---- outbox -------------------------------------------------------------------------------
@@ -549,6 +567,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
       if (method === 'GET' && path === '/nodes/status') return this.status(cp);
       if (method === 'POST' && path === '/nodes/tokens') return await this.token(request, cp, env);
       if (method === 'GET' && path === '/nodes/mine') return this.mine(request, cp);
+      if (path.startsWith('/nodes/admin/')) return await this.admin(request, cp, path.slice('/nodes/admin/'.length));
       if (method === 'POST' && path === NODE_ROUTES.place) return await this.place(request, cp);
       if (method === 'POST' && path === NODE_ROUTES.rejoin) return await this.rejoin(request, cp);
       if (method === 'POST' && path === NODE_ROUTES.leave) return await this.leave(request, cp);
@@ -763,6 +782,109 @@ export class NodeRegistryDO extends DurableObject<Env> {
     const ch = this.goodChannel;
     if (ch && compareVersions(n.build.version, ch.minimum) < 0) return true;
     return this.drainAsked.has(n.nodeId) && this.drainAsked.get(n.nodeId) === n.bootId;
+  }
+
+  // ---- maintainers --------------------------------------------------------------------------------
+
+  /**
+   * /nodes/admin/<what>, for an account in NODE_TRUSTED_OPERATORS (the Worker checked it; the object
+   * holds the same list and decides). Every action is an ALERT line naming who did it, the list too
+   * (it holds the nodes' addresses): a project session in the wrong hands shows in the team's channel.
+   */
+  private async admin(request: Request, cp: ControlPlane, what: string): Promise<Response> {
+    const id = request.headers.get('x-operator-id') ?? '';
+    if (!cp.registry.isTrusted(id)) return error(403, 'not_trusted', 'only the project maintains the nodes');
+    const actor = `${sanitizeName(decodeHeader(request.headers.get('x-operator-name'))) ?? id.slice(0, 6)} (${id})`;
+    if (request.method === 'GET' && what === 'nodes') return this.adminNodes(cp, actor);
+    if (request.method !== 'POST') return error(404, 'not_found');
+    if (what === 'update') return await this.adminUpdate(cp, actor);
+    if (what !== 'status' && what !== 'drain' && what !== 'reprobe') return error(404, 'not_found');
+    const b = await readJson<{ nodeId?: unknown; status?: unknown; reason?: unknown }>(request);
+    if (!b || !isHex(b.nodeId, 16)) return error(400, 'bad_node_id', 'nodeId: the 16 hex characters of a node');
+    const n = cp.registry.node(b.nodeId);
+    if (!n) return error(404, 'no_node');
+    if (what === 'status') return this.adminStatus(cp, actor, n, b.status, reasonOf(b.reason));
+    if (what === 'drain') return this.adminDrain(cp, actor, n, reasonOf(b.reason));
+    return await this.adminReprobe(cp, actor, n);
+  }
+
+  /** GET /nodes/admin/nodes: every node with its address, counters and live state, and the matches the control plane holds for it. */
+  private adminNodes(cp: ControlPlane, actor: string): Response {
+    const open = new Map<string, number>();
+    let verifying = 0;
+    for (const m of cp.matches.values()) {
+      if (m.state === 'done') continue;
+      open.set(m.nodeId, (open.get(m.nodeId) ?? 0) + 1);
+      if (m.state === 'verifying') verifying++;
+    }
+    const nodes = cp.registry.list().map((n) => ({
+      ...mineView(cp, n),
+      operator: { id: n.operatorId, name: n.operatorName },
+      createdAt: n.createdAt,
+      lastSeen: n.lastSeen > 0 ? n.lastSeen : null,
+      draining: n.draining,
+      egressCapGB: n.egressCapGB,
+      cpuLoad: n.cpuLoad,
+      bootId: n.bootId,
+      matches: open.get(n.nodeId) ?? 0,
+    }));
+    this.log(`ALERT admin ${actor}: listed the nodes (${nodes.length}, with their addresses)`);
+    return json({ build: CLIENT_BUILD, channel: this.goodChannel, verifying, nodes }, 200, { 'cache-control': 'no-store' });
+  }
+
+  /**
+   * POST /nodes/admin/status { nodeId, status, reason? }: ControlPlane.setStatus, and the node is
+   * told. A trusted node set to suspended or banned is out of service: no matches, no offline ALERT.
+   */
+  private adminStatus(cp: ControlPlane, actor: string, n: NodeRecord, status: unknown, reason: string | null): Response {
+    if (!ADMIN_STATUSES.includes(status as NodeStatus)) return error(400, 'bad_status', `status: ${ADMIN_STATUSES.join(', ')}`);
+    const was = n.status;
+    cp.setStatus(n.nodeId, status as NodeStatus, reason);
+    this.log(`ALERT admin ${actor}: node ${label(n)} ${was} -> ${n.status}${was === n.status ? ' (no change)' : ''}${reason ? `: ${reason}` : ''}`);
+    return json({ nodeId: n.nodeId, name: n.name, status: n.status, was });
+  }
+
+  /**
+   * POST /nodes/admin/drain { nodeId, reason? }: the node takes no new match, plays out the ones it
+   * has and then idles. One-way (node/runtime.ts): it comes back with `sudo systemctl restart
+   * turbogol-node` on its machine. A node that is not connected is told nothing (409).
+   */
+  private adminDrain(cp: ControlPlane, actor: string, n: NodeRecord, reason: string | null): Response {
+    const why = reason ?? 'asked by a maintainer';
+    if (!cp.isOnline(n.nodeId)) {
+      this.log(`ALERT admin ${actor}: node ${label(n)} not drained, it is offline: ${why}`);
+      return error(409, 'offline', 'the node is not connected: nothing was sent');
+    }
+    cp.drain(n.nodeId, why);
+    this.log(`ALERT admin ${actor}: node ${label(n)} told to drain: ${why}`);
+    return json({ nodeId: n.nodeId, name: n.name, draining: true, back: 'sudo systemctl restart turbogol-node on its machine' });
+  }
+
+  /**
+   * POST /nodes/admin/update: channel.json read again now (not within the minute) and every node
+   * below its minimum told to update (ControlPlane.channelChanged; a verifier with matches of its
+   * build still to verify waits for them, as at a hello).
+   */
+  private async adminUpdate(cp: ControlPlane, actor: string): Promise<Response> {
+    if (!(await this.refreshChannel())) cp.channelChanged();
+    const ch = this.goodChannel;
+    const below = ch ? cp.registry.list().filter((n) => n.online && compareVersions(n.build.version, ch.minimum) < 0) : [];
+    this.log(`ALERT admin ${actor}: the nodes were told the channel again (${ch ? `stable ${ch.stable}, minimum ${ch.minimum}` : 'no valid channel'}): ${below.length} online below its minimum`);
+    return json({ channel: ch, below: below.map((n) => ({ nodeId: n.nodeId, name: n.name, version: n.build.version })) });
+  }
+
+  /**
+   * POST /nodes/admin/reprobe { nodeId }: a wss host's /healthz now. The control plane's own probe
+   * runs (a host not proven reachable goes back into placement when it passes; a failure of a
+   * proven one counts toward taking it out), and the answer says what a direct probe found.
+   */
+  private async adminReprobe(cp: ControlPlane, actor: string, n: NodeRecord): Promise<Response> {
+    if (!n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl) return error(409, 'not_wss', 'only a wss host has a /healthz to probe');
+    const [, healthz] = await Promise.all([n.reachableAt === null ? cp.probe(n.nodeId) : cp.reprobe(n.nodeId), probeHealthz(n, this.fetchFn, this.healthzTimeoutMs)]);
+    const reachable = n.reachableAt !== null;
+    const found = healthz.ok ? (healthz.draining ? 'ok, draining' : 'ok') : healthz.detail;
+    this.log(`ALERT admin ${actor}: node ${label(n)} probed: ${found}; ${reachable ? 'in' : 'out of'} wss placement`);
+    return json({ nodeId: n.nodeId, name: n.name, reachable, healthz });
   }
 }
 

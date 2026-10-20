@@ -31,7 +31,8 @@
  *                       request (request.cf), the client address masked to /24 (IPv6: /48); for the
  *                       deploy measurements (docs/online/PHASE1.md), no secret needed
  *   /nodes/*            -> the community nodes: their registration, control socket, replays and
- *                       releases, and the project's operator routes (nodeRoutes.ts, NodeRegistryDO.ts)
+ *                       releases, and the project's operator and maintainer routes (nodeRoutes.ts,
+ *                       NodeRegistryDO.ts)
  *   cron                every 5 minutes (wrangler.jsonc triggers): the community nodes' health check
  *                       (nodeRoutes.ts nodeHealthCheck), one NodeRegistryDO call; none without the node settings
  *   everything else     -> the game: Workers Assets (wrangler.jsonc `assets` = the Vite build in

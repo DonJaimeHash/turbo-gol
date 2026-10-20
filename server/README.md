@@ -25,8 +25,8 @@ server/
   src/roomHost.ts       RoomHost: input buffers, bots, match rules, snapshot encoding (env-agnostic)
   src/NodeRegistryDO.ts one object: the community nodes' control plane (../nodes/control-plane) on SQLite (src/nodeStore.ts),
                         the nodes' control sockets (hibernating), the outbox of their settled matches (src/nodeOutcome.ts)
-  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator routes;
-                        the cron's health check
+  src/nodeRoutes.ts     /nodes/*: the nodes' routes to it, their releases from R2, the project's operator and
+                        maintainer routes; the cron's health check
   src/nodeAlerts.ts     its ALERT lines on the team's Discord channel (NODE_ALERT_WEBHOOK)
   src/nodeWatch.ts      what it watches in the nodes on top of the control plane (offline, traffic, tick lag, waits)
                         and the cron's /healthz probe
@@ -107,6 +107,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `POST /nodes/tokens` | `{ region, name? }`, Bearer account session of a `NODE_TRUSTED_OPERATORS` account | a one-time node token (1 h) and its Linux install line; 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 10 per account per day |
 | `GET /nodes/mine` | Bearer account session | the caller's own nodes (30 per account per minute) |
 | `GET /nodes/status` | | the public list of nodes (no addresses), cached 10 s |
+| `GET /nodes/admin/nodes`, `POST /nodes/admin/status`, `/drain`, `/update`, `/reprobe` | Bearer account session of a `NODE_TRUSTED_OPERATORS` account; `{ nodeId, status, reason? }`, `{ nodeId, reason? }`, no body, `{ nodeId }` | the maintainers' routes (see "Community nodes"): 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 30 per account per minute; every call is an `ALERT` naming the account |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 
 Rate limit: 20 `POST /api/queue` per playerId per minute (in-memory per isolate, best effort).
@@ -254,11 +255,29 @@ are in it. Among them:
   (probation or active) offline for 2 minutes, a node's traffic at 80 % of its monthly cap, its
   `tickLagP99Ms` over 8 ms in 3 heartbeats in a row, the oldest verification waiting more than 30
   minutes, a node below the channel's minimum for 2 hours (its update deferred, or not taken);
-* the health check below.
+* the health check below, and every maintainer action.
 
 While a trusted node in service is offline the alarm keeps running (as it does while a node is
 connected), and a restart raises its alert again: set a node taken out of service for good to
-`banned` (or `suspended`).
+`banned` (or `suspended`) with `/nodes/admin/status`.
+
+**Maintainer routes.** `/nodes/admin/*` takes the Bearer session of an account in
+`NODE_TRUSTED_OPERATORS`. From a tab of the game with that account signed in (as for the token in
+`nodes/docs/VPS-SAO-PAULO.md`), in the DevTools console:
+
+```js
+const s = await (await fetch('/api/auth/refresh', { method: 'POST' })).json();
+const admin = (what, body) => fetch('/nodes/admin/' + what, { method: body ? 'POST' : 'GET', headers: { authorization: 'Bearer ' + s.session, 'content-type': 'application/json' }, body: body && JSON.stringify(body) }).then((r) => r.json());
+await admin('nodes');                                            // every node: address, status, live state, matches held
+await admin('status', { nodeId, status: 'suspended', reason }); // probation | active | suspended | banned; the node is told
+await admin('drain', { nodeId, reason });                       // no new matches, it idles once they end (one-way)
+await admin('update', {});                                       // channel.json read now, nodes below its minimum told to update
+await admin('reprobe', { nodeId });                              // its /healthz now; back into wss placement if it passes
+```
+
+Each call logs an `ALERT` with the account's name and id, the list too (it shows the nodes'
+addresses). A drain has no way back from here: `sudo systemctl restart turbogol-node` on the
+node's machine brings it back.
 
 **Health check.** Every 5 minutes (`triggers` in `wrangler.jsonc`, `scheduled()` in
 `src/index.ts`) the Worker makes one call to the object, which fetches the `/healthz` of every

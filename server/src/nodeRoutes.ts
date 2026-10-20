@@ -20,6 +20,11 @@
  *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB
  *   GET      /nodes/mine              Bearer account session -> the caller's own nodes
  *   GET      /nodes/status            the public list of nodes, cached 10 s
+ *   GET      /nodes/admin/nodes       the maintainers' routes, Bearer account session of a NODE_TRUSTED_OPERATORS
+ *   POST     /nodes/admin/status      account (401 without one, 403 for any other), 30 a minute per account, 413
+ *   POST     /nodes/admin/drain       over 4 KB: every node in full; { nodeId, status, reason }; { nodeId, reason };
+ *   POST     /nodes/admin/update      the channel read again and the nodes below its minimum told to update;
+ *   POST     /nodes/admin/reprobe     { nodeId }. Every call is an ALERT line naming the account (NodeRegistryDO.ts)
  * Anything else under /nodes/ is a 404: the WebRTC signaling and the shop are not open in stage 1,
  * and the reference server's /dev/* routes never exist here. Without the node settings
  * (nodesConfigured: a fork, local dev) every route that needs the object is a 404 too.
@@ -70,7 +75,10 @@ const LIMIT_REPLAY_PUT_PER_IP = 60;
 const LIMIT_REPLAY_GET_PER_IP = 60;
 const LIMIT_STATUS_PER_IP = 60;
 const LIMIT_MINE_PER_ACCOUNT = 30;
+const LIMIT_ADMIN_PER_ACCOUNT = 30;
 const STATUS_TTL_MS = 10_000;
+/** The maintainers' routes and the method of each. */
+const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST' };
 
 /**
  * A release key: an optional X.Y.Z/ directory, then one file name. Nothing else is ever looked up in
@@ -173,6 +181,15 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     return toRegistry(env, c.request, path, operator(s));
   }
   if (method === 'GET' && path === '/nodes/status') return status(c, env, who);
+  const admin = path.startsWith('/nodes/admin/') ? path.slice('/nodes/admin/'.length) : '';
+  if (Object.hasOwn(ADMIN_ROUTES, admin) && ADMIN_ROUTES[admin] === method) {
+    if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
+    const s = requireAccount({ session: await c.session() });
+    if (s instanceof Response) return s;
+    if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project maintains the nodes');
+    if (c.limited('nadm:' + s.sub, LIMIT_ADMIN_PER_ACCOUNT)) return error(429, 'rate_limited');
+    return toRegistry(env, c.request, path, operator(s));
+  }
   return error(404, 'not_found');
 }
 

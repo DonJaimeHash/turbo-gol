@@ -4,7 +4,7 @@
 // namespaces that record what the outbox delivers, and a node played by the test (it signs the
 // challenge and its /healthz nonce, says hello, answers 'assign' and 'leave', reports). A fake
 // fetch answers that /healthz (or fails it as a test asks) and takes the posts of the team's
-// webhook, for the ALERTs, the watch and the cron's health check. Date.now
+// webhook, for the ALERTs, the watch, the cron's health check and the maintainers' routes. Date.now
 // is the test's clock. A "deploy" builds a new object on the same database with every socket
 // closed; a "hibernation" builds one on the same database and the same open sockets.
 // Run from server/: npm test
@@ -1093,4 +1093,69 @@ test('the cron’s health check through a deploy: a drain asked before it is sti
   assert.deepEqual(await health(), { probed: 1, problems: 0 }, 'below the minimum: an update');
   await h.ctx.settle();
   assert.deepEqual(posts, []);
+});
+
+test('the maintainers’ routes: a trusted account only; the list, status, drain, update and reprobe, each an ALERT naming the account', async () => {
+  const { h, env, node, ws } = await watched();
+  const admin = { 'x-operator-id': PROJECT, 'x-operator-name': encodeURIComponent('Proyecto Señor') };
+  const actor = 'admin Proyecto Señor (a1b2c3d4e5f60718)';
+  const run = (method, what, body, headers = admin) => call(h, method, '/nodes/admin/' + what, { body, headers });
+  for (const [m, w] of [['GET', 'nodes'], ['POST', 'drain'], ['POST', 'update']]) assert.equal((await run(m, w, m === 'POST' ? {} : undefined, { 'x-operator-id': STRANGER })).status, 403, w);
+  assert.equal((await run('GET', 'status')).status, 404);
+  assert.equal((await run('POST', 'reboot', { nodeId: node.nodeId })).status, 404);
+  assert.equal((await run('POST', 'drain', { nodeId: 'nope' })).json.error, 'bad_node_id');
+  assert.equal((await run('POST', 'drain', { nodeId: 'f'.repeat(16) })).json.error, 'no_node');
+  // The list: everything about every node, its address and the matches held for it included.
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  const list = await run('GET', 'nodes');
+  assert.equal(list.status, 200);
+  assert.equal(list.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(list.json.channel, { stable: '0.2.0', minimum: '0.2.0' });
+  const [v] = list.json.nodes;
+  assert.deepEqual([v.nodeId, v.publicUrl, v.operator, v.status, v.online, v.matches, v.lastSeen], [node.nodeId, NODE_URL, { id: PROJECT, name: 'Proyecto Señor' }, 'active', true, 1, clock]);
+  await h.ctx.settle();
+  assert.deepEqual(posted(), [`**ALERT** \`${actor}: listed the nodes (1, with their addresses)\``], 'a read too: the list holds the addresses');
+  // The match ends: no work left on the node's build, so an update is not deferred.
+  await send(h, ws, { t: 'report', id: 'r1', report: { kind: 'lost', matchId: placement.matchId, reason: 'tick_error' } });
+  // status
+  assert.equal((await run('POST', 'status', { nodeId: node.nodeId, status: 'pending' })).json.error, 'bad_status');
+  const st = await run('POST', 'status', { nodeId: node.nodeId, status: 'suspended', reason: 'disk\nfull' });
+  assert.deepEqual(st.json, { nodeId: node.nodeId, name: 'sao-paulo-1', status: 'suspended', was: 'active' });
+  assert.deepEqual(ws.of('status').at(-1), { t: 'status', status: 'suspended', reason: 'disk full' });
+  assert.equal((await run('POST', 'status', { nodeId: node.nodeId, status: 'active' })).json.status, 'active');
+  // drain
+  const dr = await run('POST', 'drain', { nodeId: node.nodeId, reason: 'kernel update' });
+  assert.deepEqual([dr.status, dr.json.draining], [200, true]);
+  assert.deepEqual(ws.of('drain'), [{ t: 'drain', reason: 'kernel update' }]);
+  // update: the channel read again now, not within the minute
+  await env.NODE_RELEASES.put('channel.json', JSON.stringify({ stable: '0.3.0', minimum: '0.3.0' }));
+  const up = await run('POST', 'update');
+  assert.deepEqual(up.json, { channel: { stable: '0.3.0', minimum: '0.3.0' }, below: [{ nodeId: node.nodeId, name: 'sao-paulo-1', version: '0.2.0' }] });
+  assert.deepEqual(ws.of('update'), [{ t: 'update', version: '0.3.0' }], 'told once');
+  assert.equal((await run('POST', 'update')).status, 200);
+  assert.equal(ws.of('update').length, 2, 'asked again, told again');
+  // reprobe: the control plane's probe and a direct one (a minute on: the channel takes 5 posts a minute)
+  clock += MIN;
+  await send(h, ws, { t: 'heartbeat', data: beat() });
+  node.fail = () => {
+    throw new TypeError('fetch failed: certificate has expired');
+  };
+  const rp = await run('POST', 'reprobe', { nodeId: node.nodeId });
+  assert.deepEqual([rp.json.reachable, rp.json.healthz.kind], [true, 'tls'], 'one failed re-probe does not take a node out yet');
+  node.fail = null;
+  await h.ctx.settle();
+  assert.deepEqual(posted(), [
+    `**ALERT** \`${actor}: listed the nodes (1, with their addresses)\``,
+    `**ALERT** \`${actor}: node sao-paulo-1 (${node.nodeId}) active -> suspended: disk full\``,
+    `**ALERT** \`${actor}: node sao-paulo-1 (${node.nodeId}) suspended -> active\``,
+    `**ALERT** \`${actor}: node sao-paulo-1 (${node.nodeId}) told to drain: kernel update\``,
+    `**ALERT** \`${actor}: the nodes were told the channel again (stable 0.3.0, minimum 0.3.0): 1 online below its minimum\``,
+    `**ALERT** \`${actor}: node sao-paulo-1 (${node.nodeId}) probed: TLS error (an expired or invalid certificate?): TypeError: fetch failed: certificate has expired; in wss placement\``,
+  ]);
+  assert.equal(lines.filter((l) => l.startsWith(`[nodes] ALERT ${actor}: the nodes were told`)).length, 2, 'the second update is logged too (the channel got it once in 10 minutes)');
+  // A node offline is told nothing.
+  await h.obj.webSocketClose(ws, 1006, '', false);
+  const off = await run('POST', 'drain', { nodeId: node.nodeId });
+  assert.deepEqual([off.status, off.json.error], [409, 'offline']);
+  assert.ok(lines.at(-1).endsWith('not drained, it is offline: asked by a maintainer'), lines.at(-1));
 });
