@@ -2,7 +2,8 @@
  * MatchmakerDO: one instance per region ('mm:' + region), reached only through the Worker with
  * the internal shared-secret header.
  *
- *   POST /join    { playerId, name, mode, kind? }  -> QueueResult | QueueResultP2p (matched right away) or 'waiting';
+ *   POST /join    { playerId, name, mode, kind?, doDisabled? }
+ *                                            -> QueueResult | QueueResultP2p (matched right away) or 'waiting';
  *                                               409 { error: 'active_match', matchId, kind } while a match / room of the
  *                                               player is REALLY alive: a lock older than LOCK_VERIFY_AFTER_MS is
  *                                               verified first (RoomDO /internal/presence: the player's slot has a
@@ -17,10 +18,18 @@
  *                                               socket, no upgrade with the ticket) within NO_SHOW_WINDOW_MS
  *                                               (griefing: every such ticket makes a partner wait and fall back to a
  *                                               simulating MatchDO); blocked NO_SHOW_BLOCK_MS, server queues still
- *                                               work; 503 'capacity' when MAX_ACTIVE_ROOMS rooms are alive
- *   GET  /poll?playerId=...                  -> same, answers when matched or after 25 s
+ *                                               work; 503 'capacity' when MAX_ACTIVE_ROOMS rooms are alive (not for a
+ *                                               server / ranked join of a player the nodes are on for where a node can
+ *                                               host now, nodesHere: that match waits for a node). A lock on a node
+ *                                               match answers 409 with kind 'server' and node: true (it is rejoined like
+ *                                               a server match). `doDisabled` (the Worker read do_disabled set and let a
+ *                                               server / ranked queue through, D9): where no node can host now, 503
+ *                                               'do_disabled' as without the nodes, instead of waiting for nothing
+ *   GET  /poll?playerId=...                  -> same, answers when matched or after 25 s (also while the player's match
+ *                                               is being formed: a node placement can take seconds)
  *   POST /leave   { playerId, matchId? }     -> { ok, left, released }: drops a waiter that is still queued (Esc in the
- *                                               menu) so the bot fill does not open a room nobody joins, AND frees the
+ *                                               menu; one whose match is being formed is taken out of it once that is
+ *                                               over, withdraw) so the bot fill does not open a room nobody joins, AND frees the
  *                                               player's p2p room lock (when `matchId` is given it must be that room):
  *                                               the lock is deleted first, then the RoomDO is told (/internal/leave:
  *                                               it closes the player's socket -> 'peerLeft' to the others, or marks a
@@ -32,17 +41,24 @@
  *                                               the match at once, its /release drops the capacity entry, so a guest
  *                                               that queues and quits back to back holds no rooms). Without a matchId (Esc in the
  *                                               queue, a P2P teardown) or with another id a server lock stays: a reload
- *                                               / network drop rejoins that match on 409
+ *                                               / network drop rejoins that match on 409. A node lock follows the server
+ *                                               rule, but the node goes first (/internal/leave, `connected: false` passed
+ *                                               on): the lock is freed only once the control plane recorded the leave or
+ *                                               no longer knows the match (200 / 404 / 410); a 503, an error or no answer
+ *                                               keeps it (released: false), so a leave the node never saw cannot put the
+ *                                               player in a second match of this region (every lock is per region
+ *                                               matchmaker; a ranked match is also locked in AccountsDO, every region)
  *   POST /release { matchId, playerIds, closeRoom?, noShow? }
  *                                            -> frees the "one active match per player" locks (and cached results)
- *                                               that point at `matchId` (a MatchDO match id or a RoomDO room id) and,
+ *                                               that point at `matchId` (a MatchDO match id, a RoomDO room id, or a node
+ *                                               match id: the NodeRegistryDO's outbox) and,
  *                                               unless closeRoom === false, forgets the room (capacity); a stale
  *                                               release from an older match cannot touch a newer lock; `noShow` names
  *                                               the players that never showed up (a strike each, once per room)
  *   POST /forgive { matchId, playerId }      -> { ok, forgiven }: the room saw the player's ticket after all (a slow
  *                                               join refused 403 'left' past the grace): the strike of that room is
  *                                               taken back; one not counted yet is remembered and skipped when it comes
- *   GET  /stats                              -> queue sizes, locks, rooms (debug)
+ *   GET  /stats                              -> queue sizes, locks (nodeLocks: those on node matches), rooms (debug)
  *
  * Two kinds of queue per mode (phase 2, docs/online/PHASE2.md):
  *   'server' (phase 1): a MatchDO match forms when the mode has all its humans (2 / 4 / 6) or when
@@ -54,9 +70,10 @@
  *            seed (kickoff deal + bot RNG on every peer) and tickets with role 'peer'.
  * Humans alternate teams (1st blue, 2nd red, ...); slot order is blue humans, blue bots, red
  * humans, red bots. The roster is registered in the target object (POST /internal/create)
- * BEFORE the tickets go out, so a ticket always points at a prepared room. While that create is
- * in flight the humans are in `forming`: a concurrent /join or /poll for one of them answers
- * 'waiting' instead of queueing a ghost waiter (outgoing fetches do not close the input gate).
+ * BEFORE the tickets go out, so a ticket always points at a prepared room. While that create (or a
+ * node placement) is in flight the humans are in `forming`: a concurrent /join for one of them
+ * answers 'waiting' and its /poll waits for the outcome, instead of queueing a ghost waiter
+ * (outgoing fetches do not close the input gate).
  * Everything is in memory except the active-match locks ('active:<playerId>') and the live rooms
  * ('room:<id>', matches and p2p rooms alike), which expire with the match length + a grace period
  * (p2p: the room's hard TTL) and are released by the MatchDO / RoomDO when they shut down.
@@ -65,16 +82,33 @@
  * simulates) and, separately, MAX_ACTIVE_P2P_ROOMS signaling rooms (no simulation: a RoomDO only
  * relays and mostly hibernates) alive per region matchmaker; at a cap no room of that kind forms
  * (waiters keep waiting) and new joiners of that kind get 503.
+ *
+ * Community nodes (nodes/, the NodeRegistryDO), behind the KV flag nodes_on (env.ts nodesMode: off,
+ * everyone, or a canary of account ids; vm_disabled turns them off): a MatchDO match whose humans
+ * the nodes are all on for is offered to a node first (formMatch, POST /internal/place). Placed, it
+ * is locked as kind 'node' and answered with the node's own wss:// URL and node: true; it never
+ * counts toward MAX_ACTIVE_ROOMS. Not placed (no node free, an error, no answer in
+ * NODE_CALL_TIMEOUT_MS), today's MatchDO is created, unless do_disabled is set or the cap is
+ * reached: then the humans wait in the queue for a node. A region no node can host now (not one the
+ * nodes serve, or in the back-off after hosts 0 or a failed call) has no node to wait for: there
+ * the cap answers 503 and waiters wait for a free room as without the nodes, and with do_disabled
+ * the server / ranked joins answer 503 (no MatchDO is created for them either). Custom lobbies
+ * never go to a node. With the nodes off for a player (or not configured: a fork, the tests)
+ * everything is as without them.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { error, isMode, isModeList, isQueueKind, json, matchLengthSeconds, readJson } from './env';
-import type { GameModeId, QueueKind, RoomKind } from './env';
+import { error, flag, isMode, isModeList, isQueueKind, json, matchLengthSeconds, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
+import type { GameModeId, LockKind, NodesMode, QueueKind, RoomKind } from './env';
 import { INTERNAL_HEADER, checkInternal, createTicket, internalSecret } from './auth';
 import type { TicketRole } from './auth';
+import { NODE_CALL_TIMEOUT_MS, NODE_ROUTES, askNodes, nodeLockHeld, placementFor } from './nodeApi';
+import type { PlaceBody } from './nodeApi';
+import type { Placement } from '../../nodes/control-plane/controlPlane';
 import type { RosterEntry } from './roomHost';
 import type { PresenceInfo, RoomSlotRecord } from './RoomDO';
 import { MODES } from '../../src/sim/constants';
+import { isRegion } from '../../src/net/account';
 import type { QueueResult } from '../../src/net/protocol';
 // Type-only (node's strip-only loader rejects that module's const enum; server/test/room.test.mjs
 // imports this file). P2P_FILL_WAIT mirrors P2P_FILL_WAIT_MS and is checked against it by tsc.
@@ -119,6 +153,13 @@ export const NO_SHOW_BLOCK_MS = 5 * 60_000;
 const NO_SHOW_PRUNE_AT = 2000;
 /** Room ids kept per strike entry (the newest; an older strike can no longer be forgiven, it still counts). */
 export const NO_SHOW_ROOMS_KEPT = 8;
+/**
+ * No placement is asked for this long after the NodeRegistryDO said no node of the region can host
+ * (hosts 0), or failed to answer: a stuck object then costs one wait a minute, not one per match.
+ */
+export const NO_HOSTS_BACKOFF_MS = 60_000;
+/** nodes_on and vm_disabled are read again at most this often (every join and formation asks). */
+export const NODES_MODE_TTL_MS = 10_000;
 
 export type AnyQueueResult = QueueResult | QueueResultP2p;
 
@@ -139,14 +180,16 @@ interface Waiter {
   resolvers: Array<(r: AnyQueueResult) => void>;
   /** kind 'ranked': the rating per searched playlist. */
   ratings?: Partial<Record<GameModeId, QueueRating>>;
+  /** p2p queue: its lone-human server path found no node and no room (NoRoom); not tried again before this. */
+  noRoomUntil?: number;
 }
 
 interface ActiveMatch {
-  /** Match id (server) or room id (p2p). */
+  /** Match id (server, node) or room id (p2p). */
   matchId: string;
   until: number;
-  /** Absent in rows written by phase 1 (= 'server'). */
-  kind?: RoomKind;
+  /** Absent in rows written by phase 1 (= 'server'). 'node': a match on a community node (NodeRegistryDO). */
+  kind?: LockKind;
   /** When the lock was issued (absent in older rows = long ago: verified at once). */
   since?: number;
   /**
@@ -160,6 +203,8 @@ interface ActiveMatch {
 interface LeaveBody {
   playerId?: unknown;
   matchId?: unknown;
+  /** false: the client never got into the match (a cancel while connecting). Passed on to a node only. */
+  connected?: unknown;
 }
 
 /** What /internal/status of a MatchDO tells about its liveness (the fields read here). */
@@ -200,6 +245,11 @@ function capacityOf(kind: RoomKind): number {
   return kind === 'p2p' ? MAX_ACTIVE_P2P_ROOMS : MAX_ACTIVE_ROOMS;
 }
 
+/** What a lock reads as to the client and to leaveReleases: a node match as a server one (rejoined; freed only by an explicit quit). */
+function roomKindOf(act: ActiveMatch): RoomKind {
+  return act.kind === 'p2p' ? 'p2p' : 'server';
+}
+
 interface JoinBody {
   playerId?: unknown;
   name?: unknown;
@@ -210,6 +260,8 @@ interface JoinBody {
   kind?: unknown;
   /** kind 'ranked': { [mode]: { mu, sigma } } from AccountsDO (the Worker fills it, never the client). */
   ratings?: unknown;
+  /** true: the Worker read do_disabled set (it lets only a server / ranked queue of a player the nodes are on for through). */
+  doDisabled?: unknown;
 }
 
 /** POST /custom: a custom lobby's start (LobbyDO): fixed teams, bots in the free slots. */
@@ -350,6 +402,30 @@ interface FormOptions {
   ranked?: boolean;
   /** Regulation length (custom lobbies); default MATCH_LENGTH_SECONDS. */
   matchLengthSeconds?: number;
+  /** false: never on a community node (custom lobbies: 0-1800 s against a node's length + 600 s TTL). Default: when the nodes are on for every human. */
+  nodes?: boolean;
+}
+
+/**
+ * formMatch: no node took the match and the Worker's own servers may not take it either
+ * (do_disabled, or MAX_ACTIVE_ROOMS reached), or one of the humans left while the nodes were asked
+ * ('left': no MatchDO is created with it). Not a failure: the humans (but one that left) go back
+ * to their queue.
+ */
+class NoRoom extends Error {
+  readonly code: 'do_disabled' | 'capacity' | 'left';
+  constructor(code: 'do_disabled' | 'capacity' | 'left') {
+    super(code);
+    this.code = code;
+  }
+}
+
+/** A seat issue() locks and tickets: a roster slot with its human. */
+interface Seat {
+  slot: number;
+  team: 0 | 1;
+  name: string;
+  playerId?: string;
 }
 
 const MODE_IDS: readonly GameModeId[] = ['1v1', '2v2', '3v3'];
@@ -482,8 +558,13 @@ export class MatchmakerDO extends DurableObject<Env> {
   private readonly active = new Map<string, ActiveMatch>();
   /** id -> expiry / kind of matches / rooms created by this matchmaker and not yet released (the capacity count). */
   private readonly rooms = new Map<string, RoomEntry>();
-  /** Players spliced out of a queue whose room is being created (playerId -> their queue). */
-  private readonly forming = new Map<string, QueueKey>();
+  /**
+   * Players spliced out of a queue whose match / room is being formed: their waiter (a queue's
+   * formation: a /poll waits on it, issue() answers it) or, for a custom lobby's member, its queue.
+   */
+  private readonly forming = new Map<string, Waiter | QueueKey>();
+  /** Forming waiters whose /leave came meanwhile: taken out of the formation once it is over (withdraw). */
+  private readonly cancels = new Set<string>();
   /** No-show strikes per playerId (NO_SHOW_*). */
   private readonly noShows = new Map<string, NoShowEntry>();
   /** Forgiven before the strike came ('<playerId> <roomId>' -> expiry): that strike is skipped. */
@@ -491,8 +572,17 @@ export class MatchmakerDO extends DurableObject<Env> {
   private sweepTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly retryAt = new Map<string, number>();
   private region = '?';
+  /** nodesMode as last read (readNodes), and when; the read in flight, and whether one ever finished. */
+  private nodes: NodesMode = 'off';
+  private nodesReadAt = -Infinity;
+  private nodesRead: Promise<void> | null = null;
+  private nodesKnown = false;
+  /** No placement is asked before this (NO_HOSTS_BACKOFF_MS). */
+  private noHostsUntil = 0;
   /** The clock of the request handlers (Date.now; tests inject their own). */
   now: () => number = () => Date.now();
+  /** How long a call to the NodeRegistryDO may take (tests shorten it). */
+  nodeTimeoutMs = NODE_CALL_TIMEOUT_MS;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -553,6 +643,15 @@ export class MatchmakerDO extends DurableObject<Env> {
       if (r === null) return error(400, 'bad_ratings');
       ratings = r;
     }
+    await this.readNodes(now); // before any state is read: the steps below must not wait on I/O
+    // D9 lets this server / ranked queue wait for a node; where none can host now (nodesHere)
+    // there is nothing to wait for, and it is refused as without the nodes.
+    const doDisabled = body.doDisabled === true && kind !== 'p2p';
+
+    // Left while its match was being formed (leave): nothing of that formation reaches it. Its
+    // poll waits for the formation's end (withdraw), then it queues anew.
+    const cancelled = this.forming.get(playerId);
+    if (cancelled !== undefined && this.cancels.has(playerId)) return json(this.waitingResult(cancelled));
 
     // A result never handed out comes first: a player whose poll answered 'waiting' while its
     // room was being created (see `forming`) comes back here and must get its ticket, not 409
@@ -567,7 +666,9 @@ export class MatchmakerDO extends DurableObject<Env> {
       // object itself (its release may be in flight, or never happened: upgrade failed, room gone).
       const fresh = now - (act.since ?? 0) < LOCK_VERIFY_AFTER_MS;
       if (fresh || (await this.lockHeld(act, playerId, now))) {
-        return json({ error: 'active_match', matchId: act.matchId, kind: act.kind ?? 'server', message: lockMessage(act.kind ?? 'server') }, 409);
+        // A node match is rejoined like a server one (the client rejoins any 409 that is not p2p).
+        const shown = roomKindOf(act);
+        return json({ error: 'active_match', matchId: act.matchId, kind: shown, ...(act.kind === 'node' ? { node: true } : {}), message: lockMessage(shown) }, 409);
       }
       await this.forget(playerId, act);
       // The room must know too: the slot is `left` there (its ticket refused, the others told),
@@ -589,13 +690,19 @@ export class MatchmakerDO extends DurableObject<Env> {
       this.removeWaiter(waiter);
       waiter = null;
     }
+    if (doDisabled && !this.nodesHere([playerId], now)) return this.refuseDoDisabled(waiter);
     if (waiter) {
       waiter.lastSeen = now;
       waiter.name = body.name;
       if (ratings) waiter.ratings = ratings;
     } else {
       const roomKind: RoomKind = kind === 'p2p' ? 'p2p' : 'server';
-      if (this.activeRooms(now, roomKind) >= capacityOf(roomKind)) return error(503, 'capacity', 'all rooms are busy, try again in a minute');
+      // With the nodes on for this player a server / ranked match waits for a node, not for a free
+      // MatchDO (formMatch): no cap here, unless no node can host now. A player outside the canary
+      // gets today's 503.
+      if (this.activeRooms(now, roomKind) >= capacityOf(roomKind) && !(roomKind === 'server' && this.nodesHere([playerId], now))) {
+        return error(503, 'capacity', 'all rooms are busy, try again in a minute');
+      }
       waiter = { playerId, name: body.name, modes, kind, joinedAt: now, lastSeen: now, resolvers: [], ratings };
       for (const m of modes) this.queue({ mode: m, kind }).push(waiter);
     }
@@ -605,8 +712,16 @@ export class MatchmakerDO extends DurableObject<Env> {
     }
     const r = this.matched.get(playerId);
     if (r) return this.deliver(playerId, r);
+    // That formation may have just found no node here (hosts 0): refused now, not after a poll.
+    if (doDisabled && !this.nodesHere([playerId], now)) return this.refuseDoDisabled(this.findWaiter(playerId));
     this.scheduleSweep();
     return json(this.waitingResult(waiter));
+  }
+
+  /** 503 do_disabled for a server / ranked join with no node to wait for (join): its waiter, if any, is dropped. */
+  private refuseDoDisabled(waiter: Waiter | null): Response {
+    if (waiter) this.dropWaiter(waiter);
+    return error(503, 'do_disabled');
   }
 
   private deliver(playerId: string, m: { result: AnyQueueResult; delivered: boolean }): Response {
@@ -623,10 +738,13 @@ export class MatchmakerDO extends DurableObject<Env> {
 
   private poll(playerId: string, now: number): Promise<Response> | Response {
     const m = this.matched.get(playerId);
-    if (m && m.until > now) return this.deliver(playerId, m);
-    const formingKey = this.forming.get(playerId);
-    if (formingKey !== undefined) return json(this.waitingResult(formingKey));
-    const waiter = this.findWaiter(playerId);
+    if (m && m.until > now && !this.cancels.has(playerId)) return this.deliver(playerId, m);
+    const forming = this.forming.get(playerId);
+    if (forming !== undefined && !('resolvers' in forming)) return json(this.waitingResult(forming)); // a custom lobby's start answers its members itself
+    // While its match is being formed (a node placement can take seconds) the poll waits on the
+    // waiter all the same: issue() answers it, or the formation's end / the timer with 'waiting'.
+    // An answer at once would have the client ask again at once, into the queue rate limit.
+    const waiter = forming ?? this.findWaiter(playerId);
     if (!waiter) return error(404, 'not_queued');
     waiter.lastSeen = now;
     this.scheduleSweep();
@@ -653,7 +771,10 @@ export class MatchmakerDO extends DurableObject<Env> {
    * (pending long-polls answer 'waiting' at once) and free its lock when the leave covers it (see
    * leaveReleases). The lock goes first (synchronously, so a join that follows this call sees it
    * gone), the room / match is told afterwards (awaited: by the time the client gets its answer
-   * the other peers have their 'peerLeft' / the match's bots drive the player's car).
+   * the other peers have their 'peerLeft' / the match's bots drive the player's car). A node match
+   * is the other way round: the node first, and the lock goes only once it took the leave
+   * (nodeLeave). A waiter whose match is being formed is out of every queue already: it is marked
+   * (cancels) and tryForm takes it out of the formation once that is over (withdraw).
    */
   private async leave(request: Request, now: number): Promise<Response> {
     const body = await readJson<LeaveBody>(request);
@@ -662,22 +783,78 @@ export class MatchmakerDO extends DurableObject<Env> {
     let left = false;
     const waiter = this.findWaiter(playerId);
     if (waiter) {
-      this.removeWaiter(waiter);
-      const r = this.waitingResult(waiter);
-      for (const resolve of waiter.resolvers) resolve(r);
-      waiter.resolvers.length = 0;
+      this.dropWaiter(waiter);
       left = true;
     }
-    let released = false;
+    const forming = this.forming.get(playerId);
+    if (forming !== undefined && 'resolvers' in forming) {
+      this.cancels.add(playerId);
+      this.answerWaiting(forming);
+      left = true;
+    }
     const act = this.active.get(playerId);
     const named = typeof body.matchId === 'string' ? body.matchId : null;
-    if (act && act.until > now && leaveReleases(act.kind ?? 'server', act.matchId, named)) {
-      await this.forget(playerId, act);
-      released = true;
-      if (act.kind === 'p2p') await this.leftRoom(act, playerId, now);
-      else await this.matchLeave(act.matchId, playerId);
-    }
+    const released = act !== undefined && (await this.leaveLock(playerId, act, named, body.connected === false, now));
     return json({ ok: true, left, released });
+  }
+
+  /**
+   * Free the player's lock `act` when a leave naming `named` covers it (leaveReleases), and tell its
+   * room / match (the lock first) or its node (the node first: the lock goes only once the node took
+   * the leave, nodeLeave; `neverConnected` is passed on). True when the lock was freed.
+   */
+  private async leaveLock(playerId: string, act: ActiveMatch, named: string | null, neverConnected: boolean, now: number): Promise<boolean> {
+    if (act.until <= now || !leaveReleases(roomKindOf(act), act.matchId, named)) return false;
+    if (act.kind === 'node') {
+      const released = await this.nodeLeave(act.matchId, playerId, neverConnected);
+      if (released) await this.forget(playerId, act);
+      return released;
+    }
+    await this.forget(playerId, act);
+    if (act.kind === 'p2p') await this.leftRoom(act, playerId, now);
+    else await this.matchLeave(act.matchId, playerId);
+    return true;
+  }
+
+  /**
+   * A waiter whose /leave came while its match was being formed (leave), now that the formation is
+   * over (`formed`: the match / room id, null when none formed; it is not back in the queue then,
+   * tryForm). A node match it never got into is quit as an explicit leave, connected: false (never
+   * a dodge; the lock goes once the node took it, D12). Anything else as a leave right after the
+   * formation: a p2p room's lock is freed and the room told (no strike: the ticket never reached
+   * the player); a MatchDO's lock stays, and the next queue gets that match (a ranked quit before
+   * the kickoff would be a dodge). Its polls meanwhile then answer 'waiting'.
+   */
+  private async withdraw(w: Waiter, formed: string | null, now: number): Promise<void> {
+    try {
+      const act = this.active.get(w.playerId);
+      if (formed !== null && act !== undefined && act.matchId === formed) await this.leaveLock(w.playerId, act, act.kind === 'node' ? formed : null, true, now);
+    } finally {
+      this.forming.delete(w.playerId);
+      this.cancels.delete(w.playerId);
+      this.answerWaiting(w);
+    }
+  }
+
+  /**
+   * Tell the node's control plane the player quits its node match, before the lock goes (D12):
+   * true when the lock may go (the leave is recorded: 200, even when the relay to the node then
+   * failed; or the control plane no longer has the player in a running match: 404, 410), false
+   * when it must stay (503 offline: nothing was recorded, the player may still rejoin; any other
+   * answer, an error, or none within nodeTimeoutMs, longer than the node's own RPC). Without the
+   * nodes configured nothing can hold the player: true.
+   */
+  private async nodeLeave(matchId: string, playerId: string, neverConnected: boolean): Promise<boolean> {
+    const env = this.env;
+    if (!nodesConfigured(env)) return true;
+    try {
+      const r = await askNodes(env, NODE_ROUTES.leave, { matchId, playerId, ...(neverConnected ? { connected: false } : {}) }, this.nodeTimeoutMs);
+      if ((r.status >= 200 && r.status < 300) || r.status === 404 || r.status === 410) return true;
+      console.error(`matchmaker: node leave -> ${r.status}: lock kept`);
+    } catch (e) {
+      console.error('matchmaker: node leave failed, lock kept', e);
+    }
+    return false;
   }
 
   /**
@@ -759,10 +936,24 @@ export class MatchmakerDO extends DurableObject<Env> {
     if (m && resultId(m.result) === act.matchId) this.matched.delete(playerId);
   }
 
-  /** Does the room / match behind `act` still hold the player? Unreachable object = yes (the lock expires by itself; /leave frees it). */
+  /**
+   * Does the room / match behind `act` still hold the player? Unreachable object = yes (the lock
+   * expires by itself; /leave frees it). A node match holds while the control plane has it played
+   * or reported and the player has not left it (nodeLockHeld; a 200 that is no status keeps it); a
+   * 404 (it knows neither the match nor the player in it) frees it, any other refusal keeps it, and
+   * without the nodes configured nothing holds it.
+   */
   private async lockHeld(act: ActiveMatch, playerId: string, now: number): Promise<boolean> {
     const env = this.env;
     try {
+      if (act.kind === 'node') {
+        if (!nodesConfigured(env)) return false;
+        const q = new URLSearchParams({ matchId: act.matchId, playerId });
+        const r = await askNodes(env, NODE_ROUTES.status + '?' + q.toString(), undefined, this.nodeTimeoutMs);
+        if (r.status === 404) return false;
+        if (r.status !== 200) return true;
+        return nodeLockHeld(r.body);
+      }
       const secret = await internalSecret(env.JWT_SECRET);
       const headers = { [INTERNAL_HEADER]: secret };
       if ((act.kind ?? 'server') === 'p2p') {
@@ -875,8 +1066,9 @@ export class MatchmakerDO extends DurableObject<Env> {
     for (const h of humans) this.forming.set(h.playerId, { mode, kind });
     try {
       if (kind === 'p2p') await this.formRoom(mode, humans, now, { teams, matchLengthSeconds: length });
-      else await this.formMatch(mode, humans, now, { teams, matchLengthSeconds: length });
+      else await this.formMatch(mode, humans, now, { teams, matchLengthSeconds: length, nodes: false });
     } catch (e) {
+      if (e instanceof NoRoom) return error(503, e.code, 'all rooms are busy, try again in a minute');
       console.error('matchmaker: custom form failed', e);
       return error(500, 'form_failed');
     } finally {
@@ -897,11 +1089,17 @@ export class MatchmakerDO extends DurableObject<Env> {
     const queues: Record<string, number> = {};
     for (const [key, q] of this.queues) queues[key] = q.length;
     let active = 0;
-    for (const a of this.active.values()) if (a.until > now) active++;
+    let nodeLocks = 0;
+    for (const a of this.active.values()) {
+      if (a.until <= now) continue;
+      active++;
+      if (a.kind === 'node') nodeLocks++;
+    }
     return json({
       region: this.region,
       queues,
       active,
+      nodeLocks,
       matched: this.matched.size,
       rooms: this.activeRooms(now, 'server'),
       maxRooms: MAX_ACTIVE_ROOMS,
@@ -931,6 +1129,19 @@ export class MatchmakerDO extends DurableObject<Env> {
       const i = q.indexOf(w);
       if (i >= 0) q.splice(i, 1);
     }
+  }
+
+  /** Out of every queue, its pending long-polls answered 'waiting' at once. */
+  private dropWaiter(w: Waiter): void {
+    this.removeWaiter(w);
+    this.answerWaiting(w);
+  }
+
+  /** Answer the waiter's pending long-polls 'waiting' now (each client then asks again). */
+  private answerWaiting(w: Waiter): void {
+    const r = this.waitingResult(w);
+    for (const resolve of w.resolvers) resolve(r);
+    w.resolvers.length = 0;
   }
 
   /** 'waiting' with the number of players in the same queue(s): for a waiter, the distinct players across its playlists. */
@@ -967,11 +1178,15 @@ export class MatchmakerDO extends DurableObject<Env> {
 
   private async sweep(): Promise<void> {
     const now = this.now();
+    await this.readNodes(now);
     let pending = false;
     for (const mode of MODE_IDS) {
       for (const kind of KINDS) {
         const key: QueueKey = { mode, kind };
-        await this.tryForm(key, now);
+        // Not awaited: a slow node placement must not hold up the other queues' timed formations.
+        // tryForm moves its humans to `forming` before its first await; a failure requeues them
+        // and schedules a sweep.
+        void this.tryForm(key, now);
         if (this.queue(key).length > 0) pending = true;
       }
     }
@@ -1026,41 +1241,83 @@ export class MatchmakerDO extends DurableObject<Env> {
       humans = q.slice(0, Math.min(need, q.length));
     } else {
       const f = decideP2pFormation(q.length, need, waited);
-      if (f === 'wait') return;
+      // A lone human whose server path found no room (NoRoom) waits out its own back-off; a second
+      // human still forms a P2P room (a RoomDO, its own cap) at once.
+      if (f === 'wait' || (f === 'server' && (q[0].noRoomUntil ?? 0) > now)) return;
       humans = q.slice(0, f === 'room' ? need : q.length); // 'room_bots' / 'server' take everyone waiting (1 for 'server')
       p2p = f !== 'server';
     }
     const roomKind: RoomKind = p2p ? 'p2p' : 'server';
-    if (this.activeRooms(now, roomKind) >= capacityOf(roomKind)) return; // at the budget cap: they keep waiting until a room is released
+    const ids = humans.map((h) => h.playerId);
+    // At the budget cap they keep waiting until a room is released; where a node can take the match
+    // of every one of them (a lone p2p human's server path included) formMatch asks one first.
+    if (this.activeRooms(now, roomKind) >= capacityOf(roomKind) && !(roomKind === 'server' && this.nodesHere(ids, now))) return;
     for (const h of humans) {
       this.removeWaiter(h);
-      this.forming.set(h.playerId, key);
+      this.forming.set(h.playerId, h);
     }
+    let formed: string | null = null;
     try {
-      if (p2p) await this.formRoom(key.mode, humans, now);
-      else await this.formMatch(key.mode, humans, now, { teams, ranked: key.kind === 'ranked' });
+      formed = p2p ? await this.formRoom(key.mode, humans, now) : await this.formMatch(key.mode, humans, now, { teams, ranked: key.kind === 'ranked' });
     } catch (e) {
-      console.error('matchmaker: form failed', e);
-      // Put them back (original join times) and retry after a backoff.
-      this.requeue(humans);
-      this.retryAt.set(k, now + RETRY_AFTER_MS);
+      // NoRoom: no node now and no MatchDO allowed (they wait for one), or one of them left; no failure.
+      if (!(e instanceof NoRoom)) console.error('matchmaker: form failed', e);
+      // Put them back (original join times; not one that left) and retry after a backoff: the
+      // queue's, except after a leave (the others may form at once) and on a p2p queue, where only
+      // its lone human's server path found no room (the queue may still form a room).
+      const back = humans.filter((h) => !this.cancels.has(h.playerId));
+      this.requeue(back);
+      if (!(e instanceof NoRoom) || (e.code !== 'left' && key.kind !== 'p2p')) this.retryAt.set(k, now + RETRY_AFTER_MS);
+      else if (e.code !== 'left') for (const h of back) h.noRoomUntil = now + RETRY_AFTER_MS;
+      // do_disabled where no node can host now (hosts 0): their next join is refused, so answer now.
+      if (e instanceof NoRoom && e.code === 'do_disabled' && !this.nodesHere(ids, now)) for (const h of back) this.answerWaiting(h);
+      this.scheduleSweep();
     } finally {
-      for (const h of humans) this.forming.delete(h.playerId);
+      for (const h of humans) if (!this.cancels.has(h.playerId)) this.forming.delete(h.playerId);
     }
+    for (const h of humans) if (this.cancels.has(h.playerId)) await this.withdraw(h, formed, now);
   }
 
   /**
-   * An authoritative MatchDO match (bots fill the free slots): phase 1 casual, ranked (balanced
-   * `teams`, rated by AccountsDO when it ends, locked there too so one account plays one ranked
-   * match across every region) and custom lobbies (fixed `teams`, `matchLengthSeconds`).
+   * An authoritative match (bots fill the free slots): phase 1 casual, ranked (balanced `teams`,
+   * rated by AccountsDO when it ends, locked there too so one account plays one ranked match
+   * across every region) and custom lobbies (fixed `teams`, `matchLengthSeconds`). On a community
+   * node when the nodes are on for every human and one takes it (placeOnNode); otherwise a
+   * MatchDO, or NoRoom when the nodes were asked and the Worker's own servers are off
+   * (do_disabled) or full (MAX_ACTIVE_ROOMS), or one of the humans left meanwhile.
    */
   private async formMatch(mode: GameModeId, humans: readonly HumanEntry[], now: number, opts: FormOptions = {}): Promise<string> {
     const env = this.env;
+    const length = opts.matchLengthSeconds ?? matchLengthSeconds(env);
+    const until = now + (length > 0 ? length : 20 * 60) * 1000 + ACTIVE_GRACE_MS;
+    if (opts.nodes !== false && this.nodesFor(humans.map((h) => h.playerId))) {
+      const placed = await this.placeOnNode(mode, humans, now, length, opts);
+      if (placed) {
+        if (opts.ranked) await this.rankedLock(placed.matchId, humans, until);
+        const tickets = new Map(placed.tickets.map((t) => [t.playerId, t.ticket]));
+        const names = new Map(humans.map((h) => [h.playerId, h.name]));
+        await this.issue(
+          humans,
+          placed.tickets.map((t) => ({ slot: t.slot, team: t.team, name: names.get(t.playerId) ?? '', playerId: t.playerId })),
+          placed.matchId,
+          'node',
+          until,
+          now,
+          (seat) => tickets.get(seat.playerId) as string, // placementFor: one ticket per human
+          (ticket) => ({ status: 'matched', matchId: placed.matchId, ticket, wsUrl: placed.wsUrl, node: true, ...(opts.ranked ? { ranked: true } : {}) }) satisfies QueueResult,
+        );
+        return placed.matchId;
+      }
+      // D9: with do_disabled no MatchDO is created; the humans wait in the queue for a node.
+      if (await flag(env, 'do_disabled')) throw new NoRoom('do_disabled');
+      if (this.activeRooms(now, 'server') >= MAX_ACTIVE_ROOMS) throw new NoRoom('capacity');
+      // One of them left while the node was asked (leave): no MatchDO with it, the others wait on.
+      if (humans.some((h) => this.cancels.has(h.playerId))) throw new NoRoom('left');
+    }
     const perTeam = MODES[mode];
     const roster: RosterEntry[] = opts.teams ? buildTeamRoster(perTeam, opts.teams, 'player') : buildRoster(perTeam, humans, 'player');
     const id = env.MATCH.newUniqueId();
     const matchId = id.toString();
-    const length = opts.matchLengthSeconds ?? matchLengthSeconds(env);
     const secret = await internalSecret(env.JWT_SECRET);
     const res = await env.MATCH.get(id).fetch('https://match/internal/create', {
       method: 'POST',
@@ -1068,29 +1325,102 @@ export class MatchmakerDO extends DurableObject<Env> {
       body: JSON.stringify({ matchId, mode, region: this.region, roster, matchLengthSeconds: length, createdAt: now, ranked: opts.ranked === true }),
     });
     if (!res.ok) throw new Error(`MatchDO create -> ${res.status} ${await res.text()}`);
-    const until = now + (length > 0 ? length : 20 * 60) * 1000 + ACTIVE_GRACE_MS;
-    if (opts.ranked) {
-      try {
-        const lock = await env.ACCOUNTS.get(env.ACCOUNTS.idFromName('accounts-v1')).fetch('https://accounts/ranked-lock', {
-          method: 'POST',
-          headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
-          body: JSON.stringify({ matchId, region: this.region, userIds: humans.map((h) => h.playerId), until }),
-        });
-        await lock.body?.cancel();
-      } catch (e) {
-        console.error('matchmaker: ranked lock failed', e); // the region lock below still holds the player here
-      }
-    }
+    if (opts.ranked) await this.rankedLock(matchId, humans, until);
     await this.issue(
       humans,
       roster.filter((e) => e.kind === 'player'),
       matchId,
-      'player',
+      'server',
       until,
       now,
+      this.mint(matchId, 'player', now),
       (ticket) => ({ status: 'matched', matchId, ticket, wsUrl: '/ws/' + matchId, ...(opts.ranked ? { ranked: true } : {}) }) satisfies QueueResult,
     );
     return matchId;
+  }
+
+  /** The ranked lock in AccountsDO: one ranked match per account across every region, until it is rated or cancelled. */
+  private async rankedLock(matchId: string, humans: readonly HumanEntry[], until: number): Promise<void> {
+    const env = this.env;
+    try {
+      const secret = await internalSecret(env.JWT_SECRET);
+      const lock = await env.ACCOUNTS.get(env.ACCOUNTS.idFromName('accounts-v1')).fetch('https://accounts/ranked-lock', {
+        method: 'POST',
+        headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
+        body: JSON.stringify({ matchId, region: this.region, userIds: humans.map((h) => h.playerId), until }),
+      });
+      await lock.body?.cancel();
+    } catch (e) {
+      console.error('matchmaker: ranked lock failed', e); // the region lock (issue) still holds the player here
+    }
+  }
+
+  /**
+   * Read nodes_on / vm_disabled again when NODES_MODE_TTL_MS has passed (no KV read at all while
+   * the nodes are not configured). Callers do it before they look at the queues: nodesFor is then
+   * synchronous, and no queue changes under them while KV answers. Until a first read is done every
+   * caller waits for it (the 'off' it starts from is no value: a canary player the Worker let
+   * through do_disabled would get a MatchDO); a later read serves the last value to the others.
+   */
+  private async readNodes(now: number): Promise<void> {
+    if (!nodesConfigured(this.env)) return;
+    if (now - this.nodesReadAt >= NODES_MODE_TTL_MS) {
+      this.nodesReadAt = now;
+      this.nodesRead = nodesMode(this.env).then((mode) => {
+        this.nodes = mode;
+        this.nodesKnown = true;
+      });
+      await this.nodesRead;
+    } else if (!this.nodesKnown) await this.nodesRead;
+  }
+
+  /** The nodes are on for every one of these players (configured, and nodes_on as last read names them all). */
+  private nodesFor(playerIds: readonly string[]): boolean {
+    return nodesConfigured(this.env) && nodesAllowed(this.nodes, playerIds);
+  }
+
+  /**
+   * ... and a node may take their match now: this region is one the nodes serve, outside the
+   * back-off after hosts 0 or a failed call (NO_HOSTS_BACKOFF_MS). Otherwise there is no node to
+   * wait for: the cap applies as without the nodes, and with do_disabled their server / ranked
+   * joins are refused (join; formMatch creates no MatchDO for them either).
+   */
+  private nodesHere(playerIds: readonly string[], now: number): boolean {
+    return this.nodesFor(playerIds) && isRegion(this.region) && now >= this.noHostsUntil;
+  }
+
+  /**
+   * The match on a community node, or null and the caller goes on with a MatchDO: no region the
+   * nodes know, the back-off after hosts 0 or a failed call (NO_HOSTS_BACKOFF_MS), no node free,
+   * an error, no answer within nodeTimeoutMs, or an answer that is not a placement for exactly
+   * these humans. Formation never fails because of the nodes. Stage 1 sends no transports (the
+   * default is wss) and no account fields (the project's nodes earn nothing).
+   */
+  private async placeOnNode(mode: GameModeId, humans: readonly HumanEntry[], now: number, length: number, opts: FormOptions): Promise<Placement | null> {
+    const env = this.env;
+    if (!nodesConfigured(env) || !isRegion(this.region) || now < this.noHostsUntil) return null;
+    const body: PlaceBody = {
+      mode,
+      region: this.region,
+      ranked: opts.ranked === true,
+      matchLengthSeconds: length,
+      humans: humans.map((h) => ({ playerId: h.playerId, name: h.name })),
+      ...(opts.teams ? { teams: { blue: opts.teams[0].map((h) => h.playerId), red: opts.teams[1].map((h) => h.playerId) } } : {}),
+    };
+    try {
+      const r = await askNodes(env, NODE_ROUTES.place, body, this.nodeTimeoutMs);
+      if (r.status !== 200) throw new Error(`place -> ${r.status} ${JSON.stringify(r.body)}`);
+      const answer = (r.body ?? {}) as { placement?: unknown; hosts?: unknown };
+      if (answer.hosts === 0) this.noHostsUntil = now + NO_HOSTS_BACKOFF_MS;
+      if (answer.placement === null || answer.placement === undefined) return null; // no node took it
+      const placed = placementFor(answer, humans.map((h) => h.playerId));
+      if (placed === null) throw new Error('place: not a placement for these players');
+      return placed;
+    } catch (e) {
+      this.noHostsUntil = now + NO_HOSTS_BACKOFF_MS;
+      console.error('matchmaker: node placement failed, a MatchDO instead', e);
+      return null;
+    }
   }
 
   /** Phase 2: a RoomDO signaling room; every peer simulates (bots included) from the shared seed. */
@@ -1111,31 +1441,43 @@ export class MatchmakerDO extends DurableObject<Env> {
       humans,
       slots.filter((e) => e.kind === 'peer'),
       roomId,
-      'peer',
+      'p2p',
       now + P2P_LOCK_MS,
       now,
+      this.mint(roomId, 'peer', now),
       (ticket) => ({ status: 'matched', kind: 'p2p', roomId, ticket, wsUrl: '/room/' + roomId }) satisfies QueueResultP2p,
     );
     return roomId;
   }
 
-  /** Register the room, mint one ticket per human, lock them, cache the results and answer their long-polls. */
+  /** The Worker's own ticket for a seat of MatchDO / RoomDO `id` (a node match comes with the control plane's). */
+  private mint(id: string, role: TicketRole, now: number): (seat: Seat & { playerId: string }) => Promise<string> {
+    return (e) => createTicket(this.env.JWT_SECRET, { sub: e.playerId, mid: id, team: e.team, slot: e.slot, name: e.name, role }, now);
+  }
+
+  /**
+   * Register the match / room, lock its humans (a lock of `kind`), give each seat its ticket
+   * (`ticketFor`), cache the results and answer their long-polls. A node match is none of the
+   * Worker's rooms: it never counts toward MAX_ACTIVE_ROOMS.
+   */
   private async issue(
     humans: ReadonlyArray<HumanEntry & { resolvers?: Waiter['resolvers'] }>,
-    seats: ReadonlyArray<{ slot: number; team: 0 | 1; name: string; playerId?: string }>,
+    seats: ReadonlyArray<Seat>,
     id: string,
-    role: TicketRole,
+    kind: LockKind,
     until: number,
     now: number,
+    ticketFor: (seat: Seat & { playerId: string }) => Promise<string> | string,
     makeResult: (ticket: string) => AnyQueueResult,
   ): Promise<void> {
-    const kind: RoomKind = role === 'peer' ? 'p2p' : 'server';
-    const entry: RoomEntry = { until, kind };
-    this.rooms.set(id, entry);
-    await this.ctx.storage.put('room:' + id, entry);
+    if (kind !== 'node') {
+      const entry: RoomEntry = { until, kind };
+      this.rooms.set(id, entry);
+      await this.ctx.storage.put('room:' + id, entry);
+    }
     for (const e of seats) {
       if (!e.playerId) continue;
-      const ticket = await createTicket(this.env.JWT_SECRET, { sub: e.playerId, mid: id, team: e.team, slot: e.slot, name: e.name, role }, now);
+      const ticket = await ticketFor({ ...e, playerId: e.playerId });
       this.matched.set(e.playerId, { result: makeResult(ticket), until: now + MATCHED_TTL_MS, delivered: false });
       const lock: ActiveMatch = { matchId: id, until, kind, since: now };
       this.active.set(e.playerId, lock);
@@ -1143,7 +1485,8 @@ export class MatchmakerDO extends DurableObject<Env> {
     }
     for (const h of humans) {
       const r = this.matched.get(h.playerId);
-      if (!r || !h.resolvers || h.resolvers.length === 0) continue; // no long-poll pending: the next join / poll delivers it
+      // No long-poll pending: the next join / poll delivers it. One that left meanwhile gets nothing (withdraw).
+      if (!r || !h.resolvers || h.resolvers.length === 0 || this.cancels.has(h.playerId)) continue;
       r.delivered = true;
       this.markDelivered(h.playerId, id);
       for (const resolve of h.resolvers) resolve(r.result);

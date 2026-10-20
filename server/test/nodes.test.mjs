@@ -3,7 +3,7 @@
 // NodeRegistryDO's address and internal contract
 // (server/src/nodeApi.ts), and the outcome calls of a finished node match
 // (server/src/nodeOutcome.ts) delivered to fake namespaces and to a real AccountsDO on node:sqlite
-// (the same SQL it runs on its SQLite storage). Nothing in the Worker calls this code yet.
+// (the same SQL it runs on its SQLite storage). The matchmaker's side is in nodeMatchmaker.test.mjs.
 // Run from server/: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
