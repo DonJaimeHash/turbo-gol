@@ -121,21 +121,23 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     grade: { contrast: 1.18, saturation: 1.12, lift: [0, 0.002, 0.006], gain: [1.03, 1, 0.96], vignette: 0.36 },
   },
   // The same harbour by day: the sun is the main key (azimuth 24 deg, elevation 30 deg, the sky's
-  // sun disc in world/presets.ts), a weak cool sky key from the other side, floodlights off.
+  // sun disc in world/presets.ts), a weak cool sky key from the other side, floodlights off. Bright,
+  // crisp afternoon: a strong sun on the stadium's scale (the backdrop's key.light ~ 5 / pi), a
+  // modest sky fill, clear air, ACES for a filmic shoulder on the sunlit cloud tops.
   'harbour-day': {
     id: 'harbour-day',
     night: false,
     keys: [
-      { dir: unit(-0.352, 0.5, 0.791), color: [1.0, 0.93, 0.82], intensity: 3.0 },
-      { dir: unit(0.5, 0.62, -0.6), color: [0.72, 0.82, 1.0], intensity: 0.6 },
+      { dir: unit(-0.352, 0.5, 0.791), color: [1.0, 0.92, 0.8], intensity: 5.0 },
+      { dir: unit(0.5, 0.62, -0.6), color: [0.72, 0.82, 1.0], intensity: 0.8 },
     ],
-    fill: { sky: [0.55, 0.65, 0.85], ground: [0.22, 0.2, 0.15], intensity: 1.1, env: 0.8 },
+    fill: { sky: [0.46, 0.55, 0.72], ground: [0.2, 0.19, 0.15], intensity: 1.0, env: 0.55 },
     floodlights: towerFloodlights(WARM_LAMP, 0),
-    wetness: 0.12,
-    fog: { color: [0.6, 0.65, 0.74], density: 1.1e-5 },
-    toneMapping: 'neutral',
-    exposure: 0.95,
-    grade: { contrast: 1.04, saturation: 1.06, lift: [0, 0, 0], gain: [1, 1, 1], vignette: 0.22 },
+    wetness: 0.09,
+    fog: { color: [0.46, 0.55, 0.7], density: 0.45e-5 },
+    toneMapping: 'aces',
+    exposure: 1.12,
+    grade: { contrast: 1.06, saturation: 1.1, lift: [0, 0, 0.002], gain: [1.02, 1, 0.98], vignette: 0.22 },
   },
   // A red canyon at sunset: the low sun behind the red goal (azimuth 8 deg; the key sits a little
   // higher than the disc so the pitch is not lit at a grazing angle), the floodlights already on at

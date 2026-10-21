@@ -103,25 +103,28 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     envLamp: 40,
   },
 
-  // The same harbour by day: the same geometry and shaders, only numbers change.
+  // The same harbour by day: the same geometry and shaders, only numbers change. Afternoon sun over
+  // the cranes (the theme's key), a deep blue sky with fair-weather cumulus, clear air (the yards
+  // and cranes read crisply), the backdrop lit on the stadium's scale (key.light ~ the theme's
+  // sun intensity / pi, as alpine-day).
   'harbour-day': {
     skyline: 'harbour',
-    zenith: [0.05, 0.12, 0.4],
-    mid: [0.17, 0.32, 0.7],
-    horizon: [0.6, 0.65, 0.74],
-    glow: { color: [0.32, 0.24, 0.14], az: 24, spread: 0.85, height: 0.16 },
-    key: { az: 24, el: 30, color: [1.0, 0.88, 0.7], disc: 160, sizeDeg: 0.9, halo: 0.32, halo2: 1.1, moon: false, light: [3.0, 2.65, 2.15] },
-    ambSky: [0.42, 0.52, 0.74],
-    ambGround: [0.2, 0.18, 0.15],
+    zenith: [0.03, 0.09, 0.32],
+    mid: [0.1, 0.23, 0.56],
+    horizon: [0.46, 0.55, 0.7],
+    glow: { color: [0.26, 0.19, 0.11], az: 24, spread: 0.8, height: 0.14 },
+    key: { az: 24, el: 30, color: [1.0, 0.9, 0.74], disc: 160, sizeDeg: 0.9, halo: 0.3, halo2: 1.1, moon: false, light: [1.66, 1.5, 1.26] },
+    ambSky: [0.17, 0.23, 0.36],
+    ambGround: [0.08, 0.075, 0.065],
     stars: 0.0,
-    clouds: { cover: 0.44, scale: 0.5, height: 0.085, lit: [1.45, 1.38, 1.3], shadow: [0.36, 0.4, 0.52], under: [0.3, 0.22, 0.14], alpha: 0.9, stretch: 1.0 },
-    cirrus: { cover: 0.38, scale: 0.3, height: 0.25, lit: [1.2, 1.22, 1.25], shadow: [0.55, 0.62, 0.78], under: [0.12, 0.09, 0.06], alpha: 0.5, stretch: 3.0 },
-    hazeHeight: 3500,
+    clouds: { cover: 0.45, scale: 0.6, height: 0.09, lit: [1.25, 1.2, 1.12], shadow: [0.32, 0.37, 0.5], under: [0.22, 0.16, 0.1], alpha: 0.94, stretch: 1.0 },
+    cirrus: { cover: 0.34, scale: 0.3, height: 0.25, lit: [1.05, 1.06, 1.1], shadow: [0.5, 0.58, 0.76], under: [0.1, 0.07, 0.05], alpha: 0.42, stretch: 3.0 },
+    hazeHeight: 6000,
     hazeGain: 1.0,
     lights: 0.0,
     windows: 0.0,
-    sea: { color: [0.01, 0.03, 0.045], rough: 1.0 },
-    envTurf: [0.12, 0.22, 0.09],
+    sea: { color: [0.012, 0.035, 0.05], rough: 1.0 },
+    envTurf: [0.1, 0.2, 0.07],
     envLamp: 0,
   },
 

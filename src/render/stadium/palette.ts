@@ -60,9 +60,26 @@ const STADIUM_THEMES: Readonly<Partial<Record<ThemeId, StadiumTheme>>> = {
     rampColor: [0.035, 0.085, 0.04],
     steelRim: [0.05, 0.055, 0.07],
   },
-  // "Valle Alto" at midday (floodlights off): brighter boards so they read in the sun, the wires
-  // lit by the sky (a light, transparent mesh rather than a dark veil: the concept's "light cage"),
-  // the crowd in the canopy's shade, and timber stands.
+  // Daylight (floodlights off): brighter boards so they read in the sun, the wires lit by the sky
+  // (a light mesh against the blue rather than a dark veil), the crowd in the canopy's shade.
+  'harbour-day': {
+    ledIntensity: 1.0,
+    railIntensity: 1.1,
+    lampIntensity: 30,
+    glare: 0.55,
+    beam: 0.5,
+    netColor: [0.32, 0.33, 0.35],
+    netAmbient: [0.5, 0.53, 0.6],
+    netLight: 0.5,
+    netOpacity: 0.65,
+    crowdLight: [0.6, 0.6, 0.64],
+    crowdDepthDim: 0.45,
+    canopyLight: 0,
+    rampColor: [0.04, 0.09, 0.042],
+    steelRim: [0.02, 0.022, 0.026],
+  },
+  // "Valle Alto" at midday: as harbour-day, a lighter, more transparent mesh (the concept's "light
+  // cage"), a slightly brighter crowd under the clear mountain light, and timber stands.
   'alpine-day': {
     ledIntensity: 1.0,
     railIntensity: 1.1,
