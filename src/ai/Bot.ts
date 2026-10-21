@@ -43,17 +43,13 @@ import {
 } from '../sim/types';
 import { ARENA, BALL, BOOST_PADS_BIG, BOOST_PADS_SMALL, CAR_STANDARD } from '../sim/constants';
 import {
-  BOOST_ACCEL_AIR,
-  BOOST_PER_SECOND,
-  GRAVITY,
-  JUMP_IMPULSE,
   Rng,
+  STOCK_BOT_PHYSICS,
   angleToPoint2D,
   clamp,
   clamp1,
   dist2D,
   groundAccel,
-  MAX_BOOST_SPEED,
   MAX_DRIVE_SPEED,
   turnRadius,
   v3copy,
@@ -73,6 +69,7 @@ import {
   v3sub,
   vec3,
   wrapAngle,
+  type BotPhysics,
   type Vec3,
 } from './math';
 
@@ -97,6 +94,12 @@ export interface BotOptions {
   team: Team;
   difficulty?: Difficulty;
   seed?: number;
+  /**
+   * Physics the bot plans with (gravity, jumps, boost, top speed): STOCK_BOT_PHYSICS by default; an
+   * experimental preset passes the same profile to every bot of the match (src/sim/mutators.ts
+   * botPhysicsOf). The ball comes from the wasm prediction, which follows the preset by itself.
+   */
+  physics?: BotPhysics;
 }
 
 export interface DifficultyParams {
@@ -344,8 +347,6 @@ export const TUNING = {
   demoDodgeClosing: 1500,
 };
 
-const GRAV_HALF = 0.5 * GRAVITY;
-
 /** Module-level scratch for the pure helpers (single-threaded, never retained). */
 const _reach = new Float32Array(BALL_PRED_TICKS);
 const _dir = vec3();
@@ -411,6 +412,7 @@ export function firstReachable(
   out: Float32Array,
   maxZ = TUNING.groundMaxBallZ,
   step = 2,
+  phys: BotPhysics = STOCK_BOT_PHYSICS,
 ): number {
   const pred = state.ballPred;
   const n = BALL_PRED_TICKS;
@@ -423,11 +425,11 @@ export function firstReachable(
   let d = 0;
   for (let i = 0; i < n; i += step) {
     const boosting = b > 0;
-    const vmax = boosting ? MAX_BOOST_SPEED : MAX_DRIVE_SPEED;
-    v += groundAccel(v, boosting) * dt;
+    const vmax = boosting ? phys.maxBoostSpeed : MAX_DRIVE_SPEED;
+    v += groundAccel(v, boosting, phys.boostAccelGround) * dt;
     if (v > vmax) v = Math.max(vmax, v - 200 * dt);
     d += v * dt;
-    if (boosting) b -= BOOST_PER_SECOND * dt;
+    if (boosting) b -= phys.boostPerSecond * dt;
     _reach[i] = d;
   }
 
@@ -765,12 +767,28 @@ export class Bot {
   private readonly tmpB = vec3();
   private readonly pred = new Float32Array(BALL_PRED_STRIDE);
 
+  /** The physics this bot plans with (constant for its life, the same for every bot of a match). */
+  private readonly phys: BotPhysics;
+  /** 0.5 * gravity (the aerial reach model). */
+  private readonly gravHalf: number;
+  /** Velocity a double-jump take-off adds: first jump + double jump. */
+  private readonly doubleJumpVel: number;
+
   constructor(opts: BotOptions) {
     this.team = opts.team;
     this.goalDir = opts.team === Team.Red ? 1 : -1;
     this.difficultyName = opts.difficulty ?? 'hard';
     this.params = DIFFICULTY_PARAMS[this.difficultyName];
     this.rng = new Rng(opts.seed ?? 12345);
+    this.phys = opts.physics ?? STOCK_BOT_PHYSICS;
+    this.gravHalf = 0.5 * this.phys.gravity;
+    // Stock: JUMP_IMPULSE + JUMP_IMPULSE, exactly the former 2 * JUMP_IMPULSE (x + x == 2x in IEEE).
+    this.doubleJumpVel = this.phys.jumpImpulse + this.phys.doubleJumpImpulse;
+  }
+
+  /** The physics profile this bot plans with. */
+  get physics(): BotPhysics {
+    return this.phys;
   }
 
   get difficulty(): Difficulty {
@@ -1139,7 +1157,7 @@ export class Bot {
       this.interceptT = ctx.interceptT;
       this.pred.set(ctx.interceptPred);
     } else {
-      this.interceptT = firstReachable(state, this.carPos, this.carVel, this.carFwd, this.boostAmt, this.pred);
+      this.interceptT = firstReachable(state, this.carPos, this.carVel, this.carFwd, this.boostAmt, this.pred, TUNING.groundMaxBallZ, 2, this.phys);
     }
     v3read(this.bp, this.pred, 0);
 
@@ -2112,7 +2130,7 @@ export class Bot {
       if (pz < TUNING.aerialMinBallZ || pz > p.aerialMaxZ) continue;
       const t = (i + 1) * TICK_DT;
       const dbl = p.aerialDoubleJump && pz > TUNING.aerialDoubleZ && t > 0.4;
-      const jv = dbl ? 2 * JUMP_IMPULSE + TUNING.aerialJumpHoldVelDouble : JUMP_IMPULSE + TUNING.aerialJumpHoldVel;
+      const jv = dbl ? this.doubleJumpVel + TUNING.aerialJumpHoldVelDouble : this.phys.jumpImpulse + TUNING.aerialJumpHoldVel;
       this.aerialPushDir(pred[o], pred[o + 1], pz, defensive);
       const sd = this.shotDir;
       const tx = pred[o] - sd[0] * off;
@@ -2120,14 +2138,16 @@ export class Bot {
       const tz = pz - sd[2] * off;
       const dx = tx - this.carPos[0] - (this.carVel[0] + this.carUp[0] * jv) * t;
       const dy = ty - this.carPos[1] - (this.carVel[1] + this.carUp[1] * jv) * t;
-      const dz = tz - this.carPos[2] - (this.carVel[2] + this.carUp[2] * jv) * t - GRAV_HALF * t * t;
+      const dz = tz - this.carPos[2] - (this.carVel[2] + this.carUp[2] * jv) * t - this.gravHalf * t * t;
       const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const need = (2 * len) / (t * t);
       if (need > p.aerialMaxAccel) continue;
       const h = Math.sqrt(dx * dx + dy * dy);
       if (h > 1 && (dx * fx + dy * fy) / h < p.aerialAheadCos) continue; // must be roughly ahead
-      const boostNeeded = ((need / BOOST_ACCEL_AIR) * t + 0.3) * BOOST_PER_SECOND;
-      if (boostNeeded > this.boostAmt) continue;
+      const boostNeeded = ((need / this.phys.boostAccelAir) * t + 0.3) * this.phys.boostPerSecond;
+      // Without boost there is no aerial: with stock boost use boostNeeded > 0 already says so; with
+      // a preset where boost never runs out boostNeeded is 0, so check the tank itself.
+      if (boostNeeded > this.boostAmt || this.boostAmt <= 0) continue;
       this.aerialT = t;
       this.aerialDouble = dbl;
       this.aerialDefensive = defensive;
@@ -2158,12 +2178,12 @@ export class Bot {
     // required constant acceleration to reach that point: delta = p - x - v t - ½ g t². Until the
     // jumps have happened, count the velocity they are about to add (as findAerial did).
     let jv = 0;
-    if (this.onGround) jv = this.aerialDouble ? 2 * JUMP_IMPULSE + TUNING.aerialJumpHoldVelDouble : JUMP_IMPULSE + TUNING.aerialJumpHoldVel;
-    else if (this.aerialDouble && !this.hasDoubleJumped) jv = JUMP_IMPULSE;
+    if (this.onGround) jv = this.aerialDouble ? this.doubleJumpVel + TUNING.aerialJumpHoldVelDouble : this.phys.jumpImpulse + TUNING.aerialJumpHoldVel;
+    else if (this.aerialDouble && !this.hasDoubleJumped) jv = this.phys.doubleJumpImpulse;
     const d = this.delta;
     d[0] = this.pred[0] - sd[0] * off - this.carPos[0] - (this.carVel[0] + this.carUp[0] * jv) * tRem;
     d[1] = this.pred[1] - sd[1] * off - this.carPos[1] - (this.carVel[1] + this.carUp[1] * jv) * tRem;
-    d[2] = this.pred[2] - sd[2] * off - this.carPos[2] - (this.carVel[2] + this.carUp[2] * jv) * tRem - GRAV_HALF * tRem * tRem;
+    d[2] = this.pred[2] - sd[2] * off - this.carPos[2] - (this.carVel[2] + this.carUp[2] * jv) * tRem - this.gravHalf * tRem * tRem;
     const len = v3normalize(this.aim, d);
     const need = (2 * len) / (tRem * tRem);
     const ballDist = v3dist(this.carPos, this.ballPos); // 3D: under a high ball the 2D distance is ~0

@@ -31,12 +31,14 @@ import {
 } from '../sim/types';
 import { KICKOFF_SPAWNS } from '../sim/constants';
 import { Bot, DUTIES, ROLES, TUNING, firstReachable, type BotRole, type Difficulty, type KickoffDuty } from './Bot';
-import { dist2D, v3len2, v3read, v3set, vec3 } from './math';
+import { STOCK_BOT_PHYSICS, dist2D, v3len2, v3read, v3set, vec3, type BotPhysics } from './math';
 
 export interface BotTeamOptions {
   team: Team;
   difficulty: Difficulty;
   seed?: number;
+  /** Physics profile of every member bot and of the team's own intercept estimates (stock by default). */
+  physics?: BotPhysics;
 }
 
 /** Midway between the ball distances of the farthest kickoff spot (the keeper spot) and the next one. */
@@ -53,7 +55,7 @@ export const TEAM_TUNING = {
   switchMargin: 0.2,
   /** No attacker / support switch within this many ticks of the previous one of the same kind. */
   switchMinTicks: 30,
-  /** Score (seconds) of a car with no ground intercept inside the horizon, plus ballDist / 2300. */
+  /** Score (seconds) of a car with no ground intercept inside the horizon, plus ballDist / top speed (2300 stock). */
   unreachableBase: 6,
   /** The attacker is "beaten" when the nearest opponent is this much closer to the ball. */
   beatenRatio: 0.85,
@@ -93,6 +95,8 @@ export class BotTeam {
   readonly team: Team;
   private difficulty: Difficulty;
   private readonly seed: number;
+  /** Physics profile of the member bots and of the intercept estimates (constant for the team's life). */
+  readonly physics: BotPhysics;
   private readonly bots: Bot[] = [];
   private readonly slots = new Int32Array(MAX_CARS);
   /** Bots (members 0 .. n-1) and passive members (n .. n+p-1). */
@@ -134,6 +138,7 @@ export class BotTeam {
     this.team = opts.team;
     this.difficulty = opts.difficulty;
     this.seed = opts.seed ?? 12345;
+    this.physics = opts.physics ?? STOCK_BOT_PHYSICS;
     for (let i = 0; i < MAX_CARS; i++) {
       this.roles.push('attacker');
       this.duties.push('go');
@@ -281,7 +286,7 @@ export class BotTeam {
     const bots = this.bots;
     while (bots.length < count) {
       const i = bots.length;
-      bots.push(new Bot({ team: this.team, difficulty: this.difficulty, seed: this.seed + i * TEAM_TUNING.seedStride }));
+      bots.push(new Bot({ team: this.team, difficulty: this.difficulty, seed: this.seed + i * TEAM_TUNING.seedStride, physics: this.physics }));
     }
     bots.length = count;
     for (let i = 0; i < count; i++) o = bots[i].loadState(src, o);
@@ -298,7 +303,7 @@ export class BotTeam {
     const p = Math.min(passiveSlots.length, MAX_CARS - n);
     while (this.bots.length < n) {
       const i = this.bots.length;
-      this.bots.push(new Bot({ team: this.team, difficulty: this.difficulty, seed: this.seed + i * TEAM_TUNING.seedStride }));
+      this.bots.push(new Bot({ team: this.team, difficulty: this.difficulty, seed: this.seed + i * TEAM_TUNING.seedStride, physics: this.physics }));
     }
     for (let i = 0; i < MAX_CARS; i++) this.slots[i] = i < n ? slots[i] : i < n + p ? passiveSlots[i - n] : -1;
     this.n = n;
@@ -355,9 +360,9 @@ export class BotTeam {
       this.posX[i] = this.carPos[0];
       this.posY[i] = this.carPos[1];
       this.ballDist[i] = dist2D(this.carPos[0], this.carPos[1], bx, by);
-      const t = firstReachable(state, this.carPos, this.carVel, this.carFwd, buf[o + C_BOOST], this.preds[i]);
+      const t = firstReachable(state, this.carPos, this.carVel, this.carFwd, buf[o + C_BOOST], this.preds[i], TUNING.groundMaxBallZ, 2, this.physics);
       this.interceptT[i] = t;
-      this.score[i] = t >= 0 ? t : TEAM_TUNING.unreachableBase + this.ballDist[i] / 2300;
+      this.score[i] = t >= 0 ? t : TEAM_TUNING.unreachableBase + this.ballDist[i] / this.physics.maxBoostSpeed;
       // near-ball stall counter: a touch (C_BALL_HIT_TICK changes) clears it and any lockout
       const hitTick = buf[o + C_BALL_HIT_TICK];
       if (hitTick !== this.lastHitTick[i]) {
