@@ -28,6 +28,19 @@ export class TurfView {
     parent.add(this.mesh);
   }
 
+  /** The stadium theme changed (one turf so far: nothing to rewrite; uniforms only, never a rebuild). */
+  setTheme(theme: ThemeId): void {
+    void theme;
+  }
+
+  /**
+   * Pipeline warm-up (Game.setWarm): make meshes that start hidden renderable while `on`, so their
+   * shaders compile behind the boot overlay. Nothing starts hidden yet.
+   */
+  setWarmUp(on: boolean): void {
+    void on;
+  }
+
   dispose(): void {
     this.mesh.geometry.dispose();
     (this.mesh.material as THREE.Material).dispose();

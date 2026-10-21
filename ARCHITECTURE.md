@@ -67,23 +67,26 @@ src/render/
   coords.ts             sim→three coordinate mapping helpers (tiny, shared)
   materials.ts          palette, HDR helpers and the bloom contract (glowMrt / noGlowMrt)
   quality.ts            the three quality tiers (low / high / ultra) and the one table of switches
-                        (TIERS, `tier(q)`) every view reads; parseQuality reads old 0 / 1 saves
+                        (TIERS, `tier(q)`) every view reads; pixelRatio (tier, dpr, budget);
+                        parseQuality reads old 0 / 1 saves
   theme.ts              stadium themes (ThemeId) and the world facts views share (key lights,
                         fill, floodlights, wetness, fog, tone mapping, grade); data only
-  Renderer.ts           WebGPURenderer, scene, camera, lights, resize / pixel budget (tier
-                        maxPixelRatio / pixelBudget), GPU timestamps (`#stats`), dynamic
-                        resolution, `#nancheck`; builds the world and the post chain below
+  Renderer.ts           WebGPURenderer, scene, camera, resize / pixel budget (tier maxPixelRatio /
+                        pixelBudget), GPU timestamps (`#stats`), dynamic resolution, `#nancheck`;
+                        builds the lighting, the world and the post chain below
   dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → scene-pass
                         resolution scale between the tier's minResolutionScale and 1
-  world/                World.ts (createWorld: clear colour, fog, sky, environment), sky.ts (night
-                        sky dome), environment.ts (procedural PMREM environment)
-  post/                 pipeline.ts (buildPostChain: HDR scene pass with MRT output+emissive →
+  world/                World.ts (createWorld: clear colour, fog, sky, environment; `ready`),
+                        sky.ts (night sky dome), environment.ts (procedural PMREM environment)
+  post/                 lighting.ts (createLighting: key light + shadows, hemisphere fill),
+                        pipeline.ts (buildPostChain: HDR scene pass with MRT output+emissive →
                         bloom from emissive → vignette → tone map; FXAA on tiers without MSAA)
   turf/                 TurfView (the floor mesh), turfMaterial.ts (turf, markings, goal glow)
   stadium/              StadiumView (shell + ceiling glass, truss, lamps, cones, stands, masts,
                         halos), glass.ts (the shell / ceiling material)
   Arena.ts              visual arena (uses arenaMesh.ts): converts the sim's surfaces, builds the
-                        TurfView and StadiumView, goals + nets, goal frames, pads
+                        TurfView and StadiumView, goals + nets, goal frames, pads; forwards
+                        setTheme / setWarmUp to the turf and the stadium
   Camera.ts             chase camera (ball cam / car cam, camera settings & rules, field clamp,
                         camera swivel from CameraLook, rear view); keeps Settings.camera by reference
   Car.ts                procedural buggy (body with canopy + roll hoop, knobby wheels, twin plasma
@@ -472,7 +475,8 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
   triangles. Free play at kickoff: 29 draws on low, 35 on high / ultra.
 * Post (`post/pipeline.ts`, switches from the tier table): high / ultra = MSAA x4 scene pass +
   bloom from the emissive target + vignette, dynamic resolution between 0.6 and 1; low = no MSAA,
-  no bloom, FXAA. Pixel ratio: high / ultra min(dpr, 2, 6 Mpx budget) and never below 1, low = 1.
+  no bloom, FXAA. Pixel ratio: high / ultra min(dpr, 6 Mpx budget) and never below 1 (phones at
+  most 2), low = 1.
 * Measured (desktop-app browser pane, WebGPU): 165 fps display-limited at 491×377, ~82 fps at
   1920×1080×1.37, GPU 0.2–1.1 ms at the small size; free play at kickoff, 1600×900 CSS: GPU
   ~1.4 ms on low (1600×900) and ~2.5 ms on high / ultra (2190×1233, dpr 1.37). Target stays 144+

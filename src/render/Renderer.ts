@@ -1,12 +1,13 @@
 /**
- * Renderer core: three.js r186 `WebGPURenderer` (automatic WebGL2 fallback), scene, camera, lights,
+ * Renderer core: three.js r186 `WebGPURenderer` (automatic WebGL2 fallback), scene, camera,
  * resize / pixel budget, GPU timing, dynamic resolution and `#nancheck` for the quality tiers of
  * quality.ts. The parts phase 2 of docs/visuals/REWORK.md rebuilds live in their own folders:
  *
  *   world/   sky dome, PMREM environment, fog and clear colour (`createWorld`)
- *   post/    the RenderPipeline of a tier (`buildPostChain`): HDR scene pass (MRT `output` +
- *            `emissive` on tiers with bloom) -> bloom from the EMISSIVE target only -> vignette ->
- *            Neutral tone mapping + sRGB (`renderOutput`) -> FXAA on tiers without MSAA
+ *   post/    the key light, fill and shadows (`createLighting`, lighting.ts) and the RenderPipeline
+ *            of a tier (`buildPostChain`, pipeline.ts): HDR scene pass (MRT `output` + `emissive`
+ *            on tiers with bloom) -> bloom from the EMISSIVE target only -> vignette -> Neutral
+ *            tone mapping + sRGB (`renderOutput`) -> FXAA on tiers without MSAA
  *
  *   low:          no MSAA (FXAA instead), pixel ratio 1, 2048 shadow map, no bloom, PCF radius 3
  *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, pixel budget 6 Mpx) but never
@@ -36,8 +37,8 @@
  * Nothing else here allocates per frame: `render()` and `stats()` reuse the same objects.
  */
 import * as THREE from 'three/webgpu';
-import { ARENA } from '../sim/constants';
 import { DynamicResolution } from './dynamicResolution';
+import { createLighting, type Lighting } from './post/lighting';
 import { buildPostChain, type PostChain } from './post/pipeline';
 import { pixelRatio, tier, type Quality } from './quality';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
@@ -62,12 +63,8 @@ export interface RenderStats {
 /** Camera planes in uu (1 uu = 1 three unit). */
 export const CAMERA_NEAR = 10;
 export const CAMERA_FAR = 40000;
-const SUN_COLOR = 0xfff3e2;
-const SUN_INTENSITY = 3.2;
 /** `#nancheck`: frames between two readbacks. */
 const NANCHECK_EVERY = 30;
-
-const _v = new THREE.Vector3();
 
 /** `#nancheck` counters for one render target (see Renderer.runNanCheck). */
 export interface NanCheckCounts {
@@ -201,8 +198,9 @@ export class Renderer {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly isWebGPU: boolean;
-  /** Key light (the only shadow caster). Cars and the ball set `castShadow`; the floor receives. */
+  /** Key light (the only shadow caster; post/lighting.ts). Cars and the ball set `castShadow`; the floor receives. */
   readonly sun: THREE.DirectionalLight;
+  /** Hemisphere fill (post/lighting.ts). */
   readonly hemi: THREE.HemisphereLight;
   /** True when GPU timestamps are being collected (`#stats` and backend support). */
   readonly gpuTimingEnabled: boolean;
@@ -213,6 +211,8 @@ export class Renderer {
   onResize: (() => void) | null = null;
 
   private readonly canvas: HTMLCanvasElement;
+  /** Key light, fill and shadows (post/lighting.ts). */
+  private readonly lighting: Lighting;
   /** Sky, environment, fog (world/World.ts). */
   private readonly world: World;
   /** The current tier's pipeline and passes (post/pipeline.ts); null only while being rebuilt. */
@@ -276,23 +276,10 @@ export class Renderer {
     this.camera.position.set(0, 600, -2200);
     this.camera.lookAt(0, 100, 0);
 
-    // Key light at ~41° elevation so a grounded car's shadow sticks out beside / behind it
-    // (at 50°+ the whole shadow hides under the car).
-    this.sun = new THREE.DirectionalLight(SUN_COLOR, SUN_INTENSITY);
-    this.sun.position.set(3800, 5000, -4200);
-    this.sun.target.position.set(0, 0, 0);
-    this.sun.castShadow = true;
-    this.sun.shadow.bias = -0.00015;
-    this.sun.shadow.normalBias = 2; // uu
-    this.sun.shadow.radius = 4;
-    this.scene.add(this.sun, this.sun.target);
-    this.fitShadowFrustum();
-
-    // Floodlit stadium: bright cool sky light, green turf bounce from below (undersides pick up a green tint).
-    this.hemi = new THREE.HemisphereLight(0xc5d4ff, 0x2a5a30, 1.5);
-    this.scene.add(this.hemi);
-
-    // Clear colour, fog, sky dome and the PMREM environment.
+    // Key light (+ target) and fill, then the clear colour, fog, sky dome and PMREM environment.
+    this.lighting = createLighting(this.scene, quality, theme);
+    this.sun = this.lighting.sun;
+    this.hemi = this.lighting.hemi;
     this.world = createWorld(gpu, this.scene, quality, theme);
 
     window.addEventListener('resize', this.onWindowResize);
@@ -311,7 +298,10 @@ export class Renderer {
       trackTimestamp: timing,
     });
     await gpu.init();
-    return new Renderer(gpu, canvas, opts.quality ?? 'high', opts.theme ?? DEFAULT_THEME, timing);
+    const renderer = new Renderer(gpu, canvas, opts.quality ?? 'high', opts.theme ?? DEFAULT_THEME, timing);
+    // The world's load-time work (behind the boot overlay; resolved at once until world/ bakes).
+    await renderer.world.ready;
+    return renderer;
   }
 
   setQuality(q: Quality): void {
@@ -319,10 +309,15 @@ export class Renderer {
     this.applyQuality(q);
   }
 
-  /** Switch the stadium theme. Stored only for now: the themes phase re-bakes the sky and environment. */
+  /**
+   * Switch the stadium theme: the lights, the world and the post chain are told (all stubs for now:
+   * the themes phase re-bakes the sky and environment and rewrites uniforms, never recompiles).
+   */
   setTheme(theme: ThemeId): void {
     this.theme = theme;
+    this.lighting.setTheme(theme);
     this.world.setTheme(theme);
+    if (this.post !== null) this.post.setTheme(themeWorld(theme));
   }
 
   /**
@@ -407,6 +402,7 @@ export class Renderer {
       this.post = null;
     }
     this.world.dispose();
+    this.lighting.dispose();
     this.gpu.dispose();
   }
 
@@ -466,15 +462,8 @@ export class Renderer {
   private applyQuality(q: Quality): void {
     this.quality = q;
     const spec = tier(q);
-
-    // three's ShadowNode resizes its render target from `mapSize` on every shadow render, so only
-    // the size changes here (disposing / nulling `shadow.map` would orphan the node's target).
-    const size = spec.shadowMapSize;
-    if (this.sun.shadow.mapSize.x !== size) {
-      this.sun.shadow.mapSize.set(size, size);
-      this.sun.shadow.needsUpdate = true;
-    }
-    this.sun.shadow.radius = spec.shadowRadius;
+    // Shadow map size and PCF radius of the tier, then the world's tier switches.
+    this.lighting.setQuality(q);
     this.world.setQuality(q);
 
     if (this.post !== null) {
@@ -487,41 +476,5 @@ export class Renderer {
     this.lastFrameAt = -1;
     this.post = buildPostChain(this.gpu, this.scene, this.camera, q, themeWorld(this.theme));
     this.resize();
-  }
-
-  /** Orthographic shadow frustum fitted to the arena box (field + goals, floor to ceiling). */
-  private fitShadowFrustum(): void {
-    const sun = this.sun;
-    sun.updateMatrixWorld(true);
-    sun.target.updateMatrixWorld(true);
-    sun.shadow.updateMatrices(sun);
-    const inv = sun.shadow.camera.matrixWorldInverse;
-    const hx = ARENA.extentX + 200;
-    const hz = ARENA.extentY + ARENA.goalDepth + 200;
-    const top = ARENA.height + 100;
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    let minZ = Infinity;
-    let maxZ = -Infinity;
-    for (let i = 0; i < 8; i++) {
-      _v.set(i & 1 ? hx : -hx, i & 2 ? top : -50, i & 4 ? hz : -hz).applyMatrix4(inv);
-      if (_v.x < minX) minX = _v.x;
-      if (_v.x > maxX) maxX = _v.x;
-      if (_v.y < minY) minY = _v.y;
-      if (_v.y > maxY) maxY = _v.y;
-      if (_v.z < minZ) minZ = _v.z;
-      if (_v.z > maxZ) maxZ = _v.z;
-    }
-    const sc = sun.shadow.camera;
-    sc.left = minX;
-    sc.right = maxX;
-    sc.bottom = minY;
-    sc.top = maxY;
-    // The shadow camera looks down its -z axis, so points in front have negative z.
-    sc.near = Math.max(1, -maxZ - 100);
-    sc.far = -minZ + 100;
-    sc.updateProjectionMatrix();
   }
 }

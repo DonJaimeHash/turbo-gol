@@ -19,6 +19,11 @@ const FOG_NEAR = 12000;
 const FOG_FAR = 40000;
 
 export interface World {
+  /**
+   * Load-time work (a bake, a cache read) is done: Renderer.create awaits it behind the boot
+   * overlay. Resolved at once today (nothing is baked).
+   */
+  readonly ready: Promise<void>;
   /** The quality tier changed (nothing depends on it yet). */
   setQuality(quality: Quality): void;
   /** The stadium theme changed (stored only until the themes phase re-bakes the sky). */
@@ -44,6 +49,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   void theme;
 
   return {
+    ready: Promise.resolve(),
     setQuality() {
       // Nothing depends on the tier yet (the baked sky will use its skyCubeSize / envSize).
     },

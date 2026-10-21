@@ -130,6 +130,19 @@ export class StadiumView {
     parent.add(this.buildHalos());
   }
 
+  /** The stadium theme changed (one palette so far: nothing to rewrite; uniforms only, never a rebuild). */
+  setTheme(theme: ThemeId): void {
+    void theme;
+  }
+
+  /**
+   * Pipeline warm-up (Game.setWarm): make meshes that start hidden renderable while `on`, so their
+   * shaders compile behind the boot overlay. Nothing starts hidden yet.
+   */
+  setWarmUp(on: boolean): void {
+    void on;
+  }
+
   /** Free every geometry and material (the parent removes the meshes from the scene). */
   dispose(): void {
     for (const d of this.disposables) d.dispose();

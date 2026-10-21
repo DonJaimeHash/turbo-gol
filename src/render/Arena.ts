@@ -217,6 +217,18 @@ export class ArenaView {
     this.decayFlash(this.smallFlash, this.smallPending, this.smallState, this.smallStateAttr, dt);
   }
 
+  /** The stadium theme changed: the turf and the stadium rewrite their uniforms (Game.setTheme). */
+  setTheme(theme: ThemeId): void {
+    this.turf.setTheme(theme);
+    this.stadium.setTheme(theme);
+  }
+
+  /** Pipeline warm-up (Game.setWarm): the turf's and the stadium's meshes that start hidden. */
+  setWarmUp(on: boolean): void {
+    this.turf.setWarmUp(on);
+    this.stadium.setWarmUp(on);
+  }
+
   dispose(): void {
     this.scene.remove(this.group);
     this.turf.dispose();

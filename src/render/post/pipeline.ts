@@ -47,6 +47,11 @@ export interface PostChain {
   readonly bloomPass: BloomPass | null;
   /** Dynamic resolution: scale the scene pass (1 = the drawing buffer's size). */
   setResolutionScale(scale: number): void;
+  /**
+   * The theme changed: its grade, exposure and tone mapping (uniforms only, the chain is never
+   * rebuilt for a theme). Nothing to rewrite yet: today's values stay.
+   */
+  setTheme(world: ThemeWorld): void;
   /** Free the scene pass (HDR MSAA target + depth), the bloom chain and the pipeline's quad. */
   dispose(): void;
 }
@@ -112,6 +117,9 @@ export function buildPostChain(
     bloomPass,
     setResolutionScale(scale) {
       scenePass.setResolutionScale(scale);
+    },
+    setTheme() {
+      // The post phase reads the theme's grade here (uniform writes).
     },
     dispose() {
       // RenderPipeline.dispose() only frees its quad material: the passes go first.

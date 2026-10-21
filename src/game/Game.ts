@@ -1665,6 +1665,7 @@ export class Game implements P2PGameHooks {
   }
 
   private setWarm(on: boolean): void {
+    this.arena.setWarmUp(on);
     const cars = this.cars;
     for (let i = 0; i < cars.length; i++) {
       const w = cars[i] as unknown as Warmable;
@@ -1718,14 +1719,16 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * Switch the stadium theme: stored, saved with the prefs and handed to the renderer. A stub for
-   * now: no view reads the theme yet (the themes phase of docs/visuals/REWORK.md re-bakes the sky
-   * and rewrites uniforms in place, without rebuilding the views).
+   * Switch the stadium theme: stored, saved with the prefs and handed to the renderer (lights,
+   * world, post) and the arena (turf, stadium). Stubs for now: no view reads the theme yet (the
+   * themes phase of docs/visuals/REWORK.md re-bakes the sky and rewrites uniforms in place,
+   * without rebuilding the views).
    */
   setTheme(theme: ThemeId): void {
     if (theme === this.theme) return;
     this.theme = theme;
     this.renderer.setTheme(theme);
+    this.arena.setTheme(theme);
     this.persistPrefs();
   }
 
