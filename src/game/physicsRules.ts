@@ -2,8 +2,9 @@
  * Experimental physics rules (Settings > Experimental, signed-in players only): which values a
  * player may tune, on which grid, the read-only built-in presets, and the parsers every side
  * shares (the client's local copy, AccountStore on the server, later the lobby / matchmaker /
- * room checks). Pure: no DOM, no i18n, no `const enum`, so node's type-stripping loader, the
- * Worker and the Durable Objects import it as it is (like trainingRecords.ts).
+ * room checks). The ONLY table: keys, ranges and validation live here and nowhere else. Pure: no
+ * DOM, no i18n, no `const enum`, so node's type-stripping loader, the Worker and the Durable
+ * Objects import it as it is (like trainingRecords.ts).
  *
  * Every value is an INTEGER: a percentage of the stock value, a figure in uu/s, one of a few
  * options, or a 0 / 1 toggle. A set of values (`PhysicsValues`) holds only the keys that differ
@@ -11,10 +12,11 @@
  * (a pad's left / right has no hold-repeat). The UI groups the rows by `group`; `scope:
  * 'training'` rows (game speed) exist only in experimental free play, never in a match.
  *
- * This file stops at the integers. The physics core (src/sim/mutators.ts, its own pull request)
- * maps them to the wasm's float layout and holds the C++ hard limits, which are wider than every
- * range here (tests/physics-rules.test.mjs checks the ranges against the limits the design
- * gives). `PhysicsRules` is the hand-over: the canonical integers plus PHYSICS_SCHEMA.
+ * This file stops at the integers. The physics core maps them: src/sim/mutators.ts to the wasm's
+ * float layout (arenaMutators / toMutators) and to the bots' profile (botPhysicsOf). The wasm's
+ * hard limits (src/sim/mutatorLayout.ts, mirrored from the C++) are wider than every range here:
+ * tests/physics-rules.test.mjs maps every grid value through toMutators and checks it against
+ * them. `PhysicsRules` is the hand-over: the canonical integers plus PHYSICS_SCHEMA.
  *
  * Validation has two modes (`parsePhysicsValues`):
  *   strict   (a rules snapshot: a lobby, the matchmaker, a room, a room welcome) refuses anything
@@ -207,8 +209,11 @@ export function valueOf(values: Readonly<PhysicsValues>, key: PhysicsKey): numbe
 /** The most keys a raw object may carry before it is refused (strict) or cut (lenient): bounds the work. */
 const MAX_RAW_KEYS = 64;
 
+/** A plain object (an object literal, decoded JSON, Object.create(null)): never an array, a Map or a class instance. */
 function plainObject(raw: unknown): raw is Record<string, unknown> {
-  return typeof raw === 'object' && raw !== null && !Array.isArray(raw);
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
+  const proto = Object.getPrototypeOf(raw);
+  return proto === Object.prototype || proto === null;
 }
 
 /**
@@ -237,7 +242,8 @@ export function parsePhysicsValues(raw: unknown, mode: 'strict' | 'lenient', con
       continue;
     }
     if (strict && !onGrid(f, v)) return null;
-    got.set(f.key, strict ? v : snapToGrid(f, v));
+    // `+ 0`: a -0 (JSON.parse('-0') is an integer on the grid) is stored as the grid's 0.
+    got.set(f.key, (strict ? v : snapToGrid(f, v)) + 0);
   }
   const out: PhysicsValues = {};
   for (const f of PHYSICS_FIELDS) {
@@ -292,13 +298,18 @@ export interface BuiltInPreset {
   readonly values: Readonly<PhysicsValues>;
 }
 
-export const BUILT_IN_PRESETS: readonly BuiltInPreset[] = [
-  { id: 'standard', values: {} },
-  { id: 'lowGravity', values: { gravity: 50, ballDrag: 50 } },
-  { id: 'fastBall', values: { ballMaxSpeed: 130, ballHit: 150, ballWeight: 80 } },
-  { id: 'bouncy', values: { gravity: 80, ballBounce: 150, ballWeight: 70 } },
-  { id: 'arcade', values: { carMaxSpeed: 2600, boostPower: 130, boostUse: 0, spawnBoost: 100, unlimitedFlips: 1, bumpForce: 150 } },
-];
+function builtIn(id: BuiltInId, values: PhysicsValues): BuiltInPreset {
+  return Object.freeze({ id, values: Object.freeze(values) });
+}
+
+/** Frozen, values included: read-only for everybody, whoever lists them. */
+export const BUILT_IN_PRESETS: readonly BuiltInPreset[] = Object.freeze([
+  builtIn('standard', {}),
+  builtIn('lowGravity', { gravity: 50, ballDrag: 50 }),
+  builtIn('fastBall', { ballMaxSpeed: 130, ballHit: 150, ballWeight: 80 }),
+  builtIn('bouncy', { gravity: 80, ballBounce: 150, ballWeight: 70 }),
+  builtIn('arcade', { carMaxSpeed: 2600, boostPower: 130, boostUse: 0, spawnBoost: 100, unlimitedFlips: 1, bumpForce: 150 }),
+]);
 
 export function isBuiltInId(id: unknown): id is BuiltInId {
   return BUILT_IN_PRESETS.some((p) => p.id === id);

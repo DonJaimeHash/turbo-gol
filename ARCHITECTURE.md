@@ -68,9 +68,10 @@ src/sim/
                         createArena(tickRate, mutators?) (stock without a preset), getMutators()
   mutatorLayout.ts      the wasm's mutator layout: slots, float32-exact stock values, the hard
                         limits mirrored, mutatorFingerprint (imported by the bridge: node-bundled)
-  mutators.ts           experimental physics presets: the integer value table and grid,
-                        toMutators / botPhysicsOf (exact stock for defaults), the strict / lenient
-                        parser client and server share, built-ins (not node-bundled)
+  mutators.ts           experimental physics presets, the core's half: arenaMutators (src/game/
+                        physicsRules.ts PhysicsRules -> createArena's layout, null for stock),
+                        toMutators / botPhysicsOf (exact stock for defaults), physicsFingerprint,
+                        gameSpeedFactor; the table itself is physicsRules.ts (not node-bundled)
   wasm/                 build output of native/build.ps1 (rocketsim.js, rocketsim.wasm, .d.ts)
 src/render/
   coords.ts             sim→three coordinate mapping helpers (tiny, shared)
@@ -278,10 +279,10 @@ src/game/
   trainingRecords.ts    best run per pack: validation and merge rules (shared with server/), storage
   trainingStore.ts      guest records in this browser, an account's synced with /api/me/training (local
                         copy, guest records move into the first account)
-  physicsRules.ts       experimental physics: the table of integer values (grid, groups, free-play
-                        only keys), strict / lenient parsers, built-in presets, stored presets, the
-                        rules snapshot, automatic names (shared with server/; the physics core maps
-                        the integers to the wasm, src/sim/mutators.ts)
+  physicsRules.ts       experimental physics, the only table: integer values (grid, groups, free-
+                        play only keys), strict / lenient parsers, built-in presets, stored presets,
+                        the rules snapshot, automatic names (shared with server/; the physics core
+                        maps the integers to the wasm and the bots, src/sim/mutators.ts)
   experimentalStore.ts  an account's Settings > Experimental switch and presets: a local copy per
                         account (read at boot: unlockedAtBoot), debounced pushes to /api/me/presets,
                         offline edits kept dirty, deletes need the server; nothing for a guest
@@ -413,9 +414,11 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         net-rollback-wasm and net-roomhost-wasm (RoomHost host sim + client
                         RollbackPredictor on the real wasm: hash per snapshot, replay of the
                         applied inputs between snapshots), stock-trace (the golden stock trace:
-                        hashes recorded with the wasm from before the mutators), mutators (table,
-                        parser), mutators-wasm (every field's effect, refusals, the predictor,
-                        determinism, top speed), mutators-extremes (60 s 3v3 bots at the corners)
+                        hashes recorded with the wasm from before the mutators), mutators (the
+                        mapping, the hand-over), physics-rules (the table, its parsers, every grid
+                        value inside the hard limits), mutators-wasm (every field's effect,
+                        refusals, the predictor, determinism, top speed), mutators-extremes (60 s
+                        3v3 bots at the corners)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;

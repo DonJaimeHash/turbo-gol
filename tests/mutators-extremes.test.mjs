@@ -15,17 +15,18 @@ const { BotTeam } = await import('../src/ai/Team.ts');
 const { ARENA } = await import('../src/sim/constants.ts');
 const T = await import('../src/sim/types.ts');
 const M = await import('../src/sim/mutators.ts');
+const R = await import('../src/game/physicsRules.ts');
 const L = await import('../src/sim/mutatorLayout.ts');
 
 const sim = await RocketSim.load();
 sim.initArena(buildArenaMesh().physics);
 
-const wasmFields = M.PHYSICS_FIELDS.filter((f) => f.scope === 'all');
+const wasmFields = R.PHYSICS_FIELDS.filter((f) => f.scope === 'all');
 const allAt = (pick) => Object.fromEntries(wasmFields.map((f) => [f.key, pick(f)]));
 
 const CORNERS = {
-  'all minimums': allAt((f) => f.min),
-  'all maximums': allAt((f) => f.max),
+  'all minimums': allAt((f) => R.fieldValues(f)[0]),
+  'all maximums': allAt((f) => R.fieldValues(f).at(-1)),
   'fast ball, low gravity': { gravity: 30, ballMaxSpeed: 130, ballHit: 200, ballWeight: 50, ballBounce: 150, ballDrag: 0 },
   'car 2600, bump 300 %, demolition on contact': { carMaxSpeed: 2600, bumpForce: 300, boostPower: 200, boostUse: 0, jumpPower: 150, unlimitedFlips: 1, unlimitedDoubleJumps: 1, demoMode: 1, respawnDelay: 1 },
 };
@@ -125,7 +126,7 @@ for (const [name, values] of Object.entries(CORNERS)) {
 }
 
 test('built-in presets: 30 s of 3v3 bots each stay finite and inside the field', () => {
-  for (const p of M.BUILT_IN_PRESETS) {
+  for (const p of R.BUILT_IN_PRESETS) {
     const s = match(p.values, 4, TICKS / 2);
     costs.push({ name: p.id, us: s.us });
     console.log(`built-in ${p.id}: ${s.goals} goals, ${s.touches} touches, ${s.bumps} bumps (${s.demos} demos), ${s.us.toFixed(0)} us/tick`);

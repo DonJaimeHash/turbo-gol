@@ -5,8 +5,9 @@
  *
  * RocketSimBridge imports this module, so it is part of everything that runs the sim (the web
  * client, the Worker, community nodes): it changes only with the wasm. The value table players
- * choose from (ranges, the integer grid, defaults, the parser) is src/sim/mutators.ts, which nothing
- * node-side imports, so its ranges can move inside these hard limits without a node release.
+ * choose from (ranges, the integer grid, defaults, the parser) is src/game/physicsRules.ts, mapped
+ * onto this layout by src/sim/mutators.ts; nothing node-side imports either, so the ranges can move
+ * inside these hard limits without a node release.
  *
  * Pure TS without const enums: node's type stripping, the Worker and RoomDO can import it.
  */
@@ -85,7 +86,7 @@ export function stockMutators(): Float32Array {
 /**
  * The hard limits rs_set_mutators enforces (native/wrapper.cpp, namespace M): [min, max] per slot,
  * float32 like the C++ comparison. Integral slots (version, toggles, demo mode) must hold an exact
- * integer. Mirrored here for the tests and for anyone reading the table in src/sim/mutators.ts.
+ * integer. Mirrored here for the tests and for anyone reading the table in src/game/physicsRules.ts.
  */
 export const MUTATOR_HARD_LIMITS: readonly (readonly [number, number])[] = Object.freeze(
   (

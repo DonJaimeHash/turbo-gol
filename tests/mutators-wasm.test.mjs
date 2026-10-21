@@ -14,6 +14,7 @@ const { buildArenaMesh } = await import('../src/sim/arenaMesh.ts');
 const T = await import('../src/sim/types.ts');
 const L = await import('../src/sim/mutatorLayout.ts');
 const M = await import('../src/sim/mutators.ts');
+const R = await import('../src/game/physicsRules.ts');
 
 const mesh = buildArenaMesh().physics;
 const sim = await RocketSim.load();
@@ -59,6 +60,19 @@ test('a preset round-trips: getMutators returns exactly what toMutators built', 
   sim.destroyArena();
   sim.createArena(T.TICK_RATE);
   assert.ok(sameBits(sim.getMutators(), L.stockMutators()), 'destroy / create is stock again');
+});
+
+test('the hand-over from the shared table: every built-in through rulesOf / arenaMutators runs, and reads back its physicsFingerprint', () => {
+  for (const p of R.BUILT_IN_PRESETS) {
+    const rules = R.rulesOf(p.values);
+    sim.createArena(T.TICK_RATE, M.arenaMutators(rules));
+    assert.equal(L.mutatorFingerprint(sim.getMutators()), M.physicsFingerprint(rules), p.id);
+  }
+  // A lobby's snapshot, through JSON as a room welcome brings it.
+  const snap = R.parseRulesSnapshot(JSON.parse(JSON.stringify(R.snapshotOf('Fast ball', R.BUILT_IN_PRESETS[2].values))));
+  sim.createArena(T.TICK_RATE, M.arenaMutators(snap));
+  assert.ok(sameBits(sim.getMutators(), M.toMutators(R.BUILT_IN_PRESETS[2].values)));
+  sim.createArena(T.TICK_RATE);
 });
 
 test('rs_set_mutators refuses bad data with nothing changed: NaN, infinities, outside a hard limit, non-integral toggles, version, count, null', () => {
@@ -556,7 +570,7 @@ test('determinism: two module instances, the same preset, 60 s of 3v3 bots with 
 });
 
 test('determinism: low gravity bots (bot profile from the preset) run the same twice', async () => {
-  const values = M.BUILT_IN_PRESETS.find((p) => p.id === 'lowGravity').values;
+  const values = R.BUILT_IN_PRESETS.find((p) => p.id === 'lowGravity').values;
   const opts = { mutators: M.toMutators(values), physics: M.botPhysicsOf(values), ticks: 3600 };
   const a = await runStockTrace('bots-3v3', { sim, ...opts });
   const b = await runStockTrace('bots-3v3', { sim, ...opts });

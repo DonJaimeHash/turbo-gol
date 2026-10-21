@@ -1,5 +1,6 @@
-// The experimental physics value table and its parser (src/sim/mutators.ts) against the wasm's
-// layout and hard limits (src/sim/mutatorLayout.ts). Pure: no wasm needed.
+// The physics core's mapping of the experimental physics values (src/sim/mutators.ts) to the wasm's
+// layout and hard limits (src/sim/mutatorLayout.ts) and to the bots' profile. The table, its grid
+// and its parser are src/game/physicsRules.ts (tests/physics-rules.test.mjs). Pure: no wasm needed.
 //   node --test tests/mutators.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,72 +20,19 @@ registerHooks({
 
 const L = await import('../src/sim/mutatorLayout.ts');
 const M = await import('../src/sim/mutators.ts');
+const R = await import('../src/game/physicsRules.ts');
 const AI = await import('../src/ai/math.ts');
-const { BALL, CAR_STANDARD } = await import('../src/sim/constants.ts');
-const { TICK_RATE } = await import('../src/sim/types.ts');
 
-const { PHYSICS_FIELDS, parsePhysicsValues, toMutators, botPhysicsOf } = M;
-const field = (k) => M.physicsField(k);
+const { toMutators, botPhysicsOf } = M;
+const { PHYSICS_FIELDS } = R;
 const sameBits = (a, b) => a.length === b.length && Array.from(a).every((v, i) => Object.is(Math.fround(v), Math.fround(b[i])));
 const allAt = (pick) => Object.fromEntries(PHYSICS_FIELDS.map((f) => [f.key, pick(f)]));
-
-test('table: 17 integer fields, unique keys, the UI groups, every default on its grid', () => {
-  assert.equal(PHYSICS_FIELDS.length, 17);
-  assert.equal(new Set(PHYSICS_FIELDS.map((f) => f.key)).size, 17);
-  const groups = {};
-  for (const f of PHYSICS_FIELDS) groups[f.group] = (groups[f.group] ?? 0) + 1;
-  assert.deepEqual(groups, { world: 2, ball: 5, car: 7, contact: 3 });
-  for (const f of PHYSICS_FIELDS) {
-    assert.ok(f.values.includes(f.def), `${f.key}: default ${f.def} on the grid`);
-    assert.ok(f.values.every((v) => Number.isInteger(v)), `${f.key}: integers only`);
-    assert.ok(f.values.every((v, i) => i === 0 || v > f.values[i - 1]), `${f.key}: ascending`);
-    assert.equal(f.min, f.values[0]);
-    assert.equal(f.max, f.values[f.values.length - 1]);
-    if (f.kind === 'range') {
-      assert.ok(Number.isInteger((f.max - f.min) / f.step), `${f.key}: max on the grid`);
-      assert.equal(f.values.length, (f.max - f.min) / f.step + 1);
-    }
-    if (f.kind === 'toggle') assert.deepEqual([...f.values, f.def], [0, 1, 0]);
-  }
-  assert.deepEqual(PHYSICS_FIELDS.filter((f) => f.scope === 'training').map((f) => f.key), ['gameSpeed']);
-});
-
-test('table: no field has more than 18 steps (the pad left / right has no hold-repeat)', () => {
-  for (const f of PHYSICS_FIELDS) assert.ok(f.values.length - 1 <= 18, `${f.key}: ${f.values.length - 1} steps`);
-});
-
-test('table: every grid value of every field, and the all-min / all-max corners, are inside the C++ hard limits', () => {
-  for (const f of PHYSICS_FIELDS) {
-    for (const v of f.values) {
-      const m = toMutators({ [f.key]: v });
-      assert.ok(L.mutatorsWithinLimits(m), `${f.key} = ${v}`);
-    }
-  }
-  assert.ok(L.mutatorsWithinLimits(toMutators(allAt((f) => f.min))), 'all minimums');
-  assert.ok(L.mutatorsWithinLimits(toMutators(allAt((f) => f.max))), 'all maximums');
-});
-
-test('table: the physics stays sane at the extremes (no tunnelling ball, bounce < 1, gravity pulls down)', () => {
-  const hi = toMutators(allAt((f) => f.max));
-  const lo = toMutators(allAt((f) => f.min));
-  // The ball moves at most 0.72 of its radius per tick at the UI's top speed (tunnelling starts ~0.8 R).
-  assert.ok(hi[L.M_BALL_MAX_SPEED] / TICK_RATE <= 0.72 * BALL.radius, `${hi[L.M_BALL_MAX_SPEED]} uu/s`);
-  // ...and at most 0.8 R at the wasm's hard limit, whatever a modified client sends.
-  assert.ok(L.MUTATOR_HARD_LIMITS[L.M_BALL_MAX_SPEED][1] / TICK_RATE <= 0.8 * BALL.radius);
-  assert.ok(hi[L.M_BALL_RESTITUTION] < 1 && L.MUTATOR_HARD_LIMITS[L.M_BALL_RESTITUTION][1] < 1, 'a bounce never gains energy');
-  assert.ok(hi[L.M_GRAVITY_Z] < 0 && lo[L.M_GRAVITY_Z] < 0 && L.MUTATOR_HARD_LIMITS[L.M_GRAVITY_Z][1] < 0, 'gravity always pulls down');
-  // The car moves 21.7 uu per tick at the UI maximum (22.5 at the hard limit): more than its half
-  // hitbox height (19.3) but well under its height and its half length; the 60 s corner runs of
-  // tests/mutators-extremes.test.mjs show it never leaves the field.
-  assert.ok(hi[L.M_CAR_MAX_SPEED] / TICK_RATE < CAR_STANDARD.hitboxSize[2] * 0.6);
-  assert.ok(L.MUTATOR_HARD_LIMITS[L.M_CAR_MAX_SPEED][1] / TICK_RATE < CAR_STANDARD.hitboxSize[0] / 2);
-});
 
 test('stock mapping: the defaults are the exact stock float32 values, bit for bit', () => {
   assert.equal(L.MUTATOR_COUNT, 19);
   assert.equal(L.STOCK_MUTATORS.length, L.MUTATOR_COUNT);
   assert.ok(sameBits(toMutators({}), L.STOCK_MUTATORS));
-  assert.ok(sameBits(toMutators(allAt((f) => f.def)), L.STOCK_MUTATORS), 'explicit defaults too');
+  assert.ok(sameBits(toMutators(allAt((f) => f.default)), L.STOCK_MUTATORS), 'explicit defaults too');
   assert.ok(sameBits(toMutators({ gameSpeed: 50 }), L.STOCK_MUTATORS), 'game speed is not a wasm field');
   assert.ok(sameBits(L.stockMutators(), L.STOCK_MUTATORS));
   // RocketSim's own expressions, evaluated in float32.
@@ -125,8 +73,9 @@ test('a -0 (JSON.parse("-0") passes every integer check) maps and fingerprints e
   const neg = JSON.parse('{"ballDrag": -0, "boostUse": -0, "bumpForce": -0, "spawnBoost": -0, "unlimitedFlips": -0}');
   const pos = { ballDrag: 0, boostUse: 0, bumpForce: 0, spawnBoost: 0 };
   assert.ok(Object.is(neg.ballDrag, -0), 'the input really holds -0');
-  const strict = parsePhysicsValues(neg, 'strict', 'match');
-  assert.deepEqual(strict, pos, 'strict keeps the grid 0, never -0');
+  const strict = R.parsePhysicsValues(neg, 'strict', 'match');
+  assert.deepEqual(strict, pos, 'the shared strict parser keeps the grid 0, never -0');
+  assert.ok(Object.values(strict).every((v) => Object.is(v, 0)));
   const a = toMutators(neg);
   const b = toMutators(pos);
   assert.ok(Array.from(a).every((v, i) => Object.is(v, b[i])), 'the same float32 layout, bit for bit');
@@ -137,12 +86,12 @@ test('a -0 (JSON.parse("-0") passes every integer check) maps and fingerprints e
 test('fingerprint: golden values, and any one value changes it', () => {
   assert.equal(L.mutatorFingerprint(L.STOCK_MUTATORS), 0x7318f74a);
   assert.equal(L.mutatorFingerprint(L.stockMutators()), 0x7318f74a, 'array or Float32Array alike');
-  const arcade = M.BUILT_IN_PRESETS.find((p) => p.id === 'arcade');
+  const arcade = R.BUILT_IN_PRESETS.find((p) => p.id === 'arcade');
   assert.equal(L.mutatorFingerprint(toMutators(arcade.values)), 0x1dbde5c1);
   const seen = new Set([L.mutatorFingerprint(L.STOCK_MUTATORS)]);
   for (const f of PHYSICS_FIELDS) {
     if (f.scope === 'training') continue;
-    const other = f.values.find((v) => v !== f.def);
+    const other = R.fieldValues(f).find((v) => v !== f.default);
     seen.add(L.mutatorFingerprint(toMutators({ [f.key]: other })));
   }
   assert.equal(seen.size, 1 + PHYSICS_FIELDS.length - 1, 'every field moves the fingerprint');
@@ -171,88 +120,33 @@ test('hard limits mirror: what the wasm refuses (non-finite, outside a limit, no
   assert.equal(L.mutatorsWithinLimits(v2), false);
 });
 
-test('strict parser: refuses unknown keys, non-integers, off-grid, out of range, NaN, strings, arrays, training-only keys in a match', () => {
-  const S = (raw, ctx) => parsePhysicsValues(raw, 'strict', ctx);
-  assert.deepEqual(S({}), {});
-  assert.deepEqual(S({ gravity: 50, ballDrag: 50 }), { gravity: 50, ballDrag: 50 });
-  for (const bad of [
-    null,
-    undefined,
-    42,
-    'gravity',
-    [],
-    [50],
-    { gravity: 55 }, // off the 10 grid
-    { gravity: 20 }, // below the range
-    { gravity: 210 }, // above
-    { gravity: 50.5 },
-    { gravity: NaN },
-    { gravity: Infinity },
-    { gravity: '50' },
-    { gravity: true },
-    { gravity: null },
-    { gravity: [50] },
-    { gravity: { v: 50 } },
-    { gravityZ: -325 },
-    { spawnBoost: 34 },
-    { unlimitedFlips: 2 },
-    { unlimitedFlips: 0.5 },
-    { demoMode: 3 },
-    { carMaxSpeed: 2310 },
-    JSON.parse('{"__proto__": 50}'),
-    JSON.parse('{"constructor": 50}'),
-    JSON.parse('{"toString": 50}'),
-    new Map([['gravity', 50]]),
-  ]) {
-    assert.equal(S(bad), null, `refused: ${typeof bad === 'object' && bad !== null && !(bad instanceof Map) ? JSON.stringify(bad) : String(bad)}`);
+test('the hand-over: arenaMutators(PhysicsRules) is null for stock, the layout otherwise, and refuses another version or off-grid values', () => {
+  assert.equal(M.arenaMutators(null), null, 'no rules: the plain stock path');
+  assert.equal(M.arenaMutators(R.rulesOf({})), null, 'stock rules: no rs_set_mutators call at all');
+  assert.equal(M.arenaMutators(R.rulesOf({ gameSpeed: 50 }, 'training')), null, 'a game speed alone is stock physics');
+  assert.equal(M.arenaMutators(R.rulesOf({ gravity: 100, unlimitedFlips: 0 })), null, 'explicit defaults are stock');
+  const low = R.BUILT_IN_PRESETS.find((p) => p.id === 'lowGravity').values;
+  assert.ok(sameBits(M.arenaMutators(R.rulesOf(low)), toMutators(low)));
+  assert.ok(sameBits(M.arenaMutators(R.rulesOf({ ...low, gameSpeed: 50 }, 'training')), toMutators(low)), 'free play: the game speed stays out of the wasm');
+  // A rules snapshot as a lobby carries it ({ v, name, values }) is PhysicsRules too.
+  const snap = R.parseRulesSnapshot(JSON.parse(JSON.stringify(R.snapshotOf('Low gravity', low))));
+  assert.ok(sameBits(M.arenaMutators(snap), toMutators(low)));
+  assert.throws(() => M.arenaMutators({ v: R.PHYSICS_SCHEMA + 1, values: low }), /version/);
+  for (const values of [{ gravity: 55 }, { gravity: 1e9 }, { gravity: NaN }, { nope: 1 }, { gravity: '50' }, null, []]) {
+    assert.throws(() => M.arenaMutators({ v: R.PHYSICS_SCHEMA, values }), /grid/, JSON.stringify(values));
   }
-  assert.deepEqual(S({ gameSpeed: 50 }), { gameSpeed: 50 }, 'free play takes the game speed');
-  assert.equal(S({ gameSpeed: 50 }, 'match'), null, 'a match never does');
-  assert.deepEqual(S({ gravity: 100, ballDrag: 0 }), { ballDrag: 0 }, 'explicit defaults are dropped');
-  assert.deepEqual(S(Object.assign(Object.create(null), { gravity: 60 })), { gravity: 60 });
+  // The fingerprint a peer's arena reads back once the rules are applied.
+  assert.equal(M.physicsFingerprint(null), 0x7318f74a);
+  assert.equal(M.physicsFingerprint(R.rulesOf({ gameSpeed: 50 }, 'training')), 0x7318f74a);
+  const arcade = R.BUILT_IN_PRESETS.find((p) => p.id === 'arcade').values;
+  assert.equal(M.physicsFingerprint(R.rulesOf(arcade)), 0x1dbde5c1);
+  assert.equal(M.physicsFingerprint(R.rulesOf(low)), L.mutatorFingerprint(toMutators(low)));
 });
 
-test('lenient parser: drops unknown keys and non-numbers, clamps and snaps onto the grid, never fails', () => {
-  const Lp = (raw, ctx) => parsePhysicsValues(raw, 'lenient', ctx);
-  assert.deepEqual(Lp(null), {});
-  assert.deepEqual(Lp([1, 2]), {});
-  assert.deepEqual(Lp('x'), {});
-  assert.deepEqual(Lp({ gravity: 1000, ballDrag: -5, nope: 1, ballHit: 'x', jumpPower: NaN }), { gravity: 200, ballDrag: 0 });
-  assert.deepEqual(Lp({ ballDrag: -5 }), { ballDrag: 0 });
-  assert.deepEqual(Lp({ gravity: 54 }), { gravity: 50 });
-  assert.deepEqual(Lp({ gravity: 56 }), { gravity: 60 });
-  assert.deepEqual(Lp({ gravity: 55 }), { gravity: 50 }, 'ties go to the lower grid value');
-  assert.deepEqual(Lp({ gravity: 99.6 }), {}, 'snaps to the default, which is dropped');
-  assert.deepEqual(Lp({ spawnBoost: 40 }), {}, 'snaps to 33, the default');
-  assert.deepEqual(Lp({ spawnBoost: 42 }), { spawnBoost: 50 });
-  assert.deepEqual(Lp({ unlimitedFlips: 0.9 }), { unlimitedFlips: 1 });
-  assert.deepEqual(Lp({ demoMode: 7 }), { demoMode: 2 });
-  assert.deepEqual(Lp({ carMaxSpeed: 9999 }), { carMaxSpeed: 2600 });
-  assert.deepEqual(Lp({ gameSpeed: 50, gravity: 60 }, 'match'), { gravity: 60 }, 'training-only keys dropped in a match');
-  // Whatever comes in, the result passes strict.
-  for (const raw of [{ gravity: 1e9 }, { ballDrag: 37 }, { bumpForce: -1e9, boostUse: 12.5, respawnDelay: 0 }]) {
-    const v = Lp(raw);
-    assert.deepEqual(parsePhysicsValues(v, 'strict'), v);
-  }
-});
-
-test('canonical form: only non-default keys, in table order, stable JSON', () => {
-  const a = parsePhysicsValues({ ballDrag: 50, gravity: 50, ballHit: 100 }, 'strict');
-  const b = parsePhysicsValues({ gravity: 50, ballDrag: 50 }, 'strict');
-  assert.equal(JSON.stringify(a), '{"gravity":50,"ballDrag":50}');
-  assert.equal(JSON.stringify(a), JSON.stringify(b));
-  assert.equal(JSON.stringify(M.canonicalValues({ ballDrag: 50, gravity: 50, ballHit: 100 })), '{"gravity":50,"ballDrag":50}');
-  assert.deepEqual(M.changedKeys({ ballDrag: 50, gameSpeed: 50 }), ['gameSpeed', 'ballDrag']);
-  assert.deepEqual(M.changedKeys({ ballDrag: 50, gameSpeed: 50 }, 'match'), ['ballDrag']);
-  assert.equal(M.isStock({}), true);
-  assert.equal(M.isStock({ gameSpeed: 50 }), false);
-  assert.equal(M.isStockPhysics({ gameSpeed: 50 }), true);
-  assert.equal(M.arenaMutators({}), null, 'stock physics takes the plain stock path');
-  assert.equal(M.arenaMutators({ gameSpeed: 50 }), null);
-  assert.ok(sameBits(M.arenaMutators({ gravity: 50 }), toMutators({ gravity: 50 })));
+test('game speed: a factor of real time, never above 1', () => {
   assert.equal(M.gameSpeedFactor({}), 1);
   assert.equal(M.gameSpeedFactor({ gameSpeed: 25 }), 0.25);
-  assert.ok(field('gameSpeed').max <= 100, 'free play never runs faster than real time');
+  for (const v of R.fieldValues(R.physicsField('gameSpeed'))) assert.ok(M.gameSpeedFactor({ gameSpeed: v }) <= 1);
 });
 
 test('bot profile: stock values give STOCK_BOT_PHYSICS itself (the old constants), presets mirror the mapping in doubles', () => {
@@ -272,7 +166,7 @@ test('bot profile: stock values give STOCK_BOT_PHYSICS itself (the old constants
   );
   assert.equal(botPhysicsOf({}), S);
   assert.equal(botPhysicsOf({ gameSpeed: 50 }), S, 'game speed is not physics');
-  assert.equal(botPhysicsOf(allAt((f) => f.def)), S);
+  assert.equal(botPhysicsOf(allAt((f) => f.default)), S);
   const p = botPhysicsOf({ gravity: 50, jumpPower: 150, boostPower: 200, boostUse: 0, carMaxSpeed: 2000, ballDrag: 0 });
   assert.equal(p.gravity, -325);
   assert.equal(p.jumpImpulse, (AI.JUMP_IMPULSE * 150) / 100);
@@ -294,14 +188,9 @@ test('bot profile: stock values give STOCK_BOT_PHYSICS itself (the old constants
   assert.ok(AI.straightDistance(0, 100, 2, 1 / 30, p) > AI.straightDistance(0, 100, 2));
 });
 
-test('built-in presets: valid in a match, distinct, Standard is stock', () => {
-  const ids = M.BUILT_IN_PRESETS.map((p) => p.id);
-  assert.deepEqual(ids, ['standard', 'lowGravity', 'fastBall', 'bouncy', 'arcade']);
-  for (const p of M.BUILT_IN_PRESETS) {
-    assert.deepEqual(parsePhysicsValues(p.values, 'strict', 'match'), p.values, `${p.id} is canonical and valid in a match`);
-    assert.ok(L.mutatorsWithinLimits(toMutators(p.values)), p.id);
-  }
-  assert.equal(M.isStock(M.BUILT_IN_PRESETS[0].values), true);
-  const fps = new Set(M.BUILT_IN_PRESETS.map((p) => L.mutatorFingerprint(toMutators(p.values))));
-  assert.equal(fps.size, M.BUILT_IN_PRESETS.length);
+test('built-in presets: inside the hard limits, each with its own fingerprint, Standard is stock', () => {
+  for (const p of R.BUILT_IN_PRESETS) assert.ok(L.mutatorsWithinLimits(toMutators(p.values)), p.id);
+  assert.ok(sameBits(toMutators(R.BUILT_IN_PRESETS[0].values), L.STOCK_MUTATORS));
+  const fps = new Set(R.BUILT_IN_PRESETS.map((p) => L.mutatorFingerprint(toMutators(p.values))));
+  assert.equal(fps.size, R.BUILT_IN_PRESETS.length);
 });

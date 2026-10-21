@@ -124,8 +124,8 @@ constexpr int S_VERSION = 0, S_GRAVITY_Z = 1, S_BALL_MAX_SPEED = 2, S_BALL_HIT_S
               S_BOOST_ACCEL_AIR = 9, S_BOOST_USED_PER_SECOND = 10, S_CAR_SPAWN_BOOST = 11,
               S_JUMP_IMMEDIATE_FORCE = 12, S_JUMP_ACCEL = 13, S_UNLIMITED_FLIPS = 14,
               S_UNLIMITED_DOUBLE_JUMPS = 15, S_BUMP_FORCE_SCALE = 16, S_DEMO_MODE = 17, S_RESPAWN_DELAY = 18;
-// Hard limits, wider than the UI ranges (src/sim/mutators.ts keeps those inside these; the same
-// numbers are mirrored in src/sim/mutatorLayout.ts for its tests). They keep the sim sane whatever a
+// Hard limits, wider than the UI ranges (src/game/physicsRules.ts keeps those inside these; the
+// same numbers are mirrored in src/sim/mutatorLayout.ts for its tests). They keep the sim sane whatever a
 // modified client sends: gravity always pulls down, the ball can travel at most 8500 / 120 = 71 uu
 // per tick (0.78 of its radius: no tunnelling through the thin goal / corner mesh), a bounce never
 // gains energy, the car stays below 2700 uu/s (22.5 uu per tick against a 19.3 uu half hitbox).

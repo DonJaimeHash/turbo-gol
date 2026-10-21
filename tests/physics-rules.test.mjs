@@ -1,6 +1,8 @@
 // The experimental physics table and its parsers (src/game/physicsRules.ts): the grid invariants,
 // strict and lenient parsing, the canonical form, the built-ins, the stored presets, the rules
-// snapshot and the automatic names. Pure (node's type stripping imports it as it is).
+// snapshot and the automatic names; every grid value against the wasm's hard limits, through the
+// physics core's own mapping (src/sim/mutators.ts toMutators). Pure (node's type stripping imports
+// it as it is; no wasm).
 // Run: node --test tests/physics-rules.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,30 +21,15 @@ registerHooks({
 
 const R = await import('../src/game/physicsRules.ts');
 const { sanitizeLobbyName } = await import('../src/net/account.ts');
+// The physics core's mapping and the wasm's hard limits (mirrored from native/wrapper.cpp).
+const { toMutators } = await import('../src/sim/mutators.ts');
+const L = await import('../src/sim/mutatorLayout.ts');
+const { BALL, CAR_STANDARD } = await import('../src/sim/constants.ts');
+const { TICK_RATE } = await import('../src/sim/types.ts');
 
-/**
- * The physical value each field sets, and the C++ hard limits of the design (section 6.1). Until
- * src/sim/mutators.ts lands (the physics core's pull request, which mirrors the limits), this is
- * the check that every UI range stays inside them; then this table should import from there.
- */
-const PHYSICAL = {
-  gravity: { of: (p) => (-650 * p) / 100, lo: -2000, hi: -100 },
-  ballMaxSpeed: { of: (p) => (6000 * p) / 100, lo: 1000, hi: 8500 },
-  ballHit: { of: (p) => p / 100, lo: 0, hi: 4 },
-  ballWeight: { of: (p) => (30 * p) / 100, lo: 10, hi: 90 },
-  ballBounce: { of: (p) => (0.6 * p) / 100, lo: 0, hi: 0.95 },
-  ballDrag: { of: (p) => (0.03 * p) / 100, lo: 0, hi: 0.5 },
-  carMaxSpeed: { of: (v) => v, lo: 1500, hi: 2700 },
-  boostPower: { of: (p) => (991.667 * p) / 100, lo: 0, hi: 3000 }, // the ground one; air (1058.3) below 3200 too
-  boostUse: { of: (p) => ((100 / 3) * p) / 100, lo: 0, hi: 100 },
-  spawnBoost: { of: (v) => v, lo: 0, hi: 100 },
-  jumpPower: { of: (p) => (292 * p) / 100, lo: 0, hi: 600 }, // jumpImmediateForce; jumpAccel (1458.3) below 3000 too
-  unlimitedFlips: { of: (v) => v, lo: 0, hi: 1 },
-  unlimitedDoubleJumps: { of: (v) => v, lo: 0, hi: 1 },
-  bumpForce: { of: (p) => p / 100, lo: 0, hi: 5 },
-  demoMode: { of: (v) => v, lo: 0, hi: 2 },
-  respawnDelay: { of: (v) => v, lo: 0.5, hi: 10 },
-};
+const first = (f) => R.fieldValues(f)[0];
+const last = (f) => R.fieldValues(f).at(-1);
+const allAt = (pick) => Object.fromEntries(R.PHYSICS_FIELDS.map((f) => [f.key, pick(f)]));
 
 test('the table: 17 known keys in editor groups, defaults on the grid, at most 18 steps, integers only', () => {
   assert.equal(R.PHYSICS_FIELDS.length, 17);
@@ -63,24 +50,32 @@ test('the table: 17 known keys in editor groups, defaults on the grid, at most 1
   assert.equal(R.physicsField('toString'), undefined);
 });
 
-test('every grid value stays inside the hard limits; ball speed cannot tunnel, bounce stays below 1, gravity stays down', () => {
+test('every grid value, and the all-min / all-max corners, map inside the wasm hard limits (src/sim/mutatorLayout.ts)', () => {
   for (const f of R.PHYSICS_FIELDS) {
     if (f.key === 'gameSpeed') {
       assert.ok(R.fieldValues(f).every((v) => v > 0 && v <= 100), 'game speed never above 100 %');
       continue;
     }
-    const m = PHYSICAL[f.key];
-    assert.ok(m, `${f.key} has a physical mapping`);
-    for (const v of R.fieldValues(f)) {
-      const x = m.of(v);
-      assert.ok(x >= m.lo && x <= m.hi, `${f.key} ${v} -> ${x} outside ${m.lo}..${m.hi}`);
-    }
+    for (const v of R.fieldValues(f)) assert.ok(L.mutatorsWithinLimits(toMutators({ [f.key]: v })), `${f.key} = ${v}`);
   }
-  const ball = R.physicsField('ballMaxSpeed');
-  assert.ok((6000 * ball.max) / 100 / 120 <= 0.72 * 91.25, 'top ball speed per tick <= 0.72 ball radius');
-  assert.ok((0.6 * R.physicsField('ballBounce').max) / 100 < 1);
-  assert.ok((-650 * R.physicsField('gravity').min) / 100 < 0);
-  assert.ok(R.physicsField('carMaxSpeed').max / 120 < 2 * 19.3, 'a car moves less than its hitbox height per tick');
+  assert.ok(L.mutatorsWithinLimits(toMutators(allAt(first))), 'all minimums');
+  assert.ok(L.mutatorsWithinLimits(toMutators(allAt(last))), 'all maximums');
+});
+
+test('the physics stays sane at the extremes: the ball cannot tunnel, a bounce never gains energy, gravity pulls down', () => {
+  const hi = toMutators(allAt(last));
+  const lo = toMutators(allAt(first));
+  // The ball moves at most 0.72 of its radius per tick at the table's top speed (tunnelling starts ~0.8 R)...
+  assert.ok(hi[L.M_BALL_MAX_SPEED] / TICK_RATE <= 0.72 * BALL.radius, `${hi[L.M_BALL_MAX_SPEED]} uu/s`);
+  // ...and at most 0.8 R at the wasm's hard limit, whatever a modified client sends.
+  assert.ok(L.MUTATOR_HARD_LIMITS[L.M_BALL_MAX_SPEED][1] / TICK_RATE <= 0.8 * BALL.radius);
+  assert.ok(hi[L.M_BALL_RESTITUTION] < 1 && L.MUTATOR_HARD_LIMITS[L.M_BALL_RESTITUTION][1] < 1, 'a bounce never gains energy');
+  assert.ok(hi[L.M_GRAVITY_Z] < 0 && lo[L.M_GRAVITY_Z] < 0 && L.MUTATOR_HARD_LIMITS[L.M_GRAVITY_Z][1] < 0, 'gravity always pulls down');
+  // The car moves 21.7 uu per tick at the table's maximum (22.5 at the hard limit): more than its
+  // half hitbox height (19.3) but well under its height and its half length; the 60 s corner runs
+  // of tests/mutators-extremes.test.mjs show it never leaves the field.
+  assert.ok(hi[L.M_CAR_MAX_SPEED] / TICK_RATE < CAR_STANDARD.hitboxSize[2] * 0.6);
+  assert.ok(L.MUTATOR_HARD_LIMITS[L.M_CAR_MAX_SPEED][1] / TICK_RATE < CAR_STANDARD.hitboxSize[0] / 2);
 });
 
 test('strict: unknown, non-integer, off-grid, out-of-range, NaN, strings, arrays and free-play keys in a match are refused', () => {
@@ -100,14 +95,29 @@ test('strict: unknown, non-integer, off-grid, out-of-range, NaN, strings, arrays
     { unlimitedFlips: 2 },
     { demoMode: 3 },
     { respawnDelay: 0 },
+    { gravity: true },
+    { gravity: [50] },
+    { gravity: { v: 50 } },
+    { gravityZ: -325 },
+    { unlimitedFlips: 0.5 },
+    { carMaxSpeed: 2310 },
     { __proto__: { gravity: 50 }, constructor: 1 },
+    JSON.parse('{"__proto__": 50}'),
+    JSON.parse('{"constructor": 50}'),
+    JSON.parse('{"toString": 50}'),
+    new Map([['gravity', 50]]),
     [],
+    [50],
     null,
+    undefined,
     'gravity',
     7,
   ]) {
-    assert.equal(R.parsePhysicsValues(bad, 'strict', 'match'), null, JSON.stringify(bad));
+    assert.equal(R.parsePhysicsValues(bad, 'strict', 'match'), null, bad instanceof Map ? 'a Map' : JSON.stringify(bad));
   }
+  assert.deepEqual(R.parsePhysicsValues({ gravity: 100, ballDrag: 0 }, 'strict'), { ballDrag: 0 }, 'explicit defaults are dropped');
+  assert.deepEqual(R.parsePhysicsValues(Object.assign(Object.create(null), { gravity: 60 }), 'strict'), { gravity: 60 }, 'a null-prototype object is plain');
+  assert.equal(JSON.stringify(R.parsePhysicsValues({ ballDrag: 50, gravity: 50, ballHit: 100 }, 'strict')), '{"gravity":50,"ballDrag":50}', 'one JSON form whatever the key order');
   assert.equal(R.parsePhysicsValues({ gameSpeed: 50 }, 'strict', 'match'), null, 'game speed is free play only');
   assert.deepEqual(R.parsePhysicsValues({ gameSpeed: 50 }, 'strict', 'training'), { gameSpeed: 50 });
   const many = Object.fromEntries(Array.from({ length: 65 }, (_, i) => ['k' + i, 1]));
@@ -118,7 +128,16 @@ test('lenient: drops unknown and bad keys, snaps to the grid, never fails; the c
   assert.deepEqual(R.parsePhysicsValues({ ballDrag: 60, gravity: 47, nope: 1, ballHit: 'x', ballWeight: 9999, spawnBoost: 40 }, 'lenient'), { gravity: 50, ballWeight: 200, ballDrag: 50 }, 'spawnBoost 40 snaps to the default 33: omitted');
   assert.deepEqual(R.parsePhysicsValues({ gravity: -5, carMaxSpeed: 2324 }, 'lenient'), { gravity: 30 }, 'clamped; snapped to the default: omitted');
   assert.deepEqual(R.parsePhysicsValues({ gameSpeed: 50, gravity: 50 }, 'lenient', 'match'), { gravity: 50 });
-  for (const junk of [null, [], 'x', 3, undefined]) assert.deepEqual(R.parsePhysicsValues(junk, 'lenient'), {});
+  for (const junk of [null, [], 'x', 3, undefined, new Map([['gravity', 50]])]) assert.deepEqual(R.parsePhysicsValues(junk, 'lenient'), {});
+  assert.deepEqual(R.parsePhysicsValues({ gravity: 1000, ballDrag: -5, nope: 1, ballHit: 'x', jumpPower: NaN }, 'lenient'), { gravity: 200, ballDrag: 0 });
+  assert.deepEqual(R.parsePhysicsValues({ gravity: 54 }, 'lenient'), { gravity: 50 });
+  assert.deepEqual(R.parsePhysicsValues({ gravity: 56 }, 'lenient'), { gravity: 60 });
+  assert.deepEqual(R.parsePhysicsValues({ gravity: 99.6 }, 'lenient'), {}, 'snaps to the default, which is dropped');
+  assert.deepEqual(R.parsePhysicsValues({ spawnBoost: 42, unlimitedFlips: 0.9, demoMode: 7, carMaxSpeed: 9999 }, 'lenient'), { carMaxSpeed: 2600, spawnBoost: 50, unlimitedFlips: 1, demoMode: 2 });
+  for (const raw of [{ gravity: 1e9 }, { ballDrag: 37 }, { bumpForce: -1e9, boostUse: 12.5, respawnDelay: 0 }, { ballDrag: -0 }]) {
+    const v = R.parsePhysicsValues(raw, 'lenient');
+    assert.deepEqual(R.parsePhysicsValues(v, 'strict'), v, `whatever comes in passes strict: ${JSON.stringify(raw)}`);
+  }
   assert.deepEqual(Object.keys(R.canonicalValues({ ballDrag: 50, gravity: 50, ballHit: 100 })), ['gravity', 'ballDrag']);
   assert.equal(R.isStock({}), true);
   assert.equal(R.isStock({ gravity: 100, unlimitedFlips: 0 }), true);
@@ -156,6 +175,7 @@ test('the built-ins: five, valid in a match, Standard is stock, stable ids that 
   assert.equal(R.isStock(R.BUILT_IN_PRESETS[0].values), true);
   assert.equal(R.BUILT_IN_PRESETS.slice(1).every((p) => !R.isStock(p.values)), true);
   assert.equal(R.isBuiltInId('0123456789ab'), false);
+  assert.ok(Object.isFrozen(R.BUILT_IN_PRESETS) && R.BUILT_IN_PRESETS.every((p) => Object.isFrozen(p) && Object.isFrozen(p.values)), 'read-only, values included');
 });
 
 test('stored presets: a 12-hex id, a sanitized name, lenient values; lists drop duplicates and stop at the cap', () => {

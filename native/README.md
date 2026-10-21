@@ -224,13 +224,13 @@ bit). The bridge applies a preset only through `createArena(tickRate, mutators)`
 roomHost, community nodes, ranked, casual, training packs) passes nothing and gets the stock arena.
 
 * **Validation, all or nothing.** The pointer, the count (19), the version (1), every value finite and
-  inside its hard limit (wider than the UI ranges of `src/sim/mutators.ts`: gravity -2000..-100, ball
-  top speed 1000..8500, car top speed 1500..2700, restitution 0..0.95, ...), toggles exactly 0 / 1,
-  the demo mode exactly 0 / 1 / 2: on any failure nothing changes (code 1; 2 = no arena). The limits
-  keep the sim sane whatever a modified client sends: gravity always pulls down, the ball moves at
-  most 71 uu per tick (0.78 of its radius: it cannot tunnel through the thin goal and corner mesh),
-  a bounce never gains energy, a car moves at most 22.5 uu per tick against its 19.3 uu half
-  hitbox height.
+  inside its hard limit (wider than the UI ranges of `src/game/physicsRules.ts`: gravity -2000..-100,
+  ball top speed 1000..8500, car top speed 1500..2700, restitution 0..0.95, ...), toggles exactly
+  0 / 1, the demo mode exactly 0 / 1 / 2: on any failure nothing changes (code 1; 2 = no arena).
+  The limits keep the sim sane whatever a modified client sends: gravity always pulls down, the ball
+  moves at most 71 uu per tick (0.78 of its radius: it cannot tunnel through the thin goal and
+  corner mesh), a bounce never gains energy, a car moves at most 22.5 uu per tick against its
+  19.3 uu half hitbox height.
 * **Only these fields.** The wrapper copies the arena's config and changes these fields only:
   `carMass` (RocketSim 2.2.1's `SetMutatorConfig` would give every car the BALL's mass on a car-mass
   change, Arena.cpp:39), `ballRadius` (the broadphase throws above ~105.8 uu, and the renderer,

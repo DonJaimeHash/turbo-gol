@@ -105,7 +105,7 @@ void rs_set_unlimited_boost(int enabled); // keeps boost at 100 every tick when 
 //   [14] unlimitedFlips (0/1)     [15] unlimitedDoubleJumps (0/1)
 //   [16] bumpForceScale           [17] demoMode (0/1/2, as rs_set_demo_mode)
 //   [18] respawnDelay (s)
-// Hard limits (wider than any UI range; the UI's grid lives in src/sim/mutators.ts): gravityZ
+// Hard limits (wider than any UI range; the UI's grid lives in src/game/physicsRules.ts): gravityZ
 // -2000..-100, ballMaxSpeed 1000..8500, ballHitExtraForceScale 0..4, ballMass 10..90,
 // ballWorldRestitution 0..0.95, ballDrag 0..0.5, carMaxSpeed 1500..2700, boostAccelGround 0..3000,
 // boostAccelAir 0..3200, boostUsedPerSecond 0..100, carSpawnBoostAmount 0..100, jumpImmediateForce
