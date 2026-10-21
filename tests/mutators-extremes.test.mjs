@@ -1,7 +1,8 @@
 // The corners of the experimental physics table: for every extreme preset and 3 seeds, a 60 s 3v3
 // bot match (bots with the preset's profile, kickoff after each goal) must keep a finite state, the
 // ball and every car inside the field or a goal chamber on every tick (nothing tunnels through the
-// thin goal and corner mesh), the wasm alive, and cost about what stock costs per tick.
+// thin goal and corner mesh), the wasm alive, and cost about what stock costs per tick. Shots at
+// the ball's top speed (the table's maximum and the wasm's hard limit) check the tunnelling bound.
 //   node --test tests/mutators-extremes.test.mjs      (needs src/sim/wasm/rocketsim.{js,wasm})
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,6 +15,7 @@ const { BotTeam } = await import('../src/ai/Team.ts');
 const { ARENA } = await import('../src/sim/constants.ts');
 const T = await import('../src/sim/types.ts');
 const M = await import('../src/sim/mutators.ts');
+const L = await import('../src/sim/mutatorLayout.ts');
 
 const sim = await RocketSim.load();
 sim.initArena(buildArenaMesh().physics);
@@ -127,6 +129,70 @@ test('built-in presets: 30 s of 3v3 bots each stay finite and inside the field',
     const s = match(p.values, 4, TICKS / 2);
     costs.push({ name: p.id, us: s.us });
     console.log(`built-in ${p.id}: ${s.goals} goals, ${s.touches} touches, ${s.bumps} bumps (${s.demos} demos), ${s.us.toFixed(0)} us/tick`);
+  }
+});
+
+/**
+ * Shots at the ball's top speed into the thin parts of the mesh: the posts and crossbar, the back
+ * wall beside the goal, the goal's back, side nets and roof, the rounded corners, the side walls,
+ * the ceiling and the floor. The bot matches above never get the ball near its cap (under 5000
+ * uu/s), so this is what checks the tunnelling bound of the table's maximum (7800 uu/s, 65 uu per
+ * tick) and of the wasm's hard limit (8500, 71 uu per tick) that a modified client could set.
+ */
+function topSpeedShots(cap) {
+  const m = M.toMutators({ ballMaxSpeed: 130, ballBounce: 150, ballDrag: 0, gravity: 30 });
+  m[L.M_BALL_MAX_SPEED] = cap;
+  sim.createArena(T.TICK_RATE, m);
+  sim.events.onGoal = sim.events.onBump = sim.events.onBallHit = undefined;
+  const Y = ARENA.extentY;
+  const targets = [];
+  for (const sy of [1, -1]) {
+    for (const x of [-1100, -1000, 1000, 1050, 1100, 1200, 2500]) for (const z of [100, 300, 720, 760, 1500]) targets.push([x, sy * Y, z]);
+    for (const x of [-900, 0, 900]) targets.push([x, sy * (Y + ARENA.goalDepth), 300]);
+    for (const y of [Y + 200, Y + 600, Y + 900]) targets.push([1000, sy * y, 300], [-1000, sy * y, 300], [0, sy * y, ARENA.goalHeight]);
+    for (const a of [0.2, 0.5, 0.8]) {
+      const cx = ARENA.cornerCentreX + ARENA.cornerRadius * Math.cos((a * Math.PI) / 2);
+      const cy = ARENA.cornerCentreY + ARENA.cornerRadius * Math.sin((a * Math.PI) / 2);
+      for (const z of [200, 1800]) targets.push([cx, sy * cy, z], [-cx, sy * cy, z]);
+    }
+  }
+  for (const x of [-ARENA.extentX, ARENA.extentX]) for (const y of [-3000, 0, 3000]) targets.push([x, y, 1000]);
+  for (const x of [-2000, 2000]) targets.push([x, 0, ARENA.height], [x, 2000, 0]);
+  const starts = [[0, 0, 1000], [2000, 3000, 400], [3000, 0, 1500], [0, 4000, 800], [0, -5000, 600]];
+  let shots = 0;
+  let worst = 0;
+  for (const s of starts) {
+    for (const t of targets) {
+      const d = [t[0] - s[0], t[1] - s[1], t[2] - s[2]];
+      const len = Math.hypot(d[0], d[1], d[2]);
+      if (len < 500) continue;
+      shots++;
+      sim.setBallState(s, d.map((c) => (c / len) * cap), [0, 0, 0]);
+      for (let k = 0; k < 150; k++) {
+        sim.step(1);
+        sim.sync();
+        const x = sim.buf[T.BALL_OFFSET + T.B_POS];
+        const y = sim.buf[T.BALL_OFFSET + T.B_POS + 1];
+        const z = sim.buf[T.BALL_OFFSET + T.B_POS + 2];
+        const where = `cap ${cap}, shot from (${s}) at (${t.map(Math.round)}), tick ${k + 1}: ball at (${[x, y, z].map(Math.round)})`;
+        assert.ok(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z), where);
+        // A hit on a rounded post can push the centre a few uu past this box approximation for one
+        // tick (measured: at most 20); a ball through the mesh keeps going.
+        let margin = 0;
+        while (margin <= 40 && !inside(x, y, z, margin)) margin += 5;
+        assert.ok(margin <= 40, where);
+        worst = Math.max(worst, margin);
+      }
+    }
+  }
+  return { shots, worst };
+}
+
+test('the ball at its top speed (table maximum and wasm hard limit) never tunnels through the posts, nets, corners or walls', () => {
+  for (const cap of [Math.fround(7800), L.MUTATOR_HARD_LIMITS[L.M_BALL_MAX_SPEED][1]]) {
+    const r = topSpeedShots(cap);
+    console.log(`ball at ${cap} uu/s: ${r.shots} shots, its centre at most ${r.worst} uu past the field / chamber box`);
+    assert.ok(r.shots > 300);
   }
 });
 
