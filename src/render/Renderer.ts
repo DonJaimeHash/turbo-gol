@@ -419,7 +419,9 @@ export class Renderer {
     let compiling: Promise<unknown>;
     if (this.isWebGPU) {
       type PipelineUtils = { createRenderPipeline(renderObject: unknown, promises: Promise<void>[] | null): void };
-      const utils = (gpu.backend as unknown as { pipelineUtils: PipelineUtils }).pipelineUtils;
+      const utils = (gpu.backend as unknown as { pipelineUtils?: PipelineUtils }).pipelineUtils;
+      // three internals (r186): without them the synchronous warm-up frame compiles everything.
+      if (utils === undefined || typeof utils.createRenderPipeline !== 'function') return;
       const own = Object.prototype.hasOwnProperty.call(utils, 'createRenderPipeline');
       const create = utils.createRenderPipeline;
       const pending: Promise<void>[] = [];
