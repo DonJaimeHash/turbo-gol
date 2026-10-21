@@ -395,6 +395,26 @@ test('alpine far bake: under its own parallax band, real mountains, finite data'
   }
   for (const name of ['position', 'normal', 'kcol', 'kloc', 'kdat']) assert.ok(far.geometry.attributes[name].array.every(Number.isFinite), name);
   assert.ok(far.geometry.attributes.kcol.array.every((v, i) => i % 4 !== 3 || v === KIND.ALPINE), 'one pattern kind');
+  // crests are at least a cell wide: no vertex on the mountains stands as a spike above both its
+  // ring neighbours (a crest thinner than the rows, crossing them obliquely, was baked as a comb of
+  // one-ring teeth along the ridge line; that mesh had ~1.6 % such vertices above 8000)
+  const r0 = Math.hypot(pos[0], pos[2]);
+  let nt = 1;
+  while (Math.abs(Math.hypot(pos[nt * 3], pos[nt * 3 + 2]) - r0) < 1) nt++;
+  const nr = pos.length / 3 / nt;
+  assert.ok(Number.isInteger(nr) && nr > 100, `a polar grid (${nt} columns, ${nr} rings)`);
+  const hAt = (ri, ti) => pos[(ri * nt + ((ti + nt) % nt)) * 3 + 1];
+  let high = 0;
+  let spikes = 0;
+  for (let ri = 1; ri < nr - 1; ri++) {
+    for (let ti = 0; ti < nt; ti++) {
+      const h = hAt(ri, ti);
+      if (h < 8000) continue;
+      high++;
+      if (h - Math.max(hAt(ri - 1, ti), hAt(ri + 1, ti)) > 600 && h > Math.max(hAt(ri, ti - 1), hAt(ri, ti + 1))) spikes++;
+    }
+  }
+  assert.ok(spikes < high * 0.004, `ridge spikes across the rings: ${spikes} of ${high} vertices`);
   // the bake builds it in slices (World.ts farMesh): the same geometry, bit for bit
   let yields = 0;
   const sliced = AL.buildAlpineFarSliced(sun, 0);

@@ -20,14 +20,15 @@
  *                             never meets the live edge where a camera near the pitch could see a
  *                             seam (tests/world.test.mjs).
  *   FAR  (`buildAlpineFar`)   baked into the cube map: the land beyond the crest and the mountains,
- *                             a ridged multifractal heightfield (a polar grid, fine in azimuth for
- *                             crisp ridge lines) shaped by a mass per direction: the high massif
- *                             ahead, side ranges, a lower range behind. Per vertex it carries the
- *                             baked sun visibility (a march over a coarse height grid), ambient
- *                             occlusion and a smoothed slope; the ALPINE pattern (alpineShade.ts)
- *                             draws snow by slope and height, rock strata, scree, alpine meadows
- *                             and forest per pixel. ~160k vertices, ~0.4 s of CPU, built in slices
- *                             (buildAlpineFarSliced) so the bake pipelines compile meanwhile.
+ *                             a ridged multifractal heightfield (a polar grid of square cells,
+ *                             crests no thinner than a cell) shaped by a mass per direction: the
+ *                             high massif ahead, side ranges, a lower range behind. Per vertex it
+ *                             carries the baked sun visibility (a march over a coarse height
+ *                             grid), ambient occlusion and a smoothed slope; the ALPINE pattern
+ *                             (alpineShade.ts) draws snow by slope and height, rock strata, scree,
+ *                             alpine meadows and forest per pixel. ~155k vertices, ~0.3 s of CPU,
+ *                             built in slices (buildAlpineFarSliced) so the bake pipelines compile
+ *                             meanwhile.
  *
  * Heights: the mountains rise above the default parallax band (harbour.ts SKYLINE_TOP), so the
  * 'alpine-day' preset raises the dome's hand-over band (presets.ts proxyTop) above ALPINE_TOP: the
@@ -133,27 +134,45 @@ function perlin2(x: number, z: number): number {
 
 /**
  * Shape of the ridged field (tuned for alpine relief: slopes of ~30-60 degrees, not needles). The
- * octaves stop at ~1600 uu: finer relief than the far mesh's rows (~1200 uu deep at 75k) would
- * alias into noisy normals, and the slope-driven snow would break into facet-sized blocks.
+ * octaves stop at ~1600 uu: finer relief than a few far-mesh cells (~600 uu at 75k) would alias
+ * into noisy normals, and the slope-driven snow would break into facet-sized blocks.
  */
 const RIDGE_SCALE = 30000;
 const RIDGE_POW = 1.2;
 const RIDGE_GAIN = 1.4;
 const RIDGE_OCTAVE_GAIN = 0.4;
 const RIDGE_OCTAVES = 5;
+/**
+ * The far mesh (polarGrid): FAR_NT azimuth columns, rings growing by FAR_GROW, so its cells are
+ * square (2 pi r / FAR_NT wide and as deep: ~490 uu at 60k; ~155k vertices). Ridges run across
+ * it in every direction: with rows 4x deeper than the columns were wide (1536 columns, rings
+ * + 1.6 %), a crest crossing the rings obliquely was sampled as one spike per ring, a comb of
+ * teeth along the ridge line (the back range behind the orange goal).
+ */
+const FAR_NT = 768;
+const FAR_GROW = 1 + (2 * Math.PI) / FAR_NT;
+/**
+ * Crest width in far-mesh cells: every octave's V crest is rounded over about this many cells (a
+ * soft |n|; peaks keep their height), so a crest is never thinner than the mesh can carry, and
+ * octaves finer than a cell flatten instead of aliasing.
+ */
+const CREST_CELLS = 1.5;
 
 /**
  * Ridged multifractal (sharp crests, smoother valleys), about [0, 1]: each octave's ridge is
- * weighted by the previous one, so detail gathers on the crests, as erosion leaves it.
+ * weighted by the previous one, so detail gathers on the crests, as erosion leaves it. `soft` is
+ * the crest rounding at the first octave in noise units (scaled by each octave's frequency).
  */
-function ridged(x: number, z: number, oct: number): number {
+function ridged(x: number, z: number, oct: number, soft: number): number {
   let sum = 0;
   let norm = 0;
   let amp = 1;
   let weight = 1;
   let f = 1;
   for (let o = 0; o < oct; o++) {
-    let s = 1 - Math.abs(perlin2(x * f + o * 31.7, z * f - o * 17.9)) * 1.45;
+    const n = perlin2(x * f + o * 31.7, z * f - o * 17.9);
+    const e = soft * f;
+    let s = 1 - (Math.sqrt(n * n + e * e) - e) * 1.45;
     s = Math.max(s, 0);
     s *= s;
     s *= weight;
@@ -208,7 +227,7 @@ function mountainHeight(x: number, z: number, r: number): number {
   // domain warp: ridges wander instead of following the noise lattice
   const wx = (fbm2(x / 40000 + 3.3, z / 40000, 2) - 0.5) * 1.4;
   const wz = (fbm2(x / 40000, z / 40000 + 8.1, 2) - 0.5) * 1.4;
-  const rid = ridged(x / RIDGE_SCALE + wx, z / RIDGE_SCALE + wz, RIDGE_OCTAVES);
+  const rid = ridged(x / RIDGE_SCALE + wx, z / RIDGE_SCALE + wz, RIDGE_OCTAVES, (CREST_CELLS * (FAR_GROW - 1) * r) / RIDGE_SCALE);
   // broad mass: a few dominant summits instead of an even comb of peaks
   const mass = 0.4 + 0.8 * fbm2(x / 52000 + 1.7, z / 52000 - 4.2, 3);
   return amp * rise * far * mass * Math.pow(rid, RIDGE_POW) * RIDGE_GAIN;
@@ -759,9 +778,12 @@ function* alpineFar(sunDir: readonly [number, number, number]): Work<AlpineFar> 
     return vis;
   };
 
-  // ---- polar mesh: fine in azimuth (crisp ridge lines), from just inside the live crest
-  const NT = 1536;
-  const grid = yield* polarGrid(LIVE_EDGE - 1200, 140000, 1.016, NT, terrainHeight);
+  // ---- polar mesh: square cells (FAR_NT, FAR_GROW), from the live crest outward. Not from inside
+  // it: the dome shows the cube through its parallax proxy (~60k away), so from a camera farther
+  // from a crest than the bake origin is, a baked copy of the crest's top was drawn above the live
+  // crest as a floating dark ribbon; without it those texels show the range behind.
+  const NT = FAR_NT;
+  const grid = yield* polarGrid(LIVE_EDGE, 140000, FAR_GROW, NT, terrainHeight);
   const nv = grid.pos.length / 3;
   const nrm = yield* vertexNormals(grid.pos, grid.idx);
   const rgb = new Float32Array(nv * 3);
