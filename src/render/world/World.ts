@@ -103,6 +103,8 @@ export interface World {
   dispose(): void;
   /** Timings of the bakes so far (diagnostics). */
   readonly stats: readonly WorldBakeStats[];
+  /** Resolves once every bake / cache read asked for so far is done (the loading screen waits on it). Never rejects. */
+  settled(): Promise<void>;
 }
 
 /** Bake-only resources, created by the first real bake (a cached load never needs them). */
@@ -617,6 +619,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   return {
     ready,
     stats,
+    settled: () => queue.request(queue.wanted),
     setQuality(q) {
       const next = tier(q);
       const old = spec;
