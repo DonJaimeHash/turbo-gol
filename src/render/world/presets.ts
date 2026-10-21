@@ -154,7 +154,7 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     zenith: [0.004, 0.006, 0.04],
     mid: [0.022, 0.024, 0.105],
     horizon: [0.19, 0.075, 0.065],
-    glow: { color: [0.5, 0.17, 0.05], az: 4, spread: 0.7, height: 0.09 },
+    glow: { color: [0.62, 0.22, 0.06], az: 4, spread: 0.7, height: 0.075 },
     key: { az: 172, el: 27, color: [0.82, 0.84, 1.0], disc: 2.2, sizeDeg: 0.85, halo: 0.01, halo2: 0.04, moon: true, light: [0.032, 0.034, 0.052] },
     ambSky: [0.014, 0.012, 0.03],
     ambGround: [0.018, 0.01, 0.007],

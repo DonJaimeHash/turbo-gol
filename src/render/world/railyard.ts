@@ -741,7 +741,9 @@ export function buildRailyardFar(dry = false, seed = 13): RailyardFar {
     mast(c, x, z, 3200);
   }
 
-  // ---- the city: a tall cluster on the horizon behind the far goal, lower districts round it
+  // ---- the city: a downtown of towers rising over the gantry behind the far goal, lower districts
+  // round it
+  city(c, -13000, 13000, 30000, 42000, 30, 5200, 9600, 0);
   city(c, -16000, 16000, 42000, 62000, 46, 3500, 8000, 0.25);
   city(c, -60000, 60000, 48000, 100000, 240, 1500, 5000, 0.12);
   city(c, -95000, -50000, -20000, 60000, 120, 1000, 3800, 0.06);
