@@ -33,10 +33,10 @@ const NIGHT: TurfLook = { tint: [1.45, 0.9, 0.72], dry: 0.05, stripes: 0.3, pool
 /** Per theme. Themes not built in theme.ts yet still get their own turf look here. */
 export const TURF_LOOKS: Readonly<Record<ThemeId, TurfLook>> = {
   'harbour-night': NIGHT,
-  'harbour-day': { tint: [1.02, 1, 0.95], dry: 0.12, stripes: 0.32, pools: 0, streaks: 0.6, puddles: 0.3, team: 1 },
+  'harbour-day': { tint: [1.03, 1.03, 0.88], dry: 0.12, stripes: 0.32, pools: 0, streaks: 0.6, puddles: 0.3, team: 1 },
   'canyon-sunset': { tint: [1.08, 0.98, 0.84], dry: 0.45, stripes: 0.28, pools: 0.25, streaks: 0.5, puddles: 0.1, team: 1 },
   'city-dusk': { tint: [0.95, 1, 1.03], dry: 0.05, stripes: 0.3, pools: 0.85, streaks: 1.15, puddles: 0.34, team: 1 },
-  'alpine-day': { tint: [0.95, 1.04, 0.95], dry: 0, stripes: 0.34, pools: 0, streaks: 0.4, puddles: 0.15, team: 1 },
+  'alpine-day': { tint: [1.0, 1.07, 0.84], dry: 0.06, stripes: 0.36, pools: 0, streaks: 0.4, puddles: 0.15, team: 1 },
   'railyard-night': { tint: [1.04, 0.98, 0.9], dry: 0.2, stripes: 0.26, pools: 1, streaks: 1, puddles: 0.42, team: 1 },
 };
 

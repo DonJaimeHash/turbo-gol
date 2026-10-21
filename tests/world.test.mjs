@@ -29,18 +29,19 @@ const cache = await import('../src/render/world/cache.ts');
 const finite3 = (c) => c.length === 3 && c.every((v) => Number.isFinite(v) && v >= 0);
 
 test('every theme resolves to a world preset; the built ones are their own', () => {
-  for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'city'].includes(worldPreset(id).skyline), id);
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk']) assert.ok(hasWorldPreset(id), id);
+  for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'city', 'alpine'].includes(worldPreset(id).skyline), id);
+  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day']) assert.ok(hasWorldPreset(id), id);
   assert.equal(worldPreset('harbour-night').skyline, 'harbour');
   assert.equal(worldPreset('harbour-day').skyline, 'harbour');
   assert.equal(worldPreset('canyon-sunset').skyline, 'canyon');
   assert.equal(worldPreset('city-dusk').skyline, 'city');
+  assert.equal(worldPreset('alpine-day').skyline, 'alpine');
   // themes without a preset yet use the default world
   for (const id of THEME_IDS) if (!hasWorldPreset(id)) assert.equal(worldPreset(id), worldPreset('harbour-night'), id);
 });
 
 test('world presets hold finite, non-negative radiance and sane ranges', () => {
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk']) {
+  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day']) {
     const p = worldPreset(id);
     for (const c of [p.zenith, p.mid, p.horizon, p.glow.color, p.key.color, p.key.light, p.ambSky, p.ambGround, p.sea.color, p.envTurf]) assert.ok(finite3(c), `${id} colour ${c}`);
     for (const cl of [p.clouds, p.cirrus]) {
@@ -51,6 +52,7 @@ test('world presets hold finite, non-negative radiance and sane ranges', () => {
     }
     assert.ok(p.hazeHeight > 0 && p.hazeGain > 0 && p.lights >= 0 && p.windows >= 0 && p.envLamp >= 0, id);
     assert.ok(p.key.el > 0 && p.key.el < 90 && p.key.sizeDeg > 0, `${id} key body above the horizon`);
+    if (p.proxyTop !== undefined) assert.ok(p.proxyTop[0] > 0 && p.proxyTop[1] > p.proxyTop[0], `${id} proxy band`);
   }
   // night has the moon, stars and lamps; day has none of them
   assert.equal(worldPreset('harbour-night').key.moon, true);
@@ -70,7 +72,7 @@ test('dirFromAzEl: unit vectors, azimuth 0 = +z, 90 = -x, elevation up', () => {
 
 test('the built themes keep the light count and ship their shared facts (setTheme end to end)', () => {
   const night = themeWorld('harbour-night');
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk']) {
+  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day']) {
     const w = themeWorld(id);
     assert.equal(w.id, id, 'its own entry, not the fallback');
     assert.equal(w.keys.length, 2);
@@ -84,8 +86,15 @@ test('the built themes keep the light count and ship their shared facts (setThem
     assert.ok(w.fill.env > 0 && w.fill.intensity > 0, `${id} fill`);
     assert.ok(['neutral', 'aces', 'agx'].includes(w.toneMapping) && w.exposure > 0, `${id} tone`);
   }
-  assert.ok(themeWorld('harbour-day').floodlights.every((f) => f.strength === 0), 'floodlights off by day');
-  assert.equal(themeWorld('harbour-day').night, false);
+  for (const id of ['harbour-day', 'alpine-day']) {
+    assert.ok(themeWorld(id).floodlights.every((f) => f.strength === 0), `${id}: floodlights off by day`);
+    assert.equal(themeWorld(id).night, false);
+    // the main key is the sky's sun (shadows fall away from the disc the player sees)
+    const p = worldPreset(id);
+    const sun = dirFromAzEl(p.key.az, p.key.el);
+    const k = themeWorld(id).keys[0].dir;
+    assert.ok(sun[0] * k[0] + sun[1] * k[1] + sun[2] * k[2] > 0.9999, `${id}: keys[0] points at the sun disc`);
+  }
   // the city at dusk: the sky still glows (a sun just over the horizon, no moon) but the pitch is
   // floodlit like the night and soaked
   const city = themeWorld('city-dusk');
@@ -377,4 +386,185 @@ test('city parallax proxy: its band starts no lower than the default one and sta
   assert.ok(C.CITY_PROXY_TOP[0] >= PROXY_TOP[0] && C.CITY_PROXY_TOP[1] > C.CITY_PROXY_TOP[0]);
   assert.ok(H.SKYLINE_TOP <= C.CITY_PROXY_TOP[0] + BAKE_ORIGIN.y);
   assert.ok(C.CITY_PROXY_MAX_R > H.LIVE_RADIUS, 'the proxy stays behind the live layer');
+});
+
+// ---------------------------------------------------------------------------------- alpine valley
+
+const AL = await import('../src/render/world/alpine.ts');
+
+test('alpine live layer: deterministic, inside its radius, clear of the stadium, pines over the boards', () => {
+  const a = AL.buildAlpineLive();
+  const b = AL.buildAlpineLive();
+  const pa = a.geometry.attributes.position.array;
+  const pb = b.geometry.attributes.position.array;
+  assert.equal(pa.length, pb.length);
+  assert.ok(pa.every((v, i) => v === pb[i]), 'same seed, same geometry');
+  // the harbour's attribute layout exactly: the live mesh swaps geometries without a new pipeline
+  const h = H.buildHarbourLive();
+  for (const name of ['position', 'normal', 'kcol', 'kloc', 'kdat']) {
+    assert.equal(a.geometry.attributes[name].itemSize, h.geometry.attributes[name].itemSize, name);
+    assert.equal(a.geometry.attributes[name].array.constructor, h.geometry.attributes[name].array.constructor, name);
+    assert.ok(a.geometry.attributes[name].array.every(Number.isFinite), `${name} finite`);
+  }
+  assert.equal(a.geometry.index.array.constructor, h.geometry.index.array.constructor, 'index type');
+  h.geometry.dispose();
+  const col = a.geometry.attributes.kcol.array;
+  let maxR = 0;
+  let endTreeTop = -Infinity;
+  for (let i = 0; i < pa.length / 3; i++) {
+    const x = pa[i * 3];
+    const y = pa[i * 3 + 1];
+    const z = pa[i * 3 + 2];
+    maxR = Math.max(maxR, Math.hypot(x, y - 250, z));
+    if (Math.abs(x) < H.STADIUM_HALF_X && Math.abs(z) < H.STADIUM_HALF_Z) assert.ok(y <= H.QUAY + 1, `vertex ${i} (${x}, ${y}, ${z}) inside the stadium`);
+    const kind = col[i * 4 + 3];
+    assert.ok(kind === KIND.FOLIAGE || kind === KIND.MEADOW, `kind ${kind}`);
+    if (kind === KIND.FOLIAGE && z > 8000 && Math.abs(x) < 6000) endTreeTop = Math.max(endTreeTop, y);
+  }
+  assert.ok(maxR <= H.LIVE_RADIUS, `live layer within ${H.LIVE_RADIUS} (got ${maxR.toFixed(0)})`);
+  assert.ok(endTreeTop > 900 + 250, `pines rise above the boards behind the red goal (top ${endTreeTop.toFixed(0)})`);
+  assert.ok(a.stats.trees > 800, `a forest (${a.stats.trees} pines)`);
+  assert.ok(a.stats.triangles < 110000, `live triangles ${a.stats.triangles}`);
+  assert.deepEqual(a.lamps, [], 'no lamps by day: the light map stays empty');
+  a.geometry.dispose();
+  b.geometry.dispose();
+});
+
+test('alpine terrain: flat under the stadium, the live edge sits on the baked land, a crest hides the seam', () => {
+  // flat floor under the stadium footprint (the apron and the pitch lie on it)
+  for (const [x, z] of [[0, 0], [7900, 7500], [-7900, -7500], [8000, 0], [0, -7600]]) assert.equal(AL.valleyHeight(x, z), AL.ALPINE_GROUND);
+  // the bake continues the live terrain exactly up to the crest
+  for (let k = 0; k < 32; k++) {
+    const a = (k / 32) * Math.PI * 2;
+    const x = Math.sin(a) * (AL.LIVE_EDGE - 1);
+    const z = Math.cos(a) * (AL.LIVE_EDGE - 1);
+    assert.equal(AL.terrainHeight(x, z), AL.valleyHeight(x, z));
+  }
+  // the live edge is a ridge: along every radial line the baked land behind it drops first
+  for (let k = 0; k < 360; k++) {
+    const a = (k / 360) * Math.PI * 2;
+    const crest = AL.terrainHeight(Math.sin(a) * AL.LIVE_EDGE, Math.cos(a) * AL.LIVE_EDGE);
+    for (let r = AL.LIVE_EDGE + 300; r < AL.LIVE_EDGE + 9000; r += 300) assert.ok(AL.terrainHeight(Math.sin(a) * r, Math.cos(a) * r) < crest + 1, `az ${k}: land rises right behind the crest at r ${r}`);
+  }
+  // so from cameras near the pitch (chase and kickoff heights, anywhere on the field), the baked
+  // land just behind the crest stays under the line of sight over the live crest (the live edge
+  // never meets its baked continuation in view; only a camera high over a low end crest sees
+  // past it, where the crest's pines stand in front of the seam)
+  const cams = [[0, 250, 0], [4400, 300, 5600], [-4400, 300, -5600], [-4400, 30, 5600], [3000, 600, -2000]];
+  for (const [cx, cy, cz] of cams) {
+    for (let k = 0; k < 96; k++) {
+      const a = (k / 96) * Math.PI * 2;
+      const dx = Math.sin(a);
+      const dz = Math.cos(a);
+      // distance along the ray to the live edge (camera inside the circle)
+      const b = cx * dx + cz * dz;
+      const c = cx * cx + cz * cz - AL.LIVE_EDGE * AL.LIVE_EDGE;
+      const tEdge = -b + Math.sqrt(b * b - c);
+      // rays that run into a side stand (|x| 5150..7610, |z| < 6300, up to ~2860) are hidden anyway
+      let blocked = false;
+      for (let t = 0; t < 12000 && !blocked; t += 100) blocked = Math.abs(cx + dx * t) > 5150 && Math.abs(cx + dx * t) < 7610 && Math.abs(cz + dz * t) < 6300;
+      if (blocked) continue;
+      const slopeAt = (t) => (AL.terrainHeight(cx + dx * t, cz + dz * t) - cy) / t;
+      const crest = slopeAt(tEdge - 50);
+      for (let t = tEdge + 600; t < tEdge + 9000; t += 400) assert.ok(slopeAt(t) < crest + 1e-3, `camera (${cx}, ${cy}, ${cz}) az ${k}: land behind the crest in view at +${(t - tEdge).toFixed(0)}`);
+    }
+  }
+});
+
+test('alpine far bake: under its own parallax band, real mountains, finite data', async () => {
+  const { BAKE_ORIGIN } = await import('../src/render/world/World.ts');
+  const p = worldPreset('alpine-day');
+  assert.ok(p.proxyTop !== undefined, 'the alpine preset raises the band');
+  assert.ok(AL.ALPINE_TOP <= p.proxyTop[0] + BAKE_ORIGIN.y, 'the band starts above the mountains');
+  const sun = dirFromAzEl(p.key.az, p.key.el);
+  const far = AL.buildAlpineFar(sun, false);
+  const pos = far.geometry.attributes.position.array;
+  let top = -Infinity;
+  let aheadTop = -Infinity;
+  for (let i = 0; i < pos.length; i += 3) {
+    top = Math.max(top, pos[i + 1]);
+    // the massif ahead of the blue kickoff camera (+z) rises well above the live crest
+    if (pos[i + 2] > 40000 && Math.abs(pos[i]) < pos[i + 2] * 0.5) aheadTop = Math.max(aheadTop, pos[i + 1]);
+  }
+  assert.ok(top <= AL.ALPINE_TOP, `top ${top.toFixed(0)} <= ${AL.ALPINE_TOP}`);
+  assert.ok(aheadTop > 15000, `a massif ahead (top ${aheadTop.toFixed(0)})`);
+  const kd = far.geometry.attributes.kdat.array;
+  for (let i = 0; i < kd.length; i += 4) {
+    assert.ok(kd[i] >= 0 && kd[i] <= 1 && kd[i + 1] > 0 && kd[i + 1] <= 1, 'sun visibility and occlusion in range');
+  }
+  for (const name of ['position', 'normal', 'kcol', 'kloc', 'kdat']) assert.ok(far.geometry.attributes[name].array.every(Number.isFinite), name);
+  assert.ok(far.geometry.attributes.kcol.array.every((v, i) => i % 4 !== 3 || v === KIND.ALPINE), 'one pattern kind');
+  // crests are at least a cell wide: no vertex on the mountains stands as a spike above both its
+  // ring neighbours (a crest thinner than the rows, crossing them obliquely, was baked as a comb of
+  // one-ring teeth along the ridge line; that mesh had ~1.6 % such vertices above 8000)
+  const r0 = Math.hypot(pos[0], pos[2]);
+  let nt = 1;
+  while (Math.abs(Math.hypot(pos[nt * 3], pos[nt * 3 + 2]) - r0) < 1) nt++;
+  const nr = pos.length / 3 / nt;
+  assert.ok(Number.isInteger(nr) && nr > 100, `a polar grid (${nt} columns, ${nr} rings)`);
+  const hAt = (ri, ti) => pos[(ri * nt + ((ti + nt) % nt)) * 3 + 1];
+  let high = 0;
+  let spikes = 0;
+  for (let ri = 1; ri < nr - 1; ri++) {
+    for (let ti = 0; ti < nt; ti++) {
+      const h = hAt(ri, ti);
+      if (h < 8000) continue;
+      high++;
+      if (h - Math.max(hAt(ri - 1, ti), hAt(ri + 1, ti)) > 600 && h > Math.max(hAt(ri, ti - 1), hAt(ri, ti + 1))) spikes++;
+    }
+  }
+  assert.ok(spikes < high * 0.004, `ridge spikes across the rings: ${spikes} of ${high} vertices`);
+  // the bake builds it in slices (World.ts farMesh): the same geometry, bit for bit
+  let yields = 0;
+  const sliced = AL.buildAlpineFarSliced(sun, 0);
+  const counting = setInterval(() => yields++, 0);
+  const s = await sliced;
+  clearInterval(counting);
+  for (const name of ['position', 'normal', 'kcol', 'kloc', 'kdat']) {
+    const a = far.geometry.attributes[name].array;
+    const b = s.geometry.attributes[name].array;
+    assert.equal(a.length, b.length, name);
+    assert.ok(a.every((v, i) => Object.is(v, b[i])), `${name}: sliced build differs`);
+  }
+  assert.ok(far.geometry.index.array.every((v, i) => v === s.geometry.index.array[i]), 'index');
+  assert.ok(yields > 0, 'the sliced build gives the thread back');
+  s.geometry.dispose();
+  far.geometry.dispose();
+  const dry = AL.buildAlpineFar(sun, true);
+  assert.equal(dry.geometry, null);
+  assert.deepEqual(dry.lamps, []);
+});
+
+test('alpine vertexNormals: three computeVertexNormals bit for bit (raw arrays, no BufferGeometry)', () => {
+  // a jagged indexed mesh: a height grid with shared vertices, plus one overlapping triangle
+  const n = 24;
+  const pos = new Float32Array(n * n * 3);
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const k = (j * n + i) * 3;
+      pos[k] = i * 137.5 + (j % 3) * 11;
+      pos[k + 1] = Math.abs(Math.sin(i * 1.7) * Math.cos(j * 2.3)) * 900 + i * j;
+      pos[k + 2] = j * 129.25;
+    }
+  }
+  const idx = [];
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      const a = j * n + i;
+      idx.push(a, a + n, a + 1, a + 1, a + n, a + n + 1);
+    }
+  }
+  idx.push(0, 1, 2);
+  const index = new Uint32Array(idx);
+  const ref = new THREE.BufferGeometry();
+  ref.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  ref.setIndex(new THREE.BufferAttribute(index, 1));
+  ref.computeVertexNormals();
+  const gen = AL.vertexNormals(pos, index);
+  let r = gen.next();
+  while (r.done !== true) r = gen.next();
+  const want = ref.attributes.normal.array;
+  assert.equal(r.value.length, want.length);
+  assert.ok(r.value.every((v, i) => Object.is(v, want[i])), 'same bits as three');
+  ref.dispose();
 });

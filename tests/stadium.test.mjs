@@ -342,7 +342,17 @@ test('a theme writes every stadium uniform; the heads take the floodlights stren
   assert.equal(u.lampIntensity.value, t.lampIntensity);
   assert.deepEqual([u.crowdLight.value.x, u.crowdLight.value.y, u.crowdLight.value.z], [...t.crowdLight]);
   // Unknown or unbuilt themes fall back to the default look.
-  assert.equal(stadiumTheme('alpine-day'), stadiumTheme(DEFAULT_THEME));
+  assert.equal(stadiumTheme('no-such-theme'), stadiumTheme(DEFAULT_THEME));
+  // Timber stands are optional: absent = concrete (0); the alpine valley builds them of wood.
+  assert.equal(u.standWood.value, 0);
+  applyStadiumTheme(u, 'alpine-day');
+  assert.equal(u.standWood.value, 1);
+  assert.notEqual(stadiumTheme('alpine-day'), stadiumTheme(DEFAULT_THEME));
+  // by day the floodlights are off and the boards brighter than at night
+  assert.ok(u.head.every((h) => h.value === 0));
+  assert.ok(stadiumTheme('alpine-day').ledIntensity > stadiumTheme(DEFAULT_THEME).ledIntensity);
+  applyStadiumTheme(u, DEFAULT_THEME);
+  assert.equal(u.standWood.value, 0);
 });
 
 test('each head drives its own lamp panel and glare (theme strengths per vertex), beams included', async () => {

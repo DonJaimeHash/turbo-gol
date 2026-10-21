@@ -29,6 +29,13 @@ export const KIND = {
   TOWER: 10,
   /** City ground (city.ts): the car park's wet concrete deck with bay lines, or wet asphalt streets. */
   DECK: 11,
+  /**
+   * Alpine valley (alpine.ts, patterns in alpineShade.ts): pine needles, meadow ground, baked
+   * mountains. They stay contiguous and last in the ascending chain: alpineShade tells them apart.
+   */
+  FOLIAGE: 12,
+  MEADOW: 13,
+  ALPINE: 14,
 } as const;
 export type Kind = (typeof KIND)[keyof typeof KIND];
 

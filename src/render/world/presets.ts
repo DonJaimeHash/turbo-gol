@@ -3,7 +3,7 @@
  * two cloud layers), the light the backdrop geometry receives, the sea and the environment
  * extras. A preset is DATA only: the same generators and shaders read it, so a theme switch writes
  * these numbers into uniforms and re-bakes the cube map (never a recompile). `skyline` picks the
- * geometry generator (harbour.ts / canyon.ts / city.ts).
+ * geometry generator (harbour.ts / canyon.ts / city.ts / alpine.ts).
  *
  * The facts other views share (key lights, fill, floodlights, fog, grade) live in ../theme.ts;
  * the fog density and colour of the stadium come from there, the aerial haze of the backdrop from
@@ -15,7 +15,7 @@
  */
 import type { Rgb, ThemeId } from '../theme';
 
-export type SkylineId = 'harbour' | 'canyon' | 'city';
+export type SkylineId = 'harbour' | 'canyon' | 'city' | 'alpine';
 
 export interface CloudPreset {
   /** 0 clear .. 1 overcast. */
@@ -72,6 +72,13 @@ export interface WorldPreset {
   /** Environment extras (env.ts): the lit pitch under the probe and the floodlight heads' radiance. */
   readonly envTurf: Rgb;
   readonly envLamp: number;
+  /**
+   * Heights over the bake origin (uu) where the dome's parallax proxy hands over to "at infinity"
+   * (when absent: the skyline's own band, World.ts topOf, i.e. dome.ts PROXY_TOP or the city's).
+   * A skyline taller than the default band (the alpine mountains) raises it above its highest
+   * point, so no peak straddles the hand-over.
+   */
+  readonly proxyTop?: readonly [number, number];
 }
 
 const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
@@ -97,25 +104,28 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     envLamp: 40,
   },
 
-  // The same harbour by day: the same geometry and shaders, only numbers change.
+  // The same harbour by day: the same geometry and shaders, only numbers change. Afternoon sun over
+  // the cranes (the theme's key), a deep blue sky with fair-weather cumulus, clear air (the yards
+  // and cranes read crisply), the backdrop lit on the stadium's scale (key.light ~ the theme's
+  // sun intensity / pi, as alpine-day).
   'harbour-day': {
     skyline: 'harbour',
-    zenith: [0.05, 0.12, 0.4],
-    mid: [0.17, 0.32, 0.7],
-    horizon: [0.6, 0.65, 0.74],
-    glow: { color: [0.32, 0.24, 0.14], az: 24, spread: 0.85, height: 0.16 },
-    key: { az: 24, el: 30, color: [1.0, 0.88, 0.7], disc: 160, sizeDeg: 0.9, halo: 0.32, halo2: 1.1, moon: false, light: [3.0, 2.65, 2.15] },
-    ambSky: [0.42, 0.52, 0.74],
-    ambGround: [0.2, 0.18, 0.15],
+    zenith: [0.03, 0.09, 0.32],
+    mid: [0.1, 0.23, 0.56],
+    horizon: [0.46, 0.55, 0.7],
+    glow: { color: [0.26, 0.19, 0.11], az: 24, spread: 0.8, height: 0.14 },
+    key: { az: 24, el: 30, color: [1.0, 0.9, 0.74], disc: 160, sizeDeg: 0.9, halo: 0.3, halo2: 1.1, moon: false, light: [1.66, 1.5, 1.26] },
+    ambSky: [0.17, 0.23, 0.36],
+    ambGround: [0.08, 0.075, 0.065],
     stars: 0.0,
-    clouds: { cover: 0.44, scale: 0.5, height: 0.085, lit: [1.45, 1.38, 1.3], shadow: [0.36, 0.4, 0.52], under: [0.3, 0.22, 0.14], alpha: 0.9, stretch: 1.0 },
-    cirrus: { cover: 0.38, scale: 0.3, height: 0.25, lit: [1.2, 1.22, 1.25], shadow: [0.55, 0.62, 0.78], under: [0.12, 0.09, 0.06], alpha: 0.5, stretch: 3.0 },
-    hazeHeight: 3500,
+    clouds: { cover: 0.45, scale: 0.6, height: 0.09, lit: [1.25, 1.2, 1.12], shadow: [0.32, 0.37, 0.5], under: [0.22, 0.16, 0.1], alpha: 0.94, stretch: 1.0 },
+    cirrus: { cover: 0.34, scale: 0.3, height: 0.25, lit: [1.05, 1.06, 1.1], shadow: [0.5, 0.58, 0.76], under: [0.1, 0.07, 0.05], alpha: 0.42, stretch: 3.0 },
+    hazeHeight: 6000,
     hazeGain: 1.0,
     lights: 0.0,
     windows: 0.0,
-    sea: { color: [0.01, 0.03, 0.045], rough: 1.0 },
-    envTurf: [0.12, 0.22, 0.09],
+    sea: { color: [0.012, 0.035, 0.05], rough: 1.0 },
+    envTurf: [0.1, 0.2, 0.07],
     envLamp: 0,
   },
 
@@ -164,6 +174,34 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     sea: { color: [0.004, 0.004, 0.006], rough: 1.0 },
     envTurf: [0.03, 0.06, 0.035],
     envLamp: 40,
+  },
+
+  // "Valle Alto": a mountain valley in clear midday light. The sun stands high on the left of the
+  // blue kickoff view, a little ahead (the massif ahead is side-lit: lit faces and shadowed
+  // gullies, its snow bright), a deep blue sky with
+  // fair-weather cumulus and a few high streaks, little haze low in the valley and almost none on
+  // the peaks (alpine.ts; aerial perspective by height). The mountains rise above the default
+  // parallax band, so the band moves above them (proxyTop; alpine.ts ALPINE_TOP).
+  'alpine-day': {
+    skyline: 'alpine',
+    zenith: [0.026, 0.085, 0.33],
+    mid: [0.09, 0.22, 0.58],
+    horizon: [0.42, 0.55, 0.76],
+    glow: { color: [0.12, 0.11, 0.09], az: -70, spread: 0.45, height: 0.14 },
+    key: { az: -70, el: 40, color: [1.0, 0.94, 0.84], disc: 160, sizeDeg: 0.9, halo: 0.22, halo2: 0.9, moon: false, light: [1.62, 1.55, 1.42] },
+    ambSky: [0.16, 0.22, 0.36],
+    ambGround: [0.07, 0.085, 0.05],
+    stars: 0.0,
+    clouds: { cover: 0.47, scale: 0.9, height: 0.1, lit: [1.2, 1.18, 1.14], shadow: [0.34, 0.41, 0.56], under: [0.06, 0.06, 0.05], alpha: 0.96, stretch: 1.0 },
+    cirrus: { cover: 0.3, scale: 0.32, height: 0.3, lit: [0.95, 1.0, 1.08], shadow: [0.55, 0.64, 0.82], under: [0.02, 0.02, 0.02], alpha: 0.35, stretch: 3.6 },
+    hazeHeight: 12000,
+    hazeGain: 1.0,
+    lights: 0.0,
+    windows: 0.0,
+    sea: { color: [0.01, 0.03, 0.045], rough: 1.0 },
+    envTurf: [0.1, 0.2, 0.06],
+    envLamp: 0,
+    proxyTop: [33000, 47000],
   },
 };
 

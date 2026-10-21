@@ -72,7 +72,10 @@ export interface Dome {
   readonly lut: ReturnType<typeof texture>;
   /** The floor's height relative to the origin (uu): the skyline's ground (World.ts writes it per theme). */
   readonly ground: UniformNode<'float', number>;
-  /** The heights over the origin where the parallax hands over to "at infinity" (PROXY_TOP by default; World.ts writes it per theme). */
+  /**
+   * The heights over the origin where the parallax hands over to "at infinity" (PROXY_TOP by
+   * default; World.ts writes it per theme: a preset's proxyTop, or the city's band).
+   */
   readonly top: UniformNode<'vec2', THREE.Vector2>;
   dispose(): void;
 }

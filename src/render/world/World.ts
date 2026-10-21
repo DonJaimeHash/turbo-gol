@@ -10,9 +10,10 @@
  *               light masts, the cruise ship and the lighthouse, ONE merged mesh with the live
  *               structure material (bakeMaterials.ts), drawn before the dome. The city (city.ts
  *               buildCityLive: the car park's deck, the streets below, the buildings across them)
- *               is the same kind of mesh: a theme switch swaps the geometry (same attributes, same
- *               material: no new pipeline). Themes without a live layer collapse it with a uniform
- *               (no recompile, the pipeline stays warm).
+ *               and the alpine valley (alpine.ts buildAlpineLive: valley floor, walls, pines) are
+ *               the same kind of mesh: a theme switch swaps the geometry (same attributes, same
+ *               material: no new pipeline). Themes without a live layer (the canyon) collapse it
+ *               with a uniform (no recompile, the pipeline stays warm).
  *   dome        one back-faced sphere showing the baked cube with parallax correction (dome.ts).
  *   beam        the lighthouse beam (tiers with geometry detail; collapsed when unused).
  *
@@ -22,8 +23,8 @@
  *   1. mirror cube   from the bake origin mirrored below the sea, sea hidden, live layer shown:
  *                    the sea's reflection source
  *   2. final cube    from the bake origin, tier.skyCubeSize faces, 2x2 supersampled: sky, moon,
- *                    stars, two cloud layers, the far harbour, canyon or city, the sea; alpha keeps
- *                    1000 / distance
+ *                    stars, two cloud layers, the far harbour, canyon, city or mountains, the sea;
+ *                    alpha keeps 1000 / distance
  *   3. proxy         a 32^2 box-filtered depth cube reduced to the dome's per-azimuth lookup
  *   4. environment   PMREM (tier.envSize) of the cube + the live layer + the pitch + the theme's
  *                    floodlight heads (env.ts) = scene.environment
@@ -50,6 +51,7 @@ import { createAtmosphere, type Atmosphere } from './atmosphere';
 import { CubeBaker, PROXY_WIDTH, advanceFrame, bakeProxyLUT, createCubeTarget, createProxyLUT, proxyLUTFromData } from './bake';
 import { makeSeaMaterial, makeSkyMaterial, makeStructMaterial, type StructMaterial } from './bakeMaterials';
 import { cacheKey, copyRows, openCache, readBake, writeBake, type BakeShape, type CachedBake } from './cache';
+import { buildAlpineFarSliced, buildAlpineLive } from './alpine';
 import { buildCanyon } from './canyon';
 import { CITY_LIGHT_LAYERS, CITY_PROXY_MAX_R, CITY_PROXY_TOP, CITY_STREET, buildCityFar, buildCityLive } from './city';
 import { PROXY_TOP, buildBeam, buildDome, type Beam, type Dome } from './dome';
@@ -129,6 +131,13 @@ interface LiveLayer {
   readonly lamps: Lamp[];
 }
 
+/** The skylines with a live layer, and how to build it (once per session, on first use). */
+const LIVE_BUILDERS: Readonly<Partial<Record<SkylineId, () => LiveLayer>>> = {
+  harbour: buildHarbourLive,
+  city: buildCityLive,
+  alpine: buildAlpineLive,
+};
+
 /** The ground the dome's parallax treats as the floor, per skyline (world y). */
 function groundOf(skyline: SkylineId): number {
   return skyline === 'city' ? CITY_STREET : QUAY;
@@ -136,7 +145,8 @@ function groundOf(skyline: SkylineId): number {
 
 /**
  * The parallax proxy per skyline: the cap of its radius (bake.ts bakeProxyLUT; undefined = its
- * default) and the band where the dome hands over to "at infinity" (dome.ts PROXY_TOP by default).
+ * default) and the band where the dome hands over to "at infinity" (dome.ts PROXY_TOP by default;
+ * a preset's proxyTop wins over both: the alpine mountains rise above the default band).
  * The city's towers fill only part of the proxy's elevation window (the sky between them counts as
  * infinitely far), which pushes R far behind them; from a raised camera (a car on the wall or the
  * ceiling) the rays to their tops then met the cylinder inside the hand-over band and the towers
@@ -181,10 +191,10 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   // The cache read goes first. Building the live layer (CPU) waits for the database to be open,
   // so that the read's I/O runs while the geometry is built (see realise).
   const first: Want = { theme, spec };
-  let early: { key: string; opened: Promise<boolean>; read: Promise<CachedBake | null> } | null = null;
+  let early: { key: string; read: Promise<CachedBake | null> } | null = null;
   if (!noCache) {
     const key = keyOf(first);
-    early = { key, opened: openCache(), read: readBake(key, shapeOf(first)) };
+    early = { key, read: readBake(key, shapeOf(first)) };
   }
 
   // ---- fog: one node for the scene's lifetime (its cache key never changes), uniforms only
@@ -255,9 +265,9 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   function liveOf(skyline: SkylineId): LiveLayer | null {
     let l = lives.get(skyline);
     if (l !== undefined) return l;
-    if (skyline === 'harbour') l = buildHarbourLive();
-    else if (skyline === 'city') l = buildCityLive();
-    else return null;
+    const build = LIVE_BUILDERS[skyline];
+    if (build === undefined) return null;
+    l = build();
     lives.set(skyline, l);
     if (liveMesh.geometry === placeholder) {
       // the first layer: every mesh that draws the live layer needs real attributes from now on
@@ -306,8 +316,9 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     sea.frustumCulled = false;
     bakeScene.add(sea);
     const struct = makeStructMaterial(A, 'bake');
-    // drawn in the mirror pass (the harbour's reflection in the sea); its geometry is the bake's
-    // skyline's (set in bake()), any live layer until then (realise() has built one)
+    // carries the structure material for the compile, and is drawn in the mirror pass (the
+    // harbour's reflection in the sea); its geometry is the bake's skyline's (set in bake()), any
+    // live layer until then (realise() has built one)
     const liveBake = new THREE.Mesh(liveMesh.geometry, struct.material);
     liveBake.frustumCulled = false;
     bakeScene.add(liveBake);
@@ -316,16 +327,28 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     return { scene: bakeScene, sea, struct, mirror, depth, liveBake, far: new Map(), trash };
   }
 
-  function farMesh(k: BakeKit, preset: WorldPreset): THREE.Mesh {
+  /**
+   * A skyline's bake geometry (once per kit). three's compileAsync compiles the bake pipelines one
+   * object after another and needs the main thread between its steps, so a long synchronous build
+   * stalls it: the alpine range (~0.4 s of CPU) is built in slices and overlaps the compile.
+   */
+  async function farMesh(k: BakeKit, preset: WorldPreset): Promise<THREE.Mesh> {
     let m = k.far.get(preset.skyline);
     if (m !== undefined) return m;
-    const geometry =
-      preset.skyline === 'harbour'
-        ? buildHarbourFar(false).geometry
-        : preset.skyline === 'city'
-          ? buildCityFar(false).geometry
-          : buildCanyon(dirFromAzEl(preset.key.az, Math.max(preset.key.el, 2)), false).geometry;
-    m = new THREE.Mesh(geometry as THREE.BufferGeometry, k.struct.material);
+    const sun = dirFromAzEl(preset.key.az, Math.max(preset.key.el, 2));
+    let geometry: THREE.BufferGeometry;
+    if (preset.skyline === 'alpine') {
+      geometry = (await buildAlpineFarSliced(sun)).geometry as THREE.BufferGeometry;
+      if (disposed) {
+        geometry.dispose();
+        throw new Error('world disposed during a bake');
+      }
+    } else {
+      geometry = (
+        preset.skyline === 'harbour' ? buildHarbourFar(false).geometry : preset.skyline === 'city' ? buildCityFar(false).geometry : buildCanyon(sun, false).geometry
+      ) as THREE.BufferGeometry;
+    }
+    m = new THREE.Mesh(geometry, k.struct.material);
     m.frustumCulled = false;
     k.scene.add(m);
     k.far.set(preset.skyline, m);
@@ -339,7 +362,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     A.setLightMap(lightMapOf(preset.skyline));
     showLive(preset.skyline);
     dome.ground.value = groundOf(preset.skyline) - BAKE_ORIGIN.y;
-    const top = topOf(preset.skyline);
+    const top = preset.proxyTop ?? topOf(preset.skyline);
     dome.top.value.set(top[0], top[1]);
     fogColor.value.setRGB(tw.fog.color[0], tw.fog.color[1], tw.fog.color[2]);
     fogDensity.value = tw.fog.density;
@@ -391,14 +414,16 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const k = kit;
     // Start compiling every bake pipeline (sky, sea, structures: the live layer's bake mesh carries
     // the structure material, so the far skyline need not exist yet), then build the CPU data while
-    // the GPU process compiles in parallel.
+    // the GPU process compiles (in slices where it is long: see farMesh).
     for (const m of k.far.values()) m.visible = false;
     k.sea.visible = true;
     k.liveBake.geometry = (liveOf(preset.skyline) ?? (lives.values().next().value as LiveLayer)).geometry;
     k.liveBake.visible = true;
     const tc = performance.now();
     const compiling = baker.compile(k.scene, face * SSAA);
-    const far = farMesh(k, preset);
+    // (awaited below, after the far build: a failure meanwhile is not an unhandled rejection)
+    void compiling.catch(() => undefined);
+    const far = await farMesh(k, preset);
     for (const m of k.far.values()) m.visible = m === far;
     const hasSea = preset.skyline === 'harbour';
     k.liveBake.visible = hasSea;
@@ -529,14 +554,18 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const face = want.spec.skyCubeSize;
     const key = keyOf(want);
     let rec: CachedBake | null = null;
-    if (lives.size === 0) {
-      // the read's I/O runs while the geometry is built (a skyline without a live layer still
-      // builds the harbour's: the live mesh needs real attributes, its pipeline stays warm)
-      if (early !== null) await early.opened;
-      if (liveOf(worldPreset(want.theme).skyline) === null) liveOf('harbour');
+    const skyline = worldPreset(want.theme).skyline;
+    // The cache read starts first, so its I/O runs while a live layer this session has not built
+    // yet is built (at boot and on the first switch to another skyline with one). Waiting for the
+    // open database lets the read issue its request before the CPU work blocks the thread. A
+    // skyline without a live layer still needs one at boot (the harbour's: the live mesh needs
+    // real attributes, its pipeline stays warm).
+    const reading = early !== null && early.key === key ? early.read : noCache ? null : readBake(key, shapeOf(want));
+    if (LIVE_BUILDERS[skyline] !== undefined ? !lives.has(skyline) : lives.size === 0) {
+      if (reading !== null) await openCache();
+      if (liveOf(skyline) === null) liveOf('harbour');
     }
-    if (early !== null && early.key === key) rec = await early.read;
-    else if (!noCache) rec = await readBake(key, shapeOf(want));
+    if (reading !== null) rec = await reading;
     early = null;
     if (disposed || !fits(want)) return;
     if (rec !== null) {

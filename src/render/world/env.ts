@@ -3,7 +3,8 @@
  * glass, the ball and the wet turf reflect the backdrop. Its scene, rendered from the bake origin:
  *
  *   the baked cube   on a big back-faced sphere (sky, clouds, moon or sun, far harbour or canyon)
- *   the live layer   the live layer's geometry (harbour or city) with the 'env' structure material
+ *   the live layer   the live layer's current geometry (the harbour's, the city's or the alpine
+ *                    valley's) with the 'env' structure material
  *   the pitch        a flat disc under the probe in the theme's lit-turf colour
  *   the floodlights  the theme's lamp heads (theme.ts floodlights) as hot panels, so glossy paint
  *                    shows the stadium's lamps; they are NOT in the visible sky (the stadium draws
@@ -101,7 +102,7 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
     sky.frustumCulled = false;
     scene.add(sky);
     trash.push(skyGeo, skyMat, blank);
-    // the live layer (the harbour's or the city's)
+    // the live layer (the harbour's, the city's or the alpine valley's)
     let copy: THREE.Mesh | null = null;
     if (live !== null) {
       copy = new THREE.Mesh(live.geometry, live.material);

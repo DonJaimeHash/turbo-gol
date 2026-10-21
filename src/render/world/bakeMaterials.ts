@@ -43,6 +43,7 @@ import {
   vec4,
 } from 'three/tsl';
 import { glowMrt } from '../materials';
+import { alpinePatterns } from './alpineShade';
 import { fbm3, hash12, hash13, vnoise, type Atmosphere } from './atmosphere';
 import { BAY_W, BAY_X, CROWN_K, CROWN_MIN, ROWS, ROW_HALF, ROW_PITCH, ROW_Z0 } from './city';
 import { KIND } from './geo';
@@ -73,8 +74,8 @@ export interface StructMaterial {
  *   'bake'  the bake variant: aerial perspective from the bake origin, alpha = inverse distance,
  *           every pattern.
  *   'live'  drawn per frame: aerial perspective from the camera, cheaper noise, only the live layers'
- *           kinds (harbour, city), glow of the lamps into the bloom target, and the `on` switch so a theme
- *           without a live layer hides it with a uniform instead of a recompile.
+ *           kinds (harbour, city, alpine valley), glow of the lamps into the bloom target, and the `on`
+ *           switch so a theme without a live layer hides it with a uniform instead of a recompile.
  *   'env'   the live variant for the environment probe: no glow tag (the probe's target has no
  *           `output` / `emissive` members), sharing the live layer's `on` switch (`sharedOn`).
  */
@@ -204,6 +205,11 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
         const floorLit = step(0.93, hash13(vec3(cell.y, seed.mul(91.0), 4.0)));
         const wc = mix(vec3(1.0, 0.6, 0.28), vec3(0.8, 0.88, 1.0), step(0.7, hash13(vec3(cell.yx, 2.0))));
         emi.assign(wc.mul(win.mul(max(lit, floorLit)).mul(hash13(vec3(cell, 9.0)).mul(0.8).add(0.6))).mul(U.lightsOn));
+      })
+      .ElseIf(kind.greaterThan(KIND.FOLIAGE - 0.5).and(kind.lessThan(KIND.ALPINE + 0.5)), () => {
+        // the alpine valley's kinds (pines, meadow, baked mountains): alpineShade.ts. An exact
+        // range, ahead of the city's open-ended DECK / TOWER tests below
+        alpinePatterns({ kind, wp, n, kcol, kdat, alb, vis, live });
       })
       .ElseIf(kind.greaterThan(KIND.DECK - 0.5), () => {
         // city ground (city.ts): the car park's wet concrete deck (seed >= 0.5: slab joints, the
