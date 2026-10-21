@@ -65,34 +65,57 @@ src/sim/
   wasm/                 build output of native/build.ps1 (rocketsim.js, rocketsim.wasm, .d.ts)
 src/render/
   coords.ts             sim→three coordinate mapping helpers (tiny, shared)
-  materials.ts          palette, HDR helpers and the bloom contract (glowMrt / noGlowMrt)
+  materials.ts          palette, HDR helpers, the bloom contract (glowMrt / noGlowMrt), cheap
+                        value / cell noises, OpaqueAlbedoPhysicalMaterial (albedoNode)
   quality.ts            the three quality tiers (low / high / ultra) and the one table of switches
                         (TIERS, `tier(q)`) every view reads; pixelRatio (tier, dpr, budget);
-                        parseQuality reads old 0 / 1 saves
-  theme.ts              stadium themes (ThemeId) and the world facts views share (key lights,
-                        fill, floodlights, wetness, fog, tone mapping, grade); data only
+                        parseQuality reads old 0 / 1 saves; startingQuality (the WebGL2 fallback
+                        starts on low unless the player chose a tier)
+  theme.ts              stadium themes (ThemeId, THEME_IDS) and the world facts views share (key
+                        lights, fill, floodlights, wetness, fog, tone mapping, grade); data only
   Renderer.ts           WebGPURenderer, scene, camera, resize / pixel budget (tier maxPixelRatio /
-                        pixelBudget), GPU timestamps (`#stats`), dynamic resolution, `#nancheck`;
-                        builds the lighting, the world and the post chain below
+                        pixelBudget), GPU timestamps (`#stats`), dynamic resolution, `#nancheck`,
+                        `#webgl2`, precompile (WebGL2 boot); builds the lighting, the world and
+                        the post chain below
   dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → scene-pass
                         resolution scale between the tier's minResolutionScale and 1
-  world/                World.ts (createWorld: clear colour, fog, sky, environment; `ready`),
-                        sky.ts (night sky dome), environment.ts (procedural PMREM environment)
-  post/                 lighting.ts (createLighting: key light + shadows, hemisphere fill),
-                        pipeline.ts (buildPostChain: HDR scene pass with MRT output+emissive →
-                        bloom from emissive → vignette → tone map; FXAA on tiers without MSAA)
-  turf/                 TurfView (the floor mesh), turfMaterial.ts (turf, markings, goal glow)
-  stadium/              StadiumView (shell + ceiling glass, truss, lamps, cones, stands, masts,
-                        halos), glass.ts (the shell / ceiling material)
+  world/                World.ts (createWorld: fog node, clear colour, the baked sky + backdrop
+                        cube and PMREM, the live near harbour, the lighthouse beam; `ready`,
+                        `stats`), presets.ts (per-theme sky / backdrop data), atmosphere.ts (sky,
+                        cloud, haze shading), harbour.ts / canyon.ts (backdrop generators,
+                        SKYLINE_TOP), geo.ts, lightmap.ts (lamp light map of the live layer),
+                        bakeMaterials.ts, bake.ts (CubeBaker), dome.ts (parallax dome, PROXY_TOP),
+                        env.ts (the PMREM probe), cache.ts (IndexedDB), queue.ts (latest-wins
+                        bake / cache queue)
+  post/                 lighting.ts (createLighting: the theme's two keys + shadows, hemisphere
+                        fill), pipeline.ts (buildPostChain: HDR scene pass with MRT output +
+                        emissive → [ultra extras] → bloom from emissive → vignette → exposure,
+                        grade and the theme's tone curve → sRGB; FXAA on tiers without MSAA),
+                        screenSpace.ts (ultra: GTAO, wet-pitch SSR, lens glare), quadPass.ts
+                        (generic full-screen pass: the half-resolution depth copy)
+  turf/                 TurfView (the floor mesh, the ultra blades), turfMaterial.ts (the pitch
+                        material, its lighting model and capped environment, the analytic
+                        floodlight streaks), bake.ts (blade field, field map, pool map),
+                        markings.ts, grassBlades.ts (ultra), turfTheme.ts (per-theme looks)
+  stadium/              StadiumView (cage netting on the shell and roof, LED board band, steel
+                        cage and floodlight towers, lamp panels / glare / ultra beams, stands and
+                        crowd, banners); layout.ts (pure positions), geometry.ts (shell split),
+                        palette.ts (per-theme uniforms), netting.ts, boards.ts, steel.ts,
+                        floodlights.ts, stands.ts (stand structure with the concourse apron round
+                        the cage, crowd), banners.ts, textures.ts (canvas atlases)
   Arena.ts              visual arena (uses arenaMesh.ts): converts the sim's surfaces, builds the
-                        TurfView and StadiumView, goals + nets, goal frames, pads; forwards
-                        setTheme / setWarmUp to the turf and the stadium
+                        TurfView and StadiumView, goals + nets (drawn from both sides), goal
+                        frames, pads; forwards setTheme / setWarmUp to the turf and the stadium
   Camera.ts             chase camera (ball cam / car cam, camera settings & rules, field clamp,
                         camera swivel from CameraLook, rear view); keeps Settings.camera by reference
-  Car.ts                procedural buggy (body with canopy + roll hoop, knobby wheels, twin plasma
-                        boost jets, blob), per-team
-  Ball.ts               procedural ball (two-tone halves, glowing seam band, T marks), blob
-                        shadow, ground marker
+  Car.ts                procedural dune runner (body with canopy + roll hoop, knobby wheels, twin
+                        plasma boost jets, blob), one shared surface material for all cars:
+                        per-vertex surface kinds (CAR_KIND) for flake paint under clearcoat,
+                        carbon, glass, metals, tyres, HDR lamps; the body and wheel pipelines
+                        build only their own graph
+  Ball.ts               procedural panelled ball (truncated icosahedron: pearl hexagons, graphite
+                        pentagons with lime glow rings, stitched seams; BALL_COLORS), blob shadow,
+                        ground marker
   Effects.ts            pooled particles, ribbons (boost / streaks / ball), rings, goal flash
   Hud.ts                DOM HUD: scorebar (score + clock), segmented boost bar, ball indicator,
                         debug line (F3), Tab
@@ -313,12 +336,85 @@ under MSAA extrapolation, `pow` bases, fades) are saturated first (`Car.ts` flam
 ribbons / flash). `#nancheck` in the URL reads the three targets back every 30 frames and logs
 NaN / Inf / negative counts (`window.__nancheck`); it costs nothing without the hash.
 
+**Shadow pipelines.** three's shadow pass copies `material.colorNode` into every shadow pipeline,
+so lit casters with a big procedural albedo (the cars, the ball) set it through
+`OpaqueAlbedoPhysicalMaterial.albedoNode` (materials.ts) and their shadow pipelines stay depth-only.
+`materials.ts` also has `valueNoise3` / `cellHash3`: a MaterialX gradient-noise call site cost
+about 0.15 s of cold compile, `valueNoise3` about 0.03 s.
+
 ### Pipeline warm-up
 
 `Game.warmUp()` renders one frame through the real pipeline with every normally hidden mesh made
-renderable at zero intensity (`setWarmUp(on)` on CarView / BallView / Effects) before the boot
-overlay goes away and on the frame after a tier switch, so no shader compiles on the first boost,
-airborne ball or goal.
+renderable at zero intensity (`setWarmUp(on)` on CarView / BallView / Effects / ArenaView: the
+ultra grass blades draw whatever the camera height) before the boot overlay goes away and on the
+frame after a tier switch, so no shader compiles on the first boost, airborne ball, goal or
+demolition (checked: the pipeline counts stay constant through all four on every tier, and after
+every tier switch). At boot `Game.warmUpAsync()` runs it; on the WebGL2 fallback it first calls
+`Renderer.precompile()`, a `compileAsync` of the scene through the scene pass's own render target
+and MRT (the frame's exact variants), so KHR_parallel_shader_compile builds the programs in
+parallel (5.7 s → 1.8 s on low here). WebGPU keeps the synchronous warm-up: three r186's
+`compileAsync` awaits each object's pipeline in turn, which was slower (10 s) there. A theme switch
+never compiles (uniforms, a cached cube or a re-bake); the world compiles a new bake's pipelines
+with its own `compileAsync` (world/bake.ts).
+
+Load timing: `main.ts` leaves `performance.mark`s at each boot step (`turbogol:renderer`,
+`:physics`, `:scene`, `:warmup`, and `:gpu-ready` once the GPU finished the warm-up frame on
+WebGPU).
+
+### Render modules (docs/visuals/REWORK.md)
+
+Every module reads its switches from `tier(q)` and its look from the theme (uniform writes only:
+a theme switch never rebuilds a view or recompiles). Costs: GPU ms at 1600x900 CSS on the
+reference Turing GPU, chase camera at kickoff, the module's own share (on / off A/B).
+
+* **world/** — the sky (gradient, horizon glow, moon or sun, stars, two cloud layers) and the far
+  backdrop (harbour or canyon generator) baked into a cube map (2x2 supersampled, a 32² depth cube
+  for the parallax proxy) plus a PMREM probe (the cube, the live layer, the lit pitch and the
+  theme's floodlight heads as hot panels); drawn by the parallax dome. A live near layer (quay,
+  container yards, cranes, gantries, ship, lighthouse; ~37k triangles, one merged mesh) and an
+  additive lighthouse beam are drawn each frame. Fog: one `scene.fogNode`, exponential, from the
+  theme. Draws: 3 on high / ultra (live layer, dome, beam), 2 on low. Cost ~0.07 ms (high).
+  Tiers: cube 512 / PMREM 128 / 1-lookup dome on low, 1024 / 256 / 2-lookup + beam on high and
+  ultra. Load: a cached boot 50-130 ms, a first bake ~0.6-1.2 s (pipelines compiled with
+  `compileAsync`), a cached theme switch 56-117 ms. The bakes are cached in IndexedDB
+  (`turbogol-world`, store `bakes`, at most 3 records, keyed by theme, sizes, backend, a hash of
+  the theme data and a version); `#worldnocache` ignores cached bakes (still writes them). Every
+  baked skyline stays under `harbour.ts SKYLINE_TOP` (the dome's parallax hand-over band).
+* **turf/** — the pitch: one MeshStandard graph per tier from load-time bakes (a tileable 512²
+  blade field, a 192x288 field map of wear / damp / puddle basins / hue, a 176x264 pool map of the
+  floodlights' irradiance + the pad mask; ~0.28 s at boot, the pool map cached per floodlight rig).
+  View-dependent mowing stripes, paint in the grass, damp sheen, soft puddles (relief tiers), the
+  pools and analytic anisotropic GGX floodlight streaks (stretched toward the camera, `turfStreaks`
+  heads). Its lighting model (`TurfLightingModel`) lets the pool map shape the key lights at night
+  (so the pools sit under the keys' shadows) and keeps only 12 % of the keys' direct specular there
+  (their reflections are the streaks); its environment radiance is capped at night
+  (`CappedEnvironmentNode`: the probe's hot lamp panels read as fog on the damp sheen). Draws: 1
+  (+1 blades on ultra). Cost: ~0.2 ms low, ~0.5 ms high, blades ~0.13 ms. Tiers: low flat filtered
+  (4 streak heads, no puddles), high relief (6-step POM within 600 uu, blade self-shadow) + puddles
+  + 8 streaks, ultra + ~77k instanced grass blades in a patch ahead of the camera (skipped above
+  380 uu; `setWarmUp` forces them). The goal-mouth glow is the floor's only glow-MRT term.
+* **stadium/** — 8 draws (netting, boards, steel, lamp panels, glare, stand structure, crowd,
+  banners), +1 beams on ultra; ~89k triangles on high and ultra, 53k on low; ~0.13 ms low,
+  ~0.4 ms high, ~0.6 ms ultra. Hex wire netting on the shell above the board band (y 360) and the
+  roof (box-filtered wires fading into their average coverage, a 400 uu cable grid; low: average
+  coverage only), the goal-module panels included (the goals show their net and the harbour
+  behind). LED boards from canvas atlases under y ~340 (ledIntensity 0.4), steel cage + 8
+  floodlight towers in one lit mesh, hot lamp panels (HDR core 30, half of it into the bloom) with
+  a tight exponential glare (a wider sprite halo only on low, where there is no bloom), stands
+  along the side walls only (the ends stay open for the backdrop) with ~11.8k SDF people (team-
+  dominant, desaturated kits), banners. Nothing casts shadows; nothing runs on the CPU per frame.
+* **post/** — lighting.ts: both keys and the fill exist on every tier and theme (constant light
+  count); `shadowedKeys` keys cast (1 on low, 2 on high and ultra), maps 2048 (PCF 3) on low and
+  high, 4096 (PCF 4) on ultra, frustums fitted to the arena box. pipeline.ts: see "Rendering
+  budget". screenSpace.ts (ultra, together ~+1 ms): half-resolution GTAO from a half-resolution
+  single-sample depth copy (quadPass.ts), half-resolution SSR on wet pitch pixels only (mask from
+  depth x wetness), and a quarter-resolution lens glare (short streak + three faint ghosts) of the
+  white-hot emissive only (keyed on the darkest channel, so team-coloured frames never streak).
+  Setting `castShadow` outside a tier switch crashes three r186 (a tier switch rebuilds every lit
+  material right after).
+* **Car.ts / Ball.ts** — see the module list; no extra draws; ~+0.05 ms over the old materials.
+  On tiers with `grassBlades` the ball's blob and marker and the car blobs float at y 6, above
+  the blades.
 
 ## Frame loop (src/game/Game.ts)
 
@@ -464,23 +560,36 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
 
 ## Rendering budget (measured)
 
-* Arena + stadium + pads: 14 draw calls (turf: floor; stadium: glass shell, glass ceiling, lamp
-  bars, truss, haze cones, stands, masts, halos; arena: goals, goal frames ×2, pads ×2), all
-  procedural TSL, no textures.
+* Arena: turf 1 (+1 grass blades on ultra), stadium 8 (+1 beams on ultra), world 3 (2 on low),
+  goals 1, goal frames 2, pads 2; all procedural TSL (textures are baked or drawn by code at load).
 * Cars: body (1 merged geometry) + 4 wheels (1 instanced) + flame (while boosting) + blob (while
   airborne at high detail, always at low) per car. Ball: sphere + blob + marker (airborne).
   Effects: particles (1 instanced), ribbons (1), rings (1 instanced), goal flash (1).
-* Shadow pass: only cars and the ball cast (5 draws); the floor receives.
-* Full match frame: ~34 draws on low, ~41 on high / ultra, up to ~46 with effects; ~40k
-  triangles. Free play at kickoff: 29 draws on low, 35 on high / ultra.
-* Post (`post/pipeline.ts`, switches from the tier table): high / ultra = MSAA x4 scene pass +
-  bloom from the emissive target + vignette, dynamic resolution between 0.6 and 1; low = no MSAA,
-  no bloom, FXAA. Pixel ratio: high / ultra min(dpr, 6 Mpx budget) and never below 1 (phones at
-  most 2), low = 1.
-* Measured (desktop-app browser pane, WebGPU): 165 fps display-limited at 491×377, ~82 fps at
-  1920×1080×1.37, GPU 0.2–1.1 ms at the small size; free play at kickoff, 1600×900 CSS: GPU
-  ~1.4 ms on low (1600×900) and ~2.5 ms on high / ultra (2190×1233, dpr 1.37). Target stays 144+
-  fps on a mid-range GPU at 1080p and 60 fps on integrated graphics on low.
+* Shadow pass: only cars and the ball cast, once per shadowed key (1 on low, 2 on high and ultra);
+  the floor and the grass blades receive.
+* Post (`post/pipeline.ts`, switches from the tier table): high / ultra = MSAA x4 scene pass (MRT
+  output + emissive) + 5-mip bloom from the emissive target (12 small passes) + vignette, exposure,
+  HDR grade and the theme's tone curve, dynamic resolution between 0.6 and 1; ultra adds GTAO, SSR
+  and the lens glare at half / quarter resolution; low = no MSAA, no bloom, FXAA. Pixel ratio:
+  high / ultra min(dpr, 6 Mpx budget) and never below 1 (phones at most 2), low = 1.
+* Measured (phase 3, browser pane on a Turing desktop GPU shared with other sessions, WebGPU),
+  free play at kickoff, chase camera, 1600x900 CSS, the median of three 120-frame means:
+
+  | tier | GPU | draws | triangles | buffer | texture memory |
+  |---|---|---|---|---|---|
+  | low | 0.84 ms | 28 | 90k | 1600x901 | 69 MB |
+  | high | 1.99 ms | 42 | 136k | 2190x1233 | 163 MB |
+  | ultra | 3.18 ms | 53 | 371k | 2190x1233 | 377 MB |
+
+  A 3v3 match frame at kickoff: low 1.44 ms / 51 draws, high 3.32 ms / 80 draws, ultra 5.97 ms /
+  91 draws (each extra car costs 2 draws plus 2 per shadowed key; over the 40 / 60 draw targets of
+  docs/visuals/REWORK.md, see its status). Texture memory is flat over repeated tier and theme
+  switches. Triangles include the shadow passes.
+* First load (production build, warm world cache, WebGPU high): about 2 s to the first frame
+  submitted with every pipeline requested (0.4 s renderer and cached world, 0.6 s views and bakes,
+  0.8-1 s warm-up); the GPU process then compiled that frame's pipelines for about 4 s more on the
+  reference machine (identical WGSL on every load; the browser pane recompiled it every time).
+  Low: 1.1 s, WebGL2 low 2.7-5.2 s.
 
 ## Legal
 

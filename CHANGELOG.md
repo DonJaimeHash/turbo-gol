@@ -76,6 +76,13 @@ All notable changes to Turbogol are documented here. The format follows
 - Third-party notices point to the script that applies the physics-library patches.
 
 ### Changed
+- A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
+  netting, LED boards and banners, stands with a crowd and floodlight towers, with cranes,
+  containers and a ship behind the goals. The pitch is wet, freshly mown grass with floodlight
+  reflections, cars cast real shadows, and the cars and the ball have new paint and panels. Graphics
+  quality has three tiers: Performance, High and Ultra (grass blades near the camera, reflections on
+  the wet pitch, ambient occlusion, lens glare); browsers without WebGPU start on Performance. The
+  Friendly screen has a Stadium row to pick the setting.
 - The bots fly: medium bots now go up for high balls too, hard ones double-jump for higher ones,
   and both meet the ball so that it goes toward the goal (or, for a save, away from their own);
   the defender in 3v3 saves in the air. Two old faults kept aerials from happening at all: the

@@ -1,17 +1,18 @@
 /**
- * Visual arena: the pitch (turf/), the stadium around it (stadium/: the shell and ceiling glass,
- * truss, lamps, haze cones, stands, masts, halos), the goal chambers with a see-through square net
- * and glowing frames, and the boost pads (constants.ts) as two instanced meshes (ring + floor glow
- * + floating pill / orb). The sim's surfaces (floor, shell, ceiling, goals) are converted here and
- * handed to the views that draw them.
+ * Visual arena: the pitch (turf/), the stadium around it (stadium/: cage netting on the shell and
+ * roof, LED board band, steel cage and floodlight towers, lamp panels and glare, stands and crowd,
+ * banners), the goal chambers with a see-through square net and glowing frames, and the boost pads
+ * (constants.ts) as two instanced meshes (ring + floor glow + floating pill / orb). The sim's
+ * surfaces (floor, shell, ceiling, goals) are converted here and handed to the views that draw them.
  *
  * Goals: the netting (see-through square net projected from the world axes, so it runs on round
  * the rounded edges) and a glowing tube along the middle of each rounded post / crossbar edge
  * (ArenaMesh.goalFrames: from the floor at one post over the crossbar to the floor at the other).
  *
- * Draw calls: floor 1 (TurfView), stadium 8 (StadiumView: shell, ceiling, emissive bars, truss,
- * cones, stands, masts, halos), goals 1, goal frames 2, pads 2 = 14. Per frame: one uniform write
- * (time) plus pad-state attribute writes only while a pad changes (pickup flash / recharge).
+ * Draw calls: floor 1 (TurfView; +1 grass blades on ultra), stadium 8 (StadiumView: netting, boards,
+ * steel, lamp panels, glare, stand structure, crowd, banners; +1 beams on ultra), goals 1, goal
+ * frames 2, pads 2 = 14. Per frame: one uniform write (time) plus pad-state attribute writes only
+ * while a pad changes (pickup flash / recharge).
  *
  * Bloom: see materials.ts. Every unlit material here that should glow tags its glow with
  * `glowMrt()`.
@@ -118,8 +119,7 @@ export class ArenaView {
 
   /**
    * Build the arena for a quality tier (the tier table's `detail` here, the turf and stadium read
-   * their own switches) and a stadium theme (no view reads it yet: the themes phase of
-   * docs/visuals/REWORK.md does).
+   * their own switches) and a stadium theme (the turf and the stadium write its uniforms).
    */
   constructor(scene: THREE.Scene, mesh: ArenaMesh, quality: Quality, theme: ThemeId) {
     this.scene = scene;
@@ -136,7 +136,7 @@ export class ArenaView {
     this.turf = new TurfView(this.group, floorGeo, this.timeU, quality, theme);
     this.floor = this.turf.mesh;
 
-    // ---- Stadium: shell + ceiling glass, truss, lamps, cones, stands, masts, halos (8) --------
+    // ---- Stadium: netting, boards, steel, lamps, glare, stands, crowd, banners (8, +1 on ultra) --
     const shellGeo = toGeometry(m.shell ?? m.walls, 'shell', 0, ARENA.height * 0.5, 0);
     let ceilGeo: THREE.BufferGeometry;
     if (m.ceiling !== undefined) ceilGeo = toGeometry(m.ceiling, 'ceiling', 0, ARENA.height * 0.5, 0);

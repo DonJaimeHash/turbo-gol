@@ -20,12 +20,13 @@ Three tiers, one table of switches (`TIERS`) that every view reads:
 | AA | FXAA | MSAA x4 | MSAA x4 |
 | bloom | none (glow from geometry) | emissive bloom | emissive bloom |
 | resolution | pixel ratio 1 | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
-| shadows | 1 key | 2 keys | 2 keys, bigger maps |
+| shadows | 1 key, 2048 | 2 keys, 2048 | 2 keys, 4096 |
 | turf | flat filtered, damp sheen | relief, puddles, streaks | + grass blades near the camera |
-| post | grade, vignette | grade, vignette | + GTAO, SSR on wet turf, lens flare |
+| post | grade, vignette | grade, vignette | + GTAO, SSR on wet turf, lens glare |
 | stadium | lighter crowd, no fine netting | full | + floodlight beams |
 
-Phones and tablets start on low, desktops on high. Saves from before stored 0 (high) or 1 (performance).
+Phones and tablets start on low, desktops on high, the WebGL2 fallback on low unless the player
+chose a tier. Saves from before stored 0 (high) or 1 (performance).
 
 ## Themes (`src/render/theme.ts`)
 
@@ -36,7 +37,8 @@ between themes, so a theme switch only re-bakes and rewrites uniforms; it never 
 Gameplay never reads a theme.
 
 Themes: `harbour-night` (the default), `harbour-day`, `canyon-sunset`, `city-dusk`, `alpine-day`,
-`railyard-night`.
+`railyard-night`. The Friendly screen's Stadium row picks one (saved with the prefs); a theme not
+built yet shows the night harbour.
 
 ## Module layout
 
@@ -72,6 +74,9 @@ flat because the physics ceiling is flat.
 
 ## Phases
 
+Status (2026-10-21): phases 1-3 are done on `feat/visual-rework`; phase 4 (the other themes) is
+being built; phase 5 is open.
+
 1. **Foundation** (no visual change).
    - The three tiers, prefs migration and the menu.
    - Dynamic resolution.
@@ -85,11 +90,22 @@ flat because the physics ceiling is flat.
    - Post and lighting: two shadowed keys, grade per theme, hot lamp heads with tight glare, and the
      ultra extras.
    - Car and ball materials.
-3. **Integration and tuning.**
-   - Composition: lower board band, backdrop above it.
-   - Measure every tier with `#stats` (GPU ms, draw calls) and the first-load shader compile time.
-   - Check the WebGL2 fallback and `#nancheck`.
-4. **The other five themes** and a menu row to pick one (or random).
+3. **Integration and tuning.** Done:
+   - The integrated captures' faults: the ultra lens glare keys on white-hot emissive only (no red
+     haze from the goal frame); the wet floodlight reflections are soft anisotropic streaks toward
+     the camera; the whitish fog on the damp turf (the keys' GGX highlight and the probe's hot lamp
+     panels on the sheen) is gone; the dark band across the near pitch (a mowing stripe) is soft;
+     round the goals the cage is netting and the goal net draws from both sides (no black box).
+   - Toward the concept: the floodlight pools shape the key lights and sit under their shadows
+     (car shadows read), a dominant night key, a warmer olive turf, a brighter blue sky, a lit and
+     less saturated crowd, fainter goal-mouth glow, a softer vignette.
+   - High's shadow maps are 2048 (high 163 MB of textures instead of 372); memory is flat over
+     tier and theme switches; the ball and car blobs float above the ultra grass blades.
+   - The WebGL2 fallback starts on low unless the player chose a tier, and compiles its programs
+     in parallel at boot; `#webgl2` forces it for testing. Boot marks in main.ts.
+   - The Friendly screen's Stadium row (the theme picker of phase 4).
+   - Measured: see "Measuring" below and ARCHITECTURE.md "Rendering budget".
+4. **The other five themes** (the menu row to pick one exists since phase 3).
 5. **Review, docs** (`ARCHITECTURE.md`), changelog, and the owner's approval before the deploy.
 
 ## Measuring
@@ -108,3 +124,21 @@ Targets on the reference Turing GPU at 1600x900:
 | ultra | ≤ 5 ms | — |
 
 First load ≤ 4 s on WebGPU high with a warm cache.
+
+Phase 3 results (free play at kickoff, chase camera, median of three 120-frame means, the GPU
+shared with other sessions):
+
+| tier | GPU | draw calls | triangles | textures |
+|---|---|---|---|---|
+| low | 0.84 ms | 28 | 90k | 69 MB |
+| high | 1.99 ms | 42 | 136k | 163 MB |
+| ultra | 3.18 ms | 53 | 371k | 377 MB |
+
+Open against the targets:
+- A 3v3 match frame draws 51 calls on low and 80 on high (each car: body, wheels, and both again
+  per shadowed key), and ultra takes 5.97 ms there. Options: instance every car body and every
+  wheel set into one draw each, or a single shadowed key for the bots' cars.
+- First load on the reference machine: ~2 s of JS to the first frame (production build, warm world
+  cache), then ~4 s of pipeline compile in the GPU process before it shows, every load (the WGSL
+  is identical between loads; this browser recompiled it each time). Shader sizes: turf 63 KB, car
+  60 KB, ball 52 KB, four lit stadium materials 30-34 KB each.

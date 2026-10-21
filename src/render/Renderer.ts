@@ -219,7 +219,7 @@ export class Renderer {
   /** True when GPU timestamps are being collected (`#stats` and backend support). */
   readonly gpuTimingEnabled: boolean;
   quality: Quality;
-  /** Stadium theme (setTheme). Nothing reads it yet: the themes phase of docs/visuals/REWORK.md does. */
+  /** Stadium theme (setTheme): the lights, the world and the post chain follow it. */
   theme: ThemeId;
   /** Called after every resize (the chase camera re-applies its horizontal FOV here). */
   onResize: (() => void) | null = null;
@@ -318,7 +318,7 @@ export class Renderer {
     const webgpu = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
     const quality = startingQuality(opts.quality ?? 'high', opts.qualityChosen ?? true, webgpu);
     const renderer = new Renderer(gpu, canvas, quality, opts.theme ?? DEFAULT_THEME, timing);
-    // The world's load-time work (behind the boot overlay; resolved at once until world/ bakes).
+    // The world's load-time work behind the boot overlay: its first bake or cache read.
     await renderer.world.ready;
     return renderer;
   }
