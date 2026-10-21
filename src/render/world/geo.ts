@@ -6,7 +6,8 @@
  *
  *   kcol (vec4)  albedo rgb (emission rgb for lamps) + kind (pattern id, see KIND)
  *   kloc (vec3)  the vertex position in the PART's own frame (box-local, centred), in uu
- *   kdat (vec4)  the part's half-size (x, y, z) + a random seed in [0, 1)
+ *   kdat (vec4)  the part's half-size (x, y, z) + a random seed in [0, 1) (KIND.BRICK adds its
+ *                facade style as the integer part: railyardMaterial.ts)
  *
  * A builder made with `dry = true` only counts: the generators run in that mode to collect their
  * lamps (for the light map) without paying for geometry they do not need.

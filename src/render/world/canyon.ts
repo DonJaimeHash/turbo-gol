@@ -17,7 +17,7 @@
  * The mesh is a polar grid around the origin, its rings densest where the near cliffs stand. Sun
  * shadows: every vertex marches toward the sun over a height grid (fine near the arena, coarse
  * beyond); ambient occlusion compares the vertex with the mean height around it. Both are stored
- * per vertex (kdat.x / kdat.y) for the STRATA pattern; kdat.z holds the cliff steepness hint.
+ * per vertex (kdat.x / kdat.y) for the STRATA pattern (kdat.w is a per-vertex hash).
  */
 import * as THREE from 'three/webgpu';
 import { GeoBuilder, KIND, rng, type Lamp } from './geo';

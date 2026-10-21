@@ -246,9 +246,16 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     }
     return l;
   }
-  /** Any live geometry for a skyline without its own (the bake kit's compile, a first load): the harbour's. */
+  /**
+   * Any live geometry for a skyline without its own (the bake kit's compile, a first load): one
+   * already built if there is one (no 35k-triangle harbour build for the canyon after a railyard
+   * boot), else the harbour's.
+   */
   function anyLive(skyline: SkylineId): LiveLayer {
-    return liveOf(skyline) ?? (liveOf('harbour') as LiveLayer);
+    const own = liveOf(skyline);
+    if (own !== null) return own;
+    for (const l of lives.values()) return l;
+    return liveOf('harbour') as LiveLayer;
   }
   /**
    * Show `skyline`'s live layer: hand its geometry to every mesh that draws it (the same attributes,
