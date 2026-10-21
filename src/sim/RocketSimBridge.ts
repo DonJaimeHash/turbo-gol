@@ -13,6 +13,10 @@
  * Full-state save / load (rollback netcode): saveState() / loadState() / stateHash() go through
  * ONE persistent scratch buffer of MAX_STATE_BYTES in wasm memory, setControlsPacked() through a
  * persistent MAX_CARS * 6 int8 scratch; nothing is allocated per call.
+ *
+ * Physics mutators (experimental presets): createArena(tickRate, mutators) applies a whole
+ * MUTATOR_COUNT layout (./mutatorLayout) once, before any car exists and before the ball predictor
+ * warms up; without it (every server, node, ranked, casual and training path) the arena is stock.
  */
 import createRocketSim from './wasm/rocketsim.js';
 import type { RocketSimModule, RocketSimModuleOptions } from './wasm/rocketsim.js';
@@ -44,6 +48,7 @@ import {
   Team,
 } from './types';
 import type { CarConfigInfo, CarControls, SimEvents, SimStateView } from './types';
+import { MUTATOR_COUNT } from './mutatorLayout';
 import {
   ARENA,
   BOOST_PADS_BIG,
@@ -142,6 +147,7 @@ export class RocketSim implements SimStateView {
   private readonly packedPtr: number;
   private packedScratch: Int8Array;
   private configScratchPtr = 0;
+  private mutatorScratchPtr = 0;
   private hasArena = false;
   private meshReady = false;
 
@@ -280,8 +286,17 @@ export class RocketSim implements SimStateView {
     this.ensureViews();
   }
 
-  /** Create (or re-create) the arena. */
-  createArena(tickRate: number = TICK_RATE): void {
+  /**
+   * Create (or re-create) the arena. Stock physics unless `mutators` is given: a whole
+   * MUTATOR_COUNT layout (src/sim/mutatorLayout.ts; src/sim/mutators.ts toMutators() builds one
+   * from a preset's integers), applied once through rs_set_mutators before any car exists and
+   * before the ball predictor warms up, so the predictor shares the physics and no extra prediction
+   * runs. The wasm validates every value against its hard limits, all or nothing: on a refusal the
+   * new arena is destroyed again and this throws with the code (1 bad data, 3 ballMass after cars),
+   * so no caller can go on with stock physics by mistake. The config holds for the arena's life (not
+   * in saveState / stateHash): other rules mean a new arena.
+   */
+  createArena(tickRate: number = TICK_RATE, mutators: Float32Array | null = null): void {
     if (!this.meshReady) throw new Error('RocketSim.createArena: call initArena(mesh) first');
     const rc = this.mod._rs_arena_create(tickRate);
     if (rc !== 0) throw new Error(`rs_arena_create failed with code ${rc} (2 no mesh, 4 no field layout)`);
@@ -290,6 +305,13 @@ export class RocketSim implements SimStateView {
     this.prevBumpCount = 0;
     this.prevHitTick.fill(-1);
     this.prevHitCarId.fill(0);
+    if (mutators !== null) {
+      const rm = this.setMutatorsRaw(mutators);
+      if (rm !== 0) {
+        this.destroyArena();
+        throw new Error(`rs_set_mutators failed with code ${rm} (1 bad data: count, version, non-finite or outside a hard limit; 3 ballMass change after cars)`);
+      }
+    }
     this.mod._rs_sync();
     this.ensureViews();
     // Warm up the ball predictor now (it lazily builds a second, car-less arena) so the first
@@ -407,6 +429,21 @@ export class RocketSim implements SimStateView {
   }
 
   // ---- Mutators --------------------------------------------------------------------------
+  /**
+   * The arena's effective physics mutators (MUTATOR_COUNT floats, src/sim/mutatorLayout.ts), read
+   * back from the wasm: what peers fingerprint before a match. Not for hot paths (it allocates
+   * when `out` is not given). Throws without an arena.
+   */
+  getMutators(out: Float32Array = new Float32Array(MUTATOR_COUNT)): Float32Array {
+    if (out.length < MUTATOR_COUNT) throw new Error(`RocketSim.getMutators: out holds ${out.length} floats, ${MUTATOR_COUNT} needed`);
+    const ptr = this.mutatorScratch();
+    const n = this.mod._rs_get_mutators(ptr, MUTATOR_COUNT);
+    this.ensureViews();
+    if (n !== MUTATOR_COUNT) throw new Error('rs_get_mutators failed (no arena)');
+    out.set(new Float32Array(this.memory.buffer, ptr, MUTATOR_COUNT));
+    return out;
+  }
+
   /** 0 normal (supersonic bumps demolish), 1 any contact demolishes, 2 demos disabled. */
   setDemoMode(mode: 0 | 1 | 2): void {
     this.mod._rs_set_demo_mode(mode);
@@ -612,6 +649,25 @@ export class RocketSim implements SimStateView {
   }
 
   // ---- Internals -------------------------------------------------------------------------
+  /** MUTATOR_COUNT floats of wasm scratch (allocated once, on first use). */
+  private mutatorScratch(): number {
+    if (this.mutatorScratchPtr === 0) {
+      this.mutatorScratchPtr = this.mod._malloc(MUTATOR_COUNT * 4);
+      this.ensureViews();
+    }
+    return this.mutatorScratchPtr;
+  }
+
+  /** rs_set_mutators with `m` (its rc; a wrong length is refused here with 1, like the wasm would). */
+  private setMutatorsRaw(m: Float32Array): number {
+    if (m.length !== MUTATOR_COUNT) return 1;
+    const ptr = this.mutatorScratch();
+    new Float32Array(this.memory.buffer, ptr, MUTATOR_COUNT).set(m);
+    const rc = this.mod._rs_set_mutators(ptr, MUTATOR_COUNT);
+    this.ensureViews();
+    return rc;
+  }
+
   /** Re-create the typed-array views if the WASM memory buffer was replaced by growth. */
   private ensureViews(): void {
     const b = this.memory.buffer;

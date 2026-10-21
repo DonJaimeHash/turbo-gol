@@ -29,6 +29,14 @@ for (const name of SCENARIOS) {
   });
 }
 
+test('golden stock trace through rs_set_mutators with the stock values and an explicit stock bot profile: identical', async () => {
+  const { stockMutators } = await import('../src/sim/mutatorLayout.ts');
+  const { toMutators } = await import('../src/sim/mutators.ts');
+  const { STOCK_BOT_PHYSICS } = await import('../src/ai/math.ts');
+  assertSameTrace(await runStockTrace('random-2v2', { mutators: stockMutators() }), 'random-2v2', 'stock mutators');
+  assertSameTrace(await runStockTrace('bots-3v3', { mutators: toMutators({}), physics: STOCK_BOT_PHYSICS }), 'bots-3v3', 'stock mutators + profile');
+});
+
 test('golden stock trace: a second, fresh module instance reproduces it too', async () => {
   const sim = await RocketSim.load();
   sim.initArena(buildArenaMesh().physics);
