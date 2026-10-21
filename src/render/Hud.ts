@@ -180,7 +180,15 @@ export interface PauseEntry {
   readonly kind?: 'primary' | 'quit' | 'row';
   /** Ask for a second activation first (its label turns into pause.quitConfirm): leaving an online match. */
   readonly confirm?: boolean;
-  readonly select: () => void;
+  /** `mouse`: a real mouse click picked it (the Game captures the mouse again on a resume). */
+  readonly select: (mouse: boolean) => void;
+}
+
+/** A real mouse click (not a tap, not a key / pad activation through `.click()`). */
+function isMouseClick(e: MouseEvent): boolean {
+  if (!e.isTrusted) return false;
+  const type = (e as Partial<PointerEvent>).pointerType;
+  return type !== undefined ? type === 'mouse' : e.detail > 0;
 }
 
 /** What the pause menu takes from the Game: Input's menu edges (keyboard and pad). */
@@ -1009,6 +1017,11 @@ export class Hud {
     }
   }
 
+  /** The pause menu's key line (the pause binding may have changed in the settings screen). */
+  setPauseHint(hint: string): void {
+    if (this.pausedSub.textContent !== hint) this.pausedSub.textContent = hint;
+  }
+
   /** Keyboard / pad on the pause menu (Input's menu edges, routed by the Game while paused). */
   pauseAction(action: PauseAction): void {
     if (!this.pauseMenuVisible) return;
@@ -1039,7 +1052,7 @@ export class Hud {
       const entry = entries[i];
       const kind = entry.kind ?? 'plain';
       const b = button(`hud-pause-btn hud-pause-${kind}`, entry.label());
-      b.addEventListener('click', () => this.activatePause(entry));
+      b.addEventListener('click', (e: MouseEvent) => this.activatePause(entry, isMouseClick(e)));
       if (kind === 'row') {
         if (row === null) {
           row = el('div', 'hud-pause-row');
@@ -1053,7 +1066,7 @@ export class Hud {
       closeRow();
       menu.appendChild(b);
       buttons.push(b);
-      const item: FocusItem = { el: b, accept: () => this.activatePause(entry) };
+      const item: FocusItem = { el: b, accept: () => this.activatePause(entry, false) };
       b.addEventListener('pointerdown', () => this.pauseRing.focusItem(item));
       itemOf[i] = item;
       items.push(item);
@@ -1071,7 +1084,7 @@ export class Hud {
     if (item.el !== b) b.dispatchEvent(new Event('pointerdown')); // groupItem picks the button on pointerdown
   }
 
-  private activatePause(entry: PauseEntry): void {
+  private activatePause(entry: PauseEntry, mouse: boolean): void {
     if (!this.pauseMenuVisible) return;
     const i = this.pauseEntries.indexOf(entry);
     if (i < 0) return;
@@ -1085,7 +1098,7 @@ export class Hud {
     }
     this.disarmPause();
     const entries = this.pauseEntries;
-    entry.select();
+    entry.select(mouse);
     // Still the same menu (a toggle, not resume / quit): its labels may have changed.
     if (this.pauseOpen && this.pauseEntries === entries) {
       for (let k = 0; k < entries.length; k++) this.pauseButtons[k].textContent = entries[k].label();

@@ -945,7 +945,7 @@ export class Game implements P2PGameHooks {
    * pack summary: nothing (the summary's own buttons stay the only ones).
    */
   private pauseEntries(): PauseEntry[] {
-    const resume: PauseEntry = { id: 'resume', kind: 'primary', label: () => t('pause.resume'), select: () => this.resumeFromMenu() };
+    const resume: PauseEntry = { id: 'resume', kind: 'primary', label: () => t('pause.resume'), select: (mouse) => this.resumeFromMenu(mouse) };
     const settings: PauseEntry = { id: 'settings', label: () => t('pause.settings'), select: () => this.openPauseSettings() };
     const tr = this.training;
     if (tr === null) {
@@ -953,14 +953,14 @@ export class Game implements P2PGameHooks {
     }
     if (this.trainingHud !== null && this.trainingHud.summaryVisible) return [];
     // The shot entries also resume (as the training keys do while playing).
-    const resumeAnd = (fn: (s: TrainingSession) => void): void => {
-      this.resumeFromMenu();
+    const resumeAnd = (mouse: boolean, fn: (s: TrainingSession) => void): void => {
+      this.resumeFromMenu(mouse);
       if (this.training !== null) fn(this.training);
     };
     const extras: PauseEntry[] = tr.isFreeplay
       ? [
-          { id: 'reset-ball', kind: 'row', label: () => t('trainingHud.resetBall'), select: () => resumeAnd((s) => s.resetBall()) },
-          { id: 'reset-car', kind: 'row', label: () => t('trainingHud.resetCar'), select: () => resumeAnd((s) => s.resetCar()) },
+          { id: 'reset-ball', kind: 'row', label: () => t('trainingHud.resetBall'), select: (mouse) => resumeAnd(mouse, (s) => s.resetBall()) },
+          { id: 'reset-car', kind: 'row', label: () => t('trainingHud.resetCar'), select: (mouse) => resumeAnd(mouse, (s) => s.resetCar()) },
           {
             id: 'boost',
             kind: 'row',
@@ -969,9 +969,9 @@ export class Game implements P2PGameHooks {
           },
         ]
       : [
-          { id: 'reset-shot', kind: 'row', label: () => t('trainingHud.resetShot'), select: () => resumeAnd((s) => s.resetShot()) },
-          { id: 'prev-shot', kind: 'row', label: () => t('trainingHud.prevShot'), select: () => resumeAnd((s) => s.prevShot()) },
-          { id: 'next-shot', kind: 'row', label: () => t('trainingHud.nextShot'), select: () => resumeAnd((s) => s.nextShot()) },
+          { id: 'reset-shot', kind: 'row', label: () => t('trainingHud.resetShot'), select: (mouse) => resumeAnd(mouse, (s) => s.resetShot()) },
+          { id: 'prev-shot', kind: 'row', label: () => t('trainingHud.prevShot'), select: (mouse) => resumeAnd(mouse, (s) => s.prevShot()) },
+          { id: 'next-shot', kind: 'row', label: () => t('trainingHud.nextShot'), select: (mouse) => resumeAnd(mouse, (s) => s.nextShot()) },
         ];
     return [resume, ...extras, settings, { id: 'quit', kind: 'quit', label: () => t('trainingHud.quit'), select: () => this.stopTraining() }];
   }
@@ -982,11 +982,16 @@ export class Game implements P2PGameHooks {
     return t('pause.hint', { resumeKeys: `${input.getLabel('pause', 'kbm')} / ${input.getLabel('pause', 'pad')}`, quitKeys: PAUSE_QUIT_KEYS });
   }
 
-  /** RESUME (and the training entries that resume): Enter / pad A (jump) may still be down on the first tick. */
-  private resumeFromMenu(): void {
+  /**
+   * RESUME (and the training entries that resume): Enter / pad A (jump) may still be down on the
+   * first tick. A mouse click on it captures the mouse again, as a click on the paused game does
+   * (the click is a user gesture; the button is already up, so nothing is masked).
+   */
+  private resumeFromMenu(mouse = false): void {
     this.setPaused(false);
     this.input.blockJumpUntilRelease();
     this.input.latchEdges();
+    if (mouse && this.canPointerLock && this.canvas !== null && this.playing && !this.input.pointerLocked) this.input.requestPointerLock(this.canvas);
   }
 
   /** Input's menu edges (keyboard and pad) on the pause menu; pad X opens the settings. */
@@ -1015,6 +1020,7 @@ export class Game implements P2PGameHooks {
       this.pauseSettingsOpen = false;
       // Esc is the pause binding too: its tap (still pending in Input) must not reach the next tick.
       this.input.latchEdges();
+      this.hud.setPauseHint(this.pauseHint()); // the pause binding may have been changed there
       this.hud.setPauseCovered(false, 'settings');
     });
   }
@@ -1898,7 +1904,7 @@ export class Game implements P2PGameHooks {
       this.warmFrames = 1;
       return;
     }
-    this.setWarm(true);
+    this.setWarm(true, true);
     this.renderer.render();
     this.setWarm(false);
   }
@@ -1935,7 +1941,11 @@ export class Game implements P2PGameHooks {
     this.setWarm(false);
   }
 
-  /** Make the normally hidden meshes renderable (`on`) for a warm-up render; `ballShadow`: the ball casts its shadow too. */
+  /**
+   * Make the normally hidden meshes renderable (`on`) for a warm-up render; `ballShadow`: the ball
+   * casts its shadow too (the warm-ups off screen pass it, so a day stadium never leaves the ball's
+   * shadow pipeline for the first night one to compile).
+   */
   private setWarm(on: boolean, ballShadow = false): void {
     this.warmBallShadow = on && ballShadow;
     this.applyBallShadow();
@@ -2482,6 +2492,8 @@ export class Game implements P2PGameHooks {
     const frameMs = this.lastTime * 1000;
     if (this.warmFrames > 0) {
       this.warmFrames--;
+      // An on-screen frame: the ball's shadow stays as the stadium wants it (its pipeline was built
+      // by the warm-up behind the loading screen; only the console's setQuality skips that).
       this.setWarm(true);
       renderer.render(frameMs);
       this.setWarm(false);
