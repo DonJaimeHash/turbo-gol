@@ -26,7 +26,12 @@ import type { Node, UniformNode } from 'three/webgpu';
 import {
   abs,
   cameraPosition,
+  cross,
+  dFdx,
+  dFdy,
+  diffuseColor,
   dot,
+  faceDirection,
   float,
   floor,
   fwidth,
@@ -35,14 +40,17 @@ import {
   max,
   mod,
   mrt,
+  normalViewGeometry,
   normalWorld,
   normalize,
   oneMinus,
   output,
+  positionView,
   positionWorld,
   pow,
   saturate,
   select,
+  sign,
   smoothstep,
   vec2,
   vec3,
@@ -187,4 +195,64 @@ export function octagonSdf(p: Vec2Node, hx: number, hy: number, diag: number): F
 export function boxSdf(p: Vec2Node, cx: number, cy: number, hx: number, hy: number): FloatNode {
   const d = abs(p.sub(vec2(cx, cy)));
   return max(d.x.sub(hx), d.y.sub(hy));
+}
+
+/**
+ * View-space normal from a procedural height field (uu) by screen-space derivatives: Mikkelsen,
+ * "Bump Mapping Unparametrized Surfaces on the GPU" (2010), the maths of three's BumpMapNode fed by
+ * any float node instead of a texture. Use it as `material.normalNode`. Heights are in world units,
+ * so a 0.3 uu groove keeps its depth at any distance; fade patterns that get smaller than a pixel
+ * (`resolvedFade`) or their derivatives sparkle. NaN-safe: a degenerate footprint (grazing or
+ * sub-pixel triangle, det 0) falls back to the geometric normal instead of normalising zero.
+ * Derivatives need uniform control flow, so feed it branch-free (mix / select) height nodes only.
+ */
+export function bumpNormal(height: FloatNode): Vec3Node {
+  const n = normalViewGeometry;
+  const dpdx = dFdx(positionView);
+  const dpdy = dFdy(positionView);
+  const r1 = cross(dpdy, n);
+  const r2 = cross(n, dpdx);
+  const det = dot(dpdx, r1).mul(faceDirection);
+  const grad = sign(det).mul(dFdx(height).mul(r1).add(dFdy(height).mul(r2)));
+  return normalize(abs(det).mul(n).sub(grad).add(n.mul(1e-6)));
+}
+
+/**
+ * 1 while a pattern is resolved on screen, fading to 0 as it would alias: `coord` advances by 1 per
+ * pattern period (cells, stripes, rings...); the fade runs from `lo` to `hi` periods per pixel.
+ */
+export function resolvedFade(coord: FloatNode, lo = 0.35, hi = 0.9): FloatNode {
+  return oneMinus(smoothstep(lo, hi, fwidth(coord)));
+}
+
+/**
+ * Coverage of a thin line of half width `halfWidth` at signed distance `dist` (same units), box
+ * filtered over the pixel footprint. Once the line is thinner than a pixel it widens to the
+ * footprint and dims by the same factor (the "phone wire" trick): the average stays right and the
+ * line fades smoothly at distance instead of breaking into crawling dashes. Always in 0..1.
+ * `footprint` overrides fwidth(dist), for distances built with fract() whose wrap would otherwise
+ * read as a one-pixel line: pass the fwidth of the continuous coordinate instead.
+ */
+export function thinLineMask(dist: FloatNode, halfWidth: number, footprint?: FloatNode): FloatNode {
+  const fw = (footprint ?? fwidth(dist)).max(1e-6);
+  const w = fw.mul(0.5).max(halfWidth);
+  const cover = saturate(w.sub(abs(dist)).div(fw).add(0.5));
+  return cover.mul(saturate(float(halfWidth).div(w)));
+}
+
+/**
+ * A MeshPhysicalNodeMaterial whose procedural albedo stays out of the shadow pass. three's shadow
+ * pass copies `material.colorNode` into its depth material (it multiplies the shadow alpha by
+ * `colorNode.a`), so a big procedural colour graph set as colorNode is compiled into, and run by,
+ * every shadow pipeline of the object. Opaque materials whose albedo never changes their alpha set
+ * `albedoNode` instead: it is assigned to the diffuse colour in the material's own build only.
+ */
+export class OpaqueAlbedoPhysicalMaterial extends THREE.MeshPhysicalNodeMaterial {
+  /** Linear albedo (replaces colorNode; leave colorNode null). */
+  albedoNode: Vec3Node | null = null;
+
+  override setupDiffuseColor(builder: THREE.NodeBuilder): void {
+    super.setupDiffuseColor(builder);
+    if (this.albedoNode !== null) diffuseColor.rgb.assign(this.albedoNode);
+  }
 }
