@@ -257,8 +257,9 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
         const floorLit = step(0.94, hash13(vec3(cell.y, seed.mul(59.0), 2.0)));
         const hue = hash13(vec3(cell.yx, seed.mul(31.0).add(5.0)));
         const warm = mix(vec3(1.0, 0.58, 0.26), vec3(1.0, 0.78, 0.5), hue);
-        const cool = mix(vec3(0.82, 0.87, 1.0), vec3(1.0, 0.84, 0.6), hue);
-        const wc = mix(cool, warm, max(s1.mul(oneMinus(s2)), step(0.35, hash13(vec3(cell.xy, seed.mul(7.0).add(1.0))))));
+        const cool = mix(vec3(0.8, 0.87, 1.0), vec3(0.94, 0.91, 0.86), hue);
+        // residential windows are warm; office and dark-glass ones mostly cool white (40% warm)
+        const wc = mix(cool, warm, max(s1.mul(oneMinus(s2)), step(0.6, hash13(vec3(cell.xy, seed.mul(7.0).add(1.0))))));
         // far away a cell is sub-pixel: its mean (opening x lit share) replaces the grid
         const kk = saturate(oneMinus(fwU.mul(2.0).div(cw)));
         const winA = mix(wx.mul(2.0).mul(wy1.sub(wy0)).mul(side), win, kk);
@@ -275,6 +276,10 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
         const fres = pow(oneMinus(saturate(dot(V.negate(), n))), 5.0).mul(0.96).add(0.04);
         const sky = mix(Fx.hazeColor(R), U.mid.mul(1.4), smoothstep(0.0, 0.5, R.y)).mul(smoothstep(-0.25, 0.02, R.y));
         emi.addAssign(sky.mul(fres).mul(sel(0.5, 0.12, 0.6)).mul(side).mul(oneMinus(winA.mul(litA))));
+        // ...and at any angle a little of the sky above, a greyed blue: the walls read navy between
+        // the windows (target-five-themes.webp, panel 03), not only the warm haze in front of them
+        const skyFill = mix(U.mid, vec3(dot(U.mid, vec3(0.2126, 0.7152, 0.0722))), 0.45);
+        emi.addAssign(skyFill.mul(sel(0.85, 0.3, 1.05)).mul(side).mul(oneMinus(winA)));
         // lit crown band just under the top of the part (city.ts crownOf)
         const H = hs.y.mul(2.0);
         const band = step(H.sub(150.0), v).mul(step(v, H.sub(45.0))).mul(side).mul(step(CROWN_MIN, fract(seed.mul(CROWN_K))));

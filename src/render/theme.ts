@@ -171,7 +171,7 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     fog: { color: [0.08, 0.05, 0.11], density: 1.6e-5 },
     toneMapping: 'aces',
     exposure: 1.0,
-    grade: { contrast: 1.15, saturation: 1.12, lift: [0.002, 0, 0.008], gain: [1.0, 0.98, 1.02], vignette: 0.34 },
+    grade: { contrast: 1.15, saturation: 1.12, lift: [0, 0.001, 0.008], gain: [1.0, 0.98, 1.02], vignette: 0.34 },
   },
 };
 
