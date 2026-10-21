@@ -302,9 +302,16 @@ export class GpuDiag {
     const createShaderModule = device.createShaderModule.bind(device);
     (device as unknown as { createShaderModule: (d: GPUShaderModuleDescriptor) => GPUShaderModule }).createShaderModule = (d) => {
       const mod = createShaderModule(d);
-      void mod.getCompilationInfo().then((info) => {
-        for (const m of info.messages) if (m.type === 'error') this.note(`WGSL ${d.label ?? ''} ${m.lineNum}:${m.linePos} ${m.message}`);
-      });
+      // Not every WebGPU implementation has getCompilationInfo yet: the probe must never break a
+      // shader module (a missing method or a rejected promise only skips the messages).
+      if (typeof mod.getCompilationInfo === 'function') {
+        mod
+          .getCompilationInfo()
+          .then((info) => {
+            for (const m of info.messages) if (m.type === 'error') this.note(`WGSL ${d.label ?? ''} ${m.lineNum}:${m.linePos} ${m.message}`);
+          })
+          .catch(() => undefined);
+      }
       return mod;
     };
   }
@@ -334,7 +341,10 @@ export class GpuDiag {
         name = this.shaderNames.get(s) ?? name;
       }
       if (gl.getProgramParameter(rec.program, gl.LINK_STATUS) !== true) {
-        const logs = [gl.getProgramInfoLog(rec.program) ?? '', ...shaders.map((s) => gl.getShaderInfoLog(s) ?? '')].join(' ').replace(/\s+/g, ' ').trim();
+        const logs = [gl.getProgramInfoLog(rec.program) ?? '', ...shaders.map((s) => gl.getShaderInfoLog(s) ?? '')]
+          .join(' ')
+          .replace(/[\s\u0000-\u001f]+/g, ' ') // drivers end their logs with a NUL
+          .trim();
         this.failed.push(`${name || '?'}: ${logs.slice(0, 200) || 'link failed'}`);
       }
       const problems = programOverLimits(glslProgramUse(vs, fs), limits);

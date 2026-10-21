@@ -90,7 +90,7 @@ test('every theme world feeds the lights and the grade sane values', () => {
       assert.ok(key.dir[1] > 0.2, `${id}: keys light from above (shadows stay on the pitch)`);
       assert.ok(key.intensity > 0 && key.color.every((c) => c >= 0), `${id}: key colour and intensity`);
     }
-    assert.ok(w.keys[0].intensity >= w.keys[1].intensity, `${id}: keys[0] is the brighter key (it keeps its shadow on low)`);
+    assert.ok(w.keys[0].intensity >= w.keys[1].intensity, `${id}: keys[0] is the brighter key (the first to cast a shadow)`);
     assert.ok(w.fill.intensity >= 0 && w.fill.env >= 0, `${id}: fill`);
     assert.ok(['neutral', 'aces', 'agx'].includes(w.toneMapping), `${id}: tone curve`);
     assert.ok(w.exposure > 0, `${id}: exposure`);

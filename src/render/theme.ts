@@ -47,8 +47,9 @@ export interface ThemeWorld {
   /** Night themes light the pitch with floodlights (pools, streaks, hot lamp heads); day themes with the sun. */
   readonly night: boolean;
   /**
-   * The two key lights: directional, the only shadow casters (keys[0] keeps its shadow on the low
-   * tier, keys[1] lights without one there). At night they stand for the floodlight towers.
+   * The two key lights: directional, the only shadow casters (both on high and ultra, keys[0]
+   * first; none on low, where they light without shadow maps). At night they stand for the
+   * floodlight towers.
    */
   readonly keys: readonly [KeyLight, KeyLight];
   /** Hemisphere fill (sky / ground colours, intensity) and the image-based lighting intensity. */
