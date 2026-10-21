@@ -80,8 +80,10 @@ src/render/
                         colour targets, the GPU key) and adjustTier: a tier without what the device
                         cannot do (pure; tierChanges for #diag)
   tierGuard.ts          the safety net: TierGuard (a failure within 20 s of a switch, or a lost
-                        device, falls back one tier; never a loop) and the per-GPU ceiling in
-                        localStorage (readCeiling / writeCeiling, 30 days)
+                        device, falls back one tier; a device lost in the background or on low
+                        reloads on the same tier, once a minute at most; never a loop) and the
+                        per-GPU ceiling in localStorage (readCeiling / writeCeiling, 30 days;
+                        raiseCeiling when the player's own pick runs the window clean)
   theme.ts              stadium themes (ThemeId, THEME_IDS) and the world facts views share (key
                         lights, fill, floodlights, wetness, fog, tone mapping, grade, and each
                         theme's brighter `low` look and lights: lookOf / lightsOf); data only
@@ -89,7 +91,7 @@ src/render/
                         resize / pixel budget (tier maxPixelRatio / pixelBudget), GPU timestamps
                         (`#stats`), dynamic resolution (scene pass, or the direct tier's pixel
                         ratio), `#nancheck`, `#webgl2`, `#lowgpu` / `#compat` / `#nof32filter` /
-                        `#diag` (gpuDiag.ts), precompile (WebGL2 boot), GPU failures
+                        `#nomsaa` / `#msaa` / `#diag` (gpuDiag.ts), precompile (WebGL2 boot), GPU failures
                         (setFailureListener); builds the lighting, the world and the render path
   gpuDiag.ts            `#diag`: an on-screen panel (backend, GPU, extensions / features, limits,
                         capabilities, the tier as the device runs it, the ceiling, theme, shader
@@ -98,7 +100,9 @@ src/render/
                         the WebGL2 backend with a Mali-G51-class context (no float-linear /
                         float-target / float-blend extensions, capped limits) installed before
                         three initialises; `#compat` / `#nof32filter`: a WebGPU adapter without
-                        'core-features-and-limits' / 'float32-filterable'
+                        'core-features-and-limits' / 'float32-filterable'; `#nomsaa`: no tier
+                        multisamples, `#msaa`: the canvas MSAA in compatibility mode too (A/Bs of
+                        its cost on a phone)
   dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → resolution
                         scale between the tier's minResolutionScale and 1
   world/                World.ts (createWorld: fog node, clear colour, the baked sky + backdrop
@@ -368,6 +372,13 @@ glow. The MRT write has alpha 1, so fading materials fold `diffuseColor.a` into 
 glow is read back from `diffuseColor` so view-dependent terms are evaluated once (re-evaluating
 them inside the output struct produced NaNs).
 
+**Additive materials on low.** The direct tier runs the theme's look (exposure, grade, tone curve,
+sRGB) at the end of every material and blends after it, in display space. An additive material's
+black must stay black there: the look's lift is left out of additive materials (post/pipeline.ts
+`finish`, decided per material at build time), and an additive quad or cone must fade to zero
+before its border in a round shape (the low tier's floodlight halo, stadium/floodlights.ts), or
+the sRGB curve turns its faint tail into a visible square.
+
 **NaN contract.** three writes the colour target through `max(output, 0)` (WGSL / HLSL / MSL
 `max` return the non-NaN operand), but the MRT `emissive` member is written raw, and a single NaN
 texel there blurs through the bloom mips into a black rectangle over most of the screen (the
@@ -592,8 +603,11 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   a GPU validation error, a failed pipeline or WebGL program within 20 s of the boot or a tier
   switch, or a lost device, makes the tier fall back one step behind the loading screen (its line
   and a menu toast: "Your device does not support Ultra: using High"); the GPU's ceiling is kept in
-  localStorage and caps the starting tier; a lost device reloads the page onto the lower tier. Only
-  downward, never in a loop.
+  localStorage and caps the starting tier until the player picks a higher tier and it runs the 20 s
+  window clean (`raiseCeiling`); a lost device reloads the page onto the lower tier. A device lost
+  while the page was hidden or in its first 10 s back (the system reclaimed the GPU), or lost on
+  low, reloads the page on the same tier without touching the ceiling, at most once a minute (the
+  time in sessionStorage). Only downward, never in a loop.
 * **Frozen** (countdown, goal pause, after the whistle, menu): every roster car gets zero controls.
 * **HUD**: the menu has a Mode row (← → on the row, `M`, pad left / right; ↑ ↓ / D-pad move the
   focus across Difficulty / Mode / Quality, `Q` steps to the next quality tier) and shows
@@ -678,8 +692,9 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
   output + emissive) + 5-mip bloom from the emissive target (12 small passes) + vignette, exposure,
   HDR grade and the theme's tone curve, dynamic resolution between 0.6 and 1; ultra adds GTAO, SSR
   and the lens glare at half / quarter resolution (FXAA instead of MSAA in WebGPU compatibility
-  mode); low = straight into the canvas with its MSAA x4 (no HDR target, no bloom, no post pass;
-  the look runs in every material), dynamic resolution of the pixel ratio between 0.7 and 1.
+  mode); low = straight into the canvas with its MSAA x4 (none in WebGPU compatibility mode, where
+  it is a blit resolve; no HDR target, no bloom, no post pass; the look runs in every material),
+  dynamic resolution of the pixel ratio between 0.6 and 1.
   Pixel ratio: high / ultra min(dpr, 6 Mpx budget) and never below 1 (phones at most 2), low
   min(dpr, 1.5, 1 Mpx budget) and never below 1 for the budget (phones 1.5, desktops 1); every
   tier within the device's max texture size.

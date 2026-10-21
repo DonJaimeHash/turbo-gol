@@ -18,9 +18,9 @@ Three tiers, one table of switches (`TIERS`) that every view reads:
 | | low (Performance) | high (default on desktop) | ultra (opt-in) |
 |---|---|---|---|
 | path | straight to the canvas (no HDR target, no MRT, no post pass) | HDR pipeline | HDR pipeline |
-| AA | the canvas' MSAA x4 | MSAA x4 (FXAA without a multisampled HDR target) | MSAA x4 (idem) |
+| AA | the canvas' MSAA x4 (none in WebGPU compatibility mode: a blit resolve there) | MSAA x4 (FXAA without a multisampled HDR target) | MSAA x4 (idem) |
 | bloom | none (glow from geometry) | emissive bloom | emissive bloom |
-| resolution | pixel ratio up to 1.5 in a 1 Mpx budget + dynamic resolution (0.7..1 of it) | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
+| resolution | pixel ratio up to 1.5 in a 1 Mpx budget + dynamic resolution (0.6..1 of it) | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
 | shadows | none (ground blobs) | 2 keys, 2048 | 2 keys, 4096 |
 | lighting | its own: turf, stands, steel, boards unlit with the theme's light baked in; brighter keys and fill on the lit cars, ball and goals | lit, the theme's keys and fill | idem |
 | turf | unlit: the theme's lit green, stripes, markings, pools at a low contrast (no wear, damp, sheen, streaks) | relief, puddles, 4 streak heads | + grass blades near the camera |
@@ -81,7 +81,9 @@ flat because the physics ceiling is flat.
   fallback path).
 - Glow: bloom reads only the `emissive` MRT target. Every unlit or transparent material sets
   `mrtNode = glowMrt(...)` or `noGlowMrt()` (`materials.ts`). On low there is no bloom and no glow
-  target (both return null there), so glow must come from geometry and colour.
+  target (both return null there), so glow must come from geometry and colour. Low blends in
+  display space (after the look): an additive material's black stays black (no lift: pipeline.ts
+  `finish` leaves it out of additive materials) and its quad fades to zero in a round shape.
 - NaN hygiene: saturate every uv, fade and `pow` base. Verify with `#nancheck`.
 - The scene renders through the tier's path only (`post/pipeline.ts`): the HDR pipeline's PassNode
   (high, ultra; tone mapping and sRGB once in `renderOutput`) or the direct path (low; the same
@@ -96,11 +98,13 @@ flat because the physics ceiling is flat.
   EXT_color_buffer_float, EXT_float_blend..., capped limits), `#compat` a WebGPU device in
   compatibility mode (Chrome on an OpenGL ES phone: no multisampled rgba16float, 4096 textures,
   15 varyings, 16 KB uniform buffers, 4 colour targets), `#nof32filter` one without
-  'float32-filterable' (Safari on an iPhone); `#diag` shows the backend, GPU, extensions, limits,
+  'float32-filterable' (Safari on an iPhone), `#nomsaa` every tier without multisampling (an A/B
+  of the canvas MSAA's cost on a phone); `#diag` shows the backend, GPU, extensions, limits,
   capabilities, the tier as the device runs it, the remembered ceiling and every shader or GPU
   error on screen (the first ones stay; a failed command buffer names its passes), for a
   screenshot from the phone.
-- A tier that breaks on a device falls back one tier by itself (`tierGuard.ts`), never in a loop.
+- A tier that breaks on a device falls back one tier by itself (`tierGuard.ts`), never in a loop;
+  a device lost in the background (or on low) reloads on the same tier, once a minute at most.
 - Gameplay readability: markings, goal frames, boost pads, ball marker and car silhouettes stay
   legible. Team colours keep their colour-blind separation.
 - Original content only. No commercial game names, logos, car designs or layouts. Board
@@ -111,8 +115,9 @@ flat because the physics ceiling is flat.
 Status (2026-10-21): phases 1-4 are done on `feat/visual-rework`; phase 5's review and docs are
 done (see "Final review" below); the owner tested a preview on phones and asked for changes (see
 "Owner feedback" at the end), which are in; a second round on three devices brought capability
-gating, a tier safety net and a direct Performance path ("Three devices", at the end), and
-Performance its own bright, cheap look ("The Performance look", after it).
+gating, a tier safety net and a direct Performance path ("Three devices", at the end),
+Performance its own bright, cheap look ("The Performance look", after it), and a review of both
+("Review of the device rounds", last).
 
 1. **Foundation** (no visual change).
    - The three tiers, prefs migration and the menu.
@@ -394,3 +399,72 @@ Brightness (display luminance of the chase captures, mean over the frame; the ne
 coefficient of variation is the blotchiness): night harbour 0.17 -> 0.33 (near turf 0.19 -> 0.40,
 variation 0.14 -> 0.03), canyon 0.33 -> 0.46, alpine valley 0.45 -> 0.42 (its turf had been a
 washed-out pale green, now a clear one; variation 0.06 -> 0.03).
+
+## Review of the device rounds (2026-10-21, fourth round)
+
+The two rounds above were re-tested the way the owner's devices run them: `#compat` (the Huawei)
+on low and high, `#nof32filter` (the iPhone) on ultra, `#lowgpu` and `#webgl2` on every tier, the
+phone layout (780x360 CSS at dpr 3), five low / high / ultra round trips through the loading
+screen, theme switches on low, free play and a 3v3 match, and the safety net with real validation
+errors and simulated device losses.
+
+What held: no GPU validation error under any emulation (`#diag`: the only message is three's
+warning about MRT blending in compatibility mode on high); the round trips keep textures, texture
+memory, pipelines and programs flat (low 10 / 9 MB / 42, high 29 / 160 MB / 58, ultra 36 / 374 MB /
+66; the JS heap returns to ~80 MB); theme switches on low compile nothing (35 pipelines over two
+rounds of the three stadiums); `#diag` shows the adjusted switches (`adj msaa 4 -> 0`); validation
+errors went ultra -> high -> low with both toasts, stayed on low, and the next boot started on low;
+the WebGL2 program count per switch is constant (no recompile storm). The game's CPU frame on the
+desktop is 0.33 ms (free play on low: 0.24 ms of it the render), so a phone is held back by its
+GPU, not by the game's JavaScript.
+
+Fixed:
+
+- **Square patches of light on the night sky (low).** The direct path runs the look at the end of
+  every material and blends after it, and the look's lift (night harbour 0.004 / 0.006 / 0.012)
+  was added by every ADDITIVE material too, once per layer: each floodlight halo quad, the ball's
+  trail and every glow and particle drew a flat plateau over its whole quad, and the sRGB curve
+  made it visible (about 3 / 5 / 11 of 255 on the dark sky). Additive materials take no lift now
+  (`finish` in post/pipeline.ts, decided per material at build time: no recompile on a theme
+  switch, high and ultra unchanged). The low tier's wide floodlight halo also faded to zero in a
+  square (`max(|x|, |y|)`): it fades in a circle now (stadium/floodlights.ts, low only).
+- **No canvas MSAA in WebGPU compatibility mode (the Huawei).** Dawn's OpenGL ES backend resolves
+  a multisampled pass with a framebuffer blit after it, and three stores the canvas' multisampled
+  colour and depth on every backend (`storeOp: 'store'`), so a tiled phone GPU writes all four
+  samples to memory and reads them back: at 1170x540 about 33 MB per frame instead of about 5,
+  roughly 2 GB/s at 60 fps on the weakest phone the game runs on. Even on the desktop GPU the
+  canvas MSAA costs a third of the low frame in the phone layout (0.26 ms with it, 0.20 without).
+  `capabilities.ts` reads `msaaCanvas` false in compatibility mode, so the direct tier draws
+  without anti-aliasing there (its markings are anti-aliased in the shader; `#diag`: `adj msaa
+  4 -> 0`). `#msaa` turns it back on there and `#nomsaa` turns every tier's off anywhere, for an
+  A/B on the phone itself.
+- **Dynamic resolution on low goes down to 0.6** (was 0.7): a phone at 780x360 CSS can drop from
+  1170x540 to 702x324 when frames come late (0.26 ms -> 0.13 ms in the phone layout on the desktop
+  GPU). It only goes as far down as the late frames need.
+- **The remembered ceiling never lifted.** After a fallback the boot started on the lower tier for
+  30 days even when the player picked the higher one again and it ran (a fixed build, a driver
+  update). A tier the player picks that runs through the 20 s window without a failure now lifts
+  a lower ceiling to it (`raiseCeiling`; a failure in the window still falls back and keeps it).
+- **A lost device in the background, or on low.** A phone that reclaims the GPU while another app
+  is in front loses the device; that dropped the tier for 30 days (on high or ultra) or left a
+  frozen picture with nothing to fall back to (on low). A device lost while the page is hidden or
+  within 10 s of it coming back, or lost on low, now reloads the page on the same tier without
+  touching the ceiling, once a minute at most (the time in sessionStorage: no loop). A loss in the
+  foreground on high or ultra still falls back one tier.
+
+Measured after the fixes (WebGPU, the reference Turing GPU shared with other sessions, free play at
+kickoff, chase camera, night harbour; medians of 3-5 x 120 frames):
+
+| | drawing buffer | GPU | draws | triangles |
+|---|---|---|---|---|
+| low, 1600x900 CSS | 1600x901 | 0.33-0.39 ms | 21 | 83k |
+| high, 1600x900 CSS | 2190x1233 | 1.77 ms | 41 | 130k |
+| ultra, 1600x900 CSS | 2190x1233 | 3.02 ms | 52 | 366k |
+| low, phone layout, MSAA x4 | 1170x540 | 0.26 ms | 21 | 83k |
+| low, phone layout, no MSAA (compatibility mode's default) | 1170x540 | 0.20 ms | 21 | 83k |
+| low, phone layout, at the new floor | 701x323 | 0.13 ms | 21 | 83k |
+
+Still open: the iPhone's ultra failure (WebKit only; the safety net catches it, `#diag` names the
+pass); none of the phone figures is measured on a phone. On the Huawei, `#diag` with and without
+`#msaa` shows what the canvas MSAA costs there (the fps line and the px size of `#diag`'s run
+line, which also shows dynamic resolution at work).

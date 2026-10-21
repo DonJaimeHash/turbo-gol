@@ -80,6 +80,16 @@ All notable changes to Turbogol are documented here. The format follows
   challenge at a time, and closes when the menus close into a match.
 - Browsing the public lobby list no longer registers a guest.
 - Third-party notices point to the script that applies the physics-library patches.
+- High and Ultra work on Android phones whose browser runs WebGPU on OpenGL ES (they drew nothing
+  there); they smooth edges with FXAA on those phones, and Performance there skips the edge
+  smoothing, which costs those phones the most.
+- A quality the device cannot run falls back to the one below by itself, behind the loading
+  screen, and says so ("Your device does not support Ultra: using High"); the game then starts on
+  that quality on this device until the player picks the higher one again and it runs. Coming back
+  to the game after the phone reclaimed its graphics (another app in front) reloads the page on
+  the same quality instead of leaving a frozen picture.
+- Performance: no more square patches of light round the floodlights and the other glows on the
+  night sky.
 
 ### Changed
 - A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
