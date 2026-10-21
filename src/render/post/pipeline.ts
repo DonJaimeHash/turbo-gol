@@ -50,6 +50,7 @@ import {
   pass,
   pow,
   renderOutput,
+  rtt,
   screenUV,
   smoothstep,
   uniform,
@@ -92,7 +93,7 @@ export interface PostChain {
   setResolutionScale(scale: number): void;
   /** The theme changed: exposure, tone curve, grade, vignette and the SSR wetness (uniform writes only). */
   setTheme(world: ThemeWorld): void;
-  /** Free the scene pass (HDR MSAA target + depth), the ultra passes, the bloom chain and the pipeline's quad. */
+  /** Free the scene pass (HDR MSAA target + depth), the ultra passes, the bloom chain, FXAA's input target and the pipeline's quad. */
   dispose(): void;
 }
 
@@ -213,7 +214,12 @@ export function buildPostChain(
   const ldr = renderOutput(vec4(toned, 1.0), THREE.NoToneMapping);
   const pipeline = new THREE.RenderPipeline(gpu);
   pipeline.outputColorTransform = false;
-  pipeline.outputNode = spec.msaa > 0 ? ldr : fxaa(ldr);
+  // FXAA samples its input as a texture. Given a plain node, fxaa() wraps it in an RTTNode of its
+  // own (a drawing-buffer-sized HalfFloat target + depth) that nothing could dispose: every switch
+  // to a tier without MSAA leaked one. The chain owns that target instead (no depth: a quad needs
+  // none) and frees it in dispose().
+  const ldrTarget = spec.msaa > 0 ? null : rtt(ldr, null, null, { depthBuffer: false });
+  pipeline.outputNode = ldrTarget === null ? ldr : fxaa(ldrTarget);
 
   return {
     pipeline,
@@ -231,6 +237,7 @@ export function buildPostChain(
       // RenderPipeline.dispose() only frees its quad material: the passes go first.
       if (extras !== null) extras.dispose();
       if (bloomPass !== null) bloomPass.dispose();
+      if (ldrTarget !== null) ldrTarget.dispose();
       scenePass.dispose();
       pipeline.dispose();
     },
