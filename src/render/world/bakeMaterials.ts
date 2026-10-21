@@ -1,6 +1,6 @@
 /**
  * Backdrop materials. Three run ONLY while baking (structures, sea, sky); the LIVE variant of the
- * structure material draws the near harbour layer every frame (World.ts).
+ * structure material draws the near layer (harbour or railyard) every frame (World.ts).
  *
  * Every bake material writes vec4(radiance, 1000 / distance from the bake origin): the cube map
  * keeps an inverse-distance "depth" in alpha (0 = the sky at infinity), read by the parallax proxy
@@ -45,6 +45,7 @@ import {
 import { glowMrt } from '../materials';
 import { fbm3, hash12, hash13, vnoise, type Atmosphere } from './atmosphere';
 import { KIND } from './geo';
+import { isRailyardKind, railyardPattern } from './railyardMaterial';
 
 type F = Node<'float'>;
 type V3 = Node<'vec3'>;
@@ -69,9 +70,10 @@ export interface StructMaterial {
  *
  *   'bake'  the bake variant: aerial perspective from the bake origin, alpha = inverse distance,
  *           every pattern.
- *   'live'  drawn per frame: aerial perspective from the camera, cheaper noise, only the harbour's
- *           kinds, glow of the lamps into the bloom target, and the `on` switch so a theme
- *           without the harbour hides it with a uniform instead of a recompile.
+ *   'live'  drawn per frame: aerial perspective from the camera, cheaper noise, only the kinds of
+ *           the live layers (harbour, railyard: no far city, no strata), glow of the lamps into
+ *           the bloom target, and the `on` switch so a theme without a live layer hides it with a
+ *           uniform instead of a recompile.
  *   'env'   the live variant for the environment probe: no glow tag (the probe's target has no
  *           `output` / `emissive` members), sharing the live layer's `on` switch (`sharedOn`).
  */
@@ -186,6 +188,10 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
         const g = grime(wp.mul(0.0045));
         alb.mulAssign(g.mul(1.3).add(0.2));
       })
+      .ElseIf(isRailyardKind(kind), () => {
+        // brick walls with arched windows, ballast and tracks (railyardMaterial.ts)
+        railyardPattern({ kind, kloc, hs, seedRaw: seed, u, v, onX, onY, wp, fw: max(fwU, fwZ), windows: U.windows, lightsOn: U.lightsOn, grime, live, alb, emi });
+      })
       .ElseIf(kind.lessThan(KIND.FARCITY + 0.5), () => {
         if (live) return;
         // far city: small dim windows, many dark
@@ -204,17 +210,25 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
       })
       .Else(() => {
         if (live) return;
-        // sedimentary rock: strata bands by height, warped so they wander, plus varnish streaks.
+        // sedimentary rock: beds by height (deep red, orange, a pale buff band now and then, a
+        // purple-brown one), thin laminae inside each, warped so they wander; desert varnish
+        // streaks down the cliff faces; sand and sparse scrub on the flat ledges.
         // kdat.x = baked sun visibility, kdat.y = ambient occlusion (canyon.ts)
-        const warp = fbm3(wp.mul(0.00028)).sub(0.5).mul(2.6);
-        const t = wp.y.div(380.0).add(warp);
+        const warp = fbm3(wp.mul(0.00028)).sub(0.5).mul(2.2);
+        const t = wp.y.div(420.0).add(warp);
         const band = hash12(vec2(floor(t), 7.0));
-        const c1 = mix(vec3(0.36, 0.1, 0.05), vec3(0.5, 0.2, 0.08), smoothstep(0.2, 0.6, band));
-        const c2 = mix(c1, vec3(0.6, 0.45, 0.3), step(0.86, band));
-        const c3 = mix(c2, vec3(0.2, 0.08, 0.05), step(band, 0.1));
-        const streak = smoothstep(0.55, 0.9, vnoise(vec3(wp.x.mul(0.004), wp.y.mul(0.0004), wp.z.mul(0.004))));
-        const grain = fbm3(wp.mul(0.0035)).mul(0.5).add(0.75);
-        alb.assign(c3.mul(kcol.rgb).mul(grain).mul(oneMinus(streak.mul(0.35))).mul(kdat.y));
+        const c1 = mix(vec3(0.42, 0.1, 0.045), vec3(0.62, 0.24, 0.075), smoothstep(0.25, 0.7, band));
+        const c2 = mix(c1, vec3(0.7, 0.5, 0.32), step(0.8, band));
+        const c3 = mix(c2, vec3(0.24, 0.085, 0.07), step(band, 0.18));
+        const lam = sin(t.mul(Math.PI * 8.0)).mul(0.5).add(0.5);
+        const rock = c3.mul(lam.mul(0.24).add(0.86));
+        const steep = oneMinus(smoothstep(0.55, 0.85, n.y));
+        const streak = smoothstep(0.5, 0.85, vnoise(vec3(wp.x.mul(0.004), wp.y.mul(0.00035), wp.z.mul(0.004)))).mul(steep);
+        const grain = fbm3(wp.mul(0.0035)).mul(0.45).add(0.78);
+        const ledge = smoothstep(0.8, 0.95, n.y).mul(smoothstep(300.0, 900.0, wp.y));
+        const scrub = step(0.78, vnoise(wp.mul(0.006))).mul(ledge);
+        const top = mix(vec3(0.6, 0.36, 0.2), vec3(0.08, 0.1, 0.035), scrub);
+        alb.assign(mix(rock, top, ledge.mul(0.75)).mul(kcol.rgb).mul(grain).mul(oneMinus(streak.mul(0.5))).mul(kdat.y));
         vis.assign(kdat.x);
       });
 

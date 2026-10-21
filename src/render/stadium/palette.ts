@@ -58,6 +58,40 @@ const STADIUM_THEMES: Readonly<Partial<Record<ThemeId, StadiumTheme>>> = {
     rampColor: [0.035, 0.085, 0.04],
     steelRim: [0.05, 0.055, 0.07],
   },
+  // the red canyon at sunset: warm sky light on the wire and the crowd, the steel rimmed by the sun
+  'canyon-sunset': {
+    ledIntensity: 0.45,
+    railIntensity: 0.8,
+    lampIntensity: 30,
+    glare: 0.45,
+    beam: 0.35,
+    netColor: [0.32, 0.27, 0.25],
+    netAmbient: [0.2, 0.11, 0.1],
+    netLight: 0.35,
+    netOpacity: 1,
+    crowdLight: [0.52, 0.4, 0.36],
+    crowdDepthDim: 0.5,
+    canopyLight: 0.35,
+    rampColor: [0.05, 0.085, 0.035],
+    steelRim: [0.14, 0.07, 0.04],
+  },
+  // the night railyard: rust-dark wire catching an orange-violet city sky, warmer crowd light
+  'railyard-night': {
+    ledIntensity: 0.4,
+    railIntensity: 0.75,
+    lampIntensity: 30,
+    glare: 0.55,
+    beam: 0.5,
+    netColor: [0.3, 0.27, 0.25],
+    netAmbient: [0.07, 0.05, 0.066],
+    netLight: 0.5,
+    netOpacity: 1,
+    crowdLight: [0.27, 0.24, 0.22],
+    crowdDepthDim: 0.55,
+    canopyLight: 0.38,
+    rampColor: [0.036, 0.08, 0.036],
+    steelRim: [0.07, 0.052, 0.045],
+  },
 };
 
 export function stadiumTheme(id: ThemeId): StadiumTheme {

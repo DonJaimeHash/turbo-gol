@@ -25,6 +25,10 @@ export const KIND = {
   ROCK: 7,
   FARCITY: 8,
   STRATA: 9,
+  // railyard (railyard.ts, drawn by railyardMaterial.ts); its kinds start at 20 so other
+  // skylines can number theirs from 10 without a clash
+  BRICK: 20,
+  RAILBED: 21,
 } as const;
 export type Kind = (typeof KIND)[keyof typeof KIND];
 

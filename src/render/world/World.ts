@@ -8,8 +8,11 @@
  *   live layer  the near harbour (harbour.ts buildHarbourLive): quay ground, the container yards
  *               just beyond both ends of the field, STS cranes with lattice booms, RMG gantries,
  *               light masts, the cruise ship and the lighthouse, ONE merged mesh with the live
- *               structure material (bakeMaterials.ts), drawn before the dome. Themes without the
- *               harbour collapse it with a uniform (no recompile, the pipeline stays warm).
+ *               structure material (bakeMaterials.ts), drawn before the dome. The railyard has
+ *               its own (railyard.ts buildRailyardLive: halls, gantry, chimney, viaduct, wagons):
+ *               a theme switch swaps the mesh's geometry (same attributes, same pipeline).
+ *               Themes without a live layer collapse it with a uniform (no recompile, the
+ *               pipeline stays warm).
  *   dome        one back-faced sphere showing the baked cube with parallax correction (dome.ts).
  *   beam        the lighthouse beam (tiers with geometry detail; collapsed when unused).
  *
@@ -51,10 +54,23 @@ import { buildCanyon } from './canyon';
 import { buildBeam, buildDome, type Beam, type Dome } from './dome';
 import { createEnvProbe, pmremAtlasSize, type EnvProbe } from './env';
 import type { Lamp } from './geo';
-import { LIGHTHOUSE_LANTERN, QUAY, SEA_LEVEL, buildHarbourFar, buildHarbourLive, type HarbourLive } from './harbour';
+import { LIGHTHOUSE_LANTERN, QUAY, SEA_LEVEL, buildHarbourFar, buildHarbourLive } from './harbour';
 import { buildLightMap, lightMapFromData, type LightMap } from './lightmap';
 import { dirFromAzEl, worldPreset, type SkylineId, type WorldPreset } from './presets';
 import { createLatestQueue } from './queue';
+import { buildRailyardFar, buildRailyardLive } from './railyard';
+
+/** A skyline's live near layer: one merged geometry (geo.ts attributes) and its lamps. */
+interface LiveLayer {
+  readonly geometry: THREE.BufferGeometry;
+  readonly lamps: Lamp[];
+}
+
+/** The skylines with a live near layer, and how to build it (once per session, on first use). */
+const LIVE_BUILDERS: Readonly<Partial<Record<SkylineId, () => LiveLayer>>> = {
+  harbour: buildHarbourLive,
+  railyard: buildRailyardLive,
+};
 
 /** Where the cube is rendered from: mid-pitch, at chase / broadcast camera height. */
 export const BAKE_ORIGIN = new THREE.Vector3(0, 250, 0);
@@ -165,8 +181,9 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
 
   // ---- live layer, dome, beam, environment
   const A: Atmosphere = createAtmosphere();
-  // the live layer's geometry is built by the first realise() (placeholder until then)
-  let live: HarbourLive | null = null;
+  // the live layers are built on first use by realise() (placeholder until then); the mesh shows
+  // the current skyline's (showLive)
+  const lives = new Map<SkylineId, LiveLayer>();
   const placeholder = new THREE.BufferGeometry();
   const liveMat = makeStructMaterial(A, 'live');
   const liveOn = liveMat.on as NonNullable<StructMaterial['on']>;
@@ -218,18 +235,38 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   syncBeam();
 
   // ---- per-skyline CPU data
-  /** Build the live harbour layer (once) and hand its geometry to every mesh that draws it. */
-  function liveLayer(): HarbourLive {
-    if (live !== null) return live;
-    const l = buildHarbourLive();
-    live = l;
-    liveMesh.geometry = l.geometry;
-    liveEnv.geometry = l.geometry;
-    placeholder.dispose();
+  /** A skyline's live layer, built once (null for a skyline without one). */
+  function liveOf(skyline: SkylineId): LiveLayer | null {
+    const build = LIVE_BUILDERS[skyline];
+    if (build === undefined) return null;
+    let l = lives.get(skyline);
+    if (l === undefined) {
+      l = build();
+      lives.set(skyline, l);
+    }
     return l;
   }
+  /** Any live geometry for a skyline without its own (the bake kit's compile, a first load): the harbour's. */
+  function anyLive(skyline: SkylineId): LiveLayer {
+    return liveOf(skyline) ?? (liveOf('harbour') as LiveLayer);
+  }
+  /**
+   * Show `skyline`'s live layer: hand its geometry to every mesh that draws it (the same attributes,
+   * so the same pipelines) and switch the layer on, or collapse it for a skyline without one (the
+   * mesh then keeps a real geometry, so its pipeline stays the warm one).
+   */
+  function showLive(skyline: SkylineId): void {
+    const own = liveOf(skyline);
+    const l = own ?? (liveMesh.geometry === placeholder ? anyLive(skyline) : null);
+    if (l !== null && liveMesh.geometry !== l.geometry) {
+      liveMesh.geometry = l.geometry;
+      liveEnv.geometry = l.geometry;
+    }
+    liveOn.value = own !== null ? 1 : 0;
+  }
   function lampsOf(skyline: SkylineId): Lamp[] {
-    if (skyline === 'harbour') return [...liveLayer().lamps, ...buildHarbourFar(true).lamps];
+    if (skyline === 'harbour') return [...anyLive('harbour').lamps, ...buildHarbourFar(true).lamps];
+    if (skyline === 'railyard') return [...anyLive('railyard').lamps, ...buildRailyardFar(true).lamps];
     return [];
   }
   function lightMapOf(skyline: SkylineId): LightMap | null {
@@ -240,7 +277,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     return lightMaps.get(skyline) ?? null;
   }
 
-  function buildKit(): BakeKit {
+  function buildKit(skyline: SkylineId): BakeKit {
     const trash: { dispose(): void }[] = [];
     const bakeScene = new THREE.Scene();
     const skyGeo = new THREE.SphereGeometry(150000, 64, 32);
@@ -258,7 +295,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     sea.frustumCulled = false;
     bakeScene.add(sea);
     const struct = makeStructMaterial(A, 'bake');
-    const liveBake = new THREE.Mesh(liveLayer().geometry, struct.material);
+    const liveBake = new THREE.Mesh(anyLive(skyline).geometry, struct.material);
     liveBake.frustumCulled = false;
     bakeScene.add(liveBake);
     const depth = createCubeTarget(PROXY_FACE);
@@ -269,7 +306,12 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   function farMesh(k: BakeKit, preset: WorldPreset): THREE.Mesh {
     let m = k.far.get(preset.skyline);
     if (m !== undefined) return m;
-    const geometry = preset.skyline === 'harbour' ? buildHarbourFar(false).geometry : buildCanyon(dirFromAzEl(preset.key.az, Math.max(preset.key.el, 2)), false).geometry;
+    const geometry =
+      preset.skyline === 'harbour'
+        ? buildHarbourFar(false).geometry
+        : preset.skyline === 'railyard'
+          ? buildRailyardFar(false).geometry
+          : buildCanyon(dirFromAzEl(preset.key.az, Math.max(preset.key.el, 2)), false).geometry;
     m = new THREE.Mesh(geometry as THREE.BufferGeometry, k.struct.material);
     m.frustumCulled = false;
     k.scene.add(m);
@@ -282,7 +324,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const texelAngle = Math.PI / 2 / face;
     A.applyPreset(preset, { origin: BAKE_ORIGIN, seaLevel: SEA_LEVEL, starSigma: texelAngle * 0.65 * 520, fogDensity: tw.fog.density });
     A.setLightMap(lightMapOf(preset.skyline));
-    liveOn.value = preset.skyline === 'harbour' ? 1 : 0;
+    showLive(preset.skyline);
     fogColor.value.setRGB(tw.fog.color[0], tw.fog.color[1], tw.fog.color[2]);
     fogDensity.value = tw.fog.density;
     gpu.setClearColor(_c.setRGB(tw.fog.color[0], tw.fog.color[1], tw.fog.color[2]), 1);
@@ -329,8 +371,11 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const preset = worldPreset(want.theme);
     const tw = themeWorld(want.theme);
     const face = want.spec.skyCubeSize;
-    if (kit === null) kit = buildKit();
+    if (kit === null) kit = buildKit(preset.skyline);
     const k = kit;
+    // the live layer in the bake scene: compiles the structure material, and is the harbour's
+    // reflection in the sea (mirror pass)
+    k.liveBake.geometry = anyLive(preset.skyline).geometry;
     // Start compiling every bake pipeline (sky, sea, structures: the live layer's bake mesh carries
     // the structure material, so the far skyline need not exist yet), then build the CPU data while
     // the GPU process compiles in parallel.
@@ -470,13 +515,17 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const face = want.spec.skyCubeSize;
     const key = keyOf(want);
     let rec: CachedBake | null = null;
-    if (live === null) {
+    const skyline = worldPreset(want.theme).skyline;
+    let read: Promise<CachedBake | null> | null = null;
+    if (early !== null && early.key === key) read = early.read;
+    else if (!noCache) read = readBake(key, shapeOf(want));
+    // build the live layer this theme shows (once per skyline; any one before the first frame)
+    if (LIVE_BUILDERS[skyline] !== undefined ? !lives.has(skyline) : lives.size === 0) {
       // the read's I/O runs while the geometry is built
       if (early !== null) await early.opened;
-      liveLayer();
+      anyLive(skyline);
     }
-    if (early !== null && early.key === key) rec = await early.read;
-    else if (!noCache) rec = await readBake(key, shapeOf(want));
+    if (read !== null) rec = await read;
     early = null;
     if (disposed || !fits(want)) return;
     if (rec !== null) {
@@ -535,7 +584,8 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     dispose() {
       disposed = true;
       scene.remove(liveMesh, dome.mesh);
-      if (live !== null) live.geometry.dispose();
+      for (const l of lives.values()) l.geometry.dispose();
+      lives.clear();
       placeholder.dispose();
       liveMat.material.dispose();
       liveEnv.material.dispose();

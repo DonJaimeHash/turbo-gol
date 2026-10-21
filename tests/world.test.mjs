@@ -29,7 +29,7 @@ const cache = await import('../src/render/world/cache.ts');
 const finite3 = (c) => c.length === 3 && c.every((v) => Number.isFinite(v) && v >= 0);
 
 test('every theme resolves to a world preset; the three built ones are their own', () => {
-  for (const id of THEME_IDS) assert.ok(worldPreset(id).skyline === 'harbour' || worldPreset(id).skyline === 'canyon', id);
+  for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'railyard'].includes(worldPreset(id).skyline), id);
   for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset']) assert.ok(hasWorldPreset(id), id);
   assert.equal(worldPreset('harbour-night').skyline, 'harbour');
   assert.equal(worldPreset('harbour-day').skyline, 'harbour');

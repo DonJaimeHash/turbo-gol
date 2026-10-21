@@ -70,13 +70,16 @@ interface ProbeScene {
   readonly cube: ReturnType<typeof cubeTexture>;
   readonly turf: UniformNode<'vec3', THREE.Vector3>;
   readonly lamps: readonly { mesh: THREE.Mesh; color: UniformNode<'vec3', THREE.Vector3> }[];
+  /** The live layer's copy (its geometry follows `live.geometry` on every update). */
+  readonly live: THREE.Mesh | null;
   readonly pmrem: THREE.PMREMGenerator;
   readonly trash: { dispose(): void }[];
 }
 
 /**
- * The probe at `origin` with a PMREM of `size`; `live` draws the live harbour layer into it. The
- * probe's materials carry no glow tag: the PMREM target is a plain colour target.
+ * The probe at `origin` with a PMREM of `size`; `live` draws the live layer into it (its current
+ * geometry: the world swaps it per skyline). The probe's materials carry no glow tag: the PMREM
+ * target is a plain colour target.
  */
 export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3, size: number, live: { geometry: THREE.BufferGeometry; material: THREE.Material } | null): EnvProbe {
   const target = createPmremTarget(size);
@@ -98,9 +101,10 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
     sky.frustumCulled = false;
     scene.add(sky);
     trash.push(skyGeo, skyMat, blank);
-    // the live harbour layer
+    // the live layer (its geometry follows the shown skyline's: see update)
+    let copy: THREE.Mesh | null = null;
     if (live !== null) {
-      const copy = new THREE.Mesh(live.geometry, live.material);
+      copy = new THREE.Mesh(live.geometry, live.material);
       copy.frustumCulled = false;
       scene.add(copy);
     }
@@ -127,7 +131,7 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
       lamps.push({ mesh, color });
       trash.push(mat);
     }
-    return { scene, cube, turf, lamps, pmrem: new THREE.PMREMGenerator(gpu), trash };
+    return { scene, cube, turf, lamps, live: copy, pmrem: new THREE.PMREMGenerator(gpu), trash };
   }
 
   return {
@@ -136,6 +140,7 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
       if (probe === null) probe = build();
       const p = probe;
       p.cube.value = cube;
+      if (p.live !== null && live !== null) p.live.geometry = live.geometry;
       p.turf.value.set(turf[0], turf[1], turf[2]);
       for (let i = 0; i < LAMP_SLOTS; i++) {
         const slot = p.lamps[i];
