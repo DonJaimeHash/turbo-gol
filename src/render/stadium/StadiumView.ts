@@ -11,7 +11,10 @@
  *   floodlights.ts  lamp panels, glare sprites, beams
  *   stands.ts       stand structure (with the concourse apron round the cage) and crowd
  *   banners.ts      the hanging banners
- *   textures.ts     the board and banner canvas atlases
+ *   textures.ts     the board and banner canvas atlases, painted with the place's content
+ *   content.ts      what the boards and banners show, per place (harbour, canyon, city, alpine,
+ *                   railyard; both harbour themes share one set)
+ *   emblems.ts      the canvas-path emblems of the cards and banners
  *   palette.ts      the per-theme uniforms (a theme switch only writes uniforms and a vertex
  *                   attribute of the lamp meshes: never a recompile)
  *   layout.ts       where everything stands (pure numbers, tested in node)
@@ -19,7 +22,9 @@
  *
  * Draw calls: netting 1, boards 1, steel 1, lamp panels 1, glare 1, stand structure 1, crowd 1,
  * banners 1 = 8, + beams 1 with `beamCones` (ultra) = 9. Nothing casts shadows. Nothing changes per
- * frame on the CPU: the board cards, crowd wave, flashes and banner wind run on the GPU clock.
+ * frame on the CPU: the board cards, crowd wave, flashes and banner wind run on the GPU clock. A
+ * theme switch to another place repaints the two atlases into the same canvases and textures (a
+ * re-upload, no new texture, no recompile).
  *
  * Transparent order: the netting draws first among the transparents (renderOrder -5, before the
  * goals at -4); the glare and beams (additive, renderOrder 0) are sorted with the other
@@ -38,7 +43,8 @@ import { buildNetMaterial } from './netting';
 import { applyStadiumTheme, createStadiumUniforms, type StadiumUniforms } from './palette';
 import { buildCrowd, buildStandGeometry, buildStandMaterial } from './stands';
 import { buildSteelGeometry, buildSteelMaterial } from './steel';
-import { bannerAtlas, boardAtlas } from './textures';
+import { CONTENT, THEME_PLACE, type Place } from './content';
+import { bannerAtlas, boardAtlas, paintBanners, paintBoards } from './textures';
 
 interface Disposable {
   dispose(): void;
@@ -61,6 +67,10 @@ export class StadiumView {
   private readonly u: StadiumUniforms;
   private readonly heads: HeadMesh[] = [];
   private readonly disposables: Disposable[] = [];
+  /** The board and banner atlases and the place whose content they show (null until painted). */
+  private readonly boardTex: THREE.CanvasTexture;
+  private readonly bannerTex: THREE.CanvasTexture;
+  private place: Place | null = null;
 
   /** Build the stadium for a tier and a theme into `parent`; it takes ownership of the glass geometries. */
   constructor(parent: THREE.Object3D, glass: StadiumGlass, quality: Quality, theme: ThemeId) {
@@ -71,9 +81,9 @@ export class StadiumView {
     const { boards, net } = splitShell(glass.shell, glass.ceiling);
     glass.shell.dispose();
     glass.ceiling.dispose();
-    const atlas = boardAtlas(spec.detail === 'high' ? 1024 : 512);
-    this.boards = this.add(parent, new THREE.Mesh(boards, buildBoardMaterial(spec, this.u, atlas)), 'stadium-boards');
-    this.track(atlas);
+    this.boardTex = boardAtlas(spec.detail === 'high' ? 1024 : 512);
+    this.boards = this.add(parent, new THREE.Mesh(boards, buildBoardMaterial(spec, this.u, this.boardTex)), 'stadium-boards');
+    this.track(this.boardTex);
     this.shell = this.add(parent, new THREE.Mesh(net, buildNetMaterial(spec, this.u)), 'stadium-netting');
     this.shell.renderOrder = -5;
     this.ceiling = this.shell;
@@ -94,17 +104,27 @@ export class StadiumView {
     this.add(parent, buildCrowd(spec, this.u).mesh);
 
     // ---- Banners (1) -----------------------------------------------------------------------------
-    const bannerTex = bannerAtlas(spec.detail === 'high' ? 256 : 128);
-    this.add(parent, buildBanners(spec, bannerTex).mesh);
-    this.track(bannerTex);
+    this.bannerTex = bannerAtlas(spec.detail === 'high' ? 256 : 128);
+    this.add(parent, buildBanners(spec, this.bannerTex).mesh);
+    this.track(this.bannerTex);
 
-    this.setTheme(theme);
+    this.setTheme(theme); // paints the atlases with the theme's place
   }
 
-  /** The stadium theme changed: uniform writes and the lamp meshes' strength attribute only. */
+  /**
+   * The stadium theme changed: uniform writes and the lamp meshes' strength attribute, and when
+   * the place changes (not between the two harbour themes) a repaint of the board and banner
+   * atlases into the same textures (a few ms on the CPU plus one upload; nothing recompiles).
+   */
   setTheme(theme: ThemeId): void {
     const strengths = applyStadiumTheme(this.u, theme);
     for (const h of this.heads) h.setStrengths(strengths);
+    const place = THEME_PLACE[theme];
+    if (place !== this.place) {
+      this.place = place;
+      paintBoards(this.boardTex, CONTENT[place].cards);
+      paintBanners(this.bannerTex, CONTENT[place].banners);
+    }
   }
 
   /**

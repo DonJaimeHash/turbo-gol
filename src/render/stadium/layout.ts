@@ -161,13 +161,14 @@ export interface BannerPlace {
   readonly design: number;
 }
 
-/** Banner design indices (textures.ts draws them side by side in one atlas). */
+/** Banner design indices (textures.ts draws a place's designs side by side in one atlas). */
 export const BANNER_DESIGNS = 4;
 
 /**
  * Banner placements: between neighbouring side arches on both side walls (12) and, with `corners`,
- * three on every rounded corner between its ribs (12 more). Blue designs on the blue half (-z),
- * red ones on the red half, the lighthouse and ball designs in between.
+ * three on every rounded corner between its ribs (12 more). The place's blue design (0) on the
+ * blue half (-z), its red one (1) on the red half, its second name (2) and the TURBOGOL ball (3)
+ * in between (content.ts).
  */
 export function bannerPlaces(corners: boolean): BannerPlace[] {
   const out: BannerPlace[] = [];

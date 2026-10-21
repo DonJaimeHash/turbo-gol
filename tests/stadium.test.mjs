@@ -1,8 +1,9 @@
 // The stadium's layout and geometry (node --test tests/stadium.test.mjs): everything stands on the
 // shell or outside the playable volume, the towers are the theme's floodlights, the board band is
-// low, the shell split keeps every triangle and its surface coordinates are continuous, and a
-// theme writes every uniform. Node strips the types of .ts files; extensionless src imports are
-// mapped to the .ts file by the resolve hook below.
+// low, the shell split keeps every triangle and its surface coordinates are continuous, a theme
+// writes every uniform, and every place has its own full board and banner set (the harbour's
+// names and emblems only on the harbour), drawn completely into the atlases. Node strips the types
+// of .ts files; extensionless src imports are mapped to the .ts file by the resolve hook below.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -407,5 +408,124 @@ test('the crowd: crowdDensity sets people per quad, the same crowd on every tier
     }
     c.mesh.geometry.dispose();
     c.mesh.material.dispose();
+  }
+});
+
+// ---- What the boards and banners show (content.ts, textures.ts) --------------------------------
+
+const { THEME_IDS } = await import('../src/render/theme.ts');
+const { CONTENT, GENERIC, THEME_PLACE, themeContent } = await import('../src/render/stadium/content.ts');
+const { EMBLEMS } = await import('../src/render/stadium/emblems.ts');
+const { BOARD_CARDS, drawBoards, drawBanners } = await import('../src/render/stadium/textures.ts');
+
+/** The harbour's own names: on the harbour's boards and banners, never on another place's. */
+const HARBOUR_NAMES = ['PUERTO SUR', 'EL FARO', 'LIGA PORTUARIA', 'MARELUX', 'FARO ALTO', 'ESTIBA', 'BOYA AZUL', 'NUDO SIETE', 'ONDAMAR', 'GRÚA NORTE', 'SALINA', 'TIMONEL', 'VELA ROJA', 'MUELLE 9', 'AEROFARO'];
+const HEX = /^#[0-9a-f]{6}$/i;
+/** Every text a set prints: card names and taglines, banner lines. */
+const textsOf = (set) => [...set.cards.flatMap((c) => [c.name, c.tag]), ...set.banners.flatMap((b) => b.text.split('\n'))];
+
+test('every theme has a full board and banner set; the two harbour themes share one', () => {
+  for (const id of THEME_IDS) {
+    const set = themeContent(id);
+    assert.ok(set, id);
+    assert.equal(set.cards.length, BOARD_CARDS, `${id} cards`);
+    assert.equal(set.banners.length, L.BANNER_DESIGNS, `${id} banners`);
+    for (const c of set.cards) {
+      assert.ok(c.name.length > 0 && c.tag.length > 0, `${id}: empty card text`);
+      assert.ok(c.logo in EMBLEMS, `${id} ${c.name}: emblem ${c.logo}`);
+      for (const col of [...c.bg, c.fg, c.ac]) assert.match(col, HEX, `${id} ${c.name}`);
+    }
+    for (const b of set.banners) {
+      const lines = b.text.split('\n');
+      assert.ok(lines.length >= 1 && lines.length <= 2 && lines.every((l) => l.length > 0), `${id} banner '${b.text}'`);
+      assert.ok(b.emblem in EMBLEMS, `${id} banner emblem ${b.emblem}`);
+      for (const col of [...b.bg, b.fg]) assert.match(col, HEX, `${id} banner ${b.text}`);
+    }
+  }
+  assert.equal(THEME_PLACE['harbour-night'], 'harbour');
+  assert.equal(THEME_PLACE['harbour-day'], 'harbour');
+  const others = THEME_IDS.filter((id) => !id.startsWith('harbour')).map((id) => THEME_PLACE[id]);
+  assert.equal(new Set([...others, 'harbour']).size, others.length + 1, 'every other theme has a place of its own');
+  assert.deepEqual(Object.keys(CONTENT).sort(), ['harbour', ...others].sort());
+});
+
+test('the harbour names and emblems appear only on the harbour; a place keeps its own names', () => {
+  const harbour = textsOf(CONTENT.harbour);
+  for (const n of HARBOUR_NAMES) assert.ok(harbour.includes(n), `${n} is on the harbour`);
+  for (const [place, set] of Object.entries(CONTENT)) {
+    if (place === 'harbour') continue;
+    for (const t of textsOf(set)) {
+      assert.ok(!HARBOUR_NAMES.some((n) => t.includes(n)), `${place}: '${t}' is the harbour's`);
+      assert.doesNotMatch(t, /PUERTO|PORTUARI|FARO|MUELLE|BARCO|NAVAL/, `${place}: '${t}' names the harbour`);
+    }
+    for (const e of [...set.cards.map((c) => c.logo), ...set.banners.map((b) => b.emblem)]) {
+      assert.ok(e !== 'anchor' && e !== 'lighthouse', `${place}: the harbour's ${e} emblem`);
+    }
+  }
+  // The generic sponsors are on every set at the same slots; every other name is one place's only.
+  const slotsOf = (set) => set.cards.map((c, i) => (GENERIC.includes(c.name) ? i : -1)).filter((i) => i >= 0);
+  const where = new Map();
+  for (const [place, set] of Object.entries(CONTENT)) {
+    assert.deepEqual(slotsOf(set), slotsOf(CONTENT.harbour), `${place}: generic slots`);
+    for (const g of GENERIC) assert.ok(set.cards.some((c) => c.name === g), `${place} lacks ${g}`);
+    for (const n of new Set([...set.cards.map((c) => c.name), ...set.banners.map((b) => b.text)])) {
+      if (GENERIC.includes(n)) continue;
+      assert.ok(!where.has(n), `${n} is on ${where.get(n)} and ${place}`);
+      where.set(n, place);
+    }
+  }
+});
+
+test('no two cards of a set share a name; the generic cards are the same in every set', () => {
+  for (const [place, set] of Object.entries(CONTENT)) {
+    const names = set.cards.map((c) => c.name);
+    assert.equal(new Set(names).size, names.length, `${place}: ${names.join(', ')}`);
+    set.cards.forEach((c, i) => {
+      if (!GENERIC.includes(c.name)) return;
+      const h = CONTENT.harbour.cards[i];
+      assert.deepEqual({ ...c, tag: c.name === 'MÁS GOL.' ? '' : c.tag }, { ...h, tag: c.name === 'MÁS GOL.' ? '' : h.tag }, `${place} ${c.name}`);
+    });
+  }
+  // The slogan names the place.
+  const slogans = Object.values(CONTENT).map((s) => s.cards.find((c) => c.name === 'MÁS GOL.').tag);
+  assert.equal(new Set(slogans).size, slogans.length, slogans.join(' / '));
+});
+
+/** A recording 2D context: every method is a no-op except fillText (recorded) and measureText. */
+function recordingContext() {
+  const state = { font: '10px sans-serif', texts: [], depth: 0, maxDepth: 0 };
+  return new Proxy(state, {
+    get(t, k) {
+      if (k in t) return t[k];
+      if (k === 'createLinearGradient') return () => ({ addColorStop() {} });
+      if (k === 'measureText') return (s) => ({ width: s.length * Number(/(\d+)px/.exec(t.font)[1]) * 0.62 });
+      if (k === 'fillText') return (s) => t.texts.push(s);
+      if (k === 'save') return () => (t.maxDepth = Math.max(t.maxDepth, ++t.depth));
+      if (k === 'restore') return () => t.depth--;
+      return () => {};
+    },
+    set(t, k, v) {
+      t[k] = v;
+      return true;
+    },
+  });
+}
+
+test('the atlases draw every card and banner text of a set, and every emblem restores the context', () => {
+  for (const [place, set] of Object.entries(CONTENT)) {
+    const b = recordingContext();
+    drawBoards(b, 1024, set.cards);
+    assert.deepEqual(b.texts, set.cards.flatMap((c) => [c.name, c.tag]), place);
+    assert.equal(b.depth, 0, `${place}: unbalanced save / restore on the boards`);
+    const f = recordingContext();
+    drawBanners(f, 256, set.banners);
+    assert.deepEqual(f.texts, set.banners.flatMap((d) => d.text.split('\n')), place);
+    assert.equal(f.depth, 0, `${place}: unbalanced save / restore on the banners`);
+  }
+  for (const [id, draw] of Object.entries(EMBLEMS)) {
+    const c = recordingContext();
+    draw(c, 0, 0, 10, '#ffffff', '#000000');
+    assert.equal(c.depth, 0, `${id}: unbalanced save / restore`);
+    assert.ok(c.maxDepth >= 1, `${id}: draws inside its own save`);
   }
 });

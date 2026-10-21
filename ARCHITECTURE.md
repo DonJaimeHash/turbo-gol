@@ -107,7 +107,9 @@ src/render/
                         palette.ts (per-theme uniforms; `standWood` turns the stands to
                         timber), netting.ts, boards.ts, steel.ts,
                         floodlights.ts, stands.ts (stand structure with the concourse apron round
-                        the cage, crowd), banners.ts, textures.ts (canvas atlases)
+                        the cage, crowd), banners.ts, textures.ts (the board and banner canvas
+                        atlases, repainted when the place changes), content.ts (each place's
+                        invented sponsors and banner names), emblems.ts (canvas-path emblems)
   Arena.ts              visual arena (uses arenaMesh.ts): converts the sim's surfaces, builds the
                         TurfView and StadiumView, goals + nets (drawn from both sides), goal
                         frames, pads; forwards setTheme / setWarmUp to the turf and the stadium
@@ -431,8 +433,11 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   along the side walls only (the ends stay open for the backdrop) with ~11.8k SDF people (team-
   dominant, desaturated kits), banners. Nothing casts shadows; nothing runs on the CPU per frame.
   Per theme (palette.ts, uniforms only): crowd and canopy light, net ambient, steel rim, LED and
-  lamp levels, and `standWood` (timber stands on the alpine valley); the board and banner atlases
-  (invented harbour names and emblems) are the same in every theme.
+  lamp levels, and `standWood` (timber stands on the alpine valley). The board and banner atlases
+  show the place's own content (content.ts: invented local sponsors, banner names and canvas-path
+  emblems; the two harbour themes share the harbour's anchors, lighthouse, PUERTO SUR and EL FARO,
+  which no other place shows): a switch to another place repaints both canvases into the same
+  textures (~1-2 ms, one re-upload, no recompile).
 * **post/** — lighting.ts: both keys and the fill exist on every tier and theme (constant light
   count); `shadowedKeys` keys cast (1 on low, 2 on high and ultra), maps 2048 (PCF 3) on low and
   high, 4096 (PCF 4) on ultra, frustums fitted to the arena box. pipeline.ts: see "Rendering

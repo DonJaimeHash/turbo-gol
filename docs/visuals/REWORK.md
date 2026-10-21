@@ -33,14 +33,17 @@ chose a tier. Saves from before stored 0 (high) or 1 (performance).
 A theme is data: the same generators and shaders read it. Shared facts live in `theme.ts`: the two key
 lights, fill, floodlights, wetness, fog, tone mapping and grade. Each view keeps its own per-theme
 parameters next to its code, keyed by `ThemeId`. The light count and material variants never change
-between themes, so a theme switch only re-bakes and rewrites uniforms; it never recompiles shaders.
-Gameplay never reads a theme.
+between themes, so a theme switch only re-bakes, rewrites uniforms and repaints the board and
+banner canvases; it never recompiles shaders. Gameplay never reads a theme.
 
 Themes: `harbour-night` (the default), `harbour-day`, `canyon-sunset`, `city-dusk`, `alpine-day`,
 `railyard-night`, all built. The Friendly screen's Stadium row picks one (saved with the prefs; an
 unknown saved id reads as the night harbour). Each has a world preset and a skyline (harbour,
 canyon, city, alpine or railyard: a baked far part and, except the canyon, a live near layer that
-the world swaps in by geometry), a ThemeWorld, a stadium palette and a turf look.
+the world swaps in by geometry), a ThemeWorld, a stadium palette, a turf look and its place's board
+and banner content (`stadium/content.ts`: invented local sponsors, names and canvas-path emblems;
+the two harbour themes share the harbour's, and the harbour's names and emblems appear nowhere
+else).
 
 ## Module layout
 
@@ -48,7 +51,7 @@ the world swaps in by geometry), a ThemeWorld, a stadium palette and a turf look
 |---|---|---|
 | `src/render/world/` | sky (gradient, clouds, stars, moon or sun), backdrop generators (harbour, canyon...), the bake of both into a cube map + PMREM environment, cached in IndexedDB | the old sky dome + environment |
 | `src/render/turf/` | pitch material (blade texture baked at load, stripes, wear, wetness, puddles, floodlight pools and streaks, relief), grass blades (ultra) | the old floor material |
-| `src/render/stadium/` | cage (steel arches, hex wire netting on the shell), LED boards, banners, stands and crowd, floodlight towers and lamp heads, beams (ultra) | the old truss, cones, stands, masts, halos, lamp bars, glass |
+| `src/render/stadium/` | cage (steel arches, hex wire netting on the shell), LED boards and banners (each place's own content), stands and crowd, floodlight towers and lamp heads, beams (ultra) | the old truss, cones, stands, masts, halos, lamp bars, glass |
 | `src/render/post/` | render pipeline per tier (bloom, grade, vignette, FXAA, GTAO / SSR / flare on ultra), key lights and shadows | the old `applyQuality` chain |
 | `Car.ts`, `Ball.ts` | paint with clearcoat flakes, tyres, glass, the panelled ball | same files |
 
@@ -115,7 +118,12 @@ done (see "Final review" below) and the owner's approval is next.
    chimney, a downtown against an orange glow), a brighter `harbour-day` and a stronger
    `canyon-sunset` (a low sun right of the far goal, three tiers of cliffs). Same code paths as the
    harbour: a theme switch never recompiles (the live layers share one vertex layout and one
-   material; new patterns are exact KIND ranges of the one structure material).
+   material; new patterns are exact KIND ranges of the one structure material). Each place has its
+   own boards and banners (canyon: a sun over a mesa, a cactus, CAÑÓN ROJO / EL MIRADOR; city: a
+   skyline, a neon star, CIUDAD ALTA / AZOTEA; alpine: a snowy peak, a pine, VALLE ALTO / EL PINAR;
+   railyard: a locomotive wheel, a gear, a works chimney, PATIO FERROVIARIO / LA USINA), drawn
+   into the same two canvases and textures on a switch to another place: ~1-2 ms of canvas
+   drawing (8 ms the first time), one re-upload, no new texture or pipeline.
 5. **Review, docs** (`ARCHITECTURE.md`), changelog, and the owner's approval before the deploy.
 
 ## Measuring
@@ -160,8 +168,6 @@ Open against the targets:
   terrain holds the main thread ~0.3 s); only the alpine range is built in slices.
 
 Still open from the theme work (content and art direction, for the owner):
-- The board and banner atlases are the harbour's in every theme (anchors, lighthouse, PUERTO SUR,
-  EL FARO): per-theme sets would be more atlas columns plus an index uniform (no recompile).
 - The alpine stands are the tall concrete-frame stands in timber colours (the concept has low
   gabled stands); the canyon's side walls sit mostly behind the stand canopies in the chase view;
   the city's downtown hides the horizon glow behind the far goal; the railyard's turf is greener
