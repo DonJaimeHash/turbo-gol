@@ -66,12 +66,24 @@ src/sim/
 src/render/
   coords.ts             sim→three coordinate mapping helpers (tiny, shared)
   materials.ts          palette, HDR helpers and the bloom contract (glowMrt / noGlowMrt)
-  Renderer.ts           WebGPURenderer, scene, lights, sky, PMREM environment, RenderPipeline
-                        (HDR scene pass with MRT output+emissive → bloom from emissive → vignette
-                        → tone map; FXAA at tier 1), resize / pixel budget, quality tiers, GPU
-                        timestamps (`#stats`)
-  Arena.ts              visual arena (uses arenaMesh.ts), turf, glass, goals + nets, pads,
-                        stadium (stands, truss, lamps, cones, halos)
+  quality.ts            the three quality tiers (low / high / ultra) and the one table of switches
+                        (TIERS, `tier(q)`) every view reads; parseQuality reads old 0 / 1 saves
+  theme.ts              stadium themes (ThemeId) and the world facts views share (key lights,
+                        fill, floodlights, wetness, fog, tone mapping, grade); data only
+  Renderer.ts           WebGPURenderer, scene, camera, lights, resize / pixel budget (tier
+                        maxPixelRatio / pixelBudget), GPU timestamps (`#stats`), dynamic
+                        resolution, `#nancheck`; builds the world and the post chain below
+  dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → scene-pass
+                        resolution scale between the tier's minResolutionScale and 1
+  world/                World.ts (createWorld: clear colour, fog, sky, environment), sky.ts (night
+                        sky dome), environment.ts (procedural PMREM environment)
+  post/                 pipeline.ts (buildPostChain: HDR scene pass with MRT output+emissive →
+                        bloom from emissive → vignette → tone map; FXAA on tiers without MSAA)
+  turf/                 TurfView (the floor mesh), turfMaterial.ts (turf, markings, goal glow)
+  stadium/              StadiumView (shell + ceiling glass, truss, lamps, cones, stands, masts,
+                        halos), glass.ts (the shell / ceiling material)
+  Arena.ts              visual arena (uses arenaMesh.ts): converts the sim's surfaces, builds the
+                        TurfView and StadiumView, goals + nets, goal frames, pads
   Camera.ts             chase camera (ball cam / car cam, camera settings & rules, field clamp,
                         camera swivel from CameraLook, rear view); keeps Settings.camera by reference
   Car.ts                procedural buggy (body with canopy + roll hoop, knobby wheels, twin plasma
@@ -115,7 +127,7 @@ src/game/
   Game.ts               fixed-step loop: input → controls → bot teams → sim.step → sync →
                         render(alpha); the roster (game modes, setMode / addRoster), per-car views
                         / controls / effects registration, scoreboard rows, prefs (difficulty,
-                        quality, mode),
+                        quality tier, mode, theme),
                         pipeline warm-up, goal-pause ball pin, audio / HUD glue, settings glue,
                         pointer lock (canvas click captures, menu / pause / whistle / blur release,
                         a browser-side release pauses like the Esc menu, a click on the paused
@@ -274,8 +286,10 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
 
 ### Bloom / glow contract (src/render/materials.ts)
 
-At tier 0 the scene pass renders two targets, `output` and `emissive`; bloom reads only
-`emissive` (threshold 0). Lit node materials write their `emissiveNode` there automatically. Unlit
+On the tiers with bloom (high, ultra) the scene pass renders two targets, `output` and
+`emissive`; bloom reads only `emissive` (threshold 0). Lit node materials write their
+`emissiveNode` there automatically. On low there is no bloom, so glow comes from geometry and HDR
+colour. Unlit
 materials write nothing unless they set `material.mrtNode = glowMrt(<vec3 node>)`; untagged ones
 would *overwrite* the target (NoBlending), so every transparent / additive material (flames,
 particles, ribbons, rings, glass, blobs, markers) is tagged — with `noGlowMrt()` when it must not
@@ -367,10 +381,16 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   cars are removed from the sim (slots compact; ids stay), the new roster is added, the car views
   and the Effects are rebuilt (arena and ball stay), everything goes back to kickoff, the camera
   snaps and a warm-up frame compiles the new flames. The mode persists in `GamePrefs` /
-  localStorage with difficulty and quality.
+  localStorage with difficulty, the quality tier (saved by name; saves from before the third tier
+  hold 0 = high / 1 = low) and the theme.
+* **Quality tiers** (`src/render/quality.ts`): low / high / ultra, one table of switches that every
+  view reads through `tier(q)` (MSAA, bloom, pixel ratio and budget, dynamic resolution, shadow map,
+  geometry detail, particles...). Phones and tablets start on low, desktops on high. The Friendly
+  screen's quality row (and `Q` in the legacy Hud menu) steps low → high → ultra; `setQuality`
+  rebuilds every view and the post chain (~30 ms) and warms the new pipelines up.
 * **Frozen** (countdown, goal pause, after the whistle, menu): every roster car gets zero controls.
 * **HUD**: the menu has a Mode row (← → on the row, `M`, pad left / right; ↑ ↓ / D-pad move the
-  focus across Difficulty / Mode / Quality, `Q` still toggles quality) and shows
+  focus across Difficulty / Mode / Quality, `Q` steps to the next quality tier) and shows
   `<mode> · <n> cars` in its info line; the Tab scoreboard diffs a `rows` array by content and
   rebuilds its two columns only when a roster or a name changes.
 
@@ -441,18 +461,22 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
 
 ## Rendering budget (measured)
 
-* Arena + stadium + pads: 12 draw calls (floor, glass shell, glass ceiling, goals, goal bars /
-  nets, truss, haze cones, stands, masts, halos, pads ×2), all procedural TSL, no textures.
+* Arena + stadium + pads: 14 draw calls (turf: floor; stadium: glass shell, glass ceiling, lamp
+  bars, truss, haze cones, stands, masts, halos; arena: goals, goal frames ×2, pads ×2), all
+  procedural TSL, no textures.
 * Cars: body (1 merged geometry) + 4 wheels (1 instanced) + flame (while boosting) + blob (while
-  airborne at tier 0) per car. Ball: sphere + blob + marker (airborne). Effects: particles (1
-  instanced), ribbons (1), rings (1 instanced), goal flash (1).
+  airborne at high detail, always at low) per car. Ball: sphere + blob + marker (airborne).
+  Effects: particles (1 instanced), ribbons (1), rings (1 instanced), goal flash (1).
 * Shadow pass: only cars and the ball cast (5 draws); the floor receives.
-* Full match frame: ~34 draws at tier 1, ~41 at tier 0, up to ~46 with effects; ~40k triangles.
-* Post: tier 0 = MSAA x4 scene pass + bloom from the emissive target + vignette; tier 1 = no MSAA,
-  no bloom, FXAA. Pixel ratio: tier 0 min(dpr, 6 Mpx budget) and never below 1, tier 1 = 1.
+* Full match frame: ~34 draws on low, ~41 on high / ultra, up to ~46 with effects; ~40k
+  triangles. Free play at kickoff: 29 draws on low, 35 on high / ultra.
+* Post (`post/pipeline.ts`, switches from the tier table): high / ultra = MSAA x4 scene pass +
+  bloom from the emissive target + vignette, dynamic resolution between 0.6 and 1; low = no MSAA,
+  no bloom, FXAA. Pixel ratio: high / ultra min(dpr, 2, 6 Mpx budget) and never below 1, low = 1.
 * Measured (desktop-app browser pane, WebGPU): 165 fps display-limited at 491×377, ~82 fps at
-  1920×1080×1.37, GPU 0.2–1.1 ms at the small size. Target stays 144+ fps on a mid-range GPU at
-  1080p and 60 fps on integrated graphics at tier 1.
+  1920×1080×1.37, GPU 0.2–1.1 ms at the small size; free play at kickoff, 1600×900 CSS: GPU
+  ~1.4 ms on low (1600×900) and ~2.5 ms on high / ultra (2190×1233, dpr 1.37). Target stays 144+
+  fps on a mid-range GPU at 1080p and 60 fps on integrated graphics on low.
 
 ## Legal
 
