@@ -7,9 +7,10 @@
  *
  *   refresh   estimated from the frame intervals: the 10th percentile of each 1 s window (early
  *             frames and timer jitter below it are ignored; a histogram of 0.25 ms bins). A
- *             shorter window replaces the estimate at once; a longer one pulls it up by a quarter per window only while a lower resolution has
- *             nothing to give (at the minimum scale, after a failed probe, or with the GPU idle):
- *             a slower display, a throttled tab or a CPU-bound game then stops counting as late.
+ *             shorter window replaces the estimate at once; a longer one pulls it up by a quarter
+ *             per window, but only while a lower resolution has nothing to give (at the minimum
+ *             scale, after a failed probe, or with the GPU idle): a slower display, a throttled
+ *             tab or a CPU-bound game then stops counting as late.
  *   late      a frame at 1.4 refresh intervals or more (a missed vsync is 2). Decisions are made
  *             per 0.5 s window from the share of late frames and the mean interval.
  *   down      a window with a quarter of its frames late starts a probe: one step down (0.1) per
@@ -96,7 +97,7 @@ export class DynamicResolution {
   /** Refresh window: elapsed seconds, frames and the interval histogram. */
   private refreshS = 0;
   private refreshFrames = 0;
-  private readonly bins = new Uint16Array(BINS);
+  private readonly bins = new Uint32Array(BINS);
   /** The refresh estimate may rise (a lower resolution has nothing to give right now). */
   private mayRise = false;
   /** Decision window: elapsed seconds, frames, late frames, interval sum and longest interval. */
@@ -244,7 +245,7 @@ export class DynamicResolution {
     return true;
   }
 
-  /** Windowed low percentile of the intervals: the estimate falls to it at once and, while mayRise, rises by RISE per window. */
+  /** Windowed low percentile of the intervals: the estimate falls to it at once; while mayRise it rises by RISE per window. */
   private trackRefresh(intervalMs: number, dt: number): void {
     this.bins[Math.min(BINS - 1, Math.floor(intervalMs / BIN_MS))]++;
     this.refreshFrames++;

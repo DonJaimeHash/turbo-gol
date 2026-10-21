@@ -17,10 +17,11 @@
  * Draw calls per car: body (1 merged geometry) + wheels (1 InstancedMesh, 4 instances) + flame
  * (1, only while boosting / supersonic; both jets, their nozzle discs and the underglow are ONE
  * merged geometry driven by uniforms) + ground blob (1, only while airborne at high detail / when
- * visible at low detail, see TierSpec.detail). Materials: ONE MeshPhysicalNodeMaterial shared by all cars (surface properties
- * live in vertex attributes: `color` = linear base colour, `aMat` = (metalness, roughness,
- * emissive, paintMix); clearcoat, the two-tone split, the pinstripe and the chevrons are derived
- * from them in TSL) plus one additive flame material and one blob material per car.
+ * visible at low detail, see TierSpec.detail). Materials: ONE MeshPhysicalNodeMaterial shared by
+ * all cars (surface properties live in vertex attributes: `color` = linear base colour, `aMat` =
+ * (metalness, roughness, emissive, paintMix); clearcoat, the two-tone split, the pinstripe and the
+ * chevrons are derived from them in TSL) plus one additive flame material and one blob material
+ * per car.
  *
  * No per-frame allocations: all maths goes through module scratch objects.
  */
