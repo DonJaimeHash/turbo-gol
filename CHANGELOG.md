@@ -7,6 +7,14 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- The physics core of the experimental presets (nothing visible yet: no menu offers them, and
+  every match, server, community node and training pack still runs the standard physics). The
+  physics library can now run a match with other gravity, ball speed, hit strength, ball weight,
+  bounce and air drag, car top speed, boost power and use, kickoff boost, jump power, unlimited
+  flips or double jumps, bump strength, demolitions and respawn time, every value on a fixed grid
+  and checked against hard limits so the game cannot break. It costs nothing per tick, the ball
+  prediction and the bots follow the rules, and a recorded trace proves the standard physics did
+  not change by a single bit.
 - A fourth graphics quality, Super low ("Súper bajo"), for TVs, set-top boxes and very old
   devices: about 640x360 upscaled by the screen, 30 frames per second, no edge smoothing, a
   simple sky instead of the harbour, canyon or valley behind the stadium, a painted crowd, simpler

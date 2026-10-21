@@ -48,20 +48,29 @@ native/
                         de-dup (a mutual same-tick bump is merged, demo direction wins); goal
                         de-dup reset only when the ball is placed outside a net; deterministic
                         kickoff deal (RocketSim hands spots out in heap-address order, the wrapper
-                        uses OUR spots in creation order from the seed, see native/README.md)
+                        uses OUR spots in creation order from the seed, see native/README.md);
+                        physics mutators (rs_set_mutators: a whole preset against hard limits,
+                        all or nothing, copied into the ball predictor's arena)
   build.ps1             emcc build → src/sim/wasm/rocketsim.{js,wasm} (ES module + wasm, bundled
                         by Vite into dist/assets)
   RocketSim/            git submodule: RocketSim v2.2.1 (MIT), never edited; patch-rocketsim.mjs
-                        copies it to native/build/rocketsim with two patches (native/README.md):
-                        Bullet broadphase triangle query (speed) and cars hashed by id in
-                        Arena.h (deterministic iteration order)
+                        copies it to native/build/rocketsim with three patches (native/README.md):
+                        Bullet broadphase triangle query (speed), cars hashed by id in Arena.h
+                        (deterministic iteration order) and a car top speed mutator (supersonic
+                        thresholds scaled; stock runs the original expressions)
 src/sim/
   types.ts              state-buffer layout, CarControls, SimStateView (DONE)
   constants.ts          the field (dimensions, rounded corners, goals, boost pads, kickoff and
                         respawn spots), ball / car constants: the single source for sim and render
   arenaMesh.ts          analytic field → triangle mesh (uu, sim coords) for BOTH physics and visuals
   RocketSimBridge.ts    loads the wasm, implements SimStateView, step(), setControls(), events,
-                        ball prediction (entries anchored to predTick so readers add the age)
+                        ball prediction (entries anchored to predTick so readers add the age),
+                        createArena(tickRate, mutators?) (stock without a preset), getMutators()
+  mutatorLayout.ts      the wasm's mutator layout: slots, float32-exact stock values, the hard
+                        limits mirrored, mutatorFingerprint (imported by the bridge: node-bundled)
+  mutators.ts           experimental physics presets: the integer value table and grid,
+                        toMutators / botPhysicsOf (exact stock for defaults), the strict / lenient
+                        parser client and server share, built-ins (not node-bundled)
   wasm/                 build output of native/build.ps1 (rocketsim.js, rocketsim.wasm, .d.ts)
 src/render/
   coords.ts             sim→three coordinate mapping helpers (tiny, shared)
@@ -387,11 +396,15 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         path), net-prediction + net-client (fake sim / fake fetch + socket),
                         net-rollback-wasm and net-roomhost-wasm (RoomHost host sim + client
                         RollbackPredictor on the real wasm: hash per snapshot, replay of the
-                        applied inputs between snapshots)
+                        applied inputs between snapshots), stock-trace (the golden stock trace:
+                        hashes recorded with the wasm from before the mutators), mutators (table,
+                        parser), mutators-wasm (every field's effect, refusals, the predictor,
+                        determinism, top speed), mutators-extremes (60 s 3v3 bots at the corners)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
-                        fails on a > 10 s dead ball or an own-goal streak)
+                        fails on a > 10 s dead ball or an own-goal streak), stock-trace.mjs (the
+                        golden stock trace runs; --write re-records them for a deliberate change)
 ```
 
 ### Bloom / glow contract (src/render/materials.ts)
