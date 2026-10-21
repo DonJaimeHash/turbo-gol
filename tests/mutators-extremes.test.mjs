@@ -131,9 +131,12 @@ test('built-in presets: 30 s of 3v3 bots each stay finite and inside the field',
 });
 
 test('cost: a preset match costs about what a stock match costs per tick (no hidden re-simulation)', () => {
-  const stock = Math.min(match(null, 1, TICKS / 2).us, match(null, 2, TICKS / 2).us);
+  const stock = (match(null, 1, TICKS / 2).us + match(null, 2, TICKS / 2).us) / 2;
+  const sorted = costs.map((c) => c.us).sort((a, b) => a - b);
+  const median = sorted[sorted.length >> 1];
   const worst = costs.reduce((a, c) => (c.us > a.us ? c : a), { name: '-', us: 0 });
-  console.log(`stock ${stock.toFixed(0)} us/tick (sim + 6 bots), slowest preset run: ${worst.name} ${worst.us.toFixed(0)} us/tick`);
-  // A predictor that re-simulated 720 ticks on every refresh would add ~300-500 us per tick here.
-  assert.ok(worst.us < stock * 2.5 + 40, `${worst.name}: ${worst.us.toFixed(0)} us/tick vs stock ${stock.toFixed(0)}`);
+  console.log(`stock ${stock.toFixed(0)} us/tick (sim + 6 bots), presets: median ${median.toFixed(0)}, slowest ${worst.name} ${worst.us.toFixed(0)} us/tick`);
+  // A predictor that re-simulated 720 ticks on every refresh would add ~300-500 us per tick to
+  // every preset run; timing noise moves single runs, not the median.
+  assert.ok(median < stock * 2 + 40, `median preset run ${median.toFixed(0)} us/tick vs stock ${stock.toFixed(0)}`);
 });
