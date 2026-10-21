@@ -12,9 +12,9 @@
  * Constant light count: BOTH keys and the fill exist on every tier and theme (3 lights), because
  * a light-count change recompiles every lit material (measured 6-7.5 s on the web). A theme switch
  * rewrites colours, intensities and directions (uniforms) and refits the shadow frustums (CPU
- * only). The tier decides how many keys cast shadows (`TierSpec.shadowedKeys`: keys[0] first, the
- * brighter one); a tier switch rebuilds the views and the post chain anyway, so the castShadow
- * change recompiles nothing extra.
+ * only). The tier decides how many keys cast shadows (`TierSpec.shadowedKeys`: none on low, keys[0]
+ * first, the brighter one); a tier switch rebuilds the views and the post chain anyway, so the
+ * castShadow change recompiles nothing extra.
  *
  * Shadows: only cars and the ball cast (they set `castShadow`); the floor receives. Each shadow
  * frustum is an orthographic box fitted to the arena (field + goals, floor to ceiling) seen from
@@ -42,7 +42,7 @@ const _v = new THREE.Vector3();
 export type KeyLights = readonly [THREE.DirectionalLight, THREE.DirectionalLight];
 
 export interface Lighting {
-  /** The theme's two key lights; keys[0] is the brighter one and always casts shadows. */
+  /** The theme's two key lights; keys[0] is the brighter one and the first to cast shadows. */
   readonly keys: KeyLights;
   /** keys[0] (the alias the Renderer exposes as `sun`). */
   readonly sun: THREE.DirectionalLight;

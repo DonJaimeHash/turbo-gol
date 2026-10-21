@@ -3,8 +3,8 @@
  * stadium, turf, sky, cars, ball, effects) reads the same switches instead of comparing tier names.
  *
  *   low    phones, tablets, integrated GPUs and the WebGL2 fallback's default: no MSAA (FXAA),
- *          no bloom (glow comes from geometry and HDR colour), pixel ratio 1, one shadowed key light,
- *          the cheapest turf, crowd and sky bake.
+ *          no bloom (glow comes from geometry and HDR colour), pixel ratio 1, no shadow maps (the
+ *          cars and the ball keep their ground blobs), the cheapest turf, crowd and sky bake.
  *   high   the desktop default: MSAA x4, emissive bloom, two shadowed key lights (2048 maps), relief
  *          turf, the full stadium; a pixel budget with dynamic resolution so big screens keep their
  *          refresh rate.
@@ -42,13 +42,20 @@ export interface TierSpec {
   readonly dynamicResolution: boolean;
   /** Lowest scene-pass resolution scale dynamic resolution may use. */
   readonly minResolutionScale: number;
-  /** Theme key lights that cast shadows (post/lighting.ts: keys[0] first; the other key still lights without one). */
-  readonly shadowedKeys: 1 | 2;
+  /**
+   * Theme key lights that cast shadows (post/lighting.ts: keys[0] first; a key without one still
+   * lights). None on low: the cars' and the ball's ground blobs ground them there (the cars show
+   * theirs at all times on low), no material samples a shadow map, and the shadow pass is gone.
+   * Phones start on low, and the shadow-map sampling is the one path every material that went
+   * missing on a Mali-G51 Android phone shared (the pitch, the cars and the ball, the only
+   * receivers; three r186 also takes an Android-only depth-compare fallback for it on WebGPU).
+   */
+  readonly shadowedKeys: 0 | 1 | 2;
   /**
    * Shadow map size of each shadowed key and its PCF radius. GPU memory: three r186's shadow target
    * holds a depth24plus map AND an unused RGBA8 colour texture of the same size, 8 bytes per texel:
-   * 2048 = 34 MB, 4096 = 134 MB per shadowed key: low 34 MB (one key), high 67 MB (two 2048 keys,
-   * the desktop default stays lean), ultra 268 MB (two 4096 keys, the sharpest car shadows).
+   * 2048 = 34 MB, 4096 = 134 MB per shadowed key: low none, high 67 MB (two 2048 keys, the
+   * desktop default stays lean), ultra 268 MB (two 4096 keys, the sharpest car shadows).
    */
   readonly shadowMapSize: number;
   readonly shadowRadius: number;
@@ -90,7 +97,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     pixelBudget: 2.2e6,
     dynamicResolution: false,
     minResolutionScale: 1,
-    shadowedKeys: 1,
+    shadowedKeys: 0,
     shadowMapSize: 2048,
     shadowRadius: 3,
     skyCubeSize: 512,

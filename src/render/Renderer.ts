@@ -10,8 +10,7 @@
  *            the EMISSIVE target only [+ ultra lens glare] -> vignette -> exposure, HDR grade and
  *            the theme's tone curve -> sRGB (`renderOutput`) -> FXAA on tiers without MSAA
  *
- *   low:          no MSAA (FXAA instead), pixel ratio 1, one shadowed key (2048, PCF radius 3), no
- *                 bloom
+ *   low:          no MSAA (FXAA instead), pixel ratio 1, no shadow maps (ground blobs), no bloom
  *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, pixel budget 6 Mpx) but never
  *                 below 1 (quality.ts `pixelRatio`), two shadowed keys (2048 / PCF radius 3 on high,
  *                 4096 / radius 4 on ultra), 5-mip bloom, dynamic resolution; ultra adds GTAO, SSR
@@ -22,7 +21,10 @@
  * chain (scene pass, ultra passes, bloom, pipeline quad) and builds the new one.
  *
  * `#webgl2` in the URL forces three's WebGL2 backend (the automatic fallback of browsers without
- * WebGPU), to test that path on any machine.
+ * WebGPU), to test that path on any machine; `#lowgpu` forces it with a context that looks like a
+ * low-end phone's (no float-linear / float-target / float-blend extensions, capped limits) and
+ * `#diag` shows the backend, GPU, extensions, limits, tier, theme and shader errors on screen
+ * (gpuDiag.ts).
  *
  * GPU timing: with `#stats` in the URL the renderer is created with `trackTimestamp` and resolves
  * the render-pass timestamps every frame; `gpuTimeMs` / `stats().gpuMs` expose them (0 when the
@@ -48,6 +50,7 @@ import { DynamicResolution } from './dynamicResolution';
 import { createLighting, type Lighting } from './post/lighting';
 import { buildPostChain, type PostChain } from './post/pipeline';
 import { pixelRatio, startingQuality, tier, type Quality } from './quality';
+import { GpuDiag, diagFlags, installLowGpuEmulation } from './gpuDiag';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
 import { createWorld, type World } from './world/World';
 
@@ -212,7 +215,7 @@ export class Renderer {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly isWebGPU: boolean;
-  /** The brighter key light (keys[0] of post/lighting.ts, shadowed on every tier). Cars and the ball set `castShadow`; the floor receives. */
+  /** The brighter key light (keys[0] of post/lighting.ts, shadowed on high and ultra). Cars and the ball set `castShadow`; the floor receives. */
   readonly sun: THREE.DirectionalLight;
   /** Hemisphere fill (post/lighting.ts). */
   readonly hemi: THREE.HemisphereLight;
@@ -225,6 +228,8 @@ export class Renderer {
   onResize: (() => void) | null = null;
 
   private readonly canvas: HTMLCanvasElement;
+  /** `#diag` panel (gpuDiag.ts), null without the flag. */
+  private diag: GpuDiag | null = null;
   /** Key light, fill and shadows (post/lighting.ts). */
   private readonly lighting: Lighting;
   /** Sky, environment, fog (world/World.ts). */
@@ -305,6 +310,9 @@ export class Renderer {
   static async create(canvas: HTMLCanvasElement, opts: RendererOptions = {}): Promise<Renderer> {
     const hash = typeof location !== 'undefined' ? location.hash : '';
     const timing = hash.includes('stats');
+    const flags = diagFlags(hash);
+    // `#lowgpu`: the WebGL2 context three creates in init() looks like a low-end phone's.
+    const restoreGetContext = flags.lowgpu ? installLowGpuEmulation() : null;
     const gpu = new THREE.WebGPURenderer({
       canvas,
       antialias: false,
@@ -312,12 +320,25 @@ export class Renderer {
       powerPreference: 'high-performance',
       trackTimestamp: timing,
       // `#webgl2` in the URL: the WebGL2 fallback even where WebGPU exists (testing the fallback).
-      forceWebGL: hash.includes('webgl2'),
+      forceWebGL: hash.includes('webgl2') || flags.lowgpu,
     });
-    await gpu.init();
+    try {
+      await gpu.init();
+    } finally {
+      if (restoreGetContext !== null) restoreGetContext();
+    }
     const webgpu = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
     const quality = startingQuality(opts.quality ?? 'high', opts.qualityChosen ?? true, webgpu);
-    const renderer = new Renderer(gpu, canvas, quality, opts.theme ?? DEFAULT_THEME, timing);
+    // `#diag`: the on-screen panel and its probes, installed before any shader compiles.
+    const theme = opts.theme ?? DEFAULT_THEME;
+    let renderer: Renderer | null = null;
+    let diag: GpuDiag | null = null;
+    if (flags.diag) {
+      diag = new GpuDiag(gpu, () => ({ tier: renderer?.quality ?? quality, theme: renderer?.theme ?? theme }), flags.lowgpu);
+      diag.attach();
+    }
+    renderer = new Renderer(gpu, canvas, quality, theme, timing);
+    renderer.diag = diag;
     // The world's load-time work behind the boot overlay: its first bake or cache read.
     await renderer.world.ready;
     return renderer;
@@ -486,6 +507,7 @@ export class Renderer {
     }
     this.world.dispose();
     this.lighting.dispose();
+    if (this.diag !== null) this.diag.dispose();
     this.gpu.dispose();
   }
 

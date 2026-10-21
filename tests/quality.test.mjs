@@ -59,8 +59,8 @@ test('post and lighting switches (post/: two keys, bloom, the ultra extras)', ()
   const low = tier('low');
   const high = tier('high');
   const ultra = tier('ultra');
-  // Both keys exist on every tier (constant light count); low shadows only keys[0].
-  assert.equal(low.shadowedKeys, 1);
+  // Both keys exist on every tier (constant light count); low has no shadow maps (ground blobs).
+  assert.equal(low.shadowedKeys, 0);
   assert.equal(high.shadowedKeys, 2);
   assert.equal(ultra.shadowedKeys, 2);
   // Emissive bloom over BloomNode's full 5 mips (its maximum) with a tight radius; none on low.
