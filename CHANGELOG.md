@@ -15,6 +15,13 @@ All notable changes to Turbogol are documented here. The format follows
   at 1 to 3 frames per second), unless the player picked a quality, and on a device where
   Performance failed. Picking it, or leaving it, restarts the game (during an online match, once
   the player leaves the match); `#superlow` at the end of the address tries it without saving it.
+- Settings > Experimental, for signed-in players: one switch for features being tested. While it
+  is on, Super low can be picked in Settings > Graphics (guests and players with the switch off see
+  Performance, High and Ultra; a device that needs Super low still starts on it by itself, and a
+  saved Super low pick of a player who signs out or turns the switch off becomes Performance from
+  the next start). The account keeps the switch and up to 10 physics presets (values on a fixed
+  grid with safe limits, five read-only built-ins), with a copy on the device that syncs when the
+  connection is back; the editor and the experimental modes that use them come next.
 - `#diag` shows why the game runs its quality, the frame rate and the time each part of a frame
   takes, and has a button that loses the graphics device to test the recovery; new address flags
   help measure a slow device (`#pr=`, `#hide=`, `#nopost`, `#norender`, `#diag=audit`, `#tv` for

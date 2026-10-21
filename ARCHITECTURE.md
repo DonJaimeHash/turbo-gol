@@ -78,12 +78,17 @@ src/render/
                         reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU compatibility mode
                         and <= 4 GB devices start on low unless the player chose a tier, super low
                         never raised; never above the GPU's ceiling); needsReload (into or out of
-                        super low); drawsFrame (the frame cap); lowerQuality
+                        super low); drawsFrame (the frame cap); lowerQuality; menuQualities (super
+                        low listed only for unlocked players) and nextQuality over such a list
   bootTier.ts           the boot tier before the renderer exists (the URL's #superlow, the tab's
                         recovery, a GPU of the device that fell to super low (a ceiling known
                         before the backend), the player's choice, super low on a TV with a slow GPU or on
                         1 GB: autoSuperlow, probeGpu, readBootSignals), the TierReason #diag shows,
-                        and tierPrefsAfter (the prefs keep the player's pick only)
+                        tierPrefsAfter (the prefs keep the player's pick only; 'lock') and
+                        gateTierPrefs (a locked player's saved super low reads as Performance, not chosen)
+  experimentalPage.ts   Settings > Experimental: a guest's locked line, the switch (a second press
+                        when turning it off restarts on Performance), what it unlocks, Super low's
+                        line and the account's presets; built once, lines shown / hidden
   hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
@@ -196,7 +201,8 @@ src/render/
                         Game: RESUME, training entries on one row, SETTINGS, QUIT; its own focus
                         ring driven by Input's menu edges), menu + the settings screen (tabs:
                         rebinding both devices, camera / gameplay sliders, Audio: master volume,
-                        Graphics: the quality tier)
+                        Graphics: the quality tier among MenuOptions.qualities, Experimental:
+                        experimentalPage.ts; refreshSettings redraws it when the account changes)
 src/ai/
   Bot.ts                heuristic bot: produces CarControls from SimStateView + ball prediction;
                         stall / net / wall recovery; scans every car (nearest opponent, bump
@@ -263,6 +269,13 @@ src/game/
   trainingRecords.ts    best run per pack: validation and merge rules (shared with server/), storage
   trainingStore.ts      guest records in this browser, an account's synced with /api/me/training (local
                         copy, guest records move into the first account)
+  physicsRules.ts       experimental physics: the table of integer values (grid, groups, free-play
+                        only keys), strict / lenient parsers, built-in presets, stored presets, the
+                        rules snapshot, automatic names (shared with server/; the physics core maps
+                        the integers to the wasm, src/sim/mutators.ts)
+  experimentalStore.ts  an account's Settings > Experimental switch and presets: a local copy per
+                        account (read at boot: unlockedAtBoot), debounced pushes to /api/me/presets,
+                        offline edits kept dirty, deletes need the server; nothing for a guest
   (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick)
 src/ui/                 the front-end menus, styled by menu.css (mn-)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
@@ -301,7 +314,9 @@ src/net/
   rating.ts             Weng-Lin (OpenSkill) Bradley-Terry team rating, abandon rules, tiers,
                         placement, MMR scale, abandon ban ladder (shared with server/)
   AccountClient.ts      sign in / up / recover / OAuth redirects, 1 h Bearer refreshed from the
-                        HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling
+                        HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
+                        the experimental switch and presets; a listener list (subscribe) and the
+                        { name, id } hint the boot reads (readAccountHint)
   LobbyClient.ts        custom lobbies: list / create / join by code, the lobby socket (state,
                         match result per member, back, kick, settings)
   p2p/                  phase 2: peer-to-peer deterministic rollback (docs/online/PHASE2.md)
@@ -352,11 +367,12 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         every player is ready (else cancelled at 45 s, no-shows penalised),
                         forfeit when a team quits / stays disconnected 60 s, result -> AccountsDO
   src/AccountsDO.ts     the one SQLite object for every account (accountStore.ts): users,
-                        refresh tokens, ratings, ranked results / abandons / bans / locks, login
-                        throttle, daily prune
+                        refresh tokens, ratings, ranked results / abandons / bans / locks, training
+                        records, the experimental switch and presets, login throttle, daily prune
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
-                        recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training, leaderboard,
-                        ranked result; server-side PBKDF2 of the client key
+                        recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
+                        /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
+                        minute), leaderboard, ranked result; server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
                         admit (password, kick list), start through the matchmaker's /custom
   src/LobbyDirectoryDO.ts  join codes -> lobby ids and the public list per region
@@ -642,7 +658,10 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   Phones and tablets start on low, desktops on high; WebGL2, WebGPU compatibility mode and <= 4 GB
   devices on low unless the player chose a tier; a TV on a slow GPU or a 1 GB device on super low
   (bootTier.ts, before the renderer: super low runs WebGL2). Settings > Graphics (from the menus or
-  the pause menu) picks the tier; `switchQuality` rebuilds every view and the render path
+  the pause menu) picks the tier; super low is a pick only for a signed-in player with Settings >
+  Experimental's switch on (guests see Performance / High / Ultra; a device that runs super low on
+  its own keeps it, no chip lit; a locked player's saved pick reads as Performance at the next
+  start: main.ts gateTierPrefs, and Game.checkTierLock on sign-out / switch off, without a reload); `switchQuality` rebuilds every view and the render path
   (~30 ms), waits for the world's bake at the new sizes and compiles the new pipelines in
   parallel, all behind the loading screen; into or out of super low it saves the prefs and
   reloads the page (`restartOn`: its own backend and world), except in an online match, where the
