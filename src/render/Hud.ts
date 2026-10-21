@@ -40,7 +40,7 @@ import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/N
 import { MODES, type GameMode } from '../sim/constants';
 import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
-import { nextQuality, type Quality } from './quality';
+import { QUALITIES, type Quality } from './quality';
 import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from '../game/Match';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -1160,7 +1160,7 @@ export class Hud {
       return;
     }
     if (dispatchFocus(this.mainRing, action)) return;
-    if (action === 'quality') this.toggleQuality();
+    if (action === 'quality') this.stepQuality(1);
     else if (action === 'mode') this.cycleMode(1);
     else if (action === 'settings') this.openSettings();
     else if (action === 'online') this.online();
@@ -1275,7 +1275,7 @@ export class Hud {
     const qRow = el('div', 'hud-menu-row');
     qRow.appendChild(el('span', 'hud-menu-row-label', 'Quality'));
     const qBtn = button('hud-menu-toggle', '');
-    qBtn.addEventListener('click', () => this.toggleQuality());
+    qBtn.addEventListener('click', () => this.stepQuality(1));
     this.menuQuality = qBtn;
     qRow.appendChild(qBtn);
     rows.append(diffRow, modeRow, qRow);
@@ -1297,13 +1297,14 @@ export class Hud {
     const diffRight = (): void => this.cycleDifficulty(1);
     const modeLeft = (): void => this.cycleMode(-1);
     const modeRight = (): void => this.cycleMode(1);
-    const toggleQ = (): void => this.toggleQuality();
+    const qualityLeft = (): void => this.stepQuality(-1);
+    const qualityRight = (): void => this.stepQuality(1);
     const playItem: FocusItem = { el: play, accept: () => this.play(), left: diffLeft, right: diffRight };
     const onlineItem: FocusItem = { el: online, accept: () => this.online(), left: modeLeft, right: modeRight };
     const nameItem: FocusItem = { el: nameRow, accept: () => nameInput.focus() };
     const diffItem: FocusItem = { el: diffRow, accept: diffRight, left: diffLeft, right: diffRight };
     const modeItem: FocusItem = { el: modeRow, accept: modeRight, left: modeLeft, right: modeRight };
-    const qualItem: FocusItem = { el: qRow, accept: toggleQ, left: toggleQ, right: toggleQ };
+    const qualItem: FocusItem = { el: qRow, accept: qualityRight, left: qualityLeft, right: qualityRight };
     const settingsItem: FocusItem = { el: settingsBtn, accept: () => this.openSettings(), left: diffLeft, right: diffRight };
     this.onlineItem = onlineItem;
     this.nameItem = nameItem;
@@ -1383,9 +1384,13 @@ export class Hud {
     if (opts !== null && opts.onDifficultyChange) opts.onDifficultyChange(this.difficulty);
   }
 
-  /** The next tier in menu order (Q, a click or left / right on the Quality row): low -> high -> ultra -> low. */
-  private toggleQuality(): void {
-    this.quality = nextQuality(this.quality);
+  /**
+   * Step the tier in menu order (low -> high -> ultra, wrapping): +1 for Q, a click, accept or
+   * right on the Quality row, -1 for left.
+   */
+  private stepQuality(d: 1 | -1): void {
+    const n = QUALITIES.length;
+    this.quality = QUALITIES[(QUALITIES.indexOf(this.quality) + d + n) % n];
     this.refreshMenu();
     const opts = this.menuOptions;
     if (opts !== null && opts.onQualityChange) opts.onQualityChange(this.quality);
