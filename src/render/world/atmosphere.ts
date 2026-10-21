@@ -14,9 +14,10 @@
  *                      hemispheric ambient, a horizontal "city glow" bounce, and the yard lamps from
  *                      the CPU light map (lightmap.ts).
  *
- * Compile time matters more than ALU here (the sky only runs while baking): every helper is a real
- * WGSL / GLSL function (`setLayout`) so call sites do not inline copies, and the noise is a compact
- * value-noise fbm in a loop instead of unrolled Perlin octaves.
+ * Compile time matters more than ALU here (the sky only runs while baking): the hashes, the value
+ * noise and the fbm (the heavy, uniform-free part) are real WGSL / GLSL functions (`setLayout`), so
+ * call sites do not inline copies, and the fbm is a compact value-noise loop instead of unrolled
+ * Perlin octaves. The helpers that read uniforms are inlined per material (see `functions`).
  *
  * NaN hygiene: every pow() base is clamped to >= 0, every division has a floor, every normalize
  * of a possibly-zero vector is a safe division.
