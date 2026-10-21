@@ -78,7 +78,7 @@ import { REGIONS, isPlaylist } from '../net/account';
 import type { RegionId } from '../net/account';
 import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
-import { createMenu, showRankedResult } from '../ui';
+import { createMenu, RankedResults } from '../ui';
 import type { Menu, MenuConfig, MenuHost, SearchRequest, SearchView } from '../ui';
 import type { NetStatsView } from '../net/NetStats';
 import { P2PSession, type P2PGameHooks } from '../net/p2p/P2PSession';
@@ -508,6 +508,8 @@ export class Game implements P2PGameHooks {
   readonly trainingStore: TrainingStore;
   /** Custom lobbies (the lobby socket lives across the lobby's matches). */
   readonly lobby: LobbyClient;
+  /** The rating change of each finished ranked match, held while the menus are away (showMenu). */
+  private readonly rankedResults: RankedResults;
   /** The menu search in progress (banner): its kind, playlists and start time. */
   private searchReq: SearchRequest | null = null;
   private searchSince = 0;
@@ -672,11 +674,12 @@ export class Game implements P2PGameHooks {
     // Accounts: a signed-in player queues / joins lobbies under the account (NetClient asks first).
     const accounts = new AccountClient({ antiBot: () => online.client.antiBotToken() });
     this.accounts = accounts;
-    online.client.sessionProvider = () => accounts.sessionForQueue();
+    online.client.sessionProvider = (minValidMs) => accounts.sessionForQueue(minValidMs);
     online.client.onSessionRejected = () => accounts.sessionRejected();
     this.trainingStore = new TrainingStore({ accountId: () => accounts.account?.playerId ?? null, push: (r) => accounts.pushTraining(r) });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
+    this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.hud.menuVisible && !this.onlineActive });
     this.restoreAccount();
 
     (window as unknown as { __game: Game }).__game = this;
@@ -2294,6 +2297,9 @@ export class Game implements P2PGameHooks {
       if (this.audio.running) this.removeGestureListeners();
     } else if (this.audio.suspended) this.addGestureListeners();
     if (this.installHint) this.updateInstallHint();
+    // A ranked result held while the menus were away: out as soon as they are back without a
+    // showMenu (the settings screen closed, a connection to a match failed).
+    this.rankedResults.showHeld();
     const stats = this.renderer.stats();
     // GPU frame time when the renderer exposes it (timestamp queries); guarded so either renderer works.
     const gpuMs = (this.renderer as unknown as { gpuTimeMs?: number }).gpuTimeMs;
@@ -2343,14 +2349,14 @@ export class Game implements P2PGameHooks {
     this.menuNotice = undefined;
     this.hud.hideMenu();
     this.menu.show();
-    // A ranked match just ended: show its rating change once AccountsDO has it.
+    // What an earlier ranked match's wait got while the menus were away comes first. Then, when a
+    // ranked match just ended, its rating change once AccountsDO has it (on a community node only
+    // after the replay check: a longer wait, announced once).
+    this.rankedResults.showHeld();
     const ranked = online !== null ? online.lastRankedMatchId : null;
     if (online !== null && ranked !== null) {
       online.lastRankedMatchId = null;
-      void this.accounts.waitRankedResult(ranked).then((r) => {
-        showRankedResult(this.menu, r);
-        void this.accounts.fetchMe().catch(() => undefined);
-      });
+      void this.rankedResults.watch(ranked, online.lastRankedOnNode);
     }
   }
 

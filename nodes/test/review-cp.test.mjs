@@ -2,159 +2,19 @@
 // the outcome comes from the verdict, points from verified minutes, no-shows and cancels are not
 // taken on a community node's word, malformed messages never throw, leaves after the whistle are
 // refused, dead or restarted nodes lose their matches (one strike per outage), verifier-side
-// failures are retried, and a failed verification always means manual review.
+// failures are retried, and a failed verification always means manual review. Also the API the
+// Worker calls: rejoin reasons, the lock check, the hosts count, leaves and channel changes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { T, playRecordedMatch, testBuild } from './helpers.mjs';
+import { playRecordedMatch, testBuild } from './helpers.mjs';
+import { CAP, SPECS, URL_, human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
 
-const { ControlPlane } = await import('../control-plane/controlPlane.ts');
-const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES } = await import('../control-plane/registry.ts');
+const { LINK_TIMEOUT_MS, MAX_UNAUTHENTICATED, NODE_OFFLINE_MS, REPROBE_FAILURES, REPROBE_MS } = await import('../control-plane/controlPlane.ts');
+const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES, usableTransports } = await import('../control-plane/registry.ts');
 const { Ledger } = await import('../control-plane/ledger.ts');
-const { generateEd25519, importPrivateKey, sign, sha256Hex } = await import('../shared/edcrypto.ts');
-const { authMessage, reachMessage, replayRequestMessage } = await import('../shared/controlProtocol.ts');
-const { verifyReplay } = await import('../shared/verify.ts');
-const { decodeReplay, ReplayWriter } = await import('../shared/replay.ts');
-const { nodeSimFactory } = await import('../shared/nodeArena.ts');
-
-const SPECS = { cpus: 2, cpuModel: 'x', memMB: 4096, arch: 'x64', os: 'linux', node: '24' };
-const CAP = { matches: 4, cpuMsPerMatchSecond: 1, memMBPerMatch: 20, uplinkMbps: null, source: 'declared' };
-const URL_ = 'ws://198.51.100.9:7350';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function wait(fn, what = 'condition') {
-  for (let i = 0; i < 400 && !fn(); i++) await sleep(10);
-  assert.ok(fn(), what);
-}
-
-/** Rebuild a replay with `mutate(parsed)` applied. */
-function rewrite(bytes, mutate) {
-  const r = decodeReplay(bytes);
-  mutate(r);
-  const w = new ReplayWriter(r.header);
-  const recs = [];
-  for (let i = 0; i < r.inputCount; i++) recs.push({ tick: r.inputTicks[i], o: 0, k: 'i', i });
-  for (const t of r.takeovers) recs.push({ tick: t.tick, o: 1, k: 't', t });
-  for (let i = 0; i < r.hashCount; i++) recs.push({ tick: r.hashTicks[i], o: 2, k: 'h', i });
-  recs.sort((a, b) => a.tick - b.tick || a.o - b.o);
-  for (const x of recs) {
-    if (x.k === 'i') w.input(x.tick, r.inputSlots[x.i], r.inputData, x.i * T.PACKED_INPUT_BYTES);
-    else if (x.k === 't') w.takeover(x.t.tick, x.t.slot);
-    else w.hash(x.tick, r.hashValues[x.i]);
-  }
-  if (r.end) w.end(r.end);
-  return w.finish();
-}
-const leaveAtEnd = (slot) => (bytes) => rewrite(bytes, (r) => r.takeovers.push({ tick: r.end.tick + 1, slot }));
-
-const human = (c, extra = {}) => ({ playerId: c.repeat(16), name: c.toUpperCase(), account: true, accountAgeDays: 30, ...extra });
-
-/** A control plane with one fake node (wss, or rtc with opts.rtc), logged in and proven reachable. */
-async function setup(opts = {}) {
-  const build = await testBuild();
-  let clock = Date.now();
-  const now = () => clock;
-  const ctl = await generateEd25519();
-  const nodeKeys = await generateEd25519();
-  const nodeKey = await importPrivateKey(nodeKeys.privateKey);
-  const registry = new Registry({ allowInsecure: true, trustedOperators: opts.trusted ? ['op1'] : [] });
-  const replays = new Map();
-  const outcomes = [];
-  let nodeId = '';
-  const realVerify = (bytes, job) => verifyReplay(bytes, { makeSim: nodeSimFactory, wasmSha256: build.wasmSha256, protocol: build.protocol, expect: job.expect, expectNodeId: job.hostNodeId, leaves: job.leaves });
-  const cp = new ControlPlane({
-    controlPrivateKey: ctl.privateKey,
-    controlPublicKey: ctl.publicKey,
-    controlUrl: 'ws://cp/nodes/connect',
-    httpBase: 'http://cp',
-    build: () => build,
-    channel: () => ({ stable: build.version, minimum: '0.0.0' }),
-    registry,
-    ledger: new Ledger(),
-    replays: {
-      put: async (id, b) => void replays.set(id, b),
-      get: async (id) => {
-        if (opts.getDelay) await sleep(opts.getDelay);
-        return replays.get(id) ?? null;
-      },
-    },
-    inlineVerify: opts.noInline ? undefined : opts.verify ? (bytes, job) => opts.verify(bytes, job, realVerify) : realVerify,
-    casualVerifyRate: opts.casualVerifyRate,
-    fetchJson: async (url) => {
-      const nonce = new URL(url.replace(/^ws/, 'http')).searchParams.get('nonce');
-      return { nodeId, sig: await sign(nodeKey, reachMessage(nodeId, nonce)) };
-    },
-    onOutcome: (o) => outcomes.push(o),
-    now,
-    log: process.env.CPLOG ? (m) => console.log('[cp] ' + m) : () => undefined,
-  });
-  const { token } = await registry.createToken({ id: 'op1', name: 'Operador' }, 'SA', clock);
-  const reg = await registry.register({ token, publicKey: nodeKeys.publicKey, roles: ['host'], ...(opts.rtc ? { publicUrl: null, transports: ['rtc'] } : { publicUrl: URL_ }), build, specs: SPECS, capacity: CAP }, clock);
-  assert.ok(reg.ok);
-  nodeId = reg.node.nodeId;
-
-  const toNode = [];
-  const closes = [];
-  const env = { build, cp, registry, nodeKey, toNode, closes, outcomes, replays, nodeId, session: null, boot: 'boot-1', leaveAnswers: true };
-  const fromNode = (m) => cp.onMessage(env.session, JSON.stringify(m));
-  const transport = opts.rtc ? { transports: ['rtc'], publicUrl: null, rtcReady: true, rtcRelay: true } : { transports: ['wss'], publicUrl: URL_, rtcReady: false };
-  env.hello = (patch = {}) => fromNode({ t: 'hello', data: { bootId: env.boot, build, roles: ['host'], ...transport, specs: SPECS, capacity: CAP, draining: false, egressCapGB: null, ...patch } });
-  env.heartbeat = (patch = {}) => fromNode({ t: 'heartbeat', data: { active: 0, capacity: 4, draining: false, egressGB: 0, egressCapGB: null, tickLagP99Ms: 1, cpuLoad: 0.1, rssMB: 80, matches: [], ...patch } });
-  env.send = fromNode;
-  const link = {
-    send(m) {
-      toNode.push(m);
-      if (m.t === 'challenge') void sign(nodeKey, authMessage(nodeId, m.nonce)).then((sig) => setTimeout(() => void fromNode({ t: 'auth', nodeId, sig }), 0));
-      if (m.t === 'welcome') setTimeout(() => void env.hello().then(() => env.heartbeat()), 0);
-      if (m.t === 'assign') setTimeout(() => void fromNode({ t: 'reply', rid: m.rid, ok: true, data: { wsUrl: opts.rtc ? null : `${URL_}/m/${m.match.matchId}` } }), 0);
-      if (m.t === 'leave' && env.leaveAnswers) setTimeout(() => void fromNode({ t: 'reply', rid: m.rid, ok: true, data: { slot: 0, closed: true, already: false, ended: false } }), 0);
-      if (m.t === 'leave' && !env.leaveAnswers) setTimeout(() => void fromNode({ t: 'reply', rid: m.rid, ok: false, code: 'match_over' }), 0);
-    },
-    close(code, reason) {
-      closes.push({ code, reason });
-    },
-  };
-  env.session = cp.open(link);
-  await wait(() => ['probation', 'active'].includes(registry.node(nodeId).status), 'node reachable');
-  if (opts.status) registry.setStatus(nodeId, opts.status, null);
-  env.advance = (ms) => {
-    clock += ms;
-    // A live node keeps heart-beating while time passes (handled synchronously by onMessage).
-    if (!env.session.closed) void env.heartbeat();
-  };
-  env.now = now;
-
-  /** Place a match on the node. */
-  env.place = async (humans, extra = {}) => {
-    const p = await cp.place({ mode: '1v1', region: 'SA', ranked: false, humans, matchLengthSeconds: 10, kickoffCountdownSeconds: 1, goalPauseSeconds: 1, ...(opts.rtc ? { transports: ['rtc'] } : {}), ...extra });
-    assert.ok(p, 'placed');
-    return p;
-  };
-  /** Play it (scripted chasers), upload the replay, send the report (patched), wait until settled. */
-  env.finish = async (p, { play = {}, mutate, report: patch = {}, stats: statsPatch, waitDone = true, noAdvance = false } = {}) => {
-    const a = cp.matches.get(p.matchId).assign;
-    const humanSlots = a.roster.filter((e) => e.kind === 'player').map((e) => e.slot);
-    // Default ending, whatever the (random) kickoff seed does: the rules by tick 1500, or everybody
-    // gone ('empty', proven by 200 ticks of zero controls).
-    const ending = 'stopAt' in play ? {} : { stopAt: 1500, endReason: 'empty', idleSlots: Object.fromEntries(humanSlots.map((s) => [s, 1300])) };
-    const m = await playRecordedMatch({ roster: a.roster, seed: a.kickoffSeed, matchId: a.matchId, nodeId, lengthSeconds: a.matchLengthSeconds, region: a.region, ranked: a.ranked, mode: a.mode, ...ending, ...play });
-    const bytes = mutate ? mutate(m.bytes) : m.bytes;
-    const end = m.end;
-    // The match took its game time (plus a second) on the control plane's clock too.
-    if (!noAdvance) env.advance(Math.ceil((end.tick / 120) * 1000) + 1000);
-    const sha = await sha256Hex(bytes);
-    const ts = now();
-    const up = await cp.storeReplay(a.matchId, nodeId, ts, await sign(nodeKey, replayRequestMessage('PUT', a.matchId, sha, ts)), sha, bytes);
-    assert.ok(up.ok, JSON.stringify(up));
-    const secs = end.tick / 120;
-    const stats = statsPatch ?? { ticks: end.tick, durationMs: secs * 1000, slots: humanSlots.map((slot) => ({ slot, received: end.tick, dropped: 0, underruns: 0, overruns: 0, connectedMs: secs * 1000 })), tickLagP99Ms: 1, egressBytes: 1e6 };
-    const result = { winner: end.winner, blue: end.blue, red: end.red, endTick: end.tick, endReason: end.reason, ...(end.forfeitTeam !== -1 ? { forfeitTeam: end.forfeitTeam } : {}), ...(patch.result ?? {}) };
-    const report = { kind: 'ended', matchId: a.matchId, result, replaySha256: sha, replayBytes: bytes.length, stats };
-    await fromNode({ t: 'report', id: 'ended:' + a.matchId, report });
-    if (waitDone) await wait(() => cp.matches.get(a.matchId).state === 'done', 'match settled');
-    return { entry: cp.matches.get(a.matchId), end };
-  };
-  return env;
-}
+const { generateEd25519, sign, sha256Hex } = await import('../shared/edcrypto.ts');
+const { HEARTBEAT_TIMEOUT_MS, authMessage, replayRequestMessage } = await import('../shared/controlProtocol.ts');
+const { parseReport } = await import('../control-plane/validate.ts');
 
 test("the outcome comes from the replay: a report whose end reason disagrees is a failed verification", async () => {
   const env = await setup({ status: 'active' });
@@ -181,6 +41,46 @@ test('a rated result uses the verdict and flags only proven leaves', async () =>
   assert.deepEqual(entry.outcome.players.map((x) => x.left), [false, true], 'only the proven leaver');
   // A quit pressed after the whistle is refused like MatchDO's 410 and flags nobody.
   await assert.rejects(env.cp.leave(p.matchId, 'a'.repeat(16)), (e) => e.code === 'match_over');
+});
+
+test('on a project node a ranked player with no socket at the whistle is a leaver; a community node’s word on it decides nothing', async () => {
+  const stats = (gone) => ({
+    ticks: 700,
+    durationMs: 6_000,
+    tickLagP99Ms: 1,
+    egressBytes: 1,
+    slots: [0, 1].map((slot) => ({ slot, received: 700, dropped: 0, underruns: 0, overruns: 0, connectedMs: 6_000, connectedAtEnd: slot !== gone })),
+  });
+  /** A ranked forfeit (B quits), with slot `gone` disconnected at the whistle: who is rated as a leaver. */
+  const leavers = async (env, gone) => {
+    const p = await env.place([human('a'), human('b')], { ranked: true });
+    env.advance(6_000);
+    await env.cp.leave(p.matchId, 'b'.repeat(16));
+    const { entry } = await env.finish(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1), stats: stats(gone) });
+    assert.equal(entry.outcome.kind, 'rated', JSON.stringify(entry.outcome));
+    return entry.outcome.players.map((x) => x.left);
+  };
+  const project = await setup({ trusted: true });
+  await wait(() => project.registry.node(project.nodeId).status === 'active');
+  assert.deepEqual(await leavers(project, 0), [true, true], 'A closed the tab: a leaver, like on MatchDO');
+  assert.deepEqual(await leavers(project, -1), [false, true]);
+  const community = await setup({ status: 'active' });
+  assert.deepEqual(await leavers(community, 0), [false, true], 'only the leave the control plane relayed');
+});
+
+test('connectedAtEnd: absent reads as connected (nodes before 0.2.0); anything but a boolean is a bad report', () => {
+  const report = (slot) => ({
+    kind: 'ended',
+    matchId: 'm'.repeat(64),
+    result: { winner: 0, blue: 1, red: 0, endTick: 100, endReason: 'rules' },
+    replaySha256: 'a'.repeat(64),
+    replayBytes: 10,
+    stats: { ticks: 100, durationMs: 1_000, tickLagP99Ms: 1, egressBytes: 1, slots: [{ slot: 0, received: 100, dropped: 0, underruns: 0, overruns: 0, connectedMs: 1_000, ...slot }] },
+  });
+  assert.equal(parseReport(report({})).stats.slots[0].connectedAtEnd, true);
+  assert.equal(parseReport(report({ connectedAtEnd: false })).stats.slots[0].connectedAtEnd, false);
+  assert.equal(parseReport(report({ connectedAtEnd: 'no' })), null);
+  assert.equal(parseReport(report({ connectedAtEnd: 0 })), null);
 });
 
 test('a node holding its report cannot turn a later, automatic leave into an abandon', async () => {
@@ -336,19 +236,295 @@ test('takeovers need a leave the control plane relayed', async () => {
   assert.equal(r2.entry.outcome.kind, 'unrated');
 });
 
-test('a node whose socket closed loses its matches after the heartbeat timeout, with one strike', async () => {
+test('a node whose socket closed loses its matches after NODE_OFFLINE_MS, with one strike', async () => {
   const env = await setup();
   const ps = [];
   for (const c of ['a', 'b', 'c']) ps.push(await env.place([human(c)]));
   env.cp.onClose(env.session);
-  env.advance(5_000);
+  env.advance(NODE_OFFLINE_MS - 1_000);
   env.cp.sweep();
-  assert.equal(env.cp.matches.get(ps[0].matchId).state, 'assigned', 'a quick reconnect keeps them');
-  env.advance(11_000);
+  assert.equal(env.cp.matches.get(ps[0].matchId).state, 'assigned', 'a reconnect in time keeps them');
+  env.advance(1_001);
   env.cp.sweep();
   for (const p of ps) assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
   assert.equal(env.registry.node(env.nodeId).counters.strikes, 1, 'one outage, one strike');
   assert.equal(await env.cp.rejoinTicket(ps[0].matchId, 'a'.repeat(16)), null);
+});
+
+test('a trusted node whose control link drops keeps its matches for a minute: the same process reconnecting goes on', async () => {
+  const env = await setup({ trusted: true });
+  await wait(() => env.registry.node(env.nodeId).status === 'active');
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  env.advance(6_000);
+  await env.cp.leave(p.matchId, 'b'.repeat(16));
+  env.disconnect();
+  env.advance(NODE_OFFLINE_MS - 1_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  await env.reconnect();
+  const { entry } = await env.finish(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1) });
+  assert.equal(entry.outcome.kind, 'rated', JSON.stringify(entry.outcome));
+  assert.equal(env.registry.node(env.nodeId).counters.lost, 0);
+  // Gone for longer: void, like any node.
+  const q = await env.place([human('c'), human('d')], { ranked: true });
+  env.disconnect();
+  env.advance(NODE_OFFLINE_MS + 1);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(q.matchId).outcome.reason, 'node_offline');
+});
+
+/** The node's heartbeats are held on the way from here on (env.advance's included); returns how many were held, and lets them through again. */
+function holdHeartbeats(env) {
+  const beat = env.heartbeat;
+  const held = [];
+  env.heartbeat = (patch) => (held.push(patch), Promise.resolve());
+  return {
+    held,
+    release: () => {
+      env.heartbeat = beat;
+    },
+  };
+}
+
+test('stalled control link: heartbeats held 24 s, then delivered at once, keep the link and a community node’s match; placement skips the node meanwhile', async () => {
+  const env = await setup(); // a community node
+  const name = env.registry.node(env.nodeId).name;
+  const p = await env.place([human('a')]);
+  // The 2026-10-21 timeline: the last heartbeat that got through, then sweeps at +1.65, +6.65,
+  // +11.65, +16.65 and +21.65 s while the node's heartbeats are held on the way.
+  await env.heartbeat();
+  const stall = holdHeartbeats(env);
+  for (const ms of [1_650, 5_000, 5_000, 5_000]) {
+    env.advance(ms);
+    env.cp.sweep();
+  }
+  assert.deepEqual(env.closes, [], 'no 4408 at the heartbeat timeout');
+  assert.equal(env.registry.node(env.nodeId).online, false, 'offline for placement');
+  assert.ok(env.logs.includes(`node ${name}: no heartbeat for 17 s, no new matches until the next one`), env.logs.join('\n'));
+  assert.equal(env.cp.hostsOnline('SA'), 0);
+  assert.equal(await env.cp.place({ mode: '1v1', region: 'SA', ranked: false, humans: [human('b')], matchLengthSeconds: 10 }), null, 'placement skips the silent node');
+  await assert.rejects(env.cp.leave(p.matchId, 'a'.repeat(16)), (e) => e.code === 'offline', 'nothing is relayed into the stall');
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  env.advance(5_000);
+  env.cp.sweep();
+  // The held heartbeats arrive, all at once, 23.87 s after the last one.
+  env.advance(2_220);
+  stall.release();
+  assert.ok(stall.held.length >= 4);
+  for (const patch of stall.held) await env.heartbeat(patch);
+  assert.equal(env.registry.node(env.nodeId).online, true);
+  assert.ok(env.logs.includes(`node ${name}: heartbeat again after 24 s`), env.logs.join('\n'));
+  assert.equal(env.cp.hostsOnline('SA'), 1);
+  const q = await env.place([human('c')]);
+  assert.equal(q.nodeId, env.nodeId, 'placement takes the node again after the burst');
+  for (let i = 0; i < 3; i++) {
+    env.advance(5_000);
+    env.cp.sweep();
+  }
+  assert.deepEqual(env.closes, []);
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  const n = env.registry.node(env.nodeId);
+  assert.deepEqual([n.counters.lost, n.counters.strikes], [0, 0]);
+  assert.ok(!env.logs.some((l) => l.includes('4408')));
+});
+
+test('stalled control link past LINK_TIMEOUT_MS: closed with 4408 and its silence logged, its backlog counted in a few lines; the same process reconnecting keeps a community node’s match', async () => {
+  const env = await setup();
+  const name = env.registry.node(env.nodeId).name;
+  const p = await env.place([human('a')]);
+  await env.heartbeat();
+  const stall = holdHeartbeats(env);
+  env.advance(LINK_TIMEOUT_MS);
+  env.cp.sweep();
+  assert.deepEqual(env.closes, [], 'silent, not dead yet');
+  env.advance(1_000);
+  env.cp.sweep();
+  assert.deepEqual(env.closes, [{ code: 4408, reason: 'heartbeat timeout' }]);
+  assert.ok(env.logs.includes(`node ${name}: silent ${LINK_TIMEOUT_MS / 1000 + 1} s, closing its control link (4408)`), env.logs.join('\n'));
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'the matches outlive the link');
+  // The stall ends: what it held comes in on the closed link. Counted, never handled, logged by
+  // the next sweep, then again only once the count doubled.
+  env.advance(2_000);
+  stall.release();
+  const lastSeen = env.registry.node(env.nodeId).lastSeen;
+  for (let i = 0; i < 9; i++) await env.heartbeat();
+  assert.equal(env.registry.node(env.nodeId).lastSeen, lastSeen, 'a closed link carries no heartbeat');
+  env.cp.sweep();
+  const late = () => env.logs.filter((l) => l.includes('after its link was closed'));
+  const first = `node ${name}: 9 messages so far after its link was closed, up to ${LINK_TIMEOUT_MS / 1000 - 2} s late`;
+  assert.deepEqual(late(), [first]);
+  await env.heartbeat();
+  env.cp.sweep();
+  assert.deepEqual(late(), [first]);
+  for (let i = 0; i < 8; i++) await env.heartbeat();
+  env.cp.sweep();
+  env.cp.sweep();
+  assert.deepEqual(late(), [first, `node ${name}: 18 messages so far after its link was closed, up to ${LINK_TIMEOUT_MS / 1000 - 2} s late`]);
+  await env.reconnect(); // the same bootId: the same process, its match is still running
+  for (let i = 0; i < 4; i++) {
+    env.advance(5_000);
+    env.cp.sweep();
+  }
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  const n = env.registry.node(env.nodeId);
+  assert.deepEqual([n.counters.lost, n.counters.strikes], [0, 0]);
+});
+
+test('a node that never comes back: its link is closed after LINK_TIMEOUT_MS, its matches are void once NODE_OFFLINE_MS passed, with exactly one strike', async () => {
+  const env = await setup();
+  const ps = [await env.place([human('a')]), await env.place([human('b')])];
+  await env.heartbeat();
+  holdHeartbeats(env); // switched off: nothing more comes
+  for (let t = 0; t < NODE_OFFLINE_MS; t += 5_000) {
+    env.advance(5_000);
+    env.cp.sweep();
+  }
+  assert.deepEqual(env.closes.map((c) => c.code), [4408]);
+  for (const p of ps) assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'a minute of silence, not more');
+  env.advance(1);
+  env.cp.sweep();
+  for (const p of ps) assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
+  const n = env.registry.node(env.nodeId);
+  assert.deepEqual([n.counters.lost, n.counters.strikes], [1, 1], 'one outage, one strike');
+});
+
+test('one outage, one strike, from its start: a strike the node took with its last messages covers the silence that voids its other matches a minute later', async () => {
+  for (const last of ['lost report', 'missed deadline']) {
+    const env = await setup();
+    const a = await env.place([human('a')]);
+    const b = await env.place([human('b')]);
+    await env.heartbeat();
+    if (last === 'lost report') await env.report({ kind: 'lost', matchId: a.matchId, reason: 'crash' });
+    else env.cp.matches.get(a.matchId).deadline = env.now() + 1_000;
+    holdHeartbeats(env);
+    env.advance(1_650);
+    env.cp.sweep();
+    assert.equal(env.cp.matches.get(a.matchId).state, 'done', last);
+    for (let t = 1_650; t <= NODE_OFFLINE_MS; t += 5_000) {
+      env.advance(5_000);
+      env.cp.sweep();
+    }
+    assert.equal(env.cp.matches.get(b.matchId).outcome.reason, 'node_offline', last);
+    assert.equal(env.registry.node(env.nodeId).counters.strikes, 1, `${last}: the same outage`);
+  }
+  // A strike more than a minute before the silence began was another outage.
+  const env = await setup();
+  const a = await env.place([human('a')]);
+  const b = await env.place([human('b')]);
+  await env.report({ kind: 'lost', matchId: a.matchId, reason: 'crash' });
+  for (let t = 0; t < 65_000; t += 5_000) {
+    env.advance(5_000);
+    env.cp.sweep();
+  }
+  holdHeartbeats(env);
+  for (let t = 0; t <= NODE_OFFLINE_MS; t += 5_000) {
+    env.advance(5_000);
+    env.cp.sweep();
+  }
+  assert.equal(env.cp.matches.get(b.matchId).outcome.reason, 'node_offline');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 2);
+});
+
+test('only heartbeats and hellos end a silence: junk frames or stray replies keep neither the link nor the matches', async () => {
+  for (const frame of [{ t: 'x' }, { t: 'reply', rid: 'zz', ok: true }]) {
+    const env = await setup();
+    const p = await env.place([human('a')], { matchLengthSeconds: 300 });
+    await env.heartbeat();
+    holdHeartbeats(env);
+    for (let t = 5_000; t <= NODE_OFFLINE_MS; t += 5_000) {
+      env.advance(5_000);
+      if (!env.session.closed) await env.send(frame);
+      env.cp.sweep();
+    }
+    assert.deepEqual(env.closes.map((c) => c.code), [4408], `${frame.t}: closed after LINK_TIMEOUT_MS all the same`);
+    assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+    env.advance(5_000);
+    env.cp.sweep();
+    assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline', frame.t);
+    assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+  }
+});
+
+/** The node logs in again on a new link and says nothing after the welcome: no hello, no heartbeat. */
+async function bareLogin(env) {
+  let s = null;
+  const link = {
+    send(m) {
+      if (m.t === 'challenge') void sign(env.nodeKey, authMessage(env.nodeId, m.nonce)).then((sig) => env.cp.onMessage(s, JSON.stringify({ t: 'auth', nodeId: env.nodeId, sig })));
+    },
+    close() {},
+  };
+  s = env.cp.open(link);
+  await wait(() => s.nodeId !== null, 'logged in');
+  return s;
+}
+
+test('a node that logs in again before its matches are due gets AUTH_TIMEOUT_MS for its hello, once: bare logins keep nothing', async () => {
+  // Logged in 1 s before the deadline: a sweep past it waits for the hello, which keeps the match.
+  const env = await setup();
+  const p = await env.place([human('a')]);
+  env.disconnect();
+  env.advance(NODE_OFFLINE_MS - 1_000);
+  const s = await bareLogin(env);
+  env.advance(2_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'its hello is on the way');
+  env.session = s;
+  await env.hello();
+  env.advance(5_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
+
+  // A login every 10 s and never a hello: void all the same, AUTH_TIMEOUT_MS late at most, one strike.
+  const c = await setup();
+  const q = await c.place([human('b')], { matchLengthSeconds: 300 });
+  await c.heartbeat();
+  holdHeartbeats(c);
+  let voidAt = null;
+  for (let t = 5_000; voidAt === null && t <= 3 * NODE_OFFLINE_MS; t += 5_000) {
+    c.advance(5_000);
+    if (t % 10_000 === 0) await bareLogin(c);
+    c.cp.sweep();
+    if (c.cp.matches.get(q.matchId).state === 'done') voidAt = t;
+  }
+  assert.equal(c.cp.matches.get(q.matchId).outcome.reason, 'node_offline');
+  assert.ok(voidAt <= NODE_OFFLINE_MS + 10_000, String(voidAt));
+  assert.equal(c.registry.node(c.nodeId).counters.strikes, 1);
+});
+
+test('a match sits through a minute of its node’s silence in all: a heartbeat let through now and then, or a reconnect, does not keep it', async () => {
+  for (const every of [25_000, 40_000]) {
+    const env = await setup();
+    const p = await env.place([human('a')], { matchLengthSeconds: 300 });
+    const beat = env.heartbeat;
+    await beat();
+    holdHeartbeats(env);
+    let voidAt = null;
+    for (let t = 5_000; voidAt === null && t <= 3 * NODE_OFFLINE_MS; t += 5_000) {
+      env.advance(5_000);
+      // Each silence is shorter than NODE_OFFLINE_MS. A 40 s one costs the link: the same process logs in again.
+      if (t % every === 0) await (env.session.closed ? env.reconnect() : beat());
+      env.cp.sweep();
+      if (env.cp.matches.get(p.matchId).state === 'done') voidAt = t;
+    }
+    assert.equal(env.cp.matches.get(p.matchId).outcome?.reason, 'node_offline', String(every));
+    assert.ok(voidAt <= NODE_OFFLINE_MS + 10_000, `${every}: void at ${voidAt}`);
+    assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+  }
+});
+
+test('nothing is relayed into a quiet link: an rtc offer is refused as offline at once, and relayed again after the next heartbeat', async () => {
+  const env = await setup({ rtc: true, status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  const stall = holdHeartbeats(env);
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1);
+  const sent = env.toNode.length;
+  await assert.rejects(env.cp.rtcOffer(env.nodeId, p.matchId, p.tickets[0].ticket, 'v=0'), (e) => e.code === 'offline');
+  assert.equal(env.toNode.length, sent, 'not sent: it would only wait RTC_OFFER_TIMEOUT_MS in the stall');
+  stall.release();
+  await env.heartbeat();
+  assert.deepEqual(await env.cp.rtcOffer(env.nodeId, p.matchId, p.tickets[0].ticket, 'v=0'), { sdp: 'v=0' });
 });
 
 test('a restarted node (new bootId) loses the matches of its old process', async () => {
@@ -400,7 +576,7 @@ test('a failed verification replaces a strike pause with manual review; project 
   reg.sweep(STRIKE_COOLDOWN_MS + 10);
   assert.equal(n.status, 'suspended', 'the cooldown no longer lifts it');
 
-  const t = new Registry({ trustedOperators: ['proj'] });
+  const t = new Registry({ trustedOperators: ['proj'], log: () => undefined });
   const k2 = await generateEd25519();
   const tok = await t.createToken({ id: 'proj', name: 'Proyecto' }, 'SA', 0);
   const v = (await t.register({ token: tok.token, publicKey: k2.publicKey, roles: ['host', 'verify'], publicUrl: 'wss://203.0.113.2', build, specs: SPECS, capacity: CAP }, 0)).node;
@@ -589,4 +765,355 @@ test('an unsampled casual match still needs its replay, and still counts for the
   const L = env.cp.ledger;
   const later = L.record({ matchId: 'z', nodeId: env.nodeId, operatorId: 'op1', region: 'SA', mode: '1v1', ranked: false, verified: true, endReason: 'rules', tickLagP99Ms: 1, underrunRate: 0, at: env.now(), sampleRate: 0.2, players: [{ playerId: 'b'.repeat(16), connectedMs: 60_000, account: true, accountAgeDays: 30 }] }, 1);
   assert.equal(later.repeat, 0.5, 'the unsampled match of the same group counted');
+});
+
+test('a replay upload is authenticated before its body is hashed', async () => {
+  const env = await setup();
+  const p = await env.place([human('a')]);
+  const bytes = new Uint8Array(1 << 20);
+  const sha = await sha256Hex(bytes);
+  const ts = env.now();
+  // Every player of the match knows its id and the node's: a forged upload must cost no hashing.
+  const subtle = globalThis.crypto.subtle;
+  const digest = Object.getPrototypeOf(subtle).digest;
+  let hashed = 0;
+  subtle.digest = (...args) => {
+    hashed++;
+    return digest.apply(subtle, args);
+  };
+  const signed = async (hash) => sign(env.nodeKey, replayRequestMessage('PUT', p.matchId, hash, ts));
+  try {
+    assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, 'A'.repeat(86), sha, bytes), { ok: false, status: 401, code: 'bad_sig' });
+    assert.equal(hashed, 0, 'refused before hashing');
+    // The node's own signature over another hash: hashed once, and refused.
+    const other = 'e'.repeat(64);
+    const lie = await env.cp.storeReplay(p.matchId, env.nodeId, ts, await signed(other), other, bytes);
+    assert.deepEqual(lie, { ok: false, status: 400, code: 'sha_mismatch' });
+    assert.equal(hashed, 1);
+    // What the Worker asks before it reads a body: the same answers, and null for a good upload.
+    assert.deepEqual(await env.cp.replayPutCheck('f'.repeat(64), env.nodeId, ts, await signed(sha), sha), { ok: false, status: 404, code: 'no_match' });
+    assert.deepEqual(await env.cp.replayPutCheck(p.matchId, env.nodeId, ts - 6 * 60_000, await signed(sha), sha), { ok: false, status: 401, code: 'stale' });
+    assert.deepEqual(await env.cp.replayPutCheck(p.matchId, env.nodeId, ts, 'A'.repeat(86), sha), { ok: false, status: 401, code: 'bad_sig' });
+    assert.equal(await env.cp.replayPutCheck(p.matchId, env.nodeId, ts, await signed(sha), sha), null);
+    assert.equal(hashed, 1);
+  } finally {
+    delete subtle.digest;
+  }
+  assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, await signed(sha), sha, bytes), { ok: true });
+  assert.equal(env.cp.matches.get(p.matchId).replaySha, sha);
+  // Once the match is reported, even the node's own signed upload is refused unhashed.
+  await env.send({ t: 'report', id: 'lost', report: { kind: 'lost', matchId: p.matchId, reason: 'node_shutdown' } });
+  hashed = 0;
+  subtle.digest = (...args) => {
+    hashed++;
+    return digest.apply(subtle, args);
+  };
+  try {
+    assert.deepEqual(await env.cp.storeReplay(p.matchId, env.nodeId, ts, await signed(sha), sha, bytes), { ok: false, status: 409, code: 'already_reported' });
+    assert.equal(hashed, 0);
+  } finally {
+    delete subtle.digest;
+  }
+});
+
+test('only so many sockets wait to log in: one more closes the oldest, so idle sockets cannot keep a node out', async (t) => {
+  const env = await setup();
+  const closes = [];
+  const opened = [];
+  const anon = () => {
+    const i = opened.length;
+    const s = env.cp.open({ send() {}, close: (code) => closes.push([i, code]) });
+    opened.push(s);
+    return s;
+  };
+  const busy = () => closes.filter(([, c]) => c === 1013).map(([i]) => i);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (let i = 0; i < MAX_UNAUTHENTICATED; i++) anon();
+  assert.deepEqual(closes, []);
+  assert.equal(anon().closed, false, 'the newcomer gets its challenge');
+  assert.deepEqual(busy(), [0], 'the oldest goes');
+  assert.equal(opened[0].closed, true);
+  // A socket pushed out gets nowhere, whatever it sends.
+  await env.cp.onMessage(opened[0], JSON.stringify({ t: 'auth', nodeId: env.nodeId, sig: 'x' }));
+  assert.deepEqual(closes, [[0, 1013]]);
+  env.cp.onClose(opened[5]); // one goes away: its place is free
+  anon();
+  assert.deepEqual(busy(), [0]);
+  anon();
+  assert.deepEqual(busy(), [0, 1]);
+  assert.equal(env.logs.filter((l) => l.endsWith('sockets still to log in: closing the oldest')).length, 1, 'logged once a minute');
+  // None of them logs in: each times out and frees its place, even without a close event.
+  t.mock.timers.tick(10_000);
+  assert.equal(closes.filter(([, c]) => c === 4401).length, MAX_UNAUTHENTICATED);
+  t.mock.timers.reset();
+  // With the cap full of idle sockets (a deploy, and somebody holding the door), the real node
+  // still logs in, and leaves the count once it is in.
+  for (let i = 0; i < MAX_UNAUTHENTICATED; i++) anon();
+  const idle = opened.length - MAX_UNAUTHENTICATED;
+  env.disconnect();
+  await env.reconnect();
+  assert.equal(env.cp.isOnline(env.nodeId), true);
+  assert.deepEqual(busy(), [0, 1, idle], 'it pushed out the oldest idle socket');
+  anon();
+  assert.deepEqual(busy(), [0, 1, idle], 'the node that logged in no longer counts');
+  anon();
+  assert.deepEqual(busy(), [0, 1, idle, idle + 1]);
+  for (const s of opened) env.cp.onClose(s);
+});
+
+// ---- the API the Worker calls -------------------------------------------------------------------
+
+const lostReport = (matchId) => ({ t: 'report', id: 'lost:' + matchId, report: { kind: 'lost', matchId, reason: 'node_shutdown' } });
+
+test('rejoin says why not: no_match, not_in_match, left, match_over, offline', async () => {
+  const [A, B, C, D] = ['a', 'b', 'c', 'd'].map((c) => c.repeat(16));
+  const env = await setup({ status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  assert.deepEqual(await env.cp.rejoin('f'.repeat(64), A), { ok: false, code: 'no_match' });
+  assert.deepEqual(await env.cp.rejoin(p.matchId, C), { ok: false, code: 'not_in_match' });
+  const ok = await env.cp.rejoin(p.matchId, A);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.wsUrl, p.wsUrl);
+  assert.equal(typeof ok.ticket, 'string');
+  assert.deepEqual(await env.cp.rejoinTicket(p.matchId, A).then((r) => Object.keys(r)), ['ticket', 'wsUrl']);
+  await env.cp.leave(p.matchId, B);
+  assert.deepEqual(await env.cp.rejoin(p.matchId, B), { ok: false, code: 'left' });
+  assert.equal(await env.cp.rejoinTicket(p.matchId, B), null, 'rejoinTicket: null, as before');
+  await env.send(lostReport(p.matchId));
+  assert.deepEqual(await env.cp.rejoin(p.matchId, A), { ok: false, code: 'match_over' });
+  assert.deepEqual(await env.cp.rejoin(p.matchId, B), { ok: false, code: 'left' }, 'a leaver stays a leaver');
+  // A wss node checks tickets by itself, so only a missing public URL makes it unreachable.
+  const q = await env.place([human('c')]);
+  env.disconnect();
+  assert.equal((await env.cp.rejoin(q.matchId, C)).ok, true, 'wss: its control link does not matter');
+  env.registry.node(env.nodeId).publicUrl = null;
+  assert.deepEqual(await env.cp.rejoin(q.matchId, C), { ok: false, code: 'offline' });
+  // An rtc node needs its control link for the player's offer.
+  const rtc = await setup({ rtc: true, status: 'active' });
+  const r = await rtc.place([human('d')]);
+  assert.equal((await rtc.cp.rejoin(r.matchId, D)).ok, true);
+  rtc.disconnect();
+  assert.deepEqual(await rtc.cp.rejoin(r.matchId, D), { ok: false, code: 'offline' });
+});
+
+test('matchStatus backs the matchmaker’s lock check; hostsOnline counts the hosts that may take a match', async () => {
+  const [A, B, C] = ['a', 'b', 'c'].map((c) => c.repeat(16));
+  const env = await setup({ status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  assert.deepEqual(env.cp.matchStatus(p.matchId, A), { state: 'assigned', left: false });
+  assert.equal(env.cp.matchStatus(p.matchId, C), null, 'not in it');
+  assert.equal(env.cp.matchStatus('f'.repeat(64), A), null, 'unknown');
+  await env.cp.leave(p.matchId, B);
+  assert.deepEqual(env.cp.matchStatus(p.matchId, B), { state: 'assigned', left: true });
+  await env.send(lostReport(p.matchId));
+  assert.deepEqual(env.cp.matchStatus(p.matchId, A), { state: 'done', left: false });
+
+  assert.equal(env.cp.hostsOnline('SA'), 1);
+  assert.equal(env.cp.hostsOnline('EU'), 0);
+  env.registry.setStatus(env.nodeId, 'suspended', 'test');
+  assert.equal(env.cp.hostsOnline('SA'), 0, 'suspended: takes nothing');
+  env.registry.setStatus(env.nodeId, 'probation', null);
+  assert.equal(env.cp.hostsOnline('SA'), 1, 'probation: casual matches');
+  env.disconnect();
+  assert.equal(env.cp.hostsOnline('SA'), 0);
+});
+
+test('a leave is recorded before it is relayed: a failed relay still counts, an offline node records nothing', async () => {
+  const [A, B, C, D] = ['a', 'b', 'c', 'd'].map((c) => c.repeat(16));
+  const env = await setup({ status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  assert.deepEqual(await env.cp.leave(p.matchId, A), { recorded: true, answer: { slot: 0, closed: true, already: false, ended: false } });
+  // The node refuses (its match just ended there): the leave stands, the Worker frees the lock.
+  env.leaveAnswers = false;
+  assert.deepEqual(await env.cp.leave(p.matchId, B), { recorded: true, answer: null, error: 'match_over' });
+  assert.deepEqual(env.cp.matchStatus(p.matchId, B), { state: 'assigned', left: true });
+  assert.deepEqual(await env.cp.rejoin(p.matchId, B), { ok: false, code: 'left' });
+  assert.equal(env.cp.matches.get(p.matchId).left.has(B), false, 'the node never confirmed it');
+  // The node's link drops while the leave is in flight.
+  const q = await env.place([human('c'), human('d')], { ranked: true });
+  env.leaveAnswers = 'silent';
+  const pending = env.cp.leave(q.matchId, D);
+  await sleep(5);
+  env.disconnect();
+  assert.deepEqual(await pending, { recorded: true, answer: null, error: 'disconnected' });
+  assert.equal(env.cp.matchStatus(q.matchId, D).left, true);
+  // Offline before anything is recorded: an error, and the player may still rejoin.
+  await assert.rejects(env.cp.leave(q.matchId, C), (e) => e.code === 'offline');
+  assert.deepEqual(env.cp.matchStatus(q.matchId, C), { state: 'assigned', left: false });
+  assert.equal((await env.cp.rejoin(q.matchId, C)).ok, true);
+});
+
+test('a channel change reaches the connected nodes at once; a project verifier with work on its build waits', async () => {
+  const build = await testBuild();
+  let channel = { stable: build.version, minimum: '0.0.0' };
+  const env = await setup({ channel: () => channel });
+  const updates = (e) => e.toNode.filter((m) => m.t === 'update');
+  channel = { stable: '0.0.1', minimum: '0.0.1' };
+  assert.deepEqual(updates(env), [], 'nothing until the control plane hears of it');
+  env.cp.channelChanged();
+  assert.deepEqual(updates(env), [{ t: 'update', version: '0.0.1' }]);
+
+  let vch = { stable: build.version, minimum: '0.0.0' };
+  const v = await setup({ trusted: true, roles: ['host', 'verify'], channel: () => vch });
+  await wait(() => v.registry.node(v.nodeId).status === 'active');
+  const p = await v.place([human('a')]);
+  vch = { stable: '0.0.1', minimum: '0.0.1' };
+  v.cp.channelChanged();
+  assert.deepEqual(updates(v), [], 'a match on its build may still need it');
+  assert.ok(v.logs.some((l) => /^update of verifier .* deferred/.test(l)));
+  await v.send(lostReport(p.matchId));
+  v.cp.sweep();
+  assert.deepEqual(updates(v), [{ t: 'update', version: '0.0.1' }], 'once the work is done');
+});
+
+test('a missing or invalid release channel never breaks a hello: the last good one, or 0.0.0, and one ALERT', async () => {
+  const build = await testBuild();
+  let channel; // no channel.json in R2 yet
+  const env = await setup({
+    channel: () => {
+      if (channel instanceof Error) throw channel;
+      return channel;
+    },
+  });
+  const welcomes = () => env.toNode.filter((m) => m.t === 'welcome').map((m) => m.channel);
+  const alerts = () => env.logs.filter((l) => l.startsWith('ALERT release channel'));
+  assert.deepEqual(welcomes(), [{ stable: '0.0.0', minimum: '0.0.0' }]);
+  assert.deepEqual(alerts(), ['ALERT release channel missing or invalid (undefined): holding the nodes to stable 0.0.0, minimum 0.0.0']);
+  assert.equal(env.registry.node(env.nodeId).online, true, 'the hello went through');
+
+  channel = { stable: build.version, minimum: '0.0.0', note: 'x'.repeat(5000) };
+  env.disconnect();
+  await env.reconnect();
+  assert.deepEqual(welcomes().at(-1), { stable: build.version, minimum: '0.0.0' }, 'only the known fields');
+
+  channel = { stable: 5, minimum: '1.0.0' }; // a bad upload
+  env.disconnect();
+  await env.reconnect();
+  assert.deepEqual(welcomes().at(-1), { stable: build.version, minimum: '0.0.0' }, 'the last good one');
+  assert.equal(alerts().length, 2);
+  assert.match(alerts()[1], /\(\{"stable":5,"minimum":"1\.0\.0"\}\): holding the nodes to stable 0\.0\.0-test, minimum 0\.0\.0$/);
+  channel = new Error('R2 unavailable');
+  env.cp.channelChanged();
+  env.disconnect();
+  await env.reconnect();
+  assert.equal(alerts().length, 2, 'one ALERT per bad stretch');
+  assert.deepEqual(env.toNode.filter((m) => m.t === 'update'), []);
+});
+
+test('a proven host is probed again every 5 minutes: three failures in a row take its wss out with an ALERT, a passing probe brings it back', async () => {
+  const env = await setup({ status: 'active' });
+  const n = env.registry.node(env.nodeId);
+  // The checks the sweep starts, to wait for them.
+  const started = [];
+  for (const k of ['probe', 'reprobe']) {
+    const real = env.cp[k].bind(env.cp);
+    env.cp[k] = (id) => {
+      const p = real(id);
+      started.push(p);
+      return p;
+    };
+  }
+  /** One sweep `ms` later, with the host answering or not: it must check the host. */
+  const sweepAfter = async (ms, fails) => {
+    env.probeFails = fails ? 'fetch failed' : null;
+    env.advance(ms);
+    const before = started.length;
+    env.cp.sweep();
+    assert.equal(started.length, before + 1, 'the sweep checked the host');
+    await started.at(-1);
+  };
+  env.advance(REPROBE_MS - 1_000);
+  env.cp.sweep();
+  assert.equal(started.length, 0, 'not before 5 minutes');
+  await sweepAfter(1_000, false);
+  assert.notEqual(n.reachableAt, null);
+
+  // Caddy dies, or its certificate expires: retried every 30 s once it failed.
+  await sweepAfter(REPROBE_MS, true);
+  await sweepAfter(30_000, true);
+  assert.notEqual(n.reachableAt, null, 'two failures: still placed');
+  await sweepAfter(30_000, true);
+  assert.equal(n.reachableAt, null);
+  assert.equal(n.status, 'active', 'only the transport goes');
+  assert.deepEqual(usableTransports(n), []);
+  assert.deepEqual(
+    env.logs.filter((l) => l.startsWith(`probe ${n.name} failed (`)),
+    [1, 2, 3].map((i) => `probe ${n.name} failed (${i} of ${REPROBE_FAILURES}): Error: fetch failed`),
+  );
+  assert.ok(env.logs.includes(`ALERT node ${n.name} unreachable at ${URL_}: Error: fetch failed`));
+  assert.equal(await env.cp.place({ mode: '1v1', region: 'SA', ranked: false, humans: [human('a')], matchLengthSeconds: 10 }), null, 'no placement on it');
+  assert.equal(env.cp.hostsOnline('SA'), 0, 'the matchmaker stops asking');
+  assert.equal(env.cp.regionFactorAt('SA'), env.cp.regionFactorAt('EU'), 'and the region offers no slots');
+
+  // Fixed: the unproven-host probe (every 30 s) passes.
+  await sweepAfter(30_000, true); // still down: no new ALERT
+  await sweepAfter(30_000, false);
+  assert.notEqual(n.reachableAt, null);
+  assert.ok(env.logs.includes(`node ${n.name} reachable again at ${URL_}`));
+  assert.equal(env.logs.filter((l) => l.startsWith('ALERT node')).length, 1);
+  assert.equal(env.cp.hostsOnline('SA'), 1);
+  assert.ok(await env.place([human('b')]));
+
+  // Failures must come in a row: a pass in between starts the count again.
+  await sweepAfter(REPROBE_MS, true);
+  await sweepAfter(30_000, false);
+  await sweepAfter(REPROBE_MS, true);
+  await sweepAfter(30_000, true);
+  assert.notEqual(n.reachableAt, null);
+});
+
+test('a failed probe never puts the node’s own words in a log line', async () => {
+  const env = await setup({ status: 'active' });
+  const n = env.registry.node(env.nodeId);
+  // The node answers its /healthz with text of its choosing: the JSON error quotes it, newline and all.
+  try {
+    JSON.parse('oops\nALERT node sp1 forged');
+  } catch (e) {
+    env.probeFails = e;
+  }
+  for (let i = 0; i < REPROBE_FAILURES; i++) await env.cp.reprobe(env.nodeId);
+  assert.equal(n.reachableAt, null);
+  assert.ok(env.logs.includes(`ALERT node ${n.name} unreachable at ${URL_}: bad json`));
+  assert.ok(env.logs.every((l) => !/[\r\n]/.test(l) && !l.includes('forged')));
+  // Anything else: printable characters only, and short.
+  env.probeFails = new Error(`x\r\nALERT y${'z'.repeat(500)}`);
+  assert.equal(await env.cp.probe(env.nodeId), false);
+  assert.match(env.logs.at(-1), /^probe \S+ failed: Error: x ALERT yz+$/);
+  assert.ok(env.logs.at(-1).length < 200);
+  const timeout = new Error('The operation was aborted due to timeout');
+  timeout.name = 'TimeoutError';
+  env.probeFails = timeout;
+  await env.cp.probe(env.nodeId);
+  assert.equal(env.logs.at(-1), `probe ${n.name} failed: timeout`);
+});
+
+test('a control key that does not import fails each ticket it would sign, not the process', async () => {
+  const { ControlPlane } = await import('../control-plane/controlPlane.ts');
+  const { MemoryStore } = await import('../control-plane/persist.ts');
+  const env = await setup({ status: 'active', store: new MemoryStore() });
+  const p = await env.place([human('a'), human('b')]);
+  const rejections = [];
+  const onRejection = (e) => rejections.push(e);
+  process.on('unhandledRejection', onRejection);
+  try {
+    const cp = new ControlPlane({
+      controlPrivateKey: 'not a key',
+      controlPublicKey: (await generateEd25519()).publicKey,
+      controlUrl: 'wss://cp/nodes/connect',
+      httpBase: 'https://cp',
+      build: () => env.build,
+      channel: () => ({ stable: env.build.version, minimum: '0.0.0' }),
+      registry: env.registry,
+      ledger: new Ledger(),
+      replays: { put: async () => undefined, get: async () => null },
+      log: () => undefined,
+    });
+    cp.restore(env.store.rows().matches, { cold: false });
+    await sleep(20);
+    await assert.rejects(cp.rejoin(p.matchId, 'a'.repeat(16)), /bad private key/);
+    await assert.rejects(cp.rejoin(p.matchId, 'b'.repeat(16)), /bad private key/, 'every time');
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+  assert.deepEqual(rejections, []);
 });

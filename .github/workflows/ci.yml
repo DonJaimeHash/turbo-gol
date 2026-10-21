@@ -67,11 +67,25 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
+            server/package-lock.json
             nodes/package-lock.json
       # The node runs the game's own code and wasm (root packages) and its typecheck uses the root
-      # TypeScript.
+      # TypeScript; the release build takes esbuild from server/.
       - run: npm ci
         working-directory: .
       - run: npm ci
+        working-directory: server
+      - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # The release as .github/workflows/node-release.yml builds it, unsigned, with the installers
+      # filled from release-key.pub.
+      - name: Release build (unsigned)
+        run: |
+          node scripts/build-node.mjs
+          version=$(node -p "require('./package.json').version")
+          test -f "dist/releases/$version/manifest.json"
+          if grep -l __RELEASE_PUBLIC_KEY_ dist/releases/install.sh dist/releases/install-windows.ps1 dist/releases/install-desktop.sh; then
+            echo "::error::an installer still has a release key placeholder"
+            exit 1
+          fi

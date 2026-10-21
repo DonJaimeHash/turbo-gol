@@ -7,6 +7,9 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Community nodes are on: server, Competitive and lone-player matches in South America can be
+  hosted on the project's São Paulo node, `sao-paulo-1`, and fall back to the game's own servers
+  whenever it is full, away or unreachable.
 - Training records follow the account: a signed-in player's best run per pack is saved on the
   server and shows on every device; a guest's stay in the browser and move into the account at the
   first sign-in.
@@ -18,10 +21,54 @@ All notable changes to Turbogol are documented here. The format follows
   and re-simulates the replays before any rating is written (every ranked match; casual matches by
   sample), host rewards (points for cosmetic items), a signed self-updating launcher and installers.
   Its tests and typecheck run in CI. Design notes in Spanish under `nodes/docs/`.
+- Community nodes: the control plane keeps its state through a restart. Registered nodes, tokens
+  and running matches are written to a store before anything that depends on them goes out, and
+  after a deploy the nodes get 90 seconds to reconnect, so a match played through a deploy is still
+  rated. A project node keeps its matches through a control link drop of under a minute; hosts are
+  checked again every five minutes and one that stops answering gets no matches; in a ranked match
+  on a project node, a player with no connection at the final whistle is rated as a leaver, as on
+  the game's own servers. One token registers one node, a forged replay upload is refused before
+  its body is read, and every token or node of a trusted operator logs an ALERT line.
+- The game is ready for matches hosted on a community node: after a Competitive match there, the
+  menu says the result is being verified and waits up to two minutes for it (the node's replay is
+  checked first), and a match that fails the check shows as not counted. The network panel names
+  the node that hosts the match, and quitting such a match still works when the account's session
+  would run out during it (it is renewed as the match starts, and once more if the quit is refused).
+  A result that comes in while the player is already in another match shows once the menu is back.
+- Community nodes: the control plane runs in the Worker (`NodeRegistryDO`, its state in SQLite) and
+  `/nodes/*` serves the nodes and their installers (releases from R2, registration, the control
+  socket, replay uploads). Only the project's accounts create node tokens, two nodes each at most.
+  A `nodes_on` KV flag (off, `1`, or a canary list of account ids; `vm_disabled` wins) turns the
+  nodes on. A deploy now needs the two node R2 buckets; set the node secrets with
+  `wrangler versions secret put`. The wasm's SHA-256 is committed next to it
+  (`npm run build:wasm` rewrites it, a test checks it).
+- Community nodes host matches: with `nodes_on` set for every player of a match, a server or
+  Competitive match (and the lone player of a P2P queue) goes to a community node when one is free,
+  and to the game's own servers otherwise, never failing because of the nodes. Node matches do not
+  count toward the 20-match cap, and rejoining and quitting work for them; a quit the node never
+  got keeps the player in that match instead of letting them start another in that region.
+  Without the flag nothing changes.
+- Community nodes: the control plane's ALERT lines also go to a staff-only Discord channel
+  (`NODE_ALERT_WEBHOOK`, each alert at most once in 10 minutes, every account's action each
+  time), with new ones for a project node offline for 2 minutes, a node's traffic at 80 % of its
+  cap, tick lag, and a verification or an update waiting too long. Maintainers get
+  `/nodes/admin/*` (list the nodes, change a status, drain, push the channel, probe again), each
+  action an ALERT, and a cron checks the project nodes' `/healthz` every 5 minutes, which catches
+  an expired certificate. The KV switches, `vm_disabled` included, stay manual.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
 ### Fixed
+- Community nodes: a control link that stalls no longer costs a node its matches. A node without
+  heartbeats for 15 seconds still gets no new match, but its link stays open for 30, so heartbeats
+  held on the way (24 seconds of them on the São Paulo node on 2026-10-21) bring it straight back.
+  Every node, a community one too, keeps a running match through a minute without heartbeats in
+  all, as a project node already did: players on a community node that really dies stay in its
+  match for up to about a minute instead of 15-20 seconds. A link closed for silence is logged
+  with how long the node was silent, and messages that still arrive on a closed link are counted
+  in the log.
+- Community nodes: the VPS installer keeps the name given with `--name`; it registered nodes under
+  the Linux distribution's name, read from `/etc/os-release`.
 - The anti-bot check (Turnstile) had no place to render in the new menus, so a first visit could
   not create a guest or an account while the check is on; it now shows above every menu, one
   challenge at a time, and closes when the menus close into a match.
@@ -54,11 +101,34 @@ All notable changes to Turbogol are documented here. The format follows
   noise, and they ring briefly in a short synthetic room.
 - The official deployment turns the anti-bot check on; CI runs actions/checkout and
   actions/setup-node v7.
+- Community nodes: the VPS installer can be run again (no token: it upgrades the launcher and keeps
+  the node's identity and settings) and restores a backed-up identity with `--restore`. Before it
+  spends the token it checks that the public address is this machine's (a DNS name's A and AAAA
+  records included) and that the Caddy config is its own to replace. It takes `--matches` (`auto`
+  goes back to the benchmark) and gives a name a 90-day certificate (the 6-day one only for an IP)
+  with live matches kept through a Caddy reload. Replay uploads keep trying for about 75 s, and the
+  launcher never starts a release that needs a newer Node.js than the machine has: it logs why, and
+  the node does not serve until Node.js is upgraded.
+- Community node docs: the São Paulo VPS guide is the runbook of the real machine (a Hostinger KVM
+  2 in Campinas: access, hardening, DNS and TLS, measurements, install, backups and operations),
+  the stage 1 checklist is split into eight PRs with the maintainer's steps, the pre-beta tests
+  and the main risks, and stale facts in the other node docs are corrected. The budget shows the
+  VPS's real price.
+- `npm run deploy` checks the community-node release first and, when the game code nodes run
+  changed, moves their release channel to a signed release built from the same game code; until the
+  first node release is published, deploy with `npm run deploy -- --nodes-off`.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
   Permissions-Policy headers; /.well-known/security.txt points to private vulnerability reporting.
 - Unexpected server errors (API routes and match sockets) no longer echo the exception text.
+- The server reads at most 4 KB of a JSON body, even one sent without its length; on `/nodes/*`
+  every per-address limit counts an IPv6 /64 as one address and replay downloads and
+  `GET /nodes/mine` are limited too, a target that stops answering no longer holds up the node
+  control plane's sweep or the other results, and callers are only told it is unavailable.
+- Node releases are signed in a job that installs nothing and uploaded from a separate `releases-r2`
+  environment that re-checks them and can be re-run; the deploy gate also checks the channel's
+  minimum release and that releases come from main.
 
 ## [0.1.0] - 2026-10-15
 

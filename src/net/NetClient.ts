@@ -27,7 +27,8 @@
  *                   the server's reason in the message (the menu shows it)
  *   accounts        a signed-in player (AccountClient) queues under its account: `sessionProvider`
  *                   answers before the guest session (ensureGuest), `onSessionRejected` refreshes it
- *                   after a 401; leave / ice / cancel reuse the Bearer of the last queue (`lastBearer`)
+ *                   after a 401; leave / ice / cancel reuse the Bearer of the last queue (`lastBearer`),
+ *                   which refreshBearer renews early for a match on a community node
  *   menus           `queueModes` (several playlists searched at once) and `region` (a REGIONS id, or
  *                   null = automatic) go into every queue body; the region also into leave / rejoin
  *                   so they reach the same matchmaker; kind 'ranked' (accounts only) is a server
@@ -41,7 +42,9 @@
  *                   lock is kept) or with the matchId of a server match the player quits
  *                   (OnlineSession.leave: the lock is freed, the slot goes to the host's bots, no
  *                   rejoin); the next queue() waits for it first so its join is never refused by
- *                   our own stale lock
+ *                   our own stale lock. A quit before the Welcome says `connected: false`. On a
+ *                   community node a 401 is retried once with a refreshed account session
+ *                   (`retryRejected`)
  *   ice             GET /api/ice -> the STUN / TURN servers for the P2P mesh (fetchIce)
  *   match socket    new WebSocket(wsUrl, ['tg1', 'ticket.<jwt>']), binaryType 'arraybuffer';
  *                   Welcome / Snapshot / Event / Error / Kick are dispatched to the callbacks
@@ -208,6 +211,24 @@ export interface P2pAssignment {
 
 /** What a queue of either kind resolved to; a 'p2p' queue may still get a server match (lone human). */
 export type QueueAssignment = ServerAssignment | P2pAssignment;
+
+/** leaveMatch options. */
+export interface LeaveOptions {
+  /**
+   * false: no Welcome of the match was received. The socket may still have opened and the host
+   * attached the slot (its Welcome in flight), so this is only a hint: sent as `connected: false`
+   * for stage 2 of the community nodes, where the server must confirm with the node that the slot
+   * never attached before taking it for a no-show; the Worker ignores it today. true / absent adds
+   * nothing to the body.
+   */
+  connected?: boolean;
+  /**
+   * A 401 refreshes the account's session and sends the leave once more, as the same player: the
+   * match is on a community node, where the leave is the only way out and the Bearer of the queue
+   * may have expired during the match (account sessions last 1 h).
+   */
+  retryRejected?: boolean;
+}
 
 /** Default when the server has no /api/ice route (local dev without the phase 2 Worker). */
 export const DEFAULT_ICE_SERVERS: readonly IceServer[] = [{ urls: 'stun:stun.cloudflare.com:3478' }];
@@ -498,12 +519,17 @@ export class NetClient {
   queueModes: Welcome['mode'][] | null = null;
   /** Matchmaking region (REGIONS id) of the next queue, null = automatic (the continent of the request). */
   region: string | null = null;
-  /** A signed-in account's session (AccountClient.sessionForQueue); null / unset = guest. */
-  sessionProvider: (() => Promise<GuestSession | null>) | null = null;
+  /**
+   * A signed-in account's session (AccountClient.sessionForQueue), valid for at least `minValidMs`
+   * more when given (refreshBearer); null / unset = guest.
+   */
+  sessionProvider: ((minValidMs?: number) => Promise<GuestSession | null>) | null = null;
   /** The server refused the session (401): an account refreshes it (AccountClient.sessionRejected). */
   onSessionRejected: (() => Promise<unknown>) | null = null;
   /** The Bearer of the last queue / rejoin (an account's or the guest's): leave / ice / cancel use it. */
   lastBearer: string | null = null;
+  /** Whose `lastBearer` it is: refreshBearer only swaps in a session of the same player. */
+  private lastBearerPlayer: string | null = null;
   /** The region the last queue went to (leave / rejoin must reach the same matchmaker). */
   private queuedRegion: string | null = null;
 
@@ -595,6 +621,7 @@ export class NetClient {
       const a = await this.sessionProvider();
       if (a !== null) {
         this.lastBearer = a.session;
+        this.lastBearerPlayer = a.playerId;
         return a;
       }
     }
@@ -613,6 +640,7 @@ export class NetClient {
     const g = this.guest;
     if (!sessionValid(g) || g.name !== this.name) return null;
     this.lastBearer = g.session;
+    this.lastBearerPlayer = g.playerId;
     return g;
   }
 
@@ -633,6 +661,7 @@ export class NetClient {
     if (!isGuestSession(body)) throw new NetError('protocol', 'malformed guest session');
     this.guest = body;
     this.lastBearer = body.session;
+    this.lastBearerPlayer = body.playerId;
     if (body.name.length > 0) this.name = body.name;
     saveGuestRecord(this.storage, { name: this.name, session: body });
     return body;
@@ -872,13 +901,24 @@ export class NetClient {
    * explicit quit) that match's lock is freed too and the MatchDO hands our car to its bots for
    * good (no rejoin); without one a server lock is kept (the rejoin path). Resolves with the
    * server's `released` flag (false without a session, on a network error or when there was
-   * nothing to release). The next queue() waits for it.
+   * nothing to release). The next queue() waits for it. `opts.connected` false adds
+   * `connected: false` (no Welcome came). `opts.retryRejected` (a match on a community node, which
+   * this POST is the only way out of): a 401 is retried once with a refreshed account session
+   * (leaveAgain).
    */
-  leaveMatch(matchId?: string): Promise<boolean> {
+  leaveMatch(matchId?: string, opts: LeaveOptions = {}): Promise<boolean> {
     const bearer = this.lastBearer ?? this.guest?.session ?? null;
     if (bearer === null) return Promise.resolve(false);
+    // Whose leave it is: lastBearer may belong to someone else by the time a retry goes out.
+    const who = this.lastBearerPlayer;
     this.leaves++;
-    const p = this.post('/api/leave', this.withRegion(matchId !== undefined ? { matchId } : {}), bearer)
+    const fields: { matchId?: string; connected?: false } = matchId !== undefined ? { matchId } : {};
+    if (opts.connected === false) fields.connected = false;
+    const payload = this.withRegion(fields);
+    // The first POST goes out now, before the caller closes the socket; only a retry waits.
+    let answer = this.post('/api/leave', payload, bearer);
+    if (opts.retryRejected === true) answer = answer.then((res) => (res.status === 401 ? this.leaveAgain(payload, bearer, who, res) : res));
+    const p = answer
       .then(async (res) => {
         if (!res.ok) return false;
         try {
@@ -894,6 +934,42 @@ export class NetClient {
       });
     this.leavePending = p;
     return p;
+  }
+
+  /**
+   * A leave refused with 401: refresh the account's session (onSessionRejected) and POST the same
+   * body with it, once. Only a fresh session of `who`, the player the leave was sent as, is used:
+   * another flow (the menu starting a queue) may have moved lastBearer to a guest or another
+   * account meanwhile. Resolves the refusal when there is none (a guest, a sign-out, a refresh
+   * that failed) or the retry does not get through.
+   */
+  private async leaveAgain(body: object, bearer: string, who: string | null, refused: ResponseLike): Promise<ResponseLike> {
+    if (this.onSessionRejected !== null) await this.onSessionRejected().catch(() => undefined);
+    const fresh = await this.refreshBearer();
+    if (fresh === null || fresh.playerId !== who || fresh.session === bearer) return refused;
+    this.leaves++;
+    return this.post('/api/leave', body, fresh.session).catch(() => refused);
+  }
+
+  /**
+   * Make `lastBearer` (what leave / ice / cancel send) good for `minValidMs` more: an account's
+   * session is refreshed early through sessionProvider, a guest's (24 h) stays. Only a session of
+   * the player `lastBearer` belongs to replaces it (a sign-in since the queue must not leave as
+   * someone else). Resolves the session it adopted, null when the old Bearer stays. Never rejects:
+   * on a failure the old Bearer stays and a 401 on the leave asks again.
+   */
+  async refreshBearer(minValidMs?: number): Promise<GuestSession | null> {
+    const provider = this.sessionProvider;
+    if (provider === null) return null;
+    let s: GuestSession | null;
+    try {
+      s = await provider(minValidMs);
+    } catch {
+      return null;
+    }
+    if (s === null || s.playerId !== this.lastBearerPlayer) return null;
+    this.lastBearer = s.session;
+    return s;
   }
 
   /**

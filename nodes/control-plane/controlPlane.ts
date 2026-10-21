@@ -7,8 +7,9 @@
  * Responsibilities
  *   sessions      challenge / response login of nodes, one live session per node, request/reply.
  *                 Every message is shape-checked (validate.ts) before anything reads it.
- *   reachability  'wss': GET <publicUrl>/healthz?nonce= signed by the node; 'rtc': the node's
- *                 WebRTC self-test through TURN. pending -> probation (trusted -> active)
+ *   reachability  'wss': GET <publicUrl>/healthz?nonce= signed by the node, again every 5 minutes
+ *                 (failing three times in a row takes wss out of placement, with an ALERT); 'rtc':
+ *                 the node's WebRTC self-test through TURN. pending -> probation (trusted -> active)
  *   placement     scheduler.pickNode -> 'assign' -> EdDSA tickets + the URL for the transport
  *   signaling     a player's WebRTC offer relayed to an rtc node (ticket checked on both ends)
  *   leaves        a player's explicit quit relayed to the node (MatchDO /internal/leave semantics);
@@ -22,10 +23,18 @@
  *                 it is on probation (they are its way into ranked), casualVerifyRate of an active
  *                 node's (an audit; only sampled matches earn points, worth 1 / rate), none of a
  *                 project node's.
- *   health        silent or restarted nodes: their matches are void (no penalties for players), one
+ *   health        a node silent for HEARTBEAT_TIMEOUT_MS gets no new match, its link is closed after
+ *                 LINK_TIMEOUT_MS and a match is void once it sat through NODE_OFFLINE_MS of its
+ *                 node's silence (a restarted node's at its hello): no penalties for players, one
  *                 strike per outage; strike suspensions lift after their cooldown
+ *   persistence   every durable change of a match is written through `store` (persist.ts) before
+ *                 the message that depends on it goes out: a Durable Object holds its outgoing
+ *                 messages only for the writes issued before the send. `restore` loads the rows back
+ *                 after a restart; a cold start (a deploy) gives the nodes `restartGraceMs` to
+ *                 reconnect before anything is voided for being silent or late.
  */
 import {
+  HEARTBEAT_MS,
   HEARTBEAT_TIMEOUT_MS,
   sameSimulation,
   HOST_FAULT_CODES,
@@ -63,7 +72,9 @@ import { createNodeTicket, verifyNodeTicket } from '../shared/nodeTickets';
 import { TICK_RATE } from '../../src/sim/types';
 import { regionFactor } from './ledger';
 import type { Ledger, LedgerEntry, LedgerPlayer } from './ledger';
-import { MAX_CAPACITY } from './registry';
+import { matchFromRow } from './persist';
+import type { MatchRow, MatchStore } from './persist';
+import { MAX_CAPACITY, usableTransports } from './registry';
 import type { Registry, NodeRecord } from './registry';
 import { ineligibility, pickNode, pickVerifier, transportFor } from './scheduler';
 import type { Shop } from './shop';
@@ -71,10 +82,23 @@ import { parseFromNode, parseHeartbeat, parseHello, parseReport, reportMatchId }
 
 const MODES: Record<GameMode, number> = { '1v1': 1, '2v2': 2, '3v3': 3 };
 const AUTH_TIMEOUT_MS = 10_000;
+/**
+ * Sockets still to log in, each holding an auth timer on the one control plane: one more closes
+ * the oldest (1013, try again later), so a flood of upgrades cannot stall the nodes' heartbeats. A
+ * node logs in within one round trip: to push it out, a flood must open this many in that time.
+ */
+export const MAX_UNAUTHENTICATED = 64;
 /** A placed match with no report this long after its regulation + TTL is void. */
 const REPORT_GRACE_MS = 15 * 60_000;
-/** Unproven wss hosts are probed again this often while connected. */
+/** Unproven wss hosts are probed again this often while connected; so is a proven one after a failed re-probe. */
 const PROBE_RETRY_MS = 30_000;
+/**
+ * Proven wss hosts are probed again this often while connected: an expired certificate or a dead
+ * proxy would otherwise keep players landing on a node they cannot open (close code 1006).
+ */
+export const REPROBE_MS = 5 * 60_000;
+/** Failed re-probes in a row that take a host's wss out of placement until a probe passes again. */
+export const REPROBE_FAILURES = 3;
 /** A queued verification is retried this often while no verifier can take it. */
 const VERIFY_RETRY_MS = 15_000;
 /** Ranked results wait this long for a verifier (e.g. the Sao Paulo VPS rebooting) before the match is void. */
@@ -91,7 +115,10 @@ const DONE_RETENTION_MS = 10 * 60_000;
 export const CASUAL_VERIFY_RATE = 0.2;
 /** Matches the matchmaker could not place on a node count as demand for this long. */
 const UNPLACED_WINDOW_MS = 15 * 60_000;
-/** Strikes closer together than this count once: one outage (a stop, a crash, a restart) is one strike, however many matches it took. */
+/**
+ * Strikes closer together than this count once: one outage (a stop, a crash, a restart) is one
+ * strike, however many matches it took. A silence counts from its start (strike's `since`).
+ */
 const STRIKE_DEDUPE_MS = 60_000;
 /** An honest ranked 'no_show' comes when the join window closes; this much earlier is accepted (clock skew). */
 const NO_SHOW_SKEW_MS = 5_000;
@@ -103,6 +130,34 @@ const STALL_SLACK_S = 30;
 const LEAVE_SLACK_S = 5;
 /** A ranked 'empty' is the node's fault (a strike) only when every human vanished within this many ticks. */
 const EMPTY_TOGETHER_TICKS = 240;
+/**
+ * After a cold start with unfinished matches, nothing is voided for being silent or late this
+ * long: the nodes lost their control link with the old process and need it to reconnect. The
+ * agent's backoff doubles from 1 s to a 30 s cap, +-25 %: six tries take about 76 s at worst.
+ */
+export const RESTART_GRACE_MS = 90_000;
+/**
+ * A control link that carried no heartbeat (nor hello) this long is closed (4408). The node is out
+ * of placement from HEARTBEAT_TIMEOUT_MS of silence on (the registry's `online`), but its link
+ * stays open longer: a stall in transit delivers its backlog late (on 2026-10-21 a node's
+ * heartbeats were held for 24 s on their way to the Durable Object, then all four came at once),
+ * and the first of them puts the node back in placement. A longer stall costs the node a
+ * reconnect, not its matches (NODE_OFFLINE_MS).
+ */
+export const LINK_TIMEOUT_MS = 30_000;
+/**
+ * A node's matches outlive its silence this long, a project node's and a community node's alike.
+ * A short drop or stall of its control link does not stop the matches it hosts (players play on
+ * the node itself): voiding them would have players finish a match that already counts for
+ * nothing, and give the node a strike for the network's fault. If the same process is heard again
+ * in time, through its held heartbeats or a reconnect after the 4408, they go on; a new one voids
+ * them at its hello, and report deadlines still apply. Only a heartbeat or a hello ends a silence,
+ * and a match sits through this much of them in all, its node's earlier silences included: a node
+ * that lets a heartbeat through now and then does not keep its matches (and its players' leaves
+ * refused) without end. After the 4408 (LINK_TIMEOUT_MS, plus up to a sweep) the node has 25 to
+ * 30 s to log in again: the first four tries of its backoff (1, 2, 4, 8 s, +-25 %: 19 s at most).
+ */
+export const NODE_OFFLINE_MS = 60_000;
 
 /** A request to a node without its correlation id (distributive Omit over the request variants). */
 type RpcRequest = Extract<ToNode, { rid: string }> extends infer U ? (U extends unknown ? Omit<U, 'rid'> : never) : never;
@@ -111,6 +166,12 @@ type RpcRequest = Extract<ToNode, { rid: string }> extends infer U ? (U extends 
 export interface NodeLink {
   send(msg: ToNode): void;
   close(code: number, reason: string): void;
+  /**
+   * The node went quiet on this link (true: the sweep took it out of placement) or was heard on it
+   * again (false). The Durable Object keeps it on the socket: a wake closes a socket that was quiet
+   * instead of adopting it (adopt).
+   */
+  quiet?(quiet: boolean): void;
 }
 
 export interface Human {
@@ -163,6 +224,27 @@ export type MatchOutcome =
 
 /** assigned -> (report received) reporting -> verifying -> done; or straight to done (void). */
 export type MatchState = 'assigned' | 'reporting' | 'verifying' | 'done';
+
+/**
+ * rejoin(): a fresh ticket, or why not. The Worker answers 404 for no_match and not_in_match, 410
+ * for left and match_over (it keeps the player's lock only on 'left': the match goes on without
+ * them), 503 for offline (it keeps the lock: the node may come back).
+ */
+export type RejoinAnswer = { ok: true; ticket: string; wsUrl: string } | { ok: false; code: 'no_match' | 'not_in_match' | 'left' | 'match_over' | 'offline' };
+
+/**
+ * leave() resolved: the leave is recorded (the Worker answers 200 and frees the lock), whatever
+ * the node answered. `answer` is the node's; null when the relay failed (`error`: timeout,
+ * disconnected, or the node's refusal), and then the node may or may not have applied it.
+ */
+export interface LeaveResult {
+  recorded: true;
+  answer: LeaveAnswer | null;
+  error?: string;
+}
+
+/** A refused replay upload: the HTTP status and error code the Worker answers. */
+export type ReplayRefusal = { ok: false; status: number; code: string };
 
 export interface MatchEntry {
   assign: MatchAssignment;
@@ -219,6 +301,7 @@ export interface ControlPlaneOptions {
   siteBase?: string;
   /** The build the current web client runs: nodes must match it to get matches. */
   build: () => BuildId;
+  /** The release channel (channel.json in R2). Checked at every use: a bad one never throws, see channel(). */
   channel: () => ReleaseChannel;
   registry: Registry;
   ledger: Ledger;
@@ -239,6 +322,10 @@ export interface ControlPlaneOptions {
   /** Replay storage (R2 in production). */
   replays: { put(matchId: string, bytes: Uint8Array): Promise<void>; get(matchId: string): Promise<Uint8Array | null> };
   onOutcome?: (o: MatchOutcome, m: MatchEntry) => void;
+  /** Where match changes are written as they happen, each before the message that depends on it (none: memory only). */
+  store?: MatchStore;
+  /** How long a cold start with unfinished matches waits for the nodes (default RESTART_GRACE_MS). */
+  restartGraceMs?: number;
   now?: () => number;
   log?: (msg: string) => void;
 }
@@ -266,6 +353,20 @@ export class Session {
   readonly pending = new Map<string, Pending>();
   authTimer: ReturnType<typeof setTimeout> | null = null;
   verifying = 0;
+  /**
+   * When the link last carried a heartbeat or a hello (or logged in, or was adopted):
+   * LINK_TIMEOUT_MS without one closes it. Nothing else the node sends counts.
+   */
+  heardAt = 0;
+  /** When the node logged in on this link, and whether its hello came (an adopted link's came before the wake). */
+  loggedInAt = 0;
+  hello = false;
+  /** The sweep took the node out of placement for its silence: its next heartbeat on this link is logged. */
+  quiet = false;
+  /** Messages that still came after the control plane let the link go, how late the first one was (ms), and the count the last log line gave. */
+  late = 0;
+  lateMs = 0;
+  lateLogged = 0;
   constructor(link: NodeLink) {
     this.link = link;
   }
@@ -311,6 +412,44 @@ function httpOf(wsUrl: string): string {
   return wsUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
 }
 
+/** A release version as builds carry it (validate.parseBuild's rule). */
+const VERSION = /^[0-9A-Za-z.+-]{1,32}$/;
+/** No channel known: nobody is below the minimum, so nobody is told to update. */
+const NO_CHANNEL: ReleaseChannel = { stable: '0.0.0', minimum: '0.0.0' };
+
+/** The channel the control plane can compare versions against, with nothing else in it, or null. */
+function cleanChannel(v: unknown): ReleaseChannel | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const { stable, minimum, canary } = v as Record<string, unknown>;
+  if (typeof stable !== 'string' || !VERSION.test(stable) || typeof minimum !== 'string' || !VERSION.test(minimum)) return null;
+  return { stable, minimum, ...(typeof canary === 'string' && VERSION.test(canary) ? { canary } : {}) };
+}
+
+/** Milliseconds as whole seconds, for a log line. */
+function seconds(ms: number): number {
+  return Math.round(ms / 1000);
+}
+
+/** A short, log-safe picture of a value. */
+function describe(v: unknown): string {
+  try {
+    return String(JSON.stringify(v)).slice(0, 80);
+  } catch {
+    return typeof v;
+  }
+}
+
+/**
+ * Why a reachability probe failed, fit for a log line. The node writes the answer, and a JSON
+ * error quotes it (newlines and all): its words must not become lines of their own, ALERTs for
+ * the maintainers among them.
+ */
+function probeFailure(e: unknown): string {
+  if (e instanceof SyntaxError) return 'bad json';
+  if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) return 'timeout';
+  return String(e).replace(/[^\x20-\x7e]+/g, ' ').slice(0, 120);
+}
+
 export class ControlPlane {
   readonly registry: Registry;
   readonly ledger: Ledger;
@@ -318,6 +457,18 @@ export class ControlPlane {
   readonly matches = new Map<string, MatchEntry>();
   private readonly o: ControlPlaneOptions;
   private readonly sessions = new Map<string, Session>();
+  /** Sessions that have not logged in yet: at most MAX_UNAUTHENTICATED. */
+  private readonly unauthenticated = new Set<Session>();
+  /** When the cap last closed a socket (logged once a minute). */
+  private lastBusyLog = 0;
+  /** Links let go that got messages to log since the last sweep (lateMessage). */
+  private readonly lateLinks = new Set<Session>();
+  /**
+   * The silences each running match already sat through (ms, by match id): with its node's current
+   * one, NODE_OFFLINE_MS in all voids it (overdue). Memory only: a restart forgets them, as it
+   * forgets when each node was last seen.
+   */
+  private readonly silences = new Map<string, number>();
   private readonly key: Promise<CryptoKey>;
   private readonly pub: Promise<CryptoKey>;
   private readonly now: () => number;
@@ -326,10 +477,24 @@ export class ControlPlane {
   private readonly casualVerifyRate: number;
   private readonly probing = new Set<string>();
   private readonly lastProbe = new Map<string, number>();
+  /** Failed re-probes in a row of proven hosts, and the hosts they took out (for the recovery line). */
+  private readonly probeFailures = new Map<string, number>();
+  private readonly unreachable = new Set<string>();
   private readonly deferredUpdates = new Set<string>();
   private readonly lastStrike = new Map<string, number>();
   /** Matches the matchmaker asked for and no node could take (region, when): demand the nodes did not meet. */
   private unplaced: Array<{ region: string; at: number }> = [];
+  private readonly restartGraceMs: number;
+  /** Until then a cold start waits for its nodes: see inGrace(). */
+  private graceUntil = 0;
+  /**
+   * When restore() ran (0: never). A restored node's lastSeen is 0, so its silence counts from
+   * here; and a report the restart held up is judged as if it had arrived then.
+   */
+  private restoredAt = 0;
+  /** The last valid release channel, and whether a bad one was already alerted. */
+  private goodChannel: ReleaseChannel | null = null;
+  private channelAlerted = false;
 
   constructor(o: ControlPlaneOptions) {
     this.o = o;
@@ -337,12 +502,65 @@ export class ControlPlane {
     this.ledger = o.ledger;
     this.shop = o.shop ?? null;
     this.key = importPrivateKey(o.controlPrivateKey);
+    // A key that does not import fails each place() and rejoin() that needs it, not the process:
+    // nothing else awaits it, and an unhandled rejection would end the reference server.
+    this.key.catch(() => undefined);
     this.pub = importPublicKey(o.controlPublicKey);
     this.now = o.now ?? Date.now;
     this.log = o.log ?? ((m) => console.log(`[control] ${m}`));
     this.requireRelay = o.requireRelay !== false;
     const rate = o.casualVerifyRate ?? CASUAL_VERIFY_RATE;
     this.casualVerifyRate = Number.isFinite(rate) ? Math.min(1, Math.max(0, rate)) : CASUAL_VERIFY_RATE;
+    this.restartGraceMs = o.restartGraceMs ?? RESTART_GRACE_MS;
+  }
+
+  // ---- persistence --------------------------------------------------------------------------
+
+  /** Write a match through the store. Call it before sending anything that depends on the change. */
+  private save(m: MatchEntry): void {
+    this.o.store?.save(m);
+  }
+
+  /**
+   * Load the match rows written through `store` into a fresh control plane, after its registry
+   * restored the nodes. `cold`: the process started without the nodes' sockets (a deploy or a
+   * crash drops them; a hibernation keeps them, and they are adopt()ed instead). Then, while some
+   * match is unfinished, nothing is voided for being silent or late until restartGraceMs passed:
+   * the same node process reconnects and keeps its matches; a new one voids them at its hello.
+   */
+  restore(rows: MatchRow[], opts: { cold: boolean }): void {
+    this.matches.clear();
+    this.silences.clear();
+    for (const r of rows) {
+      const m = matchFromRow(r);
+      this.matches.set(m.assign.matchId, m);
+    }
+    // One outage is one strike across a restart too: the last strike of each node is its newest strike time.
+    this.lastStrike.clear();
+    for (const n of this.registry.list()) {
+      const last = n.strikeTimes[n.strikeTimes.length - 1];
+      if (last !== undefined) this.lastStrike.set(n.nodeId, last);
+    }
+    const open = this.unfinished();
+    this.restoredAt = this.now();
+    this.graceUntil = opts.cold && open > 0 ? this.restoredAt + this.restartGraceMs : 0;
+    this.log(`restored ${rows.length} matches (${open} unfinished)${this.graceUntil > 0 ? `: ${Math.round(this.restartGraceMs / 1000)} s for the nodes to reconnect` : ''}`);
+  }
+
+  /** Matches not settled yet (assigned, reporting, verifying): the DO keeps its alarm while there are any. */
+  unfinished(): number {
+    let n = 0;
+    for (const m of this.matches.values()) if (m.state !== 'done') n++;
+    return n;
+  }
+
+  /**
+   * A cold start is still waiting for its nodes: the sweep voids no match of a silent node and
+   * none past its report deadline, and the verification queue gives up on nothing. Cooldowns,
+   * probes, the purge and verification dispatch go on.
+   */
+  inGrace(): boolean {
+    return this.now() < this.graceUntil;
   }
 
   private ice(purpose: 'node' | 'player'): Promise<IceServer[]> {
@@ -354,15 +572,69 @@ export class ControlPlane {
   /** A node opened /nodes/connect. Feed its messages to onMessage(session, text); call onClose when it goes. */
   open(link: NodeLink): Session {
     const s = new Session(link);
+    if (this.unauthenticated.size >= MAX_UNAUTHENTICATED) {
+      // The oldest goes, not the newcomer: refusing new sockets would let idle ones, reopened as
+      // they time out, keep every node from logging in (after a deploy, all of them at once).
+      const now = this.now();
+      if (now - this.lastBusyLog >= 60_000) {
+        this.lastBusyLog = now;
+        this.log(`${MAX_UNAUTHENTICATED} sockets still to log in: closing the oldest`);
+      }
+      const oldest = this.unauthenticated.values().next().value;
+      if (oldest) {
+        oldest.link.close(1013, 'busy');
+        this.onClose(oldest);
+      }
+    }
+    this.unauthenticated.add(s);
     link.send({ t: 'challenge', nonce: s.nonce });
     s.authTimer = setTimeout(() => {
-      if (!s.nodeId) link.close(4401, 'auth timeout');
+      if (s.nodeId) return;
+      link.close(4401, 'auth timeout');
+      this.onClose(s); // its place under the cap is free even if the close event never comes
     }, AUTH_TIMEOUT_MS);
+    return s;
+  }
+
+  /**
+   * A node socket that outlived a hibernation of the Durable Object, logged in before it (the
+   * socket's `{ nodeId }` attachment): an authenticated session again, with no new challenge.
+   * Sessions live in memory, so without this the first message after a wake would hit 'auth
+   * first'. An unknown or banned node is closed with 4401 (null). The node is live from the
+   * adoption: placement sees it, and the sweep closes the socket (LINK_TIMEOUT_MS) if the node
+   * behind it hung or died meanwhile. Its next heartbeat brings its live fields back. A socket that
+   * was `quiet` (NodeLink.quiet) when the object went down is closed with 4408 instead (null):
+   * adopting it would put a node already silent for a while back in placement and start its
+   * link's timeout over. A live node logs in again, and keeps its matches.
+   */
+  adopt(link: NodeLink, nodeId: string, quiet = false): Session | null {
+    const n = this.registry.node(nodeId);
+    if (!n || n.status === 'banned') {
+      link.close(4401, 'unknown node');
+      return null;
+    }
+    if (quiet) {
+      this.log(`node ${n.name}: silent when the control plane restarted, closing its control link (4408)`);
+      link.close(4408, 'heartbeat timeout');
+      return null;
+    }
+    const s = new Session(link);
+    s.nodeId = nodeId;
+    s.heardAt = this.now();
+    s.hello = true;
+    const old = this.sessions.get(nodeId);
+    if (old) {
+      old.link.close(4000, 'replaced');
+      this.onClose(old);
+    }
+    this.sessions.set(nodeId, s);
+    this.registry.adopted(nodeId, this.now());
     return s;
   }
 
   onClose(s: Session): void {
     s.closed = true;
+    this.unauthenticated.delete(s);
     if (s.authTimer) clearTimeout(s.authTimer);
     for (const p of s.pending.values()) {
       clearTimeout(p.timer);
@@ -377,6 +649,7 @@ export class ControlPlane {
 
   /** One text frame from a node. Never throws for anything the node sends; a storage failure while handling a report rejects (no ack: the node sends it again). */
   async onMessage(s: Session, text: string): Promise<void> {
+    if (s.closed) return this.lateMessage(s); // a socket the control plane already let go (pushed out by the cap, replaced, timed out)
     let raw: unknown;
     try {
       raw = JSON.parse(text);
@@ -394,6 +667,8 @@ export class ControlPlane {
       case 'hello': {
         const hello = parseHello(m.data, MAX_CAPACITY);
         if (!hello) return s.link.close(1008, 'bad hello');
+        this.heard(s);
+        s.hello = true;
         const prevBoot = this.registry.node(nodeId)?.bootId ?? null;
         const changed = this.registry.connected(nodeId, hello, this.now(), { requireRelay: this.requireRelay });
         if (prevBoot !== null && hello.bootId && hello.bootId !== prevBoot) {
@@ -409,10 +684,21 @@ export class ControlPlane {
       case 'heartbeat': {
         const hb = parseHeartbeat(m.data, MAX_CAPACITY);
         if (!hb) return s.link.close(1008, 'bad heartbeat');
+        const n = this.registry.node(nodeId);
+        if (s.quiet && n) {
+          // Held in transit, most likely: the same link, and placement takes the node again.
+          s.quiet = false;
+          s.link.quiet?.(false);
+          this.log(`node ${n.name}: heartbeat again after ${seconds(this.now() - n.lastSeen)} s`);
+        }
+        this.heard(s);
         this.registry.heartbeat(nodeId, hb, this.now());
         for (const x of hb.matches) {
           const m = x.tick > 0 ? this.matches.get(x.matchId) : undefined;
-          if (m && m.nodeId === nodeId) m.startedSeen = true;
+          if (m && m.nodeId === nodeId && !m.startedSeen) {
+            m.startedSeen = true;
+            this.save(m); // once per match, not per heartbeat
+          }
         }
         return;
       }
@@ -441,6 +727,38 @@ export class ControlPlane {
     }
   }
 
+  /**
+   * A message on a link already let go: counted, never handled, and logged by the next sweep (a
+   * backlog comes in a burst), then again each time the count doubled since the last line: a few
+   * lines, however many come. How late: the first message after a silence was due one heartbeat
+   * after the last one the link carried, so the held heartbeats of 2026-10-21 would read "4
+   * messages so far after its link was closed, up to 19 s late".
+   */
+  private lateMessage(s: Session): void {
+    if (s.nodeId === null) return;
+    if (s.late === 0) s.lateMs = Math.max(0, this.now() - s.heardAt - HEARTBEAT_MS);
+    s.late++;
+    if (s.late >= 2 * s.lateLogged) this.lateLinks.add(s);
+  }
+
+  /**
+   * A heartbeat or a hello on a logged-in link, before the registry takes it: the link's timeout
+   * starts over, and a silence that took the node out of placement counts against each match it
+   * holds (silences). One that began before a restart does not: the node lost its link with the
+   * old process.
+   */
+  private heard(s: Session): void {
+    const now = this.now();
+    s.heardAt = now;
+    const n = s.nodeId !== null ? this.registry.node(s.nodeId) : undefined;
+    if (!n || n.lastSeen < this.restoredAt) return;
+    const gap = now - n.lastSeen;
+    if (gap <= HEARTBEAT_TIMEOUT_MS) return;
+    for (const m of this.matches.values()) {
+      if (m.nodeId === n.nodeId && m.state === 'assigned') this.silences.set(m.assign.matchId, (this.silences.get(m.assign.matchId) ?? 0) + gap);
+    }
+  }
+
   private async auth(s: Session, nodeId: unknown, sig: unknown): Promise<void> {
     if (typeof nodeId !== 'string' || typeof sig !== 'string' || nodeId.length > 32 || sig.length > 200) return s.link.close(4401, 'bad auth');
     const n = this.registry.node(nodeId);
@@ -451,21 +769,24 @@ export class ControlPlane {
     }
     if (s.closed) return;
     if (s.authTimer) clearTimeout(s.authTimer);
+    this.unauthenticated.delete(s);
     const old = this.sessions.get(nodeId);
     if (old && old !== s) {
       old.link.close(4000, 'replaced');
       this.onClose(old);
     }
     s.nodeId = nodeId;
+    s.heardAt = s.loggedInAt = this.now();
     this.sessions.set(nodeId, s);
     const iceServers = n.transports.includes('rtc') ? await this.ice('node') : [];
     if (s.closed) return;
-    s.link.send({ t: 'welcome', nodeId, status: n.status, region: n.region, channel: this.o.channel(), serverTime: this.now(), iceServers });
+    s.link.send({ t: 'welcome', nodeId, status: n.status, region: n.region, channel: this.channel(), serverTime: this.now(), iceServers });
   }
 
   private call<T>(nodeId: string, msg: RpcRequest, timeoutMs = RPC_TIMEOUT_MS): Promise<T> {
     const s = this.sessions.get(nodeId);
-    if (!s || s.closed) return Promise.reject(new NodeRefused('offline'));
+    // A silent node's link may be stalled: a request sent into it would only time out.
+    if (!s || s.closed || !this.isOnline(nodeId)) return Promise.reject(new NodeRefused('offline'));
     const rid = randomHexId(8);
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -487,8 +808,35 @@ export class ControlPlane {
     this.notify(nodeId, { t: 'status', status, ...(n?.statusReason ? { reason: n.statusReason } : {}) });
   }
 
+  /**
+   * Connected and heard from within HEARTBEAT_TIMEOUT_MS: placement, requests, leaves and rtc
+   * rejoins need it. A silent node keeps its link for LINK_TIMEOUT_MS and its matches for
+   * NODE_OFFLINE_MS, but it is offline from its heartbeat timeout until it is heard again.
+   */
   isOnline(nodeId: string): boolean {
-    return this.sessions.has(nodeId);
+    const n = this.registry.node(nodeId);
+    return n !== undefined && n.online && this.now() - n.lastSeen <= HEARTBEAT_TIMEOUT_MS && this.sessions.has(nodeId);
+  }
+
+  /**
+   * When the node's current silence began: its last heartbeat or hello (or adoption), or the
+   * restore (a restart forgot the rest). Nothing else the node sends counts, nor a login alone.
+   */
+  private lastHeard(n: NodeRecord): number {
+    return Math.max(n.lastSeen, this.restoredAt);
+  }
+
+  /**
+   * The node of `m` was silent too long for it: past HEARTBEAT_TIMEOUT_MS, and NODE_OFFLINE_MS
+   * with the silences the match already sat through. A node that logged in again by then gets
+   * AUTH_TIMEOUT_MS from that login for the hello the agent sends at the welcome: once, as a later
+   * login came after the deadline.
+   */
+  private overdue(n: NodeRecord, m: MatchEntry, now: number): boolean {
+    const due = this.lastHeard(n) + Math.max(HEARTBEAT_TIMEOUT_MS, NODE_OFFLINE_MS - (this.silences.get(m.assign.matchId) ?? 0));
+    if (now <= due) return false;
+    const s = this.sessions.get(n.nodeId);
+    return !(s && !s.hello && s.loggedInAt <= due && now - s.loggedInAt <= AUTH_TIMEOUT_MS);
   }
 
   // ---- reachability / versions ------------------------------------------------------------------
@@ -497,25 +845,64 @@ export class ControlPlane {
   async probe(nodeId: string): Promise<boolean> {
     const n = this.registry.node(nodeId);
     if (!n || !n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl || n.reachableAt !== null || this.probing.has(nodeId)) return n?.reachableAt != null;
-    this.probing.add(nodeId);
-    this.lastProbe.set(nodeId, this.now());
+    const error = await this.healthz(n, n.publicUrl);
+    if (error !== null) {
+      this.log(`probe ${n.name} failed: ${error}`);
+      return false;
+    }
+    const changed = this.registry.markReachable(nodeId, this.now());
+    if (changed) this.notifyStatus(nodeId, changed);
+    this.probeFailures.delete(nodeId);
+    if (this.unreachable.delete(nodeId)) this.log(`node ${n.name} reachable again at ${n.publicUrl}`);
+    else this.log(`probe ${n.name}: reachable at ${n.publicUrl}`);
+    return true;
+  }
+
+  /**
+   * Check a proven wss host again (the sweep does every REPROBE_MS; a maintainer may ask for one).
+   * REPROBE_FAILURES failures in a row take wss out of its transports (registry.markUnreachable)
+   * with an ALERT; from then on it is an unproven host again, probed every PROBE_RETRY_MS until
+   * one passes. A failure is retried after PROBE_RETRY_MS too, so a dead host is out within about
+   * a minute, not fifteen. Resolves whether wss still reaches the node.
+   */
+  async reprobe(nodeId: string): Promise<boolean> {
+    const n = this.registry.node(nodeId);
+    if (!n || !n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl || n.reachableAt === null || this.probing.has(nodeId)) return n?.reachableAt != null;
+    const url = n.publicUrl;
+    const error = await this.healthz(n, url);
+    if (error === null) {
+      this.probeFailures.delete(nodeId);
+      return true;
+    }
+    // A hello with a new address meanwhile: that one gets proven from scratch.
+    if (n.reachableAt === null || n.publicUrl !== url) return n.reachableAt !== null;
+    const failures = (this.probeFailures.get(nodeId) ?? 0) + 1;
+    this.log(`probe ${n.name} failed (${failures} of ${REPROBE_FAILURES}): ${error}`);
+    if (failures < REPROBE_FAILURES) {
+      this.probeFailures.set(nodeId, failures);
+      return true;
+    }
+    this.probeFailures.delete(nodeId);
+    this.registry.markUnreachable(nodeId);
+    this.unreachable.add(nodeId);
+    this.log(`ALERT node ${n.name} unreachable at ${url}: ${error}`);
+    return false;
+  }
+
+  /** GET <url>/healthz?nonce= and check the node signed the nonce: null when it did, or what went wrong. */
+  private async healthz(n: NodeRecord, url: string): Promise<string | null> {
+    this.probing.add(n.nodeId);
+    this.lastProbe.set(n.nodeId, this.now());
     try {
       const nonce = randomB64(18);
       const get = this.o.fetchJson ?? (async (u: string) => (await fetch(u, { signal: AbortSignal.timeout(5_000) })).json());
-      const body = (await get(`${httpOf(n.publicUrl)}/healthz?nonce=${nonce}`)) as { nodeId?: unknown; sig?: unknown };
-      if (body?.nodeId !== nodeId || typeof body.sig !== 'string' || !(await verifyWith(n.publicKey, reachMessage(nodeId, nonce), body.sig))) {
-        this.log(`probe ${n.name}: bad answer`);
-        return false;
-      }
-      const changed = this.registry.markReachable(nodeId, this.now());
-      if (changed) this.notifyStatus(nodeId, changed);
-      this.log(`probe ${n.name}: reachable at ${n.publicUrl}`);
-      return true;
+      const body = (await get(`${httpOf(url)}/healthz?nonce=${nonce}`)) as { nodeId?: unknown; sig?: unknown };
+      if (body?.nodeId !== n.nodeId || typeof body.sig !== 'string' || !(await verifyWith(n.publicKey, reachMessage(n.nodeId, nonce), body.sig))) return 'bad answer';
+      return null;
     } catch (e) {
-      this.log(`probe ${n.name} failed: ${String(e)}`);
-      return false;
+      return probeFailure(e);
     } finally {
-      this.probing.delete(nodeId);
+      this.probing.delete(n.nodeId);
     }
   }
 
@@ -526,7 +913,7 @@ export class ControlPlane {
    */
   maybeUpdate(nodeId: string): void {
     const n = this.registry.node(nodeId);
-    const ch = this.o.channel();
+    const ch = this.channel();
     if (!n || compareVersions(n.build.version, ch.minimum) >= 0) {
       this.deferredUpdates.delete(nodeId);
       return;
@@ -538,6 +925,42 @@ export class ControlPlane {
     }
     this.deferredUpdates.delete(nodeId);
     this.notify(nodeId, { t: 'update', version: ch.stable });
+  }
+
+  /**
+   * The release channel changed (the DO re-reads channel.json): nodes below the new minimum get
+   * their 'update' now, not at their next hello. A trusted verifier with matches of its build still
+   * to verify waits, as it would at a hello.
+   */
+  channelChanged(): void {
+    for (const id of this.sessions.keys()) this.maybeUpdate(id);
+  }
+
+  /**
+   * The release channel the nodes are held to. A missing or malformed one (no channel.json in R2,
+   * a bad upload) must not break every hello: the last good one stays, or 0.0.0 (nobody is told to
+   * update), with one ALERT until a good one is back.
+   */
+  private channel(): ReleaseChannel {
+    let raw: unknown = null;
+    let threw = '';
+    try {
+      raw = this.o.channel();
+    } catch (e) {
+      threw = String(e);
+    }
+    const ch = cleanChannel(raw);
+    if (ch) {
+      this.goodChannel = ch;
+      this.channelAlerted = false;
+      return ch;
+    }
+    const use = this.goodChannel ?? NO_CHANNEL;
+    if (!this.channelAlerted) {
+      this.channelAlerted = true;
+      this.log(`ALERT release channel missing or invalid (${threw || describe(raw)}): holding the nodes to stable ${use.stable}, minimum ${use.minimum}`);
+    }
+    return use;
   }
 
   /** Someone can verify a match played on `build`: a trusted verifier on that exact release, or the in-process verifier (reference server). */
@@ -587,10 +1010,16 @@ export class ControlPlane {
     for (const m of this.matches.values()) if (m.assign.region === region && (m.state === 'assigned' || m.state === 'reporting')) demand++;
     for (const u of this.unplaced) if (u.region === region && now - u.at < UNPLACED_WINDOW_MS) demand++;
     let supply = 0;
-    for (const n of this.registry.list()) {
-      if (n.region === region && this.isOnline(n.nodeId) && n.roles.includes('host') && (n.status === 'probation' || n.status === 'active')) supply += Math.max(n.capacity.matches, n.capacityMax ?? 0);
-    }
+    for (const n of this.registry.list()) if (n.region === region && this.mayHost(n)) supply += Math.max(n.capacity.matches, n.capacityMax ?? 0);
     return regionFactor(demand, supply);
+  }
+
+  /**
+   * An online host in probation or active that players can reach: one whose wss the re-probes
+   * took out (and that has no other way in) offers nothing until a probe passes again.
+   */
+  private mayHost(n: NodeRecord): boolean {
+    return this.isOnline(n.nodeId) && n.roles.includes('host') && (n.status === 'probation' || n.status === 'active') && usableTransports(n).length > 0;
   }
 
   /**
@@ -681,7 +1110,7 @@ export class ControlPlane {
         tickets.push({ playerId: e.playerId, slot: e.slot, team: e.team, ticket });
       }
       const length = req.matchLengthSeconds > 0 ? req.matchLengthSeconds : 600;
-      this.matches.set(assign.matchId, {
+      const m: MatchEntry = {
         assign,
         nodeId: node.nodeId,
         transport,
@@ -709,24 +1138,54 @@ export class ControlPlane {
         lastTry: 0,
         inFlight: false,
         doneAt: 0,
-      });
+      };
+      this.matches.set(assign.matchId, m);
+      this.save(m); // before the tickets go out: a restart must still know the match their players join
       return { matchId: assign.matchId, nodeId: node.nodeId, nodeName: node.name, transport, wsUrl: this.urlFor(node, transport, assign.matchId), tickets };
     }
     return this.noPlace(req, refused, transports);
   }
 
-  /** A fresh ticket for a player rejoining a node match (POST /api/rejoin). */
-  async rejoinTicket(matchId: string, playerId: string): Promise<{ ticket: string; wsUrl: string } | null> {
+  /** A fresh ticket for a player rejoining a node match (POST /api/rejoin), or why not (checked in this order). */
+  async rejoin(matchId: string, playerId: string): Promise<RejoinAnswer> {
     const m = this.matches.get(matchId);
-    const n = m ? this.registry.node(m.nodeId) : undefined;
-    if (!m || !n || m.state !== 'assigned' || m.leaves.has(playerId)) return null;
-    // A wss node checks the ticket by itself; an rtc one needs its control link for the offer.
-    if (m.transport === 'rtc' && !this.isOnline(n.nodeId)) return null;
-    if (m.transport === 'wss' && !n.publicUrl) return null;
+    if (!m) return { ok: false, code: 'no_match' };
     const e = m.assign.roster.find((r) => r.kind === 'player' && r.playerId === playerId);
-    if (!e) return null;
+    if (!e) return { ok: false, code: 'not_in_match' };
+    if (m.leaves.has(playerId)) return { ok: false, code: 'left' };
+    if (m.state !== 'assigned') return { ok: false, code: 'match_over' };
+    // A wss node checks the ticket by itself; an rtc one needs its control link for the offer.
+    const n = this.registry.node(m.nodeId);
+    if (!n || (m.transport === 'rtc' && !this.isOnline(n.nodeId)) || (m.transport === 'wss' && !n.publicUrl)) return { ok: false, code: 'offline' };
     const ticket = await createNodeTicket(await this.key, { sub: playerId, mid: matchId, team: e.team, slot: e.slot, name: e.name, nodeId: n.nodeId }, this.now());
-    return { ticket, wsUrl: this.urlFor(n, m.transport, matchId) };
+    return { ok: true, ticket, wsUrl: this.urlFor(n, m.transport, matchId) };
+  }
+
+  /** rejoin() without the reason: null when the player cannot rejoin. */
+  async rejoinTicket(matchId: string, playerId: string): Promise<{ ticket: string; wsUrl: string } | null> {
+    const r = await this.rejoin(matchId, playerId);
+    return r.ok ? { ticket: r.ticket, wsUrl: r.wsUrl } : null;
+  }
+
+  /**
+   * A player's node match as the matchmaker's lock check sees it (GET /internal/status): the lock
+   * holds while the match is 'assigned' or 'reporting' and the player has not left. null (404)
+   * when the control plane does not know the match, or the player in it.
+   */
+  matchStatus(matchId: string, playerId: string): { state: MatchState; left: boolean } | null {
+    const m = this.matches.get(matchId);
+    if (!m || !m.assign.roster.some((r) => r.kind === 'player' && r.playerId === playerId)) return null;
+    return { state: m.state, left: m.leaves.has(playerId) };
+  }
+
+  /**
+   * Host nodes online in `region` that may take matches (probation or active, reachable): the
+   * `hosts` of POST /internal/place. While it is 0 the matchmaker stops asking for a while.
+   */
+  hostsOnline(region: string): number {
+    let n = 0;
+    for (const x of this.registry.list()) if (x.region === region && this.mayHost(x)) n++;
+    return n;
   }
 
   /**
@@ -735,20 +1194,33 @@ export class ControlPlane {
    * fall in the matching tick window, so a node holding its report cannot turn a later, automatic
    * leave into an abandon. `connected: false` (the client never got into the match, e.g. a cancel
    * while connecting) is never a dodge.
+   *
+   * Throws NodeRefused before recording anything (no_match, not_in_match, match_over, offline: the
+   * Worker keeps the lock on that one, the player may still rejoin). Once recorded it resolves,
+   * even when the relay then fails: the player is out of the match from then on (rejoin answers
+   * 'left'), so the Worker must free the lock rather than strand them in it.
    */
-  async leave(matchId: string, playerId: string, opts: { connected?: boolean } = {}): Promise<LeaveAnswer> {
+  async leave(matchId: string, playerId: string, opts: { connected?: boolean } = {}): Promise<LeaveResult> {
     const m = this.matches.get(matchId);
     if (!m) throw new NodeRefused('no_match');
     if (!m.assign.roster.some((r) => r.kind === 'player' && r.playerId === playerId)) throw new NodeRefused('not_in_match');
     if (m.state !== 'assigned') throw new NodeRefused('match_over');
     if (!this.isOnline(m.nodeId)) throw new NodeRefused('offline'); // nothing recorded: the player may still rejoin
-    // Before sending: the node may record the takeover even if its reply is lost.
+    // Before sending, and written: the node may record the takeover even if its reply is lost, and
+    // a restart that forgot leaveAt would turn that honest takeover into a 'bad_takeover'.
     m.leaves.add(playerId);
     if (!m.leaveAt.has(playerId)) m.leaveAt.set(playerId, this.now());
     if (opts.connected === false) m.neverJoined.add(playerId);
-    const a = await this.call<LeaveAnswer>(m.nodeId, { t: 'leave', matchId, playerId });
+    this.save(m);
+    let answer: LeaveAnswer;
+    try {
+      answer = await this.call<LeaveAnswer>(m.nodeId, { t: 'leave', matchId, playerId });
+    } catch (e) {
+      return { recorded: true, answer: null, error: e instanceof NodeRefused ? e.code : String(e) };
+    }
     m.left.add(playerId);
-    return a;
+    this.save(m);
+    return { recorded: true, answer };
   }
 
   // ---- WebRTC signaling (players of rtc nodes) ----------------------------------------------
@@ -773,25 +1245,48 @@ export class ControlPlane {
   async rtcOffer(nodeId: string, matchId: string, ticket: string, sdp: string): Promise<RtcAnswer> {
     if (typeof sdp !== 'string' || sdp.length > 32 * 1024) throw new NodeRefused('bad_offer');
     const { m, playerId } = await this.rtcCheck(nodeId, matchId, ticket);
-    m.offered.add(playerId);
+    if (!m.offered.has(playerId)) {
+      m.offered.add(playerId);
+      this.save(m); // the evidence a no-show is judged on
+    }
     const iceServers = await this.ice('node');
     return this.call<RtcAnswer>(nodeId, { t: 'rtcOffer', matchId, ticket, sdp, iceServers }, RTC_OFFER_TIMEOUT_MS);
   }
 
   // ---- results ------------------------------------------------------------------------------
 
-  /** PUT /nodes/replays/<matchId>: only the hosting node, signed, hash as declared. */
-  async storeReplay(matchId: string, nodeId: string, ts: number, sig: string, declaredSha: string, bytes: Uint8Array): Promise<{ ok: true } | { ok: false; status: number; code: string }> {
+  /**
+   * The checks of PUT /nodes/replays/<matchId> that need no body: only the hosting node, on time,
+   * signed over the declared hash, before its report. null when the upload may go on. The Worker
+   * runs it before it reads the body (up to 16 MiB): every player of a node match knows its id
+   * and the node's, and reading or hashing 16 MiB for anyone who asks would be a cheap way to
+   * stall the one control plane every node's heartbeats go through.
+   */
+  async replayPutCheck(matchId: string, nodeId: string, ts: number, sig: string, declaredSha: string): Promise<ReplayRefusal | null> {
     const m = this.matches.get(matchId);
     const n = this.registry.node(nodeId);
     if (!m || !n || m.nodeId !== nodeId) return { ok: false, status: 404, code: 'no_match' };
     if (!Number.isFinite(ts) || Math.abs(this.now() - ts) > 5 * 60_000) return { ok: false, status: 401, code: 'stale' };
+    if (!(await verifyWith(n.publicKey, replayRequestMessage('PUT', matchId, declaredSha, ts), sig))) return { ok: false, status: 401, code: 'bad_sig' };
+    if (m.report || m.state !== 'assigned') return { ok: false, status: 409, code: 'already_reported' };
+    return null;
+  }
+
+  /**
+   * PUT /nodes/replays/<matchId> once the body is in: replayPutCheck again (the match may have
+   * been reported while the body arrived), then the hash as declared.
+   */
+  async storeReplay(matchId: string, nodeId: string, ts: number, sig: string, declaredSha: string, bytes: Uint8Array): Promise<{ ok: true } | ReplayRefusal> {
+    const refused = await this.replayPutCheck(matchId, nodeId, ts, sig, declaredSha);
+    if (refused) return refused;
+    const m = this.matches.get(matchId);
+    if (!m) return { ok: false, status: 404, code: 'no_match' };
     const sha = await sha256Hex(bytes);
     if (sha !== declaredSha) return { ok: false, status: 400, code: 'sha_mismatch' };
-    if (!(await verifyWith(n.publicKey, replayRequestMessage('PUT', matchId, sha, ts), sig))) return { ok: false, status: 401, code: 'bad_sig' };
-    if (m.report || m.state !== 'assigned') return { ok: false, status: 409, code: 'already_reported' };
     await this.o.replays.put(matchId, bytes);
     m.replaySha = sha;
+    // Before the 200: a restart that forgot the upload would strike the node's honest 'ended' as 'no_replay'.
+    this.save(m);
     return { ok: true };
   }
 
@@ -811,22 +1306,24 @@ export class ControlPlane {
   /**
    * A strike for the node (unless trusted: the registry skips those), the node told when it was
    * paused. Strikes within STRIKE_DEDUPE_MS of the last one count once: one stop, crash or restart
-   * is one strike however many matches it took.
+   * is one strike however many matches it took. `since`: when the fault began, for one found
+   * later. A silence is found NODE_OFFLINE_MS after the node's last heartbeat, and a strike it took
+   * with its last messages (a 'lost' report, a missed deadline) is the same outage.
    */
-  private strike(nodeId: string, reason: string): void {
+  private strike(nodeId: string, reason: string, since = this.now()): void {
     const now = this.now();
     const last = this.lastStrike.get(nodeId);
-    if (last !== undefined && now - last < STRIKE_DEDUPE_MS) return;
+    if (last !== undefined && since - last < STRIKE_DEDUPE_MS) return;
     this.lastStrike.set(nodeId, now);
     const changed = this.registry.onLost(nodeId, reason, now);
     if (changed) this.notifyStatus(nodeId, changed);
   }
 
-  /** Void every match of `nodeId` that `which` selects, with ONE strike for the whole outage. */
-  private voidMatchesOf(nodeId: string, reason: string, which: (m: MatchEntry) => boolean): number {
+  /** Void every match of `nodeId` that `which` selects, with ONE strike for the whole outage (strike's `since`). */
+  private voidMatchesOf(nodeId: string, reason: string, which: (m: MatchEntry) => boolean, since?: number): number {
     const hit = [...this.matches.values()].filter((m) => m.nodeId === nodeId && which(m));
     for (const m of hit) this.voidMatch(m, reason);
-    if (hit.length > 0) this.strike(nodeId, reason);
+    if (hit.length > 0) this.strike(nodeId, reason, since);
     return hit.length;
   }
 
@@ -839,8 +1336,29 @@ export class ControlPlane {
     this.voidMatch(m, 'lost:bad_report');
   }
 
-  /** A report for one of the node's matches. Returns false when it must not be acked (a copy of a report still being processed). */
+  /**
+   * A report for one of the node's matches. Returns false when it must not be acked (a copy of a
+   * report still being processed). Rejects when a store fails, and the match then waits for its
+   * report as if it had never come: the node sends it again (no ack), and that copy is judged
+   * afresh instead of being acked as a second report while the row still says 'assigned'.
+   */
   private async onReport(nodeId: string, r: MatchReport): Promise<boolean> {
+    try {
+      return await this.takeReport(nodeId, r);
+    } catch (e) {
+      // Back to waiting for the report, unless the sweep settled the match meanwhile.
+      const m = this.matches.get(r.matchId);
+      if (m && m.report === r && m.state !== 'done') {
+        m.state = 'assigned';
+        m.report = null;
+        m.reportedAt = 0;
+      }
+      throw e;
+    }
+  }
+
+  /** onReport without the way back: settle the match on its report, or queue it for verification. */
+  private async takeReport(nodeId: string, r: MatchReport): Promise<boolean> {
     const m = this.matches.get(r.matchId);
     if (m && m.nodeId === nodeId && m.state === 'reporting') return false;
     // Unknown, foreign, already settled or a second report: ack and forget.
@@ -870,7 +1388,11 @@ export class ControlPlane {
         this.voidMatch(m, 'lost:' + why);
         return true;
       };
-      if (since > joinMs + CANCEL_SLACK_MS || m.startedSeen) return lost('late_cancel');
+      // A cancel a deploy held up (the node sends it again at its welcome, in the grace) is late
+      // only if it was late already when the control plane restarted.
+      const heldUp = this.inGrace() && m.assign.createdAt < this.restoredAt;
+      const lateness = (heldUp ? Math.min(m.reportedAt, this.restoredAt) : m.reportedAt) - m.assign.createdAt;
+      if (lateness > joinMs + CANCEL_SLACK_MS || m.startedSeen) return lost('late_cancel');
       if (r.reason === 'dodge') {
         // A player's own leave, relayed here before the start (MatchDO: a dodge is an abandon).
         const relayed = r.noShows.filter((p) => players.includes(p) && m.leaves.has(p));
@@ -911,16 +1433,7 @@ export class ControlPlane {
       return true;
     }
     // Verify before anything is written.
-    let bytes: Uint8Array | null;
-    try {
-      bytes = await this.o.replays.get(m.assign.matchId);
-    } catch (e) {
-      if (m.state === 'reporting' && m.report === r) {
-        m.state = 'assigned';
-        m.report = null;
-      }
-      throw e;
-    }
+    const bytes = await this.o.replays.get(m.assign.matchId);
     const sha = bytes ? await sha256Hex(bytes) : null;
     if (m.state !== 'reporting' || m.report !== r) return true; // settled meanwhile (sweep)
     if (sha === null || sha !== r.replaySha256) {
@@ -931,6 +1444,9 @@ export class ControlPlane {
     m.state = 'verifying';
     m.queuedAt = this.now();
     m.lastTry = 0;
+    // Before the ack: the node forgets an acked report, so only this row keeps the match queued.
+    // ('reporting' is never written: it only lasts across the replay read above.)
+    this.save(m);
     this.pump();
     return true;
   }
@@ -938,10 +1454,12 @@ export class ControlPlane {
   /** Dispatch every queued verification that can go now (called on reports, verifier hellos and sweeps). */
   pump(force = false): void {
     const now = this.now();
+    const grace = this.inGrace();
     for (const m of this.matches.values()) {
       if (m.state !== 'verifying' || m.inFlight) continue;
       if (!force && m.lastTry !== 0 && now - m.lastTry < VERIFY_RETRY_MS) continue;
-      if (now - m.queuedAt > VERIFY_MAX_WAIT_MS) {
+      // After a restart the verifier needs its reconnect too: try, but give up on nothing yet.
+      if (now - m.queuedAt > VERIFY_MAX_WAIT_MS && !grace) {
         this.log(`ALERT match ${m.assign.matchId} could not be verified for ${VERIFY_MAX_WAIT_MS / 3_600_000} h`);
         this.voidMatch(m, 'unverified');
         continue;
@@ -1120,6 +1638,10 @@ export class ControlPlane {
     if (rateable) {
       const leftSlots = new Set(verdict.leftSlots ?? []);
       const roster = m.assign.roster.filter((e) => e.kind === 'player' && e.playerId);
+      // MatchDO's rule on a project node: no socket at the whistle is leaving (closing the tab
+      // escapes nothing). A community node's word on its sockets decides nothing; the replay
+      // cannot tell a gone player from one holding no input, so there only proven leaves count.
+      const goneAtEnd = (slot: number) => host.trusted && r.stats.slots.some((s) => s.slot === slot && !s.connectedAtEnd);
       return this.finish(m, {
         kind: 'rated',
         matchId,
@@ -1128,8 +1650,8 @@ export class ControlPlane {
         winner: verdict.winner,
         blue: verdict.score.blue,
         red: verdict.score.red,
-        // Only leaves the replay proves (each one went through leave() above) make a leaver.
-        players: roster.map((e) => ({ id: e.playerId as string, team: e.team, left: leftSlots.has(e.slot) })),
+        // Leaves the replay proves (each one went through leave() above) make a leaver.
+        players: roster.map((e) => ({ id: e.playerId as string, team: e.team, left: leftSlots.has(e.slot) || goneAtEnd(e.slot) })),
         nodeId: m.nodeId,
       });
     }
@@ -1149,12 +1671,25 @@ export class ControlPlane {
     return m.assign.roster.filter((e) => e.kind === 'player' && e.playerId).map((e) => e.playerId as string);
   }
 
-  /** Settle a match once (later calls are ignored). */
+  /**
+   * Settle a match once (later calls are ignored). The store gets the settled row before anything
+   * else hears of it (in the DO, with the outbox rows that deliver the outcome, in one transaction).
+   * When the store throws, the match stays as it was and the caller gets the error: the report is
+   * not acked, the sweep or the queue tries again. A match settled only in memory would never be
+   * delivered, and the purge would drop its row as if it had been.
+   */
   private finish(m: MatchEntry, o: MatchOutcome): void {
     if (m.state === 'done') return;
+    const was = { state: m.state, outcome: m.outcome, doneAt: m.doneAt };
     m.state = 'done';
     m.outcome = o;
     m.doneAt = this.now();
+    try {
+      this.o.store?.finished(m, o);
+    } catch (e) {
+      Object.assign(m, was);
+      throw e;
+    }
     this.log(`match ${m.assign.matchId.slice(0, 8)} -> ${o.kind}${o.kind === 'void' ? ' (' + o.reason + ')' : ''}${m.ledger ? `, ${m.ledger.points} pts` : ''}`);
     try {
       this.o.onOutcome?.(o, m);
@@ -1165,43 +1700,85 @@ export class ControlPlane {
 
   // ---- health -------------------------------------------------------------------------------
 
-  /** Call every few seconds: silent nodes go offline (their matches void), cooldowns lift, queues retry. */
+  /**
+   * Call every few seconds: silent nodes get no new match, then lose their link and their matches;
+   * cooldowns lift, queues retry.
+   */
   sweep(): void {
     const now = this.now();
+    const grace = this.inGrace();
     const { offline, restored } = this.registry.sweep(now);
     for (const n of restored) {
       this.log(`node ${n.name}: strike cooldown over, back to ${n.status}`);
       this.notifyStatus(n.nodeId, n.status);
     }
+    // No heartbeat for HEARTBEAT_TIMEOUT_MS: the registry took the node out of placement. Its link
+    // stays: if the heartbeats were only held on the way, they bring it back when they arrive.
     for (const n of offline) {
       const s = this.sessions.get(n.nodeId);
-      if (s) {
-        s.link.close(4408, 'heartbeat timeout');
-        this.onClose(s);
-      }
+      if (!s) continue;
+      s.quiet = true;
+      s.link.quiet?.(true);
+      this.log(`node ${n.name}: no heartbeat for ${seconds(now - n.lastSeen)} s, no new matches until the next one`);
     }
-    // A node gone for HEARTBEAT_TIMEOUT_MS (socket closed, or silent): its running matches are void,
-    // one strike for the outage. A quick reconnect of the same process keeps them.
-    const gone = new Set<string>();
+    for (const s of [...this.sessions.values()]) {
+      const silent = now - s.heardAt;
+      if (silent <= LINK_TIMEOUT_MS) continue;
+      this.log(`node ${this.nameOf(s)}: silent ${seconds(silent)} s, closing its control link (4408)`);
+      s.link.close(4408, 'heartbeat timeout');
+      this.onClose(s);
+    }
+    for (const s of this.lateLinks) {
+      this.log(`node ${this.nameOf(s)}: ${s.late} message${s.late === 1 ? '' : 's'} so far after its link was closed, up to ${seconds(s.lateMs)} s late`);
+      s.lateLogged = s.late;
+    }
+    this.lateLinks.clear();
+    // A match whose node was silent for NODE_OFFLINE_MS, its earlier silences included (overdue):
+    // void, one strike for the node's outage, from the start of its silence. The same process heard
+    // again in time keeps them. Not while a restart waits for its nodes: they all look gone then. A
+    // restart forgot when each node was last seen: a node whose socket did not survive a
+    // hibernation gets its full window from the restore, as it would have without it.
+    const gone = new Map<string, Set<MatchEntry>>();
     for (const m of this.matches.values()) {
-      if (m.state !== 'assigned' || gone.has(m.nodeId) || this.isOnline(m.nodeId)) continue;
+      if (grace || m.state !== 'assigned') continue;
       const n = this.registry.node(m.nodeId);
-      if (!n || now - n.lastSeen > HEARTBEAT_TIMEOUT_MS) gone.add(m.nodeId);
+      if (n && !this.overdue(n, m, now)) continue;
+      gone.set(m.nodeId, (gone.get(m.nodeId) ?? new Set<MatchEntry>()).add(m));
     }
-    for (const id of gone) this.voidMatchesOf(id, 'node_offline', (m) => m.state === 'assigned');
-    // Hosts still unproven (Caddy may have been fetching its certificate at the first hello): probe again.
+    for (const [id, hit] of gone) {
+      const n = this.registry.node(id);
+      this.voidMatchesOf(id, 'node_offline', (m) => hit.has(m), n ? this.lastHeard(n) : undefined);
+    }
+    // Hosts still unproven (Caddy may have been fetching its certificate at the first hello): probe
+    // again. Proven ones: check again every REPROBE_MS, sooner after a failure.
     for (const n of this.registry.list()) {
-      if (n.reachableAt === null && n.transports.includes('wss') && this.isOnline(n.nodeId) && now - (this.lastProbe.get(n.nodeId) ?? 0) >= PROBE_RETRY_MS) {
-        void this.probe(n.nodeId);
+      if (!n.transports.includes('wss') || !this.isOnline(n.nodeId)) continue;
+      const since = now - (this.lastProbe.get(n.nodeId) ?? 0);
+      if (n.reachableAt === null) {
+        if (since >= PROBE_RETRY_MS) void this.probe(n.nodeId);
+      } else if (since >= (this.probeFailures.has(n.nodeId) ? PROBE_RETRY_MS : REPROBE_MS)) {
+        void this.reprobe(n.nodeId);
       }
     }
+    // No report by the deadline: void, one strike. Not in a restart's grace: a deadline that passed
+    // while the control plane was down is nobody's fault, and the node re-sends its report at the welcome.
     const late = new Set<string>();
-    for (const m of this.matches.values()) if ((m.state === 'assigned' || m.state === 'reporting') && now > m.deadline) late.add(m.nodeId);
+    for (const m of this.matches.values()) if (!grace && (m.state === 'assigned' || m.state === 'reporting') && now > m.deadline) late.add(m.nodeId);
     for (const id of late) this.voidMatchesOf(id, 'no_report', (m) => (m.state === 'assigned' || m.state === 'reporting') && now > m.deadline);
-    for (const [id, m] of this.matches) if (m.state === 'done' && now - m.doneAt > DONE_RETENTION_MS) this.matches.delete(id);
+    for (const [id, m] of this.matches) {
+      if (m.state !== 'done' || now - m.doneAt <= DONE_RETENTION_MS) continue;
+      this.matches.delete(id);
+      this.silences.delete(id);
+      this.o.store?.drop(id);
+    }
     this.unplaced = this.unplaced.filter((u) => now - u.at < UNPLACED_WINDOW_MS);
     for (const id of [...this.deferredUpdates]) this.maybeUpdate(id);
     this.pump();
+  }
+
+  /** A session's node as the log lines name it (the registry's name, cleaned at registration). */
+  private nameOf(s: Session): string {
+    return (s.nodeId !== null ? this.registry.node(s.nodeId)?.name : undefined) ?? String(s.nodeId);
   }
 
   /** The build the clients run (placements need it); exposed for the reference server's views. */

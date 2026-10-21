@@ -58,6 +58,30 @@ export interface Env {
    */
   TURN_KEY_ID?: string;
   TURN_KEY_TOKEN?: string;
+  /**
+   * Community nodes (nodes/), all optional: a fork or a test env without them never reaches a node
+   * (nodesConfigured). NODES: the NodeRegistryDO, one object 'nodes-v1' (nodeApi.ts) around the
+   * control plane.
+   */
+  NODES?: DurableObjectNamespace;
+  /** R2: the replays the nodes upload, re-simulated before a ranked result counts. */
+  NODE_REPLAYS?: R2Bucket;
+  /** R2: the signed node releases, the installers and channel.json (the release the nodes are held to). */
+  NODE_RELEASES?: R2Bucket;
+  /** Secret: the Ed25519 private key (PKCS#8, `npm run keys` in nodes/) that signs the players' node tickets. */
+  NODE_CONTROL_PRIVATE_KEY?: string;
+  /** Var: its public half, which the nodes check those tickets with. */
+  NODE_CONTROL_PUBLIC_KEY?: string;
+  /**
+   * Secret: the project's account ids, comma-separated (trustedOperatorIds). Their nodes are
+   * trusted: they verify ranked replays, their own included. A secret rather than a var: it
+   * survives deploys, keeps the ids out of the public repo, and a fork without it trusts nobody.
+   */
+  NODE_TRUSTED_OPERATORS?: string;
+  /** Secret, optional: a staff-only Discord channel's webhook URL the control plane posts its ALERT lines to (nodeAlerts.ts). */
+  NODE_ALERT_WEBHOOK?: string;
+  /** Var: the public origin the nodes and the installers reach the control plane at (https://turbo-gol.com). */
+  NODES_PUBLIC_BASE?: string;
 }
 
 export const SERVER_VERSION = '0.1.0';
@@ -79,18 +103,72 @@ export function error(status: number, code: string, message?: string): Response 
   return json({ error: code, message: message ?? code }, status);
 }
 
-/** Parse a JSON body (<= 4 KB) or return null. */
+/** The largest body readJson reads. */
+export const JSON_MAX_BYTES = 4096;
+
+/**
+ * The body, or null when it is longer than `max` bytes. Reading stops there: a body sent without
+ * a Content-Length (chunked, HTTP/2) is never buffered whole before it is found too big.
+ */
+export async function readCapped(request: Request, max: number): Promise<Uint8Array | null> {
+  if (Number(request.headers.get('content-length') ?? 0) > max) return null;
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value as Uint8Array;
+    size += chunk.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
+/** Parse a JSON body (<= 4 KB, readCapped) or return null. */
 export async function readJson<T>(request: Request): Promise<T | null> {
-  const len = Number(request.headers.get('content-length') ?? '0');
-  if (len > 4096) return null;
   try {
-    const text = await request.text();
-    if (text.length > 4096) return null;
-    if (text.length === 0) return {} as T;
-    return JSON.parse(text) as T;
+    const bytes = await readCapped(request, JSON_MAX_BYTES);
+    if (!bytes) return null;
+    if (bytes.byteLength === 0) return {} as T;
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
   } catch {
     return null;
   }
+}
+
+/** `p`, or a rejection once `ms` passed without it settling. The work itself goes on; nothing waits for it. */
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The key a per-address limit counts under: an IPv4 address as it is, an IPv6 one by its /64.
+ * One subscriber gets a whole /64 and picks the other 64 bits freely, so counting full IPv6
+ * addresses would give each caller as many fresh windows as it likes.
+ */
+export function limitKey(ip: string): string {
+  if (!ip.includes(':') || ip.includes('.')) return ip; // IPv4, IPv4-mapped, or 'local' under wrangler dev
+  const [head, tail] = ip.toLowerCase().split('::', 2);
+  const front = head ? head.split(':') : [];
+  const back = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? front : [...front, ...Array<string>(Math.max(0, 8 - front.length - back.length)).fill('0'), ...back];
+  return groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':') + '::/64';
 }
 
 export type GameModeId = '1v1' | '2v2' | '3v3';
@@ -118,6 +196,8 @@ export function isHex(v: unknown, len: number): v is string {
 export type QueueKind = 'p2p' | 'server' | 'ranked';
 /** What a match / room lock points at: a RoomDO signaling room or a MatchDO match (ranked ones included). */
 export type RoomKind = 'p2p' | 'server';
+/** A matchmaker lock: one of the Worker's own rooms, or a match on a community node (NodeRegistryDO). */
+export type LockKind = RoomKind | 'node';
 
 export function isQueueKind(v: unknown): v is QueueKind {
   return v === 'p2p' || v === 'server' || v === 'ranked';
@@ -125,6 +205,80 @@ export function isQueueKind(v: unknown): v is QueueKind {
 
 export function isModeList(v: unknown): v is GameModeId[] {
   return Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every(isMode) && new Set(v).size === v.length;
+}
+
+// ---- KV flags ----------------------------------------------------------------------------------
+
+/** A KV flag's raw value: null when it is not set, or KV cannot be read (every flag then reads as off). */
+async function flagValue(env: Pick<Env, 'FLAGS'>, name: string): Promise<string | null> {
+  try {
+    return await env.FLAGS.get(name, { cacheTtl: 60 });
+  } catch {
+    return null;
+  }
+}
+
+/** A KV flag is set: '1', 'true' or 'on'. Edge-cached 60 s: a flip takes up to a minute to land. */
+export async function flag(env: Pick<Env, 'FLAGS'>, name: string): Promise<boolean> {
+  const v = await flagValue(env, name);
+  return v === '1' || v === 'true' || v === 'on';
+}
+
+// ---- Community nodes ---------------------------------------------------------------------------
+
+/** An account id (accountStore.ts randomId): 16 lowercase hex characters. */
+const ACCOUNT_ID = /^[0-9a-f]{16}$/;
+
+/** The account ids of a comma-separated list. Anything else is dropped: a typo names nobody. */
+function accountIds(list: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const s of (list ?? '').split(',')) {
+    const id = s.trim();
+    if (ACCOUNT_ID.test(id)) out.add(id);
+  }
+  return out;
+}
+
+/** Whose matches community nodes may host: nobody, everybody, or a canary of account ids. */
+export type NodesMode = 'off' | 'all' | ReadonlySet<string>;
+
+/**
+ * The KV flag nodes_on: absent or '0' is 'off' (matchmaking as without nodes), '1' is 'all', and a
+ * comma-separated list of account ids is a canary (nodesAllowed). Anything else, a list without a
+ * single valid id included, is off: a mistyped flag fails closed. vm_disabled is the emergency
+ * switch (every match back on the Worker's own servers, no deploy): it wins over nodes_on.
+ */
+export async function nodesMode(env: Pick<Env, 'FLAGS'>): Promise<NodesMode> {
+  const [on, disabled] = await Promise.all([flagValue(env, 'nodes_on'), flag(env, 'vm_disabled')]);
+  if (disabled || on === null) return 'off';
+  const v = on.trim();
+  if (v === '1') return 'all';
+  const ids = accountIds(v);
+  return ids.size > 0 ? ids : 'off';
+}
+
+/** A match of these players may go to a node: nodes are on for all, or every one of them is in the canary. */
+export function nodesAllowed(mode: NodesMode, playerIds: readonly string[]): boolean {
+  if (mode === 'off') return false;
+  if (mode === 'all') return true;
+  return playerIds.length > 0 && playerIds.every((id) => mode.has(id));
+}
+
+/** NODE_TRUSTED_OPERATORS as account ids (an entry that is not one is dropped, so it trusts nobody). */
+export function trustedOperatorIds(env: Pick<Env, 'NODE_TRUSTED_OPERATORS'>): Set<string> {
+  return accountIds(env.NODE_TRUSTED_OPERATORS);
+}
+
+/** An Env with everything the node control plane needs (nodesConfigured). */
+export type NodesEnv = Env & Required<Pick<Env, 'NODES' | 'NODE_REPLAYS' | 'NODE_RELEASES' | 'NODE_CONTROL_PRIVATE_KEY' | 'NODE_CONTROL_PUBLIC_KEY' | 'NODES_PUBLIC_BASE'>>;
+
+/**
+ * The node control plane can run: its Durable Object, both R2 buckets, both halves of its key and
+ * the public origin the nodes reach it at (the registration answer and the install line carry it)
+ * are there. Without any of them nothing is sent to a node, whatever nodes_on says.
+ */
+export function nodesConfigured(env: Env): env is NodesEnv {
+  return !!env.NODES && !!env.NODE_REPLAYS && !!env.NODE_RELEASES && !!env.NODE_CONTROL_PRIVATE_KEY && !!env.NODE_CONTROL_PUBLIC_KEY && !!env.NODES_PUBLIC_BASE;
 }
 
 // ---- ICE servers (GET /api/ice and the RoomDO welcome) -------------------------------------------

@@ -6,7 +6,8 @@
 > nodo), cada uno con su prueba. Las pruebas automáticas
 > pasan, incluidas partidas de punta a punta por WebSocket y por WebRTC con el `NetClient` real del
 > juego. Todavía no está conectado al juego: la integración con el Worker está en
-> `INTEGRACION.md` y no se aplicó.
+> `INTEGRACION.md`, aplicada en parte: el plano de control ([6] de `PRODUCCION.md`, #28); falta el
+> gancho del matchmaker ([7]), así que ninguna partida va a un nodo.
 
 ## La idea en una frase
 
@@ -60,7 +61,7 @@ aceptar máquinas de cualquiera sin confiar en nadie.
 | Transporte WebRTC | Un DataChannel confiable y ordenado, que presenta la misma interfaz que el WebSocket. Autotest de alcance a través de TURN. | `node/rtcTransport.ts` |
 | Adaptador del jugador | Un objeto con interfaz de WebSocket que viaja por WebRTC. `NetClient` lo recibe con una fábrica y no nota la diferencia. | `client/rtcSocket.ts` |
 | Runtime y agente | Salas, temporizador único, medición de lag y tráfico, conexión saliente al plano de control. | `node/runtime.ts`, `node/agent.ts`, `node/ticker.ts` |
-| Lanzador | Baja versiones firmadas, las verifica, drena antes de actualizar y vuelve atrás si una versión se cae tres veces. | `node/launcher.ts`, `node/launcherMain.ts` |
+| Lanzador | Baja versiones firmadas, las verifica y drena antes de actualizar. Si una versión se cae tres veces, vuelve a la última buena que no esté por debajo del mínimo del canal: con `minimum = stable`, como lo deja la compuerta de deploy cuando cambia el código del juego, no hay a cuál volver. | `node/launcher.ts`, `node/launcherMain.ts` |
 | Plano de control | Registro, scheduler, señalización, cola de verificación, recompensas, tienda. Lógica independiente del transporte. | `control-plane/*.ts` |
 | Instaladores | VPS con root, Windows sin admin, macOS y Linux de escritorio sin root. | `install/` |
 | Página del operador | El botón "Poner un servidor", "Mis servidores" y la tienda. | `web/host.html` |
@@ -140,15 +141,26 @@ aceptar máquinas de cualquiera sin confiar en nadie.
   El nodo deja de tomar partidas, termina las que tiene, reporta y sale. Un segundo pedido corta ya.
 - Si una versión anterior a la mínima es lo único que queda, el lanzador no la usa: reintenta la
   estable con esperas de 5 s a 5 min. Las marcas de versión mala vencen a las 24 horas.
-- Si una versión se cae tres veces en diez minutos, el lanzador vuelve a la última buena.
+- Si una versión se cae tres veces en diez minutos, el lanzador vuelve a la última buena, siempre
+  que no esté por debajo del mínimo del canal (`chooseVersion` en `node/launcher.ts`). Con
+  `minimum = stable`, que es lo que escribe la compuerta de deploy
+  (`scripts/node-release-gate.mjs`) cuando cambia el código del juego que corre el nodo, no hay
+  vuelta atrás automática: el lanzador reintenta la estable cada vez más espaciado.
 - **Compatibilidad:** una partida solo va a un nodo con el mismo hash de wasm y la misma versión
   de protocolo que el cliente.
 
 ### Caídas y PCs que se apagan
 
-Un nodo sin heartbeat por 15 s, o cuya conexión se cortó hace más de 15 s, queda fuera de línea.
-Sus partidas se anulan sin penalizar a los jugadores y el nodo suma **un** strike por corte,
-aunque tuviera varias partidas: los strikes a menos de un minuto del anterior cuentan como uno.
+Un nodo sin heartbeat por 15 s queda fuera de línea: no recibe partidas nuevas. Su conexión de
+control sigue abierta hasta los 30 s de silencio, porque un enlace trabado entrega tarde lo que
+retuvo (el 21/10/2026 los heartbeats de un nodo quedaron retenidos 24 s en el camino y llegaron
+todos juntos): con la conexión abierta, el primero que llega le devuelve las partidas nuevas al
+nodo. Si se cierra, el nodo tiene de 25 a 30 s para reconectarse. Solo un heartbeat o un hello
+ponen fin al silencio: los demás mensajes no cuentan. Una partida aguanta 60 s de silencio de su
+nodo en total, sumando los cortes anteriores, sea el nodo del proyecto o comunitario. Después se
+anula sin penalizar a los jugadores y el nodo suma **un** strike por corte, aunque tuviera varias
+partidas: los strikes a menos de un minuto del anterior cuentan como uno, y un corte cuenta desde
+que empezó.
 Si vuelve con un proceso nuevo, sus partidas viejas se anulan de todos modos, porque se perdieron con el
 proceso. Los strikes vencen a los 7 días. Tres en una semana pausan el nodo 24 horas; después
 vuelve solo a su estado anterior, pero los strikes siguen contando hasta que venzan. Una segunda
@@ -173,12 +185,12 @@ pausa en 30 días lo devuelve a prueba. Los nodos del proyecto no se pausan.
 | Mandar mensajes rotos al plano de control | Se valida cada mensaje antes de usarlo. Un sobre, un hello o un heartbeat rotos cierran la conexión del nodo; un reporte roto de una de sus partidas la da por perdida, con strike; lo demás se ignora. | Sí |
 | Anular partidas a voluntad con cortes | Cada corte cuesta un strike. Una segunda pausa por strikes en 30 días devuelve el nodo a prueba: pierde el ranked hasta sumar otras 20 partidas verificadas. | Sí |
 | Ver las IP de los jugadores | Pasa, como en el P2P actual y en cualquier servidor comunitario. Se puede forzar TURN para ocultarlas. | — |
-| Robar la clave de releases | No está en ningún servidor: vive en CI con aprobación manual. | — |
+| Robar la clave de releases | La de producción no está en ningún servidor: vive en el gestor de contraseñas y va al entorno `releases` de GitHub, con aprobación manual (M6 de `PRODUCCION.md`), donde firma en un trabajo que no instala nada. Los instaladores no se firman y llegan por HTTPS: el token del bucket de releases va en su propio entorno (`releases-r2`), con la misma aprobación, y la subida solo acepta los instaladores del repo con la clave. | — |
 
 | Clave | Firma | Dónde vive |
 |---|---|---|
 | De control | Tickets de partida | Secreto del Worker |
-| De releases | Versiones del nodo e instaladores | CI con aprobación manual, o una máquina sin conexión |
+| De releases | El manifiesto de cada versión (que lleva el hash de cada archivo) y `launcher.mjs`. Los instaladores no: llevan la mitad pública adentro | La de producción, en el entorno `releases` de GitHub (M6) y en el gestor de contraseñas; su mitad pública, en `release-key.pub`. La de desarrollo, en `.keys/` de la PC del mantenedor, solo firma releases que nunca se suben |
 | De cada nodo | Su login y sus subidas | En la máquina del operador |
 
 ## Capacidad y costos (medidos)
@@ -205,12 +217,12 @@ instalador pregunta la subida y el benchmark la tiene en cuenta.
 
 | Hecho y probado | Falta |
 |---|---|
-| Replay y verificador con el wasm real | Integrarlo al Worker (`INTEGRACION.md`) |
+| Replay y verificador con el wasm real | Conectar el matchmaker del Worker al plano de control (`INTEGRACION.md` §3, [7] de `PRODUCCION.md`) |
 | `MatchRoom` con el protocolo de `MatchDO`, por WebSocket y por WebRTC | Probar los instaladores en máquinas reales: VPS con nombre DNS, Windows, macOS. La lista completa está en `PRODUCCION.md` |
 | Adaptador WebRTC del jugador con el `NetClient` real | TURN real en producción para nodos detrás de NAT simétrico |
 | Verificador de confianza con cola y reintentos | Atestación de inputs desde el cliente (v2) |
 | Tienda, saldo, inventario y congelamiento | Los autos nuevos en el juego y el selector que consulta el inventario |
-| Strikes que vencen y pausas de 24 horas | Registro, puntos y replays persistentes (SQLite del DO y R2) |
+| Strikes que vencen y pausas de 24 horas | Puntos persistentes: el ledger vive en memoria hasta la etapa 2 (el registro y las partidas ya van al SQLite del DO, y los replays a R2) |
 | Lanzador, releases firmadas, build con `werift` adentro | Canal sin orden para inputs y snapshots, con cambios en el cliente |
 | Apagado sin cortar partidas en Linux, macOS y Windows (`stop.request`) | Verificación en un worker thread, para que un VPS que hostea y verifica use sus dos núcleos |
 | Validación de cada mensaje de los nodos; resultados, abandonos y puntos tomados del replay | Calidad medida por los clientes (vuelve la bonificación de 1,2) |

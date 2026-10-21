@@ -294,7 +294,8 @@ async function recover(c: RouteContext): Promise<Response> {
   return withCookies(json({ ...(await accountSession(c.env, r.data)), codesLeft: r.data.codesLeft }), [refreshCookie(refreshTok)]);
 }
 
-function requireAccount(c: RouteContext): SessionClaims | Response {
+/** The session, when it is an account's: 401 without a session, 403 for a guest. Also the /nodes/* operator routes (nodeRoutes.ts). */
+export function requireAccount(c: Pick<RouteContext, 'session'>): SessionClaims | Response {
   if (!c.session) return error(401, 'unauthorized');
   if (c.session.acct !== 1) return error(403, 'account_required', 'Necesitas una cuenta (no de invitado)');
   return c.session;

@@ -5,19 +5,23 @@
  *   POST /api/queue   { mode, kind?, p2pProtocol? }  Bearer session
  *                    -> long-poll <= 25 s: QueueResultP2p (kind 'p2p', the default:
  *                       a RoomDO signaling room, wsUrl ws(s)://host/room/<roomId>) or the phase 1 QueueResult
- *                       (kind 'server', or the p2p fallback for a lone human: a MatchDO match, wsUrl /ws/<matchId>);
+ *                       (kind 'server', or the p2p fallback for a lone human: a MatchDO match, wsUrl /ws/<matchId>;
+ *                       or, with the nodes on, a match on a community node: node: true, wsUrl the node's own wss://);
  *                       426 'reload_required' for kind 'p2p' without this server's P2P protocol in p2pProtocol (a stale
  *                       page); 429 'no_show' { retryAfterMs } from the matchmaker (room tickets left unused, p2p only)
- *   POST /api/rejoin  { matchId } Bearer session        -> QueueResult with a fresh ticket (MatchDO matches only; a RoomDO
+ *   POST /api/rejoin  { matchId } Bearer session        -> QueueResult with a fresh ticket (MatchDO and node matches; a RoomDO
  *                       room id answers 410 'p2p_room': a P2P room is never rejoined, POST /api/leave frees its lock;
  *                       a match the player quit with POST /api/leave { matchId } answers 410 'left', or 404 once
- *                       that quit was its last human's: the match ended)
- *   POST /api/leave   { matchId? } Bearer session       -> { ok, left, released }: drop the player from the queue (while still
+ *                       that quit was its last human's: the match ended). An id no MatchDO, RoomDO or node match
+ *                       has: 404 and its lock freed; a node out of reach for now: 503 and the lock kept (nodeRejoin)
+ *   POST /api/leave   { matchId?, connected? } Bearer   -> { ok, left, released }: drop the player from the queue (while still
  *                       waiting) and free its P2P room lock (the room closes the player's socket: 'peerLeft' to the others);
  *                       with the matchId of its SERVER match (an explicit quit) that lock is freed too and the MatchDO
  *                       closes the player's socket, flags the slot left (no rejoin) and hands its car to the host's bots
  *                       (the last human's quit ends the match: locks and capacity released).
- *                       Without a matchId a server lock stays (a reload / network drop rejoins on the next queue's 409)
+ *                       Without a matchId a server lock stays (a reload / network drop rejoins on the next queue's 409).
+ *                       A node match is quit the same way, the node first: its lock stays (released: false) when the
+ *                       node did not take the leave. connected: false (never got in) is passed on to the node only
  *   GET  /api/ice     Bearer session                    -> { iceServers }: Cloudflare STUN always, plus 10-minute TURN
  *                       credentials minted per request when TURN_KEY_ID / TURN_KEY_TOKEN are set (env.ts)
  *   GET  /ws/:matchId   Sec-WebSocket-Protocol: tg1, ticket.<jwt>  -> 101 (ticket verified here,
@@ -30,16 +34,24 @@
  *   GET  /api/where     -> { edgeColo, country, city?, asn?, ip }: the Cloudflare colo that served the
  *                       request (request.cf), the client address masked to /24 (IPv6: /48); for the
  *                       deploy measurements (docs/online/PHASE1.md), no secret needed
+ *   /nodes/*            -> the community nodes: their registration, control socket, replays and
+ *                       releases, and the project's operator and maintainer routes (nodeRoutes.ts,
+ *                       NodeRegistryDO.ts)
+ *   cron                every 5 minutes (wrangler.jsonc triggers): the community nodes' health check
+ *                       (nodeRoutes.ts nodeHealthCheck), one NodeRegistryDO call; none without the node settings
  *   everything else     -> the game: Workers Assets (wrangler.jsonc `assets` = the Vite build in
- *                       ../dist, SPA fallback). Only /api/*, /ws/* and /room/* are routed to this code
- *                       (run_worker_first); the asset fallback below covers what still arrives.
+ *                       ../dist, SPA fallback). Only /api/*, /ws/*, /room/*, /lobby/* and /nodes/* are
+ *                       routed to this code (run_worker_first); the asset fallback below covers what
+ *                       still arrives.
  *
- * Rate limits (fixed one-minute windows, in-memory per isolate, best effort; 429 'rate_limited'):
+ * Rate limits (fixed windows, one minute unless a route says otherwise, in-memory per isolate, best
+ * effort; 429 'rate_limited'):
  *   /api/guest   10 per client IP (CF-Connecting-IP)        every guest can open a room: bound it
  *   /api/queue   20 per playerId
  *   /api/rejoin  10 per playerId and 30 per client IP      each call mints a ticket (join banner spam)
  *   /api/leave   30 per client IP
  *   /api/ice     30 per playerId                           each call may mint TURN credentials
+ *   /nodes/*     see nodeRoutes.ts (the NodeRegistryDO holds the hourly and daily ones)
  * Turnstile: outside local dev (wrangler dev on localhost / 127.0.0.1) POST /api/guest requires
  * TURNSTILE_SECRET; a deploy without it answers 503 'turnstile_unconfigured', as does one with the
  * secret but no TURNSTILE_SITEKEY var when the request carries no token (the browser only renders
@@ -49,10 +61,14 @@
  * upgrade whose Origin is outside the list is refused (403 'bad_origin'); a request without Origin
  * (non-browser client) is let through to the ticket check.
  * Flags (KV FLAGS): matchmaking_off, do_disabled -> 503. do_disabled also stops /api/queue, so no
- * new room is created while its sockets would be refused.
+ * new room is created while its sockets would be refused; for a player the nodes are on for, only
+ * its p2p queue (server and ranked matches then wait for a node; where none can host now, the
+ * matchmaker refuses them itself: doDisabled in its /join). nodes_on (absent: off; '1':
+ * everyone; a list of account ids: a canary) lets matches go to community nodes, vm_disabled turns
+ * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts).
  */
 import type { Env } from './env';
-import { SERVER_VERSION, error, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, readJson, sanitizeName } from './env';
+import { SERVER_VERSION, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
 import type { RankedCheck } from './accountStore';
@@ -65,6 +81,9 @@ import type { SessionClaims, TicketRole } from './auth';
 import { isP2pResult } from './MatchmakerDO';
 import type { AnyQueueResult } from './MatchmakerDO';
 import { RELOAD_REQUIRED, ROOM_PROTOCOL } from './RoomDO';
+import { nodeHealthCheck, nodeRoute } from './nodeRoutes';
+import { NODE_ROUTES, askNodes, rejoinTicketOf, replyCode } from './nodeApi';
+import type { NodesReply } from './nodeApi';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../../src/net/protocol';
 import type { GuestSession, QueueResult } from '../../src/net/protocol';
 
@@ -74,6 +93,7 @@ export { RoomDO } from './RoomDO';
 export { AccountsDO } from './AccountsDO';
 export { LobbyDO } from './LobbyDO';
 export { LobbyDirectoryDO } from './LobbyDirectoryDO';
+export { NodeRegistryDO } from './NodeRegistryDO';
 
 const LIMIT_WINDOW_MS = 60_000;
 const LIMIT_QUEUE_PER_PLAYER = 20;
@@ -97,12 +117,12 @@ type SocketGate = (typeof SOCKET_GATES)[keyof typeof SOCKET_GATES];
 const rateLimits = new Map<string, { n: number; resetAt: number }>();
 let limitCalls = 0;
 
-/** Fixed-window counter: true when `key` was hit more than `max` times in the current window. */
-function rateLimited(key: string, max: number, now: number): boolean {
+/** Fixed-window counter: true when `key` was hit more than `max` times in its current window of `windowMs`. */
+function rateLimited(key: string, max: number, now: number, windowMs: number = LIMIT_WINDOW_MS): boolean {
   if (++limitCalls % 256 === 0) for (const [k, v] of rateLimits) if (v.resetAt <= now) rateLimits.delete(k);
   const e = rateLimits.get(key);
   if (!e || e.resetAt <= now) {
-    rateLimits.set(key, { n: 1, resetAt: now + LIMIT_WINDOW_MS });
+    rateLimits.set(key, { n: 1, resetAt: now + windowMs });
     return false;
   }
   return ++e.n > max;
@@ -169,15 +189,6 @@ async function bearerSession(request: Request, env: Env): Promise<SessionClaims 
   const auth = request.headers.get('Authorization') ?? '';
   if (!auth.startsWith('Bearer ')) return null;
   return verifySession(env.JWT_SECRET, auth.slice(7).trim());
-}
-
-async function flag(env: Env, name: string): Promise<boolean> {
-  try {
-    const v = await env.FLAGS.get(name, { cacheTtl: 60 });
-    return v === '1' || v === 'true' || v === 'on';
-  } catch {
-    return false;
-  }
 }
 
 /** The continent Cloudflare sees the request from ('dev' under wrangler dev without cf data). */
@@ -343,12 +354,16 @@ async function queue(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
   if (await flag(env, 'matchmaking_off')) return error(503, 'matchmaking_off');
-  if (await flag(env, 'do_disabled')) return error(503, 'do_disabled'); // no new rooms while their sockets would be refused
+  // No new rooms while their sockets would be refused. With the nodes on for this player (D9) a
+  // server or ranked queue goes on: its match waits for a node, and no MatchDO is created for it.
+  const doDisabled = await flag(env, 'do_disabled');
+  if (doDisabled && !(nodesConfigured(env) && nodesAllowed(await nodesMode(env), [session.sub]))) return error(503, 'do_disabled');
   const body = await readJson<{ mode?: unknown; modes?: unknown; kind?: unknown; p2pProtocol?: unknown; region?: unknown }>(request);
   const modes: GameModeId[] | null = body && isModeList(body.modes) ? body.modes : body && isMode(body.mode) ? [body.mode] : null;
   if (!body || modes === null) return error(400, 'bad_mode', "mode must be '1v1' | '2v2' | '3v3' (or modes: a list of them)");
   if (body.kind !== undefined && !isQueueKind(body.kind)) return error(400, 'bad_kind', "kind must be 'p2p' | 'server' | 'ranked'");
   const kind = body.kind ?? 'p2p';
+  if (doDisabled && kind === 'p2p') return error(503, 'do_disabled'); // a P2P room is a RoomDO: never on a node
   if (body.region !== undefined && !isRegion(body.region)) return error(400, 'bad_region');
   // A P2P client states its P2P protocol; a page cached from before a deploy (version 1 sends
   // kind 'p2p' without it) would fail on the room's welcome after taking a seat (its partner then
@@ -378,7 +393,8 @@ async function queue(request: Request, env: Env): Promise<Response> {
   let res = await stub.fetch('https://matchmaker/join', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings }),
+    // doDisabled: where no node can host now, the matchmaker refuses this queue as above (503).
+    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined }),
   });
   if (!res.ok) return new Response(res.body, res);
   let result = (await res.json()) as AnyQueueResult;
@@ -389,7 +405,7 @@ async function queue(request: Request, env: Env): Promise<Response> {
   }
   if (result.status === 'matched') {
     if (isP2pResult(result)) result.wsUrl = socketUrl(request, '/room/' + result.roomId);
-    else if (result.matchId) result.wsUrl = socketUrl(request, '/ws/' + result.matchId);
+    else if (result.matchId && result.node !== true) result.wsUrl = socketUrl(request, '/ws/' + result.matchId); // a node match keeps the node's own wss:// URL
   }
   return json({ ...result, region });
 }
@@ -532,7 +548,7 @@ async function rejoin(request: Request, env: Env): Promise<Response> {
     // Not a MatchDO id. A RoomDO id (a 409 'active_match' of kind p2p) gets a clear answer: P2P
     // rooms are never rejoined (single-use ticket, no authority to resync from); /api/leave frees the lock.
     if (isRoomId(env, body.matchId)) return error(410, 'p2p_room', 'a P2P room cannot be rejoined; POST /api/leave frees its lock');
-    return error(400, 'bad_match_id');
+    return nodeRejoin(request, env, session.sub, body.matchId, body.region);
   }
   const res = await env.MATCH.get(id).fetch('https://match/internal/rejoin', {
     method: 'POST',
@@ -551,6 +567,42 @@ async function rejoin(request: Request, env: Env): Promise<Response> {
   const ticket = await createTicket(env.JWT_SECRET, { sub: session.sub, mid: body.matchId, team: info.team, slot: info.slot, name: info.name });
   const out: QueueResult = { status: 'matched', matchId: body.matchId, ticket, wsUrl: socketUrl(request, '/ws/' + body.matchId) };
   return json(out);
+}
+
+/**
+ * POST /api/rejoin for an id that is neither a MatchDO's nor a RoomDO's: a match on a community
+ * node, which the NodeRegistryDO knows, or nothing at all. 200: the node's fresh ticket and its
+ * own wss:// URL. 404, or 410 other than 'left': the lock that points at the id is freed, as for a
+ * MatchDO. 410 'left' (the player quit, the match goes on) and 503 (the node is out of reach for
+ * now, or the control plane does not answer, or answers a 200 that is no ticket for a wss:// URL:
+ * it may come back) keep it. Without the nodes
+ * configured the id names nothing here: 404, and the lock goes (a lock left over from a node match
+ * must not answer 409 until it expires).
+ */
+async function nodeRejoin(request: Request, env: Env, playerId: string, matchId: string, region: unknown): Promise<Response> {
+  if (!nodesConfigured(env)) {
+    await releaseLock(request, env, playerId, matchId, region);
+    return error(404, 'no_match', 'no match with this id');
+  }
+  let r: NodesReply;
+  try {
+    r = await askNodes(env, NODE_ROUTES.rejoin, { matchId, playerId });
+  } catch (e) {
+    console.error('node rejoin failed', e);
+    return error(503, 'offline', 'the node match cannot be reached right now: try again in a moment');
+  }
+  if (r.status === 200) {
+    const t = rejoinTicketOf(r.body);
+    if (t === null) {
+      // Not a ticket for the node's own wss:// URL: as if the node were out of reach, the lock stays.
+      console.error('node rejoin: the 200 is not a ticket');
+      return error(503, 'offline', 'the node match cannot be reached right now: try again in a moment');
+    }
+    const out: QueueResult = { status: 'matched', matchId, ticket: t.ticket, wsUrl: t.wsUrl, node: true };
+    return json(out);
+  }
+  if (r.status === 404 || (r.status === 410 && replyCode(r.body) !== 'left')) await releaseLock(request, env, playerId, matchId, region);
+  return r.body === null ? error(r.status, 'node_error') : json(r.body, r.status);
 }
 
 /** The `error` code of a JSON error body ('' when there is none); consumes `res`. */
@@ -579,12 +631,13 @@ async function leave(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
   if (rateLimited('l:' + clientIp(request), LIMIT_LEAVE_PER_IP, Date.now())) return error(429, 'rate_limited');
-  const body = (await readJson<{ matchId?: unknown; region?: unknown }>(request)) ?? {};
+  const body = (await readJson<{ matchId?: unknown; region?: unknown; connected?: unknown }>(request)) ?? {};
   const { stub, region } = matchmakerOf(request, env, body.region);
   const res = await stub.fetch('https://matchmaker/leave', {
     method: 'POST',
     headers: await internalHeaders(env, region),
-    body: JSON.stringify({ playerId: session.sub, matchId: isHex(body.matchId, 64) ? body.matchId : undefined }),
+    // connected: false (the client never got into the match) only matters to a node match.
+    body: JSON.stringify({ playerId: session.sub, matchId: isHex(body.matchId, 64) ? body.matchId : undefined, connected: body.connected === false ? false : undefined }),
   });
   return new Response(res.body, res);
 }
@@ -645,7 +698,19 @@ export default {
       if (!env.JWT_SECRET) return error(500, 'no_secret', 'JWT_SECRET is not configured (server/.dev.vars or wrangler secret put)');
       return websocket(request, env, SOCKET_GATES[prefix], path.slice(prefix.length));
     }
-    // ---- the game (Workers Assets): everything outside /api, /ws and /room ----
+    // ---- community nodes: before the assets, which would answer index.html for any of these ----
+    if (path.startsWith('/nodes/')) {
+      return nodeRoute({
+        env,
+        request,
+        url,
+        ip: clientIp(request),
+        session: () => (env.JWT_SECRET ? bearerSession(request, env) : Promise.resolve(null)),
+        limited: (key, max, windowMs) => rateLimited(key, max, Date.now(), windowMs),
+        cors: corsHeaders(request, env),
+      });
+    }
+    // ---- the game (Workers Assets): everything outside /api, /ws, /room, /lobby and /nodes ----
     if (!path.startsWith('/api/')) return serveAsset(request, env);
     const cors = corsHeaders(request, env);
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -687,5 +752,10 @@ export default {
       res = error(500, 'internal');
     }
     return withCors(res, cors);
+  },
+
+  /** The cron trigger (wrangler.jsonc, every 5 minutes): the community nodes' health check. */
+  async scheduled(_controller, env, ctx): Promise<void> {
+    ctx.waitUntil(nodeHealthCheck(env));
   },
 } satisfies ExportedHandler<Env>;
