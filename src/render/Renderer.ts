@@ -4,19 +4,21 @@
  * quality.ts. The parts phase 2 of docs/visuals/REWORK.md rebuilds live in their own folders:
  *
  *   world/   sky dome, PMREM environment, fog and clear colour (`createWorld`)
- *   post/    the key light, fill and shadows (`createLighting`, lighting.ts) and the RenderPipeline
- *            of a tier (`buildPostChain`, pipeline.ts): HDR scene pass (MRT `output` + `emissive`
- *            on tiers with bloom) -> bloom from the EMISSIVE target only -> vignette -> Neutral
- *            tone mapping + sRGB (`renderOutput`) -> FXAA on tiers without MSAA
+ *   post/    the theme's two key lights, fill and shadows (`createLighting`, lighting.ts) and the
+ *            RenderPipeline of a tier (`buildPostChain`, pipeline.ts): HDR scene pass (MRT `output`
+ *            + `emissive` on tiers with bloom) -> [ultra: GTAO, SSR on the wet pitch] -> bloom from
+ *            the EMISSIVE target only [+ ultra lens glare] -> vignette -> exposure, HDR grade and
+ *            the theme's tone curve -> sRGB (`renderOutput`) -> FXAA on tiers without MSAA
  *
- *   low:          no MSAA (FXAA instead), pixel ratio 1, 2048 shadow map, no bloom, PCF radius 3
+ *   low:          no MSAA (FXAA instead), pixel ratio 1, one shadowed key (2048, PCF radius 3), no
+ *                 bloom
  *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, pixel budget 6 Mpx) but never
- *                 below 1 (quality.ts `pixelRatio`), 4096 shadow map, bloom, PCF radius 4, dynamic
- *                 resolution
+ *                 below 1 (quality.ts `pixelRatio`), two shadowed keys (4096, PCF radius 4), 5-mip
+ *                 bloom, dynamic resolution; ultra adds GTAO, SSR and lens glare (post/screenSpace.ts)
  *
  * The renderer is created with `antialias: false`: MSAA lives on the scene pass (`samples`), so the
  * final full-screen quad is single-sampled on every tier. Switching tiers disposes the previous
- * chain (scene pass, bloom, pipeline quad) and builds the new one.
+ * chain (scene pass, ultra passes, bloom, pipeline quad) and builds the new one.
  *
  * GPU timing: with `#stats` in the URL the renderer is created with `trackTimestamp` and resolves
  * the render-pass timestamps every frame; `gpuTimeMs` / `stats().gpuMs` expose them (0 when the
@@ -26,7 +28,8 @@
  * render(); a DynamicResolution controller (dynamicResolution.ts) turns the intervals (and the GPU
  * time with `#stats`) into a scene-pass scale between the tier's minResolutionScale and 1, applied
  * through the chain's setResolutionScale: the composite upsamples the scene, bloom (sized from the
- * drawing buffer), the vignette and FXAA run at full size. `stats().resolutionScale` reports it.
+ * drawing buffer), the vignette and FXAA run at full size (the ultra passes that read the scene
+ * depth follow the scale). `stats().resolutionScale` reports it.
  *
  * NaN hygiene (post/pipeline.ts sanitises every pass-target read, materials their glow writes in
  * `glowMrt()`): with `#nancheck` in the URL the renderer reads the scene pass targets and the bloom
@@ -198,7 +201,7 @@ export class Renderer {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly isWebGPU: boolean;
-  /** Key light (the only shadow caster; post/lighting.ts). Cars and the ball set `castShadow`; the floor receives. */
+  /** The brighter key light (keys[0] of post/lighting.ts, shadowed on every tier). Cars and the ball set `castShadow`; the floor receives. */
   readonly sun: THREE.DirectionalLight;
   /** Hemisphere fill (post/lighting.ts). */
   readonly hemi: THREE.HemisphereLight;
@@ -310,8 +313,8 @@ export class Renderer {
   }
 
   /**
-   * Switch the stadium theme: the lights, the world and the post chain are told (all stubs for now:
-   * the themes phase re-bakes the sky and environment and rewrites uniforms, never recompiles).
+   * Switch the stadium theme: the lights (keys and fill) and the post chain (exposure, tone curve,
+   * grade) rewrite uniforms, the world re-bakes (its phase); nothing recompiles.
    */
   setTheme(theme: ThemeId): void {
     this.theme = theme;

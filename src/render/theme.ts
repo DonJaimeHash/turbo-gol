@@ -101,17 +101,24 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
   'harbour-night': {
     id: 'harbour-night',
     night: true,
+    // Two raking keys (~30 degrees up) from opposite corner towers: long, readable car shadows and
+    // a backlit sheen whichever way the camera faces. Dimmer than the old single sun (3.2) so the
+    // lamp heads and boards (HDR emitters) stand out against a darker, contrasty pitch.
     keys: [
-      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: WARM_LAMP, intensity: 2.4 },
-      { dir: unit(TOWER_X, HEAD_Y, 2900), color: WARM_LAMP, intensity: 1.6 },
+      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: WARM_LAMP, intensity: 2.0 },
+      { dir: unit(TOWER_X, HEAD_Y, 2900), color: WARM_LAMP, intensity: 1.4 },
     ],
-    fill: { sky: [0.05, 0.065, 0.12], ground: [0.03, 0.022, 0.018], intensity: 0.9, env: 0.35 },
+    // Low fill (the old hemisphere was 1.5 of a pale blue): shadows and the unlit sides of the cars
+    // stay dark navy instead of a grey wash. `env` is the image-based lighting intensity.
+    fill: { sky: [0.05, 0.065, 0.12], ground: [0.03, 0.022, 0.018], intensity: 0.7, env: 0.3 },
     floodlights: towerFloodlights(WARM_LAMP, 1),
     wetness: 0.55,
     fog: { color: [0.05, 0.046, 0.105], density: 1.6e-5 },
-    toneMapping: 'neutral',
-    exposure: 1.1,
-    grade: { contrast: 1.12, saturation: 1.05, lift: [0, 0, 0.004], gain: [1, 1, 1], vignette: 0.32 },
+    // ACES: a stronger toe (deep shadows, no black lift) and a filmic shoulder for the hot lamps,
+    // moodier than Neutral for this night; the grade adds contrast, cool shadows, warm highlights.
+    toneMapping: 'aces',
+    exposure: 1.0,
+    grade: { contrast: 1.18, saturation: 1.12, lift: [0, 0.002, 0.006], gain: [1.03, 1, 0.96], vignette: 0.36 },
   },
 };
 

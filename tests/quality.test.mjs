@@ -1,6 +1,8 @@
 // Quality tiers and theme ids (node --test tests/quality.test.mjs): the tier table, the migration of
 // saves from before the third tier, the menu order and the theme id parser. quality.ts and theme.ts
-// are pure data, so they load in node without three.
+// are pure data, so they load in node without three; the tests of how post/lighting.ts applies the
+// tier's shadow fields and the theme's keys (at the end) load three's lights and math, which need
+// no renderer either.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -42,13 +44,56 @@ test('low keeps the old performance tier (1) and high the old quality tier (0)',
   const high = tier('high');
   assert.equal(high.msaa, 4);
   assert.equal(high.bloom, true);
-  assert.equal(high.bloomMips, 3);
   assert.equal(high.pixelBudget, 6e6);
   assert.equal(high.shadowMapSize, 4096);
   assert.equal(high.shadowRadius, 4);
   assert.equal(high.detail, 'high');
   assert.equal(high.netDetail, true);
   assert.equal(high.particles, 1536);
+});
+
+test('post and lighting switches (post/: two keys, bloom, the ultra extras)', () => {
+  const low = tier('low');
+  const high = tier('high');
+  const ultra = tier('ultra');
+  // Both keys exist on every tier (constant light count); low shadows only keys[0].
+  assert.equal(low.shadowedKeys, 1);
+  assert.equal(high.shadowedKeys, 2);
+  assert.equal(ultra.shadowedKeys, 2);
+  // Emissive bloom over BloomNode's full 5 mips (its maximum) with a tight radius; none on low.
+  assert.equal(high.bloomMips, 5);
+  assert.equal(ultra.bloomMips, 5);
+  for (const q of QUALITIES) assert.ok(tier(q).bloomMips >= 1 && tier(q).bloomMips <= 5, `${q}: BloomNode has 1..5 mips`);
+  // Screen-space extras are ultra-only (high keeps its budget); MSAA, never TRAA, on high and ultra.
+  for (const key of ['gtao', 'ssr', 'lensFlare']) {
+    assert.equal(low[key], false, `low ${key}`);
+    assert.equal(high[key], false, `high ${key}`);
+    assert.equal(ultra[key], true, `ultra ${key}`);
+  }
+  assert.equal(ultra.msaa, 4);
+  // Shadow maps are square powers of two the PCF filter can use.
+  for (const q of QUALITIES) {
+    const s = tier(q);
+    assert.ok(Number.isInteger(Math.log2(s.shadowMapSize)) && s.shadowMapSize >= 1024 && s.shadowMapSize <= 4096, `${q}: shadow map size`);
+    assert.ok(s.shadowRadius > 0, `${q}: PCF radius`);
+  }
+});
+
+test('every theme world feeds the lights and the grade sane values', () => {
+  for (const id of THEME_IDS) {
+    const w = themeWorld(id);
+    for (const key of w.keys) {
+      assert.ok(Math.abs(Math.hypot(...key.dir) - 1) < 1e-9, `${id}: key direction is a unit vector`);
+      assert.ok(key.dir[1] > 0.2, `${id}: keys light from above (shadows stay on the pitch)`);
+      assert.ok(key.intensity > 0 && key.color.every((c) => c >= 0), `${id}: key colour and intensity`);
+    }
+    assert.ok(w.keys[0].intensity >= w.keys[1].intensity, `${id}: keys[0] is the brighter key (it keeps its shadow on low)`);
+    assert.ok(w.fill.intensity >= 0 && w.fill.env >= 0, `${id}: fill`);
+    assert.ok(['neutral', 'aces', 'agx'].includes(w.toneMapping), `${id}: tone curve`);
+    assert.ok(w.exposure > 0, `${id}: exposure`);
+    assert.ok(w.grade.contrast > 0 && w.grade.saturation >= 0, `${id}: grade`);
+    assert.ok(w.grade.vignette >= 0 && w.grade.vignette < 1, `${id}: vignette`);
+  }
 });
 
 test('the pixel ratio of low and high is the one the old tiers used (1 and 0)', () => {
@@ -134,4 +179,84 @@ test('parseTheme accepts the known ids only; unbuilt themes fall back to the def
   assert.ok(THEME_IDS.includes(DEFAULT_THEME));
   assert.equal(themeWorld(DEFAULT_THEME).id, DEFAULT_THEME);
   for (const id of THEME_IDS) assert.ok(themeWorld(id) !== undefined, id);
+});
+
+// ---- post/lighting.ts: the tier's shadow fields and the theme's keys, applied to real lights ----
+
+const THREE = await import('three/webgpu');
+const { createLighting } = await import('../src/render/post/lighting.ts');
+const { ARENA } = await import('../src/sim/constants.ts');
+
+const lightsOf = (scene) => scene.children.filter((o) => o.isLight);
+
+test('lighting: both keys and the fill exist on every tier and theme (constant light count)', () => {
+  for (const q of QUALITIES) {
+    const scene = new THREE.Scene();
+    const lighting = createLighting(scene, q, DEFAULT_THEME);
+    assert.deepEqual(lightsOf(scene).map((l) => l.name), ['key-0', 'key-1', 'fill'], `${q}: lights`);
+    assert.equal(lighting.sun, lighting.keys[0]);
+    for (const id of THEME_IDS) {
+      lighting.setTheme(id);
+      assert.equal(lightsOf(scene).length, 3, `${q} / ${id}: a theme switch never changes the light count`);
+    }
+    lighting.dispose();
+    assert.equal(scene.children.length, 0, `${q}: dispose removes the keys, their targets and the fill`);
+  }
+});
+
+test('lighting: the tier decides which keys cast shadows (keys[0] first), their map size and PCF radius', () => {
+  const scene = new THREE.Scene();
+  const lighting = createLighting(scene, 'low', DEFAULT_THEME);
+  // The order a session switches in, so the size and castShadow changes are exercised both ways.
+  for (const q of ['low', 'high', 'ultra', 'low', 'high']) {
+    lighting.setQuality(q);
+    const spec = tier(q);
+    lighting.keys.forEach((key, i) => {
+      assert.equal(key.castShadow, i < spec.shadowedKeys, `${q}: key ${i} castShadow`);
+      assert.equal(key.shadow.mapSize.x, spec.shadowMapSize, `${q}: key ${i} map width`);
+      assert.equal(key.shadow.mapSize.y, spec.shadowMapSize, `${q}: key ${i} map height`);
+      assert.equal(key.shadow.radius, spec.shadowRadius, `${q}: key ${i} PCF radius`);
+    });
+  }
+  lighting.dispose();
+});
+
+test('lighting: keys and fill follow the theme world (direction, colour, intensity)', () => {
+  const scene = new THREE.Scene();
+  const lighting = createLighting(scene, 'high', DEFAULT_THEME);
+  for (const id of THEME_IDS) {
+    lighting.setTheme(id);
+    const w = themeWorld(id);
+    lighting.keys.forEach((key, i) => {
+      const spec = w.keys[i];
+      const dir = key.position.clone().sub(key.target.position).normalize();
+      assert.ok(dir.distanceTo(new THREE.Vector3(...spec.dir)) < 1e-9, `${id}: key ${i} direction`);
+      assert.deepEqual(key.color.toArray(), [...spec.color], `${id}: key ${i} colour`);
+      assert.equal(key.intensity, spec.intensity, `${id}: key ${i} intensity`);
+    });
+    assert.deepEqual(lighting.hemi.color.toArray(), [...w.fill.sky], `${id}: fill sky`);
+    assert.deepEqual(lighting.hemi.groundColor.toArray(), [...w.fill.ground], `${id}: fill ground`);
+    assert.equal(lighting.hemi.intensity, w.fill.intensity, `${id}: fill intensity`);
+  }
+  lighting.dispose();
+});
+
+test('lighting: each shadow frustum holds the whole arena box (field + goals, floor to ceiling)', () => {
+  const scene = new THREE.Scene();
+  const lighting = createLighting(scene, 'high', DEFAULT_THEME);
+  const hx = ARENA.extentX;
+  const hz = ARENA.extentY + ARENA.goalDepth;
+  const p = new THREE.Vector3();
+  for (const id of THEME_IDS) {
+    lighting.setTheme(id);
+    for (const key of lighting.keys) {
+      const cam = key.shadow.camera;
+      assert.ok(cam.near > 0 && cam.far > cam.near, `${id} ${key.name}: near / far`);
+      for (let i = 0; i < 8; i++) {
+        p.set(i & 1 ? hx : -hx, i & 2 ? ARENA.height : 0, i & 4 ? hz : -hz).project(cam);
+        for (const c of [p.x, p.y, p.z]) assert.ok(Math.abs(c) <= 1, `${id} ${key.name}: corner ${i} inside the frustum (${p.toArray()})`);
+      }
+    }
+  }
+  lighting.dispose();
 });
