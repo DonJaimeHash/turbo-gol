@@ -260,7 +260,9 @@ export class CubeBaker {
     const scene = new THREE.Scene();
     const mat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, depthWrite: false, depthTest: false });
     mat.outputNode = vec4(cubeTexture(src, normalize(positionWorld.sub(cameraPosition))).rgb, float(1.0));
-    const geo = new THREE.SphereGeometry(10, 32, 16);
+    // well inside the cube camera's range (BAKE_NEAR .. BAKE_FAR): a sphere inside the near plane
+    // is clipped away and the new cube would show only the clear colour until the re-bake lands
+    const geo = new THREE.SphereGeometry(BAKE_NEAR * 20, 32, 16);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = false;
     scene.add(mesh);
