@@ -1,7 +1,7 @@
 /**
  * The world around the stadium, behind one small API the Renderer calls: the sky and backdrop
- * (baked), the live harbour layer, the image-based lighting environment, and the fog and clear
- * colour that blend the stadium into the backdrop's haze.
+ * (baked), the theme's live near layer, the image-based lighting environment, and the fog and
+ * clear colour that blend the stadium into the backdrop's haze.
  *
  * What is drawn per frame (at most 3 draws):
  *

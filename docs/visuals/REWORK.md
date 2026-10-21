@@ -37,8 +37,10 @@ between themes, so a theme switch only re-bakes and rewrites uniforms; it never 
 Gameplay never reads a theme.
 
 Themes: `harbour-night` (the default), `harbour-day`, `canyon-sunset`, `city-dusk`, `alpine-day`,
-`railyard-night`. The Friendly screen's Stadium row picks one (saved with the prefs); a theme not
-built yet shows the night harbour.
+`railyard-night`, all built. The Friendly screen's Stadium row picks one (saved with the prefs; an
+unknown saved id reads as the night harbour). Each has a world preset and a skyline (harbour,
+canyon, city, alpine or railyard: a baked far part and, except the canyon, a live near layer that
+the world swaps in by geometry), a ThemeWorld, a stadium palette and a turf look.
 
 ## Module layout
 
@@ -74,8 +76,8 @@ flat because the physics ceiling is flat.
 
 ## Phases
 
-Status (2026-10-21): phases 1-3 are done on `feat/visual-rework`; phase 4 (the other themes) is
-being built; phase 5 is open.
+Status (2026-10-21): phases 1-4 are done on `feat/visual-rework`; phase 5's review and docs are
+done (see "Final review" below) and the owner's approval is next.
 
 1. **Foundation** (no visual change).
    - The three tiers, prefs migration and the menu.
@@ -105,9 +107,15 @@ being built; phase 5 is open.
    - The WebGL2 fallback starts on low unless the player chose a tier; `#webgl2` forces it for
      testing. Both backends compile the boot's pipelines in parallel (Renderer.precompile): the
      first frame on WebGPU high is ready in ~2.7 s instead of ~5.9 s. Boot marks in main.ts.
-   - The Friendly screen's Stadium row (the theme picker of phase 4).
+   - The Friendly screen's Stadium row (the theme picker).
    - Measured: see "Measuring" below and ARCHITECTURE.md "Rendering budget".
-4. **The other five themes** (the menu row to pick one exists since phase 3).
+4. **The other five themes.** Done: `city-dusk` (a car-park roof in a city at dusk: towers with
+   lit windows, a spire, crowns), `alpine-day` (a mountain valley: a snowy massif, pines over the
+   boards, timber stands), `railyard-night` (a lattice gantry, brick halls with arched windows, a
+   chimney, a downtown against an orange glow), a brighter `harbour-day` and a stronger
+   `canyon-sunset` (a low sun right of the far goal, three tiers of cliffs). Same code paths as the
+   harbour: a theme switch never recompiles (the live layers share one vertex layout and one
+   material; new patterns are exact KIND ranges of the one structure material).
 5. **Review, docs** (`ARCHITECTURE.md`), changelog, and the owner's approval before the deploy.
 
 ## Measuring
@@ -127,21 +135,47 @@ Targets on the reference Turing GPU at 1600x900:
 
 First load ≤ 4 s on WebGPU high with a warm cache.
 
-Phase 3 results (free play at kickoff, chase camera, median of three 120-frame means, the GPU
-shared with other sessions):
+Final review results (free play at kickoff, chase camera, median of three 120-frame means, the
+GPU shared with other sessions; night harbour, every theme within ~0.1 ms of it):
 
 | tier | GPU | draw calls | triangles | textures |
 |---|---|---|---|---|
-| low | 0.84 ms | 28 | 90k | 69 MB |
-| high | 1.99 ms | 42 | 136k | 163 MB |
-| ultra | 3.18 ms | 53 | 371k | 377 MB |
+| low | 0.82 ms | 28 | 90k (alpine 151k) | 77 MB |
+| high | 1.97 ms | 42 | 136k (alpine 196k) | 175 MB |
+| ultra | 3.15 ms (alpine 3.23) | 53 | 371k (alpine 432k) | 399 MB |
+
+First load (production build, WebGPU, to the first frame finished on the GPU): high 1.8 s with a
+warm world cache, 3.0-4.0 s with an empty one; low 1.6 s warm. A cached theme switch takes
+55-150 ms, a re-bake 40-470 ms, the first bake of a session ~1-1.4 s. The cache keeps one tier's
+six themes (least recently used out first).
 
 Open against the targets:
-- A 3v3 match frame draws 51 calls on low and 80 on high (each car: body, wheels, and both again
-  per shadowed key), and ultra takes 5.97 ms there. Options: instance every car body and every
-  wheel set into one draw each, or a single shadowed key for the bots' cars.
-- First load (production build, warm world cache, WebGPU high): 2.3-2.9 s to the first frame
-  finished on the GPU (median ~2.7 s; 2.2 s on low), within the 4 s target since the boot compiles
-  its pipelines in parallel; a contended GPU process stretched single runs to ~9 s. A tier switch
-  still compiles synchronously (1-3 s on the GPU). Shader sizes: turf 63 KB, car 60 KB, ball
-  52 KB, four lit stadium materials 30-34 KB each.
+- A 3v3 match frame draws 51 calls on low and 72 on high (each car: body, wheels, and both again
+  per shadowed key); GPU time stays within budget (low 0.85 ms, high 2.0 ms, ultra 3.3 ms).
+  Options: instance every car body and every wheel set into one draw each, or a single shadowed key
+  for the bots' cars.
+- A tier switch still compiles its pipelines synchronously (1-3 s on the GPU, in the menu).
+  Shader sizes: turf 63 KB, car 60 KB, ball 52 KB, four lit stadium materials 30-34 KB each.
+- The canyon, city and railyard far parts are built synchronously during a bake (the canyon's
+  terrain holds the main thread ~0.3 s); only the alpine range is built in slices.
+
+Still open from the theme work (content and art direction, for the owner):
+- The board and banner atlases are the harbour's in every theme (anchors, lighthouse, PUERTO SUR,
+  EL FARO): per-theme sets would be more atlas columns plus an index uniform (no recompile).
+- The alpine stands are the tall concrete-frame stands in timber colours (the concept has low
+  gabled stands); the canyon's side walls sit mostly behind the stand canopies in the chase view;
+  the city's downtown hides the horizon glow behind the far goal; the railyard's turf is greener
+  than the concept's golden wet look (kept for readability).
+- The red goal frame against the warm canyon and railyard backdrops, and a ball lobbed against
+  the alpine snow, read with less contrast than on the harbour (still clear in the captures).
+
+## Final review
+
+The branch was reviewed as a whole after the alpine and railyard merges (WebGPU and the WebGL2
+fallback, an empty, cached and unavailable IndexedDB, tier and theme switches during a 3v3 match,
+the Stadium and Quality rows by mouse and keyboard, saves from before the tiers and themes).
+Fixed: every bake kept its far skyline mesh alive through the renderer's render objects (~10 MB
+of JS heap and a uniform buffer per baking theme switch); a replaced environment probe kept its
+live copy's render objects; the world cache held 3 bakes for six themes and evicted by age
+(now 6, least recently used); dead helpers of the old renderer; duplicated CPU noise helpers;
+these docs.

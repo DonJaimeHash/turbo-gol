@@ -82,7 +82,9 @@ All notable changes to Turbogol are documented here. The format follows
   reflections, cars cast real shadows, and the cars and the ball have new paint and panels. Graphics
   quality has three tiers: Performance, High and Ultra (grass blades near the camera, reflections on
   the wet pitch, ambient occlusion, lens glare); browsers without WebGPU start on Performance. The
-  Friendly screen has a Stadium row to pick the setting.
+  Friendly screen has a Stadium row to pick the setting: the night harbour, the harbour by day, a
+  red canyon at sunset, a city rooftop at dusk, an alpine valley and a rail yard at night. The
+  settings are saved in the browser after their first visit, so switching back is quick.
 - The bots fly: medium bots now go up for high balls too, hard ones double-jump for higher ones,
   and both meet the ball so that it goes toward the goal (or, for a save, away from their own);
   the defender in 3v3 saves in the air. Two old faults kept aerials from happening at all: the

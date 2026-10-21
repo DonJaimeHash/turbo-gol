@@ -1759,8 +1759,7 @@ export class Game implements P2PGameHooks {
   /**
    * Switch the stadium theme (the Friendly screen's stadium row): stored, saved with the prefs and
    * handed to the renderer (lights, world: a re-bake or a cached cube, post) and the arena (turf,
-   * stadium). Uniform writes only: no view is rebuilt and no shader recompiles. A theme not built
-   * yet shows the night harbour (theme.ts themeWorld).
+   * stadium). Uniform writes only: no view is rebuilt and no shader recompiles.
    */
   setTheme(theme: ThemeId): void {
     if (theme === this.theme) return;

@@ -60,8 +60,8 @@ const POOL_KEYS_NIGHT = 1;
 
 /**
  * The pool map of each floodlight rig seen so far (static: baked once, then reused). Keyed by the
- * theme's floodlight list, not its id: themes not built yet share the default theme's world (and
- * its list), so they share its map instead of baking identical copies.
+ * theme's floodlight list, not its id: themes that share a rig (or fall back to the default
+ * theme's world) share its map instead of baking identical copies.
  */
 const POOL_MAPS = new WeakMap<ThemeWorld['floodlights'], Uint8Array>();
 function poolMapOf(theme: ThemeId): Uint8Array {

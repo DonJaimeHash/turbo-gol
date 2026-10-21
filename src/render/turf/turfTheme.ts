@@ -30,7 +30,7 @@ export interface TurfLook {
 
 const NIGHT: TurfLook = { tint: [1.45, 0.9, 0.72], dry: 0.05, stripes: 0.3, pools: 1, streaks: 1, puddles: 0.36, team: 1 };
 
-/** Per theme. Themes not built in theme.ts yet still get their own turf look here. */
+/** Per theme (every ThemeId has one; turfLook falls back to the night look for an unknown id). */
 export const TURF_LOOKS: Readonly<Record<ThemeId, TurfLook>> = {
   'harbour-night': NIGHT,
   'harbour-day': { tint: [1.03, 1.03, 0.88], dry: 0.12, stripes: 0.32, pools: 0, streaks: 0.6, puddles: 0.3, team: 1 },

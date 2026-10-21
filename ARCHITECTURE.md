@@ -80,13 +80,17 @@ src/render/
   dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → scene-pass
                         resolution scale between the tier's minResolutionScale and 1
   world/                World.ts (createWorld: fog node, clear colour, the baked sky + backdrop
-                        cube and PMREM, the live near harbour, the lighthouse beam; `ready`,
-                        `stats`), presets.ts (per-theme sky / backdrop data), atmosphere.ts (sky,
-                        cloud, haze shading), harbour.ts / canyon.ts (backdrop generators,
-                        SKYLINE_TOP), geo.ts, lightmap.ts (lamp light map of the live layer),
-                        bakeMaterials.ts, bake.ts (CubeBaker), dome.ts (parallax dome, PROXY_TOP),
-                        env.ts (the PMREM probe), cache.ts (IndexedDB), queue.ts (latest-wins
-                        bake / cache queue)
+                        cube and PMREM, the theme's live near layer, the lighthouse beam; `ready`,
+                        `stats`), presets.ts (per-theme sky / backdrop data, the skyline of each
+                        theme), atmosphere.ts (sky, cloud, haze shading), backdrop generators
+                        (a live layer + a baked far part each): harbour.ts (SKYLINE_TOP, the
+                        stadium box), canyon.ts (baked only, NEAR_WALL), city.ts, alpine.ts
+                        (+ alpineShade.ts, its TSL patterns), railyard.ts (+ railyardMaterial.ts);
+                        geo.ts (GeoBuilder, KIND, rng and the CPU noise), lightmap.ts (lamp light
+                        map of the live layer), bakeMaterials.ts (the sky, sea and structure
+                        materials; one branch per KIND range), bake.ts (CubeBaker), dome.ts
+                        (parallax dome, PROXY_TOP), env.ts (the PMREM probe), cache.ts
+                        (IndexedDB), queue.ts (latest-wins bake / cache queue)
   post/                 lighting.ts (createLighting: the theme's two keys + shadows, hemisphere
                         fill), pipeline.ts (buildPostChain: HDR scene pass with MRT output +
                         emissive → [ultra extras] → bloom from emissive → vignette → exposure,
@@ -100,7 +104,8 @@ src/render/
   stadium/              StadiumView (cage netting on the shell and roof, LED board band, steel
                         cage and floodlight towers, lamp panels / glare / ultra beams, stands and
                         crowd, banners); layout.ts (pure positions), geometry.ts (shell split),
-                        palette.ts (per-theme uniforms), netting.ts, boards.ts, steel.ts,
+                        palette.ts (per-theme uniforms; `standWood` turns the stands to
+                        timber), netting.ts, boards.ts, steel.ts,
                         floodlights.ts, stands.ts (stand structure with the concourse apron round
                         the cage, crowd), banners.ts, textures.ts (canvas atlases)
   Arena.ts              visual arena (uses arenaMesh.ts): converts the sim's surfaces, builds the
@@ -354,13 +359,14 @@ compiles the pipelines in parallel. On WebGPU it renders one warm-up frame with 
 synchronous pipeline creation switched to `createRenderPipelineAsync`: every pipeline of the frame
 (the exact variants: scene pass, shadow maps, ultra passes, bloom, output) is requested at once
 and the browser's GPU process compiles them on its worker threads, while draws whose pipeline is
-not ready are skipped behind the overlay (first frame on the GPU 2.3-2.9 s after the page started
-instead of 5.5-6.1 s, high tier, production build; three r186's own `compileAsync` awaits each
-object's pipelines in turn, 10 s there). On the WebGL2 fallback it is a `compileAsync` of the
-scene through the scene pass's own render target and MRT, so KHR_parallel_shader_compile builds
-the programs in parallel (5.7 s → 1.8 s on low here). A tier switch still compiles its pipelines
-synchronously on the next frame. A theme switch never compiles (uniforms, a cached cube or a
-re-bake); the world compiles a new bake's pipelines with its own `compileAsync` (world/bake.ts).
+not ready are skipped behind the overlay (first frame on the GPU 1.8-2.9 s after the page started
+instead of 5.5-6.1 s, high tier, production build, warm world cache; three r186's own
+`compileAsync` awaits each object's pipelines in turn, 10 s there). On the WebGL2 fallback it is a
+`compileAsync` of the scene through the scene pass's own render target and MRT, so
+KHR_parallel_shader_compile builds the programs in parallel (5.7 s → 1.8 s on low here). A tier
+switch still compiles its pipelines synchronously on the next frame. A theme switch never compiles
+(uniforms, a cached cube or a re-bake); the world compiles a new bake's pipelines with its own
+`compileAsync` (world/bake.ts).
 
 Load timing: `main.ts` leaves `performance.mark`s at each boot step (`turbogol:renderer`,
 `:physics`, `:scene`, `:warmup`, and `:gpu-ready` once the GPU finished the warm-up frame on
@@ -373,18 +379,33 @@ a theme switch never rebuilds a view or recompiles). Costs: GPU ms at 1600x900 C
 reference Turing GPU, chase camera at kickoff, the module's own share (on / off A/B).
 
 * **world/** — the sky (gradient, horizon glow, moon or sun, stars, two cloud layers) and the far
-  backdrop (harbour or canyon generator) baked into a cube map (2x2 supersampled, a 32² depth cube
-  for the parallax proxy) plus a PMREM probe (the cube, the live layer, the lit pitch and the
-  theme's floodlight heads as hot panels); drawn by the parallax dome. A live near layer (quay,
-  container yards, cranes, gantries, ship, lighthouse; ~37k triangles, one merged mesh) and an
-  additive lighthouse beam are drawn each frame. Fog: one `scene.fogNode`, exponential, from the
-  theme. Draws: 3 on high / ultra (live layer, dome, beam), 2 on low. Cost ~0.07 ms (high).
-  Tiers: cube 512 / PMREM 128 / 1-lookup dome on low, 1024 / 256 / 2-lookup + beam on high and
-  ultra. Load: a cached boot 50-130 ms, a first bake ~0.6-1.2 s (pipelines compiled with
-  `compileAsync`), a cached theme switch 56-117 ms. The bakes are cached in IndexedDB
-  (`turbogol-world`, store `bakes`, at most 3 records, keyed by theme, sizes, backend, a hash of
-  the theme data and a version); `#worldnocache` ignores cached bakes (still writes them). Every
-  baked skyline stays under `harbour.ts SKYLINE_TOP` (the dome's parallax hand-over band).
+  backdrop of the theme's skyline (harbour, canyon, city, alpine or railyard generator) baked into
+  a cube map (2x2 supersampled, a 32² depth cube for the parallax proxy) plus a PMREM probe (the
+  cube, the live layer, the lit pitch and the theme's floodlight heads as hot panels); drawn by the
+  parallax dome. A live near layer is drawn each frame: one merged mesh per skyline, built on first
+  use and kept (`LIVE_BUILDERS` in World.ts): the harbour's quay, container yards, cranes, ship and
+  lighthouse (~35k triangles), the city's car-park deck, streets and nearest towers (~22k), the
+  alpine valley floor, walls and ~1650 pines (~96k), the railyard's halls, gantry, chimney and
+  viaduct (~18k). Every layer has the same vertex layout and the same material, so a theme switch
+  swaps the mesh's geometry without a new pipeline; the canyon (no live layer) collapses it with a
+  uniform. The additive lighthouse beam shows on the harbour only (a uniform). The structure
+  material picks a pattern per vertex `kind` (geo.ts KIND: 0-9 the harbour and canyon, 10-11 the
+  city's TOWER / DECK, 12-14 the alpine FOLIAGE / MEADOW / ALPINE, 20-21 the railyard's BRICK /
+  RAILBED; bakeMaterials.ts tests exact ranges for the alpine and railyard kinds). Fog: one
+  `scene.fogNode`, exponential, from the theme. Draws: 3 on high / ultra (live layer, dome, beam),
+  2 on low. Cost ~0.07 ms (high), the same for every theme. Tiers: cube 512 / PMREM 128 / 1-lookup
+  dome on low, 1024 / 256 / 2-lookup + beam on high and ultra. Load: a cached boot 50-130 ms, a
+  first bake ~0.9-1.3 s (~1.8 s with the browser's shader cache cold: the bake pipelines compile
+  with `compileAsync` while the CPU builds the far geometry; the alpine range is built in slices
+  so the compile keeps going, the canyon's ~0.3 s terrain still blocks it), a re-bake with
+  compiled pipelines 40-470 ms, a cached theme switch 55-120 ms. The bakes are cached in IndexedDB
+  (`turbogol-world`, store `bakes`, at most 6 records, the least recently read or written evicted
+  first through the `used` store; keyed by theme, sizes, backend, a hash of the theme data and
+  WORLD_CACHE_VERSION, which a generator or bake-material change must bump); `#worldnocache`
+  ignores cached bakes (still writes them). Every baked skyline stays under its parallax hand-over
+  band: dome.ts PROXY_TOP by default (harbour.ts SKYLINE_TOP under it); the city starts the band
+  higher and caps the proxy radius (its towers stay straight from a raised camera), and the alpine
+  preset's `proxyTop` raises it above its mountains.
 * **turf/** — the pitch: one MeshStandard graph per tier from load-time bakes (a tileable 512²
   blade field, a 192x288 field map of wear / damp / puddle basins / hue, a 176x264 pool map of the
   floodlights' irradiance + the pad mask; ~0.28 s at boot, the pool map cached per floodlight rig).
@@ -409,6 +430,9 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   a tight exponential glare (a wider sprite halo only on low, where there is no bloom), stands
   along the side walls only (the ends stay open for the backdrop) with ~11.8k SDF people (team-
   dominant, desaturated kits), banners. Nothing casts shadows; nothing runs on the CPU per frame.
+  Per theme (palette.ts, uniforms only): crowd and canopy light, net ambient, steel rim, LED and
+  lamp levels, and `standWood` (timber stands on the alpine valley); the board and banner atlases
+  (invented harbour names and emblems) are the same in every theme.
 * **post/** — lighting.ts: both keys and the fill exist on every tier and theme (constant light
   count); `shadowedKeys` keys cast (1 on low, 2 on high and ultra), maps 2048 (PCF 3) on low and
   high, 4096 (PCF 4) on ultra, frustums fitted to the arena box. pipeline.ts: see "Rendering
@@ -578,24 +602,27 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
   HDR grade and the theme's tone curve, dynamic resolution between 0.6 and 1; ultra adds GTAO, SSR
   and the lens glare at half / quarter resolution; low = no MSAA, no bloom, FXAA. Pixel ratio:
   high / ultra min(dpr, 6 Mpx budget) and never below 1 (phones at most 2), low = 1.
-* Measured (phase 3, browser pane on a Turing desktop GPU shared with other sessions, WebGPU),
-  free play at kickoff, chase camera, 1600x900 CSS, the median of three 120-frame means:
+* Measured (final review, browser pane on a Turing desktop GPU shared with other sessions,
+  WebGPU), free play at kickoff, chase camera, 1600x900 CSS, the median of three 120-frame means,
+  on the night harbour (every theme is within ~0.1 ms of it; the alpine valley has the most
+  triangles):
 
   | tier | GPU | draws | triangles | buffer | texture memory |
   |---|---|---|---|---|---|
-  | low | 0.84 ms | 28 | 90k | 1600x901 | 69 MB |
-  | high | 1.99 ms | 42 | 136k | 2190x1233 | 163 MB |
-  | ultra | 3.18 ms | 53 | 371k | 2190x1233 | 377 MB |
+  | low | 0.82 ms | 28 | 90k (alpine 151k) | 1600x901 | 77 MB |
+  | high | 1.97 ms | 42 | 136k (alpine 196k) | 2190x1233 | 175 MB |
+  | ultra | 3.15 ms (alpine 3.23) | 53 | 371k (alpine 432k) | 2190x1233 | 399 MB |
 
-  A 3v3 match frame at kickoff: low 1.44 ms / 51 draws, high 3.32 ms / 80 draws, ultra 5.97 ms /
-  91 draws (each extra car costs 2 draws plus 2 per shadowed key; over the 40 / 60 draw targets of
-  docs/visuals/REWORK.md, see its status). Texture memory is flat over repeated tier and theme
-  switches. Triangles include the shadow passes.
-* First load (production build, warm world cache, WebGPU high), to the first frame finished on
-  the GPU: 2.3-2.9 s (0.3-0.4 s renderer and cached world, 0.6 s views and bakes, 1.3-1.9 s of
-  parallel pipeline compile, `Renderer.precompile`); it was 5.5-6.1 s with the synchronous
-  warm-up alone, whose ~50 pipelines the GPU process compiled one after the other. Low: 2.2 s.
-  WebGL2 low: 2.7-5.2 s to the warm-up.
+  A 3v3 match frame at kickoff: low 0.85 ms / 51 draws, high 2.01 ms / 72 draws, ultra 3.26 ms /
+  81 draws (each extra car costs 2 draws plus 2 per shadowed key; over the 40 / 60 draw targets of
+  docs/visuals/REWORK.md, see its status). Texture memory and pipelines are flat over repeated
+  theme switches (baking or cached) and tier round trips. Triangles include the shadow passes.
+* First load (production build, WebGPU), to the first frame finished on the GPU: high 1.8 s with
+  a warm world cache (median of 3; 0.3 s renderer and cached world, 0.3 s views and bakes, ~1.1 s
+  of parallel pipeline compile, `Renderer.precompile`), 3.0-4.0 s with an empty cache (the world
+  bake ~1 s); low 1.6 s warm, 2.7 s cold. WebGL2 low: 2.0-6.2 s to the warm-up (run to run
+  variance of the parallel compile on a shared GPU). Before the parallel compile the high tier
+  took 5.5-6.1 s (~50 pipelines compiled one after the other).
 
 ## Legal
 

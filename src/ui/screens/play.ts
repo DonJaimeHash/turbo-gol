@@ -336,8 +336,8 @@ export function friendlyScreen(menu: Menu): Screen {
     () => menu.host.quality,
     (v) => menu.host.setQuality(v),
   );
-  // The stadium's setting (purely visual, saved with the prefs); a theme not built yet shows the
-  // night harbour (theme.ts themeWorld falls back to it).
+  // The stadium's setting (purely visual, saved with the prefs): Game.setTheme rewrites uniforms
+  // and re-bakes or reads the cached sky, it never recompiles.
   const theme = cycler<ThemeId>(
     t('friendly.theme'),
     THEME_IDS.map((id) => ({ value: id, label: themeName(id) })),
