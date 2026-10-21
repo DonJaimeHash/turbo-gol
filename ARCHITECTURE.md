@@ -389,10 +389,11 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   blade field, a 192x288 field map of wear / damp / puddle basins / hue, a 176x264 pool map of the
   floodlights' irradiance + the pad mask; ~0.28 s at boot, the pool map cached per floodlight rig).
   View-dependent mowing stripes, paint in the grass, damp sheen, soft puddles (relief tiers), the
-  pools and analytic anisotropic GGX floodlight streaks (stretched toward the camera, `turfStreaks`
-  heads). Its lighting model (`TurfLightingModel`) lets the pool map shape the key lights at night
-  (so the pools sit under the keys' shadows) and keeps only 12 % of the keys' direct specular there
-  (their reflections are the streaks); its environment radiance is capped at night
+  pools and analytic anisotropic GGX floodlight streaks (stretched toward the camera at grazing
+  views, compact glints seen from above at a distance, `turfStreaks` heads). Its lighting model
+  (`TurfLightingModel`) lets the pool map shape the key lights at night (so the pools sit under
+  the keys' shadows) and keeps only 12 % of the keys' direct specular there (their reflections
+  are the streaks); its environment radiance is capped at night
   (`CappedEnvironmentNode`: the probe's hot lamp panels read as fog on the damp sheen). Draws: 1
   (+1 blades on ultra). Cost: ~0.2 ms low, ~0.5 ms high, blades ~0.13 ms. Tiers: low flat filtered
   (4 streak heads, no puddles), high relief (6-step POM within 600 uu, blade self-shadow) + puddles

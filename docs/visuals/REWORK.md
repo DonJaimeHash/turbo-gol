@@ -94,8 +94,9 @@ being built; phase 5 is open.
    - The integrated captures' faults: the ultra lens glare keys on white-hot emissive only (no red
      haze from the goal frame); the wet floodlight reflections are soft anisotropic streaks toward
      the camera; the whitish fog on the damp turf (the keys' GGX highlight and the probe's hot lamp
-     panels on the sheen) is gone; the dark band across the near pitch (a mowing stripe) is soft;
-     round the goals the cage is netting and the goal net draws from both sides (no black box).
+     panels on the sheen, and the broad streak lobes seen from high cameras) is gone; the dark band
+     across the near pitch (a mowing stripe) is soft; round the goals the cage is netting and the
+     goal net draws from both sides (no black box).
    - Toward the concept: the floodlight pools shape the key lights and sit under their shadows
      (car shadows read), a dominant night key, a warmer olive turf, a brighter blue sky, a lit and
      less saturated crowd, fainter goal-mouth glow, a softer vignette.
