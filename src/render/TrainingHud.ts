@@ -9,8 +9,9 @@
  *                 the Hud's pointer-lock hint and camera mode)
  *   centre        "drive to start" while a shot waits for the first input, the success / fail
  *                 banner, the pack summary panel (passed / total, best, retry / back to menu)
- *   pause         while the Hud's PAUSED overlay is up: Resume / Reset shot / Previous / Next /
- *                 Quit (free play: Reset ball / Reset car / Unlimited boost) buttons
+ *   pause         the Hud's pause menu carries the training entries (Reset shot / Previous /
+ *                 Next, free play: Reset ball / Reset car / Unlimited boost; built by the Game);
+ *                 while it is up this overlay only hides its key hints and the "drive" prompt
  *
  * While open it puts `trn-on` on its container so training.css can hide the match score / clock.
  * Like the Hud, every per-frame setter caches what it last wrote and touches the DOM only on a
@@ -21,17 +22,8 @@ import './training.css';
 import type { ShotOutcome, TrainingSummary } from '../game/TrainingSession';
 import { t } from '../i18n';
 
-/** What the overlay's buttons do (the Game wires them to the session). */
+/** What the pack summary's buttons do (the Game wires them to the session). */
 export interface TrainingHudActions {
-  onResume(): void;
-  /** Pack: reset the shot. Free play: reset the ball. */
-  onReset(): void;
-  onPrev(): void;
-  onNext(): void;
-  /** Free play: car back to its spawn. */
-  onResetCar(): void;
-  /** Free play: toggle unlimited boost. */
-  onToggleBoost(): void;
   onRetryPack(): void;
   /** Leave training for the menu. */
   onQuit(): void;
@@ -97,18 +89,14 @@ export class TrainingHud {
   private readonly bannerTitle: HTMLElement;
   private readonly bannerSub: HTMLElement;
   private readonly keys: HTMLElement;
-  private readonly pausePanel: HTMLElement;
-  private readonly packButtons: HTMLElement[] = [];
-  private readonly freeButtons: HTMLElement[] = [];
-  private readonly boostButton: HTMLButtonElement;
   private readonly summary: HTMLElement;
   private readonly sumPack: HTMLElement;
   private readonly sumScore: HTMLElement;
   private readonly sumBest: HTMLElement;
   private readonly sumDots: HTMLElement;
   private readonly sumHint: HTMLElement;
-  /** The unlimited boost texts (panel line and pause button), built once. */
-  private readonly boostText: { lineOn: string; lineOff: string; buttonOn: string; buttonOff: string };
+  /** The unlimited boost texts of the panel line, built once. */
+  private readonly boostText: { lineOn: string; lineOff: string };
 
   private open = false;
   private freeplay = false;
@@ -139,8 +127,6 @@ export class TrainingHud {
     this.boostText = {
       lineOn: t('trainingHud.boostLineOn'),
       lineOff: t('trainingHud.boostLineOff'),
-      buttonOn: t('trainingHud.boostButtonOn'),
-      buttonOff: t('trainingHud.boostButtonOff'),
     };
 
     this.panel = el('div', 'trn-panel');
@@ -167,21 +153,6 @@ export class TrainingHud {
     this.banner.append(this.bannerTitle, this.bannerSub);
     this.banner.hidden = true;
 
-    // Pause panel: shown under the Hud's PAUSED title while paused.
-    this.pausePanel = el('div', 'trn-pause');
-    const resume = button('trn-btn trn-btn-primary', t('trainingHud.resume'), () => this.actions.onResume());
-    const reset = button('trn-btn', t('trainingHud.resetShot'), () => this.actions.onReset());
-    const prev = button('trn-btn', t('trainingHud.prevShot'), () => this.actions.onPrev());
-    const next = button('trn-btn', t('trainingHud.nextShot'), () => this.actions.onNext());
-    const resetBall = button('trn-btn', t('trainingHud.resetBall'), () => this.actions.onReset());
-    const resetCar = button('trn-btn', t('trainingHud.resetCar'), () => this.actions.onResetCar());
-    this.boostButton = button('trn-btn', this.boostText.buttonOn, () => this.actions.onToggleBoost());
-    const quit = button('trn-btn trn-btn-quit', t('trainingHud.quit'), () => this.actions.onQuit());
-    this.packButtons.push(reset, prev, next);
-    this.freeButtons.push(resetBall, resetCar, this.boostButton);
-    this.pausePanel.append(resume, reset, prev, next, resetBall, resetCar, this.boostButton, quit);
-    this.pausePanel.hidden = true;
-
     // Pack summary.
     this.summary = el('div', 'trn-summary');
     const card = el('div', 'trn-summary-card');
@@ -200,7 +171,7 @@ export class TrainingHud {
     this.summary.appendChild(card);
     this.summary.hidden = true;
 
-    this.root.append(this.panel, this.start, this.banner, this.pausePanel, this.summary);
+    this.root.append(this.panel, this.start, this.banner, this.summary);
     container.appendChild(this.root);
   }
 
@@ -222,8 +193,6 @@ export class TrainingHud {
     this.dots.hidden = freeplay;
     this.timer.hidden = freeplay;
     this.boostLine.hidden = !freeplay;
-    for (const b of this.packButtons) b.hidden = freeplay;
-    for (const b of this.freeButtons) b.hidden = !freeplay;
     this.buildDots(this.dots, this.dotEls, shots);
     this.dotState.length = 0;
     for (let i = 0; i < shots; i++) this.dotState.push(0);
@@ -321,14 +290,13 @@ export class TrainingHud {
     this.start.hidden = !waiting;
   }
 
-  /** Free play: the unlimited boost state (panel line and pause button). */
+  /** Free play: the unlimited boost state (the panel line). */
   setBoostUnlimited(on: boolean): void {
     if (on === this.lastBoost) return;
     this.lastBoost = on;
     const b = this.boostText;
     this.boostLine.textContent = on ? b.lineOn : b.lineOff;
     this.boostLine.classList.toggle('trn-boost-off', !on);
-    this.boostButton.textContent = on ? b.buttonOn : b.buttonOff;
   }
 
   /** Success / fail banner for `ms` milliseconds (pass = green, fail = red). */
@@ -378,11 +346,10 @@ export class TrainingHud {
     return !this.summary.hidden;
   }
 
-  /** Training entries under the Hud's PAUSED overlay. */
+  /** Paused (the Hud's pause menu is up): the key hints and the "drive" prompt step aside. */
   setPaused(paused: boolean): void {
     if (paused === this.lastPaused) return;
     this.lastPaused = paused;
-    this.pausePanel.hidden = !paused;
     this.root.classList.toggle('trn-paused', paused);
   }
 
