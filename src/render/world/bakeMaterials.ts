@@ -44,6 +44,7 @@ import {
 } from 'three/tsl';
 import { glowMrt } from '../materials';
 import { fbm3, hash12, hash13, vnoise, type Atmosphere } from './atmosphere';
+import { BAY_W, BAY_X, CROWN_K, CROWN_MIN, ROWS, ROW_HALF, ROW_PITCH, ROW_Z0 } from './city';
 import { KIND } from './geo';
 
 type F = Node<'float'>;
@@ -57,6 +58,8 @@ const clean = (c: V3): V3 => c.max(0.0).min(60000.0);
  * derivatives in uniform control flow, and the kind branches below are not uniform.
  */
 const aa = (fw: F, period: number): F => saturate(oneMinus(fw.mul(2.0 / period)));
+/** Radiance of a lit city window (TOWER pattern) at lightsOn 1, before its per-window spread. */
+const TOWER_WINDOW_GAIN = 1.15;
 
 export interface StructMaterial {
   readonly material: THREE.MeshBasicNodeMaterial;
@@ -69,9 +72,9 @@ export interface StructMaterial {
  *
  *   'bake'  the bake variant: aerial perspective from the bake origin, alpha = inverse distance,
  *           every pattern.
- *   'live'  drawn per frame: aerial perspective from the camera, cheaper noise, only the harbour's
- *           kinds, glow of the lamps into the bloom target, and the `on` switch so a theme
- *           without the harbour hides it with a uniform instead of a recompile.
+ *   'live'  drawn per frame: aerial perspective from the camera, cheaper noise, only the live layers'
+ *           kinds (harbour, city), glow of the lamps into the bloom target, and the `on` switch so a theme
+ *           without a live layer hides it with a uniform instead of a recompile.
  *   'env'   the live variant for the environment probe: no glow tag (the probe's target has no
  *           `output` / `emissive` members), sharing the live layer's `on` switch (`sharedOn`).
  */
@@ -201,6 +204,82 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
         const floorLit = step(0.93, hash13(vec3(cell.y, seed.mul(91.0), 4.0)));
         const wc = mix(vec3(1.0, 0.6, 0.28), vec3(0.8, 0.88, 1.0), step(0.7, hash13(vec3(cell.yx, 2.0))));
         emi.assign(wc.mul(win.mul(max(lit, floorLit)).mul(hash13(vec3(cell, 9.0)).mul(0.8).add(0.6))).mul(U.lightsOn));
+      })
+      .ElseIf(kind.greaterThan(KIND.DECK - 0.5), () => {
+        // city ground (city.ts): the car park's wet concrete deck (seed >= 0.5: slab joints, the
+        // parking rows' bay lines) or wet asphalt (the streets); puddles; the sky's haze mirrored
+        const deck = step(0.5, seed);
+        alb.mulAssign(grime(vec3(wp.xz.mul(0.0013), 3.0)).mul(0.5).add(0.75));
+        const jd = min(float(0.5).sub(abs(fract(wp.x.div(900.0)).sub(0.5))), float(0.5).sub(abs(fract(wp.z.div(900.0)).sub(0.5)))).mul(900.0);
+        alb.mulAssign(oneMinus(step(jd, 7.0).mul(aa(fwZ, 60)).mul(deck).mul(0.45)));
+        // bay lines: double rows centred on |z| = ROW_Z0 + k ROW_PITCH, bays BAY_W wide, |x| < BAY_X
+        const t = abs(wp.z).sub(ROW_Z0).div(ROW_PITCH);
+        const k = floor(t.add(0.5));
+        const dz = abs(t.sub(k).mul(ROW_PITCH));
+        const inRow = step(dz, ROW_HALF).mul(step(-0.5, k)).mul(step(k, ROWS - 0.5)).mul(step(abs(wp.x), BAY_X)).mul(deck);
+        const bx = float(0.5).sub(abs(fract(wp.x.div(BAY_W)).sub(0.5))).mul(BAY_W);
+        const paint = step(min(min(bx, dz), abs(dz.sub(ROW_HALF))), 7.0).mul(inRow).mul(aa(fwZ, 90));
+        alb.assign(mix(alb, vec3(0.62, 0.62, 0.58), paint.mul(0.85)));
+        // wet: darker everywhere, puddles darker still and glossier
+        const puddle = smoothstep(0.58, 0.68, vnoise(vec3(wp.xz.mul(0.0028), 7.0)));
+        alb.mulAssign(mix(float(0.62), float(0.42), puddle));
+        const vd = wp.sub(live ? cameraPosition : U.origin);
+        const V = vd.div(max(length(vd), 1.0));
+        const R = vec3(V.x, abs(V.y), V.z);
+        const fres = pow(oneMinus(saturate(abs(V.y))), 5.0).mul(0.96).add(0.04);
+        const sky = mix(Fx.hazeColor(R), U.mid.mul(1.4), smoothstep(0.0, 0.5, R.y));
+        emi.addAssign(sky.mul(fres).mul(mix(float(0.4), float(0.9), puddle)).mul(deck.mul(0.6).add(0.4)).mul(step(0.5, n.y)));
+      })
+      .ElseIf(kind.greaterThan(KIND.TOWER - 0.5), () => {
+        // city facades (city.ts): style floor(seed * 3) = 0 office curtain wall, 1 residential
+        // punched windows, 2 dark glass with few lights; fract(seed * 3) varies the occupancy
+        const st = floor(seed.mul(3.0));
+        const sub = fract(seed.mul(3.0));
+        const s1 = step(0.5, st);
+        const s2 = step(1.5, st);
+        const sel = (a: number, b: number, c: number): F => mix(mix(float(a), float(b), s1), float(c), s2);
+        const cw = sel(150, 270, 170); // window cell width
+        const fh = sel(390, 300, 410); // floor height
+        const wx = sel(0.3, 0.2, 0.36); // half width of the opening (cell fraction)
+        const wy0 = sel(0.2, 0.3, 0.14);
+        const wy1 = sel(0.8, 0.74, 0.86);
+        // faces from the normal, not the box test above: on a round tower the box test calls the
+        // top of the curved wall a roof (TOWER parts are unrotated boxes and cylinders)
+        const side = step(abs(n.y), 0.5);
+        const ut = mix(kloc.x.add(hs.x), kloc.z.add(hs.z), step(abs(n.z), abs(n.x)));
+        const g = vec2(ut.div(cw), v.div(fh));
+        const cell = floor(g);
+        const f = fract(g);
+        const win = step(abs(f.x.sub(0.5)), wx).mul(step(wy0, f.y)).mul(step(f.y, wy1)).mul(side);
+        const occ = sel(0.42, 0.38, 0.12).mul(sub.mul(0.6).add(0.7)).mul(U.windows).min(1.0);
+        const lit = step(hash13(vec3(cell, seed.mul(173.0))), occ);
+        // a few whole floors lit together
+        const floorLit = step(0.94, hash13(vec3(cell.y, seed.mul(59.0), 2.0)));
+        const hue = hash13(vec3(cell.yx, seed.mul(31.0).add(5.0)));
+        const warm = mix(vec3(1.0, 0.58, 0.26), vec3(1.0, 0.78, 0.5), hue);
+        const cool = mix(vec3(0.82, 0.87, 1.0), vec3(1.0, 0.84, 0.6), hue);
+        const wc = mix(cool, warm, max(s1.mul(oneMinus(s2)), step(0.35, hash13(vec3(cell.xy, seed.mul(7.0).add(1.0))))));
+        // far away a cell is sub-pixel: its mean (opening x lit share) replaces the grid
+        const kk = saturate(oneMinus(fwU.mul(2.0).div(cw)));
+        const winA = mix(wx.mul(2.0).mul(wy1.sub(wy0)).mul(side), win, kk);
+        const litA = mix(occ, max(lit, floorLit), kk);
+        const bright = mix(float(1.0), pow(hash13(vec3(cell, 11.0)), 1.5).mul(1.3).add(0.4), kk);
+        emi.assign(wc.mul(winA.mul(litA).mul(bright).mul(TOWER_WINDOW_GAIN)).mul(U.lightsOn));
+        alb.assign(mix(alb, vec3(0.02, 0.024, 0.032), winA));
+        alb.mulAssign(mix(float(0.7), float(1.0), side));
+        // the glass mirrors the dusk sky (the haze low, the sky's mid colour higher), mostly at
+        // grazing angles; reflections pointing down (the dark city) fade out
+        const vd = wp.sub(live ? cameraPosition : U.origin);
+        const V = vd.div(max(length(vd), 1.0));
+        const R = reflect(V, n);
+        const fres = pow(oneMinus(saturate(dot(V.negate(), n))), 5.0).mul(0.96).add(0.04);
+        const sky = mix(Fx.hazeColor(R), U.mid.mul(1.4), smoothstep(0.0, 0.5, R.y)).mul(smoothstep(-0.25, 0.02, R.y));
+        emi.addAssign(sky.mul(fres).mul(sel(0.5, 0.12, 0.6)).mul(side).mul(oneMinus(winA.mul(litA))));
+        // lit crown band just under the top of the part (city.ts crownOf)
+        const H = hs.y.mul(2.0);
+        const band = step(H.sub(150.0), v).mul(step(v, H.sub(45.0))).mul(side).mul(step(CROWN_MIN, fract(seed.mul(CROWN_K))));
+        const ccol = mix(vec3(0.7, 0.85, 1.4), vec3(1.4, 0.75, 0.35), step(0.5, fract(seed.mul(11.3))));
+        emi.addAssign(ccol.mul(band.mul(1.6)).mul(U.lightsOn));
       })
       .Else(() => {
         if (live) return;

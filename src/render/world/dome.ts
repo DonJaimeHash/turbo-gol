@@ -70,6 +70,10 @@ export interface Dome {
   /** The cube and proxy lookup it samples (swap `.value`, never the node). */
   readonly cube: ReturnType<typeof cubeTexture>;
   readonly lut: ReturnType<typeof texture>;
+  /** The floor's height relative to the origin (uu): the skyline's ground (World.ts writes it per theme). */
+  readonly ground: UniformNode<'float', number>;
+  /** The heights over the origin where the parallax hands over to "at infinity" (PROXY_TOP by default; World.ts writes it per theme). */
+  readonly top: UniformNode<'vec2', THREE.Vector2>;
   dispose(): void;
 }
 
@@ -141,6 +145,8 @@ export function buildDome(cubeTex: THREE.CubeTexture, lutTex: THREE.Texture, ori
     material,
     cube,
     lut,
+    ground: uGround,
+    top: uTop,
     dispose() {
       geometry.dispose();
       material.dispose();

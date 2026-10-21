@@ -3,7 +3,7 @@
  * glass, the ball and the wet turf reflect the backdrop. Its scene, rendered from the bake origin:
  *
  *   the baked cube   on a big back-faced sphere (sky, clouds, moon or sun, far harbour or canyon)
- *   the live layer   the live harbour's geometry with the 'env' structure material
+ *   the live layer   the live layer's geometry (harbour or city) with the 'env' structure material
  *   the pitch        a flat disc under the probe in the theme's lit-turf colour
  *   the floodlights  the theme's lamp heads (theme.ts floodlights) as hot panels, so glossy paint
  *                    shows the stadium's lamps; they are NOT in the visible sky (the stadium draws
@@ -67,6 +67,8 @@ function createPmremTarget(size: number): THREE.RenderTarget {
 
 interface ProbeScene {
   readonly scene: THREE.Scene;
+  /** The live layer's copy (its geometry follows `live.geometry`: the theme's skyline). */
+  readonly live: THREE.Mesh | null;
   readonly cube: ReturnType<typeof cubeTexture>;
   readonly turf: UniformNode<'vec3', THREE.Vector3>;
   readonly lamps: readonly { mesh: THREE.Mesh; color: UniformNode<'vec3', THREE.Vector3> }[];
@@ -75,7 +77,8 @@ interface ProbeScene {
 }
 
 /**
- * The probe at `origin` with a PMREM of `size`; `live` draws the live harbour layer into it. The
+ * The probe at `origin` with a PMREM of `size`; `live` draws the live layer into it (its geometry is
+ * read at every update: World.ts points it at the theme's skyline). The
  * probe's materials carry no glow tag: the PMREM target is a plain colour target.
  */
 export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3, size: number, live: { geometry: THREE.BufferGeometry; material: THREE.Material } | null): EnvProbe {
@@ -98,9 +101,10 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
     sky.frustumCulled = false;
     scene.add(sky);
     trash.push(skyGeo, skyMat, blank);
-    // the live harbour layer
+    // the live layer (the harbour's or the city's)
+    let copy: THREE.Mesh | null = null;
     if (live !== null) {
-      const copy = new THREE.Mesh(live.geometry, live.material);
+      copy = new THREE.Mesh(live.geometry, live.material);
       copy.frustumCulled = false;
       scene.add(copy);
     }
@@ -127,7 +131,7 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
       lamps.push({ mesh, color });
       trash.push(mat);
     }
-    return { scene, cube, turf, lamps, pmrem: new THREE.PMREMGenerator(gpu), trash };
+    return { scene, live: copy, cube, turf, lamps, pmrem: new THREE.PMREMGenerator(gpu), trash };
   }
 
   return {
@@ -135,6 +139,7 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
     update({ cube, turf, lamps, lampRadiance }) {
       if (probe === null) probe = build();
       const p = probe;
+      if (p.live !== null && live !== null) p.live.geometry = live.geometry;
       p.cube.value = cube;
       p.turf.value.set(turf[0], turf[1], turf[2]);
       for (let i = 0; i < LAMP_SLOTS; i++) {

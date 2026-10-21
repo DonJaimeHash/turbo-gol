@@ -58,6 +58,24 @@ const STADIUM_THEMES: Readonly<Partial<Record<ThemeId, StadiumTheme>>> = {
     rampColor: [0.035, 0.085, 0.04],
     steelRim: [0.05, 0.055, 0.07],
   },
+  // "Distrito 9" (city at dusk): the night stadium under a violet sky; the net and the steel catch
+  // the sky's pink-violet, the crowd a cooler LED light.
+  'city-dusk': {
+    ledIntensity: 0.4,
+    railIntensity: 0.8,
+    lampIntensity: 30,
+    glare: 0.55,
+    beam: 0.5,
+    netColor: [0.34, 0.35, 0.39],
+    netAmbient: [0.055, 0.055, 0.1],
+    netLight: 0.5,
+    netOpacity: 1,
+    crowdLight: [0.25, 0.25, 0.3],
+    crowdDepthDim: 0.55,
+    canopyLight: 0.35,
+    rampColor: [0.035, 0.085, 0.04],
+    steelRim: [0.055, 0.05, 0.08],
+  },
 };
 
 export function stadiumTheme(id: ThemeId): StadiumTheme {
