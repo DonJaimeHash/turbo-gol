@@ -13,7 +13,7 @@ const { LINK_TIMEOUT_MS, MAX_UNAUTHENTICATED, NODE_OFFLINE_MS, REPROBE_FAILURES,
 const { Registry, STRIKE_COOLDOWN_MS, PROBATION_MATCHES, usableTransports } = await import('../control-plane/registry.ts');
 const { Ledger } = await import('../control-plane/ledger.ts');
 const { generateEd25519, sign, sha256Hex } = await import('../shared/edcrypto.ts');
-const { replayRequestMessage } = await import('../shared/controlProtocol.ts');
+const { HEARTBEAT_TIMEOUT_MS, authMessage, replayRequestMessage } = await import('../shared/controlProtocol.ts');
 const { parseReport } = await import('../control-plane/validate.ts');
 
 test("the outcome comes from the replay: a report whose end reason disagrees is a failed verification", async () => {
@@ -328,7 +328,7 @@ test('stalled control link: heartbeats held 24 s, then delivered at once, keep t
   assert.ok(!env.logs.some((l) => l.includes('4408')));
 });
 
-test('stalled control link past LINK_TIMEOUT_MS: closed with 4408 and its silence logged, its backlog counted once; the same process reconnecting keeps a community node’s match', async () => {
+test('stalled control link past LINK_TIMEOUT_MS: closed with 4408 and its silence logged, its backlog counted in a few lines; the same process reconnecting keeps a community node’s match', async () => {
   const env = await setup();
   const name = env.registry.node(env.nodeId).name;
   const p = await env.place([human('a')]);
@@ -340,19 +340,26 @@ test('stalled control link past LINK_TIMEOUT_MS: closed with 4408 and its silenc
   env.advance(1_000);
   env.cp.sweep();
   assert.deepEqual(env.closes, [{ code: 4408, reason: 'heartbeat timeout' }]);
-  assert.ok(env.logs.includes(`node ${name}: silent 46 s, closing its control link (4408)`), env.logs.join('\n'));
+  assert.ok(env.logs.includes(`node ${name}: silent ${LINK_TIMEOUT_MS / 1000 + 1} s, closing its control link (4408)`), env.logs.join('\n'));
   assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'the matches outlive the link');
-  // The stall ends: what it held comes in on the closed link. Counted, never handled, logged once.
+  // The stall ends: what it held comes in on the closed link. Counted, never handled, logged by
+  // the next sweep, then again only once the count doubled.
   env.advance(2_000);
   stall.release();
   const lastSeen = env.registry.node(env.nodeId).lastSeen;
   for (let i = 0; i < 9; i++) await env.heartbeat();
   assert.equal(env.registry.node(env.nodeId).lastSeen, lastSeen, 'a closed link carries no heartbeat');
   env.cp.sweep();
-  assert.ok(env.logs.includes(`node ${name}: 9 messages after its link was closed, up to 43 s late`), env.logs.join('\n'));
+  const late = () => env.logs.filter((l) => l.includes('after its link was closed'));
+  const first = `node ${name}: 9 messages so far after its link was closed, up to ${LINK_TIMEOUT_MS / 1000 - 2} s late`;
+  assert.deepEqual(late(), [first]);
   await env.heartbeat();
   env.cp.sweep();
-  assert.equal(env.logs.filter((l) => l.includes('after its link was closed')).length, 1, 'once per link');
+  assert.deepEqual(late(), [first]);
+  for (let i = 0; i < 8; i++) await env.heartbeat();
+  env.cp.sweep();
+  env.cp.sweep();
+  assert.deepEqual(late(), [first, `node ${name}: 18 messages so far after its link was closed, up to ${LINK_TIMEOUT_MS / 1000 - 2} s late`]);
   await env.reconnect(); // the same bootId: the same process, its match is still running
   for (let i = 0; i < 4; i++) {
     env.advance(5_000);
@@ -379,6 +386,145 @@ test('a node that never comes back: its link is closed after LINK_TIMEOUT_MS, it
   for (const p of ps) assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
   const n = env.registry.node(env.nodeId);
   assert.deepEqual([n.counters.lost, n.counters.strikes], [1, 1], 'one outage, one strike');
+});
+
+test('one outage, one strike, from its start: a strike the node took with its last messages covers the silence that voids its other matches a minute later', async () => {
+  for (const last of ['lost report', 'missed deadline']) {
+    const env = await setup();
+    const a = await env.place([human('a')]);
+    const b = await env.place([human('b')]);
+    await env.heartbeat();
+    if (last === 'lost report') await env.report({ kind: 'lost', matchId: a.matchId, reason: 'crash' });
+    else env.cp.matches.get(a.matchId).deadline = env.now() + 1_000;
+    holdHeartbeats(env);
+    env.advance(1_650);
+    env.cp.sweep();
+    assert.equal(env.cp.matches.get(a.matchId).state, 'done', last);
+    for (let t = 1_650; t <= NODE_OFFLINE_MS; t += 5_000) {
+      env.advance(5_000);
+      env.cp.sweep();
+    }
+    assert.equal(env.cp.matches.get(b.matchId).outcome.reason, 'node_offline', last);
+    assert.equal(env.registry.node(env.nodeId).counters.strikes, 1, `${last}: the same outage`);
+  }
+  // A strike more than a minute before the silence began was another outage.
+  const env = await setup();
+  const a = await env.place([human('a')]);
+  const b = await env.place([human('b')]);
+  await env.report({ kind: 'lost', matchId: a.matchId, reason: 'crash' });
+  for (let t = 0; t < 65_000; t += 5_000) {
+    env.advance(5_000);
+    env.cp.sweep();
+  }
+  holdHeartbeats(env);
+  for (let t = 0; t <= NODE_OFFLINE_MS; t += 5_000) {
+    env.advance(5_000);
+    env.cp.sweep();
+  }
+  assert.equal(env.cp.matches.get(b.matchId).outcome.reason, 'node_offline');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 2);
+});
+
+test('only heartbeats and hellos end a silence: junk frames or stray replies keep neither the link nor the matches', async () => {
+  for (const frame of [{ t: 'x' }, { t: 'reply', rid: 'zz', ok: true }]) {
+    const env = await setup();
+    const p = await env.place([human('a')], { matchLengthSeconds: 300 });
+    await env.heartbeat();
+    holdHeartbeats(env);
+    for (let t = 5_000; t <= NODE_OFFLINE_MS; t += 5_000) {
+      env.advance(5_000);
+      if (!env.session.closed) await env.send(frame);
+      env.cp.sweep();
+    }
+    assert.deepEqual(env.closes.map((c) => c.code), [4408], `${frame.t}: closed after LINK_TIMEOUT_MS all the same`);
+    assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+    env.advance(5_000);
+    env.cp.sweep();
+    assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline', frame.t);
+    assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+  }
+});
+
+/** The node logs in again on a new link and says nothing after the welcome: no hello, no heartbeat. */
+async function bareLogin(env) {
+  let s = null;
+  const link = {
+    send(m) {
+      if (m.t === 'challenge') void sign(env.nodeKey, authMessage(env.nodeId, m.nonce)).then((sig) => env.cp.onMessage(s, JSON.stringify({ t: 'auth', nodeId: env.nodeId, sig })));
+    },
+    close() {},
+  };
+  s = env.cp.open(link);
+  await wait(() => s.nodeId !== null, 'logged in');
+  return s;
+}
+
+test('a node that logs in again before its matches are due gets AUTH_TIMEOUT_MS for its hello, once: bare logins keep nothing', async () => {
+  // Logged in 1 s before the deadline: a sweep past it waits for the hello, which keeps the match.
+  const env = await setup();
+  const p = await env.place([human('a')]);
+  env.disconnect();
+  env.advance(NODE_OFFLINE_MS - 1_000);
+  const s = await bareLogin(env);
+  env.advance(2_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned', 'its hello is on the way');
+  env.session = s;
+  await env.hello();
+  env.advance(5_000);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
+
+  // A login every 10 s and never a hello: void all the same, AUTH_TIMEOUT_MS late at most, one strike.
+  const c = await setup();
+  const q = await c.place([human('b')], { matchLengthSeconds: 300 });
+  await c.heartbeat();
+  holdHeartbeats(c);
+  let voidAt = null;
+  for (let t = 5_000; voidAt === null && t <= 3 * NODE_OFFLINE_MS; t += 5_000) {
+    c.advance(5_000);
+    if (t % 10_000 === 0) await bareLogin(c);
+    c.cp.sweep();
+    if (c.cp.matches.get(q.matchId).state === 'done') voidAt = t;
+  }
+  assert.equal(c.cp.matches.get(q.matchId).outcome.reason, 'node_offline');
+  assert.ok(voidAt <= NODE_OFFLINE_MS + 10_000, String(voidAt));
+  assert.equal(c.registry.node(c.nodeId).counters.strikes, 1);
+});
+
+test('a match sits through a minute of its node’s silence in all: a heartbeat let through now and then, or a reconnect, does not keep it', async () => {
+  for (const every of [25_000, 40_000]) {
+    const env = await setup();
+    const p = await env.place([human('a')], { matchLengthSeconds: 300 });
+    const beat = env.heartbeat;
+    await beat();
+    holdHeartbeats(env);
+    let voidAt = null;
+    for (let t = 5_000; voidAt === null && t <= 3 * NODE_OFFLINE_MS; t += 5_000) {
+      env.advance(5_000);
+      // Each silence is shorter than NODE_OFFLINE_MS. A 40 s one costs the link: the same process logs in again.
+      if (t % every === 0) await (env.session.closed ? env.reconnect() : beat());
+      env.cp.sweep();
+      if (env.cp.matches.get(p.matchId).state === 'done') voidAt = t;
+    }
+    assert.equal(env.cp.matches.get(p.matchId).outcome?.reason, 'node_offline', String(every));
+    assert.ok(voidAt <= NODE_OFFLINE_MS + 10_000, `${every}: void at ${voidAt}`);
+    assert.equal(env.registry.node(env.nodeId).counters.strikes, 1);
+  }
+});
+
+test('nothing is relayed into a quiet link: an rtc offer is refused as offline at once, and relayed again after the next heartbeat', async () => {
+  const env = await setup({ rtc: true, status: 'active' });
+  const p = await env.place([human('a'), human('b')], { ranked: true });
+  const stall = holdHeartbeats(env);
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1);
+  const sent = env.toNode.length;
+  await assert.rejects(env.cp.rtcOffer(env.nodeId, p.matchId, p.tickets[0].ticket, 'v=0'), (e) => e.code === 'offline');
+  assert.equal(env.toNode.length, sent, 'not sent: it would only wait RTC_OFFER_TIMEOUT_MS in the stall');
+  stall.release();
+  await env.heartbeat();
+  assert.deepEqual(await env.cp.rtcOffer(env.nodeId, p.matchId, p.tickets[0].ticket, 'v=0'), { sdp: 'v=0' });
 });
 
 test('a restarted node (new bootId) loses the matches of its old process', async () => {

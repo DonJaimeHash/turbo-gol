@@ -166,8 +166,8 @@ if (placed) {
 - **Verificación de locks** (`LOCK_VERIFY_AFTER_MS`): para un lock `node`, preguntar al registro
   (`GET /internal/status`, y `nodeLockHeld` de `server/src/nodeApi.ts`) si la partida sigue en
   estado `assigned` o `reporting`. Si el nodo se cae, el registro anula sus partidas a los 60-65 s
-  (60 s sin saber nada del nodo, `NODE_OFFLINE_MS`, más el intervalo del barrido), así que el lock
-  se libera solo.
+  (60 s sin heartbeat del nodo, `NODE_OFFLINE_MS`, más el intervalo del barrido; antes si la
+  partida ya pasó por otro corte), así que el lock se libera solo.
 - **`POST /api/rejoin`**: si la partida es de un nodo, `POST /internal/rejoin` al
   `NodeRegistryDO` (`ControlPlane.rejoin()`, P5 de `PRODUCCION.md`). Responde un ticket nuevo y la
   URL del nodo, o un código con el estado de `REJOIN_STATUS` (`server/src/nodeApi.ts`): 404

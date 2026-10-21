@@ -33,11 +33,12 @@
  * A start without sockets is cold (a deploy drops every socket): the control plane gives its nodes
  * the restart grace before it voids anything for silence. A wake after a hibernation keeps the
  * sockets: each is adopted from the { nodeId } attachment it got when it logged in, with no new
- * challenge. The alarm runs every 5 s while there is a socket, an unfinished match, an outbox row
- * or a grace: the sweep is the only thing that voids a dead node's matches, so it must run with no
- * node connected too. It also starts the outbox's delivery, without waiting for it (each delivery
- * times out, and a stuck target holds back only its own rows), and reads channel.json from R2 again
- * every minute.
+ * challenge, unless the attachment says its node had gone quiet (no heartbeat for 15 s): that one
+ * is closed (4408), and a live node logs in again. The alarm runs every 5 s while there is a
+ * socket, an unfinished match, an outbox row or a grace: the sweep is the only thing that voids a
+ * dead node's matches, so it must run with no node connected too. It also starts the outbox's
+ * delivery, without waiting for it (each delivery times out, and a stuck target holds back only
+ * its own rows), and reads channel.json from R2 again every minute.
  *
  * The control key: NODE_CONTROL_PUBLIC_KEY (var) must be the public half of
  * NODE_CONTROL_PRIVATE_KEY (secret), or the nodes would refuse every ticket. When they differ the
@@ -121,12 +122,12 @@ export async function controlKeysMatch(privateKey: string, publicKey: string): P
   }
 }
 
-/** The node a socket logged in as before the object slept (its attachment), or null. */
-function attachedNode(ws: WebSocket): string | null {
+/** The node a socket logged in as before the object slept, and whether it was quiet then (its attachment), or null. */
+function attachedNode(ws: WebSocket): { nodeId: string; quiet: boolean } | null {
   try {
     const a: unknown = ws.deserializeAttachment();
-    const id = typeof a === 'object' && a !== null ? (a as { nodeId?: unknown }).nodeId : null;
-    return typeof id === 'string' ? id : null;
+    const { nodeId, quiet } = (typeof a === 'object' && a !== null ? a : {}) as { nodeId?: unknown; quiet?: unknown };
+    return typeof nodeId === 'string' ? { nodeId, quiet: quiet === true } : null;
   } catch {
     return null;
   }
@@ -347,14 +348,14 @@ export class NodeRegistryDO extends DurableObject<Env> {
 
   /** A socket that outlived a hibernation: an authenticated session again, or closed (it must log in anew). */
   private adopt(cp: ControlPlane, ws: WebSocket): void {
-    const nodeId = attachedNode(ws);
+    const a = attachedNode(ws);
     const link = this.link(ws);
-    if (nodeId === null) {
+    if (a === null) {
       // It was still logging in when the object slept: its challenge is gone with the memory.
       link.close(4401, 'log in again');
       return;
     }
-    const s = cp.adopt(link, nodeId); // closes an unknown or banned node's socket itself
+    const s = cp.adopt(link, a.nodeId, a.quiet); // closes an unknown or banned node's socket itself, and a quiet one
     if (!s) return;
     this.sessions.set(ws, s);
     this.attached.add(ws);
@@ -376,6 +377,17 @@ export class NodeRegistryDO extends DurableObject<Env> {
         closeQuietly(ws, code, reason);
         // webSocketClose is not guaranteed for a close the object starts (RoomDO.kick): end the session now.
         this.gone(ws);
+      },
+      // On the socket with its node: a wake closes a socket that was quiet instead of adopting it.
+      quiet: (quiet) => {
+        const nodeId = this.sessions.get(ws)?.nodeId;
+        if (!nodeId) return;
+        try {
+          ws.serializeAttachment(quiet ? { nodeId, quiet } : { nodeId });
+          this.attached.add(ws);
+        } catch {
+          /* closed meanwhile: nothing left to adopt */
+        }
       },
     };
   }

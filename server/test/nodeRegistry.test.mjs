@@ -705,7 +705,7 @@ test('a link silent past LINK_TIMEOUT_MS is closed with 4408, its silence logged
   }
   assert.deepEqual(
     lines.filter((l) => l.includes('after its link was closed')),
-    [`[nodes] node sao-paulo-1: 10 messages after its link was closed, up to ${Math.round((late - 5_000) / 1000)} s late`],
+    [`[nodes] node sao-paulo-1: 10 messages so far after its link was closed, up to ${Math.round((late - 5_000) / 1000)} s late`],
     'once, at the next alarm',
   );
   assert.equal(back.closed, null);
@@ -960,6 +960,41 @@ test('a hibernation: the sockets are adopted without a grace, a placement uses t
   assert.equal(ws.closed, null, 'no new challenge: the heartbeat is taken');
   assert.equal(h.obj.cp.registry.node(node.nodeId).active, 1);
   assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${first.matchId}&playerId=${A}`)).json.state, 'assigned');
+});
+
+test('a hibernation with a node gone quiet: its socket, marked when the node went quiet, is closed (4408) at the wake, not adopted; the same process logs in again and keeps its match', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws, node } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+  assert.deepEqual(ws.att, { nodeId: node.nodeId });
+  // No heartbeat for 15 s: the alarm marks the socket. The next heartbeat takes the mark off.
+  clock += 20_000;
+  await h.obj.alarm();
+  assert.deepEqual(ws.att, { nodeId: node.nodeId, quiet: true });
+  await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+  assert.deepEqual(ws.att, { nodeId: node.nodeId });
+  clock += 20_000;
+  await h.obj.alarm();
+  assert.deepEqual(ws.att, { nodeId: node.nodeId, quiet: true });
+  assert.equal(ws.closed, null, 'its link is still open');
+  lines.length = 0;
+  h.obj = new D.NodeRegistryDO(h.ctx, env); // same sockets, same database: the memory is all that went
+  await h.obj.ready;
+  assert.deepEqual(ws.closed, { code: 4408, reason: 'heartbeat timeout' });
+  assert.ok(lines.includes('[nodes] node sao-paulo-1: silent when the control plane restarted, closing its control link (4408)'), lines.join('\n'));
+  assert.deepEqual((await call(h, 'POST', '/internal/place', { body: placeBody({ humans: humans(STRANGER) }) })).json, { placement: null, hosts: 0 }, 'no placement on a node already silent');
+  clock += 2_000;
+  const back = await connect(h, node);
+  await send(h, back, { t: 'hello', data: helloOf(node) });
+  await send(h, back, { t: 'heartbeat', data: beat({ active: 1 }) });
+  clock += D.TICK_MS;
+  await h.obj.alarm();
+  assert.equal(back.closed, null);
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json, { state: 'assigned', left: false });
+  const n = h.obj.cp.registry.node(node.nodeId);
+  assert.deepEqual([n.counters.lost, n.counters.strikes], [0, 0]);
 });
 
 // ---- replays -----------------------------------------------------------------------------------------

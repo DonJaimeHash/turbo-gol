@@ -406,7 +406,7 @@ aviso.
 - [ ] Cancelar mientras conecta a una ranked: cuenta como dodge, igual que en `MatchDO`
   (`server/src/MatchDO.ts:350-356`).
 - [ ] Un corte corto del enlace de control con una partida en curso: la partida sigue si el mismo
-  proceso vuelve en 60 s (`NODE_OFFLINE_MS`), y un enlace trabado menos de 45 s se recupera sin
+  proceso vuelve en 60 s (`NODE_OFFLINE_MS`), y un enlace trabado menos de 30 s se recupera sin
   cerrarse.
 
 ### Riesgos principales

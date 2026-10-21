@@ -9,6 +9,7 @@ const { STATE_VERSION, MemoryStore, nodeToRow, nodeFromRow, tokenToRow, tokenFro
 const { Registry, MAX_STRIKES, STRIKE_COOLDOWN_MS, TOKEN_TTL_MS } = await import('../control-plane/registry.ts');
 const { LINK_TIMEOUT_MS, NODE_OFFLINE_MS, RESTART_GRACE_MS, VERIFY_MAX_WAIT_MS } = await import('../control-plane/controlPlane.ts');
 const { generateEd25519 } = await import('../shared/edcrypto.ts');
+const { HEARTBEAT_TIMEOUT_MS } = await import('../shared/controlProtocol.ts');
 
 const BUILD = { version: '0.1.0', protocol: 1, wasmSha256: 'a'.repeat(64) };
 const SPECS = { cpus: 2, cpuModel: 'x', memMB: 4096, arch: 'x64', os: 'linux', node: '24' };
@@ -850,6 +851,44 @@ test('an adopted socket whose node never speaks again: offline at the heartbeat 
   env.advance(NODE_OFFLINE_MS - LINK_TIMEOUT_MS);
   env.cp.sweep();
   assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
+});
+
+test('the link hears when its node goes quiet and comes back; a socket quiet when the object went down is closed (4408), not adopted, and a live node keeps its matches', async () => {
+  const env = await setup({ store: new MemoryStore() });
+  const name = env.registry.node(env.nodeId).name;
+  const p = await env.place([human('a')]);
+  env.restart({ cold: false });
+  const marks = [];
+  env.session = env.cp.adopt({ send() {}, close() {}, quiet: (q) => marks.push(q) }, env.nodeId);
+  await env.heartbeat();
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1); // the session is env's again: advance beats, so hold them
+  env.cp.sweep();
+  assert.deepEqual(marks, [], 'heard at the advance');
+  const beat = env.heartbeat;
+  env.heartbeat = () => Promise.resolve();
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1);
+  env.cp.sweep();
+  assert.deepEqual(marks, [true]);
+  await beat();
+  assert.deepEqual(marks, [true, false]);
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1);
+  env.cp.sweep();
+  assert.deepEqual(marks, [true, false, true]);
+
+  // The object goes down with that socket marked quiet: the wake closes it instead of adopting it.
+  env.restart({ cold: false });
+  const closes = [];
+  assert.equal(env.cp.adopt({ send() {}, close: (code) => closes.push(code) }, env.nodeId, true), null);
+  assert.deepEqual(closes, [4408]);
+  assert.ok(env.logs.includes(`node ${name}: silent when the control plane restarted, closing its control link (4408)`), env.logs.join('\n'));
+  assert.equal(env.cp.hostsOnline('SA'), 0, 'no placement on a node already silent');
+  env.heartbeat = beat;
+  await env.reconnect(); // alive after all: it logs in again
+  assert.equal(env.cp.hostsOnline('SA'), 1);
+  env.advance(NODE_OFFLINE_MS);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
 });
 
 test('after a hibernation, a node whose socket did not survive it gets its full window to come back', async () => {
