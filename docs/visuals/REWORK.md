@@ -13,24 +13,26 @@ desktop GPU; the game used 1.2 ms) and about 60/100 on the low tier (about 1.2 m
 
 ## Quality tiers (`src/render/quality.ts`)
 
-Three tiers, one table of switches (`TIERS`) that every view reads:
+Four tiers, one table of switches (`TIERS`) that every view reads:
 
-| | low (Performance) | high (default on desktop) | ultra (opt-in) |
-|---|---|---|---|
-| path | straight to the canvas (no HDR target, no MRT, no post pass) | HDR pipeline | HDR pipeline |
-| AA | the canvas' MSAA x4 (none in WebGPU compatibility mode: a blit resolve there) | MSAA x4 (FXAA without a multisampled HDR target) | MSAA x4 (idem) |
-| bloom | none (glow from geometry) | emissive bloom | emissive bloom |
-| resolution | pixel ratio up to 1.5 in a 1 Mpx budget + dynamic resolution (0.6..1 of it) | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
-| shadows | none (ground blobs) | 2 keys, 2048 | 2 keys, 4096 |
-| lighting | its own: turf, stands, steel, boards unlit with the theme's light baked in; brighter keys and fill on the lit cars, ball and goals | lit, the theme's keys and fill | idem |
-| turf | unlit: the theme's lit green, stripes, markings, pools at a low contrast (no wear, damp, sheen, streaks) | relief, puddles, 4 streak heads | + grass blades near the camera |
-| post | exposure, grade, tone curve (in every material; no contrast or vignette stage) | grade, vignette | + GTAO, SSR on wet turf, lens glare |
-| stadium | no netting (the steel draws the cage), a bright flat crowd | full | + floodlight beams |
-| world | the alpine valley's lighter live layer (~52k triangles) | full | full |
+| | super low (opt-in, auto on weak TVs) | low (Performance) | high (default on desktop) | ultra (opt-in) |
+|---|---|---|---|---|
+| path | low's direct path | straight to the canvas (no HDR target, no MRT, no post pass) | HDR pipeline | HDR pipeline |
+| backend | WebGL2 (`#webgpu`: WebGPU), chosen before the renderer exists | any | any | any |
+| AA | none | the canvas' MSAA x4 (none in WebGPU compatibility mode: a blit resolve there) | MSAA x4 (FXAA without a multisampled HDR target) | MSAA x4 (idem) |
+| bloom | none | none (glow from geometry) | emissive bloom | emissive bloom |
+| resolution | about 640x360 (a 230k pixel budget below 1:1), fixed; 30 fps at most | pixel ratio up to 1.5 in a 1 Mpx budget + dynamic resolution (0.6..1 of it) | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
+| shadows | none (no shadow code at all) | none (ground blobs) | 2 keys, 2048 | 2 keys, 4096 |
+| lighting | low's, with Lambert / unlit cars, ball and goals (no environment map) | its own: turf, stands, steel, boards unlit with the theme's light baked in; brighter keys and fill on the lit cars, ball and goals | lit, the theme's keys and fill | idem |
+| turf | low's unlit turf from a 64² grain (no blade field, no field map), fixed stripes | unlit: the theme's lit green, stripes, markings, pools at a low contrast (no wear, damp, sheen, streaks) | relief, puddles, 4 streak heads | + grass blades near the camera |
+| post | low's look in every material | exposure, grade, tone curve (in every material; no contrast or vignette stage) | grade, vignette | + GTAO, SSR on wet turf, lens glare |
+| stadium | no netting, no glare, no crowd mesh (people painted on the rows) | no netting (the steel draws the cage), a bright flat crowd | full | + floodlight beams |
+| world | a gradient dome from the theme's sky (no bake, no fog, no live layer) | the alpine valley's lighter live layer (~52k triangles) | full | full |
 
 Phones and tablets start on low, desktops on high; the WebGL2 fallback, WebGPU in compatibility
-mode and devices with `navigator.deviceMemory` <= 4 start on low unless the player chose a tier, and
-no device starts above the tier its GPU last fell back to (`tierGuard.ts`). Every tier runs as
+mode and devices with `navigator.deviceMemory` <= 4 start on low unless the player chose a tier, a
+device with 1 GB or a TV (no pointer) on a slow GPU starts on super low (`bootTier.ts`, "Super low"
+below), and no device starts above the tier its GPU last fell back to (`tierGuard.ts`). Every tier runs as
 `adjustTier(TIERS[q], capabilities)` (`capabilities.ts`): the menu offers every tier, a device that
 cannot do one fully runs it without the missing pieces (see "Three devices" below). Saves from
 before stored 0 (high) or 1 (performance). Low has no shadow maps
@@ -65,7 +67,7 @@ chimney), menu names and `tests/railyard.test.mjs`.
 
 | folder | owns | built from |
 |---|---|---|
-| `src/render/world/` | sky (gradient, clouds, stars, moon or sun), backdrop generators (harbour, canyon...), the bake of both into a cube map + PMREM environment, cached in IndexedDB | the old sky dome + environment |
+| `src/render/world/` | sky (gradient, clouds, stars, moon or sun), backdrop generators (harbour, canyon...), the bake of both into a cube map + PMREM environment, cached in IndexedDB; super low's lite world (liteWorld.ts: a gradient dome, nothing baked) | the old sky dome + environment |
 | `src/render/turf/` | pitch material (blade texture baked at load, stripes, wear, wetness, puddles, floodlight pools and streaks, relief), grass blades (ultra) | the old floor material |
 | `src/render/stadium/` | cage (steel arches, hex wire netting on the shell), LED boards with a big sponsor board on each side wall (each place's own content; the banners went on 2026-10-21), stands and crowd, floodlight towers and lamp heads, beams (ultra) | the old truss, cones, stands, masts, halos, lamp bars, glass |
 | `src/render/post/` | render pipeline per tier (bloom, grade, vignette, FXAA, GTAO / SSR / flare on ultra), key lights and shadows | the old `applyQuality` chain |
@@ -91,8 +93,9 @@ flat because the physics ceiling is flat.
   `renderer.render(scene, camera)`.
 - No allocation per frame. Static work is baked at load behind the loading overlay. Hidden meshes
   get a warm-up hook (`Game.setWarm`).
-- Draw calls: at most 40 on low and 60 on high. One draw per module element is the house style
-  (instance or merge).
+- Draw calls: at most 16 on super low, 40 on low and 60 on high. One draw per module element is the
+  house style (instance or merge). Super low compiles 18 programs whatever the roster (cars share
+  their body, wheel and flame programs there: `SHARED_INSTANCING_CAPACITY`, uniform team tints).
 - Phones: everything the low tier and the WebGL2 fallback use must work on a low-end mobile GPU.
   `#lowgpu` in the URL emulates one on a desktop (WebGL2 without OES_texture_float_linear,
   EXT_color_buffer_float, EXT_float_blend..., capped limits), `#compat` a WebGPU device in
@@ -104,7 +107,8 @@ flat because the physics ceiling is flat.
   error on screen (the first ones stay; a failed command buffer names its passes), for a
   screenshot from the phone.
 - A tier that breaks on a device falls back one tier by itself (`tierGuard.ts`), never in a loop;
-  a device lost in the background (or on low) reloads on the same tier, once a minute at most.
+  a device lost in the background (or on super low) reloads on the same tier, through the tab's
+  counter (reload, then super low, then a message: "Super low" below).
 - Gameplay readability: markings, goal frames, boost pads, ball marker and car silhouettes stay
   legible. Team colours keep their colour-blind separation.
 - Original content only. No commercial game names, logos, car designs or layouts. Board
@@ -116,8 +120,8 @@ Status (2026-10-21): phases 1-4 are done on `feat/visual-rework`; phase 5's revi
 done (see "Final review" below); the owner tested a preview on phones and asked for changes (see
 "Owner feedback" at the end), which are in; a second round on three devices brought capability
 gating, a tier safety net and a direct Performance path ("Three devices", at the end),
-Performance its own bright, cheap look ("The Performance look", after it), and a review of both
-("Review of the device rounds", last).
+Performance its own bright, cheap look ("The Performance look", after it), a review of both
+("Review of the device rounds"), and a fourth tier for a 1 GB Android TV ("Super low", last).
 
 1. **Foundation** (no visual change).
    - The three tiers, prefs migration and the menu.
@@ -468,3 +472,171 @@ Still open: the iPhone's ultra failure (WebKit only; the safety net catches it, 
 pass); none of the phone figures is measured on a phone. On the Huawei, `#diag` with and without
 `#msaa` shows what the canvas MSAA costs there (the fps line and the px size of `#diag`'s run
 line, which also shows dynamic resolution at work).
+
+## Super low (2026-10-21, fifth round): a 1 GB Android TV
+
+The owner tried the game on a low-end Android TV (Noblex / Hisense, MediaTek MT5867, ARM Mali-G31,
+935 MB of RAM, `navigator.deviceMemory` 1, Android TV 14, the TV Bro browser on Android System
+WebView 155, 4 cores, no touch or mouse pointer, a USB Xbox pad) through another assistant on
+adb, whose report (Spanish, outside the repo) analysed an older preview build. What it measured
+there:
+
+- Auto chose high on WebGPU (core mode, not compatibility): 1 fps, and memory pressure (about 70 MB
+  available; the low-memory killer killed a cached app).
+- `#webgl2`: low at 962x541, 3 fps (the old low, with its HDR post path).
+- `#lowgpu`: 30 fps, but a black 3D scene.
+- 60-80 s to the menu. 69 WebGL programs linked on that low.
+- WebGPU: float32-filterable yes, float32-blendable NO, timestamp-query NO, shader-f16 yes.
+  WebGL2: no OES_texture_float_linear, EXT_color_buffer_float yes, EXT_color_buffer_half_float NO,
+  EXT_float_blend yes, no anisotropy, no KHR_parallel_shader_compile, no timer query.
+- CSS viewport 962x541 at dpr 1.3312 (a 1280x720 UI surface).
+
+The report was checked against the current branch (two independent passes: the code, and three.js
+r186 plus Arm, Chromium, W3C and Khronos sources). What held, what was already fixed, and what
+was wrong:
+
+- **Already fixed since that build**: Auto starts on low with `deviceMemory` <= 4, on WebGL2 and in
+  WebGPU compatibility mode; low renders straight to the canvas (no HalfFloat scene target, no
+  grade RTT, no FXAA: the report's "direct render" was done); the unlit baked turf and stadium, no
+  netting on low; device loss hooked into the safety net. None of the report's figures for low
+  describe today's low, which on that TV would have run on WebGPU at 1280x720 (maxPixelRatio 1.5
+  in a 1 Mpx budget gives the TV's whole dpr) with the canvas MSAA x4 (about 29 MB of
+  multisampled colour and depth written out every frame).
+- **Held**: the `#lowgpu` black scene (its allowlist kept EXT_color_buffer_half_float, which the TV
+  lacks, and dropped EXT_color_buffer_float, which it has: no renderable float format, every
+  HalfFloat target incomplete in silence; three never checks framebuffer status); the world still
+  bakes and decodes into HalfFloat targets on every load, low included; dynamic resolution blind
+  under 10 fps; `#net` matched by any hash containing 'net'; three's WebGL backend always asking for
+  an alpha canvas; the TSL shaders highp; a fallback or a GPU's ceiling saved over the player's
+  choice by the next prefs write; lost-device reloads gated by a 60 s gap the TV's boot outlasts.
+- **Wrong or overstated**: the ball prediction is incremental (about one ball step per tick, a
+  720-step rollout only after a touch: spikes, not 180 steps per tick); the retained texture data
+  is 8 / 16-bit (~3-4 MB), not float32; the wasm starts at 16 MB against a ~4 MB peak (no grow mid
+  match); P2P re-predicts about 4 times a second, not 86k steps; clamping long frames to 100 ms
+  would not rescue the resolution governor (every clamped frame reads the same, no probe could
+  succeed); the report's flag-parser and replaceState sketches were buggy; "something
+  pathological must dominate" is a hypothesis (three's PBR with environment lighting, transparent
+  layers and FP16 blending on a 4- to 8-lane GPU may simply add up); Chromium's Gamepad API needs
+  no secure context (only Firefox's does); `ro.config.low_ram` does not change WebView's process
+  layout on Android 14. `deviceMemory` and WebGPU do need one (localhost through `adb reverse`).
+- **New, found while building super low**: three r186's `compileAsync` builds each object's
+  shaders AFTER its first await (one object per yield to the main thread), and the WebGL2
+  precompile restored its state (the direct path's output context, the post path's HDR target and
+  MRT) right after the call, so it built a second, unused set of programs for the default context;
+  the warm-up frame then compiled the real ones synchronously. That is where the TV's 69 linked
+  programs came from: under `#tv` the same low links 68 before the fix and 36 after
+  (post/pipeline.ts `compileAsync`: the state is held until the compile settles; the direct path
+  keeps it even past Renderer.precompile's timeout, where every frame renders with that same
+  state anyway). Every WebGL2 boot and tier switch of every tier compiles less now.
+
+### The tier
+
+`superlow` sits below low (QUALITIES: superlow, low, high, ultra; "Super low" / "Súper bajo" in
+Settings > Graphics with its hint). It is low's direct path with nothing built that costs:
+
+- **Resolution**: a 230k pixel budget below 1:1 (`SUPERLOW_PIXELS`, quality.ts `pixelRatio`,
+  snapped to whole pixels): exactly 640x360 on the TV's 962x541 CSS viewport, a 2x upscale to its
+  1280x720 UI surface, and about 640x360 on any other screen. No dynamic resolution, no MSAA (the
+  WebGL2 context is created without it).
+- **30 fps at most** (`maxFps`, Game.ts `drawsFrame`): the animation frames in between do nothing,
+  the next drawn one carries their time (the sim keeps its 120 Hz clock: 4 ticks a frame).
+- **Backend**: WebGL2 unless `#webgpu` asks for the A/B (one 8-bit pass, the canvas depth
+  discarded before present, no Dawn heaps in the browser's process on a 1 GB device). The backend
+  and the world are chosen when the renderer is created, so a switch into or out of super low saves
+  the prefs and reloads behind the loading screen (`needsReload`, `Game.restartOn`); low / high /
+  ultra still switch in place.
+- **World** (`world/liteWorld.ts`): a gradient dome from the theme's sky preset (zenith, mid,
+  horizon, the glow toward its azimuth, the moon or sun with a short halo) over a flat silhouette
+  of the place on the horizon (blocks for the harbour, mesas for the canyon, peaks for the valley,
+  from the dome's uv: no texture, no atan). No sky cube, PMREM, live layer, IndexedDB or fog:
+  scene.environment stays null and nothing renders into a float target.
+- **Materials**: Lambert for the cars and the ball (the flat variant's albedo and emission, no
+  clearcoat, specular or environment), unlit goals, no shadow code (`shadowMap.enabled` false).
+  The turf is low's unlit turf from a 64² grain (`liteGrain`, a few ms) instead of the 512² blade
+  field (~140 ms here, seconds on the TV's CPU), fixed mowing stripes, no field map.
+- **Stadium**: no netting, no glare round the lamp heads, no crowd mesh: the people are painted on
+  the stand rows (a hash per seat: a shirt on the tread, a figure with a head on the riser).
+- **Effects**: 128 particles, each at most ~2.3 degrees across from the camera (about a dozen
+  pixels), no flash shells; additive materials in one pass (`forceSinglePass`), team tints as
+  uniforms and wheel / pad instance buffers past the uniform-buffer limit so every car shares its
+  programs (`SHARED_INSTANCING_CAPACITY`).
+- **CPU** (`cpuLite`): `html.tg-superlow` takes the HUD's blur, shadows and decorative animations
+  off (opaque panels), the boost and speed readouts update at 10 Hz, the audio has no convolver
+  room, the ball prediction refreshes every 8 ticks (the bots read it by age; the wasm's 720-tick
+  horizon is unchanged), and going online shows one line ("Super low: online matches may not run
+  smoothly on this device"). Physics stays at 120 Hz.
+
+### Which devices start on it (`bootTier.ts`)
+
+Before the renderer exists: `#superlow` in the URL, or the tab's recovery after a second lost
+device, force it for that page load (never saved); then the player's choice; then auto: a device
+with no pointer (a TV) whose GPU (a throwaway WebGL2 context, WEBGL_debug_renderer_info, lost at
+once) is on the slow list (Mali-G31, G51, G52, T7xx, T8xx, PowerVR GE8xxx), or `deviceMemory` <= 1;
+else the saved or default tier. Phones keep low. After init the old rules apply (low on weak
+backends, never above the GPU's ceiling; super low is never raised), and a WebGL2 device that
+cannot render into any half-float target (`canRenderHalfFloat`) runs super low instead of a black
+world. The prefs keep the player's own pick: a tier the session runs on its own (the URL, auto, a
+ceiling, a fallback, the guard) is never saved (`tierPrefsAfter`, `Game.persistPrefs`), which also
+fixes a fallback or a ceiling being saved as the player's choice. A pick across a reload is tried
+once above the GPU's ceiling and lifts it when it runs the fallback window clean.
+
+### Fixes the TV asked for (every tier)
+
+- `#lowgpu` keeps EXT_color_buffer_float on a device without EXT_color_buffer_half_float, so it no
+  longer blackens the scene there; the world cache is keyed by the emulation (`webgl2-lowgpu`...).
+- Dynamic resolution counts frames of 100-500 ms as late (clamped, never a refresh sample) and
+  goes straight to its minimum when half a window is that slow (no probe that could not succeed);
+  isolated long frames and a hidden page (the Renderer feeds nothing while hidden) still count
+  for nothing.
+- Hash flags are whole words with optional values (`hashFlags.ts`): `#hide=stadium-netting` no
+  longer turns on `#net`, `#diag=audit` is `#diag`.
+- Lost device or context, on both backends: a line on the loading screen, then the tab's counter
+  (`lossStep`): the first loss reloads as planned (the same tier, or the one below: low now falls
+  to super low), the second reloads on super low, the third stops with "The graphics device keeps
+  stopping. Close other apps and reload the page."; the count starts over after 5 minutes without a
+  loss. No more 60 s time gate (shorter than the TV's boot: a loop).
+- The low tier no longer bakes or uploads the field map its unlit turf never reads (~80 ms).
+
+### Diagnostics for the next TV runs (hash only, nothing without them)
+
+`#tv` emulates the TV here (WebGL2 without EXT_color_buffer_half_float, anisotropy, parallel
+compile, float-linear filtering and timer queries, its limits, the renderer string 'ARM /
+Mali-G31', 1 GB and no pointer for the boot tier); `#nofloatrt` a WebGL2 device without any
+renderable float format. `#pr=<x>` sets the pixel ratio, `#hide=<names>` hides meshes by name every
+frame, `#nopost` runs high and ultra on the direct path, `#norender` does everything but the draw
+(the CPU ceiling), `#diag=audit` adds the GL error drain and the program audit. `#diag` now shows
+the boot signals (pointer, deviceMemory, secure context, the probed GPU), the tier and why
+(hash / recover / chosen / tv-gpu / memory / default / weak / ceiling / nofloat / fallback), the
+pixel ratio and canvas size, the frame rate (the last second's slowest frame and mean, the last
+5 s, frames over 50 and 100 ms since the warm-up), the CPU per drawn frame of the ball prediction
+(and its worst frame), the bots, the physics step and the render call, the wasm memory, the
+pipelines and linked programs, a "lose context" button (`__diag.loseContext()`), and logs one
+`[diag-json]` line every 5 s (`adb logcat -s chromium`).
+
+### Measured here (the reference Turing GPU, Chrome 152, a 962x541 CSS viewport at dpr 1.37)
+
+| | super low | low |
+|---|---|---|
+| drawing buffer | 640x360 | 1318x740, MSAA x4 |
+| GPU, WebGPU, kickoff chase camera (median of 3 x 120 frames) | 0.066 ms | 0.26-0.33 ms |
+| draws / triangles | 16 / 28k | 21 / 83k |
+| pipelines (WebGL2 programs) | 18 | 39 on WebGPU; 36 linked under `#tv` (68 before the compile fix) |
+| to the menu under `#tv` (WebGL2, no parallel compile, empty world cache) | 1.24 s (renderer 0.26, warm-up 0.22) | 2.1 s with the browser's shader cache warm, 4.3 s cold (world bake 0.36, warm-up 0.6-2.8) |
+
+Pipelines stay at 18 through a goal explosion, a ball touch and a pad pickup (flames, particles,
+rings and ribbons are compiled in the warm-up). `#tv` picks super low by
+itself ('tv-gpu'); `#webgl2&nofloatrt` with a chosen low runs super low ('nofloat') and the prefs
+keep low; `#lowgpu` low renders its whole world again; a simulated loss on low falls to super low
+(toast after the reload), a second recovers on super low (WebGL2), a third stops; a pick of low
+from there reloads on low and clears the recovery; a `#superlow` page left for high by the menu
+drops the flag from the address. Captures: `tv-superlow-<theme>.png` and `tv-superlow-diag.png`
+(the visual lab's shots folder, outside the repo).
+
+Not measured on the TV yet (the next runs, in order): `#diag` with the site data cleared (Auto
+should say `superlow (tv-gpu)` on WebGL2 at 640x360 and 30 fps), the same with `#webgpu` (the
+backend A/B, with MemAvailable), `#norender` (the CPU ceiling), `#pr=1` / `#pr=0.5` (does the cost
+follow the pixels), a 5-minute 2v2 with `#diag=audit` (fps, frames over 100 ms, GL errors, the
+prediction's worst frame), and the load time to the menu. Still open: a custom WebGL2 context with
+`alpha: false` (three always asks for an alpha canvas; measure first), mediump / f16, the 60 Hz
+physics plan B, and Lambert-only lights (both keys and the fill still light the cars and the ball:
+a constant light count).

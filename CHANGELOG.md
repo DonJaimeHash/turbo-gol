@@ -7,6 +7,17 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A fourth graphics quality, Super low ("Súper bajo"), for TVs, set-top boxes and very old
+  devices: about 640x360 upscaled by the screen, 30 frames per second, no edge smoothing, a
+  simple sky instead of the harbour, canyon or valley behind the stadium, a painted crowd, simpler
+  cars and ball, fewer particles, a lighter menu and HUD, and no reverb. It starts by itself on a
+  device with 1 GB of memory or on a TV with a slow graphics chip (a 1 GB Android TV ran the game
+  at 1 to 3 frames per second), unless the player picked a quality. Picking it, or leaving it,
+  restarts the game; `#superlow` at the end of the address tries it without saving it.
+- `#diag` shows why the game runs its quality, the frame rate and the time each part of a frame
+  takes, and has a button that loses the graphics device to test the recovery; new address flags
+  help measure a slow device (`#pr=`, `#hide=`, `#nopost`, `#norender`, `#diag=audit`, `#tv` for
+  testing on a computer).
 - Community nodes are on: server, Competitive and lone-player matches in South America can be
   hosted on the project's São Paulo node, `sao-paulo-1`, and fall back to the game's own servers
   whenever it is full, away or unreachable.
@@ -65,6 +76,17 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- Browsers on the WebGL2 fallback compile about half as many shaders while loading and after a
+  quality change (each shader was compiled twice, once for nothing), so they reach the menu sooner.
+- A device that cannot draw into floating-point images on WebGL2 starts on Super low instead of
+  drawing a black world; `#lowgpu` no longer turns the 3D scene black on such a device.
+- A quality the device fell back to, or one the address forced, is no longer saved over the
+  player's own choice.
+- When the graphics device is lost again and again (a TV short of memory), the game reloads once,
+  then once more on Super low, then stops with a message instead of reloading forever.
+- On a device far too slow for its quality (under 10 frames per second) the resolution now goes
+  down instead of staying at full size.
+- `#hide=stadium-netting` (and any address containing "net") no longer opens the network panel.
 - Community nodes: a control link that stalls no longer costs a node its matches. A node without
   heartbeats for 15 seconds still gets no new match, but its link stays open for 30, so heartbeats
   held on the way (24 seconds of them on the São Paulo node on 2026-10-21) bring it straight back.
@@ -98,8 +120,9 @@ All notable changes to Turbogol are documented here. The format follows
   behind the goals. The pitch is damp, freshly mown grass with calm floodlight reflections, cars
   cast real shadows on High and Ultra (ground shadows on Performance), and the cars and the ball
   have new paint and panels. Graphics
-  quality has three tiers: Performance, High and Ultra (grass blades near the camera, reflections on
-  the wet pitch, ambient occlusion, lens glare); browsers without WebGPU start on Performance. The
+  quality has four tiers: Super low, Performance, High and Ultra (grass blades near the camera,
+  reflections on the wet pitch, ambient occlusion, lens glare); browsers without WebGPU start on
+  Performance. The
   Friendly screen has a Stadium row to pick the setting: the night harbour, a red canyon at
   sunset and an alpine valley. The settings are saved in the browser after their
   first visit, so switching back is quick.

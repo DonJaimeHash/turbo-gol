@@ -68,31 +68,54 @@ src/render/
   materials.ts          palette, HDR helpers, the bloom contract (glowMrt / noGlowMrt: null on
                         tiers without bloom, setGlowTargets / keepGlowTag), cheap value / cell
                         noises, OpaqueAlbedoPhysicalMaterial (albedoNode)
-  quality.ts            the three quality tiers (low / high / ultra) and the one table of switches
-                        (TIERS, `tier(q)`) every view reads, incl. the render path (`output`:
-                        'direct' for low, 'post') and the Performance look (`bakedLight`: unlit
-                        turf, stands, steel and boards; `netting`); pixelRatio (tier, dpr, budget, max texture
-                        size); parseQuality reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU
-                        compatibility mode and <= 4 GB devices start on low unless the player chose
-                        a tier; never above the GPU's ceiling); lowerQuality
+  quality.ts            the four quality tiers (superlow / low / high / ultra) and the one table of
+                        switches (TIERS, `tier(q)`) every view reads, incl. the render path
+                        (`output`: 'direct' for superlow and low, 'post') and the Performance look
+                        (`bakedLight`: unlit turf, stands, steel and boards; `netting`) and super
+                        low's (`world` 'lite', `cheapMaterials`, `crowd`, `glare`, `liteTurf`,
+                        `maxFps`, `preferWebGL2`, `cpuLite`); pixelRatio (tier, dpr, budget, max
+                        texture size; below 1:1 for super low's SUPERLOW_PIXELS); parseQuality
+                        reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU compatibility mode
+                        and <= 4 GB devices start on low unless the player chose a tier, super low
+                        never raised; never above the GPU's ceiling); needsReload (into or out of
+                        super low); drawsFrame (the frame cap); lowerQuality
+  bootTier.ts           the boot tier before the renderer exists (the URL's #superlow, the tab's
+                        recovery, the player's choice, super low on a TV with a slow GPU or on
+                        1 GB: autoSuperlow, probeGpu, readBootSignals), the TierReason #diag shows,
+                        and tierPrefsAfter (the prefs keep the player's pick only)
+  hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
+                        pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
+                        webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
+                        nomsaa, msaa, nopost, norender, pr, hide)
+  frameStats.ts         `#diag`'s frame rate (1 s min / mean, 5 s mean, frames over 50 / 100 ms)
+                        and CPU per frame (ball prediction, bots, physics step, render), fed by the
+                        Game only with the flag
   capabilities.ts       what the device can do (readCapabilities at init: compatibility mode, a
                         multisampled HDR target / canvas, float32 filtering, max texture size,
                         colour targets, the GPU key) and adjustTier: a tier without what the device
                         cannot do (pure; tierChanges for #diag)
   tierGuard.ts          the safety net: TierGuard (a failure within 20 s of a switch, or a lost
-                        device, falls back one tier; a device lost in the background or on low
-                        reloads on the same tier, once a minute at most; never a loop) and the
-                        per-GPU ceiling in localStorage (readCeiling / writeCeiling, 30 days;
-                        raiseCeiling when the player's own pick runs the window clean)
+                        device, falls back one tier, low to super low too; a device lost in the
+                        background or on super low reloads on the same tier; never a loop), the
+                        tab's lost-device counter (lossStep: reload, then super low, then stop) and
+                        the per-GPU ceiling in localStorage (readCeiling / writeCeiling, 30 days;
+                        raiseCeiling when the player's own pick runs the window clean, a pick
+                        across a reload tried once above it: TRY_TIER_KEY)
   theme.ts              stadium themes (ThemeId, THEME_IDS) and the world facts views share (key
                         lights, fill, floodlights, wetness, fog, tone mapping, grade, and each
                         theme's brighter `low` look and lights: lookOf / lightsOf); data only
   Renderer.ts           WebGPURenderer, scene, camera, capabilities (`caps`, the adjusted `spec`),
                         resize / pixel budget (tier maxPixelRatio / pixelBudget), GPU timestamps
                         (`#stats`), dynamic resolution (scene pass, or the direct tier's pixel
-                        ratio), `#nancheck`, `#webgl2`, `#lowgpu` / `#compat` / `#nof32filter` /
-                        `#nomsaa` / `#msaa` / `#diag` (gpuDiag.ts), precompile (WebGL2 boot), GPU failures
-                        (setFailureListener); builds the lighting, the world and the render path
+                        ratio), `#nancheck`, `#webgl2`, `#lowgpu` / `#tv` / `#nofloatrt` /
+                        `#compat` / `#nof32filter` / `#nomsaa` / `#msaa` / `#diag` (gpuDiag.ts),
+                        `#pr` / `#hide` / `#nopost` / `#norender`, the boot tier (bootTier.ts: super
+                        low's WebGL2 backend and context without MSAA, decided before init) and
+                        the float-target guard (capabilities.ts canRenderHalfFloat: WebGL2 without
+                        any renderable half float runs super low), `tierReason`, precompile (WebGL2:
+                        the path's state held until the deferred builds are done), GPU failures
+                        (setFailureListener); builds the lighting, the world (or the lite world)
+                        and the render path
   gpuDiag.ts            `#diag`: an on-screen panel (backend, GPU, extensions / features, limits,
                         capabilities, the tier as the device runs it, the ceiling, theme, shader
                         and GPU errors with the first ones kept, the passes of a failed command
@@ -102,9 +125,17 @@ src/render/
                         three initialises; `#compat` / `#nof32filter`: a WebGPU adapter without
                         'core-features-and-limits' / 'float32-filterable'; `#nomsaa`: no tier
                         multisamples, `#msaa`: the canvas MSAA in compatibility mode too (A/Bs of
-                        its cost on a phone)
+                        its cost on a phone); `#lowgpu` keeps EXT_color_buffer_float where the
+                        device has no half-float target; `#tv`: the 1 GB Android TV's WebGL2
+                        (no half-float target, anisotropy, parallel compile; 'ARM / Mali-G31';
+                        installGlEmulation, also for the boot's GPU probe); `#nofloatrt`; the
+                        panel also shows the boot signals, the tier's reason, the frame rate and
+                        CPU (frameStats.ts), the wasm memory, the pipelines, a lose-context button,
+                        a `[diag-json]` console line every 5 s; `#diag=audit` adds getError and the
+                        program audit
   dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → resolution
-                        scale between the tier's minResolutionScale and 1
+                        scale between the tier's minResolutionScale and 1 (frames of 100-500 ms:
+                        late, clamped; half a window that slow goes to the minimum at once)
   world/                World.ts (createWorld: fog node, clear colour, the baked sky + backdrop
                         cube and PMREM, the theme's live near layer, the lighthouse beam; `ready`,
                         `stats`), presets.ts (per-theme sky / backdrop data, the skyline of each
@@ -116,7 +147,10 @@ src/render/
                         map of the live layer), bakeMaterials.ts (the sky, sea and structure
                         materials; one branch per KIND range), bake.ts (CubeBaker), dome.ts
                         (parallax dome, PROXY_TOP), env.ts (the PMREM probe), cache.ts
-                        (IndexedDB), queue.ts (latest-wins bake / cache queue)
+                        (IndexedDB, keyed by the backend and its emulation), queue.ts (latest-wins
+                        bake / cache queue), liteWorld.ts (createLiteWorld, super low: a gradient
+                        dome from the theme's sky preset with the place's silhouette; no bake,
+                        environment, live layer, fog or cache)
   post/                 lighting.ts (createLighting: the theme's two keys + shadows, hemisphere
                         fill), pipeline.ts (buildPostChain: 'post' = HDR scene pass with MRT
                         output + emissive → [ultra extras] → bloom from emissive → vignette →
@@ -415,7 +449,12 @@ instead of 5.5-6.1 s, high tier, production build, warm world cache; three r186'
 `compileAsync` awaits each object's pipelines in turn, 10 s there). On the WebGL2 fallback it is a
 `compileAsync` of the scene through the scene pass's own render target and MRT (the direct low
 tier: with the DirectRenderPipeline's output context, so the programs carry the in-material look),
-so KHR_parallel_shader_compile builds the programs in parallel (5.7 s → 1.8 s on low here). A tier
+so KHR_parallel_shader_compile builds the programs in parallel (5.7 s → 1.8 s on low here). three
+r186 builds each object's shaders after compileAsync's first await, so that state (the output
+context, the scene pass's target and MRT) is held until the compile settles (`PostChain.compileAsync`
+returns `{ promise, settle }`; past Renderer.precompile's timeout the direct path keeps it, the post
+path restores it): restoring it at once, as before, built a second set of programs for the default
+context that nothing drew with (68 linked programs instead of 36 on low under `#tv`). A tier
 switch from the settings screen (`Game.switchQuality`) compiles the same way behind the loading
 screen; `setQuality` (console, capture tools) still compiles on the next frame. The ball casts its
 shadow during these warm-ups even in a day stadium, so its shadow pipeline is ready for the night
@@ -448,7 +487,7 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   alpine FOLIAGE / MEADOW / ALPINE, an exact range in bakeMaterials.ts; the city's and the rail
   yard's kinds went with those themes on 2026-10-21). Fog: one
   `scene.fogNode`, exponential, from the theme. Draws: 3 on high / ultra (live layer, dome, beam),
-  2 on low. Cost ~0.07 ms (high), the same for every theme. Tiers: cube 512 / PMREM 128 / 1-lookup
+  2 on low, 1 on super low (liteWorld.ts: the gradient dome, nothing baked, no fog). Cost ~0.07 ms (high), the same for every theme. Tiers: cube 512 / PMREM 128 / 1-lookup
   dome on low, 1024 / 256 / 2-lookup + beam on high and ultra. Load: a cached boot 50-130 ms, a
   first bake ~0.9-1.3 s (~1.8 s with the browser's shader cache cold: the bake pipelines compile
   with `compileAsync` while the CPU builds the far geometry; the alpine range is built in slices
@@ -480,7 +519,8 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   blades in a patch ahead of the camera (skipped above
   380 uu; `setWarmUp` forces them). The goal-mouth glow is the floor's only glow-MRT term.
 * **stadium/** — 7 draws (netting, boards, steel, lamp panels, glare, stand structure, crowd), +1
-  beams on ultra, 6 on low (no netting: `TierSpec.netting`, the steel draws the cage); ~89k
+  beams on ultra, 6 on low (no netting: `TierSpec.netting`, the steel draws the cage), 4 on super low
+  (no glare, no crowd mesh: the people painted on the rows, stands.ts paintedCrowd); ~89k
   triangles on high and ultra, 52k on low; ~0.4 ms high, ~0.6 ms ultra. On low (`bakedLight`) the
   stands, steel and boards are unlit, their colours x the theme's light baked in (palette.ts
   `stadiumLight`: both keys' n . l and the hemisphere fill from the theme's low lights), and the
@@ -529,6 +569,7 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
 
 ```
 requestAnimationFrame(t):
+  if !drawsFrame(t, lastDrawn, tier.maxFps): return   // super low: 30 fps, the time carries over
   dt = clamp(t - last, 0, 0.1); acc += dt
   input.beginFrame()                      // one navigator.getGamepads() per frame
   while acc >= TICK_DT:
@@ -591,23 +632,32 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   snaps and a warm-up frame compiles the new flames. The mode persists in `GamePrefs` /
   localStorage with difficulty, the quality tier (saved by name; saves from before the third tier
   hold 0 = high / 1 = low) and the theme.
-* **Quality tiers** (`src/render/quality.ts`): low / high / ultra, one table of switches that every
-  view reads through `tier(q)` (render path, MSAA, bloom, pixel ratio and budget, dynamic
-  resolution, shadow map, geometry detail, particles...); the Renderer runs them adjusted to the
-  device (capabilities.ts). Phones and tablets start on low, desktops on high; WebGL2, WebGPU
-  compatibility mode and <= 4 GB devices on low unless the player chose a tier. Settings >
-  Graphics (from the menus or the pause menu) picks the tier; `switchQuality` rebuilds every view
-  and the render path (~30 ms), waits for the world's bake at the new sizes and compiles the new
-  pipelines in parallel, all behind the loading screen.
+* **Quality tiers** (`src/render/quality.ts`): superlow / low / high / ultra, one table of
+  switches that every view reads through `tier(q)` (render path, MSAA, bloom, pixel ratio and
+  budget, dynamic resolution, shadow map, geometry detail, particles, super low's world, materials,
+  frame cap and CPU trims...); the Renderer runs them adjusted to the device (capabilities.ts).
+  Phones and tablets start on low, desktops on high; WebGL2, WebGPU compatibility mode and <= 4 GB
+  devices on low unless the player chose a tier; a TV on a slow GPU or a 1 GB device on super low
+  (bootTier.ts, before the renderer: super low runs WebGL2). Settings > Graphics (from the menus or
+  the pause menu) picks the tier; `switchQuality` rebuilds every view and the render path
+  (~30 ms), waits for the world's bake at the new sizes and compiles the new pipelines in
+  parallel, all behind the loading screen; into or out of super low it saves the prefs and
+  reloads the page (`restartOn`: its own backend and world). The prefs keep the player's pick
+  only (`persistPrefs` writes `savedQuality`): a tier the session runs on its own (the URL, auto,
+  a ceiling, a fallback) is never saved. Super low's CPU trims (`cpuLite`): `html.tg-superlow`
+  (no blur, shadows or decorative animation in the HUD), boost and speed at 10 Hz, no audio room,
+  the ball prediction every 8 ticks, a notice when going online.
 * **Tier safety net** (`src/render/tierGuard.ts`, `Game.onGpuFailure`, from `Game.bootDone()` on):
   a GPU validation error, a failed pipeline or WebGL program within 20 s of the boot or a tier
   switch, or a lost device, makes the tier fall back one step behind the loading screen (its line
   and a menu toast: "Your device does not support Ultra: using High"); the GPU's ceiling is kept in
   localStorage and caps the starting tier until the player picks a higher tier and it runs the 20 s
-  window clean (`raiseCeiling`); a lost device reloads the page onto the lower tier. A device lost
-  while the page was hidden or in its first 10 s back (the system reclaimed the GPU), or lost on
-  low, reloads the page on the same tier without touching the ceiling, at most once a minute (the
-  time in sessionStorage). Only downward, never in a loop.
+  window clean (`raiseCeiling`); a lost device reloads the page onto the lower tier (low falls to
+  super low). A device lost while the page was hidden or in its first 10 s back (the system
+  reclaimed the GPU), or lost on super low, reloads the page on the same tier without touching the
+  ceiling. Every reload after a loss goes through the tab's counter (`lossStep`, sessionStorage):
+  the second loss reloads on super low for the tab, the third shows a message and stops. Only
+  downward, never in a loop.
 * **Frozen** (countdown, goal pause, after the whistle, menu): every roster car gets zero controls.
 * **HUD**: the menu has a Mode row (← → on the row, `M`, pad left / right; ↑ ↓ / D-pad move the
   focus across Difficulty / Mode / Quality, `Q` steps to the next quality tier) and shows
