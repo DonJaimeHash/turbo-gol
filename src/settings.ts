@@ -1,7 +1,8 @@
 /**
- * Player settings (Settings > Controls / Camera), persisted in localStorage.
- * Pure data + load/save. Input.ts mutates `controls` and `bindings` in place, Camera.ts reads
- * `camera`; call saveSettings() after a change.
+ * Player settings (the settings screen: controls, camera, gameplay, audio), persisted in
+ * localStorage. Pure data + load/save. Input.ts mutates `controls` and `bindings` in place,
+ * Camera.ts reads `camera`, the Game hands `audio` to the sound engine; call saveSettings() after a
+ * change. The graphics quality is not here: it is saved with the Game's prefs (Game.ts).
  */
 import type { CameraSettings } from './render/Camera';
 import { STORAGE_PREFIX } from './brand';
@@ -36,10 +37,16 @@ export interface ControlSettings {
   vibration: boolean;
 }
 
+export interface AudioSettings {
+  /** Master volume, 0..100 (%). */
+  volume: number;
+}
+
 export interface Settings {
   controls: ControlSettings;
   camera: CameraSettings;
   bindings: BindingProfiles;
+  audio: AudioSettings;
 }
 
 export const DEFAULT_CONTROL_SETTINGS: Readonly<ControlSettings> = {
@@ -53,6 +60,13 @@ export const DEFAULT_CONTROL_SETTINGS: Readonly<ControlSettings> = {
   invertAirPitch: false,
   vibration: true,
 };
+
+export const DEFAULT_AUDIO: Readonly<AudioSettings> = {
+  volume: 70,
+};
+
+/** Slider range of the master volume: [min, max, step]. */
+export const VOLUME_RANGE: readonly [number, number, number] = [0, 100, 5];
 
 /** Ranges for the settings sliders. */
 export const CONTROL_RANGES: Readonly<Record<keyof ControlSettings, readonly [number, number, number] | null>> = {
@@ -101,7 +115,7 @@ export const DEFAULT_CAMERA: Readonly<CameraSettings> = {
 const STORAGE_KEY = STORAGE_PREFIX + 'settings.v1';
 
 export function defaultSettings(): Settings {
-  return { controls: { ...DEFAULT_CONTROL_SETTINGS }, camera: { ...DEFAULT_CAMERA }, bindings: defaultProfiles() };
+  return { controls: { ...DEFAULT_CONTROL_SETTINGS }, camera: { ...DEFAULT_CAMERA }, bindings: defaultProfiles(), audio: { ...DEFAULT_AUDIO } };
 }
 
 function num(v: unknown, lo: number, hi: number, fallback: number): number {
@@ -139,7 +153,7 @@ function isBinding(v: unknown): v is Binding {
 export function mergeSettings(raw: unknown): Settings {
   const s = defaultSettings();
   if (typeof raw !== 'object' || raw === null) return s;
-  const r = raw as { controls?: Record<string, unknown>; camera?: Record<string, unknown>; bindings?: Record<string, unknown> };
+  const r = raw as { controls?: Record<string, unknown>; camera?: Record<string, unknown>; bindings?: Record<string, unknown>; audio?: Record<string, unknown> };
   const c = r.controls ?? {};
   const cs = s.controls;
   for (const k of Object.keys(DEFAULT_CONTROL_SETTINGS) as (keyof ControlSettings)[]) {
@@ -156,6 +170,8 @@ export function mergeSettings(raw: unknown): Settings {
     const range = CAMERA_RANGES[k];
     s.camera[k] = num(cam[k], range[0], range[1], DEFAULT_CAMERA[k]);
   }
+  const au = r.audio ?? {};
+  s.audio.volume = num(au.volume, VOLUME_RANGE[0], VOLUME_RANGE[1], DEFAULT_AUDIO.volume);
   const b = r.bindings ?? {};
   for (const device of ['kbm', 'pad'] as const) {
     const prof = b[device];
