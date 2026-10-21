@@ -12,9 +12,10 @@ import type { GameMode } from '../../sim/constants';
 import { DIFFICULTIES } from '../../render/Hud';
 import type { Difficulty } from '../../render/Hud';
 import { QUALITIES, type Quality } from '../../render/quality';
+import { THEME_IDS, type ThemeId } from '../../render/theme';
 import { LOCALES, language, savedLanguage, setLanguage, systemLanguage, t } from '../../i18n';
 import type { LanguageCode } from '../../i18n';
-import { difficultyName, playlistName, qualityName, tierName } from '../names';
+import { difficultyName, playlistName, qualityName, themeName, tierName } from '../names';
 import { rankBadge, ratingCard, tierById } from '../badges';
 import type { Menu, Screen } from '../Menu';
 import { cycler, primary, regionCycler, screenHead, secondary, section, tile } from './common';
@@ -335,11 +336,19 @@ export function friendlyScreen(menu: Menu): Screen {
     () => menu.host.quality,
     (v) => menu.host.setQuality(v),
   );
+  // The stadium's setting (purely visual, saved with the prefs); a theme not built yet shows the
+  // night harbour (theme.ts themeWorld falls back to it).
+  const theme = cycler<ThemeId>(
+    t('friendly.theme'),
+    THEME_IDS.map((id) => ({ value: id, label: themeName(id) })),
+    () => menu.host.theme,
+    (v) => menu.host.setTheme(v),
+  );
   const el = h(
     'div.mn-queue',
     null,
     screenHead(t('play.friendly'), t('friendly.intro')),
-    section(t('friendly.match'), modeC.el, diffC.el, quality.el),
+    section(t('friendly.match'), modeC.el, diffC.el, quality.el, theme.el),
     h('div.mn-actions', null, primary(t('friendly.play'), () => menu.host.playFriendly(mode, difficulty), { 'data-autofocus': true })),
   );
   return {
@@ -352,6 +361,7 @@ export function friendlyScreen(menu: Menu): Screen {
       modeC.refresh();
       diffC.refresh();
       quality.refresh();
+      theme.refresh();
     },
   };
 }

@@ -191,7 +191,7 @@ export interface GamePrefs {
    * light tier ('low') and only keep a saved tier the player chose, not one saved under the old default.
    */
   qualitySet: boolean;
-  /** Stadium theme (src/render/theme.ts); the menu row to pick it comes with the themes. */
+  /** Stadium theme (src/render/theme.ts), picked on the Friendly screen's stadium row. */
   theme: ThemeId;
 }
 
@@ -767,6 +767,10 @@ export class Game implements P2PGameHooks {
         game.setQuality(q);
       },
       setQuality: (q) => game.setQuality(q),
+      get theme() {
+        return game.theme;
+      },
+      setTheme: (id) => game.setTheme(id),
       playFriendly: (mode, difficulty) => {
         if (game.session !== null && game.session.busy) game.session.cancel();
         game.setDifficulty(difficulty);
@@ -1716,7 +1720,10 @@ export class Game implements P2PGameHooks {
     this.persistPrefs();
   }
 
-  /** Switch quality tier: renderer settings plus a rebuild of every view (~30 ms). */
+  /**
+   * Switch quality tier: renderer settings plus a rebuild of every view (35-75 ms on a desktop CPU),
+   * then the next frame compiles the new tier's pipelines (warmUp).
+   */
   setQuality(q: Quality): void {
     if (q === this.quality) return;
     this.quality = q;
@@ -1730,10 +1737,10 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * Switch the stadium theme: stored, saved with the prefs and handed to the renderer (lights,
-   * world, post) and the arena (turf, stadium). Stubs for now: no view reads the theme yet (the
-   * themes phase of docs/visuals/REWORK.md re-bakes the sky and rewrites uniforms in place,
-   * without rebuilding the views).
+   * Switch the stadium theme (the Friendly screen's stadium row): stored, saved with the prefs and
+   * handed to the renderer (lights, world: a re-bake or a cached cube, post) and the arena (turf,
+   * stadium). Uniform writes only: no view is rebuilt and no shader recompiles. A theme not built
+   * yet shows the night harbour (theme.ts themeWorld).
    */
   setTheme(theme: ThemeId): void {
     if (theme === this.theme) return;

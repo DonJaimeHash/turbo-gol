@@ -185,6 +185,24 @@ test('every tier has a menu label in English and Spanish', () => {
   assert.equal(es['quality.ultra'], 'Ultra');
 });
 
+test('every theme has a menu name in English and Spanish (the stadium row of the Friendly screen)', () => {
+  const names = {
+    'harbour-night': ['Night harbour', 'Puerto de noche'],
+    'harbour-day': ['Harbour by day', 'Puerto de día'],
+    'canyon-sunset': ['Red canyon', 'Cañón rojo'],
+    'city-dusk': ['City rooftop', 'Azotea de ciudad'],
+    'alpine-day': ['Alpine valley', 'Valle alpino'],
+    'railyard-night': ['Rail yard', 'Patio ferroviario'],
+  };
+  assert.deepEqual(Object.keys(names).sort(), [...THEME_IDS].sort());
+  for (const id of THEME_IDS) {
+    assert.equal(en[`theme.${id}`], names[id][0], `${id} (en)`);
+    assert.equal(es[`theme.${id}`], names[id][1], `${id} (es)`);
+  }
+  assert.equal(en['friendly.theme'], 'Stadium');
+  assert.equal(es['friendly.theme'], 'Estadio');
+});
+
 test('parseTheme accepts the known ids only; unbuilt themes fall back to the default world', () => {
   for (const id of THEME_IDS) assert.equal(parseTheme(id), id);
   for (const bad of ['', 'harbour', 'HARBOUR-NIGHT', 0, null, undefined]) assert.equal(parseTheme(bad), null, String(bad));

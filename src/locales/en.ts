@@ -30,6 +30,13 @@ export default {
   'quality.low': 'Performance',
   'quality.high': 'High',
   'quality.ultra': 'Ultra',
+  // Stadium themes (src/render/theme.ts): the Friendly screen's stadium row
+  'theme.harbour-night': 'Night harbour',
+  'theme.harbour-day': 'Harbour by day',
+  'theme.canyon-sunset': 'Red canyon',
+  'theme.city-dusk': 'City rooftop',
+  'theme.alpine-day': 'Alpine valley',
+  'theme.railyard-night': 'Rail yard',
   'tier.bronze': 'Bronze',
   'tier.silver': 'Silver',
   'tier.gold': 'Gold',
@@ -176,6 +183,8 @@ export default {
   'friendly.mode': 'Mode',
   'friendly.difficulty': 'AI difficulty',
   'friendly.quality': 'Graphics quality',
+  // Where the match is played (the stadium's setting: harbour, canyon...); purely visual
+  'friendly.theme': 'Stadium',
   'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
   'friendly.match': 'MATCH',
   // Starts the friendly match

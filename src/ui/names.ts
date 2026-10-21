@@ -8,6 +8,7 @@ import type { Playlist, RegionId } from '../net/account';
 import type { Tier } from '../net/rating';
 import type { Difficulty } from '../render/Hud';
 import type { Quality } from '../render/quality';
+import type { ThemeId } from '../render/theme';
 
 export function playlistName(p: Playlist): string {
   return t(`playlist.${p}`);
@@ -24,6 +25,11 @@ export function difficultyName(d: Difficulty): string {
 /** A graphics quality tier: 'Performance', 'High', 'Ultra'. */
 export function qualityName(q: Quality): string {
   return t(`quality.${q}`);
+}
+
+/** A stadium theme: 'Night harbour', 'Red canyon'... */
+export function themeName(id: ThemeId): string {
+  return t(`theme.${id}`);
 }
 
 const ROMAN = ['I', 'II', 'III'];
