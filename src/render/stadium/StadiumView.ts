@@ -9,7 +9,7 @@
  *   boards.ts       shell below it: ramp pad, LED boards, rail, goal-module surrounds (opaque, lit)
  *   steel.ts        arches, ribs, rings, roof beams, floodlight towers (one merged lit mesh)
  *   floodlights.ts  lamp panels, glare sprites, beams
- *   stands.ts       stand structure and crowd
+ *   stands.ts       stand structure (with the concourse apron round the cage) and crowd
  *   banners.ts      the hanging banners
  *   textures.ts     the board and banner canvas atlases
  *   palette.ts      the per-theme uniforms (a theme switch only writes uniforms and a vertex

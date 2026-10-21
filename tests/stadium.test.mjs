@@ -338,3 +338,58 @@ test('a theme writes every stadium uniform; the heads take the floodlights stren
   // Unknown or unbuilt themes fall back to the default look.
   assert.equal(stadiumTheme('alpine-day'), stadiumTheme(DEFAULT_THEME));
 });
+
+test('each head drives its own lamp panel and glare (theme strengths per vertex), beams included', async () => {
+  const { buildLampPanels, buildGlare, buildBeams } = await import('../src/render/stadium/floodlights.ts');
+  const u = createStadiumUniforms();
+  const heads = L.towerHeads();
+  const strengths = heads.map((_, i) => (i % 3) / 2); // 0, 0.5, 1, 0, ...
+  for (const h of [buildLampPanels(u), buildGlare(TIERS.low, u), buildGlare(TIERS.high, u), buildBeams(u)]) {
+    h.setStrengths(strengths);
+    const g = h.mesh.geometry;
+    const s = g.getAttribute('aStrength');
+    const p = g.getAttribute('position');
+    assert.equal(s.count, p.count);
+    // The parts are merged head by head in towerHeads order, the same number of vertices each:
+    // every vertex of part k takes head k's strength, and part k sits at head k (panel and sprite
+    // corners round its centre, the beam cone's apex on it).
+    const per = p.count / heads.length;
+    assert.ok(Number.isInteger(per));
+    for (let i = 0; i < p.count; i++) {
+      const k = Math.floor(i / per);
+      assert.equal(s.getX(i), strengths[k], `${h.mesh.name} vertex ${i}`);
+    }
+    heads.forEach((H, k) => {
+      let near = Infinity;
+      for (let i = k * per; i < (k + 1) * per; i++) near = Math.min(near, Math.hypot(p.getX(i) - H.position[0], p.getY(i) - H.position[1], p.getZ(i) - H.position[2]));
+      assert.ok(near < 400, `${h.mesh.name} part ${k} is not at head ${k}`);
+    });
+    assert.ok(h.mesh.material.mrtNode !== null, `${h.mesh.name}: glow tagged`);
+    g.dispose();
+    h.mesh.material.dispose();
+  }
+});
+
+test('the crowd: crowdDensity sets people per quad, the same crowd on every tier', async () => {
+  const { buildCrowd } = await import('../src/render/stadium/stands.ts');
+  const u = createStadiumUniforms();
+  const low = buildCrowd(TIERS.low, u);
+  const high = buildCrowd(TIERS.high, u);
+  assert.ok(high.people > 8000, `${high.people} people on high`);
+  assert.ok(Math.abs(low.people - high.people) / high.people < 0.05, `low ${low.people} vs high ${high.people}`);
+  assert.ok(low.mesh.count < high.mesh.count * 0.55, 'fewer instances on low');
+  // Every seat block stands in a stand (outside the field, on its row) and never in an aisle.
+  const m = new THREE.Matrix4();
+  const v = new THREE.Vector3();
+  const period = L.STAND.aisleEvery * L.STAND.seatW + L.STAND.aisleW;
+  for (const c of [low, high]) {
+    for (let i = 0; i < c.mesh.count; i++) {
+      c.mesh.getMatrixAt(i, m);
+      v.setFromMatrixPosition(m);
+      assert.ok(Math.abs(v.x) >= L.STAND.x0 && !inside(v.x, v.y, v.z), 'seat outside the stands');
+      assert.ok(((v.z + L.STAND.halfLen) % period) >= L.STAND.aisleW, `seat block in an aisle at z ${v.z}`);
+    }
+    c.mesh.geometry.dispose();
+    c.mesh.material.dispose();
+  }
+});
