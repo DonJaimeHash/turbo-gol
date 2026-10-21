@@ -19,6 +19,9 @@
  *   abandons, bans   ranked abandon history (24 h window) and the queue ban it causes
  *   ranked_locks     a player's live ranked match (one at a time across every region matchmaker)
  *   training         (user, pack) -> best run of a training pack (src/game/trainingRecords.ts)
+ *   experimental     user -> Settings > Experimental's switch (src/game/experimentalStore.ts)
+ *   presets          (user, preset) -> one physics preset: its name and canonical values as JSON
+ *                    (src/game/physicsRules.ts), MAX_PRESETS per account, last write wins
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
@@ -26,6 +29,9 @@ import { PLAYLISTS, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
 import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { TrainingRecords } from '../../src/game/trainingRecords';
+import { MAX_PRESETS, parsePresetList } from '../../src/game/physicsRules';
+import type { StoredPreset } from '../../src/game/physicsRules';
+import type { ExperimentalAnswer } from '../../src/net/account';
 
 export type SqlValue = ArrayBuffer | string | number | null;
 export type Row = Record<string, SqlValue>;
@@ -168,6 +174,10 @@ export class AccountStore {
     s.exec(`CREATE TABLE IF NOT EXISTS training (
       user_id TEXT NOT NULL, pack_id TEXT NOT NULL, best INTEGER NOT NULL, shots INTEGER NOT NULL,
       completed_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, pack_id))`);
+    s.exec('CREATE TABLE IF NOT EXISTS experimental (user_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)');
+    s.exec(`CREATE TABLE IF NOT EXISTS presets (
+      user_id TEXT NOT NULL, preset_id TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (user_id, preset_id))`);
   }
 
   // ---- users ------------------------------------------------------------------------------------
@@ -400,6 +410,7 @@ export class AccountStore {
       rankedBanUntil: this.banUntil(userId, now),
       abandons24h: this.abandonsInWindow(userId, now),
       season: SEASON,
+      experimental: this.experimentalEnabled(userId),
     };
   }
 
@@ -577,6 +588,78 @@ export class AccountStore {
         this.sql.exec('INSERT OR REPLACE INTO training (user_id, pack_id, best, shots, completed_at) VALUES (?, ?, ?, ?, ?)', userId, id, b.best, b.shots, b.completedAt ?? 0);
       }
       return merged;
+    });
+  }
+
+  // ---- experimental features ----------------------------------------------------------------------
+
+  /** Settings > Experimental's switch (false for an account that never set it). */
+  experimentalEnabled(userId: string): boolean {
+    const r = this.sql.exec('SELECT enabled FROM experimental WHERE user_id = ?', userId).toArray()[0];
+    return r !== undefined && num(r.enabled) === 1;
+  }
+
+  /** The account's presets, oldest first (each re-parsed leniently: a stored row of an older schema still reads). */
+  presets(userId: string): StoredPreset[] {
+    const raw = this.sql
+      .exec('SELECT preset_id, name, data, updated_at FROM presets WHERE user_id = ? ORDER BY created_at, preset_id', userId)
+      .toArray()
+      .map((r) => {
+        let values: unknown = {};
+        try {
+          values = JSON.parse(str(r.data));
+        } catch {
+          /* a broken row reads as standard values */
+        }
+        return { id: str(r.preset_id), name: str(r.name), values, updatedAt: num(r.updated_at) };
+      });
+    return parsePresetList(raw, MAX_PRESETS);
+  }
+
+  /** GET /api/me/experimental: the switch and the presets; 'no_user' for an unknown account. */
+  experimental(userId: string): ExperimentalAnswer | 'no_user' {
+    if (this.userById(userId) === null) return 'no_user';
+    return { enabled: this.experimentalEnabled(userId), presets: this.presets(userId) };
+  }
+
+  setExperimental(userId: string, on: boolean, now: number): ExperimentalAnswer | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      this.sql.exec(
+        'INSERT INTO experimental (user_id, enabled, updated_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at',
+        userId, on ? 1 : 0, now,
+      );
+      return { enabled: on, presets: this.presets(userId) };
+    });
+  }
+
+  /**
+   * Create or replace one preset (already parsed: parseStoredPreset); the server stamps updatedAt
+   * (last write wins). 'too_many' when a new id would make MAX_PRESETS + 1. Returns the presets after it.
+   */
+  upsertPreset(userId: string, p: StoredPreset, now: number): ExperimentalAnswer | 'too_many' | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      const exists = this.sql.exec('SELECT 1 AS x FROM presets WHERE user_id = ? AND preset_id = ?', userId, p.id).toArray().length > 0;
+      if (!exists) {
+        const n = this.sql.exec('SELECT COUNT(*) AS n FROM presets WHERE user_id = ?', userId).toArray()[0];
+        if (num(n?.n) >= MAX_PRESETS) return 'too_many' as const;
+      }
+      this.sql.exec(
+        `INSERT INTO presets (user_id, preset_id, name, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_id, preset_id) DO UPDATE SET name = excluded.name, data = excluded.data, updated_at = excluded.updated_at`,
+        userId, p.id, p.name, JSON.stringify(p.values), now, now,
+      );
+      return { enabled: this.experimentalEnabled(userId), presets: this.presets(userId) };
+    });
+  }
+
+  /** Delete one preset (an unknown id is fine: the answer is the same list). */
+  deletePreset(userId: string, presetId: string): ExperimentalAnswer | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      this.sql.exec('DELETE FROM presets WHERE user_id = ? AND preset_id = ?', userId, presetId);
+      return { enabled: this.experimentalEnabled(userId), presets: this.presets(userId) };
     });
   }
 

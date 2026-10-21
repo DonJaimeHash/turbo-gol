@@ -23,6 +23,10 @@
  *   GET  /ranked-result?matchId=&userId=                             -> RankedResultAnswer
  *   GET  /leaderboard?playlist=&limit=&userId=                       -> LeaderboardAnswer
  *   POST /training        { userId, records }                        -> { records } (merged, best per pack) | 404
+ *   GET  /experimental?userId=                                       -> ExperimentalAnswer | 404
+ *   POST /experimental/set { userId, enabled }                       -> ExperimentalAnswer | 404
+ *   POST /presets/upsert  { userId, preset }                         -> ExperimentalAnswer | 400 bad_preset | 409 too_many | 404
+ *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
  *
  * Brute force (in memory, per object = global): a username with LOGIN_FAILS_FREE failures in the
  * window is throttled with a doubling delay up to LOGIN_LOCK_MAX_MS; an IP with LOGIN_IP_MAX failures
@@ -36,6 +40,7 @@ import { AccountStore } from './accountStore';
 import type { PasswordRecord, RankedResultInput } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
+import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import type { OAuthProvider, Playlist } from '../../src/net/account';
 
 const LOGIN_WINDOW_MS = 15 * 60_000;
@@ -134,6 +139,10 @@ export class AccountsDO extends DurableObject<Env> {
         if (!isPlaylist(pl)) return error(400, 'bad_playlist');
         const userId = p.get('userId');
         return json(this.store.leaderboard(pl, Number(p.get('limit') ?? 100) || 100, userId && userId.length > 0 ? userId : null));
+      }
+      case '/experimental': {
+        const r = this.store.experimental(p.get('userId') ?? '');
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
       }
     }
     return error(404, 'not_found');
@@ -253,6 +262,25 @@ export class AccountsDO extends DurableObject<Env> {
         const r = s.mergeTraining(b.userId, parseTrainingRecords(b.records), now);
         if (r === 'no_user') return error(404, 'no_user');
         return json({ records: r });
+      }
+      case '/experimental/set': {
+        if (typeof b.userId !== 'string' || typeof b.enabled !== 'boolean') return error(400, 'bad_request');
+        const r = s.setExperimental(b.userId, b.enabled, now);
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/presets/upsert': {
+        if (typeof b.userId !== 'string') return error(400, 'bad_request');
+        const preset = parseStoredPreset(b.preset);
+        if (preset === null) return error(400, 'bad_preset');
+        const r = s.upsertPreset(b.userId, preset, now);
+        if (r === 'too_many') return error(409, 'too_many');
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/presets/delete': {
+        if (typeof b.userId !== 'string') return error(400, 'bad_request');
+        if (typeof b.id !== 'string' || !PRESET_ID_RE.test(b.id)) return error(400, 'bad_preset');
+        const r = s.deletePreset(b.userId, b.id);
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');

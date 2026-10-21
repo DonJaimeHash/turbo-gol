@@ -23,7 +23,7 @@ import type { Env } from './env';
 import { error, json, readJson } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret } from './auth';
 import { MODES } from '../../src/sim/constants';
-import { LOBBY_LENGTHS, isPlaylist } from '../../src/net/account';
+import { LOBBY_LENGTHS, isPlaylist, sanitizeLobbyName } from '../../src/net/account';
 import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import type { LobbyClientMsg, LobbyMember, LobbyServerMsg, LobbySettings, LobbyState, LobbySummary } from '../../src/net/account';
 
@@ -74,12 +74,11 @@ export interface LobbyRecord {
 
 // ---- pure helpers (server/test/lobby.test.mjs) ------------------------------------------------
 
-/** 3-24 visible chars (letters, digits, space, _ . - ! ?), else null. */
-export function sanitizeLobbyName(v: unknown): string | null {
-  if (typeof v !== 'string') return null;
-  const s = v.normalize('NFKC').replace(/[^\p{L}\p{N} _.\-!?#]/gu, '').replace(/\s+/g, ' ').trim();
-  return s.length >= 3 && s.length <= 24 ? s : null;
-}
+/**
+ * The lobby name rules (src/net/account.ts: the client and the physics presets share them,
+ * src/game/physicsRules.ts), re-exported for the Worker and the tests.
+ */
+export { sanitizeLobbyName };
 
 /** The team a new member joins: the one with fewer members (blue on a tie); null when both are full. */
 export function teamForNewMember(members: readonly { team: 0 | 1 }[], perTeam: number): 0 | 1 | null {
