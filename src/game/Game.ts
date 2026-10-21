@@ -39,7 +39,20 @@
  * `setQuality` / `setTheme` stay the synchronous switches (the console and the capture helpers).
  * A tier that breaks on this GPU (validation errors after the boot or a switch, a lost device)
  * falls back one tier by itself through the same switch (`onGpuFailure`, src/render/tierGuard.ts),
- * from `bootDone()` on.
+ * from `bootDone()` on. A switch into or out of super low (quality.ts needsReload: its own backend
+ * and world) saves the prefs and reloads the page behind the loading screen (`restartOn`); a lost
+ * device reloads through the tab's counter (tierGuard.ts lossStep: reload, then super low, then a
+ * message and no more reloads).
+ *
+ * Super low (TierSpec.maxFps, cpuLite): the loop draws at most 30 frames a second (`drawsFrame`:
+ * the skipped animation frames do nothing, the next drawn one carries their time), the HUD runs
+ * without blur, shadows and decorative animation (`html.tg-superlow`, src/style.css) and updates
+ * its boost and speed at 10 Hz, the audio has no room, the ball prediction refreshes every 8 ticks
+ * instead of 4 (BALL_PRED_EVERY_LITE: the bots read the prediction by age; the 720-tick horizon is
+ * the wasm's) and going online shows a one-line notice. Physics stays at 120 Hz.
+ *
+ * `#diag` (src/render/frameStats.ts): the loop feeds the frame times and the CPU of the ball
+ * prediction, the bots, the physics step and the render call; nothing is measured without it.
  *
  * Settings (src/settings.ts: controls, camera, bindings, audio) are one live object shared by Input
  * (reads bindings / sensitivities, mutates them from the settings screen), ChaseCamera (reads
@@ -115,8 +128,23 @@ import { Effects } from '../render/Effects';
 import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow } from '../render/Hud';
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
 import { Renderer, type GpuFailure } from '../render/Renderer';
-import { parseQuality, type Quality } from '../render/quality';
-import { BACKGROUND_LOSS_MS, FALLBACK_WINDOW_MS, TierGuard, mayReloadAfterLoss, raiseCeiling, writeCeiling, type Fallback } from '../render/tierGuard';
+import { tierPrefsAfter } from '../render/bootTier';
+import { diagSources, diagStats, enableDiagStats } from '../render/frameStats';
+import { pageFlags, withoutTierFlags } from '../render/hashFlags';
+import { drawsFrame, needsReload, parseQuality, type Quality } from '../render/quality';
+import {
+  BACKGROUND_LOSS_MS,
+  FALLBACK_WINDOW_MS,
+  LOSS_COUNT_KEY,
+  RECOVER_KEY,
+  TRY_TIER_KEY,
+  TierGuard,
+  lossStep,
+  parseLossRecord,
+  raiseCeiling,
+  writeCeiling,
+  type Fallback,
+} from '../render/tierGuard';
 import { DEFAULT_THEME, parseTheme, themeWorld, type ThemeId } from '../render/theme';
 import { LoadingOverlay, afterPaint, paintedFrames } from '../ui/LoadingOverlay';
 import { loadSettings, saveSettings, type Settings } from '../settings';
@@ -195,8 +223,10 @@ export interface GameOptions {
   /** The player picked the quality tier in the menu (GamePrefs.qualitySet); persisted with the prefs. */
   qualitySet?: boolean;
   /**
-   * The quality tier read from the prefs. Until the player picks a tier it is what the prefs keep:
-   * the renderer may have started on another one (low on the WebGL2 fallback), which is not saved.
+   * The quality tier read from the prefs: the player's choice (qualitySet) or the saved default.
+   * The renderer may run another one (super low from the URL or on a weak TV, low on the WebGL2
+   * fallback, a GPU's ceiling, a fallback), which is never saved: the prefs keep this one until
+   * the player picks a tier in the menu.
    */
   savedQuality?: Quality;
   /** Regulation length in seconds (0 = unlimited). */
@@ -230,8 +260,8 @@ const QUALITY_STEPS = [0.15, 0.35, 0.6, 0.95, 1] as const;
 const THEME_STEPS = [0.2, 0.95, 1] as const;
 /** sessionStorage: a tier fallback's line across the reload after a lost device (Game.bootDone). */
 const TIER_NOTICE_KEY = STORAGE_PREFIX + 'tierNotice';
-/** sessionStorage: when the page last reloaded on the same tier after a lost device (tierGuard.ts mayReloadAfterLoss). */
-const LOSS_RELOAD_KEY = STORAGE_PREFIX + 'lossReloadAt';
+/** Delay (ms) between the lost-device line on the loading screen and the reload (it can be read). */
+const LOSS_RELOAD_DELAY_MS = 900;
 
 /** "Your device does not support Ultra: using High" (en / es). */
 function fallbackText(fb: Fallback): string {
@@ -312,6 +342,10 @@ const PREFS_KEY = STORAGE_PREFIX + 'prefs';
 const MAX_FRAME_DT = 0.1;
 /** Ball prediction refresh cadence (ticks); a full re-prediction costs 1–5 ms after a touch. */
 const BALL_PRED_EVERY = 4;
+/** The same on tiers with `cpuLite` (super low): the bots read the prediction by its age, any cadence works. */
+const BALL_PRED_EVERY_LITE = 8;
+/** Seconds between two HUD boost / speed updates on tiers with `cpuLite` (10 Hz). */
+const HUD_LITE_INTERVAL = 0.1;
 /** Ball-hit effects are rate limited per car to this many ticks (dribbles touch every tick). */
 const HIT_FX_MIN_TICKS = 6;
 /** Minimum relative speed (uu/s) for a ball touch to produce a puff / sound. */
@@ -520,8 +554,18 @@ export class Game implements P2PGameHooks {
   theme: ThemeId;
   /** The player picked the quality in the menu (GamePrefs.qualitySet). */
   private qualitySet: boolean;
-  /** The prefs' tier, saved as is until the player picks one (GameOptions.savedQuality). */
+  /** The prefs' tier (GameOptions.savedQuality): the player's pick, never the tier the device fell to. */
   private savedQuality: Quality;
+  /** The tier's CPU trims (TierSpec.cpuLite), fixed for the session (super low reloads to change). */
+  private readonly cpuLite: boolean;
+  /** Ticks between ball prediction refreshes (BALL_PRED_EVERY, or _LITE on cpuLite). */
+  private readonly predEvery: number;
+  /** rAF time (ms) of the last drawn frame (the tier's maxFps skips the others), -1 = none. */
+  private lastDrawAt = -1;
+  /** Loop time of the last HUD boost / speed update (cpuLite: 10 Hz). */
+  private hudAt = -1;
+  /** The super low online notice was shown this session. */
+  private liteOnlineNoticed = false;
   difficulty: Difficulty;
   /** Smoothed frames per second (updated 4x/s). */
   fps = 0;
@@ -702,6 +746,15 @@ export class Game implements P2PGameHooks {
     this.difficulty = opts.difficulty ?? 'medium';
     this.qualitySet = opts.qualitySet ?? false;
     this.savedQuality = opts.savedQuality ?? this.quality;
+    this.cpuLite = opts.renderer.spec.cpuLite;
+    this.predEvery = this.cpuLite ? BALL_PRED_EVERY_LITE : BALL_PRED_EVERY;
+    // Super low: the stylesheet's light HUD (no blur, shadows or decorative animation).
+    if (typeof document !== 'undefined') document.documentElement.classList.toggle('tg-superlow', this.cpuLite);
+    // `#diag`: the frame and CPU figures (frameStats.ts), and where to read the wasm memory.
+    if (pageFlags().diag) {
+      enableDiagStats();
+      diagSources.wasmBytes = () => this.sim.memoryBytes;
+    }
     this.info = opts.info ?? '';
 
     const sim = this.sim;
@@ -735,7 +788,7 @@ export class Game implements P2PGameHooks {
     if (this.touch !== null) this.input.setTouchSource(this.touch.state);
     this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse)') : null;
     this.installHint = this.touch !== null && installHintDue();
-    this.audio = new Audio();
+    this.audio = new Audio({ room: !this.cpuLite });
     this.audio.setVolume(settings.audio.volume / 100);
 
     // Initial snapshots so the first frame renders the kickoff state.
@@ -1108,6 +1161,8 @@ export class Game implements P2PGameHooks {
       if (fallback !== null) this.tierGuard.arm(); // nothing to fall back to: the guard listens again
       return Promise.resolve();
     }
+    // Into or out of super low: its own backend and world, a new page (quality.ts needsReload).
+    if (needsReload(this.quality, q)) return this.restartOn(q, fallback);
     const label = fallback !== null ? fallbackText(fallback) : t('loading.quality');
     return this.withLoading(label, QUALITY_STEPS, async (step) => {
       try {
@@ -1118,10 +1173,8 @@ export class Game implements P2PGameHooks {
         this.tierGuard.arm();
         this.quality = q;
         const switchId = ++this.tierSwitches;
-        if (fallback === null) {
-          this.qualitySet = true; // only the menus call this: the player chose (loadPrefs keeps it on phones)
-          this.persistPrefs();
-        }
+        if (fallback === null) this.choose(q);
+        this.renderer.tierReason = fallback === null ? 'chosen' : 'fallback';
         this.renderer.setQuality(q);
         await step(0);
         this.disposeViews();
@@ -1145,6 +1198,56 @@ export class Game implements P2PGameHooks {
     });
   }
 
+  /**
+   * The player picked `q` in the menu: it is their tier from now on (saved with the prefs), and it
+   * replaces what the URL or the tab's recovery forced for this page (#superlow, bootTier.ts).
+   */
+  private choose(q: Quality): void {
+    const prefs = tierPrefsAfter({ quality: this.savedQuality, qualitySet: this.qualitySet }, { kind: 'pick', tier: q });
+    this.qualitySet = prefs.qualitySet;
+    this.savedQuality = prefs.quality;
+    this.persistPrefs();
+    try {
+      window.sessionStorage.removeItem(RECOVER_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+    if (typeof location !== 'undefined' && pageFlags().superlow) {
+      try {
+        history.replaceState(null, '', location.pathname + location.search + withoutTierFlags(location.hash));
+      } catch {
+        /* sandboxed: the reload keeps the hash */
+      }
+    }
+  }
+
+  /**
+   * A switch into or out of super low: the prefs are saved (a player's pick) or the fallback's line
+   * kept for the next page (a fallback: its ceiling is already written), then the page reloads
+   * behind the loading screen (Renderer.create builds that tier's backend and world).
+   */
+  private restartOn(q: Quality, fallback: Fallback | null): Promise<void> {
+    if (fallback === null) {
+      this.choose(q);
+      // The next boot tries the pick even above the GPU's ceiling (Renderer.create, bootDone).
+      try {
+        window.sessionStorage.setItem(TRY_TIER_KEY, q);
+      } catch {
+        /* the ceiling then still caps it */
+      }
+    } else {
+      try {
+        window.sessionStorage.setItem(TIER_NOTICE_KEY, fallbackText(fallback));
+      } catch {
+        /* the reload still starts on the lower tier (its ceiling) */
+      }
+    }
+    this.loadingHold = true;
+    return this.loading.show(fallback !== null ? fallbackText(fallback) : t('loading.restart')).then(() => {
+      window.location.reload();
+    });
+  }
+
   /** The tier the player picked (switch `switchId`) has run through the fallback window: lift a lower ceiling to it. */
   private confirmTier(q: Quality, switchId: number): void {
     if (switchId !== this.tierSwitches || this.quality !== q || this.tierGuard.fallingBack) return;
@@ -1162,6 +1265,14 @@ export class Game implements P2PGameHooks {
    */
   bootDone(): void {
     this.tierGuard.arm();
+    if (diagStats !== null) diagStats.markWarm();
+    // A pick across a reload, tried above the GPU's ceiling: lift it once it runs the window clean.
+    if (this.renderer.triesAboveCeiling) {
+      const q = this.quality;
+      const switchId = this.tierSwitches;
+      window.clearTimeout(this.confirmTimer);
+      this.confirmTimer = window.setTimeout(() => this.confirmTier(q, switchId), FALLBACK_WINDOW_MS + 500);
+    }
     this.renderer.setFailureListener((f) => this.onGpuFailure(f));
     let notice: string | null = null;
     try {
@@ -1183,38 +1294,45 @@ export class Game implements P2PGameHooks {
     const background = document.hidden || performance.now() - this.visibleSince < BACKGROUND_LOSS_MS;
     const fb = this.tierGuard.onFailure(f.kind, f.tier, background);
     if (fb === null) return;
-    if (fb.to === fb.from) {
-      // Lost in the background, or on low: not the tier's fault, or nothing below it. A reload on
-      // the same tier is the only way back to a picture, once a minute at most (no loop).
-      let last: number | null = null;
-      try {
-        last = Number(window.sessionStorage.getItem(LOSS_RELOAD_KEY) ?? 'NaN');
-        if (!mayReloadAfterLoss(last, Date.now())) return;
-        window.sessionStorage.setItem(LOSS_RELOAD_KEY, String(Date.now()));
-      } catch {
-        return; // without storage a reload could not tell it already happened
-      }
-      window.location.reload();
-      return;
-    }
     let store: Storage | null = null;
     try {
       store = window.localStorage;
     } catch {
       /* storage unavailable: this session still falls back */
     }
-    writeCeiling(store, this.renderer.caps.gpu, fb.to, Date.now());
-    const text = fallbackText(fb);
+    if (fb.to !== fb.from) writeCeiling(store, this.renderer.caps.gpu, fb.to, Date.now());
     if (fb.reload) {
-      try {
-        window.sessionStorage.setItem(TIER_NOTICE_KEY, text);
-      } catch {
-        /* the reload still starts on the lower tier */
-      }
-      window.location.reload();
+      this.reloadAfterLoss(fb);
       return;
     }
+    const text = fallbackText(fb);
     void this.switchQuality(fb.to, fb).then(() => this.showTierNotice(text));
+  }
+
+  /**
+   * A lost device (or context) cannot draw again: the page reloads, through the tab's counter
+   * (tierGuard.ts lossStep): the first loss reloads as the guard planned (the same tier, or the one
+   * below with its line kept for the next page), the second reloads on super low for this tab
+   * (bootTier.ts 'recover', never saved), the third shows a message and stops. A line on the
+   * loading screen says what happens first. Without sessionStorage nothing could count: it stops.
+   */
+  private reloadAfterLoss(fb: Fallback): void {
+    let step: 'reload' | 'recover' | 'stop' = 'stop';
+    try {
+      const ss = window.sessionStorage;
+      const next = lossStep(parseLossRecord(ss.getItem(LOSS_COUNT_KEY)), Date.now());
+      ss.setItem(LOSS_COUNT_KEY, JSON.stringify(next.record));
+      step = next.step;
+      if (step === 'recover') ss.setItem(RECOVER_KEY, '1');
+      if (step === 'reload' && fb.to !== fb.from) ss.setItem(TIER_NOTICE_KEY, fallbackText(fb));
+    } catch {
+      step = 'stop';
+    }
+    this.loadingHold = true;
+    const text = step === 'stop' ? t('gpu.lostStop') : step === 'recover' ? t('gpu.lostRecover') : fb.to !== fb.from ? fallbackText(fb) : t('gpu.lostReload');
+    void this.loading.show(text).then(() => {
+      if (step !== 'stop') window.setTimeout(() => window.location.reload(), LOSS_RELOAD_DELAY_MS);
+    });
   }
 
   /** A fallback's line as a menu toast now, or the next time the menus are on screen. */
@@ -1257,6 +1375,11 @@ export class Game implements P2PGameHooks {
   setSession(s: GameSession | null): void {
     // An online match replaces the training roster: leave training first (offline roster back).
     if (s !== null && this.training !== null) this.endTraining();
+    // Super low still plays online; one line says this device may not keep up (once a session).
+    if (s !== null && this.cpuLite && !this.liteOnlineNoticed) {
+      this.liteOnlineNoticed = true;
+      this.menu.toast(t('quality.superlowOnline'), 'info');
+    }
     const old = this.session;
     if (old !== null && old !== s && old.state !== 'idle') old.leave();
     this.session = s;
@@ -2120,16 +2243,21 @@ export class Game implements P2PGameHooks {
    */
   setQuality(q: Quality): void {
     if (q === this.quality) return;
+    // Into or out of super low: a reload, as from the menu.
+    if (needsReload(this.quality, q)) {
+      void this.restartOn(q, null);
+      return;
+    }
     this.tierGuard.arm();
     this.tierSwitches++;
     this.quality = q;
-    this.qualitySet = true; // only the menu calls this: the player chose (loadPrefs keeps it on phones)
+    this.choose(q);
+    this.renderer.tierReason = 'chosen';
     this.renderer.setQuality(q);
     this.disposeViews();
     this.buildViews(q);
     this.snapCamera = true;
     this.warmUp(); // every material was rebuilt: compile the hidden ones on the next frame too
-    this.persistPrefs();
   }
 
   /**
@@ -2189,9 +2317,9 @@ export class Game implements P2PGameHooks {
   }
 
   private persistPrefs(): void {
-    // A tier the renderer picked by itself (low on the WebGL2 fallback) is not the player's choice.
-    const quality = this.qualitySet ? this.quality : this.savedQuality;
-    savePrefs({ difficulty: this.difficulty, quality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme });
+    // The player's tier (or the saved default), never the one the session runs on its own: super
+    // low from the URL or the tab's recovery, low on a weak backend, a GPU's ceiling, a fallback.
+    savePrefs({ difficulty: this.difficulty, quality: this.savedQuality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme });
   }
 
   setPaused(p: boolean): void {
@@ -2314,6 +2442,11 @@ export class Game implements P2PGameHooks {
   private readonly frame = (t: number): void => {
     if (!this.running) return;
     this.raf = requestAnimationFrame(this.frame);
+    // The tier's frame cap (super low: 30): a skipped frame does nothing; the next drawn one
+    // carries its time (dt below), so the sim clock stays right.
+    if (!drawsFrame(t, this.lastDrawAt, this.renderer.spec.maxFps)) return;
+    this.lastDrawAt = t;
+    if (diagStats !== null) diagStats.frame(t);
     const now = t * 0.001;
     let dt = this.lastTime < 0 ? 0 : now - this.lastTime;
     this.lastTime = now;
@@ -2372,15 +2505,26 @@ export class Game implements P2PGameHooks {
     } else {
       // Refresh by age rather than by tick parity so the first tick after a countdown or a kickoff
       // reset always starts from a fresh prediction (the bot adds the age to its entry index).
+      const ds = diagStats;
+      let t0 = ds !== null ? performance.now() : 0;
       const age = sim.tickCount - sim.predTick;
-      if (age >= BALL_PRED_EVERY || age < 0) sim.updateBallPrediction();
+      if (age >= this.predEvery || age < 0) sim.updateBallPrediction();
+      if (ds !== null) {
+        const t1 = performance.now();
+        ds.add('pred', t1 - t0);
+        t0 = t1;
+      }
       // One think per team per tick (a team may hold its outputs for several ticks internally).
       this.bots.think(sim, this.redOuts);
       if (this.blueSlots.length > 0) this.mates.think(sim, this.blueOuts);
+      if (ds !== null) ds.add('bots', performance.now() - t0);
     }
     for (let i = 0; i < n; i++) sim.setControls(ids[i], controls[i]);
 
+    const dsStep = diagStats;
+    const ts = dsStep !== null ? performance.now() : 0;
     sim.step(1);
+    if (dsStep !== null) dsStep.add('step', performance.now() - ts);
     this.prev.set(this.cur);
     sim.sync(); // fires onGoal / onBump / onBallHit
     this.cur.set(sim.buf);
@@ -2560,8 +2704,12 @@ export class Game implements P2PGameHooks {
       if (inMenu) hud.setOnlineStatus(session.statusText, session.statusIsError);
       hud.setNetWait(sessionActive && !inMenu ? session.hint : null);
     }
-    hud.setBoost(cur[po + C_BOOST]);
-    hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
+    // Boost and speed change every frame: 10 Hz on cpuLite (each change rewrites DOM text).
+    if (!this.cpuLite || this.time - this.hudAt >= HUD_LITE_INTERVAL || this.time < this.hudAt) {
+      this.hudAt = this.time;
+      hud.setBoost(cur[po + C_BOOST]);
+      hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
+    }
     if (this.training !== null) this.updateTrainingHud();
     this.updateScoreboard(inMenu);
     // On-screen controls (touch screens): up while a match is played in touch mode, the HUD in its
@@ -2616,6 +2764,8 @@ export class Game implements P2PGameHooks {
 
     // The frame's rAF timestamp (ms) drives dynamic resolution.
     const frameMs = this.lastTime * 1000;
+    const ds = diagStats;
+    const tr = ds !== null ? performance.now() : 0;
     if (this.warmFrames > 0) {
       this.warmFrames--;
       // An on-screen frame: the ball's shadow stays as the stadium wants it (its pipeline was built
@@ -2626,6 +2776,7 @@ export class Game implements P2PGameHooks {
     } else {
       renderer.render(frameMs);
     }
+    if (ds !== null) ds.add('render', performance.now() - tr);
   }
 
   /** The Tab / Back scoreboard: shown while the binding is held (never over the menu). */
@@ -2961,7 +3112,7 @@ export class Game implements P2PGameHooks {
     const config = sim.getCarConfig(CarPreset.Standard);
     const slots = this.carSlots;
     const cars: CarView[] = [];
-    this.effects = new Effects(scene, q);
+    this.effects = new Effects(scene, q, this.renderer.camera);
     this.effects.onDemolition = (slot, x, y, z) => this.onDemolition(slot, x, y, z);
     for (let i = 0; i < slots.length; i++) {
       const team = sim.teamOf(slots[i]);

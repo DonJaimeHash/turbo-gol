@@ -14,6 +14,9 @@
  *          lit grass colour, a narrow grain from the blade field, stripes, team tint, markings,
  *          the pools at a low contrast; no wear, damp, sheen, puddles or streaks); 1 draw, about
  *          a tenth of the lit floor's cost at a fill-bound size (it was ~30 % of the low frame).
+ *   superlow  `liteTurf`: the same unlit turf from the small lite grain (bake.ts liteGrain, 64^2,
+ *          a few ms) and the pool map: no blade field (1 MB, ~140 ms here, seconds on a 1 GB TV)
+ *          and no field map are baked or uploaded; fixed mowing stripes.
  *   high   blade normals, relief + self-shadow of the blades, soft puddles, 4 streaks (the four
  *          corner towers; 8x anisotropic); 1 draw, ~0.5 ms (budget 0.6).
  *   ultra  high + instanced grass blades within ~3 m of the camera; 2 draws,
@@ -26,7 +29,7 @@ import * as THREE from 'three/webgpu';
 import type { FloatUniform } from '../materials';
 import { tier, type Quality, type TierSpec } from '../quality';
 import { themeWorld, type ThemeId, type ThemeWorld } from '../theme';
-import { BLADE_FIELD_SIZE, FIELD_MAP, POOL_MAP, bakePoolMap, bladeField, fieldMap, poolMean, streakLamps } from './bake';
+import { BLADE_FIELD_SIZE, FIELD_MAP, LITE_GRAIN_SIZE, POOL_MAP, bakePoolMap, bladeField, fieldMap, liteGrain, poolMean, streakLamps } from './bake';
 import { GrassBlades } from './grassBlades';
 import { buildBakedTurfMaterial, buildTurfMaterial, createTurfUniforms, type TurfTextures, type TurfUniforms } from './turfMaterial';
 import { turfLook } from './turfTheme';
@@ -115,11 +118,19 @@ export class TurfView {
   constructor(parent: THREE.Object3D, geometry: THREE.BufferGeometry, timeU: FloatUniform, quality: Quality, theme: ThemeId) {
     const spec = tier(quality);
     this.baked = spec.bakedLight;
-    this.textures = {
-      blades: dataTexture(bladeField(), BLADE_FIELD_SIZE, BLADE_FIELD_SIZE, true, bladeAnisotropy(spec), 'turf-blades'),
-      field: dataTexture(fieldMap(), FIELD_MAP.w, FIELD_MAP.h, false, 4, 'turf-field-map'),
-      pools: dataTexture(poolMapOf(theme).data, POOL_MAP.w, POOL_MAP.h, false, 1, 'turf-pools'),
-    };
+    // The lite turf (super low) never samples the blade field or the field map: neither is baked.
+    this.textures = spec.liteTurf
+      ? {
+          blades: dataTexture(liteGrain(), LITE_GRAIN_SIZE, LITE_GRAIN_SIZE, true, 1, 'turf-lite-grain'),
+          field: dataTexture(new Uint8Array([128, 128, 128, 128]), 1, 1, false, 1, 'turf-field-none'),
+          pools: dataTexture(poolMapOf(theme).data, POOL_MAP.w, POOL_MAP.h, false, 1, 'turf-pools'),
+        }
+      : {
+          blades: dataTexture(bladeField(), BLADE_FIELD_SIZE, BLADE_FIELD_SIZE, true, bladeAnisotropy(spec), 'turf-blades'),
+          // The baked turf (low) reads no field map either: no bake (~80 ms), no upload.
+          field: spec.bakedLight ? dataTexture(new Uint8Array([128, 128, 128, 128]), 1, 1, false, 1, 'turf-field-none') : dataTexture(fieldMap(), FIELD_MAP.w, FIELD_MAP.h, false, 4, 'turf-field-map'),
+          pools: dataTexture(poolMapOf(theme).data, POOL_MAP.w, POOL_MAP.h, false, 1, 'turf-pools'),
+        };
     this.uniforms = createTurfUniforms(spec.turfStreaks);
     this.setTheme(theme);
 

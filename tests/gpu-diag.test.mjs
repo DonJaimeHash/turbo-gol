@@ -17,15 +17,16 @@ registerHooks({
   },
 });
 
-const { diagFlags, hiddenFeatures, installAdapterEmulation, glslProgramUse, programOverLimits, installLowGpuEmulation, LOWGPU_EXTENSIONS, LOWGPU_LIMITS } = await import('../src/render/gpuDiag.ts');
+const { diagFlags, hiddenFeatures, installAdapterEmulation, glslProgramUse, programOverLimits, installLowGpuEmulation, installGlEmulation, profileExtensions, glProfile, LOWGPU_EXTENSIONS, LOWGPU_LIMITS, TV_HIDDEN_EXTENSIONS, TV_GPU } = await import('../src/render/gpuDiag.ts');
+const { parseHashFlags, withoutTierFlags, hashValue } = await import('../src/render/hashFlags.ts');
 
-const off = { diag: false, lowgpu: false, compat: false, nof32filter: false, nomsaa: false, msaa: false };
+const off = parseHashFlags('');
 
 test('the flags are whole words of the hash', () => {
   assert.deepEqual(diagFlags(''), off);
   assert.deepEqual(diagFlags('#diag'), { ...off, diag: true });
-  assert.deepEqual(diagFlags('#lowgpu&diag&stats'), { ...off, diag: true, lowgpu: true });
-  assert.deepEqual(diagFlags('#stats&lowgpu'), { ...off, lowgpu: true });
+  assert.deepEqual(diagFlags('#lowgpu&diag&stats'), { ...off, diag: true, lowgpu: true, stats: true });
+  assert.deepEqual(diagFlags('#stats&lowgpu'), { ...off, lowgpu: true, stats: true });
   assert.deepEqual(diagFlags('#diagnostics&nolowgpu'), off);
   assert.deepEqual(diagFlags('#compat&diag'), { ...off, diag: true, compat: true });
   assert.deepEqual(diagFlags('#nof32filter'), { ...off, nof32filter: true });
@@ -131,4 +132,71 @@ test('the program audit counts varyings in vec4 rows and samplers per stage', ()
   assert.deepEqual(use, { varyingRows: 1 + 1 + 2 + 3, varyingComponents: 3 + 1 + 4 + 9, vertexSamplers: 1, fragmentSamplers: 3 });
   assert.deepEqual(programOverLimits(use, { varyings: 15, textureUnits: 16, vertexTextureUnits: 16 }), []);
   assert.deepEqual(programOverLimits(use, { varyings: 6, textureUnits: 2, vertexTextureUnits: 0 }), ['7 varyings > 6', '3 textures > 2', '1 vertex textures > 0']);
+});
+
+test('hash flags: whole words with optional values; #hide never turns on #net; #diag=audit is #diag', () => {
+  const f = parseHashFlags('#diag=audit&hide=stadium-netting,stadium-crowd&pr=0.5&superlow&webgpu');
+  assert.equal(f.diag, true);
+  assert.equal(f.audit, true);
+  assert.equal(f.net, false, 'the netting mesh name is not #net');
+  assert.deepEqual(f.hide, ['stadium-netting', 'stadium-crowd']);
+  assert.equal(f.pr, 0.5);
+  assert.equal(f.superlow, true);
+  assert.equal(f.webgpu, true);
+  assert.equal(parseHashFlags('#diag').audit, false);
+  assert.equal(parseHashFlags('#net').net, true);
+  assert.equal(parseHashFlags('#network').net, false);
+  assert.equal(parseHashFlags('#pr=abc').pr, 0);
+  assert.equal(parseHashFlags('#pr=-1').pr, 0);
+  assert.equal(parseHashFlags('#pr=9').pr, 4, 'clamped');
+  assert.equal(parseHashFlags('#stats&debug').stats, true);
+  assert.equal(parseHashFlags('#statsx').stats, false);
+  assert.equal(parseHashFlags('#tv&nofloatrt').tv, true);
+  assert.equal(parseHashFlags('#tv&nofloatrt').nofloatrt, true);
+  assert.equal(parseHashFlags('#webgl2').webgl2, true);
+  assert.equal(parseHashFlags('#nopost&norender').norender, true);
+  assert.equal(hashValue('#a=1&b', 'b'), '');
+  assert.equal(hashValue('#a=1&b', 'c'), null);
+  assert.equal(withoutTierFlags('#superlow&diag'), '#diag');
+  assert.equal(withoutTierFlags('#diag&superlow'), '#diag');
+  assert.equal(withoutTierFlags('#superlow'), '');
+  assert.equal(withoutTierFlags('#superlowx&stats'), '#superlowx&stats');
+});
+
+test('#lowgpu keeps a renderable float format on a device without EXT_color_buffer_half_float (the TV)', () => {
+  const lowgpu = glProfile({ lowgpu: true, tv: false, nofloatrt: false });
+  const desktop = ['EXT_color_buffer_float', 'EXT_color_buffer_half_float', 'OES_texture_float_linear', 'KHR_parallel_shader_compile'];
+  const tv = ['EXT_color_buffer_float', 'EXT_float_blend', 'WEBGL_debug_renderer_info'];
+  assert.deepEqual([...profileExtensions(lowgpu, desktop)].sort(), ['EXT_color_buffer_half_float', 'KHR_parallel_shader_compile']);
+  assert.deepEqual([...profileExtensions(lowgpu, tv)].sort(), ['EXT_color_buffer_float', 'WEBGL_debug_renderer_info'], 'the TV keeps its float target');
+  const none = glProfile({ lowgpu: false, tv: false, nofloatrt: true });
+  assert.deepEqual([...profileExtensions(none, desktop)].sort(), ['KHR_parallel_shader_compile', 'OES_texture_float_linear'], '#nofloatrt: no float target at all');
+  assert.equal(glProfile({ lowgpu: false, tv: false, nofloatrt: false }), null, 'nothing to emulate');
+});
+
+test('#tv: the TV\'s missing extensions, its limits and its renderer string', () => {
+  const all = ['EXT_color_buffer_float', 'EXT_color_buffer_half_float', 'EXT_texture_filter_anisotropic', 'KHR_parallel_shader_compile', 'OES_texture_float_linear', 'EXT_float_blend', 'WEBGL_debug_renderer_info'];
+  const fakeGl = {
+    getExtension: (n) => (all.includes(n) ? { name: n } : null),
+    getSupportedExtensions: () => all.slice(),
+    getParameter: (p) => (p === 0x9246 ? 'ANGLE (NVIDIA)' : p === 0x9245 ? 'Google Inc.' : p === 0x8d57 ? 8 : 16384),
+  };
+  class FakeCanvas {
+    getContext(type) {
+      return type === 'webgl2' ? fakeGl : null;
+    }
+  }
+  globalThis.HTMLCanvasElement = FakeCanvas;
+  const restore = installGlEmulation({ lowgpu: false, tv: true, nofloatrt: false });
+  const gl = new FakeCanvas().getContext('webgl2');
+  restore();
+  for (const n of TV_HIDDEN_EXTENSIONS) assert.equal(gl.getExtension(n), null, n);
+  assert.deepEqual(gl.getExtension('EXT_color_buffer_float'), { name: 'EXT_color_buffer_float' });
+  assert.deepEqual(gl.getSupportedExtensions().sort(), ['EXT_color_buffer_float', 'EXT_float_blend', 'WEBGL_debug_renderer_info']);
+  assert.equal(gl.getParameter(0x9246), TV_GPU[1]);
+  assert.equal(gl.getParameter(0x9245), TV_GPU[0]);
+  assert.equal(gl.getParameter(0x8d57), 4, 'MAX_SAMPLES');
+  assert.equal(gl.getParameter(0x0d33), 8192, 'MAX_TEXTURE_SIZE');
+  assert.equal(installGlEmulation({ lowgpu: false, tv: false, nofloatrt: false }), null);
+  delete globalThis.HTMLCanvasElement;
 });

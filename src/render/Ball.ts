@@ -181,11 +181,12 @@ export function ballFoldedPanels(): { c: Vec3Tuple; pent: boolean }[] {
  * computed in the folded frame; the tilt is unfolded by the normal's signs. Every line goes
  * through thinLineMask, so seams and rings fade to their average at distance instead of crawling.
  * `hi` false (detail 'low') drops the pillow normal, the grass stains and two wear octaves.
- * Per pixel: 10 dot / mix steps and 1 (low) to 4 (high) value-noise lookups; only the ball's
- * pixels pay.
+ * `cheap` (TierSpec.cheapMaterials, super low): Lambert with the same panels, seams, stitches and
+ * lime rings, no wear noise, no specular or environment.
+ * Per pixel: 10 dot / mix steps and 0 (super low), 1 (low) or 4 (high) value-noise lookups; only
+ * the ball's pixels pay.
  */
-function createBallMaterial(hi: boolean): THREE.MeshPhysicalNodeMaterial {
-  const m = new OpaqueAlbedoPhysicalMaterial();
+function createBallMaterial(hi: boolean, cheap = false): THREE.MeshPhysicalNodeMaterial | THREE.MeshLambertNodeMaterial {
   const n = normalize(normalLocal);
   const f = n.abs(); // folded into the positive octant
   const signs = step(0.0, n).mul(2.0).sub(1.0); // unfolds a folded-frame vector (+1 on the planes)
@@ -227,10 +228,10 @@ function createBallMaterial(hi: boolean): THREE.MeshPhysicalNodeMaterial {
   const ring = thinLineMask(length(f.sub(centre)).sub(RING_R), RING_HALF).mul(isPent);
 
   // Wear in the ball's own (unfolded) frame: scuffs (rougher, a touch darker), faint grass stains.
-  // Three octaves (lacunarity 2, gain 0.5) on high, the first one alone on low.
-  let wear: FloatNode = valueNoise3(n.mul(5.0));
+  // Three octaves (lacunarity 2, gain 0.5) on high, the first one alone on low, none when cheap.
+  let wear: FloatNode = cheap ? float(0.0) : valueNoise3(n.mul(5.0));
   if (hi) wear = wear.add(valueNoise3(n.mul(10.0)).mul(0.5)).add(valueNoise3(n.mul(20.0)).mul(0.25));
-  const scuff = smoothstep(0.2, 0.7, wear);
+  const scuff = cheap ? float(0.0) : smoothstep(0.2, 0.7, wear);
   const stain: FloatNode = hi ? smoothstep(0.5, 0.85, valueNoise3(n.mul(2.3).add(7.1))) : float(0.0);
 
   const ink = linearVec3(BALL_COLORS.pentagon);
@@ -241,6 +242,15 @@ function createBallMaterial(hi: boolean): THREE.MeshPhysicalNodeMaterial {
   let albedo: Vec3Node = mix(panel, linearVec3(BALL_COLORS.seam), groove);
   albedo = mix(albedo, mix(linearVec3(BALL_COLORS.stitch), panel.mul(0.55), isPent), stitch.mul(0.85));
   albedo = mix(albedo, lime.mul(0.75), ring);
+  if (cheap) {
+    const lm = new THREE.MeshLambertNodeMaterial();
+    lm.colorNode = albedo;
+    // NodeMaterial.setupLighting adds any material's emissiveNode (r186 types it on Standard only).
+    (lm as unknown as { emissiveNode: unknown }).emissiveNode = lime.mul(ring.mul(RING_GLOW));
+    lm.name = 'ball-turbogol-lambert';
+    return lm;
+  }
+  const m = new OpaqueAlbedoPhysicalMaterial();
   m.albedoNode = albedo; // not colorNode: keeps the panel search out of the shadow pipelines
   // A glossy PU skin without a clearcoat (a coat adds a second specular lobe per light for a
   // highlight the low base roughness already gives); scuffs and seams go matte.
@@ -286,7 +296,7 @@ export class BallView {
   readonly position: THREE.Vector3;
 
   private readonly scene: THREE.Scene;
-  private readonly material: THREE.MeshPhysicalNodeMaterial;
+  private readonly material: THREE.MeshPhysicalNodeMaterial | THREE.MeshLambertNodeMaterial;
   private readonly marker: THREE.Mesh;
   private readonly markerMat: THREE.MeshBasicNodeMaterial;
   private readonly blob: THREE.Mesh;
@@ -304,7 +314,7 @@ export class BallView {
     const groundY = spec.grassBlades ? GROUND_Y_BLADES : GROUND_Y;
     const widthSeg = hi ? 48 : 28;
     const heightSeg = hi ? 32 : 18;
-    this.material = createBallMaterial(hi);
+    this.material = createBallMaterial(hi, spec.cheapMaterials);
     this.root = new THREE.Mesh(new THREE.SphereGeometry(BALL.visualRadius, widthSeg, heightSeg), this.material);
     this.root.name = 'ball';
     this.root.castShadow = true;
@@ -339,6 +349,8 @@ export class BallView {
     this.markerMat.side = THREE.DoubleSide;
     this.markerMat.fog = false;
     this.markerMat.mrtNode = noGlowMrt(); // a plain white ring: must neither bloom nor erase glow
+    // Cheap tiers: additive, one pass instead of the back-then-front pair (a pipeline less).
+    this.markerMat.forceSinglePass = spec.cheapMaterials;
     this.markerMat.name = 'ball-marker';
     this.marker = new THREE.Mesh(ringGeo, this.markerMat);
     this.marker.name = 'ball-marker';

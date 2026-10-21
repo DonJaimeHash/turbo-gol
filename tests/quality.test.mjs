@@ -18,13 +18,13 @@ registerHooks({
   },
 });
 
-const { QUALITIES, TIERS, tier, parseQuality, nextQuality, lowerQuality, pixelRatio, startingQuality, LOW_MEMORY_GB, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
+const { QUALITIES, TIERS, tier, parseQuality, nextQuality, lowerQuality, pixelRatio, startingQuality, needsReload, drawsFrame, SUPERLOW_PIXELS, LOW_MEMORY_GB, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
 const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld, lookOf, lightsOf: themeLights } = await import('../src/render/theme.ts');
 const en = (await import('../src/locales/en.ts')).default;
 const es = (await import('../src/locales/es.ts')).default;
 
-test('three tiers in menu order, one table entry each', () => {
-  assert.deepEqual(QUALITIES, ['low', 'high', 'ultra']);
+test('four tiers in menu order, one table entry each', () => {
+  assert.deepEqual(QUALITIES, ['superlow', 'low', 'high', 'ultra']);
   assert.deepEqual(Object.keys(TIERS).sort(), [...QUALITIES].sort());
   for (const q of QUALITIES) assert.equal(tier(q), TIERS[q]);
 });
@@ -94,7 +94,7 @@ test('post and lighting switches (post/: two keys, bloom, the ultra extras)', ()
   // Shadow maps are square powers of two the PCF filter can use.
   for (const q of QUALITIES) {
     const s = tier(q);
-    assert.ok(Number.isInteger(Math.log2(s.shadowMapSize)) && s.shadowMapSize >= 1024 && s.shadowMapSize <= 4096, `${q}: shadow map size`);
+    assert.ok(Number.isInteger(Math.log2(s.shadowMapSize)) && s.shadowMapSize >= 512 && s.shadowMapSize <= 4096, `${q}: shadow map size`);
     assert.ok(s.shadowRadius > 0, `${q}: PCF radius`);
   }
 });
@@ -184,6 +184,84 @@ test('dynamic resolution ranges are sane', () => {
   }
 });
 
+test('super low: the direct path at about 640x360, 30 fps, nothing built that costs', () => {
+  const s = tier('superlow');
+  assert.equal(s.output, 'direct');
+  assert.equal(s.msaa, 0, 'no MSAA (a multisampled canvas costs a tiler its write-out)');
+  assert.equal(s.bloom, false);
+  assert.equal(s.shadowedKeys, 0, 'no shadow maps');
+  assert.equal(s.dynamicResolution, false, 'a fixed size: the compositor upscales it');
+  assert.equal(s.minResolutionScale, 1);
+  assert.equal(s.maxPixelRatio, 1);
+  assert.equal(s.pixelBudget, SUPERLOW_PIXELS);
+  assert.equal(SUPERLOW_PIXELS, 640 * 360);
+  assert.equal(s.maxFps, 30);
+  assert.equal(s.world, 'lite', 'no bake, no environment, no fog');
+  for (const k of ['cheapMaterials', 'liteTurf', 'preferWebGL2', 'cpuLite', 'bakedLight']) assert.equal(s[k], true, k);
+  for (const k of ['crowd', 'glare', 'netting', 'grassBlades', 'beamCones', 'gtao', 'ssr', 'lensFlare', 'puddles', 'turfRelief']) assert.equal(s[k], false, k);
+  assert.equal(s.particles, 128);
+  assert.equal(s.detail, 'low');
+  // The other tiers keep everything as before.
+  for (const q of ['low', 'high', 'ultra']) {
+    const t = tier(q);
+    assert.equal(t.world, 'baked', q);
+    assert.equal(t.maxFps, 0, q);
+    for (const k of ['cheapMaterials', 'liteTurf', 'preferWebGL2', 'cpuLite']) assert.equal(t[k], false, `${q} ${k}`);
+    for (const k of ['crowd', 'glare']) assert.equal(t[k], true, `${q} ${k}`);
+  }
+});
+
+test("super low's pixel ratio: the 640x360 budget below 1:1, exact on the 962x541 TV", () => {
+  const sl = tier('superlow');
+  const size = (w, h) => {
+    const r = pixelRatio(sl, 1.3312, false, w, h);
+    return [Math.floor(w * r), Math.floor(h * r)];
+  };
+  assert.deepEqual(size(962, 541), [640, 360], 'the TV: a 2x upscale to its 1280x720 UI');
+  assert.deepEqual(size(1280, 720), [640, 360]);
+  assert.deepEqual(size(1920, 1080), [640, 360]);
+  for (const [w, h] of [[1600, 900], [1366, 768], [1024, 768], [780, 360], [3840, 2160]]) {
+    const [bw, bh] = size(w, h);
+    assert.ok(Math.abs(bw * bh - SUPERLOW_PIXELS) / SUPERLOW_PIXELS < 0.01, `${w}x${h}: ${bw}x${bh} about the budget`);
+    assert.ok(Math.abs(bw / bh - w / h) < 0.01, `${w}x${h}: the aspect kept`);
+  }
+  // A canvas already under the budget stays at 1:1 (never above it), whatever the dpr.
+  assert.equal(pixelRatio(sl, 3, true, 480, 270), 1);
+  assert.equal(pixelRatio(sl, 0.75, false, 400, 300), 1);
+});
+
+test('needsReload: only a switch into or out of super low reloads the page', () => {
+  for (const a of QUALITIES) {
+    for (const b of QUALITIES) {
+      const cross = (a === 'superlow') !== (b === 'superlow');
+      assert.equal(needsReload(a, b), cross, `${a} -> ${b}`);
+    }
+  }
+});
+
+test('drawsFrame: a 30 fps cap draws every other vsync at 60 Hz, 25 fps at 50 Hz, all frames of a slower device', () => {
+  const run = (hz, cap, n = 600) => {
+    let last = -1;
+    let drawn = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i * (1000 / hz) + (i % 3 === 0 ? 0.3 : -0.2); // vsync jitter
+      if (drawsFrame(t, last, cap)) {
+        last = t;
+        drawn++;
+      }
+    }
+    return (drawn / n) * hz;
+  };
+  assert.ok(Math.abs(run(60, 30) - 30) < 0.5, `60 Hz: ${run(60, 30)}`);
+  assert.ok(Math.abs(run(50, 30) - 25) < 0.5, `50 Hz: ${run(50, 30)}`);
+  assert.ok(Math.abs(run(120, 30) - 30) < 0.5, `120 Hz: ${run(120, 30)}`);
+  assert.ok(Math.abs(run(144, 30) - 28.8) < 1.5, `144 Hz: ${run(144, 30)}`);
+  assert.equal(run(20, 30), 20, 'a device at 20 fps draws every frame');
+  assert.equal(run(60, 0), 60, 'no cap');
+  assert.equal(drawsFrame(100, -1, 30), true, 'the first frame');
+  assert.equal(drawsFrame(100, 200, 30), true, 'a timestamp that went back');
+});
+
 test('parseQuality reads the tier names and the numbers saved before the third tier', () => {
   for (const q of QUALITIES) assert.equal(parseQuality(q), q);
   assert.equal(parseQuality(0), 'high', 'old quality 0');
@@ -205,7 +283,8 @@ test('WebGL2, WebGPU compatibility mode and small-memory devices start on low un
     assert.equal(startingQuality(q, false, { ...core, deviceMemory: 8 }), q, `${q}: 8 GB`);
     for (const [name, device] of weak) {
       assert.equal(startingQuality(q, true, device), q, `${q}: ${name} keeps a tier the player chose`);
-      assert.equal(startingQuality(q, false, device), 'low', `${q}: ${name} default`);
+      // Only tiers above low come down to it: super low (decided for a weaker device) stays.
+      assert.equal(startingQuality(q, false, device), q === 'superlow' ? 'superlow' : 'low', `${q}: ${name} default`);
     }
   }
   assert.equal(LOW_MEMORY_GB, 4);
@@ -218,12 +297,15 @@ test("a GPU's remembered ceiling caps the starting tier, a chosen one too", () =
   assert.equal(startingQuality('high', true, core, 'ultra'), 'high', 'a ceiling never raises');
   assert.equal(startingQuality('low', true, core, 'high'), 'low');
   assert.equal(startingQuality('ultra', false, core, null), 'ultra');
+  assert.equal(startingQuality('high', true, core, 'superlow'), 'superlow', 'a ceiling may be super low');
+  assert.equal(startingQuality('superlow', false, { ...core, webgpu: false }, 'high'), 'superlow');
 });
 
-test('lowerQuality steps ultra -> high -> low -> null', () => {
+test('lowerQuality steps ultra -> high -> low -> superlow -> null', () => {
   assert.equal(lowerQuality('ultra'), 'high');
   assert.equal(lowerQuality('high'), 'low');
-  assert.equal(lowerQuality('low'), null);
+  assert.equal(lowerQuality('low'), 'superlow');
+  assert.equal(lowerQuality('superlow'), null);
 });
 
 test("lookOf: the low tier takes the theme's low overrides, the post tiers never", () => {
@@ -278,13 +360,21 @@ test('every theme reads at least as bright and flat on Performance as on high; t
   }
 });
 
-test('the quality key cycles low -> high -> ultra -> low', () => {
+test('the quality key cycles superlow -> low -> high -> ultra -> superlow', () => {
+  assert.equal(nextQuality('superlow'), 'low');
   assert.equal(nextQuality('low'), 'high');
   assert.equal(nextQuality('high'), 'ultra');
-  assert.equal(nextQuality('ultra'), 'low');
+  assert.equal(nextQuality('ultra'), 'superlow');
 });
 
 test('every tier has a menu label in English and Spanish', () => {
+  assert.equal(en['quality.superlow'], 'Super low');
+  assert.equal(es['quality.superlow'], 'Súper bajo');
+  for (const q of QUALITIES) {
+    const key = `settings.quality${q[0].toUpperCase()}${q.slice(1)}Hint`;
+    assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en ${key}`);
+    assert.ok(typeof es[key] === 'string' && es[key].length > 0, `es ${key}`);
+  }
   assert.equal(en['quality.low'], 'Performance');
   assert.equal(en['quality.high'], 'High');
   assert.equal(en['quality.ultra'], 'Ultra');

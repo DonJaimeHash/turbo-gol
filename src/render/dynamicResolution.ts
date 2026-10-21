@@ -30,20 +30,34 @@
  *             refresh (the CPU or a hitch, which a lower resolution won't fix), and a step up only
  *             if the GPU time scaled to the next step stays under 80 % of the refresh.
  *
- * Intervals over 100 ms are ignored: a hidden or background tab, a breakpoint, a shader compile or
- * the first frame after a stall say nothing about the load; so is the first second after a reset
- * (the warm-up frames of a tier switch), and the longest interval of each window is left out of
- * its mean (the render-target reallocation of a scale change). The scale stays on a 0.05 grid, so
- * the scene pass sees only a few render-target sizes.
+ *   too slow  intervals between MAX_INTERVAL_MS and SLOW_MAX_MS (2-10 fps: a device far beyond its
+ *             depth, the 1 GB TV of docs/visuals/REWORK.md "Super low") count as late frames of
+ *             MAX_INTERVAL_MS (clamped: they never move the refresh estimate). A window with
+ *             SLOW_SHARE of its frames that slow goes to the minimum scale at once, without a
+ *             probe (a probe could never see the 10 % it needs through clamped frames, and would
+ *             return to full resolution): at that rate the lowest resolution is the only help left.
+ *             From there the steps up and the bounce rules above apply as usual. With GPU timing
+ *             an idle GPU (the CPU or a hitch) still keeps the scale.
+ *
+ * Intervals over SLOW_MAX_MS are ignored: a hidden or background tab, a breakpoint, a shader compile
+ * or the first frame after a stall say nothing about the load (the Renderer also feeds no
+ * interval while the page is hidden); so is the first second after a reset (the warm-up frames of a
+ * tier switch), and the longest interval of each window is left out of its mean (the render-target
+ * reallocation of a scale change). The scale stays on a 0.05 grid, so the scene pass sees only a
+ * few render-target sizes.
  *
  * Limits (tuning is the integration phase of docs/visuals/REWORK.md): the refresh is only seen
  * through the game's own frames, so a game that is already slower than the display from its first
  * second (72 fps on a 144 Hz screen) takes that rate for the refresh and stays at full resolution;
- * and frames over MAX_INTERVAL_MS (under 10 fps) never count, so the scale cannot rescue them.
+ * and a device under 2 fps (frames over SLOW_MAX_MS) is out of its reach.
  */
 
-/** Intervals longer than this (ms) are not load: ignored. */
+/** Intervals longer than this (ms) are too slow: counted as late at this length (see "too slow"). */
 const MAX_INTERVAL_MS = 100;
+/** Intervals longer than this (ms) are not load: ignored. */
+const SLOW_MAX_MS = 500;
+/** Share of a window's frames over MAX_INTERVAL_MS that goes straight to the minimum scale. */
+const SLOW_SHARE = 0.5;
 /** Bounds of the refresh estimate (ms): 360 Hz up to the longest interval counted. */
 const MIN_REFRESH_MS = 1000 / 360;
 /** Refresh estimate before the first window (ms). */
@@ -110,6 +124,7 @@ export class DynamicResolution {
   private windowS = 0;
   private frames = 0;
   private lateFrames = 0;
+  private slowFrames = 0;
   private sumMs = 0;
   private maxMs = 0;
   /** Running probe: the scale it started from (-1 = none) and the mean interval before it. */
@@ -138,6 +153,7 @@ export class DynamicResolution {
     this.windowS = 0;
     this.frames = 0;
     this.lateFrames = 0;
+    this.slowFrames = 0;
     this.sumMs = 0;
     this.maxMs = 0;
     this.probeFrom = -1;
@@ -154,36 +170,54 @@ export class DynamicResolution {
    * when unknown). Returns true when `scale` changed.
    */
   update(intervalMs: number, gpuMs: number): boolean {
-    if (!(intervalMs > 0) || intervalMs > MAX_INTERVAL_MS) return false;
-    const dt = intervalMs * 0.001;
+    if (!(intervalMs > 0) || intervalMs > SLOW_MAX_MS) return false;
+    // Too slow (under 10 fps): a late frame clamped to MAX_INTERVAL_MS, never a refresh sample.
+    const slow = intervalMs > MAX_INTERVAL_MS;
+    const ms = slow ? MAX_INTERVAL_MS : intervalMs;
+    const dt = ms * 0.001;
     this.clock += dt;
-    this.trackRefresh(intervalMs, dt);
+    if (!slow) this.trackRefresh(ms, dt);
     if (this.minScale >= 1) return false;
     this.frames++;
-    this.sumMs += intervalMs;
-    if (intervalMs > this.maxMs) this.maxMs = intervalMs;
-    if (intervalMs >= this.refreshMs * LATE_FACTOR) this.lateFrames++;
+    this.sumMs += ms;
+    if (ms > this.maxMs) this.maxMs = ms;
+    if (slow || ms >= this.refreshMs * LATE_FACTOR) this.lateFrames++;
+    if (slow) this.slowFrames++;
     this.windowS += dt;
     if (this.windowS < WINDOW_S) return false;
     const n = this.frames;
     const meanMs = n > 1 ? (this.sumMs - this.maxMs) / (n - 1) : this.sumMs;
     const lateShare = this.lateFrames / n;
+    const slowShare = this.slowFrames >= 2 ? this.slowFrames / n : 0;
     const windowS = this.windowS;
     this.windowS = 0;
     this.frames = 0;
     this.lateFrames = 0;
+    this.slowFrames = 0;
     this.sumMs = 0;
     this.maxMs = 0;
     if (this.clock < SETTLE_S) return false;
-    return this.decide(meanMs, lateShare, windowS, gpuMs > 0 && Number.isFinite(gpuMs) ? gpuMs : -1);
+    return this.decide(meanMs, lateShare, windowS, gpuMs > 0 && Number.isFinite(gpuMs) ? gpuMs : -1, slowShare);
   }
 
-  /** One decision window; `gpuMs` < 0 when unknown. */
-  private decide(meanMs: number, lateShare: number, windowS: number, gpuMs: number): boolean {
+  /** One decision window; `gpuMs` < 0 when unknown; `slowShare`: its frames over MAX_INTERVAL_MS. */
+  private decide(meanMs: number, lateShare: number, windowS: number, gpuMs: number, slowShare = 0): boolean {
     const refresh = this.refreshMs;
     const gpuIdle = gpuMs >= 0 && gpuMs < refresh * GPU_BOUND;
     const late = lateShare >= DOWN_SHARE;
     let changed = false;
+
+    // Far too slow: the minimum at once (a step up that just bounced is undone by stepDown below).
+    const bounced = this.lastUpAt >= 0 && this.clock - this.lastUpAt < BOUNCE_WINDOW_S;
+    if (slowShare >= SLOW_SHARE && !gpuIdle && !bounced && this.scale > this.minScale) {
+      this.scale = this.minScale;
+      this.probeFrom = -1;
+      this.backoffS = BACKOFF_S;
+      this.headroom = 0;
+      this.lastUpAt = -1;
+      this.mayRise = true;
+      return true;
+    }
 
     if (this.probeFrom > 0) {
       if (!late || meanMs <= this.probeBaseMs * HELPED) {

@@ -21,7 +21,7 @@ registerHooks({
 
 const { QUALITIES, tier } = await import('../src/render/quality.ts');
 const { FULL_CAPABILITIES, adjustTier, tierChanges, readCapabilities, withoutMsaa, withCompatCanvasMsaa } = await import('../src/render/capabilities.ts');
-const { TierGuard, readCeiling, writeCeiling, raiseCeiling, mayReloadAfterLoss, LOSS_RELOAD_GAP_MS, CEILING_KEY, CEILING_TTL_MS, FALLBACK_WINDOW_MS, MAX_CEILINGS } = await import('../src/render/tierGuard.ts');
+const { TierGuard, readCeiling, writeCeiling, raiseCeiling, lossStep, parseLossRecord, LOSS_COUNT_RESET_MS, CEILING_KEY, CEILING_TTL_MS, FALLBACK_WINDOW_MS, MAX_CEILINGS } = await import('../src/render/tierGuard.ts');
 
 const COMPAT = { ...FULL_CAPABILITIES, compatibilityMode: true, msaaHdr: false, msaaCanvas: false, maxTextureSize: 4096, maxColorAttachments: 4, gpu: 'webgpu-compat:arm/midgard' };
 
@@ -73,7 +73,7 @@ test('#nomsaa: no tier multisamples (the direct tier without anti-aliasing, the 
   for (const q of QUALITIES) {
     const s = adjustTier(tier(q), withoutMsaa(FULL_CAPABILITIES));
     assert.equal(s.msaa, 0, q);
-    assert.deepEqual(tierChanges(tier(q), s), ['msaa 4 -> 0'], q);
+    assert.deepEqual(tierChanges(tier(q), s), tier(q).msaa > 0 ? ['msaa 4 -> 0'] : [], q);
   }
 });
 
@@ -178,7 +178,7 @@ test('a tier the player picks again and that runs clean lifts a lower ceiling to
   raiseCeiling(full, 'g', 'high', t0);
 });
 
-test('the guard falls one tier per failure, within the window, never twice at once, never below low', () => {
+test('the guard falls one tier per failure, within the window, never twice at once, never below super low', () => {
   let now = 0;
   const guard = new TierGuard(() => now);
   guard.arm();
@@ -194,12 +194,17 @@ test('the guard falls one tier per failure, within the window, never twice at on
   assert.deepEqual(guard.onFailure('error', 'high'), { from: 'high', to: 'low', reload: false });
   now = 4000;
   guard.arm();
-  assert.equal(guard.onFailure('error', 'low'), null, 'nothing below low');
-  assert.deepEqual(guard.onFailure('lost', 'low'), { from: 'low', to: 'low', reload: true }, 'a lost device on low reloads on low');
-  assert.equal(guard.onFailure('lost', 'low'), null, 'once');
+  // Low falls to super low (Game.switchQuality reloads the page for it: quality.ts needsReload).
+  assert.deepEqual(guard.onFailure('error', 'low'), { from: 'low', to: 'superlow', reload: false });
+  now = 6000;
+  guard.arm();
+  assert.equal(guard.onFailure('error', 'superlow'), null, 'nothing below super low');
+  assert.deepEqual(guard.onFailure('lost', 'superlow'), { from: 'superlow', to: 'superlow', reload: true }, 'a lost device on super low reloads on it');
+  assert.equal(guard.onFailure('lost', 'superlow'), null, 'once');
+  assert.deepEqual(new TierGuard(() => 0).onFailure('lost', 'low'), { from: 'low', to: 'superlow', reload: true }, 'a foreground loss on low: super low');
 });
 
-test('a device lost in the background reloads on the same tier; same-tier reloads at most once a minute', () => {
+test('a device lost in the background reloads on the same tier; the tab counts its lost devices (no reload loop)', () => {
   let now = 0;
   const guard = new TierGuard(() => now);
   guard.arm();
@@ -210,12 +215,23 @@ test('a device lost in the background reloads on the same tier; same-tier reload
   now = 600;
   assert.deepEqual(g2.onFailure('error', 'high', true), { from: 'high', to: 'low', reload: false }, "a validation error is the tier's, hidden or not");
   assert.deepEqual(new TierGuard(() => 0).onFailure('lost', 'high', false), { from: 'high', to: 'low', reload: true }, "in the foreground a loss is the tier's");
+  // The tab's counter: reload, then super low, then a message and no more reloads, even when
+  // each boot takes longer than a minute (the 1 GB TV boots in 60-80 s).
   const t0 = 1_000_000;
-  assert.equal(mayReloadAfterLoss(null, t0), true);
-  assert.equal(mayReloadAfterLoss(Number.NaN, t0), true);
-  assert.equal(mayReloadAfterLoss(t0 - 1000, t0), false, 'right after the last one: no loop');
-  assert.equal(mayReloadAfterLoss(t0 - LOSS_RELOAD_GAP_MS, t0), true);
-  assert.equal(mayReloadAfterLoss(t0 + 5000, t0), true, 'a clock that went back');
+  let rec = null;
+  const steps = [];
+  for (let i = 0; i < 4; i++) {
+    const next = lossStep(rec, t0 + i * 80_000);
+    steps.push(next.step);
+    rec = parseLossRecord(JSON.stringify(next.record));
+  }
+  assert.deepEqual(steps, ['reload', 'recover', 'stop', 'stop']);
+  assert.equal(lossStep(rec, rec.at + LOSS_COUNT_RESET_MS + 1).step, 'reload', 'a long healthy run starts over');
+  assert.equal(lossStep(rec, rec.at - 5000).step, 'reload', 'a clock that went back starts over');
+  assert.equal(parseLossRecord('garbage'), null);
+  assert.equal(parseLossRecord(null), null);
+  assert.equal(parseLossRecord('{"n":"2","at":1}'), null);
+  assert.equal(lossStep(null, t0).step, 'reload');
 });
 
 test('a validation error long after a switch is not the tier\'s; a lost device always is', () => {

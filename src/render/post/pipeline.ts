@@ -127,9 +127,15 @@ export interface PostChain {
   setTheme(world: ThemeWorld): void;
   /**
    * WebGL2's parallel compile (Renderer.precompile): three's compileAsync of the scene with the
-   * exact target, MRT and output processing this path renders with. Never used on WebGPU.
+   * exact target, MRT and output processing this path renders with. Never used on WebGPU. three
+   * r186 builds each object's shaders AFTER compileAsync's first await (one object per yield to the
+   * main thread), so that state stays set until the compile settles: restored then, or by
+   * `settle()` (Renderer.precompile's timeout: nothing must render with it afterwards). Restoring
+   * it right after the call, as before, built most programs for the default context (the direct
+   * path's look and sRGB missing, the post tiers' canvas instead of their HDR target and MRT):
+   * wasted compiles, and the warm-up frame then compiled the real ones synchronously.
    */
-  compileAsync(): Promise<unknown>;
+  compileAsync(): { readonly promise: Promise<unknown>; settle(): void };
   /** Free what the path allocated: scene pass (HDR MSAA target + depth), ultra passes, bloom chain, FXAA's input target, the pipeline. */
   dispose(): void;
 }
@@ -258,24 +264,27 @@ function buildDirect(gpu: THREE.WebGPURenderer, scene: THREE.Scene, camera: THRE
       writeLook(look, w, 'direct');
     },
     compileAsync() {
-      // DirectRenderPipeline.render() swaps these in around renderer.render(); compileAsync reads
-      // them synchronously (before its first await), so they are restored at once.
+      // DirectRenderPipeline.render() swaps these in around renderer.render(); the deferred node
+      // builds of compileAsync read them until it settles (see PostChain.compileAsync).
       internals._update();
       const ctx = internals._contextNode;
-      if (ctx === null) return Promise.resolve();
+      if (ctx === null) return { promise: Promise.resolve(), settle() {} };
       const prevCtx = gpu.contextNode;
       const tone = gpu.toneMapping;
       const space = gpu.outputColorSpace;
       gpu.contextNode = ctx;
       gpu.toneMapping = THREE.NoToneMapping;
       gpu.outputColorSpace = THREE.ColorManagement.workingColorSpace;
-      try {
-        return gpu.compileAsync(scene, camera);
-      } finally {
+      let held = true;
+      const settle = (): void => {
+        if (!held) return;
+        held = false;
         gpu.contextNode = prevCtx;
         gpu.toneMapping = tone;
         gpu.outputColorSpace = space;
-      }
+      };
+      const promise = gpu.compileAsync(scene, camera).finally(settle);
+      return { promise, settle };
     },
     dispose() {
       pipeline.dispose();
@@ -348,17 +357,21 @@ function buildHdr(gpu: THREE.WebGPURenderer, scene: THREE.Scene, camera: THREE.P
       if (extras !== null) extras.setTheme(w);
     },
     compileAsync() {
-      // compileAsync reads the target and the MRT synchronously, before its first await.
+      // The scene pass's target and MRT, held until the deferred node builds are done (see
+      // PostChain.compileAsync).
       const prevTarget = gpu.getRenderTarget();
       const prevMrt = gpu.getMRT();
-      try {
-        gpu.setRenderTarget(scenePass.renderTarget);
-        gpu.setMRT(scenePass.getMRT());
-        return gpu.compileAsync(scene, camera);
-      } finally {
+      gpu.setRenderTarget(scenePass.renderTarget);
+      gpu.setMRT(scenePass.getMRT());
+      let held = true;
+      const settle = (): void => {
+        if (!held) return;
+        held = false;
         gpu.setRenderTarget(prevTarget);
         gpu.setMRT(prevMrt);
-      }
+      };
+      const promise = gpu.compileAsync(scene, camera).finally(settle);
+      return { promise, settle };
     },
     dispose() {
       // RenderPipeline.dispose() only frees its quad material: the passes go first.

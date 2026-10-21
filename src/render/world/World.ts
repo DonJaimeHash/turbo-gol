@@ -47,6 +47,7 @@
  */
 import * as THREE from 'three/webgpu';
 import { exp, fog, length, oneMinus, positionView, uniform } from 'three/tsl';
+import { pageFlags } from '../hashFlags';
 import { tier, type Quality, type TierSpec } from '../quality';
 import { lightsOf, themeWorld, type ThemeId, type ThemeWorld } from '../theme';
 import { createAtmosphere, type Atmosphere } from './atmosphere';
@@ -163,8 +164,12 @@ function proxySsaaOf(s: TierSpec): number {
 export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quality: Quality, theme: ThemeId): World {
   const created = performance.now();
   const isWebGPU = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
-  const backendName = isWebGPU ? 'webgpu' : 'webgl2';
-  const noCache = typeof location !== 'undefined' && location.hash.includes('worldnocache');
+  // An emulated device's bakes are its own (a phone or TV emulation must never leave a record the
+  // real backend reads, nor read one).
+  const flags = pageFlags();
+  const emulated = [flags.lowgpu ? 'lowgpu' : '', flags.tv ? 'tv' : '', flags.compat ? 'compat' : ''].filter((e) => e !== '').join('+');
+  const backendName = (isWebGPU ? 'webgpu' : 'webgl2') + (emulated !== '' ? `-${emulated}` : '');
+  const noCache = flags.worldnocache;
   const stats: WorldBakeStats[] = [];
   let spec = tier(quality);
   let disposed = false;

@@ -82,7 +82,7 @@ import {
 import { ARENA } from '../../sim/constants';
 import { TEAM_BLUE, TEAM_RED, glowMrt, linearVec3, type FloatNode, type FloatUniform, type Vec2Node, type Vec3Node } from '../materials';
 import type { TierSpec } from '../quality';
-import { BLADE_FIELD_SIZE, FIELD_MAP, GRASS_HEIGHT, LAMP_REF_DISTANCE, POOL_MAP, POOL_MAX, TURF_TILE, type FloorMapRect } from './bake';
+import { BLADE_FIELD_SIZE, FIELD_MAP, GRASS_HEIGHT, LAMP_REF_DISTANCE, LITE_GRAIN_TILE, POOL_MAP, POOL_MAX, TURF_TILE, type FloorMapRect } from './bake';
 import { markingsCoverage } from './markings';
 
 export type Vec3Uniform = UniformNode<'vec3', THREE.Vector3>;
@@ -712,29 +712,37 @@ const RAMP_SHADE = 0.78;
  * Fog comes from the scene as for every material; the look (exposure, grade, tone curve) runs at
  * the end of the shader (post/pipeline.ts, the direct path). NaN-safe: the uvs are saturated
  * where the maps clamp, every smoothstep has distinct edges.
+ *
+ * `liteTurf` (super low): the same floor from two texture reads instead of three: `textures.blades`
+ * is the small lite grain (turf/bake.ts liteGrain: one read for the grain and its tint, no clump
+ * read), the mowing stripes are fixed (the bands' bend seen along the field, no view vector), the
+ * paint's edges are not ragged by the grass, and there is no fog in that tier's world.
  */
 export function buildBakedTurfMaterial(o: TurfMaterialOptions): THREE.MeshBasicNodeMaterial {
   const { timeU, textures, uniforms: U } = o;
+  const lite = o.spec.liteTurf;
   const m = new THREE.MeshBasicNodeMaterial();
-  m.name = 'turf-baked';
+  m.name = lite ? 'turf-lite' : 'turf-baked';
   const p = positionWorld.xz; // (x, sim y)
   const toCam = cameraPosition.sub(positionWorld);
   const dist = max(length(toCam), float(1));
   const V = toCam.div(dist);
 
   // -- grain: the blade field's heights and tints, narrow ranges (no gaps, no blotches)
-  const tA = texture(textures.blades, p.div(TURF_TILE));
-  const tC = texture(textures.blades, rot2(p, -1.1).div(TURF_TILE * 11));
+  const tA = texture(textures.blades, p.div(lite ? LITE_GRAIN_TILE : TURF_TILE));
+  const clump: FloatNode = lite ? float(0.5) : texture(textures.blades, rot2(p, -1.1).div(TURF_TILE * 11)).a;
   const grain = mix(float(GRAIN_BLADE[0]), float(GRAIN_BLADE[1]), tA.r)
     .mul(mix(float(GRAIN_TINT[0]), float(GRAIN_TINT[1]), tA.a))
-    .mul(mix(float(GRAIN_CLUMP[0]), float(GRAIN_CLUMP[1]), tC.a));
+    .mul(mix(float(GRAIN_CLUMP[0]), float(GRAIN_CLUMP[1]), lite ? tA.a : clump));
 
   // -- light: the theme's grass colour, the pools at their contrast, the ramps a little darker
   const pool = texture(textures.pools, floorMapUv(p, POOL_MAP)).rgb;
   const irr = dot(pool.mul(pool), vec3(0.2126, 0.7152, 0.0722)).mul(POOL_MAX);
   const poolK = U.bakedPools.x.add(U.bakedPools.y.mul(irr)).max(0.0);
   const ramp = mix(float(RAMP_SHADE), float(1), smoothstep(0.55, 0.98, normalWorld.y));
-  const stripe = mowingStripes(bandBend(p, fwidth(p.y.div(BAND_Z)), fwidth(p.x.div(BAND_X))), V.xz, float(0), U);
+  const stripe = lite
+    ? mowingStripes(bandBend(p, null, null), vec2(0, 0.85), float(0), U)
+    : mowingStripes(bandBend(p, fwidth(p.y.div(BAND_Z)), fwidth(p.x.div(BAND_X))), V.xz, float(0), U);
   let col: Vec3Node = U.bakedGrass.mul(grain).mul(stripe).mul(poolK).mul(ramp).mul(teamTint(p, U));
 
   // -- goal floors (beyond the goal lines): shaded by the net, a hint of the team colour
@@ -747,7 +755,7 @@ export function buildBakedTurfMaterial(o: TurfMaterialOptions): THREE.MeshBasicN
   const nearK = oneMinus(smoothstep(300, 1500, dist));
   const fw = fwidth(p);
   const aa = max(fw.x, fw.y).mul(0.8).add(0.25);
-  const lines = markingsCoverage(p, tA.r.sub(0.5).mul(3).mul(nearK), aa);
+  const lines = markingsCoverage(p, lite ? float(0) : tA.r.sub(0.5).mul(3).mul(nearK), aa);
   col = mix(col, v3(PAINT).mul(U.bakedPaint).mul(mix(float(0.9), float(1), tA.r)), lines);
 
   // -- goal-mouth glow (see buildTurfMaterial)

@@ -27,12 +27,20 @@ export default {
   'difficulty.medium': 'Normal',
   'difficulty.hard': 'Hard',
   // Graphics quality tiers (src/render/quality.ts): Settings > Graphics
+  'quality.superlow': 'Super low',
   'quality.low': 'Performance',
   'quality.high': 'High',
   'quality.ultra': 'Ultra',
   // A tier broke on this device and the game fell back one tier (src/render/tierGuard.ts): a toast /
-  // the loading line; {from} and {to} are quality.low / quality.high / quality.ultra
+  // the loading line; {from} and {to} are quality.superlow / quality.low / quality.high / quality.ultra
   'quality.fallback': 'Your device does not support {from}: using {to}',
+  // Toast when an online match starts on Super low (it still connects)
+  'quality.superlowOnline': 'Super low: online matches may not run smoothly on this device',
+  // The graphics device was lost (src/render/tierGuard.ts lossStep): the loading line before the
+  // page reloads, the second time it reloads on Super low, the third time it stops
+  'gpu.lostReload': 'The graphics device stopped: restarting…',
+  'gpu.lostRecover': 'The graphics device stopped again: restarting on Super low…',
+  'gpu.lostStop': 'The graphics device keeps stopping. Close other apps and reload the page.',
   // Stadium themes (src/render/theme.ts): the Friendly screen's stadium row
   'theme.harbour-night': 'Night harbour',
   'theme.canyon-sunset': 'Red canyon',
@@ -739,9 +747,10 @@ export default {
   'settings.resetAudio': 'Reset audio',
   // Graphics tab: line over the rows (a change shows the loading screen for a moment)
   'settings.graphicsNote': 'A quality change reloads the stadium for a moment',
-  // Graphics tab row: the three tiers are quality.low / quality.high / quality.ultra
+  // Graphics tab row: the four tiers are quality.superlow / quality.low / quality.high / quality.ultra
   'settings.quality': 'Graphics quality',
   // Line under the quality row, for the tier that is selected
+  'settings.qualitySuperlowHint': 'For TVs and very old devices: 30 fps, a simpler stadium (restarts the game)',
   'settings.qualityLowHint': 'Smoothest, for phones and older computers',
   'settings.qualityHighHint': 'Balanced detail and smoothness',
   'settings.qualityUltraHint': 'Every effect, for a powerful graphics card',
@@ -1030,4 +1039,6 @@ export default {
   'loading.ready': 'Almost ready…',
   // A graphics quality change (Settings > Graphics)
   'loading.quality': 'Applying graphics quality…',
+  // Switching into or out of Super low restarts the page (its own renderer)
+  'loading.restart': 'Restarting with the new graphics quality…',
 } satisfies Messages;

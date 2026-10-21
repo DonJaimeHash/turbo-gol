@@ -7,6 +7,10 @@
  *   post/    the theme's two key lights, fill and shadows (`createLighting`, lighting.ts) and the
  *            render path of a tier (`buildPostChain`, pipeline.ts)
  *
+ *   superlow (direct):   the direct path of low at about 640x360 (quality.ts SUPERLOW_PIXELS), no
+ *                        MSAA, 30 fps at most (Game), the lite world (world/liteWorld.ts: a
+ *                        gradient dome, no bake, no environment, no fog), WebGL2 unless the URL
+ *                        says #webgpu; decided before the renderer exists (bootTier.ts)
  *   low (direct):        three's DirectRenderPipeline straight into the canvas: the theme's look
  *                        (vignette, exposure, grade, tone curve) and sRGB at the end of every
  *                        material, the canvas' MSAA x4 (none in WebGPU compatibility mode), no
@@ -22,9 +26,14 @@
  * Capabilities (capabilities.ts): read once after init (`caps`); every tier runs as
  * `adjustTier(tier(q), caps)` (`spec`): no multisampled HDR target in WebGPU compatibility mode ->
  * FXAA, no multisampled canvas -> the direct tier without AA, maps and the drawing buffer within
- * maxTextureSize. The starting tier (quality.ts startingQuality) is low on WebGL2, in WebGPU
- * compatibility mode and with navigator.deviceMemory <= 4 unless the player chose one, and never
- * above the GPU's remembered ceiling (tierGuard.ts).
+ * maxTextureSize. The boot tier comes first (bootTier.ts: the URL's #superlow, the tab's recovery,
+ * the player's choice, super low on a 1 GB device or a TV on the slow GPU list, else the saved or
+ * default tier), before the backend exists, because super low picks its own (WebGL2) and its
+ * world. Once the backend is up, startingQuality (quality.ts) lowers a tier above low to low on
+ * WebGL2, in WebGPU compatibility mode and with navigator.deviceMemory <= 4 unless the player chose
+ * one, never above the GPU's remembered ceiling (tierGuard.ts); and a WebGL2 device that cannot
+ * render into any half-float target (capabilities.ts canRenderHalfFloat) runs super low, which
+ * renders none, instead of a black world. `tierReason` says which rule decided (#diag).
  *
  * The renderer is created with `antialias: true` (false with `#nomsaa`, the A/B flag that turns
  * every tier's multisampling off: capabilities.ts withoutMsaa): only the direct tier draws the scene into the
@@ -39,7 +48,8 @@
  *
  * `#webgl2` in the URL forces three's WebGL2 backend (the automatic fallback of browsers without
  * WebGPU), to test that path on any machine; `#lowgpu` forces it with a context that looks like a
- * low-end phone's (no float-linear / float-target / float-blend extensions, capped limits);
+ * low-end phone's (no float-linear / float-target / float-blend extensions, capped limits), `#tv`
+ * with the 1 GB TV's (and its boot signals), `#nofloatrt` without any renderable float format;
  * `#compat` and `#nof32filter` make the WebGPU device a compatibility-mode one (an OpenGL ES
  * Android phone) or one without 'float32-filterable' (an iPhone); `#diag` shows the backend, GPU,
  * extensions, limits, capabilities, the tier as this device runs it, theme and every shader or GPU
@@ -66,26 +76,34 @@
  * 0, and it has no glow target to spread one. Zero cost without the hash (one boolean test per
  * frame).
  *
+ * Diagnostics (hashFlags.ts, nothing without them): `#pr=<x>` sets the pixel ratio, `#hide=<names>`
+ * draws those meshes invisible every frame, `#nopost` runs the post tiers on the direct path
+ * (capabilities.ts withoutPost), `#norender` does everything but the draw (the CPU ceiling).
+ *
  * Nothing else here allocates per frame: `render()` and `stats()` reuse the same objects.
  */
 import * as THREE from 'three/webgpu';
-import { adjustTier, readCapabilities, tierChanges, withCompatCanvasMsaa, withoutMsaa, type Capabilities } from './capabilities';
+import { adjustTier, canRenderHalfFloat, readCapabilities, tierChanges, withCompatCanvasMsaa, withoutMsaa, withoutPost, type Capabilities } from './capabilities';
+import { bootTier, readBootSignals, type TierReason } from './bootTier';
+import { diagSources } from './frameStats';
+import { pageFlags, type HashFlags } from './hashFlags';
 import { DynamicResolution } from './dynamicResolution';
 import { setGlowTargets } from './materials';
 import { createLighting, type Lighting } from './post/lighting';
 import { buildPostChain, type PostChain } from './post/pipeline';
-import { pixelRatio, startingQuality, tier, type Quality, type TierSpec } from './quality';
-import { GpuDiag, addThreeConsoleHook, diagFlags, hiddenFeatures, installAdapterEmulation, installLowGpuEmulation } from './gpuDiag';
+import { parseQuality, pixelRatio, startingQuality, tier, type Quality, type TierSpec } from './quality';
+import { GpuDiag, addThreeConsoleHook, hiddenFeatures, installAdapterEmulation, installGlEmulation } from './gpuDiag';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
-import { readCeiling, type FailureKind } from './tierGuard';
+import { RECOVER_KEY, TRY_TIER_KEY, readCeiling, type FailureKind } from './tierGuard';
+import { createLiteWorld } from './world/liteWorld';
 import { createWorld, type World } from './world/World';
 
 export interface RendererOptions {
-  /** Quality tier (default 'high'). */
+  /** Quality tier: the prefs' (default 'high'); bootTier.ts may start on super low instead. */
   quality?: Quality;
   /**
-   * The player chose `quality` in the menu (default true). When false and the browser only offers
-   * the WebGL2 fallback, the renderer starts on low instead (quality.ts startingQuality).
+   * The player chose `quality` in the menu (default true). When false the boot may pick super low
+   * (bootTier.ts) and a weak backend starts on low (quality.ts startingQuality).
    */
   qualityChosen?: boolean;
   /** Stadium theme (default DEFAULT_THEME). */
@@ -268,6 +286,10 @@ export class Renderer {
   theme: ThemeId;
   /** Called after every resize (the chase camera re-applies its horizontal FOV here). */
   onResize: (() => void) | null = null;
+  /** Why the session runs its tier (bootTier.ts; 'weak' / 'ceiling' / 'nofloat' set at init). */
+  tierReason: TierReason = 'default';
+  /** This boot runs the player's pick above the GPU's ceiling once (tierGuard.ts TRY_TIER_KEY). */
+  triesAboveCeiling = false;
 
   private readonly canvas: HTMLCanvasElement;
   /** `#diag` panel (gpuDiag.ts), null without the flag. */
@@ -305,6 +327,8 @@ export class Renderer {
   /** Who hears about GPU failures (Game: the tier fallback), and one failure seen before it listened. */
   private failureListener: ((f: GpuFailure) => void) | null = null;
   private pendingFailure: GpuFailure | null = null;
+  /** The page's URL flags (diagnostics: #pr, #hide, #nopost, #norender). */
+  private readonly flags: HashFlags = pageFlags();
 
   private constructor(gpu: THREE.WebGPURenderer, canvas: HTMLCanvasElement, quality: Quality, theme: ThemeId, timing: boolean, caps: Capabilities) {
     this.gpu = gpu;
@@ -319,7 +343,7 @@ export class Renderer {
     // The backend clears the flag when 'timestamp-query' (or EXT_disjoint_timer_query_webgl2) is absent.
     this.gpuTimingEnabled = timing && (gpu.backend as { trackTimestamp?: boolean }).trackTimestamp === true;
     this.nanReport = null;
-    if (typeof location !== 'undefined' && location.hash.includes('nancheck')) {
+    if (this.flags.nancheck) {
       this.nanReport = {
         checks: 0,
         frame: 0,
@@ -335,7 +359,8 @@ export class Renderer {
       console.info(`[nancheck] enabled: pass targets + bloom result read back every ${NANCHECK_EVERY} frames`);
     }
 
-    gpu.shadowMap.enabled = true;
+    // No shadow code at all on the lite tier (super low: its own session, a switch to it reloads).
+    gpu.shadowMap.enabled = this.spec.world !== 'lite';
     gpu.shadowMap.type = THREE.PCFShadowMap;
     // The pipeline issues several internal renders per frame (shadow, scene, bloom mips, composite);
     // reset the counters once per frame ourselves so stats() reports the whole frame.
@@ -349,7 +374,8 @@ export class Renderer {
     this.lighting = createLighting(this.scene, quality, theme);
     this.sun = this.lighting.sun;
     this.hemi = this.lighting.hemi;
-    this.world = createWorld(gpu, this.scene, quality, theme);
+    // The world is chosen once (quality.ts needsReload): the bake, or the lite dome of super low.
+    this.world = this.spec.world === 'lite' ? createLiteWorld(gpu, this.scene, quality, theme) : createWorld(gpu, this.scene, quality, theme);
 
     window.addEventListener('resize', this.onWindowResize);
     if (this.sizeObserver !== null) this.sizeObserver.observe(canvas);
@@ -398,27 +424,45 @@ export class Renderer {
     });
   }
 
-  /** Create the WebGPU renderer on `canvas` (falls back to WebGL2 by itself) and await backend init. */
+  /**
+   * Create the WebGPU renderer on `canvas` (falls back to WebGL2 by itself) and await backend init.
+   * The boot tier is decided first (bootTier.ts), with the URL's emulation already installed so the
+   * GPU probe sees the emulated device: super low starts the WebGL2 backend (unless `#webgpu`) and
+   * a context without MSAA, both fixed at creation.
+   */
   static async create(canvas: HTMLCanvasElement, opts: RendererOptions = {}): Promise<Renderer> {
-    const hash = typeof location !== 'undefined' ? location.hash : '';
-    const timing = hash.includes('stats');
-    const flags = diagFlags(hash);
-    // `#lowgpu`: the WebGL2 context three creates in init() looks like a low-end phone's.
-    const restoreGetContext = flags.lowgpu ? installLowGpuEmulation() : null;
+    const flags = pageFlags();
+    const timing = flags.stats;
+    // `#lowgpu` / `#tv` / `#nofloatrt`: the WebGL2 contexts created from now until init is over
+    // (the boot's GPU probe, three's) look like that device's.
+    const restoreGetContext = installGlEmulation(flags);
     // `#compat` / `#nof32filter`: the WebGPU adapter three requests hides those features.
     const restoreAdapter = installAdapterEmulation(hiddenFeatures(flags));
+    let recover = false;
+    try {
+      recover = window.sessionStorage.getItem(RECOVER_KEY) === '1';
+    } catch {
+      /* storage unavailable */
+    }
+    const signals = readBootSignals(flags.tv);
+    const chosen = opts.qualityChosen ?? true;
+    const boot = bootTier({ quality: opts.quality ?? 'high', qualitySet: chosen }, signals, flags.superlow ? 'hash' : recover ? 'recover' : null);
+    const bootSpec = tier(boot.tier);
     const gpu = new THREE.WebGPURenderer({
       canvas,
-      // MSAA x4 for what is drawn straight into the canvas: only the direct (low) tier does that.
-      // The post tiers' final full-screen quad is single-sampled whatever this says (three gives
-      // full-screen passes 0 samples on WebGPU); on WebGL2 it is the context's own multisampled
-      // framebuffer, fixed at creation, which the post tiers' quad then draws into as well.
-      antialias: !flags.nomsaa,
+      // MSAA x4 for what is drawn straight into the canvas: only the direct tiers do that (super
+      // low without it). The post tiers' final full-screen quad is single-sampled whatever this
+      // says (three gives full-screen passes 0 samples on WebGPU); on WebGL2 it is the context's
+      // own multisampled framebuffer, fixed at creation, which the post tiers' quad then draws
+      // into as well.
+      antialias: !flags.nomsaa && bootSpec.msaa > 0,
       alpha: false,
       powerPreference: 'high-performance',
       trackTimestamp: timing,
-      // `#webgl2` in the URL: the WebGL2 fallback even where WebGPU exists (testing the fallback).
-      forceWebGL: hash.includes('webgl2') || flags.lowgpu,
+      // `#webgl2` in the URL: the WebGL2 fallback even where WebGPU exists (testing the fallback);
+      // super low prefers it (one 8-bit pass, the context's depth discarded before present, no
+      // Dawn heaps in a 1 GB device's browser process) unless `#webgpu` asks for the A/B.
+      forceWebGL: flags.webgl2 || flags.lowgpu || flags.tv || (bootSpec.preferWebGL2 && !flags.webgpu),
     });
     // three r186's WebGL2 backend creates its context with antialias only when the renderer's
     // current samples are > 0, which it reports as 0 while the output colour space differs from
@@ -438,13 +482,28 @@ export class Renderer {
     const read = readCapabilities(gpu);
     const caps = flags.nomsaa ? withoutMsaa(read) : flags.msaa ? withCompatCanvasMsaa(read) : read;
     let ceiling: Quality | null = null;
+    let tryTier: Quality | null = null;
     try {
       ceiling = readCeiling(window.localStorage, caps.gpu, Date.now());
+      tryTier = parseQuality(window.sessionStorage.getItem(TRY_TIER_KEY));
+      window.sessionStorage.removeItem(TRY_TIER_KEY);
     } catch {
       /* storage unavailable */
     }
+    // The player just picked this tier across a reload (Game.restartOn): this boot tries it above
+    // the ceiling once; Game.bootDone lifts the ceiling when it runs the fallback window clean.
+    const tryIt = tryTier !== null && boot.reason === 'chosen' && boot.tier === tryTier && ceiling !== null;
+    if (tryIt) ceiling = null;
     const nav = navigator as unknown as { deviceMemory?: number };
-    const quality = startingQuality(opts.quality ?? 'high', opts.qualityChosen ?? true, { webgpu, compatibilityMode: caps.compatibilityMode, deviceMemory: nav.deviceMemory }, ceiling);
+    let quality = startingQuality(boot.tier, boot.reason === 'chosen', { webgpu, compatibilityMode: caps.compatibilityMode, deviceMemory: flags.tv ? 1 : nav.deviceMemory }, ceiling);
+    let reason: TierReason = quality === boot.tier ? boot.reason : quality === ceiling ? 'ceiling' : 'weak';
+    // A WebGL2 device without any renderable half-float format would bake a black world (and the
+    // post tiers would draw nothing): super low renders no float target at all.
+    const gl = (gpu.backend as { gl?: WebGL2RenderingContext }).gl;
+    if (!webgpu && gl !== undefined && quality !== 'superlow' && !canRenderHalfFloat(gl)) {
+      quality = 'superlow';
+      reason = 'nofloat';
+    }
     // `#diag`: the on-screen panel and its probes, installed before any shader compiles.
     const theme = opts.theme ?? DEFAULT_THEME;
     let renderer: Renderer | null = null;
@@ -461,7 +520,21 @@ export class Renderer {
           } catch {
             now = ceiling;
           }
-          return { tier: q, theme: renderer?.theme ?? theme, changes: tierChanges(tier(q), spec), output: spec.output, msaa: spec.msaa, ceiling: now, caps };
+          return {
+            tier: q,
+            theme: renderer?.theme ?? theme,
+            changes: tierChanges(tier(q), spec),
+            output: spec.output,
+            msaa: spec.msaa,
+            ceiling: now,
+            caps,
+            reason: renderer?.tierReason ?? reason,
+            pointer: signals.pointer,
+            deviceMemory: signals.deviceMemory,
+            probedGpu: signals.gpu,
+            pixelRatio: gpu.getPixelRatio(),
+            wasmBytes: diagSources.wasmBytes(),
+          };
         },
         flags,
         (message) => renderer?.reportFailure('error', message),
@@ -469,6 +542,8 @@ export class Renderer {
       diag.attach();
     }
     renderer = new Renderer(gpu, canvas, quality, theme, timing, caps);
+    renderer.tierReason = reason;
+    renderer.triesAboveCeiling = tryIt;
     renderer.diag = diag;
     renderer.watchFailures();
     // The world's load-time work behind the boot overlay: its first bake or cache read.
@@ -512,7 +587,9 @@ export class Renderer {
     const touch = spec.maxPixelRatio > 1 && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
     // The direct tier's dynamic resolution is the canvas' own pixel ratio (no scene pass to scale).
     const scale = this.dynamicResolution && spec.output === 'direct' ? this.dynRes.scale : 1;
-    this.gpu.setPixelRatio(pixelRatio(spec, window.devicePixelRatio, touch, w, h, this.caps.maxTextureSize) * scale);
+    // `#pr=<x>`: a fixed pixel ratio (the TV's R1-R3 runs: does the cost follow the pixels?).
+    const ratio = this.flags.pr > 0 ? this.flags.pr : pixelRatio(spec, window.devicePixelRatio, touch, w, h, this.caps.maxTextureSize) * scale;
+    this.gpu.setPixelRatio(ratio);
     this.gpu.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -533,7 +610,8 @@ export class Renderer {
     // frame about to be drawn never uses a stale aspect (two layout reads, no allocation).
     if (this.canvas.clientWidth !== this.cssW || this.canvas.clientHeight !== this.cssH) this.resize();
     if (frameTime !== undefined) {
-      if (this.dynamicResolution && this.lastFrameAt >= 0 && this.post !== null) {
+      // No interval while the page is hidden (a background tab's throttled frames are no load).
+      if (this.dynamicResolution && this.lastFrameAt >= 0 && this.post !== null && document.visibilityState !== 'hidden') {
         // GPU time of the last resolved frame when `#stats` timing is on, else intervals only.
         const gpuMs = this.gpuTimingEnabled ? this.gpu.info.render.timestamp : Number.NaN;
         if (this.dynRes.update(frameTime - this.lastFrameAt, gpuMs)) {
@@ -546,7 +624,9 @@ export class Renderer {
       this.lastFrameAt = frameTime;
     }
     this.gpu.info.reset();
-    if (this.post !== null) this.post.render();
+    if (this.flags.hide.length > 0) this.applyHide();
+    // `#norender`: the frame without its draw (physics, bots, HUD, compositor: the CPU ceiling).
+    if (this.post !== null && !this.flags.norender) this.post.render();
     if (this.nanReport !== null && ++this.nanFrame % NANCHECK_EVERY === 0 && !this.nanBusy) void this.runNanCheck();
     if (this.gpuTimingEnabled) {
       // Diagnostics only (#stats): reads back the render-pass timestamps written this frame.
@@ -583,6 +663,7 @@ export class Renderer {
     if (post === null) return;
     const gpu = this.gpu;
     let compiling: Promise<unknown>;
+    let settle = (): void => undefined;
     if (this.isWebGPU) {
       type PipelineUtils = { createRenderPipeline(renderObject: unknown, promises: Promise<void>[] | null): void };
       const utils = (gpu.backend as unknown as { pipelineUtils?: PipelineUtils }).pipelineUtils;
@@ -602,12 +683,21 @@ export class Renderer {
       }
       compiling = Promise.all(pending);
     } else {
-      // The scene pass's target and MRT, or the direct path's in-material output (pipeline.ts).
-      compiling = post.compileAsync();
+      // The scene pass's target and MRT, or the direct path's in-material output (pipeline.ts),
+      // held until the compile settles or times out.
+      const c = post.compileAsync();
+      compiling = c.promise;
+      settle = c.settle;
     }
     let timer = 0;
     await Promise.race([compiling, new Promise<void>((resolve) => (timer = window.setTimeout(resolve, timeoutMs)))]);
     window.clearTimeout(timer);
+    // A compile still running after the timeout: the direct path keeps its context until the
+    // compile settles (every frame renders with that same context and colour state, so the frames
+    // are unchanged, and the objects still to build get the shaders they draw with); the post
+    // path's held scene-pass target would take the frames' output quad, so it is restored now and
+    // the rest builds with the default state (the warm-up frame builds what it draws).
+    if (post.output !== 'direct') settle();
   }
 
   /**
@@ -631,6 +721,23 @@ export class Renderer {
     this.gpuSum = 0;
     this.gpuFrames = 0;
     return this.statsOut;
+  }
+
+  /** `#hide=<names>`: the named meshes, found once per tier switch and hidden before every draw. */
+  private hidden: THREE.Object3D[] = [];
+  private hideScan = 0;
+
+  private applyHide(): void {
+    // The views rebuild on a tier or roster switch: look the names up again now and then.
+    if (++this.hideScan % 60 === 1) {
+      const names = new Set(this.flags.hide);
+      const found: THREE.Object3D[] = [];
+      this.scene.traverse((o) => {
+        if (names.has(o.name)) found.push(o);
+      });
+      this.hidden = found;
+    }
+    for (const o of this.hidden) o.visible = false;
   }
 
   dispose(): void {
@@ -731,7 +838,9 @@ export class Renderer {
 
   private applyQuality(q: Quality): void {
     this.quality = q;
-    const spec = adjustTier(tier(q), this.caps);
+    // `#nopost`: the post tiers on the direct path (the post chain's cost, A/B'd on the device).
+    const adjusted = adjustTier(tier(q), this.caps);
+    const spec = this.flags.nopost ? withoutPost(adjusted) : adjusted;
     this.spec = spec;
     // Glow tags for the views about to be built (and the world's kept materials), then the shadow
     // map size and PCF radius of the tier, then the world's tier switches.
@@ -757,6 +866,7 @@ export class Renderer {
     this.dynRes.reset(spec.dynamicResolution ? spec.minResolutionScale : 1);
     this.lastFrameAt = -1;
     this.post = buildPostChain(this.gpu, this.scene, this.camera, spec, themeWorld(this.theme));
+    this.hideScan = 0;
     this.resize();
   }
 }

@@ -7,7 +7,9 @@
  *    floor round the cage out to the stands' footprint, see buildApron). One merged mesh, one lit
  *    material (colour procedural from the position and a per-vertex part kind: no textures); on
  *    tiers with `bakedLight` (low) unlit, the same colours x the theme's baked light
- *    (palette.ts stadiumLight).
+ *    (palette.ts stadiumLight). Tiers without `crowd` (super low) paint the people on the rows
+ *    instead (`paintedCrowd`): per seat a shirt on the tread and a figure with a head on the riser
+ *    behind it, from a hash of the seat (no quads, no alpha cut: opaque, a few operations).
  *  - Crowd: one instanced quad per seat block (thousands), opaque with an alpha cut (alpha to
  *    coverage under MSAA). Each person is drawn in the fragment shader from a few SDFs (torso,
  *    head, hair; raised arms and a scarf on tiers with `netDetail`), shirts from a team-dominant
@@ -200,6 +202,43 @@ function buildApron(qb: QuadBuilder): void {
   }
 }
 
+/**
+ * The crowd painted on the stand rows (tiers without `crowd`): per seat (seatW along z, one row
+ * per rowRise of height) a hashed person in the bright Performance palette (half of them in the
+ * stand half's team colour), ~12 % empty seats. The tread shows a shirt (laps and shoulders from
+ * above); the riser behind it a shirt below and a head above, narrower than the seat, the seat
+ * colour between people. An albedo: the stand material lights it like the rows round it.
+ */
+function paintedCrowd(p: Vec3Node, seatCol: Vec3Node): { lap: Vec3Node; figure: Vec3Node; occ: FloatNode } {
+  const rowF = p.y.sub(S.y0).div(S.rowRise);
+  const row = floor(rowF.add(0.02)); // a tread sits exactly on a row height; a riser spans one
+  const fy = fract(rowF.add(0.02));
+  const zc = p.z.div(S.seatW);
+  const seat = floor(zc);
+  const fz = fract(zc).sub(0.5);
+  const seed = hash(seat.mul(7.31).add(row.mul(131.7)).add(step(float(0), p.x).mul(53.1)));
+  const seed2 = hash(seed.mul(91.7).add(3.3));
+  const occ = step(0.12, seed);
+  const blue = linearVec3(TEAM_BLUE);
+  const red = linearVec3(TEAM_RED);
+  const teamPure = mix(blue, red, teamHalf(p.z));
+  const team = mix(teamPure, vec3(dot(teamPure, vec3(0.2126, 0.7152, 0.0722))), 0.3).mul(0.55);
+  let casual: Vec3Node = vec3(0.62, 0.62, 0.6);
+  casual = select(seed2.greaterThan(0.2), vec3(0.07, 0.07, 0.08), casual);
+  casual = select(seed2.greaterThan(0.45), vec3(0.24, 0.25, 0.27), casual);
+  casual = select(seed2.greaterThan(0.65), vec3(0.05, 0.08, 0.24), casual);
+  casual = select(seed2.greaterThan(0.85), vec3(0.6, 0.42, 0.05), casual);
+  const shirt = mix(casual, team.mul(seed2.mul(0.35).add(0.75)), step(seed, float(0.56)));
+  const skin = mix(vec3(0.5, 0.34, 0.24), vec3(0.13, 0.075, 0.045), seed2.mul(seed2));
+  // The riser: shoulders up to ~55 % of its height, a head above (a soft round spot).
+  const body = step(abs(fz), float(0.36)).mul(step(fy, float(0.55)));
+  const head = oneMinus(smoothstep(0.16, 0.22, length(vec2(fz, fy.sub(0.75).mul(0.9)))));
+  // Albedo: the stand material lights it with the rows (the theme's baked light).
+  const figure = mix(mix(seatCol, shirt, body), skin, head);
+  const lap = mix(seatCol, shirt.mul(0.85), step(abs(fz), float(0.4)));
+  return { lap, figure, occ };
+}
+
 /** Seat-block colour of a stand point: team seats per half (blue toward -z, red toward +z). */
 function teamHalf(z: FloatNode): FloatNode {
   return smoothstep(float(-900), float(900), z);
@@ -225,8 +264,13 @@ export function buildStandMaterial(spec: TierSpec, u: StadiumUniforms): THREE.Me
   const az = fract(p.z.add(S.halfLen).div(period)).mul(period);
   const inAisle = step(az, float(S.aisleW));
   const seatCol = mix(linearVec3(0x0a1a3a), linearVec3(0x3a0912), teamHalf(p.z));
-  const tread = mix(concrete.mul(0.6), concrete.mul(0.9), inAisle);
-  const riser = mix(seatCol, concrete, inAisle);
+  let tread: Vec3Node = mix(concrete.mul(0.6), concrete.mul(0.9), inAisle);
+  let riser: Vec3Node = mix(seatCol, concrete, inAisle);
+  if (!spec.crowd) {
+    const crowd = paintedCrowd(p, seatCol);
+    tread = mix(mix(tread, crowd.lap, crowd.occ), tread, inAisle);
+    riser = mix(mix(riser, crowd.figure, crowd.occ), riser, inAisle);
+  }
   const front = mix(vec3(0.018, 0.02, 0.026), timber.mul(0.45), u.standWood);
   const roof = mix(vec3(0.022, 0.022, 0.026), shingle, u.standWood);
   // Downlights: a row of lamps under the canopy's front.

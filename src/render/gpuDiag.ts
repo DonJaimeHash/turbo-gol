@@ -35,31 +35,40 @@
  *            browser (a float32 texture with linear filtering samples black, a float32 colour
  *            target is incomplete), so the emulation reproduces the formats a phone lacks; the
  *            capped limits are checked by #diag's program audit (a desktop driver still links a
- *            program the phone would refuse).
+ *            program the phone would refuse). On a device WITHOUT EXT_color_buffer_half_float (the
+ *            1 GB TV of docs/visuals/REWORK.md "Super low": float yes, half float no) it keeps
+ *            EXT_color_buffer_float, so a renderable half-float format stays (the emulated phone
+ *            used to leave none there: every HalfFloat target incomplete, a black 3D scene).
+ *   #tv      the 1 GB Android TV itself (TV Bro on WebView, Mali-G31): WebGL2 forced, no
+ *            EXT_color_buffer_half_float (EXT_color_buffer_float stays), no anisotropy, no
+ *            KHR_parallel_shader_compile, no float-linear filtering, no timer queries, its limits,
+ *            the renderer string 'ARM / Mali-G31' (the boot's GPU probe sees it too:
+ *            bootTier.ts), and no pointer and 1 GB for the boot tier (readBootSignals).
+ *   #nofloatrt  a WebGL2 context without any renderable float format (no EXT_color_buffer_float
+ *            nor EXT_color_buffer_half_float): what Renderer.create's float-target guard catches.
+ *
+ * #diag=audit also drains gl.getError() and audits each linked program (link status, limits) on
+ * every refresh; plain #diag only counts them (a status read can wait on a compile without
+ * KHR_parallel_shader_compile). The panel also shows the frame rate (frameStats.ts), the CPU per
+ * frame of the ball prediction, the bots, the physics step and the render call, the wasm memory,
+ * the pipelines, why the session runs its tier (bootTier.ts), the pointer, the secure context and
+ * the pixel ratio, logs one JSON line every 5 s ('[diag-json] {...}') and has a button that loses
+ * the context or the device (`__diag.loseContext()`): the safety net's test.
  *
  * Cost: nothing without the flags (one string test at boot). With #diag the context or device is
  * wrapped once (shader sources, link status read back once a second): diagnostics only.
  */
 import * as THREE from 'three/webgpu';
 import type { Capabilities } from './capabilities';
+import { diagStats } from './frameStats';
+import { parseHashFlags, type HashFlags } from './hashFlags';
 
-/** The URL flags of this module. */
-export interface DiagFlags {
-  readonly diag: boolean;
-  readonly lowgpu: boolean;
-  /** WebGPU in compatibility mode (an Android phone's Chrome on an OpenGL ES driver). */
-  readonly compat: boolean;
-  /** A WebGPU device without 'float32-filterable' (an iPhone's Safari). */
-  readonly nof32filter: boolean;
-  /** No multisampling on any tier (an A/B of the canvas MSAA's cost on a phone). */
-  readonly nomsaa: boolean;
-  /** The canvas MSAA in WebGPU compatibility mode too, where it is off by default. */
-  readonly msaa: boolean;
-}
+/** The URL flags of this module (hashFlags.ts: every flag of the page). */
+export type DiagFlags = HashFlags;
 
+/** The page's hash flags (whole words: `#diag=audit` is #diag, `#hide=stadium-netting` is not #net). */
 export function diagFlags(hash: string): DiagFlags {
-  const has = (flag: string): boolean => new RegExp(`(^|[#&])${flag}(&|$)`).test(hash);
-  return { diag: has('diag'), lowgpu: has('lowgpu'), compat: has('compat'), nof32filter: has('nof32filter'), nomsaa: has('nomsaa'), msaa: has('msaa') };
+  return parseHashFlags(hash);
 }
 
 /**
@@ -181,42 +190,133 @@ export const LOWGPU_LIMITS: ReadonlyArray<readonly [number, number]> = [
   [0x84ff, 16], // MAX_TEXTURE_MAX_ANISOTROPY_EXT
 ];
 
+/**
+ * The WebGL2 extensions #tv hides: what the 1 GB TV's WebView lacks of the ones three.js asks for
+ * (measured with #diag&webgl2 there: f32-linear NO, cb-half NO, aniso NO, parallel NO, timer NO,
+ * msrtt NO; cb-float and f32-blend yes).
+ */
+export const TV_HIDDEN_EXTENSIONS: readonly string[] = [
+  'OES_texture_float_linear',
+  'EXT_color_buffer_half_float',
+  'EXT_texture_filter_anisotropic',
+  'KHR_parallel_shader_compile',
+  'EXT_disjoint_timer_query_webgl2',
+  'WEBGL_multisampled_render_to_texture',
+];
+
+/** WebGL2 limits #tv caps (measured on the TV; the desktop's own lower values stay). */
+export const TV_LIMITS: ReadonlyArray<readonly [number, number]> = [
+  [0x0d33, 8192], // MAX_TEXTURE_SIZE
+  [0x851c, 8192], // MAX_CUBE_MAP_TEXTURE_SIZE
+  [0x84e8, 8192], // MAX_RENDERBUFFER_SIZE
+  [0x8872, 16], // MAX_TEXTURE_IMAGE_UNITS
+  [0x8b4d, 96], // MAX_COMBINED_TEXTURE_IMAGE_UNITS
+  [0x8dfc, 31], // MAX_VARYING_VECTORS
+  [0x8dfd, 4096], // MAX_FRAGMENT_UNIFORM_VECTORS
+  [0x8dfb, 4096], // MAX_VERTEX_UNIFORM_VECTORS
+  [0x8a30, 65536], // MAX_UNIFORM_BLOCK_SIZE
+  [0x8d57, 4], // MAX_SAMPLES
+  [0x8824, 4], // MAX_DRAW_BUFFERS
+  [0x8cdf, 4], // MAX_COLOR_ATTACHMENTS
+];
+
+/** UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL (WEBGL_debug_renderer_info). */
+const UNMASKED_VENDOR = 0x9245;
+const UNMASKED_RENDERER = 0x9246;
+/** What #tv's context reports through WEBGL_debug_renderer_info. */
+export const TV_GPU: readonly [vendor: string, renderer: string] = ['ARM', 'Mali-G31'];
+
+/** One emulated WebGL2 device: which extensions it exposes, its limits, its renderer string. */
+export interface GlProfile {
+  /** Only these (null: every extension but `hide`). */
+  readonly keep: ReadonlySet<string> | null;
+  readonly hide: ReadonlySet<string>;
+  readonly limits: ReadonlyMap<number, number>;
+  readonly gpu: readonly [string, string] | null;
+}
+
+/**
+ * The context profile of the emulation flags (null: none). #lowgpu: the phone's allowlist (plus
+ * EXT_color_buffer_float on a device without EXT_color_buffer_half_float, profileExtensions) and
+ * limits. #tv: the TV's blocklist, limits and renderer string. #nofloatrt (alone or with either):
+ * both colour-buffer float extensions off.
+ */
+export function glProfile(flags: Pick<HashFlags, 'lowgpu' | 'tv' | 'nofloatrt'>): GlProfile | null {
+  if (!flags.lowgpu && !flags.tv && !flags.nofloatrt) return null;
+  const hide = new Set<string>(flags.tv ? TV_HIDDEN_EXTENSIONS : []);
+  if (flags.nofloatrt) {
+    hide.add('EXT_color_buffer_float');
+    hide.add('EXT_color_buffer_half_float');
+  }
+  const limits = new Map<number, number>(flags.tv ? TV_LIMITS : []);
+  if (flags.lowgpu) for (const [k, v] of LOWGPU_LIMITS) limits.set(k, Math.min(v, limits.get(k) ?? v));
+  return { keep: flags.lowgpu ? new Set(LOWGPU_EXTENSIONS) : null, hide, limits, gpu: flags.tv ? TV_GPU : null };
+}
+
+/**
+ * The extensions `profile` exposes of a context that supports `real`. The phone's allowlist keeps
+ * EXT_color_buffer_float when the device has no EXT_color_buffer_half_float, so a renderable float
+ * format stays (see the file header). Pure.
+ */
+export function profileExtensions(profile: GlProfile, real: readonly string[]): Set<string> {
+  const realSet = new Set(real);
+  const keep = profile.keep;
+  const keepFloat = keep !== null && !realSet.has('EXT_color_buffer_half_float');
+  const out = new Set<string>();
+  for (const n of real) {
+    if (profile.hide.has(n)) continue;
+    if (keep !== null && !keep.has(n) && !(keepFloat && n === 'EXT_color_buffer_float')) continue;
+    out.add(n);
+  }
+  return out;
+}
+
 const patchedContexts = new WeakSet<object>();
 
-/** Make a WebGL2 context look like a low-end phone's (see the file header). */
-function patchLowGpuContext(gl: WebGL2RenderingContext): void {
+/** Make a WebGL2 context look like `profile`'s device (see the file header). */
+function patchContext(gl: WebGL2RenderingContext, profile: GlProfile): void {
   if (patchedContexts.has(gl)) return;
   patchedContexts.add(gl);
-  const keep = new Set(LOWGPU_EXTENSIONS);
-  const caps = new Map<number, number>(LOWGPU_LIMITS);
   const getExtension = gl.getExtension.bind(gl);
   const getSupportedExtensions = gl.getSupportedExtensions.bind(gl);
   const getParameter = gl.getParameter.bind(gl);
+  const exposed = profileExtensions(profile, getSupportedExtensions() ?? []);
+  const gpu = profile.gpu;
   const g = gl as unknown as Record<string, unknown>;
-  g.getExtension = (name: string): unknown => (keep.has(name) ? getExtension(name) : null);
-  g.getSupportedExtensions = (): string[] => (getSupportedExtensions() ?? []).filter((n) => keep.has(n));
+  g.getExtension = (name: string): unknown => (exposed.has(name) ? getExtension(name) : null);
+  g.getSupportedExtensions = (): string[] => (getSupportedExtensions() ?? []).filter((n) => exposed.has(n));
   g.getParameter = (pname: number): unknown => {
+    if (gpu !== null && pname === UNMASKED_VENDOR) return gpu[0];
+    if (gpu !== null && pname === UNMASKED_RENDERER) return gpu[1];
     const v: unknown = getParameter(pname);
-    const cap = caps.get(pname);
+    const cap = profile.limits.get(pname);
     return cap !== undefined && typeof v === 'number' ? Math.min(v, cap) : v;
   };
 }
 
 /**
- * #lowgpu: patch canvas.getContext until the returned function is called, so the WebGL2 context
- * three.js creates in between is the emulated one.
+ * The emulation flags (#lowgpu, #tv, #nofloatrt): patch canvas.getContext until the returned
+ * function is called, so the WebGL2 contexts created in between (the boot's GPU probe, three's)
+ * are the emulated device's (the patch stays on those contexts). Null when no flag asks for one.
  */
-export function installLowGpuEmulation(): () => void {
+export function installGlEmulation(flags: Pick<HashFlags, 'lowgpu' | 'tv' | 'nofloatrt'>): (() => void) | null {
+  const profile = glProfile(flags);
+  if (profile === null || typeof HTMLCanvasElement === 'undefined') return null;
   const proto = HTMLCanvasElement.prototype as unknown as { getContext: (this: HTMLCanvasElement, type: string, attrs?: unknown) => unknown };
   const original = proto.getContext;
   proto.getContext = function (this: HTMLCanvasElement, type: string, attrs?: unknown): unknown {
     const ctx = original.call(this, type, attrs);
-    if (type === 'webgl2' && ctx !== null && ctx !== undefined) patchLowGpuContext(ctx as WebGL2RenderingContext);
+    if (type === 'webgl2' && ctx !== null && ctx !== undefined) patchContext(ctx as WebGL2RenderingContext, profile);
     return ctx;
   };
   return () => {
     proto.getContext = original;
   };
+}
+
+/** #lowgpu alone: installGlEmulation with the phone's profile. */
+export function installLowGpuEmulation(): () => void {
+  return installGlEmulation({ lowgpu: true, tv: false, nofloatrt: false }) ?? ((): void => undefined);
 }
 
 // ---- #diag ------------------------------------------------------------------------------------
@@ -232,7 +332,20 @@ export interface DiagState {
   /** The highest tier that has not failed on this GPU (tierGuard.ts), null when none failed. */
   readonly ceiling: string | null;
   readonly caps: Capabilities;
+  /** Why the session runs its tier (bootTier.ts TierReason). */
+  readonly reason: string;
+  /** The boot's signals: the primary pointer, navigator.deviceMemory, the probed GPU string ('' when not probed). */
+  readonly pointer: string;
+  readonly deviceMemory: number | undefined;
+  readonly probedGpu: string;
+  /** The drawing buffer's pixel ratio. */
+  readonly pixelRatio: number;
+  /** Bytes of the physics module's wasm memory (0 when unknown). */
+  readonly wasmBytes: number;
 }
+
+/** Seconds between two JSON lines in the console. */
+const JSON_EVERY_S = 5;
 
 /** One render pass an encoder began (WebGPU #diag pass report). */
 interface PassRecord {
@@ -335,7 +448,10 @@ export class GpuDiag {
   private readonly over: string[] = [];
   private glErrors = 0;
   private lastText = '';
+  private lastStable = '';
   private timer = 0;
+  private refreshes = 0;
+  private readonly button: HTMLButtonElement;
   private gl: WebGL2RenderingContext | null = null;
   private header: string[] = [];
 
@@ -374,7 +490,33 @@ export class GpuDiag {
     ].join(';');
     this.el = el;
     (document.body ?? document.documentElement).appendChild(el);
-    (window as unknown as { __diag: () => string }).__diag = () => this.text();
+    // The safety net's test: lose the WebGL context, or report a lost WebGPU device and destroy it.
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'lose context';
+    button.style.cssText = 'position:fixed;top:30px;left:50%;transform:translateX(-50%);z-index:2147483001;font:11px ui-monospace,Menlo,Consolas,monospace;padding:2px 8px;color:#e8f2d0;background:#401018;border:1px solid #ff6070;border-radius:4px;cursor:pointer';
+    button.addEventListener('click', () => this.loseContext());
+    this.button = button;
+    (document.body ?? document.documentElement).appendChild(button);
+    (window as unknown as { __diag: (() => string) & { loseContext?: () => string } }).__diag = Object.assign(() => this.text(), { loseContext: () => this.loseContext() });
+  }
+
+  /**
+   * Lose the context (WebGL2: WEBGL_lose_context) or the device (WebGPU: three's onDeviceLost
+   * with a simulated message, then device.destroy(), whose own 'destroyed' loss three ignores).
+   */
+  loseContext(): string {
+    const backend = this.gpu.backend as unknown as { isWebGPUBackend?: boolean; gl?: WebGL2RenderingContext; device?: GPUDevice };
+    if (backend.isWebGPUBackend === true && backend.device !== undefined) {
+      const r = this.gpu as unknown as { onDeviceLost: (info: unknown) => void };
+      r.onDeviceLost({ api: 'WebGPU', message: '#diag: simulated device loss', reason: null });
+      backend.device.destroy();
+      return 'WebGPU device lost (simulated) and destroyed';
+    }
+    const ext = backend.gl?.getExtension('WEBGL_lose_context') ?? null;
+    if (ext === null) return 'no WEBGL_lose_context';
+    ext.loseContext();
+    return 'WebGL context lost';
   }
 
   /** Install the probes (three's console, the context or device) and start refreshing. */
@@ -397,6 +539,7 @@ export class GpuDiag {
   dispose(): void {
     window.clearInterval(this.timer);
     this.el.remove();
+    this.button.remove();
   }
 
   // ---- probes -------------------------------------------------------------------------------
@@ -501,10 +644,10 @@ export class GpuDiag {
     };
   }
 
-  /** Link status and limits of the programs linked since the last refresh (WebGL2). */
+  /** Link status and limits of the programs linked since the last refresh (WebGL2, #diag=audit only). */
   private auditPrograms(): void {
     const gl = this.gl;
-    if (gl === null) return;
+    if (gl === null || !this.flags.audit) return;
     const parallel = gl.getExtension('KHR_parallel_shader_compile') as { COMPLETION_STATUS_KHR: number } | null;
     const limits = {
       varyings: gl.getParameter(gl.MAX_VARYING_VECTORS) as number,
@@ -548,7 +691,6 @@ export class GpuDiag {
   private describeBackend(): string[] {
     const out: string[] = [];
     const backend = this.gpu.backend as unknown as { isWebGPUBackend?: boolean; gl?: WebGL2RenderingContext; device?: GPUDevice; compatibilityMode?: boolean };
-    const hash = location.hash;
     const yn = (b: boolean): string => (b ? 'yes' : 'NO');
     if (backend.isWebGPUBackend === true && backend.device !== undefined) {
       const d = backend.device;
@@ -574,7 +716,18 @@ export class GpuDiag {
       );
     } else if (backend.gl !== undefined) {
       const gl = backend.gl;
-      const why = this.flags.lowgpu ? 'forced by #lowgpu (emulated low-end phone)' : hash.includes('webgl2') ? 'forced by #webgl2' : typeof navigator !== 'undefined' && 'gpu' in navigator ? 'WebGPU adapter or device unavailable' : 'no WebGPU in this browser';
+      const f = this.flags;
+      const why = f.tv
+        ? 'forced by #tv (emulated 1 GB TV)'
+        : f.lowgpu
+          ? 'forced by #lowgpu (emulated low-end phone)'
+          : f.webgl2
+            ? 'forced by #webgl2'
+            : this.state().tier === 'superlow' && !f.webgpu
+              ? 'super low prefers WebGL2 (#webgpu: WebGPU)'
+              : typeof navigator !== 'undefined' && 'gpu' in navigator
+                ? 'WebGPU adapter or device unavailable'
+                : 'no WebGPU in this browser';
       out.push(`backend WebGL2 (${why})`);
       const dbg = gl.getExtension('WEBGL_debug_renderer_info') as { UNMASKED_RENDERER_WEBGL: number; UNMASKED_VENDOR_WEBGL: number } | null;
       const renderer = dbg !== null ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
@@ -613,18 +766,43 @@ export class GpuDiag {
     const s = this.state();
     const canvas = this.gpu.domElement;
     const f = this.flags;
-    const emulated = [f.lowgpu ? ' #lowgpu' : '', f.compat ? ' #compat' : '', f.nof32filter ? ' #nof32filter' : '', f.nomsaa ? ' #nomsaa' : '', f.msaa ? ' #msaa' : ''].join('');
+    const emulated = [
+      f.tv ? ' #tv' : '',
+      f.lowgpu ? ' #lowgpu' : '',
+      f.nofloatrt ? ' #nofloatrt' : '',
+      f.compat ? ' #compat' : '',
+      f.nof32filter ? ' #nof32filter' : '',
+      f.nomsaa ? ' #nomsaa' : '',
+      f.msaa ? ' #msaa' : '',
+      f.audit ? ' audit' : '',
+      f.nopost ? ' #nopost' : '',
+      f.norender ? ' #norender' : '',
+      f.pr > 0 ? ` #pr=${f.pr}` : '',
+      f.hide.length > 0 ? ` #hide=${f.hide.join(',')}` : '',
+    ].join('');
     const lines = [`Turbogol #diag${emulated}`, ...this.header];
     const c = s.caps;
+    const secure = typeof isSecureContext === 'boolean' ? isSecureContext : false;
+    lines.push(`boot pointer ${s.pointer} | ${s.deviceMemory ?? '?'} GB | secure ${secure ? 'yes' : 'NO'} | probe ${s.probedGpu || '(not probed)'}`);
     lines.push(`caps msaa-hdr ${c.msaaHdr ? 'yes' : 'NO'} | msaa-canvas ${c.msaaCanvas ? 'yes' : 'NO'} | max tex ${c.maxTextureSize} | targets ${c.maxColorAttachments} | ceiling ${s.ceiling ?? 'none'}`);
-    lines.push(`run  tier ${s.tier} (${s.output}, msaa ${s.msaa}) | theme ${s.theme} | ${canvas.width}x${canvas.height} px (css ${canvas.clientWidth}x${canvas.clientHeight}, dpr ${window.devicePixelRatio})`);
+    lines.push(
+      `run  tier ${s.tier} (${s.reason}; ${s.output}, msaa ${s.msaa}) | theme ${s.theme} | ${canvas.width}x${canvas.height} px, ratio ${s.pixelRatio.toFixed(4)} (css ${canvas.clientWidth}x${canvas.clientHeight}, dpr ${window.devicePixelRatio})`,
+    );
     if (s.changes.length > 0) lines.push(`adj  ${s.changes.join(' | ')}`);
-    if (this.gl !== null) {
-      const pending = this.programs.filter((r) => !r.done).length;
-      lines.push(`prog ${this.programs.length} linked${pending > 0 ? ` (${pending} compiling)` : ''} | ${this.failed.length} FAILED | ${this.over.length} over the limits | ${this.glErrors} GL errors`);
-      for (const f of this.failed.slice(-4)) lines.push(`fail ${f}`);
-      for (const o of this.over.slice(-4)) lines.push(`over ${o}`);
+    const st = diagStats !== null ? diagStats.snapshot() : null;
+    if (st !== null) {
+      const ms = (v: number): string => v.toFixed(2);
+      lines.push(`fps  1 s min ${st.fpsMin1.toFixed(1)} avg ${st.fpsAvg1.toFixed(1)} | 5 s avg ${st.fpsAvg5.toFixed(1)} | frames > 50 ms ${st.over50}, > 100 ms ${st.over100} (since warm-up)`);
+      lines.push(`cpu  ms/frame: ball pred ${ms(st.cpu.pred)} (worst ${ms(st.predMax)}) | bots ${ms(st.cpu.bots)} | step ${ms(st.cpu.step)} | render ${ms(st.cpu.render)} | wasm ${(s.wasmBytes / 1048576).toFixed(1)} MB`);
     }
+    const pipelines = (this.gpu as unknown as { _pipelines?: { caches?: Map<unknown, unknown> } })._pipelines?.caches?.size ?? -1;
+    if (this.gl !== null) {
+      const pending = f.audit ? this.programs.filter((r) => !r.done).length : 0;
+      const audit = f.audit ? ` | ${this.failed.length} FAILED | ${this.over.length} over the limits | ${this.glErrors} GL errors` : ' (#diag=audit: link status, limits, GL errors)';
+      lines.push(`prog ${this.programs.length} linked${pending > 0 ? ` (${pending} compiling)` : ''}, ${pipelines} pipelines${audit}`);
+      for (const fl of this.failed.slice(-4)) lines.push(`fail ${fl}`);
+      for (const o of this.over.slice(-4)) lines.push(`over ${o}`);
+    } else lines.push(`prog ${pipelines} pipelines`);
     for (const m of this.messages) lines.push(`msg  ${m}`);
     if (this.messages.length === 0 && this.failed.length === 0) lines.push('msg  no shader or GPU errors so far');
     this.lines.length = 0;
@@ -633,7 +811,38 @@ export class GpuDiag {
     if (text !== this.lastText) {
       this.lastText = text;
       this.el.textContent = text;
-      console.info(`[diag]\n${text}`);
+      // The whole panel goes to the console when more than the running figures changed.
+      const stable = lines.filter((l) => !/^(fps|cpu|run|prog) /.test(l)).join('\n');
+      if (stable !== this.lastStable) {
+        this.lastStable = stable;
+        console.info(`[diag]\n${text}`);
+      }
+    }
+    // One machine-readable line every JSON_EVERY_S (adb logcat -s chromium, or the console).
+    if (++this.refreshes % JSON_EVERY_S === 0) {
+      const info = this.gpu.info.render;
+      console.info(
+        `[diag-json] ${JSON.stringify({
+          t: Math.round(performance.now()),
+          tier: s.tier,
+          reason: s.reason,
+          backend: c.backend,
+          px: [canvas.width, canvas.height],
+          ratio: +s.pixelRatio.toFixed(4),
+          fps1: st !== null ? [+st.fpsMin1.toFixed(1), +st.fpsAvg1.toFixed(1)] : null,
+          fps5: st !== null ? +st.fpsAvg5.toFixed(1) : null,
+          over50: st?.over50 ?? null,
+          over100: st?.over100 ?? null,
+          cpu: st !== null ? { pred: +st.cpu.pred.toFixed(2), predMax: +st.predMax.toFixed(2), bots: +st.cpu.bots.toFixed(2), step: +st.cpu.step.toFixed(2), render: +st.cpu.render.toFixed(2) } : null,
+          draws: info.drawCalls,
+          tris: info.triangles,
+          pipelines,
+          programs: this.gl !== null ? this.programs.length : null,
+          glErrors: f.audit ? this.glErrors : null,
+          wasmMB: +(s.wasmBytes / 1048576).toFixed(1),
+          msgs: this.messages.length,
+        })}`,
+      );
     }
   }
 }

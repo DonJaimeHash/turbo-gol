@@ -50,7 +50,7 @@ import type { ArenaMesh } from '../sim/arenaMesh';
 import { ARENA, BOOST_PADS_BIG, BOOST_PADS_SMALL, BOOST_PAD_BIG_RADIUS, BOOST_PAD_SMALL_RADIUS } from '../sim/constants';
 import { NUM_BOOST_PADS } from '../sim/types';
 import { simToThree } from './coords';
-import { BOOST_YELLOW, TEAM_BLUE, TEAM_RED, fresnel, glowMrt, hdrColor, lineMask, linearVec3, type FloatUniform } from './materials';
+import { BOOST_YELLOW, SHARED_INSTANCING_CAPACITY, TEAM_BLUE, TEAM_RED, fresnel, glowMrt, hdrColor, lineMask, linearVec3, type FloatUniform } from './materials';
 import { tier, type Quality } from './quality';
 import { StadiumView } from './stadium/StadiumView';
 import type { ThemeId } from './theme';
@@ -117,6 +117,8 @@ export class ArenaView {
   private readonly bigStateAttr: THREE.InstancedBufferAttribute;
   private readonly smallStateAttr: THREE.InstancedBufferAttribute;
   private readonly disposables: Disposable[] = [];
+  /** TierSpec.cheapMaterials (super low). */
+  private readonly cheap: boolean;
 
   /**
    * Build the arena for a quality tier (the tier table's `detail` here, the turf and stadium read
@@ -125,7 +127,9 @@ export class ArenaView {
   constructor(scene: THREE.Scene, mesh: ArenaMesh, quality: Quality, theme: ThemeId) {
     this.scene = scene;
     const m = mesh as unknown as ArenaMeshLike;
-    const high = tier(quality).detail === 'high';
+    const spec = tier(quality);
+    const high = spec.detail === 'high';
+    this.cheap = spec.cheapMaterials;
 
     // ---- Floor (the sim's exact floor fan when available, else a plane) ------------------------
     let floorGeo: THREE.BufferGeometry;
@@ -154,7 +158,8 @@ export class ArenaView {
     if (goalData !== undefined) {
       const goalUv = m.uvs?.goals;
       const goalGeo = toGeometry(goalData, 'goals', 0, ARENA.goalHeight * 0.5, ARENA.extentY + ARENA.goalDepth * 0.5, goalUv);
-      const goals = new THREE.Mesh(goalGeo, buildGoalMaterial(goalUv !== undefined));
+      const goals = new THREE.Mesh(goalGeo, buildGoalMaterial(goalUv !== undefined, spec.cheapMaterials));
+      goals.name = 'goals';
       goals.castShadow = false;
       goals.receiveShadow = false;
       goals.matrixAutoUpdate = false;
@@ -265,7 +270,12 @@ export class ArenaView {
     stateAttr: THREE.InstancedBufferAttribute,
   ): THREE.InstancedMesh {
     const material = buildPadMaterial(stateAttr, this.timeU);
-    const mesh = new THREE.InstancedMesh(geometry, material, positions.length);
+    // Cheap tiers: additive, one pass instead of the back-then-front pair (a pipeline less), and an
+    // instance buffer past the uniform-buffer limit so both pad sets share one program
+    // (materials.ts SHARED_INSTANCING_CAPACITY).
+    material.forceSinglePass = this.cheap;
+    const mesh = new THREE.InstancedMesh(geometry, material, this.cheap ? SHARED_INSTANCING_CAPACITY : positions.length);
+    mesh.count = positions.length;
     for (let i = 0; i < positions.length; i++) {
       const p = positions[i];
       simToThree(_p, p[0], p[1], 0);
@@ -434,16 +444,13 @@ function buildSmallPadGeometry(): THREE.BufferGeometry {
  * and a lit lintel along the top of the mouth. Blue at -z, red at +z. The sim provides planar
  * UVs (x, distance along the profile); without them a world-space projection is used.
  * Both sides: round the mouth the cage is netting, so the chamber is also seen from outside, as a
- * net box behind the end wall (forceSinglePass keeps it one draw).
+ * net box behind the end wall (forceSinglePass keeps it one draw). `cheap` (TierSpec.cheapMaterials,
+ * super low): the same net unlit, its lit share folded into a flat self-lit colour (no light loop,
+ * no environment read).
  */
-function buildGoalMaterial(hasUv: boolean): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial({
-    roughness: 0.6,
-    metalness: 0,
-    side: THREE.DoubleSide,
-    transparent: true,
-    depthWrite: false,
-  });
+function buildGoalMaterial(hasUv: boolean, cheap = false): THREE.MeshStandardNodeMaterial | THREE.MeshBasicNodeMaterial {
+  const params = { side: THREE.DoubleSide, transparent: true, depthWrite: false };
+  const m = cheap ? new THREE.MeshBasicNodeMaterial(params) : new THREE.MeshStandardNodeMaterial({ roughness: 0.6, metalness: 0, ...params });
   m.forceSinglePass = true;
   const p = positionWorld;
   const isRed = step(float(0), p.z);
@@ -460,8 +467,11 @@ function buildGoalMaterial(hasUv: boolean): THREE.MeshStandardNodeMaterial {
   void hasUv; // the sim's UVs (x, height) are kept for other materials; the net is triplanar
   const lintel = smoothstep(float(ARENA.goalHeight - 60), float(ARENA.goalHeight), p.y);
   m.opacityNode = net.mul(0.85).add(0.08);
-  m.colorNode = tint.mul(0.5);
-  m.emissiveNode = tint.mul(net.mul(0.5)).add(tint.mul(fresnel(2.5)).mul(0.3)).add(tint.mul(lintel).mul(0.8));
+  const glow = tint.mul(net.mul(0.5)).add(tint.mul(fresnel(2.5)).mul(0.3)).add(tint.mul(lintel).mul(0.8));
+  if (m instanceof THREE.MeshStandardNodeMaterial) {
+    m.colorNode = tint.mul(0.5);
+    m.emissiveNode = glow;
+  } else m.colorNode = tint.mul(0.12).add(glow);
   m.mrtNode = glowMrt(tint.mul(net.mul(0.3).add(lintel.mul(0.8))));
   return m;
 }

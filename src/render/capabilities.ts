@@ -73,6 +73,46 @@ export function withCompatCanvasMsaa(caps: Capabilities): Capabilities {
   return caps.backend === 'webgpu' && caps.compatibilityMode ? { ...caps, msaaCanvas: true } : caps;
 }
 
+/**
+ * `#nopost` (a diagnostic): a post tier's switches on the direct path, straight to the canvas
+ * without its HDR target, bloom and screen-space passes (the cost of the post chain on a device,
+ * A/B'd against the same tier). Other tiers unchanged. Pure.
+ */
+export function withoutPost(spec: TierSpec): TierSpec {
+  if (spec.output !== 'post') return spec;
+  return { ...spec, output: 'direct', bloom: false, lensFlare: false, gtao: false, ssr: false };
+}
+
+/**
+ * Whether this WebGL2 context can render into a half-float colour target (RGBA16F): enables
+ * EXT_color_buffer_float or EXT_color_buffer_half_float and checks a 4x4 target's framebuffer for
+ * completeness. three never checks, so without either extension every HalfFloat target (the
+ * world's sky cube and environment, the post tiers' scene pass) stays incomplete and draws
+ * nothing: a black world. Renderer.create runs such a device on super low, which renders no
+ * float target. Leaves no state behind (the previous framebuffer and texture bindings are restored).
+ */
+export function canRenderHalfFloat(gl: WebGL2RenderingContext): boolean {
+  if (gl.getExtension('EXT_color_buffer_float') === null && gl.getExtension('EXT_color_buffer_half_float') === null) return false;
+  const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+  const tex = gl.createTexture();
+  const fb = gl.createFramebuffer();
+  try {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, 4, 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  } catch {
+    return false;
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
+    gl.bindTexture(gl.TEXTURE_2D, prevTex);
+    gl.deleteFramebuffer(fb);
+    gl.deleteTexture(tex);
+  }
+}
+
 /** The largest power of two <= n (n >= 1). */
 function floorPow2(n: number): number {
   return 2 ** Math.floor(Math.log2(Math.max(1, n)));

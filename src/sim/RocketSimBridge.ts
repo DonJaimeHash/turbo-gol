@@ -195,6 +195,11 @@ export class RocketSim implements SimStateView {
   }
 
   // ---- SimStateView ----------------------------------------------------------------------
+  /** Bytes of this instance's wasm memory (#diag: no growth during a match). */
+  get memoryBytes(): number {
+    return this.memory.buffer.byteLength;
+  }
+
   get tickCount(): number {
     return this.buf[H_TICK_COUNT];
   }

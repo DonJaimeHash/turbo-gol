@@ -84,6 +84,7 @@ import { simRotMatToQuat, simVecLerpFromBuf } from './coords';
 import {
   BRAND_LIME,
   OpaqueAlbedoPhysicalMaterial,
+  SHARED_INSTANCING_CAPACITY,
   bumpNormal,
   cellHash3,
   glowMrt,
@@ -285,15 +286,22 @@ interface CarMaterialVariant {
   readonly knobs: number;
   /** Lamp emission gain (LAMP_GAIN_BLOOM with bloom, LAMP_GAIN_FLAT without). */
   readonly lampGain: number;
+  /**
+   * Lambert instead of the physical model (TierSpec.cheapMaterials, super low): the flat
+   * variant's albedo (livery, carbon, glass, metals' base colours) and emission (lamps, the
+   * pinstripe, the rim lift) under one diffuse lobe per light: no specular, no clearcoat, no
+   * environment read.
+   */
+  readonly cheap: boolean;
 }
 
 function carMaterialVariant(spec: TierSpec): CarMaterialVariant {
   const hi = spec.detail === 'high';
-  return { fine: hi, knobs: hi ? KNOBS_HIGH : KNOBS_LOW, lampGain: spec.bloom ? LAMP_GAIN_BLOOM : LAMP_GAIN_FLAT };
+  return { fine: hi, knobs: hi ? KNOBS_HIGH : KNOBS_LOW, lampGain: spec.bloom ? LAMP_GAIN_BLOOM : LAMP_GAIN_FLAT, cheap: spec.cheapMaterials };
 }
 
 function variantKey(v: CarMaterialVariant): string {
-  return `${v.fine ? 'fine' : 'flat'}-${v.knobs}-${v.lampGain}`;
+  return `${v.cheap ? 'lambert' : v.fine ? 'fine' : 'flat'}-${v.knobs}-${v.lampGain}`;
 }
 
 /** 1 where `kind` is `k` (kinds are integers, so the neighbours are exactly 0), else 0. */
@@ -610,8 +618,7 @@ function wheelSurface(v: CarMaterialVariant): CarSurface {
  * masks are smoothstep / saturate outputs, bumpNormal guards its normalisation and the flake tilt
  * is never normalised.
  */
-function createCarMaterial(v: CarMaterialVariant): THREE.MeshPhysicalNodeMaterial {
-  const m = new OpaqueAlbedoPhysicalMaterial();
+function createCarMaterial(v: CarMaterialVariant): CarMaterial {
   // One graph per mesh type, built on first use and shared by all the outputs (and every build).
   let body: CarSurface | null = null;
   let wheel: CarSurface | null = null;
@@ -619,6 +626,15 @@ function createCarMaterial(v: CarMaterialVariant): THREE.MeshPhysicalNodeMateria
     if ((builder.object as THREE.InstancedMesh | null)?.isInstancedMesh === true) return (wheel ??= wheelSurface(v));
     return (body ??= bodySurface(v));
   };
+  if (v.cheap) {
+    const lm = new THREE.MeshLambertNodeMaterial();
+    lm.colorNode = Fn((b) => surfaceOf(b).albedo)();
+    // NodeMaterial.setupLighting adds any material's emissiveNode (r186 types it on Standard only).
+    (lm as unknown as { emissiveNode: unknown }).emissiveNode = Fn((b) => surfaceOf(b).emissive)();
+    lm.name = 'car-surface-lambert';
+    return lm;
+  }
+  const m = new OpaqueAlbedoPhysicalMaterial();
   m.albedoNode = Fn((b) => surfaceOf(b).albedo)(); // not colorNode: keeps the livery out of the shadow pipelines
   m.metalnessNode = Fn((b) => surfaceOf(b).metalness)();
   m.roughnessNode = Fn((b) => surfaceOf(b).roughness)();
@@ -642,10 +658,13 @@ function createCarMaterial(v: CarMaterialVariant): THREE.MeshPhysicalNodeMateria
  * survives the rebuild. A tier switch builds the other variant (a different shader anyway: the
  * pipeline's MSAA and MRT change with the tier).
  */
-const sharedMaterials = new Map<string, { material: THREE.MeshPhysicalNodeMaterial; refs: number }>();
+const sharedMaterials = new Map<string, { material: CarMaterial; refs: number }>();
+
+/** The shared car material: physical on every tier but the cheap one (Lambert, super low). */
+export type CarMaterial = THREE.MeshPhysicalNodeMaterial | THREE.MeshLambertNodeMaterial;
 
 /** The shared material of tier `spec` and its variant key (for releaseCarMaterial). Exported for tests. */
-export function acquireCarMaterial(spec: TierSpec): { material: THREE.MeshPhysicalNodeMaterial; key: string } {
+export function acquireCarMaterial(spec: TierSpec): { material: CarMaterial; key: string } {
   const v = carMaterialVariant(spec);
   const key = variantKey(v);
   let entry = sharedMaterials.get(key);
@@ -684,13 +703,17 @@ interface FlameUniforms {
  * 3 underglow; `aJet` (-1 / +1, 0 for the underglow) puts a part on the left or right thruster.
  * Jet / disc vertices are unit sized and scaled by the `len` / `rad` uniforms around the nozzle.
  */
-function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number): { material: THREE.MeshBasicNodeMaterial; u: FlameUniforms } {
+function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number, cheap = false): { material: THREE.MeshBasicNodeMaterial; u: FlameUniforms } {
   const m = new THREE.MeshBasicNodeMaterial();
   m.transparent = true;
   m.blending = THREE.AdditiveBlending;
   m.depthWrite = false;
   m.side = THREE.DoubleSide;
   m.fog = false;
+  // Cheap tiers (super low): additive, so the order of the faces does not matter: one pass instead
+  // of three's back-then-front pair (one pipeline and one draw less), and the team tint a uniform
+  // (both teams' flames share one program).
+  if (cheap) m.forceSinglePass = true;
 
   const u: FlameUniforms = {
     len: uniform(FLAME_LENGTH),
@@ -713,9 +736,13 @@ function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number
 
   // Position: radial wobble growing towards the tip (vertex noise, decorrelated per jet) and a
   // slight pinch at every shock diamond; then the jet goes to its thruster.
-  const wobble = mx_noise_float(vec3(positionLocal.y.mul(2.2), positionLocal.z.mul(2.2).add(jet.mul(3.7)), t.mul(3.0).sub(clock.mul(7.0))))
-    .mul(0.18)
-    .mul(t);
+  // (Cheap tiers: no wobble. Its noise functions come out of each car's own build in another
+  // order, so every car's flame would be a program of its own.)
+  const wobble = cheap
+    ? float(0)
+    : mx_noise_float(vec3(positionLocal.y.mul(2.2), positionLocal.z.mul(2.2).add(jet.mul(3.7)), t.mul(3.0).sub(clock.mul(7.0))))
+        .mul(0.18)
+        .mul(t);
   const pinch = cos(diamondPhase).mul(-0.12).mul(t.oneMinus());
   const jetOffset = vec3(0, 0, jet.mul(jetZ));
   const coneP = positionLocal.add(normalLocal.mul(wobble.add(pinch))).mul(vec3(u.len, u.rad, u.rad)).add(jetOffset);
@@ -725,7 +752,7 @@ function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number
   m.positionNode = select(isCone, coneP, select(isDisc, discP, glowP));
 
   // Colour per part. Every pow() base below is in [0, 1].
-  const tint = color(TEAM_GLOW[team]);
+  const tint = cheap ? uniform(new THREE.Color(TEAM_GLOW[team])) : color(TEAM_GLOW[team]);
   const core = mix(vec3(1.0, 1.0, 1.0), tint, 0.2);
   const flicker = sin(t.mul(16.0).sub(clock.mul(40.0))).mul(0.12).add(0.88);
   // |n . v| is in [0, 1] for unit vectors; the saturate also maps a NaN (degenerate normal) to 0.
@@ -1303,7 +1330,10 @@ export class CarView {
     const wheelOuter = Math.min(WHEEL_OUTER, config.hitboxSize[1] * 0.5 - 2.5);
     this.track[0] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - config.frontWheelOffset[1]);
     this.track[1] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - config.backWheelOffset[1]);
-    this.wheels = new THREE.InstancedMesh(buildWheelGeometry(WHEEL_WIDTH, detail, team), material, 4);
+    // Cheap tiers: an instance buffer past the uniform-buffer limit, so every car's wheels share
+    // one program (materials.ts SHARED_INSTANCING_CAPACITY); 4 are drawn and uploaded.
+    this.wheels = new THREE.InstancedMesh(buildWheelGeometry(WHEEL_WIDTH, detail, team), material, spec.cheapMaterials ? SHARED_INSTANCING_CAPACITY : 4);
+    this.wheels.count = 4;
     this.wheels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.wheels.castShadow = true;
     this.wheels.receiveShadow = true;
@@ -1315,7 +1345,7 @@ export class CarView {
     const nozzleX = config.hitboxOffset[0] - (config.hitboxSize[0] * 0.5 - 1.5) + 0.75 - 0.2;
     const nozzleY = BOOST_NOZZLE_Y;
     _v.set(config.hitboxOffset[0] - nozzleX, config.hitboxOffset[2] - config.hitboxSize[2] * 0.5 - 1 - nozzleY, 0);
-    const flame = createFlameMaterial(team, _v, BOOST_NOZZLE_Z);
+    const flame = createFlameMaterial(team, _v, BOOST_NOZZLE_Z, spec.cheapMaterials);
     this.flameMat = flame.material;
     this.flameU = flame.u;
     this.flame = new THREE.Mesh(buildFlameGeometry(_v), this.flameMat);
@@ -1500,7 +1530,15 @@ export class CarView {
       const rest = hp[2] + CAR_REST_Z - radius;
       this.composeWheel(i, hp, rest, radius, 0, 0);
     }
-    this.wheels.instanceMatrix.needsUpdate = true;
+    this.markWheels();
+  }
+
+  /** The 4 wheel matrices changed: upload them (only them: the cheap tiers' buffer holds 1025). */
+  private markWheels(): void {
+    const im = this.wheels.instanceMatrix;
+    im.clearUpdateRanges();
+    im.addUpdateRange(0, 4 * 16);
+    im.needsUpdate = true;
   }
 
   /**
@@ -1548,6 +1586,6 @@ export class CarView {
       this.spin[i] = ang;
       this.composeWheel(i, hp, s, radius, steer, ang);
     }
-    this.wheels.instanceMatrix.needsUpdate = true;
+    this.markWheels();
   }
 }

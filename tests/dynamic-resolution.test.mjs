@@ -134,11 +134,13 @@ test('jittery, timer-paced frames with a few very short intervals do not count a
   assert.ok(dr.refreshMs > 14, `refresh ${dr.refreshMs}`);
 });
 
-test('stalls and a throttled background tab are ignored', () => {
+test('stalls and a hidden tab are ignored (the Renderer feeds nothing while the page is hidden)', () => {
   const dr = new DynamicResolution(0.6);
   warm(dr);
   for (let i = 0; i < 200; i++) assert.equal(dr.update(1000, Number.NaN), false, 'hidden tab at 1 fps');
-  for (let i = 0; i < 200; i++) assert.equal(dr.update(333, Number.NaN), false, 'background tab at 3 fps');
+  for (let i = 0; i < 200; i++) assert.equal(dr.update(600, Number.NaN), false, 'a stall over SLOW_MAX_MS');
+  // Isolated long frames among on-time ones (a compile, a GC) move nothing.
+  for (let i = 0; i < 300; i++) assert.equal(dr.update(i % 40 === 0 ? 250 : HZ60, Number.NaN), false, 'a long frame now and then');
   assert.equal(dr.scale, 1);
   assert.ok(Math.abs(dr.refreshMs - HZ60) < 0.15, 'the refresh estimate is untouched');
   assert.equal(dr.update(0, Number.NaN), false);
@@ -232,4 +234,27 @@ test('every scale is on the 0.05 grid', () => {
   const { changes } = run(dr, 120, HZ60, (s) => 21 * s * s);
   assert.ok(changes.length > 0);
   for (const [, s] of changes) assert.equal(Math.round(s * 20) / 20, s, `${s}`);
+});
+
+test('far too slow (under 10 fps): straight to the minimum, held there, and the refresh estimate untouched', () => {
+  const dr = new DynamicResolution(0.6);
+  warm(dr);
+  let changes = 0;
+  // 3 fps: the old controller ignored every one of these frames and could never help.
+  for (let i = 0; i < 12; i++) if (dr.update(333, Number.NaN)) changes++;
+  assert.equal(dr.scale, 0.6, 'the minimum at once (no probe that clamped frames could never pass)');
+  assert.equal(changes, 1);
+  for (let i = 0; i < 200; i++) dr.update(333, Number.NaN);
+  assert.equal(dr.scale, 0.6, 'held while still that slow');
+  assert.ok(Math.abs(dr.refreshMs - HZ60) < 0.15, `the refresh estimate stays the display's (${dr.refreshMs})`);
+  // The load goes away: back up in steps.
+  run(dr, 30, HZ60, () => 5);
+  assert.equal(dr.scale, 1);
+});
+
+test('far too slow with GPU timing and an idle GPU (CPU-bound): the scale stays', () => {
+  const dr = new DynamicResolution(0.6);
+  warm(dr, true);
+  for (let i = 0; i < 100; i++) dr.update(200, 4);
+  assert.equal(dr.scale, 1);
 });

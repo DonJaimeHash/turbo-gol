@@ -15,6 +15,10 @@
  *                  RANK (the share of the pitch lower than a texel equals its value, so a puddle
  *                  level of 0.2 floods 20 % of it), A = large-scale colour variation. Low frequency
  *                  only. Baked once per page load.
+ *   liteGrain()    LITE_GRAIN_SIZE^2 tileable grain for the tiers with `liteTurf` (super low), in the
+ *                  blade field's channels (R = height-like brightness, A = tint) from a two-octave
+ *                  value noise: 16 KB and a few ms instead of the blade field's 1 MB and ~140 ms
+ *                  (several seconds on a 1 GB TV's CPU).
  *   bakePoolMap()  POOL_MAP: RGB = the theme's floodlight irradiance on the pitch (the pools of light,
  *                  sqrt-encoded over POOL_MAX), A = boost-pad mask (1 on a pad: the grass blades of
  *                  the ultra tier stay off the pads). Baked once per floodlight rig: TurfView keeps
@@ -204,6 +208,36 @@ export function bakeBladeField(size = BLADE_FIELD_SIZE, blades = 5200, seed = 7)
     }
   }
   return data;
+}
+
+/** Texels per side of the lite grain, and the uu one tile covers. */
+export const LITE_GRAIN_SIZE = 64;
+export const LITE_GRAIN_TILE = 96;
+
+/** The lite grain (see the file header): tileable, deterministic. */
+export function bakeLiteGrain(size = LITE_GRAIN_SIZE, seed = 11): Uint8Array {
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      // Fine blades (two octaves, 2 and 1 texels a cell) and a broader tint; every period tiles.
+      const fine = vnoise((x / size) * 32, (y / size) * 32, seed, 32) * 0.6 + vnoise((x / size) * 64, (y / size) * 64, seed + 5, 64) * 0.4;
+      const tint = fbm((x / size) * 8, (y / size) * 8, seed + 17, 2, 8);
+      const v = toByte(fine);
+      data[i] = v;
+      data[i + 1] = 128;
+      data[i + 2] = 128;
+      data[i + 3] = toByte(tint);
+    }
+  }
+  return data;
+}
+
+let liteGrainCache: Uint8Array | null = null;
+/** The lite grain, baked on first use and shared afterwards (read-only). */
+export function liteGrain(): Uint8Array {
+  if (liteGrainCache === null) liteGrainCache = bakeLiteGrain();
+  return liteGrainCache;
 }
 
 let bladeFieldCache: Uint8Array | null = null;

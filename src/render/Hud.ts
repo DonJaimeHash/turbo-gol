@@ -45,6 +45,7 @@ import { isNodeHost } from '../net/protocol';
 import { MODES, type GameMode } from '../sim/constants';
 import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
+import { pageFlags } from './hashFlags';
 import { QUALITIES, type Quality } from './quality';
 import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from '../game/Match';
 
@@ -158,7 +159,7 @@ export interface MenuOptions {
  * Gamepad / input layer routes these while the menu is shown (the keyboard goes through the
  * Hud's own listener). 'settings' = open the settings screen (next tab while inside it),
  * 'back' = leave the settings screen, 'up' / 'down' = move the focus, 'mode' = next game mode
- * (M), 'quality' = the next quality tier (Q: low -> high -> ultra -> low).
+ * (M), 'quality' = the next quality tier (Q: superlow -> low -> high -> ultra -> superlow).
  */
 export type MenuAction = 'accept' | 'left' | 'right' | 'quality' | 'mode' | 'settings' | 'up' | 'down' | 'back' | 'online';
 
@@ -242,6 +243,7 @@ const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: Key }> = [
 
 /** The line under the Graphics tab's quality row, per tier. */
 const QUALITY_HINTS: Readonly<Record<Quality, Key>> = {
+  superlow: 'settings.qualitySuperlowHint',
   low: 'settings.qualityLowHint',
   high: 'settings.qualityHighHint',
   ultra: 'settings.qualityUltraHint',
@@ -714,9 +716,10 @@ export class Hud {
     this.netWait.hidden = true;
     this.root.appendChild(this.netWait);
 
-    const hash = typeof location !== 'undefined' ? location.hash : '';
-    this.setDebug(hash.includes('stats') || hash.includes('debug'));
-    this.setNetToggle(hash.includes('net'));
+    // Whole words of the hash (hashFlags.ts): `#hide=stadium-netting` is not `#net`.
+    const flags = pageFlags();
+    this.setDebug(flags.stats || flags.debug);
+    this.setNetToggle(flags.net);
 
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('resize', this.onResize);
@@ -1554,7 +1557,7 @@ export class Hud {
   }
 
   /**
-   * Step the tier in menu order (low -> high -> ultra, wrapping): +1 for Q, a click, accept or
+   * Step the tier in menu order (superlow -> low -> high -> ultra, wrapping): +1 for Q, a click, accept or
    * right on the Quality row, -1 for left.
    */
   private stepQuality(d: 1 | -1): void {
@@ -1876,14 +1879,19 @@ export class Hud {
   }
 
   /**
-   * Graphics: the quality tier (low / high / ultra), a line about the selected one. A pick goes to
+   * Graphics: the quality tier (super low / low / high / ultra), a line about the selected one. A pick goes to
    * MenuOptions.onQualityChange, which runs the switch behind the loading screen.
    */
   private buildGraphicsPage(): PageBuild {
     const page = el('div', 'hud-settings-page');
     page.appendChild(el('div', 'hud-settings-device', t('settings.graphicsNote')));
     const hint = el('div', 'hud-settings-hint');
-    const hints: Record<Quality, string> = { low: t(QUALITY_HINTS.low), high: t(QUALITY_HINTS.high), ultra: t(QUALITY_HINTS.ultra) };
+    const hints: Record<Quality, string> = {
+      superlow: t(QUALITY_HINTS.superlow),
+      low: t(QUALITY_HINTS.low),
+      high: t(QUALITY_HINTS.high),
+      ultra: t(QUALITY_HINTS.ultra),
+    };
     const quality = this.choiceRow<Quality>(
       t('settings.quality'),
       QUALITIES.map((q) => ({ value: q, label: t(`quality.${q}`) })),

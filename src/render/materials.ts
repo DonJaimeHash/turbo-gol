@@ -95,6 +95,17 @@ export const BOOST_YELLOW = 0xffc23a;
  */
 export const GLOW_MAX = 64;
 
+/**
+ * Instance capacity that makes three r186 read an InstancedMesh's matrices as instanced vertex
+ * attributes instead of a uniform buffer: a matrix buffer over the backend's uniform-buffer limit
+ * (65536 bytes on WebGL2 and on WebGPU's default limits: 1024 matrices) takes that path. Below it
+ * every small InstancedMesh gets a uniform block named after its own buffer node, so its shader
+ * text, and its program, is its own: one wheel program per car, one per pad set. The cheap tier
+ * (super low, TierSpec.cheapMaterials) allocates this many instances (66 KB) and draws `count`
+ * of them, so every car's wheels and both pad sets share a program each.
+ */
+export const SHARED_INSTANCING_CAPACITY = 1025;
+
 /** HDR colour: `hex` scaled by `intensity` (> 1 blooms). Writes into `out` when given. */
 export function hdrColor(hex: number, intensity: number, out: THREE.Color = new THREE.Color()): THREE.Color {
   return out.setHex(hex).multiplyScalar(intensity);

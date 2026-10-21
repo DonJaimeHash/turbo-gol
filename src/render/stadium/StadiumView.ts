@@ -22,7 +22,9 @@
  * Draw calls: netting 1, boards 1, steel 1, lamp panels 1, glare 1, stand structure 1, crowd 1 = 7,
  * + beams 1 with `beamCones` (ultra) = 8; low draws no netting (TierSpec.netting) = 6, and its
  * stands, steel and boards are unlit with the theme's light baked in (TierSpec.bakedLight,
- * palette.ts stadiumLight). Nothing casts shadows. Nothing changes per frame on the
+ * palette.ts stadiumLight). Super low also leaves out the glare (TierSpec.glare: the lamp panels
+ * stay) and the crowd (TierSpec.crowd: its people are painted on the stand rows, opaque, in the
+ * stand material) = 4. Nothing casts shadows. Nothing changes per frame on the
  * CPU: the board cards, crowd wave and flashes run on the GPU clock. A theme switch to another
  * place repaints the board atlas into the same canvas and texture (a re-upload, no new texture, no
  * recompile).
@@ -99,7 +101,8 @@ export class StadiumView {
     this.add(parent, new THREE.Mesh(buildSteelGeometry(spec).geometry, buildSteelMaterial(spec, this.u)), 'stadium-steel');
 
     // ---- Floodlights: lamp panels, glare (+ beams on ultra) ---------------------------------
-    const lights = [buildLampPanels(this.u), buildGlare(spec, this.u)];
+    const lights = [buildLampPanels(this.u)];
+    if (spec.glare) lights.push(buildGlare(spec, this.u));
     if (spec.beamCones) lights.push(buildBeams(this.u));
     for (const h of lights) {
       this.add(parent, h.mesh);
@@ -108,7 +111,7 @@ export class StadiumView {
 
     // ---- Stands and crowd (2) ------------------------------------------------------------------
     this.add(parent, new THREE.Mesh(buildStandGeometry(), buildStandMaterial(spec, this.u)), 'stadium-stands');
-    this.add(parent, buildCrowd(spec, this.u).mesh);
+    if (spec.crowd) this.add(parent, buildCrowd(spec, this.u).mesh);
 
     this.setTheme(theme); // paints the board atlas with the theme's place
   }

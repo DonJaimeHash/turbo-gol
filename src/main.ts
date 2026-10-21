@@ -11,7 +11,8 @@
  * Load timing: each step leaves a `performance.mark` ('turbogol:renderer' once the renderer and
  * the world's first bake or cache read are ready, ':physics', ':scene', ':warmup' after the
  * warm-up render compiled every pipeline, ':gpu-ready' once the GPU finished that work on
- * WebGPU), read from the console or a profiler; marks cost nothing measurable.
+ * WebGPU, ':menu' once the loading screen is gone), read from the console or a profiler; marks
+ * cost nothing measurable.
  */
 import { Game, addRoster, loadPrefs } from './game/Game';
 import { t } from './i18n';
@@ -78,7 +79,9 @@ async function boot(): Promise<void> {
   );
   let renderer: Renderer;
   try {
-    // The WebGL2 fallback starts on low unless the player picked a tier (quality.ts startingQuality).
+    // The boot tier (bootTier.ts: #superlow, the tab's recovery, the player's pick, super low on a
+    // 1 GB device or a TV on the slow GPU list) picks the backend; then the WebGL2 fallback starts on
+    // low unless the player picked a tier (quality.ts startingQuality).
     renderer = await Renderer.create(canvas, { quality: prefs.quality, qualityChosen: prefs.qualitySet, theme: prefs.theme });
   } catch (err) {
     showError(t('boot.rendererFailed'), t('boot.rendererHint'), err);
@@ -151,6 +154,7 @@ async function boot(): Promise<void> {
   game.start();
   await paintedFrames(2);
   await loading.hide();
+  performance.mark('turbogol:menu');
   // The tier safety net listens from now on (a failure of the warm-up is handled now, behind its
   // own loading screen): render/tierGuard.ts.
   game.bootDone();

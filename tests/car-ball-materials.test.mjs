@@ -162,3 +162,16 @@ test('car: one shared material per tier variant (high and ultra share it), dispo
   releaseCarMaterial(again.key);
   releaseCarMaterial(low.key);
 });
+
+test('car: super low shares one Lambert material (no clearcoat, no environment)', () => {
+  const sl = acquireCarMaterial(tier('superlow'));
+  const low = acquireCarMaterial(tier('low'));
+  assert.notEqual(sl.key, low.key);
+  assert.equal(sl.material.type, 'MeshLambertNodeMaterial');
+  assert.equal(low.material.type, 'MeshPhysicalNodeMaterial', 'low keeps the physical model');
+  const again = acquireCarMaterial(tier('superlow'));
+  assert.equal(again.material, sl.material, 'every car of the tier shares it');
+  releaseCarMaterial(again.key);
+  releaseCarMaterial(sl.key);
+  releaseCarMaterial(low.key);
+});
