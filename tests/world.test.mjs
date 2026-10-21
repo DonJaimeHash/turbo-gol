@@ -216,3 +216,47 @@ test('copyRows: drops the row padding of a readback and can reverse the rows', (
   cache.copyRows(tight, 2, 2, 1, out2, 4, true);
   assert.deepEqual([...out2], [0, 0, 0, 0, 3, 4, 1, 2]);
 });
+
+const { createLatestQueue } = await import('../src/render/world/queue.ts');
+
+test('latest-wins queue: an idle request that needs no work never wedges later requests', async () => {
+  const ran = [];
+  const q = createLatestQueue('a', (x, y) => x === y, async (w) => { ran.push(w); }, { alive: () => true, onError: () => {} });
+  await q.request('a');
+  assert.deepEqual(ran, ['a']);
+  // nothing to do (e.g. a tier switch between two tiers with the same bake sizes)...
+  await q.request('a');
+  assert.deepEqual(ran, ['a']);
+  // ...and the next real change still runs (it used to return the settled loop and do nothing)
+  await q.request('b');
+  assert.deepEqual(ran, ['a', 'b']);
+  assert.equal(q.wanted, 'b');
+});
+
+test('latest-wins queue: wishes made during a run collapse to the newest one', async () => {
+  const ran = [];
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const q = createLatestQueue('a', (x, y) => x === y, async (w) => { ran.push(w); if (w === 'a') await gate; }, { alive: () => true, onError: () => {} });
+  const first = q.request('a');
+  const second = q.request('b');
+  q.request('c');
+  assert.equal(first, second, 'one loop at a time');
+  release();
+  await first;
+  assert.deepEqual(ran, ['a', 'c']);
+});
+
+test('latest-wins queue: failures are reported and the loop goes on; a dead owner does nothing', async () => {
+  const errs = [];
+  const ran = [];
+  let alive = true;
+  const q = createLatestQueue('a', (x, y) => x === y, (w) => { ran.push(w); if (w === 'a') throw new Error('sync boom'); return Promise.resolve(); }, { alive: () => alive, onError: (e) => errs.push(e.message) });
+  await q.request('a');
+  assert.deepEqual(errs, ['sync boom']);
+  await q.request('b');
+  assert.deepEqual(ran, ['a', 'b'], 'a synchronous throw does not wedge the queue');
+  alive = false;
+  await q.request('c');
+  assert.deepEqual(ran, ['a', 'b']);
+});

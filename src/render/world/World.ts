@@ -54,6 +54,7 @@ import type { Lamp } from './geo';
 import { LIGHTHOUSE_LANTERN, QUAY, SEA_LEVEL, buildHarbourFar, buildHarbourLive, type HarbourLive } from './harbour';
 import { buildLightMap, lightMapFromData, type LightMap } from './lightmap';
 import { dirFromAzEl, worldPreset, type SkylineId, type WorldPreset } from './presets';
+import { createLatestQueue } from './queue';
 
 /** Where the cube is rendered from: mid-pitch, at chase / broadcast camera height. */
 export const BAKE_ORIGIN = new THREE.Vector3(0, 250, 0);
@@ -148,11 +149,11 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   };
   // The cache read goes first. Building the live layer (CPU) waits for the database to be open,
   // so that the read's I/O runs while the geometry is built (see realise).
-  let wanted: Want = { theme, spec };
+  const first: Want = { theme, spec };
   let early: { key: string; opened: Promise<boolean>; read: Promise<CachedBake | null> } | null = null;
   if (!noCache) {
-    const key = keyOf(wanted);
-    early = { key, opened: openCache(), read: readBake(key, shapeOf(wanted)) };
+    const key = keyOf(first);
+    early = { key, opened: openCache(), read: readBake(key, shapeOf(first)) };
   }
 
   // ---- fog: one node for the scene's lifetime (its cache key never changes), uniforms only
@@ -299,8 +300,31 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     env.update({ cube: cube.texture, turf: preset.envTurf, lamps: tw.floodlights, lampRadiance: preset.envLamp });
   }
 
-  /** Bake `want` into the current targets (GPU); the cache write runs afterwards. */
-  async function bake(want: Want, key: string): Promise<WorldBakeStats> {
+  /**
+   * The current cube and environment targets have `want`'s sizes. A tier switch that lands while a
+   * bake compiles or a cache read is in flight swaps them for other sizes: drawing or decoding the
+   * old sizes into them would show garbage (and cache a record that no key can use), so that work
+   * is dropped and the queue goes on with the newer wish.
+   */
+  function fits(want: Want): boolean {
+    const [envW, envH] = pmremAtlasSize(want.spec.envSize);
+    return cube.width === want.spec.skyCubeSize && env.target.width === envW && env.target.height === envH;
+  }
+
+  /** Free a skyline's bake geometry (13 MB for the harbour; rebuilt in ~50 ms by a later bake). */
+  function dropFar(k: BakeKit, skyline: SkylineId): void {
+    const m = k.far.get(skyline);
+    if (m === undefined) return;
+    k.scene.remove(m);
+    m.geometry.dispose();
+    k.far.delete(skyline);
+  }
+
+  /**
+   * Bake `want` into the current targets (GPU); the cache write runs afterwards. Null when the
+   * targets changed size meanwhile (see `fits`).
+   */
+  async function bake(want: Want, key: string): Promise<WorldBakeStats | null> {
     const t0 = performance.now();
     const preset = worldPreset(want.theme);
     const tw = themeWorld(want.theme);
@@ -325,6 +349,10 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     await compiling;
     const compileMs = performance.now() - tc;
     if (disposed) throw new Error('world disposed during a bake');
+    if (!fits(want)) {
+      dropFar(k, preset.skyline);
+      return null;
+    }
 
     // ---- synchronous from here: no frame renders between the new uniforms and the new cube
     const tr = performance.now();
@@ -359,12 +387,10 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const envH = env.target.height;
     const envRead = baker.encode2D(env.target.texture, envW, envH);
     // bake-only memory: the SSAA scratch target, the mirror cube (re-allocated next bake) and the
-    // far skyline (13 MB for the harbour; rebuilt in ~50 ms by a later bake, usually a cache hit)
+    // far skyline (usually a later visit is a cache hit)
     baker.releaseScratch();
     k.mirror.dispose();
-    k.scene.remove(far);
-    far.geometry.dispose();
-    k.far.delete(preset.skyline);
+    dropFar(k, preset.skyline);
     const renderMs = performance.now() - tr;
 
     void storeBake(key, face, reads, lutRead, envRead, envW, envH, lm, enc);
@@ -452,40 +478,22 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     if (early !== null && early.key === key) rec = await early.read;
     else if (!noCache) rec = await readBake(key, shapeOf(want));
     early = null;
-    if (disposed) return;
+    if (disposed || !fits(want)) return;
     if (rec !== null) {
       showCached(want, rec);
       stats.push({ theme: want.theme, face, source: 'cache', totalMs: performance.now() - t0, geometryMs: 0, compileMs: 0, renderMs: 0, sinceCreateMs: performance.now() - created });
       return;
     }
-    stats.push(await bake(want, key));
+    const baked = await bake(want, key);
+    if (baked !== null) stats.push(baked);
   }
 
-  // ---- serialised work: the latest wanted theme / sizes win
-  let done: Want | null = null;
-  let running: Promise<void> | null = null;
-  const same = (a: Want | null, b: Want): boolean => a !== null && keyOf(a) === keyOf(b);
-  function schedule(): Promise<void> {
-    if (running !== null) return running;
-    running = (async () => {
-      try {
-        while (!disposed && !same(done, wanted)) {
-          const w = wanted;
-          try {
-            await realise(w);
-          } catch (err) {
-            if (!disposed) console.error('[world] bake failed', err);
-          }
-          done = w;
-        }
-      } finally {
-        running = null;
-      }
-    })();
-    return running;
-  }
-
-  const ready = schedule();
+  // ---- serialised work: the latest wanted theme / sizes win (queue.ts)
+  const queue = createLatestQueue<Want>(first, (a, b) => keyOf(a) === keyOf(b), realise, {
+    alive: () => !disposed,
+    onError: (err) => console.error('[world] bake failed', err),
+  });
+  const ready = queue.request(first);
 
   return {
     ready,
@@ -518,13 +526,11 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
         scene.environment = env.target.texture;
         updateEnv();
       }
-      wanted = { theme: wanted.theme, spec: next };
-      void schedule();
+      void queue.request({ theme: queue.wanted.theme, spec: next });
     },
     setTheme(t) {
       if (disposed) return;
-      wanted = { theme: t, spec };
-      void schedule();
+      void queue.request({ theme: t, spec });
     },
     dispose() {
       disposed = true;
