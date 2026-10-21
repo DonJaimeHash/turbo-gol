@@ -165,6 +165,11 @@ function topOf(skyline: SkylineId): readonly [number, number] {
 
 const _c = new THREE.Color();
 
+/** Fire an object's 'dispose' event: three's renderer frees the object's render objects on it. */
+function disposeObject(o: THREE.Object3D): void {
+  (o as unknown as THREE.EventDispatcher<{ dispose: object }>).dispatchEvent({ type: 'dispose' });
+}
+
 function parallaxIterations(s: TierSpec): number {
   return s.detail === 'high' ? 2 : 1;
 }
@@ -408,11 +413,18 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     return cube.width === want.spec.skyCubeSize && env.target.width === envW && env.target.height === envH;
   }
 
-  /** Free a skyline's bake geometry (13 MB for the harbour; rebuilt in ~50 ms by a later bake). */
+  /**
+   * Free a skyline's bake geometry (13 MB for the harbour; rebuilt in ~50 ms by a later bake). The
+   * renderer keeps one render object per mesh and pass (bindings, and through them the geometry's
+   * CPU arrays) until the MESH is disposed: three r186 frees them on the object's 'dispose' event
+   * only (geometry.dispose frees the GPU buffers). Without it every bake kept its far geometry
+   * alive, ~10 MB of JS heap and a uniform buffer per theme switch that baked.
+   */
   function dropFar(k: BakeKit, skyline: SkylineId): void {
     const m = k.far.get(skyline);
     if (m === undefined) return;
     k.scene.remove(m);
+    disposeObject(m);
     m.geometry.dispose();
     k.far.delete(skyline);
   }
@@ -660,7 +672,10 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
       if (lutData !== null) lutData.dispose();
       baker.dispose();
       if (kit !== null) {
-        for (const m of kit.far.values()) m.geometry.dispose();
+        for (const m of kit.far.values()) {
+          disposeObject(m);
+          m.geometry.dispose();
+        }
         for (const d of kit.trash) d.dispose();
         kit = null;
       }
