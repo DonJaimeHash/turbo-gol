@@ -5,10 +5,15 @@
  * its world cell and nothing swims as the camera moves. Blades shrink to nothing toward the patch
  * edge (BLADE_RANGE from the camera) and widen with distance so they never get thinner than about a
  * pixel (no sparkle), their colour comes from the turf's own palette and field maps (grassAlbedo),
- * so they fade into the floor.
+ * so they fade into the floor. A blade loses its width with its height: one with (almost) no height
+ * would lie flat in the floor plane and z-fight with it as dots of blade colour, so it degenerates
+ * to zero area and draws nothing.
  *
  * Readability: no blades on the boost pads (the pool map's pad mask) or in the puddles (drowned),
  * blades on the markings are painted and shorter, nothing off the flat floor (ramps, goals).
+ *
+ * Glow: `noGlowMrt()` (an untagged lit material would overwrite the glow target with its own
+ * emissive, i.e. bloom the pools' light and erase the goal-mouth glow under the blades).
  *
  * Per frame (CPU): onBeforeRender writes the patch origin (one Vector2) and skips the draw
  * (instanceCount 0) while the camera is higher than BLADE_MAX_CAMERA_Y above the pitch, where every
@@ -41,7 +46,7 @@ import {
   vec3,
 } from 'three/tsl';
 import { ARENA } from '../../sim/constants';
-import type { Vec3Node } from '../materials';
+import { noGlowMrt, type Vec3Node } from '../materials';
 import { FIELD_MAP, GRASS_HEIGHT, POOL_MAP, POOL_MAX, TURF_TILE } from './bake';
 import { markingsCoverage, roundedRectSdf } from './markings';
 import { PAINT, bandBend, floorMapUv, grassAlbedo, mowingStripes, teamTint, v3, viewN, type TurfTextures, type TurfUniforms } from './turfMaterial';
@@ -54,13 +59,18 @@ const BLADE_MAX_CAMERA_Y = BLADE_RANGE + 60;
 /** Blade half width at the root (uu) and the distance from which it widens to stay ~1 px. */
 const BLADE_HALF_WIDTH = 0.2;
 const BLADE_WIDEN_FROM = 140;
+/** Blade heights (uu) over which the width goes from 0 to full (a flat blade must not draw). */
+const BLADE_SOLID_FROM = 0.25;
+const BLADE_SOLID_AT = 0.9;
+/** Blade roughness dry .. damp (broad: a sheen like the floor's, never glints). */
+const BLADE_ROUGHNESS: readonly [number, number] = [0.9, 0.66];
 
 const _cam = new THREE.Vector3();
 
 export class GrassBlades {
   readonly mesh: THREE.Mesh;
   private readonly geometry: THREE.InstancedBufferGeometry;
-  private readonly material: THREE.MeshLambertNodeMaterial;
+  private readonly material: THREE.MeshStandardNodeMaterial;
   private readonly origin: UniformNode<'vec2', THREE.Vector2>;
   private readonly total: number;
   private warm = false;
@@ -78,10 +88,13 @@ export class GrassBlades {
     geo.instanceCount = this.total;
     this.geometry = geo;
 
-    // Lambert: the blades are thin, rough and seen in their thousands; a specular lobe per blade
-    // would only add sparkle (the turf below carries the wet sheen and the streaks).
-    const m = new THREE.MeshLambertNodeMaterial({ side: THREE.DoubleSide });
+    // MeshStandard with a broad lobe (BLADE_ROUGHNESS): the blades must pick up the same damp sheen
+    // as the floor round them. Lambert blades (no specular) read as a band of dark dots wherever
+    // the floor shows a key light's sheen; the lobe is rough enough not to sparkle and costs no
+    // measurable time over Lambert (both ~0.13 ms on ultra at the chase camera).
+    const m = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide });
     m.name = 'turf-blades';
+    m.metalnessNode = float(0);
 
     // -- the blade's world cell and its random values
     const ii = float(instanceIndex);
@@ -128,7 +141,13 @@ export class GrassBlades {
     const leanAmt = h2.mul(0.45).add(0.25);
     const lean = vec3(sin(yaw).negate().mul(0.55).add(bend.x.mul(0.2)), 0, cos(yaw).mul(0.55).add(bend.y.mul(0.65))).mul(leanAmt);
     const t = positionLocal.y;
-    const halfW = float(BLADE_HALF_WIDTH).mul(h2.mul(0.5).add(0.75)).mul(max(float(1), dCam.div(BLADE_WIDEN_FROM)));
+    // Width goes to 0 with the height: a blade faded out (patch edge), masked (pads) or off the flat
+    // floor would otherwise lie in the floor plane and z-fight with it (it draws after the floor
+    // with the same depth), a ring of dark dots following the camera.
+    const halfW = float(BLADE_HALF_WIDTH)
+      .mul(h2.mul(0.5).add(0.75))
+      .mul(max(float(1), dCam.div(BLADE_WIDEN_FROM)))
+      .mul(smoothstep(BLADE_SOLID_FROM, BLADE_SOLID_AT, height));
     m.positionNode = vec3(root.x, 0, root.y)
       .add(side.mul(positionLocal.x.mul(halfW)))
       .add(vec3(0, t.mul(height), 0))
@@ -144,15 +163,18 @@ export class GrassBlades {
     col = col.mul(mix(float(1), float(0.75), dampLocal));
     col = mix(col, v3(PAINT), paint.mul(t.mul(0.4).add(0.6)));
     m.colorNode = varying(col);
-    // The floodlight pools light the blades like the floor below (same baked irradiance). NodeMaterial
-    // reads emissiveNode on every lit material; the r186 typings only declare it on MeshStandard.
-    (m as unknown as { emissiveNode: Vec3Node }).emissiveNode = varying(col.mul(pool.rgb.mul(pool.rgb).mul(POOL_MAX).mul(U.pools)));
+    m.roughnessNode = varying(mix(float(BLADE_ROUGHNESS[0]), float(BLADE_ROUGHNESS[1]), dampLocal));
+    // The floodlight pools light the blades like the floor below (same baked irradiance).
+    m.emissiveNode = varying(col.mul(pool.rgb.mul(pool.rgb).mul(POOL_MAX).mul(U.pools)));
 
     // Soft normal: part face normal, mostly up (blades are thin and translucent), flipped on the
     // back face so both sides light alike.
     const faceN = normalize(cross(side, vec3(0, 1, 0).add(lean.mul(t.mul(2)))));
     const faceV = varying(faceN);
     m.normalNode = viewN(normalize(mix(faceV.mul(faceDirection), vec3(0, 1, 0), 0.6)));
+    // Never in the glow target: the emissive above is the pools' light, not a glow, and an
+    // untagged material would also overwrite the goal-mouth glow the floor wrote under the blades.
+    m.mrtNode = noGlowMrt();
     this.material = m;
 
     const mesh = new THREE.Mesh(geo, m);
