@@ -5,9 +5,9 @@
  *
  * Load-time work (behind the boot overlay, measured in Chrome): the blade field (~140 ms) and the
  * field map (~80 ms) are baked once per page load and shared by every TurfView (bake.ts); the pool
- * map is baked from the theme's floodlights (~30-60 ms) once per theme and cached, so a tier switch
- * (which rebuilds the views) bakes nothing. setTheme otherwise writes uniforms only: the light
- * count, the lamp count and the material variant never change with the theme.
+ * map is baked from the theme's floodlights (~30-60 ms) once per floodlight rig and cached, so a
+ * tier switch (which rebuilds the views) bakes nothing. setTheme otherwise writes uniforms only:
+ * the light count, the lamp count and the material variant never change with the theme.
  *
  * Per tier (quality.ts), at 1600x900 CSS on the chase camera (docs/visuals/REWORK.md budgets):
  *   low    flat filtered blade texture (2x anisotropic), damp sheen, no puddles, `turfStreaks` (4)
@@ -23,7 +23,7 @@
 import * as THREE from 'three/webgpu';
 import type { FloatUniform } from '../materials';
 import { tier, type Quality, type TierSpec } from '../quality';
-import { themeWorld, type ThemeId } from '../theme';
+import { themeWorld, type ThemeId, type ThemeWorld } from '../theme';
 import { BLADE_FIELD_SIZE, FIELD_MAP, POOL_MAP, bakePoolMap, bladeField, fieldMap, streakLamps } from './bake';
 import { GrassBlades } from './grassBlades';
 import { buildTurfMaterial, createTurfUniforms, type TurfTextures, type TurfUniforms } from './turfMaterial';
@@ -35,13 +35,18 @@ const LAMP_RADIUS = 260;
 const POOL_GAIN = 0.45;
 const STREAK_GAIN = 0.3;
 
-/** The pool map of each theme seen so far (static per theme: baked once, then reused). */
-const POOL_MAPS = new Map<ThemeId, Uint8Array>();
+/**
+ * The pool map of each floodlight rig seen so far (static: baked once, then reused). Keyed by the
+ * theme's floodlight list, not its id: themes not built yet share the default theme's world (and
+ * its list), so they share its map instead of baking identical copies.
+ */
+const POOL_MAPS = new WeakMap<ThemeWorld['floodlights'], Uint8Array>();
 function poolMapOf(theme: ThemeId): Uint8Array {
-  let data = POOL_MAPS.get(theme);
+  const rig = themeWorld(theme).floodlights;
+  let data = POOL_MAPS.get(rig);
   if (data === undefined) {
-    data = bakePoolMap(themeWorld(theme).floodlights);
-    POOL_MAPS.set(theme, data);
+    data = bakePoolMap(rig);
+    POOL_MAPS.set(rig, data);
   }
   return data;
 }
@@ -101,7 +106,7 @@ export class TurfView {
 
   /**
    * The stadium theme changed: uniform writes and the theme's pool map into the same texture (baked
-   * on the theme's first use, ~30-60 ms); never a rebuild or a recompile.
+   * on its floodlight rig's first use, ~30-60 ms); never a rebuild or a recompile.
    */
   setTheme(theme: ThemeId): void {
     if (theme === this.theme) return;

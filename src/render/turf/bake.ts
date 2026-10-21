@@ -8,7 +8,7 @@
  *                  (0.5 = flat), A = tint (a tileable clump noise mixed with a per-blade random
  *                  value). Uploaded with mipmaps and anisotropic filtering, so the GPU's filter
  *                  anti-aliases the blade detail: crisp blades at the car's feet, a calm average far
- *                  away, no shimmer at grazing angles. Baked once per page load (~100 ms), shared by
+ *                  away, no shimmer at grazing angles. Baked once per page load (~140 ms), shared by
  *                  every TurfView (a tier switch rebuilds the views, not the bake).
  *   fieldMap()     FIELD_MAP over the whole floor: R = wear (trampled turf, bare soil in the goal
  *                  mouths), G = damp (wet patches, worse drainage near the walls), B = puddle basin
@@ -17,7 +17,8 @@
  *                  only. Baked once per page load.
  *   bakePoolMap()  POOL_MAP: RGB = the theme's floodlight irradiance on the pitch (the pools of light,
  *                  sqrt-encoded over POOL_MAX), A = boost-pad mask (1 on a pad: the grass blades of
- *                  the ultra tier stay off the pads). Re-baked in place by a theme change.
+ *                  the ultra tier stay off the pads). Baked once per floodlight rig: TurfView keeps
+ *                  each rig's map and swaps it into the pool texture on a theme change.
  *
  * Axes: three.js world space in uu (x across the field, z along it: sim y = three z; y up).
  */
@@ -382,8 +383,8 @@ function padMaskBytes(): Uint8Array {
 }
 
 /**
- * Bake the pool map of `floodlights` into `out` (allocated when absent; a theme change re-bakes
- * into the texture's own buffer). Texel (i, j) samples its centre, like the GPU's bilinear filter.
+ * Bake the pool map of `floodlights` into `out` (allocated when absent). Texel (i, j) samples its
+ * centre, like the GPU's bilinear filter.
  */
 export function bakePoolMap(floodlights: readonly Floodlight[], out: Uint8Array = new Uint8Array(POOL_MAP.w * POOL_MAP.h * 4)): Uint8Array {
   const { w, h, x0, z0, sx, sz } = POOL_MAP;

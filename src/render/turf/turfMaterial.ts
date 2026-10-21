@@ -496,8 +496,9 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
     return e;
   })() as unknown as Vec3Node;
 
-  // Goal-mouth glow: fades in over the last metres before the line (strongest at the line), pulses
-  // gently. Dimmer than on the old bright floor in colour; the bloom input stays about the same.
+  // Goal-mouth glow: fades in over the last metres before the line (strongest at the line, the cube
+  // of the old ramp, so tighter to it), pulses gently. Dimmer than on the old bright floor in colour;
+  // the bloom input at the line stays about the same as the old floor's.
   const bz = ARENA.extentY - ARENA.backRampRadius - 60;
   const mouthK = smoothstep(float(bz - 700), float(bz + 100), az);
   const inMouth = step(abs(p.x), float(ARENA.goalHalfWidth + 40)).mul(mouthK).mul(mouthK).mul(mouthK);
