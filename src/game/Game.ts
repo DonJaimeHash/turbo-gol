@@ -2177,13 +2177,15 @@ export class Game implements P2PGameHooks {
     }
     this.audio.update(dt, as);
 
+    // The frame's rAF timestamp (ms) drives dynamic resolution.
+    const frameMs = this.lastTime * 1000;
     if (this.warmFrames > 0) {
       this.warmFrames--;
       this.setWarm(true);
-      renderer.render();
+      renderer.render(frameMs);
       this.setWarm(false);
     } else {
-      renderer.render();
+      renderer.render(frameMs);
     }
   }
 
@@ -2293,9 +2295,11 @@ export class Game implements P2PGameHooks {
     // GPU frame time when the renderer exposes it (timestamp queries); guarded so either renderer works.
     const gpuMs = (this.renderer as unknown as { gpuTimeMs?: number }).gpuTimeMs;
     const gpuInfo = typeof gpuMs === 'number' && gpuMs >= 0 ? ` · gpu ${gpuMs.toFixed(1)} ms` : '';
+    // Dynamic-resolution scale of the scene pass (tiers that have it).
+    const resInfo = Number.isNaN(stats.resolutionScale) ? '' : ` · res ${stats.resolutionScale.toFixed(2)}`;
     // Gamepad input never unlocks audio (no user activation): tell pad-only players what to press.
     const soundHint = !this.audio.running && this.input.hasGamepad && !this.menuShown ? ' · press a key or click for sound' : '';
-    this.hud.setFps(this.fps, `${this.renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · ${stats.drawCalls} draws${gpuInfo}${soundHint}`);
+    this.hud.setFps(this.fps, `${this.renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · ${stats.drawCalls} draws${gpuInfo}${resInfo}${soundHint}`);
   }
 
   /**

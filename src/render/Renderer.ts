@@ -19,6 +19,12 @@
  * the render-pass timestamps every frame; `gpuTimeMs` / `stats().gpuMs` expose them (0 when the
  * backend has no timestamp queries). Off by default: the per-frame resolve allocates a promise.
  *
+ * Dynamic resolution (tiers with `dynamicResolution`): loop frames pass their rAF timestamp to
+ * render(); a DynamicResolution controller (dynamicResolution.ts) turns the intervals (and the GPU
+ * time with `#stats`) into a scene-pass scale between the tier's minResolutionScale and 1, applied
+ * with PassNode.setResolutionScale: the composite upsamples the scene, bloom (sized from the
+ * drawing buffer), the vignette and FXAA run at full size. `stats().resolutionScale` reports it.
+ *
  * NaN hygiene: the pass targets are HalfFloat, and a single NaN texel in the emissive target
  * would blur through the bloom mips into a big black rectangle (NaN + x = NaN in the composite,
  * NaN -> 0 in the final unorm write). Every read of a pass target in the composite is therefore
@@ -62,6 +68,7 @@ import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ARENA } from '../sim/constants';
 import { GLOW_MAX, glowMrt, type Vec3Node } from './materials';
+import { DynamicResolution } from './dynamicResolution';
 import { tier, type Quality } from './quality';
 import { DEFAULT_THEME, type ThemeId } from './theme';
 
@@ -77,6 +84,8 @@ export interface RenderStats {
   triangles: number;
   /** Mean GPU render time (ms) over the frames since the previous stats() call; 0 when unavailable. */
   gpuMs: number;
+  /** Scene-pass resolution scale set by dynamic resolution (1 = full); NaN on tiers without it. */
+  resolutionScale: number;
 }
 
 /** Camera planes in uu (1 uu = 1 three unit). */
@@ -251,7 +260,12 @@ export class Renderer {
   private scenePass: ReturnType<typeof pass> | null = null;
   private bloomPass: ReturnType<typeof bloom> | null = null;
   private envTarget: Disposable | null = null;
-  private readonly statsOut: RenderStats = { drawCalls: 0, triangles: 0, gpuMs: 0 };
+  private readonly statsOut: RenderStats = { drawCalls: 0, triangles: 0, gpuMs: 0, resolutionScale: Number.NaN };
+  /** Dynamic resolution (tiers with `dynamicResolution`): scales the scene pass to hold the refresh rate. */
+  private readonly dynRes = new DynamicResolution();
+  private dynamicResolution = false;
+  /** requestAnimationFrame timestamp (ms) of the previous loop frame; -1 after a tier switch. */
+  private lastFrameAt = -1;
   private gpuSum = 0;
   private gpuFrames = 0;
   /** `#nancheck` diagnostics (null = off, the default). */
@@ -391,11 +405,22 @@ export class Renderer {
    * Draw one frame through the pipeline. The scene must always go through the PassNode (whose
    * targets are named `output` / `emissive`): a direct `gpu.render(scene, camera)` would compile
    * the glow-tagged materials against the renderer's unnamed internal framebuffer and fail.
+   *
+   * `frameTime`: the frame's requestAnimationFrame timestamp (ms). Loop frames pass it so dynamic
+   * resolution sees the presentation intervals; one-off renders (the boot warm-up) leave it out.
    */
-  render(): void {
+  render(frameTime?: number): void {
     // ResizeObserver callbacks wait for the next rendering update; checking here as well means the
     // frame about to be drawn never uses a stale aspect (two layout reads, no allocation).
     if (this.canvas.clientWidth !== this.cssW || this.canvas.clientHeight !== this.cssH) this.resize();
+    if (frameTime !== undefined) {
+      if (this.dynamicResolution && this.lastFrameAt >= 0 && this.scenePass !== null) {
+        // GPU time of the last resolved frame when `#stats` timing is on, else intervals only.
+        const gpuMs = this.gpuTimingEnabled ? this.gpu.info.render.timestamp : Number.NaN;
+        if (this.dynRes.update(frameTime - this.lastFrameAt, gpuMs)) this.scenePass.setResolutionScale(this.dynRes.scale);
+      }
+      this.lastFrameAt = frameTime;
+    }
     this.gpu.info.reset();
     if (this.pipeline !== null) this.pipeline.render();
     if (this.nanReport !== null && ++this.nanFrame % NANCHECK_EVERY === 0 && !this.nanBusy) void this.runNanCheck();
@@ -415,12 +440,16 @@ export class Renderer {
     return this.gpuTimingEnabled ? this.statsOut.gpuMs : Number.NaN;
   }
 
-  /** Draw calls / triangles of the last frame, mean GPU ms since the last call (same object every call). */
+  /**
+   * Draw calls / triangles of the last frame, mean GPU ms since the last call and the current
+   * dynamic-resolution scale (same object every call).
+   */
   stats(): RenderStats {
     const r = this.gpu.info.render;
     this.statsOut.drawCalls = r.drawCalls;
     this.statsOut.triangles = r.triangles;
     this.statsOut.gpuMs = this.gpuFrames > 0 ? this.gpuSum / this.gpuFrames : 0;
+    this.statsOut.resolutionScale = this.dynamicResolution ? this.dynRes.scale : Number.NaN;
     this.gpuSum = 0;
     this.gpuFrames = 0;
     return this.statsOut;
@@ -521,6 +550,10 @@ export class Renderer {
     this.sun.shadow.radius = spec.shadowRadius;
 
     this.teardownPipeline();
+    // A new scene pass starts at full resolution; the controller starts over in the tier's range.
+    this.dynamicResolution = spec.dynamicResolution;
+    this.dynRes.reset(spec.dynamicResolution ? spec.minResolutionScale : 1);
+    this.lastFrameAt = -1;
 
     // Scene pass: HDR HalfFloat target, MSAA on the tiers that ask for it (the renderer itself is
     // created without antialias so nothing else is multisampled). The WebGPU backend only supports
