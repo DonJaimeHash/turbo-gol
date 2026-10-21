@@ -162,6 +162,9 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
       if (probe !== null) {
         probe.pmrem.dispose();
         for (const t of probe.trash) t.dispose();
+        // the live copy shares the world's geometry and material (neither is disposed here): its
+        // own 'dispose' event frees its render objects, which would keep this probe's scene alive
+        if (probe.live !== null) (probe.live as unknown as THREE.EventDispatcher<{ dispose: object }>).dispatchEvent({ type: 'dispose' });
         probe = null;
       }
     },
