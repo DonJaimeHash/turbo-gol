@@ -50,7 +50,7 @@ import { createAtmosphere, type Atmosphere } from './atmosphere';
 import { CubeBaker, PROXY_WIDTH, advanceFrame, bakeProxyLUT, createCubeTarget, createProxyLUT, proxyLUTFromData } from './bake';
 import { makeSeaMaterial, makeSkyMaterial, makeStructMaterial, type StructMaterial } from './bakeMaterials';
 import { cacheKey, copyRows, openCache, readBake, writeBake, type BakeShape, type CachedBake } from './cache';
-import { buildAlpineFar, buildAlpineLive } from './alpine';
+import { buildAlpineFarSliced, buildAlpineLive } from './alpine';
 import { buildCanyon } from './canyon';
 import { PROXY_TOP, buildBeam, buildDome, type Beam, type Dome } from './dome';
 import { createEnvProbe, pmremAtlasSize, type EnvProbe } from './env';
@@ -291,12 +291,26 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     return { scene: bakeScene, sea, struct, mirror, depth, liveBake, far: new Map(), trash };
   }
 
-  function farMesh(k: BakeKit, preset: WorldPreset): THREE.Mesh {
+  /**
+   * A skyline's bake geometry (once per kit). three's compileAsync compiles the bake pipelines one
+   * object after another and needs the main thread between its steps, so a long synchronous build
+   * stalls it: the alpine range (~0.4 s of CPU) is built in slices and overlaps the compile.
+   */
+  async function farMesh(k: BakeKit, preset: WorldPreset): Promise<THREE.Mesh> {
     let m = k.far.get(preset.skyline);
     if (m !== undefined) return m;
     const sun = dirFromAzEl(preset.key.az, Math.max(preset.key.el, 2));
-    const geometry = preset.skyline === 'harbour' ? buildHarbourFar(false).geometry : preset.skyline === 'alpine' ? buildAlpineFar(sun, false).geometry : buildCanyon(sun, false).geometry;
-    m = new THREE.Mesh(geometry as THREE.BufferGeometry, k.struct.material);
+    let geometry: THREE.BufferGeometry;
+    if (preset.skyline === 'alpine') {
+      geometry = (await buildAlpineFarSliced(sun)).geometry as THREE.BufferGeometry;
+      if (disposed) {
+        geometry.dispose();
+        throw new Error('world disposed during a bake');
+      }
+    } else {
+      geometry = (preset.skyline === 'harbour' ? buildHarbourFar(false).geometry : buildCanyon(sun, false).geometry) as THREE.BufferGeometry;
+    }
+    m = new THREE.Mesh(geometry, k.struct.material);
     m.frustumCulled = false;
     k.scene.add(m);
     k.far.set(preset.skyline, m);
@@ -362,13 +376,15 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const k = kit;
     // Start compiling every bake pipeline (sky, sea, structures: the live layer's bake mesh carries
     // the structure material, so the far skyline need not exist yet), then build the CPU data while
-    // the GPU process compiles in parallel.
+    // the GPU process compiles (in slices where it is long: see farMesh).
     for (const m of k.far.values()) m.visible = false;
     k.sea.visible = true;
     k.liveBake.visible = true;
     const tc = performance.now();
     const compiling = baker.compile(k.scene, face * SSAA);
-    const far = farMesh(k, preset);
+    // (awaited below, after the far build: a failure meanwhile is not an unhandled rejection)
+    void compiling.catch(() => undefined);
+    const far = await farMesh(k, preset);
     for (const m of k.far.values()) m.visible = m === far;
     const hasSea = preset.skyline === 'harbour';
     if (hasSea) k.liveBake.geometry = liveOf('harbour').geometry;

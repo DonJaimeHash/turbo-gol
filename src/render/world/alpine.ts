@@ -26,8 +26,8 @@
  *                             baked sun visibility (a march over a coarse height grid), ambient
  *                             occlusion and a smoothed slope; the ALPINE pattern (alpineShade.ts)
  *                             draws snow by slope and height, rock strata, scree, alpine meadows
- *                             and forest per pixel. ~160k vertices, ~0.3 s of CPU while the bake
- *                             pipelines compile.
+ *                             and forest per pixel. ~160k vertices, ~0.4 s of CPU, built in slices
+ *                             (buildAlpineFarSliced) so the bake pipelines compile meanwhile.
  *
  * Heights: the mountains rise above the default parallax band (harbour.ts SKYLINE_TOP), so the
  * 'alpine-day' preset raises the dome's hand-over band (presets.ts proxyTop) above ALPINE_TOP: the
@@ -264,6 +264,48 @@ export function forestCover(x: number, z: number, slope: number): number {
   return Math.min(1, Math.max(0, f));
 }
 
+// ------------------------------------------------------------------------------- cooperative work
+
+/**
+ * CPU work written as a generator that yields at safe points (between rows of a grid). `finish`
+ * runs it at once; `sliced` runs it in slices and gives the thread back between them. The far bake
+ * needs that: three's compileAsync compiles the bake pipelines one object after another and needs
+ * the main thread between its steps, so ~0.4 s of synchronous terrain work would stall the compile
+ * instead of overlapping it (World.ts bake).
+ */
+type Work<T> = Generator<void, T, void>;
+
+function finish<T>(w: Work<T>): T {
+  for (;;) {
+    const r = w.next();
+    if (r.done === true) return r.value;
+  }
+}
+
+/** One task's yield (a message, not a timer: timers are throttled in a hidden tab). */
+function yieldTask(): Promise<void> {
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      ch.port1.close();
+      resolve();
+    };
+    ch.port2.postMessage(null);
+  });
+}
+
+async function sliced<T>(w: Work<T>, sliceMs: number): Promise<T> {
+  let t = performance.now();
+  for (;;) {
+    const r = w.next();
+    if (r.done === true) return r.value;
+    if (performance.now() - t >= sliceMs) {
+      await yieldTask();
+      t = performance.now();
+    }
+  }
+}
+
 // ------------------------------------------------------------------------------------- mesh parts
 
 interface PolarGrid {
@@ -276,8 +318,8 @@ interface PolarGrid {
   readonly invLogGrow: number;
 }
 
-/** Polar grid of terrain from rMin to rMax (radii grow by `grow`), `nt` azimuth steps. */
-function polarGrid(rMin: number, rMax: number, grow: number, nt: number, height: (x: number, z: number) => number): PolarGrid {
+/** Polar grid of terrain from rMin to rMax (radii grow by `grow`), `nt` azimuth steps (yields per ring). */
+function* polarGrid(rMin: number, rMax: number, grow: number, nt: number, height: (x: number, z: number) => number): Work<PolarGrid> {
   const radii: number[] = [];
   for (let r = rMin; r < rMax; r *= grow) radii.push(r);
   radii.push(rMax);
@@ -294,6 +336,7 @@ function polarGrid(rMin: number, rMax: number, grow: number, nt: number, height:
       pos[k + 1] = height(x, z);
       pos[k + 2] = z;
     }
+    yield;
   }
   const idx = new Uint32Array((nr - 1) * nt * 6);
   let n = 0;
@@ -338,13 +381,60 @@ function sampleGrid(g: PolarGrid, data: Float32Array, stride: number, at: number
   return (a + (b - a) * s) * (1 - t) + (c + (d - c) * s) * t;
 }
 
-function vertexNormals(pos: Float32Array, idx: Uint32Array): Float32Array {
-  const tmp = new THREE.BufferGeometry();
-  tmp.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  tmp.setIndex(new THREE.BufferAttribute(idx, 1));
-  tmp.computeVertexNormals();
-  const nrm = Float32Array.from(tmp.attributes.normal.array as ArrayLike<number>);
-  tmp.dispose();
+/**
+ * Area-weighted vertex normals of an indexed mesh: three's BufferGeometry.computeVertexNormals
+ * step for step (the same sums, rounded to float32 at the same points, so the same bits; checked
+ * in tests/world.test.mjs) on the raw arrays, yielding every 16k triangles.
+ */
+export function* vertexNormals(pos: Float32Array, idx: Uint32Array): Work<Float32Array> {
+  const nrm = new Float32Array(pos.length);
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = idx[i] * 3;
+    const b = idx[i + 1] * 3;
+    const c = idx[i + 2] * 3;
+    const bx = pos[b];
+    const by = pos[b + 1];
+    const bz = pos[b + 2];
+    // cb = C - B, ab = A - B, cb x ab
+    const cx = pos[c] - bx;
+    const cy = pos[c + 1] - by;
+    const cz = pos[c + 2] - bz;
+    const ax = pos[a] - bx;
+    const ay = pos[a + 1] - by;
+    const az = pos[a + 2] - bz;
+    const nx = cy * az - cz * ay;
+    const ny = cz * ax - cx * az;
+    const nz = cx * ay - cy * ax;
+    // read all three, then write all three (as three does)
+    const ax0 = nrm[a] + nx;
+    const ay0 = nrm[a + 1] + ny;
+    const az0 = nrm[a + 2] + nz;
+    const bx0 = nrm[b] + nx;
+    const by0 = nrm[b + 1] + ny;
+    const bz0 = nrm[b + 2] + nz;
+    const cx0 = nrm[c] + nx;
+    const cy0 = nrm[c + 1] + ny;
+    const cz0 = nrm[c + 2] + nz;
+    nrm[a] = ax0;
+    nrm[a + 1] = ay0;
+    nrm[a + 2] = az0;
+    nrm[b] = bx0;
+    nrm[b + 1] = by0;
+    nrm[b + 2] = bz0;
+    nrm[c] = cx0;
+    nrm[c + 1] = cy0;
+    nrm[c + 2] = cz0;
+    if (i % 49152 === 49149) yield;
+  }
+  for (let i = 0; i < nrm.length; i += 3) {
+    const x = nrm[i];
+    const y = nrm[i + 1];
+    const z = nrm[i + 2];
+    const s = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
+    nrm[i] = x * s;
+    nrm[i + 1] = y * s;
+    nrm[i + 2] = z * s;
+  }
   return nrm;
 }
 
@@ -528,9 +618,9 @@ export function buildAlpineLive(seed = 5): AlpineLive {
 
   // ---- terrain: valley floor, walls, crest at LIVE_EDGE
   const NT = 256;
-  const grid = polarGrid(5000, LIVE_EDGE, 1.04, NT, valleyHeight);
+  const grid = finish(polarGrid(5000, LIVE_EDGE, 1.04, NT, valleyHeight));
   const nv = grid.pos.length / 3;
-  const nrm = vertexNormals(grid.pos, grid.idx);
+  const nrm = finish(vertexNormals(grid.pos, grid.idx));
 
   // ---- pines: a jittered grid (finer near the stadium), kept by the forest cover: first the
   // list (x, y0, z, h, rb, tiers * 100 + segs), then every vertex straight into the final arrays
@@ -620,14 +710,27 @@ export interface AlpineFar {
  * sun) bakes the terrain shadows. A dry run has nothing to collect (no lamps by day).
  */
 export function buildAlpineFar(sunDir: readonly [number, number, number], dry = false): AlpineFar {
-  const g = new GeoBuilder(dry);
   if (dry) return { geometry: null, lamps: [], stats: { parts: 0, verts: 0 } };
+  return finish(alpineFar(sunDir));
+}
+
+/**
+ * buildAlpineFar in slices of ~`sliceMs` of the main thread (the same geometry): ~0.4 s of CPU
+ * that a bake runs while its pipelines compile (World.ts).
+ */
+export function buildAlpineFarSliced(sunDir: readonly [number, number, number], sliceMs = 8): Promise<AlpineFar> {
+  return sliced(alpineFar(sunDir), sliceMs);
+}
+
+function* alpineFar(sunDir: readonly [number, number, number]): Work<AlpineFar> {
+  const g = new GeoBuilder(false);
   // ---- coarse height grid for the shadow march and the occlusion
   const GN = 224;
   const GE = 145000;
   const hg = new Float32Array(GN * GN);
   for (let j = 0; j < GN; j++) {
     for (let i = 0; i < GN; i++) hg[j * GN + i] = terrainHeight(-GE + ((i + 0.5) / GN) * 2 * GE, -GE + ((j + 0.5) / GN) * 2 * GE);
+    yield;
   }
   const G = (x: number, z: number): number => {
     const fx = ((x + GE) / (2 * GE)) * GN - 0.5;
@@ -658,9 +761,9 @@ export function buildAlpineFar(sunDir: readonly [number, number, number], dry = 
 
   // ---- polar mesh: fine in azimuth (crisp ridge lines), from just inside the live crest
   const NT = 1536;
-  const grid = polarGrid(LIVE_EDGE - 1200, 140000, 1.016, NT, terrainHeight);
+  const grid = yield* polarGrid(LIVE_EDGE - 1200, 140000, 1.016, NT, terrainHeight);
   const nv = grid.pos.length / 3;
-  const nrm = vertexNormals(grid.pos, grid.idx);
+  const nrm = yield* vertexNormals(grid.pos, grid.idx);
   const rgb = new Float32Array(nv * 3);
   const dat = new Float32Array(nv * 4);
   for (let i = 0; i < nv; i++) {
@@ -681,7 +784,9 @@ export function buildAlpineFar(sunDir: readonly [number, number, number], dry = 
     // forest potential of the pattern (patches, not a uniform band)
     dat[i * 4 + 2] = fbm2(x / 5000 - 2.2, z / 5000 + 6.4, 2);
     dat[i * 4 + 3] = hash2(i, 91);
+    if (i % NT === NT - 1) yield;
   }
+  yield;
   g.raw(grid.pos, nrm, grid.idx, rgb, dat, KIND.ALPINE);
   return { geometry: g.build(new THREE.Sphere(new THREE.Vector3(), 145000)), lamps: [], stats: { parts: g.parts, verts: g.verts } };
 }

@@ -395,8 +395,57 @@ test('alpine far bake: under its own parallax band, real mountains, finite data'
   }
   for (const name of ['position', 'normal', 'kcol', 'kloc', 'kdat']) assert.ok(far.geometry.attributes[name].array.every(Number.isFinite), name);
   assert.ok(far.geometry.attributes.kcol.array.every((v, i) => i % 4 !== 3 || v === KIND.ALPINE), 'one pattern kind');
+  // the bake builds it in slices (World.ts farMesh): the same geometry, bit for bit
+  let yields = 0;
+  const sliced = AL.buildAlpineFarSliced(sun, 0);
+  const counting = setInterval(() => yields++, 0);
+  const s = await sliced;
+  clearInterval(counting);
+  for (const name of ['position', 'normal', 'kcol', 'kloc', 'kdat']) {
+    const a = far.geometry.attributes[name].array;
+    const b = s.geometry.attributes[name].array;
+    assert.equal(a.length, b.length, name);
+    assert.ok(a.every((v, i) => Object.is(v, b[i])), `${name}: sliced build differs`);
+  }
+  assert.ok(far.geometry.index.array.every((v, i) => v === s.geometry.index.array[i]), 'index');
+  assert.ok(yields > 0, 'the sliced build gives the thread back');
+  s.geometry.dispose();
   far.geometry.dispose();
   const dry = AL.buildAlpineFar(sun, true);
   assert.equal(dry.geometry, null);
   assert.deepEqual(dry.lamps, []);
+});
+
+test('alpine vertexNormals: three computeVertexNormals bit for bit (raw arrays, no BufferGeometry)', () => {
+  // a jagged indexed mesh: a height grid with shared vertices, plus one overlapping triangle
+  const n = 24;
+  const pos = new Float32Array(n * n * 3);
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const k = (j * n + i) * 3;
+      pos[k] = i * 137.5 + (j % 3) * 11;
+      pos[k + 1] = Math.abs(Math.sin(i * 1.7) * Math.cos(j * 2.3)) * 900 + i * j;
+      pos[k + 2] = j * 129.25;
+    }
+  }
+  const idx = [];
+  for (let j = 0; j < n - 1; j++) {
+    for (let i = 0; i < n - 1; i++) {
+      const a = j * n + i;
+      idx.push(a, a + n, a + 1, a + 1, a + n, a + n + 1);
+    }
+  }
+  idx.push(0, 1, 2);
+  const index = new Uint32Array(idx);
+  const ref = new THREE.BufferGeometry();
+  ref.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  ref.setIndex(new THREE.BufferAttribute(index, 1));
+  ref.computeVertexNormals();
+  const gen = AL.vertexNormals(pos, index);
+  let r = gen.next();
+  while (r.done !== true) r = gen.next();
+  const want = ref.attributes.normal.array;
+  assert.equal(r.value.length, want.length);
+  assert.ok(r.value.every((v, i) => Object.is(v, want[i])), 'same bits as three');
+  ref.dispose();
 });
