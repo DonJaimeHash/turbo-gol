@@ -116,7 +116,7 @@ import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
 import { Renderer, type GpuFailure } from '../render/Renderer';
 import { parseQuality, type Quality } from '../render/quality';
-import { TierGuard, writeCeiling, type Fallback } from '../render/tierGuard';
+import { BACKGROUND_LOSS_MS, FALLBACK_WINDOW_MS, TierGuard, mayReloadAfterLoss, raiseCeiling, writeCeiling, type Fallback } from '../render/tierGuard';
 import { DEFAULT_THEME, parseTheme, themeWorld, type ThemeId } from '../render/theme';
 import { LoadingOverlay, afterPaint, paintedFrames } from '../ui/LoadingOverlay';
 import { loadSettings, saveSettings, type Settings } from '../settings';
@@ -230,6 +230,8 @@ const QUALITY_STEPS = [0.15, 0.35, 0.6, 0.95, 1] as const;
 const THEME_STEPS = [0.2, 0.95, 1] as const;
 /** sessionStorage: a tier fallback's line across the reload after a lost device (Game.bootDone). */
 const TIER_NOTICE_KEY = STORAGE_PREFIX + 'tierNotice';
+/** sessionStorage: when the page last reloaded on the same tier after a lost device (tierGuard.ts mayReloadAfterLoss). */
+const LOSS_RELOAD_KEY = STORAGE_PREFIX + 'lossReloadAt';
 
 /** "Your device does not support Ultra: using High" (en / es). */
 function fallbackText(fb: Fallback): string {
@@ -602,6 +604,11 @@ export class Game implements P2PGameHooks {
   private readonly tierGuard = new TierGuard(() => performance.now());
   /** A tier fallback's line, for the menus' next toast when they are not on screen (null = none). */
   private tierNotice: string | null = null;
+  /** Every tier switch counts here: a pending ceiling check (confirmTier) belongs to the latest one only. */
+  private tierSwitches = 0;
+  private confirmTimer = 0;
+  /** performance.now() when the page was last visible after being hidden (Infinity while hidden): a lost device right after is the background's. */
+  private visibleSince = Number.NEGATIVE_INFINITY;
   /** The settings screen is open over the pause menu (openPauseSettings). */
   private pauseSettingsOpen = false;
   /** While true (goal pause / after the final whistle) the ball is held at pinPos.xy each tick. */
@@ -626,6 +633,7 @@ export class Game implements P2PGameHooks {
   };
 
   private readonly onVisibility = (): void => {
+    this.visibleSince = document.hidden ? Number.POSITIVE_INFINITY : performance.now();
     if (document.hidden && !this.menuShown && !this.paused) this.setPaused(true);
   };
 
@@ -1109,6 +1117,7 @@ export class Game implements P2PGameHooks {
         // The new tier's failures count from here (its compile included).
         this.tierGuard.arm();
         this.quality = q;
+        const switchId = ++this.tierSwitches;
         if (fallback === null) {
           this.qualitySet = true; // only the menus call this: the player chose (loadPrefs keeps it on phones)
           this.persistPrefs();
@@ -1123,11 +1132,27 @@ export class Game implements P2PGameHooks {
         await step(2);
         await this.compilePipelines();
         await step(3);
+        // The player's own pick that runs through the fallback window clean lifts a lower
+        // remembered ceiling to it (tierGuard.ts raiseCeiling): the next boot starts on it again.
+        if (fallback === null) {
+          window.clearTimeout(this.confirmTimer);
+          this.confirmTimer = window.setTimeout(() => this.confirmTier(q, switchId), FALLBACK_WINDOW_MS + 500);
+        }
       } finally {
         // ...and again from its first frames (this also ends a fallback, done or skipped).
         this.tierGuard.arm();
       }
     });
+  }
+
+  /** The tier the player picked (switch `switchId`) has run through the fallback window: lift a lower ceiling to it. */
+  private confirmTier(q: Quality, switchId: number): void {
+    if (switchId !== this.tierSwitches || this.quality !== q || this.tierGuard.fallingBack) return;
+    try {
+      raiseCeiling(window.localStorage, this.renderer.caps.gpu, q, Date.now());
+    } catch {
+      /* storage unavailable */
+    }
   }
 
   /**
@@ -1155,8 +1180,23 @@ export class Game implements P2PGameHooks {
    */
   private onGpuFailure(f: GpuFailure): void {
     console.warn(`[game] GPU ${f.kind} on ${f.tier}: ${f.message}`);
-    const fb = this.tierGuard.onFailure(f.kind, f.tier);
+    const background = document.hidden || performance.now() - this.visibleSince < BACKGROUND_LOSS_MS;
+    const fb = this.tierGuard.onFailure(f.kind, f.tier, background);
     if (fb === null) return;
+    if (fb.to === fb.from) {
+      // Lost in the background, or on low: not the tier's fault, or nothing below it. A reload on
+      // the same tier is the only way back to a picture, once a minute at most (no loop).
+      let last: number | null = null;
+      try {
+        last = Number(window.sessionStorage.getItem(LOSS_RELOAD_KEY) ?? 'NaN');
+        if (!mayReloadAfterLoss(last, Date.now())) return;
+        window.sessionStorage.setItem(LOSS_RELOAD_KEY, String(Date.now()));
+      } catch {
+        return; // without storage a reload could not tell it already happened
+      }
+      window.location.reload();
+      return;
+    }
     let store: Storage | null = null;
     try {
       store = window.localStorage;
@@ -2047,6 +2087,7 @@ export class Game implements P2PGameHooks {
 
   dispose(): void {
     this.stop();
+    window.clearTimeout(this.confirmTimer);
     if (this.p2p !== null) this.p2p.dispose();
     if (this.online !== null) this.online.dispose();
     this.disposeViews();
@@ -2080,6 +2121,7 @@ export class Game implements P2PGameHooks {
   setQuality(q: Quality): void {
     if (q === this.quality) return;
     this.tierGuard.arm();
+    this.tierSwitches++;
     this.quality = q;
     this.qualitySet = true; // only the menu calls this: the player chose (loadPrefs keeps it on phones)
     this.renderer.setQuality(q);

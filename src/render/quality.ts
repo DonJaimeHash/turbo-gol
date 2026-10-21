@@ -7,9 +7,10 @@
  *   low    phones, tablets, integrated GPUs, WebGPU compatibility mode, small-memory devices and the
  *          WebGL2 fallback's default: renders STRAIGHT to the canvas (`output: 'direct'`: no HDR
  *          target, no MRT, no post pass; exposure, grade, vignette, tone curve and sRGB run at the
- *          end of every material's shader) with the canvas's MSAA x4, no bloom (glow comes from
- *          geometry and colour), a pixel ratio up to 1.5 within a 1 Mpx budget with dynamic
- *          resolution down to 0.7 of it, no shadow maps (the cars and the ball keep their ground
+ *          end of every material's shader) with the canvas's MSAA x4 (none in WebGPU compatibility
+ *          mode: capabilities.ts), no bloom (glow comes from geometry and colour), a pixel ratio
+ *          up to 1.5 within a 1 Mpx budget with dynamic
+ *          resolution down to 0.6 of it, no shadow maps (the cars and the ball keep their ground
  *          blobs), and its own look rather than a cut-down high: the turf, stands, steel and boards
  *          unlit with the theme's light baked into their colour (`bakedLight`), no cage netting,
  *          a bright flat crowd, the smallest sky bake, a brighter grade per theme (theme.ts `low`).
@@ -137,11 +138,12 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     bloom: false,
     bloomMips: 3,
     // Up to 1.5x on a phone (780x360 CSS -> 1170x540), 1 on desktops and tablets (the budget, never
-    // below 1 for it); dynamic resolution goes down to 0.7 of that when frames come late.
+    // below 1 for it); dynamic resolution goes down to 0.6 of that when frames come late (a phone
+    // 702x324): fluid first, and only as far down as the frames need.
     maxPixelRatio: 1.5,
     pixelBudget: 1e6,
     dynamicResolution: true,
-    minResolutionScale: 0.7,
+    minResolutionScale: 0.6,
     shadowedKeys: 0,
     shadowMapSize: 2048,
     shadowRadius: 3,

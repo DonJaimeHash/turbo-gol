@@ -36,11 +36,11 @@ test('low renders straight to the canvas; high keeps the old quality tier (0)', 
   assert.equal(low.msaa, 4, 'canvas MSAA');
   assert.equal(low.bloom, false, 'no glow target on the canvas');
   for (const key of ['gtao', 'ssr', 'lensFlare', 'grassBlades', 'beamCones', 'puddles', 'turfRelief']) assert.equal(low[key], false, `low ${key}`);
-  // Up to 1.5x within a 1 Mpx budget, dynamic resolution down to 0.7 of it.
+  // Up to 1.5x within a 1 Mpx budget, dynamic resolution down to 0.6 of it.
   assert.equal(low.maxPixelRatio, 1.5);
   assert.equal(low.pixelBudget, 1e6);
   assert.equal(low.dynamicResolution, true);
-  assert.equal(low.minResolutionScale, 0.7);
+  assert.equal(low.minResolutionScale, 0.6);
   assert.equal(low.shadowMapSize, 2048);
   assert.equal(low.shadowRadius, 3);
   assert.equal(low.detail, 'low');

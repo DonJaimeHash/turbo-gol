@@ -20,10 +20,10 @@ registerHooks({
 });
 
 const { QUALITIES, tier } = await import('../src/render/quality.ts');
-const { FULL_CAPABILITIES, adjustTier, tierChanges, readCapabilities } = await import('../src/render/capabilities.ts');
-const { TierGuard, readCeiling, writeCeiling, CEILING_KEY, CEILING_TTL_MS, FALLBACK_WINDOW_MS, MAX_CEILINGS } = await import('../src/render/tierGuard.ts');
+const { FULL_CAPABILITIES, adjustTier, tierChanges, readCapabilities, withoutMsaa, withCompatCanvasMsaa } = await import('../src/render/capabilities.ts');
+const { TierGuard, readCeiling, writeCeiling, raiseCeiling, mayReloadAfterLoss, LOSS_RELOAD_GAP_MS, CEILING_KEY, CEILING_TTL_MS, FALLBACK_WINDOW_MS, MAX_CEILINGS } = await import('../src/render/tierGuard.ts');
 
-const COMPAT = { ...FULL_CAPABILITIES, compatibilityMode: true, msaaHdr: false, maxTextureSize: 4096, maxColorAttachments: 4, gpu: 'webgpu-compat:arm/midgard' };
+const COMPAT = { ...FULL_CAPABILITIES, compatibilityMode: true, msaaHdr: false, msaaCanvas: false, maxTextureSize: 4096, maxColorAttachments: 4, gpu: 'webgpu-compat:arm/midgard' };
 
 test('a device that can do everything runs every tier as the table says (same object)', () => {
   for (const q of QUALITIES) {
@@ -32,10 +32,14 @@ test('a device that can do everything runs every tier as the table says (same ob
   }
 });
 
-test('WebGPU compatibility mode: the post tiers take FXAA (no multisampled rgba16float), low keeps the canvas MSAA', () => {
+test('WebGPU compatibility mode: the post tiers take FXAA (no multisampled rgba16float), low draws without the canvas MSAA (#msaa: with it)', () => {
   const low = adjustTier(tier('low'), COMPAT);
   assert.equal(low.output, 'direct');
-  assert.equal(low.msaa, 4, 'the 8-bit canvas multisamples in compatibility mode');
+  assert.equal(low.msaa, 0, 'no blit-resolved canvas MSAA on an OpenGL ES phone');
+  assert.deepEqual(tierChanges(tier('low'), low), ['msaa 4 -> 0']);
+  assert.equal(adjustTier(tier('low'), withCompatCanvasMsaa(COMPAT)).msaa, 4, '#msaa: the 8-bit canvas multisamples in compatibility mode');
+  assert.equal(withCompatCanvasMsaa(FULL_CAPABILITIES), FULL_CAPABILITIES, 'other devices unchanged');
+  assert.equal(withCompatCanvasMsaa({ ...FULL_CAPABILITIES, backend: 'webgl2', msaaCanvas: false }).msaaCanvas, false, 'not a WebGL2 context');
   for (const q of ['high', 'ultra']) {
     const s = adjustTier(tier(q), COMPAT);
     assert.equal(s.msaa, 0, `${q}: FXAA`);
@@ -61,6 +65,18 @@ test('no multisampled canvas: the direct tier runs without anti-aliasing; small 
   assert.deepEqual(tierChanges(tier('ultra'), ultra), ['bloom true -> false', 'shadowMapSize 4096 -> 2048', 'lensFlare true -> false']);
 });
 
+test('#nomsaa: no tier multisamples (the direct tier without anti-aliasing, the post tiers on FXAA), nothing else changes', () => {
+  const caps = withoutMsaa(COMPAT);
+  assert.equal(caps.msaaCanvas, false);
+  assert.equal(caps.msaaHdr, false);
+  assert.equal(caps.gpu, COMPAT.gpu, 'the same GPU key: the remembered ceiling still applies');
+  for (const q of QUALITIES) {
+    const s = adjustTier(tier(q), withoutMsaa(FULL_CAPABILITIES));
+    assert.equal(s.msaa, 0, q);
+    assert.deepEqual(tierChanges(tier(q), s), ['msaa 4 -> 0'], q);
+  }
+});
+
 test('readCapabilities: WebGPU core, compatibility mode, no float32-filterable', () => {
   const device = (features, limits = {}) => ({
     features: new Set(features),
@@ -80,7 +96,7 @@ test('readCapabilities: WebGPU core, compatibility mode, no float32-filterable',
   const compat = readCapabilities({ backend: { isWebGPUBackend: true, compatibilityMode: true, device: device([], { maxTextureDimension2D: 4096, maxColorAttachments: 4 }) } });
   assert.equal(compat.compatibilityMode, true);
   assert.equal(compat.msaaHdr, false);
-  assert.equal(compat.msaaCanvas, true);
+  assert.equal(compat.msaaCanvas, false, 'off by default there (a blit resolve)');
   assert.equal(compat.maxTextureSize, 4096);
   assert.equal(compat.maxColorAttachments, 4);
   assert.ok(compat.gpu.startsWith('webgpu-compat'));
@@ -143,6 +159,25 @@ test('ceilings: per GPU, only ever lowered while valid, expired after the TTL, a
   writeCeiling(full, 'gpu-a', 'low', t0);
 });
 
+test('a tier the player picks again and that runs clean lifts a lower ceiling to it, never lowers one', () => {
+  const s = store();
+  const t0 = 5_000_000;
+  raiseCeiling(s, 'gpu-a', 'ultra', t0);
+  assert.equal(s.getItem(CEILING_KEY), null, 'no record: nothing written');
+  writeCeiling(s, 'gpu-a', 'low', t0);
+  writeCeiling(s, 'gpu-b', 'high', t0);
+  raiseCeiling(s, 'gpu-a', 'high', t0 + 1);
+  assert.equal(readCeiling(s, 'gpu-a', t0 + 2), 'high', 'low -> high');
+  raiseCeiling(s, 'gpu-a', 'low', t0 + 3);
+  assert.equal(readCeiling(s, 'gpu-a', t0 + 4), 'high', 'never lowered');
+  raiseCeiling(s, 'gpu-a', 'ultra', t0 + 5);
+  assert.equal(readCeiling(s, 'gpu-a', t0 + 6), null, 'the top tier clears the record');
+  assert.equal(readCeiling(s, 'gpu-b', t0 + 6), 'high', 'other GPUs untouched');
+  raiseCeiling(null, 'gpu-b', 'ultra', t0);
+  const full = { getItem: () => JSON.stringify({ g: { q: 'low', at: t0 } }), setItem: () => { throw new Error('QuotaExceededError'); } };
+  raiseCeiling(full, 'g', 'high', t0);
+});
+
 test('the guard falls one tier per failure, within the window, never twice at once, never below low', () => {
   let now = 0;
   const guard = new TierGuard(() => now);
@@ -160,7 +195,27 @@ test('the guard falls one tier per failure, within the window, never twice at on
   now = 4000;
   guard.arm();
   assert.equal(guard.onFailure('error', 'low'), null, 'nothing below low');
-  assert.equal(guard.onFailure('lost', 'low'), null, 'no reload loop on low');
+  assert.deepEqual(guard.onFailure('lost', 'low'), { from: 'low', to: 'low', reload: true }, 'a lost device on low reloads on low');
+  assert.equal(guard.onFailure('lost', 'low'), null, 'once');
+});
+
+test('a device lost in the background reloads on the same tier; same-tier reloads at most once a minute', () => {
+  let now = 0;
+  const guard = new TierGuard(() => now);
+  guard.arm();
+  now = 500;
+  assert.deepEqual(guard.onFailure('lost', 'ultra', true), { from: 'ultra', to: 'ultra', reload: true }, "the background's, not the tier's");
+  const g2 = new TierGuard(() => now);
+  g2.arm();
+  now = 600;
+  assert.deepEqual(g2.onFailure('error', 'high', true), { from: 'high', to: 'low', reload: false }, "a validation error is the tier's, hidden or not");
+  assert.deepEqual(new TierGuard(() => 0).onFailure('lost', 'high', false), { from: 'high', to: 'low', reload: true }, "in the foreground a loss is the tier's");
+  const t0 = 1_000_000;
+  assert.equal(mayReloadAfterLoss(null, t0), true);
+  assert.equal(mayReloadAfterLoss(Number.NaN, t0), true);
+  assert.equal(mayReloadAfterLoss(t0 - 1000, t0), false, 'right after the last one: no loop');
+  assert.equal(mayReloadAfterLoss(t0 - LOSS_RELOAD_GAP_MS, t0), true);
+  assert.equal(mayReloadAfterLoss(t0 + 5000, t0), true, 'a clock that went back');
 });
 
 test('a validation error long after a switch is not the tier\'s; a lost device always is', () => {

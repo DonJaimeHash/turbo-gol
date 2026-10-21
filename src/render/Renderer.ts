@@ -9,8 +9,9 @@
  *
  *   low (direct):        three's DirectRenderPipeline straight into the canvas: the theme's look
  *                        (vignette, exposure, grade, tone curve) and sRGB at the end of every
- *                        material, the canvas' MSAA x4, no HDR target, no MRT, no post pass; a
- *                        pixel ratio up to 1.5 (1 Mpx budget), no shadow maps (ground blobs), no bloom
+ *                        material, the canvas' MSAA x4 (none in WebGPU compatibility mode), no
+ *                        HDR target, no MRT, no post pass; a pixel ratio up to 1.5 (1 Mpx
+ *                        budget), no shadow maps (ground blobs), no bloom
  *   high / ultra (post): HDR scene pass (MRT `output` + `emissive`) -> [ultra: GTAO, SSR on the
  *                        wet pitch] -> bloom from the EMISSIVE target only [+ ultra lens glare] ->
  *                        vignette -> exposure, HDR grade and the theme's tone curve -> sRGB ->
@@ -25,7 +26,8 @@
  * compatibility mode and with navigator.deviceMemory <= 4 unless the player chose one, and never
  * above the GPU's remembered ceiling (tierGuard.ts).
  *
- * The renderer is created with `antialias: true`: only the direct tier draws the scene into the
+ * The renderer is created with `antialias: true` (false with `#nomsaa`, the A/B flag that turns
+ * every tier's multisampling off: capabilities.ts withoutMsaa): only the direct tier draws the scene into the
  * canvas, so on WebGPU its samples (`_samples`, set per tier) only matter there (three gives
  * full-screen passes 0 samples); on WebGL2 it is the context's multisampled framebuffer, fixed at
  * creation (three only asks for one while the output colour space is the working one: linear during
@@ -67,7 +69,7 @@
  * Nothing else here allocates per frame: `render()` and `stats()` reuse the same objects.
  */
 import * as THREE from 'three/webgpu';
-import { adjustTier, readCapabilities, tierChanges, type Capabilities } from './capabilities';
+import { adjustTier, readCapabilities, tierChanges, withCompatCanvasMsaa, withoutMsaa, type Capabilities } from './capabilities';
 import { DynamicResolution } from './dynamicResolution';
 import { setGlowTargets } from './materials';
 import { createLighting, type Lighting } from './post/lighting';
@@ -411,7 +413,7 @@ export class Renderer {
       // The post tiers' final full-screen quad is single-sampled whatever this says (three gives
       // full-screen passes 0 samples on WebGPU); on WebGL2 it is the context's own multisampled
       // framebuffer, fixed at creation, which the post tiers' quad then draws into as well.
-      antialias: true,
+      antialias: !flags.nomsaa,
       alpha: false,
       powerPreference: 'high-performance',
       trackTimestamp: timing,
@@ -431,7 +433,10 @@ export class Renderer {
       restoreAdapter();
     }
     const webgpu = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
-    const caps = readCapabilities(gpu);
+    // `#nomsaa`: no tier multisamples; `#msaa`: the canvas MSAA even in WebGPU compatibility mode,
+    // where it is off by default (capabilities.ts): the A/Bs of its cost on a phone.
+    const read = readCapabilities(gpu);
+    const caps = flags.nomsaa ? withoutMsaa(read) : flags.msaa ? withCompatCanvasMsaa(read) : read;
     let ceiling: Quality | null = null;
     try {
       ceiling = readCeiling(window.localStorage, caps.gpu, Date.now());

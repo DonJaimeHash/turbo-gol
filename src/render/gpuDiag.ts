@@ -20,6 +20,11 @@
  *   #nof32filter  a WebGPU device without 'float32-filterable' (an iPhone's Safari): the adapter
  *            three requests hides those features (installAdapterEmulation), so the device lacks
  *            them and validates like the phone's (compatibility mode with its default limits).
+ *   #nomsaa  no multisampling on any tier (capabilities.ts withoutMsaa: the direct tier draws the
+ *            canvas without anti-aliasing, the post tiers take FXAA), and
+ *   #msaa    the direct tier's canvas MSAA x4 in WebGPU compatibility mode too, where it is off by
+ *            default (a blit resolve: capabilities.ts): A/Bs on a phone, whose canvas MSAA a
+ *            tiled GPU pays in memory traffic, against the fps line and #diag's px size.
  *   #lowgpu  forces the WebGL2 backend and makes its context look like a Mali-G51-class Android
  *            phone's before three.js initialises: only the extensions such a phone has are exposed
  *            (no OES_texture_float_linear, EXT_color_buffer_float, EXT_float_blend, timer queries,
@@ -46,11 +51,15 @@ export interface DiagFlags {
   readonly compat: boolean;
   /** A WebGPU device without 'float32-filterable' (an iPhone's Safari). */
   readonly nof32filter: boolean;
+  /** No multisampling on any tier (an A/B of the canvas MSAA's cost on a phone). */
+  readonly nomsaa: boolean;
+  /** The canvas MSAA in WebGPU compatibility mode too, where it is off by default. */
+  readonly msaa: boolean;
 }
 
 export function diagFlags(hash: string): DiagFlags {
   const has = (flag: string): boolean => new RegExp(`(^|[#&])${flag}(&|$)`).test(hash);
-  return { diag: has('diag'), lowgpu: has('lowgpu'), compat: has('compat'), nof32filter: has('nof32filter') };
+  return { diag: has('diag'), lowgpu: has('lowgpu'), compat: has('compat'), nof32filter: has('nof32filter'), nomsaa: has('nomsaa'), msaa: has('msaa') };
 }
 
 /**
@@ -604,7 +613,7 @@ export class GpuDiag {
     const s = this.state();
     const canvas = this.gpu.domElement;
     const f = this.flags;
-    const emulated = [f.lowgpu ? ' #lowgpu' : '', f.compat ? ' #compat' : '', f.nof32filter ? ' #nof32filter' : ''].join('');
+    const emulated = [f.lowgpu ? ' #lowgpu' : '', f.compat ? ' #compat' : '', f.nof32filter ? ' #nof32filter' : '', f.nomsaa ? ' #nomsaa' : '', f.msaa ? ' #msaa' : ''].join('');
     const lines = [`Turbogol #diag${emulated}`, ...this.header];
     const c = s.caps;
     lines.push(`caps msaa-hdr ${c.msaaHdr ? 'yes' : 'NO'} | msaa-canvas ${c.msaaCanvas ? 'yes' : 'NO'} | max tex ${c.maxTextureSize} | targets ${c.maxColorAttachments} | ceiling ${s.ceiling ?? 'none'}`);

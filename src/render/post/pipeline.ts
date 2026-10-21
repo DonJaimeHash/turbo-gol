@@ -179,11 +179,20 @@ function curveOf(c: Curve, color: Vec3Node): Vec3Node {
  * function so the colour is evaluated once; with several curves in use the curve is a uniform
  * branch (only one runs). The first max(0) also turns a NaN into 0 (min / max return the non-NaN
  * operand).
+ *
+ * On the direct path this runs at the end of every material, so it is built per material: an
+ * ADDITIVE material (halos, beams, flames, pads' glow, particles) adds its result to what is
+ * already drawn, and a lift there would be added once per additive layer, a flat plateau over the
+ * whole quad or cone (square halos round the floodlights and a solid bar for the lighthouse beam
+ * on the night sky). Additive materials take no lift (their black stays black); the post path's
+ * single full-screen quad is not additive and keeps it.
  */
 function finish(u: LookUniforms, contrast = true): (hdr: Vec3Node) => Vec3Node {
-  const fn = Fn(([input]: [Node]) => {
+  const fn = Fn(([input]: [Node], builder: { material?: THREE.Material | null }) => {
     // Gain (multiplies the highlights) and lift (adds to the shadows), after the exposure.
-    const c = (input as Vec3Node).max(0.0).mul(u.exposure).mul(u.gain).add(u.lift).max(0.0).toVar();
+    const additive = builder.material?.blending === THREE.AdditiveBlending;
+    const scaled = (input as Vec3Node).max(0.0).mul(u.exposure).mul(u.gain);
+    const c = (additive ? scaled : scaled.add(u.lift)).max(0.0).toVar();
     // Contrast around mid grey in log space (pow base kept above 0: no NaN from pow(0, k) * 0);
     // left out where no theme changes it (the direct path: DIRECT_CONTRAST).
     if (contrast) {

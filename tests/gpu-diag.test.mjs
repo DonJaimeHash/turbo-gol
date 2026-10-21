@@ -19,7 +19,7 @@ registerHooks({
 
 const { diagFlags, hiddenFeatures, installAdapterEmulation, glslProgramUse, programOverLimits, installLowGpuEmulation, LOWGPU_EXTENSIONS, LOWGPU_LIMITS } = await import('../src/render/gpuDiag.ts');
 
-const off = { diag: false, lowgpu: false, compat: false, nof32filter: false };
+const off = { diag: false, lowgpu: false, compat: false, nof32filter: false, nomsaa: false, msaa: false };
 
 test('the flags are whole words of the hash', () => {
   assert.deepEqual(diagFlags(''), off);
@@ -30,6 +30,9 @@ test('the flags are whole words of the hash', () => {
   assert.deepEqual(diagFlags('#compat&diag'), { ...off, diag: true, compat: true });
   assert.deepEqual(diagFlags('#nof32filter'), { ...off, nof32filter: true });
   assert.deepEqual(diagFlags('#compatible&f32filter'), off);
+  assert.deepEqual(diagFlags('#diag&nomsaa'), { ...off, diag: true, nomsaa: true });
+  assert.deepEqual(diagFlags('#compat&msaa'), { ...off, compat: true, msaa: true });
+  assert.deepEqual(diagFlags('#msaa4&nomsaa2'), off);
 });
 
 test('#compat hides core-features-and-limits, #nof32filter float32-filterable from the adapter and the device', async () => {

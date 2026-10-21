@@ -176,12 +176,16 @@ export function buildGlare(spec: TierSpec, u: StadiumUniforms, heads: readonly T
   // wider soft halo and a faint horizontal streak stand in for it.
   const core = exp(rr.mul(-1 / 150));
   let shape = core.mul(1.1);
+  // The quad's fade to zero before its border: square with bloom (the tight core is gone long
+  // before it); round without, where the wide halo still shows there and the direct path's
+  // display-space blending would draw a square's outline round every lamp.
+  let edge = oneMinus(smoothstep(size * 0.32, size * 0.5, max(abs(pv.x), abs(pv.y))));
   if (!spec.bloom) {
     const halo = exp(rr.mul(-1 / 420));
     const streak = exp(abs(pv.y).mul(-1 / 30)).mul(exp(abs(pv.x).mul(-1 / 700)));
     shape = shape.add(halo.mul(0.35)).add(streak.mul(0.4));
+    edge = oneMinus(smoothstep(size * 0.25, size * 0.5, rr));
   }
-  const edge = oneMinus(smoothstep(size * 0.32, size * 0.5, max(abs(pv.x), abs(pv.y))));
   m.colorNode = vec3(1.0, 0.9, 0.78).mul(shape.mul(edge)).mul(facing).mul(u.glare);
   m.mrtNode = noGlowMrt();
   const mesh = new THREE.Mesh(g, m);

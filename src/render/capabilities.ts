@@ -11,7 +11,13 @@
  *   format rgba16float "does not support multisampling" there, so the high tier's MSAA x4 HDR
  *   scene pass (its 'output-msaa' and 'emissive-msaa' textures) was invalid and every frame
  *   failed. Without `msaaHdr` the post tiers take FXAA instead. The canvas (rgba8unorm /
- *   bgra8unorm) does multisample there, so the direct low tier keeps its MSAA x4.
+ *   bgra8unorm) does multisample there, but `msaaCanvas` is off by default in that mode: Dawn's
+ *   OpenGL ES backend resolves a multisampled pass with a framebuffer blit after it, so a tiled
+ *   phone GPU writes all four samples of colour and depth to memory and reads them back (three
+ *   stores the canvas' multisampled attachment on every backend), about six times the memory
+ *   traffic of the frame without it on the weakest phones the game runs on. The direct tier runs
+ *   there without anti-aliasing (its markings are anti-aliased in the shader); `#msaa` turns the
+ *   canvas MSAA back on for an A/B on the phone, `#nomsaa` turns every tier's off anywhere.
  *   No 'float32-filterable' (Safari on an iPhone): no tier binds a float32 colour texture (every
  *   target and baked texture is RGBA8 or half float; depth textures are bound as depth), and every
  *   tier runs clean on Chromium without the feature. The iPhone's ultra failure ("encoder state is
@@ -50,6 +56,22 @@ export const FULL_CAPABILITIES: Capabilities = {
   maxColorAttachments: 8,
   gpu: 'any',
 };
+
+/**
+ * `caps` without multisampling (`#nomsaa`, an A/B on a phone): adjustTier then runs the direct
+ * tier without anti-aliasing and the post tiers with FXAA. Pure.
+ */
+export function withoutMsaa(caps: Capabilities): Capabilities {
+  return { ...caps, msaaHdr: false, msaaCanvas: false };
+}
+
+/**
+ * `caps` with the canvas MSAA forced on in WebGPU compatibility mode (`#msaa`, the A/B of its
+ * default there; the canvas formats do multisample in that mode). Other devices unchanged. Pure.
+ */
+export function withCompatCanvasMsaa(caps: Capabilities): Capabilities {
+  return caps.backend === 'webgpu' && caps.compatibilityMode ? { ...caps, msaaCanvas: true } : caps;
+}
 
 /** The largest power of two <= n (n >= 1). */
 function floorPow2(n: number): number {
@@ -104,7 +126,7 @@ interface WebGpuBackendLike {
 /**
  * Read the backend's capabilities once it initialised. `msaaCanvas` on WebGL2 is whatever the
  * context was created with (Renderer creates it with antialias); on WebGPU every canvas format
- * multisamples, in compatibility mode too.
+ * multisamples, in compatibility mode too, where it is off all the same (see the file header).
  */
 export function readCapabilities(renderer: RendererLike): Capabilities {
   const backend = renderer.backend as WebGpuBackendLike;
@@ -118,7 +140,7 @@ export function readCapabilities(renderer: RendererLike): Capabilities {
       backend: 'webgpu',
       compatibilityMode: compat,
       msaaHdr: !compat,
-      msaaCanvas: true,
+      msaaCanvas: !compat,
       float32Filterable: f32,
       maxTextureSize: d.limits.maxTextureDimension2D ?? 8192,
       maxColorAttachments: d.limits.maxColorAttachments ?? 8,

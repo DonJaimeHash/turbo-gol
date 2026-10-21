@@ -13,9 +13,17 @@
  *              always counts (it renders nothing more).
  *   lost       the device is gone: the game stores the lower ceiling and reloads the page, which
  *              starts at most on it (Game.onGpuFailure; at most two reloads, ultra -> high -> low).
+ *              A device lost while the page was in the background, or in the first seconds back
+ *              (BACKGROUND_LOSS_MS: a phone's system reclaimed the GPU while another app ran), is
+ *              not the tier's: the page reloads on the same tier and no ceiling is written. On low,
+ *              with nothing below, a lost device also reloads on low (the only way back to a
+ *              picture). Such a same-tier reload happens at most once per LOSS_RELOAD_GAP_MS
+ *              (`mayReloadAfterLoss`, the time of the last one kept in sessionStorage): no loop.
  *   ceiling    per GPU key (capabilities.ts `gpu`: backend, compatibility mode and the adapter's
  *              or the unmasked WebGL renderer's name), expiring after CEILING_TTL_MS so a later
- *              build or driver gets another chance; at most MAX_CEILINGS GPUs are kept.
+ *              build or driver gets another chance; at most MAX_CEILINGS GPUs are kept. A tier
+ *              above it that the player picks in the menu and that runs through the whole window
+ *              without a failure lifts it to that tier (`raiseCeiling`, Game.switchQuality).
  *
  * Pure: the clock and the storage are passed in (node tests).
  */
@@ -28,12 +36,16 @@ export const FALLBACK_WINDOW_MS = 20000;
 export const CEILING_TTL_MS = 30 * 24 * 3600 * 1000;
 /** GPUs remembered at most (the oldest record goes first). */
 export const MAX_CEILINGS = 8;
+/** A device lost within this long (ms) after the page was last hidden is the background's, not the tier's. */
+export const BACKGROUND_LOSS_MS = 10000;
+/** Same-tier reloads after a lost device: at most one per this long (ms). */
+export const LOSS_RELOAD_GAP_MS = 60000;
 /** localStorage key of the ceilings: { [gpu]: { q, at } }. */
 export const CEILING_KEY = STORAGE_PREFIX + 'tierCeiling.v1';
 
 export type FailureKind = 'error' | 'lost';
 
-/** What to do about a failure: switch to `to` (a reload first when the device is lost). */
+/** What to do about a failure: switch to `to` (a reload first when the device is lost; `to` === `from`: a reload on the same tier, no ceiling). */
 export interface Fallback {
   readonly from: Quality;
   readonly to: Quality;
@@ -90,6 +102,27 @@ export function writeCeiling(store: Store | null, gpu: string, q: Quality, now: 
 }
 
 /**
+ * The player picked `q` in the menu and it ran through the whole fallback window without a
+ * failure: a ceiling below it is lifted to it (none is left when `q` is the top tier), so the
+ * next boot starts on the player's choice again instead of the old fallback's tier for the rest
+ * of the record's 30 days (a driver or a build that has since been fixed). A record at or above
+ * `q` stays as it is.
+ */
+export function raiseCeiling(store: Store | null, gpu: string, q: Quality, now: number): void {
+  if (store === null) return;
+  const all = readAll(store);
+  const old = all[gpu];
+  if (old === undefined || QUALITIES.indexOf(old.q) >= QUALITIES.indexOf(q)) return;
+  if (QUALITIES.indexOf(q) === QUALITIES.length - 1) delete all[gpu];
+  else all[gpu] = { q, at: now };
+  try {
+    store.setItem(CEILING_KEY, JSON.stringify(all));
+  } catch {
+    /* storage full or disabled */
+  }
+}
+
+/**
  * Decides when a failure makes the tier fall back. `arm()` when a tier starts rendering (the end of
  * the boot, the start and the end of every switch); `onFailure()` for every failure the renderer
  * reports; `fallingBack` stays true from a decision until the next `arm()`.
@@ -114,13 +147,31 @@ export class TierGuard {
     this.busy = false;
   }
 
-  /** A failure of kind `kind` while `current` renders: the fallback to make, or null (nothing to do). */
-  onFailure(kind: FailureKind, current: Quality): Fallback | null {
+  /**
+   * A failure of kind `kind` while `current` renders: the fallback to make, or null (nothing to
+   * do). `background`: the page is hidden or was within BACKGROUND_LOSS_MS (a lost device then
+   * reloads on the same tier).
+   */
+  onFailure(kind: FailureKind, current: Quality, background = false): Fallback | null {
     if (this.busy) return null;
     const to = lowerQuality(current);
+    if (kind === 'lost' && (background || to === null)) {
+      this.busy = true;
+      return { from: current, to: current, reload: true };
+    }
     if (to === null) return null;
     if (kind === 'error' && this.now() - this.armedAt > FALLBACK_WINDOW_MS) return null;
     this.busy = true;
     return { from: current, to, reload: kind === 'lost' };
   }
+}
+
+/**
+ * Whether a same-tier reload after a lost device may happen now (`now`, ms since the epoch), given
+ * the time of the last one (`lastAt`, NaN or null when none): at most one per LOSS_RELOAD_GAP_MS,
+ * so a device that is lost again right after the reload leaves the page as it is instead of
+ * reloading forever.
+ */
+export function mayReloadAfterLoss(lastAt: number | null, now: number): boolean {
+  return lastAt === null || !Number.isFinite(lastAt) || now - lastAt >= LOSS_RELOAD_GAP_MS || now < lastAt;
 }
