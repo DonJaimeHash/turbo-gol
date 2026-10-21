@@ -29,7 +29,10 @@ export interface TierSpec {
   readonly bloom: boolean;
   /** Bloom mip levels (BloomNode's private _nMips, three pinned to 0.186.x). */
   readonly bloomMips: number;
-  /** Highest device pixel ratio used (phones are also capped at 2 by the renderer). */
+  /**
+   * Highest device pixel ratio used (Infinity = only the pixel budget limits it; phones and tablets
+   * are also capped at MAX_TOUCH_PIXEL_RATIO). 1 renders at CSS resolution. See `pixelRatio`.
+   */
   readonly maxPixelRatio: number;
   /** Drawing-buffer pixel budget (pixels): above it the pixel ratio drops, never below 1. */
   readonly pixelBudget: number;
@@ -98,7 +101,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     msaa: 4,
     bloom: true,
     bloomMips: 3,
-    maxPixelRatio: 2,
+    maxPixelRatio: Infinity,
     pixelBudget: 6e6,
     dynamicResolution: true,
     minResolutionScale: 0.6,
@@ -124,7 +127,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     msaa: 4,
     bloom: true,
     bloomMips: 3,
-    maxPixelRatio: 2,
+    maxPixelRatio: Infinity,
     pixelBudget: 6e6,
     dynamicResolution: true,
     minResolutionScale: 0.6,
@@ -151,6 +154,22 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
 /** The tier's switches. */
 export function tier(q: Quality): TierSpec {
   return TIERS[q];
+}
+
+/** Phones and tablets render at most at this pixel ratio on any tier (their DPR of 3+ costs ~2x the pixels). */
+export const MAX_TOUCH_PIXEL_RATIO = 2;
+
+/**
+ * The drawing-buffer pixel ratio of tier `spec` for a canvas of `cssW` x `cssH` CSS pixels: the
+ * device pixel ratio up to the tier's maxPixelRatio (and MAX_TOUCH_PIXEL_RATIO on a `touch`
+ * screen), lowered to fit the pixel budget but never below 1:1 for it; a tier whose maxPixelRatio
+ * is 1 renders at CSS resolution. (A dpr-2 1080p laptop on high renders at ~1.7x instead of 2x.)
+ */
+export function pixelRatio(spec: TierSpec, devicePixelRatio: number, touch: boolean, cssW: number, cssH: number): number {
+  if (!(spec.maxPixelRatio > 1)) return Math.min(1, spec.maxPixelRatio);
+  let dpr = Math.min(devicePixelRatio || 1, spec.maxPixelRatio);
+  if (touch) dpr = Math.min(dpr, MAX_TOUCH_PIXEL_RATIO);
+  return Math.min(dpr, Math.max(1, Math.sqrt(spec.pixelBudget / (cssW * cssH))));
 }
 
 /** A saved tier: the current names, or the numbers saved before the third tier (0 high, 1 performance). */

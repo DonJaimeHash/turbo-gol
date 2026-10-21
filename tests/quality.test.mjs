@@ -16,7 +16,7 @@ registerHooks({
   },
 });
 
-const { QUALITIES, TIERS, tier, parseQuality, nextQuality } = await import('../src/render/quality.ts');
+const { QUALITIES, TIERS, tier, parseQuality, nextQuality, pixelRatio, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
 const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld } = await import('../src/render/theme.ts');
 const en = (await import('../src/locales/en.ts')).default;
 const es = (await import('../src/locales/es.ts')).default;
@@ -49,6 +49,39 @@ test('low keeps the old performance tier (1) and high the old quality tier (0)',
   assert.equal(high.detail, 'high');
   assert.equal(high.netDetail, true);
   assert.equal(high.particles, 1536);
+});
+
+test('the pixel ratio of low and high is the one the old tiers used (1 and 0)', () => {
+  // The old Renderer.resize: quality 1 rendered at CSS resolution; quality 0 followed the device
+  // (phones capped at 2) down to a 6 Mpx budget, never below 1:1 for the budget.
+  const oldQ0 = (dpr, touch, w, h) => {
+    let d = dpr || 1;
+    if (touch) d = Math.min(d, 2);
+    return Math.min(d, Math.max(1, Math.sqrt(6e6 / (w * h))));
+  };
+  const sizes = [
+    [375, 812],
+    [812, 375],
+    [1280, 720],
+    [1536, 864],
+    [1600, 900],
+    [1920, 1080],
+    [2560, 1440],
+    [3840, 2160],
+  ];
+  for (const dpr of [0.75, 1, 1.25, 1.369, 1.5, 2, 2.25, 2.5, 3, 4]) {
+    for (const touch of [false, true]) {
+      for (const [w, h] of sizes) {
+        const at = `dpr ${dpr} touch ${touch} ${w}x${h}`;
+        assert.equal(pixelRatio(tier('low'), dpr, touch, w, h), 1, `low ${at}`);
+        assert.equal(pixelRatio(tier('high'), dpr, touch, w, h), oldQ0(dpr, touch, w, h), `high ${at}`);
+        assert.ok(pixelRatio(tier('ultra'), dpr, touch, w, h) >= pixelRatio(tier('high'), dpr, touch, w, h), `ultra ${at}`);
+      }
+    }
+  }
+  assert.equal(MAX_TOUCH_PIXEL_RATIO, 2);
+  // A dpr-2 1080p laptop on high renders at ~1.7x instead of 2x (the budget).
+  assert.ok(Math.abs(pixelRatio(tier('high'), 2, false, 1920, 1080) - Math.sqrt(6e6 / (1920 * 1080))) < 1e-12);
 });
 
 test('ultra is never below high on any switch', () => {

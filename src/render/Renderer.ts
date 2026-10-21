@@ -9,8 +9,9 @@
  *            Neutral tone mapping + sRGB (`renderOutput`) -> FXAA on tiers without MSAA
  *
  *   low:          no MSAA (FXAA instead), pixel ratio 1, 2048 shadow map, no bloom, PCF radius 3
- *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, 2, pixel budget 6 Mpx) but never
- *                 below 1, 4096 shadow map, bloom, PCF radius 4, dynamic resolution
+ *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, pixel budget 6 Mpx) but never
+ *                 below 1 (quality.ts `pixelRatio`), 4096 shadow map, bloom, PCF radius 4, dynamic
+ *                 resolution
  *
  * The renderer is created with `antialias: false`: MSAA lives on the scene pass (`samples`), so the
  * final full-screen quad is single-sampled on every tier. Switching tiers disposes the previous
@@ -38,7 +39,7 @@ import * as THREE from 'three/webgpu';
 import { ARENA } from '../sim/constants';
 import { DynamicResolution } from './dynamicResolution';
 import { buildPostChain, type PostChain } from './post/pipeline';
-import { tier, type Quality } from './quality';
+import { pixelRatio, tier, type Quality } from './quality';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
 import { createWorld, type World } from './world/World';
 
@@ -61,8 +62,6 @@ export interface RenderStats {
 /** Camera planes in uu (1 uu = 1 three unit). */
 export const CAMERA_NEAR = 10;
 export const CAMERA_FAR = 40000;
-/** Phones and tablets render at most at this pixel ratio on any tier (their DPR of 3+ costs ~2x the pixels). */
-const MAX_TOUCH_PIXEL_RATIO = 2;
 const SUN_COLOR = 0xfff3e2;
 const SUN_INTENSITY = 3.2;
 /** `#nancheck`: frames between two readbacks. */
@@ -338,13 +337,8 @@ export class Renderer {
     const w = Math.max(1, this.cssW || window.innerWidth);
     const h = Math.max(1, this.cssH || window.innerHeight);
     const spec = tier(this.quality);
-    let pr = Math.min(1, spec.maxPixelRatio);
-    if (spec.maxPixelRatio > 1) {
-      let dpr = Math.min(window.devicePixelRatio || 1, spec.maxPixelRatio);
-      if (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) dpr = Math.min(dpr, MAX_TOUCH_PIXEL_RATIO);
-      pr = Math.min(dpr, Math.max(1, Math.sqrt(spec.pixelBudget / (w * h))));
-    }
-    this.gpu.setPixelRatio(pr);
+    const touch = spec.maxPixelRatio > 1 && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+    this.gpu.setPixelRatio(pixelRatio(spec, window.devicePixelRatio, touch, w, h));
     this.gpu.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
