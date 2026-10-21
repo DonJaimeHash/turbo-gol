@@ -1,12 +1,13 @@
 /**
  * Procedural ball for the three.js WebGPU renderer.
  *
- * - Sphere of BALL.visualRadius with a TSL material: the Turbogol match ball. One continuous
- *   seam band wanders around the sphere (the saddle curve z = k (x^2 - y^2) on the unit sphere,
- *   swinging about 43 degrees above and below the equator) and splits it into a white half and a
- *   cool grey half; the band is brand lime, lit (it blooms softly) and outlined in graphite, and a
- *   graphite 'T' monogram sits at the centre of each half. Everything is analytic in the local
- *   normal (no textures, no seams in the mesh), so the spin reads clearly from any side.
+ * - Sphere of BALL.visualRadius with a TSL material: the Turbogol match ball, a stitched panel
+ *   ball. Its 32 panels are the faces of a truncated icosahedron projected onto the sphere: 20
+ *   pearl hexagons and 12 graphite pentagons, each pentagon carrying a glowing brand-lime ring.
+ *   Panels are pillowed (bent normals rising from the seams), the seams are dark grooves with
+ *   stitches beside them, and a little wear (scuffs, faint grass stains) breaks the gloss.
+ *   Everything is analytic in the local normal (no textures, no seams in the mesh), so the panel
+ *   pattern turns with the ball and the spin reads from any side. Colours: BALL_COLORS.
  * - Rotation is integrated locally from B_ANG_VEL each frame (RocketSim's noBallRot leaves B_ROT
  *   constant by default, so the sim rotation cannot be trusted for visuals).
  * - Ground blob: a soft dark disc on the floor under the ball, always visible (the main depth
@@ -17,35 +18,90 @@
  */
 import * as THREE from 'three/webgpu';
 import {
-  color,
+  cross,
+  dot,
   float,
+  fract,
   fwidth,
-  min,
+  length,
+  max,
   mix,
+  mx_fractal_noise_float,
+  mx_noise_float,
   normalLocal,
   normalView,
+  normalize,
   positionViewDirection,
-  select,
   smoothstep,
   step,
+  transformNormalToView,
   uniform,
   uv,
-  vec2,
   vec3,
 } from 'three/tsl';
 import { B_ANG_VEL, B_POS, BALL_OFFSET } from '../sim/types';
 import { BALL } from '../sim/constants';
 import { simVecLerpFromBuf } from './coords';
-import { BRAND_LIME, boxSdf, noGlowMrt } from './materials';
+import {
+  BRAND_LIME,
+  OpaqueAlbedoPhysicalMaterial,
+  linearVec3,
+  noGlowMrt,
+  resolvedFade,
+  thinLineMask,
+  type FloatNode,
+  type Vec3Node,
+} from './materials';
 import { tier, type Quality } from './quality';
 
-/** Seam surface z = SEAM_K (x^2 - y^2): larger swings the band further from the equator. */
-const SEAM_K = 1.3;
-/** Band half width and the width of its graphite outline (radians on the unit sphere). */
-const BAND_HALF = 0.075;
-const BAND_OUTLINE = 0.018;
-/** Glow of the lime band (emissive multiplier; the bloom picks it up). */
-const BAND_GLOW = 0.5;
+/**
+ * The match ball's colourway (sRGB hex). Restyle the ball here: the shader reads nothing else.
+ * Keep `glow` the brand lime (the ball's brand cue) and the pentagons clearly darker than the
+ * hexagons, which is what makes the spin readable.
+ */
+export const BALL_COLORS = {
+  /** The 20 hexagon panels: pearl white. */
+  hexagon: 0xe9ebe5,
+  /** The 12 pentagon panels: graphite. */
+  pentagon: 0x2b3039,
+  /** The grooves between panels. */
+  seam: 0x0e1013,
+  /** Stitch dashes along the grooves. */
+  stitch: 0x8a8f96,
+  /** The glowing ring inset in every pentagon (blooms on tiers with bloom). */
+  glow: BRAND_LIME,
+  /** Grass stain tint (multiplied into the hexagons where the wear noise says so). */
+  stain: 0xc9d3a8,
+} as const;
+
+/** Golden ratio: the icosahedron's coordinates. */
+const PHI = (1 + Math.sqrt(5)) / 2;
+/**
+ * Truncated icosahedron face planes: hexagons lie at 1.51152 and pentagons at 1.55163 from the
+ * centre (the icosahedron's edges cut at thirds). A direction belongs to the face whose plane it
+ * meets first (largest dot(n, c) / distance), so pentagon scores get this weight (hexagon
+ * distance / pentagon distance); tests/car-ball-materials.test.mjs checks it against the
+ * polyhedron.
+ */
+export const BALL_PENT_WEIGHT = 0.9741542;
+/** Seam groove half width (radians on the unit sphere) and the stitches just outside it. */
+const SEAM_HALF = 0.011;
+const STITCH_OFFSET = 0.019;
+const STITCH_HALF = 0.0035;
+/** Stitches per radian along a seam, and the dash duty (fraction of a period that is thread). */
+const STITCH_PER_RAD = 60;
+const STITCH_DUTY = 0.45;
+/**
+ * Pillow: panels curve down into the seam over this many radians, the normal tilting toward the
+ * seam by up to PILLOW_TILT there and easing to none inside the panel ((1 - t)^2, no crease).
+ */
+const PILLOW = 0.085;
+const PILLOW_TILT = 0.3;
+/** Lime ring in each pentagon: radius and half width (chord length on the unit sphere). */
+const RING_R = 0.15;
+const RING_HALF = 0.024;
+/** Emissive multiplier of the lime ring (blooms on high; HDR colour alone on low). */
+const RING_GLOW = 1.6;
 /** prev→cur jumps longer than this are teleports (goal reset): snap instead of lerp. */
 const TELEPORT_DIST_SQ = 500 * 500;
 /** Marker fades in between these heights above the floor (uu, ball bottom). */
@@ -62,40 +118,135 @@ const BLOB_MAX_HEIGHT = 1500;
 
 const _dq = new THREE.Quaternion();
 
+type Vec3Tuple = [number, number, number];
+
+function unit(x: number, y: number, z: number): Vec3Tuple {
+  const l = Math.hypot(x, y, z);
+  return [x / l, y / l, z / l];
+}
+
 /**
- * The match-ball material. `f = z - k (x^2 - y^2)` of the unit local normal is positive on one
- * half and negative on the other; `f / |grad f|` (the gradient is never shorter than 1, so the
- * division is safe) is a distance to the seam in radians, anti-aliased with fwidth. The
- * monogram is a box-SDF 'T' in the gnomonic tangent plane of each pole (+z on the white half,
- * -z on the grey half, mirrored there so it reads the right way round from outside).
+ * Unit face normals of the truncated icosahedron: the 12 pentagons are the icosahedron's vertices
+ * (cyclic permutations of (0, +-1, +-phi)), the 20 hexagons its face centres: (+-1, +-1, +-1) and
+ * the cyclic permutations of (0, +-phi, +-1/phi). The cyclic order matters: the other chirality,
+ * (0, +-1/phi, +-phi), is not a face of this icosahedron and gives irregular panels.
  */
-function createBallMaterial(): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial();
-  const n = normalLocal.normalize();
-  const f = n.z.sub(n.x.mul(n.x).sub(n.y.mul(n.y)).mul(SEAM_K));
-  const grad = vec3(n.x.mul(-2 * SEAM_K), n.y.mul(2 * SEAM_K), 1.0).length();
-  const dist = f.div(grad).abs();
-  const aa = fwidth(dist).mul(0.75).add(1e-4);
-  const band = smoothstep(aa.negate().add(BAND_HALF), aa.add(BAND_HALF), dist).oneMinus();
-  const rim = smoothstep(aa.negate().add(BAND_HALF + BAND_OUTLINE), aa.add(BAND_HALF + BAND_OUTLINE), dist).oneMinus().sub(band).saturate();
-  const white = step(0.0, f);
+export function ballPanelCentres(): { pent: Vec3Tuple[]; hex: Vec3Tuple[] } {
+  const pent: Vec3Tuple[] = [];
+  const hex: Vec3Tuple[] = [];
+  for (const a of [-1, 1]) {
+    for (const b of [-1, 1]) {
+      pent.push(unit(0, a, b * PHI), unit(a, b * PHI, 0), unit(b * PHI, 0, a));
+      hex.push(unit(0, a * PHI, b / PHI), unit(b / PHI, 0, a * PHI), unit(a * PHI, b / PHI, 0));
+      for (const c of [-1, 1]) hex.push(unit(a, b, c));
+    }
+  }
+  return { pent, hex };
+}
 
-  // 'T' at the pole of each half: top bar plus stem, union of two box SDFs.
-  const sz = select(n.z.greaterThan(0.0), 1.0, -1.0);
-  const p = vec2(n.x.mul(sz), n.y).div(n.z.abs().max(0.3));
-  const tSdf = min(boxSdf(p, 0, 0.22, 0.3, 0.08), boxSdf(p, 0, -0.01, 0.085, 0.31));
-  const taa = fwidth(tSdf).mul(0.75).add(1e-4);
-  const logo = smoothstep(taa.negate(), taa, tSdf).oneMinus().mul(step(0.6, n.z.abs()));
+/**
+ * The faces the shader searches after folding the normal into the positive octant (abs): the
+ * panel layout is symmetric under every coordinate sign flip, so the 7 faces with non-negative
+ * coordinates stand for all 32. Three hexagon pairs are neighbours across a coordinate plane
+ * (mirror images of each other), so those mirrors join the list as runner-up candidates: with
+ * them the folded search finds the same face and the same runner-up as the full one wherever a
+ * seam is near (tests/car-ball-materials.test.mjs checks that against the 32-face search).
+ */
+export function ballFoldedPanels(): { c: Vec3Tuple; pent: boolean }[] {
+  return [
+    { c: unit(0, 1, PHI), pent: true },
+    { c: unit(1, PHI, 0), pent: true },
+    { c: unit(PHI, 0, 1), pent: true },
+    { c: unit(1, 1, 1), pent: false },
+    { c: unit(0, PHI, 1 / PHI), pent: false },
+    { c: unit(1 / PHI, 0, PHI), pent: false },
+    { c: unit(PHI, 1 / PHI, 0), pent: false },
+    { c: unit(0, PHI, -1 / PHI), pent: false },
+    { c: unit(-1 / PHI, 0, PHI), pent: false },
+    { c: unit(PHI, -1 / PHI, 0), pent: false },
+  ];
+}
 
-  const ink = color(0x1b2230);
-  const lime = color(BRAND_LIME);
-  const panel = mix(color(0xb3bcc9), color(0xf3f5f8), white);
-  const albedo = mix(mix(mix(panel, ink, logo), ink, rim), lime, band);
-  m.colorNode = albedo;
-  m.roughnessNode = mix(mix(float(0.38), float(0.5), rim.add(logo).saturate()), float(0.25), band);
-  m.metalnessNode = mix(0.1, 0.0, band);
+/**
+ * The match-ball material (see the file header). The normal is folded into the positive octant
+ * and the 10 candidate faces of ballFoldedPanels are walked once in straight-line code: best and
+ * runner-up weighted scores and centres. Their score gap over its gradient is the distance to the
+ * seam in radians, which drives the groove, the stitches and the pillow; the chord to the
+ * pentagon centre draws the lime ring. Everything but the pillow tilt is symmetric, so it is
+ * computed in the folded frame; the tilt is unfolded by the normal's signs. Every line goes
+ * through thinLineMask, so seams and rings fade to their average at distance instead of crawling.
+ * `hi` false (detail 'low') drops the pillow normal, the grass stains and two wear octaves.
+ * Per pixel: 10 dot / mix steps and 2-4 noise octaves; only the ball's pixels pay.
+ */
+function createBallMaterial(hi: boolean): THREE.MeshPhysicalNodeMaterial {
+  const m = new OpaqueAlbedoPhysicalMaterial();
+  const n = normalize(normalLocal);
+  const f = n.abs(); // folded into the positive octant
+  const signs = step(0.0, n).mul(2.0).sub(1.0); // unfolds a folded-frame vector (+1 on the planes)
+
+  let best: FloatNode = float(-2.0);
+  let second: FloatNode = float(-2.0);
+  let bestW: Vec3Node = vec3(0.0, 1.0, 0.0); // weighted centre (unit centre x its face weight)
+  let secondW: Vec3Node = vec3(1.0, 0.0, 0.0);
+  let isPent: FloatNode = float(0.0);
+  // Arithmetic (step + mix), not select(): TSL emits select() as if / else blocks, and chained
+  // steps nest them (32 of them passed WGSL's statement depth limit of 127). Each step here is one
+  // flat statement per variable.
+  for (const { c, pent } of ballFoldedPanels()) {
+    const w = pent ? BALL_PENT_WEIGHT : 1;
+    const cw = vec3(c[0] * w, c[1] * w, c[2] * w);
+    const sc = dot(f, cw).toVar();
+    const wins = step(best, sc).toVar(); // 1 when this face beats the best so far
+    const beatsSecond = step(second, sc);
+    secondW = mix(mix(secondW, cw, beatsSecond), bestW, wins).toVar();
+    second = mix(max(second, sc), best, wins).toVar();
+    isPent = mix(isPent, float(pent ? 1 : 0), wins).toVar();
+    bestW = mix(bestW, cw, wins).toVar();
+    best = max(best, sc).toVar();
+  }
+
+  // Distance to the seam (radians): the score gap over the gap's tangential gradient.
+  const g = bestW.sub(secondW);
+  const gTan = g.sub(f.mul(dot(f, g)));
+  const d = best.sub(second).div(length(gTan).max(1e-4));
+  const groove = thinLineMask(d, SEAM_HALF);
+  // Stitches: dashes along the seam, in a thin band on the panel side of the groove.
+  const along = dot(f, normalize(cross(bestW, secondW)));
+  const dashD = fract(along.mul(STITCH_PER_RAD)).sub(0.5);
+  const dashFw = fwidth(along.mul(STITCH_PER_RAD)); // the continuous coordinate: no line at the wrap
+  const dash = thinLineMask(dashD, STITCH_DUTY * 0.5, dashFw).mul(resolvedFade(along.mul(STITCH_PER_RAD)));
+  const stitch = dash.mul(thinLineMask(d.sub(STITCH_OFFSET), STITCH_HALF));
+  // Lime ring around each pentagon centre (chord distance from the unit centre).
+  const centre = bestW.div(mix(float(1.0), float(BALL_PENT_WEIGHT), isPent));
+  const ring = thinLineMask(length(f.sub(centre)).sub(RING_R), RING_HALF).mul(isPent);
+
+  // Wear in the ball's own (unfolded) frame: scuffs (rougher, a touch darker), faint grass stains.
+  const scuff = smoothstep(0.2, 0.7, mx_fractal_noise_float(n.mul(5.0), hi ? 3 : 1, 2.0, 0.5, 1.0));
+  const stain: FloatNode = hi ? smoothstep(0.5, 0.85, mx_noise_float(n.mul(2.3).add(7.1))) : float(0.0);
+
+  const ink = linearVec3(BALL_COLORS.pentagon);
+  let panel: Vec3Node = mix(linearVec3(BALL_COLORS.hexagon), ink, isPent);
+  panel = mix(panel, panel.mul(linearVec3(BALL_COLORS.stain)), stain.mul(0.55).mul(isPent.oneMinus()));
+  panel = panel.mul(scuff.mul(0.12).oneMinus());
+  const lime = linearVec3(BALL_COLORS.glow);
+  let albedo: Vec3Node = mix(panel, linearVec3(BALL_COLORS.seam), groove);
+  albedo = mix(albedo, mix(linearVec3(BALL_COLORS.stitch), panel.mul(0.55), isPent), stitch.mul(0.85));
+  albedo = mix(albedo, lime.mul(0.75), ring);
+  m.albedoNode = albedo; // not colorNode: keeps the panel search out of the shadow pipelines
+  // A glossy PU skin without a clearcoat (a coat adds a second specular lobe per light for a
+  // highlight the low base roughness already gives); scuffs and seams go matte.
+  m.roughnessNode = mix(mix(float(0.26), float(0.55), scuff), float(0.78), max(groove, stitch));
+  m.metalnessNode = float(0.0);
   const fresnel = normalView.dot(positionViewDirection).saturate().oneMinus().pow(4.0);
-  m.emissiveNode = lime.mul(band.mul(BAND_GLOW)).add(panel.mul(fresnel.mul(0.08)));
+  m.emissiveNode = lime.mul(ring.mul(RING_GLOW)).add(panel.mul(fresnel.mul(0.06)));
+  if (hi) {
+    // Pillow: the panel curves down into the seam; tilt the normal toward the seam (against the
+    // gap's gradient, which points into the panel), easing out so the panel has no inner crease.
+    const gDir = normalize(gTan.add(f.mul(1e-5))).mul(signs);
+    const t = d.div(PILLOW).saturate().oneMinus();
+    const slope = t.mul(t).mul(PILLOW_TILT);
+    m.normalNode = transformNormalToView(normalize(n.sub(gDir.mul(slope)))).normalize();
+  }
   m.name = 'ball-turbogol';
   return m;
 }
@@ -126,7 +277,7 @@ export class BallView {
   readonly position: THREE.Vector3;
 
   private readonly scene: THREE.Scene;
-  private readonly material: THREE.MeshStandardNodeMaterial;
+  private readonly material: THREE.MeshPhysicalNodeMaterial;
   private readonly marker: THREE.Mesh;
   private readonly markerMat: THREE.MeshBasicNodeMaterial;
   private readonly blob: THREE.Mesh;
@@ -142,7 +293,7 @@ export class BallView {
     const hi = tier(quality).detail === 'high';
     const widthSeg = hi ? 48 : 28;
     const heightSeg = hi ? 32 : 18;
-    this.material = createBallMaterial();
+    this.material = createBallMaterial(hi);
     this.root = new THREE.Mesh(new THREE.SphereGeometry(BALL.visualRadius, widthSeg, heightSeg), this.material);
     this.root.name = 'ball';
     this.root.castShadow = true;
