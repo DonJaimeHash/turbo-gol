@@ -527,7 +527,8 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
     const occl = saturate(hS.sub(tA.r).sub(SHADOW_RISE).mul(4)).mul(oneMinus(smoothstep(SHADOW_RANGE * 0.4, SHADOW_RANGE, dist)));
     albedo = albedo.mul(oneMinus(occl.mul(0.55)));
   }
-  albedo = albedo.mul(teamTint(p, U));
+  // The team tint is the grass's, not the soil's (bare goal-mouth soil read grey-purple in blue).
+  albedo = albedo.mul(mix(teamTint(p, U), vec3(1, 1, 1), bare));
 
   // Goal floors (beyond the goal lines): shaded by the net, a hint of the team colour.
   const az = abs(p.y);

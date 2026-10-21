@@ -205,7 +205,7 @@ const CARDS: readonly Card[] = [
   { name: 'PUERTO SUR', tag: 'LIGA DEL PUERTO', logo: 'anchor', bg: ['#0b1d42', '#06122a'], fg: '#ffffff', ac: '#ffffff' },
   { name: 'TURBOGOL', tag: 'turbo-gol.com', logo: 'chevrons', bg: ['#0a0e17', '#04060b'], fg: '#ffffff', ac: '#c6ff2e' },
   { name: 'MARELUX', tag: 'ENERGÍA DEL MAR', logo: 'wave', bg: ['#08305a', '#051d3d'], fg: '#ffffff', ac: '#47d2ff' },
-  { name: 'CHISPAZO', tag: 'BEBIDA ENERGÉTICA', logo: 'bolt', bg: ['#121705', '#090b02'], fg: '#e9ff9a', ac: '#c6ff2e' },
+  { name: 'CHISPA VERDE', tag: 'BEBIDA ENERGÉTICA', logo: 'bolt', bg: ['#121705', '#090b02'], fg: '#e9ff9a', ac: '#c6ff2e' },
   { name: 'FARO ALTO', tag: 'NEUMÁTICOS', logo: 'lighthouse', bg: ['#1a2233', '#0e131f'], fg: '#ffffff', ac: '#ffffff' },
   { name: 'ESTIBA', tag: 'LOGÍSTICA PORTUARIA', logo: 'chevrons', bg: ['#9c420a', '#6a2a04'], fg: '#ffffff', ac: '#ffffff' },
   { name: 'BOYA AZUL', tag: 'SEGUROS', logo: 'ball', bg: ['#164fae', '#0c337a'], fg: '#ffffff', ac: '#ffffff' },
