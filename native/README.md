@@ -5,7 +5,9 @@ a patched Bullet 3.24 in `libsrc/bullet3-3.24`, zlib), compiled to WebAssembly w
 RocketSim is a **git submodule** at `native/RocketSim`, pinned to the v2.2.1 commit
 (`f80f9d9`): clone with `--recurse-submodules` or run `git submodule update --init`. The
 submodule is never edited: `patch-rocketsim.mjs` mirrors it into `native/build/rocketsim` with our
-two patches applied (see "Patches to the physics library") and the build compiles that copy. `wrapper.cpp` implements the C API declared in `rs_api.h`; the
+three patches applied (see "Patches to the physics library") and the build compiles that copy;
+`wrapper.cpp` includes its headers from that copy too (never from the submodule: patch 3 changes
+the layout of `MutatorConfig`). `wrapper.cpp` implements the C API declared in `rs_api.h`; the
 TypeScript side (`src/sim/RocketSimBridge.ts`) talks only to that API and reads one flat
 `Float32Array` state buffer whose layout is defined in `src/sim/types.ts`.
 
@@ -20,7 +22,7 @@ Options: `-Clean` (wipe `native/build/obj`), `-NoLto` (faster link), `-DebugBuil
 assertions), `-Jobs N` (parallel compiles, default = CPU count), `-EmsdkDir <path>`.
 
 Output: `src/sim/wasm/rocketsim.js` (ES module, default export `createRocketSim()`) and
-`src/sim/wasm/rocketsim.wasm` (591,376 bytes = ~578 KB, ~230 KB gzipped; the 8-car state buffer is
+`src/sim/wasm/rocketsim.wasm` (593,938 bytes = ~580 KB, ~230 KB gzipped; the 8-car state buffer is
 zero-initialised `.bss`, so it costs nothing in the binary). `src/sim/wasm/rocketsim.d.ts` is
 hand-written (not generated) and must be updated when `rs_api.h` changes. Both generated files are
 meant to be committed so the project runs without a C++ toolchain. `native/build/` (objects,
@@ -97,6 +99,16 @@ marked `// PATCH (turbogol)` in the patched copy, as Bullet's zlib license asks)
    wrapper deals its own kickoff spots in creation order from the seed and chooses respawn spots
    from the sim state (see "Field layout"), so a seed reproduces a whole match, demolitions
    included (`scripts/smoke-match.mjs` prints identical runs from any path).
+3. `src/Sim/MutatorConfig/MutatorConfig.h` and `src/Sim/Car/Car.cpp`: a `carMaxSpeed` mutator
+   (default `RLConst::CAR_MAX_SPEED`, also added to RocketSim's own mutator serialisation list),
+   for the experimental physics presets (see "Physics mutators"). `Car::_FinishPhysicsTick` clamps
+   the car's speed to it and `Car::_PostTickUpdate` scales `SUPERSONIC_START_SPEED` and
+   `SUPERSONIC_MAINTAIN_MIN_SPEED` by `carMaxSpeed / CAR_MAX_SPEED`. Both changes are a branch on
+   `carMaxSpeed != CAR_MAX_SPEED`: at the stock value the original constant expressions run, so
+   stock physics stays bit-identical (the golden trace, `tests/stock-trace.test.mjs`). The flip's
+   `forwardSpeedRatio` (`|forward speed| / CAR_MAX_SPEED`, which sizes the dodge impulse) keeps the
+   constant: above 2300 uu/s a dodge is a little stronger. Every other field the presets set was
+   already a `MutatorConfig` field that RocketSim reads each tick in place of its constant.
 
 Everything else compiles unmodified under Emscripten 6. `<filesystem>` is only used by
 `RocketSim::Init()` (file loading), which the wrapper never calls; the mesh is passed in memory
@@ -168,6 +180,7 @@ through `rs_init_arena_mesh` and `RocketSim::InitFromMem({}, true)`.
   -0.001 uu/s nudge, because `Arena::Step` puts a zero-velocity ball to sleep (kickoff
   optimisation) and it would otherwise float in mid-air forever.
 * **rs_set_unlimited_boost** sets every car's boost to 100 before (and after) each tick.
+* **Physics mutators** (`rs_set_mutators` / `rs_get_mutators`): see the section below.
 * **rs_get_boost_pad(i, out4)**: x, y, z, isBig of pad `i` as the arena simulates it (the
   bridge's `boostPadInfo`; `tests/sim.test.mjs` 22 checks it against `constants.ts`).
 * **tickRate** outside [15, 120] falls back to 120 (RocketSim asserts that range).
@@ -195,8 +208,53 @@ refused (3). `rs_arena_create` then:
   callback) fire when |ball.y| > goalLineY + ball radius (5600 + 91.25).
 
 The ball predictor's own arena (`BallPredTracker`) is created from the same `ArenaConfig`; its
-constructor predicts once before the wrapper can move its planes, so the wrapper moves them and
-re-predicts immediately (`CreatePredTracker`).
+constructor predicts once before the wrapper can move its planes, so the wrapper moves them, copies
+the arena's `MutatorConfig` into it (see "Physics mutators") and re-predicts immediately
+(`CreatePredTracker`).
+
+## Physics mutators (experimental presets)
+
+`rs_set_mutators(data, 19)` sets 18 `MutatorConfig` fields of the current arena at once (layout v1
+in `rs_api.h` and `src/sim/mutatorLayout.ts`: gravity z, ball top speed / hit scale / mass / bounce /
+drag, car top speed (patch 3), boost acceleration ground / air, boost use, spawn boost, first-jump
+impulse and hold acceleration, unlimited flips / double jumps, bump scale, demo mode, respawn
+delay). `rs_get_mutators(out, cap)` reads them back (a fresh arena returns `STOCK_MUTATORS` bit for
+bit). The bridge applies a preset only through `createArena(tickRate, mutators)`, right after
+`rs_arena_create`, before any car and before the predictor warm-up; every other caller (the Worker,
+roomHost, community nodes, ranked, casual, training packs) passes nothing and gets the stock arena.
+
+* **Validation, all or nothing.** The pointer, the count (19), the version (1), every value finite and
+  inside its hard limit (wider than the UI ranges of `src/sim/mutators.ts`: gravity -2000..-100, ball
+  top speed 1000..8500, car top speed 1500..2700, restitution 0..0.95, ...), toggles exactly 0 / 1,
+  the demo mode exactly 0 / 1 / 2: on any failure nothing changes (code 1; 2 = no arena). The limits
+  keep the sim sane whatever a modified client sends: gravity always pulls down, the ball moves at
+  most 71 uu per tick (0.78 of its radius: it cannot tunnel through the thin goal and corner mesh),
+  a bounce never gains energy, a car moves at most 22.5 uu per tick against its 19.3 uu half
+  hitbox height.
+* **Only these fields.** The wrapper copies the arena's config and changes these fields only:
+  `carMass` (RocketSim 2.2.1's `SetMutatorConfig` would give every car the BALL's mass on a car-mass
+  change, Arena.cpp:39), `ballRadius` (the broadphase throws above ~105.8 uu, and the renderer,
+  goal line and bots assume it) and the goal threshold are never touched.
+* **Ball mass** rebuilds the ball's rigid body (RocketSim removes it from the Bullet world and adds a
+  new one). The wrapper carries the ball's exact Bullet state over, and refuses the change once a
+  car exists (code 3): applied before the cars, the Bullet object order is the same on every peer.
+* **Gravity** is given to every non-static body explicitly: Bullet's `setGravity` only reaches
+  ACTIVE bodies, and `Arena::Step` puts a ball at rest to sleep (the predictor arena's ball sleeps at
+  the kickoff spot after its first prediction, so without this it kept stock gravity and never
+  matched).
+* **The predictor shares the config.** `rs_set_mutators` sets the same config on the
+  `BallPredTracker`'s arena and re-predicts at once; `CreatePredTracker` copies it for a tracker
+  created later. With a mismatch `BallState::Matches()` fails within a few ticks and every update
+  becomes a full 720-tick re-simulation (measured with gravity 50 %: 300 updates took 410 ms instead
+  of 5 ms); with the copy the predicted ball equals the stepped ball bit for bit
+  (`tests/mutators-wasm.test.mjs`).
+* **Cost**: nothing per tick (RocketSim reads these fields every tick anyway; patch 3 replaces a
+  constant with a field read). The call itself takes microseconds, a ball rebuild microseconds, and
+  the bridge's existing predictor warm-up is the only prediction.
+* **Not in the state.** The config is not in the `rs_save_state` blob or `rs_state_hash`: it is
+  constant for the arena's life (other rules mean a new arena), so peers compare
+  `mutatorFingerprint(getMutators())` once, before tick 0. `rs_arena_destroy` drops it with the
+  arena and `rs_arena_create` always starts stock. `rs_set_demo_mode` still sets the demo mode alone.
 
 ## Full state save / load (rollback netcode)
 
@@ -296,6 +354,8 @@ Known residual hidden state (NOT in the blob, documented so hash mismatches can 
   baseline on load so the load itself never fires `onBallHit`.
 * The ball predictor keeps its own tick counter; after a load with a lower tick it re-predicts in
   full on the next `rs_ball_pred_update` (the bridge resets `predTick`).
+* The physics mutators (`MutatorConfig`): constant for the arena's life and fingerprinted
+  separately (see "Physics mutators").
 
 Cost (node 24, 6 cars, 3049-byte blob, `tests/sim-state.test.mjs` g): save + load 16.7 us,
 save 9.8 us, hash 13.0 us, `setControlsPacked` 0.26 us. Nothing is allocated per call: the

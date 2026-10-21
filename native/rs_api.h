@@ -95,6 +95,34 @@ float* rs_ball_pred_ptr(void);
 void rs_set_demo_mode(int demoMode);
 void rs_set_unlimited_boost(int enabled); // keeps boost at 100 every tick when enabled
 
+// Physics mutators of the current arena (RocketSim's MutatorConfig; Turbogol's experimental
+// physics presets, src/sim/mutatorLayout.ts). Layout v1, exactly `count` = 19 floats:
+//   [0] layout version (1)        [1] gravityZ              [2] ballMaxSpeed
+//   [3] ballHitExtraForceScale    [4] ballMass (Bullet mass units, stock 30)
+//   [5] ballWorldRestitution      [6] ballDrag              [7] carMaxSpeed
+//   [8] boostAccelGround          [9] boostAccelAir         [10] boostUsedPerSecond
+//   [11] carSpawnBoostAmount      [12] jumpImmediateForce   [13] jumpAccel
+//   [14] unlimitedFlips (0/1)     [15] unlimitedDoubleJumps (0/1)
+//   [16] bumpForceScale           [17] demoMode (0/1/2, as rs_set_demo_mode)
+//   [18] respawnDelay (s)
+// Hard limits (wider than any UI range; the UI's grid lives in src/sim/mutators.ts): gravityZ
+// -2000..-100, ballMaxSpeed 1000..8500, ballHitExtraForceScale 0..4, ballMass 10..90,
+// ballWorldRestitution 0..0.95, ballDrag 0..0.5, carMaxSpeed 1500..2700, boostAccelGround 0..3000,
+// boostAccelAir 0..3200, boostUsedPerSecond 0..100, carSpawnBoostAmount 0..100, jumpImmediateForce
+// 0..600, jumpAccel 0..3000, bumpForceScale 0..5, respawnDelay 0.5..10. All or nothing: a null
+// pointer, another count or version, a non-finite value or one outside its limit changes nothing.
+// carMass, ballRadius, the goal threshold and every other field are never touched. A ballMass change
+// rebuilds the ball body (its state is carried over exactly) and is refused once a car exists, so
+// the Bullet object order is the same on every peer. The ball predictor's arena gets the same
+// config and re-predicts at once, so predictions follow the preset and stay incremental. Meant to
+// be called once, right after rs_arena_create (the bridge's createArena(tickRate, mutators)): a new
+// arena always starts stock, and the config is NOT in rs_save_state / rs_state_hash (it never
+// changes during a match). Returns 0 ok, 1 bad data, 2 no arena, 3 ballMass change while cars exist.
+int rs_set_mutators(const float* data, int count);
+// Writes the arena's effective values in the same layout (version first) to `out`. Returns the
+// number of floats written (19), or 0 (no arena, null pointer, cap < 19).
+int rs_get_mutators(float* out, int cap);
+
 
 // ---- Full state save / load (netcode rollback, phase 1 online) ------------------------------
 // Serialises the complete dynamic state of the arena, Bullet-exact, in creation (slot) order:
