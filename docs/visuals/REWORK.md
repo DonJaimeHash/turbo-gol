@@ -17,16 +17,21 @@ Three tiers, one table of switches (`TIERS`) that every view reads:
 
 | | low (Performance) | high (default on desktop) | ultra (opt-in) |
 |---|---|---|---|
-| AA | FXAA | MSAA x4 | MSAA x4 |
+| path | straight to the canvas (no HDR target, no MRT, no post pass) | HDR pipeline | HDR pipeline |
+| AA | the canvas' MSAA x4 | MSAA x4 (FXAA without a multisampled HDR target) | MSAA x4 (idem) |
 | bloom | none (glow from geometry) | emissive bloom | emissive bloom |
-| resolution | pixel ratio 1 | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
+| resolution | pixel ratio up to 1.5 in a 1 Mpx budget + dynamic resolution (0.7..1 of it) | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
 | shadows | none (ground blobs) | 2 keys, 2048 | 2 keys, 4096 |
 | turf | flat filtered, damp sheen, 2 streak heads | relief, puddles, 4 streak heads | + grass blades near the camera |
-| post | grade, vignette | grade, vignette | + GTAO, SSR on wet turf, lens glare |
+| post | grade, vignette (in every material) | grade, vignette | + GTAO, SSR on wet turf, lens glare |
 | stadium | lighter crowd, no fine netting | full | + floodlight beams |
 
-Phones and tablets start on low, desktops on high, the WebGL2 fallback on low unless the player
-chose a tier. Saves from before stored 0 (high) or 1 (performance). Low has no shadow maps
+Phones and tablets start on low, desktops on high; the WebGL2 fallback, WebGPU in compatibility
+mode and devices with `navigator.deviceMemory` <= 4 start on low unless the player chose a tier, and
+no device starts above the tier its GPU last fell back to (`tierGuard.ts`). Every tier runs as
+`adjustTier(TIERS[q], capabilities)` (`capabilities.ts`): the menu offers every tier, a device that
+cannot do one fully runs it without the missing pieces (see "Three devices" below). Saves from
+before stored 0 (high) or 1 (performance). Low has no shadow maps
 (since 2026-10-21): the cars and the ball keep their ground blobs, and no material samples a shadow
 map (see "Owner feedback" below).
 
@@ -70,21 +75,30 @@ flat because the physics ceiling is flat.
 
 ## Contracts every module keeps
 
-- WebGPU and the automatic WebGL2 fallback (TSL only; compute needs a fallback path).
+- WebGPU (also in compatibility mode) and the automatic WebGL2 fallback (TSL only; compute needs a
+  fallback path).
 - Glow: bloom reads only the `emissive` MRT target. Every unlit or transparent material sets
-  `mrtNode = glowMrt(...)` or `noGlowMrt()` (`materials.ts`). On low there is no bloom, so glow must
-  come from geometry and HDR colour there.
+  `mrtNode = glowMrt(...)` or `noGlowMrt()` (`materials.ts`). On low there is no bloom and no glow
+  target (both return null there), so glow must come from geometry and colour.
 - NaN hygiene: saturate every uv, fade and `pow` base. Verify with `#nancheck`.
-- The scene renders through the pipeline's PassNode only; tone mapping and sRGB are applied once in
-  `renderOutput`.
+- The scene renders through the tier's path only (`post/pipeline.ts`): the HDR pipeline's PassNode
+  (high, ultra; tone mapping and sRGB once in `renderOutput`) or the direct path (low; the same
+  look and sRGB at the end of every material, three's DirectRenderPipeline). Never a plain
+  `renderer.render(scene, camera)`.
 - No allocation per frame. Static work is baked at load behind the loading overlay. Hidden meshes
   get a warm-up hook (`Game.setWarm`).
 - Draw calls: at most 40 on low and 60 on high. One draw per module element is the house style
   (instance or merge).
 - Phones: everything the low tier and the WebGL2 fallback use must work on a low-end mobile GPU.
   `#lowgpu` in the URL emulates one on a desktop (WebGL2 without OES_texture_float_linear,
-  EXT_color_buffer_float, EXT_float_blend..., capped limits); `#diag` shows the backend, GPU,
-  extensions, limits and every shader or GPU error on screen, for a screenshot from the phone.
+  EXT_color_buffer_float, EXT_float_blend..., capped limits), `#compat` a WebGPU device in
+  compatibility mode (Chrome on an OpenGL ES phone: no multisampled rgba16float, 4096 textures,
+  15 varyings, 16 KB uniform buffers, 4 colour targets), `#nof32filter` one without
+  'float32-filterable' (Safari on an iPhone); `#diag` shows the backend, GPU, extensions, limits,
+  capabilities, the tier as the device runs it, the remembered ceiling and every shader or GPU
+  error on screen (the first ones stay; a failed command buffer names its passes), for a
+  screenshot from the phone.
+- A tier that breaks on a device falls back one tier by itself (`tierGuard.ts`), never in a loop.
 - Gameplay readability: markings, goal frames, boost pads, ball marker and car silhouettes stay
   legible. Team colours keep their colour-blind separation.
 - Original content only. No commercial game names, logos, car designs or layouts. Board
@@ -94,7 +108,8 @@ flat because the physics ceiling is flat.
 
 Status (2026-10-21): phases 1-4 are done on `feat/visual-rework`; phase 5's review and docs are
 done (see "Final review" below); the owner tested a preview on phones and asked for changes (see
-"Owner feedback" at the end), which are in.
+"Owner feedback" at the end), which are in; a second round on three devices brought capability
+gating, a tier safety net and a direct Performance path ("Three devices", at the end).
 
 1. **Foundation** (no visual change).
    - The three tiers, prefs migration and the menu.
@@ -235,3 +250,81 @@ the pause menu and the ball's shadow by day are the UI track's):
 
 Measured after the changes (same method as the final review, night harbour): low 0.82 ms / 24
 draws / 37 MB of textures, high 1.83 ms / 41 / 160 MB, ultra 3.04 ms / 52 / 374 MB.
+
+## Three devices (2026-10-21, second round): capabilities, a safety net, a direct Performance tier
+
+The owner tested the preview on an Intel Mac (Safari: WebGL2; Chrome: WebGPU), an iPhone (Safari,
+WebGPU without 'float32-filterable') and a Huawei with a Kirin 710F (Mali, Android 10, Chrome in
+WebGPU compatibility mode, 4 GB). The Mac was fine. The iPhone ran Performance (dark) and broke on
+Ultra ("GPUCommandEncoder.finish: encoder state is 'Locked'"); the Huawei ran Performance and broke
+on High ("Invalid Texture 'output-msaa'"). The owner: Performance must run fluidly on every device
+and look good, not dark or blotchy; take things out of it if needed rather than imitate High.
+
+- **The Huawei's High, reproduced** with `#compat` (the adapter three requests hides
+  'core-features-and-limits', so Dawn validates like the phone, with the same default limits):
+  rgba16float "does not support multisampling" in compatibility mode, so the MSAA x4 HDR scene
+  pass ('output-msaa', 'emissive-msaa') was invalid every frame. Fix: capability gating
+  (`capabilities.ts`): without `msaaHdr` the post tiers take FXAA. High and ultra then run clean in
+  compatibility mode (three warns that per-target MRT blending falls back to the material's there).
+- **The iPhone's Ultra: not reproducible on Chromium.** `#nof32filter` runs every tier clean: no tier
+  binds a float32 colour texture (every target and baked texture is RGBA8 or half float, depth
+  textures are bound as depth). 'Locked' is WebKit's state of an encoder whose render pass was
+  invalid or never ended; the first error was not on the panel. Candidates: one of the ultra passes
+  WebKit validates differently (the half-depth copy, the SSR blur into mip levels) or memory (ultra
+  holds 374 MB of textures, 268 MB of it the two 4096 shadow maps). Now: the safety net falls back to
+  High on that phone, and `#diag` keeps the first errors and names the passes of a failed command
+  buffer (texture label, format, samples, mip; '(open)' for a pass never ended), so the next
+  screenshot names the culprit.
+- **Safety net** (`tierGuard.ts`, `Game.onGpuFailure`): GPU validation errors, failed pipelines or
+  WebGL programs within 20 s of the boot or a tier switch, or a lost device at any time, make the
+  tier fall back one step (ultra -> high -> low) behind the loading screen, with "Your device does
+  not support Ultra: using High" / "Tu dispositivo no soporta Ultra: se usa Alta" on the loading
+  line and as a menu toast. The highest tier that has not failed is remembered per GPU in
+  localStorage (`turbogol.tierCeiling.v1`, 30 days) and caps the starting tier. A lost device
+  reloads the page onto the lower tier. Only downward, a failure during a fallback is the
+  fallback's own, nothing below low: no loops. Tested by forcing the multisampled HDR target in
+  compatibility mode (high -> low, the cause first on `#diag`), real validation errors (ultra ->
+  high -> low -> stays) and a simulated device loss (reload onto low, the toast after it).
+- **Performance renders straight to the canvas** (`TierSpec.output: 'direct'`, three's
+  DirectRenderPipeline): no HalfFloat scene target, no MRT, no composite, no FXAA; the theme's
+  vignette, exposure, grade, tone curve and sRGB run at the end of every material's fragment shader
+  (output targets only: bakes and shadow maps are untouched), and the canvas multisamples (x4: the
+  8-bit canvas does so in compatibility mode too; on the WebGL2 fallback the context is created
+  multisampled). `glowMrt` / `noGlowMrt` return null on tiers without bloom; the world's dome, beam
+  and live layer, kept across tier switches, are re-tagged (`keepGlowTag`). One 8-bit pass instead
+  of a half-float scene target plus two full-screen passes: the bandwidth a phone's tiled GPU saves;
+  on the desktop GPU it is the same time within noise, with MSAA x4 instead of FXAA. Blending
+  happens after the tone curve there (display space): additive glows add up brighter. The low tier
+  renders up to 1.5x on phones (1 Mpx budget: desktops and tablets stay at 1x) and dynamic
+  resolution scales that pixel ratio down to 0.7 of it (a phone at 780x360 CSS: 1170x540 down to
+  819x378) when frames come late.
+- **Default tier**: WebGL2, WebGPU compatibility mode and `deviceMemory` <= 4 start on low unless
+  the player chose a tier (phones and tablets already did).
+- **Clean switches**: low <-> high <-> ultra round trips keep the texture count, texture memory and
+  pipelines flat (low 11 textures / 9.3 MB / 43 pipelines without the canvas buffers, high 29 /
+  160 MB / 58, ultra 36 / 374 MB / 66), the canvas' MSAA colour buffer is freed when leaving low on
+  WebGPU, theme switches on low compile nothing after each theme's first bake, and the warm-up
+  covers every hidden mesh on every tier (pipelines constant over a warm render). On the WebGL2
+  fallback the direct tier's parallel compile covers the same programs as the old low path did.
+
+Measured (WebGPU, the reference Turing GPU shared with other sessions, free play at kickoff, chase
+camera, night harbour; the old low path A/B'd in the same session by swapping the tier table):
+
+| | drawing buffer | GPU (median) | draws |
+|---|---|---|---|
+| low, before (FXAA path) | 1600x901 | 0.93 ms | 24 |
+| low, now (direct, MSAA x4) | 1600x901 | 0.96 ms (0.85 without MSAA) | 22 |
+| low before, phone layout 780x360 CSS at dpr 3 | 780x360 | 0.44 ms | 24 |
+| low now, same layout | 1170x540 (1.5x) | 0.55 ms | 22 |
+| low now, at the dynamic-resolution floor | 819x378 | 0.33 ms | 22 |
+| high | 2190x1233 | 1.81 ms | 41 |
+| ultra | 2190x1233 | 3.03 ms | 52 |
+
+(The low rows vary by up to 0.3 ms run to run on the shared GPU; high and ultra did not change.)
+
+What the look of Performance can rely on (for its restyle): the path above; no bloom, no shadow
+maps, no screen-space passes, no puddles or relief; glow only from geometry and colour; per theme
+`ThemeWorld.low` overrides the exposure and any grade field (contrast, saturation, lift, gain,
+vignette) on that tier only (`lookOf`, uniform writes, no recompile); the tone curve is the
+theme's (ACES on all three); materials, lights and the turf read the `tier('low')` switches as
+before.

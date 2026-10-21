@@ -65,25 +65,40 @@ src/sim/
   wasm/                 build output of native/build.ps1 (rocketsim.js, rocketsim.wasm, .d.ts)
 src/render/
   coords.ts             sim→three coordinate mapping helpers (tiny, shared)
-  materials.ts          palette, HDR helpers, the bloom contract (glowMrt / noGlowMrt), cheap
-                        value / cell noises, OpaqueAlbedoPhysicalMaterial (albedoNode)
+  materials.ts          palette, HDR helpers, the bloom contract (glowMrt / noGlowMrt: null on
+                        tiers without bloom, setGlowTargets / keepGlowTag), cheap value / cell
+                        noises, OpaqueAlbedoPhysicalMaterial (albedoNode)
   quality.ts            the three quality tiers (low / high / ultra) and the one table of switches
-                        (TIERS, `tier(q)`) every view reads; pixelRatio (tier, dpr, budget);
-                        parseQuality reads old 0 / 1 saves; startingQuality (the WebGL2 fallback
-                        starts on low unless the player chose a tier)
+                        (TIERS, `tier(q)`) every view reads, incl. the render path (`output`:
+                        'direct' for low, 'post'); pixelRatio (tier, dpr, budget, max texture
+                        size); parseQuality reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU
+                        compatibility mode and <= 4 GB devices start on low unless the player chose
+                        a tier; never above the GPU's ceiling); lowerQuality
+  capabilities.ts       what the device can do (readCapabilities at init: compatibility mode, a
+                        multisampled HDR target / canvas, float32 filtering, max texture size,
+                        colour targets, the GPU key) and adjustTier: a tier without what the device
+                        cannot do (pure; tierChanges for #diag)
+  tierGuard.ts          the safety net: TierGuard (a failure within 20 s of a switch, or a lost
+                        device, falls back one tier; never a loop) and the per-GPU ceiling in
+                        localStorage (readCeiling / writeCeiling, 30 days)
   theme.ts              stadium themes (ThemeId, THEME_IDS) and the world facts views share (key
                         lights, fill, floodlights, wetness, fog, tone mapping, grade); data only
-  Renderer.ts           WebGPURenderer, scene, camera, resize / pixel budget (tier maxPixelRatio /
-                        pixelBudget), GPU timestamps (`#stats`), dynamic resolution, `#nancheck`,
-                        `#webgl2`, `#lowgpu` / `#diag` (gpuDiag.ts), precompile (WebGL2 boot);
-                        builds the lighting, the world and the post chain below
+  Renderer.ts           WebGPURenderer, scene, camera, capabilities (`caps`, the adjusted `spec`),
+                        resize / pixel budget (tier maxPixelRatio / pixelBudget), GPU timestamps
+                        (`#stats`), dynamic resolution (scene pass, or the direct tier's pixel
+                        ratio), `#nancheck`, `#webgl2`, `#lowgpu` / `#compat` / `#nof32filter` /
+                        `#diag` (gpuDiag.ts), precompile (WebGL2 boot), GPU failures
+                        (setFailureListener); builds the lighting, the world and the render path
   gpuDiag.ts            `#diag`: an on-screen panel (backend, GPU, extensions / features, limits,
-                        tier, theme, shader and GPU errors, WebGL programs over the limits) for a
-                        phone screenshot; `#lowgpu`: the WebGL2 backend with a Mali-G51-class
-                        context (no float-linear / float-target / float-blend extensions, capped
-                        limits) installed before three initialises
-  dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → scene-pass
-                        resolution scale between the tier's minResolutionScale and 1
+                        capabilities, the tier as the device runs it, the ceiling, theme, shader
+                        and GPU errors with the first ones kept, the passes of a failed command
+                        buffer, WebGL programs over the limits) for a phone screenshot; `#lowgpu`:
+                        the WebGL2 backend with a Mali-G51-class context (no float-linear /
+                        float-target / float-blend extensions, capped limits) installed before
+                        three initialises; `#compat` / `#nof32filter`: a WebGPU adapter without
+                        'core-features-and-limits' / 'float32-filterable'
+  dynamicResolution.ts  pure controller: frame intervals (+ GPU ms with `#stats`) → resolution
+                        scale between the tier's minResolutionScale and 1
   world/                World.ts (createWorld: fog node, clear colour, the baked sky + backdrop
                         cube and PMREM, the theme's live near layer, the lighthouse beam; `ready`,
                         `stats`), presets.ts (per-theme sky / backdrop data, the skyline of each
@@ -97,9 +112,11 @@ src/render/
                         (parallax dome, PROXY_TOP), env.ts (the PMREM probe), cache.ts
                         (IndexedDB), queue.ts (latest-wins bake / cache queue)
   post/                 lighting.ts (createLighting: the theme's two keys + shadows, hemisphere
-                        fill), pipeline.ts (buildPostChain: HDR scene pass with MRT output +
-                        emissive → [ultra extras] → bloom from emissive → vignette → exposure,
-                        grade and the theme's tone curve → sRGB; FXAA on tiers without MSAA),
+                        fill), pipeline.ts (buildPostChain: 'post' = HDR scene pass with MRT
+                        output + emissive → [ultra extras] → bloom from emissive → vignette →
+                        exposure, grade and the theme's tone curve → sRGB, FXAA without MSAA;
+                        'direct' = three's DirectRenderPipeline, the same look and sRGB at the
+                        end of every material, straight into the multisampled canvas),
                         screenSpace.ts (ultra: GTAO, wet-pitch SSR, lens glare), quadPass.ts
                         (generic full-screen pass: the half-resolution depth copy)
   turf/                 TurfView (the floor mesh, the ultra blades), turfMaterial.ts (the pitch
@@ -338,8 +355,10 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
 
 On the tiers with bloom (high, ultra) the scene pass renders two targets, `output` and
 `emissive`; bloom reads only `emissive` (threshold 0). Lit node materials write their
-`emissiveNode` there automatically. On low there is no bloom, so glow comes from geometry and HDR
-colour. Unlit
+`emissiveNode` there automatically. On low there is no bloom and no glow target (it renders
+straight to the canvas): `glowMrt` / `noGlowMrt` return null there (`setGlowTargets`, set by the
+Renderer before a tier's views are built; the world's dome, beam and live layer, which live across
+tier switches, are re-tagged through `keepGlowTag`), so glow comes from geometry and colour. Unlit
 materials write nothing unless they set `material.mrtNode = glowMrt(<vec3 node>)`; untagged ones
 would *overwrite* the target (NoBlending), so every transparent / additive material (flames,
 particles, ribbons, rings, glass, blobs, markers) is tagged — with `noGlowMrt()` when it must not
@@ -381,8 +400,9 @@ and the browser's GPU process compiles them on its worker threads, while draws w
 not ready are skipped behind the overlay (first frame on the GPU 1.8-2.9 s after the page started
 instead of 5.5-6.1 s, high tier, production build, warm world cache; three r186's own
 `compileAsync` awaits each object's pipelines in turn, 10 s there). On the WebGL2 fallback it is a
-`compileAsync` of the scene through the scene pass's own render target and MRT, so
-KHR_parallel_shader_compile builds the programs in parallel (5.7 s → 1.8 s on low here). A tier
+`compileAsync` of the scene through the scene pass's own render target and MRT (the direct low
+tier: with the DirectRenderPipeline's output context, so the programs carry the in-material look),
+so KHR_parallel_shader_compile builds the programs in parallel (5.7 s → 1.8 s on low here). A tier
 switch from the settings screen (`Game.switchQuality`) compiles the same way behind the loading
 screen; `setQuality` (console, capture tools) still compiles on the next frame. The ball casts its
 shadow during these warm-ups even in a day stadium, so its shadow pipeline is ready for the night
@@ -460,7 +480,15 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   harbour themes share the harbour's anchors, lighthouse, waves and PUERTO SUR, which no other
   place shows): a switch to another place repaints the canvas into the same texture (~1-2 ms, one
   re-upload, no recompile). The hanging banners went on 2026-10-21 (the owner's request).
-* **post/** — lighting.ts: both keys and the fill exist on every tier and theme (constant light
+* **post/** — pipeline.ts: the render path of the tier (`TierSpec.output`). High and ultra:
+  the HDR RenderPipeline. Low: three's DirectRenderPipeline draws the scene straight into the
+  canvas (no HalfFloat target, no MRT, no composite, no FXAA): the theme's vignette, exposure,
+  grade, tone curve (`lookOf`: the theme's `low` overrides apply there) and sRGB at the end of
+  every material's fragment shader, output targets only; the canvas multisamples x4 (WebGPU: the
+  renderer's samples, set per tier; WebGL2: the context, created multisampled). Blending happens
+  after the tone curve there. The device's capabilities (capabilities.ts) take MSAA off the post
+  tiers where a multisampled rgba16float target cannot exist (WebGPU compatibility mode: FXAA).
+  lighting.ts: both keys and the fill exist on every tier and theme (constant light
   count); `shadowedKeys` keys cast (none on low: the cars and the ball keep their ground blobs;
   2 on high and ultra), maps 2048 (PCF 3) on high, 4096 (PCF 4) on ultra, frustums fitted to the
   arena box. pipeline.ts: see "Rendering
@@ -541,11 +569,19 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   localStorage with difficulty, the quality tier (saved by name; saves from before the third tier
   hold 0 = high / 1 = low) and the theme.
 * **Quality tiers** (`src/render/quality.ts`): low / high / ultra, one table of switches that every
-  view reads through `tier(q)` (MSAA, bloom, pixel ratio and budget, dynamic resolution, shadow map,
-  geometry detail, particles...). Phones and tablets start on low, desktops on high. Settings >
+  view reads through `tier(q)` (render path, MSAA, bloom, pixel ratio and budget, dynamic
+  resolution, shadow map, geometry detail, particles...); the Renderer runs them adjusted to the
+  device (capabilities.ts). Phones and tablets start on low, desktops on high; WebGL2, WebGPU
+  compatibility mode and <= 4 GB devices on low unless the player chose a tier. Settings >
   Graphics (from the menus or the pause menu) picks the tier; `switchQuality` rebuilds every view
-  and the post chain (~30 ms), waits for the world's bake at the new sizes and compiles the new
+  and the render path (~30 ms), waits for the world's bake at the new sizes and compiles the new
   pipelines in parallel, all behind the loading screen.
+* **Tier safety net** (`src/render/tierGuard.ts`, `Game.onGpuFailure`, from `Game.bootDone()` on):
+  a GPU validation error, a failed pipeline or WebGL program within 20 s of the boot or a tier
+  switch, or a lost device, makes the tier fall back one step behind the loading screen (its line
+  and a menu toast: "Your device does not support Ultra: using High"); the GPU's ceiling is kept in
+  localStorage and caps the starting tier; a lost device reloads the page onto the lower tier. Only
+  downward, never in a loop.
 * **Frozen** (countdown, goal pause, after the whistle, menu): every roster car gets zero controls.
 * **HUD**: the menu has a Mode row (← → on the row, `M`, pad left / right; ↑ ↓ / D-pad move the
   focus across Difficulty / Mode / Quality, `Q` steps to the next quality tier) and shows
@@ -629,8 +665,12 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
 * Post (`post/pipeline.ts`, switches from the tier table): high / ultra = MSAA x4 scene pass (MRT
   output + emissive) + 5-mip bloom from the emissive target (12 small passes) + vignette, exposure,
   HDR grade and the theme's tone curve, dynamic resolution between 0.6 and 1; ultra adds GTAO, SSR
-  and the lens glare at half / quarter resolution; low = no MSAA, no bloom, FXAA. Pixel ratio:
-  high / ultra min(dpr, 6 Mpx budget) and never below 1 (phones at most 2), low = 1.
+  and the lens glare at half / quarter resolution (FXAA instead of MSAA in WebGPU compatibility
+  mode); low = straight into the canvas with its MSAA x4 (no HDR target, no bloom, no post pass;
+  the look runs in every material), dynamic resolution of the pixel ratio between 0.7 and 1.
+  Pixel ratio: high / ultra min(dpr, 6 Mpx budget) and never below 1 (phones at most 2), low
+  min(dpr, 1.5, 1 Mpx budget) and never below 1 for the budget (phones 1.5, desktops 1); every
+  tier within the device's max texture size.
 * Measured (2026-10-21 after the owner's feedback: no shadow maps on low, no banners, the big
   side boards, a calmer night pitch with fewer streak heads; browser pane on a Turing desktop GPU
   shared with other sessions, WebGPU), free play at kickoff, chase camera, 1600x900 CSS, the median
@@ -645,6 +685,11 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
 
   The final review before it measured low 0.82 ms / 28 draws / 77 MB, high 1.97 ms / 42 / 175 MB,
   ultra 3.15 ms / 53 / 399 MB.
+
+  Since the direct low tier (docs/visuals/REWORK.md, "Three devices"): low 22 draws and 9.3 MB of
+  textures plus the canvas' MSAA x4 colour and depth buffers (~46 MB at 1600x900, three allocates
+  them outside its texture count), the GPU time the same as the FXAA path within the shared GPU's
+  noise (0.96 / 0.93 ms in an A/B); high 1.81 ms / 41, ultra 3.03 ms / 52 (unchanged).
 
   A 3v3 match frame at kickoff (final review): low 0.85 ms / 51 draws, high 2.01 ms / 72 draws,
   ultra 3.26 ms / 81 draws (each extra car costs 2 draws plus 2 per shadowed key; over the 40 / 60
