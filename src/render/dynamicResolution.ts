@@ -5,9 +5,9 @@
  * with PassNode.setResolutionScale, so the composite upsamples the scene (bloom, the vignette and
  * FXAA keep working on the full-size output).
  *
- *   refresh   estimated from the frame intervals: the second-shortest interval of each 1 s window
- *             (one early frame is ignored). A shorter window replaces the estimate at once; a
- *             longer one pulls it up by a quarter per window only while a lower resolution has
+ *   refresh   estimated from the frame intervals: the 10th percentile of each 1 s window (early
+ *             frames and timer jitter below it are ignored; a histogram of 0.25 ms bins). A
+ *             shorter window replaces the estimate at once; a longer one pulls it up by a quarter per window only while a lower resolution has
  *             nothing to give (at the minimum scale, after a failed probe, or with the GPU idle):
  *             a slower display, a throttled tab or a CPU-bound game then stops counting as late.
  *   late      a frame at 1.4 refresh intervals or more (a missed vsync is 2). Decisions are made
@@ -43,6 +43,10 @@ const DEFAULT_REFRESH_MS = 1000 / 60;
 /** Refresh-estimate window (s) and the share a longer window pulls the estimate up. */
 const REFRESH_WINDOW_S = 1;
 const RISE = 0.25;
+/** The estimate is this percentile of a window's intervals, read from a histogram of BIN_MS bins. */
+const REFRESH_PERCENTILE = 0.1;
+const BIN_MS = 0.25;
+const BINS = Math.ceil(MAX_INTERVAL_MS / BIN_MS) + 1;
 /** Decision window (s). */
 const WINDOW_S = 0.5;
 /** No decision for this long (s) after a reset. */
@@ -89,11 +93,10 @@ export class DynamicResolution {
   private minScale: number;
   /** Seconds of counted frames since the last reset. */
   private clock = 0;
-  /** Refresh window: elapsed seconds, frames and the two shortest intervals. */
+  /** Refresh window: elapsed seconds, frames and the interval histogram. */
   private refreshS = 0;
   private refreshFrames = 0;
-  private min1 = Infinity;
-  private min2 = Infinity;
+  private readonly bins = new Uint16Array(BINS);
   /** The refresh estimate may rise (a lower resolution has nothing to give right now). */
   private mayRise = false;
   /** Decision window: elapsed seconds, frames, late frames, interval sum and longest interval. */
@@ -241,21 +244,27 @@ export class DynamicResolution {
     return true;
   }
 
-  /** Windowed second-shortest interval: the estimate falls to it at once and, while mayRise, rises by RISE per window. */
+  /** Windowed low percentile of the intervals: the estimate falls to it at once and, while mayRise, rises by RISE per window. */
   private trackRefresh(intervalMs: number, dt: number): void {
-    if (intervalMs < this.min1) {
-      this.min2 = this.min1;
-      this.min1 = intervalMs;
-    } else if (intervalMs < this.min2) this.min2 = intervalMs;
+    this.bins[Math.min(BINS - 1, Math.floor(intervalMs / BIN_MS))]++;
     this.refreshFrames++;
     this.refreshS += dt;
     if (this.refreshS < REFRESH_WINDOW_S) return;
-    const w = this.refreshFrames >= 2 ? this.min2 : this.min1;
+    // The bin where REFRESH_PERCENTILE of the window's frames is reached (at least two frames).
+    const k = Math.min(this.refreshFrames, Math.max(2, Math.ceil(this.refreshFrames * REFRESH_PERCENTILE)));
+    let seen = 0;
+    let w = MAX_INTERVAL_MS;
+    for (let i = 0; i < BINS; i++) {
+      seen += this.bins[i];
+      if (seen >= k) {
+        w = (i + 0.5) * BIN_MS;
+        break;
+      }
+    }
     const est = w < this.refreshMs ? w : this.mayRise ? this.refreshMs + (w - this.refreshMs) * RISE : this.refreshMs;
     this.refreshMs = Math.min(MAX_INTERVAL_MS, Math.max(MIN_REFRESH_MS, est));
     this.refreshS = 0;
     this.refreshFrames = 0;
-    this.min1 = Infinity;
-    this.min2 = Infinity;
+    this.bins.fill(0);
   }
 }

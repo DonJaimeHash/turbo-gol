@@ -58,7 +58,7 @@ test('on-time frames keep full resolution and the refresh estimate follows the d
   const { changes } = run(dr, 20, HZ144, () => 3);
   assert.deepEqual(changes, []);
   assert.equal(dr.scale, 1);
-  assert.ok(Math.abs(dr.refreshMs - HZ144) < 0.01, `refresh ${dr.refreshMs}`);
+  assert.ok(Math.abs(dr.refreshMs - HZ144) < 0.15, `refresh ${dr.refreshMs} (0.25 ms bins)`);
 });
 
 test('a GPU-bound load steps down within about half a second until frames fit', () => {
@@ -121,13 +121,26 @@ test('CPU-bound at a high refresh with jitter (1-3 vsyncs a frame): full resolut
   assert.ok(below < 10, `${below.toFixed(1)} s of 300 below full resolution`);
 });
 
+test('jittery, timer-paced frames with a few very short intervals do not count as late', () => {
+  const dr = new DynamicResolution(0.6);
+  // 16.7 ms +- 2 ms (a loop paced by a timer or a jittery vsync), 3 % of the intervals 1-3 ms apart.
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 60 * 120; i++) {
+    const interval = rnd() < 0.03 ? 1 + 2 * rnd() : 14.7 + 4 * rnd();
+    dr.update(interval, Number.NaN);
+  }
+  assert.equal(dr.scale, 1);
+  assert.ok(dr.refreshMs > 14, `refresh ${dr.refreshMs}`);
+});
+
 test('stalls and a throttled background tab are ignored', () => {
   const dr = new DynamicResolution(0.6);
   warm(dr);
   for (let i = 0; i < 200; i++) assert.equal(dr.update(1000, Number.NaN), false, 'hidden tab at 1 fps');
   for (let i = 0; i < 200; i++) assert.equal(dr.update(333, Number.NaN), false, 'background tab at 3 fps');
   assert.equal(dr.scale, 1);
-  assert.ok(Math.abs(dr.refreshMs - HZ60) < 0.01, 'the refresh estimate is untouched');
+  assert.ok(Math.abs(dr.refreshMs - HZ60) < 0.15, 'the refresh estimate is untouched');
   assert.equal(dr.update(0, Number.NaN), false);
   assert.equal(dr.update(Number.NaN, Number.NaN), false);
   assert.equal(dr.update(-5, Number.NaN), false);
