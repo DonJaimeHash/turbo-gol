@@ -120,7 +120,7 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     // moodier than Neutral for this night; the grade adds contrast, cool shadows, warm highlights.
     toneMapping: 'aces',
     exposure: 1.0,
-    grade: { contrast: 1.18, saturation: 1.12, lift: [0, 0.002, 0.006], gain: [1.03, 1, 0.96], vignette: 0.36 },
+    grade: { contrast: 1.18, saturation: 1.12, lift: [0, 0.002, 0.006], gain: [1.03, 1, 0.96], vignette: 0.3 },
   },
   // The same harbour by day: the sun is the main key (azimuth 24 deg, elevation 30 deg, the sky's
   // sun disc in world/presets.ts), a weak cool sky key from the other side, floodlights off.
