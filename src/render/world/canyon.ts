@@ -13,6 +13,7 @@
  */
 import * as THREE from 'three/webgpu';
 import { GeoBuilder, KIND, rng, type Lamp } from './geo';
+import { SKYLINE_TOP } from './harbour';
 
 const sstep = (a: number, b: number, x: number): number => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -71,6 +72,10 @@ export function buildCanyon(sunDir: readonly [number, number, number], dry = fal
     buttes.push({ x, z, r: 1500 + R() * 4500, h: 2500 + R() * 7000 });
   }
   const STEP = 620;
+  // Terrain above CAP_START is eased toward SKYLINE_TOP (harbour.ts: under the dome's parallax
+  // band). The terraces add at most ~20 uu and the surface noise under 130 uu on top of it.
+  const CAP_START = 8400;
+  const CAP_ROOM = SKYLINE_TOP - 200 - CAP_START;
   const H = (x: number, z: number): number => {
     const meander = 2600 * Math.sin(z / 23000) + 1100 * Math.sin(z / 7700 + 1.3);
     const dx = Math.abs(x - meander);
@@ -87,6 +92,7 @@ export function buildCanyon(sunDir: readonly [number, number, number], dry = fal
         if (dx2 * dx2 + dz2 * dz2 < rr * rr) h = Math.max(h, sstep(rr, b.r * 0.9, Math.hypot(dx2, dz2)) * b.h);
       }
     }
+    if (h > CAP_START) h = CAP_START + CAP_ROOM * (1 - Math.exp(-(h - CAP_START) / CAP_ROOM));
     // terraces: flat ledges, steep risers
     const t = h / STEP;
     h = (Math.floor(t) + sstep(0.5, 1.0, t - Math.floor(t))) * STEP;

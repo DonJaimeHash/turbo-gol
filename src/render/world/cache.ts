@@ -13,7 +13,7 @@
  * Bump whenever a generator, a bake material or the codec changes what a bake produces (the theme
  * data itself is hashed into the key, see `cacheKey`).
  */
-export const WORLD_CACHE_VERSION = 4;
+export const WORLD_CACHE_VERSION = 5;
 const DB_NAME = 'turbogol-world';
 const STORE = 'bakes';
 /** Bakes kept (about 29 MB each at 1024 faces, 9 MB at 512): one tier's three themes. */

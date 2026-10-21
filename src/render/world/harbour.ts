@@ -47,6 +47,13 @@ export const LIGHTHOUSE_LANTERN: Vec3 = [LIGHTHOUSE_AT[0], LIGHTHOUSE_BASE + LIG
 /** No tall live part inside this box (the stadium: side stands to |x| ~ 7600, field ends at |z| 6560). */
 export const STADIUM_HALF_X = 8000;
 export const STADIUM_HALF_Z = 7600;
+/**
+ * Highest point of the baked skyline (world y). The dome's parallax proxy hands over to "at
+ * infinity" from dome.ts PROXY_TOP[0] over the bake origin (world y 10250) upward: anything
+ * standing in that band is stretched and sheared from an off-centre camera (a far tower seen from
+ * a high corner of the arena smeared its windows into streaks), so every top stays under it.
+ */
+export const SKYLINE_TOP = 10000;
 
 const ASPHALT: Vec3 = [0.07, 0.07, 0.075];
 const CONCRETE: Vec3 = [0.2, 0.2, 0.19];
@@ -541,8 +548,11 @@ export function buildHarbourFar(dry = false, seed = 11): HarbourFar {
       const z = z0 + (z1 - z0) * R();
       const w = 700 + 1800 * R();
       const d = 700 + 1800 * R();
+      // every top and its roof lamp (60 uu) stay under SKYLINE_TOP (the dome's parallax band)
+      const cap = SKYLINE_TOP - 60;
       let h = hMin + (hMax - hMin) * Math.pow(R(), 2.2);
-      if (R() < tall) h = Math.min(h * 2.2, 10500); // towers stay under the parallax band top
+      if (R() < tall) h *= 2.2;
+      h = Math.min(h, cap - base);
       const k = 0.75 + 0.5 * R();
       const yaw = R() * 0.6;
       const tone: Vec3 = [0.045 * k, 0.05 * k, 0.06 * k];
@@ -550,9 +560,12 @@ export function buildHarbourFar(dry = false, seed = 11): HarbourFar {
       g.boxAt(x, base + h / 2, z, w, h / 2, d, tone, KIND.FARCITY, R(), yaw);
       let top = base + h;
       if (h > 3500 && R() < 0.4) {
-        const h2 = h * (0.15 + 0.25 * R());
-        g.boxAt(x, top + h2 / 2, z, w * 0.62, h2 / 2, d * 0.62, tone, KIND.FARCITY, R(), yaw);
-        top += h2;
+        const h2 = Math.min(h * (0.15 + 0.25 * R()), cap - top);
+        const seed = R();
+        if (h2 > 100) {
+          g.boxAt(x, top + h2 / 2, z, w * 0.62, h2 / 2, d * 0.62, tone, KIND.FARCITY, seed, yaw);
+          top += h2;
+        }
       }
       if (top - base > 7000) g.boxAt(x, top + 30, z, 30, 30, 30, RED_LAMP, KIND.LAMP, R());
     }

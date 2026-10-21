@@ -260,3 +260,22 @@ test('latest-wins queue: failures are reported and the loop goes on; a dead owne
   await q.request('c');
   assert.deepEqual(ran, ['a', 'b']);
 });
+
+test('the baked skylines stay under the dome parallax hand-over band (no smeared towers)', async () => {
+  const { PROXY_TOP } = await import('../src/render/world/dome.ts');
+  const { BAKE_ORIGIN } = await import('../src/render/world/World.ts');
+  const { buildCanyon } = await import('../src/render/world/canyon.ts');
+  assert.ok(H.SKYLINE_TOP <= PROXY_TOP[0] + BAKE_ORIGIN.y, 'the band starts above the skyline');
+  const maxY = (geo) => {
+    const p = geo.attributes.position.array;
+    let m = -Infinity;
+    for (let i = 1; i < p.length; i += 3) m = Math.max(m, p[i]);
+    return m;
+  };
+  const far = H.buildHarbourFar(false);
+  assert.ok(maxY(far.geometry) <= H.SKYLINE_TOP, `far harbour top ${maxY(far.geometry).toFixed(0)}`);
+  far.geometry.dispose();
+  const canyon = buildCanyon(dirFromAzEl(8, 4.5), false);
+  assert.ok(maxY(canyon.geometry) <= H.SKYLINE_TOP, `canyon top ${maxY(canyon.geometry).toFixed(0)}`);
+  canyon.geometry.dispose();
+});
