@@ -423,8 +423,9 @@ export class Registry {
   }
 
   /**
-   * Housekeeping: nodes whose heartbeats stopped go offline (the control plane voids their
-   * matches); strike suspensions whose cooldown passed are lifted (the node is told).
+   * Housekeeping: nodes whose heartbeats stopped go offline, which takes them out of placement (the
+   * control plane closes their links and voids their matches later, if they stay silent); strike
+   * suspensions whose cooldown passed are lifted (the node is told).
    */
   sweep(now: number): { offline: NodeRecord[]; restored: NodeRecord[] } {
     const offline: NodeRecord[] = [];

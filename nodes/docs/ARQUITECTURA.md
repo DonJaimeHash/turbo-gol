@@ -151,8 +151,12 @@ aceptar máquinas de cualquiera sin confiar en nadie.
 
 ### Caídas y PCs que se apagan
 
-Un nodo sin heartbeat por 15 s, o cuya conexión se cortó hace más de 15 s, queda fuera de línea.
-Sus partidas se anulan sin penalizar a los jugadores y el nodo suma **un** strike por corte,
+Un nodo sin heartbeat por 15 s queda fuera de línea: no recibe partidas nuevas. Su conexión de
+control sigue abierta hasta los 45 s de silencio, porque un enlace trabado entrega tarde lo que
+retuvo (el 21/10/2026 los heartbeats de un nodo quedaron retenidos 24 s en el camino y llegaron
+todos juntos): con la conexión abierta, el primero que llega le devuelve las partidas nuevas al
+nodo. Si el plano de control no sabe nada de un nodo por 60 s, sea del proyecto o comunitario,
+sus partidas se anulan sin penalizar a los jugadores y el nodo suma **un** strike por corte,
 aunque tuviera varias partidas: los strikes a menos de un minuto del anterior cuentan como uno.
 Si vuelve con un proceso nuevo, sus partidas viejas se anulan de todos modos, porque se perdieron con el
 proceso. Los strikes vencen a los 7 días. Tres en una semana pausan el nodo 24 horas; después

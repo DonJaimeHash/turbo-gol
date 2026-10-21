@@ -33,7 +33,7 @@ import { compareVersions, reachMessage } from '../../nodes/shared/controlProtoco
 import { randomB64, verifyWith } from '../../nodes/shared/edcrypto';
 import type { FetchFn } from './nodeAlerts';
 
-/** A trusted node's matches are void after TRUSTED_OFFLINE_MS (60 s) of silence; this long, someone should look. */
+/** A node's matches are void after NODE_OFFLINE_MS (60 s) of silence; this long, someone should look. */
 export const OFFLINE_ALERT_MS = 2 * 60_000;
 export const EGRESS_ALERT_SHARE = 0.8;
 /** A tick at 120 Hz is 8.33 ms: a p99 above this means the node is about to fall behind. */

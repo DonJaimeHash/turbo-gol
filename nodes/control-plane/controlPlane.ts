@@ -23,8 +23,10 @@
  *                 it is on probation (they are its way into ranked), casualVerifyRate of an active
  *                 node's (an audit; only sampled matches earn points, worth 1 / rate), none of a
  *                 project node's.
- *   health        silent or restarted nodes: their matches are void (no penalties for players), one
- *                 strike per outage; strike suspensions lift after their cooldown
+ *   health        a node silent for HEARTBEAT_TIMEOUT_MS gets no new match, its link is closed after
+ *                 LINK_TIMEOUT_MS and its matches are void after NODE_OFFLINE_MS (a restarted one's
+ *                 at its hello): no penalties for players, one strike per outage; strike
+ *                 suspensions lift after their cooldown
  *   persistence   every durable change of a match is written through `store` (persist.ts) before
  *                 the message that depends on it goes out: a Durable Object holds its outgoing
  *                 messages only for the writes issued before the send. `restore` loads the rows back
@@ -32,6 +34,7 @@
  *                 reconnect before anything is voided for being silent or late.
  */
 import {
+  HEARTBEAT_MS,
   HEARTBEAT_TIMEOUT_MS,
   sameSimulation,
   HOST_FAULT_CODES,
@@ -131,12 +134,24 @@ const EMPTY_TOGETHER_TICKS = 240;
  */
 export const RESTART_GRACE_MS = 90_000;
 /**
- * A trusted node's matches outlive its silence this long (a community node's: HEARTBEAT_TIMEOUT_MS,
- * for now). A short drop of its control link does not stop the matches it hosts: voiding them
- * would have players finish a ranked match that already counts for nothing. If the same process
- * reconnects in time (its backoff: 1, 2, 4, 8, 16 s) they go on; a new one voids them at its hello.
+ * A control link that carried nothing this long is closed (4408). The node is out of placement
+ * from HEARTBEAT_TIMEOUT_MS of silence on (the registry's `online`), but its link stays open
+ * longer: a stall in transit delivers its backlog late (on 2026-10-21 a node's heartbeats were
+ * held for 24 s on their way to the Durable Object, then all four came at once), the first of them
+ * puts the node back in placement, and a close sent into the stall would be held as well.
  */
-export const TRUSTED_OFFLINE_MS = 60_000;
+export const LINK_TIMEOUT_MS = 45_000;
+/**
+ * A node's matches outlive its silence this long, a project node's and a community node's alike.
+ * A short drop or stall of its control link does not stop the matches it hosts (players play on
+ * the node itself): voiding them would have players finish a match that already counts for
+ * nothing, and give the node a strike for the network's fault. If the same process is heard again
+ * in time, through its held heartbeats or a reconnect after the 4408 (its backoff: 1, 2, 4, 8,
+ * 16 s), they go on; a new one voids them at its hello, and report deadlines still apply. It must
+ * exceed LINK_TIMEOUT_MS by a reconnect, or the sweep that closes a silent link would void its
+ * matches too.
+ */
+export const NODE_OFFLINE_MS = 60_000;
 
 /** A request to a node without its correlation id (distributive Omit over the request variants). */
 type RpcRequest = Extract<ToNode, { rid: string }> extends infer U ? (U extends unknown ? Omit<U, 'rid'> : never) : never;
@@ -326,6 +341,13 @@ export class Session {
   readonly pending = new Map<string, Pending>();
   authTimer: ReturnType<typeof setTimeout> | null = null;
   verifying = 0;
+  /** When the link last carried a message from the node (or logged in, or was adopted): LINK_TIMEOUT_MS of nothing closes it. */
+  heardAt = 0;
+  /** The sweep took the node out of placement for its silence: its next heartbeat on this link is logged. */
+  quiet = false;
+  /** Messages that still came after the control plane let the link go, and how late the first one was (ms). */
+  late = 0;
+  lateMs = 0;
   constructor(link: NodeLink) {
     this.link = link;
   }
@@ -384,6 +406,11 @@ function cleanChannel(v: unknown): ReleaseChannel | null {
   return { stable, minimum, ...(typeof canary === 'string' && VERSION.test(canary) ? { canary } : {}) };
 }
 
+/** Milliseconds as whole seconds, for a log line. */
+function seconds(ms: number): number {
+  return Math.round(ms / 1000);
+}
+
 /** A short, log-safe picture of a value. */
 function describe(v: unknown): string {
   try {
@@ -415,6 +442,8 @@ export class ControlPlane {
   private readonly unauthenticated = new Set<Session>();
   /** When the cap last closed a socket (logged once a minute). */
   private lastBusyLog = 0;
+  /** Links let go that got a message since the last sweep: the sweep logs each one once. */
+  private readonly lateLinks = new Set<Session>();
   private readonly key: Promise<CryptoKey>;
   private readonly pub: Promise<CryptoKey>;
   private readonly now: () => number;
@@ -546,8 +575,8 @@ export class ControlPlane {
    * socket's `{ nodeId }` attachment): an authenticated session again, with no new challenge.
    * Sessions live in memory, so without this the first message after a wake would hit 'auth
    * first'. An unknown or banned node is closed with 4401 (null). The node is live from the
-   * adoption: placement sees it, and the heartbeat timeout closes the socket if the node behind it
-   * hung or died meanwhile. Its next heartbeat brings its live fields back.
+   * adoption: placement sees it, and the sweep closes the socket (LINK_TIMEOUT_MS) if the node
+   * behind it hung or died meanwhile. Its next heartbeat brings its live fields back.
    */
   adopt(link: NodeLink, nodeId: string): Session | null {
     const n = this.registry.node(nodeId);
@@ -557,6 +586,7 @@ export class ControlPlane {
     }
     const s = new Session(link);
     s.nodeId = nodeId;
+    s.heardAt = this.now();
     const old = this.sessions.get(nodeId);
     if (old) {
       old.link.close(4000, 'replaced');
@@ -584,7 +614,8 @@ export class ControlPlane {
 
   /** One text frame from a node. Never throws for anything the node sends; a storage failure while handling a report rejects (no ack: the node sends it again). */
   async onMessage(s: Session, text: string): Promise<void> {
-    if (s.closed) return; // a socket the control plane already let go (pushed out by the cap, replaced, timed out)
+    if (s.closed) return this.lateMessage(s); // a socket the control plane already let go (pushed out by the cap, replaced, timed out)
+    s.heardAt = this.now();
     let raw: unknown;
     try {
       raw = JSON.parse(text);
@@ -617,6 +648,12 @@ export class ControlPlane {
       case 'heartbeat': {
         const hb = parseHeartbeat(m.data, MAX_CAPACITY);
         if (!hb) return s.link.close(1008, 'bad heartbeat');
+        const n = this.registry.node(nodeId);
+        if (s.quiet && n) {
+          // Held in transit, most likely: the same link, and placement takes the node again.
+          s.quiet = false;
+          this.log(`node ${n.name}: heartbeat again after ${seconds(this.now() - n.lastSeen)} s`);
+        }
         this.registry.heartbeat(nodeId, hb, this.now());
         for (const x of hb.matches) {
           const m = x.tick > 0 ? this.matches.get(x.matchId) : undefined;
@@ -652,6 +689,21 @@ export class ControlPlane {
     }
   }
 
+  /**
+   * A message on a link already let go: counted, never handled, and logged once by the next sweep
+   * (a backlog comes in a burst). How late: the first message after a silence was due one heartbeat
+   * after the last one the link carried, so the held heartbeats of 2026-10-21 would read "4 messages
+   * after its link was closed, up to 19 s late".
+   */
+  private lateMessage(s: Session): void {
+    if (s.nodeId === null) return;
+    if (s.late === 0) {
+      s.lateMs = Math.max(0, this.now() - s.heardAt - HEARTBEAT_MS);
+      this.lateLinks.add(s);
+    }
+    s.late++;
+  }
+
   private async auth(s: Session, nodeId: unknown, sig: unknown): Promise<void> {
     if (typeof nodeId !== 'string' || typeof sig !== 'string' || nodeId.length > 32 || sig.length > 200) return s.link.close(4401, 'bad auth');
     const n = this.registry.node(nodeId);
@@ -669,6 +721,7 @@ export class ControlPlane {
       this.onClose(old);
     }
     s.nodeId = nodeId;
+    s.heardAt = this.now();
     this.sessions.set(nodeId, s);
     const iceServers = n.transports.includes('rtc') ? await this.ice('node') : [];
     if (s.closed) return;
@@ -677,7 +730,8 @@ export class ControlPlane {
 
   private call<T>(nodeId: string, msg: RpcRequest, timeoutMs = RPC_TIMEOUT_MS): Promise<T> {
     const s = this.sessions.get(nodeId);
-    if (!s || s.closed) return Promise.reject(new NodeRefused('offline'));
+    // A silent node's link may be stalled: a request sent into it would only time out.
+    if (!s || s.closed || !this.isOnline(nodeId)) return Promise.reject(new NodeRefused('offline'));
     const rid = randomHexId(8);
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -699,8 +753,19 @@ export class ControlPlane {
     this.notify(nodeId, { t: 'status', status, ...(n?.statusReason ? { reason: n.statusReason } : {}) });
   }
 
+  /**
+   * Connected and heard from within HEARTBEAT_TIMEOUT_MS: placement, requests, leaves and rtc
+   * rejoins need it. A silent node keeps its link for LINK_TIMEOUT_MS and its matches for
+   * NODE_OFFLINE_MS, but it is offline from its heartbeat timeout until it is heard again.
+   */
   isOnline(nodeId: string): boolean {
-    return this.sessions.has(nodeId);
+    const n = this.registry.node(nodeId);
+    return n !== undefined && n.online && this.now() - n.lastSeen <= HEARTBEAT_TIMEOUT_MS && this.sessions.has(nodeId);
+  }
+
+  /** When the control plane last heard from the node: its last heartbeat or hello, its link's last message or login, or the restore (a restart forgot the rest). */
+  private lastHeard(n: NodeRecord): number {
+    return Math.max(n.lastSeen, this.restoredAt, this.sessions.get(n.nodeId)?.heardAt ?? 0);
   }
 
   // ---- reachability / versions ------------------------------------------------------------------
@@ -1562,7 +1627,10 @@ export class ControlPlane {
 
   // ---- health -------------------------------------------------------------------------------
 
-  /** Call every few seconds: silent nodes go offline (their matches void), cooldowns lift, queues retry. */
+  /**
+   * Call every few seconds: silent nodes get no new match, then lose their link and their matches;
+   * cooldowns lift, queues retry.
+   */
   sweep(): void {
     const now = this.now();
     const grace = this.inGrace();
@@ -1571,23 +1639,33 @@ export class ControlPlane {
       this.log(`node ${n.name}: strike cooldown over, back to ${n.status}`);
       this.notifyStatus(n.nodeId, n.status);
     }
+    // No heartbeat for HEARTBEAT_TIMEOUT_MS: the registry took the node out of placement. Its link
+    // stays: if the heartbeats were only held on the way, they bring it back when they arrive.
     for (const n of offline) {
       const s = this.sessions.get(n.nodeId);
-      if (s) {
-        s.link.close(4408, 'heartbeat timeout');
-        this.onClose(s);
-      }
+      if (!s) continue;
+      s.quiet = true;
+      this.log(`node ${n.name}: no heartbeat for ${seconds(now - n.lastSeen)} s, no new matches until the next one`);
     }
-    // A node gone for HEARTBEAT_TIMEOUT_MS (socket closed, or silent), a trusted one for
-    // TRUSTED_OFFLINE_MS: its running matches are void, one strike for the outage. A quick
-    // reconnect of the same process keeps them. Not while a restart waits for its nodes: they all
-    // look gone then. A restart forgot when each node was last seen: a node whose socket did not
-    // survive a hibernation gets its full window from the restore, as it would have without it.
+    for (const s of [...this.sessions.values()]) {
+      const silent = now - s.heardAt;
+      if (silent <= LINK_TIMEOUT_MS) continue;
+      this.log(`node ${this.nameOf(s)}: silent ${seconds(silent)} s, closing its control link (4408)`);
+      s.link.close(4408, 'heartbeat timeout');
+      this.onClose(s);
+    }
+    for (const s of this.lateLinks) this.log(`node ${this.nameOf(s)}: ${s.late} message${s.late === 1 ? '' : 's'} after its link was closed, up to ${seconds(s.lateMs)} s late`);
+    this.lateLinks.clear();
+    // A node not heard from for NODE_OFFLINE_MS (its link closed, or silent): its running matches
+    // are void, one strike for the outage. The same process heard again in time keeps them. Not
+    // while a restart waits for its nodes: they all look gone then. A restart forgot when each node
+    // was last seen: a node whose socket did not survive a hibernation gets its full window from
+    // the restore, as it would have without it.
     const gone = new Set<string>();
     for (const m of this.matches.values()) {
-      if (grace || m.state !== 'assigned' || gone.has(m.nodeId) || this.isOnline(m.nodeId)) continue;
+      if (grace || m.state !== 'assigned' || gone.has(m.nodeId)) continue;
       const n = this.registry.node(m.nodeId);
-      if (!n || now - Math.max(n.lastSeen, this.restoredAt) > (n.trusted ? TRUSTED_OFFLINE_MS : HEARTBEAT_TIMEOUT_MS)) gone.add(m.nodeId);
+      if (!n || now - this.lastHeard(n) > NODE_OFFLINE_MS) gone.add(m.nodeId);
     }
     for (const id of gone) this.voidMatchesOf(id, 'node_offline', (m) => m.state === 'assigned');
     // Hosts still unproven (Caddy may have been fetching its certificate at the first hello): probe
@@ -1614,6 +1692,11 @@ export class ControlPlane {
     this.unplaced = this.unplaced.filter((u) => now - u.at < UNPLACED_WINDOW_MS);
     for (const id of [...this.deferredUpdates]) this.maybeUpdate(id);
     this.pump();
+  }
+
+  /** A session's node as the log lines name it (the registry's name, cleaned at registration). */
+  private nameOf(s: Session): string {
+    return (s.nodeId !== null ? this.registry.node(s.nodeId)?.name : undefined) ?? String(s.nodeId);
   }
 
   /** The build the clients run (placements need it); exposed for the reference server's views. */

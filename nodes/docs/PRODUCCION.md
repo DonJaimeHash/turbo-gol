@@ -405,8 +405,9 @@ aviso.
   cola de verificación del build viejo se vacía antes de que el verificador se actualice.
 - [ ] Cancelar mientras conecta a una ranked: cuenta como dodge, igual que en `MatchDO`
   (`server/src/MatchDO.ts:350-356`).
-- [ ] Un corte corto del enlace de control con una partida en curso, según lo que se decida en
-  [1].
+- [ ] Un corte corto del enlace de control con una partida en curso: la partida sigue si el mismo
+  proceso vuelve en 60 s (`NODE_OFFLINE_MS`), y un enlace trabado menos de 45 s se recupera sin
+  cerrarse.
 
 ### Riesgos principales
 
@@ -425,7 +426,7 @@ aviso.
   (`control-plane/controlPlane.ts:859-861`). Contraseña fuerte y única, un `ALERT` por cada
   token y cada registro (P24) y un tope de 2 nodos para esa cuenta (P20).
 - **Un solo DO para todo.** Quien juega en un nodo conoce el id de la partida y el del nodo. Sin
-  topes, subidas de replays o conexiones sin autenticar pueden trabar el DO, y con 15 s sin
+  topes, subidas de replays o conexiones sin autenticar pueden trabar el DO, y con 60 s sin
   heartbeats se anulan partidas en curso (P19, P20).
 - **Secretos que despliegan.** `wrangler secret put` reinicia las partidas en curso (M7, M13).
 

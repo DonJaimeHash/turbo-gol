@@ -380,11 +380,13 @@ export class NodeRegistryDO extends DurableObject<Env> {
     };
   }
 
+  /**
+   * The socket's session ends. It stays the socket's: what still comes on it (the backlog of a
+   * stalled link, after its 4408) reaches the control plane, which only counts it for the log.
+   */
   private gone(ws: WebSocket): void {
     const s = this.sessions.get(ws);
-    if (!s) return;
-    this.sessions.delete(ws);
-    this.cp?.onClose(s);
+    if (s && !s.closed) this.cp?.onClose(s);
   }
 
   // ---- Hibernation API handlers -----------------------------------------------------------

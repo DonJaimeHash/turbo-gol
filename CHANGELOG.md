@@ -59,6 +59,11 @@ All notable changes to Turbogol are documented here. The format follows
   new-issue page.
 
 ### Fixed
+- Community nodes: a control link that stalls no longer costs a node its matches. A node without
+  heartbeats for 15 seconds still gets no new match, but its link stays open for 45, so heartbeats
+  held on the way (24 seconds of them on the São Paulo node on 2026-10-21) bring it straight back;
+  and every node, a community one too, keeps its running matches for a minute without news, as a
+  project node already did. Each closed link, and what still arrives on it, is logged.
 - Community nodes: the VPS installer keeps the name given with `--name`; it registered nodes under
   the Linux distribution's name, read from `/etc/os-release`.
 - The anti-bot check (Turnstile) had no place to render in the new menus, so a first visit could

@@ -323,10 +323,12 @@ del PR [7]: los jugadores con un lock de partida de nodo quedarían atascados ha
 
 ### Si se cae
 
-- Sus partidas en curso se anulan sin penalizar a los jugadores si no vuelve en unos 60 s: un
-  nodo del proyecto tiene 60 s sin heartbeat para reconectarse y conservarlas (`TRUSTED_OFFLINE_MS`
-  en `control-plane/controlPlane.ts`), más el intervalo del barrido; un nodo comunitario, 15 s. El nodo suma un strike,
-  pero un nodo del proyecto no se pausa.
+- Sus partidas en curso se anulan sin penalizar a los jugadores si no vuelve en unos 60 s: todo
+  nodo, del proyecto o comunitario, tiene 60 s sin heartbeat para reconectarse y conservarlas
+  (`NODE_OFFLINE_MS` en `control-plane/controlPlane.ts`), más el intervalo del barrido. A los 15 s
+  sin heartbeat deja de recibir partidas, y a los 45 s el plano de control cierra su conexión
+  (4408) y anota en el log cuántos segundos estuvo callado. El nodo suma un strike, pero un nodo
+  del proyecto no se pausa.
 - Las ranked de Sudamérica vuelven a `MatchDO`, como hoy, mientras no haya otro verificador: una
   ranked solo va a un nodo si alguien puede re-simularla (`control-plane/controlPlane.ts:637`).
 - Las partidas terminadas esperan su verificación hasta 6 horas
