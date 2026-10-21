@@ -1,5 +1,5 @@
 /**
- * City generator ("Distrito 9", theme city-dusk; original design): the stadium stands on the roof
+ * City generator (the city rooftop, theme city-dusk; original design): the stadium stands on the roof
  * deck of a multi-storey car park in the middle of a city at dusk. Two parts, like harbour.ts, both
  * appended to GeoBuilders (geo.ts):
  *

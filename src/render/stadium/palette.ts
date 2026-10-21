@@ -60,7 +60,7 @@ const STADIUM_THEMES: Readonly<Partial<Record<ThemeId, StadiumTheme>>> = {
     rampColor: [0.035, 0.085, 0.04],
     steelRim: [0.05, 0.055, 0.07],
   },
-  // "Distrito 9" (city at dusk): the night stadium under a violet sky; the net and the steel catch
+  // The city rooftop (city at dusk): the night stadium under a violet sky; the net and the steel catch
   // the sky's pink-violet, the crowd a cooler LED light.
   'city-dusk': {
     ledIntensity: 0.4,

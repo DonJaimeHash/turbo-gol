@@ -155,7 +155,7 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     envLamp: 18,
   },
 
-  // "Distrito 9": the car park's roof in the middle of a city just after sunset (city.ts). The sun
+  // The city rooftop: the car park's roof in the middle of a city just after sunset (city.ts). The sun
   // is a degree above the horizon behind the far goal's skyline (hidden by the towers: only its
   // glow shows); a deep violet sky, clouds lit pink and orange from below, the first stars. A light
   // haze: the towers keep their navy glass and lit windows instead of fading into the warm glow.

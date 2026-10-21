@@ -181,7 +181,7 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     exposure: 1.0,
     grade: { contrast: 1.16, saturation: 1.1, lift: [0.005, 0.001, 0.005], gain: [1.04, 0.99, 0.95], vignette: 0.38 },
   },
-  // "Distrito 9": the car park's roof in a city just after sunset (world/city.ts). The sky still
+  // The city rooftop: the car park's roof in a city just after sunset (world/city.ts). The sky still
   // glows, but the pitch is lit like the night: the same two raking tower keys in a cooler LED
   // white, all eight floodlights, a violet fill, a soaked pitch, a pink-violet haze and grade.
   'city-dusk': {
