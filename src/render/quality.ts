@@ -8,7 +8,8 @@
  *   high   the desktop default: MSAA x4, emissive bloom, two shadowed key lights, relief turf, the
  *          full stadium; a pixel budget with dynamic resolution so big screens keep their refresh rate.
  *   ultra  opt-in on top of high: grass blades near the camera, GTAO, screen-space reflections on wet
- *          turf, floodlight beams, lens flare, bigger shadow maps and pixel budget.
+ *          turf, floodlight beams, lens glare. Its shadow maps stay at high's 4096 (two 8192 depth
+ *          maps would hold 512 MB), and it keeps MSAA x4 (no TRAA: no per-object motion vectors).
  *
  * The values start as the two old tiers (low = the old performance tier, high and ultra = the old
  * quality 0); the modules of docs/visuals/REWORK.md tune them as they land.
@@ -27,7 +28,7 @@ export interface TierSpec {
   readonly msaa: 0 | 4;
   /** Emissive bloom (the glow MRT target); without it glow must come from geometry and HDR colour. */
   readonly bloom: boolean;
-  /** Bloom mip levels (BloomNode's private _nMips, three pinned to 0.186.x). */
+  /** Bloom mip levels, 1..5 (BloomNode's private _nMips, three pinned to 0.186.x); post/pipeline.ts weights them for a tight halo. */
   readonly bloomMips: number;
   /**
    * Highest device pixel ratio used (Infinity = only the pixel budget limits it; phones and tablets
@@ -40,7 +41,7 @@ export interface TierSpec {
   readonly dynamicResolution: boolean;
   /** Lowest scene-pass resolution scale dynamic resolution may use. */
   readonly minResolutionScale: number;
-  /** Key lights that cast shadows (the other key, if any, still lights without shadows). */
+  /** Theme key lights that cast shadows (post/lighting.ts: keys[0] first; the other key still lights without one). */
   readonly shadowedKeys: 1 | 2;
   /** Shadow map size of each shadowed key and its PCF radius. */
   readonly shadowMapSize: number;
@@ -60,7 +61,11 @@ export interface TierSpec {
   readonly netDetail: boolean;
   /** Stadium: additive floodlight beam cones. */
   readonly beamCones: boolean;
-  /** Post: ground-truth ambient occlusion, screen-space reflections on wet pixels, lens flare. */
+  /**
+   * Post (post/screenSpace.ts): half-resolution ground-truth ambient occlusion, half-resolution
+   * screen-space reflections on the wet pitch, procedural lens glare (streak + ghosts) of the
+   * brightest emissive. Ultra-only: together about +0.9 ms at 1600x900 on the reference GPU.
+   */
   readonly gtao: boolean;
   readonly ssr: boolean;
   readonly lensFlare: boolean;
@@ -100,7 +105,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
   high: {
     msaa: 4,
     bloom: true,
-    bloomMips: 3,
+    bloomMips: 5,
     maxPixelRatio: Infinity,
     pixelBudget: 6e6,
     dynamicResolution: true,
@@ -126,7 +131,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
   ultra: {
     msaa: 4,
     bloom: true,
-    bloomMips: 3,
+    bloomMips: 5,
     maxPixelRatio: Infinity,
     pixelBudget: 6e6,
     dynamicResolution: true,

@@ -42,13 +42,56 @@ test('low keeps the old performance tier (1) and high the old quality tier (0)',
   const high = tier('high');
   assert.equal(high.msaa, 4);
   assert.equal(high.bloom, true);
-  assert.equal(high.bloomMips, 3);
   assert.equal(high.pixelBudget, 6e6);
   assert.equal(high.shadowMapSize, 4096);
   assert.equal(high.shadowRadius, 4);
   assert.equal(high.detail, 'high');
   assert.equal(high.netDetail, true);
   assert.equal(high.particles, 1536);
+});
+
+test('post and lighting switches (post/: two keys, bloom, the ultra extras)', () => {
+  const low = tier('low');
+  const high = tier('high');
+  const ultra = tier('ultra');
+  // Both keys exist on every tier (constant light count); low shadows only keys[0].
+  assert.equal(low.shadowedKeys, 1);
+  assert.equal(high.shadowedKeys, 2);
+  assert.equal(ultra.shadowedKeys, 2);
+  // Emissive bloom over BloomNode's full 5 mips (its maximum) with a tight radius; none on low.
+  assert.equal(high.bloomMips, 5);
+  assert.equal(ultra.bloomMips, 5);
+  for (const q of QUALITIES) assert.ok(tier(q).bloomMips >= 1 && tier(q).bloomMips <= 5, `${q}: BloomNode has 1..5 mips`);
+  // Screen-space extras are ultra-only (high keeps its budget); MSAA, never TRAA, on high and ultra.
+  for (const key of ['gtao', 'ssr', 'lensFlare']) {
+    assert.equal(low[key], false, `low ${key}`);
+    assert.equal(high[key], false, `high ${key}`);
+    assert.equal(ultra[key], true, `ultra ${key}`);
+  }
+  assert.equal(ultra.msaa, 4);
+  // Shadow maps are square powers of two the PCF filter can use.
+  for (const q of QUALITIES) {
+    const s = tier(q);
+    assert.ok(Number.isInteger(Math.log2(s.shadowMapSize)) && s.shadowMapSize >= 1024 && s.shadowMapSize <= 4096, `${q}: shadow map size`);
+    assert.ok(s.shadowRadius > 0, `${q}: PCF radius`);
+  }
+});
+
+test('every theme world feeds the lights and the grade sane values', () => {
+  for (const id of THEME_IDS) {
+    const w = themeWorld(id);
+    for (const key of w.keys) {
+      assert.ok(Math.abs(Math.hypot(...key.dir) - 1) < 1e-9, `${id}: key direction is a unit vector`);
+      assert.ok(key.dir[1] > 0.2, `${id}: keys light from above (shadows stay on the pitch)`);
+      assert.ok(key.intensity > 0 && key.color.every((c) => c >= 0), `${id}: key colour and intensity`);
+    }
+    assert.ok(w.keys[0].intensity >= w.keys[1].intensity, `${id}: keys[0] is the brighter key (it keeps its shadow on low)`);
+    assert.ok(w.fill.intensity >= 0 && w.fill.env >= 0, `${id}: fill`);
+    assert.ok(['neutral', 'aces', 'agx'].includes(w.toneMapping), `${id}: tone curve`);
+    assert.ok(w.exposure > 0, `${id}: exposure`);
+    assert.ok(w.grade.contrast > 0 && w.grade.saturation >= 0, `${id}: grade`);
+    assert.ok(w.grade.vignette >= 0 && w.grade.vignette < 1, `${id}: vignette`);
+  }
 });
 
 test('the pixel ratio of low and high is the one the old tiers used (1 and 0)', () => {
