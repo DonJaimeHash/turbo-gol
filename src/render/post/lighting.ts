@@ -48,7 +48,12 @@ export interface Lighting {
   readonly sun: THREE.DirectionalLight;
   /** Hemisphere fill (the theme's `fill.sky` / `fill.ground` / `fill.intensity`). */
   readonly hemi: THREE.HemisphereLight;
-  /** Apply the tier: which keys cast shadows, their map size and PCF radius. */
+  /**
+   * Apply the tier: which keys cast shadows, their map size and PCF radius. Only as part of a full
+   * tier switch (Game.setQuality rebuilds every lit material right after): three r186 shares one
+   * light node per light, so the first material built after a key stops casting frees that key's
+   * shadow map, and any older material still sampling it crashes in ShadowNode.updateShadow.
+   */
   setQuality(quality: Quality): void;
   /** Rewrite the keys and the fill from the theme (uniform writes + frustum refits; never changes the light count). */
   setTheme(theme: ThemeId): void;

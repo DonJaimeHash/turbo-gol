@@ -8,8 +8,9 @@
  *   high   the desktop default: MSAA x4, emissive bloom, two shadowed key lights, relief turf, the
  *          full stadium; a pixel budget with dynamic resolution so big screens keep their refresh rate.
  *   ultra  opt-in on top of high: grass blades near the camera, GTAO, screen-space reflections on wet
- *          turf, floodlight beams, lens glare. Its shadow maps stay at high's 4096 (two 8192 depth
- *          maps would hold 512 MB), and it keeps MSAA x4 (no TRAA: no per-object motion vectors).
+ *          turf, floodlight beams, lens glare. Its shadow maps stay at high's 4096 (see
+ *          `shadowMapSize`: two 8192 maps would hold about 1 GB), and it keeps MSAA x4 (no TRAA: no
+ *          per-object motion vectors).
  *
  * The values start as the two old tiers (low = the old performance tier, high and ultra = the old
  * quality 0); the modules of docs/visuals/REWORK.md tune them as they land.
@@ -43,7 +44,11 @@ export interface TierSpec {
   readonly minResolutionScale: number;
   /** Theme key lights that cast shadows (post/lighting.ts: keys[0] first; the other key still lights without one). */
   readonly shadowedKeys: 1 | 2;
-  /** Shadow map size of each shadowed key and its PCF radius. */
+  /**
+   * Shadow map size of each shadowed key and its PCF radius. GPU memory: three r186's shadow target
+   * holds a depth24plus map AND an unused RGBA8 colour texture of the same size, 8 bytes per texel:
+   * 2048 = 34 MB, 4096 = 134 MB per shadowed key (high and ultra: two keys, about 268 MB).
+   */
   readonly shadowMapSize: number;
   readonly shadowRadius: number;
   /** Size of one face of the baked sky + backdrop cube map, and of the PMREM environment. */

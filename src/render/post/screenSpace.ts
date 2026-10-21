@@ -65,7 +65,7 @@ const AO_THICKNESS = 60;
 const AO_SAMPLES = 8;
 const AO_STRENGTH = 0.75;
 
-/** SSR: pixels whose world height is below FLOOR_Y0 are pitch (fading out by FLOOR_Y1, uu). */
+/** SSR: pixels whose |world height| is below FLOOR_Y0 are pitch (fading out by FLOOR_Y1, uu). */
 const FLOOR_Y0 = 4;
 const FLOOR_Y1 = 14;
 /** SSR march: quality (fraction of texels stepped), plane distance a reflection may reach (uu), hit thickness (uu). */
@@ -155,12 +155,16 @@ export function buildScreenSpace(
   let ssrPass: ReturnType<typeof ssr> | null = null;
   if (spec.ssr && halfDepth !== null) {
     const depthTex = halfDepth;
-    /** 1 on pitch pixels (world height ~ 0), 0 elsewhere; the background (depth 1) is discarded by SSR itself. */
+    /**
+     * 1 on pitch pixels (world height ~ 0), 0 elsewhere; the background (depth 1) is discarded by
+     * SSR itself. |height|, not height: a surface visible BELOW the pitch plane (ground or stand
+     * bases outside the cage) is not wet turf and must not reflect with the pitch's up normal.
+     */
     const pitchMask = (u: Vec2Node): FloatNode => {
       const d = depthTex.sample(saturate(u)).r;
       const viewPos = getViewPosition(saturate(u), d, projInv) as Vec3Node;
       const worldY = camWorld.mul(vec4(viewPos, 1.0)).y;
-      return oneMinus(smoothstep(FLOOR_Y0, FLOOR_Y1, worldY));
+      return oneMinus(smoothstep(FLOOR_Y0, FLOOR_Y1, worldY.abs()));
     };
     const viewUp = viewMatrix.mul(vec4(0.0, 1.0, 0.0, 0.0)).xyz.normalize();
     // Normals: SSR reads `normalNode` once at the reflecting pixel (setup) and samples it at each
