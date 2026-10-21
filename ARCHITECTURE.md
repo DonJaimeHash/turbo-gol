@@ -349,13 +349,18 @@ renderable at zero intensity (`setWarmUp(on)` on CarView / BallView / Effects / 
 ultra grass blades draw whatever the camera height) before the boot overlay goes away and on the
 frame after a tier switch, so no shader compiles on the first boost, airborne ball, goal or
 demolition (checked: the pipeline counts stay constant through all four on every tier, and after
-every tier switch). At boot `Game.warmUpAsync()` runs it; on the WebGL2 fallback it first calls
-`Renderer.precompile()`, a `compileAsync` of the scene through the scene pass's own render target
-and MRT (the frame's exact variants), so KHR_parallel_shader_compile builds the programs in
-parallel (5.7 s → 1.8 s on low here). WebGPU keeps the synchronous warm-up: three r186's
-`compileAsync` awaits each object's pipeline in turn, which was slower (10 s) there. A theme switch
-never compiles (uniforms, a cached cube or a re-bake); the world compiles a new bake's pipelines
-with its own `compileAsync` (world/bake.ts).
+every tier switch). At boot `Game.warmUpAsync()` runs it after `Renderer.precompile()`, which
+compiles the pipelines in parallel. On WebGPU it renders one warm-up frame with three's
+synchronous pipeline creation switched to `createRenderPipelineAsync`: every pipeline of the frame
+(the exact variants: scene pass, shadow maps, ultra passes, bloom, output) is requested at once
+and the browser's GPU process compiles them on its worker threads, while draws whose pipeline is
+not ready are skipped behind the overlay (first frame on the GPU 2.3-2.9 s after the page started
+instead of 5.5-6.1 s, high tier, production build; three r186's own `compileAsync` awaits each
+object's pipelines in turn, 10 s there). On the WebGL2 fallback it is a `compileAsync` of the
+scene through the scene pass's own render target and MRT, so KHR_parallel_shader_compile builds
+the programs in parallel (5.7 s → 1.8 s on low here). A tier switch still compiles its pipelines
+synchronously on the next frame. A theme switch never compiles (uniforms, a cached cube or a
+re-bake); the world compiles a new bake's pipelines with its own `compileAsync` (world/bake.ts).
 
 Load timing: `main.ts` leaves `performance.mark`s at each boot step (`turbogol:renderer`,
 `:physics`, `:scene`, `:warmup`, and `:gpu-ready` once the GPU finished the warm-up frame on
@@ -585,11 +590,11 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
   91 draws (each extra car costs 2 draws plus 2 per shadowed key; over the 40 / 60 draw targets of
   docs/visuals/REWORK.md, see its status). Texture memory is flat over repeated tier and theme
   switches. Triangles include the shadow passes.
-* First load (production build, warm world cache, WebGPU high): about 2 s to the first frame
-  submitted with every pipeline requested (0.4 s renderer and cached world, 0.6 s views and bakes,
-  0.8-1 s warm-up); the GPU process then compiled that frame's pipelines for about 4 s more on the
-  reference machine (identical WGSL on every load; the browser pane recompiled it every time).
-  Low: 1.1 s, WebGL2 low 2.7-5.2 s.
+* First load (production build, warm world cache, WebGPU high), to the first frame finished on
+  the GPU: 2.3-2.9 s (0.3-0.4 s renderer and cached world, 0.6 s views and bakes, 1.3-1.9 s of
+  parallel pipeline compile, `Renderer.precompile`); it was 5.5-6.1 s with the synchronous
+  warm-up alone, whose ~50 pipelines the GPU process compiled one after the other. Low: 2.2 s.
+  WebGL2 low: 2.7-5.2 s to the warm-up.
 
 ## Legal
 

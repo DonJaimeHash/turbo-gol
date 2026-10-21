@@ -391,34 +391,61 @@ export class Renderer {
   }
 
   /**
-   * WebGL2 only: compile the programs of every visible mesh for the current tier without blocking
-   * (KHR_parallel_shader_compile), through the scene pass's own render target and MRT, i.e. the
-   * exact variants the frame uses (a compileAsync against another target or MRT builds the wrong
-   * ones). The shadow and post passes are left to the first real frame (a few small programs).
-   * Measured on the low tier's first load: 1.8 s instead of 5.7 s of synchronous compile.
-   * On WebGPU it does nothing: three r186's compileAsync builds the objects one after the other and
-   * awaits each pipeline, which took longer (10 s) than the synchronous warm-up render, whose
-   * pipelines the browser's GPU process compiles while the frame is submitted.
-   * Resolves when done or after `timeoutMs`: three's WebGL2 backend polls the parallel compile
-   * from requestAnimationFrame, which never fires in a hidden tab (the first frame then compiles
-   * what is left).
+   * The boot's pipeline compile, in parallel instead of one pipeline after the other (Game.warmUpAsync
+   * calls it with every normally hidden mesh visible, then renders the synchronous warm-up frame).
+   *
+   * WebGPU: one frame through the real pipeline (scene pass, shadow maps, ultra passes, bloom,
+   * output) with three's synchronous pipeline creation switched to createRenderPipelineAsync, so
+   * every pipeline of that frame (the exact variants: same targets, MRT, sample counts) is requested
+   * at once and the browser's GPU process compiles them on its worker threads; draws whose pipeline
+   * is not ready are skipped (the frame is hidden behind the boot overlay). Measured on the high
+   * tier (dev server, warm world cache, GPU shared with other sessions): the first frame was ready
+   * on the GPU 2.5-2.8 s after the page started instead of 5.4-6.1 s with the synchronous
+   * warm-up alone (52 pipelines either way). three r186's own compileAsync awaits each object's
+   * pipelines in turn (10 s here), and a compileAsync per object builds some wrong variants
+   * (transparent double-pass materials, a second turf program).
+   *
+   * WebGL2: a compileAsync of the scene (KHR_parallel_shader_compile) through the scene pass's own
+   * render target and MRT; the shadow and post passes are left to the warm-up frame (a few small
+   * programs). Measured on the low tier's first load: 1.8 s instead of 5.7 s of synchronous
+   * compile. Three's WebGL2 backend polls the parallel compile from requestAnimationFrame, which
+   * never fires in a hidden tab: the promise then settles after `timeoutMs` and the first visible
+   * frames finish what is left.
    */
   async precompile(timeoutMs = PRECOMPILE_TIMEOUT_MS): Promise<void> {
     const post = this.post;
-    if (post === null || this.isWebGPU) return;
+    if (post === null) return;
     const gpu = this.gpu;
-    const pass = post.scenePass;
-    const prevTarget = gpu.getRenderTarget();
-    const prevMrt = gpu.getMRT();
-    let compiling: Promise<void>;
-    try {
-      // compileAsync reads the target and the MRT synchronously, before its first await.
-      gpu.setRenderTarget(pass.renderTarget);
-      gpu.setMRT(pass.getMRT());
-      compiling = gpu.compileAsync(this.scene, this.camera);
-    } finally {
-      gpu.setRenderTarget(prevTarget);
-      gpu.setMRT(prevMrt);
+    let compiling: Promise<unknown>;
+    if (this.isWebGPU) {
+      type PipelineUtils = { createRenderPipeline(renderObject: unknown, promises: Promise<void>[] | null): void };
+      const utils = (gpu.backend as unknown as { pipelineUtils: PipelineUtils }).pipelineUtils;
+      const own = Object.prototype.hasOwnProperty.call(utils, 'createRenderPipeline');
+      const create = utils.createRenderPipeline;
+      const pending: Promise<void>[] = [];
+      utils.createRenderPipeline = function (this: PipelineUtils, renderObject, promises) {
+        create.call(this, renderObject, promises ?? pending);
+      };
+      try {
+        this.render();
+      } finally {
+        if (own) utils.createRenderPipeline = create;
+        else delete (utils as Partial<PipelineUtils>).createRenderPipeline;
+      }
+      compiling = Promise.all(pending);
+    } else {
+      const pass = post.scenePass;
+      const prevTarget = gpu.getRenderTarget();
+      const prevMrt = gpu.getMRT();
+      try {
+        // compileAsync reads the target and the MRT synchronously, before its first await.
+        gpu.setRenderTarget(pass.renderTarget);
+        gpu.setMRT(pass.getMRT());
+        compiling = gpu.compileAsync(this.scene, this.camera);
+      } finally {
+        gpu.setRenderTarget(prevTarget);
+        gpu.setMRT(prevMrt);
+      }
     }
     let timer = 0;
     await Promise.race([compiling, new Promise<void>((resolve) => (timer = window.setTimeout(resolve, timeoutMs)))]);

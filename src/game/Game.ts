@@ -1680,10 +1680,10 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * The boot's warm-up: the same as warmUp, but on the WebGL2 fallback every scene program (hidden
-   * meshes included) is first compiled in parallel through the scene pass's own target and MRT
-   * (Renderer.precompile), so the synchronous warm-up render only builds the few shadow and
-   * post-processing programs left.
+   * The boot's warm-up: the same as warmUp, but every pipeline (hidden meshes included) is first
+   * compiled in parallel (Renderer.precompile: on WebGPU one frame whose pipelines are all created
+   * asynchronously, on WebGL2 a compileAsync of the scene), so the synchronous warm-up render only
+   * builds what is left (nothing on WebGPU, a few shadow and post programs on WebGL2).
    */
   async warmUpAsync(): Promise<void> {
     if (this.running) {

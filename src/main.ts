@@ -149,8 +149,8 @@ async function boot(): Promise<void> {
   });
   // Every pipeline (scene, shadow, bloom, flames, marker, particles, goal FX) is compiled behind the
   // overlay instead of stalling the first menu frame and the first boost / airborne ball / goal:
-  // one render with every normally hidden mesh visible (on WebGL2 the scene's programs are first
-  // compiled in parallel).
+  // one render with every normally hidden mesh visible, after compiling its pipelines in parallel
+  // (Renderer.precompile).
   performance.mark('turbogol:scene');
   await game.warmUpAsync();
   performance.mark('turbogol:warmup');

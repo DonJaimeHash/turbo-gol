@@ -101,8 +101,9 @@ being built; phase 5 is open.
      less saturated crowd, fainter goal-mouth glow, a softer vignette.
    - High's shadow maps are 2048 (high 163 MB of textures instead of 372); memory is flat over
      tier and theme switches; the ball and car blobs float above the ultra grass blades.
-   - The WebGL2 fallback starts on low unless the player chose a tier, and compiles its programs
-     in parallel at boot; `#webgl2` forces it for testing. Boot marks in main.ts.
+   - The WebGL2 fallback starts on low unless the player chose a tier; `#webgl2` forces it for
+     testing. Both backends compile the boot's pipelines in parallel (Renderer.precompile): the
+     first frame on WebGPU high is ready in ~2.7 s instead of ~5.9 s. Boot marks in main.ts.
    - The Friendly screen's Stadium row (the theme picker of phase 4).
    - Measured: see "Measuring" below and ARCHITECTURE.md "Rendering budget".
 4. **The other five themes** (the menu row to pick one exists since phase 3).
@@ -138,7 +139,8 @@ Open against the targets:
 - A 3v3 match frame draws 51 calls on low and 80 on high (each car: body, wheels, and both again
   per shadowed key), and ultra takes 5.97 ms there. Options: instance every car body and every
   wheel set into one draw each, or a single shadowed key for the bots' cars.
-- First load on the reference machine: ~2 s of JS to the first frame (production build, warm world
-  cache), then ~4 s of pipeline compile in the GPU process before it shows, every load (the WGSL
-  is identical between loads; this browser recompiled it each time). Shader sizes: turf 63 KB, car
-  60 KB, ball 52 KB, four lit stadium materials 30-34 KB each.
+- First load (production build, warm world cache, WebGPU high): 2.3-2.9 s to the first frame
+  finished on the GPU (median ~2.7 s; 2.2 s on low), within the 4 s target since the boot compiles
+  its pipelines in parallel; a contended GPU process stretched single runs to ~9 s. A tier switch
+  still compiles synchronously (1-3 s on the GPU). Shader sizes: turf 63 KB, car 60 KB, ball
+  52 KB, four lit stadium materials 30-34 KB each.
