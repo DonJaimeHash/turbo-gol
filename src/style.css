@@ -2008,3 +2008,11 @@ html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {
   animation: none !important;
 }
+
+/* Without box shadows two focus states would show nothing (their only cue is a ring of shadow):
+   a plain outline instead, so the pad's focus stays visible on the TV. */
+html.tg-superlow .hud-pause-primary.hud-focus,
+html.tg-superlow .hud-menu-play.hud-focus {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}

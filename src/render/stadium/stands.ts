@@ -9,7 +9,8 @@
  *    tiers with `bakedLight` (low) unlit, the same colours x the theme's baked light
  *    (palette.ts stadiumLight). Tiers without `crowd` (super low) paint the people on the rows
  *    instead (`paintedCrowd`): per seat a shirt on the tread and a figure with a head on the riser
- *    behind it, from a hash of the seat (no quads, no alpha cut: opaque, a few operations).
+ *    behind it, from a hash of the seat (no quads, no alpha cut: opaque, a few operations), fading
+ *    to their mean colours where a seat covers only a few pixels (no moire at 640x360).
  *  - Crowd: one instanced quad per seat block (thousands), opaque with an alpha cut (alpha to
  *    coverage under MSAA). Each person is drawn in the fragment shader from a few SDFs (torso,
  *    head, hair; raised arms and a scarf on tiers with `netDetail`), shirts from a team-dominant
@@ -236,7 +237,27 @@ function paintedCrowd(p: Vec3Node, seatCol: Vec3Node): { lap: Vec3Node; figure: 
   // Albedo: the stand material lights it with the rows (the theme's baked light).
   const figure = mix(mix(seatCol, shirt, body), skin, head);
   const lap = mix(seatCol, shirt.mul(0.85), step(abs(fz), float(0.4)));
-  return { lap, figure, occ };
+  // Band limit: super low draws about 640x360 without MSAA, and where a seat covers only a few
+  // pixels the shoulders and heads (the same shape in every seat: a periodic pattern) alias into
+  // moire arcs that crawl with the camera. Over the seat's footprint (seats per pixel), first the
+  // shapes go (under ~3 px a seat: each seat its own mean, still one hashed person), then the
+  // seats (under ~1.5 px a seat: the crowd's mean). A riser is ~40 % shirt and ~13 % head; the
+  // crowd's mean takes the casual palette's mean (0.29, 0.27, 0.25), 56 % team shirts at 0.925
+  // of the kit, the skin tones' mean (E[seed2^2] = 1/3) and 12 % empty seats.
+  const footprint = max(fwidth(zc), fwidth(rowF));
+  const shapes = oneMinus(smoothstep(0.3, 0.6, footprint));
+  const seats = oneMinus(smoothstep(0.6, 1.2, footprint));
+  const seatFigure = seatCol.mul(0.478).add(shirt.mul(0.396)).add(skin.mul(0.126));
+  const seatLap = mix(seatCol, shirt.mul(0.85), 0.8);
+  const meanShirt = mix(vec3(0.29, 0.27, 0.25), team.mul(0.925), 0.56);
+  const meanSkin = mix(vec3(0.5, 0.34, 0.24), vec3(0.13, 0.075, 0.045), 1 / 3);
+  const meanFigure = seatCol.mul(0.478).add(meanShirt.mul(0.396)).add(meanSkin.mul(0.126));
+  const meanLap = mix(seatCol, meanShirt.mul(0.85), 0.8);
+  return {
+    lap: mix(mix(meanLap, seatLap, seats), lap, shapes),
+    figure: mix(mix(meanFigure, seatFigure, seats), figure, shapes),
+    occ: mix(float(0.88), occ, seats),
+  };
 }
 
 /** Seat-block colour of a stand point: team seats per half (blue toward -z, red toward +z). */

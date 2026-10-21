@@ -130,7 +130,7 @@ import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
 import { Renderer, type GpuFailure } from '../render/Renderer';
 import { tierPrefsAfter } from '../render/bootTier';
 import { diagSources, diagStats, enableDiagStats } from '../render/frameStats';
-import { pageFlags, withoutTierFlags } from '../render/hashFlags';
+import { emulatedDevice, pageFlags, withoutTierFlags } from '../render/hashFlags';
 import { drawsFrame, needsReload, parseQuality, type Quality } from '../render/quality';
 import {
   BACKGROUND_LOSS_MS,
@@ -566,6 +566,11 @@ export class Game implements P2PGameHooks {
   private hudAt = -1;
   /** The super low online notice was shown this session. */
   private liteOnlineNoticed = false;
+  /**
+   * A tier picked in an online match that needs a reload (into or out of super low): the reload
+   * would leave the match (an abandon), so it waits for the menus (showMenu); null when none.
+   */
+  private pendingRestart: Quality | null = null;
   difficulty: Difficulty;
   /** Smoothed frames per second (updated 4x/s). */
   fps = 0;
@@ -1000,7 +1005,8 @@ export class Game implements P2PGameHooks {
   private settingsOptions(): MenuOptions {
     return {
       difficulty: this.difficulty,
-      quality: this.quality,
+      // A pick that waits for the online match to end shows as the selected tier (with its line).
+      quality: this.pendingRestart ?? this.quality,
       mode: this.mode,
       onPlay: () => undefined,
       settings: this.settings,
@@ -1157,12 +1163,29 @@ export class Game implements P2PGameHooks {
    * stalls on nothing.
    */
   switchQuality(q: Quality, fallback: Fallback | null = null): Promise<void> {
+    // A new pick replaces one that waits for the online match to end (back to the running tier:
+    // the prefs keep that one again).
+    if (fallback === null && this.pendingRestart !== null) {
+      this.pendingRestart = null;
+      this.hud.setQualityPending(null);
+      if (q === this.quality) this.choose(q);
+    }
     if (q === this.quality) {
       if (fallback !== null) this.tierGuard.arm(); // nothing to fall back to: the guard listens again
       return Promise.resolve();
     }
     // Into or out of super low: its own backend and world, a new page (quality.ts needsReload).
-    if (needsReload(this.quality, q)) return this.restartOn(q, fallback);
+    if (needsReload(this.quality, q)) {
+      // In an online match the reload would leave it (an abandon): the pick is saved now and the
+      // page restarts once the menus are back (showMenu); the Graphics tab says so.
+      if (fallback === null && this.onlineActive) {
+        this.choose(q);
+        this.pendingRestart = q;
+        this.hud.setQualityPending(q);
+        return Promise.resolve();
+      }
+      return this.restartOn(q, fallback);
+    }
     const label = fallback !== null ? fallbackText(fallback) : t('loading.quality');
     return this.withLoading(label, QUALITY_STEPS, async (step) => {
       try {
@@ -1300,7 +1323,9 @@ export class Game implements P2PGameHooks {
     } catch {
       /* storage unavailable: this session still falls back */
     }
-    if (fb.to !== fb.from) writeCeiling(store, this.renderer.caps.gpu, fb.to, Date.now());
+    // A fall into super low also starts the next boots on it, on its own backend (tierGuard.ts
+    // readSuperlowBoot); not from an emulated device, whose record this browser's real GPU would read.
+    if (fb.to !== fb.from) writeCeiling(store, this.renderer.caps.gpu, fb.to, Date.now(), !emulatedDevice(pageFlags()));
     if (fb.reload) {
       this.reloadAfterLoss(fb);
       return;
@@ -2943,6 +2968,13 @@ export class Game implements P2PGameHooks {
     if (online !== null && ranked !== null) {
       online.lastRankedMatchId = null;
       void this.rankedResults.watch(ranked, online.lastRankedOnNode);
+    }
+    // A tier picked during the online match that needs a reload (switchQuality): now.
+    const pending = this.pendingRestart;
+    if (pending !== null) {
+      this.pendingRestart = null;
+      this.hud.setQualityPending(null);
+      void this.restartOn(pending, null);
     }
   }
 

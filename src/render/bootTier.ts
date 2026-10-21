@@ -7,8 +7,11 @@
  *
  * Precedence (`bootTier`):
  *   1. `#superlow` in the URL ('hash'), or the tab's recovery after a second lost device
- *      ('recover', sessionStorage: tierGuard.ts lossPlan): super low for this page load only.
+ *      ('recover', sessionStorage: tierGuard.ts lossStep): super low for this page load only.
  *      Neither is ever saved: the prefs keep the player's own tier (Game.persistPrefs).
+ *   1b. A GPU of this device fell back to super low ('ceiling': tierGuard.ts readSuperlowBoot), a
+ *      ceiling known before the backend, so the fallback gets super low's backend and context;
+ *      not while the player's own pick across a reload is tried (Renderer.create).
  *   2. The player's choice in Settings > Graphics ('chosen', prefs.qualitySet).
  *   3. Auto: super low on a device with no pointer at all (a TV: neither fine nor coarse) whose
  *      GPU is on the slow list ('tv-gpu'; the GPU string comes from a throwaway WebGL2 context,
@@ -83,9 +86,14 @@ export interface BootPrefs {
 /** What forces the tier for this page load only: the URL, or the tab's recovery after lost devices. */
 export type BootForce = 'hash' | 'recover' | null;
 
-/** The boot tier and why (see the file header). Pure. */
-export function bootTier(prefs: BootPrefs, signals: BootSignals, force: BootForce): { tier: Quality; reason: TierReason } {
+/**
+ * The boot tier and why (see the file header). `capped`: a GPU of this device fell back to super
+ * low (tierGuard.ts readSuperlowBoot), which caps even the player's tier like any ceiling; the
+ * caller leaves it false while the player's pick across a reload is tried (TRY_TIER_KEY). Pure.
+ */
+export function bootTier(prefs: BootPrefs, signals: BootSignals, force: BootForce, capped = false): { tier: Quality; reason: TierReason } {
   if (force !== null) return { tier: 'superlow', reason: force };
+  if (capped) return { tier: 'superlow', reason: 'ceiling' };
   const saved = parseQuality(prefs.quality) ?? 'high';
   if (prefs.qualitySet) return { tier: saved, reason: 'chosen' };
   const auto = autoSuperlow(signals);

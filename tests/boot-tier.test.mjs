@@ -58,6 +58,13 @@ test('precedence: the URL and the tab recovery, then the player, then auto, then
   assert.deepEqual(bootTier(unset, DESKTOP, null), { tier: 'high', reason: 'default' });
   assert.deepEqual(bootTier({ quality: 'low', qualitySet: false }, PHONE, null), { tier: 'low', reason: 'default' });
   assert.deepEqual(bootTier({ quality: 'superlow', qualitySet: true }, DESKTOP, null), { tier: 'superlow', reason: 'chosen' });
+  // A GPU of this device fell to super low (tierGuard.ts readSuperlowBoot): a ceiling, so it caps
+  // the player's tier too, below the URL and the tab's recovery (their own reasons).
+  assert.deepEqual(bootTier({ quality: 'low', qualitySet: true }, DESKTOP, null, true), { tier: 'superlow', reason: 'ceiling' });
+  assert.deepEqual(bootTier(unset, PHONE, null, true), { tier: 'superlow', reason: 'ceiling' });
+  assert.deepEqual(bootTier(unset, TV, null, true), { tier: 'superlow', reason: 'ceiling' });
+  assert.deepEqual(bootTier({ quality: 'low', qualitySet: true }, DESKTOP, 'hash', true), { tier: 'superlow', reason: 'hash' });
+  assert.deepEqual(bootTier({ quality: 'low', qualitySet: true }, DESKTOP, null, false), { tier: 'low', reason: 'chosen' }, 'the pick tried across a reload (the caller passes false)');
   // Garbage in the prefs never yields an unknown tier.
   for (const q of [7, 'basura', null, undefined]) assert.ok(QUALITIES.includes(bootTier({ quality: q, qualitySet: true }, DESKTOP, null).tier), String(q));
 });

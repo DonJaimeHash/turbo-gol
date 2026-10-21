@@ -88,6 +88,15 @@ export function parseHashFlags(hash: string): HashFlags {
   };
 }
 
+/**
+ * The page emulates another device (#tv, #lowgpu, #nofloatrt, #compat, #nof32filter): what it
+ * learns about that device is not written where this browser's real GPU reads it back
+ * (tierGuard.ts writeCeiling's super low boot record). Pure.
+ */
+export function emulatedDevice(f: Pick<HashFlags, 'tv' | 'lowgpu' | 'nofloatrt' | 'compat' | 'nof32filter'>): boolean {
+  return f.tv || f.lowgpu || f.nofloatrt || f.compat || f.nof32filter;
+}
+
 /** `hash` without the tier flags a player's own choice replaces (`#superlow`); '' or '#...' (Game.switchQuality). */
 export function withoutTierFlags(hash: string): string {
   const parts = hash.replace(/^#/, '').split('&').filter((p) => p.length > 0 && p.split('=')[0] !== 'superlow');

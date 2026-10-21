@@ -513,6 +513,7 @@ export default {
   'settings.qualityLowHint': 'Lo más fluido, para celulares y computadoras antiguas',
   'settings.qualityHighHint': 'Equilibrio entre detalle y fluidez',
   'settings.qualityUltraHint': 'Todos los efectos, para una tarjeta gráfica potente',
+  'settings.qualityAfterOnline': 'Se aplica al salir de la partida online (el juego se reinicia)',
   'settings.on': 'SÍ',
   'settings.off': 'NO',
   'settings.keys': '{navKeys} navegar   ·   {adjustKeys} ajustar   ·   {selectKeys} elegir   ·   {clearKeys} quitar   ·   {tabKeys} pestañas   ·   {backKeys} volver',

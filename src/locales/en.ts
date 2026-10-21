@@ -754,6 +754,9 @@ export default {
   'settings.qualityLowHint': 'Smoothest, for phones and older computers',
   'settings.qualityHighHint': 'Balanced detail and smoothness',
   'settings.qualityUltraHint': 'Every effect, for a powerful graphics card',
+  // In place of the hint when the picked tier needs a restart (into or out of Super low) during an
+  // online match: it waits until the player leaves the match
+  'settings.qualityAfterOnline': 'Applies when you leave the online match (the game restarts)',
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',

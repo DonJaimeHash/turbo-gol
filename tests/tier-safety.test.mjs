@@ -21,7 +21,7 @@ registerHooks({
 
 const { QUALITIES, tier } = await import('../src/render/quality.ts');
 const { FULL_CAPABILITIES, adjustTier, tierChanges, readCapabilities, withoutMsaa, withCompatCanvasMsaa } = await import('../src/render/capabilities.ts');
-const { TierGuard, readCeiling, writeCeiling, raiseCeiling, lossStep, parseLossRecord, LOSS_COUNT_RESET_MS, CEILING_KEY, CEILING_TTL_MS, FALLBACK_WINDOW_MS, MAX_CEILINGS } = await import('../src/render/tierGuard.ts');
+const { TierGuard, readCeiling, writeCeiling, raiseCeiling, readSuperlowBoot, lossStep, parseLossRecord, LOSS_COUNT_RESET_MS, CEILING_KEY, CEILING_TTL_MS, FALLBACK_WINDOW_MS, MAX_CEILINGS, SUPERLOW_BOOT_KEY } = await import('../src/render/tierGuard.ts');
 
 const COMPAT = { ...FULL_CAPABILITIES, compatibilityMode: true, msaaHdr: false, msaaCanvas: false, maxTextureSize: 4096, maxColorAttachments: 4, gpu: 'webgpu-compat:arm/midgard' };
 
@@ -176,6 +176,41 @@ test('a tier the player picks again and that runs clean lifts a lower ceiling to
   raiseCeiling(null, 'gpu-b', 'ultra', t0);
   const full = { getItem: () => JSON.stringify({ g: { q: 'low', at: t0 } }), setItem: () => { throw new Error('QuotaExceededError'); } };
   raiseCeiling(full, 'g', 'high', t0);
+});
+
+test('a ceiling at super low also starts the next boots on it, before the backend exists; a clean pick above lifts it', () => {
+  const s = store();
+  const t0 = 9_000_000;
+  assert.equal(readSuperlowBoot(s, t0), false, 'nothing written');
+  writeCeiling(s, 'webgpu:mali', 'low', t0);
+  assert.equal(readSuperlowBoot(s, t0 + 1), false, 'a ceiling above super low is per backend only');
+  // Low failed on WebGPU: the next boot must pick super low's own backend (WebGL2 without MSAA)
+  // even though its ceilings are keyed by a backend it has not created yet.
+  writeCeiling(s, 'webgpu:mali', 'superlow', t0 + 2);
+  assert.equal(readSuperlowBoot(s, t0 + 3), true);
+  assert.equal(JSON.parse(s.getItem(SUPERLOW_BOOT_KEY)).gpu, 'webgpu:mali');
+  assert.equal(readSuperlowBoot(s, t0 + 2 + CEILING_TTL_MS + 1), false, 'expires with the ceiling');
+  assert.equal(readSuperlowBoot(s, t0 + 1), false, 'a clock that went back');
+  // A pick of super low itself never lifts it; a pick above that ran clean does, from any GPU key.
+  raiseCeiling(s, 'webgpu:mali', 'superlow', t0 + 4);
+  assert.equal(readSuperlowBoot(s, t0 + 5), true);
+  raiseCeiling(s, 'webgl2:ARM/Mali-G31', 'low', t0 + 6);
+  assert.equal(readSuperlowBoot(s, t0 + 7), false);
+  assert.equal(readCeiling(s, 'webgpu:mali', t0 + 7), 'superlow', 'the other GPU keeps its own record');
+  // An emulated device (#tv, #lowgpu...) writes no boot record: this browser's real GPU would read it.
+  const e = store();
+  writeCeiling(e, 'webgl2:ARM/Mali-G31', 'superlow', t0, false);
+  assert.equal(readCeiling(e, 'webgl2:ARM/Mali-G31', t0 + 1), 'superlow');
+  assert.equal(readSuperlowBoot(e, t0 + 1), false);
+  // Garbage and missing storage never throw.
+  for (const raw of ['', '{', 'null', '{"gpu":1,"at":2}', '{"gpu":"g","at":"x"}']) {
+    e.setItem(SUPERLOW_BOOT_KEY, raw);
+    assert.equal(readSuperlowBoot(e, t0), false, raw);
+  }
+  assert.equal(readSuperlowBoot(null, t0), false);
+  const broken = { getItem: () => { throw new Error('SecurityError'); }, setItem: () => undefined };
+  assert.equal(readSuperlowBoot(broken, t0), false);
+  raiseCeiling(broken, 'g', 'high', t0);
 });
 
 test('the guard falls one tier per failure, within the window, never twice at once, never below super low', () => {

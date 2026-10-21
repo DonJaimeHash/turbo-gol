@@ -18,7 +18,7 @@ registerHooks({
 });
 
 const { diagFlags, hiddenFeatures, installAdapterEmulation, glslProgramUse, programOverLimits, installLowGpuEmulation, installGlEmulation, profileExtensions, glProfile, LOWGPU_EXTENSIONS, LOWGPU_LIMITS, TV_HIDDEN_EXTENSIONS, TV_GPU } = await import('../src/render/gpuDiag.ts');
-const { parseHashFlags, withoutTierFlags, hashValue } = await import('../src/render/hashFlags.ts');
+const { parseHashFlags, withoutTierFlags, hashValue, emulatedDevice } = await import('../src/render/hashFlags.ts');
 
 const off = parseHashFlags('');
 
@@ -158,6 +158,9 @@ test('hash flags: whole words with optional values; #hide never turns on #net; #
   assert.equal(hashValue('#a=1&b', 'b'), '');
   assert.equal(hashValue('#a=1&b', 'c'), null);
   assert.equal(withoutTierFlags('#superlow&diag'), '#diag');
+  // An emulated device never writes what this browser's real GPU reads back (the super low boot record).
+  for (const h of ['#tv', '#lowgpu', '#nofloatrt&webgl2', '#compat', '#nof32filter']) assert.equal(emulatedDevice(parseHashFlags(h)), true, h);
+  for (const h of ['', '#webgl2', '#superlow&webgpu', '#diag=audit&nomsaa']) assert.equal(emulatedDevice(parseHashFlags(h)), false, h);
   assert.equal(withoutTierFlags('#diag&superlow'), '#diag');
   assert.equal(withoutTierFlags('#superlow'), '');
   assert.equal(withoutTierFlags('#superlowx&stats'), '#superlowx&stats');

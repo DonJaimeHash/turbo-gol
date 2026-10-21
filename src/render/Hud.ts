@@ -491,6 +491,8 @@ export class Hud {
   private menuOptions: MenuOptions | null = null;
   private difficulty: Difficulty = 'medium';
   private quality: Quality = 'high';
+  /** A picked tier that waits for the online match to end (Game.switchQuality): its line on the Graphics tab. */
+  private qualityPending: Quality | null = null;
   private mode: GameMode = '1v1';
   private debug = false;
 
@@ -1557,6 +1559,14 @@ export class Hud {
   }
 
   /**
+   * A tier picked in an online match that needs a reload (into or out of super low) waits for the
+   * menus (Game.switchQuality): the Graphics tab says so under it; null when nothing waits.
+   */
+  setQualityPending(q: Quality | null): void {
+    this.qualityPending = q;
+  }
+
+  /**
    * Step the tier in menu order (superlow -> low -> high -> ultra, wrapping): +1 for Q, a click, accept or
    * right on the Quality row, -1 for left.
    */
@@ -1902,7 +1912,7 @@ export class Hud {
         const opts = this.menuOptions;
         if (opts !== null && opts.onQualityChange) opts.onQualityChange(q);
       },
-      (q) => (hint.textContent = hints[q]),
+      (q) => (hint.textContent = q === this.qualityPending ? t('settings.qualityAfterOnline') : hints[q]),
     );
     page.append(quality.row, hint);
     return { page, items: [quality.item], actions: el('div', 'hud-settings-actions'), footer: null };

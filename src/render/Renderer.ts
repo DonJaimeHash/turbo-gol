@@ -27,9 +27,11 @@
  * `adjustTier(tier(q), caps)` (`spec`): no multisampled HDR target in WebGPU compatibility mode ->
  * FXAA, no multisampled canvas -> the direct tier without AA, maps and the drawing buffer within
  * maxTextureSize. The boot tier comes first (bootTier.ts: the URL's #superlow, the tab's recovery,
- * the player's choice, super low on a 1 GB device or a TV on the slow GPU list, else the saved or
- * default tier), before the backend exists, because super low picks its own (WebGL2) and its
- * world. Once the backend is up, startingQuality (quality.ts) lowers a tier above low to low on
+ * a GPU of this device that fell back to super low (tierGuard.ts readSuperlowBoot), the player's
+ * choice, super low on a 1 GB device or a TV on the slow GPU list, else the saved or default
+ * tier), before the backend exists, because super low picks its own (WebGL2) and its world; when
+ * super low is only reached after init (this GPU's ceiling, no float target), a ceiling at super
+ * low makes the next boots pick its backend. Once the backend is up, startingQuality (quality.ts) lowers a tier above low to low on
  * WebGL2, in WebGPU compatibility mode and with navigator.deviceMemory <= 4 unless the player chose
  * one, never above the GPU's remembered ceiling (tierGuard.ts); and a WebGL2 device that cannot
  * render into any half-float target (capabilities.ts canRenderHalfFloat) runs super low, which
@@ -86,7 +88,7 @@ import * as THREE from 'three/webgpu';
 import { adjustTier, canRenderHalfFloat, readCapabilities, tierChanges, withCompatCanvasMsaa, withoutMsaa, withoutPost, type Capabilities } from './capabilities';
 import { bootTier, readBootSignals, type TierReason } from './bootTier';
 import { diagSources } from './frameStats';
-import { pageFlags, type HashFlags } from './hashFlags';
+import { emulatedDevice, pageFlags, type HashFlags } from './hashFlags';
 import { DynamicResolution } from './dynamicResolution';
 import { setGlowTargets } from './materials';
 import { createLighting, type Lighting } from './post/lighting';
@@ -94,7 +96,7 @@ import { buildPostChain, type PostChain } from './post/pipeline';
 import { parseQuality, pixelRatio, startingQuality, tier, type Quality, type TierSpec } from './quality';
 import { GpuDiag, addThreeConsoleHook, hiddenFeatures, installAdapterEmulation, installGlEmulation } from './gpuDiag';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
-import { RECOVER_KEY, TRY_TIER_KEY, readCeiling, type FailureKind } from './tierGuard';
+import { RECOVER_KEY, TRY_TIER_KEY, readCeiling, readSuperlowBoot, writeCeiling, type FailureKind } from './tierGuard';
 import { createLiteWorld } from './world/liteWorld';
 import { createWorld, type World } from './world/World';
 
@@ -439,14 +441,24 @@ export class Renderer {
     // `#compat` / `#nof32filter`: the WebGPU adapter three requests hides those features.
     const restoreAdapter = installAdapterEmulation(hiddenFeatures(flags));
     let recover = false;
+    let tryTier: Quality | null = null;
+    let superlowBoot = false;
     try {
       recover = window.sessionStorage.getItem(RECOVER_KEY) === '1';
+      tryTier = parseQuality(window.sessionStorage.getItem(TRY_TIER_KEY));
+      window.sessionStorage.removeItem(TRY_TIER_KEY);
+      superlowBoot = readSuperlowBoot(window.localStorage, Date.now());
     } catch {
       /* storage unavailable */
     }
     const signals = readBootSignals(flags.tv);
     const chosen = opts.qualityChosen ?? true;
-    const boot = bootTier({ quality: opts.quality ?? 'high', qualitySet: chosen }, signals, flags.superlow ? 'hash' : recover ? 'recover' : null);
+    const prefsTier = parseQuality(opts.quality ?? 'high') ?? 'high';
+    // The player just picked this tier across a reload (Game.restartOn): this boot tries it above
+    // any ceiling once (super low's included); Game.bootDone lifts the ceiling when it runs the
+    // fallback window clean.
+    const trying = tryTier !== null && chosen && prefsTier === tryTier;
+    const boot = bootTier({ quality: prefsTier, qualitySet: chosen }, signals, flags.superlow ? 'hash' : recover ? 'recover' : null, superlowBoot && !trying);
     const bootSpec = tier(boot.tier);
     const gpu = new THREE.WebGPURenderer({
       canvas,
@@ -482,17 +494,12 @@ export class Renderer {
     const read = readCapabilities(gpu);
     const caps = flags.nomsaa ? withoutMsaa(read) : flags.msaa ? withCompatCanvasMsaa(read) : read;
     let ceiling: Quality | null = null;
-    let tryTier: Quality | null = null;
     try {
       ceiling = readCeiling(window.localStorage, caps.gpu, Date.now());
-      tryTier = parseQuality(window.sessionStorage.getItem(TRY_TIER_KEY));
-      window.sessionStorage.removeItem(TRY_TIER_KEY);
     } catch {
       /* storage unavailable */
     }
-    // The player just picked this tier across a reload (Game.restartOn): this boot tries it above
-    // the ceiling once; Game.bootDone lifts the ceiling when it runs the fallback window clean.
-    const tryIt = tryTier !== null && boot.reason === 'chosen' && boot.tier === tryTier && ceiling !== null;
+    const tryIt = trying && boot.reason === 'chosen' && (ceiling !== null || superlowBoot);
     if (tryIt) ceiling = null;
     const nav = navigator as unknown as { deviceMemory?: number };
     let quality = startingQuality(boot.tier, boot.reason === 'chosen', { webgpu, compatibilityMode: caps.compatibilityMode, deviceMemory: flags.tv ? 1 : nav.deviceMemory }, ceiling);
@@ -504,6 +511,18 @@ export class Renderer {
       quality = 'superlow';
       reason = 'nofloat';
     }
+    // Super low reached after the backend was chosen for another tier (this GPU's ceiling, or no
+    // float target): this page runs it on that backend and context (a multisampled WebGL2 one, or
+    // WebGPU); the ceiling at super low makes the next boots start on super low's own
+    // (tierGuard.ts readSuperlowBoot). Not from an emulated device (#tv, #lowgpu...): its record
+    // would hold for this browser's real GPU too.
+    if (quality === 'superlow' && boot.tier !== 'superlow' && !emulatedDevice(flags)) {
+      try {
+        writeCeiling(window.localStorage, caps.gpu, 'superlow', Date.now());
+      } catch {
+        /* storage unavailable */
+      }
+    }
     // `#diag`: the on-screen panel and its probes, installed before any shader compiles.
     const theme = opts.theme ?? DEFAULT_THEME;
     let renderer: Renderer | null = null;
@@ -514,9 +533,11 @@ export class Renderer {
         () => {
           const q = renderer?.quality ?? quality;
           const spec = renderer?.spec ?? tier(q);
-          let now: Quality | null = null;
+          let now: string | null = null;
           try {
             now = readCeiling(window.localStorage, caps.gpu, Date.now());
+            // A GPU of this device fell to super low: the boots start on it (tierGuard.ts).
+            if (readSuperlowBoot(window.localStorage, Date.now())) now = `${now ?? 'none'} (boot: superlow)`;
           } catch {
             now = ceiling;
           }

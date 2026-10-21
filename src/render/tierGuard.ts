@@ -29,6 +29,13 @@
  *              build or driver gets another chance; at most MAX_CEILINGS GPUs are kept. A tier
  *              above it that the player picks in the menu and that runs through the whole window
  *              without a failure lifts it to that tier (`raiseCeiling`, Game.switchQuality).
+ *   super low  the key above is only known once the renderer exists, but super low picks its
+ *              backend and context before (WebGL2 without MSAA, bootTier.ts): a ceiling written at
+ *              super low also leaves a backend-free record (SUPERLOW_BOOT_KEY, `readSuperlowBoot`)
+ *              that starts the next boots on super low, so a fallback into it (low failed or lost
+ *              its device) runs on super low's own backend, not on the one that just failed (with
+ *              a multisampled WebGL2 context). It expires with the ceiling and goes with the first
+ *              tier above super low the player picks that runs the window clean (`raiseCeiling`).
  *
  * Pure: the clock and the storage are passed in (node tests).
  */
@@ -57,6 +64,8 @@ export const RECOVER_KEY = STORAGE_PREFIX + 'recover';
  * ceiling (Game.bootDone, raiseCeiling); otherwise a ceiling at super low could never be left.
  */
 export const TRY_TIER_KEY = STORAGE_PREFIX + 'tryTier';
+/** localStorage: { gpu, at } while a GPU's ceiling is super low (see "super low" above; '' = none). */
+export const SUPERLOW_BOOT_KEY = STORAGE_PREFIX + 'superlowBoot.v1';
 
 export type FailureKind = 'error' | 'lost';
 
@@ -100,19 +109,43 @@ export function readCeiling(store: Store | null, gpu: string, now: number): Qual
   return rec.q;
 }
 
-/** Remember `q` as the highest tier for `gpu` (a lower existing record that has not expired stays). */
-export function writeCeiling(store: Store | null, gpu: string, q: Quality, now: number): void {
+/**
+ * Remember `q` as the highest tier for `gpu` (a lower existing record that has not expired stays).
+ * A record at super low also writes the boot record (`readSuperlowBoot`) unless `bootRecord` is
+ * false (an emulated device: hashFlags.ts emulatedDevice).
+ */
+export function writeCeiling(store: Store | null, gpu: string, q: Quality, now: number, bootRecord = true): void {
   if (store === null) return;
   const all = readAll(store);
   const old = all[gpu];
   const keepOld = old !== undefined && now - old.at <= CEILING_TTL_MS && QUALITIES.indexOf(old.q) <= QUALITIES.indexOf(q);
   if (!keepOld) all[gpu] = { q, at: now };
+  const rec = all[gpu];
   const gpus = Object.keys(all).sort((a, b) => all[b].at - all[a].at);
   for (const g of gpus.slice(MAX_CEILINGS)) delete all[g];
   try {
     store.setItem(CEILING_KEY, JSON.stringify(all));
+    // Super low: the next boots start on it before the backend exists (see "super low" above).
+    if (rec.q === 'superlow' && bootRecord) store.setItem(SUPERLOW_BOOT_KEY, JSON.stringify({ gpu, at: rec.at }));
   } catch {
     /* storage full or disabled: this session still falls back */
+  }
+}
+
+/**
+ * Whether a GPU's ceiling is super low (`writeCeiling`) and has not expired at `now`: the boot then
+ * starts on super low whatever the backend it would have picked (Renderer.create). Pure.
+ */
+export function readSuperlowBoot(store: Store | null, now: number): boolean {
+  if (store === null) return false;
+  try {
+    const raw = store.getItem(SUPERLOW_BOOT_KEY);
+    if (raw === null || raw === '') return false;
+    const r = JSON.parse(raw) as { gpu?: unknown; at?: unknown } | null;
+    if (r === null || typeof r.gpu !== 'string' || typeof r.at !== 'number' || !Number.isFinite(r.at)) return false;
+    return now >= r.at && now - r.at <= CEILING_TTL_MS;
+  } catch {
+    return false;
   }
 }
 
@@ -121,10 +154,18 @@ export function writeCeiling(store: Store | null, gpu: string, q: Quality, now: 
  * failure: a ceiling below it is lifted to it (none is left when `q` is the top tier), so the
  * next boot starts on the player's choice again instead of the old fallback's tier for the rest
  * of the record's 30 days (a driver or a build that has since been fixed). A record at or above
- * `q` stays as it is.
+ * `q` stays as it is. A pick above super low that ran clean also drops the super low boot record
+ * (`readSuperlowBoot`), whichever GPU wrote it: this device runs more than super low.
  */
 export function raiseCeiling(store: Store | null, gpu: string, q: Quality, now: number): void {
   if (store === null) return;
+  if (q !== 'superlow') {
+    try {
+      if (store.getItem(SUPERLOW_BOOT_KEY) !== null) store.setItem(SUPERLOW_BOOT_KEY, '');
+    } catch {
+      /* storage full or disabled */
+    }
+  }
   const all = readAll(store);
   const old = all[gpu];
   if (old === undefined || QUALITIES.indexOf(old.q) >= QUALITIES.indexOf(q)) return;
