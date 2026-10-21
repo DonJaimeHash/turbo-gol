@@ -28,7 +28,8 @@ export interface TurfLook {
   readonly team: number;
 }
 
-const NIGHT: TurfLook = { tint: [1.45, 0.9, 0.72], dry: 0.05, stripes: 0.3, pools: 1, streaks: 1, puddles: 0.36, team: 1 };
+/** The night harbour: streaks and puddles toned down (calm reflections; 1 and 0.36 before). */
+const NIGHT: TurfLook = { tint: [1.45, 0.9, 0.72], dry: 0.05, stripes: 0.3, pools: 1, streaks: 0.55, puddles: 0.2, team: 1 };
 
 /** Per theme (every ThemeId has one; turfLook falls back to the night look for an unknown id). */
 export const TURF_LOOKS: Readonly<Record<ThemeId, TurfLook>> = {

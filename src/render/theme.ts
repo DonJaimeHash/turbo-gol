@@ -114,7 +114,9 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     // stay dark navy instead of a grey wash. `env` is the image-based lighting intensity.
     fill: { sky: [0.05, 0.065, 0.12], ground: [0.03, 0.022, 0.018], intensity: 0.7, env: 0.3 },
     floodlights: towerFloodlights(WARM_LAMP, 1),
-    wetness: 0.55,
+    // Damp, not soaked (0.55 before the owner found the night pitch too reflective): a calmer
+    // sheen, fewer and fainter streaks (turf/), a weaker SSR mask on ultra (post/).
+    wetness: 0.32,
     fog: { color: [0.05, 0.046, 0.105], density: 1.6e-5 },
     // ACES: a stronger toe (deep shadows, no black lift) and a filmic shoulder for the hot lamps,
     // moodier than Neutral for this night; the grade adds contrast, cool shadows, warm highlights.

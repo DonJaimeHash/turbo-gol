@@ -10,10 +10,11 @@
  * the light count, the lamp count and the material variant never change with the theme.
  *
  * Per tier (quality.ts), at 1600x900 CSS on the chase camera (docs/visuals/REWORK.md budgets):
- *   low    flat filtered blade texture (2x anisotropic), damp sheen, no puddles, `turfStreaks` (4)
- *          analytic floodlight streaks, baked pools; 1 draw, ~0.2 ms (budget 0.25).
- *   high   blade normals, relief + self-shadow of the blades, soft puddles, 8 streaks (8x
- *          anisotropic); 1 draw, ~0.5 ms (budget 0.6).
+ *   low    flat filtered blade texture (2x anisotropic), damp sheen, no puddles, `turfStreaks` (2:
+ *          one diagonal pair of corner towers) analytic floodlight streaks, baked pools; 1 draw,
+ *          ~0.2 ms (budget 0.25).
+ *   high   blade normals, relief + self-shadow of the blades, soft puddles, 4 streaks (the four
+ *          corner towers; 8x anisotropic); 1 draw, ~0.5 ms (budget 0.6).
  *   ultra  high + instanced grass blades within ~3 m of the camera; 2 draws,
  *          blades ~0.1 ms (budget 0.4).
  *

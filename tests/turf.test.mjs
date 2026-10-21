@@ -109,13 +109,20 @@ test('pool map: floodlit where the heads aim, the pads masked, dark without lamp
   assert.equal(pm[texelAt(POOL_MAP, BOOST_PADS_BIG[0][0], BOOST_PADS_BIG[0][1]) + 3], 255);
 });
 
-test('streak heads: a fixed count per tier whatever the theme, far heads first', () => {
+test('streak heads: a fixed count per tier whatever the theme, far heads first, in diagonal pairs', () => {
   const world = themeWorld('harbour-night');
+  // Fewer reflections at night (the owner): two heads on low, the four corners on high and ultra.
+  assert.deepEqual(['low', 'high', 'ultra'].map((q) => TIERS[q].turfStreaks), [2, 4, 4]);
   for (const q of ['low', 'high', 'ultra']) {
     const n = TIERS[q].turfStreaks;
     const heads = bake.streakLamps(world.floodlights, n);
     assert.equal(heads.length, n);
     assert.ok(heads.every((h, i) => i === 0 || Math.abs(h.position[2]) <= Math.abs(heads[i - 1].position[2]) || heads[i - 1].strength === 0));
+    // every pair is two opposite corners (point-symmetric about the centre spot)
+    for (let i = 0; i + 1 < n; i += 2) {
+      const [a, b] = [heads[i].position, heads[i + 1].position];
+      assert.ok(Math.abs(a[0] + b[0]) < 1e-6 && Math.abs(a[2] + b[2]) < 1e-6, `${q}: heads ${i}, ${i + 1} are opposite corners`);
+    }
   }
   const none = bake.streakLamps([], 4);
   assert.equal(none.length, 4);

@@ -66,7 +66,11 @@ export interface TierSpec {
   readonly turfRelief: boolean;
   /** Turf: real grass blades (instanced geometry) within a few metres of the camera. */
   readonly grassBlades: boolean;
-  /** Turf: puddles (else only a damp sheen); analytic floodlight streaks on the wet pitch. */
+  /**
+   * Turf: puddles (else only a damp sheen); analytic floodlight streaks on the wet pitch, from the
+   * `turfStreaks` heads of turf/bake.ts streakLamps (2 = one diagonal pair of corner towers, 4 =
+   * the four corners; each head is a loop step per wet pixel).
+   */
   readonly puddles: boolean;
   readonly turfStreaks: number;
   /** Stadium: crowd density (people per seat block, 0..1) and the netting's fine wire detail. */
@@ -105,7 +109,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     turfRelief: false,
     grassBlades: false,
     puddles: false,
-    turfStreaks: 4,
+    turfStreaks: 2,
     crowdDensity: 0.5,
     netDetail: false,
     beamCones: false,
@@ -131,7 +135,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     turfRelief: true,
     grassBlades: false,
     puddles: true,
-    turfStreaks: 8,
+    turfStreaks: 4,
     crowdDensity: 1,
     netDetail: true,
     beamCones: false,
@@ -157,7 +161,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     turfRelief: true,
     grassBlades: true,
     puddles: true,
-    turfStreaks: 8,
+    turfStreaks: 4,
     crowdDensity: 1,
     netDetail: true,
     beamCones: true,

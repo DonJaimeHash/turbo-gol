@@ -414,14 +414,27 @@ export function decodePool(byte: number): number {
   return s * s * POOL_MAX;
 }
 
+/** Order of the corners among heads equally far down the field: diagonal pairs first. */
+function cornerRank(f: Floodlight): number {
+  const [x, , z] = f.position;
+  if (x < 0 && z < 0) return 0;
+  if (x > 0 && z > 0) return 1;
+  if (x < 0) return 2;
+  return 3;
+}
+
 /**
  * The `count` floodlights whose wet-turf streaks a tier draws: the heads farthest down the field
- * first (low in the view from either end, they make the long streaks down the pitch), padded with
- * dark slots so the shader's lamp count never changes with the theme.
+ * first (low in the view from either end, they make the long streaks down the pitch), the corners
+ * in diagonal pairs (two heads are one pair of opposite corners: each end of the field sees one
+ * streak, the same for both teams), padded with dark slots so the shader's lamp count never
+ * changes with the theme.
  */
 export function streakLamps(floodlights: readonly Floodlight[], count: number): Floodlight[] {
   const lit = floodlights.filter((f) => f.strength > 0);
-  const order = lit.map((f, i) => ({ f, i })).sort((a, b) => Math.abs(b.f.position[2]) - Math.abs(a.f.position[2]) || a.i - b.i);
+  const order = lit
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => Math.abs(b.f.position[2]) - Math.abs(a.f.position[2]) || cornerRank(a.f) - cornerRank(b.f) || a.i - b.i);
   const out: Floodlight[] = [];
   for (let k = 0; k < count; k++) {
     out.push(k < order.length ? order[k].f : { position: [0, 10000, 0], target: [0, 0, 0], color: [0, 0, 0], strength: 0 });
