@@ -14,7 +14,10 @@
  *                             drooping rims; self-shadowing in the vertex colour) in forests, clumps
  *                             and lone trees, with a meadow behind each goal so the massif shows
  *                             over the boards. About 95k triangles from 95k vertices (the harbour:
- *                             35k from 71k), built in ~30-60 ms on the first visit of a session.
+ *                             35k from 71k), built in ~30-60 ms on the first visit of a session;
+ *                             the Performance tier's lighter variant (`LiveDetail` 'low': the same
+ *                             trees, lighter crowns, half the terrain's azimuth segments) ~52k
+ *                             triangles from 54k vertices, ~20 ms.
  *                             The walls end in a crest at LIVE_EDGE: behind it the land drops first,
  *                             so the baked continuation (drawn through the dome's parallax proxy)
  *                             never meets the live edge where a camera near the pitch could see a
@@ -590,12 +593,22 @@ export interface AlpineLive {
   readonly stats: { readonly parts: number; readonly verts: number; readonly triangles: number; readonly trees: number };
 }
 
-/** The live (per-frame) part of the valley: see the file header. */
-export function buildAlpineLive(seed = 5): AlpineLive {
+/**
+ * Level of detail of the live layer: 'high' (the high tiers) or 'low' (the Performance tier, whose
+ * phones pay for every vertex of this one merged, never culled mesh): the same trees in the same
+ * places and the same terrain heights, with half the terrain's azimuth segments and lighter
+ * crowns (three cones of six rim segments near the stadium, two of five farther out), about
+ * half the triangles.
+ */
+export type LiveDetail = 'low' | 'high';
+
+/** The live (per-frame) part of the valley: see the file header and `LiveDetail`. */
+export function buildAlpineLive(seed = 5, detail: LiveDetail = 'high'): AlpineLive {
   const R = rng(seed);
+  const low = detail === 'low';
 
   // ---- terrain: valley floor, walls, crest at LIVE_EDGE
-  const NT = 256;
+  const NT = low ? 128 : 256;
   const grid = finish(polarGrid(5000, LIVE_EDGE, 1.04, NT, valleyHeight));
   const nv = grid.pos.length / 3;
   const nrm = finish(vertexNormals(grid.pos, grid.idx));
@@ -632,8 +645,8 @@ export function buildAlpineLive(seed = 5): AlpineLive {
       }
     }
   };
-  place(780, 0, 17500, 4, 8, 1700, 2900, 0.2);
-  place(1080, 17500, LIVE_EDGE, 3, 6, 1900, 3100, 0.23);
+  place(780, 0, 17500, low ? 3 : 4, low ? 6 : 8, 1700, 2900, 0.2);
+  place(1080, 17500, LIVE_EDGE, low ? 2 : 3, low ? 5 : 6, 1900, 3100, 0.23);
   const trees = list.length / 6;
   let maxV = nv;
   let maxI = grid.idx.length;

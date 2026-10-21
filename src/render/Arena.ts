@@ -101,7 +101,8 @@ export class ArenaView {
   readonly turf: TurfView;
   readonly stadium: StadiumView;
   readonly floor: THREE.Mesh;
-  readonly shell: THREE.Mesh;
+  /** The cage netting (null on tiers without `netting`). */
+  readonly shell: THREE.Mesh | null;
   readonly goals: THREE.Mesh | null;
   readonly padMeshes: { readonly big: THREE.InstancedMesh; readonly small: THREE.InstancedMesh };
 
@@ -146,7 +147,7 @@ export class ArenaView {
       ceilGeo.translate(0, ARENA.height - 4, 0);
     }
     this.stadium = new StadiumView(this.group, { shell: shellGeo, ceiling: ceilGeo }, quality, theme);
-    this.shell = this.stadium.shell;
+    this.shell = this.stadium.netting;
 
     // ---- Goals: see-through square net (uses the sim's planar UVs when provided) ---------------
     const goalData = m.goals ?? m.goal;

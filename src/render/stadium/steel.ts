@@ -9,7 +9,7 @@
  * Never casts shadows (only cars and the ball do).
  */
 import * as THREE from 'three/webgpu';
-import { abs, cameraPosition, dot, float, mix, normalWorld, normalize, positionWorld, pow, saturate, smoothstep } from 'three/tsl';
+import { abs, cameraPosition, dot, float, mix, normalWorld, normalize, positionWorld, pow, saturate, smoothstep, vec3 } from 'three/tsl';
 import type { TierSpec } from '../quality';
 import { arcInPlane, mergeParts, roundedOutline, sweepTube } from './geometry';
 import {
@@ -28,7 +28,7 @@ import {
   ROOF_RING_R,
   towerHeads,
 } from './layout';
-import type { StadiumUniforms } from './palette';
+import { stadiumLight, type StadiumUniforms } from './palette';
 
 /**
  * Profile of a rib at outline point (bx, bz) with outward plan normal (nx, nz), its centre line
@@ -143,12 +143,27 @@ export function buildSteelGeometry(spec: TierSpec): SteelBuild {
   return { geometry, triangles: geometry.getAttribute('position').count / 3 };
 }
 
-/** Dark galvanised steel, lit (keys, fill, environment), with a cheap view rim from the uniforms. */
-export function buildSteelMaterial(u: StadiumUniforms): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial({ color: 0x262a31, metalness: 0.7, roughness: 0.42 });
+/**
+ * Painted steel on tiers with `bakedLight` (unlit): a mid grey x the theme's baked light, so the
+ * frame reads as structure without the metal's environment reflections.
+ */
+const STEEL_BAKED = [0.075, 0.08, 0.09] as const;
+
+/**
+ * Dark galvanised steel, lit (keys, fill, environment), with a cheap view rim from the uniforms;
+ * on tiers with `bakedLight` unlit painted steel x the theme's baked light, the same rim.
+ */
+export function buildSteelMaterial(spec: TierSpec, u: StadiumUniforms): THREE.MeshStandardNodeMaterial | THREE.MeshBasicNodeMaterial {
   const view = normalize(cameraPosition.sub(positionWorld));
   const rim = pow(saturate(float(1).sub(abs(dot(normalWorld, view)))), 3);
   const top = smoothstep(-0.2, 0.9, normalWorld.y);
-  m.emissiveNode = u.steelRim.mul(rim.mul(mix(float(0.4), float(1), top)));
+  const rimCol = u.steelRim.mul(rim.mul(mix(float(0.4), float(1), top)));
+  if (spec.bakedLight) {
+    const m = new THREE.MeshBasicNodeMaterial();
+    m.colorNode = vec3(...STEEL_BAKED).mul(stadiumLight(u, normalWorld)).add(rimCol);
+    return m;
+  }
+  const m = new THREE.MeshStandardNodeMaterial({ color: 0x262a31, metalness: 0.7, roughness: 0.42 });
+  m.emissiveNode = rimCol;
   return m;
 }

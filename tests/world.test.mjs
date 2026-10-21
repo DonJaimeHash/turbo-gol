@@ -354,6 +354,32 @@ test('alpine live layer: deterministic, inside its radius, clear of the stadium,
   b.geometry.dispose();
 });
 
+test("alpine live layer, Performance detail: the same trees in the same places, about half the triangles, the same layout", () => {
+  const high = AL.buildAlpineLive();
+  const low = AL.buildAlpineLive(5, 'low');
+  assert.equal(low.stats.trees, high.stats.trees, 'every tree kept');
+  assert.ok(low.stats.triangles < high.stats.triangles * 0.6, `low ${low.stats.triangles} vs high ${high.stats.triangles} triangles`);
+  assert.ok(low.stats.verts < high.stats.verts * 0.65, `low ${low.stats.verts} vs high ${high.stats.verts} vertices`);
+  for (const name of ['position', 'normal', 'kcol', 'kloc', 'kdat']) {
+    assert.equal(low.geometry.attributes[name].itemSize, high.geometry.attributes[name].itemSize, name);
+    assert.equal(low.geometry.attributes[name].array.constructor, high.geometry.attributes[name].array.constructor, name);
+    assert.ok(low.geometry.attributes[name].array.every(Number.isFinite), `${name} finite`);
+  }
+  assert.equal(low.geometry.index.array.constructor, high.geometry.index.array.constructor, 'index type');
+  const p = low.geometry.attributes.position.array;
+  let maxR = 0;
+  for (let i = 0; i < p.length / 3; i++) {
+    const x = p[i * 3];
+    const y = p[i * 3 + 1];
+    const z = p[i * 3 + 2];
+    maxR = Math.max(maxR, Math.hypot(x, y - 250, z));
+    if (Math.abs(x) < H.STADIUM_HALF_X && Math.abs(z) < H.STADIUM_HALF_Z) assert.ok(y <= H.QUAY + 1, `vertex ${i} inside the stadium`);
+  }
+  assert.ok(maxR <= H.LIVE_RADIUS, `within ${H.LIVE_RADIUS} (got ${maxR.toFixed(0)})`);
+  high.geometry.dispose();
+  low.geometry.dispose();
+});
+
 test('alpine terrain: flat under the stadium, the live edge sits on the baked land, a crest hides the seam', () => {
   // flat floor under the stadium footprint (the apron and the pitch lie on it)
   for (const [x, z] of [[0, 0], [7900, 7500], [-7900, -7500], [8000, 0], [0, -7600]]) assert.equal(AL.valleyHeight(x, z), AL.ALPINE_GROUND);

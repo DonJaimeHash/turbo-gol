@@ -10,7 +10,9 @@
  *          end of every material's shader) with the canvas's MSAA x4, no bloom (glow comes from
  *          geometry and colour), a pixel ratio up to 1.5 within a 1 Mpx budget with dynamic
  *          resolution down to 0.7 of it, no shadow maps (the cars and the ball keep their ground
- *          blobs), the cheapest turf, crowd and sky bake.
+ *          blobs), and its own look rather than a cut-down high: the turf, stands, steel and boards
+ *          unlit with the theme's light baked into their colour (`bakedLight`), no cage netting,
+ *          a bright flat crowd, the smallest sky bake, a brighter grade per theme (theme.ts `low`).
  *   high   the desktop default: MSAA x4, emissive bloom, two shadowed key lights (2048 maps), relief
  *          turf, the full stadium; a pixel budget with dynamic resolution so big screens keep their
  *          refresh rate.
@@ -89,11 +91,26 @@ export interface TierSpec {
   readonly grassBlades: boolean;
   /**
    * Turf: puddles (else only a damp sheen); analytic floodlight streaks on the wet pitch, from the
-   * `turfStreaks` heads of turf/bake.ts streakLamps (2 = one diagonal pair of corner towers, 4 =
-   * the four corners; each head is a loop step per wet pixel).
+   * `turfStreaks` heads of turf/bake.ts streakLamps (0 = none: the baked-light turf of low has no
+   * sheen to reflect them; 4 = the four corners; each head is a loop step per wet pixel).
    */
   readonly puddles: boolean;
   readonly turfStreaks: number;
+  /**
+   * The Performance look (low): the big static surfaces are unlit, their light baked into their
+   * colour from the theme, so they cost no light loop, no environment read and no specular: the
+   * turf is a clean, evenly lit green (mowing stripes, markings, team tint, the floodlight pools
+   * at a low contrast; no wear, damp, sheen, puddles or streaks: turf/), the stands, the steel and
+   * the boards take one dot product of the theme's light, the crowd a bright flat palette
+   * (stadium/). The cars, the ball and the goals stay lit (the theme's keys and fill: their low
+   * overrides, theme.ts `lightsOf`).
+   */
+  readonly bakedLight: boolean;
+  /**
+   * Stadium: the cage's wire netting (one transparent layer over most of the upper screen, about a
+   * tenth of the old low frame's pixel cost). Without it the steel frame alone draws the cage.
+   */
+  readonly netting: boolean;
   /** Stadium: crowd density (people per seat block, 0..1) and the netting's fine wire detail. */
   readonly crowdDensity: number;
   readonly netDetail: boolean;
@@ -133,7 +150,9 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     turfRelief: false,
     grassBlades: false,
     puddles: false,
-    turfStreaks: 2,
+    turfStreaks: 0,
+    bakedLight: true,
+    netting: false,
     crowdDensity: 0.5,
     netDetail: false,
     beamCones: false,
@@ -161,6 +180,8 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     grassBlades: false,
     puddles: true,
     turfStreaks: 4,
+    bakedLight: false,
+    netting: true,
     crowdDensity: 1,
     netDetail: true,
     beamCones: false,
@@ -188,6 +209,8 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     grassBlades: true,
     puddles: true,
     turfStreaks: 4,
+    bakedLight: false,
+    netting: true,
     crowdDensity: 1,
     netDetail: true,
     beamCones: true,

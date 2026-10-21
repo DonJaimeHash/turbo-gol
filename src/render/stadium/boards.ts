@@ -23,11 +23,11 @@
  * seams at the panel and card edges. Bloom: the LEDs feed it softly (they are large), the rail more.
  */
 import * as THREE from 'three/webgpu';
-import { abs, dFdx, dFdy, float, floor, fract, fwidth, hash, length, max, mix, mod, oneMinus, positionWorld, smoothstep, step, texture, time, uv, vec2, vec3 } from 'three/tsl';
+import { abs, dFdx, dFdy, float, floor, fract, fwidth, hash, length, max, mix, mod, normalWorld, oneMinus, positionWorld, smoothstep, step, texture, time, uv, vec2, vec3 } from 'three/tsl';
 import { glowMrt } from '../materials';
 import type { TierSpec } from '../quality';
 import { BIG_FIRST, BIG_PANELS, FIELD, LED_FRAME, LED_HI, LED_LO, PANEL_COUNT, PANEL_LEN, RAIL_HI, RAIL_LO } from './layout';
-import type { StadiumUniforms } from './palette';
+import { stadiumLight, type StadiumUniforms } from './palette';
 import { BIG_CELL0, BOARD_CARDS, BOARD_COLS, BOARD_ROWS } from './textures';
 
 /**
@@ -43,8 +43,8 @@ const BIG_PHASE = 15;
 const CHANGE_FADE = 0.55;
 const DIP_LEVEL = 0.08;
 
-export function buildBoardMaterial(spec: TierSpec, u: StadiumUniforms, atlas: THREE.Texture): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.6, metalness: 0 });
+export function buildBoardMaterial(spec: TierSpec, u: StadiumUniforms, atlas: THREE.Texture): THREE.MeshStandardNodeMaterial | THREE.MeshBasicNodeMaterial {
+  const m = spec.bakedLight ? new THREE.MeshBasicNodeMaterial() : new THREE.MeshStandardNodeMaterial({ roughness: 0.6, metalness: 0 });
   const s = uv().x;
   const h = uv().y;
   const p = positionWorld;
@@ -115,11 +115,17 @@ export function buildBoardMaterial(spec: TierSpec, u: StadiumUniforms, atlas: TH
   const seams = smoothstep(0.0, 0.02, fract(p.x.div(290))).mul(0.25).add(0.75);
   const surroundCol = vec3(0.022, 0.024, 0.03).mul(seams);
   const base = mix(pad, frameCol, max(inBand, step(float(LED_HI), h)).mul(boardsOn));
-  m.colorNode = mix(mix(base, vec3(0, 0, 0), inLed), surroundCol, surround.mul(step(float(LED_LO), h)));
-  // The LED face: a satin finish (a glossier one mirrored the lamp heads as a bright streak across
-  // the sponsors' names).
-  m.roughnessNode = mix(float(0.7), float(0.5), inLed);
-  m.emissiveNode = ledOn.add(railCol);
+  const albedo = mix(mix(base, vec3(0, 0, 0), inLed), surroundCol, surround.mul(step(float(LED_LO), h)));
+  if (m instanceof THREE.MeshStandardNodeMaterial) {
+    m.colorNode = albedo;
+    // The LED face: a satin finish (a glossier one mirrored the lamp heads as a bright streak
+    // across the sponsors' names).
+    m.roughnessNode = mix(float(0.7), float(0.5), inLed);
+    m.emissiveNode = ledOn.add(railCol);
+  } else {
+    // bakedLight: unlit, the theme's baked light on the pad and the frames, the LEDs self-lit.
+    m.colorNode = albedo.mul(stadiumLight(u, normalWorld)).add(ledOn).add(railCol);
+  }
   m.mrtNode = glowMrt(ledOn.mul(0.15).add(railCol.mul(0.5)), 'none');
   return m;
 }

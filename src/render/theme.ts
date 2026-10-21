@@ -74,12 +74,20 @@ export interface ThemeWorld {
   };
   /**
    * The Performance (low) tier's own look, when it should differ: the exposure and the grade
-   * fields given here replace the ones above on that tier only (`lookOf`; uniform
-   * writes, a theme switch still compiles nothing). That tier renders straight to the canvas
-   * without bloom or shadow maps and blends after the tone curve, so the same numbers can read
-   * darker there.
+   * fields given here replace the ones above on that tier only (`lookOf`), and so do the key
+   * intensities and the fill fields (`lightsOf`: the lit cars, ball and goals, and the light the
+   * stadium bakes into its unlit surfaces there). Uniform writes: a theme switch still compiles
+   * nothing. That tier renders straight to the canvas without bloom or shadow maps, on phone
+   * screens that are often dimmed, so it reads brighter and flatter: more exposure and fill, a
+   * softer contrast, no vignette.
    */
-  readonly low?: { readonly exposure?: number; readonly grade?: Partial<ThemeWorld['grade']> };
+  readonly low?: {
+    readonly exposure?: number;
+    readonly grade?: Partial<ThemeWorld['grade']>;
+    /** Intensities of keys[0] and keys[1] (their colours and directions stay the theme's). */
+    readonly keys?: readonly [number, number];
+    readonly fill?: Partial<ThemeWorld['fill']>;
+  };
 }
 
 /** Floodlight towers outside the side walls, heads above the cage roof (shared by every theme). */
@@ -132,6 +140,12 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     toneMapping: 'aces',
     exposure: 1.0,
     grade: { contrast: 1.18, saturation: 1.12, lift: [0, 0.002, 0.006], gain: [1.03, 1, 0.96], vignette: 0.3 },
+    low: {
+      exposure: 1.3,
+      grade: { contrast: 1.0, saturation: 1.15, lift: [0.004, 0.006, 0.012], vignette: 0 },
+      keys: [2.6, 1.3],
+      fill: { intensity: 1.6, env: 0.5 },
+    },
   },
   // A red canyon at sunset: the low sun behind the red goal, right of it (azimuth 13 deg, the sky's
   // disc in world/presets.ts; the key sits a little higher than the disc so the pitch is not lit at
@@ -151,6 +165,11 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     toneMapping: 'aces',
     exposure: 1.0,
     grade: { contrast: 1.13, saturation: 1.14, lift: [0.004, 0, 0.004], gain: [1.04, 0.99, 0.93], vignette: 0.32 },
+    low: {
+      exposure: 1.15,
+      grade: { contrast: 1.0, saturation: 1.1, vignette: 0 },
+      fill: { intensity: 1.2 },
+    },
   },
   // "Valle Alto", a mountain valley at midday: the sun high on the left of the blue kickoff view
   // (azimuth -70 deg, elevation 40 deg, the sky's sun disc in world/presets.ts) as the main
@@ -170,6 +189,10 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     toneMapping: 'aces',
     exposure: 1.15,
     grade: { contrast: 1.05, saturation: 1.08, lift: [0, 0, 0.002], gain: [1.0, 1.0, 1.02], vignette: 0.2 },
+    low: {
+      exposure: 1.15,
+      grade: { contrast: 1.0, saturation: 1.1, vignette: 0 },
+    },
   },
 };
 
@@ -186,6 +209,25 @@ export function lookOf(world: ThemeWorld, output: 'direct' | 'post'): { exposure
   const low = output === 'direct' ? world.low : undefined;
   if (low === undefined) return { exposure: world.exposure, grade: world.grade };
   return { exposure: low.exposure ?? world.exposure, grade: { ...world.grade, ...low.grade } };
+}
+
+/** The lights of a render path (see `lookOf`): the theme's keys and fill, with its `low` overrides on the direct path. */
+export interface ThemeLights {
+  readonly keys: readonly [KeyLight, KeyLight];
+  readonly fill: ThemeWorld['fill'];
+}
+
+/**
+ * The key lights and the fill a render path uses for `world` (post/lighting.ts, the world's
+ * environment intensity, the stadium's baked light): the theme's own, with its `low` key
+ * intensities and fill fields on the direct (Performance) path.
+ */
+export function lightsOf(world: ThemeWorld, output: 'direct' | 'post'): ThemeLights {
+  const low = output === 'direct' ? world.low : undefined;
+  if (low === undefined || (low.keys === undefined && low.fill === undefined)) return { keys: world.keys, fill: world.fill };
+  const k = low.keys;
+  const keys: readonly [KeyLight, KeyLight] = k === undefined ? world.keys : [{ ...world.keys[0], intensity: k[0] }, { ...world.keys[1], intensity: k[1] }];
+  return { keys, fill: { ...world.fill, ...low.fill } };
 }
 
 /** A saved theme id, or null. */

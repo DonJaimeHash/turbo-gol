@@ -15,6 +15,10 @@
  *    through the net. On tiers without `netDetail` the hex lattice is only its average coverage
  *    (no fine wires; the cables stay) and four heads light it.
  *
+ * Tiers without `netting` (low) do not build it: a transparent layer over most of the upper
+ * screen was about a tenth of that frame's pixel cost, and the steel frame alone draws the cage
+ * there.
+ *
  * Seams: the coordinate jumps only under the steel (arches, corner ribs, the roof ring), see
  * layout.ts netAcross. Unlit and transparent: the glow goes through glowMrt (additive, a little
  * near the lamps only), NaN-safe (every pow base saturated, every divisor clamped).

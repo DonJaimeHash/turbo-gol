@@ -364,6 +364,38 @@ test('a theme writes every stadium uniform; the heads take the floodlights stren
   assert.equal(u.standWood.value, 0);
 });
 
+test("Performance (bakedLight): the theme's low stadium levels and the light its unlit surfaces bake in", async () => {
+  const { THEME_IDS: ids, lightsOf: themeLights } = await import('../src/render/theme.ts');
+  const u = createStadiumUniforms();
+  const vec = (c) => [c.value.x, c.value.y, c.value.z];
+  for (const id of ids) {
+    const t = stadiumTheme(id);
+    const w = themeWorld(id);
+    // The high tiers keep the theme's own levels.
+    applyStadiumTheme(u, id);
+    assert.deepEqual(vec(u.crowdLight), [...t.crowdLight], `${id}: high crowd light`);
+    const highKey = vec(u.bakedKey0);
+    // Performance: the low levels where the theme gives them, its own elsewhere.
+    applyStadiumTheme(u, id, true);
+    const low = { ...t, ...t.low };
+    assert.deepEqual(vec(u.crowdLight), [...low.crowdLight], `${id}: low crowd light`);
+    assert.equal(u.crowdDepthDim.value, low.crowdDepthDim, `${id}: low depth dim`);
+    assert.equal(u.ledIntensity.value, low.ledIntensity, `${id}: low LED level`);
+    // A brighter crowd than on high: no dark mass on a phone.
+    const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    assert.ok(lum(low.crowdLight) >= lum(t.crowdLight), `${id}: the low crowd is no darker`);
+    // The baked light: the tier's keys (the theme's low intensities) x the theme's low gain / pi.
+    const lights = themeLights(w, 'direct');
+    const gain = (t.low && t.low.light) ?? 1;
+    const k0 = lights.keys[0];
+    vec(u.bakedKey0).forEach((v, i) => assert.ok(Math.abs(v - (k0.color[i] * k0.intensity * gain) / Math.PI) < 1e-6, `${id}: key 0 channel ${i}`));
+    vec(u.bakedDir0).forEach((v, i) => assert.ok(Math.abs(v - k0.dir[i]) < 1e-6, `${id}: key 0 direction`));
+    for (const c of [u.bakedKey0, u.bakedKey1, u.bakedSky, u.bakedGround]) assert.ok(vec(c).every((v) => Number.isFinite(v) && v >= 0), `${id}: finite, non-negative light`);
+    assert.ok(lum(vec(u.bakedSky)) > lum(vec(u.bakedGround)), `${id}: lit from the sky`);
+    assert.ok(lum(vec(u.bakedKey0)) >= lum(highKey) - 1e-9, `${id}: the low key is no dimmer`);
+  }
+});
+
 test('each head drives its own lamp panel and glare (theme strengths per vertex), beams included', async () => {
   const { buildLampPanels, buildGlare, buildBeams } = await import('../src/render/stadium/floodlights.ts');
   const u = createStadiumUniforms();

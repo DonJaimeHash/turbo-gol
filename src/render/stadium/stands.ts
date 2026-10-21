@@ -5,7 +5,9 @@
  *  - Structure: stepped concrete rows (tread + riser, team-coloured seats), the front wall, aisles,
  *    end walls, a back wall, a roof canopy with a row of downlights, and the concourse apron (the
  *    floor round the cage out to the stands' footprint, see buildApron). One merged mesh, one lit
- *    material (colour procedural from the position and a per-vertex part kind: no textures).
+ *    material (colour procedural from the position and a per-vertex part kind: no textures); on
+ *    tiers with `bakedLight` (low) unlit, the same colours x the theme's baked light
+ *    (palette.ts stadiumLight).
  *  - Crowd: one instanced quad per seat block (thousands), opaque with an alpha cut (alpha to
  *    coverage under MSAA). Each person is drawn in the fragment shader from a few SDFs (torso,
  *    head, hair; raised arms and a scarf on tiers with `netDetail`), shirts from a team-dominant
@@ -15,6 +17,9 @@
  *    vertex shader computes the animation per seat (a travelling wave, idle bobbing) and passes it
  *    on as varyings; standing up moves the body inside the quad, the seat stays put.
  *    `crowdDensity` < 1 draws 1 / crowdDensity people per quad (fewer instances, same crowd).
+ *    Tiers with `bakedLight` (low) take a brighter, flatter palette (clear team kits, lighter
+ *    casual colours, no cheap-volume shading) under the theme's low crowd light: a lit crowd on a
+ *    dimmed phone screen instead of a dark mass.
  *
  * Unlit crowd (its light is `crowdLight`, a theme uniform): its glow (rare phone flashes) goes
  * through glowMrt. Nothing here is inside the playable volume (the stands at x >= STAND.x0 = 5150,
@@ -25,6 +30,7 @@ import {
   abs,
   attribute,
   dot,
+  faceDirection,
   float,
   floor,
   fract,
@@ -34,6 +40,7 @@ import {
   max,
   min,
   mix,
+  normalWorld,
   oneMinus,
   positionWorld,
   saturate,
@@ -51,7 +58,7 @@ import { TEAM_BLUE, TEAM_RED, glowMrt, linearVec3, type FloatNode, type Vec2Node
 import type { TierSpec } from '../quality';
 import { rng } from './geometry';
 import { FIELD, STAND, standRowX, standRowY } from './layout';
-import type { StadiumUniforms } from './palette';
+import { stadiumLight, type StadiumUniforms } from './palette';
 
 const S = STAND;
 const TOP_X = standRowX(S.rows);
@@ -198,8 +205,12 @@ function teamHalf(z: FloatNode): FloatNode {
   return smoothstep(float(-900), float(900), z);
 }
 
-export function buildStandMaterial(u: StadiumUniforms): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0, side: THREE.DoubleSide });
+/**
+ * The stand structure: lit (MeshStandard) on the high tiers; on tiers with `bakedLight` unlit, the
+ * same colours x the theme's baked light (palette.ts stadiumLight: no light loop, no environment).
+ */
+export function buildStandMaterial(spec: TierSpec, u: StadiumUniforms): THREE.MeshStandardNodeMaterial | THREE.MeshBasicNodeMaterial {
+  const m = spec.bakedLight ? new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide }) : new THREE.MeshStandardNodeMaterial({ roughness: 0.9, metalness: 0, side: THREE.DoubleSide });
   const kind = attribute('aKind', 'float');
   const p = positionWorld;
   const isK = (k: number): FloatNode => step(float(k - 0.5), kind).mul(step(kind, float(k + 0.5)));
@@ -230,8 +241,13 @@ export function buildStandMaterial(u: StadiumUniforms): THREE.MeshStandardNodeMa
   // The concourse apron: dark concrete slabs (it is only ever seen through the netting).
   const slab = hash(floor(p.x.div(500)).add(floor(p.z.div(500)).mul(13.7))).mul(0.3).add(0.7);
   col = mix(col, vec3(0.03, 0.032, 0.036).mul(slab), isK(K_APRON));
-  m.colorNode = col;
-  m.emissiveNode = down;
+  if (m instanceof THREE.MeshStandardNodeMaterial) {
+    m.colorNode = col;
+    m.emissiveNode = down;
+  } else {
+    // Seen from either side (DoubleSide): the normal of the face the camera sees.
+    m.colorNode = col.mul(stadiumLight(u, normalWorld.mul(faceDirection))).add(down);
+  }
   m.mrtNode = glowMrt(down.mul(0.4), 'none');
   return m;
 }
@@ -363,34 +379,60 @@ export function buildCrowd(spec: TierSpec, u: StadiumUniforms): CrowdBuild {
 
   // Colours: a team-dominant palette. Each stand's blue half (z < 0) is mostly blue shirts, the
   // red half mostly red; the rest wear dark casual colours, a few bright. Kits are a little
-  // desaturated (fabric under warm floodlight, not the HUD's pure team colours).
+  // desaturated (fabric under warm floodlight, not the HUD's pure team colours). The bakedLight
+  // tiers (low) take a brighter, flatter palette: a lit crowd in clear team colours that reads on
+  // a dimmed phone screen, not a dark mass, without the cheap-volume shading.
+  const bright = spec.bakedLight;
   const teamPure = mix(linearVec3(TEAM_BLUE), linearVec3(TEAM_RED), info4.y);
-  const team = mix(teamPure, vec3(dot(teamPure, vec3(0.2126, 0.7152, 0.0722))), 0.25).mul(0.3);
+  const team = mix(teamPure, vec3(dot(teamPure, vec3(0.2126, 0.7152, 0.0722))), bright ? 0.3 : 0.25).mul(bright ? 0.55 : 0.3);
+  const PAL: ReadonlyArray<readonly [number, number, number]> = bright
+    ? [
+        [0.62, 0.62, 0.6], // white
+        [0.07, 0.07, 0.08], // charcoal
+        [0.24, 0.25, 0.27], // grey
+        [0.05, 0.08, 0.24], // navy
+        [0.6, 0.42, 0.05], // yellow
+        [0.07, 0.26, 0.08], // green
+      ]
+    : [
+        [0.5, 0.5, 0.48],
+        [0.016, 0.016, 0.018],
+        [0.09, 0.095, 0.105],
+        [0.02, 0.03, 0.08],
+        [0.4, 0.28, 0.04],
+        [0.045, 0.11, 0.05],
+      ];
   const pal = (k: FloatNode): Vec3Node => {
-    let c: Vec3Node = vec3(0.5, 0.5, 0.48); // white
-    c = select(k.greaterThan(0.12), vec3(0.016, 0.016, 0.018), c); // black
-    c = select(k.greaterThan(0.4), vec3(0.09, 0.095, 0.105), c); // grey
-    c = select(k.greaterThan(0.62), vec3(0.02, 0.03, 0.08), c); // navy
-    c = select(k.greaterThan(0.8), vec3(0.4, 0.28, 0.04), c); // yellow
-    c = select(k.greaterThan(0.9), vec3(0.045, 0.11, 0.05), c); // green
+    let c: Vec3Node = vec3(...PAL[0]);
+    c = select(k.greaterThan(0.12), vec3(...PAL[1]), c);
+    c = select(k.greaterThan(0.4), vec3(...PAL[2]), c);
+    c = select(k.greaterThan(0.62), vec3(...PAL[3]), c);
+    c = select(k.greaterThan(0.8), vec3(...PAL[4]), c);
+    c = select(k.greaterThan(0.9), vec3(...PAL[5]), c);
     return c;
   };
-  const isTeam = step(seedP, float(0.42));
+  const isTeam = step(seedP, float(bright ? 0.5 : 0.42));
   // Team shirts vary in shade (kits, scarves, jackets over them).
-  const shirt = mix(pal(seedQ), team.mul(seedR.mul(0.7).add(0.45)), isTeam);
+  const shirt = mix(pal(seedQ), team.mul(seedR.mul(bright ? 0.35 : 0.7).add(bright ? 0.75 : 0.45)), isTeam);
   const skin = mix(vec3(0.5, 0.34, 0.24), vec3(0.13, 0.075, 0.045), seedR.mul(seedR));
   const hair = mix(vec3(0.02, 0.015, 0.01), vec3(0.3, 0.21, 0.1), step(0.85, seedQ));
   const inHead = oneMinus(smoothstep(aa.negate(), aa, head));
   const hairMask = inHead.mul(step(hc.y.add(sc.mul(2.5)).sub(seedR.mul(4)), q2.y)).mul(step(0.25, seedP));
-  // Cheap volume: the torso a cylinder (darker at its sides), the head a sphere lit from above,
-  // a soft shadow of the head on the chest.
-  const nx = q2.x.sub(dx).div(sc.mul(18)).saturate();
-  const torsoShade = oneMinus(nx.mul(nx).mul(0.45)).mul(smoothstep(y0.add(sc.mul(10)), y0.add(sc.mul(62)), q2.y).mul(0.35).add(0.7));
-  const neck = oneMinus(oneMinus(smoothstep(float(0), sc.mul(14), length(q2.sub(hc.sub(vec2(0, sc.mul(14))))))).mul(0.35));
-  const hq2 = q2.sub(hc).div(sc.mul(11));
-  const headShade = saturate(hq2.y.mul(0.35).add(0.85).sub(dot(hq2, hq2).mul(0.25)));
-  let colP: Vec3Node = mix(shirt.mul(torsoShade).mul(neck), skin.mul(headShade), inHead);
-  colP = mix(colP, hair.mul(headShade), hairMask);
+  let colP: Vec3Node;
+  if (bright) {
+    colP = mix(shirt, skin, inHead);
+    colP = mix(colP, hair, hairMask);
+  } else {
+    // Cheap volume: the torso a cylinder (darker at its sides), the head a sphere lit from above,
+    // a soft shadow of the head on the chest.
+    const nx = q2.x.sub(dx).div(sc.mul(18)).saturate();
+    const torsoShade = oneMinus(nx.mul(nx).mul(0.45)).mul(smoothstep(y0.add(sc.mul(10)), y0.add(sc.mul(62)), q2.y).mul(0.35).add(0.7));
+    const neck = oneMinus(oneMinus(smoothstep(float(0), sc.mul(14), length(q2.sub(hc.sub(vec2(0, sc.mul(14))))))).mul(0.35));
+    const hq2 = q2.sub(hc).div(sc.mul(11));
+    const headShade = saturate(hq2.y.mul(0.35).add(0.85).sub(dot(hq2, hq2).mul(0.25)));
+    colP = mix(shirt.mul(torsoShade).mul(neck), skin.mul(headShade), inHead);
+    colP = mix(colP, hair.mul(headShade), hairMask);
+  }
   if (full) {
     const hand = step(handY.sub(sc.mul(6)), q2.y).mul(step(0.05, armUp)).mul(oneMinus(inHead));
     colP = mix(colP, skin, hand.mul(step(sc.mul(10), abs(q2.x.sub(dx)))));
@@ -398,11 +440,13 @@ export function buildCrowd(spec: TierSpec, u: StadiumUniforms): CrowdBuild {
   colP = mix(colP, team.mul(1.4), scarf);
   // Seat back behind the lower body; everything above the figure is cut away.
   const seatMask = step(q2.y, float(36));
-  const seatCol = mix(linearVec3(0x0a1a3a), linearVec3(0x3a0912), info4.y).mul(0.5);
+  const seatCol = mix(linearVec3(0x0a1a3a), linearVec3(0x3a0912), info4.y).mul(bright ? 1 : 0.5);
   const coverage = max(person, scarf);
   // Light: floodlit from above (brighter at the top of each figure), hashed per-person noise,
   // darker by row depth (the back rows sit under the canopy) with a pool under the downlights.
-  const shade = smoothstep(float(0), float(110), q2.y).mul(0.5).add(0.5).mul(seedR.mul(0.35).add(0.75));
+  const shade = bright
+    ? smoothstep(float(0), float(110), q2.y).mul(0.25).add(0.8).mul(seedR.mul(0.2).add(0.9))
+    : smoothstep(float(0), float(110), q2.y).mul(0.5).add(0.5).mul(seedR.mul(0.35).add(0.75));
   const depth = info4.z;
   const depthLight = mix(float(1), oneMinus(u.crowdDepthDim), smoothstep(0.25, 1.0, depth));
   const pool = smoothstep(0.32, 0.5, depth).mul(oneMinus(smoothstep(0.62, 0.85, depth))).mul(u.canopyLight);

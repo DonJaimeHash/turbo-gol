@@ -414,6 +414,32 @@ export function decodePool(byte: number): number {
   return s * s * POOL_MAX;
 }
 
+/**
+ * Mean irradiance luminance of pool map `data` over the flat pitch (the field without its ramps:
+ * what the baked-light turf reads, turfMaterial.ts buildBakedTurfMaterial), 0 without lamps. The
+ * Performance tier's turf divides by it, so its pools keep the pitch's brightness at 1 on average
+ * whatever the floodlight rig.
+ */
+export function poolMean(data: Uint8Array): number {
+  const { w, h, x0, z0, sx, sz } = POOL_MAP;
+  const fx = ARENA.extentX - ARENA.sideRampRadius;
+  const fz = ARENA.extentY - ARENA.backRampRadius;
+  let sum = 0;
+  let n = 0;
+  for (let j = 0; j < h; j++) {
+    const z = z0 + ((j + 0.5) / h) * sz;
+    if (Math.abs(z) > fz) continue;
+    for (let i = 0; i < w; i++) {
+      const x = x0 + ((i + 0.5) / w) * sx;
+      if (Math.abs(x) > fx) continue;
+      const o = (j * w + i) * 4;
+      sum += 0.2126 * decodePool(data[o]) + 0.7152 * decodePool(data[o + 1]) + 0.0722 * decodePool(data[o + 2]);
+      n++;
+    }
+  }
+  return n > 0 ? sum / n : 0;
+}
+
 /** Order of the corners among heads equally far down the field: diagonal pairs first. */
 function cornerRank(f: Floodlight): number {
   const [x, , z] = f.position;

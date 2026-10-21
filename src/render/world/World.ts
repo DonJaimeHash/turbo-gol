@@ -11,8 +11,11 @@
  *               structure material (bakeMaterials.ts), drawn before the dome. The alpine valley
  *               (alpine.ts buildAlpineLive: valley floor, walls, pines) is the same kind of mesh: a
  *               theme switch swaps the geometry (same attributes, same material: no new pipeline).
- *               Themes without a live layer (the canyon) collapse it with a uniform (no recompile,
- *               the pipeline stays warm).
+ *               The tiers with geometry detail 'low' (Performance) draw the valley's lighter
+ *               variant (alpine.ts LiveDetail: the same trees, ~52k triangles instead of ~96k; this
+ *               mesh is never culled, so a phone shades every vertex every frame). Themes without
+ *               a live layer (the canyon) collapse it with a uniform (no recompile, the pipeline
+ *               stays warm) on the smallest layer built so far.
  *   dome        one back-faced sphere showing the baked cube with parallax correction (dome.ts).
  *   beam        the lighthouse beam (tiers with geometry detail; collapsed when unused).
  *
@@ -45,12 +48,12 @@
 import * as THREE from 'three/webgpu';
 import { exp, fog, length, oneMinus, positionView, uniform } from 'three/tsl';
 import { tier, type Quality, type TierSpec } from '../quality';
-import { themeWorld, type ThemeId, type ThemeWorld } from '../theme';
+import { lightsOf, themeWorld, type ThemeId, type ThemeWorld } from '../theme';
 import { createAtmosphere, type Atmosphere } from './atmosphere';
 import { CubeBaker, PROXY_WIDTH, advanceFrame, bakeProxyLUT, createCubeTarget, createProxyLUT, proxyLUTFromData } from './bake';
 import { makeSeaMaterial, makeSkyMaterial, makeStructMaterial, type StructMaterial } from './bakeMaterials';
 import { cacheKey, copyRows, openCache, readBake, writeBake, type BakeShape, type CachedBake } from './cache';
-import { buildAlpineFarSliced, buildAlpineLive } from './alpine';
+import { buildAlpineFarSliced, buildAlpineLive, type LiveDetail } from './alpine';
 import { buildCanyon } from './canyon';
 import { PROXY_TOP, buildBeam, buildDome, type Beam, type Dome } from './dome';
 import { createEnvProbe, pmremAtlasSize, type EnvProbe } from './env';
@@ -131,10 +134,15 @@ interface LiveLayer {
   readonly lamps: Lamp[];
 }
 
-/** The skylines with a live layer, and how to build it (once per session, on first use). */
-const LIVE_BUILDERS: Readonly<Partial<Record<SkylineId, () => LiveLayer>>> = {
-  harbour: buildHarbourLive,
-  alpine: buildAlpineLive,
+/**
+ * The skylines with a live layer and how to build it (once per session and level of detail, on
+ * first use): `byDetail` layers have a lighter variant for the tiers with geometry detail 'low'
+ * (alpine.ts LiveDetail: the Performance tier's phones pay for every vertex of this one merged,
+ * never culled mesh).
+ */
+const LIVE_BUILDERS: Readonly<Partial<Record<SkylineId, { readonly build: (detail: LiveDetail) => LiveLayer; readonly byDetail: boolean }>>> = {
+  harbour: { build: () => buildHarbourLive(), byDetail: false },
+  alpine: { build: (detail) => buildAlpineLive(5, detail), byDetail: true },
 };
 
 const _c = new THREE.Color();
@@ -188,11 +196,11 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
 
   // ---- live layer, dome, beam, environment
   const A: Atmosphere = createAtmosphere();
-  // the live layers (one per skyline that has one, built on first use by realise(), the placeholder
-  // until then); the mesh shows the current skyline's (showLive). Every layer has the same
-  // attributes and the same material, so swapping the mesh's geometry on a theme switch adds no
-  // pipeline.
-  const lives = new Map<SkylineId, LiveLayer>();
+  // the live layers (one per skyline that has one and level of detail, built on first use by
+  // realise(), the placeholder until then); the mesh shows the current skyline's (showLive). Every
+  // layer has the same attributes and the same material, so swapping the mesh's geometry on a
+  // theme or tier switch adds no pipeline.
+  const lives = new Map<string, LiveLayer>();
   const placeholder = new THREE.BufferGeometry();
   const liveMat = makeStructMaterial(A, 'live');
   const liveOn = liveMat.on as NonNullable<StructMaterial['on']>;
@@ -244,37 +252,48 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   syncBeam();
 
   // ---- per-skyline CPU data
-  /** A skyline's live layer, built once (null for a skyline without one, e.g. the canyon). */
+  /** The key of `skyline`'s live layer at the current tier's level of detail (null: it has none). */
+  function liveKey(skyline: SkylineId): string | null {
+    const b = LIVE_BUILDERS[skyline];
+    if (b === undefined) return null;
+    return b.byDetail ? `${skyline}:${spec.detail}` : skyline;
+  }
+  /** A skyline's live layer at the tier's detail, built once (null for a skyline without one, e.g. the canyon). */
   function liveOf(skyline: SkylineId): LiveLayer | null {
-    const build = LIVE_BUILDERS[skyline];
-    if (build === undefined) return null;
-    let l = lives.get(skyline);
+    const b = LIVE_BUILDERS[skyline];
+    const key = liveKey(skyline);
+    if (b === undefined || key === null) return null;
+    let l = lives.get(key);
     if (l === undefined) {
-      l = build();
-      lives.set(skyline, l);
+      l = b.build(spec.detail);
+      lives.set(key, l);
     }
     return l;
   }
   /**
-   * Any live geometry for a skyline without its own (the bake kit's compile, a first load): one
-   * already built if there is one (no 35k-triangle harbour build for the canyon after an alpine
-   * boot), else the harbour's.
+   * Any live geometry for a skyline without its own (the bake kit's compile, a first load, the
+   * collapsed mesh): the smallest one already built if there is one (no 35k-triangle harbour
+   * build for the canyon after an alpine boot; the collapsed mesh's vertices are still shaded),
+   * else the harbour's.
    */
   function anyLive(skyline: SkylineId): LiveLayer {
     const own = liveOf(skyline);
     if (own !== null) return own;
-    for (const l of lives.values()) return l;
-    return liveOf('harbour') as LiveLayer;
+    let best: LiveLayer | null = null;
+    for (const l of lives.values()) {
+      if (best === null || l.geometry.getAttribute('position').count < best.geometry.getAttribute('position').count) best = l;
+    }
+    return best ?? (liveOf('harbour') as LiveLayer);
   }
   /**
    * Show `skyline`'s live layer: hand its geometry to every mesh that draws it (the same attributes,
    * so the same pipelines) and switch the layer on, or collapse it for a skyline without one (the
-   * mesh then keeps a real geometry, so its pipeline stays the warm one).
+   * mesh then keeps a real geometry, the smallest built, so its pipeline stays the warm one).
    */
   function showLive(skyline: SkylineId): void {
     const own = liveOf(skyline);
-    const l = own ?? (liveMesh.geometry === placeholder ? anyLive(skyline) : null);
-    if (l !== null && liveMesh.geometry !== l.geometry) {
+    const l = own ?? anyLive(skyline);
+    if (liveMesh.geometry !== l.geometry) {
       liveMesh.geometry = l.geometry;
       liveEnv.geometry = l.geometry;
     }
@@ -360,7 +379,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     fogColor.value.setRGB(tw.fog.color[0], tw.fog.color[1], tw.fog.color[2]);
     fogDensity.value = tw.fog.density;
     gpu.setClearColor(_c.setRGB(tw.fog.color[0], tw.fog.color[1], tw.fog.color[2]), 1);
-    scene.environmentIntensity = tw.fill.env;
+    scene.environmentIntensity = lightsOf(tw, spec.output).fill.env;
     shown = t;
     syncBeam();
   }
@@ -563,7 +582,8 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     // skyline without a live layer needs one only before the first frame (any built one, else the
     // harbour's: the live mesh needs real attributes, its pipeline stays warm).
     const reading = early !== null && early.key === key ? early.read : noCache ? null : readBake(key, shapeOf(want));
-    if (LIVE_BUILDERS[skyline] !== undefined ? !lives.has(skyline) : lives.size === 0) {
+    const ownKey = liveKey(skyline);
+    if (ownKey !== null ? !lives.has(ownKey) : lives.size === 0) {
       if (reading !== null) await openCache();
       anyLive(skyline);
     }
@@ -612,6 +632,12 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
         scene.add(dome.mesh);
       }
       syncBeam();
+      if (shown !== null) {
+        // the image-based light's intensity of the tier's path (the theme's low fill on the direct
+        // one), and the live layer at the tier's level of detail (built on its first use)
+        scene.environmentIntensity = lightsOf(themeWorld(shown), next.output).fill.env;
+        showLive(worldPreset(shown).skyline);
+      }
       // environment size: a new probe now (scene.environment changes here, while the views rebuild)
       if (next.envSize !== old.envSize) {
         env.dispose();

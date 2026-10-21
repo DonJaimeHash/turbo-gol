@@ -10,9 +10,10 @@
  * the light count, the lamp count and the material variant never change with the theme.
  *
  * Per tier (quality.ts), at 1600x900 CSS on the chase camera (docs/visuals/REWORK.md budgets):
- *   low    flat filtered blade texture (2x anisotropic), damp sheen, no puddles, `turfStreaks` (2:
- *          one diagonal pair of corner towers) analytic floodlight streaks, baked pools; 1 draw,
- *          ~0.2 ms (budget 0.25).
+ *   low    `bakedLight`: the unlit baked turf (turfMaterial.ts buildBakedTurfMaterial: the theme's
+ *          lit grass colour, a narrow grain from the blade field, stripes, team tint, markings,
+ *          the pools at a low contrast; no wear, damp, sheen, puddles or streaks); 1 draw, about
+ *          a tenth of the lit floor's cost at a fill-bound size (it was ~30 % of the low frame).
  *   high   blade normals, relief + self-shadow of the blades, soft puddles, 4 streaks (the four
  *          corner towers; 8x anisotropic); 1 draw, ~0.5 ms (budget 0.6).
  *   ultra  high + instanced grass blades within ~3 m of the camera; 2 draws,
@@ -25,9 +26,9 @@ import * as THREE from 'three/webgpu';
 import type { FloatUniform } from '../materials';
 import { tier, type Quality, type TierSpec } from '../quality';
 import { themeWorld, type ThemeId, type ThemeWorld } from '../theme';
-import { BLADE_FIELD_SIZE, FIELD_MAP, POOL_MAP, bakePoolMap, bladeField, fieldMap, streakLamps } from './bake';
+import { BLADE_FIELD_SIZE, FIELD_MAP, POOL_MAP, bakePoolMap, bladeField, fieldMap, poolMean, streakLamps } from './bake';
 import { GrassBlades } from './grassBlades';
-import { buildTurfMaterial, createTurfUniforms, type TurfTextures, type TurfUniforms } from './turfMaterial';
+import { buildBakedTurfMaterial, buildTurfMaterial, createTurfUniforms, type TurfTextures, type TurfUniforms } from './turfMaterial';
 import { turfLook } from './turfTheme';
 
 /** Source radius (uu) of a floodlight head for the streak lobe (the head is ~5 m across). */
@@ -60,19 +61,21 @@ const KEY_SPECULAR_DAY = 1;
 const POOL_KEYS_NIGHT = 1;
 
 /**
- * The pool map of each floodlight rig seen so far (static: baked once, then reused). Keyed by the
- * theme's floodlight list, not its id: themes that share a rig (or fall back to the default
- * theme's world) share its map instead of baking identical copies.
+ * The pool map of each floodlight rig seen so far and its mean irradiance (the baked-light turf's
+ * pools keep a mean of 1; static: baked once, then reused). Keyed by the theme's floodlight list,
+ * not its id: themes that share a rig (or fall back to the default theme's world) share its map
+ * instead of baking identical copies.
  */
-const POOL_MAPS = new WeakMap<ThemeWorld['floodlights'], Uint8Array>();
-function poolMapOf(theme: ThemeId): Uint8Array {
+const POOL_MAPS = new WeakMap<ThemeWorld['floodlights'], { readonly data: Uint8Array; readonly mean: number }>();
+function poolMapOf(theme: ThemeId): { readonly data: Uint8Array; readonly mean: number } {
   const rig = themeWorld(theme).floodlights;
-  let data = POOL_MAPS.get(rig);
-  if (data === undefined) {
-    data = bakePoolMap(rig);
-    POOL_MAPS.set(rig, data);
+  let map = POOL_MAPS.get(rig);
+  if (map === undefined) {
+    const data = bakePoolMap(rig);
+    map = { data, mean: poolMean(data) };
+    POOL_MAPS.set(rig, map);
   }
-  return data;
+  return map;
 }
 
 /** Anisotropic filtering of the blade field per tier (the grazing-angle sharpness of the turf). */
@@ -102,6 +105,8 @@ export class TurfView {
 
   private readonly textures: { readonly blades: THREE.DataTexture; readonly field: THREE.DataTexture; readonly pools: THREE.DataTexture };
   private theme: ThemeId | null = null;
+  /** The tier's unlit turf (TierSpec.bakedLight): its stripes come from TurfLook.baked. */
+  private readonly baked: boolean;
 
   /**
    * `geometry`: the floor (three coords, owned and disposed by this view); `timeU`: the arena's
@@ -109,16 +114,18 @@ export class TurfView {
    */
   constructor(parent: THREE.Object3D, geometry: THREE.BufferGeometry, timeU: FloatUniform, quality: Quality, theme: ThemeId) {
     const spec = tier(quality);
+    this.baked = spec.bakedLight;
     this.textures = {
       blades: dataTexture(bladeField(), BLADE_FIELD_SIZE, BLADE_FIELD_SIZE, true, bladeAnisotropy(spec), 'turf-blades'),
       field: dataTexture(fieldMap(), FIELD_MAP.w, FIELD_MAP.h, false, 4, 'turf-field-map'),
-      pools: dataTexture(poolMapOf(theme), POOL_MAP.w, POOL_MAP.h, false, 1, 'turf-pools'),
+      pools: dataTexture(poolMapOf(theme).data, POOL_MAP.w, POOL_MAP.h, false, 1, 'turf-pools'),
     };
     this.uniforms = createTurfUniforms(spec.turfStreaks);
     this.setTheme(theme);
 
     const textures: TurfTextures = this.textures;
-    this.mesh = new THREE.Mesh(geometry, buildTurfMaterial({ timeU, spec, textures, uniforms: this.uniforms }));
+    const options = { timeU, spec, textures, uniforms: this.uniforms };
+    this.mesh = new THREE.Mesh(geometry, spec.bakedLight ? buildBakedTurfMaterial(options) : buildTurfMaterial(options));
     this.mesh.name = 'turf';
     this.mesh.receiveShadow = true;
     this.mesh.castShadow = false;
@@ -138,9 +145,11 @@ export class TurfView {
     const world = themeWorld(theme);
     const look = turfLook(theme);
     const U = this.uniforms;
+    const pools = this.textures.pools;
+    const map = poolMapOf(theme);
     U.wetness.value = world.wetness;
     U.puddleLevel.value = look.puddles * world.wetness;
-    U.stripes.value = look.stripes * STRIPE_GAIN;
+    U.stripes.value = (this.baked ? look.baked.stripes : look.stripes) * STRIPE_GAIN;
     U.pools.value = look.pools * POOL_GAIN;
     U.streaks.value = look.streaks * STREAK_GAIN;
     U.dry.value = look.dry;
@@ -159,10 +168,15 @@ export class TurfView {
       (U.lampPos.array[i] as THREE.Vector4).set(f.position[0], f.position[1], f.position[2], LAMP_RADIUS);
       (U.lampCol.array[i] as THREE.Vector3).set(f.color[0] * f.strength, f.color[1] * f.strength, f.color[2] * f.strength);
     }
-    const pools = this.textures.pools;
-    const data = poolMapOf(theme);
-    if (pools.image.data !== data) {
-      pools.image.data = data;
+    // The baked turf: its grass colour, the pools at the theme's contrast around a mean of 1
+    // (factor = 1 - k + k x irradiance / mean), the paint level.
+    const b = look.baked;
+    U.bakedGrass.value.set(b.grass[0], b.grass[1], b.grass[2]);
+    const pk = map.mean > 1e-3 ? b.pools : 0;
+    U.bakedPools.value.set(1 - pk, pk > 0 ? pk / map.mean : 0);
+    U.bakedPaint.value = b.paint;
+    if (pools.image.data !== map.data) {
+      pools.image.data = map.data;
       pools.needsUpdate = true;
     }
   }

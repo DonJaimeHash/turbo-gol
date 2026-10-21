@@ -20,7 +20,9 @@
  *   geometry.ts     the shell split and the tube / merge helpers
  *
  * Draw calls: netting 1, boards 1, steel 1, lamp panels 1, glare 1, stand structure 1, crowd 1 = 7,
- * + beams 1 with `beamCones` (ultra) = 8. Nothing casts shadows. Nothing changes per frame on the
+ * + beams 1 with `beamCones` (ultra) = 8; low draws no netting (TierSpec.netting) = 6, and its
+ * stands, steel and boards are unlit with the theme's light baked in (TierSpec.bakedLight,
+ * palette.ts stadiumLight). Nothing casts shadows. Nothing changes per frame on the
  * CPU: the board cards, crowd wave and flashes run on the GPU clock. A theme switch to another
  * place repaints the board atlas into the same canvas and texture (a re-upload, no new texture, no
  * recompile).
@@ -55,14 +57,17 @@ export interface StadiumGlass {
 }
 
 export class StadiumView {
-  /** The cage netting: the shell above the board band and the roof, one transparent mesh. */
-  readonly shell: THREE.Mesh;
-  /** The roof is part of the netting mesh (one draw): the same mesh as `shell`. */
-  readonly ceiling: THREE.Mesh;
+  /**
+   * The cage netting: the shell above the board band and the roof, one transparent mesh; null on
+   * tiers without `netting` (low: the steel frame alone draws the cage).
+   */
+  readonly netting: THREE.Mesh | null;
   /** The board band (the shell below the netting). */
   readonly boards: THREE.Mesh;
 
   private readonly u: StadiumUniforms;
+  /** The tier bakes the theme's light into the unlit stands, steel and boards (TierSpec.bakedLight). */
+  private readonly baked: boolean;
   private readonly heads: HeadMesh[] = [];
   private readonly disposables: Disposable[] = [];
   /** The board atlas and the place whose content it shows (null until painted). */
@@ -73,6 +78,7 @@ export class StadiumView {
   constructor(parent: THREE.Object3D, glass: StadiumGlass, quality: Quality, theme: ThemeId) {
     const spec = tier(quality);
     this.u = createStadiumUniforms();
+    this.baked = spec.bakedLight;
 
     // ---- Shell: netting above the board band (with the roof), boards below ------------------
     const { boards, net } = splitShell(glass.shell, glass.ceiling);
@@ -81,12 +87,16 @@ export class StadiumView {
     this.boardTex = boardAtlas(spec.detail === 'high' ? 1024 : 512);
     this.boards = this.add(parent, new THREE.Mesh(boards, buildBoardMaterial(spec, this.u, this.boardTex)), 'stadium-boards');
     this.track(this.boardTex);
-    this.shell = this.add(parent, new THREE.Mesh(net, buildNetMaterial(spec, this.u)), 'stadium-netting');
-    this.shell.renderOrder = -5;
-    this.ceiling = this.shell;
+    if (spec.netting) {
+      this.netting = this.add(parent, new THREE.Mesh(net, buildNetMaterial(spec, this.u)), 'stadium-netting');
+      this.netting.renderOrder = -5;
+    } else {
+      net.dispose();
+      this.netting = null;
+    }
 
     // ---- Steel cage and towers (1) -----------------------------------------------------------
-    this.add(parent, new THREE.Mesh(buildSteelGeometry(spec).geometry, buildSteelMaterial(this.u)), 'stadium-steel');
+    this.add(parent, new THREE.Mesh(buildSteelGeometry(spec).geometry, buildSteelMaterial(spec, this.u)), 'stadium-steel');
 
     // ---- Floodlights: lamp panels, glare (+ beams on ultra) ---------------------------------
     const lights = [buildLampPanels(this.u), buildGlare(spec, this.u)];
@@ -97,7 +107,7 @@ export class StadiumView {
     }
 
     // ---- Stands and crowd (2) ------------------------------------------------------------------
-    this.add(parent, new THREE.Mesh(buildStandGeometry(), buildStandMaterial(this.u)), 'stadium-stands');
+    this.add(parent, new THREE.Mesh(buildStandGeometry(), buildStandMaterial(spec, this.u)), 'stadium-stands');
     this.add(parent, buildCrowd(spec, this.u).mesh);
 
     this.setTheme(theme); // paints the board atlas with the theme's place
@@ -109,7 +119,7 @@ export class StadiumView {
    * same texture (a few ms on the CPU plus one upload; nothing recompiles).
    */
   setTheme(theme: ThemeId): void {
-    const strengths = applyStadiumTheme(this.u, theme);
+    const strengths = applyStadiumTheme(this.u, theme, this.baked);
     for (const h of this.heads) h.setStrengths(strengths);
     const place = THEME_PLACE[theme];
     if (place !== this.place) {

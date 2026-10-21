@@ -27,9 +27,12 @@
  * each half, team-tinted goal floors and the pulsing goal-mouth glow, which is the ONLY floor term in
  * the glow MRT (`glowMrt(..., 'none')`: the streaks, pools and line lift never bloom).
  *
- * Cost at 1600x900 CSS (dpr 1.37, chase camera, the floor's share of the frame): ~0.2 ms on low,
- * ~0.5 ms on high (docs/visuals/REWORK.md budgets 0.25 / 0.6). A MeshPhysical clear coat measured
- * 0.18 ms more on high and mirrored the directional keys as one big glare, so it is not used.
+ * Cost at 1600x900 CSS (dpr 1.37, chase camera, the floor's share of the frame): ~0.5 ms on high
+ * (docs/visuals/REWORK.md budget 0.6). A MeshPhysical clear coat measured 0.18 ms more on high and
+ * mirrored the directional keys as one big glare, so it is not used. The Performance tier
+ * (`bakedLight`) draws its own floor instead: `buildBakedTurfMaterial` at the end of this file,
+ * unlit, the light baked into its colour (the lit floor on low was ~30 % of that frame's pixel
+ * cost, and its wear, damp patches and sheen read as dark blotches on dimmed phone screens).
  *
  * NaN hygiene: every uv into a clamped map is saturated, every pow / sqrt / log2 argument is
  * saturated or kept positive, every normalize has a non-zero argument (normals are (x, 1, z)
@@ -56,6 +59,7 @@ import {
   max,
   min,
   mix,
+  normalWorld,
   normalize,
   oneMinus,
   pmremTexture,
@@ -111,6 +115,14 @@ export interface TurfUniforms {
   readonly keySpecular: FloatUniform;
   /** How much the pool map shapes the key lights (poolKeyGain: 0 none .. 1 fully; per theme). */
   readonly poolKeys: FloatUniform;
+  /**
+   * The baked-light turf (TierSpec.bakedLight): the lit grass colour (TurfLook.baked.grass), the
+   * pool factor a + b x irradiance (x = a, y = b: TurfView keeps the mean at 1 and scales the
+   * spread by TurfLook.baked.pools) and the paint's brightness.
+   */
+  readonly bakedGrass: Vec3Uniform;
+  readonly bakedPools: UniformNode<'vec2', THREE.Vector2>;
+  readonly bakedPaint: FloatUniform;
   /** Streak heads: xyz = position (uu), w = source radius (uu); colour = linear RGB x strength. */
   readonly lampPos: LampPosArray;
   readonly lampCol: LampColArray;
@@ -145,6 +157,9 @@ export function createTurfUniforms(lampCount: number): TurfUniforms {
     envMax: uniform(1e4),
     keySpecular: uniform(1),
     poolKeys: uniform(0),
+    bakedGrass: uniform(new THREE.Vector3(0.05, 0.17, 0.03)),
+    bakedPools: uniform(new THREE.Vector2(1, 0)),
+    bakedPaint: uniform(1),
     lampPos: uniformArray<'vec4'>(pos, 'vec4'),
     lampCol: uniformArray<'vec3'>(col, 'vec3'),
     lampCount,
@@ -663,5 +678,84 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
   const shadowTint = vec3(0.15, 0.19, 0.19);
   const tintShadow = Fn(([shadow]: [Node]) => mix(shadowTint, vec3(1.0, 1.0, 1.0), shadow as Vec3Node));
   m.receivedShadowNode = tintShadow as unknown as () => Node;
+  return m;
+}
+
+// ---- the baked-light floor (the Performance tier) ---------------------------------------------------
+
+/**
+ * Brightness range of the baked turf's grain: blade heights near the camera (no dark thatch gaps:
+ * a narrow range reads as grass up close and averages to a flat colour in the mips farther away),
+ * the per-blade tint and the clump-scale variation.
+ */
+const GRAIN_BLADE: readonly [number, number] = [0.86, 1.08];
+const GRAIN_TINT: readonly [number, number] = [0.94, 1.06];
+const GRAIN_CLUMP: readonly [number, number] = [0.9, 1.1];
+/** The ramps up to the walls a little darker than the flat (their shape reads without lighting). */
+const RAMP_SHADE = 0.78;
+
+/**
+ * The floor of the tiers with `bakedLight` (low, "Performance"): UNLIT (MeshBasic: no light loop,
+ * no environment read, no specular, no shadow), a clean, evenly lit green whose light is baked into
+ * its colour per theme (TurfLook.baked: TurfView writes the uniforms):
+ *
+ *   - grass: the theme's lit grass colour x a narrow grain from the blade field (two reads of the
+ *     same small mipmapped texture: the detail and the clump scale), never the high tiers' dark
+ *     thatch gaps, wear, bare soil, damp patches or puddles (the blotches of a dimmed phone screen);
+ *   - the view-dependent mowing stripes, the team tint of the halves and the goal floors, as on
+ *     the lit floor (gameplay readability);
+ *   - the floodlight pools at a low contrast (one read of the pool map; mean 1, so the pitch
+ *     keeps its brightness whatever the theme's rig);
+ *   - the markings: crisp paint, self-lit at the theme's paint level;
+ *   - the goal-mouth glow (no glow target on that tier: colour only).
+ *
+ * Fog comes from the scene as for every material; the look (exposure, grade, tone curve) runs at
+ * the end of the shader (post/pipeline.ts, the direct path). NaN-safe: the uvs are saturated
+ * where the maps clamp, every smoothstep has distinct edges.
+ */
+export function buildBakedTurfMaterial(o: TurfMaterialOptions): THREE.MeshBasicNodeMaterial {
+  const { timeU, textures, uniforms: U } = o;
+  const m = new THREE.MeshBasicNodeMaterial();
+  m.name = 'turf-baked';
+  const p = positionWorld.xz; // (x, sim y)
+  const toCam = cameraPosition.sub(positionWorld);
+  const dist = max(length(toCam), float(1));
+  const V = toCam.div(dist);
+
+  // -- grain: the blade field's heights and tints, narrow ranges (no gaps, no blotches)
+  const tA = texture(textures.blades, p.div(TURF_TILE));
+  const tC = texture(textures.blades, rot2(p, -1.1).div(TURF_TILE * 11));
+  const grain = mix(float(GRAIN_BLADE[0]), float(GRAIN_BLADE[1]), tA.r)
+    .mul(mix(float(GRAIN_TINT[0]), float(GRAIN_TINT[1]), tA.a))
+    .mul(mix(float(GRAIN_CLUMP[0]), float(GRAIN_CLUMP[1]), tC.a));
+
+  // -- light: the theme's grass colour, the pools at their contrast, the ramps a little darker
+  const pool = texture(textures.pools, floorMapUv(p, POOL_MAP)).rgb;
+  const irr = dot(pool.mul(pool), vec3(0.2126, 0.7152, 0.0722)).mul(POOL_MAX);
+  const poolK = U.bakedPools.x.add(U.bakedPools.y.mul(irr)).max(0.0);
+  const ramp = mix(float(RAMP_SHADE), float(1), smoothstep(0.55, 0.98, normalWorld.y));
+  const stripe = mowingStripes(bandBend(p, fwidth(p.y.div(BAND_Z)), fwidth(p.x.div(BAND_X))), V.xz, float(0), U);
+  let col: Vec3Node = U.bakedGrass.mul(grain).mul(stripe).mul(poolK).mul(ramp).mul(teamTint(p, U));
+
+  // -- goal floors (beyond the goal lines): shaded by the net, a hint of the team colour
+  const az = abs(p.y);
+  const glowCol = mix(linearVec3(TEAM_BLUE), linearVec3(TEAM_RED), step(float(0), p.y));
+  const inGoal = smoothstep(float(ARENA.extentY - 10), float(ARENA.extentY + 60), az);
+  col = mix(col, col.mul(0.55).add(glowCol.mul(0.012)), inGoal);
+
+  // -- paint: crisp lines, a touch of grass raggedness right by the camera
+  const nearK = oneMinus(smoothstep(300, 1500, dist));
+  const fw = fwidth(p);
+  const aa = max(fw.x, fw.y).mul(0.8).add(0.25);
+  const lines = markingsCoverage(p, tA.r.sub(0.5).mul(3).mul(nearK), aa);
+  col = mix(col, v3(PAINT).mul(U.bakedPaint).mul(mix(float(0.9), float(1), tA.r)), lines);
+
+  // -- goal-mouth glow (see buildTurfMaterial)
+  const bz = ARENA.extentY - ARENA.backRampRadius - 60;
+  const mouthK = smoothstep(float(bz - 700), float(bz + 100), az);
+  const inMouth = step(abs(p.x), float(ARENA.goalHalfWidth + 40)).mul(mouthK).mul(mouthK).mul(mouthK);
+  const pulse = float(GOAL_GLOW).add(sin(timeU.mul(1.5)).mul(GOAL_GLOW * 0.25));
+  m.colorNode = col.add(glowCol.mul(inMouth).mul(pulse));
+  m.mrtNode = glowMrt(glowCol.mul(inMouth).mul(pulse).mul(GOAL_GLOW_BLOOM), 'none');
   return m;
 }

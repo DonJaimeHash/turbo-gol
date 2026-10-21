@@ -19,7 +19,7 @@ registerHooks({
 });
 
 const { QUALITIES, TIERS, tier, parseQuality, nextQuality, lowerQuality, pixelRatio, startingQuality, LOW_MEMORY_GB, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
-const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld, lookOf } = await import('../src/render/theme.ts');
+const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld, lookOf, lightsOf: themeLights } = await import('../src/render/theme.ts');
 const en = (await import('../src/locales/en.ts')).default;
 const es = (await import('../src/locales/es.ts')).default;
 
@@ -46,6 +46,15 @@ test('low renders straight to the canvas; high keeps the old quality tier (0)', 
   assert.equal(low.detail, 'low');
   assert.equal(low.netDetail, false, 'no near-camera hex fade on the glass');
   assert.equal(low.particles, 512);
+  // Its own look: the turf, stands, steel and boards unlit with the theme's light baked in, no
+  // cage netting, no streak heads (the baked turf has no sheen to reflect them).
+  assert.equal(low.bakedLight, true);
+  assert.equal(low.netting, false);
+  assert.equal(low.turfStreaks, 0);
+  for (const q of ['high', 'ultra']) {
+    assert.equal(tier(q).bakedLight, false, `${q}: lit surfaces`);
+    assert.equal(tier(q).netting, true, `${q}: the cage netting`);
+  }
 
   const high = tier('high');
   assert.equal(high.output, 'post');
@@ -231,6 +240,44 @@ test("lookOf: the low tier takes the theme's low overrides, the post tiers never
   }
 });
 
+test("lightsOf: the low tier takes the theme's low key intensities and fill, the post tiers never", () => {
+  const w = themeWorld(DEFAULT_THEME);
+  for (const id of THEME_IDS) {
+    const tw = themeWorld(id);
+    const post = themeLights(tw, 'post');
+    assert.equal(post.keys, tw.keys, `${id}: post keys are the theme's`);
+    assert.equal(post.fill, tw.fill, `${id}: post fill is the theme's`);
+  }
+  const tuned = { ...w, low: { keys: [3, 2], fill: { intensity: 2 } } };
+  const low = themeLights(tuned, 'direct');
+  assert.deepEqual(low.keys.map((k) => k.intensity), [3, 2]);
+  low.keys.forEach((k, i) => {
+    assert.deepEqual(k.dir, w.keys[i].dir, "directions stay the theme's");
+    assert.deepEqual(k.color, w.keys[i].color, "colours stay the theme's");
+  });
+  assert.deepEqual(low.fill, { ...w.fill, intensity: 2 });
+  // Only a fill override: the keys stay the theme's objects; only a look override: the fill too.
+  assert.equal(themeLights({ ...w, low: { fill: { env: 1 } } }, 'direct').keys, w.keys);
+  assert.equal(themeLights({ ...w, low: { exposure: 2 } }, 'direct').fill, w.fill);
+});
+
+test('every theme reads at least as bright and flat on Performance as on high; the direct path compiles no contrast or vignette', () => {
+  for (const id of THEME_IDS) {
+    const w = themeWorld(id);
+    const low = lookOf(w, 'direct');
+    const lights = themeLights(w, 'direct');
+    assert.ok(low.exposure >= w.exposure, `${id}: low exposure ${low.exposure} >= ${w.exposure}`);
+    assert.ok(low.grade.contrast <= w.grade.contrast, `${id}: low contrast no harder`);
+    assert.ok(low.grade.lift.every((c, i) => c >= w.grade.lift[i]), `${id}: low lift no darker`);
+    // post/pipeline.ts compiles these stages only when some theme uses them on the direct path.
+    assert.equal(low.grade.contrast, 1, `${id}: no contrast stage on the direct path`);
+    assert.equal(low.grade.vignette, 0, `${id}: no vignette on the direct path`);
+    assert.ok(lights.fill.intensity >= w.fill.intensity && lights.fill.env >= w.fill.env, `${id}: low fill no dimmer`);
+    lights.keys.forEach((k, i) => assert.ok(k.intensity >= w.keys[i].intensity && k.intensity > 0, `${id}: low key ${i} no dimmer`));
+    assert.ok(lights.keys[0].intensity >= lights.keys[1].intensity, `${id}: keys[0] stays the brighter key`);
+  }
+});
+
 test('the quality key cycles low -> high -> ultra -> low', () => {
   assert.equal(nextQuality('low'), 'high');
   assert.equal(nextQuality('high'), 'ultra');
@@ -325,6 +372,26 @@ test('lighting: keys and fill follow the theme world (direction, colour, intensi
     assert.deepEqual(lighting.hemi.color.toArray(), [...w.fill.sky], `${id}: fill sky`);
     assert.deepEqual(lighting.hemi.groundColor.toArray(), [...w.fill.ground], `${id}: fill ground`);
     assert.equal(lighting.hemi.intensity, w.fill.intensity, `${id}: fill intensity`);
+  }
+  lighting.dispose();
+});
+
+test("lighting: the low tier lights with the theme's low keys and fill, a switch back restores the theme's", () => {
+  const scene = new THREE.Scene();
+  const lighting = createLighting(scene, 'low', DEFAULT_THEME);
+  const check = (q, id) => {
+    const want = themeLights(themeWorld(id), tier(q).output);
+    lighting.keys.forEach((key, i) => assert.equal(key.intensity, want.keys[i].intensity, `${q} / ${id}: key ${i} intensity`));
+    assert.equal(lighting.hemi.intensity, want.fill.intensity, `${q} / ${id}: fill intensity`);
+    assert.deepEqual(lighting.hemi.color.toArray(), [...want.fill.sky], `${q} / ${id}: fill sky`);
+  };
+  check('low', DEFAULT_THEME);
+  for (const q of ['high', 'low', 'ultra', 'low']) {
+    lighting.setQuality(q);
+    for (const id of THEME_IDS) {
+      lighting.setTheme(id);
+      check(q, id);
+    }
   }
   lighting.dispose();
 });

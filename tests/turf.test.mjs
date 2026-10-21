@@ -111,8 +111,9 @@ test('pool map: floodlit where the heads aim, the pads masked, dark without lamp
 
 test('streak heads: a fixed count per tier whatever the theme, far heads first, in diagonal pairs', () => {
   const world = themeWorld('harbour-night');
-  // Fewer reflections at night (the owner): two heads on low, the four corners on high and ultra.
-  assert.deepEqual(['low', 'high', 'ultra'].map((q) => TIERS[q].turfStreaks), [2, 4, 4]);
+  // Fewer reflections at night (the owner): none on low (its baked-light turf has no sheen), the
+  // four corners on high and ultra.
+  assert.deepEqual(['low', 'high', 'ultra'].map((q) => TIERS[q].turfStreaks), [0, 4, 4]);
   for (const q of ['low', 'high', 'ultra']) {
     const n = TIERS[q].turfStreaks;
     const heads = bake.streakLamps(world.floodlights, n);
@@ -152,4 +153,44 @@ test('every theme has a turf look; puddles stay subtle', () => {
     assert.ok(look.pools >= 0 && look.streaks >= 0 && look.team >= 0);
     assert.equal(look.tint.length, 3);
   }
+});
+
+test('the baked turf (Performance): a clean green per theme, pools at a low contrast around a mean of 1', () => {
+  for (const id of THEME_IDS) {
+    const b = turfLook(id).baked;
+    const [r, g, bl] = b.grass;
+    assert.ok([r, g, bl].every((c) => Number.isFinite(c) && c > 0), `${id}: grass colour`);
+    assert.ok(g > r && g > bl, `${id}: the grass is green`);
+    // bright enough to read on a dimmed phone screen, never an HDR emitter
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+    assert.ok(lum > 0.08 && lum < 0.3, `${id}: grass luminance ${lum.toFixed(3)}`);
+    assert.ok(b.pools >= 0 && b.pools <= 0.5, `${id}: pools stay subtle (no blotches)`);
+    assert.ok(b.stripes > 0 && b.stripes <= 0.5, `${id}: stripes`);
+    assert.ok(b.paint >= 0.5 && b.paint <= 1.2, `${id}: line paint reads white`);
+  }
+  // The pool mean the shader divides by: 0 without lamps, positive under the night harbour's rig.
+  const rig = themeWorld('harbour-night').floodlights;
+  const dark = bake.bakePoolMap(rig.map((f) => ({ ...f, strength: 0 })));
+  assert.equal(bake.poolMean(dark), 0);
+  const night = bake.bakePoolMap(rig);
+  const mean = bake.poolMean(night);
+  assert.ok(mean > 0.3 && mean < bake.POOL_MAX, `night pool mean ${mean}`);
+  // factor = 1 - k + k x E / mean (TurfView.setTheme) averages to 1 over the flat pitch.
+  const k = turfLook('harbour-night').baked.pools;
+  let sum = 0;
+  let n = 0;
+  const { w, h, x0, z0, sx, sz } = POOL_MAP;
+  for (let j = 0; j < h; j++) {
+    const z = z0 + ((j + 0.5) / h) * sz;
+    if (Math.abs(z) > FLAT_Z) continue;
+    for (let i = 0; i < w; i++) {
+      const x = x0 + ((i + 0.5) / w) * sx;
+      if (Math.abs(x) > FLAT_X) continue;
+      const o = (j * w + i) * 4;
+      const e = 0.2126 * bake.decodePool(night[o]) + 0.7152 * bake.decodePool(night[o + 1]) + 0.0722 * bake.decodePool(night[o + 2]);
+      sum += 1 - k + (k * e) / mean;
+      n++;
+    }
+  }
+  assert.ok(Math.abs(sum / n - 1) < 1e-9, `mean pool factor ${sum / n}`);
 });

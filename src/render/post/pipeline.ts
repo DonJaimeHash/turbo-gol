@@ -17,7 +17,9 @@
  *                device has no multisampled HDR target (WebGPU compatibility mode)
  *
  * 'direct' (low, "Performance"): three's DirectRenderPipeline draws the scene straight into the
- *   canvas: the same vignette, exposure, grade and tone curve (`finish`), then sRGB, run at the end
+ *   canvas: the same exposure, grade and tone curve (`finish`; the contrast and the vignette only
+ *   when some theme uses them on this path, DIRECT_CONTRAST / DIRECT_VIGNETTE: none does today),
+ *   then sRGB, run at the end
  *   of every material's fragment shader (three's `getOutput` context hook, output targets only:
  *   bakes and shadow maps are untouched). No HDR target, no MRT (glowMrt returns null on tiers
  *   without bloom, and three ignores material MRT outputs on the canvas), no composite, no FXAA:
@@ -96,6 +98,15 @@ type Curve = ThemeWorld['toneMapping'];
 const TONE_CURVES: Readonly<Record<Curve, number>> = { neutral: 0, aces: 1, agx: 2 };
 /** The curves the themes use (the branch covers only these; one curve compiles no branch). */
 const CURVES: readonly Curve[] = [...new Set(THEME_IDS.map((id) => themeWorld(id).toneMapping))];
+/**
+ * The direct path compiles only the look stages some theme uses there (its low overrides, theme.ts
+ * `lookOf`): the contrast (three pow per fragment) when a theme's direct contrast differs from 1,
+ * the vignette when one's is above 0. Decided over every theme, so a theme switch still compiles
+ * nothing; the look runs at the end of EVERY material on that path, overdraw included.
+ */
+const DIRECT_LOOKS = THEME_IDS.map((id) => lookOf(themeWorld(id), 'direct').grade);
+const DIRECT_CONTRAST = DIRECT_LOOKS.some((g) => g.contrast !== 1);
+const DIRECT_VIGNETTE = DIRECT_LOOKS.some((g) => g.vignette > 0);
 
 export type ScenePass = ReturnType<typeof pass>;
 export type BloomPass = ReturnType<typeof bloom>;
@@ -169,12 +180,15 @@ function curveOf(c: Curve, color: Vec3Node): Vec3Node {
  * branch (only one runs). The first max(0) also turns a NaN into 0 (min / max return the non-NaN
  * operand).
  */
-function finish(u: LookUniforms): (hdr: Vec3Node) => Vec3Node {
+function finish(u: LookUniforms, contrast = true): (hdr: Vec3Node) => Vec3Node {
   const fn = Fn(([input]: [Node]) => {
     // Gain (multiplies the highlights) and lift (adds to the shadows), after the exposure.
     const c = (input as Vec3Node).max(0.0).mul(u.exposure).mul(u.gain).add(u.lift).max(0.0).toVar();
-    // Contrast around mid grey in log space (pow base kept above 0: no NaN from pow(0, k) * 0).
-    c.assign(pow(c.div(GRADE_PIVOT).max(1e-6), vec3(u.contrast, u.contrast, u.contrast)).mul(GRADE_PIVOT));
+    // Contrast around mid grey in log space (pow base kept above 0: no NaN from pow(0, k) * 0);
+    // left out where no theme changes it (the direct path: DIRECT_CONTRAST).
+    if (contrast) {
+      c.assign(pow(c.div(GRADE_PIVOT).max(1e-6), vec3(u.contrast, u.contrast, u.contrast)).mul(GRADE_PIVOT));
+    }
     // Saturation around the luminance (can push a channel below 0: clamped).
     c.assign(mix(vec3(luminance(c)), c, u.saturation).max(0.0));
     const [first, ...rest] = CURVES;
@@ -216,7 +230,9 @@ function buildDirect(gpu: THREE.WebGPURenderer, scene: THREE.Scene, camera: THRE
   writeLook(look, world, 'direct');
   // The material's output (fog included) -> vignette, exposure, grade, curve; alpha kept for the
   // blending. The pipeline then applies sRGB (renderOutput with the renderer's NoToneMapping).
-  const pipeline = new THREE.DirectRenderPipeline(gpu, vec4(finish(look)(output.rgb.mul(vignetteOf(look))), output.a));
+  // Only the stages some theme uses on this path (DIRECT_CONTRAST, DIRECT_VIGNETTE).
+  const lit = DIRECT_VIGNETTE ? output.rgb.mul(vignetteOf(look)) : output.rgb;
+  const pipeline = new THREE.DirectRenderPipeline(gpu, vec4(finish(look, DIRECT_CONTRAST)(lit), output.a));
   // three r186 internals (pinned to 0.186.x): the context the pipeline renders with.
   const internals = pipeline as unknown as { _update(): void; _contextNode: THREE.ContextNode<unknown> | null };
   return {

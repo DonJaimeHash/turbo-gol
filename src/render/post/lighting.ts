@@ -14,7 +14,9 @@
  * rewrites colours, intensities and directions (uniforms) and refits the shadow frustums (CPU
  * only). The tier decides how many keys cast shadows (`TierSpec.shadowedKeys`: none on low, keys[0]
  * first, the brighter one); a tier switch rebuilds the views and the post chain anyway, so the
- * castShadow change recompiles nothing extra.
+ * castShadow change recompiles nothing extra. The direct (low) path lights with the theme's low key
+ * intensities and fill where it gives them (theme.ts `lightsOf`: a brighter fill there, so the
+ * cars' unlit sides never sink into the dark); those are uniform writes too.
  *
  * Shadows: only cars and the ball cast (they set `castShadow`); the floor receives. Each shadow
  * frustum is an orthographic box fitted to the arena (field + goals, floor to ceiling) seen from
@@ -25,7 +27,7 @@
 import * as THREE from 'three/webgpu';
 import { ARENA } from '../../sim/constants';
 import { tier, type Quality, type TierSpec } from '../quality';
-import { themeWorld, type ThemeId } from '../theme';
+import { lightsOf, themeWorld, type ThemeId } from '../theme';
 
 /**
  * Distance of each key from the field centre along its direction (uu). A directional light only
@@ -49,14 +51,16 @@ export interface Lighting {
   /** Hemisphere fill (the theme's `fill.sky` / `fill.ground` / `fill.intensity`). */
   readonly hemi: THREE.HemisphereLight;
   /**
-   * Apply the tier: which keys cast shadows, their map size and PCF radius. Only as part of a full
-   * tier switch (Game.setQuality rebuilds every lit material right after): three r186 shares one
-   * light node per light, so the first material built after a key stops casting frees that key's
-   * shadow map, and any older material still sampling it crashes in ShadowNode.updateShadow.
-   * `spec`: the tier's switches as the device runs them (capabilities.ts adjustTier), default tier(q).
+   * Apply the tier: which keys cast shadows, their map size and PCF radius, and the tier's
+   * intensities (the theme's `low` overrides on the direct path: theme.ts `lightsOf`). Only as part
+   * of a full tier switch (Game.setQuality rebuilds every lit material right after): three r186
+   * shares one light node per light, so the first material built after a key stops casting frees
+   * that key's shadow map, and any older material still sampling it crashes in
+   * ShadowNode.updateShadow. `spec`: the tier's switches as the device runs them
+   * (capabilities.ts adjustTier), default tier(q).
    */
   setQuality(quality: Quality, spec?: TierSpec): void;
-  /** Rewrite the keys and the fill from the theme (uniform writes + frustum refits; never changes the light count). */
+  /** Rewrite the keys and the fill from the theme and the tier's path (uniform writes + frustum refits; never changes the light count). */
   setTheme(theme: ThemeId): void;
   /** Remove the lights from the scene and free the shadow maps. */
   dispose(): void;
@@ -79,17 +83,21 @@ export function createLighting(scene: THREE.Scene, quality: Quality, theme: Them
   hemi.name = 'fill';
   scene.add(hemi);
 
+  // The theme shown and the tier's render path (the direct path takes the theme's low lights).
+  let themeId = theme;
+  let output: TierSpec['output'] = tier(quality).output;
   const setTheme = (id: ThemeId): void => {
-    const world = themeWorld(id);
+    themeId = id;
+    const lights = lightsOf(themeWorld(id), output);
     for (let i = 0; i < keys.length; i++) {
-      const spec = world.keys[i];
+      const spec = lights.keys[i];
       const key = keys[i];
       key.color.setRGB(spec.color[0], spec.color[1], spec.color[2]);
       key.intensity = spec.intensity;
       key.position.set(spec.dir[0], spec.dir[1], spec.dir[2]).multiplyScalar(KEY_DISTANCE);
       fitShadowFrustum(key);
     }
-    const fill = world.fill;
+    const fill = lights.fill;
     hemi.color.setRGB(fill.sky[0], fill.sky[1], fill.sky[2]);
     hemi.groundColor.setRGB(fill.ground[0], fill.ground[1], fill.ground[2]);
     hemi.intensity = fill.intensity;
@@ -109,6 +117,10 @@ export function createLighting(scene: THREE.Scene, quality: Quality, theme: Them
         key.shadow.needsUpdate = true;
       }
       key.shadow.radius = spec.shadowRadius;
+    }
+    if (spec.output !== output) {
+      output = spec.output;
+      setTheme(themeId);
     }
   };
 
