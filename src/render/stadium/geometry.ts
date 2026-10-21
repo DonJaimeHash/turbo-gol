@@ -15,7 +15,7 @@
  */
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { BOARD_SPLIT_Y, FIELD, OUTLINE_LENGTH, netAcross, outlineDistance, outlinePos, profileDistance } from './layout';
+import { BOARD_SPLIT_Y, FIELD, OUTLINE_LENGTH, netAcross, outlineDistance, profileDistance } from './layout';
 
 /** One vertex during the split: position, normal. */
 interface V {
@@ -129,7 +129,7 @@ export function splitShell(shell: THREE.BufferGeometry, ceiling: THREE.BufferGeo
   const walls = above.build((v, tri) => {
     const cx = (tri[0].p[0] + tri[1].p[0] + tri[2].p[0]) / 3;
     const cz = (tri[0].p[2] + tri[1].p[2] + tri[2].p[2]) / 3;
-    return [netAcross(v.p[0], v.p[2], outlinePos(cx, cz).a), profileDistance(v.p[1], v.n[1])];
+    return [netAcross(v.p[0], v.p[2], cx, cz), profileDistance(v.p[1], v.n[1])];
   }, false);
 
   // The roof: non-indexed, uv = world (x, z).

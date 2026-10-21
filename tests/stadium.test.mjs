@@ -224,13 +224,19 @@ test('netting coordinate: true distances across every panel, at the foot and at 
       const da = 0.002;
       const p0 = [ARENA.cornerCentreX + r * Math.cos(a), ARENA.cornerCentreY + r * Math.sin(a)];
       const p1 = [ARENA.cornerCentreX + r * Math.cos(a + da), ARENA.cornerCentreY + r * Math.sin(a + da)];
-      const s0 = L.netAcross(p0[0], p0[1], a);
-      const s1 = L.netAcross(p1[0], p1[1], a);
+      const s0 = L.netAcross(p0[0], p0[1], p0[0], p0[1]);
+      const s1 = L.netAcross(p1[0], p1[1], p0[0], p0[1]);
       assert.ok(Math.abs(Math.abs(s1 - s0) - r * da) < 1e-3, `corner ${deg} deg inset ${inset}`);
     }
+    // A corner triangle's vertex on the arc's end (z = cz: a side point on its own) still takes
+    // the corner coordinate: the triangle's centroid picks the part, not each vertex.
+    const ref = [ARENA.cornerCentreX + r * Math.cos(0.06), ARENA.cornerCentreY + r * Math.sin(0.06)];
+    const atEnd = L.netAcross(ARENA.cornerCentreX + r, ARENA.cornerCentreY, ref[0], ref[1]);
+    const inside = L.netAcross(ref[0], ref[1], ref[0], ref[1]);
+    assert.ok(Math.abs(Math.abs(inside - atEnd) - r * 0.06) < 1e-6, `corner end inset ${inset}`);
   }
-  assert.equal(L.netAcross(ARENA.extentX, 1234, 0), 1234);
-  assert.equal(L.netAcross(567, ARENA.extentY, Math.PI / 2), 567);
+  assert.equal(L.netAcross(ARENA.extentX, 1234, ARENA.extentX, 1234), 1234);
+  assert.equal(L.netAcross(567, ARENA.extentY, 567, ARENA.extentY), 567);
 });
 
 test('the shell split keeps every triangle: boards below the cut (and the goal panels), netting above', () => {
@@ -251,6 +257,19 @@ test('the shell split keeps every triangle: boards below the cut (and the goal p
   for (let i = 0; i < np.count; i++) {
     assert.ok(np.getY(i) >= L.BOARD_SPLIT_Y - 1e-3, 'net vertex below the cut');
     assert.ok(Number.isFinite(nuv.getX(i)) && Number.isFinite(nuv.getY(i)));
+  }
+  // Netting coordinates are true distances inside every triangle (the hex cells keep their size;
+  // only the corners' wall arc shears them a little): no triangle mixes two coordinate systems,
+  // so the coordinate jumps only between triangles, under the steel.
+  for (let t = 0; t < np.count; t += 3) {
+    for (let a = 0; a < 3; a++) {
+      const i = t + a;
+      const j = t + ((a + 1) % 3);
+      const d3 = Math.hypot(np.getX(i) - np.getX(j), np.getY(i) - np.getY(j), np.getZ(i) - np.getZ(j));
+      if (d3 < 1) continue;
+      const d2 = Math.hypot(nuv.getX(i) - nuv.getX(j), nuv.getY(i) - nuv.getY(j));
+      assert.ok(d2 / d3 > 0.75 && d2 / d3 < 1.3, `net triangle ${t / 3}: uv edge ${d2.toFixed(0)} for ${d3.toFixed(0)} uu`);
+    }
   }
   // Board coordinates: finite, and no triangle's outline distance spans more than its own size
   // (x 1.6 for the corners' inset arcs): the seam behind the red goal is unwrapped.

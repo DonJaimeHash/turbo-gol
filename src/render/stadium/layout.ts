@@ -288,19 +288,27 @@ function outlineWalk(x: number, z: number): number {
 const CORNER_PANEL_EDGES: readonly number[] = [0, ...CORNER_RIB_DEG].map((d) => (d * Math.PI) / 180);
 
 /**
- * Netting coordinate across the wall at a shell point (uu): z on the side walls, x on the back
- * walls, and on a corner the arc length at the point's own radius from the middle of the panel
- * between two ribs (so the hex cells keep their size up the wall arc, where the corner's radius
- * shrinks by 600 uu). The coordinate jumps only at the arches and ribs, which hide the seams.
- * `aRef` is the angle that picks the panel (the triangle's centroid, so a triangle never straddles
- * two panels).
+ * Netting coordinate across the wall at a shell point (x, z) (uu): z on the side walls, x on the
+ * back walls, and on a corner the arc length at the point's own radius from the middle of the
+ * panel between two ribs (so the hex cells keep their size up the wall arc, where the corner's
+ * radius shrinks by 600 uu). The coordinate jumps only at the arches and ribs, which hide the
+ * seams.
+ *
+ * (refX, refZ) is the triangle's centroid: it picks the part (side, end or corner) and the corner
+ * panel for all three corners of the triangle, so a triangle never mixes two coordinate systems.
+ * (A corner triangle's vertices sit exactly on the arcs' ends, z = +-cz or x = +-cx, which on
+ * their own classify as side or end: mixing z ~ 3900 with a panel coordinate ~ -220 in one
+ * triangle squeezed the cells 18x into a wireless strip beside the arches and the end ribs.)
  */
-export function netAcross(x: number, z: number, aRef: number): number {
-  const o = outlinePos(x, z);
-  if (o.part === 'side') return z;
-  if (o.part === 'end') return x;
+export function netAcross(x: number, z: number, refX: number, refZ: number): number {
+  const ref = outlinePos(refX, refZ);
+  if (ref.part === 'side') return z;
+  if (ref.part === 'end') return x;
+  // The point round the reference's corner (its quadrant, whatever the point's own part).
+  const dx = x * ref.sx - FIELD.cx;
+  const dz = z * ref.sz - FIELD.cz;
   let k = 0;
-  while (k + 2 < CORNER_PANEL_EDGES.length && aRef > CORNER_PANEL_EDGES[k + 1]) k++;
+  while (k + 2 < CORNER_PANEL_EDGES.length && ref.a > CORNER_PANEL_EDGES[k + 1]) k++;
   const mid = (CORNER_PANEL_EDGES[k] + CORNER_PANEL_EDGES[k + 1]) / 2;
-  return (o.a - mid) * o.r;
+  return (Math.atan2(dz, dx) - mid) * Math.hypot(dx, dz);
 }
