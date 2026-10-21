@@ -12,8 +12,9 @@ All notable changes to Turbogol are documented here. The format follows
   simple sky instead of the harbour, canyon or valley behind the stadium, a painted crowd, simpler
   cars and ball, fewer particles, a lighter menu and HUD, and no reverb. It starts by itself on a
   device with 1 GB of memory or on a TV with a slow graphics chip (a 1 GB Android TV ran the game
-  at 1 to 3 frames per second), unless the player picked a quality. Picking it, or leaving it,
-  restarts the game; `#superlow` at the end of the address tries it without saving it.
+  at 1 to 3 frames per second), unless the player picked a quality, and on a device where
+  Performance failed. Picking it, or leaving it, restarts the game (during an online match, once
+  the player leaves the match); `#superlow` at the end of the address tries it without saving it.
 - `#diag` shows why the game runs its quality, the frame rate and the time each part of a frame
   takes, and has a button that loses the graphics device to test the recovery; new address flags
   help measure a slow device (`#pr=`, `#hide=`, `#nopost`, `#norender`, `#diag=audit`, `#tv` for

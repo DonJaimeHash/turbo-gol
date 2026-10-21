@@ -94,8 +94,10 @@ flat because the physics ceiling is flat.
 - No allocation per frame. Static work is baked at load behind the loading overlay. Hidden meshes
   get a warm-up hook (`Game.setWarm`).
 - Draw calls: at most 16 on super low, 40 on low and 60 on high. One draw per module element is the
-  house style (instance or merge). Super low compiles 18 programs whatever the roster (cars share
-  their body, wheel and flame programs there: `SHARED_INSTANCING_CAPACITY`, uniform team tints).
+  house style (instance or merge). Super low boots on 18 programs whatever the roster (cars share
+  their body, wheel and flame programs there: `SHARED_INSTANCING_CAPACITY`, uniform team tints); on
+  WebGL2 a roster change (a mode, training) still links 5 again, as every tier does (see "Review of
+  super low" below).
 - Phones: everything the low tier and the WebGL2 fallback use must work on a low-end mobile GPU.
   `#lowgpu` in the URL emulates one on a desktop (WebGL2 without OES_texture_float_linear,
   EXT_color_buffer_float, EXT_float_blend..., capped limits), `#compat` a WebGPU device in
@@ -544,7 +546,9 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   discarded before present, no Dawn heaps in the browser's process on a 1 GB device). The backend
   and the world are chosen when the renderer is created, so a switch into or out of super low saves
   the prefs and reloads behind the loading screen (`needsReload`, `Game.restartOn`); low / high /
-  ultra still switch in place.
+  ultra still switch in place. In an online match the reload would leave it (an abandon): such a
+  pick is saved and waits for the menus (`Game.pendingRestart`; the Graphics tab says "Applies when
+  you leave the online match").
 - **World** (`world/liteWorld.ts`): a gradient dome from the theme's sky preset (zenith, mid,
   horizon, the glow toward its azimuth, the moon or sun with a short halo) over a flat silhouette
   of the place on the horizon (blocks for the harbour, mesas for the canyon, peaks for the valley,
@@ -555,7 +559,9 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   The turf is low's unlit turf from a 64² grain (`liteGrain`, a few ms) instead of the 512² blade
   field (~140 ms here, seconds on the TV's CPU), fixed mowing stripes, no field map.
 - **Stadium**: no netting, no glare round the lamp heads, no crowd mesh: the people are painted on
-  the stand rows (a hash per seat: a shirt on the tread, a figure with a head on the riser).
+  the stand rows (a hash per seat: a shirt on the tread, a figure with a head on the riser),
+  band-limited by the seat's footprint (`fwidth`): under ~3 px a seat each seat is its own mean
+  colour, under ~1.5 px the crowd's mean, so the far stands show no moire.
 - **Effects**: 128 particles, each at most ~2.3 degrees across from the camera (about a dozen
   pixels), no flash shells; additive materials in one pass (`forceSinglePass`), team tints as
   uniforms and wheel / pad instance buffers past the uniform-buffer limit so every car shares its
@@ -569,13 +575,17 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
 ### Which devices start on it (`bootTier.ts`)
 
 Before the renderer exists: `#superlow` in the URL, or the tab's recovery after a second lost
-device, force it for that page load (never saved); then the player's choice; then auto: a device
+device, force it for that page load (never saved); then a GPU of this device that fell back to
+super low (`tierGuard.ts readSuperlowBoot`: the ceilings are keyed by a backend that does not
+exist yet, so a ceiling at super low also leaves a backend-free record; 'ceiling', capping even the
+player's tier, not while their own pick across a reload is tried); then the player's choice; then auto: a device
 with no pointer (a TV) whose GPU (a throwaway WebGL2 context, WEBGL_debug_renderer_info, lost at
 once) is on the slow list (Mali-G31, G51, G52, T7xx, T8xx, PowerVR GE8xxx), or `deviceMemory` <= 1;
 else the saved or default tier. Phones keep low. After init the old rules apply (low on weak
 backends, never above the GPU's ceiling; super low is never raised), and a WebGL2 device that
 cannot render into any half-float target (`canRenderHalfFloat`) runs super low instead of a black
-world. The prefs keep the player's own pick: a tier the session runs on its own (the URL, auto, a
+world; when super low is only reached there (this GPU's ceiling, no float target), a ceiling at
+super low makes the next boots start on super low's own backend and context. The prefs keep the player's own pick: a tier the session runs on its own (the URL, auto, a
 ceiling, a fallback, the guard) is never saved (`tierPrefsAfter`, `Game.persistPrefs`), which also
 fixes a fallback or a ceiling being saved as the player's choice. A pick across a reload is tried
 once above the GPU's ceiling and lifts it when it runs the fallback window clean.
@@ -624,7 +634,8 @@ pipelines and linked programs, a "lose context" button (`__diag.loseContext()`),
 | to the menu under `#tv` (WebGL2, no parallel compile, empty world cache) | 1.24 s (renderer 0.26, warm-up 0.22) | 2.1 s with the browser's shader cache warm, 4.3 s cold (world bake 0.36, warm-up 0.6-2.8) |
 
 Pipelines stay at 18 through a goal explosion, a ball touch and a pad pickup (flames, particles,
-rings and ribbons are compiled in the warm-up). `#tv` picks super low by
+rings and ribbons are compiled in the warm-up); a roster change relinks 5 on WebGL2 (see the
+review below). `#tv` picks super low by
 itself ('tv-gpu'); `#webgl2&nofloatrt` with a chosen low runs super low ('nofloat') and the prefs
 keep low; `#lowgpu` low renders its whole world again; a simulated loss on low falls to super low
 (toast after the reload), a second recovers on super low (WebGL2), a third stops; a pick of low
@@ -640,3 +651,79 @@ prediction's worst frame), and the load time to the menu. Still open: a custom W
 `alpha: false` (three always asks for an alpha canvas; measure first), mediump / f16, the 60 Hz
 physics plan B, and Lambert-only lights (both keys and the fill still light the cars and the ball:
 a constant light count).
+
+### Review of super low (2026-10-21, sixth round)
+
+Re-tested on the reference desktop (Chrome 152, a 962x541 CSS viewport at dpr 1.37, a 165 Hz
+display) the way the TV and the other devices boot: empty site data and IndexedDB with `#tv`,
+`#superlow`, `#superlow&webgpu`, `#lowgpu`, `#compat`, `#webgl2`, `#webgl2&nofloatrt`, a phone
+layout (375x812, coarse pointer) and the plain desktop; the menu's picks into and out of super
+low; simulated validation errors and lost contexts; 3 themes and a 2v2 match captured at 640x360;
+low, high and ultra pixel-compared against the previous commit (dd60871, a worktree on another
+port; the same deterministic frames: fixed game clock, node clock and resolution).
+
+What held:
+
+- Auto: the desktop stays on high ('default'), the phone layout on low, `#webgl2` and `#compat` on
+  low ('weak'), `#tv` on super low ('tv-gpu', WebGL2, 640x360, a context without MSAA, 18
+  programs, 0 GL errors, 1.5 s to the menu here). Nothing is saved by the URL or auto (prefs null).
+- Picks: `#superlow` then Performance in the menu reloads on low ('chosen'), drops `#superlow`
+  from the address, saves low; Super low from there reloads on it ('chosen', saved). The pick
+  across a reload is tried above a ceiling once and lifts it after 20 s clean. No reload loops.
+- The 30 fps cap keeps the game's time: 120.6 ticks and 1.004 game seconds per second during a 2v2
+  under `#superlow` (on this 165 Hz display the cap draws every 6th vsync: 27.5 fps; 30 on 60 Hz,
+  25 on 50 Hz, as `drawsFrame` says).
+- Lost contexts: 1st reload, 2nd recovers on super low, 3rd stops with its message, on WebGL2.
+- Flags: `#pr=0.5` gives 481x270, `#hide=` hides by name (14 draws without the stands and the sky),
+  `#norender`, `#diag=audit`, `#nofloatrt` ('nofloat'), `#lowgpu` (low renders its world).
+- Low, high and ultra: pixel-identical to the previous commit on WebGPU and on `#webgl2` (at most
+  1 / 255 except a few pad pixels that differ between two runs of the same build, and the first
+  frame of the boot tier: the wheels' state carried over from the menu loop; after a round trip
+  that frame is identical too).
+- Walls, markings, pads, ball, goals and the team colours read clearly at 640x360 in the three
+  themes (captures `rv-sl3-*`, `rv-sl-match-*` in the visual lab's shots folder).
+
+Fixed:
+
+- **A fallback into super low ran on the backend that had just failed.** The ceilings are keyed by
+  the backend's GPU name, known only after the renderer exists, so after low failed (validation
+  errors, or a lost device on a chosen low) the next boot started low's backend and context
+  (WebGPU, or a multisampled WebGL2 context), then capped the tier at super low: super low on
+  WebGPU (measured: `superlow (ceiling)` on WebGPU after a simulated error on a chosen low), and a
+  device-specific failure there had nothing below it. A ceiling at super low now also writes a
+  backend-free record (`tierGuard.ts readSuperlowBoot`, the ceiling's 30 days) that the boot reads
+  before the renderer exists ('ceiling', below the URL and the tab's recovery, above the player's
+  pick like any ceiling; not while the player's own pick across a reload is tried); the first pick
+  above super low that runs the 20 s window clean lifts it. Super low reached only after init (a
+  GPU's ceiling, `nofloat`) writes it too, so from the next boot on it gets its own backend and a
+  context without MSAA. Emulated devices (`#tv`, `#lowgpu`, `#nofloatrt`, `#compat`,
+  `#nof32filter`) never write it (`emulatedDevice`): this browser's real GPU would read it.
+  Measured: the same simulated error now reloads on `superlow (ceiling)` on WebGL2 without MSAA;
+  a pick of Performance runs it on WebGPU and lifts both records after the window.
+- **Changing to or from super low in an online match left the match.** The pause menu's Settings
+  reach Graphics in a match, and a pick across the super low boundary reloaded the page at once:
+  an abandon, without the confirmation QUIT asks for online. In an online session such a pick is
+  saved and waits for the menus (`Game.pendingRestart`, applied at the end of `showMenu`); the
+  Graphics tab says "Applies when you leave the online match (the game restarts)" / "Se aplica al
+  salir de la partida online (el juego se reinicia)"; a pick back to the running tier cancels it.
+  Offline matches and training still restart at once (the super low hint says so).
+- **Moire in the painted crowd.** At 640x360 without MSAA the same shoulders and head in every seat
+  aliased into arcs across the far stands, crawling as the camera moves. The painted crowd is now
+  band-limited by the seat's footprint (`fwidth` of the seat and row coordinates): the shapes go
+  under ~3 px a seat (each seat its own mean colour), the seats under ~1.5 px (the crowd's mean,
+  about the same mean in linear light as the aliased rows had). One program as before; its cost is
+  within the noise of the shared desktop GPU at 2889x1623 (`#pr=3`).
+- **The pad's focus vanished on two buttons under `html.tg-superlow`**: the pause menu's RESUME
+  and the legacy menu's PLAY showed focus only with a box-shadow ring, which super low removes; a
+  plain outline replaces it there.
+
+Still open (minor, measured here):
+
+- On WebGL2 a roster change (a mode, entering or leaving training) relinks 5 programs on super low
+  (the body, wheel and flame programs are freed with the old cars before the new ones draw, and
+  the particles' and rings' uniform-buffer names are per object); low relinks 13-15. The frame of
+  the change took 209 ms here under `#tv`; on the TV, a pause in the menu.
+- `#webgl2&nofloatrt` with a chosen low: the first boot runs super low on a multisampled context
+  (the next boots start on super low's own; emulated here, so not written).
+- On 144 / 165 Hz displays the cap gives 28.8 / 27.5 fps (even frame pacing over an exact 30).
+

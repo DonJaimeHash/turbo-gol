@@ -80,7 +80,8 @@ src/render/
                         never raised; never above the GPU's ceiling); needsReload (into or out of
                         super low); drawsFrame (the frame cap); lowerQuality
   bootTier.ts           the boot tier before the renderer exists (the URL's #superlow, the tab's
-                        recovery, the player's choice, super low on a TV with a slow GPU or on
+                        recovery, a GPU of the device that fell to super low (a ceiling known
+                        before the backend), the player's choice, super low on a TV with a slow GPU or on
                         1 GB: autoSuperlow, probeGpu, readBootSignals), the TierReason #diag shows,
                         and tierPrefsAfter (the prefs keep the player's pick only)
   hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
@@ -100,7 +101,9 @@ src/render/
                         tab's lost-device counter (lossStep: reload, then super low, then stop) and
                         the per-GPU ceiling in localStorage (readCeiling / writeCeiling, 30 days;
                         raiseCeiling when the player's own pick runs the window clean, a pick
-                        across a reload tried once above it: TRY_TIER_KEY)
+                        across a reload tried once above it: TRY_TIER_KEY); a ceiling at super low
+                        also leaves a backend-free record (readSuperlowBoot) so the next boots pick
+                        super low's own backend and context before the renderer exists
   theme.ts              stadium themes (ThemeId, THEME_IDS) and the world facts views share (key
                         lights, fill, floodlights, wetness, fog, tone mapping, grade, and each
                         theme's brighter `low` look and lights: lookOf / lightsOf); data only
@@ -642,7 +645,9 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   the pause menu) picks the tier; `switchQuality` rebuilds every view and the render path
   (~30 ms), waits for the world's bake at the new sizes and compiles the new pipelines in
   parallel, all behind the loading screen; into or out of super low it saves the prefs and
-  reloads the page (`restartOn`: its own backend and world). The prefs keep the player's pick
+  reloads the page (`restartOn`: its own backend and world), except in an online match, where the
+  reload would leave it: the pick waits for the menus (`pendingRestart`, its line on the Graphics
+  tab). The prefs keep the player's pick
   only (`persistPrefs` writes `savedQuality`): a tier the session runs on its own (the URL, auto,
   a ceiling, a fallback) is never saved. Super low's CPU trims (`cpuLite`): `html.tg-superlow`
   (no blur, shadows or decorative animation in the HUD), boost and speed at 10 Hz, no audio room,
@@ -653,7 +658,8 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   and a menu toast: "Your device does not support Ultra: using High"); the GPU's ceiling is kept in
   localStorage and caps the starting tier until the player picks a higher tier and it runs the 20 s
   window clean (`raiseCeiling`); a lost device reloads the page onto the lower tier (low falls to
-  super low). A device lost while the page was hidden or in its first 10 s back (the system
+  super low; a ceiling at super low starts the next boots on super low's own backend, WebGL2
+  without MSAA, `readSuperlowBoot`). A device lost while the page was hidden or in its first 10 s back (the system
   reclaimed the GPU), or lost on super low, reloads the page on the same tier without touching the
   ceiling. Every reload after a loss goes through the tab's counter (`lossStep`, sessionStorage):
   the second loss reloads on super low for the tab, the third shows a message and stops. Only
