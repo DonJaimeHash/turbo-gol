@@ -275,7 +275,7 @@ test('netting coordinate: true distances across every panel, at the foot and at 
   assert.equal(L.netAcross(567, ARENA.extentY, 567, ARENA.extentY), 567);
 });
 
-test('the shell split keeps every triangle: boards below the cut (and the goal panels), netting above', () => {
+test('the shell split keeps every triangle: boards below the cut (goal panels too), netting above', () => {
   const mesh = buildArenaMesh();
   const shell = toGeometry(mesh.shell);
   const ceiling = toGeometry(mesh.ceiling);
@@ -285,9 +285,15 @@ test('the shell split keeps every triangle: boards below the cut (and the goal p
   const bp = boards.getAttribute('position');
   for (let i = 0; i < bp.count; i++) {
     const y = bp.getY(i);
-    const goalPanel = Math.abs(bp.getX(i)) <= L.FIELD.moduleHalfW + 1 && Math.abs(bp.getZ(i)) > ARENA.extentY - 31;
-    assert.ok(y <= L.BOARD_SPLIT_Y + 1e-3 || goalPanel, `board vertex at y ${y}`);
+    assert.ok(y <= L.BOARD_SPLIT_Y + 1e-3, `board vertex at y ${y}`);
   }
+  // The goal-module panels above the band are netting (the backdrop and the goal net show there).
+  let moduleNet = 0;
+  const gp = net.getAttribute('position');
+  for (let i = 0; i < gp.count; i++) {
+    if (Math.abs(gp.getX(i)) < L.FIELD.moduleHalfW - 10 && Math.abs(gp.getZ(i)) > ARENA.extentY - 31 && gp.getY(i) < L.FIELD.moduleTop - 10) moduleNet++;
+  }
+  assert.ok(moduleNet > 0, 'goal module netting');
   const np = net.getAttribute('position');
   const nuv = net.getAttribute('uv');
   for (let i = 0; i < np.count; i++) {

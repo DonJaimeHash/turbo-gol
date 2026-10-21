@@ -2,8 +2,8 @@
  * Geometry helpers for the stadium. Everything here runs once, at build time (behind the loading
  * overlay or a tier switch), and may allocate freely; nothing runs per frame.
  *
- *  - splitShell(): the sim's wall shell -> the opaque board band (below BOARD_SPLIT_Y, plus the flat
- *    goal-module panels round each goal mouth) and the netting above it, as two non-indexed
+ *  - splitShell(): the sim's wall shell -> the opaque board band (below BOARD_SPLIT_Y, the flat
+ *    goal-module panels round each goal mouth included) and the netting above it, as two non-indexed
  *    geometries with surface coordinates in `uv` (uu): the boards get the distance round the
  *    outline (continuous, so the cards run round the corners), the netting a per-panel coordinate
  *    whose seams fall under the steel (layout.ts netAcross). Triangles crossing the cut are clipped,
@@ -28,11 +28,6 @@ function lerpV(a: V, b: V, t: number): V {
     p: [a.p[0] + (b.p[0] - a.p[0]) * t, a.p[1] + (b.p[1] - a.p[1]) * t, a.p[2] + (b.p[2] - a.p[2]) * t],
     n: [a.n[0] + (b.n[0] - a.n[0]) * t, a.n[1] + (b.n[1] - a.n[1]) * t, a.n[2] + (b.n[2] - a.n[2]) * t],
   };
-}
-
-/** True for a triangle (centroid) of the flat back-wall panel built round a goal mouth. */
-function inGoalModule(cx: number, cy: number, cz: number): boolean {
-  return Math.abs(cx) < FIELD.moduleHalfW + 1 && Math.abs(cz) > FIELD.halfZ - 30 && cy < FIELD.moduleTop + 1;
 }
 
 /** Collects triangles, then builds a non-indexed geometry with its surface coordinates. */
@@ -101,10 +96,10 @@ export function splitShell(shell: THREE.BufferGeometry, ceiling: THREE.BufferGeo
     const ic = index !== null ? index.getX(t * 3 + 2) : t * 3 + 2;
     const tri = [vert(ia), vert(ib), vert(ic)];
     const ys = tri.map((v) => v.p[1]);
-    const cx = (tri[0].p[0] + tri[1].p[0] + tri[2].p[0]) / 3;
-    const cy = (ys[0] + ys[1] + ys[2]) / 3;
-    const cz = (tri[0].p[2] + tri[1].p[2] + tri[2].p[2]) / 3;
-    if (Math.max(...ys) <= BOARD_SPLIT_Y || inGoalModule(cx, cy, cz)) {
+    // The goal-module panel round each mouth splits like the rest of the wall: netting above the
+    // board band, so the backdrop and the goal chamber's net show round the goal (an opaque panel
+    // there read as a black box behind the goal).
+    if (Math.max(...ys) <= BOARD_SPLIT_Y) {
       below.add(tri);
       continue;
     }

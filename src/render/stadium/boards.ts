@@ -10,8 +10,8 @@
  *    stadium; dim (ledIntensity ~0.4), with dark seams between panels and, on tiers with
  *    `netDetail`, an LED dot grid that only shows up close;
  *  - a thin white LED rail on top;
- *  - round each goal mouth the panel stays a dark padded surround (no boards, no rail), so the
- *    goal frames read against it.
+ *  - beside each goal mouth the band is a dark padded surround (no boards, no rail), so the goal
+ *    frames read against it; above the band the goal module is netting like the rest of the wall.
  *
  * The texture is sampled with explicit gradients from a continuous coordinate, so there are no mip
  * seams at the panel and card edges. Bloom: the LEDs feed it softly (they are large), the rail more.
@@ -33,7 +33,7 @@ export function buildBoardMaterial(spec: TierSpec, u: StadiumUniforms, atlas: TH
   const s = uv().x;
   const h = uv().y;
   const p = positionWorld;
-  // The goal-module surround (the flat panel round each mouth): no boards there.
+  // The goal-module surround (the flat panel beside each mouth, below the netting): no boards there.
   const surround = step(abs(p.x), float(FIELD.moduleHalfW + 20)).mul(step(float(FIELD.halfZ - 200), abs(p.z)));
   const boardsOn = oneMinus(surround);
 

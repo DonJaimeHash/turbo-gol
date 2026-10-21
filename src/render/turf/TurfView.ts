@@ -31,9 +31,27 @@ import { turfLook } from './turfTheme';
 
 /** Source radius (uu) of a floodlight head for the streak lobe (the head is ~5 m across). */
 const LAMP_RADIUS = 260;
-/** Overall gains of the floodlight pools and streaks (the integration phase tunes the balance here). */
-const POOL_GAIN = 0.45;
-const STREAK_GAIN = 0.3;
+/**
+ * Overall gains of the floodlight pools, the wet streaks and the mowing stripes over the theme
+ * looks (turfTheme.ts), tuned in the integration phase against the lighting of post/lighting.ts.
+ * The stripes stay faint (the view-dependent sheen of a mown pitch, not dark bands across it).
+ */
+const POOL_GAIN = 0.5;
+const STREAK_GAIN = 0.24;
+const STRIPE_GAIN = 0.55;
+/**
+ * Brightest environment radiance the turf reflects (turfMaterial.ts CappedEnvironmentNode): at night
+ * the probe's hot floodlight panels stay out of the damp sheen (the streaks reflect the lamps); by
+ * day the bright sky must pass.
+ */
+const ENV_MAX_NIGHT = 0.5;
+const ENV_MAX_DAY = 50;
+/**
+ * Share of the key lights' direct specular on the turf (turfMaterial.ts TurfLightingModel): at
+ * night the keys stand for the towers, whose reflections are the streaks; by day the sun's sheen.
+ */
+const KEY_SPECULAR_NIGHT = 0.12;
+const KEY_SPECULAR_DAY = 1;
 
 /**
  * The pool map of each floodlight rig seen so far (static: baked once, then reused). Keyed by the
@@ -116,7 +134,7 @@ export class TurfView {
     const U = this.uniforms;
     U.wetness.value = world.wetness;
     U.puddleLevel.value = look.puddles * world.wetness;
-    U.stripes.value = look.stripes;
+    U.stripes.value = look.stripes * STRIPE_GAIN;
     U.pools.value = look.pools * POOL_GAIN;
     U.streaks.value = look.streaks * STREAK_GAIN;
     U.dry.value = look.dry;
@@ -124,6 +142,8 @@ export class TurfView {
     U.team.value = look.team;
     // The paint's self-illumination keeps the lines readable under floodlights; by day the sun does.
     U.lineLift.value = world.night ? 1 : 0.3;
+    U.envMax.value = world.night ? ENV_MAX_NIGHT : ENV_MAX_DAY;
+    U.keySpecular.value = world.night ? KEY_SPECULAR_NIGHT : KEY_SPECULAR_DAY;
     const k = world.keys[0].dir;
     U.keyDir.value.set(k[0], k[1], k[2]);
     const heads = streakLamps(world.floodlights, U.lampCount);

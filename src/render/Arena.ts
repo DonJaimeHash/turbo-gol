@@ -432,15 +432,18 @@ function buildSmallPadGeometry(): THREE.BufferGeometry {
  * Goal chambers: a see-through square net (strands 56 uu apart) in the team colour, a fresnel glow
  * and a lit lintel along the top of the mouth. Blue at -z, red at +z. The sim provides planar
  * UVs (x, distance along the profile); without them a world-space projection is used.
+ * Both sides: round the mouth the cage is netting, so the chamber is also seen from outside, as a
+ * net box behind the end wall (forceSinglePass keeps it one draw).
  */
 function buildGoalMaterial(hasUv: boolean): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({
     roughness: 0.6,
     metalness: 0,
-    side: THREE.FrontSide,
+    side: THREE.DoubleSide,
     transparent: true,
     depthWrite: false,
   });
+  m.forceSinglePass = true;
   const p = positionWorld;
   const isRed = step(float(0), p.z);
   const tint = mix(linearVec3(TEAM_BLUE), linearVec3(TEAM_RED), isRed);

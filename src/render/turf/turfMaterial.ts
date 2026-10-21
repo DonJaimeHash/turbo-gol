@@ -58,6 +58,7 @@ import {
   mix,
   normalize,
   oneMinus,
+  pmremTexture,
   positionWorld,
   pow,
   saturate,
@@ -104,6 +105,10 @@ export interface TurfUniforms {
   readonly team: FloatUniform;
   /** Unit vector toward the main key light (self-shadow of the blades on the relief tiers). */
   readonly keyDir: Vec3Uniform;
+  /** Brightest environment radiance the turf reflects (CappedEnvironmentNode; per theme, night / day). */
+  readonly envMax: FloatUniform;
+  /** Share of the key lights' direct specular the turf keeps (TurfLightingModel; per theme, night / day). */
+  readonly keySpecular: FloatUniform;
   /** Streak heads: xyz = position (uu), w = source radius (uu); colour = linear RGB x strength. */
   readonly lampPos: LampPosArray;
   readonly lampCol: LampColArray;
@@ -135,6 +140,8 @@ export function createTurfUniforms(lampCount: number): TurfUniforms {
     team: uniform(1),
     lineLift: uniform(1),
     keyDir: uniform(new THREE.Vector3(0, 1, 0)),
+    envMax: uniform(1e4),
+    keySpecular: uniform(1),
     lampPos: uniformArray<'vec4'>(pos, 'vec4'),
     lampCol: uniformArray<'vec3'>(col, 'vec3'),
     lampCount,
@@ -201,6 +208,8 @@ export function grassAlbedo(
 /** Mowing bands: 14 across the length (bent toward +-z), 8 lengthwise (bent toward +-x). */
 export const BAND_Z = (ARENA.extentY * 2) / 14;
 export const BAND_X = (ARENA.extentX * 2) / 8;
+/** Half width (uu) of the blend between two mowing bands. */
+const BAND_EDGE = 110;
 
 /**
  * Mowing bands at floor point `p`: which way the blades are bent, vec2(x: -1..1 toward +-x for the
@@ -212,9 +221,10 @@ export function bandBend(p: Vec2Node, fwZ: FloatNode | null, fwX: FloatNode | nu
   const wobble = sin(p.x.mul(0.0021)).mul(14).add(sin(p.x.mul(0.013)).mul(3)); // mower lines are not perfect
   const triZ = abs(fract(p.y.add(wobble).div(BAND_Z * 2)).mul(2).sub(1));
   const triX = abs(fract(p.x.div(BAND_X * 2)).mul(2).sub(1));
-  // Soft band edges, never narrower than the pixel footprint (no aliasing at distance).
-  const eZ = fwZ === null ? float(30 / BAND_Z) : max(fwZ, float(30 / BAND_Z));
-  const eX = fwX === null ? float(30 / BAND_X) : max(fwX, float(30 / BAND_X));
+  // Soft band edges (a mower's pass blends over ~1 m, so a near band edge never reads as a shadow
+  // line), never narrower than the pixel footprint (no aliasing at distance).
+  const eZ = fwZ === null ? float(BAND_EDGE / BAND_Z) : max(fwZ, float(BAND_EDGE / BAND_Z));
+  const eX = fwX === null ? float(BAND_EDGE / BAND_X) : max(fwX, float(BAND_EDGE / BAND_X));
   const bendZ = smoothstep(float(0.5).sub(eZ), float(0.5).add(eZ), triZ).mul(2).sub(1);
   const bendX = smoothstep(float(0.5).sub(eX), float(0.5).add(eX), triX).mul(2).sub(1);
   return vec2(bendX, bendZ);
@@ -311,33 +321,113 @@ function reliefHit(blades: THREE.Texture, uv0: Vec2Node, lod: FloatNode, V: Vec3
   return fn() as unknown as Vec4Node;
 }
 
+/** Streak lobe shape: stretched toward the camera along the pitch, narrowed across it (anisotropic GGX). */
+const STREAK_STRETCH = 2.6;
+const STREAK_NARROW = 0.65;
+
 /**
- * Analytic reflection of the streak heads in the water film: a GGX lobe per head, widened by the
- * head's angular size (Karis 2013), with `rough` (sub-pixel ripples, growing with distance)
- * stretching far reflections into the long streaks seen on wet pitches. For these near-mirror lobes
- * H ~ N, so the Fresnel term (water F0 0.02) and the Smith visibility (~ 1 / (4 NoL NoV), its NoL
- * cancelling the cosine) are taken at the view angle once per pixel, outside the head loop: ~35
- * ALU per head. Radiance in LAMP_REF_DISTANCE units (bake.ts).
+ * Analytic reflection of the streak heads in the water film: an anisotropic GGX lobe per head,
+ * widened by the head's angular size (Karis 2013) and by `rough` (sub-pixel ripples, growing near
+ * the camera), STRETCHED along the view's direction over the pitch and narrowed across it: the
+ * blades and ripples break the film up into the long, soft streaks running toward the camera that a
+ * wet pitch shows, never round mirror images of the heads (Ht and Hb are the half vector's parts
+ * toward the camera and across, on the flat water). For these near-mirror lobes H ~ N, so the
+ * Fresnel term (water F0 0.02) and the Smith visibility (~ 1 / (4 NoL NoV), its NoL cancelling the
+ * cosine) are taken at the view angle once per pixel, outside the head loop: ~40 ALU per head.
+ * Radiance in LAMP_REF_DISTANCE units (bake.ts).
  */
-function lampStreaks(n: Vec3Node, rough: FloatNode, V: Vec3Node, U: TurfUniforms): Vec3Node {
+function lampStreaks(rough: FloatNode, V: Vec3Node, U: TurfUniforms): Vec3Node {
   let sum: Vec3Node = vec3(0, 0, 0);
   const P = positionWorld;
-  const NoV = saturate(dot(n, V));
+  const NoV = saturate(V.y);
   const F = float(0.02).add(pow(oneMinus(NoV), 5).mul(0.98));
   const k = F.mul((LAMP_REF_DISTANCE * LAMP_REF_DISTANCE) / (4 * Math.PI)).div(NoV.add(0.04));
   const r2 = rough.mul(rough);
+  // Unit horizontal direction toward the camera (any unit vector when looking straight down).
+  const th = V.xz.div(max(length(V.xz), float(1e-3)));
   for (let i = 0; i < U.lampCount; i++) {
     const lp = U.lampPos.element(i);
     const Lv = lp.xyz.sub(P);
     const invD = inverseSqrt(max(dot(Lv, Lv), float(1)));
     const H = normalize(Lv.mul(invD).add(V));
-    const NoH = saturate(dot(n, H));
+    const ht = dot(H.xz, th);
+    const hb = H.x.mul(th.y).sub(H.z.mul(th.x));
     const a = max(r2.add(lp.w.mul(invD).mul(0.5)), float(0.002));
-    const a2 = a.mul(a);
-    const den = NoH.mul(NoH).mul(a2.sub(1)).add(1);
-    sum = sum.add(U.lampCol.element(i).mul(a2.div(den.mul(den)).mul(invD).mul(invD)));
+    const at = a.mul(STREAK_STRETCH);
+    const ab = a.mul(STREAK_NARROW);
+    const den = ht.mul(ht).div(at.mul(at)).add(hb.mul(hb).div(ab.mul(ab))).add(H.y.mul(H.y));
+    sum = sum.add(U.lampCol.element(i).mul(float(1).div(at.mul(ab).mul(den.mul(den))).mul(invD).mul(invD)));
   }
   return sum.mul(k);
+}
+
+/** One PMREM node per environment texture (PMREMNode builds a generator of its own; share them). */
+const turfPmrem = new WeakMap<THREE.Texture, ReturnType<typeof pmremTexture>>();
+
+/**
+ * The scene environment for the turf with its radiance capped at `cap` (before
+ * scene.environmentIntensity). The world's probe holds the floodlight heads as hot panels (so paint
+ * and glass show the lamps); on the damp turf their blurred images read as whitish fog over the
+ * puddles from high cameras, and the lamps' reflections on the wet pitch are the analytic streaks'
+ * job. Given as the material's `envNode`, it is sampled by MeshStandardNodeMaterial's
+ * EnvironmentNode in its radiance and irradiance contexts exactly like scene.environment (the same
+ * texture reads, one min more).
+ */
+class CappedEnvironmentNode extends THREE.Node {
+  private readonly cap: FloatNode;
+
+  constructor(cap: FloatNode) {
+    super('vec3');
+    this.cap = cap;
+  }
+
+  override setup(builder: THREE.NodeBuilder): Node {
+    const env = (builder as unknown as { environmentNode: { value: THREE.Texture } | null }).environmentNode;
+    if (env === null || env === undefined) return vec3(0, 0, 0);
+    let pm = turfPmrem.get(env.value);
+    if (pm === undefined) {
+      pm = pmremTexture(env.value);
+      turfPmrem.set(env.value, pm);
+    }
+    return (pm as unknown as Vec3Node).min(this.cap);
+  }
+}
+
+/**
+ * The turf's lighting model: three's physical model with the key lights' direct specular scaled by
+ * `keySpecular`. At night the keys stand for the floodlight towers, and on the damp sheen their
+ * GGX highlight was one broad white blob per key (whitish fog over the pitch in front of the goals);
+ * the towers' reflections on the wet turf are the analytic streaks (lampStreaks). The diffuse light
+ * of the keys, their shadows and the environment are untouched. The scale runs after every direct
+ * light (start() lights them, then calls indirect()), on the summed direct specular.
+ */
+class TurfLightingModel extends THREE.PhysicalLightingModel {
+  private readonly keySpecular: FloatNode;
+
+  constructor(keySpecular: FloatNode) {
+    super();
+    this.keySpecular = keySpecular;
+  }
+
+  override indirect(builder: THREE.NodeBuilder): void {
+    const ctx = (builder as unknown as { context: { reflectedLight: { directSpecular: Vec3Node } } }).context;
+    ctx.reflectedLight.directSpecular.mulAssign(this.keySpecular);
+    super.indirect(builder);
+  }
+}
+
+/** MeshStandardNodeMaterial lit through TurfLightingModel. */
+class TurfNodeMaterial extends THREE.MeshStandardNodeMaterial {
+  private readonly keySpecular: FloatNode;
+
+  constructor(keySpecular: FloatNode) {
+    super();
+    this.keySpecular = keySpecular;
+  }
+
+  override setupLightingModel(): THREE.PhysicalLightingModel {
+    return new TurfLightingModel(this.keySpecular);
+  }
 }
 
 export interface TurfMaterialOptions {
@@ -352,7 +442,7 @@ export interface TurfMaterialOptions {
 export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNodeMaterial {
   const { timeU, spec, textures, uniforms: U } = o;
   const relief = spec.turfRelief;
-  const m = new THREE.MeshStandardNodeMaterial();
+  const m = new TurfNodeMaterial(U.keySpecular);
   m.name = 'turf';
   const p = positionWorld.xz; // (x, sim y)
   const toCam = cameraPosition.sub(positionWorld);
@@ -458,13 +548,16 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
   const rip = tB.gb.mul(2).sub(1);
   const waterN = normalize(vec3(rip.x.mul(0.03), 1, rip.y.mul(0.03)));
   const grassRough = mix(float(0.82), float(0.58), dampLocal).sub(paint.mul(0.15));
-  // Ripples are sub-pixel far away: their spread widens the lamp lobe with distance (sharp lamp
-  // images in a near puddle, long streaks far down the pitch); water held between blades is never a
-  // flat mirror, which also keeps the glints from turning into pixel glitter at grazing angles.
-  const rippleRough = max(mix(float(0.1), float(0.26), smoothstep(250, 3000, dist)), mix(float(0.24), float(0.1), saturate(puddle.mul(1.4))));
+  // Ripple roughness of the lamp streaks: near the camera the film is broken up by the blades (soft,
+  // wide glints, never a round mirror image of a head), farther down the pitch it reads smoother and
+  // puddles smoother still; the lobe's stretch toward the camera makes the streaks. Water held
+  // between blades is never a flat mirror, which also keeps the glints from turning into pixel
+  // glitter at grazing angles.
+  const rippleRough = mix(mix(float(0.3), float(0.21), smoothstep(300, 2500, dist)), float(0.12), saturate(puddle.mul(1.4)).mul(0.6));
 
   m.metalnessNode = float(0);
   m.colorNode = albedo;
+  m.envNode = new CappedEnvironmentNode(U.envMax);
   // The damp sheen: the water film flattens the grass normal and smooths its lobe where it lies
   // (puddles only part way: their sharp reflections are the streaks, a smooth lobe there would mirror
   // the environment's brightest band as a cut-out). Low is flat filtered: the geometric normal, no
@@ -491,7 +584,7 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
     const wv = waterSmooth.toVar();
     const e = vec3(0, 0, 0).toVar();
     If(wv.greaterThan(0.003), () => {
-      e.assign(lampStreaks(vec3(0, 1, 0), r, V, U).mul(wv));
+      e.assign(lampStreaks(r, V, U).mul(wv));
     });
     return e;
   })() as unknown as Vec3Node;
@@ -513,8 +606,10 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
   // Only the goal glow blooms (the streaks, pools and paint lift stay out of the glow target).
   m.mrtNode = glowMrt(goalGlow.mul(GOAL_GLOW_BLOOM), 'none');
 
-  // Shadows are tinted cool green-grey instead of black (floodlit from many lamps).
-  const shadowTint = vec3(0.36, 0.44, 0.42);
+  // A shadow keeps a little cool light of its key (the other towers and the wet turf's bounce),
+  // never the 36-44 % that left the cars' shadows invisible under two keys: each key's shadow
+  // only takes that key's light, the other key and the pools still light the spot.
+  const shadowTint = vec3(0.15, 0.19, 0.19);
   const tintShadow = Fn(([shadow]: [Node]) => mix(shadowTint, vec3(1.0, 1.0, 1.0), shadow as Vec3Node));
   m.receivedShadowNode = tintShadow as unknown as () => Node;
   return m;

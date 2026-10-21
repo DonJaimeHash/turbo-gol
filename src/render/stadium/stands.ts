@@ -357,8 +357,10 @@ export function buildCrowd(spec: TierSpec, u: StadiumUniforms): CrowdBuild {
     : float(0);
 
   // Colours: a team-dominant palette. Each stand's blue half (z < 0) is mostly blue shirts, the
-  // red half mostly red; the rest wear dark casual colours, a few bright.
-  const team = mix(linearVec3(TEAM_BLUE).mul(0.3), linearVec3(TEAM_RED).mul(0.3), info4.y);
+  // red half mostly red; the rest wear dark casual colours, a few bright. Kits are a little
+  // desaturated (fabric under warm floodlight, not the HUD's pure team colours).
+  const teamPure = mix(linearVec3(TEAM_BLUE), linearVec3(TEAM_RED), info4.y);
+  const team = mix(teamPure, vec3(dot(teamPure, vec3(0.2126, 0.7152, 0.0722))), 0.25).mul(0.3);
   const pal = (k: FloatNode): Vec3Node => {
     let c: Vec3Node = vec3(0.5, 0.5, 0.48); // white
     c = select(k.greaterThan(0.12), vec3(0.016, 0.016, 0.018), c); // black
@@ -368,7 +370,7 @@ export function buildCrowd(spec: TierSpec, u: StadiumUniforms): CrowdBuild {
     c = select(k.greaterThan(0.9), vec3(0.045, 0.11, 0.05), c); // green
     return c;
   };
-  const isTeam = step(seedP, float(0.5));
+  const isTeam = step(seedP, float(0.42));
   // Team shirts vary in shade (kits, scarves, jackets over them).
   const shirt = mix(pal(seedQ), team.mul(seedR.mul(0.7).add(0.45)), isTeam);
   const skin = mix(vec3(0.5, 0.34, 0.24), vec3(0.13, 0.075, 0.045), seedR.mul(seedR));

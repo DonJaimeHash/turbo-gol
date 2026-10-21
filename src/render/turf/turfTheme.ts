@@ -28,7 +28,7 @@ export interface TurfLook {
   readonly team: number;
 }
 
-const NIGHT: TurfLook = { tint: [1, 1, 1], dry: 0.05, stripes: 0.3, pools: 1, streaks: 1, puddles: 0.36, team: 1 };
+const NIGHT: TurfLook = { tint: [1.45, 0.9, 0.72], dry: 0.05, stripes: 0.3, pools: 1, streaks: 1, puddles: 0.36, team: 1 };
 
 /** Per theme. Themes not built in theme.ts yet still get their own turf look here. */
 export const TURF_LOOKS: Readonly<Record<ThemeId, TurfLook>> = {

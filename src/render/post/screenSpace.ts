@@ -13,8 +13,10 @@
  *               times the theme's wetness, so no material has to write a mask target; the pitch
  *               normal is the exact world up (the turf is a plane), hit normals come from depth.
  *               Its roughness blur gives the soft, smeared reflections of wet grass
- *   glare       a procedural streak (anamorphic, horizontal) and three lens ghosts from the
- *               brightest emissive (the bloom's first blurred mip, above GLARE_THRESHOLD), one
+ *   glare       a short procedural streak (anamorphic, horizontal) and three faint lens ghosts of
+ *               the WHITE-HOT emissive only (the bloom's first blurred mip, keyed on its darkest
+ *               channel above GLARE_THRESHOLD: the lamp heads, never the saturated team-coloured
+ *               goal frames, pads or boards, whose ghost once laid a red haze over the roof), one
  *               quarter-resolution pass
  *
  * TRAA is deliberately not used: without per-object motion vectors it lost AA on moving cars in
@@ -34,6 +36,7 @@ import {
   getNormalFromDepth,
   getViewPosition,
   int,
+  min,
   mix,
   oneMinus,
   pow,
@@ -77,14 +80,18 @@ const SSR_ROUGHNESS = 0.6;
 const SSR_MAX_LUMINANCE = 6;
 const SSR_GAIN = 0.6;
 
-/** Glare: bright-part threshold (linear HDR of the blurred emissive), streak reach (uv per tap) and gains. */
-const GLARE_THRESHOLD = 0.75;
-const STREAK_TAPS = 24;
-const STREAK_STEP = 0.005;
-const STREAK_GAIN = 0.18;
+/**
+ * Glare: threshold on the darkest channel of the blurred emissive (linear HDR: only white-hot
+ * sources pass, the lamp cores write ~15 there, the team colours have a channel near 0), streak
+ * reach (uv per tap) and gains. Tight and subtle: a short smear and faint ghosts.
+ */
+const GLARE_THRESHOLD = 1.2;
+const STREAK_TAPS = 14;
+const STREAK_STEP = 0.0035;
+const STREAK_GAIN = 0.1;
 const STREAK_TINT: readonly [number, number, number] = [0.75, 0.85, 1.0];
 const GHOST_SPACING = 0.34;
-const GHOST_GAIN = 0.15;
+const GHOST_GAIN = 0.035;
 const GHOST_TINTS: readonly (readonly [number, number, number])[] = [
   [1.0, 0.75, 0.45],
   [0.5, 0.85, 1.0],
@@ -193,12 +200,18 @@ export function buildScreenSpace(
     const mips = (bloomPass as unknown as { _renderTargetsVertical?: THREE.RenderTarget[] })._renderTargetsVertical;
     if (mips !== undefined && mips.length > 0) {
       const src = mips[0].texture;
-      const bright = (u: Vec2Node): Vec3Node => (texture(src, saturate(u)).rgb as Vec3Node).max(0.0).min(HDR_MAX).sub(GLARE_THRESHOLD).max(0.0);
+      // White-hot parts only: weight each texel by how far its DARKEST channel clears the threshold
+      // (c * (1 - T / min(c)), 0 below it), so a saturated red or blue emitter never streaks.
+      const bright = (u: Vec2Node): Vec3Node => {
+        const c = (texture(src, saturate(u)).rgb as Vec3Node).max(0.0).min(HDR_MAX);
+        const lo = min(c.r, min(c.g, c.b));
+        return c.mul(saturate(oneMinus(float(GLARE_THRESHOLD).div(lo.max(1e-3)))));
+      };
       const p = uv();
       // Streak: symmetric horizontal taps, exponential falloff (a lens-coating smear of the lamps).
       let streak: Vec3Node = bright(p).mul(1.0);
       for (let i = 1; i <= STREAK_TAPS; i++) {
-        const w = Math.exp((-3.0 * i) / STREAK_TAPS);
+        const w = Math.exp((-4.0 * i) / STREAK_TAPS);
         const pair = bright(p.add(vec2(i * STREAK_STEP, 0))).add(bright(p.sub(vec2(i * STREAK_STEP, 0))));
         streak = streak.add(pair.mul(w));
       }
