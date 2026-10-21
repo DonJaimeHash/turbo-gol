@@ -331,6 +331,15 @@ function reliefHit(blades: THREE.Texture, uv0: Vec2Node, lod: FloatNode, V: Vec3
 /** Streak lobe shape: stretched toward the camera along the pitch, narrowed across it (anisotropic GGX). */
 const STREAK_STRETCH = 2.6;
 const STREAK_NARROW = 0.65;
+/**
+ * Seen from above at a distance (an aerial ball cam, a high replay camera), the lobe takes this
+ * shape and the ripples this roughness instead: compact glints in the wet patches. The grazing
+ * views' broad, stretched lobes covered metres of the clump-scale water patches there and read as
+ * whitish fog over the pitch. `steep` (buildTurfMaterial) blends the two.
+ */
+const STEEP_STRETCH = 1.2;
+const STEEP_NARROW = 0.9;
+const STEEP_ROUGH = 0.1;
 
 /**
  * Analytic reflection of the streak heads in the water film: an anisotropic GGX lobe per head,
@@ -341,15 +350,18 @@ const STREAK_NARROW = 0.65;
  * toward the camera and across, on the flat water). For these near-mirror lobes H ~ N, so the
  * Fresnel term (water F0 0.02) and the Smith visibility (~ 1 / (4 NoL NoV), its NoL cancelling the
  * cosine) are taken at the view angle once per pixel, outside the head loop: ~40 ALU per head.
+ * `steep` (0 grazing .. 1 seen from above at a distance) shortens the stretch (STEEP_*).
  * Radiance in LAMP_REF_DISTANCE units (bake.ts).
  */
-function lampStreaks(rough: FloatNode, V: Vec3Node, U: TurfUniforms): Vec3Node {
+function lampStreaks(rough: FloatNode, steep: FloatNode, V: Vec3Node, U: TurfUniforms): Vec3Node {
   let sum: Vec3Node = vec3(0, 0, 0);
   const P = positionWorld;
   const NoV = saturate(V.y);
   const F = float(0.02).add(pow(oneMinus(NoV), 5).mul(0.98));
   const k = F.mul((LAMP_REF_DISTANCE * LAMP_REF_DISTANCE) / (4 * Math.PI)).div(NoV.add(0.04));
   const r2 = rough.mul(rough);
+  const stretch = mix(float(STREAK_STRETCH), float(STEEP_STRETCH), steep);
+  const narrow = mix(float(STREAK_NARROW), float(STEEP_NARROW), steep);
   // Unit horizontal direction toward the camera (any unit vector when looking straight down).
   const th = V.xz.div(max(length(V.xz), float(1e-3)));
   for (let i = 0; i < U.lampCount; i++) {
@@ -360,8 +372,8 @@ function lampStreaks(rough: FloatNode, V: Vec3Node, U: TurfUniforms): Vec3Node {
     const ht = dot(H.xz, th);
     const hb = H.x.mul(th.y).sub(H.z.mul(th.x));
     const a = max(r2.add(lp.w.mul(invD).mul(0.5)), float(0.002));
-    const at = a.mul(STREAK_STRETCH);
-    const ab = a.mul(STREAK_NARROW);
+    const at = a.mul(stretch);
+    const ab = a.mul(narrow);
     const den = ht.mul(ht).div(at.mul(at)).add(hb.mul(hb).div(ab.mul(ab))).add(H.y.mul(H.y));
     sum = sum.add(U.lampCol.element(i).mul(float(1).div(at.mul(ab).mul(den.mul(den))).mul(invD).mul(invD)));
   }
@@ -583,7 +595,14 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
   // puddles smoother still; the lobe's stretch toward the camera makes the streaks. Water held
   // between blades is never a flat mirror, which also keeps the glints from turning into pixel
   // glitter at grazing angles.
-  const rippleRough = mix(mix(float(0.3), float(0.21), smoothstep(300, 2500, dist)), float(0.12), saturate(puddle.mul(1.4)).mul(0.6));
+  // Seen from above at a distance the same broad lobes covered metres of the water patches and read
+  // as whitish fog: there (steep) the ripples read smoother and the reflections compact (STEEP_*).
+  const steep = smoothstep(0.2, 0.5, saturate(V.y)).mul(smoothstep(800, 1600, dist));
+  const rippleRough = mix(
+    mix(mix(float(0.3), float(0.21), smoothstep(300, 2500, dist)), float(0.12), saturate(puddle.mul(1.4)).mul(0.6)),
+    float(STEEP_ROUGH),
+    steep,
+  );
 
   m.metalnessNode = float(0);
   m.colorNode = albedo;
@@ -612,10 +631,11 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
   const streaks = Fn(() => {
     // Evaluated before the branch (they hold texture reads).
     const r = rippleRough.toVar();
+    const st = steep.toVar();
     const wv = waterSmooth.toVar();
     const e = vec3(0, 0, 0).toVar();
     If(wv.greaterThan(0.003), () => {
-      e.assign(lampStreaks(r, V, U).mul(wv));
+      e.assign(lampStreaks(r, st, V, U).mul(wv));
     });
     return e;
   })() as unknown as Vec3Node;
