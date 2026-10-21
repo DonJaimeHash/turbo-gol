@@ -29,19 +29,20 @@ const cache = await import('../src/render/world/cache.ts');
 const finite3 = (c) => c.length === 3 && c.every((v) => Number.isFinite(v) && v >= 0);
 
 test('every theme resolves to a world preset; the built ones are their own', () => {
-  for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'city', 'alpine'].includes(worldPreset(id).skyline), id);
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day']) assert.ok(hasWorldPreset(id), id);
+  for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'city', 'alpine', 'railyard'].includes(worldPreset(id).skyline), id);
+  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night']) assert.ok(hasWorldPreset(id), id);
   assert.equal(worldPreset('harbour-night').skyline, 'harbour');
   assert.equal(worldPreset('harbour-day').skyline, 'harbour');
   assert.equal(worldPreset('canyon-sunset').skyline, 'canyon');
   assert.equal(worldPreset('city-dusk').skyline, 'city');
   assert.equal(worldPreset('alpine-day').skyline, 'alpine');
+  assert.equal(worldPreset('railyard-night').skyline, 'railyard');
   // themes without a preset yet use the default world
   for (const id of THEME_IDS) if (!hasWorldPreset(id)) assert.equal(worldPreset(id), worldPreset('harbour-night'), id);
 });
 
 test('world presets hold finite, non-negative radiance and sane ranges', () => {
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day']) {
+  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night']) {
     const p = worldPreset(id);
     for (const c of [p.zenith, p.mid, p.horizon, p.glow.color, p.key.color, p.key.light, p.ambSky, p.ambGround, p.sea.color, p.envTurf]) assert.ok(finite3(c), `${id} colour ${c}`);
     for (const cl of [p.clouds, p.cirrus]) {
@@ -72,7 +73,7 @@ test('dirFromAzEl: unit vectors, azimuth 0 = +z, 90 = -x, elevation up', () => {
 
 test('the built themes keep the light count and ship their shared facts (setTheme end to end)', () => {
   const night = themeWorld('harbour-night');
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day']) {
+  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night']) {
     const w = themeWorld(id);
     assert.equal(w.id, id, 'its own entry, not the fallback');
     assert.equal(w.keys.length, 2);

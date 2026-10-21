@@ -95,6 +95,8 @@ function towerFloodlights(color: Rgb, strength: number): Floodlight[] {
 }
 
 const WARM_LAMP: Rgb = [1.0, 0.93, 0.82];
+/** The railyard's older lamps: a warmer, more sodium-tinted white. */
+const SODIUM_WHITE: Rgb = [1.0, 0.86, 0.66];
 
 /** Themes built so far (the themes phase of docs/visuals/REWORK.md adds the others). */
 const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
@@ -141,23 +143,43 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     exposure: 1.12,
     grade: { contrast: 1.06, saturation: 1.1, lift: [0, 0, 0.002], gain: [1.02, 1, 0.98], vignette: 0.22 },
   },
-  // A red canyon at sunset: the low sun behind the red goal (azimuth 8 deg; the key sits a little
-  // higher than the disc so the pitch is not lit at a grazing angle), the floodlights already on at
-  // half strength, dry turf, a warm haze.
+  // A red canyon at sunset: the low sun behind the red goal, right of it (azimuth 13 deg, the sky's
+  // disc in world/presets.ts; the key sits a little higher than the disc so the pitch is not lit at
+  // a grazing angle), the floodlights already on at half strength, dry turf, a warm haze; a strong
+  // orange key against a violet fill, graded warm and contrasty.
   'canyon-sunset': {
     id: 'canyon-sunset',
     night: false,
     keys: [
-      { dir: unit(-0.136, 0.208, 0.969), color: [1.0, 0.62, 0.32], intensity: 2.6 },
+      { dir: unit(-0.2200, 0.2079, 0.9531), color: [1.0, 0.58, 0.28], intensity: 2.8 },
       { dir: unit(TOWER_X, HEAD_Y, -2900), color: WARM_LAMP, intensity: 1.0 },
     ],
-    fill: { sky: [0.45, 0.32, 0.4], ground: [0.3, 0.12, 0.05], intensity: 0.9, env: 0.6 },
+    fill: { sky: [0.4, 0.27, 0.45], ground: [0.32, 0.12, 0.05], intensity: 0.85, env: 0.6 },
     floodlights: towerFloodlights(WARM_LAMP, 0.45),
     wetness: 0.05,
-    fog: { color: [0.62, 0.28, 0.15], density: 0.8e-5 },
+    fog: { color: [0.6, 0.26, 0.14], density: 0.8e-5 },
     toneMapping: 'aces',
     exposure: 1.0,
-    grade: { contrast: 1.08, saturation: 1.1, lift: [0.004, 0, 0], gain: [1.02, 1, 0.96], vignette: 0.3 },
+    grade: { contrast: 1.13, saturation: 1.14, lift: [0.004, 0, 0.004], gain: [1.04, 0.99, 0.93], vignette: 0.32 },
+  },
+  // "Patio Ferroviario": the night railyard (world/railyard.ts). The same two raking tower keys as
+  // the night harbour in a warmer, sodium-tinted white; a violet-brown fill from the orange city
+  // sky; a soaked pitch (the lamps streak on it), warm brown haze; ACES with warm highlights and a
+  // touch of violet in the shadows.
+  'railyard-night': {
+    id: 'railyard-night',
+    night: true,
+    keys: [
+      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: SODIUM_WHITE, intensity: 2.0 },
+      { dir: unit(TOWER_X, HEAD_Y, 2900), color: SODIUM_WHITE, intensity: 1.4 },
+    ],
+    fill: { sky: [0.062, 0.045, 0.075], ground: [0.035, 0.022, 0.016], intensity: 0.7, env: 0.3 },
+    floodlights: towerFloodlights(SODIUM_WHITE, 1),
+    wetness: 0.62,
+    fog: { color: [0.075, 0.042, 0.048], density: 1.7e-5 },
+    toneMapping: 'aces',
+    exposure: 1.0,
+    grade: { contrast: 1.16, saturation: 1.1, lift: [0.005, 0.001, 0.005], gain: [1.04, 0.99, 0.95], vignette: 0.38 },
   },
   // "Distrito 9": the car park's roof in a city just after sunset (world/city.ts). The sky still
   // glows, but the pitch is lit like the night: the same two raking tower keys in a cooler LED

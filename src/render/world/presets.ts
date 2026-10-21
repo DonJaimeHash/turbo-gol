@@ -3,7 +3,7 @@
  * two cloud layers), the light the backdrop geometry receives, the sea and the environment
  * extras. A preset is DATA only: the same generators and shaders read it, so a theme switch writes
  * these numbers into uniforms and re-bakes the cube map (never a recompile). `skyline` picks the
- * geometry generator (harbour.ts / canyon.ts / city.ts / alpine.ts).
+ * geometry generator (harbour.ts / canyon.ts / city.ts / alpine.ts / railyard.ts).
  *
  * The facts other views share (key lights, fill, floodlights, fog, grade) live in ../theme.ts;
  * the fog density and colour of the stadium come from there, the aerial haze of the backdrop from
@@ -15,7 +15,7 @@
  */
 import type { Rgb, ThemeId } from '../theme';
 
-export type SkylineId = 'harbour' | 'canyon' | 'city' | 'alpine';
+export type SkylineId = 'harbour' | 'canyon' | 'city' | 'alpine' | 'railyard';
 
 export interface CloudPreset {
   /** 0 clear .. 1 overcast. */
@@ -129,25 +129,29 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     envLamp: 0,
   },
 
-  // Another generator (rock mesas instead of the harbour), the same sky, haze and lighting code.
+  // Another generator (tiered red cliffs and buttes instead of the harbour), the same sky, haze and
+  // lighting code. A strong sunset: the disc low in a notch of the horizon right of the far goal
+  // (azimuth 13), a hot orange glow along the horizon, a violet zenith and a field of small clouds
+  // lit pink and orange from below; the walls facing the sun burn red, the others fall into violet
+  // shade.
   'canyon-sunset': {
     skyline: 'canyon',
-    zenith: [0.03, 0.04, 0.15],
-    mid: [0.16, 0.1, 0.24],
-    horizon: [0.62, 0.28, 0.15],
-    glow: { color: [0.62, 0.24, 0.07], az: 8, spread: 0.9, height: 0.07 },
-    key: { az: 8, el: 4.5, color: [1.0, 0.55, 0.22], disc: 70, sizeDeg: 1.1, halo: 0.4, halo2: 1.6, moon: false, light: [3.4, 1.55, 0.6] },
-    ambSky: [0.1, 0.08, 0.15],
-    ambGround: [0.12, 0.05, 0.03],
+    zenith: [0.022, 0.03, 0.15],
+    mid: [0.13, 0.08, 0.3],
+    horizon: [0.75, 0.32, 0.12],
+    glow: { color: [0.95, 0.36, 0.08], az: 13, spread: 0.85, height: 0.075 },
+    key: { az: 13, el: 4.6, color: [1.0, 0.6, 0.26], disc: 150, sizeDeg: 1.25, halo: 0.25, halo2: 1.1, moon: false, light: [3.8, 1.6, 0.55] },
+    ambSky: [0.14, 0.09, 0.18],
+    ambGround: [0.22, 0.085, 0.04],
     stars: 0.0,
-    clouds: { cover: 0.48, scale: 0.45, height: 0.085, lit: [1.1, 0.48, 0.26], shadow: [0.12, 0.06, 0.11], under: [0.5, 0.18, 0.06], alpha: 0.9, stretch: 1.0 },
-    cirrus: { cover: 0.45, scale: 0.28, height: 0.24, lit: [1.3, 0.62, 0.32], shadow: [0.2, 0.1, 0.16], under: [0.35, 0.12, 0.05], alpha: 0.6, stretch: 3.2 },
-    hazeHeight: 5000,
-    hazeGain: 1.0,
+    clouds: { cover: 0.5, scale: 1.25, height: 0.085, lit: [0.95, 0.42, 0.36], shadow: [0.13, 0.075, 0.2], under: [0.75, 0.25, 0.1], alpha: 0.92, stretch: 1.2 },
+    cirrus: { cover: 0.46, scale: 0.3, height: 0.24, lit: [0.95, 0.44, 0.38], shadow: [0.2, 0.1, 0.22], under: [0.45, 0.14, 0.05], alpha: 0.5, stretch: 2.6 },
+    hazeHeight: 3800,
+    hazeGain: 0.42,
     lights: 0.25,
     windows: 0.0,
     sea: { color: [0.02, 0.02, 0.02], rough: 1.0 },
-    envTurf: [0.1, 0.12, 0.05],
+    envTurf: [0.12, 0.13, 0.05],
     envLamp: 18,
   },
 
@@ -202,6 +206,31 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     envTurf: [0.1, 0.2, 0.06],
     envLamp: 0,
     proxyTop: [33000, 47000],
+  },
+
+  // "Patio Ferroviario": an old railway depot at night (railyard.ts). An orange-tinted night: the
+  // city behind the far goal (azimuth 0) lights a wide band of the horizon and the undersides of
+  // broken clouds, the zenith stays deep violet, a dim moon sits behind the kickoff camera and
+  // rims the faces turned toward the pitch; few stars through the light pollution.
+  'railyard-night': {
+    skyline: 'railyard',
+    zenith: [0.004, 0.006, 0.04],
+    mid: [0.022, 0.024, 0.105],
+    horizon: [0.19, 0.075, 0.065],
+    glow: { color: [0.62, 0.22, 0.06], az: 4, spread: 0.7, height: 0.075 },
+    key: { az: 172, el: 27, color: [0.82, 0.84, 1.0], disc: 2.2, sizeDeg: 0.85, halo: 0.01, halo2: 0.04, moon: true, light: [0.032, 0.034, 0.052] },
+    ambSky: [0.014, 0.012, 0.03],
+    ambGround: [0.018, 0.01, 0.007],
+    stars: 0.35,
+    clouds: { cover: 0.55, scale: 0.62, height: 0.085, lit: [0.075, 0.06, 0.15], shadow: [0.016, 0.015, 0.05], under: [0.9, 0.32, 0.1], alpha: 0.95, stretch: 1.35 },
+    cirrus: { cover: 0.46, scale: 0.4, height: 0.22, lit: [0.06, 0.05, 0.11], shadow: [0.014, 0.014, 0.036], under: [0.35, 0.12, 0.06], alpha: 0.55, stretch: 2.8 },
+    hazeHeight: 2400,
+    hazeGain: 0.35,
+    lights: 1.0,
+    windows: 0.6,
+    sea: { color: [0.002, 0.002, 0.002], rough: 1.0 },
+    envTurf: [0.04, 0.062, 0.03],
+    envLamp: 40,
   },
 };
 

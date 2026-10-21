@@ -3,8 +3,8 @@
  * glass, the ball and the wet turf reflect the backdrop. Its scene, rendered from the bake origin:
  *
  *   the baked cube   on a big back-faced sphere (sky, clouds, moon or sun, far harbour or canyon)
- *   the live layer   the live layer's current geometry (the harbour's, the city's or the alpine
- *                    valley's) with the 'env' structure material
+ *   the live layer   the live layer's current geometry (the harbour's, the city's, the alpine
+ *                    valley's or the railyard's) with the 'env' structure material
  *   the pitch        a flat disc under the probe in the theme's lit-turf colour
  *   the floodlights  the theme's lamp heads (theme.ts floodlights) as hot panels, so glossy paint
  *                    shows the stadium's lamps; they are NOT in the visible sky (the stadium draws
@@ -79,8 +79,8 @@ interface ProbeScene {
 
 /**
  * The probe at `origin` with a PMREM of `size`; `live` draws the live layer into it (its geometry is
- * read at every update: World.ts points it at the theme's skyline). The
- * probe's materials carry no glow tag: the PMREM target is a plain colour target.
+ * read at every update: World.ts swaps it per skyline). The probe's materials carry no glow tag:
+ * the PMREM target is a plain colour target.
  */
 export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3, size: number, live: { geometry: THREE.BufferGeometry; material: THREE.Material } | null): EnvProbe {
   const target = createPmremTarget(size);
@@ -102,7 +102,8 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
     sky.frustumCulled = false;
     scene.add(sky);
     trash.push(skyGeo, skyMat, blank);
-    // the live layer (the harbour's, the city's or the alpine valley's)
+    // the live layer (the harbour's, the city's, the alpine valley's or the railyard's; its geometry
+    // follows the shown skyline's: see update)
     let copy: THREE.Mesh | null = null;
     if (live !== null) {
       copy = new THREE.Mesh(live.geometry, live.material);

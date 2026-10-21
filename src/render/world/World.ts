@@ -9,9 +9,10 @@
  *               just beyond both ends of the field, STS cranes with lattice booms, RMG gantries,
  *               light masts, the cruise ship and the lighthouse, ONE merged mesh with the live
  *               structure material (bakeMaterials.ts), drawn before the dome. The city (city.ts
- *               buildCityLive: the car park's deck, the streets below, the buildings across them)
- *               and the alpine valley (alpine.ts buildAlpineLive: valley floor, walls, pines) are
- *               the same kind of mesh: a theme switch swaps the geometry (same attributes, same
+ *               buildCityLive: the car park's deck, the streets below, the buildings across them),
+ *               the alpine valley (alpine.ts buildAlpineLive: valley floor, walls, pines) and the
+ *               railyard (railyard.ts buildRailyardLive: halls, gantry, chimney, viaduct, wagons)
+ *               are the same kind of mesh: a theme switch swaps the geometry (same attributes, same
  *               material: no new pipeline). Themes without a live layer (the canyon) collapse it
  *               with a uniform (no recompile, the pipeline stays warm).
  *   dome        one back-faced sphere showing the baked cube with parallax correction (dome.ts).
@@ -23,8 +24,8 @@
  *   1. mirror cube   from the bake origin mirrored below the sea, sea hidden, live layer shown:
  *                    the sea's reflection source
  *   2. final cube    from the bake origin, tier.skyCubeSize faces, 2x2 supersampled: sky, moon,
- *                    stars, two cloud layers, the far harbour, canyon, city or mountains, the sea;
- *                    alpha keeps 1000 / distance
+ *                    stars, two cloud layers, the far harbour, canyon, city, mountains or railyard,
+ *                    the sea; alpha keeps 1000 / distance
  *   3. proxy         a 32^2 box-filtered depth cube reduced to the dome's per-azimuth lookup
  *   4. environment   PMREM (tier.envSize) of the cube + the live layer + the pitch + the theme's
  *                    floodlight heads (env.ts) = scene.environment
@@ -61,6 +62,7 @@ import { LIGHTHOUSE_LANTERN, QUAY, SEA_LEVEL, buildHarbourFar, buildHarbourLive 
 import { buildLightMap, lightMapFromData, type LightMap } from './lightmap';
 import { dirFromAzEl, worldPreset, type SkylineId, type WorldPreset } from './presets';
 import { createLatestQueue } from './queue';
+import { buildRailyardFar, buildRailyardLive } from './railyard';
 
 /** Where the cube is rendered from: mid-pitch, at chase / broadcast camera height. */
 export const BAKE_ORIGIN = new THREE.Vector3(0, 250, 0);
@@ -136,6 +138,7 @@ const LIVE_BUILDERS: Readonly<Partial<Record<SkylineId, () => LiveLayer>>> = {
   harbour: buildHarbourLive,
   city: buildCityLive,
   alpine: buildAlpineLive,
+  railyard: buildRailyardLive,
 };
 
 /** The ground the dome's parallax treats as the floor, per skyline (world y). */
@@ -206,9 +209,10 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
 
   // ---- live layer, dome, beam, environment
   const A: Atmosphere = createAtmosphere();
-  // the live layers (one per skyline that has one, built on first use; the first realise() builds
-  // the first theme's, the placeholder stands in until then). Every layer has the same attributes
-  // and the same material, so swapping the mesh's geometry on a theme switch adds no pipeline.
+  // the live layers (one per skyline that has one, built on first use by realise(), the placeholder
+  // until then); the mesh shows the current skyline's (showLive). Every layer has the same
+  // attributes and the same material, so swapping the mesh's geometry on a theme switch adds no
+  // pipeline.
   const lives = new Map<SkylineId, LiveLayer>();
   const placeholder = new THREE.BufferGeometry();
   const liveMat = makeStructMaterial(A, 'live');
@@ -261,33 +265,46 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   syncBeam();
 
   // ---- per-skyline CPU data
-  /** A skyline's live layer, built once (null: the skyline has none, e.g. the canyon). */
+  /** A skyline's live layer, built once (null for a skyline without one, e.g. the canyon). */
   function liveOf(skyline: SkylineId): LiveLayer | null {
-    let l = lives.get(skyline);
-    if (l !== undefined) return l;
     const build = LIVE_BUILDERS[skyline];
     if (build === undefined) return null;
-    l = build();
-    lives.set(skyline, l);
-    if (liveMesh.geometry === placeholder) {
-      // the first layer: every mesh that draws the live layer needs real attributes from now on
-      liveMesh.geometry = l.geometry;
-      liveEnv.geometry = l.geometry;
-      placeholder.dispose();
+    let l = lives.get(skyline);
+    if (l === undefined) {
+      l = build();
+      lives.set(skyline, l);
     }
     return l;
   }
-  /** Show `skyline`'s live layer (or collapse the mesh when it has none: no recompile either way). */
+  /**
+   * Any live geometry for a skyline without its own (the bake kit's compile, a first load): one
+   * already built if there is one (no 35k-triangle harbour build for the canyon after a railyard
+   * boot), else the harbour's.
+   */
+  function anyLive(skyline: SkylineId): LiveLayer {
+    const own = liveOf(skyline);
+    if (own !== null) return own;
+    for (const l of lives.values()) return l;
+    return liveOf('harbour') as LiveLayer;
+  }
+  /**
+   * Show `skyline`'s live layer: hand its geometry to every mesh that draws it (the same attributes,
+   * so the same pipelines) and switch the layer on, or collapse it for a skyline without one (the
+   * mesh then keeps a real geometry, so its pipeline stays the warm one).
+   */
   function showLive(skyline: SkylineId): void {
-    const l = liveOf(skyline);
-    liveOn.value = l !== null ? 1 : 0;
-    if (l === null) return;
-    liveMesh.geometry = l.geometry;
-    liveEnv.geometry = l.geometry;
+    const own = liveOf(skyline);
+    const l = own ?? (liveMesh.geometry === placeholder ? anyLive(skyline) : null);
+    if (l !== null && liveMesh.geometry !== l.geometry) {
+      liveMesh.geometry = l.geometry;
+      liveEnv.geometry = l.geometry;
+    }
+    liveOn.value = own !== null ? 1 : 0;
   }
   function lampsOf(skyline: SkylineId): Lamp[] {
-    if (skyline === 'harbour') return [...(liveOf('harbour') as LiveLayer).lamps, ...buildHarbourFar(true).lamps];
-    if (skyline === 'city') return [...(liveOf('city') as LiveLayer).lamps, ...buildCityFar(true).lamps];
+    if (skyline === 'harbour') return [...anyLive('harbour').lamps, ...buildHarbourFar(true).lamps];
+    if (skyline === 'city') return [...anyLive('city').lamps, ...buildCityFar(true).lamps];
+    if (skyline === 'railyard') return [...anyLive('railyard').lamps, ...buildRailyardFar(true).lamps];
     return [];
   }
   function lightMapOf(skyline: SkylineId): LightMap | null {
@@ -298,7 +315,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     return lightMaps.get(skyline) ?? null;
   }
 
-  function buildKit(): BakeKit {
+  function buildKit(skyline: SkylineId): BakeKit {
     const trash: { dispose(): void }[] = [];
     const bakeScene = new THREE.Scene();
     const skyGeo = new THREE.SphereGeometry(150000, 64, 32);
@@ -317,9 +334,8 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     bakeScene.add(sea);
     const struct = makeStructMaterial(A, 'bake');
     // carries the structure material for the compile, and is drawn in the mirror pass (the
-    // harbour's reflection in the sea); its geometry is the bake's skyline's (set in bake()), any
-    // live layer until then (realise() has built one)
-    const liveBake = new THREE.Mesh(liveMesh.geometry, struct.material);
+    // harbour's reflection in the sea); bake() sets the bake's skyline's geometry
+    const liveBake = new THREE.Mesh(anyLive(skyline).geometry, struct.material);
     liveBake.frustumCulled = false;
     bakeScene.add(liveBake);
     const depth = createCubeTarget(PROXY_FACE);
@@ -344,9 +360,9 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
         throw new Error('world disposed during a bake');
       }
     } else {
-      geometry = (
-        preset.skyline === 'harbour' ? buildHarbourFar(false).geometry : preset.skyline === 'city' ? buildCityFar(false).geometry : buildCanyon(sun, false).geometry
-      ) as THREE.BufferGeometry;
+      const id = preset.skyline;
+      const built = id === 'harbour' ? buildHarbourFar(false) : id === 'city' ? buildCityFar(false) : id === 'railyard' ? buildRailyardFar(false) : buildCanyon(sun, false);
+      geometry = built.geometry as THREE.BufferGeometry;
     }
     m = new THREE.Mesh(geometry, k.struct.material);
     m.frustumCulled = false;
@@ -410,14 +426,16 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const preset = worldPreset(want.theme);
     const tw = themeWorld(want.theme);
     const face = want.spec.skyCubeSize;
-    if (kit === null) kit = buildKit();
+    if (kit === null) kit = buildKit(preset.skyline);
     const k = kit;
+    // the live layer in the bake scene: compiles the structure material, and is the harbour's
+    // reflection in the sea (mirror pass)
+    k.liveBake.geometry = anyLive(preset.skyline).geometry;
     // Start compiling every bake pipeline (sky, sea, structures: the live layer's bake mesh carries
     // the structure material, so the far skyline need not exist yet), then build the CPU data while
     // the GPU process compiles (in slices where it is long: see farMesh).
     for (const m of k.far.values()) m.visible = false;
     k.sea.visible = true;
-    k.liveBake.geometry = (liveOf(preset.skyline) ?? (lives.values().next().value as LiveLayer)).geometry;
     k.liveBake.visible = true;
     const tc = performance.now();
     const compiling = baker.compile(k.scene, face * SSAA);
@@ -558,12 +576,12 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     // The cache read starts first, so its I/O runs while a live layer this session has not built
     // yet is built (at boot and on the first switch to another skyline with one). Waiting for the
     // open database lets the read issue its request before the CPU work blocks the thread. A
-    // skyline without a live layer still needs one at boot (the harbour's: the live mesh needs
-    // real attributes, its pipeline stays warm).
+    // skyline without a live layer needs one only before the first frame (any built one, else the
+    // harbour's: the live mesh needs real attributes, its pipeline stays warm).
     const reading = early !== null && early.key === key ? early.read : noCache ? null : readBake(key, shapeOf(want));
     if (LIVE_BUILDERS[skyline] !== undefined ? !lives.has(skyline) : lives.size === 0) {
       if (reading !== null) await openCache();
-      if (liveOf(skyline) === null) liveOf('harbour');
+      anyLive(skyline);
     }
     if (reading !== null) rec = await reading;
     early = null;
