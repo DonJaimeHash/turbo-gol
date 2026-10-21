@@ -45,8 +45,11 @@ test('low keeps the old performance tier (1) and high the old quality tier (0)',
   assert.equal(high.msaa, 4);
   assert.equal(high.bloom, true);
   assert.equal(high.pixelBudget, 6e6);
-  assert.equal(high.shadowMapSize, 4096);
-  assert.equal(high.shadowRadius, 4);
+  // Two 2048 keys on the desktop default (67 MB); ultra keeps the 4096 maps (268 MB).
+  assert.equal(high.shadowMapSize, 2048);
+  assert.equal(high.shadowRadius, 3);
+  assert.equal(tier('ultra').shadowMapSize, 4096);
+  assert.equal(tier('ultra').shadowRadius, 4);
   assert.equal(high.detail, 'high');
   assert.equal(high.netDetail, true);
   assert.equal(high.particles, 1536);
