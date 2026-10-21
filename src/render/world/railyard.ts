@@ -21,14 +21,18 @@
  *                    GANTRY_TOWER_X; brick halls at |x| > 6900, z 8000..13000 (the "Deposito" on
  *                    the right, the sawtooth "Talleres" on the left); the chimney (right) and the
  *                    water tower (left) behind the gantry; the viaduct along x at z = VIADUCT_Z with
- *                    a passenger train on it; freight tracks at ground level in between
+ *                    a passenger train on it; freight tracks at ground level in between; another
+ *                    chimney beyond the viaduct on the left (LIVE_CHIMNEY)
  *   near end (-z)    the engine shed (big lit arched doors toward the pitch), tracks into it, a
  *                    second chimney and water tower, a signal gantry
  *   sides (|x|)      tall warehouses behind the stands (their lit windows show over the canopy)
  *
  * Every live part stays within harbour.ts LIVE_RADIUS and outside the stadium footprint
  * (STADIUM_HALF_X / STADIUM_HALF_Z hold nothing above the ground), and every baked top stays under
- * SKYLINE_TOP (the dome's parallax band).
+ * SKYLINE_TOP (the dome's parallax band). A thin, tall part seen against open sky from the kickoff
+ * cameras is live, not baked: the dome's proxy radius at its azimuth is the far city's, so from
+ * an off-centre camera it would be sheared into a bent smear (railyard.test.mjs checks the view
+ * of the far end).
  *
  * Patterns (railyardMaterial.ts): KIND.BRICK walls draw their arched windows, piers, string courses
  * and soot from the part's box; the integer part of the seed (kdat.w) is the facade style (0 plain
@@ -53,6 +57,8 @@ export const VIADUCT_DECK = 1000;
 /** The far end's chimney (right of the goal) and its top. */
 export const CHIMNEY_AT: readonly [number, number] = [-4600, 13200];
 export const CHIMNEY_TOP = 7000;
+/** The second chimney (left of the far end, behind the viaduct): x, z and its top. Live, not baked. */
+export const LIVE_CHIMNEY: readonly [number, number, number] = [12000, 24500, 7400];
 /** A track bed narrower than this (half width, uu) draws sleepers and rails (railyardMaterial.ts). */
 export const RAILBED_TRACK_HALF = 300;
 /** Track gauge (rail centre to rail centre, uu) the pattern draws. */
@@ -650,6 +656,12 @@ export function buildRailyardLive(seed = 5): RailyardLive {
     mast(c, s * 12500, 7000);
   }
 
+  // ---- the second chimney left of the far end, over the workshops (LIVE_CHIMNEY). Baked, a thin
+  // shaft in front of open sky was sheared into a bent smear by the dome's parallax proxy (whose
+  // radius there is the far city's, not the chimney's) from the kickoff camera. Built last, so the
+  // random stream of every part above is unchanged.
+  chimney(c, LIVE_CHIMNEY[0], LIVE_CHIMNEY[1], LIVE_CHIMNEY[2], 400, 210, BRICK_RED);
+
   const geometry = g.build(new THREE.Sphere(new THREE.Vector3(), LIVE_RADIUS)) as THREE.BufferGeometry;
   const triangles = (geometry.index as THREE.BufferAttribute).count / 3;
   return { geometry, lamps: c.lamps, stats: { parts: g.parts, verts: g.verts, triangles } };
@@ -713,7 +725,9 @@ export function buildRailyardFar(dry = false, seed = 13): RailyardFar {
     placed++;
   }
 
-  // ---- chimneys, gasholders, water towers, masts
+  // ---- chimneys, gasholders, water towers, masts. The first entry is drawn by the live layer
+  // instead (LIVE_CHIMNEY: baked, the parallax proxy sheared it); it still runs here into a dry
+  // builder so the random stream, and so the city below, stay as they were.
   const chimneys: readonly (readonly [number, number, number])[] = [
     [14000, 30000, 7800],
     [-26000, 24000, 6400],
@@ -722,7 +736,8 @@ export function buildRailyardFar(dry = false, seed = 13): RailyardFar {
     [9000, -34000, 6000],
     [-12000, 41000, 9000],
   ];
-  for (const [x, z, h] of chimneys) chimney(c, x, z, h, 300 + h * 0.03, 170 + h * 0.012, pick(R, bricks));
+  const skip: Ctx = { g: new GeoBuilder(true, 1), R, lamps: [] };
+  chimneys.forEach(([x, z, h], i) => chimney(i === 0 ? skip : c, x, z, h, 300 + h * 0.03, 170 + h * 0.012, pick(R, bricks)));
   gasholder(c, -27500, 33000, 2600, 4200, 0.7);
   gasholder(c, -33500, 29000, 2300, 3900, 0.45);
   gasholder(c, 36000, 21000, 2400, 4000, 0.6);

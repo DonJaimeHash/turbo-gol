@@ -129,6 +129,37 @@ test('a dry far-railyard run collects exactly the lamps of a full run; the bake 
   full.geometry.dispose();
 });
 
+test('no thin baked chimney in the kickoff view of the far end: the dome proxy would shear it, so it is live', () => {
+  // Seen from the blue kickoff camera (0, 131, -5270), a baked chimney in front of open sky is
+  // drawn through the dome's per-azimuth proxy radius (the far city's, ~40-60k), not its own: a
+  // bent, smeared hook beside the gantry. Chimney shafts are the only brick above 5200 (halls stop
+  // under it); within 40 degrees of the far end they must stand in or behind the downtown.
+  const far = Y.buildRailyardFar(false);
+  const p = far.geometry.attributes.position.array;
+  const k = far.geometry.attributes.kcol.array;
+  const CAM_Z = -5270;
+  for (let i = 0; i < p.length / 3; i++) {
+    const y = p[i * 3 + 1];
+    if (k[i * 4 + 3] !== KIND.BRICK || y <= 5200) continue;
+    const dx = p[i * 3];
+    const dz = p[i * 3 + 2] - CAM_Z;
+    if (dz <= 0 || Math.abs(Math.atan2(dx, dz)) > (40 * Math.PI) / 180) continue;
+    assert.ok(Math.hypot(dx, dz) >= 40000, `baked chimney at (${dx.toFixed(0)}, ${y.toFixed(0)}, ${p[i * 3 + 2].toFixed(0)}) in the far-end view`);
+  }
+  far.geometry.dispose();
+  // ... and the one that used to stand there is in the live layer, full height
+  const live = Y.buildRailyardLive();
+  const lp = live.geometry.attributes.position.array;
+  const lk = live.geometry.attributes.kcol.array;
+  const [cx, cz, top] = Y.LIVE_CHIMNEY;
+  let shaftTop = -Infinity;
+  for (let i = 0; i < lp.length / 3; i++) {
+    if (lk[i * 4 + 3] === KIND.BRICK && Math.hypot(lp[i * 3] - cx, lp[i * 3 + 2] - cz) < 700) shaftTop = Math.max(shaftTop, lp[i * 3 + 1]);
+  }
+  assert.ok(shaftTop >= top - 100, `live chimney shaft reaches ${shaftTop.toFixed(0)} (top ${top})`);
+  live.geometry.dispose();
+});
+
 test('canyon: its own sunset (sun right of the far goal, key light on it), walls kept off the arena, the sun in a notch', () => {
   const w = themeWorld('canyon-sunset');
   const p = worldPreset('canyon-sunset');
