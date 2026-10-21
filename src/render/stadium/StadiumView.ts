@@ -12,8 +12,8 @@
  *   stands.ts       stand structure (with the concourse apron round the cage) and crowd
  *   banners.ts      the hanging banners
  *   textures.ts     the board and banner canvas atlases, painted with the place's content
- *   content.ts      what the boards and banners show, per place (harbour, canyon, city, alpine,
- *                   railyard; both harbour themes share one set)
+ *   content.ts      what the boards and banners show, per place (harbour, canyon, alpine valley;
+ *                   both harbour themes share one set)
  *   emblems.ts      the canvas-path emblems of the cards and banners
  *   palette.ts      the per-theme uniforms (a theme switch only writes uniforms and a vertex
  *                   attribute of the lamp meshes: never a recompile)

@@ -15,10 +15,10 @@
  * Colours are linear-light RGB (HDR allowed), the values shaders use.
  */
 
-export type ThemeId = 'harbour-night' | 'harbour-day' | 'canyon-sunset' | 'city-dusk' | 'alpine-day' | 'railyard-night';
+export type ThemeId = 'harbour-night' | 'harbour-day' | 'canyon-sunset' | 'alpine-day';
 
 /** Menu order. */
-export const THEME_IDS: readonly ThemeId[] = ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night'];
+export const THEME_IDS: readonly ThemeId[] = ['harbour-night', 'harbour-day', 'canyon-sunset', 'alpine-day'];
 
 export const DEFAULT_THEME: ThemeId = 'harbour-night';
 
@@ -95,8 +95,6 @@ function towerFloodlights(color: Rgb, strength: number): Floodlight[] {
 }
 
 const WARM_LAMP: Rgb = [1.0, 0.93, 0.82];
-/** The railyard's older lamps: a warmer, more sodium-tinted white. */
-const SODIUM_WHITE: Rgb = [1.0, 0.86, 0.66];
 
 /** Themes built so far (the themes phase of docs/visuals/REWORK.md adds the others). */
 const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
@@ -161,43 +159,6 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     toneMapping: 'aces',
     exposure: 1.0,
     grade: { contrast: 1.13, saturation: 1.14, lift: [0.004, 0, 0.004], gain: [1.04, 0.99, 0.93], vignette: 0.32 },
-  },
-  // "Patio Ferroviario": the night railyard (world/railyard.ts). The same two raking tower keys as
-  // the night harbour in a warmer, sodium-tinted white; a violet-brown fill from the orange city
-  // sky; a soaked pitch (the lamps streak on it), warm brown haze; ACES with warm highlights and a
-  // touch of violet in the shadows.
-  'railyard-night': {
-    id: 'railyard-night',
-    night: true,
-    keys: [
-      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: SODIUM_WHITE, intensity: 2.0 },
-      { dir: unit(TOWER_X, HEAD_Y, 2900), color: SODIUM_WHITE, intensity: 1.4 },
-    ],
-    fill: { sky: [0.062, 0.045, 0.075], ground: [0.035, 0.022, 0.016], intensity: 0.7, env: 0.3 },
-    floodlights: towerFloodlights(SODIUM_WHITE, 1),
-    wetness: 0.62,
-    fog: { color: [0.075, 0.042, 0.048], density: 1.7e-5 },
-    toneMapping: 'aces',
-    exposure: 1.0,
-    grade: { contrast: 1.16, saturation: 1.1, lift: [0.005, 0.001, 0.005], gain: [1.04, 0.99, 0.95], vignette: 0.38 },
-  },
-  // The city rooftop: the car park's roof in a city just after sunset (world/city.ts). The sky still
-  // glows, but the pitch is lit like the night: the same two raking tower keys in a cooler LED
-  // white, all eight floodlights, a violet fill, a soaked pitch, a pink-violet haze and grade.
-  'city-dusk': {
-    id: 'city-dusk',
-    night: true,
-    keys: [
-      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: [0.96, 0.97, 1.0], intensity: 2.0 },
-      { dir: unit(TOWER_X, HEAD_Y, 2900), color: [0.96, 0.97, 1.0], intensity: 1.4 },
-    ],
-    fill: { sky: [0.075, 0.05, 0.13], ground: [0.035, 0.026, 0.03], intensity: 0.75, env: 0.35 },
-    floodlights: towerFloodlights([0.96, 0.97, 1.0], 1),
-    wetness: 0.72,
-    fog: { color: [0.08, 0.05, 0.11], density: 1.6e-5 },
-    toneMapping: 'aces',
-    exposure: 1.0,
-    grade: { contrast: 1.15, saturation: 1.12, lift: [0, 0.001, 0.008], gain: [1.0, 0.98, 1.02], vignette: 0.34 },
   },
   // "Valle Alto", a mountain valley at midday: the sun high on the left of the blue kickoff view
   // (azimuth -70 deg, elevation 40 deg, the sky's sun disc in world/presets.ts) as the main

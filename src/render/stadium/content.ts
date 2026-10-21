@@ -19,16 +19,14 @@
 import type { ThemeId } from '../theme';
 import type { EmblemId } from './emblems';
 
-export type Place = 'harbour' | 'canyon' | 'city' | 'alpine' | 'railyard';
+export type Place = 'harbour' | 'canyon' | 'alpine';
 
 /** The place each theme stands in (the harbour by night and by day share one set). */
 export const THEME_PLACE: Readonly<Record<ThemeId, Place>> = {
   'harbour-night': 'harbour',
   'harbour-day': 'harbour',
   'canyon-sunset': 'canyon',
-  'city-dusk': 'city',
   'alpine-day': 'alpine',
-  'railyard-night': 'railyard',
 };
 
 export interface BoardCard {
@@ -153,35 +151,6 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
       ballBanner(['#1e0f0a', '#0c0604'], '#ffb347'),
     ],
   },
-  // A rooftop in the city at dusk: towers, neon, night traffic.
-  city: {
-    cards: cards(
-      [
-        { name: 'CIUDAD ALTA', tag: 'LIGA DE LA AZOTEA', logo: 'skyline', bg: ['#1a0f3d', '#0d0724'], fg: '#ffffff', ac: '#ff4fd8' },
-        { name: 'NEÓN 24', tag: 'TIENDA 24 HORAS', logo: 'neonStar', bg: ['#08102e', '#040819'], fg: '#ffffff', ac: '#38e8ff' },
-        { name: 'GOMA VIVA', tag: 'NEUMÁTICOS', logo: 'chevrons', bg: ['#121212', '#050505'], fg: '#ffd21f', ac: '#ffd21f' },
-        { name: 'RUTA NOCTURNA', tag: 'MENSAJERÍA', logo: 'chevrons', bg: ['#3a1060', '#22083a'], fg: '#ffffff', ac: '#c08cff' },
-        { name: 'TECHO SEGURO', tag: 'SEGUROS', logo: 'skyline', bg: ['#1446a0', '#0a2c6e'], fg: '#ffffff', ac: '#ffffff' },
-        { name: 'PASO CEBRA', tag: 'ZAPATILLAS', logo: 'chevrons', bg: ['#0f0f0f', '#000000'], fg: '#ffffff', ac: '#ffffff' },
-        { name: 'TORRE ÍNDIGO', tag: 'MIRADOR PANORÁMICO', logo: 'skyline', bg: ['#14134a', '#0a092c'], fg: '#ffffff', ac: '#9b8cff' },
-        { name: 'NIVEL 12', tag: 'ESTACIONAMIENTO', logo: 'skyline', bg: ['#2a2a0a', '#161604'], fg: '#f0ff6a', ac: '#f0ff6a' },
-        { name: 'CIELO VIOLETA', tag: 'PERFUMERÍA', logo: 'neonStar', bg: ['#4a0f4f', '#2c0730'], fg: '#ffffff', ac: '#ffb3f5' },
-        { name: 'BÓVEDA', tag: 'BANCO DIGITAL', logo: 'skyline', bg: ['#181238', '#0c0921'], fg: '#ffffff', ac: '#7ef0ff' },
-        { name: 'LA TERRAZA', tag: 'PIZZERÍA', logo: 'ball', bg: ['#b0123a', '#780a26'], fg: '#ffffff', ac: '#ffffff' },
-        { name: 'BLOQUE 5', tag: 'MERCADO', logo: 'skyline', bg: ['#0d3528', '#072118'], fg: '#ffffff', ac: '#7cf0b5' },
-        { name: 'TAXI LUNA', tag: 'VIAJES 24 H', logo: 'neonStar', bg: ['#3a2c05', '#221902'], fg: '#ffd84a', ac: '#ffd84a' },
-        { name: 'COPA AZOTEA', tag: 'NOCHE EN LA CIUDAD', logo: 'neonStar', bg: ['#1a0f3d', '#0d0724'], fg: '#ffffff', ac: '#ffffff' },
-      ],
-      'MÁS TURBO. MÁS CIUDAD.',
-      INLAND_PAIR,
-    ),
-    banners: [
-      { bg: ['#14217a', '#0a1246'], fg: '#ffffff', emblem: 'skyline', text: 'CIUDAD ALTA' },
-      { bg: ['#8f1040', '#520824'], fg: '#ffffff', emblem: 'skyline', text: 'CIUDAD ALTA' },
-      { bg: ['#1a0f3d', '#0d0724'], fg: '#ffffff', emblem: 'neonStar', text: 'AZOTEA' },
-      ballBanner(['#0e1626', '#060a12'], '#38e8ff'),
-    ],
-  },
   // A mountain valley at midday: peaks, pine forest, snow, the valley's farms and lifts.
   alpine: {
     cards: cards(
@@ -209,35 +178,6 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
       { bg: ['#a01818', '#5e0c0c'], fg: '#ffffff', emblem: 'peak', text: 'VALLE ALTO' },
       { bg: ['#123a24', '#082214'], fg: '#ffffff', emblem: 'pine', text: 'EL PINAR' },
       ballBanner(['#1a2233', '#0e131f'], '#c6ff2e'),
-    ],
-  },
-  // An old railway depot at night: locomotives, rails, the works and its chimney.
-  railyard: {
-    cards: cards(
-      [
-        { name: 'PATIO FERROVIARIO', tag: 'LIGA DEL PATIO', logo: 'wheel', bg: ['#2a0f0a', '#170805'], fg: '#ffffff', ac: '#ffb347' },
-        { name: 'LA USINA', tag: 'ENERGÍA', logo: 'chimney', bg: ['#2a1408', '#160a03'], fg: '#ffffff', ac: '#ffb347' },
-        { name: 'BIELA ROJA', tag: 'NEUMÁTICOS', logo: 'wheel', bg: ['#5a0d10', '#360608'], fg: '#ffffff', ac: '#ff6b4a' },
-        { name: 'VÍA ANCHA', tag: 'MUDANZAS', logo: 'chevrons', bg: ['#14120a', '#0a0904'], fg: '#ffd21f', ac: '#ffd21f' },
-        { name: 'RIEL SEGURO', tag: 'SEGUROS', logo: 'wheel', bg: ['#1d3a5a', '#10223a'], fg: '#ffffff', ac: '#bcd8ff' },
-        { name: 'DURMIENTE', tag: 'COLCHONES', logo: 'chevrons', bg: ['#0f0f0f', '#000000'], fg: '#ffffff', ac: '#ffcc00' },
-        { name: 'TROCHA ANGOSTA', tag: 'TURISMO EN TREN', logo: 'wheel', bg: ['#0d3528', '#072118'], fg: '#ffffff', ac: '#7cf0b5' },
-        { name: 'ENGRANAJE', tag: 'MAQUINARIA', logo: 'gear', bg: ['#8e3c0c', '#5c2406'], fg: '#ffffff', ac: '#ffffff' },
-        { name: 'SILBATO', tag: 'RADIO NOCTURNA', logo: 'chimney', bg: ['#092647', '#05162c'], fg: '#e6f4ff', ac: '#4fb3ff' },
-        { name: 'SEÑAL VERDE', tag: 'BANCO DIGITAL', logo: 'chevrons', bg: ['#0d2a14', '#06180b'], fg: '#ffffff', ac: '#5cff8a' },
-        { name: 'FOGONERO', tag: 'PARRILLA', logo: 'chimney', bg: ['#aa0e27', '#74081a'], fg: '#ffffff', ac: '#ffffff' },
-        { name: 'ANDÉN 4', tag: 'MERCADO', logo: 'wheel', bg: ['#3a2412', '#22140a'], fg: '#ffe3c0', ac: '#ffb35a' },
-        { name: 'TALLER CENTRAL', tag: 'REPUESTOS', logo: 'gear', bg: ['#1a2233', '#0e131f'], fg: '#ffffff', ac: '#ffcc66' },
-        { name: 'LIGA FERROVIARIA', tag: 'NOCHE DE ANDENES', logo: 'gear', bg: ['#2a0f0a', '#170805'], fg: '#ffffff', ac: '#ffffff' },
-      ],
-      'MÁS TURBO. MÁS VÍA.',
-      INLAND_PAIR,
-    ),
-    banners: [
-      { bg: ['#16285a', '#0b1634'], fg: '#ffffff', emblem: 'wheel', text: 'PATIO\nFERROVIARIO' },
-      { bg: ['#7e1a10', '#461008'], fg: '#ffffff', emblem: 'wheel', text: 'PATIO\nFERROVIARIO' },
-      { bg: ['#2a1408', '#160a03'], fg: '#ffffff', emblem: 'chimney', text: 'LA USINA' },
-      ballBanner(['#0e1626', '#060a12'], '#ffb347'),
     ],
   },
 };

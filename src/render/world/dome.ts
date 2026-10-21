@@ -74,7 +74,7 @@ export interface Dome {
   readonly ground: UniformNode<'float', number>;
   /**
    * The heights over the origin where the parallax hands over to "at infinity" (PROXY_TOP by
-   * default; World.ts writes it per theme: a preset's proxyTop, or the city's band).
+   * default; World.ts writes it per theme: a preset's proxyTop, else this default).
    */
   readonly top: UniformNode<'vec2', THREE.Vector2>;
   dispose(): void;

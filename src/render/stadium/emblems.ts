@@ -7,10 +7,7 @@
  *   generic    bolt, ball, chevrons, signal       (any place)
  *   harbour    anchor, lighthouse, wave (the sea)
  *   canyon     sunMesa (a striped sun over a mesa), cactus
- *   city       skyline, neonStar
  *   alpine     peak (a snowy summit), pine
- *   railyard   wheel (a locomotive driving wheel on its rail), gear, chimney (a works chimney and
- *              a sawtooth hall)
  */
 
 export type Ctx = CanvasRenderingContext2D;
@@ -270,73 +267,6 @@ const drawCactus: Emblem = (ctx, x, y, s, color, bg) => {
   ctx.restore();
 };
 
-// ---- City -------------------------------------------------------------------------------------
-
-/** Downtown towers on a ground line, windows cut out, an antenna on the tallest. */
-const drawSkyline: Emblem = (ctx, x, y, s, color, bg) => {
-  enter(ctx, x, y, s, color);
-  const towers: readonly (readonly [number, number, number])[] = [
-    [-0.92, 0.3, -0.12],
-    [-0.62, 0.26, -0.48],
-    [-0.36, 0.3, -0.84],
-    [-0.06, 0.24, -0.3],
-    [0.18, 0.3, -0.62],
-    [0.48, 0.24, -0.2],
-    [0.72, 0.22, 0.05],
-  ];
-  for (const [tx, tw, top] of towers) ctx.fillRect(tx, top, tw, 0.8 - top);
-  ctx.fillRect(0.24, -0.72, 0.18, 0.1);
-  ctx.lineWidth = 0.045;
-  ctx.beginPath();
-  ctx.moveTo(-0.21, -0.84);
-  ctx.lineTo(-0.21, -1.0);
-  ctx.stroke();
-  ctx.fillStyle = bg;
-  for (const [tx, tw, top] of towers) {
-    for (let wy = top + 0.1; wy < 0.68; wy += 0.14) {
-      for (let c = 0; c < 2; c++) ctx.fillRect(tx + tw * (0.2 + c * 0.36), wy, tw * 0.24, 0.065);
-    }
-  }
-  ctx.fillRect(-1, 0.8, 2, 0.04);
-  ctx.fillStyle = color;
-  ctx.fillRect(-1, 0.84, 2, 0.07);
-  ctx.restore();
-};
-
-/** A neon star: a five-pointed outline with a soft glow (wide faint strokes) and two sparkles. */
-const drawNeonStar: Emblem = (ctx, x, y, s, color) => {
-  enter(ctx, x, y, s, color);
-  ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 === 1 ? 0.36 : 0.86;
-    const a = -Math.PI / 2 + (i * Math.PI) / 5;
-    ctx.lineTo(Math.cos(a) * r, 0.06 + Math.sin(a) * r);
-  }
-  ctx.closePath();
-  ctx.globalAlpha = 0.22;
-  ctx.lineWidth = 0.28;
-  ctx.stroke();
-  ctx.globalAlpha = 0.45;
-  ctx.lineWidth = 0.16;
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-  ctx.lineWidth = 0.075;
-  ctx.stroke();
-  ctx.lineWidth = 0.045;
-  ctx.beginPath();
-  for (const [cx, cy, r] of [
-    [0.8, -0.72, 0.13],
-    [-0.82, 0.62, 0.1],
-  ] as const) {
-    ctx.moveTo(cx - r, cy);
-    ctx.lineTo(cx + r, cy);
-    ctx.moveTo(cx, cy - r);
-    ctx.lineTo(cx, cy + r);
-  }
-  ctx.stroke();
-  ctx.restore();
-};
-
 // ---- Alpine -----------------------------------------------------------------------------------
 
 /** A snowy summit (a jagged snow line cut below the top) before a dimmer second peak. */
@@ -399,111 +329,6 @@ const drawPine: Emblem = (ctx, x, y, s, color, bg) => {
   ctx.restore();
 };
 
-// ---- Railyard ---------------------------------------------------------------------------------
-
-/** A locomotive driving wheel: rim, spokes, the crescent counterweight, hub, crank boss, on a rail. */
-const drawWheel: Emblem = (ctx, x, y, s, color, bg) => {
-  enter(ctx, x, y, s, color);
-  const cy = -0.06;
-  ctx.lineWidth = 0.13;
-  ctx.beginPath();
-  ctx.arc(0, cy, 0.78, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.lineWidth = 0.06;
-  ctx.beginPath();
-  for (let i = 0; i < 12; i++) {
-    const a = (i * Math.PI * 2) / 12 + Math.PI / 12;
-    ctx.moveTo(Math.cos(a) * 0.18, cy + Math.sin(a) * 0.18);
-    ctx.lineTo(Math.cos(a) * 0.74, cy + Math.sin(a) * 0.74);
-  }
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(0, cy, 0.74, Math.PI * 0.16, Math.PI * 0.84);
-  ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(0, cy, 0.21, 0, Math.PI * 2);
-  ctx.moveTo(0.1, cy - 0.42);
-  ctx.arc(0, cy - 0.42, 0.1, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = bg;
-  ctx.beginPath();
-  ctx.arc(0, cy, 0.08, 0, Math.PI * 2);
-  ctx.moveTo(0.04, cy - 0.42);
-  ctx.arc(0, cy - 0.42, 0.04, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = color;
-  ctx.fillRect(-1, 0.86, 2, 0.08);
-  ctx.restore();
-};
-
-/** A ten-tooth gear with a bore and five lightening holes. */
-const drawGear: Emblem = (ctx, x, y, s, color, bg) => {
-  enter(ctx, x, y, s, color);
-  const N = 10;
-  const t = (Math.PI * 2) / N;
-  const at = (r: number, a: number): void => ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-  ctx.beginPath();
-  for (let i = 0; i < N; i++) {
-    const a0 = i * t;
-    at(0.66, a0);
-    at(0.66, a0 + 0.18 * t);
-    at(0.9, a0 + 0.3 * t);
-    at(0.9, a0 + 0.7 * t);
-    at(0.66, a0 + 0.82 * t);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = bg;
-  ctx.beginPath();
-  ctx.arc(0, 0, 0.24, 0, Math.PI * 2);
-  for (let i = 0; i < 5; i++) {
-    const a = -Math.PI / 2 + (i * Math.PI * 2) / 5;
-    ctx.moveTo(Math.cos(a) * 0.45 + 0.1, Math.sin(a) * 0.45);
-    ctx.arc(Math.cos(a) * 0.45, Math.sin(a) * 0.45, 0.1, 0, Math.PI * 2);
-  }
-  ctx.fill();
-  ctx.restore();
-};
-
-/** A tapering brick chimney with smoke, beside a works hall with a sawtooth roof. */
-const drawChimney: Emblem = (ctx, x, y, s, color, bg) => {
-  enter(ctx, x, y, s, color);
-  ctx.beginPath();
-  ctx.moveTo(-0.95, 0.88);
-  ctx.lineTo(-0.95, 0.3);
-  for (let k = 0; k < 3; k++) {
-    const x0 = -0.95 + k * 0.3;
-    ctx.lineTo(x0, 0.06);
-    ctx.lineTo(x0 + 0.3, 0.3);
-  }
-  ctx.lineTo(-0.05, 0.88);
-  ctx.closePath();
-  ctx.moveTo(0.05, 0.88);
-  ctx.lineTo(0.14, -0.5);
-  ctx.lineTo(0.34, -0.5);
-  ctx.lineTo(0.43, 0.88);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillRect(0.09, -0.6, 0.3, 0.11);
-  ctx.globalAlpha = 0.8;
-  ctx.beginPath();
-  for (const [cx, cy, r] of [
-    [0.3, -0.76, 0.13],
-    [0.52, -0.84, 0.16],
-    [0.78, -0.8, 0.19],
-  ] as const) {
-    ctx.moveTo(cx + r, cy);
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  }
-  ctx.fill();
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = bg;
-  for (const by of [-0.22, 0.14, 0.5]) ctx.fillRect(0.0, by, 0.5, 0.035);
-  for (let k = 0; k < 3; k++) ctx.fillRect(-0.88 + k * 0.3, 0.46, 0.15, 0.16);
-  ctx.restore();
-};
-
 export const EMBLEMS = {
   wave: drawWave,
   bolt: drawBolt,
@@ -514,13 +339,8 @@ export const EMBLEMS = {
   lighthouse: drawLighthouse,
   sunMesa: drawSunMesa,
   cactus: drawCactus,
-  skyline: drawSkyline,
-  neonStar: drawNeonStar,
   peak: drawPeak,
   pine: drawPine,
-  wheel: drawWheel,
-  gear: drawGear,
-  chimney: drawChimney,
 } as const satisfies Readonly<Record<string, Emblem>>;
 
 export type EmblemId = keyof typeof EMBLEMS;

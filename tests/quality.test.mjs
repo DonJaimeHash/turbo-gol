@@ -190,9 +190,7 @@ test('every theme has a menu name in English and Spanish (the stadium row of the
     'harbour-night': ['Night harbour', 'Puerto de noche'],
     'harbour-day': ['Harbour by day', 'Puerto de día'],
     'canyon-sunset': ['Red canyon', 'Cañón rojo'],
-    'city-dusk': ['City rooftop', 'Azotea de ciudad'],
     'alpine-day': ['Alpine valley', 'Valle alpino'],
-    'railyard-night': ['Rail yard', 'Patio ferroviario'],
   };
   assert.deepEqual(Object.keys(names).sort(), [...THEME_IDS].sort());
   for (const id of THEME_IDS) {

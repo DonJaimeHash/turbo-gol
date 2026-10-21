@@ -1,14 +1,13 @@
 /**
  * Geometry builder for the backdrop: every solid of a skyline (land, containers, cranes, ship,
- * lighthouse, far city, rock, city towers and streets, mountains and pines, brick halls and track
- * beds) is appended to ONE merged world-space BufferGeometry drawn with ONE
+ * lighthouse, far city, rock, mountains and pines) is appended to ONE merged world-space
+ * BufferGeometry drawn with ONE
  * material, so a skyline is one draw call and one pipeline. Per vertex it carries what the shader
  * needs to draw patterns without textures (see bakeMaterials.ts):
  *
  *   kcol (vec4)  albedo rgb (emission rgb for lamps) + kind (pattern id, see KIND)
  *   kloc (vec3)  the vertex position in the PART's own frame (box-local, centred), in uu
- *   kdat (vec4)  the part's half-size (x, y, z) + a random seed in [0, 1) (KIND.BRICK adds its
- *                facade style as the integer part: railyardMaterial.ts)
+ *   kdat (vec4)  the part's half-size (x, y, z) + a random seed in [0, 1)
  *
  * A builder made with `dry = true` only counts: the generators run in that mode to collect their
  * lamps (for the light map) without paying for geometry they do not need.
@@ -27,10 +26,6 @@ export const KIND = {
   ROCK: 7,
   FARCITY: 8,
   STRATA: 9,
-  /** City facades (city.ts): window grid, glass reflection, lit crown; the style is in the seed. */
-  TOWER: 10,
-  /** City ground (city.ts): the car park's wet concrete deck with bay lines, or wet asphalt streets. */
-  DECK: 11,
   /**
    * Alpine valley (alpine.ts, patterns in alpineShade.ts): pine needles, meadow ground, baked
    * mountains. Contiguous: bakeMaterials.ts tests their exact range, alpineShade tells them apart.
@@ -38,10 +33,6 @@ export const KIND = {
   FOLIAGE: 12,
   MEADOW: 13,
   ALPINE: 14,
-  // railyard (railyard.ts, drawn by railyardMaterial.ts); its kinds start at 20 so other
-  // skylines can number theirs from 10 without a clash
-  BRICK: 20,
-  RAILBED: 21,
 } as const;
 export type Kind = (typeof KIND)[keyof typeof KIND];
 

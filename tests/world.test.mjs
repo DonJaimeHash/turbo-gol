@@ -19,7 +19,7 @@ registerHooks({
 });
 
 const THREE = await import('three/webgpu');
-const { THEME_IDS, themeWorld } = await import('../src/render/theme.ts');
+const { THEME_IDS, themeWorld, DEFAULT_THEME } = await import('../src/render/theme.ts');
 const { worldPreset, hasWorldPreset, dirFromAzEl } = await import('../src/render/world/presets.ts');
 const H = await import('../src/render/world/harbour.ts');
 const { KIND } = await import('../src/render/world/geo.ts');
@@ -29,20 +29,23 @@ const cache = await import('../src/render/world/cache.ts');
 const finite3 = (c) => c.length === 3 && c.every((v) => Number.isFinite(v) && v >= 0);
 
 test('every theme resolves to a world preset; the built ones are their own', () => {
-  for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'city', 'alpine', 'railyard'].includes(worldPreset(id).skyline), id);
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night']) assert.ok(hasWorldPreset(id), id);
+  for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'alpine'].includes(worldPreset(id).skyline), id);
+  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'alpine-day']) assert.ok(hasWorldPreset(id), id);
   assert.equal(worldPreset('harbour-night').skyline, 'harbour');
   assert.equal(worldPreset('harbour-day').skyline, 'harbour');
   assert.equal(worldPreset('canyon-sunset').skyline, 'canyon');
-  assert.equal(worldPreset('city-dusk').skyline, 'city');
   assert.equal(worldPreset('alpine-day').skyline, 'alpine');
-  assert.equal(worldPreset('railyard-night').skyline, 'railyard');
+  // the themes removed on 2026-10-21 (city-dusk, railyard-night) are gone everywhere
+  for (const id of ['city-dusk', 'railyard-night']) {
+    assert.ok(!THEME_IDS.includes(id), id);
+    assert.equal(hasWorldPreset(id), false, id);
+  }
   // themes without a preset yet use the default world
   for (const id of THEME_IDS) if (!hasWorldPreset(id)) assert.equal(worldPreset(id), worldPreset('harbour-night'), id);
 });
 
 test('world presets hold finite, non-negative radiance and sane ranges', () => {
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night']) {
+  for (const id of THEME_IDS) {
     const p = worldPreset(id);
     for (const c of [p.zenith, p.mid, p.horizon, p.glow.color, p.key.color, p.key.light, p.ambSky, p.ambGround, p.sea.color, p.envTurf]) assert.ok(finite3(c), `${id} colour ${c}`);
     for (const cl of [p.clouds, p.cirrus]) {
@@ -73,7 +76,7 @@ test('dirFromAzEl: unit vectors, azimuth 0 = +z, 90 = -x, elevation up', () => {
 
 test('the built themes keep the light count and ship their shared facts (setTheme end to end)', () => {
   const night = themeWorld('harbour-night');
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'city-dusk', 'alpine-day', 'railyard-night']) {
+  for (const id of THEME_IDS) {
     const w = themeWorld(id);
     assert.equal(w.id, id, 'its own entry, not the fallback');
     assert.equal(w.keys.length, 2);
@@ -96,14 +99,6 @@ test('the built themes keep the light count and ship their shared facts (setThem
     const k = themeWorld(id).keys[0].dir;
     assert.ok(sun[0] * k[0] + sun[1] * k[1] + sun[2] * k[2] > 0.9999, `${id}: keys[0] points at the sun disc`);
   }
-  // the city at dusk: the sky still glows (a sun just over the horizon, no moon) but the pitch is
-  // floodlit like the night and soaked
-  const city = themeWorld('city-dusk');
-  assert.equal(city.night, true);
-  assert.ok(city.floodlights.every((f) => f.strength === 1), 'all eight heads on');
-  assert.ok(city.wetness > themeWorld('harbour-night').wetness, 'wetter than the harbour');
-  assert.equal(worldPreset('city-dusk').key.moon, false);
-  assert.ok(worldPreset('city-dusk').key.el < 3 && worldPreset('city-dusk').lights > 0 && worldPreset('city-dusk').windows > 0);
 });
 
 test('harbour live layer: deterministic, inside its radius, clear of the stadium, tall over the boards', () => {
@@ -318,96 +313,6 @@ test('the baked skylines stay under the dome parallax hand-over band (no smeared
   canyon.geometry.dispose();
 });
 
-// ---- city-dusk (src/render/world/city.ts)
-
-const C = await import('../src/render/world/city.ts');
-
-test('city live layer: deterministic, inside the live radius, clear of the stadium, towers over the far goal', () => {
-  const a = C.buildCityLive();
-  const b = C.buildCityLive();
-  const pa = a.geometry.attributes.position.array;
-  const pb = b.geometry.attributes.position.array;
-  assert.equal(pa.length, pb.length);
-  assert.ok(pa.every((v, i) => v === pb[i]), 'same seed, same geometry');
-  const col = a.geometry.attributes.kcol.array;
-  let maxR = 0;
-  let farEndTop = -Infinity;
-  let spireTop = -Infinity;
-  let lowest = Infinity;
-  for (let i = 0; i < pa.length / 3; i++) {
-    const x = pa[i * 3];
-    const y = pa[i * 3 + 1];
-    const z = pa[i * 3 + 2];
-    assert.ok(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z));
-    maxR = Math.max(maxR, Math.hypot(x, y - 250, z));
-    lowest = Math.min(lowest, y);
-    // the stadium and its apron stand on the deck: nothing of the city rises inside their footprint
-    if (Math.abs(x) < H.STADIUM_HALF_X - 400 && Math.abs(z) < 6500) assert.ok(y <= H.QUAY + 1, `vertex ${i} (${x}, ${y}, ${z}) inside the stadium`);
-    const kind = col[i * 4 + 3];
-    if (kind === KIND.TOWER && z > C.DECK_Z && Math.abs(x) < 12000) farEndTop = Math.max(farEndTop, y);
-    if (z > 15000 && z < 22000 && Math.abs(x + 5200) < 200) spireTop = Math.max(spireTop, y);
-  }
-  assert.ok(maxR <= H.LIVE_RADIUS, `live layer within ${H.LIVE_RADIUS} (got ${maxR.toFixed(0)})`);
-  assert.ok(lowest >= C.CITY_STREET - 1, 'nothing below the streets');
-  assert.ok(farEndTop > 7000, `towers rise well over the boards behind the far goal (top ${farEndTop.toFixed(0)})`);
-  assert.ok(spireTop > H.SKYLINE_TOP, `the live spire may rise above the baked skyline's cap (top ${spireTop.toFixed(0)})`);
-  for (const name of ['normal', 'kcol', 'kloc', 'kdat']) assert.ok(a.geometry.attributes[name].array.every(Number.isFinite), name);
-  // the same vertex layout as the harbour's live layer: World.ts swaps the geometry, the pipeline stays
-  const h = H.buildHarbourLive();
-  assert.deepEqual(Object.keys(a.geometry.attributes).sort(), Object.keys(h.geometry.attributes).sort());
-  for (const name of Object.keys(h.geometry.attributes)) assert.equal(a.geometry.attributes[name].itemSize, h.geometry.attributes[name].itemSize, name);
-  assert.equal(a.geometry.index.array.constructor, h.geometry.index.array.constructor, 'same index format');
-  assert.ok(a.stats.triangles <= h.stats.triangles, `no more triangles than the harbour's live layer (${a.stats.triangles} vs ${h.stats.triangles})`);
-  // lamps: the deck poles and the street lamps, all inside the live area, lighting downward
-  assert.ok(a.lamps.length > 50);
-  for (const L of a.lamps) assert.ok(Math.hypot(L.pos[0], L.pos[2]) < H.LIVE_RADIUS && L.down === 1 && finite3(L.color));
-  a.geometry.dispose();
-  b.geometry.dispose();
-  h.geometry.dispose();
-});
-
-test('city far bake: under the dome band, deterministic lamps (none: no light map), a dry run counts the same parts', () => {
-  const full = C.buildCityFar(false);
-  const dry = C.buildCityFar(true);
-  assert.equal(dry.geometry, null);
-  assert.deepEqual(dry.lamps, full.lamps);
-  assert.equal(dry.stats.parts, full.stats.parts);
-  assert.equal(full.geometry.attributes.position.count, full.stats.verts);
-  const p = full.geometry.attributes.position.array;
-  let top = -Infinity;
-  for (let i = 1; i < p.length; i += 3) top = Math.max(top, p[i]);
-  assert.ok(top <= H.SKYLINE_TOP, `far city top ${top.toFixed(0)}`);
-  assert.ok(full.geometry.attributes.kdat.array.every(Number.isFinite));
-  full.geometry.dispose();
-});
-
-test('city patterns: seeds carry the facade style and the crown as the shader decodes them (float32)', () => {
-  for (let i = 0; i < 400; i++) {
-    const r = (i + 0.5) / 400;
-    for (const style of [C.TOWER_STYLE.OFFICE, C.TOWER_STYLE.RESIDENTIAL, C.TOWER_STYLE.DARK]) {
-      const s = Math.fround(C.towerSeed(style, r));
-      assert.equal(Math.floor(Math.fround(s * 3)), style, `style of seed ${s}`);
-      const f = Math.fround(s * Math.fround(C.CROWN_K));
-      assert.equal(C.crownOf(s), f - Math.floor(f) >= C.CROWN_MIN);
-    }
-  }
-  // the bay lines the DECK pattern draws match the parked cars' rows, on the deck, past the apron
-  assert.equal(C.BAY_X % C.BAY_W, 0, 'bays start on a line');
-  assert.ok(C.ROW_Z0 - C.ROW_HALF > 6500, 'first row past the stadium apron');
-  assert.ok(C.ROW_Z0 + (C.ROWS - 1) * C.ROW_PITCH + C.ROW_HALF < C.DECK_Z, 'last row on the deck');
-  assert.ok(C.DECK_SEED >= 0.5 && C.STREET_SEED < 0.5);
-  // the light map's two layers are the street and the deck; the dome's floor for the city is the street
-  assert.deepEqual([...C.CITY_LIGHT_LAYERS], [C.CITY_STREET, H.QUAY]);
-});
-
-test('city parallax proxy: its band starts no lower than the default one and stays over the baked skyline', async () => {
-  const { PROXY_TOP } = await import('../src/render/world/dome.ts');
-  const { BAKE_ORIGIN } = await import('../src/render/world/World.ts');
-  assert.ok(C.CITY_PROXY_TOP[0] >= PROXY_TOP[0] && C.CITY_PROXY_TOP[1] > C.CITY_PROXY_TOP[0]);
-  assert.ok(H.SKYLINE_TOP <= C.CITY_PROXY_TOP[0] + BAKE_ORIGIN.y);
-  assert.ok(C.CITY_PROXY_MAX_R > H.LIVE_RADIUS, 'the proxy stays behind the live layer');
-});
-
 // ---------------------------------------------------------------------------------- alpine valley
 
 const AL = await import('../src/render/world/alpine.ts');
@@ -587,4 +492,52 @@ test('alpine vertexNormals: three computeVertexNormals bit for bit (raw arrays, 
   assert.equal(r.value.length, want.length);
   assert.ok(r.value.every((v, i) => Object.is(v, want[i])), 'same bits as three');
   ref.dispose();
+});
+
+// ---------------------------------------------------------------------------------- red canyon
+
+const { buildCanyon, NEAR_WALL } = await import('../src/render/world/canyon.ts');
+const { BAKE_ORIGIN } = await import('../src/render/world/World.ts');
+const { stadiumTheme } = await import('../src/render/stadium/palette.ts');
+
+test('the structure material kinds are unique pattern ids', () => {
+  const ids = Object.values(KIND);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('canyon: its own sunset (sun right of the far goal, key light on it), walls kept off the arena, the sun in a notch', () => {
+  const w = themeWorld('canyon-sunset');
+  const p = worldPreset('canyon-sunset');
+  assert.equal(w.id, 'canyon-sunset');
+  assert.equal(p.skyline, 'canyon');
+  assert.ok(p.key.az > 0 && p.key.az < 20 && p.key.el > 0 && p.key.el < 10, 'a low sun right of the far goal');
+  // keys[0] stands for the sun: the same azimuth, a little higher
+  const sun = dirFromAzEl(p.key.az, p.key.el);
+  const k = w.keys[0].dir;
+  const azK = Math.atan2(-k[0], k[2]) * (180 / Math.PI);
+  assert.ok(Math.abs(azK - p.key.az) < 1, `key azimuth ${azK.toFixed(2)} vs sun ${p.key.az}`);
+  assert.ok(k[1] > sun[1], 'the key sits above the disc');
+  assert.notEqual(stadiumTheme('canyon-sunset'), stadiumTheme(DEFAULT_THEME), 'its own stadium palette');
+
+  const c = buildCanyon(sun, false);
+  const pos = c.geometry.attributes.position.array;
+  let maxY = -Infinity;
+  let horizon = -Infinity;
+  const sunAz = Math.atan2(sun[0], sun[2]);
+  for (let i = 0; i < pos.length; i += 3) {
+    const x = pos[i];
+    const y = pos[i + 1];
+    const z = pos[i + 2];
+    maxY = Math.max(maxY, y);
+    // beside the arena no wall stands nearer than NEAR_WALL minus the meander and the talus
+    if (Math.abs(z) < 8000 && y > 1500) assert.ok(Math.abs(x) > NEAR_WALL - 2400, `wall at (${x.toFixed(0)}, ${y.toFixed(0)}, ${z.toFixed(0)})`);
+    // the terrain's elevation seen from the bake origin in the sun's azimuth
+    const r = Math.hypot(x, z);
+    let d = Math.atan2(x, z) - sunAz;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    if (r > 8000 && Math.abs(d) < 0.01) horizon = Math.max(horizon, Math.atan2(y - BAKE_ORIGIN.y, r));
+  }
+  assert.ok(maxY <= H.SKYLINE_TOP, `canyon top ${maxY.toFixed(0)}`);
+  assert.ok(horizon < Math.asin(sun[1]), `the sun clears the horizon (terrain ${(horizon * 57.3).toFixed(2)} deg, sun ${p.key.el} deg)`);
+  c.geometry.dispose();
 });

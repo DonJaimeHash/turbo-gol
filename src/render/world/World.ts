@@ -8,13 +8,11 @@
  *   live layer  the near harbour (harbour.ts buildHarbourLive): quay ground, the container yards
  *               just beyond both ends of the field, STS cranes with lattice booms, RMG gantries,
  *               light masts, the cruise ship and the lighthouse, ONE merged mesh with the live
- *               structure material (bakeMaterials.ts), drawn before the dome. The city (city.ts
- *               buildCityLive: the car park's deck, the streets below, the buildings across them),
- *               the alpine valley (alpine.ts buildAlpineLive: valley floor, walls, pines) and the
- *               railyard (railyard.ts buildRailyardLive: halls, gantry, chimney, viaduct, wagons)
- *               are the same kind of mesh: a theme switch swaps the geometry (same attributes, same
- *               material: no new pipeline). Themes without a live layer (the canyon) collapse it
- *               with a uniform (no recompile, the pipeline stays warm).
+ *               structure material (bakeMaterials.ts), drawn before the dome. The alpine valley
+ *               (alpine.ts buildAlpineLive: valley floor, walls, pines) is the same kind of mesh: a
+ *               theme switch swaps the geometry (same attributes, same material: no new pipeline).
+ *               Themes without a live layer (the canyon) collapse it with a uniform (no recompile,
+ *               the pipeline stays warm).
  *   dome        one back-faced sphere showing the baked cube with parallax correction (dome.ts).
  *   beam        the lighthouse beam (tiers with geometry detail; collapsed when unused).
  *
@@ -24,7 +22,7 @@
  *   1. mirror cube   from the bake origin mirrored below the sea, sea hidden, live layer shown:
  *                    the sea's reflection source
  *   2. final cube    from the bake origin, tier.skyCubeSize faces, 2x2 supersampled: sky, moon,
- *                    stars, two cloud layers, the far harbour, canyon, city, mountains or railyard,
+ *                    stars, two cloud layers, the far harbour, canyon or mountains,
  *                    the sea; alpha keeps 1000 / distance
  *   3. proxy         a 32^2 box-filtered depth cube reduced to the dome's per-azimuth lookup
  *   4. environment   PMREM (tier.envSize) of the cube + the live layer + the pitch + the theme's
@@ -54,7 +52,6 @@ import { makeSeaMaterial, makeSkyMaterial, makeStructMaterial, type StructMateri
 import { cacheKey, copyRows, openCache, readBake, writeBake, type BakeShape, type CachedBake } from './cache';
 import { buildAlpineFarSliced, buildAlpineLive } from './alpine';
 import { buildCanyon } from './canyon';
-import { CITY_LIGHT_LAYERS, CITY_PROXY_MAX_R, CITY_PROXY_TOP, CITY_STREET, buildCityFar, buildCityLive } from './city';
 import { PROXY_TOP, buildBeam, buildDome, type Beam, type Dome } from './dome';
 import { createEnvProbe, pmremAtlasSize, type EnvProbe } from './env';
 import type { Lamp } from './geo';
@@ -62,7 +59,6 @@ import { LIGHTHOUSE_LANTERN, QUAY, SEA_LEVEL, buildHarbourFar, buildHarbourLive 
 import { buildLightMap, lightMapFromData, type LightMap } from './lightmap';
 import { dirFromAzEl, worldPreset, type SkylineId, type WorldPreset } from './presets';
 import { createLatestQueue } from './queue';
-import { buildRailyardFar, buildRailyardLive } from './railyard';
 
 /** Where the cube is rendered from: mid-pitch, at chase / broadcast camera height. */
 export const BAKE_ORIGIN = new THREE.Vector3(0, 250, 0);
@@ -136,32 +132,8 @@ interface LiveLayer {
 /** The skylines with a live layer, and how to build it (once per session, on first use). */
 const LIVE_BUILDERS: Readonly<Partial<Record<SkylineId, () => LiveLayer>>> = {
   harbour: buildHarbourLive,
-  city: buildCityLive,
   alpine: buildAlpineLive,
-  railyard: buildRailyardLive,
 };
-
-/** The ground the dome's parallax treats as the floor, per skyline (world y). */
-function groundOf(skyline: SkylineId): number {
-  return skyline === 'city' ? CITY_STREET : QUAY;
-}
-
-/**
- * The parallax proxy per skyline: the cap of its radius (bake.ts bakeProxyLUT; undefined = its
- * default) and the band where the dome hands over to "at infinity" (dome.ts PROXY_TOP by default;
- * a preset's proxyTop wins over both: the alpine mountains rise above the default band).
- * The city's towers fill only part of the proxy's elevation window (the sky between them counts as
- * infinitely far), which pushes R far behind them; from a raised camera (a car on the wall or the
- * ceiling) the rays to their tops then met the cylinder inside the hand-over band and the towers
- * bent sideways. The cap keeps R near the downtown's distance and the band starts higher, so the
- * towers keep one parallax from foot to top (the clouds low over them follow the cylinder too).
- */
-function proxyMaxR(skyline: SkylineId): number | undefined {
-  return skyline === 'city' ? CITY_PROXY_MAX_R : undefined;
-}
-function topOf(skyline: SkylineId): readonly [number, number] {
-  return skyline === 'city' ? CITY_PROXY_TOP : PROXY_TOP;
-}
 
 const _c = new THREE.Color();
 
@@ -283,7 +255,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   }
   /**
    * Any live geometry for a skyline without its own (the bake kit's compile, a first load): one
-   * already built if there is one (no 35k-triangle harbour build for the canyon after a railyard
+   * already built if there is one (no 35k-triangle harbour build for the canyon after an alpine
    * boot), else the harbour's.
    */
   function anyLive(skyline: SkylineId): LiveLayer {
@@ -308,14 +280,12 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
   }
   function lampsOf(skyline: SkylineId): Lamp[] {
     if (skyline === 'harbour') return [...anyLive('harbour').lamps, ...buildHarbourFar(true).lamps];
-    if (skyline === 'city') return [...anyLive('city').lamps, ...buildCityFar(true).lamps];
-    if (skyline === 'railyard') return [...anyLive('railyard').lamps, ...buildRailyardFar(true).lamps];
     return [];
   }
   function lightMapOf(skyline: SkylineId): LightMap | null {
     if (!lightMaps.has(skyline)) {
       const lamps = lampsOf(skyline);
-      lightMaps.set(skyline, lamps.length > 0 ? buildLightMap(lamps, 256, skyline === 'city' ? CITY_LIGHT_LAYERS : undefined) : null);
+      lightMaps.set(skyline, lamps.length > 0 ? buildLightMap(lamps, 256) : null);
     }
     return lightMaps.get(skyline) ?? null;
   }
@@ -366,7 +336,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
       }
     } else {
       const id = preset.skyline;
-      const built = id === 'harbour' ? buildHarbourFar(false) : id === 'city' ? buildCityFar(false) : id === 'railyard' ? buildRailyardFar(false) : buildCanyon(sun, false);
+      const built = id === 'harbour' ? buildHarbourFar(false) : buildCanyon(sun, false);
       geometry = built.geometry as THREE.BufferGeometry;
     }
     m = new THREE.Mesh(geometry, k.struct.material);
@@ -382,8 +352,8 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     A.applyPreset(preset, { origin: BAKE_ORIGIN, seaLevel: SEA_LEVEL, starSigma: texelAngle * 0.65 * 520, fogDensity: tw.fog.density });
     A.setLightMap(lightMapOf(preset.skyline));
     showLive(preset.skyline);
-    dome.ground.value = groundOf(preset.skyline) - BAKE_ORIGIN.y;
-    const top = preset.proxyTop ?? topOf(preset.skyline);
+    dome.ground.value = QUAY - BAKE_ORIGIN.y;
+    const top = preset.proxyTop ?? PROXY_TOP;
     dome.top.value.set(top[0], top[1]);
     fogColor.value.setRGB(tw.fog.color[0], tw.fog.color[1], tw.fog.color[2]);
     fogDensity.value = tw.fog.density;
@@ -488,7 +458,7 @@ export function createWorld(gpu: THREE.WebGPURenderer, scene: THREE.Scene, quali
     const reads = baker.render(k.scene, cube, BAKE_ORIGIN, SSAA, enc);
     // 3. the parallax proxy (only its alpha = inverse distance is used)
     baker.render(k.scene, k.depth, BAKE_ORIGIN, proxySsaaOf(want.spec));
-    bakeProxyLUT(gpu, k.depth.texture, lutRT, proxyMaxR(preset.skyline));
+    bakeProxyLUT(gpu, k.depth.texture, lutRT);
     dome.lut.value = lutRT.texture;
     if (lutData !== null) {
       lutData.dispose();
