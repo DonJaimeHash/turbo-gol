@@ -33,6 +33,11 @@
  * (the warm-up frames of a tier switch), and the longest interval of each window is left out of
  * its mean (the render-target reallocation of a scale change). The scale stays on a 0.05 grid, so
  * the scene pass sees only a few render-target sizes.
+ *
+ * Limits (tuning is the integration phase of docs/visuals/REWORK.md): the refresh is only seen
+ * through the game's own frames, so a game that is already slower than the display from its first
+ * second (72 fps on a 144 Hz screen) takes that rate for the refresh and stays at full resolution;
+ * and frames over MAX_INTERVAL_MS (under 10 fps) never count, so the scale cannot rescue them.
  */
 
 /** Intervals longer than this (ms) are not load: ignored. */
