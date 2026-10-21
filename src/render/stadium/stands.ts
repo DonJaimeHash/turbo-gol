@@ -3,7 +3,8 @@
  * crowd in them.
  *
  *  - Structure: stepped concrete rows (tread + riser, team-coloured seats), the front wall, aisles,
- *    end walls, a back wall and a roof canopy with a row of downlights. One merged mesh, one lit
+ *    end walls, a back wall, a roof canopy with a row of downlights, and the concourse apron (the
+ *    floor round the cage out to the stands' footprint, see buildApron). One merged mesh, one lit
  *    material (colour procedural from the position and a per-vertex part kind: no textures).
  *  - Crowd: one instanced quad per seat block (thousands), opaque with an alpha cut (alpha to
  *    coverage under MSAA). Each person is drawn in the fragment shader from a few SDFs (torso,
@@ -16,7 +17,8 @@
  *    `crowdDensity` < 1 draws 1 / crowdDensity people per quad (fewer instances, same crowd).
  *
  * Unlit crowd (its light is `crowdLight`, a theme uniform): its glow (rare phone flashes) goes
- * through glowMrt. Nothing here is inside the playable volume (x >= STAND.x0 = 5150).
+ * through glowMrt. Nothing here is inside the playable volume (the stands at x >= STAND.x0 = 5150,
+ * the apron below the pitch, outside the field outline).
  */
 import * as THREE from 'three/webgpu';
 import {
@@ -48,7 +50,7 @@ import {
 import { TEAM_BLUE, TEAM_RED, glowMrt, linearVec3, type FloatNode, type Vec2Node, type Vec3Node } from '../materials';
 import type { TierSpec } from '../quality';
 import { rng } from './geometry';
-import { STAND, standRowX, standRowY } from './layout';
+import { FIELD, STAND, standRowX, standRowY } from './layout';
 import type { StadiumUniforms } from './palette';
 
 const S = STAND;
@@ -65,6 +67,7 @@ const K_FRONT = 2;
 const K_WALL = 3;
 const K_ROOF = 4;
 const K_FASCIA = 5;
+const K_APRON = 6;
 
 type Pt = readonly [number, number, number];
 
@@ -77,10 +80,22 @@ class QuadBuilder {
   quad(a: Pt, b: Pt, c: Pt, d: Pt, n: Pt, k: number): void {
     // Wind the triangles so their front face is the side the normal points to (the material is
     // DoubleSide and flips the normal on back faces, so a mismatch would light the wrong side).
+    this.emit(QuadBuilder.facing(a, b, c, n) ? [a, b, c, a, c, d] : [a, c, b, a, d, c], n, k);
+  }
+
+  tri(a: Pt, b: Pt, c: Pt, n: Pt, k: number): void {
+    this.emit(QuadBuilder.facing(a, b, c, n) ? [a, b, c] : [a, c, b], n, k);
+  }
+
+  /** True when (a, b, c) winds counter-clockwise seen from the side `n` points to. */
+  private static facing(a: Pt, b: Pt, c: Pt, n: Pt): boolean {
     const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     const cross = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
-    const order = cross[0] * n[0] + cross[1] * n[1] + cross[2] * n[2] >= 0 ? [a, b, c, a, c, d] : [a, c, b, a, d, c];
+    return cross[0] * n[0] + cross[1] * n[1] + cross[2] * n[2] >= 0;
+  }
+
+  private emit(order: readonly Pt[], n: Pt, k: number): void {
     for (const v of order) {
       this.pos.push(v[0], v[1], v[2]);
       this.nor.push(n[0], n[1], n[2]);
@@ -134,7 +149,48 @@ export function buildStandGeometry(): THREE.BufferGeometry {
     quad([rx0, S.roofY, rz], [rx0, S.roofY, -rz], [rx0, S.roofY + 120, -rz], [rx0, S.roofY + 120, rz], [-1, 0, 0], K_FASCIA);
     quad([rx0, S.roofY + 120, rz], [rx0, S.roofY + 120, -rz], [TOP_X + 60, S.roofY + 160, -rz], [TOP_X + 60, S.roofY + 160, rz], [0, 1, 0], K_WALL);
   }
+  buildApron(qb);
   return qb.geometry();
+}
+
+/** The concourse floor's height (just under the pitch: never z-fights the turf or the goal floors). */
+export const APRON_Y = -6;
+/** Its outer edge: the back of the stands' canopies and the stands' ends (+ the canopy overhang). */
+export const APRON_X = TOP_X + 60;
+export const APRON_Z = S.halfLen + 200;
+/** Chords of each corner arc of the apron's inner edge (the field outline, under the shell). */
+const APRON_CORNER_SEGS = 12;
+
+/**
+ * The concourse floor round the cage: from the field outline out to the stands' footprint
+ * (|x| <= APRON_X, |z| <= APRON_Z), dark concrete at APRON_Y. Without it nothing lies outside the
+ * shell, so a camera on a wall or in the air looked down through the netting (transparent from
+ * y = 360) between the cage and the stands into the sky dome's pale lower half: a bright band
+ * along the board line. Per quadrant: a side strip, an end strip and a fan round the corner arc
+ * (the chords sit inside the outline, under the floor ramp, by at most 4 uu).
+ */
+function buildApron(qb: QuadBuilder): void {
+  const up: Pt = [0, 1, 0];
+  const y = APRON_Y;
+  const R = FIELD.cornerR;
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const P = (x: number, z: number): Pt => [sx * x, y, sz * z];
+      qb.quad(P(FIELD.halfX, 0), P(APRON_X, 0), P(APRON_X, FIELD.cz), P(FIELD.halfX, FIELD.cz), up, K_APRON);
+      qb.quad(P(0, FIELD.halfZ), P(FIELD.cx, FIELD.halfZ), P(FIELD.cx, APRON_Z), P(0, APRON_Z), up, K_APRON);
+      // Corner: a fan from the apron's corner (it sees the whole arc) plus the two edge triangles.
+      const far = P(APRON_X, APRON_Z);
+      let prev = P(FIELD.cx + R, FIELD.cz);
+      qb.tri(far, P(APRON_X, FIELD.cz), prev, up, K_APRON);
+      for (let i = 1; i <= APRON_CORNER_SEGS; i++) {
+        const a = (i / APRON_CORNER_SEGS) * (Math.PI / 2);
+        const next = P(FIELD.cx + R * Math.cos(a), FIELD.cz + R * Math.sin(a));
+        qb.tri(far, prev, next, up, K_APRON);
+        prev = next;
+      }
+      qb.tri(far, prev, P(FIELD.cx, APRON_Z), up, K_APRON);
+    }
+  }
 }
 
 /** Seat-block colour of a stand point: team seats per half (blue toward -z, red toward +z). */
@@ -166,6 +222,9 @@ export function buildStandMaterial(u: StadiumUniforms): THREE.MeshStandardNodeMa
   col = mix(col, concrete.mul(0.55), isK(K_WALL));
   col = mix(col, front, isK(K_FRONT));
   col = mix(col, roof, isK(K_ROOF).add(isK(K_FASCIA)));
+  // The concourse apron: dark concrete slabs (it is only ever seen through the netting).
+  const slab = hash(floor(p.x.div(500)).add(floor(p.z.div(500)).mul(13.7))).mul(0.3).add(0.7);
+  col = mix(col, vec3(0.03, 0.032, 0.036).mul(slab), isK(K_APRON));
   m.colorNode = col;
   m.emissiveNode = down;
   m.mrtNode = glowMrt(down.mul(0.4), 'none');

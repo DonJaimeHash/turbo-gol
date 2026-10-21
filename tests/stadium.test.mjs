@@ -26,7 +26,7 @@ const { TIERS } = await import('../src/render/quality.ts');
 const L = await import('../src/render/stadium/layout.ts');
 const { splitShell } = await import('../src/render/stadium/geometry.ts');
 const { buildSteelGeometry } = await import('../src/render/stadium/steel.ts');
-const { buildStandGeometry } = await import('../src/render/stadium/stands.ts');
+const { buildStandGeometry, APRON_X, APRON_Y, APRON_Z } = await import('../src/render/stadium/stands.ts');
 const { createStadiumUniforms, applyStadiumTheme, stadiumTheme } = await import('../src/render/stadium/palette.ts');
 
 /** three.js world point -> isInsideArena (sim coords: x, y = three z, z = three y). */
@@ -109,7 +109,43 @@ test('the stands, banners and lamp heads stand outside the playable volume', () 
   const g = buildStandGeometry();
   const p = g.getAttribute('position');
   for (let i = 0; i < p.count; i++) assert.ok(!inside(p.getX(i), p.getY(i), p.getZ(i)), 'stand vertex inside');
-  for (let i = 0; i < p.count; i++) assert.ok(Math.abs(p.getX(i)) >= L.STAND.x0 - 1e-3, 'stands start at STAND.x0');
+  // Above the floor only the stands themselves (the apron lies under the pitch level).
+  for (let i = 0; i < p.count; i++) {
+    if (p.getY(i) >= 0) assert.ok(Math.abs(p.getX(i)) >= L.STAND.x0 - 1e-3, 'stands start at STAND.x0');
+    else assert.equal(p.getY(i), APRON_Y, 'only the apron below the floor');
+  }
+  // The apron covers the ground round the cage out to the stands' footprint (what a camera on a
+  // wall sees through the netting) and never the field.
+  const apron = [];
+  for (let t = 0; t < p.count; t += 3) {
+    if (p.getY(t) < 0) apron.push([0, 1, 2].map((k) => [p.getX(t + k), p.getZ(t + k)]));
+  }
+  const cross2 = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const inTri = (q, [a, b, c]) => {
+    const d1 = cross2(a, b, q);
+    const d2 = cross2(b, c, q);
+    const d3 = cross2(c, a, q);
+    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+  };
+  // Signed distance outside the field outline (the rounded rectangle at the foot of the walls).
+  const outside = (x, z) => {
+    const ax = Math.abs(x);
+    const az = Math.abs(z);
+    if (ax > L.FIELD.cx && az > L.FIELD.cz) return Math.hypot(ax - L.FIELD.cx, az - L.FIELD.cz) - L.FIELD.cornerR;
+    return Math.max(ax - L.FIELD.halfX, az - L.FIELD.halfZ);
+  };
+  let sampled = 0;
+  for (let x = -APRON_X + 25; x < APRON_X; x += 97) {
+    for (let z = -APRON_Z + 25; z < APRON_Z; z += 97) {
+      const covered = apron.some((t) => inTri([x, z], t));
+      // 12 uu margins round the outline: the corner arcs' chords run up to 4 uu inside it.
+      if (outside(x, z) > 12) {
+        sampled++;
+        assert.ok(covered, `apron hole at ${x},${z}`);
+      } else if (outside(x, z) < -12) assert.ok(!covered, `apron under the field at ${x},${z}`);
+    }
+  }
+  assert.ok(sampled > 1000, `${sampled} samples round the cage`);
   // Every triangle's winding agrees with its normal (the DoubleSide material flips back faces).
   const n = g.getAttribute('normal');
   const a = new THREE.Vector3();
