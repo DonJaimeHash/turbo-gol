@@ -18,7 +18,7 @@ registerHooks({
   },
 });
 
-const { QUALITIES, TIERS, tier, parseQuality, nextQuality, pixelRatio, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
+const { QUALITIES, TIERS, tier, parseQuality, nextQuality, pixelRatio, startingQuality, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
 const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld } = await import('../src/render/theme.ts');
 const en = (await import('../src/locales/en.ts')).default;
 const es = (await import('../src/locales/es.ts')).default;
@@ -159,6 +159,15 @@ test('parseQuality reads the tier names and the numbers saved before the third t
   assert.equal(parseQuality(0), 'high', 'old quality 0');
   assert.equal(parseQuality(1), 'low', 'old performance 1');
   for (const bad of [2, -1, '0', '1', 'HIGH', 'medium', null, undefined, {}, true]) assert.equal(parseQuality(bad), null, String(bad));
+});
+
+test('the WebGL2 fallback starts on low unless the player chose a tier', () => {
+  for (const q of QUALITIES) {
+    assert.equal(startingQuality(q, false, true), q, `${q}: WebGPU keeps the saved / default tier`);
+    assert.equal(startingQuality(q, true, true), q, `${q}: WebGPU, chosen`);
+    assert.equal(startingQuality(q, true, false), q, `${q}: WebGL2 keeps a tier the player chose`);
+    assert.equal(startingQuality(q, false, false), 'low', `${q}: WebGL2 default`);
+  }
 });
 
 test('the quality key cycles low -> high -> ultra -> low', () => {

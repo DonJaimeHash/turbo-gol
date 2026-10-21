@@ -13,12 +13,16 @@
  *   low:          no MSAA (FXAA instead), pixel ratio 1, one shadowed key (2048, PCF radius 3), no
  *                 bloom
  *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, pixel budget 6 Mpx) but never
- *                 below 1 (quality.ts `pixelRatio`), two shadowed keys (4096, PCF radius 4), 5-mip
- *                 bloom, dynamic resolution; ultra adds GTAO, SSR and lens glare (post/screenSpace.ts)
+ *                 below 1 (quality.ts `pixelRatio`), two shadowed keys (2048 / PCF radius 3 on high,
+ *                 4096 / radius 4 on ultra), 5-mip bloom, dynamic resolution; ultra adds GTAO, SSR
+ *                 and lens glare (post/screenSpace.ts)
  *
  * The renderer is created with `antialias: false`: MSAA lives on the scene pass (`samples`), so the
  * final full-screen quad is single-sampled on every tier. Switching tiers disposes the previous
  * chain (scene pass, ultra passes, bloom, pipeline quad) and builds the new one.
+ *
+ * `#webgl2` in the URL forces three's WebGL2 backend (the automatic fallback of browsers without
+ * WebGPU), to test that path on any machine.
  *
  * GPU timing: with `#stats` in the URL the renderer is created with `trackTimestamp` and resolves
  * the render-pass timestamps every frame; `gpuTimeMs` / `stats().gpuMs` expose them (0 when the
@@ -43,13 +47,18 @@ import * as THREE from 'three/webgpu';
 import { DynamicResolution } from './dynamicResolution';
 import { createLighting, type Lighting } from './post/lighting';
 import { buildPostChain, type PostChain } from './post/pipeline';
-import { pixelRatio, tier, type Quality } from './quality';
+import { pixelRatio, startingQuality, tier, type Quality } from './quality';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
 import { createWorld, type World } from './world/World';
 
 export interface RendererOptions {
   /** Quality tier (default 'high'). */
   quality?: Quality;
+  /**
+   * The player chose `quality` in the menu (default true). When false and the browser only offers
+   * the WebGL2 fallback, the renderer starts on low instead (quality.ts startingQuality).
+   */
+  qualityChosen?: boolean;
   /** Stadium theme (default DEFAULT_THEME). */
   theme?: ThemeId;
 }
@@ -292,16 +301,21 @@ export class Renderer {
 
   /** Create the WebGPU renderer on `canvas` (falls back to WebGL2 by itself) and await backend init. */
   static async create(canvas: HTMLCanvasElement, opts: RendererOptions = {}): Promise<Renderer> {
-    const timing = typeof location !== 'undefined' && location.hash.includes('stats');
+    const hash = typeof location !== 'undefined' ? location.hash : '';
+    const timing = hash.includes('stats');
     const gpu = new THREE.WebGPURenderer({
       canvas,
       antialias: false,
       alpha: false,
       powerPreference: 'high-performance',
       trackTimestamp: timing,
+      // `#webgl2` in the URL: the WebGL2 fallback even where WebGPU exists (testing the fallback).
+      forceWebGL: hash.includes('webgl2'),
     });
     await gpu.init();
-    const renderer = new Renderer(gpu, canvas, opts.quality ?? 'high', opts.theme ?? DEFAULT_THEME, timing);
+    const webgpu = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
+    const quality = startingQuality(opts.quality ?? 'high', opts.qualityChosen ?? true, webgpu);
+    const renderer = new Renderer(gpu, canvas, quality, opts.theme ?? DEFAULT_THEME, timing);
     // The world's load-time work (behind the boot overlay; resolved at once until world/ bakes).
     await renderer.world.ready;
     return renderer;

@@ -191,6 +191,17 @@ export function parseQuality(v: unknown): Quality | null {
   return null;
 }
 
+/**
+ * The tier a session starts on: the saved (or default) tier `saved`, except on the WebGL2 fallback
+ * (`webgpu` false), which starts on low unless the player chose a tier in the menu (`chosen`): it
+ * compiles every pipeline several times slower and renders about 2x slower than WebGPU (the boot
+ * would otherwise compile the high tier's shaders for seconds). Phones and tablets already start
+ * on low through their default (Game.ts loadPrefs).
+ */
+export function startingQuality(saved: Quality, chosen: boolean, webgpu: boolean): Quality {
+  return !webgpu && !chosen ? 'low' : saved;
+}
+
 /** The next tier in menu order (the quality key cycles low -> high -> ultra -> low). */
 export function nextQuality(q: Quality): Quality {
   return QUALITIES[(QUALITIES.indexOf(q) + 1) % QUALITIES.length];

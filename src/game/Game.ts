@@ -170,6 +170,11 @@ export interface GameOptions {
   difficulty?: Difficulty;
   /** The player picked the quality tier in the menu (GamePrefs.qualitySet); persisted with the prefs. */
   qualitySet?: boolean;
+  /**
+   * The quality tier read from the prefs. Until the player picks a tier it is what the prefs keep:
+   * the renderer may have started on another one (low on the WebGL2 fallback), which is not saved.
+   */
+  savedQuality?: Quality;
   /** Regulation length in seconds (0 = unlimited). */
   matchLengthSeconds?: number;
   /** Text shown in the menu footer (backend, version...). */
@@ -454,6 +459,8 @@ export class Game implements P2PGameHooks {
   theme: ThemeId;
   /** The player picked the quality in the menu (GamePrefs.qualitySet). */
   private qualitySet: boolean;
+  /** The prefs' tier, saved as is until the player picks one (GameOptions.savedQuality). */
+  private savedQuality: Quality;
   difficulty: Difficulty;
   /** Smoothed frames per second (updated 4x/s). */
   fps = 0;
@@ -615,6 +622,7 @@ export class Game implements P2PGameHooks {
     this.theme = opts.renderer.theme;
     this.difficulty = opts.difficulty ?? 'medium';
     this.qualitySet = opts.qualitySet ?? false;
+    this.savedQuality = opts.savedQuality ?? this.quality;
     this.info = opts.info ?? '';
 
     const sim = this.sim;
@@ -1773,7 +1781,9 @@ export class Game implements P2PGameHooks {
   }
 
   private persistPrefs(): void {
-    savePrefs({ difficulty: this.difficulty, quality: this.quality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme });
+    // A tier the renderer picked by itself (low on the WebGL2 fallback) is not the player's choice.
+    const quality = this.qualitySet ? this.quality : this.savedQuality;
+    savePrefs({ difficulty: this.difficulty, quality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme });
   }
 
   setPaused(p: boolean): void {

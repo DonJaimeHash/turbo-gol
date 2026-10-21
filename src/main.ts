@@ -3,6 +3,11 @@
  * the cars of the saved game mode (1v1 / 2v2 / 3v3) → Game. Progress is written to #overlay; a
  * readable error page replaces it when the GPU or the wasm cannot be initialised. Both are in the
  * page's language (boot.* texts); the error details (stack) stay as the browser wrote them.
+ *
+ * Load timing: each step leaves a `performance.mark` ('turbogol:renderer' once the renderer and
+ * the world's first bake or cache read are ready, ':physics', ':scene', ':warmup' after the
+ * warm-up render compiled every pipeline, ':gpu-ready' once the GPU finished that work on
+ * WebGPU), read from the console or a profiler; marks cost nothing measurable.
  */
 import { Game, addRoster, loadPrefs } from './game/Game';
 import { t } from './i18n';
@@ -80,12 +85,14 @@ async function boot(): Promise<void> {
   );
   let renderer: Renderer;
   try {
-    renderer = await Renderer.create(canvas, { quality: prefs.quality, theme: prefs.theme });
+    // The WebGL2 fallback starts on low unless the player picked a tier (quality.ts startingQuality).
+    renderer = await Renderer.create(canvas, { quality: prefs.quality, qualityChosen: prefs.qualitySet, theme: prefs.theme });
   } catch (err) {
     showError(t('boot.rendererFailed'), t('boot.rendererHint'), err);
     return;
   }
 
+  performance.mark('turbogol:renderer');
   setProgress(t('boot.physics', { backend: renderer.isWebGPU ? 'WebGPU' : 'WebGL2' }));
   const loaded = await simLoad;
   if (loaded.sim === null) {
@@ -93,6 +100,7 @@ async function boot(): Promise<void> {
     return;
   }
   const sim = loaded.sim;
+  performance.mark('turbogol:physics');
 
   setProgress(t('boot.arena'));
   const mesh = buildArenaMesh();
@@ -136,12 +144,17 @@ async function boot(): Promise<void> {
     carIds,
     difficulty: prefs.difficulty,
     qualitySet: prefs.qualitySet,
+    savedQuality: prefs.quality,
     info: `${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · RocketSim ${sim.version} · 120 Hz`,
   });
   // One synchronous render with every normally hidden mesh visible: compiles all pipelines
   // (scene, shadow, bloom, flames, marker, particles, goal FX) behind the overlay instead of
   // stalling the first menu frame and the first boost / airborne ball / goal.
+  performance.mark('turbogol:scene');
   game.warmUp();
+  performance.mark('turbogol:warmup');
+  const device = (renderer.gpu.backend as { device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } } }).device;
+  if (device?.queue?.onSubmittedWorkDone) void device.queue.onSubmittedWorkDone().then(() => performance.mark('turbogol:gpu-ready'));
   clearProgress();
   game.start();
 }
