@@ -300,6 +300,31 @@ test('the 10-preset cap: a local create past it is refused; a 409 from the accou
   assert.equal(store.create('Bad (name)'.slice(0, 2)), 'bad_name');
 });
 
+test('a preset the server refuses (bad_preset: a client and a server of different versions) stays here, dirty, and goes up once accepted', async () => {
+  const srv = fakeServer();
+  const { store, problems } = makeStore(srv);
+  const kept = store.create('Kept here', { gravity: 50 });
+  const fine = store.create('Fine one');
+  const realUpsert = srv.remote.upsert;
+  srv.remote.upsert = async (p) => {
+    if (p.id === kept.id) {
+      srv.calls.push('upsert');
+      throw Object.assign(new Error('bad_preset'), { code: 'bad_preset', status: 400 });
+    }
+    return realUpsert(p);
+  };
+  await store.sync();
+  assert.deepEqual(srv.state(A).presets.map((p) => p.name), ['Fine one'], 'the other one still goes up');
+  assert.deepEqual(store.presets().map((p) => p.name), ['Fine one', 'Kept here'], 'the pull does not delete the refused one (the account\'s first, then the ones only here)');
+  assert.equal(store.get(kept.id).synced, false);
+  assert.equal(store.get(fine.id).synced, true);
+  assert.deepEqual(problems, []);
+  srv.remote.upsert = realUpsert;
+  await store.sync();
+  assert.deepEqual(srv.state(A).presets.map((p) => p.name).sort(), ['Fine one', 'Kept here']);
+  assert.ok(store.list().every((p) => p.synced));
+});
+
 test('duplicate copies any preset (a built-in too); delete needs the server, offline it is refused and nothing changes', async () => {
   const srv = fakeServer();
   const { store, problems } = makeStore(srv);

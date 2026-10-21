@@ -183,10 +183,13 @@ export function onGrid(f: PhysicsField, v: number): boolean {
   return v >= f.min && v <= f.max && (v - f.min) % f.step === 0;
 }
 
-/** The field's value nearest to `v` (a finite number); a tie takes the lower one. */
+/**
+ * The field's value nearest to `v` (a finite number); a tie takes the lower one, for a range as
+ * for a choice (the physics core's lenient parser snaps the same way, so both agree on any input).
+ */
 export function snapToGrid(f: PhysicsField, v: number): number {
   if (f.kind === 'range') {
-    const n = Math.round((Math.min(f.max, Math.max(f.min, v)) - f.min) / f.step);
+    const n = Math.ceil((Math.min(f.max, Math.max(f.min, v)) - f.min) / f.step - 0.5);
     return Math.min(f.max, f.min + n * f.step);
   }
   const grid = fieldValues(f);

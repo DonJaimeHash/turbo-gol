@@ -138,7 +138,12 @@ test('snapping a choice takes the nearest option (a tie the lower one)', () => {
   assert.equal(R.snapToGrid(spawn, 42), 50);
   assert.equal(R.snapToGrid(spawn, 1000), 100);
   assert.equal(R.snapToGrid(R.physicsField('unlimitedFlips'), 0.5), 0);
-  assert.equal(R.snapToGrid(R.physicsField('ballDrag'), 12.5), 25, 'a range rounds half up');
+  assert.equal(R.snapToGrid(R.physicsField('ballDrag'), 12.5), 0, 'a range tie takes the lower value too');
+  assert.equal(R.snapToGrid(R.physicsField('ballDrag'), 12.6), 25);
+  assert.equal(R.snapToGrid(R.physicsField('gravity'), 35), 30);
+  assert.equal(R.snapToGrid(R.physicsField('carMaxSpeed'), 2025), 2000);
+  assert.equal(R.snapToGrid(R.physicsField('carMaxSpeed'), 2026), 2050);
+  for (const f of R.PHYSICS_FIELDS) for (const v of R.fieldValues(f)) assert.equal(R.snapToGrid(f, v), v, `${f.key} ${v} stays`);
 });
 
 test('the built-ins: five, valid in a match, Standard is stock, stable ids that no stored preset can take', () => {

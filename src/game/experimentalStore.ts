@@ -432,10 +432,12 @@ export class ExperimentalStore {
 
   /**
    * A failed request: 'stop' the push (offline, a refused session, a rate limit, a server error:
-   * the next push tries again), 'skip' that preset (the account is full: it stays dirty here) or
-   * 'drop' its dirty mark (the server can never store it).
+   * the next push tries again) or 'skip' that preset: it stays dirty here, so the pull keeps it and
+   * the next push tries again (the account is full; or the server refuses it, which only a client
+   * and a server of different versions can cause: dropping the dirty mark would make the next pull
+   * delete the player's preset).
    */
-  private failed(err: unknown): 'stop' | 'skip' | 'drop' {
+  private failed(err: unknown): 'stop' | 'skip' {
     const code = errorCode(err);
     if (code === 'network') {
       this.problem('offline');
@@ -445,7 +447,7 @@ export class ExperimentalStore {
       this.problem('too_many');
       return 'skip';
     }
-    if (code === 'bad_preset') return 'drop'; // the server can never store it: keep it here only
+    if (code === 'bad_preset') return 'skip';
     return 'stop'; // 401 / 429 / 5xx: try again at the next push
   }
 
@@ -479,17 +481,11 @@ export class ExperimentalStore {
       try {
         ans = await remote.upsert(p);
       } catch (err) {
-        const what = this.failed(err);
-        if (what === 'stop') {
+        if (this.failed(err) === 'stop') {
           if (last !== null) this.adopt(id, this.load(id), last);
           return false;
         }
-        if (what === 'drop') {
-          c = this.load(id);
-          c.dirty = c.dirty.filter((d) => d !== pid);
-          this.save(id, c);
-        }
-        continue;
+        continue; // 'skip': it stays dirty here
       }
       this.offlineNoted = false;
       if (this.accountId() !== id) return false;
