@@ -18,8 +18,8 @@ registerHooks({
   },
 });
 
-const { QUALITIES, TIERS, tier, parseQuality, nextQuality, pixelRatio, startingQuality, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
-const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld } = await import('../src/render/theme.ts');
+const { QUALITIES, TIERS, tier, parseQuality, nextQuality, lowerQuality, pixelRatio, startingQuality, LOW_MEMORY_GB, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
+const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld, lookOf } = await import('../src/render/theme.ts');
 const en = (await import('../src/locales/en.ts')).default;
 const es = (await import('../src/locales/es.ts')).default;
 
@@ -29,12 +29,18 @@ test('three tiers in menu order, one table entry each', () => {
   for (const q of QUALITIES) assert.equal(tier(q), TIERS[q]);
 });
 
-test('low keeps the old performance tier (1) and high the old quality tier (0)', () => {
+test('low renders straight to the canvas; high keeps the old quality tier (0)', () => {
   const low = tier('low');
-  assert.equal(low.msaa, 0, 'FXAA instead of MSAA');
-  assert.equal(low.bloom, false);
-  assert.equal(low.maxPixelRatio, 1, 'CSS resolution');
-  assert.equal(low.dynamicResolution, false);
+  // The direct path: no HDR target, no post pass; the canvas' MSAA x4 instead of FXAA.
+  assert.equal(low.output, 'direct');
+  assert.equal(low.msaa, 4, 'canvas MSAA');
+  assert.equal(low.bloom, false, 'no glow target on the canvas');
+  for (const key of ['gtao', 'ssr', 'lensFlare', 'grassBlades', 'beamCones', 'puddles', 'turfRelief']) assert.equal(low[key], false, `low ${key}`);
+  // Up to 1.5x within a 1 Mpx budget, dynamic resolution down to 0.7 of it.
+  assert.equal(low.maxPixelRatio, 1.5);
+  assert.equal(low.pixelBudget, 1e6);
+  assert.equal(low.dynamicResolution, true);
+  assert.equal(low.minResolutionScale, 0.7);
   assert.equal(low.shadowMapSize, 2048);
   assert.equal(low.shadowRadius, 3);
   assert.equal(low.detail, 'low');
@@ -42,6 +48,8 @@ test('low keeps the old performance tier (1) and high the old quality tier (0)',
   assert.equal(low.particles, 512);
 
   const high = tier('high');
+  assert.equal(high.output, 'post');
+  assert.equal(tier('ultra').output, 'post');
   assert.equal(high.msaa, 4);
   assert.equal(high.bloom, true);
   assert.equal(high.pixelBudget, 6e6);
@@ -99,7 +107,7 @@ test('every theme world feeds the lights and the grade sane values', () => {
   }
 });
 
-test('the pixel ratio of low and high is the one the old tiers used (1 and 0)', () => {
+test('the pixel ratio of high is the one the old quality tier (0) used; low: up to 1.5 within 1 Mpx', () => {
   // The old Renderer.resize: quality 1 rendered at CSS resolution; quality 0 followed the device
   // (phones capped at 2) down to a 6 Mpx budget, never below 1:1 for the budget.
   const oldQ0 = (dpr, touch, w, h) => {
@@ -121,7 +129,8 @@ test('the pixel ratio of low and high is the one the old tiers used (1 and 0)', 
     for (const touch of [false, true]) {
       for (const [w, h] of sizes) {
         const at = `dpr ${dpr} touch ${touch} ${w}x${h}`;
-        assert.equal(pixelRatio(tier('low'), dpr, touch, w, h), 1, `low ${at}`);
+        const low = Math.min(dpr, 1.5, Math.max(1, Math.sqrt(1e6 / (w * h))));
+        assert.equal(pixelRatio(tier('low'), dpr, touch, w, h), low, `low ${at}`);
         assert.equal(pixelRatio(tier('high'), dpr, touch, w, h), oldQ0(dpr, touch, w, h), `high ${at}`);
         assert.ok(pixelRatio(tier('ultra'), dpr, touch, w, h) >= pixelRatio(tier('high'), dpr, touch, w, h), `ultra ${at}`);
       }
@@ -130,6 +139,18 @@ test('the pixel ratio of low and high is the one the old tiers used (1 and 0)', 
   assert.equal(MAX_TOUCH_PIXEL_RATIO, 2);
   // A dpr-2 1080p laptop on high renders at ~1.7x instead of 2x (the budget).
   assert.ok(Math.abs(pixelRatio(tier('high'), 2, false, 1920, 1080) - Math.sqrt(6e6 / (1920 * 1080))) < 1e-12);
+  // Low: a dpr-3 phone in landscape (780x360 CSS) at 1.5x (1170x540), a 1600x900 desktop at 1x.
+  assert.equal(pixelRatio(tier('low'), 3, true, 780, 360), 1.5);
+  assert.equal(pixelRatio(tier('low'), 1.369, false, 1600, 900), 1);
+});
+
+test("the drawing buffer fits the device's largest render target (maxTextureSize)", () => {
+  // WebGPU compatibility mode allows 4096: a 3840x2160 CSS canvas at dpr 2 on high would be 7680.
+  assert.equal(pixelRatio(tier('high'), 2, false, 3840, 2160, 4096), Math.min(Math.sqrt(6e6 / (3840 * 2160)) > 1 ? 2 : 1, 4096 / 3840));
+  assert.ok(pixelRatio(tier('ultra'), 2, false, 3840, 2160, 4096) * 3840 <= 4096);
+  assert.ok(pixelRatio(tier('low'), 3, true, 5000, 2000, 4096) * 5000 <= 4096 + 1e-9, 'below 1 when it must');
+  // Nothing changes when the canvas fits.
+  for (const q of QUALITIES) assert.equal(pixelRatio(tier(q), 2, false, 1600, 900, 4096), pixelRatio(tier(q), 2, false, 1600, 900), q);
 });
 
 test('ultra is never below high on any switch', () => {
@@ -161,12 +182,52 @@ test('parseQuality reads the tier names and the numbers saved before the third t
   for (const bad of [2, -1, '0', '1', 'HIGH', 'medium', null, undefined, {}, true]) assert.equal(parseQuality(bad), null, String(bad));
 });
 
-test('the WebGL2 fallback starts on low unless the player chose a tier', () => {
+test('WebGL2, WebGPU compatibility mode and small-memory devices start on low unless the player chose a tier', () => {
+  const core = { webgpu: true, compatibilityMode: false, deviceMemory: undefined };
+  const weak = [
+    ['WebGL2', { ...core, webgpu: false }],
+    ['compatibility mode', { ...core, compatibilityMode: true }],
+    ['4 GB', { ...core, deviceMemory: 4 }],
+    ['2 GB', { ...core, deviceMemory: 2 }],
+  ];
   for (const q of QUALITIES) {
-    assert.equal(startingQuality(q, false, true), q, `${q}: WebGPU keeps the saved / default tier`);
-    assert.equal(startingQuality(q, true, true), q, `${q}: WebGPU, chosen`);
-    assert.equal(startingQuality(q, true, false), q, `${q}: WebGL2 keeps a tier the player chose`);
-    assert.equal(startingQuality(q, false, false), 'low', `${q}: WebGL2 default`);
+    assert.equal(startingQuality(q, false, core), q, `${q}: WebGPU keeps the saved / default tier`);
+    assert.equal(startingQuality(q, true, core), q, `${q}: WebGPU, chosen`);
+    assert.equal(startingQuality(q, false, { ...core, deviceMemory: 8 }), q, `${q}: 8 GB`);
+    for (const [name, device] of weak) {
+      assert.equal(startingQuality(q, true, device), q, `${q}: ${name} keeps a tier the player chose`);
+      assert.equal(startingQuality(q, false, device), 'low', `${q}: ${name} default`);
+    }
+  }
+  assert.equal(LOW_MEMORY_GB, 4);
+});
+
+test("a GPU's remembered ceiling caps the starting tier, a chosen one too", () => {
+  const core = { webgpu: true, compatibilityMode: false, deviceMemory: undefined };
+  assert.equal(startingQuality('ultra', true, core, 'high'), 'high');
+  assert.equal(startingQuality('ultra', true, core, 'low'), 'low');
+  assert.equal(startingQuality('high', true, core, 'ultra'), 'high', 'a ceiling never raises');
+  assert.equal(startingQuality('low', true, core, 'high'), 'low');
+  assert.equal(startingQuality('ultra', false, core, null), 'ultra');
+});
+
+test('lowerQuality steps ultra -> high -> low -> null', () => {
+  assert.equal(lowerQuality('ultra'), 'high');
+  assert.equal(lowerQuality('high'), 'low');
+  assert.equal(lowerQuality('low'), null);
+});
+
+test("lookOf: the low tier takes the theme's low overrides, the post tiers never", () => {
+  const w = themeWorld(DEFAULT_THEME);
+  assert.deepEqual(lookOf(w, 'post'), { exposure: w.exposure, grade: w.grade });
+  const tuned = { ...w, low: { exposure: 1.4, grade: { contrast: 1.0, vignette: 0.1 } } };
+  assert.deepEqual(lookOf(tuned, 'post'), { exposure: w.exposure, grade: w.grade });
+  const low = lookOf(tuned, 'direct');
+  assert.equal(low.exposure, 1.4);
+  assert.deepEqual(low.grade, { ...w.grade, contrast: 1.0, vignette: 0.1 });
+  for (const id of THEME_IDS) {
+    const l = lookOf(themeWorld(id), 'direct');
+    assert.ok(l.exposure > 0 && l.grade.contrast > 0 && l.grade.saturation >= 0 && l.grade.vignette >= 0 && l.grade.vignette < 1, `${id}: low look sane`);
   }
 });
 

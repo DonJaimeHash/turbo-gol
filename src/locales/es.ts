@@ -26,6 +26,7 @@ export default {
   'quality.low': 'Rendimiento',
   'quality.high': 'Alta',
   'quality.ultra': 'Ultra',
+  'quality.fallback': 'Tu dispositivo no soporta {from}: se usa {to}',
   'theme.harbour-night': 'Puerto de noche',
   'theme.canyon-sunset': 'Cañón rojo',
   'theme.alpine-day': 'Valle alpino',

@@ -72,6 +72,14 @@ export interface ThemeWorld {
     /** 0 = none; the old renderer used 0.32. */
     readonly vignette: number;
   };
+  /**
+   * The Performance (low) tier's own look, when it should differ: the exposure and the grade
+   * fields given here replace the ones above on that tier only (`lookOf`; uniform
+   * writes, a theme switch still compiles nothing). That tier renders straight to the canvas
+   * without bloom or shadow maps and blends after the tone curve, so the same numbers can read
+   * darker there.
+   */
+  readonly low?: { readonly exposure?: number; readonly grade?: Partial<ThemeWorld['grade']> };
 }
 
 /** Floodlight towers outside the side walls, heads above the cage roof (shared by every theme). */
@@ -168,6 +176,16 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
 /** The shared world facts of a theme (unknown or not-yet-built themes fall back to the default). */
 export function themeWorld(id: ThemeId): ThemeWorld {
   return WORLDS[id] ?? (WORLDS[DEFAULT_THEME] as ThemeWorld);
+}
+
+/**
+ * The exposure and grade a render path shows for `world` (post/pipeline.ts): the theme's own, with
+ * its `low` overrides on the direct (Performance) path.
+ */
+export function lookOf(world: ThemeWorld, output: 'direct' | 'post'): { exposure: number; grade: ThemeWorld['grade'] } {
+  const low = output === 'direct' ? world.low : undefined;
+  if (low === undefined) return { exposure: world.exposure, grade: world.grade };
+  return { exposure: low.exposure ?? world.exposure, grade: { ...world.grade, ...low.grade } };
 }
 
 /** A saved theme id, or null. */

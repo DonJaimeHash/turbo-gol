@@ -5,26 +5,43 @@
  *
  *   world/   sky dome, PMREM environment, fog and clear colour (`createWorld`)
  *   post/    the theme's two key lights, fill and shadows (`createLighting`, lighting.ts) and the
- *            RenderPipeline of a tier (`buildPostChain`, pipeline.ts): HDR scene pass (MRT `output`
- *            + `emissive` on tiers with bloom) -> [ultra: GTAO, SSR on the wet pitch] -> bloom from
- *            the EMISSIVE target only [+ ultra lens glare] -> vignette -> exposure, HDR grade and
- *            the theme's tone curve -> sRGB (`renderOutput`) -> FXAA on tiers without MSAA
+ *            render path of a tier (`buildPostChain`, pipeline.ts)
  *
- *   low:          no MSAA (FXAA instead), pixel ratio 1, no shadow maps (ground blobs), no bloom
- *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, pixel budget 6 Mpx) but never
- *                 below 1 (quality.ts `pixelRatio`), two shadowed keys (2048 / PCF radius 3 on high,
- *                 4096 / radius 4 on ultra), 5-mip bloom, dynamic resolution; ultra adds GTAO, SSR
- *                 and lens glare (post/screenSpace.ts)
+ *   low (direct):        three's DirectRenderPipeline straight into the canvas: the theme's look
+ *                        (vignette, exposure, grade, tone curve) and sRGB at the end of every
+ *                        material, the canvas' MSAA x4, no HDR target, no MRT, no post pass; a
+ *                        pixel ratio up to 1.5 (1 Mpx budget), no shadow maps (ground blobs), no bloom
+ *   high / ultra (post): HDR scene pass (MRT `output` + `emissive`) -> [ultra: GTAO, SSR on the
+ *                        wet pitch] -> bloom from the EMISSIVE target only [+ ultra lens glare] ->
+ *                        vignette -> exposure, HDR grade and the theme's tone curve -> sRGB ->
+ *                        FXAA where the scene pass has no MSAA; MSAA x4, pixel ratio min(dpr,
+ *                        6 Mpx budget) but never below 1 (quality.ts `pixelRatio`), two shadowed
+ *                        keys (2048 / PCF 3 on high, 4096 / PCF 4 on ultra), 5-mip bloom
  *
- * The renderer is created with `antialias: false`: MSAA lives on the scene pass (`samples`), so the
- * final full-screen quad is single-sampled on every tier. Switching tiers disposes the previous
- * chain (scene pass, ultra passes, bloom, pipeline quad) and builds the new one.
+ * Capabilities (capabilities.ts): read once after init (`caps`); every tier runs as
+ * `adjustTier(tier(q), caps)` (`spec`): no multisampled HDR target in WebGPU compatibility mode ->
+ * FXAA, no multisampled canvas -> the direct tier without AA, maps and the drawing buffer within
+ * maxTextureSize. The starting tier (quality.ts startingQuality) is low on WebGL2, in WebGPU
+ * compatibility mode and with navigator.deviceMemory <= 4 unless the player chose one, and never
+ * above the GPU's remembered ceiling (tierGuard.ts).
+ *
+ * The renderer is created with `antialias: true`: only the direct tier draws the scene into the
+ * canvas, so on WebGPU its samples (`_samples`, set per tier) only matter there (three gives
+ * full-screen passes 0 samples); on WebGL2 it is the context's multisampled framebuffer, fixed at
+ * creation (three only asks for one while the output colour space is the working one: linear during
+ * init). Switching tiers disposes the previous path (scene pass, ultra passes, bloom, pipeline quad;
+ * leaving the direct tier, the canvas' MSAA buffer) and builds the new one.
+ *
+ * Failures (`setFailureListener`): WebGPU uncaptured errors, failed pipelines or WebGL programs and
+ * a lost device or context go to the Game, whose safety net (tierGuard.ts) falls back one tier.
  *
  * `#webgl2` in the URL forces three's WebGL2 backend (the automatic fallback of browsers without
  * WebGPU), to test that path on any machine; `#lowgpu` forces it with a context that looks like a
- * low-end phone's (no float-linear / float-target / float-blend extensions, capped limits) and
- * `#diag` shows the backend, GPU, extensions, limits, tier, theme and shader errors on screen
- * (gpuDiag.ts).
+ * low-end phone's (no float-linear / float-target / float-blend extensions, capped limits);
+ * `#compat` and `#nof32filter` make the WebGPU device a compatibility-mode one (an OpenGL ES
+ * Android phone) or one without 'float32-filterable' (an iPhone); `#diag` shows the backend, GPU,
+ * extensions, limits, capabilities, the tier as this device runs it, theme and every shader or GPU
+ * error on screen (gpuDiag.ts).
  *
  * GPU timing: with `#stats` in the URL the renderer is created with `trackTimestamp` and resolves
  * the render-pass timestamps every frame; `gpuTimeMs` / `stats().gpuMs` expose them (0 when the
@@ -32,26 +49,33 @@
  *
  * Dynamic resolution (tiers with `dynamicResolution`): loop frames pass their rAF timestamp to
  * render(); a DynamicResolution controller (dynamicResolution.ts) turns the intervals (and the GPU
- * time with `#stats`) into a scene-pass scale between the tier's minResolutionScale and 1, applied
- * through the chain's setResolutionScale: the composite upsamples the scene, bloom (sized from the
- * drawing buffer), the vignette and FXAA run at full size (the ultra passes that read the scene
- * depth follow the scale). `stats().resolutionScale` reports it.
+ * time with `#stats`) into a scale between the tier's minResolutionScale and 1. Post tiers apply
+ * it to the scene pass (the composite upsamples the scene; bloom, the vignette and FXAA run at
+ * full size; the ultra passes that read the scene depth follow it); the direct tier multiplies the
+ * canvas' pixel ratio by it (a resize: the controller changes it at most every half second, steps
+ * of 0.05 to 0.1, and leaves the reallocation's long frame out of its mean). `stats().resolutionScale`
+ * reports it.
  *
  * NaN hygiene (post/pipeline.ts sanitises every pass-target read, materials their glow writes in
  * `glowMrt()`): with `#nancheck` in the URL the renderer reads the scene pass targets and the bloom
  * result back every NANCHECK_EVERY frames and logs '[nancheck] ...' counters (NaN / Inf / negative
- * / black texels, NaN bounding box); the same report lives at `window.__nancheck`. Zero cost
- * without the hash (one boolean test per frame).
+ * / black texels, NaN bounding box); the same report lives at `window.__nancheck`. The direct tier
+ * has no HDR target to read (it says so once): its look starts with max(0), which turns a NaN into
+ * 0, and it has no glow target to spread one. Zero cost without the hash (one boolean test per
+ * frame).
  *
  * Nothing else here allocates per frame: `render()` and `stats()` reuse the same objects.
  */
 import * as THREE from 'three/webgpu';
+import { adjustTier, readCapabilities, tierChanges, type Capabilities } from './capabilities';
 import { DynamicResolution } from './dynamicResolution';
+import { setGlowTargets } from './materials';
 import { createLighting, type Lighting } from './post/lighting';
 import { buildPostChain, type PostChain } from './post/pipeline';
-import { pixelRatio, startingQuality, tier, type Quality } from './quality';
-import { GpuDiag, diagFlags, installLowGpuEmulation } from './gpuDiag';
+import { pixelRatio, startingQuality, tier, type Quality, type TierSpec } from './quality';
+import { GpuDiag, addThreeConsoleHook, diagFlags, hiddenFeatures, installAdapterEmulation, installLowGpuEmulation } from './gpuDiag';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
+import { readCeiling, type FailureKind } from './tierGuard';
 import { createWorld, type World } from './world/World';
 
 export interface RendererOptions {
@@ -71,9 +95,21 @@ export interface RenderStats {
   triangles: number;
   /** Mean GPU render time (ms) over the frames since the previous stats() call; 0 when unavailable. */
   gpuMs: number;
-  /** Scene-pass resolution scale set by dynamic resolution (1 = full); NaN on tiers without it. */
+  /** Resolution scale set by dynamic resolution (1 = full: the scene pass, or the direct tier's pixel ratio); NaN on tiers without it. */
   resolutionScale: number;
 }
+
+/** A GPU failure the renderer saw (Renderer.setFailureListener; the safety net is tierGuard.ts). */
+export interface GpuFailure {
+  /** 'error': a WebGPU validation / out-of-memory / internal error, a pipeline or WebGL program that failed; 'lost': the device or the WebGL context is gone. */
+  readonly kind: FailureKind;
+  readonly message: string;
+  /** The tier that was rendering. */
+  readonly tier: Quality;
+}
+
+/** three's messages (its console function, type 'error') that mean a pipeline or program failed. */
+const FAILED_PROGRAM = /Shader Error|pipeline creation failed/i;
 
 /** Camera planes in uu (1 uu = 1 three unit). */
 export const CAMERA_NEAR = 10;
@@ -221,7 +257,11 @@ export class Renderer {
   readonly hemi: THREE.HemisphereLight;
   /** True when GPU timestamps are being collected (`#stats` and backend support). */
   readonly gpuTimingEnabled: boolean;
+  /** What the GPU can do (capabilities.ts), read at init. */
+  readonly caps: Capabilities;
   quality: Quality;
+  /** The tier's switches as this device runs them: adjustTier(tier(quality), caps). */
+  spec: TierSpec;
   /** Stadium theme (setTheme): the lights, the world and the post chain follow it. */
   theme: ThemeId;
   /** Called after every resize (the chase camera re-applies its horizontal FOV here). */
@@ -248,6 +288,7 @@ export class Renderer {
   private readonly nanReport: NanCheckReport | null;
   private nanFrame = 0;
   private nanBusy = false;
+  private nanDirectNoted = false;
   private readonly onWindowResize = (): void => this.resize();
   /**
    * Re-measures whenever the canvas' CSS box changes, after layout. Window 'resize' alone is not
@@ -259,13 +300,20 @@ export class Renderer {
   /** The canvas' CSS size at the last resize: render() re-measures when it differs (a backstop for the observer). */
   private cssW = -1;
   private cssH = -1;
+  /** Who hears about GPU failures (Game: the tier fallback), and one failure seen before it listened. */
+  private failureListener: ((f: GpuFailure) => void) | null = null;
+  private pendingFailure: GpuFailure | null = null;
 
-  private constructor(gpu: THREE.WebGPURenderer, canvas: HTMLCanvasElement, quality: Quality, theme: ThemeId, timing: boolean) {
+  private constructor(gpu: THREE.WebGPURenderer, canvas: HTMLCanvasElement, quality: Quality, theme: ThemeId, timing: boolean, caps: Capabilities) {
     this.gpu = gpu;
     this.canvas = canvas;
     this.quality = quality;
+    this.caps = caps;
+    this.spec = adjustTier(tier(quality), caps);
     this.theme = theme;
     this.isWebGPU = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
+    // Before the world builds its kept materials: their glow tags follow the tier (materials.ts).
+    setGlowTargets(this.spec.bloom);
     // The backend clears the flag when 'timestamp-query' (or EXT_disjoint_timer_query_webgl2) is absent.
     this.gpuTimingEnabled = timing && (gpu.backend as { trackTimestamp?: boolean }).trackTimestamp === true;
     this.nanReport = null;
@@ -306,6 +354,48 @@ export class Renderer {
     this.applyQuality(quality);
   }
 
+  /**
+   * Hear about GPU failures: WebGPU uncaptured errors (validation, out of memory, internal), a
+   * render pipeline or WebGL program that failed, a lost device or WebGL context. A failure seen
+   * before anyone listened (the boot's warm-up) is delivered at once. Null stops listening.
+   */
+  setFailureListener(fn: ((f: GpuFailure) => void) | null): void {
+    this.failureListener = fn;
+    const pending = this.pendingFailure;
+    if (fn !== null && pending !== null) {
+      this.pendingFailure = null;
+      fn(pending);
+    }
+  }
+
+  private reportFailure(kind: FailureKind, message: string): void {
+    const f: GpuFailure = { kind, message, tier: this.quality };
+    if (this.failureListener !== null) this.failureListener(f);
+    else if (this.pendingFailure === null || kind === 'lost') this.pendingFailure = f;
+  }
+
+  /** Route three's error callbacks and messages into reportFailure (once, at creation). */
+  private watchFailures(): void {
+    const gpu = this.gpu as unknown as { onError: (info: unknown) => void; onDeviceLost: (info: unknown) => void };
+    const message = (info: unknown): string => {
+      const m = (info as { message?: unknown } | null)?.message;
+      return typeof m === 'string' ? m : String(info);
+    };
+    const onError = gpu.onError;
+    gpu.onError = (info: unknown): void => {
+      onError.call(this.gpu, info);
+      this.reportFailure('error', message(info));
+    };
+    const onLost = gpu.onDeviceLost;
+    gpu.onDeviceLost = (info: unknown): void => {
+      onLost.call(this.gpu, info);
+      this.reportFailure('lost', message(info));
+    };
+    addThreeConsoleHook((type, msg) => {
+      if (type === 'error' && FAILED_PROGRAM.test(msg)) this.reportFailure('error', msg);
+    });
+  }
+
   /** Create the WebGPU renderer on `canvas` (falls back to WebGL2 by itself) and await backend init. */
   static async create(canvas: HTMLCanvasElement, opts: RendererOptions = {}): Promise<Renderer> {
     const hash = typeof location !== 'undefined' ? location.hash : '';
@@ -313,32 +403,69 @@ export class Renderer {
     const flags = diagFlags(hash);
     // `#lowgpu`: the WebGL2 context three creates in init() looks like a low-end phone's.
     const restoreGetContext = flags.lowgpu ? installLowGpuEmulation() : null;
+    // `#compat` / `#nof32filter`: the WebGPU adapter three requests hides those features.
+    const restoreAdapter = installAdapterEmulation(hiddenFeatures(flags));
     const gpu = new THREE.WebGPURenderer({
       canvas,
-      antialias: false,
+      // MSAA x4 for what is drawn straight into the canvas: only the direct (low) tier does that.
+      // The post tiers' final full-screen quad is single-sampled whatever this says (three gives
+      // full-screen passes 0 samples on WebGPU); on WebGL2 it is the context's own multisampled
+      // framebuffer, fixed at creation, which the post tiers' quad then draws into as well.
+      antialias: true,
       alpha: false,
       powerPreference: 'high-performance',
       trackTimestamp: timing,
       // `#webgl2` in the URL: the WebGL2 fallback even where WebGPU exists (testing the fallback).
       forceWebGL: hash.includes('webgl2') || flags.lowgpu,
     });
+    // three r186's WebGL2 backend creates its context with antialias only when the renderer's
+    // current samples are > 0, which it reports as 0 while the output colour space differs from
+    // the working one (its own sRGB output pass would need a framebuffer target): linear during
+    // init, so the fallback's canvas multisamples too, sRGB again right after.
+    gpu.outputColorSpace = THREE.LinearSRGBColorSpace;
     try {
       await gpu.init();
     } finally {
+      gpu.outputColorSpace = THREE.SRGBColorSpace;
       if (restoreGetContext !== null) restoreGetContext();
+      restoreAdapter();
     }
     const webgpu = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
-    const quality = startingQuality(opts.quality ?? 'high', opts.qualityChosen ?? true, webgpu);
+    const caps = readCapabilities(gpu);
+    let ceiling: Quality | null = null;
+    try {
+      ceiling = readCeiling(window.localStorage, caps.gpu, Date.now());
+    } catch {
+      /* storage unavailable */
+    }
+    const nav = navigator as unknown as { deviceMemory?: number };
+    const quality = startingQuality(opts.quality ?? 'high', opts.qualityChosen ?? true, { webgpu, compatibilityMode: caps.compatibilityMode, deviceMemory: nav.deviceMemory }, ceiling);
     // `#diag`: the on-screen panel and its probes, installed before any shader compiles.
     const theme = opts.theme ?? DEFAULT_THEME;
     let renderer: Renderer | null = null;
     let diag: GpuDiag | null = null;
     if (flags.diag) {
-      diag = new GpuDiag(gpu, () => ({ tier: renderer?.quality ?? quality, theme: renderer?.theme ?? theme }), flags.lowgpu);
+      diag = new GpuDiag(
+        gpu,
+        () => {
+          const q = renderer?.quality ?? quality;
+          const spec = renderer?.spec ?? tier(q);
+          let now: Quality | null = null;
+          try {
+            now = readCeiling(window.localStorage, caps.gpu, Date.now());
+          } catch {
+            now = ceiling;
+          }
+          return { tier: q, theme: renderer?.theme ?? theme, changes: tierChanges(tier(q), spec), output: spec.output, msaa: spec.msaa, ceiling: now, caps };
+        },
+        flags,
+        (message) => renderer?.reportFailure('error', message),
+      );
       diag.attach();
     }
-    renderer = new Renderer(gpu, canvas, quality, theme, timing);
+    renderer = new Renderer(gpu, canvas, quality, theme, timing, caps);
     renderer.diag = diag;
+    renderer.watchFailures();
     // The world's load-time work behind the boot overlay: its first bake or cache read.
     await renderer.world.ready;
     return renderer;
@@ -376,9 +503,11 @@ export class Renderer {
     this.cssH = this.canvas.clientHeight;
     const w = Math.max(1, this.cssW || window.innerWidth);
     const h = Math.max(1, this.cssH || window.innerHeight);
-    const spec = tier(this.quality);
+    const spec = this.spec;
     const touch = spec.maxPixelRatio > 1 && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
-    this.gpu.setPixelRatio(pixelRatio(spec, window.devicePixelRatio, touch, w, h));
+    // The direct tier's dynamic resolution is the canvas' own pixel ratio (no scene pass to scale).
+    const scale = this.dynamicResolution && spec.output === 'direct' ? this.dynRes.scale : 1;
+    this.gpu.setPixelRatio(pixelRatio(spec, window.devicePixelRatio, touch, w, h, this.caps.maxTextureSize) * scale);
     this.gpu.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -386,9 +515,10 @@ export class Renderer {
   }
 
   /**
-   * Draw one frame through the pipeline. The scene must always go through the PassNode (whose
-   * targets are named `output` / `emissive`): a direct `gpu.render(scene, camera)` would compile
-   * the glow-tagged materials against the renderer's unnamed internal framebuffer and fail.
+   * Draw one frame through the tier's path (post/pipeline.ts): the HDR pipeline, whose scene pass
+   * names its targets `output` / `emissive`, or the direct path into the canvas (no glow tags
+   * there: glowMrt returns null on tiers without bloom). Never `gpu.render(scene, camera)` alone:
+   * that would add three's own HalfFloat framebuffer and output pass and skip the theme's look.
    *
    * `frameTime`: the frame's requestAnimationFrame timestamp (ms). Loop frames pass it so dynamic
    * resolution sees the presentation intervals; one-off renders (the boot warm-up) leave it out.
@@ -401,12 +531,17 @@ export class Renderer {
       if (this.dynamicResolution && this.lastFrameAt >= 0 && this.post !== null) {
         // GPU time of the last resolved frame when `#stats` timing is on, else intervals only.
         const gpuMs = this.gpuTimingEnabled ? this.gpu.info.render.timestamp : Number.NaN;
-        if (this.dynRes.update(frameTime - this.lastFrameAt, gpuMs)) this.post.setResolutionScale(this.dynRes.scale);
+        if (this.dynRes.update(frameTime - this.lastFrameAt, gpuMs)) {
+          // Direct tier: a new canvas size (the controller changes it at most every half second
+          // and leaves the reallocation's long frame out of its mean); post tiers: the scene pass.
+          if (this.post.output === 'direct') this.resize();
+          else this.post.setResolutionScale(this.dynRes.scale);
+        }
       }
       this.lastFrameAt = frameTime;
     }
     this.gpu.info.reset();
-    if (this.post !== null) this.post.pipeline.render();
+    if (this.post !== null) this.post.render();
     if (this.nanReport !== null && ++this.nanFrame % NANCHECK_EVERY === 0 && !this.nanBusy) void this.runNanCheck();
     if (this.gpuTimingEnabled) {
       // Diagnostics only (#stats): reads back the render-pass timestamps written this frame.
@@ -431,9 +566,9 @@ export class Renderer {
    * pipelines in turn (10 s here), and a compileAsync per object builds some wrong variants
    * (transparent double-pass materials, a second turf program).
    *
-   * WebGL2: a compileAsync of the scene (KHR_parallel_shader_compile) through the scene pass's own
-   * render target and MRT; the shadow and post passes are left to the warm-up frame (a few small
-   * programs). Measured on the low tier's first load: 1.8 s instead of 5.7 s of synchronous
+   * WebGL2: a compileAsync of the scene (KHR_parallel_shader_compile) with the path's own target
+   * and MRT (post tiers) or in-material output (the direct tier), PostChain.compileAsync; the
+   * shadow and post passes are left to the warm-up frame (a few small programs). Measured on the low tier's first load: 1.8 s instead of 5.7 s of synchronous
    * compile. Three's WebGL2 backend polls the parallel compile from requestAnimationFrame, which
    * never fires in a hidden tab: the promise then settles after `timeoutMs` and the first visible
    * frames finish what is left.
@@ -462,18 +597,8 @@ export class Renderer {
       }
       compiling = Promise.all(pending);
     } else {
-      const pass = post.scenePass;
-      const prevTarget = gpu.getRenderTarget();
-      const prevMrt = gpu.getMRT();
-      try {
-        // compileAsync reads the target and the MRT synchronously, before its first await.
-        gpu.setRenderTarget(pass.renderTarget);
-        gpu.setMRT(pass.getMRT());
-        compiling = gpu.compileAsync(this.scene, this.camera);
-      } finally {
-        gpu.setRenderTarget(prevTarget);
-        gpu.setMRT(prevMrt);
-      }
+      // The scene pass's target and MRT, or the direct path's in-material output (pipeline.ts).
+      compiling = post.compileAsync();
     }
     let timer = 0;
     await Promise.race([compiling, new Promise<void>((resolve) => (timer = window.setTimeout(resolve, timeoutMs)))]);
@@ -526,6 +651,13 @@ export class Renderer {
     if (report === null || post === null) return;
     const scenePass = post.scenePass;
     const bloomPass = post.bloomPass;
+    if (scenePass === null) {
+      // The direct tier keeps no HDR target to read back: a NaN there is already 0 on screen (the
+      // look's first max(0), pipeline.ts), and it has no glow target to spread one.
+      if (!this.nanDirectNoted) console.info('[nancheck] the direct (low) tier renders straight to the canvas: no HDR targets to read back');
+      this.nanDirectNoted = true;
+      return;
+    }
     this.nanBusy = true;
     const frame = this.nanFrame;
     try {
@@ -569,22 +701,57 @@ export class Renderer {
     }
   }
 
+  /**
+   * Leaving the direct tier on WebGPU: free the canvas' multisampled colour buffer three keeps for
+   * it (4 samples of the drawing buffer, ~43 MB at 2190x1233), which the post tiers never use (their
+   * full-screen quad is single-sampled; the depth buffer is replaced by three itself). three r186
+   * internals: the canvas target's colour texture and its backend data; getColorBuffer recreates the
+   * buffer when the direct tier comes back (its sample count no longer matches).
+   */
+  private releaseCanvasMsaa(): void {
+    if (!this.isWebGPU) return;
+    try {
+      const target = (this.gpu as unknown as { getCanvasTarget(): { colorTexture?: { samples: number } } }).getCanvasTarget();
+      const tex = target.colorTexture;
+      if (tex === undefined) return;
+      const data = (this.gpu.backend as unknown as { get(o: object): { texture?: GPUTexture } }).get(tex);
+      if (data.texture === undefined) return;
+      data.texture.destroy();
+      data.texture = undefined;
+      tex.samples = 0;
+    } catch (err) {
+      console.warn('[renderer] could not free the canvas MSAA buffer (three internals changed?)', err);
+    }
+  }
+
   private applyQuality(q: Quality): void {
     this.quality = q;
-    const spec = tier(q);
-    // Shadow map size and PCF radius of the tier, then the world's tier switches.
-    this.lighting.setQuality(q);
+    const spec = adjustTier(tier(q), this.caps);
+    this.spec = spec;
+    // Glow tags for the views about to be built (and the world's kept materials), then the shadow
+    // map size and PCF radius of the tier, then the world's tier switches.
+    setGlowTargets(spec.bloom);
+    this.lighting.setQuality(q, spec);
     this.world.setQuality(q);
 
     if (this.post !== null) {
+      const wasDirect = this.post.output === 'direct';
       this.post.dispose();
       this.post = null;
+      if (wasDirect && spec.output !== 'direct') this.releaseCanvasMsaa();
     }
-    // A new scene pass starts at full resolution; the controller starts over in the tier's range.
+    // The canvas' MSAA, which only the direct path uses (WebGPU: read per render, the post tiers'
+    // quad is single-sampled anyway; WebGL2: the context's, fixed at creation). three r186 zeroes
+    // it in WebGPU compatibility mode, where its own default path would render into a
+    // multisampled rgba16float target that mode cannot create; the canvas' 8-bit formats do
+    // multisample there, and no path here goes through three's default one (both draw the
+    // canvas with NoToneMapping in the working colour space).
+    if (this.isWebGPU) (this.gpu as unknown as { _samples: number })._samples = spec.output === 'direct' ? spec.msaa : 0;
+    // A new path starts at full resolution; the controller starts over in the tier's range.
     this.dynamicResolution = spec.dynamicResolution;
     this.dynRes.reset(spec.dynamicResolution ? spec.minResolutionScale : 1);
     this.lastFrameAt = -1;
-    this.post = buildPostChain(this.gpu, this.scene, this.camera, q, themeWorld(this.theme));
+    this.post = buildPostChain(this.gpu, this.scene, this.camera, spec, themeWorld(this.theme));
     this.resize();
   }
 }

@@ -9,7 +9,10 @@
  * `emissiveNode` there automatically. Unlit `MeshBasicNodeMaterial`s write nothing unless they
  * set `material.mrtNode = glowMrt(<colour node>)`, which is what every flame, pad, lamp, halo and
  * particle that should glow must do; things that must NOT glow may leave `mrtNode` null (nothing
- * is written) or use `noGlowMrt()` to be explicit.
+ * is written) or use `noGlowMrt()` to be explicit. On tiers without bloom (low renders straight to
+ * the canvas, which has no `emissive` target) both return null (`setGlowTargets`, set by the
+ * Renderer before a tier's views are built; `keepGlowTag` for materials kept across tier switches),
+ * so glow there comes from geometry and colour alone.
  *
  * NaN contract: three writes the colour target through `max(output, 0)` (WGSL / HLSL / MSL max
  * return the non-NaN operand), so a NaN in a material's colour never reaches the `output`
@@ -97,14 +100,61 @@ export function hdrColor(hex: number, intensity: number, out: THREE.Color = new 
   return out.setHex(hex).multiplyScalar(intensity);
 }
 
+/** The tier has a glow target (bloom): set by the Renderer before the views of a tier are built. */
+let glowTargets = true;
+/** Materials kept across tier switches (the world's) and how to rebuild their glow tag. */
+const keptTags = new Map<THREE.Material, () => MrtNode | null>();
+
+/**
+ * Glow targets on or off for the materials built from now on (Renderer.applyQuality, before the
+ * views of the tier are built: every view is rebuilt on a tier switch). Off on tiers without bloom:
+ * `glowMrt` / `noGlowMrt` then return null, so no material carries an MRT output (the direct tier
+ * renders into the canvas, which has no `emissive` target) and no glow term is compiled. The
+ * materials registered with `keepGlowTag` are re-tagged here (and recompile on their next draw).
+ */
+export function setGlowTargets(on: boolean): void {
+  if (on === glowTargets) return;
+  glowTargets = on;
+  for (const [m, build] of keptTags) {
+    (m as THREE.NodeMaterial).mrtNode = build();
+    m.needsUpdate = true;
+  }
+}
+
+/** Whether materials built now get a glow tag (see setGlowTargets). */
+export function glowTargetsOn(): boolean {
+  return glowTargets;
+}
+
+/**
+ * For a material that lives across tier switches (the world's dome, live layer and beam): set its
+ * glow tag from `build` (a glowMrt / noGlowMrt call) now and again on every setGlowTargets change,
+ * until the material is disposed.
+ */
+export function keepGlowTag(m: THREE.NodeMaterial, build: () => MrtNode | null): void {
+  m.mrtNode = build();
+  if (keptTags.has(m)) {
+    keptTags.set(m, build);
+    return;
+  }
+  keptTags.set(m, build);
+  const onDispose = (): void => {
+    keptTags.delete(m);
+    m.removeEventListener('dispose', onDispose);
+  };
+  m.addEventListener('dispose', onDispose);
+}
+
 /**
  * Tag for the bloom pass: writes `emissiveNode` into the scene pass' `emissive` target.
  * `blending` is how that write combines with what is already in the target:
  *   'additive' (default) adds, which is right for additive flames / glows and for glass that
  *   must not erase the lamps behind it; 'material' uses the material's own blend state;
  *   'none' overwrites (opaque surfaces).
+ * Null on tiers without bloom (setGlowTargets): the material then has no MRT output at all.
  */
-export function glowMrt(emissiveNode: Vec3Node, blending: 'additive' | 'material' | 'none' = 'additive'): MrtNode {
+export function glowMrt(emissiveNode: Vec3Node, blending: 'additive' | 'material' | 'none' = 'additive'): MrtNode | null {
+  if (!glowTargets) return null;
   // Sanitised write: min / max return the non-NaN operand (WGSL, HLSL, MSL), so a NaN produced by
   // the material (e.g. pow() of a varying that MSAA centre interpolation extrapolated below 0)
   // lands as 0 instead of entering the bloom chain, where ONE NaN texel blurs through the mips
@@ -119,8 +169,8 @@ export function glowMrt(emissiveNode: Vec3Node, blending: 'additive' | 'material
   return node;
 }
 
-/** Explicit "never blooms" tag (adds zero to the emissive target, so nothing behind is erased). */
-export function noGlowMrt(): MrtNode {
+/** Explicit "never blooms" tag (adds zero to the emissive target, so nothing behind is erased); null without bloom. */
+export function noGlowMrt(): MrtNode | null {
   return glowMrt(vec3(0, 0, 0), 'additive');
 }
 

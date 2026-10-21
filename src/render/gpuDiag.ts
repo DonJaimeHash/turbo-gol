@@ -9,7 +9,17 @@
  *            screenshot of it from any phone. It also checks every linked WebGL program against
  *            the context's limits (varyings, texture units, uniform blocks) and lists the programs
  *            that fail or would not fit. The same text goes to the console once a second while it
- *            changes (`window.__diag()` returns it).
+ *            changes (`window.__diag()` returns it). It shows the tier as the device runs it (the
+ *            render path, MSAA, every switch capabilities.ts turned off) and the remembered ceiling
+ *            of tierGuard.ts. On WebGPU it names the passes of a command buffer that failed: each
+ *            encoder's finish() runs in an error scope and the error lists the encoder's passes
+ *            and their attachments (texture label, format, samples, mip; '(open)' for a pass never
+ *            ended), then goes on to the renderer's safety net as an uncaptured error would. The
+ *            first messages stay on the panel (the cause), the latest after them.
+ *   #compat  WebGPU in compatibility mode (an Android phone's Chrome on OpenGL ES), and
+ *   #nof32filter  a WebGPU device without 'float32-filterable' (an iPhone's Safari): the adapter
+ *            three requests hides those features (installAdapterEmulation), so the device lacks
+ *            them and validates like the phone's (compatibility mode with its default limits).
  *   #lowgpu  forces the WebGL2 backend and makes its context look like a Mali-G51-class Android
  *            phone's before three.js initialises: only the extensions such a phone has are exposed
  *            (no OES_texture_float_linear, EXT_color_buffer_float, EXT_float_blend, timer queries,
@@ -26,15 +36,99 @@
  * wrapped once (shader sources, link status read back once a second): diagnostics only.
  */
 import * as THREE from 'three/webgpu';
+import type { Capabilities } from './capabilities';
 
 /** The URL flags of this module. */
 export interface DiagFlags {
   readonly diag: boolean;
   readonly lowgpu: boolean;
+  /** WebGPU in compatibility mode (an Android phone's Chrome on an OpenGL ES driver). */
+  readonly compat: boolean;
+  /** A WebGPU device without 'float32-filterable' (an iPhone's Safari). */
+  readonly nof32filter: boolean;
 }
 
 export function diagFlags(hash: string): DiagFlags {
-  return { diag: /(^|[#&])diag(&|$)/.test(hash), lowgpu: /(^|[#&])lowgpu(&|$)/.test(hash) };
+  const has = (flag: string): boolean => new RegExp(`(^|[#&])${flag}(&|$)`).test(hash);
+  return { diag: has('diag'), lowgpu: has('lowgpu'), compat: has('compat'), nof32filter: has('nof32filter') };
+}
+
+/**
+ * Chain `hook` into three.js's console function (its warnings and errors: shader errors, pipeline
+ * failures, uncaught GPU errors, a lost device): the hook sees every message, then the previous
+ * function (another hook) or the browser console gets it as before.
+ */
+export function addThreeConsoleHook(hook: (type: 'log' | 'warn' | 'error', message: string, params: readonly unknown[]) => void): void {
+  const prev = THREE.getConsoleFunction();
+  THREE.setConsoleFunction((type: 'log' | 'warn' | 'error', message: string, ...params: unknown[]) => {
+    hook(type, message, params);
+    if (prev) {
+      prev(type, message, ...params);
+      return;
+    }
+    const c = console as unknown as Record<string, (...a: unknown[]) => void>;
+    const first = params[0] as { isStackTrace?: boolean; getError?: (m: string) => unknown } | undefined;
+    const log = c[type] ?? console.log;
+    if (first !== undefined && first !== null && first.isStackTrace === true && first.getError) log(first.getError(message));
+    else log(message, ...params);
+  });
+}
+
+// ---- #compat / #nof32filter ---------------------------------------------------------------------
+
+/**
+ * The WebGPU features the adapter emulation hides for the flags: 'core-features-and-limits' makes
+ * the device a compatibility-mode one (three r186 always asks for a 'compatibility' feature-level
+ * adapter and requests every feature it lists, so a desktop Chrome then gets the same validation
+ * and the same default limits as the phone: 4096 textures, 15 varyings, 16 KB uniform buffers,
+ * 4 colour targets), 'float32-filterable' is what Safari on an iPhone lacks.
+ */
+export function hiddenFeatures(flags: Pick<DiagFlags, 'compat' | 'nof32filter'>): string[] {
+  const out: string[] = [];
+  if (flags.compat) out.push('core-features-and-limits');
+  if (flags.nof32filter) out.push('float32-filterable');
+  return out;
+}
+
+/** An adapter that does not list (or grant) the `hidden` features. */
+function wrapAdapter(adapter: GPUAdapter, hidden: ReadonlySet<string>): GPUAdapter {
+  const features = new Set<string>();
+  for (const f of adapter.features) if (!hidden.has(f)) features.add(f);
+  const requestDevice = (desc?: GPUDeviceDescriptor): Promise<GPUDevice> => {
+    const required = desc?.requiredFeatures !== undefined ? [...desc.requiredFeatures].filter((f) => !hidden.has(f)) : undefined;
+    return adapter.requestDevice(desc === undefined ? undefined : { ...desc, requiredFeatures: required });
+  };
+  return new Proxy(adapter, {
+    get(target, prop) {
+      if (prop === 'features') return features;
+      if (prop === 'requestDevice') return requestDevice;
+      const v: unknown = Reflect.get(target, prop, target);
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+}
+
+/**
+ * #compat / #nof32filter: until the returned function is called, navigator.gpu.requestAdapter
+ * hands out adapters without the `hidden` features (see hiddenFeatures), so the device three.js
+ * creates in between lacks them. Does nothing without WebGPU or with nothing to hide.
+ */
+export function installAdapterEmulation(hidden: readonly string[]): () => void {
+  const nav = typeof navigator !== 'undefined' ? (navigator as unknown as { gpu?: GPU }) : {};
+  const gpu = nav.gpu;
+  if (gpu === undefined || hidden.length === 0) return () => undefined;
+  const set = new Set(hidden);
+  const original = gpu.requestAdapter.bind(gpu);
+  const own = Object.prototype.hasOwnProperty.call(gpu, 'requestAdapter');
+  const prev = gpu.requestAdapter;
+  (gpu as unknown as { requestAdapter: GPU['requestAdapter'] }).requestAdapter = async (opts?: GPURequestAdapterOptions) => {
+    const adapter = await original(opts);
+    return adapter === null ? null : wrapAdapter(adapter, set);
+  };
+  return () => {
+    if (own) (gpu as unknown as { requestAdapter: GPU['requestAdapter'] }).requestAdapter = prev;
+    else delete (gpu as unknown as { requestAdapter?: GPU['requestAdapter'] }).requestAdapter;
+  };
 }
 
 // ---- #lowgpu ----------------------------------------------------------------------------------
@@ -122,6 +216,47 @@ export function installLowGpuEmulation(): () => void {
 export interface DiagState {
   readonly tier: string;
   readonly theme: string;
+  /** The tier's switches this device runs differently (capabilities.ts tierChanges). */
+  readonly changes: readonly string[];
+  readonly output: string;
+  readonly msaa: number;
+  /** The highest tier that has not failed on this GPU (tierGuard.ts), null when none failed. */
+  readonly ceiling: string | null;
+  readonly caps: Capabilities;
+}
+
+/** One render pass an encoder began (WebGPU #diag pass report). */
+interface PassRecord {
+  readonly what: string;
+  ended: boolean;
+}
+
+/** Texture views -> 'label(format x4 mip1)' for the pass report (#diag only). */
+const viewNames = new WeakMap<object, string>();
+let viewsHooked = false;
+
+/** Name every texture view created from now on (GPUTexture.prototype.createView, #diag only). */
+function hookTextureViews(): void {
+  if (viewsHooked || typeof GPUTexture === 'undefined') return;
+  viewsHooked = true;
+  const proto = GPUTexture.prototype as unknown as { createView: (this: GPUTexture, d?: GPUTextureViewDescriptor) => GPUTextureView };
+  const createView = proto.createView;
+  proto.createView = function (this: GPUTexture, d?: GPUTextureViewDescriptor): GPUTextureView {
+    const v = createView.call(this, d);
+    const fmt = d?.format ?? this.format;
+    const mip = d?.baseMipLevel !== undefined && d.baseMipLevel > 0 ? ` mip${d.baseMipLevel}` : '';
+    viewNames.set(v, `${this.label || 'canvas'}(${fmt}${this.sampleCount > 1 ? ` x${this.sampleCount}` : ''}${mip})`);
+    return v;
+  };
+}
+
+/** The attachments of a render pass, as text. */
+function describePass(desc: GPURenderPassDescriptor): string {
+  const parts: string[] = [];
+  for (const c of desc.colorAttachments) if (c !== null && c !== undefined) parts.push(viewNames.get(c.view) ?? '?');
+  const ds = desc.depthStencilAttachment;
+  if (ds !== undefined) parts.push(`depth ${viewNames.get(ds.view) ?? '?'}`);
+  return `${desc.label ?? ''}[${parts.join(', ')}]`;
 }
 
 /** A linked WebGL program the audit has looked at. */
@@ -173,6 +308,8 @@ export function programOverLimits(use: ProgramUse, limits: { varyings: number; t
 
 const PANEL_ID = 'turbogol-diag';
 const MAX_MESSAGES = 8;
+/** The first messages always stay on the panel (the cause comes first); the rest roll. */
+const FIRST_KEPT = 3;
 
 /**
  * The #diag panel and its probes. Create it right after the renderer's backend initialised
@@ -195,12 +332,15 @@ export class GpuDiag {
 
   private readonly gpu: THREE.WebGPURenderer;
   private readonly state: () => DiagState;
-  private readonly lowgpu: boolean;
+  private readonly flags: DiagFlags;
+  /** An error the pass report captured in its scope (it would have been uncaptured): to the safety net. */
+  private readonly onCaptured: (message: string) => void;
 
-  constructor(gpu: THREE.WebGPURenderer, state: () => DiagState, lowgpu: boolean) {
+  constructor(gpu: THREE.WebGPURenderer, state: () => DiagState, flags: DiagFlags, onCaptured: (message: string) => void) {
     this.gpu = gpu;
     this.state = state;
-    this.lowgpu = lowgpu;
+    this.flags = flags;
+    this.onCaptured = onCaptured;
     const el = document.createElement('pre');
     el.id = PANEL_ID;
     el.style.cssText = [
@@ -252,27 +392,17 @@ export class GpuDiag {
 
   // ---- probes -------------------------------------------------------------------------------
 
-  private note(msg: string): void {
-    const m = msg.replace(/\s+/g, ' ').trim().slice(0, 260);
+  private note(msg: string, max = 260): void {
+    const m = msg.replace(/\s+/g, ' ').trim().slice(0, max);
     if (m.length === 0 || this.messages.includes(m)) return;
     this.messages.push(m);
-    if (this.messages.length > MAX_MESSAGES) this.messages.shift();
+    if (this.messages.length > MAX_MESSAGES) this.messages.splice(FIRST_KEPT, 1);
   }
 
   /** three.js warnings and errors (shader errors, pipeline failures) go through its console function. */
   private hookThreeConsole(): void {
-    const prev = THREE.getConsoleFunction();
-    THREE.setConsoleFunction((type: 'log' | 'warn' | 'error', message: string, ...params: unknown[]) => {
+    addThreeConsoleHook((type, message, params) => {
       if (type === 'error' || type === 'warn') this.note(`${type === 'error' ? 'ERR' : 'warn'} ${message} ${params.filter((p) => typeof p === 'string').join(' ')}`);
-      if (prev) {
-        prev(type, message, ...params);
-        return;
-      }
-      const c = console as unknown as Record<string, (...a: unknown[]) => void>;
-      const first = params[0] as { isStackTrace?: boolean; getError?: (m: string) => unknown } | undefined;
-      const log = c[type] ?? console.log;
-      if (first !== undefined && first !== null && first.isStackTrace === true && first.getError) log(first.getError(message));
-      else log(message, ...params);
     });
   }
 
@@ -299,6 +429,7 @@ export class GpuDiag {
       const err = (e as GPUUncapturedErrorEvent).error;
       this.note(`GPU ${err.constructor.name}: ${err.message}`);
     });
+    this.hookEncoders(device);
     const createShaderModule = device.createShaderModule.bind(device);
     (device as unknown as { createShaderModule: (d: GPUShaderModuleDescriptor) => GPUShaderModule }).createShaderModule = (d) => {
       const mod = createShaderModule(d);
@@ -313,6 +444,51 @@ export class GpuDiag {
           .catch(() => undefined);
       }
       return mod;
+    };
+  }
+
+  /**
+   * The pass report: every command encoder remembers the render passes it began (their attachments)
+   * and whether each ended; its finish() runs in a validation error scope, so an error of that
+   * command buffer (a WebKit encoder left 'Locked' by an invalid pass, Dawn's "While encoding
+   * BeginRenderPass...") is noted with the passes, then handed to the safety net like the
+   * uncaptured error it would have been. Scopes are a stack: the push / pop pair is synchronous
+   * around finish(), so three's own scopes (pipeline creation) below it are untouched.
+   */
+  private hookEncoders(device: GPUDevice): void {
+    hookTextureViews();
+    const createCommandEncoder = device.createCommandEncoder.bind(device);
+    (device as unknown as { createCommandEncoder: (d?: GPUCommandEncoderDescriptor) => GPUCommandEncoder }).createCommandEncoder = (d) => {
+      const enc = createCommandEncoder(d);
+      const passes: PassRecord[] = [];
+      const begin = enc.beginRenderPass.bind(enc);
+      (enc as unknown as { beginRenderPass: (pd: GPURenderPassDescriptor) => GPURenderPassEncoder }).beginRenderPass = (pd) => {
+        const rec: PassRecord = { what: describePass(pd), ended: false };
+        passes.push(rec);
+        const pass = begin(pd);
+        const end = pass.end.bind(pass);
+        (pass as unknown as { end: () => void }).end = () => {
+          rec.ended = true;
+          end();
+        };
+        return pass;
+      };
+      const finish = enc.finish.bind(enc);
+      (enc as unknown as { finish: (fd?: GPUCommandBufferDescriptor) => GPUCommandBuffer }).finish = (fd) => {
+        device.pushErrorScope('validation');
+        const cb = finish(fd);
+        void device
+          .popErrorScope()
+          .then((err) => {
+            if (err === null) return;
+            const list = passes.map((p) => `${p.what}${p.ended ? '' : ' (open)'}`).join(' ');
+            this.note(`GPU finish ${enc.label || '?'} passes ${list || 'none'}: ${err.message}`, 420);
+            this.onCaptured(err.message);
+          })
+          .catch(() => undefined);
+        return cb;
+      };
+      return enc;
     };
   }
 
@@ -389,7 +565,7 @@ export class GpuDiag {
       );
     } else if (backend.gl !== undefined) {
       const gl = backend.gl;
-      const why = this.lowgpu ? 'forced by #lowgpu (emulated low-end phone)' : hash.includes('webgl2') ? 'forced by #webgl2' : typeof navigator !== 'undefined' && 'gpu' in navigator ? 'WebGPU adapter or device unavailable' : 'no WebGPU in this browser';
+      const why = this.flags.lowgpu ? 'forced by #lowgpu (emulated low-end phone)' : hash.includes('webgl2') ? 'forced by #webgl2' : typeof navigator !== 'undefined' && 'gpu' in navigator ? 'WebGPU adapter or device unavailable' : 'no WebGPU in this browser';
       out.push(`backend WebGL2 (${why})`);
       const dbg = gl.getExtension('WEBGL_debug_renderer_info') as { UNMASKED_RENDERER_WEBGL: number; UNMASKED_VENDOR_WEBGL: number } | null;
       const renderer = dbg !== null ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
@@ -427,8 +603,13 @@ export class GpuDiag {
     this.auditPrograms();
     const s = this.state();
     const canvas = this.gpu.domElement;
-    const lines = [`Turbogol #diag${this.lowgpu ? ' #lowgpu' : ''}`, ...this.header];
-    lines.push(`run  tier ${s.tier} | theme ${s.theme} | ${canvas.width}x${canvas.height} px (css ${canvas.clientWidth}x${canvas.clientHeight}, dpr ${window.devicePixelRatio})`);
+    const f = this.flags;
+    const emulated = [f.lowgpu ? ' #lowgpu' : '', f.compat ? ' #compat' : '', f.nof32filter ? ' #nof32filter' : ''].join('');
+    const lines = [`Turbogol #diag${emulated}`, ...this.header];
+    const c = s.caps;
+    lines.push(`caps msaa-hdr ${c.msaaHdr ? 'yes' : 'NO'} | msaa-canvas ${c.msaaCanvas ? 'yes' : 'NO'} | max tex ${c.maxTextureSize} | targets ${c.maxColorAttachments} | ceiling ${s.ceiling ?? 'none'}`);
+    lines.push(`run  tier ${s.tier} (${s.output}, msaa ${s.msaa}) | theme ${s.theme} | ${canvas.width}x${canvas.height} px (css ${canvas.clientWidth}x${canvas.clientHeight}, dpr ${window.devicePixelRatio})`);
+    if (s.changes.length > 0) lines.push(`adj  ${s.changes.join(' | ')}`);
     if (this.gl !== null) {
       const pending = this.programs.filter((r) => !r.done).length;
       lines.push(`prog ${this.programs.length} linked${pending > 0 ? ` (${pending} compiling)` : ''} | ${this.failed.length} FAILED | ${this.over.length} over the limits | ${this.glErrors} GL errors`);

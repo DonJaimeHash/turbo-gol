@@ -1,6 +1,7 @@
-// GPU diagnostics (node --test tests/gpu-diag.test.mjs): the #diag / #lowgpu hash flags, the
-// #lowgpu context emulation (hidden extensions, capped limits) on a fake canvas and context, and the
-// program audit's GLSL resource count against a context's limits.
+// GPU diagnostics (node --test tests/gpu-diag.test.mjs): the #diag / #lowgpu / #compat /
+// #nof32filter hash flags, the #lowgpu context emulation (hidden extensions, capped limits) on a
+// fake canvas and context, the #compat / #nof32filter adapter emulation on a fake navigator.gpu,
+// and the program audit's GLSL resource count against a context's limits.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -16,14 +17,54 @@ registerHooks({
   },
 });
 
-const { diagFlags, glslProgramUse, programOverLimits, installLowGpuEmulation, LOWGPU_EXTENSIONS, LOWGPU_LIMITS } = await import('../src/render/gpuDiag.ts');
+const { diagFlags, hiddenFeatures, installAdapterEmulation, glslProgramUse, programOverLimits, installLowGpuEmulation, LOWGPU_EXTENSIONS, LOWGPU_LIMITS } = await import('../src/render/gpuDiag.ts');
+
+const off = { diag: false, lowgpu: false, compat: false, nof32filter: false };
 
 test('the flags are whole words of the hash', () => {
-  assert.deepEqual(diagFlags(''), { diag: false, lowgpu: false });
-  assert.deepEqual(diagFlags('#diag'), { diag: true, lowgpu: false });
-  assert.deepEqual(diagFlags('#lowgpu&diag&stats'), { diag: true, lowgpu: true });
-  assert.deepEqual(diagFlags('#stats&lowgpu'), { diag: false, lowgpu: true });
-  assert.deepEqual(diagFlags('#diagnostics&nolowgpu'), { diag: false, lowgpu: false });
+  assert.deepEqual(diagFlags(''), off);
+  assert.deepEqual(diagFlags('#diag'), { ...off, diag: true });
+  assert.deepEqual(diagFlags('#lowgpu&diag&stats'), { ...off, diag: true, lowgpu: true });
+  assert.deepEqual(diagFlags('#stats&lowgpu'), { ...off, lowgpu: true });
+  assert.deepEqual(diagFlags('#diagnostics&nolowgpu'), off);
+  assert.deepEqual(diagFlags('#compat&diag'), { ...off, diag: true, compat: true });
+  assert.deepEqual(diagFlags('#nof32filter'), { ...off, nof32filter: true });
+  assert.deepEqual(diagFlags('#compatible&f32filter'), off);
+});
+
+test('#compat hides core-features-and-limits, #nof32filter float32-filterable from the adapter and the device', async () => {
+  assert.deepEqual(hiddenFeatures(off), []);
+  assert.deepEqual(hiddenFeatures({ compat: true, nof32filter: true }), ['core-features-and-limits', 'float32-filterable']);
+  const requested = [];
+  const adapter = {
+    features: new Set(['core-features-and-limits', 'float32-filterable', 'timestamp-query']),
+    limits: { maxTextureDimension2D: 16384 },
+    info: { vendor: 'x' },
+    async requestDevice(desc) {
+      requested.push(desc);
+      return { features: new Set(desc?.requiredFeatures ?? []) };
+    },
+  };
+  const gpu = { async requestAdapter() { return adapter; } };
+  const hadNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { value: { gpu }, configurable: true });
+  try {
+    assert.equal(typeof installAdapterEmulation([]), 'function', 'nothing to hide: a no-op');
+    const restore = installAdapterEmulation(hiddenFeatures({ compat: true, nof32filter: false }));
+    const a = await gpu.requestAdapter({ featureLevel: 'compatibility' });
+    assert.deepEqual([...a.features].sort(), ['float32-filterable', 'timestamp-query']);
+    assert.equal(a.limits.maxTextureDimension2D, 16384, 'everything else passes through');
+    assert.equal(a.info.vendor, 'x');
+    const d = await a.requestDevice({ requiredFeatures: ['core-features-and-limits', 'timestamp-query'], requiredLimits: {} });
+    assert.deepEqual([...d.features], ['timestamp-query'], 'a compatibility-mode device');
+    assert.deepEqual(requested.at(-1).requiredLimits, {});
+    restore();
+    assert.equal(Object.prototype.hasOwnProperty.call(gpu, 'requestAdapter'), true, 'own method restored');
+    assert.equal(await gpu.requestAdapter(), adapter);
+  } finally {
+    if (hadNavigator) Object.defineProperty(globalThis, 'navigator', hadNavigator);
+    else delete globalThis.navigator;
+  }
 });
 
 test('#lowgpu hides the float-linear, float-target and float-blend extensions and caps the limits', () => {

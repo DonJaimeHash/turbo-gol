@@ -151,6 +151,9 @@ async function boot(): Promise<void> {
   game.start();
   await paintedFrames(2);
   await loading.hide();
+  // The tier safety net listens from now on (a failure of the warm-up is handled now, behind its
+  // own loading screen): render/tierGuard.ts.
+  game.bootDone();
 }
 
 boot().catch((err: unknown) => {

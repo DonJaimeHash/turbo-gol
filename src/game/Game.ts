@@ -37,6 +37,9 @@
  * cache read). The overlay is painted first, the work runs in steps with a painted frame between
  * them (the bar moves), and the loop neither renders nor reads input meanwhile (`loadingHold`).
  * `setQuality` / `setTheme` stay the synchronous switches (the console and the capture helpers).
+ * A tier that breaks on this GPU (validation errors after the boot or a switch, a lost device)
+ * falls back one tier by itself through the same switch (`onGpuFailure`, src/render/tierGuard.ts),
+ * from `bootDone()` on.
  *
  * Settings (src/settings.ts: controls, camera, bindings, audio) are one live object shared by Input
  * (reads bindings / sensitivities, mutates them from the settings screen), ChaseCamera (reads
@@ -111,8 +114,9 @@ import { CarView } from '../render/Car';
 import { Effects } from '../render/Effects';
 import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow } from '../render/Hud';
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
-import { Renderer } from '../render/Renderer';
+import { Renderer, type GpuFailure } from '../render/Renderer';
 import { parseQuality, type Quality } from '../render/quality';
+import { TierGuard, writeCeiling, type Fallback } from '../render/tierGuard';
 import { DEFAULT_THEME, parseTheme, themeWorld, type ThemeId } from '../render/theme';
 import { LoadingOverlay, afterPaint, paintedFrames } from '../ui/LoadingOverlay';
 import { loadSettings, saveSettings, type Settings } from '../settings';
@@ -224,6 +228,13 @@ export interface GamePrefs {
 const QUALITY_STEPS = [0.15, 0.35, 0.6, 0.95, 1] as const;
 /** The same for a stadium switch: uniforms, then the world's bake or cache read. */
 const THEME_STEPS = [0.2, 0.95, 1] as const;
+/** sessionStorage: a tier fallback's line across the reload after a lost device (Game.bootDone). */
+const TIER_NOTICE_KEY = STORAGE_PREFIX + 'tierNotice';
+
+/** "Your device does not support Ultra: using High" (en / es). */
+function fallbackText(fb: Fallback): string {
+  return t('quality.fallback', { from: t(`quality.${fb.from}`), to: t(`quality.${fb.to}`) });
+}
 /**
  * How long the bar takes to creep from one step's mark toward the next (ms): it eases most of the
  * way there and waits (LOADING_CREEP), so a long step never looks frozen and a short one jumps on.
@@ -587,6 +598,10 @@ export class Game implements P2PGameHooks {
   private loadingHold = false;
   /** Loads run one at a time: the next one starts when this settles. */
   private loadingChain: Promise<void> = Promise.resolve();
+  /** The quality safety net (tierGuard.ts): a tier that breaks on this GPU falls back one tier. */
+  private readonly tierGuard = new TierGuard(() => performance.now());
+  /** A tier fallback's line, for the menus' next toast when they are not on screen (null = none). */
+  private tierNotice: string | null = null;
   /** The settings screen is open over the pause menu (openPauseSettings). */
   private pauseSettingsOpen = false;
   /** While true (goal pause / after the final whistle) the ball is held at pinPos.xy each tick. */
@@ -1080,24 +1095,92 @@ export class Game implements P2PGameHooks {
    * sizes, then every pipeline compiled in parallel (compilePipelines), so the first frame after it
    * stalls on nothing.
    */
-  switchQuality(q: Quality): Promise<void> {
-    if (q === this.quality) return Promise.resolve();
-    return this.withLoading(t('loading.quality'), QUALITY_STEPS, async (step) => {
-      if (q === this.quality) return;
-      this.quality = q;
-      this.qualitySet = true; // only the menus call this: the player chose (loadPrefs keeps it on phones)
-      this.persistPrefs();
-      this.renderer.setQuality(q);
-      await step(0);
-      this.disposeViews();
-      this.buildViews(q);
-      this.snapCamera = true;
-      await step(1);
-      await this.renderer.settled();
-      await step(2);
-      await this.compilePipelines();
-      await step(3);
+  switchQuality(q: Quality, fallback: Fallback | null = null): Promise<void> {
+    if (q === this.quality) {
+      if (fallback !== null) this.tierGuard.arm(); // nothing to fall back to: the guard listens again
+      return Promise.resolve();
+    }
+    const label = fallback !== null ? fallbackText(fallback) : t('loading.quality');
+    return this.withLoading(label, QUALITY_STEPS, async (step) => {
+      try {
+        if (q === this.quality) return;
+        // A fallback queued behind a switch the player made meanwhile has nothing left to do.
+        if (fallback !== null && this.quality !== fallback.from) return;
+        // The new tier's failures count from here (its compile included).
+        this.tierGuard.arm();
+        this.quality = q;
+        if (fallback === null) {
+          this.qualitySet = true; // only the menus call this: the player chose (loadPrefs keeps it on phones)
+          this.persistPrefs();
+        }
+        this.renderer.setQuality(q);
+        await step(0);
+        this.disposeViews();
+        this.buildViews(q);
+        this.snapCamera = true;
+        await step(1);
+        await this.renderer.settled();
+        await step(2);
+        await this.compilePipelines();
+        await step(3);
+      } finally {
+        // ...and again from its first frames (this also ends a fallback, done or skipped).
+        this.tierGuard.arm();
+      }
     });
+  }
+
+  /**
+   * The boot is over (main.ts, once the loading screen is gone): the safety net starts listening to
+   * the renderer (a failure of the boot's warm-up is delivered now), and a fallback that reloaded
+   * the page says so.
+   */
+  bootDone(): void {
+    this.tierGuard.arm();
+    this.renderer.setFailureListener((f) => this.onGpuFailure(f));
+    let notice: string | null = null;
+    try {
+      notice = window.sessionStorage.getItem(TIER_NOTICE_KEY);
+      if (notice !== null) window.sessionStorage.removeItem(TIER_NOTICE_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+    if (notice !== null) this.showTierNotice(notice);
+  }
+
+  /**
+   * A GPU failure (Renderer.setFailureListener): the tier falls back one step when the guard says
+   * so (tierGuard.ts), the device's ceiling is remembered, the player is told. A lost device cannot
+   * render again: the page reloads and starts on the lower tier (Renderer.create reads the ceiling).
+   */
+  private onGpuFailure(f: GpuFailure): void {
+    console.warn(`[game] GPU ${f.kind} on ${f.tier}: ${f.message}`);
+    const fb = this.tierGuard.onFailure(f.kind, f.tier);
+    if (fb === null) return;
+    let store: Storage | null = null;
+    try {
+      store = window.localStorage;
+    } catch {
+      /* storage unavailable: this session still falls back */
+    }
+    writeCeiling(store, this.renderer.caps.gpu, fb.to, Date.now());
+    const text = fallbackText(fb);
+    if (fb.reload) {
+      try {
+        window.sessionStorage.setItem(TIER_NOTICE_KEY, text);
+      } catch {
+        /* the reload still starts on the lower tier */
+      }
+      window.location.reload();
+      return;
+    }
+    void this.switchQuality(fb.to, fb).then(() => this.showTierNotice(text));
+  }
+
+  /** A fallback's line as a menu toast now, or the next time the menus are on screen. */
+  private showTierNotice(text: string): void {
+    if (this.menu.visible && !this.hud.menuVisible) this.menu.toast(text, 'info');
+    else this.tierNotice = text;
   }
 
   /**
@@ -1996,6 +2079,7 @@ export class Game implements P2PGameHooks {
    */
   setQuality(q: Quality): void {
     if (q === this.quality) return;
+    this.tierGuard.arm();
     this.quality = q;
     this.qualitySet = true; // only the menu calls this: the player chose (loadPrefs keeps it on phones)
     this.renderer.setQuality(q);
@@ -2652,6 +2736,8 @@ export class Game implements P2PGameHooks {
       this.menu.toast(result.winner === null ? t('game.resultDraw', { detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], detail }), 'info');
     }
     else if (this.menuNotice !== undefined && this.menuNotice.length > 0) this.menu.toast(this.menuNotice, 'info');
+    if (this.tierNotice !== null) this.menu.toast(this.tierNotice, 'info');
+    this.tierNotice = null;
     this.lastResult = null;
     this.menuNotice = undefined;
     this.hud.hideMenu();

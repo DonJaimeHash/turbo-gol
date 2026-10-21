@@ -30,6 +30,9 @@ export default {
   'quality.low': 'Performance',
   'quality.high': 'High',
   'quality.ultra': 'Ultra',
+  // A tier broke on this device and the game fell back one tier (src/render/tierGuard.ts): a toast /
+  // the loading line; {from} and {to} are quality.low / quality.high / quality.ultra
+  'quality.fallback': 'Your device does not support {from}: using {to}',
   // Stadium themes (src/render/theme.ts): the Friendly screen's stadium row
   'theme.harbour-night': 'Night harbour',
   'theme.canyon-sunset': 'Red canyon',

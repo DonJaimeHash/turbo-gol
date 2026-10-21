@@ -43,7 +43,7 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
-import { glowMrt } from '../materials';
+import { glowMrt, keepGlowTag } from '../materials';
 import { alpinePatterns } from './alpineShade';
 import { fbm3, hash12, hash13, vnoise, type Atmosphere } from './atmosphere';
 import { KIND } from './geo';
@@ -241,7 +241,8 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
   if (live && on !== null) {
     m.colorNode = shaded;
     // glow of the lamps and lit windows (the dome uses the same threshold for the baked ones)
-    if (mode === 'live') m.mrtNode = glowMrt(max(shaded.sub(1.0), vec3(0.0)).mul(0.5), 'none');
+    // (built once per world: the tag follows the tier's glow target, materials.ts keepGlowTag)
+    if (mode === 'live') keepGlowTag(m, () => glowMrt(max(shaded.sub(1.0), vec3(0.0)).mul(0.5), 'none'));
     m.positionNode = positionLocal.mul(on);
   } else {
     const invDist = float(1000.0).div(max(length(positionWorld.sub(U.origin)), 1.0));

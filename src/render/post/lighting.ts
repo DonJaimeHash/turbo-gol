@@ -24,7 +24,7 @@
  */
 import * as THREE from 'three/webgpu';
 import { ARENA } from '../../sim/constants';
-import { tier, type Quality } from '../quality';
+import { tier, type Quality, type TierSpec } from '../quality';
 import { themeWorld, type ThemeId } from '../theme';
 
 /**
@@ -53,8 +53,9 @@ export interface Lighting {
    * tier switch (Game.setQuality rebuilds every lit material right after): three r186 shares one
    * light node per light, so the first material built after a key stops casting frees that key's
    * shadow map, and any older material still sampling it crashes in ShadowNode.updateShadow.
+   * `spec`: the tier's switches as the device runs them (capabilities.ts adjustTier), default tier(q).
    */
-  setQuality(quality: Quality): void;
+  setQuality(quality: Quality, spec?: TierSpec): void;
   /** Rewrite the keys and the fill from the theme (uniform writes + frustum refits; never changes the light count). */
   setTheme(theme: ThemeId): void;
   /** Remove the lights from the scene and free the shadow maps. */
@@ -94,8 +95,7 @@ export function createLighting(scene: THREE.Scene, quality: Quality, theme: Them
     hemi.intensity = fill.intensity;
   };
 
-  const setQuality = (q: Quality): void => {
-    const spec = tier(q);
+  const setQuality = (q: Quality, spec: TierSpec = tier(q)): void => {
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
       key.castShadow = i < spec.shadowedKeys;

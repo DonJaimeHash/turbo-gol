@@ -47,7 +47,7 @@ import {
   vec2,
   vec3,
 } from 'three/tsl';
-import { glowMrt } from '../materials';
+import { glowMrt, keepGlowTag } from '../materials';
 import { PROXY_SCALE } from './bake';
 
 type F = Node<'float'>;
@@ -132,7 +132,8 @@ export function buildDome(cubeTex: THREE.CubeTexture, lutTex: THREE.Texture, ori
   })().toVar('domeColor');
   material.colorNode = color;
   // the baked lamps and lit windows bloom like the live ones (same threshold and gain)
-  material.mrtNode = glowMrt(max(color.sub(1.0), vec3(0.0)).mul(0.5), 'none');
+  // (kept across tier switches: the tag follows the tier's glow target, materials.ts keepGlowTag)
+  keepGlowTag(material, () => glowMrt(max(color.sub(1.0), vec3(0.0)).mul(0.5), 'none'));
   const geometry = new THREE.SphereGeometry(DOME_RADIUS, 48, 24);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = 'world-dome';
@@ -191,7 +192,7 @@ export function buildBeam(): Beam {
     return vec3(1.0, 0.9, 0.7).mul(along.mul(pow(facing, 1.5)).mul(0.22).mul(intensity));
   })().toVar('beamColor');
   material.colorNode = col;
-  material.mrtNode = glowMrt(col.mul(0.5));
+  keepGlowTag(material, () => glowMrt(col.mul(0.5)));
   const geometry = new THREE.ConeGeometry(700, BEAM_LEN, 24, 1, true).translate(0, -BEAM_LEN / 2, 0).rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = 'world-beam';

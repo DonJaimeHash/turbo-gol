@@ -1,10 +1,16 @@
 /**
  * Graphics quality tiers. One table says what each tier turns on, so every view (renderer, arena,
  * stadium, turf, sky, cars, ball, effects) reads the same switches instead of comparing tier names.
+ * The renderer runs `adjustTier(TIERS[q], capabilities)` (capabilities.ts): the same switches
+ * without what the device cannot do (no multisampled HDR target in WebGPU compatibility mode...).
  *
- *   low    phones, tablets, integrated GPUs and the WebGL2 fallback's default: no MSAA (FXAA),
- *          no bloom (glow comes from geometry and HDR colour), pixel ratio 1, no shadow maps (the
- *          cars and the ball keep their ground blobs), the cheapest turf, crowd and sky bake.
+ *   low    phones, tablets, integrated GPUs, WebGPU compatibility mode, small-memory devices and the
+ *          WebGL2 fallback's default: renders STRAIGHT to the canvas (`output: 'direct'`: no HDR
+ *          target, no MRT, no post pass; exposure, grade, vignette, tone curve and sRGB run at the
+ *          end of every material's shader) with the canvas's MSAA x4, no bloom (glow comes from
+ *          geometry and colour), a pixel ratio up to 1.5 within a 1 Mpx budget with dynamic
+ *          resolution down to 0.7 of it, no shadow maps (the cars and the ball keep their ground
+ *          blobs), the cheapest turf, crowd and sky bake.
  *   high   the desktop default: MSAA x4, emissive bloom, two shadowed key lights (2048 maps), relief
  *          turf, the full stadium; a pixel budget with dynamic resolution so big screens keep their
  *          refresh rate.
@@ -25,7 +31,19 @@ export type Quality = 'low' | 'high' | 'ultra';
 export const QUALITIES: readonly Quality[] = ['low', 'high', 'ultra'];
 
 export interface TierSpec {
-  /** MSAA samples on the scene pass (WebGPU supports only 1 or 4); 0 = FXAA on the output instead. */
+  /**
+   * How the frame reaches the canvas. 'post': the HDR pipeline of post/pipeline.ts (a HalfFloat
+   * scene pass, MRT with the glow target when `bloom`, the composite, FXAA without MSAA). 'direct':
+   * `renderer` draws the scene straight into the canvas (three's DirectRenderPipeline: the look
+   * of post/pipeline.ts `finish` and sRGB at the end of each material's fragment shader; no HDR
+   * target, no MRT, no post pass), the cheapest path on every GPU: one pass, 8-bit, MSAA resolved
+   * on tile. Blending happens after the tone curve (display space) there.
+   */
+  readonly output: 'direct' | 'post';
+  /**
+   * MSAA samples (WebGPU supports only 1 or 4). 'post': on the HDR scene pass, 0 = FXAA on the
+   * output instead. 'direct': on the canvas, 0 = no anti-aliasing.
+   */
   readonly msaa: 0 | 4;
   /** Emissive bloom (the glow MRT target); without it glow must come from geometry and HDR colour. */
   readonly bloom: boolean;
@@ -38,9 +56,12 @@ export interface TierSpec {
   readonly maxPixelRatio: number;
   /** Drawing-buffer pixel budget (pixels): above it the pixel ratio drops, never below 1. */
   readonly pixelBudget: number;
-  /** Scale the scene pass down (and back up) to hold the display's refresh rate. */
+  /**
+   * Scale the resolution down (and back up) to hold the display's refresh rate: the scene pass on
+   * 'post' tiers, the canvas' pixel ratio on the 'direct' tier.
+   */
   readonly dynamicResolution: boolean;
-  /** Lowest scene-pass resolution scale dynamic resolution may use. */
+  /** Lowest resolution scale dynamic resolution may use. */
   readonly minResolutionScale: number;
   /**
    * Theme key lights that cast shadows (post/lighting.ts: keys[0] first; a key without one still
@@ -94,13 +115,16 @@ export interface TierSpec {
 
 export const TIERS: Readonly<Record<Quality, TierSpec>> = {
   low: {
-    msaa: 0,
+    output: 'direct',
+    msaa: 4,
     bloom: false,
     bloomMips: 3,
-    maxPixelRatio: 1,
-    pixelBudget: 2.2e6,
-    dynamicResolution: false,
-    minResolutionScale: 1,
+    // Up to 1.5x on a phone (780x360 CSS -> 1170x540), 1 on desktops and tablets (the budget, never
+    // below 1 for it); dynamic resolution goes down to 0.7 of that when frames come late.
+    maxPixelRatio: 1.5,
+    pixelBudget: 1e6,
+    dynamicResolution: true,
+    minResolutionScale: 0.7,
     shadowedKeys: 0,
     shadowMapSize: 2048,
     shadowRadius: 3,
@@ -120,6 +144,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     particles: 512,
   },
   high: {
+    output: 'post',
     msaa: 4,
     bloom: true,
     bloomMips: 5,
@@ -146,6 +171,7 @@ export const TIERS: Readonly<Record<Quality, TierSpec>> = {
     particles: 1536,
   },
   ultra: {
+    output: 'post',
     msaa: 4,
     bloom: true,
     bloomMips: 5,
@@ -186,12 +212,15 @@ export const MAX_TOUCH_PIXEL_RATIO = 2;
  * device pixel ratio up to the tier's maxPixelRatio (and MAX_TOUCH_PIXEL_RATIO on a `touch`
  * screen), lowered to fit the pixel budget but never below 1:1 for it; a tier whose maxPixelRatio
  * is 1 renders at CSS resolution. (A dpr-2 1080p laptop on high renders at ~1.7x instead of 2x.)
+ * The drawing buffer never exceeds `maxTextureSize` on either side (the device's largest render
+ * target: 4096 in WebGPU compatibility mode), which may take the ratio below 1 on a huge canvas.
  */
-export function pixelRatio(spec: TierSpec, devicePixelRatio: number, touch: boolean, cssW: number, cssH: number): number {
-  if (!(spec.maxPixelRatio > 1)) return Math.min(1, spec.maxPixelRatio);
+export function pixelRatio(spec: TierSpec, devicePixelRatio: number, touch: boolean, cssW: number, cssH: number, maxTextureSize = Infinity): number {
+  const fit = maxTextureSize / Math.max(1, cssW, cssH);
+  if (!(spec.maxPixelRatio > 1)) return Math.min(1, spec.maxPixelRatio, fit);
   let dpr = Math.min(devicePixelRatio || 1, spec.maxPixelRatio);
   if (touch) dpr = Math.min(dpr, MAX_TOUCH_PIXEL_RATIO);
-  return Math.min(dpr, Math.max(1, Math.sqrt(spec.pixelBudget / (cssW * cssH))));
+  return Math.min(dpr, Math.max(1, Math.sqrt(spec.pixelBudget / (cssW * cssH))), fit);
 }
 
 /** A saved tier: the current names, or the numbers saved before the third tier (0 high, 1 performance). */
@@ -202,15 +231,37 @@ export function parseQuality(v: unknown): Quality | null {
   return null;
 }
 
+/** What the starting tier depends on besides the saved one (read at renderer init). */
+export interface StartingDevice {
+  /** WebGPU (false: the WebGL2 fallback). */
+  readonly webgpu: boolean;
+  /** WebGPU in compatibility mode (an OpenGL ES driver: older or low-end phones). */
+  readonly compatibilityMode: boolean;
+  /** navigator.deviceMemory in GB (Chromium only, rounded down to 0.25..8); undefined elsewhere. */
+  readonly deviceMemory: number | undefined;
+}
+
+/** Devices with this much memory (GB) or less start on low (Chromium reports 4 for 4 GB phones). */
+export const LOW_MEMORY_GB = 4;
+
 /**
- * The tier a session starts on: the saved (or default) tier `saved`, except on the WebGL2 fallback
- * (`webgpu` false), which starts on low unless the player chose a tier in the menu (`chosen`): it
- * compiles every pipeline several times slower and renders about 2x slower than WebGPU (the boot
- * would otherwise compile the high tier's shaders for seconds). Phones and tablets already start
- * on low through their default (Game.ts loadPrefs).
+ * The tier a session starts on: the saved (or default) tier `saved`, except on a device that
+ * should start on low unless the player chose a tier in the menu (`chosen`): the WebGL2 fallback
+ * (it compiles every pipeline several times slower and renders about 2x slower than WebGPU),
+ * WebGPU in compatibility mode (OpenGL ES phones) and devices with LOW_MEMORY_GB or less. Phones and
+ * tablets already start on low through their default (Game.ts loadPrefs). `ceiling` is the
+ * highest tier that has not failed on this GPU (tierGuard.ts), which caps even a chosen tier.
  */
-export function startingQuality(saved: Quality, chosen: boolean, webgpu: boolean): Quality {
-  return !webgpu && !chosen ? 'low' : saved;
+export function startingQuality(saved: Quality, chosen: boolean, device: StartingDevice, ceiling: Quality | null = null): Quality {
+  const weak = !device.webgpu || device.compatibilityMode || (device.deviceMemory !== undefined && device.deviceMemory <= LOW_MEMORY_GB);
+  const q = weak && !chosen ? 'low' : saved;
+  return ceiling !== null && QUALITIES.indexOf(ceiling) < QUALITIES.indexOf(q) ? ceiling : q;
+}
+
+/** The tier below `q` (ultra -> high -> low), null below low. */
+export function lowerQuality(q: Quality): Quality | null {
+  const i = QUALITIES.indexOf(q);
+  return i > 0 ? QUALITIES[i - 1] : null;
 }
 
 /** The next tier in menu order (the quality key cycles low -> high -> ultra -> low). */
