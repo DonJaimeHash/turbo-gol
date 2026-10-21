@@ -15,7 +15,7 @@
  */
 import type { Rgb, ThemeId } from '../theme';
 
-export type SkylineId = 'harbour' | 'canyon';
+export type SkylineId = 'harbour' | 'canyon' | 'alpine';
 
 export interface CloudPreset {
   /** 0 clear .. 1 overcast. */
@@ -72,6 +72,12 @@ export interface WorldPreset {
   /** Environment extras (env.ts): the lit pitch under the probe and the floodlight heads' radiance. */
   readonly envTurf: Rgb;
   readonly envLamp: number;
+  /**
+   * Heights over the bake origin (uu) where the dome's parallax proxy hands over to "at infinity"
+   * (dome.ts PROXY_TOP when absent). A skyline taller than the default band (the alpine
+   * mountains) raises it above its highest point, so no peak straddles the hand-over.
+   */
+  readonly proxyTop?: readonly [number, number];
 }
 
 const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
@@ -139,6 +145,34 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     sea: { color: [0.02, 0.02, 0.02], rough: 1.0 },
     envTurf: [0.1, 0.12, 0.05],
     envLamp: 18,
+  },
+
+  // "Valle Alto": a mountain valley in clear midday light. The sun stands high on the left of the
+  // blue kickoff view, a little ahead (the massif ahead is side-lit: lit faces and shadowed
+  // gullies, its snow bright), a deep blue sky with
+  // fair-weather cumulus and a few high streaks, little haze low in the valley and almost none on
+  // the peaks (alpine.ts; aerial perspective by height). The mountains rise above the default
+  // parallax band, so the band moves above them (proxyTop; alpine.ts ALPINE_TOP).
+  'alpine-day': {
+    skyline: 'alpine',
+    zenith: [0.026, 0.085, 0.33],
+    mid: [0.09, 0.22, 0.58],
+    horizon: [0.42, 0.55, 0.76],
+    glow: { color: [0.12, 0.11, 0.09], az: -70, spread: 0.45, height: 0.14 },
+    key: { az: -70, el: 40, color: [1.0, 0.94, 0.84], disc: 160, sizeDeg: 0.9, halo: 0.22, halo2: 0.9, moon: false, light: [1.62, 1.55, 1.42] },
+    ambSky: [0.16, 0.22, 0.36],
+    ambGround: [0.07, 0.085, 0.05],
+    stars: 0.0,
+    clouds: { cover: 0.47, scale: 0.9, height: 0.1, lit: [1.2, 1.18, 1.14], shadow: [0.34, 0.41, 0.56], under: [0.06, 0.06, 0.05], alpha: 0.96, stretch: 1.0 },
+    cirrus: { cover: 0.3, scale: 0.32, height: 0.3, lit: [0.95, 1.0, 1.08], shadow: [0.55, 0.64, 0.82], under: [0.02, 0.02, 0.02], alpha: 0.35, stretch: 3.6 },
+    hazeHeight: 12000,
+    hazeGain: 1.0,
+    lights: 0.0,
+    windows: 0.0,
+    sea: { color: [0.01, 0.03, 0.045], rough: 1.0 },
+    envTurf: [0.1, 0.2, 0.06],
+    envLamp: 0,
+    proxyTop: [33000, 47000],
   },
 };
 

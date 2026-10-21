@@ -203,7 +203,12 @@ export function buildStandMaterial(u: StadiumUniforms): THREE.MeshStandardNodeMa
   const kind = attribute('aKind', 'float');
   const p = positionWorld;
   const isK = (k: number): FloatNode => step(float(k - 0.5), kind).mul(step(kind, float(k + 0.5)));
-  const concrete = vec3(0.065, 0.068, 0.072).mul(hash(floor(p.z.div(300)).add(floor(p.y.div(46)).mul(7.1))).mul(0.12).add(0.88));
+  const stone = vec3(0.065, 0.068, 0.072).mul(hash(floor(p.z.div(300)).add(floor(p.y.div(46)).mul(7.1))).mul(0.12).add(0.88));
+  // Timber stands (a theme's standWood): planks along z with a per-board tone, shingles on the canopy.
+  const board = hash(floor(p.y.div(30)).add(floor(p.z.div(470)).mul(3.7)).add(floor(p.x.div(470)).mul(1.3)));
+  const timber = vec3(0.17, 0.088, 0.042).mul(board.mul(0.4).add(0.7));
+  const shingle = vec3(0.06, 0.034, 0.02).mul(hash(floor(p.z.div(80)).add(floor(p.x.div(60)).mul(5.3))).mul(0.45).add(0.75));
+  const concrete = mix(stone, timber, u.standWood);
   // Aisles: lighter stair concrete every aisleEvery seats.
   const period = S.aisleEvery * S.seatW + S.aisleW;
   const az = fract(p.z.add(S.halfLen).div(period)).mul(period);
@@ -211,8 +216,8 @@ export function buildStandMaterial(u: StadiumUniforms): THREE.MeshStandardNodeMa
   const seatCol = mix(linearVec3(0x0a1a3a), linearVec3(0x3a0912), teamHalf(p.z));
   const tread = mix(concrete.mul(0.6), concrete.mul(0.9), inAisle);
   const riser = mix(seatCol, concrete, inAisle);
-  const front = vec3(0.018, 0.02, 0.026);
-  const roof = vec3(0.022, 0.022, 0.026);
+  const front = mix(vec3(0.018, 0.02, 0.026), timber.mul(0.45), u.standWood);
+  const roof = mix(vec3(0.022, 0.022, 0.026), shingle, u.standWood);
   // Downlights: a row of lamps under the canopy's front.
   const lampRow = step(abs(abs(p.x).sub(DOWNLIGHT_X)), float(26)).mul(step(abs(fract(p.z.div(DOWNLIGHT_STEP)).sub(0.5)), float(0.09)));
   const down = vec3(1.0, 0.95, 0.85).mul(lampRow).mul(isK(K_ROOF)).mul(u.canopyLight.mul(14));

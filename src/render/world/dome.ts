@@ -70,6 +70,8 @@ export interface Dome {
   /** The cube and proxy lookup it samples (swap `.value`, never the node). */
   readonly cube: ReturnType<typeof cubeTexture>;
   readonly lut: ReturnType<typeof texture>;
+  /** The hand-over band (PROXY_TOP by default; a preset may raise it: presets.ts proxyTop). */
+  readonly top: UniformNode<'vec2', THREE.Vector2>;
   dispose(): void;
 }
 
@@ -141,6 +143,7 @@ export function buildDome(cubeTex: THREE.CubeTexture, lutTex: THREE.Texture, ori
     material,
     cube,
     lut,
+    top: uTop,
     dispose() {
       geometry.dispose();
       material.dispose();

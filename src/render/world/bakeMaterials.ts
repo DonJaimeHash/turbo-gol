@@ -43,6 +43,7 @@ import {
   vec4,
 } from 'three/tsl';
 import { glowMrt } from '../materials';
+import { alpinePatterns } from './alpineShade';
 import { fbm3, hash12, hash13, vnoise, type Atmosphere } from './atmosphere';
 import { KIND } from './geo';
 
@@ -202,7 +203,7 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
         const wc = mix(vec3(1.0, 0.6, 0.28), vec3(0.8, 0.88, 1.0), step(0.7, hash13(vec3(cell.yx, 2.0))));
         emi.assign(wc.mul(win.mul(max(lit, floorLit)).mul(hash13(vec3(cell, 9.0)).mul(0.8).add(0.6))).mul(U.lightsOn));
       })
-      .Else(() => {
+      .ElseIf(kind.lessThan(KIND.STRATA + 0.5), () => {
         if (live) return;
         // sedimentary rock: strata bands by height, warped so they wander, plus varnish streaks.
         // kdat.x = baked sun visibility, kdat.y = ambient occlusion (canyon.ts)
@@ -216,6 +217,10 @@ export function makeStructMaterial(A: Atmosphere, mode: 'bake' | 'live' | 'env',
         const grain = fbm3(wp.mul(0.0035)).mul(0.5).add(0.75);
         alb.assign(c3.mul(kcol.rgb).mul(grain).mul(oneMinus(streak.mul(0.35))).mul(kdat.y));
         vis.assign(kdat.x);
+      })
+      .Else(() => {
+        // the alpine valley's kinds (pines, meadow, baked mountains): alpineShade.ts
+        alpinePatterns({ kind, wp, n, kcol, kdat, alb, vis, live });
       });
 
     const col = Fx.shade(alb, n, wp, vis).add(emi);

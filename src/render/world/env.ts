@@ -3,7 +3,8 @@
  * glass, the ball and the wet turf reflect the backdrop. Its scene, rendered from the bake origin:
  *
  *   the baked cube   on a big back-faced sphere (sky, clouds, moon or sun, far harbour or canyon)
- *   the live layer   the live harbour's geometry with the 'env' structure material
+ *   the live layer   the live layer's current geometry (the harbour's or the alpine valley's) with
+ *                    the 'env' structure material
  *   the pitch        a flat disc under the probe in the theme's lit-turf colour
  *   the floodlights  the theme's lamp heads (theme.ts floodlights) as hot panels, so glossy paint
  *                    shows the stadium's lamps; they are NOT in the visible sky (the stadium draws
@@ -70,6 +71,8 @@ interface ProbeScene {
   readonly cube: ReturnType<typeof cubeTexture>;
   readonly turf: UniformNode<'vec3', THREE.Vector3>;
   readonly lamps: readonly { mesh: THREE.Mesh; color: UniformNode<'vec3', THREE.Vector3> }[];
+  /** The live layer's copy (its geometry follows the world's live layer on every update). */
+  readonly live: THREE.Mesh | null;
   readonly pmrem: THREE.PMREMGenerator;
   readonly trash: { dispose(): void }[];
 }
@@ -98,9 +101,10 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
     sky.frustumCulled = false;
     scene.add(sky);
     trash.push(skyGeo, skyMat, blank);
-    // the live harbour layer
+    // the live layer
+    let copy: THREE.Mesh | null = null;
     if (live !== null) {
-      const copy = new THREE.Mesh(live.geometry, live.material);
+      copy = new THREE.Mesh(live.geometry, live.material);
       copy.frustumCulled = false;
       scene.add(copy);
     }
@@ -127,7 +131,7 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
       lamps.push({ mesh, color });
       trash.push(mat);
     }
-    return { scene, cube, turf, lamps, pmrem: new THREE.PMREMGenerator(gpu), trash };
+    return { scene, cube, turf, lamps, live: copy, pmrem: new THREE.PMREMGenerator(gpu), trash };
   }
 
   return {
@@ -136,6 +140,7 @@ export function createEnvProbe(gpu: THREE.WebGPURenderer, origin: THREE.Vector3,
       if (probe === null) probe = build();
       const p = probe;
       p.cube.value = cube;
+      if (p.live !== null && live !== null) p.live.geometry = live.geometry;
       p.turf.value.set(turf[0], turf[1], turf[2]);
       for (let i = 0; i < LAMP_SLOTS; i++) {
         const slot = p.lamps[i];

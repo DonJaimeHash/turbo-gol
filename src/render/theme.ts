@@ -155,6 +155,25 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     exposure: 1.0,
     grade: { contrast: 1.08, saturation: 1.1, lift: [0.004, 0, 0], gain: [1.02, 1, 0.96], vignette: 0.3 },
   },
+  // "Valle Alto", a mountain valley at midday: the sun high on the left of the blue kickoff view
+  // (azimuth -70 deg, elevation 40 deg, the sky's sun disc in world/presets.ts) as the main
+  // key, a weak cool sky key from the other side, a bright sky fill, floodlights off, a dry pitch,
+  // clear air. Radiometry matches the backdrop: the preset's key.light ~ this key / pi.
+  'alpine-day': {
+    id: 'alpine-day',
+    night: false,
+    keys: [
+      { dir: unit(0.7198, 0.6428, 0.262), color: [1.0, 0.95, 0.87], intensity: 5.0 },
+      { dir: unit(-0.55, 0.6, -0.55), color: [0.7, 0.8, 1.0], intensity: 0.8 },
+    ],
+    fill: { sky: [0.46, 0.56, 0.74], ground: [0.2, 0.22, 0.12], intensity: 1.0, env: 0.55 },
+    floodlights: towerFloodlights(WARM_LAMP, 0),
+    wetness: 0.03,
+    fog: { color: [0.44, 0.56, 0.76], density: 0.35e-5 },
+    toneMapping: 'aces',
+    exposure: 1.15,
+    grade: { contrast: 1.05, saturation: 1.08, lift: [0, 0, 0.002], gain: [1.0, 1.0, 1.02], vignette: 0.2 },
+  },
 };
 
 /** The shared world facts of a theme (unknown or not-yet-built themes fall back to the default). */

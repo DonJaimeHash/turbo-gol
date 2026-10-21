@@ -35,6 +35,8 @@ export interface StadiumTheme {
   readonly rampColor: Rgb;
   /** Steel: a rim term so floodlit tubes read against the sky. */
   readonly steelRim: Rgb;
+  /** Stands built of timber instead of concrete, 0..1 (planked walls and rows, shingled canopy); absent = 0. */
+  readonly standWood?: number;
 }
 
 /**
@@ -57,6 +59,26 @@ const STADIUM_THEMES: Readonly<Partial<Record<ThemeId, StadiumTheme>>> = {
     canopyLight: 0.35,
     rampColor: [0.035, 0.085, 0.04],
     steelRim: [0.05, 0.055, 0.07],
+  },
+  // "Valle Alto" at midday (floodlights off): brighter boards so they read in the sun, the wires
+  // lit by the sky (a light, transparent mesh rather than a dark veil: the concept's "light cage"),
+  // the crowd in the canopy's shade, and timber stands.
+  'alpine-day': {
+    ledIntensity: 1.0,
+    railIntensity: 1.1,
+    lampIntensity: 30,
+    glare: 0.55,
+    beam: 0.5,
+    netColor: [0.33, 0.34, 0.35],
+    netAmbient: [0.5, 0.53, 0.6],
+    netLight: 0.5,
+    netOpacity: 0.55,
+    crowdLight: [0.66, 0.66, 0.68],
+    crowdDepthDim: 0.45,
+    canopyLight: 0,
+    rampColor: [0.04, 0.095, 0.04],
+    steelRim: [0.02, 0.022, 0.026],
+    standWood: 1,
   },
 };
 
@@ -83,6 +105,7 @@ export interface StadiumUniforms {
   readonly canopyLight: FloatUniform;
   readonly rampColor: ColorUniform;
   readonly steelRim: ColorUniform;
+  readonly standWood: FloatUniform;
   /** Per tower head (layout.towerHeads order): the theme floodlight's strength (0 = off by day). */
   readonly head: readonly FloatUniform[];
 }
@@ -105,6 +128,7 @@ export function createStadiumUniforms(): StadiumUniforms {
     canopyLight: f(),
     rampColor: c(),
     steelRim: c(),
+    standWood: f(),
     head: towerHeads().map(() => f()),
   };
 }
@@ -130,6 +154,7 @@ export function applyStadiumTheme(u: StadiumUniforms, id: ThemeId): number[] {
   u.canopyLight.value = world.night ? t.canopyLight : 0;
   u.rampColor.value.set(...t.rampColor);
   u.steelRim.value.set(...t.steelRim);
+  u.standWood.value = t.standWood ?? 0;
   // Head i is the theme's floodlight i (same order as theme.ts builds them); a theme with fewer
   // floodlights leaves the rest dark.
   const strengths = u.head.map((h, i) => {

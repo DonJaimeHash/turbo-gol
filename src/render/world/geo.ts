@@ -25,6 +25,10 @@ export const KIND = {
   ROCK: 7,
   FARCITY: 8,
   STRATA: 9,
+  /** Alpine valley (alpine.ts, patterns in alpineShade.ts): pine needles, meadow ground, baked mountains. */
+  FOLIAGE: 10,
+  MEADOW: 11,
+  ALPINE: 12,
 } as const;
 export type Kind = (typeof KIND)[keyof typeof KIND];
 
