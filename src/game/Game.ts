@@ -1679,6 +1679,26 @@ export class Game implements P2PGameHooks {
     this.setWarm(false);
   }
 
+  /**
+   * The boot's warm-up: the same as warmUp, but on the WebGL2 fallback every scene program (hidden
+   * meshes included) is first compiled in parallel through the scene pass's own target and MRT
+   * (Renderer.precompile), so the synchronous warm-up render only builds the few shadow and
+   * post-processing programs left.
+   */
+  async warmUpAsync(): Promise<void> {
+    if (this.running) {
+      this.warmUp();
+      return;
+    }
+    this.setWarm(true);
+    try {
+      await this.renderer.precompile();
+    } finally {
+      this.setWarm(false);
+    }
+    this.warmUp();
+  }
+
   private setWarm(on: boolean): void {
     this.arena.setWarmUp(on);
     const cars = this.cars;

@@ -75,6 +75,8 @@ export interface RenderStats {
 /** Camera planes in uu (1 uu = 1 three unit). */
 export const CAMERA_NEAR = 10;
 export const CAMERA_FAR = 40000;
+/** Longest wait for the boot's non-blocking pipeline compile (Renderer.precompile). */
+const PRECOMPILE_TIMEOUT_MS = 10000;
 /** `#nancheck`: frames between two readbacks. */
 const NANCHECK_EVERY = 30;
 
@@ -386,6 +388,41 @@ export class Renderer {
       this.gpuSum += this.gpu.info.render.timestamp;
       this.gpuFrames++;
     }
+  }
+
+  /**
+   * WebGL2 only: compile the programs of every visible mesh for the current tier without blocking
+   * (KHR_parallel_shader_compile), through the scene pass's own render target and MRT, i.e. the
+   * exact variants the frame uses (a compileAsync against another target or MRT builds the wrong
+   * ones). The shadow and post passes are left to the first real frame (a few small programs).
+   * Measured on the low tier's first load: 1.8 s instead of 5.7 s of synchronous compile.
+   * On WebGPU it does nothing: three r186's compileAsync builds the objects one after the other and
+   * awaits each pipeline, which took longer (10 s) than the synchronous warm-up render, whose
+   * pipelines the browser's GPU process compiles while the frame is submitted.
+   * Resolves when done or after `timeoutMs`: three's WebGL2 backend polls the parallel compile
+   * from requestAnimationFrame, which never fires in a hidden tab (the first frame then compiles
+   * what is left).
+   */
+  async precompile(timeoutMs = PRECOMPILE_TIMEOUT_MS): Promise<void> {
+    const post = this.post;
+    if (post === null || this.isWebGPU) return;
+    const gpu = this.gpu;
+    const pass = post.scenePass;
+    const prevTarget = gpu.getRenderTarget();
+    const prevMrt = gpu.getMRT();
+    let compiling: Promise<void>;
+    try {
+      // compileAsync reads the target and the MRT synchronously, before its first await.
+      gpu.setRenderTarget(pass.renderTarget);
+      gpu.setMRT(pass.getMRT());
+      compiling = gpu.compileAsync(this.scene, this.camera);
+    } finally {
+      gpu.setRenderTarget(prevTarget);
+      gpu.setMRT(prevMrt);
+    }
+    let timer = 0;
+    await Promise.race([compiling, new Promise<void>((resolve) => (timer = window.setTimeout(resolve, timeoutMs)))]);
+    window.clearTimeout(timer);
   }
 
   /**

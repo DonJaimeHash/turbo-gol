@@ -147,11 +147,12 @@ async function boot(): Promise<void> {
     savedQuality: prefs.quality,
     info: `${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · RocketSim ${sim.version} · 120 Hz`,
   });
-  // One synchronous render with every normally hidden mesh visible: compiles all pipelines
-  // (scene, shadow, bloom, flames, marker, particles, goal FX) behind the overlay instead of
-  // stalling the first menu frame and the first boost / airborne ball / goal.
+  // Every pipeline (scene, shadow, bloom, flames, marker, particles, goal FX) is compiled behind the
+  // overlay instead of stalling the first menu frame and the first boost / airborne ball / goal:
+  // one render with every normally hidden mesh visible (on WebGL2 the scene's programs are first
+  // compiled in parallel).
   performance.mark('turbogol:scene');
-  game.warmUp();
+  await game.warmUpAsync();
   performance.mark('turbogol:warmup');
   const device = (renderer.gpu.backend as { device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } } }).device;
   if (device?.queue?.onSubmittedWorkDone) void device.queue.onSubmittedWorkDone().then(() => performance.mark('turbogol:gpu-ready'));
