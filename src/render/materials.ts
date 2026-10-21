@@ -24,26 +24,38 @@
 import * as THREE from 'three/webgpu';
 import type { Node, UniformNode } from 'three/webgpu';
 import {
+  Fn,
   abs,
   cameraPosition,
+  cross,
+  dFdx,
+  dFdy,
+  diffuseColor,
   dot,
+  faceDirection,
   float,
   floor,
+  fract,
   fwidth,
   hash,
   length,
   max,
+  mix,
   mod,
   mrt,
+  normalViewGeometry,
   normalWorld,
   normalize,
   oneMinus,
   output,
+  positionView,
   positionWorld,
   pow,
   saturate,
   select,
+  sign,
   smoothstep,
+  uint,
   vec2,
   vec3,
 } from 'three/tsl';
@@ -188,3 +200,123 @@ export function boxSdf(p: Vec2Node, cx: number, cy: number, hx: number, hy: numb
   const d = abs(p.sub(vec2(cx, cy)));
   return max(d.x.sub(hx), d.y.sub(hy));
 }
+
+/**
+ * View-space normal from a procedural height field (uu) by screen-space derivatives: Mikkelsen,
+ * "Bump Mapping Unparametrized Surfaces on the GPU" (2010), the maths of three's BumpMapNode fed by
+ * any float node instead of a texture. Use it as `material.normalNode`. Heights are in world units,
+ * so a 0.3 uu groove keeps its depth at any distance; fade patterns that get smaller than a pixel
+ * (`resolvedFade`) or their derivatives sparkle. NaN-safe: a degenerate footprint (grazing or
+ * sub-pixel triangle, det 0) falls back to the geometric normal instead of normalising zero.
+ * Derivatives need uniform control flow: call it (and every fwidth inside the height) at the top
+ * level of the material, never inside a select() / If branch (TSL emits select() as if / else
+ * blocks); heights built from select() results are fine, the derivative is taken afterwards.
+ */
+export function bumpNormal(height: FloatNode): Vec3Node {
+  const n = normalViewGeometry;
+  const dpdx = dFdx(positionView);
+  const dpdy = dFdy(positionView);
+  const r1 = cross(dpdy, n);
+  const r2 = cross(n, dpdx);
+  const det = dot(dpdx, r1).mul(faceDirection);
+  const grad = sign(det).mul(dFdx(height).mul(r1).add(dFdy(height).mul(r2)));
+  return normalize(abs(det).mul(n).sub(grad).add(n.mul(1e-6)));
+}
+
+/**
+ * 1 while a pattern is resolved on screen, fading to 0 as it would alias: `coord` advances by 1 per
+ * pattern period (cells, stripes, rings...); the fade runs from `lo` to `hi` periods per pixel.
+ */
+export function resolvedFade(coord: FloatNode, lo = 0.35, hi = 0.9): FloatNode {
+  return oneMinus(smoothstep(lo, hi, fwidth(coord)));
+}
+
+/**
+ * Coverage of a thin line of half width `halfWidth` at signed distance `dist` (same units), box
+ * filtered over the pixel footprint. Once the line is thinner than a pixel it widens to the
+ * footprint and dims by the same factor (the "phone wire" trick): the average stays right and the
+ * line fades smoothly at distance instead of breaking into crawling dashes. Always in 0..1.
+ * `footprint` overrides fwidth(dist), for distances built with fract() whose wrap would otherwise
+ * read as a one-pixel line: pass the fwidth of the continuous coordinate instead.
+ */
+export function thinLineMask(dist: FloatNode, halfWidth: number, footprint?: FloatNode): FloatNode {
+  const fw = (footprint ?? fwidth(dist)).max(1e-6);
+  const w = fw.mul(0.5).max(halfWidth);
+  const cover = saturate(w.sub(abs(dist)).div(fw).add(0.5));
+  return cover.mul(saturate(float(halfWidth).div(w)));
+}
+
+/**
+ * A MeshPhysicalNodeMaterial whose procedural albedo stays out of the shadow pass. three's shadow
+ * pass copies `material.colorNode` into its depth material (it multiplies the shadow alpha by
+ * `colorNode.a`), so a big procedural colour graph set as colorNode is compiled into, and run by,
+ * every shadow pipeline of the object. Opaque materials whose albedo never changes their alpha set
+ * `albedoNode` instead: it is assigned to the diffuse colour in the material's own build only.
+ */
+export class OpaqueAlbedoPhysicalMaterial extends THREE.MeshPhysicalNodeMaterial {
+  /** Linear albedo (replaces colorNode; leave colorNode null). */
+  albedoNode: Vec3Node | null = null;
+
+  override setupDiffuseColor(builder: THREE.NodeBuilder): void {
+    super.setupDiffuseColor(builder);
+    if (this.albedoNode !== null) diffuseColor.rgb.assign(this.albedoNode);
+  }
+}
+
+/**
+ * Offset added before a noise lattice is converted to uint: three's `hash` (and `toUint`) clamp
+ * negative seeds to 0, so every cell index stays positive for |p| below this many cells.
+ */
+const NOISE_LATTICE_OFFSET = 4096;
+/**
+ * Scales value noise to the spread of MaterialX gradient noise (`mx_noise_float`, standard
+ * deviation ~0.27 against ~0.37 for raw value noise), so thresholds tuned for one fit the other.
+ */
+const VALUE_NOISE_SPREAD = 0.73;
+
+type UintNode = Node<'uint'>;
+
+/**
+ * One PCG hash (three's `hash`) of a lattice cell: the uint cell indices mixed with three large
+ * odd primes (Teschner et al., "Optimized Spatial Hashing", 2003). 0..1.
+ */
+function latticeHash(x: UintNode, y: UintNode, z: UintNode): FloatNode {
+  return hash(x.mul(uint(73856093)).bitXor(y.mul(uint(19349663))).bitXor(z.mul(uint(83492791))));
+}
+
+/**
+ * Smooth 3D value noise (C1: Hermite-interpolated hashes of the 8 lattice corners, one lattice
+ * cell per unit of `p`), roughly -0.73..0.73 with the spread of `mx_noise_float`. A drop-in for
+ * the MaterialX gradient noise where only blotches matter (grime, dust, wear): each MaterialX noise
+ * call site added about 0.15 s to a cold pipeline compile (measured, Dawn / D3D12 on Windows; ANGLE
+ * sends the WebGL2 fallback through the same HLSL compiler) and this one about 0.03 s. Emitted once
+ * as a WGSL / GLSL function. Valid for |p| < 4096; no NaN path (floor, fract, integer hashes, mixes).
+ */
+export const valueNoise3 = Fn(([p]: [Vec3Node]) => {
+  const q = p.add(NOISE_LATTICE_OFFSET);
+  const i = floor(q);
+  const f = fract(q);
+  const u = f.mul(f).mul(f.mul(-2.0).add(3.0));
+  const x0 = i.x.toUint();
+  const y0 = i.y.toUint();
+  const z0 = i.z.toUint();
+  const x1 = x0.add(uint(1));
+  const y1 = y0.add(uint(1));
+  const z1 = z0.add(uint(1));
+  const a = mix(latticeHash(x0, y0, z0), latticeHash(x1, y0, z0), u.x);
+  const b = mix(latticeHash(x0, y1, z0), latticeHash(x1, y1, z0), u.x);
+  const c = mix(latticeHash(x0, y0, z1), latticeHash(x1, y0, z1), u.x);
+  const d = mix(latticeHash(x0, y1, z1), latticeHash(x1, y1, z1), u.x);
+  return mix(mix(a, b, u.y), mix(c, d, u.y), u.z).mul(2.0 * VALUE_NOISE_SPREAD).sub(VALUE_NOISE_SPREAD);
+}).setLayout({ name: 'valueNoise3', type: 'float', inputs: [{ name: 'p', type: 'vec3' }] });
+
+/**
+ * Three independent 0..1 randoms per unit cell of `p` (what `mx_cell_noise_vec3` gives, with a
+ * fraction of its code): one lattice seed, PCG-hashed three times with different keys. Valid for
+ * |p| < 4096. Emitted once as a WGSL / GLSL function.
+ */
+export const cellHash3 = Fn(([p]: [Vec3Node]) => {
+  const i = floor(p.add(NOISE_LATTICE_OFFSET));
+  const s = i.x.toUint().mul(uint(73856093)).bitXor(i.y.toUint().mul(uint(19349663))).bitXor(i.z.toUint().mul(uint(83492791)));
+  return vec3(hash(s), hash(s.bitXor(uint(0x68e31da4))), hash(s.bitXor(uint(0x1b56c4e9))));
+}).setLayout({ name: 'cellHash3', type: 'vec3', inputs: [{ name: 'p', type: 'vec3' }] });
