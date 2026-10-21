@@ -55,6 +55,10 @@ All notable changes to Turbogol are documented here. The format follows
   `/nodes/admin/*` (list the nodes, change a status, drain, push the channel, probe again), each
   action an ALERT, and a cron checks the project nodes' `/healthz` every 5 minutes, which catches
   an expired certificate. The KV switches, `vm_disabled` included, stay manual.
+- `#diag` at the end of the address shows a small panel with the graphics backend, the GPU, its
+  extensions and limits, the quality, the stadium and any shader or GPU error, to send a
+  screenshot when the game draws wrongly on a device (nothing is sent anywhere). `#lowgpu` makes a
+  desktop browser behave like a low-end phone's GPU, for testing.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
 
@@ -77,14 +81,16 @@ All notable changes to Turbogol are documented here. The format follows
 
 ### Changed
 - A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
-  netting, LED boards and banners, stands with a crowd and floodlight towers, with cranes,
-  containers and a ship behind the goals. The pitch is wet, freshly mown grass with floodlight
-  reflections, cars cast real shadows, and the cars and the ball have new paint and panels. Graphics
+  netting, LED boards (a big main-sponsor board in the middle of each side wall; the boards change
+  every 30 seconds), stands with a crowd and floodlight towers, with cranes, containers and a ship
+  behind the goals. The pitch is damp, freshly mown grass with calm floodlight reflections, cars
+  cast real shadows on High and Ultra (ground shadows on Performance), and the cars and the ball
+  have new paint and panels. Graphics
   quality has three tiers: Performance, High and Ultra (grass blades near the camera, reflections on
   the wet pitch, ambient occlusion, lens glare); browsers without WebGPU start on Performance. The
   Friendly screen has a Stadium row to pick the setting: the night harbour, the harbour by day, a
-  red canyon at sunset, a city rooftop at dusk, an alpine valley and a rail yard at night. The
-  settings are saved in the browser after their first visit, so switching back is quick.
+  red canyon at sunset and an alpine valley. The settings are saved in the browser after their
+  first visit, so switching back is quick.
 - The bots fly: medium bots now go up for high balls too, hard ones double-jump for higher ones,
   and both meet the ball so that it goes toward the goal (or, for a save, away from their own);
   the defender in 3v3 saves in the air. Two old faults kept aerials from happening at all: the
