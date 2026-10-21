@@ -1,6 +1,6 @@
 /**
- * Where every part of the stadium stands: the cage's steel, the LED board band, the banners, the
- * floodlight towers and the stands. Pure numbers and small pure functions (no three.js), so the
+ * Where every part of the stadium stands: the cage's steel, the LED board band, the floodlight
+ * towers and the stands. Pure numbers and small pure functions (no three.js), so the
  * tests check them in node against the sim's playable volume.
  *
  * Units and axes: uu (1 uu ~ 1 cm), three.js world space (x across the field, y up, z along it;
@@ -143,63 +143,6 @@ export const STAND = {
 
 export const standRowX = (r: number): number => STAND.x0 + r * STAND.rowDepth;
 export const standRowY = (r: number): number => STAND.y0 + r * STAND.rowRise;
-
-// ---- Banners hung on the cage, just outside the netting ---------------------------------------
-
-export const BANNER_W = 300;
-export const BANNER_H = 900;
-/** Top hem height and the gap between the netting and the cloth (behind the arches' tubes). */
-export const BANNER_TOP = FIELD.wallTop - 70;
-export const BANNER_GAP = ARCH_OFF + 40;
-
-export interface BannerPlace {
-  /** Hang point (top centre), outward wall normal (nx, nz), design index. */
-  readonly x: number;
-  readonly z: number;
-  readonly nx: number;
-  readonly nz: number;
-  readonly design: number;
-}
-
-/** Banner design indices (textures.ts draws a place's designs side by side in one atlas). */
-export const BANNER_DESIGNS = 4;
-
-/**
- * Banner placements: between neighbouring side arches on both side walls (12) and, with `corners`,
- * three on every rounded corner between its ribs (12 more). The place's blue design (0) on the
- * blue half (-z), its red one (1) on the red half, its second name (2) and the TURBOGOL ball (3)
- * in between (content.ts).
- */
-export function bannerPlaces(corners: boolean): BannerPlace[] {
-  const out: BannerPlace[] = [];
-  let k = 0;
-  const pick = (z: number): number => {
-    k++;
-    if (k % 3 === 0) return k % 2 === 0 ? 2 : 3;
-    return z < 0 ? 0 : 1;
-  };
-  for (const sx of [-1, 1]) {
-    for (let i = 0; i + 1 < ARCH_Z.length; i++) {
-      const z = (ARCH_Z[i] + ARCH_Z[i + 1]) / 2;
-      out.push({ x: sx * (FIELD.halfX + BANNER_GAP), z, nx: sx, nz: 0, design: pick(z) });
-    }
-  }
-  if (corners) {
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        for (const deg of [15, 45, 75]) {
-          const a = (deg * Math.PI) / 180;
-          const nx = sx * Math.cos(a);
-          const nz = sz * Math.sin(a);
-          const r = FIELD.cornerR + BANNER_GAP;
-          const z = sz * FIELD.cz + nz * r;
-          out.push({ x: sx * FIELD.cx + nx * r, z, nx, nz, design: pick(z) });
-        }
-      }
-    }
-  }
-  return out;
-}
 
 // ---- The shell's surface coordinates ------------------------------------------------------------
 

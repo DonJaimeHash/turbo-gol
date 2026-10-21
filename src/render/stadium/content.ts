@@ -1,12 +1,8 @@
 /**
- * What the LED boards and the hanging banners show, per place (pure data; textures.ts draws it).
- * Both harbour themes share the harbour's set; every other theme has its own. A set holds
- * BOARD_CARDS board cards (sponsors with a tagline, an emblem and colours) and BANNER_DESIGNS
- * banner designs (an emblem, colours and a short text; "\n" breaks a line), in the slots the
- * boards and layout.ts bannerPlaces() read:
+ * What the LED boards show, per place (pure data; textures.ts draws it). Both harbour themes share
+ * the harbour's set; every other theme has its own. A set holds BOARD_CARDS board cards (sponsors
+ * with a tagline, an emblem and colours), in the slots the boards read:
  *
- *   banners  0 the place on the blue half, 1 the same on the red half, 2 a second local name,
- *            3 the TURBOGOL ball
  *   cards    the generic sponsors (GENERIC, the same cards in every set, at the same slots;
  *            only the "MÁS GOL." tagline changes per place), a telecom and a games sponsor
  *            (the harbour's sea-named CORALINA and PIXELMAR; the inland places share INLAND) and
@@ -14,7 +10,7 @@
  *
  * Every name is invented for Turbogol (none is a real brand, company, product or team), in
  * Spanish, and the place's own names and emblems appear only in its set: the harbour's anchors,
- * lighthouse, waves, PUERTO SUR, EL FARO, LIGA PORTUARIA and harbour sponsors only on the harbour.
+ * lighthouse, waves, PUERTO SUR, LIGA PORTUARIA and harbour sponsors only on the harbour.
  */
 import type { ThemeId } from '../theme';
 import type { EmblemId } from './emblems';
@@ -39,20 +35,8 @@ export interface BoardCard {
   readonly ac: string;
 }
 
-export interface BannerDesign {
-  /** Cloth gradient (top, bottom) and text colour; the emblem is white. */
-  readonly bg: readonly [string, string];
-  readonly fg: string;
-  readonly emblem: EmblemId;
-  /** Emblem size relative to the standard one (1). */
-  readonly scale?: number;
-  /** One or two lines ("\n"). */
-  readonly text: string;
-}
-
 export interface ContentSet {
   readonly cards: readonly BoardCard[];
-  readonly banners: readonly BannerDesign[];
 }
 
 // ---- Generic sponsors (every place) -----------------------------------------------------------
@@ -73,9 +57,6 @@ type Pair = readonly [telecom: BoardCard, games: BoardCard];
 const INLAND_PAIR: Pair = [RED_PLENA, FICHA_EXTRA];
 /** Their names (in every set but the harbour's). */
 export const INLAND: readonly string[] = INLAND_PAIR.map((c) => c.name);
-
-/** The TURBOGOL ball banner (slot 3), in the place's colours. */
-const ballBanner = (bg: readonly [string, string], fg: string): BannerDesign => ({ bg, fg, emblem: 'ball', scale: 0.85, text: 'TURBOGOL' });
 
 /**
  * A place's 20 cards: the generic ones at slots 1, 3, 9 and 10, its telecom and games sponsors at
@@ -115,12 +96,6 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
         { name: 'PIXELMAR', tag: 'VIDEOJUEGOS', logo: 'bolt', bg: ['#250840', '#140423'], fg: '#ffffff', ac: '#ff4fd8' },
       ],
     ),
-    banners: [
-      { bg: ['#13295c', '#0a1736'], fg: '#ffffff', emblem: 'anchor', text: 'PUERTO SUR' },
-      { bg: ['#8a1124', '#4f0712'], fg: '#ffffff', emblem: 'anchor', text: 'PUERTO SUR' },
-      { bg: ['#13295c', '#0a1736'], fg: '#ffffff', emblem: 'lighthouse', text: 'EL FARO' },
-      ballBanner(['#0e1626', '#060a12'], '#c6ff2e'),
-    ],
   },
   // A red canyon at sunset: mesas, cactus, dust, the sun going down.
   canyon: {
@@ -144,12 +119,6 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
       'MÁS TURBO. MÁS CAÑÓN.',
       INLAND_PAIR,
     ),
-    banners: [
-      { bg: ['#1f2f6e', '#101a40'], fg: '#ffffff', emblem: 'sunMesa', text: 'CAÑÓN ROJO' },
-      { bg: ['#8f1c12', '#52100a'], fg: '#ffffff', emblem: 'sunMesa', text: 'CAÑÓN ROJO' },
-      { bg: ['#1f2f6e', '#101a40'], fg: '#ffffff', emblem: 'cactus', text: 'EL MIRADOR' },
-      ballBanner(['#1e0f0a', '#0c0604'], '#ffb347'),
-    ],
   },
   // A mountain valley at midday: peaks, pine forest, snow, the valley's farms and lifts.
   alpine: {
@@ -173,16 +142,10 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
       'MÁS TURBO. MÁS ALTURA.',
       INLAND_PAIR,
     ),
-    banners: [
-      { bg: ['#16467e', '#0b2a50'], fg: '#ffffff', emblem: 'peak', text: 'VALLE ALTO' },
-      { bg: ['#a01818', '#5e0c0c'], fg: '#ffffff', emblem: 'peak', text: 'VALLE ALTO' },
-      { bg: ['#123a24', '#082214'], fg: '#ffffff', emblem: 'pine', text: 'EL PINAR' },
-      ballBanner(['#1a2233', '#0e131f'], '#c6ff2e'),
-    ],
   },
 };
 
-/** The board and banner content of a theme. */
+/** The board content of a theme. */
 export function themeContent(theme: ThemeId): ContentSet {
   return CONTENT[THEME_PLACE[theme]];
 }

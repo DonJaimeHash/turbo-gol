@@ -1,7 +1,7 @@
 /**
  * Visual arena: the pitch (turf/), the stadium around it (stadium/: cage netting on the shell and
- * roof, LED board band, steel cage and floodlight towers, lamp panels and glare, stands and crowd,
- * banners), the goal chambers with a see-through square net and glowing frames, and the boost pads
+ * roof, LED board band, steel cage and floodlight towers, lamp panels and glare, stands and
+ * crowd), the goal chambers with a see-through square net and glowing frames, and the boost pads
  * (constants.ts) as two instanced meshes (ring + floor glow + floating pill / orb). The sim's
  * surfaces (floor, shell, ceiling, goals) are converted here and handed to the views that draw them.
  *
@@ -9,9 +9,9 @@
  * the rounded edges) and a glowing tube along the middle of each rounded post / crossbar edge
  * (ArenaMesh.goalFrames: from the floor at one post over the crossbar to the floor at the other).
  *
- * Draw calls: floor 1 (TurfView; +1 grass blades on ultra), stadium 8 (StadiumView: netting, boards,
- * steel, lamp panels, glare, stand structure, crowd, banners; +1 beams on ultra), goals 1, goal
- * frames 2, pads 2 = 14. Per frame: one uniform write (time) plus pad-state attribute writes only
+ * Draw calls: floor 1 (TurfView; +1 grass blades on ultra), stadium 7 (StadiumView: netting, boards,
+ * steel, lamp panels, glare, stand structure, crowd; +1 beams on ultra), goals 1, goal frames 2,
+ * pads 2 = 13. Per frame: one uniform write (time) plus pad-state attribute writes only
  * while a pad changes (pickup flash / recharge).
  *
  * Bloom: see materials.ts. Every unlit material here that should glow tags its glow with
@@ -136,7 +136,7 @@ export class ArenaView {
     this.turf = new TurfView(this.group, floorGeo, this.timeU, quality, theme);
     this.floor = this.turf.mesh;
 
-    // ---- Stadium: netting, boards, steel, lamps, glare, stands, crowd, banners (8, +1 on ultra) --
+    // ---- Stadium: netting, boards, steel, lamps, glare, stands, crowd (7, +1 on ultra) -----------
     const shellGeo = toGeometry(m.shell ?? m.walls, 'shell', 0, ARENA.height * 0.5, 0);
     let ceilGeo: THREE.BufferGeometry;
     if (m.ceiling !== undefined) ceilGeo = toGeometry(m.ceiling, 'ceiling', 0, ARENA.height * 0.5, 0);

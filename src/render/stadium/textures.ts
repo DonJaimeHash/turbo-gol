@@ -1,25 +1,21 @@
 /**
- * The canvas atlases of the LED boards and the hanging banners (no image or font files: the text
- * uses the system sans-serif, every emblem is a canvas path from emblems.ts). What they show is a
- * place's content set (content.ts): both harbour themes share the harbour's, every other theme
- * has its own.
+ * The canvas atlas of the LED boards (no image or font files: the text uses the system sans-serif,
+ * every emblem is a canvas path from emblems.ts). What it shows is a place's content set
+ * (content.ts): both harbour themes share the harbour's, every other theme has its own.
  *
  *   boardAtlas()   -> a BOARD_COLS x BOARD_ROWS card canvas texture; paintBoards() draws a set's
  *                     BOARD_CARDS sponsor cards into it
- *   bannerAtlas()  -> a canvas texture of BANNER_DESIGNS banner designs side by side;
- *                     paintBanners() draws a set's designs into it
  *
- * StadiumView paints both when it is built and repaints them when a theme switch changes the
- * place: into the same canvases and textures (same size, `needsUpdate`), so the materials keep
- * their bindings and never recompile, and nothing is allocated per frame. drawBoards() and
- * drawBanners() take any 2D context (the tests record one in node).
+ * StadiumView paints it when it is built and repaints it when a theme switch changes the place:
+ * into the same canvas and texture (same size, `needsUpdate`), so the material keeps its binding
+ * and never recompiles, and nothing is allocated per frame. drawBoards() takes any 2D context (the
+ * tests record one in node).
  *
  * Every name is invented for Turbogol; none is a real brand, and nothing copies a real logo.
  */
 import * as THREE from 'three/webgpu';
-import type { BannerDesign, BoardCard } from './content';
+import type { BoardCard } from './content';
 import { EMBLEMS, type Ctx } from './emblems';
-import { BANNER_DESIGNS } from './layout';
 
 export const BOARD_COLS = 2;
 export const BOARD_ROWS = 10;
@@ -104,52 +100,6 @@ export function drawBoards(ctx: Ctx, size: number, cards: readonly BoardCard[]):
   }
 }
 
-/**
- * Draw BANNER_DESIGNS banners side by side into a (w * BANNER_DESIGNS) x 3w context: cloth with a
- * stitched border, a sleeve at the top, the emblem, the text (one or two lines) and a
- * swallow-tail cut (transparent; the shader alpha-tests it).
- */
-export function drawBanners(ctx: Ctx, w: number, banners: readonly BannerDesign[]): void {
-  const h = w * 3;
-  reset(ctx, w * BANNER_DESIGNS, h);
-  ctx.textAlign = 'center';
-  for (let i = 0; i < BANNER_DESIGNS; i++) {
-    const d = banners[i];
-    const x0 = i * w;
-    const g = ctx.createLinearGradient(0, 0, 0, h);
-    g.addColorStop(0, d.bg[0]);
-    g.addColorStop(1, d.bg[1]);
-    ctx.fillStyle = g;
-    ctx.fillRect(x0, 0, w, h);
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = w * 0.025;
-    ctx.strokeRect(x0 + w * 0.07, h * 0.06, w * 0.86, h * 0.86);
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.fillRect(x0, 0, w, h * 0.035);
-    EMBLEMS[d.emblem](ctx, x0 + w / 2, h * 0.4, w * 0.36 * (d.scale ?? 1), '#ffffff', mixHex(d.bg[0], d.bg[1], 0.4));
-    // The text block is centred at 0.765 h; every line gets the size of the widest one.
-    const lines = d.text.split('\n');
-    let fs = Math.round(w * (lines.length > 1 ? 0.12 : 0.14));
-    for (const line of lines) fs = Math.min(fs, fitText(ctx, line, w * 0.74, fs, 900, false));
-    ctx.font = `900 ${fs}px ${FONT}`;
-    ctx.fillStyle = d.fg;
-    const lh = fs * 1.15;
-    lines.forEach((line, k) => ctx.fillText(line, x0 + w / 2, h * 0.765 + (k - (lines.length - 1) / 2) * lh + fs * 0.35));
-    // Swallow-tail cut at the bottom (transparent below the V).
-    ctx.clearRect(x0, h * 0.94, w, h * 0.06);
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.moveTo(x0, h * 0.94);
-    ctx.lineTo(x0 + w, h * 0.94);
-    ctx.lineTo(x0 + w, h);
-    ctx.lineTo(x0 + w / 2, h * 0.955);
-    ctx.lineTo(x0, h);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.textAlign = 'left';
-}
-
 function canvasTexture(width: number, height: number, anisotropy: number): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -176,21 +126,9 @@ export function boardAtlas(size: number): THREE.CanvasTexture {
   return canvasTexture(size, size, 8);
 }
 
-/** Banner atlas: BANNER_DESIGNS designs of w x 3w side by side (paintBanners fills it). */
-export function bannerAtlas(w: number): THREE.CanvasTexture {
-  return canvasTexture(w * BANNER_DESIGNS, w * 3, 4);
-}
-
 /** Paint a set's cards into the board atlas (the same texture: re-uploaded on the next frame). */
 export function paintBoards(tex: THREE.CanvasTexture, cards: readonly BoardCard[]): void {
   const { ctx, width } = contextOf(tex);
   drawBoards(ctx, width, cards);
-  tex.needsUpdate = true;
-}
-
-/** Paint a set's banner designs into the banner atlas (the same texture). */
-export function paintBanners(tex: THREE.CanvasTexture, banners: readonly BannerDesign[]): void {
-  const { ctx, width } = contextOf(tex);
-  drawBanners(ctx, width / BANNER_DESIGNS, banners);
   tex.needsUpdate = true;
 }

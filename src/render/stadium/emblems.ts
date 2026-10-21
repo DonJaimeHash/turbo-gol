@@ -1,7 +1,7 @@
 /**
- * The emblems of the board cards and banners (textures.ts), each a 2D-canvas path drawn by code
+ * The emblems of the board cards (textures.ts), each a 2D-canvas path drawn by code
  * (no image files, nothing copied from a real logo). An emblem is drawn centred on (x, y), about
- * 2 * s across, in one colour; `bg` (the card's or banner's background colour behind the emblem)
+ * 2 * s across, in one colour; `bg` (the card's background colour behind the emblem)
  * cuts details out of it. Every emblem saves and restores the context state.
  *
  *   generic    bolt, ball, chevrons, signal       (any place)
