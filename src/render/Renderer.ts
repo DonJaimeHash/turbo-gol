@@ -349,6 +349,11 @@ export class Renderer {
     this.applyQuality(q);
   }
 
+  /** The world's bakes / cache reads asked for so far (a tier or theme switch) are done. Never rejects. */
+  settled(): Promise<void> {
+    return this.world.settled();
+  }
+
   /**
    * Switch the stadium theme: the lights (keys and fill) and the post chain (exposure, tone curve,
    * grade) rewrite uniforms, the world re-bakes (its phase); nothing recompiles.

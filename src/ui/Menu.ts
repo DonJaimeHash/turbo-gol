@@ -29,7 +29,6 @@ import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
 import type { Difficulty } from '../render/Hud';
-import type { Quality } from '../render/quality';
 import type { ThemeId } from '../render/theme';
 import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 
@@ -77,9 +76,10 @@ export interface MenuHost {
   bearer(): Promise<string>;
   readonly mode: GameMode;
   readonly difficulty: Difficulty;
-  quality: Quality;
-  setQuality(q: Quality): void;
-  /** The stadium theme (saved with the prefs; Game.setTheme re-bakes the sky, never recompiles). */
+  /**
+   * The stadium theme (saved with the prefs). setTheme switches behind the loading screen
+   * (Game.switchTheme: a re-bake or a cached sky, never a recompile); `theme` reads the new one at once.
+   */
   readonly theme: ThemeId;
   setTheme(id: ThemeId): void;
   /** An offline friendly match against the bots. */
@@ -90,7 +90,7 @@ export interface MenuHost {
   searchView(): SearchView;
   /** A custom lobby started: join this member's match. */
   playLobbyMatch(result: QueueResult | QueueResultP2p): void;
-  /** The Controls & Settings screen (the Hud's); `onClose` when it is left. */
+  /** The settings screen (the Hud's: controls, camera, gameplay, audio, graphics); `onClose` when it is left. */
   openSettings(onClose: () => void): void;
   /** One line about the build (WebGPU / RocketSim version), shown in the footer. */
   readonly info: string;

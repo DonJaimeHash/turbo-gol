@@ -24,7 +24,14 @@
     <div id="app">
       <canvas id="game-canvas"></canvas>
       <div id="hud"></div>
-      <div id="overlay"></div>
+      <!-- The loading screen from the first paint (src/ui/LoadingOverlay.ts takes it over). -->
+      <div id="overlay" class="ld ld-on" aria-busy="true">
+        <div class="ld-box">
+          <div class="ld-logo" aria-hidden="true"><span class="ld-logo-a">TURBO</span><span class="ld-logo-b">GOL</span></div>
+          <div class="ld-bar"><div class="ld-fill ld-creep"></div></div>
+          <div class="ld-line"></div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

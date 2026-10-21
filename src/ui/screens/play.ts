@@ -11,11 +11,10 @@ import { MODES } from '../../sim/constants';
 import type { GameMode } from '../../sim/constants';
 import { DIFFICULTIES } from '../../render/Hud';
 import type { Difficulty } from '../../render/Hud';
-import { QUALITIES, type Quality } from '../../render/quality';
 import { THEME_IDS, type ThemeId } from '../../render/theme';
 import { LOCALES, language, savedLanguage, setLanguage, systemLanguage, t } from '../../i18n';
 import type { LanguageCode } from '../../i18n';
-import { difficultyName, playlistName, qualityName, themeName, tierName } from '../names';
+import { difficultyName, playlistName, themeName, tierName } from '../names';
 import { rankBadge, ratingCard, tierById } from '../badges';
 import type { Menu, Screen } from '../Menu';
 import { cycler, primary, regionCycler, screenHead, secondary, section, tile } from './common';
@@ -329,15 +328,9 @@ export function friendlyScreen(menu: Menu): Screen {
     () => difficulty,
     (v) => (difficulty = v),
   );
-  // Menu order low -> high -> ultra: the right arrow steps like the Q key (nextQuality).
-  const quality = cycler<Quality>(
-    t('friendly.quality'),
-    QUALITIES.map((q) => ({ value: q, label: qualityName(q) })),
-    () => menu.host.quality,
-    (v) => menu.host.setQuality(v),
-  );
-  // The stadium's setting (purely visual, saved with the prefs): Game.setTheme rewrites uniforms
-  // and re-bakes or reads the cached sky, it never recompiles.
+  // The stadium (purely visual, saved with the prefs; the graphics quality lives in Settings >
+  // Graphics): the switch runs behind the loading screen (Game.switchTheme rewrites uniforms and
+  // re-bakes or reads the cached sky, it never recompiles).
   const theme = cycler<ThemeId>(
     t('friendly.theme'),
     THEME_IDS.map((id) => ({ value: id, label: themeName(id) })),
@@ -348,7 +341,7 @@ export function friendlyScreen(menu: Menu): Screen {
     'div.mn-queue',
     null,
     screenHead(t('play.friendly'), t('friendly.intro')),
-    section(t('friendly.match'), modeC.el, diffC.el, quality.el, theme.el),
+    section(t('friendly.match'), modeC.el, diffC.el, theme.el),
     h('div.mn-actions', null, primary(t('friendly.play'), () => menu.host.playFriendly(mode, difficulty), { 'data-autofocus': true })),
   );
   return {
@@ -360,7 +353,6 @@ export function friendlyScreen(menu: Menu): Screen {
       difficulty = menu.host.difficulty;
       modeC.refresh();
       diffC.refresh();
-      quality.refresh();
       theme.refresh();
     },
   };

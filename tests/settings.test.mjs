@@ -15,7 +15,7 @@ registerHooks({
   },
 });
 
-const { mergeSettings, defaultSettings, DEFAULT_CAMERA, DEFAULT_CONTROL_SETTINGS } = await import('../src/settings.ts');
+const { mergeSettings, defaultSettings, DEFAULT_AUDIO, DEFAULT_CAMERA, DEFAULT_CONTROL_SETTINGS, VOLUME_RANGE } = await import('../src/settings.ts');
 const { DEFAULT_KBM, DEFAULT_PAD, GP_MAX_BUTTONS, GP_MAX_AXES, MAX_MOUSE_BUTTON } = await import('../src/input/bindings.ts');
 
 test('mouse buttons and pad indices must be whole numbers in range (1 << 32 aliases LMB)', () => {
@@ -93,4 +93,23 @@ test('valid saved bindings of every kind survive the merge', () => {
   for (const [a, b] of Object.entries(kbm)) assert.deepEqual(s.bindings.kbm[a], b, a);
   for (const [a, b] of Object.entries(pad)) assert.deepEqual(s.bindings.pad[a], b, a);
   assert.deepEqual(s.bindings.kbm.boost, DEFAULT_KBM.boost, 'untouched actions keep the default');
+});
+
+test('the master volume is a number in 0..100 (%); anything else falls back to the default', () => {
+  const vol = (audio) => mergeSettings({ audio }).audio.volume;
+  assert.equal(vol({ volume: 35 }), 35);
+  assert.equal(vol({ volume: 0 }), 0, 'muted is a valid choice');
+  assert.equal(vol({ volume: 150 }), 100);
+  assert.equal(vol({ volume: -5 }), 0);
+  for (const bad of ['loud', NaN, Infinity, null, true]) assert.equal(vol({ volume: bad }), DEFAULT_AUDIO.volume, String(bad));
+  assert.equal(vol(null), DEFAULT_AUDIO.volume);
+  assert.equal(vol(7), DEFAULT_AUDIO.volume);
+  assert.deepEqual(mergeSettings({}).audio, DEFAULT_AUDIO);
+  assert.deepEqual(defaultSettings().audio, DEFAULT_AUDIO);
+  assert.notEqual(defaultSettings().audio, DEFAULT_AUDIO, 'a copy: the settings screen writes into it');
+  const [min, max, step] = VOLUME_RANGE;
+  assert.equal(min, 0);
+  assert.equal(max, 100);
+  assert.equal((max - min) % step, 0, 'the slider reaches both ends');
+  assert.equal(DEFAULT_AUDIO.volume % step, 0, 'the default sits on the slider grid');
 });

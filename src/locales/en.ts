@@ -26,7 +26,7 @@ export default {
   'difficulty.easy': 'Easy',
   'difficulty.medium': 'Normal',
   'difficulty.hard': 'Hard',
-  // Graphics quality tiers (src/render/quality.ts): the menus' quality row and the Q toggle
+  // Graphics quality tiers (src/render/quality.ts): Settings > Graphics
   'quality.low': 'Performance',
   'quality.high': 'High',
   'quality.ultra': 'Ultra',
@@ -111,7 +111,7 @@ export default {
   'home.profile': 'PROFILE',
   'home.profileSub': 'Account, ranks and stats',
   'home.settings': 'SETTINGS',
-  'home.settingsSub': 'Controls, camera and graphics',
+  'home.settingsSub': 'Controls, audio and graphics',
   // Home tile that opens the language picker; its subtitle is the current language's own name
   'home.language': 'LANGUAGE',
   // {season} is the season number; shown uppercase by CSS
@@ -180,7 +180,6 @@ export default {
   'friendly.title': 'Friendly',
   'friendly.mode': 'Mode',
   'friendly.difficulty': 'AI difficulty',
-  'friendly.quality': 'Graphics quality',
   // Where the match is played (the stadium's setting: harbour, canyon...); purely visual
   'friendly.theme': 'Stadium',
   'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
@@ -640,19 +639,21 @@ export default {
   'pause.hintDefault': '{resumeKeys} to resume  ·  {quitKeys} to quit',
   // The same line with the player's pause keys; a mouse click on the game also resumes
   'pause.hint': '{resumeKeys} or click to resume  ·  {quitKeys} to quit',
-  // Buttons on a touch screen, in place of that line, uppercase
+  // Pause menu buttons (mouse, keys, controller and touch), uppercase
   // Back to the match
   'pause.resume': 'RESUME',
+  // Opens the settings screen (controls, audio, graphics); BACK there returns to the pause menu
+  'pause.settings': 'SETTINGS',
   // Leave the match for the menus
   'pause.quit': 'QUIT',
-  // The QUIT button after one tap in an online match: a second tap leaves it (may count as an abandon)
+  // The QUIT button after one press in an online match: a second one leaves it (may count as an abandon)
   'pause.quitConfirm': 'LEAVE MATCH?',
 
-  // Controls & settings screen, opened from the pause screen and the menus (src/render/Hud.ts)
+  // Settings screen, opened from the pause menu and the menus (src/render/Hud.ts)
   // Top-left button that closes the screen, uppercase (shown after a ‹ arrow)
   'settings.back': 'BACK',
   // Screen title, uppercase
-  'settings.title': 'CONTROLS & SETTINGS',
+  'settings.title': 'SETTINGS',
   // Tab: key bindings for keyboard and mouse
   'settings.tabKbm': 'Keyboard & Mouse',
   // Tab: button bindings for a gamepad
@@ -660,6 +661,10 @@ export default {
   'settings.tabCamera': 'Camera',
   // Tab: sensitivities, deadzones and other control options
   'settings.tabGameplay': 'Gameplay',
+  // Tab: sound volume
+  'settings.tabAudio': 'Audio',
+  // Tab: graphics quality
+  'settings.tabGraphics': 'Graphics',
   // Group titles of the binding lists (shown uppercase by the style)
   'settings.groupDriving': 'Driving',
   // Car controls while flying
@@ -724,6 +729,20 @@ export default {
   'settings.vibration': 'Controller vibration',
   // Gameplay tab footer button: restore every row
   'settings.resetGameplay': 'Reset gameplay',
+  // Audio tab: line over the rows
+  'settings.audioNote': 'Game sounds',
+  // Audio tab slider: the volume of every sound, 0-100 %
+  'settings.volume': 'Master volume',
+  // Audio tab footer button: the volume back to its default
+  'settings.resetAudio': 'Reset audio',
+  // Graphics tab: line over the rows (a change shows the loading screen for a moment)
+  'settings.graphicsNote': 'A quality change reloads the stadium for a moment',
+  // Graphics tab row: the three tiers are quality.low / quality.high / quality.ultra
+  'settings.quality': 'Graphics quality',
+  // Line under the quality row, for the tier that is selected
+  'settings.qualityLowHint': 'Smoothest, for phones and older computers',
+  'settings.qualityHighHint': 'Balanced detail and smoothness',
+  'settings.qualityUltraHint': 'Every effect, for a powerful graphics card',
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',
@@ -878,22 +897,20 @@ export default {
   // Prompt while a shot waits for the first car input (one line, no wrap; on a phone it sits between
   // the touch stick and the JUMP button, so keep it no longer than the English)
   'trainingHud.start': 'Drive to start the shot',
-  // Pause panel button: back to the shot
-  'trainingHud.resume': 'Resume',
-  // Pause panel button (shot packs): restart the current shot
+  // Pause menu button (shot packs): restart the current shot
   'trainingHud.resetShot': 'Reset shot',
-  // Pause panel buttons (shot packs)
+  // Pause menu buttons (shot packs)
   'trainingHud.prevShot': 'Previous shot',
   'trainingHud.nextShot': 'Next shot',
-  // Pause panel button (free play): the ball back to the centre spot
+  // Pause menu button (free play): the ball back to the centre spot
   'trainingHud.resetBall': 'Reset ball',
-  // Pause panel button (free play): the car back to its spawn
+  // Pause menu button (free play): the car back to its spawn
   'trainingHud.resetCar': 'Reset car',
-  // Pause panel toggle button (free play) while unlimited boost is on; ON / OFF as in settings.on / settings.off
+  // Pause menu toggle button (free play) while unlimited boost is on; ON / OFF as in settings.on / settings.off
   'trainingHud.boostButtonOn': 'Unlimited boost: ON',
   // The same button while unlimited boost is off
   'trainingHud.boostButtonOff': 'Unlimited boost: OFF',
-  // Pause panel button: leave training for the menu
+  // Pause menu button: leave training for the menu
   'trainingHud.quit': 'Quit training',
   // Pack summary title
   'trainingHud.packComplete': 'Pack complete',
@@ -991,18 +1008,24 @@ export default {
   // Guest name in the menus when the game runs without an online server (online guests get a generated name like Guest123, which is never translated)
   'game.guestName': 'Guest',
 
-  // Boot progress and error page on the loading screen, before the menus (src/main.ts). The title
-  // above them (TURBOGOL) and the error details (stack) are not translated.
-  'boot.renderer': 'Starting renderer…',
+  // Error page that replaces the loading screen when the game cannot start (src/main.ts). The error
+  // details (stack) are not translated.
   'boot.rendererFailed': 'Could not start the renderer',
   // Keep the browser names and versions as they are
   'boot.rendererHint': 'This game needs WebGPU (Chrome / Edge 113+, Firefox 141+, Safari 26+) or at least WebGL2. Make sure hardware acceleration is enabled in the browser settings.',
-  // {backend} is WebGPU or WebGL2 (not translated)
-  'boot.physics': 'Loading physics (RocketSim)… [{backend}]',
   'boot.physicsFailed': 'Could not load the physics module',
   'boot.physicsHint': 'The WebAssembly module (rocketsim.wasm) failed to load or instantiate.',
-  'boot.arena': 'Building arena…',
-  'boot.scene': 'Building scene…',
   'boot.failed': 'Failed to start',
   'boot.failedHint': 'Something went wrong while starting the game.',
+
+  // Loading screen (src/ui/LoadingOverlay.ts): one short line under the TURBOGOL wordmark and the
+  // progress bar, shown uppercase. Keep them short and plain (no technical words).
+  // Boot, first part (graphics and the stadium's sky); also a stadium change
+  'loading.stadium': 'Loading stadium…',
+  // Boot, second part (physics, the pitch and the cars)
+  'loading.pitch': 'Setting up the pitch…',
+  // Boot, last part (preparing the graphics so the first match runs smoothly)
+  'loading.ready': 'Almost ready…',
+  // A graphics quality change (Settings > Graphics)
+  'loading.quality': 'Applying graphics quality…',
 } satisfies Messages;

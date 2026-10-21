@@ -1,18 +1,20 @@
 /**
  * DOM HUD: the scorebug (top left: BLU / RED chips with their scores, then the clock), the
  * segmented boost bar (bottom left, the speed readout sits above it in debug mode), fps, camera
- * mode, off-screen ball indicator, countdown, banners, pause overlay, the Tab scoreboard, a
- * pointer-lock hint, the start menu and the "Controls & settings" screen (rebinding for
- * keyboard/mouse and controller, camera and gameplay sliders). Every per-frame setter caches its
- * last value and touches the DOM only when something changed, so calling them every frame costs
- * nothing and allocates nothing.
+ * mode, off-screen ball indicator, countdown, banners, the pause menu, the Tab scoreboard, a
+ * pointer-lock hint, the start menu and the settings screen (rebinding for keyboard/mouse and
+ * controller, camera and gameplay sliders, the master volume, the graphics quality). Every
+ * per-frame setter caches its last value and touches the DOM only when something changed, so
+ * calling them every frame costs nothing and allocates nothing.
  *
  * Debug readouts (speed, fps / draw calls / GPU time) are hidden by default; F3 toggles them,
  * and `#stats` or `#debug` in the URL shows them from the start.
  *
  * Menu navigation: the Hud listens to window keydown itself (keyboard); the Game forwards gamepad
  * edges through `menuAction`. While a rebind capture is in progress (`capturing`) both paths are
- * ignored so the captured key / button only reaches Input.startRebind.
+ * ignored so the captured key / button only reaches Input.startRebind. The pause menu is driven by
+ * the Game instead (`pauseAction`, from Input's menu edges: keyboard and pad alike), since the
+ * pause / back keys it shares with the match are Input's.
  *
  * Styling lives in src/style.css (classes prefixed `hud-`).
  */
@@ -30,9 +32,11 @@ import {
 import {
   CAMERA_RANGES,
   CONTROL_RANGES,
+  DEFAULT_AUDIO,
   DEFAULT_CAMERA,
   DEFAULT_CONTROL_SETTINGS,
   CLASSIC_CAMERA_DEFAULTS,
+  VOLUME_RANGE,
   type ControlSettings,
   type Settings,
 } from '../settings';
@@ -108,6 +112,7 @@ export interface MenuOptions {
   /** Game mode shown in the Mode row (1v1 / 2v2 / 3v3). */
   mode: GameMode;
   onPlay: (difficulty: Difficulty, quality: Quality, mode: GameMode) => void;
+  /** The quality tier picked (the settings screen's Graphics tab; Q in the legacy main menu). */
   onQualityChange?: (quality: Quality) => void;
   onDifficultyChange?: (difficulty: Difficulty) => void;
   /** The Mode row changed (arrows, M, pad left / right); the Game rebuilds the roster at once. */
@@ -157,7 +162,37 @@ export interface MenuOptions {
  */
 export type MenuAction = 'accept' | 'left' | 'right' | 'quality' | 'mode' | 'settings' | 'up' | 'down' | 'back' | 'online';
 
-export type SettingsTab = 'kbm' | 'pad' | 'camera' | 'gameplay';
+export type SettingsTab = 'kbm' | 'pad' | 'camera' | 'gameplay' | 'audio' | 'graphics';
+
+/**
+ * One entry of the pause menu (setPaused): RESUME, SETTINGS, QUIT, and the training entries in
+ * between. The Game builds the list; the Hud draws it and moves the focus.
+ */
+export interface PauseEntry {
+  /** Stable id ('resume', 'settings', 'quit'...): setPauseCovered(false, id) focuses it again. */
+  readonly id: string;
+  /** The button text, read again after every activation (a toggle changes it). */
+  readonly label: () => string;
+  /**
+   * 'primary': RESUME's lime look; 'quit': the red edge; 'row': a smaller button on a shared row
+   * (training), one focus stop for the row (left / right pick); default: a plain wide button.
+   */
+  readonly kind?: 'primary' | 'quit' | 'row';
+  /** Ask for a second activation first (its label turns into pause.quitConfirm): leaving an online match. */
+  readonly confirm?: boolean;
+  /** `mouse`: a real mouse click picked it (the Game captures the mouse again on a resume). */
+  readonly select: (mouse: boolean) => void;
+}
+
+/** A real mouse click (not a tap, not a key / pad activation through `.click()`). */
+function isMouseClick(e: MouseEvent): boolean {
+  if (!e.isTrusted) return false;
+  const type = (e as Partial<PointerEvent>).pointerType;
+  return type !== undefined ? type === 'mouse' : e.detail > 0;
+}
+
+/** What the pause menu takes from the Game: Input's menu edges (keyboard and pad). */
+export type PauseAction = 'up' | 'down' | 'left' | 'right' | 'accept';
 
 /** One car on the Tab scoreboard. */
 export interface ScoreboardRow {
@@ -201,7 +236,16 @@ const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: Key }> = [
   { id: 'pad', label: 'settings.tabPad' },
   { id: 'camera', label: 'settings.tabCamera' },
   { id: 'gameplay', label: 'settings.tabGameplay' },
+  { id: 'audio', label: 'settings.tabAudio' },
+  { id: 'graphics', label: 'settings.tabGraphics' },
 ];
+
+/** The line under the Graphics tab's quality row, per tier. */
+const QUALITY_HINTS: Readonly<Record<Quality, Key>> = {
+  low: 'settings.qualityLowHint',
+  high: 'settings.qualityHighHint',
+  ultra: 'settings.qualityUltraHint',
+};
 
 const GROUP_TITLES: Readonly<Record<'driving' | 'air' | 'camera' | 'game', Key>> = {
   driving: 'settings.groupDriving',
@@ -243,8 +287,8 @@ const SETTINGS_KEYS = {
   cancel: 'Esc',
 } as const;
 
-/** The pause overlay's quit keys (fixed: Game handles Backspace / pad B while paused). */
-const PAUSE_QUIT_KEYS = 'Backspace / B';
+/** The pause menu's quit keys (fixed: Game handles Backspace / pad B while paused). */
+export const PAUSE_QUIT_KEYS = 'Backspace / B';
 
 /** The camera presets' values (field of view / distance / height), shown after their names. */
 const PRESET_WIDE_VALUES = '110/270/100';
@@ -290,7 +334,8 @@ interface PageBuild {
   items: FocusItem[];
   /** Footer buttons of the page (shown only while its tab is active). */
   actions: HTMLElement;
-  footer: FocusItem;
+  /** Their focus stop; null when the page has no footer buttons. */
+  footer: FocusItem | null;
 }
 
 /** Wrapping focus over a list of items; keeps the `hud-focus` class on the current one. */
@@ -345,9 +390,6 @@ class FocusRing {
 
 export class Hud {
   readonly root: HTMLElement;
-  /** The pause screen's RESUME / QUIT buttons (touch mode only, see the constructor); set by the Game. */
-  onPauseResume: (() => void) | null = null;
-  onPauseQuit: (() => void) | null = null;
 
   /** Labels the per-frame / per-event setters swap in, translated once here (never t() per frame). */
   private readonly labelBallCam = t('hud.ballCam');
@@ -376,11 +418,19 @@ export class Hud {
   private readonly bannerSub: HTMLElement;
   private readonly paused: HTMLElement;
   private readonly pausedSub: HTMLElement;
-  private readonly pauseQuit: HTMLButtonElement;
-  /** QUIT takes a second tap (setPaused: an online match, where leaving may count as an abandon). */
-  private quitConfirm = false;
-  /** QUIT was tapped once and asks for the second tap. */
-  private quitArmed = false;
+  /** The pause menu's buttons (setPaused rebuilds them from the Game's entries). */
+  private readonly pauseMenu: HTMLElement;
+  private readonly pauseRing = new FocusRing();
+  private pauseOpen = false;
+  /** The settings screen is open over the pause menu (setPauseCovered). */
+  private pauseCovered = false;
+  private pauseEntries: readonly PauseEntry[] = [];
+  /** One button per entry, in entry order. */
+  private readonly pauseButtons: HTMLButtonElement[] = [];
+  /** The focus stop of each entry, in entry order (the entries of a row share one). */
+  private readonly pauseItemOf: FocusItem[] = [];
+  /** The entry waiting for its second activation (PauseEntry.confirm), or null. */
+  private pauseArmed: PauseEntry | null = null;
   private readonly hint: HTMLElement;
 
   // Scoreboard (Tab).
@@ -639,21 +689,16 @@ export class Hud {
 
     this.paused = el('div', 'hud-paused');
     this.pausedSub = el('div', 'hud-paused-sub', t('pause.hintDefault', { resumeKeys: 'Esc / Start', quitKeys: PAUSE_QUIT_KEYS }));
-    // Touch mode only (style.css, html.tg-touch): a finger has no Esc / Backspace, so RESUME and
-    // QUIT take the key line's place. Only the buttons take the pointer: a tap on the veil still
-    // reaches the canvas (resume). Training hides them for its own pause panel. Online, QUIT asks
-    // for a second tap: a mis-tap next to RESUME would leave the match (an abandon in ranked).
-    const pauseActions = el('div', 'hud-paused-actions');
-    const resume = button('hud-paused-btn hud-paused-resume', t('pause.resume'));
-    resume.addEventListener('click', () => this.onPauseResume?.());
-    const quit = button('hud-paused-btn hud-paused-quit', t('pause.quit'));
-    quit.addEventListener('click', () => {
-      if (this.quitConfirm && !this.quitArmed) this.armQuit(true);
-      else this.onPauseQuit?.();
-    });
-    this.pauseQuit = quit;
-    pauseActions.append(resume, quit);
-    this.paused.append(el('div', 'hud-paused-title', t('pause.title')), this.pausedSub, pauseActions);
+    // The pause menu, for every input: the mouse and a finger click its buttons, the keyboard and
+    // the pad move the focus (the Game routes Input's menu edges to pauseAction). Only the buttons
+    // take the pointer: a click or tap on the veil still reaches the canvas (resume). The key line
+    // stays for the keyboard (style.css hides it in touch mode). Online, QUIT asks for a second
+    // press: a slip next to RESUME would leave the match (an abandon in ranked).
+    this.pauseMenu = el('div', 'hud-pause-menu');
+    // DOM focus stays off the buttons: Enter on a clicked button would click it natively on top of
+    // the Game's accept.
+    this.pauseMenu.addEventListener('mousedown', (e: MouseEvent) => e.preventDefault());
+    this.paused.append(el('div', 'hud-paused-title', t('pause.title')), this.pausedSub, this.pauseMenu);
     this.paused.hidden = true;
     this.root.appendChild(this.paused);
 
@@ -935,19 +980,140 @@ export class Hud {
     this.banner.hidden = true;
   }
 
-  /** Show or hide the pause screen; `confirmQuit` (an online match): its QUIT button takes a second tap. */
-  setPaused(paused: boolean, confirmQuit = false): void {
+  /**
+   * Show the pause menu with `entries` (the focus on the first) and `hint` as its key line, or hide
+   * it. Called on pause only (it rebuilds the buttons), never per frame.
+   */
+  setPaused(paused: boolean, entries: readonly PauseEntry[] = [], hint?: string): void {
+    this.pauseOpen = paused;
+    this.pauseCovered = false;
+    this.pauseArmed = null;
     this.paused.hidden = !paused;
-    this.quitConfirm = paused && confirmQuit;
-    this.armQuit(false);
+    if (!paused) {
+      this.pauseRing.use([]);
+      return;
+    }
+    if (hint !== undefined) this.pausedSub.textContent = hint;
+    this.buildPauseMenu(entries);
   }
 
-  /** QUIT's second-tap state: its label asks to confirm while armed. */
-  private armQuit(on: boolean): void {
-    if (on === this.quitArmed) return;
-    this.quitArmed = on;
-    this.pauseQuit.textContent = t(on ? 'pause.quitConfirm' : 'pause.quit');
-    this.pauseQuit.classList.toggle('hud-paused-armed', on);
+  /** The pause menu is up (and not covered by the settings screen). */
+  get pauseMenuVisible(): boolean {
+    return this.pauseOpen && !this.pauseCovered;
+  }
+
+  /**
+   * The settings screen opens over the pause menu (`covered`: the menu hides, the game stays
+   * paused) or closes again: the menu comes back with the focus on entry `focusId`.
+   */
+  setPauseCovered(covered: boolean, focusId?: string): void {
+    if (!this.pauseOpen) return;
+    this.pauseCovered = covered;
+    this.paused.hidden = covered;
+    this.disarmPause();
+    if (!covered && focusId !== undefined) {
+      const i = this.pauseEntries.findIndex((e) => e.id === focusId);
+      if (i >= 0) this.focusPauseEntry(i);
+    }
+  }
+
+  /** The pause menu's key line (the pause binding may have changed in the settings screen). */
+  setPauseHint(hint: string): void {
+    if (this.pausedSub.textContent !== hint) this.pausedSub.textContent = hint;
+  }
+
+  /** Keyboard / pad on the pause menu (Input's menu edges, routed by the Game while paused). */
+  pauseAction(action: PauseAction): void {
+    if (!this.pauseMenuVisible) return;
+    if (action !== 'accept') this.disarmPause();
+    dispatchFocus(this.pauseRing, action);
+  }
+
+  private buildPauseMenu(entries: readonly PauseEntry[]): void {
+    const menu = this.pauseMenu;
+    menu.textContent = '';
+    this.pauseEntries = entries;
+    const buttons = this.pauseButtons;
+    const itemOf = this.pauseItemOf;
+    buttons.length = 0;
+    itemOf.length = 0;
+    const items: FocusItem[] = [];
+    // A run of 'row' entries shares one line and one focus stop (left / right pick, accept clicks).
+    let row: HTMLElement | null = null;
+    let rowStart = 0;
+    const closeRow = (): void => {
+      if (row === null) return;
+      const item = this.groupItem(row, buttons.slice(rowStart), this.pauseRing);
+      for (let k = rowStart; k < buttons.length; k++) itemOf[k] = item;
+      items.push(item);
+      row = null;
+    };
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const kind = entry.kind ?? 'plain';
+      const b = button(`hud-pause-btn hud-pause-${kind}`, entry.label());
+      b.addEventListener('click', (e: MouseEvent) => this.activatePause(entry, isMouseClick(e)));
+      if (kind === 'row') {
+        if (row === null) {
+          row = el('div', 'hud-pause-row');
+          rowStart = buttons.length;
+          menu.appendChild(row);
+        }
+        row.appendChild(b);
+        buttons.push(b);
+        continue;
+      }
+      closeRow();
+      menu.appendChild(b);
+      buttons.push(b);
+      const item: FocusItem = { el: b, accept: () => this.activatePause(entry, false) };
+      b.addEventListener('pointerdown', () => this.pauseRing.focusItem(item));
+      itemOf[i] = item;
+      items.push(item);
+    }
+    closeRow();
+    this.pauseRing.use(items, 0);
+  }
+
+  /** Put the focus on entry `i` (and pick it inside its row when it is in one). */
+  private focusPauseEntry(i: number): void {
+    const item = this.pauseItemOf[i];
+    const b = this.pauseButtons[i];
+    if (item === undefined || b === undefined) return;
+    this.pauseRing.focusItem(item);
+    if (item.el !== b) b.dispatchEvent(new Event('pointerdown')); // groupItem picks the button on pointerdown
+  }
+
+  private activatePause(entry: PauseEntry, mouse: boolean): void {
+    if (!this.pauseMenuVisible) return;
+    const i = this.pauseEntries.indexOf(entry);
+    if (i < 0) return;
+    if (entry.confirm === true && this.pauseArmed !== entry) {
+      this.disarmPause();
+      this.pauseArmed = entry;
+      const b = this.pauseButtons[i];
+      b.textContent = t('pause.quitConfirm');
+      b.classList.add('hud-pause-armed');
+      return;
+    }
+    this.disarmPause();
+    const entries = this.pauseEntries;
+    entry.select(mouse);
+    // Still the same menu (a toggle, not resume / quit): its labels may have changed.
+    if (this.pauseOpen && this.pauseEntries === entries) {
+      for (let k = 0; k < entries.length; k++) this.pauseButtons[k].textContent = entries[k].label();
+    }
+  }
+
+  private disarmPause(): void {
+    const armed = this.pauseArmed;
+    if (armed === null) return;
+    this.pauseArmed = null;
+    const i = this.pauseEntries.indexOf(armed);
+    if (i < 0) return;
+    const b = this.pauseButtons[i];
+    b.textContent = armed.label();
+    b.classList.remove('hud-pause-armed');
   }
 
   /**
@@ -1097,7 +1263,6 @@ export class Hud {
         ? `Enter / A  play${online}   ·   M  mode   ·   Q  quality   ·   O / X  controls & settings`
         : `Enter / A  play${online}   ·   M  mode   ·   Q  quality`;
     }
-    this.refreshPausedSub();
     this.renderControlsList();
     this.refreshMenu();
     this.showMainPanel();
@@ -1134,11 +1299,14 @@ export class Hud {
    */
   openSettingsScreen(opts: MenuOptions, onClose: () => void): void {
     this.menuOptions = opts;
+    this.quality = opts.quality;
     if (this.menu === null) this.buildMenu();
     const menu = this.menu as HTMLElement;
     menu.classList.add('hud-menu-settings-only');
     menu.hidden = false;
     this.settingsOnlyClose = onClose;
+    // A finger has no use for the binding tabs: touch mode opens on Graphics instead.
+    if ((this.tab === 'kbm' || this.tab === 'pad') && document.documentElement.classList.contains('tg-touch')) this.tab = 'graphics';
     this.openSettings();
   }
 
@@ -1474,18 +1642,7 @@ export class Hud {
     this.showMainPanel();
     // Bindings may have changed.
     this.renderControlsList();
-    this.refreshPausedSub();
     this.mainRing.set(this.mainRing.index, false);
-  }
-
-  /** The pause overlay's hint, from the live pause bindings (rebindable, never unbound). */
-  private refreshPausedSub(): void {
-    const input = this.menuOptions?.input;
-    if (input === undefined) return;
-    this.pausedSub.textContent = t('pause.hint', {
-      resumeKeys: `${input.getLabel('pause', 'kbm')} / ${input.getLabel('pause', 'pad')}`,
-      quitKeys: PAUSE_QUIT_KEYS,
-    });
   }
 
   private stopPadPoll(): void {
@@ -1516,15 +1673,28 @@ export class Hud {
     panel.appendChild(tabs);
 
     const body = el('div', 'hud-settings-body');
-    const kbm = this.buildBindPage('kbm');
-    const pad = this.buildBindPage('pad');
-    const camera = this.buildCameraPage();
-    const gameplay = this.buildGameplayPage();
-    body.append(kbm.page, pad.page, camera.page, gameplay.page);
+    const built: Record<SettingsTab, PageBuild> = {
+      kbm: this.buildBindPage('kbm'),
+      pad: this.buildBindPage('pad'),
+      camera: this.buildCameraPage(),
+      gameplay: this.buildGameplayPage(),
+      audio: this.buildAudioPage(),
+      graphics: this.buildGraphicsPage(),
+    };
+    const foot = el('div', 'hud-settings-foot');
+    const pages = {} as Record<SettingsTab, HTMLElement>;
+    const pageActions = {} as Record<SettingsTab, HTMLElement>;
+    const tabItems = {} as Record<SettingsTab, FocusItem[]>;
+    for (const tab of SETTINGS_TABS) {
+      const b = built[tab.id];
+      body.appendChild(b.page);
+      foot.appendChild(b.actions);
+      pages[tab.id] = b.page;
+      pageActions[tab.id] = b.actions;
+      tabItems[tab.id] = b.footer !== null ? [tabsItem, ...b.items, b.footer] : [tabsItem, ...b.items];
+    }
     panel.appendChild(body);
 
-    const foot = el('div', 'hud-settings-foot');
-    foot.append(kbm.actions, pad.actions, camera.actions, gameplay.actions);
     const k = SETTINGS_KEYS;
     foot.appendChild(
       el(
@@ -1535,14 +1705,9 @@ export class Hud {
     );
     panel.appendChild(foot);
 
-    this.pages = { kbm: kbm.page, pad: pad.page, camera: camera.page, gameplay: gameplay.page };
-    this.pageActions = { kbm: kbm.actions, pad: pad.actions, camera: camera.actions, gameplay: gameplay.actions };
-    this.tabItems = {
-      kbm: [tabsItem, ...kbm.items, kbm.footer],
-      pad: [tabsItem, ...pad.items, pad.footer],
-      camera: [tabsItem, ...camera.items, camera.footer],
-      gameplay: [tabsItem, ...gameplay.items, gameplay.footer],
-    };
+    this.pages = pages;
+    this.pageActions = pageActions;
+    this.tabItems = tabItems;
     this.settingsBody = body;
     panel.hidden = true;
     (this.menu as HTMLElement).appendChild(panel);
@@ -1680,8 +1845,108 @@ export class Hud {
     return { page, items, actions, footer: this.groupItem(actions, [reset]) };
   }
 
+  /** Audio: the master volume (settings.audio, applied by the Game's onSettingsChanged). */
+  private buildAudioPage(): PageBuild {
+    const page = el('div', 'hud-settings-page');
+    page.appendChild(el('div', 'hud-settings-device', t('settings.audioNote')));
+    const volume = this.sliderRow(
+      t('settings.volume'),
+      VOLUME_RANGE,
+      '%',
+      () => this.liveSettings?.audio.volume ?? DEFAULT_AUDIO.volume,
+      (v) => {
+        const st = this.liveSettings;
+        if (st === null) return;
+        st.audio.volume = v;
+        this.notifySettingsChanged();
+      },
+    );
+    page.appendChild(volume.row);
+    const reset = button('hud-settings-action', t('settings.resetAudio'));
+    reset.addEventListener('click', () => {
+      const st = this.liveSettings;
+      if (st === null) return;
+      Object.assign(st.audio, DEFAULT_AUDIO);
+      this.refreshSliders();
+      this.notifySettingsChanged();
+    });
+    const actions = el('div', 'hud-settings-actions');
+    actions.appendChild(reset);
+    return { page, items: [volume.item], actions, footer: this.groupItem(actions, [reset]) };
+  }
+
+  /**
+   * Graphics: the quality tier (low / high / ultra), a line about the selected one. A pick goes to
+   * MenuOptions.onQualityChange, which runs the switch behind the loading screen.
+   */
+  private buildGraphicsPage(): PageBuild {
+    const page = el('div', 'hud-settings-page');
+    page.appendChild(el('div', 'hud-settings-device', t('settings.graphicsNote')));
+    const hint = el('div', 'hud-settings-hint');
+    const hints: Record<Quality, string> = { low: t(QUALITY_HINTS.low), high: t(QUALITY_HINTS.high), ultra: t(QUALITY_HINTS.ultra) };
+    const quality = this.choiceRow<Quality>(
+      t('settings.quality'),
+      QUALITIES.map((q) => ({ value: q, label: t(`quality.${q}`) })),
+      () => this.quality,
+      (q) => {
+        if (q === this.quality) return;
+        this.quality = q;
+        const opts = this.menuOptions;
+        if (opts !== null && opts.onQualityChange) opts.onQualityChange(q);
+      },
+      (q) => (hint.textContent = hints[q]),
+    );
+    page.append(quality.row, hint);
+    return { page, items: [quality.item], actions: el('div', 'hud-settings-actions'), footer: null };
+  }
+
+  /**
+   * "Label   [A] [B] [C]": a segmented choice. Left / right step (no wrap: a quality switch is a
+   * reload, ultra never jumps to low), accept steps with wrap, a click picks. `onShow` gets the
+   * value after every refresh (a line about it).
+   */
+  private choiceRow<T>(
+    label: string,
+    options: ReadonlyArray<{ value: T; label: string }>,
+    get: () => T,
+    set: (v: T) => void,
+    onShow?: (v: T) => void,
+  ): { row: HTMLElement; item: FocusItem } {
+    const row = el('div', 'hud-settings-row hud-choice-row');
+    row.appendChild(el('span', 'hud-settings-label', label));
+    const ctl = el('span', 'hud-settings-ctl hud-choice');
+    const buttons = options.map((o) => button('hud-choice-opt', o.label));
+    ctl.append(...buttons);
+    row.appendChild(ctl);
+    const index = (): number => Math.max(0, options.findIndex((o) => o.value === get()));
+    const refresh = (): void => {
+      const i = index();
+      for (let k = 0; k < buttons.length; k++) {
+        buttons[k].classList.toggle('hud-on', k === i);
+        buttons[k].setAttribute('aria-pressed', String(k === i));
+      }
+      if (onShow) onShow(options[i].value);
+    };
+    const pick = (i: number): void => {
+      set(options[i].value);
+      refresh();
+    };
+    buttons.forEach((b, k) => b.addEventListener('click', () => pick(k)));
+    const n = options.length;
+    const item: FocusItem = {
+      el: row,
+      left: () => pick(Math.max(0, index() - 1)),
+      right: () => pick(Math.min(n - 1, index() + 1)),
+      accept: () => pick((index() + 1) % n),
+    };
+    row.addEventListener('pointerdown', () => this.settingsRing.focusItem(item));
+    this.refreshers.push(refresh);
+    refresh();
+    return { row, item };
+  }
+
   /** A horizontal group of buttons as one focus item: left/right pick, accept clicks. */
-  private groupItem(container: HTMLElement, buttons: HTMLButtonElement[]): FocusItem {
+  private groupItem(container: HTMLElement, buttons: HTMLButtonElement[], ring: FocusRing = this.settingsRing): FocusItem {
     let index = 0;
     const highlight = (): void => {
       for (let i = 0; i < buttons.length; i++) buttons[i].classList.toggle('hud-focus', i === index);
@@ -1705,7 +1970,7 @@ export class Hud {
       },
       accept: () => buttons[index].click(),
     };
-    container.addEventListener('pointerdown', () => this.settingsRing.focusItem(item));
+    container.addEventListener('pointerdown', () => ring.focusItem(item));
     return item;
   }
 
