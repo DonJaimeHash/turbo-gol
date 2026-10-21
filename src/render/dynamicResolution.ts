@@ -18,12 +18,14 @@
  *             (or stop being late). If it reaches the minimum without that, the frames are not
  *             held back by the resolution (CPU-bound, a capped frame rate): the scale goes back
  *             to where the probe started and no probe runs for 30 s (doubling up to 4 min).
- *   up        3 s of windows with at most 5 % late frames: one step up (0.05). Between 5 % and a
- *             quarter nothing moves (hysteresis). A step up that turns late within 8 s is undone
- *             (0.05 down, no probe) and marks that scale as the ceiling: the next try at or above
- *             it waits twice as long (up to 48 s), and a try that holds for 8 s clears it. So a
- *             load just above a step costs one short stutter per try, and the tries back off
- *             instead of oscillating.
+ *   up        3 s of windows that are not late (under a quarter of late frames): one step up
+ *             (0.05). No stricter share holds the scale: late frames that a lower resolution does
+ *             not cause (CPU hitches, a 144-165 Hz display missing 10-20 % of its vsyncs) would
+ *             otherwise keep a scale lowered by a passing load for good. A step up that turns late
+ *             within 8 s is undone (0.05 down, no probe) and marks that scale as the ceiling: the
+ *             next try at or above it waits twice as long (up to 48 s), and a try that holds for
+ *             8 s clears it. So a load just above a step costs one short stutter per try, and the
+ *             tries back off instead of oscillating.
  *   GPU time  when known (`#stats` timestamps): no probe while the GPU used less than 60 % of the
  *             refresh (the CPU or a hitch, which a lower resolution won't fix), and a step up only
  *             if the GPU time scaled to the next step stays under 80 % of the refresh.
@@ -59,9 +61,8 @@ const WINDOW_S = 0.5;
 const SETTLE_S = 1;
 /** A frame is late at this many refresh intervals or more. */
 const LATE_FACTOR = 1.4;
-/** Late share of a window that steps down, and the share at or under which it counts as headroom. */
+/** Late share of a window that steps down; a window under it counts as headroom. */
 const DOWN_SHARE = 0.25;
-const UP_SHARE = 0.05;
 /** A probe succeeds once the mean interval falls to this share of the one before it. */
 const HELPED = 0.9;
 /** No probe for this long (s) after one failed; doubles up to BACKOFF_MAX_S. */
@@ -220,7 +221,7 @@ export class DynamicResolution {
     if (this.scale >= 1) return false;
     const next = Math.min(1, snap(this.scale + UP_STEP));
     const k = next / this.scale;
-    if (lateShare > UP_SHARE || (gpuMs >= 0 && gpuMs * k * k > refresh * GPU_HEADROOM)) {
+    if (gpuMs >= 0 && gpuMs * k * k > refresh * GPU_HEADROOM) {
       this.headroom = 0;
       return false;
     }

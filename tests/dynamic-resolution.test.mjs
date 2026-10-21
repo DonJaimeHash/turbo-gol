@@ -170,14 +170,43 @@ test('with GPU timing: no step up when the next step would not fit', () => {
   );
 });
 
-test('a late share between 5 % and a quarter moves nothing (hysteresis)', () => {
+test('late frames under a quarter that the resolution does not cause never hold the scale down', () => {
   const dr = new DynamicResolution(0.6);
   let t = warm(dr);
   t = run(dr, 4, HZ60, heavy, { t0: t }).t;
   assert.equal(dr.scale, 0.6);
-  // One frame in eight misses a vsync (12.5 %): not enough to step down, too many to step up.
+  // The load is gone but one frame in eight misses a vsync (12.5 %, the CPU): not enough to step
+  // down, and the scale climbs back 0.05 per 3 s.
   const { changes } = run(dr, 60, HZ60, () => 5, { t0: t, cpu: (i) => (i % 8 === 0 ? 20 : 0) });
-  assert.deepEqual(changes, []);
+  assert.equal(dr.scale, 1, JSON.stringify(changes));
+  for (let i = 0; i < changes.length; i++) assert.ok(changes[i][1] > (i > 0 ? changes[i - 1][1] : 0.6), `only steps up: ${JSON.stringify(changes)}`);
+  for (let i = 1; i < changes.length; i++) assert.ok(changes[i][0] - changes[i - 1][0] >= 2.9, 'one step per 3 s');
+});
+
+test('a passing overload on a 165 Hz display that misses 1 vsync in 6: back to full resolution', () => {
+  // Measured in the browser: after a real GPU overload the scale reached 0.6 and stayed there
+  // while 10-20 % of the frames missed a vsync with the GPU at 0.6 ms.
+  const HZ165 = 1000 / 165;
+  // The load depends on the time (run() has no clock for it), so this one is driven frame by frame.
+  for (const timing of [false, true]) {
+    const dr = new DynamicResolution(0.6);
+    let t = 0;
+    let i = 0;
+    let lowest = 1;
+    let fullAgainAt = -1;
+    while (t < 60) {
+      const g = (t > 5 && t < 12 ? 40 : 1.2) * dr.scale * dr.scale;
+      const busy = Math.max(g, i++ % 6 === 0 ? 8 : 4);
+      const interval = Math.max(1, Math.ceil(busy / HZ165 - 1e-9)) * HZ165;
+      t += interval / 1000;
+      dr.update(interval, timing ? g : Number.NaN);
+      lowest = Math.min(lowest, dr.scale);
+      if (t > 12 && dr.scale === 1 && fullAgainAt < 0) fullAgainAt = t;
+    }
+    assert.ok(lowest <= 0.7, `timing ${timing}: the overload stepped down (lowest ${lowest})`);
+    assert.equal(dr.scale, 1, `timing ${timing}: back to full resolution`);
+    assert.ok(fullAgainAt > 12 && fullAgainAt < 12 + 30, `timing ${timing}: full resolution again ${(fullAgainAt - 12).toFixed(1)} s after the load`);
+  }
 });
 
 test('minimum 1 never moves; reset goes back to full resolution', () => {
