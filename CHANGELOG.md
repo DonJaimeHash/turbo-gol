@@ -7,6 +7,9 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Community nodes are on: server, Competitive and lone-player matches in South America can be
+  hosted on the project's São Paulo node, `sao-paulo-1`, and fall back to the game's own servers
+  whenever it is full, away or unreachable.
 - Training records follow the account: a signed-in player's best run per pack is saved on the
   server and shows on every device; a guest's stay in the browser and move into the account at the
   first sign-in.

@@ -378,7 +378,7 @@ quedan en el log.
 | M12 | **Hecho (20/10/2026)**: `node.json` copiado a la carpeta privada de la PC del mantenedor, para pasarlo al gestor de contraseñas. Falta, si se quiere, una instantánea del VPS en el panel de Hostinger | — | — |
 | M13 | **Hecho (20/10/2026)**: el canal `#node-alerts` de Discord, solo del equipo (creado desde `private/discord`), y su webhook en el secreto `NODE_ALERT_WEBHOOK` | — | El canary |
 | M14 | **Hecho (20/10/2026)**: [7] y [8] desplegados con el flag apagado | — | El canary |
-| M15 | Canary: `npx wrangler kv key put nodes_on "<id1>,<id2>" --binding FLAGS --remote` con las dos cuentas de prueba, las pruebas de abajo, y después `nodes_on` en `1`. `vm_disabled` queda como interruptor | Después de M14, con P6 y [8] desplegados | La apertura |
+| M15 | **Hecho (21/10/2026)**: canary con la cuenta del proyecto (una casual contra bots) y con dos invitados (una casual contra bots y una 1v1 entre los dos), todas en `node:sao-paulo-1`, sin cortes ni strikes; a las 00:32 UTC, `nodes_on` en `1`. `vm_disabled` queda como interruptor. **Falta** una ranked de verdad en el nodo, con dos cuentas que no sean la del proyecto (ver abajo) | — | La apertura |
 
 ### Pruebas antes de abrir la beta
 
@@ -386,10 +386,14 @@ Con las dos cuentas de prueba en el canary, nunca con la del proyecto: si juega 
 scheduler no usa su nodo (`control-plane/scheduler.ts:57`) y la ranked cae en un `MatchDO` sin
 aviso.
 
-- [ ] Una casual y una ranked desde un navegador, en turbo-gol.com, viendo el resultado en la
-  pantalla de fin de partida. La casual, con la conexión en "Servidor". El panel de red dice
-  `host node:sao-paulo-1` (P28).
-- [ ] Una salida y un forfeit.
+- [x] **Una casual desde un navegador** (21/10/2026), con la conexión en "Servidor": contra bots
+  con la cuenta del proyecto y con un invitado, y una 1v1 entre dos invitados. El panel de red
+  dice `host node:sao-paulo-1`. Latencia desde Córdoba: 41 ms, jitter de 0,8 ms, ninguna
+  desincronización.
+- [ ] **Una ranked desde un navegador,** con dos cuentas que no sean la del proyecto, viendo el
+  resultado en la pantalla de fin de partida (la verificación la hace el mismo VPS).
+- [ ] Una salida y un forfeit. La salida de una casual ya se probó (21/10/2026): el nodo cierra la
+  partida y libera el lock, también si el jugador sale antes de conectarse.
 - [ ] Cerrar la pestaña en una ranked: cuenta como abandono, como en `MatchDO` (P7).
 - [ ] Un deploy del Worker en medio de una partida: no se anula, y se califica después de la
   gracia.
