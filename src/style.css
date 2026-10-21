@@ -1471,6 +1471,17 @@ body {
   color: var(--muted);
 }
 
+/* Settings > Experimental (src/render/experimentalPage.ts): the guest's line wraps on a phone; the
+   switch's "press again" stands out. */
+.hud-settings-device.hud-exp-locked {
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.hud-settings-hint.hud-exp-confirm {
+  color: var(--red-hi);
+}
+
 .hud-settings-foot {
   display: flex;
   flex-direction: column;

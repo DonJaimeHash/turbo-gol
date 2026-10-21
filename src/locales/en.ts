@@ -36,6 +36,11 @@ export default {
   'quality.fallback': 'Your device does not support {from}: using {to}',
   // Toast when an online match starts on Super low (it still connects)
   'quality.superlowOnline': 'Super low: online matches may not run smoothly on this device',
+  // Toast when the player's own Super low pick is no longer allowed (signed out, another account,
+  // experimental features off): the game keeps running, the next start uses Performance
+  'quality.superlowLocked': 'Super low is for signed-in players with experimental features on: Performance from the next start',
+  // Toast after a start that found a saved Super low pick this player may not make: the game runs on Performance
+  'quality.superlowLockedBoot': 'Super low is for signed-in players with experimental features on: using Performance',
   // The graphics device was lost (src/render/tierGuard.ts lossStep): the loading line before the
   // page reloads, the second time it reloads on Super low, the third time it stops
   'gpu.lostReload': 'The graphics device stopped: restarting…',
@@ -461,6 +466,9 @@ export default {
   'error.account.throttled': 'Too many attempts, wait a moment',
   'error.account.bad_recovery': 'Wrong username or recovery code',
   'error.account.rename_too_soon': 'You can change your name once every 30 days',
+  // Physics presets (Settings > Experimental): the account already holds 10
+  'error.account.too_many': '10 presets at most: delete one first',
+  'error.account.bad_preset': 'Invalid preset',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
@@ -675,6 +683,8 @@ export default {
   'settings.tabAudio': 'Audio',
   // Tab: graphics quality
   'settings.tabGraphics': 'Graphics',
+  // Tab: features being tested, for signed-in players (a guest's tab gets a lock after it)
+  'settings.tabExperimental': 'Experimental',
   // Group titles of the binding lists (shown uppercase by the style)
   'settings.groupDriving': 'Driving',
   // Car controls while flying
@@ -757,6 +767,26 @@ export default {
   // In place of the hint when the picked tier needs a restart (into or out of Super low) during an
   // online match: it waits until the player leaves the match
   'settings.qualityAfterOnline': 'Applies when you leave the online match (the game restarts)',
+  // In place of the hint when the device runs Super low by itself (a weak TV, the safety net) and
+  // the player cannot pick it: no tier is lit
+  'settings.qualityAuto': 'This device runs Super low on its own',
+  // Experimental tab (src/render/experimentalPage.ts). A guest sees only this line
+  'settings.experimentalLocked': 'Sign in to try experimental features: Super low graphics and custom physics in free play and P2P lobbies',
+  // Line over the switch
+  'settings.experimentalNote': 'Features being tested: they may change or go away',
+  // The switch's label (settings.on / settings.off)
+  'settings.experimentalSwitch': 'Experimental features',
+  // Under the switch while it is on
+  'settings.experimentalUnlocks': 'Unlocks Super low graphics, Experimental free play and lobby rules',
+  // After the first press to turn the switch off while the player's graphics are Super low
+  'settings.experimentalOffRestart': 'Press again: Performance graphics, restarts',
+  // Super low's line while the switch is on: the player picked it / it is listed now
+  // (or settings.qualityAuto when the device runs it on its own)
+  'settings.experimentalSuperlowChosen': 'Super low is your graphics quality',
+  'settings.experimentalSuperlowListed': 'Super low is now listed in Graphics',
+  // The player's own presets (the built-in ones are not counted); {names} is a comma-separated list
+  'settings.experimentalPresets': 'Your presets ({count}/{max}): {names}',
+  'settings.experimentalNoPresets': 'No presets of your own yet ({max} at most)',
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',
@@ -803,6 +833,64 @@ export default {
   'action.trainingResetCar': 'Practice: reset car',
   // Free play only: turns unlimited boost on and off
   'action.trainingBoost': 'Practice: unlimited boost',
+
+  // Experimental physics presets (src/game/physicsRules.ts, Settings > Experimental). Preset names
+  // follow the lobby name rules (letters, digits, spaces and _ . - ! ? #, 3 to 24 characters):
+  // rules.builtin.*, rules.defaultName and rules.copyName must keep to them (tests/i18n-lobby-name.test.mjs)
+  'rules.preset': 'Rules',
+  // Under a built-in preset in the picker
+  'rules.builtIn': 'Built-in: duplicate it to edit',
+  // Preset buttons
+  'rules.new': 'New',
+  'rules.duplicate': 'Duplicate',
+  'rules.rename': 'Rename',
+  'rules.delete': 'Delete',
+  'rules.deleteConfirm': 'Delete? Press again',
+  'rules.name': 'Name',
+  // Automatic name of a new preset; {n} counts from 1
+  'rules.defaultName': 'My rules {n}',
+  // Name of a copy; {name} is the original's, {n} counts from 2
+  'rules.copyName': '{name} #{n}',
+  // Toasts
+  'rules.full': '{max} presets at most: delete one first',
+  'rules.offline': 'Saved on this device; it goes to your account when you are back online',
+  'rules.deleteOffline': 'Deleting a preset needs a connection',
+  'rules.reset': 'Reset to standard',
+  // A row that only exists in free play (game speed)
+  'rules.trainingOnly': 'Free play only',
+  // Row groups
+  'rules.groupWorld': 'World',
+  'rules.groupBall': 'Ball',
+  'rules.groupCar': 'Car',
+  'rules.groupContact': 'Contact',
+  // One row per value
+  'rules.gravity': 'Gravity',
+  'rules.gameSpeed': 'Game speed',
+  'rules.ballMaxSpeed': 'Ball top speed',
+  'rules.ballHit': 'Hit strength',
+  'rules.ballWeight': 'Ball weight',
+  'rules.ballBounce': 'Ball bounce',
+  'rules.ballDrag': 'Air drag (ball)',
+  'rules.carMaxSpeed': 'Car top speed',
+  'rules.boostPower': 'Boost power',
+  'rules.boostUse': 'Boost use',
+  'rules.spawnBoost': 'Boost at kickoff',
+  'rules.jumpPower': 'Jump power',
+  'rules.unlimitedFlips': 'Unlimited flips',
+  'rules.unlimitedDoubleJumps': 'Unlimited double jumps',
+  'rules.bumpForce': 'Bump strength',
+  'rules.demoMode': 'Demolitions',
+  // The demolitions row's options
+  'rules.demoNormal': 'Normal',
+  'rules.demoContact': 'On contact',
+  'rules.demoOff': 'Off',
+  'rules.respawnDelay': 'Respawn time',
+  // Names of the built-in presets
+  'rules.builtin.standard': 'Standard',
+  'rules.builtin.lowGravity': 'Low gravity',
+  'rules.builtin.fastBall': 'Fast ball',
+  'rules.builtin.bouncy': 'Bouncy',
+  'rules.builtin.arcade': 'Arcade',
 
   // Training screen and packs (src/ui/screens/training.ts, src/game/trainingPacks.ts)
   // Screen title (top bar / history)

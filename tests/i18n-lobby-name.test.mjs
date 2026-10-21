@@ -47,6 +47,26 @@ test('the default lobby name survives the server sanitizer in every locale', () 
   }
 });
 
+test('preset names keep to the same rules in every locale: built-ins, "My rules N" and "{name} #N" copies', async () => {
+  const R = await import('../src/game/physicsRules.ts');
+  const ACC = await import('../src/net/account.ts');
+  assert.equal(ACC.sanitizeLobbyName, sanitizeLobbyName, 'LobbyDO re-exports the shared sanitizer');
+  for (const [code, { messages }] of Object.entries(I.LOCALES)) {
+    const say = (key, params) => I.textIn(messages, code, key, params);
+    const keep = (text, what) => assert.equal(sanitizeLobbyName(text), text, `${code} ${what}: the sanitizer would change ${JSON.stringify(text)}`);
+    for (const p of R.BUILT_IN_PRESETS) keep(say(`rules.builtin.${p.id}`), p.id);
+    for (const n of [1, 9, 10, 99]) keep(say('rules.defaultName', { n }), 'rules.defaultName');
+    assert.equal(R.defaultPresetName([], (n) => say('rules.defaultName', { n })), say('rules.defaultName', { n: 1 }));
+    const copyOf = (name, n) => say('rules.copyName', { name, n });
+    for (const base of [say('rules.builtin.lowGravity'), say('rules.defaultName', { n: 10 }), 'A'.repeat(24)]) {
+      const copy = R.copyPresetName(base, [], copyOf);
+      keep(copy, 'rules.copyName');
+      assert.ok(copy.length <= 24);
+      keep(R.copyPresetName(copy, [copy], copyOf), 'a copy of a copy');
+    }
+  }
+});
+
 test('the sanitizer still drops what the templates must avoid', () => {
   assert.equal(sanitizeLobbyName("Guest123's lobby"), 'Guest123s lobby');
   assert.equal(sanitizeLobbyName('Sala de Tomi'), 'Sala de Tomi');

@@ -15,6 +15,8 @@
  * cost nothing measurable.
  */
 import { Game, addRoster, loadPrefs } from './game/Game';
+import { ExperimentalStore } from './game/experimentalStore';
+import { gateTierPrefs } from './render/bootTier';
 import { t } from './i18n';
 import { LoadingOverlay, afterPaint, paintedFrames } from './ui/LoadingOverlay';
 import type { GameMode } from './sim/constants';
@@ -62,7 +64,13 @@ function showError(title: string, hint: string, err: unknown): void {
 async function boot(): Promise<void> {
   const canvas = byId<HTMLCanvasElement>('game-canvas');
   const hudContainer = byId<HTMLDivElement>('hud');
-  const prefs = loadPrefs();
+  // Super low is a pick for signed-in players with experimental features on (Settings >
+  // Experimental): the account is not restored yet, so the hint's id and that account's local copy
+  // decide (experimentalStore.ts). Anyone else's saved pick of it starts as Performance, not chosen
+  // (bootTier.ts gateTierPrefs: a weak TV still gets super low by itself); the Game saves that and
+  // says so once the menus are up (Game.bootDone).
+  const saved = loadPrefs();
+  const prefs = gateTierPrefs(saved, ExperimentalStore.unlockedAtBoot());
   // Controls / camera / bindings (Settings > Controls & Camera), persisted by the Game on change.
   const settings = loadSettings();
 
@@ -136,6 +144,7 @@ async function boot(): Promise<void> {
     difficulty: prefs.difficulty,
     qualitySet: prefs.qualitySet,
     savedQuality: prefs.quality,
+    superlowLocked: prefs !== saved,
     info: `${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · RocketSim ${sim.version} · 120 Hz`,
     loading,
   });

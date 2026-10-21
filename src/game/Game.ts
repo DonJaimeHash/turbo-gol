@@ -51,6 +51,14 @@
  * instead of 4 (BALL_PRED_EVERY_LITE: the bots read the prediction by age; the 720-tick horizon is
  * the wasm's) and going online shows a one-line notice. Physics stays at 120 Hz.
  *
+ * Experimental features (Settings > Experimental, `experimental`: src/game/experimentalStore.ts):
+ * a signed-in player's switch and physics presets. Super low is a pick only for an unlocked player
+ * (`experimentalUnlocked`: signed in, switch on): the Graphics tab lists it for them alone
+ * (quality.ts menuQualities), main.ts gates a saved pick at boot (bootTier.ts gateTierPrefs), and
+ * every account or switch change re-checks it (`checkTierLock`: a locked player's saved super low
+ * becomes Performance from the next start, said in a toast, nothing reloads). Devices that run
+ * super low on their own keep it.
+ *
  * `#diag` (src/render/frameStats.ts): the loop feeds the frame times and the CPU of the ball
  * prediction, the bots, the physics step and the render call; nothing is measured without it.
  *
@@ -108,6 +116,9 @@ import { t } from '../i18n';
 import type { ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
 import { TrainingStore } from './trainingStore';
+import { ExperimentalStore, type ExperimentalProblem } from './experimentalStore';
+import { MAX_PRESETS } from './physicsRules';
+import type { ExperimentalOptions, SuperlowStatus } from '../render/experimentalPage';
 import { LobbyClient } from '../net/LobbyClient';
 import { REGIONS, isPlaylist } from '../net/account';
 import type { RegionId } from '../net/account';
@@ -125,13 +136,13 @@ import { BallView } from '../render/Ball';
 import { ChaseCamera, SWIVEL_PITCH_MOUSE_DEG, SWIVEL_PITCH_STICK_DEG, type CameraCarState } from '../render/Camera';
 import { CarView } from '../render/Car';
 import { Effects } from '../render/Effects';
-import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow } from '../render/Hud';
+import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow, type SettingsTab } from '../render/Hud';
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
 import { Renderer, type GpuFailure } from '../render/Renderer';
 import { tierPrefsAfter } from '../render/bootTier';
 import { diagSources, diagStats, enableDiagStats } from '../render/frameStats';
 import { emulatedDevice, pageFlags, withoutTierFlags } from '../render/hashFlags';
-import { drawsFrame, needsReload, parseQuality, type Quality } from '../render/quality';
+import { drawsFrame, menuQualities, needsReload, parseQuality, type Quality } from '../render/quality';
 import {
   BACKGROUND_LOSS_MS,
   FALLBACK_WINDOW_MS,
@@ -229,6 +240,11 @@ export interface GameOptions {
    * the player picks a tier in the menu.
    */
   savedQuality?: Quality;
+  /**
+   * The saved pick was super low and this player may not pick it (bootTier.ts gateTierPrefs in
+   * main.ts): the prefs above already read Performance; the menus say why once they are up.
+   */
+  superlowLocked?: boolean;
   /** Regulation length in seconds (0 = unlimited). */
   matchLengthSeconds?: number;
   /** Text shown in the menu footer (backend, version...). */
@@ -267,6 +283,22 @@ const LOSS_RELOAD_DELAY_MS = 900;
 function fallbackText(fb: Fallback): string {
   return t('quality.fallback', { from: t(`quality.${fb.from}`), to: t(`quality.${fb.to}`) });
 }
+
+/** The toast of an experimental store problem (experimentalStore.ts). */
+function experimentalProblemText(p: ExperimentalProblem): string {
+  switch (p) {
+    case 'offline':
+      return t('rules.offline');
+    case 'too_many':
+    case 'full':
+      return t('rules.full', { max: MAX_PRESETS });
+    case 'delete_offline':
+      return t('rules.deleteOffline');
+    default:
+      return t('error.unexpected');
+  }
+}
+
 /**
  * How long the bar takes to creep from one step's mark toward the next (ms): it eases most of the
  * way there and waits (LOADING_CREEP), so a long step never looks frozen and a short one jumps on.
@@ -623,6 +655,14 @@ export class Game implements P2PGameHooks {
   readonly accounts: AccountClient;
   /** Training records: this browser for a guest, the account (server + local copy) when signed in. */
   readonly trainingStore: TrainingStore;
+  /** Settings > Experimental: the account's switch and physics presets (server + local copy); nothing for a guest. */
+  readonly experimental: ExperimentalStore;
+  /** The account whose experimental state was pulled this page (one sync per sign-in), null = none yet. */
+  private experimentalSyncedFor: string | null = null;
+  /** The boot gated a saved super low pick (GameOptions.superlowLocked): told once the menus are up. */
+  private readonly superlowLockedAtBoot: boolean;
+  /** Lines for the menus' next toast while a screen covers them (the settings screen, a match). */
+  private readonly pendingNotices: string[] = [];
   /** Custom lobbies (the lobby socket lives across the lobby's matches). */
   readonly lobby: LobbyClient;
   /** The rating change of each finished ranked match, held while the menus are away (showMenu). */
@@ -751,6 +791,7 @@ export class Game implements P2PGameHooks {
     this.difficulty = opts.difficulty ?? 'medium';
     this.qualitySet = opts.qualitySet ?? false;
     this.savedQuality = opts.savedQuality ?? this.quality;
+    this.superlowLockedAtBoot = opts.superlowLocked === true;
     this.cpuLite = opts.renderer.spec.cpuLite;
     this.predEvery = this.cpuLite ? BALL_PRED_EVERY_LITE : BALL_PRED_EVERY;
     // Super low: the stylesheet's light HUD (no blur, shadows or decorative animation).
@@ -821,9 +862,19 @@ export class Game implements P2PGameHooks {
     online.client.sessionProvider = (minValidMs) => accounts.sessionForQueue(minValidMs);
     online.client.onSessionRejected = () => accounts.sessionRejected();
     this.trainingStore = new TrainingStore({ accountId: () => accounts.account?.playerId ?? null, push: (r) => accounts.pushTraining(r) });
+    this.experimental = new ExperimentalStore({
+      accountId: () => accounts.account?.playerId ?? null,
+      fetch: () => accounts.fetchExperimental(),
+      setEnabled: (on) => accounts.setExperimental(on),
+      upsert: (p) => accounts.upsertPreset(p),
+      remove: (id) => accounts.deletePreset(id),
+    });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.hud.menuVisible && !this.onlineActive });
+    accounts.subscribe(() => this.onAccountChange());
+    this.experimental.subscribe(() => this.onExperimentalChange());
+    this.experimental.onProblem = (p) => this.notify(experimentalProblemText(p));
     this.restoreAccount();
 
     (window as unknown as { __game: Game }).__game = this;
@@ -847,6 +898,117 @@ export class Game implements P2PGameHooks {
       }
       void this.accounts.fetchMe().catch(() => undefined);
     });
+  }
+
+  // ---- experimental features (Settings > Experimental) -----------------------------------------
+
+  /**
+   * A signed-in player with Settings > Experimental's switch on: Super low is listed in Graphics
+   * (and, later, experimental free play and lobby rules). Guests are never unlocked.
+   */
+  get experimentalUnlocked(): boolean {
+    return this.accounts.signedIn && this.experimental.enabled();
+  }
+
+  /**
+   * An account change (sign-in / out, a refresh, a profile answer): MeInfo's switch, one pull of
+   * the account's experimental state per sign-in, then the same checks as a switch change.
+   */
+  private onAccountChange(): void {
+    const id = this.accounts.account?.playerId ?? null;
+    const me = this.accounts.me;
+    if (id !== null && me !== null && me.playerId === id && typeof me.experimental === 'boolean') this.experimental.noteServerEnabled(me.experimental);
+    if (id !== this.experimentalSyncedFor) {
+      this.experimentalSyncedFor = id;
+      if (id !== null) void this.experimental.sync();
+    }
+    this.onExperimentalChange();
+  }
+
+  /** The experimental state changed: the Super low lock, and the settings screen when it is open. */
+  private onExperimentalChange(): void {
+    this.checkTierLock();
+    this.hud.refreshSettings(this.settingsOptions());
+  }
+
+  /**
+   * Super low is a pick for unlocked players only. When this player can no longer pick it (signed
+   * out, a failed refresh, another account, the switch off here or on another device) a saved
+   * super low pick turns into Performance, not chosen (bootTier.ts tierPrefsAfter 'lock'), saved
+   * now and used from the next start; nothing reloads, and a pick into super low waiting for the
+   * online match to end is dropped. A device that runs super low on its own keeps it.
+   */
+  private checkTierLock(): void {
+    if (this.experimentalUnlocked) return;
+    if (this.pendingRestart === 'superlow') {
+      this.pendingRestart = null;
+      this.hud.setQualityPending(null);
+    }
+    if (!this.qualitySet || this.savedQuality !== 'superlow') return;
+    const prefs = tierPrefsAfter({ quality: this.savedQuality, qualitySet: this.qualitySet }, { kind: 'lock' });
+    this.qualitySet = prefs.qualitySet;
+    this.savedQuality = prefs.quality;
+    this.persistPrefs();
+    this.notify(t('quality.superlowLocked'));
+  }
+
+  /**
+   * The switch from Settings > Experimental (the page asked twice when this restarts). Off while
+   * the player's own pick is super low: Performance first (a reload, quality.ts needsReload, or a
+   * wait for the end of an online match), so the lock has nothing left to say; a pick into super
+   * low still waiting for the online match is simply dropped.
+   */
+  private setExperimentalEnabled(on: boolean): void {
+    if (!this.accounts.signedIn) return;
+    if (!on) {
+      if (this.pendingRestart === 'superlow') void this.switchQuality(this.quality);
+      else if (this.qualitySet && this.savedQuality === 'superlow') void this.switchQuality('low');
+    }
+    this.experimental.setEnabled(on);
+  }
+
+  /** Turning the switch off restarts the game: the player's own pick is super low (not one waiting for an online match). */
+  private experimentalOffRestarts(): boolean {
+    return this.qualitySet && this.savedQuality === 'superlow' && this.pendingRestart === null;
+  }
+
+  private superlowStatus(): SuperlowStatus {
+    if ((this.qualitySet && this.savedQuality === 'superlow') || this.pendingRestart === 'superlow') return 'chosen';
+    return this.quality === 'superlow' ? 'auto' : 'listed';
+  }
+
+  private experimentalOptions(): ExperimentalOptions {
+    return {
+      state: () => ({
+        available: this.accounts.signedIn,
+        enabled: this.experimental.enabled(),
+        offRestarts: this.experimentalOffRestarts(),
+        superlow: this.superlowStatus(),
+        presetNames: this.experimental.presets().map((p) => p.name),
+        maxPresets: MAX_PRESETS,
+      }),
+      setEnabled: (on) => this.setExperimentalEnabled(on),
+      onOpen: () => {
+        if (this.accounts.signedIn) void this.experimental.sync();
+      },
+    };
+  }
+
+  /** A line for the player: a menu toast now, or once the screen covering the menus is gone (flushNotices). */
+  private notify(text: string): void {
+    if (this.menu.visible && !this.hud.menuVisible) this.menu.toast(text, 'info');
+    else if (!this.pendingNotices.includes(text)) this.pendingNotices.push(text);
+  }
+
+  private flushNotices(): void {
+    if (!this.menu.visible || this.hud.menuVisible) return;
+    for (const text of this.pendingNotices.splice(0)) this.menu.toast(text, 'info');
+  }
+
+  /** The settings screen was left (its BACK): pending preset edits go up, held lines show. */
+  private settingsClosed(): void {
+    void this.experimental.flush();
+    this.flushNotices();
   }
 
   // ---- menus (src/ui) --------------------------------------------------------------------
@@ -923,7 +1085,7 @@ export class Game implements P2PGameHooks {
       },
       searchView: () => game.menuSearchView(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
-      openSettings: (onClose) => game.openSettingsScreen(onClose),
+      openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
       get info() {
         return game.info;
       },
@@ -996,9 +1158,16 @@ export class Game implements P2PGameHooks {
     online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl });
   }
 
-  /** The Hud's settings screen over the menus; `onClose` when it is left. */
-  private openSettingsScreen(onClose: () => void): void {
-    this.hud.openSettingsScreen(this.settingsOptions(), onClose);
+  /** The Hud's settings screen over the menus (on `tab` when given); `onClose` when it is left. */
+  private openSettingsScreen(onClose: () => void, tab?: SettingsTab): void {
+    this.hud.openSettingsScreen(
+      this.settingsOptions(),
+      () => {
+        this.settingsClosed();
+        onClose();
+      },
+      tab,
+    );
   }
 
   /** What the settings screen works on, from the menus and from the pause menu alike. */
@@ -1007,6 +1176,11 @@ export class Game implements P2PGameHooks {
       difficulty: this.difficulty,
       // A pick that waits for the online match to end shows as the selected tier (with its line).
       quality: this.pendingRestart ?? this.quality,
+      // Super low is listed for unlocked players only; a device running it on its own (or a pick
+      // made before the lock) lights no chip and gets its line.
+      qualities: menuQualities(this.experimentalUnlocked),
+      qualityNote: this.renderer.tierReason === 'chosen' ? t('quality.superlowLocked') : t('settings.qualityAuto'),
+      experimental: this.experimentalOptions(),
       mode: this.mode,
       onPlay: () => undefined,
       settings: this.settings,
@@ -1100,6 +1274,7 @@ export class Game implements P2PGameHooks {
     this.hud.setPauseCovered(true);
     this.hud.openSettingsScreen(this.settingsOptions(), () => {
       this.pauseSettingsOpen = false;
+      void this.experimental.flush();
       // Esc is the pause binding too: its tap (still pending in Input) must not reach the next tick.
       this.input.latchEdges();
       this.hud.setPauseHint(this.pauseHint()); // the pause binding may have been changed there
@@ -1305,6 +1480,13 @@ export class Game implements P2PGameHooks {
       /* storage unavailable */
     }
     if (notice !== null) this.showTierNotice(notice);
+    // The boot read a saved super low pick this player may not make (main.ts gateTierPrefs): the
+    // prefs keep Performance from now on, and the player is told, unless the device runs super low
+    // by itself anyway (then nothing changed on screen).
+    if (this.superlowLockedAtBoot) {
+      this.persistPrefs();
+      if (this.quality !== 'superlow') this.notify(t('quality.superlowLockedBoot'));
+    }
   }
 
   /**
@@ -2960,6 +3142,7 @@ export class Game implements P2PGameHooks {
     this.menuNotice = undefined;
     this.hud.hideMenu();
     this.menu.show();
+    this.flushNotices();
     // What an earlier ranked match's wait got while the menus were away comes first. Then, when a
     // ranked match just ended, its rating change once AccountsDO has it (on a community node only
     // after the replay check: a longer wait, announced once).
