@@ -187,6 +187,11 @@ test('physics profile: the stock profile is the default arithmetic; a preset pro
   const b = new Bot({ team: Team.Blue, physics: fast });
   assert.equal(b.physics, fast);
   assert.equal(new Bot({ team: Team.Blue }).physics, m.STOCK_BOT_PHYSICS);
+  // The aerial planner's jump-hold velocities follow the hold acceleration: exactly 1x for stock.
+  assert.equal(new Bot({ team: Team.Blue })['holdScale'], 1);
+  assert.equal(new Bot({ team: Team.Blue, physics: { ...m.STOCK_BOT_PHYSICS } })['holdScale'], 1);
+  const springy = { ...m.STOCK_BOT_PHYSICS, jumpHoldAccel: m.JUMP_HOLD_ACCEL * 1.5 };
+  assert.ok(Math.abs(new Bot({ team: Team.Blue, physics: springy })['holdScale'] - 1.5) < 1e-12);
   setCar(state, 0, { team: Team.Blue, x: 0, y: 0 });
   setCar(state, 1, { team: Team.Red, x: 0, y: 4000, yaw: -Math.PI / 2 });
   const c = emptyControls();

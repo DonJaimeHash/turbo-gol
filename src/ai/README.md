@@ -428,7 +428,9 @@ The numbers above that an experimental physics preset can change (gravity, first
 hold acceleration, the double-jump impulse, boost acceleration on the ground / in the air, boost
 use per second, the top speed) are read from a `BotPhysics` profile instead of module constants:
 the reach model (`firstReachable`, `groundAccel`, `straightDistance`), the aerial planner (gravity
-term, jump velocities, the boost-needed sum) and the team score (`ballDist / maxBoostSpeed`). Every
+term, jump velocities, the boost-needed sum; the jump-hold velocities `aerialJumpHoldVel*` of TUNING
+scale with `jumpHoldAccel / JUMP_HOLD_ACCEL`, exactly 1 for stock) and the team score
+(`ballDist / maxBoostSpeed`). Every
 `Bot` and `BotTeam` takes `physics` in its options and keeps it for its life. The default is
 `STOCK_BOT_PHYSICS`, the old constants themselves, so stock bots compute bit-identical numbers (the
 golden trace, `tests/stock-trace.test.mjs`, replays a 2-minute 3v3 hash for hash). A preset's

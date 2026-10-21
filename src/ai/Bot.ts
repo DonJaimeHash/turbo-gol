@@ -773,6 +773,11 @@ export class Bot {
   private readonly gravHalf: number;
   /** Velocity a double-jump take-off adds: first jump + double jump. */
   private readonly doubleJumpVel: number;
+  /**
+   * The profile's first-jump hold acceleration over the stock one: the jump-hold velocities of
+   * TUNING (aerialJumpHoldVel*, measured with stock physics) scale with it. Exactly 1 for stock.
+   */
+  private readonly holdScale: number;
 
   constructor(opts: BotOptions) {
     this.team = opts.team;
@@ -784,6 +789,8 @@ export class Bot {
     this.gravHalf = 0.5 * this.phys.gravity;
     // Stock: JUMP_IMPULSE + JUMP_IMPULSE, exactly the former 2 * JUMP_IMPULSE (x + x == 2x in IEEE).
     this.doubleJumpVel = this.phys.jumpImpulse + this.phys.doubleJumpImpulse;
+    // Stock: x / x == 1 and v * 1 == v in IEEE, so the stock hold velocities are unchanged.
+    this.holdScale = this.phys.jumpHoldAccel / STOCK_BOT_PHYSICS.jumpHoldAccel;
   }
 
   /** The physics profile this bot plans with. */
@@ -2130,7 +2137,7 @@ export class Bot {
       if (pz < TUNING.aerialMinBallZ || pz > p.aerialMaxZ) continue;
       const t = (i + 1) * TICK_DT;
       const dbl = p.aerialDoubleJump && pz > TUNING.aerialDoubleZ && t > 0.4;
-      const jv = dbl ? this.doubleJumpVel + TUNING.aerialJumpHoldVelDouble : this.phys.jumpImpulse + TUNING.aerialJumpHoldVel;
+      const jv = dbl ? this.doubleJumpVel + TUNING.aerialJumpHoldVelDouble * this.holdScale : this.phys.jumpImpulse + TUNING.aerialJumpHoldVel * this.holdScale;
       this.aerialPushDir(pred[o], pred[o + 1], pz, defensive);
       const sd = this.shotDir;
       const tx = pred[o] - sd[0] * off;
@@ -2178,7 +2185,7 @@ export class Bot {
     // required constant acceleration to reach that point: delta = p - x - v t - ½ g t². Until the
     // jumps have happened, count the velocity they are about to add (as findAerial did).
     let jv = 0;
-    if (this.onGround) jv = this.aerialDouble ? this.doubleJumpVel + TUNING.aerialJumpHoldVelDouble : this.phys.jumpImpulse + TUNING.aerialJumpHoldVel;
+    if (this.onGround) jv = this.aerialDouble ? this.doubleJumpVel + TUNING.aerialJumpHoldVelDouble * this.holdScale : this.phys.jumpImpulse + TUNING.aerialJumpHoldVel * this.holdScale;
     else if (this.aerialDouble && !this.hasDoubleJumped) jv = this.phys.doubleJumpImpulse;
     const d = this.delta;
     d[0] = this.pred[0] - sd[0] * off - this.carPos[0] - (this.carVel[0] + this.carUp[0] * jv) * tRem;
