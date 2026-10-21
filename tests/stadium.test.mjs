@@ -174,6 +174,29 @@ test('the LED board band stays low', () => {
   assert.ok(t.ledIntensity > 0.2 && t.ledIntensity <= 0.5, 'dim boards (ledIntensity ~0.4)');
 });
 
+test('the panels tile the outline and the big boards sit in the middle of the side walls', () => {
+  assert.ok(Math.abs(L.PANEL_COUNT * L.PANEL_LEN - L.OUTLINE_LENGTH) < 1e-6, 'whole panels round the outline');
+  assert.ok(L.CARD_ASPECT > 4.9 && L.CARD_ASPECT < 5.3, `card aspect ${L.CARD_ASPECT}`);
+  assert.equal(L.PANEL_COUNT % 2, 0);
+  assert.ok(Number.isInteger(L.BIG_FIRST) && L.BIG_FIRST >= 0 && L.BIG_FIRST + L.BIG_PANELS <= L.PANEL_COUNT / 2);
+  // Panel k is centred at k * PANEL_LEN; the big board's middle is each side wall's middle.
+  const mid = (L.BIG_FIRST + (L.BIG_PANELS - 1) / 2) * L.PANEL_LEN;
+  for (const [x, s] of [[-L.FIELD.halfX, mid], [L.FIELD.halfX, mid + L.OUTLINE_LENGTH / 2]]) {
+    assert.ok(Math.abs(L.outlineDistance(x, 0) - s) < 1, `side wall x ${x}: middle at ${L.outlineDistance(x, 0).toFixed(1)}, board at ${s.toFixed(1)}`);
+    assert.equal(L.panelAt(s), L.panelAt(L.outlineDistance(x, 0)));
+  }
+  // ~31 m wide, all of it on the straight side wall (the corners start at |z| = cz).
+  assert.ok(L.BIG_PANELS === 3 && (L.BIG_PANELS * L.PANEL_LEN) / 2 < L.FIELD.cz - 500);
+  for (let k = 0; k < L.PANEL_COUNT; k++) assert.equal(L.panelAt((k + 0.25) * L.PANEL_LEN), k);
+  assert.equal(L.panelAt(L.OUTLINE_LENGTH - 1), 0, 'the outline wraps to panel 0');
+});
+
+test('the boards change every 30 s; the big board half a period after the others', async () => {
+  const B = await import('../src/render/stadium/boards.ts');
+  assert.equal(B.CARD_SECONDS, 30);
+  assert.equal(B.BIG_SECONDS, 30);
+});
+
 test('profile distance: height on the wall, arc length on the ramp and the ceiling arc', () => {
   const top = L.FIELD.wallTop;
   assert.equal(L.profileDistance(1000, 0), 1000);
@@ -401,16 +424,16 @@ test('the crowd: crowdDensity sets people per quad, the same crowd on every tier
 const { THEME_IDS } = await import('../src/render/theme.ts');
 const { CONTENT, GENERIC, INLAND, THEME_PLACE, themeContent } = await import('../src/render/stadium/content.ts');
 const { EMBLEMS } = await import('../src/render/stadium/emblems.ts');
-const { BOARD_CARDS, drawBoards } = await import('../src/render/stadium/textures.ts');
+const { BOARD_CARDS, BOARD_COLS, BOARD_ROWS, BIG_CELL0, boardAtlasSize, drawBoards } = await import('../src/render/stadium/textures.ts');
 const textures = await import('../src/render/stadium/textures.ts');
 
 /** The harbour's own names: on the harbour's boards, never on another place's. */
-const HARBOUR_NAMES = ['PUERTO SUR', 'LIGA PORTUARIA', 'MARELUX', 'FARO ALTO', 'ESTIBA', 'BOYA AZUL', 'NUDO SIETE', 'CORALINA', 'ONDAMAR', 'GRÚA NORTE', 'SALINA', 'TIMONEL', 'VELA ROJA', 'PIXELMAR', 'MUELLE 9', 'AEROFARO'];
+const HARBOUR_NAMES = ['PLEAMAR', 'ROMPEOLAS', 'PUERTO SUR', 'LIGA PORTUARIA', 'MARELUX', 'FARO ALTO', 'ESTIBA', 'BOYA AZUL', 'NUDO SIETE', 'CORALINA', 'ONDAMAR', 'GRÚA NORTE', 'SALINA', 'TIMONEL', 'VELA ROJA', 'PIXELMAR', 'MUELLE 9', 'AEROFARO'];
 /** The harbour's emblems (the anchor, the lighthouse, the sea's waves). */
 const HARBOUR_EMBLEMS = ['anchor', 'lighthouse', 'wave'];
 const HEX = /^#[0-9a-f]{6}$/i;
-/** Every text a set prints: card names and taglines. */
-const textsOf = (set) => set.cards.flatMap((c) => [c.name, c.tag]);
+/** Every text a set prints: card names and taglines, the big board's two sponsors. */
+const textsOf = (set) => [...set.cards, set.main, set.secondary].flatMap((c) => [c.name, c.tag]);
 
 test('every theme has a full board set; the two harbour themes share one; no banners are left', () => {
   for (const id of THEME_IDS) {
@@ -418,7 +441,10 @@ test('every theme has a full board set; the two harbour themes share one; no ban
     assert.ok(set, id);
     assert.equal(set.cards.length, BOARD_CARDS, `${id} cards`);
     assert.equal(set.banners, undefined, `${id}: no banner designs`);
-    for (const c of set.cards) {
+    // the big board's main and secondary sponsors: their own names, not among the cards
+    assert.ok(set.main && set.secondary && set.main.name !== set.secondary.name, `${id}: two big sponsors`);
+    for (const c of [set.main, set.secondary]) assert.ok(!set.cards.some((k) => k.name === c.name) && !GENERIC.includes(c.name), `${id}: ${c.name} is not a card`);
+    for (const c of [...set.cards, set.main, set.secondary]) {
       assert.ok(c.name.length > 0 && c.tag.length > 0, `${id}: empty card text`);
       assert.ok(c.logo in EMBLEMS, `${id} ${c.name}: emblem ${c.logo}`);
       for (const col of [...c.bg, c.fg, c.ac]) assert.match(col, HEX, `${id} ${c.name}`);
@@ -442,7 +468,7 @@ test('the harbour names and emblems appear only on the harbour; a place keeps it
       assert.ok(!HARBOUR_NAMES.some((n) => t.includes(n)), `${place}: '${t}' is the harbour's`);
       assert.doesNotMatch(t, /PUERTO|PORTUARI|FARO|MUELLE|BARCO|NAVAL|CORAL|MAR|MAR/, `${place}: '${t}' names the harbour or the sea`);
     }
-    for (const e of set.cards.map((c) => c.logo)) {
+    for (const e of [...set.cards, set.main, set.secondary].map((c) => c.logo)) {
       assert.ok(!HARBOUR_EMBLEMS.includes(e), `${place}: the harbour's ${e} emblem`);
     }
   }
@@ -456,7 +482,7 @@ test('the harbour names and emblems appear only on the harbour; a place keeps it
     assert.deepEqual(slotsOf(set, GENERIC), slotsOf(CONTENT.harbour, GENERIC), `${place}: generic slots`);
     for (const g of GENERIC) assert.ok(set.cards.some((c) => c.name === g), `${place} lacks ${g}`);
     assert.deepEqual(slotsOf(set, INLAND), place === 'harbour' ? [] : seaSlots, `${place}: inland slots`);
-    for (const n of new Set(set.cards.map((c) => c.name))) {
+    for (const n of new Set([...set.cards, set.main, set.secondary].map((c) => c.name))) {
       if (GENERIC.includes(n) || INLAND.includes(n)) continue;
       assert.ok(!where.has(n), `${n} is on ${where.get(n)} and ${place}`);
       where.set(n, place);
@@ -504,11 +530,20 @@ function recordingContext() {
   });
 }
 
-test('the atlas draws every card text of a set, and every emblem restores the context', () => {
+test('the atlas draws every card text of a set and each big sponsor once per third, and every emblem restores the context', () => {
+  // cells: the cards, then 2 sponsors x 3 thirds; the cells keep the card aspect
+  assert.ok(BOARD_COLS * BOARD_ROWS >= BIG_CELL0 + 2 * L.BIG_PANELS && BIG_CELL0 === BOARD_CARDS);
+  for (const w of [512, 1024]) {
+    const { width, height } = boardAtlasSize(w);
+    const aspect = width / BOARD_COLS / (height / BOARD_ROWS);
+    assert.ok(width === w && Math.abs(aspect - L.CARD_ASPECT) < 0.05, `atlas ${width}x${height}: cell aspect ${aspect}`);
+  }
   for (const [place, set] of Object.entries(CONTENT)) {
     const b = recordingContext();
-    drawBoards(b, 1024, set.cards);
-    assert.deepEqual(b.texts, set.cards.flatMap((c) => [c.name, c.tag]), place);
+    const { width, height } = boardAtlasSize(1024);
+    drawBoards(b, width, height, set);
+    const big = (c) => Array.from({ length: L.BIG_PANELS }, () => [c.name, c.tag]).flat();
+    assert.deepEqual(b.texts, [...set.cards.flatMap((c) => [c.name, c.tag]), ...big(set.main), ...big(set.secondary)], place);
     assert.equal(b.depth, 0, `${place}: unbalanced save / restore on the boards`);
   }
   for (const [id, draw] of Object.entries(EMBLEMS)) {

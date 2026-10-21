@@ -51,9 +51,31 @@ export const LED_FRAME = 7;
 /** The white LED rail on top of the boards (profile distance). */
 export const RAIL_LO = 333;
 export const RAIL_HI = 340;
-/** LED card aspect (width / height) the atlas is drawn at; one panel per card along the wall. */
-export const CARD_ASPECT = 5.12;
-export const PANEL_LEN = (LED_HI - LED_LO - 2 * LED_FRAME) * CARD_ASPECT;
+/** Length of the field outline (the rounded rectangle at the foot of the walls). */
+export const OUTLINE_LENGTH = 4 * (FIELD.cz + FIELD.cx) + 2 * Math.PI * FIELD.cornerR;
+/**
+ * The LED panels round the outline: PANEL_COUNT panels of PANEL_LEN uu, one card each. Panel k
+ * spans outline distances [(k - 1/2) PANEL_LEN, (k + 1/2) PANEL_LEN) (mod the outline): 36 of
+ * them put the middle of each side wall (a quarter and three quarters of the way round) on a
+ * panel centre, so the big sponsor board there is exactly BIG_PANELS panels.
+ */
+export const PANEL_COUNT = 36;
+export const PANEL_LEN = OUTLINE_LENGTH / PANEL_COUNT;
+/** LED card aspect (width / height) the atlas is drawn at (~5.1). */
+export const CARD_ASPECT = PANEL_LEN / (LED_HI - LED_LO - 2 * LED_FRAME);
+
+/** The panel at outline distance `s` (0 .. PANEL_COUNT - 1). */
+export function panelAt(s: number): number {
+  return Math.floor(s / PANEL_LEN + 0.5) % PANEL_COUNT;
+}
+
+/**
+ * The big sponsor board in the middle of each side wall: BIG_PANELS panels wide (~31 m, the
+ * same height as the others), alternating between the place's main and secondary sponsor.
+ * BIG_FIRST is its first panel on the -x side wall; the +x one starts half the outline later.
+ */
+export const BIG_PANELS = 3;
+export const BIG_FIRST = panelAt(outlineDistance(-FIELD.halfX, 0)) - (BIG_PANELS - 1) / 2;
 
 // ---- The cage: steel hugging the OUTSIDE of the netting --------------------------------------
 
@@ -145,9 +167,6 @@ export const standRowX = (r: number): number => STAND.x0 + r * STAND.rowDepth;
 export const standRowY = (r: number): number => STAND.y0 + r * STAND.rowRise;
 
 // ---- The shell's surface coordinates ------------------------------------------------------------
-
-/** Length of the field outline (the rounded rectangle at the foot of the walls). */
-export const OUTLINE_LENGTH = 4 * (FIELD.cz + FIELD.cx) + 2 * Math.PI * FIELD.cornerR;
 
 /**
  * Profile distance of a shell point: the distance along the wall's cross-section, equal to the

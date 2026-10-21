@@ -1,8 +1,12 @@
 /**
  * What the LED boards show, per place (pure data; textures.ts draws it). Both harbour themes share
  * the harbour's set; every other theme has its own. A set holds BOARD_CARDS board cards (sponsors
- * with a tagline, an emblem and colours), in the slots the boards read:
+ * with a tagline, an emblem and colours), in the slots the boards read, and the place's two big
+ * sponsors:
  *
+ *   main, secondary  the place's main and secondary sponsor: the big board in the middle of each
+ *            side wall alternates between them (boards.ts), drawn in a wider layout; they are
+ *            not among the cards
  *   cards    the generic sponsors (GENERIC, the same cards in every set, at the same slots;
  *            only the "MÁS GOL." tagline changes per place), a telecom and a games sponsor
  *            (the harbour's sea-named CORALINA and PIXELMAR; the inland places share INLAND) and
@@ -37,6 +41,9 @@ export interface BoardCard {
 
 export interface ContentSet {
   readonly cards: readonly BoardCard[];
+  /** The big side-wall board's two sponsors (textures.ts drawBigCard). */
+  readonly main: BoardCard;
+  readonly secondary: BoardCard;
 }
 
 // ---- Generic sponsors (every place) -----------------------------------------------------------
@@ -96,6 +103,8 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
         { name: 'PIXELMAR', tag: 'VIDEOJUEGOS', logo: 'bolt', bg: ['#250840', '#140423'], fg: '#ffffff', ac: '#ff4fd8' },
       ],
     ),
+    main: { name: 'PLEAMAR', tag: 'ENERGÍA DE LAS MAREAS', logo: 'wave', bg: ['#0a3a6e', '#041a36'], fg: '#ffffff', ac: '#47d2ff' },
+    secondary: { name: 'ROMPEOLAS', tag: 'SEGUROS NÁUTICOS', logo: 'anchor', bg: ['#0d3b3e', '#062224'], fg: '#ffffff', ac: '#7cf0e0' },
   },
   // A red canyon at sunset: mesas, cactus, dust, the sun going down.
   canyon: {
@@ -119,6 +128,8 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
       'MÁS TURBO. MÁS CAÑÓN.',
       INLAND_PAIR,
     ),
+    main: { name: 'ARENISCA', tag: 'ENERGÍA DEL DESIERTO', logo: 'sunMesa', bg: ['#8a2c0c', '#4a1405'], fg: '#ffffff', ac: '#ffc46b' },
+    secondary: { name: 'ESPEJISMO', tag: 'BEBIDAS HELADAS', logo: 'cactus', bg: ['#2c1a3e', '#170c22'], fg: '#ffe0b0', ac: '#9be07a' },
   },
   // A mountain valley at midday: peaks, pine forest, snow, the valley's farms and lifts.
   alpine: {
@@ -142,6 +153,8 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
       'MÁS TURBO. MÁS ALTURA.',
       INLAND_PAIR,
     ),
+    main: { name: 'VENTISCA', tag: 'ROPA TÉRMICA', logo: 'peak', bg: ['#0c3a6a', '#062140'], fg: '#ffffff', ac: '#bfe6ff' },
+    secondary: { name: 'DESHIELO', tag: 'AGUA DE LA CUMBRE', logo: 'pine', bg: ['#123a30', '#08221c'], fg: '#ffffff', ac: '#7fe0c0' },
   },
 };
 
