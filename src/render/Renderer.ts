@@ -1,19 +1,20 @@
 /**
  * Renderer core: three.js r186 `WebGPURenderer` (automatic WebGL2 fallback), scene, camera, lights,
- * sky, fog, environment map and post-processing for the quality tiers of quality.ts.
+ * resize / pixel budget, GPU timing, dynamic resolution and `#nancheck` for the quality tiers of
+ * quality.ts. The parts phase 2 of docs/visuals/REWORK.md rebuilds live in their own folders:
  *
- * Every tier renders through one RenderPipeline whose switches come from the tier table (`tier(q)`):
- *   scene pass (HDR HalfFloat; MRT `output` + `emissive` on tiers with bloom) -> bloom from the
- *   EMISSIVE target only (threshold 0, see materials.ts for the glow contract) -> vignette ->
- *   Neutral tone mapping + sRGB (`renderOutput`) -> FXAA on tiers without MSAA.
+ *   world/   sky dome, PMREM environment, fog and clear colour (`createWorld`)
+ *   post/    the RenderPipeline of a tier (`buildPostChain`): HDR scene pass (MRT `output` +
+ *            `emissive` on tiers with bloom) -> bloom from the EMISSIVE target only -> vignette ->
+ *            Neutral tone mapping + sRGB (`renderOutput`) -> FXAA on tiers without MSAA
  *
  *   low:          no MSAA (FXAA instead), pixel ratio 1, 2048 shadow map, no bloom, PCF radius 3
  *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, 2, pixel budget 6 Mpx) but never
- *                 below 1, 4096 shadow map, bloom, PCF radius 4
+ *                 below 1, 4096 shadow map, bloom, PCF radius 4, dynamic resolution
  *
  * The renderer is created with `antialias: false`: MSAA lives on the scene pass (`samples`), so the
  * final full-screen quad is single-sampled on every tier. Switching tiers disposes the previous
- * PassNode / BloomNode (RenderPipeline.dispose() only frees its quad material).
+ * chain (scene pass, bloom, pipeline quad) and builds the new one.
  *
  * GPU timing: with `#stats` in the URL the renderer is created with `trackTimestamp` and resolves
  * the render-pass timestamps every frame; `gpuTimeMs` / `stats().gpuMs` expose them (0 when the
@@ -22,55 +23,24 @@
  * Dynamic resolution (tiers with `dynamicResolution`): loop frames pass their rAF timestamp to
  * render(); a DynamicResolution controller (dynamicResolution.ts) turns the intervals (and the GPU
  * time with `#stats`) into a scene-pass scale between the tier's minResolutionScale and 1, applied
- * with PassNode.setResolutionScale: the composite upsamples the scene, bloom (sized from the
+ * through the chain's setResolutionScale: the composite upsamples the scene, bloom (sized from the
  * drawing buffer), the vignette and FXAA run at full size. `stats().resolutionScale` reports it.
  *
- * NaN hygiene: the pass targets are HalfFloat, and a single NaN texel in the emissive target
- * would blur through the bloom mips into a big black rectangle (NaN + x = NaN in the composite,
- * NaN -> 0 in the final unorm write). Every read of a pass target in the composite is therefore
- * sanitised with max(0) / min(HDR_MAX) (min / max return the non-NaN operand on every backend) and
- * materials sanitise their own glow writes in `glowMrt()`. With `#nancheck` in the URL the
- * renderer reads the scene pass targets and the bloom result back every NANCHECK_EVERY frames and
- * logs '[nancheck] ...' counters (NaN / Inf / negative / black texels, NaN bounding box); the same
- * report lives at `window.__nancheck`. Zero cost without the hash (one boolean test per frame).
+ * NaN hygiene (post/pipeline.ts sanitises every pass-target read, materials their glow writes in
+ * `glowMrt()`): with `#nancheck` in the URL the renderer reads the scene pass targets and the bloom
+ * result back every NANCHECK_EVERY frames and logs '[nancheck] ...' counters (NaN / Inf / negative
+ * / black texels, NaN bounding box); the same report lives at `window.__nancheck`. Zero cost
+ * without the hash (one boolean test per frame).
  *
  * Nothing else here allocates per frame: `render()` and `stats()` reuse the same objects.
  */
 import * as THREE from 'three/webgpu';
-import type { Node } from 'three/webgpu';
-import {
-  atan,
-  emissive,
-  float,
-  floor,
-  hash,
-  length,
-  mix,
-  mrt,
-  mx_fractal_noise_float,
-  mx_noise_float,
-  normalize,
-  oneMinus,
-  output,
-  pass,
-  positionWorld,
-  renderOutput,
-  screenUV,
-  sin,
-  smoothstep,
-  step,
-  time,
-  vec2,
-  vec3,
-  vec4,
-} from 'three/tsl';
-import { bloom } from 'three/addons/tsl/display/BloomNode.js';
-import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ARENA } from '../sim/constants';
-import { GLOW_MAX, glowMrt, type Vec3Node } from './materials';
 import { DynamicResolution } from './dynamicResolution';
+import { buildPostChain, type PostChain } from './post/pipeline';
 import { tier, type Quality } from './quality';
-import { DEFAULT_THEME, type ThemeId } from './theme';
+import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
+import { createWorld, type World } from './world/World';
 
 export interface RendererOptions {
   /** Quality tier (default 'high'). */
@@ -91,24 +61,14 @@ export interface RenderStats {
 /** Camera planes in uu (1 uu = 1 three unit). */
 export const CAMERA_NEAR = 10;
 export const CAMERA_FAR = 40000;
-const SKY_RADIUS = 32000;
 /** Phones and tablets render at most at this pixel ratio on any tier (their DPR of 3+ costs ~2x the pixels). */
 const MAX_TOUCH_PIXEL_RATIO = 2;
-/** Sky horizon colour (linear); also the fog and clear colour so distant tiers blend into the sky. */
-const HORIZON = { r: 0.11, g: 0.15, b: 0.27 };
 const SUN_COLOR = 0xfff3e2;
 const SUN_INTENSITY = 3.2;
-const EXPOSURE = 1.15;
-/** HDR ceiling applied when the composite reads a pass target (HalfFloat max is 65504). */
-const HDR_MAX = 65000;
 /** `#nancheck`: frames between two readbacks. */
 const NANCHECK_EVERY = 30;
 
 const _v = new THREE.Vector3();
-
-interface Disposable {
-  dispose(): void;
-}
 
 /** `#nancheck` counters for one render target (see Renderer.runNanCheck). */
 export interface NanCheckCounts {
@@ -254,12 +214,10 @@ export class Renderer {
   onResize: (() => void) | null = null;
 
   private readonly canvas: HTMLCanvasElement;
-  private readonly sky: THREE.Mesh;
-  private readonly background = new THREE.Color(HORIZON.r, HORIZON.g, HORIZON.b);
-  private pipeline: THREE.RenderPipeline | null = null;
-  private scenePass: ReturnType<typeof pass> | null = null;
-  private bloomPass: ReturnType<typeof bloom> | null = null;
-  private envTarget: Disposable | null = null;
+  /** Sky, environment, fog (world/World.ts). */
+  private readonly world: World;
+  /** The current tier's pipeline and passes (post/pipeline.ts); null only while being rebuilt. */
+  private post: PostChain | null = null;
   private readonly statsOut: RenderStats = { drawCalls: 0, triangles: 0, gpuMs: 0, resolutionScale: Number.NaN };
   /** Dynamic resolution (tiers with `dynamicResolution`): scales the scene pass to hold the refresh rate. */
   private readonly dynRes = new DynamicResolution();
@@ -309,11 +267,8 @@ export class Renderer {
       console.info(`[nancheck] enabled: pass targets + bloom result read back every ${NANCHECK_EVERY} frames`);
     }
 
-    gpu.toneMapping = THREE.NeutralToneMapping;
-    gpu.toneMappingExposure = EXPOSURE;
     gpu.shadowMap.enabled = true;
     gpu.shadowMap.type = THREE.PCFShadowMap;
-    gpu.setClearColor(this.background, 1);
     // The pipeline issues several internal renders per frame (shadow, scene, bloom mips, composite);
     // reset the counters once per frame ourselves so stats() reports the whole frame.
     gpu.info.autoReset = false;
@@ -338,12 +293,8 @@ export class Renderer {
     this.hemi = new THREE.HemisphereLight(0xc5d4ff, 0x2a5a30, 1.5);
     this.scene.add(this.hemi);
 
-    // Fog matches the sky horizon; the stands (6000-10000 uu away) are barely touched.
-    this.scene.fog = new THREE.Fog(this.background, 12000, 40000);
-    this.scene.background = null;
-
-    this.sky = buildSkyDome();
-    this.scene.add(this.sky);
+    // Clear colour, fog, sky dome and the PMREM environment.
+    this.world = createWorld(gpu, this.scene, quality, theme);
 
     window.addEventListener('resize', this.onWindowResize);
     if (this.sizeObserver !== null) this.sizeObserver.observe(canvas);
@@ -361,19 +312,18 @@ export class Renderer {
       trackTimestamp: timing,
     });
     await gpu.init();
-    const renderer = new Renderer(gpu, canvas, opts.quality ?? 'high', opts.theme ?? DEFAULT_THEME, timing);
-    renderer.buildEnvironment();
-    return renderer;
+    return new Renderer(gpu, canvas, opts.quality ?? 'high', opts.theme ?? DEFAULT_THEME, timing);
   }
 
   setQuality(q: Quality): void {
-    if (q === this.quality && this.pipeline !== null) return;
+    if (q === this.quality && this.post !== null) return;
     this.applyQuality(q);
   }
 
   /** Switch the stadium theme. Stored only for now: the themes phase re-bakes the sky and environment. */
   setTheme(theme: ThemeId): void {
     this.theme = theme;
+    this.world.setTheme(theme);
   }
 
   /**
@@ -414,15 +364,15 @@ export class Renderer {
     // frame about to be drawn never uses a stale aspect (two layout reads, no allocation).
     if (this.canvas.clientWidth !== this.cssW || this.canvas.clientHeight !== this.cssH) this.resize();
     if (frameTime !== undefined) {
-      if (this.dynamicResolution && this.lastFrameAt >= 0 && this.scenePass !== null) {
+      if (this.dynamicResolution && this.lastFrameAt >= 0 && this.post !== null) {
         // GPU time of the last resolved frame when `#stats` timing is on, else intervals only.
         const gpuMs = this.gpuTimingEnabled ? this.gpu.info.render.timestamp : Number.NaN;
-        if (this.dynRes.update(frameTime - this.lastFrameAt, gpuMs)) this.scenePass.setResolutionScale(this.dynRes.scale);
+        if (this.dynRes.update(frameTime - this.lastFrameAt, gpuMs)) this.post.setResolutionScale(this.dynRes.scale);
       }
       this.lastFrameAt = frameTime;
     }
     this.gpu.info.reset();
-    if (this.pipeline !== null) this.pipeline.render();
+    if (this.post !== null) this.post.pipeline.render();
     if (this.nanReport !== null && ++this.nanFrame % NANCHECK_EVERY === 0 && !this.nanBusy) void this.runNanCheck();
     if (this.gpuTimingEnabled) {
       // Diagnostics only (#stats): reads back the render-pass timestamps written this frame.
@@ -458,14 +408,11 @@ export class Renderer {
   dispose(): void {
     window.removeEventListener('resize', this.onWindowResize);
     if (this.sizeObserver !== null) this.sizeObserver.disconnect();
-    this.teardownPipeline();
-    if (this.envTarget !== null) {
-      this.envTarget.dispose();
-      this.envTarget = null;
-      this.scene.environment = null;
+    if (this.post !== null) {
+      this.post.dispose();
+      this.post = null;
     }
-    this.sky.geometry.dispose();
-    (this.sky.material as THREE.Material).dispose();
+    this.world.dispose();
     this.gpu.dispose();
   }
 
@@ -475,8 +422,10 @@ export class Renderer {
    */
   private async runNanCheck(): Promise<void> {
     const report = this.nanReport;
-    const scenePass = this.scenePass;
-    if (report === null || scenePass === null) return;
+    const post = this.post;
+    if (report === null || post === null) return;
+    const scenePass = post.scenePass;
+    const bloomPass = post.bloomPass;
     this.nanBusy = true;
     const frame = this.nanFrame;
     try {
@@ -484,7 +433,7 @@ export class Renderer {
       const w = rt.width;
       const h = rt.height;
       const bloomRt =
-        this.bloomPass !== null ? (this.bloomPass as unknown as { _renderTargetsHorizontal?: THREE.RenderTarget[] })._renderTargetsHorizontal?.[0] : undefined;
+        bloomPass !== null ? (bloomPass as unknown as { _renderTargetsHorizontal?: THREE.RenderTarget[] })._renderTargetsHorizontal?.[0] : undefined;
       // Issue every readback before awaiting any: the copies are encoded synchronously, so all
       // three capture the SAME frame (awaiting one first lets later frames render in between).
       const outP = this.gpu.readRenderTargetPixelsAsync(rt, 0, 0, w, h, 0);
@@ -520,22 +469,6 @@ export class Renderer {
     }
   }
 
-  /** Free the scene pass (HDR MSAA target + depth) and the bloom chain before dropping the pipeline. */
-  private teardownPipeline(): void {
-    if (this.bloomPass !== null) {
-      this.bloomPass.dispose();
-      this.bloomPass = null;
-    }
-    if (this.scenePass !== null) {
-      this.scenePass.dispose();
-      this.scenePass = null;
-    }
-    if (this.pipeline !== null) {
-      this.pipeline.dispose();
-      this.pipeline = null;
-    }
-  }
-
   private applyQuality(q: Quality): void {
     this.quality = q;
     const spec = tier(q);
@@ -548,96 +481,18 @@ export class Renderer {
       this.sun.shadow.needsUpdate = true;
     }
     this.sun.shadow.radius = spec.shadowRadius;
+    this.world.setQuality(q);
 
-    this.teardownPipeline();
+    if (this.post !== null) {
+      this.post.dispose();
+      this.post = null;
+    }
     // A new scene pass starts at full resolution; the controller starts over in the tier's range.
     this.dynamicResolution = spec.dynamicResolution;
     this.dynRes.reset(spec.dynamicResolution ? spec.minResolutionScale : 1);
     this.lastFrameAt = -1;
-
-    // Scene pass: HDR HalfFloat target, MSAA on the tiers that ask for it (the renderer itself is
-    // created without antialias so nothing else is multisampled). The WebGPU backend only supports
-    // 1 or 4 samples, hence the table's 4 / 0.
-    const scenePass = pass(this.scene, this.camera, { samples: spec.msaa });
-    this.scenePass = scenePass;
-    // Every pass target is read through `sanitize`: min / max return the non-NaN operand, so a NaN
-    // or Inf texel written by a material becomes 0 / HDR_MAX here instead of poisoning the bloom
-    // blur (one NaN at a coarse mip upsamples to a big black rectangle) or the tone map.
-    const sanitize = (c: Node<'vec4'>): Vec3Node => c.rgb.max(0.0).min(HDR_MAX);
-    let hdr: Vec3Node = sanitize(scenePass.getTextureNode('output'));
-    if (spec.bloom) {
-      // Bloom reads the emissive MRT target (cleared to black), so only tagged emitters glow.
-      // Lit materials without an mrtNode (ball, car bodies) write their emissiveNode through this
-      // pass-level MRT, raw: clamp it like glowMrt() does so a NaN / Inf / negative emissive term
-      // (e.g. the ball's hex seam weights rounding past 1) never reaches the bloom chain. The
-      // member keeps three's default NoBlending for this target.
-      scenePass.setMRT(mrt({ output, emissive: emissive.max(0.0).min(GLOW_MAX) }).setClearColor('emissive', 0x000000, 0));
-      const bloomPass = bloom(vec4(sanitize(scenePass.getTextureNode('emissive')), 1.0), 0.5, 0.45, 0);
-      // Three mips (the table's bloomMips) give a tight glow (mips 3-4 are only ~1.5% of the blur
-      // fill, so this is a look choice, not a saving). `_nMips` is private to BloomNode; three is
-      // pinned to 0.186.x.
-      const mips = bloomPass as unknown as { _nMips?: number };
-      if (typeof mips._nMips === 'number') mips._nMips = spec.bloomMips;
-      else console.warn('BloomNode private API changed; bloom falls back to 5 mips');
-      this.bloomPass = bloomPass;
-      hdr = hdr.add(sanitize(bloomPass));
-    }
-
-    // Subtle vignette in HDR, then tone mapping + sRGB once (outputColorTransform is off so the
-    // FXAA pass of the tiers without MSAA runs on the final LDR image, which is what it expects).
-    const uvc = screenUV.sub(0.5).mul(vec2(1.0, 0.8));
-    const vignette = oneMinus(smoothstep(0.45, 1.1, length(uvc).mul(1.6)).mul(0.32));
-    const shaded = vec4(hdr.mul(vignette), 1.0);
-    const ldr = renderOutput(shaded);
-    const pipeline = new THREE.RenderPipeline(this.gpu);
-    pipeline.outputColorTransform = false;
-    pipeline.outputNode = spec.msaa > 0 ? ldr : fxaa(ldr);
-    this.pipeline = pipeline;
+    this.post = buildPostChain(this.gpu, this.scene, this.camera, q, themeWorld(this.theme));
     this.resize();
-  }
-
-  /**
-   * Procedural stadium environment map (PMREM, built once): turf below, a stands band at the
-   * horizon, a bright rail ring, floodlight banks high up. Paint, glass, rims and the ball reflect
-   * it; without it PBR speculars have only the single key light to reflect.
-   */
-  private buildEnvironment(): void {
-    const env = new THREE.Scene();
-    const trash: Disposable[] = [];
-
-    const domeGeo = new THREE.SphereGeometry(50, 32, 16);
-    const domeMat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide });
-    const up = normalize(positionWorld).y;
-    const turf = vec3(0.05, 0.13, 0.08);
-    const stands = vec3(0.16, 0.2, 0.31);
-    const sky = vec3(0.027, 0.047, 0.1);
-    const rail = oneMinus(smoothstep(0.0, 0.012, length(up.sub(0.05))));
-    domeMat.colorNode = mix(mix(turf, stands, smoothstep(-0.35, 0.0, up)), sky, smoothstep(0.05, 0.3, up)).add(vec3(1.4, 1.8, 2.2).mul(rail));
-    env.add(new THREE.Mesh(domeGeo, domeMat));
-    trash.push(domeGeo, domeMat);
-
-    const lampMat = new THREE.MeshBasicNodeMaterial();
-    lampMat.colorNode = vec3(1.0, 0.95, 0.86).mul(12);
-    const lampGeo = new THREE.PlaneGeometry(1, 1);
-    trash.push(lampGeo, lampMat);
-    const addLamp = (az: number, elev: number, w: number, h: number): void => {
-      const m = new THREE.Mesh(lampGeo, lampMat);
-      const r = 40;
-      m.position.set(Math.cos(az) * Math.cos(elev) * r, Math.sin(elev) * r, Math.sin(az) * Math.cos(elev) * r);
-      m.scale.set(w, h, 1);
-      m.lookAt(0, 0, 0);
-      env.add(m);
-    };
-    for (let i = 0; i < 16; i++) addLamp((i / 16) * Math.PI * 2, (60 + (i % 2) * 12) * (Math.PI / 180), 4, 2);
-    for (let i = 0; i < 4; i++) addLamp((i + 0.5) * (Math.PI / 2), 48 * (Math.PI / 180), 9, 5);
-
-    const pmrem = new THREE.PMREMGenerator(this.gpu);
-    const target = pmrem.fromScene(env, 0.04);
-    pmrem.dispose();
-    for (const d of trash) d.dispose();
-    this.envTarget = target;
-    this.scene.environment = target.texture;
-    this.scene.environmentIntensity = 0.55;
   }
 
   /** Orthographic shadow frustum fitted to the arena box (field + goals, floor to ceiling). */
@@ -675,52 +530,4 @@ export class Renderer {
     sc.far = -minZ + 100;
     sc.updateProjectionMatrix();
   }
-}
-
-/**
- * Night-stadium sky: gradient dome (horizon glow -> deep blue zenith), two layers of twinkling
- * stars (a few peak above 1 and bloom), a warm city glow with a noisy skyline at the horizon and a
- * thin drifting cloud band. Drawn LAST among opaques (renderOrder 1000, depth tested, no depth
- * write) so it only shades the pixels the arena left uncovered: zero overdraw from inside the
- * shell, and it fills the view through the glass. Shown on every quality tier.
- */
-function buildSkyDome(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(SKY_RADIUS, 24, 12);
-  const material = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, depthWrite: false, fog: false });
-  const dir = normalize(positionWorld);
-  const up = dir.y;
-  const horizon = vec3(HORIZON.r, HORIZON.g, HORIZON.b);
-  const mid = vec3(0.035, 0.05, 0.11);
-  const zenith = vec3(0.012, 0.015, 0.035);
-  const gradient = mix(mix(horizon, mid, smoothstep(-0.02, 0.25, up)), zenith, smoothstep(0.25, 0.9, up));
-
-  // City glow: sodium haze under the horizon line, shaped by a noisy skyline.
-  const az = atan(dir.z, dir.x);
-  const skyline = mx_noise_float(vec2(az.mul(4.0), 0.0)).mul(0.5).add(0.5);
-  const glow = oneMinus(smoothstep(-0.02, 0.14, up)).mul(float(0.35).add(skyline.mul(0.65)));
-  const city = vec3(0.3, 0.2, 0.1).mul(glow).mul(0.9);
-
-  // Cloud band drifting slowly.
-  const c = mx_fractal_noise_float(vec3(dir.xz.mul(2.5).add(time.mul(0.008)), 0.0), 3);
-  const cloud = vec3(0.04, 0.05, 0.09).mul(smoothstep(0.45, 0.8, c)).mul(smoothstep(0.05, 0.35, up));
-
-  const aboveHorizon = smoothstep(0.08, 0.45, up);
-  const starLayer = (cellSize: number, threshold: number, gain: number): Vec3Node => {
-    const cell = floor(dir.xz.mul(cellSize));
-    const h = hash(cell.x.add(cell.y.mul(131.7)));
-    const on = step(threshold, h);
-    const twinkle = float(0.8).add(sin(time.mul(1.7).add(h.mul(6.283))).mul(0.6));
-    return vec3(0.9, 0.95, 1.0).mul(on.mul(twinkle).mul(gain).mul(aboveHorizon));
-  };
-  const stars = starLayer(420, 0.9965, 0.5).add(starLayer(900, 0.994, 0.9));
-
-  material.colorNode = gradient.add(city).add(cloud).add(stars);
-  material.mrtNode = glowMrt(stars.mul(0.6), 'none');
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.frustumCulled = false;
-  mesh.renderOrder = 1000;
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
-  mesh.matrixAutoUpdate = false;
-  return mesh;
 }
