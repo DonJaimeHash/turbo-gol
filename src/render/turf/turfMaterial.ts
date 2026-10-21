@@ -109,6 +109,8 @@ export interface TurfUniforms {
   readonly envMax: FloatUniform;
   /** Share of the key lights' direct specular the turf keeps (TurfLightingModel; per theme, night / day). */
   readonly keySpecular: FloatUniform;
+  /** How much the pool map shapes the key lights (poolKeyGain: 0 none .. 1 fully; per theme). */
+  readonly poolKeys: FloatUniform;
   /** Streak heads: xyz = position (uu), w = source radius (uu); colour = linear RGB x strength. */
   readonly lampPos: LampPosArray;
   readonly lampCol: LampColArray;
@@ -142,6 +144,7 @@ export function createTurfUniforms(lampCount: number): TurfUniforms {
     keyDir: uniform(new THREE.Vector3(0, 1, 0)),
     envMax: uniform(1e4),
     keySpecular: uniform(1),
+    poolKeys: uniform(0),
     lampPos: uniformArray<'vec4'>(pos, 'vec4'),
     lampCol: uniformArray<'vec3'>(col, 'vec3'),
     lampCount,
@@ -264,9 +267,13 @@ const SHADOW_RANGE = 2600;
 /** Puddle look: basin-rank width of the rim (wide: no hard outline), and never a full mirror. */
 const PUDDLE_SOFT = 0.18;
 const PUDDLE_MAX = 0.65;
-/** Goal-mouth glow: colour at the line (x team colour, +-25 % pulse) and its share in the bloom input. */
-const GOAL_GLOW = 0.04;
-const GOAL_GLOW_BLOOM = 2.8;
+/**
+ * Goal-mouth glow: colour at the line (x team colour, +-25 % pulse) and its share in the bloom input
+ * (the same bloom input as before; the colour is halved so the darker night turf in front of the
+ * goals does not turn team-blue or red).
+ */
+const GOAL_GLOW = 0.02;
+const GOAL_GLOW_BLOOM = 5.6;
 /**
  * Roughness the water film brings the grass lobe down to. Never a mirror: a smooth lobe would mirror
  * whatever bright band the environment holds (cut-out-looking puddles); the sharp lamp reflections
@@ -394,19 +401,29 @@ class CappedEnvironmentNode extends THREE.Node {
 }
 
 /**
- * The turf's lighting model: three's physical model with the key lights' direct specular scaled by
- * `keySpecular`. At night the keys stand for the floodlight towers, and on the damp sheen their
- * GGX highlight was one broad white blob per key (whitish fog over the pitch in front of the goals);
- * the towers' reflections on the wet turf are the analytic streaks (lampStreaks). The diffuse light
- * of the keys, their shadows and the environment are untouched. The scale runs after every direct
- * light (start() lights them, then calls indirect()), on the summed direct specular.
+ * The turf's lighting model: three's physical model with two changes to the key lights' direct
+ * term (the keys are the only direct lights; the fill and the environment are indirect):
+ *  - their light is scaled by `keyGain`, the floodlight pool map's irradiance (poolKeyGain): at
+ *    night the keys stand for the floodlight towers, so the pools shape their light and, being
+ *    part of the keys, sit UNDER the keys' shadows (car and ball shadows read; an unshadowed
+ *    emissive pool term washed them out);
+ *  - their direct specular is scaled by `keySpecular`: on the damp sheen the keys' GGX highlight
+ *    was one broad white blob per key (whitish fog over the pitch in front of the goals); the
+ *    towers' reflections on the wet turf are the analytic streaks (lampStreaks). The scale runs
+ *    after every direct light (start() lights them, then calls indirect()), on the summed term.
  */
 class TurfLightingModel extends THREE.PhysicalLightingModel {
   private readonly keySpecular: FloatNode;
+  private readonly keyGain: FloatNode;
 
-  constructor(keySpecular: FloatNode) {
+  constructor(keySpecular: FloatNode, keyGain: FloatNode) {
     super();
     this.keySpecular = keySpecular;
+    this.keyGain = keyGain;
+  }
+
+  override direct(input: THREE.LightingModelDirectInput, builder: THREE.NodeBuilder): void {
+    super.direct({ ...input, lightColor: (input.lightColor as Vec3Node).mul(this.keyGain) }, builder);
   }
 
   override indirect(builder: THREE.NodeBuilder): void {
@@ -416,9 +433,11 @@ class TurfLightingModel extends THREE.PhysicalLightingModel {
   }
 }
 
-/** MeshStandardNodeMaterial lit through TurfLightingModel. */
-class TurfNodeMaterial extends THREE.MeshStandardNodeMaterial {
+/** MeshStandardNodeMaterial lit through TurfLightingModel (the floor and the ultra grass blades). */
+export class TurfNodeMaterial extends THREE.MeshStandardNodeMaterial {
   private readonly keySpecular: FloatNode;
+  /** Gain of the key lights (poolKeyGain), set before the first build. */
+  keyGain: FloatNode = float(1);
 
   constructor(keySpecular: FloatNode) {
     super();
@@ -426,8 +445,18 @@ class TurfNodeMaterial extends THREE.MeshStandardNodeMaterial {
   }
 
   override setupLightingModel(): THREE.PhysicalLightingModel {
-    return new TurfLightingModel(this.keySpecular);
+    return new TurfLightingModel(this.keySpecular, this.keyGain);
   }
+}
+
+/**
+ * Gain of the key lights from the pool map's rgb (sqrt-encoded irradiance, bake.ts): 1 where
+ * `poolKeys` is 0 (day themes), the pool's irradiance luminance (mean ~0.96 on the night harbour,
+ * 0.47 .. 1.47 from the 5th to the 95th percentile) where it is 1.
+ */
+export function poolKeyGain(poolRgb: Vec3Node, U: TurfUniforms): FloatNode {
+  const irr = dot(poolRgb.mul(poolRgb), vec3(0.2126, 0.7152, 0.0722)).mul(POOL_MAX);
+  return mix(float(1), irr, U.poolKeys);
 }
 
 export interface TurfMaterialOptions {
@@ -575,6 +604,7 @@ export function buildTurfMaterial(o: TurfMaterialOptions): THREE.MeshStandardNod
   //    the water mask is coherent at the clump scale, so most dry turf skips the lamp loop)
   const pool = texture(textures.pools, floorMapUv(p, POOL_MAP));
   const poolE = pool.rgb.mul(pool.rgb).mul(POOL_MAX).mul(U.pools);
+  m.keyGain = poolKeyGain(pool.rgb, U);
   // The lamps reflect off the water surface taken flat: its ripples are in the roughness (blade-scale
   // normals would glitter and crawl in motion; the streaks break up through the clump-scale water
   // cover instead).

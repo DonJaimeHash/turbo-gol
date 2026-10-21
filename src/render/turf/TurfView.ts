@@ -36,7 +36,7 @@ const LAMP_RADIUS = 260;
  * looks (turfTheme.ts), tuned in the integration phase against the lighting of post/lighting.ts.
  * The stripes stay faint (the view-dependent sheen of a mown pitch, not dark bands across it).
  */
-const POOL_GAIN = 0.5;
+const POOL_GAIN = 0.2;
 const STREAK_GAIN = 0.24;
 const STRIPE_GAIN = 0.55;
 /**
@@ -52,6 +52,11 @@ const ENV_MAX_DAY = 50;
  */
 const KEY_SPECULAR_NIGHT = 0.12;
 const KEY_SPECULAR_DAY = 1;
+/**
+ * At night the pool map shapes the key lights (turfMaterial.ts poolKeyGain), so the pools sit under
+ * the keys' shadows; POOL_GAIN is then only the unshadowed spill of the other heads.
+ */
+const POOL_KEYS_NIGHT = 1;
 
 /**
  * The pool map of each floodlight rig seen so far (static: baked once, then reused). Keyed by the
@@ -144,6 +149,7 @@ export class TurfView {
     U.lineLift.value = world.night ? 1 : 0.3;
     U.envMax.value = world.night ? ENV_MAX_NIGHT : ENV_MAX_DAY;
     U.keySpecular.value = world.night ? KEY_SPECULAR_NIGHT : KEY_SPECULAR_DAY;
+    U.poolKeys.value = world.night ? POOL_KEYS_NIGHT : 0;
     const k = world.keys[0].dir;
     U.keyDir.value.set(k[0], k[1], k[2]);
     const heads = streakLamps(world.floodlights, U.lampCount);

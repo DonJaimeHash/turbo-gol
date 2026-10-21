@@ -103,10 +103,12 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     night: true,
     // Two raking keys (~30 degrees up) from opposite corner towers: long, readable car shadows and
     // a backlit sheen whichever way the camera faces. Dimmer than the old single sun (3.2) so the
-    // lamp heads and boards (HDR emitters) stand out against a darker, contrasty pitch.
+    // lamp heads and boards (HDR emitters) stand out against a darker, contrasty pitch. keys[0]
+    // clearly dominant: each shadow only takes its own key's light, so a balanced pair washed the
+    // car shadows out.
     keys: [
-      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: WARM_LAMP, intensity: 2.0 },
-      { dir: unit(TOWER_X, HEAD_Y, 2900), color: WARM_LAMP, intensity: 1.4 },
+      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: WARM_LAMP, intensity: 2.4 },
+      { dir: unit(TOWER_X, HEAD_Y, 2900), color: WARM_LAMP, intensity: 0.95 },
     ],
     // Low fill (the old hemisphere was 1.5 of a pale blue): shadows and the unlit sides of the cars
     // stay dark navy instead of a grey wash. `env` is the image-based lighting intensity.

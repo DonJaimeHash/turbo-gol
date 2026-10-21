@@ -49,7 +49,7 @@ import { ARENA } from '../../sim/constants';
 import { noGlowMrt, type Vec3Node } from '../materials';
 import { FIELD_MAP, GRASS_HEIGHT, POOL_MAP, POOL_MAX, TURF_TILE } from './bake';
 import { markingsCoverage, roundedRectSdf } from './markings';
-import { PAINT, bandBend, floorMapUv, grassAlbedo, mowingStripes, teamTint, v3, viewN, type TurfTextures, type TurfUniforms } from './turfMaterial';
+import { PAINT, TurfNodeMaterial, bandBend, floorMapUv, grassAlbedo, mowingStripes, poolKeyGain, teamTint, v3, viewN, type TurfTextures, type TurfUniforms } from './turfMaterial';
 
 /** Patch radius around the camera (uu) and the blade grid spacing (uu). */
 const BLADE_RANGE = 320;
@@ -70,7 +70,7 @@ const _cam = new THREE.Vector3();
 export class GrassBlades {
   readonly mesh: THREE.Mesh;
   private readonly geometry: THREE.InstancedBufferGeometry;
-  private readonly material: THREE.MeshStandardNodeMaterial;
+  private readonly material: TurfNodeMaterial;
   private readonly origin: UniformNode<'vec2', THREE.Vector2>;
   private readonly total: number;
   private warm = false;
@@ -92,7 +92,9 @@ export class GrassBlades {
     // as the floor round them. Lambert blades (no specular) read as a band of dark dots wherever
     // the floor shows a key light's sheen; the lobe is rough enough not to sparkle and costs no
     // measurable time over Lambert (both ~0.13 ms on ultra at the chase camera).
-    const m = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide });
+    // TurfNodeMaterial: the same key-light model as the floor (pool-shaped keys, damped key specular).
+    const m = new TurfNodeMaterial(U.keySpecular);
+    m.side = THREE.DoubleSide;
     m.name = 'turf-blades';
     m.metalnessNode = float(0);
 
@@ -164,7 +166,9 @@ export class GrassBlades {
     col = mix(col, v3(PAINT), paint.mul(t.mul(0.4).add(0.6)));
     m.colorNode = varying(col);
     m.roughnessNode = varying(mix(float(BLADE_ROUGHNESS[0]), float(BLADE_ROUGHNESS[1]), dampLocal));
-    // The floodlight pools light the blades like the floor below (same baked irradiance).
+    // The floodlight pools light the blades like the floor below (same baked irradiance): they
+    // shape the keys (poolKeyGain) and add their unshadowed spill.
+    m.keyGain = varying(poolKeyGain(pool.rgb, U));
     m.emissiveNode = varying(col.mul(pool.rgb.mul(pool.rgb).mul(POOL_MAX).mul(U.pools)));
 
     // Soft normal: part face normal, mostly up (blades are thin and translucent), flipped on the
