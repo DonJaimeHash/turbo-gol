@@ -268,12 +268,12 @@ const SHADOW_RANGE = 2600;
 const PUDDLE_SOFT = 0.18;
 const PUDDLE_MAX = 0.65;
 /**
- * Goal-mouth glow: colour at the line (x team colour, +-25 % pulse) and its share in the bloom input
- * (the same bloom input as before; the colour is halved so the darker night turf in front of the
- * goals does not turn team-blue or red).
+ * Goal-mouth glow: colour at the line (x team colour, +-25 % pulse) and its share in the bloom input.
+ * Both kept low: the glow covers metres of turf in front of each goal, and the darker night turf
+ * there turned team-blue or red, its bloom a coloured haze over the whole near pitch at kickoff.
  */
 const GOAL_GLOW = 0.02;
-const GOAL_GLOW_BLOOM = 5.6;
+const GOAL_GLOW_BLOOM = 2.0;
 /**
  * Roughness the water film brings the grass lobe down to. Never a mirror: a smooth lobe would mirror
  * whatever bright band the environment holds (cut-out-looking puddles); the sharp lamp reflections
