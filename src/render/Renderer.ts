@@ -1,18 +1,18 @@
 /**
  * Renderer core: three.js r186 `WebGPURenderer` (automatic WebGL2 fallback), scene, camera, lights,
- * sky, fog, environment map and post-processing with two quality tiers.
+ * sky, fog, environment map and post-processing for the quality tiers of quality.ts.
  *
- * Both tiers render through one RenderPipeline:
- *   scene pass (HDR HalfFloat; MRT `output` + `emissive` at quality 0) -> bloom from the EMISSIVE
- *   target only (threshold 0, see materials.ts for the glow contract) -> vignette -> Neutral tone
- *   mapping + sRGB (`renderOutput`) -> FXAA at quality 1.
+ * Every tier renders through one RenderPipeline whose switches come from the tier table (`tier(q)`):
+ *   scene pass (HDR HalfFloat; MRT `output` + `emissive` on tiers with bloom) -> bloom from the
+ *   EMISSIVE target only (threshold 0, see materials.ts for the glow contract) -> vignette ->
+ *   Neutral tone mapping + sRGB (`renderOutput`) -> FXAA on tiers without MSAA.
  *
- *   quality 0: MSAA x4 on the scene pass, pixel ratio min(dpr, pixel budget 6 Mpx) but never
- *              below 1, 4096 shadow map, bloom, PCF radius 4
- *   quality 1: no MSAA (FXAA instead), pixel ratio 1, 2048 shadow map, no bloom, PCF radius 3
+ *   low:          no MSAA (FXAA instead), pixel ratio 1, 2048 shadow map, no bloom, PCF radius 3
+ *   high / ultra: MSAA x4 on the scene pass, pixel ratio min(dpr, 2, pixel budget 6 Mpx) but never
+ *                 below 1, 4096 shadow map, bloom, PCF radius 4
  *
  * The renderer is created with `antialias: false`: MSAA lives on the scene pass (`samples`), so the
- * final full-screen quad is single-sampled at both tiers. Switching tiers disposes the previous
+ * final full-screen quad is single-sampled on every tier. Switching tiers disposes the previous
  * PassNode / BloomNode (RenderPipeline.dispose() only frees its quad material).
  *
  * GPU timing: with `#stats` in the URL the renderer is created with `trackTimestamp` and resolves
@@ -62,11 +62,14 @@ import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ARENA } from '../sim/constants';
 import { GLOW_MAX, glowMrt, type Vec3Node } from './materials';
-
-export type Quality = 0 | 1;
+import { tier, type Quality } from './quality';
+import { DEFAULT_THEME, type ThemeId } from './theme';
 
 export interface RendererOptions {
+  /** Quality tier (default 'high'). */
   quality?: Quality;
+  /** Stadium theme (default DEFAULT_THEME). */
+  theme?: ThemeId;
 }
 
 export interface RenderStats {
@@ -80,9 +83,7 @@ export interface RenderStats {
 export const CAMERA_NEAR = 10;
 export const CAMERA_FAR = 40000;
 const SKY_RADIUS = 32000;
-/** Drawing-buffer pixel budget at quality 0 (a dpr-2 1080p laptop renders at ~1.7x instead of 2x). */
-const PIXEL_BUDGET_Q0 = 6e6;
-/** Phones and tablets render quality 0 at most at this pixel ratio (their DPR of 3+ costs ~2x the pixels). */
+/** Phones and tablets render at most at this pixel ratio on any tier (their DPR of 3+ costs ~2x the pixels). */
 const MAX_TOUCH_PIXEL_RATIO = 2;
 /** Sky horizon colour (linear); also the fog and clear colour so distant tiers blend into the sky. */
 const HORIZON = { r: 0.11, g: 0.15, b: 0.27 };
@@ -238,6 +239,8 @@ export class Renderer {
   /** True when GPU timestamps are being collected (`#stats` and backend support). */
   readonly gpuTimingEnabled: boolean;
   quality: Quality;
+  /** Stadium theme (setTheme). Nothing reads it yet: the themes phase of docs/visuals/REWORK.md does. */
+  theme: ThemeId;
   /** Called after every resize (the chase camera re-applies its horizontal FOV here). */
   onResize: (() => void) | null = null;
 
@@ -267,10 +270,11 @@ export class Renderer {
   private cssW = -1;
   private cssH = -1;
 
-  private constructor(gpu: THREE.WebGPURenderer, canvas: HTMLCanvasElement, quality: Quality, timing: boolean) {
+  private constructor(gpu: THREE.WebGPURenderer, canvas: HTMLCanvasElement, quality: Quality, theme: ThemeId, timing: boolean) {
     this.gpu = gpu;
     this.canvas = canvas;
     this.quality = quality;
+    this.theme = theme;
     this.isWebGPU = (gpu.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
     // The backend clears the flag when 'timestamp-query' (or EXT_disjoint_timer_query_webgl2) is absent.
     this.gpuTimingEnabled = timing && (gpu.backend as { trackTimestamp?: boolean }).trackTimestamp === true;
@@ -343,7 +347,7 @@ export class Renderer {
       trackTimestamp: timing,
     });
     await gpu.init();
-    const renderer = new Renderer(gpu, canvas, opts.quality ?? 0, timing);
+    const renderer = new Renderer(gpu, canvas, opts.quality ?? 'high', opts.theme ?? DEFAULT_THEME, timing);
     renderer.buildEnvironment();
     return renderer;
   }
@@ -353,21 +357,28 @@ export class Renderer {
     this.applyQuality(q);
   }
 
+  /** Switch the stadium theme. Stored only for now: the themes phase re-bakes the sky and environment. */
+  setTheme(theme: ThemeId): void {
+    this.theme = theme;
+  }
+
   /**
    * Match the drawing buffer to the canvas' CSS size (window resize, the canvas' ResizeObserver and
-   * render() when the size changed; also called by setQuality). Quality 0 keeps the device pixel
-   * ratio up to a pixel budget, never below 1:1; quality 1 renders at CSS resolution.
+   * render() when the size changed; also called by setQuality). The pixel ratio follows the device
+   * up to the tier's maxPixelRatio and pixel budget, never below 1:1; a tier whose maxPixelRatio is
+   * 1 (low) renders at CSS resolution.
    */
   resize(): void {
     this.cssW = this.canvas.clientWidth;
     this.cssH = this.canvas.clientHeight;
     const w = Math.max(1, this.cssW || window.innerWidth);
     const h = Math.max(1, this.cssH || window.innerHeight);
-    let pr = 1;
-    if (this.quality === 0) {
-      let dpr = window.devicePixelRatio || 1;
+    const spec = tier(this.quality);
+    let pr = Math.min(1, spec.maxPixelRatio);
+    if (spec.maxPixelRatio > 1) {
+      let dpr = Math.min(window.devicePixelRatio || 1, spec.maxPixelRatio);
       if (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) dpr = Math.min(dpr, MAX_TOUCH_PIXEL_RATIO);
-      pr = Math.min(dpr, Math.max(1, Math.sqrt(PIXEL_BUDGET_Q0 / (w * h))));
+      pr = Math.min(dpr, Math.max(1, Math.sqrt(spec.pixelBudget / (w * h))));
     }
     this.gpu.setPixelRatio(pr);
     this.gpu.setSize(w, h, false);
@@ -498,30 +509,30 @@ export class Renderer {
 
   private applyQuality(q: Quality): void {
     this.quality = q;
-    const high = q === 0;
+    const spec = tier(q);
 
     // three's ShadowNode resizes its render target from `mapSize` on every shadow render, so only
     // the size changes here (disposing / nulling `shadow.map` would orphan the node's target).
-    const size = high ? 4096 : 2048;
+    const size = spec.shadowMapSize;
     if (this.sun.shadow.mapSize.x !== size) {
       this.sun.shadow.mapSize.set(size, size);
       this.sun.shadow.needsUpdate = true;
     }
-    this.sun.shadow.radius = high ? 4 : 3;
+    this.sun.shadow.radius = spec.shadowRadius;
 
     this.teardownPipeline();
 
-    // Scene pass: HDR HalfFloat target, MSAA only at quality 0 (the renderer itself is created
-    // without antialias so nothing else is multisampled). The WebGPU backend only supports 1 or 4
-    // samples, so the tiers are 4 / 0.
-    const scenePass = pass(this.scene, this.camera, { samples: high ? 4 : 0 });
+    // Scene pass: HDR HalfFloat target, MSAA on the tiers that ask for it (the renderer itself is
+    // created without antialias so nothing else is multisampled). The WebGPU backend only supports
+    // 1 or 4 samples, hence the table's 4 / 0.
+    const scenePass = pass(this.scene, this.camera, { samples: spec.msaa });
     this.scenePass = scenePass;
     // Every pass target is read through `sanitize`: min / max return the non-NaN operand, so a NaN
     // or Inf texel written by a material becomes 0 / HDR_MAX here instead of poisoning the bloom
     // blur (one NaN at a coarse mip upsamples to a big black rectangle) or the tone map.
     const sanitize = (c: Node<'vec4'>): Vec3Node => c.rgb.max(0.0).min(HDR_MAX);
     let hdr: Vec3Node = sanitize(scenePass.getTextureNode('output'));
-    if (high) {
+    if (spec.bloom) {
       // Bloom reads the emissive MRT target (cleared to black), so only tagged emitters glow.
       // Lit materials without an mrtNode (ball, car bodies) write their emissiveNode through this
       // pass-level MRT, raw: clamp it like glowMrt() does so a NaN / Inf / negative emissive term
@@ -529,24 +540,25 @@ export class Renderer {
       // member keeps three's default NoBlending for this target.
       scenePass.setMRT(mrt({ output, emissive: emissive.max(0.0).min(GLOW_MAX) }).setClearColor('emissive', 0x000000, 0));
       const bloomPass = bloom(vec4(sanitize(scenePass.getTextureNode('emissive')), 1.0), 0.5, 0.45, 0);
-      // Three mips give a tight glow (mips 3-4 are only ~1.5% of the blur fill, so this is
-      // a look choice, not a saving). `_nMips` is private to BloomNode; three is pinned to 0.186.x.
+      // Three mips (the table's bloomMips) give a tight glow (mips 3-4 are only ~1.5% of the blur
+      // fill, so this is a look choice, not a saving). `_nMips` is private to BloomNode; three is
+      // pinned to 0.186.x.
       const mips = bloomPass as unknown as { _nMips?: number };
-      if (typeof mips._nMips === 'number') mips._nMips = 3;
+      if (typeof mips._nMips === 'number') mips._nMips = spec.bloomMips;
       else console.warn('BloomNode private API changed; bloom falls back to 5 mips');
       this.bloomPass = bloomPass;
       hdr = hdr.add(sanitize(bloomPass));
     }
 
     // Subtle vignette in HDR, then tone mapping + sRGB once (outputColorTransform is off so the
-    // FXAA pass at quality 1 runs on the final LDR image, which is what it expects).
+    // FXAA pass of the tiers without MSAA runs on the final LDR image, which is what it expects).
     const uvc = screenUV.sub(0.5).mul(vec2(1.0, 0.8));
     const vignette = oneMinus(smoothstep(0.45, 1.1, length(uvc).mul(1.6)).mul(0.32));
     const shaded = vec4(hdr.mul(vignette), 1.0);
     const ldr = renderOutput(shaded);
     const pipeline = new THREE.RenderPipeline(this.gpu);
     pipeline.outputColorTransform = false;
-    pipeline.outputNode = high ? ldr : fxaa(ldr);
+    pipeline.outputNode = spec.msaa > 0 ? ldr : fxaa(ldr);
     this.pipeline = pipeline;
     this.resize();
   }
@@ -637,7 +649,7 @@ export class Renderer {
  * stars (a few peak above 1 and bloom), a warm city glow with a noisy skyline at the horizon and a
  * thin drifting cloud band. Drawn LAST among opaques (renderOrder 1000, depth tested, no depth
  * write) so it only shades the pixels the arena left uncovered: zero overdraw from inside the
- * shell, and it fills the view through the glass. Shown at both quality tiers.
+ * shell, and it fills the view through the glass. Shown on every quality tier.
  */
 function buildSkyDome(): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(SKY_RADIUS, 24, 12);

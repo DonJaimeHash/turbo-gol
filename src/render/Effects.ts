@@ -42,6 +42,7 @@ import { BALL } from '../sim/constants';
 import { simRotMatToQuat, simToThree, simVecLerpFromBuf } from './coords';
 import { BOOST_NOZZLE_X, BOOST_NOZZLE_Y, BOOST_NOZZLE_Z, TEAM_GLOW } from './Car';
 import { BRAND_LIME, glowMrt } from './materials';
+import { tier, type Quality } from './quality';
 
 const TWO_PI = Math.PI * 2;
 const GRAVITY = 650; // uu/s^2, the sim's gravity
@@ -188,7 +189,8 @@ function createRibbonMaterial(): THREE.MeshBasicNodeMaterial {
 
 export class Effects {
   private readonly scene: THREE.Scene;
-  private readonly quality: 0 | 1;
+  /** High detail (TierSpec.detail): fuller bursts and boost embers. */
+  private readonly hi: boolean;
   /** Pool size. */
   private readonly n: number;
   private readonly mesh: THREE.InstancedMesh;
@@ -287,10 +289,11 @@ export class Effects {
   private pendingHitSpeed = -1;
   private disposed = false;
 
-  constructor(scene: THREE.Scene, quality: 0 | 1) {
+  constructor(scene: THREE.Scene, quality: Quality) {
     this.scene = scene;
-    this.quality = quality;
-    const n = quality === 0 ? 1536 : 512;
+    const spec = tier(quality);
+    this.hi = spec.detail === 'high';
+    const n = spec.particles;
     this.n = n;
 
     this.pos = new Float32Array(n * 3);
@@ -384,7 +387,7 @@ export class Effects {
     // Rings.
     this.ringMat = createRingMaterial();
     this.ringMat.name = 'fx-rings';
-    this.rings = new THREE.InstancedMesh(new THREE.RingGeometry(0.86, 1, quality === 0 ? 64 : 40, 1), this.ringMat, RING_SLOTS);
+    this.rings = new THREE.InstancedMesh(new THREE.RingGeometry(0.86, 1, this.hi ? 64 : 40, 1), this.ringMat, RING_SLOTS);
     this.rings.name = 'fx-rings';
     this.rings.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.rings.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(RING_SLOTS * 3), 3);
@@ -453,7 +456,7 @@ export class Effects {
     const r = this.teamGlow[gi] * 0.75 + 0.25;
     const g = this.teamGlow[gi + 1] * 0.75 + 0.25;
     const b = this.teamGlow[gi + 2] * 0.75 + 0.25;
-    const hi = this.quality === 0;
+    const hi = this.hi;
     this.burst(_p.x, _p.y, _p.z, hi ? 200 : 110, r * 1.4, g * 1.4, b * 1.4, 500, 2000, 0.25, 5, 14, 0.9, 1.6, 0.55, 0.8, 22, 0);
 
     // Confetti: slow tumbling flakes in team glow / white / brand lime.
@@ -642,7 +645,7 @@ export class Effects {
       this.ribbonStyle(e + 3, BOOST_RIBBON_WIDTH, BOOST_RIBBON_LIFE, tr, tg, tb);
       this.ribbonEmit(e + 3, _rear2.x, _rear2.y, _rear2.z);
 
-      const acc = this.slotBoostAcc[slot] + (this.quality === 0 ? 35 : 20) * dt;
+      const acc = this.slotBoostAcc[slot] + (this.hi ? 35 : 20) * dt;
       const count = Math.floor(acc);
       this.slotBoostAcc[slot] = acc - count;
       const cr = this.teamGlow[gi] * 1.25;
@@ -688,7 +691,7 @@ export class Effects {
    * A demolished car blows up at its last live position (slotLast): a hot white core, rising
    * orange flames, fast team-coloured sparks, embers that arc out and bounce on the floor, a few
    * dim haze puffs (additive, so lit smoke rather than dark smoke), a ground shockwave and a flash
-   * shell. Everything inherits 30 % of the car's velocity. About 140 particles (60 at quality 1).
+   * shell. Everything inherits 30 % of the car's velocity. About 140 particles (60 at low detail).
    */
   private explode(slot: number, team: number): void {
     const l6 = slot * 6;
@@ -702,7 +705,7 @@ export class Effects {
     const tr = this.teamGlow[gi];
     const tg = this.teamGlow[gi + 1];
     const tb = this.teamGlow[gi + 2];
-    const hi = this.quality === 0;
+    const hi = this.hi;
     // Core, flames, deep red flames, sparks, embers, haze.
     this.burst(x, y, z, hi ? 10 : 5, 2.2, 1.45, 0.6, 30, 220, 0.3, 24, 40, 0.2, 0.36, -0.1, 4, 0, 0, vx, vy, vz);
     this.burst(x, y, z, hi ? 40 : 18, 2.0, 0.55, 0.08, 150, 650, 0.45, 14, 30, 0.45, 0.85, -0.35, 2.2, 0, 0, vx, vy, vz);

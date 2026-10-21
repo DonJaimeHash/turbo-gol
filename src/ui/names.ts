@@ -7,6 +7,7 @@ import { t } from '../i18n';
 import type { Playlist, RegionId } from '../net/account';
 import type { Tier } from '../net/rating';
 import type { Difficulty } from '../render/Hud';
+import type { Quality } from '../render/quality';
 
 export function playlistName(p: Playlist): string {
   return t(`playlist.${p}`);
@@ -18,6 +19,11 @@ export function regionName(id: RegionId): string {
 
 export function difficultyName(d: Difficulty): string {
   return t(`difficulty.${d}`);
+}
+
+/** A graphics quality tier: 'Performance', 'High', 'Ultra'. */
+export function qualityName(q: Quality): string {
+  return t(`quality.${q}`);
 }
 
 const ROMAN = ['I', 'II', 'III'];

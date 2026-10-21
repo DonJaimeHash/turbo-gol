@@ -16,8 +16,8 @@
  *
  * Draw calls per car: body (1 merged geometry) + wheels (1 InstancedMesh, 4 instances) + flame
  * (1, only while boosting / supersonic; both jets, their nozzle discs and the underglow are ONE
- * merged geometry driven by uniforms) + ground blob (1, only while airborne at quality 0 / when
- * visible at 1). Materials: ONE MeshPhysicalNodeMaterial shared by all cars (surface properties
+ * merged geometry driven by uniforms) + ground blob (1, only while airborne at high detail / when
+ * visible at low detail, see TierSpec.detail). Materials: ONE MeshPhysicalNodeMaterial shared by all cars (surface properties
  * live in vertex attributes: `color` = linear base colour, `aMat` = (metalness, roughness,
  * emissive, paintMix); clearcoat, the two-tone split, the pinstripe and the chevrons are derived
  * from them in TSL) plus one additive flame material and one blob material per car.
@@ -61,6 +61,7 @@ import {
 } from '../sim/types';
 import { simRotMatToQuat, simVecLerpFromBuf } from './coords';
 import { BRAND_LIME, glowMrt, lineMask, linearVec3, noGlowMrt } from './materials';
+import { tier, type Quality, type TierSpec } from './quality';
 
 /**
  * Team paint (sRGB hex), indexed by Team (0 blue, 1 red). The blue is the lighter of the two
@@ -249,7 +250,7 @@ function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number
   const jet = attribute('aJet', 'float');
   const isCone = part.lessThan(1.5);
   const isDisc = part.lessThan(2.5);
-  // Jets: 1 at the tip, 0 at the base. Saturated because with MSAA (quality 0) varyings are
+  // Jets: 1 at the tip, 0 at the base. Saturated because with MSAA (tiers with msaa 4) varyings are
   // interpolated at the pixel centre, which lies OUTSIDE the triangle for partially covered edge
   // pixels: past the tip `uv.y` extrapolates above 1 and pow() of the negative 1 - t is NaN. One
   // NaN texel in the glow target blurs through the bloom mips into a big black rectangle.
@@ -450,9 +451,9 @@ function tube(ax: number, ay: number, az: number, bx: number, by: number, bz: nu
  * 120 x 39 x 87 uu) and translated to the car origin at the end. A final guard squeezes the body
  * into the hitbox (minus a margin) should a preset ever be smaller than the design.
  */
-function buildBodyGeometry(cfg: CarConfigInfo, team: Team, quality: 0 | 1): THREE.BufferGeometry {
+function buildBodyGeometry(cfg: CarConfigInfo, team: Team, detail: TierSpec['detail']): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const hi = quality === 0;
+  const hi = detail === 'high';
   const L = cfg.hitboxSize[0];
   const W = cfg.hitboxSize[1];
   const H = cfg.hitboxSize[2];
@@ -639,9 +640,9 @@ function buildBodyGeometry(cfg: CarConfigInfo, team: Team, quality: 0 | 1): THRE
  * off-road tyre (carcass, sidewalls, staggered tread blocks), dark six-spoke rim over a dish, a
  * light beadlock ring with bolts on both faces and a team-coloured hub cap.
  */
-function buildWheelGeometry(width: number, quality: 0 | 1, team: Team): THREE.BufferGeometry {
+function buildWheelGeometry(width: number, detail: TierSpec['detail'], team: Team): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const hi = quality === 0;
+  const hi = detail === 'high';
   const seg = hi ? 24 : 14;
   const seg2 = hi ? 18 : 10;
   const hw = width * 0.5;
@@ -799,7 +800,8 @@ export class CarView {
   readonly config: CarConfigInfo;
 
   private readonly scene: THREE.Scene;
-  private readonly quality: 0 | 1;
+  /** High geometry detail: the shadow map grounds the car, the blob only shows once airborne (updateBlob). */
+  private readonly blobOnlyAirborne: boolean;
   private readonly body: THREE.Mesh;
   private readonly wheels: THREE.InstancedMesh;
   private readonly flame: THREE.Mesh;
@@ -821,18 +823,19 @@ export class CarView {
   private warmBlob = false;
   private warmBlobOpacity = 0;
 
-  constructor(scene: THREE.Scene, config: CarConfigInfo, team: Team, quality: 0 | 1) {
+  constructor(scene: THREE.Scene, config: CarConfigInfo, team: Team, quality: Quality) {
     this.scene = scene;
     this.config = config;
     this.team = team;
-    this.quality = quality;
+    const detail = tier(quality).detail;
+    this.blobOnlyAirborne = detail === 'high';
     this.position = this.root.position;
     this.quaternion = this.root.quaternion;
     this.root.name = team === 0 ? 'car-blue' : 'car-red';
 
     const material = acquireCarMaterial();
 
-    this.body = new THREE.Mesh(buildBodyGeometry(config, team, quality), material);
+    this.body = new THREE.Mesh(buildBodyGeometry(config, team, detail), material);
     this.body.castShadow = true;
     this.body.receiveShadow = true;
     this.root.add(this.body);
@@ -840,7 +843,7 @@ export class CarView {
     const wheelOuter = Math.min(WHEEL_OUTER, config.hitboxSize[1] * 0.5 - 2.5);
     this.track[0] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - config.frontWheelOffset[1]);
     this.track[1] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - config.backWheelOffset[1]);
-    this.wheels = new THREE.InstancedMesh(buildWheelGeometry(WHEEL_WIDTH, quality, team), material, 4);
+    this.wheels = new THREE.InstancedMesh(buildWheelGeometry(WHEEL_WIDTH, detail, team), material, 4);
     this.wheels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.wheels.castShadow = true;
     this.wheels.receiveShadow = true;
@@ -998,7 +1001,7 @@ export class CarView {
 
   /**
    * Ground blob under the hitbox centre: grows and fades with height (0..BLOB_MAX_HEIGHT), fades
-   * out on walls/ceiling (car up vector), and at quality 0 only appears once the car is airborne
+   * out on walls/ceiling (car up vector), and at high detail only appears once the car is airborne
    * (the shadow map handles grounded cars there).
    */
   private updateBlob(cur: Float32Array, r: number): void {
@@ -1008,7 +1011,7 @@ export class CarView {
     const k = h > 0 ? Math.min(1, h / BLOB_MAX_HEIGHT) : 0; // NaN-safe: a bad height collapses to 0, never a NaN scale
     const upY = rotValid(cur, r) ? cur[r + 8] : 1; // sim up.z = three up.y
     let op = (0.5 - 0.38 * k) * clamp(upY, 0, 1);
-    if (this.quality === 0) op *= smooth01(h, 20, 45);
+    if (this.blobOnlyAirborne) op *= smooth01(h, 20, 45);
     if (op <= 0.01) {
       this.blob.visible = false;
       return;

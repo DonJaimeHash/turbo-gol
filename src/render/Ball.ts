@@ -37,6 +37,7 @@ import { B_ANG_VEL, B_POS, BALL_OFFSET } from '../sim/types';
 import { BALL } from '../sim/constants';
 import { simVecLerpFromBuf } from './coords';
 import { BRAND_LIME, boxSdf, noGlowMrt } from './materials';
+import { tier, type Quality } from './quality';
 
 /** Seam surface z = SEAM_K (x^2 - y^2): larger swings the band further from the equator. */
 const SEAM_K = 1.3;
@@ -136,10 +137,11 @@ export class BallView {
   private warmMarker = false;
   private warmMarkerOpacity = 0;
 
-  constructor(scene: THREE.Scene, quality: 0 | 1) {
+  constructor(scene: THREE.Scene, quality: Quality) {
     this.scene = scene;
-    const widthSeg = quality === 0 ? 48 : 28;
-    const heightSeg = quality === 0 ? 32 : 18;
+    const hi = tier(quality).detail === 'high';
+    const widthSeg = hi ? 48 : 28;
+    const heightSeg = hi ? 32 : 18;
     this.material = createBallMaterial();
     this.root = new THREE.Mesh(new THREE.SphereGeometry(BALL.visualRadius, widthSeg, heightSeg), this.material);
     this.root.name = 'ball';
@@ -164,7 +166,7 @@ export class BallView {
     this.blob.position.y = 0.8;
     scene.add(this.blob);
 
-    const ringGeo = new THREE.RingGeometry(BALL.visualRadius - MARKER_THICKNESS, BALL.visualRadius, quality === 0 ? 48 : 32, 1);
+    const ringGeo = new THREE.RingGeometry(BALL.visualRadius - MARKER_THICKNESS, BALL.visualRadius, hi ? 48 : 32, 1);
     ringGeo.rotateX(-Math.PI / 2); // lie flat on the floor
     this.markerMat = new THREE.MeshBasicNodeMaterial();
     this.markerMat.color.setHex(0xffffff);

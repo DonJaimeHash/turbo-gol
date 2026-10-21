@@ -29,6 +29,7 @@ import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
 import type { Difficulty } from '../render/Hud';
+import type { Quality } from '../render/quality';
 import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 
 export type SearchKind = 'casual' | 'ranked';
@@ -75,8 +76,8 @@ export interface MenuHost {
   bearer(): Promise<string>;
   readonly mode: GameMode;
   readonly difficulty: Difficulty;
-  quality: 0 | 1;
-  setQuality(q: 0 | 1): void;
+  quality: Quality;
+  setQuality(q: Quality): void;
   /** An offline friendly match against the bots. */
   playFriendly(mode: GameMode, difficulty: Difficulty): void;
   startTraining(id: string): void;

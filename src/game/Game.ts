@@ -92,7 +92,9 @@ import { CarView } from '../render/Car';
 import { Effects } from '../render/Effects';
 import { Hud, type ClockMode, type OnlineKind, type ScoreboardData, type ScoreboardRow } from '../render/Hud';
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
-import { Renderer, type Quality } from '../render/Renderer';
+import { Renderer } from '../render/Renderer';
+import { parseQuality, type Quality } from '../render/quality';
+import { DEFAULT_THEME, parseTheme, type ThemeId } from '../render/theme';
 import { loadSettings, saveSettings, type Settings } from '../settings';
 import type { ArenaMesh } from '../sim/arenaMesh';
 import { BOOST_PADS_BIG, BOOST_PADS_SMALL, MODES, type GameMode } from '../sim/constants';
@@ -176,13 +178,16 @@ export interface GameOptions {
 
 export interface GamePrefs {
   difficulty: Difficulty;
+  /** Saved as the tier name; saves from before the third tier hold 0 / 1 (parseQuality reads both). */
   quality: Quality;
   mode: GameMode;
   /**
    * The player picked the quality in the menu. Phones and tablets (coarse pointer) start on the
-   * light tier (1) and only keep a saved tier the player chose, not one saved under the old default.
+   * light tier ('low') and only keep a saved tier the player chose, not one saved under the old default.
    */
   qualitySet: boolean;
+  /** Stadium theme (src/render/theme.ts); the menu row to pick it comes with the themes. */
+  theme: ThemeId;
 }
 
 /**
@@ -317,10 +322,10 @@ const SCOREBOARD_DIFFICULTY: Readonly<Record<Difficulty, string>> = {
 const SCOREBOARD_ONLINE = t('game.scoreboardOnline');
 const SCOREBOARD_ONLINE_P2P = t('game.scoreboardOnlineP2p');
 
-/** Read the saved difficulty / quality / mode (falls back to defaults when storage is unavailable). */
+/** Read the saved difficulty / quality / mode / theme (falls back to defaults when storage is unavailable). */
 export function loadPrefs(): GamePrefs {
   const touch = hasCoarsePointer();
-  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 1 : 0, mode: '1v1', qualitySet: false };
+  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 'low' : 'high', mode: '1v1', qualitySet: false, theme: DEFAULT_THEME };
   try {
     const raw = window.localStorage.getItem(PREFS_KEY);
     if (raw !== null) {
@@ -329,8 +334,10 @@ export function loadPrefs(): GamePrefs {
         prefs.difficulty = parsed.difficulty;
       }
       prefs.qualitySet = parsed.qualitySet === true;
-      if ((parsed.quality === 0 || parsed.quality === 1) && (!touch || prefs.qualitySet)) prefs.quality = parsed.quality;
+      const quality = parseQuality(parsed.quality);
+      if (quality !== null && (!touch || prefs.qualitySet)) prefs.quality = quality;
       if (isGameMode(parsed.mode)) prefs.mode = parsed.mode;
+      prefs.theme = parseTheme(parsed.theme) ?? DEFAULT_THEME;
     }
   } catch {
     /* private mode / storage disabled */
@@ -443,6 +450,8 @@ export class Game implements P2PGameHooks {
 
   paused = false;
   quality: Quality;
+  /** Stadium theme (GamePrefs.theme): the views read it when they are built (setTheme). */
+  theme: ThemeId;
   /** The player picked the quality in the menu (GamePrefs.qualitySet). */
   private qualitySet: boolean;
   difficulty: Difficulty;
@@ -601,6 +610,7 @@ export class Game implements P2PGameHooks {
     this.playerCarId = opts.playerCarId;
     this.mode = opts.mode ?? '1v1';
     this.quality = opts.renderer.quality;
+    this.theme = opts.renderer.theme;
     this.difficulty = opts.difficulty ?? 'medium';
     this.qualitySet = opts.qualitySet ?? false;
     this.info = opts.info ?? '';
@@ -742,7 +752,7 @@ export class Game implements P2PGameHooks {
       get quality() {
         return game.quality;
       },
-      set quality(q: 0 | 1) {
+      set quality(q: Quality) {
         game.setQuality(q);
       },
       setQuality: (q) => game.setQuality(q),
@@ -1639,8 +1649,9 @@ export class Game implements P2PGameHooks {
    * hidden (boost flames, ball ground marker, particles, goal ring / flash) are made renderable for
    * one synchronous render so their shaders are built now rather than at the first boost, first
    * airborne ball or first goal (measured: 60-150 ms presentation stalls at exactly those moments).
-   * Must run through the real render path: at quality 0 the scene is drawn by the bloom pass into
-   * its own render target, so renderer.gpu.compileAsync(scene, camera) builds the wrong variants.
+   * Must run through the real render path: the scene is drawn by the pipeline's scene pass into its
+   * own render target (MRT on tiers with bloom), so renderer.gpu.compileAsync(scene, camera) builds
+   * the wrong variants.
    * While the loop is running (setQuality) the same happens on the next loop frame via warmFrames.
    */
   warmUp(): void {
@@ -1707,6 +1718,18 @@ export class Game implements P2PGameHooks {
   }
 
   /**
+   * Switch the stadium theme: stored, saved with the prefs and handed to the renderer. A stub for
+   * now: no view reads the theme yet (the themes phase of docs/visuals/REWORK.md re-bakes the sky
+   * and rewrites uniforms in place, without rebuilding the views).
+   */
+  setTheme(theme: ThemeId): void {
+    if (theme === this.theme) return;
+    this.theme = theme;
+    this.renderer.setTheme(theme);
+    this.persistPrefs();
+  }
+
+  /**
    * Switch the game mode (1v1 / 2v2 / 3v3). Only from the menu: the bots are removed from the sim
    * and the new roster is added (`addRoster`), the car views / effects registrations / bot slots
    * are rebuilt, everything goes back to kickoff and the camera snaps. Ignored during a match.
@@ -1744,7 +1767,7 @@ export class Game implements P2PGameHooks {
   }
 
   private persistPrefs(): void {
-    savePrefs({ difficulty: this.difficulty, quality: this.quality, mode: this.mode, qualitySet: this.qualitySet });
+    savePrefs({ difficulty: this.difficulty, quality: this.quality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme });
   }
 
   setPaused(p: boolean): void {
@@ -2476,7 +2499,7 @@ export class Game implements P2PGameHooks {
 
   private buildViews(q: Quality): void {
     const scene = this.renderer.scene;
-    this.arena = new ArenaView(scene, this.arenaMesh, q);
+    this.arena = new ArenaView(scene, this.arenaMesh, q, this.theme);
     this.ball = new BallView(scene, q);
     this.buildCarViews(q);
     this.placeViews();

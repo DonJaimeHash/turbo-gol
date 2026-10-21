@@ -85,8 +85,8 @@ import {
   type Vec2Node,
   type Vec3Node,
 } from './materials';
-
-export type Quality = 0 | 1;
+import { tier, type Quality } from './quality';
+import type { ThemeId } from './theme';
 
 /**
  * Tolerant view of the sim's triangle-mesh records (sim coords, uu). The sim owner may name the
@@ -175,10 +175,16 @@ export class ArenaView {
   private readonly smallStateAttr: THREE.InstancedBufferAttribute;
   private readonly disposables: Disposable[] = [];
 
-  constructor(scene: THREE.Scene, mesh: ArenaMesh, quality: Quality) {
+  /**
+   * Build the arena for a quality tier (the tier table's `detail` and `netDetail`) and a stadium
+   * theme (no view reads it yet: the themes phase of docs/visuals/REWORK.md does).
+   */
+  constructor(scene: THREE.Scene, mesh: ArenaMesh, quality: Quality, theme: ThemeId) {
     this.scene = scene;
     const m = mesh as unknown as ArenaMeshLike;
-    const high = quality === 0;
+    const spec = tier(quality);
+    const high = spec.detail === 'high';
+    void theme;
 
     // ---- Floor (the sim's exact floor fan when available, else a plane) ------------------------
     let floorGeo: THREE.BufferGeometry;
@@ -197,7 +203,7 @@ export class ArenaView {
     // ---- Shell + ceiling: dark glass (transparent, drawn first among transparents) --------------
     const shellData = m.shell ?? m.walls;
     const shellGeo = toGeometry(shellData, 'shell', 0, ARENA.height * 0.5, 0);
-    this.shell = new THREE.Mesh(shellGeo, buildGlassMaterial(high, false));
+    this.shell = new THREE.Mesh(shellGeo, buildGlassMaterial(spec.netDetail, false));
     this.shell.castShadow = false;
     this.shell.receiveShadow = false;
     this.shell.matrixAutoUpdate = false;
@@ -213,7 +219,7 @@ export class ArenaView {
       ceilGeo.rotateX(Math.PI / 2); // normal -y: visible from inside only
       ceilGeo.translate(0, ARENA.height - 4, 0);
     }
-    const ceiling = new THREE.Mesh(ceilGeo, buildGlassMaterial(high, true));
+    const ceiling = new THREE.Mesh(ceilGeo, buildGlassMaterial(spec.netDetail, true));
     ceiling.castShadow = false;
     ceiling.receiveShadow = false;
     ceiling.matrixAutoUpdate = false;
@@ -868,11 +874,12 @@ function buildFloorMaterial(timeU: FloatUniform): THREE.MeshStandardNodeMaterial
 
 /**
  * Dark glass for the shell (walls) and the ceiling: almost transparent, the stadium shows through;
- * fresnel brightens grazing views; a faint hex panel mesh only reads near the camera / at grazing
- * angles (walls only; skipped at quality 1); bright white-cyan frames run where the glass meets the
- * floor ramp and where it meets the ceiling arc (HDR, they bloom). Rough glass reflects the env map.
+ * fresnel brightens grazing views; a faint hex panel mesh only reads near the camera (tiers with
+ * netDetail) and at grazing angles (walls only); bright white-cyan frames run where the glass meets
+ * the floor ramp and where it meets the ceiling arc (HDR, they bloom). Rough glass reflects the env
+ * map.
  */
-function buildGlassMaterial(high: boolean, ceiling: boolean): THREE.MeshStandardNodeMaterial {
+function buildGlassMaterial(netDetail: boolean, ceiling: boolean): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({
     roughness: 0.12,
     metalness: 0,
@@ -896,7 +903,7 @@ function buildGlassMaterial(high: boolean, ceiling: boolean): THREE.MeshStandard
       .add(hexEdgeMask(p.xz, cell, lw).mul(w.y));
     const grazing = fresnel(1.5).mul(0.6);
     let vis: FloatNode = grazing;
-    if (high) {
+    if (netDetail) {
       const near = oneMinus(smoothstep(float(700), float(2400), cameraDistance()));
       vis = max(near.mul(0.9), grazing);
     }

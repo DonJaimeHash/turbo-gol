@@ -40,6 +40,7 @@ import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/N
 import { MODES, type GameMode } from '../sim/constants';
 import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
+import { nextQuality, type Quality } from './quality';
 import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from '../game/Match';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -102,11 +103,11 @@ export interface MenuOptions {
   title?: string;
   subtitle?: string;
   difficulty: Difficulty;
-  quality: 0 | 1;
+  quality: Quality;
   /** Game mode shown in the Mode row (1v1 / 2v2 / 3v3). */
   mode: GameMode;
-  onPlay: (difficulty: Difficulty, quality: 0 | 1, mode: GameMode) => void;
-  onQualityChange?: (quality: 0 | 1) => void;
+  onPlay: (difficulty: Difficulty, quality: Quality, mode: GameMode) => void;
+  onQualityChange?: (quality: Quality) => void;
   onDifficultyChange?: (difficulty: Difficulty) => void;
   /** The Mode row changed (arrows, M, pad left / right); the Game rebuilds the roster at once. */
   onModeChange?: (mode: GameMode) => void;
@@ -151,7 +152,7 @@ export interface MenuOptions {
  * Gamepad / input layer routes these while the menu is shown (the keyboard goes through the
  * Hud's own listener). 'settings' = open the settings screen (next tab while inside it),
  * 'back' = leave the settings screen, 'up' / 'down' = move the focus, 'mode' = next game mode
- * (M), 'quality' = toggle the quality tier (Q).
+ * (M), 'quality' = the next quality tier (Q: low -> high -> ultra -> low).
  */
 export type MenuAction = 'accept' | 'left' | 'right' | 'quality' | 'mode' | 'settings' | 'up' | 'down' | 'back' | 'online';
 
@@ -436,7 +437,7 @@ export class Hud {
   private readonly mainRing = new FocusRing();
   private menuOptions: MenuOptions | null = null;
   private difficulty: Difficulty = 'medium';
-  private quality: 0 | 1 = 0;
+  private quality: Quality = 'high';
   private mode: GameMode = '1v1';
   private debug = false;
 
@@ -1048,7 +1049,7 @@ export class Hud {
     return this.difficulty;
   }
 
-  get selectedQuality(): 0 | 1 {
+  get selectedQuality(): Quality {
     return this.quality;
   }
 
@@ -1144,10 +1145,11 @@ export class Hud {
    * Route gamepad / keyboard navigation to the menu (no-op while hidden or while a rebind
    * capture is running). Main menu: up/down move the focus (PLAY, Difficulty, Mode, Quality,
    * Controls & settings), accept activates the focused row (PLAY by default), left/right change
-   * the focused row's value (difficulty / mode; toggle quality on its row), 'mode' (M) cycles the
-   * mode, 'quality' (Q) toggles quality, 'settings' opens the settings screen. Settings screen:
-   * up/down focus, left/right adjust (tabs on the tab strip), accept activates (rebind / toggle /
-   * button), 'settings' or 'quality' = next tab, back closes ('mode' does nothing there).
+   * the focused row's value (difficulty / mode; the next quality tier on its row), 'mode' (M)
+   * cycles the mode, 'quality' (Q) steps to the next quality tier, 'settings' opens the settings
+   * screen. Settings screen: up/down focus, left/right adjust (tabs on the tab strip), accept
+   * activates (rebind / toggle / button), 'settings' or 'quality' = next tab, back closes ('mode'
+   * does nothing there).
    */
   menuAction(action: MenuAction): void {
     if (!this.menuVisible || this.menuOptions === null || this.captureRow !== null) return;
@@ -1381,8 +1383,9 @@ export class Hud {
     if (opts !== null && opts.onDifficultyChange) opts.onDifficultyChange(this.difficulty);
   }
 
+  /** The next tier in menu order (Q, a click or left / right on the Quality row): low -> high -> ultra -> low. */
   private toggleQuality(): void {
-    this.quality = this.quality === 0 ? 1 : 0;
+    this.quality = nextQuality(this.quality);
     this.refreshMenu();
     const opts = this.menuOptions;
     if (opts !== null && opts.onQualityChange) opts.onQualityChange(this.quality);
@@ -1392,7 +1395,7 @@ export class Hud {
   private refreshMenu(): void {
     if (this.menuDifficulty !== null) this.menuDifficulty.textContent = this.difficulty.toUpperCase();
     if (this.menuMode !== null) this.menuMode.textContent = this.mode.toUpperCase();
-    if (this.menuQuality !== null) this.menuQuality.textContent = this.quality === 0 ? 'HIGH  (Q)' : 'PERFORMANCE  (Q)';
+    if (this.menuQuality !== null) this.menuQuality.textContent = `${t(`quality.${this.quality}`).toUpperCase()}  (Q)`;
     if (this.menuInfo !== null) {
       const info = this.menuOptions?.info ?? '';
       this.menuInfo.textContent = info.length > 0 ? `${modeInfo(this.mode)}  ·  ${info}` : modeInfo(this.mode);

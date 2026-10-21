@@ -11,9 +11,10 @@ import { MODES } from '../../sim/constants';
 import type { GameMode } from '../../sim/constants';
 import { DIFFICULTIES } from '../../render/Hud';
 import type { Difficulty } from '../../render/Hud';
+import { QUALITIES, type Quality } from '../../render/quality';
 import { LOCALES, language, savedLanguage, setLanguage, systemLanguage, t } from '../../i18n';
 import type { LanguageCode } from '../../i18n';
-import { difficultyName, playlistName, tierName } from '../names';
+import { difficultyName, playlistName, qualityName, tierName } from '../names';
 import { rankBadge, ratingCard, tierById } from '../badges';
 import type { Menu, Screen } from '../Menu';
 import { cycler, primary, regionCycler, screenHead, secondary, section, tile } from './common';
@@ -327,12 +328,10 @@ export function friendlyScreen(menu: Menu): Screen {
     () => difficulty,
     (v) => (difficulty = v),
   );
-  const quality = cycler<0 | 1>(
+  // Menu order low -> high -> ultra: the right arrow steps like the Q key (nextQuality).
+  const quality = cycler<Quality>(
     t('friendly.quality'),
-    [
-      { value: 0, label: t('friendly.qualityHigh') },
-      { value: 1, label: t('friendly.qualityPerformance') },
-    ],
+    QUALITIES.map((q) => ({ value: q, label: qualityName(q) })),
     () => menu.host.quality,
     (v) => menu.host.setQuality(v),
   );

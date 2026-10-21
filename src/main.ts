@@ -80,7 +80,7 @@ async function boot(): Promise<void> {
   );
   let renderer: Renderer;
   try {
-    renderer = await Renderer.create(canvas, { quality: prefs.quality });
+    renderer = await Renderer.create(canvas, { quality: prefs.quality, theme: prefs.theme });
   } catch (err) {
     showError(t('boot.rendererFailed'), t('boot.rendererHint'), err);
     return;

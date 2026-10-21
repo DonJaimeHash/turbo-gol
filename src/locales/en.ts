@@ -26,6 +26,10 @@ export default {
   'difficulty.easy': 'Easy',
   'difficulty.medium': 'Normal',
   'difficulty.hard': 'Hard',
+  // Graphics quality tiers (src/render/quality.ts): the menus' quality row and the Q toggle
+  'quality.low': 'Performance',
+  'quality.high': 'High',
+  'quality.ultra': 'Ultra',
   'tier.bronze': 'Bronze',
   'tier.silver': 'Silver',
   'tier.gold': 'Gold',
@@ -172,8 +176,6 @@ export default {
   'friendly.mode': 'Mode',
   'friendly.difficulty': 'AI difficulty',
   'friendly.quality': 'Graphics quality',
-  'friendly.qualityHigh': 'High',
-  'friendly.qualityPerformance': 'Performance',
   'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
   'friendly.match': 'MATCH',
   // Starts the friendly match
