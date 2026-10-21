@@ -114,6 +114,12 @@ const BLOB_OPACITY_LO = 0.55;
 const BLOB_OPACITY_HI = 0.15;
 const BLOB_SCALE_HI = 1.6;
 const BLOB_MAX_HEIGHT = 1500;
+/**
+ * Height (uu) of the ground blob and the airborne marker above the floor: just above the turf, and
+ * above the grass blades (up to ~5 uu) on tiers with `grassBlades`, which would speckle them.
+ */
+const GROUND_Y = 0.8;
+const GROUND_Y_BLADES = 6;
 
 const _dq = new THREE.Quaternion();
 
@@ -293,7 +299,9 @@ export class BallView {
 
   constructor(scene: THREE.Scene, quality: Quality) {
     this.scene = scene;
-    const hi = tier(quality).detail === 'high';
+    const spec = tier(quality);
+    const hi = spec.detail === 'high';
+    const groundY = spec.grassBlades ? GROUND_Y_BLADES : GROUND_Y;
     const widthSeg = hi ? 48 : 28;
     const heightSeg = hi ? 32 : 18;
     this.material = createBallMaterial(hi);
@@ -317,7 +325,7 @@ export class BallView {
     this.blob.renderOrder = 1;
     this.blob.castShadow = false;
     this.blob.receiveShadow = false;
-    this.blob.position.y = 0.8;
+    this.blob.position.y = groundY;
     scene.add(this.blob);
 
     const ringGeo = new THREE.RingGeometry(BALL.visualRadius - MARKER_THICKNESS, BALL.visualRadius, hi ? 48 : 32, 1);
@@ -336,7 +344,7 @@ export class BallView {
     this.marker.name = 'ball-marker';
     this.marker.visible = false;
     this.marker.renderOrder = 2;
-    this.marker.position.y = 1;
+    this.marker.position.y = groundY + 0.2;
     scene.add(this.marker);
   }
 

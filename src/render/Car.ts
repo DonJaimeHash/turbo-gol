@@ -1254,6 +1254,8 @@ export class CarView {
   private readonly scene: THREE.Scene;
   /** High geometry detail: the shadow map grounds the car, the blob only shows once airborne (updateBlob). */
   private readonly blobOnlyAirborne: boolean;
+  /** Height of the blob over the floor: above the grass blades on tiers with `grassBlades`. */
+  private readonly blobY: number;
   /** Variant key of the shared car material this view holds (see acquireCarMaterial). */
   private readonly materialKey: string;
   private readonly body: THREE.Mesh;
@@ -1284,6 +1286,7 @@ export class CarView {
     const spec = tier(quality);
     const detail = spec.detail;
     this.blobOnlyAirborne = detail === 'high';
+    this.blobY = spec.grassBlades ? 6 : 0.6;
     this.position = this.root.position;
     this.quaternion = this.root.quaternion;
     this.root.name = team === 0 ? 'car-blue' : 'car-red';
@@ -1476,7 +1479,7 @@ export class CarView {
     this.blob.visible = true;
     this.blobOpacity.value = op;
     _v.set(cfg.hitboxOffset[0], 0, 0).applyQuaternion(q).add(this.root.position);
-    this.blob.position.set(_v.x, 0.6, _v.z);
+    this.blob.position.set(_v.x, this.blobY, _v.z);
     const grow = 1 + 0.3 * k;
     this.blob.scale.set(BLOB_LENGTH * grow, 1, BLOB_WIDTH * grow);
     _v.set(1, 0, 0).applyQuaternion(q);
