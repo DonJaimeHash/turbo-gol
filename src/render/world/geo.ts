@@ -1,6 +1,6 @@
 /**
  * Geometry builder for the backdrop: every solid of a skyline (land, containers, cranes, ship,
- * lighthouse, far city, rock) is appended to ONE merged world-space BufferGeometry drawn with ONE
+ * lighthouse, far city, rock, city towers and streets) is appended to ONE merged world-space BufferGeometry drawn with ONE
  * material, so a skyline is one draw call and one pipeline. Per vertex it carries what the shader
  * needs to draw patterns without textures (see bakeMaterials.ts):
  *
@@ -25,6 +25,10 @@ export const KIND = {
   ROCK: 7,
   FARCITY: 8,
   STRATA: 9,
+  /** City facades (city.ts): window grid, glass reflection, lit crown; the style is in the seed. */
+  TOWER: 10,
+  /** City ground (city.ts): the car park's wet concrete deck with bay lines, or wet asphalt streets. */
+  DECK: 11,
 } as const;
 export type Kind = (typeof KIND)[keyof typeof KIND];
 

@@ -157,6 +157,24 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     exposure: 1.0,
     grade: { contrast: 1.08, saturation: 1.1, lift: [0.004, 0, 0], gain: [1.02, 1, 0.96], vignette: 0.3 },
   },
+  // "Distrito 9": the car park's roof in a city just after sunset (world/city.ts). The sky still
+  // glows, but the pitch is lit like the night: the same two raking tower keys in a cooler LED
+  // white, all eight floodlights, a violet fill, a soaked pitch, a pink-violet haze and grade.
+  'city-dusk': {
+    id: 'city-dusk',
+    night: true,
+    keys: [
+      { dir: unit(-TOWER_X, HEAD_Y, -2900), color: [0.96, 0.97, 1.0], intensity: 2.0 },
+      { dir: unit(TOWER_X, HEAD_Y, 2900), color: [0.96, 0.97, 1.0], intensity: 1.4 },
+    ],
+    fill: { sky: [0.075, 0.05, 0.13], ground: [0.035, 0.026, 0.03], intensity: 0.75, env: 0.35 },
+    floodlights: towerFloodlights([0.96, 0.97, 1.0], 1),
+    wetness: 0.72,
+    fog: { color: [0.08, 0.05, 0.11], density: 1.6e-5 },
+    toneMapping: 'aces',
+    exposure: 1.0,
+    grade: { contrast: 1.15, saturation: 1.12, lift: [0, 0.001, 0.008], gain: [1.0, 0.98, 1.02], vignette: 0.34 },
+  },
 };
 
 /** The shared world facts of a theme (unknown or not-yet-built themes fall back to the default). */

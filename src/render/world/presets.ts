@@ -3,7 +3,7 @@
  * two cloud layers), the light the backdrop geometry receives, the sea and the environment
  * extras. A preset is DATA only: the same generators and shaders read it, so a theme switch writes
  * these numbers into uniforms and re-bakes the cube map (never a recompile). `skyline` picks the
- * geometry generator (harbour.ts / canyon.ts).
+ * geometry generator (harbour.ts / canyon.ts / city.ts).
  *
  * The facts other views share (key lights, fill, floodlights, fog, grade) live in ../theme.ts;
  * the fog density and colour of the stadium come from there, the aerial haze of the backdrop from
@@ -15,7 +15,7 @@
  */
 import type { Rgb, ThemeId } from '../theme';
 
-export type SkylineId = 'harbour' | 'canyon';
+export type SkylineId = 'harbour' | 'canyon' | 'city';
 
 export interface CloudPreset {
   /** 0 clear .. 1 overcast. */
@@ -139,6 +139,31 @@ const PRESETS: Readonly<Partial<Record<ThemeId, WorldPreset>>> = {
     sea: { color: [0.02, 0.02, 0.02], rough: 1.0 },
     envTurf: [0.1, 0.12, 0.05],
     envLamp: 18,
+  },
+
+  // "Distrito 9": the car park's roof in the middle of a city just after sunset (city.ts). The sun
+  // is a degree above the horizon behind the far goal's skyline (hidden by the towers: only its
+  // glow shows); a deep violet sky, clouds lit pink and orange from below, the first stars. A light
+  // haze: the towers keep their navy glass and lit windows instead of fading into the warm glow.
+  'city-dusk': {
+    skyline: 'city',
+    zenith: [0.004, 0.006, 0.032],
+    mid: [0.012, 0.02, 0.09],
+    horizon: [0.12, 0.06, 0.15],
+    glow: { color: [0.3, 0.1, 0.045], az: 6, spread: 0.4, height: 0.08 },
+    key: { az: 6, el: 1.2, color: [1.0, 0.45, 0.25], disc: 20, sizeDeg: 1.0, halo: 0.04, halo2: 0.08, moon: false, light: [0.06, 0.03, 0.03] },
+    ambSky: [0.035, 0.03, 0.08],
+    ambGround: [0.02, 0.014, 0.016],
+    stars: 0.25,
+    clouds: { cover: 0.4, scale: 0.6, height: 0.085, lit: [0.045, 0.04, 0.09], shadow: [0.012, 0.013, 0.036], under: [0.7, 0.22, 0.13], alpha: 0.9, stretch: 1.3 },
+    cirrus: { cover: 0.48, scale: 0.34, height: 0.24, lit: [0.05, 0.045, 0.1], shadow: [0.018, 0.02, 0.055], under: [0.26, 0.09, 0.08], alpha: 0.5, stretch: 3.2 },
+    hazeHeight: 3400,
+    hazeGain: 0.35,
+    lights: 1.0,
+    windows: 0.62,
+    sea: { color: [0.004, 0.004, 0.006], rough: 1.0 },
+    envTurf: [0.03, 0.06, 0.035],
+    envLamp: 40,
   },
 };
 
