@@ -188,7 +188,6 @@ test('every tier has a menu label in English and Spanish', () => {
 test('every theme has a menu name in English and Spanish (the stadium row of the Friendly screen)', () => {
   const names = {
     'harbour-night': ['Night harbour', 'Puerto de noche'],
-    'harbour-day': ['Harbour by day', 'Puerto de día'],
     'canyon-sunset': ['Red canyon', 'Cañón rojo'],
     'alpine-day': ['Alpine valley', 'Valle alpino'],
   };

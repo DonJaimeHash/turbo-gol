@@ -32,7 +32,6 @@ export default {
   'quality.ultra': 'Ultra',
   // Stadium themes (src/render/theme.ts): the Friendly screen's stadium row
   'theme.harbour-night': 'Night harbour',
-  'theme.harbour-day': 'Harbour by day',
   'theme.canyon-sunset': 'Red canyon',
   'theme.alpine-day': 'Alpine valley',
   'tier.bronze': 'Bronze',

@@ -34,7 +34,6 @@ const NIGHT: TurfLook = { tint: [1.45, 0.9, 0.72], dry: 0.05, stripes: 0.3, pool
 /** Per theme (every ThemeId has one; turfLook falls back to the night look for an unknown id). */
 export const TURF_LOOKS: Readonly<Record<ThemeId, TurfLook>> = {
   'harbour-night': NIGHT,
-  'harbour-day': { tint: [1.03, 1.03, 0.88], dry: 0.12, stripes: 0.32, pools: 0, streaks: 0.6, puddles: 0.3, team: 1 },
   'canyon-sunset': { tint: [1.08, 0.98, 0.84], dry: 0.45, stripes: 0.28, pools: 0.25, streaks: 0.5, puddles: 0.1, team: 1 },
   'alpine-day': { tint: [1.0, 1.07, 0.84], dry: 0.06, stripes: 0.36, pools: 0, streaks: 0.4, puddles: 0.15, team: 1 },
 };

@@ -24,7 +24,6 @@ export type Place = 'harbour' | 'canyon' | 'alpine';
 /** The place each theme stands in (the harbour by night and by day share one set). */
 export const THEME_PLACE: Readonly<Record<ThemeId, Place>> = {
   'harbour-night': 'harbour',
-  'harbour-day': 'harbour',
   'canyon-sunset': 'canyon',
   'alpine-day': 'alpine',
 };

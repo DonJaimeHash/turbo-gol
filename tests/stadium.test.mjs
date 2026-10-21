@@ -451,7 +451,6 @@ test('every theme has a full board set; the two harbour themes share one; no ban
     }
   }
   assert.equal(THEME_PLACE['harbour-night'], 'harbour');
-  assert.equal(THEME_PLACE['harbour-day'], 'harbour');
   const others = THEME_IDS.filter((id) => !id.startsWith('harbour')).map((id) => THEME_PLACE[id]);
   assert.equal(new Set([...others, 'harbour']).size, others.length + 1, 'every other theme has a place of its own');
   assert.deepEqual(Object.keys(CONTENT).sort(), ['harbour', ...others].sort());

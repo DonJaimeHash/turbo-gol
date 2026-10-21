@@ -38,16 +38,17 @@ parameters next to its code, keyed by `ThemeId`. The light count and material va
 between themes, so a theme switch only re-bakes, rewrites uniforms and repaints the board
 canvas; it never recompiles shaders. Gameplay never reads a theme.
 
-Themes: `harbour-night` (the default), `harbour-day`, `canyon-sunset`, `alpine-day`. The Stadium
+Themes: `harbour-night` (the default), `canyon-sunset`, `alpine-day`. The Stadium
 row picks one (saved with the prefs; an unknown saved id reads as the night harbour). Each has a
 world preset and a skyline (harbour, canyon or alpine: a baked far part and, except the canyon, a
 live near layer that the world swaps in by geometry), a ThemeWorld, a stadium palette, a turf look
 and its place's board content (`stadium/content.ts`: invented local sponsors, names and
-canvas-path emblems, and the place's main and secondary sponsor for the big side-wall boards; the
-two harbour themes share the harbour's, and the harbour's names and emblems appear nowhere else).
+canvas-path emblems, and the place's main and secondary sponsor for the big side-wall boards; the harbour's names and emblems appear nowhere else).
 
-`city-dusk` and `railyard-night` were removed on 2026-10-21 (the owner found them too bright and
-reflective "for now"). To bring them back, start from commit 32aabad: `world/city.ts`,
+`city-dusk`, `railyard-night` and `harbour-day` were removed on 2026-10-21: the owner keeps three
+stadiums "for now" (the city and the rail yard felt too bright and reflective). `harbour-day` was
+only data on the harbour generator: its ThemeWorld, world preset, stadium palette and turf look are
+in commit 32aabad. To bring the city and the rail yard back, start from the same commit: `world/city.ts`,
 `world/railyard.ts`, `world/railyardMaterial.ts`, their KIND ranges (TOWER / DECK, BRICK /
 RAILBED) and branches in `bakeMaterials.ts`, the world's per-skyline ground / proxy overrides,
 their ThemeWorld, preset, palette, turf look, content set, emblems (skyline, neonStar, wheel, gear,
@@ -125,8 +126,8 @@ done (see "Final review" below); the owner tested a preview on phones and asked 
      first frame on WebGPU high is ready in ~2.7 s instead of ~5.9 s. Boot marks in main.ts.
    - The Friendly screen's Stadium row (the theme picker).
    - Measured: see "Measuring" below and ARCHITECTURE.md "Rendering budget".
-4. **The other five themes.** Done (`city-dusk` and `railyard-night` were removed again on
-   2026-10-21, see "Themes"): `city-dusk` (a car-park roof in a city at dusk: towers with
+4. **The other five themes.** Done (`city-dusk`, `railyard-night` and `harbour-day` were removed
+   again on 2026-10-21, see "Themes"): `city-dusk` (a car-park roof in a city at dusk: towers with
    lit windows, a spire, crowns), `alpine-day` (a mountain valley: a snowy massif, pines over the
    boards, timber stands), `railyard-night` (a lattice gantry, brick halls with arched windows, a
    chimney, a downtown against an orange glow), a brighter `harbour-day` and a stronger
@@ -228,8 +229,8 @@ the pause menu and the ball's shadow by day are the UI track's):
   high and ultra 4). On the desktop GPU the frame time is the same within noise (A/B interleaved,
   1600x900, median of 3 x 120 frames: low 0.807 / 0.814 ms, high 1.839 / 1.833, ultra 3.094 /
   3.078); the saving is for ALU-bound phones.
-- **Themes**: `city-dusk` and `railyard-night` removed (see "Themes"); `harbour-day` stays (the
-  owner named only the city rooftop and the rail yard).
+- **Themes**: `city-dusk`, `railyard-night` and `harbour-day` removed (see "Themes"): three
+  stadiums remain.
 - **No hanging banners** on any stadium (one draw less).
 
 Measured after the changes (same method as the final review, night harbour): low 0.82 ms / 24

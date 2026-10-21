@@ -27,7 +27,6 @@ export default {
   'quality.high': 'Alta',
   'quality.ultra': 'Ultra',
   'theme.harbour-night': 'Puerto de noche',
-  'theme.harbour-day': 'Puerto de día',
   'theme.canyon-sunset': 'Cañón rojo',
   'theme.alpine-day': 'Valle alpino',
   'tier.bronze': 'Bronce',

@@ -30,13 +30,12 @@ const finite3 = (c) => c.length === 3 && c.every((v) => Number.isFinite(v) && v 
 
 test('every theme resolves to a world preset; the built ones are their own', () => {
   for (const id of THEME_IDS) assert.ok(['harbour', 'canyon', 'alpine'].includes(worldPreset(id).skyline), id);
-  for (const id of ['harbour-night', 'harbour-day', 'canyon-sunset', 'alpine-day']) assert.ok(hasWorldPreset(id), id);
+  for (const id of ['harbour-night', 'canyon-sunset', 'alpine-day']) assert.ok(hasWorldPreset(id), id);
   assert.equal(worldPreset('harbour-night').skyline, 'harbour');
-  assert.equal(worldPreset('harbour-day').skyline, 'harbour');
   assert.equal(worldPreset('canyon-sunset').skyline, 'canyon');
   assert.equal(worldPreset('alpine-day').skyline, 'alpine');
-  // the themes removed on 2026-10-21 (city-dusk, railyard-night) are gone everywhere
-  for (const id of ['city-dusk', 'railyard-night']) {
+  // the themes removed on 2026-10-21 (city-dusk, railyard-night, harbour-day) are gone everywhere
+  for (const id of ['city-dusk', 'railyard-night', 'harbour-day']) {
     assert.ok(!THEME_IDS.includes(id), id);
     assert.equal(hasWorldPreset(id), false, id);
   }
@@ -61,9 +60,9 @@ test('world presets hold finite, non-negative radiance and sane ranges', () => {
   // night has the moon, stars and lamps; day has none of them
   assert.equal(worldPreset('harbour-night').key.moon, true);
   assert.ok(worldPreset('harbour-night').stars > 0 && worldPreset('harbour-night').lights > 0);
-  assert.equal(worldPreset('harbour-day').key.moon, false);
-  assert.equal(worldPreset('harbour-day').stars, 0);
-  assert.equal(worldPreset('harbour-day').lights, 0);
+  assert.equal(worldPreset('alpine-day').key.moon, false);
+  assert.equal(worldPreset('alpine-day').stars, 0);
+  assert.equal(worldPreset('alpine-day').lights, 0);
 });
 
 test('dirFromAzEl: unit vectors, azimuth 0 = +z, 90 = -x, elevation up', () => {
@@ -90,7 +89,7 @@ test('the built themes keep the light count and ship their shared facts (setThem
     assert.ok(w.fill.env > 0 && w.fill.intensity > 0, `${id} fill`);
     assert.ok(['neutral', 'aces', 'agx'].includes(w.toneMapping) && w.exposure > 0, `${id} tone`);
   }
-  for (const id of ['harbour-day', 'alpine-day']) {
+  for (const id of ['alpine-day']) {
     assert.ok(themeWorld(id).floodlights.every((f) => f.strength === 0), `${id}: floodlights off by day`);
     assert.equal(themeWorld(id).night, false);
     // the main key is the sky's sun (shadows fall away from the disc the player sees)
