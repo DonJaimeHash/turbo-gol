@@ -414,12 +414,14 @@ test('the crowd: crowdDensity sets people per quad, the same crowd on every tier
 // ---- What the boards and banners show (content.ts, textures.ts) --------------------------------
 
 const { THEME_IDS } = await import('../src/render/theme.ts');
-const { CONTENT, GENERIC, THEME_PLACE, themeContent } = await import('../src/render/stadium/content.ts');
+const { CONTENT, GENERIC, INLAND, THEME_PLACE, themeContent } = await import('../src/render/stadium/content.ts');
 const { EMBLEMS } = await import('../src/render/stadium/emblems.ts');
 const { BOARD_CARDS, drawBoards, drawBanners } = await import('../src/render/stadium/textures.ts');
 
 /** The harbour's own names: on the harbour's boards and banners, never on another place's. */
-const HARBOUR_NAMES = ['PUERTO SUR', 'EL FARO', 'LIGA PORTUARIA', 'MARELUX', 'FARO ALTO', 'ESTIBA', 'BOYA AZUL', 'NUDO SIETE', 'ONDAMAR', 'GRÚA NORTE', 'SALINA', 'TIMONEL', 'VELA ROJA', 'MUELLE 9', 'AEROFARO'];
+const HARBOUR_NAMES = ['PUERTO SUR', 'EL FARO', 'LIGA PORTUARIA', 'MARELUX', 'FARO ALTO', 'ESTIBA', 'BOYA AZUL', 'NUDO SIETE', 'CORALINA', 'ONDAMAR', 'GRÚA NORTE', 'SALINA', 'TIMONEL', 'VELA ROJA', 'PIXELMAR', 'MUELLE 9', 'AEROFARO'];
+/** The harbour's emblems (the anchor, the lighthouse, the sea's waves). */
+const HARBOUR_EMBLEMS = ['anchor', 'lighthouse', 'wave'];
 const HEX = /^#[0-9a-f]{6}$/i;
 /** Every text a set prints: card names and taglines, banner lines. */
 const textsOf = (set) => [...set.cards.flatMap((c) => [c.name, c.tag]), ...set.banners.flatMap((b) => b.text.split('\n'))];
@@ -456,27 +458,31 @@ test('the harbour names and emblems appear only on the harbour; a place keeps it
     if (place === 'harbour') continue;
     for (const t of textsOf(set)) {
       assert.ok(!HARBOUR_NAMES.some((n) => t.includes(n)), `${place}: '${t}' is the harbour's`);
-      assert.doesNotMatch(t, /PUERTO|PORTUARI|FARO|MUELLE|BARCO|NAVAL/, `${place}: '${t}' names the harbour`);
+      assert.doesNotMatch(t, /PUERTO|PORTUARI|FARO|MUELLE|BARCO|NAVAL|CORAL|MAR|MAR/, `${place}: '${t}' names the harbour or the sea`);
     }
     for (const e of [...set.cards.map((c) => c.logo), ...set.banners.map((b) => b.emblem)]) {
-      assert.ok(e !== 'anchor' && e !== 'lighthouse', `${place}: the harbour's ${e} emblem`);
+      assert.ok(!HARBOUR_EMBLEMS.includes(e), `${place}: the harbour's ${e} emblem`);
     }
   }
-  // The generic sponsors are on every set at the same slots; every other name is one place's only.
-  const slotsOf = (set) => set.cards.map((c, i) => (GENERIC.includes(c.name) ? i : -1)).filter((i) => i >= 0);
+  // The generic sponsors are on every set at the same slots, the inland pair on every set but the
+  // harbour's at the harbour's CORALINA and PIXELMAR slots; every other name is one place's only.
+  const slotsOf = (set, names) => set.cards.map((c, i) => (names.includes(c.name) ? i : -1)).filter((i) => i >= 0);
+  const seaSlots = slotsOf(CONTENT.harbour, ['CORALINA', 'PIXELMAR']);
+  assert.equal(seaSlots.length, INLAND.length);
   const where = new Map();
   for (const [place, set] of Object.entries(CONTENT)) {
-    assert.deepEqual(slotsOf(set), slotsOf(CONTENT.harbour), `${place}: generic slots`);
+    assert.deepEqual(slotsOf(set, GENERIC), slotsOf(CONTENT.harbour, GENERIC), `${place}: generic slots`);
     for (const g of GENERIC) assert.ok(set.cards.some((c) => c.name === g), `${place} lacks ${g}`);
+    assert.deepEqual(slotsOf(set, INLAND), place === 'harbour' ? [] : seaSlots, `${place}: inland slots`);
     for (const n of new Set([...set.cards.map((c) => c.name), ...set.banners.map((b) => b.text)])) {
-      if (GENERIC.includes(n)) continue;
+      if (GENERIC.includes(n) || INLAND.includes(n)) continue;
       assert.ok(!where.has(n), `${n} is on ${where.get(n)} and ${place}`);
       where.set(n, place);
     }
   }
 });
 
-test('no two cards of a set share a name; the generic cards are the same in every set', () => {
+test('no two cards of a set share a name; the generic and inland cards are the same in every set', () => {
   for (const [place, set] of Object.entries(CONTENT)) {
     const names = set.cards.map((c) => c.name);
     assert.equal(new Set(names).size, names.length, `${place}: ${names.join(', ')}`);
@@ -485,6 +491,11 @@ test('no two cards of a set share a name; the generic cards are the same in ever
       const h = CONTENT.harbour.cards[i];
       assert.deepEqual({ ...c, tag: c.name === 'MÁS GOL.' ? '' : c.tag }, { ...h, tag: c.name === 'MÁS GOL.' ? '' : h.tag }, `${place} ${c.name}`);
     });
+    if (place !== 'harbour') {
+      set.cards.forEach((c, i) => {
+        if (INLAND.includes(c.name)) assert.deepEqual(c, CONTENT.canyon.cards[i], `${place} ${c.name}`);
+      });
+    }
   }
   // The slogan names the place.
   const slogans = Object.values(CONTENT).map((s) => s.cards.find((c) => c.name === 'MÁS GOL.').tag);

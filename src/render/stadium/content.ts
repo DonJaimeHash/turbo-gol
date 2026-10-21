@@ -7,12 +7,14 @@
  *
  *   banners  0 the place on the blue half, 1 the same on the red half, 2 a second local name,
  *            3 the TURBOGOL ball
- *   cards    the generic sponsors (GENERIC, the same cards in every set, at the same slots) and
- *            the place's own sponsors; only the "MÁS GOL." tagline changes per place
+ *   cards    the generic sponsors (GENERIC, the same cards in every set, at the same slots;
+ *            only the "MÁS GOL." tagline changes per place), a telecom and a games sponsor
+ *            (the harbour's sea-named CORALINA and PIXELMAR; the inland places share INLAND) and
+ *            the place's own sponsors
  *
  * Every name is invented for Turbogol (none is a real brand, company, product or team), in
  * Spanish, and the place's own names and emblems appear only in its set: the harbour's anchors,
- * lighthouse, PUERTO SUR, EL FARO, LIGA PORTUARIA and harbour sponsors only on the harbour.
+ * lighthouse, waves, PUERTO SUR, EL FARO, LIGA PORTUARIA and harbour sponsors only on the harbour.
  */
 import type { ThemeId } from '../theme';
 import type { EmblemId } from './emblems';
@@ -59,27 +61,33 @@ export interface ContentSet {
 
 const TURBOGOL: BoardCard = { name: 'TURBOGOL', tag: 'turbo-gol.com', logo: 'chevrons', bg: ['#0a0e17', '#04060b'], fg: '#ffffff', ac: '#c6ff2e' };
 const CHISPA_VERDE: BoardCard = { name: 'CHISPA VERDE', tag: 'BEBIDA ENERGÉTICA', logo: 'bolt', bg: ['#121705', '#090b02'], fg: '#e9ff9a', ac: '#c6ff2e' };
-const CORALINA: BoardCard = { name: 'CORALINA', tag: 'TELECOMUNICACIONES', logo: 'wave', bg: ['#b81a4e', '#820c33'], fg: '#ffffff', ac: '#ffffff' };
 const CANAL_CANCHA: BoardCard = { name: 'CANAL CANCHA', tag: 'TODOS LOS PARTIDOS', logo: 'ball', bg: ['#a8840f', '#735a05'], fg: '#14110a', ac: '#14110a' };
-const PIXELMAR: BoardCard = { name: 'PIXELMAR', tag: 'VIDEOJUEGOS', logo: 'bolt', bg: ['#250840', '#140423'], fg: '#ffffff', ac: '#ff4fd8' };
 /** The game's own slogan card; the tagline names the place. */
 const masGol = (tag: string): BoardCard => ({ name: 'MÁS GOL.', tag, logo: 'chevrons', bg: ['#0b1d42', '#06122a'], fg: '#ffffff', ac: '#3a9bff' });
 
 /** The generic sponsors' names (in every set). */
-export const GENERIC: readonly string[] = [TURBOGOL.name, CHISPA_VERDE.name, CORALINA.name, CANAL_CANCHA.name, PIXELMAR.name, 'MÁS GOL.'];
+export const GENERIC: readonly string[] = [TURBOGOL.name, CHISPA_VERDE.name, CANAL_CANCHA.name, 'MÁS GOL.'];
+
+/** The telecom and games sponsors of the inland places (the harbour has its own sea-named ones). */
+const RED_PLENA: BoardCard = { name: 'RED PLENA', tag: 'TELECOMUNICACIONES', logo: 'signal', bg: ['#b81a4e', '#820c33'], fg: '#ffffff', ac: '#ffffff' };
+const FICHA_EXTRA: BoardCard = { name: 'FICHA EXTRA', tag: 'VIDEOJUEGOS', logo: 'bolt', bg: ['#250840', '#140423'], fg: '#ffffff', ac: '#ff4fd8' };
+type Pair = readonly [telecom: BoardCard, games: BoardCard];
+const INLAND_PAIR: Pair = [RED_PLENA, FICHA_EXTRA];
+/** Their names (in every set but the harbour's). */
+export const INLAND: readonly string[] = INLAND_PAIR.map((c) => c.name);
 
 /** The TURBOGOL ball banner (slot 3), in the place's colours. */
 const ballBanner = (bg: readonly [string, string], fg: string): BannerDesign => ({ bg, fg, emblem: 'ball', scale: 0.85, text: 'TURBOGOL' });
 
 /**
- * A place's 20 cards: the generic ones at slots 1, 3, 8, 9, 10 and 16, the place's own 14 (in
- * order) at the others.
+ * A place's 20 cards: the generic ones at slots 1, 3, 9 and 10, its telecom and games sponsors at
+ * 8 and 16, its own 14 (in order) at the others.
  */
-function cards(own: readonly BoardCard[], slogan: string): BoardCard[] {
-  const generic: Readonly<Partial<Record<number, BoardCard>>> = { 1: TURBOGOL, 3: CHISPA_VERDE, 8: CORALINA, 9: CANAL_CANCHA, 10: masGol(slogan), 16: PIXELMAR };
+function cards(own: readonly BoardCard[], slogan: string, [telecom, games]: Pair): BoardCard[] {
+  const fixed: Readonly<Partial<Record<number, BoardCard>>> = { 1: TURBOGOL, 3: CHISPA_VERDE, 8: telecom, 9: CANAL_CANCHA, 10: masGol(slogan), 16: games };
   const out: BoardCard[] = [];
   let k = 0;
-  for (let i = 0; i < own.length + 6; i++) out.push(generic[i] ?? own[k++]);
+  for (let i = 0; i < own.length + 6; i++) out.push(fixed[i] ?? own[k++]);
   return out;
 }
 
@@ -104,6 +112,10 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
         { name: 'LIGA PORTUARIA', tag: 'NOCHE DE PUERTO', logo: 'anchor', bg: ['#0b1d42', '#06122a'], fg: '#ffffff', ac: '#ffffff' },
       ],
       'MÁS TURBO. MÁS PUERTO.',
+      [
+        { name: 'CORALINA', tag: 'TELECOMUNICACIONES', logo: 'wave', bg: ['#b81a4e', '#820c33'], fg: '#ffffff', ac: '#ffffff' },
+        { name: 'PIXELMAR', tag: 'VIDEOJUEGOS', logo: 'bolt', bg: ['#250840', '#140423'], fg: '#ffffff', ac: '#ff4fd8' },
+      ],
     ),
     banners: [
       { bg: ['#13295c', '#0a1736'], fg: '#ffffff', emblem: 'anchor', text: 'PUERTO SUR' },
@@ -132,6 +144,7 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
         { name: 'COPA ATARDECER', tag: 'FINAL AL ATARDECER', logo: 'sunMesa', bg: ['#4a1208', '#2c0a04'], fg: '#ffffff', ac: '#ffffff' },
       ],
       'MÁS TURBO. MÁS CAÑÓN.',
+      INLAND_PAIR,
     ),
     banners: [
       { bg: ['#1f2f6e', '#101a40'], fg: '#ffffff', emblem: 'sunMesa', text: 'CAÑÓN ROJO' },
@@ -160,6 +173,7 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
         { name: 'COPA AZOTEA', tag: 'NOCHE EN LA CIUDAD', logo: 'neonStar', bg: ['#1a0f3d', '#0d0724'], fg: '#ffffff', ac: '#ffffff' },
       ],
       'MÁS TURBO. MÁS CIUDAD.',
+      INLAND_PAIR,
     ),
     banners: [
       { bg: ['#14217a', '#0a1246'], fg: '#ffffff', emblem: 'skyline', text: 'CIUDAD ALTA' },
@@ -188,6 +202,7 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
         { name: 'COPA DEL PINAR', tag: 'TARDE EN EL VALLE', logo: 'pine', bg: ['#0e2a4a', '#071a30'], fg: '#ffffff', ac: '#ffffff' },
       ],
       'MÁS TURBO. MÁS ALTURA.',
+      INLAND_PAIR,
     ),
     banners: [
       { bg: ['#16467e', '#0b2a50'], fg: '#ffffff', emblem: 'peak', text: 'VALLE ALTO' },
@@ -216,6 +231,7 @@ export const CONTENT: Readonly<Record<Place, ContentSet>> = {
         { name: 'LIGA FERROVIARIA', tag: 'NOCHE DE ANDENES', logo: 'gear', bg: ['#2a0f0a', '#170805'], fg: '#ffffff', ac: '#ffffff' },
       ],
       'MÁS TURBO. MÁS VÍA.',
+      INLAND_PAIR,
     ),
     banners: [
       { bg: ['#16285a', '#0b1634'], fg: '#ffffff', emblem: 'wheel', text: 'PATIO\nFERROVIARIO' },

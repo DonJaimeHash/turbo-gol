@@ -121,9 +121,12 @@ done (see "Final review" below) and the owner's approval is next.
    material; new patterns are exact KIND ranges of the one structure material). Each place has its
    own boards and banners (canyon: a sun over a mesa, a cactus, CAÑÓN ROJO / EL MIRADOR; city: a
    skyline, a neon star, CIUDAD ALTA / AZOTEA; alpine: a snowy peak, a pine, VALLE ALTO / EL PINAR;
-   railyard: a locomotive wheel, a gear, a works chimney, PATIO FERROVIARIO / LA USINA), drawn
-   into the same two canvases and textures on a switch to another place: ~1-2 ms of canvas
-   drawing (8 ms the first time), one re-upload, no new texture or pipeline.
+   railyard: a locomotive wheel, a gear, a works chimney, PATIO FERROVIARIO / LA USINA); only
+   TURBOGOL, CHISPA VERDE, CANAL CANCHA and MÁS GOL. are on every place's boards, and the
+   harbour's sea-named telecom and games sponsors (CORALINA with its waves, PIXELMAR) give way
+   to RED PLENA and FICHA EXTRA elsewhere. They are drawn into the same two canvases and textures
+   on a switch to another place: ~1-2 ms of canvas drawing (8 ms the first time), one re-upload,
+   no new texture or pipeline.
 5. **Review, docs** (`ARCHITECTURE.md`), changelog, and the owner's approval before the deploy.
 
 ## Measuring

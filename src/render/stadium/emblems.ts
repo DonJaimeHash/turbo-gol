@@ -4,8 +4,8 @@
  * 2 * s across, in one colour; `bg` (the card's or banner's background colour behind the emblem)
  * cuts details out of it. Every emblem saves and restores the context state.
  *
- *   generic    bolt, ball, chevrons, wave         (any place)
- *   harbour    anchor, lighthouse
+ *   generic    bolt, ball, chevrons, signal       (any place)
+ *   harbour    anchor, lighthouse, wave (the sea)
  *   canyon     sunMesa (a striped sun over a mesa), cactus
  *   city       skyline, neonStar
  *   alpine     peak (a snowy summit), pine
@@ -30,20 +30,14 @@ function enter(ctx: Ctx, x: number, y: number, s: number, color: string): void {
 
 // ---- Generic ----------------------------------------------------------------------------------
 
-const drawWave: Emblem = (ctx, x, y, s, color) => {
+/** Four rising signal bars on a base line (a phone's reception). */
+const drawSignal: Emblem = (ctx, x, y, s, color) => {
   enter(ctx, x, y, s, color);
-  ctx.lineWidth = 0.12;
-  for (let k = 0; k < 3; k++) {
-    ctx.beginPath();
-    for (let i = 0; i <= 24; i++) {
-      const t = i / 24;
-      const px = -0.8 + t * 1.6;
-      const py = -0.35 + k * 0.35 + Math.sin(t * Math.PI * 2 + k * 0.6) * 0.12;
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
+  for (let i = 0; i < 4; i++) {
+    const h = 0.4 + i * 0.4;
+    ctx.fillRect(-0.82 + i * 0.44, 0.78 - h, 0.3, h);
   }
+  ctx.fillRect(-0.9, 0.84, 1.8, 0.07);
   ctx.restore();
 };
 
@@ -103,6 +97,24 @@ const drawChevrons: Emblem = (ctx, x, y, s, color) => {
 };
 
 // ---- Harbour ----------------------------------------------------------------------------------
+
+/** Three sea waves (the harbour's). */
+const drawWave: Emblem = (ctx, x, y, s, color) => {
+  enter(ctx, x, y, s, color);
+  ctx.lineWidth = 0.12;
+  for (let k = 0; k < 3; k++) {
+    ctx.beginPath();
+    for (let i = 0; i <= 24; i++) {
+      const t = i / 24;
+      const px = -0.8 + t * 1.6;
+      const py = -0.35 + k * 0.35 + Math.sin(t * Math.PI * 2 + k * 0.6) * 0.12;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+};
 
 /** A ship's anchor: ring, stock, shank, curved arms with flukes and the crown. */
 const drawAnchor: Emblem = (ctx, x, y, s, color) => {
@@ -497,6 +509,7 @@ export const EMBLEMS = {
   bolt: drawBolt,
   ball: drawBall,
   chevrons: drawChevrons,
+  signal: drawSignal,
   anchor: drawAnchor,
   lighthouse: drawLighthouse,
   sunMesa: drawSunMesa,
