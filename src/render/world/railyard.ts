@@ -767,6 +767,3 @@ export function buildRailyardFar(dry = false, seed = 13): RailyardFar {
 
   return { geometry: g.build(new THREE.Sphere(new THREE.Vector3(), 170000)), lamps: c.lamps, stats: { parts: g.parts, verts: g.verts } };
 }
-
-/** Exposed for tests: no tall live part inside this box (the stadium). */
-export const RAILYARD_CLEAR = { halfX: STADIUM_HALF_X, halfZ: STADIUM_HALF_Z } as const;

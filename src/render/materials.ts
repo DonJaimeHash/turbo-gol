@@ -38,10 +38,8 @@ import {
   fract,
   fwidth,
   hash,
-  length,
   max,
   mix,
-  mod,
   mrt,
   normalViewGeometry,
   normalWorld,
@@ -76,24 +74,18 @@ export function linearVec3(hex: number): Vec3Node {
 }
 
 /**
- * Turbogol team colours for the world (goal frames, nets, turf tint), index = Team (0 blue,
- * 1 red). Azure vs crimson: opposite hues on the blue-yellow axis that red-green colour-blind
+ * Turbogol team colours for the world (goal frames, nets, turf tint): team 0 blue, team 1 red.
+ * Azure vs crimson: opposite hues on the blue-yellow axis that red-green colour-blind
  * players still separate, and the blue is clearly lighter than the red (CIE L* ~63 vs ~52; the
  * HUD's deeper crimson #d42039 widens that to ~17), so the two also differ in plain lightness.
  * The HUD stylesheet mirrors them (src/style.css :root --blue / --red).
  */
 export const TEAM_BLUE = 0x3a9bff;
 export const TEAM_RED = 0xf02a44;
-export const TEAM_COLORS: readonly [number, number] = [TEAM_BLUE, TEAM_RED];
 /** Brand accent ("volt" lime): ball band, car pinstripe, goal confetti; the HUD boost bar (--brand). */
 export const BRAND_LIME = 0xc6ff2e;
 /** Boost pads. */
 export const BOOST_YELLOW = 0xffc23a;
-/**
- * Bloom input threshold. Bloom reads the emissive MRT target, so this is 0: everything written
- * through `emissiveNode` / `glowMrt()` glows in proportion to its brightness.
- */
-export const BLOOM_THRESHOLD = 0;
 /**
  * Ceiling of one glow write (linear HDR). Far above every emitter (lamps ~3.5, pad flash 6, flames
  * ~2); its job is to bound the additive accumulation and, with the floor of 0, to sanitise NaN.
@@ -132,14 +124,6 @@ export function noGlowMrt(): MrtNode {
   return glowMrt(vec3(0, 0, 0), 'additive');
 }
 
-/** Unlit material in an HDR colour that blooms, for neon strips, lamps and other glowing things. */
-export function emissiveMaterial(hex: number, intensity: number): THREE.MeshBasicNodeMaterial {
-  const m = new THREE.MeshBasicNodeMaterial();
-  hdrColor(hex, intensity, m.color);
-  m.mrtNode = glowMrt(linearVec3(hex).mul(intensity), 'none');
-  return m;
-}
-
 /**
  * Anti-aliased line mask: 1 where |dist| < halfWidth, feathered over about one pixel.
  * `dist` is a signed distance in world units (uu).
@@ -150,49 +134,10 @@ export function lineMask(dist: FloatNode, halfWidth: number): FloatNode {
   return oneMinus(smoothstep(float(halfWidth).sub(aa), float(halfWidth).add(aa), d));
 }
 
-/**
- * Hexagonal cell edges for a 2D coordinate `p` (world units): 1 on the edges, 0 inside the cells.
- * Based on the classic hex-grid construction (two offset rectangular lattices, nearest centre).
- */
-export function hexEdgeMask(p: Vec2Node, cellSize: number, lineWidth: number): FloatNode {
-  const r = vec2(1, 1.7320508);
-  const h = vec2(0.5, 0.8660254);
-  const q = p.div(cellSize);
-  const a = mod(q, r).sub(h);
-  const b = mod(q.sub(h), r).sub(h);
-  const gv = select(length(a).lessThan(length(b)), a, b);
-  const ga = abs(gv);
-  // Hex distance: 0 at the cell centre, 0.5 on the edges.
-  const d = max(dot(ga, h), ga.x);
-  const w = lineWidth / cellSize;
-  const aa = fwidth(d).mul(0.75);
-  return smoothstep(float(0.5 - w).sub(aa), float(0.5 - w).add(aa), d);
-}
-
 /** Fresnel rim factor (0 facing the camera, 1 at grazing angles), from world-space normal. */
 export function fresnel(power: number): FloatNode {
   const v = normalize(cameraPosition.sub(positionWorld));
   return pow(saturate(oneMinus(abs(dot(normalWorld, v)))), power);
-}
-
-/** Distance from the camera to the fragment (uu). */
-export function cameraDistance(): FloatNode {
-  return length(cameraPosition.sub(positionWorld));
-}
-
-/** Pseudo-random 0..1 value per `size`-sized cell of a 2D coordinate. */
-export function cellHash(p: Vec2Node, size: number): FloatNode {
-  const c = floor(p.div(size));
-  return hash(c.x.add(c.y.mul(57.17)).add(11.3));
-}
-
-/**
- * Signed distance to an octagon centred at the origin: sides at |x| = hx, |y| = hy and 45°
- * corner cuts on |x| + |y| = diag. Exact on the edges (what the line masks need).
- */
-export function octagonSdf(p: Vec2Node, hx: number, hy: number, diag: number): FloatNode {
-  const a = abs(p);
-  return max(max(a.x.sub(hx), a.y.sub(hy)), a.x.add(a.y).sub(diag).mul(Math.SQRT1_2));
 }
 
 /** Signed distance to an axis-aligned box outline (Chebyshev form; exact on the edges). */
