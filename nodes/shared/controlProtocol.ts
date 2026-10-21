@@ -36,10 +36,7 @@ export type { RosterEntry, Difficulty };
 
 export const CONTROL_PROTOCOL = 2;
 export const HEARTBEAT_MS = 5_000;
-/**
- * A node silent for this long is offline: no new matches. Its control link and its running matches
- * last longer (LINK_TIMEOUT_MS and NODE_OFFLINE_MS in control-plane/controlPlane.ts).
- */
+/** A node silent for this long is offline: no new matches; its running ranked matches are voided. */
 export const HEARTBEAT_TIMEOUT_MS = 15_000;
 /** Request -> reply timeout (assign, leave). */
 export const RPC_TIMEOUT_MS = 5_000;
