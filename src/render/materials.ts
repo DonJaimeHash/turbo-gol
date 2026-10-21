@@ -24,6 +24,7 @@
 import * as THREE from 'three/webgpu';
 import type { Node, UniformNode } from 'three/webgpu';
 import {
+  Fn,
   abs,
   cameraPosition,
   cross,
@@ -34,10 +35,12 @@ import {
   faceDirection,
   float,
   floor,
+  fract,
   fwidth,
   hash,
   length,
   max,
+  mix,
   mod,
   mrt,
   normalViewGeometry,
@@ -52,6 +55,7 @@ import {
   select,
   sign,
   smoothstep,
+  uint,
   vec2,
   vec3,
 } from 'three/tsl';
@@ -204,7 +208,9 @@ export function boxSdf(p: Vec2Node, cx: number, cy: number, hx: number, hy: numb
  * so a 0.3 uu groove keeps its depth at any distance; fade patterns that get smaller than a pixel
  * (`resolvedFade`) or their derivatives sparkle. NaN-safe: a degenerate footprint (grazing or
  * sub-pixel triangle, det 0) falls back to the geometric normal instead of normalising zero.
- * Derivatives need uniform control flow, so feed it branch-free (mix / select) height nodes only.
+ * Derivatives need uniform control flow: call it (and every fwidth inside the height) at the top
+ * level of the material, never inside a select() / If branch (TSL emits select() as if / else
+ * blocks); heights built from select() results are fine, the derivative is taken afterwards.
  */
 export function bumpNormal(height: FloatNode): Vec3Node {
   const n = normalViewGeometry;
@@ -256,3 +262,61 @@ export class OpaqueAlbedoPhysicalMaterial extends THREE.MeshPhysicalNodeMaterial
     if (this.albedoNode !== null) diffuseColor.rgb.assign(this.albedoNode);
   }
 }
+
+/**
+ * Offset added before a noise lattice is converted to uint: three's `hash` (and `toUint`) clamp
+ * negative seeds to 0, so every cell index stays positive for |p| below this many cells.
+ */
+const NOISE_LATTICE_OFFSET = 4096;
+/**
+ * Scales value noise to the spread of MaterialX gradient noise (`mx_noise_float`, standard
+ * deviation ~0.27 against ~0.37 for raw value noise), so thresholds tuned for one fit the other.
+ */
+const VALUE_NOISE_SPREAD = 0.73;
+
+type UintNode = Node<'uint'>;
+
+/**
+ * One PCG hash (three's `hash`) of a lattice cell: the uint cell indices mixed with three large
+ * odd primes (Teschner et al., "Optimized Spatial Hashing", 2003). 0..1.
+ */
+function latticeHash(x: UintNode, y: UintNode, z: UintNode): FloatNode {
+  return hash(x.mul(uint(73856093)).bitXor(y.mul(uint(19349663))).bitXor(z.mul(uint(83492791))));
+}
+
+/**
+ * Smooth 3D value noise (C1: Hermite-interpolated hashes of the 8 lattice corners, one lattice
+ * cell per unit of `p`), roughly -0.73..0.73 with the spread of `mx_noise_float`. A drop-in for
+ * the MaterialX gradient noise where only blotches matter (grime, dust, wear): each MaterialX noise
+ * call site added about 0.15 s to a cold pipeline compile (measured, Dawn / D3D12 on Windows; ANGLE
+ * sends the WebGL2 fallback through the same HLSL compiler) and this one about 0.03 s. Emitted once
+ * as a WGSL / GLSL function. Valid for |p| < 4096; no NaN path (floor, fract, integer hashes, mixes).
+ */
+export const valueNoise3 = Fn(([p]: [Vec3Node]) => {
+  const q = p.add(NOISE_LATTICE_OFFSET);
+  const i = floor(q);
+  const f = fract(q);
+  const u = f.mul(f).mul(f.mul(-2.0).add(3.0));
+  const x0 = i.x.toUint();
+  const y0 = i.y.toUint();
+  const z0 = i.z.toUint();
+  const x1 = x0.add(uint(1));
+  const y1 = y0.add(uint(1));
+  const z1 = z0.add(uint(1));
+  const a = mix(latticeHash(x0, y0, z0), latticeHash(x1, y0, z0), u.x);
+  const b = mix(latticeHash(x0, y1, z0), latticeHash(x1, y1, z0), u.x);
+  const c = mix(latticeHash(x0, y0, z1), latticeHash(x1, y0, z1), u.x);
+  const d = mix(latticeHash(x0, y1, z1), latticeHash(x1, y1, z1), u.x);
+  return mix(mix(a, b, u.y), mix(c, d, u.y), u.z).mul(2.0 * VALUE_NOISE_SPREAD).sub(VALUE_NOISE_SPREAD);
+}).setLayout({ name: 'valueNoise3', type: 'float', inputs: [{ name: 'p', type: 'vec3' }] });
+
+/**
+ * Three independent 0..1 randoms per unit cell of `p` (what `mx_cell_noise_vec3` gives, with a
+ * fraction of its code): one lattice seed, PCG-hashed three times with different keys. Valid for
+ * |p| < 4096. Emitted once as a WGSL / GLSL function.
+ */
+export const cellHash3 = Fn(([p]: [Vec3Node]) => {
+  const i = floor(p.add(NOISE_LATTICE_OFFSET));
+  const s = i.x.toUint().mul(uint(73856093)).bitXor(i.y.toUint().mul(uint(19349663))).bitXor(i.z.toUint().mul(uint(83492791)));
+  return vec3(hash(s), hash(s.bitXor(uint(0x68e31da4))), hash(s.bitXor(uint(0x1b56c4e9))));
+}).setLayout({ name: 'cellHash3', type: 'vec3', inputs: [{ name: 'p', type: 'vec3' }] });

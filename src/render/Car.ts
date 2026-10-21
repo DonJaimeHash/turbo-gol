@@ -49,7 +49,6 @@ import {
   mix,
   mod,
   modelViewMatrix,
-  mx_cell_noise_vec3,
   mx_noise_float,
   normalGeometry,
   normalLocal,
@@ -86,12 +85,14 @@ import {
   BRAND_LIME,
   OpaqueAlbedoPhysicalMaterial,
   bumpNormal,
+  cellHash3,
   glowMrt,
   lineMask,
   linearVec3,
   noGlowMrt,
   resolvedFade,
   thinLineMask,
+  valueNoise3,
   type FloatNode,
   type Vec3Node,
 } from './materials';
@@ -348,7 +349,7 @@ function tyreDetail(p: Vec3Node, r: FloatNode, rr: FloatNode, onWall: FloatNode,
   const sipe = max(sipeA, sipeB).mul(onCrown);
   // Sidewall: fine concentric ribs, a raised band with blocky "lettering", a bead line at the rim.
   const ribs = sin(r.mul(TWO_PI * 40)).mul(0.5).add(0.5).mul(resolvedFade(r.mul(40), 0.15, 0.45));
-  const band = smoothstep(0.38, 0.42, rr).mul(smoothstep(0.8, 0.76, rr));
+  const band = smoothstep(0.38, 0.42, rr).mul(smoothstep(0.76, 0.8, rr).oneMinus());
   // Lettering: GLYPHS cells round the band, each a letter-like set of strokes picked by a hash
   // (a vertical: centre, both sides or left; a horizontal: top, top and bottom, middle or none).
   const glyphU = theta.mul(GLYPHS / TWO_PI);
@@ -420,14 +421,16 @@ function surfaceInputs(): SurfaceInputs {
 /**
  * Metallic flakes: a per-cell normal tilt in view space for cells of FLAKE_SIZE in `q` (uu), and
  * `res`, 1 while a cell spans several pixels. Not normalised (transformNormalToView would
- * normalise: every flake the same tilt, and NaN for a zero jitter); the cell noise gives each
+ * normalise: every flake the same tilt, and NaN for a zero jitter); the cell hash gives each
  * flake its own tilt. Below a few pixels a flake reads as grain, so the tilt fades early and the
- * caller widens the base-coat lobe instead (the flakes' average).
+ * caller widens the base-coat lobe instead (the flakes' average). The fade reads the footprint of
+ * all three axes: on the pod top seen from the side, z shrinks at grazing angles while x does not.
  */
 function flakes(q: Vec3Node): { tilt: Vec3Node; res: FloatNode } {
   const fq = q.div(FLAKE_SIZE);
-  const res = resolvedFade(fq.x, 0.12, 0.45).mul(resolvedFade(fq.y, 0.12, 0.45));
-  const tilt = modelViewMatrix.mul(vec4(mx_cell_noise_vec3(fq).sub(0.5), 0.0)).xyz.mul(res.mul(FLAKE_TILT));
+  const fw = fwidth(fq);
+  const res = smoothstep(0.12, 0.45, max(max(fw.x, fw.y), fw.z)).oneMinus();
+  const tilt = modelViewMatrix.mul(vec4(cellHash3(fq).sub(0.5), 0.0)).xyz.mul(res.mul(FLAKE_TILT));
   return { tilt, res };
 }
 
@@ -449,8 +452,8 @@ function bodySurface(v: CarMaterialVariant): CarSurface {
   const kTrim = isKind(kind, CAR_KIND.TRIM);
 
   // Noise (fine variant): ~12 uu grime blotches and a ~1 uu grain (the alloy's hand-brushed look).
-  const coarse: FloatNode = v.fine ? mx_noise_float(p.mul(0.085)) : zero;
-  const grain: FloatNode = v.fine ? mx_noise_float(p.mul(0.9)) : zero;
+  const coarse: FloatNode = v.fine ? valueNoise3(p.mul(0.085)) : zero;
+  const grain: FloatNode = v.fine ? valueNoise3(p.mul(0.9)) : zero;
 
   // Livery on team paint (unchanged: two-tone line, pinstripe, nose chevrons).
   const za = p.z.abs();
@@ -477,7 +480,7 @@ function bodySurface(v: CarMaterialVariant): CarSurface {
   // Grime: a dirt film low on the body (a uniform 0.2 film without the noise).
   const dirty = smoothstep(-0.2, 0.5, coarse.add(grain.mul(0.3)));
   const grimeTake = kPaint.add(kCarbon).add(kTrim).add(kAlloy.mul(0.6)).add(kExhaust.mul(0.5)).min(1.0);
-  const grime = smoothstep(GRIME_Y0, GRIME_Y1, p.y).mul(dirty).mul(grimeTake).mul(GRIME_AMOUNT);
+  const grime = smoothstep(GRIME_Y1, GRIME_Y0, p.y).oneMinus().mul(dirty).mul(grimeTake).mul(GRIME_AMOUNT);
   const dirt = vec3(0.05, 0.046, 0.038);
 
   // Flakes on the upper paint; their sub-pixel average widens the base-coat lobe (flakeBlur).
@@ -554,7 +557,7 @@ function wheelSurface(v: CarMaterialVariant): CarSurface {
   const { sipe, ribs, letters, beadLine } = v.fine ? tyreDetail(p, r, rr, onWall, onCrown, v.knobs) : { sipe: zero, ribs: zero, letters: zero, beadLine: zero };
   // Dust settles on the crown edges and the lower sidewall (the wheel turns: no "low" here); one
   // noise in the fine variant, a uniform 0.2 film without it.
-  const dirty = smoothstep(-0.2, 0.5, v.fine ? mx_noise_float(q.mul(0.085)) : zero);
+  const dirty = smoothstep(-0.2, 0.5, v.fine ? valueNoise3(q.mul(0.085)) : zero);
   const dust = dirty.mul(mix(smoothstep(0.7, 0.95, rr).mul(onWall), float(0.6), onWall.oneMinus())).mul(0.15);
   const rubber = mix(vec3(0.016, 0.016, 0.018), vec3(0.024, 0.024, 0.025), onCrown); // scuffed crown
   const tyreCol = mix(mix(mix(rubber, vec3(0.006, 0.006, 0.007), sipe), vec3(0.03, 0.03, 0.032), letters), vec3(0.07, 0.066, 0.06), dust);
@@ -641,7 +644,8 @@ function createCarMaterial(v: CarMaterialVariant): THREE.MeshPhysicalNodeMateria
  */
 const sharedMaterials = new Map<string, { material: THREE.MeshPhysicalNodeMaterial; refs: number }>();
 
-function acquireCarMaterial(spec: TierSpec): { material: THREE.MeshPhysicalNodeMaterial; key: string } {
+/** The shared material of tier `spec` and its variant key (for releaseCarMaterial). Exported for tests. */
+export function acquireCarMaterial(spec: TierSpec): { material: THREE.MeshPhysicalNodeMaterial; key: string } {
   const v = carMaterialVariant(spec);
   const key = variantKey(v);
   let entry = sharedMaterials.get(key);
@@ -653,7 +657,8 @@ function acquireCarMaterial(spec: TierSpec): { material: THREE.MeshPhysicalNodeM
   return { material: entry.material, key };
 }
 
-function releaseCarMaterial(key: string): void {
+/** Drops one reference to the shared material of `key`; the last one disposes it. Exported for tests. */
+export function releaseCarMaterial(key: string): void {
   const entry = sharedMaterials.get(key);
   if (entry === undefined) return;
   entry.refs--;

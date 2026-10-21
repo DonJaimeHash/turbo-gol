@@ -26,8 +26,6 @@ import {
   length,
   max,
   mix,
-  mx_fractal_noise_float,
-  mx_noise_float,
   normalLocal,
   normalView,
   normalize,
@@ -49,6 +47,7 @@ import {
   noGlowMrt,
   resolvedFade,
   thinLineMask,
+  valueNoise3,
   type FloatNode,
   type Vec3Node,
 } from './materials';
@@ -176,7 +175,8 @@ export function ballFoldedPanels(): { c: Vec3Tuple; pent: boolean }[] {
  * computed in the folded frame; the tilt is unfolded by the normal's signs. Every line goes
  * through thinLineMask, so seams and rings fade to their average at distance instead of crawling.
  * `hi` false (detail 'low') drops the pillow normal, the grass stains and two wear octaves.
- * Per pixel: 10 dot / mix steps and 2-4 noise octaves; only the ball's pixels pay.
+ * Per pixel: 10 dot / mix steps and 1 (low) to 4 (high) value-noise lookups; only the ball's
+ * pixels pay.
  */
 function createBallMaterial(hi: boolean): THREE.MeshPhysicalNodeMaterial {
   const m = new OpaqueAlbedoPhysicalMaterial();
@@ -221,8 +221,11 @@ function createBallMaterial(hi: boolean): THREE.MeshPhysicalNodeMaterial {
   const ring = thinLineMask(length(f.sub(centre)).sub(RING_R), RING_HALF).mul(isPent);
 
   // Wear in the ball's own (unfolded) frame: scuffs (rougher, a touch darker), faint grass stains.
-  const scuff = smoothstep(0.2, 0.7, mx_fractal_noise_float(n.mul(5.0), hi ? 3 : 1, 2.0, 0.5, 1.0));
-  const stain: FloatNode = hi ? smoothstep(0.5, 0.85, mx_noise_float(n.mul(2.3).add(7.1))) : float(0.0);
+  // Three octaves (lacunarity 2, gain 0.5) on high, the first one alone on low.
+  let wear: FloatNode = valueNoise3(n.mul(5.0));
+  if (hi) wear = wear.add(valueNoise3(n.mul(10.0)).mul(0.5)).add(valueNoise3(n.mul(20.0)).mul(0.25));
+  const scuff = smoothstep(0.2, 0.7, wear);
+  const stain: FloatNode = hi ? smoothstep(0.5, 0.85, valueNoise3(n.mul(2.3).add(7.1))) : float(0.0);
 
   const ink = linearVec3(BALL_COLORS.pentagon);
   let panel: Vec3Node = mix(linearVec3(BALL_COLORS.hexagon), ink, isPent);

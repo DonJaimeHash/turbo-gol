@@ -18,8 +18,9 @@ registerHooks({
 });
 
 const { ballPanelCentres, ballFoldedPanels, BALL_PENT_WEIGHT, BALL_COLORS } = await import('../src/render/Ball.ts');
-const { CAR_KIND, TEAM_PAINT, TEAM_GLOW } = await import('../src/render/Car.ts');
+const { CAR_KIND, TEAM_PAINT, TEAM_GLOW, acquireCarMaterial, releaseCarMaterial } = await import('../src/render/Car.ts');
 const { BRAND_LIME } = await import('../src/render/materials.ts');
+const { tier } = await import('../src/render/quality.ts');
 
 const PHI = (1 + Math.sqrt(5)) / 2;
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -138,4 +139,26 @@ test('car: team paint unchanged, the blue clearly lighter than the red (colour-b
   assert.deepEqual([...TEAM_PAINT], [0x2a86f0, 0xc8152f]);
   assert.deepEqual([...TEAM_GLOW], [0x56b0ff, 0xff3d55]);
   assert.ok(lum(TEAM_PAINT[0]) / lum(TEAM_PAINT[1]) > 1.6, 'blue paint lighter than red');
+});
+
+test('car: one shared material per tier variant (high and ultra share it), disposed with its last view', () => {
+  const high = acquireCarMaterial(tier('high'));
+  const ultra = acquireCarMaterial(tier('ultra'));
+  const low = acquireCarMaterial(tier('low'));
+  assert.equal(ultra.key, high.key, 'ultra reads the same switches as high');
+  assert.equal(ultra.material, high.material);
+  assert.notEqual(low.key, high.key, 'low builds the flat variant');
+  assert.notEqual(low.material, high.material);
+  let disposed = 0;
+  high.material.addEventListener('dispose', () => disposed++);
+  releaseCarMaterial(high.key);
+  assert.equal(disposed, 0, 'still held by the ultra view');
+  releaseCarMaterial(ultra.key);
+  assert.equal(disposed, 1, 'the last release disposes it');
+  releaseCarMaterial(ultra.key); // a stray release of a freed key is a no-op
+  assert.equal(disposed, 1);
+  const again = acquireCarMaterial(tier('high'));
+  assert.notEqual(again.material, high.material, 'a disposed material is never handed out again');
+  releaseCarMaterial(again.key);
+  releaseCarMaterial(low.key);
 });
