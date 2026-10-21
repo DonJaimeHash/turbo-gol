@@ -57,6 +57,8 @@ All notable changes to Turbogol are documented here. The format follows
   an expired certificate. The KV switches, `vm_disabled` included, stay manual.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
+- Settings has an Audio tab with a master volume (saved with the other settings), and the pause
+  menu opens Settings in the middle of a match or training.
 
 ### Fixed
 - Community nodes: a control link that stalls no longer costs a node its matches. A node without
@@ -126,6 +128,18 @@ All notable changes to Turbogol are documented here. The format follows
 - `npm run deploy` checks the community-node release first and, when the game code nodes run
   changed, moves their release channel to a signed release built from the same game code; until the
   first node release is published, deploy with `npm run deploy -- --nodes-off`.
+- The graphics quality moved from the Friendly screen to Settings > Graphics, where it can also be
+  changed in the middle of a match or training from the pause menu. A quality change shows the
+  loading screen until the new quality is fully ready, so the first moments after it no longer
+  stutter; changing the stadium on the Friendly screen does the same until the new sky is ready.
+- The game opens on a clean loading screen (the wordmark, a progress bar, one short line) that
+  shows from the very first moment and fades into the menu once it is on screen, instead of the
+  old technical progress texts.
+- The pause menu works with every input: the mouse, a finger, the keyboard (arrows, Enter) and the
+  controller (D-pad, A; X opens the settings) pick RESUME, SETTINGS or QUIT, and training's own
+  entries (reset, next / previous shot, unlimited boost) sit in the same menu.
+- In the day stadiums the ball casts no shadow: the low sun threw it far from the ball, where it
+  looked like a second landing mark. The landing marker under the ball stays.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and

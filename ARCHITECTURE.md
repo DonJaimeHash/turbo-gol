@@ -126,8 +126,11 @@ src/render/
   Effects.ts            pooled particles, ribbons (boost / streaks / ball), rings, goal flash
   Hud.ts                DOM HUD: scorebar (score + clock), segmented boost bar, ball indicator,
                         debug line (F3), Tab
-                        scoreboard, pointer-lock hint, menu + "Controls & settings" screen
-                        (rebinding both devices, camera / gameplay sliders)
+                        scoreboard, pointer-lock hint, the pause menu (PauseEntry list from the
+                        Game: RESUME, training entries on one row, SETTINGS, QUIT; its own focus
+                        ring driven by Input's menu edges), menu + the settings screen (tabs:
+                        rebinding both devices, camera / gameplay sliders, Audio: master volume,
+                        Graphics: the quality tier)
 src/ai/
   Bot.ts                heuristic bot: produces CarControls from SimStateView + ball prediction;
                         stall / net / wall recovery; scans every car (nearest opponent, bump
@@ -152,7 +155,7 @@ src/input/
                         TouchState = Input's TouchSource (stick + per-button finger count and tap
                         latch, releaseAll), stickVector (radial deadzone + gain, up = +y),
                         hitCircle, the TB buttons → actions mapping (copied from DEFAULT_KBM)
-src/settings.ts         Settings { controls, camera, bindings }: defaults, ranges,
+src/settings.ts         Settings { controls, camera, bindings, audio }: defaults, ranges,
                         validation, localStorage load / save. One live object shared by Input,
                         ChaseCamera and the Hud; Game.applySettings() persists and re-applies
 src/game/
@@ -164,8 +167,12 @@ src/game/
                         pipeline warm-up, goal-pause ball pin, audio / HUD glue, settings glue,
                         pointer lock (canvas click captures, menu / pause / whistle / blur release,
                         a browser-side release pauses like the Esc menu, a click on the paused
-                        game resumes and recaptures), pause screen → menu (quitToMenu: Backspace
-                        / pad B while paused clears the match and reopens the menu at kickoff);
+                        game resumes and recaptures), pause menu (pauseEntries; SETTINGS opens the
+                        settings screen over the paused game, BACK returns; QUIT / Backspace /
+                        pad B: quitToMenu clears the match and reopens the menu at kickoff), the
+                        loading screen for long loads (withLoading: switchQuality, switchTheme,
+                        steps with a painted frame between them, the loop held meanwhile), the
+                        ball's shadow off in day stadiums (applyBallShadow);
                         online: one GameSession at a time (session / online / p2p, setSession,
                         startSession(mode, kind)); phase 1: applyOnlineRoster (fresh arena from
                         the Welcome roster, player at its slot, no local bots), onlineTick (input
@@ -192,6 +199,9 @@ src/game/
                         copy, guest records move into the first account)
   (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick)
 src/ui/                 the front-end menus, styled by menu.css (mn-)
+  LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
+                        wordmark, a progress bar eased by CSS transitions (it moves while the main
+                        thread is busy), one short line; swallows keys while up; boot and Game
   Menu.ts               controller: top bar (breadcrumb, region / players online, account chip),
                         screen stack, bottom bar (key hints + the matchmaking banner with timer and
                         cancel), toasts, modals, shared prefs (region, playlists, connection),
@@ -293,8 +303,9 @@ docs/online/            PHASE1.md, PHASE2.md (the designs), DECISIONS.md (confir
                         MEASUREMENTS.md, ACCOUNTS.md (menus, accounts, ranked, lobbies, OAuth setup)
 src/audio/
   Audio.ts              synthesized engine/boost/impact/goal sounds driven by sim events
-src/main.ts             boot: wasm load ‖ renderer init, build arena, settings, Game, warm-up
-                        render, start
+src/main.ts             boot behind the loading screen: wasm load ‖ renderer init + the world's
+                        first bake, build arena, settings, Game, warm-up render, start, fade into
+                        the menu
 index.html, src/style.css
 tests/                  node tests (node --test): sim harness (wasm, incl. the 8-car layout, 2v2 /
                         3v3 kickoffs, slot compaction), arena mesh validity, arena physics, bot
@@ -353,8 +364,8 @@ about 0.15 s of cold compile, `valueNoise3` about 0.03 s.
 
 `Game.warmUp()` renders one frame through the real pipeline with every normally hidden mesh made
 renderable at zero intensity (`setWarmUp(on)` on CarView / BallView / Effects / ArenaView: the
-ultra grass blades draw whatever the camera height) before the boot overlay goes away and on the
-frame after a tier switch, so no shader compiles on the first boost, airborne ball, goal or
+ultra grass blades draw whatever the camera height) before the loading screen goes away (boot, tier
+switch), so no shader compiles on the first boost, airborne ball, goal or
 demolition (checked: the pipeline counts stay constant through all four on every tier, and after
 every tier switch). At boot `Game.warmUpAsync()` runs it after `Renderer.precompile()`, which
 compiles the pipelines in parallel. On WebGPU it renders one warm-up frame with three's
@@ -366,7 +377,10 @@ instead of 5.5-6.1 s, high tier, production build, warm world cache; three r186'
 `compileAsync` awaits each object's pipelines in turn, 10 s there). On the WebGL2 fallback it is a
 `compileAsync` of the scene through the scene pass's own render target and MRT, so
 KHR_parallel_shader_compile builds the programs in parallel (5.7 s → 1.8 s on low here). A tier
-switch still compiles its pipelines synchronously on the next frame. A theme switch never compiles
+switch from the settings screen (`Game.switchQuality`) compiles the same way behind the loading
+screen; `setQuality` (console, capture tools) still compiles on the next frame. The ball casts its
+shadow during these warm-ups even in a day stadium, so its shadow pipeline is ready for the night
+ones (the stadium only flips the mesh's `castShadow`). A theme switch never compiles
 (uniforms, a cached cube or a re-bake); the world compiles a new bake's pipelines with its own
 `compileAsync` (world/bake.ts).
 
@@ -445,8 +459,8 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   single-sample depth copy (quadPass.ts), half-resolution SSR on wet pitch pixels only (mask from
   depth x wetness), and a quarter-resolution lens glare (short streak + three faint ghosts) of the
   white-hot emissive only (keyed on the darkest channel, so team-coloured frames never streak).
-  Setting `castShadow` outside a tier switch crashes three r186 (a tier switch rebuilds every lit
-  material right after).
+  Setting a light's `castShadow` outside a tier switch crashes three r186 (a tier switch rebuilds
+  every lit material right after); a mesh's only adds it to the shadow pass or takes it out.
 * **Car.ts / Ball.ts** — see the module list; no extra draws; ~+0.05 ms over the old materials.
   On tiers with `grassBlades` the ball's blob and marker and the car blobs float at y 6, above
   the blades.
@@ -519,9 +533,10 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   hold 0 = high / 1 = low) and the theme.
 * **Quality tiers** (`src/render/quality.ts`): low / high / ultra, one table of switches that every
   view reads through `tier(q)` (MSAA, bloom, pixel ratio and budget, dynamic resolution, shadow map,
-  geometry detail, particles...). Phones and tablets start on low, desktops on high. The Friendly
-  screen's quality row (and `Q` in the legacy Hud menu) steps low → high → ultra; `setQuality`
-  rebuilds every view and the post chain (~30 ms) and warms the new pipelines up.
+  geometry detail, particles...). Phones and tablets start on low, desktops on high. Settings >
+  Graphics (from the menus or the pause menu) picks the tier; `switchQuality` rebuilds every view
+  and the post chain (~30 ms), waits for the world's bake at the new sizes and compiles the new
+  pipelines in parallel, all behind the loading screen.
 * **Frozen** (countdown, goal pause, after the whistle, menu): every roster car gets zero controls.
 * **HUD**: the menu has a Mode row (← → on the row, `M`, pad left / right; ↑ ↓ / D-pad move the
   focus across Difficulty / Mode / Quality, `Q` steps to the next quality tier) and shows
