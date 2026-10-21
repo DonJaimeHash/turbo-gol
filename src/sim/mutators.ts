@@ -201,7 +201,7 @@ export function parsePhysicsValues(raw: unknown, mode: 'strict' | 'lenient', con
     }
     if (strict) {
       if (!Number.isInteger(v) || !f.values.includes(v)) return null;
-      picked.set(f.key, v);
+      picked.set(f.key, v + 0); // -0 is the grid's 0
     } else {
       picked.set(f.key, snap(f, v));
     }
@@ -258,7 +258,9 @@ function pct(stock: number, p: number): number {
 export function toMutators(values: PhysicsValues): Float32Array {
   const m = stockMutators();
   const S = STOCK_MUTATORS;
-  const v = (k: PhysicsKey) => physicsValue(values, k);
+  // `+ 0` turns a -0 (JSON.parse('-0') passes every integer check) into 0, so one set of values
+  // has one float layout and one fingerprint whichever way its zeros arrived.
+  const v = (k: PhysicsKey) => physicsValue(values, k) + 0;
   m[M_GRAVITY_Z] = pct(S[M_GRAVITY_Z], v('gravity'));
   m[M_BALL_MAX_SPEED] = pct(S[M_BALL_MAX_SPEED], v('ballMaxSpeed'));
   m[M_BALL_HIT_SCALE] = pct(S[M_BALL_HIT_SCALE], v('ballHit'));
@@ -304,7 +306,7 @@ function pctD(stock: number, p: number): number {
 export function botPhysicsOf(values: PhysicsValues): BotPhysics {
   if (isStockPhysics(values)) return STOCK_BOT_PHYSICS;
   const S = STOCK_BOT_PHYSICS;
-  const v = (k: PhysicsKey) => physicsValue(values, k);
+  const v = (k: PhysicsKey) => physicsValue(values, k) + 0; // -0 as 0, as in toMutators
   const car = v('carMaxSpeed');
   return Object.freeze({
     gravity: pctD(S.gravity, v('gravity')),

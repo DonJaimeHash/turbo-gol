@@ -121,6 +121,19 @@ test('mapping: a non-default value is fround(stock x p / 100); speeds and choice
   assert.equal(toMutators({ spawnBoost: 50 })[L.M_CAR_SPAWN_BOOST], 50);
 });
 
+test('a -0 (JSON.parse("-0") passes every integer check) maps and fingerprints exactly like 0', () => {
+  const neg = JSON.parse('{"ballDrag": -0, "boostUse": -0, "bumpForce": -0, "spawnBoost": -0, "unlimitedFlips": -0}');
+  const pos = { ballDrag: 0, boostUse: 0, bumpForce: 0, spawnBoost: 0 };
+  assert.ok(Object.is(neg.ballDrag, -0), 'the input really holds -0');
+  const strict = parsePhysicsValues(neg, 'strict', 'match');
+  assert.deepEqual(strict, pos, 'strict keeps the grid 0, never -0');
+  const a = toMutators(neg);
+  const b = toMutators(pos);
+  assert.ok(Array.from(a).every((v, i) => Object.is(v, b[i])), 'the same float32 layout, bit for bit');
+  assert.equal(L.mutatorFingerprint(a), L.mutatorFingerprint(b));
+  assert.deepEqual({ ...botPhysicsOf(neg) }, { ...botPhysicsOf(pos) });
+});
+
 test('fingerprint: golden values, and any one value changes it', () => {
   assert.equal(L.mutatorFingerprint(L.STOCK_MUTATORS), 0x7318f74a);
   assert.equal(L.mutatorFingerprint(L.stockMutators()), 0x7318f74a, 'array or Float32Array alike');
