@@ -2,8 +2,8 @@
 
 > Estado al 20/10/2026: el nodo `sao-paulo-1` (id `acff628eb18f760a`, release 0.2.0) está
 > instalado y activo, con los roles de host y verificador, `--matches 15` y `--egress-cap-gb 3800`.
-> Todavía no recibe partidas: el flag `nodes_on` está apagado (ver el canary, M15, en
-> `PRODUCCION.md`). Este documento es el manual de la máquina. El orden del trabajo que falta
+> Desde el 21/10/2026 a las 00:32 UTC recibe partidas de todos los jugadores (`nodes_on` en `1`,
+> después del canary de M15 en `PRODUCCION.md`). Este documento es el manual de la máquina. El orden del trabajo que falta
 > está en `PRODUCCION.md`, etapa 1; los números de PR ([1] a [8]) y de acción (M1 a M16) son los
 > de esa lista.
 
@@ -113,6 +113,7 @@ Dos detalles del SSH:
 | Tamaño de los replays | De 2,3 a 2,8 KB si solo juegan bots (no se graban: se recalculan); de 60 a 403 KB con humanos simulados |
 | Ping desde la PC del mantenedor (Córdoba, Argentina) | De 40 a 51 ms, 42 ms de promedio. HTTPS a sp1 en frío: conexión TCP en 0,13 s, TLS listo en 0,38 s |
 | Subida del VPS a Cloudflare | De 120 a 264 Mbit/s en dos corridas (un número aproximado) |
+| Partidas reales (21/10/2026) | Una 1v1 contra un bot: 2,7 % de un núcleo en promedio (máximo 5 %), 400 kbit/s de salida, 188 MB de memoria. Una 1v1 entre dos invitados: 2,3 % (máximo 5 %), 780 kbit/s (el doble: snapshots para dos jugadores). Sin cortes ni strikes, y 0 ms de retraso del tick. El costo real incluye la red, que el benchmark no cuenta: el nodo corre en un solo proceso, así que con el 60 % de un núcleo aguanta unas 24 partidas 1v1 o de 12 a 15 de 3v3. Por eso `--matches 15` |
 
 ## Antes de instalar el nodo
 
