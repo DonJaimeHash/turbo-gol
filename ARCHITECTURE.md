@@ -70,7 +70,8 @@ src/render/
                         noises, OpaqueAlbedoPhysicalMaterial (albedoNode)
   quality.ts            the three quality tiers (low / high / ultra) and the one table of switches
                         (TIERS, `tier(q)`) every view reads, incl. the render path (`output`:
-                        'direct' for low, 'post'); pixelRatio (tier, dpr, budget, max texture
+                        'direct' for low, 'post') and the Performance look (`bakedLight`: unlit
+                        turf, stands, steel and boards; `netting`); pixelRatio (tier, dpr, budget, max texture
                         size); parseQuality reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU
                         compatibility mode and <= 4 GB devices start on low unless the player chose
                         a tier; never above the GPU's ceiling); lowerQuality
@@ -82,7 +83,8 @@ src/render/
                         device, falls back one tier; never a loop) and the per-GPU ceiling in
                         localStorage (readCeiling / writeCeiling, 30 days)
   theme.ts              stadium themes (ThemeId, THEME_IDS) and the world facts views share (key
-                        lights, fill, floodlights, wetness, fog, tone mapping, grade); data only
+                        lights, fill, floodlights, wetness, fog, tone mapping, grade, and each
+                        theme's brighter `low` look and lights: lookOf / lightsOf); data only
   Renderer.ts           WebGPURenderer, scene, camera, capabilities (`caps`, the adjusted `spec`),
                         resize / pixel budget (tier maxPixelRatio / pixelBudget), GPU timestamps
                         (`#stats`), dynamic resolution (scene pass, or the direct tier's pixel
@@ -426,10 +428,11 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   cube, the live layer, the lit pitch and the theme's floodlight heads as hot panels); drawn by the
   parallax dome. A live near layer is drawn each frame: one merged mesh per skyline, built on first
   use and kept (`LIVE_BUILDERS` in World.ts): the harbour's quay, container yards, cranes, ship and
-  lighthouse (~35k triangles) and the alpine valley floor, walls and ~1650 pines (~96k). Every
-  layer has the same vertex layout and the same material, so a theme switch
-  swaps the mesh's geometry without a new pipeline; the canyon (no live layer) collapses it with a
-  uniform. The additive lighthouse beam shows on the harbour only (a uniform). The structure
+  lighthouse (~35k triangles) and the alpine valley floor, walls and ~1650 pines (~96k; on the
+  tiers with geometry detail 'low' a lighter variant of the same trees, ~52k: alpine.ts
+  `LiveDetail`, the layers keyed by skyline and detail). Every layer has the same vertex layout and
+  the same material, so a theme or tier switch swaps the mesh's geometry without a new pipeline;
+  the canyon (no live layer) collapses it with a uniform, on the smallest layer built so far. The additive lighthouse beam shows on the harbour only (a uniform). The structure
   material picks a pattern per vertex `kind` (geo.ts KIND: 0-9 the harbour and canyon, 12-14 the
   alpine FOLIAGE / MEADOW / ALPINE, an exact range in bakeMaterials.ts; the city's and the rail
   yard's kinds went with those themes on 2026-10-21). Fog: one
@@ -446,7 +449,8 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   ignores cached bakes (still writes them). Every baked skyline stays under its parallax hand-over
   band: dome.ts PROXY_TOP by default (harbour.ts SKYLINE_TOP under it); the alpine preset's
   `proxyTop` raises it above its mountains.
-* **turf/** — the pitch: one MeshStandard graph per tier from load-time bakes (a tileable 512²
+* **turf/** — the pitch: one MeshStandard graph per tier (an unlit one on low, see below) from
+  load-time bakes (a tileable 512²
   blade field, a 192x288 field map of wear / damp / puddle basins / hue, a 176x264 pool map of the
   floodlights' irradiance + the pad mask; ~0.28 s at boot, the pool map cached per floodlight rig).
   View-dependent mowing stripes, paint in the grass, damp sheen, soft puddles (relief tiers), the
@@ -456,14 +460,20 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   the keys' shadows) and keeps only 12 % of the keys' direct specular there (their reflections
   are the streaks); its environment radiance is capped at night
   (`CappedEnvironmentNode`: the probe's hot lamp panels read as fog on the damp sheen). Draws: 1
-  (+1 blades on ultra). Cost: ~0.2 ms low, ~0.5 ms high, blades ~0.13 ms. Tiers: low flat filtered
-  (2 streak heads: one diagonal pair of corner towers, no puddles), high relief (6-step POM within
+  (+1 blades on ultra). Cost: ~0.5 ms high, blades ~0.13 ms. Tiers: low (`bakedLight`) the unlit
+  baked turf (`buildBakedTurfMaterial`: the theme's lit grass colour `TurfLook.baked`, a narrow
+  grain from the blade field, stripes, team tint, markings, goal floors and glow, the pools at a
+  low contrast around a mean of 1; no field map, sheen, puddles or streaks: about a tenth of the
+  lit floor's cost, which was ~30 % of the old low frame at a fill-bound size), high relief (6-step POM within
   600 uu, blade self-shadow) + puddles + 4 streaks (the corner towers), ultra + ~77k instanced grass
   blades in a patch ahead of the camera (skipped above
   380 uu; `setWarmUp` forces them). The goal-mouth glow is the floor's only glow-MRT term.
 * **stadium/** — 7 draws (netting, boards, steel, lamp panels, glare, stand structure, crowd), +1
-  beams on ultra; ~89k triangles on high and ultra, 53k on low; ~0.13 ms low,
-  ~0.4 ms high, ~0.6 ms ultra. Hex wire netting on the shell above the board band (y 360) and the
+  beams on ultra, 6 on low (no netting: `TierSpec.netting`, the steel draws the cage); ~89k
+  triangles on high and ultra, 52k on low; ~0.4 ms high, ~0.6 ms ultra. On low (`bakedLight`) the
+  stands, steel and boards are unlit, their colours x the theme's light baked in (palette.ts
+  `stadiumLight`: both keys' n . l and the hemisphere fill from the theme's low lights), and the
+  crowd takes a bright, flat palette under the theme's low crowd light (`StadiumTheme.low`). Hex wire netting on the shell above the board band (y 360) and the
   roof (box-filtered wires fading into their average coverage, a 400 uu cable grid; low: average
   coverage only), the goal-module panels included (the goals show their net and the harbour
   behind). LED boards from one canvas atlas under y ~340 (ledIntensity 0.4, a satin face): 36
@@ -482,14 +492,16 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
   re-upload, no recompile). The hanging banners went on 2026-10-21 (the owner's request).
 * **post/** — pipeline.ts: the render path of the tier (`TierSpec.output`). High and ultra:
   the HDR RenderPipeline. Low: three's DirectRenderPipeline draws the scene straight into the
-  canvas (no HalfFloat target, no MRT, no composite, no FXAA): the theme's vignette, exposure,
-  grade, tone curve (`lookOf`: the theme's `low` overrides apply there) and sRGB at the end of
-  every material's fragment shader, output targets only; the canvas multisamples x4 (WebGPU: the
+  canvas (no HalfFloat target, no MRT, no composite, no FXAA): the theme's exposure, grade, tone
+  curve (`lookOf`: the theme's `low` overrides apply there; the contrast and vignette stages only
+  when some theme uses them there, none does) and sRGB at the end of every material's fragment
+  shader, output targets only; the canvas multisamples x4 (WebGPU: the
   renderer's samples, set per tier; WebGL2: the context, created multisampled). Blending happens
   after the tone curve there. The device's capabilities (capabilities.ts) take MSAA off the post
   tiers where a multisampled rgba16float target cannot exist (WebGPU compatibility mode: FXAA).
   lighting.ts: both keys and the fill exist on every tier and theme (constant light
-  count); `shadowedKeys` keys cast (none on low: the cars and the ball keep their ground blobs;
+  count), at the theme's low intensities on the direct path (theme.ts `lightsOf`);
+  `shadowedKeys` keys cast (none on low: the cars and the ball keep their ground blobs;
   2 on high and ultra), maps 2048 (PCF 3) on high, 4096 (PCF 4) on ultra, frustums fitted to the
   arena box. pipeline.ts: see "Rendering
   budget". screenSpace.ts (ultra, together ~+1 ms): half-resolution GTAO from a half-resolution
@@ -655,7 +667,7 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
 
 ## Rendering budget (measured)
 
-* Arena: turf 1 (+1 grass blades on ultra), stadium 7 (+1 beams on ultra), world 3 (2 on low),
+* Arena: turf 1 (+1 grass blades on ultra), stadium 7 (+1 beams on ultra, 6 on low), world 3 (2 on low),
   goals 1, goal frames 2, pads 2; all procedural TSL (textures are baked or drawn by code at load).
 * Cars: body (1 merged geometry) + 4 wheels (1 instanced) + flame (while boosting) + blob (while
   airborne at high detail, always at low) per car. Ball: sphere + blob + marker (airborne).
@@ -690,6 +702,14 @@ skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
   textures plus the canvas' MSAA x4 colour and depth buffers (~46 MB at 1600x900, three allocates
   them outside its texture count), the GPU time the same as the FXAA path within the shared GPU's
   noise (0.96 / 0.93 ms in an A/B); high 1.81 ms / 41, ultra 3.03 ms / 52 (unchanged).
+
+  Since the Performance look (docs/visuals/REWORK.md, "The Performance look": the baked-light
+  turf, stands, steel and boards, no netting, the alpine valley's lighter live layer): low 0.41 ms
+  (night harbour), 0.32 (canyon), 0.36 (alpine) at 1600x900 instead of 0.88 / 0.83 / 0.84, 21
+  draws, 83k triangles (alpine 100k instead of 145k), 11 textures / 9.5 MB; at a fill-bound
+  3200x1802 1.03 ms instead of 2.49; the phone layout (780x360 CSS at dpr 3, 1170x540) 0.22-0.28
+  ms instead of 0.43-0.86. A 3v3 match frame on low: 34-41 draws (flames and the ball marker come
+  and go), 0.63 ms at 1600x900.
 
   A 3v3 match frame at kickoff (final review): low 0.85 ms / 51 draws, high 2.01 ms / 72 draws,
   ultra 3.26 ms / 81 draws (each extra car costs 2 draws plus 2 per shadowed key; over the 40 / 60

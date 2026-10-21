@@ -22,9 +22,11 @@ Three tiers, one table of switches (`TIERS`) that every view reads:
 | bloom | none (glow from geometry) | emissive bloom | emissive bloom |
 | resolution | pixel ratio up to 1.5 in a 1 Mpx budget + dynamic resolution (0.7..1 of it) | pixel budget + dynamic resolution | bigger budget + dynamic resolution |
 | shadows | none (ground blobs) | 2 keys, 2048 | 2 keys, 4096 |
-| turf | flat filtered, damp sheen, 2 streak heads | relief, puddles, 4 streak heads | + grass blades near the camera |
-| post | grade, vignette (in every material) | grade, vignette | + GTAO, SSR on wet turf, lens glare |
-| stadium | lighter crowd, no fine netting | full | + floodlight beams |
+| lighting | its own: turf, stands, steel, boards unlit with the theme's light baked in; brighter keys and fill on the lit cars, ball and goals | lit, the theme's keys and fill | idem |
+| turf | unlit: the theme's lit green, stripes, markings, pools at a low contrast (no wear, damp, sheen, streaks) | relief, puddles, 4 streak heads | + grass blades near the camera |
+| post | exposure, grade, tone curve (in every material; no contrast or vignette stage) | grade, vignette | + GTAO, SSR on wet turf, lens glare |
+| stadium | no netting (the steel draws the cage), a bright flat crowd | full | + floodlight beams |
+| world | the alpine valley's lighter live layer (~52k triangles) | full | full |
 
 Phones and tablets start on low, desktops on high; the WebGL2 fallback, WebGPU in compatibility
 mode and devices with `navigator.deviceMemory` <= 4 start on low unless the player chose a tier, and
@@ -109,7 +111,8 @@ flat because the physics ceiling is flat.
 Status (2026-10-21): phases 1-4 are done on `feat/visual-rework`; phase 5's review and docs are
 done (see "Final review" below); the owner tested a preview on phones and asked for changes (see
 "Owner feedback" at the end), which are in; a second round on three devices brought capability
-gating, a tier safety net and a direct Performance path ("Three devices", at the end).
+gating, a tier safety net and a direct Performance path ("Three devices", at the end), and
+Performance its own bright, cheap look ("The Performance look", after it).
 
 1. **Foundation** (no visual change).
    - The three tiers, prefs migration and the menu.
@@ -328,3 +331,66 @@ maps, no screen-space passes, no puddles or relief; glow only from geometry and 
 vignette) on that tier only (`lookOf`, uniform writes, no recompile); the tone curve is the
 theme's (ACES on all three); materials, lights and the turf read the `tier('low')` switches as
 before.
+
+## The Performance look (2026-10-21, third round)
+
+The owner, on the same devices: Performance looked "rather dark"; it must run very fluidly on every
+device with good visuals, not dark or blotchy, and it need not imitate High (take things out).
+What made it dark and blotchy, and what cost a phone's GPU, measured on the old low frame at a
+fill-bound size (3200x1802, the per-pixel share a phone pays; each mesh hidden in turn): the lit
+turf ~30 % of the frame (four texture reads, the physical model with two keys, the fill and two
+PMREM environment reads, the streak loop, the damp sheen), the stand structure ~8 %, the netting
+(a transparent layer over most of the upper screen) ~10 %, the crowd ~8 %; the turf's wear, bare
+soil, damp patches and sheen read as dark smudges on a dimmed phone screen, the crowd as a dark
+mass, and ACES with a 1.18 contrast and a 0.3 vignette crushed the night's darks.
+
+Performance now has its own look (`TierSpec.bakedLight`, `netting`; high and ultra unchanged: high
+pixel-diffed against the previous build, only the animated boards, pads, crowd and beam differ;
+ultra takes the same code paths):
+
+- **Turf**: unlit (`buildBakedTurfMaterial`): the theme's lit grass colour (`TurfLook.baked`), a
+  narrow grain from the blade field (no dark gaps), clean view-dependent mowing stripes, the team
+  tint of the halves, crisp self-lit markings, the floodlight pools at a low contrast around a
+  mean of 1 (`poolMean`), the goal floors and the goal-mouth glow. No wear, soil, damp, sheen,
+  puddles or streaks (`turfStreaks` 0). About a tenth of the lit floor's cost.
+- **Stadium**: no netting (the steel frame draws the cage); the stands, steel and boards unlit,
+  their colours x the theme's light baked in (`stadiumLight`: both keys' n . l and the hemisphere
+  fill, one dot product each, no environment read); a bright, flat crowd palette (clear team kits,
+  lighter casual colours, no cheap-volume shading) under each theme's low crowd light
+  (`StadiumTheme.low`). Lamp heads and their sprite halos as before (no bloom on this tier).
+- **World**: the alpine valley's live layer at a lighter level of detail (`LiveDetail` 'low': the
+  same 1652 pines in the same places, lighter crowns, half the terrain's azimuth segments: 52k
+  triangles instead of 96k); this merged mesh is never culled, so a phone shades every vertex of it
+  every frame. A skyline without a live layer collapses the smallest layer built so far.
+- **Light and colour** (`ThemeWorld.low`, uniform writes): more exposure (night harbour 1.3,
+  canyon 1.15, alpine 1.15), contrast 1 and no vignette on every theme (so the direct path
+  compiles neither stage: three pow per fragment of every material saved), a little lift at night;
+  brighter keys and fill for the lit cars, ball and goals at night (`lightsOf`: keys 2.6 / 1.3,
+  fill 1.6, environment 0.5) and a brighter fill at sunset.
+
+Measured (WebGPU, the reference Turing GPU shared with other sessions, free play at kickoff, chase
+camera; medians of 3 x 120 frames; "A/B" = two interleaved rounds against the previous build,
+reloaded in the same session, the GPU busier than in the first session):
+
+| | before | after |
+|---|---|---|
+| 1600x900 CSS (1600x901), night harbour | 0.88 ms (A/B 0.97, 0.98) | 0.41 ms (A/B 0.43, 0.55) |
+| idem, canyon | 0.83 ms (A/B 1.17, 1.24) | 0.32 ms (A/B 0.35, 0.43) |
+| idem, alpine valley | 0.84 ms (A/B 1.23, 1.28) | 0.36 ms (A/B 0.32, 0.32) |
+| 3200x1802 (fill-bound), harbour / alpine | 2.49 / 2.48 ms | 1.03 / 1.03 ms |
+| phone layout 780x360 CSS at dpr 3 (1170x540), harbour | 0.86 ms (A/B 0.54, 0.62) | 0.28 ms (A/B 0.25, 0.25) |
+| idem, canyon | (A/B 0.49, 0.51) | 0.22 ms (A/B 0.22, 0.39) |
+| idem, alpine | 0.80 ms (A/B 0.43, 0.44) | 0.23 ms (A/B 0.24, 0.39) |
+| draws | 22 | 21 |
+| triangles harbour / alpine | 85k / 145k | 83k / 100k |
+| textures (low) | 11, 9.8 MB | 11, 9.5 MB |
+
+Round trips low / high / ultra keep textures, texture memory and pipelines flat (low 11 / 9.5 MB /
+40 pipelines, high 30 / 168 MB / 54); theme switches on low compile nothing; a forced warm render
+adds no pipeline; the WebGL2 fallback and WebGPU compatibility mode (`#compat`) render the same
+look without errors. (Uniform buffers grow by one per tier switch, as before this change.)
+
+Brightness (display luminance of the chase captures, mean over the frame; the near turf's
+coefficient of variation is the blotchiness): night harbour 0.17 -> 0.33 (near turf 0.19 -> 0.40,
+variation 0.14 -> 0.03), canyon 0.33 -> 0.46, alpine valley 0.45 -> 0.42 (its turf had been a
+washed-out pale green, now a clear one; variation 0.06 -> 0.03).

@@ -146,6 +146,10 @@ All notable changes to Turbogol are documented here. The format follows
   entries (reset, next / previous shot, unlimited boost) sit in the same menu.
 - In the day stadiums the ball casts no shadow: the low sun threw it far from the ball, where it
   looked like a second landing mark. The landing marker under the ball stays.
+- Performance has its own bright, clean look and draws each frame in about half the time: an
+  evenly lit pitch with clear mowing stripes and crisp lines (no dark patches), a lit crowd in the
+  team colours, a brighter picture in every stadium, lighter pine forests in the alpine valley,
+  and the cage drawn by its steel frame without the wire netting. High and Ultra are unchanged.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
