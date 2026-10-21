@@ -222,6 +222,25 @@ test('without IndexedDB the cache reports "not cached" at once', async () => {
   assert.equal(await cache.writeBake({ key: 'k' }), false);
 });
 
+test('cache eviction: least recently used first, unstamped bakes before stamped ones, room for every theme', () => {
+  const { evictions, MAX_ENTRIES } = cache;
+  assert.ok(MAX_ENTRIES >= THEME_IDS.length, 'one tier keeps a bake of every theme');
+  assert.deepEqual(evictions(['a', 'b'], new Map(), 3), [], 'under the cap: nothing goes');
+  const used = new Map([
+    ['a', 300],
+    ['b', 100],
+    ['c', 200],
+  ]);
+  assert.deepEqual(evictions(['a', 'b', 'c'], used, 2), ['b'], 'the oldest read or write goes');
+  assert.deepEqual(evictions(['a', 'b', 'c'], used, 1), ['b', 'c']);
+  // a bake read again moves to the back of the line (a favourite theme survives browsing the row)
+  used.set('b', 400);
+  assert.deepEqual(evictions(['a', 'b', 'c'], used, 2), ['c']);
+  // a bake without a stamp (written before the stamps existed) counts as the oldest
+  assert.deepEqual(evictions(['a', 'b', 'c', 'old'], used, 3), ['old']);
+  assert.deepEqual(evictions(['z', 'y'], new Map(), 1), ['y'], 'ties in key order');
+});
+
 test('copyRows: drops the row padding of a readback and can reverse the rows', () => {
   // 2 x 3 texels of 1 byte, rows padded to 4 bytes
   const src = new Uint8Array([1, 2, 0, 0, 3, 4, 0, 0, 5, 6]);

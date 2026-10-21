@@ -6,7 +6,9 @@
  *
  * Everything here fails silently: no IndexedDB (private windows, some embedded browsers, tests),
  * a blocked or slow open, a quota error or a malformed record all mean "not cached" and the world
- * simply bakes. At most MAX_ENTRIES bakes are kept (the oldest go first).
+ * simply bakes. At most MAX_ENTRIES bakes are kept; the least recently used go first: every read
+ * that hits and every write stamps the key in the small `used` store (a bake record itself is never
+ * rewritten just to mark it used), and `evictions` picks the oldest stamps.
  */
 
 /**
@@ -15,9 +17,16 @@
  */
 export const WORLD_CACHE_VERSION = 8;
 const DB_NAME = 'turbogol-world';
+/** Version 2 added the `used` store (version 1 evicted the oldest write first). */
+const DB_VERSION = 2;
 const STORE = 'bakes';
-/** Bakes kept (about 29 MB each at 1024 faces, 9 MB at 512): one tier's three themes. */
-const MAX_ENTRIES = 3;
+/** When each key was last read or written: { key, at } (a few bytes per bake). */
+const USED = 'used';
+/**
+ * Bakes kept (about 29 MB each at 1024 faces, 9 MB at 512): every theme of one tier, so browsing
+ * the Stadium row or coming back to a favourite reads the cache instead of re-baking.
+ */
+export const MAX_ENTRIES = 6;
 /** An open or read slower than this falls back to baking (ms). */
 const TIMEOUT_MS = 1500;
 
@@ -105,6 +114,18 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   });
 }
 
+/**
+ * The keys to delete so that at most `max` bakes stay: the least recently used first (`used` maps a
+ * key to its last read or write; a bake without a stamp, e.g. one written before the `used` store
+ * existed, counts as the oldest), ties in key order. Pure (tested).
+ */
+export function evictions(keys: readonly string[], used: ReadonlyMap<string, number>, max: number): string[] {
+  const extra = keys.length - max;
+  if (extra <= 0) return [];
+  const at = (k: string): number => used.get(k) ?? 0;
+  return [...keys].sort((a, b) => at(a) - at(b) || (a < b ? -1 : a > b ? 1 : 0)).slice(0, extra);
+}
+
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function openDb(): Promise<IDBDatabase | null> {
@@ -116,12 +137,18 @@ function openDb(): Promise<IDBDatabase | null> {
         resolve(null);
         return;
       }
-      const req = idb.open(DB_NAME, 1);
+      const req = idb.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'key' }).createIndex('savedAt', 'savedAt');
+        if (!db.objectStoreNames.contains(USED)) db.createObjectStore(USED, { keyPath: 'key' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        // a later version opened in another tab: let it upgrade (this tab then stops caching)
+        db.onversionchange = () => db.close();
+        resolve(db);
+      };
       req.onerror = () => resolve(null);
       req.onblocked = () => resolve(null);
     } catch {
@@ -144,7 +171,11 @@ export async function readBake(key: string, shape: BakeShape): Promise<CachedBak
   const read = new Promise<CachedBake | null>((resolve) => {
     try {
       const req = db.transaction(STORE, 'readonly').objectStore(STORE).get(key);
-      req.onsuccess = () => resolve(validBake(req.result, key, shape) ? (req.result as CachedBake) : null);
+      req.onsuccess = () => {
+        const hit = validBake(req.result, key, shape);
+        if (hit) touch(db, key);
+        resolve(hit ? (req.result as CachedBake) : null);
+      };
       req.onerror = () => resolve(null);
     } catch {
       resolve(null);
@@ -153,28 +184,42 @@ export async function readBake(key: string, shape: BakeShape): Promise<CachedBak
   return withTimeout(read, TIMEOUT_MS, null);
 }
 
-/** Store a bake (best effort), then drop the oldest entries beyond MAX_ENTRIES. */
+/** Stamp `key` as used now (best effort, its own small transaction: the read never waits for it). */
+function touch(db: IDBDatabase, key: string): void {
+  try {
+    db.transaction(USED, 'readwrite').objectStore(USED).put({ key, at: Date.now() });
+  } catch {
+    /* not stamped: the bake only looks older than it is */
+  }
+}
+
+/** Store a bake (best effort), then drop the least recently used entries beyond MAX_ENTRIES. */
 export async function writeBake(rec: CachedBake): Promise<boolean> {
   const db = await openDb();
   if (db === null) return false;
   const write = new Promise<boolean>((resolve) => {
     try {
-      const tx = db.transaction(STORE, 'readwrite');
+      const tx = db.transaction([STORE, USED], 'readwrite');
       const store = tx.objectStore(STORE);
+      const used = tx.objectStore(USED);
       store.put(rec);
-      // evict the oldest beyond MAX_ENTRIES, walking the savedAt index by key only (no data loaded)
-      const count = store.count();
-      count.onsuccess = () => {
-        let extra = count.result - MAX_ENTRIES;
-        if (extra <= 0) return;
-        const cursor = store.index('savedAt').openKeyCursor();
-        cursor.onsuccess = () => {
-          const c = cursor.result;
-          if (c === null || extra <= 0) return;
-          store.delete(c.primaryKey);
-          extra--;
-          c.continue();
-        };
+      used.put({ key: rec.key, at: Date.now() });
+      // evict beyond MAX_ENTRIES by key and stamp only (no bake data is loaded)
+      const keys = store.getAllKeys();
+      const stamps = used.getAll();
+      stamps.onsuccess = () => {
+        const at = new Map<string, number>();
+        for (const s of stamps.result as { key: unknown; at: unknown }[]) {
+          if (typeof s.key === 'string' && typeof s.at === 'number') at.set(s.key, s.at);
+        }
+        const all = (keys.result as IDBValidKey[]).filter((k): k is string => typeof k === 'string');
+        for (const k of evictions(all, at, MAX_ENTRIES)) {
+          store.delete(k);
+          used.delete(k);
+        }
+        // stamps without a bake (a read's stamp that landed after its bake was evicted)
+        const live = new Set(all);
+        for (const k of at.keys()) if (!live.has(k)) used.delete(k);
       };
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => resolve(false);
