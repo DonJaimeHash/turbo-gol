@@ -113,6 +113,41 @@ const WORLDS: Readonly<Partial<Record<ThemeId, ThemeWorld>>> = {
     exposure: 1.1,
     grade: { contrast: 1.12, saturation: 1.05, lift: [0, 0, 0.004], gain: [1, 1, 1], vignette: 0.32 },
   },
+  // The same harbour by day: the sun is the main key (azimuth 24 deg, elevation 30 deg, the sky's
+  // sun disc in world/presets.ts), a weak cool sky key from the other side, floodlights off.
+  'harbour-day': {
+    id: 'harbour-day',
+    night: false,
+    keys: [
+      { dir: unit(-0.352, 0.5, 0.791), color: [1.0, 0.93, 0.82], intensity: 3.0 },
+      { dir: unit(0.5, 0.62, -0.6), color: [0.72, 0.82, 1.0], intensity: 0.6 },
+    ],
+    fill: { sky: [0.55, 0.65, 0.85], ground: [0.22, 0.2, 0.15], intensity: 1.1, env: 0.8 },
+    floodlights: towerFloodlights(WARM_LAMP, 0),
+    wetness: 0.12,
+    fog: { color: [0.6, 0.65, 0.74], density: 1.1e-5 },
+    toneMapping: 'neutral',
+    exposure: 0.95,
+    grade: { contrast: 1.04, saturation: 1.06, lift: [0, 0, 0], gain: [1, 1, 1], vignette: 0.22 },
+  },
+  // A red canyon at sunset: the low sun behind the red goal (azimuth 8 deg; the key sits a little
+  // higher than the disc so the pitch is not lit at a grazing angle), the floodlights already on at
+  // half strength, dry turf, a warm haze.
+  'canyon-sunset': {
+    id: 'canyon-sunset',
+    night: false,
+    keys: [
+      { dir: unit(-0.136, 0.208, 0.969), color: [1.0, 0.62, 0.32], intensity: 2.6 },
+      { dir: unit(TOWER_X, HEAD_Y, -2900), color: WARM_LAMP, intensity: 1.0 },
+    ],
+    fill: { sky: [0.45, 0.32, 0.4], ground: [0.3, 0.12, 0.05], intensity: 0.9, env: 0.6 },
+    floodlights: towerFloodlights(WARM_LAMP, 0.45),
+    wetness: 0.05,
+    fog: { color: [0.62, 0.28, 0.15], density: 0.8e-5 },
+    toneMapping: 'aces',
+    exposure: 1.0,
+    grade: { contrast: 1.08, saturation: 1.1, lift: [0.004, 0, 0], gain: [1.02, 1, 0.96], vignette: 0.3 },
+  },
 };
 
 /** The shared world facts of a theme (unknown or not-yet-built themes fall back to the default). */
