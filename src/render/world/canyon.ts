@@ -20,52 +20,13 @@
  * per vertex (kdat.x / kdat.y) for the STRATA pattern (kdat.w is a per-vertex hash).
  */
 import * as THREE from 'three/webgpu';
-import { GeoBuilder, KIND, rng, type Lamp } from './geo';
+import { GeoBuilder, KIND, fbm2, hash2, rng, sstep, vnoise2, type Lamp } from './geo';
 import { SKYLINE_TOP } from './harbour';
 
 /** Nearest distance (uu) of the first cliff from the canyon's axis (the parallax proxy's limit). */
 export const NEAR_WALL = 11800;
 /** Strata step (uu): every cliff face shows a ledge at each multiple of it. */
 const STEP = 380;
-
-const sstep = (a: number, b: number, x: number): number => {
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
-
-function hash2(ix: number, iz: number): number {
-  let h = (Math.imul(ix, 374761393) + Math.imul(iz, 668265263)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-function vnoise2(x: number, z: number): number {
-  const ix = Math.floor(x);
-  const iz = Math.floor(z);
-  const fx = x - ix;
-  const fz = z - iz;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uz = fz * fz * (3 - 2 * fz);
-  const a = hash2(ix, iz);
-  const b = hash2(ix + 1, iz);
-  const c = hash2(ix, iz + 1);
-  const d = hash2(ix + 1, iz + 1);
-  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
-}
-
-function fbm2(x: number, z: number, oct: number): number {
-  let s = 0;
-  let a = 0.5;
-  let f = 1;
-  let n = 0;
-  for (let o = 0; o < oct; o++) {
-    s += a * vnoise2(x * f + o * 17.3, z * f - o * 9.1);
-    n += a;
-    f *= 2.03;
-    a *= 0.5;
-  }
-  return s / n;
-}
 
 /** A height grid of H over a square [-E, E]^2 with bilinear lookup (shadow march, occlusion). */
 function heightGrid(H: (x: number, z: number) => number, n: number, E: number): (x: number, z: number) => number {

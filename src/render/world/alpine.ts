@@ -39,7 +39,7 @@
  * right of that view; azimuth 0 = +z, 90 = -x (presets.ts dirFromAzEl).
  */
 import * as THREE from 'three/webgpu';
-import { GeoBuilder, KIND, rng, type Lamp } from './geo';
+import { GeoBuilder, KIND, fbm2, hash2, rng, sstep, vnoise2, type Lamp } from './geo';
 import { LIVE_RADIUS, STADIUM_HALF_X, STADIUM_HALF_Z } from './harbour';
 
 /** Valley floor level round the stadium (the harbour's quay level: just under the pitch). */
@@ -60,47 +60,6 @@ const SIDE_H = 5400;
 const END_H = 1150;
 
 // ------------------------------------------------------------------------------------------ noise
-
-const sstep = (a: number, b: number, x: number): number => {
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
-
-function hash2(ix: number, iz: number): number {
-  let h = (Math.imul(ix, 374761393) + Math.imul(iz, 668265263)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-/** 2D value noise in [0, 1]. */
-function vnoise2(x: number, z: number): number {
-  const ix = Math.floor(x);
-  const iz = Math.floor(z);
-  const fx = x - ix;
-  const fz = z - iz;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uz = fz * fz * (3 - 2 * fz);
-  const a = hash2(ix, iz);
-  const b = hash2(ix + 1, iz);
-  const c = hash2(ix, iz + 1);
-  const d = hash2(ix + 1, iz + 1);
-  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
-}
-
-/** fbm of value noise in [0, 1]. */
-function fbm2(x: number, z: number, oct: number): number {
-  let s = 0;
-  let a = 0.5;
-  let f = 1;
-  let n = 0;
-  for (let o = 0; o < oct; o++) {
-    s += a * vnoise2(x * f + o * 17.3, z * f - o * 9.1);
-    n += a;
-    f *= 2.03;
-    a *= 0.5;
-  }
-  return s / n;
-}
 
 /** 16 unit gradients for the gradient noise. */
 const GRAD = (() => {

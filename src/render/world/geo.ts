@@ -55,6 +55,49 @@ export interface Lamp {
   readonly down: number;
 }
 
+/** Smoothstep on numbers (the CPU generators: terrains, light map). */
+export const sstep = (a: number, b: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/** Integer lattice hash in [0, 1) (the CPU terrains of canyon.ts and alpine.ts). */
+export function hash2(ix: number, iz: number): number {
+  let h = (Math.imul(ix, 374761393) + Math.imul(iz, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/** 2D value noise in [0, 1]. */
+export function vnoise2(x: number, z: number): number {
+  const ix = Math.floor(x);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uz = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz);
+  const b = hash2(ix + 1, iz);
+  const c = hash2(ix, iz + 1);
+  const d = hash2(ix + 1, iz + 1);
+  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+}
+
+/** fbm of value noise in [0, 1]. */
+export function fbm2(x: number, z: number, oct: number): number {
+  let s = 0;
+  let a = 0.5;
+  let f = 1;
+  let n = 0;
+  for (let o = 0; o < oct; o++) {
+    s += a * vnoise2(x * f + o * 17.3, z * f - o * 9.1);
+    n += a;
+    f *= 2.03;
+    a *= 0.5;
+  }
+  return s / n;
+}
+
 /** Small deterministic PRNG (mulberry32) so every build produces the same skyline. */
 export function rng(seed: number): () => number {
   let a = seed >>> 0;

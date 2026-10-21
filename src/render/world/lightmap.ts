@@ -13,7 +13,7 @@
  * touches the texels within its reach (4 x range), so a build costs a few milliseconds.
  */
 import * as THREE from 'three/webgpu';
-import type { Lamp } from './geo';
+import { sstep, type Lamp } from './geo';
 
 export interface LightMap {
   readonly texture: THREE.DataTexture;
@@ -26,10 +26,6 @@ export interface LightMap {
   readonly layers: readonly [number, number];
 }
 
-const sstep = (a: number, b: number, x: number): number => {
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
 const sat = (x: number): number => Math.min(1, Math.max(0, x));
 
 /** The float texels of a light map (rgba, `res` wide, 4 * `res` high), for tests and the texture. */
