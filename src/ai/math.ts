@@ -232,7 +232,7 @@ export function heading2D(v: Vec3): number {
   return Math.atan2(v[1], v[0]);
 }
 
-// ---- driving model (RocketSim constants) ------------------------------------------
+// ---- driving model (RocketSim constants; BotPhysics below for presets) -----------------
 
 /** Ground max speed with throttle only (uu/s). */
 export const MAX_DRIVE_SPEED = 1410;
@@ -255,6 +255,41 @@ export const JUMP_MAX_HOLD = 0.2;
 /** Dodge impulse magnitude (RocketSim FLIP_INITIAL_VEL_SCALE). */
 export const DODGE_IMPULSE = 500;
 export const GRAVITY = -650;
+
+/**
+ * The physics numbers the bots plan with (gravity, jumps, boost, top speed). Stock by default
+ * (STOCK_BOT_PHYSICS: the constants above, so the stock arithmetic is unchanged); an experimental
+ * physics preset gives every bot of a match the same profile, built from the preset's integers by
+ * src/sim/mutators.ts botPhysicsOf() (doubles, identical on every peer). The ball needs no profile:
+ * the bots read it from the wasm's prediction, which follows the preset.
+ */
+export interface BotPhysics {
+  /** Gravity along z (uu/s², negative). */
+  readonly gravity: number;
+  /** Instant velocity of the first jump (uu/s). */
+  readonly jumpImpulse: number;
+  /** Instant velocity of the double jump (uu/s; RocketSim keeps its constant for it). */
+  readonly doubleJumpImpulse: number;
+  /** Acceleration while the first jump is held (uu/s²). */
+  readonly jumpHoldAccel: number;
+  readonly boostAccelGround: number;
+  readonly boostAccelAir: number;
+  /** Boost used per second while boosting (0: it never runs out). */
+  readonly boostPerSecond: number;
+  /** The car's top speed with boost (uu/s). */
+  readonly maxBoostSpeed: number;
+}
+
+export const STOCK_BOT_PHYSICS: BotPhysics = Object.freeze({
+  gravity: GRAVITY,
+  jumpImpulse: JUMP_IMPULSE,
+  doubleJumpImpulse: JUMP_IMPULSE,
+  jumpHoldAccel: JUMP_HOLD_ACCEL,
+  boostAccelGround: BOOST_ACCEL_GROUND,
+  boostAccelAir: BOOST_ACCEL_AIR,
+  boostPerSecond: BOOST_PER_SECOND,
+  maxBoostSpeed: MAX_BOOST_SPEED,
+});
 
 // Measured steady-state curvature (1/uu) vs forward speed (uu/s), from RocketSim constants
 // STEER_ANGLE_FROM_SPEED_CURVE. Piecewise linear, clamped at both ends.
@@ -293,15 +328,15 @@ export function throttleAccel(speed: number): number {
 }
 
 /** Total ground forward acceleration with full throttle, with or without boost. */
-export function groundAccel(speed: number, boosting: boolean): number {
-  return throttleAccel(speed) + (boosting ? BOOST_ACCEL_GROUND : 0);
+export function groundAccel(speed: number, boosting: boolean, boostAccelGround = BOOST_ACCEL_GROUND): number {
+  return throttleAccel(speed) + (boosting ? boostAccelGround : 0);
 }
 
 /**
  * Distance (uu) a car starting at forward speed `v0` with `boost` units reaches after `t` seconds,
  * driving straight with full throttle and boosting while it has any. Coarse explicit integration.
  */
-export function straightDistance(v0: number, boost: number, t: number, dt = 1 / 30): number {
+export function straightDistance(v0: number, boost: number, t: number, dt = 1 / 30, phys: BotPhysics = STOCK_BOT_PHYSICS): number {
   let v = Math.max(0, v0);
   let b = boost;
   let d = 0;
@@ -309,23 +344,23 @@ export function straightDistance(v0: number, boost: number, t: number, dt = 1 / 
   while (elapsed < t) {
     const h = Math.min(dt, t - elapsed);
     const boosting = b > 0;
-    const vmax = boosting ? MAX_BOOST_SPEED : MAX_DRIVE_SPEED;
-    v += groundAccel(v, boosting) * h;
+    const vmax = boosting ? phys.maxBoostSpeed : MAX_DRIVE_SPEED;
+    v += groundAccel(v, boosting, phys.boostAccelGround) * h;
     if (v > vmax) v = Math.max(vmax, v - 200 * h);
     d += v * h;
-    if (boosting) b -= BOOST_PER_SECOND * h;
+    if (boosting) b -= phys.boostPerSecond * h;
     elapsed += h;
   }
   return d;
 }
 
 /** Height (uu) reached by a jump held for `hold` seconds (<= 0.2), ignoring the 3-tick ramp. */
-export function jumpApex(hold: number): number {
+export function jumpApex(hold: number, phys: BotPhysics = STOCK_BOT_PHYSICS): number {
   const h = clamp(hold, 0, JUMP_MAX_HOLD);
-  const a = JUMP_HOLD_ACCEL + GRAVITY;
-  const vEnd = JUMP_IMPULSE + a * h;
-  const zEnd = JUMP_IMPULSE * h + 0.5 * a * h * h;
-  return zEnd + (vEnd * vEnd) / (2 * -GRAVITY);
+  const a = phys.jumpHoldAccel + phys.gravity;
+  const vEnd = phys.jumpImpulse + a * h;
+  const zEnd = phys.jumpImpulse * h + 0.5 * a * h * h;
+  return zEnd + (vEnd * vEnd) / (2 * -phys.gravity);
 }
 
 // ---- deterministic RNG --------------------------------------------------------------------

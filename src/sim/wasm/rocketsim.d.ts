@@ -80,6 +80,14 @@ export interface RocketSimModule {
 
   _rs_set_demo_mode(demoMode: number): void;
   _rs_set_unlimited_boost(enabled: number): void;
+  /**
+   * Physics mutators of the current arena, MUTATOR_COUNT floats in the layout of
+   * src/sim/mutatorLayout.ts (version first). All or nothing: 0 ok, 1 bad data (count, version,
+   * non-finite, outside a hard limit), 2 no arena, 3 ballMass change while cars exist.
+   */
+  _rs_set_mutators(dataPtr: number, count: number): number;
+  /** Writes the arena's effective mutators (same layout) at outPtr; returns the count written (19) or 0. */
+  _rs_get_mutators(outPtr: number, cap: number): number;
 
   // Full state save / load (netcode rollback). See rs_api.h for the codes and the blob layout.
   /** Writes the state blob at outPtr (at most cap bytes); returns its length or -1. */
