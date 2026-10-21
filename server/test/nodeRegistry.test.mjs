@@ -44,7 +44,7 @@ const { CLIENT_BUILD } = await import('../src/nodeApi.ts');
 const { INTERNAL_HEADER, internalSecret } = await import('../src/auth.ts');
 const { generateEd25519, importPrivateKey, sign, sha256Hex } = await import('../../nodes/shared/edcrypto.ts');
 const { authMessage, reachMessage, replayRequestMessage } = await import('../../nodes/shared/controlProtocol.ts');
-const { RESTART_GRACE_MS, TRUSTED_OFFLINE_MS } = await import('../../nodes/control-plane/controlPlane.ts');
+const { LINK_TIMEOUT_MS, NODE_OFFLINE_MS, RESTART_GRACE_MS } = await import('../../nodes/control-plane/controlPlane.ts');
 const { STATE_VERSION } = await import('../../nodes/control-plane/persist.ts');
 
 const SECRET = 'node-registry-test-secret';
@@ -551,7 +551,7 @@ test('socket guards: a binary frame closes 1003, a frame over 256 KB 1009, bad J
   const c = await open();
   await h.obj.webSocketMessage(c, '{nope');
   assert.equal(c.closed.code, 1008);
-  // A message on a socket the object already let go is refused, not handed to the control plane.
+  // A message on a socket the object already let go is not handled (a logged-in one's is only counted).
   await h.obj.webSocketMessage(c, JSON.stringify({ t: 'auth', nodeId: node.nodeId, sig: 'x' }));
   assert.equal(c.closed.code, 1008);
   const d = await open();
@@ -615,6 +615,103 @@ test('a node that dropped its link: a leave is not recorded (503) and the lock s
   const lv = await call(h, 'POST', '/internal/leave', { body: { matchId: placement.matchId, playerId: A } });
   assert.deepEqual([lv.status, lv.json.error], [503, 'offline']);
   assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json, { state: 'assigned', left: false });
+});
+
+// ---- a stalled control link ------------------------------------------------------------------------
+
+/** 2026-10-21 at `hms` UTC. */
+const at = (hms) => Date.parse('2026-10-21T' + hms + 'Z');
+
+for (const trusted of [true, false]) {
+  test(`a stalled control link, the 2026-10-21 timeline on a ${trusted ? 'project' : 'community'} node: the beats held from x1.7 to x26.7 arrive at once, the link and the match stay, and placement skips the node until then`, async () => {
+    clock = at('00:00:40.000');
+    const h = await boot(makeEnv());
+    clock = at('00:00:50.000');
+    const { ws, node } = await liveNode(h);
+    // Stage 1 registers only the project's nodes: a community one is the same record, untrusted.
+    if (!trusted) h.obj.cp.registry.node(node.nodeId).trusted = false;
+    const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+    assert.ok(placement, 'placed');
+    const place = async () => (await call(h, 'POST', '/internal/place', { body: placeBody({ humans: humans(STRANGER) }) })).json;
+    // The node beats at x1.7 and x6.7 s, the alarm runs at x3.4 and x8.4 s. Every beat sent between
+    // 00:01:07 and 00:01:30.6 is held on the way; the four of them arrive at 00:01:30.619.
+    const events = [{ t: at('00:01:30.619'), kind: 'flush' }];
+    for (let t = at('00:00:51.000'); t <= at('00:01:40.000'); t += 100) {
+      if (t % 5_000 === 1_700) events.push({ t, kind: t > at('00:01:07') && t < at('00:01:30.6') ? 'held' : 'beat' });
+      if (t % 5_000 === 3_400) events.push({ t, kind: 'alarm' });
+    }
+    events.sort((a, b) => a.t - b.t);
+    lines.length = 0;
+    let held = 0;
+    let stalled = null;
+    let after = null;
+    for (const e of events) {
+      clock = e.t;
+      if (e.kind === 'beat') await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+      if (e.kind === 'held') held++;
+      if (e.kind === 'alarm') await h.obj.alarm();
+      if (e.kind === 'flush') {
+        for (let i = 0; i < held; i++) await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+        after = { online: h.obj.cp.registry.node(node.nodeId).online, place: await place() };
+      }
+      if (clock === at('00:01:23.400')) stalled = { closed: ws.closed, online: h.obj.cp.registry.node(node.nodeId).online, place: await place() };
+    }
+    assert.equal(held, 4);
+    assert.deepEqual(stalled, { closed: null, online: false, place: { placement: null, hosts: 0 } }, 'out of placement at the heartbeat timeout, the link kept');
+    assert.ok(lines.includes('[nodes] node sao-paulo-1: no heartbeat for 17 s, no new matches until the next one'), lines.join('\n'));
+    assert.equal(after.online, true);
+    assert.equal(after.place.hosts, 1);
+    assert.equal(after.place.placement?.nodeId, node.nodeId, 'placement takes the node again after the burst');
+    assert.ok(lines.includes('[nodes] node sao-paulo-1: heartbeat again after 24 s'), lines.join('\n'));
+    assert.equal(ws.closed, null);
+    assert.ok(!lines.some((l) => l.includes('4408')), lines.join('\n'));
+    assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json, { state: 'assigned', left: false });
+    const n = h.obj.cp.registry.node(node.nodeId);
+    assert.deepEqual([n.counters.lost, n.counters.strikes], [0, 0]);
+  });
+}
+
+test('a link silent past LINK_TIMEOUT_MS is closed with 4408, its silence logged; what it held is counted once, and the same process comes back to its match', async () => {
+  const h = await boot(makeEnv());
+  const { ws, node } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+  const last = clock;
+  lines.length = 0;
+  while (clock + D.TICK_MS - last <= LINK_TIMEOUT_MS) {
+    clock += D.TICK_MS;
+    await h.obj.alarm();
+  }
+  assert.equal(ws.closed, null);
+  clock += D.TICK_MS;
+  await h.obj.alarm();
+  assert.deepEqual(ws.closed, { code: 4408, reason: 'heartbeat timeout' });
+  assert.ok(lines.includes(`[nodes] node sao-paulo-1: silent ${Math.round((clock - last) / 1000)} s, closing its control link (4408)`), lines.join('\n'));
+  // The stall ends: its heartbeats come in on the closed socket, then the node's answer to the close.
+  clock += 1_000;
+  const late = clock - last;
+  for (let i = 0; i < 10; i++) await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+  await h.obj.webSocketClose(ws, 4408, 'heartbeat timeout', true);
+  assert.equal(h.obj.cp.registry.node(node.nodeId).lastSeen, last, 'a closed link carries no heartbeat');
+  // The same process logs in again (its backoff starts at 1 s), within NODE_OFFLINE_MS of its last heartbeat.
+  clock += 1_000;
+  const back = await connect(h, node);
+  await send(h, back, { t: 'hello', data: helloOf(node) });
+  await send(h, back, { t: 'heartbeat', data: beat({ active: 1 }) });
+  for (let i = 0; i < 4; i++) {
+    clock += D.TICK_MS;
+    await send(h, back, { t: 'heartbeat', data: beat({ active: 1 }) });
+    await h.obj.alarm();
+  }
+  assert.deepEqual(
+    lines.filter((l) => l.includes('after its link was closed')),
+    [`[nodes] node sao-paulo-1: 10 messages so far after its link was closed, up to ${Math.round((late - 5_000) / 1000)} s late`],
+    'once, at the next alarm',
+  );
+  assert.equal(back.closed, null);
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json, { state: 'assigned', left: false });
+  const n = h.obj.cp.registry.node(node.nodeId);
+  assert.deepEqual([n.counters.lost, n.counters.strikes], [0, 0]);
 });
 
 // ---- settled matches and the outbox ----------------------------------------------------------------
@@ -758,7 +855,7 @@ test('the alarm: re-armed while a socket, a match, a grace or an offline trusted
     throw new Error('disk full');
   };
   lines.length = 0;
-  clock += TRUSTED_OFFLINE_MS + 1;
+  clock += NODE_OFFLINE_MS + 1;
   await h.obj.alarm();
   assert.match(alerts()[0], /ALERT sweep failed: Error: disk full/);
   assert.equal(h.ctx.alarm, clock + D.TICK_MS);
@@ -863,6 +960,41 @@ test('a hibernation: the sockets are adopted without a grace, a placement uses t
   assert.equal(ws.closed, null, 'no new challenge: the heartbeat is taken');
   assert.equal(h.obj.cp.registry.node(node.nodeId).active, 1);
   assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${first.matchId}&playerId=${A}`)).json.state, 'assigned');
+});
+
+test('a hibernation with a node gone quiet: its socket, marked when the node went quiet, is closed (4408) at the wake, not adopted; the same process logs in again and keeps its match', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { ws, node } = await liveNode(h);
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+  assert.deepEqual(ws.att, { nodeId: node.nodeId });
+  // No heartbeat for 15 s: the alarm marks the socket. The next heartbeat takes the mark off.
+  clock += 20_000;
+  await h.obj.alarm();
+  assert.deepEqual(ws.att, { nodeId: node.nodeId, quiet: true });
+  await send(h, ws, { t: 'heartbeat', data: beat({ active: 1 }) });
+  assert.deepEqual(ws.att, { nodeId: node.nodeId });
+  clock += 20_000;
+  await h.obj.alarm();
+  assert.deepEqual(ws.att, { nodeId: node.nodeId, quiet: true });
+  assert.equal(ws.closed, null, 'its link is still open');
+  lines.length = 0;
+  h.obj = new D.NodeRegistryDO(h.ctx, env); // same sockets, same database: the memory is all that went
+  await h.obj.ready;
+  assert.deepEqual(ws.closed, { code: 4408, reason: 'heartbeat timeout' });
+  assert.ok(lines.includes('[nodes] node sao-paulo-1: silent when the control plane restarted, closing its control link (4408)'), lines.join('\n'));
+  assert.deepEqual((await call(h, 'POST', '/internal/place', { body: placeBody({ humans: humans(STRANGER) }) })).json, { placement: null, hosts: 0 }, 'no placement on a node already silent');
+  clock += 2_000;
+  const back = await connect(h, node);
+  await send(h, back, { t: 'hello', data: helloOf(node) });
+  await send(h, back, { t: 'heartbeat', data: beat({ active: 1 }) });
+  clock += D.TICK_MS;
+  await h.obj.alarm();
+  assert.equal(back.closed, null);
+  assert.deepEqual((await call(h, 'GET', `/internal/status?matchId=${placement.matchId}&playerId=${A}`)).json, { state: 'assigned', left: false });
+  const n = h.obj.cp.registry.node(node.nodeId);
+  assert.deepEqual([n.counters.lost, n.counters.strikes], [0, 0]);
 });
 
 // ---- replays -----------------------------------------------------------------------------------------

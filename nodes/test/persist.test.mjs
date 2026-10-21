@@ -7,8 +7,9 @@ import { human, leaveAtEnd, setup, sleep, wait } from './fakeNode.mjs';
 
 const { STATE_VERSION, MemoryStore, nodeToRow, nodeFromRow, tokenToRow, tokenFromRow, matchToRow, matchFromRow } = await import('../control-plane/persist.ts');
 const { Registry, MAX_STRIKES, STRIKE_COOLDOWN_MS, TOKEN_TTL_MS } = await import('../control-plane/registry.ts');
-const { RESTART_GRACE_MS, TRUSTED_OFFLINE_MS, VERIFY_MAX_WAIT_MS } = await import('../control-plane/controlPlane.ts');
+const { LINK_TIMEOUT_MS, NODE_OFFLINE_MS, RESTART_GRACE_MS, VERIFY_MAX_WAIT_MS } = await import('../control-plane/controlPlane.ts');
 const { generateEd25519 } = await import('../shared/edcrypto.ts');
+const { HEARTBEAT_TIMEOUT_MS } = await import('../shared/controlProtocol.ts');
 
 const BUILD = { version: '0.1.0', protocol: 1, wasmSha256: 'a'.repeat(64) };
 const SPECS = { cpus: 2, cpuModel: 'x', memMB: 4096, arch: 'x64', os: 'linux', node: '24' };
@@ -758,7 +759,7 @@ test('a store that fails while a match settles loses nothing: the next try settl
   // The sweep voiding a silent node's match: the next sweep does it.
   const s = await env.place([human('c')]);
   env.disconnect();
-  env.advance(16_000);
+  env.advance(NODE_OFFLINE_MS + 1);
   store.fail.finished = 1;
   assert.throws(() => env.cp.sweep(), /SQLITE_FULL/);
   assert.equal(env.cp.matches.get(s.matchId).state, 'assigned', 'never settled in memory only: the purge would drop its row unsent');
@@ -825,7 +826,7 @@ test('a socket that outlived a hibernation is adopted without a new challenge; a
   assert.deepEqual(closes, [4401, 4401]);
 });
 
-test('an adopted socket whose node never speaks again is closed by the heartbeat timeout, and its matches are void', async () => {
+test('an adopted socket whose node never speaks again: offline at the heartbeat timeout, closed after LINK_TIMEOUT_MS, its matches void after NODE_OFFLINE_MS', async () => {
   const env = await setup({ store: new MemoryStore() });
   const p = await env.place([human('a')]);
   env.restart({ cold: false });
@@ -835,16 +836,63 @@ test('an adopted socket whose node never speaks again is closed by the heartbeat
   // env.session stays the one closed by the restart: no heartbeats from here on.
   env.advance(15_000);
   env.cp.sweep();
-  assert.deepEqual(closes, []);
+  assert.equal(env.cp.hostsOnline('SA'), 1);
   env.advance(1_000);
   env.cp.sweep();
-  assert.deepEqual(closes, [4408]);
+  assert.equal(env.cp.hostsOnline('SA'), 0, 'no new matches');
   assert.equal(env.cp.isOnline(env.nodeId), false);
+  env.advance(LINK_TIMEOUT_MS - 16_000);
+  env.cp.sweep();
+  assert.deepEqual(closes, [], 'its link waits for a late heartbeat');
+  env.advance(1);
+  env.cp.sweep();
+  assert.deepEqual(closes, [4408]);
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  env.advance(NODE_OFFLINE_MS - LINK_TIMEOUT_MS);
+  env.cp.sweep();
   assert.equal(env.cp.matches.get(p.matchId).outcome.reason, 'node_offline');
 });
 
+test('the link hears when its node goes quiet and comes back; a socket quiet when the object went down is closed (4408), not adopted, and a live node keeps its matches', async () => {
+  const env = await setup({ store: new MemoryStore() });
+  const name = env.registry.node(env.nodeId).name;
+  const p = await env.place([human('a')]);
+  env.restart({ cold: false });
+  const marks = [];
+  env.session = env.cp.adopt({ send() {}, close() {}, quiet: (q) => marks.push(q) }, env.nodeId);
+  await env.heartbeat();
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1); // the session is env's again: advance beats, so hold them
+  env.cp.sweep();
+  assert.deepEqual(marks, [], 'heard at the advance');
+  const beat = env.heartbeat;
+  env.heartbeat = () => Promise.resolve();
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1);
+  env.cp.sweep();
+  assert.deepEqual(marks, [true]);
+  await beat();
+  assert.deepEqual(marks, [true, false]);
+  env.advance(HEARTBEAT_TIMEOUT_MS + 1);
+  env.cp.sweep();
+  assert.deepEqual(marks, [true, false, true]);
+
+  // The object goes down with that socket marked quiet: the wake closes it instead of adopting it.
+  env.restart({ cold: false });
+  const closes = [];
+  assert.equal(env.cp.adopt({ send() {}, close: (code) => closes.push(code) }, env.nodeId, true), null);
+  assert.deepEqual(closes, [4408]);
+  assert.ok(env.logs.includes(`node ${name}: silent when the control plane restarted, closing its control link (4408)`), env.logs.join('\n'));
+  assert.equal(env.cp.hostsOnline('SA'), 0, 'no placement on a node already silent');
+  env.heartbeat = beat;
+  await env.reconnect(); // alive after all: it logs in again
+  assert.equal(env.cp.hostsOnline('SA'), 1);
+  env.advance(NODE_OFFLINE_MS);
+  env.cp.sweep();
+  assert.equal(env.cp.matches.get(p.matchId).state, 'assigned');
+  assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
+});
+
 test('after a hibernation, a node whose socket did not survive it gets its full window to come back', async () => {
-  // A project node: TRUSTED_OFFLINE_MS from the restore, and the same process reconnecting goes on.
+  // A project node: NODE_OFFLINE_MS from the restore, and the same process reconnecting goes on.
   const env = await setup({ store: new MemoryStore(), trusted: true });
   await wait(() => env.registry.node(env.nodeId).status === 'active');
   const p = await env.place([human('a'), human('b')], { ranked: true });
@@ -853,23 +901,23 @@ test('after a hibernation, a node whose socket did not survive it gets its full 
   env.cp.sweep();
   const m = env.cp.matches.get(p.matchId);
   assert.equal(m.state, 'assigned', 'its last heartbeat is forgotten, not 0');
-  env.advance(TRUSTED_OFFLINE_MS - 1_000);
+  env.advance(NODE_OFFLINE_MS - 1_000);
   env.cp.sweep();
   assert.equal(m.state, 'assigned');
   await env.reconnect();
-  env.advance(TRUSTED_OFFLINE_MS);
+  env.advance(NODE_OFFLINE_MS);
   env.cp.sweep();
   assert.equal(m.state, 'assigned');
   assert.equal(env.registry.node(env.nodeId).counters.strikes, 0);
 
-  // A community node: HEARTBEAT_TIMEOUT_MS from the restore.
+  // A community node: the same NODE_OFFLINE_MS from the restore.
   const c = await setup({ store: new MemoryStore() });
   const q = await c.place([human('c')]);
   c.restart({ cold: false });
-  c.advance(15_000);
+  c.advance(NODE_OFFLINE_MS);
   c.cp.sweep();
   assert.equal(c.cp.matches.get(q.matchId).state, 'assigned');
-  c.advance(1_000);
+  c.advance(1);
   c.cp.sweep();
   assert.equal(c.cp.matches.get(q.matchId).outcome.reason, 'node_offline');
 });
