@@ -98,7 +98,14 @@ src/render/
                         gateTierPrefs (a locked player's saved super low reads as Performance, not chosen)
   experimentalPage.ts   Settings > Experimental: a guest's locked line, the switch (a second press
                         when turning it off restarts on Performance), what it unlocks, Super low's
-                        line and the account's presets; built once, lines shown / hidden
+                        line and the preset editor (picker over the built-ins and the player's
+                        presets, New / Duplicate / Rename / Delete, the name field, one stepper or
+                        cycler per value on its grid with the standard value, the summary line,
+                        Reset to standard); contexts menu / training (experimental free play's
+                        live pick) / match (the room's rules, read-only); built once through the
+                        Hud's PageKit, lines shown / hidden, edits saved at once
+  rulesText.ts          the texts of physics rules: preset names (built-ins from the locale),
+                        values (km/h, %, s, on / off, demolitions), standard values, the summary
   hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
@@ -208,11 +215,13 @@ src/render/
   Hud.ts                DOM HUD: scorebar (score + clock), segmented boost bar, ball indicator,
                         debug line (F3), Tab
                         scoreboard, pointer-lock hint, the pause menu (PauseEntry list from the
-                        Game: RESUME, training entries on one row, SETTINGS, QUIT; its own focus
+                        Game: RESUME, training entries on one row, RULES in experimental free
+                        play, SETTINGS, QUIT; its own focus
                         ring driven by Input's menu edges), menu + the settings screen (tabs:
                         rebinding both devices, camera / gameplay sliders, Audio: master volume,
                         Graphics: the quality tier among MenuOptions.qualities, Experimental:
-                        experimentalPage.ts; refreshSettings redraws it when the account changes)
+                        experimentalPage.ts; refreshSettings redraws it when the account changes;
+                        pad A / B leave a text field of the screen instead of acting on it)
 src/ai/
   Bot.ts                heuristic bot: produces CarControls from SimStateView + ball prediction;
                         stall / net / wall recovery; scans every car (nearest opponent, bump
@@ -285,8 +294,16 @@ src/game/
                         maps the integers to the wasm and the bots, src/sim/mutators.ts)
   experimentalStore.ts  an account's Settings > Experimental switch and presets: a local copy per
                         account (read at boot: unlockedAtBoot), debounced pushes to /api/me/presets,
-                        offline edits kept dirty, deletes need the server; nothing for a guest
-  (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick)
+                        offline edits kept dirty, a preset the full account refused waits for room
+                        (said once), deletes need the server; nothing for a guest
+  experimentalTraining.ts experimental free play, pure: rules for free play only (packs always stock,
+                        a locked player stock), the arena plan (mutators, fingerprint, game speed),
+                        createArena before the car, the rebuild when the physics differ (a pack
+                        after it is stock), the game-speed accumulator
+  (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick;
+  startTraining(FREEPLAY_ID, { rules }) is experimental free play: the preset's physics, its game
+  speed, the TrainingHud's rules line, the pause menu's RULES applied when the settings close, no
+  records)
 src/ui/                 the front-end menus, styled by menu.css (mn-)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
@@ -295,12 +312,14 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
                         screen stack, bottom bar (key hints + the matchmaking banner with timer and
                         cancel), toasts, modals, shared prefs (region, playlists, connection),
                         population polling; MenuHost = what the Game provides (search, friendly,
-                        training, lobby matches, settings screen)
+                        training (with experimental rules), the experimental view (unlocked,
+                        presets), lobby matches, settings screen)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
   screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
-                        browser / create / lobby (custom.ts), training, profile (sign in / up /
+                        browser / create / lobby (custom.ts), training (with Experimental free
+                        play, its rules picker and Edit presets for unlocked players), profile (sign in / up /
                         recover, account actions), leaderboard + ranked result dialog
 src/net/
   protocol.ts           wire protocol shared with server/ (DONE): one binary frame per message,
@@ -418,7 +437,11 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         mapping, the hand-over), physics-rules (the table, its parsers, every grid
                         value inside the hard limits), mutators-wasm (every field's effect,
                         refusals, the predictor, determinism, top speed), mutators-extremes (60 s
-                        3v3 bots at the corners)
+                        3v3 bots at the corners), experimental-training (free play only, packs
+                        stock, createArena before the car, the rebuild, no records, game speed;
+                        real arenas with the extreme built-ins), hud-menu (the preset editor over
+                        the real store with a fake row kit), experimental-store (incl. a preset
+                        the full account refused), menu-accounts (a 401 write sent again once)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
