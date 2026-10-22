@@ -9,8 +9,9 @@
  * (a later change, outside the protocol files the community nodes bundle).
  *
  * Development and the owner's device tests can preview any car (`previewCarsAllowed`: a dev
- * server, or a build made with VITE_PREVIEW_CARS=1): `#car=<id>` drives it offline whether owned
- * or not, `#showroom=<yaw>[,<pitch>]` frames it (Game.enterShowroom). Production builds ignore both.
+ * server, or a build made with VITE_PREVIEW_CARS=1): `#car=<id>[,<id>...]` puts it on the offline
+ * roster whether owned or not (the player's car, then the bots'), `#showroom=<yaw>[,<pitch>[,<slot>]]`
+ * frames one (Game.enterShowroom). Production builds ignore both.
  */
 import { STORAGE_PREFIX } from '../brand';
 import { DEFAULT_CAR, isCarId, type CarId } from './cosmetics';

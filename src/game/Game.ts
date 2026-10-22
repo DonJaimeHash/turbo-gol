@@ -75,12 +75,15 @@
  *
  * Cars (src/game/cosmetics.ts, bodies in src/render/cars): every roster entry carries the car its
  * view draws (`rosterCars`, built with the roster): the player's own pick offline and in training
- * (`localCar`: carSelection.ts, only a car the player is entitled to; `#car=<id>` in previews),
- * the default car for every bot and, for now, every car online. All of them are Standard cars:
- * a car is a look, never physics. `setCar` switches the player's car in place (CarView.setBody:
- * same meshes, same material, no compile). The showroom camera (`enterShowroom` / `exitShowroom`,
- * for a garage behind the menus; `#showroom=<yaw>[,<pitch>]` in previews) frames the player's car
- * on the pitch where it stands, in the live scene and its three lights, and holds the offline sim.
+ * (`localCar`: carSelection.ts, only a car the player is entitled to), the default car for every
+ * bot and, for now, every car online; in previews `#car=<id>[,<id>...]` sets the offline
+ * roster's cars, bots included (so a body's red version can be looked at). All of them are
+ * Standard cars: a car is a look, never physics. `setCar` switches the player's car in place
+ * (CarView.setBody: same meshes, same material, no compile). The showroom camera
+ * (`enterShowroom` / `exitShowroom`, for a garage behind the menus;
+ * `#showroom=<yaw>[,<pitch>[,<slot>]]` in previews) frames the player's car, or roster entry
+ * `slot`, on the pitch where it stands, in the live scene and its three lights, and holds the
+ * offline sim.
  *
  * Mouse look needs the pointer lock: a click on the canvas while a match is being played
  * requests it (that click is masked so it does not boost / jump), opening the menu / pausing / the
@@ -456,11 +459,14 @@ const _srTarget = new THREE.Vector3();
 const _srDir = new THREE.Vector3();
 const _srUp = new THREE.Vector3();
 
-/** `#car=<id>` where previews are allowed (carSelection.ts previewCarsAllowed); null otherwise or for an unknown id. */
-function previewCarFlag(): CarId | null {
-  if (!previewCarsAllowed()) return null;
-  const id = pageFlags().car;
-  return isCarId(id) ? id : null;
+/**
+ * `#car=<id>[,<id>...]` where previews are allowed (carSelection.ts previewCarsAllowed): a car per
+ * offline roster entry, the player's first; null for an entry left empty or an unknown id (that
+ * entry keeps its own car), [] without the flag or outside previews.
+ */
+function previewCarsFlag(): readonly (CarId | null)[] {
+  if (!previewCarsAllowed()) return [];
+  return pageFlags().cars.map((id) => (isCarId(id) ? id : null));
 }
 
 /** Training result banner titles (the sub line names the shot). */
@@ -629,14 +635,17 @@ export class Game implements P2PGameHooks {
   cars: CarView[] = [];
   /** The player's own car pick (only a car the player is entitled to). Debug: window.__game.carPick. */
   readonly carPick = new CarSelection();
-  /** `#car=<id>` in previews: the player's car offline and in training, owned or not. */
-  private readonly previewCar: CarId | null = previewCarFlag();
+  /** `#car=<id>[,<id>...]` in previews: the offline roster's cars (the player's first), owned or not. */
+  private readonly previewCars: readonly (CarId | null)[] = previewCarsFlag();
   /** The car each roster entry drives, in roster order (carIds): what its CarView draws. */
   private readonly rosterCars: CarId[] = [];
   /** The roster is an online session's (installSessionRoster): every car is the default one. */
   private rosterOnline = false;
-  /** The showroom camera (enterShowroom): a fixed yaw (rad) or null to orbit, the pitch (rad), the orbit's yaw; null = off. */
-  private showroom: { yaw: number | null; pitch: number; orbit: number } | null = null;
+  /**
+   * The showroom camera (enterShowroom): a fixed yaw (rad) or null to orbit, the pitch (rad), the
+   * orbit's yaw, the roster entry framed (null = the player); null = off.
+   */
+  private showroom: { yaw: number | null; pitch: number; orbit: number; slot: number | null } | null = null;
   ball!: BallView;
   effects!: Effects;
 
@@ -2860,7 +2869,7 @@ export class Game implements P2PGameHooks {
 
   /** The car the player drives offline and in training: `#car` in previews, else the player's own pick. */
   get localCar(): CarId {
-    return this.previewCar ?? this.carPick.current;
+    return this.previewCars[0] ?? this.carPick.current;
   }
 
   /**
@@ -2887,17 +2896,18 @@ export class Game implements P2PGameHooks {
 
   /**
    * The showroom camera, for the garage (behind the menus) and the car previews: the player's car
-   * framed close up where it stands on the pitch, in the live scene (its lights, its materials:
-   * nothing is added). `yawDeg` fixes the angle round the car (0 = the nose, 90 = the right side,
-   * 180 = the tail, 270 = the left side); without it the camera orbits slowly. `pitchDeg` is the
-   * camera's height angle (SHOWROOM_PITCH_DEG by default, up to 89 for the roof: from yaw 180 the
-   * nose points up the screen). The offline sim is held while it is on (nothing moves under the
-   * camera); exitShowroom hands the camera back.
+   * (or roster entry `slot`, in roster order: `cars[slot]`, the player's car again when there is
+   * no such entry) framed close up where it stands on the pitch, in the live scene (its lights,
+   * its materials: nothing is added). `yawDeg` fixes the angle round the car (0 = the nose, 90 =
+   * the right side, 180 = the tail, 270 = the left side); without it the camera orbits slowly.
+   * `pitchDeg` is the camera's height angle (SHOWROOM_PITCH_DEG by default, up to 89 for the
+   * roof: from yaw 180 the nose points up the screen). The offline sim is held while it is on
+   * (nothing moves under the camera); exitShowroom hands the camera back.
    */
-  enterShowroom(angles: { readonly yawDeg?: number | null; readonly pitchDeg?: number | null } = {}): void {
-    const yaw = angles.yawDeg ?? null;
-    const pitch = Math.min(89, Math.max(-10, angles.pitchDeg ?? SHOWROOM_PITCH_DEG));
-    this.showroom = { yaw: yaw !== null ? yaw * DEG_TO_RAD : null, pitch: pitch * DEG_TO_RAD, orbit: this.showroom?.orbit ?? 0.6 };
+  enterShowroom(view: { readonly yawDeg?: number | null; readonly pitchDeg?: number | null; readonly slot?: number | null } = {}): void {
+    const yaw = view.yawDeg ?? null;
+    const pitch = Math.min(89, Math.max(-10, view.pitchDeg ?? SHOWROOM_PITCH_DEG));
+    this.showroom = { yaw: yaw !== null ? yaw * DEG_TO_RAD : null, pitch: pitch * DEG_TO_RAD, orbit: this.showroom?.orbit ?? 0.6, slot: view.slot ?? null };
   }
 
   /** Back to the menu orbit or the chase camera (its field of view restored). */
@@ -2910,13 +2920,14 @@ export class Game implements P2PGameHooks {
 
   /**
    * Place the showroom camera (render, every frame it is on): on a sphere round the hitbox centre
-   * of the player's car, in the car's own frame, far enough for the car's bounding sphere (the
-   * hitbox half diagonal) to fit the narrower field of view; the up vector is the orbit's, so a
-   * view from straight above stays upright. Scratch vectors only.
+   * of the framed car (the player's, or roster entry `slot`), in the car's own frame, far enough
+   * for the car's bounding sphere (the hitbox half diagonal) to fit the narrower field of view;
+   * the up vector is the orbit's, so a view from straight above stays upright. Scratch vectors
+   * only.
    */
   private placeShowroomCamera(camera: THREE.PerspectiveCamera, dt: number): void {
     const s = this.showroom;
-    const car = this.cars[this.playerIndex];
+    const car = (s !== null && s.slot !== null ? this.cars[s.slot] : undefined) ?? this.cars[this.playerIndex];
     if (s === null || car === undefined) return;
     if (s.yaw === null) s.orbit = (s.orbit + SHOWROOM_ORBIT_RATE * dt) % (Math.PI * 2);
     const yaw = s.yaw ?? s.orbit;
@@ -3704,8 +3715,8 @@ export class Game implements P2PGameHooks {
       carIds.push(id);
       slots.push(slot);
       offs.push(sim.carOffset(slot));
-      // The player drives its own pick, every bot the default car.
-      this.rosterCars.push(i === 0 ? this.localCar : DEFAULT_CAR);
+      // The player drives its own pick, every bot the default car (in previews, `#car`'s entries).
+      this.rosterCars.push(i === 0 ? this.localCar : (this.previewCars[i] ?? DEFAULT_CAR));
       const team = i === 0 ? Team.Blue : sim.teamOf(slot);
       if (i === 0) {
         rows.push({ name: t('game.you'), team: Team.Blue, you: true });

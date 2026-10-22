@@ -39,18 +39,16 @@ test('catalog: the default car and the four to come, in menu order, one price ta
     assert.equal(carCosmetic(c.id), c);
   }
   assert.deepEqual(carCosmetic('dune'), { id: 'dune', nameKey: 'car.dune', descKey: 'car.duneDesc', price: 0, status: 'available' });
-  for (const id of ['pampero', 'carpincho', 'condor', 'tero']) {
-    assert.equal(carCosmetic(id).price, 1500, `${id} price`);
-    assert.equal(carCosmetic(id).status, 'soon', `${id} waits for its body`);
-  }
+  for (const id of ['pampero', 'carpincho', 'condor', 'tero']) assert.equal(carCosmetic(id).price, 1500, `${id} price`);
   for (const id of CAR_IDS) assert.ok(isCarId(id));
   for (const bad of ['', 'Dune', 'car-next-1', 'dune ', 0, null, undefined, {}]) assert.equal(isCarId(bad), false, String(bad));
 });
 
-test('catalog: an available car has a body; a car still to come draws the default body', () => {
+test('catalog: a car is available exactly when its body module has a body; a car still to come draws the default body', () => {
+  // Adding a car (docs/cars.md) fills src/render/cars/<id>.ts and flips its status: this follows.
   for (const c of CARS) {
-    if (c.status === 'available') assert.ok(hasCarBody(c.id), `${c.id} has a body`);
-    else assert.equal(carBody(c.id), carBody(DEFAULT_CAR), `${c.id} falls back to the default body`);
+    assert.equal(c.status === 'available', hasCarBody(c.id), `${c.id}: status '${c.status}', body ${hasCarBody(c.id) ? 'built' : 'to come'}`);
+    if (c.status === 'soon') assert.equal(carBody(c.id), carBody(DEFAULT_CAR), `${c.id} falls back to the default body`);
   }
 });
 
@@ -120,16 +118,21 @@ test('preview flags: #car and #showroom parse anywhere, apply only on a dev serv
   assert.equal(previewCarsAllowed({ DEV: false, VITE_PREVIEW_CARS: '0' }), false);
   assert.equal(previewCarsAllowed({ DEV: true }), true, 'the dev server');
   assert.equal(previewCarsAllowed({ DEV: false, VITE_PREVIEW_CARS: '1' }), true, 'a preview build');
-  assert.equal(parseHashFlags('').car, null);
+  assert.deepEqual(parseHashFlags('').cars, []);
   assert.equal(parseHashFlags('').showroom, null);
-  assert.equal(parseHashFlags('#car=tero&diag').car, 'tero');
-  assert.equal(parseHashFlags('#car=').car, null);
-  assert.equal(parseHashFlags('#carousel').car, null, 'whole words only');
-  assert.deepEqual(parseHashFlags('#showroom=35&high').showroom, { yawDeg: 35, pitchDeg: null });
-  assert.deepEqual(parseHashFlags('#superlow&showroom=145,20').showroom, { yawDeg: 145, pitchDeg: 20 });
-  assert.deepEqual(parseHashFlags('#showroom').showroom, { yawDeg: null, pitchDeg: null }, 'bare: the slow orbit');
-  assert.deepEqual(parseShowroom(',80'), { yawDeg: null, pitchDeg: 80 });
-  assert.deepEqual(parseShowroom('side,x'), { yawDeg: null, pitchDeg: null });
+  assert.deepEqual(parseHashFlags('#car=tero&diag').cars, ['tero'], 'the player only');
+  assert.deepEqual(parseHashFlags('#car=tero,tero').cars, ['tero', 'tero'], 'the player and the first bot (a 1v1: the red one)');
+  assert.deepEqual(parseHashFlags('#car=,condor').cars, ['', 'condor'], 'the player keeps their own pick');
+  assert.deepEqual(parseHashFlags('#car=').cars, []);
+  assert.deepEqual(parseHashFlags('#carousel').cars, [], 'whole words only');
+  assert.deepEqual(parseHashFlags('#showroom=35&high').showroom, { yawDeg: 35, pitchDeg: null, slot: null });
+  assert.deepEqual(parseHashFlags('#superlow&showroom=145,20').showroom, { yawDeg: 145, pitchDeg: 20, slot: null });
+  assert.deepEqual(parseHashFlags('#car=tero,tero&showroom=35,12,1').showroom, { yawDeg: 35, pitchDeg: 12, slot: 1 }, 'the red car of a 1v1');
+  assert.deepEqual(parseHashFlags('#showroom').showroom, { yawDeg: null, pitchDeg: null, slot: null }, 'bare: the slow orbit');
+  assert.deepEqual(parseShowroom(',80'), { yawDeg: null, pitchDeg: 80, slot: null });
+  assert.deepEqual(parseShowroom('90,,3'), { yawDeg: 90, pitchDeg: null, slot: 3 });
+  assert.deepEqual(parseShowroom('side,x,-1'), { yawDeg: null, pitchDeg: null, slot: null });
+  assert.deepEqual(parseShowroom('0,0,1.5'), { yawDeg: 0, pitchDeg: 0, slot: null }, 'a slot is a whole roster index');
   assert.equal(parseShowroom(null), null);
 });
 

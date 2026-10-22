@@ -32,11 +32,20 @@ export const CAR_PRICES: Readonly<Record<CarId, number>> = {
   tero: 1500,
 };
 
+/**
+ * 'available' exactly when the car's body module (src/render/cars/<id>.ts) has a body
+ * (tests/cosmetics.test.mjs). One car per paragraph: the bodies are built on parallel branches,
+ * and git merges two edits cleanly only with an unchanged line between them.
+ */
 const CAR_STATUS: Readonly<Record<CarId, CarStatus>> = {
   dune: 'available',
+
   pampero: 'soon',
+
   carpincho: 'soon',
+
   condor: 'soon',
+
   tero: 'soon',
 };
 
