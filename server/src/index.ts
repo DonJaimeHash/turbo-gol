@@ -8,7 +8,9 @@
  *                       (kind 'server', or the p2p fallback for a lone human: a MatchDO match, wsUrl /ws/<matchId>;
  *                       or, with the nodes on, a match on a community node: node: true, wsUrl the node's own wss://);
  *                       426 'reload_required' for kind 'p2p' without this server's P2P protocol in p2pProtocol (a stale
- *                       page); 429 'no_show' { retryAfterMs } from the matchmaker (room tickets left unused, p2p only)
+ *                       page); 429 'no_show' { retryAfterMs } from the matchmaker (room tickets left unused, p2p only);
+ *                       400 'experimental_lobby_only' for a body that carries `physics`: experimental rules
+ *                       exist only in custom P2P lobbies, never in the casual or ranked queues
  *   POST /api/rejoin  { matchId } Bearer session        -> QueueResult with a fresh ticket (MatchDO and node matches; a RoomDO
  *                       room id answers 410 'p2p_room': a P2P room is never rejoined, POST /api/leave frees its lock;
  *                       a match the player quit with POST /api/leave { matchId } answers 410 'left', or 404 once
@@ -22,6 +24,11 @@
  *                       Without a matchId a server lock stays (a reload / network drop rejoins on the next queue's 409).
  *                       A node match is quit the same way, the node first: its lock stays (released: false) when the
  *                       node did not take the leave. connected: false (never got in) is passed on to the node only
+ *   POST /api/lobbies { name, password?, mode, visibility, net, matchLengthSeconds, physics?, region? } Bearer
+ *                    -> LobbyTicketAnswer (LobbyDO.ts); `physics` (experimental rules) from a guest session:
+ *                       403 'account_required' (a lobby with them takes signed-in players only)
+ *   POST /api/lobbies/join { code, password? } Bearer -> LobbyTicketAnswer; a guest into a lobby with
+ *                       experimental rules: 403 'account_required' (LobbyDO)
  *   GET  /api/ice     Bearer session                    -> { iceServers }: Cloudflare STUN always, plus 10-minute TURN
  *                       credentials minted per request when TURN_KEY_ID / TURN_KEY_TOKEN are set (env.ts)
  *   GET  /ws/:matchId   Sec-WebSocket-Protocol: tg1, ticket.<jwt>  -> 101 (ticket verified here,
@@ -68,7 +75,7 @@
  * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts).
  */
 import type { Env } from './env';
-import { SERVER_VERSION, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
+import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
 import type { RankedCheck } from './accountStore';
@@ -358,7 +365,10 @@ async function queue(request: Request, env: Env): Promise<Response> {
   // server or ranked queue goes on: its match waits for a node, and no MatchDO is created for it.
   const doDisabled = await flag(env, 'do_disabled');
   if (doDisabled && !(nodesConfigured(env) && nodesAllowed(await nodesMode(env), [session.sub]))) return error(503, 'do_disabled');
-  const body = await readJson<{ mode?: unknown; modes?: unknown; kind?: unknown; p2pProtocol?: unknown; region?: unknown }>(request);
+  const body = await readJson<{ mode?: unknown; modes?: unknown; kind?: unknown; p2pProtocol?: unknown; region?: unknown; physics?: unknown }>(request);
+  // The owner's rule: every ranked or counted match, P2P included, runs the standard physics.
+  // Experimental rules exist only in custom P2P lobbies; a queue never accepts or carries them.
+  if (carriesPhysics(body)) return error(400, EXPERIMENTAL_REFUSED, 'experimental rules exist only in custom P2P lobbies, never in the casual or ranked queues');
   const modes: GameModeId[] | null = body && isModeList(body.modes) ? body.modes : body && isMode(body.mode) ? [body.mode] : null;
   if (!body || modes === null) return error(400, 'bad_mode', "mode must be '1v1' | '2v2' | '3v3' (or modes: a list of them)");
   if (body.kind !== undefined && !isQueueKind(body.kind)) return error(400, 'bad_kind', "kind must be 'p2p' | 'server' | 'ranked'");
@@ -461,15 +471,21 @@ async function lobbyTicket(request: Request, env: Env, session: SessionClaims, l
   return { lobbyId, code, ticket, wsUrl: socketUrl(request, '/lobby/' + lobbyId) };
 }
 
-/** POST /api/lobbies { name, password?, mode, visibility, net, matchLengthSeconds, region? }: a new lobby hosted by the caller (guests too). */
+/**
+ * POST /api/lobbies { name, password?, mode, visibility, net, matchLengthSeconds, physics?, region? }:
+ * a new lobby hosted by the caller (guests too, but never with experimental rules: `physics` needs
+ * an account session, 403 account_required; LobbyDO checks the rules themselves).
+ */
 async function createLobby(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
   if (await flag(env, 'matchmaking_off')) return error(503, 'matchmaking_off');
   if (rateLimited('lc:' + session.sub, LIMIT_LOBBY_CREATE_PER_PLAYER, Date.now())) return error(429, 'rate_limited', 'Creaste demasiadas salas, espera un minuto');
-  const b = await readJson<{ name?: unknown; password?: unknown; mode?: unknown; visibility?: unknown; net?: unknown; matchLengthSeconds?: unknown; region?: unknown }>(request);
+  const b = await readJson<{ name?: unknown; password?: unknown; mode?: unknown; visibility?: unknown; net?: unknown; matchLengthSeconds?: unknown; physics?: unknown; region?: unknown }>(request);
   if (!b) return error(400, 'bad_request');
   if (b.region !== undefined && !isRegion(b.region)) return error(400, 'bad_region');
+  // Experimental rules are for signed-in players only (null = standard physics, anyone).
+  if (carriesPhysics(b) && session.acct !== 1) return error(403, 'account_required', 'Inicia sesión para crear una sala experimental');
   const name = b.name === undefined ? 'Sala de ' + session.name : sanitizeLobbyName(b.name);
   if (name === null) return error(400, 'bad_name', 'El nombre de la sala tiene que tener entre 3 y 24 caracteres');
   const region = regionOf(request, env, b.region);
@@ -487,7 +503,7 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
       code,
       region,
       socketBase: (u.protocol === 'https:' ? 'wss://' : 'ws://') + u.host,
-      settings: { name, mode: b.mode, visibility: b.visibility, net: b.net, matchLengthSeconds: b.matchLengthSeconds },
+      settings: { name, mode: b.mode, visibility: b.visibility, net: b.net, matchLengthSeconds: b.matchLengthSeconds, physics: b.physics },
       password: typeof b.password === 'string' && b.password.length > 0 ? b.password : null,
       host: { playerId: session.sub, name: session.name, guest: session.acct !== 1 },
     }),

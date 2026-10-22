@@ -34,7 +34,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { error, json } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
 import type { PasswordRecord, RankedResultInput } from './accountStore';
@@ -175,6 +175,11 @@ export class AccountsDO extends DurableObject<Env> {
   private async post(path: string, request: Request, now: number): Promise<Response> {
     const b = await body<Record<string, unknown>>(request);
     if (!b) return error(400, 'bad_request');
+    // A match with experimental rules counts for nothing: no rating, no ranked lock, no abandon or
+    // no-show penalty, no training record. Such a report is refused, whoever sent it.
+    if ((path === '/ranked-result' || path === '/ranked-cancel' || path === '/ranked-lock' || path === '/training') && carriesPhysics(b)) {
+      return error(400, EXPERIMENTAL_REFUSED, 'a match with experimental rules records nothing');
+    }
     const s = this.store;
     switch (path) {
       case '/register': {

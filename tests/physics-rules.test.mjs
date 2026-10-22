@@ -215,6 +215,19 @@ test('rules snapshot: a copy with v, a valid name and strict match values; anyth
   }
 });
 
+test('lobby rules (a lobby, the matchmaker, a room, a welcome): none or a snapshot that changes nothing is standard (null); a valid one is kept; anything else is bad', () => {
+  const s = R.snapshotOf('Low gravity', { gravity: 50, ballDrag: 50 });
+  assert.equal(R.parseLobbyRules(undefined), null);
+  assert.equal(R.parseLobbyRules(null), null);
+  assert.deepEqual(R.parseLobbyRules(JSON.parse(JSON.stringify(s))), s);
+  assert.equal(R.parseLobbyRules({ v: 1, name: 'Standard', values: {} }), null, 'changes nothing: an ordinary lobby');
+  assert.equal(R.parseLobbyRules({ v: 1, name: 'Standard', values: { gravity: 100 } }), null, 'a default written out is still the standard physics');
+  assert.deepEqual(R.parseLobbyRules({ v: 1, name: 'Low gravity', values: { ballDrag: 50, gravity: 50, ballHit: 100 } }), s, 'kept in the canonical form');
+  for (const bad of [{ ...s, v: 2 }, { ...s, values: { gameSpeed: 50 } }, { ...s, values: { gravity: 55 } }, { ...s, name: '(copy)' }, 'Low gravity', 0, false, [], {}]) {
+    assert.equal(R.parseLobbyRules(bad), 'bad', JSON.stringify(bad));
+  }
+});
+
 test('automatic names: the first free "My rules N"; copies "{name} #N" from 2, a copy of a copy from its original, cut to fit', () => {
   const def = (n) => `My rules ${n}`;
   const copy = (name, n) => `${name} #${n}`;

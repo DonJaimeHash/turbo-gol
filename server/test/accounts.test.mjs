@@ -369,7 +369,7 @@ test('lobby helpers: names, codes, team for a newcomer, refit on a playlist chan
   const two = L.refitTeams([{ id: 'm1', team: 0, joinedAt: 1 }, { id: 'm2', team: 0, joinedAt: 2 }], 1);
   assert.deepEqual([...two.entries()], [['m1', 0], ['m2', 1]], 'the newest moves');
   const s = L.parseLobbySettings({ mode: '3v3', matchLengthSeconds: 0, net: 'server' }, L.defaultLobbySettings('Sala'));
-  assert.deepEqual(s, { name: 'Sala', mode: '3v3', visibility: 'public', net: 'server', matchLengthSeconds: 0 });
+  assert.deepEqual(s, { name: 'Sala', mode: '3v3', visibility: 'public', net: 'server', matchLengthSeconds: 0, physics: null });
   assert.equal(L.parseLobbySettings({ matchLengthSeconds: 7 }, s), 'bad_length');
   assert.equal(L.parseLobbySettings({ mode: '4v4' }, s), 'bad_mode');
 });

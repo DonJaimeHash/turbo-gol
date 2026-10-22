@@ -16,6 +16,7 @@
  * so re-simulation never advances a bot's RNG or re-fires a goal differently on two peers.
  */
 import { PACKED_INPUT_BYTES } from '../../sim/types';
+import type { RulesSnapshot } from '../../game/physicsRules';
 
 /**
  * Signaling protocol version (RoomWelcome.protocol; a mismatch tells the client to reload).
@@ -30,8 +31,14 @@ import { PACKED_INPUT_BYTES } from '../../sim/types';
  *      page from before is refused the same way.
  *   4: the bots changed (aerials on medium, aerial fixes): every peer runs the room's bots. Bump it whenever the shared simulation changes
  *      (the field, the physics, the bots): peers on different builds would desync.
+ *   5: experimental rules (an experimental custom lobby, src/game/physicsRules.ts) and the wasm
+ *      with the physics mutators: RoomWelcome.physics (always present, null = standard physics)
+ *      is applied by every peer when it builds the arena, and 'ready' carries `physicsFp`, the
+ *      mutator fingerprint its arena reads back; the room refuses a peer whose fingerprint is not
+ *      the room's (error ROOM_ERROR_PHYSICS_MISMATCH, its socket closed: the others play on with
+ *      the team AI in that slot). Standard physics did not change (the golden stock trace).
  */
-export const P2P_PROTOCOL_VERSION = 4;
+export const P2P_PROTOCOL_VERSION = 5;
 
 /**
  * Error code of a P2P protocol mismatch, on both paths: POST /api/queue { kind: 'p2p' } without
@@ -102,6 +109,13 @@ export interface RoomWelcome {
   iceServers: IceServer[];
   /** Server wall clock (ms since epoch) when this message was sent, for a coarse clock offset. */
   now: number;
+  /**
+   * The room's physics (an experimental custom lobby's rules, checked strictly by the room and by
+   * RoomClient: parseLobbyRules), null = standard. Every peer creates its arena with them before
+   * any car (Game.applyP2PRoster: createArena(tickRate, arenaMutators(physics))) and plans its bots
+   * with them (botPhysicsOf). A room with physics has no server fallback and records nothing.
+   */
+  physics: RulesSnapshot | null;
 }
 
 export type RoomServerMessage =
@@ -125,13 +139,26 @@ export type RoomServerMessage =
 
 /** RoomServerMessage 'error' code of a dropped signal relay (not fatal: the offer is re-sent). */
 export const ROOM_ERROR_SIGNAL_DROPPED = 'signal_dropped';
+/**
+ * RoomServerMessage 'error' code: this peer's 'ready' carried another physicsFp than the room's
+ * rules give (a modified page, or rules applied wrongly). The room closes the socket: the slot is
+ * left (never a no-show strike) and the others play on with the team AI in it.
+ */
+export const ROOM_ERROR_PHYSICS_MISMATCH = 'physics_mismatch';
+/** RoomClient's error code for a welcome whose `physics` is missing or not rules this build reads. */
+export const P2P_ERROR_BAD_PHYSICS = 'bad_physics';
 
 export type SignalData = { sdp: { type: 'offer' | 'answer'; sdp: string } } | { candidate: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null } | null };
 
 export type RoomClientMessage =
   | { type: 'signal'; to: number; data: SignalData }
-  /** Mesh complete on my side (every pair connected) and the game is loaded. */
-  | { type: 'ready' }
+  /**
+   * Mesh complete on my side (every pair connected) and the game is loaded. `physicsFp`: the
+   * mutatorFingerprint of my arena's mutators as the wasm reads them back (sim.getMutators());
+   * the room compares it with its rules' (physicsFingerprint): required in a room with physics,
+   * checked when present in a standard one.
+   */
+  | { type: 'ready'; physicsFp?: number }
   | { type: 'ping'; t0: number }
   /** My P2P connection to `slot` is dead (after the mesh timeout); the room decides the drop tick. */
   | { type: 'unreachable'; slot: number; atTick: number }

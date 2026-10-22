@@ -149,6 +149,22 @@ export async function readJson<T>(request: Request): Promise<T | null> {
 }
 
 /** `p`, or a rejection once `ms` passed without it settling. The work itself goes on; nothing waits for it. */
+/**
+ * The owner's rule for experimental physics (src/game/physicsRules.ts): every ranked or counted
+ * match, P2P included, runs the standard physics, and a match with experimental rules counts for
+ * nothing. True when a decoded body carries rules (a `physics` that is neither absent nor null):
+ * the queues, server matches (MatchDO), community node placements and every report that rates,
+ * strikes or records something refuse such a body, whoever sent it.
+ */
+export function carriesPhysics(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) return false;
+  const v = (body as { physics?: unknown }).physics;
+  return v !== undefined && v !== null;
+}
+
+/** The refusal of a body that carries experimental rules where only standard physics may run. */
+export const EXPERIMENTAL_REFUSED = 'experimental_lobby_only';
+
 export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const late = new Promise<never>((_, reject) => {

@@ -346,7 +346,8 @@ const PEERS_2V2 = [
   { slot: 3, team: 1, kind: 'bot', name: 'Bot 2' },
 ];
 
-async function makeRoom(slots, mode = '2v2', env = ENV) {
+/** `extra`: more /internal/create fields (an experimental room's `physics`). */
+async function makeRoom(slots, mode = '2v2', env = ENV, extra = {}) {
   const ctx = new FakeCtx();
   const room = new R.RoomDO(ctx, env);
   const secret = await internalSecret(SECRET);
@@ -354,7 +355,7 @@ async function makeRoom(slots, mode = '2v2', env = ENV) {
     new Request('https://room/internal/create', {
       method: 'POST',
       headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
-      body: JSON.stringify({ roomId: 'r1', mode, region: 'test', seed: 7, slots, matchLengthSeconds: 300, createdAt: Date.now() }),
+      body: JSON.stringify({ roomId: 'r1', mode, region: 'test', seed: 7, slots, matchLengthSeconds: 300, createdAt: Date.now(), ...extra }),
     }),
   );
   assert.equal(res.status, 200, 'create');
@@ -1379,5 +1380,240 @@ test('RoomDO + MatchmakerDO: a slow joiner refused after the no-show grace, thre
     assert.equal(r.status, 200, `A is not blocked: ${JSON.stringify(r.json)}`);
     assert.equal(r.json.status, 'waiting');
     await w.call('/leave', { playerId: 'pa' });
+  });
+});
+
+// ---- experimental rules (a custom lobby's physics, src/game/physicsRules.ts) ---------------------
+// The owner's rule: what matters for P2P and ranked matches is the standard physics; a room with
+// experimental rules counts for nothing. RoomDO keeps the rules and hands them to every socket,
+// checks every peer's 'ready' fingerprint, never names a no-show; the matchmaker takes rules only
+// from a custom lobby's P2P start and never counts a strike for such a room.
+
+const { physicsFingerprint } = await import('../../src/sim/mutators.ts');
+const RULES = { v: 1, name: 'Low gravity', values: { gravity: 50, ballDrag: 50 } };
+const RULES_FP = physicsFingerprint(RULES);
+const STOCK_FP = physicsFingerprint(null);
+const PEERS_1V1 = [
+  { slot: 0, team: 0, kind: 'peer', name: 'A', playerId: 'pa' },
+  { slot: 1, team: 1, kind: 'peer', name: 'B', playerId: 'pb' },
+];
+const errorsOf = (ws) => ws.of('error').map((e) => e.code);
+
+test('RoomDO: ROOM_PROTOCOL is 5 (experimental rules in the welcome, the ready fingerprint)', () => {
+  assert.equal(R.ROOM_PROTOCOL, 5);
+  assert.equal(R.PHYSICS_MISMATCH, 'physics_mismatch');
+  assert.notEqual(RULES_FP, STOCK_FP);
+});
+
+test('RoomDO: physicsReady: with rules the fingerprint is required and must be theirs; standard rooms check one that is present', () => {
+  assert.equal(R.physicsReady(RULES, RULES_FP), true);
+  assert.equal(R.physicsReady(RULES, STOCK_FP), false, 'a stock arena in an experimental room');
+  assert.equal(R.physicsReady(RULES, undefined), false, 'required with rules');
+  assert.equal(R.physicsReady(RULES, String(RULES_FP)), false, 'a number, nothing else');
+  assert.equal(R.physicsReady(null, undefined), true, 'a standard room lets a ready without one through (headless tools)');
+  assert.equal(R.physicsReady(null, STOCK_FP), true);
+  assert.equal(R.physicsReady(null, RULES_FP), false, 'a preset arena in a standard room');
+});
+
+test('RoomDO: experimental rules are persisted at create and carried by every welcome (first, late, replacement) and /internal/status', async () => {
+  const h = await makeRoom(PEERS_1V1, '1v1', ENV, { physics: RULES });
+  assert.deepEqual(h.ctx.storage.map.get('record').physics, RULES, 'persisted with the record');
+  const a = await h.join(0);
+  assert.deepEqual(a.of('room')[0].physics, RULES, 'first socket');
+  assert.equal(a.of('room')[0].protocol, 5);
+  const b = await h.join(1);
+  assert.deepEqual(b.of('room')[0].physics, RULES, 'second socket');
+  await h.send(a, { type: 'ready', physicsFp: RULES_FP });
+  await h.send(b, { type: 'ready', physicsFp: RULES_FP });
+  assert.equal(a.of('start').length, 1, 'the right fingerprints start the match');
+  // A replacement socket of a slot after the start (another tab): the same rules again.
+  const b2 = await h.join(1);
+  assert.deepEqual(b2.of('room')[0].physics, RULES, 'replacement socket');
+  assert.equal(b2.of('start').length, 1, 'with the running timeline');
+  assert.deepEqual((await h.internal('/internal/status')).json.physics, RULES);
+  // A standard room says so (null) in its welcome.
+  const s = await makeRoom(PEERS_1V1, '1v1');
+  assert.equal((await s.join(0)).of('room')[0].physics, null);
+});
+
+test('RoomDO: rules that are not exactly a match snapshot are refused at create (400 bad_physics); a snapshot that changes nothing is standard', async () => {
+  const secret = await internalSecret(SECRET);
+  const create = async (physics) => {
+    const room = new R.RoomDO(new FakeCtx(), ENV);
+    const res = await room.fetch(
+      new Request('https://room/internal/create', {
+        method: 'POST',
+        headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
+        body: JSON.stringify({ roomId: 'r9', mode: '1v1', region: 'test', seed: 1, slots: PEERS_1V1, matchLengthSeconds: 300, createdAt: Date.now(), physics }),
+      }),
+    );
+    return { status: res.status, json: await res.json() };
+  };
+  const bads = [
+    { ...RULES, values: { gravity: 47 } }, // off the grid
+    { ...RULES, values: { gameSpeed: 50 } }, // free play only
+    { ...RULES, values: { gravity: 50, wings: 1 } }, // unknown key
+    { ...RULES, v: 2 }, // another table version
+    { ...RULES, name: '(copy)' }, // a name the sanitizer would change
+    [RULES],
+    'Low gravity',
+  ];
+  for (const bad of bads) {
+    const r = await create(bad);
+    assert.equal(r.status, 400, JSON.stringify(bad));
+    assert.equal(r.json.error, 'bad_physics');
+  }
+  assert.equal((await create({ v: 1, name: 'Standard', values: {} })).status, 200, 'a snapshot that changes nothing');
+  const plain = await makeRoom(PEERS_1V1, '1v1', ENV, { physics: { v: 1, name: 'My rules 1', values: {} } });
+  assert.equal(plain.ctx.storage.map.get('record').physics, null, 'is a standard room');
+});
+
+test('RoomDO: a ready with another physicsFp gets error physics_mismatch and its socket closed (left, never a no-show); the others start with its car the team AI from tick 0', async () => {
+  const mm = makeMatchmakerNs();
+  const h = await makeRoom(PEERS_2V2, '2v2', { JWT_SECRET: SECRET, MATCHMAKER: mm.ns }, { physics: RULES });
+  const [a, b, c] = [await h.join(0), await h.join(1), await h.join(2)];
+  await h.send(a, { type: 'ready', physicsFp: RULES_FP });
+  await h.send(b, { type: 'ready', physicsFp: RULES_FP });
+  assert.equal(a.of('start').length, 0, 'C connected, not ready');
+  await h.send(c, { type: 'ready', physicsFp: STOCK_FP }); // its arena runs the standard physics
+  assert.deepEqual(errorsOf(c), ['physics_mismatch']);
+  assert.equal(c.readyState, 3, 'its socket is closed');
+  assert.equal(c.closed.code, R.CLOSE_PHYSICS_MISMATCH);
+  assert.equal(c.of('start').length, 0, 'it never gets the start');
+  for (const ws of [a, b]) {
+    assert.deepEqual(ws.of('peerLeft').map((m) => m.slot), [2]);
+    assert.equal(ws.of('start').length, 1, 'the others start without it');
+    assert.deepEqual(ws.of('drop'), [{ type: 'drop', slot: 2, atTick: 0 }], 'its car is the team AI from tick 0');
+  }
+  await settle();
+  assert.ok(mm.releases.every((r) => r.body.noShow === undefined), 'nobody is named a no-show');
+  // With rules, a ready that carries no fingerprint is refused as well.
+  const h2 = await makeRoom(PEERS_1V1, '1v1', ENV, { physics: RULES });
+  const [x, y] = [await h2.join(0), await h2.join(1)];
+  await h2.send(x, { type: 'ready' });
+  assert.deepEqual(errorsOf(x), ['physics_mismatch']);
+  assert.equal(x.readyState, 3);
+  await h2.send(y, { type: 'ready', physicsFp: RULES_FP });
+  assert.equal(y.of('start').length, 0, 'one human left: no start (the client goes back to its lobby)');
+});
+
+test('RoomDO: a standard room starts on a ready without a fingerprint or with the stock one, and refuses a preset arena', async () => {
+  const h = await makeRoom(PEERS_2V2, '2v2');
+  const [a, b, c] = [await h.join(0), await h.join(1), await h.join(2)];
+  await h.send(a, { type: 'ready' });
+  await h.send(b, { type: 'ready', physicsFp: STOCK_FP });
+  await h.send(c, { type: 'ready', physicsFp: RULES_FP });
+  assert.deepEqual(errorsOf(c), ['physics_mismatch'], 'a preset arena in a standard room');
+  assert.equal(a.of('start').length, 1);
+  assert.deepEqual(a.of('drop'), [{ type: 'drop', slot: 2, atTick: 0 }]);
+});
+
+test('RoomDO: a room with experimental rules never names a no-show: not at the start drop, not in /internal/leave, not at the cleanup; no forgive either', async () => {
+  await withClock(30_000_000, async (clock) => {
+    const mm = makeMatchmakerNs();
+    const h = await makeRoom(PEERS_2V2_FULL, '2v2', { JWT_SECRET: SECRET, MATCHMAKER: mm.ns }, { physics: RULES });
+    const t0 = clock.t;
+    const [a, c] = [await h.join(0), await h.join(2)];
+    for (const ws of [a, c]) await h.send(ws, { type: 'ready', physicsFp: RULES_FP });
+    // D leaves through the matchmaker before connecting: no no-show in the answer.
+    const left = await h.internal('/internal/leave', { playerId: 'pd' });
+    assert.equal(left.json.noShow, false, 'never a strike in an experimental room');
+    clock.t = t0 + R.NO_SHOW_MS;
+    await h.room.alarm(); // B never came: declared left, the start drops it
+    assert.deepEqual(a.of('drop'), [{ type: 'drop', slot: 1, atTick: 0 }, { type: 'drop', slot: 3, atTick: 0 }]);
+    // B's ticket arrives late: refused, and nothing to forgive.
+    assert.equal((await h.upgrade(1)).status, 403);
+    clock.t = t0 + R.ROOM_TTL_MS;
+    await h.room.alarm(); // the TTL cleanup
+    await settle();
+    assert.ok(mm.releases.length >= 2, 'the locks were released');
+    assert.ok(mm.releases.every((r) => r.body.noShow === undefined), `no release names a no-show: ${JSON.stringify(mm.releases.map((r) => r.body))}`);
+    assert.equal(mm.releases.filter((r) => r.url === 'https://matchmaker/forgive').length, 0, 'no forgive');
+  });
+});
+
+test('MatchmakerDO: /custom takes rules for a P2P room with >= 2 humans only (400 experimental_p2p_only / bad_physics), hands them to the RoomDO and marks its locks', async () => {
+  const h = await makeMatchmaker();
+  const members = [{ playerId: 'pa', name: 'A', team: 0 }, { playerId: 'pb', name: 'B', team: 1 }];
+  let r = await h.call('/custom', { kind: 'server', mode: '1v1', members, matchLengthSeconds: 300, physics: RULES });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, 'experimental_p2p_only', 'never a server match');
+  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members: members.slice(0, 1), matchLengthSeconds: 300, physics: RULES });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, 'experimental_p2p_only', 'a lone human never falls back to a MatchDO with rules');
+  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300, physics: { ...RULES, values: { gameSpeed: 50 } } });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, 'bad_physics');
+  assert.equal(h.matchNs.calls.length + h.roomNs.calls.length, 0, 'nothing was created for the refused starts');
+  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300, physics: RULES });
+  assert.equal(r.status, 200);
+  const create = h.roomNs.calls.find((c) => c.path === '/internal/create');
+  assert.deepEqual(create.body.physics, RULES, 'the RoomDO gets the rules');
+  assert.equal(h.matchNs.calls.length, 0, 'no MatchDO');
+  assert.equal(r.json.results.pa.kind, 'p2p');
+  const roomId = r.json.results.pa.roomId;
+  assert.equal((await h.mm.ctx.storage.get('active:pa')).exp, true, 'the lock is marked (and persisted)');
+  assert.equal((await h.mm.ctx.storage.get('room:' + roomId)).exp, true, 'the capacity entry too');
+  // A standard lobby's start: physics null, an ordinary room.
+  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members: [{ playerId: 'pc', name: 'C', team: 0 }, { playerId: 'pd', name: 'D', team: 1 }], matchLengthSeconds: 300, physics: null });
+  assert.equal(r.status, 200);
+  assert.equal(h.roomNs.calls.filter((c) => c.path === '/internal/create').at(-1).body.physics, null);
+  assert.equal((await h.mm.ctx.storage.get('active:pc')).exp, undefined);
+});
+
+test('MatchmakerDO: /join refuses rules (400 experimental_lobby_only): the casual and ranked queues run the standard physics', async () => {
+  const h = await makeMatchmaker();
+  for (const kind of ['p2p', 'server', 'ranked']) {
+    const r = await h.call('/join', { playerId: 'pa', name: 'A', mode: '1v1', kind, physics: RULES, ratings: { '1v1': { mu: 25, sigma: 8 } } });
+    assert.equal(r.status, 400, kind);
+    assert.equal(r.json.error, 'experimental_lobby_only');
+  }
+  assert.equal((await h.call('/stats')).json.active, 0, 'nobody queued');
+  const ok = await h.call('/join', { playerId: 'pa', name: 'A', mode: '1v1', kind: 'p2p', physics: null });
+  assert.equal(ok.json.status, 'waiting', 'null is the standard physics');
+  await h.call('/leave', { playerId: 'pa' });
+});
+
+test('MatchmakerDO: a room with experimental rules never counts a no-show strike, even from a release or a leave that names one', async () => {
+  const h = await makeMatchmaker();
+  h.leaveInfo.set('pa', { ok: true, slot: 0, ...NEVER }); // a room answer that would be a strike
+  const members = [{ playerId: 'pa', name: 'A', team: 0 }, { playerId: 'pb', name: 'B', team: 1 }];
+  for (let i = 0; i < M.NO_SHOW_LIMIT + 1; i++) {
+    const r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300, physics: RULES });
+    assert.equal(r.status, 200, `round ${i}`);
+    const roomId = r.json.results.pa.roomId;
+    if (i % 2 === 0) await h.call('/release', { matchId: roomId, playerIds: ['pa', 'pb'], closeRoom: true, noShow: ['pa'] });
+    else {
+      await h.call('/leave', { playerId: 'pa' });
+      await h.call('/leave', { playerId: 'pb' });
+    }
+    h.setTime(h.time() + 1000);
+  }
+  assert.equal((await h.call('/stats')).json.noShows, 0, 'no strike at all');
+  const q = await h.join('pa');
+  assert.equal(q.status, 200, 'the p2p queue is not blocked');
+  await h.call('/leave', { playerId: 'pa' });
+});
+
+test('RoomDO + MatchmakerDO: an experimental lobby start: the rules reach every welcome, a peer that never comes is dropped without a strike', async () => {
+  await withClock(40_000_000, async (clock) => {
+    const w = await makeWorld();
+    const members = [{ playerId: 'pa', name: 'A', team: 0 }, { playerId: 'pb', name: 'B', team: 0 }, { playerId: 'pc', name: 'C', team: 1 }];
+    const r = await w.call('/custom', { kind: 'p2p', mode: '2v2', members, matchLengthSeconds: 300, physics: RULES });
+    assert.equal(r.status, 200);
+    const res = r.json.results;
+    const room = w.roomOf(res.pa.roomId).room;
+    const t0 = clock.t;
+    const a = await w.upgrade(res.pa);
+    const b = await w.upgrade(res.pb);
+    assert.deepEqual(a.ws.of('room')[0].physics, RULES);
+    assert.deepEqual(b.ws.of('room')[0].physics, RULES);
+    for (const ws of [a.ws, b.ws]) await room.webSocketMessage(ws, JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+    clock.t = t0 + R.NO_SHOW_MS;
+    await room.alarm();
+    assert.equal(a.ws.of('start').length, 1, 'A and B start without C');
+    assert.equal(a.ws.of('drop').length, 1, "C's car is the team AI from tick 0");
+    await w.drain();
+    assert.equal((await w.call('/stats')).json.noShows, 0, 'C never showed up: no strike in an experimental room');
   });
 });

@@ -10,7 +10,7 @@
  * transit or in a log is useless on any other site.
  */
 
-import type { StoredPreset } from '../game/physicsRules';
+import type { RulesSnapshot, StoredPreset } from '../game/physicsRules';
 
 export const CLIENT_KDF_ITERATIONS = 200_000;
 const CLIENT_KDF_SALT_PREFIX = 'turbogol/account/v1/';
@@ -303,6 +303,15 @@ export interface LobbySettings {
   /** Empty slots get bots (always: a roster has every car of the mode). Kept for the UI line. */
   net: LobbyNet;
   matchLengthSeconds: number;
+  /**
+   * Experimental physics rules (Settings > Experimental): a COPY of the host's preset at the time
+   * (src/game/physicsRules.ts RulesSnapshot, checked strictly by parseLobbyRules), null or absent =
+   * standard physics. Only with net 'p2p', and only while every member is signed in: the Worker,
+   * LobbyDO, the matchmaker and RoomDO refuse it otherwise (account_required, guests_present,
+   * experimental_p2p_only, bad_physics). Such a match counts for nothing: never rated, no stats,
+   * no records, no no-show strikes, never on a community node. The server always sends it (null).
+   */
+  physics?: RulesSnapshot | null;
 }
 
 /** A row of the public lobby list (GET /api/lobbies). */
@@ -317,6 +326,10 @@ export interface LobbySummary {
   region: string;
   inGame: boolean;
   net: LobbyNet;
+  /** The lobby plays experimental rules: members must be signed in (rows of older builds lack it: false). */
+  experimental: boolean;
+  /** Those rules (LobbySettings.physics), null for standard physics. */
+  physics: RulesSnapshot | null;
 }
 
 export interface LobbyMember {

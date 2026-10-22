@@ -44,7 +44,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { error, json, readJson } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './env';
 import type { GameModeId } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret } from './auth';
 import { RoomHost } from './roomHost';
@@ -279,6 +279,8 @@ export class MatchDO extends DurableObject<Env> {
     if (!body || typeof body.matchId !== 'string' || !Array.isArray(body.roster) || body.roster.length < 1 || body.roster.length > MAX_CARS) {
       return error(400, 'bad_request');
     }
+    // A server match runs the standard physics only, whoever asks (experimental rules are P2P only).
+    if (carriesPhysics(body)) return error(400, EXPERIMENTAL_REFUSED, 'experimental rules never run on a server match');
     for (let i = 0; i < body.roster.length; i++) {
       const e = body.roster[i];
       if (!e || e.slot !== i || (e.team !== 0 && e.team !== 1) || (e.kind !== 'player' && e.kind !== 'bot') || typeof e.name !== 'string') {

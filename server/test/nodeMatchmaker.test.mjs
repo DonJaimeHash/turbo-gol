@@ -419,6 +419,28 @@ test('a two-human p2p room never goes to a node; a custom lobby never asks for a
   assert.equal(h.nodes.of('/internal/place').length, 0);
 });
 
+test('an experimental lobby never reaches a node: with the nodes on, its rules go to a RoomDO, a server start with rules is refused, a queue join with rules too', async () => {
+  const h = await makeMm();
+  const rules = { v: 1, name: 'Low gravity', values: { gravity: 50, ballDrag: 50 } };
+  const members = [{ playerId: A, name: 'Ana', team: 0 }, { playerId: B, name: 'Beto', team: 1 }];
+  let r = await h.call('/custom', { kind: 'server', mode: '1v1', members, matchLengthSeconds: 300, physics: rules });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, 'experimental_p2p_only');
+  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members: members.slice(0, 1), matchLengthSeconds: 300, physics: rules });
+  assert.equal(r.json.error, 'experimental_p2p_only', 'a lone human with rules: no MatchDO / node fallback');
+  r = await h.join(C, 'server', '1v1', { physics: rules });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, 'experimental_lobby_only');
+  r = await h.join(C, 'ranked', '1v1', { physics: rules });
+  assert.equal(r.json.error, 'experimental_lobby_only');
+  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300, physics: rules });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.results[A].kind, 'p2p');
+  assert.deepEqual(h.room.calls.find((c) => c.path === '/internal/create').body.physics, rules);
+  assert.equal(h.nodes.of('/internal/place').length, 0, 'never asked for a placement');
+  assert.equal(created(h).length, 0, 'no MatchDO');
+});
+
 test('a ranked match on a node: balanced teams in the placement, the AccountsDO ranked lock on the node’s match id', async () => {
   const h = await makeMm();
   const [qa, qb] = await h.pair(A, B, 'ranked');

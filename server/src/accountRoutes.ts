@@ -44,7 +44,7 @@
  * origin = PUBLIC_ORIGIN when set, else the request's own.
  */
 import type { Env } from './env';
-import { error, json, readJson } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './env';
 import { base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
@@ -376,6 +376,8 @@ async function training(c: RouteContext): Promise<Response> {
   if (c.limited('tr:' + s.sub, LIMIT_TRAINING_PER_ACCOUNT)) return error(429, 'rate_limited');
   const b = await readJson<{ records?: unknown }>(c.request);
   if (!b || typeof b.records !== 'object' || b.records === null || Array.isArray(b.records)) return error(400, 'bad_request');
+  // Records come from the standard training packs only: never from a run with experimental rules.
+  if (carriesPhysics(b)) return error(400, EXPERIMENTAL_REFUSED, 'experimental rules record nothing');
   const r = await accountsCall(c.env, '/training', { userId: s.sub, records: b.records });
   const out = pass(r);
   out.headers.set('cache-control', 'no-store');

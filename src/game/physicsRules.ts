@@ -1,10 +1,10 @@
 /**
  * Experimental physics rules (Settings > Experimental, signed-in players only): which values a
  * player may tune, on which grid, the read-only built-in presets, and the parsers every side
- * shares (the client's local copy, AccountStore on the server, later the lobby / matchmaker /
- * room checks). The ONLY table: keys, ranges and validation live here and nowhere else. Pure: no
- * DOM, no i18n, no `const enum`, so node's type-stripping loader, the Worker and the Durable
- * Objects import it as it is (like trainingRecords.ts).
+ * shares (the client's local copy, AccountStore on the server, the lobby / matchmaker / room
+ * checks of an experimental P2P lobby). The ONLY table: keys, ranges and validation live here and
+ * nowhere else. Pure: no DOM, no i18n, no `const enum`, so node's type-stripping loader, the
+ * Worker and the Durable Objects import it as it is (like trainingRecords.ts).
  *
  * Every value is an INTEGER: a percentage of the stock value, a figure in uu/s, one of a few
  * options, or a 0 / 1 toggle. A set of values (`PhysicsValues`) holds only the keys that differ
@@ -19,7 +19,7 @@
  * them. `PhysicsRules` is the hand-over: the canonical integers plus PHYSICS_SCHEMA.
  *
  * Validation has two modes (`parsePhysicsValues`):
- *   strict   (a rules snapshot: a lobby, the matchmaker, a room, a room welcome) refuses anything
+ *   strict   (a rules snapshot: a lobby, the matchmaker, a room, a room welcome: parseLobbyRules) refuses anything
  *            that is not exactly a grid value of a known key allowed in that context;
  *   lenient  (account storage, the local copy, server answers) drops unknown keys and snaps a
  *            value to the nearest grid value, so old presets stay valid when a later schema adds,
@@ -385,6 +385,19 @@ export function parseRulesSnapshot(raw: unknown): RulesSnapshot | null {
   if (typeof raw.name !== 'string' || sanitizeLobbyName(raw.name) !== raw.name) return null;
   const values = parsePhysicsValues(raw.values, 'strict', 'match');
   return values === null ? null : { v: PHYSICS_SCHEMA, name: raw.name, values };
+}
+
+/**
+ * The rules a lobby, the matchmaker, a room and a room welcome keep of what they were sent:
+ * undefined or null is standard physics (null); a snapshot that changes nothing is standard too
+ * (null: such a lobby is an ordinary one, open to guests); anything else must pass
+ * parseRulesSnapshot exactly, else 'bad' (the server answers 400 bad_physics).
+ */
+export function parseLobbyRules(raw: unknown): RulesSnapshot | null | 'bad' {
+  if (raw === undefined || raw === null) return null;
+  const s = parseRulesSnapshot(raw);
+  if (s === null) return 'bad';
+  return isStock(s.values, 'match') ? null : s;
 }
 
 // ---- names --------------------------------------------------------------------------------------
