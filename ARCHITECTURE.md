@@ -209,13 +209,14 @@ src/render/
                         setBody swaps the body in place), one shared surface material for all
                         cars: per-vertex surface kinds (CAR_KIND) for flake paint under
                         clearcoat, carbon, glass, metals, tyres, HDR lamps, the body's livery in
-                        four per-object uniforms (one pipeline for every body); the body and
+                        five per-object uniforms (one pipeline for every body); the body and
                         wheel pipelines build only their own graph
   cars/                 the car bodies (docs/cars.md): types.ts (CarBodySpec, the contract),
-                        kit.ts (surfaces, lofts, the BodyKit, buildBody and its containment
-                        guard), wheels.ts (wheel styles: knobby, slick), dune.ts (the dune runner,
-                        the default car), index.ts (the registry), cache.ts (geometry shared per
-                        body / team / detail, reference-counted)
+                        kit.ts (surfaces, lofts, the BodyKit, resolveWheels, buildBody and its
+                        containment guard), wheels.ts (wheel styles: knobby, slick), one module
+                        per catalog car (dune.ts, the dune runner, the default car; pampero.ts,
+                        carpincho.ts, condor.ts, tero.ts still null), index.ts (the registry),
+                        cache.ts (geometry shared per body / team / detail, reference-counted)
   Ball.ts               procedural panelled ball (truncated icosahedron: pearl hexagons, graphite
                         pentagons with lime glow rings, stitched seams; BALL_COLORS), blob shadow,
                         ground marker
