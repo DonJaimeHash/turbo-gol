@@ -50,6 +50,19 @@ export default {
   'theme.harbour-night': 'Night harbour',
   'theme.canyon-sunset': 'Red canyon',
   'theme.alpine-day': 'Alpine valley',
+  // Cosmetic cars (src/game/cosmetics.ts): the garage and the shop. The names are invented proper
+  // names, Spanish words kept as they are (the pampas wind, the capybara, the condor, the southern
+  // lapwing); each *Desc is the car's one line under its name
+  'car.dune': 'Dune',
+  'car.duneDesc': 'Bubble canopy, roll hoop and knobby tyres: the all-rounder',
+  'car.pampero': 'Pampero',
+  'car.pamperoDesc': 'Low and sharp, like the cold wind of the pampas',
+  'car.carpincho': 'Carpincho',
+  'car.carpinchoDesc': 'Round, sturdy and unflappable, like the capybara',
+  'car.condor': 'Cóndor',
+  'car.condorDesc': 'Long and wide, built to glide',
+  'car.tero': 'Tero',
+  'car.teroDesc': 'Light, quick and loud: always on the alert',
   'tier.bronze': 'Bronze',
   'tier.silver': 'Silver',
   'tier.gold': 'Gold',

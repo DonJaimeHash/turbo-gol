@@ -13,6 +13,10 @@
  *                    nancheck, worldnocache, nopost (the post tiers draw straight to the canvas),
  *                    norender (everything but the drawing: the CPU ceiling), pr=<x> (pixel ratio),
  *                    hide=<mesh names, comma separated>
+ *   car previews     car=<id> (the player's car offline, owned or not), showroom[=<yaw>[,<pitch>]]
+ *                    (the showroom camera at boot, menu hidden: a fixed angle in degrees, or a slow
+ *                    orbit when bare). Read only where previews are allowed: a dev server or a
+ *                    VITE_PREVIEW_CARS=1 build (src/game/carSelection.ts previewCarsAllowed).
  */
 
 export interface HashFlags {
@@ -40,6 +44,23 @@ export interface HashFlags {
   readonly pr: number;
   /** `#hide=a,b`: mesh names drawn invisible every frame. */
   readonly hide: readonly string[];
+  /** `#car=<id>`: the car id to preview (unchecked here), null without the flag. */
+  readonly car: string | null;
+  /** `#showroom`: the showroom camera's angles, null without the flag. */
+  readonly showroom: ShowroomAngles | null;
+}
+
+/** `#showroom=<yaw>[,<pitch>]` in degrees; null = not given (a bare `#showroom` orbits). */
+export interface ShowroomAngles {
+  readonly yawDeg: number | null;
+  readonly pitchDeg: number | null;
+}
+
+/** The angles of a `#showroom` value ('' when bare, null when absent); a non-number is not given. */
+export function parseShowroom(value: string | null): ShowroomAngles | null {
+  if (value === null) return null;
+  const [yaw, pitch] = value.split(',').map((s) => (s.trim().length > 0 ? Number(s) : Number.NaN));
+  return { yawDeg: Number.isFinite(yaw) ? yaw : null, pitchDeg: pitch !== undefined && Number.isFinite(pitch) ? pitch : null };
 }
 
 /** The value of flag `name` in `hash`: '' for a bare flag, null when absent. */
@@ -63,6 +84,7 @@ export function parseHashFlags(hash: string): HashFlags {
   const diag = hashValue(hash, 'diag');
   const pr = Number(hashValue(hash, 'pr') ?? '');
   const hide = hashValue(hash, 'hide');
+  const car = hashValue(hash, 'car');
   return {
     diag: diag !== null,
     audit: diag === 'audit',
@@ -85,6 +107,8 @@ export function parseHashFlags(hash: string): HashFlags {
     norender: has('norender'),
     pr: Number.isFinite(pr) && pr > 0 ? Math.min(4, Math.max(0.1, pr)) : 0,
     hide: hide !== null ? hide.split(',').map((s) => s.trim()).filter((s) => s.length > 0) : [],
+    car: car !== null && car.length > 0 ? car : null,
+    showroom: parseShowroom(hashValue(hash, 'showroom')),
   };
 }
 

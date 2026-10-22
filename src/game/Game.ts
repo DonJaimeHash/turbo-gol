@@ -73,6 +73,15 @@
  * castShadow flips (no recompile); the warm-ups behind the loading screen turn it on so its shadow
  * pipeline is ready for the night stadiums.
  *
+ * Cars (src/game/cosmetics.ts, bodies in src/render/cars): every roster entry carries the car its
+ * view draws (`rosterCars`, built with the roster): the player's own pick offline and in training
+ * (`localCar`: carSelection.ts, only a car the player is entitled to; `#car=<id>` in previews),
+ * the default car for every bot and, for now, every car online. All of them are Standard cars:
+ * a car is a look, never physics. `setCar` switches the player's car in place (CarView.setBody:
+ * same meshes, same material, no compile). The showroom camera (`enterShowroom` / `exitShowroom`,
+ * for a garage behind the menus; `#showroom=<yaw>[,<pitch>]` in previews) frames the player's car
+ * on the pitch where it stands, in the live scene and its three lights, and holds the offline sim.
+ *
  * Mouse look needs the pointer lock: a click on the canvas while a match is being played
  * requests it (that click is masked so it does not boost / jump), opening the menu / pausing / the
  * final whistle / losing focus release it, and losing it from the browser side (Esc) pauses the
@@ -142,7 +151,7 @@ import { RollbackEngine } from '../net/p2p/Rollback';
 import type { MatchEvent as HostEvent, Welcome } from '../net/protocol';
 import { ArenaView } from '../render/Arena';
 import { BallView } from '../render/Ball';
-import { ChaseCamera, SWIVEL_PITCH_MOUSE_DEG, SWIVEL_PITCH_STICK_DEG, type CameraCarState } from '../render/Camera';
+import { ChaseCamera, SWIVEL_PITCH_MOUSE_DEG, SWIVEL_PITCH_STICK_DEG, clampToArena, type CameraCarState } from '../render/Camera';
 import { CarView } from '../render/Car';
 import { Effects } from '../render/Effects';
 import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow, type SettingsTab } from '../render/Hud';
@@ -204,6 +213,8 @@ import {
 } from '../sim/types';
 import { DEFAULT_MATCH_SECONDS, Match, formatClockSeconds, type MatchEvent } from './Match';
 import { STORAGE_PREFIX } from '../brand';
+import { CarSelection, previewCarsAllowed } from './carSelection';
+import { DEFAULT_CAR, isCarId, type CarId } from './cosmetics';
 import { OnlineSession } from './OnlineSession';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
 import {
@@ -402,6 +413,17 @@ const FPS_INTERVAL = 0.25;
 const MENU_ORBIT_RADIUS = 3600;
 const MENU_ORBIT_HEIGHT = 1500;
 const MENU_ORBIT_RATE = 0.08;
+/**
+ * Showroom camera (enterShowroom): vertical field of view (deg; narrow, so the car is not
+ * distorted close up), the default height angle (deg), the slow orbit's rate (rad/s) and the
+ * framing margin over the car's bounding sphere (the hitbox's half diagonal).
+ */
+const SHOWROOM_FOV = 30;
+const SHOWROOM_PITCH_DEG = 12;
+const SHOWROOM_ORBIT_RATE = 0.3;
+const SHOWROOM_MARGIN = 1.08;
+/** The showroom camera stays this high over the floor (uu). */
+const SHOWROOM_MIN_Y = 6;
 /** Pad pickups within this distance (uu) of the player car play the pickup chime. */
 const PAD_SOUND_DIST = 320;
 /**
@@ -426,8 +448,19 @@ const ZERO_VEC: readonly [number, number, number] = [0, 0, 0];
 const BALL_IND_INSET_X = 0.9;
 const BALL_IND_INSET_Y = 0.86;
 const RAD_TO_DEG = 180 / Math.PI;
+const DEG_TO_RAD = Math.PI / 180;
 
 const _ind = new THREE.Vector3();
+const _srTarget = new THREE.Vector3();
+const _srDir = new THREE.Vector3();
+const _srUp = new THREE.Vector3();
+
+/** `#car=<id>` where previews are allowed (carSelection.ts previewCarsAllowed); null otherwise or for an unknown id. */
+function previewCarFlag(): CarId | null {
+  if (!previewCarsAllowed()) return null;
+  const id = pageFlags().car;
+  return isCarId(id) ? id : null;
+}
 
 /** Training result banner titles (the sub line names the shot). */
 const TRAINING_RESULT_TITLE: Readonly<Record<ResultReason, string>> = {
@@ -593,6 +626,16 @@ export class Game implements P2PGameHooks {
   /** Debug access to the views (rebuilt on quality change). */
   arena!: ArenaView;
   cars: CarView[] = [];
+  /** The player's own car pick (only a car the player is entitled to). Debug: window.__game.carPick. */
+  readonly carPick = new CarSelection();
+  /** `#car=<id>` in previews: the player's car offline and in training, owned or not. */
+  private readonly previewCar: CarId | null = previewCarFlag();
+  /** The car each roster entry drives, in roster order (carIds): what its CarView draws. */
+  private readonly rosterCars: CarId[] = [];
+  /** The roster is an online session's (installSessionRoster): every car is the default one. */
+  private rosterOnline = false;
+  /** The showroom camera (enterShowroom): a fixed yaw (rad) or null to orbit, the pitch (rad), the orbit's yaw; null = off. */
+  private showroom: { yaw: number | null; pitch: number; orbit: number } | null = null;
   ball!: BallView;
   effects!: Effects;
 
@@ -1793,6 +1836,11 @@ export class Game implements P2PGameHooks {
     this.mates.setSlots(this.blueSlots, [this.playerSlot]);
     this.lastHitTick.fill(-1e9);
     this.lastBumpFxTick = -1e9;
+    // Online every car is the default one for now: the rosters carry no car yet (a later change,
+    // outside the protocol files the community nodes bundle).
+    this.rosterCars.length = 0;
+    for (let i = 0; i < ids.length; i++) this.rosterCars.push(DEFAULT_CAR);
+    this.rosterOnline = true;
     this.rebuildCarViews(this.quality);
     this.ballPinned = false;
     sim.sync();
@@ -2456,6 +2504,14 @@ export class Game implements P2PGameHooks {
     this.hud.setCameraMode(this.chase.ballCam);
     if (this.touch !== null) this.touch.setBallCam(this.chase.ballCam);
     this.showMenu();
+    // `#showroom` in previews (carSelection.ts previewCarsAllowed): the showroom camera from the
+    // first frame, the menus and the HUD out of the picture (screenshots of each car and tier).
+    const showroom = previewCarsAllowed() ? pageFlags().showroom : null;
+    if (showroom !== null) {
+      this.menu.hide();
+      this.hud.root.style.visibility = 'hidden';
+      this.enterShowroom(showroom);
+    }
     this.lastTime = -1;
     this.raf = requestAnimationFrame(this.frame);
   }
@@ -2796,6 +2852,92 @@ export class Game implements P2PGameHooks {
     this.snapCamera = true;
   }
 
+  // ---- cars and the showroom ----------------------------------------------------------------
+
+  /** The car the player drives offline and in training: `#car` in previews, else the player's own pick. */
+  get localCar(): CarId {
+    return this.previewCar ?? this.carPick.current;
+  }
+
+  /**
+   * The player picks car `id` (the garage): kept only when the player is entitled to it
+   * (carSelection.ts). On the offline or training roster the player's car switches to it at once,
+   * in place (CarView.setBody: no view rebuild, no compile; the geometry is built on first use, a
+   * few ms, so this belongs to a menu, never to a frame); an online roster keeps the default car
+   * and the pick applies from the next offline roster. Returns whether the pick was taken.
+   */
+  setCar(id: CarId): boolean {
+    if (!this.carPick.select(id)) return false;
+    if (this.rosterOnline) return true;
+    const car = this.localCar;
+    const i = this.playerIndex;
+    this.rosterCars[i] = car;
+    this.cars[i]?.setBody(car);
+    return true;
+  }
+
+  /** The showroom camera is on (enterShowroom). */
+  get inShowroom(): boolean {
+    return this.showroom !== null;
+  }
+
+  /**
+   * The showroom camera, for the garage (behind the menus) and the car previews: the player's car
+   * framed close up where it stands on the pitch, in the live scene (its lights, its materials:
+   * nothing is added). `yawDeg` fixes the angle round the car (0 = the nose, 90 = the right side,
+   * 180 = the tail, 270 = the left side); without it the camera orbits slowly. `pitchDeg` is the
+   * camera's height angle (SHOWROOM_PITCH_DEG by default, up to 89 for the roof). The offline sim
+   * is held while it is on (nothing moves under the camera); exitShowroom hands the camera back.
+   */
+  enterShowroom(angles: { readonly yawDeg?: number | null; readonly pitchDeg?: number | null } = {}): void {
+    const yaw = angles.yawDeg ?? null;
+    const pitch = Math.min(89, Math.max(-10, angles.pitchDeg ?? SHOWROOM_PITCH_DEG));
+    this.showroom = { yaw: yaw !== null ? yaw * DEG_TO_RAD : null, pitch: pitch * DEG_TO_RAD, orbit: this.showroom?.orbit ?? 0.6 };
+  }
+
+  /** Back to the menu orbit or the chase camera (its field of view restored). */
+  exitShowroom(): void {
+    if (this.showroom === null) return;
+    this.showroom = null;
+    this.chase.applyProjection(this.renderer.camera);
+    this.snapCamera = true;
+  }
+
+  /**
+   * Place the showroom camera (render, every frame it is on): on a sphere round the hitbox centre
+   * of the player's car, in the car's own frame, far enough for the car's bounding sphere (the
+   * hitbox half diagonal) to fit the narrower field of view; the up vector is the orbit's, so a
+   * view from straight above stays upright. Scratch vectors only.
+   */
+  private placeShowroomCamera(camera: THREE.PerspectiveCamera, dt: number): void {
+    const s = this.showroom;
+    const car = this.cars[this.playerIndex];
+    if (s === null || car === undefined) return;
+    if (s.yaw === null) s.orbit = (s.orbit + SHOWROOM_ORBIT_RATE * dt) % (Math.PI * 2);
+    const yaw = s.yaw ?? s.orbit;
+    const cp = Math.cos(s.pitch);
+    const sp = Math.sin(s.pitch);
+    const cfg = car.config;
+    const q = car.quaternion;
+    const target = _srTarget.set(cfg.hitboxOffset[0], cfg.hitboxOffset[2], cfg.hitboxOffset[1]).applyQuaternion(q).add(car.position);
+    if (camera.fov !== SHOWROOM_FOV) {
+      camera.fov = SHOWROOM_FOV;
+      camera.updateProjectionMatrix();
+    }
+    const vHalf = (SHOWROOM_FOV * DEG_TO_RAD) / 2;
+    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    const radius = 0.5 * Math.hypot(cfg.hitboxSize[0], cfg.hitboxSize[1], cfg.hitboxSize[2]);
+    const dist = (SHOWROOM_MARGIN * radius) / Math.sin(Math.min(vHalf, hHalf));
+    // Car-local (x forward, y up, z right) direction from the car to the camera, and the orbit's up.
+    _srDir.set(Math.cos(yaw) * cp, sp, Math.sin(yaw) * cp).applyQuaternion(q);
+    _srUp.set(-Math.cos(yaw) * sp, cp, -Math.sin(yaw) * sp).applyQuaternion(q);
+    camera.position.copy(target).addScaledVector(_srDir, dist);
+    if (camera.position.y < SHOWROOM_MIN_Y) camera.position.y = SHOWROOM_MIN_Y;
+    clampToArena(camera.position);
+    camera.up.copy(_srUp);
+    camera.lookAt(target);
+  }
+
   // ---- loop ------------------------------------------------------------------------------
 
   private readonly frame = (t: number): void => {
@@ -2825,7 +2967,7 @@ export class Game implements P2PGameHooks {
       this.alpha = session.advance(dt);
       // The menu is pad-driven while a room connects: keep polling the gamepad.
       if (inMenu) this.input.sample(this.playerControls);
-    } else if (!inMenu && !this.paused && !this.loadingHold) {
+    } else if (!inMenu && !this.paused && !this.loadingHold && this.showroom === null) {
       // Experimental free play's game speed slows the sim clock (never above 1: fewer ticks, no extra work).
       this.acc = accumulate(this.acc, dt, this.training !== null ? this.trainingSpeed : 1, MAX_FRAME_DT);
       while (this.acc >= TICK_DT) {
@@ -3016,7 +3158,11 @@ export class Game implements P2PGameHooks {
 
     // Camera.
     const po = this.playerOff;
-    if (inMenu) {
+    if (this.showroom !== null) {
+      this.placeShowroomCamera(camera, viewDt);
+      this.snapCamera = true;
+      this.hud.setBallIndicator(false);
+    } else if (inMenu) {
       const a = this.time * MENU_ORBIT_RATE;
       camera.position.set(Math.sin(a) * MENU_ORBIT_RADIUS, MENU_ORBIT_HEIGHT, Math.cos(a) * MENU_ORBIT_RADIUS);
       camera.up.set(0, 1, 0);
@@ -3102,7 +3248,7 @@ export class Game implements P2PGameHooks {
 
     // Audio (engine / boost / wind layers follow the player's car).
     const as = this.audioState;
-    if (inMenu || this.paused) {
+    if (inMenu || this.paused || this.showroom !== null) {
       as.speed = 0;
       as.forwardSpeed = 0;
       as.boosting = false;
@@ -3472,7 +3618,7 @@ export class Game implements P2PGameHooks {
     this.placeViews();
   }
 
-  /** One CarView per roster entry (team colours from the sim) plus the Effects with every car registered. */
+  /** One CarView per roster entry (team colours from the sim, its car from rosterCars) plus the Effects with every car registered. */
   private buildCarViews(q: Quality): void {
     const scene = this.renderer.scene;
     const sim = this.sim;
@@ -3483,7 +3629,7 @@ export class Game implements P2PGameHooks {
     this.effects.onDemolition = (slot, x, y, z) => this.onDemolition(slot, x, y, z);
     for (let i = 0; i < slots.length; i++) {
       const team = sim.teamOf(slots[i]);
-      cars.push(new CarView(scene, config, team, q));
+      cars.push(new CarView(scene, config, team, q, this.rosterCars[i] ?? DEFAULT_CAR));
       this.effects.registerCar(slots[i], team);
     }
     this.cars = cars;
@@ -3538,6 +3684,8 @@ export class Game implements P2PGameHooks {
     slots.length = 0;
     offs.length = 0;
     rows.length = 0;
+    this.rosterCars.length = 0;
+    this.rosterOnline = false;
     this.redSlots.length = 0;
     this.redOuts.length = 0;
     this.blueSlots.length = 0;
@@ -3551,6 +3699,8 @@ export class Game implements P2PGameHooks {
       carIds.push(id);
       slots.push(slot);
       offs.push(sim.carOffset(slot));
+      // The player drives its own pick, every bot the default car.
+      this.rosterCars.push(i === 0 ? this.localCar : DEFAULT_CAR);
       const team = i === 0 ? Team.Blue : sim.teamOf(slot);
       if (i === 0) {
         rows.push({ name: t('game.you'), team: Team.Blue, you: true });
