@@ -23,7 +23,6 @@ import { t } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
 import type { TrainingRecordsView } from '../game/trainingStore';
-import type { ListedPreset } from '../game/experimentalStore';
 import type { ExperimentalStore } from '../game/experimentalStore';
 import type { PopulationAnswer, RegionId } from '../net/account';
 import { REGIONS, isRegion } from '../net/account';
@@ -66,7 +65,7 @@ export interface MenuConfig {
 
 /** What the menus see of the experimental features (Settings > Experimental). */
 export interface ExperimentalMenuView {
-  /** Signed in with the switch on: experimental free play (and, later, lobby rules) are offered. */
+  /** Signed in with the switch on: experimental free play and a lobby host's rules row are offered. */
   readonly unlocked: boolean;
   /** The player's presets (the built-ins only for a guest) and the one picked last (lastUsed). */
   readonly store: ExperimentalStore;
@@ -105,12 +104,6 @@ export interface MenuHost {
   searchView(): SearchView;
   /** A custom lobby started: join this member's match. */
   playLobbyMatch(result: QueueResult | QueueResultP2p): void;
-  /**
-   * The presets a lobby host may pick as experimental rules (src/game/experimentalStore.ts list():
-   * the built-ins first, then the player's own), null unless the player is signed in with
-   * Settings > Experimental on (guests and players with the switch off never see the rules row).
-   */
-  lobbyRules(): readonly ListedPreset[] | null;
   /**
    * The settings screen (the Hud's: controls, camera, gameplay, audio, graphics, experimental),
    * on `opts.tab` when given; `onClose` when it is left.

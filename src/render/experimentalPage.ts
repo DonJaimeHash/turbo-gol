@@ -93,7 +93,7 @@ export interface ExperimentalOptions {
    * experimental P2P match): `matchRules` only, read-only.
    */
   context?: ExperimentalContext;
-  /** 'match': the room's rules as one line (its name and rulesText.rulesSummary). */
+  /** 'match': the room's rules as one line (custom.rulesInfo with rulesText.lobbyRulesLine). */
   matchRules?: string;
 }
 

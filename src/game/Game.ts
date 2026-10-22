@@ -127,7 +127,7 @@ import { MAX_PRESETS, canonicalValues, type PhysicsValues } from './physicsRules
 import { arenaMutators } from '../sim/mutators';
 import { STOCK_ARENA_FINGERPRINT, accumulate, buildTrainingArena, needsTrainingArena, planTrainingArena, trainingRules, type TrainingArenaPlan } from './experimentalTraining';
 import type { ExperimentalContext, ExperimentalOptions, SuperlowStatus } from '../render/experimentalPage';
-import { presetName } from '../render/rulesText';
+import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
 import { REGIONS, isPlaylist } from '../net/account';
 import type { RegionId } from '../net/account';
@@ -1006,10 +1006,14 @@ export class Game implements P2PGameHooks {
   /**
    * Settings > Experimental: the switch and, for a signed-in player, the preset editor. In
    * experimental free play the editor's pick is free play's rules ('training': applied when the
-   * screen closes, openPauseSettings).
+   * screen closes, openPauseSettings). In an experimental P2P room ('match') the page shows the
+   * room's rules as one read-only line instead of the editor: they are the room's, fixed for its
+   * life, and nothing on this screen can change the arena of a match.
    */
   private experimentalOptions(): ExperimentalOptions {
-    const context: ExperimentalContext = this.training !== null && this.freePlayRules !== null ? 'training' : 'menu';
+    const p2p = this.p2p;
+    const room = p2p !== null && this.session === p2p && p2p.active ? p2p.rules : null;
+    const context: ExperimentalContext = room !== null ? 'match' : this.training !== null && this.freePlayRules !== null ? 'training' : 'menu';
     return {
       state: () => ({
         available: this.accounts.signedIn,
@@ -1023,6 +1027,7 @@ export class Game implements P2PGameHooks {
       },
       presets: this.accounts.signedIn ? this.experimental : undefined,
       context,
+      matchRules: room !== null ? t('custom.rulesInfo', { summary: lobbyRulesLine(room) }) : undefined,
     };
   }
 
@@ -1125,7 +1130,6 @@ export class Game implements P2PGameHooks {
       },
       searchView: () => game.menuSearchView(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
-      lobbyRules: () => (game.experimentalUnlocked ? game.experimental.list() : null),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
       get info() {
         return game.info;
@@ -1404,6 +1408,10 @@ export class Game implements P2PGameHooks {
    * stalls on nothing.
    */
   switchQuality(q: Quality, fallback: Fallback | null = null): Promise<void> {
+    // Super low is a pick for unlocked players only (the Graphics tab lists it for them alone): a
+    // pick of it from a locked player (a stale or tampered chip) changes nothing. The tier guard's
+    // fallbacks are not picks and still reach it.
+    if (fallback === null && q === 'superlow' && !this.experimentalUnlocked) return Promise.resolve();
     // A new pick replaces one that waits for the online match to end (back to the running tier:
     // the prefs keep that one again).
     if (fallback === null && this.pendingRestart !== null) {

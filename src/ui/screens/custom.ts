@@ -21,9 +21,9 @@ import { MODES } from '../../sim/constants';
 import { DEFAULT_MATCH_SECONDS } from '../../game/Match';
 import { isStock, parseLobbyRules, sameValues, snapshotOf, type RulesSnapshot } from '../../game/physicsRules';
 import type { ListedPreset } from '../../game/experimentalStore';
-import { t, type Key } from '../../i18n';
+import { t } from '../../i18n';
 import { playlistName } from '../names';
-import { rulesSummary } from '../rulesText';
+import { lobbyRulesLine, presetName } from '../../render/rulesText';
 import type { Menu, Screen } from '../Menu';
 import { cycler, field, primary, screenHead, secondary, section } from './common';
 
@@ -45,6 +45,16 @@ function errText(e: unknown): string {
 function lobbyRules(raw: unknown): RulesSnapshot | null {
   const r = parseLobbyRules(raw);
   return r === 'bad' ? null : r;
+}
+
+/**
+ * The presets a lobby host may pick as experimental rules (ExperimentalStore.list(): the built-ins
+ * first, then the player's own), null unless the player is signed in with Settings > Experimental
+ * on (guests and players with the switch off never see the rules row).
+ */
+function lobbyPresets(menu: Menu): readonly ListedPreset[] | null {
+  const exp = menu.host.experimental;
+  return exp.unlocked ? exp.store.list() : null;
 }
 
 /** One option of the rules cycler: a preset's name and the snapshot a lobby gets of it (null = standard physics). */
@@ -70,7 +80,7 @@ export function rulesChoices(presets: readonly ListedPreset[] | null, current: R
   if (presets === null && current === null) return null;
   const out: RulesChoice[] = [];
   for (const p of presets ?? []) {
-    const label = p.builtIn ? t(`rules.builtin.${p.id}` as Key) : p.name;
+    const label = presetName(p);
     out.push({ id: p.id, label, physics: isStock(p.values, 'match') ? null : snapshotOf(label, p.values) });
   }
   if (!out.some((c) => c.physics === null)) out.unshift({ id: 'standard', label: t('rules.builtin.standard'), physics: null });
@@ -81,7 +91,7 @@ export function rulesChoices(presets: readonly ListedPreset[] | null, current: R
 
 /** The rules row of the host's settings, when it has one: what `settingsControls` needs. */
 interface RulesControls {
-  /** Settings > Experimental's presets (MenuHost.lobbyRules), null when the player is not unlocked. */
+  /** Settings > Experimental's presets (lobbyPresets: MenuHost.experimental), null when the player is not unlocked. */
   presets: readonly ListedPreset[] | null;
   /** EDIT PRESETS (unlocked players only): open Settings > Experimental, then come back with the draft. */
   onEdit: (() => void) | null;
@@ -153,7 +163,7 @@ export function customScreen(menu: Menu): Screen {
     const exp = l.experimental === true;
     const guest = exp && !menu.host.accounts.signedIn;
     const rules = exp ? lobbyRules(l.physics) : null;
-    const tag = exp ? h('span.mn-tag.mn-tag-exp', { title: rules !== null ? t('custom.rulesInfo', { summary: rulesSummary(rules) }) : '' }, (guest ? '🔒 ' : '') + t('custom.tagExperimental')) : null;
+    const tag = exp ? h('span.mn-tag.mn-tag-exp', { title: rules !== null ? t('custom.rulesInfo', { summary: lobbyRulesLine(rules) }) : '' }, (guest ? '🔒 ' : '') + t('custom.tagExperimental')) : null;
     return navButton('mn-lobby-row', [
       h('span.mn-lobby-name', null, l.locked ? '🔒 ' : '', l.name, tag !== null ? ' ' : '', tag),
       h('span.mn-lobby-mode', null, `${playlistName(l.mode)} ${l.mode}`),
@@ -298,7 +308,7 @@ export function lobbyCreateScreen(menu: Menu): Screen {
   // The rules row for an unlocked player; EDIT PRESETS comes back to this screen with its choices.
   const pick = { id: null as string | null };
   const rules = (): RulesControls => {
-    const presets = menu.host.lobbyRules();
+    const presets = lobbyPresets(menu);
     if (presets === null) s.physics = null; // signed out or switched off meanwhile
     const back = (): void => {
       setChildren(controls, ...settingsControls(s, rules()));
@@ -348,7 +358,7 @@ export function lobbyScreen(menu: Menu): Screen {
     const pick = kept?.pick ?? { id: null };
     const name = field(t('custom.nameField'), { maxLength: 24, value: kept?.name ?? draft.name });
     const pw = field(s.hasPassword ? t('custom.newPassword') : t('custom.passwordOptional'), { type: 'password', maxLength: 32 });
-    const presets = menu.host.lobbyRules();
+    const presets = lobbyPresets(menu);
     const onEdit =
       presets === null
         ? null
@@ -404,7 +414,7 @@ export function lobbyScreen(menu: Menu): Screen {
     });
     // Every member sees the experimental rules before the match.
     rulesLine.hidden = rules === null;
-    rulesLine.textContent = rules !== null ? t('custom.rulesInfo', { summary: rulesSummary(rules) }) : '';
+    rulesLine.textContent = rules !== null ? t('custom.rulesInfo', { summary: lobbyRulesLine(rules) }) : '';
     setChildren(codeEl, h('span.mn-lobby-code-label', null, t('custom.codeLabel')), h('span.mn-lobby-code-value', null, s.code), navButton('mn-btn mn-btn-small', t('custom.copy'), () => void copyText(s.code).then((ok) => menu.toast(ok ? t('custom.copied') : t('custom.copyFailed'), ok ? 'ok' : 'error'))));
     const per = MODES[s.settings.mode];
     const col = (team: 0 | 1): HTMLElement => {

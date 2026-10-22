@@ -104,8 +104,10 @@ src/render/
                         Reset to standard); contexts menu / training (experimental free play's
                         live pick) / match (the room's rules, read-only); built once through the
                         Hud's PageKit, lines shown / hidden, edits saved at once
-  rulesText.ts          the texts of physics rules: preset names (built-ins from the locale),
-                        values (km/h, %, s, on / off, demolitions), standard values, the summary
+  rulesText.ts          the texts of physics rules, shared by every menu (the editor, training,
+                        the TrainingHud, the custom lobby screens): preset names (built-ins from the
+                        locale), values (km/h, %, s, on / off, demolitions), standard values, the
+                        summary, a lobby's (or room's) rules line
   hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
@@ -319,9 +321,6 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
-  rulesText.ts          experimental rules as the menus write them: a value (% of standard, km/h
-                        like the HUD, on / off, the demolition option, seconds), the changes of a
-                        set of values, a lobby's rules line
   screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
                         browser / create / lobby (custom.ts: the host's experimental rules row for
                         unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
