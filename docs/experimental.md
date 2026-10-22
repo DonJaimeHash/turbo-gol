@@ -12,8 +12,9 @@ and they may change or go away. Nothing you do with them counts: no rank, no sta
 
 The switch is saved on your account, so it follows you to other devices, and on this device for when
 you are offline. If you turn it off, sign out, or sign in with an account that has it off, every
-feature below goes away at once. If your Super low pick is the one in use, turning the switch off
-asks for a second press, because the game restarts on Performance.
+feature below goes away at once, and a saved Super low pick becomes Performance from the next start.
+If you picked Super low in Settings > Graphics, turning the switch off asks for a second press,
+because the game then restarts on Performance.
 
 ## What it unlocks
 
@@ -45,9 +46,9 @@ your account, with a copy on the device: an edit made offline is uploaded when y
 Deleting a preset needs a connection.
 
 Every value has a fixed list of steps. You cannot type a number, so a preset can never hold a value
-outside the safe range. Each row shows its standard value under its name, and the **Del** key (or
-**Reset to standard** in the footer, which asks for a second press) puts the standard values back.
-Edits save by themselves. The editor works with a mouse, the keyboard, a controller or touch, in
+outside the safe range. Each row shows its standard value under its name. The **Del** key puts the
+focused value back to standard, and **Reset to standard** in the footer (it asks for a second press)
+puts every value back. Edits save by themselves. The editor works with a mouse, the keyboard, a controller or touch, in
 English and Spanish.
 
 ## The values
