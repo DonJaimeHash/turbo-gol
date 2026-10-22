@@ -1,7 +1,8 @@
 // Car bodies (node --test tests/car-bodies.test.mjs): the contract every body of src/render/cars
-// keeps so it costs no draw call, pipeline or compile (docs/cars.md), the wheel styles, the livery
-// packing, the shared geometry cache and CarView's in-place body swap. The dune runner's geometry
-// is pinned byte for byte to what it was before the body kit existed.
+// keeps so it costs no draw call, pipeline or compile (docs/cars.md), its livery landing on its
+// paint, the wheel styles and placement, the kit's helpers, the livery packing, the shared
+// geometry cache and CarView's in-place body swap. The dune runner's geometry is pinned byte for
+// byte to what it was before the body kit existed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -20,14 +21,16 @@ registerHooks({
 
 const THREE = await import('three/webgpu');
 const kit = await import('../src/render/cars/kit.ts');
-const { KNOBBY, SLICK, WHEEL_STYLES, SLICK_R, buildWheel, tyreRadius } = await import('../src/render/cars/wheels.ts');
+const { KNOBBY, SLICK, WHEEL_STYLES, buildWheel } = await import('../src/render/cars/wheels.ts');
 const { DEFAULT_BODY, carBodies, carBody, hasCarBody, registerCarBody } = await import('../src/render/cars/index.ts');
 const { DUNE } = await import('../src/render/cars/dune.ts');
 const cache = await import('../src/render/cars/cache.ts');
 const { CarView, packLivery } = await import('../src/render/Car.ts');
 const { CAR_STANDARD } = await import('../src/sim/constants.ts');
+const { CAR_IDS } = await import('../src/game/cosmetics.ts');
 
-const { CAR_KIND, BOOST_NOZZLE_X, BOOST_NOZZLE_Y, BOOST_NOZZLE_Z, HITBOX_MARGIN, BODY_TRIS_CAP, BODY_TRIS_TARGET, WHEEL_TRIS_CAP, CROWN_R, RIM_R, WHEEL_WIDTH } = kit;
+const { CAR_KIND, BOOST_NOZZLE_X, BOOST_NOZZLE_Y, BOOST_NOZZLE_Z, CAR_REST_Z, HITBOX_MARGIN, BODY_TRIS_CAP, BODY_TRIS_TARGET, WHEEL_TRIS_CAP, WHEEL_TRIS_TARGET } = kit;
+const { CROWN_R, RIM_R, SLICK_R, WHEEL_WIDTH, WHEEL_VISUAL_RANGE, WHEEL_WIDTH_RANGE, resolveWheels, tyreRadius, wheelOuterMax } = kit;
 
 // The Standard preset as the wasm reports it (rs_get_car_config: float32 values; fround of the
 // constants is exactly what RocketSim.getCarConfig(CarPreset.Standard) returns).
@@ -48,6 +51,8 @@ const TEAMS = [0, 1];
 const KINDS = new Set(Object.values(CAR_KIND));
 // The shipped bodies, before any test registers a stand-in.
 const SHIPPED = carBodies();
+// Every wheel style in use: the shared ones and any a body declares in its own module.
+const STYLES = [...new Set([...WHEEL_STYLES, ...SHIPPED.map((b) => b.wheels.style)])];
 
 /**
  * SHA-256 of the dune runner's geometry: every attribute's name, item size, normalized flag and
@@ -126,10 +131,11 @@ test('dune: body and wheel geometry byte-identical to the original dune runner (
   }
 });
 
-test('registry: dune is the default body, every shipped body has a unique id, unknown ids draw the default', () => {
+test('registry: dune is the default body, every shipped body has a unique catalog id, unknown ids draw the default', () => {
   assert.equal(DEFAULT_BODY, DUNE);
   assert.equal(SHIPPED[0], DUNE);
   assert.equal(new Set(SHIPPED.map((b) => b.id)).size, SHIPPED.length);
+  for (const b of SHIPPED) assert.ok(CAR_IDS.includes(b.id), `${b.id} is a catalog id (src/game/cosmetics.ts)`);
   assert.equal(carBody('dune'), DUNE);
   assert.equal(carBody('no-such-car'), DEFAULT_BODY);
   assert.equal(hasCarBody('no-such-car'), false);
@@ -139,7 +145,7 @@ test('registry: dune is the default body, every shipped body has a unique id, un
 for (const spec of SHIPPED) {
   for (const detail of DETAILS) {
     test(`body ${spec.id} (${detail}): layout, clean attributes, inside the hitbox unsqueezed, within budget, thrusters at the nozzles`, () => {
-      assert.ok(spec.budget[detail] <= BODY_TRIS_CAP[detail], `declared budget ${spec.budget[detail]} within the hard cap ${BODY_TRIS_CAP[detail]}`);
+      assert.ok(spec.budget[detail] <= BODY_TRIS_CAP[detail], `declared budget ${spec.budget[detail]} within the hard cap ${BODY_TRIS_CAP[detail]} (target ${BODY_TRIS_TARGET[detail]})`);
       for (const team of TEAMS) {
         const label = `${spec.id} team ${team} ${detail}`;
         const g = kit.buildBody(spec, CFG, team, detail);
@@ -159,12 +165,14 @@ for (const spec of SHIPPED) {
         assert.ok(bb.min.z >= oz - W / 2 + HITBOX_MARGIN - eps && bb.max.z <= oz + W / 2 - HITBOX_MARGIN + eps, `${label}: z ${bb.min.z}..${bb.max.z}`);
         // Twin thrusters (EXHAUST housings) centred on the boost nozzles, their exit plane where the
         // flame starts (CarView puts it 0.2 uu behind the exit; Effects emits at BOOST_NOZZLE_*).
+        // EXHAUST is the boost thrusters' kind only: other pipes are ALLOY, CHROME or DARK_METAL.
         for (const side of [-1, 1]) {
           const ex = verticesOf(g, CAR_KIND.EXHAUST).filter((v) => Math.sign(v[2]) === side);
           assert.ok(ex.length > 0, `${label}: an exhaust on side ${side}`);
           const mean = (i) => ex.reduce((s, v) => s + v[i], 0) / ex.length;
-          assert.ok(Math.abs(mean(1) - BOOST_NOZZLE_Y) < 0.5, `${label}: exhaust y ${mean(1)}`);
-          assert.ok(Math.abs(mean(2) - side * BOOST_NOZZLE_Z) < 0.5, `${label}: exhaust z ${mean(2)}`);
+          const only = 'EXHAUST is for the two boost thrusters only: docs/cars.md contract 5';
+          assert.ok(Math.abs(mean(1) - BOOST_NOZZLE_Y) < 0.5, `${label}: exhaust y ${mean(1)} (${only})`);
+          assert.ok(Math.abs(mean(2) - side * BOOST_NOZZLE_Z) < 0.5, `${label}: exhaust z ${mean(2)} (${only})`);
           const exit = Math.min(...ex.map((v) => v[0]));
           assert.ok(Math.abs(exit - BOOST_NOZZLE_X) < 0.5, `${label}: exhaust exit plane x ${exit}`);
         }
@@ -180,20 +188,62 @@ for (const spec of SHIPPED) {
     assert.ok(l.grime.y1 < l.grime.y0 && l.grime.amount >= 0 && l.grime.amount <= 1, 'grime: dirty below y1 < clean above y0');
     assert.ok(l.ao.y0 < l.ao.y1, 'ao: y0 < y1');
     assert.ok(l.heat.length > 0 && Math.abs(l.heat.x - BOOST_NOZZLE_X) < 1, 'heat tint from the nozzle exit plane');
-    assert.ok(spec.wheels.visual > 0.8 && spec.wheels.visual < 1.3);
-    assert.ok(spec.wheels.outer > WHEEL_WIDTH && spec.wheels.outer <= CFG.hitboxSize[1] / 2);
-    assert.ok(WHEEL_STYLES.includes(spec.wheels.style), 'a listed wheel style (one id, one geometry)');
+    assert.ok(l.chevronTint >= 0 && l.chevronTint <= 1, 'chevron tint 0..1');
+    // Wheel placement within the ranges CarView draws (resolveWheels clamps silently: none here).
+    const w = spec.wheels;
+    const inRange = (v, [lo, hi]) => v >= lo && v <= hi;
+    for (const axle of [w, { ...w, ...w.rear }]) {
+      assert.ok(inRange(axle.visual, WHEEL_VISUAL_RANGE), `visual ${axle.visual} within ${WHEEL_VISUAL_RANGE}`);
+      assert.ok(inRange(axle.width ?? 1, WHEEL_WIDTH_RANGE), `width ${axle.width} within ${WHEEL_WIDTH_RANGE}`);
+      assert.ok(axle.outer > WHEEL_WIDTH && axle.outer <= wheelOuterMax(CFG), `outer ${axle.outer} within ${WHEEL_WIDTH}..${wheelOuterMax(CFG)}`);
+    }
+  });
+
+  test(`body ${spec.id}: its livery lands on its paint (LiverySpec is car-local: the build frame + (ox, oy, oz))`, () => {
+    const l = spec.livery;
+    for (const detail of DETAILS) {
+      const label = `${spec.id} ${detail}`;
+      const g = kit.buildBody(spec, CFG, 0, detail);
+      g.computeBoundingBox();
+      const bb = g.boundingBox;
+      const p = g.attributes.position.array;
+      const n = g.attributes.normal.array;
+      const m = g.attributes.aMat.array;
+      const paint = []; // [x, y, z, normal y] of every PAINT vertex, car-local
+      for (let v = 0; v < p.length / 3; v++) if (m[v * 4 + 3] === CAR_KIND.PAINT) paint.push([p[v * 3], p[v * 3 + 1], p[v * 3 + 2], n[v * 3 + 1]]);
+      assert.ok(paint.length > 0, `${label}: some team paint`);
+      const lo = (a) => a.reduce((x, y) => Math.min(x, y), Infinity);
+      const hi = (a) => a.reduce((x, y) => Math.max(x, y), -Infinity);
+      const ys = paint.map((v) => v[1]);
+      if (l.twoToneY !== null) {
+        assert.ok(l.twoToneY > lo(ys) && l.twoToneY < hi(ys), `${label}: two-tone line y ${l.twoToneY} inside the paint's y ${lo(ys)}..${hi(ys)}`);
+      }
+      if (l.chevrons !== null) {
+        const c = l.chevrons;
+        const hit = paint.some(([x, , z, ny]) => x >= c.x0 && x <= c.x1 && Math.abs(z) < c.halfWidth && ny > 0.35);
+        assert.ok(hit, `${label}: chevrons x ${c.x0}..${c.x1} |z| < ${c.halfWidth} reach up-facing paint`);
+      }
+      if (l.seams !== null) {
+        // Grooves on the upper paint's top (the shader's onTop: normal y from 0.25, above the line).
+        const top = paint.filter(([, y, z, ny]) => ny > 0.25 && Math.abs(z) < l.seams.maxZ && (l.twoToneY === null || y > l.twoToneY)).map((v) => v[0]);
+        assert.ok(top.length > 0, `${label}: up-facing upper paint within |z| < ${l.seams.maxZ}`);
+        for (const x of l.seams.x) assert.ok(x > lo(top) && x < hi(top), `${label}: seam x ${x} across the top paint ${lo(top)}..${hi(top)}`);
+      }
+      assert.ok(l.grime.y0 > bb.min.y && l.grime.y0 < bb.max.y, `${label}: grime y0 ${l.grime.y0} inside the body's y ${bb.min.y}..${bb.max.y}`);
+      assert.ok(l.ao.y1 > bb.min.y && l.ao.y1 < bb.max.y, `${label}: ao y1 ${l.ao.y1} inside the body's y ${bb.min.y}..${bb.max.y}`);
+    }
   });
 }
 
-for (const style of WHEEL_STYLES) {
+for (const style of STYLES) {
   for (const detail of DETAILS) {
     test(`wheel ${style.id} (${detail}): layout, within budget, the tyre the shader expects`, () => {
+      assert.ok(style.budget[detail] <= WHEEL_TRIS_CAP[detail], `declared budget ${style.budget[detail]} within the hard cap ${WHEEL_TRIS_CAP[detail]} (target ${WHEEL_TRIS_TARGET[detail]})`);
       const g = buildWheel(style, detail, 0);
       assertLayout(g, style.id);
       assertClean(g, style.id);
       const tris = g.attributes.position.count / 3;
-      assert.ok(tris <= WHEEL_TRIS_CAP[detail], `${tris} triangles within ${WHEEL_TRIS_CAP[detail]}`);
+      assert.ok(tris <= style.budget[detail], `${tris} triangles within its budget ${style.budget[detail]}`);
       const radius = (v) => Math.hypot(v[0], v[1]);
       const all = [];
       for (const k of KINDS) all.push(...verticesOf(g, k));
@@ -210,19 +260,110 @@ for (const style of WHEEL_STYLES) {
   }
 }
 
-test('wheel styles: one geometry per id, the dune keeps the knobby', () => {
-  assert.equal(new Set(WHEEL_STYLES.map((s) => s.id)).size, WHEEL_STYLES.length);
+test('wheel styles: one object per id across the shared styles and every body (the cache keys on it), the dune keeps the knobby', () => {
+  assert.equal(new Set(STYLES.map((s) => s.id)).size, STYLES.length, 'two different styles share an id');
   assert.equal(DUNE.wheels.style, KNOBBY);
   assert.notEqual(digest(buildWheel(SLICK, 'high', 0)), digest(buildWheel(KNOBBY, 'high', 0)));
+  // A style without a beadlock drops the ring and its bolts.
+  const plain = { ...SLICK, id: 'test-plain', bead: null, bolts: 6 };
+  for (const detail of DETAILS) {
+    const g = buildWheel(plain, detail, 0);
+    assertClean(g, 'no bead');
+    assert.equal(verticesOf(g, CAR_KIND.BEAD).length, 0, 'no bead ring');
+    assert.equal(verticesOf(g, CAR_KIND.CHROME).length, 0, 'no bolts without a ring');
+  }
+});
+
+test('wheel placement: CarView draws the wheels where resolveWheels (BodyKit.wheels) says, front and rear, any width', () => {
+  const scene = new THREE.Scene();
+  const placements = [
+    DUNE.wheels,
+    { style: SLICK, visual: 1.0, outer: 37, width: 1.25, rear: { visual: 1.2, outer: 40.5, width: 1.35 } },
+    { style: KNOBBY, visual: 0.85, outer: 99 }, // past the hitbox: clamped to wheelOuterMax
+  ];
+  const m = new THREE.Matrix4();
+  const pos = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const sc = new THREE.Vector3();
+  for (const [n, wheels] of placements.entries()) {
+    const id = `test-placement-${n}`;
+    registerCarBody({ ...DUNE, id, wheels });
+    const view = new CarView(scene, CFG, 0, 'low', id);
+    const r = resolveWheels(CFG, wheels);
+    try {
+      for (let i = 0; i < 4; i++) {
+        const at = (i < 2 ? r.front : r.back).at;
+        view.wheels.getMatrixAt(i, m);
+        m.decompose(pos, q, sc);
+        // Car-local = build frame + the hitbox offset (three's axes: the sim's x, z, y).
+        const label = `placement ${n} wheel ${i}`;
+        const near = (a, b, what) => assert.ok(Math.abs(a - b) < 1e-3, `${label}: ${what} ${a} vs ${b}`);
+        near(pos.x, at.x + CFG.hitboxOffset[0], 'x');
+        near(pos.y, at.y + CFG.hitboxOffset[2], 'centre height');
+        near(Math.abs(pos.z), (at.zIn + at.zOut) / 2, 'track');
+        near(sc.x * tyreRadius(wheels.style), at.radius, 'outer radius');
+        near(sc.z * WHEEL_WIDTH, at.zOut - at.zIn, 'width');
+        near(at.y - at.radius, -CAR_REST_Z - CFG.hitboxOffset[2], 'the tyre on the floor');
+        assert.ok(at.zOut <= wheelOuterMax(CFG) + 1e-3, `${label}: inside the hitbox`);
+      }
+    } finally {
+      view.dispose(); // a failed assertion must not leave the cache holding its geometry
+    }
+  }
+});
+
+test('kit: wheelArch over the dune runner\'s own wheels sweeps the arches its hand-placed arch calls do', () => {
+  // The dune's arches (dune.ts), then the same from BodyKit.wheels: the band follows the wheel.
+  const hand = { ...DUNE, id: 'test-arch-hand', build: (k) => { k.arch(CFG.frontWheelOffset[0] - k.ox, CFG.frontWheelRadius * 1.1); k.arch(CFG.backWheelOffset[0] - k.ox, CFG.backWheelRadius * 1.1); } };
+  const auto = { ...DUNE, id: 'test-arch-auto', build: (k) => { k.wheelArch(k.wheels.front); k.wheelArch(k.wheels.back); } };
+  for (const detail of DETAILS) {
+    const a = kit.buildBody(hand, CFG, 0, detail).attributes.position.array;
+    const b = kit.buildBody(auto, CFG, 0, detail).attributes.position.array;
+    assert.equal(a.length, b.length);
+    let worst = 0;
+    for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+    assert.ok(worst < 1e-3, `${detail}: within ${worst} uu`);
+  }
+});
+
+test('kit: per-triangle surfaces, fins and wings, per-ring exponents and flat floors build clean geometry', () => {
+  const PROBE = {
+    ...DUNE,
+    id: 'test-kit-probe',
+    build(k) {
+      // A cab loft: a flat-floored, round-topped section sharpening towards the nose, glass above y 0.
+      const rings = [-40, -10, 20, 45].map((x, i) => ({ o: [x, -6, 0], u: [0, 0, 1], v: [0, 1, 0], hu: 18 - i * 2, hv: 12 - i * 2, hvNeg: 8, n: 2.5 + i }));
+      k.pushBy(kit.loft(rings, k.hi ? 16 : 10, 3), (x, y) => (y > 0 ? k.glass : k.paint));
+      k.fin(kit.CARBON, [[-50, 2], [-40, 2], [-48, 12]], 1.2); // a vertical fin across z = 0
+      k.fin(kit.TRIM, [[-56, -20], [-48, -20], [-48, 20], [-56, 20]], 1, 'xz', 10); // a wing at y 10
+      k.wheelArch(k.wheels.front);
+    },
+  };
+  for (const detail of DETAILS) {
+    const g = kit.buildBody(PROBE, CFG, 1, detail);
+    assertLayout(g, `probe ${detail}`);
+    assertClean(g, `probe ${detail}`);
+    assert.ok(verticesOf(g, CAR_KIND.GLASS).length > 0 && verticesOf(g, CAR_KIND.PAINT).length > 0, 'both surfaces of the cab');
+    // Per triangle: the three vertices of a triangle share one kind.
+    const m = g.attributes.aMat.array;
+    for (let v = 0; v < m.length / 4; v += 3) assert.ok(m[v * 4 + 3] === m[v * 4 + 7] && m[v * 4 + 3] === m[v * 4 + 11], `triangle ${v / 3}: one kind`);
+    // The wing spans y 9.5..10.5 (build frame) at x -56..-48, z -20..20.
+    const wing = verticesOf(g, CAR_KIND.TRIM);
+    const ys = wing.map((p) => p[1] - CFG.hitboxOffset[2]);
+    assert.ok(Math.abs(Math.min(...ys) - 9.5) < 1e-4 && Math.abs(Math.max(...ys) - 10.5) < 1e-4, 'the wing centred on y 10');
+    assert.ok(Math.abs(Math.max(...wing.map((p) => p[2])) - 20) < 1e-4, 'the wing across z');
+  }
 });
 
 test('livery: the dune packs to the numbers the shader had compiled in; features switch off', () => {
   const p = packLivery(DUNE.livery).map((v) => v.toArray());
+  const lime = new THREE.Color().setHex(0xc6ff2e); // BRAND_LIME, linear: the old compiled-in constant
   assert.deepEqual(p, [
     [8.75, 0.45, 29, -31],
     [38, 68, 12, 11],
     [18.5, 10, 3, 0.55],
     [2, 14, BOOST_NOZZLE_X, 7],
+    [lime.r, lime.g, lime.b, 0],
   ]);
   const off = packLivery({ ...DUNE.livery, twoToneY: null, pinstripe: 0, chevrons: null, seams: null }).map((v) => v.toArray());
   assert.ok(off[0][0] < -1000, 'no two-tone line: paint all over');
@@ -299,8 +440,8 @@ test('CarView: cars of the same body, team and detail share geometry; setBody sw
   assert.equal(a.setBody('test-wedge'), false, 'no-op when unchanged');
   assert.deepEqual(cache.geometryCacheStats(), { bodies: 3, wheels: 3, refs: 6 });
 
-  // An id without a body draws the default one.
-  assert.equal(a.setBody('pampero'), true);
+  // An id without a body draws the default one (not a catalog car: those get their bodies).
+  assert.equal(a.setBody('no-such-car'), true);
   assert.equal(a.bodyId, 'dune');
   assert.equal(a.body.geometry, duneBody, 'back on the shared dune geometry');
   assert.deepEqual(cache.geometryCacheStats(), { bodies: 2, wheels: 2, refs: 6 }, 'the wedge geometry was released');

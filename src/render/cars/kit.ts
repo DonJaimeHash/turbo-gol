@@ -3,11 +3,15 @@
  *
  *   surfaces   CAR_KIND (the shared material's surface kinds) and the stock Surfaces (trim,
  *              carbon, satin alloy, lamps, exhaust...), the team colours, the boost nozzles
- *   geometry   tag (bake a Surface into `color` / `aMat`, non-indexed, no uv), mergeParts,
- *              section / loft (superellipse lofts), tube (a cylinder between two points)
+ *   geometry   tag / tagBy (bake one Surface, or one per triangle, into `color` / `aMat`,
+ *              non-indexed, no uv), mergeParts, section / loft (superellipse lofts), tube (a
+ *              cylinder between two points)
+ *   wheels     the tyre numbers the shader compiles, the placement ranges and resolveWheels (where
+ *              a body's WheelPlacement puts the wheels: CarView draws them there, the kit reports it)
  *   bodies     createKit (the BodyKit a CarBodySpec.build receives: the design half extents, the
- *              team surfaces, push / box / arch) and buildBody (build, merge, containment guard,
- *              translate to the car origin)
+ *              nozzles, the wheels, the team surfaces, push / pushBy / box / fin / arch /
+ *              wheelArch) and buildBody (build, merge, containment guard, translate to the car
+ *              origin)
  *
  * Every part carries exactly the attributes position, normal, color, aMat (non-indexed): the
  * attribute layout is part of three's render-object cache key, so one more attribute, a uv or an
@@ -17,7 +21,7 @@
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { CarConfigInfo, Team } from '../../sim/types';
-import type { ArchOptions, BodyKit, CarBodySpec, CarDetail, Ring, Surface } from './types';
+import type { ArchOptions, BodyKit, CarBodySpec, CarDetail, Ring, Surface, SurfacePicker, WheelAt, WheelPlacement, WheelStyle } from './types';
 
 /**
  * Surface kinds of the shared car material, stored per vertex in `aMat.w` (small integers, decoded
@@ -50,7 +54,11 @@ export const CAR_KIND = {
   LAMP: 8,
   /** Team-painted hub cap: flake paint and clearcoat without the livery. */
   HUB: 9,
-  /** Thruster housing: polished metal with a heat tint (straw to blue) toward the exit. */
+  /**
+   * Thruster housing: polished metal with a heat tint (straw to blue) toward the exit. Only the two
+   * boost thrusters (the tint runs from their exit plane, the test finds them by it): side pipes
+   * and stacks are ALLOY, CHROME or DARK_METAL.
+   */
   EXHAUST: 10,
   /** Beadlock ring: machined alloy with fine concentric turning marks. */
   BEAD: 11,
@@ -108,22 +116,39 @@ export const RIM_R = 0.66;
 export const TREAD_R = 0.93;
 /**
  * The shader paints knob tops (sipes, the scuffed crown) where the unit-wheel radius is at least
- * this: a slick tyre's tread stays below it (wheels.ts SLICK_R).
+ * this: a slick tyre's tread stays below it (SLICK_R).
  */
 export const CROWN_R = 0.985;
+/**
+ * A slick's tread radius (tyre-radius units): below CROWN_R, so the shader paints no knob sipes on
+ * it (they would sit on a smooth tread), close enough to 1 that the tyre keeps its size.
+ */
+export const SLICK_R = 0.975;
 /** Tread knobs around the tyre per geometry detail, and their width (tyre-radius units). Compiled in. */
 export const KNOBS_HIGH = 16;
 export const KNOBS_LOW = 12;
 export const KNOB_WIDTH = 0.24;
 
 /**
- * Body triangle budgets per geometry detail (docs/cars.md): a body declares its own
- * (CarBodySpec.budget) at or below the target, never above the hard cap (tests/car-bodies.test.mjs).
- * The wheel geometry (4 instances) has its own cap.
+ * Triangle budgets per geometry detail (docs/cars.md; the per-tier frame budgets behind them): a
+ * body (CarBodySpec.budget) or a wheel style (WheelStyle.budget) declares its own, aiming for the
+ * target (the dune runner's size: a body or style above it says why in its module), never above
+ * the hard cap (tests/car-bodies.test.mjs refuses it). The wheel geometry is drawn 4 times a car.
  */
 export const BODY_TRIS_TARGET: Readonly<Record<CarDetail, number>> = { low: 2000, high: 3500 };
 export const BODY_TRIS_CAP: Readonly<Record<CarDetail, number>> = { low: 2400, high: 4200 };
-export const WHEEL_TRIS_CAP: Readonly<Record<CarDetail, number>> = { low: 440, high: 820 };
+export const WHEEL_TRIS_TARGET: Readonly<Record<CarDetail, number>> = { low: 440, high: 820 };
+export const WHEEL_TRIS_CAP: Readonly<Record<CarDetail, number>> = { low: 500, high: 900 };
+
+/** WheelPlacement.visual's range: visual tyre radius over the physics radius (the dune runner: 1.1). */
+export const WHEEL_VISUAL_RANGE: readonly [number, number] = [0.8, 1.3];
+/** WheelPlacement.width's range: tyre width over WHEEL_WIDTH, the instances' z scale (the dune runner: 1). */
+export const WHEEL_WIDTH_RANGE: readonly [number, number] = [0.8, 1.4];
+/** The outer tyre face stays this far inside the hitbox's side (uu). */
+const WHEEL_SIDE_INSET = 2.5;
+/** wheelArch's band: from this far inside the tyre's inner face to this far past its outer face (uu). */
+const ARCH_OVERLAP_IN = 1;
+const ARCH_OVERLAP_OUT = 2.6;
 
 // ---- scratch -------------------------------------------------------------------------------
 const _q = new THREE.Quaternion();
@@ -166,6 +191,52 @@ export function tag(src: THREE.BufferGeometry, s: Surface): THREE.BufferGeometry
   return g;
 }
 
+/**
+ * tag with a Surface per triangle: `pick` gets each triangle's centre and unit face normal (in the
+ * geometry's own frame, the build frame for body parts) and returns its surface. The kind is
+ * constant over a triangle (aMat.w is interpolated: a triangle spanning two kinds would decode as
+ * neither), so a band follows the part's triangle edges: put loft rings where it should start.
+ */
+export function tagBy(src: THREE.BufferGeometry, pick: SurfacePicker): THREE.BufferGeometry {
+  let g = src;
+  if (src.index !== null) {
+    g = src.toNonIndexed();
+    src.dispose();
+  }
+  if (g.getAttribute('uv') !== undefined) g.deleteAttribute('uv');
+  const p = g.attributes.position.array;
+  const n = g.attributes.position.count;
+  const col = new Float32Array(n * 3);
+  const mat = new Float32Array(n * 4);
+  for (let t = 0; t + 2 < n; t += 3) {
+    const a = t * 3;
+    const ux = p[a + 3] - p[a];
+    const uy = p[a + 4] - p[a + 1];
+    const uz = p[a + 5] - p[a + 2];
+    const vx = p[a + 6] - p[a];
+    const vy = p[a + 7] - p[a + 1];
+    const vz = p[a + 8] - p[a + 2];
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz) || 1; // a degenerate triangle picks with a zero normal
+    const s = pick((p[a] + p[a + 3] + p[a + 6]) / 3, (p[a + 1] + p[a + 4] + p[a + 7]) / 3, (p[a + 2] + p[a + 5] + p[a + 8]) / 3, nx / l, ny / l, nz / l);
+    _col.setHex(s.color); // sRGB hex -> linear working colour space
+    for (let v = t; v < t + 3; v++) {
+      col[v * 3] = _col.r;
+      col[v * 3 + 1] = _col.g;
+      col[v * 3 + 2] = _col.b;
+      mat[v * 4] = s.metal;
+      mat[v * 4 + 1] = s.rough;
+      mat[v * 4 + 2] = s.emissive;
+      mat[v * 4 + 3] = s.kind;
+    }
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aMat', new THREE.BufferAttribute(mat, 4));
+  return g;
+}
+
 /** Merge tagged parts in order (the order is the vertex order) and dispose of them. */
 export function mergeParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const merged = mergeGeometries(parts, false);
@@ -178,15 +249,8 @@ export function section(x: number, w: number, y0: number, y1: number, zc = 0): R
   return { o: [x, (y0 + y1) * 0.5, zc], u: [0, 0, 1], v: [0, 1, 0], hu: w, hv: (y1 - y0) * 0.5 };
 }
 
-/**
- * Smooth lofted solid: a superellipse ring per section (exponent `n`: 2 = ellipse, larger =
- * boxier, `seg` points), consecutive rings stitched into quads, both ends closed by a flat fan
- * on their own vertices (a crisp end edge). The sides share ring vertices, so
- * computeVertexNormals() shades them smoothly. Winding is chosen so the faces point outwards
- * whichever way the rings progress. Consecutive rings must not coincide (a zero-area quad has
- * no normal: NaN in the shader).
- */
-export function loft(rings: readonly Ring[], seg: number, n: number): THREE.BufferGeometry {
+/** The unit superellipse of exponent `n` sampled at `seg` points (loft): its u and v coordinates. */
+function superellipse(seg: number, n: number): readonly [Float64Array, Float64Array] {
   const e = 2 / n;
   const cu = new Float64Array(seg);
   const cv = new Float64Array(seg);
@@ -197,12 +261,27 @@ export function loft(rings: readonly Ring[], seg: number, n: number): THREE.Buff
     cu[j] = Math.sign(c) * Math.pow(Math.abs(c), e);
     cv[j] = Math.sign(s) * Math.pow(Math.abs(s), e);
   }
+  return [cu, cv];
+}
+
+/**
+ * Smooth lofted solid: a superellipse ring per section (exponent `n`: 2 = ellipse, larger =
+ * boxier, `seg` points; a ring's own `n` / `hvNeg` override it), consecutive rings stitched into
+ * quads, both ends closed by a flat fan on their own vertices (a crisp end edge). The sides share
+ * ring vertices, so computeVertexNormals() shades them smoothly. Winding is chosen so the faces
+ * point outwards whichever way the rings progress. Consecutive rings must not coincide and no
+ * ring may be zero-sized (a zero-area quad has no normal: NaN in the shader): taper a point to
+ * at least 0.3 uu.
+ */
+export function loft(rings: readonly Ring[], seg: number, n: number): THREE.BufferGeometry {
+  const [cu, cv] = superellipse(seg, n);
   const pos: number[] = [];
   const idx: number[] = [];
   const ringPoints = (r: Ring): void => {
+    const [ru, rv] = r.n !== undefined ? superellipse(seg, r.n) : [cu, cv];
     for (let j = 0; j < seg; j++) {
-      const a = cu[j] * r.hu;
-      const b = cv[j] * r.hv;
+      const a = ru[j] * r.hu;
+      const b = rv[j] * (rv[j] < 0 && r.hvNeg !== undefined ? r.hvNeg : r.hv);
       pos.push(r.o[0] + r.u[0] * a + r.v[0] * b, r.o[1] + r.u[1] * a + r.v[1] * b, r.o[2] + r.u[2] * a + r.v[2] * b);
     }
   };
@@ -261,6 +340,64 @@ export function tube(ax: number, ay: number, az: number, bx: number, by: number,
   return g;
 }
 
+// ---- wheel placement ------------------------------------------------------------------------
+
+/** The style's outer tyre radius in tyre-radius units: CarView keeps this on the floor. */
+export function tyreRadius(style: WheelStyle): number {
+  return style.tyre === 'slick' ? SLICK_R : 1;
+}
+
+/** The widest WheelPlacement.outer on hitbox `cfg` (uu from the centre line; 40.85 on Standard). */
+export function wheelOuterMax(cfg: CarConfigInfo): number {
+  return cfg.hitboxSize[1] * 0.5 - WHEEL_SIDE_INSET;
+}
+
+/** One axle's wheels resolved on a hitbox (resolveWheels). */
+export interface AxleWheels {
+  /** Visual radius over the physics radius and width over WHEEL_WIDTH, within their ranges. */
+  readonly visual: number;
+  readonly width: number;
+  /** The style's outer tyre radius, unit wheel (tyreRadius). */
+  readonly tyreR: number;
+  /** Outward offset of the wheel centre from the physics hardpoint (uu; negative moves it in: a wide tyre keeps its outer face). */
+  readonly track: number;
+  /** The wheel at rest in the build frame (BodyKit.wheels). */
+  readonly at: WheelAt;
+}
+
+/** `v` within [lo, hi]; `fallback` when it is not a number (a NaN scale would hide the wheels). */
+function within(v: number, [lo, hi]: readonly [number, number], fallback: number): number {
+  return Number.isFinite(v) ? clamp(v, lo, hi) : fallback;
+}
+
+function resolveAxle(cfg: CarConfigInfo, w: WheelPlacement, front: boolean): AxleWheels {
+  const r = front ? undefined : w.rear;
+  const visual = within(r?.visual ?? w.visual, WHEEL_VISUAL_RANGE, 1);
+  const width = within(r?.width ?? w.width ?? 1, WHEEL_WIDTH_RANGE, 1);
+  const outer = Math.min(r?.outer ?? w.outer, wheelOuterMax(cfg));
+  const hp = front ? cfg.frontWheelOffset : cfg.backWheelOffset;
+  const half = WHEEL_WIDTH * width * 0.5;
+  const track = outer - half - hp[1];
+  const tyreR = tyreRadius(w.style);
+  const radius = (front ? cfg.frontWheelRadius : cfg.backWheelRadius) * visual * tyreR;
+  const zOut = hp[1] + track + half;
+  // The centre at rest sits the outer radius over the floor (CarView.composeWheel); the sim's
+  // hardpoint is (x forward, y right, z up), the hitbox offset likewise.
+  const at: WheelAt = { x: hp[0] - cfg.hitboxOffset[0], y: radius - CAR_REST_Z - cfg.hitboxOffset[2], radius, zIn: zOut - 2 * half, zOut };
+  return { visual, width, tyreR, track, at };
+}
+
+/**
+ * Where WheelPlacement `w` puts the wheels on hitbox `cfg`, per axle: what CarView draws (the
+ * instance matrices) and what BodyKit.wheels tells the body, from one place, so arches, fenders
+ * and pods follow the wheels drawn. Out-of-range numbers are clamped (the tests require none).
+ */
+export function resolveWheels(cfg: CarConfigInfo, w: WheelPlacement): { readonly front: AxleWheels; readonly back: AxleWheels } {
+  return { front: resolveAxle(cfg, w, true), back: resolveAxle(cfg, w, false) };
+}
+
+// ---- bodies ---------------------------------------------------------------------------------
+
 /** A BodyKit plus the parts it collects (buildBody merges them). */
 interface KitBuild {
   readonly kit: BodyKit;
@@ -268,11 +405,12 @@ interface KitBuild {
 }
 
 /**
- * The kit a body is built with, for hitbox `cfg`, `team` and geometry `detail`: hitbox-centred
- * design coordinates (the default hitbox gives hl 58.75, hh 17.83, hw 41.85), the team surfaces,
- * and the part helpers. The surfaces and helpers are the dune runner's, unchanged.
+ * The kit a body is built with, for hitbox `cfg`, `team`, geometry `detail` and the body's wheel
+ * placement: hitbox-centred design coordinates (the default hitbox gives hl 58.75, hh 17.83, hw
+ * 41.85), the nozzles and wheels in them, the team surfaces, and the part helpers. The surfaces
+ * and the dune runner's helpers (push, box, arch) are as they always were.
  */
-function createKit(cfg: CarConfigInfo, team: Team, detail: CarDetail): KitBuild {
+function createKit(cfg: CarConfigInfo, team: Team, detail: CarDetail, wheels: WheelPlacement): KitBuild {
   const parts: THREE.BufferGeometry[] = [];
   const hi = detail === 'high';
   const L = cfg.hitboxSize[0];
@@ -289,21 +427,34 @@ function createKit(cfg: CarConfigInfo, team: Team, detail: CarDetail): KitBuild 
   const glass: Surface = { color: TEAM_GLASS[team], metal: 0, rough: 0.05, emissive: 0, kind: CAR_KIND.GLASS };
   const strip: Surface = { color: TEAM_GLOW[team], metal: 0, rough: 0.2, emissive: 1.4, kind: CAR_KIND.LAMP };
 
+  const resolved = resolveWheels(cfg, wheels);
   const push = (g: THREE.BufferGeometry, s: Surface): void => {
     parts.push(tag(g, s));
+  };
+  const pushBy = (g: THREE.BufferGeometry, pick: SurfacePicker): void => {
+    parts.push(tagBy(g, pick));
   };
   const box = (s: Surface, sx: number, sy: number, sz: number, x: number, y: number, z: number): void => {
     const g = new THREE.BoxGeometry(sx, sy, sz);
     g.translate(x, y, z);
     parts.push(tag(g, s));
   };
-  // A rounded band swept around a wheel's rest position (centre `wx`, visual radius `rv`), one per
-  // side, its ends cut where they would leave the hitbox (floor, nose, tail).
-  const arch = (wx: number, rv: number, o: ArchOptions = {}): void => {
-    const archZIn = o.zIn ?? 20;
-    const archZOut = o.zOut ?? hw - 0.25;
+  const fin = (s: Surface, profile: readonly (readonly [number, number])[], thickness: number, plane: 'xy' | 'xz' = 'xy', at = 0): void => {
+    const shape = new THREE.Shape(profile.map(([a, b]) => new THREE.Vector2(a, b)));
+    const g = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false, curveSegments: 1 });
+    if (plane === 'xy') {
+      g.translate(0, 0, at - thickness * 0.5);
+    } else {
+      g.rotateX(Math.PI / 2); // (x, y, depth) -> (x, -depth, y): the profile's second axis becomes z
+      g.translate(0, at + thickness * 0.5, 0);
+    }
+    parts.push(tag(g, s));
+  };
+  // A rounded band swept around a wheel's rest position (centre `wx`, `cy`, outer radius `rv`), one
+  // per side between |z| `zIn` and `zOut`, its ends cut where they would leave the hitbox (floor,
+  // nose, tail).
+  const sweepArch = (wx: number, rv: number, cy: number, archZIn: number, archZOut: number, o: ArchOptions): void => {
     const archHu = (archZOut - archZIn) * 0.5;
-    const cy = rv - CAR_REST_Z - oy; // wheel centre at rest (contact point on the floor)
     const rIn = rv + (o.gap ?? 1.75);
     const rOut = Math.min(rIn + (o.thickness ?? 3), hh - cy);
     if (rOut - rIn < 1) return;
@@ -330,7 +481,38 @@ function createKit(cfg: CarConfigInfo, team: Team, detail: CarDetail): KitBuild 
       parts.push(tag(loft(rings, hi ? 12 : 8, o.exponent ?? 4), o.surface ?? paint));
     }
   };
-  return { kit: { hi, cfg, team, hl, hh, hw, ox, oy, oz, paint, glass, strip, push, box, arch }, parts };
+  // The dune runner's form: centre `rv` over the floor (its knobby tyre's outer radius), band 20..hw - 0.25.
+  const arch = (wx: number, rv: number, o: ArchOptions = {}): void => {
+    sweepArch(wx, rv, rv - CAR_REST_Z - oy, o.zIn ?? 20, o.zOut ?? hw - 0.25, o);
+  };
+  // Over a resolved wheel (k.wheels.front / back): its radius and centre, the band round its tyre.
+  const wheelArch = (w: WheelAt, o: ArchOptions = {}): void => {
+    sweepArch(w.x, w.radius, w.y, o.zIn ?? w.zIn - ARCH_OVERLAP_IN, o.zOut ?? Math.min(hw - 0.25, w.zOut + ARCH_OVERLAP_OUT), o);
+  };
+  const nozzle = { x: -hl + 0.75, y: BOOST_NOZZLE_Y - oy, z: BOOST_NOZZLE_Z };
+  const kit: BodyKit = {
+    hi,
+    cfg,
+    team,
+    hl,
+    hh,
+    hw,
+    ox,
+    oy,
+    oz,
+    nozzle,
+    wheels: { front: resolved.front.at, back: resolved.back.at },
+    paint,
+    glass,
+    strip,
+    push,
+    pushBy,
+    box,
+    fin,
+    arch,
+    wheelArch,
+  };
+  return { kit, parts };
 }
 
 /**
@@ -340,7 +522,7 @@ function createKit(cfg: CarConfigInfo, team: Team, detail: CarDetail): KitBuild 
  * a squeeze is recorded in `userData.squeeze` (the tests require none on the default hitbox).
  */
 export function buildBody(spec: CarBodySpec, cfg: CarConfigInfo, team: Team, detail: CarDetail): THREE.BufferGeometry {
-  const { kit, parts } = createKit(cfg, team, detail);
+  const { kit, parts } = createKit(cfg, team, detail, spec.wheels);
   spec.build(kit);
   const merged = mergeParts(parts);
   // Containment guard: squeeze any axis that would leave the hitbox (no-op on the default one).

@@ -2,42 +2,61 @@
  * Wheel styles: the unit wheel every car instances 4 times (radius 1 in xy, the axle along z in
  * uu, width WHEEL_WIDTH), as data. The tyre is what the shared shader knows (kit.ts RIM_R,
  * TREAD_R, CROWN_R, WHEEL_WIDTH and the knob count per detail are compiled into its tyre detail),
- * so a style picks the tyre ('knobby' or 'slick') and leaves those numbers alone; the rim, the
- * spokes, the dish and the hub are plain vertex data and free (any count, colour or depth, within
- * WHEEL_TRIS_CAP).
+ * so a style picks the tyre ('knobby' or 'slick') and leaves those numbers alone; the rim (colour,
+ * finish, spokes), the dish, the beadlock and the hub are plain vertex data and free (any count,
+ * colour or depth, within the style's budget). A body's wheel width and size are its placement
+ * (WheelPlacement: instance-matrix values), not its style.
  *
  * KNOBBY is the dune runner's wheel, byte for byte the geometry it always had (pinned by
- * tests/car-bodies.test.mjs).
+ * tests/car-bodies.test.mjs). A body's own style can live in its module: the tests collect every
+ * style a body uses, and one id must always be one object (the geometry cache keys on it).
  */
 import * as THREE from 'three/webgpu';
 import type { Team } from '../../sim/types';
-import { BEAD, BOLT, CAR_KIND, DISC, KNOBS_HIGH, KNOBS_LOW, KNOB_WIDTH, RIM_DARK, RIM_R, TEAM_PAINT, TREAD_R, TWO_PI, TYRE, WHEEL_WIDTH, mergeParts, tag } from './kit';
+import { BEAD, BOLT, CAR_KIND, DISC, KNOBS_HIGH, KNOBS_LOW, KNOB_WIDTH, RIM_DARK, RIM_R, SLICK_R, TEAM_PAINT, TREAD_R, TWO_PI, TYRE, WHEEL_WIDTH, mergeParts, tag } from './kit';
 import type { CarDetail, Surface, WheelStyle } from './types';
 
-/**
- * A slick's tread radius (tyre-radius units): below kit.ts CROWN_R, so the shader paints no knob
- * sipes on it (they would sit on a smooth tread), close enough to 1 that the tyre keeps its size.
- */
-export const SLICK_R = 0.975;
 /** Width (uu) of a slick's chamfered shoulder, from the sidewall's edge up to the tread. */
 const SLICK_SHOULDER = 1.5;
 
 /** Knobby off-road tyre on a dark six-spoke rim over a dish, beadlock bolts, a team hub cap. */
-export const KNOBBY: WheelStyle = { id: 'knobby', tyre: 'knobby', spokes: 6, spokeWidth: 0.17, dish: 0.4, rim: 0x2a2f37, bolts: 8, hub: 'team' };
+export const KNOBBY: WheelStyle = {
+  id: 'knobby',
+  tyre: 'knobby',
+  spokes: 6,
+  spokeWidth: 0.17,
+  dish: 0.4,
+  dishColor: DISC.color,
+  rim: RIM_DARK.color,
+  rimFinish: { metal: RIM_DARK.metal, rough: RIM_DARK.rough },
+  bead: BEAD.color,
+  bolts: 8,
+  hub: 'team',
+  budget: { low: 440, high: 820 },
+};
 /** Smooth road tyre on a light five-spoke alloy, no bolts: a style for the bodies to come. */
-export const SLICK: WheelStyle = { id: 'slick-5', tyre: 'slick', spokes: 5, spokeWidth: 0.22, dish: 0.25, rim: 0xb8bec8, bolts: 0, hub: 'team' };
-/** Every style (the tests build each one at both details). */
+export const SLICK: WheelStyle = {
+  id: 'slick-5',
+  tyre: 'slick',
+  spokes: 5,
+  spokeWidth: 0.22,
+  dish: 0.25,
+  dishColor: DISC.color,
+  rim: 0xb8bec8,
+  rimFinish: { metal: RIM_DARK.metal, rough: RIM_DARK.rough },
+  bead: BEAD.color,
+  bolts: 0,
+  hub: 'team',
+  budget: { low: 340, high: 520 },
+};
+/** The shared styles (the tests build each one, and every body's own, at both details). */
 export const WHEEL_STYLES: readonly WheelStyle[] = [KNOBBY, SLICK];
-
-/** The style's outer tyre radius in tyre-radius units: CarView keeps this on the floor. */
-export function tyreRadius(style: WheelStyle): number {
-  return style.tyre === 'slick' ? SLICK_R : 1;
-}
 
 /**
  * The unit wheel of `style` at geometry `detail` for `team` (the hub cap's paint); instances scale
- * (radius, radius, 1). Tyre (carcass, sidewalls, knobs or a slick tread), a light beadlock ring
- * with bolts on both faces, the rim barrel, the dish, the spokes and the hub cap.
+ * (radius, radius, width). Tyre (carcass, sidewalls, knobs or a slick tread), a light beadlock
+ * ring with bolts on both faces (when the style has one), the rim barrel, the dish, the spokes
+ * and the hub cap.
  */
 export function buildWheel(style: WheelStyle, detail: CarDetail, team: Team): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
@@ -47,7 +66,9 @@ export function buildWheel(style: WheelStyle, detail: CarDetail, team: Team): TH
   const seg2 = hi ? 18 : 10;
   const hw = width * 0.5;
   const hub: Surface = { color: style.hub === 'team' ? TEAM_PAINT[team] : style.hub, metal: 0.4, rough: 0.36, emissive: 0.15, kind: CAR_KIND.HUB };
-  const rim: Surface = { ...RIM_DARK, color: style.rim };
+  const rim: Surface = { ...RIM_DARK, color: style.rim, metal: style.rimFinish.metal, rough: style.rimFinish.rough };
+  const bead: Surface | null = style.bead !== null ? { ...BEAD, color: style.bead } : null;
+  const disc: Surface = { ...DISC, color: style.dishColor };
 
   if (style.tyre === 'knobby') {
     const tread = new THREE.CylinderGeometry(TREAD_R, TREAD_R, width, seg, 1, true);
@@ -80,10 +101,11 @@ export function buildWheel(style: WheelStyle, detail: CarDetail, team: Team): TH
     if (side < 0) wall.rotateY(Math.PI);
     wall.translate(0, 0, side * hw);
     parts.push(tag(wall, TYRE));
-    const bead = new THREE.RingGeometry(0.54, 0.7, seg2, 1);
-    if (side < 0) bead.rotateY(Math.PI);
-    bead.translate(0, 0, side * (hw + 0.35));
-    parts.push(tag(bead, BEAD));
+    if (bead === null) continue; // no beadlock: no ring, no bolts
+    const ring = new THREE.RingGeometry(0.54, 0.7, seg2, 1);
+    if (side < 0) ring.rotateY(Math.PI);
+    ring.translate(0, 0, side * (hw + 0.35));
+    parts.push(tag(ring, bead));
     if (hi) {
       for (let i = 0; i < style.bolts; i++) {
         const bolt = new THREE.BoxGeometry(0.07, 0.07, 0.3);
@@ -98,7 +120,7 @@ export function buildWheel(style: WheelStyle, detail: CarDetail, team: Team): TH
   parts.push(tag(barrel, rim));
   const dish = new THREE.CylinderGeometry(0.6, 0.6, width * style.dish, seg2, 1, false);
   dish.rotateX(Math.PI / 2);
-  parts.push(tag(dish, DISC));
+  parts.push(tag(dish, disc));
   for (let i = 0; i < style.spokes; i++) {
     const spoke = new THREE.BoxGeometry(style.spokeWidth, 0.42, width + 0.9);
     spoke.translate(0, 0.36, 0);

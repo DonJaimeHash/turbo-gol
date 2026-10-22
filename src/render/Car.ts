@@ -19,7 +19,7 @@
  * visible at low detail, see TierSpec.detail). Materials: ONE MeshPhysicalNodeMaterial shared by
  * all cars and wheels of a tier (surface properties live in vertex attributes: `color` = linear
  * base colour, `aMat` = (metalness, roughness, emissive, kind), see CAR_KIND; the body's livery in
- * four per-object uniforms, see liveryUniforms) plus one additive flame material and one blob
+ * five per-object uniforms, see liveryUniforms) plus one additive flame material and one blob
  * material per car. Every body draws with the same material, mesh types and vertex layout: a
  * body is geometry and uniform values only, never a draw call or a pipeline.
  *
@@ -82,14 +82,12 @@ import {
 } from '../sim/types';
 import { simRotMatToQuat, simVecLerpFromBuf } from './coords';
 import {
-  BRAND_LIME,
   OpaqueAlbedoPhysicalMaterial,
   SHARED_INSTANCING_CAPACITY,
   bumpNormal,
   cellHash3,
   glowMrt,
   lineMask,
-  linearVec3,
   noGlowMrt,
   resolvedFade,
   thinLineMask,
@@ -119,10 +117,12 @@ import {
   assertUnitNormals,
   clamp,
   mergeParts,
+  resolveWheels,
+  type AxleWheels,
   type CarKind,
 } from './cars/kit';
 import type { CarBodySpec, CarDetail, LiverySpec, WheelStyle } from './cars/types';
-import { buildWheel, tyreRadius } from './cars/wheels';
+import { buildWheel } from './cars/wheels';
 
 // The shared car constants live with the body kit; these names stay importable from here.
 export { BOOST_NOZZLE_X, BOOST_NOZZLE_Y, BOOST_NOZZLE_Z, CAR_KIND, TEAM_GLOW, TEAM_PAINT, type CarKind } from './cars/kit';
@@ -353,27 +353,32 @@ function flakes(q: Vec3Node): { tilt: Vec3Node; res: FloatNode } {
 }
 
 /**
- * A body's livery (LiverySpec, car-local uu) as the four vec4s bodySurface reads:
+ * A body's livery (LiverySpec, car-local uu) as the five vec4s bodySurface reads:
  *   [0] two-tone y, pinstripe half width, seam x (bonnet), seam x (deck lid)
  *   [1] chevrons x0, x1, half width, period along x
  *   [2] seam max |z|, grime y0 (clean above), grime y1 (dirty below), grime amount
  *   [3] ao y0 (darkest below), ao y1 (open above), heat-tint x (exit plane), heat-tint length
+ *   [4] accent (the pinstripe) linear r, g, b, chevron tint (0 white .. 1 the accent)
  * A feature that is off gets numbers that zero its mask: the two-tone line far below the car,
  * chevrons with x0 > x1, seams with a negative |z| limit, a zero pinstripe (masked by step()).
  */
-export type PackedLivery = readonly [THREE.Vector4, THREE.Vector4, THREE.Vector4, THREE.Vector4];
+export type PackedLivery = readonly [THREE.Vector4, THREE.Vector4, THREE.Vector4, THREE.Vector4, THREE.Vector4];
 
 /** Far below any body (uu): a two-tone line here leaves the whole body painted. */
 const LIVERY_OFF_Y = -1e4;
 
+const _accent = new THREE.Color();
+
 export function packLivery(l: LiverySpec): PackedLivery {
   const ch = l.chevrons;
   const se = l.seams;
+  _accent.setHex(l.accent); // sRGB hex -> linear, as linearVec3 and tag() convert
   return [
     new THREE.Vector4(l.twoToneY ?? LIVERY_OFF_Y, l.pinstripe, se !== null ? se.x[0] : 0, se !== null ? se.x[1] : 0),
     ch !== null ? new THREE.Vector4(ch.x0, ch.x1, ch.halfWidth, ch.period) : new THREE.Vector4(1e4, -1e4, -1, 1),
     new THREE.Vector4(se !== null ? se.maxZ : -1, l.grime.y0, l.grime.y1, l.grime.amount),
     new THREE.Vector4(l.ao.y0, l.ao.y1, l.heat.x, l.heat.length),
+    new THREE.Vector4(_accent.r, _accent.g, _accent.b, clamp(l.chevronTint, 0, 1)),
   ];
 }
 
@@ -397,14 +402,14 @@ interface LiveryHolder {
 type LiveryUniform = THREE.UniformNode<'vec4', THREE.Vector4>;
 
 /**
- * The livery as four uniforms of the object group (three's default for `uniform`), refreshed per
+ * The livery as five uniforms of the object group (three's default for `uniform`), refreshed per
  * drawn object (onObjectUpdate) from the body mesh's `userData.carLivery`, the default body's
  * livery for any other object. Why uniforms of the object group: the cars of every body keep ONE
  * material and so one node build, one shader and one pipeline per tier variant (three caches the
  * build by material and geometry layout, NodeManager.getForRender, never by uniform values);
  * the object group already holds each draw's own matrices in a uniform buffer of its own
  * (NodeBuilderState.createBindings clones the non-shared groups per render object), so the
- * livery is 64 more bytes in a buffer every body draw already binds and updates (the material
+ * livery is 80 more bytes in a buffer every body draw already binds and updates (the material
  * has nodes: NodeMaterialObserver refreshes it on every draw). No bind group, varying or texture
  * is added on WebGPU or WebGL2. The shadow pipelines never see it: it only reaches outputs the
  * depth pass does not build (albedoNode, not colorNode). Alternatives weighed: compiled constants
@@ -412,17 +417,17 @@ type LiveryUniform = THREE.UniformNode<'vec4', THREE.Vector4>;
  * new geometry layout, and a vec4 more per vertex on every body), a uniform array indexed by a
  * body id (the same per-object refresh, plus an index to carry).
  */
-function liveryUniforms(): readonly [LiveryUniform, LiveryUniform, LiveryUniform, LiveryUniform] {
+function liveryUniforms(): readonly [LiveryUniform, LiveryUniform, LiveryUniform, LiveryUniform, LiveryUniform] {
   const fallback = liveryOf(DEFAULT_BODY);
-  const slot = (i: 0 | 1 | 2 | 3): LiveryUniform =>
+  const slot = (i: 0 | 1 | 2 | 3 | 4): LiveryUniform =>
     uniform(fallback[i].clone()).onObjectUpdate(({ object }) => ((object?.userData as LiveryHolder | undefined)?.carLivery ?? fallback)[i]);
-  return [slot(0), slot(1), slot(2), slot(3)];
+  return [slot(0), slot(1), slot(2), slot(3), slot(4)];
 }
 
 /**
  * The body (pod, side pods, arches, canopy, cage, lamps, engine cover, thrusters), car-local uu:
  * metallic-flake team paint under a deep clearcoat with the drawn body's livery (LiverySpec: gloss
- * carbon below the two-tone line, lime pinstripe, white nose chevrons, two panel seams), carbon
+ * carbon below the two-tone line, an accent pinstripe, nose chevrons, two panel seams), carbon
  * twill, dark tinted glass, a satin alloy cage, heat-tinted thruster housings, HDR lamps and grime
  * low down.
  */
@@ -441,16 +446,17 @@ function bodySurface(v: CarMaterialVariant): CarSurface {
   const coarse: FloatNode = v.fine ? valueNoise3(p.mul(0.085)) : zero;
   const grain: FloatNode = v.fine ? valueNoise3(p.mul(0.9)) : zero;
 
-  // Livery on team paint, the drawn body's (packLivery's four uniforms): two-tone line, pinstripe,
+  // Livery on team paint, the drawn body's (packLivery's five uniforms): two-tone line, pinstripe,
   // nose chevrons.
-  const [liv0, liv1, liv2, liv3] = liveryUniforms();
+  const [liv0, liv1, liv2, liv3, liv4] = liveryUniforms();
   const za = p.z.abs();
   const onNose = step(liv1.x, p.x).mul(step(p.x, liv1.y)).mul(step(za, liv1.z)).mul(step(0.35, nG.y));
   const chevron = step(fract(p.x.add(za.mul(0.9)).div(liv1.w)), 0.36).mul(onNose).mul(kPaint);
   const lower = step(p.y, liv0.x).mul(kPaint);
   const upper = kPaint.sub(lower);
   const pin = lineMask(p.y.sub(liv0.x), liv0.y).mul(step(1e-3, liv0.y)).mul(kPaint); // no stripe at width 0
-  const lime = linearVec3(BRAND_LIME);
+  const accent = liv4.xyz; // the dune runner's: the brand lime
+  const chevronCol = mix(vec3(0.88, 0.89, 0.91), accent, liv4.w);
   // Panel seams: thin grooves across the top of the paint (the dune runner's bonnet and deck lid).
   const onTop = smoothstep(0.25, 0.55, nG.y).mul(step(za, liv2.x)).mul(upper);
   const seam = max(thinLineMask(p.x.sub(liv0.z), SEAM_HALF_W), thinLineMask(p.x.sub(liv0.w), SEAM_HALF_W)).mul(onTop);
@@ -478,7 +484,7 @@ function bodySurface(v: CarMaterialVariant): CarSurface {
 
   // Colour. Paint face / flop: the pigment reads brighter facing the viewer, deeper at grazing.
   const flop = mix(float(0.86), float(1.04), ndv.pow(0.6));
-  const livery = mix(mix(mix(base.mul(flop), carbonCol, lower), vec3(0.88, 0.89, 0.91), chevron.mul(0.92)), lime, pin).mul(seam.mul(0.8).oneMinus());
+  const livery = mix(mix(mix(base.mul(flop), carbonCol, lower), chevronCol, chevron.mul(0.92)), accent, pin).mul(seam.mul(0.8).oneMinus());
   let albedo: Vec3Node = mix(base, livery, kPaint);
   albedo = mix(albedo, carbonCol, kCarbon);
   albedo = mix(albedo, base.mul(heatTint), kExhaust);
@@ -502,7 +508,7 @@ function bodySurface(v: CarMaterialVariant): CarSurface {
   const lens = ndv.mul(ndv).mul(0.55).add(0.45);
   const lamps = base.mul(glow).mul(mix(float(1.0), lens.mul(v.lampGain), kLamp));
   const rimLift = ndv.oneMinus().pow(3.0).mul(RIM_LIFT).mul(kPaint).mul(grime.oneMinus());
-  const emissive = lamps.add(lime.mul(pin.mul(0.35))).add(mix(albedo, vec3(1.0, 1.0, 1.0), 0.5).mul(rimLift));
+  const emissive = lamps.add(accent.mul(pin.mul(0.35))).add(mix(albedo, vec3(1.0, 1.0, 1.0), 0.5).mul(rimLift));
 
   let normal: Vec3Node | null = null;
   let coatNormal: Vec3Node | null = null;
@@ -874,9 +880,8 @@ export class CarView {
    * vanish). The body and the other tiers' wheels have no node attributes and share safely.
    */
   private readonly ownWheels: Map<string, THREE.BufferGeometry> | null;
-  /** The body's wheels: visual radius over the physics radius, outer tyre radius (unit wheel). */
-  private wheelVisual = 1;
-  private tyreR = 1;
+  /** The body's wheels per axle (front, back): kit.ts resolveWheels of its WheelPlacement. */
+  private axles: readonly [AxleWheels, AxleWheels];
   private readonly body: THREE.Mesh;
   private readonly wheels: THREE.InstancedMesh;
   private readonly flame: THREE.Mesh;
@@ -929,7 +934,7 @@ export class CarView {
     this.body.receiveShadow = true;
     this.root.add(this.body);
 
-    this.placeWheelsFor(bodySpec);
+    this.axles = this.placeWheelsFor(bodySpec);
     this.ownWheels = spec.cheapMaterials ? new Map() : null;
     // Cheap tiers: an instance buffer past the uniform-buffer limit, so every car's wheels share
     // one program (materials.ts SHARED_INSTANCING_CAPACITY); 4 are drawn and uploaded.
@@ -1101,7 +1106,7 @@ export class CarView {
     (this.body.userData as LiveryHolder).carLivery = liveryOf(spec);
     this.bodySpec = spec;
     this.bodyKey = body.key;
-    this.placeWheelsFor(spec);
+    this.axles = this.placeWheelsFor(spec);
     releaseBodyGeometry(oldBody);
     if (oldWheel !== null) releaseWheelGeometry(oldWheel);
     return true;
@@ -1173,19 +1178,16 @@ export class CarView {
   }
 
   /**
-   * The body's wheel placement (WheelPlacement: instance-matrix values only): the track that puts
-   * the outer tyre face at `outer` (inside the hitbox), the visual radius and the tyre's outer
-   * radius (kept finite and positive: a NaN scale would hide the wheels).
+   * The body's wheel placement (WheelPlacement: instance-matrix values only), per axle, from the
+   * same kit.ts resolveWheels the body's BodyKit.wheels came from: the track that puts the outer
+   * tyre face at `outer` (inside the hitbox), the visual radius, the width and the tyre's outer
+   * radius (clamped to their ranges: a NaN scale would hide the wheels).
    */
-  private placeWheelsFor(spec: CarBodySpec): void {
-    const cfg = this.config;
-    const w = spec.wheels;
-    const wheelOuter = Math.min(w.outer, cfg.hitboxSize[1] * 0.5 - 2.5);
-    this.track[0] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - cfg.frontWheelOffset[1]);
-    this.track[1] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - cfg.backWheelOffset[1]);
-    this.wheelVisual = w.visual > 0 ? w.visual : 1;
-    const r = tyreRadius(w.style);
-    this.tyreR = r > 0 ? r : 1;
+  private placeWheelsFor(spec: CarBodySpec): readonly [AxleWheels, AxleWheels] {
+    const { front, back } = resolveWheels(this.config, spec.wheels);
+    this.track[0] = front.track;
+    this.track[1] = back.track;
+    return [front, back];
   }
 
   /**
@@ -1215,17 +1217,20 @@ export class CarView {
 
   /**
    * Instance matrix = T(hardpoint - suspension*up + visual lift/track) * Ry(-steer) * Rz(spin)
-   * * S(visualRadius, visualRadius, 1). The visual radius is the body's `wheels.visual` x the
+   * * S(visualRadius, visualRadius, width). The visual radius is the axle's `visual` x the
    * physics radius; the centre is lifted by the difference between the tyre's outer radius
-   * (visual radius x tyreR) and the physics radius, so the contact point stays on the floor.
+   * (visual radius x tyreR) and the physics radius, so the contact point stays on the floor. The
+   * width scales the unit wheel's z only (the tyre shader reads the unscaled geometry: its sipes
+   * and sidewall stay where it expects them; three's instance normal is the inverse transpose).
    */
   private composeWheel(i: number, hp: readonly [number, number, number], s: number, radius: number, steer: number, ang: number): void {
-    const rv = radius * this.wheelVisual;
+    const axle = this.axles[i < 2 ? 0 : 1];
+    const rv = radius * axle.visual;
     const track = this.track[i < 2 ? 0 : 1];
     _e.set(0, -steer, ang, 'XYZ');
     _q.setFromEuler(_e);
-    _v.set(hp[0], hp[2] - s + (rv * this.tyreR - radius), (i & 1) === 0 ? -(hp[1] + track) : hp[1] + track);
-    _s.set(rv, rv, 1);
+    _v.set(hp[0], hp[2] - s + (rv * axle.tyreR - radius), (i & 1) === 0 ? -(hp[1] + track) : hp[1] + track);
+    _s.set(rv, rv, axle.width);
     _m.compose(_v, _q, _s);
     this.wheels.setMatrixAt(i, _m);
   }
@@ -1254,7 +1259,8 @@ export class CarView {
       const s = clamp(sp + (sc - sp) * alpha, parked - SUSPENSION_CLAMP, Math.max(parked, rest) + 2);
 
       const steer = front ? cur[off + C_WHEEL_STEER + i] : 0;
-      let ang = this.spin[i] - (fwdSpeed * dt) / (radius * this.wheelVisual * this.tyreR); // rolls on its outer radius
+      const axle = this.axles[front ? 0 : 1];
+      let ang = this.spin[i] - (fwdSpeed * dt) / (radius * axle.visual * axle.tyreR); // rolls on its outer radius
       if (ang > TWO_PI || ang < -TWO_PI) ang %= TWO_PI;
       this.spin[i] = ang;
       this.composeWheel(i, hp, s, radius, steer, ang);

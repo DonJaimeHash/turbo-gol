@@ -11,7 +11,8 @@
  * order of two parts, needs new pins and a look at the car on every tier.
  */
 import * as THREE from 'three/webgpu';
-import { BOOST_NOZZLE_X, BOOST_NOZZLE_Y, BOOST_NOZZLE_Z, CAGE, CARBON, DISC, EXHAUST, HEADLIGHT, TAILLIGHT, TRIM, TWO_PI, section, tube, loft } from './kit';
+import { BRAND_LIME } from '../materials';
+import { BOOST_NOZZLE_X, CAGE, CARBON, DISC, EXHAUST, HEADLIGHT, TAILLIGHT, TRIM, TWO_PI, section, tube, loft } from './kit';
 import type { BodyKit, CarBodySpec } from './types';
 import { KNOBBY } from './wheels';
 
@@ -98,10 +99,9 @@ function build(k: BodyKit): void {
   k.box(CARBON, 9, 0.8, 14, -38.5, 9.2, 0);
 
   // Twin thrusters: housing, dark throat and a tail-light ring each, exiting at the boost nozzles.
-  const nx = -hl + 0.75; // nozzle exit plane
-  const ny = BOOST_NOZZLE_Y - k.oy;
+  const { x: nx, y: ny } = k.nozzle; // the exit plane and the nozzles' height
   for (const side of [-1, 1]) {
-    const z = side * BOOST_NOZZLE_Z;
+    const z = side * k.nozzle.z;
     const housing = new THREE.CylinderGeometry(4.2, 4.6, 7, hi ? 16 : 10, 1, false);
     housing.rotateZ(Math.PI / 2);
     housing.translate(nx + 3.5, ny, z);
@@ -131,13 +131,16 @@ export const DUNE: CarBodySpec = {
   id: 'dune',
   build,
   wheels: { style: KNOBBY, visual: WHEEL_VISUAL, outer: 39 },
-  // The livery the shared material always painted on this body (car-local uu).
+  // The livery the shared material always painted on this body (car-local uu: the build frame
+  // + (13.88, 20.76, 0), so the two-tone line is at -12.0 in build(), the chevrons at 24.1..54.1).
   livery: {
     twoToneY: 8.75,
     pinstripe: 0.45,
     chevrons: { x0: 38, x1: 68, halfWidth: 12, period: 11 },
     // The bonnet and the rear deck lid, across the top of the pod (not the side pods).
     seams: { x: [29, -31], maxZ: 18.5 },
+    accent: BRAND_LIME,
+    chevronTint: 0,
     grime: { y0: 10, y1: 3, amount: 0.55 },
     ao: { y0: 2, y1: 14 },
     // The thruster housings run 7 uu forward of the exit plane (the tint fades along them).
