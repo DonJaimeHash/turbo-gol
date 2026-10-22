@@ -758,7 +758,10 @@ export class Game implements P2PGameHooks {
     // `#diag`: the frame and CPU figures (frameStats.ts), and where to read the wasm memory.
     if (pageFlags().diag) {
       enableDiagStats();
-      diagSources.wasmBytes = () => this.sim.memoryBytes;
+      // Read through a cast, not a bridge getter: RocketSimBridge.ts ships in the community nodes'
+      // bundle, and any change to it needs a signed node release before a deploy.
+      const wasm = this.sim as unknown as { readonly memory: WebAssembly.Memory };
+      diagSources.wasmBytes = () => wasm.memory.buffer.byteLength;
     }
     this.info = opts.info ?? '';
 
