@@ -1,5 +1,8 @@
 import { defineConfig } from 'vite';
 
+/** The local Worker's port (`wrangler dev`): 8787, or TG_API_PORT to run a second checkout beside it. */
+const API_PORT = Number(process.env.TG_API_PORT) || 8787;
+
 export default defineConfig({
   base: './',
   server: {
@@ -12,15 +15,15 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
-    // Online mode (docs/online/PHASE1.md, PHASE2.md): the Worker runs under `wrangler dev` on 8787;
-    // the browser talks to the same origin and Vite forwards the control plane, the match sockets
-    // (/ws, phase 1), the P2P signaling sockets (/room, phase 2) and the lobby sockets (/lobby).
+    // Online mode (docs/online/PHASE1.md, PHASE2.md): the Worker runs under `wrangler dev` on 8787
+    // (API_PORT); the browser talks to the same origin and Vite forwards the control plane, the match
+    // sockets (/ws, phase 1), the P2P signaling sockets (/room, phase 2) and the lobby sockets (/lobby).
     proxy: {
-      '/api': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-      '/ws': { target: 'ws://127.0.0.1:8787', ws: true, changeOrigin: true },
-      '/room': { target: 'ws://127.0.0.1:8787', ws: true, changeOrigin: true },
+      '/api': { target: `http://127.0.0.1:${API_PORT}`, changeOrigin: true },
+      '/ws': { target: `ws://127.0.0.1:${API_PORT}`, ws: true, changeOrigin: true },
+      '/room': { target: `ws://127.0.0.1:${API_PORT}`, ws: true, changeOrigin: true },
       // Custom-match lobby sockets (LobbyDO).
-      '/lobby': { target: 'ws://127.0.0.1:8787', ws: true, changeOrigin: true },
+      '/lobby': { target: `ws://127.0.0.1:${API_PORT}`, ws: true, changeOrigin: true },
     },
   },
   preview: {
