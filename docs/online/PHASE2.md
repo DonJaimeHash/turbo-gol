@@ -380,3 +380,44 @@ Smokes contra el deploy en la misma versión: `server/test/smoke.mjs` PASSED (ho
 
 Pendiente de medir: dos máquinas en redes distintas (candidatos `srflx`/`relay`, RTT real entre
 ISPs argentinos, tasa de TURN). Con una sola PC sólo se ejercita el candidato `host`.
+
+## Experimental rules (protocol 5, 2026-10-21)
+
+A custom lobby whose signed-in host picked a physics preset (Settings > Experimental, design PR 4)
+plays a P2P room with those rules. What changed on the P2P path:
+
+- **Protocol 5** (`P2P_PROTOCOL_VERSION`, `ROOM_PROTOCOL`): `RoomWelcome.physics` (always present,
+  null = standard) and `{ type: 'ready', physicsFp }`. `PROTOCOL_VERSION` (phase 1) stays 3: the
+  golden stock trace is unchanged.
+- **The rules travel once** (lobby settings, `/custom`, RoomDO `/internal/create`, every welcome)
+  and are checked strictly at each step (`parseLobbyRules`); RoomClient refuses a welcome without
+  them or with rules it cannot read (`bad_physics`: the menu says reload).
+- **Applied before the cars**: `Game.applyP2PRoster` calls `createArena(TICK_RATE,
+  arenaMutators(physics))`, then `addCar` per slot, then `resetKickoff(seed)`. Both BotTeams plan
+  with `botPhysicsOf(physics.values)`. The same integers give the same f32 config on every peer.
+- **The ready fingerprint**: the state hash does not cover the config, so `ready` carries
+  `mutatorFingerprint(sim.getMutators())` and the room compares it with `physicsFingerprint(rules)`.
+  A mismatch (or no fingerprint with rules) gets `error physics_mismatch` and the socket closed with
+  4005: the slot is left (never a no-show), the others start with its car the team AI. A standard
+  room refuses a preset fingerprint too, and lets a ready without one through (headless tools).
+- **No fallback, no strikes**: a room with rules never hands over to a casual server match (the
+  mesh timing out, or everybody else gone before the start, fails back to the lobby), never names a
+  no-show, and the matchmaker marks its locks so a strike cannot be counted for it either.
+
+Verified (2026-10-21, wrangler dev + Vite on this machine, two built-in browser tabs on different
+loopback origins, so two accounts, frames driven by a timer because the pane was hidden):
+
+| Step | Result |
+|---|---|
+| Host (switch on) | the rules row lists Standard, the built-ins and a user preset; Server hides and clears it; EDIT PRESETS opens Settings > Experimental and comes back with the draft |
+| Lobby list | `EXP` for a signed-in player, `🔒 EXP` for a guest, the rules in the tooltip; a guest's click says "Experimental lobby: sign in to join" |
+| Members | the line "Experimental rules: Moon ball · Gravity 40% · Ball weight 70% · Ball bounce 130% · Jump power 120%" before the start |
+| A stale page (served the protocol-4 RoomClient by mistake) | its ready had no fingerprint: `physics_mismatch`, it went back to its lobby |
+| Match, 2v2 with two bots, 3 min | both arenas `88e70a4e` (gravity -260, bounce 0.78), bots planning with gravity -260, both readies with that fingerprint, 533 / 722 hash votes agreed and 0 disagreed, 0 resyncs, final whistle 1-0 on both |
+| Afterwards | both back in the lobby (open), arenas stock again (`7318f74a`), no rating, no ban, no abandons, leaderboard empty |
+| The same lobby back on Standard | welcome without rules, readies with the stock fingerprint, hashes agree, the match plays as before |
+
+Tests: `server/test/room.test.mjs` (the room and the matchmaker), `server/test/nodeMatchmaker.test.mjs`,
+`server/test/experimental-lobby.test.mjs` (LobbyDO, the Worker, every standard-physics-only path),
+`tests/p2p-session.test.mjs` (the client, and two sessions on the real engine + wasm + bots under a
+preset), `server/test/smoke-accounts.mjs` (an experimental lobby against wrangler dev).

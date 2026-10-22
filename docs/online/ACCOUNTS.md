@@ -105,6 +105,20 @@ vez desde el Perfil.
   bots. P2P necesita 2 humanos o más; uno solo juega en servidor. No suman ni restan rango.
 - **Vuelta:** al terminar el partido volvés a la sala. Se reabre cuando vuelven todos, o a los
   40 min.
+- **Reglas experimentales** (Ajustes > Experimental, solo cuentas con el interruptor activado):
+  el anfitrión de una sala P2P elige Estándar, un preset incluido o uno propio. Es una copia del
+  preset (`LobbySettings.physics`), validada estrictamente en el Worker, `LobbyDO`, el matchmaker,
+  `RoomDO` y el cliente.
+  - Solo entran jugadores con cuenta: un invitado no puede crearla ni unirse (403
+    `account_required`), y no se pueden activar reglas con un invitado en la sala
+    (`guests_present`). La lista la marca EXP (con candado para los invitados).
+  - Solo P2P con al menos 2 humanos (`experimental_p2p_only`): nunca un `MatchDO`, nunca un nodo y
+    sin pasar a un partido en servidor si la malla falla (se vuelve a la sala).
+  - No cuenta para nada: sin rango, sin estadísticas, sin récords y sin castigos por no
+    presentarse. Las colas casual y ranked, `MatchDO`, los nodos y los reportes a `AccountsDO`
+    rechazan cualquier cuerpo con reglas (`experimental_lobby_only`).
+  - Cada cliente arma la arena con las reglas antes de los autos y manda en `ready` la huella de lo
+    que el wasm aplicó; la sala rechaza otra (`physics_mismatch`) y ese auto pasa a la IA.
 
 ## Costo
 

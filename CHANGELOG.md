@@ -7,6 +7,17 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Experimental rules in custom lobbies, for signed-in players with Settings > Experimental on: the
+  host of a P2P lobby picks Standard, a built-in preset (Low gravity, Fast ball, Bouncy, Arcade)
+  or one of their own in "Rules (experimental)", with a button to edit the presets. The lobby list
+  tags such a lobby EXP (with a lock for guests, who cannot join it) and every member sees the
+  rules before the match ("Experimental rules: Low gravity · Gravity 50% · Air drag (ball) 50%").
+  Every player's game applies the same rules (the bots too) and the server checks that it did
+  before the match starts; a player whose game runs other physics is told to reload and the bots
+  take over that car. These matches count for nothing: no rank, no stats, no records, no penalty
+  for not showing up, never on a community node and never moved to a server match. Casual,
+  Competitive, server and node matches keep the standard physics, bit for bit. Pages from before
+  this version are asked to reload (P2P protocol 5).
 - The physics core of the experimental presets (nothing visible yet: no menu offers them, and
   every match, server, community node and training pack still runs the standard physics). The
   physics library can now run a match with other gravity, ball speed, hit strength, ball weight,

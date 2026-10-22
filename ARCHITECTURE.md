@@ -281,8 +281,10 @@ src/game/
                         copy, guest records move into the first account)
   physicsRules.ts       experimental physics, the only table: integer values (grid, groups, free-
                         play only keys), strict / lenient parsers, built-in presets, stored presets,
-                        the rules snapshot, automatic names (shared with server/; the physics core
-                        maps the integers to the wasm and the bots, src/sim/mutators.ts)
+                        the rules snapshot and parseLobbyRules (what a lobby, the matchmaker, a room
+                        and a welcome keep: strict, a snapshot that changes nothing is standard),
+                        automatic names (shared with server/; the physics core maps the integers to
+                        the wasm and the bots, src/sim/mutators.ts)
   experimentalStore.ts  an account's Settings > Experimental switch and presets: a local copy per
                         account (read at boot: unlockedAtBoot), debounced pushes to /api/me/presets,
                         offline edits kept dirty, deletes need the server; nothing for a guest
@@ -299,8 +301,13 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
+  rulesText.ts          experimental rules as the menus write them: a value (% of standard, km/h
+                        like the HUD, on / off, the demolition option, seconds), the changes of a
+                        set of values, a lobby's rules line
   screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
-                        browser / create / lobby (custom.ts), training, profile (sign in / up /
+                        browser / create / lobby (custom.ts: the host's experimental rules row for
+                        unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
+                        rules line before the match), training, profile (sign in / up /
                         recover, account actions), leaderboard + ranked result dialog
 src/net/
   protocol.ts           wire protocol shared with server/ (DONE): one binary frame per message,
@@ -330,7 +337,8 @@ src/net/
   LobbyClient.ts        custom lobbies: list / create / join by code, the lobby socket (state,
                         match result per member, back, kick, settings)
   p2p/                  phase 2: peer-to-peer deterministic rollback (docs/online/PHASE2.md)
-    protocol.ts         (DONE) signaling JSON (RoomWelcome, signal relay, ready, start, drop,
+    protocol.ts         signaling JSON (RoomWelcome with the room's physics, signal relay, ready
+                        with the arena's physicsFp, start, drop,
                         unreachable, hashReport) + binary mesh packets (Input batches with
                         ackTick / myTick, Hash, StateRequest / StateResponse), QueueResultP2p
     InputStore.ts       per-slot 256-tick ring of packed inputs keyed by tick (the "known" map)
@@ -347,7 +355,10 @@ src/net/
                         dead, one ICE restart first), getStats 1 Hz (host / srflx / relay, RTT),
                         assembleGamePacket; fake connections in node tests
     P2PSession.ts       the P2P match inside the frame loop: quickMatch (or joinAssigned: a
-                        custom lobby's room) -> room -> mesh ->
+                        custom lobby's room; with experimental rules the arena and both BotTeams
+                        follow RoomWelcome.physics, 'ready' carries the fingerprint the wasm reads
+                        back, and there is no server fallback: a failure goes back to the lobby)
+                        -> room -> mesh ->
                         ready -> start -> wall-clock ticks (canAdvance: stall hint / timesync
                         skip), engine hooks (seeded BotTeams + Match on the confirmed timeline
                         only, goals from the ball-scored flag, kickoff seeds seed + n), input
@@ -358,39 +369,48 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         /api/leave, /api/ice (STUN + optional TURN credentials), /ws/:matchId and
                         /room/:roomId (one gate: ticket verified at the edge, role 'player' /
                         'peer', claims forwarded in headers; Origin checked against VITE_ORIGINS,
-                        loopback page origins accepted while the Worker runs on a loopback host)
+                        loopback page origins accepted while the Worker runs on a loopback host);
+                        /api/lobbies (experimental rules from an account session only); the queues
+                        never take rules (400 experimental_lobby_only)
   src/auth.ts           HS256 JWT on WebCrypto: sessions, tickets (jti), internal header
   src/MatchmakerDO.ts   one per region (chosen in the menu or the continent): a waiter sits in
                         the queue of every playlist it searches; 'ranked': MMR window growing
                         with the wait, balanced teams, never bots; /custom forms a lobby's
-                        match with fixed teams; /population for the menus;
+                        match with fixed teams (experimental rules: a P2P room with >= 2 humans
+                        only, its locks marked: no no-show strikes); /population for the menus;
                         queues per (mode, kind); 'server': bot fill after 10 s;
                         'p2p': a room at once with the mode's humans, after 15 s with >= 2 humans
                         + bots, a lone human -> a server match; rosters, seeds, tickets, locks
   src/RoomDO.ts         one per P2P room (Hibernation API, no simulation): RoomWelcome (seed,
-                        slots, ICE), signal relay, ready -> start { startAt: now + 1.5 s }, drop
-                        { slot, atTick: max(reported) + 60 } on a majority of 'unreachable'
-                        reports or a socket closed > 5 s, hashReport, locks released on close,
-                        cleanup 60 s empty / 20 min TTL
+                        slots, ICE, physics), signal relay, ready (its physicsFp must be the
+                        room rules' fingerprint, else physics_mismatch) -> start { startAt: now +
+                        1.5 s }, drop { slot, atTick: max(reported) + 60 } on a majority of
+                        'unreachable' reports or a socket closed > 5 s, hashReport, locks released
+                        on close, cleanup 60 s empty / 20 min TTL
   src/MatchDO.ts        one per match: sockets, RoomHost loop (setInterval 8 ms + accumulator),
                         snapshots every 4 ticks, events, TTL / shutdown; ranked: no start until
                         every player is ready (else cancelled at 45 s, no-shows penalised),
                         forfeit when a team quits / stays disconnected 60 s, result -> AccountsDO
   src/AccountsDO.ts     the one SQLite object for every account (accountStore.ts): users,
                         refresh tokens, ratings, ranked results / abandons / bans / locks, training
-                        records, the experimental switch and presets, login throttle, daily prune
+                        records, the experimental switch and presets, login throttle, daily prune;
+                        a report or record that carries experimental rules is refused
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
                         minute), leaderboard, ranked result; server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
-                        admit (password, kick list), start through the matchmaker's /custom
+                        admit (password, kick list), start through the matchmaker's /custom;
+                        experimental rules (P2P only, strict) only while every member is signed
+                        in: guests refused at create, admit, upgrade, settings and start
   src/LobbyDirectoryDO.ts  join codes -> lobby ids and the public list per region
   src/roomHost.ts       RoomHost: per-slot input rings (hold last, bufferHint), BotTeam for bot
                         slots, Match rules, rs_save_state snapshots (env-agnostic; fake-sim tests)
   src/wasm.ts           the shared rocketsim.wasm as a WebAssembly.Module in workerd
-  test/                 auth + RoomHost + room / matchmaker unit tests (node), smoke.mjs (phase 1
-                        end to end vs wrangler dev), smoke-p2p.mjs (phase 2 signaling end to end)
+  test/                 auth + RoomHost + room / matchmaker unit tests (node), experimental-lobby
+                        (the lobby gates and every standard-physics-only path), smoke.mjs (phase 1
+                        end to end vs wrangler dev), smoke-p2p.mjs (phase 2 signaling end to end),
+                        smoke-accounts.mjs (accounts, ranked, lobbies, an experimental lobby)
 docs/online/            PHASE1.md, PHASE2.md (the designs), DECISIONS.md (confirmed decisions),
                         MEASUREMENTS.md, ACCOUNTS.md (menus, accounts, ranked, lobbies, OAuth setup)
 src/audio/
@@ -418,7 +438,7 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         mapping, the hand-over), physics-rules (the table, its parsers, every grid
                         value inside the hard limits), mutators-wasm (every field's effect,
                         refusals, the predictor, determinism, top speed), mutators-extremes (60 s
-                        3v3 bots at the corners)
+                        3v3 bots at the corners), rules-text (the menus' rules lines)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
@@ -769,6 +789,19 @@ contiguous tick; a backlog longer than 16 goes out as several packets), a latenc
 estimate from each packet's `ackTick` / `myTick` throttles a peer that runs ahead (a timesync
 skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
 ("Verification").
+
+Experimental rules (P2P protocol 5): a custom lobby whose signed-in host picked a physics preset
+(`LobbySettings.physics`, a copy of it) passes it, checked strictly at every door (LobbyDO, the
+matchmaker's `/custom`, RoomDO, RoomClient: `parseLobbyRules`), to its RoomDO, whose welcome
+carries it to every socket. Each peer creates its arena with `arenaMutators(physics)` before any
+car and plans both BotTeams with `botPhysicsOf`; the integers are the same everywhere, so the f32
+config is too. The state hash does not cover that config, so `ready` carries the fingerprint of
+the mutators the wasm reads back and the room refuses another one (`physics_mismatch`: the socket
+is closed, the others play on with the team AI in that slot). Only signed-in players play such a
+room (guests are refused by the Worker and LobbyDO), it never falls back to a server match, and it
+counts for nothing: the casual and ranked queues, MatchDO, community nodes and every report to
+AccountsDO refuse a body that carries rules, and the room never names a no-show (its matchmaker
+locks are marked too). Every other match runs the standard physics, bit for bit.
 
 ## Rendering budget (measured)
 
