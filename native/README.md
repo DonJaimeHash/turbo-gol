@@ -250,7 +250,19 @@ roomHost, community nodes, ranked, casual, training packs) passes nothing and ge
   (`tests/mutators-wasm.test.mjs`).
 * **Cost**: nothing per tick (RocketSim reads these fields every tick anyway; patch 3 replaces a
   constant with a field read). The call itself takes microseconds, a ball rebuild microseconds, and
-  the bridge's existing predictor warm-up is the only prediction.
+  the bridge's existing predictor warm-up is the only prediction. `node scripts/bot-bench.mjs
+  --preset=builtins,extremes` plays the same seeded 3v3 bot matches on stock and on each preset and
+  compares the step, the bots' think(), a ball prediction refresh (`--predEvery=1`: every tick, as
+  P2P) and the whole tick; it fails when a refresh costs like a full prediction (a predictor that
+  lost the config) or the state goes non-finite. On the 16-thread desktop no preset costs more per
+  tick than stock (3v3, prediction every 4 ticks: stock 81 µs, the built-ins and both corners
+  65-75 µs; the step itself 21-23 µs on all of them). Numbers per preset: `docs/experimental.md`.
+* **Release.** The wasm, the bridge and the bots' physics profile are node-bundled: a wasm change
+  changes `CLIENT_BUILD.wasmSha256` (`server/src/nodeApi.ts`, `tests/wasm-hash.test.mjs`) and needs
+  a signed community-node release before `npm run deploy` (the steps: `docs/experimental.md`,
+  "Deploying this feature"). Changing a range in `src/game/physicsRules.ts` needs neither a rebuild
+  nor a node release as long as it stays inside the hard limits (`tests/physics-rules.test.mjs`
+  checks every grid value against them).
 * **Not in the state.** The config is not in the `rs_save_state` blob or `rs_state_hash`: it is
   constant for the arena's life (other rules mean a new arena), so peers compare
   `mutatorFingerprint(getMutators())` once, before tick 0. `rs_arena_destroy` drops it with the
@@ -392,6 +404,16 @@ slot compaction on `removeCar`, and arena re-creation. It uses `src/sim/arenaMes
 present and falls back to a minimal two-goal mesh otherwise. Node strips TypeScript types natively
 but does not add file extensions to bare relative imports, so the test registers a small
 `node:module` resolve hook that maps `./x` to `./x.ts`.
+
+`tests/mutators-wasm.test.mjs` covers `rs_set_mutators` / `rs_get_mutators`: a fresh arena reads
+back `STOCK_MUTATORS`, every field's effect, every refusal (count, version, NaN / Inf, each hard
+limit, ball mass after a car) with nothing changed, the predictor matching the stepped ball bit for
+bit under a preset, save / load under a preset, two instances giving the same hashes, and the car
+top speed with its supersonic thresholds. `tests/mutators-extremes.test.mjs` plays 60 s 3v3 bot
+matches at the corners of the table (finite state, nothing outside the field or a goal chamber,
+about stock's cost) and shots at the ball's top speed into posts, nets and corners.
+`tests/stock-trace.test.mjs` replays the golden traces recorded with the wasm from before the
+mutators: the stock physics did not change by one bit.
 
 `tests/sim-state.test.mjs` covers the save / load API: round trips (save, play on, load, replay
 the same inputs: identical hash and state buffer; random and ball-chasing inputs, 1v1 and 3v3,

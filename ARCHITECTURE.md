@@ -433,6 +433,9 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         smoke-accounts.mjs (accounts, ranked, lobbies, an experimental lobby)
 docs/online/            PHASE1.md, PHASE2.md (the designs), DECISIONS.md (confirmed decisions),
                         MEASUREMENTS.md, ACCOUNTS.md (menus, accounts, ranked, lobbies, OAuth setup)
+docs/experimental.md    Settings > Experimental for players (turning it on, presets, every value
+                        with its range, lobbies, what never counts) and for developers (the cost
+                        bench, where the code is, what deploying it needs)
 src/audio/
   Audio.ts              synthesized engine/boost/impact/goal sounds driven by sim events
 src/main.ts             boot behind the loading screen: wasm load ‖ renderer init + the world's
@@ -469,7 +472,11 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
                         fails on a > 10 s dead ball or an own-goal streak), stock-trace.mjs (the
-                        golden stock trace runs; --write re-records them for a deliberate change)
+                        golden stock trace runs; --write re-records them for a deliberate change),
+                        bot-bench.mjs (this tree's bots against a git revision's; --preset plays
+                        the same seeded matches on stock and experimental physics and compares the
+                        step, think(), ball prediction and whole-tick cost, failing when a preset
+                        breaks the state or the predictor), bot-skills.mjs (bot scenarios)
 ```
 
 ### Bloom / glow contract (src/render/materials.ts)

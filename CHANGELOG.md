@@ -11,21 +11,25 @@ All notable changes to Turbogol are documented here. The format follows
   host of a P2P lobby picks Standard, a built-in preset (Low gravity, Fast ball, Bouncy, Arcade)
   or one of their own in "Rules (experimental)", with a button to edit the presets. The lobby list
   tags such a lobby EXP (with a lock for guests, who cannot join it) and every member sees the
-  rules before the match ("Experimental rules: Low gravity · Gravity 50% · Air drag (ball) 50%").
+  rules before the match ("Experimental rules: Low gravity · Gravity 50% · Air drag (ball) 50%"),
+  and during it in Settings > Experimental, in place of the editor.
   Every player's game applies the same rules (the bots too) and the server checks that it did
   before the match starts; a player whose game runs other physics is told to reload and the bots
   take over that car. These matches count for nothing: no rank, no stats, no records, no penalty
   for not showing up, never on a community node and never moved to a server match. Casual,
   Competitive, server and node matches keep the standard physics, bit for bit. Pages from before
   this version are asked to reload (P2P protocol 5).
-- The physics core of the experimental presets (nothing visible yet: no menu offers them, and
-  every match, server, community node and training pack still runs the standard physics). The
-  physics library can now run a match with other gravity, ball speed, hit strength, ball weight,
-  bounce and air drag, car top speed, boost power and use, kickoff boost, jump power, unlimited
-  flips or double jumps, bump strength, demolitions and respawn time, every value on a fixed grid
-  and checked against hard limits so the game cannot break. It costs nothing per tick, the ball
-  prediction and the bots follow the rules, and a recorded trace proves the standard physics did
-  not change by a single bit.
+- The physics core of the experimental presets: the physics library can run a match with other
+  gravity, ball speed, hit strength, ball weight, bounce and air drag, car top speed, boost power
+  and use, kickoff boost, jump power, unlimited flips or double jumps, bump strength, demolitions
+  and respawn time, every value on a fixed grid and checked against hard limits so the game cannot
+  break. It costs nothing per tick (`node scripts/bot-bench.mjs --preset=<id>` compares any preset
+  with the standard physics), the ball prediction and the bots follow the rules, and a recorded
+  trace proves the standard physics did not change by a single bit. Every match, server, community
+  node and training pack still runs the standard physics.
+- `docs/experimental.md`: what Settings > Experimental unlocks, every physics value with its range,
+  why experimental matches count for nothing, how to measure what a preset costs, and what
+  deploying it needs.
 - A fourth graphics quality, Super low ("Súper bajo"), for TVs, set-top boxes and very old
   devices: about 640x360 upscaled by the screen, 30 frames per second, no edge smoothing, a
   simple sky instead of the harbour, canyon or valley behind the stadium, a painted crowd, simpler

@@ -24,6 +24,10 @@ con código: no se descarga ningún asset.
 - **Cuentas y competitivo**: usuario y contraseña (Google / Discord opcionales). Competitivo da un
   rating por playlist, con partidas de clasificación, rangos, ranking y penalización por abandono.
   Los invitados pueden jugar todo menos competitivo.
+- **Funciones experimentales** (jugadores con cuenta, Configuración > Experimental): la calidad
+  gráfica Súper bajo y presets de física (gravedad, velocidad de la pelota y del auto, boost,
+  saltos, choques...) para la práctica libre y las salas P2P. Nunca cuentan para el rango ni las
+  estadísticas ([docs/experimental.md](docs/experimental.md), en inglés).
 - **Controles**: teclado + mouse y control a la vez, todo reasignable.
 
 ## Probarlo
