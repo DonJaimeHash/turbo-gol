@@ -361,6 +361,11 @@ src/net/
                         password rules, clientPasswordKey (PBKDF2 in the browser), regions
   rating.ts             Weng-Lin (OpenSkill) Bradley-Terry team rating, abandon rules, tiers,
                         placement, MMR scale, abandon ban ladder (shared with server/)
+  cosmetics.ts          the cars online (never in the nodes' bundle): a seat's car on the wire as
+                        extensions of the bundled types (CosmeticWelcome roster, MatchedCars by
+                        slot for node matches; RoomSlot.car is in p2p/protocol.ts), absent = the
+                        default car; the inventory and hosts' shop answers (ItemsAnswer, ShopAnswer,
+                        ClaimAnswer) shared with server/
   AccountClient.ts      sign in / up / recover / OAuth redirects, 1 h Bearer refreshed from the
                         HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
                         the experimental switch and presets (each call for the account that made
@@ -427,11 +432,14 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
   src/AccountsDO.ts     the one SQLite object for every account (accountStore.ts): users,
                         refresh tokens, ratings, ranked results / abandons / bans / locks, training
                         records, the experimental switch and presets, login throttle, daily prune;
-                        a report or record that carries experimental rules is refused
+                        a report or record that carries experimental rules is refused; the hosts'
+                        shop (never pruned): credits from the node outbox, claims and grants (the
+                        inventory), freezes, the car each account drives (signed into its session)
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
-                        minute), leaderboard, ranked result; server-side PBKDF2 of the client key
+                        minute), /api/me/items, /api/me/car, /api/me/shop and its claim (account
+                        only), leaderboard, ranked result; server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
                         admit (password, kick list), start through the matchmaker's /custom;
                         experimental rules (P2P only, strict) only while every member is signed

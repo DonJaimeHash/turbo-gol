@@ -517,15 +517,18 @@ aviso.
 
 ### Puntos
 
-- [ ] **Guardar el ledger, los canjes y los inventarios antes de dar puntos.** Si no, cada deploy
-  borra lo ganado. Solo entonces se abren las rutas de la tienda. En la etapa 1 el ledger vive en
-  memoria, y alcanza porque los nodos del proyecto no ganan puntos.
-- [ ] **Decidir dónde viven los inventarios.** Los documentos no coinciden:
-  `control-plane/shop.ts:13` los pone en el almacenamiento de la cuenta, `INTEGRACION.md` §1 en el
-  SQLite del `NodeRegistryDO`, y la etapa 3 de este documento en una tabla de `AccountsDO`.
-- [ ] **Rutas de mantenedor para la tienda:** descongelar los canjes de un operador, levantar la
-  suspensión de su nodo y editar el catálogo. Desde esta etapa, una verificación fallida suspende
-  la PC de un amigo y congela sus canjes.
+- [x] **Guardar el ledger, los canjes y los inventarios antes de dar puntos.** El ledger en el
+  SQLite del `NodeRegistryDO` (`server/src/nodeStore.ts`: asientos, totales y notas, leídos al
+  arrancar); los créditos, canjes, congelamientos e inventarios en `AccountsDO`
+  (`server/src/accountStore.ts`), que recibe los puntos por la bandeja (`/host-credit`). Nada de
+  eso se poda.
+- [x] **Decidir dónde viven los inventarios.** En `AccountsDO` (la opción A del plan de autos): la
+  cuenta del operador ya es la del jugador, un canje es una transacción en un solo objeto y los
+  forks sin nodos tienen inventario igual.
+- [x] **Rutas de mantenedor para la tienda:** `POST /nodes/admin/unfreeze { account }`, y
+  `grant` / `revoke { account, item }` para dar o sacar un ítem (un `ALERT` cada una). La
+  suspensión del nodo se levanta con `/nodes/admin/status`; el catálogo es código. Desde esta
+  etapa, una verificación fallida suspende la PC de un amigo y congela sus canjes.
 - [ ] **La insignia de Anfitrión.** Está disponible en el catálogo (`RECOMPENSAS.md`), así que los
   amigos la van a canjear en esta etapa. El juego tiene que mostrarla en el perfil, y el nombre del
   anfitrión en la pantalla de carga, con `GET /api/me/items`. Si no, dejarla como "próximamente".
@@ -606,13 +609,14 @@ aviso.
 
 - [ ] **El auto:** un segundo modelo, solo estético, con el mismo hitbox, para que el wasm y el
   verificador no cambien. Precio decidido: 1.500 puntos.
-- [ ] **El inventario:** `GET /api/me/items` con una tabla en `AccountsDO` (hoy no existe). Si la
-  insignia ya lo trajo en la etapa 2, se reutiliza.
-- [ ] **El protocolo:** un campo estético en el roster, que sube `PROTOCOL_VERSION` y por lo tanto
-  exige una release nueva del nodo. El mismo campo va en el roster de las salas P2P, que sube
-  `P2P_PROTOCOL_VERSION` (`src/net/p2p/protocol.ts:34`): si no, el auto no se ve en el casual por
-  defecto.
-- [ ] **El servidor valida que la cuenta tenga el ítem,** y el selector de autos lo ofrece.
+- [x] **El inventario:** `GET /api/me/items`, con las tablas de `AccountsDO`.
+- [x] **El protocolo:** no hace falta subir `PROTOCOL_VERSION` ni `P2P_PROTOCOL_VERSION`. El auto
+  viaja con el asiento, como el nombre (`src/net/cosmetics.ts`, fuera del bundle de los nodos): en
+  el roster del Welcome de `MatchDO`, en los slots de las salas P2P y, para un nodo, en `cars` del
+  resultado de la cola y del rejoin. La asignación que recibe el nodo no cambia ni un byte.
+- [x] **El servidor valida que la cuenta tenga el ítem:** `AccountsDO` firma en la sesión solo un
+  auto que la cuenta todavía tiene, y el matchmaker toma el auto de la sesión, nunca del cuerpo.
+  Falta el selector de autos en el juego.
 
 ### Operación
 

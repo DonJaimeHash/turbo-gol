@@ -57,17 +57,24 @@ Implementado en `control-plane/ledger.ts`, probado en `test/logic.test.mjs`.
 | **Inventario** | Lo que tiene cada cuenta. El juego lo consulta para desbloquear los ítems. |
 | **Congelamiento** | Si una partida de tus servidores falla la verificación, tus canjes quedan en pausa hasta que un mantenedor revise. |
 
-Catálogo inicial, en `control-plane/shop.ts`:
+Todo eso vive en la cuenta (`AccountsDO`, `server/src/accountStore.ts`): los puntos llegan desde el
+plano de control una vez por partida verificada, un canje es una sola transacción y canjear dos
+veces lo mismo no gasta dos veces. Un mantenedor puede dar un ítem sin costo (`/nodes/admin/grant`,
+para probar o para devolver lo que un error quitó), sacarlo (`revoke`, que devuelve lo gastado) y
+levantar un congelamiento (`unfreeze`); cada acción queda en el canal del equipo.
+
+Catálogo, en `control-plane/shop.ts`; los autos salen de `src/game/cosmetics.ts`, la misma tabla
+que lee el juego:
 
 | Ítem | Tipo | Precio | Estado |
 |---|---|---|---|
 | Anfitrión | Insignia en el perfil y tu nombre en la pantalla de carga de tus partidas | Gratis, con una partida verificada | Disponible |
-| Próximo auto | Auto | 1.500, decidido por el mantenedor | Próximamente, hasta que el juego tenga un segundo auto |
+| Pampero, Carpincho, Cóndor, Tero | Auto (solo la carrocería: el mismo hitbox y la misma física que el Dune, que es de todos) | 1.500 cada uno, decidido por el mantenedor | Próximamente, hasta que su carrocería esté hecha |
 | Próxima estela de boost | Estela | 600 | Próximamente |
 | Próxima explosión de gol | Explosión | 1.000 | Próximamente |
 
-Agregar un auto nuevo es agregar su entrada al catálogo cuando el juego pueda dibujarlo. Todo el
-arte del juego es procedural, así que producir variantes cuesta poco.
+Agregar un auto nuevo es agregarlo a `src/game/cosmetics.ts` con su carrocería: la tienda lo lista
+sola. Todo el arte del juego es procedural, así que producir variantes cuesta poco.
 
 ### Ejemplos de ritmo
 
