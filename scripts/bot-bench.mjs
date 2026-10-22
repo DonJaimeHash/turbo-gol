@@ -15,6 +15,25 @@
 // shots on target (a touch that sends the ball at the opponent's mouth, ballistic, within 3 s),
 // passes (a touch within 3 s of a teammate's), forward touches (% of touches leaving the ball moving
 // toward the opponent's goal at > 500 uu/s); plus the share of the match the ball spends above 500 uu.
+//
+// Experimental physics cost (docs/experimental.md): --preset=<id>[,<id>...] (or `--preset <id>`)
+// plays the same matches with stock physics and with each preset (src/game/physicsRules.ts), both
+// teams this tree's bots with the preset's physics profile, and compares what a tick costs:
+//   node scripts/bot-bench.mjs --preset=arcade [--modes=3v3] [--matches=4] [--seconds=120]
+//                              [--difficulty=hard] [--seed=1] [--predEvery=4] [--json=cost.json]
+//   <id>: a built-in (standard, lowGravity, fastBall, bouncy, arcade), `builtins` (the four that
+//   change something), `min` / `max` (every match key at its lowest / highest grid value),
+//   `extremes` (min and max), or one set of values as `gravity=50,ballDrag=50` or as JSON. The
+//   values go through the strict parser in the match context (game speed is free play only: it
+//   changes how many ticks run per second, not what a tick costs, so it is refused here).
+// Per mode and preset it prints the physics step per tick, think() per bot and tick, one ball
+// prediction refresh (incremental; the full one is measured once per match), the total per tick and
+// its change from stock, plus goals / touches / bumps / demolitions and the top ball and car speeds.
+// Stock and preset matches alternate with the same seeds, so CPU drift hits both alike.
+// --predEvery=1 refreshes the prediction every tick, as P2P does on confirmed ticks (the offline
+// game: 4; Super low: 8). A refresh that costs like a full 720-tick prediction means the predictor
+// is not running the preset's physics; that, or a non-finite state, prints "!!" and exits with 1.
+// Run it on the slowest device you care about (the Mali-G31 TV class) for numbers that matter.
 import { performance } from 'node:perf_hooks';
 import { writeFileSync } from 'node:fs';
 import { applyOverrides, arg, loadBots, loadSim, scoreSummary } from './bot-lib.mjs';
@@ -28,9 +47,11 @@ const seconds = Number(arg('seconds', '180'));
 const seed0 = Number(arg('seed', '1'));
 const jsonOut = arg('json', '');
 
+const presetArg = arg('preset', '');
 const A = await loadBots(null);
 applyOverrides(A, arg('tuneA', ''), arg('paramsA', ''));
-const B = await loadBots(baseline);
+// The cost bench needs no git revision: both teams are this tree's bots.
+const B = presetArg === '' ? await loadBots(baseline) : null;
 const { sim, C, T } = await loadSim();
 const { MODES, ARENA } = C;
 
@@ -149,6 +170,10 @@ function playMatch(mode, aIsBlue, seed) {
 }
 
 const fmt = (x) => x.toFixed(2).padStart(6);
+if (presetArg !== '') {
+  const failed = await presetBench(presetArg);
+  process.exit(failed ? 1 : 0);
+}
 const overrides = `${arg('tuneA', '') ? ' tuneA ' + arg('tuneA', '') : ''}${arg('paramsA', '') ? ' paramsA ' + arg('paramsA', '') : ''}`;
 console.log(`bot bench: A = ${A.label} (${diffA}) vs B = ${B.label} (${diffB}), ${matches} x ${seconds} s per mode${overrides}`);
 const summary = [];
@@ -184,4 +209,200 @@ console.log('\n' + summary.join('\n'));
 if (jsonOut) {
   writeFileSync(jsonOut, JSON.stringify(results, null, 2));
   console.log(`results written to ${jsonOut}`);
+}
+
+// ---- --preset: what experimental physics costs per tick, against stock -------------------------
+
+/** The presets `spec` names, as [{ id, values }] strictly parsed in the match context. Throws on anything else. */
+function presetList(spec, R) {
+  const matchFields = R.PHYSICS_FIELDS.filter((f) => f.scope === 'all');
+  const corner = (pick) => Object.fromEntries(matchFields.map((f) => [f.key, pick(R.fieldValues(f))]));
+  const corners = { min: () => corner((vals) => vals[0]), max: () => corner((vals) => vals.at(-1)) };
+  const check = (id, raw) => {
+    const values = R.parsePhysicsValues(raw, 'strict', 'match');
+    if (values === null) throw new Error(`--preset ${id}: not valid match rules (an unknown key, a value off the grid or out of range, or game speed)`);
+    return { id, values: R.canonicalValues(values, 'match') };
+  };
+  const t = spec.trim();
+  if (t.startsWith('{')) return [check('custom', JSON.parse(t))];
+  if (t.includes('=')) {
+    const raw = {};
+    for (const kv of t.split(',').filter(Boolean)) {
+      const [k, v] = kv.split('=');
+      raw[k.trim()] = Number(v);
+    }
+    return [check('custom', raw)];
+  }
+  const out = [];
+  for (const id of t.split(',').map((x) => x.trim()).filter(Boolean)) {
+    if (id === 'builtins') {
+      for (const p of R.BUILT_IN_PRESETS) if (!R.isStock(p.values, 'match')) out.push(check(p.id, p.values));
+    } else if (id === 'extremes') out.push(check('min', corners.min()), check('max', corners.max()));
+    else if (id in corners) out.push(check(id, corners[id]()));
+    else {
+      const p = R.BUILT_IN_PRESETS.find((b) => b.id === id);
+      if (p === undefined) throw new Error(`--preset: unknown preset '${id}' (built-ins: ${R.BUILT_IN_PRESETS.map((b) => b.id).join(', ')}; or builtins, min, max, extremes, key=value,...)`);
+      out.push(check(p.id, p.values));
+    }
+  }
+  if (out.length === 0) throw new Error('--preset: no preset given');
+  return out;
+}
+
+function emptyCost() {
+  return { matches: 0, ticks: 0, playTicks: 0, stepMs: 0, thinkMs: 0, botTicks: 0, predMs: 0, predCalls: 0, fullPredMs: 0, goals: 0, touches: 0, bumps: 0, demos: 0, maxBall: 0, maxCar: 0, nonFinite: 0 };
+}
+
+/** One bot match on stock physics (values null) or a preset's; adds its costs and counts to `acc`. */
+function costMatch(M, mode, values, seed, predEvery, acc) {
+  const perTeam = MODES[mode];
+  sim.createArena(T.TICK_RATE, values === null ? null : M.arenaMutators({ v: 1, values }));
+  sim.events.onGoal = sim.events.onBump = sim.events.onBallHit = undefined;
+  for (let i = 0; i < perTeam; i++) sim.addCar(T.Team.Blue, T.CarPreset.Standard);
+  for (let i = 0; i < perTeam; i++) sim.addCar(T.Team.Red, T.CarPreset.Standard);
+  let kickoffSeed = seed * 31;
+  sim.resetKickoff(kickoffSeed++);
+  sim.sync();
+  const slotBuf = new Int32Array(T.MAX_CARS);
+  const slotsOf = (team) => Array.from(slotBuf.subarray(0, sim.slotsOfTeam(team, slotBuf)));
+  const blueSlots = slotsOf(T.Team.Blue);
+  const redSlots = slotsOf(T.Team.Red);
+  const allSlots = [...blueSlots, ...redSlots];
+  // The preset's physics profile (the bots plan with its gravity, jump, boost and top speed).
+  const physics = values === null ? undefined : M.botPhysicsOf(values);
+  const blue = new A.BotTeam({ team: T.Team.Blue, difficulty: diffA, seed: seed * 7919 + 777, physics });
+  const red = new A.BotTeam({ team: T.Team.Red, difficulty: diffA, seed: seed * 7919 + 7, physics });
+  blue.setSlots(blueSlots);
+  red.setSlots(redSlots);
+  const blueOuts = blueSlots.map(() => T.emptyControls());
+  const redOuts = redSlots.map(() => T.emptyControls());
+  sim.events.onGoal = () => acc.goals++;
+  sim.events.onBallHit = () => acc.touches++;
+  sim.events.onBump = (_a, _b, demo) => {
+    acc.bumps++;
+    if (demo) acc.demos++;
+  };
+  // The one-off full prediction: what createArena's warm-up pays, and what every refresh would
+  // cost if the predictor ran other physics than the arena.
+  const f0 = performance.now();
+  sim.forceBallPrediction();
+  acc.fullPredMs += performance.now() - f0;
+  const buf = sim.buf;
+  const bo = T.BALL_OFFSET;
+  const total = seconds * T.TICK_RATE;
+  let goalPause = 0;
+  for (let tick = 1; tick <= total; tick++) {
+    if (goalPause > 0) {
+      if (--goalPause === 0) {
+        sim.resetKickoff(kickoffSeed++);
+        sim.sync();
+        blue.reset();
+        red.reset();
+      }
+    } else {
+      const age = sim.tickCount - sim.predTick;
+      if (age >= predEvery || age < 0) {
+        const p0 = performance.now();
+        sim.updateBallPrediction();
+        acc.predMs += performance.now() - p0;
+        acc.predCalls++;
+      }
+      const t0 = performance.now();
+      blue.think(sim, blueOuts);
+      red.think(sim, redOuts);
+      acc.thinkMs += performance.now() - t0;
+      acc.botTicks += allSlots.length;
+      acc.playTicks++;
+      for (let i = 0; i < blueSlots.length; i++) sim.setControls(sim.carIdOf(blueSlots[i]), blueOuts[i]);
+      for (let i = 0; i < redSlots.length; i++) sim.setControls(sim.carIdOf(redSlots[i]), redOuts[i]);
+    }
+    const goalsBefore = acc.goals;
+    const s0 = performance.now();
+    sim.step(1);
+    sim.sync();
+    acc.stepMs += performance.now() - s0;
+    acc.ticks++;
+    if (acc.goals > goalsBefore) goalPause = GOAL_PAUSE_TICKS;
+    const bv = Math.hypot(buf[bo + T.B_VEL], buf[bo + T.B_VEL + 1], buf[bo + T.B_VEL + 2]);
+    if (!Number.isFinite(bv) || !Number.isFinite(buf[bo + T.B_POS] + buf[bo + T.B_POS + 1] + buf[bo + T.B_POS + 2])) acc.nonFinite++;
+    else if (bv > acc.maxBall) acc.maxBall = bv;
+    for (const slot of allSlots) {
+      const co = sim.carOffset(slot);
+      const cv = Math.hypot(buf[co + T.C_VEL], buf[co + T.C_VEL + 1], buf[co + T.C_VEL + 2]);
+      if (!Number.isFinite(cv)) acc.nonFinite++;
+      else if (cv > acc.maxCar) acc.maxCar = cv;
+    }
+  }
+  acc.matches++;
+}
+
+/** Per-tick costs in microseconds: the step, think() per bot, one refresh, and what a whole tick pays. */
+function costOf(c) {
+  return {
+    step: (1000 * c.stepMs) / Math.max(1, c.ticks),
+    think: (1000 * c.thinkMs) / Math.max(1, c.botTicks),
+    refresh: (1000 * c.predMs) / Math.max(1, c.predCalls),
+    fullMs: c.fullPredMs / Math.max(1, c.matches),
+    tick: (1000 * (c.stepMs + c.thinkMs + c.predMs)) / Math.max(1, c.ticks),
+  };
+}
+
+/** The --preset run. True when a preset broke something (a non-finite state, a predictor off its physics). */
+async function presetBench(spec) {
+  const R = await import(new URL('../src/game/physicsRules.ts', import.meta.url).href);
+  const M = await import(new URL('../src/sim/mutators.ts', import.meta.url).href);
+  const presets = presetList(spec, R);
+  const predEvery = Math.max(1, Math.floor(Number(arg('predEvery', '4'))));
+  console.log(
+    `preset bench: this tree's bots (${diffA}) on both teams with each preset's physics profile, ${matches} x ${seconds} s per mode and preset, ` +
+      `ball prediction every ${predEvery} tick${predEvery === 1 ? ' (as P2P)' : 's'}\n  ${presets.map((p) => `${p.id} ${JSON.stringify(p.values)}`).join('\n  ')}`,
+  );
+  const results = { difficulty: diffA, seconds, matches, predEvery, modes: {} };
+  const blocks = [];
+  let failed = false;
+  // One short stock match first, untimed: the JIT and the wasm warm up before anything is compared.
+  costMatch(M, modes[0], null, seed0 + 999, predEvery, emptyCost());
+  for (const mode of modes) {
+    const t0 = performance.now();
+    const stock = emptyCost();
+    const per = presets.map(() => emptyCost());
+    for (let m = 0; m < matches; m++) {
+      // Stock and the presets in turn on the same seed, the order flipped every match.
+      const order = [-1, ...presets.map((_, i) => i)];
+      if (m % 2 === 1) order.reverse();
+      for (const i of order) costMatch(M, mode, i < 0 ? null : presets[i].values, seed0 + m, predEvery, i < 0 ? stock : per[i]);
+    }
+    const s = costOf(stock);
+    const change = (x, base) => `${x >= base ? '+' : ''}${((100 * (x - base)) / Math.max(1e-9, base)).toFixed(0)}%`;
+    const row = (id, c, k) =>
+      `  ${id.padEnd(11)} step ${k.step.toFixed(1).padStart(6)} us  think ${k.think.toFixed(1).padStart(5)} us/bot  refresh ${k.refresh.toFixed(1).padStart(6)} us (full ${k.fullMs.toFixed(2)} ms)  ` +
+      `tick ${k.tick.toFixed(1).padStart(6)} us${c === stock ? '        ' : ` ${change(k.tick, s.tick).padStart(6)} `}  ` +
+      `goals ${(c.goals / c.matches).toFixed(1)}  touches ${(c.touches / c.matches).toFixed(0)}  bumps ${(c.bumps / c.matches).toFixed(0)}  demos ${(c.demos / c.matches).toFixed(1)}  ` +
+      `top ball ${Math.round(c.maxBall)} / car ${Math.round(c.maxCar)} uu/s${c.nonFinite > 0 ? `  NON-FINITE x${c.nonFinite}` : ''}`;
+    const out = [`${mode} (${MODES[mode] * 2} bots; per tick: step, think() per bot, one prediction refresh, the whole tick; ${((performance.now() - t0) / 1000).toFixed(0)} s)`, row('stock', stock, s)];
+    results.modes[mode] = { stock: { ...s, counts: stock }, presets: {} };
+    presets.forEach((p, i) => {
+      const k = costOf(per[i]);
+      out.push(row(p.id, per[i], k));
+      results.modes[mode].presets[p.id] = { values: p.values, ...k, tickChange: (k.tick - s.tick) / s.tick, counts: per[i] };
+      if (per[i].nonFinite > 0) {
+        out.push(`  !! ${p.id}: a non-finite ball or car state (the table or the wasm's hard limits let a broken value through)`);
+        failed = true;
+      }
+      // An incremental refresh that costs about a full prediction: the predictor's arena keeps stock
+      // physics (rs_set_mutators must copy the config into it), so every refresh re-predicts 720 ticks.
+      if (k.refresh > Math.max(3 * s.refresh, 250 * k.fullMs)) {
+        out.push(`  !! ${p.id}: a prediction refresh costs ${k.refresh.toFixed(0)} us against ${s.refresh.toFixed(0)} us on stock: the predictor does not run the preset's physics`);
+        failed = true;
+      }
+    });
+    console.log(out.join('\n'));
+    blocks.push(out.join('\n'));
+  }
+  if (modes.length > 1) console.log('\n' + blocks.join('\n'));
+  if (jsonOut) {
+    writeFileSync(jsonOut, JSON.stringify(results, null, 2));
+    console.log(`results written to ${jsonOut}`);
+  }
+  return failed;
 }

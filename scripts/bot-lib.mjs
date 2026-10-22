@@ -35,10 +35,13 @@ registerHooks({
 
 export const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** `--name=value` from the command line, else `def`. */
+/** `--name=value` (or `--name value`) from the command line, else `def`. */
 export function arg(name, def) {
-  const a = process.argv.find((x) => x.startsWith(`--${name}=`));
-  return a === undefined ? def : a.slice(name.length + 3);
+  const argv = process.argv;
+  const a = argv.find((x) => x.startsWith(`--${name}=`));
+  if (a !== undefined) return a.slice(name.length + 3);
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && i + 1 < argv.length && !argv[i + 1].startsWith('--') ? argv[i + 1] : def;
 }
 
 /** 'true' / 'false' / a number. */
