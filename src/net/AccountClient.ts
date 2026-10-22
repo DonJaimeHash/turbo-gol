@@ -419,18 +419,24 @@ export class AccountClient {
   // ---- experimental features (src/game/experimentalStore.ts) -------------------------------------
 
   /**
-   * A Bearer call of the experimental routes; answers parsed leniently. A 401 refreshes the session
-   * once and sends the call again with the new one (a write is not lost to a session that expired
-   * early); a second 401, or a refresh that signs out, rejects.
+   * A Bearer call of the experimental routes, for the account signed in when the call starts (the
+   * store's copy is per account); answers parsed leniently. A 401 refreshes the session once and
+   * sends the call again with the new one (a write is not lost to a session that expired early); a
+   * second 401, a refresh that signs out, or a session of another account rejects. The refresh
+   * cookie is shared by the tabs (one may have signed in as someone else meanwhile), so a refresh
+   * can hand back another account: one player's switch or preset must never reach it.
    */
   private async experimentalCall(path: string, body?: unknown): Promise<ExperimentalAnswer> {
-    const bearer = await this.bearer();
-    let res = await this.call(path, body, bearer);
+    const owner = this.account?.playerId ?? null;
+    const refused = (): AccountError => new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+    const first = owner === null ? null : await this.sessionForQueue();
+    if (first === null || first.playerId !== owner) throw refused();
+    let res = await this.call(path, body, first.session);
     if (res.status === 401) {
       const s = await this.sessionRejected();
-      if (s === null || s.session === bearer) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+      if (s === null || s.session === first.session || s.playerId !== owner) throw refused();
       res = await this.call(path, body, s.session);
-      if (res.status === 401) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+      if (res.status === 401) throw refused();
     }
     const r = await this.jsonOrFail<{ enabled?: unknown; presets?: unknown }>(res);
     return { enabled: r.enabled === true, presets: parsePresetList(r.presets, MAX_PRESETS * 2) };

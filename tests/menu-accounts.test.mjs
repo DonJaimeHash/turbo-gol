@@ -585,3 +585,31 @@ test('AccountClient experimental calls: a 401 refreshes the session and sends th
   assert.deepEqual(sent, ['Bearer jwt-Tomi', 'Bearer jwt-Other']);
   assert.equal(refreshes, 2);
 });
+
+test('AccountClient experimental calls: a refresh that hands back another account (another tab signed in) never gets the write', async () => {
+  const PRESET = { id: '0123456789ab', name: 'Low gravity', values: { gravity: 50 }, updatedAt: 0 };
+  const OTHER = (name, expiresAt) => ({ kind: 'account', playerId: '9876543210fedcba', name, session: 'jwt-' + name, expiresAt });
+  const sent = [];
+  const srv = fakeServer({
+    '/api/me/presets': (b, h) => {
+      sent.push(h.authorization);
+      return res(401, { error: 'unauthorized' });
+    },
+    '/api/me/experimental': (b, h) => {
+      sent.push(h.authorization);
+      return res(200, { enabled: b?.enabled === true, presets: [] });
+    },
+    '/api/auth/refresh': () => res(200, OTHER('Bea', Date.now() + 3600_000)),
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
+  // Refused with this account's session, and the refresh comes back as someone else: no second send.
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  await assert.rejects(a.upsertPreset(PRESET), (e) => e instanceof AC.AccountError && e.code === 'unauthorized');
+  assert.deepEqual(sent, ['Bearer jwt-Tomi'], "Tomi's preset never goes up with Bea's session");
+  assert.equal(a.account.playerId, '9876543210fedcba', 'the client follows the cookie (the store then works for Bea)');
+  // The session near its end: the refresh before the call turns into another account: nothing is sent.
+  sent.length = 0;
+  a.account = SESSION('Tomi', Date.now() + 1000);
+  await assert.rejects(a.setExperimental(true), (e) => e.code === 'unauthorized');
+  assert.deepEqual(sent, [], "Tomi's switch never reaches Bea's account");
+});

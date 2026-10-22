@@ -344,8 +344,9 @@ src/net/
                         placement, MMR scale, abandon ban ladder (shared with server/)
   AccountClient.ts      sign in / up / recover / OAuth redirects, 1 h Bearer refreshed from the
                         HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
-                        the experimental switch and presets; a listener list (subscribe) and the
-                        { name, id } hint the boot reads (readAccountHint)
+                        the experimental switch and presets (each call for the account that made
+                        it: a refresh that hands back another account never gets it); a listener
+                        list (subscribe) and the { name, id } hint the boot reads (readAccountHint)
   LobbyClient.ts        custom lobbies: list / create / join by code, the lobby socket (state,
                         match result per member, back, kick, settings)
   p2p/                  phase 2: peer-to-peer deterministic rollback (docs/online/PHASE2.md)
@@ -441,7 +442,8 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         stock, createArena before the car, the rebuild, no records, game speed;
                         real arenas with the extreme built-ins), hud-menu (the preset editor over
                         the real store with a fake row kit), experimental-store (incl. a preset
-                        the full account refused), menu-accounts (a 401 write sent again once)
+                        the full account refused), menu-accounts (a 401 write sent again once,
+                        never to another account)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
