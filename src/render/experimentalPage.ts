@@ -559,7 +559,9 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
       deleteArmed = null;
       resetArmed = null;
     }
-    actions.hidden = !v.editor || !mine;
+    // The Hud shows this tab's actions with the tab (selectTab): the button itself hides, so a guest,
+    // a switch that is off or a built-in never shows Reset, whenever the tab is selected.
+    resetBtn.hidden = !v.editor || !mine;
     if (!v.editor) return;
     const src = source() as PresetSource;
     pickerValue.textContent = cur === null ? '' : presetName(cur);

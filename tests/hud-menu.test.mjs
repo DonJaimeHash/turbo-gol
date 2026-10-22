@@ -261,6 +261,10 @@ test('Experimental page: focus stops only on shown rows; turning it off with Sup
   assert.equal(locked.hidden, false);
   assert.equal(row.hidden, true);
   assert.equal(editor.hidden, true);
+  // The Hud shows the tab's footer with the tab: a guest still gets no Reset button there.
+  page.actions.hidden = false;
+  page.refresh();
+  assert.equal(page.actions.children[0].hidden, true, 'a guest: no Reset to standard');
   state = { ...STATE };
   page.refresh();
   assert.equal(page.items().length, 1);
@@ -354,7 +358,10 @@ test('Preset editor: built-ins are read-only (duplicate them); New and Duplicate
   assert.equal(page.items().length, 1 + 2 + R.PHYSICS_FIELDS.length, 'switch, picker, buttons, one stop per value');
   assert.deepEqual(buttons().map((b) => [b.textContent, b.disabled]), [['New', false], ['Duplicate', false], ['Rename', true], ['Delete', true]]);
   assert.equal(find('hud-exp-name-row')[0].hidden, true);
-  assert.equal(page.actions.hidden, true, 'no Reset for a built-in');
+  assert.equal(page.actions.children[0].hidden, true, 'no Reset for a built-in');
+  page.actions.hidden = false; // the Hud shows the tab's actions with the tab (selectTab)
+  page.refresh();
+  assert.equal(page.actions.children[0].hidden, true, 'still none once the Hud shows the actions');
   const gravityRow = rowItem('Gravity');
   gravityRow.right();
   assert.equal(store.get('standard').values.gravity, undefined, 'a built-in never changes');
@@ -378,7 +385,7 @@ test('Preset editor: built-ins are read-only (duplicate them); New and Duplicate
   assert.deepEqual(copy.values, { gravity: 50, ballDrag: 50 });
   assert.equal(text('hud-exp-picker-hint'), 'Your presets: 1 of 10');
   assert.equal(find('hud-exp-name')[0].value, 'Low gravity #2');
-  assert.equal(page.actions.hidden, false);
+  assert.equal(page.actions.children[0].hidden, false);
   assert.equal(page.items().length, 1 + 2 + 1 + R.PHYSICS_FIELDS.length + 1, '+ the name and Reset');
   assert.ok(page.kit.relayouts > 0, 'the Hud re-reads the focus stops after an action');
   // Ranges step and stop at their ends; Delete (clear) puts the standard value back.
