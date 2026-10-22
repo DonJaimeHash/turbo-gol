@@ -103,6 +103,10 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- In about half of the peer-to-peer matches every player's game dealt its own kickoff positions
+  (the room's random seed, read as a negative number, meant "pick at random"): the games went out
+  of sync at the start and after every goal, and only caught up by copying another player's state
+  a moment later. Every player now deals the same kickoff from the room's seed.
 - Browsers on the WebGL2 fallback compile about half as many shaders while loading and after a
   quality change (each shader was compiled twice, once for nothing), so they reach the menu sooner.
 - A device that cannot draw into floating-point images on WebGL2 starts on Super low instead of

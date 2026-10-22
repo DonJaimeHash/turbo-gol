@@ -56,7 +56,7 @@
  * tick (the wasm BallPredTracker's incremental / full decision then depends on the confirmed ball
  * states only, never on when a peer rolled back) and packs the bot controls; onConfirmedTick(tick)
  * detects goals on the rising edge of the ball-scored flag of the confirmed state, ticks the Match,
- * performs its kickoff resets with rs_reset_kickoff(seed + n) and saves a CHECKPOINT of the
+ * performs its kickoff resets with rs_reset_kickoff(kickoffSeedOf(seed, n)) and saves a CHECKPOINT of the
  * confirmed-timeline objects (Match, kickoff count, scored flag, the bot layout and both BotTeams,
  * Match.saveState / BotTeam.saveState) in a ring keyed by tick (CHECKPOINT_TICKS entries, plus one
  * per hash tick like the engine's hash ring). Predicted ticks only sample the local input and let
@@ -247,6 +247,17 @@ export const STATUS = {
   experimentalFailed: t('p2p.experimentalFailed'),
   physicsMismatch: t('p2p.physicsMismatch'),
 } as const;
+
+/**
+ * The rs_reset_kickoff seed of the room's `n`-th kickoff (0: the welcome's and tick 1's): the room
+ * seed (a uint32) plus n, as a NON-NEGATIVE int31. The wasm takes an int and deals RANDOM spots
+ * for a negative one, so a room seed from 2^31 up (half of them, and a seed just below after a few
+ * goals) gave every peer its own kickoff: a desync at the first hash vote and after every goal,
+ * each healed by a resync. Every protocol 5 peer deals with this, the same spots for the same room.
+ */
+export function kickoffSeedOf(roomSeed: number, n: number): number {
+  return (roomSeed + n) & 0x7fffffff;
+}
 
 /** Tick expected at local time `nowMs` when tick 0 is at `startAtLocalMs` (negative before the start). */
 export function expectedTickAt(nowMs: number, startAtLocalMs: number): number {
@@ -1201,8 +1212,7 @@ export class P2PSession {
     switch (e.type) {
       case 'kickoffReset': {
         const w = this.welcome;
-        const seed = (w !== null ? w.seed : 0) + this.kickoffs++;
-        this.game.sim.resetKickoff(seed);
+        this.game.sim.resetKickoff(kickoffSeedOf(w !== null ? w.seed : 0, this.kickoffs++));
         this.wasScored = false;
         if (this.blueTeam !== null) this.blueTeam.reset();
         if (this.redTeam !== null) this.redTeam.reset();
@@ -1495,7 +1505,7 @@ export class P2PSession {
     this.checkpointRestores = 0;
     this.peersDead = 0;
     const sim = this.game.sim;
-    sim.resetKickoff(w.seed);
+    sim.resetKickoff(kickoffSeedOf(w.seed, 0));
     this.kickoffs = 0;
     this.wasScored = false;
     // The room's physics profile (the stock one for standard rules): the same integers on every

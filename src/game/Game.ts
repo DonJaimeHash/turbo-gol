@@ -128,7 +128,7 @@ import type { QueueResultP2p } from '../net/p2p/protocol';
 import { createMenu, RankedResults } from '../ui';
 import type { Menu, MenuConfig, MenuHost, SearchRequest, SearchView } from '../ui';
 import type { NetStatsView } from '../net/NetStats';
-import { P2PSession, type P2PGameHooks } from '../net/p2p/P2PSession';
+import { P2PSession, kickoffSeedOf, type P2PGameHooks } from '../net/p2p/P2PSession';
 import type { RoomWelcome } from '../net/p2p/protocol';
 import { RollbackEngine } from '../net/p2p/Rollback';
 import type { MatchEvent as HostEvent, Welcome } from '../net/protocol';
@@ -1684,7 +1684,7 @@ export class Game implements P2PGameHooks {
     for (const r of roster) ids.push(sim.addCar(r.team === 1 ? Team.Red : Team.Blue, CarPreset.Standard));
     // The room's kickoff deal, so the first snapshots (menu background, countdown frame) already
     // show it; the session repeats rs_reset_kickoff(seed) as the confirmed timeline's tick 0 state.
-    sim.resetKickoff(w.seed);
+    sim.resetKickoff(kickoffSeedOf(w.seed, 0));
     if (isGameMode(w.mode)) this.mode = w.mode;
     const rows = this.sbRows;
     rows.length = 0;

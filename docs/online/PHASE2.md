@@ -400,6 +400,11 @@ plays a P2P room with those rules. What changed on the P2P path:
   A mismatch (or no fingerprint with rules) gets `error physics_mismatch` and the socket closed with
   4005: the slot is left (never a no-show), the others start with its car the team AI. A standard
   room refuses a preset fingerprint too, and lets a ready without one through (headless tools).
+- **The kickoff seed** (found while verifying, fixed in the same protocol): `rs_reset_kickoff` takes
+  an int and deals random spots for a negative one, and a room seed is a random uint32, so in half
+  of the rooms (seed >= 2^31) each peer dealt its own kickoff: a desync at the first hash vote and
+  after every goal, healed by a resync at the next one. Every peer now resets with
+  `kickoffSeedOf(seed, n)`, the room seed plus n as a non-negative int31 (unchanged below 2^31).
 - **No fallback, no strikes**: a room with rules never hands over to a casual server match (the
   mesh timing out, or everybody else gone before the start, fails back to the lobby), never names a
   no-show, and the matchmaker marks its locks so a strike cannot be counted for it either.
@@ -415,7 +420,7 @@ loopback origins, so two accounts, frames driven by a timer because the pane was
 | A stale page (served the protocol-4 RoomClient by mistake) | its ready had no fingerprint: `physics_mismatch`, it went back to its lobby |
 | Match, 2v2 with two bots, 3 min | both arenas `88e70a4e` (gravity -260, bounce 0.78), bots planning with gravity -260, both readies with that fingerprint, 533 / 722 hash votes agreed and 0 disagreed, 0 resyncs, final whistle 1-0 on both |
 | Afterwards | both back in the lobby (open), arenas stock again (`7318f74a`), no rating, no ban, no abandons, leaderboard empty |
-| The same lobby back on Standard | welcome without rules, readies with the stock fingerprint, hashes agree, the match plays as before |
+| The same lobby back on Standard (two rooms, seeds 2446418727 and 2362603178) | welcome without rules, readies with the stock fingerprint; both rooms disagreed at ticks 30 and 60 and resynced, then agreed (920 votes, through 3 min and 1.5 min of overtime): the kickoff seed above, reproduced in node (every seed >= 2^31 disagrees, every seed below agrees) and fixed; the Moon ball room's seed (1053802906) was below 2^31 |
 
 Tests: `server/test/room.test.mjs` (the room and the matchmaker), `server/test/nodeMatchmaker.test.mjs`,
 `server/test/experimental-lobby.test.mjs` (LobbyDO, the Worker, every standard-physics-only path),

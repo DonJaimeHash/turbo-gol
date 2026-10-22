@@ -1935,6 +1935,31 @@ function realRulesGame(sim, mesh, script) {
   return g;
 }
 
+test('kickoffSeedOf: the room seed plus n as a non-negative int31 (the wasm deals random spots for a negative int), the same on every peer', async () => {
+  const { kickoffSeedOf } = SESSION;
+  assert.equal(kickoffSeedOf(4242, 0), 4242, 'a seed below 2^31 deals as before');
+  assert.equal(kickoffSeedOf(4242, 3), 4245);
+  for (const seed of [2147483647, 2147483648, 2446418727, 4294967295]) {
+    for (let n = 0; n < 40; n++) {
+      const k = kickoffSeedOf(seed, n);
+      assert.ok(Number.isInteger(k) && k >= 0 && k <= 0x7fffffff, `${seed} + ${n} -> ${k}`);
+    }
+  }
+  // Two arenas dealt with a big room seed hold the same state (a raw negative int would be random).
+  const mesh = buildArenaMesh().physics;
+  const hashes = [];
+  for (let i = 0; i < 2; i++) {
+    const sim = await RocketSim.load();
+    sim.initArena(mesh);
+    sim.createArena(120);
+    for (let c = 0; c < 4; c++) sim.addCar(c < 2 ? T.Team.Blue : T.Team.Red, T.CarPreset.Standard);
+    sim.resetKickoff(kickoffSeedOf(2446418727, 0));
+    sim.step(30);
+    hashes.push(sim.stateHash());
+  }
+  assert.equal(hashes[0], hashes[1]);
+});
+
 test('two sessions on the real RollbackEngine + wasm + BotTeams with experimental rules (2v2, 20 ms links): both arenas run the rules, the same fingerprint goes out, no desyncs, the same match', async () => {
   const rules = { v: 1, name: 'Arcade moon', values: { gravity: 50, ballBounce: 150, carMaxSpeed: 2600, boostPower: 130, boostUse: 0, spawnBoost: 100, unlimitedFlips: 1, bumpForce: 150 } };
   const mesh = buildArenaMesh().physics;
@@ -2005,7 +2030,8 @@ test('two sessions on the real RollbackEngine + wasm + BotTeams with experimenta
   const startAt = t + 100;
   for (let i = 0; i < 2; i++) {
     const { session } = sessions[i];
-    fakes[i].room.onWelcome({ ...welcomeFor(i === 0 ? 0 : 2, slots), physics: rules });
+    // A room seed from 2^31 up: every peer must deal the same kickoff (kickoffSeedOf).
+    fakes[i].room.onWelcome({ ...welcomeFor(i === 0 ? 0 : 2, slots), seed: 2446418727, physics: rules });
     assert.equal(session.state, 'connecting');
     fakes[i].mesh.connected = true;
     session.advance(0);
