@@ -205,11 +205,17 @@ src/render/
                         frames, pads; forwards setTheme / setWarmUp to the turf and the stadium
   Camera.ts             chase camera (ball cam / car cam, camera settings & rules, field clamp,
                         camera swivel from CameraLook, rear view); keeps Settings.camera by reference
-  Car.ts                procedural dune runner (body with canopy + roll hoop, knobby wheels, twin
-                        plasma boost jets, blob), one shared surface material for all cars:
-                        per-vertex surface kinds (CAR_KIND) for flake paint under clearcoat,
-                        carbon, glass, metals, tyres, HDR lamps; the body and wheel pipelines
-                        build only their own graph
+  Car.ts                CarView (a body from cars/, its wheels, twin plasma boost jets, blob;
+                        setBody swaps the body in place), one shared surface material for all
+                        cars: per-vertex surface kinds (CAR_KIND) for flake paint under
+                        clearcoat, carbon, glass, metals, tyres, HDR lamps, the body's livery in
+                        four per-object uniforms (one pipeline for every body); the body and
+                        wheel pipelines build only their own graph
+  cars/                 the car bodies (docs/cars.md): types.ts (CarBodySpec, the contract),
+                        kit.ts (surfaces, lofts, the BodyKit, buildBody and its containment
+                        guard), wheels.ts (wheel styles: knobby, slick), dune.ts (the dune runner,
+                        the default car), index.ts (the registry), cache.ts (geometry shared per
+                        body / team / detail, reference-counted)
   Ball.ts               procedural panelled ball (truncated icosahedron: pearl hexagons, graphite
                         pentagons with lime glow rings, stitched seams; BALL_COLORS), blob shadow,
                         ground marker
@@ -300,6 +306,12 @@ src/game/
                         account (read at boot: unlockedAtBoot), debounced pushes to /api/me/presets,
                         offline edits kept dirty, a preset the full account refused waits for room
                         (said once), deletes need the server; nothing for a guest
+  cosmetics.ts          the cosmetic cars, pure data with no imports (never in the nodes' bundle):
+                        CarId in menu order, name / description keys, price in host points, status
+                        ('soon' until a body exists); every car is a Standard car
+  carSelection.ts       the player's car pick (localStorage), only a car the player is entitled to
+                        (entitledCars, where the inventory will plug in); the preview gate of
+                        #car / #showroom (a dev server or a VITE_PREVIEW_CARS=1 build)
   experimentalTraining.ts experimental free play, pure: rules for free play only (packs always stock,
                         a locked player stock), the arena plan (mutators, fingerprint, game speed),
                         createArena before the car, the rebuild when the physics differ (a pack
