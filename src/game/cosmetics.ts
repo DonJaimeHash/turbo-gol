@@ -40,7 +40,7 @@ export const CAR_PRICES: Readonly<Record<CarId, number>> = {
 const CAR_STATUS: Readonly<Record<CarId, CarStatus>> = {
   dune: 'available',
 
-  pampero: 'soon',
+  pampero: 'available',
 
   carpincho: 'soon',
 
