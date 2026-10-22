@@ -190,8 +190,8 @@ class FakeRoom {
     this.sent.push({ type: 'signal', to, data });
     return true;
   }
-  ready() {
-    this.sent.push({ type: 'ready' });
+  ready(physicsFp) {
+    this.sent.push(physicsFp === undefined ? { type: 'ready' } : { type: 'ready', physicsFp });
     return true;
   }
   unreachable(slot, atTick) {
@@ -377,6 +377,7 @@ function welcomeFor(mySlot, slots) {
     slots,
     iceServers: [{ urls: 'stun:stun.example:3478' }],
     now: 1_000_000,
+    physics: null,
   };
 }
 
@@ -1771,4 +1772,324 @@ test("a welcome of another P2P protocol: RoomClient fails with 'reload_required'
   assert.equal(env.session.state, 'idle');
   assert.equal(env.session.statusText, STATUS.reload);
   assert.equal(env.client.leaves, 1, 'the room lock is released on the way out');
+});
+
+// ---- experimental rules (a custom lobby's RoomWelcome.physics) ----------------------------------
+
+const MUT = await import('../src/sim/mutators.ts');
+const LAYOUT = await import('../src/sim/mutatorLayout.ts');
+const { STOCK_BOT_PHYSICS } = await import('../src/ai/math.ts');
+const RULES_LOW = { v: 1, name: 'Low gravity', values: { gravity: 50, ballDrag: 50 } };
+
+/** A RoomClient on a scripted socket (as in the clock test): `deliver(msg)` feeds one frame. */
+function scriptedRoomClient() {
+  const sent = [];
+  let socket = null;
+  const client = new RoomClient({
+    now: () => 10_000,
+    pingIntervalMs: 1_000_000,
+    webSocketFactory: (url, protocols) => {
+      socket = { url, protocols, binaryType: 'blob', readyState: 0, protocol: '', onopen: null, onmessage: null, onclose: null, onerror: null, send: (d) => sent.push(JSON.parse(d)), close() {} };
+      return socket;
+    },
+  });
+  const welcomes = [];
+  const errors = [];
+  client.onWelcome = (w) => welcomes.push(w);
+  client.onError = (code) => errors.push(code);
+  client.connect('/room/r1', 'TK');
+  socket.readyState = 1;
+  socket.onopen({});
+  return { client, sent, welcomes, errors, deliver: (m) => socket.onmessage({ data: JSON.stringify(m) }) };
+}
+
+test('RoomClient: the welcome must carry rules this build reads (strict); they arrive parsed, standard as null; ready(fp) sends the fingerprint', () => {
+  // No `physics` at all (a room of another build): refused, never handed on.
+  let r = scriptedRoomClient();
+  const missing = welcomeFor(0, SLOTS_1V1);
+  delete missing.physics;
+  r.deliver(missing);
+  assert.deepEqual(r.errors, [P.P2P_ERROR_BAD_PHYSICS]);
+  assert.equal(r.welcomes.length, 0);
+  assert.equal(r.client.welcome, null);
+  // Rules this build does not read: a free-play key, an off-grid value, another table version.
+  for (const bad of [{ ...RULES_LOW, values: { gameSpeed: 50 } }, { ...RULES_LOW, values: { gravity: 55 } }, { ...RULES_LOW, v: 2 }, 'Low gravity']) {
+    r = scriptedRoomClient();
+    r.deliver({ ...welcomeFor(0, SLOTS_1V1), physics: bad });
+    assert.deepEqual(r.errors, [P.P2P_ERROR_BAD_PHYSICS], JSON.stringify(bad));
+    assert.equal(r.welcomes.length, 0);
+  }
+  // Good rules arrive in the canonical form; a snapshot that changes nothing is standard (null).
+  r = scriptedRoomClient();
+  r.deliver({ ...welcomeFor(0, SLOTS_1V1), physics: { v: 1, name: 'Low gravity', values: { ballDrag: 50, gravity: 50, ballHit: 100 } } });
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.welcomes[0].physics, RULES_LOW);
+  assert.deepEqual(r.client.welcome.physics, RULES_LOW);
+  r = scriptedRoomClient();
+  r.deliver({ ...welcomeFor(0, SLOTS_1V1), physics: { v: 1, name: 'Standard', values: {} } });
+  assert.equal(r.welcomes[0].physics, null);
+  r.client.ready(MUT.physicsFingerprint(RULES_LOW));
+  assert.deepEqual(r.sent.at(-1), { type: 'ready', physicsFp: MUT.physicsFingerprint(RULES_LOW) });
+  r.client.ready();
+  assert.deepEqual(r.sent.at(-1), { type: 'ready' }, 'none without one');
+});
+
+/** A session in an experimental lobby room (joinAssigned), welcomed with `physics`; the sim reads back `arenaRules`' mutators. */
+function experimentalSession(physics, arenaRules = physics, slots = SLOTS_1V1) {
+  const env = makeSession();
+  const { session, game, sim } = env;
+  sim.getMutators = (out) => {
+    out.set(MUT.toMutators(arenaRules === null ? {} : arenaRules.values));
+    return out;
+  };
+  env.failed = [];
+  game.p2pFailed = (m) => env.failed.push(m);
+  const apply = game.applyP2PRoster;
+  game.applyP2PRoster = function (w) {
+    this.log.push(['rules', w.physics]);
+    apply.call(this, w);
+  };
+  env.room = null;
+  session.joinAssigned(slots.length === 2 ? '1v1' : '2v2', { kind: 'p2p', roomId: 'room1', ticket: 'TICKET', wsUrl: '/room/room1' });
+  env.room.onWelcome({ ...welcomeFor(0, slots), physics });
+  return env;
+}
+
+test('an experimental room: the arena gets the rules, both BotTeams their physics profile, ready carries the arena fingerprint', () => {
+  const env = experimentalSession(RULES_LOW);
+  const { session, game } = env;
+  assert.equal(session.state, 'connecting');
+  assert.deepEqual(game.log.find((l) => l[0] === 'rules'), ['rules', RULES_LOW], 'applyP2PRoster gets the room rules');
+  assert.equal(session.experimental, true);
+  assert.deepEqual(session.rules, RULES_LOW);
+  const profile = MUT.botPhysicsOf(RULES_LOW.values);
+  assert.deepEqual(session['blueTeam'].physics, profile, 'blue bots plan with the rules');
+  assert.deepEqual(session['redTeam'].physics, profile, 'red bots too');
+  assert.equal(session['blueTeam'].physics.gravity, -325);
+  env.mesh.connected = true;
+  session.advance(0);
+  assert.deepEqual(env.room.sent.filter((m) => m.type === 'ready'), [{ type: 'ready', physicsFp: MUT.physicsFingerprint(RULES_LOW) }]);
+  // A standard room: the stock profile, the stock fingerprint.
+  const plain = experimentalSession(null);
+  assert.equal(plain.session.experimental, false);
+  assert.equal(plain.session['blueTeam'].physics, STOCK_BOT_PHYSICS, 'the stock profile object itself');
+  plain.mesh.connected = true;
+  plain.session.advance(0);
+  assert.deepEqual(plain.room.sent.filter((m) => m.type === 'ready'), [{ type: 'ready', physicsFp: MUT.physicsFingerprint(null) }]);
+});
+
+test('an experimental room has no server fallback: a mesh that never completes, or everybody else gone before the start, fails back to the lobby (lock released, nothing handed over)', () => {
+  let env = experimentalSession(RULES_LOW);
+  env.session.advance(0);
+  env.t += FALLBACK_MS + 1;
+  env.session.advance(0);
+  assert.equal(env.session.state, 'idle');
+  assert.equal(env.session.error, STATUS.experimentalFailed);
+  assert.equal(env.game.log.filter((l) => l[0] === 'handover').length, 0, 'never a casual server match');
+  assert.deepEqual(env.game.log.at(-1), ['restore'], 'the offline roster (stock arena) is back');
+  assert.deepEqual(env.failed, [STATUS.experimentalFailed], 'the Game takes the member back to its lobby');
+  assert.equal(env.client.leaves, 1, 'the room lock is released');
+  assert.equal(env.session.rules, null);
+
+  env = experimentalSession(RULES_LOW);
+  env.mesh.connected = true;
+  env.session.advance(0);
+  env.room.onPeerLeft(1, 'p1');
+  env.session.advance(0);
+  assert.equal(env.session.state, 'idle');
+  assert.equal(env.session.error, STATUS.experimentalFailed);
+  assert.equal(env.game.log.filter((l) => l[0] === 'handover').length, 0);
+  // The same room with standard rules keeps today's fallback.
+  env = experimentalSession(null);
+  env.session.advance(0);
+  env.t += FALLBACK_MS + 1;
+  env.session.advance(0);
+  assert.deepEqual(env.game.log.at(-1), ['handover', '1v1', null, STATUS.fallback]);
+});
+
+test("the room's physics_mismatch fails the session with its own line; a welcome the client cannot read says reload", () => {
+  const env = experimentalSession(RULES_LOW, null); // this page's arena would run the stock physics
+  env.mesh.connected = true;
+  env.session.advance(0);
+  assert.equal(env.room.sent.at(-1).physicsFp, MUT.physicsFingerprint(null), 'what the wasm read back, not what the room asked for');
+  env.room.onError(P.ROOM_ERROR_PHYSICS_MISMATCH, "your arena does not run this room's rules");
+  assert.equal(env.session.state, 'idle');
+  assert.equal(env.session.error, STATUS.physicsMismatch);
+  assert.deepEqual(env.failed, [STATUS.physicsMismatch]);
+  const e2 = makeSession();
+  e2.session.joinAssigned('1v1', { kind: 'p2p', roomId: 'room1', ticket: 'T', wsUrl: '/room/room1' });
+  e2.room.onError(P.P2P_ERROR_BAD_PHYSICS, 'room rules this page cannot read');
+  assert.equal(e2.session.error, STATUS.reload);
+});
+
+test('a roster the Game cannot build (the wasm refused the rules: its arena is gone) fails the session and rebuilds the offline roster', () => {
+  const env = makeSession();
+  const { session, game } = env;
+  env.failed = [];
+  game.p2pFailed = (m) => env.failed.push(m);
+  game.applyP2PRoster = function () {
+    this.log.push(['roster-throws']);
+    throw new Error('rs_set_mutators failed with code 1');
+  };
+  session.joinAssigned('1v1', { kind: 'p2p', roomId: 'room1', ticket: 'T', wsUrl: '/room/room1' });
+  env.room.onWelcome({ ...welcomeFor(0, SLOTS_1V1), physics: RULES_LOW });
+  assert.equal(session.state, 'idle');
+  assert.match(session.error, /^Roster: /);
+  assert.deepEqual(game.log.slice(-2), [['roster-throws'], ['restore']], 'never left without an arena');
+  assert.equal(env.failed.length, 1, 'back to the lobby');
+  assert.equal(session.rules, null);
+});
+
+/** Game hooks over a real RocketSim that build the arena with the room's rules (as Game.applyP2PRoster does). */
+function realRulesGame(sim, mesh, script) {
+  const g = realGame(sim, mesh, script);
+  g.applyP2PRoster = (w) => {
+    sim.initArena(mesh);
+    sim.createArena(120, MUT.arenaMutators(w.physics));
+    for (const s of w.slots.slice().sort((a, b) => a.slot - b.slot)) sim.addCar(s.team === 1 ? T.Team.Red : T.Team.Blue, T.CarPreset.Standard);
+    sim.resetKickoff(w.seed);
+    sim.sync();
+  };
+  return g;
+}
+
+test('kickoffSeedOf: the room seed plus n as a non-negative int31 (the wasm deals random spots for a negative int), the same on every peer', async () => {
+  const { kickoffSeedOf } = SESSION;
+  assert.equal(kickoffSeedOf(4242, 0), 4242, 'a seed below 2^31 deals as before');
+  assert.equal(kickoffSeedOf(4242, 3), 4245);
+  for (const seed of [2147483647, 2147483648, 2446418727, 4294967295]) {
+    for (let n = 0; n < 40; n++) {
+      const k = kickoffSeedOf(seed, n);
+      assert.ok(Number.isInteger(k) && k >= 0 && k <= 0x7fffffff, `${seed} + ${n} -> ${k}`);
+    }
+  }
+  // Two arenas dealt with a big room seed hold the same state (a raw negative int would be random).
+  const mesh = buildArenaMesh().physics;
+  const hashes = [];
+  for (let i = 0; i < 2; i++) {
+    const sim = await RocketSim.load();
+    sim.initArena(mesh);
+    sim.createArena(120);
+    for (let c = 0; c < 4; c++) sim.addCar(c < 2 ? T.Team.Blue : T.Team.Red, T.CarPreset.Standard);
+    sim.resetKickoff(kickoffSeedOf(2446418727, 0));
+    sim.step(30);
+    hashes.push(sim.stateHash());
+  }
+  assert.equal(hashes[0], hashes[1]);
+});
+
+test('two sessions on the real RollbackEngine + wasm + BotTeams with experimental rules (2v2, 20 ms links): both arenas run the rules, the same fingerprint goes out, no desyncs, the same match', async () => {
+  const rules = { v: 1, name: 'Arcade moon', values: { gravity: 50, ballBounce: 150, carMaxSpeed: 2600, boostPower: 130, boostUse: 0, spawnBoost: 100, unlimitedFlips: 1, bumpForce: 150 } };
+  const mesh = buildArenaMesh().physics;
+  const sims = [await RocketSim.load(), await RocketSim.load()];
+  let t = 10_000;
+  const inbox = [];
+  const sessions = [];
+  const fakes = [];
+  const LATENCY = 20;
+  let tickA = 0;
+  const scripts = [
+    (out) => {
+      tickA++;
+      out.throttle = 1;
+      out.steer = Math.floor(tickA / 60) % 2 === 0 ? 0.6 : -0.6;
+      out.boost = tickA % 180 < 90;
+      out.jump = tickA % 240 === 5;
+    },
+    (out) => {
+      out.throttle = 1;
+      out.steer = 0.2;
+      out.boost = true;
+    },
+  ];
+  for (let i = 0; i < 2; i++) {
+    const game = realRulesGame(sims[i], mesh, scripts[i]);
+    const fake = { room: null, mesh: null };
+    fakes.push(fake);
+    const session = new P2PSession(game, {
+      client: new FakeClient(),
+      now: () => t,
+      engineFactory: (s, n, humans, me, hooks, opts) => new RollbackEngine(s, n, humans, me, hooks, opts),
+      roomFactory: (o) => {
+        fake.room = new FakeRoom(o);
+        fake.room.ready = (fp) => {
+          fake.room.sent.push({ type: 'ready', physicsFp: fp });
+          return true;
+        };
+        return fake.room;
+      },
+      meshFactory: (o) => {
+        const m = new FakeMesh(o);
+        m.sendGame = (slot, buf, len) => {
+          inbox.push({ at: t + LATENCY, to: slot === 0 ? 0 : 1, kind: 'game', from: o.mySlot, bytes: Uint8Array.from(buf.subarray(0, len)) });
+          return true;
+        };
+        m.sendCtl = (slot, buf, len) => {
+          inbox.push({ at: t + LATENCY, to: slot === 0 ? 0 : 1, kind: 'ctl', from: o.mySlot, bytes: Uint8Array.from(buf.subarray(0, len)) });
+          return true;
+        };
+        m.broadcastCtl = (buf, len) => {
+          m.sendCtl(o.mySlot === 0 ? 2 : 0, buf, len);
+          return 1;
+        };
+        fake.mesh = m;
+        return m;
+      },
+    });
+    sessions.push({ session, game });
+  }
+  const slots = [
+    { slot: 0, team: 0, name: 'A', kind: 'peer', peerId: 'a', connected: true },
+    { slot: 1, team: 0, name: 'Bot 2', kind: 'bot', connected: false },
+    { slot: 2, team: 1, name: 'B', kind: 'peer', peerId: 'b', connected: true },
+    { slot: 3, team: 1, name: 'Bot 2', kind: 'bot', connected: false },
+  ];
+  for (let i = 0; i < 2; i++) sessions[i].session.joinAssigned('2v2', { kind: 'p2p', roomId: 'r', ticket: 'T', wsUrl: '/room/r' });
+  const startAt = t + 100;
+  for (let i = 0; i < 2; i++) {
+    const { session } = sessions[i];
+    // A room seed from 2^31 up: every peer must deal the same kickoff (kickoffSeedOf).
+    fakes[i].room.onWelcome({ ...welcomeFor(i === 0 ? 0 : 2, slots), seed: 2446418727, physics: rules });
+    assert.equal(session.state, 'connecting');
+    fakes[i].mesh.connected = true;
+    session.advance(0);
+    fakes[i].room.onStart(startAt, t);
+  }
+  // Both arenas read back exactly the rules' layout, and both peers said so to the room.
+  const want = MUT.toMutators(rules.values);
+  for (let i = 0; i < 2; i++) {
+    assert.deepEqual(Array.from(sims[i].getMutators()), Array.from(want), `peer ${i}: the arena runs the rules`);
+    assert.deepEqual(fakes[i].room.sent.filter((m) => m.type === 'ready'), [{ type: 'ready', physicsFp: MUT.physicsFingerprint(rules) }]);
+  }
+  assert.equal(sims[0].getMutators()[LAYOUT.M_GRAVITY_Z], Math.fround(-325));
+  const deliver = () => {
+    for (let k = 0; k < inbox.length; k++) {
+      const m = inbox[k];
+      if (m.at > t) continue;
+      inbox.splice(k--, 1);
+      const target = fakes[m.to].mesh;
+      if (m.kind === 'game') target.onGame(m.from, m.bytes);
+      else target.onCtl(m.from, m.bytes);
+    }
+  };
+  const FRAME = 1000 / 60;
+  const frames = Math.ceil((6 * 1000 + 100) / FRAME); // 3 s countdown + 3 s of play
+  for (let f = 0; f < frames; f++) {
+    t += FRAME;
+    deliver();
+    sessions[f % 2].session.advance(FRAME / 1000);
+    sessions[(f + 1) % 2].session.advance(FRAME / 1000);
+  }
+  const [A, B] = sessions;
+  assert.equal(A.session.state, 'playing');
+  assert.equal(B.session.state, 'playing');
+  assert.ok(A.session.engine.confirmedTick > 600 && B.session.engine.confirmedTick > 600);
+  assert.equal(A.session.engine.stats.desyncs + B.session.engine.stats.desyncs, 0, 'the hash votes never disagreed');
+  assert.equal(A.session.hashesDisagreed + B.session.hashesDisagreed, 0);
+  assert.ok(A.session.hashesAgreed >= 15 && B.session.hashesAgreed >= 15, `agreed ${A.session.hashesAgreed} / ${B.session.hashesAgreed}`);
+  assert.deepEqual(A.game.events, B.game.events, 'identical match flow');
+  assert.deepEqual(A.session.score, B.session.score);
+  // The kickoff boost follows the rules (spawnBoost 100): the bots' cars start full. Boost use 0: never drops.
+  const boost = sims[0].buf[sims[0].carOffset(1) + T.C_BOOST];
+  assert.ok(boost > 99, `a bot car keeps a full tank under boost use 0 (${boost})`);
 });

@@ -433,7 +433,27 @@ export function lowerQuality(q: Quality): Quality | null {
   return i > 0 ? QUALITIES[i - 1] : null;
 }
 
-/** The next tier in menu order (the quality key cycles superlow -> low -> high -> ultra -> superlow). */
-export function nextQuality(q: Quality): Quality {
-  return QUALITIES[(QUALITIES.indexOf(q) + 1) % QUALITIES.length];
+/** The tiers a player without experimental features may pick (bootTier.ts gateTierPrefs). */
+export const LOCKED_QUALITIES: readonly Quality[] = ['low', 'high', 'ultra'];
+
+/**
+ * The tiers Settings > Graphics lists: every tier for a signed-in player with experimental
+ * features on (`unlocked`, src/game/experimentalStore.ts), else all but super low. Only the pick
+ * is gated: a device still starts on super low by itself (bootTier.ts auto, the URL, the tab's
+ * recovery, a ceiling) and the safety net still falls into it (`lowerQuality`). Pure.
+ */
+export function menuQualities(unlocked: boolean): readonly Quality[] {
+  return unlocked ? QUALITIES : LOCKED_QUALITIES;
+}
+
+/**
+ * The next tier of `list` in menu order, wrapping (the legacy quality key: superlow -> low -> high
+ * -> ultra -> superlow with every tier); a tier outside the list steps to the first listed one above it.
+ */
+export function nextQuality(q: Quality, list: readonly Quality[] = QUALITIES): Quality {
+  if (list.length === 0) return q;
+  const i = list.indexOf(q);
+  if (i >= 0) return list[(i + 1) % list.length];
+  const rank = QUALITIES.indexOf(q);
+  return list.find((x) => QUALITIES.indexOf(x) > rank) ?? list[0];
 }

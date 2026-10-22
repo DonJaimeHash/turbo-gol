@@ -7,6 +7,29 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Experimental rules in custom lobbies, for signed-in players with Settings > Experimental on: the
+  host of a P2P lobby picks Standard, a built-in preset (Low gravity, Fast ball, Bouncy, Arcade)
+  or one of their own in "Rules (experimental)", with a button to edit the presets. The lobby list
+  tags such a lobby EXP (with a lock for guests, who cannot join it) and every member sees the
+  rules before the match ("Experimental rules: Low gravity · Gravity 50% · Air drag (ball) 50%"),
+  and during it in Settings > Experimental, in place of the editor.
+  Every player's game applies the same rules (the bots too) and the server checks that it did
+  before the match starts; a player whose game runs other physics is told to reload and the bots
+  take over that car. These matches count for nothing: no rank, no stats, no records, no penalty
+  for not showing up, never on a community node and never moved to a server match. Casual,
+  Competitive, server and node matches keep the standard physics, bit for bit. Pages from before
+  this version are asked to reload (P2P protocol 5).
+- The physics core of the experimental presets: the physics library can run a match with other
+  gravity, ball speed, hit strength, ball weight, bounce and air drag, car top speed, boost power
+  and use, kickoff boost, jump power, unlimited flips or double jumps, bump strength, demolitions
+  and respawn time, every value on a fixed grid and checked against hard limits so the game cannot
+  break. It costs nothing per tick (`node scripts/bot-bench.mjs --preset=<id>` compares any preset
+  with the standard physics), the ball prediction and the bots follow the rules, and a recorded
+  trace proves the standard physics did not change by a single bit. Every match, server, community
+  node and training pack still runs the standard physics.
+- `docs/experimental.md`: what Settings > Experimental unlocks, every physics value with its range,
+  why experimental matches count for nothing, how to measure what a preset costs, and what
+  deploying it needs.
 - A fourth graphics quality, Super low ("Súper bajo"), for TVs, set-top boxes and very old
   devices: about 640x360 upscaled by the screen, 30 frames per second, no edge smoothing, a
   simple sky instead of the harbour, canyon or valley behind the stadium, a painted crowd, simpler
@@ -15,6 +38,20 @@ All notable changes to Turbogol are documented here. The format follows
   at 1 to 3 frames per second), unless the player picked a quality, and on a device where
   Performance failed. Picking it, or leaving it, restarts the game (during an online match, once
   the player leaves the match); `#superlow` at the end of the address tries it without saving it.
+- Settings > Experimental, for signed-in players: one switch for features being tested. While it
+  is on, Super low can be picked in Settings > Graphics (guests and players with the switch off see
+  Performance, High and Ultra; a device that needs Super low still starts on it by itself, and a
+  saved Super low pick of a player who signs out or turns the switch off becomes Performance from
+  the next start). The account keeps the switch and up to 10 physics presets (values on a fixed
+  grid with safe limits, five read-only built-ins), with a copy on the device that syncs when the
+  connection is back. The same tab edits them: pick a preset (built-ins can be duplicated, not
+  changed), New, Duplicate, Rename, Delete, and step each value on its grid next to its standard
+  value, with a one-line summary of the changes and Reset to standard; it works with mouse,
+  keyboard, controller and touch, in English and Spanish, and every edit saves by itself.
+- Experimental free play, in Training for signed-in players with experimental features on: free
+  play with the physics of a preset (picked on the training screen, or in the pause menu's RULES,
+  applied when that screen closes), including a slower game speed. It saves no records; training
+  packs, ranked, casual and P2P matches keep the standard physics.
 - `#diag` shows why the game runs its quality, the frame rate and the time each part of a frame
   takes, and has a button that loses the graphics device to test the recovery; new address flags
   help measure a slow device (`#pr=`, `#hide=`, `#nopost`, `#norender`, `#diag=audit`, `#tv` for
@@ -77,6 +114,10 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- In about half of the peer-to-peer matches every player's game dealt its own kickoff positions
+  (the room's random seed, read as a negative number, meant "pick at random"): the games went out
+  of sync at the start and after every goal, and only caught up by copying another player's state
+  a moment later. Every player now deals the same kickoff from the room's seed.
 - Browsers on the WebGL2 fallback compile about half as many shaders while loading and after a
   quality change (each shader was compiled twice, once for nothing), so they reach the menu sooner.
 - A device that cannot draw into floating-point images on WebGL2 starts on Super low instead of

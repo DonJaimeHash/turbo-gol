@@ -16,6 +16,13 @@
  *   POST /api/me/training     Bearer (account) { records }      -> { records }: the training records of
  *                             src/game/trainingRecords.ts merged into the account (best per pack, the
  *                             client's rule) and returned; invalid entries are dropped, 20 a minute
+ *   GET  /api/me/experimental Bearer (account)                  -> ExperimentalAnswer { enabled, presets }
+ *   POST /api/me/experimental Bearer (account) { enabled }      -> ExperimentalAnswer (Settings > Experimental's switch)
+ *   POST /api/me/presets      Bearer (account) { preset }       -> ExperimentalAnswer | 400 bad_preset | 409 too_many
+ *   POST /api/me/presets/delete Bearer (account) { id }         -> ExperimentalAnswer: the physics presets of
+ *                             src/game/physicsRules.ts, MAX_PRESETS per account, one per request (a whole
+ *                             list would overrun the 4 KB body), last write wins (the server's updatedAt);
+ *                             30 writes and 60 reads a minute per account; a guest gets 403 account_required
  *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
  *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
@@ -37,12 +44,13 @@
  * origin = PUBLIC_ORIGIN when set, else the request's own.
  */
 import type { Env } from './env';
-import { error, json, readJson } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './env';
 import { base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
 import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, UserRef } from './accountStore';
+import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 
 export const ACCOUNT_SESSION_TTL_SECONDS = 60 * 60;
 export const SERVER_KDF_ITERATIONS = 100_000;
@@ -368,10 +376,67 @@ async function training(c: RouteContext): Promise<Response> {
   if (c.limited('tr:' + s.sub, LIMIT_TRAINING_PER_ACCOUNT)) return error(429, 'rate_limited');
   const b = await readJson<{ records?: unknown }>(c.request);
   if (!b || typeof b.records !== 'object' || b.records === null || Array.isArray(b.records)) return error(400, 'bad_request');
+  // Records come from the standard training packs only: never from a run with experimental rules.
+  if (carriesPhysics(b)) return error(400, EXPERIMENTAL_REFUSED, 'experimental rules record nothing');
   const r = await accountsCall(c.env, '/training', { userId: s.sub, records: b.records });
   const out = pass(r);
   out.headers.set('cache-control', 'no-store');
   return out;
+}
+
+/** Experimental writes (the switch, a preset saved or deleted) per account and minute; reads have their own budget. */
+export const LIMIT_EXPERIMENTAL_WRITES = 30;
+export const LIMIT_EXPERIMENTAL_READS = 60;
+
+function noStore(res: Response): Response {
+  const out = pass(res);
+  out.headers.set('cache-control', 'no-store');
+  return out;
+}
+
+/** GET /api/me/experimental: the switch and the presets (src/game/experimentalStore.ts syncs with it). */
+async function experimentalGet(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('xpr:' + s.sub, LIMIT_EXPERIMENTAL_READS)) return error(429, 'rate_limited');
+  return noStore(await accountsCall(c.env, '/experimental?userId=' + encodeURIComponent(s.sub)));
+}
+
+/** POST /api/me/experimental { enabled }: Settings > Experimental's switch. */
+async function experimentalSet(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('xp:' + s.sub, LIMIT_EXPERIMENTAL_WRITES)) return error(429, 'rate_limited');
+  const b = await readJson<{ enabled?: unknown }>(c.request);
+  if (!b || typeof b.enabled !== 'boolean') return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/experimental/set', { userId: s.sub, enabled: b.enabled }));
+}
+
+/**
+ * POST /api/me/presets { preset }: one preset created or replaced (src/game/physicsRules.ts
+ * parseStoredPreset: a 12-hex id, a lobby-style name, values snapped to the table's grid);
+ * 409 too_many past MAX_PRESETS. One preset is a few hundred bytes, well inside readJson's 4 KB.
+ */
+async function presetUpsert(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('xp:' + s.sub, LIMIT_EXPERIMENTAL_WRITES)) return error(429, 'rate_limited');
+  const b = await readJson<{ preset?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  const preset = parseStoredPreset(b.preset);
+  if (preset === null) return error(400, 'bad_preset', 'Preset inválido');
+  return noStore(await accountsCall(c.env, '/presets/upsert', { userId: s.sub, preset }));
+}
+
+/** POST /api/me/presets/delete { id }. */
+async function presetDelete(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('xp:' + s.sub, LIMIT_EXPERIMENTAL_WRITES)) return error(429, 'rate_limited');
+  const b = await readJson<{ id?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  if (typeof b.id !== 'string' || !PRESET_ID_RE.test(b.id)) return error(400, 'bad_preset', 'Preset inválido');
+  return noStore(await accountsCall(c.env, '/presets/delete', { userId: s.sub, id: b.id }));
 }
 
 async function me(c: RouteContext): Promise<Response> {
@@ -554,9 +619,13 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/recovery-codes') return newRecoveryCodes(c);
     if (p === '/api/me/username') return rename(c);
     if (p === '/api/me/training') return training(c);
+    if (p === '/api/me/experimental') return experimentalSet(c);
+    if (p === '/api/me/presets') return presetUpsert(c);
+    if (p === '/api/me/presets/delete') return presetDelete(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);
+    if (p === '/api/me/experimental') return experimentalGet(c);
     if (p === '/api/leaderboard') return leaderboard(c, url);
     if (p === '/api/ranked/result') return rankedResult(c, url);
     const o = /^\/api\/auth\/oauth\/(google|discord)\/(start|callback)$/.exec(p);

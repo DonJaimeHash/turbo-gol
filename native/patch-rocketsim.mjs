@@ -13,7 +13,10 @@
 //      (processAllTriangles is not virtual in this Bullet fork; same triangles, ~60x faster setup).
 //   2. RocketSim Arena::_cars hashed by car id instead of by pointer: iteration order (car updates,
 //      pad pickups, kickoff assignment) independent of heap addresses -> deterministic replays.
-// Both are marked "// PATCH (turbogol)" in the patched files, as the zlib license asks for altered
+//   3. RocketSim MutatorConfig::carMaxSpeed (stock RLConst::CAR_MAX_SPEED): Car::_FinishPhysicsTick
+//      clamps the car to it and Car::_PostTickUpdate scales the supersonic thresholds with it. At the
+//      stock value both run their original constant expressions (bit-identical stock physics).
+// All are marked "// PATCH (turbogol)" in the patched files, as the zlib license asks for altered
 // Bullet sources.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -51,6 +54,51 @@ const PATCHES = [
     file: 'src/Sim/Arena/Arena.h',
     find: '\tconst std::unordered_set<Car*>& GetCars() { return _cars; }\n',
     replace: '\tconst std::unordered_set<Car*, CarIdHash>& GetCars() { return _cars; }\n',
+  },
+  // 3. The car's top speed as a mutator (Turbogol's experimental physics presets set it through
+  //    rs_set_mutators). Every other MutatorConfig field the presets use already replaces its
+  //    constant in RocketSim.
+  {
+    file: 'src/Sim/MutatorConfig/MutatorConfig.h',
+    find: '\t\tballMaxSpeed = RLConst::BALL_MAX_SPEED,\n',
+    replace:
+      '\t\tballMaxSpeed = RLConst::BALL_MAX_SPEED,\n' +
+      '\t\t// PATCH (turbogol): the car top speed. Car::_FinishPhysicsTick clamps to it and\n' +
+      '\t\t// Car::_PostTickUpdate scales the supersonic thresholds by carMaxSpeed / CAR_MAX_SPEED.\n' +
+      '\t\tcarMaxSpeed = RLConst::CAR_MAX_SPEED,\n',
+  },
+  {
+    file: 'src/Sim/MutatorConfig/MutatorConfig.h',
+    find: 'demoMode, enableTeamDemos, goalBaseThresholdY\n',
+    replace: 'demoMode, enableTeamDemos, goalBaseThresholdY, carMaxSpeed /* PATCH (turbogol) */\n',
+  },
+  {
+    file: 'src/Sim/Car/Car.cpp',
+    find: '\t\tif (_internalState.isSupersonic && _internalState.supersonicTime < RLConst::SUPERSONIC_MAINTAIN_MAX_TIME) {\n',
+    replace:
+      '\t\t// PATCH (turbogol): a carMaxSpeed mutator scales the supersonic thresholds by\n' +
+      '\t\t// carMaxSpeed / CAR_MAX_SPEED. At the stock top speed the original branches below run.\n' +
+      '\t\tif (mutatorConfig.carMaxSpeed != RLConst::CAR_MAX_SPEED) {\n' +
+      '\t\t\tfloat speedScale = mutatorConfig.carMaxSpeed / RLConst::CAR_MAX_SPEED;\n' +
+      '\t\t\tfloat maintainMinSpeed = RLConst::SUPERSONIC_MAINTAIN_MIN_SPEED * speedScale;\n' +
+      '\t\t\tfloat startSpeed = RLConst::SUPERSONIC_START_SPEED * speedScale;\n' +
+      '\t\t\tif (_internalState.isSupersonic && _internalState.supersonicTime < RLConst::SUPERSONIC_MAINTAIN_MAX_TIME)\n' +
+      '\t\t\t\t_internalState.isSupersonic = (speedSquared >= maintainMinSpeed * maintainMinSpeed);\n' +
+      '\t\t\telse\n' +
+      '\t\t\t\t_internalState.isSupersonic = (speedSquared >= startSpeed * startSpeed);\n' +
+      '\t\t} else if (_internalState.isSupersonic && _internalState.supersonicTime < RLConst::SUPERSONIC_MAINTAIN_MAX_TIME) {\n',
+  },
+  {
+    file: 'src/Sim/Car/Car.cpp',
+    find: '\t\tif (vel.length2() > (CAR_MAX_SPEED * UU_TO_BT) * (CAR_MAX_SPEED * UU_TO_BT))\n',
+    replace:
+      '\t\t// PATCH (turbogol): the top speed is the carMaxSpeed mutator. At the stock value the\n' +
+      '\t\t// original constant expression below runs.\n' +
+      '\t\tif (mutatorConfig.carMaxSpeed != CAR_MAX_SPEED) {\n' +
+      '\t\t\tfloat carMaxSpeedBT = mutatorConfig.carMaxSpeed * UU_TO_BT;\n' +
+      '\t\t\tif (vel.length2() > carMaxSpeedBT * carMaxSpeedBT)\n' +
+      '\t\t\t\tvel = vel.normalized() * carMaxSpeedBT;\n' +
+      '\t\t} else if (vel.length2() > (CAR_MAX_SPEED * UU_TO_BT) * (CAR_MAX_SPEED * UU_TO_BT))\n',
   },
 ];
 
@@ -103,4 +151,4 @@ for (const dir of ['src', 'libsrc']) {
 }
 // Files that disappeared upstream (after a submodule bump) must not linger in the build tree.
 if (existsSync(out)) for (const full of walk(out)) if (!wanted.has(full)) rmSync(full);
-console.log(`RocketSim prepared in ${out}: ${PATCHES.length} patches, ${written} files written`);
+console.log(`RocketSim prepared in ${out}: ${PATCHES.length} replacements, ${written} files written`);

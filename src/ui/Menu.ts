@@ -23,12 +23,13 @@ import { t } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
 import type { TrainingRecordsView } from '../game/trainingStore';
+import type { ExperimentalStore } from '../game/experimentalStore';
 import type { PopulationAnswer, RegionId } from '../net/account';
 import { REGIONS, isRegion } from '../net/account';
 import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
-import type { Difficulty } from '../render/Hud';
+import type { Difficulty, SettingsTab } from '../render/Hud';
 import type { ThemeId } from '../render/theme';
 import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 
@@ -62,12 +63,21 @@ export interface MenuConfig {
   online: boolean;
 }
 
+/** What the menus see of the experimental features (Settings > Experimental). */
+export interface ExperimentalMenuView {
+  /** Signed in with the switch on: experimental free play and a lobby host's rules row are offered. */
+  readonly unlocked: boolean;
+  /** The player's presets (the built-ins only for a guest) and the one picked last (lastUsed). */
+  readonly store: ExperimentalStore;
+}
+
 /** What the menus need from the Game. */
 export interface MenuHost {
   readonly accounts: AccountClient;
   readonly lobby: LobbyClient;
   /** Training records of the current player (guest: this browser; account: synced with the server). */
   readonly training: TrainingRecordsView;
+  readonly experimental: ExperimentalMenuView;
   config(): Promise<MenuConfig>;
   /** The guest name (online as a guest) and its setter. */
   guestName(): string;
@@ -84,14 +94,21 @@ export interface MenuHost {
   setTheme(id: ThemeId): void;
   /** An offline friendly match against the bots. */
   playFriendly(mode: GameMode, difficulty: Difficulty): void;
-  startTraining(id: string): void;
+  /**
+   * Free play or a shot pack; `opts.rules` (a preset id) makes free play experimental for an
+   * unlocked player (packs always run stock physics).
+   */
+  startTraining(id: string, opts?: { rules?: string }): void;
   search(req: SearchRequest): void;
   cancelSearch(): void;
   searchView(): SearchView;
   /** A custom lobby started: join this member's match. */
   playLobbyMatch(result: QueueResult | QueueResultP2p): void;
-  /** The settings screen (the Hud's: controls, camera, gameplay, audio, graphics); `onClose` when it is left. */
-  openSettings(onClose: () => void): void;
+  /**
+   * The settings screen (the Hud's: controls, camera, gameplay, audio, graphics, experimental),
+   * on `opts.tab` when given; `onClose` when it is left.
+   */
+  openSettings(onClose: () => void, opts?: { tab?: SettingsTab }): void;
   /** One line about the build (WebGPU / RocketSim version), shown in the footer. */
   readonly info: string;
 }
@@ -213,7 +230,7 @@ export class Menu {
     container.appendChild(this.root);
     this.nav = new FocusNav(() => this.modalEl ?? this.stack.at(-1)?.el ?? null);
     window.addEventListener('keydown', (e) => this.onKey(e));
-    host.accounts.onChange = () => this.refreshChrome();
+    host.accounts.subscribe(() => this.refreshChrome());
     void host
       .config()
       .then((c) => {

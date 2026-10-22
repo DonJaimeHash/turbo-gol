@@ -25,7 +25,7 @@ red.think(state, outs);                       // outs[i] = controls for slots[i]
 |-------------|----------|
 | `Bot.ts`    | `Bot` class (one car), `TeamContext`, difficulty table, tunables, pure helpers (`predictBallAt`, `firstReachable`, `steerToward`, `shotHitPoint`, `aimInAir`) |
 | `Team.ts`   | `BotTeam`: ranks the teammates every tick, assigns roles / kickoff duties through `bot.teamCtx`, `TEAM_TUNING` |
-| `math.ts`   | allocation-free `Float32Array(3)` vector helpers, the car driving model from RocketSim's constants (turn radius / curvature, ground acceleration, jump numbers), seeded `Rng` |
+| `math.ts`   | allocation-free `Float32Array(3)` vector helpers, the car driving model from RocketSim's constants (turn radius / curvature, ground acceleration, jump numbers), the `BotPhysics` profile (`STOCK_BOT_PHYSICS`), seeded `Rng` |
 | `../../tests/bot.test.mjs` | node self-check of one bot with a fake state buffer (no wasm needed): `node --test tests/bot.test.mjs` |
 | `../../tests/bot-team.test.mjs` | node self-check of `BotTeam` (roles, hysteresis, kickoff duties, lane / yield rules, 1-slot equivalence) |
 
@@ -38,7 +38,8 @@ export type BotRole = 'attacker' | 'support' | 'defender';
 export type KickoffDuty = 'go' | 'cheat' | 'stay';
 
 export class Bot {
-  constructor(opts: { team: Team; difficulty?: Difficulty; seed?: number });
+  constructor(opts: { team: Team; difficulty?: Difficulty; seed?: number; physics?: BotPhysics });
+  readonly physics: BotPhysics;  // STOCK_BOT_PHYSICS unless a preset gave another profile
   readonly team: Team;
   readonly difficulty: Difficulty;
   readonly role: BotRole;        // = teamCtx.role ('attacker' for a standalone bot)
@@ -60,7 +61,8 @@ export class TeamContext {       // owned by the Bot, all vectors preallocated
 }
 
 export class BotTeam {
-  constructor(opts: { team: Team; difficulty: Difficulty; seed?: number });
+  constructor(opts: { team: Team; difficulty: Difficulty; seed?: number; physics?: BotPhysics });
+  readonly physics: BotPhysics;   // handed to every member bot and used for the intercept estimates
   readonly team: Team;
   readonly size: number;          // bots driven
   readonly passiveCount: number;  // passive members (the human teammate): ranked, never driven
@@ -77,7 +79,7 @@ export class BotTeam {
 
 // pure helpers
 predictBallAt(state, tSeconds, out: Float32Array /*6*/): Float32Array   // [x,y,z,vx,vy,vz]
-firstReachable(state, carPos, carVel, carFwd, boost, out /*6*/, maxZ = 300, step = 2): number // seconds or -1
+firstReachable(state, carPos, carVel, carFwd, boost, out /*6*/, maxZ = 300, step = 2, phys = STOCK_BOT_PHYSICS): number // seconds or -1
 steerToward(fwd, right, from, to, gain = TUNING.steerGain): number       // clamped steer
 shotHitPoint(ballPos, goalTarget, outHit, outDir, offset = CONTACT_DIST + hitMargin): Vec3
 aimInAir(fwd, right, up, angVel, dir, out: CarControls): void           // PD pitch/yaw/roll
@@ -419,6 +421,26 @@ attacker's time within 450 uu of the ball with no touch in the last second over 
 * jump: +291.7 uu/s instantly, +1458 uu/s² while held (≤ 0.2 s); dodge impulse 500 uu/s.
 * `firstReachable` integrates the straight-line reachable distance once per call (coarse, 2 ticks)
   and adds a turning penalty `angle * turnRadius(clamp(speed, 400, 1400))` (capped at 2500 uu).
+
+### Physics profile (`BotPhysics`)
+
+The numbers above that an experimental physics preset can change (gravity, first-jump impulse and
+hold acceleration, the double-jump impulse, boost acceleration on the ground / in the air, boost
+use per second, the top speed) are read from a `BotPhysics` profile instead of module constants:
+the reach model (`firstReachable`, `groundAccel`, `straightDistance`), the aerial planner (gravity
+term, jump velocities, the boost-needed sum; the jump-hold velocities `aerialJumpHoldVel*` of TUNING
+scale with `jumpHoldAccel / JUMP_HOLD_ACCEL`, exactly 1 for stock) and the team score
+(`ballDist / maxBoostSpeed`). Every
+`Bot` and `BotTeam` takes `physics` in its options and keeps it for its life. The default is
+`STOCK_BOT_PHYSICS`, the old constants themselves, so stock bots compute bit-identical numbers (the
+golden trace, `tests/stock-trace.test.mjs`, replays a 2-minute 3v3 hash for hash). A preset's
+profile comes from `botPhysicsOf(values)` (`src/sim/mutators.ts`): doubles built from the preset's
+integers, identical on every peer; the double jump keeps the constant, as in RocketSim. The ball
+needs no profile: its trajectory comes from the wasm's prediction, which shares the preset. Not
+adapted (yet): the TUNING heights (`groundMaxBallZ`, `jumpMinBallZ`, the aerial heights) and
+`CONTACT_DIST` stay tuned for stock, so bots play worse under extreme presets but stay
+deterministic and finite (`tests/mutators-extremes.test.mjs`). Same cost: a field read instead of a
+constant.
 
 ## Cost
 

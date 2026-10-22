@@ -3,13 +3,16 @@
  * username and password (the password is turned into clientPasswordKey here and never sent),
  * Google / Discord sign-in (a full-page redirect; the server answers back to `/#auth=<result>`),
  * the short Bearer session (1 h) refreshed from the HttpOnly refresh cookie, the profile (/api/me:
- * ratings per playlist, ranked ban), the leaderboard, the rating change of a ranked match and the
- * account's training records (/api/me/training).
+ * ratings per playlist, ranked ban, the experimental switch), the leaderboard, the rating change of
+ * a ranked match, the account's training records (/api/me/training) and its experimental switch
+ * and physics presets (/api/me/experimental, /api/me/presets: src/game/experimentalStore.ts).
  *
  * Persistence: the refresh token is an HttpOnly cookie the page cannot read; localStorage only keeps
- * a hint (ACCOUNT_HINT_KEY: "this browser was signed in as X") so a guest's page load does not
- * spend a refresh request. NetClient asks `sessionForQueue()` before using its guest session: a
- * signed-in player queues, joins lobbies and plays under the account.
+ * a hint (ACCOUNT_HINT_KEY: "this browser was signed in as X", `{ name, id }`) so a guest's page
+ * load does not spend a refresh request, and so the boot knows whose experimental switch to read
+ * before the account is restored (main.ts; a hint from before the id counts as nobody's). NetClient
+ * asks `sessionForQueue()` before using its guest session: a signed-in player queues, joins lobbies
+ * and plays under the account. Every change reaches each `subscribe`r (the menus, the Game).
  *
  * Errors reject with AccountError, its message already the player's text: a server error code by
  * its error.account.* text (serverText, src/i18n.ts), else the server's message, else
@@ -18,9 +21,11 @@
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
 import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
+import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { STORAGE_PREFIX } from '../brand';
+import { MAX_PRESETS, parsePresetList } from '../game/physicsRules';
+import type { StoredPreset } from '../game/physicsRules';
 import { parseTrainingRecords } from '../game/trainingRecords';
 import type { TrainingRecords } from '../game/trainingRecords';
 import { serverText, t } from '../i18n';
@@ -109,13 +114,36 @@ export interface RankedWaitOptions {
   onVerifying?: () => void;
 }
 
+/** What ACCOUNT_HINT_KEY holds: the name, and the account id since experimental features (null in an older hint). */
+export interface AccountHint {
+  name: string;
+  id: string | null;
+}
+
+/**
+ * The hint this browser keeps ("signed in as X"), read without an AccountClient (main.ts reads it
+ * before the account is restored: the boot tier, src/game/experimentalStore.ts). Null when none or
+ * unreadable.
+ */
+export function readAccountHint(storage: Pick<StorageLike, 'getItem'> | null): AccountHint | null {
+  try {
+    const raw = storage?.getItem(ACCOUNT_HINT_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw) as { name?: unknown; id?: unknown };
+    if (typeof o.name !== 'string') return null;
+    return { name: o.name, id: typeof o.id === 'string' && /^[0-9a-f]{16}$/.test(o.id) ? o.id : null };
+  } catch {
+    return null;
+  }
+}
+
 export class AccountClient {
   /** The signed-in account's Bearer session, null for a guest. */
   account: AccountSession | null = null;
   /** Last /api/me answer (null for a guest or before the first fetch). */
   me: MeInfo | null = null;
-  /** Sign-in / sign-out / rename / profile refresh happened (menus redraw). */
-  onChange: (() => void) | null = null;
+  /** Sign-in / sign-out / rename / profile refresh: every `subscribe`r is called (the menus redraw, the Game re-checks). */
+  private readonly listeners = new Set<() => void>();
 
   private readonly apiBase: string;
   private readonly fetchFn: FetchLike;
@@ -140,32 +168,42 @@ export class AccountClient {
 
   /** The name this browser was last signed in with (the refresh cookie probably still works), null for a guest. */
   get hintName(): string | null {
-    try {
-      const raw = this.storage?.getItem(ACCOUNT_HINT_KEY);
-      if (!raw) return null;
-      const o = JSON.parse(raw) as { name?: unknown };
-      return typeof o.name === 'string' ? o.name : null;
-    } catch {
-      return null;
-    }
+    return readAccountHint(this.storage)?.name ?? null;
   }
 
-  private setHint(name: string | null): void {
+  /** The account id of the hint (null for a guest, or a hint written before it carried the id). */
+  get hintId(): string | null {
+    return readAccountHint(this.storage)?.id ?? null;
+  }
+
+  private setHint(s: AccountSession | null): void {
     try {
-      if (name === null) this.storage?.removeItem(ACCOUNT_HINT_KEY);
-      else this.storage?.setItem(ACCOUNT_HINT_KEY, JSON.stringify({ name }));
+      if (s === null) this.storage?.removeItem(ACCOUNT_HINT_KEY);
+      else this.storage?.setItem(ACCOUNT_HINT_KEY, JSON.stringify({ name: s.name, id: s.playerId } satisfies AccountHint));
     } catch {
       /* storage disabled */
     }
   }
 
+  /** Call `fn` after every account change (sign-in / out, rename, profile refresh); returns the unsubscribe. */
+  subscribe(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
   private changed(): void {
-    if (this.onChange) this.onChange();
+    for (const fn of [...this.listeners]) {
+      try {
+        fn();
+      } catch (err) {
+        console.error('[accounts] listener failed', err);
+      }
+    }
   }
 
   private adopt(s: AccountSession): AccountSession {
     this.account = s;
-    this.setHint(s.name);
+    this.setHint(s);
     this.changed();
     return s;
   }
@@ -376,6 +414,51 @@ export class AccountClient {
     }
     const r = await this.jsonOrFail<{ records?: unknown }>(res);
     return parseTrainingRecords(r.records);
+  }
+
+  // ---- experimental features (src/game/experimentalStore.ts) -------------------------------------
+
+  /**
+   * A Bearer call of the experimental routes, for the account signed in when the call starts (the
+   * store's copy is per account); answers parsed leniently. A 401 refreshes the session once and
+   * sends the call again with the new one (a write is not lost to a session that expired early); a
+   * second 401, a refresh that signs out, or a session of another account rejects. The refresh
+   * cookie is shared by the tabs (one may have signed in as someone else meanwhile), so a refresh
+   * can hand back another account: one player's switch or preset must never reach it.
+   */
+  private async experimentalCall(path: string, body?: unknown): Promise<ExperimentalAnswer> {
+    const owner = this.account?.playerId ?? null;
+    const refused = (): AccountError => new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+    const first = owner === null ? null : await this.sessionForQueue();
+    if (first === null || first.playerId !== owner) throw refused();
+    let res = await this.call(path, body, first.session);
+    if (res.status === 401) {
+      const s = await this.sessionRejected();
+      if (s === null || s.session === first.session || s.playerId !== owner) throw refused();
+      res = await this.call(path, body, s.session);
+      if (res.status === 401) throw refused();
+    }
+    const r = await this.jsonOrFail<{ enabled?: unknown; presets?: unknown }>(res);
+    return { enabled: r.enabled === true, presets: parsePresetList(r.presets, MAX_PRESETS * 2) };
+  }
+
+  /** The account's switch and presets (GET /api/me/experimental). */
+  fetchExperimental(): Promise<ExperimentalAnswer> {
+    return this.experimentalCall('/api/me/experimental');
+  }
+
+  /** Settings > Experimental's switch on the account; resolves the account's state after it. */
+  setExperimental(enabled: boolean): Promise<ExperimentalAnswer> {
+    return this.experimentalCall('/api/me/experimental', { enabled });
+  }
+
+  /** Create or replace one preset (409 too_many past MAX_PRESETS: AccountError code 'too_many'). */
+  upsertPreset(preset: StoredPreset): Promise<ExperimentalAnswer> {
+    return this.experimentalCall('/api/me/presets', { preset: { id: preset.id, name: preset.name, values: preset.values } });
+  }
+
+  deletePreset(id: string): Promise<ExperimentalAnswer> {
+    return this.experimentalCall('/api/me/presets/delete', { id });
   }
 
   async leaderboard(playlist: Playlist): Promise<LeaderboardAnswer> {

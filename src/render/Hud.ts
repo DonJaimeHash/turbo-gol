@@ -3,7 +3,8 @@
  * segmented boost bar (bottom left, the speed readout sits above it in debug mode), fps, camera
  * mode, off-screen ball indicator, countdown, banners, the pause menu, the Tab scoreboard, a
  * pointer-lock hint, the start menu and the settings screen (rebinding for keyboard/mouse and
- * controller, camera and gameplay sliders, the master volume, the graphics quality). Every
+ * controller, camera and gameplay sliders, the master volume, the graphics quality, the
+ * account-only experimental switch and physics preset editor: experimentalPage.ts). Every
  * per-frame setter caches its last value and touches the DOM only when something changed, so
  * calling them every frame costs nothing and allocates nothing.
  *
@@ -46,7 +47,8 @@ import { MODES, type GameMode } from '../sim/constants';
 import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
 import { pageFlags } from './hashFlags';
-import { QUALITIES, type Quality } from './quality';
+import { QUALITIES, nextQuality, type Quality } from './quality';
+import { buildExperimentalPage, type ExperimentalOptions, type ExperimentalPage } from './experimentalPage';
 import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from '../game/Match';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -110,6 +112,16 @@ export interface MenuOptions {
   subtitle?: string;
   difficulty: Difficulty;
   quality: Quality;
+  /**
+   * The tiers Settings > Graphics lists (quality.ts menuQualities: Super low only for a signed-in
+   * player with experimental features on); every tier when absent. A running tier outside the
+   * list lights no chip and shows `qualityNote` under the row.
+   */
+  qualities?: readonly Quality[];
+  /** The line under the quality row while the running tier is not listed (default settings.qualityAuto). */
+  qualityNote?: string;
+  /** Settings > Experimental (absent: the page shows the guest's locked line). */
+  experimental?: ExperimentalOptions;
   /** Game mode shown in the Mode row (1v1 / 2v2 / 3v3). */
   mode: GameMode;
   onPlay: (difficulty: Difficulty, quality: Quality, mode: GameMode) => void;
@@ -163,7 +175,7 @@ export interface MenuOptions {
  */
 export type MenuAction = 'accept' | 'left' | 'right' | 'quality' | 'mode' | 'settings' | 'up' | 'down' | 'back' | 'online';
 
-export type SettingsTab = 'kbm' | 'pad' | 'camera' | 'gameplay' | 'audio' | 'graphics';
+export type SettingsTab = 'kbm' | 'pad' | 'camera' | 'gameplay' | 'audio' | 'graphics' | 'experimental';
 
 /**
  * One entry of the pause menu (setPaused): RESUME, SETTINGS, QUIT, and the training entries in
@@ -239,7 +251,38 @@ const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: Key }> = [
   { id: 'gameplay', label: 'settings.tabGameplay' },
   { id: 'audio', label: 'settings.tabAudio' },
   { id: 'graphics', label: 'settings.tabGraphics' },
+  // Always listed (no hidden-tab logic for the strip and Q / E): a guest's says it is locked.
+  { id: 'experimental', label: 'settings.tabExperimental' },
 ];
+
+/** The Experimental tab's label: a lock for a guest, like Competitive's. */
+export function experimentalTabLabel(available: boolean): string {
+  return available ? t('settings.tabExperimental') : `${t('settings.tabExperimental')} 🔒`;
+}
+
+/**
+ * A segmented choice whose options may be partly listed (Settings > Graphics: Super low only when
+ * unlocked): the value `dir` steps reach from `value` among `listed`, in the order of `all`. Left /
+ * right (-1 / +1) stop at the ends; accept (0) wraps. From a value that is not listed (a device
+ * running Super low on its own) the first step lands on the nearest listed option that way (none
+ * below: null), accept on the first one above it. Null: nothing to pick. Pure.
+ */
+export function choiceStep<T>(all: readonly T[], listed: readonly T[], value: T, dir: -1 | 0 | 1): T | null {
+  const opts = all.filter((v) => listed.includes(v));
+  if (opts.length === 0) return null;
+  const i = opts.indexOf(value);
+  if (i >= 0) {
+    if (dir === 0) return opts[(i + 1) % opts.length];
+    const j = i + dir;
+    return j >= 0 && j < opts.length ? opts[j] : null;
+  }
+  const rank = all.indexOf(value);
+  const above = opts.find((v) => all.indexOf(v) > rank);
+  if (dir === 1) return above ?? null;
+  if (dir === 0) return above ?? opts[0];
+  const below = opts.filter((v) => all.indexOf(v) < rank);
+  return below.length > 0 ? below[below.length - 1] : null;
+}
 
 /** The line under the Graphics tab's quality row, per tier. */
 const QUALITY_HINTS: Readonly<Record<Quality, Key>> = {
@@ -333,7 +376,8 @@ interface BindRow {
 
 interface PageBuild {
   page: HTMLElement;
-  items: FocusItem[];
+  /** The page's focus stops; a function when they depend on what the page shows now. */
+  items: FocusItem[] | (() => FocusItem[]);
   /** Footer buttons of the page (shown only while its tab is active). */
   actions: HTMLElement;
   /** Their focus stop; null when the page has no footer buttons. */
@@ -506,7 +550,9 @@ export class Hud {
   private readonly tabButtons: HTMLButtonElement[] = [];
   private pages: Record<SettingsTab, HTMLElement> | null = null;
   private pageActions: Record<SettingsTab, HTMLElement> | null = null;
-  private tabItems: Record<SettingsTab, FocusItem[]> | null = null;
+  /** Each tab's focus stops, read when the tab is selected or refreshed (a page may show or hide rows). */
+  private tabItems: Record<SettingsTab, () => FocusItem[]> | null = null;
+  private experimentalPage: ExperimentalPage | null = null;
   private readonly settingsRing = new FocusRing();
   private readonly bindRows: BindRow[] = [];
   private captureRow: BindRow | null = null;
@@ -1302,7 +1348,7 @@ export class Hud {
    * hides the overlay again and calls `onClose`. Rebinding, sliders and presets work as before
    * through `opts` (settings, input, onSettingsChanged, onCameraPreset).
    */
-  openSettingsScreen(opts: MenuOptions, onClose: () => void): void {
+  openSettingsScreen(opts: MenuOptions, onClose: () => void, tab?: SettingsTab): void {
     this.menuOptions = opts;
     this.quality = opts.quality;
     if (this.menu === null) this.buildMenu();
@@ -1310,8 +1356,10 @@ export class Hud {
     menu.classList.add('hud-menu-settings-only');
     menu.hidden = false;
     this.settingsOnlyClose = onClose;
+    // `tab`: open on that tab (a screen that sends the player to one: the presets' editor).
+    if (tab !== undefined) this.tab = tab;
     // A finger has no use for the binding tabs: touch mode opens on Graphics instead.
-    if ((this.tab === 'kbm' || this.tab === 'pad') && document.documentElement.classList.contains('tg-touch')) this.tab = 'graphics';
+    else if ((this.tab === 'kbm' || this.tab === 'pad') && document.documentElement.classList.contains('tg-touch')) this.tab = 'graphics';
     this.openSettings();
   }
 
@@ -1328,6 +1376,14 @@ export class Hud {
   menuAction(action: MenuAction): void {
     if (!this.menuVisible || this.menuOptions === null || this.captureRow !== null) return;
     if (this.settingsOpen) {
+      // A text field of the screen is being typed in (the preset name: the keyboard is up): pad A
+      // or B leaves it (that saves it), up / down leave it and move on; left / right are the field's.
+      const active = typeof document !== 'undefined' ? document.activeElement : null;
+      if (active instanceof HTMLInputElement && active.type === 'text' && this.settingsPanel !== null && this.settingsPanel.contains(active)) {
+        if (action === 'left' || action === 'right') return;
+        active.blur();
+        if (action !== 'up' && action !== 'down') return;
+      }
       if (dispatchFocus(this.settingsRing, action)) return;
       if (action === 'back') this.closeSettings();
       else if (action === 'quality' || action === 'settings') this.cycleTab(1);
@@ -1567,12 +1623,17 @@ export class Hud {
   }
 
   /**
-   * Step the tier in menu order (superlow -> low -> high -> ultra, wrapping): +1 for Q, a click, accept or
-   * right on the Quality row, -1 for left.
+   * Step the tier in menu order among the listed ones (MenuOptions.qualities: superlow -> low ->
+   * high -> ultra when unlocked, wrapping): +1 for Q, a click, accept or right on the Quality row,
+   * -1 for left.
    */
   private stepQuality(d: 1 | -1): void {
-    const n = QUALITIES.length;
-    this.quality = QUALITIES[(QUALITIES.indexOf(this.quality) + d + n) % n];
+    const list = this.menuOptions?.qualities ?? QUALITIES;
+    if (d === 1) this.quality = nextQuality(this.quality, list);
+    else {
+      const back = [...list].reverse();
+      this.quality = nextQuality(this.quality, back.length > 0 ? back : list);
+    }
     this.refreshMenu();
     const opts = this.menuOptions;
     if (opts !== null && opts.onQualityChange) opts.onQualityChange(this.quality);
@@ -1635,6 +1696,8 @@ export class Hud {
     this.refreshBindLabels('kbm');
     this.refreshBindLabels('pad');
     this.refreshSliders();
+    this.refreshTabLabels();
+    if (this.experimentalPage !== null) this.experimentalPage.disarm();
     this.selectTab(this.tab);
     this.updatePadStatus();
     if (this.padTimer === 0) this.padTimer = window.setInterval(() => this.updatePadStatus(), 500);
@@ -1645,6 +1708,7 @@ export class Hud {
       this.cancelCapture(); // BACK during a capture aborts the capture, not the screen
       return;
     }
+    if (this.experimentalPage !== null) this.experimentalPage.disarm();
     const only = this.settingsOnlyClose;
     if (only !== null) {
       this.showMainPanel();
@@ -1693,18 +1757,24 @@ export class Hud {
       gameplay: this.buildGameplayPage(),
       audio: this.buildAudioPage(),
       graphics: this.buildGraphicsPage(),
+      experimental: this.buildExperimentalPage(),
     };
     const foot = el('div', 'hud-settings-foot');
     const pages = {} as Record<SettingsTab, HTMLElement>;
     const pageActions = {} as Record<SettingsTab, HTMLElement>;
-    const tabItems = {} as Record<SettingsTab, FocusItem[]>;
+    const tabItems = {} as Record<SettingsTab, () => FocusItem[]>;
     for (const tab of SETTINGS_TABS) {
       const b = built[tab.id];
       body.appendChild(b.page);
       foot.appendChild(b.actions);
       pages[tab.id] = b.page;
       pageActions[tab.id] = b.actions;
-      tabItems[tab.id] = b.footer !== null ? [tabsItem, ...b.items, b.footer] : [tabsItem, ...b.items];
+      const items = b.items;
+      const footer = b.footer;
+      tabItems[tab.id] = () => {
+        const list = typeof items === 'function' ? items() : items;
+        return footer !== null ? [tabsItem, ...list, footer] : [tabsItem, ...list];
+      };
     }
     panel.appendChild(body);
 
@@ -1889,8 +1959,10 @@ export class Hud {
   }
 
   /**
-   * Graphics: the quality tier (super low / low / high / ultra), a line about the selected one. A pick goes to
-   * MenuOptions.onQualityChange, which runs the switch behind the loading screen.
+   * Graphics: the quality tier, a line about the selected one. Lists MenuOptions.qualities (Super
+   * low only for a signed-in player with experimental features on); a running tier outside the
+   * list (a TV running Super low on its own) lights no chip and says so (MenuOptions.qualityNote).
+   * A pick goes to MenuOptions.onQualityChange, which runs the switch behind the loading screen.
    */
   private buildGraphicsPage(): PageBuild {
     const page = el('div', 'hud-settings-page');
@@ -1907,28 +1979,73 @@ export class Hud {
       QUALITIES.map((q) => ({ value: q, label: t(`quality.${q}`) })),
       () => this.quality,
       (q) => {
-        if (q === this.quality) return;
+        // The lit chip too: it makes the running tier the player's pick when the prefs hold
+        // another one (a Super low pick locked earlier this session; Game.switchQuality).
         this.quality = q;
         const opts = this.menuOptions;
         if (opts !== null && opts.onQualityChange) opts.onQualityChange(q);
       },
-      (q) => (hint.textContent = q === this.qualityPending ? t('settings.qualityAfterOnline') : hints[q]),
+      (q, listed) => {
+        if (!listed) hint.textContent = this.menuOptions?.qualityNote ?? t('settings.qualityAuto');
+        else hint.textContent = q === this.qualityPending ? t('settings.qualityAfterOnline') : hints[q];
+      },
+      () => this.menuOptions?.qualities ?? QUALITIES,
     );
     page.append(quality.row, hint);
     return { page, items: [quality.item], actions: el('div', 'hud-settings-actions'), footer: null };
   }
 
   /**
+   * Experimental: experimentalPage.ts (a locked line for a guest; the switch and the preset editor
+   * for a signed-in player). Its rows come and go with the switch and the preset picked, so its
+   * focus stops are read again whenever it asks (`relayout`); its footer button (Reset to standard)
+   * is one of those stops, not a fixed footer.
+   */
+  private buildExperimentalPage(): PageBuild {
+    const built = buildExperimentalPage(
+      {
+        line: (className, text) => el('div', className, text),
+        button: (className, text, onClick) => {
+          const b = button(className, text);
+          b.addEventListener('click', onClick);
+          return b;
+        },
+        textInput: (className, maxLength, onCommit) => {
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.className = className;
+          input.maxLength = maxLength;
+          input.spellcheck = false;
+          input.autocomplete = 'off';
+          input.enterKeyHint = 'done';
+          input.addEventListener('change', () => onCommit(input.value));
+          return input;
+        },
+        toggleRow: (label, get, set) => this.toggleRow(label, get, set),
+        bindFocus: (target, item) => target.addEventListener('pointerdown', () => this.settingsRing.focusItem(item)),
+        relayout: () => {
+          if (this.settingsOpen && this.tab === 'experimental') this.refreshFocusItems();
+        },
+      },
+      () => this.menuOptions?.experimental ?? null,
+    );
+    this.experimentalPage = built;
+    return { page: built.page, items: () => built.items(), actions: built.actions, footer: null };
+  }
+
+  /**
    * "Label   [A] [B] [C]": a segmented choice. Left / right step (no wrap: a quality switch is a
-   * reload, ultra never jumps to low), accept steps with wrap, a click picks. `onShow` gets the
-   * value after every refresh (a line about it).
+   * reload, ultra never jumps to low), accept steps with wrap, a click picks. `listed` (default
+   * every option) hides the others; a value outside it lights nothing (choiceStep). `onShow` gets
+   * the value after every refresh, and whether it is listed (a line about it).
    */
   private choiceRow<T>(
     label: string,
     options: ReadonlyArray<{ value: T; label: string }>,
     get: () => T,
     set: (v: T) => void,
-    onShow?: (v: T) => void,
+    onShow?: (v: T, listed: boolean) => void,
+    listed?: () => readonly T[],
   ): { row: HTMLElement; item: FocusItem } {
     const row = el('div', 'hud-settings-row hud-choice-row');
     row.appendChild(el('span', 'hud-settings-label', label));
@@ -1936,26 +2053,30 @@ export class Hud {
     const buttons = options.map((o) => button('hud-choice-opt', o.label));
     ctl.append(...buttons);
     row.appendChild(ctl);
-    const index = (): number => Math.max(0, options.findIndex((o) => o.value === get()));
+    const all = options.map((o) => o.value);
+    const shown = (): readonly T[] => (listed ? listed() : all);
     const refresh = (): void => {
-      const i = index();
+      const list = shown();
+      const v = get();
+      const on = list.includes(v) ? all.indexOf(v) : -1;
       for (let k = 0; k < buttons.length; k++) {
-        buttons[k].classList.toggle('hud-on', k === i);
-        buttons[k].setAttribute('aria-pressed', String(k === i));
+        buttons[k].hidden = !list.includes(all[k]);
+        buttons[k].classList.toggle('hud-on', k === on);
+        buttons[k].setAttribute('aria-pressed', String(k === on));
       }
-      if (onShow) onShow(options[i].value);
+      if (onShow) onShow(v, on >= 0);
     };
-    const pick = (i: number): void => {
-      set(options[i].value);
+    const pickValue = (v: T | null): void => {
+      if (v === null) return;
+      set(v);
       refresh();
     };
-    buttons.forEach((b, k) => b.addEventListener('click', () => pick(k)));
-    const n = options.length;
+    buttons.forEach((b, k) => b.addEventListener('click', () => pickValue(all[k])));
     const item: FocusItem = {
       el: row,
-      left: () => pick(Math.max(0, index() - 1)),
-      right: () => pick(Math.min(n - 1, index() + 1)),
-      accept: () => pick((index() + 1) % n),
+      left: () => pickValue(choiceStep(all, shown(), get(), -1)),
+      right: () => pickValue(choiceStep(all, shown(), get(), 1)),
+      accept: () => pickValue(choiceStep(all, shown(), get(), 0)),
     };
     row.addEventListener('pointerdown', () => this.settingsRing.focusItem(item));
     this.refreshers.push(refresh);
@@ -2031,7 +2152,7 @@ export class Hud {
     return { row, item };
   }
 
-  private toggleRow(label: string, get: () => boolean, set: (v: boolean) => void): { row: HTMLElement; item: FocusItem } {
+  private toggleRow(label: string, get: () => boolean, set: (v: boolean) => void): { row: HTMLElement; item: FocusItem; refresh: () => void } {
     const row = el('div', 'hud-settings-row hud-toggle-row');
     row.appendChild(el('span', 'hud-settings-label', label));
     const ctl = el('span', 'hud-settings-ctl');
@@ -2053,7 +2174,7 @@ export class Hud {
     const item: FocusItem = { el: row, left: flip, right: flip, accept: flip };
     row.addEventListener('pointerdown', () => this.settingsRing.focusItem(item));
     this.refreshers.push(refresh);
-    return { row, item };
+    return { row, item, refresh };
   }
 
   private controlNumber(key: keyof ControlSettings): number {
@@ -2114,8 +2235,50 @@ export class Hud {
       this.pageActions[id].hidden = id !== tab;
     }
     if (this.settingsBody !== null) this.settingsBody.scrollTop = 0;
-    this.settingsRing.use(this.tabItems[tab], 0);
+    if (this.experimentalPage !== null && tab !== 'experimental') this.experimentalPage.disarm();
+    this.settingsRing.use(this.tabItems[tab](), 0);
     if (tab === 'pad') this.updatePadStatus();
+    if (tab === 'experimental') this.menuOptions?.experimental?.onOpen?.();
+  }
+
+  /**
+   * The settings screen's state changed under it (an account change, the experimental switch, a
+   * sync): take `opts` as its options when given and redraw the rows, the tab labels and the focus
+   * stops of the tab on screen (the focus keeps its place). Nothing when the screen is not open.
+   */
+  refreshSettings(opts?: MenuOptions): void {
+    if (!this.settingsOpen || this.settingsPanel === null) return;
+    if (opts !== undefined) {
+      this.menuOptions = opts;
+      this.quality = opts.quality;
+    }
+    this.refreshTabLabels();
+    this.refreshSliders();
+    if (this.experimentalPage !== null) this.experimentalPage.refresh();
+    this.refreshFocusItems();
+  }
+
+  /**
+   * Read the focus stops of the tab on screen again: the focus stays on the same row when it is
+   * still shown, else at its place in the list.
+   */
+  private refreshFocusItems(): void {
+    if (this.tabItems === null || this.captureRow !== null) return;
+    const ring = this.settingsRing;
+    const was = ring.item;
+    const index = ring.index;
+    const items = this.tabItems[this.tab]();
+    ring.use(items, 0);
+    const keep = was !== null ? items.indexOf(was) : -1;
+    ring.set(keep >= 0 ? keep : Math.min(index, items.length - 1), false);
+  }
+
+  private refreshTabLabels(): void {
+    for (let i = 0; i < SETTINGS_TABS.length; i++) {
+      if (SETTINGS_TABS[i].id === 'experimental' && this.tabButtons[i] !== undefined) {
+        this.tabButtons[i].textContent = experimentalTabLabel(this.menuOptions?.experimental?.state().available === true);
+      }
+    }
   }
 
   private cycleTab(dir: number): void {

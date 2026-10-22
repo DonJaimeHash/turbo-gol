@@ -1,7 +1,7 @@
 {
   "name": "turbogol-community-nodes",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Community-run match servers for Turbogol: the node program (host + verifier), its launcher, the reference control plane and the rewards ledger. One runtime dependency: werift (WebRTC).",
   "license": "AGPL-3.0-or-later",

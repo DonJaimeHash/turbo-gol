@@ -95,10 +95,21 @@
  * the server / ranked joins answer 503 (no MatchDO is created for them either). Custom lobbies
  * never go to a node. With the nodes off for a player (or not configured: a fork, the tests)
  * everything is as without them.
+ *
+ * Experimental rules (the owner's rule: every ranked or counted match, P2P included, runs the
+ * standard physics; the experimental counts for nothing): only a custom lobby's /custom may carry
+ * `physics` (src/game/physicsRules.ts parseLobbyRules, strict: 400 bad_physics), only for a
+ * P2P room with at least 2 humans (400 experimental_p2p_only otherwise: no lone-human MatchDO
+ * fallback, never formMatch, never a node) and only when every member says `guest: false` (403
+ * account_required; the room gets that flag per seat and checks it again). /join (the casual
+ * and ranked queues) refuses a body that carries it (400 experimental_lobby_only). The rules go
+ * to RoomDO /internal/create; the room's locks and capacity entry are marked experimental
+ * (ActiveMatch.exp, RoomEntry.exp, kept in storage), and a room so marked never counts a no-show
+ * strike, whatever its release says.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { error, flag, isMode, isModeList, isQueueKind, json, matchLengthSeconds, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, flag, isMode, isModeList, isQueueKind, json, matchLengthSeconds, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
 import type { GameModeId, LockKind, NodesMode, QueueKind, RoomKind } from './env';
 import { INTERNAL_HEADER, checkInternal, createTicket, internalSecret } from './auth';
 import type { TicketRole } from './auth';
@@ -109,6 +120,8 @@ import type { RosterEntry } from './roomHost';
 import type { PresenceInfo, RoomSlotRecord } from './RoomDO';
 import { MODES } from '../../src/sim/constants';
 import { isRegion } from '../../src/net/account';
+import { parseLobbyRules } from '../../src/game/physicsRules';
+import type { RulesSnapshot } from '../../src/game/physicsRules';
 import type { QueueResult } from '../../src/net/protocol';
 // Type-only (node's strip-only loader rejects that module's const enum; server/test/room.test.mjs
 // imports this file). P2P_FILL_WAIT mirrors P2P_FILL_WAIT_MS and is checked against it by tsc.
@@ -198,6 +211,8 @@ interface ActiveMatch {
    * connecting is a no-show strike only when the player actually had the ticket.
    */
   delivered?: boolean;
+  /** A room with experimental rules: it never counts a no-show strike (it counts for nothing). */
+  exp?: true;
 }
 
 interface LeaveBody {
@@ -230,13 +245,17 @@ export function roomHoldsPlayer(p: PresenceInfo, lockAgeMs: number, graceMs: num
 interface RoomEntry {
   until: number;
   kind: RoomKind;
+  /** A P2P room with experimental rules (no no-show strikes). */
+  exp?: true;
 }
 
 function roomEntryOf(v: unknown): RoomEntry | null {
   if (typeof v === 'number') return { until: v, kind: 'server' };
   if (typeof v === 'object' && v !== null && typeof (v as RoomEntry).until === 'number') {
     const k = (v as RoomEntry).kind;
-    return { until: (v as RoomEntry).until, kind: k === 'p2p' ? 'p2p' : 'server' };
+    const entry: RoomEntry = { until: (v as RoomEntry).until, kind: k === 'p2p' ? 'p2p' : 'server' };
+    if ((v as RoomEntry).exp === true) entry.exp = true;
+    return entry;
   }
   return null;
 }
@@ -262,6 +281,8 @@ interface JoinBody {
   ratings?: unknown;
   /** true: the Worker read do_disabled set (it lets only a server / ranked queue of a player the nodes are on for through). */
   doDisabled?: unknown;
+  /** Never accepted: experimental rules exist only in custom lobbies (400 experimental_lobby_only). */
+  physics?: unknown;
 }
 
 /** POST /custom: a custom lobby's start (LobbyDO): fixed teams, bots in the free slots. */
@@ -270,6 +291,8 @@ interface CustomBody {
   mode?: unknown;
   members?: unknown;
   matchLengthSeconds?: unknown;
+  /** The lobby's experimental rules (null / absent = standard): P2P with >= 2 humans only. */
+  physics?: unknown;
 }
 
 // ---- ranked matchmaking (pure, unit-tested in server/test/ranked.test.mjs) --------------------------
@@ -404,6 +427,12 @@ interface FormOptions {
   matchLengthSeconds?: number;
   /** false: never on a community node (custom lobbies: 0-1800 s against a node's length + 600 s TTL). Default: when the nodes are on for every human. */
   nodes?: boolean;
+  /**
+   * formRoom only (a custom lobby's P2P room): its experimental rules, null / absent = standard;
+   * the room gets each peer's HumanEntry.guest with them. formMatch refuses any (a MatchDO or a
+   * node never runs other physics than the standard).
+   */
+  physics?: RulesSnapshot | null;
 }
 
 /**
@@ -449,6 +478,8 @@ function resultId(r: AnyQueueResult): string | undefined {
 export interface HumanEntry {
   playerId: string;
   name: string;
+  /** /custom only: false for a signed-in lobby member (a room with experimental rules needs it of every seat). */
+  guest?: boolean;
 }
 
 export interface RosterSlot<K extends string> {
@@ -631,6 +662,8 @@ export class MatchmakerDO extends DurableObject<Env> {
   private async join(request: Request, now: number): Promise<Response> {
     const body = await readJson<JoinBody>(request);
     if (!body || typeof body.playerId !== 'string' || typeof body.name !== 'string') return error(400, 'bad_request');
+    // The casual and ranked queues run the standard physics, always (the Worker refuses it first).
+    if (carriesPhysics(body)) return error(400, EXPERIMENTAL_REFUSED, 'experimental rules exist only in custom P2P lobbies');
     const modes: GameModeId[] | null = isModeList(body.modes) ? body.modes.slice() : isMode(body.mode) ? [body.mode] : null;
     if (modes === null) return error(400, 'bad_request');
     if (body.kind !== undefined && !isQueueKind(body.kind)) return error(400, 'bad_kind', "kind must be 'p2p' | 'server' | 'ranked'");
@@ -885,7 +918,12 @@ export class MatchmakerDO extends DurableObject<Env> {
    */
   private async leftRoom(act: ActiveMatch, playerId: string, now: number): Promise<void> {
     const info = await this.roomLeave(act.matchId, playerId);
-    if (info !== null && info.noShow === true && act.delivered === true) this.strike(playerId, act.matchId, now);
+    if (info !== null && info.noShow === true && act.delivered === true && !this.experimental(act)) this.strike(playerId, act.matchId, now);
+  }
+
+  /** The lock is one of a room with experimental rules (the lock's mark, or the room's): never a strike. */
+  private experimental(act: ActiveMatch): boolean {
+    return act.exp === true || this.rooms.get(act.matchId)?.exp === true;
   }
 
   /** A no-show strike for room `roomId` (once per room; skipped when that room already forgave it). */
@@ -1009,8 +1047,9 @@ export class MatchmakerDO extends DurableObject<Env> {
         await this.ctx.storage.delete('active:' + id);
         n++;
         // Never showed up although it had the ticket (the room's start drop or its cleanup says
-        // so): a strike, once per lock (the lock is gone after this) and per room.
-        if (a.delivered === true && Array.isArray(body.noShow) && body.noShow.includes(id)) this.strike(id, matchId, now);
+        // so): a strike, once per lock (the lock is gone after this) and per room; never in a room
+        // with experimental rules, whatever the release names.
+        if (a.delivered === true && Array.isArray(body.noShow) && body.noShow.includes(id) && !this.experimental(a)) this.strike(id, matchId, now);
       }
       const m = this.matched.get(id);
       if (m && resultId(m.result) === matchId) this.matched.delete(id); // a cached 'matched' result would point at the dead room
@@ -1033,9 +1072,9 @@ export class MatchmakerDO extends DurableObject<Env> {
   }
 
   /**
-   * POST /custom { kind, mode, members: [{ playerId, name, team }], matchLengthSeconds } (LobbyDO
-   * start): a match / room with the lobby's teams (bots in the free slots), the members locked like
-   * queue matches. Answers { results: { [playerId]: AnyQueueResult } } at once (no long-poll), 409
+   * POST /custom { kind, mode, members: [{ playerId, name, team, guest }], matchLengthSeconds,
+   * physics } (LobbyDO start): a match / room with the lobby's teams (bots in the free slots), the
+   * members locked like queue matches. Answers { results: { [playerId]: AnyQueueResult } } at once (no long-poll), 409
    * 'member_busy' { playerId } when a member still holds a live lock, 503 'capacity' at the cap.
    */
   private async custom(request: Request, now: number): Promise<Response> {
@@ -1045,13 +1084,24 @@ export class MatchmakerDO extends DurableObject<Env> {
     const perTeam = MODES[mode];
     const teams: [HumanEntry[], HumanEntry[]] = [[], []];
     const seen = new Set<string>();
-    for (const m of body.members as Array<{ playerId?: unknown; name?: unknown; team?: unknown }>) {
+    let guests = false;
+    for (const m of body.members as Array<{ playerId?: unknown; name?: unknown; team?: unknown; guest?: unknown }>) {
       if (!m || typeof m.playerId !== 'string' || typeof m.name !== 'string' || (m.team !== 0 && m.team !== 1) || seen.has(m.playerId)) return error(400, 'bad_members');
       seen.add(m.playerId);
-      teams[m.team].push({ playerId: m.playerId, name: m.name });
+      // Signed in only when the lobby says so (a member without the flag counts as a guest).
+      const guest = m.guest !== false;
+      if (guest) guests = true;
+      teams[m.team].push({ playerId: m.playerId, name: m.name, guest });
     }
     if (seen.size === 0 || teams[0].length > perTeam || teams[1].length > perTeam) return error(400, 'bad_members');
     const length = typeof body.matchLengthSeconds === 'number' && body.matchLengthSeconds >= 0 && body.matchLengthSeconds <= 1800 ? Math.floor(body.matchLengthSeconds) : undefined;
+    // Experimental rules: checked again (strictly), and only for a P2P room with >= 2 humans: no
+    // lone-human MatchDO with them, never a node.
+    const physics = parseLobbyRules(body.physics);
+    if (physics === 'bad') return error(400, 'bad_physics', 'invalid experimental rules');
+    if (physics !== null && (body.kind !== 'p2p' || seen.size < 2)) return error(400, 'experimental_p2p_only', 'experimental rules need a P2P match with at least 2 players');
+    // ... and signed-in players only (LobbyDO refuses guests at every door; checked again here).
+    if (physics !== null && guests) return error(403, 'account_required', 'experimental rules are for signed-in players only');
     const humans = [...teams[0], ...teams[1]];
     for (const h of humans) {
       const act = this.active.get(h.playerId);
@@ -1065,7 +1115,7 @@ export class MatchmakerDO extends DurableObject<Env> {
     if (this.activeRooms(now, kind) >= capacityOf(kind)) return error(503, 'capacity', 'all rooms are busy, try again in a minute');
     for (const h of humans) this.forming.set(h.playerId, { mode, kind });
     try {
-      if (kind === 'p2p') await this.formRoom(mode, humans, now, { teams, matchLengthSeconds: length });
+      if (kind === 'p2p') await this.formRoom(mode, humans, now, { teams, matchLengthSeconds: length, physics });
       else await this.formMatch(mode, humans, now, { teams, matchLengthSeconds: length, nodes: false });
     } catch (e) {
       if (e instanceof NoRoom) return error(503, e.code, 'all rooms are busy, try again in a minute');
@@ -1287,6 +1337,8 @@ export class MatchmakerDO extends DurableObject<Env> {
    * (do_disabled) or full (MAX_ACTIVE_ROOMS), or one of the humans left meanwhile.
    */
   private async formMatch(mode: GameModeId, humans: readonly HumanEntry[], now: number, opts: FormOptions = {}): Promise<string> {
+    // A MatchDO and a community node run the standard physics only (/custom never sends rules here).
+    if (opts.physics !== undefined && opts.physics !== null) throw new Error('formMatch: experimental rules are for P2P rooms only');
     const env = this.env;
     const length = opts.matchLengthSeconds ?? matchLengthSeconds(env);
     const until = now + (length > 0 ? length : 20 * 60) * 1000 + ACTIVE_GRACE_MS;
@@ -1427,6 +1479,9 @@ export class MatchmakerDO extends DurableObject<Env> {
   private async formRoom(mode: GameModeId, humans: readonly HumanEntry[], now: number, opts: FormOptions = {}): Promise<string> {
     const env = this.env;
     const slots: RoomSlotRecord[] = opts.teams ? buildTeamRoster(MODES[mode], opts.teams, 'peer') : buildRoster(MODES[mode], humans, 'peer');
+    // Experimental rules: every peer seat says whether its player is a guest (RoomDO refuses one).
+    const physics = opts.physics ?? null;
+    const guestOf = new Map(humans.map((h) => [h.playerId, h.guest]));
     const id = env.ROOM.newUniqueId();
     const roomId = id.toString();
     const seed = randomSeed();
@@ -1434,7 +1489,7 @@ export class MatchmakerDO extends DurableObject<Env> {
     const res = await env.ROOM.get(id).fetch('https://room/internal/create', {
       method: 'POST',
       headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
-      body: JSON.stringify({ roomId, mode, region: this.region, seed, slots, matchLengthSeconds: opts.matchLengthSeconds ?? matchLengthSeconds(env), createdAt: now }),
+      body: JSON.stringify({ roomId, mode, region: this.region, seed, slots: physics === null ? slots : slots.map((s) => (s.kind === 'peer' ? { ...s, guest: guestOf.get(s.playerId as string) !== false } : s)), matchLengthSeconds: opts.matchLengthSeconds ?? matchLengthSeconds(env), createdAt: now, physics }),
     });
     if (!res.ok) throw new Error(`RoomDO create -> ${res.status} ${await res.text()}`);
     await this.issue(
@@ -1446,6 +1501,7 @@ export class MatchmakerDO extends DurableObject<Env> {
       now,
       this.mint(roomId, 'peer', now),
       (ticket) => ({ status: 'matched', kind: 'p2p', roomId, ticket, wsUrl: '/room/' + roomId }) satisfies QueueResultP2p,
+      opts.physics !== undefined && opts.physics !== null,
     );
     return roomId;
   }
@@ -1458,7 +1514,8 @@ export class MatchmakerDO extends DurableObject<Env> {
   /**
    * Register the match / room, lock its humans (a lock of `kind`), give each seat its ticket
    * (`ticketFor`), cache the results and answer their long-polls. A node match is none of the
-   * Worker's rooms: it never counts toward MAX_ACTIVE_ROOMS.
+   * Worker's rooms: it never counts toward MAX_ACTIVE_ROOMS. `experimental`: a P2P room with
+   * experimental rules (its locks and capacity entry are marked: no no-show strikes).
    */
   private async issue(
     humans: ReadonlyArray<HumanEntry & { resolvers?: Waiter['resolvers'] }>,
@@ -1469,9 +1526,11 @@ export class MatchmakerDO extends DurableObject<Env> {
     now: number,
     ticketFor: (seat: Seat & { playerId: string }) => Promise<string> | string,
     makeResult: (ticket: string) => AnyQueueResult,
+    experimental = false,
   ): Promise<void> {
     if (kind !== 'node') {
       const entry: RoomEntry = { until, kind };
+      if (experimental) entry.exp = true;
       this.rooms.set(id, entry);
       await this.ctx.storage.put('room:' + id, entry);
     }
@@ -1480,6 +1539,7 @@ export class MatchmakerDO extends DurableObject<Env> {
       const ticket = await ticketFor({ ...e, playerId: e.playerId });
       this.matched.set(e.playerId, { result: makeResult(ticket), until: now + MATCHED_TTL_MS, delivered: false });
       const lock: ActiveMatch = { matchId: id, until, kind, since: now };
+      if (experimental) lock.exp = true;
       this.active.set(e.playerId, lock);
       await this.ctx.storage.put('active:' + e.playerId, lock);
     }

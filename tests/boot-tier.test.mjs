@@ -88,6 +88,50 @@ test('the prefs keep the player\'s pick: a tier the session runs on its own is n
   assert.deepEqual(tierPrefsAfter(unset, { kind: 'pick', tier: 'low' }), { quality: 'low', qualitySet: true });
 });
 
+const { gateTierPrefs } = await import('../src/render/bootTier.ts');
+const { menuQualities, nextQuality, lowerQuality } = await import('../src/render/quality.ts');
+
+test('Super low is a pick for unlocked players: a locked saved pick reads as Performance, not chosen; nothing else changes', () => {
+  const picked = { quality: 'superlow', qualitySet: true, theme: 'night', mode: '2v2' };
+  const gated = gateTierPrefs(picked, false);
+  assert.deepEqual(gated, { quality: 'low', qualitySet: false, theme: 'night', mode: '2v2' }, 'the other prefs are kept');
+  assert.equal(gateTierPrefs(picked, true), picked, 'unlocked: the same object');
+  for (const q of ['low', 'high', 'ultra']) {
+    const p = { quality: q, qualitySet: true };
+    assert.equal(gateTierPrefs(p, false), p, `${q} is everyone's`);
+  }
+  const unset = { quality: 'superlow', qualitySet: false };
+  assert.equal(gateTierPrefs(unset, false), unset, 'not a pick (an old default): auto decides anyway');
+  // Not chosen: the TV auto rule still gives the weak TV super low, the desktop gets Performance.
+  assert.deepEqual(bootTier(gated, TV, null), { tier: 'superlow', reason: 'tv-gpu' }, 'a guest on the 1 GB TV still starts on super low');
+  assert.deepEqual(bootTier(gated, DESKTOP, null), { tier: 'low', reason: 'default' });
+  // The URL, the tab's recovery and a ceiling come before the prefs: untouched by the gate.
+  assert.deepEqual(bootTier(gated, DESKTOP, 'hash'), { tier: 'superlow', reason: 'hash' });
+  assert.deepEqual(bootTier(gated, DESKTOP, 'recover'), { tier: 'superlow', reason: 'recover' });
+  assert.deepEqual(bootTier(gated, DESKTOP, null, true), { tier: 'superlow', reason: 'ceiling' });
+  // The safety net still falls into super low for everyone.
+  assert.equal(lowerQuality('low'), 'superlow');
+});
+
+test("tierPrefsAfter 'lock': a super low pick becomes Performance, not chosen; any other prefs stay", () => {
+  assert.deepEqual(tierPrefsAfter({ quality: 'superlow', qualitySet: true }, { kind: 'lock' }), { quality: 'low', qualitySet: false });
+  const high = { quality: 'high', qualitySet: true };
+  assert.equal(tierPrefsAfter(high, { kind: 'lock' }), high);
+  const unset = { quality: 'low', qualitySet: false };
+  assert.equal(tierPrefsAfter(unset, { kind: 'lock' }), unset);
+});
+
+test('menuQualities / nextQuality: Super low listed only when unlocked; the quality key cycles the list', () => {
+  assert.deepEqual(menuQualities(true), QUALITIES);
+  assert.deepEqual(menuQualities(false), ['low', 'high', 'ultra']);
+  const locked = menuQualities(false);
+  assert.equal(nextQuality('low', locked), 'high');
+  assert.equal(nextQuality('ultra', locked), 'low', 'wraps past super low');
+  assert.equal(nextQuality('superlow', locked), 'low', 'a device on super low by itself steps to the first listed tier');
+  assert.equal(nextQuality('ultra'), 'superlow', 'every tier by default');
+  assert.equal(nextQuality('high', []), 'high');
+});
+
 const { FrameStats } = await import('../src/render/frameStats.ts');
 
 test('#diag frame statistics: 1 s min / mean, 5 s mean, long frames after the warm-up, CPU per frame', () => {

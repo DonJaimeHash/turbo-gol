@@ -17,14 +17,28 @@
  * member's { t: 'back' } brings it back to 'open'. The host leaving hands the lobby to the
  * longest-standing member; the last member leaving (or idling past IDLE_CLOSE_MS without sockets)
  * closes it and removes it from LobbyDirectoryDO. Custom matches are never rated.
+ *
+ * Experimental rules (LobbySettings.physics, a copy of a signed-in host's preset: src/game/
+ * physicsRules.ts parseLobbyRules, strict; a snapshot that changes nothing is standard physics):
+ * only with net 'p2p' (else 'experimental_p2p_only') and only while EVERY member is signed in. A
+ * guest is refused at every door: create (403 account_required, the Worker checks the session
+ * first), /internal/admit (403 account_required), the socket upgrade of an admit (403: an admit
+ * taken up to ADMIT_TTL_MS before the rules were set), settings with rules while a guest is a
+ * member ('guests_present'; pending guest admits are dropped), and the start ('guests_present').
+ * The start hands the rules and every member's `guest` to the matchmaker's /custom, which checks
+ * them again (P2P with >= 2 humans, every member signed in, never a MatchDO or a node) and puts
+ * them in the RoomDO (which refuses them with a guest seat too). Nothing of such a match is ever
+ * rated or recorded: custom lobbies never are, and the P2P path reports no result at all.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { error, json, readJson } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret } from './auth';
 import { MODES } from '../../src/sim/constants';
-import { LOBBY_LENGTHS, isPlaylist } from '../../src/net/account';
+import { LOBBY_LENGTHS, isPlaylist, sanitizeLobbyName } from '../../src/net/account';
 import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
+import { parseLobbyRules } from '../../src/game/physicsRules';
+import type { RulesSnapshot } from '../../src/game/physicsRules';
 import type { LobbyClientMsg, LobbyMember, LobbyServerMsg, LobbySettings, LobbyState, LobbySummary } from '../../src/net/account';
 
 const ADMIT_TTL_MS = 90_000;
@@ -74,12 +88,11 @@ export interface LobbyRecord {
 
 // ---- pure helpers (server/test/lobby.test.mjs) ------------------------------------------------
 
-/** 3-24 visible chars (letters, digits, space, _ . - ! ?), else null. */
-export function sanitizeLobbyName(v: unknown): string | null {
-  if (typeof v !== 'string') return null;
-  const s = v.normalize('NFKC').replace(/[^\p{L}\p{N} _.\-!?#]/gu, '').replace(/\s+/g, ' ').trim();
-  return s.length >= 3 && s.length <= 24 ? s : null;
-}
+/**
+ * The lobby name rules (src/net/account.ts: the client and the physics presets share them,
+ * src/game/physicsRules.ts), re-exported for the Worker and the tests.
+ */
+export { sanitizeLobbyName };
 
 /** The team a new member joins: the one with fewer members (blue on a tie); null when both are full. */
 export function teamForNewMember(members: readonly { team: 0 | 1 }[], perTeam: number): 0 | 1 | null {
@@ -123,10 +136,15 @@ function validPassword(v: unknown): v is string {
   return typeof v === 'string' && v.length >= 1 && v.length <= 32;
 }
 
+/** The lobby's experimental rules (null = standard; a record written before the field: none). */
+export function lobbyPhysics(s: LobbySettings): RulesSnapshot | null {
+  return s.physics ?? null;
+}
+
 function parseSettings(v: unknown, base: LobbySettings): LobbySettings | string {
   if (!v || typeof v !== 'object') return 'bad_settings';
   const o = v as Partial<Record<keyof LobbySettings, unknown>>;
-  const out = { ...base };
+  const out: LobbySettings = { ...base, physics: lobbyPhysics(base) };
   if (o.name !== undefined) {
     const n = sanitizeLobbyName(o.name);
     if (n === null) return 'bad_name';
@@ -148,11 +166,19 @@ function parseSettings(v: unknown, base: LobbySettings): LobbySettings | string 
     if (typeof o.matchLengthSeconds !== 'number' || !LOBBY_LENGTHS.includes(o.matchLengthSeconds)) return 'bad_length';
     out.matchLengthSeconds = o.matchLengthSeconds;
   }
+  // Absent: the rules stay; null: standard physics; else a strict snapshot (one that changes
+  // nothing is standard). Experimental rules exist only for P2P matches.
+  if (o.physics !== undefined) {
+    const rules = parseLobbyRules(o.physics);
+    if (rules === 'bad') return 'bad_physics';
+    out.physics = rules;
+  }
+  if (out.physics !== null && out.net !== 'p2p') return 'experimental_p2p_only';
   return out;
 }
 
 export function defaultLobbySettings(name: string): LobbySettings {
-  return { name, mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS };
+  return { name, mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS, physics: null };
 }
 
 export { parseSettings as parseLobbySettings };
@@ -199,6 +225,8 @@ export class LobbyDO extends DurableObject<Env> {
     }
     const settings = parseSettings(b.settings, defaultLobbySettings('Sala de ' + b.host.name));
     if (typeof settings === 'string') return error(400, settings);
+    // The Worker refuses a guest's rules already; checked again here (every door checks).
+    if (lobbyPhysics(settings) !== null && b.host.guest === true) return error(403, 'account_required', 'Inicia sesión para crear una sala experimental');
     if (b.password !== undefined && b.password !== null && !validPassword(b.password)) return error(400, 'bad_password');
     const now = Date.now();
     this.rec = {
@@ -230,6 +258,7 @@ export class LobbyDO extends DurableObject<Env> {
     const b = await readJson<{ playerId?: unknown; name?: unknown; guest?: unknown; password?: unknown }>(request);
     if (!b || typeof b.playerId !== 'string' || typeof b.name !== 'string') return error(400, 'bad_request');
     if (rec.kicked.includes(b.playerId)) return error(403, 'kicked', 'El anfitrión te expulsó de esta sala');
+    if (b.guest === true && lobbyPhysics(rec.settings) !== null) return error(403, 'account_required', 'Sala experimental: inicia sesión para entrar');
     const now = Date.now();
     const member = rec.members.find((m) => m.playerId === b.playerId);
     if (!member) {
@@ -258,6 +287,8 @@ export class LobbyDO extends DurableObject<Env> {
     const admit = rec.admits.find((a) => a.playerId === playerId && a.until > now);
     if (!member) {
       if (!admit) return error(403, 'not_admitted');
+      // An admit taken before the host picked experimental rules: a guest cannot come in now.
+      if (admit.guest && lobbyPhysics(rec.settings) !== null) return error(403, 'account_required');
       const team = teamForNewMember(rec.members, this.perTeam());
       if (team === null) return error(409, 'full');
       member = { id: 'm' + rec.nextMember++, playerId, name: admit.name, guest: admit.guest, team, joinedAt: now, inGame: false };
@@ -311,13 +342,17 @@ export class LobbyDO extends DurableObject<Env> {
         if (!isHost) return fail('not_host', 'Solo el anfitrión cambia la configuración');
         if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
         const next = parseSettings(msg.settings, rec.settings);
-        if (typeof next === 'string') return fail(next, 'Configuración inválida');
+        if (typeof next === 'string') return fail(next, next === 'experimental_p2p_only' ? 'Las reglas experimentales necesitan una partida P2P' : 'Configuración inválida');
+        // Experimental rules: every member signed in.
+        if (lobbyPhysics(next) !== null && rec.members.some((m) => m.guest)) return fail('guests_present', 'Hay invitados en la sala: deben iniciar sesión o salir');
         if (next.mode !== rec.settings.mode) {
           const fit = refitTeams(rec.members, MODES[next.mode]);
           if (fit === null) return fail('too_many', 'Hay más jugadores que lugares en ese modo');
           for (const m of rec.members) m.team = fit.get(m.id) ?? m.team;
         }
         rec.settings = next;
+        // ... and no guest admitted before may still come in (its socket would be refused anyway).
+        if (lobbyPhysics(next) !== null) rec.admits = rec.admits.filter((a) => !a.guest);
         if (msg.password === null) rec.pwHash = null;
         else if (msg.password !== undefined) {
           if (!validPassword(msg.password)) return fail('bad_password', 'La contraseña puede tener de 1 a 32 caracteres');
@@ -338,6 +373,10 @@ export class LobbyDO extends DurableObject<Env> {
         if (!isHost) return fail('not_host', 'Solo el anfitrión inicia la partida');
         if (rec.status !== 'open') return fail('busy', 'La partida ya empezó');
         if (rec.members.some((m) => m.inGame)) return fail('busy', 'Hay jugadores que todavía están en la partida anterior');
+        if (lobbyPhysics(rec.settings) !== null) {
+          if (rec.members.some((m) => m.guest)) return fail('guests_present', 'Hay invitados en la sala: deben iniciar sesión o salir');
+          if (rec.settings.net !== 'p2p' || rec.members.length < 2) return fail('experimental_p2p_only', 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores');
+        }
         await this.start(ws);
         return;
       }
@@ -438,7 +477,10 @@ export class LobbyDO extends DurableObject<Env> {
           kind: rec.settings.net,
           mode: rec.settings.mode,
           matchLengthSeconds: rec.settings.matchLengthSeconds,
-          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team })),
+          // `guest`: the matchmaker and RoomDO refuse experimental rules for a guest too.
+          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team, guest: m.guest })),
+          // Experimental rules travel as the copy the lobby holds (the matchmaker checks them again).
+          physics: lobbyPhysics(rec.settings),
         }),
       });
     } catch (e) {
@@ -470,7 +512,7 @@ export class LobbyDO extends DurableObject<Env> {
   private stateFor(memberId: string): LobbyState {
     const rec = this.rec as LobbyRecord;
     const members: LobbyMember[] = rec.members.map((m) => ({ id: m.id, name: m.name, team: m.team, host: m.id === rec.hostId, guest: m.guest, inGame: m.inGame }));
-    return { code: rec.code, settings: rec.settings, hasPassword: rec.pwHash !== null, region: rec.region, members, you: memberId, status: rec.status };
+    return { code: rec.code, settings: { ...rec.settings, physics: lobbyPhysics(rec.settings) }, hasPassword: rec.pwHash !== null, region: rec.region, members, you: memberId, status: rec.status };
   }
 
   private send(ws: WebSocket, msg: LobbyServerMsg): void {
@@ -501,6 +543,8 @@ export class LobbyDO extends DurableObject<Env> {
       region: rec.region,
       inGame: rec.status !== 'open',
       net: rec.settings.net,
+      experimental: lobbyPhysics(rec.settings) !== null,
+      physics: lobbyPhysics(rec.settings),
     };
   }
 

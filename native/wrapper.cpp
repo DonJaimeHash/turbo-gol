@@ -11,6 +11,10 @@
 // them (custom boost pads, planes moved, goal threshold), rs_reset_kickoff deals our kickoff spots,
 // rs_add_car and rs_step put new / respawning cars on our respawn spots.
 //
+// Physics mutators (experimental presets): rs_set_mutators validates a whole layout against hard
+// limits (namespace M), then sets it on the arena and on the ball predictor's arena, all or
+// nothing. rs_arena_create always starts with RocketSim's stock MutatorConfig.
+//
 // Exceptions: RocketSim reports fatal errors with RS_ERR_CLOSE, which throws. The module is linked
 // without exception catching, so a throw aborts the whole WASM instance. Every entry point below
 // therefore validates its inputs and returns an error code / no-ops instead of letting RocketSim
@@ -32,11 +36,15 @@
 
 #include "rs_api.h"
 
-#include "RocketSim/src/RocketSim.h"
-#include "RocketSim/src/Sim/BallPredTracker/BallPredTracker.h"
-#include "RocketSim/libsrc/bullet3-3.24/BulletCollision/CollisionDispatch/btInternalEdgeUtility.h"
-#include "RocketSim/libsrc/bullet3-3.24/BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h"
-#include "RocketSim/libsrc/bullet3-3.24/BulletCollision/CollisionShapes/btTriangleMesh.h"
+// The PATCHED mirror that build.ps1 compiles (native/patch-rocketsim.mjs writes it), never the
+// pristine submodule in native/RocketSim: the wrapper must see the same headers as the library
+// (patch 2 changes Arena::_cars, patch 3 adds MutatorConfig::carMaxSpeed, which moves every field
+// after it).
+#include "build/rocketsim/src/RocketSim.h"
+#include "build/rocketsim/src/Sim/BallPredTracker/BallPredTracker.h"
+#include "build/rocketsim/libsrc/bullet3-3.24/BulletCollision/CollisionDispatch/btInternalEdgeUtility.h"
+#include "build/rocketsim/libsrc/bullet3-3.24/BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h"
+#include "build/rocketsim/libsrc/bullet3-3.24/BulletCollision/CollisionShapes/btTriangleMesh.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -106,6 +114,137 @@ constexpr float RESPAWN_CLEARANCE = 300.f;
 constexpr float EXTRA_SPAWN_OFFSET = 250.f;
 }  // namespace F
 static F::Layout g_field;
+
+// ---- Physics mutators (rs_set_mutators / rs_get_mutators; layout in rs_api.h) ---------------
+namespace M {
+constexpr float VERSION = 1.f;
+constexpr int COUNT = 19;
+constexpr int S_VERSION = 0, S_GRAVITY_Z = 1, S_BALL_MAX_SPEED = 2, S_BALL_HIT_SCALE = 3, S_BALL_MASS = 4,
+              S_BALL_RESTITUTION = 5, S_BALL_DRAG = 6, S_CAR_MAX_SPEED = 7, S_BOOST_ACCEL_GROUND = 8,
+              S_BOOST_ACCEL_AIR = 9, S_BOOST_USED_PER_SECOND = 10, S_CAR_SPAWN_BOOST = 11,
+              S_JUMP_IMMEDIATE_FORCE = 12, S_JUMP_ACCEL = 13, S_UNLIMITED_FLIPS = 14,
+              S_UNLIMITED_DOUBLE_JUMPS = 15, S_BUMP_FORCE_SCALE = 16, S_DEMO_MODE = 17, S_RESPAWN_DELAY = 18;
+// Hard limits, wider than the UI ranges (src/game/physicsRules.ts keeps those inside these; the
+// same numbers are mirrored in src/sim/mutatorLayout.ts for its tests). They keep the sim sane whatever a
+// modified client sends: gravity always pulls down, the ball can travel at most 8500 / 120 = 71 uu
+// per tick (0.78 of its radius: no tunnelling through the thin goal / corner mesh), a bounce never
+// gains energy, the car stays below 2700 uu/s (22.5 uu per tick against a 19.3 uu half hitbox).
+struct Limit {
+  float lo, hi;
+  bool integral;  // exactly an integer in [lo, hi] (version, toggles, demo mode)
+};
+static const Limit LIMITS[COUNT] = {
+    {1.f, 1.f, true},          // version
+    {-2000.f, -100.f, false},  // gravityZ
+    {1000.f, 8500.f, false},   // ballMaxSpeed
+    {0.f, 4.f, false},         // ballHitExtraForceScale
+    {10.f, 90.f, false},       // ballMass
+    {0.f, 0.95f, false},       // ballWorldRestitution
+    {0.f, 0.5f, false},        // ballDrag
+    {1500.f, 2700.f, false},   // carMaxSpeed
+    {0.f, 3000.f, false},      // boostAccelGround
+    {0.f, 3200.f, false},      // boostAccelAir
+    {0.f, 100.f, false},       // boostUsedPerSecond
+    {0.f, 100.f, false},       // carSpawnBoostAmount
+    {0.f, 600.f, false},       // jumpImmediateForce
+    {0.f, 3000.f, false},      // jumpAccel
+    {0.f, 1.f, true},          // unlimitedFlips
+    {0.f, 1.f, true},          // unlimitedDoubleJumps
+    {0.f, 5.f, false},         // bumpForceScale
+    {0.f, 2.f, true},          // demoMode
+    {0.5f, 10.f, false},       // respawnDelay
+};
+static_assert(sizeof(LIMITS) / sizeof(LIMITS[0]) == COUNT, "one limit per slot");
+
+static bool Valid(const float* data) {
+  for (int i = 0; i < COUNT; i++) {
+    const float v = data[i];
+    const Limit& l = LIMITS[i];
+    if (!std::isfinite(v) || v < l.lo || v > l.hi) return false;
+    if (l.integral && v != std::floor(v)) return false;
+  }
+  return true;
+}
+
+// Only the listed fields change: carMass (RocketSim 2.2.1's SetMutatorConfig would give every car
+// the ball's mass on a carMass change), ballRadius, goalBaseThresholdY and the rest are kept.
+static MutatorConfig With(MutatorConfig mc, const float* d) {
+  mc.gravity = Vec(mc.gravity.x, mc.gravity.y, d[S_GRAVITY_Z]);
+  mc.ballMaxSpeed = d[S_BALL_MAX_SPEED];
+  mc.ballHitExtraForceScale = d[S_BALL_HIT_SCALE];
+  mc.ballMass = d[S_BALL_MASS];
+  mc.ballWorldRestitution = d[S_BALL_RESTITUTION];
+  mc.ballDrag = d[S_BALL_DRAG];
+  mc.carMaxSpeed = d[S_CAR_MAX_SPEED];  // RocketSim patch 3 (native/patch-rocketsim.mjs)
+  mc.boostAccelGround = d[S_BOOST_ACCEL_GROUND];
+  mc.boostAccelAir = d[S_BOOST_ACCEL_AIR];
+  mc.boostUsedPerSecond = d[S_BOOST_USED_PER_SECOND];
+  mc.carSpawnBoostAmount = d[S_CAR_SPAWN_BOOST];
+  mc.jumpImmediateForce = d[S_JUMP_IMMEDIATE_FORCE];
+  mc.jumpAccel = d[S_JUMP_ACCEL];
+  mc.unlimitedFlips = d[S_UNLIMITED_FLIPS] != 0.f;
+  mc.unlimitedDoubleJumps = d[S_UNLIMITED_DOUBLE_JUMPS] != 0.f;
+  mc.bumpForceScale = d[S_BUMP_FORCE_SCALE];
+  mc.demoMode = d[S_DEMO_MODE] == 1.f ? DemoMode::ON_CONTACT : d[S_DEMO_MODE] == 2.f ? DemoMode::DISABLED : DemoMode::NORMAL;
+  mc.respawnDelay = d[S_RESPAWN_DELAY];
+  return mc;
+}
+
+static void Write(const MutatorConfig& mc, float* out) {
+  out[S_VERSION] = VERSION;
+  out[S_GRAVITY_Z] = mc.gravity.z;
+  out[S_BALL_MAX_SPEED] = mc.ballMaxSpeed;
+  out[S_BALL_HIT_SCALE] = mc.ballHitExtraForceScale;
+  out[S_BALL_MASS] = mc.ballMass;
+  out[S_BALL_RESTITUTION] = mc.ballWorldRestitution;
+  out[S_BALL_DRAG] = mc.ballDrag;
+  out[S_CAR_MAX_SPEED] = mc.carMaxSpeed;
+  out[S_BOOST_ACCEL_GROUND] = mc.boostAccelGround;
+  out[S_BOOST_ACCEL_AIR] = mc.boostAccelAir;
+  out[S_BOOST_USED_PER_SECOND] = mc.boostUsedPerSecond;
+  out[S_CAR_SPAWN_BOOST] = mc.carSpawnBoostAmount;
+  out[S_JUMP_IMMEDIATE_FORCE] = mc.jumpImmediateForce;
+  out[S_JUMP_ACCEL] = mc.jumpAccel;
+  out[S_UNLIMITED_FLIPS] = mc.unlimitedFlips ? 1.f : 0.f;
+  out[S_UNLIMITED_DOUBLE_JUMPS] = mc.unlimitedDoubleJumps ? 1.f : 0.f;
+  out[S_BUMP_FORCE_SCALE] = mc.bumpForceScale;
+  out[S_DEMO_MODE] = mc.demoMode == DemoMode::ON_CONTACT ? 1.f : mc.demoMode == DemoMode::DISABLED ? 2.f : 0.f;
+  out[S_RESPAWN_DELAY] = mc.respawnDelay;
+}
+
+// Arena::SetMutatorConfig, keeping the ball's exact state across the body rebuild a ballMass
+// change triggers (RocketSim rebuilds the ball at its spawn origin; Ball::SetState would round-trip
+// the position through uu, which is not the identity in float32).
+static void SetConfig(Arena* arena, const MutatorConfig& mc) {
+  Ball* ball = arena->ball;
+  const bool rebuild = mc.ballMass != arena->GetMutatorConfig().ballMass ||
+                       mc.ballRadius != arena->GetMutatorConfig().ballRadius;
+  const btTransform tf = ball->_rigidBody.getWorldTransform();
+  const btVector3 lin = ball->_rigidBody.getLinearVelocity();
+  const btVector3 ang = ball->_rigidBody.getAngularVelocity();
+  const int activation = ball->_rigidBody.getActivationState();
+  const BallState internal = ball->_internalState;
+  arena->SetMutatorConfig(mc);
+  // Bullet's btDiscreteDynamicsWorld::setGravity only reaches ACTIVE bodies, and Arena::Step puts a
+  // ball at rest to sleep (the predictor's arena holds one right after its first prediction, at the
+  // kickoff spot): without this its ball would keep the old gravity and no prediction would ever
+  // match. The same per-body call Bullet makes when a body is added (bit-identical for stock).
+  {
+    const btVector3 g = arena->_bulletWorld.getGravity();
+    btAlignedObjectArray<btRigidBody*>& bodies = arena->_bulletWorld.getNonStaticRigidBodies();
+    for (int i = 0; i < bodies.size(); i++)
+      if (!(bodies[i]->getFlags() & BT_DISABLE_WORLD_GRAVITY)) bodies[i]->setGravity(g);
+  }
+  if (!rebuild) return;
+  btRigidBody& rb = ball->_rigidBody;
+  rb.setWorldTransform(tf);
+  rb.setLinearVelocity(lin);
+  rb.setAngularVelocity(ang);
+  rb.updateInertiaTensor();
+  rb.forceActivationState(activation);
+  ball->_internalState = internal;
+}
+}  // namespace M
 
 // Slot index (FL, FR, BL, BR) -> RocketSim wheel index (FR, FL, BR, BL).
 static const int WHEEL_SLOT_TO_RS[4] = {1, 0, 3, 2};
@@ -1126,10 +1265,15 @@ static void FillBallPred(void) {
 }
 
 // The tracker builds its own car-less arena from our ArenaConfig (bounds, pads) and predicts once
-// in its constructor, before that arena has our planes: move them, then predict again.
+// in its constructor, before that arena has our planes and our mutators (it starts with stock
+// ones): move the planes, copy the arena's MutatorConfig, then predict again. With stock physics
+// the copy changes nothing the ball feels (same gravity, drag, bounce, mass; the goal threshold is
+// never read by a car-less, callback-less arena). Without it a preset arena would never Match()
+// its prediction and every update would be a full 720-tick re-simulation.
 static void CreatePredTracker(void) {
   g_predTracker = new BallPredTracker(g_arena, (size_t)L::BALL_PRED_TICKS + 1);
   ApplyFieldPlanes(g_predTracker->ballPredArena);
+  M::SetConfig(g_predTracker->ballPredArena, g_arena->GetMutatorConfig());
   g_predTracker->ForceUpdateAllPred(g_arena->ball->GetState());
   g_predTracker->lastUpdateTickCount = (int)g_arena->tickCount;
 }
@@ -1173,6 +1317,29 @@ RS_API void rs_set_unlimited_boost(int enabled) {
   g_unlimitedBoost = enabled != 0;
   if (g_unlimitedBoost)
     for (Car* car : g_cars) car->_internalState.boost = 100.f;
+}
+
+RS_API int rs_set_mutators(const float* data, int count) {
+  if (!g_arena) return 2;
+  if (!data || count != M::COUNT || data[M::S_VERSION] != M::VERSION) return 1;
+  if (!M::Valid(data)) return 1;
+  const MutatorConfig mc = M::With(g_arena->GetMutatorConfig(), data);
+  if (mc.ballMass != g_arena->GetMutatorConfig().ballMass && !g_cars.empty()) return 3;
+  M::SetConfig(g_arena, mc);
+  if (g_predTracker) {
+    // The predictor follows at once: same config, then a full prediction from the current ball.
+    M::SetConfig(g_predTracker->ballPredArena, mc);
+    g_predTracker->ForceUpdateAllPred(g_arena->ball->GetState());
+    g_predTracker->lastUpdateTickCount = (int)g_arena->tickCount;
+    FillBallPred();
+  }
+  return 0;
+}
+
+RS_API int rs_get_mutators(float* out, int cap) {
+  if (!g_arena || !out || cap < M::COUNT) return 0;
+  M::Write(g_arena->GetMutatorConfig(), out);
+  return M::COUNT;
 }
 
 // ---- Full state save / load (netcode rollback) -------------------------------------------

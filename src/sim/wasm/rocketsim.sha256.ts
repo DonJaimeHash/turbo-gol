@@ -5,4 +5,4 @@
  * wasm: native/build.ps1 rewrites the line below after every build, and tests/wasm-hash.test.mjs
  * fails when the two disagree.
  */
-export const ROCKETSIM_WASM_SHA256 = 'c137f952a57395e81e97a187c1a14bed0f034131418deb4bdd4a7b3fdf3f3c92';
+export const ROCKETSIM_WASM_SHA256 = 'd8e6af256eafa07785d5e341ffe11ac95c311fc6780a2c968f19fee93c75fe07';

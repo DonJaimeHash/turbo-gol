@@ -9,7 +9,10 @@
  *
  * Lifecycle
  *   create    POST /internal/create (matchmaker): roster (slots: peer / bot, names, playerIds), mode,
- *             seed (random uint32), region, createdAt -> storage; 'unused' cleanup in 90 s
+ *             seed (random uint32), region, createdAt, physics (a custom lobby's experimental rules,
+ *             null = standard: checked strictly again, 400 bad_physics; with rules every peer slot
+ *             must carry guest: false, else 403 account_required) -> storage; 'unused'
+ *             cleanup in 90 s
  *   upgrade   GET /room/<id> forwarded by the Worker with the verified ticket claims in x-* headers
  *             + the internal header: slot check, a slot already `left` or dropped is refused (403
  *             'left': its lock may have been freed and the player seated elsewhere; a ticket
@@ -24,7 +27,11 @@
  *             given up (a slow join past the grace: 403 'left') also asks the matchmaker to take
  *             back the strike it may already have counted for this room (POST /forgive)
  *   messages  signal -> relayed to the target slot (when it has no socket the sender gets
- *             'error' { code: 'signal_dropped', to } and re-offers on its 'peerJoined'); ready -> once
+ *             'error' { code: 'signal_dropped', to } and re-offers on its 'peerJoined'); ready
+ *             { physicsFp } -> the fingerprint of the peer's arena mutators must be the room
+ *             rules' (physicsFingerprint: required with experimental rules, checked when present
+ *             with standard ones), else 'error' physics_mismatch and the socket is closed (the slot
+ *             is left like any closed one: the others start without it, its car the team AI); once
  *             every connected peer is ready, >= 2 are connected and NO peer slot is still absent
  *             without being `left` (a ticket in flight: a staggered joiner must not be dropped at
  *             tick 0 by the first two humans): 'start' { startAt: now + 1.5 s } to all, then 'drop'
@@ -57,6 +64,13 @@
  *             players that never showed up are named in `noShow`, so the matchmaker can back off
  *             repeat no-shows), storage wiped; hard TTL 20 min after create (alarm)
  *
+ * Experimental rules (RoomRecord.physics): the welcome of EVERY socket carries them (first, late
+ * and replacement sockets: null = standard), every peer builds its arena with them, and the
+ * 'ready' fingerprint makes a peer that runs other physics impossible to miss (the state hash does
+ * not cover the config). Such a room counts for nothing: it never names a no-show to the
+ * matchmaker (release, /internal/leave, /forgive), which marks its locks too; nothing reports a
+ * P2P result anywhere.
+ *
  * Guards: JSON text frames only (binary ignored), <= 16 KB (1009), a token bucket of 60 messages/s
  * (burst 400: a 3v3 mesh setup trickles 5 offers / answers plus the host / srflx / relay
  * candidates of 5 connections in its first second) per socket (1008 'rate'), malformed JSON ->
@@ -75,19 +89,26 @@ import { INTERNAL_HEADER, checkInternal, internalSecret, randomHex } from './aut
 import { TICK_RATE, WS_SUBPROTOCOL } from '../../src/net/protocol';
 import { MAX_CARS } from '../../src/sim/types';
 import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
+import { parseLobbyRules } from '../../src/game/physicsRules';
+import type { RulesSnapshot } from '../../src/game/physicsRules';
+import { physicsFingerprint } from '../../src/sim/mutators';
 // Type-only: node's strip-only loader cannot load that module's `const enum` and
 // server/test/room.test.mjs imports this file. The numeric defaults are mirrored below and checked
 // against the protocol's literal types by tsc.
-import type { P2P_ERROR_RELOAD, P2P_HASH_EVERY, P2P_INPUT_DELAY_DEFAULT, P2P_NO_SHOW_MS, P2P_PROTOCOL_VERSION, P2P_WINDOW_DEFAULT, ROOM_ERROR_SIGNAL_DROPPED, RoomServerMessage, RoomSlot, RoomWelcome, SignalData } from '../../src/net/p2p/protocol';
+import type { P2P_ERROR_RELOAD, P2P_HASH_EVERY, P2P_INPUT_DELAY_DEFAULT, P2P_NO_SHOW_MS, P2P_PROTOCOL_VERSION, P2P_WINDOW_DEFAULT, ROOM_ERROR_PHYSICS_MISMATCH, ROOM_ERROR_SIGNAL_DROPPED, RoomServerMessage, RoomSlot, RoomWelcome, SignalData } from '../../src/net/p2p/protocol';
 
 /** Mirrors protocol.ts P2P_PROTOCOL_VERSION (the welcome's `protocol`; the Worker's queue gate checks the client's against it). */
-export const ROOM_PROTOCOL: typeof P2P_PROTOCOL_VERSION = 4;
+export const ROOM_PROTOCOL: typeof P2P_PROTOCOL_VERSION = 5;
 /** Mirrors protocol.ts P2P_ERROR_RELOAD: the error code of a stale page (another P2P protocol). */
 export const RELOAD_REQUIRED: typeof P2P_ERROR_RELOAD = 'reload_required';
 /** Mirrors protocol.ts P2P_NO_SHOW_MS: a peer slot not connected this long after create is declared left. */
 export const NO_SHOW_MS: typeof P2P_NO_SHOW_MS = 6_000;
 /** Mirrors protocol.ts ROOM_ERROR_SIGNAL_DROPPED (type-only import above; checked by tsc). */
 export const SIGNAL_DROPPED: typeof ROOM_ERROR_SIGNAL_DROPPED = 'signal_dropped';
+/** Mirrors protocol.ts ROOM_ERROR_PHYSICS_MISMATCH: a 'ready' whose physicsFp is not the room rules'. */
+export const PHYSICS_MISMATCH: typeof ROOM_ERROR_PHYSICS_MISMATCH = 'physics_mismatch';
+/** The close code of a socket refused for its physics (after the 'error' frame). */
+export const CLOSE_PHYSICS_MISMATCH = 4005;
 const INPUT_DELAY: typeof P2P_INPUT_DELAY_DEFAULT = 3;
 const WINDOW: typeof P2P_WINDOW_DEFAULT = 16;
 const HASH_EVERY: typeof P2P_HASH_EVERY = 30;
@@ -134,6 +155,8 @@ export interface RoomRecord {
   slots: RoomSlotRecord[];
   matchLengthSeconds: number;
   createdAt: number;
+  /** A custom lobby's experimental rules (null = standard; absent in records of older builds). */
+  physics?: RulesSnapshot | null;
 }
 
 export interface UnreachableReport {
@@ -217,9 +240,26 @@ interface CreateBody {
   slots?: unknown;
   matchLengthSeconds?: unknown;
   createdAt?: unknown;
+  physics?: unknown;
 }
 
 // ---- pure decisions (unit-tested in server/test/room.test.mjs) ----------------------------------
+
+/** The room's experimental rules (null = standard physics). */
+export function roomPhysics(rec: RoomRecord): RulesSnapshot | null {
+  return rec.physics ?? null;
+}
+
+/**
+ * A 'ready' frame's `physicsFp` against the room's rules: true when the peer may start. With
+ * experimental rules the fingerprint is required and must be theirs; with standard physics one
+ * that is present must be the stock fingerprint (a peer that runs a preset in a standard room is
+ * refused as well), and a missing one is let through (headless tools).
+ */
+export function physicsReady(rules: RulesSnapshot | null, physicsFp: unknown): boolean {
+  if (physicsFp === undefined && rules === null) return true;
+  return typeof physicsFp === 'number' && physicsFp === physicsFingerprint(rules);
+}
 
 /** Smallest count that is more than half of `n` (1 for n = 1, 2 for n = 2 or 3, 3 for 4 or 5, ...). */
 export function majorityOf(n: number): number {
@@ -431,6 +471,13 @@ export class RoomDO extends DurableObject<Env> {
       }
       case 'ready': {
         if (att.ready) return;
+        if (!physicsReady(roomPhysics(this.record), msg.physicsFp)) {
+          // This peer's arena does not run the room's rules (a modified page, an apply bug): it must
+          // not start, or the room would desync forever. Its slot is left like a closed one.
+          this.send(ws, { type: 'error', code: PHYSICS_MISMATCH, message: 'your arena does not run this room\'s rules: reload the page' });
+          await this.kick(ws, CLOSE_PHYSICS_MISMATCH, PHYSICS_MISMATCH, now);
+          return;
+        }
         att.ready = true;
         ws.serializeAttachment(att);
         await this.maybeStart(now);
@@ -484,18 +531,26 @@ export class RoomDO extends DurableObject<Env> {
     }
     const slots: RoomSlotRecord[] = [];
     let peers = 0;
+    let guests = 0;
     for (let i = 0; i < body.slots.length; i++) {
       const e: unknown = body.slots[i];
       if (!isRecord(e) || e.slot !== i || (e.team !== 0 && e.team !== 1) || (e.kind !== 'peer' && e.kind !== 'bot') || typeof e.name !== 'string') return error(400, 'bad_roster');
       if (e.kind === 'peer') {
         if (typeof e.playerId !== 'string') return error(400, 'bad_roster');
         peers++;
+        // Only a room with experimental rules reads it: a seat is signed in when it says guest: false.
+        if (e.guest !== false) guests++;
         slots.push({ slot: i, team: e.team, kind: 'peer', name: e.name, playerId: e.playerId });
       } else {
         slots.push({ slot: i, team: e.team, kind: 'bot', name: e.name });
       }
     }
     if (peers < MIN_HUMANS) return error(400, 'bad_roster', `a p2p room needs >= ${MIN_HUMANS} peers`);
+    // A custom lobby's rules, checked again as strictly (the matchmaker did, LobbyDO did).
+    const physics = parseLobbyRules(body.physics);
+    if (physics === 'bad') return error(400, 'bad_physics', 'invalid experimental rules');
+    // ... and signed-in players only: every peer seat must say guest: false (the matchmaker's flag).
+    if (physics !== null && guests > 0) return error(403, 'account_required', 'experimental rules are for signed-in players only');
     const now = Date.now();
     const rec: RoomRecord = {
       roomId: body.roomId,
@@ -505,6 +560,7 @@ export class RoomDO extends DurableObject<Env> {
       slots,
       matchLengthSeconds: typeof body.matchLengthSeconds === 'number' && body.matchLengthSeconds >= 0 ? Math.floor(body.matchLengthSeconds) : DEFAULT_MATCH_SECONDS,
       createdAt: typeof body.createdAt === 'number' ? body.createdAt : now,
+      physics,
     };
     this.record = rec;
     this.state = freshState();
@@ -565,8 +621,9 @@ export class RoomDO extends DurableObject<Env> {
       if (st.startAt === null) await this.maybeStart(now);
       await this.persist();
     }
-    // `noShow` true: the player never opened its socket nor presented its ticket (the matchmaker counts a strike).
-    const out: RoomLeaveAnswer = { ok: true, slot, closed: false, everConnected, noShow: this.isNoShow(slot) };
+    // `noShow` true: the player never opened its socket nor presented its ticket (the matchmaker
+    // counts a strike); never in a room with experimental rules (it counts for nothing).
+    const out: RoomLeaveAnswer = { ok: true, slot, closed: false, everConnected, noShow: roomPhysics(rec) === null && this.isNoShow(slot) };
     return json(out);
   }
 
@@ -580,6 +637,7 @@ export class RoomDO extends DurableObject<Env> {
       seed: rec?.seed ?? null,
       region: rec?.region ?? null,
       createdAt: rec?.createdAt ?? null,
+      physics: rec ? roomPhysics(rec) : null,
       slots: rec ? this.roomSlots() : [],
       connected: this.connectedCount(),
       startAt: this.state.startAt,
@@ -642,7 +700,8 @@ export class RoomDO extends DurableObject<Env> {
     if (this.isNoShow(slot)) {
       this.state.arrived[slot] = true;
       await this.persist();
-      this.forgive(playerId);
+      // A room with experimental rules never named a no-show: nothing to take back.
+      if (this.record !== null && roomPhysics(this.record) === null) this.forgive(playerId);
     }
     return error(403, 'left', 'this slot left the room (single-use seat)');
   }
@@ -707,6 +766,8 @@ export class RoomDO extends DurableObject<Env> {
       slots: this.roomSlots(),
       iceServers,
       now,
+      // Every welcome carries the rules (first, late and replacement sockets alike).
+      physics: roomPhysics(rec),
     };
     this.send(server, welcome);
     if (st.startAt !== null) {
@@ -899,10 +960,13 @@ export class RoomDO extends DurableObject<Env> {
    * among them that never opened their socket (the matchmaker backs off repeat no-shows). Best
    * effort, in the background.
    */
-  private release(playerIds: string[], closeRoom: boolean, noShow: string[] = []): void {
+  private release(playerIds: string[], closeRoom: boolean, noShowIds: string[] = []): void {
     const rec = this.record;
     const env = this.env;
     if (!rec || !env.JWT_SECRET || (playerIds.length === 0 && !closeRoom)) return;
+    // A room with experimental rules counts for nothing: no no-show strikes (the matchmaker's
+    // lock is marked as well, so a modified release could not count one either).
+    const noShow = roomPhysics(rec) === null ? noShowIds : [];
     const roomId = rec.roomId;
     const region = rec.region;
     this.ctx.waitUntil(

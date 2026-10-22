@@ -29,8 +29,16 @@
  * the team AI from the first simulated tick (the engine cannot confirm a tick without that slot's
  * input or its drop, so the drop lands at the same tick everywhere).
  *
+ * Experimental rules (a custom lobby's RoomWelcome.physics, src/game/physicsRules.ts): the Game
+ * builds the arena with them (applyP2PRoster), both BotTeams plan with their physics profile
+ * (botPhysicsOf), and 'ready' carries the fingerprint of the mutators the wasm reads back, which
+ * the room compares with its own (ROOM_ERROR_PHYSICS_MISMATCH: STATUS.physicsMismatch). Such a room
+ * has NO server fallback: every path that would hand over to a casual server match (the mesh not
+ * complete in time, everybody else gone before the start) fails to the lobby instead
+ * (STATUS.experimentalFailed), and nothing of it is ever recorded anywhere.
+ *
  * Errors with a clear menu line: a stale page (426 'reload_required' from the queue, or a welcome
- * of another P2P protocol) -> STATUS.reload; 429 'no_show' (too many room tickets left unused) ->
+ * of another P2P protocol or with rules this build cannot read) -> STATUS.reload; 429 'no_show' (too many room tickets left unused) ->
  * noShowStatus(retryAfterMs). A room socket that closes before the welcome (the room refused the
  * upgrade: browsers only show 1006; e.g. 403 'left' for a join that got there after the no-show
  * grace, or an expired ticket) releases the lock and queues again by itself, once per quickMatch
@@ -48,7 +56,7 @@
  * tick (the wasm BallPredTracker's incremental / full decision then depends on the confirmed ball
  * states only, never on when a peer rolled back) and packs the bot controls; onConfirmedTick(tick)
  * detects goals on the rising edge of the ball-scored flag of the confirmed state, ticks the Match,
- * performs its kickoff resets with rs_reset_kickoff(seed + n) and saves a CHECKPOINT of the
+ * performs its kickoff resets with rs_reset_kickoff(kickoffSeedOf(seed, n)) and saves a CHECKPOINT of the
  * confirmed-timeline objects (Match, kickoff count, scored flag, the bot layout and both BotTeams,
  * Match.saveState / BotTeam.saveState) in a ring keyed by tick (CHECKPOINT_TICKS entries, plus one
  * per hash tick like the engine's hash ring). Predicted ticks only sample the local input and let
@@ -83,6 +91,9 @@
  * RoomClient, Mesh and RollbackEngine are built per room.
  */
 import { BotTeam } from '../../ai/Team';
+import { botPhysicsOf } from '../../sim/mutators';
+import { MUTATOR_COUNT, mutatorFingerprint } from '../../sim/mutatorLayout';
+import type { RulesSnapshot } from '../../game/physicsRules';
 import type { GameMode } from '../../sim/constants';
 import {
   BALL_OFFSET,
@@ -118,6 +129,7 @@ import { Mesh, assembleGamePacket, type MeshOptions } from './Mesh';
 import {
   HASH_LEN,
   INPUT_HDR,
+  P2P_ERROR_BAD_PHYSICS,
   P2P_ERROR_NO_SHOW,
   P2P_ERROR_RELOAD,
   P2P_HASH_EVERY,
@@ -126,6 +138,7 @@ import {
   P2P_INPUT_MAX_BATCH,
   P2P_WINDOW_DEFAULT,
   P2pMsg,
+  ROOM_ERROR_PHYSICS_MISMATCH,
   STATE_REQ_LEN,
   STATE_RESP_HDR,
   decodeHash,
@@ -231,7 +244,20 @@ export const STATUS = {
   requeue: t('p2p.requeue'),
   lostRoom: t('p2p.lostRoom'),
   reload: t('error.queue.reload_required'),
+  experimentalFailed: t('p2p.experimentalFailed'),
+  physicsMismatch: t('p2p.physicsMismatch'),
 } as const;
+
+/**
+ * The rs_reset_kickoff seed of the room's `n`-th kickoff (0: the welcome's and tick 1's): the room
+ * seed (a uint32) plus n, as a NON-NEGATIVE int31. The wasm takes an int and deals RANDOM spots
+ * for a negative one, so a room seed from 2^31 up (half of them, and a seed just below after a few
+ * goals) gave every peer its own kickoff: a desync at the first hash vote and after every goal,
+ * each healed by a resync. Every protocol 5 peer deals with this, the same spots for the same room.
+ */
+export function kickoffSeedOf(roomSeed: number, n: number): number {
+  return (roomSeed + n) & 0x7fffffff;
+}
 
 /** Tick expected at local time `nowMs` when tick 0 is at `startAtLocalMs` (negative before the start). */
 export function expectedTickAt(nowMs: number, startAtLocalMs: number): number {
@@ -317,6 +343,11 @@ export interface P2PSim {
   /** A full re-prediction from the current ball state (RocketSimBridge.forceBallPrediction); updateBallPrediction when absent. */
   forceBallPrediction?(): void;
   isBallScored(): boolean;
+  /**
+   * The arena's mutators as the wasm reads them back (RocketSimBridge.getMutators): their
+   * fingerprint goes out with 'ready'. Absent (fakes): 'ready' carries none.
+   */
+  getMutators?(out?: Float32Array): Float32Array;
 }
 
 export type EngineFactory = (sim: P2PSim, numSlots: number, humanSlots: readonly number[], localSlot: number, hooks: EngineHooks, opts: EngineOptions) => RollbackEngineLike;
@@ -336,7 +367,8 @@ export interface RoomLike {
   readonly rttMs: number;
   connect(wsUrl: string, ticket: string): void;
   signal(to: number, data: SignalData): boolean;
-  ready(): boolean;
+  /** `physicsFp`: the fingerprint of the arena's mutators (the room refuses another one). */
+  ready(physicsFp?: number): boolean;
   unreachable(slot: number, atTick: number): boolean;
   hashReport(tick: number, hash: number, agree: number, disagree: number): boolean;
   serverToLocal(serverMs: number): number;
@@ -378,7 +410,10 @@ export interface MeshLike {
 /** What the session needs from the Game (src/game/Game.ts implements it; tests use a stub). */
 export interface P2PGameHooks {
   readonly sim: P2PSim;
-  /** Fresh arena from the room roster (player at you.slot, no local bot teams). Throws on a bad roster. */
+  /**
+   * Fresh arena from the room roster (player at you.slot, no local bot teams), created with the
+   * room's physics (w.physics, null = standard) before any car. Throws on a bad roster or rules.
+   */
   applyP2PRoster(w: RoomWelcome): void;
   restoreOfflineRoster(): void;
   /** The match is on screen (start received): hide the menu, reset the offline match, block edges. */
@@ -399,6 +434,11 @@ export interface P2PGameHooks {
   p2pHandover(mode: GameMode, assignment: ServerAssignment | null, notice: string): void;
   /** The session died mid-match: back to the menu with the reason. */
   onSessionDisconnected(message: string): void;
+  /**
+   * Matchmaking / signaling / connecting failed (fail(): the menu shows `message`): a custom
+   * lobby's member goes back to its lobby. Optional (test fakes).
+   */
+  p2pFailed?(message: string): void;
 }
 
 export interface P2PSessionOptions {
@@ -461,6 +501,11 @@ export class P2PSession {
   /** The confirmed-timeline match (score / clock / phase for the HUD). */
   match: Match;
   welcome: RoomWelcome | null = null;
+  /**
+   * The current room's experimental rules (RoomWelcome.physics), null = standard physics. Set by
+   * the welcome, cleared when the session leaves the room.
+   */
+  rules: RulesSnapshot | null = null;
   engine: RollbackEngineLike | null = null;
   mesh: MeshLike | null = null;
   room: RoomLike | null = null;
@@ -535,6 +580,8 @@ export class P2PSession {
   private readonly peerHashTick = new Int32Array(MAX_CARS).fill(-1);
   private readonly peerHash = new Uint32Array(MAX_CARS);
   private readonly localControls: CarControls = emptyControls();
+  /** getMutators() scratch for the 'ready' fingerprint. */
+  private readonly mutatorScratch = new Float32Array(MUTATOR_COUNT);
 
   // Checkpoints of the confirmed-timeline objects (see the header): a ring per tick and one per hash tick.
   private ckBuf: Float64Array | null = null;
@@ -619,6 +666,11 @@ export class P2PSession {
   /** A match is on screen and taking input. */
   get inMatch(): boolean {
     return this.state === 'countdown' || this.state === 'playing';
+  }
+
+  /** The current room plays experimental rules (no server fallback, nothing recorded). */
+  get experimental(): boolean {
+    return this.rules !== null;
   }
 
   get name(): string {
@@ -847,7 +899,7 @@ export class P2PSession {
       if (!this.readySent) {
         this.readySent = true;
         this.log.push('ready', `mesh complete (${mesh.connectedCount()} of ${remaining} peers)`);
-        room.ready();
+        room.ready(this.physicsFingerprint());
       }
       this.status = STATUS.readyWait;
       return;
@@ -1160,8 +1212,7 @@ export class P2PSession {
     switch (e.type) {
       case 'kickoffReset': {
         const w = this.welcome;
-        const seed = (w !== null ? w.seed : 0) + this.kickoffs++;
-        this.game.sim.resetKickoff(seed);
+        this.game.sim.resetKickoff(kickoffSeedOf(w !== null ? w.seed : 0, this.kickoffs++));
         this.wasScored = false;
         if (this.blueTeam !== null) this.blueTeam.reset();
         if (this.redTeam !== null) this.redTeam.reset();
@@ -1404,11 +1455,15 @@ export class P2PSession {
     try {
       this.game.applyP2PRoster(w);
     } catch (err) {
+      // The arena may be gone or half built (createArena destroys it when the wasm refuses the
+      // rules): fail() rebuilds the offline one, as after any applied roster.
+      this.rosterApplied = true;
       this.fail(`Roster: ${describe(err)}`);
       return;
     }
     this.rosterApplied = true;
     this.welcome = w;
+    this.rules = w.physics ?? null;
     this.mode = w.mode;
     this.mySlot = w.you.slot;
     this.numSlots = slots.length;
@@ -1453,11 +1508,14 @@ export class P2PSession {
     this.checkpointRestores = 0;
     this.peersDead = 0;
     const sim = this.game.sim;
-    sim.resetKickoff(w.seed);
+    sim.resetKickoff(kickoffSeedOf(w.seed, 0));
     this.kickoffs = 0;
     this.wasScored = false;
-    this.blueTeam = new BotTeam({ team: Team.Blue, difficulty: P2P_BOT_DIFFICULTY, seed: w.seed });
-    this.redTeam = new BotTeam({ team: Team.Red, difficulty: P2P_BOT_DIFFICULTY, seed: (w.seed + RED_SEED_OFFSET) | 0 });
+    // The room's physics profile (the stock one for standard rules): the same integers on every
+    // peer give the same profile, so the bots stay deterministic under any rules.
+    const physics = botPhysicsOf(this.rules?.values ?? {});
+    this.blueTeam = new BotTeam({ team: Team.Blue, difficulty: P2P_BOT_DIFFICULTY, seed: w.seed, physics });
+    this.redTeam = new BotTeam({ team: Team.Red, difficulty: P2P_BOT_DIFFICULTY, seed: (w.seed + RED_SEED_OFFSET) | 0, physics });
     this.teamsDirty = true;
     this.rebuildTeams();
     this.match = new Match({ lengthSeconds: w.matchLengthSeconds });
@@ -1604,7 +1662,14 @@ export class P2PSession {
   }
 
   private handleRoomError(code: string, message: string): void {
-    if (code === P2P_ERROR_RELOAD) {
+    if (code === ROOM_ERROR_PHYSICS_MISMATCH) {
+      // The room refused our 'ready': our arena does not run the room's rules. It closes the socket.
+      this.log.push('room.physics', message);
+      if (this.state === 'signaling' || this.state === 'connecting') this.fail(STATUS.physicsMismatch);
+      else this.error = STATUS.physicsMismatch;
+      return;
+    }
+    if (code === P2P_ERROR_RELOAD || code === P2P_ERROR_BAD_PHYSICS) {
       // Another P2P protocol in the welcome: this page is stale, only a reload helps.
       this.log.push('room.reload', message);
       if (this.state === 'signaling' || this.state === 'connecting') this.fail(STATUS.reload);
@@ -1747,6 +1812,12 @@ export class P2PSession {
    * the fallback's server queue cannot be refused with 409 by our own stale room lock.
    */
   private fallback(notice: string): void {
+    if (this.rules !== null) {
+      // An experimental room never becomes a casual server match: back to the lobby.
+      this.log.push('handover.refused', `experimental rules "${this.rules.name}": no server fallback (${notice})`);
+      this.fail(STATUS.experimentalFailed);
+      return;
+    }
     this.log.push('handover', notice);
     this.attempt++;
     const mode = this.mode;
@@ -1754,6 +1825,21 @@ export class P2PSession {
     this.setState('idle', 'fallback');
     this.status = '';
     this.game.p2pHandover(mode, null, notice);
+  }
+
+  /**
+   * The fingerprint of the arena's mutators as the wasm reads them back (what 'ready' carries: the
+   * room compares it with its rules'); undefined when the sim cannot read them (test fakes).
+   */
+  private physicsFingerprint(): number | undefined {
+    const sim = this.game.sim;
+    if (sim.getMutators === undefined) return undefined;
+    try {
+      return mutatorFingerprint(sim.getMutators(this.mutatorScratch));
+    } catch (err) {
+      this.log.push('physics.read', logText(err));
+      return undefined;
+    }
   }
 
   /** Matchmaking / signaling / connecting failed: back to idle with the error on the menu. */
@@ -1767,6 +1853,7 @@ export class P2PSession {
     this.status = '';
     this.error = message;
     if (hadRoster) this.game.restoreOfflineRoster();
+    if (this.game.p2pFailed !== undefined) this.game.p2pFailed(message);
   }
 
   /** The match died (desync, dropped by the room, room lost with a dead peer): the Game shows the menu (which leaves the session). */
@@ -1798,6 +1885,7 @@ export class P2PSession {
     }
     this.engine = null;
     this.welcome = null;
+    this.rules = null;
     this.rosterApplied = false;
     this.blueTeam = null;
     this.redTeam = null;

@@ -172,6 +172,35 @@ test('pure helpers: predictBallAt, firstReachable, steerToward', () => {
   assert.equal(steerToward(carFwd, right, carPos, m.vec3(0, 500, 0)), 0);
 });
 
+test('physics profile: the stock profile is the default arithmetic; a preset profile changes the reach model', () => {
+  const state = makeState();
+  setBall(state, 0, 3000);
+  const out = new Float32Array(6);
+  const carPos = m.vec3(0, 0, 17), carVel = m.vec3(0, 0, 0), carFwd = m.vec3(0, 1, 0);
+  const tDefault = firstReachable(state, carPos, carVel, carFwd, 100, out);
+  assert.equal(firstReachable(state, carPos, carVel, carFwd, 100, out, bot.TUNING.groundMaxBallZ, 2, m.STOCK_BOT_PHYSICS), tDefault);
+  const fast = { ...m.STOCK_BOT_PHYSICS, boostAccelGround: m.BOOST_ACCEL_GROUND * 2, maxBoostSpeed: 2600, boostPerSecond: 0 };
+  assert.ok(firstReachable(state, carPos, carVel, carFwd, 100, out, bot.TUNING.groundMaxBallZ, 2, fast) < tDefault, 'more boost, higher top speed: there sooner');
+  const slow = { ...m.STOCK_BOT_PHYSICS, boostAccelGround: m.BOOST_ACCEL_GROUND / 2, maxBoostSpeed: 2000 };
+  assert.ok(firstReachable(state, carPos, carVel, carFwd, 100, out, bot.TUNING.groundMaxBallZ, 2, slow) > tDefault, 'less boost: later');
+  // A bot keeps its profile and thinks without NaN under it.
+  const b = new Bot({ team: Team.Blue, physics: fast });
+  assert.equal(b.physics, fast);
+  assert.equal(new Bot({ team: Team.Blue }).physics, m.STOCK_BOT_PHYSICS);
+  // The aerial planner's jump-hold velocities follow the hold acceleration: exactly 1x for stock.
+  assert.equal(new Bot({ team: Team.Blue })['holdScale'], 1);
+  assert.equal(new Bot({ team: Team.Blue, physics: { ...m.STOCK_BOT_PHYSICS } })['holdScale'], 1);
+  const springy = { ...m.STOCK_BOT_PHYSICS, jumpHoldAccel: m.JUMP_HOLD_ACCEL * 1.5 };
+  assert.ok(Math.abs(new Bot({ team: Team.Blue, physics: springy })['holdScale'] - 1.5) < 1e-12);
+  setCar(state, 0, { team: Team.Blue, x: 0, y: 0 });
+  setCar(state, 1, { team: Team.Red, x: 0, y: 4000, yaw: -Math.PI / 2 });
+  const c = emptyControls();
+  for (let i = 0; i < 30; i++) {
+    b.think(state, 0, -1, c);
+    assertFiniteControls(c, 'preset profile');
+  }
+});
+
 test('air: rolled car levels out with the correct roll sign and nothing is NaN', () => {
   const out = emptyControls();
   const th = 0.5; // rolled right by 0.5 rad (up tilted toward +right)

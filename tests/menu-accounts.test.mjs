@@ -78,7 +78,7 @@ test('AccountClient: login sends the client key (never the password), adopts the
   const storage = memStorage();
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage });
   let changes = 0;
-  a.onChange = () => changes++;
+  a.subscribe(() => changes++);
   await a.login('Tomi', 'correct horse battery');
   const sent = srv.calls[0].body;
   assert.equal(sent.username, 'Tomi');
@@ -464,4 +464,152 @@ test('LobbyClient: the public list needs no session (browsing never registers a 
   assert.equal(bearers, 0);
   assert.equal(srv.calls[0].path, '/api/lobbies?region=SA');
   assert.equal(srv.calls[0].method, 'GET');
+});
+
+// ---- experimental features: the listener list, the { name, id } hint, the API calls ----------------
+
+test('AccountClient.subscribe: every listener hears each change, an unsubscribed one does not, a throwing one stops nobody', async () => {
+  const srv = fakeServer({
+    '/api/auth/login': () => res(200, SESSION('Tomi', Date.now() + 3600_000)),
+    '/api/auth/logout': () => res(200, { ok: true }),
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: memStorage() });
+  const heard = [];
+  const errors = [];
+  const realError = console.error;
+  console.error = (...args) => errors.push(args.join(' '));
+  try {
+    a.subscribe(() => heard.push('menu'));
+    a.subscribe(() => {
+      throw new Error('boom');
+    });
+    const off = a.subscribe(() => heard.push('game'));
+    await a.login('Tomi', 'correct horse battery');
+    assert.deepEqual(heard, ['menu', 'game']);
+    off();
+    await a.logout();
+    assert.deepEqual(heard, ['menu', 'game', 'menu']);
+    assert.equal(errors.length, 2, 'the throwing listener is logged each time');
+  } finally {
+    console.error = realError;
+  }
+});
+
+test('the account hint keeps { name, id }; a hint from before the id reads as no id; sign-out removes it', async () => {
+  const storage = memStorage();
+  const srv = fakeServer({
+    '/api/auth/login': () => res(200, SESSION('Tomi', Date.now() + 3600_000)),
+    '/api/auth/logout': () => res(200, { ok: true }),
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage });
+  await a.login('Tomi', 'correct horse battery');
+  assert.deepEqual(JSON.parse(storage.getItem(AC.ACCOUNT_HINT_KEY)), { name: 'Tomi', id: 'abcdef0123456789' });
+  assert.deepEqual(AC.readAccountHint(storage), { name: 'Tomi', id: 'abcdef0123456789' });
+  assert.equal(a.hintId, 'abcdef0123456789');
+  storage.setItem(AC.ACCOUNT_HINT_KEY, JSON.stringify({ name: 'Tomi' }));
+  assert.deepEqual(AC.readAccountHint(storage), { name: 'Tomi', id: null }, 'written before this release');
+  assert.equal(a.hintName, 'Tomi');
+  assert.equal(a.hintId, null);
+  storage.setItem(AC.ACCOUNT_HINT_KEY, JSON.stringify({ name: 'Tomi', id: '../x' }));
+  assert.equal(AC.readAccountHint(storage).id, null, 'only an account id');
+  storage.setItem(AC.ACCOUNT_HINT_KEY, '{nope');
+  assert.equal(AC.readAccountHint(storage), null);
+  assert.equal(AC.readAccountHint(null), null);
+  await a.logout();
+  assert.equal(storage.getItem(AC.ACCOUNT_HINT_KEY), null);
+});
+
+test('AccountClient experimental calls: Bearer, paths and bodies, the answer parsed leniently, 409 too_many and a refused session', async () => {
+  const PRESET = { id: '0123456789ab', name: 'Low gravity', values: { gravity: 50 }, updatedAt: 0 };
+  let presetStatus = 200;
+  let getStatus = 200;
+  const srv = fakeServer({
+    '/api/me/experimental': (b, h) => {
+      if (b === undefined) return getStatus === 200 ? res(200, { enabled: true, presets: [{ ...PRESET, values: { gravity: 47, nope: 3 }, updatedAt: 5 }, { id: 'bad', name: 'x' }] }) : res(getStatus, { error: 'unauthorized' });
+      return res(200, { enabled: b.enabled, presets: [] });
+    },
+    '/api/me/presets': (b) => (presetStatus === 200 ? res(200, { enabled: false, presets: [{ ...b.preset, updatedAt: 9 }] }) : res(409, { error: 'too_many', message: 'too_many' })),
+    '/api/me/presets/delete': (b) => res(200, { enabled: false, presets: [] }),
+    '/api/auth/refresh': () => res(401, { error: 'bad_refresh' }),
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
+  await assert.rejects(a.fetchExperimental(), (e) => e instanceof AC.AccountError && e.code === 'unauthorized', 'a guest: no request');
+  assert.equal(srv.calls.length, 0);
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  const got = await a.fetchExperimental();
+  assert.equal(srv.calls[0].method, 'GET');
+  assert.equal(srv.calls[0].headers.authorization, 'Bearer jwt-Tomi');
+  assert.deepEqual(got, { enabled: true, presets: [{ id: '0123456789ab', name: 'Low gravity', values: { gravity: 50 }, updatedAt: 5 }] }, 'snapped, unknown key and bad preset dropped');
+  assert.deepEqual(await a.setExperimental(false), { enabled: false, presets: [] });
+  assert.deepEqual(srv.calls.at(-1).body, { enabled: false });
+  assert.equal(srv.calls.at(-1).method, 'POST');
+  const up = await a.upsertPreset({ ...PRESET, updatedAt: 123 });
+  assert.deepEqual(srv.calls.at(-1).body, { preset: { id: '0123456789ab', name: 'Low gravity', values: { gravity: 50 } } }, 'the server stamps updatedAt');
+  assert.equal(up.presets[0].updatedAt, 9);
+  presetStatus = 409;
+  await assert.rejects(a.upsertPreset(PRESET), (e) => e instanceof AC.AccountError && e.code === 'too_many' && e.status === 409 && e.message === '10 presets at most: delete one first');
+  await a.deletePreset('0123456789ab');
+  assert.deepEqual(srv.calls.at(-1), { path: '/api/me/presets/delete', method: 'POST', body: { id: '0123456789ab' }, headers: srv.calls.at(-1).headers });
+  getStatus = 401;
+  await assert.rejects(a.fetchExperimental(), (e) => e.code === 'unauthorized');
+  assert.equal(a.signedIn, false, 'the refresh after the 401 failed: signed out');
+});
+
+test('AccountClient experimental calls: a 401 refreshes the session and sends the write again, once', async () => {
+  const PRESET = { id: '0123456789ab', name: 'Low gravity', values: { gravity: 50 }, updatedAt: 0 };
+  const sent = [];
+  let refreshes = 0;
+  let fresh = 'Fresh';
+  const srv = fakeServer({
+    '/api/me/presets': (b, h) => {
+      sent.push(h.authorization);
+      return h.authorization === 'Bearer jwt-Fresh' ? res(200, { enabled: true, presets: [{ ...b.preset, updatedAt: 3 }] }) : res(401, { error: 'unauthorized' });
+    },
+    '/api/auth/refresh': () => {
+      refreshes++;
+      return res(200, SESSION(fresh, Date.now() + 3600_000));
+    },
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  const ans = await a.upsertPreset(PRESET);
+  assert.deepEqual(sent, ['Bearer jwt-Tomi', 'Bearer jwt-Fresh'], 'the same write again with the new session');
+  assert.equal(refreshes, 1);
+  assert.equal(ans.presets[0].updatedAt, 3);
+  assert.equal(a.signedIn, true);
+  // Refused again with the refreshed session: it rejects, with no second refresh.
+  fresh = 'Other';
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  sent.length = 0;
+  await assert.rejects(a.upsertPreset(PRESET), (e) => e instanceof AC.AccountError && e.code === 'unauthorized' && e.status === 401);
+  assert.deepEqual(sent, ['Bearer jwt-Tomi', 'Bearer jwt-Other']);
+  assert.equal(refreshes, 2);
+});
+
+test('AccountClient experimental calls: a refresh that hands back another account (another tab signed in) never gets the write', async () => {
+  const PRESET = { id: '0123456789ab', name: 'Low gravity', values: { gravity: 50 }, updatedAt: 0 };
+  const OTHER = (name, expiresAt) => ({ kind: 'account', playerId: '9876543210fedcba', name, session: 'jwt-' + name, expiresAt });
+  const sent = [];
+  const srv = fakeServer({
+    '/api/me/presets': (b, h) => {
+      sent.push(h.authorization);
+      return res(401, { error: 'unauthorized' });
+    },
+    '/api/me/experimental': (b, h) => {
+      sent.push(h.authorization);
+      return res(200, { enabled: b?.enabled === true, presets: [] });
+    },
+    '/api/auth/refresh': () => res(200, OTHER('Bea', Date.now() + 3600_000)),
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
+  // Refused with this account's session, and the refresh comes back as someone else: no second send.
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  await assert.rejects(a.upsertPreset(PRESET), (e) => e instanceof AC.AccountError && e.code === 'unauthorized');
+  assert.deepEqual(sent, ['Bearer jwt-Tomi'], "Tomi's preset never goes up with Bea's session");
+  assert.equal(a.account.playerId, '9876543210fedcba', 'the client follows the cookie (the store then works for Bea)');
+  // The session near its end: the refresh before the call turns into another account: nothing is sent.
+  sent.length = 0;
+  a.account = SESSION('Tomi', Date.now() + 1000);
+  await assert.rejects(a.setExperimental(true), (e) => e.code === 'unauthorized');
+  assert.deepEqual(sent, [], "Tomi's switch never reaches Bea's account");
 });

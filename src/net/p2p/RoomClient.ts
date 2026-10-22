@@ -8,8 +8,11 @@
  *                            ROOM_ERROR_SIGNAL_DROPPED (the target slot had no socket) goes to
  *                            onSignalDropped(to) instead of onError (the mesh re-offers); a
  *                            welcome of another P2P_PROTOCOL_VERSION fails with code
- *                            P2P_ERROR_RELOAD (the page is stale: the session says "reload")
- *   senders                  signal(to, data), ready(), unreachable(slot, atTick), hashReport(...)
+ *                            P2P_ERROR_RELOAD (the page is stale: the session says "reload"), one
+ *                            whose `physics` is missing or not rules this build reads (strict:
+ *                            parseLobbyRules) with P2P_ERROR_BAD_PHYSICS; the welcome handed on
+ *                            carries the parsed rules (null = standard physics)
+ *   senders                  signal(to, data), ready(physicsFp), unreachable(slot, atTick), hashReport(...)
  *   log                      every message in / out but ping / pong (signals: type only) goes to
  *                            the P2PLogSink of the options (P2PSession.log)
  *   clock                    a ping every ROOM_PING_INTERVAL_MS (setPingIntervalMs slows it down once
@@ -30,7 +33,8 @@ import { median } from '../ClockSync';
 import { WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../protocol';
 import type { P2PLogSink } from './DebugLog';
 import { signalKind } from './Mesh';
-import { P2P_ERROR_RELOAD, P2P_PROTOCOL_VERSION, ROOM_ERROR_SIGNAL_DROPPED, type RoomClientMessage, type RoomServerMessage, type RoomSlot, type RoomWelcome, type SignalData } from './protocol';
+import { P2P_ERROR_BAD_PHYSICS, P2P_ERROR_RELOAD, P2P_PROTOCOL_VERSION, ROOM_ERROR_SIGNAL_DROPPED, type RoomClientMessage, type RoomServerMessage, type RoomSlot, type RoomWelcome, type SignalData } from './protocol';
+import { parseLobbyRules } from '../../game/physicsRules';
 
 export const ROOM_PING_INTERVAL_MS = 2000;
 /** Ping cadence once the match runs (keeps the room socket alive; the offset is no longer used). */
@@ -160,10 +164,13 @@ export class RoomClient {
     return ok;
   }
 
-  /** Mesh complete on my side and the game loaded: the room starts once every peer said so. */
-  ready(): boolean {
-    const ok = this.send({ type: 'ready' });
-    this.log.push('room.ready>', ok ? 'sent' : 'NOT sent (socket not open)');
+  /**
+   * Mesh complete on my side and the game loaded: the room starts once every peer said so.
+   * `physicsFp`: the fingerprint of the arena's mutators as the wasm reads them back.
+   */
+  ready(physicsFp?: number): boolean {
+    const ok = this.send(physicsFp === undefined ? { type: 'ready' } : { type: 'ready', physicsFp: physicsFp >>> 0 });
+    this.log.push('room.ready>', `${ok ? 'sent' : 'NOT sent (socket not open)'}${physicsFp === undefined ? '' : ` physics ${(physicsFp >>> 0).toString(16)}`}`);
     return ok;
   }
 
@@ -280,15 +287,23 @@ export class RoomClient {
           this.fail(P2P_ERROR_RELOAD, `room protocol ${msg.protocol} (client ${P2P_PROTOCOL_VERSION})`);
           return;
         }
-        this.welcome = msg;
-        this.log.push('room.welcome', `${msg.roomId.slice(0, 8)} ${msg.mode} seed ${msg.seed} you ${msg.you.slot} slots [${describeSlots(msg.slots)}] ice ${msg.iceServers.length}`);
+        // The room's rules, as strictly as the room checked them: a welcome without the field (a
+        // room of another build) or with rules this build cannot read never builds an arena.
+        const physics = 'physics' in msg ? parseLobbyRules(msg.physics) : 'bad';
+        if (physics === 'bad') {
+          this.fail(P2P_ERROR_BAD_PHYSICS, 'room rules this page cannot read');
+          return;
+        }
+        const w: RoomWelcome = { ...msg, physics };
+        this.welcome = w;
+        this.log.push('room.welcome', `${w.roomId.slice(0, 8)} ${w.mode} seed ${w.seed} you ${w.you.slot} slots [${describeSlots(w.slots)}] ice ${w.iceServers.length}${physics === null ? '' : ` rules "${physics.name}" ${JSON.stringify(physics.values)}`}`);
         // A coarse first offset (biased by the one-way latency): only until the first pong.
         if (typeof msg.now === 'number' && this.samples === 0) {
           const t = this.now();
           this.addClockSample(t, msg.now, t);
           this.coarseOnly = true;
         }
-        if (this.onWelcome) this.onWelcome(msg);
+        if (this.onWelcome) this.onWelcome(w);
         return;
       }
       case 'peerJoined':

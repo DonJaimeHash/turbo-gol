@@ -12,8 +12,11 @@
 //   + left + a ban, A's next ranked queue 429 'ranked_ban' -> population endpoint -> A creates a
 //   public lobby with a password -> B sees it in the list (locked) -> wrong password 403 -> joins ->
 //   both lobby sockets get the state (two members, A host) -> B switches team -> A starts -> both get
-//   their P2P room result -> both leave the room locks -> recovery code resets B's password ->
-//   logout: the refresh cookie no longer works.
+//   their P2P room result -> both leave the room locks -> an experimental lobby (a guest cannot create
+//   or join it, the casual and ranked queues refuse rules, the list tags it, a server match with the
+//   rules is refused, every room welcome carries them, a ready with the stock fingerprint is refused
+//   with physics_mismatch, the rules fingerprint on both starts the match, nothing is rated) ->
+//   recovery code resets B's password -> logout: the refresh cookie no longer works.
 // Exit 0 = pass, 1 = a check failed.
 import { registerHooks } from 'node:module';
 
@@ -33,6 +36,8 @@ const argv = process.argv.slice(2);
 const API = (argv.find((a) => a.startsWith('--api='))?.slice(6) ?? process.env.API ?? 'http://127.0.0.1:8787').replace(/\/$/, '');
 const ACC = await import('../../src/net/account.ts');
 const P = await import('../../src/net/protocol.ts');
+const P2 = await import('../../src/net/p2p/protocol.ts');
+const MUT = await import('../../src/sim/mutators.ts');
 
 let failed = 0;
 function check(ok, label, extra) {
@@ -249,6 +254,90 @@ if (cl.status === 200) {
   lb.ws.send(JSON.stringify({ t: 'leave' }));
   la.ws.send(JSON.stringify({ t: 'leave' }));
   await waitFor(() => la.closed !== null && lb.closed !== null);
+}
+
+// ---- an experimental lobby: accounts only, P2P only, the rules in every welcome, the ready fingerprint ----
+// The owner's rule: the casual and ranked queues never take rules, and a match with them counts for
+// nothing (no rating, no strike: nothing reports a P2P result anywhere).
+const RULES = { v: 1, name: 'Low gravity', values: { gravity: 50, ballDrag: 50 } };
+const RULES_FP = MUT.physicsFingerprint(RULES);
+const STOCK_FP = MUT.physicsFingerprint(null);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function openRoom(r) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(r.wsUrl, [P.WS_SUBPROTOCOL, P.WS_TICKET_PREFIX + r.ticket]);
+    const st = { ws, msgs: [], closed: null, of: (type) => st.msgs.filter((m) => m.type === type) };
+    ws.onopen = () => resolve(st);
+    ws.onmessage = (ev) => st.msgs.push(JSON.parse(ev.data));
+    ws.onclose = (ev) => {
+      st.closed = { code: ev.code, reason: ev.reason };
+      resolve(st);
+    };
+    ws.onerror = (e) => reject(e);
+  });
+}
+const guestS = await api('/api/guest', { body: { name: 'Smoke guest' } });
+const tokG = guestS.json?.session;
+const expBody = { name: 'Smoke exp ' + rnd(), mode: '1v1', visibility: 'public', net: 'p2p', matchLengthSeconds: 180, region, physics: RULES };
+const gx = await api('/api/lobbies', { body: expBody, token: tokG });
+check(gx.status === 403 && gx.json?.error === 'account_required', 'a guest cannot create a lobby with experimental rules', gx.status);
+const qx = await api('/api/queue', { body: { mode: '1v1', kind: 'p2p', p2pProtocol: P2.P2P_PROTOCOL_VERSION, physics: RULES }, token: tokB });
+check(qx.status === 400 && qx.json?.error === 'experimental_lobby_only', 'the casual queue refuses rules', qx.status);
+const qrx = await api('/api/queue', { body: { modes: ['1v1'], kind: 'ranked', region, physics: RULES }, token: tokB });
+check(qrx.status === 400 && qrx.json?.error === 'experimental_lobby_only', 'the ranked queue refuses rules', qrx.status);
+const ex = await api('/api/lobbies', { body: expBody, token: tokA });
+check(ex.status === 200 && typeof ex.json?.ticket === 'string', 'A (signed in) creates a lobby with experimental rules', ex.status);
+if (ex.status === 200) {
+  const xa = await openLobby(ex.json);
+  check(await waitFor(() => xa.states.length > 0) && same(xa.states.at(-1).settings.physics, RULES), 'the lobby state carries the rules', xa.states.at(-1)?.settings.physics);
+  await new Promise((r) => setTimeout(r, 3500)); // the Worker's list cache (3 s)
+  const row = (await api('/api/lobbies?region=' + region)).json?.lobbies?.find((l) => l.code === ex.json.code);
+  check(row && row.experimental === true && row.physics?.name === RULES.name, 'the public list tags it experimental, with its rules', row && { experimental: row.experimental, rules: row.physics?.name });
+  const gj = await api('/api/lobbies/join', { body: { code: ex.json.code }, token: tokG });
+  check(gj.status === 403 && gj.json?.error === 'account_required', 'a guest cannot join it', gj.status);
+  const bj = await api('/api/lobbies/join', { body: { code: ex.json.code }, token: tokB });
+  check(bj.status === 200, 'B (signed in) joins it', bj.status);
+  const xb = await openLobby(bj.json);
+  check(await waitFor(() => xb.states.at(-1)?.members.length === 2) && same(xb.states.at(-1).settings.physics, RULES), 'B sees the rules before the match');
+  xa.ws.send(JSON.stringify({ t: 'settings', settings: { net: 'server' } }));
+  check(await waitFor(() => xa.errors.some((e) => e.code === 'experimental_p2p_only')), 'a server match with the rules is refused', xa.errors.at(-1)?.code);
+  // Round 1: B's arena runs the standard physics (a modified page): refused at its ready.
+  xa.ws.send(JSON.stringify({ t: 'start' }));
+  check(await waitFor(() => xa.matches.length > 0 && xb.matches.length > 0, 8000), 'start: both get their P2P room', { a: xa.matches[0]?.kind, b: xb.matches[0]?.kind });
+  const r1 = [xa.matches[0], xb.matches[0]];
+  if (r1[0]?.kind === 'p2p' && r1[1]?.kind === 'p2p') {
+    const [ra, rb] = [await openRoom(r1[0]), await openRoom(r1[1])];
+    check(await waitFor(() => ra.of('room').length > 0 && rb.of('room').length > 0), 'both room welcomes');
+    check(same(ra.of('room')[0]?.physics, RULES) && same(rb.of('room')[0]?.physics, RULES) && ra.of('room')[0]?.protocol === P2.P2P_PROTOCOL_VERSION, 'every welcome carries the rules (protocol 5)', ra.of('room')[0]?.physics);
+    ra.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+    rb.ws.send(JSON.stringify({ type: 'ready', physicsFp: STOCK_FP }));
+    check(await waitFor(() => rb.closed !== null), 'a ready with another fingerprint: physics_mismatch, socket closed', { errors: rb.of('error').map((e) => e.code), closed: rb.closed });
+    check(rb.of('error').some((e) => e.code === 'physics_mismatch') && ra.of('start').length === 0, 'B never starts with other physics', rb.of('error'));
+    ra.ws.close();
+    await api('/api/leave', { body: { matchId: r1[0].roomId, region }, token: tokA });
+    await api('/api/leave', { body: { matchId: r1[1].roomId, region }, token: tokB });
+    xa.ws.send(JSON.stringify({ t: 'back' }));
+    xb.ws.send(JSON.stringify({ t: 'back' }));
+    check(await waitFor(() => xa.states.at(-1)?.status === 'open'), 'back in the lobby');
+    // Round 2: both arenas run the rules: the room starts.
+    xa.ws.send(JSON.stringify({ t: 'start' }));
+    check(await waitFor(() => xa.matches.length > 1 && xb.matches.length > 1, 8000), 'start again');
+    const r2 = [xa.matches[1], xb.matches[1]];
+    const [sa, sb] = [await openRoom(r2[0]), await openRoom(r2[1])];
+    check(await waitFor(() => sa.of('room').length > 0 && sb.of('room').length > 0), 'both welcomes again');
+    sa.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+    sb.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+    check(await waitFor(() => sa.of('start').length > 0 && sb.of('start').length > 0), 'the rules fingerprint on both: the match starts', { a: sa.of('start')[0]?.startAt, b: sb.of('start')[0]?.startAt });
+    sa.ws.close();
+    sb.ws.close();
+    await api('/api/leave', { body: { matchId: r2[0].roomId, region }, token: tokA });
+    await api('/api/leave', { body: { matchId: r2[1].roomId, region }, token: tokB });
+  }
+  const meAfter = await api('/api/me', { token: tokA });
+  check(meAfter.json?.ratings?.[0]?.games === 1, 'nothing rated: A still has only the ranked game', meAfter.json?.ratings?.[0]?.games);
+  xb.ws.send(JSON.stringify({ t: 'leave' }));
+  xa.ws.send(JSON.stringify({ t: 'leave' }));
+  await waitFor(() => xa.closed !== null && xb.closed !== null);
 }
 
 // ---- recovery / logout -----------------------------------------------------------------------------

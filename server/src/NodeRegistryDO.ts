@@ -66,7 +66,7 @@ import type { HeartbeatData, NodeStatus, RegisterAnswer, RegisterRequest, Releas
 import { importPrivateKey, sign, verifyWith } from '../../nodes/shared/edcrypto';
 import { REGIONS, isRegion } from '../../src/net/account';
 import { checkInternal } from './auth';
-import { error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
+import { carriesPhysics, error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
 import { AlertHook } from './nodeAlerts';
 import type { FetchFn } from './nodeAlerts';
@@ -137,9 +137,14 @@ const isStr = (v: unknown, max: number): v is string => typeof v === 'string' &&
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 const isIdList = (v: unknown): v is string[] => Array.isArray(v) && v.length <= 3 && v.every((x) => isStr(x, 64));
 
-/** POST /internal/place as the matchmaker builds it, or null. ControlPlane.place checks the teams against the humans. */
-function parsePlace(v: unknown): PlaceRequest | null {
+/**
+ * POST /internal/place as the matchmaker builds it, or null (400). ControlPlane.place checks the
+ * teams against the humans. Exported for the tests (server/test/experimental-lobby.test.mjs).
+ */
+export function parsePlace(v: unknown): PlaceRequest | null {
   if (typeof v !== 'object' || v === null) return null;
+  // A community node runs the standard physics only: a placement with experimental rules is refused.
+  if (carriesPhysics(v)) return null;
   const b = v as Record<string, unknown>;
   if (!isMode(b.mode) || !isRegion(b.region) || typeof b.ranked !== 'boolean' || !isNum(b.matchLengthSeconds)) return null;
   if (!Array.isArray(b.humans) || b.humans.length < 1 || b.humans.length > 6) return null;

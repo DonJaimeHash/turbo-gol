@@ -36,6 +36,11 @@ export default {
   'quality.fallback': 'Your device does not support {from}: using {to}',
   // Toast when an online match starts on Super low (it still connects)
   'quality.superlowOnline': 'Super low: online matches may not run smoothly on this device',
+  // Toast when the player's own Super low pick is no longer allowed (signed out, another account,
+  // experimental features off): the game keeps running, the next start uses Performance
+  'quality.superlowLocked': 'Super low is for signed-in players with experimental features on: Performance from the next start',
+  // Toast after a start that found a saved Super low pick this player may not make: the game runs on Performance
+  'quality.superlowLockedBoot': 'Super low is for signed-in players with experimental features on: using Performance',
   // The graphics device was lost (src/render/tierGuard.ts lossStep): the loading line before the
   // page reloads, the second time it reloads on Super low, the third time it stops
   'gpu.lostReload': 'The graphics device stopped: restarting…',
@@ -300,6 +305,17 @@ export default {
   'custom.leaveMember': 'You can rejoin with the code while the lobby exists.',
   'custom.leave': 'LEAVE',
   'custom.stay': 'STAY',
+  // Experimental rules in a custom lobby (Settings > Experimental presets; signed-in players only)
+  // Host setting: the rules cycler (Standard, the built-ins, the player's presets); P2P only
+  'custom.settingRules': 'Rules (experimental)',
+  // Host button next to the rules cycler: opens Settings > Experimental, then comes back here
+  'custom.editPresets': 'EDIT PRESETS',
+  // Under the rules cycler when experimental rules are picked
+  'custom.rulesNote': 'Signed-in players only. The match counts for nothing: no rank, no stats',
+  // Lobby screen line before the match; {summary} is e.g. 'Low gravity · Gravity 50% · Air drag (ball) 50%'
+  'custom.rulesInfo': 'Experimental rules: {summary}',
+  // Short tag of a lobby with experimental rules (lobby list, lobby title)
+  'custom.tagExperimental': 'EXP',
 
   // Profile and account forms (src/ui/screens/profile.ts)
   // Screen title (window / back stack)
@@ -461,6 +477,9 @@ export default {
   'error.account.throttled': 'Too many attempts, wait a moment',
   'error.account.bad_recovery': 'Wrong username or recovery code',
   'error.account.rename_too_soon': 'You can change your name once every 30 days',
+  // Physics presets (Settings > Experimental): the account already holds 10
+  'error.account.too_many': '10 presets at most: delete one first',
+  'error.account.bad_preset': 'Invalid preset',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
@@ -489,6 +508,13 @@ export default {
   // The server switched matchmaking off (creating a lobby). Same text as error.queue.matchmaking_off
   // (Spanish players keep the generic error.server line here: src/i18n.ts SERVER_DETAIL_CODES)
   'error.lobby.matchmaking_off': 'Matchmaking is paused, try again later',
+  // A guest joining (or creating) a lobby with experimental rules
+  'error.lobby.account_required': 'Experimental lobby: sign in to join',
+  // The host picked experimental rules while a guest is in the lobby
+  'error.lobby.guests_present': 'Guests cannot play experimental rules: they must sign in or leave',
+  // Experimental rules with the server connection, or a lobby with a single player
+  'error.lobby.experimental_p2p_only': 'Experimental rules need a P2P match with at least 2 players',
+  'error.lobby.bad_physics': 'Invalid rules',
   // Matchmaking: Casual and Competitive searches (POST /api/queue, /api/rejoin, the guest session)
   'error.queue.rate_limited': 'Too many attempts, wait a minute',
   'error.queue.account_required': 'Sign in to play Competitive',
@@ -553,6 +579,10 @@ export default {
   'p2p.engine': 'Engine: {message}',
   // {detail}: the socket close code and reason, not translated ('1006')
   'p2p.roomClosed': 'Room closed ({detail})',
+  // An experimental lobby's match could not connect: there is no server match to fall back to
+  'p2p.experimentalFailed': 'Could not connect the players: experimental matches have no server fallback',
+  // The room refused this page: its arena does not run the lobby's rules
+  'p2p.physicsMismatch': "Your game could not apply the lobby's rules: reload the page",
 
   // Leaderboard and the Competitive result dialog (src/ui/screens/leaderboard.ts)
   // Screen title (top bar / history)
@@ -654,6 +684,8 @@ export default {
   'pause.resume': 'RESUME',
   // Opens the settings screen (controls, audio, graphics); BACK there returns to the pause menu
   'pause.settings': 'SETTINGS',
+  // Experimental free play only: opens the settings screen on its Experimental tab (the physics preset)
+  'pause.rules': 'RULES',
   // Leave the match for the menus
   'pause.quit': 'QUIT',
   // The QUIT button after one press in an online match: a second one leaves it (may count as an abandon)
@@ -675,6 +707,8 @@ export default {
   'settings.tabAudio': 'Audio',
   // Tab: graphics quality
   'settings.tabGraphics': 'Graphics',
+  // Tab: features being tested, for signed-in players (a guest's tab gets a lock after it)
+  'settings.tabExperimental': 'Experimental',
   // Group titles of the binding lists (shown uppercase by the style)
   'settings.groupDriving': 'Driving',
   // Car controls while flying
@@ -757,6 +791,23 @@ export default {
   // In place of the hint when the picked tier needs a restart (into or out of Super low) during an
   // online match: it waits until the player leaves the match
   'settings.qualityAfterOnline': 'Applies when you leave the online match (the game restarts)',
+  // In place of the hint when the device runs Super low by itself (a weak TV, the safety net) and
+  // the player cannot pick it: no tier is lit
+  'settings.qualityAuto': 'This device runs Super low on its own',
+  // Experimental tab (src/render/experimentalPage.ts). A guest sees only this line
+  'settings.experimentalLocked': 'Sign in to try experimental features: Super low graphics and custom physics in free play and P2P lobbies',
+  // Line over the switch
+  'settings.experimentalNote': 'Features being tested: they may change or go away',
+  // The switch's label (settings.on / settings.off)
+  'settings.experimentalSwitch': 'Experimental features',
+  // Under the switch while it is on
+  'settings.experimentalUnlocks': 'Unlocks Super low graphics, Experimental free play and lobby rules',
+  // After the first press to turn the switch off while the player's graphics are Super low
+  'settings.experimentalOffRestart': 'Press again: Performance graphics, restarts',
+  // Super low's line while the switch is on: the player picked it / it is listed now
+  // (or settings.qualityAuto when the device runs it on its own)
+  'settings.experimentalSuperlowChosen': 'Super low is your graphics quality',
+  'settings.experimentalSuperlowListed': 'Super low is now listed in Graphics',
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',
@@ -804,6 +855,86 @@ export default {
   // Free play only: turns unlimited boost on and off
   'action.trainingBoost': 'Practice: unlimited boost',
 
+  // Experimental physics presets (src/game/physicsRules.ts, Settings > Experimental). Preset names
+  // follow the lobby name rules (letters, digits, spaces and _ . - ! ? #, 3 to 24 characters):
+  // rules.builtin.*, rules.defaultName and rules.copyName must keep to them (tests/i18n-lobby-name.test.mjs)
+  'rules.preset': 'Rules',
+  // Under a built-in preset in the picker
+  'rules.builtIn': 'Built-in: duplicate it to edit',
+  // Preset buttons
+  'rules.new': 'New',
+  'rules.duplicate': 'Duplicate',
+  'rules.rename': 'Rename',
+  'rules.delete': 'Delete',
+  'rules.deleteConfirm': 'Delete? Press again',
+  'rules.name': 'Name',
+  // Automatic name of a new preset; {n} counts from 1
+  'rules.defaultName': 'My rules {n}',
+  // Name of a copy; {name} is the original's, {n} counts from 2
+  'rules.copyName': '{name} #{n}',
+  // Toasts
+  'rules.full': '{max} presets at most: delete one first',
+  'rules.offline': 'Saved on this device; it goes to your account when you are back online',
+  'rules.deleteOffline': 'Deleting a preset needs a connection',
+  'rules.reset': 'Reset to standard',
+  // A row that only exists in free play (game speed)
+  'rules.trainingOnly': 'Free play only',
+  // Row groups
+  'rules.groupWorld': 'World',
+  'rules.groupBall': 'Ball',
+  'rules.groupCar': 'Car',
+  'rules.groupContact': 'Contact',
+  // One row per value
+  'rules.gravity': 'Gravity',
+  'rules.gameSpeed': 'Game speed',
+  'rules.ballMaxSpeed': 'Ball top speed',
+  'rules.ballHit': 'Hit strength',
+  'rules.ballWeight': 'Ball weight',
+  'rules.ballBounce': 'Ball bounce',
+  'rules.ballDrag': 'Air drag (ball)',
+  'rules.carMaxSpeed': 'Car top speed',
+  'rules.boostPower': 'Boost power',
+  'rules.boostUse': 'Boost use',
+  'rules.spawnBoost': 'Boost at kickoff',
+  'rules.jumpPower': 'Jump power',
+  'rules.unlimitedFlips': 'Unlimited flips',
+  'rules.unlimitedDoubleJumps': 'Unlimited double jumps',
+  'rules.bumpForce': 'Bump strength',
+  'rules.demoMode': 'Demolitions',
+  // The demolitions row's options
+  'rules.demoNormal': 'Normal',
+  'rules.demoContact': 'On contact',
+  'rules.demoOff': 'Off',
+  'rules.respawnDelay': 'Respawn time',
+  // Names of the built-in presets
+  'rules.builtin.standard': 'Standard',
+  'rules.builtin.lowGravity': 'Low gravity',
+  'rules.builtin.fastBall': 'Fast ball',
+  'rules.builtin.bouncy': 'Bouncy',
+  'rules.builtin.arcade': 'Arcade',
+  // The editor (Settings > Experimental, while the switch is on): the title over the preset picker
+  'rules.groupPresets': 'Physics presets',
+  // Under the picker while one of the player's own presets is shown ({max} is 10)
+  'rules.yours': 'Your presets: {count} of {max}',
+  // What the preset on screen changes: {summary} is rules.standardPhysics or "Gravity 50% · Air drag (ball) 50%"
+  'rules.changes': 'Changes: {summary}',
+  'rules.standardPhysics': 'Standard physics',
+  // Ends a summary that lists only some of the changes
+  'rules.more': '+{count} more',
+  // Under each value's name: its standard value ({value} is written like the value: 100%, 216 km/h, 3 s)
+  'rules.standardValue': 'Standard {value}',
+  'rules.kmh': '{value} km/h',
+  // Respawn time, in seconds
+  'rules.seconds': '{value} s',
+  // Boost use at 0%: the boost never runs out
+  'rules.boostEndless': 'Endless',
+  // In experimental free play (the pause menu's RULES): when the picked preset takes effect
+  'rules.appliesOnClose': 'Free play restarts with these rules when you go back',
+  // A preset name the lobby name rules refuse
+  'rules.badName': 'Names: 3 to 24 letters, digits, spaces and _ . - ! ? #',
+  // Reset to standard after one press: a second one resets every value
+  'rules.resetConfirm': 'Reset to standard? Press again',
+
   // Training screen and packs (src/ui/screens/training.ts, src/game/trainingPacks.ts)
   // Screen title (top bar / history)
   'training.screenTitle': 'Training',
@@ -826,6 +957,13 @@ export default {
   'training.notPlayed': 'Not played',
   // Mode name; the menu tile shows it uppercased
   'training.freePlay': 'Free play',
+  // Signed-in players with Settings > Experimental on: free play with a physics preset (the tile
+  // shows it uppercased, with the tag), the preset picker and the button to the preset editor
+  'training.expFreePlay': 'Experimental free play',
+  'training.expFreePlayText': 'Free play with your own physics',
+  'training.tagExp': 'EXP',
+  'training.rules': 'Rules',
+  'training.editPresets': 'Edit presets',
   // Pack category
   'training.catShooting': 'Shooting',
   // Pack category
@@ -926,6 +1064,8 @@ export default {
   'trainingHud.boostButtonOff': 'Unlimited boost: OFF',
   // Pause menu button: leave training for the menu
   'trainingHud.quit': 'Quit training',
+  // Experimental free play: the preset's name under the title
+  'trainingHud.rulesLine': 'Rules: {name}',
   // Pack summary title
   'trainingHud.packComplete': 'Pack complete',
   // Pack summary button: play the pack again

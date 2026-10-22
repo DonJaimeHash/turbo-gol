@@ -10,6 +10,8 @@
  * transit or in a log is useless on any other site.
  */
 
+import type { RulesSnapshot, StoredPreset } from '../game/physicsRules';
+
 export const CLIENT_KDF_ITERATIONS = 200_000;
 const CLIENT_KDF_SALT_PREFIX = 'turbogol/account/v1/';
 
@@ -208,6 +210,18 @@ export interface MeInfo {
   rankedBanUntil: number;
   abandons24h: number;
   season: number;
+  /**
+   * Settings > Experimental's switch as the account holds it (GET /api/me/experimental: also the
+   * presets). The client keeps a local copy per account (src/game/experimentalStore.ts).
+   */
+  experimental: boolean;
+}
+
+/** GET /api/me/experimental (and the base of every experimental write's answer). */
+export interface ExperimentalAnswer {
+  enabled: boolean;
+  /** The account's own presets, oldest first (src/game/physicsRules.ts StoredPreset). */
+  presets: StoredPreset[];
 }
 
 export interface LeaderboardEntry {
@@ -261,6 +275,22 @@ export interface PopulationAnswer {
 
 // ---- custom lobbies -----------------------------------------------------------------------------
 
+/** Lobby names: at least this many characters after sanitizeLobbyName, at most LOBBY_NAME_MAX. */
+export const LOBBY_NAME_MIN = 3;
+export const LOBBY_NAME_MAX = 24;
+
+/**
+ * A lobby name (and a physics preset's name, src/game/physicsRules.ts): NFKC, only letters,
+ * digits, space and `_ . - ! ? #`, runs of spaces as one, trimmed, 3-24 characters; null
+ * otherwise. The server keeps what this returns (server/src/LobbyDO.ts), so a client text that
+ * must arrive unchanged has to survive it (tests/i18n-lobby-name.test.mjs).
+ */
+export function sanitizeLobbyName(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.normalize('NFKC').replace(/[^\p{L}\p{N} _.\-!?#]/gu, '').replace(/\s+/g, ' ').trim();
+  return s.length >= LOBBY_NAME_MIN && s.length <= LOBBY_NAME_MAX ? s : null;
+}
+
 export type LobbyNet = 'p2p' | 'server';
 export type LobbyVisibility = 'public' | 'private';
 /** Match length options of a custom lobby (seconds; 0 = unlimited). */
@@ -273,6 +303,15 @@ export interface LobbySettings {
   /** Empty slots get bots (always: a roster has every car of the mode). Kept for the UI line. */
   net: LobbyNet;
   matchLengthSeconds: number;
+  /**
+   * Experimental physics rules (Settings > Experimental): a COPY of the host's preset at the time
+   * (src/game/physicsRules.ts RulesSnapshot, checked strictly by parseLobbyRules), null or absent =
+   * standard physics. Only with net 'p2p', and only while every member is signed in: the Worker,
+   * LobbyDO, the matchmaker and RoomDO refuse it otherwise (account_required, guests_present,
+   * experimental_p2p_only, bad_physics). Such a match counts for nothing: never rated, no stats,
+   * no records, no no-show strikes, never on a community node. The server always sends it (null).
+   */
+  physics?: RulesSnapshot | null;
 }
 
 /** A row of the public lobby list (GET /api/lobbies). */
@@ -287,6 +326,10 @@ export interface LobbySummary {
   region: string;
   inGame: boolean;
   net: LobbyNet;
+  /** The lobby plays experimental rules: members must be signed in (rows of older builds lack it: false). */
+  experimental: boolean;
+  /** Those rules (LobbySettings.physics), null for standard physics. */
+  physics: RulesSnapshot | null;
 }
 
 export interface LobbyMember {

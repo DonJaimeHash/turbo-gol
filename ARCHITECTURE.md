@@ -48,20 +48,30 @@ native/
                         de-dup (a mutual same-tick bump is merged, demo direction wins); goal
                         de-dup reset only when the ball is placed outside a net; deterministic
                         kickoff deal (RocketSim hands spots out in heap-address order, the wrapper
-                        uses OUR spots in creation order from the seed, see native/README.md)
+                        uses OUR spots in creation order from the seed, see native/README.md);
+                        physics mutators (rs_set_mutators: a whole preset against hard limits,
+                        all or nothing, copied into the ball predictor's arena)
   build.ps1             emcc build → src/sim/wasm/rocketsim.{js,wasm} (ES module + wasm, bundled
                         by Vite into dist/assets)
   RocketSim/            git submodule: RocketSim v2.2.1 (MIT), never edited; patch-rocketsim.mjs
-                        copies it to native/build/rocketsim with two patches (native/README.md):
-                        Bullet broadphase triangle query (speed) and cars hashed by id in
-                        Arena.h (deterministic iteration order)
+                        copies it to native/build/rocketsim with three patches (native/README.md):
+                        Bullet broadphase triangle query (speed), cars hashed by id in Arena.h
+                        (deterministic iteration order) and a car top speed mutator (supersonic
+                        thresholds scaled; stock runs the original expressions)
 src/sim/
   types.ts              state-buffer layout, CarControls, SimStateView (DONE)
   constants.ts          the field (dimensions, rounded corners, goals, boost pads, kickoff and
                         respawn spots), ball / car constants: the single source for sim and render
   arenaMesh.ts          analytic field → triangle mesh (uu, sim coords) for BOTH physics and visuals
   RocketSimBridge.ts    loads the wasm, implements SimStateView, step(), setControls(), events,
-                        ball prediction (entries anchored to predTick so readers add the age)
+                        ball prediction (entries anchored to predTick so readers add the age),
+                        createArena(tickRate, mutators?) (stock without a preset), getMutators()
+  mutatorLayout.ts      the wasm's mutator layout: slots, float32-exact stock values, the hard
+                        limits mirrored, mutatorFingerprint (imported by the bridge: node-bundled)
+  mutators.ts           experimental physics presets, the core's half: arenaMutators (src/game/
+                        physicsRules.ts PhysicsRules -> createArena's layout, null for stock),
+                        toMutators / botPhysicsOf (exact stock for defaults), physicsFingerprint,
+                        gameSpeedFactor; the table itself is physicsRules.ts (not node-bundled)
   wasm/                 build output of native/build.ps1 (rocketsim.js, rocketsim.wasm, .d.ts)
 src/render/
   coords.ts             sim→three coordinate mapping helpers (tiny, shared)
@@ -78,12 +88,26 @@ src/render/
                         reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU compatibility mode
                         and <= 4 GB devices start on low unless the player chose a tier, super low
                         never raised; never above the GPU's ceiling); needsReload (into or out of
-                        super low); drawsFrame (the frame cap); lowerQuality
+                        super low); drawsFrame (the frame cap); lowerQuality; menuQualities (super
+                        low listed only for unlocked players) and nextQuality over such a list
   bootTier.ts           the boot tier before the renderer exists (the URL's #superlow, the tab's
                         recovery, a GPU of the device that fell to super low (a ceiling known
                         before the backend), the player's choice, super low on a TV with a slow GPU or on
                         1 GB: autoSuperlow, probeGpu, readBootSignals), the TierReason #diag shows,
-                        and tierPrefsAfter (the prefs keep the player's pick only)
+                        tierPrefsAfter (the prefs keep the player's pick only; 'lock') and
+                        gateTierPrefs (a locked player's saved super low reads as Performance, not chosen)
+  experimentalPage.ts   Settings > Experimental: a guest's locked line, the switch (a second press
+                        when turning it off restarts on Performance), what it unlocks, Super low's
+                        line and the preset editor (picker over the built-ins and the player's
+                        presets, New / Duplicate / Rename / Delete, the name field, one stepper or
+                        cycler per value on its grid with the standard value, the summary line,
+                        Reset to standard); contexts menu / training (experimental free play's
+                        live pick) / match (the room's rules, read-only); built once through the
+                        Hud's PageKit, lines shown / hidden, edits saved at once
+  rulesText.ts          the texts of physics rules, shared by every menu (the editor, training,
+                        the TrainingHud, the custom lobby screens): preset names (built-ins from the
+                        locale), values (km/h, %, s, on / off, demolitions), standard values, the
+                        summary, a lobby's (or room's) rules line
   hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
@@ -193,10 +217,13 @@ src/render/
   Hud.ts                DOM HUD: scorebar (score + clock), segmented boost bar, ball indicator,
                         debug line (F3), Tab
                         scoreboard, pointer-lock hint, the pause menu (PauseEntry list from the
-                        Game: RESUME, training entries on one row, SETTINGS, QUIT; its own focus
+                        Game: RESUME, training entries on one row, RULES in experimental free
+                        play, SETTINGS, QUIT; its own focus
                         ring driven by Input's menu edges), menu + the settings screen (tabs:
                         rebinding both devices, camera / gameplay sliders, Audio: master volume,
-                        Graphics: the quality tier)
+                        Graphics: the quality tier among MenuOptions.qualities, Experimental:
+                        experimentalPage.ts; refreshSettings redraws it when the account changes;
+                        pad A / B leave a text field of the screen instead of acting on it)
 src/ai/
   Bot.ts                heuristic bot: produces CarControls from SimStateView + ball prediction;
                         stall / net / wall recovery; scans every car (nearest opponent, bump
@@ -263,7 +290,24 @@ src/game/
   trainingRecords.ts    best run per pack: validation and merge rules (shared with server/), storage
   trainingStore.ts      guest records in this browser, an account's synced with /api/me/training (local
                         copy, guest records move into the first account)
-  (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick)
+  physicsRules.ts       experimental physics, the only table: integer values (grid, groups, free-
+                        play only keys), strict / lenient parsers, built-in presets, stored presets,
+                        the rules snapshot and parseLobbyRules (what a lobby, the matchmaker, a room
+                        and a welcome keep: strict, a snapshot that changes nothing is standard),
+                        automatic names (shared with server/; the physics core maps the integers to
+                        the wasm and the bots, src/sim/mutators.ts)
+  experimentalStore.ts  an account's Settings > Experimental switch and presets: a local copy per
+                        account (read at boot: unlockedAtBoot), debounced pushes to /api/me/presets,
+                        offline edits kept dirty, a preset the full account refused waits for room
+                        (said once), deletes need the server; nothing for a guest
+  experimentalTraining.ts experimental free play, pure: rules for free play only (packs always stock,
+                        a locked player stock), the arena plan (mutators, fingerprint, game speed),
+                        createArena before the car, the rebuild when the physics differ (a pack
+                        after it is stock), the game-speed accumulator
+  (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick;
+  startTraining(FREEPLAY_ID, { rules }) is experimental free play: the preset's physics, its game
+  speed, the TrainingHud's rules line, the pause menu's RULES applied when the settings close, no
+  records)
 src/ui/                 the front-end menus, styled by menu.css (mn-)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
@@ -272,12 +316,16 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
                         screen stack, bottom bar (key hints + the matchmaking banner with timer and
                         cancel), toasts, modals, shared prefs (region, playlists, connection),
                         population polling; MenuHost = what the Game provides (search, friendly,
-                        training, lobby matches, settings screen)
+                        training (with experimental rules), the experimental view (unlocked,
+                        presets), lobby matches, settings screen)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
   screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
-                        browser / create / lobby (custom.ts), training, profile (sign in / up /
+                        browser / create / lobby (custom.ts: the host's experimental rules row for
+                        unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
+                        rules line before the match), training (with Experimental free play, its
+                        rules picker and Edit presets for unlocked players), profile (sign in / up /
                         recover, account actions), leaderboard + ranked result dialog
 src/net/
   protocol.ts           wire protocol shared with server/ (DONE): one binary frame per message,
@@ -301,11 +349,15 @@ src/net/
   rating.ts             Weng-Lin (OpenSkill) Bradley-Terry team rating, abandon rules, tiers,
                         placement, MMR scale, abandon ban ladder (shared with server/)
   AccountClient.ts      sign in / up / recover / OAuth redirects, 1 h Bearer refreshed from the
-                        HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling
+                        HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
+                        the experimental switch and presets (each call for the account that made
+                        it: a refresh that hands back another account never gets it); a listener
+                        list (subscribe) and the { name, id } hint the boot reads (readAccountHint)
   LobbyClient.ts        custom lobbies: list / create / join by code, the lobby socket (state,
                         match result per member, back, kick, settings)
   p2p/                  phase 2: peer-to-peer deterministic rollback (docs/online/PHASE2.md)
-    protocol.ts         (DONE) signaling JSON (RoomWelcome, signal relay, ready, start, drop,
+    protocol.ts         signaling JSON (RoomWelcome with the room's physics, signal relay, ready
+                        with the arena's physicsFp, start, drop,
                         unreachable, hashReport) + binary mesh packets (Input batches with
                         ackTick / myTick, Hash, StateRequest / StateResponse), QueueResultP2p
     InputStore.ts       per-slot 256-tick ring of packed inputs keyed by tick (the "known" map)
@@ -322,7 +374,10 @@ src/net/
                         dead, one ICE restart first), getStats 1 Hz (host / srflx / relay, RTT),
                         assembleGamePacket; fake connections in node tests
     P2PSession.ts       the P2P match inside the frame loop: quickMatch (or joinAssigned: a
-                        custom lobby's room) -> room -> mesh ->
+                        custom lobby's room; with experimental rules the arena and both BotTeams
+                        follow RoomWelcome.physics, 'ready' carries the fingerprint the wasm reads
+                        back, and there is no server fallback: a failure goes back to the lobby)
+                        -> room -> mesh ->
                         ready -> start -> wall-clock ticks (canAdvance: stall hint / timesync
                         skip), engine hooks (seeded BotTeams + Match on the confirmed timeline
                         only, goals from the ball-scored flag, kickoff seeds seed + n), input
@@ -333,40 +388,54 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         /api/leave, /api/ice (STUN + optional TURN credentials), /ws/:matchId and
                         /room/:roomId (one gate: ticket verified at the edge, role 'player' /
                         'peer', claims forwarded in headers; Origin checked against VITE_ORIGINS,
-                        loopback page origins accepted while the Worker runs on a loopback host)
+                        loopback page origins accepted while the Worker runs on a loopback host);
+                        /api/lobbies (experimental rules from an account session only); the queues
+                        never take rules (400 experimental_lobby_only)
   src/auth.ts           HS256 JWT on WebCrypto: sessions, tickets (jti), internal header
   src/MatchmakerDO.ts   one per region (chosen in the menu or the continent): a waiter sits in
                         the queue of every playlist it searches; 'ranked': MMR window growing
                         with the wait, balanced teams, never bots; /custom forms a lobby's
-                        match with fixed teams; /population for the menus;
+                        match with fixed teams (experimental rules: a P2P room with >= 2 humans,
+                        every member signed in, its locks marked: no no-show strikes);
+                        /population for the menus;
                         queues per (mode, kind); 'server': bot fill after 10 s;
                         'p2p': a room at once with the mode's humans, after 15 s with >= 2 humans
                         + bots, a lone human -> a server match; rosters, seeds, tickets, locks
   src/RoomDO.ts         one per P2P room (Hibernation API, no simulation): RoomWelcome (seed,
-                        slots, ICE), signal relay, ready -> start { startAt: now + 1.5 s }, drop
-                        { slot, atTick: max(reported) + 60 } on a majority of 'unreachable'
-                        reports or a socket closed > 5 s, hashReport, locks released on close,
-                        cleanup 60 s empty / 20 min TTL
+                        slots, ICE, physics), signal relay, ready (its physicsFp must be the
+                        room rules' fingerprint, else physics_mismatch) -> start { startAt: now +
+                        1.5 s }, drop { slot, atTick: max(reported) + 60 } on a majority of
+                        'unreachable' reports or a socket closed > 5 s, hashReport, locks released
+                        on close, cleanup 60 s empty / 20 min TTL
   src/MatchDO.ts        one per match: sockets, RoomHost loop (setInterval 8 ms + accumulator),
                         snapshots every 4 ticks, events, TTL / shutdown; ranked: no start until
                         every player is ready (else cancelled at 45 s, no-shows penalised),
                         forfeit when a team quits / stays disconnected 60 s, result -> AccountsDO
   src/AccountsDO.ts     the one SQLite object for every account (accountStore.ts): users,
-                        refresh tokens, ratings, ranked results / abandons / bans / locks, login
-                        throttle, daily prune
+                        refresh tokens, ratings, ranked results / abandons / bans / locks, training
+                        records, the experimental switch and presets, login throttle, daily prune;
+                        a report or record that carries experimental rules is refused
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
-                        recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training, leaderboard,
-                        ranked result; server-side PBKDF2 of the client key
+                        recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
+                        /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
+                        minute), leaderboard, ranked result; server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
-                        admit (password, kick list), start through the matchmaker's /custom
+                        admit (password, kick list), start through the matchmaker's /custom;
+                        experimental rules (P2P only, strict) only while every member is signed
+                        in: guests refused at create, admit, upgrade, settings and start
   src/LobbyDirectoryDO.ts  join codes -> lobby ids and the public list per region
   src/roomHost.ts       RoomHost: per-slot input rings (hold last, bufferHint), BotTeam for bot
                         slots, Match rules, rs_save_state snapshots (env-agnostic; fake-sim tests)
   src/wasm.ts           the shared rocketsim.wasm as a WebAssembly.Module in workerd
-  test/                 auth + RoomHost + room / matchmaker unit tests (node), smoke.mjs (phase 1
-                        end to end vs wrangler dev), smoke-p2p.mjs (phase 2 signaling end to end)
+  test/                 auth + RoomHost + room / matchmaker unit tests (node), experimental-lobby
+                        (the lobby gates and every standard-physics-only path), smoke.mjs (phase 1
+                        end to end vs wrangler dev), smoke-p2p.mjs (phase 2 signaling end to end),
+                        smoke-accounts.mjs (accounts, ranked, lobbies, an experimental lobby)
 docs/online/            PHASE1.md, PHASE2.md (the designs), DECISIONS.md (confirmed decisions),
                         MEASUREMENTS.md, ACCOUNTS.md (menus, accounts, ranked, lobbies, OAuth setup)
+docs/experimental.md    Settings > Experimental for players (turning it on, presets, every value
+                        with its range, lobbies, what never counts) and for developers (the cost
+                        bench, where the code is, what deploying it needs)
 src/audio/
   Audio.ts              synthesized engine/boost/impact/goal sounds driven by sim events
 src/main.ts             boot behind the loading screen: wasm load ‖ renderer init + the world's
@@ -387,11 +456,27 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         path), net-prediction + net-client (fake sim / fake fetch + socket),
                         net-rollback-wasm and net-roomhost-wasm (RoomHost host sim + client
                         RollbackPredictor on the real wasm: hash per snapshot, replay of the
-                        applied inputs between snapshots)
+                        applied inputs between snapshots), stock-trace (the golden stock trace:
+                        hashes recorded with the wasm from before the mutators), mutators (the
+                        mapping, the hand-over), physics-rules (the table, its parsers, every grid
+                        value inside the hard limits), mutators-wasm (every field's effect,
+                        refusals, the predictor, determinism, top speed), mutators-extremes (60 s
+                        3v3 bots at the corners), rules-text (the menus' rules lines),
+                        experimental-training (free play only, packs
+                        stock, createArena before the car, the rebuild, no records, game speed;
+                        real arenas with the extreme built-ins), hud-menu (the preset editor over
+                        the real store with a fake row kit), experimental-store (incl. a preset
+                        the full account refused), menu-accounts (a 401 write sent again once,
+                        never to another account)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
                         smoke-match.mjs (BotTeam vs BotTeam in any mode: touches, goals incl.
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
-                        fails on a > 10 s dead ball or an own-goal streak)
+                        fails on a > 10 s dead ball or an own-goal streak), stock-trace.mjs (the
+                        golden stock trace runs; --write re-records them for a deliberate change),
+                        bot-bench.mjs (this tree's bots against a git revision's; --preset plays
+                        the same seeded matches on stock and experimental physics and compares the
+                        step, think(), ball prediction and whole-tick cost, failing when a preset
+                        breaks the state or the predictor), bot-skills.mjs (bot scenarios)
 ```
 
 ### Bloom / glow contract (src/render/materials.ts)
@@ -642,7 +727,10 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   Phones and tablets start on low, desktops on high; WebGL2, WebGPU compatibility mode and <= 4 GB
   devices on low unless the player chose a tier; a TV on a slow GPU or a 1 GB device on super low
   (bootTier.ts, before the renderer: super low runs WebGL2). Settings > Graphics (from the menus or
-  the pause menu) picks the tier; `switchQuality` rebuilds every view and the render path
+  the pause menu) picks the tier; super low is a pick only for a signed-in player with Settings >
+  Experimental's switch on (guests see Performance / High / Ultra; a device that runs super low on
+  its own keeps it, no chip lit; a locked player's saved pick reads as Performance at the next
+  start: main.ts gateTierPrefs, and Game.checkTierLock on sign-out / switch off, without a reload); `switchQuality` rebuilds every view and the render path
   (~30 ms), waits for the world's bake at the new sizes and compiles the new pipelines in
   parallel, all behind the loading screen; into or out of super low it saves the prefs and
   reloads the page (`restartOn`: its own backend and world), except in an online match, where the
@@ -734,6 +822,20 @@ contiguous tick; a backlog longer than 16 goes out as several packets), a latenc
 estimate from each packet's `ackTick` / `myTick` throttles a peer that runs ahead (a timesync
 skip moves its tick 0 one tick later). Measured numbers: `docs/online/PHASE2.md`
 ("Verification").
+
+Experimental rules (P2P protocol 5): a custom lobby whose signed-in host picked a physics preset
+(`LobbySettings.physics`, a copy of it) passes it, checked strictly at every door (LobbyDO, the
+matchmaker's `/custom`, RoomDO, RoomClient: `parseLobbyRules`), to its RoomDO, whose welcome
+carries it to every socket. Each peer creates its arena with `arenaMutators(physics)` before any
+car and plans both BotTeams with `botPhysicsOf`; the integers are the same everywhere, so the f32
+config is too. The state hash does not cover that config, so `ready` carries the fingerprint of
+the mutators the wasm reads back and the room refuses another one (`physics_mismatch`: the socket
+is closed, the others play on with the team AI in that slot). Only signed-in players play such a
+room (guests are refused by the Worker and LobbyDO, and again by the matchmaker's `/custom` and
+RoomDO's create, which get every member's `guest` flag), it never falls back to a server match, and it
+counts for nothing: the casual and ranked queues, MatchDO, community nodes and every report to
+AccountsDO refuse a body that carries rules, and the room never names a no-show (its matchmaker
+locks are marked too). Every other match runs the standard physics, bit for bit.
 
 ## Rendering budget (measured)
 

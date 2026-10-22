@@ -4,7 +4,8 @@
  *
  *   top left      pack name, "Shot n / N · <shot name>", attempts, one dot per shot (pass / fail /
  *                 none, the current one ringed) and the shot timer bar; free play shows its
- *                 unlimited-boost state instead; under it the training key hints, from the live
+ *                 unlimited-boost state instead (experimental free play also "Rules: <preset>",
+ *                 setRules); under it the training key hints, from the live
  *                 bindings of the device in use (kept in the panel: the bottom centre belongs to
  *                 the Hud's pointer-lock hint and camera mode)
  *   centre        "drive to start" while a shot waits for the first input, the success / fail
@@ -77,6 +78,8 @@ export class TrainingHud {
 
   private readonly panel: HTMLElement;
   private readonly title: HTMLElement;
+  /** Experimental free play's "Rules: <preset>" (hidden otherwise). */
+  private readonly rulesLine: HTMLElement;
   private readonly shotLine: HTMLElement;
   private readonly attemptsLine: HTMLElement;
   private readonly dots: HTMLElement;
@@ -131,6 +134,8 @@ export class TrainingHud {
 
     this.panel = el('div', 'trn-panel');
     this.title = el('div', 'trn-title', '');
+    this.rulesLine = el('div', 'trn-rules', '');
+    this.rulesLine.hidden = true;
     this.shotLine = el('div', 'trn-shot', '');
     this.attemptsLine = el('div', 'trn-attempts', '');
     this.dots = el('div', 'trn-dots');
@@ -142,7 +147,7 @@ export class TrainingHud {
     this.timer.append(track, this.timerText);
     this.boostLine = el('div', 'trn-boost', '');
     this.keys = el('div', 'trn-keys', '');
-    this.panel.append(this.title, this.shotLine, this.attemptsLine, this.dots, this.timer, this.boostLine, this.keys);
+    this.panel.append(this.title, this.rulesLine, this.shotLine, this.attemptsLine, this.dots, this.timer, this.boostLine, this.keys);
 
     this.start = el('div', 'trn-start', t('trainingHud.start'));
     this.start.hidden = true;
@@ -188,6 +193,7 @@ export class TrainingHud {
     this.container.classList.add('trn-on');
     this.root.classList.toggle('trn-freeplay', freeplay);
     this.title.textContent = title;
+    this.setRules(null);
     this.shotLine.hidden = freeplay;
     this.attemptsLine.hidden = freeplay;
     this.dots.hidden = freeplay;
@@ -208,6 +214,17 @@ export class TrainingHud {
     this.hideResult();
     this.hideSummary();
     this.setPaused(false);
+  }
+
+  /** The panel's title (experimental free play turning plain: the rules went). */
+  setTitle(title: string): void {
+    if (this.title.textContent !== title) this.title.textContent = title;
+  }
+
+  /** Experimental free play's rules line ("Rules: Low gravity"); null hides it. Not per frame: on a change of rules. */
+  setRules(text: string | null): void {
+    this.rulesLine.hidden = text === null;
+    this.rulesLine.textContent = text ?? '';
   }
 
   hide(): void {

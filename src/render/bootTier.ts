@@ -12,7 +12,10 @@
  *   1b. A GPU of this device fell back to super low ('ceiling': tierGuard.ts readSuperlowBoot), a
  *      ceiling known before the backend, so the fallback gets super low's backend and context;
  *      not while the player's own pick across a reload is tried (Renderer.create).
- *   2. The player's choice in Settings > Graphics ('chosen', prefs.qualitySet).
+ *   2. The player's choice in Settings > Graphics ('chosen', prefs.qualitySet). Super low is a
+ *      pick for signed-in players with experimental features on only: main.ts runs the prefs
+ *      through `gateTierPrefs` first, so anyone else's saved super low reads as Performance, not
+ *      chosen, and falls through to auto (a weak TV still gets super low by itself).
  *   3. Auto: super low on a device with no pointer at all (a TV: neither fine nor coarse) whose
  *      GPU is on the slow list ('tv-gpu'; the GPU string comes from a throwaway WebGL2 context,
  *      `probeGpu`), or on 1 GB or less (`navigator.deviceMemory` <= 1: 'memory'). Phones (coarse
@@ -146,12 +149,35 @@ export interface TierPrefs {
   readonly qualitySet: boolean;
 }
 
+/** What the prefs fall back to when super low is picked by a player who may not pick it: Performance, not chosen. */
+const LOCKED_PREFS: TierPrefs = { quality: 'low', qualitySet: false };
+
 /**
  * The prefs after an event: the player's pick in the menu ('pick') becomes their tier; a tier the
  * session runs on its own ('run': #superlow, the tab's recovery, auto super low, low on a weak
  * backend, a GPU's ceiling, the float-target guard, a fallback) never touches them, so the next
- * page load decides again from the same prefs. Pure.
+ * page load decides again from the same prefs; 'lock' (the player can no longer pick super low:
+ * signed out, another account, experimental features off) turns a super low pick into
+ * Performance, not chosen (`gateTierPrefs`). Pure.
  */
-export function tierPrefsAfter(prefs: TierPrefs, event: { readonly kind: 'pick'; readonly tier: Quality } | { readonly kind: 'run'; readonly tier: Quality; readonly reason: TierReason }): TierPrefs {
-  return event.kind === 'pick' ? { quality: event.tier, qualitySet: true } : prefs;
+export function tierPrefsAfter(
+  prefs: TierPrefs,
+  event: { readonly kind: 'pick'; readonly tier: Quality } | { readonly kind: 'run'; readonly tier: Quality; readonly reason: TierReason } | { readonly kind: 'lock' },
+): TierPrefs {
+  if (event.kind === 'pick') return { quality: event.tier, qualitySet: true };
+  if (event.kind === 'lock') return gateTierPrefs(prefs, false);
+  return prefs;
+}
+
+/**
+ * Super low is a pick for signed-in players with experimental features on (`unlocked`,
+ * src/game/experimentalStore.ts unlockedAtBoot at boot): anyone else's saved pick of it reads as
+ * Performance, NOT chosen, so the auto rule still starts a TV on the slow-GPU list or a 1 GB
+ * device on super low by itself, and the URL, the tab's recovery and a ceiling still force it
+ * (they come before the prefs in `bootTier`). Every other pick is kept. Returns `prefs` itself
+ * when nothing changes. Pure.
+ */
+export function gateTierPrefs<P extends TierPrefs>(prefs: P, unlocked: boolean): P {
+  if (unlocked || !prefs.qualitySet || prefs.quality !== 'superlow') return prefs;
+  return { ...prefs, ...LOCKED_PREFS };
 }
