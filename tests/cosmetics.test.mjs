@@ -71,6 +71,15 @@ test('every car has a name and a one-line description in English and Spanish', (
   }
 });
 
+test('the hosts’ shop names each car as the locales do (its proper name, the same in every language)', async () => {
+  const { CAR_NAMES, CATALOG } = await import('../nodes/control-plane/shop.ts');
+  for (const id of CAR_IDS) {
+    assert.equal(CAR_NAMES[id], en[`car.${id}`], `${id} (en)`);
+    assert.equal(CAR_NAMES[id], es[`car.${id}`], `${id} (es)`);
+  }
+  for (const it of CATALOG.filter((i) => i.kind === 'car')) assert.equal(it.name, es[it.nameKey], it.id);
+});
+
 /** A Storage stand-in. */
 function memoryStorage(init = {}) {
   const m = new Map(Object.entries(init));
@@ -180,13 +189,14 @@ function bundleClosure() {
   return new Set([...seen].map(rel));
 }
 
-test('the community nodes bundle never imports the car catalog or the car pick', () => {
+test('the community nodes bundle never imports the car catalog, the car pick or the online cars', () => {
   const closure = bundleClosure();
   // The walk reaches the game code nodes run (node-release-gate.mjs's inputs), so it is a real one.
   for (const input of ['nodes/node/matchRoom.ts', 'nodes/shared/nodeArena.ts', 'server/src/roomHost.ts', 'src/net/protocol.ts', 'src/game/Match.ts', 'src/sim/RocketSimBridge.ts', 'src/ai/Bot.ts']) {
     assert.ok(closure.has(input), `the walk reaches ${input}`);
   }
-  for (const file of ['src/game/cosmetics.ts', 'src/game/carSelection.ts']) {
+  // The online cars too: their wire types and helpers, and the shop that lists the catalog (server side).
+  for (const file of ['src/game/cosmetics.ts', 'src/game/carSelection.ts', 'src/net/cosmetics.ts', 'nodes/control-plane/shop.ts']) {
     assert.equal(closure.has(file), false, `${file} is in the node bundle: adding a car would need a node release`);
   }
   for (const file of closure) assert.ok(!file.startsWith('src/render/'), `${file}: render code in the node bundle`);

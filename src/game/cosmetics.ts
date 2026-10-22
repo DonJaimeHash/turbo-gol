@@ -1,8 +1,8 @@
 /**
  * The cosmetic cars (the garage, the host points shop): every car id in menu order, its name and
  * one-line description (locale keys: src/ui/names.ts carName / carDescription), its price in host
- * points and whether it can be had yet. Pure data with no imports: the Worker's shop can read the
- * same table later (nodes/control-plane/shop.ts still lists a placeholder), and no file of the
+ * points and whether it can be had yet. Pure data with no imports: the Worker's shop lists the same
+ * table (nodes/control-plane/shop.ts CATALOG, claimed in AccountsDO), and no file of the
  * community nodes' bundle may import this module at runtime (tests/cosmetics.test.mjs), so adding
  * a car never needs a node release.
  *
