@@ -422,7 +422,7 @@ test('a two-human p2p room never goes to a node; a custom lobby never asks for a
 test('an experimental lobby never reaches a node: with the nodes on, its rules go to a RoomDO, a server start with rules is refused, a queue join with rules too', async () => {
   const h = await makeMm();
   const rules = { v: 1, name: 'Low gravity', values: { gravity: 50, ballDrag: 50 } };
-  const members = [{ playerId: A, name: 'Ana', team: 0 }, { playerId: B, name: 'Beto', team: 1 }];
+  const members = [{ playerId: A, name: 'Ana', team: 0, guest: false }, { playerId: B, name: 'Beto', team: 1, guest: false }];
   let r = await h.call('/custom', { kind: 'server', mode: '1v1', members, matchLengthSeconds: 300, physics: rules });
   assert.equal(r.status, 400);
   assert.equal(r.json.error, 'experimental_p2p_only');

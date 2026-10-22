@@ -376,8 +376,9 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
   src/MatchmakerDO.ts   one per region (chosen in the menu or the continent): a waiter sits in
                         the queue of every playlist it searches; 'ranked': MMR window growing
                         with the wait, balanced teams, never bots; /custom forms a lobby's
-                        match with fixed teams (experimental rules: a P2P room with >= 2 humans
-                        only, its locks marked: no no-show strikes); /population for the menus;
+                        match with fixed teams (experimental rules: a P2P room with >= 2 humans,
+                        every member signed in, its locks marked: no no-show strikes);
+                        /population for the menus;
                         queues per (mode, kind); 'server': bot fill after 10 s;
                         'p2p': a room at once with the mode's humans, after 15 s with >= 2 humans
                         + bots, a lone human -> a server match; rosters, seeds, tickets, locks
@@ -798,7 +799,8 @@ car and plans both BotTeams with `botPhysicsOf`; the integers are the same every
 config is too. The state hash does not cover that config, so `ready` carries the fingerprint of
 the mutators the wasm reads back and the room refuses another one (`physics_mismatch`: the socket
 is closed, the others play on with the team AI in that slot). Only signed-in players play such a
-room (guests are refused by the Worker and LobbyDO), it never falls back to a server match, and it
+room (guests are refused by the Worker and LobbyDO, and again by the matchmaker's `/custom` and
+RoomDO's create, which get every member's `guest` flag), it never falls back to a server match, and it
 counts for nothing: the casual and ranked queues, MatchDO, community nodes and every report to
 AccountsDO refuse a body that carries rules, and the room never names a no-show (its matchmaker
 locks are marked too). Every other match runs the standard physics, bit for bit.

@@ -10,7 +10,8 @@
  * Lifecycle
  *   create    POST /internal/create (matchmaker): roster (slots: peer / bot, names, playerIds), mode,
  *             seed (random uint32), region, createdAt, physics (a custom lobby's experimental rules,
- *             null = standard: checked strictly again, 400 bad_physics) -> storage; 'unused'
+ *             null = standard: checked strictly again, 400 bad_physics; with rules every peer slot
+ *             must carry guest: false, else 403 account_required) -> storage; 'unused'
  *             cleanup in 90 s
  *   upgrade   GET /room/<id> forwarded by the Worker with the verified ticket claims in x-* headers
  *             + the internal header: slot check, a slot already `left` or dropped is refused (403
@@ -530,12 +531,15 @@ export class RoomDO extends DurableObject<Env> {
     }
     const slots: RoomSlotRecord[] = [];
     let peers = 0;
+    let guests = 0;
     for (let i = 0; i < body.slots.length; i++) {
       const e: unknown = body.slots[i];
       if (!isRecord(e) || e.slot !== i || (e.team !== 0 && e.team !== 1) || (e.kind !== 'peer' && e.kind !== 'bot') || typeof e.name !== 'string') return error(400, 'bad_roster');
       if (e.kind === 'peer') {
         if (typeof e.playerId !== 'string') return error(400, 'bad_roster');
         peers++;
+        // Only a room with experimental rules reads it: a seat is signed in when it says guest: false.
+        if (e.guest !== false) guests++;
         slots.push({ slot: i, team: e.team, kind: 'peer', name: e.name, playerId: e.playerId });
       } else {
         slots.push({ slot: i, team: e.team, kind: 'bot', name: e.name });
@@ -545,6 +549,8 @@ export class RoomDO extends DurableObject<Env> {
     // A custom lobby's rules, checked again as strictly (the matchmaker did, LobbyDO did).
     const physics = parseLobbyRules(body.physics);
     if (physics === 'bad') return error(400, 'bad_physics', 'invalid experimental rules');
+    // ... and signed-in players only: every peer seat must say guest: false (the matchmaker's flag).
+    if (physics !== null && guests > 0) return error(403, 'account_required', 'experimental rules are for signed-in players only');
     const now = Date.now();
     const rec: RoomRecord = {
       roomId: body.roomId,

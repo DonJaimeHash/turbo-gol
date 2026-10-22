@@ -346,7 +346,10 @@ const PEERS_2V2 = [
   { slot: 3, team: 1, kind: 'bot', name: 'Bot 2' },
 ];
 
-/** `extra`: more /internal/create fields (an experimental room's `physics`). */
+/** Peer seats as the matchmaker sends them for a room with experimental rules (signed-in players). */
+const signedIn = (slots) => slots.map((s) => (s.kind === 'peer' ? { ...s, guest: false } : s));
+
+/** `extra`: more /internal/create fields (an experimental room's `physics`: its peer seats are signed in). */
 async function makeRoom(slots, mode = '2v2', env = ENV, extra = {}) {
   const ctx = new FakeCtx();
   const room = new R.RoomDO(ctx, env);
@@ -355,7 +358,7 @@ async function makeRoom(slots, mode = '2v2', env = ENV, extra = {}) {
     new Request('https://room/internal/create', {
       method: 'POST',
       headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
-      body: JSON.stringify({ roomId: 'r1', mode, region: 'test', seed: 7, slots, matchLengthSeconds: 300, createdAt: Date.now(), ...extra }),
+      body: JSON.stringify({ roomId: 'r1', mode, region: 'test', seed: 7, slots: extra.physics ? signedIn(slots) : slots, matchLengthSeconds: 300, createdAt: Date.now(), ...extra }),
     }),
   );
   assert.equal(res.status, 200, 'create');
@@ -1436,15 +1439,15 @@ test('RoomDO: experimental rules are persisted at create and carried by every we
   assert.equal((await s.join(0)).of('room')[0].physics, null);
 });
 
-test('RoomDO: rules that are not exactly a match snapshot are refused at create (400 bad_physics); a snapshot that changes nothing is standard', async () => {
+test('RoomDO: rules that are not exactly a match snapshot are refused at create (400 bad_physics); a snapshot that changes nothing is standard; rules need signed-in seats (403 account_required)', async () => {
   const secret = await internalSecret(SECRET);
-  const create = async (physics) => {
+  const create = async (physics, slots = signedIn(PEERS_1V1)) => {
     const room = new R.RoomDO(new FakeCtx(), ENV);
     const res = await room.fetch(
       new Request('https://room/internal/create', {
         method: 'POST',
         headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
-        body: JSON.stringify({ roomId: 'r9', mode: '1v1', region: 'test', seed: 1, slots: PEERS_1V1, matchLengthSeconds: 300, createdAt: Date.now(), physics }),
+        body: JSON.stringify({ roomId: 'r9', mode: '1v1', region: 'test', seed: 1, slots, matchLengthSeconds: 300, createdAt: Date.now(), physics }),
       }),
     );
     return { status: res.status, json: await res.json() };
@@ -1466,6 +1469,15 @@ test('RoomDO: rules that are not exactly a match snapshot are refused at create 
   assert.equal((await create({ v: 1, name: 'Standard', values: {} })).status, 200, 'a snapshot that changes nothing');
   const plain = await makeRoom(PEERS_1V1, '1v1', ENV, { physics: { v: 1, name: 'My rules 1', values: {} } });
   assert.equal(plain.ctx.storage.map.get('record').physics, null, 'is a standard room');
+  // Signed-in players only: a guest seat, or a seat that does not say guest: false, is refused with rules.
+  const guestSeat = [{ ...PEERS_1V1[0], guest: false }, { ...PEERS_1V1[1], guest: true }];
+  for (const slots of [guestSeat, PEERS_1V1]) {
+    const r = await create(RULES, slots);
+    assert.equal(r.status, 403, JSON.stringify(slots));
+    assert.equal(r.json.error, 'account_required');
+  }
+  assert.equal((await create(null, guestSeat)).status, 200, 'a standard room takes guests');
+  assert.equal((await create({ v: 1, name: 'Standard', values: {} }, guestSeat)).status, 200, 'so does one whose rules change nothing');
 });
 
 test('RoomDO: a ready with another physicsFp gets error physics_mismatch and its socket closed (left, never a no-show); the others start with its car the team AI from tick 0', async () => {
@@ -1532,9 +1544,9 @@ test('RoomDO: a room with experimental rules never names a no-show: not at the s
   });
 });
 
-test('MatchmakerDO: /custom takes rules for a P2P room with >= 2 humans only (400 experimental_p2p_only / bad_physics), hands them to the RoomDO and marks its locks', async () => {
+test('MatchmakerDO: /custom takes rules for a P2P room with >= 2 signed-in humans only (400 experimental_p2p_only / bad_physics, 403 account_required), hands them to the RoomDO and marks its locks', async () => {
   const h = await makeMatchmaker();
-  const members = [{ playerId: 'pa', name: 'A', team: 0 }, { playerId: 'pb', name: 'B', team: 1 }];
+  const members = [{ playerId: 'pa', name: 'A', team: 0, guest: false }, { playerId: 'pb', name: 'B', team: 1, guest: false }];
   let r = await h.call('/custom', { kind: 'server', mode: '1v1', members, matchLengthSeconds: 300, physics: RULES });
   assert.equal(r.status, 400);
   assert.equal(r.json.error, 'experimental_p2p_only', 'never a server match');
@@ -1544,20 +1556,29 @@ test('MatchmakerDO: /custom takes rules for a P2P room with >= 2 humans only (40
   r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300, physics: { ...RULES, values: { gameSpeed: 50 } } });
   assert.equal(r.status, 400);
   assert.equal(r.json.error, 'bad_physics');
+  // A guest member (or one the lobby did not mark as signed in) never plays rules.
+  for (const second of [{ ...members[1], guest: true }, { playerId: 'pb', name: 'B', team: 1 }]) {
+    r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members: [members[0], second], matchLengthSeconds: 300, physics: RULES });
+    assert.equal(r.status, 403, JSON.stringify(second));
+    assert.equal(r.json.error, 'account_required');
+  }
   assert.equal(h.matchNs.calls.length + h.roomNs.calls.length, 0, 'nothing was created for the refused starts');
   r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300, physics: RULES });
   assert.equal(r.status, 200);
   const create = h.roomNs.calls.find((c) => c.path === '/internal/create');
   assert.deepEqual(create.body.physics, RULES, 'the RoomDO gets the rules');
+  assert.deepEqual(create.body.slots.map((x) => x.guest), [false, false], 'and every peer seat signed in');
   assert.equal(h.matchNs.calls.length, 0, 'no MatchDO');
   assert.equal(r.json.results.pa.kind, 'p2p');
   const roomId = r.json.results.pa.roomId;
   assert.equal((await h.mm.ctx.storage.get('active:pa')).exp, true, 'the lock is marked (and persisted)');
   assert.equal((await h.mm.ctx.storage.get('room:' + roomId)).exp, true, 'the capacity entry too');
-  // A standard lobby's start: physics null, an ordinary room.
-  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members: [{ playerId: 'pc', name: 'C', team: 0 }, { playerId: 'pd', name: 'D', team: 1 }], matchLengthSeconds: 300, physics: null });
+  // A standard lobby's start (guests welcome): physics null, an ordinary room, its seats as before.
+  r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members: [{ playerId: 'pc', name: 'C', team: 0, guest: true }, { playerId: 'pd', name: 'D', team: 1 }], matchLengthSeconds: 300, physics: null });
   assert.equal(r.status, 200);
-  assert.equal(h.roomNs.calls.filter((c) => c.path === '/internal/create').at(-1).body.physics, null);
+  const plainCreate = h.roomNs.calls.filter((c) => c.path === '/internal/create').at(-1).body;
+  assert.equal(plainCreate.physics, null);
+  assert.equal(plainCreate.slots.some((x) => 'guest' in x), false, 'a standard room create is unchanged');
   assert.equal((await h.mm.ctx.storage.get('active:pc')).exp, undefined);
 });
 
@@ -1577,7 +1598,7 @@ test('MatchmakerDO: /join refuses rules (400 experimental_lobby_only): the casua
 test('MatchmakerDO: a room with experimental rules never counts a no-show strike, even from a release or a leave that names one', async () => {
   const h = await makeMatchmaker();
   h.leaveInfo.set('pa', { ok: true, slot: 0, ...NEVER }); // a room answer that would be a strike
-  const members = [{ playerId: 'pa', name: 'A', team: 0 }, { playerId: 'pb', name: 'B', team: 1 }];
+  const members = [{ playerId: 'pa', name: 'A', team: 0, guest: false }, { playerId: 'pb', name: 'B', team: 1, guest: false }];
   for (let i = 0; i < M.NO_SHOW_LIMIT + 1; i++) {
     const r = await h.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300, physics: RULES });
     assert.equal(r.status, 200, `round ${i}`);
@@ -1598,7 +1619,7 @@ test('MatchmakerDO: a room with experimental rules never counts a no-show strike
 test('RoomDO + MatchmakerDO: an experimental lobby start: the rules reach every welcome, a peer that never comes is dropped without a strike', async () => {
   await withClock(40_000_000, async (clock) => {
     const w = await makeWorld();
-    const members = [{ playerId: 'pa', name: 'A', team: 0 }, { playerId: 'pb', name: 'B', team: 0 }, { playerId: 'pc', name: 'C', team: 1 }];
+    const members = [{ playerId: 'pa', name: 'A', team: 0, guest: false }, { playerId: 'pb', name: 'B', team: 0, guest: false }, { playerId: 'pc', name: 'C', team: 1, guest: false }];
     const r = await w.call('/custom', { kind: 'p2p', mode: '2v2', members, matchLengthSeconds: 300, physics: RULES });
     assert.equal(r.status, 200);
     const res = r.json.results;

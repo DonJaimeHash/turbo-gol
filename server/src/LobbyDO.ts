@@ -25,8 +25,9 @@
  * first), /internal/admit (403 account_required), the socket upgrade of an admit (403: an admit
  * taken up to ADMIT_TTL_MS before the rules were set), settings with rules while a guest is a
  * member ('guests_present'; pending guest admits are dropped), and the start ('guests_present').
- * The start hands the rules to the matchmaker's /custom, which checks them again (P2P with >= 2
- * humans, never a MatchDO or a node) and puts them in the RoomDO. Nothing of such a match is ever
+ * The start hands the rules and every member's `guest` to the matchmaker's /custom, which checks
+ * them again (P2P with >= 2 humans, every member signed in, never a MatchDO or a node) and puts
+ * them in the RoomDO (which refuses them with a guest seat too). Nothing of such a match is ever
  * rated or recorded: custom lobbies never are, and the P2P path reports no result at all.
  */
 import { DurableObject } from 'cloudflare:workers';
@@ -476,7 +477,8 @@ export class LobbyDO extends DurableObject<Env> {
           kind: rec.settings.net,
           mode: rec.settings.mode,
           matchLengthSeconds: rec.settings.matchLengthSeconds,
-          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team })),
+          // `guest`: the matchmaker and RoomDO refuse experimental rules for a guest too.
+          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team, guest: m.guest })),
           // Experimental rules travel as the copy the lobby holds (the matchmaker checks them again).
           physics: lobbyPhysics(rec.settings),
         }),

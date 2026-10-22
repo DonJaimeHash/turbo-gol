@@ -287,6 +287,7 @@ test('LobbyDO: the start hands the rules to the matchmaker (/custom physics); wi
   const custom = h.mm.calls.find((c) => c.path === '/custom');
   assert.equal(custom.body.kind, 'p2p');
   assert.deepEqual(custom.body.physics, RULES, 'the copy the lobby holds');
+  assert.deepEqual(custom.body.members.map((x) => x.guest), [false, false], 'with every member\'s guest flag (the matchmaker and RoomDO check it again)');
   assert.equal(m.of('match').length, 1, 'each member gets its room');
   const plain = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 });
   const p = (await plain.upgrade('host1')).ws;

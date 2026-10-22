@@ -405,6 +405,9 @@ plays a P2P room with those rules. What changed on the P2P path:
   of the rooms (seed >= 2^31) each peer dealt its own kickoff: a desync at the first hash vote and
   after every goal, healed by a resync at the next one. Every peer now resets with
   `kickoffSeedOf(seed, n)`, the room seed plus n as a non-negative int31 (unchanged below 2^31).
+- **Signed-in players only, at every step**: the Worker and LobbyDO refuse a guest at every door,
+  and the start passes each member's `guest` flag on: the matchmaker's `/custom` and RoomDO's
+  `/internal/create` refuse rules with a guest seat (403 `account_required`) as well.
 - **No fallback, no strikes**: a room with rules never hands over to a casual server match (the
   mesh timing out, or everybody else gone before the start, fails back to the lobby), never names a
   no-show, and the matchmaker marks its locks so a strike cannot be counted for it either.

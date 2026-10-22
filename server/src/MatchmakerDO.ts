@@ -98,12 +98,14 @@
  *
  * Experimental rules (the owner's rule: every ranked or counted match, P2P included, runs the
  * standard physics; the experimental counts for nothing): only a custom lobby's /custom may carry
- * `physics` (src/game/physicsRules.ts parseLobbyRules, strict: 400 bad_physics), and only for a
+ * `physics` (src/game/physicsRules.ts parseLobbyRules, strict: 400 bad_physics), only for a
  * P2P room with at least 2 humans (400 experimental_p2p_only otherwise: no lone-human MatchDO
- * fallback, never formMatch, never a node). /join (the casual and ranked queues) refuses a body
- * that carries it (400 experimental_lobby_only). The rules go to RoomDO /internal/create; the
- * room's locks and capacity entry are marked experimental (ActiveMatch.exp, RoomEntry.exp, kept
- * in storage), and a room so marked never counts a no-show strike, whatever its release says.
+ * fallback, never formMatch, never a node) and only when every member says `guest: false` (403
+ * account_required; the room gets that flag per seat and checks it again). /join (the casual
+ * and ranked queues) refuses a body that carries it (400 experimental_lobby_only). The rules go
+ * to RoomDO /internal/create; the room's locks and capacity entry are marked experimental
+ * (ActiveMatch.exp, RoomEntry.exp, kept in storage), and a room so marked never counts a no-show
+ * strike, whatever its release says.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
@@ -426,8 +428,9 @@ interface FormOptions {
   /** false: never on a community node (custom lobbies: 0-1800 s against a node's length + 600 s TTL). Default: when the nodes are on for every human. */
   nodes?: boolean;
   /**
-   * formRoom only (a custom lobby's P2P room): its experimental rules, null / absent = standard.
-   * formMatch refuses any (a MatchDO or a node never runs other physics than the standard).
+   * formRoom only (a custom lobby's P2P room): its experimental rules, null / absent = standard;
+   * the room gets each peer's HumanEntry.guest with them. formMatch refuses any (a MatchDO or a
+   * node never runs other physics than the standard).
    */
   physics?: RulesSnapshot | null;
 }
@@ -475,6 +478,8 @@ function resultId(r: AnyQueueResult): string | undefined {
 export interface HumanEntry {
   playerId: string;
   name: string;
+  /** /custom only: false for a signed-in lobby member (a room with experimental rules needs it of every seat). */
+  guest?: boolean;
 }
 
 export interface RosterSlot<K extends string> {
@@ -1067,9 +1072,9 @@ export class MatchmakerDO extends DurableObject<Env> {
   }
 
   /**
-   * POST /custom { kind, mode, members: [{ playerId, name, team }], matchLengthSeconds } (LobbyDO
-   * start): a match / room with the lobby's teams (bots in the free slots), the members locked like
-   * queue matches. Answers { results: { [playerId]: AnyQueueResult } } at once (no long-poll), 409
+   * POST /custom { kind, mode, members: [{ playerId, name, team, guest }], matchLengthSeconds,
+   * physics } (LobbyDO start): a match / room with the lobby's teams (bots in the free slots), the
+   * members locked like queue matches. Answers { results: { [playerId]: AnyQueueResult } } at once (no long-poll), 409
    * 'member_busy' { playerId } when a member still holds a live lock, 503 'capacity' at the cap.
    */
   private async custom(request: Request, now: number): Promise<Response> {
@@ -1079,10 +1084,14 @@ export class MatchmakerDO extends DurableObject<Env> {
     const perTeam = MODES[mode];
     const teams: [HumanEntry[], HumanEntry[]] = [[], []];
     const seen = new Set<string>();
-    for (const m of body.members as Array<{ playerId?: unknown; name?: unknown; team?: unknown }>) {
+    let guests = false;
+    for (const m of body.members as Array<{ playerId?: unknown; name?: unknown; team?: unknown; guest?: unknown }>) {
       if (!m || typeof m.playerId !== 'string' || typeof m.name !== 'string' || (m.team !== 0 && m.team !== 1) || seen.has(m.playerId)) return error(400, 'bad_members');
       seen.add(m.playerId);
-      teams[m.team].push({ playerId: m.playerId, name: m.name });
+      // Signed in only when the lobby says so (a member without the flag counts as a guest).
+      const guest = m.guest !== false;
+      if (guest) guests = true;
+      teams[m.team].push({ playerId: m.playerId, name: m.name, guest });
     }
     if (seen.size === 0 || teams[0].length > perTeam || teams[1].length > perTeam) return error(400, 'bad_members');
     const length = typeof body.matchLengthSeconds === 'number' && body.matchLengthSeconds >= 0 && body.matchLengthSeconds <= 1800 ? Math.floor(body.matchLengthSeconds) : undefined;
@@ -1091,6 +1100,8 @@ export class MatchmakerDO extends DurableObject<Env> {
     const physics = parseLobbyRules(body.physics);
     if (physics === 'bad') return error(400, 'bad_physics', 'invalid experimental rules');
     if (physics !== null && (body.kind !== 'p2p' || seen.size < 2)) return error(400, 'experimental_p2p_only', 'experimental rules need a P2P match with at least 2 players');
+    // ... and signed-in players only (LobbyDO refuses guests at every door; checked again here).
+    if (physics !== null && guests) return error(403, 'account_required', 'experimental rules are for signed-in players only');
     const humans = [...teams[0], ...teams[1]];
     for (const h of humans) {
       const act = this.active.get(h.playerId);
@@ -1468,6 +1479,9 @@ export class MatchmakerDO extends DurableObject<Env> {
   private async formRoom(mode: GameModeId, humans: readonly HumanEntry[], now: number, opts: FormOptions = {}): Promise<string> {
     const env = this.env;
     const slots: RoomSlotRecord[] = opts.teams ? buildTeamRoster(MODES[mode], opts.teams, 'peer') : buildRoster(MODES[mode], humans, 'peer');
+    // Experimental rules: every peer seat says whether its player is a guest (RoomDO refuses one).
+    const physics = opts.physics ?? null;
+    const guestOf = new Map(humans.map((h) => [h.playerId, h.guest]));
     const id = env.ROOM.newUniqueId();
     const roomId = id.toString();
     const seed = randomSeed();
@@ -1475,7 +1489,7 @@ export class MatchmakerDO extends DurableObject<Env> {
     const res = await env.ROOM.get(id).fetch('https://room/internal/create', {
       method: 'POST',
       headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
-      body: JSON.stringify({ roomId, mode, region: this.region, seed, slots, matchLengthSeconds: opts.matchLengthSeconds ?? matchLengthSeconds(env), createdAt: now, physics: opts.physics ?? null }),
+      body: JSON.stringify({ roomId, mode, region: this.region, seed, slots: physics === null ? slots : slots.map((s) => (s.kind === 'peer' ? { ...s, guest: guestOf.get(s.playerId as string) !== false } : s)), matchLengthSeconds: opts.matchLengthSeconds ?? matchLengthSeconds(env), createdAt: now, physics }),
     });
     if (!res.ok) throw new Error(`RoomDO create -> ${res.status} ${await res.text()}`);
     await this.issue(

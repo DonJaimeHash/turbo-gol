@@ -111,7 +111,9 @@ vez desde el Perfil.
   `RoomDO` y el cliente.
   - Solo entran jugadores con cuenta: un invitado no puede crearla ni unirse (403
     `account_required`), y no se pueden activar reglas con un invitado en la sala
-    (`guests_present`). La lista la marca EXP (con candado para los invitados).
+    (`guests_present`). La lista la marca EXP (con candado para los invitados). `LobbyDO` manda
+    la marca `guest` de cada miembro al matchmaker, y el matchmaker y `RoomDO` rechazan otra vez
+    las reglas con un invitado (403 `account_required`).
   - Solo P2P con al menos 2 humanos (`experimental_p2p_only`): nunca un `MatchDO`, nunca un nodo y
     sin pasar a un partido en servidor si la malla falla (se vuelve a la sala).
   - No cuenta para nada: sin rango, sin estadísticas, sin récords y sin castigos por no
