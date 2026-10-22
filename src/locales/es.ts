@@ -220,6 +220,11 @@ export default {
   'custom.leaveMember': 'Puedes volver a entrar con el código mientras la sala exista.',
   'custom.leave': 'SALIR',
   'custom.stay': 'QUEDARME',
+  'custom.settingRules': 'Reglas (experimental)',
+  'custom.editPresets': 'EDITAR PRESETS',
+  'custom.rulesNote': 'Solo jugadores con cuenta. La partida no cuenta: no da rango ni estadísticas',
+  'custom.rulesInfo': 'Reglas experimentales: {summary}',
+  'custom.tagExperimental': 'EXP',
 
   // Profile and account forms (src/ui/screens/profile.ts)
   'profile.title': 'Perfil',
@@ -357,6 +362,10 @@ export default {
   'error.lobby.member_busy': 'Un jugador todavía está en otra partida',
   'error.lobby.capacity': 'Todos los servidores están ocupados, inténtalo de nuevo en un minuto',
   'error.lobby.matchmaking_off': 'La búsqueda de partidas está en pausa, inténtalo más tarde',
+  'error.lobby.account_required': 'Sala experimental: inicia sesión para entrar',
+  'error.lobby.guests_present': 'Los invitados no pueden jugar con reglas experimentales: deben iniciar sesión o salir',
+  'error.lobby.experimental_p2p_only': 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores',
+  'error.lobby.bad_physics': 'Reglas inválidas',
   'error.queue.rate_limited': 'Demasiados intentos, espera un minuto',
   'error.queue.account_required': 'Inicia sesión para jugar Competitivo',
   'error.queue.ranked_ban': 'Competitivo bloqueado por abandonar partidas: {time}',

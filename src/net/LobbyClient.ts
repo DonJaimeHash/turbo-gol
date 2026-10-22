@@ -9,6 +9,9 @@
  * player comes back to the same lobby afterwards (`back()`); a ping every PING_MS keeps proxies from
  * dropping the idle socket (answered by the server's auto-response, without waking it).
  *
+ * A lobby may carry experimental rules (LobbySettings.physics: signed-in members only, P2P only,
+ * the match counts for nothing): create sends them, `settings` changes them, the state shows them.
+ *
  * A refused request (AccountError) or a lobby socket 'error' (onError) carries the player's text:
  * the error.lobby.* text of the server's code (serverText, src/i18n.ts), else the server's message,
  * else a generic one (error.server with the status; error.lobby.start_failed on the socket).
@@ -149,6 +152,8 @@ export class LobbyClient {
       visibility: c.settings.visibility,
       net: c.settings.net,
       matchLengthSeconds: c.settings.matchLengthSeconds,
+      // Experimental rules (a signed-in host only: the Worker answers a guest 403 account_required).
+      physics: c.settings.physics ?? undefined,
       password: c.password ?? undefined,
       region: c.region ?? undefined,
     });

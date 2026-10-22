@@ -305,6 +305,17 @@ export default {
   'custom.leaveMember': 'You can rejoin with the code while the lobby exists.',
   'custom.leave': 'LEAVE',
   'custom.stay': 'STAY',
+  // Experimental rules in a custom lobby (Settings > Experimental presets; signed-in players only)
+  // Host setting: the rules cycler (Standard, the built-ins, the player's presets); P2P only
+  'custom.settingRules': 'Rules (experimental)',
+  // Host button next to the rules cycler: opens Settings > Experimental, then comes back here
+  'custom.editPresets': 'EDIT PRESETS',
+  // Under the rules cycler when experimental rules are picked
+  'custom.rulesNote': 'Signed-in players only. The match counts for nothing: no rank, no stats',
+  // Lobby screen line before the match; {summary} is e.g. 'Low gravity · Gravity 50% · Air drag (ball) 50%'
+  'custom.rulesInfo': 'Experimental rules: {summary}',
+  // Short tag of a lobby with experimental rules (lobby list, lobby title)
+  'custom.tagExperimental': 'EXP',
 
   // Profile and account forms (src/ui/screens/profile.ts)
   // Screen title (window / back stack)
@@ -497,6 +508,13 @@ export default {
   // The server switched matchmaking off (creating a lobby). Same text as error.queue.matchmaking_off
   // (Spanish players keep the generic error.server line here: src/i18n.ts SERVER_DETAIL_CODES)
   'error.lobby.matchmaking_off': 'Matchmaking is paused, try again later',
+  // A guest joining (or creating) a lobby with experimental rules
+  'error.lobby.account_required': 'Experimental lobby: sign in to join',
+  // The host picked experimental rules while a guest is in the lobby
+  'error.lobby.guests_present': 'Guests cannot play experimental rules: they must sign in or leave',
+  // Experimental rules with the server connection, or a lobby with a single player
+  'error.lobby.experimental_p2p_only': 'Experimental rules need a P2P match with at least 2 players',
+  'error.lobby.bad_physics': 'Invalid rules',
   // Matchmaking: Casual and Competitive searches (POST /api/queue, /api/rejoin, the guest session)
   'error.queue.rate_limited': 'Too many attempts, wait a minute',
   'error.queue.account_required': 'Sign in to play Competitive',

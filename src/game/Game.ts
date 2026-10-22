@@ -1086,6 +1086,7 @@ export class Game implements P2PGameHooks {
       },
       searchView: () => game.menuSearchView(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
+      lobbyRules: () => (game.experimentalUnlocked ? game.experimental.list() : null),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
       get info() {
         return game.info;

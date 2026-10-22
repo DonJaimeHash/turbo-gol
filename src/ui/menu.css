@@ -983,6 +983,33 @@
   background: rgba(78, 224, 138, 0.2);
   color: var(--mn-green);
 }
+/* Experimental rules (custom.ts): the EXP tag (lobby list, lobby title), the lobby's rules line,
+   the host's rules row with its note and EDIT PRESETS. */
+.mn-tag-exp {
+  background: rgba(255, 207, 90, 0.18);
+  color: var(--mn-gold);
+  font-style: normal;
+  font-weight: 800;
+  vertical-align: middle;
+}
+.mn-lobby-title .mn-tag-exp {
+  font-size: 14px;
+}
+.mn-lobby-rules {
+  margin-top: 6px;
+  color: var(--mn-gold);
+}
+.mn-rules {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.mn-rules-note {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.mn-rules > .mn-btn {
+  margin: 2px 0 6px;
+}
 .mn-kick {
   font: inherit;
   font-size: 12px;
