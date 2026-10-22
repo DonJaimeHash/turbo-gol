@@ -233,8 +233,8 @@
   transform: translateX(-50%);
 }
 
-/* Training paused: its pause entries (training.css .trn-pause) take the bottom centre on a short
-   screen; the meter is back on resume. */
+/* Training paused: the pause menu (style.css .hud-pause-menu, with the training entries) reaches the
+   bottom centre on a short screen; the meter is back on resume. */
 .tc-on.trn-on:has(.trn-paused) .hud-boost {
   visibility: hidden;
 }

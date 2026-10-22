@@ -7,6 +7,18 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A fourth graphics quality, Super low ("Súper bajo"), for TVs, set-top boxes and very old
+  devices: about 640x360 upscaled by the screen, 30 frames per second, no edge smoothing, a
+  simple sky instead of the harbour, canyon or valley behind the stadium, a painted crowd, simpler
+  cars and ball, fewer particles, a lighter menu and HUD, and no reverb. It starts by itself on a
+  device with 1 GB of memory or on a TV with a slow graphics chip (a 1 GB Android TV ran the game
+  at 1 to 3 frames per second), unless the player picked a quality, and on a device where
+  Performance failed. Picking it, or leaving it, restarts the game (during an online match, once
+  the player leaves the match); `#superlow` at the end of the address tries it without saving it.
+- `#diag` shows why the game runs its quality, the frame rate and the time each part of a frame
+  takes, and has a button that loses the graphics device to test the recovery; new address flags
+  help measure a slow device (`#pr=`, `#hide=`, `#nopost`, `#norender`, `#diag=audit`, `#tv` for
+  testing on a computer).
 - Community nodes are on: server, Competitive and lone-player matches in South America can be
   hosted on the project's São Paulo node, `sao-paulo-1`, and fall back to the game's own servers
   whenever it is full, away or unreachable.
@@ -55,10 +67,27 @@ All notable changes to Turbogol are documented here. The format follows
   `/nodes/admin/*` (list the nodes, change a status, drain, push the channel, probe again), each
   action an ALERT, and a cron checks the project nodes' `/healthz` every 5 minutes, which catches
   an expired certificate. The KV switches, `vm_disabled` included, stay manual.
+- `#diag` at the end of the address shows a small panel with the graphics backend, the GPU, its
+  extensions and limits, the quality, the stadium and any shader or GPU error, to send a
+  screenshot when the game draws wrongly on a device (nothing is sent anywhere). `#lowgpu` makes a
+  desktop browser behave like a low-end phone's GPU, for testing.
 - A link to the official Discord server in the menu footer, the READMEs, CONTRIBUTING.md and the
   new-issue page.
+- Settings has an Audio tab with a master volume (saved with the other settings), and the pause
+  menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- Browsers on the WebGL2 fallback compile about half as many shaders while loading and after a
+  quality change (each shader was compiled twice, once for nothing), so they reach the menu sooner.
+- A device that cannot draw into floating-point images on WebGL2 starts on Super low instead of
+  drawing a black world; `#lowgpu` no longer turns the 3D scene black on such a device.
+- A quality the device fell back to, or one the address forced, is no longer saved over the
+  player's own choice.
+- When the graphics device is lost again and again (a TV short of memory), the game reloads once,
+  then once more on Super low, then stops with a message instead of reloading forever.
+- On a device far too slow for its quality (under 10 frames per second) the resolution now goes
+  down instead of staying at full size.
+- `#hide=stadium-netting` (and any address containing "net") no longer opens the network panel.
 - Community nodes: a control link that stalls no longer costs a node its matches. A node without
   heartbeats for 15 seconds still gets no new match, but its link stays open for 30, so heartbeats
   held on the way (24 seconds of them on the São Paulo node on 2026-10-21) bring it straight back.
@@ -74,8 +103,30 @@ All notable changes to Turbogol are documented here. The format follows
   challenge at a time, and closes when the menus close into a match.
 - Browsing the public lobby list no longer registers a guest.
 - Third-party notices point to the script that applies the physics-library patches.
+- High and Ultra work on Android phones whose browser runs WebGPU on OpenGL ES (they drew nothing
+  there); they smooth edges with FXAA on those phones, and Performance there skips the edge
+  smoothing, which costs those phones the most.
+- A quality the device cannot run falls back to the one below by itself, behind the loading
+  screen, and says so ("Your device does not support Ultra: using High"); the game then starts on
+  that quality on this device until the player picks the higher one again and it runs. Coming back
+  to the game after the phone reclaimed its graphics (another app in front) reloads the page on
+  the same quality instead of leaving a frozen picture.
+- Performance: no more square patches of light round the floodlights and the other glows on the
+  night sky.
 
 ### Changed
+- A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
+  netting, LED boards (a big main-sponsor board in the middle of each side wall; the boards change
+  every 30 seconds), stands with a crowd and floodlight towers, with cranes, containers and a ship
+  behind the goals. The pitch is damp, freshly mown grass with calm floodlight reflections, cars
+  cast real shadows on High and Ultra (ground shadows on Performance), and the cars and the ball
+  have new paint and panels. Graphics
+  quality has four tiers: Super low, Performance, High and Ultra (grass blades near the camera,
+  reflections on the wet pitch, ambient occlusion, lens glare); browsers without WebGPU start on
+  Performance. The
+  Friendly screen has a Stadium row to pick the setting: the night harbour, a red canyon at
+  sunset and an alpine valley. The settings are saved in the browser after their
+  first visit, so switching back is quick.
 - The bots fly: medium bots now go up for high balls too, hard ones double-jump for higher ones,
   and both meet the ball so that it goes toward the goal (or, for a save, away from their own);
   the defender in 3v3 saves in the air. Two old faults kept aerials from happening at all: the
@@ -117,6 +168,22 @@ All notable changes to Turbogol are documented here. The format follows
 - `npm run deploy` checks the community-node release first and, when the game code nodes run
   changed, moves their release channel to a signed release built from the same game code; until the
   first node release is published, deploy with `npm run deploy -- --nodes-off`.
+- The graphics quality moved from the Friendly screen to Settings > Graphics, where it can also be
+  changed in the middle of a match or training from the pause menu. A quality change shows the
+  loading screen until the new quality is fully ready, so the first moments after it no longer
+  stutter; changing the stadium on the Friendly screen does the same until the new sky is ready.
+- The game opens on a clean loading screen (the wordmark, a progress bar, one short line) that
+  shows from the very first moment and fades into the menu once it is on screen, instead of the
+  old technical progress texts.
+- The pause menu works with every input: the mouse, a finger, the keyboard (arrows, Enter) and the
+  controller (D-pad, A; X opens the settings) pick RESUME, SETTINGS or QUIT, and training's own
+  entries (reset, next / previous shot, unlimited boost) sit in the same menu.
+- In the day stadiums the ball casts no shadow: the low sun threw it far from the ball, where it
+  looked like a second landing mark. The landing marker under the ball stays.
+- Performance has its own bright, clean look and draws each frame in about half the time: an
+  evenly lit pitch with clear mowing stripes and crisp lines (no dark patches), a lit crowd in the
+  team colours, a brighter picture in every stadium, lighter pine forests in the alpine valley,
+  and the cage drawn by its steel frame without the wire netting. High and Ultra are unchanged.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and

@@ -16,26 +16,46 @@
  *
  * Draw calls per car: body (1 merged geometry) + wheels (1 InstancedMesh, 4 instances) + flame
  * (1, only while boosting / supersonic; both jets, their nozzle discs and the underglow are ONE
- * merged geometry driven by uniforms) + ground blob (1, only while airborne at quality 0 / when
- * visible at 1). Materials: ONE MeshPhysicalNodeMaterial shared by all cars (surface properties
- * live in vertex attributes: `color` = linear base colour, `aMat` = (metalness, roughness,
- * emissive, paintMix); clearcoat, the two-tone split, the pinstripe and the chevrons are derived
- * from them in TSL) plus one additive flame material and one blob material per car.
+ * merged geometry driven by uniforms) + ground blob (1, only while airborne at high detail / when
+ * visible at low detail, see TierSpec.detail). Materials: ONE MeshPhysicalNodeMaterial shared by
+ * all cars and wheels of a tier (surface properties live in vertex attributes: `color` = linear
+ * base colour, `aMat` = (metalness, roughness, emissive, kind), see CAR_KIND) plus one additive
+ * flame material and one blob material per car.
+ *
+ * The shared material (createCarMaterial) turns each surface kind into a real-looking material in
+ * TSL, without textures: metallic-flake paint under a deep clearcoat, gloss carbon twill, dark
+ * tinted glass, chrome / satin alloy / heat-tinted exhausts, tyre rubber with knob sipes and
+ * sidewall detail, HDR lamps, and a little grime low on the body. Team colours come unchanged
+ * from TEAM_PAINT, so the teams keep their colour-blind lightness separation.
  *
  * No per-frame allocations: all maths goes through module scratch objects.
  */
 import * as THREE from 'three/webgpu';
 import {
+  Fn,
+  atan,
   attribute,
   color,
   cos,
   diffuseColor,
   float,
+  floor,
   fract,
+  fwidth,
+  hash,
+  length,
+  max,
+  min,
   mix,
+  mod,
+  modelViewMatrix,
   mx_noise_float,
+  normalGeometry,
   normalLocal,
   normalView,
+  normalViewGeometry,
+  normalize,
+  positionGeometry,
   positionLocal,
   positionViewDirection,
   select,
@@ -46,6 +66,7 @@ import {
   uniform,
   uv,
   vec3,
+  vec4,
 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { CarConfigInfo, Team } from '../sim/types';
@@ -60,7 +81,23 @@ import {
   C_WHEEL_SUSPENSION,
 } from '../sim/types';
 import { simRotMatToQuat, simVecLerpFromBuf } from './coords';
-import { BRAND_LIME, glowMrt, lineMask, linearVec3, noGlowMrt } from './materials';
+import {
+  BRAND_LIME,
+  OpaqueAlbedoPhysicalMaterial,
+  SHARED_INSTANCING_CAPACITY,
+  bumpNormal,
+  cellHash3,
+  glowMrt,
+  lineMask,
+  linearVec3,
+  noGlowMrt,
+  resolvedFade,
+  thinLineMask,
+  valueNoise3,
+  type FloatNode,
+  type Vec3Node,
+} from './materials';
+import { tier, type Quality, type TierSpec } from './quality';
 
 /**
  * Team paint (sRGB hex), indexed by Team (0 blue, 1 red). The blue is the lighter of the two
@@ -70,7 +107,7 @@ export const TEAM_PAINT: readonly [number, number] = [0x2a86f0, 0xc8152f];
 /** Brighter team tint for flames, light strips, trails and explosions, indexed by Team. */
 export const TEAM_GLOW: readonly [number, number] = [0x56b0ff, 0xff3d55];
 /** Canopy glass, a dark team tint. */
-const TEAM_GLASS: readonly [number, number] = [0x0a1a34, 0x2c0a12];
+const TEAM_GLASS: readonly [number, number] = [0x081426, 0x22080e];
 
 /**
  * Boost nozzles in car-local three.js coordinates (x forward, y up, z right) for the default
@@ -80,6 +117,42 @@ export const BOOST_NOZZLE_X = -44.3;
 export const BOOST_NOZZLE_Y = 19.75;
 export const BOOST_NOZZLE_Z = 8;
 
+/**
+ * Surface kinds of the shared car material, stored per vertex in `aMat.w` (small integers, decoded
+ * in TSL with `isKind`). The vertex colour, metalness and roughness are each kind's base values;
+ * the material adds the kind's procedural detail on top.
+ */
+export const CAR_KIND = {
+  /** Satin black plastic (light-bar housing). */
+  TRIM: 0,
+  /**
+   * Team paint: metallic flakes under a deep clearcoat, plus the livery (gloss carbon below the
+   * two-tone line, lime pinstripe on it, white nose chevrons), two panel seams and grime low down.
+   */
+  PAINT: 1,
+  /** Gloss carbon fibre (engine cover): a 2x2 twill under clearcoat. */
+  CARBON: 2,
+  /** Dark tinted canopy glass: a dielectric with a mirror clearcoat. */
+  GLASS: 3,
+  /** Polished chrome (wheel bolts). */
+  CHROME: 4,
+  /** Satin light alloy (roll hoop, braces, nerf bar) with a fine brushed roughness variation. */
+  ALLOY: 5,
+  /** Dark anodised metal (rim barrel, spokes, dish, thruster throats). */
+  DARK_METAL: 6,
+  /** Tyre rubber: knob sipes, sidewall ribs and a raised lettering band (relief), worn crown, dust. */
+  TYRE: 7,
+  /** HDR lamp (headlights, tail-light rings, team light strips): emission with a lens falloff. */
+  LAMP: 8,
+  /** Team-painted hub cap: flake paint and clearcoat without the livery. */
+  HUB: 9,
+  /** Thruster housing: polished metal with a heat tint (straw to blue) toward the exit. */
+  EXHAUST: 10,
+  /** Beadlock ring: machined alloy with fine concentric turning marks. */
+  BEAD: 11,
+} as const;
+export type CarKind = (typeof CAR_KIND)[keyof typeof CAR_KIND];
+
 /** Surface description baked into vertex attributes and read by the shared material. */
 interface Surface {
   readonly color: number;
@@ -87,22 +160,23 @@ interface Surface {
   readonly rough: number;
   /** Emissive strength (multiplies the base colour; > 1 pushes into bloom). */
   readonly emissive: number;
-  /**
-   * 0..1 strength of the glossy fresnel rim highlight AND the clearcoat. Exactly 1 marks team
-   * paint, which also gets the two-tone split, the pinstripe and the chevrons.
-   */
-  readonly paint: number;
+  readonly kind: CarKind;
 }
 
-const TRIM: Surface = { color: 0x15181d, metal: 0.15, rough: 0.7, emissive: 0, paint: 0 };
-const CAGE: Surface = { color: 0xdfe3ea, metal: 0.5, rough: 0.34, emissive: 0, paint: 0.4 };
-const HEADLIGHT: Surface = { color: 0xffffff, metal: 0, rough: 0.4, emissive: 3.0, paint: 0 };
-const TAILLIGHT: Surface = { color: 0xff2a1e, metal: 0, rough: 0.4, emissive: 1.8, paint: 0 };
-const TYRE: Surface = { color: 0x0c0e11, metal: 0, rough: 0.92, emissive: 0, paint: 0 };
-const RIM: Surface = { color: 0xaab0b8, metal: 0.75, rough: 0.32, emissive: 0, paint: 0 }; // gunmetal chrome: fully metallic parts mirrored the red crowd tiers and read pink
-const RIM_DARK: Surface = { color: 0x2c313a, metal: 0.65, rough: 0.38, emissive: 0, paint: 0 };
-const BEAD: Surface = { color: 0xd3d8e0, metal: 0.55, rough: 0.36, emissive: 0, paint: 0 };
-const DISC: Surface = { color: 0x1b1e24, metal: 0.4, rough: 0.6, emissive: 0, paint: 0 };
+const TRIM: Surface = { color: 0x14161a, metal: 0.1, rough: 0.55, emissive: 0, kind: CAR_KIND.TRIM };
+const CARBON: Surface = { color: 0x16181d, metal: 0.2, rough: 0.32, emissive: 0, kind: CAR_KIND.CARBON };
+// Satin rather than mirror: a fully metallic hoop mirrors the dark night sky and loses the white
+// roll hoop that is part of the car's silhouette.
+const CAGE: Surface = { color: 0xdfe3ea, metal: 0.7, rough: 0.3, emissive: 0, kind: CAR_KIND.ALLOY };
+const HEADLIGHT: Surface = { color: 0xf4f7ff, metal: 0, rough: 0.12, emissive: 3.0, kind: CAR_KIND.LAMP };
+const TAILLIGHT: Surface = { color: 0xff2a1e, metal: 0, rough: 0.12, emissive: 1.8, kind: CAR_KIND.LAMP };
+const TYRE: Surface = { color: 0x0c0e11, metal: 0, rough: 0.88, emissive: 0, kind: CAR_KIND.TYRE };
+const BOLT: Surface = { color: 0xc9ced6, metal: 1, rough: 0.16, emissive: 0, kind: CAR_KIND.CHROME };
+// Gunmetal, not mirror chrome: fully metallic parts mirrored the red crowd tiers and read pink.
+const EXHAUST: Surface = { color: 0xaab0b8, metal: 0.8, rough: 0.24, emissive: 0, kind: CAR_KIND.EXHAUST };
+const RIM_DARK: Surface = { color: 0x2a2f37, metal: 0.75, rough: 0.34, emissive: 0, kind: CAR_KIND.DARK_METAL };
+const BEAD: Surface = { color: 0xd3d8e0, metal: 0.7, rough: 0.3, emissive: 0, kind: CAR_KIND.BEAD };
+const DISC: Surface = { color: 0x1b1e24, metal: 0.5, rough: 0.5, emissive: 0, kind: CAR_KIND.DARK_METAL };
 
 const TWO_PI = Math.PI * 2;
 /** Height of the car origin above the floor at rest (RocketSim CAR_SPAWN_REST_Z), any preset. */
@@ -121,6 +195,12 @@ const WHEEL_OUTER = 39;
 const RIM_R = 0.66;
 /** Tyre carcass radius in tyre-radius units; the knobs stand out to 1. */
 const TREAD_R = 0.93;
+/** Tread knobs around the tyre per geometry detail, and their width (tyre-radius units). */
+const KNOBS_HIGH = 16;
+const KNOBS_LOW = 12;
+const KNOB_WIDTH = 0.24;
+/** Letter cells round the sidewall's lettering band. */
+const GLYPHS = 56;
 /** Car-local height (uu above the car origin) of the two-tone line: paint above, carbon below. */
 const TWO_TONE_Y = 8.75;
 /** Half width (uu) of the lime pinstripe on the two-tone line. */
@@ -130,6 +210,39 @@ const CHEVRON_X0 = 38;
 const CHEVRON_X1 = 68;
 const CHEVRON_HALF_W = 12;
 const CHEVRON_PERIOD = 11;
+/** Panel seams across the top of the pod (car-local x, uu): the bonnet and the rear deck lid. */
+const HOOD_SEAM_X = 29;
+const DECK_SEAM_X = -31;
+/** Seams stop at the pod's sides (|z| below this) and are this half wide / deep (uu). */
+const SEAM_MAX_Z = 18.5;
+const SEAM_HALF_W = 0.18;
+const SEAM_DEPTH = 0.3;
+/** Metallic flake cell size (uu), the tilt of a flake's normal, and the base-coat metalness. */
+const FLAKE_SIZE = 0.12;
+const FLAKE_TILT = 0.28;
+const PAINT_METAL = 0.22;
+const PAINT_ROUGH = 0.34;
+/** Clearcoat roughness on clean paint, carbon, glass and lenses. */
+const COAT_ROUGH = 0.03;
+/** Carbon tow width (uu) of the 2x2 twill. */
+const CARBON_TOW = 0.32;
+/** Grime: the band low on the body (car-local y, fully dirty below GRIME_Y1) and its strength. */
+const GRIME_Y0 = 10;
+const GRIME_Y1 = 3;
+const GRIME_AMOUNT = 0.55;
+/** Approximate visual wheel radius (uu): scales the unit wheel space for noise and relief. */
+const WHEEL_R_UU = 14;
+/** Length (uu) of a thruster housing behind its exit plane (the heat tint fades along it). */
+const HOUSING_LEN = 7;
+/**
+ * Lamp emission gain. With bloom (high, ultra) the emissive target adds the halo; without it (low)
+ * the lamp has to read from its HDR colour alone, so it runs a little hotter: the lens core tone
+ * maps toward white-hot with the colour kept at its rim (the lens falloff).
+ */
+const LAMP_GAIN_BLOOM = 1.6;
+const LAMP_GAIN_FLAT = 1.9;
+/** Strength of the paint's fresnel rim lift (keeps the silhouette readable on dark themes). */
+const RIM_LIFT = 0.22;
 /** Flame (one jet) size at full boost (uu). */
 const FLAME_LENGTH = 112;
 const FLAME_RADIUS = 7.5;
@@ -158,60 +271,419 @@ const _m = new THREE.Matrix4();
 const _col = new THREE.Color();
 
 // ---- shared material ------------------------------------------------------------------------
-let sharedMaterial: THREE.MeshPhysicalNodeMaterial | null = null;
-let sharedRefs = 0;
+
+/** What a tier changes in the shared car material (read from its TierSpec). */
+interface CarMaterialVariant {
+  /**
+   * Fine detail, on geometry detail 'high': metallic flakes, knob sipes, sidewall ribs and
+   * lettering, bead turning marks, carbon weave, noise-driven grime and dust, and the per-pixel
+   * relief (normalNode) that carries them. The low variant keeps the paint, livery, seam lines,
+   * metals, glass, lamps and a uniform dirt film: a much smaller shader (compile time on phones and
+   * the WebGL2 fallback), whose fine detail would be sub-pixel at pixel ratio 1 anyway.
+   */
+  readonly fine: boolean;
+  /** Tread knobs around the tyre (the wheel geometry of the same detail). */
+  readonly knobs: number;
+  /** Lamp emission gain (LAMP_GAIN_BLOOM with bloom, LAMP_GAIN_FLAT without). */
+  readonly lampGain: number;
+  /**
+   * Lambert instead of the physical model (TierSpec.cheapMaterials, super low): the flat
+   * variant's albedo (livery, carbon, glass, metals' base colours) and emission (lamps, the
+   * pinstripe, the rim lift) under one diffuse lobe per light: no specular, no clearcoat, no
+   * environment read.
+   */
+  readonly cheap: boolean;
+}
+
+function carMaterialVariant(spec: TierSpec): CarMaterialVariant {
+  const hi = spec.detail === 'high';
+  return { fine: hi, knobs: hi ? KNOBS_HIGH : KNOBS_LOW, lampGain: spec.bloom ? LAMP_GAIN_BLOOM : LAMP_GAIN_FLAT, cheap: spec.cheapMaterials };
+}
+
+function variantKey(v: CarMaterialVariant): string {
+  return `${v.cheap ? 'lambert' : v.fine ? 'fine' : 'flat'}-${v.knobs}-${v.lampGain}`;
+}
+
+/** 1 where `kind` is `k` (kinds are integers, so the neighbours are exactly 0), else 0. */
+function isKind(kind: FloatNode, k: CarKind): FloatNode {
+  return float(1).sub(kind.sub(k).abs().min(1));
+}
 
 /**
- * One physically based node material for every car part of every car. Base colour, metalness,
- * roughness, emissive, clearcoat and a TSL fresnel highlight are all driven by vertex attributes
- * so a whole car (and its wheels) share a single material. The livery is procedural, on team
- * paint only (paintMix exactly 1): gloss carbon below the two-tone line, a lime pinstripe on the
- * line (slightly emissive so it reads in shadow) and forward-pointing white chevrons on the top
- * of the nose.
+ * 2x2 carbon twill of CARBON_TOW tows, projected along the dominant axis of the geometry normal
+ * `nG`: `tow` 0..1 across each tow, `weaveRes` 1 while the tows are resolved, 0 once sub-pixel.
  */
-function createCarMaterial(): THREE.MeshPhysicalNodeMaterial {
-  const m = new THREE.MeshPhysicalNodeMaterial();
-  const base = attribute('color', 'vec3');
+function carbonWeave(p: Vec3Node, nG: Vec3Node): { tow: FloatNode; weaveRes: FloatNode } {
+  const cp = select(nG.y.abs().greaterThan(0.6), p.xz, select(nG.z.abs().greaterThan(0.6), p.xy, p.zy)).div(CARBON_TOW);
+  const cell = floor(cp);
+  const cf = fract(cp);
+  const twillDir = step(2.0, mod(cell.x.add(cell.y), 4.0));
+  const across = mix(cf.y, cf.x, twillDir);
+  const tow = sin(across.mul(Math.PI)).mul(0.55).add(0.45).mul(mix(1.0, 0.62, twillDir));
+  const weaveRes = resolvedFade(cp.x, 0.15, 0.45).mul(resolvedFade(cp.y, 0.15, 0.45));
+  return { tow, weaveRes };
+}
+
+/** Tyre surface detail of the fine variant (each 0..1; see createCarMaterial). */
+interface TyreDetail {
+  /** Knob sipes (grooves on the knob tops). */
+  readonly sipe: FloatNode;
+  /** Fine concentric sidewall ribs (relief only). */
+  readonly ribs: FloatNode;
+  /** Raised moulded lettering on the sidewall band. */
+  readonly letters: FloatNode;
+  /** A groove line just outside the rim. */
+  readonly beadLine: FloatNode;
+}
+
+/**
+ * Knob sipes, sidewall ribs, moulded lettering and the bead line, in the unit wheel space of
+ * buildWheelGeometry (`p`; `r` its radius, `rr` 0 at the rim to 1 at the carcass). Everything
+ * angular is built on fract() of the tread angle, so atan's jump at +-pi leaves no seam.
+ */
+function tyreDetail(p: Vec3Node, r: FloatNode, rr: FloatNode, onWall: FloatNode, onCrown: FloatNode, knobs: number): TyreDetail {
+  // atan(0, 0) is undefined: nudge x off zero (only the hub centre, never a tyre pixel, gets there).
+  const tx = select(p.x.abs().lessThan(1e-5), float(1e-5), p.x);
+  const theta = atan(p.y, tx);
+  // Knob i is centred at angle pi/2 + i * 2pi / knobs; `a` is the angle from the nearest knob centre
+  // in pitch units (fract keeps it continuous across atan's seam at +-pi).
+  const a = fract(theta.sub(Math.PI / 2).mul(knobs / TWO_PI).add(0.5)).sub(0.5);
+  const pitch = TWO_PI / knobs; // tyre-radius units per pitch at the crown
+  const knobHalf = (KNOB_WIDTH * 0.5) / pitch;
+  // Two zig-zag sipes along the axle on each knob, and one cut across its middle.
+  const zig = sin(p.z.mul(1.6)).mul(0.05 * knobHalf);
+  const sipeA = thinLineMask(a.abs().sub(knobHalf * 0.42).add(zig).mul(pitch * WHEEL_R_UU), 0.16);
+  const sipeB = thinLineMask(p.z.abs().sub(WHEEL_WIDTH * 0.25), 0.14).mul(step(a.abs(), knobHalf * 0.9));
+  const sipe = max(sipeA, sipeB).mul(onCrown);
+  // Sidewall: fine concentric ribs, a raised band with blocky "lettering", a bead line at the rim.
+  const ribs = sin(r.mul(TWO_PI * 40)).mul(0.5).add(0.5).mul(resolvedFade(r.mul(40), 0.15, 0.45));
+  const band = smoothstep(0.38, 0.42, rr).mul(smoothstep(0.76, 0.8, rr).oneMinus());
+  // Lettering: GLYPHS cells round the band, each a letter-like set of strokes picked by a hash
+  // (a vertical: centre, both sides or left; a horizontal: top, top and bottom, middle or none).
+  const glyphU = theta.mul(GLYPHS / TWO_PI);
+  // Footprint of glyphU without atan's jump at +-pi (the shifted copy jumps at 0 instead).
+  const glyphFw = min(fwidth(glyphU), fwidth(fract(theta.div(TWO_PI).add(0.5)).mul(GLYPHS)));
+  const gu = fract(glyphU);
+  const gv = rr.sub(0.42).div(0.36).saturate();
+  // hash() converts its seed to u32, which clamps negatives to 0: keep every glyph's seed positive
+  // (glyphU runs -GLYPHS/2..GLYPHS/2; the two faces get different text).
+  const glyphSeed = floor(glyphU).add(64.0).add(step(0.0, p.z).mul(128.0));
+  const h1 = hash(glyphSeed);
+  const h2 = hash(glyphSeed.add(17.0));
+  const gvFw = fwidth(gv);
+  const stem = (c: number): FloatNode => thinLineMask(gu.sub(c), 0.075, glyphFw);
+  const bar = (c: number): FloatNode => thinLineMask(gv.sub(c), 0.1, gvFw).mul(step(0.18, gu)).mul(step(gu, 0.82));
+  const left = stem(0.22);
+  const top = bar(0.88);
+  const vertical = mix(mix(stem(0.5), max(left, stem(0.78)), step(0.33, h1)), left, step(0.66, h1));
+  const horizontal = mix(mix(top, max(top, bar(0.12)), step(0.25, h2)), mix(bar(0.5), float(0.0), step(0.75, h2)), step(0.5, h2));
+  const word = step(0.12, fract(theta.mul(3 / TWO_PI).add(0.04))); // three words round the wall
+  const letters = max(vertical, horizontal).mul(step(gv, 0.999)).mul(step(0.001, gv)).mul(band).mul(word).mul(onWall);
+  const beadLine = thinLineMask(rr.sub(0.12), 0.03).mul(onWall);
+  return { sipe, ribs, letters, beadLine };
+}
+
+/** Every output of the shared material, as one mesh type's node graph (see createCarMaterial). */
+interface CarSurface {
+  readonly albedo: Vec3Node;
+  readonly metalness: FloatNode;
+  readonly roughness: FloatNode;
+  readonly clearcoat: FloatNode;
+  readonly clearcoatRoughness: FloatNode;
+  readonly ao: FloatNode;
+  readonly emissive: Vec3Node;
+  /** Fine variant only: the relief normal and the clearcoat's (the grooves without the flakes). */
+  readonly normal: Vec3Node | null;
+  readonly coatNormal: Vec3Node | null;
+}
+
+/** Vertex attributes and geometry terms both mesh types read. */
+interface SurfaceInputs {
+  /** Linear base colour (`color`) and (metalness, roughness, emissive, kind) (`aMat`). */
+  readonly base: Vec3Node;
+  readonly metal: FloatNode;
+  readonly rough: FloatNode;
+  readonly glow: FloatNode;
+  readonly kind: FloatNode;
+  /** Geometry-space position and unit normal (car-local uu on the body, unit wheel on the wheels). */
+  readonly p: Vec3Node;
+  readonly nG: Vec3Node;
+  /** Facing ratio, saturated (a safe pow base): paint flop, lamp lenses, rim lift. */
+  readonly ndv: FloatNode;
+}
+
+function surfaceInputs(): SurfaceInputs {
   const surf = attribute('aMat', 'vec4');
-  const paintMask = step(0.99, surf.w);
-  const p = positionLocal;
+  return {
+    base: attribute('color', 'vec3'),
+    metal: surf.x,
+    rough: surf.y,
+    glow: surf.z,
+    kind: surf.w,
+    p: positionGeometry,
+    nG: normalize(normalGeometry.add(vec3(0.0, 1e-6, 0.0))), // never normalize(0)
+    ndv: normalViewGeometry.dot(positionViewDirection).saturate(),
+  };
+}
+
+/**
+ * Metallic flakes: a per-cell normal tilt in view space for cells of FLAKE_SIZE in `q` (uu), and
+ * `res`, 1 while a cell spans several pixels. Not normalised (transformNormalToView would
+ * normalise: every flake the same tilt, and NaN for a zero jitter); the cell hash gives each
+ * flake its own tilt. Below a few pixels a flake reads as grain, so the tilt fades early and the
+ * caller widens the base-coat lobe instead (the flakes' average). The fade reads the footprint of
+ * all three axes: on the pod top seen from the side, z shrinks at grazing angles while x does not.
+ */
+function flakes(q: Vec3Node): { tilt: Vec3Node; res: FloatNode } {
+  const fq = q.div(FLAKE_SIZE);
+  const fw = fwidth(fq);
+  const res = smoothstep(0.12, 0.45, max(max(fw.x, fw.y), fw.z)).oneMinus();
+  const tilt = modelViewMatrix.mul(vec4(cellHash3(fq).sub(0.5), 0.0)).xyz.mul(res.mul(FLAKE_TILT));
+  return { tilt, res };
+}
+
+/**
+ * The body (pod, side pods, arches, canopy, cage, lamps, engine cover, thrusters), car-local uu:
+ * metallic-flake team paint under a deep clearcoat with the livery (gloss carbon below the two-tone
+ * line, lime pinstripe, white nose chevrons), two panel seams, carbon twill, dark tinted glass, a
+ * satin alloy cage, heat-tinted thruster housings, HDR lamps and grime low down.
+ */
+function bodySurface(v: CarMaterialVariant): CarSurface {
+  const { base, metal: metal0, rough: rough0, glow, kind, p, nG, ndv } = surfaceInputs();
+  const zero = float(0.0);
+  const kPaint = isKind(kind, CAR_KIND.PAINT);
+  const kCarbon = isKind(kind, CAR_KIND.CARBON);
+  const kGlass = isKind(kind, CAR_KIND.GLASS);
+  const kAlloy = isKind(kind, CAR_KIND.ALLOY);
+  const kLamp = isKind(kind, CAR_KIND.LAMP);
+  const kExhaust = isKind(kind, CAR_KIND.EXHAUST);
+  const kTrim = isKind(kind, CAR_KIND.TRIM);
+
+  // Noise (fine variant): ~12 uu grime blotches and a ~1 uu grain (the alloy's hand-brushed look).
+  const coarse: FloatNode = v.fine ? valueNoise3(p.mul(0.085)) : zero;
+  const grain: FloatNode = v.fine ? valueNoise3(p.mul(0.9)) : zero;
+
+  // Livery on team paint (unchanged: two-tone line, pinstripe, nose chevrons).
   const za = p.z.abs();
-  const onNose = step(CHEVRON_X0, p.x).mul(step(p.x, CHEVRON_X1)).mul(step(za, CHEVRON_HALF_W)).mul(step(0.35, normalLocal.y));
-  const chevron = step(fract(p.x.add(za.mul(0.9)).div(CHEVRON_PERIOD)), 0.36).mul(onNose).mul(paintMask);
-  const lower = step(p.y, TWO_TONE_Y).mul(paintMask);
-  const pin = lineMask(p.y.sub(TWO_TONE_Y), PINSTRIPE_HALF_W).mul(paintMask);
+  const onNose = step(CHEVRON_X0, p.x).mul(step(p.x, CHEVRON_X1)).mul(step(za, CHEVRON_HALF_W)).mul(step(0.35, nG.y));
+  const chevron = step(fract(p.x.add(za.mul(0.9)).div(CHEVRON_PERIOD)), 0.36).mul(onNose).mul(kPaint);
+  const lower = step(p.y, TWO_TONE_Y).mul(kPaint);
+  const upper = kPaint.sub(lower);
+  const pin = lineMask(p.y.sub(TWO_TONE_Y), PINSTRIPE_HALF_W).mul(kPaint);
   const lime = linearVec3(BRAND_LIME);
-  const carbon = linearVec3(0x16181d);
-  const albedo = mix(mix(mix(base, carbon, lower), vec3(0.92, 0.93, 0.95), chevron.mul(0.9)), lime, pin);
-  const fresnel = normalView.dot(positionViewDirection).saturate().oneMinus().pow(3.0);
-  const rim = mix(albedo, vec3(1.0, 1.0, 1.0), 0.55).mul(fresnel.mul(surf.w).mul(0.35));
-  m.colorNode = albedo;
-  m.metalnessNode = surf.x;
-  m.roughnessNode = surf.y;
-  m.emissiveNode = base.mul(surf.z).add(rim).add(lime.mul(pin.mul(0.35)));
-  m.clearcoatNode = surf.w;
-  m.clearcoatRoughnessNode = float(0.08);
-  m.name = 'car-surface';
+  // Panel seams: thin grooves across the top of the pod (bonnet and rear deck lid).
+  const onTop = smoothstep(0.25, 0.55, nG.y).mul(step(za, SEAM_MAX_Z)).mul(upper);
+  const seam = max(thinLineMask(p.x.sub(HOOD_SEAM_X), SEAM_HALF_W), thinLineMask(p.x.sub(DECK_SEAM_X), SEAM_HALF_W)).mul(onTop);
+
+  // Carbon twill (lower body and carbon parts); its average once the tows are sub-pixel.
+  const { tow, weaveRes } = v.fine ? carbonWeave(p, nG) : { tow: float(0.6), weaveRes: zero };
+  const weave = mix(float(0.6), tow, weaveRes);
+  const carbonMask = kCarbon.add(lower).min(1.0);
+  const carbonCol = mix(vec3(0.012, 0.013, 0.015), vec3(0.036, 0.038, 0.042), weave);
+
+  // Thruster housings: heat tint from deep blue at the exit through straw to clean metal.
+  const heatT = p.x.sub(BOOST_NOZZLE_X).div(HOUSING_LEN).saturate();
+  const heatTint = mix(mix(vec3(0.32, 0.36, 0.7), vec3(0.95, 0.72, 0.42), smoothstep(0.0, 0.35, heatT)), vec3(1.0, 1.0, 1.0), smoothstep(0.35, 0.8, heatT));
+
+  // Grime: a dirt film low on the body (a uniform 0.2 film without the noise).
+  const dirty = smoothstep(-0.2, 0.5, coarse.add(grain.mul(0.3)));
+  const grimeTake = kPaint.add(kCarbon).add(kTrim).add(kAlloy.mul(0.6)).add(kExhaust.mul(0.5)).min(1.0);
+  const grime = smoothstep(GRIME_Y1, GRIME_Y0, p.y).oneMinus().mul(dirty).mul(grimeTake).mul(GRIME_AMOUNT);
+  const dirt = vec3(0.05, 0.046, 0.038);
+
+  // Flakes on the upper paint; their sub-pixel average widens the base-coat lobe (flakeBlur).
+  const flake = v.fine ? flakes(p) : null;
+  const flakeMask = upper.mul(pin.oneMinus()).mul(chevron.oneMinus());
+  const flakeBlur = (flake !== null ? flake.res.oneMinus() : float(1.0)).mul(0.08).mul(flakeMask);
+
+  // Colour. Paint face / flop: the pigment reads brighter facing the viewer, deeper at grazing.
+  const flop = mix(float(0.86), float(1.04), ndv.pow(0.6));
+  const livery = mix(mix(mix(base.mul(flop), carbonCol, lower), vec3(0.88, 0.89, 0.91), chevron.mul(0.92)), lime, pin).mul(seam.mul(0.8).oneMinus());
+  let albedo: Vec3Node = mix(base, livery, kPaint);
+  albedo = mix(albedo, carbonCol, kCarbon);
+  albedo = mix(albedo, base.mul(heatTint), kExhaust);
+  albedo = mix(albedo, base.mul(0.18), kLamp); // a lamp's lit look comes from its emission
+  albedo = mix(albedo, dirt, grime);
+
+  const paintMetal = mix(float(PAINT_METAL), float(0.2), lower).mul(pin.oneMinus()).mul(chevron.mul(0.8).oneMinus());
+  let metalness: FloatNode = mix(metal0, paintMetal, kPaint);
+  metalness = mix(metalness, float(0.2), kCarbon).mul(grime.oneMinus());
+  const paintRough = mix(mix(float(PAINT_ROUGH), float(0.3).add(weave.mul(0.1)), lower), float(0.4), chevron).add(flakeBlur);
+  let roughness: FloatNode = mix(rough0, paintRough, kPaint);
+  roughness = mix(roughness, float(0.3).add(weave.mul(0.12)), kCarbon);
+  roughness = mix(roughness, rough0.mul(grain.mul(0.35).add(1.0)), kAlloy); // satin, brushed by hand
+  roughness = mix(roughness, float(0.85), seam);
+  roughness = mix(roughness, float(0.82), grime).saturate();
+
+  // Clearcoat: paint (and its carbon), carbon parts, glass, lamp lenses; dulled by grime.
+  const clearcoat = kPaint.add(kCarbon).add(kGlass).add(kLamp.mul(0.8)).min(1.0).mul(grime.mul(1.4).oneMinus().saturate()).mul(seam.oneMinus());
+
+  // Emission: HDR lamps with a lens falloff, the pinstripe's faint glow, the paint's rim lift.
+  const lens = ndv.mul(ndv).mul(0.55).add(0.45);
+  const lamps = base.mul(glow).mul(mix(float(1.0), lens.mul(v.lampGain), kLamp));
+  const rimLift = ndv.oneMinus().pow(3.0).mul(RIM_LIFT).mul(kPaint).mul(grime.oneMinus());
+  const emissive = lamps.add(lime.mul(pin.mul(0.35))).add(mix(albedo, vec3(1.0, 1.0, 1.0), 0.5).mul(rimLift));
+
+  let normal: Vec3Node | null = null;
+  let coatNormal: Vec3Node | null = null;
+  if (flake !== null) {
+    const carbonH = tow.sub(0.5).mul(weaveRes).mul(0.03).mul(carbonMask);
+    coatNormal = bumpNormal(seam.mul(-SEAM_DEPTH).add(carbonH));
+    normal = normalize(coatNormal.add(flake.tilt.mul(flakeMask)));
+  }
+  return {
+    albedo,
+    metalness,
+    roughness,
+    clearcoat,
+    clearcoatRoughness: float(COAT_ROUGH).add(grime.mul(0.4)),
+    ao: mix(float(0.45), float(1.0), smoothstep(2.0, 14.0, p.y)), // the underbody gets little sky
+    emissive,
+    normal,
+    coatNormal,
+  };
+}
+
+/**
+ * The wheels, in the unit wheel space the instances scale (radius 1 in xy, axle along z in uu),
+ * so the detail turns with the tyre: knobby rubber with sipes, sidewall ribs and moulded lettering
+ * and a little dust, a machined beadlock, chrome bolts, dark anodised spokes and a flake-paint hub.
+ */
+function wheelSurface(v: CarMaterialVariant): CarSurface {
+  const { base, metal: metal0, rough: rough0, glow, kind, p, nG, ndv } = surfaceInputs();
+  const zero = float(0.0);
+  const kTyre = isKind(kind, CAR_KIND.TYRE);
+  const kHub = isKind(kind, CAR_KIND.HUB);
+  const kBead = isKind(kind, CAR_KIND.BEAD);
+  const r = length(p.xy);
+  // Unit wheel scaled to uu, so the noise and the flakes have the body's grain.
+  const q = vec3(p.x.mul(WHEEL_R_UU), p.y.mul(WHEEL_R_UU), p.z);
+
+  const onWall = smoothstep(0.55, 0.85, nG.z.abs());
+  const onCrown = step(0.985, r).mul(onWall.oneMinus()); // knob tops (the carcass sits at TREAD_R)
+  const rr = r.sub(RIM_R).div(TREAD_R - RIM_R).saturate();
+  const { sipe, ribs, letters, beadLine } = v.fine ? tyreDetail(p, r, rr, onWall, onCrown, v.knobs) : { sipe: zero, ribs: zero, letters: zero, beadLine: zero };
+  // Dust settles on the crown edges and the lower sidewall (the wheel turns: no "low" here); one
+  // noise in the fine variant, a uniform 0.2 film without it.
+  const dirty = smoothstep(-0.2, 0.5, v.fine ? valueNoise3(q.mul(0.085)) : zero);
+  const dust = dirty.mul(mix(smoothstep(0.7, 0.95, rr).mul(onWall), float(0.6), onWall.oneMinus())).mul(0.15);
+  const rubber = mix(vec3(0.016, 0.016, 0.018), vec3(0.024, 0.024, 0.025), onCrown); // scuffed crown
+  const tyreCol = mix(mix(mix(rubber, vec3(0.006, 0.006, 0.007), sipe), vec3(0.03, 0.03, 0.032), letters), vec3(0.07, 0.066, 0.06), dust);
+  const tyreRough = mix(mix(mix(float(0.88), float(0.8), onCrown), float(0.6), letters), float(0.95), max(sipe, dust));
+  // Beadlock: concentric turning marks (roughness), faded once sub-pixel.
+  const turning: FloatNode = v.fine ? sin(r.mul(TWO_PI * 60)).mul(resolvedFade(r.mul(60), 0.1, 0.3)) : zero;
+  const flake = v.fine ? flakes(q) : null;
+  const flakeBlur = (flake !== null ? flake.res.oneMinus() : float(1.0)).mul(0.08).mul(kHub);
+
+  const flop = mix(float(0.86), float(1.04), ndv.pow(0.6));
+  const albedo = mix(mix(base, base.mul(flop), kHub), tyreCol, kTyre);
+  let roughness: FloatNode = mix(rough0, rough0.add(flakeBlur), kHub);
+  roughness = mix(roughness, rough0.add(turning.mul(0.05)), kBead);
+  roughness = mix(roughness, tyreRough, kTyre).saturate();
+  const rimLift = ndv.oneMinus().pow(3.0).mul(RIM_LIFT).mul(kHub);
+
+  let normal: Vec3Node | null = null;
+  let coatNormal: Vec3Node | null = null;
+  if (flake !== null) {
+    const tyreH = sipe.mul(-0.45).add(ribs.mul(0.012).add(letters.mul(0.16)).sub(beadLine.mul(0.12)).mul(onWall));
+    coatNormal = bumpNormal(tyreH.mul(kTyre).add(turning.mul(0.006).mul(kBead)));
+    normal = normalize(coatNormal.add(flake.tilt.mul(kHub)));
+  }
+  return {
+    albedo,
+    metalness: metal0,
+    roughness,
+    clearcoat: kHub, // the hub cap's paint
+    clearcoatRoughness: float(COAT_ROUGH),
+    ao: mix(float(0.55), float(1.0), smoothstep(0.5, 0.68, r)), // deep inside the rim
+    emissive: base.mul(glow).add(mix(albedo, vec3(1.0, 1.0, 1.0), 0.5).mul(rimLift)),
+    normal,
+    coatNormal,
+  };
+}
+
+/**
+ * One physically based node material for every car part of every car of a tier. Everything comes
+ * from the vertex attributes (`color`, `aMat` = metalness, roughness, emissive, kind) and the
+ * geometry-space position, so the cars of both teams draw with it and nothing is per car.
+ *
+ * The body and the wheels are different pipelines anyway (the wheels are instanced), so the
+ * material builds only what each needs: its outputs are Fn nodes that pick, at shader build time,
+ * the body graph (bodySurface) or the wheel graph (wheelSurface) by the object being built. Each
+ * shader is about half of a combined one: less to compile (WebGL2 and phones) and to run.
+ * Within a graph every kind is evaluated and mixed in, branch-free: the derivative-based relief
+ * needs uniform control flow, and a car covers few pixels.
+ *
+ * NaN hygiene: every pow base is saturated, the tread angle never takes atan(0, 0), fades and
+ * masks are smoothstep / saturate outputs, bumpNormal guards its normalisation and the flake tilt
+ * is never normalised.
+ */
+function createCarMaterial(v: CarMaterialVariant): CarMaterial {
+  // One graph per mesh type, built on first use and shared by all the outputs (and every build).
+  let body: CarSurface | null = null;
+  let wheel: CarSurface | null = null;
+  const surfaceOf = (builder: THREE.NodeBuilder): CarSurface => {
+    if ((builder.object as THREE.InstancedMesh | null)?.isInstancedMesh === true) return (wheel ??= wheelSurface(v));
+    return (body ??= bodySurface(v));
+  };
+  if (v.cheap) {
+    const lm = new THREE.MeshLambertNodeMaterial();
+    lm.colorNode = Fn((b) => surfaceOf(b).albedo)();
+    // NodeMaterial.setupLighting adds any material's emissiveNode (r186 types it on Standard only).
+    (lm as unknown as { emissiveNode: unknown }).emissiveNode = Fn((b) => surfaceOf(b).emissive)();
+    lm.name = 'car-surface-lambert';
+    return lm;
+  }
+  const m = new OpaqueAlbedoPhysicalMaterial();
+  m.albedoNode = Fn((b) => surfaceOf(b).albedo)(); // not colorNode: keeps the livery out of the shadow pipelines
+  m.metalnessNode = Fn((b) => surfaceOf(b).metalness)();
+  m.roughnessNode = Fn((b) => surfaceOf(b).roughness)();
+  m.clearcoatNode = Fn((b) => surfaceOf(b).clearcoat)();
+  m.clearcoatRoughnessNode = Fn((b) => surfaceOf(b).clearcoatRoughness)();
+  m.aoNode = Fn((b) => surfaceOf(b).ao)();
+  m.emissiveNode = Fn((b) => surfaceOf(b).emissive)();
+  if (v.fine) {
+    m.normalNode = Fn((b) => surfaceOf(b).normal ?? normalViewGeometry)();
+    // The coat lies smooth over the flakes but follows the grooves.
+    m.clearcoatNormalNode = Fn((b) => surfaceOf(b).coatNormal ?? normalViewGeometry)();
+  }
+  m.name = v.fine ? 'car-surface' : 'car-surface-flat';
   return m;
 }
 
 /**
- * Reference-counted: the material is disposed when the last CarView releases it. A roster change
- * (Game.rebuildCarViews) builds the new views before disposing the old ones so the count never
- * reaches zero in between and the compiled material survives the rebuild.
+ * Shared materials by variant, reference-counted: a material is disposed when the last CarView of
+ * its tier releases it. A roster change (Game.rebuildCarViews) builds the new views before
+ * disposing the old ones so the count never reaches zero in between and the compiled material
+ * survives the rebuild. A tier switch builds the other variant (a different shader anyway: the
+ * pipeline's MSAA and MRT change with the tier).
  */
-function acquireCarMaterial(): THREE.MeshPhysicalNodeMaterial {
-  if (sharedMaterial === null) sharedMaterial = createCarMaterial();
-  sharedRefs++;
-  return sharedMaterial;
+const sharedMaterials = new Map<string, { material: CarMaterial; refs: number }>();
+
+/** The shared car material: physical on every tier but the cheap one (Lambert, super low). */
+export type CarMaterial = THREE.MeshPhysicalNodeMaterial | THREE.MeshLambertNodeMaterial;
+
+/** The shared material of tier `spec` and its variant key (for releaseCarMaterial). Exported for tests. */
+export function acquireCarMaterial(spec: TierSpec): { material: CarMaterial; key: string } {
+  const v = carMaterialVariant(spec);
+  const key = variantKey(v);
+  let entry = sharedMaterials.get(key);
+  if (entry === undefined) {
+    entry = { material: createCarMaterial(v), refs: 0 };
+    sharedMaterials.set(key, entry);
+  }
+  entry.refs++;
+  return { material: entry.material, key };
 }
 
-function releaseCarMaterial(): void {
-  sharedRefs--;
-  if (sharedRefs <= 0 && sharedMaterial !== null) {
-    sharedMaterial.dispose();
-    sharedMaterial = null;
-    sharedRefs = 0;
+/** Drops one reference to the shared material of `key`; the last one disposes it. Exported for tests. */
+export function releaseCarMaterial(key: string): void {
+  const entry = sharedMaterials.get(key);
+  if (entry === undefined) return;
+  entry.refs--;
+  if (entry.refs <= 0) {
+    entry.material.dispose();
+    sharedMaterials.delete(key);
   }
 }
 
@@ -231,13 +703,17 @@ interface FlameUniforms {
  * 3 underglow; `aJet` (-1 / +1, 0 for the underglow) puts a part on the left or right thruster.
  * Jet / disc vertices are unit sized and scaled by the `len` / `rad` uniforms around the nozzle.
  */
-function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number): { material: THREE.MeshBasicNodeMaterial; u: FlameUniforms } {
+function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number, cheap = false): { material: THREE.MeshBasicNodeMaterial; u: FlameUniforms } {
   const m = new THREE.MeshBasicNodeMaterial();
   m.transparent = true;
   m.blending = THREE.AdditiveBlending;
   m.depthWrite = false;
   m.side = THREE.DoubleSide;
   m.fog = false;
+  // Cheap tiers (super low): additive, so the order of the faces does not matter: one pass instead
+  // of three's back-then-front pair (one pipeline and one draw less), and the team tint a uniform
+  // (both teams' flames share one program).
+  if (cheap) m.forceSinglePass = true;
 
   const u: FlameUniforms = {
     len: uniform(FLAME_LENGTH),
@@ -249,7 +725,7 @@ function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number
   const jet = attribute('aJet', 'float');
   const isCone = part.lessThan(1.5);
   const isDisc = part.lessThan(2.5);
-  // Jets: 1 at the tip, 0 at the base. Saturated because with MSAA (quality 0) varyings are
+  // Jets: 1 at the tip, 0 at the base. Saturated because with MSAA (tiers with msaa 4) varyings are
   // interpolated at the pixel centre, which lies OUTSIDE the triangle for partially covered edge
   // pixels: past the tip `uv.y` extrapolates above 1 and pow() of the negative 1 - t is NaN. One
   // NaN texel in the glow target blurs through the bloom mips into a big black rectangle.
@@ -260,9 +736,13 @@ function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number
 
   // Position: radial wobble growing towards the tip (vertex noise, decorrelated per jet) and a
   // slight pinch at every shock diamond; then the jet goes to its thruster.
-  const wobble = mx_noise_float(vec3(positionLocal.y.mul(2.2), positionLocal.z.mul(2.2).add(jet.mul(3.7)), t.mul(3.0).sub(clock.mul(7.0))))
-    .mul(0.18)
-    .mul(t);
+  // (Cheap tiers: no wobble. Its noise functions come out of each car's own build in another
+  // order, so every car's flame would be a program of its own.)
+  const wobble = cheap
+    ? float(0)
+    : mx_noise_float(vec3(positionLocal.y.mul(2.2), positionLocal.z.mul(2.2).add(jet.mul(3.7)), t.mul(3.0).sub(clock.mul(7.0))))
+        .mul(0.18)
+        .mul(t);
   const pinch = cos(diamondPhase).mul(-0.12).mul(t.oneMinus());
   const jetOffset = vec3(0, 0, jet.mul(jetZ));
   const coneP = positionLocal.add(normalLocal.mul(wobble.add(pinch))).mul(vec3(u.len, u.rad, u.rad)).add(jetOffset);
@@ -272,7 +752,7 @@ function createFlameMaterial(team: Team, glowCentre: THREE.Vector3, jetZ: number
   m.positionNode = select(isCone, coneP, select(isDisc, discP, glowP));
 
   // Colour per part. Every pow() base below is in [0, 1].
-  const tint = color(TEAM_GLOW[team]);
+  const tint = cheap ? uniform(new THREE.Color(TEAM_GLOW[team])) : color(TEAM_GLOW[team]);
   const core = mix(vec3(1.0, 1.0, 1.0), tint, 0.2);
   const flicker = sin(t.mul(16.0).sub(clock.mul(40.0))).mul(0.12).add(0.88);
   // |n . v| is in [0, 1] for unit vectors; the saturate also maps a NaN (degenerate normal) to 0.
@@ -336,7 +816,7 @@ function tag(src: THREE.BufferGeometry, s: Surface): THREE.BufferGeometry {
     mat[v * 4] = s.metal;
     mat[v * 4 + 1] = s.rough;
     mat[v * 4 + 2] = s.emissive;
-    mat[v * 4 + 3] = s.paint;
+    mat[v * 4 + 3] = s.kind;
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.setAttribute('aMat', new THREE.BufferAttribute(mat, 4));
@@ -450,9 +930,9 @@ function tube(ax: number, ay: number, az: number, bx: number, by: number, bz: nu
  * 120 x 39 x 87 uu) and translated to the car origin at the end. A final guard squeezes the body
  * into the hitbox (minus a margin) should a preset ever be smaller than the design.
  */
-function buildBodyGeometry(cfg: CarConfigInfo, team: Team, quality: 0 | 1): THREE.BufferGeometry {
+function buildBodyGeometry(cfg: CarConfigInfo, team: Team, detail: TierSpec['detail']): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const hi = quality === 0;
+  const hi = detail === 'high';
   const L = cfg.hitboxSize[0];
   const W = cfg.hitboxSize[1];
   const H = cfg.hitboxSize[2];
@@ -463,9 +943,9 @@ function buildBodyGeometry(cfg: CarConfigInfo, team: Team, quality: 0 | 1): THRE
   const hl = L * 0.5 - margin;
   const hh = H * 0.5 - margin;
   const hw = W * 0.5 - margin;
-  const paint: Surface = { color: TEAM_PAINT[team], metal: 0.25, rough: 0.4, emissive: 0, paint: 1 };
-  const glass: Surface = { color: TEAM_GLASS[team], metal: 0.85, rough: 0.06, emissive: 0, paint: 0.7 };
-  const strip: Surface = { color: TEAM_GLOW[team], metal: 0, rough: 0.4, emissive: 1.4, paint: 0 };
+  const paint: Surface = { color: TEAM_PAINT[team], metal: PAINT_METAL, rough: PAINT_ROUGH, emissive: 0, kind: CAR_KIND.PAINT };
+  const glass: Surface = { color: TEAM_GLASS[team], metal: 0, rough: 0.05, emissive: 0, kind: CAR_KIND.GLASS };
+  const strip: Surface = { color: TEAM_GLOW[team], metal: 0, rough: 0.2, emissive: 1.4, kind: CAR_KIND.LAMP };
 
   const box = (s: Surface, sx: number, sy: number, sz: number, x: number, y: number, z: number): void => {
     const g = new THREE.BoxGeometry(sx, sy, sz);
@@ -584,9 +1064,9 @@ function buildBodyGeometry(cfg: CarConfigInfo, team: Team, quality: 0 | 1): THRE
   box(TRIM, 3, 2.4, 17, hoopX + 2.4, barY, 0);
   for (const z of [-7.2, -2.4, 2.4, 7.2]) box(HEADLIGHT, 0.8, 1.8, 2.8, hoopX + 4.1, barY, z);
 
-  // Engine cover on the rear deck.
-  box(TRIM, 11, 4.5, 13, -38, 6.5, 0);
-  box(TRIM, 9, 0.8, 14, -38.5, 9.2, 0);
+  // Carbon engine cover on the rear deck.
+  box(CARBON, 11, 4.5, 13, -38, 6.5, 0);
+  box(CARBON, 9, 0.8, 14, -38.5, 9.2, 0);
 
   // Twin thrusters: housing, dark throat and a tail-light ring each.
   const nx = -hl + 0.75; // nozzle exit plane
@@ -596,7 +1076,7 @@ function buildBodyGeometry(cfg: CarConfigInfo, team: Team, quality: 0 | 1): THRE
     const housing = new THREE.CylinderGeometry(4.2, 4.6, 7, hi ? 16 : 10, 1, false);
     housing.rotateZ(Math.PI / 2);
     housing.translate(nx + 3.5, ny, z);
-    parts.push(tag(housing, RIM));
+    parts.push(tag(housing, EXHAUST));
     const throat = new THREE.CircleGeometry(3.3, hi ? 16 : 10);
     throat.rotateY(-Math.PI / 2);
     throat.translate(nx - 0.05, ny, z);
@@ -639,21 +1119,21 @@ function buildBodyGeometry(cfg: CarConfigInfo, team: Team, quality: 0 | 1): THRE
  * off-road tyre (carcass, sidewalls, staggered tread blocks), dark six-spoke rim over a dish, a
  * light beadlock ring with bolts on both faces and a team-coloured hub cap.
  */
-function buildWheelGeometry(width: number, quality: 0 | 1, team: Team): THREE.BufferGeometry {
+function buildWheelGeometry(width: number, detail: TierSpec['detail'], team: Team): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const hi = quality === 0;
+  const hi = detail === 'high';
   const seg = hi ? 24 : 14;
   const seg2 = hi ? 18 : 10;
   const hw = width * 0.5;
-  const hub: Surface = { color: TEAM_PAINT[team], metal: 0.3, rough: 0.4, emissive: 0.15, paint: 0.98 };
+  const hub: Surface = { color: TEAM_PAINT[team], metal: 0.4, rough: 0.36, emissive: 0.15, kind: CAR_KIND.HUB };
 
   const tread = new THREE.CylinderGeometry(TREAD_R, TREAD_R, width, seg, 1, true);
   tread.rotateX(Math.PI / 2);
   parts.push(tag(tread, TYRE));
-  const knobs = hi ? 16 : 12;
+  const knobs = hi ? KNOBS_HIGH : KNOBS_LOW;
   const knobH = 1 - TREAD_R + 0.01;
   for (let i = 0; i < knobs; i++) {
-    const knob = new THREE.BoxGeometry(0.24, knobH, width * 0.46);
+    const knob = new THREE.BoxGeometry(KNOB_WIDTH, knobH, width * 0.46);
     knob.translate(0, 1 - knobH * 0.5, ((i & 1) === 0 ? -1 : 1) * width * 0.25);
     knob.rotateZ((i * TWO_PI) / knobs);
     parts.push(tag(knob, TYRE));
@@ -672,7 +1152,7 @@ function buildWheelGeometry(width: number, quality: 0 | 1, team: Team): THREE.Bu
         const bolt = new THREE.BoxGeometry(0.07, 0.07, 0.3);
         bolt.translate(0, 0.62, side * (hw + 0.45));
         bolt.rotateZ((i * TWO_PI) / 8 + 0.3);
-        parts.push(tag(bolt, RIM));
+        parts.push(tag(bolt, BOLT));
       }
     }
   }
@@ -799,7 +1279,12 @@ export class CarView {
   readonly config: CarConfigInfo;
 
   private readonly scene: THREE.Scene;
-  private readonly quality: 0 | 1;
+  /** High geometry detail: the shadow map grounds the car, the blob only shows once airborne (updateBlob). */
+  private readonly blobOnlyAirborne: boolean;
+  /** Height of the blob over the floor: above the grass blades on tiers with `grassBlades`. */
+  private readonly blobY: number;
+  /** Variant key of the shared car material this view holds (see acquireCarMaterial). */
+  private readonly materialKey: string;
   private readonly body: THREE.Mesh;
   private readonly wheels: THREE.InstancedMesh;
   private readonly flame: THREE.Mesh;
@@ -821,18 +1306,23 @@ export class CarView {
   private warmBlob = false;
   private warmBlobOpacity = 0;
 
-  constructor(scene: THREE.Scene, config: CarConfigInfo, team: Team, quality: 0 | 1) {
+  constructor(scene: THREE.Scene, config: CarConfigInfo, team: Team, quality: Quality) {
     this.scene = scene;
     this.config = config;
     this.team = team;
-    this.quality = quality;
+    const spec = tier(quality);
+    const detail = spec.detail;
+    this.blobOnlyAirborne = detail === 'high';
+    this.blobY = spec.grassBlades ? 6 : 0.6;
     this.position = this.root.position;
     this.quaternion = this.root.quaternion;
     this.root.name = team === 0 ? 'car-blue' : 'car-red';
 
-    const material = acquireCarMaterial();
+    const shared = acquireCarMaterial(spec);
+    this.materialKey = shared.key;
+    const material = shared.material;
 
-    this.body = new THREE.Mesh(buildBodyGeometry(config, team, quality), material);
+    this.body = new THREE.Mesh(buildBodyGeometry(config, team, detail), material);
     this.body.castShadow = true;
     this.body.receiveShadow = true;
     this.root.add(this.body);
@@ -840,7 +1330,10 @@ export class CarView {
     const wheelOuter = Math.min(WHEEL_OUTER, config.hitboxSize[1] * 0.5 - 2.5);
     this.track[0] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - config.frontWheelOffset[1]);
     this.track[1] = Math.max(0, wheelOuter - WHEEL_WIDTH * 0.5 - config.backWheelOffset[1]);
-    this.wheels = new THREE.InstancedMesh(buildWheelGeometry(WHEEL_WIDTH, quality, team), material, 4);
+    // Cheap tiers: an instance buffer past the uniform-buffer limit, so every car's wheels share
+    // one program (materials.ts SHARED_INSTANCING_CAPACITY); 4 are drawn and uploaded.
+    this.wheels = new THREE.InstancedMesh(buildWheelGeometry(WHEEL_WIDTH, detail, team), material, spec.cheapMaterials ? SHARED_INSTANCING_CAPACITY : 4);
+    this.wheels.count = 4;
     this.wheels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.wheels.castShadow = true;
     this.wheels.receiveShadow = true;
@@ -852,7 +1345,7 @@ export class CarView {
     const nozzleX = config.hitboxOffset[0] - (config.hitboxSize[0] * 0.5 - 1.5) + 0.75 - 0.2;
     const nozzleY = BOOST_NOZZLE_Y;
     _v.set(config.hitboxOffset[0] - nozzleX, config.hitboxOffset[2] - config.hitboxSize[2] * 0.5 - 1 - nozzleY, 0);
-    const flame = createFlameMaterial(team, _v, BOOST_NOZZLE_Z);
+    const flame = createFlameMaterial(team, _v, BOOST_NOZZLE_Z, spec.cheapMaterials);
     this.flameMat = flame.material;
     this.flameU = flame.u;
     this.flame = new THREE.Mesh(buildFlameGeometry(_v), this.flameMat);
@@ -993,12 +1486,12 @@ export class CarView {
     this.flameMat.dispose();
     this.blob.geometry.dispose();
     this.blobMat.dispose();
-    releaseCarMaterial();
+    releaseCarMaterial(this.materialKey);
   }
 
   /**
    * Ground blob under the hitbox centre: grows and fades with height (0..BLOB_MAX_HEIGHT), fades
-   * out on walls/ceiling (car up vector), and at quality 0 only appears once the car is airborne
+   * out on walls/ceiling (car up vector), and at high detail only appears once the car is airborne
    * (the shadow map handles grounded cars there).
    */
   private updateBlob(cur: Float32Array, r: number): void {
@@ -1008,7 +1501,7 @@ export class CarView {
     const k = h > 0 ? Math.min(1, h / BLOB_MAX_HEIGHT) : 0; // NaN-safe: a bad height collapses to 0, never a NaN scale
     const upY = rotValid(cur, r) ? cur[r + 8] : 1; // sim up.z = three up.y
     let op = (0.5 - 0.38 * k) * clamp(upY, 0, 1);
-    if (this.quality === 0) op *= smooth01(h, 20, 45);
+    if (this.blobOnlyAirborne) op *= smooth01(h, 20, 45);
     if (op <= 0.01) {
       this.blob.visible = false;
       return;
@@ -1016,7 +1509,7 @@ export class CarView {
     this.blob.visible = true;
     this.blobOpacity.value = op;
     _v.set(cfg.hitboxOffset[0], 0, 0).applyQuaternion(q).add(this.root.position);
-    this.blob.position.set(_v.x, 0.6, _v.z);
+    this.blob.position.set(_v.x, this.blobY, _v.z);
     const grow = 1 + 0.3 * k;
     this.blob.scale.set(BLOB_LENGTH * grow, 1, BLOB_WIDTH * grow);
     _v.set(1, 0, 0).applyQuaternion(q);
@@ -1037,7 +1530,15 @@ export class CarView {
       const rest = hp[2] + CAR_REST_Z - radius;
       this.composeWheel(i, hp, rest, radius, 0, 0);
     }
-    this.wheels.instanceMatrix.needsUpdate = true;
+    this.markWheels();
+  }
+
+  /** The 4 wheel matrices changed: upload them (only them: the cheap tiers' buffer holds 1025). */
+  private markWheels(): void {
+    const im = this.wheels.instanceMatrix;
+    im.clearUpdateRanges();
+    im.addUpdateRange(0, 4 * 16);
+    im.needsUpdate = true;
   }
 
   /**
@@ -1085,6 +1586,6 @@ export class CarView {
       this.spin[i] = ang;
       this.composeWheel(i, hp, s, radius, steer, ang);
     }
-    this.wheels.instanceMatrix.needsUpdate = true;
+    this.markWheels();
   }
 }

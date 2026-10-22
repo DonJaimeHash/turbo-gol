@@ -18,6 +18,11 @@
  *    shockwaves).
  *  - flash: one fresnel shell sphere, visible for half a second after a goal; a second one for
  *    demolitions (0.4 s).
+ *
+ * Tiers with `cheapMaterials` (super low, a 128-particle pool): no flash shells (a goal next to the
+ * camera filled the screen with additive layers on a GPU that blends slowly), and every particle
+ * is kept small on screen: its radius at most SCREEN_CAP x its distance from the camera (about a
+ * dozen pixels at 640x360), its stretched length three times that.
  */
 import * as THREE from 'three/webgpu';
 import { attribute, cameraPosition, cross, diffuseColor, materialColor, normalView, positionLocal, positionViewDirection } from 'three/tsl';
@@ -42,6 +47,7 @@ import { BALL } from '../sim/constants';
 import { simRotMatToQuat, simToThree, simVecLerpFromBuf } from './coords';
 import { BOOST_NOZZLE_X, BOOST_NOZZLE_Y, BOOST_NOZZLE_Z, TEAM_GLOW } from './Car';
 import { BRAND_LIME, glowMrt } from './materials';
+import { tier, type Quality } from './quality';
 
 const TWO_PI = Math.PI * 2;
 const GRAVITY = 650; // uu/s^2, the sim's gravity
@@ -83,6 +89,8 @@ const GLOW_PARTICLES = 0.6;
 const GLOW_RIBBON = 0.5;
 const GLOW_RING = 0.6;
 const GLOW_FLASH = 0.4;
+/** Super low: a particle's radius at most this x its distance from the camera (tan of ~2.3 degrees). */
+const SCREEN_CAP = 0.04;
 
 // Ribbons.
 const RIBBON_CAP = 48; // points per emitter
@@ -188,7 +196,8 @@ function createRibbonMaterial(): THREE.MeshBasicNodeMaterial {
 
 export class Effects {
   private readonly scene: THREE.Scene;
-  private readonly quality: 0 | 1;
+  /** High detail (TierSpec.detail): fuller bursts and boost embers. */
+  private readonly hi: boolean;
   /** Pool size. */
   private readonly n: number;
   private readonly mesh: THREE.InstancedMesh;
@@ -282,15 +291,22 @@ export class Effects {
   private warmRings = false;
   private warmFlash = false;
   private warmDemoFlash = false;
+  /** The flash shells exist on screen (not on tiers with cheapMaterials). */
+  private readonly flashes: boolean;
+  /** Super low: the camera whose distance caps the particles' size (null: no cap). */
+  private readonly capCamera: THREE.Camera | null;
 
   // Deferred ball hit (the contact offset is read from the next state buffer the view receives).
   private pendingHitSpeed = -1;
   private disposed = false;
 
-  constructor(scene: THREE.Scene, quality: 0 | 1) {
+  constructor(scene: THREE.Scene, quality: Quality, camera: THREE.Camera | null = null) {
     this.scene = scene;
-    this.quality = quality;
-    const n = quality === 0 ? 1536 : 512;
+    const spec = tier(quality);
+    this.hi = spec.detail === 'high';
+    this.flashes = !spec.cheapMaterials;
+    this.capCamera = spec.cheapMaterials ? camera : null;
+    const n = spec.particles;
     this.n = n;
 
     this.pos = new Float32Array(n * 3);
@@ -372,6 +388,8 @@ export class Effects {
     rbGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
     this.ribbonMat = createRibbonMaterial();
     this.ribbonMat.name = 'fx-ribbons';
+    // Cheap tiers: additive, one pass instead of the back-then-front pair (a pipeline less).
+    this.ribbonMat.forceSinglePass = spec.cheapMaterials;
     this.ribbon = new THREE.Mesh(rbGeo, this.ribbonMat);
     this.ribbon.name = 'fx-ribbons';
     this.ribbon.frustumCulled = false;
@@ -384,7 +402,8 @@ export class Effects {
     // Rings.
     this.ringMat = createRingMaterial();
     this.ringMat.name = 'fx-rings';
-    this.rings = new THREE.InstancedMesh(new THREE.RingGeometry(0.86, 1, quality === 0 ? 64 : 40, 1), this.ringMat, RING_SLOTS);
+    this.ringMat.forceSinglePass = spec.cheapMaterials;
+    this.rings = new THREE.InstancedMesh(new THREE.RingGeometry(0.86, 1, this.hi ? 64 : 40, 1), this.ringMat, RING_SLOTS);
     this.rings.name = 'fx-rings';
     this.rings.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.rings.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(RING_SLOTS * 3), 3);
@@ -453,7 +472,7 @@ export class Effects {
     const r = this.teamGlow[gi] * 0.75 + 0.25;
     const g = this.teamGlow[gi + 1] * 0.75 + 0.25;
     const b = this.teamGlow[gi + 2] * 0.75 + 0.25;
-    const hi = this.quality === 0;
+    const hi = this.hi;
     this.burst(_p.x, _p.y, _p.z, hi ? 200 : 110, r * 1.4, g * 1.4, b * 1.4, 500, 2000, 0.25, 5, 14, 0.9, 1.6, 0.55, 0.8, 22, 0);
 
     // Confetti: slow tumbling flakes in team glow / white / brand lime.
@@ -467,12 +486,14 @@ export class Effects {
     this.startRing(RING_GOAL_A, _p, null, 120, 2720, GOAL_RING_DURATION, 0, r * 1.6, g * 1.6, b * 1.6, 0.9);
     this.startRing(RING_GOAL_B, _p, null, 120, 2720, GOAL_RING_DURATION, GOAL_RING2_DELAY, r * 1.6, g * 1.6, b * 1.6, 0.45);
 
-    this.flash.position.copy(_p);
-    this.flash.scale.setScalar(FLASH_SCALE_0);
-    this.flashMat.color.setRGB(r * 0.6 + 0.4, g * 0.6 + 0.4, b * 0.6 + 0.4).multiplyScalar(1.3);
-    this.flashMat.opacity = 0.8;
-    this.flash.visible = true;
-    this.flashT = 0;
+    if (this.flashes) {
+      this.flash.position.copy(_p);
+      this.flash.scale.setScalar(FLASH_SCALE_0);
+      this.flashMat.color.setRGB(r * 0.6 + 0.4, g * 0.6 + 0.4, b * 0.6 + 0.4).multiplyScalar(1.3);
+      this.flashMat.opacity = 0.8;
+      this.flash.visible = true;
+      this.flashT = 0;
+    }
   }
 
   /**
@@ -541,13 +562,13 @@ export class Effects {
         this.rings.count = 1;
         this.rings.visible = true;
       }
-      this.warmFlash = !this.flash.visible;
+      this.warmFlash = this.flashes && !this.flash.visible;
       if (this.warmFlash) {
         this.flash.scale.setScalar(0.01);
         this.flashMat.opacity = 0;
         this.flash.visible = true;
       }
-      this.warmDemoFlash = !this.demoFlash.visible;
+      this.warmDemoFlash = this.flashes && !this.demoFlash.visible;
       if (this.warmDemoFlash) {
         this.demoFlash.scale.setScalar(0.01);
         this.demoFlashMat.opacity = 0;
@@ -642,7 +663,7 @@ export class Effects {
       this.ribbonStyle(e + 3, BOOST_RIBBON_WIDTH, BOOST_RIBBON_LIFE, tr, tg, tb);
       this.ribbonEmit(e + 3, _rear2.x, _rear2.y, _rear2.z);
 
-      const acc = this.slotBoostAcc[slot] + (this.quality === 0 ? 35 : 20) * dt;
+      const acc = this.slotBoostAcc[slot] + (this.hi ? 35 : 20) * dt;
       const count = Math.floor(acc);
       this.slotBoostAcc[slot] = acc - count;
       const cr = this.teamGlow[gi] * 1.25;
@@ -688,7 +709,7 @@ export class Effects {
    * A demolished car blows up at its last live position (slotLast): a hot white core, rising
    * orange flames, fast team-coloured sparks, embers that arc out and bounce on the floor, a few
    * dim haze puffs (additive, so lit smoke rather than dark smoke), a ground shockwave and a flash
-   * shell. Everything inherits 30 % of the car's velocity. About 140 particles (60 at quality 1).
+   * shell. Everything inherits 30 % of the car's velocity. About 140 particles (60 at low detail).
    */
   private explode(slot: number, team: number): void {
     const l6 = slot * 6;
@@ -702,7 +723,7 @@ export class Effects {
     const tr = this.teamGlow[gi];
     const tg = this.teamGlow[gi + 1];
     const tb = this.teamGlow[gi + 2];
-    const hi = this.quality === 0;
+    const hi = this.hi;
     // Core, flames, deep red flames, sparks, embers, haze.
     this.burst(x, y, z, hi ? 10 : 5, 2.2, 1.45, 0.6, 30, 220, 0.3, 24, 40, 0.2, 0.36, -0.1, 4, 0, 0, vx, vy, vz);
     this.burst(x, y, z, hi ? 40 : 18, 2.0, 0.55, 0.08, 150, 650, 0.45, 14, 30, 0.45, 0.85, -0.35, 2.2, 0, 0, vx, vy, vz);
@@ -716,12 +737,14 @@ export class Effects {
     const ring = this.demoRing;
     this.demoRing = ring === RING_DEMO_A ? RING_DEMO_B : RING_DEMO_A;
     this.startRing(ring, _p, _up, 40, 760, DEMO_RING_DURATION, 0, 1.7, 0.7, 0.16, 0.9);
-    this.demoFlash.position.set(x, y, z);
-    this.demoFlash.scale.setScalar(DEMO_FLASH_SCALE_0);
-    this.demoFlashMat.color.setRGB(1.3, 0.55, 0.16);
-    this.demoFlashMat.opacity = 0.45;
-    this.demoFlash.visible = true;
-    this.demoFlashT = 0;
+    if (this.flashes) {
+      this.demoFlash.position.set(x, y, z);
+      this.demoFlash.scale.setScalar(DEMO_FLASH_SCALE_0);
+      this.demoFlashMat.color.setRGB(1.3, 0.55, 0.16);
+      this.demoFlashMat.opacity = 0.45;
+      this.demoFlash.visible = true;
+      this.demoFlashT = 0;
+    }
 
     if (this.onDemolition !== null) this.onDemolition(slot, x, y, z);
   }
@@ -1280,6 +1303,10 @@ export class Effects {
     const col = this.col;
     let alive = this.alive;
     let i = 0;
+    const cam = this.capCamera;
+    const cx = cam !== null ? cam.position.x : 0;
+    const cy = cam !== null ? cam.position.y : 0;
+    const cz = cam !== null ? cam.position.z : 0;
     while (i < alive) {
       const l = this.life[i] - dt;
       if (l <= 0) {
@@ -1300,7 +1327,16 @@ export class Effects {
       let py = pos[i3 + 1] + vy * dt;
       const pz = pos[i3 + 2] + vz * dt;
       const fade = l * this.invLife[i];
-      const s = this.size[i] * (0.35 + 0.65 * fade);
+      let s = this.size[i] * (0.35 + 0.65 * fade);
+      // Super low: never a big blob in front of the camera (one additive layer over the screen).
+      let cap = Infinity;
+      if (cam !== null) {
+        const dx = pos[i3] - cx;
+        const dy = pos[i3 + 1] - cy;
+        const dz = pos[i3 + 2] - cz;
+        cap = Math.sqrt(dx * dx + dy * dy + dz * dz) * SCREEN_CAP;
+        if (s > cap) s = cap;
+      }
       if (py < s) {
         // Floor bounce.
         py = s;
@@ -1342,7 +1378,7 @@ export class Effects {
         const wx = ay * uz - az * uy;
         const wy = az * ux - ax * uz;
         const wz = ax * uy - ay * ux;
-        const L = len * (0.5 + 0.5 * fade);
+        const L = Math.min(len * (0.5 + 0.5 * fade), cap * 3);
         m[o] = ax * L;
         m[o + 1] = ay * L;
         m[o + 2] = az * L;

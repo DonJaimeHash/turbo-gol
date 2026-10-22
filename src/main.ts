@@ -1,11 +1,22 @@
 /**
  * Boot: renderer (WebGPU, WebGL2 fallback) → RocketSim wasm → analytic arena mesh → arena +
- * the cars of the saved game mode (1v1 / 2v2 / 3v3) → Game. Progress is written to #overlay; a
- * readable error page replaces it when the GPU or the wasm cannot be initialised. Both are in the
- * page's language (boot.* texts); the error details (stack) stay as the browser wrote them.
+ * the cars of the saved game mode (1v1 / 2v2 / 3v3) → Game → warm-up → menu. The loading screen
+ * (#overlay, src/ui/LoadingOverlay.ts: the wordmark, a progress bar, one short line) is in
+ * index.html, so it shows from the first paint; each step moves the bar (an eased CSS transition
+ * toward the step's end, so it keeps moving through the long steps and the synchronous ones), and
+ * it fades into the menu once the menu's first frame is on screen. The Game keeps it for every
+ * later load. A readable error page replaces it when the GPU or the wasm cannot be initialised,
+ * in the page's language (boot.* texts); the error details (stack) stay as the browser wrote them.
+ *
+ * Load timing: each step leaves a `performance.mark` ('turbogol:renderer' once the renderer and
+ * the world's first bake or cache read are ready, ':physics', ':scene', ':warmup' after the
+ * warm-up render compiled every pipeline, ':gpu-ready' once the GPU finished that work on
+ * WebGPU, ':menu' once the loading screen is gone), read from the console or a profiler; marks
+ * cost nothing measurable.
  */
 import { Game, addRoster, loadPrefs } from './game/Game';
 import { t } from './i18n';
+import { LoadingOverlay, afterPaint, paintedFrames } from './ui/LoadingOverlay';
 import type { GameMode } from './sim/constants';
 import { Renderer } from './render/Renderer';
 import { loadSettings } from './settings';
@@ -20,24 +31,7 @@ function byId<T extends HTMLElement>(id: string): T {
 }
 
 const overlay = byId<HTMLDivElement>('overlay');
-
-function setProgress(text: string): void {
-  overlay.textContent = '';
-  const box = document.createElement('div');
-  box.className = 'overlay-msg';
-  const title = document.createElement('div');
-  title.className = 'overlay-title';
-  title.textContent = 'TURBOGOL';
-  const line = document.createElement('div');
-  line.className = 'overlay-line';
-  line.textContent = text;
-  box.append(title, line);
-  overlay.appendChild(box);
-}
-
-function clearProgress(): void {
-  overlay.textContent = '';
-}
+const loading = new LoadingOverlay(overlay);
 
 function describe(err: unknown): string {
   if (err instanceof Error) return err.stack ?? err.message;
@@ -59,7 +53,9 @@ function showError(title: string, hint: string, err: unknown): void {
   pre.textContent = describe(err);
   box.append(h, p, pre);
   overlay.appendChild(box);
-  overlay.classList.add('overlay-blocking');
+  // The page stops here: the error page stays up and takes the keys back (copying the details).
+  loading.dispose();
+  overlay.classList.add('ld-on', 'overlay-blocking');
   console.error(title, err);
 }
 
@@ -70,7 +66,10 @@ async function boot(): Promise<void> {
   // Controls / camera / bindings (Settings > Controls & Camera), persisted by the Game on change.
   const settings = loadSettings();
 
-  setProgress(t('boot.renderer'));
+  loading.label(t('loading.stadium'));
+  // The GPU adapter / device and the world's first bake or cache read: the longest step (a cached
+  // load is well under a second, a first visit's bake a couple of seconds).
+  loading.progress(0.42, 2600);
   // The wasm fetch + compile starts now, concurrently with the GPU adapter / device request (the
   // two longest async steps of the boot). Its outcome is captured so each failure keeps its own
   // error page and a renderer failure never leaves an unhandled rejection behind.
@@ -80,21 +79,31 @@ async function boot(): Promise<void> {
   );
   let renderer: Renderer;
   try {
-    renderer = await Renderer.create(canvas, { quality: prefs.quality });
+    // The boot tier (bootTier.ts: #superlow, the tab's recovery, the player's pick, super low on a
+    // 1 GB device or a TV on the slow GPU list) picks the backend; then the WebGL2 fallback starts on
+    // low unless the player picked a tier (quality.ts startingQuality).
+    renderer = await Renderer.create(canvas, { quality: prefs.quality, qualityChosen: prefs.qualitySet, theme: prefs.theme });
   } catch (err) {
     showError(t('boot.rendererFailed'), t('boot.rendererHint'), err);
     return;
   }
 
-  setProgress(t('boot.physics', { backend: renderer.isWebGPU ? 'WebGPU' : 'WebGL2' }));
+  performance.mark('turbogol:renderer');
+  loading.label(t('loading.pitch'));
+  loading.progress(0.55, 700);
   const loaded = await simLoad;
   if (loaded.sim === null) {
     showError(t('boot.physicsFailed'), t('boot.physicsHint'), loaded.err);
     return;
   }
   const sim = loaded.sim;
+  performance.mark('turbogol:physics');
 
-  setProgress(t('boot.arena'));
+  loading.progress(0.6, 200);
+  // The arena, the roster and the scene are built synchronously (~50-150 ms): the bar eases on
+  // (the transition runs on the compositor) once this frame has painted.
+  await afterPaint();
+  loading.progress(0.74, 600);
   const mesh = buildArenaMesh();
   sim.initArena(mesh.physics);
   sim.createArena(TICK_RATE);
@@ -114,16 +123,6 @@ async function boot(): Promise<void> {
   sim.resetKickoff();
   sim.sync();
 
-  setProgress(t('boot.scene'));
-  // Let the progress text paint before the (synchronous, ~50 ms) scene build. rAF does not fire
-  // in a hidden tab, so a timer fallback keeps the boot going in the background.
-  await new Promise<void>((resolve) => {
-    const timer = window.setTimeout(resolve, 50);
-    requestAnimationFrame(() => {
-      window.clearTimeout(timer);
-      resolve();
-    });
-  });
   const game = new Game({
     sim,
     renderer,
@@ -136,14 +135,29 @@ async function boot(): Promise<void> {
     carIds,
     difficulty: prefs.difficulty,
     qualitySet: prefs.qualitySet,
+    savedQuality: prefs.quality,
     info: `${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · RocketSim ${sim.version} · 120 Hz`,
+    loading,
   });
-  // One synchronous render with every normally hidden mesh visible: compiles all pipelines
-  // (scene, shadow, bloom, flames, marker, particles, goal FX) behind the overlay instead of
-  // stalling the first menu frame and the first boost / airborne ball / goal.
-  game.warmUp();
-  clearProgress();
+  // Every pipeline (scene, shadow, bloom, flames, marker, particles, goal FX) is compiled behind the
+  // overlay instead of stalling the first menu frame and the first boost / airborne ball / goal:
+  // one render with every normally hidden mesh visible, after compiling its pipelines in parallel
+  // (Renderer.precompile).
+  performance.mark('turbogol:scene');
+  loading.label(t('loading.ready'));
+  loading.progress(0.95, 2400);
+  await game.warmUpAsync();
+  performance.mark('turbogol:warmup');
+  const device = (renderer.gpu.backend as { device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } } }).device;
+  if (device?.queue?.onSubmittedWorkDone) void device.queue.onSubmittedWorkDone().then(() => performance.mark('turbogol:gpu-ready'));
+  // The menu and its first frames come up under the loading screen, then it fades into them.
   game.start();
+  await paintedFrames(2);
+  await loading.hide();
+  performance.mark('turbogol:menu');
+  // The tier safety net listens from now on (a failure of the warm-up is handled now, behind its
+  // own loading screen): render/tierGuard.ts.
+  game.bootDone();
 }
 
 boot().catch((err: unknown) => {

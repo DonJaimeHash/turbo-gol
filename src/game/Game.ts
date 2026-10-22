@@ -21,13 +21,48 @@
  * member, so its bots take the roles / kickoff duties the human leaves). The chase camera follows
  * roster entry 0. The mode
  * can only change from the menu (`setMode`): the bots are removed from the sim and re-added.
- * A running match reaches the menu through the pause screen (`quitToMenu`: Backspace / pad B
- * while paused, or its QUIT button in touch mode) or the return after the final whistle.
+ * A running match reaches the menu through the pause menu (`quitToMenu`: its QUIT entry, or
+ * Backspace / pad B while paused) or the return after the final whistle.
  *
- * Settings (src/settings.ts: controls, camera, bindings) are one live object shared by Input (reads
- * bindings / sensitivities, mutates them from the settings screen), ChaseCamera (reads `camera` by
- * reference) and the Hud (sliders). Every change ends in `applySettings()`: save to localStorage,
- * re-apply the dodge deadzone to the sim and the camera projection.
+ * Pause menu (Hud.setPaused, entries built by `pauseEntries`): RESUME, the training entries,
+ * SETTINGS and QUIT, for every input: mouse and touch click them, Input's menu edges (arrows /
+ * WASD / Enter, D-pad / stick / A) move the focus through `Hud.pauseAction`, pad X opens the
+ * settings. SETTINGS opens the Hud's settings screen over the paused game (`openPauseSettings`;
+ * the game stays paused and the chase camera stays put: `menuShown` ignores that screen) and its
+ * BACK returns to the pause menu.
+ *
+ * Long loads run behind the loading screen (src/ui/LoadingOverlay.ts, `withLoading`): a quality
+ * switch (`switchQuality`: renderer tier, view rebuild, the world's new bake sizes, every pipeline
+ * compiled in parallel) and a stadium switch (`switchTheme`: uniforms, then the world's re-bake or
+ * cache read). The overlay is painted first, the work runs in steps with a painted frame between
+ * them (the bar moves), and the loop neither renders nor reads input meanwhile (`loadingHold`).
+ * `setQuality` / `setTheme` stay the synchronous switches (the console and the capture helpers).
+ * A tier that breaks on this GPU (validation errors after the boot or a switch, a lost device)
+ * falls back one tier by itself through the same switch (`onGpuFailure`, src/render/tierGuard.ts),
+ * from `bootDone()` on. A switch into or out of super low (quality.ts needsReload: its own backend
+ * and world) saves the prefs and reloads the page behind the loading screen (`restartOn`); a lost
+ * device reloads through the tab's counter (tierGuard.ts lossStep: reload, then super low, then a
+ * message and no more reloads).
+ *
+ * Super low (TierSpec.maxFps, cpuLite): the loop draws at most 30 frames a second (`drawsFrame`:
+ * the skipped animation frames do nothing, the next drawn one carries their time), the HUD runs
+ * without blur, shadows and decorative animation (`html.tg-superlow`, src/style.css) and updates
+ * its boost and speed at 10 Hz, the audio has no room, the ball prediction refreshes every 8 ticks
+ * instead of 4 (BALL_PRED_EVERY_LITE: the bots read the prediction by age; the 720-tick horizon is
+ * the wasm's) and going online shows a one-line notice. Physics stays at 120 Hz.
+ *
+ * `#diag` (src/render/frameStats.ts): the loop feeds the frame times and the CPU of the ball
+ * prediction, the bots, the physics step and the render call; nothing is measured without it.
+ *
+ * Settings (src/settings.ts: controls, camera, bindings, audio) are one live object shared by Input
+ * (reads bindings / sensitivities, mutates them from the settings screen), ChaseCamera (reads
+ * `camera` by reference) and the Hud (sliders). Every change ends in `applySettings()`: save to
+ * localStorage, re-apply the dodge deadzone to the sim, the camera projection and the volume.
+ *
+ * Day stadiums (themeWorld(theme).night false) give the ball no shadow (`applyBallShadow`): under
+ * a low sun it lands far from the ball and reads as a second landing marker. Only the ball mesh's
+ * castShadow flips (no recompile); the warm-ups behind the loading screen turn it on so its shadow
+ * pipeline is ready for the night stadiums.
  *
  * Mouse look needs the pointer lock: a click on the canvas while a match is being played
  * requests it (that click is masked so it does not boost / jump), opening the menu / pausing / the
@@ -90,9 +125,28 @@ import { BallView } from '../render/Ball';
 import { ChaseCamera, SWIVEL_PITCH_MOUSE_DEG, SWIVEL_PITCH_STICK_DEG, type CameraCarState } from '../render/Camera';
 import { CarView } from '../render/Car';
 import { Effects } from '../render/Effects';
-import { Hud, type ClockMode, type OnlineKind, type ScoreboardData, type ScoreboardRow } from '../render/Hud';
+import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow } from '../render/Hud';
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
-import { Renderer, type Quality } from '../render/Renderer';
+import { Renderer, type GpuFailure } from '../render/Renderer';
+import { tierPrefsAfter } from '../render/bootTier';
+import { diagSources, diagStats, enableDiagStats } from '../render/frameStats';
+import { emulatedDevice, pageFlags, withoutTierFlags } from '../render/hashFlags';
+import { drawsFrame, needsReload, parseQuality, type Quality } from '../render/quality';
+import {
+  BACKGROUND_LOSS_MS,
+  FALLBACK_WINDOW_MS,
+  LOSS_COUNT_KEY,
+  RECOVER_KEY,
+  TRY_TIER_KEY,
+  TierGuard,
+  lossStep,
+  parseLossRecord,
+  raiseCeiling,
+  writeCeiling,
+  type Fallback,
+} from '../render/tierGuard';
+import { DEFAULT_THEME, parseTheme, themeWorld, type ThemeId } from '../render/theme';
+import { LoadingOverlay, afterPaint, paintedFrames } from '../ui/LoadingOverlay';
 import { loadSettings, saveSettings, type Settings } from '../settings';
 import type { ArenaMesh } from '../sim/arenaMesh';
 import { BOOST_PADS_BIG, BOOST_PADS_SMALL, MODES, type GameMode } from '../sim/constants';
@@ -168,22 +222,57 @@ export interface GameOptions {
   difficulty?: Difficulty;
   /** The player picked the quality tier in the menu (GamePrefs.qualitySet); persisted with the prefs. */
   qualitySet?: boolean;
+  /**
+   * The quality tier read from the prefs: the player's choice (qualitySet) or the saved default.
+   * The renderer may run another one (super low from the URL or on a weak TV, low on the WebGL2
+   * fallback, a GPU's ceiling, a fallback), which is never saved: the prefs keep this one until
+   * the player picks a tier in the menu.
+   */
+  savedQuality?: Quality;
   /** Regulation length in seconds (0 = unlimited). */
   matchLengthSeconds?: number;
   /** Text shown in the menu footer (backend, version...). */
   info?: string;
+  /** The boot's loading screen, reused for every later load (one is created over #overlay when omitted). */
+  loading?: LoadingOverlay;
 }
 
 export interface GamePrefs {
   difficulty: Difficulty;
+  /** Saved as the tier name; saves from before the third tier hold 0 / 1 (parseQuality reads both). */
   quality: Quality;
   mode: GameMode;
   /**
    * The player picked the quality in the menu. Phones and tablets (coarse pointer) start on the
-   * light tier (1) and only keep a saved tier the player chose, not one saved under the old default.
+   * light tier ('low') and only keep a saved tier the player chose, not one saved under the old default.
    */
   qualitySet: boolean;
+  /** Stadium theme (src/render/theme.ts), picked on the Friendly screen's stadium row. */
+  theme: ThemeId;
 }
+
+/**
+ * Bar positions after each step of a quality switch (withLoading): renderer, views, the world's
+ * bake or cache read, pipelines; then 1 as it fades.
+ */
+const QUALITY_STEPS = [0.15, 0.35, 0.6, 0.95, 1] as const;
+/** The same for a stadium switch: uniforms, then the world's bake or cache read. */
+const THEME_STEPS = [0.2, 0.95, 1] as const;
+/** sessionStorage: a tier fallback's line across the reload after a lost device (Game.bootDone). */
+const TIER_NOTICE_KEY = STORAGE_PREFIX + 'tierNotice';
+/** Delay (ms) between the lost-device line on the loading screen and the reload (it can be read). */
+const LOSS_RELOAD_DELAY_MS = 900;
+
+/** "Your device does not support Ultra: using High" (en / es). */
+function fallbackText(fb: Fallback): string {
+  return t('quality.fallback', { from: t(`quality.${fb.from}`), to: t(`quality.${fb.to}`) });
+}
+/**
+ * How long the bar takes to creep from one step's mark toward the next (ms): it eases most of the
+ * way there and waits (LOADING_CREEP), so a long step never looks frozen and a short one jumps on.
+ */
+const LOADING_CREEP_MS = 2600;
+const LOADING_CREEP = 0.85;
 
 /**
  * What the Game needs from an online session to host it (OnlineSession and P2PSession both satisfy
@@ -253,6 +342,10 @@ const PREFS_KEY = STORAGE_PREFIX + 'prefs';
 const MAX_FRAME_DT = 0.1;
 /** Ball prediction refresh cadence (ticks); a full re-prediction costs 1–5 ms after a touch. */
 const BALL_PRED_EVERY = 4;
+/** The same on tiers with `cpuLite` (super low): the bots read the prediction by its age, any cadence works. */
+const BALL_PRED_EVERY_LITE = 8;
+/** Seconds between two HUD boost / speed updates on tiers with `cpuLite` (10 Hz). */
+const HUD_LITE_INTERVAL = 0.1;
 /** Ball-hit effects are rate limited per car to this many ticks (dribbles touch every tick). */
 const HIT_FX_MIN_TICKS = 6;
 /** Minimum relative speed (uu/s) for a ball touch to produce a puff / sound. */
@@ -317,10 +410,10 @@ const SCOREBOARD_DIFFICULTY: Readonly<Record<Difficulty, string>> = {
 const SCOREBOARD_ONLINE = t('game.scoreboardOnline');
 const SCOREBOARD_ONLINE_P2P = t('game.scoreboardOnlineP2p');
 
-/** Read the saved difficulty / quality / mode (falls back to defaults when storage is unavailable). */
+/** Read the saved difficulty / quality / mode / theme (falls back to defaults when storage is unavailable). */
 export function loadPrefs(): GamePrefs {
   const touch = hasCoarsePointer();
-  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 1 : 0, mode: '1v1', qualitySet: false };
+  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 'low' : 'high', mode: '1v1', qualitySet: false, theme: DEFAULT_THEME };
   try {
     const raw = window.localStorage.getItem(PREFS_KEY);
     if (raw !== null) {
@@ -329,8 +422,10 @@ export function loadPrefs(): GamePrefs {
         prefs.difficulty = parsed.difficulty;
       }
       prefs.qualitySet = parsed.qualitySet === true;
-      if ((parsed.quality === 0 || parsed.quality === 1) && (!touch || prefs.qualitySet)) prefs.quality = parsed.quality;
+      const quality = parseQuality(parsed.quality);
+      if (quality !== null && (!touch || prefs.qualitySet)) prefs.quality = quality;
       if (isGameMode(parsed.mode)) prefs.mode = parsed.mode;
+      prefs.theme = parseTheme(parsed.theme) ?? DEFAULT_THEME;
     }
   } catch {
     /* private mode / storage disabled */
@@ -374,6 +469,16 @@ function hasCoarsePointer(): boolean {
   } catch {
     return false;
   }
+}
+
+/** The page's #overlay (the loading screen's element), created next to the HUD when the page has none. */
+function overlayHost(hudContainer: HTMLElement): HTMLElement {
+  const found = document.getElementById('overlay');
+  if (found !== null) return found;
+  const el = document.createElement('div');
+  el.id = 'overlay';
+  (hudContainer.parentElement ?? document.body).appendChild(el);
+  return el;
 }
 
 /** Pointer lock only makes sense with a mouse / trackpad (touch devices never get the hint). */
@@ -442,9 +547,30 @@ export class Game implements P2PGameHooks {
   effects!: Effects;
 
   paused = false;
+  /** The loading screen: the boot's, then every long load (withLoading). */
+  readonly loading: LoadingOverlay;
   quality: Quality;
+  /** Stadium theme (GamePrefs.theme): the views read it when they are built (setTheme). */
+  theme: ThemeId;
   /** The player picked the quality in the menu (GamePrefs.qualitySet). */
   private qualitySet: boolean;
+  /** The prefs' tier (GameOptions.savedQuality): the player's pick, never the tier the device fell to. */
+  private savedQuality: Quality;
+  /** The tier's CPU trims (TierSpec.cpuLite), fixed for the session (super low reloads to change). */
+  private readonly cpuLite: boolean;
+  /** Ticks between ball prediction refreshes (BALL_PRED_EVERY, or _LITE on cpuLite). */
+  private readonly predEvery: number;
+  /** rAF time (ms) of the last drawn frame (the tier's maxFps skips the others), -1 = none. */
+  private lastDrawAt = -1;
+  /** Loop time of the last HUD boost / speed update (cpuLite: 10 Hz). */
+  private hudAt = -1;
+  /** The super low online notice was shown this session. */
+  private liteOnlineNoticed = false;
+  /**
+   * A tier picked in an online match that needs a reload (into or out of super low): the reload
+   * would leave the match (an abandon), so it waits for the menus (showMenu); null when none.
+   */
+  private pendingRestart: Quality | null = null;
   difficulty: Difficulty;
   /** Smoothed frames per second (updated 4x/s). */
   fps = 0;
@@ -517,6 +643,23 @@ export class Game implements P2PGameHooks {
   private installHint: boolean;
   /** Frames left that render the normally hidden meshes so their pipelines compile (see warmUp). */
   private warmFrames = 0;
+  /** A warm-up behind the loading screen: the ball casts its shadow whatever the stadium (applyBallShadow). */
+  private warmBallShadow = false;
+  /** A load runs behind the loading screen (withLoading): the loop neither renders nor reads input. */
+  private loadingHold = false;
+  /** Loads run one at a time: the next one starts when this settles. */
+  private loadingChain: Promise<void> = Promise.resolve();
+  /** The quality safety net (tierGuard.ts): a tier that breaks on this GPU falls back one tier. */
+  private readonly tierGuard = new TierGuard(() => performance.now());
+  /** A tier fallback's line, for the menus' next toast when they are not on screen (null = none). */
+  private tierNotice: string | null = null;
+  /** Every tier switch counts here: a pending ceiling check (confirmTier) belongs to the latest one only. */
+  private tierSwitches = 0;
+  private confirmTimer = 0;
+  /** performance.now() when the page was last visible after being hidden (Infinity while hidden): a lost device right after is the background's. */
+  private visibleSince = Number.NEGATIVE_INFINITY;
+  /** The settings screen is open over the pause menu (openPauseSettings). */
+  private pauseSettingsOpen = false;
   /** While true (goal pause / after the final whistle) the ball is held at pinPos.xy each tick. */
   private ballPinned = false;
   private readonly pinPos: [number, number, number] = [0, 0, 0];
@@ -539,6 +682,7 @@ export class Game implements P2PGameHooks {
   };
 
   private readonly onVisibility = (): void => {
+    this.visibleSince = document.hidden ? Number.POSITIVE_INFINITY : performance.now();
     if (document.hidden && !this.menuShown && !this.paused) this.setPaused(true);
   };
 
@@ -603,8 +747,22 @@ export class Game implements P2PGameHooks {
     this.playerCarId = opts.playerCarId;
     this.mode = opts.mode ?? '1v1';
     this.quality = opts.renderer.quality;
+    this.theme = opts.renderer.theme;
     this.difficulty = opts.difficulty ?? 'medium';
     this.qualitySet = opts.qualitySet ?? false;
+    this.savedQuality = opts.savedQuality ?? this.quality;
+    this.cpuLite = opts.renderer.spec.cpuLite;
+    this.predEvery = this.cpuLite ? BALL_PRED_EVERY_LITE : BALL_PRED_EVERY;
+    // Super low: the stylesheet's light HUD (no blur, shadows or decorative animation).
+    if (typeof document !== 'undefined') document.documentElement.classList.toggle('tg-superlow', this.cpuLite);
+    // `#diag`: the frame and CPU figures (frameStats.ts), and where to read the wasm memory.
+    if (pageFlags().diag) {
+      enableDiagStats();
+      // Read through a cast, not a bridge getter: RocketSimBridge.ts ships in the community nodes'
+      // bundle, and any change to it needs a signed node release before a deploy.
+      const wasm = this.sim as unknown as { readonly memory: WebAssembly.Memory };
+      diagSources.wasmBytes = () => wasm.memory.buffer.byteLength;
+    }
     this.info = opts.info ?? '';
 
     const sim = this.sim;
@@ -632,15 +790,14 @@ export class Game implements P2PGameHooks {
     sim.setCarDodgeDeadzone(this.playerCarId, settings.controls.dodgeDeadzone);
     this.match = new Match({ lengthSeconds: opts.matchLengthSeconds ?? DEFAULT_MATCH_SECONDS });
     this.hud = new Hud(opts.hudContainer);
-    // The pause screen's touch-mode buttons: what Esc / Start and Backspace / B do there (processActions).
-    this.hud.onPauseResume = () => this.setPaused(false);
-    this.hud.onPauseQuit = () => this.quitToMenu();
+    this.loading = opts.loading ?? new LoadingOverlay(overlayHost(opts.hudContainer));
     // Touch screens only: the controls layer goes right after the Hud root and drives Input like a keyboard.
     this.touch = hasTouchScreen() ? new TouchControls(this.hud.root, { kbm: () => settings.bindings.kbm }) : null;
     if (this.touch !== null) this.input.setTouchSource(this.touch.state);
     this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse)') : null;
     this.installHint = this.touch !== null && installHintDue();
-    this.audio = new Audio();
+    this.audio = new Audio({ room: !this.cpuLite });
+    this.audio.setVolume(settings.audio.volume / 100);
 
     // Initial snapshots so the first frame renders the kickoff state.
     sim.sync();
@@ -697,9 +854,13 @@ export class Game implements P2PGameHooks {
 
   // ---- menus (src/ui) --------------------------------------------------------------------
 
-  /** Either menu layer is up: the new front-end menus or the Hud's settings screen. */
+  /**
+   * A menu layer replaces the game: the front-end menus or the Hud's settings screen over them. The
+   * settings screen opened from the pause menu does not count: the game stays paused under it, on
+   * its chase camera.
+   */
   get menuShown(): boolean {
-    return this.menu.visible || this.hud.menuVisible;
+    return this.menu.visible || (this.hud.menuVisible && !this.pauseSettingsOpen);
   }
 
   private hideMenus(): void {
@@ -742,13 +903,10 @@ export class Game implements P2PGameHooks {
       get difficulty() {
         return game.difficulty;
       },
-      get quality() {
-        return game.quality;
+      get theme() {
+        return game.theme;
       },
-      set quality(q: 0 | 1) {
-        game.setQuality(q);
-      },
-      setQuality: (q) => game.setQuality(q),
+      setTheme: (id) => void game.switchTheme(id),
       playFriendly: (mode, difficulty) => {
         if (game.session !== null && game.session.busy) game.session.cancel();
         game.setDifficulty(difficulty);
@@ -841,21 +999,394 @@ export class Game implements P2PGameHooks {
     online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl });
   }
 
-  /** The Hud's Controls & Settings screen over the menus; `onClose` when it is left. */
+  /** The Hud's settings screen over the menus; `onClose` when it is left. */
   private openSettingsScreen(onClose: () => void): void {
-    this.hud.openSettingsScreen(
-      {
-        difficulty: this.difficulty,
-        quality: this.quality,
-        mode: this.mode,
-        onPlay: () => undefined,
-        settings: this.settings,
-        input: this.input,
-        onSettingsChanged: () => this.applySettings(),
-        onCameraPreset: () => this.chase.applyProjection(this.renderer.camera),
-      },
-      onClose,
-    );
+    this.hud.openSettingsScreen(this.settingsOptions(), onClose);
+  }
+
+  /** What the settings screen works on, from the menus and from the pause menu alike. */
+  private settingsOptions(): MenuOptions {
+    return {
+      difficulty: this.difficulty,
+      // A pick that waits for the online match to end shows as the selected tier (with its line).
+      quality: this.pendingRestart ?? this.quality,
+      mode: this.mode,
+      onPlay: () => undefined,
+      settings: this.settings,
+      input: this.input,
+      onSettingsChanged: () => this.applySettings(),
+      onCameraPreset: () => this.chase.applyProjection(this.renderer.camera),
+      // Graphics tab: the switch runs behind the loading screen; the screen stays open under it.
+      onQualityChange: (q) => void this.switchQuality(q),
+    };
+  }
+
+  // ---- pause menu ------------------------------------------------------------------------
+
+  /**
+   * The pause menu's entries: RESUME, SETTINGS, QUIT (online it takes a second press: leaving may
+   * count as an abandon); training adds its entries on one row (pack: reset / previous / next shot;
+   * free play: reset ball / reset car / unlimited boost) and QUIT leaves training. Paused under a
+   * pack summary: nothing (the summary's own buttons stay the only ones).
+   */
+  private pauseEntries(): PauseEntry[] {
+    const resume: PauseEntry = { id: 'resume', kind: 'primary', label: () => t('pause.resume'), select: (mouse) => this.resumeFromMenu(mouse) };
+    const settings: PauseEntry = { id: 'settings', label: () => t('pause.settings'), select: () => this.openPauseSettings() };
+    const tr = this.training;
+    if (tr === null) {
+      return [resume, settings, { id: 'quit', kind: 'quit', confirm: this.onlineActive, label: () => t('pause.quit'), select: () => this.quitToMenu() }];
+    }
+    if (this.trainingHud !== null && this.trainingHud.summaryVisible) return [];
+    // The shot entries also resume (as the training keys do while playing).
+    const resumeAnd = (mouse: boolean, fn: (s: TrainingSession) => void): void => {
+      this.resumeFromMenu(mouse);
+      if (this.training !== null) fn(this.training);
+    };
+    const extras: PauseEntry[] = tr.isFreeplay
+      ? [
+          { id: 'reset-ball', kind: 'row', label: () => t('trainingHud.resetBall'), select: (mouse) => resumeAnd(mouse, (s) => s.resetBall()) },
+          { id: 'reset-car', kind: 'row', label: () => t('trainingHud.resetCar'), select: (mouse) => resumeAnd(mouse, (s) => s.resetCar()) },
+          {
+            id: 'boost',
+            kind: 'row',
+            label: () => t(this.trainingUnlimitedBoost ? 'trainingHud.boostButtonOn' : 'trainingHud.boostButtonOff'),
+            select: () => this.toggleTrainingBoost(),
+          },
+        ]
+      : [
+          { id: 'reset-shot', kind: 'row', label: () => t('trainingHud.resetShot'), select: (mouse) => resumeAnd(mouse, (s) => s.resetShot()) },
+          { id: 'prev-shot', kind: 'row', label: () => t('trainingHud.prevShot'), select: (mouse) => resumeAnd(mouse, (s) => s.prevShot()) },
+          { id: 'next-shot', kind: 'row', label: () => t('trainingHud.nextShot'), select: (mouse) => resumeAnd(mouse, (s) => s.nextShot()) },
+        ];
+    return [resume, ...extras, settings, { id: 'quit', kind: 'quit', label: () => t('trainingHud.quit'), select: () => this.stopTraining() }];
+  }
+
+  /** The pause menu's key line, from the live pause bindings (rebindable, never unbound). */
+  private pauseHint(): string {
+    const input = this.input;
+    return t('pause.hint', { resumeKeys: `${input.getLabel('pause', 'kbm')} / ${input.getLabel('pause', 'pad')}`, quitKeys: PAUSE_QUIT_KEYS });
+  }
+
+  /**
+   * RESUME (and the training entries that resume): Enter / pad A (jump) may still be down on the
+   * first tick. A mouse click on it captures the mouse again, as a click on the paused game does
+   * (the click is a user gesture; the button is already up, so nothing is masked).
+   */
+  private resumeFromMenu(mouse = false): void {
+    this.setPaused(false);
+    this.input.blockJumpUntilRelease();
+    this.input.latchEdges();
+    if (mouse && this.canPointerLock && this.canvas !== null && this.playing && !this.input.pointerLocked) this.input.requestPointerLock(this.canvas);
+  }
+
+  /** Input's menu edges (keyboard and pad) on the pause menu; pad X opens the settings. */
+  private pauseMenuActions(): void {
+    const hud = this.hud;
+    if (!hud.pauseMenuVisible) return;
+    const a = this.input.actions;
+    if (a.accept) hud.pauseAction('accept');
+    else if (a.settings) this.openPauseSettings();
+    else if (a.menuUp) hud.pauseAction('up');
+    else if (a.menuDown) hud.pauseAction('down');
+    else if (a.menuLeft) hud.pauseAction('left');
+    else if (a.menuRight) hud.pauseAction('right');
+  }
+
+  /**
+   * SETTINGS on the pause menu (or pad X there): the settings screen over the paused game, the
+   * pause menu hidden under it. Its BACK (button, Esc, pad B) returns to the pause menu, focus on
+   * SETTINGS; the Esc / B that closed it is dropped, so it neither resumes nor quits.
+   */
+  private openPauseSettings(): void {
+    if (!this.paused || this.pauseSettingsOpen || this.menuShown || this.hud.menuVisible) return;
+    this.pauseSettingsOpen = true;
+    this.hud.setPauseCovered(true);
+    this.hud.openSettingsScreen(this.settingsOptions(), () => {
+      this.pauseSettingsOpen = false;
+      // Esc is the pause binding too: its tap (still pending in Input) must not reach the next tick.
+      this.input.latchEdges();
+      this.hud.setPauseHint(this.pauseHint()); // the pause binding may have been changed there
+      this.hud.setPauseCovered(false, 'settings');
+    });
+  }
+
+  /** Leave the pause menu's settings screen without its BACK (the game resumed or the menus took over). */
+  private closePauseSettings(): void {
+    if (!this.pauseSettingsOpen) return;
+    this.pauseSettingsOpen = false;
+    if (this.hud.capturing) this.input.cancelRebind();
+    this.hud.hideMenu();
+  }
+
+  // ---- loading screen --------------------------------------------------------------------
+
+  /**
+   * Run `work` behind the loading screen: it is shown and painted first, then the work runs in
+   * steps (`step(i)`: step i is done, the bar moves to marks[i] and creeps on toward marks[i + 1],
+   * and a frame paints before the next step), then the loop renders the result under the overlay
+   * for two frames before it fades out. While it runs the loop neither renders nor reads input
+   * (`loadingHold`; an online session keeps advancing). Loads queue, one at a time; a failure is
+   * logged and the overlay still goes.
+   */
+  private withLoading(label: string, marks: readonly number[], work: (step: (i: number) => Promise<void>) => Promise<void>): Promise<void> {
+    const run = async (): Promise<void> => {
+      const ov = this.loading;
+      await ov.show(label);
+      this.loadingHold = true;
+      // Toward the first mark while the first step runs; each step's end jumps on and creeps toward the next.
+      const creep = (from: number, to: number): void => ov.progress(from + (to - from) * LOADING_CREEP, LOADING_CREEP_MS);
+      creep(0, marks[0]);
+      try {
+        await work(async (i) => {
+          const done = marks[i];
+          ov.progress(done, 240);
+          await afterPaint();
+          const next = marks[i + 1];
+          if (next !== undefined) creep(done, next);
+        });
+      } catch (err) {
+        console.error('[game] load failed', err);
+      } finally {
+        this.loadingHold = false;
+      }
+      await paintedFrames(2);
+      // A pad press made during the load is not an edge for the screen under it.
+      this.input.latchEdges();
+      await ov.hide();
+    };
+    const p = this.loadingChain.then(run);
+    this.loadingChain = p.catch(() => undefined);
+    return p;
+  }
+
+  /**
+   * Settings > Graphics: switch the quality tier behind the loading screen, in steps: the renderer
+   * (lights, the world's sizes, the post chain), the views, the world's bake or cache read at the new
+   * sizes, then every pipeline compiled in parallel (compilePipelines), so the first frame after it
+   * stalls on nothing.
+   */
+  switchQuality(q: Quality, fallback: Fallback | null = null): Promise<void> {
+    // A new pick replaces one that waits for the online match to end (back to the running tier:
+    // the prefs keep that one again).
+    if (fallback === null && this.pendingRestart !== null) {
+      this.pendingRestart = null;
+      this.hud.setQualityPending(null);
+      if (q === this.quality) this.choose(q);
+    }
+    if (q === this.quality) {
+      if (fallback !== null) this.tierGuard.arm(); // nothing to fall back to: the guard listens again
+      return Promise.resolve();
+    }
+    // Into or out of super low: its own backend and world, a new page (quality.ts needsReload).
+    if (needsReload(this.quality, q)) {
+      // In an online match the reload would leave it (an abandon): the pick is saved now and the
+      // page restarts once the menus are back (showMenu); the Graphics tab says so.
+      if (fallback === null && this.onlineActive) {
+        this.choose(q);
+        this.pendingRestart = q;
+        this.hud.setQualityPending(q);
+        return Promise.resolve();
+      }
+      return this.restartOn(q, fallback);
+    }
+    const label = fallback !== null ? fallbackText(fallback) : t('loading.quality');
+    return this.withLoading(label, QUALITY_STEPS, async (step) => {
+      try {
+        if (q === this.quality) return;
+        // A fallback queued behind a switch the player made meanwhile has nothing left to do.
+        if (fallback !== null && this.quality !== fallback.from) return;
+        // The new tier's failures count from here (its compile included).
+        this.tierGuard.arm();
+        this.quality = q;
+        const switchId = ++this.tierSwitches;
+        if (fallback === null) this.choose(q);
+        this.renderer.tierReason = fallback === null ? 'chosen' : 'fallback';
+        this.renderer.setQuality(q);
+        await step(0);
+        this.disposeViews();
+        this.buildViews(q);
+        this.snapCamera = true;
+        await step(1);
+        await this.renderer.settled();
+        await step(2);
+        await this.compilePipelines();
+        await step(3);
+        // The player's own pick that runs through the fallback window clean lifts a lower
+        // remembered ceiling to it (tierGuard.ts raiseCeiling): the next boot starts on it again.
+        if (fallback === null) {
+          window.clearTimeout(this.confirmTimer);
+          this.confirmTimer = window.setTimeout(() => this.confirmTier(q, switchId), FALLBACK_WINDOW_MS + 500);
+        }
+      } finally {
+        // ...and again from its first frames (this also ends a fallback, done or skipped).
+        this.tierGuard.arm();
+      }
+    });
+  }
+
+  /**
+   * The player picked `q` in the menu: it is their tier from now on (saved with the prefs), and it
+   * replaces what the URL or the tab's recovery forced for this page (#superlow, bootTier.ts).
+   */
+  private choose(q: Quality): void {
+    const prefs = tierPrefsAfter({ quality: this.savedQuality, qualitySet: this.qualitySet }, { kind: 'pick', tier: q });
+    this.qualitySet = prefs.qualitySet;
+    this.savedQuality = prefs.quality;
+    this.persistPrefs();
+    try {
+      window.sessionStorage.removeItem(RECOVER_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+    if (typeof location !== 'undefined' && pageFlags().superlow) {
+      try {
+        history.replaceState(null, '', location.pathname + location.search + withoutTierFlags(location.hash));
+      } catch {
+        /* sandboxed: the reload keeps the hash */
+      }
+    }
+  }
+
+  /**
+   * A switch into or out of super low: the prefs are saved (a player's pick) or the fallback's line
+   * kept for the next page (a fallback: its ceiling is already written), then the page reloads
+   * behind the loading screen (Renderer.create builds that tier's backend and world).
+   */
+  private restartOn(q: Quality, fallback: Fallback | null): Promise<void> {
+    if (fallback === null) {
+      this.choose(q);
+      // The next boot tries the pick even above the GPU's ceiling (Renderer.create, bootDone).
+      try {
+        window.sessionStorage.setItem(TRY_TIER_KEY, q);
+      } catch {
+        /* the ceiling then still caps it */
+      }
+    } else {
+      try {
+        window.sessionStorage.setItem(TIER_NOTICE_KEY, fallbackText(fallback));
+      } catch {
+        /* the reload still starts on the lower tier (its ceiling) */
+      }
+    }
+    this.loadingHold = true;
+    return this.loading.show(fallback !== null ? fallbackText(fallback) : t('loading.restart')).then(() => {
+      window.location.reload();
+    });
+  }
+
+  /** The tier the player picked (switch `switchId`) has run through the fallback window: lift a lower ceiling to it. */
+  private confirmTier(q: Quality, switchId: number): void {
+    if (switchId !== this.tierSwitches || this.quality !== q || this.tierGuard.fallingBack) return;
+    try {
+      raiseCeiling(window.localStorage, this.renderer.caps.gpu, q, Date.now());
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  /**
+   * The boot is over (main.ts, once the loading screen is gone): the safety net starts listening to
+   * the renderer (a failure of the boot's warm-up is delivered now), and a fallback that reloaded
+   * the page says so.
+   */
+  bootDone(): void {
+    this.tierGuard.arm();
+    if (diagStats !== null) diagStats.markWarm();
+    // A pick across a reload, tried above the GPU's ceiling: lift it once it runs the window clean.
+    if (this.renderer.triesAboveCeiling) {
+      const q = this.quality;
+      const switchId = this.tierSwitches;
+      window.clearTimeout(this.confirmTimer);
+      this.confirmTimer = window.setTimeout(() => this.confirmTier(q, switchId), FALLBACK_WINDOW_MS + 500);
+    }
+    this.renderer.setFailureListener((f) => this.onGpuFailure(f));
+    let notice: string | null = null;
+    try {
+      notice = window.sessionStorage.getItem(TIER_NOTICE_KEY);
+      if (notice !== null) window.sessionStorage.removeItem(TIER_NOTICE_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+    if (notice !== null) this.showTierNotice(notice);
+  }
+
+  /**
+   * A GPU failure (Renderer.setFailureListener): the tier falls back one step when the guard says
+   * so (tierGuard.ts), the device's ceiling is remembered, the player is told. A lost device cannot
+   * render again: the page reloads and starts on the lower tier (Renderer.create reads the ceiling).
+   */
+  private onGpuFailure(f: GpuFailure): void {
+    console.warn(`[game] GPU ${f.kind} on ${f.tier}: ${f.message}`);
+    const background = document.hidden || performance.now() - this.visibleSince < BACKGROUND_LOSS_MS;
+    const fb = this.tierGuard.onFailure(f.kind, f.tier, background);
+    if (fb === null) return;
+    let store: Storage | null = null;
+    try {
+      store = window.localStorage;
+    } catch {
+      /* storage unavailable: this session still falls back */
+    }
+    // A fall into super low also starts the next boots on it, on its own backend (tierGuard.ts
+    // readSuperlowBoot); not from an emulated device, whose record this browser's real GPU would read.
+    if (fb.to !== fb.from) writeCeiling(store, this.renderer.caps.gpu, fb.to, Date.now(), !emulatedDevice(pageFlags()));
+    if (fb.reload) {
+      this.reloadAfterLoss(fb);
+      return;
+    }
+    const text = fallbackText(fb);
+    void this.switchQuality(fb.to, fb).then(() => this.showTierNotice(text));
+  }
+
+  /**
+   * A lost device (or context) cannot draw again: the page reloads, through the tab's counter
+   * (tierGuard.ts lossStep): the first loss reloads as the guard planned (the same tier, or the one
+   * below with its line kept for the next page), the second reloads on super low for this tab
+   * (bootTier.ts 'recover', never saved), the third shows a message and stops. A line on the
+   * loading screen says what happens first. Without sessionStorage nothing could count: it stops.
+   */
+  private reloadAfterLoss(fb: Fallback): void {
+    let step: 'reload' | 'recover' | 'stop' = 'stop';
+    try {
+      const ss = window.sessionStorage;
+      const next = lossStep(parseLossRecord(ss.getItem(LOSS_COUNT_KEY)), Date.now());
+      ss.setItem(LOSS_COUNT_KEY, JSON.stringify(next.record));
+      step = next.step;
+      if (step === 'recover') ss.setItem(RECOVER_KEY, '1');
+      if (step === 'reload' && fb.to !== fb.from) ss.setItem(TIER_NOTICE_KEY, fallbackText(fb));
+    } catch {
+      step = 'stop';
+    }
+    this.loadingHold = true;
+    const text = step === 'stop' ? t('gpu.lostStop') : step === 'recover' ? t('gpu.lostRecover') : fb.to !== fb.from ? fallbackText(fb) : t('gpu.lostReload');
+    void this.loading.show(text).then(() => {
+      if (step !== 'stop') window.setTimeout(() => window.location.reload(), LOSS_RELOAD_DELAY_MS);
+    });
+  }
+
+  /** A fallback's line as a menu toast now, or the next time the menus are on screen. */
+  private showTierNotice(text: string): void {
+    if (this.menu.visible && !this.hud.menuVisible) this.menu.toast(text, 'info');
+    else this.tierNotice = text;
+  }
+
+  /**
+   * The Friendly screen's stadium row: switch the theme behind the loading screen (uniforms, then
+   * the world's re-bake or cache read). `theme` reads the new one at once (the menu row).
+   */
+  switchTheme(theme: ThemeId): Promise<void> {
+    if (theme === this.theme) return Promise.resolve();
+    this.theme = theme;
+    return this.withLoading(t('loading.stadium'), THEME_STEPS, async (step) => {
+      this.applyTheme(theme);
+      await step(0);
+      await this.renderer.settled();
+      await step(1);
+    });
+  }
+
+  /** Day stadiums: no ball shadow (see the file header); a warm-up behind the loading screen keeps it on. */
+  private applyBallShadow(): void {
+    this.ball.root.castShadow = this.warmBallShadow || themeWorld(this.theme).night;
   }
 
   // ---- online ----------------------------------------------------------------------------
@@ -872,6 +1403,11 @@ export class Game implements P2PGameHooks {
   setSession(s: GameSession | null): void {
     // An online match replaces the training roster: leave training first (offline roster back).
     if (s !== null && this.training !== null) this.endTraining();
+    // Super low still plays online; one line says this device may not keep up (once a session).
+    if (s !== null && this.cpuLite && !this.liteOnlineNoticed) {
+      this.liteOnlineNoticed = true;
+      this.menu.toast(t('quality.superlowOnline'), 'info');
+    }
     const old = this.session;
     if (old !== null && old !== s && old.state !== 'idle') old.leave();
     this.session = s;
@@ -1339,19 +1875,8 @@ export class Game implements P2PGameHooks {
 
   private ensureTrainingHud(): TrainingHud {
     if (this.trainingHud !== null) return this.trainingHud;
-    // Pause-panel and summary buttons; the shot ones also resume.
-    const resumeAnd = (fn: (tr: TrainingSession) => void): void => {
-      this.setPaused(false);
-      this.input.blockJumpUntilRelease();
-      if (this.training !== null) fn(this.training);
-    };
+    // The summary's buttons (the pause entries are the Hud's pause menu: pauseEntries).
     const th = new TrainingHud(this.hud.root.parentElement ?? this.hud.root, {
-      onResume: () => this.setPaused(false),
-      onReset: () => resumeAnd((tr) => tr.resetShot()),
-      onPrev: () => resumeAnd((tr) => tr.prevShot()),
-      onNext: () => resumeAnd((tr) => tr.nextShot()),
-      onResetCar: () => resumeAnd((tr) => tr.resetCar()),
-      onToggleBoost: () => this.toggleTrainingBoost(),
       onRetryPack: () => this.trainingRetryPack(),
       onQuit: () => this.stopTraining(),
     });
@@ -1642,21 +2167,63 @@ export class Game implements P2PGameHooks {
    * hidden (boost flames, ball ground marker, particles, goal ring / flash) are made renderable for
    * one synchronous render so their shaders are built now rather than at the first boost, first
    * airborne ball or first goal (measured: 60-150 ms presentation stalls at exactly those moments).
-   * Must run through the real render path: at quality 0 the scene is drawn by the bloom pass into
-   * its own render target, so renderer.gpu.compileAsync(scene, camera) builds the wrong variants.
-   * While the loop is running (setQuality) the same happens on the next loop frame via warmFrames.
+   * Must run through the real render path: the scene is drawn by the pipeline's scene pass into its
+   * own render target (MRT on tiers with bloom), so renderer.gpu.compileAsync(scene, camera) builds
+   * the wrong variants.
+   * While the loop is running (setQuality, setMode, training) the same happens on the next loop
+   * frame via warmFrames; the switches behind the loading screen use compilePipelines instead.
    */
   warmUp(): void {
     if (this.running) {
       this.warmFrames = 1;
       return;
     }
-    this.setWarm(true);
+    this.setWarm(true, true);
     this.renderer.render();
     this.setWarm(false);
   }
 
-  private setWarm(on: boolean): void {
+  /**
+   * The boot's warm-up: the same as warmUp, but every pipeline (hidden meshes included) is first
+   * compiled in parallel (Renderer.precompile: on WebGPU one frame whose pipelines are all created
+   * asynchronously, on WebGL2 a compileAsync of the scene), so the synchronous warm-up render only
+   * builds what is left (nothing on WebGPU, a few shadow and post programs on WebGL2).
+   */
+  async warmUpAsync(): Promise<void> {
+    if (this.running) {
+      this.warmUp();
+      return;
+    }
+    await this.compilePipelines();
+  }
+
+  /**
+   * warmUpAsync's work, also run by a quality switch behind the loading screen (the loop does not
+   * render meanwhile: loadingHold): the parallel precompile, then one synchronous warm-up render for
+   * what is left. The ball casts its shadow throughout, so its shadow pipeline exists for the night
+   * stadiums even when this one is a day stadium.
+   */
+  private async compilePipelines(): Promise<void> {
+    this.setWarm(true, true);
+    try {
+      await this.renderer.precompile();
+    } finally {
+      this.setWarm(false);
+    }
+    this.setWarm(true, true);
+    this.renderer.render();
+    this.setWarm(false);
+  }
+
+  /**
+   * Make the normally hidden meshes renderable (`on`) for a warm-up render; `ballShadow`: the ball
+   * casts its shadow too (the warm-ups off screen pass it, so a day stadium never leaves the ball's
+   * shadow pipeline for the first night one to compile).
+   */
+  private setWarm(on: boolean, ballShadow = false): void {
+    this.warmBallShadow = on && ballShadow;
+    this.applyBallShadow();
+    this.arena.setWarmUp(on);
     const cars = this.cars;
     for (let i = 0; i < cars.length; i++) {
       const w = cars[i] as unknown as Warmable;
@@ -1671,6 +2238,7 @@ export class Game implements P2PGameHooks {
 
   dispose(): void {
     this.stop();
+    window.clearTimeout(this.confirmTimer);
     if (this.p2p !== null) this.p2p.dispose();
     if (this.online !== null) this.online.dispose();
     this.disposeViews();
@@ -1696,16 +2264,46 @@ export class Game implements P2PGameHooks {
     this.persistPrefs();
   }
 
-  /** Switch quality tier: renderer settings plus a rebuild of every view (~30 ms). */
+  /**
+   * Switch quality tier at once: renderer settings plus a rebuild of every view (35-75 ms on a
+   * desktop CPU), then the next frame compiles the new tier's pipelines (warmUp). The menus use
+   * switchQuality (the same behind the loading screen); this stays for the console and the tools.
+   */
   setQuality(q: Quality): void {
     if (q === this.quality) return;
+    // Into or out of super low: a reload, as from the menu.
+    if (needsReload(this.quality, q)) {
+      void this.restartOn(q, null);
+      return;
+    }
+    this.tierGuard.arm();
+    this.tierSwitches++;
     this.quality = q;
-    this.qualitySet = true; // only the menu calls this: the player chose (loadPrefs keeps it on phones)
+    this.choose(q);
+    this.renderer.tierReason = 'chosen';
     this.renderer.setQuality(q);
     this.disposeViews();
     this.buildViews(q);
     this.snapCamera = true;
     this.warmUp(); // every material was rebuilt: compile the hidden ones on the next frame too
+  }
+
+  /**
+   * Switch the stadium theme at once: stored, saved with the prefs and handed to the renderer
+   * (lights, world: a re-bake or a cached cube, post), the arena (turf, stadium) and the ball's
+   * shadow. Uniform writes only: no view is rebuilt and no shader recompiles. The Friendly screen
+   * uses switchTheme (the same behind the loading screen, until the world is done).
+   */
+  setTheme(theme: ThemeId): void {
+    if (theme === this.theme) return;
+    this.applyTheme(theme);
+  }
+
+  private applyTheme(theme: ThemeId): void {
+    this.theme = theme;
+    this.renderer.setTheme(theme);
+    this.arena.setTheme(theme);
+    this.applyBallShadow();
     this.persistPrefs();
   }
 
@@ -1747,13 +2345,19 @@ export class Game implements P2PGameHooks {
   }
 
   private persistPrefs(): void {
-    savePrefs({ difficulty: this.difficulty, quality: this.quality, mode: this.mode, qualitySet: this.qualitySet });
+    // The player's tier (or the saved default), never the one the session runs on its own: super
+    // low from the URL or the tab's recovery, low on a weak backend, a GPU's ceiling, a fallback.
+    savePrefs({ difficulty: this.difficulty, quality: this.savedQuality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme });
   }
 
   setPaused(p: boolean): void {
     if (this.paused === p) return;
     this.paused = p;
-    this.hud.setPaused(p, this.onlineActive);
+    if (p) this.hud.setPaused(true, this.pauseEntries(), this.pauseHint());
+    else {
+      this.closePauseSettings();
+      this.hud.setPaused(false);
+    }
     if (p) {
       this.acc = 0;
       // A hidden tab stops requestAnimationFrame, so render() (the only driver of the continuous
@@ -1765,9 +2369,10 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * Persist the settings and re-apply what lives outside Input: the sim's dodge deadzone and the
+   * Persist the settings and re-apply what lives outside Input: the sim's dodge deadzone, the
    * camera projection (the camera settings themselves are read live by reference; the vibration
-   * flag is read by Input.rumble). Called from Input.onChange and the Hud's settings screen.
+   * flag is read by Input.rumble) and the master volume. Called from Input.onChange and the Hud's
+   * settings screen.
    */
   applySettings(): void {
     const s = this.settings;
@@ -1776,6 +2381,7 @@ export class Game implements P2PGameHooks {
     // a different local value would only make the prediction diverge.
     if (!this.onlineActive) this.sim.setCarDodgeDeadzone(this.playerCarId, s.controls.dodgeDeadzone);
     this.chase.applyProjection(this.renderer.camera);
+    this.audio.setVolume(s.audio.volume / 100);
   }
 
   /** Cars take no input: kickoff countdown, goal pause, after the final whistle, in the menu. */
@@ -1798,9 +2404,9 @@ export class Game implements P2PGameHooks {
     return phase !== 'menu' && phase !== 'ended';
   }
 
-  /** Paused on a match (not the menu): a click on the canvas resumes it. */
+  /** Paused on a match (not the menu, not its settings screen): a click on the canvas resumes it. */
   private get canResumeByPointer(): boolean {
-    return this.running && this.paused && !this.menuShown && (this.match.phase !== 'menu' || this.onlineActive || this.training !== null);
+    return this.running && this.paused && !this.menuShown && !this.hud.menuVisible && (this.match.phase !== 'menu' || this.onlineActive || this.training !== null);
   }
 
   /** Start a match from the menu (also used by the debug console). */
@@ -1824,8 +2430,8 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * Leave the match for the menu (pause screen: Backspace / pad B). The match state is cleared
-   * (`Match.reset()`), everything is put back on its kickoff spot and the menu opens over the
+   * Leave the match for the menu (the pause menu's QUIT, or Backspace / pad B while paused). The
+   * match state is cleared (`Match.reset()`), everything is put back on its kickoff spot and the menu opens over the
    * current roster, so the mode / difficulty / quality can change before the next PLAY. Nothing
    * happens in the menu itself.
    */
@@ -1864,6 +2470,11 @@ export class Game implements P2PGameHooks {
   private readonly frame = (t: number): void => {
     if (!this.running) return;
     this.raf = requestAnimationFrame(this.frame);
+    // The tier's frame cap (super low: 30): a skipped frame does nothing; the next drawn one
+    // carries its time (dt below), so the sim clock stays right.
+    if (!drawsFrame(t, this.lastDrawAt, this.renderer.spec.maxFps)) return;
+    this.lastDrawAt = t;
+    if (diagStats !== null) diagStats.frame(t);
     const now = t * 0.001;
     let dt = this.lastTime < 0 ? 0 : now - this.lastTime;
     this.lastTime = now;
@@ -1883,7 +2494,7 @@ export class Game implements P2PGameHooks {
       this.alpha = session.advance(dt);
       // The menu is pad-driven while a room connects: keep polling the gamepad.
       if (inMenu) this.input.sample(this.playerControls);
-    } else if (!inMenu && !this.paused) {
+    } else if (!inMenu && !this.paused && !this.loadingHold) {
       this.acc += dt;
       if (this.acc > MAX_FRAME_DT) this.acc = MAX_FRAME_DT;
       while (this.acc >= TICK_DT) {
@@ -1895,6 +2506,11 @@ export class Game implements P2PGameHooks {
     } else {
       // Still poll the gamepad so Start / A work in menus and while paused.
       this.input.sample(this.playerControls);
+    }
+    if (this.loadingHold) {
+      // Behind the loading screen: the work in progress owns the renderer, nothing reacts to input.
+      this.input.consumeActions();
+      return;
     }
     this.processActions();
 
@@ -1917,15 +2533,26 @@ export class Game implements P2PGameHooks {
     } else {
       // Refresh by age rather than by tick parity so the first tick after a countdown or a kickoff
       // reset always starts from a fresh prediction (the bot adds the age to its entry index).
+      const ds = diagStats;
+      let t0 = ds !== null ? performance.now() : 0;
       const age = sim.tickCount - sim.predTick;
-      if (age >= BALL_PRED_EVERY || age < 0) sim.updateBallPrediction();
+      if (age >= this.predEvery || age < 0) sim.updateBallPrediction();
+      if (ds !== null) {
+        const t1 = performance.now();
+        ds.add('pred', t1 - t0);
+        t0 = t1;
+      }
       // One think per team per tick (a team may hold its outputs for several ticks internally).
       this.bots.think(sim, this.redOuts);
       if (this.blueSlots.length > 0) this.mates.think(sim, this.blueOuts);
+      if (ds !== null) ds.add('bots', performance.now() - t0);
     }
     for (let i = 0; i < n; i++) sim.setControls(ids[i], controls[i]);
 
+    const dsStep = diagStats;
+    const ts = dsStep !== null ? performance.now() : 0;
     sim.step(1);
+    if (dsStep !== null) dsStep.add('step', performance.now() - ts);
     this.prev.set(this.cur);
     sim.sync(); // fires onGoal / onBump / onBallHit
     this.cur.set(sim.buf);
@@ -1975,10 +2602,12 @@ export class Game implements P2PGameHooks {
       // A keyboard pause edge right after the pointer-lock release already paused us is that same
       // Escape; a pad Start (pa.pause) never is.
       if (a.pause && (pa.pause || this.time - this.unlockPausedAt > UNLOCK_PAUSE_WINDOW)) this.setPaused(!this.paused);
-      // Pause screen: a bare back edge (Backspace, pad B) leaves for the menu. Escape and Start
+      // Pause menu: a bare back edge (Backspace, pad B) leaves for the menu. Escape and Start
       // carry the pause edge as well and only resume (the Escape that follows a pointer-lock
       // release is dropped above but still has a.pause set, so it never quits either).
       else if (a.back && !a.pause && this.paused) this.quitToMenu();
+      // Its focus: arrows / WASD / D-pad / stick move, Enter / A activate, pad X opens the settings.
+      else if (this.paused) this.pauseMenuActions();
       if (a.toggleBallCam) {
         this.chase.toggle();
         hud.setCameraMode(this.chase.ballCam);
@@ -2103,8 +2732,12 @@ export class Game implements P2PGameHooks {
       if (inMenu) hud.setOnlineStatus(session.statusText, session.statusIsError);
       hud.setNetWait(sessionActive && !inMenu ? session.hint : null);
     }
-    hud.setBoost(cur[po + C_BOOST]);
-    hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
+    // Boost and speed change every frame: 10 Hz on cpuLite (each change rewrites DOM text).
+    if (!this.cpuLite || this.time - this.hudAt >= HUD_LITE_INTERVAL || this.time < this.hudAt) {
+      this.hudAt = this.time;
+      hud.setBoost(cur[po + C_BOOST]);
+      hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
+    }
     if (this.training !== null) this.updateTrainingHud();
     this.updateScoreboard(inMenu);
     // On-screen controls (touch screens): up while a match is played in touch mode, the HUD in its
@@ -2157,14 +2790,21 @@ export class Game implements P2PGameHooks {
     }
     this.audio.update(dt, as);
 
+    // The frame's rAF timestamp (ms) drives dynamic resolution.
+    const frameMs = this.lastTime * 1000;
+    const ds = diagStats;
+    const tr = ds !== null ? performance.now() : 0;
     if (this.warmFrames > 0) {
       this.warmFrames--;
+      // An on-screen frame: the ball's shadow stays as the stadium wants it (its pipeline was built
+      // by the warm-up behind the loading screen; only the console's setQuality skips that).
       this.setWarm(true);
-      renderer.render();
+      renderer.render(frameMs);
       this.setWarm(false);
     } else {
-      renderer.render();
+      renderer.render(frameMs);
     }
+    if (ds !== null) ds.add('render', performance.now() - tr);
   }
 
   /** The Tab / Back scoreboard: shown while the binding is held (never over the menu). */
@@ -2276,9 +2916,11 @@ export class Game implements P2PGameHooks {
     // GPU frame time when the renderer exposes it (timestamp queries); guarded so either renderer works.
     const gpuMs = (this.renderer as unknown as { gpuTimeMs?: number }).gpuTimeMs;
     const gpuInfo = typeof gpuMs === 'number' && gpuMs >= 0 ? ` · gpu ${gpuMs.toFixed(1)} ms` : '';
+    // Dynamic-resolution scale of the scene pass (tiers that have it).
+    const resInfo = Number.isNaN(stats.resolutionScale) ? '' : ` · res ${stats.resolutionScale.toFixed(2)}`;
     // Gamepad input never unlocks audio (no user activation): tell pad-only players what to press.
     const soundHint = !this.audio.running && this.input.hasGamepad && !this.menuShown ? ' · press a key or click for sound' : '';
-    this.hud.setFps(this.fps, `${this.renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · ${stats.drawCalls} draws${gpuInfo}${soundHint}`);
+    this.hud.setFps(this.fps, `${this.renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · ${stats.drawCalls} draws${gpuInfo}${resInfo}${soundHint}`);
   }
 
   /**
@@ -2315,6 +2957,8 @@ export class Game implements P2PGameHooks {
       this.menu.toast(result.winner === null ? t('game.resultDraw', { detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], detail }), 'info');
     }
     else if (this.menuNotice !== undefined && this.menuNotice.length > 0) this.menu.toast(this.menuNotice, 'info');
+    if (this.tierNotice !== null) this.menu.toast(this.tierNotice, 'info');
+    this.tierNotice = null;
     this.lastResult = null;
     this.menuNotice = undefined;
     this.hud.hideMenu();
@@ -2327,6 +2971,13 @@ export class Game implements P2PGameHooks {
     if (online !== null && ranked !== null) {
       online.lastRankedMatchId = null;
       void this.rankedResults.watch(ranked, online.lastRankedOnNode);
+    }
+    // A tier picked during the online match that needs a reload (switchQuality): now.
+    const pending = this.pendingRestart;
+    if (pending !== null) {
+      this.pendingRestart = null;
+      this.hud.setQualityPending(null);
+      void this.restartOn(pending, null);
     }
   }
 
@@ -2482,8 +3133,9 @@ export class Game implements P2PGameHooks {
 
   private buildViews(q: Quality): void {
     const scene = this.renderer.scene;
-    this.arena = new ArenaView(scene, this.arenaMesh, q);
+    this.arena = new ArenaView(scene, this.arenaMesh, q, this.theme);
     this.ball = new BallView(scene, q);
+    this.applyBallShadow();
     this.buildCarViews(q);
     this.placeViews();
   }
@@ -2495,7 +3147,7 @@ export class Game implements P2PGameHooks {
     const config = sim.getCarConfig(CarPreset.Standard);
     const slots = this.carSlots;
     const cars: CarView[] = [];
-    this.effects = new Effects(scene, q);
+    this.effects = new Effects(scene, q, this.renderer.camera);
     this.effects.onDemolition = (slot, x, y, z) => this.onDemolition(slot, x, y, z);
     for (let i = 0; i < slots.length; i++) {
       const team = sim.teamOf(slots[i]);

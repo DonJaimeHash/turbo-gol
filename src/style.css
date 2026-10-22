@@ -489,23 +489,26 @@ body {
   animation: hud-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) both;
 }
 
-/* ---- Pause overlay ---------------------------------------------------------------------- */
+/* ---- Pause menu (Hud.setPaused) -------------------------------------------------------- */
 
 .hud-paused {
   position: absolute;
   inset: 0;
   display: grid;
   place-content: center;
+  justify-items: center;
+  padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + 12px) calc(var(--safe-left) + 16px);
   text-align: center;
   background: rgba(4, 6, 12, 0.55);
   backdrop-filter: blur(3px);
 }
 
 .hud-paused-title {
-  font-size: clamp(40px, 8vh, 80px);
+  font-size: clamp(36px, 8vh, 80px);
   font-weight: 900;
   font-style: italic;
   letter-spacing: 0.12em;
+  line-height: 1.1;
 }
 
 .hud-paused-title::after {
@@ -521,69 +524,170 @@ body {
 
 .hud-paused-sub {
   margin-top: 6px;
-  font-size: clamp(13px, 2vh, 18px);
+  font-size: clamp(12px, 1.8vh, 16px);
   color: var(--muted);
   letter-spacing: 0.08em;
 }
 
-/* Touch mode (html.tg-touch, src/input/TouchControls.ts): RESUME / QUIT take the place of the key
-   line, which means nothing to a finger. The veil keeps ignoring the pointer (a tap on it reaches
-   the canvas and resumes); only the buttons take it. Training has its own pause panel
-   (training.css .trn-pause). */
-.hud-paused-actions {
+/* A finger has no Esc / Backspace: the key line goes, the buttons stay. */
+.tg-touch .hud-paused-sub {
   display: none;
-  justify-content: center;
-  gap: clamp(12px, 2.4vw, 20px);
-  margin-top: clamp(14px, 3.4vh, 28px);
 }
 
-.tg-touch .hud-paused-actions {
+/* The buttons, for every input. The veil ignores the pointer (a click or tap on it reaches the
+   canvas and resumes); only the buttons take it. */
+.hud-pause-menu {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: clamp(7px, 1.3vh, 11px);
+  width: min(420px, calc(100vw - 48px));
+  margin-top: clamp(14px, 3.2vh, 30px);
 }
 
-.tg-touch .hud-paused-sub,
-.tg-touch .trn-on .hud-paused-actions {
+.hud-pause-menu:empty {
   display: none;
 }
 
-.hud-paused-btn {
+.hud-pause-btn {
   pointer-events: auto;
-  touch-action: none;
-  min-width: clamp(124px, 20vw, 172px);
-  min-height: 48px;
-  padding: 10px 22px;
+  touch-action: manipulation;
+  min-height: clamp(40px, 6.2vh, 52px);
+  padding: 8px 22px;
   font: inherit;
-  font-size: clamp(15px, 2.6vh, 19px);
+  font-size: clamp(14px, 2.3vh, 19px);
   font-weight: 800;
   font-style: italic;
   letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--text);
   text-shadow: var(--shadow);
   background: var(--panel);
   border: 1px solid var(--panel-edge);
   border-radius: 8px;
   cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease,
+    box-shadow 0.12s ease;
 }
 
-.hud-paused-btn:active {
-  transform: scale(0.96);
+.hud-pause-btn:hover {
+  border-color: rgba(198, 255, 46, 0.55);
 }
 
-.hud-paused-resume {
+.hud-pause-btn:active {
+  transform: scale(0.97);
+}
+
+/* Keyboard / pad focus (never shown in touch mode, below). */
+.hud-pause-btn.hud-focus {
+  border-color: var(--brand);
+  background-color: rgba(24, 34, 14, 0.86);
+  box-shadow:
+    0 0 0 1px var(--brand),
+    0 0 16px rgba(198, 255, 46, 0.35);
+}
+
+.hud-pause-primary {
   color: var(--brand-ink);
   text-shadow: none;
   border-color: var(--brand);
   background: linear-gradient(180deg, var(--brand), var(--brand-deep));
 }
 
-.hud-paused-quit {
+.hud-pause-primary.hud-focus {
+  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+  box-shadow:
+    0 0 0 2px var(--text),
+    0 0 18px var(--brand-glow);
+}
+
+.hud-pause-quit {
   border-color: rgba(255, 77, 94, 0.6);
 }
 
-/* Online, after the first tap: the second one leaves the match. */
-.hud-paused-quit.hud-paused-armed {
+.hud-pause-quit.hud-focus {
+  border-color: rgb(255, 77, 94);
+  box-shadow:
+    0 0 0 1px rgb(255, 77, 94),
+    0 0 16px rgba(255, 77, 94, 0.35);
+}
+
+/* Online, after the first press: the second one leaves the match. */
+.hud-pause-quit.hud-pause-armed {
   border-color: rgb(255, 77, 94);
   background: rgba(255, 77, 94, 0.32);
+}
+
+/* The training entries: smaller buttons on one row, one focus stop (left / right pick). */
+.hud-pause-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 3px;
+  margin: 0 -3px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+
+.hud-pause-row .hud-pause-btn {
+  flex: 1 1 auto;
+  min-height: clamp(34px, 5vh, 42px);
+  padding: 6px 10px;
+  font-size: clamp(12px, 1.7vh, 14px);
+  font-style: normal;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* Inside a row the picked button only lights while the row has the focus. */
+.hud-pause-row .hud-pause-btn.hud-focus {
+  border-color: var(--panel-edge);
+  background-color: var(--panel);
+  box-shadow: none;
+}
+
+.hud-pause-row.hud-focus .hud-pause-btn.hud-focus {
+  border-color: var(--brand);
+  background-color: rgba(24, 34, 14, 0.86);
+  box-shadow:
+    0 0 0 1px var(--brand),
+    0 0 14px rgba(198, 255, 46, 0.35);
+}
+
+.tg-touch .hud-pause-btn.hud-focus,
+.tg-touch .hud-pause-row.hud-focus .hud-pause-btn.hud-focus {
+  border-color: var(--panel-edge);
+  background-color: var(--panel);
+  box-shadow: none;
+}
+
+.tg-touch .hud-pause-primary.hud-focus {
+  border-color: var(--brand);
+  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+}
+
+.tg-touch .hud-pause-quit.hud-focus {
+  border-color: rgba(255, 77, 94, 0.6);
+}
+
+/* Short landscape phones: a tighter column so the whole menu fits under the title. */
+@media (max-height: 460px) {
+  .hud-paused-title {
+    font-size: 34px;
+  }
+  .hud-pause-menu {
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .hud-pause-btn {
+    min-height: 40px;
+  }
+  .hud-pause-row .hud-pause-btn {
+    min-height: 36px;
+  }
 }
 
 /* ---- Start menu ------------------------------------------------------------------------- */
@@ -998,10 +1102,13 @@ body {
   box-shadow: 0 0 0 2px #fff, 0 0 18px var(--brand-glow);
 }
 
-/* ---- Controls & settings screen (same panel look, wider, scrolls inside) ------------------ */
+/* ---- Settings screen (same panel look, wider, scrolls inside) ----------------------------- */
 
 .hud-menu-panel.hud-settings-panel {
   width: min(100%, 760px);
+  /* One height for every tab (the long binding lists scroll inside): a tab switch never resizes it. */
+  height: min(660px, calc(100vh - var(--safe-top) - var(--safe-bottom) - 32px));
+  height: min(660px, calc(100dvh - var(--safe-top) - var(--safe-bottom) - 32px));
   max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 32px);
   max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 32px);
   display: flex;
@@ -1318,6 +1425,52 @@ body {
   border-color: var(--brand);
 }
 
+/* A segmented choice (Graphics: the quality tier). */
+.hud-choice {
+  gap: 0;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.hud-choice-opt {
+  min-width: 64px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-choice-opt:hover {
+  color: var(--text);
+}
+
+.hud-choice-opt.hud-on {
+  color: var(--brand-ink);
+  background: var(--brand);
+}
+
+.tg-touch .hud-choice-opt {
+  min-height: 40px;
+}
+
+/* The line under a choice (what the selected tier is for). */
+.hud-settings-hint {
+  padding: 2px 10px 8px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 .hud-settings-foot {
   display: flex;
   flex-direction: column;
@@ -1600,6 +1753,8 @@ body {
   }
   .hud-menu-panel.hud-settings-panel {
     width: 100%;
+    height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 12px);
+    height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 12px);
     max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 12px);
     max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 12px);
     border-radius: 8px;
@@ -1640,8 +1795,144 @@ body {
   }
 }
 
-/* ---- Boot overlay (src/main.ts): progress text and the renderer / wasm error page --------- */
+/* ---- Loading screen (src/ui/LoadingOverlay.ts) and the boot error page (src/main.ts) -------
+   The same markup is in index.html, so the first paint already shows it (this sheet loads in the
+   head, before the bundle). Above every layer: the menus (40), the settings screen (60), the
+   Turnstile slot (70) and the touch controls' rotate screen (80). */
 
+#overlay {
+  z-index: 100;
+}
+
+/* Open: the page under it takes no pointer (keys: LoadingOverlay swallows them). */
+#overlay.ld-on {
+  pointer-events: auto;
+}
+
+.ld {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(90% 70% at 50% 46%, rgba(198, 255, 46, 0.05), transparent 62%),
+    radial-gradient(130% 90% at 50% 120%, rgba(58, 155, 255, 0.1), transparent 60%),
+    var(--ink);
+  opacity: 0;
+  visibility: hidden;
+  /* LOADING_FADE_OUT_MS */
+  transition:
+    opacity 0.38s ease,
+    visibility 0s linear 0.38s;
+}
+
+.ld.ld-on {
+  opacity: 1;
+  visibility: visible;
+  /* LOADING_FADE_IN_MS */
+  transition: opacity 0.16s ease-out;
+}
+
+.ld-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(14px, 2.6vh, 22px);
+  transform: translateY(0);
+  transition: transform 0.38s ease;
+}
+
+/* Leaving: the wordmark drifts up a little as it fades (into the menu's top bar, in spirit). */
+.ld:not(.ld-on) .ld-box {
+  transform: translateY(-6px);
+}
+
+/* The wordmark as the menu's top bar draws it (menu.css .mn-brand), larger. */
+.ld-logo {
+  font-size: clamp(34px, 6.2vw, 62px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+.ld-logo-a {
+  color: var(--text);
+}
+
+.ld-logo-b {
+  position: relative;
+  padding-right: 0.08em;
+  color: var(--brand);
+}
+
+.ld-logo-b::after {
+  content: '';
+  position: absolute;
+  left: 0.05em;
+  right: 0.1em;
+  bottom: -0.16em;
+  height: 0.12em;
+  border-radius: 0.06em;
+  background: var(--brand);
+  transform: skewX(-20deg);
+}
+
+.ld-bar {
+  width: clamp(160px, 24vw, 280px);
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(244, 247, 255, 0.12);
+}
+
+.ld-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  box-shadow: 0 0 10px var(--brand-glow);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.24s cubic-bezier(0.2, 0.7, 0.25, 1);
+}
+
+/* Before the bundle runs (index.html): a slow creep, so the bar is alive from the first paint. */
+.ld-fill.ld-creep {
+  animation: ld-creep 5s cubic-bezier(0.1, 0.6, 0.3, 1) forwards;
+}
+
+@keyframes ld-creep {
+  from {
+    transform: scaleX(0.02);
+  }
+  to {
+    transform: scaleX(0.18);
+  }
+}
+
+.ld-line {
+  min-height: 1.3em;
+  font-size: clamp(11px, 1.5vh, 13px);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-fill.ld-creep {
+    animation: none;
+    transform: scaleX(0.1);
+  }
+  .ld-box,
+  .ld:not(.ld-on) .ld-box {
+    transform: none;
+  }
+}
+
+/* The error page (renderer or wasm failed): replaces the loading screen's content. */
 #overlay.overlay-blocking {
   pointer-events: auto;
   background: var(--ink);
@@ -1660,33 +1951,18 @@ body {
   text-shadow: var(--shadow);
 }
 
-/* The TURBOGOL wordmark as one string: heavy italic, white fading into lime where GOL starts. */
 .overlay-title {
-  padding-right: 0.14em;
-  font-size: clamp(32px, 6vw, 64px);
+  font-size: clamp(28px, 5vw, 52px);
   font-weight: 900;
-  font-style: italic;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   line-height: 1.1;
-  background: linear-gradient(90deg, var(--text) 0 57%, var(--brand) 66%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  text-shadow: none;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
+  color: #ff6b6b;
 }
 
 .overlay-line {
   font-size: clamp(14px, 1.6vw, 18px);
   color: var(--muted);
   max-width: 60ch;
-}
-
-.overlay-error .overlay-title {
-  font-style: normal;
-  letter-spacing: 0.08em;
-  background: none;
-  color: #ff6b6b;
 }
 
 .overlay-detail {
@@ -1703,4 +1979,40 @@ body {
   text-align: left;
   white-space: pre-wrap;
   user-select: text;
+}
+
+/* ---- Super low (html.tg-superlow, Game.ts: TierSpec.cpuLite) --------------------------------
+   The 1 GB TV of docs/visuals/REWORK.md "Super low" composites the page on the same weak GPU the
+   game draws on: no blur behind the panels (each backdrop-filter re-reads and blurs what is
+   under it every frame), no text or box shadows, no decorative animation, opaque panels. The
+   informative animations stay: the blinking overtime clock and low-time clock, the menu's
+   spinner, the loading bar. The rules win over every stylesheet (menu.css, training.css,
+   touch.css) through the class on <html> and !important. */
+html.tg-superlow {
+  --panel: rgb(10, 13, 24);
+}
+
+html.tg-superlow *,
+html.tg-superlow *::before,
+html.tg-superlow *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  text-shadow: none !important;
+  box-shadow: none !important;
+}
+
+html.tg-superlow .hud-pop,
+html.tg-superlow .hud-hint,
+html.tg-superlow [class*='mn-']:not(.mn-spinner),
+html.tg-superlow [class*='trn-'],
+html.tg-superlow [class*='tc-'] {
+  animation: none !important;
+}
+
+/* Without box shadows two focus states would show nothing (their only cue is a ring of shadow):
+   a plain outline instead, so the pad's focus stays visible on the TV. */
+html.tg-superlow .hud-pause-primary.hud-focus,
+html.tg-superlow .hud-menu-play.hud-focus {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
 }

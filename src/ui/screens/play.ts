@@ -11,9 +11,10 @@ import { MODES } from '../../sim/constants';
 import type { GameMode } from '../../sim/constants';
 import { DIFFICULTIES } from '../../render/Hud';
 import type { Difficulty } from '../../render/Hud';
+import { THEME_IDS, type ThemeId } from '../../render/theme';
 import { LOCALES, language, savedLanguage, setLanguage, systemLanguage, t } from '../../i18n';
 import type { LanguageCode } from '../../i18n';
-import { difficultyName, playlistName, tierName } from '../names';
+import { difficultyName, playlistName, themeName, tierName } from '../names';
 import { rankBadge, ratingCard, tierById } from '../badges';
 import type { Menu, Screen } from '../Menu';
 import { cycler, primary, regionCycler, screenHead, secondary, section, tile } from './common';
@@ -327,20 +328,20 @@ export function friendlyScreen(menu: Menu): Screen {
     () => difficulty,
     (v) => (difficulty = v),
   );
-  const quality = cycler<0 | 1>(
-    t('friendly.quality'),
-    [
-      { value: 0, label: t('friendly.qualityHigh') },
-      { value: 1, label: t('friendly.qualityPerformance') },
-    ],
-    () => menu.host.quality,
-    (v) => menu.host.setQuality(v),
+  // The stadium (purely visual, saved with the prefs; the graphics quality lives in Settings >
+  // Graphics): the switch runs behind the loading screen (Game.switchTheme rewrites uniforms and
+  // re-bakes or reads the cached sky, it never recompiles).
+  const theme = cycler<ThemeId>(
+    t('friendly.theme'),
+    THEME_IDS.map((id) => ({ value: id, label: themeName(id) })),
+    () => menu.host.theme,
+    (v) => menu.host.setTheme(v),
   );
   const el = h(
     'div.mn-queue',
     null,
     screenHead(t('play.friendly'), t('friendly.intro')),
-    section(t('friendly.match'), modeC.el, diffC.el, quality.el),
+    section(t('friendly.match'), modeC.el, diffC.el, theme.el),
     h('div.mn-actions', null, primary(t('friendly.play'), () => menu.host.playFriendly(mode, difficulty), { 'data-autofocus': true })),
   );
   return {
@@ -352,7 +353,7 @@ export function friendlyScreen(menu: Menu): Screen {
       difficulty = menu.host.difficulty;
       modeC.refresh();
       diffC.refresh();
-      quality.refresh();
+      theme.refresh();
     },
   };
 }

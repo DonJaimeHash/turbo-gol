@@ -3,7 +3,8 @@
  *
  * Graph: the continuous layers → sfx bus → master gain → DynamicsCompressor → destination. One-shots
  * → their own dry bus → master, plus a send into one shared short room (a ConvolverNode over a
- * synthetic stereo impulse) → master; sub / body voices can go through a shared soft saturator
+ * synthetic stereo impulse) → master (no room with `{ room: false }`: super low's CPU trim, dry
+ * one-shots and no convolution on the audio thread); sub / body voices can go through a shared soft saturator
  * first. The whole graph is created lazily on the first `resume()` (which must come from a user
  * gesture because of the autoplay policy); every method is a no-op while the context is not
  * running, so stale events never pile up and burst out on resume.
@@ -134,8 +135,12 @@ export class Audio {
   private lastDemolition = -1;
   private disposed = false;
 
-  constructor() {
+  /** The shared room (a ConvolverNode) for the one-shots; false: dry only (super low's CPU trim). */
+  private readonly withRoom: boolean;
+
+  constructor(opts: { room?: boolean } = {}) {
     // Nothing is created here: an AudioContext may only start from a user gesture.
+    this.withRoom = opts.room ?? true;
   }
 
   /** True when sound can actually be produced right now. */
@@ -711,15 +716,18 @@ export class Audio {
     oneShot.gain.value = 1;
     oneShot.connect(master);
     this.oneShot = oneShot;
-    const room = ctx.createConvolver();
-    room.normalize = false; // makeRoomImpulse scales the impulse itself (unity over 125 Hz-4 kHz)
-    room.buffer = this.makeRoomImpulse(ctx);
-    room.connect(master);
-    this.room = room;
-    const roomIn = ctx.createGain();
-    roomIn.gain.value = 0.5; // return level: a voice sent at 1 comes back 6 dB below its own energy
-    roomIn.connect(room);
-    this.roomIn = roomIn;
+    // Without the room (super low) the one-shots stay dry: no convolver on the audio thread.
+    if (this.withRoom) {
+      const room = ctx.createConvolver();
+      room.normalize = false; // makeRoomImpulse scales the impulse itself (unity over 125 Hz-4 kHz)
+      room.buffer = this.makeRoomImpulse(ctx);
+      room.connect(master);
+      this.room = room;
+      const roomIn = ctx.createGain();
+      roomIn.gain.value = 0.5; // return level: a voice sent at 1 comes back 6 dB below its own energy
+      roomIn.connect(room);
+      this.roomIn = roomIn;
+    }
     // Shared soft saturator for sub / body voices: tanh(2.5x) / 2.5, unity gain for small signals,
     // so the level fed in sets the drive. Low-frequency material only, hence no oversampling.
     const satCurve = new Float32Array(1025); // odd length: an input of 0 maps exactly to 0 (no DC)
@@ -935,10 +943,11 @@ export class Audio {
     const out = ctx.createGain();
     out.gain.value = level;
     out.connect(saturate ? this.sat! : this.oneShot!);
-    if (send > 0) {
+    const roomIn = this.roomIn;
+    if (send > 0 && roomIn !== null) {
       const s = ctx.createGain();
       s.gain.value = send;
-      out.connect(s).connect(this.roomIn!);
+      out.connect(s).connect(roomIn);
     }
     return out;
   }

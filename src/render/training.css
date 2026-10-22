@@ -237,24 +237,7 @@
   display: none;
 }
 
-/* Paused under the summary (tab hidden): the summary's own buttons stay the only ones. */
-.trn-summary-on .trn-pause {
-  display: none !important;
-}
-
-/* ---- Pause entries (under the Hud's PAUSED title) ---------------------------------------- */
-
-.trn-pause {
-  position: absolute;
-  top: calc(58% + 12px); /* clear of the PAUSED title's lime underline */
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  width: min(560px, calc(100vw - 32px));
-}
+/* ---- Buttons (the pack summary) ---------------------------------------------------------- */
 
 .trn-btn {
   pointer-events: auto;
@@ -288,11 +271,7 @@
   filter: brightness(1.08);
 }
 
-.trn-btn.trn-btn-quit {
-  border-color: rgba(255, 77, 94, 0.6);
-}
-
-/* Touch mode: thumb-sized targets (pause entries, summary buttons). */
+/* Touch mode: thumb-sized targets (the summary buttons). */
 .tg-touch .trn-btn {
   min-height: 44px;
   padding: 10px 18px;
