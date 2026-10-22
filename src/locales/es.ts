@@ -401,6 +401,8 @@ export default {
   'p2p.badSlot': 'Slot propio {slot} inválido',
   'p2p.engine': 'Motor: {message}',
   'p2p.roomClosed': 'Sala cerrada ({detail})',
+  'p2p.experimentalFailed': 'No se pudo conectar a los jugadores: las partidas experimentales no pasan a un servidor',
+  'p2p.physicsMismatch': 'Tu juego no pudo aplicar las reglas de la sala: recarga la página',
 
   // Leaderboard and the Competitive result dialog (src/ui/screens/leaderboard.ts)
   'board.screenTitle': 'Clasificación',

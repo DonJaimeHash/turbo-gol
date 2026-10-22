@@ -561,6 +561,10 @@ export default {
   'p2p.engine': 'Engine: {message}',
   // {detail}: the socket close code and reason, not translated ('1006')
   'p2p.roomClosed': 'Room closed ({detail})',
+  // An experimental lobby's match could not connect: there is no server match to fall back to
+  'p2p.experimentalFailed': 'Could not connect the players: experimental matches have no server fallback',
+  // The room refused this page: its arena does not run the lobby's rules
+  'p2p.physicsMismatch': "Your game could not apply the lobby's rules: reload the page",
 
   // Leaderboard and the Competitive result dialog (src/ui/screens/leaderboard.ts)
   // Screen title (top bar / history)

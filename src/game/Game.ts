@@ -118,6 +118,7 @@ import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClie
 import { TrainingStore } from './trainingStore';
 import { ExperimentalStore, type ExperimentalProblem } from './experimentalStore';
 import { MAX_PRESETS } from './physicsRules';
+import { arenaMutators } from '../sim/mutators';
 import type { ExperimentalOptions, SuperlowStatus } from '../render/experimentalPage';
 import { LobbyClient } from '../net/LobbyClient';
 import { REGIONS, isPlaylist } from '../net/account';
@@ -1133,12 +1134,21 @@ export class Game implements P2PGameHooks {
     };
   }
 
-  /** A custom lobby started: play this member's match (a P2P room or a server match). */
+  /**
+   * A custom lobby started: play this member's match (a P2P room or a server match). A lobby with
+   * experimental rules plays only its P2P room: a server match for it (which the server never
+   * forms) is not joined, and the member goes back to the lobby.
+   */
   private playLobbyMatch(r: QueueResult | QueueResultP2p): void {
     const st = this.lobby.state;
     const mode: GameMode = st !== null && isPlaylist(st.settings.mode) ? st.settings.mode : this.mode;
     if (this.session !== null && this.session.busy) this.session.cancel();
     this.searchReq = null;
+    if ((r as QueueResultP2p).kind !== 'p2p' && st !== null && st.settings.physics !== undefined && st.settings.physics !== null) {
+      this.notify(t('p2p.experimentalFailed'));
+      this.lobby.back();
+      return;
+    }
     if ((r as QueueResultP2p).kind === 'p2p') {
       const p2p = this.p2p;
       const q = r as QueueResultP2p;
@@ -1656,7 +1666,11 @@ export class Game implements P2PGameHooks {
    * Rebuild the arena from a P2P room's roster (RoomWelcome.slots): one addCar per slot in slot
    * order on a fresh arena (ids 1..n on every peer, so rs_load_state blobs are interchangeable),
    * the player at `you.slot`, no local bot teams (the P2PSession runs the room's seeded ones on the
-   * confirmed timeline). Views / effects / scoreboard are rebuilt.
+   * confirmed timeline). Views / effects / scoreboard are rebuilt. The arena is created with the
+   * room's physics (an experimental lobby's rules, null = standard) BEFORE any car, so a ball
+   * weight change rebuilds the ball before the cars exist on every peer alike; the kickoff boost
+   * follows them (resetKickoff after the cars). arenaMutators throws on rules this build does not
+   * read: the session then fails instead of playing other physics than the room's.
    */
   applyP2PRoster(w: RoomWelcome): void {
     const sim = this.sim;
@@ -1664,7 +1678,7 @@ export class Game implements P2PGameHooks {
     if (roster.length === 0 || roster.length > MAX_CARS) throw new Error(`roster of ${roster.length} cars`);
     const me = w.you.slot;
     if (me < 0 || me >= roster.length) throw new Error(`player slot ${me} not in the roster`);
-    sim.createArena(TICK_RATE);
+    sim.createArena(TICK_RATE, arenaMutators(w.physics ?? null));
     const ids: number[] = [];
     for (const r of roster) ids.push(sim.addCar(r.team === 1 ? Team.Red : Team.Blue, CarPreset.Standard));
     // The room's kickoff deal, so the first snapshots (menu background, countdown frame) already
@@ -1961,6 +1975,15 @@ export class Game implements P2PGameHooks {
     this.menuNotice = message;
     if (!this.menuShown) this.showMenu();
     else if (this.session !== null) this.session.leave();
+  }
+
+  /**
+   * P2PGameHooks: matchmaking / connecting failed (the menu shows why). A custom lobby's member
+   * whose match never started goes back to its lobby, so the host can start again (an experimental
+   * room has no server fallback: this is where its failures end).
+   */
+  p2pFailed(_message: string): void {
+    if (this.lobby.me?.inGame === true) this.lobby.back();
   }
 
   /** Phase 1 name of onSessionDisconnected (OnlineSession calls it). */
