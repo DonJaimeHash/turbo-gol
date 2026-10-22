@@ -418,12 +418,19 @@ export class AccountClient {
 
   // ---- experimental features (src/game/experimentalStore.ts) -------------------------------------
 
-  /** A Bearer call of the experimental routes: a 401 refreshes once and rejects; answers parsed leniently. */
+  /**
+   * A Bearer call of the experimental routes; answers parsed leniently. A 401 refreshes the session
+   * once and sends the call again with the new one (a write is not lost to a session that expired
+   * early); a second 401, or a refresh that signs out, rejects.
+   */
   private async experimentalCall(path: string, body?: unknown): Promise<ExperimentalAnswer> {
-    const res = await this.call(path, body, await this.bearer());
+    const bearer = await this.bearer();
+    let res = await this.call(path, body, bearer);
     if (res.status === 401) {
-      await this.sessionRejected();
-      throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+      const s = await this.sessionRejected();
+      if (s === null || s.session === bearer) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+      res = await this.call(path, body, s.session);
+      if (res.status === 401) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
     }
     const r = await this.jsonOrFail<{ enabled?: unknown; presets?: unknown }>(res);
     return { enabled: r.enabled === true, presets: parsePresetList(r.presets, MAX_PRESETS * 2) };

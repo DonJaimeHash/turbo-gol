@@ -554,3 +554,34 @@ test('AccountClient experimental calls: Bearer, paths and bodies, the answer par
   await assert.rejects(a.fetchExperimental(), (e) => e.code === 'unauthorized');
   assert.equal(a.signedIn, false, 'the refresh after the 401 failed: signed out');
 });
+
+test('AccountClient experimental calls: a 401 refreshes the session and sends the write again, once', async () => {
+  const PRESET = { id: '0123456789ab', name: 'Low gravity', values: { gravity: 50 }, updatedAt: 0 };
+  const sent = [];
+  let refreshes = 0;
+  let fresh = 'Fresh';
+  const srv = fakeServer({
+    '/api/me/presets': (b, h) => {
+      sent.push(h.authorization);
+      return h.authorization === 'Bearer jwt-Fresh' ? res(200, { enabled: true, presets: [{ ...b.preset, updatedAt: 3 }] }) : res(401, { error: 'unauthorized' });
+    },
+    '/api/auth/refresh': () => {
+      refreshes++;
+      return res(200, SESSION(fresh, Date.now() + 3600_000));
+    },
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  const ans = await a.upsertPreset(PRESET);
+  assert.deepEqual(sent, ['Bearer jwt-Tomi', 'Bearer jwt-Fresh'], 'the same write again with the new session');
+  assert.equal(refreshes, 1);
+  assert.equal(ans.presets[0].updatedAt, 3);
+  assert.equal(a.signedIn, true);
+  // Refused again with the refreshed session: it rejects, with no second refresh.
+  fresh = 'Other';
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  sent.length = 0;
+  await assert.rejects(a.upsertPreset(PRESET), (e) => e instanceof AC.AccountError && e.code === 'unauthorized' && e.status === 401);
+  assert.deepEqual(sent, ['Bearer jwt-Tomi', 'Bearer jwt-Other']);
+  assert.equal(refreshes, 2);
+});

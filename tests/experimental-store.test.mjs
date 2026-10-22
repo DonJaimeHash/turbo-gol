@@ -380,3 +380,56 @@ test('two tabs of one account share the copy through storage, and the account th
   await device2.sync();
   assert.deepEqual(device2.presets().map((p) => [p.name, p.values]), [['From tab 1', { gravity: 50 }]]);
 });
+
+test('a preset the account refuses as full is not sent again (one toast) until the account has room: a delete here, or one on another device', async () => {
+  const srv = fakeServer();
+  // Another device filled the account.
+  const other = makeStore(srv, memStorage());
+  for (let i = 1; i <= R.MAX_PRESETS; i++) other.store.create(`Rules ${i}`);
+  await other.store.flush();
+  assert.equal(srv.state(A).presets.length, R.MAX_PRESETS);
+  const { store, problems, timers } = makeStore(srv);
+  const upserts = () => srv.calls.filter((c) => c === 'upsert').length;
+  const mine = store.create('Here only');
+  await store.flush();
+  assert.deepEqual(problems, ['too_many']);
+  const sent = upserts();
+  // Edits, flushes and syncs while the account is full: nothing goes up, nothing is said again.
+  store.update(mine.id, { gravity: 50 });
+  timers.fire();
+  await settle();
+  await store.flush();
+  await store.sync();
+  assert.equal(upserts(), sent, 'not sent again while the account is full');
+  assert.deepEqual(problems, ['too_many'], 'said once');
+  assert.equal(store.presets().length, R.MAX_PRESETS + 1, "the account's ten, then the one only here");
+  assert.equal(store.get(mine.id).synced, false);
+  // A delete from here makes room: it goes up by itself (a push is scheduled).
+  const theirs = store.presets().find((p) => p.name === 'Rules 1');
+  assert.equal(await store.remove(theirs.id), true);
+  assert.equal(timers.pending.size, 1, 'a push is scheduled');
+  timers.fire();
+  await settle();
+  await store.flush();
+  assert.ok(srv.state(A).presets.some((p) => p.id === mine.id && p.values.gravity === 50));
+  assert.equal(store.get(mine.id).synced, true);
+  assert.deepEqual(problems, ['too_many']);
+  // Full again: this device deletes one, another fills the account, this one creates one more.
+  assert.equal(await store.remove(store.presets().find((p) => p.name === 'Rules 2').id), true);
+  await other.store.sync();
+  other.store.create('Other again');
+  await other.store.flush();
+  assert.equal(srv.state(A).presets.length, R.MAX_PRESETS);
+  const third = store.create('Third');
+  await store.flush();
+  assert.deepEqual(problems, ['too_many', 'too_many'], 'a new refusal is said again');
+  // The other device deletes one: the next answer lists nine, and the waiting one goes up.
+  srv.state(A).presets.shift();
+  await store.sync();
+  assert.equal(timers.pending.size, 1, 'room seen in the answer: a push is scheduled');
+  timers.fire();
+  await settle();
+  await store.flush();
+  assert.ok(srv.state(A).presets.some((p) => p.id === third.id));
+  assert.ok(store.list().every((p) => p.synced));
+});
