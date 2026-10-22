@@ -187,12 +187,13 @@ export function noGlowMrt(): MrtNode | null {
 
 /**
  * Anti-aliased line mask: 1 where |dist| < halfWidth, feathered over about one pixel.
- * `dist` is a signed distance in world units (uu).
+ * `dist` is a signed distance in world units (uu); `halfWidth` a number or a node (a uniform).
  */
-export function lineMask(dist: FloatNode, halfWidth: number): FloatNode {
+export function lineMask(dist: FloatNode, halfWidth: number | FloatNode): FloatNode {
   const d = abs(dist);
   const aa = fwidth(d).mul(0.75).add(0.35);
-  return oneMinus(smoothstep(float(halfWidth).sub(aa), float(halfWidth).add(aa), d));
+  const hw = (): FloatNode => (typeof halfWidth === 'number' ? float(halfWidth) : halfWidth);
+  return oneMinus(smoothstep(hw().sub(aa), hw().add(aa), d));
 }
 
 /** Fresnel rim factor (0 facing the camera, 1 at grazing angles), from world-space normal. */
