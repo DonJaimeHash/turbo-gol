@@ -1455,6 +1455,9 @@ export class P2PSession {
     try {
       this.game.applyP2PRoster(w);
     } catch (err) {
+      // The arena may be gone or half built (createArena destroys it when the wasm refuses the
+      // rules): fail() rebuilds the offline one, as after any applied roster.
+      this.rosterApplied = true;
       this.fail(`Roster: ${describe(err)}`);
       return;
     }

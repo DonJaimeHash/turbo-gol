@@ -62,10 +62,11 @@ function sameRules(a: RulesSnapshot | null, b: RulesSnapshot | null): boolean {
 /**
  * The rules cycler's options: the presets the player may pick (built-ins first, null when the
  * player is not unlocked: then only Standard), plus the lobby's current rules when they are none of
- * them (a preset edited since, or a host that took over the lobby). Null: no rules row at all (a
- * player who is not unlocked, in a lobby without rules).
+ * them (a preset edited since, or a host that took over the lobby) and `keepId` (the preset picked
+ * before EDIT PRESETS) is not one of them either. Null: no rules row at all (a player who is not
+ * unlocked, in a lobby without rules).
  */
-function rulesChoices(presets: readonly ListedPreset[] | null, current: RulesSnapshot | null): RulesChoice[] | null {
+export function rulesChoices(presets: readonly ListedPreset[] | null, current: RulesSnapshot | null, keepId: string | null = null): RulesChoice[] | null {
   if (presets === null && current === null) return null;
   const out: RulesChoice[] = [];
   for (const p of presets ?? []) {
@@ -73,7 +74,8 @@ function rulesChoices(presets: readonly ListedPreset[] | null, current: RulesSna
     out.push({ id: p.id, label, physics: isStock(p.values, 'match') ? null : snapshotOf(label, p.values) });
   }
   if (!out.some((c) => c.physics === null)) out.unshift({ id: 'standard', label: t('rules.builtin.standard'), physics: null });
-  if (current !== null && !out.some((c) => sameRules(c.physics, current))) out.push({ id: 'lobby', label: current.name, physics: current });
+  const kept = keepId !== null && keepId !== 'lobby' && out.some((c) => c.id === keepId);
+  if (!kept && current !== null && !out.some((c) => sameRules(c.physics, current))) out.push({ id: 'lobby', label: current.name, physics: current });
   return out;
 }
 
@@ -83,6 +85,12 @@ interface RulesControls {
   presets: readonly ListedPreset[] | null;
   /** EDIT PRESETS (unlocked players only): open Settings > Experimental, then come back with the draft. */
   onEdit: (() => void) | null;
+  /**
+   * The id picked in the rules cycler, kept by the screen across EDIT PRESETS: back from it the same
+   * preset is picked again with the values it has NOW (an edit applies; a deleted one falls back to
+   * the rules the draft holds), never a stale copy of it under the same name.
+   */
+  pick: { id: string | null };
 }
 
 /** Join a lobby (asking for the password when it is locked) and open the lobby screen. */
@@ -220,20 +228,23 @@ export function customScreen(menu: Menu): Screen {
  */
 function settingsControls(s: LobbySettings, rules: RulesControls | null = null): HTMLElement[] {
   const current = lobbyRules(s.physics ?? null);
-  const choices = rules !== null ? rulesChoices(rules.presets, current) : null;
+  const choices = rules !== null ? rulesChoices(rules.presets, current, rules.pick.id) : null;
   let rulesRow: HTMLElement | null = null;
   let syncRules = (): void => undefined;
-  if (choices !== null) {
-    let picked = (choices.find((c) => sameRules(c.physics, current)) ?? choices[0]).id;
-    s.physics = current;
+  if (rules !== null && choices !== null) {
+    const kept = rules.pick.id !== null ? choices.find((c) => c.id === rules.pick.id) : undefined;
+    let picked = (kept ?? choices.find((c) => sameRules(c.physics, current)) ?? choices[0]).id;
+    rules.pick.id = picked;
+    s.physics = kept !== undefined ? kept.physics : current;
     const note = h('div.mn-rules-note', null, t('custom.rulesNote'));
     const pick = cycler<string>(t('custom.settingRules'), choices.map((c) => ({ value: c.id, label: c.label })), () => picked, (id) => {
       picked = id;
+      rules.pick.id = id;
       s.physics = choices.find((c) => c.id === id)?.physics ?? null;
       note.hidden = s.physics === null;
     });
     note.hidden = s.physics === null;
-    const edit = rules !== null && rules.onEdit !== null ? secondary(t('custom.editPresets'), rules.onEdit) : null;
+    const edit = rules.onEdit !== null ? secondary(t('custom.editPresets'), rules.onEdit) : null;
     rulesRow = h('div.mn-rules', null, pick.el, note, edit);
     syncRules = () => {
       const p2p = s.net === 'p2p';
@@ -241,6 +252,7 @@ function settingsControls(s: LobbySettings, rules: RulesControls | null = null):
       if (!p2p && s.physics !== null) {
         s.physics = null;
         picked = (choices.find((c) => c.physics === null) ?? choices[0]).id;
+        rules.pick.id = picked;
         pick.refresh();
         note.hidden = true;
       }
@@ -284,6 +296,7 @@ export function lobbyCreateScreen(menu: Menu): Screen {
   });
   const el = h('div.mn-queue', null, screenHead(t('custom.createLobby'), t('custom.createSubtitle')), section(t('custom.lobbySection'), name.el, controls, pw.el), h('div.mn-actions', null, create));
   // The rules row for an unlocked player; EDIT PRESETS comes back to this screen with its choices.
+  const pick = { id: null as string | null };
   const rules = (): RulesControls => {
     const presets = menu.host.lobbyRules();
     if (presets === null) s.physics = null; // signed out or switched off meanwhile
@@ -291,7 +304,7 @@ export function lobbyCreateScreen(menu: Menu): Screen {
       setChildren(controls, ...settingsControls(s, rules()));
       menu.refocus();
     };
-    return { presets, onEdit: presets === null ? null : () => menu.host.openSettings(back, { tab: 'experimental' }) };
+    return { presets, onEdit: presets === null ? null : () => menu.host.openSettings(back, { tab: 'experimental' }), pick };
   };
   return {
     id: 'lobby-create',
@@ -329,9 +342,10 @@ export function lobbyScreen(menu: Menu): Screen {
     );
   };
 
-  /** The host's settings dialog; `kept`: the draft (and typed name) to reopen with, back from EDIT PRESETS. */
-  const configure = (s: LobbyState, kept?: { draft: LobbySettings; name: string }): void => {
+  /** The host's settings dialog; `kept`: the draft (typed name, picked rules) to reopen with, back from EDIT PRESETS. */
+  const configure = (s: LobbyState, kept?: { draft: LobbySettings; name: string; pick: { id: string | null } }): void => {
     const draft: LobbySettings = kept?.draft ?? { ...s.settings };
+    const pick = kept?.pick ?? { id: null };
     const name = field(t('custom.nameField'), { maxLength: 24, value: kept?.name ?? draft.name });
     const pw = field(s.hasPassword ? t('custom.newPassword') : t('custom.passwordOptional'), { type: 'password', maxLength: 32 });
     const presets = menu.host.lobbyRules();
@@ -343,13 +357,13 @@ export function lobbyScreen(menu: Menu): Screen {
             menu.host.openSettings(() => {
               // The lobby may have gone, or started, while the settings were open.
               const now = lobby.state;
-              if (now !== null && now.status === 'open' && lobby.isHost) configure(now, { draft, name: name.input.value });
+              if (now !== null && now.status === 'open' && lobby.isHost) configure(now, { draft, name: name.input.value, pick });
               else menu.refocus();
             }, { tab: 'experimental' });
           };
     const close = menu.modal({
       title: t('custom.configureTitle'),
-      body: [name.el, ...settingsControls(draft, { presets, onEdit }), pw.el],
+      body: [name.el, ...settingsControls(draft, { presets, onEdit, pick }), pw.el],
       actions: [
         {
           label: t('custom.save'),

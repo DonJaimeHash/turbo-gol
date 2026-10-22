@@ -1922,6 +1922,24 @@ test("the room's physics_mismatch fails the session with its own line; a welcome
   assert.equal(e2.session.error, STATUS.reload);
 });
 
+test('a roster the Game cannot build (the wasm refused the rules: its arena is gone) fails the session and rebuilds the offline roster', () => {
+  const env = makeSession();
+  const { session, game } = env;
+  env.failed = [];
+  game.p2pFailed = (m) => env.failed.push(m);
+  game.applyP2PRoster = function () {
+    this.log.push(['roster-throws']);
+    throw new Error('rs_set_mutators failed with code 1');
+  };
+  session.joinAssigned('1v1', { kind: 'p2p', roomId: 'room1', ticket: 'T', wsUrl: '/room/room1' });
+  env.room.onWelcome({ ...welcomeFor(0, SLOTS_1V1), physics: RULES_LOW });
+  assert.equal(session.state, 'idle');
+  assert.match(session.error, /^Roster: /);
+  assert.deepEqual(game.log.slice(-2), [['roster-throws'], ['restore']], 'never left without an arena');
+  assert.equal(env.failed.length, 1, 'back to the lobby');
+  assert.equal(session.rules, null);
+});
+
 /** Game hooks over a real RocketSim that build the arena with the room's rules (as Game.applyP2PRoster does). */
 function realRulesGame(sim, mesh, script) {
   const g = realGame(sim, mesh, script);
