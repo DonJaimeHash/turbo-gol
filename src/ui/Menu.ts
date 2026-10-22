@@ -23,6 +23,7 @@ import { t } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
 import type { TrainingRecordsView } from '../game/trainingStore';
+import type { ExperimentalStore } from '../game/experimentalStore';
 import type { PopulationAnswer, RegionId } from '../net/account';
 import { REGIONS, isRegion } from '../net/account';
 import type { QueueResult } from '../net/protocol';
@@ -62,12 +63,21 @@ export interface MenuConfig {
   online: boolean;
 }
 
+/** What the menus see of the experimental features (Settings > Experimental). */
+export interface ExperimentalMenuView {
+  /** Signed in with the switch on: experimental free play (and, later, lobby rules) are offered. */
+  readonly unlocked: boolean;
+  /** The player's presets (the built-ins only for a guest) and the one picked last (lastUsed). */
+  readonly store: ExperimentalStore;
+}
+
 /** What the menus need from the Game. */
 export interface MenuHost {
   readonly accounts: AccountClient;
   readonly lobby: LobbyClient;
   /** Training records of the current player (guest: this browser; account: synced with the server). */
   readonly training: TrainingRecordsView;
+  readonly experimental: ExperimentalMenuView;
   config(): Promise<MenuConfig>;
   /** The guest name (online as a guest) and its setter. */
   guestName(): string;
@@ -84,7 +94,11 @@ export interface MenuHost {
   setTheme(id: ThemeId): void;
   /** An offline friendly match against the bots. */
   playFriendly(mode: GameMode, difficulty: Difficulty): void;
-  startTraining(id: string): void;
+  /**
+   * Free play or a shot pack; `opts.rules` (a preset id) makes free play experimental for an
+   * unlocked player (packs always run stock physics).
+   */
+  startTraining(id: string, opts?: { rules?: string }): void;
   search(req: SearchRequest): void;
   cancelSearch(): void;
   searchView(): SearchView;

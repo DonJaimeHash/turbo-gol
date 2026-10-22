@@ -61,6 +61,15 @@
   letter-spacing: 0.04em;
 }
 
+/* Experimental free play: the preset under the title. */
+.trn-rules {
+  margin-top: 2px;
+  font-size: clamp(12px, 1.6vh, 14px);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #c79bff;
+}
+
 .trn-attempts,
 .trn-boost {
   margin-top: 2px;

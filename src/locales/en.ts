@@ -662,6 +662,8 @@ export default {
   'pause.resume': 'RESUME',
   // Opens the settings screen (controls, audio, graphics); BACK there returns to the pause menu
   'pause.settings': 'SETTINGS',
+  // Experimental free play only: opens the settings screen on its Experimental tab (the physics preset)
+  'pause.rules': 'RULES',
   // Leave the match for the menus
   'pause.quit': 'QUIT',
   // The QUIT button after one press in an online match: a second one leaves it (may count as an abandon)
@@ -784,9 +786,6 @@ export default {
   // (or settings.qualityAuto when the device runs it on its own)
   'settings.experimentalSuperlowChosen': 'Super low is your graphics quality',
   'settings.experimentalSuperlowListed': 'Super low is now listed in Graphics',
-  // The player's own presets (the built-in ones are not counted); {names} is a comma-separated list
-  'settings.experimentalPresets': 'Your presets ({count}/{max}): {names}',
-  'settings.experimentalNoPresets': 'No presets of your own yet ({max} at most)',
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',
@@ -891,6 +890,28 @@ export default {
   'rules.builtin.fastBall': 'Fast ball',
   'rules.builtin.bouncy': 'Bouncy',
   'rules.builtin.arcade': 'Arcade',
+  // The editor (Settings > Experimental, while the switch is on): the title over the preset picker
+  'rules.groupPresets': 'Physics presets',
+  // Under the picker while one of the player's own presets is shown ({max} is 10)
+  'rules.yours': 'Your presets: {count} of {max}',
+  // What the preset on screen changes: {summary} is rules.standardPhysics or "Gravity 50% · Air drag (ball) 50%"
+  'rules.changes': 'Changes: {summary}',
+  'rules.standardPhysics': 'Standard physics',
+  // Ends a summary that lists only some of the changes
+  'rules.more': '+{count} more',
+  // Under each value's name: its standard value ({value} is written like the value: 100%, 216 km/h, 3 s)
+  'rules.standardValue': 'Standard {value}',
+  'rules.kmh': '{value} km/h',
+  // Respawn time, in seconds
+  'rules.seconds': '{value} s',
+  // Boost use at 0%: the boost never runs out
+  'rules.boostEndless': 'Endless',
+  // In experimental free play (the pause menu's RULES): when the picked preset takes effect
+  'rules.appliesOnClose': 'Free play restarts with these rules when you go back',
+  // A preset name the lobby name rules refuse
+  'rules.badName': 'Names: 3 to 24 letters, digits, spaces and _ . - ! ? #',
+  // Reset to standard after one press: a second one resets every value
+  'rules.resetConfirm': 'Reset to standard? Press again',
 
   // Training screen and packs (src/ui/screens/training.ts, src/game/trainingPacks.ts)
   // Screen title (top bar / history)
@@ -914,6 +935,13 @@ export default {
   'training.notPlayed': 'Not played',
   // Mode name; the menu tile shows it uppercased
   'training.freePlay': 'Free play',
+  // Signed-in players with Settings > Experimental on: free play with a physics preset (the tile
+  // shows it uppercased, with the tag), the preset picker and the button to the preset editor
+  'training.expFreePlay': 'Experimental free play',
+  'training.expFreePlayText': 'Free play with your own physics',
+  'training.tagExp': 'EXP',
+  'training.rules': 'Rules',
+  'training.editPresets': 'Edit presets',
   // Pack category
   'training.catShooting': 'Shooting',
   // Pack category
@@ -1014,6 +1042,8 @@ export default {
   'trainingHud.boostButtonOff': 'Unlimited boost: OFF',
   // Pause menu button: leave training for the menu
   'trainingHud.quit': 'Quit training',
+  // Experimental free play: the preset's name under the title
+  'trainingHud.rulesLine': 'Rules: {name}',
   // Pack summary title
   'trainingHud.packComplete': 'Pack complete',
   // Pack summary button: play the pack again
