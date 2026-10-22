@@ -416,12 +416,13 @@ const MENU_ORBIT_RATE = 0.08;
 /**
  * Showroom camera (enterShowroom): vertical field of view (deg; narrow, so the car is not
  * distorted close up), the default height angle (deg), the slow orbit's rate (rad/s) and the
- * framing margin over the car's bounding sphere (the hitbox's half diagonal).
+ * framing margin over the car's bounding sphere (the hitbox's half diagonal, 76 uu: roomy for a
+ * car 120 uu long, so a little under 1 still fits it, tyres included, from any angle).
  */
 const SHOWROOM_FOV = 30;
 const SHOWROOM_PITCH_DEG = 12;
 const SHOWROOM_ORBIT_RATE = 0.3;
-const SHOWROOM_MARGIN = 1.08;
+const SHOWROOM_MARGIN = 0.95;
 /** The showroom camera stays this high over the floor (uu). */
 const SHOWROOM_MIN_Y = 6;
 /** Pad pickups within this distance (uu) of the player car play the pickup chime. */
@@ -2886,8 +2887,9 @@ export class Game implements P2PGameHooks {
    * framed close up where it stands on the pitch, in the live scene (its lights, its materials:
    * nothing is added). `yawDeg` fixes the angle round the car (0 = the nose, 90 = the right side,
    * 180 = the tail, 270 = the left side); without it the camera orbits slowly. `pitchDeg` is the
-   * camera's height angle (SHOWROOM_PITCH_DEG by default, up to 89 for the roof). The offline sim
-   * is held while it is on (nothing moves under the camera); exitShowroom hands the camera back.
+   * camera's height angle (SHOWROOM_PITCH_DEG by default, up to 89 for the roof: from yaw 180 the
+   * nose points up the screen). The offline sim is held while it is on (nothing moves under the
+   * camera); exitShowroom hands the camera back.
    */
   enterShowroom(angles: { readonly yawDeg?: number | null; readonly pitchDeg?: number | null } = {}): void {
     const yaw = angles.yawDeg ?? null;

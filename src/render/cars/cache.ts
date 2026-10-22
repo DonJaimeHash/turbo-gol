@@ -4,7 +4,9 @@
  * team, detail), so identical cars draw the same buffers (a 3v3 of one body builds 2 bodies, not
  * 6) and a roster change re-uses what is there. A geometry is disposed when the last CarView
  * releases it; Game.rebuildCarViews builds the new views before disposing the old ones, so a
- * rebuild with the same cars builds nothing.
+ * rebuild with the same cars builds nothing. Super low's wheels stay out of it: their meshes
+ * instance through vertex attributes, which three disposes along with a geometry, so each view
+ * keeps its own wheels until it goes (Car.ts CarView.ownWheels).
  */
 import type * as THREE from 'three/webgpu';
 import type { CarConfigInfo, Team } from '../../sim/types';

@@ -121,8 +121,8 @@ import {
   mergeParts,
   type CarKind,
 } from './cars/kit';
-import type { CarBodySpec, CarDetail, LiverySpec } from './cars/types';
-import { tyreRadius } from './cars/wheels';
+import type { CarBodySpec, CarDetail, LiverySpec, WheelStyle } from './cars/types';
+import { buildWheel, tyreRadius } from './cars/wheels';
 
 // The shared car constants live with the body kit; these names stay importable from here.
 export { BOOST_NOZZLE_X, BOOST_NOZZLE_Y, BOOST_NOZZLE_Z, CAR_KIND, TEAM_GLOW, TEAM_PAINT, type CarKind } from './cars/kit';
@@ -861,7 +861,19 @@ export class CarView {
   /** The body drawn (cars/index.ts) and the cached geometry it holds (cars/cache.ts keys); see setBody. */
   private bodySpec: CarBodySpec;
   private bodyKey: string;
-  private wheelKey: string;
+  /** Cache key of the shared wheel geometry held, null while the wheels are this view's own (ownWheels). */
+  private wheelKey: string | null = null;
+  /**
+   * Cheap tiers: the wheel geometries this view built for itself, by style id, kept until
+   * dispose(); null elsewhere (shared through cars/cache.ts). There the wheels instance through
+   * vertex attributes (SHARED_INSTANCING_CAPACITY), which three r186 counts as the render
+   * object's node attributes, and the dispose handler a geometry gets when it is first drawn
+   * (renderers/common/Geometries.js initGeometry) deletes the node attributes of THAT render
+   * object as it is then: a wheel geometry disposed after a swap, or shared with a view that
+   * swapped away from it, would take a live mesh's instance-matrix buffers with it (the wheels
+   * vanish). The body and the other tiers' wheels have no node attributes and share safely.
+   */
+  private readonly ownWheels: Map<string, THREE.BufferGeometry> | null;
   /** The body's wheels: visual radius over the physics radius, outer tyre radius (unit wheel). */
   private wheelVisual = 1;
   private tyreR = 1;
@@ -918,11 +930,10 @@ export class CarView {
     this.root.add(this.body);
 
     this.placeWheelsFor(bodySpec);
-    const wheelGeo = acquireWheelGeometry(bodySpec.wheels.style, team, detail);
-    this.wheelKey = wheelGeo.key;
+    this.ownWheels = spec.cheapMaterials ? new Map() : null;
     // Cheap tiers: an instance buffer past the uniform-buffer limit, so every car's wheels share
     // one program (materials.ts SHARED_INSTANCING_CAPACITY); 4 are drawn and uploaded.
-    this.wheels = new THREE.InstancedMesh(wheelGeo.geometry, material, spec.cheapMaterials ? SHARED_INSTANCING_CAPACITY : 4);
+    this.wheels = new THREE.InstancedMesh(this.wheelGeometry(bodySpec.wheels.style), material, spec.cheapMaterials ? SHARED_INSTANCING_CAPACITY : 4);
     this.wheels.count = 4;
     this.wheels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.wheels.castShadow = true;
@@ -1083,19 +1094,36 @@ export class CarView {
     const spec = carBody(id);
     if (this.disposed || spec === this.bodySpec) return false;
     const body = acquireBodyGeometry(spec, this.config, this.team, this.detail);
-    const wheel = acquireWheelGeometry(spec.wheels.style, this.team, this.detail);
     const oldBody = this.bodyKey;
     const oldWheel = this.wheelKey;
     this.body.geometry = body.geometry;
-    this.wheels.geometry = wheel.geometry;
+    this.wheels.geometry = this.wheelGeometry(spec.wheels.style);
     (this.body.userData as LiveryHolder).carLivery = liveryOf(spec);
     this.bodySpec = spec;
     this.bodyKey = body.key;
-    this.wheelKey = wheel.key;
     this.placeWheelsFor(spec);
     releaseBodyGeometry(oldBody);
-    releaseWheelGeometry(oldWheel);
+    if (oldWheel !== null) releaseWheelGeometry(oldWheel);
     return true;
+  }
+
+  /**
+   * The unit wheel of `style` for this view: shared from the cache (wheelKey holds the reference)
+   * or, on cheap tiers, this view's own (ownWheels: built once per style, kept until dispose()).
+   */
+  private wheelGeometry(style: WheelStyle): THREE.BufferGeometry {
+    const own = this.ownWheels;
+    if (own === null) {
+      const shared = acquireWheelGeometry(style, this.team, this.detail);
+      this.wheelKey = shared.key;
+      return shared.geometry;
+    }
+    let g = own.get(style.id);
+    if (g === undefined) {
+      g = buildWheel(style, this.detail, this.team);
+      own.set(style.id, g);
+    }
+    return g;
   }
 
   dispose(): void {
@@ -1103,10 +1131,13 @@ export class CarView {
     this.disposed = true;
     this.scene.remove(this.root);
     this.scene.remove(this.blob);
-    // The body and wheel geometry are shared (cars/cache.ts): the last release disposes them.
+    // The body and wheel geometry are shared (cars/cache.ts): the last release disposes them. A
+    // cheap tier's own wheels go after their mesh (ownWheels: the dispose handler then only drops
+    // this dead mesh's instance buffers).
     releaseBodyGeometry(this.bodyKey);
-    releaseWheelGeometry(this.wheelKey);
+    if (this.wheelKey !== null) releaseWheelGeometry(this.wheelKey);
     this.wheels.dispose();
+    if (this.ownWheels !== null) for (const g of this.ownWheels.values()) g.dispose();
     this.flame.geometry.dispose();
     this.flameMat.dispose();
     this.blob.geometry.dispose();

@@ -74,7 +74,9 @@ below the target; the test fails above the declared budget and refuses a budget 
 Draw calls per car do not change: body + wheels, plus the flame while boosting and the blob when
 the tier shows it (2 shadow draws per key light on high and ultra). A body costs about 0.3 MB
 (low) / 0.55 MB (high) of vertex data per team in use: cars of the same body, team and detail share
-one geometry (`cache.ts`).
+one geometry (`cache.ts`), and so do their wheels, except on super low, where every car keeps its
+own wheels (its wheels instance through vertex attributes, which three r186 disposes along with a
+geometry: `CarView.ownWheels`).
 
 ## The livery (`LiverySpec`)
 
@@ -143,7 +145,7 @@ Settings > Graphics or `__game.setQuality('low')`, super low with `#superlow`):
 | front three-quarter | `#car=<id>&showroom=35` |
 | side | `#car=<id>&showroom=90,8` |
 | rear three-quarter | `#car=<id>&showroom=145` |
-| top | `#car=<id>&showroom=0,85` |
+| top (nose up) | `#car=<id>&showroom=180,85` |
 
 `#diag` shows the pipelines (and the linked programs on WebGL2): with the new car on the roster
 they must match the dune runner's, in a 1v1 and a 3v3, on every tier, and stay flat when the car is

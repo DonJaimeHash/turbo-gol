@@ -308,3 +308,28 @@ test('CarView: cars of the same body, team and detail share geometry; setBody sw
   for (const v of [a, b, red]) v.dispose();
   assert.deepEqual(cache.geometryCacheStats(), { bodies: 0, wheels: 0, refs: 0 });
 });
+
+test('CarView on super low: bodies shared, every view owns its wheels and keeps them across swaps until dispose', () => {
+  // Super low instances the wheels through vertex attributes (SHARED_INSTANCING_CAPACITY), and
+  // three r186 disposes a geometry with the node attributes (those instance buffers) of the render
+  // object that first drew it: a wheel geometry may never be disposed while a live mesh used it.
+  const scene = new THREE.Scene();
+  const a = new CarView(scene, CFG, 0, 'superlow');
+  const b = new CarView(scene, CFG, 0, 'superlow');
+  assert.equal(a.body.geometry, b.body.geometry, 'the body is shared');
+  assert.notEqual(a.wheels.geometry, b.wheels.geometry, "each view's own wheels");
+  assert.equal(a.wheels.count, 4);
+  const knobby = a.wheels.geometry;
+  let disposed = 0;
+  knobby.addEventListener('dispose', () => disposed++);
+  assert.equal(a.setBody('test-wedge'), true);
+  assert.notEqual(a.wheels.geometry, knobby, 'slick wheels');
+  assert.equal(disposed, 0, 'the swapped-out wheels stay until the view goes');
+  assert.equal(a.setBody('dune'), true);
+  assert.equal(a.wheels.geometry, knobby, 'swapping back re-uses them');
+  assert.deepEqual(cache.geometryCacheStats(), { bodies: 1, wheels: 0, refs: 2 }, 'only the body in the cache');
+  a.dispose();
+  assert.equal(disposed, 1, 'disposed with the view, after its mesh');
+  b.dispose();
+  assert.deepEqual(cache.geometryCacheStats(), { bodies: 0, wheels: 0, refs: 0 });
+});
