@@ -1109,6 +1109,9 @@ export class Game implements P2PGameHooks {
   private hideMenus(): void {
     this.menu.hide();
     this.hud.hideMenu();
+    // A match, training or online session takes the screen: a showroom behind the menus (the
+    // garage) gives the camera back and stops holding the sim.
+    this.exitShowroom();
     // A Turnstile widget left from the menus (a lobby join, a sign-up) cannot be solved in a match.
     if (this.online !== null) this.online.client.cancelChallenge();
   }
