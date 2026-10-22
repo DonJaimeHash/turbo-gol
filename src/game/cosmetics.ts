@@ -46,7 +46,7 @@ const CAR_STATUS: Readonly<Record<CarId, CarStatus>> = {
 
   condor: 'soon',
 
-  tero: 'soon',
+  tero: 'available',
 };
 
 export interface CarCosmetic {
