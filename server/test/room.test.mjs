@@ -1638,3 +1638,77 @@ test('RoomDO + MatchmakerDO: an experimental lobby start: the rules reach every 
     assert.equal((await w.call('/stats')).json.noShows, 0, 'C never showed up: no strike in an experimental room');
   });
 });
+
+// ---- cosmetic cars: a seat's car from the queue to every welcome (src/net/cosmetics.ts) ---------------
+
+test('buildRoster / buildTeamRoster: a human seat carries its car, a bot none; a roster without cars is the same as before', () => {
+  const humans = [{ playerId: 'a', name: 'A', car: 'tero' }, { playerId: 'b', name: 'B' }];
+  const r = M.buildRoster(2, humans, 'peer');
+  assert.deepEqual(r.map((e) => [e.slot, e.kind, e.playerId ?? null, e.car ?? null]), [[0, 'peer', 'a', 'tero'], [1, 'bot', null, null], [2, 'peer', 'b', null], [3, 'bot', null, null]]);
+  assert.equal('car' in r[2], false, 'no car key at all for the default car');
+  const t = M.buildTeamRoster(1, [[{ playerId: 'b', name: 'B' }], [{ playerId: 'a', name: 'A', car: 'condor' }]], 'player');
+  assert.deepEqual(t.map((e) => e.car ?? null), [null, 'condor']);
+  assert.deepEqual(M.buildRoster(1, [{ playerId: 'a', name: 'A' }], 'player'), [
+    { slot: 0, team: 0, kind: 'player', name: 'A', playerId: 'a' },
+    { slot: 1, team: 1, kind: 'bot', name: 'Bot 1' },
+  ]);
+});
+
+test('RoomDO: every welcome and peerJoined carry each peer seat\'s car; a car the catalog does not know is dropped, a bot has none; persisted with the record', async () => {
+  const slots = [
+    { slot: 0, team: 0, kind: 'peer', name: 'A', playerId: 'pa', car: 'tero' },
+    { slot: 1, team: 0, kind: 'peer', name: 'B', playerId: 'pb', car: 'lamborghini' },
+    { slot: 2, team: 1, kind: 'peer', name: 'C', playerId: 'pc' },
+    { slot: 3, team: 1, kind: 'bot', name: 'Bot 2', car: 'pampero' },
+  ];
+  const h = await makeRoom(slots);
+  assert.deepEqual(h.ctx.storage.map.get('record').slots.map((s) => s.car ?? null), ['tero', null, null, null]);
+  const a = await h.join(0);
+  assert.deepEqual(a.of('room')[0].slots.map((s) => s.car ?? null), ['tero', null, null, null]);
+  assert.equal('car' in a.of('room')[0].slots[2], false, 'the default car: no field, as before cars');
+  const b = await h.join(1);
+  assert.deepEqual(b.of('room')[0].slots.map((s) => s.car ?? null), ['tero', null, null, null], 'a late welcome too');
+  assert.equal(a.of('peerJoined')[0].slot.car, undefined, 'B drives the default car');
+  await h.join(2);
+  assert.equal(a.of('peerJoined').length, 2);
+  const a2 = await h.join(0);
+  assert.equal(a2.of('room')[0].slots[0].car, 'tero', 'a replacement socket (the others hear no peerJoined for it)');
+});
+
+test('MatchmakerDO: the /join car sits with the seat: a P2P room\'s slots and a server match\'s roster carry it; a junk one is dropped; a rejoin with a new session takes the new car', async () => {
+  const h = await makeMatchmaker();
+  const join = (playerId, kind, car) => h.call('/join', { playerId, name: playerId, mode: '1v1', kind, ...(car !== undefined ? { car } : {}) });
+  assert.equal((await join('pa', 'p2p', 'tero')).json.status, 'waiting');
+  assert.equal((await join('pa', 'p2p', 'pampero')).json.status, 'waiting', 'the same waiter, a newer session');
+  await join('pb', 'p2p', 'ferrari');
+  const room = h.roomNs.calls.find((c) => c.path === '/internal/create');
+  assert.deepEqual(room.body.slots.map((s) => [s.playerId ?? null, s.car ?? null]), [['pa', 'pampero'], ['pb', null]]);
+  await join('sa', 'server', 'condor');
+  await join('sb', 'server');
+  const match = h.matchNs.calls.find((c) => c.path === '/internal/create');
+  assert.deepEqual(match.body.roster.map((e) => [e.kind, e.car ?? null]), [['player', 'condor'], ['player', null]]);
+});
+
+test('MatchmakerDO /custom: each lobby member\'s car into the room slots and the MatchDO roster (a junk one dropped)', async () => {
+  const h = await makeMatchmaker();
+  const members = [{ playerId: 'pa', name: 'A', team: 0, guest: false, car: 'tero' }, { playerId: 'pb', name: 'B', team: 1, guest: true, car: 7 }];
+  assert.equal((await h.call('/custom', { kind: 'p2p', mode: '2v2', members, matchLengthSeconds: 300 })).status, 200);
+  const room = h.roomNs.calls.filter((c) => c.path === '/internal/create').at(-1);
+  assert.deepEqual(room.body.slots.map((s) => [s.kind, s.car ?? null]), [['peer', 'tero'], ['bot', null], ['peer', null], ['bot', null]]);
+  assert.equal((await h.call('/custom', { kind: 'server', mode: '1v1', members: [{ playerId: 'pc', name: 'C', team: 1, guest: false, car: 'carpincho' }], matchLengthSeconds: 300 })).status, 200);
+  const match = h.matchNs.calls.filter((c) => c.path === '/internal/create').at(-1);
+  assert.deepEqual(match.body.roster.map((e) => [e.kind, e.car ?? null]), [['bot', null], ['player', 'carpincho']]);
+});
+
+test('RoomDO + MatchmakerDO: a lobby start with cars: each peer\'s welcome shows every seat\'s car', async () => {
+  await withClock(50_000_000, async () => {
+    const w = await makeWorld();
+    const members = [{ playerId: 'pa', name: 'A', team: 0, guest: false, car: 'condor' }, { playerId: 'pb', name: 'B', team: 1, guest: false }];
+    const r = await w.call('/custom', { kind: 'p2p', mode: '1v1', members, matchLengthSeconds: 300 });
+    assert.equal(r.status, 200);
+    const a = await w.upgrade(r.json.results.pa);
+    const b = await w.upgrade(r.json.results.pb);
+    for (const ws of [a.ws, b.ws]) assert.deepEqual(ws.of('room')[0].slots.map((s) => s.car ?? null), ['condor', null]);
+    await w.drain();
+  });
+});

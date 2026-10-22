@@ -268,6 +268,24 @@ test('outcomeCalls: every outcome ends with exactly one /release of every human'
   }
 });
 
+test("outcomeCalls with the hosts' points: a scored match credits its operator (/host-credit, AccountsDO's body), a failed verification freezes it at the settle time (/host-freeze); both before the /release, only what the entry carries", () => {
+  const casual = assign({ ranked: false });
+  const ledger = { matchId: MID, nodeId: 'n1', operatorId: C, points: 22.5, verified: true, at: NOW + 5, players: [], region: 'SA' };
+  const unrated = { kind: 'unrated', matchId: MID, nodeId: 'n1', blue: 1, red: 0, verified: true };
+  assert.deepEqual(parsed(O.outcomeCalls(unrated, casual, IDS, { ledger, doneAt: NOW + 9 })), [
+    { matchId: MID, target: 'accounts', path: '/host-credit', body: { matchId: MID, userId: C, nodeId: 'n1', points: 22.5, verified: true, at: NOW + 5 } },
+    release(),
+  ]);
+  const failed = { ...RANKED_VOID, ranked: false };
+  assert.deepEqual(parsed(O.outcomeCalls(failed, casual, IDS, { ledger: null, freeze: { operatorId: C, reason: 'verification_failed:' + MID }, doneAt: NOW + 9 })), [
+    { matchId: MID, target: 'accounts', path: '/host-freeze', body: { userId: C, reason: 'verification_failed:' + MID, at: NOW + 9 } },
+    release(),
+  ]);
+  // A rated match on a community node: its rating first, then its points.
+  assert.deepEqual(parsed(O.outcomeCalls(RATED, assign(), IDS, { ledger })).map((c) => c.path), ['/ranked-result', '/host-credit', '/release']);
+  assert.deepEqual(parsed(O.outcomeCalls(unrated, casual, IDS, { ledger: null })), [release()], 'a project node: nothing to credit');
+});
+
 // ---- nodeOutcome.ts: delivery --------------------------------------------------------------------
 
 /** ACCOUNTS and MATCHMAKER whose objects answer `answer(name, path)`: a Response, or an Error to throw. `calls` records each POST. */

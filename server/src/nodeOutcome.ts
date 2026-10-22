@@ -4,12 +4,19 @@
  * NodeRegistryDO writes them to its outbox in the transaction that settles the match
  * (MatchStore.finished) and delivers each one until deliverCall says it is done.
  *
- * Delivering a call twice does no harm: AccountsDO records a match id once (/ranked-result and
- * /ranked-cancel skip one they already have), and /release only frees the locks that still point at
- * this match.
+ * Delivering a call twice does no harm: AccountsDO records a match id once (/ranked-result,
+ * /ranked-cancel and /host-credit skip one they already have; /host-freeze keeps a freeze in force
+ * and ignores one from before the last unfreeze), and /release only frees the locks that still
+ * point at this match.
+ *
+ * The hosts' points (Option A of the shop: AccountsDO owns wallets, NodeRegistryDO the scoring): a
+ * match a community node earned points for (MatchEntry.ledger) credits its operator's account, and
+ * a failed verification (MatchEntry.freeze) freezes it, in the same transaction that settles the
+ * match. A project node never earns and never freezes: the control plane sets neither for it.
  */
-import type { MatchOutcome } from '../../nodes/control-plane/controlPlane';
+import type { MatchEntry, MatchOutcome } from '../../nodes/control-plane/controlPlane';
 import type { MatchAssignment } from '../../nodes/shared/controlProtocol';
+import type { HostCredit } from './accountStore';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { withTimeout } from './env';
 import type { Env } from './env';
@@ -26,7 +33,7 @@ export interface OutcomeCall {
   matchId: string;
   /** ACCOUNTS_TARGET, or 'mm:<region>' (that region's MatchmakerDO). */
   target: string;
-  path: '/ranked-result' | '/ranked-cancel' | '/release';
+  path: '/ranked-result' | '/ranked-cancel' | '/host-credit' | '/host-freeze' | '/release';
   /** The JSON body, as the outbox stores it and as it is sent. */
   body: string;
 }
@@ -35,10 +42,12 @@ export interface OutcomeCall {
  * The calls for one settled match, in delivery order. A rated match goes to /ranked-result with
  * MatchDO's body. A ranked void goes to /ranked-cancel, with the playlist and region of the
  * assignment (a void outcome carries neither): its noShows get an abandon, nobody is rated. A
- * casual match, void or not, has nothing to record. Every match then frees its players' locks in
- * the matchmaker of its region, so they can queue again. `playerIds`: the match's humans.
+ * casual match, void or not, has nothing to record. `rewards` (the settled MatchEntry's ledger and
+ * freeze, and when it settled): its points to /host-credit, its freeze to /host-freeze. Every match
+ * then frees its players' locks in the matchmaker of its region, so they can queue again.
+ * `playerIds`: the match's humans.
  */
-export function outcomeCalls(o: MatchOutcome, assign: MatchAssignment, playerIds: readonly string[]): OutcomeCall[] {
+export function outcomeCalls(o: MatchOutcome, assign: MatchAssignment, playerIds: readonly string[], rewards: Partial<Pick<MatchEntry, 'ledger' | 'freeze' | 'doneAt'>> = {}): OutcomeCall[] {
   const matchId = o.matchId;
   const calls: OutcomeCall[] = [];
   if (o.kind === 'rated') {
@@ -47,6 +56,17 @@ export function outcomeCalls(o: MatchOutcome, assign: MatchAssignment, playerIds
   } else if (o.kind === 'void' && o.ranked) {
     const body = { matchId, playlist: assign.mode, region: assign.region, players: o.players, noShows: o.noShows, reason: o.reason.slice(0, REASON_MAX) };
     calls.push({ matchId, target: ACCOUNTS_TARGET, path: '/ranked-cancel', body: JSON.stringify(body) });
+  }
+  const e = rewards.ledger;
+  if (e) {
+    const body: HostCredit = { matchId, userId: e.operatorId, nodeId: e.nodeId, points: e.points, verified: e.verified, at: e.at };
+    calls.push({ matchId, target: ACCOUNTS_TARGET, path: '/host-credit', body: JSON.stringify(body) });
+  }
+  const f = rewards.freeze;
+  if (f) {
+    // `at`: when the match settled, so an unfreeze given after it is never undone by a late redelivery.
+    const body = { userId: f.operatorId, reason: f.reason, at: rewards.doneAt ?? 0 };
+    calls.push({ matchId, target: ACCOUNTS_TARGET, path: '/host-freeze', body: JSON.stringify(body) });
   }
   calls.push({ matchId, target: 'mm:' + assign.region, path: '/release', body: JSON.stringify({ matchId, playerIds }) });
   return calls;

@@ -10,9 +10,12 @@
  *                       426 'reload_required' for kind 'p2p' without this server's P2P protocol in p2pProtocol (a stale
  *                       page); 429 'no_show' { retryAfterMs } from the matchmaker (room tickets left unused, p2p only);
  *                       400 'experimental_lobby_only' for a body that carries `physics`: experimental rules
- *                       exist only in custom P2P lobbies, never in the casual or ranked queues
- *   POST /api/rejoin  { matchId } Bearer session        -> QueueResult with a fresh ticket (MatchDO and node matches; a RoomDO
- *                       room id answers 410 'p2p_room': a P2P room is never rejoined, POST /api/leave frees its lock;
+ *                       exist only in custom P2P lobbies, never in the casual or ranked queues. The seat's
+ *                       car comes from the session (an account's `car` claim, seatFields), never from the
+ *                       body; a node match's result carries the match's `cars` by slot (src/net/cosmetics.ts)
+ *   POST /api/rejoin  { matchId } Bearer session        -> QueueResult with a fresh ticket (MatchDO and node matches, a node
+ *                       match's with its `cars`; a RoomDO room id answers 410 'p2p_room': a P2P room is never
+ *                       rejoined, POST /api/leave frees its lock;
  *                       a match the player quit with POST /api/leave { matchId } answers 410 'left', or 404 once
  *                       that quit was its last human's: the match ended). An id no MatchDO, RoomDO or node match
  *                       has: 404 and its lock freed; a node out of reach for now: 503 and the lock kept (nodeRejoin)
@@ -93,6 +96,8 @@ import { NODE_ROUTES, askNodes, rejoinTicketOf, replyCode } from './nodeApi';
 import type { NodesReply } from './nodeApi';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../../src/net/protocol';
 import type { GuestSession, QueueResult } from '../../src/net/protocol';
+import type { CosmeticQueueResult } from '../../src/net/cosmetics';
+import type { CarId } from '../../src/game/cosmetics';
 
 export { MatchDO } from './MatchDO';
 export { MatchmakerDO } from './MatchmakerDO';
@@ -345,6 +350,23 @@ async function releaseLock(request: Request, env: Env, playerId: string, matchId
 
 // ---- handlers -----------------------------------------------------------------------------
 
+const DAY_MS = 24 * 60 * 60_000;
+
+/**
+ * What a seat takes from the session (MatchmakerDO HumanEntry), never from the request body: the
+ * car an account drives (src/net/cosmetics.ts: absent = the default car, a guest's always) and, for
+ * the rewards weight of a match on a community node (nodes/control-plane/ledger.ts), that it is an
+ * account and how many days old.
+ */
+function seatFields(session: SessionClaims, nowMs: number): { car?: CarId; account?: true; accountAgeDays?: number } {
+  if (session.acct !== 1) return {};
+  return {
+    ...(session.car !== undefined ? { car: session.car } : {}),
+    account: true,
+    ...(session.since !== undefined ? { accountAgeDays: Math.max(0, Math.floor((nowMs - session.since * 1000) / DAY_MS)) } : {}),
+  };
+}
+
 async function guest(request: Request, env: Env): Promise<Response> {
   if (rateLimited('g:' + clientIp(request), LIMIT_GUEST_PER_IP, Date.now())) return error(429, 'rate_limited');
   const body = (await readJson<{ name?: unknown; turnstileToken?: unknown }>(request)) ?? {};
@@ -404,7 +426,7 @@ async function queue(request: Request, env: Env): Promise<Response> {
     method: 'POST',
     headers,
     // doDisabled: where no node can host now, the matchmaker refuses this queue as above (503).
-    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined }),
+    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined, ...seatFields(session, now) }),
   });
   if (!res.ok) return new Response(res.body, res);
   let result = (await res.json()) as AnyQueueResult;
@@ -505,7 +527,7 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
       socketBase: (u.protocol === 'https:' ? 'wss://' : 'ws://') + u.host,
       settings: { name, mode: b.mode, visibility: b.visibility, net: b.net, matchLengthSeconds: b.matchLengthSeconds, physics: b.physics },
       password: typeof b.password === 'string' && b.password.length > 0 ? b.password : null,
-      host: { playerId: session.sub, name: session.name, guest: session.acct !== 1 },
+      host: { playerId: session.sub, name: session.name, guest: session.acct !== 1, ...(session.car !== undefined ? { car: session.car } : {}) },
     }),
   });
   if (!res.ok) return new Response(res.body, res);
@@ -534,7 +556,7 @@ async function joinLobby(request: Request, env: Env): Promise<Response> {
   const res = await env.LOBBY.get(id).fetch('https://lobby/internal/admit', {
     method: 'POST',
     headers: await internalHeaders(env),
-    body: JSON.stringify({ playerId: session.sub, name: session.name, guest: session.acct !== 1, password: typeof b.password === 'string' ? b.password : undefined }),
+    body: JSON.stringify({ playerId: session.sub, name: session.name, guest: session.acct !== 1, password: typeof b.password === 'string' ? b.password : undefined, ...(session.car !== undefined ? { car: session.car } : {}) }),
   });
   if (!res.ok) return new Response(res.body, res);
   return json(await lobbyTicket(request, env, session, lobbyId, code));
@@ -614,7 +636,8 @@ async function nodeRejoin(request: Request, env: Env, playerId: string, matchId:
       console.error('node rejoin: the 200 is not a ticket');
       return error(503, 'offline', 'the node match cannot be reached right now: try again in a moment');
     }
-    const out: QueueResult = { status: 'matched', matchId, ticket: t.ticket, wsUrl: t.wsUrl, node: true };
+    // The match's cars (src/net/cosmetics.ts): a node's own welcome never carries them.
+    const out: CosmeticQueueResult = { status: 'matched', matchId, ticket: t.ticket, wsUrl: t.wsUrl, node: true, ...(t.cars ? { cars: t.cars } : {}) };
     return json(out);
   }
   if (r.status === 404 || (r.status === 410 && replyCode(r.body) !== 'left')) await releaseLock(request, env, playerId, matchId, region);

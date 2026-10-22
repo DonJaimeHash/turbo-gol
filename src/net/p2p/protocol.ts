@@ -17,6 +17,7 @@
  */
 import { PACKED_INPUT_BYTES } from '../../sim/types';
 import type { RulesSnapshot } from '../../game/physicsRules';
+import type { CarId } from '../../game/cosmetics';
 
 /**
  * Signaling protocol version (RoomWelcome.protocol; a mismatch tells the client to reload).
@@ -82,6 +83,13 @@ export interface RoomSlot {
    * is single use, so a slot that lost its socket never comes back. Absent = false.
    */
   left?: boolean;
+  /**
+   * The car this seat drives (src/net/cosmetics.ts: the session's when the matchmaker formed the
+   * room; absent = the default car, every bot's). Only a body: every car simulates as
+   * CarPreset.Standard, so it is no part of the shared simulation and needs no
+   * P2P_PROTOCOL_VERSION bump (a page from before ignores it and draws the default car).
+   */
+  car?: CarId;
 }
 
 export interface IceServer {

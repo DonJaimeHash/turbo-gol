@@ -5,8 +5,9 @@
  * (JSON text frames, src/net/account.ts LobbyServerMsg / LobbyClientMsg): a lobby where nobody
  * talks costs nothing; the whole state lives in one storage record so a wake-up rebuilds it.
  *
- *   POST /internal/create { lobbyId, code, region, socketBase, settings, password?, host: { playerId, name, guest } }
- *   POST /internal/admit  { playerId, name, guest, password? } -> { ok } | 403 bad_password / kicked | 409 full | 410 closed
+ *   POST /internal/create { lobbyId, code, region, socketBase, settings, password?, host: { playerId, name, guest, car? } }
+ *   POST /internal/admit  { playerId, name, guest, password?, car? } -> { ok } | 403 bad_password / kicked | 409 full | 410 closed
+ *                         (car: the session's, src/net/cosmetics.ts; the member's seat drives it, LobbyMember shows it)
  *   GET  /lobby (upgrade, through the Worker's /lobby/<id> gate with a role 'lobby' ticket)
  *
  * Flow: the Worker admits a player (password, room, kick list), mints a lobby ticket and the
@@ -40,6 +41,8 @@ import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import { parseLobbyRules } from '../../src/game/physicsRules';
 import type { RulesSnapshot } from '../../src/game/physicsRules';
 import type { LobbyClientMsg, LobbyMember, LobbyServerMsg, LobbySettings, LobbyState, LobbySummary } from '../../src/net/account';
+import { seatCar } from '../../src/net/cosmetics';
+import type { CarId } from '../../src/game/cosmetics';
 
 const ADMIT_TTL_MS = 90_000;
 const IDLE_CLOSE_MS = 2 * 60_000;
@@ -58,6 +61,8 @@ interface MemberRec {
   team: 0 | 1;
   joinedAt: number;
   inGame: boolean;
+  /** The car the member's seat drives (from its admit; absent = the default car): the start hands it to /custom. */
+  car?: CarId;
 }
 
 interface AdmitRec {
@@ -65,6 +70,14 @@ interface AdmitRec {
   name: string;
   guest: boolean;
   until: number;
+  /** The admitted session's car (the Worker's, from the session claim; never the client's body). */
+  car?: CarId;
+}
+
+/** `{ car }` when `v` is a car the catalog knows, else nothing: a field of another shape is dropped. */
+function carField(v: unknown): { car?: CarId } {
+  const car = seatCar(v);
+  return car !== undefined ? { car } : {};
 }
 
 export interface LobbyRecord {
@@ -219,7 +232,7 @@ export class LobbyDO extends DurableObject<Env> {
 
   private async create(request: Request): Promise<Response> {
     if (this.rec) return error(409, 'exists');
-    const b = await readJson<{ lobbyId?: unknown; code?: unknown; region?: unknown; socketBase?: unknown; settings?: unknown; password?: unknown; host?: { playerId?: unknown; name?: unknown; guest?: unknown } }>(request);
+    const b = await readJson<{ lobbyId?: unknown; code?: unknown; region?: unknown; socketBase?: unknown; settings?: unknown; password?: unknown; host?: { playerId?: unknown; name?: unknown; guest?: unknown; car?: unknown } }>(request);
     if (!b || typeof b.lobbyId !== 'string' || typeof b.code !== 'string' || typeof b.region !== 'string' || typeof b.socketBase !== 'string' || !b.host || typeof b.host.playerId !== 'string' || typeof b.host.name !== 'string') {
       return error(400, 'bad_request');
     }
@@ -242,7 +255,7 @@ export class LobbyDO extends DurableObject<Env> {
       nextMember: 1,
       status: 'open',
       statusAt: now,
-      admits: [{ playerId: b.host.playerId, name: b.host.name, guest: b.host.guest === true, until: now + ADMIT_TTL_MS }],
+      admits: [{ playerId: b.host.playerId, name: b.host.name, guest: b.host.guest === true, until: now + ADMIT_TTL_MS, ...carField(b.host.car) }],
       kicked: [],
       lastSocketAt: now,
     };
@@ -255,7 +268,7 @@ export class LobbyDO extends DurableObject<Env> {
   private async admit(request: Request): Promise<Response> {
     const rec = this.rec;
     if (!rec || this.closed) return error(410, 'closed', 'La sala ya no existe');
-    const b = await readJson<{ playerId?: unknown; name?: unknown; guest?: unknown; password?: unknown }>(request);
+    const b = await readJson<{ playerId?: unknown; name?: unknown; guest?: unknown; password?: unknown; car?: unknown }>(request);
     if (!b || typeof b.playerId !== 'string' || typeof b.name !== 'string') return error(400, 'bad_request');
     if (rec.kicked.includes(b.playerId)) return error(403, 'kicked', 'El anfitrión te expulsó de esta sala');
     if (b.guest === true && lobbyPhysics(rec.settings) !== null) return error(403, 'account_required', 'Sala experimental: inicia sesión para entrar');
@@ -269,7 +282,7 @@ export class LobbyDO extends DurableObject<Env> {
       if (rec.members.length + pending >= this.perTeam() * 2) return error(409, 'full', 'La sala está llena');
     }
     rec.admits = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId);
-    rec.admits.push({ playerId: b.playerId, name: b.name, guest: b.guest === true, until: now + ADMIT_TTL_MS });
+    rec.admits.push({ playerId: b.playerId, name: b.name, guest: b.guest === true, until: now + ADMIT_TTL_MS, ...carField(b.car) });
     await this.save();
     return json({ ok: true });
   }
@@ -291,9 +304,13 @@ export class LobbyDO extends DurableObject<Env> {
       if (admit.guest && lobbyPhysics(rec.settings) !== null) return error(403, 'account_required');
       const team = teamForNewMember(rec.members, this.perTeam());
       if (team === null) return error(409, 'full');
-      member = { id: 'm' + rec.nextMember++, playerId, name: admit.name, guest: admit.guest, team, joinedAt: now, inGame: false };
+      member = { id: 'm' + rec.nextMember++, playerId, name: admit.name, guest: admit.guest, team, joinedAt: now, inGame: false, ...carField(admit.car) };
       rec.members.push(member);
       if (rec.hostId === '') rec.hostId = member.id;
+    } else if (admit) {
+      // A member back through a fresh admit (another tab, a reload) sits in the car its session has now.
+      if (admit.car !== undefined) member.car = admit.car;
+      else delete member.car;
     }
     rec.admits = rec.admits.filter((a) => a.playerId !== playerId && a.until > now);
     rec.lastSocketAt = now;
@@ -478,7 +495,7 @@ export class LobbyDO extends DurableObject<Env> {
           mode: rec.settings.mode,
           matchLengthSeconds: rec.settings.matchLengthSeconds,
           // `guest`: the matchmaker and RoomDO refuse experimental rules for a guest too.
-          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team, guest: m.guest })),
+          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team, guest: m.guest, ...(m.car !== undefined ? { car: m.car } : {}) })),
           // Experimental rules travel as the copy the lobby holds (the matchmaker checks them again).
           physics: lobbyPhysics(rec.settings),
         }),
@@ -511,7 +528,7 @@ export class LobbyDO extends DurableObject<Env> {
 
   private stateFor(memberId: string): LobbyState {
     const rec = this.rec as LobbyRecord;
-    const members: LobbyMember[] = rec.members.map((m) => ({ id: m.id, name: m.name, team: m.team, host: m.id === rec.hostId, guest: m.guest, inGame: m.inGame }));
+    const members: LobbyMember[] = rec.members.map((m) => ({ id: m.id, name: m.name, team: m.team, host: m.id === rec.hostId, guest: m.guest, inGame: m.inGame, ...(m.car !== undefined ? { car: m.car } : {}) }));
     return { code: rec.code, settings: { ...rec.settings, physics: lobbyPhysics(rec.settings) }, hasPassword: rec.pwHash !== null, region: rec.region, members, you: memberId, status: rec.status };
   }
 

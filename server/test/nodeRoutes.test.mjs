@@ -253,7 +253,7 @@ test('the channel: its own route (and channel.json), { stable, minimum } only, n
 
 // ---- what is not served ------------------------------------------------------------------------------
 
-test('no /dev/*, no WebRTC signaling, no shop, nothing unknown: 404, and the object never hears of them', async () => {
+test('no /dev/*, no WebRTC signaling, nothing unknown: 404, and the object never hears of them', async () => {
   const env = makeEnv();
   const routes = [
     ['POST', '/dev/login'],
@@ -262,8 +262,6 @@ test('no /dev/*, no WebRTC signaling, no shop, nothing unknown: 404, and the obj
     ['POST', '/nodes/dev/login'],
     ['POST', `/nodes/rtc/${'a'.repeat(16)}/${'ab'.repeat(32)}/ice`],
     ['POST', `/nodes/rtc/${'a'.repeat(16)}/${'ab'.repeat(32)}/offer`],
-    ['GET', '/nodes/shop'],
-    ['POST', '/nodes/shop/claim'],
     ['GET', '/nodes/inventory'],
     ['GET', '/nodes/'],
     ['GET', '/nodes/register'],
@@ -272,6 +270,9 @@ test('no /dev/*, no WebRTC signaling, no shop, nothing unknown: 404, and the obj
     ['PUT', '/nodes/replays/' + 'AB'.repeat(32)],
   ];
   for (const [method, path] of routes) assert.equal((await req(env, method, path)).status, 404, `${method} ${path}`);
+  // The shop's aliases are AccountsDO's (hostShop.test.mjs): an account session first, never the object.
+  assert.equal((await req(env, 'GET', '/nodes/shop')).status, 401);
+  assert.equal((await req(env, 'POST', '/nodes/shop/claim', { body: '{}' })).status, 401);
   assert.equal(env.NODES.seen.length, 0);
 });
 
@@ -418,7 +419,7 @@ test('mine: an account session, forwarded with the caller’s id, 30 a minute pe
 /** Another account of the project: this file's limits are one isolate's, and the admin test spends this one's. */
 const MAINTAINER = 'b1b2c3d4e5f60718';
 
-test('admin: 401 without a session, 403 for a guest and for any other account, forwarded for a trusted one with the operator headers overwritten; 30 a minute per account; no CORS', async () => {
+test('admin: 401 without a session, 403 for a guest and for any other account, forwarded for a trusted one (the inventory routes too) with the operator headers overwritten; 30 a minute per account; no CORS', async () => {
   const env = makeEnv({ NODE_TRUSTED_OPERATORS: `${PROJECT},${MAINTAINER}` });
   env.NODES.handler = (r) => new RealResponse(JSON.stringify({ path: new URL(r.url).pathname, method: r.method }), { headers: { 'content-type': 'application/json' } });
   const ask = (method, what, auth, { body, headers = {} } = {}) => req(env, method, '/nodes/admin/' + what, { body, headers: { ...(auth ? { authorization: 'Bearer ' + auth } : {}), ...headers } });
@@ -434,7 +435,8 @@ test('admin: 401 without a session, 403 for a guest and for any other account, f
   assert.equal(env.NODES.seen.length, 0);
   const auth = await accountToken(MAINTAINER, 'Proyecto Ñandú');
   const body = JSON.stringify({ nodeId: 'ab'.repeat(8), status: 'suspended', reason: 'x' });
-  for (const [m, w] of [['GET', 'nodes'], ['POST', 'status'], ['POST', 'drain'], ['POST', 'update'], ['POST', 'reprobe']]) {
+  const forwards = [['GET', 'nodes'], ['POST', 'status'], ['POST', 'drain'], ['POST', 'update'], ['POST', 'reprobe'], ['POST', 'grant'], ['POST', 'revoke'], ['POST', 'unfreeze']];
+  for (const [m, w] of forwards) {
     const res = await ask(m, w, auth, { body: m === 'POST' ? body : undefined, headers: { 'x-operator-id': PLAYER, 'x-operator-name': 'Mallory' } });
     assert.deepEqual([res.status, await jsonOf(res)], [200, { path: '/nodes/admin/' + w, method: m }], w);
     assert.equal(res.headers.get('access-control-allow-origin'), null, 'for curl and same-origin pages: no CORS');
@@ -446,10 +448,10 @@ test('admin: 401 without a session, 403 for a guest and for any other account, f
   assert.equal(seen.headers[INTERNAL_HEADER], secret);
   assert.equal(await seen.req.text(), body);
   const forwarded = env.NODES.seen.length;
-  for (const [m, w] of [['POST', 'nodes'], ['GET', 'drain'], ['POST', 'reboot'], ['POST', 'toString'], ['GET', '']]) assert.equal((await ask(m, w, auth)).status, 404, `${m} /nodes/admin/${w}`);
+  for (const [m, w] of [['POST', 'nodes'], ['GET', 'drain'], ['GET', 'grant'], ['POST', 'reboot'], ['POST', 'toString'], ['GET', '']]) assert.equal((await ask(m, w, auth)).status, 404, `${m} /nodes/admin/${w}`);
   assert.equal((await ask('POST', 'status', auth, { body, headers: { 'content-length': '4097' } })).status, 413);
   assert.equal(env.NODES.seen.length, forwarded, 'none of these reached the object');
-  for (let i = 5; i < 30; i++) assert.equal((await ask('GET', 'nodes', auth)).status, 200);
+  for (let i = forwards.length; i < 30; i++) assert.equal((await ask('GET', 'nodes', auth)).status, 200);
   assert.equal((await ask('GET', 'nodes', auth)).status, 429, 'the 31st in a minute');
 });
 

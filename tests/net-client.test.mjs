@@ -1190,3 +1190,19 @@ test('a queue cancelled while waiting for another challenge gives up without ren
   assert.equal(api.rendered.length, 1, 'the cancelled queue never rendered');
   assert.equal(calls.some((c) => c.url === '/api/guest' || c.url === '/api/queue'), false);
 });
+
+test('a page from before the cars: a Welcome whose roster carries `car` (src/net/cosmetics.ts) is taken as it is, nothing refused', () => {
+  const { client, sockets } = makeClient({});
+  const got = { welcome: null, errors: [] };
+  client.onWelcome = (w) => (got.welcome = w);
+  client.onError = (code) => got.errors.push(code);
+  client.connect('ws://h/ws/m', 'T');
+  const ws = sockets[0];
+  ws.open();
+  const roster = [{ carId: 1, slot: 0, team: 0, name: 'A', kind: 'player', car: 'tero' }, { carId: 2, slot: 1, team: 1, name: 'Bot', kind: 'bot' }];
+  const welcome = { protocol: P.PROTOCOL_VERSION, matchId: 'm', mode: '1v1', tickRate: 120, carId: 1, slot: 0, roster, tick: 0, matchLengthSeconds: 300 };
+  ws.deliver(encodeJson(MsgType.Welcome, welcome));
+  assert.deepEqual(got.welcome, welcome);
+  assert.deepEqual(got.errors, []);
+  assert.equal(ws.closed ?? null, null, 'the socket stays open');
+});

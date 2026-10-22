@@ -1,8 +1,9 @@
 // The cosmetic cars and the hosts' shop on the server, without workerd: AccountStore's inventory,
 // car pick, wallet, claims, freezes and grants on node:sqlite (the AccountsDO's SQL), the session's
 // `car` / `since` claims (accountRoutes.ts accountSession, auth.ts verifySession), and the Worker's
-// /api/me/items, /api/me/car, /api/me/shop and /api/me/shop/claim in front of a real AccountsDO.
-// The catalog is nodes/control-plane/shop.ts's (its cars
+// /api/me/items, /api/me/car, /api/me/shop, /api/me/shop/claim (and the /nodes/shop aliases) in
+// front of a real AccountsDO, plus what /api/queue and /api/lobbies take from the session for the
+// seat (index.ts seatFields: never the body). The catalog is nodes/control-plane/shop.ts's (its cars
 // src/game/cosmetics.ts's): a test that needs a car to be claimable pins its status for the test, so
 // none depends on which bodies are built. 'cloudflare:workers' and MatchDO's wasm are stubbed.
 // Run from server/: npm test
@@ -324,9 +325,11 @@ const ROUTES = [
   ['POST', '/api/me/car', { car: 'tero' }],
   ['GET', '/api/me/shop', undefined],
   ['POST', '/api/me/shop/claim', { item: 'tero' }],
+  ['GET', '/nodes/shop', undefined],
+  ['POST', '/nodes/shop/claim', { item: 'tero' }],
 ];
 
-test('Worker: the inventory and shop routes need an account: 401 without a session, 403 account_required for a guest', async () => {
+test('Worker: the inventory and shop routes need an account: 401 without a session, 403 account_required for a guest (the /nodes/shop aliases too)', async () => {
   const { env } = makeEnv();
   const guest = (await createSession(SECRET, '0123456789abcdef', 'Invitado')).token;
   for (const [method, path, body] of ROUTES) {
@@ -362,7 +365,7 @@ test('Worker: items, then a car picked: 409 until it is owned, then a fresh sess
   assert.equal((await verifySession(SECRET, r.json.session)).car, undefined);
 });
 
-test('Worker: the shop and a claim round trip (a retry spends nothing twice); refusals keep their codes', async () => {
+test('Worker: the shop and a claim round trip (a retry spends nothing twice); /nodes/shop answers the same without the node settings; refusals keep their codes', async () => {
   const { env, store } = makeEnv();
   const id = store.register('Ana', PW, [], H('1'), Date.now()).userId;
   const token = await accountToken(id);
@@ -373,10 +376,13 @@ test('Worker: the shop and a claim round trip (a retry spends nothing twice); re
     assert.equal(shop.headers.get('cache-control'), 'no-store');
     assert.deepEqual(shop.json.wallet, { earned: 1600, spent: 0, balance: 1600, frozen: null });
     assert.equal(shop.json.items.find((i) => i.id === 'pampero').claimable, true);
+    const alias = await call(env, 'GET', '/nodes/shop', { token });
+    assert.equal(alias.status, 200, 'no NODES binding here: the alias is AccountsDO\'s');
+    assert.deepEqual(alias.json, shop.json);
     let r = await call(env, 'POST', '/api/me/shop/claim', { token, body: { item: 'pampero' } });
     assert.equal(r.status, 200);
     assert.deepEqual([r.json.item, r.json.claimed, r.json.wallet.balance, r.json.items], ['pampero', true, 100, ['pampero']]);
-    r = await call(env, 'POST', '/api/me/shop/claim', { token, body: { itemId: 'pampero' } });
+    r = await call(env, 'POST', '/nodes/shop/claim', { token, body: { itemId: 'pampero' } });
     assert.deepEqual([r.status, r.json.claimed, r.json.wallet.balance], [200, false, 100], 'the reference server\'s `itemId` too; owned: nothing spent');
     assert.deepEqual((await call(env, 'GET', '/api/me/items', { token })).json.cars, ['dune', 'pampero']);
   });
@@ -406,6 +412,39 @@ test('Worker: picking a car and claiming share a write budget per account and mi
   assert.equal(limitedAt, LIMIT_COSMETIC_WRITES + 1);
   assert.equal((await call(env, 'POST', '/api/me/shop/claim', { token, body: { item: 'badge-host' } })).status, 429);
   assert.equal((await call(env, 'GET', '/api/me/items', { token })).status, 200, 'reads have their own budget');
+});
+
+test('Worker: a queue seats the session\'s car and account age, never a car from the body; a guest\'s seat has neither', async () => {
+  const { env, mm } = makeEnv();
+  const since = Math.floor((Date.now() - 10 * DAY - 60_000) / 1000);
+  const joins = () => mm.calls.filter((c) => c.path === '/join').map((c) => c.body);
+  await call(env, 'POST', '/api/queue', { token: await accountToken('a1b2c3d4e5f60718', { car: 'tero', since }), body: { mode: '1v1', kind: 'server', car: 'condor' } });
+  let j = joins().at(-1);
+  assert.deepEqual([j.playerId, j.car, j.account, j.accountAgeDays], ['a1b2c3d4e5f60718', 'tero', true, 10]);
+  await call(env, 'POST', '/api/queue', { token: await accountToken('b1b2c3d4e5f60718'), body: { mode: '1v1', kind: 'server', car: 'condor' } });
+  j = joins().at(-1);
+  assert.deepEqual([j.car, j.account, j.accountAgeDays], [undefined, true, undefined], 'an account on the default car (and a token from before `since`)');
+  const guest = (await createSession(SECRET, '0123456789abcdef', 'Invitado')).token;
+  await call(env, 'POST', '/api/queue', { token: guest, body: { mode: '1v1', kind: 'server', car: 'condor' } });
+  j = joins().at(-1);
+  assert.deepEqual(Object.keys(j).filter((k) => ['car', 'account', 'accountAgeDays'].includes(k)), [], 'a guest: none of them');
+  // A guest token that carries a car claim (forged or stale) still seats the default car.
+  const forged = await signJwt(SECRET, { sub: '0123456789abcdef', name: 'X', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 60, car: 'tero' });
+  await call(env, 'POST', '/api/queue', { token: forged, body: { mode: '1v1', kind: 'server' } });
+  assert.equal(joins().at(-1).car, undefined);
+});
+
+test('Worker: a lobby\'s host and each admitted member take the car of their session (LobbyDO keeps it with the seat)', async () => {
+  const { env, lobby } = makeEnv();
+  const settings = { name: 'Sala', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 };
+  assert.equal((await call(env, 'POST', '/api/lobbies', { token: await accountToken('a1b2c3d4e5f60718', { car: 'tero' }), body: { ...settings, car: 'condor' } })).status, 200);
+  const create = lobby.calls.find((c) => c.path === '/internal/create');
+  assert.deepEqual([create.body.host.car, create.body.host.guest], ['tero', false]);
+  assert.equal((await call(env, 'POST', '/api/lobbies/join', { token: await accountToken('b1b2c3d4e5f60718', { car: 'pampero' }), body: { code: 'ABCDEF', car: 'condor' } })).status, 200);
+  assert.equal(lobby.calls.filter((c) => c.path === '/internal/admit').at(-1).body.car, 'pampero');
+  const guest = (await createSession(SECRET, '0123456789abcdef', 'Invitado')).token;
+  assert.equal((await call(env, 'POST', '/api/lobbies/join', { token: guest, body: { code: 'ABCDEF', car: 'condor' } })).status, 200);
+  assert.equal('car' in lobby.calls.filter((c) => c.path === '/internal/admit').at(-1).body, false);
 });
 
 test('every catalog car can be granted, picked and seated: the session carries each one', async () => {

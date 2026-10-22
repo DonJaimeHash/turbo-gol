@@ -70,6 +70,8 @@ import type {
 import { importPrivateKey, importPublicKey, randomB64, randomHexId, sha256Hex, verifyWith } from '../shared/edcrypto';
 import { createNodeTicket, verifyNodeTicket } from '../shared/nodeTickets';
 import { TICK_RATE } from '../../src/sim/types';
+import type { CarId } from '../../src/game/cosmetics';
+import { carsBySlot } from '../../src/net/cosmetics';
 import { regionFactor } from './ledger';
 import type { Ledger, LedgerEntry, LedgerPlayer } from './ledger';
 import { matchFromRow } from './persist';
@@ -180,6 +182,12 @@ export interface Human {
   /** Registered account (rewards weight) and its age. Guests: false / 0. */
   account?: boolean;
   accountAgeDays?: number;
+  /**
+   * The car the player drives (src/net/cosmetics.ts; absent: the default car). Kept with the match
+   * (MatchEntry.humans) for the rejoin answer's `cars`, and never sent to the node: rosterOf builds
+   * the assignment's roster field by field, so a node's assignment is the same with or without cars.
+   */
+  car?: CarId;
 }
 
 export interface PlaceRequest {
@@ -230,7 +238,7 @@ export type MatchState = 'assigned' | 'reporting' | 'verifying' | 'done';
  * for left and match_over (it keeps the player's lock only on 'left': the match goes on without
  * them), 503 for offline (it keeps the lock: the node may come back).
  */
-export type RejoinAnswer = { ok: true; ticket: string; wsUrl: string } | { ok: false; code: 'no_match' | 'not_in_match' | 'left' | 'match_over' | 'offline' };
+export type RejoinAnswer = { ok: true; ticket: string; wsUrl: string; cars?: Array<CarId | null> } | { ok: false; code: 'no_match' | 'not_in_match' | 'left' | 'match_over' | 'offline' };
 
 /**
  * leave() resolved: the leave is recorded (the Worker answers 200 and frees the lock), whatever
@@ -281,6 +289,12 @@ export interface MatchEntry {
   verifiedBy: string | null;
   outcome: MatchOutcome | null;
   ledger: LedgerEntry | null;
+  /**
+   * A failed verification on a community node: whose wallet it freezes, and why. Settled with the
+   * match, so the NodeRegistryDO writes the freeze with the outcome (nodeOutcome.ts /host-freeze).
+   * Absent in rows written before it, and on every other match.
+   */
+  freeze?: { operatorId: string; reason: string };
   /** When the control plane gives up waiting for a report. */
   deadline: number;
   /** Verification queue: when the job was queued, the last dispatch attempt, a dispatch in flight. */
@@ -1158,7 +1172,14 @@ export class ControlPlane {
     const n = this.registry.node(m.nodeId);
     if (!n || (m.transport === 'rtc' && !this.isOnline(n.nodeId)) || (m.transport === 'wss' && !n.publicUrl)) return { ok: false, code: 'offline' };
     const ticket = await createNodeTicket(await this.key, { sub: playerId, mid: matchId, team: e.team, slot: e.slot, name: e.name, nodeId: n.nodeId }, this.now());
-    return { ok: true, ticket, wsUrl: this.urlFor(n, m.transport, matchId) };
+    const cars = this.carsOf(m);
+    return { ok: true, ticket, wsUrl: this.urlFor(n, m.transport, matchId), ...(cars ? { cars } : {}) };
+  }
+
+  /** The match's cars by slot (each human's from `humans`, the bots' none), or undefined when every seat drives the default. */
+  private carsOf(m: MatchEntry): Array<CarId | null> | undefined {
+    const cars = new Map(m.humans.map((h) => [h.playerId, h.car]));
+    return carsBySlot(m.assign.roster.length, m.assign.roster.map((e) => ({ slot: e.slot, car: e.kind === 'player' && e.playerId ? cars.get(e.playerId) : undefined })));
   }
 
   /** rejoin() without the reason: null when the player cannot rejoin. */
@@ -1596,7 +1617,10 @@ export class ControlPlane {
     if (changed) this.notifyStatus(m.nodeId, changed);
     if (!ok) {
       this.log(`ALERT match ${matchId} on ${host.name}: verification ${why} ${verdict.message ?? ''}`);
-      if (!host.trusted) this.shop?.freeze(host.operatorId, `verification_failed:${matchId}`);
+      if (!host.trusted) {
+        m.freeze = { operatorId: host.operatorId, reason: `verification_failed:${matchId}` };
+        this.shop?.freeze(m.freeze.operatorId, m.freeze.reason);
+      }
       return this.voidMatch(m, 'verification_failed:' + why);
     }
     const reason = verdict.endReason ?? res.endReason;

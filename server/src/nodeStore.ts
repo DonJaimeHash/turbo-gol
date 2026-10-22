@@ -13,15 +13,37 @@
  *   nodes         every registered node
  *   node_matches  the matches the control plane keeps (settled ones until its retention ends)
  *   outbox        the calls of each settled match (nodeOutcome.ts), until each is delivered
+ *   ledger_entries the rewards ledger (nodes/control-plane/ledger.ts): one row per scored match,
+ *                 written with the match it settles; kept WINDOW_DAYS (the leaderboard, the summaries)
+ *   ledger_totals every operator's all-time points and verified matches, updated in the same
+ *                 transaction as its entry
+ *   ledger_notes  the repeat decay's notes of matches that earned nothing by themselves, kept 24 h
+ * Ledger.restore reads the three back at every start (ledgerSnapshot): a deploy keeps the decay,
+ * the leaderboard and the summaries. The points themselves go to the operator's account (AccountsDO
+ * host_credits, through the outbox), which keeps them for good.
  */
 import { STATE_VERSION, matchToRow, nodeToRow, tokenToRow } from '../../nodes/control-plane/persist';
 import type { MatchRow, MatchStore, NodeRow, RegistryStore, TokenRow } from '../../nodes/control-plane/persist';
 import type { MatchEntry, MatchOutcome, MatchState } from '../../nodes/control-plane/controlPlane';
+import { REPEAT_WINDOW_MS, WINDOW_DAYS } from '../../nodes/control-plane/ledger';
+import type { GroupNote, LedgerEntry, LedgerSnapshot } from '../../nodes/control-plane/ledger';
 import { TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
 import type { NodeRecord, TokenRecord } from '../../nodes/control-plane/registry';
 import type { SqlLike } from './accountStore';
 import { outcomeCalls } from './nodeOutcome';
 import type { OutcomeCall } from './nodeOutcome';
+
+const DAY_MS = 24 * 60 * 60_000;
+
+/** A note's player ids ([] when the row does not read). */
+function playersOf(v: string): string[] {
+  try {
+    const o: unknown = JSON.parse(v);
+    return Array.isArray(o) ? o.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 /** One undelivered call. */
 export interface OutboxRow extends OutcomeCall {
@@ -61,7 +83,12 @@ export class NodeStore implements RegistryStore, MatchStore {
       id INTEGER PRIMARY KEY AUTOINCREMENT, match_id TEXT NOT NULL, target TEXT NOT NULL, path TEXT NOT NULL,
       body TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
     s.exec('CREATE INDEX IF NOT EXISTS outbox_next ON outbox (next_at)');
-    const v = s.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'state_version'").toArray()[0]?.v;
+    s.exec('CREATE TABLE IF NOT EXISTS ledger_entries (match_id TEXT PRIMARY KEY, operator_id TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL)');
+    s.exec('CREATE INDEX IF NOT EXISTS ledger_entries_at ON ledger_entries (at)');
+    s.exec('CREATE TABLE IF NOT EXISTS ledger_totals (operator_id TEXT PRIMARY KEY, earned REAL NOT NULL, verified INTEGER NOT NULL)');
+    s.exec('CREATE TABLE IF NOT EXISTS ledger_notes (operator_id TEXT NOT NULL, players TEXT NOT NULL, at INTEGER NOT NULL)');
+    s.exec('CREATE INDEX IF NOT EXISTS ledger_notes_at ON ledger_notes (at)');
+    const v =s.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'state_version'").toArray()[0]?.v;
     if (v === undefined) {
       s.exec("INSERT INTO meta (k, v) VALUES ('state_version', ?)", String(STATE_VERSION));
     } else if (Number(v) !== STATE_VERSION) {
@@ -148,10 +175,12 @@ export class NodeStore implements RegistryStore, MatchStore {
    */
   finished(m: MatchEntry, o: MatchOutcome): void {
     const humans = m.assign.roster.filter((e) => e.kind === 'player' && e.playerId).map((e) => e.playerId as string);
-    const calls = outcomeCalls(o, m.assign, humans);
+    const calls = outcomeCalls(o, m.assign, humans, m);
     const now = this.now();
     this.tx(() => {
       this.save(m);
+      // Its points: the ledger's row and totals, and the operator's credit (an outbox row below).
+      if (m.ledger) this.ledgerEntry(m.ledger, now);
       for (const c of calls) {
         this.sql.exec('INSERT INTO outbox (match_id, target, path, body, attempts, next_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)', c.matchId, c.target, c.path, c.body, now, now);
       }
@@ -161,6 +190,51 @@ export class NodeStore implements RegistryStore, MatchStore {
 
   drop(matchId: string): void {
     this.sql.exec('DELETE FROM node_matches WHERE match_id = ?', matchId);
+  }
+
+  // ---- the rewards ledger -------------------------------------------------------------------
+
+  /** One scored match (once per match id) and its operator's totals; entries past the window go. */
+  private ledgerEntry(e: LedgerEntry, now: number): void {
+    if (this.sql.exec('SELECT 1 AS x FROM ledger_entries WHERE match_id = ?', e.matchId).toArray().length > 0) return;
+    this.sql.exec('INSERT INTO ledger_entries (match_id, operator_id, at, data) VALUES (?, ?, ?, ?)', e.matchId, e.operatorId, e.at, JSON.stringify(e));
+    this.sql.exec(
+      'INSERT INTO ledger_totals (operator_id, earned, verified) VALUES (?, ?, ?) ON CONFLICT(operator_id) DO UPDATE SET earned = earned + excluded.earned, verified = verified + excluded.verified',
+      e.operatorId,
+      e.points,
+      e.verified ? 1 : 0,
+    );
+    this.sql.exec('DELETE FROM ledger_entries WHERE at < ?', now - WINDOW_DAYS * DAY_MS);
+  }
+
+  /** The ledger's note of a match that earned nothing by itself (Ledger onNote); notes past the repeat window go. */
+  ledgerNote(n: GroupNote): void {
+    this.sql.exec('INSERT INTO ledger_notes (operator_id, players, at) VALUES (?, ?, ?)', n.operatorId, JSON.stringify(n.playerIds), n.at);
+    this.sql.exec('DELETE FROM ledger_notes WHERE at <= ?', n.at - REPEAT_WINDOW_MS);
+  }
+
+  /** What Ledger.restore reads at the start: the window's entries, the repeat window's notes, every operator's totals. */
+  ledgerSnapshot(now: number): LedgerSnapshot {
+    const s = this.sql;
+    s.exec('DELETE FROM ledger_entries WHERE at < ?', now - WINDOW_DAYS * DAY_MS);
+    s.exec('DELETE FROM ledger_notes WHERE at <= ?', now - REPEAT_WINDOW_MS);
+    const entries: LedgerEntry[] = [];
+    for (const r of s.exec<{ data: string }>('SELECT data FROM ledger_entries ORDER BY at').toArray()) {
+      try {
+        entries.push(JSON.parse(r.data) as LedgerEntry);
+      } catch {
+        /* a row that does not read is skipped: its points are in the totals and the account already */
+      }
+    }
+    const notes = s
+      .exec<{ operator_id: string; players: string; at: number }>('SELECT operator_id, players, at FROM ledger_notes')
+      .toArray()
+      .map((r) => ({ operatorId: r.operator_id, playerIds: playersOf(r.players), at: Number(r.at) }));
+    const totals = s
+      .exec<{ operator_id: string; earned: number; verified: number }>('SELECT operator_id, earned, verified FROM ledger_totals')
+      .toArray()
+      .map((r) => ({ operatorId: r.operator_id, earned: Number(r.earned), verified: Number(r.verified) }));
+    return { entries, notes, totals };
   }
 
   // ---- outbox -------------------------------------------------------------------------------

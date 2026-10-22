@@ -2,7 +2,8 @@
 // that comes with them: "what matters for P2P and ranked matches is the DEFAULT physics; the
 // experimental counts for nothing". Covered here:
 //   - LobbyDO: the rules in the settings (strict, P2P only), every guest gate (create, admit, the
-//     socket upgrade, settings, start), the summary's EXP flag, the /custom body;
+//     socket upgrade, settings, start), the summary's EXP flag, the /custom body (and, beside the
+//     rules, the cosmetic car each member's seat keeps);
 //   - the Worker: a guest's lobby with rules (403 account_required), the casual and ranked queues
 //     never take rules (400 experimental_lobby_only);
 //   - the standard-physics-only paths refuse rules whoever sends them: MatchDO /internal/create,
@@ -295,6 +296,28 @@ test('LobbyDO: the start hands the rules to the matchmaker (/custom physics); wi
   await plain.upgrade('acct2');
   await plain.send(p, { t: 'start' });
   assert.equal(plain.mm.calls.find((c) => c.path === '/custom').body.physics, null);
+});
+
+test("LobbyDO (cosmetic cars, not rules): each member's seat keeps the car its admit brought; the state shows it, the start hands it to /custom, a fresh admit takes the new one", async () => {
+  const h = await makeLobby({ name: 'Sala', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 }, { playerId: 'host1', name: 'Ana', guest: false, car: 'tero' });
+  const host = (await h.upgrade('host1')).ws;
+  assert.equal((await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false, car: 'pampero' })).status, 200);
+  const b = (await h.upgrade('acct2')).ws;
+  assert.equal((await h.post('/internal/admit', { playerId: 'guest3', name: 'Caro', guest: true, car: 'ferrari' })).status, 200);
+  await h.upgrade('guest3');
+  const members = () => host.of('state').at(-1).lobby.members.map((m) => [m.name, m.car ?? null]);
+  assert.deepEqual(members(), [['Ana', 'tero'], ['Beto', 'pampero'], ['Caro', null]], 'a junk car is dropped');
+  // Beto picked another car and came back through a fresh admit (another tab).
+  await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false, car: 'condor' });
+  await h.upgrade('acct2');
+  assert.deepEqual(members()[1], ['Beto', 'condor']);
+  await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false });
+  await h.upgrade('acct2');
+  assert.deepEqual(members()[1], ['Beto', null], 'back on the default car');
+  await h.send(host, { t: 'start' });
+  const custom = h.mm.calls.find((c) => c.path === '/custom');
+  assert.deepEqual(custom.body.members.map((m) => [m.playerId, m.car ?? null]), [['host1', 'tero'], ['acct2', null], ['guest3', null]]);
+  assert.equal(b.of('match').length, 0, 'the replaced socket gets nothing');
 });
 
 // ---- the Worker -----------------------------------------------------------------------------------
