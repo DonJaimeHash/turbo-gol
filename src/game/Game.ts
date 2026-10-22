@@ -2,7 +2,7 @@
  * Game: the fixed-step loop that wires every module together (see ARCHITECTURE.md "Frame loop").
  *
  *   requestAnimationFrame:
- *     dt = clamp(now - last, 0, MAX_FRAME_DT); acc += dt
+ *     dt = clamp(now - last, 0, MAX_FRAME_DT); acc += dt (x free play's game speed, never above 1)
  *     while acc >= TICK_DT:  input -> controls, bot -> controls, sim.step(1), prev <- cur,
  *                            sim.sync() (fires goal / bump / ball-hit events), cur <- sim.buf,
  *                            match.tick(), pad pickups, player sound edges
@@ -57,7 +57,8 @@
  * (quality.ts menuQualities), main.ts gates a saved pick at boot (bootTier.ts gateTierPrefs), and
  * every account or switch change re-checks it (`checkTierLock`: a locked player's saved super low
  * becomes Performance from the next start, said in a toast, nothing reloads). Devices that run
- * super low on their own keep it.
+ * super low on their own keep it. The same unlocked player gets experimental free play (the
+ * training screen's tile: startTraining(FREEPLAY_ID, { rules }), see Training below).
  *
  * `#diag` (src/render/frameStats.ts): the loop feeds the frame times and the CPU of the ball
  * prediction, the bots, the physics step and the render call; nothing is measured without it.
@@ -105,6 +106,11 @@
  * all, so car and ball stay exactly where the shot put them. Leaving (pause screen quit, the
  * summary's "back to menu", or startMatch / an online session) rebuilds the offline roster of the
  * selected mode (restoreOfflineRoster), so the next friendly match is the same as after boot.
+ * Experimental free play (`freePlayRules`, an unlocked player's preset) builds its arena with the
+ * preset's physics before the car (src/game/experimentalTraining.ts), runs the clock at its game
+ * speed, shows "Rules: name" and a RULES pause entry (the settings screen's Experimental tab; the
+ * pick there applies once, when it closes: applyFreePlayRules) and saves no records; packs are
+ * always stock, and any training whose physics differ from the arena's rebuilds it.
  */
 import * as THREE from 'three/webgpu';
 import type { Difficulty } from '../ai/Bot';
@@ -117,9 +123,11 @@ import type { ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
 import { TrainingStore } from './trainingStore';
 import { ExperimentalStore, type ExperimentalProblem } from './experimentalStore';
-import { MAX_PRESETS } from './physicsRules';
+import { MAX_PRESETS, canonicalValues, type PhysicsValues } from './physicsRules';
 import { arenaMutators } from '../sim/mutators';
-import type { ExperimentalOptions, SuperlowStatus } from '../render/experimentalPage';
+import { STOCK_ARENA_FINGERPRINT, accumulate, buildTrainingArena, needsTrainingArena, planTrainingArena, trainingRules, type TrainingArenaPlan } from './experimentalTraining';
+import type { ExperimentalContext, ExperimentalOptions, SuperlowStatus } from '../render/experimentalPage';
+import { presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
 import { REGIONS, isPlaylist } from '../net/account';
 import type { RegionId } from '../net/account';
@@ -568,6 +576,15 @@ export class Game implements P2PGameHooks {
   training: TrainingSession | null = null;
   /** Free play: unlimited boost (trainingBoost toggles it; ON at every free play start, OFF in packs). */
   trainingUnlimitedBoost = true;
+  /**
+   * Experimental free play's rules (the preset picked on the training screen, or later in the pause
+   * menu's RULES), null in plain free play and in packs. Debug: window.__game.freePlayRules.
+   */
+  freePlayRules: { readonly id: string; readonly name: string; readonly values: Readonly<PhysicsValues> } | null = null;
+  /** The physics the training arena was built with (experimentalTraining.ts: packs rebuild a non-stock one). */
+  private trainingArenaFp = STOCK_ARENA_FINGERPRINT;
+  /** Experimental free play's game speed (the accumulator's factor; 1 everywhere else). */
+  private trainingSpeed = 1;
 
   /** Interpolation snapshots (full state buffers). */
   readonly prev = new Float32Array(STATE_BUFFER_FLOATS);
@@ -904,8 +921,9 @@ export class Game implements P2PGameHooks {
   // ---- experimental features (Settings > Experimental) -----------------------------------------
 
   /**
-   * A signed-in player with Settings > Experimental's switch on: Super low is listed in Graphics
-   * (and, later, experimental free play and lobby rules). Guests are never unlocked.
+   * A signed-in player with Settings > Experimental's switch on: Super low is listed in Graphics,
+   * the preset editor and experimental free play are there (and, later, lobby rules). Guests are
+   * never unlocked.
    */
   get experimentalUnlocked(): boolean {
     return this.accounts.signedIn && this.experimental.enabled();
@@ -926,9 +944,16 @@ export class Game implements P2PGameHooks {
     this.onExperimentalChange();
   }
 
-  /** The experimental state changed: the Super low lock, and the settings screen when it is open. */
+  /**
+   * The experimental state changed: the Super low lock, experimental free play when the player is
+   * no longer unlocked (signed out, the switch off on another device: stock physics at once; while
+   * the settings screen is open over it, when that closes), and the settings screen when it is open.
+   */
   private onExperimentalChange(): void {
     this.checkTierLock();
+    if (this.freePlayRules !== null && !this.experimentalUnlocked && !this.pauseSettingsOpen && this.applyFreePlayRules() && this.hud.pauseMenuVisible) {
+      this.hud.setPaused(true, this.pauseEntries(), this.pauseHint()); // RULES goes
+    }
     this.hud.refreshSettings(this.settingsOptions());
   }
 
@@ -978,20 +1003,26 @@ export class Game implements P2PGameHooks {
     return this.quality === 'superlow' ? 'auto' : 'listed';
   }
 
+  /**
+   * Settings > Experimental: the switch and, for a signed-in player, the preset editor. In
+   * experimental free play the editor's pick is free play's rules ('training': applied when the
+   * screen closes, openPauseSettings).
+   */
   private experimentalOptions(): ExperimentalOptions {
+    const context: ExperimentalContext = this.training !== null && this.freePlayRules !== null ? 'training' : 'menu';
     return {
       state: () => ({
         available: this.accounts.signedIn,
         enabled: this.experimental.enabled(),
         offRestarts: this.experimentalOffRestarts(),
         superlow: this.superlowStatus(),
-        presetNames: this.experimental.presets().map((p) => p.name),
-        maxPresets: MAX_PRESETS,
       }),
       setEnabled: (on) => this.setExperimentalEnabled(on),
       onOpen: () => {
         if (this.accounts.signedIn) void this.experimental.sync();
       },
+      presets: this.accounts.signedIn ? this.experimental : undefined,
+      context,
     };
   }
 
@@ -1043,6 +1074,14 @@ export class Game implements P2PGameHooks {
       get training() {
         return game.trainingStore;
       },
+      experimental: {
+        get unlocked() {
+          return game.experimentalUnlocked;
+        },
+        get store() {
+          return game.experimental;
+        },
+      },
       config: async (): Promise<MenuConfig> => {
         if (net === null) return { regions: REGIONS, autoRegion: '', oauth: [], online: false };
         const c = await net.config();
@@ -1075,9 +1114,9 @@ export class Game implements P2PGameHooks {
         game.menuNotice = undefined;
         game.startMatch();
       },
-      startTraining: (id) => {
+      startTraining: (id, opts) => {
         if (game.session !== null && game.session.busy) game.session.cancel();
-        game.startTraining(id);
+        game.startTraining(id, opts);
       },
       search: (req) => game.menuSearch(req),
       cancelSearch: () => {
@@ -1208,8 +1247,9 @@ export class Game implements P2PGameHooks {
   /**
    * The pause menu's entries: RESUME, SETTINGS, QUIT (online it takes a second press: leaving may
    * count as an abandon); training adds its entries on one row (pack: reset / previous / next shot;
-   * free play: reset ball / reset car / unlimited boost) and QUIT leaves training. Paused under a
-   * pack summary: nothing (the summary's own buttons stay the only ones).
+   * free play: reset ball / reset car / unlimited boost) and QUIT leaves training; experimental
+   * free play also gets RULES (the settings screen on its Experimental tab). Paused under a pack
+   * summary: nothing (the summary's own buttons stay the only ones).
    */
   private pauseEntries(): PauseEntry[] {
     const resume: PauseEntry = { id: 'resume', kind: 'primary', label: () => t('pause.resume'), select: (mouse) => this.resumeFromMenu(mouse) };
@@ -1240,6 +1280,7 @@ export class Game implements P2PGameHooks {
           { id: 'prev-shot', kind: 'row', label: () => t('trainingHud.prevShot'), select: (mouse) => resumeAnd(mouse, (s) => s.prevShot()) },
           { id: 'next-shot', kind: 'row', label: () => t('trainingHud.nextShot'), select: (mouse) => resumeAnd(mouse, (s) => s.nextShot()) },
         ];
+    if (tr.isFreeplay && this.freePlayRules !== null) extras.push({ id: 'rules', label: () => t('pause.rules'), select: () => this.openPauseSettings('experimental') });
     return [resume, ...extras, settings, { id: 'quit', kind: 'quit', label: () => t('trainingHud.quit'), select: () => this.stopTraining() }];
   }
 
@@ -1275,22 +1316,36 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * SETTINGS on the pause menu (or pad X there): the settings screen over the paused game, the
-   * pause menu hidden under it. Its BACK (button, Esc, pad B) returns to the pause menu, focus on
-   * SETTINGS; the Esc / B that closed it is dropped, so it neither resumes nor quits.
+   * SETTINGS on the pause menu (or pad X there), RULES (experimental free play: on the Experimental
+   * tab): the settings screen over the paused game, the pause menu hidden under it. Its BACK
+   * (button, Esc, pad B) returns to the pause menu, focus on the entry that opened it; the Esc / B
+   * that closed it is dropped, so it neither resumes nor quits. In experimental free play the
+   * rules picked there apply then, once (applyFreePlayRules), and the pause menu is rebuilt (no
+   * RULES entry any more once the player is not unlocked).
    */
-  private openPauseSettings(): void {
+  private openPauseSettings(tab?: SettingsTab): void {
     if (!this.paused || this.pauseSettingsOpen || this.menuShown || this.hud.menuVisible) return;
     this.pauseSettingsOpen = true;
     this.hud.setPauseCovered(true);
-    this.hud.openSettingsScreen(this.settingsOptions(), () => {
-      this.pauseSettingsOpen = false;
-      void this.experimental.flush();
-      // Esc is the pause binding too: its tap (still pending in Input) must not reach the next tick.
-      this.input.latchEdges();
-      this.hud.setPauseHint(this.pauseHint()); // the pause binding may have been changed there
-      this.hud.setPauseCovered(false, 'settings');
-    });
+    const from = tab === 'experimental' ? 'rules' : 'settings';
+    this.hud.openSettingsScreen(
+      this.settingsOptions(),
+      () => {
+        this.pauseSettingsOpen = false;
+        void this.experimental.flush();
+        // Esc is the pause binding too: its tap (still pending in Input) must not reach the next tick.
+        this.input.latchEdges();
+        if (this.freePlayRules !== null && this.applyFreePlayRules()) {
+          // The entries changed with the rules (RULES goes when the player is no longer unlocked).
+          this.hud.setPaused(true, this.pauseEntries(), this.pauseHint());
+          this.hud.setPauseCovered(false, this.freePlayRules !== null ? from : 'settings');
+          return;
+        }
+        this.hud.setPauseHint(this.pauseHint()); // the pause binding may have been changed there
+        this.hud.setPauseCovered(false, from);
+      },
+      tab,
+    );
   }
 
   /** Leave the pause menu's settings screen without its BACK (the game resumed or the menus took over). */
@@ -1358,6 +1413,9 @@ export class Game implements P2PGameHooks {
     }
     if (q === this.quality) {
       if (fallback !== null) this.tierGuard.arm(); // nothing to fall back to: the guard listens again
+      // The lit chip picked: the running tier becomes the player's pick when the prefs hold another
+      // (a Super low pick the lock turned into Performance earlier this session, then unlocked again).
+      else if (!this.qualitySet || this.savedQuality !== q) this.choose(q);
       return Promise.resolve();
     }
     // Into or out of super low: its own backend and world, a new page (quality.ts needsReload).
@@ -2001,13 +2059,21 @@ export class Game implements P2PGameHooks {
    * another), unlimited boost is ON for free play and OFF for packs (each shot sets its own boost),
    * the TrainingHud opens and the first shot is placed, frozen until the first car input. Unknown
    * ids are ignored with a warning. Reachable from the console as window.__game.startTraining(id).
+   *
+   * `opts.rules` (a preset id: the training screen's Experimental free play) makes free play
+   * experimental for an unlocked player: the preset's physics on a fresh arena before the car
+   * (experimentalTraining.ts), its game speed on the loop's clock, "Rules: name" on the
+   * TrainingHud, RULES in the pause menu, and no records. Packs always run stock physics: rules
+   * given with a pack are ignored (with a warning). The arena is kept from one training to the
+   * next only while the wanted physics are the same (a pack after experimental free play is stock).
    */
-  startTraining(id: string): void {
+  startTraining(id: string, opts: { rules?: string | null } = {}): void {
     const pack = id === FREEPLAY_ID ? null : packById(id);
     if (pack === undefined) {
       console.warn(`Game.startTraining: unknown training id '${id}'`);
       return;
     }
+    if (pack !== null && opts.rules != null) console.warn(`Game.startTraining: training packs run stock physics; rules '${opts.rules}' ignored`);
     const session = this.session;
     if (session !== null && session.state !== 'idle') session.leave();
     if (this.hud.capturing) this.input.cancelRebind();
@@ -2021,16 +2087,61 @@ export class Game implements P2PGameHooks {
     this.menuReturnAt = -1;
     this.goCaptionUntil = -1;
     this.match.reset();
-    if (this.training === null) this.applyTrainingRoster();
+    this.freePlayRules = pack === null && opts.rules != null ? this.freePlayPreset(opts.rules) : null;
+    // The pause menu's RULES picks from the remembered preset: it starts on the one playing.
+    if (this.freePlayRules !== null) this.experimental.setLastUsed(this.freePlayRules.id);
+    const plan = planTrainingArena(trainingRules(id, this.freePlayRules?.values ?? null, this.experimentalUnlocked));
+    if (needsTrainingArena(this.training !== null, this.trainingArenaFp, plan)) this.applyTrainingRoster(plan);
+    this.trainingSpeed = plan.speed;
     this.trainingUnlimitedBoost = pack === null;
     this.sim.setUnlimitedBoost(this.trainingUnlimitedBoost);
     const th = this.ensureTrainingHud();
-    th.show(pack === null ? FREEPLAY_NAME : pack.name, pack === null ? 0 : pack.shots.length, pack === null);
+    th.show(pack !== null ? pack.name : this.freePlayRules !== null ? t('training.expFreePlay') : FREEPLAY_NAME, pack === null ? 0 : pack.shots.length, pack === null);
+    th.setRules(this.freePlayRules !== null ? t('trainingHud.rulesLine', { name: this.freePlayRules.name }) : null);
     this.trainingHintsPad = null;
-    this.training = new TrainingSession(pack, this.trainingHooks, { records: this.trainingStore });
+    // Experimental free play never saves anything (free play records nothing anyway: packs only).
+    this.training = new TrainingSession(pack, this.trainingHooks, this.freePlayRules === null ? { records: this.trainingStore } : { storage: null });
     this.training.start();
     this.acc = 0;
     this.snapCamera = true;
+  }
+
+  /** The preset `presetId` as experimental free play's rules (standard when it is gone), null for a player who is not unlocked. */
+  private freePlayPreset(presetId: string): Game['freePlayRules'] {
+    if (!this.experimentalUnlocked) return null;
+    const p = this.experimental.get(presetId) ?? this.experimental.get('standard');
+    return p === null ? null : { id: p.id, name: presetName(p), values: canonicalValues(p.values) };
+  }
+
+  /**
+   * Experimental free play takes the rules of the settings screen ('training' context: the preset
+   * picked there, the store's lastUsed) when that screen closes, or stock physics once the player
+   * is no longer unlocked (plain free play from then on). A change of physics rebuilds the arena
+   * once (car and ball back to their spots, unlimited boost as it was); a change of game speed or
+   * name only updates the clock and the TrainingHud. True when anything changed.
+   */
+  private applyFreePlayRules(): boolean {
+    const tr = this.training;
+    const was = this.freePlayRules;
+    if (tr === null || !tr.isFreeplay || was === null) return false;
+    const next = this.freePlayPreset(this.experimental.lastUsed());
+    const plan = planTrainingArena(trainingRules(FREEPLAY_ID, next?.values ?? null, this.experimentalUnlocked));
+    const sameRules = next !== null && next.id === was.id && next.name === was.name && JSON.stringify(next.values) === JSON.stringify(was.values);
+    if (sameRules && plan.fingerprint === this.trainingArenaFp) return false;
+    this.freePlayRules = next;
+    this.trainingSpeed = plan.speed;
+    if (plan.fingerprint !== this.trainingArenaFp) {
+      this.applyTrainingRoster(plan);
+      this.sim.setUnlimitedBoost(this.trainingUnlimitedBoost);
+      tr.start(); // free play: car and ball back to their spots
+      this.acc = 0;
+    }
+    const th = this.trainingHud;
+    if (th !== null) {
+      th.setTitle(next !== null ? t('training.expFreePlay') : FREEPLAY_NAME);
+      th.setRules(next !== null ? t('trainingHud.rulesLine', { name: next.name }) : null);
+    }
+    return true;
   }
 
   /**
@@ -2050,6 +2161,8 @@ export class Game implements P2PGameHooks {
   private endTraining(): void {
     if (this.training === null) return;
     this.training = null;
+    this.freePlayRules = null;
+    this.trainingSpeed = 1;
     if (this.trainingHud !== null) this.trainingHud.hide();
     this.hud.hideBanner();
     this.goCaptionUntil = -1;
@@ -2058,11 +2171,15 @@ export class Game implements P2PGameHooks {
     this.restoreOfflineRoster();
   }
 
-  /** The training roster: a fresh arena with only the player's blue car (no bot slots on either team). */
-  private applyTrainingRoster(): void {
+  /**
+   * The training roster: a fresh arena with the plan's physics (stock, or experimental free play's
+   * preset, applied before the car: experimentalTraining.ts) and only the player's blue car (no
+   * bot slots on either team).
+   */
+  private applyTrainingRoster(plan: TrainingArenaPlan): void {
     const sim = this.sim;
-    sim.createArena(TICK_RATE);
-    this.playerCarId = sim.addCar(Team.Blue, CarPreset.Standard);
+    this.playerCarId = buildTrainingArena(sim, plan, TICK_RATE, Team.Blue, CarPreset.Standard);
+    this.trainingArenaFp = plan.fingerprint;
     this.applyRoster([this.playerCarId]);
     sim.setCarDodgeDeadzone(this.playerCarId, this.settings.controls.dodgeDeadzone);
     this.rebuildCarViews(this.quality);
@@ -2698,8 +2815,8 @@ export class Game implements P2PGameHooks {
       // The menu is pad-driven while a room connects: keep polling the gamepad.
       if (inMenu) this.input.sample(this.playerControls);
     } else if (!inMenu && !this.paused && !this.loadingHold) {
-      this.acc += dt;
-      if (this.acc > MAX_FRAME_DT) this.acc = MAX_FRAME_DT;
+      // Experimental free play's game speed slows the sim clock (never above 1: fewer ticks, no extra work).
+      this.acc = accumulate(this.acc, dt, this.training !== null ? this.trainingSpeed : 1, MAX_FRAME_DT);
       while (this.acc >= TICK_DT) {
         if (this.training !== null) this.trainingTick();
         else this.tick();

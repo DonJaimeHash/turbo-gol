@@ -1028,6 +1028,46 @@
 .mn-training-top .mn-tile {
   width: 100%;
 }
+/* Experimental free play (unlocked players): its tile beside the rules picker. */
+.mn-exp {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+.mn-exp-side {
+  display: grid;
+  gap: 8px;
+  align-content: center;
+  padding: 12px 16px;
+  border: 1px solid var(--mn-edge);
+  border-radius: 12px;
+  background: var(--mn-card);
+}
+.mn-exp-side .mn-row {
+  padding: 0;
+}
+.mn-exp-side .mn-cycle {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mn-exp-summary {
+  margin: 0;
+}
+.mn-exp-edit {
+  justify-self: start;
+}
+.mn-tile-exp {
+  border-left-color: #c79bff;
+}
+.mn-tile-exp .mn-tile-glyph,
+.mn-tile-exp .mn-tile-tag {
+  color: #c79bff;
+}
+.mn-tile-exp .mn-tile-tag {
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
 .mn-packs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1342,6 +1382,7 @@
   .mn-play-tiles,
   .mn-playlists,
   .mn-packs,
+  .mn-exp,
   .mn-profile-ratings,
   .mn-teams {
     grid-template-columns: 1fr;

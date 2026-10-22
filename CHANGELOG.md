@@ -40,7 +40,14 @@ All notable changes to Turbogol are documented here. The format follows
   saved Super low pick of a player who signs out or turns the switch off becomes Performance from
   the next start). The account keeps the switch and up to 10 physics presets (values on a fixed
   grid with safe limits, five read-only built-ins), with a copy on the device that syncs when the
-  connection is back; the editor and the experimental modes that use them come next.
+  connection is back. The same tab edits them: pick a preset (built-ins can be duplicated, not
+  changed), New, Duplicate, Rename, Delete, and step each value on its grid next to its standard
+  value, with a one-line summary of the changes and Reset to standard; it works with mouse,
+  keyboard, controller and touch, in English and Spanish, and every edit saves by itself.
+- Experimental free play, in Training for signed-in players with experimental features on: free
+  play with the physics of a preset (picked on the training screen, or in the pause menu's RULES,
+  applied when that screen closes), including a slower game speed. It saves no records; training
+  packs, ranked, casual and P2P matches keep the standard physics.
 - `#diag` shows why the game runs its quality, the frame rate and the time each part of a frame
   takes, and has a button that loses the graphics device to test the recovery; new address flags
   help measure a slow device (`#pr=`, `#hide=`, `#nopost`, `#norender`, `#diag=audit`, `#tv` for

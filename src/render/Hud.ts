@@ -4,7 +4,7 @@
  * mode, off-screen ball indicator, countdown, banners, the pause menu, the Tab scoreboard, a
  * pointer-lock hint, the start menu and the settings screen (rebinding for keyboard/mouse and
  * controller, camera and gameplay sliders, the master volume, the graphics quality, the
- * account-only experimental switch: experimentalPage.ts). Every
+ * account-only experimental switch and physics preset editor: experimentalPage.ts). Every
  * per-frame setter caches its last value and touches the DOM only when something changed, so
  * calling them every frame costs nothing and allocates nothing.
  *
@@ -1376,6 +1376,14 @@ export class Hud {
   menuAction(action: MenuAction): void {
     if (!this.menuVisible || this.menuOptions === null || this.captureRow !== null) return;
     if (this.settingsOpen) {
+      // A text field of the screen is being typed in (the preset name: the keyboard is up): pad A
+      // or B leaves it (that saves it), up / down leave it and move on; left / right are the field's.
+      const active = typeof document !== 'undefined' ? document.activeElement : null;
+      if (active instanceof HTMLInputElement && active.type === 'text' && this.settingsPanel !== null && this.settingsPanel.contains(active)) {
+        if (action === 'left' || action === 'right') return;
+        active.blur();
+        if (action !== 'up' && action !== 'down') return;
+      }
       if (dispatchFocus(this.settingsRing, action)) return;
       if (action === 'back') this.closeSettings();
       else if (action === 'quality' || action === 'settings') this.cycleTab(1);
@@ -1971,7 +1979,8 @@ export class Hud {
       QUALITIES.map((q) => ({ value: q, label: t(`quality.${q}`) })),
       () => this.quality,
       (q) => {
-        if (q === this.quality) return;
+        // The lit chip too: it makes the running tier the player's pick when the prefs hold
+        // another one (a Super low pick locked earlier this session; Game.switchQuality).
         this.quality = q;
         const opts = this.menuOptions;
         if (opts !== null && opts.onQualityChange) opts.onQualityChange(q);
@@ -1986,17 +1995,42 @@ export class Hud {
     return { page, items: [quality.item], actions: el('div', 'hud-settings-actions'), footer: null };
   }
 
-  /** Experimental: experimentalPage.ts (the switch for a signed-in player, a locked line for a guest). */
+  /**
+   * Experimental: experimentalPage.ts (a locked line for a guest; the switch and the preset editor
+   * for a signed-in player). Its rows come and go with the switch and the preset picked, so its
+   * focus stops are read again whenever it asks (`relayout`); its footer button (Reset to standard)
+   * is one of those stops, not a fixed footer.
+   */
   private buildExperimentalPage(): PageBuild {
     const built = buildExperimentalPage(
       {
         line: (className, text) => el('div', className, text),
+        button: (className, text, onClick) => {
+          const b = button(className, text);
+          b.addEventListener('click', onClick);
+          return b;
+        },
+        textInput: (className, maxLength, onCommit) => {
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.className = className;
+          input.maxLength = maxLength;
+          input.spellcheck = false;
+          input.autocomplete = 'off';
+          input.enterKeyHint = 'done';
+          input.addEventListener('change', () => onCommit(input.value));
+          return input;
+        },
         toggleRow: (label, get, set) => this.toggleRow(label, get, set),
+        bindFocus: (target, item) => target.addEventListener('pointerdown', () => this.settingsRing.focusItem(item)),
+        relayout: () => {
+          if (this.settingsOpen && this.tab === 'experimental') this.refreshFocusItems();
+        },
       },
       () => this.menuOptions?.experimental ?? null,
     );
     this.experimentalPage = built;
-    return { page: built.page, items: () => built.items(), actions: el('div', 'hud-settings-actions'), footer: null };
+    return { page: built.page, items: () => built.items(), actions: built.actions, footer: null };
   }
 
   /**
@@ -2221,11 +2255,22 @@ export class Hud {
     this.refreshTabLabels();
     this.refreshSliders();
     if (this.experimentalPage !== null) this.experimentalPage.refresh();
-    if (this.tabItems !== null && this.captureRow === null) {
-      const index = this.settingsRing.index;
-      this.settingsRing.use(this.tabItems[this.tab](), 0);
-      this.settingsRing.set(Math.min(index, this.settingsRing.items.length - 1), false);
-    }
+    this.refreshFocusItems();
+  }
+
+  /**
+   * Read the focus stops of the tab on screen again: the focus stays on the same row when it is
+   * still shown, else at its place in the list.
+   */
+  private refreshFocusItems(): void {
+    if (this.tabItems === null || this.captureRow !== null) return;
+    const ring = this.settingsRing;
+    const was = ring.item;
+    const index = ring.index;
+    const items = this.tabItems[this.tab]();
+    ring.use(items, 0);
+    const keep = was !== null ? items.indexOf(was) : -1;
+    ring.set(keep >= 0 ? keep : Math.min(index, items.length - 1), false);
   }
 
   private refreshTabLabels(): void {

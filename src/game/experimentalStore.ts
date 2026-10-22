@@ -16,6 +16,9 @@
  *     the upload is debounced (`flush`: when the settings screen closes, when another preset is
  *     picked, or PUSH_DELAY_MS after the last edit), one preset per request. Offline it stays
  *     dirty (one 'offline' problem: "saved on this device") and goes up with the next push;
+ *   - a preset the account refuses as full (409 too_many: another device filled it) stays here,
+ *     dirty, with one 'too_many' problem, and is not sent again until the account has room (a
+ *     delete from here, or an answer listing fewer than MAX_PRESETS presets);
  *   - deleting needs the server (offline: the 'delete_offline' problem), so there are no
  *     tombstones to keep.
  * Conflicts: last write wins, by the server's updatedAt. A pull keeps the local version of a dirty
@@ -158,6 +161,12 @@ export class ExperimentalStore {
   private readonly now: () => number;
   /** When the switch was last changed here (noteServerEnabled ignores older answers for a while). */
   private lastSwitchAt = -Infinity;
+  /**
+   * The presets the account refused as full (409 too_many), per account id: they stay here, dirty,
+   * and are not sent again (nor is the toast shown again) until the account has room: a delete
+   * from here, or an answer that lists fewer than MAX_PRESETS presets.
+   */
+  private readonly refusedFull = new Map<string, Set<string>>();
 
   constructor(remote: ExperimentalRemote | null, opts: ExperimentalStoreOptions = {}) {
     this.remote = remote;
@@ -373,7 +382,10 @@ export class ExperimentalStore {
     const c = this.load(id);
     c.presets = c.presets.filter((p) => p.id !== presetId);
     c.dirty = c.dirty.filter((d) => d !== presetId);
+    // The account has room again: the presets it refused as full go up with the next push.
+    const hadRefused = this.refusedFull.delete(id);
     this.adopt(id, c, ans);
+    if (hadRefused && this.load(id).dirty.length > 0) this.schedulePush();
     return true;
   }
 
@@ -437,14 +449,21 @@ export class ExperimentalStore {
    * and a server of different versions can cause: dropping the dirty mark would make the next pull
    * delete the player's preset).
    */
-  private failed(err: unknown): 'stop' | 'skip' {
+  private failed(err: unknown, refused?: { account: string; preset: string }): 'stop' | 'skip' {
     const code = errorCode(err);
     if (code === 'network') {
       this.problem('offline');
       return 'stop';
     }
     if (code === 'too_many') {
-      this.problem('too_many');
+      // Said once, and the preset waits here for room (refusedFull) instead of going up again.
+      let set = refused !== undefined ? this.refusedFull.get(refused.account) : undefined;
+      const first = set === undefined || set.size === 0;
+      if (refused !== undefined) {
+        if (set === undefined) this.refusedFull.set(refused.account, (set = new Set()));
+        set.add(refused.preset);
+      }
+      if (first) this.problem('too_many');
       return 'skip';
     }
     if (code === 'bad_preset') return 'skip';
@@ -476,12 +495,13 @@ export class ExperimentalStore {
       c = this.load(id);
       const p = c.presets.find((q) => q.id === pid);
       if (p === undefined) continue;
+      if (this.refusedFull.get(id)?.has(pid) === true) continue; // the account is full: it waits here for room
       const sig = presetSig(p);
       let ans: ExperimentalAnswer;
       try {
         ans = await remote.upsert(p);
       } catch (err) {
-        if (this.failed(err) === 'stop') {
+        if (this.failed(err, { account: id, preset: pid }) === 'stop') {
           if (last !== null) this.adopt(id, this.load(id), last);
           return false;
         }
@@ -529,6 +549,12 @@ export class ExperimentalStore {
     if (!c.enabledDirty) c.enabled = ans.enabled;
     if (c.lastUsed !== null && !isBuiltInId(c.lastUsed) && !out.some((p) => p.id === c.lastUsed)) c.lastUsed = null;
     this.save(id, c);
+    // The account has room again (a delete on another device): what it refused as full goes up next.
+    const refused = this.refusedFull.get(id);
+    if (refused !== undefined && ans.presets.length < MAX_PRESETS) {
+      this.refusedFull.delete(id);
+      if (refused.size > 0 && c.dirty.length > 0) this.schedulePush();
+    }
     this.emit();
   }
 }

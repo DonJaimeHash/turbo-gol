@@ -1482,6 +1482,126 @@ body {
   color: var(--red-hi);
 }
 
+.hud-settings-device.hud-exp-match {
+  white-space: normal;
+  line-height: 1.45;
+}
+
+/* The preset editor: the picker, its buttons and name, then one row per value: the name with its
+   standard value under it, then "− value +" (a range) or "‹ value ›" (a choice or a toggle). A
+   changed value is lime; a built-in's rows are dimmed and inert. Touch mode: 44 px targets. */
+.hud-exp-title {
+  margin-top: 14px;
+}
+
+/* The name column shrinks and wraps (long Spanish labels on a phone): the controls keep one column. */
+.hud-rule-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.hud-rule-std {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.hud-settings-ctl.hud-rule-ctl {
+  gap: 4px;
+}
+
+.hud-rule-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font: inherit;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  cursor: pointer;
+  text-shadow: none;
+}
+
+.hud-rule-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hud-rule-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.tg-touch .hud-rule-btn {
+  width: 44px;
+  height: 44px;
+}
+
+.hud-rule-value {
+  min-width: 9ch;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hud-rule-changed .hud-rule-value {
+  color: var(--brand);
+}
+
+.hud-rule-locked .hud-settings-label,
+.hud-rule-locked .hud-rule-value {
+  opacity: 0.6;
+}
+
+.hud-exp-picker .hud-rule-value {
+  min-width: 15ch;
+  color: var(--text);
+}
+
+.hud-exp-buttons {
+  margin: 0 8px 4px;
+}
+
+.hud-settings-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.hud-settings-action.hud-exp-armed {
+  color: var(--red-hi);
+  border-color: var(--red-hi);
+}
+
+.tg-touch .hud-exp-buttons .hud-settings-action,
+.tg-touch .hud-exp-actions .hud-settings-action {
+  min-height: 44px;
+}
+
+.hud-menu-name.hud-exp-name {
+  flex: 0 1 240px;
+  text-align: left;
+}
+
+.hud-settings-hint.hud-exp-status {
+  color: #ffd166;
+}
+
+.hud-settings-hint.hud-exp-summary {
+  color: var(--text);
+}
+
+.hud-settings-hint.hud-exp-live {
+  color: var(--blue-hi);
+}
+
 .hud-settings-foot {
   display: flex;
   flex-direction: column;
