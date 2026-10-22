@@ -42,7 +42,7 @@ const CAR_STATUS: Readonly<Record<CarId, CarStatus>> = {
 
   pampero: 'soon',
 
-  carpincho: 'soon',
+  carpincho: 'available',
 
   condor: 'soon',
 
