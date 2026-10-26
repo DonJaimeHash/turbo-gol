@@ -7,6 +7,14 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Hold a direction on a controller (the D-pad or the left stick) to walk through the menus: after a
+  short pause the focus keeps moving, and it stops at the end of the list instead of jumping
+  somewhere else; press again to go on. Past the top of a screen you reach the region and account
+  buttons in the top bar, past the bottom the search's CANCEL and the links at the foot of the
+  page, which a controller could not reach before.
+- Controller shortcuts in the menus: Start opens Settings and Y cancels the search you are in (X on
+  the keyboard). The bumpers, the triggers and Q / E are kept for switching sections and tabs in
+  the menus to come; during a match none of them does anything new.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
   boost and switch to the ball camera, with your own keys or buttons (keyboard and mouse, or the
@@ -121,6 +129,22 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- The menus remember where you were: going back to a screen (Esc, B, Back), or closing a dialog
+  such as the language list, puts the focus back on the tile or button you left from instead of
+  the first one. A list that refreshes under the focus (lobbies, the leaderboard's tabs, the
+  training packs) keeps your place.
+- Text fields no longer trap the arrows or a TV remote: a field reached with the arrows lets you
+  move on past it (on Custom lobbies, JOIN and REFRESH can now be reached with a remote); press OK,
+  Enter or A, or just type, to edit it, and Enter, Esc / B or ↑ / ↓ to stop editing (a field being
+  edited shows a lime line under it). Esc while typing no longer also leaves the screen.
+- On Casual and Competitive, ↓ from any playlist card goes to the Region row (from the left card
+  it used to skip to FIND MATCH), and ↑ comes back to the card you came from: the arrow back
+  retraces your steps across the menus.
+- On a phone, a quick double tap no longer presses a button on the next screen, and a dialog that
+  appears under your finger ignores that touch. While a dialog is open nothing behind it can be
+  focused or pressed.
+- An arrow with nowhere to go nudges the focused button a little that way, so you can tell the
+  press arrived (not in Super low, nor with reduced motion).
 - In the pause menu, B on a controller and Backspace no longer throw you out of the match (online
   and in Competitive too, where leaving counts as an abandon): like Esc and Start, they go back to
   the match. Only the QUIT button leaves, and online it still asks a second time. Inside the pause

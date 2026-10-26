@@ -243,7 +243,10 @@ src/input/
                         DEFAULT_PAD, KEYBOARD_ONLY_KBM), the arrows as fixed second driving keys
                         (KBM_SECONDARY), labels, ACTION_ROWS, CameraLook
   Input.ts              keyboard + mouse + gamepad → CarControls, camera look (+ lookSource), held
-                        states and one-shot / menu edges, driven by Settings.bindings; pointer lock
+                        states and one-shot / menu edges (the pad's LB / RB, LT / RT past 0.5 with
+                        a 0.3 re-arm, Y and Start for the menus only; a held D-pad / stick
+                        direction repeats after 400 ms, then every 80 ms, on an injectable clock:
+                        menuRepeat), driven by Settings.bindings; pointer lock
                         (the capturing click is masked), one pad poll per frame (beginFrame),
                         latchEdges for menu hand-off, rebind capture (startRebind: armed on the
                         next macrotask, Esc cancels on both devices, wheel only over the cell),
@@ -324,9 +327,22 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
                         cancel), toasts, modals, shared prefs (region, playlists, connection),
                         population polling; MenuHost = what the Game provides (search, friendly,
                         training (with experimental rules), the experimental view (unlocked,
-                        presets), lobby matches, settings screen)
+                        presets), lobby matches, settings screen). Focus: three zones (top bar,
+                        stage, footer; a modal alone), the last focus per screen (FocusMemory by
+                        element or data-key: back to a screen or out of a modal lands where it
+                        was; data-autofocus on a first visit only), modals with aria-modal and the
+                        rest inert. Back order: modal, a field being edited, Screen.back, pop.
+                        MenuCommand shortcuts (Q / E, LB / RB, LT / RT, X / Y, Start, pad X /
+                        Delete) reach Screen.command first. The 450 ms tap guard (touch)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
-                        direction; Enter / A activate natively; side controls claim left / right)
+                        direction; Enter / A activate natively; side controls claim left / right);
+                        pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
+                        rowStep, left vertically from unionBox), the way back (NavPath), the focus
+                        memory (FocusMemory), fields in navigation or editing mode (data-editing)
+                        and the edge nudge (mn-bounce-*); FocusNav puts them on the DOM
+  device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
+                        <html>), html.tg-tv (no pointer at all, or #tv), finePointer (a text field
+                        may take a first focus), the tap guard (tapGuarded); pure + installDevice
   backGuard.ts          system Back (Android gesture / button, TV remote BACK, browser back, Alt +
                         ←, mouse back, GoBack / BrowserBack keys) as Game.onSystemBack: a
                         CloseWatcher kept alive (Android's Back, no user activation needed) and
