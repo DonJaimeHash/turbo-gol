@@ -68,7 +68,7 @@ export class SearchPill {
   }
 
   set(v: SearchView, now: number): void {
-    this.el.hidden = !v.active;
+    if (this.el.hidden === v.active) this.el.hidden = !v.active;
     if (!v.active) {
       this.key = '';
       return;

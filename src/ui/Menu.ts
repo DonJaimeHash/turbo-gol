@@ -1085,7 +1085,7 @@ export class Menu {
     this.lastError = v.error;
     this.searchPill.set(v, now);
     const over = v.active && this.settingsUp() && this.visibleNow;
-    this.float.hidden = !over;
+    if (this.float.hidden === over) this.float.hidden = !over; // written on a change only (4 Hz)
     if (over) this.floatPill.set(v, now);
     if (v.active !== this.searching) {
       this.searching = v.active;
