@@ -13,6 +13,9 @@
  *                    nancheck, worldnocache, nopost (the post tiers draw straight to the canvas),
  *                    norender (everything but the drawing: the CPU ceiling), pr=<x> (pixel ratio),
  *                    hide=<mesh names, comma separated>
+ *   layout           widetext (every UI family becomes plain Arial, about 1.5x the display face
+ *                    and as wide as Android's Roboto: html.tg-widetext, src/style.css), so a label
+ *                    that only fits in a condensed face shows up on a desktop
  */
 
 export interface HashFlags {
@@ -36,6 +39,8 @@ export interface HashFlags {
   readonly msaa: boolean;
   readonly nopost: boolean;
   readonly norender: boolean;
+  /** `#widetext`: the UI in plain Arial (a fit test for the fallback fonts). */
+  readonly widetext: boolean;
   /** `#pr=<x>`: the drawing buffer's pixel ratio (0 = no override). */
   readonly pr: number;
   /** `#hide=a,b`: mesh names drawn invisible every frame. */
@@ -83,6 +88,7 @@ export function parseHashFlags(hash: string): HashFlags {
     msaa: has('msaa'),
     nopost: has('nopost'),
     norender: has('norender'),
+    widetext: has('widetext'),
     pr: Number.isFinite(pr) && pr > 0 ? Math.min(4, Math.max(0.1, pr)) : 0,
     hide: hide !== null ? hide.split(',').map((s) => s.trim()).filter((s) => s.length > 0) : [],
   };

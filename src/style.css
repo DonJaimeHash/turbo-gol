@@ -2020,6 +2020,19 @@ body {
   user-select: text;
 }
 
+/* ---- #widetext (src/render/hashFlags.ts; main.ts sets html.tg-widetext) -------------------------
+   A layout test: every family becomes plain Arial, which measures like Android's Roboto (about 1.5x
+   Barlow Condensed, 1.4x Bahnschrift Condensed), so a label that only fits in a condensed face shows
+   up on a desktop. */
+html.tg-widetext {
+  --font-body: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+  --font-display: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+}
+
+html.tg-widetext * {
+  font-stretch: normal !important;
+}
+
 /* ---- Super low (html.tg-superlow, Game.ts: TierSpec.cpuLite) --------------------------------
    The 1 GB TV of docs/visuals/REWORK.md "Super low" composites the page on the same weak GPU the
    game draws on. Nothing in the game blurs what is under it (no backdrop blur anywhere:
