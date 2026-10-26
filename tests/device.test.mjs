@@ -89,3 +89,32 @@ test('typedInField: a character, or a keydown with no key (Chrome autofill), in 
   assert.equal(DEV.typedInField({ target: null, key: 'a' }), false);
   assert.equal(DEV.typedInField({ target: {}, key: 'a' }), false, 'window / document: no tagName');
 });
+
+test('layoutClass: by height and orientation, never by width alone; the TV whatever its size', () => {
+  assert.equal(DEV.layoutClass(1366, 768, false), 'pc');
+  assert.equal(DEV.layoutClass(1920, 1080, false), 'pc');
+  assert.equal(DEV.layoutClass(1366, 600, false), 'short');
+  assert.equal(DEV.layoutClass(844, 390, false), 'phone');
+  assert.equal(DEV.layoutClass(780, 360, false), 'phone');
+  assert.equal(DEV.layoutClass(915, 412, false), 'phone', 'a long phone held sideways is no short laptop');
+  assert.equal(DEV.layoutClass(820, 560, false), 'pc', 'a small window, sideways');
+  assert.equal(DEV.layoutClass(390, 844, false), 'portrait');
+  assert.equal(DEV.layoutClass(768, 1024, false), 'tablet');
+  assert.equal(DEV.layoutClass(960, 540, true), 'tv');
+  assert.equal(DEV.layoutClass(1920, 1080, true), 'tv');
+});
+
+test('uiScale: 1 at each class reference view, clamped (PC 0.9 to 1.35, phone 0.92 to 1.1, TV 1 to 2)', () => {
+  const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} vs ${b}`);
+  near(DEV.uiScale('pc', 1366, 768), 1);
+  near(DEV.uiScale('pc', 1920, 1080), 1.35);
+  near(DEV.uiScale('short', 1366, 600), 0.9);
+  near(DEV.uiScale('phone', 844, 390), 1);
+  near(DEV.uiScale('phone', 780, 360), 360 / 390);
+  near(DEV.uiScale('phone', 640, 300), 0.92);
+  near(DEV.uiScale('portrait', 390, 844), 1);
+  near(DEV.uiScale('tv', 960, 540), 1);
+  near(DEV.uiScale('tv', 962, 541), 962 / 960);
+  near(DEV.uiScale('tv', 1920, 1080), 2);
+  near(DEV.uiScale('tv', 800, 450), 1);
+});

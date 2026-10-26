@@ -9,10 +9,12 @@
  *
  * Around that spatial pick (pickTarget, unchanged: tests/menu-accounts.test.mjs) come the pure
  * pieces below (tests/nav-rows.test.mjs), which FocusNav puts on the DOM:
- * - Zones (NavZone): the top bar, the stage, the footer, or a modal alone. An arrow with no target
- *   in its zone goes on to the next zone that way, onto the target remembered there, else its
- *   `[data-nav-entry]`, else the nearest one (zoneEntryIndex). A held (repeated) arrow stops at a
- *   zone's edge: crossing takes a fresh press.
+ * - Zones (NavZone): the top bar, the stage, the footer, the phone's tabs, or a modal alone. An
+ *   arrow ▲ ▼ with no target in its zone goes on to the next zone that way, onto the target
+ *   remembered there, else its `[data-nav-entry]`, else the nearest one (zoneEntryIndex). A side
+ *   zone (the phone's rail, at the left) is crossed with ◀ ▶ instead: from any zone into it, and
+ *   from it into the main zone. A held (repeated) arrow stops at a zone's edge: crossing takes a
+ *   fresh press.
  * - Rows (`data-nav-row` on a container): ◀ ▶ walk its targets in DOM order, wrapped or stacked too
  *   (rowStep); ▲ ▼ leave it from the row's whole box (unionBox), so what is under a row does not
  *   depend on which member had the focus, and coming back into it lands on the member focused last.
@@ -266,11 +268,16 @@ function caretStep(el: HTMLElement, d: -1 | 1): void {
   }
 }
 
-/** A focus zone: an element whose `[data-nav]` targets the arrows move among. `main`: where a screen's or a modal's first focus goes. */
+/**
+ * A focus zone: an element whose `[data-nav]` targets the arrows move among. `main`: where a
+ * screen's or a modal's first focus goes. `side`: beside the others (the rail), crossed with ◀ ▶,
+ * never with ▲ ▼.
+ */
 export interface NavZone {
   readonly name: string;
   readonly el: HTMLElement;
   readonly main?: boolean;
+  readonly side?: boolean;
 }
 
 export interface FocusNavOptions {
@@ -403,6 +410,18 @@ export class FocusNav {
         if (i >= 0) next = others[i];
       }
     }
+    // ◀ ▶ in a side zone (the rail, a column): out of it, past its own other targets (a row's
+    // members aside, done above).
+    if (next === null && horizontal && zone.side === true) {
+      next = repeat ? null : this.crossSide(zone, from, dir);
+      if (next === null) {
+        this.bounce(cur, dir);
+        return false;
+      }
+      this.path.push(cur, next, dir);
+      this.focus(next);
+      return true;
+    }
     if (next === null) {
       // Leaving a one-line row up or down: from the row's whole box. A stacked row (a narrow screen)
       // is left from its last member, as anything else (its box would reach back up past it).
@@ -412,7 +431,7 @@ export class FocusNav {
       const i = pickTarget(src, dir, all.map(box));
       if (i >= 0) next = horizontal ? all[i] : this.intoRow(all[i]);
     }
-    if (next === null && !horizontal && !repeat) next = this.crossZone(zone, from, dir);
+    if (next === null && !repeat) next = horizontal ? this.crossSide(zone, from, dir) : this.crossZone(zone, from, dir);
     if (next === null) {
       this.bounce(cur, dir);
       return false;
@@ -430,18 +449,35 @@ export class FocusNav {
     return last !== undefined && last !== t && last.isConnected && row.contains(last) && visible(last) ? last : t;
   }
 
-  /** The next zone that way with a target: where the arrow lands there (zoneEntryIndex), null past the last. */
+  /** Where an arrow going `dir` lands in zone `z` (zoneEntryIndex), null for an empty zone. */
+  private enter(z: NavZone, from: NavBox, dir: NavDir, t: readonly HTMLElement[]): HTMLElement | null {
+    const rem = this.opts.remembered?.(z, t) ?? null;
+    const i = zoneEntryIndex(from, dir, t.map(box), rem !== null ? t.indexOf(rem) : -1, t.findIndex((e) => e.hasAttribute('data-nav-entry')));
+    return i >= 0 ? t[i] : null;
+  }
+
+  /** The next zone that way with a target (side zones skipped): where the arrow lands there, null past the last. */
   private crossZone(zone: NavZone, from: NavBox, dir: NavDir): HTMLElement | null {
-    const zs = this.zones();
+    const zs = this.zones().filter((z) => z.side !== true);
     const k = zs.findIndex((z) => z.el === zone.el);
     const step = dir === 'down' ? 1 : -1;
     for (let j = k + step; k >= 0 && j >= 0 && j < zs.length; j += step) {
-      const z = zs[j];
-      const t = this.targets(z);
+      const t = this.targets(zs[j]);
       if (t.length === 0) continue;
-      const rem = this.opts.remembered?.(z, t) ?? null;
-      const i = zoneEntryIndex(from, dir, t.map(box), rem !== null ? t.indexOf(rem) : -1, t.findIndex((e) => e.hasAttribute('data-nav-entry')));
-      if (i >= 0) return t[i];
+      const next = this.enter(zs[j], from, dir, t);
+      if (next !== null) return next;
+    }
+    return null;
+  }
+
+  /** ◀ ▶ past a zone's edge: into a side zone that lies that way, or out of one into the main zone. */
+  private crossSide(zone: NavZone, from: NavBox, dir: NavDir): HTMLElement | null {
+    for (const z of this.zones()) {
+      if (z.el === zone.el || (zone.side === true ? z.main !== true : z.side !== true)) continue;
+      const t = this.targets(z);
+      if (t.length === 0 || pickTarget(from, dir, t.map(box)) < 0) continue; // nothing of it lies that way
+      const next = this.enter(z, from, dir, t);
+      if (next !== null) return next;
     }
     return null;
   }

@@ -101,6 +101,56 @@ export default {
   'menu.leaveStay': 'KEEP PLAYING',
   'menu.leaveGo': 'LEAVE',
 
+  // The menu shell (src/ui/shell/*): sections, hints, pills, About, the new-version sheet
+  // The five sections, in the top bar (PC, TV) and the phone's rail: capitals, short (the rail
+  // gives each 91 px at 14 px on a phone held sideways; a longer one shrinks to fit)
+  'nav.play': 'PLAY',
+  'nav.training': 'TRAINING',
+  'nav.garage': 'GARAGE',
+  'nav.leaderboard': 'LEADERBOARD',
+  'nav.profile': 'PROFILE',
+  // The same in an upright phone's tab bar, where five share 390 px: at most about 8 letters
+  'nav.trainingShort': 'TRAIN',
+  'nav.leaderboardShort': 'RANKS',
+  // Breadcrumb of the Play hub (PLAY › MODES › CASUAL)
+  'nav.modes': 'MODES',
+  // Screen-reader name of the section bar; also the hint bar's verb for switching sections
+  'nav.sections': 'Sections',
+  // Hint bar verbs, after a drawn key or button (A, ENTER, OK...)
+  'nav.select': 'Select',
+  'nav.back': 'Back',
+  // The hint bar's Back on a TV remote (its ↩ button)
+  'nav.backRemote': 'Back',
+  'nav.settings': 'Settings',
+  'nav.cancelSearch': 'Cancel search',
+  // Tooltips of the ‹ › beside the sections (mouse)
+  'nav.prevSection': 'Previous section',
+  'nav.nextSection': 'Next section',
+  // Hint bar link and rail button: the About sheet (build, licenses, Discord)
+  'nav.about': 'About',
+  // About sheet title; {game} is the game's name
+  'nav.aboutTitle': 'About {game}',
+  // Closes the About sheet
+  'nav.close': 'CLOSE',
+  // Region pill: the connection is up (below 5 players in a match no count is shown)
+  'pill.online': 'Online',
+  // Region pill: the server cannot be reached; RETRY tries again
+  'pill.offline': 'Offline',
+  'pill.retry': 'RETRY',
+  'pill.connecting': 'Connecting…',
+  // Region pill's screen-reader name; {status} is pill.online or menu.playing
+  'pill.regionLabel': 'Region: {region}, {status}. Change region',
+  // The server refused this page's version (a new one was deployed): a sheet that stays until
+  // answered, then the top bar's pill
+  'update.title': "There's a new version",
+  'update.text': 'Reload the page to keep playing online. It takes a few seconds.',
+  'update.reload': 'RELOAD NOW',
+  'update.later': 'NOT NOW',
+  'update.pill': 'UPDATE TO PLAY',
+  // GARAGE section until the cars arrive
+  'garage.soon': 'COMING SOON',
+  'garage.soonText': 'Cars and stadiums, all in one place.',
+
   // Rank badges and rating cards (src/ui/badges.ts)
   // Rank badge tooltip and rating card while placement matches are still left
   'badge.unranked': 'Unranked',

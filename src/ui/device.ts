@@ -64,6 +64,81 @@ export function initialInput(pointer: PointerKind, tvFlag: boolean): InputKind {
   return isTv(pointer, tvFlag) ? 'remote' : pointer === 'coarse' ? 'touch' : 'mouse';
 }
 
+/**
+ * The shell's layout class (plan §1.4), by height and orientation, never by width alone:
+ *   tv        html.tg-tv (no pointer at all, or #tv), whatever its size
+ *   phone     landscape, at most 500 tall (a phone held sideways: the 123 px rail)
+ *   portrait  upright, at most 600 wide (an upright phone: tabs at the bottom)
+ *   tablet    upright, wider (as portrait, more columns)
+ *   short     at least 900 wide and at most 600 tall (a 1366 x 600 laptop)
+ *   pc        the rest
+ * Mirrored as `data-layout` on <html> (installLayout), with `data-shell` (shellOf: bar, rail, tabs,
+ * tv), which src/ui/styles/shell.css keys on. Pure.
+ */
+export type LayoutClass = 'pc' | 'short' | 'phone' | 'portrait' | 'tablet' | 'tv';
+
+/** Where the shell puts the sections for a class: the top bar, the rail, the tab bar, or the TV's bar. Pure. */
+export type ShellKind = 'bar' | 'rail' | 'tabs' | 'tv';
+
+export function shellOf(cls: LayoutClass): ShellKind {
+  return cls === 'tv' ? 'tv' : cls === 'phone' ? 'rail' : cls === 'portrait' || cls === 'tablet' ? 'tabs' : 'bar';
+}
+
+export function layoutClass(w: number, h: number, tv: boolean): LayoutClass {
+  if (tv) return 'tv';
+  if (w > h) {
+    if (h <= 500) return 'phone';
+    if (h <= 600 && w >= 900) return 'short';
+    return 'pc';
+  }
+  if (w <= 600) return 'portrait';
+  return 'tablet';
+}
+
+const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+
+/**
+ * The device factor of `--ui-scale` (1 rem = 16 px x the factor at each class's reference view):
+ * PC and short screens by height (768 tall = 1, 0.9 to 1.35), a phone held sideways by height
+ * (390 = 1, 0.92 to 1.1), an upright phone or tablet by width (390 = 1, 0.92 to 1.1), a TV by
+ * width (960 = 1, up to 2: the real TV reports 962 x 541). The "Interface size" setting (PR 11)
+ * multiplies it. Pure.
+ */
+export function uiScale(cls: LayoutClass, w: number, h: number): number {
+  switch (cls) {
+    case 'tv':
+      return clamp(w / 960, 1, 2);
+    case 'phone':
+      return clamp(h / 390, 0.92, 1.1);
+    case 'portrait':
+    case 'tablet':
+      return clamp(w / 390, 0.92, 1.1);
+    default:
+      return clamp(h / 768, 0.9, 1.35);
+  }
+}
+
+/**
+ * Once, in the browser (installDevice, after `tg-tv`): `data-layout` and `--ui-scale` on <html>,
+ * again on every resize and turn. The root font size follows (src/ui/styles/shell.css), so everything the
+ * shell writes in rem scales with the screen; the old screens' px do not.
+ */
+export function installLayout(): void {
+  const html = document.documentElement;
+  const apply = (): void => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const cls = layoutClass(w, h, html.classList.contains('tg-tv'));
+    if (html.dataset.layout !== cls) html.dataset.layout = cls;
+    const shell = shellOf(cls);
+    if (html.dataset.shell !== shell) html.dataset.shell = shell;
+    const s = uiScale(cls, w, h).toFixed(3);
+    if (html.style.getPropertyValue('--ui-scale') !== s) html.style.setProperty('--ui-scale', s);
+  };
+  apply();
+  window.addEventListener('resize', apply);
+}
+
 /** The last input used (no DOM: installDevice feeds it). */
 export class DeviceTracker {
   private kind: InputKind;
@@ -122,9 +197,9 @@ export function typedInField(e: Pick<KeyboardEvent, 'target' | 'key'>): boolean 
 }
 
 /**
- * Once, in the browser: `tg-tv` on <html> (`tvFlag`: the #tv emulation), the tracker of the last
- * input fed by keydown / pointerdown (capture, passive: nothing is cancelled) and mirrored as
- * `data-input` on <html>. `padConnected` (Input.hasGamepad) tells a remote's arrows from a
+ * Once, in the browser: `tg-tv` on <html> (`tvFlag`: the #tv emulation), the layout class and the
+ * UI scale (installLayout), the tracker of the last input fed by keydown / pointerdown (capture,
+ * passive: nothing is cancelled) and mirrored as `data-input` on <html>. `padConnected` (Input.hasGamepad) tells a remote's arrows from a
  * keyboard's on a TV; the Game reports pad presses per frame (DeviceTracker.notePadPresses).
  */
 export function installDevice(opts: { tvFlag: boolean; padConnected: () => boolean }): DeviceTracker {
@@ -145,5 +220,6 @@ export function installDevice(opts: { tvFlag: boolean; padConnected: () => boole
     { capture: true, passive: true },
   );
   window.addEventListener('pointerdown', (e) => d.note(pointerInput(e.pointerType)), { capture: true, passive: true });
+  installLayout();
   return d;
 }
