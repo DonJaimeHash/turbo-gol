@@ -7,7 +7,17 @@
  *
  * Touch mode (`tg-touch` on <html>, src/input/TouchControls.ts: the last input used was a finger)
  * adds a '‹' back button to the top bar and drops the key hints and focus rings (menu.css); the
- * menus then focus nothing by themselves (`autoFocus`), so no text field pops up the keyboard.
+ * menus then focus nothing by themselves (`autoFocus`), so no text field pops up the keyboard, and
+ * a tap that began before a screen or a modal came up (or within TAP_GUARD_MS after) presses
+ * nothing on it (src/ui/device.ts tapGuarded).
+ *
+ * Focus (src/ui/nav.ts): three zones, the top bar, the stage and the footer (a modal alone while it
+ * is up); the last focus is remembered per screen (FocusMemory, by element or `data-key`), so going
+ * back to a screen, or closing a modal, puts it where it was (`data-autofocus` counts on a first
+ * visit only). Esc / B / Back (`back`): the modal closes, else a field being edited stops editing,
+ * else the screen's own back, else the screen pops. Shortcuts (`MenuCommand`): Q / E, pad LB / RB
+ * and LT / RT (a screen's own tabs first, then the sections the shell brings), keyboard X / pad Y
+ * cancel the search, pad Start opens the settings, pad X / Delete the screen's context action.
  *
  * The Game implements MenuHost (what the menus can ask of it) and calls show() / hide() /
  * action(); the menu never touches the sim or the renderer. Styling: src/ui/menu.css (`mn-`).
@@ -15,8 +25,9 @@
 import './menu.css';
 import { h, setChildren, clock } from './dom';
 import type { Child } from './dom';
-import { FocusNav, isEditable, trackFocusClass } from './nav';
-import type { NavDir } from './nav';
+import { FocusMemory, FocusNav, isEditable, isEditing, navKey, setEditing } from './nav';
+import type { NavDir, NavZone } from './nav';
+import { finePointer, tapGuarded } from './device';
 import { rankBadge, tierById } from './badges';
 import { playlistName, regionName, tierName } from './names';
 import { t } from '../i18n';
@@ -154,6 +165,15 @@ function loadPrefs(): MenuPrefs {
   }
 }
 
+/**
+ * What the menus take besides the arrows, accept and back (`Menu.action`): 'prev' / 'next' (pad LB /
+ * RB, keyboard Q / E without tabs of the screen's own: the sections, from the Tablero shell on),
+ * 'tabPrev' / 'tabNext' (pad LT / RT, keyboard Q / E: a screen's own tabs), 'cancel' (pad Y,
+ * keyboard X: cancel the search), 'menu' (pad Start: the settings), 'context' (pad X, Delete: the
+ * screen's context action).
+ */
+export type MenuCommand = 'prev' | 'next' | 'tabPrev' | 'tabNext' | 'cancel' | 'menu' | 'context';
+
 /** One screen of the stack. `el` is built once; show / hide / tick are optional. */
 export interface Screen {
   readonly id: string;
@@ -165,6 +185,8 @@ export interface Screen {
   tick?(now: number): void;
   /** Esc / B on this screen: return true to swallow it (e.g. a sub-view closes first). */
   back?(): boolean;
+  /** A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context action). */
+  command?(c: MenuCommand): boolean;
 }
 
 export type ScreenFactory = (menu: Menu) => Screen;
@@ -188,6 +210,8 @@ export class Menu {
   cfg: MenuConfig | null = null;
 
   private readonly stage: HTMLElement;
+  private readonly topBar: HTMLElement;
+  private readonly bottomBar: HTMLElement;
   private readonly crumbs: HTMLElement;
   private readonly chip: HTMLElement;
   private readonly backButton: HTMLButtonElement;
@@ -200,9 +224,26 @@ export class Menu {
   private readonly factories = new Map<string, ScreenFactory>();
   private stack: Screen[] = [];
   private readonly nav: FocusNav;
+  /** Last focus: 'last:<screen>' anywhere while that screen was on top, 'stage:<screen>' on its stage, 'top' / 'bottom' in the bars. */
+  private readonly memory = new FocusMemory<HTMLElement>();
   private modalEl: HTMLElement | null = null;
   private modalDismiss: (() => void) | null = null;
   private modalOnClose: (() => void) | null = null;
+  /** What had the focus when the modal opened: it gets it back when the modal closes. */
+  private modalOpener: HTMLElement | null = null;
+  /** performance.now() of the last screen or modal mounted (or modal closed): the tap guard's reference. */
+  private mountedAt = -Infinity;
+  /** The last finger / pen down and up (performance.now()), for the tap guard. */
+  private touchDownAt = -Infinity;
+  private touchUpAt = -Infinity;
+  /** A keydown the fields' capture listener already handled (onKey leaves it). */
+  private keyDone: Event | null = null;
+  /**
+   * Keys first pressed while the menus had them (onKey; keyup forgets them). A key's own repeat
+   * of any other (an arrow still steering at the final whistle) moves no focus, as the pad's
+   * repeat after a hand-off (Input.resetMenuRepeat).
+   */
+  private readonly keysDown = new Set<string>();
   private timer = 0;
   private popAt = 0;
   private lastError: string | null = null;
@@ -218,24 +259,34 @@ export class Menu {
     // Touch mode only (menu.css): a finger has no Esc / B. On the home screen it is hidden but keeps
     // its place (mount), so the brand does not move when a screen opens.
     this.backButton = h('button.mn-back', { type: 'button', title: t('menu.back'), 'aria-label': t('menu.back'), onclick: () => this.back() }, '‹');
-    const top = h('header.mn-top', null, this.backButton, h('div.mn-brand', null, h('span.mn-brand-a', null, 'TURBO'), h('span.mn-brand-b', null, 'GOL')), this.crumbs, h('div.mn-top-right', null, this.online, this.chip));
+    this.topBar = h('header.mn-top', null, this.backButton, h('div.mn-brand', null, h('span.mn-brand-a', null, 'TURBO'), h('span.mn-brand-b', null, 'GOL')), this.crumbs, h('div.mn-top-right', null, this.online, this.chip));
     this.stage = h('main.mn-stage');
     this.banner = h('div.mn-banner', { hidden: true });
     this.hints = h('div.mn-hints');
-    // AGPL-3.0 section 13: a network game offers its source to the players.
-    const source = h('a.mn-source', { href: SOURCE_URL, target: '_blank', rel: 'noopener', title: t('menu.sourceTitle', { license: LICENSE_NAME }) }, t('menu.source'));
-    const discord = h('a.mn-source', { href: DISCORD_URL, target: '_blank', rel: 'noopener', title: t('menu.discordTitle') }, 'Discord');
+    // AGPL-3.0 section 13: a network game offers its source to the players. The links are focus
+    // targets of the footer zone (↓ past the stage's last control), so a controller reaches them too.
+    const link = (href: string, text: string, title?: string): HTMLAnchorElement => h('a.mn-source', { href, target: '_blank', rel: 'noopener', title, 'data-nav': true }, text);
+    const source = link(SOURCE_URL, t('menu.source'), t('menu.sourceTitle', { license: LICENSE_NAME }));
+    const discord = link(DISCORD_URL, 'Discord', t('menu.discordTitle'));
     // Narrow screens drop the build line (.mn-info-build), never the source link.
-    const bottom = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, h('span.mn-info-build', null, host.info, ' · '), source, ' · ', h('a.mn-source', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener' }, t('menu.licenses')), ' · ', discord));
+    this.bottomBar = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, h('span.mn-info-build', null, host.info, ' · '), source, ' · ', link('./third-party-licenses.txt', t('menu.licenses')), ' · ', discord));
     this.toasts = h('div.mn-toasts');
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
-    this.root = h('div.mn', { hidden: true }, top, this.stage, bottom, this.toasts, this.modalLayer);
+    this.root = h('div.mn', { hidden: true }, this.topBar, this.stage, this.bottomBar, this.toasts, this.modalLayer);
     // RMB is bindable in game: no context menu over the menus.
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
-    trackFocusClass(this.root);
     container.appendChild(this.root);
-    this.nav = new FocusNav(() => this.modalEl ?? this.stack.at(-1)?.el ?? null);
+    this.nav = new FocusNav(() => this.zones(), {
+      remembered: (zone, targets) => this.memory.recall(zone.name === 'stage' ? 'stage:' + (this.top()?.id ?? '') : zone.name, targets, navKey),
+      restore: () => this.restoreFocus(),
+      onFocus: (el, zone) => this.noteFocus(el, zone),
+    });
+    this.nav.install(this.root);
+    // Capture, before a field's own Enter (custom.ts JOIN, profile.ts sign-in): the fields' modes.
+    this.root.addEventListener('keydown', (e) => this.onFieldKey(e), true);
+    this.installTapGuard();
     window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('keyup', (e) => this.keysDown.delete(e.code));
     host.accounts.subscribe(() => this.refreshChrome());
     void host
       .config()
@@ -306,6 +357,7 @@ export class Menu {
     this.root.hidden = true;
     this.root.parentElement?.classList.remove('mn-open');
     this.visibleNow = false;
+    this.keysDown.clear(); // a key held into the match and out again is no menu key
     this.closeModal();
     if (this.timer !== 0) {
       window.clearInterval(this.timer);
@@ -336,13 +388,21 @@ export class Menu {
 
   /**
    * Esc / B / the '‹' button / the system Back (Game.onSystemBack): close the modal (unless it is not
-   * dismissable), else the screen's own back, else pop one screen. False when there was nothing to
-   * go back from (the home screen, no modal): the system Back then asks to leave the game.
+   * dismissable), else stop editing the field being edited (in touch mode that step is skipped: a
+   * finger's field has no navigation mode to go back to, and Android's first Back already hid the
+   * keyboard), else the screen's own back, else pop one screen. False when there was nothing to go
+   * back from (the home screen, no modal): the system Back then asks to leave the game.
    */
   back(): boolean {
     if (this.modalEl && this.modalDismiss) {
       this.modalDismiss();
       return true;
+    }
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && isEditing(a) && this.root.contains(a)) {
+      setEditing(a, false);
+      if (!touchMode()) return true;
+      a.blur();
     }
     const t = this.top();
     if (t?.back?.()) return true;
@@ -356,6 +416,8 @@ export class Menu {
   private mount(): void {
     const top = this.top();
     if (!top) return;
+    this.mountedAt = performance.now();
+    this.nav.reset();
     setChildren(this.stage, top.el);
     // A screen opens at its top. With the keyboard / pad the first control's focus scrolls there
     // (autoFocus); touch mode focuses nothing, and the stage would keep the last screen's offset.
@@ -368,33 +430,140 @@ export class Menu {
     this.autoFocus();
   }
 
-  /** Refocus the first control of the current screen (after it rebuilt its content). */
+  /** Put the focus back on the current screen when nothing has it (after the screen rebuilt its content). */
   refocus(): void {
     this.autoFocus(true);
   }
 
   /**
-   * On the next frame, focus the first control of the modal or the screen on top (`ifNone`: only
-   * when nothing there has the focus), where the keyboard and the controller start from. Not in
-   * touch mode: a focused text field would pop up the phone's keyboard and a finger needs no focus
-   * ring. The controller still gets one there: FocusNav focuses the first control on its first
-   * press (and a pad press leaves touch mode).
+   * On the next frame, focus the modal's first control, or the screen's remembered one
+   * (restoreFocus; `ifNone`: only when nothing there has the focus), where the keyboard and the
+   * controller go on from. Not in touch mode: a focused text field would pop up the phone's keyboard
+   * and a finger needs no focus ring. The controller still gets one there: FocusNav starts on its
+   * first press (and a pad press leaves touch mode).
    */
   private autoFocus(ifNone = false): void {
     requestAnimationFrame(() => {
       if (touchMode()) return;
       if (ifNone && this.nav.current !== null) return;
-      this.nav.first();
+      this.restoreFocus();
     });
+  }
+
+  /**
+   * The modal's first control; else the control focused last on the screen on top (anywhere, then
+   * on its stage, by element or `data-key`); else its `data-autofocus` or first one (a first visit).
+   * Without a fine pointer a text field is never the first, remembered or not (the system keyboard
+   * would come up): the stage's remembered control, else its first that is no field.
+   */
+  private restoreFocus(): void {
+    const skipFields = !finePointer();
+    if (this.modalEl !== null) {
+      this.nav.first(skipFields);
+      return;
+    }
+    const top = this.top();
+    if (top === null) return;
+    const targets = skipFields ? this.nav.targets().filter((t) => !isEditable(t)) : this.nav.targets();
+    const el = this.memory.recall('last:' + top.id, targets, navKey) ?? this.memory.recall('stage:' + top.id, targets, navKey);
+    if (el !== null) this.nav.focus(el);
+    else this.nav.first(skipFields);
+  }
+
+  /** The focus zones (nav.ts): a modal alone, else the top bar, the stage and the footer. */
+  private zones(): NavZone[] {
+    if (this.modalEl !== null) return [{ name: 'modal', el: this.modalEl, main: true }];
+    return [
+      { name: 'top', el: this.topBar },
+      { name: 'stage', el: this.stage, main: true },
+      { name: 'bottom', el: this.bottomBar },
+    ];
+  }
+
+  /** A menu control got the focus: remember it for the screen on top and for its zone. */
+  private noteFocus(el: HTMLElement, zone: NavZone | null): void {
+    const top = this.top();
+    if (zone === null || zone.name === 'modal' || top === null) return;
+    const key = navKey(el);
+    this.memory.remember('last:' + top.id, el, key);
+    this.memory.remember(zone.name === 'stage' ? 'stage:' + top.id : zone.name, el, key);
+  }
+
+  /**
+   * Touch: a tap whose finger went down before the last screen or modal was mounted, or within
+   * TAP_GUARD_MS after (device.ts), is no click on it (a double tap on a tile would press what the
+   * next screen has under it; a modal that came up under a finger). Trusted pointer clicks only:
+   * Enter / Space and the controller's A (FocusNav.accept: el.click()) always go through.
+   */
+  private installTapGuard(): void {
+    const finger = (e: Event): boolean => {
+      const p = (e as PointerEvent).pointerType;
+      return p === 'touch' || p === 'pen';
+    };
+    this.root.addEventListener('pointerdown', (e) => {
+      if (finger(e)) this.touchDownAt = performance.now();
+    }, true);
+    this.root.addEventListener('pointerup', (e) => {
+      if (finger(e)) this.touchUpAt = performance.now();
+    }, true);
+    this.root.addEventListener(
+      'click',
+      (e) => {
+        if (!e.isTrusted || (e as MouseEvent).detail === 0) return; // a key's or FocusNav's click
+        const p = (e as PointerEvent).pointerType;
+        // Older engines' clicks are plain MouseEvents: a finger's when one just lifted.
+        const byFinger = p === 'touch' || p === 'pen' || (p === undefined && performance.now() - this.touchUpAt < 800);
+        if (byFinger && tapGuarded(this.touchDownAt, this.mountedAt)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      },
+      true,
+    );
   }
 
   // ---- input -----------------------------------------------------------------------------------
 
+  /**
+   * A text field's keys, in the capture phase (before the field's own listeners and the window's).
+   * Navigation mode (reached with the arrows): Enter / OK starts editing (and is no submit); a
+   * character, Backspace or Delete starts it and types. Editing: Enter stops it (the field's own
+   * Enter still runs: JOIN, SIGN IN), Esc stops it and is no Back, but in a modal, where Esc closes
+   * the modal (`back`'s order, as pad B and the system Back). The arrows are onKey's.
+   */
+  private onFieldKey(e: KeyboardEvent): void {
+    const el = e.target;
+    if (!(el instanceof HTMLElement) || !isEditable(el) || !el.hasAttribute('data-nav')) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || typeof e.key !== 'string') return; // Chrome's autofill sends keydowns without a key
+    if (isEditing(el)) {
+      if (e.key === 'Enter') setEditing(el, false);
+      else if (e.key === 'Escape' && this.modalEl === null) {
+        e.preventDefault();
+        setEditing(el, false);
+        this.keyDone = e;
+      }
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      setEditing(el, true);
+      this.keyDone = e;
+    } else if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') setEditing(el, true);
+  }
+
   private onKey(e: KeyboardEvent): void {
     if (!this.visibleNow || this.root.hidden) return;
+    if (e === this.keyDone) {
+      this.keyDone = null;
+      return;
+    }
     if (document.querySelector('.hud-settings-panel:not([hidden])')) return; // the Hud's settings screen owns the keys
     if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
-    const editing = isEditable(document.activeElement);
+    if (!e.repeat && typeof e.code === 'string') this.keysDown.add(e.code);
+    const active = document.activeElement;
+    const field = isEditable(active); // a text field's keys are its own, but for the arrows in navigation mode
+    const editing = field && isEditing(active);
+    const plain = !e.ctrlKey && !e.metaKey;
     let dir: NavDir | null = null;
     switch (e.code) {
       case 'ArrowUp':
@@ -411,30 +580,97 @@ export class Menu {
         break;
       case 'Escape':
         e.preventDefault();
-        if (editing) (document.activeElement as HTMLElement).blur();
         this.back();
         return;
       case 'Backspace':
-        if (!editing) {
+        if (!field) {
           e.preventDefault();
           this.back();
         }
+        return;
+      // Shortcuts (MenuCommand), never while a text field has the focus (they are letters there).
+      case 'KeyQ':
+      case 'KeyE':
+        if (field || !plain || e.repeat) return;
+        e.preventDefault();
+        this.tabOrSection(e.code === 'KeyQ' ? -1 : 1);
+        return;
+      case 'KeyX':
+        if (field || !plain || e.repeat) return;
+        e.preventDefault();
+        this.command('cancel');
+        return;
+      case 'Delete':
+        if (field || !plain || e.repeat) return;
+        e.preventDefault();
+        this.command('context');
         return;
       default:
         return;
     }
     if (dir !== null) {
       e.preventDefault();
-      this.nav.move(dir);
+      if (!e.repeat || this.keysDown.has(e.code)) this.nav.move(dir, e.repeat);
     }
   }
 
-  /** Controller (and any other non-keyboard source) routed by the Game. */
-  action(a: NavDir | 'accept' | 'back'): void {
+  /** Keyboard Q / E: the screen's own tabs when it has them, else the sections (pad: LT / RT and LB / RB apart). */
+  private tabOrSection(d: -1 | 1): void {
+    if (this.modalEl !== null) return;
+    if (!this.command(d < 0 ? 'tabPrev' : 'tabNext')) this.command(d < 0 ? 'prev' : 'next');
+  }
+
+  /**
+   * Controller (and any other non-keyboard source) routed by the Game (`repeat`: an arrow's
+   * auto-repeat while held, Input's NAV_REPEAT_*).
+   */
+  action(a: NavDir | 'accept' | 'back' | MenuCommand, repeat = false): void {
     if (!this.visibleNow) return;
     if (a === 'accept') this.nav.accept();
     else if (a === 'back') this.back();
-    else this.nav.move(a);
+    else if (a === 'up' || a === 'down' || a === 'left' || a === 'right') this.nav.move(a, repeat);
+    else this.command(a);
+  }
+
+  /**
+   * A shortcut: the screen on top first (Screen.command), else the menus' own: 'tabPrev' / 'tabNext'
+   * step the screen's inner tabs (stepTabs), 'cancel' cancels the search, 'menu' opens the settings.
+   * The sections ('prev' / 'next') arrive with the Tablero shell. False when nothing took it.
+   * Nothing while a modal is up (it keeps the focus).
+   */
+  command(c: MenuCommand): boolean {
+    if (!this.visibleNow || this.modalEl !== null) return false;
+    if (this.top()?.command?.(c)) return true;
+    if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
+    if (c === 'cancel' && this.host.searchView().active) {
+      this.host.cancelSearch();
+      return true;
+    }
+    if (c === 'menu') {
+      this.host.openSettings(() => this.refocus());
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * The screen's inner tabs (`.mn-tabs` of `.mn-tab`, the picked one `.mn-tab-on`: Leaderboard's
+   * playlists, Profile's sign-in / register / recover), by pad LT / RT or Q / E: the one before /
+   * after is pressed (round), and the focus goes with the pick when it was on the tabs (the screen
+   * rebuilds them). False when the screen shows none.
+   */
+  private stepTabs(d: -1 | 1): boolean {
+    const top = this.top();
+    const strip = top === null ? null : top.el.querySelector<HTMLElement>('.mn-tabs');
+    if (top === null || strip === null) return false;
+    const tabs = Array.from(strip.querySelectorAll<HTMLElement>('.mn-tab'));
+    const i = tabs.findIndex((b) => b.classList.contains('mn-tab-on'));
+    if (i < 0 || tabs.length < 2) return false;
+    const onTabs = strip.contains(document.activeElement);
+    tabs[(i + d + tabs.length) % tabs.length].click();
+    const picked = top.el.querySelector<HTMLElement>('.mn-tabs .mn-tab-on');
+    if (onTabs && picked !== null && !touchMode()) this.nav.focus(picked);
+    return true;
   }
 
   // ---- chrome: top bar, banner, population ---------------------------------------------------
@@ -505,7 +741,8 @@ export class Menu {
         h('span.mn-banner-modes', null, v.modes.map((m) => playlistName(m)).join(' · ')),
         h('span.mn-banner-time'),
         h('span.mn-banner-text'),
-        h('button.mn-banner-cancel', { type: 'button', 'data-nav': true, onclick: () => this.host.cancelSearch() }, t('menu.searchCancel')),
+        // The footer zone's entry: ↓ past the stage's last control lands on it while a search runs.
+        h('button.mn-banner-cancel', { type: 'button', 'data-nav': true, 'data-nav-entry': true, onclick: () => this.host.cancelSearch() }, t('menu.searchCancel')),
       );
     }
     this.banner.hidden = false;
@@ -522,13 +759,20 @@ export class Menu {
     window.setTimeout(() => t.remove(), 4800);
   }
 
-  /** A modal dialog over the current screen; an action returning false keeps it open. Returns a closer. */
+  /**
+   * A modal dialog over the current screen; an action returning false keeps it open. Returns a
+   * closer. While it is up the rest of the menus is inert (no focus, no click, no screen reader),
+   * and when it closes the focus goes back to what had it when it opened (the tile that opened it).
+   */
   modal(spec: ModalSpec): () => void {
-    this.closeModal();
+    const prev = this.modalEl !== null ? this.modalOpener : null;
+    this.closeModal(false);
+    const a = document.activeElement;
+    this.modalOpener = prev ?? (a instanceof HTMLElement && a !== document.body && this.root.contains(a) ? a : null);
     const close = (): void => {
       if (this.modalEl === box) this.closeModal();
     };
-    const actions = h('div.mn-modal-actions');
+    const actions = h('div.mn-modal-actions', { 'data-nav-row': true });
     for (const a of spec.actions) {
       const b = h(`button.mn-btn${a.primary ? '.mn-btn-primary' : ''}` as 'button', { type: 'button', 'data-nav': true }, a.label);
       b.addEventListener('click', async () => {
@@ -543,25 +787,47 @@ export class Menu {
       actions.appendChild(b);
     }
     const body = Array.isArray(spec.body) ? spec.body : [spec.body];
-    const box = h('div.mn-modal', { role: 'dialog', 'aria-label': spec.title }, h('div.mn-modal-title', null, spec.title), h('div.mn-modal-body', null, ...body), actions);
+    const box = h('div.mn-modal', { role: 'dialog', 'aria-modal': 'true', 'aria-label': spec.title }, h('div.mn-modal-title', null, spec.title), h('div.mn-modal-body', null, ...body), actions);
     this.modalEl = box;
     this.modalDismiss = spec.dismissable === false ? () => undefined : close;
     this.modalOnClose = spec.onClose ?? null;
     setChildren(this.modalLayer, box);
     this.modalLayer.hidden = false;
+    this.setBackgroundInert(true);
+    this.mountedAt = performance.now();
+    this.nav.reset();
     this.autoFocus();
     return close;
   }
 
-  private closeModal(): void {
+  /** The menus under a modal: inert while it is up (the focus cannot leave it, a click on them does nothing). */
+  private setBackgroundInert(on: boolean): void {
+    this.topBar.inert = on;
+    this.stage.inert = on;
+    this.bottomBar.inert = on;
+  }
+
+  /**
+   * Close the modal; `refocus`: give the focus back to what had it when the modal opened (when it
+   * is still there; else the screen's remembered one, restoreFocus). Not when another modal replaces it.
+   */
+  private closeModal(refocus = true): void {
     if (!this.modalEl) return;
     const onClose = this.modalOnClose;
+    const opener = this.modalOpener;
     this.modalEl = null;
     this.modalDismiss = null;
     this.modalOnClose = null;
+    this.modalOpener = null;
     this.modalLayer.hidden = true;
     this.modalLayer.textContent = '';
-    this.refocus();
+    if (refocus) {
+      this.setBackgroundInert(false);
+      this.mountedAt = performance.now();
+      this.nav.reset();
+      if (!touchMode() && this.visibleNow && opener !== null && opener.isConnected && this.nav.targets().includes(opener)) this.nav.focus(opener);
+      else this.refocus();
+    }
     if (onClose !== null) onClose();
   }
 

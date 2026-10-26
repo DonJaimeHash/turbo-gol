@@ -134,8 +134,9 @@ async function joinFlow(menu: Menu, code: string, locked: boolean): Promise<void
       { label: t('custom.cancel'), onClick: () => true },
     ],
   });
+  // An Enter the menus took (OK on a field in navigation mode starts editing: Menu.onFieldKey) is no submit.
   pw.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void attempt(pw.input.value).then((ok) => ok && close());
+    if (e.key === 'Enter' && !e.defaultPrevented) void attempt(pw.input.value).then((ok) => ok && close());
   });
 }
 
@@ -154,7 +155,7 @@ export function customScreen(menu: Menu): Screen {
     void joinFlow(menu, c, false).catch(() => undefined);
   };
   code.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') join();
+    if (e.key === 'Enter' && !e.defaultPrevented) join(); // not the OK that starts editing (Menu.onFieldKey)
   });
   let refreshAt = 0;
   let loading = false;
@@ -175,7 +176,7 @@ export function customScreen(menu: Menu): Screen {
       // The server refuses a guest anyway (403 account_required): say so without asking it.
       if (guest) menu.toast(t('error.lobby.account_required'), 'error');
       else void joinFlow(menu, l.code, l.locked);
-    }, { 'data-code': l.code, disabled: l.players >= l.max });
+    }, { 'data-code': l.code, 'data-key': 'lobby-' + l.code, disabled: l.players >= l.max });
   };
   const load = async (): Promise<void> => {
     if (loading) return;
@@ -196,9 +197,10 @@ export function customScreen(menu: Menu): Screen {
     'div.mn-custom',
     null,
     screenHead(t('custom.heading'), t('custom.subtitle')),
+    // A row (nav.ts): ◀ ▶ walk CREATE, the code field, JOIN and REFRESH in order, wrapped or not.
     h(
       'div.mn-custom-bar',
-      null,
+      { 'data-nav-row': true },
       primary(t('custom.createLobby'), () => menu.open('lobby-create'), { 'data-autofocus': true }),
       h('div.mn-join', null, code.el, secondary(t('custom.join'), join)),
       secondary(t('custom.refresh'), () => void load()),

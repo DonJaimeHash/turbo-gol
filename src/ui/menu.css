@@ -402,6 +402,46 @@
 .mn .mn-btn-primary:active:not(:disabled) {
   background: var(--brand-deep);
 }
+/* An arrow with nowhere to go (nav.ts bounce): a 2 px nudge that way. `translate`, so it adds to a
+   tile's own transform. Super low keeps it (style.css: informative, the TV's only cue at an edge);
+   reduced motion never has it. */
+@media (prefers-reduced-motion: no-preference) {
+  .mn .mn-bounce-up,
+  .mn .mn-bounce-down,
+  .mn .mn-bounce-left,
+  .mn .mn-bounce-right {
+    animation: mn-bounce 0.12s ease-out;
+  }
+}
+.mn-bounce-up {
+  --mn-bounce: 0 -2px;
+}
+.mn-bounce-down {
+  --mn-bounce: 0 2px;
+}
+.mn-bounce-left {
+  --mn-bounce: -2px 0;
+}
+.mn-bounce-right {
+  --mn-bounce: 2px 0;
+}
+@keyframes mn-bounce {
+  50% {
+    translate: var(--mn-bounce);
+  }
+}
+/* A text field's modes (nav.ts): reached with the arrows it shows no caret (the arrows move on);
+   editing (OK / Enter, typing, a click or a tap) shows the caret and a lime underline (a background
+   image, so Super low, which drops every box shadow, keeps it). */
+.mn .mn-input:not([data-editing]) {
+  caret-color: transparent;
+}
+.mn .mn-input[data-editing] {
+  background-image: linear-gradient(var(--brand), var(--brand));
+  background-size: 100% 3px;
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+}
 
 /* ---- tiles ------------------------------------------------------------------------------------- */
 /* No overflow clip on a tile: the focus heel sits under it (focus.css); its texts clip themselves. */

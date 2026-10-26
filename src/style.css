@@ -2072,9 +2072,10 @@ html.tg-widetext * {
    primary are flat lime, no box or text shadow is drawn (the HUD over the scene keeps one hard
    pixel: A20) and no decorative transition or animation runs, by class prefix. The focus ring
    stays (src/ui/styles/focus.css), and so do the informative animations: the search spinner,
-   hold-to-confirm, the busy stripe, the low / overtime clock, a key capture, the P2P wait line and
-   the loading bar. The rules win over every stylesheet (menu.css, training.css, touch.css)
-   through the class on <html> and !important. */
+   hold-to-confirm, the busy stripe, the low / overtime clock, a key capture, the P2P wait line,
+   the loading bar and the 120 ms edge nudge (menu.css .mn-bounce-*: an arrow with nowhere to go,
+   a compositor-only translate, the TV's only cue at an edge). The rules win over every
+   stylesheet (menu.css, training.css, touch.css) through the class on <html> and !important. */
 html.tg-superlow {
   --surface-0-90: var(--surface-0);
   --surface-0-94: var(--surface-0);
@@ -2111,7 +2112,7 @@ html.tg-superlow .hud-boost-label {
   color: var(--text);
 }
 
-html.tg-superlow [class*='mn-']:not(.mn-spinner):not(.mn-hold):not(.mn-busy),
+html.tg-superlow [class*='mn-']:not(.mn-spinner):not(.mn-hold):not(.mn-busy):not([class*='mn-bounce-']),
 html.tg-superlow [class*='hud-']:not(.hud-overtime):not(.hud-clock-low):not(.hud-capturing):not(.hud-netwait),
 html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {
