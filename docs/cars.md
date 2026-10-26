@@ -16,7 +16,10 @@ The default car is the dune runner (`dune`). Four more are reserved in the catal
 | file | owns |
 |---|---|
 | `src/game/cosmetics.ts` | the catalog: `CarId`, menu order, price in host points (one table), status, the locale keys. Pure data, no imports; the community nodes' bundle must never import it (tested) |
-| `src/game/carSelection.ts` | the player's pick (`turbogol.car`), only a car the player is entitled to; `entitledCars()` is where the inventory will plug in; `previewCarsAllowed` gates the preview flags |
+| `src/game/carSelection.ts` | the player's pick (`turbogol.car`), only a car the player is entitled to (`entitledCars()`: the default car, plus the cars a signed-in account owns); `previewCarsAllowed` gates the preview flags |
+| `src/game/garage.ts` | the account's cars and the hosts' shop on the client (`Garage`: the entitlement from the session's car and `/api/me/items`, equip through `POST /api/me/car`, claims) and the garage's view model (`garageView`) |
+| `src/net/cosmetics.ts` | each seat's car online (`seatCars`: the MatchDO Welcome's, a P2P room slot's, a community node match's `cars`) and the account routes' answers; outside the nodes' bundle |
+| `src/ui/screens/garage.ts` | the garage screen (Home > GARAGE): the cards, equip and claim, the host points, over the showroom |
 | `src/render/cars/types.ts` | the contract: `CarBodySpec`, `BodyKit`, `LiverySpec`, `WheelStyle`, `WheelPlacement`, `WheelAt` |
 | `src/render/cars/kit.ts` | `CAR_KIND`, the stock surfaces, team colours, `BOOST_NOZZLE_*`, the tyre numbers the shader compiles, the budgets and ranges, `tag` / `tagBy` / `loft` / `section` / `tube` / `mergeParts`, `resolveWheels` (where the wheels are drawn), the kit a body builds with and `buildBody` (merge, containment guard, translate) |
 | `src/render/cars/wheels.ts` | the shared wheel styles (`KNOBBY`, `SLICK`) and `buildWheel` |
@@ -24,12 +27,15 @@ The default car is the dune runner (`dune`). Four more are reserved in the catal
 | `src/render/cars/index.ts` | the registry (`carBody(id)`); it reads every car's module and never needs editing |
 | `src/render/cars/cache.ts` | shared geometry, reference-counted |
 | `src/render/Car.ts` | the shared material (the livery uniforms), flame, blob and `CarView` (`setBody`) |
-| `src/game/Game.ts` | `rosterCars` (who drives what), `setCar`, the showroom camera |
+| `src/game/Game.ts` | `rosterCars` (who drives what), `setCar`, the showroom camera (`garageShowroom`, `previewCar`) |
 
 Who drives what: offline and in training the player drives their own pick (`Game.localCar`), every
-bot drives the default car, and online every car is the default car for now (the rosters do not
-carry a car yet; that change stays out of `src/net/protocol.ts` and the other files the nodes bundle).
-In previews the `#car` flag sets the offline roster's cars, bots included (see Verifying).
+bot drives the default car, and online each seat drives the car the server seated it with: the
+account session's (AccountsDO signs only a car the account still owns), carried like the player's
+name (`src/net/cosmetics.ts`, kept out of `src/net/protocol.ts` and the other files the nodes
+bundle). A signed-in player's pick follows the server's: equipping in the garage goes through
+`POST /api/me/car` first. In previews the `#car` flag sets the offline roster's cars, bots included
+(see Verifying).
 
 ## Two frames
 
@@ -259,7 +265,8 @@ roster (`#car=<id>`: the bots keep the dune runner) they must match a dune-only 
 and a 3v3 (`__game.setMode('3v3')` in the console), on every tier, and stay flat when a car is
 switched: `__game.cars[__game.playerIndex].setBody('<id>')` (or `'dune'`), then
 `__game.cars[__game.playerIndex].bodyId` to confirm. (`__game.setCar` only takes a car the player
-is entitled to, the dune runner for now, and under `#car` keeps the previewed one.) Compare the
+is entitled to, and under `#car` keeps the previewed one; `__game.rosterCarIds` lists the car each
+roster entry drives, online too.) Compare the
 draws only for the same view (free play, or a showroom angle): in the menu's orbit the count moves
 with what the camera frames. Then the usual: `#webgl2`, `#compat`, `#lowgpu`, `#nancheck`, and
 `npm run typecheck` and `npm test`.

@@ -616,7 +616,10 @@ aviso.
   resultado de la cola y del rejoin. La asignación que recibe el nodo no cambia ni un byte.
 - [x] **El servidor valida que la cuenta tenga el ítem:** `AccountsDO` firma en la sesión solo un
   auto que la cuenta todavía tiene, y el matchmaker toma el auto de la sesión, nunca del cuerpo.
-  Falta el selector de autos en el juego.
+- [x] **El garaje en el juego** (`src/ui/screens/garage.ts`, Inicio > GARAJE): los autos sobre la
+  cámara de exhibición, equipar (`POST /api/me/car`), canjear con confirmación
+  (`POST /api/me/shop/claim`), el saldo y, sin puntos o como invitado, cómo se ganan. Cada auto
+  de la partida se dibuja con el auto de su asiento (`src/net/cosmetics.ts` `seatCars`).
 
 ### Operación
 
