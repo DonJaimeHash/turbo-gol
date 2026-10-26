@@ -29,6 +29,7 @@
  *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
  *   GET  /items?userId=                                              -> ItemsAnswer | 404
  *   POST /car             { userId, car }                            -> UserRef (the session to mint) | 400 bad_car | 409 not_owned | 404
+ *   POST /equipped        { userIds } (a lobby's start, LobbyDO)     -> { cars: { [userId]: CarId } } (unknown / banned left out)
  *   GET  /shop?userId=                                               -> ShopAnswer | 404
  *   POST /shop/claim      { userId, item }                           -> ClaimAnswer | 404 unknown_item | 409 <ClaimRefusal> | 404
  *   POST /host-credit     HostCredit (the NodeRegistryDO's outbox)    -> { ok, applied } (once per matchId)
@@ -55,6 +56,8 @@ import { isCarId } from '../../src/game/cosmetics';
 import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
 
 const LOGIN_WINDOW_MS = 15 * 60_000;
+/** The most accounts one /equipped asks for (a lobby's members: a 3v3). */
+const EQUIPPED_MAX = 6;
 export const LOGIN_FAILS_FREE = 5;
 const LOGIN_LOCK_BASE_MS = 30_000;
 export const LOGIN_LOCK_MAX_MS = 15 * 60_000;
@@ -317,6 +320,11 @@ export class AccountsDO extends DurableObject<Env> {
         const r = s.setCar(b.userId, b.car, now);
         if (r === 'not_owned') return error(409, 'not_owned', 'Ese auto no es tuyo todavía');
         return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/equipped': {
+        const ids = b.userIds;
+        if (!Array.isArray(ids) || ids.length > EQUIPPED_MAX || !ids.every((id): id is string => typeof id === 'string' && id.length <= 64)) return error(400, 'bad_request');
+        return json({ cars: s.equippedCars(ids) });
       }
       case '/shop/claim': {
         if (typeof b.userId !== 'string' || typeof b.item !== 'string' || !ITEM_ID_RE.test(b.item)) return error(400, 'bad_request');

@@ -15,8 +15,8 @@
  *   outbox        the calls of each settled match (nodeOutcome.ts), until each is delivered
  *   ledger_entries the rewards ledger (nodes/control-plane/ledger.ts): one row per scored match,
  *                 written with the match it settles; kept WINDOW_DAYS (the leaderboard, the summaries)
- *   ledger_totals every operator's all-time points and verified matches, updated in the same
- *                 transaction as its entry
+ *   ledger_totals every operator's all-time points and verified matches (countsAsHosted: one that
+ *                 served someone else), updated in the same transaction as its entry
  *   ledger_notes  the repeat decay's notes of matches that earned nothing by themselves, kept 24 h
  * Ledger.restore reads the three back at every start (ledgerSnapshot): a deploy keeps the decay,
  * the leaderboard and the summaries. The points themselves go to the operator's account (AccountsDO
@@ -25,7 +25,7 @@
 import { STATE_VERSION, matchToRow, nodeToRow, tokenToRow } from '../../nodes/control-plane/persist';
 import type { MatchRow, MatchStore, NodeRow, RegistryStore, TokenRow } from '../../nodes/control-plane/persist';
 import type { MatchEntry, MatchOutcome, MatchState } from '../../nodes/control-plane/controlPlane';
-import { REPEAT_WINDOW_MS, WINDOW_DAYS } from '../../nodes/control-plane/ledger';
+import { REPEAT_WINDOW_MS, WINDOW_DAYS, countsAsHosted } from '../../nodes/control-plane/ledger';
 import type { GroupNote, LedgerEntry, LedgerSnapshot } from '../../nodes/control-plane/ledger';
 import { TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
 import type { NodeRecord, TokenRecord } from '../../nodes/control-plane/registry';
@@ -88,7 +88,7 @@ export class NodeStore implements RegistryStore, MatchStore {
     s.exec('CREATE TABLE IF NOT EXISTS ledger_totals (operator_id TEXT PRIMARY KEY, earned REAL NOT NULL, verified INTEGER NOT NULL)');
     s.exec('CREATE TABLE IF NOT EXISTS ledger_notes (operator_id TEXT NOT NULL, players TEXT NOT NULL, at INTEGER NOT NULL)');
     s.exec('CREATE INDEX IF NOT EXISTS ledger_notes_at ON ledger_notes (at)');
-    const v =s.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'state_version'").toArray()[0]?.v;
+    const v = s.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'state_version'").toArray()[0]?.v;
     if (v === undefined) {
       s.exec("INSERT INTO meta (k, v) VALUES ('state_version', ?)", String(STATE_VERSION));
     } else if (Number(v) !== STATE_VERSION) {
@@ -202,7 +202,7 @@ export class NodeStore implements RegistryStore, MatchStore {
       'INSERT INTO ledger_totals (operator_id, earned, verified) VALUES (?, ?, ?) ON CONFLICT(operator_id) DO UPDATE SET earned = earned + excluded.earned, verified = verified + excluded.verified',
       e.operatorId,
       e.points,
-      e.verified ? 1 : 0,
+      countsAsHosted(e) ? 1 : 0,
     );
     this.sql.exec('DELETE FROM ledger_entries WHERE at < ?', now - WINDOW_DAYS * DAY_MS);
   }

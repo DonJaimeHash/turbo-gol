@@ -68,7 +68,7 @@ que lee el juego:
 
 | Ítem | Tipo | Precio | Estado |
 |---|---|---|---|
-| Anfitrión | Insignia en el perfil y tu nombre en la pantalla de carga de tus partidas | Gratis, con una partida verificada | Disponible |
+| Anfitrión | Insignia en el perfil y tu nombre en la pantalla de carga de tus partidas | Gratis, con una partida verificada que sirvió a otro jugador (una que jugaste solo en tu servidor no cuenta) | Disponible |
 | Pampero, Carpincho, Cóndor, Tero | Auto (solo la carrocería: el mismo hitbox y la misma física que el Dune, que es de todos) | 1.500 cada uno, decidido por el mantenedor | Próximamente, hasta que su carrocería esté hecha |
 | Próxima estela de boost | Estela | 600 | Próximamente |
 | Próxima explosión de gol | Explosión | 1.000 | Próximamente |

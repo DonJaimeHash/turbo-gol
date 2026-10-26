@@ -7,7 +7,8 @@
  *
  *   POST /internal/create { lobbyId, code, region, socketBase, settings, password?, host: { playerId, name, guest, car? } }
  *   POST /internal/admit  { playerId, name, guest, password?, car? } -> { ok } | 403 bad_password / kicked | 409 full | 410 closed
- *                         (car: the session's, src/net/cosmetics.ts; the member's seat drives it, LobbyMember shows it)
+ *                         (car: the session's, src/net/cosmetics.ts; the member's seat drives it, LobbyMember shows it;
+ *                         each start reads every signed-in member's car again from AccountsDO /equipped)
  *   GET  /lobby (upgrade, through the Worker's /lobby/<id> gate with a role 'lobby' ticket)
  *
  * Flow: the Worker admits a player (password, room, kick list), mints a lobby ticket and the
@@ -42,11 +43,14 @@ import { parseLobbyRules } from '../../src/game/physicsRules';
 import type { RulesSnapshot } from '../../src/game/physicsRules';
 import type { LobbyClientMsg, LobbyMember, LobbyServerMsg, LobbySettings, LobbyState, LobbySummary } from '../../src/net/account';
 import { seatCar } from '../../src/net/cosmetics';
+import { DEFAULT_CAR } from '../../src/game/cosmetics';
 import type { CarId } from '../../src/game/cosmetics';
 
 const ADMIT_TTL_MS = 90_000;
 const IDLE_CLOSE_MS = 2 * 60_000;
 const MAX_AGE_MS = 6 * 60 * 60_000;
+/** How long a start waits for AccountsDO's cars (equippedCars) before it seats the admits' ones. */
+const EQUIPPED_TIMEOUT_MS = 1500;
 const ALARM_MS = 60_000;
 const IN_GAME_RESET_MS = 40 * 60_000;
 const MAX_FRAME = 2048;
@@ -61,7 +65,10 @@ interface MemberRec {
   team: 0 | 1;
   joinedAt: number;
   inGame: boolean;
-  /** The car the member's seat drives (from its admit; absent = the default car): the start hands it to /custom. */
+  /**
+   * The car the member's seat drives (absent = the default car): its admit's, then what AccountsDO
+   * says at each start (equippedCars); the start hands it to /custom.
+   */
   car?: CarId;
 }
 
@@ -480,11 +487,60 @@ export class LobbyDO extends DurableObject<Env> {
     await this.publish();
   }
 
+  /**
+   * The car each signed-in member drives now (AccountsDO POST /equipped: the loadout while it is
+   * still owned), read at every start: an admit's car would otherwise stay for the lobby's whole
+   * life (up to MAX_AGE_MS, the socket stays open through the matches), past a maintainer's revoke,
+   * and a car equipped in the garage meanwhile would never apply. An account the answer leaves out
+   * (banned, gone) drives the default car. Null without a signed-in member, or when AccountsDO
+   * does not answer within EQUIPPED_TIMEOUT_MS: the start keeps the admits' cars.
+   */
+  private async equippedCars(members: readonly MemberRec[]): Promise<Record<string, unknown> | null> {
+    const userIds = members.filter((m) => !m.guest).map((m) => m.playerId);
+    if (userIds.length === 0) return null;
+    const env = this.env;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const ask = (async (): Promise<Record<string, unknown> | null> => {
+        const res = await env.ACCOUNTS.get(env.ACCOUNTS.idFromName('accounts-v1')).fetch('https://accounts/equipped', {
+          method: 'POST',
+          headers: { [INTERNAL_HEADER]: await internalSecret(env.JWT_SECRET), 'content-type': 'application/json' },
+          body: JSON.stringify({ userIds }),
+        });
+        if (!res.ok) {
+          await res.body?.cancel();
+          return null;
+        }
+        const b = (await res.json()) as { cars?: unknown };
+        return typeof b.cars === 'object' && b.cars !== null && !Array.isArray(b.cars) ? (b.cars as Record<string, unknown>) : null;
+      })();
+      const late = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), EQUIPPED_TIMEOUT_MS);
+      });
+      return await Promise.race([ask, late]);
+    } catch (e) {
+      console.error('LobbyDO: equipped cars failed', e);
+      return null;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
   private async start(hostWs: WebSocket): Promise<void> {
     const rec = this.rec as LobbyRecord;
     rec.status = 'starting';
     this.broadcastState();
     const env = this.env;
+    const fresh = await this.equippedCars(rec.members);
+    if (this.closed || this.rec === null) return;
+    if (fresh !== null) {
+      for (const m of rec.members) {
+        if (m.guest) continue;
+        const car = seatCar(fresh[m.playerId]);
+        if (car !== undefined && car !== DEFAULT_CAR) m.car = car;
+        else delete m.car;
+      }
+    }
     let res: Response;
     try {
       res = await env.MATCHMAKER.get(env.MATCHMAKER.idFromName('mm:' + rec.region)).fetch('https://matchmaker/custom', {

@@ -195,9 +195,14 @@ function pass(res: Response): Response {
 
 // ---- sessions -----------------------------------------------------------------------------------
 
-export async function accountSession(env: Env, u: UserRef, nowMs: number = Date.now()): Promise<AccountSession> {
+/**
+ * `capExp` (seconds): the session never outlives it. A route that re-signs from the Bearer alone
+ * (POST /api/me/car) passes the Bearer's own exp, so only a sign-in or the refresh cookie (both
+ * refuse a banned account, and a password change or logout drops the cookies) ever extends one.
+ */
+export async function accountSession(env: Env, u: UserRef, nowMs: number = Date.now(), capExp?: number): Promise<AccountSession> {
   const iat = nowSeconds(nowMs);
-  const exp = iat + ACCOUNT_SESSION_TTL_SECONDS;
+  const exp = Math.min(iat + ACCOUNT_SESSION_TTL_SECONDS, capExp ?? Infinity);
   const car = u.car ?? DEFAULT_CAR;
   const claims: SessionClaims = { sub: u.userId, name: u.username, iat, exp, acct: 1 };
   // Absent = the default car on every path (the seats, the rosters): the token carries only another one.
@@ -473,8 +478,10 @@ async function itemsGet(c: CosmeticContext): Promise<Response> {
 }
 
 /**
- * POST /api/me/car { car }: the default car or one the account owns (AccountsDO checks it), then
- * a fresh session that carries it, as a rename does: the next queue or lobby seats the account with it.
+ * POST /api/me/car { car }: the default car or one the account owns (AccountsDO checks it, and
+ * refuses a banned account), then the session re-signed with it: the next queue or lobby seats the
+ * account with it. It keeps the Bearer's exp: unlike a rename (once per 30 days) this route can be
+ * called every minute, and a fresh hour each time would keep a stolen or banned token alive forever.
  */
 async function carSet(c: CosmeticContext): Promise<Response> {
   const s = requireAccount(c);
@@ -484,7 +491,7 @@ async function carSet(c: CosmeticContext): Promise<Response> {
   if (!b || !isCarId(b.car)) return error(400, 'bad_car', 'Auto desconocido');
   const r = await accountsJson<UserRef>(c.env, '/car', { userId: s.sub, car: b.car });
   if (!r.ok) return noStore(r.res);
-  return json(await accountSession(c.env, r.data), 200, { 'cache-control': 'no-store' });
+  return json(await accountSession(c.env, r.data, Date.now(), s.exp), 200, { 'cache-control': 'no-store' });
 }
 
 /** GET /api/me/shop: the hosts' shop as the account sees it, and its wallet. */

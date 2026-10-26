@@ -99,6 +99,18 @@ function round2(x: number): number {
   return Math.round(x * 100) / 100;
 }
 
+/**
+ * A verified hosted match that counts as one (verifiedMatches, the free badge's
+ * minVerifiedMatches): verified and worth points, so it served someone other than the operator. A
+ * match the operator played alone on their own node (vs bots, or with a no-show) is verified all
+ * the same but earns 0: it counts for nothing, as their own minutes. AccountsDO counts its
+ * host_credits rows by the same rule (server/src/accountStore.ts verifiedHosted), the
+ * NodeRegistryDO's ledger_totals too (server/src/nodeStore.ts).
+ */
+export function countsAsHosted(e: Pick<LedgerEntry, 'verified' | 'points'>): boolean {
+  return e.verified && e.points > 0;
+}
+
 export interface OperatorSummary {
   operatorId: string;
   /** Points earned over the last WINDOW_DAYS (activity). */
@@ -117,7 +129,7 @@ export interface GroupNote {
   at: number;
 }
 
-/** An operator's all-time points and verified matches (what earned() and verifiedMatches() answer). */
+/** An operator's all-time points and verified matches (countsAsHosted: what earned() and verifiedMatches() answer). */
 export interface OperatorTotal {
   operatorId: string;
   earned: number;
@@ -215,7 +227,7 @@ export class Ledger {
     };
     this.entries.push(entry);
     this.totals.set(input.operatorId, round2((this.totals.get(input.operatorId) ?? 0) + points));
-    if (input.verified) this.verified.set(input.operatorId, (this.verified.get(input.operatorId) ?? 0) + 1);
+    if (countsAsHosted(entry)) this.verified.set(input.operatorId, (this.verified.get(input.operatorId) ?? 0) + 1);
     return entry;
   }
 
@@ -250,7 +262,7 @@ export class Ledger {
     return this.totals.get(operatorId) ?? 0;
   }
 
-  /** Verified matches an operator's nodes ever hosted. */
+  /** Verified matches an operator's nodes ever hosted for someone else (countsAsHosted). */
   verifiedMatches(operatorId: string): number {
     return this.verified.get(operatorId) ?? 0;
   }

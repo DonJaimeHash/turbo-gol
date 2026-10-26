@@ -733,6 +733,16 @@ export class AccountStore {
     return isCarId(car) && (car === DEFAULT_CAR || this.ownsItem(userId, car)) ? car : DEFAULT_CAR;
   }
 
+  /** POST /equipped (a lobby's start, LobbyDO): the car each of `userIds` drives now; an unknown or banned account is left out. */
+  equippedCars(userIds: readonly string[]): Record<string, CarId> {
+    const out: Record<string, CarId> = {};
+    for (const id of userIds) {
+      const u = this.userById(id);
+      if (u !== null && num(u.banned) !== 1) out[id] = this.equippedCar(id);
+    }
+    return out;
+  }
+
   /** GET /api/me/items: the owned item ids, the car driven and every car the account may drive. */
   items(userId: string): ItemsAnswer | 'no_user' {
     if (this.userById(userId) === null) return 'no_user';
@@ -740,11 +750,14 @@ export class AccountStore {
     return { items, car: this.equippedCar(userId), cars: entitledCarsOf(items) };
   }
 
-  /** POST /api/me/car: drive `car` from the next session on (the default car, or one the account owns); that session's UserRef. */
+  /**
+   * POST /api/me/car: drive `car` from the next session on (the default car, or one the account
+   * owns); that session's UserRef. A banned account is 'no_user', as signedIn and refresh refuse it.
+   */
   setCar(userId: string, car: CarId, now: number): UserRef | 'not_owned' | 'no_user' {
     return this.tx(() => {
       const u = this.userById(userId);
-      if (u === null) return 'no_user' as const;
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
       if (car !== DEFAULT_CAR && !this.ownsItem(userId, car)) return 'not_owned' as const;
       this.sql.exec(
         'INSERT INTO loadout (user_id, car, updated_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET car = excluded.car, updated_at = excluded.updated_at',
@@ -760,8 +773,13 @@ export class AccountStore {
     return r && num(r.at) > num(r.cleared_at) ? str(r.reason) : null;
   }
 
+  /**
+   * Verified matches the account's nodes hosted for someone else (nodes/control-plane/ledger.ts
+   * countsAsHosted: verified and worth points): one the operator played alone counts for nothing,
+   * not even toward the free badge.
+   */
   private verifiedHosted(userId: string): number {
-    return num(this.sql.exec('SELECT COUNT(*) AS n FROM host_credits WHERE user_id = ? AND verified = 1', userId).toArray()[0]?.n);
+    return num(this.sql.exec('SELECT COUNT(*) AS n FROM host_credits WHERE user_id = ? AND verified = 1 AND points > 0', userId).toArray()[0]?.n);
   }
 
   /** Points earned hosting (all time), spent on claims, the balance (never below 0) and the freeze. */
@@ -789,7 +807,8 @@ export class AccountStore {
    */
   claim(userId: string, itemId: string, now: number): ClaimAnswer | Exclude<ClaimRefusal, 'owned'> | 'no_user' {
     return this.tx(() => {
-      if (this.userById(userId) === null) return 'no_user' as const;
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
       const it = catalogItem(itemId);
       if (!it) return 'unknown_item' as const;
       const done = (claimed: boolean): ClaimAnswer => ({ item: it.id, claimed, wallet: this.wallet(userId), items: this.itemIds(userId) });

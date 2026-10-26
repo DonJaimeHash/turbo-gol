@@ -3,7 +3,7 @@ import '../dev/ts-resolve.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { Ledger } = await import('../control-plane/ledger.ts');
+const { Ledger, countsAsHosted } = await import('../control-plane/ledger.ts');
 const { Shop, CATALOG, catalogItem, claimBlock } = await import('../control-plane/shop.ts');
 const { CARS, DEFAULT_CAR } = await import('../../src/game/cosmetics.ts');
 
@@ -31,6 +31,21 @@ test('the free host badge needs one verified hosted match', () => {
   assert.equal(r.wallet.spent, 0);
   assert.deepEqual(S.inventory('op'), ['badge-host']);
   assert.equal(S.claim('op', 'badge-host', 3).code, 'owned');
+});
+
+test('a match the operator played alone on their own node is verified but counts for nothing: no points, no verified match, the badge stays blocked', () => {
+  const L = new Ledger();
+  const S = new Shop(L);
+  const alone = { matchId: 'own', nodeId: 'n', operatorId: 'op', region: 'SA', mode: '1v1', ranked: false, verified: true, endReason: 'rules', tickLagP99Ms: 8, underrunRate: 0.02, at: 1 };
+  const e = L.record({ ...alone, players: [{ playerId: 'op', connectedMs: 5 * 60_000, account: true, accountAgeDays: 400 }] }, 1);
+  assert.deepEqual([e.verified, e.points, countsAsHosted(e)], [true, 0, false]);
+  // A friend who never showed up (0 minutes) serves nobody either.
+  L.record({ ...alone, matchId: 'own2', at: 2, players: [{ playerId: 'op', connectedMs: 5 * 60_000, account: true, accountAgeDays: 400 }, { playerId: 'f', connectedMs: 0, account: true, accountAgeDays: 30 }] }, 1);
+  assert.equal(L.verifiedMatches('op'), 0);
+  assert.equal(S.claim('op', 'badge-host', 3).code, 'requires_matches');
+  earn(L, 'op', 5, 4);
+  assert.equal(L.verifiedMatches('op'), 1);
+  assert.equal(S.claim('op', 'badge-host', 5).ok, true);
 });
 
 test('items cost points; announced items are not claimable until the game has them', () => {

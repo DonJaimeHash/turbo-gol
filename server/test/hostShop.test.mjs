@@ -35,7 +35,7 @@ const S = await import('../src/accountStore.ts');
 const { AccountsDO } = await import('../src/AccountsDO.ts');
 const { accountSession, LIMIT_COSMETIC_WRITES } = await import('../src/accountRoutes.ts');
 const worker = (await import('../src/index.ts')).default;
-const { signJwt, createSession, verifySession, verifyJwt } = await import('../src/auth.ts');
+const { signJwt, createSession, verifySession, verifyJwt, INTERNAL_HEADER, internalSecret } = await import('../src/auth.ts');
 const { CATALOG, catalogItem } = await import('../../nodes/control-plane/shop.ts');
 const { CAR_IDS, DEFAULT_CAR } = await import('../../src/game/cosmetics.ts');
 
@@ -155,13 +155,37 @@ test('AccountStore: a car is driven only while it is owned: picked after a grant
   assert.equal(store.setCar(a, DEFAULT_CAR, NOW + 5).car, DEFAULT_CAR, 'the default car is everyone\'s');
 });
 
+test('AccountsDO /equipped (a lobby\'s start): the car each account drives now; an unknown or banned account is left out; at most a 3v3\'s ids', async () => {
+  const { env, store, db } = makeEnv();
+  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
+  const b = store.register('Beto', PW, [], H('2'), NOW).userId;
+  const c = store.register('Caro', PW, [], H('3'), NOW).userId;
+  store.grant(a, 'tero', NOW);
+  store.setCar(a, 'tero', NOW);
+  store.grant(b, 'condor', NOW);
+  store.setCar(b, 'condor', NOW);
+  store.revoke(b, 'condor');
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(c);
+  const ask = async (body) => {
+    const res = await env.ACCOUNTS.get().fetch('https://accounts/equipped', { method: 'POST', headers: { [INTERNAL_HEADER]: await internalSecret(SECRET), 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: res.status, json: await res.json() };
+  };
+  assert.deepEqual(await ask({ userIds: [a, b, c, 'ffffffffffffffff'] }), { status: 200, json: { cars: { [a]: 'tero', [b]: DEFAULT_CAR } } });
+  assert.equal((await ask({ userIds: Array.from({ length: 7 }, () => a) })).status, 400);
+  assert.equal((await ask({ userIds: [3] })).status, 400);
+  assert.equal((await ask({})).status, 400);
+});
+
 test('AccountStore wallet: one credit per match, a claim spends its cost once, the balance never goes below 0, nothing of it is pruned', async () => {
   const { store, db } = makeStore();
   const a = store.register('Ana', PW, [], H('1'), NOW).userId;
   const b = store.register('Beto', PW, [], H('2'), NOW).userId;
   assert.deepEqual(store.wallet(a), { earned: 0, spent: 0, balance: 0, frozen: null });
-  // The free host badge needs one verified hosted match.
+  // The free host badge needs one verified hosted match that served someone else: one the operator
+  // played alone on their node (verified, 0 points) counts for nothing (ledger.ts countsAsHosted).
   assert.equal(store.claim(a, 'badge-host', NOW), 'requires_matches');
+  assert.equal(store.hostCredit({ matchId: matchId(), userId: a, nodeId: NODE, points: 0, verified: true, at: NOW }), true);
+  assert.equal(store.claim(a, 'badge-host', NOW), 'requires_matches', 'an operator-only match');
   const m = matchId();
   assert.equal(store.hostCredit({ matchId: m, userId: a, nodeId: NODE, points: 1000.004, verified: true, at: NOW }), true);
   assert.equal(store.hostCredit({ matchId: m, userId: a, nodeId: NODE, points: 1000, verified: true, at: NOW }), false, 'the outbox delivering it twice credits it once');
@@ -190,7 +214,7 @@ test('AccountStore wallet: one credit per match, a claim spends its cost once, t
   assert.equal(store.wallet(b).balance, 0, 'a row that would make it negative (none can be written) still reads 0');
   // The daily prune keeps every credit and claim.
   store.prune(NOW + 400 * DAY);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM host_credits').get().n, 2);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM host_credits').get().n, 3, "the operator-only match's 0 too");
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM host_claims').get().n, 2);
   assert.equal(store.wallet(a).earned, 1600);
 });
@@ -305,7 +329,7 @@ function makeEnv() {
   };
   const obj = new AccountsDO(ctx, env);
   env.ACCOUNTS = { idFromName: (n) => ({ n }), get: () => ({ fetch: (url, init) => obj.fetch(new Request(url, init)) }) };
-  return { env, obj, store: obj.store, mm, lobby };
+  return { env, obj, store: obj.store, mm, lobby, db };
 }
 
 let ipCount = 0;
@@ -363,6 +387,25 @@ test('Worker: items, then a car picked: 409 until it is owned, then a fresh sess
   r = await call(env, 'POST', '/api/me/car', { token, body: { car: DEFAULT_CAR } });
   assert.equal(r.json.car, DEFAULT_CAR);
   assert.equal((await verifySession(SECRET, r.json.session)).car, undefined);
+});
+
+test('Worker: a car pick re-signs the session without extending it (a token 60 s from expiry stays so); a banned account can neither pick nor claim', async () => {
+  const { env, store, db } = makeEnv();
+  const id = store.register('Ana', PW, [], H('1'), Date.now()).userId;
+  const exp = Math.floor(Date.now() / 1000) + 60;
+  const token = await accountToken(id, { exp });
+  store.grant(id, 'tero', Date.now());
+  let r = await call(env, 'POST', '/api/me/car', { token, body: { car: 'tero' } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.expiresAt, exp * 1000, "the Bearer's exp, not a fresh hour");
+  const again = await call(env, 'POST', '/api/me/car', { token: r.json.session, body: { car: DEFAULT_CAR } });
+  assert.deepEqual([again.status, (await verifySession(SECRET, again.json.session)).exp], [200, exp], 'and re-signing that one extends nothing either');
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(id);
+  db.prepare('DELETE FROM refresh').run();
+  r = await call(env, 'POST', '/api/me/car', { token, body: { car: 'tero' } });
+  assert.deepEqual([r.status, r.json.error, r.json.session], [404, 'no_user', undefined]);
+  r = await call(env, 'POST', '/api/me/shop/claim', { token, body: { item: 'badge-host' } });
+  assert.deepEqual([r.status, r.json.error], [404, 'no_user']);
 });
 
 test('Worker: the shop and a claim round trip (a retry spends nothing twice); /nodes/shop answers the same without the node settings; refusals keep their codes', async () => {
