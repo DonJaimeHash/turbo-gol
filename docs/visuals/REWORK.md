@@ -542,9 +542,10 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   WebGL2 context is created without it).
 - **30 fps at most** (`maxFps`, Game.ts `drawsFrame`): the animation frames in between do nothing,
   the next drawn one carries their time (the sim keeps its 120 Hz clock: 4 ticks a frame). Under
-  the menus the scene drops to 20 fps, and to one held frame under the settings screen, a modal
-  or an offline pause (ARCHITECTURE.md "UI at rest"); the menus still read the remote and the pad
-  on every animation frame.
+  the menus the scene drops to 20 fps (an average: 2 and 3 refreshes in turn on a 50 Hz set), and
+  to one held frame under the settings screen, a modal or an offline pause (ARCHITECTURE.md "UI at
+  rest"); the menus still read the remote and the pad on every animation frame, and an online
+  pause reads them between its 30 fps frames too.
 - **Backend**: WebGL2 unless `#webgpu` asks for the A/B (one 8-bit pass, the canvas depth
   discarded before present, no Dawn heaps in the browser's process on a 1 GB device). The backend
   and the world are chosen when the renderer is created, so a switch into or out of super low saves
