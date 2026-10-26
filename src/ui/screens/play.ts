@@ -131,16 +131,26 @@ export function playScreen(menu: Menu): Screen {
   return { id: 'play', title: t('play.title'), el, show: tick, tick };
 }
 
-/** Toggle cards for the playlists; at least one stays selected. `extra(p)` adds the per-playlist line. */
+/**
+ * Toggle cards for the playlists; at least one stays selected. `extra(p)` adds the per-playlist
+ * line. `refresh` runs on the menu's tick: the DOM is written only when a card's state or text changed.
+ */
 function playlistPicker(get: () => GameMode[], set: (m: GameMode[]) => void, extra: (p: Playlist) => Node | null): { el: HTMLElement; refresh: () => void } {
   const wrap = h('div.mn-playlists');
   const cards = new Map<Playlist, HTMLButtonElement>();
+  const shown = new Map<Playlist, string>();
   const refresh = (): void => {
     const sel = get();
     for (const [p, c] of cards) {
-      c.setAttribute('aria-pressed', String(sel.includes(p)));
+      const pressed = String(sel.includes(p));
+      if (c.getAttribute('aria-pressed') !== pressed) c.setAttribute('aria-pressed', pressed);
       const slot = c.querySelector('.mn-pl-extra');
-      if (slot) setChildren(slot, extra(p));
+      const node = extra(p);
+      const text = node?.textContent ?? '';
+      if (slot && shown.get(p) !== text) {
+        shown.set(p, text);
+        setChildren(slot, node);
+      }
     }
   };
   for (const p of PLAYLISTS) {

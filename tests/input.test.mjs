@@ -1149,3 +1149,56 @@ test('dispose removes listeners, cancels a pending rebind and exits pointer lock
   assert.equal(sample().throttle, 0);
   input.dispose(); // idempotent
 });
+
+// ---- UI at rest (Game.ts frame): the menus read the pad on every animation frame ----------------
+
+const { runsLogic, drawsScene, sceneFps, TIERS } = await import('../src/render/quality.ts');
+
+/**
+ * Drive Input like Game.frame on a 60 Hz display for `presses` D-pad taps of `ms` each (start phases
+ * spread over a frame), the menus up on super low: the logic runs when runsLogic says (`readEvery`
+ * = true: today's loop; false: a loop that read the pad only on drawn frames), the scene is drawn
+ * at sceneFps. Returns the menuDown edges seen and the drawn frames per second.
+ */
+function menuLoop(ms, presses, readEvery) {
+  const pad = makePad();
+  const { input, out } = setup({ pad });
+  const fps = sceneFps({ cover: 'partial', cap: TIERS.superlow.maxFps, lite: true, still: false, animated: true, phone: false, covered: 0 });
+  const frame = 1000 / 60;
+  const gap = 300; // between taps
+  const starts = Array.from({ length: presses }, (_, i) => 100 + i * gap + (i * 7.3) % frame);
+  const end = 100 + presses * gap + 200;
+  let lastLogic = -1;
+  let lastDraw = -1;
+  let edges = 0;
+  let drawn = 0;
+  for (let t = 0; t < end; t += frame) {
+    const down = starts.some((s) => t >= s && t < s + ms);
+    if (down) press(pad, GP.DPAD_DOWN);
+    else release(pad, GP.DPAD_DOWN);
+    const draw = drawsScene(t, lastDraw, fps, false);
+    const logic = readEvery ? runsLogic(t, lastLogic, TIERS.superlow.maxFps, false) : draw;
+    if (draw) {
+      lastDraw = t;
+      drawn++;
+    }
+    if (!logic) continue;
+    lastLogic = t;
+    input.beginFrame();
+    input.sample(out);
+    if (input.padActions.menuDown) edges++;
+    input.consumeActions();
+  }
+  return { edges, fps: (drawn * 1000) / end };
+}
+
+test('menus at 20 fps (super low): every D-pad tap of 20-60 ms moves the focus once; drawn-frame reads lose some', () => {
+  for (const ms of [20, 30, 40, 50, 60]) {
+    const r = menuLoop(ms, 40, true);
+    assert.equal(r.edges, 40, `${ms} ms taps: ${r.edges} of 40`);
+    assert.ok(Math.abs(r.fps - 20) < 0.6, `the scene at ${r.fps} fps`);
+  }
+  // The same taps read only on the 20 fps drawn frames (the old loop's cadence, slower): lost ones.
+  const old = menuLoop(30, 40, false);
+  assert.ok(old.edges < 40, `drawn-frame reads saw ${old.edges} of 40`);
+});

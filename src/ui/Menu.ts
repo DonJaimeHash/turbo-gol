@@ -10,12 +10,18 @@
  * menus then focus nothing by themselves (`autoFocus`), so no text field pops up the keyboard.
  *
  * The Game implements MenuHost (what the menus can ask of it) and calls show() / hide() /
- * action(); the menu never touches the sim or the renderer. Styling: src/ui/menu.css (`mn-`).
+ * action(); the menu never touches the sim or the renderer. It tells the Game what it leaves of
+ * the 3D scene behind it (MenuHost.setMenuCover: part of it while up, all of it under a modal,
+ * with the share a touch screen's menus hide, src/ui/cover.ts), so the scene runs at the menus'
+ * rate or holds one frame (src/render/quality.ts sceneFps). Its own timer (`tick`: the banner,
+ * the screen's counters) runs at 4 Hz, 1 Hz on super low (`tg-superlow` on <html>), and writes
+ * the DOM only when a text changed. Styling: src/ui/menu.css (`mn-`).
  */
 import './menu.css';
 import { h, setChildren, clock } from './dom';
 import type { Child } from './dom';
 import { FocusNav, isEditable, trackFocusClass } from './nav';
+import { coverShare, paintsBackground } from './cover';
 import type { NavDir } from './nav';
 import { rankBadge, tierById } from './badges';
 import { playlistName, regionName, tierName } from './names';
@@ -31,6 +37,7 @@ import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
 import type { Difficulty, SettingsTab } from '../render/Hud';
 import type { ThemeId } from '../render/theme';
+import type { SceneCover } from '../render/quality';
 import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 
 export type SearchKind = 'casual' | 'ranked';
@@ -109,6 +116,12 @@ export interface MenuHost {
    * on `opts.tab` when given; `onClose` when it is left.
    */
   openSettings(onClose: () => void, opts?: { tab?: SettingsTab }): void;
+  /**
+   * What the menus leave of the 3D scene (Game.setMenuCover): 'partial' while they are up (with
+   * `covered`, the share of a touch screen they hide: cover.ts), 'opaque' under a modal, 'none'
+   * once hidden. The Game draws the scene at the menus' rate or holds one frame.
+   */
+  setMenuCover(level: SceneCover, covered?: number): void;
   /** One line about the build (WebGPU / RocketSim version), shown in the footer. */
   readonly info: string;
 }
@@ -124,6 +137,10 @@ export interface MenuPrefs {
 const PREFS_KEY = STORAGE_PREFIX + 'menu.v1';
 const POPULATION_EVERY_MS = 10_000;
 const TICK_MS = 250;
+/** The same on super low (`tg-superlow`: the 1 GB TV): the banner's clock still moves every second. */
+const TICK_MS_LITE = 1000;
+/** A touch screen re-measures the share its menus hide this often (ms, on the tick): content loads, layers go. */
+const COVER_EVERY_MS = 1000;
 /** The navigation keys in the hint line (key names stay untranslated). */
 const NAV_KEYS = { moveKeys: '↑↓←→ / D-pad', selectKeys: 'Enter / A', backKeys: 'Esc / B' };
 
@@ -201,7 +218,17 @@ export class Menu {
   private popAt = 0;
   private lastError: string | null = null;
   private bannerKey = '';
+  private bannerTime = '';
+  private bannerText = '';
   private visibleNow = false;
+  /** A coarse primary pointer (phones, tablets): the share the menus hide is measured (measureCover). */
+  private readonly coarse: boolean;
+  /** The last cover told to the Game (reportCover), the share measured, a measurement queued. */
+  private coverSent: SceneCover | null = null;
+  private coveredSent = -1;
+  private covered = 0;
+  private coverQueued = false;
+  private coverAt = 0;
 
   constructor(host: MenuHost, container: HTMLElement) {
     this.host = host;
@@ -230,6 +257,8 @@ export class Menu {
     container.appendChild(this.root);
     this.nav = new FocusNav(() => this.modalEl ?? this.stack.at(-1)?.el ?? null);
     window.addEventListener('keydown', (e) => this.onKey(e));
+    this.coarse = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+    if (this.coarse) window.addEventListener('resize', () => this.measureCover());
     host.accounts.subscribe(() => this.refreshChrome());
     void host
       .config()
@@ -291,8 +320,9 @@ export class Menu {
     this.root.hidden = false;
     this.root.parentElement?.classList.add('mn-open'); // menu.css hides the in-game HUD behind it
     this.visibleNow = true;
+    this.reportCover();
     this.mount();
-    if (this.timer === 0) this.timer = window.setInterval(() => this.tick(), TICK_MS);
+    if (this.timer === 0) this.timer = window.setInterval(() => this.tick(), document.documentElement.classList.contains('tg-superlow') ? TICK_MS_LITE : TICK_MS);
     this.tick();
   }
 
@@ -301,6 +331,7 @@ export class Menu {
     this.root.parentElement?.classList.remove('mn-open');
     this.visibleNow = false;
     this.closeModal();
+    this.reportCover();
     if (this.timer !== 0) {
       window.clearInterval(this.timer);
       this.timer = 0;
@@ -354,6 +385,41 @@ export class Menu {
     top.show?.();
     this.refreshChrome();
     this.autoFocus();
+    this.measureCover();
+  }
+
+  /**
+   * Tell the Game what the menus leave of the 3D scene (MenuHost.setMenuCover; quality.ts
+   * sceneFps): nothing once hidden, all of it under a modal, else part of it with the share a
+   * touch screen's menus hide (measureCover). Only a change is sent.
+   */
+  private reportCover(): void {
+    const level: SceneCover = !this.visibleNow ? 'none' : this.modalEl !== null ? 'opaque' : 'partial';
+    const covered = level === 'partial' ? this.covered : 0;
+    if (level === this.coverSent && covered === this.coveredSent) return;
+    this.coverSent = level;
+    this.coveredSent = covered;
+    this.host.setMenuCover(level, covered);
+  }
+
+  /**
+   * On a touch screen, measure the share of it the menus hide (cover.ts: a 9 x 5 grid of
+   * elementFromPoint and computed backgrounds) on the next frame, after layout: when a screen
+   * mounts, a modal closes or the viewport changes, and once a second on the tick (a list that
+   * loaded, the loading screen gone). Nothing on other devices (the 20 fps rule is a phone's).
+   */
+  private measureCover(): void {
+    if (!this.coarse || this.coverQueued) return;
+    this.coverQueued = true;
+    requestAnimationFrame(() => {
+      this.coverQueued = false;
+      if (!this.visibleNow || this.modalEl !== null) return;
+      this.coverAt = performance.now();
+      const share = coverShare(this.root, window.innerWidth, window.innerHeight, (x, y) => document.elementFromPoint(x, y), (el) => paintsBackground(getComputedStyle(el)));
+      if (Number.isNaN(share)) return; // another layer on top (settings, loading): the last share stands
+      this.covered = Math.round(share * 100) / 100;
+      this.reportCover();
+    });
   }
 
   /** Refocus the first control of the current screen (after it rebuilt its content). */
@@ -469,6 +535,7 @@ export class Menu {
     }
     this.renderBanner(now);
     this.top()?.tick?.(now);
+    if (this.coarse && now - this.coverAt >= COVER_EVERY_MS) this.measureCover();
   }
 
   private renderBanner(now: number): void {
@@ -485,6 +552,8 @@ export class Menu {
     const key = v.kind + v.modes.join();
     if (key !== this.bannerKey) {
       this.bannerKey = key;
+      this.bannerTime = '';
+      this.bannerText = '';
       setChildren(
         this.banner,
         h('span.mn-spinner'),
@@ -496,8 +565,16 @@ export class Menu {
       );
     }
     this.banner.hidden = false;
-    (this.banner.querySelector('.mn-banner-time') as HTMLElement).textContent = clock(now - v.since);
-    (this.banner.querySelector('.mn-banner-text') as HTMLElement).textContent = v.text;
+    // Written only when they change (the clock once a second, the status line now and then).
+    const time = clock(now - v.since);
+    if (time !== this.bannerTime) {
+      this.bannerTime = time;
+      (this.banner.querySelector('.mn-banner-time') as HTMLElement).textContent = time;
+    }
+    if (v.text !== this.bannerText) {
+      this.bannerText = v.text;
+      (this.banner.querySelector('.mn-banner-text') as HTMLElement).textContent = v.text;
+    }
   }
 
   // ---- toasts / modals --------------------------------------------------------------------------
@@ -535,6 +612,7 @@ export class Menu {
     this.modalDismiss = spec.dismissable === false ? () => undefined : close;
     setChildren(this.modalLayer, box);
     this.modalLayer.hidden = false;
+    this.reportCover();
     this.autoFocus();
     return close;
   }
@@ -545,6 +623,8 @@ export class Menu {
     this.modalDismiss = null;
     this.modalLayer.hidden = true;
     this.modalLayer.textContent = '';
+    this.reportCover();
+    this.measureCover();
     this.refocus();
   }
 

@@ -44,7 +44,18 @@
  * device reloads through the tab's counter (tierGuard.ts lossStep: reload, then super low, then a
  * message and no more reloads).
  *
- * Super low (TierSpec.maxFps, cpuLite): the loop draws at most 30 frames a second (`drawsFrame`:
+ * UI at rest (`frame`, quality.ts sceneFps): the scene is drawn at the match's frame cap (the
+ * tier's maxFps and the player's GamePrefs.fpsCap), at 30 fps under the menus (20 on super low,
+ * and on a phone whose menus hide more than 70 % of it), and not at all (one held frame, drawn
+ * again only when something under it changes: `redraw`) under an opaque layer (a menu modal, the
+ * settings screen, the rotate-your-phone screen), in an offline pause and, under the menus, with
+ * prefers-reduced-motion or GamePrefs.menuSceneAnimated off. The menus say what they leave of the
+ * scene (`setMenuCover`, src/ui/Menu.ts). A match being played keeps its cap for everything; the
+ * menus and an offline pause still read the input and run their logic on every animation frame,
+ * so a short pad press is never lost between two drawn frames. Paced frames give dynamic
+ * resolution no interval (Renderer.render).
+ *
+ * Super low (TierSpec.maxFps, cpuLite): a match runs at most 30 frames a second (`drawsFrame`:
  * the skipped animation frames do nothing, the next drawn one carries their time), the HUD runs
  * without blur, shadows and decorative animation (`html.tg-superlow`, src/style.css) and updates
  * its boost and speed at 10 Hz, the audio has no room, the ball prediction refreshes every 8 ticks
@@ -151,7 +162,7 @@ import { Renderer, type GpuFailure } from '../render/Renderer';
 import { tierPrefsAfter } from '../render/bootTier';
 import { diagSources, diagStats, enableDiagStats } from '../render/frameStats';
 import { emulatedDevice, pageFlags, withoutTierFlags } from '../render/hashFlags';
-import { drawsFrame, menuQualities, needsReload, parseQuality, type Quality } from '../render/quality';
+import { HELD_FRAME, drawsScene, frameCap, menuQualities, needsReload, parseFpsCap, parseQuality, runsLogic, sceneFps, type FpsCap, type Quality, type SceneCover } from '../render/quality';
 import {
   BACKGROUND_LOSS_MS,
   FALLBACK_WINDOW_MS,
@@ -254,6 +265,10 @@ export interface GameOptions {
    * main.ts): the prefs above already read Performance; the menus say why once they are up.
    */
   superlowLocked?: boolean;
+  /** GamePrefs.menuSceneAnimated (true when omitted). */
+  menuSceneAnimated?: boolean;
+  /** GamePrefs.fpsCap (0 = none when omitted). */
+  fpsCap?: FpsCap;
   /** Regulation length in seconds (0 = unlimited). */
   matchLengthSeconds?: number;
   /** Text shown in the menu footer (backend, version...). */
@@ -274,6 +289,13 @@ export interface GamePrefs {
   qualitySet: boolean;
   /** Stadium theme (src/render/theme.ts), picked on the Friendly screen's stadium row. */
   theme: ThemeId;
+  /**
+   * The menus' stadium moves (the orbit camera at the menus' rate); off, it is one held frame
+   * (quality.ts sceneFps). No Settings row yet (Graphics, a later page): setMenuSceneAnimated.
+   */
+  menuSceneAnimated: boolean;
+  /** The player's frame limit on top of the tier's (quality.ts FpsCap; 0 = none). No Settings row yet: setFpsCap. */
+  fpsCap: FpsCap;
 }
 
 /**
@@ -451,10 +473,10 @@ const SCOREBOARD_DIFFICULTY: Readonly<Record<Difficulty, string>> = {
 const SCOREBOARD_ONLINE = t('game.scoreboardOnline');
 const SCOREBOARD_ONLINE_P2P = t('game.scoreboardOnlineP2p');
 
-/** Read the saved difficulty / quality / mode / theme (falls back to defaults when storage is unavailable). */
+/** Read the saved difficulty / quality / mode / theme / scene pace (falls back to defaults when storage is unavailable). */
 export function loadPrefs(): GamePrefs {
   const touch = hasCoarsePointer();
-  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 'low' : 'high', mode: '1v1', qualitySet: false, theme: DEFAULT_THEME };
+  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 'low' : 'high', mode: '1v1', qualitySet: false, theme: DEFAULT_THEME, menuSceneAnimated: true, fpsCap: 0 };
   try {
     const raw = window.localStorage.getItem(PREFS_KEY);
     if (raw !== null) {
@@ -467,6 +489,8 @@ export function loadPrefs(): GamePrefs {
       if (quality !== null && (!touch || prefs.qualitySet)) prefs.quality = quality;
       if (isGameMode(parsed.mode)) prefs.mode = parsed.mode;
       prefs.theme = parseTheme(parsed.theme) ?? DEFAULT_THEME;
+      prefs.menuSceneAnimated = parsed.menuSceneAnimated !== false;
+      prefs.fpsCap = parseFpsCap(parsed.fpsCap);
     }
   } catch {
     /* private mode / storage disabled */
@@ -610,8 +634,28 @@ export class Game implements P2PGameHooks {
   private readonly cpuLite: boolean;
   /** Ticks between ball prediction refreshes (BALL_PRED_EVERY, or _LITE on cpuLite). */
   private readonly predEvery: number;
-  /** rAF time (ms) of the last drawn frame (the tier's maxFps skips the others), -1 = none. */
+  /** rAF time (ms) of the last drawn frame (the scene's rate skips the others: frame), -1 = none. */
   private lastDrawAt = -1;
+  /** rAF time (ms) of the last frame that ran the game's logic (a match's frames under its cap do nothing), -1 = none. */
+  private lastLogicAt = -1;
+  /** Loop seconds since the last drawn frame (the views' dt when it is drawn); 0 while the frame is held. */
+  private drawAcc = 0;
+  /** The menus' orbit clock (s): it runs on drawn menu frames only, so a held frame resumes where it stopped. */
+  private orbitTime = 0;
+  /** The last frame's pace (sceneFps, cover, menus, still): a change draws one frame. */
+  private sceneKey = -1;
+  /** Something under a held or paced frame changed (the canvas size, rebuilt views, the end of a load, a visible tab): draw the next frame. */
+  private redraw = true;
+  /** What the menus leave of the scene (setMenuCover) and the share of a touch screen they hide. */
+  private menuCover: SceneCover = 'none';
+  private menuCovered = 0;
+  /** A coarse primary pointer (phones, tablets): menus that hide most of the screen draw the scene at 20 fps (sceneFps). */
+  private readonly coarse: boolean;
+  /** prefers-reduced-motion, followed live: the menus' stadium holds still (one held frame). */
+  private reduceMotion = false;
+  /** GamePrefs.menuSceneAnimated and fpsCap (setMenuSceneAnimated / setFpsCap). */
+  private menuSceneAnimated: boolean;
+  private fpsCap: FpsCap;
   /** Loop time of the last HUD boost / speed update (cpuLite: 10 Hz). */
   private hudAt = -1;
   /** The super low online notice was shown this session. */
@@ -622,7 +666,7 @@ export class Game implements P2PGameHooks {
    */
   private pendingRestart: Quality | null = null;
   difficulty: Difficulty;
-  /** Smoothed frames per second (updated 4x/s). */
+  /** Smoothed drawn frames per second (updated 4x/s). */
   fps = 0;
   /** Sim ticks since start. */
   ticks = 0;
@@ -741,6 +785,8 @@ export class Game implements P2PGameHooks {
 
   private readonly onVisibility = (): void => {
     this.visibleSince = document.hidden ? Number.POSITIVE_INFINITY : performance.now();
+    // A background tab may lose the canvas' last frame: a held one is drawn again.
+    if (!document.hidden) this.redraw = true;
     if (document.hidden && !this.menuShown && !this.paused) this.setPaused(true);
   };
 
@@ -810,6 +856,9 @@ export class Game implements P2PGameHooks {
     this.qualitySet = opts.qualitySet ?? false;
     this.savedQuality = opts.savedQuality ?? this.quality;
     this.superlowLockedAtBoot = opts.superlowLocked === true;
+    this.menuSceneAnimated = opts.menuSceneAnimated !== false;
+    this.fpsCap = parseFpsCap(opts.fpsCap);
+    this.coarse = hasCoarsePointer();
     this.cpuLite = opts.renderer.spec.cpuLite;
     this.predEvery = this.cpuLite ? BALL_PRED_EVERY_LITE : BALL_PRED_EVERY;
     // Super low: the stylesheet's light HUD (no blur, shadows or decorative animation).
@@ -855,6 +904,18 @@ export class Game implements P2PGameHooks {
     if (this.touch !== null) this.input.setTouchSource(this.touch.state);
     this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse)') : null;
     this.installHint = this.touch !== null && installHintDue();
+    // The menus' stadium holds still under prefers-reduced-motion (sceneFps), followed live; a
+    // resize clears the canvas, so a held frame is drawn again.
+    const motion = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    if (motion !== null) {
+      this.reduceMotion = motion.matches;
+      motion.addEventListener('change', () => {
+        this.reduceMotion = motion.matches;
+      });
+    }
+    this.renderer.onResize = () => {
+      this.redraw = true;
+    };
     this.audio = new Audio({ room: !this.cpuLite });
     this.audio.setVolume(settings.audio.volume / 100);
 
@@ -1062,6 +1123,44 @@ export class Game implements P2PGameHooks {
     return this.menu.visible || (this.hud.menuVisible && !this.pauseSettingsOpen);
   }
 
+  /**
+   * What the menus leave of the scene (src/ui/Menu.ts, through MenuHost): 'partial' while they are
+   * up with the stadium showing through (`covered`: the share of a touch screen they hide,
+   * src/ui/cover.ts), 'opaque' under their modal, 'none' once hidden. The loop draws the scene at
+   * the menus' rate or holds one frame (quality.ts sceneFps, `frame`).
+   */
+  setMenuCover(level: SceneCover, covered = 0): void {
+    this.menuCover = level;
+    this.menuCovered = covered;
+  }
+
+  /** The player's frame limit on top of the tier's (GamePrefs.fpsCap; its Settings row comes later), saved. */
+  setFpsCap(cap: FpsCap): void {
+    this.fpsCap = parseFpsCap(cap);
+    this.persistPrefs();
+  }
+
+  /** Whether the menus' stadium moves (GamePrefs.menuSceneAnimated; its Settings row comes later), saved. */
+  setMenuSceneAnimated(on: boolean): void {
+    this.menuSceneAnimated = on;
+    this.persistPrefs();
+  }
+
+  /** The rotate-your-phone screen is up (src/input/touch.css: touch mode, upright on a touch screen): it hides everything. */
+  private get rotateShown(): boolean {
+    const q = this.portraitQuery;
+    return this.touch !== null && this.touch.touchMode && q !== null && q.matches;
+  }
+
+  /**
+   * What lies over the scene (quality.ts sceneFps): the settings screen (over the menus or the
+   * pause) and the rotate-your-phone screen hide it; else what the menus reported while they are up.
+   */
+  private sceneCover(): SceneCover {
+    if (this.hud.menuVisible || this.rotateShown) return 'opaque';
+    return this.menu.visible ? this.menuCover : 'none';
+  }
+
   private hideMenus(): void {
     this.menu.hide();
     this.hud.hideMenu();
@@ -1134,6 +1233,7 @@ export class Game implements P2PGameHooks {
       searchView: () => game.menuSearchView(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
+      setMenuCover: (level, covered) => game.setMenuCover(level, covered),
       get info() {
         return game.info;
       },
@@ -2636,6 +2736,7 @@ export class Game implements P2PGameHooks {
     this.arena.setTheme(theme);
     this.applyBallShadow();
     this.persistPrefs();
+    this.redraw = true;
   }
 
   /**
@@ -2678,7 +2779,7 @@ export class Game implements P2PGameHooks {
   private persistPrefs(): void {
     // The player's tier (or the saved default), never the one the session runs on its own: super
     // low from the URL or the tab's recovery, low on a weak backend, a GPU's ceiling, a fallback.
-    savePrefs({ difficulty: this.difficulty, quality: this.savedQuality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme });
+    savePrefs({ difficulty: this.difficulty, quality: this.savedQuality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme, menuSceneAnimated: this.menuSceneAnimated, fpsCap: this.fpsCap });
   }
 
   setPaused(p: boolean): void {
@@ -2801,11 +2902,22 @@ export class Game implements P2PGameHooks {
   private readonly frame = (t: number): void => {
     if (!this.running) return;
     this.raf = requestAnimationFrame(this.frame);
-    // The tier's frame cap (super low: 30): a skipped frame does nothing; the next drawn one
-    // carries its time (dt below), so the sim clock stays right.
-    if (!drawsFrame(t, this.lastDrawAt, this.renderer.spec.maxFps)) return;
-    this.lastDrawAt = t;
-    if (diagStats !== null) diagStats.frame(t);
+    const inMenu = this.menuShown;
+    // Online the host / the peers keep running: the pause overlay only takes the input away, and
+    // the menu (still up while a P2P room connects) must not stop the session's ready / fallback
+    // bookkeeping either.
+    const session = this.session !== null && this.session.active ? this.session : null;
+    // A match on screen keeps its frame cap (super low: 30; GamePrefs.fpsCap) for everything: a
+    // skipped frame does nothing, the next one carries its time (dt below), so the sim clock stays
+    // right. The menus and an offline pause run their logic on every animation frame whatever the
+    // scene's rate below, so a short press of a pad never falls between two drawn frames.
+    const live = session !== null ? session.inMatch : !inMenu && !this.paused;
+    const cap = frameCap(this.renderer.spec.maxFps, this.fpsCap);
+    if (!runsLogic(t, this.lastLogicAt, cap, live)) {
+      if (diagStats !== null) diagStats.frame(t, false);
+      return;
+    }
+    this.lastLogicAt = t;
     const now = t * 0.001;
     let dt = this.lastTime < 0 ? 0 : now - this.lastTime;
     this.lastTime = now;
@@ -2815,12 +2927,6 @@ export class Game implements P2PGameHooks {
 
     // One gamepad poll per frame (navigator.getGamepads() allocates); every tick reuses it.
     this.input.beginFrame();
-    const inMenu = this.menuShown;
-    // Online the host / the peers keep running: the pause overlay only takes the input away, and
-    // the menu (still up while a P2P room connects) must not stop the session's ready / fallback
-    // bookkeeping either.
-    const session = this.session !== null && this.session.active ? this.session : null;
-
     if (session !== null) {
       this.alpha = session.advance(dt);
       // The menu is pad-driven while a room connects: keep polling the gamepad.
@@ -2841,12 +2947,45 @@ export class Game implements P2PGameHooks {
     if (this.loadingHold) {
       // Behind the loading screen: the work in progress owns the renderer, nothing reacts to input.
       this.input.consumeActions();
+      this.redraw = true; // what the load changed (tier, stadium, views) shows on the next frame
+      if (diagStats !== null) diagStats.frame(t, false);
       return;
     }
     this.processActions();
 
-    this.render(dt, inMenu);
-    this.updateFps(now);
+    // "UI at rest": the scene at the match's cap, the menus' rate, or one held frame under an
+    // opaque layer, in an offline pause and when the menus' stadium may not move (quality.ts
+    // sceneFps). A change of pace draws once (the held frame shows the new state), and so does
+    // whatever changed under it (`redraw`) and a pipeline warm-up frame.
+    const menus = this.menuShown; // processActions may have opened or left them
+    const cover = this.sceneCover();
+    const still = this.paused && !menus && !(session !== null && session.inMatch); // online the match goes on
+    const fps = sceneFps({
+      cover,
+      cap,
+      lite: this.cpuLite,
+      still,
+      animated: this.menuSceneAnimated && !this.reduceMotion,
+      phone: this.coarse,
+      covered: this.menuCovered,
+    });
+    const key = (fps + 2) * 16 + (cover === 'none' ? 0 : cover === 'partial' ? 4 : 8) + (menus ? 2 : 0) + (still ? 1 : 0);
+    const changed = key !== this.sceneKey;
+    this.sceneKey = key;
+    if (fps === HELD_FRAME) this.drawAcc = 0;
+    else this.drawAcc += dt;
+    const draw = drawsScene(t, this.lastDrawAt, fps, changed || this.redraw || this.warmFrames > 0);
+    if (diagStats !== null) diagStats.frame(t, draw);
+    if (draw) {
+      this.lastDrawAt = t;
+      this.redraw = false;
+      const drawDt = this.drawAcc > MAX_FRAME_DT ? MAX_FRAME_DT : this.drawAcc;
+      this.drawAcc = 0;
+      // A paced or held frame's interval says nothing about the load: no rAF time for dynamic resolution.
+      this.render(drawDt, menus, fps === cap ? t : undefined);
+    }
+    this.frameLogic(dt, menus);
+    this.updateFps(now, draw);
   };
 
   private tick(): void {
@@ -2977,7 +3116,12 @@ export class Game implements P2PGameHooks {
     return edge;
   }
 
-  private render(dt: number, inMenu: boolean): void {
+  /**
+   * Draw the frame: the views (`dt`: seconds since the last drawn frame, 0 after a held one), the
+   * camera (the menus' orbit or the chase camera), the HUD and the renderer. `frameTime`: the
+   * rAF time for dynamic resolution, undefined for a paced or held frame (Renderer.render).
+   */
+  private render(dt: number, inMenu: boolean, frameTime: number | undefined): void {
     const prev = this.prev;
     const cur = this.cur;
     const alpha = this.alpha;
@@ -3017,7 +3161,9 @@ export class Game implements P2PGameHooks {
     // Camera.
     const po = this.playerOff;
     if (inMenu) {
-      const a = this.time * MENU_ORBIT_RATE;
+      // The orbit runs on the drawn frames' time: a held frame resumes it where it stopped.
+      this.orbitTime += dt;
+      const a = this.orbitTime * MENU_ORBIT_RATE;
       camera.position.set(Math.sin(a) * MENU_ORBIT_RADIUS, MENU_ORBIT_HEIGHT, Math.cos(a) * MENU_ORBIT_RADIUS);
       camera.up.set(0, 1, 0);
       camera.lookAt(this.menuLook);
@@ -3070,6 +3216,32 @@ export class Game implements P2PGameHooks {
       hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
     }
     if (this.training !== null) this.updateTrainingHud();
+
+    const ds = diagStats;
+    const tr = ds !== null ? performance.now() : 0;
+    if (this.warmFrames > 0) {
+      this.warmFrames--;
+      // An on-screen frame: the ball's shadow stays as the stadium wants it (its pipeline was built
+      // by the warm-up behind the loading screen; only the console's setQuality skips that).
+      this.setWarm(true);
+      renderer.render(frameTime);
+      this.setWarm(false);
+    } else {
+      renderer.render(frameTime);
+    }
+    if (ds !== null) ds.add('render', performance.now() - tr);
+  }
+
+  /**
+   * The frame's work besides drawing, on every frame that runs the game's logic, drawn or not (a
+   * held frame under the pause or the settings screen still lets it move on): the held scoreboard,
+   * the touch controls and the upright pause, the pointer-lock hint, the GO caption, the return to
+   * the menus after the whistle and the audio layers. `dt`: the loop's seconds since the last such frame.
+   */
+  private frameLogic(dt: number, inMenu: boolean): void {
+    const hud = this.hud;
+    const cur = this.cur;
+    const po = this.playerOff;
     this.updateScoreboard(inMenu);
     // On-screen controls (touch screens): up while a match is played in touch mode, the HUD in its
     // touch layout while that match is on screen (paused too). The last input used sets the mode; a
@@ -3120,22 +3292,6 @@ export class Game implements P2PGameHooks {
       as.throttle = this.playerControls.throttle;
     }
     this.audio.update(dt, as);
-
-    // The frame's rAF timestamp (ms) drives dynamic resolution.
-    const frameMs = this.lastTime * 1000;
-    const ds = diagStats;
-    const tr = ds !== null ? performance.now() : 0;
-    if (this.warmFrames > 0) {
-      this.warmFrames--;
-      // An on-screen frame: the ball's shadow stays as the stadium wants it (its pipeline was built
-      // by the warm-up behind the loading screen; only the console's setQuality skips that).
-      this.setWarm(true);
-      renderer.render(frameMs);
-      this.setWarm(false);
-    } else {
-      renderer.render(frameMs);
-    }
-    if (ds !== null) ds.add('render', performance.now() - tr);
   }
 
   /** The Tab / Back scoreboard: shown while the binding is held (never over the menu). */
@@ -3226,8 +3382,9 @@ export class Game implements P2PGameHooks {
     this.hud.setBallIndicator(true, nx, ny, Math.atan2(ny, nx) * RAD_TO_DEG, Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.01);
   }
 
-  private updateFps(now: number): void {
-    this.fpsFrames++;
+  /** The 4 Hz housekeeping and the drawn frame rate (`fps`, the F3 line): every frame of logic, `drawn` or not. */
+  private updateFps(now: number, drawn: boolean): void {
+    if (drawn) this.fpsFrames++;
     if (this.fpsWindowStart === 0) this.fpsWindowStart = now;
     const elapsed = now - this.fpsWindowStart;
     if (elapsed < FPS_INTERVAL) return;
@@ -3503,8 +3660,12 @@ export class Game implements P2PGameHooks {
     for (const c of oldCars) c.dispose();
   }
 
-  /** Place the cars and the ball at the current state right away (no interpolation on the first frame). */
+  /**
+   * Place the cars and the ball at the current state right away (no interpolation on the first
+   * frame); a held frame (menus, settings) is drawn again with them.
+   */
   private placeViews(): void {
+    this.redraw = true;
     const cars = this.cars;
     const offs = this.carOffsets;
     for (let i = 0; i < cars.length; i++) cars[i].update(this.cur, this.cur, offs[i], 1, 0);
