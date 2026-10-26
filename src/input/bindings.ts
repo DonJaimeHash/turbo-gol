@@ -9,13 +9,18 @@
  * cam, RT/LT throttle/reverse, left stick steer + air pitch/yaw, right stick camera swivel, right
  * stick click rear view, Back/Select scoreboard, Start menu; air roll left/right are unbound.
  *
- * Training (src/game/TrainingSession.ts): Backspace resets the shot and the arrow keys step
- * through the shots; on a controller View / Back is the scoreboard, so the training actions live
- * on the D-pad (free in a match: the D-pad only
- * navigates menus) and LB. None of them shares a key or button with another default binding.
- *   reset shot / ball   Backspace   D-pad ↓     next shot     →    D-pad →
- *   previous shot       ←           D-pad ←     reset car     ↓    D-pad ↑   (free play)
- *   unlimited boost     ↑           LB          (free play toggle)
+ * The arrow keys drive too (KBM_SECONDARY: throttle / reverse / steer, pitch / yaw in the air, as
+ * W A S D), the first guess of a driving game in the browser; a player's own binding of an arrow
+ * key wins over it.
+ *
+ * Training (src/game/TrainingSession.ts): Backspace resets the shot, Page Up / Page Down step
+ * through the shots, F puts the car back and T toggles unlimited boost (free play): keys nobody
+ * drives with (R is the reset to kickoff); on a controller View / Back is the scoreboard, so the
+ * training actions live on the D-pad (free in a match: the D-pad only navigates menus) and LB. None
+ * of them shares a key or button with another default binding (secondary keys included).
+ *   reset shot / ball   Backspace   D-pad ↓     next shot     PgDn   D-pad →
+ *   previous shot       PgUp        D-pad ←     reset car     F      D-pad ↑   (free play)
+ *   unlimited boost     T           LB          (free play toggle)
  */
 import { t } from '../i18n';
 
@@ -132,11 +137,39 @@ export const DEFAULT_KBM: Readonly<BindingProfile> = {
   scoreboard: key('Tab'),
   pause: key('Escape'),
   reset: key('KeyR'), // reset to kickoff (training resets the shot with Backspace)
-  trainingReset: key('Backspace'), // "reset shot"; while paused Backspace still quits (fixed menu key)
-  trainingPrev: key('ArrowLeft'),
-  trainingNext: key('ArrowRight'),
-  trainingResetCar: key('ArrowDown'),
-  trainingBoost: key('ArrowUp'),
+  trainingReset: key('Backspace'), // "reset shot"; while paused Backspace resumes (fixed menu key)
+  trainingPrev: key('PageUp'),
+  trainingNext: key('PageDown'),
+  trainingResetCar: key('KeyF'),
+  trainingBoost: key('KeyT'),
+};
+
+/**
+ * Second keys of the keyboard + mouse column, in every preset (fixed, not on the controls screen):
+ * the arrow keys drive like W A S D (Input.ts sample). One is ignored while the player's profile
+ * binds that key to any action (Input.refreshDerived): their own binding wins, nothing doubles.
+ */
+export const KBM_SECONDARY: Readonly<Partial<Record<ActionId, string>>> = {
+  throttle: 'ArrowUp',
+  reverse: 'ArrowDown',
+  steerLeft: 'ArrowLeft',
+  steerRight: 'ArrowRight',
+  pitchDown: 'ArrowUp',
+  pitchUp: 'ArrowDown',
+  yawLeft: 'ArrowLeft',
+  yawRight: 'ArrowRight',
+};
+
+/**
+ * The training keys of the layouts before KBM_SECONDARY (the arrows): settings.ts moves a saved
+ * binding still equal to one of these to today's default (SETTINGS_REV 2), so the arrows drive for
+ * a player who never changed them.
+ */
+export const LEGACY_TRAINING_KBM: Readonly<Partial<Record<ActionId, string>>> = {
+  trainingPrev: 'ArrowLeft',
+  trainingNext: 'ArrowRight',
+  trainingResetCar: 'ArrowDown',
+  trainingBoost: 'ArrowUp',
 };
 
 /**
@@ -311,6 +344,8 @@ const KEY_LABELS: Readonly<Record<string, string>> = {
   ArrowDown: '↓',
   ArrowLeft: '←',
   ArrowRight: '→',
+  PageUp: 'PgUp',
+  PageDown: 'PgDn',
 };
 
 const MOUSE_LABELS: readonly string[] = ['LMB', 'MMB', 'RMB', 'Mouse 4', 'Mouse 5'];

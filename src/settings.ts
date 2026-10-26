@@ -7,8 +7,10 @@
 import type { CameraSettings } from './render/Camera';
 import { STORAGE_PREFIX } from './brand';
 import {
+  DEFAULT_KBM,
   GP_MAX_AXES,
   GP_MAX_BUTTONS,
+  LEGACY_TRAINING_KBM,
   MAX_MOUSE_BUTTON,
   bindingMatchesDevice,
   defaultProfiles,
@@ -113,6 +115,12 @@ export const DEFAULT_CAMERA: Readonly<CameraSettings> = {
 };
 
 const STORAGE_KEY = STORAGE_PREFIX + 'settings.v1';
+/**
+ * Revision of the saved defaults, written next to the settings (`rev`). 2: the training keys left
+ * the arrows (bindings.ts LEGACY_TRAINING_KBM), which drive now; settings saved before (no `rev`)
+ * get today's training keys wherever they still held the old default.
+ */
+export const SETTINGS_REV = 2;
 
 export function defaultSettings(): Settings {
   return { controls: { ...DEFAULT_CONTROL_SETTINGS }, camera: { ...DEFAULT_CAMERA }, bindings: defaultProfiles(), audio: { ...DEFAULT_AUDIO } };
@@ -153,7 +161,7 @@ function isBinding(v: unknown): v is Binding {
 export function mergeSettings(raw: unknown): Settings {
   const s = defaultSettings();
   if (typeof raw !== 'object' || raw === null) return s;
-  const r = raw as { controls?: Record<string, unknown>; camera?: Record<string, unknown>; bindings?: Record<string, unknown>; audio?: Record<string, unknown> };
+  const r = raw as { controls?: Record<string, unknown>; camera?: Record<string, unknown>; bindings?: Record<string, unknown>; audio?: Record<string, unknown>; rev?: unknown };
   const c = r.controls ?? {};
   const cs = s.controls;
   for (const k of Object.keys(DEFAULT_CONTROL_SETTINGS) as (keyof ControlSettings)[]) {
@@ -187,6 +195,14 @@ export function mergeSettings(raw: unknown): Settings {
       } else if (isBinding(v) && bindingMatchesDevice(v, device)) s.bindings[device][action] = v;
     }
   }
+  // Saved before rev 2: a training key still on its old arrow is the old default, not a choice.
+  if (!(typeof r.rev === 'number' && r.rev >= 2)) {
+    const kbm = s.bindings.kbm;
+    for (const action of Object.keys(LEGACY_TRAINING_KBM) as ActionId[]) {
+      const b = kbm[action];
+      if (b !== null && b.kind === 'key' && b.code === LEGACY_TRAINING_KBM[action]) kbm[action] = DEFAULT_KBM[action];
+    }
+  }
   return s;
 }
 
@@ -202,7 +218,7 @@ export function loadSettings(): Settings {
 
 export function saveSettings(s: Settings): void {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...s, rev: SETTINGS_REV }));
   } catch {
     /* ignore */
   }

@@ -63,6 +63,10 @@ export default {
   'menu.searchCasual': 'CASUAL',
   'menu.searchCancel': 'CANCELAR',
   'menu.back': 'Volver',
+  'menu.leaveTitle': '¿Salir de {game}?',
+  'menu.leaveText': 'Pulsa Atrás otra vez para salir.',
+  'menu.leaveStay': 'SEGUIR JUGANDO',
+  'menu.leaveGo': 'SALIR',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   'badge.unranked': 'Sin clasificar',
@@ -452,6 +456,20 @@ export default {
   'touch.rotate': 'Gira el teléfono para jugar',
   'touch.installHint': 'Juega en pantalla completa: toca Compartir › Agregar a inicio',
 
+  // Controls card of the first matches and free play (src/render/controlsCard.ts)
+  'controls.title': 'CONTROLES',
+  'controls.tagFirst': 'TU PRIMER PARTIDO',
+  'controls.tagMatch': 'PARTIDO {n} DE {total}',
+  'controls.drive': 'Manejar',
+  'controls.steer': 'Girar',
+  'controls.jump': 'Saltar',
+  'controls.boost': 'Boost',
+  'controls.ballCam': 'Cámara de pelota',
+  'controls.mouseLeft': 'Clic izquierdo',
+  'controls.mouseRight': 'Clic derecho',
+  'controls.mouseMiddle': 'Clic de la rueda',
+  'controls.change': 'Cámbialos en Configuración › {tab}',
+
   // In-match HUD (src/render/Hud.ts)
   'hud.tagBlue': 'AZUL',
   'hud.tagRed': 'ROJO',
@@ -467,8 +485,8 @@ export default {
 
   // Pause screen (src/render/Hud.ts)
   'pause.title': 'PAUSA',
-  'pause.hintDefault': '{resumeKeys} para reanudar  ·  {quitKeys} para salir',
-  'pause.hint': '{resumeKeys} o clic para reanudar  ·  {quitKeys} para salir',
+  'pause.hintDefault': '{resumeKeys} para reanudar',
+  'pause.hint': '{resumeKeys} o clic para reanudar',
   'pause.resume': 'REANUDAR',
   'pause.settings': 'CONFIGURACIÓN',
   'pause.rules': 'REGLAS',
@@ -490,6 +508,7 @@ export default {
   'settings.groupCamera': 'Cámara',
   'settings.groupGame': 'Partida',
   'settings.mouseNote': 'Puedes asignar los botones y la rueda del mouse · moverlo gira la cámara',
+  'settings.arrowsNote': 'Las flechas también manejan, salvo que les asignes otra acción',
   'settings.rebindTitle': 'Haz clic para reasignar',
   'settings.pauseLockedTitle': 'La pausa no se puede quitar',
   'settings.unbindTitle': 'Quitar ({key})',

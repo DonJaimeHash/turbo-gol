@@ -14,8 +14,8 @@
  *
  *   Action              Keyboard + mouse         Controller (standard mapping, Xbox names)
  *   ------------------  -----------------------  ----------------------------------------
- *   Throttle / reverse  W / S                    RT / LT (analog 0..1)
- *   Steer               A / D                    Left stick X (× steering sensitivity)
+ *   Throttle / reverse  W / S  (and ↑ / ↓)       RT / LT (analog 0..1)
+ *   Steer               A / D  (and ← / →)       Left stick X (× steering sensitivity)
  *   Air pitch           W nose down, S nose up   Left stick Y (forward = nose down)
  *   Air yaw             A / D                    Left stick X (× aerial sensitivity)
  *   Jump                Right mouse button       A
@@ -30,9 +30,12 @@
  *   Pause / menu        Esc                      Start
  *   Reset to kickoff    R                        unbound
  *   Training: reset     Backspace                D-pad ↓  (shot in a pack, ball in free play)
- *   Training: prev/next ← / →                    D-pad ← / →
- *   Free play: car      ↓                        D-pad ↑  (reset car to its spawn)
- *   Free play: boost    ↑                        LB       (toggle unlimited boost)
+ *   Training: prev/next PgUp / PgDn              D-pad ← / →
+ *   Free play: car      F                        D-pad ↑  (reset car to its spawn)
+ *   Free play: boost    T                        LB       (toggle unlimited boost)
+ *
+ *   The arrows are second keys (KBM_SECONDARY, fixed): ↑ / ↓ as W / S, ← / → as A / D, on the
+ *   ground and in the air, unless the player bound that arrow to an action of their own.
  *
  *   Fixed (not rebindable) menu keys: Enter / Numpad Enter accept, Esc / Backspace back, arrows and
  *   WASD navigate; gamepad A accept, B back, X controls & settings, D-pad or left stick navigate.
@@ -65,6 +68,7 @@ import {
   GP,
   GP_MAX_AXES,
   GP_MAX_BUTTONS,
+  KBM_SECONDARY,
   MAX_MOUSE_BUTTON,
   bindingLabel,
   bindingMatchesDevice,
@@ -377,6 +381,8 @@ export class Input {
   private readonly tapped = new Set<string>();
   /** Keyboard codes bound to any kbm action (their default browser action is suppressed). */
   private readonly boundKeys = new Set<string>();
+  /** Per action: its KBM_SECONDARY key while no kbm binding uses that key, else null (refreshDerived). */
+  private readonly secondary: (string | null)[] = new Array<string | null>(N).fill(null);
   private mouseHeld = 0;
   private mouseTapped = 0;
   /** Buttons whose current press is the click that captured the mouse (ignored until released). */
@@ -796,6 +802,8 @@ export class Input {
             break;
         }
       }
+      const sk = this.secondary[i]; // the arrows drive too (KBM_SECONDARY)
+      if (sk !== null && d === 0 && (keys.has(sk) || tapped.has(sk))) d = 1;
       if (i >= I_LOOK_FIRST && i <= I_LOOK_LAST) {
         kd[i] = d;
         km[i] = m; // look: mouse travel goes through the virtual stick below
@@ -1176,6 +1184,12 @@ export class Input {
     for (let i = 0; i < N; i++) {
       const b = kbm[ACTION_IDS[i]];
       if (b && b.kind === 'key') bound.add(b.code);
+    }
+    // A second key only while the player's own profile leaves it free (their binding wins).
+    const sec = this.secondary;
+    for (let i = 0; i < N; i++) {
+      const code = KBM_SECONDARY[ACTION_IDS[i]];
+      sec[i] = code !== undefined && !bound.has(code) ? code : null;
     }
   }
 

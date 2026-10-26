@@ -1131,9 +1131,10 @@ test('touch mode: a menu key or a bound key leaves it; volume / media keys, code
   assert.equal(keyLeavesTouchMode('KeyQ', false, DEFAULT_KBM), true, 'air roll left');
   assert.equal(keyLeavesTouchMode('KeyZ', false, DEFAULT_KBM), false, 'unbound in the default layout');
   assert.equal(keyLeavesTouchMode('KeyZ', false, KEYBOARD_ONLY_KBM), true, 'bound in the keyboard-only layout');
-  const rebound = { ...DEFAULT_KBM, boost: { kind: 'key', code: 'KeyF' } };
-  assert.equal(keyLeavesTouchMode('KeyF', false, rebound), true, 'the live profile counts');
-  assert.equal(keyLeavesTouchMode('KeyF', false, DEFAULT_KBM), false);
+  const rebound = { ...DEFAULT_KBM, boost: { kind: 'key', code: 'KeyG' } };
+  assert.equal(keyLeavesTouchMode('KeyG', false, rebound), true, 'the live profile counts');
+  assert.equal(keyLeavesTouchMode('KeyG', false, DEFAULT_KBM), false);
+  assert.equal(keyLeavesTouchMode('KeyF', false, DEFAULT_KBM), true, 'free play reset car');
   assert.equal(keyLeavesTouchMode('KeyW', true, DEFAULT_KBM), false, 'typed into a text field');
   assert.equal(keyLeavesTouchMode('ShiftLeft', true, DEFAULT_KBM), false);
 });

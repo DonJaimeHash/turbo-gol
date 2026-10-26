@@ -223,7 +223,12 @@ src/render/
                         rebinding both devices, camera / gameplay sliders, Audio: master volume,
                         Graphics: the quality tier among MenuOptions.qualities, Experimental:
                         experimentalPage.ts; refreshSettings redraws it when the account changes;
-                        pad A / B leave a text field of the screen instead of acting on it)
+                        pad A / B leave a text field of the screen instead of acting on it), the
+                        controls card (setControlsCard: big card or slim strip, bottom right)
+  controlsCard.ts       the controls card of the first matches and free play, pure: when it shows
+                        (ControlsCardPlan: the first 3 matches' kickoff countdown, free play until
+                        the car moves, then a strip for 60 s of play; the count in localStorage)
+                        and its rows from the live bindings of the device (controlsCardRows)
 src/ai/
   Bot.ts                heuristic bot: produces CarControls from SimStateView + ball prediction;
                         stall / net / wall recovery; scans every car (nearest opponent, bump
@@ -235,7 +240,8 @@ src/ai/
                         members (the human teammate); README.md documents the tunables
 src/input/
   bindings.ts           pure data: ActionId, Binding, the default layouts (DEFAULT_KBM /
-                        DEFAULT_PAD, KEYBOARD_ONLY_KBM), labels, ACTION_ROWS, CameraLook
+                        DEFAULT_PAD, KEYBOARD_ONLY_KBM), the arrows as fixed second driving keys
+                        (KBM_SECONDARY), labels, ACTION_ROWS, CameraLook
   Input.ts              keyboard + mouse + gamepad → CarControls, camera look (+ lookSource), held
                         states and one-shot / menu edges, driven by Settings.bindings; pointer lock
                         (the capturing click is masked), one pad poll per frame (beginFrame),
@@ -261,8 +267,9 @@ src/game/
                         pointer lock (canvas click captures, menu / pause / whistle / blur release,
                         a browser-side release pauses like the Esc menu, a click on the paused
                         game resumes and recaptures), pause menu (pauseEntries; SETTINGS opens the
-                        settings screen over the paused game, BACK returns; QUIT / Backspace /
-                        pad B: quitToMenu clears the match and reopens the menu at kickoff), the
+                        settings screen over the paused game, BACK returns; Backspace / pad B
+                        resume; QUIT only: quitToMenu clears the match and reopens the menu at
+                        kickoff), system Back (onSystemBack, src/ui/backGuard.ts), the
                         loading screen for long loads (withLoading: switchQuality, switchTheme,
                         steps with a painted frame between them, the loop held meanwhile), the
                         ball's shadow off in day stadiums (applyBallShadow);
@@ -320,6 +327,10 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
                         presets), lobby matches, settings screen)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right)
+  backGuard.ts          system Back (Android gesture / button, TV remote BACK, browser back, Alt +
+                        ←, mouse back, GoBack / BrowserBack keys): one sentinel history entry,
+                        re-armed after each Back, turns it into Game.onSystemBack; released while
+                        the home screen's "Leave Turbogol?" is up
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
   screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
                         browser / create / lobby (custom.ts: the host's experimental rules row for

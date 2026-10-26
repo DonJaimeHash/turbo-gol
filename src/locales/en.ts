@@ -92,6 +92,14 @@ export default {
   'menu.searchCancel': 'CANCEL',
   // Tooltip / screen-reader name of the top-bar '‹' button (touch screens): back to the previous screen
   'menu.back': 'Back',
+  // Dialog on the home screen after the system Back (Android's back gesture or button, a TV remote's
+  // BACK, the browser's back button); {game} is the game's name
+  'menu.leaveTitle': 'Leave {game}?',
+  // The dialog's text: while it is up, the next Back leaves the page ("Back" is the system button)
+  'menu.leaveText': 'Press Back again to leave.',
+  // The dialog's buttons, uppercase: close it / go back to the page before the game
+  'menu.leaveStay': 'KEEP PLAYING',
+  'menu.leaveGo': 'LEAVE',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   // Rank badge tooltip and rating card while placement matches are still left
@@ -650,6 +658,27 @@ export default {
   // then its "Add to Home Screen" item (use Safari's own names in your language); › joins the two steps
   'touch.installHint': 'Play full screen: tap Share › Add to Home Screen',
 
+  // Controls card (src/render/controlsCard.ts): during the kickoff countdown of the first matches
+  // and in free play, then a slim strip in a corner. Short: it shares the screen with the match.
+  // Card title, uppercase
+  'controls.title': 'CONTROLS',
+  // Tag next to the title in the very first match, uppercase
+  'controls.tagFirst': 'YOUR FIRST MATCH',
+  // Tag next to the title in the next ones; {n} of {total} (2 of 3), uppercase
+  'controls.tagMatch': 'MATCH {n} OF {total}',
+  // Row names; the keys / buttons of the player's own bindings come after them
+  'controls.drive': 'Drive',
+  'controls.steer': 'Steer',
+  'controls.jump': 'Jump',
+  'controls.boost': 'Boost',
+  'controls.ballCam': 'Ball cam',
+  // Mouse buttons in words, next to a small mouse drawing
+  'controls.mouseLeft': 'Left click',
+  'controls.mouseRight': 'Right click',
+  'controls.mouseMiddle': 'Wheel click',
+  // Line under the rows; {tab} is settings.tabKbm or settings.tabPad
+  'controls.change': 'Change them in Settings › {tab}',
+
   // In-match HUD (src/render/Hud.ts). Short: it shares a 375 px phone screen with the touch controls.
   // Scorebug team tags (top left, next to the score), uppercase, about 3 letters
   'hud.tagBlue': 'BLU',
@@ -675,10 +704,11 @@ export default {
   // Pause screen (src/render/Hud.ts)
   // Title, huge, uppercase
   'pause.title': 'PAUSED',
-  // Line under the title; {resumeKeys} and {quitKeys} are key names (Esc / Start, Backspace / B), not translated. Keep the spacing.
-  'pause.hintDefault': '{resumeKeys} to resume  ·  {quitKeys} to quit',
+  // Line under the title; {resumeKeys} are key names (Esc / Start / B), not translated. Every one of
+  // them resumes (B and Backspace too): only the QUIT button leaves the match.
+  'pause.hintDefault': '{resumeKeys} to resume',
   // The same line with the player's pause keys; a mouse click on the game also resumes
-  'pause.hint': '{resumeKeys} or click to resume  ·  {quitKeys} to quit',
+  'pause.hint': '{resumeKeys} or click to resume',
   // Pause menu buttons (mouse, keys, controller and touch), uppercase
   // Back to the match
   'pause.resume': 'RESUME',
@@ -718,6 +748,8 @@ export default {
   'settings.groupGame': 'Game',
   // One line over the keyboard & mouse list (cut with … when the screen is narrow)
   'settings.mouseNote': 'Mouse buttons and wheel are bindable · mouse movement swivels the camera',
+  // Keyboard & Mouse tab, under the mouse note: the arrow keys are fixed second keys for driving
+  'settings.arrowsNote': 'The arrow keys drive too, unless you bind them to something else',
   // Tooltip of a binding cell
   'settings.rebindTitle': 'Click to rebind',
   // Tooltip of the disabled × next to the pause binding

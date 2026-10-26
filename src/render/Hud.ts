@@ -8,6 +8,9 @@
  * per-frame setter caches its last value and touches the DOM only when something changed, so
  * calling them every frame costs nothing and allocates nothing.
  *
+ * The controls card (bottom right, src/render/controlsCard.ts: the first matches' kickoff countdown
+ * and free play, then a slim strip) is drawn by `setControlsCard` from rows the Game builds.
+ *
  * Debug readouts (speed, fps / draw calls / GPU time) are hidden by default; F3 toggles them,
  * and `#stats` or `#debug` in the URL shows them from the start.
  *
@@ -49,6 +52,8 @@ import type { CameraSettings } from './Camera';
 import { pageFlags } from './hashFlags';
 import { QUALITIES, nextQuality, type Quality } from './quality';
 import { buildExperimentalPage, type ExperimentalOptions, type ExperimentalPage } from './experimentalPage';
+import type { CardKey, CardView, ControlsCardContent } from './controlsCard';
+import { pauseResumeKeys } from '../game/pauseKeys';
 import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from '../game/Match';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
@@ -332,9 +337,6 @@ const SETTINGS_KEYS = {
   cancel: 'Esc',
 } as const;
 
-/** The pause menu's quit keys (fixed: Game handles Backspace / pad B while paused). */
-export const PAUSE_QUIT_KEYS = 'Backspace / B';
-
 /** The camera presets' values (field of view / distance / height), shown after their names. */
 const PRESET_WIDE_VALUES = '110/270/100';
 const PRESET_CLASSIC_VALUES = '90/270/100';
@@ -478,6 +480,12 @@ export class Hud {
   /** The entry waiting for its second activation (PauseEntry.confirm), or null. */
   private pauseArmed: PauseEntry | null = null;
   private readonly hint: HTMLElement;
+  private readonly controls: HTMLElement;
+  private readonly controlsTag: HTMLElement;
+  private readonly controlsRows: HTMLElement;
+  private readonly controlsFoot: HTMLElement;
+  private controlsView: CardView = 'off';
+  private controlsContent: ControlsCardContent | null = null;
 
   // Scoreboard (Tab).
   private readonly scoreboard: HTMLElement;
@@ -611,6 +619,8 @@ export class Hud {
       return;
     }
     if (this.menu === null || this.menu.hidden) return;
+    // Alt + ← is the browser's Back (BackGuard: the screen goes back), not a value step.
+    if (e.altKey) return;
     const action = this.settingsOpen ? settingsKeyAction(e.code) : mainKeyAction(e.code);
     if (action !== null) {
       this.menuAction(action);
@@ -678,6 +688,19 @@ export class Hud {
     this.hint.hidden = true;
     this.root.appendChild(this.hint);
 
+    // Controls card (bottom right): opaque graphite, no blur over the live canvas; the rows come
+    // from the Game (setControlsCard), the strip layout is a class on the same element.
+    this.controls = el('section', 'hud-controls');
+    this.controls.setAttribute('aria-label', t('controls.title'));
+    const controlsHead = el('div', 'hud-controls-head');
+    this.controlsTag = el('span', 'hud-controls-tag', '');
+    controlsHead.append(el('span', 'hud-controls-title', t('controls.title')), this.controlsTag);
+    this.controlsRows = el('div', 'hud-controls-rows');
+    this.controlsFoot = el('div', 'hud-controls-foot', '');
+    this.controls.append(controlsHead, this.controlsRows, this.controlsFoot);
+    this.controls.hidden = true;
+    this.root.appendChild(this.controls);
+
     this.speedBox = el('div', 'hud-speed');
     this.speedValue = el('div', 'hud-speed-value', '0');
     const speedUnit = el('div', 'hud-speed-unit', 'km/h');
@@ -738,7 +761,7 @@ export class Hud {
     this.root.appendChild(this.scoreboard);
 
     this.paused = el('div', 'hud-paused');
-    this.pausedSub = el('div', 'hud-paused-sub', t('pause.hintDefault', { resumeKeys: 'Esc / Start', quitKeys: PAUSE_QUIT_KEYS }));
+    this.pausedSub = el('div', 'hud-paused-sub', t('pause.hintDefault', { resumeKeys: pauseResumeKeys('Esc', 'Start') }));
     // The pause menu, for every input: the mouse and a finger click its buttons, the keyboard and
     // the pad move the focus (the Game routes Input's menu edges to pauseAction). Only the buttons
     // take the pointer: a click or tap on the veil still reaches the canvas (resume). The key line
@@ -1247,6 +1270,33 @@ export class Hud {
     }
     this.hint.textContent = text;
     this.hint.hidden = false;
+  }
+
+  /**
+   * The controls card: 'full' the big card, 'strip' the slim corner strip, 'off' hidden (also
+   * without content). A new `content` object rebuilds the rows (the Game makes one only when the
+   * device, a binding or the tag changes), so a per-frame call with the same arguments costs nothing.
+   */
+  setControlsCard(view: CardView, content: ControlsCardContent | null): void {
+    if (content !== null && content !== this.controlsContent) {
+      this.controlsContent = content;
+      this.controlsTag.textContent = content.tag;
+      this.controlsFoot.textContent = content.foot;
+      const rows: HTMLElement[] = [];
+      for (const r of content.rows) {
+        const keys = el('span', 'hud-controls-keys');
+        for (const k of r.keys) keys.appendChild(k.kind === 'mouse' ? mouseKey(k) : el('kbd', k.kind === 'pad' ? 'hud-key hud-key-pad' : 'hud-key', k.label));
+        const row = el('div', 'hud-controls-row');
+        row.append(el('span', 'hud-controls-label', r.label), keys);
+        rows.push(row);
+      }
+      this.controlsRows.replaceChildren(...rows);
+    }
+    const shown = view !== 'off' && this.controlsContent !== null;
+    if (view === this.controlsView && shown === !this.controls.hidden) return;
+    this.controlsView = view;
+    this.controls.hidden = !shown;
+    this.controls.classList.toggle('hud-controls-strip', view === 'strip');
   }
 
   get menuVisible(): boolean {
@@ -1804,6 +1854,8 @@ export class Hud {
     if (device === 'pad') this.padStatus = status;
     else status.textContent = t('settings.mouseNote');
     page.appendChild(status);
+    // The arrows' second bindings (bindings.ts KBM_SECONDARY) have no row: said once here.
+    if (device === 'kbm') page.appendChild(el('div', 'hud-settings-device', t('settings.arrowsNote')));
 
     // Built once per page: the same texts for every row.
     const rebindTitle = t('settings.rebindTitle');
@@ -2519,6 +2571,35 @@ function controlRow(action: string, keys: string): HTMLElement {
   const row = el('div', 'hud-menu-control');
   row.append(el('span', 'hud-menu-control-action', action), el('span', 'hud-menu-control-keys', keys));
   return row;
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** The lit part of the controls card's mouse (24 × 24 view box): left half, wheel, right half. */
+const MOUSE_LIT: Readonly<Record<number, string>> = {
+  0: 'M11.1 4.1A5.1 5.1 0 0 0 6.9 9.2V9.4H11.1Z',
+  1: 'M11 5h2v4h-2Z',
+  2: 'M12.9 4.1A5.1 5.1 0 0 1 17.1 9.2V9.4H12.9Z',
+};
+
+/** A mouse button on the controls card: a small mouse with that button lit, then its name ('Right click'). */
+function mouseKey(k: CardKey): HTMLElement {
+  const box = el('span', 'hud-controls-mouse');
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'hud-mouse');
+  const outline = document.createElementNS(SVG_NS, 'path');
+  outline.setAttribute('d', 'M12 3a6 6 0 0 1 6 6v6a6 6 0 0 1-12 0V9a6 6 0 0 1 6-6ZM6 10h12M12 3v7');
+  svg.appendChild(outline);
+  const lit = k.button !== undefined ? MOUSE_LIT[k.button] : undefined;
+  if (lit !== undefined) {
+    const p = document.createElementNS(SVG_NS, 'path');
+    p.setAttribute('d', lit);
+    p.setAttribute('class', 'hud-mouse-lit');
+    svg.appendChild(p);
+  }
+  box.append(svg, el('span', 'hud-controls-mouse-name', k.label));
+  return box;
 }
 
 function el(tag: string, className: string, text?: string): HTMLElement {
