@@ -937,6 +937,7 @@ export class Menu {
       chip.setAttribute('aria-label', this.host.guestName() + '. ' + t('menu.guestSignIn'));
     }
     this.regionPill.set(this.regionState());
+    this.queueFit(); // the chip's name or the pill's text may have grown: the sections fit again
   }
 
   private regionState(): RegionPillState {
@@ -1002,7 +1003,7 @@ export class Menu {
     };
     close = this.modal({
       title: t('common.region'),
-      body: h('div.mn-sheet-list', null, option(null, auto), ...REGIONS.map((r) => option(r.id, regionName(r.id)))),
+      body: h('div.mn-sheet-list.mn-sheet-grid', null, option(null, auto), ...REGIONS.map((r) => option(r.id, regionName(r.id)))),
       actions: [{ label: t('lang.cancel'), onClick: () => true }],
     });
   }
@@ -1078,6 +1079,7 @@ export class Menu {
       this.reloadNeeded = true;
       this.updateBtn.hidden = false;
       this.root.classList.add('mn-pills-more');
+      this.queueFit();
       if (!this.settingsUp()) this.openUpdateSheet();
     } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) this.toast(v.error, 'error');
     this.lastError = v.error;

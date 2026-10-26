@@ -306,6 +306,11 @@ html.tg-tv .mn-glyph-round {
   margin-top: 0.75rem;
 }
 
+/* Short options side by side where the sheet is wide (seven regions fit a TV without a scroll). */
+.mn-sheet-grid {
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+}
+
 .mn-sheet-option {
   display: flex;
   align-items: center;

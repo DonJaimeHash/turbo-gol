@@ -201,7 +201,7 @@ span.mn-crumb {
 
 .mn-sec-bar {
   position: absolute;
-  inset: auto 0 5px;
+  inset: auto 2px 5px; /* the -20 degree skew stays inside the tab (no overflow for data-fit) */
   height: 4px;
   background: var(--brand);
   transform: skewX(-20deg) scaleX(0);
@@ -469,8 +469,10 @@ html[data-shell='rail'] .mn-sl-foot {
   height: 1.4em;
 }
 
-/* Beside the search or update pill, the account chip is its avatar. */
-html[data-shell='rail'] .mn-pills-more .mn-chip-text {
+/* Beside the search or update pill, the account chip is its avatar; on a stacked screen the region
+   pill is its icon and dot (the crumbs need the room). */
+html[data-shell='rail'] .mn-pills-more .mn-chip-text,
+html[data-shell='rail'] .mn-stacked .mn-pill-region > :not(.mn-icon):not(.mn-dot) {
   display: none;
 }
 
@@ -510,9 +512,12 @@ html[data-layout='portrait'] .mn-chip {
   padding: 0 0.375rem;
 }
 
-/* Upright, stacked: ‹ and the screen's own name (its crumbs and the region pill make room). */
+/* Upright, stacked: ‹ and the screen's own name (its crumbs and the region pill make room); beside
+   the search or update pill the wordmark and the chip step aside (PERFIL is a tab below). */
 html[data-layout='portrait'] .mn-crumbs > :not(:last-child),
-html[data-layout='portrait'] .mn-stacked .mn-pill-region {
+html[data-layout='portrait'] .mn-stacked .mn-pill-region,
+html[data-layout='portrait'] .mn-pills-more .mn-brand,
+html[data-layout='portrait'] .mn-pills-more .mn-chip {
   display: none;
 }
 
