@@ -566,8 +566,9 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   pixels), no flash shells; additive materials in one pass (`forceSinglePass`), team tints as
   uniforms and wheel / pad instance buffers past the uniform-buffer limit so every car shares its
   programs (`SHARED_INSTANCING_CAPACITY`).
-- **CPU** (`cpuLite`): `html.tg-superlow` takes the HUD's blur, shadows and decorative animations
-  off (opaque panels), the boost and speed readouts update at 10 Hz, the audio has no convolver
+- **CPU** (`cpuLite`): `html.tg-superlow` takes the shadows and decorative transitions and
+  animations off by class prefix and makes every panel opaque (nothing blurs the canvas on any tier
+  since the Tablero tokens: ARCHITECTURE.md "UI tokens"), the boost and speed readouts update at 10 Hz, the audio has no convolver
   room, the ball prediction refreshes every 8 ticks (the bots read it by age; the wasm's 720-tick
   horizon is unchanged), and going online shows one line ("Super low: online matches may not run
   smoothly on this device"). Physics stays at 120 Hz.
@@ -717,7 +718,9 @@ Fixed:
   within the noise of the shared desktop GPU at 2889x1623 (`#pr=3`).
 - **The pad's focus vanished on two buttons under `html.tg-superlow`**: the pause menu's RESUME
   and the legacy menu's PLAY showed focus only with a box-shadow ring, which super low removes; a
-  plain outline replaces it there.
+  plain outline replaced it there, and since the Tablero base (src/ui/styles/focus.css) every
+  focus in the menus, the HUD and the pack summary is one outline + gap ring + lime heel / bar that
+  super low keeps.
 
 Still open (minor, measured here):
 

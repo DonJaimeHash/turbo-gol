@@ -7,6 +7,8 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `#widetext` (for contributors): the whole interface in plain Arial, about as wide as Android's
+  Roboto, to see on a desktop which label would not fit without the condensed font.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
   boost and switch to the ball camera, with your own keys or buttons (keyboard and mouse, or the
@@ -121,6 +123,10 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- Super low ("Súper bajo"): the focused button of the pause menu, Settings and the training pack
+  summary was hard to see from the couch; it has the same ring as everywhere else. The match HUD
+  keeps a one-pixel shadow under its text (BOOST, the clock, the countdown read over a bright pitch;
+  the BOOST label is white), every panel is opaque and menu transitions are off.
 - In the pause menu, B on a controller and Backspace no longer throw you out of the match (online
   and in Competitive too, where leaving counts as an abandon): like Esc and Start, they go back to
   the match. Only the QUIT button leaves, and online it still asks a second time. Inside the pause
@@ -173,6 +179,15 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- A cleaner interface, the first step of the new menus. Titles, buttons and numbers use one
+  condensed typeface on every device (Barlow Condensed, a free font of 6 KB that comes with the
+  game), so an Android phone or a TV shows the same proportions as Windows did. Panels are solid
+  instead of blurring the stadium behind them (smoother on phones and TVs), the pause, the pack
+  summary and dialogs dim the game more, and one focus ring (white, with a lime mark under it, or a
+  lime bar for a row) shows where you are with a keyboard, a controller or a TV remote; it is never
+  shown to a finger. The menu tiles have drawn icons instead of emoji, and secondary text is a
+  little brighter. Hover effects only happen where a mouse can hover; with reduced motion turned on
+  in your system nothing slides, pops or blinks.
 - The arrow keys drive too (↑ / ↓ accelerate and reverse, ← / → steer, also in the air), next to
   W A S D, unless you bind an arrow to something else. The training keys that used the arrows moved:
   Page Up / Page Down for the previous / next shot, F to put the car back and T for unlimited boost

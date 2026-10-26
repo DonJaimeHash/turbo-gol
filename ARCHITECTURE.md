@@ -111,7 +111,8 @@ src/render/
   hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
-                        nomsaa, msaa, nopost, norender, pr, hide)
+                        nomsaa, msaa, nopost, norender, pr, hide, widetext: the UI in plain Arial,
+                        html.tg-widetext set by main.ts, a fit test for the fallback fonts)
   frameStats.ts         `#diag`'s frame rate (1 s min / mean, 5 s mean, frames over 50 / 100 ms)
                         and CPU per frame (ball prediction, bots, physics step, render), fed by the
                         Game only with the flag
@@ -315,7 +316,15 @@ src/game/
   startTraining(FREEPLAY_ID, { rules }) is experimental free play: the preset's physics, its game
   speed, the TrainingHud's rules line, the pause menu's RULES applied when the settings close, no
   records)
-src/ui/                 the front-end menus, styled by menu.css (mn-)
+src/ui/                 the front-end menus, styled by menu.css (mn-) on the tokens of styles/
+  styles/tokens.css     every colour, type role and scale, space, radius, shadow, layer, motion
+                        and focus value (the Tablero plan §1.2), the display font's @font-face and
+                        its calibrated fallbacks; the old names (--panel, --muted, --mn-*) are
+                        aliases until the PR that rewrites their last user. "UI tokens" below
+  styles/focus.css      the one focus ring of every world (menus .mn-focus / :focus-visible, the
+                        Hud's .hud-focus, the pack summary's default button)
+  components/icons.ts   the SVG icon sprite (~37 icons on a 24 grid, one hidden <svg> of
+                        <symbol>s mounted by the first icon(); the menu tiles use it)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
                         thread is busy), one short line; swallows keys while up; boot and Game
@@ -454,7 +463,9 @@ src/audio/
 src/main.ts             boot behind the loading screen: wasm load ‖ renderer init + the world's
                         first bake, build arena, settings, Game, warm-up render, start, fade into
                         the menu
-index.html, src/style.css
+index.html, src/style.css (the entry sheet: imports src/ui/styles/tokens.css and focus.css; the
+                        HUD, the loading screen, #widetext and super low)
+public/fonts/           tg-display-v1.woff2 (the display font, 5.6 KB) and its OFL.txt
 tests/                  node tests (node --test): sim harness (wasm, incl. the 8-car layout, 2v2 /
                         3v3 kickoffs, slot compaction), arena mesh validity, arena physics, bot
                         (pure + wasm-backed recovery, near-ball rules), bot team (roles,
@@ -751,7 +762,9 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   tab). The prefs keep the player's pick
   only (`persistPrefs` writes `savedQuality`): a tier the session runs on its own (the URL, auto,
   a ceiling, a fallback) is never saved. Super low's CPU trims (`cpuLite`): `html.tg-superlow`
-  (no blur, shadows or decorative animation in the HUD), boost and speed at 10 Hz, no audio room,
+  (opaque surfaces, a flat lime hero, no box or text shadow but one hard pixel under the HUD's
+  text, no decorative transition or animation by class prefix; the focus ring stays: "UI tokens"
+  below), boost and speed at 10 Hz, no audio room,
   the ball prediction every 8 ticks, a notice when going online.
 * **Tier safety net** (`src/render/tierGuard.ts`, `Game.onGpuFailure`, from `Game.bootDone()` on):
   a GPU validation error, a failed pipeline or WebGL program within 20 s of the boot or a tier
@@ -908,6 +921,56 @@ locks are marked too). Every other match runs the standard physics, bit for bit.
   bake ~1 s); low 1.6 s warm, 2.7 s cold. WebGL2 low: 2.0-6.2 s to the warm-up (run to run
   variance of the parallel compile on a shared GPU). Before the parallel compile the high tier
   took 5.5-6.1 s (~50 pipelines compiled one after the other).
+
+## UI tokens, focus and the display font
+
+The Tablero redesign (PR 1: base) gives the three UI worlds (the menus `mn-`, the HUD `hud-`, the
+training HUD `trn-`, the touch controls `tc-`) one set of tokens, `src/ui/styles/tokens.css`,
+imported first by `src/style.css`:
+
+* **Colour.** `--ink`, `--surface-0..3` (opaque) and their alpha twins for a surface over the live
+  scene (`--surface-0-94`...), `--edge` / `--edge-hi`, `--text` / `--text-2` / `--text-3` (the 5.6:1
+  floor), the lime `--brand*` (one filled lime thing per screen, plus boost and the goal), team
+  `--blue*` / `--red*` (teams only), `--danger`, `--warn`, `--ok`, `--info`, `--rank-gold` (ranks
+  only), `--lab` (Experimental only), `--focus`, `--veil` (pause, dialogs, the summary: solid, never
+  blurred) and `--scrim`. Nothing in `src/` uses `backdrop-filter` (each one re-reads and blurs the
+  canvas every frame): `tests/css-budget.test.mjs` fails on one.
+* **Type.** Display and Heading roles (titles, buttons, tabs, numerals; always capitals) use
+  `--font-display`; Body and Label keep the condensed system stack `--font-body` (no Impact).
+  Weights stop at 700. The scale `--t-hero ... --t-label` per class (PC, short screens, phone
+  landscape, `html.tg-tv`) is in rem for the shell's root scale (PR 4).
+* **Space, radii, shadows, layers, motion:** `--sp-1..8`, `--r-slot / key / tile / panel / pill`,
+  `--shadow-sheet` (static, sheets only), `--z-*` (the order of the HUD, menus, settings, anti-bot,
+  rotate screen and loading screen), `--dur-*` / `--ease*` (transform and opacity only).
+* **Focus** (`src/ui/styles/focus.css`): a 3 px white outline 3 px out, an `--ink` ring in the gap
+  (a spread-only shadow that super low keeps) and a lime heel skewed -20 degrees under the box;
+  rows (lists, settings rows, button stacks, one-stop groups) get a lime bar on their left inside
+  edge instead. Never on a touch screen; 4 px and a 6 px heel under `html.tg-tv`.
+* **Hover** only inside `@media (hover: hover)`; one pressed state (`scale(.97)`); one
+  `prefers-reduced-motion` block for every prefix in `src/style.css` (opacity still fades, 120 ms at
+  most; the search spinner keeps turning).
+* **Super low** is one switch: the alpha twins point at the opaque surfaces, `--brand-grad` at the
+  flat lime, every `mn-` / `hud-` / `trn-` / `tc-` transition and animation is off except the
+  informative ones (spinner, hold, busy stripe, low / overtime clock, key capture, the P2P wait line).
+
+**Display font.** `public/fonts/tg-display-v1.woff2` (5,616 B, 88 glyphs: A-Z, Á É Í Ó Ú Ü Ñ, 0-9,
+v and the UI's punctuation; kern and tabular figures kept) is Barlow Condensed Bold 1.408 (SIL OFL
+1.1, `public/fonts/OFL.txt`, THIRD_PARTY_NOTICES.md) from google/fonts
+`ofl/barlowcondensed/BarlowCondensed-Bold.ttf` (SHA-256 `e476562e...5b65`), cut with fontTools 4.60.1
+(+ brotli):
+
+```
+pyftsubset BarlowCondensed-Bold.ttf --flavor=woff2 --output-file=tg-display-v1.woff2   --unicodes="U+0020-0023,U+0025-0029,U+002B-003B,U+003F,U+0041-005A,U+0076,U+00A0-00A1,U+00B7,U+00BF,U+00C1,U+00C9,U+00CD,U+00D1,U+00D3,U+00D7,U+00DA,U+00DC,U+2013-2014,U+2019,U+2026,U+2039-203A,U+2212"   --layout-features=kern,tnum --no-hinting --desubroutinize   --name-IDs=0,1,2,3,4,5,6,13,14 --name-languages=0x0409 --drop-tables+=DSIG,gasp
+```
+
+Same origin (COEP `require-corp` has nothing to say), preloaded by `index.html`, `font-display:
+swap`, one `unicode-range` with those code points; a new cut is a new versioned name (`-v2`). The
+face's line metrics are overridden (ascent 90 %, descent 20 %) so capitals sit centred in the line
+box. Until it arrives, or if it never does, the stack falls to Windows' Bahnschrift (Bold Condensed
+is 1.1x as wide), then to Android's Roboto Condensed / Roboto through local() faces scaled to the
+same widths (`size-adjust` 83.5 % / 73.2 %, measured on 21 UI labels), then the system stack.
+`#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it.
+`scripts/copy-notices.mjs` refuses to build with a font and no license next to it.
 
 ## Legal
 
