@@ -31,6 +31,7 @@ import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
 import type { Difficulty, SettingsTab } from '../render/Hud';
 import type { ThemeId } from '../render/theme';
+import type { ActionId, Device } from '../input/bindings';
 import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 
 export type SearchKind = 'casual' | 'ranked';
@@ -109,6 +110,8 @@ export interface MenuHost {
    * on `opts.tab` when given; `onClose` when it is left.
    */
   openSettings(onClose: () => void, opts?: { tab?: SettingsTab }): void;
+  /** The key / button name of an action's live binding on `device`, for a hint text ('—' unbound). */
+  keyLabel(action: ActionId, device: Device): string;
   /** One line about the build (WebGPU / RocketSim version), shown in the footer. */
   readonly info: string;
 }

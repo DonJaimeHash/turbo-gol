@@ -972,8 +972,8 @@ export default {
   'training.screenTitle': 'Training',
   // Screen heading, uppercase
   'training.title': 'TRAINING',
-  // Keep the key names (Backspace, D-pad, arrows) as they are
-  'training.subtitle': 'The shot starts when you touch a control. Backspace / D-pad ↓ resets the shot, ← → switch shots.',
+  // {reset} and {shots} are key names from the player's bindings, e.g. "Backspace / D-pad ↓" and "PgUp / PgDn (D-pad ← / D-pad →)"
+  'training.subtitle': 'The shot starts when you touch a control. {reset} resets the shot, {shots} switch shots.',
   // Subtitle of the Free play tile
   'training.freePlayText': 'You, the ball and unlimited boost',
   // Under the Shooting category

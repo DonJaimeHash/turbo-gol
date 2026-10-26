@@ -275,3 +275,22 @@ test('settings saved before rev 2: training keys still on their old arrows move 
   const r = mergeSettings({ rev: 2, bindings: { kbm: oldKbm } });
   for (const [a, b] of Object.entries(oldKbm)) assert.deepEqual(r.bindings.kbm[a], b, a);
 });
+
+test('settings saved before rev 2: a training key whose new default the player already uses stays on its arrow', () => {
+  const key = (code) => ({ kind: 'key', code });
+  const oldKbm = { trainingPrev: key('ArrowLeft'), trainingNext: key('ArrowRight'), trainingResetCar: key('ArrowDown'), trainingBoost: key('ArrowUp') };
+  // Boost on F and ball cam on T (the new reset car / unlimited boost keys), PgDn on the scoreboard.
+  const s = mergeSettings({ bindings: { kbm: { ...oldKbm, boost: key('KeyF'), ballCam: key('KeyT'), scoreboard: key('PageDown') } } });
+  const k = s.bindings.kbm;
+  assert.deepEqual(k.boost, key('KeyF'), 'boost stays on F');
+  assert.deepEqual(k.ballCam, key('KeyT'));
+  assert.deepEqual(k.scoreboard, key('PageDown'));
+  assert.deepEqual(k.trainingResetCar, key('ArrowDown'), 'F taken: reset car keeps its arrow');
+  assert.deepEqual(k.trainingBoost, key('ArrowUp'), 'T taken');
+  assert.deepEqual(k.trainingNext, key('ArrowRight'), 'PgDn taken');
+  assert.deepEqual(k.trainingPrev, DEFAULT_KBM.trainingPrev, 'PgUp free: moved');
+  for (const code of ['KeyF', 'KeyT', 'PageDown']) {
+    const users = ACTION_IDS.filter((a) => bindingsEqual(k[a], key(code)));
+    assert.equal(users.length, 1, `${code} has one action: ${users.join(', ')}`);
+  }
+});

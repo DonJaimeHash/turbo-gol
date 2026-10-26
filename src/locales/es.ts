@@ -653,7 +653,7 @@ export default {
   // Training screen and packs (src/ui/screens/training.ts, src/game/trainingPacks.ts)
   'training.screenTitle': 'Entrenamiento',
   'training.title': 'ENTRENAMIENTO',
-  'training.subtitle': 'El tiro empieza cuando tocas un control. Backspace / D-pad ↓ reinicia el tiro, ← → cambian de tiro.',
+  'training.subtitle': 'El tiro empieza cuando tocas un control. {reset} reinicia el tiro, {shots} cambian de tiro.',
   'training.freePlayText': 'Tú, la pelota y boost infinito',
   'training.shootingText': 'Anota en la portería rival',
   'training.savingText': 'Ataja los tiros a tu portería',

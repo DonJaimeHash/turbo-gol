@@ -328,9 +328,11 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right)
   backGuard.ts          system Back (Android gesture / button, TV remote BACK, browser back, Alt +
-                        ←, mouse back, GoBack / BrowserBack keys): one sentinel history entry,
-                        re-armed after each Back, turns it into Game.onSystemBack; released while
-                        the home screen's "Leave Turbogol?" is up
+                        ←, mouse back, GoBack / BrowserBack keys) as Game.onSystemBack: a
+                        CloseWatcher kept alive (Android's Back, no user activation needed) and
+                        one sentinel history entry re-armed after each Back (the history Backs);
+                        released while the home screen's "Leave Turbogol?" is up. Mid-match the
+                        Game adds a beforeunload backstop (updateLeaveGuard)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
   screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
                         browser / create / lobby (custom.ts: the host's experimental rules row for

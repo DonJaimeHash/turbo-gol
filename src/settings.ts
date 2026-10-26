@@ -12,6 +12,7 @@ import {
   GP_MAX_BUTTONS,
   LEGACY_TRAINING_KBM,
   MAX_MOUSE_BUTTON,
+  actionsSharingBinding,
   bindingMatchesDevice,
   defaultProfiles,
   type ActionId,
@@ -118,7 +119,7 @@ const STORAGE_KEY = STORAGE_PREFIX + 'settings.v1';
 /**
  * Revision of the saved defaults, written next to the settings (`rev`). 2: the training keys left
  * the arrows (bindings.ts LEGACY_TRAINING_KBM), which drive now; settings saved before (no `rev`)
- * get today's training keys wherever they still held the old default.
+ * get today's training keys wherever they still held the old default and the new key is free.
  */
 export const SETTINGS_REV = 2;
 
@@ -196,11 +197,16 @@ export function mergeSettings(raw: unknown): Settings {
     }
   }
   // Saved before rev 2: a training key still on its old arrow is the old default, not a choice.
+  // It moves to today's key only when no other action of the player has that key (boost on F,
+  // ball cam on T: free play would reset the car on every boost); otherwise it keeps its arrow,
+  // where the player's own binding wins over the arrow's driving (Input.refreshDerived), as before.
   if (!(typeof r.rev === 'number' && r.rev >= 2)) {
     const kbm = s.bindings.kbm;
     for (const action of Object.keys(LEGACY_TRAINING_KBM) as ActionId[]) {
       const b = kbm[action];
-      if (b !== null && b.kind === 'key' && b.code === LEGACY_TRAINING_KBM[action]) kbm[action] = DEFAULT_KBM[action];
+      if (b === null || b.kind !== 'key' || b.code !== LEGACY_TRAINING_KBM[action]) continue;
+      const to = DEFAULT_KBM[action];
+      if (actionsSharingBinding(kbm, to, action).length === 0) kbm[action] = to;
     }
   }
   return s;

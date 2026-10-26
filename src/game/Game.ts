@@ -37,6 +37,7 @@
  * browser's back, Alt + ←, a mouse's back button) never leaves the page by itself: `onSystemBack`
  * closes the settings screen or a modal, goes back one menu screen, pauses a match being played
  * (a paused one stays paused), and on the home screen asks "Leave Turbogol?" (`confirmLeave`).
+ * What still walks the history out mid-match meets the browser's "Leave site?" (`updateLeaveGuard`).
  *
  * The controls card (src/render/controlsCard.ts, Hud.setControlsCard): the first matches' kickoff
  * countdown and free play show the live bindings of the device in use, then a slim strip for a
@@ -735,6 +736,8 @@ export class Game implements P2PGameHooks {
   private pauseSettingsOpen = false;
   /** System Back as one step inside the game (onSystemBack); null without a history (a node test). */
   private readonly backGuard: BackGuard | null;
+  /** The beforeunload backstop is listening (a match under way: updateLeaveGuard). */
+  private leaveGuarded = false;
   /** When the controls card shows (the first matches, free play) and what it lists (built on a change). */
   private readonly controlsCard = new ControlsCardPlan(localCardSeen);
   private controlsContent: ControlsCardContent | null = null;
@@ -1159,6 +1162,7 @@ export class Game implements P2PGameHooks {
       searchView: () => game.menuSearchView(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
+      keyLabel: (action, device) => game.input.getLabel(action, device),
       get info() {
         return game.info;
       },
@@ -1432,6 +1436,38 @@ export class Game implements P2PGameHooks {
     }
     this.menu.modal({ title: t('menu.leaveTitle', { game: GAME_NAME }), body: t('menu.leaveText'), actions, onClose: () => guard.resume() });
   }
+
+  /** A match is under way, paused too (not training, not after the final whistle): leaving the page now loses it, online as an abandon. */
+  private get matchUnderway(): boolean {
+    if (!this.running || this.loadingHold || this.menuShown || this.training !== null) return false;
+    const session = this.session;
+    if (session !== null && session.active) return session.inMatch;
+    const phase = this.match.phase;
+    return phase !== 'menu' && phase !== 'ended';
+  }
+
+  /**
+   * Per frame: the system Back's backstop. While a match is under way the browser asks before the
+   * page goes (beforeunload), for what still walks the history out of it (backGuard.ts header: a
+   * second history Back with no click or key between in Chromium / WebKit, a browser without
+   * CloseWatcher), a reload, a closed tab. Listened to only meanwhile (a beforeunload listener can
+   * cost the page its back/forward cache in some browsers). The browser shows the prompt only after
+   * a click, tap or key on the page.
+   */
+  private updateLeaveGuard(): void {
+    const on = this.matchUnderway;
+    if (on === this.leaveGuarded) return;
+    this.leaveGuarded = on;
+    if (on) window.addEventListener('beforeunload', this.onBeforeUnload);
+    else window.removeEventListener('beforeunload', this.onBeforeUnload);
+  }
+
+  private readonly onBeforeUnload = (e: BeforeUnloadEvent): void => {
+    // A reload behind the loading screen (a quality fallback, a lost GPU) sets loadingHold first.
+    if (!this.matchUnderway) return;
+    e.preventDefault();
+    e.returnValue = ''; // browsers that predate preventDefault here
+  };
 
   // ---- loading screen --------------------------------------------------------------------
 
@@ -2513,9 +2549,13 @@ export class Game implements P2PGameHooks {
 
   // ---- controls card (src/render/controlsCard.ts) --------------------------------------------
 
-  /** A kickoff countdown step (offline, server or P2P): the first one after the menus may bring the card (not under the menus). */
+  /**
+   * A kickoff countdown step (offline, server or P2P): the first one after the menus may bring the
+   * card (not under the menus). Not in touch mode, which shows no card: a phone's first matches
+   * would use up the ones a controller connected later should get.
+   */
   private cardCountdown(): void {
-    if (!this.menuShown) this.controlsCard.countdown();
+    if (!this.menuShown && !(this.touch !== null && this.touch.touchMode)) this.controlsCard.countdown();
   }
 
   /**
@@ -2600,6 +2640,10 @@ export class Game implements P2PGameHooks {
     }
     this.removeGestureListeners();
     if (this.backGuard !== null) this.backGuard.dispose();
+    if (this.leaveGuarded) {
+      this.leaveGuarded = false;
+      window.removeEventListener('beforeunload', this.onBeforeUnload);
+    }
     this.input.exitPointerLock();
   }
 
@@ -3067,7 +3111,11 @@ export class Game implements P2PGameHooks {
       const pk = pauseKeyAction(a.pause, a.back, this.paused, dropPause);
       if (pk === 'toggle') this.setPaused(!this.paused);
       else if (pk === 'resume') {
-        if (hud.pauseMenuVisible) this.resumeFromMenu();
+        // Pad B is boost too: held on past the resume it would boost at once.
+        if (hud.pauseMenuVisible) {
+          this.input.blockBoostUntilRelease();
+          this.resumeFromMenu();
+        }
       } else if (pk === 'menu') this.pauseMenuActions();
       if (a.toggleBallCam) {
         this.chase.toggle();
@@ -3218,6 +3266,7 @@ export class Game implements P2PGameHooks {
       touch.setVisible(this.playing && touchMode, this.training !== null, touchMode && (this.playing || this.canResumeByPointer));
     }
     this.updateControlsCard(dt, inMenu, touchMode);
+    this.updateLeaveGuard();
     // A controller press arms the system Back guard too (backGuard.ts: it carries no user activation).
     const presses = this.input.gamepadPresses;
     if (presses !== this.padPressesSeen) {

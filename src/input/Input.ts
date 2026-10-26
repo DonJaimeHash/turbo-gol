@@ -79,6 +79,7 @@ import {
   type CameraLook,
   type Device,
 } from './bindings';
+import { isBackKey } from '../ui/backGuard';
 
 /** Edge-triggered one-shot actions. Read after `sample()`, then call `consumeActions()`. */
 export interface InputActions {
@@ -167,8 +168,10 @@ interface Capture {
 
 // Duck-typed event views (node has no KeyboardEvent / MouseEvent classes).
 interface KeyLike {
+  key?: unknown;
   code?: unknown;
   repeat?: unknown;
+  altKey?: unknown;
   ctrlKey?: unknown;
   metaKey?: unknown;
 }
@@ -387,6 +390,8 @@ export class Input {
   private mouseTapped = 0;
   /** Buttons whose current press is the click that captured the mouse (ignored until released). */
   private mouseMask = 0;
+  /** Back / forward buttons whose press ended a rebind capture: their release is cancelled (no history walk). */
+  private mouseEat = 0;
   /** Bit 1 = wheel up, bit 2 = wheel down, since the last sample. */
   private wheelTaps = 0;
   private mouseDX = 0;
@@ -438,6 +443,7 @@ export class Input {
   private kSteer = 1 / PX_FULL_DEFLECTION_AT_5;
 
   private jumpBlocked = false;
+  private boostBlocked = false;
   private capture: Capture | null = null;
   private disposed = false;
 
@@ -455,6 +461,9 @@ export class Input {
         return;
       }
       if (cap.target.device === 'kbm') {
+        // A back key is the system Back (src/ui/backGuard.ts), whose step cancels the capture
+        // (Game.onSystemBack), as Esc does: never a binding (it would pause the match on each press).
+        if (isBackKey(ke)) return;
         e.preventDefault();
         if (!cap.armed || ke.repeat === true || cap.ignoreKeys.has(code)) return;
         this.endCapture({ kind: 'key', code });
@@ -463,8 +472,11 @@ export class Input {
     }
     // Bound keys lose their browser default, except with Ctrl / Meta so reload, DevTools and the
     // like keep working. (Ctrl + W / T / N / Q are browser-reserved anyway: preventDefault cannot
-    // stop them outside the Keyboard Lock API, which is why no preset binds Ctrl.)
-    if (PREVENT_DEFAULT_KEYS.has(code) || (this.boundKeys.has(code) && ke.ctrlKey !== true && ke.metaKey !== true)) e.preventDefault();
+    // stop them outside the Keyboard Lock API, which is why no preset binds Ctrl.) Alt + ← / → keep
+    // theirs, the browser's Back / Forward (Windows, Linux; the system Back: backGuard.ts), unless
+    // the player binds an Alt key (air roll on L Alt + the arrows that steer is a game combo).
+    const historyKey = ke.altKey === true && (code === 'ArrowLeft' || code === 'ArrowRight') && !this.boundKeys.has('AltLeft') && !this.boundKeys.has('AltRight');
+    if (!historyKey && (PREVENT_DEFAULT_KEYS.has(code) || (this.boundKeys.has(code) && ke.ctrlKey !== true && ke.metaKey !== true))) e.preventDefault();
     if (ke.repeat === true) return;
     this.keys.add(code);
     this.tapped.add(code);
@@ -516,7 +528,11 @@ export class Input {
     const bit = 1 << button;
     const cap = this.capture;
     if (cap !== null && cap.target.device === 'kbm') {
-      if (cap.armed && button <= 4 && (cap.ignoreMouse & bit) === 0) this.endCapture({ kind: 'mouse', button });
+      if (cap.armed && button <= 4 && (cap.ignoreMouse & bit) === 0) {
+        // A back / forward button bound here walks the history on its release unless cancelled.
+        if (button >= 3) this.mouseEat |= bit;
+        this.endCapture({ kind: 'mouse', button });
+      }
       return;
     }
     this.mouseHeld |= bit;
@@ -526,9 +542,11 @@ export class Input {
   private readonly onMouseUp = (e: Event): void => {
     const button = (e as MouseLike).button;
     if (!validMouseButton(button)) return;
-    // Back / forward buttons navigate on release; keep them for the game when it has the mouse.
-    if (button >= 3 && (this.locked || e.target === this.lockElement || e.target === this.target)) e.preventDefault();
+    // Back / forward buttons navigate on release; keep them for the game when it has the mouse,
+    // and for the rebind capture that just took one (wherever the pointer is).
     const bit = 1 << button;
+    if (button >= 3 && ((this.mouseEat & bit) !== 0 || this.locked || e.target === this.lockElement || e.target === this.target)) e.preventDefault();
+    this.mouseEat &= ~bit;
     this.mouseHeld &= ~bit;
     if ((this.mouseMask & bit) !== 0) {
       // The click that captured the mouse is over: it was not a tap either.
@@ -1002,6 +1020,10 @@ export class Input {
       if (!jump) this.jumpBlocked = false;
       jump = false;
     }
+    if (this.boostBlocked) {
+      if (!boost) this.boostBlocked = false;
+      boost = false;
+    }
     out.jump = jump;
     out.boost = boost;
     out.handbrake = handbrake;
@@ -1027,6 +1049,11 @@ export class Input {
   /** Ignore jump until it is released (so the button press that closed a menu does not jump). */
   blockJumpUntilRelease(): void {
     this.jumpBlocked = true;
+  }
+
+  /** Ignore boost until it is released (pad B, boost by default, resumes the pause: Game.processActions). */
+  blockBoostUntilRelease(): void {
+    this.boostBlocked = true;
   }
 
   /**
@@ -1222,6 +1249,7 @@ export class Input {
     this.mouseHeld = 0;
     this.mouseTapped = 0;
     this.mouseMask = 0;
+    this.mouseEat = 0;
     this.wheelTaps = 0;
     this.mouseDX = 0;
     this.mouseDY = 0;
