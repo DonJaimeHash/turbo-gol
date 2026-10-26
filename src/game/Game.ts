@@ -160,7 +160,7 @@ import { RollbackEngine } from '../net/p2p/Rollback';
 import type { MatchEvent as HostEvent, Welcome } from '../net/protocol';
 import { ArenaView } from '../render/Arena';
 import { BallView } from '../render/Ball';
-import { ChaseCamera, SWIVEL_PITCH_MOUSE_DEG, SWIVEL_PITCH_STICK_DEG, clampToArena, type CameraCarState } from '../render/Camera';
+import { ChaseCamera, SWIVEL_PITCH_MOUSE_DEG, SWIVEL_PITCH_STICK_DEG, clampToArena, hasViewShift, setViewShift, type CameraCarState } from '../render/Camera';
 import { CarView } from '../render/Car';
 import { Effects } from '../render/Effects';
 import { Hud, PAUSE_QUIT_KEYS, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow, type SettingsTab } from '../render/Hud';
@@ -3038,10 +3038,11 @@ export class Game implements P2PGameHooks {
     const oy = f !== null ? 0.5 - (f.y0 + f.y1) / 2 : 0;
     const v = camera.view;
     const offset = v !== null && v.enabled;
-    if (camera.fov !== SHOWROOM_FOV || (f === null ? offset : !offset || v.offsetX !== ox || v.offsetY !== oy)) {
+    if (camera.fov !== SHOWROOM_FOV || (f === null ? offset : !hasViewShift(camera, ox, oy))) {
       camera.fov = SHOWROOM_FOV;
-      // Each of the three updates the projection.
-      if (f !== null) camera.setViewOffset(1, 1, ox, oy, 1, 1);
+      // Each of the three updates the projection; setViewShift keeps the aspect (three's own
+      // setViewOffset would reset it to the full view's).
+      if (f !== null) setViewShift(camera, ox, oy);
       else if (offset) camera.clearViewOffset();
       else camera.updateProjectionMatrix();
     }
