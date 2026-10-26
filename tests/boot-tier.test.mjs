@@ -157,3 +157,29 @@ test('#diag frame statistics: 1 s min / mean, 5 s mean, long frames after the wa
   assert.equal(s.cpu.step, 0);
   assert.ok(s.fpsMin1 <= s.fpsAvg1);
 });
+
+test('#diag frame statistics: a paced or held scene counts its drawn frames, the animation frames, and no stalls', () => {
+  const fs = new FrameStats();
+  fs.markWarm();
+  let t = 0;
+  const vsync = 1000 / 60;
+  // 3 s of the menus at 20 fps on a 60 Hz display: every third animation frame drawn.
+  for (let i = 0; i < 180; i++) fs.frame((t += vsync), i % 3 === 0);
+  let s = fs.snapshot();
+  assert.ok(Math.abs(s.fpsAvg1 - 20) < 1, `drawn ${s.fpsAvg1}`);
+  assert.ok(Math.abs(s.rafAvg1 - 60) < 1.5, `animation frames ${s.rafAvg1}`);
+  assert.ok(Math.abs(s.fpsMin1 - 20) < 1, `slowest drawn ${s.fpsMin1}`);
+  assert.equal(s.over50, 0, 'a paced scene is no stall');
+  // 8 s held (the settings screen): no drawn frame, the windows still close.
+  for (let i = 0; i < 480; i++) fs.frame((t += vsync), false);
+  s = fs.snapshot();
+  assert.equal(s.fpsAvg1, 0);
+  assert.equal(s.fpsAvg5, 0);
+  assert.equal(s.fpsMin1, 0);
+  assert.ok(Math.abs(s.rafAvg1 - 60) < 1.5);
+  assert.equal(s.over50, 0);
+  // A stall: one animation frame 120 ms after the previous one.
+  fs.frame((t += 120), false);
+  assert.equal(fs.snapshot().over100, 1);
+  assert.equal(fs.snapshot().over50, 1);
+});
