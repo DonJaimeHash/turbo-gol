@@ -600,8 +600,9 @@ export class Hud {
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     // A rebind capture owns the keyboard: Enter / Esc / anything must reach Input only.
     if (this.captureRow !== null) return;
-    // The guest name field: letters must type, not navigate; Enter / Esc leave it.
-    if (e.target instanceof HTMLInputElement && e.target.type === 'text') {
+    // The Hud's own text fields (the preset name, the legacy guest name): letters must type, not
+    // navigate; Enter / Esc leave them. The menus' fields are the menus' (src/ui/nav.ts: editing mode).
+    if (e.target instanceof HTMLInputElement && e.target.type === 'text' && this.root.contains(e.target)) {
       if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Escape') {
         e.target.blur();
         e.preventDefault();

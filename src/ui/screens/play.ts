@@ -133,7 +133,8 @@ export function playScreen(menu: Menu): Screen {
 
 /** Toggle cards for the playlists; at least one stays selected. `extra(p)` adds the per-playlist line. */
 function playlistPicker(get: () => GameMode[], set: (m: GameMode[]) => void, extra: (p: Playlist) => Node | null): { el: HTMLElement; refresh: () => void } {
-  const wrap = h('div.mn-playlists');
+  // A row (nav.ts): ▼ from any card goes to what is under the row (the Region row), ▲ back to that card.
+  const wrap = h('div.mn-playlists', { 'data-nav-row': true });
   const cards = new Map<Playlist, HTMLButtonElement>();
   const refresh = (): void => {
     const sel = get();
@@ -146,7 +147,7 @@ function playlistPicker(get: () => GameMode[], set: (m: GameMode[]) => void, ext
   for (const p of PLAYLISTS) {
     const c = h(
       'button.mn-pl',
-      { type: 'button', 'data-nav': true, 'aria-pressed': 'false' },
+      { type: 'button', 'data-nav': true, 'data-key': 'playlist-' + p, 'aria-pressed': 'false' },
       h('span.mn-pl-check', { 'aria-hidden': 'true' }),
       h('span.mn-pl-name', null, playlistName(p)),
       h('span.mn-pl-size', null, t('play.playlistCars', { playlist: p, count: MODES[p] * 2 })),

@@ -1127,6 +1127,9 @@ test('touch mode: a menu key or a bound key leaves it; volume / media keys, code
   }
   for (const code of MENU_KEYS) assert.equal(keyLeavesTouchMode(code, false, DEFAULT_KBM), true, code);
   for (const code of ['Escape', 'Enter', 'Backspace', 'ArrowUp', 'KeyW', 'Space', 'Tab']) assert.ok(MENU_KEYS.has(code), code);
+  // The menus' shortcuts (src/ui/Menu.ts onKey): Q / E tabs and sections, X cancels the search, Delete the context action.
+  for (const code of ['KeyQ', 'KeyE', 'KeyX', 'Delete']) assert.ok(MENU_KEYS.has(code), code);
+  assert.equal(keyLeavesTouchMode('KeyX', false, DEFAULT_KBM), true, 'X: unbound in the default layout, a menu key');
   assert.equal(keyLeavesTouchMode('ShiftLeft', false, DEFAULT_KBM), true, 'powerslide / air roll');
   assert.equal(keyLeavesTouchMode('KeyQ', false, DEFAULT_KBM), true, 'air roll left');
   assert.equal(keyLeavesTouchMode('KeyZ', false, DEFAULT_KBM), false, 'unbound in the default layout');

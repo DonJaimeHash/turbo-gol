@@ -217,6 +217,7 @@ import {
 import { DEFAULT_MATCH_SECONDS, Match, formatClockSeconds, type MatchEvent } from './Match';
 import { GAME_NAME, STORAGE_PREFIX } from '../brand';
 import { BackGuard } from '../ui/backGuard';
+import { installDevice, type DeviceTracker } from '../ui/device';
 import { pauseKeyAction, pauseResumeKeys } from './pauseKeys';
 import { CARD_FIRST_MATCHES, ControlsCardPlan, controlsCardRows, localCardSeen, type ControlsCardContent } from '../render/controlsCard';
 import type { Device } from '../input/bindings';
@@ -652,8 +653,6 @@ export class Game implements P2PGameHooks {
   private playerControls: CarControls;
   /** Local tick of the last bump sound online (see BUMP_FX_MIN_TICKS_ONLINE). */
   private lastBumpFxTick = -1e9;
-  /** Gamepad Y (button 3) state for the menu's ONLINE shortcut (polled only while the menu is up). */
-  private padYDown = false;
   /** The bot slots of each team and, in the same order, the controls they write (views into `controls`). */
   private readonly redSlots: number[] = [];
   private readonly redOuts: CarControls[] = [];
@@ -745,6 +744,8 @@ export class Game implements P2PGameHooks {
   private controlsMatch = -1;
   /** Input.gamepadPresses last seen: a controller press arms the Back guard (it carries no user activation). */
   private padPressesSeen = 0;
+  /** The last input used and the TV class (src/ui/device.ts: html.tg-tv, data-input); null in a node test. */
+  private readonly device: DeviceTracker | null;
   /** While true (goal pause / after the final whistle) the ball is held at pinPos.xy each tick. */
   private ballPinned = false;
   private readonly pinPos: [number, number, number] = [0, 0, 0];
@@ -920,6 +921,7 @@ export class Game implements P2PGameHooks {
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
+    this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad }) : null;
     this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.hud.menuVisible && !this.onlineActive });
     accounts.subscribe(() => this.onAccountChange());
     this.experimental.subscribe(() => this.onExperimentalChange());
@@ -1345,6 +1347,7 @@ export class Game implements P2PGameHooks {
     const a = this.input.actions;
     if (a.accept) hud.pauseAction('accept');
     else if (a.settings) this.openPauseSettings();
+    else if (a.menuRepeat) return; // a held arrow does not spin the ring round
     else if (a.menuUp) hud.pauseAction('up');
     else if (a.menuDown) hud.pauseAction('down');
     else if (a.menuLeft) hud.pauseAction('left');
@@ -3079,24 +3082,37 @@ export class Game implements P2PGameHooks {
     if (hud.capturing) {
       // A rebind capture owns every device: the press that ends it must not act on anything else.
     } else if (this.menu.visible && !hud.menuVisible) {
-      // The front-end menus: keyboard goes to their own listener, gamepad edges come from here.
+      // The front-end menus: keyboard goes to their own listener (Q / E / X / Delete too), gamepad
+      // edges come from here. Start before B: Start is also the pause binding, whose edge sets back.
+      // An arrow's auto-repeat (pa.menuRepeat) cycles no choice and crosses no zone (nav.ts).
       const m = this.menu;
+      const rep = pa.menuRepeat;
       if (pa.accept) m.action('accept');
+      else if (pa.menuStart) m.action('menu');
       else if (pa.back) m.action('back');
-      else if (pa.menuLeft) m.action('left');
-      else if (pa.menuRight) m.action('right');
-      else if (pa.menuUp) m.action('up');
-      else if (pa.menuDown) m.action('down');
+      else if (pa.settings) m.action('context');
+      else if (pa.menuCancel) m.action('cancel');
+      else if (pa.menuPrev) m.action('prev');
+      else if (pa.menuNext) m.action('next');
+      else if (pa.menuTabPrev) m.action('tabPrev');
+      else if (pa.menuTabNext) m.action('tabNext');
+      else if (pa.menuLeft) m.action('left', rep);
+      else if (pa.menuRight) m.action('right', rep);
+      else if (pa.menuUp) m.action('up', rep);
+      else if (pa.menuDown) m.action('down', rep);
     } else if (hud.menuVisible) {
-      // Keyboard goes straight to the Hud's own listener; only gamepad edges are forwarded.
+      // Keyboard goes straight to the Hud's own listener; only gamepad edges are forwarded. A held
+      // arrow repeats up / down only: left / right on its rows apply at once (Graphics would switch
+      // the quality, a reload, on every repeat).
+      const rep = pa.menuRepeat;
       if (pa.accept) hud.menuAction('accept');
       else if (pa.back) hud.menuAction('back');
       else if (pa.settings) hud.menuAction('settings');
-      else if (pa.menuLeft) hud.menuAction('left');
-      else if (pa.menuRight) hud.menuAction('right');
+      else if (pa.menuLeft && !rep) hud.menuAction('left');
+      else if (pa.menuRight && !rep) hud.menuAction('right');
       else if (pa.menuUp) hud.menuAction('up');
       else if (pa.menuDown) hud.menuAction('down');
-      else if (this.padYEdge()) hud.menuAction('online');
+      else if (pa.menuCancel) hud.menuAction('online');
     } else if (this.training !== null && this.training.phase === 'summary') {
       // The pack summary owns the edges: retry, back to the menu, or pick a shot.
       this.trainingSummaryActions();
@@ -3129,31 +3145,6 @@ export class Game implements P2PGameHooks {
       } else if (a.reset && !wasPaused && !this.paused && !this.carsFrozen && !this.onlineActive) this.resetToKickoff();
     }
     input.consumeActions();
-  }
-
-  /**
-   * Rising edge of gamepad Y (standard mapping button 3), the menu's ONLINE shortcut. Input has no
-   * fixed binding for it, so the menu polls the pads itself; only while the menu is up, so the
-   * navigator.getGamepads() allocation never happens in a match frame.
-   */
-  private padYEdge(): boolean {
-    if (!this.input.hasGamepad || typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return false;
-    let down = false;
-    try {
-      const pads = navigator.getGamepads();
-      for (let i = 0; i < pads.length; i++) {
-        const gp = pads[i];
-        if (gp !== null && gp.buttons.length > 3 && gp.buttons[3].pressed) {
-          down = true;
-          break;
-        }
-      }
-    } catch {
-      return false;
-    }
-    const edge = down && !this.padYDown;
-    this.padYDown = down;
-    return edge;
   }
 
   private render(dt: number, inMenu: boolean): void {
@@ -3272,6 +3263,7 @@ export class Game implements P2PGameHooks {
     if (presses !== this.padPressesSeen) {
       this.padPressesSeen = presses;
       if (this.backGuard !== null) this.backGuard.arm();
+      if (this.device !== null) this.device.notePadPresses(presses);
     }
     // Mouse look needs the pointer lock; pad players (a controller connected) and fingers are not nagged.
     hud.showHint(this.canPointerLock && !this.input.pointerLocked && !this.input.hasGamepad && this.playing && !touchMode ? POINTER_LOCK_HINT : null);

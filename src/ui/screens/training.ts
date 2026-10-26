@@ -107,11 +107,14 @@ export function trainingScreen(menu: Menu): Screen {
             h('span.mn-pack-diff', null, DIFFICULTY_LABELS[d]),
             h('span.mn-pack-shots', null, t('training.packShots', { count: pack.shots.length, seconds: pack.timeLimitSeconds })),
             h('span.mn-pack-best', null, rec ? t('training.best', { best: rec.best, total: pack.shots.length }) : t('training.notPlayed')),
-          ], () => menu.host.startTraining(pack.id));
+          ], () => menu.host.startTraining(pack.id), { 'data-key': 'pack-' + pack.id });
         }),
       ),
     );
+    // The records sync redraws the grid: a controller's focus on a pack comes back to it (by key).
+    const had = typeof document !== 'undefined' && grid.contains(document.activeElement);
     setChildren(grid, ...cols);
+    if (had) menu.refocus();
   };
   const render = (): void => {
     const sub = head.querySelector('.mn-subtitle');
