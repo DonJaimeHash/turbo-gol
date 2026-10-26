@@ -1,31 +1,46 @@
 /**
  * The Pampero ('pampero', the cold southern wind of the pampas): a low, wide, razor-edged wedge of
  * an endurance hyper-GT, built from faceted lofts (polygon sections with hard creases, so every
- * facet takes its own light; super low shades them by diffuse alone). A long nose spear with a
- * rounded ridge drops to a carbon arrow splitter between two fender pods. One pod per side runs
- * nose to tail with a flat, sharp shoulder rising as a wedge: the front fender, the blade over a
- * deep dark side intake behind the front wheel, the rear haunch scooped in behind the intake, a
- * tumblehome kick line along the flank, arches swept round the wheels. The shoulder chamfer is one
- * light line: a headlight at the nose, the ice stripe along the car, a tail light at the back. A
- * low, smooth fastback canopy with a dark glass band; mirrors on stalks; louvres over the arches; a
- * team rear wing with a flap on twin raked alloy pylons, carbon endplates edged with team light;
- * the twin thrusters as jet exhausts with team-lit lips in a carbon bay over diffuser fins, between
- * two red light blades on the bevelled carbon rear panels. Paint is two-tone: team colour over
- * gloss carbon below the flank crease, an ice pinstripe on it, no chevrons. Slick tyres on light
- * twelve-vane turbine rims, taller and wider at the rear.
+ * facet takes its own light; super low shades them by diffuse alone), one design language from
+ * the nose to the canopy and the tail.
+ *
+ * An arrowhead in plan: a long nose spear, lowest and furthest forward, falls to a carbon tip with
+ * a team-lit splitter edge, and widens into two fender pods whose fronts are knife blades swept
+ * back to the outer corners, the headlights on the blades' edges. Each pod runs nose to tail with a
+ * flat, sharp shoulder rising as a wedge and a ridge running diagonally across its top (inner front
+ * to outer rear): the front fender narrowed over the front wheel (the front track sits inside the
+ * rear's), a deep side intake behind it raked like the windscreen and tapering to a point under
+ * the blade, with a back wall and two vanes, then the rear haunch at full width, its tail dropping
+ * over the rear tyre. The shoulder chamfer is one light line: headlights at the nose, the ice
+ * stripe along the car, the tail lights at the back. A low faceted canopy, its glass one dark band
+ * over the windscreen, the sides and the roof, a hard belt crease, a ridged fastback with a short
+ * fin; mirrors on swept arms off the canopy's flanks. A deep team wing with a flap (high detail)
+ * hangs from two carbon swan-neck pylons between swept carbon endplates edged with team light. The
+ * tail is a vertical panel in a dark shade of the team colour: the twin thrusters exit it as jet
+ * exhausts, a team-coloured fan in each team-lit lip, over a diffuser ramp whose fins, lit at
+ * their trailing edges, are the car's lowest, rearmost parts; the pods' bevelled tails, in the
+ * same dark shade, carry the red light blades. Paint is two-tone: team colour over gloss carbon below the flank crease,
+ * an ice pinstripe on it, no chevrons. Slick tyres on twelve-vane turbine rims, taller, wider and
+ * further out at the rear.
+ *
+ * Lamps and team light run hotter on high detail (high and ultra, where bloom carries the colour)
+ * than on low detail (low and super low, no bloom), where a lamp too hot tone-maps to white or
+ * orange: the same parts, plain vertex data, less emission.
  *
  * Designed on the default hitbox in the build frame (docs/cars.md: hitbox-centred uu, kit.hl / hh /
- * hw 58.75 / 17.83 / 41.85; the livery is car-local, the build frame + (13.88, 20.76, 0)). Within
- * the targets: body 2,724 triangles on high and 1,920 on low, wheels 604 / 424.
+ * hw 58.75 / 17.83 / 41.85; the livery is car-local, the build frame + (13.88, 20.76, 0)). The
+ * body cannot reach below the hitbox (build y -17.83, 20 uu over the ground) nor past its tail, so
+ * the lower half of each tyre and the back of the rear tyres show on every car. Within the
+ * targets: body 2,752 triangles on high and 1,984 on low, wheels 604 / 424.
  */
 import * as THREE from 'three/webgpu';
-import { BOOST_NOZZLE_X, CAGE, CAR_KIND, CARBON, DISC, EXHAUST, HEADLIGHT, PAINT_METAL, PAINT_ROUGH, TAILLIGHT, TRIM, TWO_PI, clamp, loft } from './kit';
-import type { BodyKit, CarBodySpec, Ring, Surface, WheelAt, WheelStyle } from './types';
+import { BOOST_NOZZLE_X, CAR_KIND, CARBON, EXHAUST, HEADLIGHT, PAINT_METAL, PAINT_ROUGH, TAILLIGHT, TEAM_PAINT, TRIM, clamp, tube } from './kit';
+import type { BodyKit, CarBodySpec, Surface, WheelAt, WheelStyle } from './types';
 
-/** The ice accent (sRGB): the pinstripe, the shoulder stripe, the headlights' tint. */
+/** The ice accent (sRGB): the pinstripe, the shoulder stripe. */
 const ICE = 0xcdeeff;
 
-/** Slick tyres on light twelve-vane turbine rims over a dark dish, a light lip, a team hub. */
+/** Slick tyres on twelve-vane turbine rims (satin alloy) over a dark dish, a light lip, a team hub. */
 export const TURBINE: WheelStyle = {
   id: 'pampero-turbine',
   tyre: 'slick',
@@ -33,21 +48,24 @@ export const TURBINE: WheelStyle = {
   spokeWidth: 0.11,
   dish: 0.5,
   dishColor: 0x0b0d10,
-  rim: 0xc3cad3,
-  rimFinish: { metal: 0.85, rough: 0.26 },
+  rim: 0xa9b1bb,
+  rimFinish: { metal: 0.6, rough: 0.3 },
   bead: 0xdfe4ea,
   bolts: 0,
   hub: 'team',
   budget: { low: 424, high: 604 },
 };
 
-/** The body's floor (build frame): every part's underside. */
-const FLOOR = -17.4;
-/** The flanks' crease (build frame): the widest line of the side pods, the two-tone line on it. */
+/** The body's floor (build frame): every part's underside, at the hitbox's (less 0.13 uu). */
+const FLOOR = -17.7;
+/** The flanks' crease (build frame): the two-tone line and the pinstripe on it. */
 const CREASE = -12.26;
+/** The underside of the pods' knife blades at the nose (build frame). */
+const BLADE = -14.2;
 
 type P3 = readonly [number, number, number];
 type V3 = [number, number, number];
+type XY = readonly (readonly [number, number])[];
 
 const sub = (a: P3, b: P3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const cross = (a: P3, b: P3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -67,6 +85,11 @@ function geometry(pos: readonly number[], nrm: readonly number[]): THREE.BufferG
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
   return g;
+}
+/** `c` (sRGB hex) scaled by `f` per channel: a darker shade. */
+function shade(c: number, f: number): number {
+  const ch = (s: number): number => Math.round(((c >> s) & 255) * f) << s;
+  return ch(16) | ch(8) | ch(0);
 }
 
 /**
@@ -166,14 +189,8 @@ function facetLoft(
   }
 }
 
-/** A smooth loft ring across x: centre z `zc`, half width `hu`, from `bottom` to `top`, widest at `wide` of the height. */
-function ring(x: number, zc: number, hu: number, bottom: number, top: number, wide = 0.5): Ring {
-  const yc = bottom + (top - bottom) * wide;
-  return { o: [x, yc, zc], u: [0, 0, 1], v: [0, 1, 0], hu, hv: top - yc, hvNeg: yc - bottom };
-}
-
 /** Piecewise linear y over x through `pts` ([x, y], x descending), clamped at the ends. */
-function profile(pts: readonly (readonly [number, number])[]): (x: number) => number {
+function profile(pts: XY): (x: number) => number {
   return (x) => {
     if (x >= pts[0][0]) return pts[0][1];
     for (let i = 1; i < pts.length; i++) {
@@ -187,52 +204,62 @@ function profile(pts: readonly (readonly [number, number])[]): (x: number) => nu
   };
 }
 
-/**
- * The row (0..seg-1, counted from +u towards +v) of a smooth loft of rings at constant, monotone x,
- * all of exponent `n`, that the point (x, y, z) lies on: a window band follows the loft's rows.
- */
-function rowOf(rings: readonly Ring[], seg: number, n: number, x: number, y: number, z: number): number {
-  const last = rings.length - 1;
-  const dir = Math.sign(rings[last].o[0] - rings[0].o[0]);
-  let i = 0;
-  while (i < last - 1 && (x - rings[i + 1].o[0]) * dir > 0) i++;
-  const a = rings[i];
-  const b = rings[i + 1];
-  const t = clamp((x - a.o[0]) / (b.o[0] - a.o[0]), 0, 1);
-  const mix = (p: number, q: number): number => p + (q - p) * t;
-  const dv = y - mix(a.o[1], b.o[1]);
-  const hv = dv >= 0 ? mix(a.hv, b.hv) : mix(a.hvNeg ?? a.hv, b.hvNeg ?? b.hv);
-  const u = (z - mix(a.o[2], b.o[2])) / mix(a.hu, b.hu);
-  const v = dv / hv;
-  const p = n / 2; // the superellipse's |cos|^(2/n), inverted
-  let ang = Math.atan2(Math.sign(v) * Math.abs(v) ** p, Math.sign(u) * Math.abs(u) ** p);
-  if (ang < 0) ang += TWO_PI;
-  return Math.floor(ang / (TWO_PI / seg)) % seg;
+/** The x along a ring's outer flank (its points 0..4, rising) at height `y`. */
+function flankX(r: readonly P3[], y: number): number {
+  for (let i = 1; i <= 4; i++) {
+    if (y <= r[i][1] || i === 4) {
+      const [a, b] = [r[i - 1], r[i]];
+      return a[0] + ((b[0] - a[0]) * clamp((y - a[1]) / (b[1] - a[1]), 0, 1));
+    }
+  }
+  return r[0][0];
 }
 
 /**
- * The side pod's section at `x` (the right side; the left mirrors z), from `b` up to `t` between
- * the inner face `zi` and the outer face `zo`, its lower points at `xb` (a raked ring): a tucked
- * lower flank up to the crease, the flank up to the kick line `yK` (scooped in by `scoop` at the
- * crease), the upper flank leaning in (tumblehome), the shoulder chamfer (the stripe), the flat
- * top falling slightly inwards, an inner chamfer and wall, the floor. Facets 0 tuck, 1 flank,
- * 2 upper flank, 3 shoulder, 4 top, 5 inner chamfer, 6 inner wall, 7 floor.
+ * One station of a side pod (the right side; the left mirrors z): its top at `x` (its floor at
+ * `xb`, a raked ring), between the inner face `zi` and the outer face `zo`, from the bottom `b`
+ * up to the outer shoulder's top `t` and the ridge `tr` at `zr`, the kick line `yK`, the lower
+ * flank drawn in by `scoop` (the intake's depth and the haunch's waist) up to the crease `yC`.
  */
-function podRing(x: number, zi: number, zo: number, b: number, t: number, yK: number, scoop: number, xb = x): P3[] {
-  const yC = clamp(CREASE, b + 0.35, t - 1.6);
+interface PodStation {
+  readonly x: number;
+  readonly xb: number;
+  readonly zi: number;
+  readonly zo: number;
+  readonly b: number;
+  readonly t: number;
+  readonly tr: number;
+  readonly zr: number;
+  readonly yK: number;
+  readonly scoop: number;
+  readonly yC: number;
+}
+
+/**
+ * The side pod's section: a tucked lower flank up to the crease, the flank up to the kick line
+ * (both drawn in by the scoop), the upper flank leaning in (tumblehome), the shoulder chamfer (the
+ * light line), the top in two facets meeting at the ridge, an inner chamfer and wall, the floor.
+ * Facets 0 tuck, 1 flank, 2 upper flank, 3 shoulder, 4 outer top, 5 inner top, 6 inner chamfer,
+ * 7 inner wall, 8 floor.
+ */
+function podRing(s: PodStation): P3[] {
+  const { x, xb, zi, zo, b, t, tr, zr, scoop } = s;
+  const yC = clamp(s.yC, b + 0.35, t - 1.6);
   const tuck = clamp((yC - b) * 0.45, 0.15, 2.4);
   const sh = Math.min(1.3, 0.45 * (t - yC));
-  const yk = clamp(yK, yC + 0.4, t - sh - 0.4);
+  const yk = clamp(s.yK, yC + 0.4, t - sh - 0.4);
   const lean = clamp((t - sh - yk) * 0.3, 0.2, 2.2);
-  const yI = t - Math.min(1.8, 0.45 * (t - b));
-  const at = (y: number): number => xb + ((x - xb) * (y - b)) / (t - b);
+  const ti = tr - 0.9;
+  const yI = ti - Math.min(1.8, 0.45 * (ti - b));
+  const at = (y: number): number => xb + ((x - xb) * (y - b)) / (tr - b);
   return [
     [xb, b, zo - tuck - scoop],
     [at(yC), yC, zo - scoop],
     [at(yk), yk, zo - 0.15],
     [at(t - sh), t - sh, zo - lean],
-    [x, t, zo - lean - 1.2],
-    [at(t - 0.5), t - 0.5, zi + 1.2],
+    [at(t), t, zo - lean - 1.2],
+    [x, tr, zr],
+    [at(ti), ti, zi + 1.2],
     [at(yI), yI, zi],
     [xb, b, zi],
   ];
@@ -240,7 +267,7 @@ function podRing(x: number, zi: number, zo: number, b: number, t: number, yK: nu
 
 /**
  * The tub's section at `x`, half width `hu`, from `b` to `t`, widest at `wide` of the height: a
- * shallow ridge down the middle of the top, the upper flanks to the crease, the lower flanks
+ * shallow ridge down the middle of the top, the upper flanks to the widest line, the lower flanks
  * tucked to the floor. Facets 0 top, 1 upper flank, 2 lower flank, 3 floor, 4..6 the left side.
  */
 function tubRing(x: number, hu: number, b: number, t: number, wide: number): P3[] {
@@ -254,6 +281,27 @@ function tubRing(x: number, hu: number, b: number, t: number, wide: number): P3[
     [x, b, -hu * 0.86],
     [x, m, -hu],
     [x, t - r, -hu * 0.62],
+  ];
+}
+
+/**
+ * The canopy's section at `x`, half width `hu`, from `b` (inside the tub) to the belt crease and the
+ * ridge `top`: the lower side, the side glass, the roof's side and the roof, meeting at a ridge.
+ * Facets 0 roof, 1 roof side, 2 side, 3 lower side, 4 floor, 5..8 the left side.
+ */
+function canopyRing(x: number, hu: number, b: number, belt: number, top: number): P3[] {
+  const roof = top - 0.14 * (top - belt);
+  const upper = belt + 0.5 * (top - belt);
+  return [
+    [x, top, 0],
+    [x, roof, hu * 0.42],
+    [x, upper, hu * 0.84],
+    [x, belt, hu],
+    [x, b, hu * 0.9],
+    [x, b, -hu * 0.9],
+    [x, belt, -hu],
+    [x, upper, -hu * 0.84],
+    [x, roof, -hu * 0.42],
   ];
 }
 
@@ -274,225 +322,365 @@ function archStations(w: WheelAt, gap: number, steps: number, tailX: number): { 
   return out;
 }
 
+/** The pod's outer shoulder top (build y over x): a knife at the nose rising as a wedge to the tail. */
+const SHOULDER = profile([
+  [53.6, -12.0],
+  [47.4, -12.0],
+  [45.3, -11.4],
+  [42.8, -8.4],
+  [40, -6.4],
+  [37.4, -5.3],
+  [30, -4.0],
+  [20, -2.5],
+  [6, 0.0],
+  [-4, 2.2],
+  [-16, 2.9],
+  [-30, 3.3],
+  [-59, 3.7],
+]);
+/** The pod's ridge: steep off the knife (the chisel), then 0.7 over the shoulder. */
+const RIDGE = profile([
+  [53.6, -11.6],
+  [51.6, -10.7],
+  [49.1, -9.7],
+  [47.4, -9.0],
+  [45.3, -8.2],
+  [42.8, -7.1],
+  [40, -5.9],
+  [37.4, -4.7],
+  [30, -3.3],
+  [20, -1.8],
+  [6, 0.7],
+  [-4, 2.9],
+  [-16, 3.6],
+  [-30, 4.0],
+  [-59, 4.4],
+]);
+/** Where the ridge runs across the pod's top (0 inner face, 1 outer): inner front to outer rear. */
+const RIDGE_AT = profile([
+  [53.6, 0.5],
+  [49, 0.4],
+  [37.4, 0.42],
+  [20, 0.5],
+  [0, 0.6],
+  [-20, 0.66],
+  [-59, 0.62],
+]);
+/** The pod's outer face in plan: the blade swept back to the outer corner, the waist, the haunch. */
+const OUTER = profile([
+  [53.6, 23.0],
+  [45.27, 37.5],
+  [43.5, 38.0],
+  [25.6, 38.2],
+  [14, 38.9],
+  [3, 40.4],
+  [-3, 41.2],
+  [-8, 41.6],
+  [-59, 41.6],
+]);
+/** The pod's inner face in plan. */
+const INNER = profile([
+  [53.6, 18.6],
+  [49, 18.2],
+  [45, 17.6],
+  [26, 17.6],
+  [23, 18.6],
+  [20, 19.5],
+  [6, 19.5],
+  [2, 18.0],
+  [-3, 15.4],
+  [-59, 15.4],
+]);
+/** The kick line, where the flank folds in: rising as a wedge from the nose to the tail. */
+const KICK = profile([
+  [58, -13.4],
+  [-58, -3.2],
+]);
+/** The haunch's waist: the lower flank drawn in behind the intake, out again at the rear arch. */
+const WAIST = profile([
+  [-3, 0],
+  [-8, 1.6],
+  [-18, 1.0],
+  [-27, 0.3],
+  [-31, 0],
+]);
+/** The spear's top over x, nose to tail (its tail kicks up into the rear panel). */
+const SPEAR = profile([
+  [58.7, -16.1],
+  [56.2, -13.8],
+  [53.6, -11.7],
+  [49, -10.0],
+  [43, -8.4],
+  [36, -6.4],
+  [28, -4.6],
+  [24, -3.6],
+  [16, -2.2],
+  [8, -0.4],
+  [0, 0.4],
+  [-8, 0.85],
+  [-26, 1.25],
+  [-40, 1.5],
+  [-46, 1.8],
+  [-52, 2.6],
+  [-56.6, 3.6],
+]);
+
 function build(k: BodyKit): void {
   const { hi, paint, glass, strip } = k;
   const accent: Surface = { color: ICE, metal: PAINT_METAL, rough: PAINT_ROUGH, emissive: 0.25, kind: CAR_KIND.PAINT };
+  // Lamps and team light: hotter with bloom (high detail), saturated and softer without it.
+  const glow: Surface = { ...strip, emissive: hi ? 1.2 : 0.6 };
+  const tail: Surface = hi ? TAILLIGHT : { ...TAILLIGHT, color: 0xff0a1a, emissive: 0.45 };
+  // A dark shade of the team colour (satin): the rear panels, the diffuser and the intake's upper vane.
+  const dark: Surface = { color: shade(TEAM_PAINT[k.team], 0.4), metal: 0.3, rough: 0.42, emissive: 0, kind: CAR_KIND.TRIM };
+  // The intake's back wall (dark grey, so its depth reads) and the jets' fans (team colour).
+  const wall: Surface = { ...TRIM, color: 0x2a2e35, rough: 0.6 };
+  const fan: Surface = { color: TEAM_PAINT[k.team], metal: 0.25, rough: 0.4, emissive: hi ? 0.5 : 0.55, kind: CAR_KIND.TRIM };
 
-  // Central tub, nose to tail: a pointed spear with a shallow ridge dropping to the floor at the
-  // nose (the wedge line), the cockpit, and the carbon tail panel of the jet bay.
-  const tub = [
-    tubRing(58.6, 1.6, FLOOR, -14.4, 0.35),
-    tubRing(56.4, 4.2, FLOOR, -13.6, 0.35),
-    tubRing(52, 7.6, FLOOR, -12.0, 0.38),
-    tubRing(45, 10.8, FLOOR, -9.6, 0.4),
-    tubRing(37, 13, FLOOR, -7.0, 0.42),
-    tubRing(28, 15.2, FLOOR, -4.2, 0.45),
-    tubRing(18, 16.8, FLOOR, -1.8, 0.45),
-    tubRing(6, 17.4, FLOOR, 0.2, 0.45),
-    tubRing(-10, 17.4, FLOOR, 1.2, 0.45),
-    tubRing(-26, 17, FLOOR, 1.4, 0.45),
-    tubRing(-40, 16.2, FLOOR, 1.4, 0.45),
-    tubRing(-53.5, 15.2, FLOOR, 1.0, 0.45),
+  // Central tub, nose to tail: a pointed spear with a rounded ridge, lowest and furthest forward,
+  // widening to meet the pods' inner faces so the nose is one arrowhead and the deck between canopy
+  // and pods a shallow valley; its floor rises at the tail into the diffuser ramp, its tail is the
+  // dark rear panel the thrusters exit.
+  const hu = (x: number): number => INNER(x) + 0.6;
+  const tubSt: (readonly [number, number, number, number?])[] = [
+    [58.7, 1.4, 0.4],
+    [56.2, 9.2, 0.35],
+    [53.6, 19.2, 0.35],
+    [49, hu(49), 0.55],
+    [43, hu(43), 0.85],
+    [36, hu(36), 0.85],
+    [28, 19.0, 0.85],
+    [24, 20.0, 0.85],
+    [20, 20.1, 0.85],
+    [8, 20.1, 0.85],
+    ...(hi ? [[0, 18.4, 0.85] as const] : []),
+    [-4, 16.0, 0.85],
+    [-26, 16.0, 0.85],
+    [-46, 16.0, 0.85],
+    [-52, 16.0, 0.85, -14.0],
+    [-56.6, 16.0, 0.85, -9.8],
   ];
-  facetLoft(k, tub, (f) => (f === 3 ? TRIM : paint), [paint, CARBON], [], [0]);
+  const tub = tubSt.map(([x, w, wide, b]) => tubRing(x, w, b ?? FLOOR, SPEAR(x), wide));
+  // The tip's top and upper flanks, below the two-tone line, keep the team colour (no livery): a
+  // team arrow over the carbon splitter.
+  const tip: Surface = { color: TEAM_PAINT[k.team], metal: PAINT_METAL, rough: PAINT_ROUGH, emissive: 0, kind: CAR_KIND.TRIM };
+  const tipTop = (f: number, sp: number): boolean => sp < 3 && (f <= 1 || f >= 5);
+  const ramp = tubSt.findIndex(([x]) => x === -46); // the diffuser ramp's first ring (dark team, like its fins)
+  facetLoft(k, tub, (f, sp) => (f === 3 ? (sp >= ramp ? dark : TRIM) : tipTop(f, sp) ? tip : paint), [paint, dark], [1, 2, 3, ramp], [0]);
 
-  // Canopy: a smooth, low fastback bubble over the sharp body. Glass wraps the windscreen and the
-  // sides as one dark band; the roof and the fastback behind the side windows are paint.
-  const canSeg = hi ? 20 : 12;
-  const canN = 2.6;
-  const can = [
-    ring(28, 0, 6, -9, -5.0, 0.4),
-    ring(24, 0, 10.4, -9, -0.8, 0.4),
-    ring(16, 0, 13.4, -8, 5.0, 0.4),
-    ring(8, 0, 14.6, -7, 9.0, 0.4),
-    ...(hi ? [ring(0, 0, 15, -6, 10.8, 0.4)] : []),
-    ring(-8, 0, 14.8, -6, 11.2, 0.4),
-    ...(hi ? [ring(-18, 0, 13.8, -6, 10.2, 0.4)] : []),
-    ring(-28, 0, 12, -6, 8.2, 0.4),
-    ...(hi ? [ring(-38, 0, 9.6, -6, 5.8, 0.4)] : []),
-    ring(-46, 0, 7.4, -6, 3.8, 0.4),
-    ring(-51, 0, 5.6, -6, 2.4, 0.4),
+  // Canopy: faceted, low, a hard belt crease over a body-colour band; its glass is one dark band
+  // over the windscreen, the sides and the roof; behind it a ridged paint fastback.
+  const canSt: (readonly [number, number, number, number, number])[] = [
+    [29, 6.8, -9.5, -5.6, -4.0],
+    [24, 11.0, -9.5, -3.0, -0.4],
+    [16, 13.6, -8, -0.8, 5.0],
+    [8, 14.6, -7, 1.0, 9.0],
+    ...(hi ? [[0, 15.0, -6, 1.8, 10.8] as const] : []),
+    [-8, 14.8, -6, 2.2, 11.2],
+    ...(hi ? [[-18, 13.8, -6, 2.5, 10.3] as const] : []),
+    [-26, 12.4, -6, 2.6, 8.7],
+    ...(hi ? [[-36, 10.2, -6, 2.6, 6.5] as const] : []),
+    [-45, 7.8, -6, 2.7, 4.6],
+    [-50, 6.0, -6, 2.8, 3.8],
   ];
-  const step = 360 / canSeg;
-  k.pushBy(loft(can, canSeg, canN), (x, y, z, nx) => {
-    if (Math.abs(nx) > 0.97 && (x > 27.9 || x < -50.9)) return paint; // the end caps
-    const mid = (rowOf(can, canSeg, canN, x, y, z) + 0.5) * step;
-    const side = mid > 15 && mid < 165; // above the belt line
-    if (x > 8) return side ? glass : paint; // the windscreen
-    if (x > -28 && side && (mid < 70 || mid > 110)) return glass; // the side windows
-    return paint;
-  });
+  const can = canSt.map(([x, w, b, belt, top]) => canopyRing(x, w, b, belt, top));
+  const glassEnd = canSt.findIndex(([x]) => x === -26);
+  // The glass rounded across its facets (no facet-sized glints), crisp at the belt; the fastback
+  // crisp all round, its ridge a spine.
+  facetLoft(k, can.slice(0, glassEnd + 1), (f) => (f !== 3 && f !== 4 && f !== 5 ? glass : paint), [paint, paint], [0], [0, 1, 2, 7, 8]);
+  facetLoft(k, can.slice(glassEnd), () => paint, [paint, paint]);
+  // A short fin on the fastback's ridge.
+  k.fin(paint, [[-19, 9.4], [-25, 12.6], [-29, 12.4], [-47, 5.4], [-48.6, 3.4], [-19, 3.4]], 0.8, 'xy', 0);
 
-  // One faceted pod per side, nose to tail: the front fender, the blade over the side intake, the
-  // rear haunch. Flat, sharp shoulders rising as a wedge, undersides swept round the wheels; the
-  // shoulder chamfer is a headlight at the nose, the ice stripe along the car, a tail light at the
-  // back.
-  const shoulder = profile([
-    [58.2, -14.6],
-    [56.4, -12.4],
-    [54.2, -10.2],
-    [52, -8.6],
-    [50, -7.4],
-    [46, -6.0],
-    [42, -5.0],
-    [37.4, -4.4],
-    [30, -3.6],
-    [20, -2.4],
-    [18, -2.2],
-    [6, 0.2],
-    [3.6, 1.0],
-    [-4, 2.4],
-    [-16, 3.0],
-    [-30, 3.4],
-    [-59, 3.8],
-  ]);
-  // The kick line: where the flank folds in, rising as a wedge from the nose to the tail.
-  const kick = profile([
-    [58, -13.4],
-    [-58, -3.2],
-  ]);
-  // The scoop: the flank below the kick line drawn in behind the intake, fading out at the rear arch.
-  const scoop = profile([
-    [3.6, 0],
-    [-4, 3.8],
-    [-16, 2.4],
-    [-30, 0],
-  ]);
-  const tailX = -58.5;
-  const front = archStations(k.wheels.front, 1.5, hi ? 10 : 7, tailX);
-  const back = archStations(k.wheels.back, 1.5, hi ? 9 : 6, tailX + 1.1);
-  const last = back[back.length - 1];
-  // Stations: [x, zi, zo, bottom, top, lower x]; the intake's four after the front arch, the tail
-  // bevelled into the carbon rear panel.
-  const st: (readonly [number, number, number, number, number, number?])[] = [
-    [58.2, 23.4, 31.6, FLOOR, shoulder(58.2)],
-    [56.4, 21.2, 35.4, FLOOR, shoulder(56.4)],
-    [54.2, 20, 38.4, FLOOR, shoulder(54.2)],
-    ...front.map((a) => [a.x, 19.6, 41.6, a.y, shoulder(a.x)] as const),
-    [20.4, 19.8, 41.4, FLOOR, shoulder(20.4)], // the fender's back: the intake's raked front wall up to...
-    [18, 21.4, 40.2, -4.6, shoulder(18)], // ...the blade over the intake, a waist in plan...
-    [6, 21.4, 40.2, -2.8, shoulder(6)],
-    [3.6, 18, 41.2, FLOOR, shoulder(3.6), 5.4], // ...and the haunch's front, the intake's mouth
-    [-4, 15.4, 41.6, FLOOR, shoulder(-4)],
-    [-16, 15.4, 41.6, FLOOR, shoulder(-16)],
-    ...back.map((a) => [a.x, 15.4, 41.6, a.y, shoulder(a.x)] as const),
-    [tailX, 16.3, 40.7, last.y + 0.9, shoulder(tailX) - 0.9],
+  // One faceted pod per side, nose to tail.
+  const tailX = -58.6;
+  const front = archStations(k.wheels.front, 1.2, hi ? 10 : 6, tailX);
+  const back = archStations(k.wheels.back, 1.0, hi ? 9 : 6, -57.0);
+  const st = (x: number, b: number, o: Partial<PodStation> = {}): PodStation => {
+    const zi = o.zi ?? INNER(x);
+    const zo = o.zo ?? OUTER(x);
+    return { x, xb: x, zi, zo, b, t: SHOULDER(x), tr: RIDGE(x), zr: zi + RIDGE_AT(x) * (zo - zi), yK: KICK(x), scoop: 0, yC: CREASE, ...o };
+  };
+  // The intake behind the front wheel: rings raked like the windscreen (floor `xb`, top `x`), the
+  // lower flank drawn in (the opening) under a top edge falling to a point at the rear.
+  const intake = (xb: number, x: number, zo: number, scoop: number, yK: number): PodStation =>
+    st(x, FLOOR, { xb, zi: INNER(xb), zo, scoop, yK, yC: yK - 1.0 });
+  const stations: PodStation[] = [
+    // The knife blades, 2.2 uu thick over open air and the front tyre, swept back to the outer
+    // corner (zo); then the fender.
+    st(53.6, BLADE),
+    st(51.6, BLADE),
+    ...front.map((a) => (a.y < BLADE ? st(a.x, BLADE) : st(a.x, a.y, a.x > 45 ? { t: a.y + 2.2 } : {}))),
+    st(14.2, FLOOR, { xb: 25.2, zi: 18.4, zo: 38.3 }), // the intake's front edge
+    intake(24.4, 13.4, 38.5, 9.0, -4.6),
+    intake(19, 8, 39.0, 8.6, -7.0),
+    ...(hi ? [intake(13, 3, 39.6, 6.6, -10.2)] : []),
+    intake(7, -2, 40.2, 3.6, -13.6),
+    intake(2, -5, 41.0, 0.4, -16.6),
+    st(-8, FLOOR, { scoop: WAIST(-8) }),
+    st(-18, FLOOR, { scoop: WAIST(-18) }),
+    ...(hi ? [st(-27, FLOOR, { scoop: WAIST(-27) })] : []),
+    ...back.map((a) => st(a.x, a.y)),
+    // The tail, bevelled into the dark rear panel, dropping over the rear tyre.
+    { ...st(tailX, -9.6, { zi: 16.3, zo: 40.7 }), t: SHOULDER(tailX) - 0.9, tr: RIDGE(tailX) - 0.9 },
   ];
-  const i0 = 3 + front.length; // the station at the fender's back
-  const spans = st.length - 1;
+  const spans = stations.length - 1;
+  const iB = stations.findIndex((s) => s.x !== s.xb); // the intake's front edge
+  const iG = iB + (hi ? 5 : 4); // its last ring, where the opening closes
+  const iSweep = stations.findIndex((s) => s.x < 45); // the first ring behind the blades
+  const lamp = (sp: number): boolean => stations[sp].x > 45;
+  const hard = [iSweep - 1, iB, iB + 1, spans - 1, spans];
   for (const s of [-1, 1]) {
-    const rings = st.map(([x, zi, zo, b, t, xb]) => podRing(x, zi, zo, b, t, kick(x), scoop(x), xb).map(([px, py, pz]): P3 => [px, py, pz * s]));
+    const rings = stations.map((p) => podRing(p).map(([px, py, pz]): P3 => [px, py, pz * s]));
     facetLoft(
       k,
       rings,
       (f, sp) => {
-        if (f === 7) return TRIM; // the floor and the wheel-well liners
-        const mouth = sp === i0 + 2;
-        if ((sp === i0 || mouth) && (f === 0 || f === 6)) return TRIM; // the intake's front wall and its mouth
-        if (mouth && f === 1) return TRIM;
-        if (f === 3) return sp < 2 ? HEADLIGHT : sp >= spans - 2 ? TAILLIGHT : accent;
+        if (f === 8) return TRIM; // the floor and the wheel-well liners
+        if (sp >= iB && sp < iG && f <= 1) return sp === iB ? wall : f === 0 ? wall : TRIM; // the intake: front and back walls, roof
+        if (f === 3) return lamp(sp) ? HEADLIGHT : sp >= spans - 2 ? tail : accent;
+        if (sp === spans - 1) return dark; // the bevel round the tail
         return paint;
       },
-      [paint, CARBON],
-      [i0, i0 + 1, i0 + 2, i0 + 3, spans],
+      [paint, dark],
+      hard,
     );
 
-    // Mirrors on stalks off the fenders, beside the windscreen (their glass faces back).
-    k.fin(paint, [[24.2, 0.9], [23, 2.1], [20.5, 2.3], [20.3, 0.2], [22, -0.1]], 4.2, 'xy', s * 24.6);
-    k.fin(CARBON, [[23.2, -3.2], [21.6, -3.2], [21.2, 0.4], [22.4, 0.4]], 0.8, 'xy', s * 24.6);
-    if (hi) k.box(glass, 0.3, 1.7, 3.6, 20.25, 1.2, s * 24.6);
+    // The intake's vanes: an upper one in the dark team shade, a lower one lit, from the front wall
+    // to where the top edge comes down to them, just inside the opening's lip.
+    const kicks = rings.slice(iB + 1, iG + 1).map((r) => r[2]); // the opening's top edge
+    const vane = (y: number, surface: Surface, th: number): void => {
+      const xf = (flankX(rings[iB], y) + flankX(rings[iB + 1], y)) * 0.5;
+      let xr = kicks[kicks.length - 1][0];
+      for (let i = 1; i < kicks.length; i++) {
+        if (kicks[i][1] <= y + 0.4) {
+          const [a, b] = [kicks[i - 1], kicks[i]];
+          xr = a[0] + ((b[0] - a[0]) * (y + 0.4 - a[1])) / (b[1] - a[1]);
+          break;
+        }
+      }
+      const zf = Math.abs(rings[iB + 1][2][2]);
+      const zr = OUTER(xr) - 0.15;
+      k.fin(surface, [[xf, s * (zf - 3.4)], [xf, s * (zf - 0.7)], [xr, s * (zr - 0.7)], [xr, s * (zr - 3.0)]], th, 'xz', y);
+    };
+    vane(-9.0, dark, 0.6);
+    vane(-13.4, glow, 0.45);
 
-    // The intake: a dark cavity behind the front wheel, a carbon sill under it with a team light.
-    k.box(TRIM, 17.6, 12.4, 15, 12, -10.7, s * 24.5);
-    k.box(CARBON, 19, 2.9, 9.9, 12, -15.85, s * 36.45);
-    k.box(strip, 17, 0.7, 0.5, 12, -14.55, s * 41.3);
+    // Mirrors on swept arms off the canopy's flanks, low beside it (carbon; their glass faces back).
+    k.push(tube(17.4, -2.6, s * 12.4, 14.8, -1.2, s * 15.4, 0.4, 4), CARBON);
+    k.fin(CARBON, [[15.8, -2.0], [15.0, 0.1], [12.8, 0.1], [12.6, -1.6], [13.6, -2.2]], 2.4, 'xy', s * 16.2);
+    if (hi) k.box(glass, 0.3, 1.6, 2.0, 12.65, -0.8, s * 16.2);
 
-    // A headlight slit on the fender's chisel front, a red light blade across the haunch's tail.
-    k.box(HEADLIGHT, 0.5, 0.9, 6.4, 58.3, -15.6, s * 27.4);
-    k.box(TAILLIGHT, 0.9, 1.5, 19.4, -58.25, 0.6, s * 29.2);
+    // The red light blade across the tail.
+    k.box(tail, 0.9, 1.6, 21, -58.25, 0.6, s * 29);
 
-    // Louvres over the rear wheels, and over the front ones on high detail.
-    for (const x of [-40.5, -43.5, -46.5, -49.5]) k.box(TRIM, 1.0, 0.5, 10.5, x, shoulder(x) - 0.2, s * 30);
-    if (hi) for (const x of [31, 33.5, 36]) k.box(TRIM, 1.0, 0.5, 9, x, shoulder(x) - 0.2, s * 30);
+    // Louvres: over the rear wheels on the inner top, over the front ones on the outer top (high).
+    for (const x of hi ? [-40.5, -43.5, -46.5, -49.5] : [-42, -46.5]) k.box(TRIM, 1.0, 0.6, 8, x, RIDGE(x) - 0.75, s * 23.5);
+    if (hi) for (const x of [31, 33.5, 36]) k.box(TRIM, 1.0, 0.6, 7, x, RIDGE(x) - 0.65, s * 31.6);
 
-    // Rear wing: a raked alloy pylon on the deck and a carbon endplate at the wing's tip.
-    k.fin(CAGE, [[-39.5, -0.6], [-45.5, -0.6], [-55.2, 14.8], [-50.4, 14.8]], 1.3, 'xy', s * 12.5);
-    k.fin(CARBON, [[-58.6, 10.6], [-50.5, 10.6], [-46.6, 17.4], [-58.6, 17.4]], 1.1, 'xy', s * 40.3);
-    k.box(strip, 0.5, 6.2, 1.3, -58.45, 14.2, s * 40.3);
+    // Rear wing: a carbon swan-neck pylon from the deck over the main plane's top, and a swept
+    // carbon endplate at its tip, its trailing edge lit.
+    k.fin(
+      CARBON,
+      [
+        [-34.5, -0.5],
+        [-37.5, 6.5],
+        [-39.8, 12.4],
+        [-41.6, 16.0],
+        [-43.6, 17.4],
+        [-50.0, 17.4],
+        [-51.6, 16.4],
+        [-51.6, 14.6],
+        [-46.4, 14.3],
+        [-44.4, 14.6],
+        [-42.4, 12.0],
+        [-40.6, 6.0],
+        [-38.2, -0.5],
+      ],
+      1.6,
+      'xy',
+      s * 11.5,
+    );
+    k.fin(CARBON, [[-42.6, 11.4], [-47.0, 17.6], [-58.7, 17.6], [-58.7, 9.4]], 1.0, 'xy', s * 40.4);
+    k.box(glow, 0.4, 7.6, 1.2, -58.5, 13.5, s * 40.4);
   }
 
-  // The wing: a lens-section main plane lofted across the car, trailing edge up, and a steeper
-  // flap over its trailing edge (high detail).
-  const wing = (xc: number, yc: number, aoa: number, tips: readonly [number, number], hu: number, hv: number, seg: number): void => {
-    const u = [Math.cos(aoa), -Math.sin(aoa), 0] as const;
-    const v = [Math.sin(aoa), Math.cos(aoa), 0] as const;
-    const r = (z: number, w: number, h: number): Ring => ({ o: [xc, yc, z], u, v, hu: w, hv: h });
-    const [z0, z1] = tips;
-    k.push(loft([r(-z1, hu * 0.88, hv * 0.65), r(-z0, hu, hv), r(z0, hu, hv), r(z1, hu * 0.88, hv * 0.65)], seg, 2.4), paint);
+  // The wing: a faceted section (rounded leading edge) across the car between the endplates, team
+  // colour on top, carbon below, and a steeper flap over its trailing edge (high detail).
+  const wing = (lx: number, ly: number, chord: number, aoa: number, h: number): void => {
+    const d = [-Math.cos(aoa), Math.sin(aoa)] as const;
+    const n = [Math.sin(aoa), Math.cos(aoa)] as const;
+    const sec: XY = [
+      [0, 0],
+      [0.22, 0.5],
+      [0.7, 0.42],
+      [1, 0.1],
+      [1, -0.18],
+      [0.35, -0.5],
+    ];
+    const ring = (z: number): P3[] => sec.map(([u, v]) => [lx + u * chord * d[0] + v * h * n[0], ly + u * chord * d[1] + v * h * n[1], z]);
+    facetLoft(k, [ring(-40.2), ring(40.2)], (f) => (f <= 2 ? paint : f === 3 ? TRIM : CARBON), [CARBON, CARBON], [], [0]);
   };
-  wing(-52.9, 14.4, 0.15, [38, 40.3], 5.5, 1.2, hi ? 12 : 8);
-  if (hi) wing(-56.7, 16.5, 0.3, [38.4, 40.3], 2.0, 0.45, 8);
+  wing(-43.6, 12.6, 13, 0.13, 2.9);
+  if (hi) wing(-54.6, 15.3, 4.0, 0.42, 1.0);
 
-  // Carbon arrow splitter under the nose and the fender fronts (kept ahead of the front tyres).
+  // The splitter's team-lit leading edge under the spear, swept to the pods' inner corners.
   k.fin(
-    CARBON,
+    glow,
     [
-      [58.7, -1.5],
-      [58.7, 1.5],
-      [57.9, 22],
-      [56, 40.8],
-      [52.4, 40.8],
-      [54, 22],
-      [52, 9],
-      [52, -9],
-      [54, -22],
-      [52.4, -40.8],
-      [56, -40.8],
-      [57.9, -22],
+      [58.72, -0.9],
+      [58.72, 0.9],
+      [53.4, 19.0],
+      [52.4, 19.0],
+      [57.4, 0],
+      [52.4, -19.0],
+      [53.4, -19.0],
     ],
-    0.8,
+    0.5,
     'xz',
-    -16.9,
+    FLOOR + 0.25,
   );
 
-  // Diffuser fins on the carbon tail panel under the jets (satin, so their edges do not glint).
-  for (const z of [-12.4, -3.6, 3.6, 12.4]) {
-    k.fin(TRIM, [[-53, -17.3], [-58.3, -17.3], [-58.3, -10.4], [-56.4, -8.2], [-53, -8.2]], 0.7, 'xy', z);
+  // The diffuser's fins under the ramp, the lowest and rearmost parts, lit at their trailing edges.
+  for (const z of [-13, -5, 5, 13]) {
+    k.fin(dark, [[-45, FLOOR], [-58.7, FLOOR], [-58.7, -12.2], [-56.0, -9.0], [-45, -16.6]], 0.8, 'xy', z);
+    k.box(glow, 0.3, 2.4, 0.6, -58.6, FLOOR + 1.3, z);
   }
 
-  // Twin thrusters as jet exhausts in the carbon bay: heat-tinted housing, dark throat and a
-  // team-lit lip ring each, exiting at the boost nozzles.
+  // Twin thrusters as jet exhausts out of the rear panel: heat-tinted housing, a team-lit lip ring
+  // and a team-coloured fan in each, exiting at the boost nozzles.
   const { x: nx, y: ny } = k.nozzle;
   const jSeg = hi ? 16 : 10;
   for (const side of [-1, 1]) {
     const z = side * k.nozzle.z;
-    const housing = new THREE.CylinderGeometry(3.7, 4.1, 6.5, jSeg, 1, false);
+    const housing = new THREE.CylinderGeometry(4.4, 4.8, 3.2, jSeg, 1, false);
     housing.rotateZ(Math.PI / 2);
-    housing.translate(nx + 3.25, ny, z);
+    housing.translate(nx + 1.6, ny, z);
     k.push(housing, EXHAUST);
-    const throat = new THREE.CircleGeometry(3.0, jSeg);
-    throat.rotateY(-Math.PI / 2);
-    throat.translate(nx - 0.05, ny, z);
-    k.push(throat, DISC);
-    const lip = new THREE.TorusGeometry(3.2, 0.5, hi ? 4 : 3, hi ? 16 : 12);
+    const cone = new THREE.ConeGeometry(3.4, 0.7, jSeg);
+    cone.rotateZ(Math.PI / 2);
+    cone.translate(nx - 0.35, ny, z);
+    k.push(cone, fan);
+    const lip = new THREE.TorusGeometry(3.9, 0.55, hi ? 4 : 3, hi ? 16 : 10);
     lip.rotateY(Math.PI / 2);
     lip.translate(nx + 0.05, ny, z);
-    k.push(lip, strip);
+    k.push(lip, glow);
   }
 }
 
 export const PAMPERO: CarBodySpec = {
   id: 'pampero',
   build,
-  wheels: { style: TURBINE, visual: 1.12, outer: 40.6, width: 1.05, rear: { visual: 1.1, width: 1.2 } },
+  // The front track inside the rear's (the front pods narrower than the haunches: an arrow in
+  // plan), the rear tyres tucked 2 uu under the haunches.
+  wheels: { style: TURBINE, visual: 1.04, outer: 36.8, width: 1.0, rear: { visual: 1.06, outer: 39.6, width: 1.02 } },
   // Car-local uu (the build frame + (13.88, 20.76, 0)): the two-tone line on the flanks' crease
-  // (CREASE, build -12.26); the bonnet seam across the nose spear (build 45) and the engine cover's
-  // across the fastback (build -32).
+  // (CREASE, build -12.26); one seam, the engine cover's, across the fastback (build -32).
   livery: {
     twoToneY: 8.5,
     pinstripe: 0.4,
     chevrons: null,
-    seams: { x: [58.9, -18.1], maxZ: 12 },
+    seams: { x: [-18.1, -18.1], maxZ: 12 },
     accent: ICE,
     chevronTint: 0,
     grime: { y0: 9.5, y1: 4, amount: 0.4 },
