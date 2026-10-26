@@ -20,7 +20,10 @@ All notable changes to Turbogol are documented here. The format follows
   on the keyboard) those of the leaderboard and of the sign-in screen; during a match none of them
   does anything new.
 - `#widetext` (for contributors): the whole interface in plain Arial, about as wide as Android's
-  Roboto, to see on a desktop which label would not fit without the condensed font.
+  Roboto, to see on a desktop which label would not fit without the condensed font. Labels that
+  would not fit shrink a little, then take a shorter name (TRAIN, RANKS), and `node
+  scripts/ui-fit.mjs` checks every menu screen at five sizes with it (a CI job, for information).
+- GARAGE has its place in the menus already, with a "coming soon" panel until the cars arrive.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
   boost and switch to the ball camera, with your own keys or buttons (keyboard and mouse, or the
@@ -135,6 +138,10 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- When a new version of the game is out and yours is too old to play online, a window says so and
+  offers RELOAD NOW (selected), instead of a message that vanished after four seconds; if you say
+  NOT NOW, an "UPDATE TO PLAY" pill stays in the top bar until you reload.
+- Leaving Settings with Esc no longer also goes back a screen in the menus behind it.
 - Super low ("Súper bajo"): the focused button of the pause menu, Settings and the training pack
   summary was hard to see from the couch; it has the same ring as everywhere else. The match HUD
   keeps a one-pixel shadow under its text (BOOST, the clock, the countdown read over a bright pitch;
@@ -213,6 +220,32 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- The menus are a board of five sections: PLAY, TRAINING, GARAGE, LEADERBOARD and PROFILE. On a
+  computer and a TV they sit in the top bar next to the logo, your region and connection, your
+  account and Settings; on a phone held sideways in a rail on the left (with the source code link
+  at its foot), and on a phone held upright in tabs at the bottom. Pick one with a click or a tap,
+  with the bumpers (LB / RB) or Q / E, or with a TV remote: press up to reach the bar, then left and
+  right (the section opens as soon as you land on it). The logo always takes you back to PLAY.
+- Back is predictable everywhere: it closes a window first, then goes back one screen, then from
+  any section to PLAY, and only on PLAY does it ask "Leave Turbogol?" (KEEP PLAYING is the answer
+  already selected). Esc, Backspace and the controller's B now ask that too on PLAY, as Android's
+  back gesture and a TV remote's BACK already did. A screen you opened inside a section shows a
+  back arrow and the way you came ("PLAY › MODES › CASUAL"): click any step to jump back to it.
+- The search you started stays in sight on every section, as a pill in the top bar with its time
+  ("CASUAL · 2v2 · 0:42"): open it to go back to the search, press ✕, Y on a controller or X on the
+  keyboard to cancel it. It also floats above Settings, where Y, X and ✕ cancel it too. The old
+  search banner at the bottom of the menus is gone.
+- The region pill shows your region and whether you are online ("● Online", or how many are
+  playing once there are five or more); open it to change the region, or press RETRY when the game
+  cannot reach the server. The hint bar at the bottom speaks only the language of what you are holding: the
+  controller's buttons, the keyboard's keys or the TV remote's, and nothing with a mouse.
+- On a phone held upright the menus now work (profile, leaderboard, training...); only a match
+  asks you to turn the phone. A tablet plays either way. You can pinch to zoom the menus; the match
+  controls still keep every finger.
+- Windows, dialogs and short messages share one look: a solid panel in the middle (it rises from
+  the bottom on a phone), and up to three short messages at a time that stay longer when they are
+  longer. The source code link stays on screen (the bottom bar, or the foot of the phone's rail);
+  the licenses, Discord and the game's version are under About next to it.
 - A cleaner interface, the first step of the new menus. Titles, buttons and numbers use one
   condensed typeface on every device (Barlow Condensed, a free font of 6 KB that comes with the
   game), so an Android phone or a TV shows the same proportions as Windows did. Panels are solid

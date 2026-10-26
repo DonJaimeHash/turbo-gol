@@ -322,33 +322,58 @@ src/game/
   startTraining(FREEPLAY_ID, { rules }) is experimental free play: the preset's physics, its game
   speed, the TrainingHud's rules line, the pause menu's RULES applied when the settings close, no
   records)
-src/ui/                 the front-end menus, styled by menu.css (mn-) on the tokens of styles/
+src/ui/                 the front-end menus: the Tablero shell (styles/shell.css, components.css)
+                        around the screens (menu.css until their own PRs), all mn-, on the tokens
   styles/tokens.css     every colour, type role and scale, space, radius, shadow, layer, motion
                         and focus value (the Tablero plan §1.2), the display font's @font-face and
                         its calibrated fallbacks; the old names (--panel, --muted, --mn-*) are
                         aliases until the PR that rewrites their last user. "UI tokens" below
   styles/focus.css      the one focus ring of every world (menus .mn-focus / :focus-visible, the
                         Hud's .hud-focus, the pack summary's default button)
-  components/icons.ts   the SVG icon sprite (~37 icons on a 24 grid, one hidden <svg> of
+  styles/shell.css      the shell's grid and bars per html[data-shell] (bar, rail, tabs, tv) in rem
+                        (1 rem = 16 px x --ui-scale; body stays 16 px, so the old screens' px do
+                        not move); styles/components.css: pills, glyphs, sheets, toasts
+  components/icons.ts   the SVG icon sprite (~38 icons on a 24 grid, one hidden <svg> of
                         <symbol>s mounted by the first icon(); the menu tiles use it)
+  components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
+                        length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons)
+  shell/                sections.ts (the five sections, their roots, stepSection; pure),
+                        hints.ts (the hint bar per last input; pure), topbar.ts (wordmark,
+                        sections with focus = selection, back + crumbs, chip, Settings), rail.ts
+                        (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
+                        About), pills.ts (region / connection, search, update)
+  backModel.ts          the order of Back, pure: menuBack (sheet, field being edited, the
+                        screen's own, pop, another section to JUGAR, JUGAR's root asks to leave)
+                        and systemBack (load, key capture, the Hud's screen, menus, pack summary,
+                        match); tests/back-model.test.mjs
+  fit.ts                data-fit: a box shrinks its font 1 px at a time to its minimum while it
+                        overflows, then takes its short labels (data-fit-alt); __uiFit() (dev /
+                        VITE_UI_FIT=1) reports overflowing bars, cut labels, a sideways scroll, rings
+                        a clipping box would cut (scripts/ui-fit.mjs, CI's ui-fit job)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
                         thread is busy), one short line; swallows keys while up; boot and Game
-  Menu.ts               controller: top bar (breadcrumb, region / players online, account chip),
-                        screen stack, bottom bar (key hints + the matchmaking banner with timer and
-                        cancel), toasts, modals, shared prefs (region, playlists, connection),
-                        population polling; MenuHost = what the Game provides (search, friendly,
-                        training (with experimental rules), the experimental view (unlocked,
-                        presets), lobby matches, settings screen). Focus: three zones (top bar,
-                        stage, footer; a modal alone), the last focus per screen (FocusMemory by
-                        element or data-key: back to a screen or out of a modal lands where it
-                        was; data-autofocus on a first visit only; never a text field without a
-                        fine pointer), modals with aria-modal and the rest inert. Back order:
-                        modal, a field being edited, Screen.back, pop. MenuCommand shortcuts
-                        (Q / E, LB / RB, LT / RT, X / Y, Start, pad X / Delete) reach
-                        Screen.command first; LT / RT and Q / E then step a screen's .mn-tabs
-                        (stepTabs). A key's own repeat moves the focus only for a key first
-                        pressed in the menus. The 450 ms tap guard (touch)
+  Menu.ts               the shell's controller: five sections (JUGAR · ENTRENAMIENTO · GARAJE ·
+                        CLASIFICACIÓN · PERFIL), each a root screen with stacked screens on it
+                        (open: a root switches section, at its root; a section switch always lands
+                        on the root), the top bar / rail / tabs / hint bar, the pills (region and
+                        connection with RETRY, the running search on every section and floating
+                        over Settings, "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
+                        new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
+                        shared prefs, population polling; MenuHost = what the Game provides
+                        (search, friendly, training, the experimental view, lobby matches,
+                        settings screen, confirmLeave). Focus: zones top bar, stage, footer, tabs
+                        and the rail as a side zone (left / right cross it; a sheet alone); up from
+                        the stage lands on the active section (data-nav-entry), focus = selection
+                        on the section tabs; the last focus per screen (FocusMemory by element or
+                        data-key; data-autofocus on a first visit only; never a text field without
+                        a fine pointer); sheets with aria-modal and the rest inert. Back:
+                        backModel.ts (Esc / B / the back button on JUGAR's root ask to leave too).
+                        MenuCommand shortcuts (Q / E, LB / RB, LT / RT, X / Y, Start, pad X /
+                        Delete) reach Screen.command first; LB / RB the sections, LT / RT and Q / E
+                        a screen's .mn-tabs (stepTabs) else the sections; X / Y cancel the search,
+                        over Settings too. A key's own repeat moves the focus only for a key first
+                        pressed in the menus. The 450 ms tap guard (touch; not on the bars)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right);
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
@@ -356,16 +381,22 @@ src/ui/                 the front-end menus, styled by menu.css (mn-) on the tok
                         memory (FocusMemory), fields in navigation or editing mode (data-editing)
                         and the edge nudge (mn-bounce-*); FocusNav puts them on the DOM
   device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
-                        <html>), html.tg-tv (no pointer at all, or #tv), finePointer (a text field
-                        may take a first focus), the tap guard (tapGuarded); pure + installDevice
+                        <html>), html.tg-tv (no pointer at all, or #tv), the layout class by height
+                        and orientation (layoutClass: pc, short, phone, portrait, tablet, tv;
+                        data-layout and data-shell on <html>) and --ui-scale (uiScale), finePointer
+                        (a text field may take a first focus), the tap guard (tapGuarded); pure +
+                        installDevice
   backGuard.ts          system Back (Android gesture / button, TV remote BACK, browser back, Alt +
                         ←, mouse back, GoBack / BrowserBack keys) as Game.onSystemBack: a
                         CloseWatcher kept alive (Android's Back, no user activation needed) and
-                        one sentinel history entry re-armed after each Back (the history Backs);
-                        released while the home screen's "Leave Turbogol?" is up. Mid-match the
-                        Game adds a beforeunload backstop (updateLeaveGuard)
+                        one sentinel history entry re-armed after each Back (the history Backs;
+                        sections are no history entries of their own: backModel.ts walks them);
+                        released while JUGAR's "Leave Turbogol?" is up. Mid-match the Game adds a
+                        beforeunload backstop (updateLeaveGuard)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
-  screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
+  screens/              JUGAR's root (home in play.ts until plan PR 5), play hub (crumb MODES),
+                        casual, competitive, friendly (play.ts), GARAJE's "coming soon" (garage.ts,
+                        until plan PR 8), custom lobby
                         browser / create / lobby (custom.ts: the host's experimental rules row for
                         unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
                         rules line before the match), training (with Experimental free play, its
@@ -522,7 +553,9 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         bot-bench.mjs (this tree's bots against a git revision's; --preset plays
                         the same seeded matches on stock and experimental physics and compares the
                         step, think(), ball prediction and whole-tick cost, failing when a preset
-                        breaks the state or the predictor), bot-skills.mjs (bot scenarios)
+                        breaks the state or the predictor), bot-skills.mjs (bot scenarios),
+                        ui-fit.mjs (every menu screen at five sizes with #widetext in a headless
+                        Chrome / Edge over CDP: window.__uiFit, src/ui/fit.ts)
 ```
 
 ### Bloom / glow contract (src/render/materials.ts)
@@ -961,7 +994,10 @@ imported first by `src/style.css`:
   `--font-display`; Body and Label keep the system stack they always had, `--font-body` (Bahnschrift
   on Windows, Roboto on Android, San Francisco on Apple; no Impact). Weights stop at 700. The scale
   `--t-hero ... --t-label` per class (PC, short screens, phone landscape, phone portrait,
-  `html.tg-tv`) is in rem for the shell's root scale (PR 4).
+  `html.tg-tv`) is in rem for the shell's root scale: `html { font-size: 16px x --ui-scale }`
+  (device.ts uiScale: PC by height, 768 = 1, 0.9 to 1.35; a phone sideways by height, 390 = 1, 0.92
+  to 1.1; upright by width; a TV by width, 960 = 1, up to 2), with `body` kept at 16 px so only rem
+  sizes (the shell) follow.
 * **Space, radii, shadows, layers, motion:** `--sp-1..8`, `--r-slot / key / tile / panel / pill`,
   `--shadow-sheet` (static, sheets only), `--z-*` (the order of the HUD, menus, settings, anti-bot,
   rotate screen and loading screen), `--dur-*` / `--ease*` (transform and opacity only).
@@ -969,7 +1005,7 @@ imported first by `src/style.css`:
   (a spread-only shadow that super low keeps) and a lime heel skewed -20 degrees under the box;
   rows (lists, settings rows, button stacks, one-stop groups, training packs, cyclers) get a lime
   bar on their left inside edge instead. Never on a touch screen; 4 px and a 6 px heel under
-  `html.tg-tv`. Every vertical scroller (`.mn-stage`, `.mn-lobbies`, `.mn-board`, `.mn-modal`,
+  `html.tg-tv`. Every vertical scroller (`.mn-stage`, `.mn-lobbies`, `.mn-board`, `.mn-sheet`,
   `.hud-menu`, `.hud-settings-body`) has a scroll padding of 16 px (24 under a heel), since the focus
   is scrolled in with `block: 'nearest'`, flush with the edge; tile grids are 16 px apart, past the
   heel.
@@ -999,7 +1035,10 @@ box. Until it arrives, or if it never does, the stack falls to Windows' Bahnschr
 is 1.1x as wide), then to Android's Roboto Condensed / Roboto through local() faces scaled to the
 same widths (`size-adjust` 83.5 % / 73.2 %, measured on 21 UI labels), then Apple's DIN Condensed /
 Avenir Next Condensed and the condensed system faces.
-`#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it.
+`#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it;
+`data-fit` (src/ui/fit.ts) shrinks a label that would not fit, down to its minimum, then takes its
+short form (ENTRENAR, RANKING), and `node scripts/ui-fit.mjs` checks every menu screen at 780x360,
+844x390, 960x540 (TV), 1366x768 and 390x844 with it (CI job `ui-fit`, information only for now).
 `scripts/copy-notices.mjs` refuses to build with a font and no license next to it.
 
 ## Legal
