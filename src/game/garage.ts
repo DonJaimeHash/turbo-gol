@@ -3,13 +3,17 @@
  * (src/ui/screens/garage.ts), and what keeps the player's car pick honest.
  *
  * Entitlement (carSelection.ts setEntitledCars): a guest drives the default car alone; a signed-in
- * account the default car, the car its session carries (AccountsDO signs only one the account still
- * owns: at once, before any other answer) and, once GET /api/me/items or the shop answered for that
- * account, every car it owns. An account's pick follows the server's: the session's car (or the
- * items answer's, the fresher one) becomes the local pick, and equipping goes through POST
- * /api/me/car first (a fresh session that carries it, AccountClient.selectCar), so the car driven
- * offline and the car seated online are the same one; the server is the authority online. A
- * sign-out keeps the pick saved (it reads as the default car until that account is back).
+ * account the default car and the car its session carries (AccountsDO signs only one the account
+ * still owns) until GET /api/me/items, the shop or a claim answered for that account, then the
+ * default car and every car the answer says it owns (the session's no longer counts by itself: a
+ * car revoked since the session was signed is not driven). An account's pick follows the server's:
+ * the session's car (or the items answer's, the fresher one) becomes the local pick, and equipping
+ * goes through POST /api/me/car first (a re-signed session that carries it, AccountClient.selectCar),
+ * so the car driven offline and the car seated online are the same one; the server is the authority
+ * online. An answer that shows the session's car is stale (a maintainer's revoke, a pick in another
+ * tab) re-signs the session through the refresh cookie (renewIfStale), so the next queue seats the
+ * car the account drives now. A sign-out keeps the pick saved (it reads as the default car until
+ * that account is back).
  *
  * The shop (GET /api/me/shop, nodes/docs/RECOMPENSAS.md): host points are earned only by running a
  * community server (verified player-minutes), never bought, won by playing or traded; a claim is one
@@ -85,14 +89,17 @@ export function garageView(input: GarageInput): GarageView {
   const catalog = input.catalog ?? CARS;
   const shopCars = new Map<string, ShopItemView>();
   for (const it of input.shop?.items ?? []) if (it.kind === 'car') shopCars.set(it.id, it);
-  const pick = input.selected !== null && catalog.some((c) => c.id === input.selected) ? input.selected : input.equipped;
+  const owns = (id: CarId) => id === DEFAULT_CAR || input.owned.includes(id) || shopCars.get(id)?.owned === true;
+  // A car driven that is not owned (a revoke the session has not caught up with) shows as the default car: one card is always Equipped.
+  const equipped = owns(input.equipped) ? input.equipped : DEFAULT_CAR;
+  const pick = input.selected !== null && catalog.some((c) => c.id === input.selected) ? input.selected : equipped;
   const cars = catalog.map((c): GarageCarView => {
     const item = shopCars.get(c.id);
-    const owned = c.id === DEFAULT_CAR || input.owned.includes(c.id) || item?.owned === true;
+    const owned = owns(c.id);
     const soon = c.status !== 'available' || (item !== undefined && item.status !== 'available');
     let state: GarageCarState;
     let lock: GarageLock | null = null;
-    if (owned) state = c.id === input.equipped ? 'equipped' : 'owned';
+    if (owned) state = c.id === equipped ? 'equipped' : 'owned';
     else if (soon) state = 'soon';
     else if (item?.claimable === true) state = 'claimable';
     else {
@@ -141,6 +148,8 @@ export interface GarageAccounts {
   fetchShop(): Promise<ShopAnswer>;
   selectCar(car: CarId): Promise<AccountSession>;
   claimItem(item: string): Promise<ClaimAnswer>;
+  /** Re-sign the session through the refresh cookie (AccountClient.renewSession): it then carries the car driven now. */
+  renewSession(): Promise<unknown>;
 }
 
 export class Garage {
@@ -158,6 +167,10 @@ export class Garage {
   private owner: string | null = null;
   /** The item ids `owner` owns (items or shop answers); [] until one answered. */
   private items: readonly string[] = [];
+  /** An answer (items, the shop, a claim) came for `owner`: `items` alone entitle, the session's car no longer by itself. */
+  private answered = false;
+  /** The session (owner and token) a renewal was asked for (renewIfStale): one stale session renews once. */
+  private renewed: string | null = null;
   private readonly listeners = new Set<() => void>();
 
   /**
@@ -213,6 +226,8 @@ export class Garage {
     if (id !== this.owner) {
       this.owner = id;
       this.items = [];
+      this.answered = false;
+      this.renewed = null;
       this.shop = null;
       this.error = null;
       this.loading = false;
@@ -228,11 +243,29 @@ export class Garage {
   private sync(car: CarId | undefined): void {
     const a = this.accounts.account;
     const before = this.pick.current;
-    setEntitledCars(a === null ? [] : [a.car ?? DEFAULT_CAR, ...this.items]);
+    setEntitledCars(a === null ? [] : this.answered ? this.items : [a.car ?? DEFAULT_CAR, ...this.items]);
     // An older server sends no car: the pick stays (as entitled).
     if (a !== null && car !== undefined && this.pick.current !== car) this.pick.select(car);
     if (this.pick.current !== before) this.onCarChange();
     this.changed();
+  }
+
+  /**
+   * An answer for the signed-in account shows its session's car is not the one it drives now
+   * (`car`: the items answer's, which says which one; undefined after a shop answer, where the
+   * session's car is stale when it is no longer owned): a maintainer revoked it, or another tab
+   * picked another. The session is re-signed through the refresh cookie (AccountsDO signs the car
+   * driven now), or every queue until it expires (up to an hour) would seat the old car online while
+   * the garage shows another. Once per session; a session without a car (an older server) never.
+   */
+  private renewIfStale(car: CarId | undefined): void {
+    const a = this.accounts.account;
+    if (a === null || a.car === undefined || a.playerId !== this.owner) return;
+    const stale = car !== undefined ? car !== a.car : a.car !== DEFAULT_CAR && !this.items.includes(a.car);
+    const key = a.playerId + ' ' + a.session;
+    if (!stale || this.renewed === key) return;
+    this.renewed = key;
+    this.accounts.renewSession().catch(() => undefined); // adopted: onAccount -> sync moves the pick
   }
 
   /** GET /api/me/items for `owner` (a sign-in): every car it owns counts offline too. Failing is quiet: the session's car still counts. */
@@ -245,6 +278,8 @@ export class Garage {
     }
     if (this.owner !== owner) return;
     this.items = r.items;
+    this.answered = true;
+    this.renewIfStale(r.car);
     this.sync(r.car);
   }
 
@@ -260,6 +295,8 @@ export class Garage {
       this.shop = shop;
       this.error = null;
       this.items = shop.items.filter((it) => it.owned).map((it) => it.id);
+      this.answered = true;
+      this.renewIfStale(undefined);
     } catch (err) {
       if (this.owner === owner) this.error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -301,6 +338,7 @@ export class Garage {
     const r = await this.accounts.claimItem(id);
     if (this.owner !== owner) return r;
     this.items = r.items;
+    this.answered = true;
     if (this.shop !== null) {
       // The claimed item is owned now (no longer claimable, nothing blocks it) until the shop answers again.
       const items = this.shop.items.map((it): ShopItemView => {

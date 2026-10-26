@@ -18,7 +18,7 @@ The default car is the dune runner (`dune`). Four more are reserved in the catal
 | `src/game/cosmetics.ts` | the catalog: `CarId`, menu order, price in host points (one table), status, the locale keys. Pure data, no imports; the community nodes' bundle must never import it (tested) |
 | `src/game/carSelection.ts` | the player's pick (`turbogol.car`), only a car the player is entitled to (`entitledCars()`: the default car, plus the cars a signed-in account owns); `previewCarsAllowed` gates the preview flags |
 | `src/game/garage.ts` | the account's cars and the hosts' shop on the client (`Garage`: the entitlement from the session's car and `/api/me/items`, equip through `POST /api/me/car`, claims) and the garage's view model (`garageView`) |
-| `src/net/cosmetics.ts` | each seat's car online (`seatCars`: the MatchDO Welcome's, a P2P room slot's, a community node match's `cars`) and the account routes' answers; outside the nodes' bundle |
+| `src/net/cosmetics.ts` | each seat's car online (`seatCars`: the MatchDO Welcome's, a P2P room slot's, a community node match's `cars` from the Worker, never the node's own Welcome) and the account routes' answers; outside the nodes' bundle |
 | `src/ui/screens/garage.ts` | the garage screen (Home > GARAGE): the cards, equip and claim, the host points, over the showroom |
 | `src/render/cars/types.ts` | the contract: `CarBodySpec`, `BodyKit`, `LiverySpec`, `WheelStyle`, `WheelPlacement`, `WheelAt` |
 | `src/render/cars/kit.ts` | `CAR_KIND`, the stock surfaces, team colours, `BOOST_NOZZLE_*`, the tyre numbers the shader compiles, the budgets and ranges, `tag` / `tagBy` / `loft` / `section` / `tube` / `mergeParts`, `resolveWheels` (where the wheels are drawn), the kit a body builds with and `buildBody` (merge, containment guard, translate) |
@@ -33,7 +33,9 @@ Who drives what: offline and in training the player drives their own pick (`Game
 bot drives the default car, and online each seat drives the car the server seated it with: the
 account session's (AccountsDO signs only a car the account still owns), carried like the player's
 name (`src/net/cosmetics.ts`, kept out of `src/net/protocol.ts` and the other files the nodes
-bundle). A signed-in player's pick follows the server's: equipping in the garage goes through
+bundle). On a community node's match only the Worker's `cars` count (the queue result's, the
+rejoin answer's): the node's own Welcome is its operator's to write, so a car in it is ignored. A
+signed-in player's pick follows the server's: equipping in the garage goes through
 `POST /api/me/car` first. In previews the `#car` flag sets the offline roster's cars, bots included
 (see Verifying).
 

@@ -55,8 +55,9 @@
  *                   other than 1000 or 4000 'replaced' (a newer socket of ours took the slot: final),
  *                   unless the client closed it or was kicked
  *   cars            a community node's match has its cars by slot in the queue result and the rejoin
- *                   answer only (src/net/cosmetics.ts MatchedCars): MatchAssignment.cars and
- *                   `matchCars`, which the Game reads with the Welcome (a MatchDO's Welcome has them)
+ *                   answer only (src/net/cosmetics.ts MatchedCars, nodeCarsOf: [] when every seat
+ *                   drives the default): MatchAssignment.cars and `matchCars`, which the Game reads
+ *                   instead of the node's Welcome (a MatchDO's Welcome has them, matchCars null)
  *
  * The HTTP and WebSocket implementations are injectable (fetch / WebSocket by default) so the
  * logic runs in node tests with fakes. No allocations on the per-message path beyond the
@@ -90,7 +91,7 @@ import {
   type SnapshotPacket,
   type Welcome,
 } from './protocol';
-import { carsOf, type CosmeticQueueResult } from './cosmetics';
+import { nodeCarsOf, type CosmeticQueueResult } from './cosmetics';
 import type { CarId } from '../game/cosmetics';
 
 export const GUEST_STORAGE_KEY = STORAGE_PREFIX + 'guest';
@@ -196,8 +197,9 @@ export interface MatchAssignment {
   wsUrl: string;
   /**
    * A community node's match: each slot's car (src/net/cosmetics.ts MatchedCars, null = the
-   * default car), which the node's own Welcome never carries. Absent for a MatchDO match (its
-   * Welcome has them) and when every seat drives the default car.
+   * default car; [] = every seat on the default car), always present on one (nodeCarsOf): the only
+   * cars of that match, a car in the node's own Welcome is never read. Absent for a MatchDO match
+   * (its Welcome has them).
    */
   cars?: Array<CarId | null>;
 }
@@ -470,8 +472,9 @@ export class NetClient {
   matchId: string | null = null;
   /**
    * The cars of the match being joined (MatchAssignment.cars): the last matched queue result's or
-   * rejoin answer's, null = none (every Welcome roster entry without a car drives the default
-   * one). OnlineSession.joinAssigned sets it for a match assigned elsewhere (a lobby, a P2P queue).
+   * rejoin answer's when it is a node match (seatCars then reads only these, never the node's
+   * Welcome), null = not one (the Welcome's roster entries carry theirs). OnlineSession.joinAssigned
+   * sets it for a match assigned elsewhere (a lobby, a P2P queue).
    */
   matchCars: Array<CarId | null> | null = null;
 
@@ -857,8 +860,9 @@ export class NetClient {
           this.allowReconnect = true;
           const out: ServerAssignment = { kind: 'server', matchId, ticket: q.ticket, wsUrl: q.wsUrl };
           if ((q as QueueResult).ranked === true) out.ranked = true;
-          // A node match's cars by slot (its node never sends them); a field of another shape is dropped.
-          const cars = carsOf((q as CosmeticQueueResult).cars);
+          // A node match's cars by slot, from the Worker ([] when all drive the default; the node's
+          // own Welcome is never read for them); a field of another shape is dropped.
+          const cars = nodeCarsOf(q);
           this.matchCars = cars ?? null;
           if (cars) out.cars = cars;
           return out;
@@ -1253,7 +1257,7 @@ export class NetClient {
     if (typeof q.ticket !== 'string' || typeof q.wsUrl !== 'string') throw new NetError('protocol', 'rejoin without ticket / wsUrl');
     this.matchId = q.matchId ?? matchId;
     // A node match's answer carries its cars again (NodeRegistryDO keeps them with the match).
-    const cars = carsOf(q.cars);
+    const cars = nodeCarsOf(q);
     this.matchCars = cars ?? null;
     return { matchId: this.matchId, ticket: q.ticket, wsUrl: q.wsUrl, ...(cars ? { cars } : {}) };
   }

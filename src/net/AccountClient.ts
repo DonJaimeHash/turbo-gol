@@ -296,6 +296,17 @@ export class AccountClient {
     return this.refresh();
   }
 
+  /**
+   * Re-sign the session now through the refresh cookie (AccountsDO signs the car the account drives
+   * now, src/net/cosmetics.ts): the Garage asks for it when an answer shows the session's car is no
+   * longer the account's (a maintainer's revoke, a pick in another tab), so the next queue seats the
+   * right one. Resolves null when signed out (or the cookie is gone: signed out then too).
+   */
+  renewSession(): Promise<AccountSession | null> {
+    if (this.account === null) return Promise.resolve(null);
+    return this.refresh();
+  }
+
   /** The server refused our session (401): refresh once. */
   async sessionRejected(): Promise<AccountSession | null> {
     if (this.account === null) return null;

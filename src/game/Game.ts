@@ -78,7 +78,8 @@
  * (`localCar`: carSelection.ts, only a car the player is entitled to: the Garage keeps that from
  * the account, src/game/garage.ts), the default car for every bot, and online each seat's car as
  * the roster says (src/net/cosmetics.ts seatCars: the MatchDO Welcome's, the room's slots', a node
- * match's assignment `cars`; applyOnlineRoster / applyP2PRoster build the views with them); in
+ * match's assignment `cars` only, never its node's Welcome; applyOnlineRoster / applyP2PRoster
+ * build the views with them); in
  * previews `#car=<id>[,<id>...]` sets the offline roster's cars, bots included (so a body's red
  * version can be looked at). All of them are Standard cars: a car is a look, never physics. A car
  * that changes on a roster already on screen (the pick or the entitlement: dressLocalCar; a rejoin's
@@ -224,7 +225,7 @@ import { STORAGE_PREFIX } from '../brand';
 import { CarSelection, previewCarsAllowed } from './carSelection';
 import { DEFAULT_CAR, isCarId, type CarId } from './cosmetics';
 import { Garage, type ShowroomFrame } from './garage';
-import { carsOf, seatCars, type CosmeticQueueResult } from '../net/cosmetics';
+import { nodeCarsOf, seatCars } from '../net/cosmetics';
 import { OnlineSession } from './OnlineSession';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
 import {
@@ -1293,8 +1294,8 @@ export class Game implements P2PGameHooks {
     this.setMode(mode);
     this.menuReturnAt = -1;
     this.setSession(online);
-    // A lobby's server match is a MatchDO's (its Welcome has the cars); a `cars` answer counts all the same.
-    const cars = carsOf((q as CosmeticQueueResult).cars);
+    // A lobby's server match is a MatchDO's (its Welcome has the cars); a node answer's would count (nodeCarsOf).
+    const cars = nodeCarsOf(q);
     online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl, ...(cars ? { cars } : {}) });
   }
 
@@ -1792,9 +1793,10 @@ export class Game implements P2PGameHooks {
    * like the host's, one addCar per roster entry in slot order (the ids must match: rs_load_state
    * refuses a different roster), the player at `welcome.slot`, no local bots (every other car is
    * driven by the host through the echoed inputs). Views / effects / scoreboard are rebuilt. Each
-   * seat's car (src/net/cosmetics.ts seatCars): its Welcome entry's (a MatchDO's), else `cars` for
-   * its slot (a community node's match: the queue result's or rejoin answer's, NetClient.matchCars),
-   * else the default car; every one is a Standard car all the same.
+   * seat's car (src/net/cosmetics.ts seatCars): with `cars` (a community node's match: the queue
+   * result's or rejoin answer's, NetClient.matchCars) its slot's there and nothing of the node's
+   * Welcome, else its Welcome entry's (a MatchDO's), else the default car; every one is a Standard
+   * car all the same.
    */
   applyOnlineRoster(w: Welcome, cars?: ReadonlyArray<CarId | null> | null): void {
     const sim = this.sim;

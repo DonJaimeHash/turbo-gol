@@ -1,6 +1,11 @@
 import { defineConfig } from 'vite';
 
-/** The local Worker's port (`wrangler dev`): 8787, or TG_API_PORT to run a second checkout beside it. */
+/**
+ * The local Worker's port (`wrangler dev`): 8787, or TG_API_PORT to run a second checkout beside it.
+ * Pair it with `npx wrangler dev --port <n> --host 127.0.0.1:<n>`: without --host the Worker hands
+ * out ws:// URLs on 8787 (wrangler.jsonc dev.host), so the match, room and lobby sockets would go to
+ * the other checkout (server/README.md "Run locally").
+ */
 const API_PORT = Number(process.env.TG_API_PORT) || 8787;
 
 export default defineConfig({

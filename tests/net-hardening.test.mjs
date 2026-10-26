@@ -24,6 +24,7 @@ const T = await import('../src/sim/types.ts');
 const { NetClient, NetError, CLOSE_REPLACED } = await import('../src/net/NetClient.ts');
 const { OnlineSession, HARD_RESYNC_TICKS } = await import('../src/game/OnlineSession.ts');
 const { TICK_MS } = await import('../src/net/ClockSync.ts');
+const { seatCars } = await import('../src/net/cosmetics.ts');
 
 const { MsgType, encodeJson, encodeSnapshot, encodePong, decodeInput, fnv1a32 } = P;
 const { STATE_BUFFER_FLOATS, H_TICK_COUNT, H_NUM_CARS, CARS_OFFSET, CAR_STRIDE, C_ID, C_TEAM, C_POS, BALL_OFFSET, B_POS, PACKED_INPUT_BYTES, TICK_DT } = T;
@@ -191,7 +192,10 @@ async function playingSession(routes = {}, { connecting = false, welcome = {}, p
     sim,
     hud: { netVisible: false },
     ticks: 0,
-    applyOnlineRoster() {},
+    rosterCalls: [],
+    applyOnlineRoster(w, cars) {
+      this.rosterCalls.push({ w, cars });
+    },
     afterRollback() {},
     startOnlineMatch() {},
     onOnlineEvent() {},
@@ -563,4 +567,30 @@ test('OnlineSession on a Durable Object: no early renewal and a refused quit is 
   await flush();
   assert.equal(s.issued(), 1);
   assert.deepEqual(s.auths, ['Bearer jwt-a1']);
+});
+
+test('cars on a community node\'s match: the Worker\'s list alone; a car the node writes in its own Welcome is never drawn', async () => {
+  const roster = [
+    { carId: 1, slot: 0, team: 0, name: 'Tester', kind: 'player', car: 'tero' },
+    { carId: 2, slot: 1, team: 1, name: 'Amigo', kind: 'player', car: 'condor' },
+  ];
+  const nodeQueue = (cars) => ({ '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm1', ticket: 'tkt', wsUrl: 'wss://node/ws/m1', node: true, ...(cars ? { cars } : {}) }) });
+  const welcome = { hostColo: 'node:sao-paulo-1', roster };
+  // The Worker seated the player on pampero and the other seat on the default car.
+  let s = await playingSession(nodeQueue(['pampero', null]), { welcome });
+  let call = s.game.rosterCalls.at(-1);
+  assert.deepEqual(seatCars(call.w.roster, call.cars), ['pampero', 'dune']);
+  s.session.leave();
+  // Every seat on the default car: the Worker sends no `cars`, and the node's cars still do not count.
+  s = await playingSession(nodeQueue(null), { welcome });
+  call = s.game.rosterCalls.at(-1);
+  assert.deepEqual(call.cars, []);
+  assert.deepEqual(seatCars(call.w.roster, call.cars), ['dune', 'dune']);
+  s.session.leave();
+  // A MatchDO's Welcome (no node: true on the answer) is the Worker's own: its cars are drawn.
+  s = await playingSession({}, { welcome: { roster } });
+  call = s.game.rosterCalls.at(-1);
+  assert.equal(call.cars, null);
+  assert.deepEqual(seatCars(call.w.roster, call.cars), ['tero', 'condor']);
+  s.session.leave();
 });

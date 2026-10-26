@@ -22,7 +22,7 @@ registerHooks({
 const { CARS, DEFAULT_CAR } = await import('../src/game/cosmetics.ts');
 const { CAR_PICK_KEY, CarSelection, entitledCars, setEntitledCars } = await import('../src/game/carSelection.ts');
 const { Garage, garageView } = await import('../src/game/garage.ts');
-const { carsOf, carsBySlot, seatCars, itemsAnswerOf, shopAnswerOf, claimAnswerOf, walletOf } = await import('../src/net/cosmetics.ts');
+const { carsOf, carsBySlot, nodeCarsOf, seatCars, itemsAnswerOf, shopAnswerOf, claimAnswerOf, walletOf } = await import('../src/net/cosmetics.ts');
 
 function memoryStorage(init = {}) {
   const m = new Map(Object.entries(init));
@@ -86,6 +86,13 @@ function fakeAccounts() {
       if (car !== DEFAULT_CAR && !server.items.includes(car)) throw Object.assign(new Error('That car is not yours yet'), { code: 'not_owned' });
       server.car = car;
       accounts.account = { ...accounts.account, car };
+      accounts.tell();
+      return accounts.account;
+    },
+    /** The refresh cookie re-signs the session with the car the server has now (AccountsDO refOf). */
+    async renewSession() {
+      calls.push('renew');
+      accounts.account = { ...accounts.account, session: accounts.account.session + "'", car: server.car };
       accounts.tell();
       return accounts.account;
     },
@@ -194,6 +201,57 @@ test('Garage entitlement: an answer for an account no longer signed in is droppe
   assert.equal(b.pick.current, 'tero');
 });
 
+test('Garage after a revoke: an answer without the session\'s car entitles only what is owned, renews the session once, and the pick and the seat agree on the default car', async () => {
+  // The items answer at sign-in already says the car went (revoked between the session and the answer).
+  const store = memoryStorage({ [CAR_PICK_KEY]: 'pampero' });
+  const { accounts, pick, garage } = makeGarage({ storage: store });
+  accounts.server.items = [];
+  accounts.server.car = DEFAULT_CAR;
+  accounts.signIn('a1', 'pampero');
+  assert.equal(pick.current, 'pampero', 'before any answer the session\'s car counts');
+  await settle();
+  assert.deepEqual(accounts.calls, ['items', 'renew']);
+  assert.equal(accounts.account.car, DEFAULT_CAR, 'the re-signed session seats the default car online');
+  assert.deepEqual(entitledCars(), ['dune']);
+  assert.equal(pick.current, 'dune');
+  assert.equal(garage.view(null).cars.find((c) => c.id === 'dune').state, 'equipped');
+
+  // The revoke lands after the items answered: the shop answer no longer lists it as owned.
+  const b = makeGarage({ storage: memoryStorage() });
+  b.accounts.server.items = ['pampero'];
+  b.accounts.server.car = 'pampero';
+  b.accounts.server.shop = { items: [shopItem('pampero')], wallet: wallet(0) };
+  b.accounts.signIn('a2', 'pampero');
+  await settle();
+  assert.deepEqual(b.accounts.calls, ['items'], 'nothing stale: no renewal');
+  assert.equal(b.pick.current, 'pampero');
+  b.accounts.server.items = [];
+  b.accounts.server.car = DEFAULT_CAR;
+  await b.garage.refresh();
+  await settle();
+  assert.deepEqual(b.accounts.calls, ['items', 'shop', 'renew']);
+  assert.equal(b.pick.current, 'dune');
+  assert.equal(b.accounts.account.car, DEFAULT_CAR);
+  const v = b.garage.view(null);
+  assert.deepEqual(v.cars.filter((c) => c.state === 'equipped').map((c) => c.id), ['dune'], 'one card is Equipped');
+  // A renewal the server does not answer (offline): asked once per session, the pick still the default car.
+  const c = makeGarage({ storage: memoryStorage() });
+  c.accounts.server.items = [];
+  c.accounts.renewSession = async () => (c.accounts.calls.push('renew'), Promise.reject(new Error('offline')));
+  c.accounts.signIn('a3', 'tero');
+  await settle();
+  await c.garage.refresh();
+  await settle();
+  assert.deepEqual(c.accounts.calls, ['items', 'renew', 'shop']);
+  assert.equal(c.pick.current, 'dune');
+});
+
+test('garageView: an equipped car that is not owned shows as the default car Equipped', () => {
+  const v = garageView({ signedIn: true, equipped: 'pampero', owned: [], shop: null, selected: null });
+  assert.deepEqual(v.cars.filter((c) => c.state === 'equipped').map((c) => c.id), ['dune']);
+  assert.equal(v.selected.id, 'dune');
+});
+
 test('Garage.equip: an account goes through the server (its session moves the pick); a refusal changes nothing; a guest only the default car', async () => {
   const { accounts, pick, garage, dressed } = makeGarage();
   accounts.server.items = ['pampero'];
@@ -256,7 +314,7 @@ test('Garage.refresh and claim: the shop and the wallet; a claimed car is owned 
 
 // ---- each seat's car online --------------------------------------------------------------------
 
-test('seatCars: the seat\'s own car (Welcome / room slot), else the node answer\'s for its slot, else the default car; slot order', () => {
+test('seatCars: a node match\'s cars from the Worker only, else the seat\'s own car (Welcome / room slot), else the default car; slot order', () => {
   // A MatchDO Welcome (roster entries in any order) and a P2P room's slots carry their own.
   const roster = [
     { slot: 1, kind: 'bot', name: 'Bot' },
@@ -266,15 +324,27 @@ test('seatCars: the seat\'s own car (Welcome / room slot), else the node answer\
   // A community node's match: the Welcome has no cars, the assignment's `cars` does.
   const nodeRoster = [{ slot: 0 }, { slot: 1 }, { slot: 2 }, { slot: 3 }];
   assert.deepEqual(seatCars(nodeRoster, ['tero', null, 'condor', null]), ['tero', 'dune', 'condor', 'dune']);
-  // The seat's own beats the answer's (both present: the Welcome is the match's own word).
-  assert.deepEqual(seatCars([{ slot: 0, car: 'carpincho' }, { slot: 1 }], ['tero', 'condor']), ['carpincho', 'condor']);
-  // Absent everywhere: every car the default one (an old server, an old page's answer).
+  // A node's Welcome is its operator's: a car in it never counts, the Worker's list alone does
+  // (an empty list: a node match where every seat drives the default car).
+  assert.deepEqual(seatCars([{ slot: 0, car: 'carpincho' }, { slot: 1, car: 'tero' }], ['pampero', null]), ['pampero', 'dune']);
+  assert.deepEqual(seatCars([{ slot: 0, car: 'tero' }, { slot: 1, car: 'condor' }], []), ['dune', 'dune']);
+  // Not a node match (null / absent): every seat's own, else the default (an old server, an old page's answer).
   assert.deepEqual(seatCars(nodeRoster, null), ['dune', 'dune', 'dune', 'dune']);
   assert.deepEqual(seatCars(nodeRoster), ['dune', 'dune', 'dune', 'dune']);
   // An id this page does not know, or a field of another shape, reads as the default car.
-  assert.deepEqual(seatCars([{ slot: 0, car: 'batmobile' }, { slot: 1, car: 42 }, { slot: 2, car: { id: 'tero' } }], ['tero', 'tero', 'tero']), ['tero', 'tero', 'tero'], 'junk seat cars fall through to the answer');
+  assert.deepEqual(seatCars([{ slot: 0, car: 'batmobile' }, { slot: 1, car: 42 }, { slot: 2, car: { id: 'tero' } }]), ['dune', 'dune', 'dune']);
+  assert.deepEqual(seatCars([{ slot: 0 }, { slot: 1 }, { slot: 2 }], ['batmobile', 7, 'tero']), ['dune', 'dune', 'tero']);
   assert.deepEqual(seatCars([{ slot: 0, car: 'batmobile' }]), ['dune']);
   assert.deepEqual(seatCars([{ slot: 0 }, { slot: 1 }], ['tero']), ['tero', 'dune'], 'a short answer: the rest default');
+});
+
+test('nodeCarsOf: a node match always has a list (the Worker\'s `cars`, else []), any other match none', () => {
+  assert.deepEqual(nodeCarsOf({ node: true, cars: ['tero', null] }), ['tero', null]);
+  assert.deepEqual(nodeCarsOf({ node: true }), [], 'every seat on the default car: the Worker leaves the field out');
+  assert.deepEqual(nodeCarsOf({ node: true, cars: ['tero', 'batmobile'] }), [], 'a field of another shape: the default for all, never the node\'s Welcome');
+  assert.equal(nodeCarsOf({ matchId: 'm', cars: ['tero'] }), undefined, 'a MatchDO match: its Welcome has them');
+  assert.equal(nodeCarsOf({ node: 'yes', cars: ['tero'] }), undefined);
+  assert.equal(nodeCarsOf(null), undefined);
 });
 
 test('carsOf / carsBySlot: a node answer\'s `cars` is up to six car ids or nulls, else dropped; absent when every seat drives the default', () => {

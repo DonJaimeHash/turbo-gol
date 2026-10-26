@@ -1226,8 +1226,8 @@ test('a community node match: its cars by slot ride on the queue result and the 
   assert.deepEqual(plain, { matchId: 'm2', ticket: 'T2', wsUrl: '/ws/m2' }, 'a MatchDO match: no cars field (its Welcome has them)');
   assert.equal(h.client.matchCars, null, 'a new queue forgets the last match cars');
   const junk = await h.client.queue('1v1', 'server');
-  assert.equal('cars' in junk, false, 'an unknown car id: the field is dropped, the match still joined');
-  assert.equal(h.client.matchCars, null);
+  assert.deepEqual(junk.cars, [], 'an unknown car id: the field is dropped (every seat on the default car, never the node\'s Welcome), the match still joined');
+  assert.deepEqual(h.client.matchCars, []);
   // The rejoin answer of a node match carries them again (the socket came back, or a reloaded page).
   const r = await h.client.rejoin('n1');
   assert.deepEqual(r, { matchId: 'n1', ticket: 'T9', wsUrl: 'wss://node/ws/n1', cars: ['tero', null, null, 'pampero'] });
@@ -1243,4 +1243,18 @@ test('queue: 409 active_match of a node match rejoins it with its cars on the as
   const a = await client.queue('1v1', 'server');
   assert.deepEqual(a, { kind: 'server', matchId: 'n7', ticket: 'T7', wsUrl: 'wss://node/ws/n7', cars: [null, 'condor'] });
   assert.deepEqual(client.matchCars, [null, 'condor']);
+});
+
+test('a community node match where every seat drives the default car (no `cars` field) still reads only the Worker\'s list: matchCars [], not null', async () => {
+  const h = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'n1', ticket: 'T1', wsUrl: 'wss://node/ws/n1', node: true }),
+    '/api/rejoin': () => jsonResponse(200, { status: 'matched', matchId: 'n1', ticket: 'T2', wsUrl: 'wss://node/ws/n1', node: true }),
+  });
+  const a = await h.client.queue('1v1', 'server');
+  assert.deepEqual(a, { kind: 'server', matchId: 'n1', ticket: 'T1', wsUrl: 'wss://node/ws/n1', cars: [] });
+  assert.deepEqual(h.client.matchCars, []);
+  h.client.matchCars = null;
+  assert.deepEqual((await h.client.rejoin('n1')).cars, []);
+  assert.deepEqual(h.client.matchCars, []);
 });

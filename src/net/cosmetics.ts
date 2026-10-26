@@ -20,8 +20,11 @@
  *   P2P room          RoomSlot.car (src/net/p2p/protocol.ts: that file is not bundled either)
  *   node match        `cars` by slot (MatchedCars) in the queue result and the rejoin answer: the
  *                     node itself never hears of cars (its assignment is unchanged, byte for byte)
- *   client rule       car of slot i = welcome.roster[i].car ?? slots[i].car ?? result.cars?.[i] ?? DEFAULT_CAR
- *                     (seatCars; the node answer's `cars` ride on NetClient's MatchAssignment)
+ *   client rule       a node match (nodeCarsOf: the Worker's answer said node: true): car of slot i =
+ *                     result.cars?.[i] ?? DEFAULT_CAR, whatever the node's own Welcome says (its
+ *                     operator writes it: a car there would skip the claim). Any other match: car
+ *                     of slot i = welcome.roster[i].car ?? slots[i].car ?? DEFAULT_CAR (seatCars;
+ *                     the node answer's `cars` ride on NetClient's MatchAssignment and matchCars)
  *
  * The account routes' answers (inventory, the car pick, the shop and a claim) are read leniently
  * here too (walletOf, itemsAnswerOf, shopAnswerOf, claimAnswerOf: AccountClient), for the garage.
@@ -75,18 +78,32 @@ export function carsBySlot(size: number, seats: ReadonlyArray<{ slot: number; ca
 }
 
 /**
+ * The cars of a queue result or rejoin answer from the Worker: a community node's match (node:
+ * true) always gets a list, `cars` when it reads as one, else [] (every seat on the default car: the
+ * Worker leaves the field out then, or sent one of another shape). Undefined for any other match (a
+ * MatchDO's Welcome carries its own), whatever `cars` it has.
+ */
+export function nodeCarsOf(q: unknown): Array<CarId | null> | undefined {
+  const o = fields(q);
+  return o.node === true ? (carsOf(o.cars) ?? []) : undefined;
+}
+
+/**
  * The client rule (Game.applyOnlineRoster / applyP2PRoster): the car of each seat in slot order,
  * from `seats` (a Welcome's roster entries or a room's slots, { slot, car? } in any order) and a
- * node answer's `cars` (absent or null: none): the seat's own car, else the answer's for its slot,
- * else the default car. An id this page does not know reads as the default car, like a field of
- * another shape. A bot of the matchmaker's fill never carries one; a seat its player left keeps
- * theirs (the server keeps it on the bot that takes over, so no car changes body mid-match).
+ * node match's `cars` (nodeCarsOf; absent or null: not a node match). With `cars`, only the
+ * Worker's list counts and a seat's own `car` is ignored: that Welcome is the node's, which its
+ * operator writes, and a car there would put anyone in a car nobody claimed. Without, the seat's own
+ * car (a MatchDO Welcome's, a room slot's: the Worker wrote both). Else the default car. An id this
+ * page does not know reads as the default car, like a field of another shape. A bot of the
+ * matchmaker's fill never carries one; a seat its player left keeps theirs (the server keeps it on
+ * the bot that takes over, so no car changes body mid-match).
  */
 export function seatCars(seats: ReadonlyArray<{ slot: number; car?: unknown }>, cars?: ReadonlyArray<CarId | null> | null): CarId[] {
   return seats
     .slice()
     .sort((a, b) => a.slot - b.slot)
-    .map((s) => seatCar(s.car) ?? seatCar(cars?.[s.slot]) ?? DEFAULT_CAR);
+    .map((s) => (cars ? seatCar(cars[s.slot]) : seatCar(s.car)) ?? DEFAULT_CAR);
 }
 
 // ---- the account routes: inventory and the hosts' shop (nodes/control-plane/shop.ts) -----------------
