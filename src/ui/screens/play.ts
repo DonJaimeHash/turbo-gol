@@ -64,13 +64,13 @@ export function homeScreen(menu: Menu): Screen {
     h(
       'div.mn-home-tiles',
       null,
-      tile('mn-tile-hero', '▶', t('home.play'), t('home.playSub'), () => menu.open('play'), null),
-      tile('', '◎', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
-      tile('', '▲', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
-      tile('', '◆', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
-      tile('', '⚙', t('home.settings'), t('home.settingsSub'), () => menu.host.openSettings(() => menu.refocus())),
+      tile('mn-tile-hero', 'play', t('home.play'), t('home.playSub'), () => menu.open('play'), null),
+      tile('', 'training', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
+      tile('', 'leaderboard', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
+      tile('', 'profile', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
+      tile('', 'settings', t('home.settings'), t('home.settingsSub'), () => menu.host.openSettings(() => menu.refocus())),
       // Static: render() rebuilds only `side`, so keyboard / controller focus here survives a refresh.
-      tile('mn-tile-lang', '🌐', t('home.language'), LOCALES[language()].name, () => openLanguagePicker(menu)),
+      tile('mn-tile-lang', 'globe', t('home.language'), LOCALES[language()].name, () => openLanguagePicker(menu)),
     ),
     side,
   );
@@ -113,10 +113,10 @@ export function playScreen(menu: Menu): Screen {
     h(
       'div.mn-play-tiles',
       null,
-      tile('mn-tile-casual', '◐', t('play.casual'), t('play.casualSub'), () => menu.open('casual'), casualSub),
-      tile('mn-tile-ranked', '★', t('play.ranked'), t('play.rankedSub'), () => menu.open('ranked'), rankedTag),
-      tile('mn-tile-custom', '⌂', t('play.custom'), t('play.customSub'), () => menu.open('custom'), customSub),
-      tile('mn-tile-offline', '◇', t('play.friendly'), t('play.friendlySub'), () => menu.open('friendly')),
+      tile('mn-tile-casual', 'ball', t('play.casual'), t('play.casualSub'), () => menu.open('casual'), casualSub),
+      tile('mn-tile-ranked', 'trophy', t('play.ranked'), t('play.rankedSub'), () => menu.open('ranked'), rankedTag),
+      tile('mn-tile-custom', 'friends', t('play.custom'), t('play.customSub'), () => menu.open('custom'), customSub),
+      tile('mn-tile-offline', 'bot', t('play.friendly'), t('play.friendlySub'), () => menu.open('friendly')),
     ),
     h('div.mn-play-foot', null, rankedSub),
   );

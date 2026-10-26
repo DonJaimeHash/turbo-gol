@@ -44,7 +44,7 @@ export function trainingScreen(menu: Menu): Screen {
 
   // Experimental free play (unlocked players only): the tile, the Rules cycler, a summary, Edit presets.
   const exp = (): Menu['host']['experimental'] => menu.host.experimental;
-  const expTile = tile('mn-tile-exp', '◈', t('training.expFreePlay').toLocaleUpperCase(language()), t('training.expFreePlayText'), () => menu.host.startTraining(FREEPLAY_ID, { rules: exp().store.lastUsed() }), t('training.tagExp'));
+  const expTile = tile('mn-tile-exp', 'lab', t('training.expFreePlay').toLocaleUpperCase(language()), t('training.expFreePlayText'), () => menu.host.startTraining(FREEPLAY_ID, { rules: exp().store.lastUsed() }), t('training.tagExp'));
   const cyclerSlot = h('div.mn-exp-cycler');
   const summary = h('p.mn-note.mn-exp-summary');
   const edit = navButton('mn-btn mn-exp-edit', t('training.editPresets'), () =>
@@ -89,7 +89,7 @@ export function trainingScreen(menu: Menu): Screen {
     'div.mn-training',
     null,
     head,
-    h('div.mn-training-top', null, tile('mn-tile-hero', '◎', FREEPLAY_NAME.toLocaleUpperCase(language()), t('training.freePlayText'), () => menu.host.startTraining(FREEPLAY_ID)), expBlock),
+    h('div.mn-training-top', null, tile('mn-tile-hero', 'training', FREEPLAY_NAME.toLocaleUpperCase(language()), t('training.freePlayText'), () => menu.host.startTraining(FREEPLAY_ID)), expBlock),
     grid,
   );
   const draw = (records: TrainingRecords): void => {

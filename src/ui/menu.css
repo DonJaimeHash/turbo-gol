@@ -446,6 +446,14 @@
   background: var(--surface-3);
   border: 1px solid var(--edge-hi);
 }
+/* The sprite icons (src/ui/components/icons.ts): one em, in the text colour. */
+.mn-icon {
+  display: block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  overflow: visible;
+}
 .mn-tile-title {
   min-width: 0;
   overflow: hidden;
