@@ -6,6 +6,7 @@ import { customScreen, lobbyCreateScreen, lobbyScreen } from './screens/custom';
 import { trainingScreen } from './screens/training';
 import { profileScreen } from './screens/profile';
 import { leaderboardScreen } from './screens/leaderboard';
+import { garageScreen } from './screens/garage';
 
 export { Menu } from './Menu';
 export type { MenuHost, MenuConfig, SearchRequest, SearchView } from './Menu';
@@ -24,5 +25,6 @@ export function createMenu(host: MenuHost, container: HTMLElement): Menu {
   m.register('training', trainingScreen);
   m.register('profile', profileScreen);
   m.register('leaderboard', leaderboardScreen);
+  m.register('garage', garageScreen);
   return m;
 }

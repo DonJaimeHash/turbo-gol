@@ -2,7 +2,8 @@
  * Home, the Play hub and the queue screens: Casual (several playlists at once, region, P2P or
  * server), Competitive (accounts only: rank per playlist, placement, abandon ban) and Friendly
  * (offline against the AI). Play -> Casual / Competitive / Custom lobbies / Friendly; Training
- * lives next to Play. The home screen also holds the language picker (src/i18n.ts).
+ * and the Garage (src/ui/screens/garage.ts) live next to Play. The home screen also holds the
+ * language picker (src/i18n.ts).
  */
 import { h, setChildren, clock } from '../dom';
 import { PLAYLISTS } from '../../net/account';
@@ -66,6 +67,7 @@ export function homeScreen(menu: Menu): Screen {
       null,
       tile('mn-tile-hero', '▶', t('home.play'), t('home.playSub'), () => menu.open('play'), null),
       tile('', '◎', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
+      tile('mn-tile-garage', '⬢', t('home.garage'), t('home.garageSub'), () => menu.open('garage')),
       tile('', '▲', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
       tile('', '◆', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
       tile('', '⚙', t('home.settings'), t('home.settingsSub'), () => menu.host.openSettings(() => menu.refocus())),
