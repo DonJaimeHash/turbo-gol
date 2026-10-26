@@ -62,7 +62,8 @@
  * backend has no timestamp queries). Off by default: the per-frame resolve allocates a promise.
  *
  * Dynamic resolution (tiers with `dynamicResolution`): loop frames pass their rAF timestamp to
- * render() (a match's, not the menus' paced ones); a DynamicResolution controller
+ * render() (a match's, not the menus' paced ones nor those under the player's frame limit: the
+ * Game resets the scale to 1 as the menus open, resetResolutionScale); a DynamicResolution controller
  * (dynamicResolution.ts) turns the intervals (and the GPU time with `#stats`) into a scale between
  * the tier's minResolutionScale and 1. Post tiers apply it to the scene pass (the composite
  * upsamples the scene; bloom, the vignette and FXAA run at full size; the ultra passes that read
@@ -591,6 +592,22 @@ export class Renderer {
     this.lighting.setTheme(theme);
     this.world.setTheme(theme);
     if (this.post !== null) this.post.setTheme(themeWorld(theme));
+  }
+
+  /**
+   * Back to full resolution with a fresh controller (its refresh estimate stays) when dynamic
+   * resolution had lowered it: the Game calls it as the menus open, whose paced frames feed the
+   * controller nothing (render), so the scale the match left would stay where the menus' own light
+   * frames used to raise it. Nothing when the scale is already 1.
+   */
+  resetResolutionScale(): void {
+    if (!this.dynamicResolution || this.dynRes.scale >= 1) return;
+    this.dynRes.reset(this.spec.minResolutionScale);
+    this.lastFrameAt = -1;
+    if (this.post === null) return;
+    // As a decision of the controller: the direct tier's canvas size, the post tiers' scene pass.
+    if (this.post.output === 'direct') this.resize();
+    else this.post.setResolutionScale(1);
   }
 
   /**

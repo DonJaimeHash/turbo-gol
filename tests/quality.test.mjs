@@ -19,7 +19,7 @@ registerHooks({
 });
 
 const { QUALITIES, TIERS, tier, parseQuality, nextQuality, lowerQuality, pixelRatio, startingQuality, needsReload, drawsFrame, SUPERLOW_PIXELS, LOW_MEMORY_GB, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
-const { HELD_FRAME, MENU_FPS, MENU_FPS_LITE, MENU_COVER_LITE, FPS_CAPS, parseFpsCap, frameCap, sceneFps, drawsScene, runsLogic } = await import('../src/render/quality.ts');
+const { HELD_FRAME, MENU_FPS, MENU_FPS_LITE, MENU_COVER_LITE, FPS_CAPS, parseFpsCap, frameCap, sceneFps, drawsScene, runsLogic, FramePacer, pauseHolds } = await import('../src/render/quality.ts');
 const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld, lookOf, lightsOf: themeLights } = await import('../src/render/theme.ts');
 const en = (await import('../src/locales/en.ts')).default;
 const es = (await import('../src/locales/es.ts')).default;
@@ -280,6 +280,26 @@ function drawnRate(hz, draws, n = 600) {
   }
   return (drawn / n) * hz;
 }
+/** The refreshes between drawn frames of a fresh FramePacer at `fps` on `hz` over `secs` (jitter as drawnRate), and the rate. */
+function paced(hz, fps, secs = 30) {
+  const pacer = new FramePacer();
+  const counts = new Set();
+  let lastI = -1;
+  let first = -1;
+  let lastT = 0;
+  let drawn = 0;
+  for (let i = 0; i < Math.round(hz * secs); i++) {
+    const t = 1000 + i * (1000 / hz) + (i % 3 === 0 ? 0.3 : -0.2);
+    if (!pacer.draws(t, fps)) continue;
+    if (lastI >= 0) counts.add(i - lastI);
+    if (first < 0) first = t;
+    lastT = t;
+    lastI = i;
+    drawn++;
+  }
+  return { fps: ((drawn - 1) * 1000) / (lastT - first), counts: [...counts].sort((a, b) => a - b) };
+}
+const DISPLAYS = [50, 59.94, 60, 60.05, 75, 90, 100, 119.88, 120, 144, 165, 240];
 
 test('frameCap: the lower of the tier cap and the player limit, 0 = none; parseFpsCap keeps 30 / 60 only', () => {
   assert.equal(frameCap(0, 0), 0);
@@ -316,25 +336,106 @@ test('sceneFps: a match at its cap, the menus at 30 (20 on super low or a mostly
   assert.equal(pace({ still: true, cover: 'partial' }), HELD_FRAME);
 });
 
-test('drawsScene: the paced rates on 60 / 50 / 120 Hz, nothing while held unless something changed', () => {
-  const at = (fps) => (t, last) => drawsScene(t, last, fps, false);
-  assert.ok(Math.abs(drawnRate(60, at(30)) - 30) < 0.5, `menus at 60 Hz: ${drawnRate(60, at(30))}`);
-  assert.ok(Math.abs(drawnRate(60, at(20)) - 20) < 0.5, `super low menus at 60 Hz: ${drawnRate(60, at(20))}`);
-  assert.ok(Math.abs(drawnRate(120, at(20)) - 20) < 0.5, `120 Hz: ${drawnRate(120, at(20))}`);
-  assert.ok(Math.abs(drawnRate(50, at(20)) - 50 / 3) < 0.5, `50 Hz: every third vsync, ${drawnRate(50, at(20))}`);
-  assert.equal(drawnRate(60, at(0)), 60, 'a match without a cap');
-  assert.equal(drawnRate(60, at(HELD_FRAME)), 0, 'held');
-  assert.equal(drawsScene(5000, 4990, HELD_FRAME, true), true, 'a change under the held frame draws it once');
-  assert.equal(drawsScene(5000, 4990, 20, true), true);
-  assert.equal(drawsScene(5000, -1, HELD_FRAME, false), false, 'held from the first frame: only a change draws');
+test('pauseHolds: only an offline pause holds the scene; online the match goes on (its pause, its whistle)', () => {
+  assert.equal(pauseHolds(true, false, false), true, 'an offline match or training, paused');
+  assert.equal(pauseHolds(false, false, false), false);
+  assert.equal(pauseHolds(true, true, false), false, 'the menus pace their own scene');
+  // Online: a pause, and the session's 'ended' state (the whistle, the menus not back yet: still an
+  // active session, though not inMatch) with the pause up.
+  assert.equal(pauseHolds(true, false, true), false, 'an online pause, or the whistle under it');
+  assert.equal(pace({ still: pauseHolds(true, false, true), cap: TIERS.superlow.maxFps, lite: true }), 30, 'its end drawn at the cap');
 });
 
-test('runsLogic: a live match keeps its cap, the menus and an offline pause run every animation frame', () => {
-  const logic = (cap, live) => (t, last) => runsLogic(t, last, cap, live);
-  assert.ok(Math.abs(drawnRate(60, logic(30, true)) - 30) < 0.5, 'super low match: 30, as drawsFrame');
-  assert.equal(drawnRate(60, logic(0, true)), 60);
-  assert.equal(drawnRate(60, logic(30, false)), 60, 'super low menus: every frame');
-  assert.equal(drawnRate(144, logic(30, false)), 144);
+test('FramePacer: 20 / 30 / 60 fps on average on any display (its own rate when slower)', () => {
+  for (const hz of DISPLAYS) {
+    for (const fps of [MENU_FPS_LITE, MENU_FPS, 60]) {
+      const r = paced(hz, fps);
+      assert.ok(Math.abs(r.fps - Math.min(fps, hz)) < 0.5, `${fps} fps on ${hz} Hz: ${r.fps.toFixed(2)}`);
+    }
+  }
+  // Where drawsFrame's whole refreshes fall short (quality.ts FramePacer).
+  assert.ok(Math.abs(drawnRate(165, (t, last) => drawsFrame(t, last, 30), 3300) - 27.5) < 0.5, 'drawsFrame: 27.5 on 165 Hz');
+  assert.ok(Math.abs(drawnRate(75, (t, last) => drawsFrame(t, last, 60), 1500) - 37.5) < 0.5, 'drawsFrame: 37.5 on 75 Hz');
+});
+
+test('FramePacer: the two nearest counts of refreshes, one on a display a hair off a multiple of the rate', () => {
+  assert.deepEqual(paced(165, 30).counts, [5, 6]);
+  assert.deepEqual(paced(144, 30).counts, [4, 5]);
+  assert.deepEqual(paced(50, 20).counts, [2, 3]);
+  assert.deepEqual(paced(144, 60).counts, [2, 3]);
+  assert.deepEqual(paced(75, 60).counts, [1, 2]);
+  // Locked to the display (a strict deadline would skip or double a refresh every few seconds there).
+  const locked = [
+    [59.94, 30, 2],
+    [60, 30, 2],
+    [60.05, 30, 2],
+    [59.94, 20, 3],
+    [60.05, 20, 3],
+    [119.88, 30, 4],
+    [120, 60, 2],
+    [60, 60, 1],
+    [60.05, 60, 1],
+    [240, 30, 8],
+  ];
+  for (const [hz, fps, k] of locked) assert.deepEqual(paced(hz, fps, 60).counts, [k], `${fps} fps on ${hz} Hz: every ${k} refreshes`);
+  assert.deepEqual(paced(50, 60).counts, [1], 'a display slower than the rate: every frame');
+});
+
+test('FramePacer: the first frame, a forced one and a stall start the deadline over; a clock that went back draws', () => {
+  const p = new FramePacer();
+  const v = 1000 / 60;
+  assert.equal(p.draws(1000, 30), true, 'the first frame');
+  assert.equal(p.draws(1000 + v, 30), false);
+  assert.equal(p.draws(1000 + 2 * v, 30), true);
+  assert.equal(p.draws(1000 + 3 * v, 30, true), true, 'forced (a change of pace, a redraw)');
+  assert.equal(p.draws(1000 + 4 * v, 30), false, 'one period from the forced frame');
+  assert.equal(p.draws(1000 + 5 * v, 30), true);
+  // A stall of half a second: one frame, then the rate from it (no burst to catch up).
+  let t = 1500 + 5 * v;
+  assert.equal(p.draws(t, 30), true);
+  assert.equal(p.draws((t += v), 30), false);
+  assert.equal(p.draws((t += v), 30), true);
+  assert.equal(p.draws(t - 1000, 30), true, 'a timestamp that went back');
+  for (let i = 0; i < 5; i++) assert.equal(p.draws(t + i * v, 0), true, 'fps 0: every frame');
+  p.reset();
+  assert.equal(p.draws(t + 5 * v, 30), true, 'after reset');
+});
+
+test('drawsScene: the paced rates through a FramePacer, the tier cap in whole refreshes, nothing while held unless something changed', () => {
+  const at = (fps) => {
+    const pacer = new FramePacer();
+    return (t, last) => drawsScene(t, last, fps, false, pacer);
+  };
+  assert.ok(Math.abs(drawnRate(60, at(30)) - 30) < 0.5, `menus at 60 Hz: ${drawnRate(60, at(30))}`);
+  assert.ok(Math.abs(drawnRate(60, at(20)) - 20) < 0.5, `super low menus at 60 Hz: ${drawnRate(60, at(20))}`);
+  assert.ok(Math.abs(drawnRate(50, at(20), 1000) - 20) < 0.5, `50 Hz: ${drawnRate(50, at(20), 1000)}`);
+  assert.ok(Math.abs(drawnRate(165, at(30), 3300) - 30) < 0.5, `165 Hz: ${drawnRate(165, at(30), 3300)}`);
+  assert.equal(drawnRate(60, at(0)), 60, 'a match without a cap');
+  assert.equal(drawnRate(60, at(HELD_FRAME)), 0, 'held');
+  // No pacer: the tier's own cap over a match not being played, in whole refreshes as drawsFrame.
+  const whole = (fps) => (t, last) => drawsScene(t, last, fps, false, null);
+  assert.ok(Math.abs(drawnRate(50, whole(30)) - 25) < 0.5, `whole refreshes on 50 Hz: ${drawnRate(50, whole(30))}`);
+  assert.equal(drawnRate(60, whole(0)), 60);
+  const p = new FramePacer();
+  assert.equal(drawsScene(5000, 4990, HELD_FRAME, true, p), true, 'a change under the held frame draws it once');
+  assert.equal(drawsScene(5000, 4990, 20, true, p), true);
+  assert.equal(drawsScene(5010, 5000, 20, false, p), false, 'a forced frame starts the period');
+  assert.equal(drawsScene(5000, -1, HELD_FRAME, false, p), false, 'held from the first frame: only a change draws');
+  assert.equal(drawsScene(5000, -1, HELD_FRAME, false, null), false);
+  assert.equal(drawsScene(5010, 5000, 20, false, p), true, 'held resets the pacer: its next paced frame draws');
+});
+
+test("runsLogic: a live match keeps its cap (the tier's in whole refreshes, the player's at its average), the menus and an offline pause run every frame", () => {
+  const logic = (cap, live, pacer) => (t, last) => runsLogic(t, last, cap, live, pacer);
+  assert.ok(Math.abs(drawnRate(60, logic(30, true, null)) - 30) < 0.5, 'super low match: 30, as drawsFrame');
+  assert.ok(Math.abs(drawnRate(50, logic(30, true, null)) - 25) < 0.5, 'super low match on 50 Hz: 25, as it always was');
+  assert.equal(drawnRate(60, logic(0, true, null)), 60);
+  for (const [hz, cap] of [[144, 60], [165, 60], [75, 60], [144, 30], [165, 30], [50, 30]]) {
+    const r = drawnRate(hz, logic(cap, true, new FramePacer()), hz * 20);
+    assert.ok(Math.abs(r - cap) < 0.5, `the player's ${cap} fps limit on ${hz} Hz: ${r.toFixed(2)}`);
+  }
+  assert.equal(drawnRate(60, logic(30, false, null)), 60, 'super low menus: every frame');
+  assert.equal(drawnRate(144, logic(30, false, new FramePacer())), 144);
 });
 
 test('parseQuality reads the tier names and the numbers saved before the third tier', () => {

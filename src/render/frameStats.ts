@@ -3,11 +3,13 @@
  * console): the drawn frame rate over the last second (its slowest frame and its mean) and over
  * the last five, the animation frames per second the loop ran (the input is read on every one of
  * them under the menus while the scene is drawn slower or held: Game.ts frame), the stalls since
- * the warm-up (animation frames 50 and 100 ms or more after the previous one: a paced or held
- * scene is not a stall), and the CPU milliseconds per drawn frame of the ball prediction (mean
- * and the worst frame: it is spiky, a full re-prediction after a touch), the bots, the physics
- * step and the render call. Fed by the Game only when `#diag` is on (`diagStats` is null
- * otherwise: one null test per measured call, no clock read). Pure: the caller passes the times.
+ * the warm-up (frames 50 and 100 ms or more after the previous one: between drawn frames in a
+ * match, so a frame its cap should have drawn and did not counts, as it always did; between
+ * animation frames while the scene is paced or held, which is no stall itself), and the CPU
+ * milliseconds per drawn frame of the ball prediction (mean and the worst frame: it is spiky, a
+ * full re-prediction after a touch), the bots, the physics step and the render call. Fed by the
+ * Game only when `#diag` is on (`diagStats` is null otherwise: one null test per measured call, no
+ * clock read). Pure: the caller passes the times.
  */
 
 export type CpuKind = 'pred' | 'bots' | 'step' | 'render';
@@ -21,7 +23,7 @@ export interface FrameStatsView {
   readonly fpsAvg5: number;
   /** Animation frames per second over the last whole second (drawn or not). */
   readonly rafAvg1: number;
-  /** Animation frames over 50 / 100 ms after the previous one since the warm-up (markWarm). */
+  /** Stalls since the warm-up (markWarm): frames over 50 / 100 ms after the previous one (frame's `paced`). */
   readonly over50: number;
   readonly over100: number;
   /** CPU ms per drawn frame over the last second (mean), and the worst frame of the prediction. */
@@ -30,7 +32,8 @@ export interface FrameStatsView {
 }
 
 export class FrameStats {
-  private last = -1;
+  /** The frame the next stall is measured from (frame: a drawn one, or any while paced), -1 = none. */
+  private stallFrom = -1;
   private lastDrawn = -1;
   private warm = false;
   private over50 = 0;
@@ -71,17 +74,21 @@ export class FrameStats {
 
   /**
    * An animation frame at `t` (ms, the rAF timestamp), `drawn` or not (a match's skipped frames
-   * under the tier's cap, the menus' paced scene, a held frame). A drawn one closes the CPU buckets.
+   * under its cap, the menus' paced scene, a held frame). A drawn one closes the CPU buckets.
+   * `paced`: the scene is drawn slower than the loop runs or held (the menus, an offline pause),
+   * so a stall is the gap since the previous animation frame; else (a match: every frame its cap
+   * lets through is drawn) since the previous drawn one, and the cap's skipped frames are no mark
+   * (one missed vsync of super low's 30 fps on 60 Hz is a 50-67 ms frame, its refreshes 33 apart).
    */
-  frame(t: number, drawn = true): void {
-    if (this.last >= 0) {
-      const dt = t - this.last;
+  frame(t: number, drawn = true, paced = false): void {
+    if (paced || drawn) {
+      const dt = this.stallFrom >= 0 ? t - this.stallFrom : 0;
       if (dt > 0 && this.warm) {
         if (dt > 50) this.over50++;
         if (dt > 100) this.over100++;
       }
+      this.stallFrom = t;
     }
-    this.last = t;
     if (this.w1Start < 0) this.w1Start = t;
     if (this.w5Start < 0) this.w5Start = t;
     this.w1Rafs++;

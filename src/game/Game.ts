@@ -50,10 +50,13 @@
  * again only when something under it changes: `redraw`) under an opaque layer (a menu modal, the
  * settings screen, the rotate-your-phone screen), in an offline pause and, under the menus, with
  * prefers-reduced-motion or GamePrefs.menuSceneAnimated off. The menus say what they leave of the
- * scene (`setMenuCover`, src/ui/Menu.ts). A match being played keeps its cap for everything; the
- * menus and an offline pause still read the input and run their logic on every animation frame,
- * so a short pad press is never lost between two drawn frames. Paced frames give dynamic
- * resolution no interval (Renderer.render).
+ * scene (`setMenuCover`, src/ui/Menu.ts). The menus' rates and the player's limit keep their
+ * average on any display (quality.ts FramePacer: 30 on 144 / 165 Hz), the tier's own cap counts
+ * whole refreshes as it always did (drawsFrame). A match being played keeps its cap for
+ * everything; the menus and an offline pause still read the input and run their logic on every
+ * animation frame, and an online pause reads the pad on the frames between its cap's, so a short
+ * pad press is never lost between two drawn frames. Paced frames give dynamic resolution no
+ * interval (Renderer.render), so the menus start at full resolution (resetResolutionScale).
  *
  * Super low (TierSpec.maxFps, cpuLite): a match runs at most 30 frames a second (`drawsFrame`:
  * the skipped animation frames do nothing, the next drawn one carries their time), the HUD runs
@@ -162,7 +165,7 @@ import { Renderer, type GpuFailure } from '../render/Renderer';
 import { tierPrefsAfter } from '../render/bootTier';
 import { diagSources, diagStats, enableDiagStats } from '../render/frameStats';
 import { emulatedDevice, pageFlags, withoutTierFlags } from '../render/hashFlags';
-import { HELD_FRAME, drawsScene, frameCap, menuQualities, needsReload, parseFpsCap, parseQuality, runsLogic, sceneFps, type FpsCap, type Quality, type SceneCover } from '../render/quality';
+import { FramePacer, HELD_FRAME, drawsScene, frameCap, menuQualities, needsReload, parseFpsCap, parseQuality, pauseHolds, runsLogic, sceneFps, type FpsCap, type Quality, type SceneCover } from '../render/quality';
 import {
   BACKGROUND_LOSS_MS,
   FALLBACK_WINDOW_MS,
@@ -638,6 +641,9 @@ export class Game implements P2PGameHooks {
   private lastDrawAt = -1;
   /** rAF time (ms) of the last frame that ran the game's logic (a match's frames under its cap do nothing), -1 = none. */
   private lastLogicAt = -1;
+  /** The deadlines of the player's frame limit in a match (logic) and of the scene's paced rates (quality.ts FramePacer). */
+  private readonly logicPace = new FramePacer();
+  private readonly scenePace = new FramePacer();
   /** Loop seconds since the last drawn frame (the views' dt when it is drawn); 0 while the frame is held. */
   private drawAcc = 0;
   /** The menus' orbit clock (s): it runs on drawn menu frames only, so a held frame resumes where it stopped. */
@@ -2912,9 +2918,16 @@ export class Game implements P2PGameHooks {
     // right. The menus and an offline pause run their logic on every animation frame whatever the
     // scene's rate below, so a short press of a pad never falls between two drawn frames.
     const live = session !== null ? session.inMatch : !inMenu && !this.paused;
-    const cap = frameCap(this.renderer.spec.maxFps, this.fpsCap);
-    if (!runsLogic(t, this.lastLogicAt, cap, live)) {
-      if (diagStats !== null) diagStats.frame(t, false);
+    const tierCap = this.renderer.spec.maxFps;
+    const cap = frameCap(tierCap, this.fpsCap);
+    // The tier's own cap counts whole refreshes as it always did (drawsFrame: super low's 30 is 25
+    // on 50 Hz); a lower player limit keeps its average (FramePacer: 60 on 144 Hz, not 48).
+    const ownCap = cap === tierCap;
+    if (!runsLogic(t, this.lastLogicAt, cap, live, ownCap ? null : this.logicPace)) {
+      // An online pause (live: the match goes on at its cap) still reads the pad in between: the
+      // edges wait in Input's actions for the next frame of logic, so a tap in its menu is not lost.
+      if (this.paused) this.input.readEdges();
+      if (diagStats !== null) diagStats.frame(t, false, false);
       return;
     }
     this.lastLogicAt = t;
@@ -2948,7 +2961,7 @@ export class Game implements P2PGameHooks {
       // Behind the loading screen: the work in progress owns the renderer, nothing reacts to input.
       this.input.consumeActions();
       this.redraw = true; // what the load changed (tier, stadium, views) shows on the next frame
-      if (diagStats !== null) diagStats.frame(t, false);
+      if (diagStats !== null) diagStats.frame(t, false, true);
       return;
     }
     this.processActions();
@@ -2959,7 +2972,7 @@ export class Game implements P2PGameHooks {
     // whatever changed under it (`redraw`) and a pipeline warm-up frame.
     const menus = this.menuShown; // processActions may have opened or left them
     const cover = this.sceneCover();
-    const still = this.paused && !menus && !(session !== null && session.inMatch); // online the match goes on
+    const still = pauseHolds(this.paused, menus, session !== null); // online the match goes on, its whistle ('ended') too
     const fps = sceneFps({
       cover,
       cap,
@@ -2972,17 +2985,28 @@ export class Game implements P2PGameHooks {
     const key = (fps + 2) * 16 + (cover === 'none' ? 0 : cover === 'partial' ? 4 : 8) + (menus ? 2 : 0) + (still ? 1 : 0);
     const changed = key !== this.sceneKey;
     this.sceneKey = key;
+    // Into the menus: their paced scene feeds dynamic resolution nothing, so the scale the match
+    // left would stay. Full resolution, as the menus reached on their own before (the next match
+    // lowers it again under its own load); before the draw, so a resize's redraw is this one.
+    if (changed && menus) this.renderer.resetResolutionScale();
     if (fps === HELD_FRAME) this.drawAcc = 0;
     else this.drawAcc += dt;
-    const draw = drawsScene(t, this.lastDrawAt, fps, changed || this.redraw || this.warmFrames > 0);
-    if (diagStats !== null) diagStats.frame(t, draw);
+    // A match being played draws every frame its cap let through (rate 0); the tier's cap over
+    // nothing else in whole refreshes (no pacer: drawsFrame); the menus' rates and the player's
+    // limit at their average (scenePace).
+    const rate = live && fps === cap ? 0 : fps;
+    const draw = drawsScene(t, this.lastDrawAt, rate, changed || this.redraw || this.warmFrames > 0, cover === 'none' && ownCap ? null : this.scenePace);
+    // A paced or held scene's stalls are between animation frames, a match's between drawn ones (frameStats.ts).
+    if (diagStats !== null) diagStats.frame(t, draw, fps !== cap);
     if (draw) {
       this.lastDrawAt = t;
       this.redraw = false;
       const drawDt = this.drawAcc > MAX_FRAME_DT ? MAX_FRAME_DT : this.drawAcc;
       this.drawAcc = 0;
-      // A paced or held frame's interval says nothing about the load: no rAF time for dynamic resolution.
-      this.render(drawDt, menus, fps === cap ? t : undefined);
+      // A paced or held frame's interval says nothing about the load: no rAF time for dynamic
+      // resolution. Nor under the player's limit: its frames alternate between two counts of
+      // refreshes (FramePacer), which the controller would take for late ones; it holds its scale.
+      this.render(drawDt, menus, fps === cap && ownCap ? t : undefined);
     }
     this.frameLogic(dt, menus);
     this.updateFps(now, draw);
@@ -3215,7 +3239,6 @@ export class Game implements P2PGameHooks {
       hud.setBoost(cur[po + C_BOOST]);
       hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
     }
-    if (this.training !== null) this.updateTrainingHud();
 
     const ds = diagStats;
     const tr = ds !== null ? performance.now() : 0;
@@ -3243,6 +3266,8 @@ export class Game implements P2PGameHooks {
     const cur = this.cur;
     const po = this.playerOff;
     this.updateScoreboard(inMenu);
+    // Training's panel (its setters skip unchanged values): the pause's Unlimited boost shows at once over a held frame.
+    if (this.training !== null) this.updateTrainingHud();
     // On-screen controls (touch screens): up while a match is played in touch mode, the HUD in its
     // touch layout while that match is on screen (paused too). The last input used sets the mode; a
     // gamepad press turns it off (Input counts them, hasGamepad only says connected).

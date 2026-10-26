@@ -7,15 +7,15 @@
  *   superlow  ("Super low") very weak devices: a 1 GB Android TV on a Mali-G31 (docs/visuals/REWORK.md
  *          "Super low"), set-top boxes, the oldest phones. The direct path of low at about 640x360
  *          (a 230k pixel budget below 1:1, no dynamic resolution: the compositor upscales a fixed
- *          size), 30 fps at most (20 under the menus: sceneFps), no MSAA, no shadow maps, and
- *          nothing built that costs: no world bake (a gradient sky dome from the theme's colours,
- *          no live layer, no environment map,
- *          no fog, no IndexedDB: world/liteWorld.ts), no crowd (the stands are painted), no
- *          netting, lamp heads without halos, Lambert / unlit materials for the cars, the ball and
- *          the goals, a small turf texture instead of the blade field, 128 particles kept small on
- *          screen, and the game's own CPU trims (`cpuLite`). Its backend and world are chosen
- *          when the renderer is created (WebGL2 by default, `preferWebGL2`), so switching into or
- *          out of it reloads the page (`needsReload`); low / high / ultra switch in place.
+ *          size), 30 fps at most (20 under the menus: sceneFps, FramePacer), no MSAA, no shadow
+ *          maps, and nothing built that costs: no world bake (a gradient sky dome from the theme's
+ *          colours, no live layer, no environment map, no fog, no IndexedDB: world/liteWorld.ts),
+ *          no crowd (the stands are painted), no netting, lamp heads without halos, Lambert /
+ *          unlit materials for the cars, the ball and the goals, a small turf texture instead of
+ *          the blade field, 128 particles kept small on screen, and the game's own CPU trims
+ *          (`cpuLite`). Its backend and world are chosen when the renderer is created (WebGL2 by
+ *          default, `preferWebGL2`), so switching into or out of it reloads the page
+ *          (`needsReload`); low / high / ultra switch in place.
  *   low    phones, tablets, integrated GPUs, WebGPU compatibility mode, small-memory devices and the
  *          WebGL2 fallback's default: renders STRAIGHT to the canvas (`output: 'direct'`: no HDR
  *          target, no MRT, no post pass; exposure, grade, vignette, tone curve and sRGB run at the
@@ -468,13 +468,22 @@ export interface ScenePace {
   readonly cap: number;
   /** The tier's CPU trims (TierSpec.cpuLite: super low). */
   readonly lite: boolean;
-  /** Nothing in the scene moves: an offline pause (the sim stopped, the views and the camera frozen). */
+  /** Nothing in the scene moves: an offline pause (pauseHolds: the sim stopped, the views and the camera frozen). */
   readonly still: boolean;
   /** The menus' stadium may move: GamePrefs.menuSceneAnimated, and no prefers-reduced-motion (the orbit stops). */
   readonly animated: boolean;
   /** A touch screen (coarse pointer), and the share of the screen the menus hide (coverShare; 0 elsewhere). */
   readonly phone: boolean;
   readonly covered: number;
+}
+
+/**
+ * ScenePace.still: a pause holds the scene in an offline match or training (the sim stopped, the
+ * views and the camera frozen), not under the menus; never with a session active (`online`), whose
+ * match goes on under its pause and after its whistle ('ended', until the menus come back). Pure.
+ */
+export function pauseHolds(paused: boolean, menus: boolean, online: boolean): boolean {
+  return paused && !menus && !online;
 }
 
 /**
@@ -490,25 +499,81 @@ export function sceneFps(p: ScenePace): number {
   return frameCap(p.cap, p.lite || (p.phone && p.covered > MENU_COVER_LITE) ? MENU_FPS_LITE : MENU_FPS);
 }
 
+/** FramePacer: the share of each frame's lateness (or earliness) that moves the next deadline. */
+const PACE_PULL = 0.1;
+
 /**
- * Whether the animation frame at `now` (ms) runs the game's logic (input, sim, session) when the
- * last one that did was at `last` (ms, < 0 = none): a match being played (`live`) keeps its frame
- * cap (drawsFrame: the frames in between do nothing, the next one carries their time); the menus
- * and an offline pause run every animation frame, so a pad press is read whatever the scene's
- * rate (a press shorter than one drawn frame is not lost). Pure.
+ * A frame rate that keeps its average on any display (the menus' 30 / 20 fps, the player's
+ * GamePrefs.fpsCap: Game.ts frame). drawsFrame rounds every wait up to whole refreshes, which
+ * loses up to one refresh a frame (27.5 fps for 30 on 165 Hz, 16.7 for 20 on 50 Hz, 37.5 for 60
+ * on 75 Hz). Here an animation frame is drawn when it is the refresh nearest the deadline (within
+ * half the last rAF interval of it), and the next deadline is one period after that one, moved
+ * PACE_PULL of the way toward the frame actually drawn: elsewhere the frames alternate between
+ * the two nearest counts of refreshes and the average holds (30 on 144 / 165 Hz: 5 and 6
+ * refreshes on 165; 20 on 50 Hz: 2 and 3); on a display a hair off a multiple of the rate
+ * (59.94 / 60.05 / 119.88 Hz) the pull locks it to the display (30.03 fps on 60.05 Hz, every
+ * second refresh), where a strict deadline would skip or double a refresh every few seconds.
+ * More than a period late (a stall, a frame rate the display cannot give) starts the deadline
+ * over from the frame drawn. Call it on every animation frame where it paces (it reads the
+ * display's period from them).
  */
-export function runsLogic(now: number, last: number, cap: number, live: boolean): boolean {
-  return !live || drawsFrame(now, last, cap);
+export class FramePacer {
+  private due = -1;
+  private prev = -1;
+
+  /** Forget the deadline: the next frame is drawn and starts a new one. */
+  reset(): void {
+    this.due = -1;
+  }
+
+  /**
+   * Whether the animation frame at `now` (ms) is drawn at `fps` (0 or less: every frame); `force`
+   * draws it and starts the deadline over from it (a change of pace, a redraw).
+   */
+  draws(now: number, fps: number, force = false): boolean {
+    const gap = this.prev >= 0 ? now - this.prev : 0;
+    this.prev = now;
+    if (!(fps > 0)) {
+      this.due = -1;
+      return true;
+    }
+    const period = 1000 / fps;
+    const lead = this.due - now;
+    // Not yet: more than half a refresh before the deadline (two periods or more before it: a clock that went back).
+    if (!force && this.due >= 0 && lead > 0.5 * Math.min(gap > 0 ? gap : 0, period) && lead < 2 * period) return false;
+    this.due = force || this.due < 0 || lead < -period || lead >= 2 * period ? now + period : this.due + period - PACE_PULL * lead;
+    return true;
+  }
 }
 
 /**
- * Whether the animation frame at `now` (ms) draws the scene at `fps` (sceneFps) when the last
- * drawn one was at `last` (ms, < 0 = none): as drawsFrame, never for HELD_FRAME, always when
- * `redraw` (something under the held frame changed: the canvas size, the cover, a rebuilt view). Pure.
+ * Whether the animation frame at `now` (ms) runs the game's logic (input, sim, session) when the
+ * last one that did was at `last` (ms, < 0 = none): a match being played (`live`) keeps its frame
+ * cap (the frames in between do nothing, the next one carries their time); the tier's own cap
+ * (super low's 30: `pacer` null) in whole refreshes as drawsFrame, so a match runs as it always
+ * did, a lower GamePrefs.fpsCap through `pacer` at its average. The menus and an offline pause run
+ * every animation frame, so a pad press is read whatever the scene's rate (a press shorter than
+ * one drawn frame is not lost).
  */
-export function drawsScene(now: number, last: number, fps: number, redraw: boolean): boolean {
-  if (redraw) return true;
-  return fps !== HELD_FRAME && drawsFrame(now, last, fps);
+export function runsLogic(now: number, last: number, cap: number, live: boolean, pacer: FramePacer | null): boolean {
+  if (!live) return true;
+  return pacer === null ? drawsFrame(now, last, cap) : pacer.draws(now, cap);
+}
+
+/**
+ * Whether the animation frame at `now` (ms) draws the scene at `fps` (sceneFps, 0 = every frame):
+ * never for HELD_FRAME, always when `redraw` (something under the held frame changed: the canvas
+ * size, the cover, a rebuilt view; a change of pace); else through `pacer` (the menus' rates, the
+ * player's limit: their average), or with `pacer` null in whole refreshes from the last drawn
+ * frame at `last` (ms, < 0 = none) as drawsFrame (the tier's own cap).
+ */
+export function drawsScene(now: number, last: number, fps: number, redraw: boolean, pacer: FramePacer | null): boolean {
+  if (fps === HELD_FRAME) {
+    pacer?.reset();
+    return redraw;
+  }
+  if (pacer === null) return redraw || drawsFrame(now, last, fps);
+  return pacer.draws(now, fps, redraw);
 }
 
 /** The tier below `q` (ultra -> high -> low -> superlow), null below super low. */

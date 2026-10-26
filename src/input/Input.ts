@@ -43,7 +43,8 @@
  *
  * Per frame: `beginFrame()` polls the gamepad once (navigator.getGamepads() allocates) and every
  * `sample()` of that frame reuses it; `latchEdges()` turns presses made while a menu was closing
- * into "already held" so they fire no one-shot edge on the first tick.
+ * into "already held" so they fire no one-shot edge on the first tick; `readEdges()` polls and
+ * samples on a frame that runs no logic, keeping the edges for the next one.
  *
  * Mouse: the camera swivel is a VIRTUAL STICK. Each tick the mouse delta (pixels × k, where
  * sensitivity 5 ≈ a 300 px swipe for full deflection) is added to a 2D vector clamped to unit
@@ -1014,6 +1015,17 @@ export class Input {
   latchEdges(): void {
     this.sample(this.scratch);
     this.consumeActions();
+  }
+
+  /**
+   * Poll the gamepad and sample once into a scratch, keeping the edges: for an animation frame
+   * that runs no logic while a menu is up over a match that keeps its frame cap (Game.ts frame: an
+   * online pause on super low). The edges wait in `actions` / `padActions` for the next frame's
+   * consumeActions, so a press shorter than one frame of logic still reaches the menu.
+   */
+  readEdges(): void {
+    this.beginFrame();
+    this.sample(this.scratch);
   }
 
   /** Ignore jump until it is released (so the button press that closed a menu does not jump). */

@@ -1152,7 +1152,7 @@ test('dispose removes listeners, cancels a pending rebind and exits pointer lock
 
 // ---- UI at rest (Game.ts frame): the menus read the pad on every animation frame ----------------
 
-const { runsLogic, drawsScene, sceneFps, TIERS } = await import('../src/render/quality.ts');
+const { runsLogic, drawsScene, sceneFps, FramePacer, TIERS } = await import('../src/render/quality.ts');
 
 /**
  * Drive Input like Game.frame on a 60 Hz display for `presses` D-pad taps of `ms` each (start phases
@@ -1164,6 +1164,7 @@ function menuLoop(ms, presses, readEvery) {
   const pad = makePad();
   const { input, out } = setup({ pad });
   const fps = sceneFps({ cover: 'partial', cap: TIERS.superlow.maxFps, lite: true, still: false, animated: true, phone: false, covered: 0 });
+  const pacer = new FramePacer();
   const frame = 1000 / 60;
   const gap = 300; // between taps
   const starts = Array.from({ length: presses }, (_, i) => 100 + i * gap + (i * 7.3) % frame);
@@ -1176,8 +1177,8 @@ function menuLoop(ms, presses, readEvery) {
     const down = starts.some((s) => t >= s && t < s + ms);
     if (down) press(pad, GP.DPAD_DOWN);
     else release(pad, GP.DPAD_DOWN);
-    const draw = drawsScene(t, lastDraw, fps, false);
-    const logic = readEvery ? runsLogic(t, lastLogic, TIERS.superlow.maxFps, false) : draw;
+    const draw = drawsScene(t, lastDraw, fps, false, pacer);
+    const logic = readEvery ? runsLogic(t, lastLogic, TIERS.superlow.maxFps, false, null) : draw;
     if (draw) {
       lastDraw = t;
       drawn++;
@@ -1201,4 +1202,42 @@ test('menus at 20 fps (super low): every D-pad tap of 20-60 ms moves the focus o
   // The same taps read only on the 20 fps drawn frames (the old loop's cadence, slower): lost ones.
   const old = menuLoop(30, 40, false);
   assert.ok(old.edges < 40, `drawn-frame reads saw ${old.edges} of 40`);
+});
+
+/**
+ * The same taps in an online pause on super low (Game.ts frame): the match goes on at its 30 fps
+ * cap (runsLogic live, the tier's cap in whole refreshes), each frame of logic samples the pad (the
+ * session's ticks) and the pause menu reads the edges; on the frames between, `between` = true
+ * reads the pad with readEdges (today's loop), false does nothing (before). Returns the edges seen.
+ */
+function onlinePauseLoop(ms, presses, between) {
+  const pad = makePad();
+  const { input, out } = setup({ pad });
+  const frame = 1000 / 60;
+  const gap = 300;
+  const starts = Array.from({ length: presses }, (_, i) => 100 + i * gap + (i * 7.3) % frame);
+  const end = 100 + presses * gap + 200;
+  let lastLogic = -1;
+  let edges = 0;
+  for (let t = 0; t < end; t += frame) {
+    const down = starts.some((s) => t >= s && t < s + ms);
+    if (down) press(pad, GP.DPAD_DOWN);
+    else release(pad, GP.DPAD_DOWN);
+    if (!runsLogic(t, lastLogic, TIERS.superlow.maxFps, true, null)) {
+      if (between) input.readEdges();
+      continue;
+    }
+    lastLogic = t;
+    input.beginFrame();
+    input.sample(out);
+    if (input.actions.menuDown) edges++;
+    input.consumeActions();
+  }
+  return edges;
+}
+
+test('online pause at 30 fps (super low): readEdges between the frames of logic keeps every 20-60 ms D-pad tap', () => {
+  for (const ms of [20, 30, 40, 50, 60]) assert.equal(onlinePauseLoop(ms, 40, true), 40, `${ms} ms taps`);
+  const before = onlinePauseLoop(20, 40, false);
+  assert.ok(before < 40, `logic frames alone saw ${before} of 40`);
 });
