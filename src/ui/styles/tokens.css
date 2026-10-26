@@ -125,18 +125,20 @@
   --mn-red: var(--danger);
   --mn-green: var(--ok);
   /* The old menus' stage veil (src/ui/menu.css .mn): darker at the bars so text on the bare stage
-     reads over the scene; super low flattens it (style.css). The Tablero shell uses --scrim. */
+     reads over the scene; super low makes it opaque (style.css). The Tablero shell uses --scrim. */
   --mn-backdrop: linear-gradient(180deg, rgba(5, 7, 13, 0.92) 0%, rgba(5, 7, 13, 0.55) 22%, rgba(5, 7, 13, 0.55) 70%, rgba(5, 7, 13, 0.95) 100%);
 
   /* ---- Type -------------------------------------------------------------------------------------
      Display (italic capitals: hero, screen titles, results, big clocks) and Heading (upright
      capitals: sections, tiles, buttons, tabs) use --font-display and are always uppercase: the
      file has no lower case, and a mixed string would fall back letter by letter. Body and Label
-     keep the system stack. Weights stop at 700 (no face goes higher; 800 / 900 only meant a
-     synthetic bold). The fallback stack is condensed first, without Impact; #widetext
-     (style.css) swaps both for plain Arial, which measures like Android's Roboto. */
-  --font-body: 'Bahnschrift', 'DIN Condensed', 'Avenir Next Condensed', 'Roboto Condensed', 'sans-serif-condensed', 'Arial Narrow', system-ui, sans-serif;
-  --font-display: 'TG Display', 'Bahnschrift', 'TG Display Condensed Fallback', 'TG Display Wide Fallback', var(--font-body);
+     keep the system stack they always had, without Impact (plan §1.2.3: Roboto on Android, San
+     Francisco on Apple; a condensed body face there would be DIN Condensed, which ships Bold
+     only). Weights stop at 700 (no face goes higher; 800 / 900 only meant a synthetic bold). The
+     display fallback is condensed first, also without Impact; #widetext (style.css) swaps both
+     for plain Arial, which measures like Android's Roboto. */
+  --font-body: 'Bahnschrift', 'Segoe UI Variable Display', 'Arial Narrow', system-ui, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'TG Display', 'Bahnschrift', 'TG Display Condensed Fallback', 'TG Display Wide Fallback', 'DIN Condensed', 'Avenir Next Condensed', 'Roboto Condensed', 'sans-serif-condensed', 'Arial Narrow', system-ui, sans-serif;
   --font: var(--font-body);
   --font-mono: 'Cascadia Mono', 'Consolas', 'SF Mono', Menlo, ui-monospace, monospace;
   /* The scale at each class's reference view (1 rem = 16 px there; the root scale arrives with the
@@ -232,6 +234,20 @@
     --t-title: 1.25rem;
     --t-heading: 1rem;
     --t-body: 0.9375rem;
+    --t-small: 0.875rem;
+    --t-label: 0.875rem;
+  }
+}
+
+/* Phone portrait (the Vertical class, 390 x 844): menus only (the match asks to turn the phone). */
+@media (orientation: portrait) and (max-width: 600px) {
+  :root {
+    --t-hero: 2.5rem;
+    --t-display: 1.75rem;
+    --t-numeral: 3.5rem;
+    --t-title: 1.25rem;
+    --t-heading: 1rem;
+    --t-body: 1rem;
     --t-small: 0.875rem;
     --t-label: 0.875rem;
   }

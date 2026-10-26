@@ -242,13 +242,7 @@
   visibility: hidden;
 }
 
-/* Debug readouts (F3) under the small buttons. Without debug the fps readout stays hidden here
-   (style.css's later `.hud-fps` display wins over its own `display: none`, and the readout would
-   show through the PAUSE button). */
-.tc-on .hud-root:not(.hud-debug) .hud-fps {
-  display: none;
-}
-
+/* Debug readouts (F3) under the small buttons (hidden without debug: style.css .hud-fps). */
 .tc-on .hud-fps {
   top: calc(var(--safe-top) + clamp(16px, 4vh, 24px) + clamp(48px, 12vh, 60px) + 8px);
 }

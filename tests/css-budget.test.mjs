@@ -90,6 +90,59 @@ function rules(text) {
   return out;
 }
 
+/** Every innermost rule of a sheet with its declarations: [{ selector, body }]. */
+const blocks = (text) => [...stripComments(text).matchAll(/([^{}]*)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1].trim().replace(/\s+/g, ' '), body: m[2] }));
+
+test('the type scale has every class of the plan: PC, short screens, phone landscape, phone portrait, TV', () => {
+  const tokens = stripComments(css.get('src/ui/styles/tokens.css'));
+  const roles = ['t-hero', 't-display', 't-numeral', 't-title', 't-heading', 't-body', 't-small', 't-label'];
+  const scope = (head) => {
+    const at = tokens.indexOf(head);
+    assert.ok(at >= 0, head);
+    let depth = 0;
+    for (let i = tokens.indexOf('{', at); i < tokens.length; i++) {
+      if (tokens[i] === '{') depth++;
+      else if (tokens[i] === '}' && --depth === 0) return tokens.slice(at, i);
+    }
+    return '';
+  };
+  for (const head of [':root {', '@media (orientation: landscape) and (max-height: 500px)', '@media (orientation: portrait) and (max-width: 600px)', 'html.tg-tv {']) {
+    const body = scope(head);
+    for (const r of roles) assert.match(body, new RegExp(`--${r}:`), `${head} ${r}`);
+  }
+  assert.match(scope('@media (max-height: 600px) and (min-width: 900px)'), /--t-hero:/);
+});
+
+test('one pressed state: the menus, the HUD (pause and settings) and training squeeze to .97', () => {
+  const all = [...css.values()].flatMap(blocks);
+  for (const target of ['.mn [data-nav]:active', '.hud-pause-btn:active', '.hud-settings-action:active', '.hud-choice-opt:active', '.trn-btn:active']) {
+    const hit = all.find((b) => b.selector.split(',').some((sel) => sel.trim().startsWith(target)) && /transform:\s*scale\(0?\.97\)/.test(b.body));
+    assert.ok(hit, target);
+  }
+});
+
+test('a scroller never cuts the focus ring: every vertical scroller declares a scroll padding', () => {
+  const bad = [];
+  for (const [f, text] of css) {
+    for (const b of blocks(text)) {
+      if (!/(?:^|;)\s*overflow(?:-y)?:\s*(?:auto|scroll)/.test(b.body)) continue;
+      if (b.selector === '.overlay-detail') continue; // the loading screen's error text: nothing to focus
+      if (!/scroll-padding/.test(b.body)) bad.push(`${f}: ${b.selector}`);
+    }
+  }
+  assert.deepEqual(bad, []);
+});
+
+test('the debug readout (F3) stays hidden in a match: only .hud-debug shows it (B15)', () => {
+  for (const [f, text] of css) {
+    for (const b of blocks(text)) {
+      if (!b.selector.split(',').some((sel) => /\.hud-fps$/.test(sel.trim()))) continue;
+      const display = /(?:^|;)\s*display:\s*([\w-]+)/.exec(b.body);
+      if (display && display[1] !== 'none') assert.match(b.selector, /\.hud-debug /, `${f}: ${b.selector}`);
+    }
+  }
+});
+
 test('hover only where a pointer really hovers: every :hover sits in @media (hover: hover)', () => {
   const bad = [];
   for (const [f, text] of css) {
@@ -124,10 +177,12 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 });
 
 // Within about 1 % of what Vite's minifier writes (comments, spaces, last semicolons and leading
-// zeros out). The cap steps down as the plan's PRs land: 76 KB here (the built sheet was 69.1 KB
-// before PR 1, which adds the tokens, the focus ring and the font faces: 73.3 KB), then 70 KB, the
-// plan's §2.7 budget, once PR 10 deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css.
-const CSS_BUDGET = 76 * 1024;
+// zeros out). Over the plan's §2.7 budget of 70 KB for now, an open decision for the owner: Vite's
+// sheet was 69.1 kB before PR 1, which adds the tokens, the focus ring, the pressed states and the
+// font faces (74.3 kB built, 75,157 B by this measure). The cap is that plus about 0.6 KB, so nothing
+// grows unnoticed, and steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB)
+// and PR 15 menu.css.
+const CSS_BUDGET = 74 * 1024;
 
 test(`the CSS stays within ${CSS_BUDGET / 1024} KB minified`, () => {
   let total = 0;

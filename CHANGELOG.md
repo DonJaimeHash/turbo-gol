@@ -126,7 +126,12 @@ All notable changes to Turbogol are documented here. The format follows
 - Super low ("Súper bajo"): the focused button of the pause menu, Settings and the training pack
   summary was hard to see from the couch; it has the same ring as everywhere else. The match HUD
   keeps a one-pixel shadow under its text (BOOST, the clock, the countdown read over a bright pitch;
-  the BOOST label is white), every panel is opaque and menu transitions are off.
+  the BOOST label is white), every panel is opaque, the menus are drawn on a solid dark page instead
+  of over the stadium (lighter for the TV), and menu transitions are off.
+- The fps / draw-call readout no longer shows in the top right corner of every match: only F3 (or
+  `#stats`) turns it on, as intended.
+- The BLU tag of the scoreboard is readable: dark text on the team blue (it was white on a light
+  blue, under the contrast minimum).
 - In the pause menu, B on a controller and Backspace no longer throw you out of the match (online
   and in Competitive too, where leaving counts as an abandon): like Esc and Start, they go back to
   the match. Only the QUIT button leaves, and online it still asks a second time. Inside the pause

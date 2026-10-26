@@ -179,7 +179,10 @@ function searchButton(menu: Menu, kind: 'casual' | 'ranked', start: () => void):
   const refresh = (): void => {
     const v = menu.host.searchView();
     el.textContent = v.active ? (v.kind === kind ? cancel : cancelOther) : idle;
+    // CANCEL is no lime primary (its hover / pressed lime would outrank the red and leave white text
+    // on lime, menu.css); FIND MATCH is again.
     el.classList.toggle('mn-btn-cancel', v.active);
+    el.classList.toggle('mn-btn-primary', !v.active);
   };
   return { el, refresh };
 }

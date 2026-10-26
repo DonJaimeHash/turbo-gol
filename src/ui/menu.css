@@ -5,7 +5,7 @@
    src/ui/styles/focus.css. Hover only where a pointer can hover (@media (hover: hover)). */
 
 /* The stage veil over the live scene: --mn-backdrop, one static gradient darker at the bars (no
-   tints, no blur; one flat colour on super low). */
+   tints, no blur; an opaque page on super low, style.css). */
 .mn {
   position: absolute;
   inset: 0;
@@ -155,12 +155,16 @@
 }
 
 /* ---- stage / bottom --------------------------------------------------------------------------- */
+/* The scrollers (this one, .mn-lobbies, .mn-board, .mn-modal) keep a focused control's ring (6 px
+   out) and heel (15 px under it, focus.css) inside the scroll box: FocusNav scrolls the focus in
+   with block 'nearest' (nav.ts:108), flush with the edge without a scroll padding. */
 .mn-stage {
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--brand-glow) transparent;
   padding: 22px calc(var(--safe-right) + 22px) 22px calc(var(--safe-left) + 22px);
+  scroll-padding-block: 16px 24px;
 }
 
 .mn-screen {
@@ -530,7 +534,7 @@
 }
 .mn-home-tiles {
   display: grid;
-  gap: 12px;
+  gap: 16px; /* clears the focus heel (15 px under a tile) */
 }
 .mn-home-side {
   padding: 16px;
@@ -555,7 +559,7 @@
 .mn-play-tiles {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 .mn-play-tiles .mn-tile {
   min-height: 130px;
@@ -1145,7 +1149,7 @@
 .mn-packs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 .mn-pack-col {
   display: grid;
@@ -1309,6 +1313,7 @@
   gap: 4px;
   max-height: 58vh;
   overflow-y: auto;
+  scroll-padding-block: 16px;
 }
 .mn-board-row {
   display: grid;
@@ -1393,6 +1398,7 @@
   width: min(560px, 100%);
   max-height: 90vh;
   overflow-y: auto;
+  scroll-padding-block: 16px 24px;
   padding: 22px;
   border-radius: var(--r-panel);
   background: var(--surface-1);

@@ -567,7 +567,7 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   uniforms and wheel / pad instance buffers past the uniform-buffer limit so every car shares its
   programs (`SHARED_INSTANCING_CAPACITY`).
 - **CPU** (`cpuLite`): `html.tg-superlow` takes the shadows and decorative transitions and
-  animations off by class prefix and makes every panel opaque (nothing blurs the canvas on any tier
+  animations off by class prefix and makes every panel and the menus' shell opaque (nothing blurs the canvas on any tier
   since the Tablero tokens: ARCHITECTURE.md "UI tokens"), the boost and speed readouts update at 10 Hz, the audio has no convolver
   room, the ball prediction refreshes every 8 ticks (the bots read it by age; the wasm's 720-tick
   horizon is unchanged), and going online shows one line ("Super low: online matches may not run

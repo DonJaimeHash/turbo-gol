@@ -58,8 +58,13 @@ html:not(.tg-touch) .trn-summary-card .trn-btn-primary::after {
 }
 
 /* ---- Rows: the bar on the left ------------------------------------------------------------- */
+/* Stacked controls closer than the heel's 15 px (a training pack column, a cycler row) are rows. */
 html:not(.tg-touch) .mn .mn-lobby-row.mn-focus::after,
 html:not(.tg-touch) .mn .mn-lobby-row:focus-visible::after,
+html:not(.tg-touch) .mn .mn-pack.mn-focus::after,
+html:not(.tg-touch) .mn .mn-pack:focus-visible::after,
+html:not(.tg-touch) .mn .mn-cycle.mn-focus::after,
+html:not(.tg-touch) .mn .mn-cycle:focus-visible::after,
 html:not(.tg-touch) .hud-pause-menu > .hud-pause-btn.hud-focus::after,
 html:not(.tg-touch) .hud-pause-row.hud-focus .hud-pause-btn.hud-focus::after,
 html:not(.tg-touch) .hud-settings-row.hud-focus::after,

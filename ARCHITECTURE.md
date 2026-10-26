@@ -936,22 +936,29 @@ imported first by `src/style.css`:
   blurred) and `--scrim`. Nothing in `src/` uses `backdrop-filter` (each one re-reads and blurs the
   canvas every frame): `tests/css-budget.test.mjs` fails on one.
 * **Type.** Display and Heading roles (titles, buttons, tabs, numerals; always capitals) use
-  `--font-display`; Body and Label keep the condensed system stack `--font-body` (no Impact).
-  Weights stop at 700. The scale `--t-hero ... --t-label` per class (PC, short screens, phone
-  landscape, `html.tg-tv`) is in rem for the shell's root scale (PR 4).
+  `--font-display`; Body and Label keep the system stack they always had, `--font-body` (Bahnschrift
+  on Windows, Roboto on Android, San Francisco on Apple; no Impact). Weights stop at 700. The scale
+  `--t-hero ... --t-label` per class (PC, short screens, phone landscape, phone portrait,
+  `html.tg-tv`) is in rem for the shell's root scale (PR 4).
 * **Space, radii, shadows, layers, motion:** `--sp-1..8`, `--r-slot / key / tile / panel / pill`,
   `--shadow-sheet` (static, sheets only), `--z-*` (the order of the HUD, menus, settings, anti-bot,
   rotate screen and loading screen), `--dur-*` / `--ease*` (transform and opacity only).
 * **Focus** (`src/ui/styles/focus.css`): a 3 px white outline 3 px out, an `--ink` ring in the gap
   (a spread-only shadow that super low keeps) and a lime heel skewed -20 degrees under the box;
-  rows (lists, settings rows, button stacks, one-stop groups) get a lime bar on their left inside
-  edge instead. Never on a touch screen; 4 px and a 6 px heel under `html.tg-tv`.
-* **Hover** only inside `@media (hover: hover)`; one pressed state (`scale(.97)`); one
+  rows (lists, settings rows, button stacks, one-stop groups, training packs, cyclers) get a lime
+  bar on their left inside edge instead. Never on a touch screen; 4 px and a 6 px heel under
+  `html.tg-tv`. Every vertical scroller (`.mn-stage`, `.mn-lobbies`, `.mn-board`, `.mn-modal`,
+  `.hud-menu`, `.hud-settings-body`) has a scroll padding of 16 px (24 under a heel), since the focus
+  is scrolled in with `block: 'nearest'`, flush with the edge; tile grids are 16 px apart, past the
+  heel.
+* **Hover** only inside `@media (hover: hover)`; one pressed state (`scale(.97)`, a step darker, the
+  lime primary to `--brand-deep`) in the menus, the HUD's pause and settings and training; one
   `prefers-reduced-motion` block for every prefix in `src/style.css` (opacity still fades, 120 ms at
   most; the search spinner keeps turning).
 * **Super low** is one switch: the alpha twins point at the opaque surfaces, `--brand-grad` at the
-  flat lime, every `mn-` / `hud-` / `trn-` / `tc-` transition and animation is off except the
-  informative ones (spinner, hold, busy stripe, low / overtime clock, key capture, the P2P wait line).
+  flat lime, the menus' shell is an opaque page (no full-screen translucent layer), every `mn-` /
+  `hud-` / `trn-` / `tc-` transition and animation is off except the informative ones (spinner,
+  hold, busy stripe, low / overtime clock, key capture, the P2P wait line).
 
 **Display font.** `public/fonts/tg-display-v1.woff2` (5,616 B, 88 glyphs: A-Z, Á É Í Ó Ú Ü Ñ, 0-9,
 v and the UI's punctuation; kern and tabular figures kept) is Barlow Condensed Bold 1.408 (SIL OFL
@@ -968,7 +975,8 @@ swap`, one `unicode-range` with those code points; a new cut is a new versioned 
 face's line metrics are overridden (ascent 90 %, descent 20 %) so capitals sit centred in the line
 box. Until it arrives, or if it never does, the stack falls to Windows' Bahnschrift (Bold Condensed
 is 1.1x as wide), then to Android's Roboto Condensed / Roboto through local() faces scaled to the
-same widths (`size-adjust` 83.5 % / 73.2 %, measured on 21 UI labels), then the system stack.
+same widths (`size-adjust` 83.5 % / 73.2 %, measured on 21 UI labels), then Apple's DIN Condensed /
+Avenir Next Condensed and the condensed system faces.
 `#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it.
 `scripts/copy-notices.mjs` refuses to build with a font and no license next to it.
 

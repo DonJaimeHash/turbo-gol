@@ -128,7 +128,8 @@ body {
 }
 
 .hud-score-team.hud-blue .hud-score-tag {
-  background: linear-gradient(180deg, var(--blue), var(--blue-deep));
+  color: var(--ink);
+  background: var(--blue);
 }
 
 .hud-score-team.hud-red .hud-score-tag {
@@ -171,7 +172,9 @@ body {
   animation: hud-blink 1s steps(2, start) infinite;
 }
 
-/* ---- Debug readouts (F3): fps / draw calls / GPU time top right, speed above the boost ---- */
+/* ---- Debug readouts (F3): fps / draw calls / GPU time top right, speed above the boost ----
+   Hidden unless .hud-debug (Hud.setDebug: F3, #stats, #debug); the positioning rules below set no
+   display of their own, or they would win over this one (B15: the readout showed in every match). */
 
 .hud-fps,
 .hud-speed {
@@ -190,7 +193,6 @@ body {
   position: absolute;
   top: calc(var(--safe-top) + 8px);
   right: calc(var(--safe-right) + 10px);
-  display: flex;
   flex-direction: column;
   align-items: flex-end;
   font-size: 12px;
@@ -632,6 +634,32 @@ body {
   border-color: var(--danger-line);
 }
 
+/* Pressed: the HUD's one pressed state (menu.css has the menus' twin), the only feedback a finger
+   gets (touch draws no ring): a 3 % squeeze in --dur-press and a step darker; lime deepens. */
+.hud-pause-btn:active,
+.hud-settings-back:active,
+.hud-settings-tab:active,
+.hud-settings-action:active:not(:disabled),
+.hud-bind-cell:active,
+.hud-toggle:active,
+.hud-choice-opt:active,
+.hud-rule-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.hud-pause-btn:active:not(.hud-pause-primary),
+.hud-settings-back:active,
+.hud-settings-action:active:not(:disabled),
+.hud-bind-cell:active:not(.hud-capturing),
+.hud-rule-btn:active:not(:disabled) {
+  background-color: var(--surface-3-97);
+}
+
+.hud-pause-primary:active,
+.hud-toggle.hud-on:active {
+  background: var(--brand-deep);
+}
+
 /* Short landscape phones: a tighter column so the whole menu fits under the title. */
 @media (max-height: 460px) {
   .hud-paused-title {
@@ -661,6 +689,7 @@ body {
   background: var(--veil);
   pointer-events: auto;
   overflow: auto;
+  scroll-padding: 16px;
 }
 
 /* The settings screen alone, over the front-end menus (Hud.openSettingsScreen). */
@@ -901,6 +930,9 @@ body {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 8px 14px 12px;
+  /* FocusRing scrolls a row in with block 'nearest' (Hud.ts:419): keep the ring (6 px out,
+     focus.css) inside the scroll box (the plan's anti-clip rule). */
+  scroll-padding-block: 16px;
   scrollbar-width: thin;
   scrollbar-color: var(--edge-hi) transparent;
 }
@@ -2053,7 +2085,10 @@ html.tg-superlow {
   --surface-3-97: var(--surface-3);
   --brand-grad: var(--brand);
   --scrim: none;
-  --mn-backdrop: rgba(5, 7, 13, 0.62);
+  /* The menus' shell is opaque (M54; plan §2.7: no full-screen translucent layer on super low): one
+     flat page instead of a 2-megapixel blend over a 0.2-megapixel scene. Without any veil, the text
+     straight on the stage (titles, subtitles, list heads) did not read over the stands. */
+  --mn-backdrop: var(--ink);
   --shadow: var(--shadow-lite);
 }
 
