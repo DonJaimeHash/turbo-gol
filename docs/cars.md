@@ -7,9 +7,10 @@ simulation sees. What a new car adds is a body geometry, a wheel style and a few
 drawn with the material, meshes and pipelines every car already uses: no draw call, no pipeline,
 no shader compile.
 
-The default car is the dune runner (`dune`). Four more are reserved in the catalog with status
-`'soon'`: `pampero`, `carpincho`, `condor` and `tero`. Each already has its module in
-`src/render/cars/` exporting `null`; until it exports a body, the car draws the dune runner.
+The default car is the dune runner (`dune`). Four more are in the catalog with status
+`'available'`: `pampero`, `carpincho`, `condor` and `tero`, each with its body in
+`src/render/cars/<id>.ts`. A car added later starts as `'soon'` with a module exporting `null`;
+until it exports a body, the car draws the dune runner.
 
 ## Where things live
 
@@ -23,7 +24,7 @@ The default car is the dune runner (`dune`). Four more are reserved in the catal
 | `src/render/cars/types.ts` | the contract: `CarBodySpec`, `BodyKit`, `LiverySpec`, `WheelStyle`, `WheelPlacement`, `WheelAt` |
 | `src/render/cars/kit.ts` | `CAR_KIND`, the stock surfaces, team colours, `BOOST_NOZZLE_*`, the tyre numbers the shader compiles, the budgets and ranges, `tag` / `tagBy` / `loft` / `section` / `tube` / `mergeParts`, `resolveWheels` (where the wheels are drawn), the kit a body builds with and `buildBody` (merge, containment guard, translate) |
 | `src/render/cars/wheels.ts` | the shared wheel styles (`KNOBBY`, `SLICK`) and `buildWheel` |
-| `src/render/cars/<id>.ts` | one module per catalog car: `dune.ts` (the dune runner), and `pampero.ts`, `carpincho.ts`, `condor.ts`, `tero.ts` waiting for their bodies |
+| `src/render/cars/<id>.ts` | one module per catalog car: `dune.ts` (the dune runner), `pampero.ts`, `carpincho.ts`, `condor.ts`, `tero.ts` |
 | `src/render/cars/index.ts` | the registry (`carBody(id)`); it reads every car's module and never needs editing |
 | `src/render/cars/cache.ts` | shared geometry, reference-counted |
 | `src/render/Car.ts` | the shared material (the livery uniforms), flame, blob and `CarView` (`setBody`) |

@@ -31,9 +31,13 @@ function memoryStorage(init = {}) {
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-/** The catalog with `available` cars available (the bodies land on other branches: the model must not care). */
+/**
+ * The catalog with the default car and the `available` cars available, every other car still to
+ * come, whatever src/game/cosmetics.ts says today (the bodies land on other branches: the model
+ * must not care).
+ */
 function catalogWith(...available) {
-  return CARS.map((c) => (available.includes(c.id) ? { ...c, status: 'available' } : c));
+  return CARS.map((c) => ({ ...c, status: c.id === DEFAULT_CAR || available.includes(c.id) ? 'available' : 'soon' }));
 }
 
 const wallet = (balance, extra = {}) => ({ earned: balance, spent: 0, balance, frozen: null, ...extra });
@@ -389,9 +393,12 @@ test('garageView: a guest sees the default car equipped, the others locked (sign
   assert.equal(v.explain, 'signIn');
   assert.equal(v.cars[1].price, 1500);
   assert.equal(v.cars[0].price, 0);
-  // Today's catalog: every car but the default one still to come, for everyone.
+  // Without a catalog the game's own (src/game/cosmetics.ts): a built car locked for a guest, one still to come shown so.
   const today = garageView({ signedIn: false, equipped: 'dune', owned: [], shop: null, selected: null });
-  assert.deepEqual(today.cars.map((c) => c.state), ['equipped', 'soon', 'soon', 'soon', 'soon']);
+  assert.deepEqual(
+    today.cars.map((c) => c.state),
+    CARS.map((c) => (c.id === DEFAULT_CAR ? 'equipped' : c.status === 'available' ? 'locked' : 'soon')),
+  );
 });
 
 test('garageView: an account\'s cars by the shop: owned (equip), claimable (claim), locked with the shop\'s reason, coming soon; the points explained at 0', () => {
@@ -421,7 +428,7 @@ test('garageView: an account\'s cars by the shop: owned (equip), claimable (clai
   assert.equal(garageView({ signedIn: true, equipped: 'pampero', owned: ['pampero'], shop: { ...shop, wallet: wallet(2300) }, selected: null, catalog }).explain, null);
 
   // The equipped car is the pick (an owned car); an owned car whose body is not built is still owned.
-  const w = garageView({ signedIn: true, equipped: 'pampero', owned: ['pampero'], shop: null, selected: 'ferrari', catalog: CARS });
+  const w = garageView({ signedIn: true, equipped: 'pampero', owned: ['pampero'], shop: null, selected: 'ferrari', catalog: catalogWith() });
   assert.deepEqual(w.cars.slice(0, 2).map((c) => [c.id, c.state, c.action, c.bodyReady]), [
     ['dune', 'owned', 'equip', true],
     ['pampero', 'equipped', null, false],
