@@ -13,7 +13,8 @@
  * Development and the owner's device tests can preview any car (`previewCarsAllowed`: a dev
  * server, or a build made with VITE_PREVIEW_CARS=1): `#car=<id>[,<id>...]` puts it on the offline
  * roster whether owned or not (the player's car, then the bots'), `#showroom=<yaw>[,<pitch>[,<slot>]]`
- * frames one (Game.enterShowroom). Production builds ignore both.
+ * frames one (Game.enterShowroom). Production builds ignore both. A VITE_PREVIEW_CARS=1 build also
+ * entitles a guest to every catalog car offline (PREVIEW_ALL_CARS, src/game/garage.ts).
  */
 import { STORAGE_PREFIX } from '../brand';
 import { CAR_IDS, DEFAULT_CAR, isCarId, type CarId } from './cosmetics';
@@ -98,3 +99,14 @@ export interface PreviewEnv {
 export function previewCarsAllowed(env: PreviewEnv | undefined = import.meta.env): boolean {
   return env?.DEV === true || env?.VITE_PREVIEW_CARS === '1';
 }
+
+/**
+ * A build made with VITE_PREVIEW_CARS=1 (the owner's device tests from a static site with no API):
+ * without an account the player is entitled to every catalog car, offline only (Friendly vs AI,
+ * Training, the garage's equip, which then picks on this page alone: src/game/garage.ts), and the
+ * garage says so. Online the server still seats each car, and an account's cars are the server's
+ * whatever the build. Read from import.meta.env as is, never through a parameter: a production
+ * build folds it to false and drops everything it guards, the garage's notice included. The dev
+ * server is not a preview here: the account and shop flows run there as in production.
+ */
+export const PREVIEW_ALL_CARS: boolean = import.meta.env?.VITE_PREVIEW_CARS === '1';

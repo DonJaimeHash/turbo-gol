@@ -24,11 +24,17 @@
  * garageView is the pure view model (tests/garage.test.mjs): each car's state and action, the card
  * on screen, the wallet and which explanation the screen owes the player (sign in, or how points are
  * earned). Nothing here runs per frame: every change comes from a menu action or an answer.
+ *
+ * A build made with VITE_PREVIEW_CARS=1 (carSelection.ts PREVIEW_ALL_CARS: the owner's device tests
+ * from a static site with no API) entitles a guest to every catalog car: each one is owned in the
+ * view and an equip picks it on this page alone, nothing goes to a server; the screen says so
+ * (previewNotice). Signed in, the account's cars are the server's as in any build. A production
+ * build drops all of it (tests/preview-cars.test.mjs).
  */
 import type { AccountSession } from '../net/account';
 import type { ClaimAnswer, ItemsAnswer, ShopAnswer, ShopItemView, Wallet } from '../net/cosmetics';
-import { setEntitledCars, type CarSelection } from './carSelection';
-import { CARS, DEFAULT_CAR, isCarId, type CarCosmetic, type CarId } from './cosmetics';
+import { PREVIEW_ALL_CARS, setEntitledCars, type CarSelection } from './carSelection';
+import { CAR_IDS, CARS, DEFAULT_CAR, isCarId, type CarCosmetic, type CarId } from './cosmetics';
 
 /** What a car is to this player: driven now, owned, claimable now, out of reach, or still to come. */
 export type GarageCarState = 'equipped' | 'owned' | 'claimable' | 'locked' | 'soon';
@@ -62,6 +68,8 @@ export interface GarageView {
   readonly wallet: Wallet | null;
   /** What the screen explains: 'signIn' (a guest), 'host' (no points yet: how they are earned), null. */
   readonly explain: 'signIn' | 'host' | null;
+  /** A guest on a preview build (PREVIEW_ALL_CARS): every car owned, the screen says so (previewNotice). */
+  readonly preview: boolean;
 }
 
 export interface GarageInput {
@@ -76,6 +84,8 @@ export interface GarageInput {
   readonly selected: CarId | null;
   /** The catalog (src/game/cosmetics.ts CARS); tests pass their own. */
   readonly catalog?: readonly CarCosmetic[];
+  /** A preview build (Garage.view: PREVIEW_ALL_CARS): a guest owns every car. Never an account. */
+  readonly preview?: boolean;
 }
 
 /**
@@ -83,13 +93,15 @@ export interface GarageInput {
  * own word. Still to come ('soon'): the catalog or the shop says so (a page and a server of
  * different builds both have to draw and sell it). A locked car tells why: a guest, else the shop's
  * reason. The explanation: a guest is asked to sign in; an account without a point to spend is told
- * how points are earned (never a rate: they come from verified hosted matches only).
+ * how points are earned (never a rate: they come from verified hosted matches only). A guest on a
+ * preview build owns every car and is asked nothing (the screen tells it is a preview).
  */
 export function garageView(input: GarageInput): GarageView {
   const catalog = input.catalog ?? CARS;
+  const preview = input.preview === true && !input.signedIn;
   const shopCars = new Map<string, ShopItemView>();
   for (const it of input.shop?.items ?? []) if (it.kind === 'car') shopCars.set(it.id, it);
-  const owns = (id: CarId) => id === DEFAULT_CAR || input.owned.includes(id) || shopCars.get(id)?.owned === true;
+  const owns = (id: CarId) => preview || id === DEFAULT_CAR || input.owned.includes(id) || shopCars.get(id)?.owned === true;
   // A car driven that is not owned (a revoke the session has not caught up with) shows as the default car: one card is always Equipped.
   const equipped = owns(input.equipped) ? input.equipped : DEFAULT_CAR;
   const pick = input.selected !== null && catalog.some((c) => c.id === input.selected) ? input.selected : equipped;
@@ -120,8 +132,17 @@ export function garageView(input: GarageInput): GarageView {
     };
   });
   const wallet = input.signedIn ? (input.shop?.wallet ?? null) : null;
-  const explain = !input.signedIn ? 'signIn' : wallet !== null && wallet.balance <= 0 ? 'host' : null;
-  return { cars, selected: cars.find((c) => c.selected) ?? cars[0], wallet, explain };
+  const explain = preview ? null : !input.signedIn ? 'signIn' : wallet !== null && wallet.balance <= 0 ? 'host' : null;
+  return { cars, selected: cars.find((c) => c.selected) ?? cars[0], wallet, explain, preview };
+}
+
+/**
+ * What the garage of a preview build tells a guest (PREVIEW_ALL_CARS), in the page's language. Not
+ * in src/locales on purpose: only the preview branch of the screen reads it, so a production build
+ * leaves the text out with the code.
+ */
+export function previewNotice(language: string): string {
+  return language === 'es' ? 'Vista previa: todos los autos desbloqueados' : 'Preview: every car unlocked';
 }
 
 /** A shop refusal as the garage tells it: an item the server does not list cannot be had now either. */
@@ -201,7 +222,7 @@ export class Garage {
 
   /** The view model with card `selected` on screen (null: the equipped car's). */
   view(selected: CarId | null): GarageView {
-    return garageView({ signedIn: this.signedIn, equipped: this.equipped, owned: this.items, shop: this.shop, selected });
+    return garageView({ signedIn: this.signedIn, equipped: this.equipped, owned: this.items, shop: this.shop, selected, preview: PREVIEW_ALL_CARS });
   }
 
   /** Call `fn` after every change (an answer, a claim, a sign-in or out); returns the unsubscribe. */
@@ -243,7 +264,8 @@ export class Garage {
   private sync(car: CarId | undefined): void {
     const a = this.accounts.account;
     const before = this.pick.current;
-    setEntitledCars(a === null ? [] : this.answered ? this.items : [a.car ?? DEFAULT_CAR, ...this.items]);
+    // A guest: the default car, or every car on a preview build (offline only: online the server seats each car).
+    setEntitledCars(a === null ? (PREVIEW_ALL_CARS ? CAR_IDS : []) : this.answered ? this.items : [a.car ?? DEFAULT_CAR, ...this.items]);
     // An older server sends no car: the pick stays (as entitled).
     if (a !== null && car !== undefined && this.pick.current !== car) this.pick.select(car);
     if (this.pick.current !== before) this.onCarChange();
@@ -310,8 +332,9 @@ export class Garage {
   /**
    * Drive car `id` from now on: an account through POST /api/me/car first (the server keeps the
    * pick and seats the account with it from the next match; the adopted session moves the local
-   * pick, see sync), a guest the default car only. Resolves whether the car is the one driven now;
-   * rejects with the server's refusal (AccountError, its text the player's), changing nothing.
+   * pick, see sync), a guest the default car only (any car on a preview build, on this page
+   * alone). Resolves whether the car is the one driven now; rejects with the server's refusal
+   * (AccountError, its text the player's), changing nothing.
    */
   async equip(id: CarId): Promise<boolean> {
     if (!isCarId(id)) return false;

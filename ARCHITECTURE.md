@@ -312,7 +312,9 @@ src/game/
                         ('soon' until a body exists); every car is a Standard car
   carSelection.ts       the player's car pick (localStorage), only a car the player is entitled to
                         (entitledCars, where the inventory will plug in); the preview gate of
-                        #car / #showroom (a dev server or a VITE_PREVIEW_CARS=1 build)
+                        #car / #showroom (a dev server or a VITE_PREVIEW_CARS=1 build), and
+                        PREVIEW_ALL_CARS (a VITE_PREVIEW_CARS=1 build only: a guest gets every car
+                        offline, the garage says so; folded away in production builds)
   experimentalTraining.ts experimental free play, pure: rules for free play only (packs always stock,
                         a locked player stock), the arena plan (mutators, fingerprint, game speed),
                         createArena before the car, the rebuild when the physics differ (a pack

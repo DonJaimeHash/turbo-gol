@@ -20,7 +20,7 @@ registerHooks({
 });
 
 const { CARS, DEFAULT_CAR } = await import('../src/game/cosmetics.ts');
-const { CAR_PICK_KEY, CarSelection, entitledCars, setEntitledCars } = await import('../src/game/carSelection.ts');
+const { CAR_PICK_KEY, CarSelection, PREVIEW_ALL_CARS, entitledCars, setEntitledCars } = await import('../src/game/carSelection.ts');
 const { Garage, garageView } = await import('../src/game/garage.ts');
 const { carsOf, carsBySlot, nodeCarsOf, seatCars, itemsAnswerOf, shopAnswerOf, claimAnswerOf, walletOf } = await import('../src/net/cosmetics.ts');
 
@@ -134,10 +134,14 @@ test('setEntitledCars: the default car always, catalog ids only, menu order; say
 test('Garage entitlement: a guest drives the default car; a sign-in widens it to the session car at once, then to the items', async () => {
   const store = memoryStorage({ [CAR_PICK_KEY]: 'tero' });
   const { accounts, pick, garage, dressed } = makeGarage({ storage: store });
+  assert.equal(PREVIEW_ALL_CARS, false, 'not a VITE_PREVIEW_CARS=1 build (tests/preview-cars.test.mjs is one)');
   assert.equal(garage.signedIn, false);
   assert.deepEqual(entitledCars(), ['dune']);
   assert.equal(pick.current, 'dune', 'a saved pick a guest is not entitled to reads as the default car');
   assert.equal(garage.equipped, 'dune');
+  assert.equal(garage.view(null).preview, false);
+  assert.equal(await garage.equip('tero'), false, 'a guest cannot equip a car it does not own');
+  assert.equal(pick.current, 'dune');
 
   accounts.server.items = ['host-badge', 'pampero', 'tero'];
   accounts.server.car = 'tero';

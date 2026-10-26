@@ -17,7 +17,7 @@ until it exports a body, the car draws the dune runner.
 | file | owns |
 |---|---|
 | `src/game/cosmetics.ts` | the catalog: `CarId`, menu order, price in host points (one table), status, the locale keys. Pure data, no imports; the community nodes' bundle must never import it (tested) |
-| `src/game/carSelection.ts` | the player's pick (`turbogol.car`), only a car the player is entitled to (`entitledCars()`: the default car, plus the cars a signed-in account owns); `previewCarsAllowed` gates the preview flags |
+| `src/game/carSelection.ts` | the player's pick (`turbogol.car`), only a car the player is entitled to (`entitledCars()`: the default car, plus the cars a signed-in account owns); `previewCarsAllowed` gates the preview flags; `PREVIEW_ALL_CARS` entitles a guest to every car on a `VITE_PREVIEW_CARS=1` build |
 | `src/game/garage.ts` | the account's cars and the hosts' shop on the client (`Garage`: the entitlement from the session's car and `/api/me/items`, equip through `POST /api/me/car`, claims) and the garage's view model (`garageView`) |
 | `src/net/cosmetics.ts` | each seat's car online (`seatCars`: the MatchDO Welcome's, a P2P room slot's, a community node match's `cars` from the Worker, never the node's own Welcome) and the account routes' answers; outside the nodes' bundle |
 | `src/ui/screens/garage.ts` | the garage screen (Home > GARAGE): the cards, equip and claim, the host points, over the showroom |
@@ -252,6 +252,15 @@ Preview flags, on the dev server (`npm run dev`) or a build made with `VITE_PREV
   held. Yaw in degrees round the car (0 the nose, 90 the right side, 180 the tail), pitch the
   height angle (12 by default, up to 89), slot the roster entry framed (the player by default). A
   bare `#showroom` orbits the player's car slowly.
+
+A build made with `VITE_PREVIEW_CARS=1` (not the dev server) also unlocks every car without an
+account, for trying them on devices from a static site with no API (`PREVIEW_ALL_CARS`): offline
+play (Friendly vs AI, Training) drives the pick, the garage shows every car owned, its EQUIP picks
+on the page alone and its side panel says "Vista previa: todos los autos desbloqueados" ("Preview:
+every car unlocked"). Nothing goes to a server; signed in, the account's cars are the server's as
+in any build. The gate is read from `import.meta.env` as is, so a production build folds it to
+false and leaves the code and the text out (`tests/preview-cars.test.mjs`; grep a build for the
+text to check). Build one with `VITE_PREVIEW_CARS=1 npx vite build --outDir <dir> --emptyOutDir`.
 
 The reference angles, on each tier (high and ultra by default on a desktop, Performance from
 Settings > Graphics or `__game.setQuality('low')`, super low with `#superlow`):

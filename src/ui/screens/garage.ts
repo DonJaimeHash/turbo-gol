@@ -19,6 +19,9 @@
  *
  * Keyboard / controller: the cards and buttons are data-nav targets, the equipped car's card is
  * focused first and moving onto a card looks at it; touch: a tap on a card picks it.
+ *
+ * A preview build (VITE_PREVIEW_CARS=1, carSelection.ts PREVIEW_ALL_CARS): a guest owns every car
+ * and the side panel says so in place of the invitation to sign in (garage.ts previewNotice).
  */
 import { h, navButton, setChildren } from '../dom';
 import type { Child } from '../dom';
@@ -26,7 +29,8 @@ import { language, t } from '../../i18n';
 import { carDescription, carName } from '../names';
 import type { Menu, Screen } from '../Menu';
 import { CARS, type CarId } from '../../game/cosmetics';
-import type { Garage, GarageCarView, GarageView, ShowroomFrame } from '../../game/garage';
+import { previewNotice, type Garage, type GarageCarView, type GarageView, type ShowroomFrame } from '../../game/garage';
+import { PREVIEW_ALL_CARS } from '../../game/carSelection';
 import { DISCORD_URL, SOURCE_URL } from '../../brand';
 import { screenHead } from './common';
 
@@ -151,6 +155,11 @@ export function garageScreen(menu: Menu): Screen {
 
   const drawWallet = (v: GarageView): void => {
     const g = store();
+    // A preview build: every car is the guest's (nothing to sign in for). A production build drops this branch and its text.
+    if (PREVIEW_ALL_CARS && v.preview) {
+      draw(wallet, 'preview:' + language(), () => [h('h2.mn-section-title', null, previewNotice(language()))]);
+      return;
+    }
     if (!g.signedIn) {
       draw(wallet, 'guest', () => [
         h('h2.mn-section-title', null, t('garage.guestTitle')),
