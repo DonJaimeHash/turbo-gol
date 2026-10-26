@@ -4,8 +4,11 @@
  * Google / Discord sign-in (a full-page redirect; the server answers back to `/#auth=<result>`),
  * the short Bearer session (1 h) refreshed from the HttpOnly refresh cookie, the profile (/api/me:
  * ratings per playlist, ranked ban, the experimental switch), the leaderboard, the rating change of
- * a ranked match, the account's training records (/api/me/training) and its experimental switch
- * and physics presets (/api/me/experimental, /api/me/presets: src/game/experimentalStore.ts).
+ * a ranked match, the account's training records (/api/me/training), its experimental switch
+ * and physics presets (/api/me/experimental, /api/me/presets: src/game/experimentalStore.ts), and
+ * its cars and the hosts' shop (/api/me/items, /api/me/car, /api/me/shop, /api/me/shop/claim:
+ * src/game/garage.ts). The session carries the car the account drives online (`car`); picking
+ * another hands back a fresh session, adopted like a rename's.
  *
  * Persistence: the refresh token is an HttpOnly cookie the page cannot read; localStorage only keeps
  * a hint (ACCOUNT_HINT_KEY: "this browser was signed in as X", `{ name, id }`) so a guest's page
@@ -23,7 +26,10 @@
 import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
 import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
+import { claimAnswerOf, itemsAnswerOf, shopAnswerOf } from './cosmetics';
+import type { ClaimAnswer, ItemsAnswer, ShopAnswer } from './cosmetics';
 import { STORAGE_PREFIX } from '../brand';
+import { isCarId, type CarId } from '../game/cosmetics';
 import { MAX_PRESETS, parsePresetList } from '../game/physicsRules';
 import type { StoredPreset } from '../game/physicsRules';
 import { parseTrainingRecords } from '../game/trainingRecords';
@@ -202,6 +208,8 @@ export class AccountClient {
   }
 
   private adopt(s: AccountSession): AccountSession {
+    // The session's car (src/net/cosmetics.ts): a catalog id, else none (the default car).
+    if (s.car !== undefined && !isCarId(s.car)) delete s.car;
     this.account = s;
     this.setHint(s);
     this.changed();
@@ -419,14 +427,16 @@ export class AccountClient {
   // ---- experimental features (src/game/experimentalStore.ts) -------------------------------------
 
   /**
-   * A Bearer call of the experimental routes, for the account signed in when the call starts (the
-   * store's copy is per account); answers parsed leniently. A 401 refreshes the session once and
-   * sends the call again with the new one (a write is not lost to a session that expired early); a
-   * second 401, a refresh that signs out, or a session of another account rejects. The refresh
-   * cookie is shared by the tabs (one may have signed in as someone else meanwhile), so a refresh
-   * can hand back another account: one player's switch or preset must never reach it.
+   * A Bearer call of a per-account route (the experimental switch and presets, the cars and the
+   * shop), for the account signed in when the call starts (the stores' copies are per account);
+   * resolves the answer's JSON (an error status rejects, as jsonOrFail). A 401 refreshes the
+   * session once and sends the call again with the new one (a write is not lost to a session that
+   * expired early); a second 401, a refresh that signs out, or a session of another account
+   * rejects. The refresh cookie is shared by the tabs (one may have signed in as someone else
+   * meanwhile), so a refresh can hand back another account: one player's switch, preset, car or
+   * claim must never reach it.
    */
-  private async experimentalCall(path: string, body?: unknown): Promise<ExperimentalAnswer> {
+  private async ownCall(path: string, body?: unknown): Promise<unknown> {
     const owner = this.account?.playerId ?? null;
     const refused = (): AccountError => new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
     const first = owner === null ? null : await this.sessionForQueue();
@@ -438,8 +448,13 @@ export class AccountClient {
       res = await this.call(path, body, s.session);
       if (res.status === 401) throw refused();
     }
-    const r = await this.jsonOrFail<{ enabled?: unknown; presets?: unknown }>(res);
-    return { enabled: r.enabled === true, presets: parsePresetList(r.presets, MAX_PRESETS * 2) };
+    return this.jsonOrFail<unknown>(res);
+  }
+
+  /** The experimental routes' answer, parsed leniently (ownCall). */
+  private async experimentalCall(path: string, body?: unknown): Promise<ExperimentalAnswer> {
+    const r = (await this.ownCall(path, body)) as { enabled?: unknown; presets?: unknown } | null;
+    return { enabled: r?.enabled === true, presets: parsePresetList(r?.presets, MAX_PRESETS * 2) };
   }
 
   /** The account's switch and presets (GET /api/me/experimental). */
@@ -459,6 +474,42 @@ export class AccountClient {
 
   deletePreset(id: string): Promise<ExperimentalAnswer> {
     return this.experimentalCall('/api/me/presets/delete', { id });
+  }
+
+  // ---- cars and the hosts' shop (src/game/garage.ts; the answers: src/net/cosmetics.ts) ----------
+
+  /** The account's items, the car it drives online and every car it may drive (GET /api/me/items). */
+  async fetchItems(): Promise<ItemsAnswer> {
+    return itemsAnswerOf(await this.ownCall('/api/me/items'));
+  }
+
+  /**
+   * Drive `car` online from now on (POST /api/me/car): the default car or one the account owns
+   * (409 not_owned, 400 bad_car otherwise). The answer is a fresh session that carries it, adopted
+   * as a rename's is: the next queue or lobby seats the account with it (a match already formed
+   * keeps the car it was formed with). An answer that comes back once another account is signed in
+   * (another tab, a sign-out) is not adopted.
+   */
+  async selectCar(car: CarId): Promise<AccountSession> {
+    const owner = this.account?.playerId ?? null;
+    const s = await this.ownCall('/api/me/car', { car });
+    if (!isSession(s) || s.playerId !== owner || this.account?.playerId !== owner) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+    return this.adopt(s);
+  }
+
+  /** The hosts' shop as this account sees it (claimable, owned, why not) and its wallet (GET /api/me/shop). */
+  async fetchShop(): Promise<ShopAnswer> {
+    return shopAnswerOf(await this.ownCall('/api/me/shop'));
+  }
+
+  /**
+   * Claim `item` with the account's host points (POST /api/me/shop/claim), one transaction on the
+   * server: `claimed` false when the account owned it already (a retry spends nothing twice).
+   * Refusals reject with their code: 404 unknown_item, 409 not_available / frozen / insufficient /
+   * requires_matches.
+   */
+  async claimItem(item: string): Promise<ClaimAnswer> {
+    return claimAnswerOf(await this.ownCall('/api/me/shop/claim', { item }));
   }
 
   async leaderboard(playlist: Playlist): Promise<LeaderboardAnswer> {

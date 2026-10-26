@@ -21,6 +21,10 @@
  *   node match        `cars` by slot (MatchedCars) in the queue result and the rejoin answer: the
  *                     node itself never hears of cars (its assignment is unchanged, byte for byte)
  *   client rule       car of slot i = welcome.roster[i].car ?? slots[i].car ?? result.cars?.[i] ?? DEFAULT_CAR
+ *                     (seatCars; the node answer's `cars` ride on NetClient's MatchAssignment)
+ *
+ * The account routes' answers (inventory, the car pick, the shop and a claim) are read leniently
+ * here too (walletOf, itemsAnswerOf, shopAnswerOf, claimAnswerOf: AccountClient), for the garage.
  */
 import { CAR_IDS, DEFAULT_CAR, isCarId } from '../game/cosmetics';
 import type { CarId } from '../game/cosmetics';
@@ -68,6 +72,21 @@ export function carsBySlot(size: number, seats: ReadonlyArray<{ slot: number; ca
   const out: Array<CarId | null> = Array.from({ length: Math.max(0, Math.min(MAX_SEATS, size)) }, () => null);
   for (const s of seats) if (s.car !== undefined && Number.isInteger(s.slot) && s.slot >= 0 && s.slot < out.length) out[s.slot] = s.car;
   return out;
+}
+
+/**
+ * The client rule (Game.applyOnlineRoster / applyP2PRoster): the car of each seat in slot order,
+ * from `seats` (a Welcome's roster entries or a room's slots, { slot, car? } in any order) and a
+ * node answer's `cars` (absent or null: none): the seat's own car, else the answer's for its slot,
+ * else the default car. An id this page does not know reads as the default car, like a field of
+ * another shape. A bot of the matchmaker's fill never carries one; a seat its player left keeps
+ * theirs (the server keeps it on the bot that takes over, so no car changes body mid-match).
+ */
+export function seatCars(seats: ReadonlyArray<{ slot: number; car?: unknown }>, cars?: ReadonlyArray<CarId | null> | null): CarId[] {
+  return seats
+    .slice()
+    .sort((a, b) => a.slot - b.slot)
+    .map((s) => seatCar(s.car) ?? seatCar(cars?.[s.slot]) ?? DEFAULT_CAR);
 }
 
 // ---- the account routes: inventory and the hosts' shop (nodes/control-plane/shop.ts) -----------------
@@ -136,4 +155,66 @@ export interface ClaimAnswer {
   claimed: boolean;
   wallet: Wallet;
   items: string[];
+}
+
+// ---- the answers as the game reads them (AccountClient): lenient, a field of another shape is dropped ----
+
+const ITEM_KINDS: readonly unknown[] = ['car', 'paint', 'boost', 'goal', 'badge', 'title'] satisfies ItemKind[];
+const ITEM_STATUSES: readonly unknown[] = ['available', 'soon', 'retired'] satisfies ItemStatus[];
+const CLAIM_BLOCKS: readonly unknown[] = ['unknown_item', 'not_available', 'frozen', 'insufficient', 'requires_matches'] satisfies Array<ShopItemView['blocked']>;
+
+function fields(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
+}
+
+/** Host points from a field: a finite number not below 0, else 0. */
+function points(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+function strings(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+/** A wallet from an answer: points that do not read as points are 0, `frozen` a reason or null. */
+export function walletOf(v: unknown): Wallet {
+  const o = fields(v);
+  return { earned: points(o.earned), spent: points(o.spent), balance: points(o.balance), frozen: typeof o.frozen === 'string' && o.frozen.length > 0 ? o.frozen : null };
+}
+
+/** GET /api/me/items as the game reads it: `car` the default one unless it is a catalog id, `cars` from both lists. */
+export function itemsAnswerOf(v: unknown): ItemsAnswer {
+  const o = fields(v);
+  const items = strings(o.items);
+  return { items, car: seatCar(o.car) ?? DEFAULT_CAR, cars: entitledCarsOf([...items, ...strings(o.cars)]) };
+}
+
+/** GET /api/me/shop as the game reads it: an item without an id, a known kind or a known status is left out. */
+export function shopAnswerOf(v: unknown): ShopAnswer {
+  const o = fields(v);
+  const items: ShopItemView[] = [];
+  for (const raw of Array.isArray(o.items) ? o.items : []) {
+    const it = fields(raw);
+    if (typeof it.id !== 'string' || !ITEM_KINDS.includes(it.kind) || !ITEM_STATUSES.includes(it.status)) continue;
+    const view: ShopItemView = {
+      id: it.id,
+      kind: it.kind as ItemKind,
+      name: typeof it.name === 'string' ? it.name : it.id,
+      description: typeof it.description === 'string' ? it.description : '',
+      cost: points(it.cost),
+      status: it.status as ItemStatus,
+      owned: it.owned === true,
+      claimable: it.claimable === true,
+    };
+    if (CLAIM_BLOCKS.includes(it.blocked)) view.blocked = it.blocked as ShopItemView['blocked'];
+    if (typeof it.minVerifiedMatches === 'number') view.minVerifiedMatches = it.minVerifiedMatches;
+    items.push(view);
+  }
+  return { items, wallet: walletOf(o.wallet) };
+}
+
+/** POST /api/me/shop/claim's answer as the game reads it. */
+export function claimAnswerOf(v: unknown): ClaimAnswer {
+  const o = fields(v);
+  return { item: typeof o.item === 'string' ? o.item : '', claimed: o.claimed === true, wallet: walletOf(o.wallet), items: strings(o.items) };
 }

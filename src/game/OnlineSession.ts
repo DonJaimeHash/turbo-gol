@@ -293,6 +293,8 @@ export class OnlineSession {
     this.status = t('online.connecting');
     this.matchId = m.matchId;
     this.lost = false;
+    // A node match's cars by slot come with its assignment (src/net/cosmetics.ts), never in its Welcome.
+    this.client.matchCars = m.cars ?? null;
     this.client.connect(m.wsUrl, m.ticket);
   }
 
@@ -473,7 +475,7 @@ export class OnlineSession {
       let sim: RollbackSim;
       try {
         sim = rollbackSimOf(this.game.sim);
-        this.game.applyOnlineRoster(w);
+        this.game.applyOnlineRoster(w, this.client.matchCars);
       } catch (err) {
         this.fail(`Roster: ${describe(err)}`);
         return;
@@ -491,8 +493,11 @@ export class OnlineSession {
       // the queue: renew an account's now when it would not outlast a long match.
       if (isNodeHost(w.hostColo)) void this.client.refreshBearer(NODE_BEARER_MIN_VALID_MS);
     } else {
-      // Same match after a rejoin: the next snapshot resyncs the state; forget the stale ring.
+      // Same match after a rejoin: the next snapshot resyncs the state; forget the stale ring. The
+      // cars are the roster's again (a node's from the rejoin answer): a body that differs is
+      // swapped in place, nothing is rebuilt.
       existing.reset();
+      this.game.dressOnlineRoster(w, this.client.matchCars);
       this.status = '';
     }
     this.client.sendReady();

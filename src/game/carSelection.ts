@@ -1,12 +1,14 @@
 /**
  * The local player's car: a pick kept in this browser (localStorage `turbogol.car`) that only ever
- * holds a car the player is entitled to. For now everyone is entitled to the default car alone;
- * the inventory API (a later change: the account's cars) extends `entitledCars` and nothing else
- * here changes. A saved id the player is not, or no longer, entitled to reads as the default car.
+ * holds a car the player is entitled to (`entitledCars`): the default car, plus each car the
+ * signed-in account owns, which src/game/garage.ts keeps here (`setEntitledCars`: the session's car
+ * at once, the inventory once /api/me/items or the shop answers, the default car alone again after
+ * a sign-out). A saved id the player is not, or no longer, entitled to reads as the default car.
  *
  * Who drives what (Game.rosterCars): the player's car offline and in training is this pick; bots
- * always drive the default car; online every car is the default one until the rosters carry cars
- * (a later change, outside the protocol files the community nodes bundle).
+ * always drive the default car; online each seat's car comes with the roster (src/net/cosmetics.ts
+ * seatCars), decided by the server from the account session (AccountsDO signs only a car the
+ * account still owns): online the server is the authority, and an account's pick follows it.
  *
  * Development and the owner's device tests can preview any car (`previewCarsAllowed`: a dev
  * server, or a build made with VITE_PREVIEW_CARS=1): `#car=<id>[,<id>...]` puts it on the offline
@@ -14,14 +16,30 @@
  * frames one (Game.enterShowroom). Production builds ignore both.
  */
 import { STORAGE_PREFIX } from '../brand';
-import { DEFAULT_CAR, isCarId, type CarId } from './cosmetics';
+import { CAR_IDS, DEFAULT_CAR, isCarId, type CarId } from './cosmetics';
 
 /** localStorage key of the pick. */
 export const CAR_PICK_KEY = STORAGE_PREFIX + 'car';
 
-/** The cars this player may drive. The inventory API extends this (a later change). */
+/** What entitledCars answers: the default car alone until setEntitledCars says more (a guest's for good). */
+let entitled: readonly CarId[] = [DEFAULT_CAR];
+
+/** The cars this player may drive, in menu order: the default car and, signed in, each car the account owns. */
 export function entitledCars(): readonly CarId[] {
-  return [DEFAULT_CAR];
+  return entitled;
+}
+
+/**
+ * The cars this player may drive from now on (src/game/garage.ts: the account's, none for a guest):
+ * the default car is always in, anything that is not a catalog id is dropped, menu order. Returns
+ * whether the set changed (the player's car may then be another one: the Garage tells the Game).
+ */
+export function setEntitledCars(cars: Iterable<unknown>): boolean {
+  const want = new Set<unknown>(cars);
+  const next = CAR_IDS.filter((id) => id === DEFAULT_CAR || want.has(id));
+  if (next.length === entitled.length && next.every((id, i) => id === entitled[i])) return false;
+  entitled = next;
+  return true;
 }
 
 /** The storage the pick lives in: localStorage, a stand-in in tests, null for none. */

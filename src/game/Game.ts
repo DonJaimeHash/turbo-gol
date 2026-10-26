@@ -75,15 +75,20 @@
  *
  * Cars (src/game/cosmetics.ts, bodies in src/render/cars): every roster entry carries the car its
  * view draws (`rosterCars`, built with the roster): the player's own pick offline and in training
- * (`localCar`: carSelection.ts, only a car the player is entitled to), the default car for every
- * bot and, for now, every car online; in previews `#car=<id>[,<id>...]` sets the offline
- * roster's cars, bots included (so a body's red version can be looked at). All of them are
- * Standard cars: a car is a look, never physics. `setCar` switches the player's car in place
- * (CarView.setBody: same meshes, same material, no compile). The showroom camera
- * (`enterShowroom` / `exitShowroom`, for a garage behind the menus;
- * `#showroom=<yaw>[,<pitch>[,<slot>]]` in previews) frames the player's car, or roster entry
- * `slot`, on the pitch where it stands, in the live scene and its three lights, and holds the
- * offline sim.
+ * (`localCar`: carSelection.ts, only a car the player is entitled to: the Garage keeps that from
+ * the account, src/game/garage.ts), the default car for every bot, and online each seat's car as
+ * the roster says (src/net/cosmetics.ts seatCars: the MatchDO Welcome's, the room's slots', a node
+ * match's assignment `cars`; applyOnlineRoster / applyP2PRoster build the views with them); in
+ * previews `#car=<id>[,<id>...]` sets the offline roster's cars, bots included (so a body's red
+ * version can be looked at). All of them are Standard cars: a car is a look, never physics. A car
+ * that changes on a roster already on screen (the pick or the entitlement: dressLocalCar; a rejoin's
+ * Welcome: dressOnlineRoster) swaps its body in place (dressSlot, CarView.setBody: same meshes,
+ * same material, no compile), never per frame; a room's slots keep the car they were formed with
+ * (a peer joining late changes no body). The showroom camera
+ * (`enterShowroom` / `exitShowroom`: the garage behind the menus, garageShowroom, with a frame its
+ * panels leave free; `#showroom=<yaw>[,<pitch>[,<slot>]]` in previews) frames the player's car, or
+ * roster entry `slot`, on the pitch where it stands, in the live scene and its three lights, and
+ * holds the offline sim; the garage's previewCar shows any car's body on it for a look.
  *
  * Mouse look needs the pointer lock: a click on the canvas while a match is being played
  * requests it (that click is masked so it does not boost / jump), opening the menu / pausing / the
@@ -218,6 +223,8 @@ import { DEFAULT_MATCH_SECONDS, Match, formatClockSeconds, type MatchEvent } fro
 import { STORAGE_PREFIX } from '../brand';
 import { CarSelection, previewCarsAllowed } from './carSelection';
 import { DEFAULT_CAR, isCarId, type CarId } from './cosmetics';
+import { Garage, type ShowroomFrame } from './garage';
+import { carsOf, seatCars, type CosmeticQueueResult } from '../net/cosmetics';
 import { OnlineSession } from './OnlineSession';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
 import {
@@ -426,8 +433,12 @@ const SHOWROOM_FOV = 30;
 const SHOWROOM_PITCH_DEG = 12;
 const SHOWROOM_ORBIT_RATE = 0.3;
 const SHOWROOM_MARGIN = 0.95;
+/** The margin in a frame (the garage's): a little room round the car, panels on every side of it. */
+const SHOWROOM_FRAME_MARGIN = 1.1;
 /** The showroom camera stays this high over the floor (uu). */
 const SHOWROOM_MIN_Y = 6;
+/** A showroom frame (the garage's) counts as at least this share of the viewport on each axis. */
+const SHOWROOM_FRAME_MIN = 0.1;
 /** Pad pickups within this distance (uu) of the player car play the pickup chime. */
 const PAD_SOUND_DIST = 320;
 /**
@@ -639,13 +650,16 @@ export class Game implements P2PGameHooks {
   private readonly previewCars: readonly (CarId | null)[] = previewCarsFlag();
   /** The car each roster entry drives, in roster order (carIds): what its CarView draws. */
   private readonly rosterCars: CarId[] = [];
-  /** The roster is an online session's (installSessionRoster): every car is the default one. */
+  /** The roster is an online session's (installSessionRoster): its cars are the room's, not the player's pick. */
   private rosterOnline = false;
+  /** The garage's look at another car on the player's car (previewCar), null = none: it draws what it drives. */
+  private previewBody: CarId | null = null;
   /**
    * The showroom camera (enterShowroom): a fixed yaw (rad) or null to orbit, the pitch (rad), the
-   * orbit's yaw, the roster entry framed (null = the player); null = off.
+   * orbit's yaw, the roster entry framed (null = the player), the part of the screen to fit it in
+   * (null = all of it); null = off.
    */
-  private showroom: { yaw: number | null; pitch: number; orbit: number; slot: number | null } | null = null;
+  private showroom: { yaw: number | null; pitch: number; orbit: number; slot: number | null; frame: ShowroomFrame | null } | null = null;
   ball!: BallView;
   effects!: Effects;
 
@@ -728,6 +742,8 @@ export class Game implements P2PGameHooks {
   readonly trainingStore: TrainingStore;
   /** Settings > Experimental: the account's switch and physics presets (server + local copy); nothing for a guest. */
   readonly experimental: ExperimentalStore;
+  /** The cars: what the account owns, the hosts' shop, the pick kept honest (src/game/garage.ts). Debug: window.__game.garage. */
+  readonly garage: Garage;
   /** The account whose experimental state was pulled this page (one sync per sign-in), null = none yet. */
   private experimentalSyncedFor: string | null = null;
   /** The boot gated a saved super low pick (GameOptions.superlowLocked): told once the menus are up. */
@@ -944,6 +960,8 @@ export class Game implements P2PGameHooks {
       remove: (id) => accounts.deletePreset(id),
     });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
+    // The account's cars: its session's car and inventory widen what the pick may hold (the views exist: it may dress the player's car).
+    this.garage = new Garage(accounts, this.carPick, () => this.dressLocalCar());
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.hud.menuVisible && !this.onlineActive });
     accounts.subscribe(() => this.onAccountChange());
@@ -1146,6 +1164,13 @@ export class Game implements P2PGameHooks {
           return game.experimental;
         },
       },
+      garage: {
+        get store() {
+          return game.garage;
+        },
+        showroom: (frame) => game.garageShowroom(frame),
+        preview: (id) => game.previewCar(id),
+      },
       config: async (): Promise<MenuConfig> => {
         if (net === null) return { regions: REGIONS, autoRegion: '', oauth: [], online: false };
         const c = await net.config();
@@ -1268,7 +1293,9 @@ export class Game implements P2PGameHooks {
     this.setMode(mode);
     this.menuReturnAt = -1;
     this.setSession(online);
-    online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl });
+    // A lobby's server match is a MatchDO's (its Welcome has the cars); a `cars` answer counts all the same.
+    const cars = carsOf((q as CosmeticQueueResult).cars);
+    online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl, ...(cars ? { cars } : {}) });
   }
 
   /** The Hud's settings screen over the menus (on `tab` when given); `onClose` when it is left. */
@@ -1764,9 +1791,12 @@ export class Game implements P2PGameHooks {
    * Rebuild the arena from the host's roster (Welcome): a fresh arena so the car ids restart at 1
    * like the host's, one addCar per roster entry in slot order (the ids must match: rs_load_state
    * refuses a different roster), the player at `welcome.slot`, no local bots (every other car is
-   * driven by the host through the echoed inputs). Views / effects / scoreboard are rebuilt.
+   * driven by the host through the echoed inputs). Views / effects / scoreboard are rebuilt. Each
+   * seat's car (src/net/cosmetics.ts seatCars): its Welcome entry's (a MatchDO's), else `cars` for
+   * its slot (a community node's match: the queue result's or rejoin answer's, NetClient.matchCars),
+   * else the default car; every one is a Standard car all the same.
    */
-  applyOnlineRoster(w: Welcome): void {
+  applyOnlineRoster(w: Welcome, cars?: ReadonlyArray<CarId | null> | null): void {
     const sim = this.sim;
     const roster = w.roster.slice().sort((a, b) => a.slot - b.slot);
     if (roster.length === 0 || roster.length > MAX_CARS) throw new Error(`roster of ${roster.length} cars`);
@@ -1785,7 +1815,19 @@ export class Game implements P2PGameHooks {
       const r = roster[i];
       rows.push({ name: i === w.slot ? t('game.nameYou', { name: r.name }) : r.name, team: r.team, you: i === w.slot, bot: r.kind === 'bot' });
     }
-    this.installSessionRoster(ids, w.slot);
+    this.installSessionRoster(ids, w.slot, seatCars(roster, cars));
+  }
+
+  /**
+   * A rejoin's Welcome on the roster already built (OnlineSession: the same match): each seat's car
+   * as the roster says now (seatCars, as applyOnlineRoster), a body that differs swapped in place
+   * (dressSlot: no view rebuild, no compile). The server keeps a seat's car for the whole match (the
+   * bot that takes over a left seat drives it on), so this normally changes nothing.
+   */
+  dressOnlineRoster(w: Welcome, cars?: ReadonlyArray<CarId | null> | null): void {
+    if (!this.rosterOnline || w.roster.length !== this.rosterCars.length) return;
+    const next = seatCars(w.roster, cars);
+    for (let i = 0; i < next.length; i++) this.dressSlot(i, next[i]);
   }
 
   /**
@@ -1796,7 +1838,9 @@ export class Game implements P2PGameHooks {
    * room's physics (an experimental lobby's rules, null = standard) BEFORE any car, so a ball
    * weight change rebuilds the ball before the cars exist on every peer alike; the kickoff boost
    * follows them (resetKickoff after the cars). arenaMutators throws on rules this build does not
-   * read: the session then fails instead of playing other physics than the room's.
+   * read: the session then fails instead of playing other physics than the room's. Each slot's car
+   * is the room's (RoomSlot.car, fixed when the matchmaker formed the room; a bot's is the default
+   * car): a look only, never part of the shared simulation.
    */
   applyP2PRoster(w: RoomWelcome): void {
     const sim = this.sim;
@@ -1817,11 +1861,11 @@ export class Game implements P2PGameHooks {
       const r = roster[i];
       rows.push({ name: i === me ? t('game.nameYou', { name: r.name }) : r.name, team: r.team, you: i === me, bot: r.kind === 'bot' });
     }
-    this.installSessionRoster(ids, me);
+    this.installSessionRoster(ids, me, seatCars(roster));
   }
 
-  /** Common tail of the session rosters: slots / offsets / controls, no local bots, views, snapshots. */
-  private installSessionRoster(ids: readonly number[], me: number): void {
+  /** Common tail of the session rosters: slots / offsets / controls, no local bots, views (each with `cars[i]`), snapshots. */
+  private installSessionRoster(ids: readonly number[], me: number, cars: readonly CarId[]): void {
     const sim = this.sim;
     const carIds = this.carIds;
     const slots = this.carSlots;
@@ -1849,10 +1893,9 @@ export class Game implements P2PGameHooks {
     this.mates.setSlots(this.blueSlots, [this.playerSlot]);
     this.lastHitTick.fill(-1e9);
     this.lastBumpFxTick = -1e9;
-    // Online every car is the default one for now: the rosters carry no car yet (a later change,
-    // outside the protocol files the community nodes bundle).
+    // The seats' cars, as the server seated them (the player's own pick counts from its next match).
     this.rosterCars.length = 0;
-    for (let i = 0; i < ids.length; i++) this.rosterCars.push(DEFAULT_CAR);
+    for (let i = 0; i < ids.length; i++) this.rosterCars.push(cars[i] ?? DEFAULT_CAR);
     this.rosterOnline = true;
     this.rebuildCarViews(this.quality);
     this.ballPinned = false;
@@ -2872,21 +2915,66 @@ export class Game implements P2PGameHooks {
     return this.previewCars[0] ?? this.carPick.current;
   }
 
+  /** The car each roster entry drives, in roster order (what its view draws). Debug: window.__game.rosterCarIds. */
+  get rosterCarIds(): readonly CarId[] {
+    return this.rosterCars;
+  }
+
   /**
-   * The player picks car `id` (the garage): kept only when the player is entitled to it
-   * (carSelection.ts). On the offline or training roster the player's car switches to it at once,
-   * in place (CarView.setBody: no view rebuild, no compile; the geometry is built on first use, a
-   * few ms, so this belongs to a menu, never to a frame); an online roster keeps the default car
-   * and the pick applies from the next offline roster. Returns whether the pick was taken.
+   * The player picks car `id` on this page alone (a guest's garage; an account's goes through
+   * Garage.equip, so the server seats it too): kept only when the player is entitled to it
+   * (carSelection.ts), then dressLocalCar. Returns whether the pick was taken.
    */
   setCar(id: CarId): boolean {
     if (!this.carPick.select(id)) return false;
-    if (this.rosterOnline) return true;
-    const car = this.localCar;
-    const i = this.playerIndex;
-    this.rosterCars[i] = car;
-    this.cars[i]?.setBody(car);
+    this.dressLocalCar();
     return true;
+  }
+
+  /**
+   * The player's car may be another one (the pick, or what the account may drive, changed: the
+   * Garage calls this): on the offline or training roster it switches at once, in place
+   * (dressSlot); an online roster keeps the car the server seated, and the pick counts from the
+   * next match.
+   */
+  private dressLocalCar(): void {
+    if (this.rosterOnline) return;
+    this.dressSlot(this.playerIndex, this.localCar);
+  }
+
+  /**
+   * Roster entry `i` drives `car` from now on: its view's body is swapped in place (CarView.setBody:
+   * same meshes, same material, no rebuild, no compile; the geometry is built on first use, a few
+   * ms, so this belongs to a menu action or a Welcome, never to a frame). The player's car keeps a
+   * garage preview's body on screen until previewCar(null).
+   */
+  private dressSlot(i: number, car: CarId): void {
+    if (this.rosterCars[i] === car) return;
+    this.rosterCars[i] = car;
+    if (i !== this.playerIndex || this.previewBody === null) this.cars[i]?.setBody(car);
+  }
+
+  /**
+   * The garage's look at car `id` on the player's car (any car, owned or not: a look only, never
+   * the car driven), null = back to the body it drives. One body swap per call (a menu action);
+   * exitShowroom ends it too.
+   */
+  previewCar(id: CarId | null): void {
+    if (id === this.previewBody) return;
+    this.previewBody = id;
+    const i = this.playerIndex;
+    this.cars[i]?.setBody(id ?? this.rosterCars[i] ?? DEFAULT_CAR);
+  }
+
+  /**
+   * The garage behind the menus (src/ui/screens/garage.ts): the showroom orbiting the player's car,
+   * fitted into `frame` (the part of the screen the garage's panels leave free; it calls again when
+   * the layout changes, never per frame); null ends it (exitShowroom: the menu orbit, the player's
+   * own body back).
+   */
+  garageShowroom(frame: ShowroomFrame | null): void {
+    if (frame === null) this.exitShowroom();
+    else this.enterShowroom({ frame });
   }
 
   /** The showroom camera is on (enterShowroom). */
@@ -2901,20 +2989,25 @@ export class Game implements P2PGameHooks {
    * its materials: nothing is added). `yawDeg` fixes the angle round the car (0 = the nose, 90 =
    * the right side, 180 = the tail, 270 = the left side); without it the camera orbits slowly.
    * `pitchDeg` is the camera's height angle (SHOWROOM_PITCH_DEG by default, up to 89 for the
-   * roof: from yaw 180 the nose points up the screen). The offline sim is held while it is on
-   * (nothing moves under the camera); exitShowroom hands the camera back.
+   * roof: from yaw 180 the nose points up the screen). `frame` fits the car into that part of the
+   * screen instead of all of it (the garage's: a view offset centres it there, the whole screen is
+   * still drawn). The offline sim is held while it is on (nothing moves under the camera);
+   * exitShowroom hands the camera back.
    */
-  enterShowroom(view: { readonly yawDeg?: number | null; readonly pitchDeg?: number | null; readonly slot?: number | null } = {}): void {
+  enterShowroom(view: { readonly yawDeg?: number | null; readonly pitchDeg?: number | null; readonly slot?: number | null; readonly frame?: ShowroomFrame | null } = {}): void {
     const yaw = view.yawDeg ?? null;
     const pitch = Math.min(89, Math.max(-10, view.pitchDeg ?? SHOWROOM_PITCH_DEG));
-    this.showroom = { yaw: yaw !== null ? yaw * DEG_TO_RAD : null, pitch: pitch * DEG_TO_RAD, orbit: this.showroom?.orbit ?? 0.6, slot: view.slot ?? null };
+    this.showroom = { yaw: yaw !== null ? yaw * DEG_TO_RAD : null, pitch: pitch * DEG_TO_RAD, orbit: this.showroom?.orbit ?? 0.6, slot: view.slot ?? null, frame: view.frame ?? null };
   }
 
-  /** Back to the menu orbit or the chase camera (its field of view restored). */
+  /** Back to the menu orbit or the chase camera (its field of view restored, no view offset), the player's own body back. */
   exitShowroom(): void {
+    this.previewCar(null);
     if (this.showroom === null) return;
     this.showroom = null;
-    this.chase.applyProjection(this.renderer.camera);
+    const camera = this.renderer.camera;
+    if (camera.view !== null && camera.view.enabled) camera.clearViewOffset();
+    this.chase.applyProjection(camera);
     this.snapCamera = true;
   }
 
@@ -2922,8 +3015,10 @@ export class Game implements P2PGameHooks {
    * Place the showroom camera (render, every frame it is on): on a sphere round the hitbox centre
    * of the framed car (the player's, or roster entry `slot`), in the car's own frame, far enough
    * for the car's bounding sphere (the hitbox half diagonal) to fit the narrower field of view;
-   * the up vector is the orbit's, so a view from straight above stays upright. Scratch vectors
-   * only.
+   * the up vector is the orbit's, so a view from straight above stays upright. With a frame the car
+   * fits the frame's share of the field of view and a view offset (in viewport fractions, so a
+   * resize keeps it) moves it to the frame's centre; the projection is updated only when the field
+   * of view or the offset changes. Scratch vectors only.
    */
   private placeShowroomCamera(camera: THREE.PerspectiveCamera, dt: number): void {
     const s = this.showroom;
@@ -2936,14 +3031,23 @@ export class Game implements P2PGameHooks {
     const cfg = car.config;
     const q = car.quaternion;
     const target = _srTarget.set(cfg.hitboxOffset[0], cfg.hitboxOffset[2], cfg.hitboxOffset[1]).applyQuaternion(q).add(car.position);
-    if (camera.fov !== SHOWROOM_FOV) {
+    const f = s.frame;
+    const ox = f !== null ? 0.5 - (f.x0 + f.x1) / 2 : 0;
+    const oy = f !== null ? 0.5 - (f.y0 + f.y1) / 2 : 0;
+    const v = camera.view;
+    const offset = v !== null && v.enabled;
+    if (camera.fov !== SHOWROOM_FOV || (f === null ? offset : !offset || v.offsetX !== ox || v.offsetY !== oy)) {
       camera.fov = SHOWROOM_FOV;
-      camera.updateProjectionMatrix();
+      // Each of the three updates the projection.
+      if (f !== null) camera.setViewOffset(1, 1, ox, oy, 1, 1);
+      else if (offset) camera.clearViewOffset();
+      else camera.updateProjectionMatrix();
     }
-    const vHalf = (SHOWROOM_FOV * DEG_TO_RAD) / 2;
-    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    const tanV = Math.tan((SHOWROOM_FOV * DEG_TO_RAD) / 2);
+    const vHalf = Math.atan(tanV * (f !== null ? Math.max(SHOWROOM_FRAME_MIN, f.y1 - f.y0) : 1));
+    const hHalf = Math.atan(tanV * camera.aspect * (f !== null ? Math.max(SHOWROOM_FRAME_MIN, f.x1 - f.x0) : 1));
     const radius = 0.5 * Math.hypot(cfg.hitboxSize[0], cfg.hitboxSize[1], cfg.hitboxSize[2]);
-    const dist = (SHOWROOM_MARGIN * radius) / Math.sin(Math.min(vHalf, hHalf));
+    const dist = ((f !== null ? SHOWROOM_FRAME_MARGIN : SHOWROOM_MARGIN) * radius) / Math.sin(Math.min(vHalf, hHalf));
     // Car-local (x forward, y up, z right) direction from the car to the camera, and the orbit's up.
     _srDir.set(Math.cos(yaw) * cp, sp, Math.sin(yaw) * cp).applyQuaternion(q);
     _srUp.set(-Math.cos(yaw) * sp, cp, -Math.sin(yaw) * sp).applyQuaternion(q);
@@ -3634,7 +3738,7 @@ export class Game implements P2PGameHooks {
     this.placeViews();
   }
 
-  /** One CarView per roster entry (team colours from the sim, its car from rosterCars) plus the Effects with every car registered. */
+  /** One CarView per roster entry (team colours from the sim, its car from rosterCars, the player's a garage preview's) plus the Effects with every car registered. */
   private buildCarViews(q: Quality): void {
     const scene = this.renderer.scene;
     const sim = this.sim;
@@ -3645,7 +3749,9 @@ export class Game implements P2PGameHooks {
     this.effects.onDemolition = (slot, x, y, z) => this.onDemolition(slot, x, y, z);
     for (let i = 0; i < slots.length; i++) {
       const team = sim.teamOf(slots[i]);
-      cars.push(new CarView(scene, config, team, q, this.rosterCars[i] ?? DEFAULT_CAR));
+      // The garage's preview stays on the player's car through a rebuild (a quality change under it).
+      const car = i === this.playerIndex && this.previewBody !== null ? this.previewBody : (this.rosterCars[i] ?? DEFAULT_CAR);
+      cars.push(new CarView(scene, config, team, q, car));
       this.effects.registerCar(slots[i], team);
     }
     this.cars = cars;

@@ -86,7 +86,7 @@ function memoryStorage(init = {}) {
   return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), map: m };
 }
 
-test('car pick: only a car the player is entitled to (today the default car alone), kept under the brand prefix', () => {
+test('car pick: only a car the player is entitled to (a guest: the default car alone), kept under the brand prefix', () => {
   assert.equal(CAR_PICK_KEY, 'turbogol.car');
   assert.deepEqual(entitledCars(), ['dune']);
   const store = memoryStorage();
@@ -102,7 +102,7 @@ test('car pick: only a car the player is entitled to (today the default car alon
   assert.equal(new CarSelection({ storage: memoryStorage({ [CAR_PICK_KEY]: 'not-a-car' }) }).current, 'dune');
 });
 
-test('car pick: a wider entitlement (the inventory to come) keeps the pick while it lasts', () => {
+test('car pick: a wider entitlement (the cars an account owns: src/game/garage.ts) keeps the pick while it lasts', () => {
   let owned = ['dune', 'tero'];
   const store = memoryStorage();
   const sel = new CarSelection({ storage: store, entitled: () => owned });
@@ -196,7 +196,7 @@ test('the community nodes bundle never imports the car catalog, the car pick or 
     assert.ok(closure.has(input), `the walk reaches ${input}`);
   }
   // The online cars too: their wire types and helpers, and the shop that lists the catalog (server side).
-  for (const file of ['src/game/cosmetics.ts', 'src/game/carSelection.ts', 'src/net/cosmetics.ts', 'nodes/control-plane/shop.ts']) {
+  for (const file of ['src/game/cosmetics.ts', 'src/game/carSelection.ts', 'src/game/garage.ts', 'src/net/cosmetics.ts', 'nodes/control-plane/shop.ts']) {
     assert.equal(closure.has(file), false, `${file} is in the node bundle: adding a car would need a node release`);
   }
   for (const file of closure) assert.ok(!file.startsWith('src/render/'), `${file}: render code in the node bundle`);

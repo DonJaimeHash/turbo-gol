@@ -150,6 +150,68 @@ export default {
   'home.guestText': 'Create an account to get a rank in {playlist1}, {playlist2} and {playlist3}. As a guest you can play Casual, custom lobbies and training.',
   // Button on the home side panel and on the locked Competitive screen
   'home.signIn': 'SIGN IN / CREATE ACCOUNT',
+  // Home tile that opens the garage
+  'home.garage': 'GARAGE',
+  'home.garageSub': 'Your cars and host points',
+
+  // Garage (src/ui/screens/garage.ts): the cars and the hosts' shop. Host points are earned only by
+  // running a community server (nodes/docs/RECOMPENSAS.md): never bought, won by playing or traded.
+  // Never state a rate (points per minute or per match): it depends on verification and the region.
+  // Garage title (breadcrumb)
+  'garage.title': 'Garage',
+  'garage.heading': 'GARAGE',
+  'garage.subtitle': 'Every car drives the same: only the look changes',
+  // A car card's state; {points} is a formatted number of host points
+  'garage.stateEquipped': 'Equipped',
+  'garage.stateOwned': 'Owned',
+  'garage.stateClaimable': 'Claim · {points} pts',
+  'garage.stateLocked': '🔒 {points} pts',
+  // A car whose body is still being built: it cannot be claimed yet
+  'garage.stateSoon': 'Coming soon',
+  // Shown over the car on screen when it is not the one the player drives (a look only)
+  'garage.previewTag': 'PREVIEW',
+  'garage.equip': 'EQUIP',
+  // {points} is the car's price, formatted
+  'garage.claim': 'CLAIM FOR {points} PTS',
+  // Under the car the player drives
+  'garage.equippedNow': 'You drive this car',
+  // An owned car whose body is not built yet draws the default car
+  'garage.bodySoon': 'Its body is on the way: until then it looks like the Dune',
+  // Why the car on screen cannot be claimed; {cost} and {balance} are formatted numbers
+  'garage.needSignIn': 'Sign in to collect cars',
+  'garage.needPoints': 'You need {cost} host points; you have {balance}',
+  'garage.needFrozen': 'Your claims are paused',
+  'garage.needMatches': 'Your server needs a verified match first',
+  'garage.needUnavailable': 'It cannot be claimed right now',
+  'garage.needLoading': 'Loading…',
+  'garage.soonText': 'Coming soon: its body is still being built',
+  // Claim confirmation; {car} is the car's name, {cost} {balance} {after} formatted numbers
+  'garage.claimTitle': 'Claim {car}?',
+  'garage.claimText': '{car} costs {cost} host points: your balance goes from {balance} to {after}.',
+  'garage.claimConfirm': 'CLAIM',
+  'garage.claimCancel': 'CANCEL',
+  // Toasts; {car} is the car's name
+  'garage.claimed': '{car} is yours',
+  'garage.equipped': '{car} equipped',
+  // The host points panel; {points}, {earned} and {spent} are formatted numbers
+  'garage.wallet': 'HOST POINTS',
+  'garage.points': '{points} pts',
+  'garage.earnedSpent': 'Earned {earned} · Spent {spent}',
+  'garage.frozenVerification': 'Claims paused: a match on your server failed verification. A maintainer will review it.',
+  // {reason} is the server's own word for it
+  'garage.frozen': 'Claims paused while a maintainer reviews your account ({reason})',
+  'garage.loading': 'Loading your host points…',
+  'garage.retry': 'RETRY',
+  // How points are earned: shown to an account with none to spend
+  'garage.hostTitle': 'How to earn host points',
+  'garage.hostText': 'Host points come only from running a community server: every verified match it hosts adds some. They are never bought, won by playing or traded.',
+  'garage.hostTesting': 'Community servers are in testing: ask on Discord if you want to run one.',
+  // Links: the community servers' docs, the Discord server
+  'garage.hostDocs': 'HOW TO RUN A SERVER',
+  'garage.hostDiscord': 'ASK ON DISCORD',
+  // For a guest (the button under it is home.signIn)
+  'garage.guestTitle': 'Collect cars',
+  'garage.guestText': 'New cars are claimed with host points, which accounts earn by running a community server. Sign in or create an account to see yours.',
 
   // Play hub, Casual and Competitive (src/ui/screens/play.ts)
   // Play hub title (breadcrumb)
@@ -493,6 +555,16 @@ export default {
   // Physics presets (Settings > Experimental): the account already holds 10
   'error.account.too_many': '10 presets at most: delete one first',
   'error.account.bad_preset': 'Invalid preset',
+  // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
+  'error.account.not_owned': 'That car is not yours yet',
+  'error.account.bad_car': 'Unknown car',
+  // Claiming with host points (the garage)
+  'error.account.unknown_item': 'That item is not in the shop',
+  'error.account.bad_item': 'That item is not in the shop',
+  'error.account.not_available': 'That item cannot be claimed yet',
+  'error.account.frozen': 'Your claims are paused until a maintainer reviews your server',
+  'error.account.insufficient': 'Not enough host points',
+  'error.account.requires_matches': 'Your server needs a verified match first',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',

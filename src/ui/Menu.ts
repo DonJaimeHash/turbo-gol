@@ -24,6 +24,8 @@ import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
 import type { TrainingRecordsView } from '../game/trainingStore';
 import type { ExperimentalStore } from '../game/experimentalStore';
+import type { Garage, ShowroomFrame } from '../game/garage';
+import type { CarId } from '../game/cosmetics';
 import type { PopulationAnswer, RegionId } from '../net/account';
 import { REGIONS, isRegion } from '../net/account';
 import type { QueueResult } from '../net/protocol';
@@ -71,6 +73,16 @@ export interface ExperimentalMenuView {
   readonly store: ExperimentalStore;
 }
 
+/** What the menus see of the cars (the garage screen: src/ui/screens/garage.ts). */
+export interface GarageMenuView {
+  /** The account's cars and the hosts' shop, and the player's pick (src/game/garage.ts). */
+  readonly store: Garage;
+  /** The showroom behind the menus, the car fitted into `frame` (viewport fractions); null ends it. */
+  showroom(frame: ShowroomFrame | null): void;
+  /** Show car `id`'s body on the player's car for a look (null: the car it drives). */
+  preview(id: CarId | null): void;
+}
+
 /** What the menus need from the Game. */
 export interface MenuHost {
   readonly accounts: AccountClient;
@@ -78,6 +90,7 @@ export interface MenuHost {
   /** Training records of the current player (guest: this browser; account: synced with the server). */
   readonly training: TrainingRecordsView;
   readonly experimental: ExperimentalMenuView;
+  readonly garage: GarageMenuView;
   config(): Promise<MenuConfig>;
   /** The guest name (online as a guest) and its setter. */
   guestName(): string;
