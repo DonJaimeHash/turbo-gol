@@ -1,0 +1,252 @@
+/* Turbogol design tokens (the Tablero redesign): the one place for colour, type, spacing, radii,
+   shadows, layers, motion and the focus ring. src/style.css imports this file first, so the HUD,
+   the loading screen, the menus (src/ui), training (src/render/training.css) and the touch
+   controls (src/input/touch.css) all read the same values. No other stylesheet under
+   src/ui/styles/ may write a colour literal (tests/css-budget.test.mjs).
+
+   Colours are opaque. A surface laid over the live scene uses its alpha twin (-90 ... -97);
+   html.tg-superlow (src/style.css) points every twin back at the opaque colour. Lime is "go":
+   one filled lime thing per screen, plus boost and the goal. Azure and crimson only mean a team,
+   gold only a rank, violet only Experimental. */
+
+/* ---- Display font -------------------------------------------------------------------------------
+   One self-hosted file (same origin, so COEP require-corp has nothing to say): Barlow Condensed
+   Bold 700 (SIL OFL 1.1, public/fonts/OFL.txt, THIRD_PARTY_NOTICES.md) subset to the capitals,
+   Á É Í Ó Ú Ü Ñ, digits, v and the punctuation the UI shows, kern + tnum kept, hinting dropped
+   (ARCHITECTURE.md "Display font" has the pyftsubset command). index.html preloads it; swap shows
+   the fallback stack below for the first ~100 ms of a first visit, or for good if the file never
+   arrives. 600-800 so the 600 and 700 roles use the file without a synthetic bold; italic is
+   synthesized, as it always was with Bahnschrift. A name in the versioned file (-v1) instead of a
+   hash: a new cut is a new file. The overrides centre the capitals in the line box (cap height
+   .70 em, accents up to .92, Q and the comma down to -.10): 90 / 20 instead of the file's
+   100 / 20, so `line-height: normal` is 1.1 em, near Bahnschrift's 1.0. */
+@font-face {
+  font-family: 'TG Display';
+  src: url('/fonts/tg-display-v1.woff2') format('woff2');
+  font-weight: 600 800;
+  font-style: normal;
+  font-display: swap;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+  unicode-range:
+    U+0020-0023, U+0025-0029, U+002B-003B, U+003F, U+0041-005A, U+0076, U+00A0-00A1, U+00B7,
+    U+00BF, U+00C1, U+00C9, U+00CD, U+00D1, U+00D3, U+00D7, U+00DA, U+00DC, U+2013-2014, U+2019,
+    U+2026, U+2039-203A, U+2212;
+}
+
+/* Android's Roboto under the same widths, for the first paint before the swap or a file that never
+   arrived (scaled by the summed advances of 21 UI labels, Bold 700 against Barlow Condensed Bold:
+   Roboto Condensed 1.198x, Roboto 1.367x). Windows keeps its own Bahnschrift (Bold Condensed is
+   1.1x the file: the layouts were drawn with it); without a local match a face is skipped. */
+@font-face {
+  font-family: 'TG Display Condensed Fallback';
+  src: local('Roboto Condensed Bold'), local('RobotoCondensed-Bold');
+  font-weight: 600 800;
+  size-adjust: 83.5%;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'TG Display Wide Fallback';
+  src: local('Roboto Bold'), local('Roboto-Bold');
+  font-weight: 600 800;
+  size-adjust: 73.2%;
+  ascent-override: 90%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+
+:root {
+  /* ---- Colour ---------------------------------------------------------------------------------- */
+  --ink: #05070d; /* page; the dark gap of the focus ring; text on --blue */
+  --surface-0: #0e1117; /* bars, rail, tabs, hint bar; HUD plates */
+  --surface-1: #161a22; /* tiles, panels, sheets, rows */
+  --surface-2: #1f2430; /* hover (real hover only), focused tile, secondary button */
+  --surface-3: #2a303c; /* pressed, neutral selected, slot and glyph wells */
+  --surface-0-90: rgba(14, 17, 23, 0.9);
+  --surface-0-94: rgba(14, 17, 23, 0.94);
+  --surface-0-96: rgba(14, 17, 23, 0.96);
+  --surface-1-94: rgba(22, 26, 34, 0.94);
+  --surface-1-96: rgba(22, 26, 34, 0.96);
+  --surface-2-97: rgba(31, 36, 48, 0.97);
+  --surface-3-97: rgba(42, 48, 60, 0.97);
+  --edge: #2b313c; /* 1 px borders */
+  --edge-hi: #4a5262; /* hover / focused borders, drawn keys, locked silhouettes */
+  --text: #f4f7ff; /* 17:1 on --surface-1 */
+  --text-2: #b9c0cc; /* subtitles and help, 9.4:1 */
+  --text-3: #8a93a3; /* inactive, why something is locked: 5.6:1, the floor */
+  --brand: #c6ff2e;
+  --brand-hi: #dcff6e; /* primary hover; top of the boost segments */
+  --brand-deep: #7fc41a; /* primary pressed */
+  --brand-ink: #0d1600; /* text on lime, about 15:1 */
+  --brand-grad: linear-gradient(100deg, #d4ff4f 0%, #c6ff2e 45%, #a9e622 100%); /* flat --brand on super low */
+  --brand-tint: rgba(198, 255, 46, 0.12); /* a lime-washed surface (armed, picked) */
+  --brand-line: rgba(198, 255, 46, 0.75); /* a lime hairline (toasts, dialogs, the search banner) */
+  --brand-glow: rgba(198, 255, 46, 0.45);
+  /* Teams only. Far apart in hue AND lightness (CIE L* ~63 vs ~46), so red-green colour-blind
+     players still tell them apart; the HUD also labels them BLU / RED. -hi = the light tint for
+     text on dark panels, -deep = the dark end of a team gradient. */
+  --blue: #3a9bff;
+  --blue-deep: #1450b8;
+  --blue-hi: #9ccfff;
+  --blue-glow: rgba(58, 155, 255, 0.45);
+  --red: #d42039;
+  --red-deep: #6e0c1c;
+  --red-hi: #ff8c9b;
+  --red-glow: rgba(212, 32, 57, 0.5);
+  --danger: #ff6a3d; /* leave, kick, errors (6.1:1); never the team crimson */
+  --danger-line: rgba(255, 106, 61, 0.6);
+  --danger-tint: rgba(255, 106, 61, 0.16);
+  --warn: #ffd166; /* clock <= 10 s, MATCH IN PROGRESS, reconnecting, key capture */
+  --warn-tint: rgba(255, 209, 102, 0.12);
+  --ok: #4ee08a; /* online, copied, a pass: always with a word or a shape */
+  --ok-glow: rgba(78, 224, 138, 0.45);
+  --ok-tint: rgba(78, 224, 138, 0.18);
+  --info: #9fb4d0;
+  --rank-gold: #ffcf5a; /* ranks only, never server points */
+  --lab: #c79bff; /* Experimental only */
+  --focus: #ffffff;
+  --veil: rgba(4, 6, 12, 0.82); /* behind the pause, sheets and the final screen; never blurred */
+  --scrim: linear-gradient(180deg, rgba(5, 7, 13, 0) 0%, rgba(5, 7, 13, 0.5) 55%, rgba(5, 7, 13, 0.8) 100%);
+
+  /* Old names, kept as aliases until the PR that rewrites their last user (plan §2.5: PR 15). */
+  --panel: var(--surface-0-94);
+  --panel-edge: var(--edge);
+  --muted: var(--text-2);
+  --amber: var(--warn);
+  --mn-card: var(--surface-1-94);
+  --mn-card-hi: var(--surface-2-97);
+  --mn-edge: var(--edge);
+  --mn-edge-hi: var(--brand-line);
+  --mn-gold: var(--rank-gold);
+  --mn-red: var(--danger);
+  --mn-green: var(--ok);
+  /* The old menus' stage veil (src/ui/menu.css .mn): darker at the bars so text on the bare stage
+     reads over the scene; super low flattens it (style.css). The Tablero shell uses --scrim. */
+  --mn-backdrop: linear-gradient(180deg, rgba(5, 7, 13, 0.92) 0%, rgba(5, 7, 13, 0.55) 22%, rgba(5, 7, 13, 0.55) 70%, rgba(5, 7, 13, 0.95) 100%);
+
+  /* ---- Type -------------------------------------------------------------------------------------
+     Display (italic capitals: hero, screen titles, results, big clocks) and Heading (upright
+     capitals: sections, tiles, buttons, tabs) use --font-display and are always uppercase: the
+     file has no lower case, and a mixed string would fall back letter by letter. Body and Label
+     keep the system stack. Weights stop at 700 (no face goes higher; 800 / 900 only meant a
+     synthetic bold). The fallback stack is condensed first, without Impact; #widetext
+     (style.css) swaps both for plain Arial, which measures like Android's Roboto. */
+  --font-body: 'Bahnschrift', 'DIN Condensed', 'Avenir Next Condensed', 'Roboto Condensed', 'sans-serif-condensed', 'Arial Narrow', system-ui, sans-serif;
+  --font-display: 'TG Display', 'Bahnschrift', 'TG Display Condensed Fallback', 'TG Display Wide Fallback', var(--font-body);
+  --font: var(--font-body);
+  --font-mono: 'Cascadia Mono', 'Consolas', 'SF Mono', Menlo, ui-monospace, monospace;
+  /* The scale at each class's reference view (1 rem = 16 px there; the root scale arrives with the
+     shell, PR 4). Phone landscape and short screens below, the TV under html.tg-tv. */
+  --t-hero: 3.5rem; /* 56: PLAY NOW */
+  --t-display: 2.75rem; /* 44: screen titles */
+  --t-numeral: 5.5rem; /* 88: search clock, result */
+  --t-title: 1.5rem; /* 24: tile titles */
+  --t-heading: 1.125rem; /* 18: sections, tabs, buttons */
+  --t-body: 1rem; /* 16 */
+  --t-small: 0.875rem; /* 14: subtitles, help */
+  --t-label: 0.75rem; /* 12: slots */
+  --track-label: 0.06em;
+
+  /* ---- Space, radii, shadows ------------------------------------------------------------------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+  --r-slot: 3px; /* slot backgrounds, the boost bar */
+  --r-key: 6px; /* keys, HUD plates */
+  --r-tile: 10px; /* tiles, buttons, rows, the scorebug */
+  --r-panel: 16px; /* panels, sheets, the final screen */
+  --r-pill: 999px;
+  /* Static only, on sheets and the final screen; none on super low. */
+  --shadow-sheet: 0 24px 60px rgba(5, 7, 13, 0.55);
+  /* Text over the live scene; super low: one hard pixel instead of two blurs (style.css). */
+  --shadow: 0 2px 10px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.95);
+  --shadow-lite: 0 1px 0 #000;
+
+  /* ---- Layers ---------------------------------------------------------------------------------- */
+  --z-hud: 10;
+  --z-touch: 20;
+  --z-veil: 30;
+  --z-dock: 32;
+  --z-score: 34;
+  --z-menus: 40;
+  --z-cards: 45;
+  --z-settings: 60;
+  --z-update: 65;
+  --z-antibot: 70;
+  --z-rotate: 80;
+  --z-loading: 100;
+
+  /* ---- Motion: transform and opacity only, nothing animated on box-shadow or filter ------------ */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-lift: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-press: 80ms; /* scale(.97) */
+  --dur-lift: 120ms; /* focused / hovered tile, translateY(-3px) */
+  --dur-tab: 200ms;
+  --dur-section: 180ms;
+  --dur-push: 200ms;
+  --dur-pop: 160ms;
+  --dur-sheet-in: 180ms;
+  --dur-sheet-out: 140ms;
+  --dur-toast-in: 200ms;
+  --dur-toast-out: 300ms;
+
+  /* ---- Focus (src/ui/styles/focus.css): ring, dark gap, lime heel; survives super low ---------- */
+  --focus-w: 3px;
+  --focus-gap: 3px;
+  --focus-heel: 4px;
+  --focus-heel-y: 11px;
+  --focus-lift: -3px;
+
+  /* ---- Safe areas ------------------------------------------------------------------------------ */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* Short screens (a 1366 x 600 laptop, not a phone): the big roles come down. */
+@media (max-height: 600px) and (min-width: 900px) {
+  :root {
+    --t-hero: 3rem;
+    --t-display: 2.25rem;
+    --t-numeral: 4rem;
+    --t-title: 1.375rem;
+  }
+}
+
+/* Phone landscape: 14 px is the floor for anything a thumb reads. */
+@media (orientation: landscape) and (max-height: 500px) {
+  :root {
+    --t-hero: 2.75rem;
+    --t-display: 1.75rem;
+    --t-numeral: 3.5rem;
+    --t-title: 1.25rem;
+    --t-heading: 1rem;
+    --t-body: 0.9375rem;
+    --t-small: 0.875rem;
+    --t-label: 0.875rem;
+  }
+}
+
+/* The TV at 3 m (html.tg-tv arrives with the shell, PR 4): larger roles, a thicker ring. */
+html.tg-tv {
+  --t-hero: 3.75rem;
+  --t-display: 2.75rem;
+  --t-numeral: 5rem;
+  --t-title: 1.75rem;
+  --t-heading: 1.25rem;
+  --t-body: 1.125rem;
+  --t-small: 1.125rem;
+  --t-label: 1rem;
+  --focus-w: 4px;
+  --focus-heel: 6px;
+}

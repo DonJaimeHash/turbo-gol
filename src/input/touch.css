@@ -1,14 +1,16 @@
 /*
- * On-screen touch controls (src/input/TouchControls.ts). Every class is prefixed `tc-`; the palette,
- * font, shadow and safe-area insets come from the custom properties in src/style.css (:root).
+ * On-screen touch controls (src/input/TouchControls.ts). Every class is prefixed `tc-`; colours,
+ * type, layers and safe-area insets are the tokens of src/ui/styles/tokens.css. The see-through
+ * whites and inks of the stick and the buttons are this layer's own (it has to show the pitch
+ * under a thumb); PR 9 of the Tablero plan redraws them.
  *
  * The layer is in #hud right after the Hud root and shows only with `tc-show` (a match played in
  * touch mode). The rules under `.tc-on` (on #hud while that match is on screen in touch mode,
  * played or paused, so the HUD does not reshuffle behind the pause screen) move or hide the parts
  * of the match / training HUD the controls replace, so a phone driven by a pad keeps the usual
  * HUD. Sizes follow the viewport height (dvh, vh where dvh is missing) with px clamps; insets add
- * the safe areas. Only transforms move anything, and nothing uses backdrop-filter (expensive on
- * phone GPUs).
+ * the safe areas. Only transforms move anything, and nothing blurs what is under it (expensive on
+ * phone GPUs: no backdrop blur anywhere, tests/css-budget.test.mjs).
  *
  * The TouchControls root routes every finger itself (hit tests on the measured circles), so its
  * children never take the pointer.
@@ -37,7 +39,7 @@
   -webkit-user-select: none;
   user-select: none;
   color: var(--text);
-  font-family: var(--font);
+  font-family: var(--font-display);
   font-stretch: condensed;
   text-shadow: var(--shadow);
 }
@@ -114,9 +116,10 @@
   border-radius: 50%;
   background: rgba(7, 10, 20, 0.4);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.08em;
   line-height: 1;
+  text-transform: uppercase;
   white-space: nowrap;
   transition:
     transform 0.06s,
@@ -126,7 +129,7 @@
 
 .tc-btn.tc-down {
   transform: scale(0.92);
-  border-color: #fff;
+  border-color: var(--text);
   background: rgba(244, 247, 255, 0.26);
 }
 
@@ -135,14 +138,14 @@
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-boost);
   height: var(--tc-boost);
-  border-color: rgba(198, 255, 46, 0.75);
+  border-color: var(--brand-line);
   color: var(--brand);
   font-size: clamp(14px, 4vh, 20px);
 }
 
 .tc-boost.tc-down {
   border-color: var(--brand);
-  background: rgba(198, 255, 46, 0.3);
+  background: var(--brand-glow);
 }
 
 .tc-jump {
@@ -179,12 +182,12 @@
 
 .tc-cam {
   right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-small) + var(--tc-gap));
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* Ball cam on: lit like the Hud's camera pill. */
 .tc-cam.tc-cam-on {
-  border-color: rgba(198, 255, 46, 0.75);
+  border-color: var(--brand-line);
   color: var(--brand);
 }
 
@@ -267,7 +270,7 @@
 .tc-rotate {
   position: absolute;
   inset: 0;
-  z-index: 80; /* above the menus (40), the settings screen (60) and the Turnstile slot (70) */
+  z-index: var(--z-rotate); /* above the menus (40), the settings screen (60) and the Turnstile slot (70) */
   display: none;
   flex-direction: column;
   align-items: center;
@@ -276,7 +279,7 @@
   padding: calc(var(--safe-top) + 24px) calc(var(--safe-right) + 24px) calc(var(--safe-bottom) + 24px) calc(var(--safe-left) + 24px);
   background: var(--ink);
   color: var(--text);
-  font-family: var(--font);
+  font-family: var(--font-body);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -318,12 +321,9 @@
   }
 }
 
+/* Reduced motion (the rest is the one block of src/style.css): the phone rests turned. */
 @media (prefers-reduced-motion: reduce) {
   .tc-rotate-phone {
-    animation: none;
     transform: rotate(-90deg);
-  }
-  .tc-btn {
-    transition: none;
   }
 }

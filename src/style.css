@@ -1,35 +1,9 @@
-/* Turbogol: full-screen canvas + the DOM HUD (see src/render/Hud.ts). */
+/* Turbogol: full-screen canvas + the DOM HUD (see src/render/Hud.ts). The tokens (colour, type,
+   space, radii, layers, motion) and the one focus ring live in src/ui/styles/; this sheet is the
+   entry index.html links, so both reach the HUD, the loading screen and the menus. */
 
-:root {
-  /* Teams: azure (0) and crimson (1). Far apart in hue AND in lightness (CIE L* ~63 vs ~46), so
-     red-green colour-blind players still tell them apart; the HUD also labels them BLU / RED.
-     -hi = the light tint for text on dark panels, -deep = the dark end of a team gradient. */
-  --blue: #3a9bff;
-  --blue-deep: #1450b8;
-  --blue-hi: #9ccfff;
-  --red: #d42039;
-  --red-deep: #6e0c1c;
-  --red-hi: #ff8c9b;
-  /* Brand accent, "volt" lime: boost, primary actions, focus, the GOL of the wordmark.
-     --brand-ink is the text colour on it. */
-  --brand: #c6ff2e;
-  --brand-deep: #7fc41a;
-  --brand-ink: #0d1600;
-  --brand-glow: rgba(198, 255, 46, 0.45);
-  --amber: #ffd166;
-  --ink: #05070d;
-  --panel: rgba(7, 10, 20, 0.74);
-  --panel-edge: rgba(205, 218, 240, 0.18);
-  --text: #f4f7ff;
-  --muted: rgba(244, 247, 255, 0.62);
-  /* Condensed DIN-like display stack (Bahnschrift ships with Windows 10+; degrades gracefully). */
-  --font: 'Bahnschrift', 'Segoe UI Variable Display', 'Arial Narrow', Impact, system-ui, 'Segoe UI', Roboto, sans-serif;
-  --shadow: 0 2px 10px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.95);
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-right: env(safe-area-inset-right, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --safe-left: env(safe-area-inset-left, 0px);
-}
+@import './ui/styles/tokens.css';
+@import './ui/styles/focus.css';
 
 *,
 *::before,
@@ -46,7 +20,7 @@ body {
   overflow: hidden;
   background: var(--ink);
   color: var(--text);
-  font-family: var(--font);
+  font-family: var(--font-body);
   font-stretch: condensed;
   -webkit-font-smoothing: antialiased;
   user-select: none;
@@ -115,12 +89,10 @@ body {
   display: flex;
   align-items: stretch;
   height: clamp(36px, 5.6vh, 52px);
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 6px;
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-key);
   overflow: hidden;
-  backdrop-filter: blur(6px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
 .hud-score::before {
@@ -141,7 +113,7 @@ body {
 
 .hud-score-team + .hud-score-team,
 .hud-clock {
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 1px solid var(--edge);
 }
 
 .hud-score-tag {
@@ -149,9 +121,10 @@ body {
   align-items: center;
   padding: 3px clamp(7px, 1.1vh, 11px) 0;
   font-size: clamp(11px, 1.6vh, 15px);
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.14em;
-  color: #fff;
+  text-transform: uppercase;
+  color: var(--text);
 }
 
 .hud-score-team.hud-blue .hud-score-tag {
@@ -168,10 +141,11 @@ body {
   justify-content: center;
   min-width: clamp(34px, 5vh, 50px);
   padding: 3px clamp(7px, 1.1vh, 12px) 0;
+  font-family: var(--font-display);
   font-size: clamp(22px, 3.8vh, 36px);
-  font-weight: 900;
+  font-weight: 700;
   line-height: 1;
-  color: #fff;
+  color: var(--text);
 }
 
 .hud-clock {
@@ -180,14 +154,15 @@ body {
   justify-content: center;
   min-width: clamp(64px, 10vh, 100px);
   padding: 3px clamp(9px, 1.4vh, 14px) 0;
+  font-family: var(--font-display);
   font-size: clamp(18px, 3vh, 28px);
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.04em;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--surface-1);
 }
 
 .hud-clock.hud-clock-low {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 /* Overtime: '+m:ss' in lime, blinking (red would read as a team colour). */
@@ -220,7 +195,7 @@ body {
   align-items: flex-end;
   font-size: 12px;
   line-height: 1.3;
-  color: var(--muted);
+  color: var(--text-2);
   opacity: 0.85;
   font-variant-numeric: tabular-nums;
 }
@@ -238,18 +213,18 @@ body {
   left: 50%;
   transform: translateX(-50%);
   padding: 4px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--panel-edge);
-  background: var(--panel);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--edge);
+  background: var(--surface-0-94);
   font-size: clamp(10px, 1.4vh, 13px);
   font-weight: 700;
   letter-spacing: 0.16em;
+  text-transform: uppercase;
   color: var(--brand);
 }
 
 .hud-cam.hud-cam-off {
-  color: var(--muted);
-  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--text-2);
 }
 
 /* ---- Speed (bottom left, above the boost bar; debug only) -------------------------------- */
@@ -264,8 +239,9 @@ body {
 
 .hud-speed-value {
   min-width: 2.2ch;
+  font-family: var(--font-display);
   font-size: clamp(22px, 4vh, 36px);
-  font-weight: 900;
+  font-weight: 700;
   letter-spacing: -0.02em;
   text-align: right;
   transition: color 0.15s;
@@ -275,7 +251,7 @@ body {
   font-size: clamp(12px, 1.8vh, 16px);
   font-weight: 700;
   letter-spacing: 0.12em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .hud-speed.hud-supersonic .hud-speed-value {
@@ -303,9 +279,10 @@ body {
   grid-area: label;
   padding-left: 4px;
   font-size: clamp(10px, 1.4vh, 12px);
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.26em;
-  color: var(--muted);
+  text-transform: uppercase;
+  color: var(--text-2);
 }
 
 .hud-boost-bar {
@@ -315,11 +292,10 @@ body {
   height: clamp(14px, 2.3vh, 20px);
   margin-bottom: 0.15em;
   transform: skewX(-20deg);
-  background: rgba(4, 6, 12, 0.55) linear-gradient(rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 3px;
+  background: var(--surface-0-90);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-slot);
   overflow: hidden;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
 }
 
 .hud-boost-fill {
@@ -335,36 +311,34 @@ body {
 .hud-boost-segs {
   position: absolute;
   inset: 0;
-  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 3px), rgba(4, 6, 12, 0.92) calc(10% - 3px) 10%);
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 3px), var(--ink) calc(10% - 3px) 10%);
 }
 
 .hud-boost-value {
   grid-area: value;
   min-width: 3ch;
+  font-family: var(--font-display);
   font-size: clamp(26px, 4.6vh, 42px);
-  font-weight: 900;
+  font-weight: 700;
   line-height: 0.9;
   color: var(--brand);
-  text-shadow: 0 0 14px rgba(198, 255, 46, 0.3), var(--shadow);
 }
 
+/* Full: the lime edge alone (no glow: a shadow that comes and goes with the tank, B17). */
 .hud-boost.hud-boost-full .hud-boost-bar {
   border-color: var(--brand);
-  box-shadow: 0 0 14px var(--brand-glow), 0 4px 14px rgba(0, 0, 0, 0.45);
 }
 
 .hud-boost.hud-boost-low .hud-boost-fill {
-  background: linear-gradient(90deg, #b8860b, var(--amber));
+  background: var(--warn);
 }
 
 .hud-boost.hud-boost-low .hud-boost-value {
-  color: var(--amber);
-  text-shadow: var(--shadow);
+  color: var(--warn);
 }
 
 .hud-boost.hud-boost-empty .hud-boost-value {
-  color: var(--muted);
-  text-shadow: var(--shadow);
+  color: var(--text-3);
 }
 
 /* ---- Off-screen ball indicator (ball glyph + arrow pinned to the screen edge) ------------ */
@@ -386,9 +360,10 @@ body {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  /* The match ball in miniature: white and grey halves split by the lime band. */
+  /* The match ball in miniature, in its own paint (public/favicon.svg): white and grey halves
+     split by the lime band. */
   background: linear-gradient(150deg, #f3f5f8 0 40%, #1b2230 40% 43%, var(--brand) 43% 57%, #1b2230 57% 60%, #b3bcc9 60%);
-  box-shadow: 0 0 0 2px rgba(4, 6, 12, 0.85), 0 2px 8px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 0 0 2px var(--ink), 0 2px 8px rgba(0, 0, 0, 0.7);
 }
 
 .hud-ball-ind-arrow {
@@ -399,8 +374,8 @@ body {
   height: 0;
   border-top: 8px solid transparent;
   border-bottom: 8px solid transparent;
-  border-left: 12px solid #fff;
-  filter: drop-shadow(0 0 2px rgba(4, 6, 12, 0.9));
+  border-left: 12px solid var(--text);
+  filter: drop-shadow(0 0 2px var(--ink));
   transform-origin: 6px 8px;
 }
 
@@ -423,12 +398,13 @@ body {
   top: 38%;
   left: 50%;
   transform: translate(-50%, -50%);
+  font-family: var(--font-display);
   font-size: clamp(72px, 18vh, 180px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   line-height: 1;
   text-transform: uppercase;
-  color: #fff;
+  color: var(--text);
   text-shadow: 0 0 24px rgba(255, 255, 255, 0.35), var(--shadow);
 }
 
@@ -444,25 +420,25 @@ body {
   transform: translate(-50%, -50%);
   text-align: center;
   padding: clamp(10px, 1.8vh, 18px) clamp(26px, 5vw, 60px);
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 8px;
-  backdrop-filter: blur(6px);
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
 }
 
 .hud-banner.hud-blue {
   border-color: var(--blue);
-  box-shadow: 0 0 30px rgba(58, 155, 255, 0.45);
+  box-shadow: 0 0 30px var(--blue-glow);
 }
 
 .hud-banner.hud-red {
   border-color: var(--red);
-  box-shadow: 0 0 30px rgba(212, 32, 57, 0.5);
+  box-shadow: 0 0 30px var(--red-glow);
 }
 
 .hud-banner-title {
+  font-family: var(--font-display);
   font-size: clamp(34px, 7vh, 72px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.04em;
   line-height: 1.05;
@@ -482,7 +458,7 @@ body {
   font-size: clamp(13px, 2.2vh, 20px);
   font-weight: 600;
   letter-spacing: 0.1em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .hud-pop {
@@ -499,16 +475,17 @@ body {
   justify-items: center;
   padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + 12px) calc(var(--safe-left) + 16px);
   text-align: center;
-  background: rgba(4, 6, 12, 0.55);
-  backdrop-filter: blur(3px);
+  background: var(--veil);
 }
 
 .hud-paused-title {
+  font-family: var(--font-display);
   font-size: clamp(36px, 8vh, 80px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.12em;
   line-height: 1.1;
+  text-transform: uppercase;
 }
 
 .hud-paused-title::after {
@@ -525,7 +502,7 @@ body {
 .hud-paused-sub {
   margin-top: 6px;
   font-size: clamp(12px, 1.8vh, 16px);
-  color: var(--muted);
+  color: var(--text-2);
   letter-spacing: 0.08em;
 }
 
@@ -555,69 +532,60 @@ body {
   min-height: clamp(40px, 6.2vh, 52px);
   padding: 8px 22px;
   font: inherit;
+  font-family: var(--font-display);
   font-size: clamp(14px, 2.3vh, 19px);
-  font-weight: 800;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text);
-  text-shadow: var(--shadow);
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 8px;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
   cursor: pointer;
   transition:
+    transform var(--dur-press) ease-out,
     border-color 0.12s ease,
-    background-color 0.12s ease,
-    box-shadow 0.12s ease;
+    background-color 0.12s ease;
 }
 
-.hud-pause-btn:hover {
-  border-color: rgba(198, 255, 46, 0.55);
+@media (hover: hover) {
+  .hud-pause-btn:hover {
+    border-color: var(--edge-hi);
+    background-color: var(--surface-2-97);
+  }
 }
 
-.hud-pause-btn:active {
-  transform: scale(0.97);
-}
-
-/* Keyboard / pad focus (never shown in touch mode, below). */
+/* Keyboard / pad focus: the ring of src/ui/styles/focus.css (never shown in touch mode). */
 .hud-pause-btn.hud-focus {
-  border-color: var(--brand);
-  background-color: rgba(24, 34, 14, 0.86);
-  box-shadow:
-    0 0 0 1px var(--brand),
-    0 0 16px rgba(198, 255, 46, 0.35);
+  border-color: var(--edge-hi);
 }
 
 .hud-pause-primary {
   color: var(--brand-ink);
-  text-shadow: none;
   border-color: var(--brand);
-  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+  background: var(--brand-grad);
 }
 
-.hud-pause-primary.hud-focus {
-  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
-  box-shadow:
-    0 0 0 2px var(--text),
-    0 0 18px var(--brand-glow);
+@media (hover: hover) {
+  .hud-pause-primary:hover {
+    border-color: var(--brand-hi);
+    background: var(--brand-hi);
+  }
 }
 
 .hud-pause-quit {
-  border-color: rgba(255, 77, 94, 0.6);
+  border-color: var(--danger-line);
 }
 
 .hud-pause-quit.hud-focus {
-  border-color: rgb(255, 77, 94);
-  box-shadow:
-    0 0 0 1px rgb(255, 77, 94),
-    0 0 16px rgba(255, 77, 94, 0.35);
+  border-color: var(--danger);
 }
 
 /* Online, after the first press: the second one leaves the match. */
 .hud-pause-quit.hud-pause-armed {
-  border-color: rgb(255, 77, 94);
-  background: rgba(255, 77, 94, 0.32);
+  border-color: var(--danger);
+  background: var(--danger-tint);
 }
 
 /* The training entries: smaller buttons on one row, one focus stop (left / right pick). */
@@ -628,7 +596,7 @@ body {
   gap: 6px;
   padding: 3px;
   margin: 0 -3px;
-  border-radius: 10px;
+  border-radius: var(--r-tile);
   border: 1px solid transparent;
 }
 
@@ -642,35 +610,26 @@ body {
   white-space: nowrap;
 }
 
-/* Inside a row the picked button only lights while the row has the focus. */
+/* Inside a row the picked button only lights while the row has the focus (focus.css). */
 .hud-pause-row .hud-pause-btn.hud-focus {
-  border-color: var(--panel-edge);
-  background-color: var(--panel);
-  box-shadow: none;
+  border-color: var(--edge);
 }
 
 .hud-pause-row.hud-focus .hud-pause-btn.hud-focus {
-  border-color: var(--brand);
-  background-color: rgba(24, 34, 14, 0.86);
-  box-shadow:
-    0 0 0 1px var(--brand),
-    0 0 14px rgba(198, 255, 46, 0.35);
+  border-color: var(--edge-hi);
 }
 
 .tg-touch .hud-pause-btn.hud-focus,
 .tg-touch .hud-pause-row.hud-focus .hud-pause-btn.hud-focus {
-  border-color: var(--panel-edge);
-  background-color: var(--panel);
-  box-shadow: none;
+  border-color: var(--edge);
 }
 
 .tg-touch .hud-pause-primary.hud-focus {
   border-color: var(--brand);
-  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
 }
 
 .tg-touch .hud-pause-quit.hud-focus {
-  border-color: rgba(255, 77, 94, 0.6);
+  border-color: var(--danger-line);
 }
 
 /* Short landscape phones: a tighter column so the whole menu fits under the title. */
@@ -690,7 +649,8 @@ body {
   }
 }
 
-/* ---- Start menu ------------------------------------------------------------------------- */
+/* ---- The settings overlay (Hud.openSettingsScreen; the old start panel Hud.buildMenu still
+   builds stays hidden and unstyled until the Hud's menu code goes, plan PR 7) ------------------ */
 
 .hud-menu {
   position: absolute;
@@ -698,17 +658,14 @@ body {
   display: grid;
   place-items: center;
   padding: calc(var(--safe-top) + 16px) 16px calc(var(--safe-bottom) + 16px);
-  background:
-    radial-gradient(120% 90% at 50% 110%, rgba(58, 155, 255, 0.18), transparent 60%),
-    radial-gradient(120% 90% at 50% -10%, rgba(198, 255, 46, 0.12), transparent 60%),
-    rgba(4, 6, 12, 0.8);
+  background: var(--veil);
   pointer-events: auto;
   overflow: auto;
 }
 
 /* The settings screen alone, over the front-end menus (Hud.openSettingsScreen). */
 .hud-menu.hud-menu-settings-only {
-  z-index: 60;
+  z-index: var(--z-settings);
 }
 
 /* Touch mode: it pans but never zooms (manipulation would keep the pinch zoom on Android). */
@@ -719,155 +676,11 @@ body {
 .hud-menu-panel {
   width: min(92vw, 520px);
   padding: clamp(18px, 3vh, 32px) clamp(18px, 3vw, 36px);
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 12px;
-  backdrop-filter: blur(10px);
+  background: var(--surface-1-96);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
   text-align: center;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-}
-
-.hud-menu-title {
-  display: inline-block;
-  font-size: clamp(34px, 7vh, 64px);
-  font-weight: 900;
-  font-style: italic;
-  letter-spacing: 0.06em;
-  line-height: 1;
-  padding-right: 0.12em;
-  background: linear-gradient(90deg, var(--text) 0 57%, var(--brand) 66%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  text-shadow: none;
-}
-
-.hud-menu-subtitle {
-  margin-top: 8px;
-  font-size: clamp(11px, 1.6vh, 14px);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.hud-menu-play {
-  margin-top: clamp(16px, 3vh, 28px);
-  width: 100%;
-  padding: 14px 0;
-  font: inherit;
-  font-size: clamp(20px, 3.2vh, 28px);
-  font-weight: 900;
-  font-style: italic;
-  letter-spacing: 0.18em;
-  color: var(--brand-ink);
-  background: linear-gradient(90deg, var(--brand), #e4ff8a);
-  border: 0;
-  border-radius: 8px;
-  cursor: pointer;
-  text-shadow: none;
-  transition: transform 0.1s, filter 0.1s;
-}
-
-.hud-menu-play:hover,
-.hud-menu-play:focus-visible {
-  transform: translateY(-1px);
-  filter: brightness(1.06);
-  outline: none;
-}
-
-.hud-menu-hint {
-  margin-top: 8px;
-  font-size: 12px;
-  letter-spacing: 0.12em;
-  color: var(--muted);
-}
-
-/* ---- Online (phase 1): quick match button, status line, guest name ------------------------ */
-
-.hud-menu-online {
-  margin-top: 10px;
-  width: 100%;
-  padding: 10px 0;
-  font: inherit;
-  font-size: clamp(14px, 2.2vh, 18px);
-  font-weight: 900;
-  font-style: italic;
-  letter-spacing: 0.16em;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 8px;
-  cursor: pointer;
-  text-shadow: var(--shadow);
-  transition: transform 0.1s, filter 0.1s, background 0.1s;
-}
-
-.hud-menu-online:hover,
-.hud-menu-online.hud-focus {
-  background: rgba(198, 255, 46, 0.12);
-  border-color: var(--brand);
-  box-shadow: 0 0 0 1px var(--brand), 0 0 14px rgba(198, 255, 46, 0.25);
-  transform: translateY(-1px);
-}
-
-.hud-menu-status {
-  margin-top: 8px;
-  padding: 6px 10px;
-  font-size: 13px;
-  letter-spacing: 0.08em;
-  color: #e9ffc0;
-  background: rgba(198, 255, 46, 0.08);
-  border: 1px solid rgba(198, 255, 46, 0.3);
-  border-radius: 6px;
-  animation: hud-blink 1.6s steps(2, start) infinite;
-}
-
-.hud-menu-status.hud-error {
-  color: #ffb3b3;
-  background: rgba(255, 90, 90, 0.12);
-  border-color: rgba(255, 90, 90, 0.4);
-  animation: none;
-}
-
-/* ONLINE submenu (phase 2): Quick match (P2P) / Partida en servidor under the ONLINE button. */
-.hud-menu-online.hud-active {
-  background: rgba(198, 255, 46, 0.12);
-  border-color: var(--brand);
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-}
-.hud-menu-online-sub {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  background: rgba(198, 255, 46, 0.05);
-  border: 1px solid rgba(198, 255, 46, 0.35);
-  border-top: 0;
-  border-radius: 0 0 8px 8px;
-}
-.hud-menu-online-opt {
-  width: 100%;
-  padding: 9px 0;
-  font: inherit;
-  font-size: clamp(12px, 1.9vh, 15px);
-  font-weight: 800;
-  font-style: italic;
-  letter-spacing: 0.14em;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
-  cursor: pointer;
-  text-shadow: var(--shadow);
-  transition: transform 0.1s, filter 0.1s, background 0.1s;
-}
-.hud-menu-online-opt:hover,
-.hud-menu-online-opt.hud-focus {
-  background: rgba(198, 255, 46, 0.12);
-  border-color: var(--brand);
-  box-shadow: 0 0 0 1px var(--brand), 0 0 12px rgba(198, 255, 46, 0.25);
-  transform: translateY(-1px);
+  box-shadow: var(--shadow-sheet);
 }
 
 /* In-match wait line (a P2P stall: 'Esperando a <name>…'), top centre. */
@@ -880,10 +693,10 @@ body {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: #e9ffc0;
-  background: var(--panel);
-  border: 1px solid rgba(198, 255, 46, 0.4);
-  border-radius: 999px;
+  color: var(--warn);
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-pill);
   text-shadow: var(--shadow);
   animation: hud-blink 1.6s steps(2, start) infinite;
   pointer-events: none;
@@ -898,7 +711,7 @@ body {
   position: absolute;
   left: 50%;
   top: 50%;
-  z-index: 70;
+  z-index: var(--z-antibot);
   display: flex;
   justify-content: center;
   max-width: calc(100% - 32px);
@@ -920,9 +733,9 @@ body {
   letter-spacing: 0.08em;
   text-align: right;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-key);
   outline: none;
   user-select: text;
   -webkit-user-select: text;
@@ -930,7 +743,7 @@ body {
 
 .hud-menu-name:focus {
   border-color: var(--brand);
-  background: rgba(198, 255, 46, 0.1);
+  background: var(--brand-tint);
 }
 
 /* ---- Network panel (F4 / #net): top left, under the scorebug ------------------------------ */
@@ -942,11 +755,10 @@ body {
   padding: 6px 10px 8px;
   font-size: 12px;
   line-height: 1.35;
-  color: var(--muted);
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 8px;
-  opacity: 0.92;
+  color: var(--text-2);
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-key);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
@@ -961,145 +773,10 @@ body {
 
 .hud-net-body {
   margin: 0;
-  font-family: 'Cascadia Mono', 'Consolas', 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   white-space: pre;
   color: var(--text);
-}
-
-.hud-menu-rows {
-  margin-top: clamp(14px, 2.4vh, 22px);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.hud-menu-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.hud-menu-row-label {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.hud-menu-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.hud-menu-value {
-  min-width: 7ch;
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-}
-
-.hud-menu-arrow,
-.hud-menu-toggle {
-  font: inherit;
-  font-weight: 800;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
-  cursor: pointer;
-  text-shadow: none;
-}
-
-.hud-menu-arrow {
-  width: 30px;
-  height: 30px;
-  font-size: 20px;
-  line-height: 1;
-}
-
-.hud-menu-toggle {
-  padding: 6px 12px;
-  font-size: 13px;
-  letter-spacing: 0.1em;
-}
-
-.hud-menu-arrow:hover,
-.hud-menu-toggle:hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.hud-menu-controls {
-  margin-top: clamp(14px, 2.4vh, 22px);
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 4px;
-  text-align: left;
-}
-
-.hud-menu-control {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.hud-menu-control-action {
-  color: var(--muted);
-}
-
-.hud-menu-control-keys {
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.hud-menu-info {
-  margin-top: 12px;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
-
-.hud-menu-settings {
-  margin-top: 10px;
-  width: 100%;
-  padding: 10px 0;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
-  cursor: pointer;
-  text-shadow: none;
-}
-
-.hud-menu-settings:hover {
-  background: rgba(255, 255, 255, 0.14);
-}
-
-/* Keyboard / gamepad focus (main menu rows and buttons): the brand lime. */
-.hud-menu-row.hud-focus,
-.hud-menu-settings.hud-focus {
-  border-color: var(--brand);
-  background: rgba(198, 255, 46, 0.1);
-  box-shadow: 0 0 0 1px var(--brand), 0 0 14px rgba(198, 255, 46, 0.25);
-}
-
-.hud-menu-play.hud-focus {
-  transform: translateY(-1px);
-  filter: brightness(1.06);
-  box-shadow: 0 0 0 2px #fff, 0 0 18px var(--brand-glow);
 }
 
 /* ---- Settings screen (same panel look, wider, scrolls inside) ----------------------------- */
@@ -1135,19 +812,23 @@ body {
 .hud-settings-back {
   padding: 6px 12px;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-key);
   cursor: pointer;
   text-shadow: none;
 }
 
-.hud-settings-back:hover {
-  background: rgba(255, 255, 255, 0.16);
+@media (hover: hover) {
+  .hud-settings-back:hover {
+    background: var(--surface-3);
+  }
 }
 
 /* Touch mode: a thumb-sized target. */
@@ -1158,11 +839,13 @@ body {
 }
 
 .hud-settings-title {
+  font-family: var(--font-display);
   font-size: clamp(18px, 3vh, 26px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.08em;
   line-height: 1;
+  text-transform: uppercase;
   color: var(--text);
   text-shadow: none;
   border-left: 4px solid var(--brand);
@@ -1173,7 +856,7 @@ body {
   display: flex;
   gap: 2px;
   padding: 0 14px;
-  border-bottom: 1px solid var(--panel-edge);
+  border-bottom: 1px solid var(--edge);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -1186,32 +869,30 @@ body {
   flex: 1 0 auto;
   padding: 10px 12px;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
-  color: var(--muted);
+  color: var(--text-2);
   background: none;
   border: 0;
   border-bottom: 2px solid transparent;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--r-key) var(--r-key) 0 0;
   cursor: pointer;
   text-shadow: none;
 }
 
-.hud-settings-tab:hover {
-  color: var(--text);
+@media (hover: hover) {
+  .hud-settings-tab:hover {
+    color: var(--text);
+  }
 }
 
 .hud-settings-tab.hud-active {
   color: var(--text);
   border-bottom-color: var(--brand);
-}
-
-.hud-settings-tabs.hud-focus .hud-settings-tab.hud-active {
-  background: rgba(198, 255, 46, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(198, 255, 46, 0.6);
 }
 
 .hud-settings-body {
@@ -1221,7 +902,7 @@ body {
   overscroll-behavior: contain;
   padding: 8px 14px 12px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+  scrollbar-color: var(--edge-hi) transparent;
 }
 
 .hud-settings-page {
@@ -1241,16 +922,16 @@ body {
 }
 
 .hud-settings-device.hud-pad-missing {
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .hud-settings-group {
   margin: 10px 10px 3px;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .hud-settings-row {
@@ -1258,18 +939,15 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 5px 10px;
-  border-radius: 8px;
+  padding: 5px 10px 5px 14px;
+  border-radius: var(--r-tile);
   border: 1px solid transparent;
 }
 
-.hud-settings-row:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.hud-settings-row.hud-focus {
-  background: rgba(198, 255, 46, 0.08);
-  border-color: rgba(198, 255, 46, 0.7);
+@media (hover: hover) {
+  .hud-settings-row:hover {
+    background: var(--surface-2);
+  }
 }
 
 .hud-settings-label {
@@ -1294,29 +972,31 @@ body {
   padding: 6px 10px;
   font: inherit;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-key);
   cursor: pointer;
   text-shadow: none;
 }
 
-.hud-bind-cell:hover {
-  background: rgba(255, 255, 255, 0.16);
+@media (hover: hover) {
+  .hud-bind-cell:hover {
+    background: var(--surface-3);
+  }
 }
 
 .hud-bind-cell.hud-capturing {
-  color: #ffd166;
-  border-color: #ffd166;
-  background: rgba(255, 209, 102, 0.12);
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--warn-tint);
   animation: hud-blink 1s steps(2, start) infinite;
 }
 
 .hud-bind-row.hud-unbound .hud-bind-cell {
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .hud-bind-clear {
@@ -1325,17 +1005,19 @@ body {
   font: inherit;
   font-size: 16px;
   line-height: 1;
-  color: var(--muted);
+  color: var(--text-2);
   background: none;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--r-key);
   cursor: pointer;
   text-shadow: none;
 }
 
-.hud-bind-clear:hover {
-  color: #ff5a5a;
-  border-color: rgba(255, 90, 90, 0.5);
+@media (hover: hover) {
+  .hud-bind-clear:hover {
+    color: var(--danger);
+    border-color: var(--danger-line);
+  }
 }
 
 .hud-bind-row.hud-unbound .hud-bind-clear {
@@ -1369,7 +1051,7 @@ body {
   margin: 0;
   border-radius: 2px;
   outline: none;
-  background: linear-gradient(90deg, var(--brand) var(--p, 0%), rgba(255, 255, 255, 0.18) var(--p, 0%));
+  background: linear-gradient(90deg, var(--brand) var(--p, 0%), var(--surface-3) var(--p, 0%));
   cursor: pointer;
 }
 
@@ -1378,7 +1060,7 @@ body {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--text);
   border: 2px solid var(--brand);
   box-shadow: 0 0 6px var(--brand-glow);
 }
@@ -1387,7 +1069,7 @@ body {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--text);
   border: 2px solid var(--brand);
   box-shadow: 0 0 6px var(--brand-glow);
 }
@@ -1400,7 +1082,7 @@ body {
   min-width: 5ch;
   text-align: right;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1408,13 +1090,15 @@ body {
   min-width: 64px;
   padding: 6px 12px;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.12em;
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-pill);
   cursor: pointer;
   text-shadow: none;
 }
@@ -1429,29 +1113,32 @@ body {
 .hud-choice {
   gap: 0;
   padding: 2px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-pill);
 }
 
 .hud-choice-opt {
   min-width: 64px;
   padding: 6px 14px;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text-2);
   background: none;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   cursor: pointer;
   text-shadow: none;
 }
 
-.hud-choice-opt:hover {
-  color: var(--text);
+@media (hover: hover) {
+  .hud-choice-opt:hover {
+    color: var(--text);
+  }
 }
 
 .hud-choice-opt.hud-on {
@@ -1468,7 +1155,7 @@ body {
   padding: 2px 10px 8px;
   font-size: 12px;
   letter-spacing: 0.04em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* Settings > Experimental (src/render/experimentalPage.ts): the guest's line wraps on a phone; the
@@ -1479,7 +1166,7 @@ body {
 }
 
 .hud-settings-hint.hud-exp-confirm {
-  color: var(--red-hi);
+  color: var(--danger);
 }
 
 .hud-settings-device.hud-exp-match {
@@ -1506,7 +1193,7 @@ body {
 .hud-rule-std {
   font-size: 11px;
   letter-spacing: 0.04em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .hud-settings-ctl.hud-rule-ctl {
@@ -1519,22 +1206,27 @@ body {
   padding: 0;
   font: inherit;
   font-size: 18px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-key);
   cursor: pointer;
   text-shadow: none;
 }
 
-.hud-rule-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
+@media (hover: hover) {
+  .hud-rule-btn:hover:not(:disabled) {
+    background: var(--surface-3);
+  }
 }
 
+/* At its end: the dim text colour, never a faint opacity (contrast stays >= 4.5:1). */
 .hud-rule-btn:disabled {
-  opacity: 0.3;
+  color: var(--text-3);
+  background: none;
+  border-color: var(--edge);
   cursor: default;
 }
 
@@ -1547,7 +1239,7 @@ body {
   min-width: 9ch;
   text-align: center;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1571,13 +1263,15 @@ body {
 }
 
 .hud-settings-action:disabled {
-  opacity: 0.4;
+  color: var(--text-3);
+  background: none;
+  border-color: var(--edge);
   cursor: default;
 }
 
 .hud-settings-action.hud-exp-armed {
-  color: var(--red-hi);
-  border-color: var(--red-hi);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .tg-touch .hud-exp-buttons .hud-settings-action,
@@ -1591,7 +1285,7 @@ body {
 }
 
 .hud-settings-hint.hud-exp-status {
-  color: #ffd166;
+  color: var(--warn);
 }
 
 .hud-settings-hint.hud-exp-summary {
@@ -1607,7 +1301,7 @@ body {
   flex-direction: column;
   gap: 8px;
   padding: 10px 18px 14px;
-  border-top: 1px solid var(--panel-edge);
+  border-top: 1px solid var(--edge);
 }
 
 .hud-settings-actions {
@@ -1615,57 +1309,57 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   padding: 2px;
-  border-radius: 8px;
+  border-radius: var(--r-tile);
 }
 
 .hud-settings-action {
-  padding: 8px 14px;
+  padding: 8px 14px 8px 16px;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-key);
   cursor: pointer;
   text-shadow: none;
 }
 
-.hud-settings-action:hover {
-  background: rgba(255, 255, 255, 0.16);
+@media (hover: hover) {
+  .hud-settings-action:hover {
+    background: var(--surface-3);
+  }
 }
 
 .hud-settings-actions.hud-focus .hud-settings-action.hud-focus {
-  border-color: var(--brand);
-  background: rgba(198, 255, 46, 0.12);
-  box-shadow: 0 0 0 1px var(--brand), 0 0 12px rgba(198, 255, 46, 0.4);
+  background: var(--surface-3);
 }
 
 .hud-settings-keys {
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* ---- Scoreboard (held Tab / Back) ------------------------------------------------------- */
 
+/* Held over a live match: no dimming layer under the panel (it is 96 % opaque already). */
 .hud-scoreboard {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(4, 6, 12, 0.35);
 }
 
 .hud-sb-panel {
   width: min(92vw, 560px);
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 12px;
-  backdrop-filter: blur(8px);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  background: var(--surface-1-96);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-sheet);
   overflow: hidden;
 }
 
@@ -1684,9 +1378,10 @@ body {
   align-items: center;
   justify-content: center;
   padding: 10px;
+  font-family: var(--font-display);
   font-size: clamp(30px, 5.5vh, 52px);
-  font-weight: 900;
-  color: #fff;
+  font-weight: 700;
+  color: var(--text);
 }
 
 .hud-sb-score.hud-blue {
@@ -1703,10 +1398,11 @@ body {
   justify-content: center;
   min-width: 110px;
   padding: 0 14px;
+  font-family: var(--font-display);
   font-size: clamp(18px, 3vh, 28px);
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.06em;
-  background: rgba(2, 4, 10, 0.55);
+  background: var(--surface-0);
 }
 
 .hud-sb-teams {
@@ -1719,12 +1415,12 @@ body {
 }
 
 .hud-sb-team + .hud-sb-team {
-  border-left: 1px solid var(--panel-edge);
+  border-left: 1px solid var(--edge);
 }
 
 .hud-sb-team-name {
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.22em;
   text-transform: uppercase;
 }
@@ -1749,23 +1445,23 @@ body {
   align-items: center;
   gap: 8px;
   font-size: 15px;
-  font-weight: 700;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--text-2);
 }
 
 .hud-sb-row.hud-sb-you {
   color: var(--text);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .hud-sb-tag {
   padding: 2px 6px;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.14em;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--muted);
+  border-radius: var(--r-slot);
+  background: var(--surface-3);
+  color: var(--text-2);
   text-shadow: none;
 }
 
@@ -1782,12 +1478,12 @@ body {
 
 .hud-sb-foot {
   padding: 8px 14px 10px;
-  border-top: 1px solid var(--panel-edge);
+  border-top: 1px solid var(--edge);
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   text-align: center;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* ---- Pointer-lock hint (bottom centre, above the camera mode pill) ------------------------ */
@@ -1798,13 +1494,13 @@ body {
   left: 50%;
   transform: translateX(-50%);
   padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--panel-edge);
-  background: var(--panel);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--edge);
+  background: var(--surface-0-94);
   font-size: clamp(11px, 1.5vh, 13px);
   letter-spacing: 0.1em;
   white-space: nowrap;
-  color: var(--muted);
+  color: var(--text-2);
   animation: hud-fade-in 0.3s ease both;
 }
 
@@ -1816,11 +1512,6 @@ body {
    height, so a 960 × 540 TV and a 1366 × 768 laptop get the same proportions. */
 
 .hud-controls {
-  --cc-bg: #161a22;
-  --cc-line: #2b313c;
-  --cc-cap: #1f2430;
-  --cc-cap-edge: #4a5262;
-  --cc-soft: #b9c0cc;
   position: absolute;
   right: calc(var(--safe-right) + clamp(14px, 2.4vw, 32px));
   bottom: calc(var(--safe-bottom) + clamp(12px, 2.4vh, 26px));
@@ -1829,10 +1520,10 @@ body {
   padding: clamp(10px, 2vh, 16px) clamp(12px, 2.2vh, 18px) clamp(9px, 1.8vh, 14px);
   display: flex;
   flex-direction: column;
-  background: var(--cc-bg);
-  border: 1px solid var(--cc-line);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(5, 7, 13, 0.4);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+  box-shadow: var(--shadow-sheet);
   color: var(--text);
   text-shadow: none;
   animation: hud-fade-in 0.2s ease both;
@@ -1847,9 +1538,11 @@ body {
 }
 
 .hud-controls-title {
+  font-family: var(--font-display);
   font-size: clamp(14px, 2.4vh, 18px);
   font-weight: 700;
   letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 /* The tag: a skewed chip behind upright text. */
@@ -1865,7 +1558,7 @@ body {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
-  color: var(--cc-soft);
+  color: var(--text-2);
 }
 
 .hud-controls-tag::before {
@@ -1873,8 +1566,8 @@ body {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: #2a303c;
-  border-radius: 3px;
+  background: var(--surface-3);
+  border-radius: var(--r-slot);
   transform: skewX(-20deg);
 }
 
@@ -1884,7 +1577,7 @@ body {
   justify-content: space-between;
   gap: 12px;
   min-height: clamp(30px, 5.5vh, 42px);
-  border-top: 1px solid var(--cc-line);
+  border-top: 1px solid var(--edge);
 }
 
 .hud-controls-label {
@@ -1905,10 +1598,10 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--cc-cap);
-  border: 1px solid var(--cc-cap-edge);
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
   border-bottom-width: 2px;
-  border-radius: 6px;
+  border-radius: var(--r-key);
   font-family: inherit;
   font-size: clamp(11px, 1.8vh, 14px);
   font-weight: 700;
@@ -1929,7 +1622,7 @@ body {
   gap: 6px;
   font-size: clamp(11px, 1.8vh, 14px);
   white-space: nowrap;
-  color: var(--cc-soft);
+  color: var(--text-2);
 }
 
 .hud-mouse {
@@ -1949,10 +1642,10 @@ body {
 
 .hud-controls-foot {
   padding-top: clamp(6px, 1.2vh, 10px);
-  border-top: 1px solid var(--cc-line);
+  border-top: 1px solid var(--edge);
   font-size: clamp(11px, 1.8vh, 14px);
   line-height: 1.3;
-  color: var(--cc-soft);
+  color: var(--text-2);
 }
 
 /* The strip: one line (two when it does not fit), no title, no tag, no foot. It stays in the
@@ -1985,7 +1678,7 @@ body {
 
 .hud-controls-strip .hud-controls-label {
   font-size: clamp(11px, 1.7vh, 13px);
-  color: var(--cc-soft);
+  color: var(--text-2);
 }
 
 .hud-controls-strip .hud-key {
@@ -2038,9 +1731,6 @@ body {
 
 @media (max-height: 480px), (max-width: 560px) {
   .hud-fps-info {
-    display: none;
-  }
-  .hud-menu-controls {
     display: none;
   }
   .hud-cam {
@@ -2113,16 +1803,33 @@ body {
   }
   .hud-sb-team + .hud-sb-team {
     border-left: 0;
-    border-top: 1px solid var(--panel-edge);
+    border-top: 1px solid var(--edge);
   }
 }
 
+/* ---- Reduced motion: one block for every prefix (menu.css, training.css and touch.css have none
+   of their own) --------------------------------------------------------------------------------
+   Nothing slides, pops, lifts or blinks; a change of opacity still fades, in 120 ms at most. The
+   search spinner keeps turning (it says a search is running); the loading bar has its own block
+   below; the rotate screen's phone rests turned (touch.css). */
 @media (prefers-reduced-motion: reduce) {
-  .hud-pop,
-  .hud-hint,
-  .hud-clock.hud-overtime,
-  .hud-bind-cell.hud-capturing {
-    animation: none;
+  [class*='mn-']:not(.mn-spinner),
+  [class*='hud-'],
+  [class*='trn-'],
+  [class*='tc-'] {
+    animation: none !important;
+    transition-property: opacity !important;
+    transition-duration: 0.12s !important;
+  }
+  .mn .mn-tile.mn-focus,
+  .mn .mn-tile:focus-visible {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) and (hover: hover) {
+  .mn .mn-tile:hover {
+    transform: none;
   }
 }
 
@@ -2132,7 +1839,7 @@ body {
    Turnstile slot (70) and the touch controls' rotate screen (80). */
 
 #overlay {
-  z-index: 100;
+  z-index: var(--z-loading);
 }
 
 /* Open: the page under it takes no pointer (keys: LoadingOverlay swallows them). */
@@ -2179,8 +1886,9 @@ body {
 
 /* The wordmark as the menu's top bar draws it (menu.css .mn-brand), larger. */
 .ld-logo {
+  font-family: var(--font-display);
   font-size: clamp(34px, 6.2vw, 62px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.02em;
   line-height: 1;
@@ -2215,7 +1923,7 @@ body {
   height: 3px;
   overflow: hidden;
   border-radius: 2px;
-  background: rgba(244, 247, 255, 0.12);
+  background: var(--surface-3);
 }
 
 .ld-fill {
@@ -2249,7 +1957,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2284,15 +1992,15 @@ body {
 
 .overlay-title {
   font-size: clamp(28px, 5vw, 52px);
-  font-weight: 900;
+  font-weight: 700;
   letter-spacing: 0.08em;
   line-height: 1.1;
-  color: #ff6b6b;
+  color: var(--danger);
 }
 
 .overlay-line {
   font-size: clamp(14px, 1.6vw, 18px);
-  color: var(--muted);
+  color: var(--text-2);
   max-width: 60ch;
 }
 
@@ -2302,11 +2010,11 @@ body {
   max-height: 40vh;
   overflow: auto;
   padding: 12px 16px;
-  border: 1px solid var(--panel-edge);
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--muted);
-  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-key);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font: 12px/1.5 var(--font-mono);
   text-align: left;
   white-space: pre-wrap;
   user-select: text;
@@ -2314,37 +2022,63 @@ body {
 
 /* ---- Super low (html.tg-superlow, Game.ts: TierSpec.cpuLite) --------------------------------
    The 1 GB TV of docs/visuals/REWORK.md "Super low" composites the page on the same weak GPU the
-   game draws on: no blur behind the panels (each backdrop-filter re-reads and blurs what is
-   under it every frame), no text or box shadows, no decorative animation, opaque panels. The
-   informative animations stay: the blinking overtime clock and low-time clock, the menu's
-   spinner, the loading bar. The rules win over every stylesheet (menu.css, training.css,
-   touch.css) through the class on <html> and !important. */
+   game draws on. Nothing in the game blurs what is under it (no backdrop blur anywhere:
+   tests/css-budget.test.mjs), and here every surface over the scene is opaque, the hero and the
+   primary are flat lime, no box or text shadow is drawn (the HUD over the scene keeps one hard
+   pixel: A20) and no decorative transition or animation runs, by class prefix. The focus ring
+   stays (src/ui/styles/focus.css), and so do the informative animations: the search spinner,
+   hold-to-confirm, the busy stripe, the low / overtime clock, a key capture, the P2P wait line and
+   the loading bar. The rules win over every stylesheet (menu.css, training.css, touch.css)
+   through the class on <html> and !important. */
 html.tg-superlow {
-  --panel: rgb(10, 13, 24);
+  --surface-0-90: var(--surface-0);
+  --surface-0-94: var(--surface-0);
+  --surface-0-96: var(--surface-0);
+  --surface-1-94: var(--surface-1);
+  --surface-1-96: var(--surface-1);
+  --surface-2-97: var(--surface-2);
+  --surface-3-97: var(--surface-3);
+  --brand-grad: var(--brand);
+  --scrim: none;
+  --mn-backdrop: rgba(5, 7, 13, 0.62);
+  --shadow: var(--shadow-lite);
 }
 
 html.tg-superlow *,
 html.tg-superlow *::before,
 html.tg-superlow *::after {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
   text-shadow: none !important;
   box-shadow: none !important;
 }
 
-html.tg-superlow .hud-pop,
-html.tg-superlow .hud-hint,
-html.tg-superlow .hud-controls,
-html.tg-superlow [class*='mn-']:not(.mn-spinner),
+/* The HUD, the training panels and the touch buttons sit on the live scene: one hard pixel under
+   their text instead of nothing (BOOST and the clock stay readable on a bright pitch). */
+html.tg-superlow .hud-root *,
+html.tg-superlow .trn-root *,
+html.tg-superlow .tc-root * {
+  text-shadow: var(--shadow-lite) !important;
+}
+
+html.tg-superlow .hud-boost-label {
+  color: var(--text);
+}
+
+html.tg-superlow [class*='mn-']:not(.mn-spinner):not(.mn-hold):not(.mn-busy),
+html.tg-superlow [class*='hud-']:not(.hud-overtime):not(.hud-clock-low):not(.hud-capturing):not(.hud-netwait),
 html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {
+  transition: none !important;
   animation: none !important;
 }
 
-/* Without box shadows two focus states would show nothing (their only cue is a ring of shadow):
-   a plain outline instead, so the pad's focus stays visible on the TV. */
-html.tg-superlow .hud-pause-primary.hud-focus,
-html.tg-superlow .hud-menu-play.hud-focus {
-  outline: 2px solid var(--text);
-  outline-offset: 1px;
+/* No lift on a focused or hovered tile (the ring says it). */
+html.tg-superlow .mn .mn-tile.mn-focus,
+html.tg-superlow .mn .mn-tile:focus-visible {
+  transform: none;
+}
+
+@media (hover: hover) {
+  html.tg-superlow .mn .mn-tile:hover {
+    transform: none;
+  }
 }

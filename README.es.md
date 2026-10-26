@@ -3,7 +3,8 @@
 **Un juego de fútbol con autos y física, rápido, que corre en el navegador.** Manejas, saltas,
 vuelas con el boost y anotas goles en 1v1, 2v2 o 3v3, contra bots o contra otras personas online. Todo
 lo que ves y escuchas (la cancha, los autos, la pelota, el estadio, el cielo, los sonidos) se genera
-con código: no se descarga ningún asset.
+con código; la única excepción es un subconjunto de 6 KB de una fuente libre (Barlow Condensed,
+licencia SIL Open Font License) para los títulos.
 
 **Juégalo ya: [turbo-gol.com](https://turbo-gol.com)** · Comunidad: [Discord](https://discord.gg/sPyf787aHP) (en inglés)
 

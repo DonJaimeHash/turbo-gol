@@ -1,8 +1,9 @@
 /*
- * Training HUD (src/render/TrainingHud.ts). Every class is prefixed `trn-`; the palette, font and
- * text shadow come from the custom properties in src/style.css (:root). The overlay ignores the
- * pointer except its buttons, so a click on the game still reaches the canvas (mouse capture /
- * resume after a pause).
+ * Training HUD (src/render/TrainingHud.ts). Every class is prefixed `trn-`; colours, type and radii
+ * are the tokens of src/ui/styles/tokens.css (a pass is --ok, a miss --danger), the focus ring of
+ * the summary's default button is src/ui/styles/focus.css. Panels are opaque enough to need no
+ * blur. The overlay ignores the pointer except its buttons, so a click on the game still reaches
+ * the canvas (mouse capture / resume after a pause).
  */
 
 .trn-root {
@@ -12,8 +13,6 @@
   font-variant-numeric: tabular-nums;
   text-shadow: var(--shadow);
   color: var(--text);
-  --trn-pass: #37d67a;
-  --trn-fail: #ff4d5e;
 }
 
 .trn-root[hidden],
@@ -40,15 +39,15 @@
   min-width: min(260px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   padding: 10px 14px 12px;
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 8px;
-  backdrop-filter: blur(6px);
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
 }
 
 .trn-title {
+  font-family: var(--font-display);
   font-size: clamp(15px, 2.4vh, 22px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -67,14 +66,14 @@
   font-size: clamp(12px, 1.6vh, 14px);
   font-weight: 700;
   letter-spacing: 0.06em;
-  color: #c79bff;
+  color: var(--lab);
 }
 
 .trn-attempts,
 .trn-boost {
   margin-top: 2px;
   font-size: clamp(12px, 1.6vh, 14px);
-  color: var(--muted);
+  color: var(--text-2);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -84,7 +83,7 @@
 }
 
 .trn-boost.trn-boost-off {
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* ---- Shot dots ------------------------------------------------------------------------- */
@@ -100,19 +99,19 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: rgba(244, 247, 255, 0.18);
-  border: 1px solid rgba(244, 247, 255, 0.35);
+  background: var(--surface-3);
+  border: 1px solid var(--edge-hi);
   box-sizing: border-box;
 }
 
 .trn-dot.trn-dot-pass {
-  background: var(--trn-pass);
-  border-color: var(--trn-pass);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 
 .trn-dot.trn-dot-fail {
-  background: var(--trn-fail);
-  border-color: var(--trn-fail);
+  background: var(--danger);
+  border-color: var(--danger);
 }
 
 .trn-dot.trn-dot-current {
@@ -134,7 +133,7 @@
   height: 8px;
   border-radius: 4px;
   overflow: hidden;
-  background: rgba(244, 247, 255, 0.14);
+  background: var(--surface-3);
 }
 
 .trn-timer-fill {
@@ -146,18 +145,20 @@
 }
 
 .trn-timer.trn-timer-low .trn-timer-fill {
-  background: linear-gradient(90deg, var(--amber), var(--trn-fail));
+  background: linear-gradient(90deg, var(--warn), var(--danger));
 }
 
+/* Waiting for the first touch: the fill dims (the timer has not started). */
 .trn-timer.trn-timer-idle .trn-timer-fill {
-  opacity: 0.45;
+  opacity: 0.6;
 }
 
 .trn-timer-text {
   min-width: 2ch;
   text-align: right;
+  font-family: var(--font-display);
   font-size: clamp(16px, 2.4vh, 22px);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 /* ---- Start prompt, result banner ------------------------------------------------------- */
@@ -168,9 +169,9 @@
   bottom: calc(var(--safe-bottom) + clamp(84px, 13vh, 130px)); /* above the boost bar's row */
   transform: translateX(-50%);
   padding: 6px 16px;
-  border-radius: 6px;
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
+  border-radius: var(--r-key);
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
   font-size: clamp(13px, 2vh, 18px);
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -187,25 +188,25 @@
   max-width: calc(100vw - 32px);
   text-align: center;
   padding: clamp(10px, 1.8vh, 18px) clamp(26px, 5vw, 60px);
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 8px;
-  backdrop-filter: blur(6px);
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
 }
 
 .trn-banner.trn-pass {
-  border-color: var(--trn-pass);
-  box-shadow: 0 0 30px rgba(55, 214, 122, 0.45);
+  border-color: var(--ok);
+  box-shadow: 0 0 30px var(--ok-glow);
 }
 
 .trn-banner.trn-fail {
-  border-color: var(--trn-fail);
-  box-shadow: 0 0 30px rgba(255, 77, 94, 0.45);
+  border-color: var(--danger);
+  box-shadow: 0 0 30px var(--danger-line);
 }
 
 .trn-banner-title {
+  font-family: var(--font-display);
   font-size: clamp(34px, 7vh, 72px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.04em;
   line-height: 1.05;
@@ -213,11 +214,11 @@
 }
 
 .trn-banner.trn-pass .trn-banner-title {
-  color: #9af0bd;
+  color: var(--ok);
 }
 
 .trn-banner.trn-fail .trn-banner-title {
-  color: #ffa3ad;
+  color: var(--danger);
 }
 
 .trn-banner-sub {
@@ -225,7 +226,7 @@
   font-size: clamp(13px, 2.2vh, 20px);
   font-weight: 600;
   letter-spacing: 0.1em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* ---- Key hints (panel footer, one binding per line) -------------------------------------- */
@@ -233,10 +234,10 @@
 .trn-keys {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid var(--panel-edge);
+  border-top: 1px solid var(--edge);
   font-size: clamp(11px, 1.5vh, 13px);
   line-height: 1.45;
-  color: var(--muted);
+  color: var(--text-2);
   letter-spacing: 0.06em;
   white-space: pre-line;
 }
@@ -248,36 +249,49 @@
 
 /* ---- Buttons (the pack summary) ---------------------------------------------------------- */
 
+/* The default button (RETRY: pad A / Enter) wears the focus ring of src/ui/styles/focus.css. */
 .trn-btn {
   pointer-events: auto;
   cursor: pointer;
   font: inherit;
+  font-family: var(--font-display);
   font-size: clamp(13px, 1.9vh, 16px);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text);
-  text-shadow: var(--shadow);
+  text-shadow: none;
   padding: 8px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--panel-edge);
-  background: var(--panel);
+  border-radius: var(--r-key);
+  border: 1px solid var(--edge-hi);
+  background: var(--surface-2);
+  transition: transform var(--dur-press) ease-out;
 }
 
-.trn-btn:hover {
-  border-color: rgba(198, 255, 46, 0.6);
-  background: rgba(24, 32, 20, 0.85);
+@media (hover: hover) {
+  .trn-btn:hover {
+    background: var(--surface-3);
+  }
+}
+
+.trn-btn:active {
+  transform: scale(0.97);
 }
 
 .trn-btn.trn-btn-primary {
   color: var(--brand-ink);
-  text-shadow: none;
   border-color: var(--brand);
-  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+  background: var(--brand-grad);
 }
 
-.trn-btn.trn-btn-primary:hover {
-  filter: brightness(1.08);
+@media (hover: hover) {
+  .trn-btn.trn-btn-primary:hover {
+    background: var(--brand-hi);
+  }
+}
+
+.trn-btn.trn-btn-primary:active {
+  background: var(--brand-deep);
 }
 
 /* Touch mode: thumb-sized targets (the summary buttons). */
@@ -294,8 +308,7 @@
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgba(4, 6, 12, 0.55);
-  backdrop-filter: blur(3px);
+  background: var(--veil);
 }
 
 .trn-summary-card {
@@ -304,22 +317,24 @@
   box-sizing: border-box;
   padding: clamp(16px, 3vh, 28px) clamp(18px, 4vw, 34px);
   text-align: center;
-  background: var(--panel);
-  border: 1px solid var(--panel-edge);
-  border-radius: 10px;
+  background: var(--surface-1-96);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-sheet);
 }
 
 .trn-summary-pack {
   font-size: clamp(13px, 1.9vh, 16px);
-  color: var(--muted);
+  color: var(--text-2);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .trn-summary-title {
   margin-top: 4px;
+  font-family: var(--font-display);
   font-size: clamp(24px, 4.4vh, 40px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -327,8 +342,9 @@
 
 .trn-summary-score {
   margin-top: 6px;
+  font-family: var(--font-display);
   font-size: clamp(44px, 9vh, 84px);
-  font-weight: 900;
+  font-weight: 700;
   line-height: 1;
 }
 
@@ -338,7 +354,7 @@
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .trn-summary-best.trn-new-best {
@@ -358,10 +374,11 @@
   margin-top: 18px;
 }
 
+/* 16 px: clear of the default button's focus heel. */
 .trn-summary-hint {
-  margin-top: 12px;
+  margin-top: 16px;
   font-size: clamp(11px, 1.5vh, 13px);
-  color: var(--muted);
+  color: var(--text-2);
   letter-spacing: 0.06em;
 }
 
@@ -392,9 +409,4 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .trn-pop,
-  .trn-start {
-    animation: none;
-  }
-}
+/* Reduced motion and super low: the one block per prefix in src/style.css. */
