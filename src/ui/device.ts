@@ -110,12 +110,15 @@ export function finePointer(): boolean {
   }
 }
 
-/** A keydown typed into a text field (a character): it says nothing about the device, the field's keys stay its own. */
-function typedInField(e: KeyboardEvent): boolean {
+/**
+ * A keydown typed into a text field (a character, or Chrome autofill's keydown with no `key`): it
+ * says nothing about the device, the field's keys stay its own. Pure (a node test feeds it objects).
+ */
+export function typedInField(e: Pick<KeyboardEvent, 'target' | 'key'>): boolean {
   const t = e.target as HTMLElement | null;
-  if (t === null || typeof t.tagName !== 'string') return false;
-  const field = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
-  return field && e.key.length === 1;
+  if (t === null || typeof t !== 'object' || typeof t.tagName !== 'string') return false;
+  const field = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable === true;
+  return field && (typeof e.key !== 'string' || e.key.length === 1);
 }
 
 /**

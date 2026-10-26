@@ -167,6 +167,13 @@
   scrollbar-color: rgba(198, 255, 46, 0.45) transparent;
   padding: 22px calc(var(--safe-right) + 22px) 22px calc(var(--safe-left) + 22px);
 }
+/* The focus ring (outline + offset) stays inside a scroller: FocusNav's scrollIntoView('nearest')
+   stops 16 px short of the edge (the TV's last training pack had its ring cut at the stage's bottom). */
+.mn-stage,
+.mn-lobbies,
+.mn-modal {
+  scroll-padding-block: 16px;
+}
 
 .mn-screen {
   max-width: 1180px;
@@ -378,7 +385,8 @@
   box-shadow: 0 0 0 6px rgba(198, 255, 46, 0.4), 0 0 24px rgba(198, 255, 46, 0.45);
 }
 /* An arrow with nowhere to go (nav.ts bounce): a 2 px nudge that way. `translate`, so it adds to a
-   tile's own transform; Super low drops it with every mn- animation, reduced motion never has it. */
+   tile's own transform. Super low keeps it (style.css: informative, the TV's only cue at an edge);
+   reduced motion never has it. */
 @media (prefers-reduced-motion: no-preference) {
   .mn .mn-bounce-up,
   .mn .mn-bounce-down,

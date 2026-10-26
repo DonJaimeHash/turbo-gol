@@ -176,9 +176,10 @@ export interface MenuOptions {
  * Gamepad / input layer routes these while the menu is shown (the keyboard goes through the
  * Hud's own listener). 'settings' = open the settings screen (next tab while inside it),
  * 'back' = leave the settings screen, 'up' / 'down' = move the focus, 'mode' = next game mode
- * (M), 'quality' = the next quality tier (Q: superlow -> low -> high -> ultra -> superlow).
+ * (M), 'quality' = the next quality tier (Q: superlow -> low -> high -> ultra -> superlow),
+ * 'tabPrev' / 'tabNext' = the settings screen's previous / next tab (pad LB / RB and LT / RT; Q / E).
  */
-export type MenuAction = 'accept' | 'left' | 'right' | 'quality' | 'mode' | 'settings' | 'up' | 'down' | 'back' | 'online';
+export type MenuAction = 'accept' | 'left' | 'right' | 'quality' | 'mode' | 'settings' | 'up' | 'down' | 'back' | 'online' | 'tabPrev' | 'tabNext';
 
 export type SettingsTab = 'kbm' | 'pad' | 'camera' | 'gameplay' | 'audio' | 'graphics' | 'experimental';
 
@@ -367,6 +368,8 @@ interface FocusItem {
   accept?: () => void;
   /** Delete key: unbind. */
   clear?: () => void;
+  /** left / right follow a held arrow's auto-repeat (a slider); every other row steps once per press. */
+  repeat?: boolean;
 }
 
 interface BindRow {
@@ -386,7 +389,7 @@ interface PageBuild {
   footer: FocusItem | null;
 }
 
-/** Wrapping focus over a list of items; keeps the `hud-focus` class on the current one. */
+/** Wrapping focus over a list of items (an arrow's auto-repeat stops at the ends); keeps the `hud-focus` class on the current one. */
 class FocusRing {
   items: FocusItem[] = [];
   index = 0;
@@ -419,8 +422,11 @@ class FocusRing {
     if (scroll) next.el.scrollIntoView({ block: 'nearest' });
   }
 
-  move(dir: number): void {
-    this.set(this.index + dir);
+  /** One step; `wrap` false (an arrow's auto-repeat): nothing past the first / last item. */
+  move(dir: number, wrap = true): void {
+    const j = this.index + dir;
+    if (!wrap && (j < 0 || j >= this.items.length)) return;
+    this.set(j);
   }
 
   /** Pointer interaction: focus the row that was touched (no scrolling). */
@@ -624,7 +630,7 @@ export class Hud {
     if (e.altKey) return;
     const action = this.settingsOpen ? settingsKeyAction(e.code) : mainKeyAction(e.code);
     if (action !== null) {
-      this.menuAction(action);
+      this.menuAction(action, e.repeat); // the key's own repeat: as the pad's (menuAction)
       e.preventDefault();
       return;
     }
@@ -634,10 +640,8 @@ export class Hud {
         this.clearFocused();
         break;
       case 'KeyQ':
-        this.cycleTab(-1);
-        break;
       case 'KeyE':
-        this.cycleTab(1);
+        if (!e.repeat) this.menuAction(e.code === 'KeyQ' ? 'tabPrev' : 'tabNext');
         break;
       default:
         return;
@@ -1421,10 +1425,12 @@ export class Hud {
    * the focused row's value (difficulty / mode; the next quality tier on its row), 'mode' (M)
    * cycles the mode, 'quality' (Q) steps to the next quality tier, 'settings' opens the settings
    * screen. Settings screen: up/down focus, left/right adjust (tabs on the tab strip), accept
-   * activates (rebind / toggle / button), 'settings' or 'quality' = next tab, back closes ('mode'
-   * does nothing there).
+   * activates (rebind / toggle / button), 'settings', 'quality' or 'tabNext' = next tab, 'tabPrev'
+   * = the previous one, back closes ('mode' does nothing there). `repeat`: an arrow's auto-repeat
+   * (Input's NAV_REPEAT_*, a key's own): up / down stop at the first / last row instead of wrapping
+   * round, left / right only step a slider (a choice, the tabs or Graphics, a reload, once per press).
    */
-  menuAction(action: MenuAction): void {
+  menuAction(action: MenuAction, repeat = false): void {
     if (!this.menuVisible || this.menuOptions === null || this.captureRow !== null) return;
     if (this.settingsOpen) {
       // A text field of the screen is being typed in (the preset name: the keyboard is up): pad A
@@ -1435,12 +1441,13 @@ export class Hud {
         active.blur();
         if (action !== 'up' && action !== 'down') return;
       }
-      if (dispatchFocus(this.settingsRing, action)) return;
+      if (dispatchFocus(this.settingsRing, action, repeat)) return;
       if (action === 'back') this.closeSettings();
-      else if (action === 'quality' || action === 'settings') this.cycleTab(1);
+      else if (action === 'quality' || action === 'settings' || action === 'tabNext') this.cycleTab(1);
+      else if (action === 'tabPrev') this.cycleTab(-1);
       return;
     }
-    if (dispatchFocus(this.mainRing, action)) return;
+    if (dispatchFocus(this.mainRing, action, repeat)) return;
     if (action === 'quality') this.stepQuality(1);
     else if (action === 'mode') this.cycleMode(1);
     else if (action === 'settings') this.openSettings();
@@ -2199,7 +2206,7 @@ export class Hud {
     };
     input.addEventListener('input', () => apply(stepSettingValue(Number(input.value), 0, min, max, step)));
     const nudge = (dir: number): void => apply(stepSettingValue(get(), dir, min, max, step));
-    const item: FocusItem = { el: row, left: () => nudge(-1), right: () => nudge(1) };
+    const item: FocusItem = { el: row, left: () => nudge(-1), right: () => nudge(1), repeat: true }; // a held ◀ ▶ slides (FOV: 50 steps)
     row.addEventListener('pointerdown', () => this.settingsRing.focusItem(item));
     this.refreshers.push(refresh);
     return { row, item };
@@ -2434,23 +2441,26 @@ export class Hud {
   }
 }
 
-/** up/down/left/right/accept on a focus ring; false when the action is not a focus action. */
-function dispatchFocus(ring: FocusRing, action: MenuAction): boolean {
+/**
+ * up/down/left/right/accept on a focus ring; false when the action is not a focus action.
+ * `repeat` (a held arrow's auto-repeat): up / down never wrap, left / right only on a `repeat` item.
+ */
+function dispatchFocus(ring: FocusRing, action: MenuAction, repeat = false): boolean {
   switch (action) {
     case 'up':
-      ring.move(-1);
+      ring.move(-1, !repeat);
       return true;
     case 'down':
-      ring.move(1);
+      ring.move(1, !repeat);
       return true;
     case 'left': {
       const it = ring.item;
-      if (it !== null && it.left) it.left();
+      if (it !== null && it.left && (!repeat || it.repeat === true)) it.left();
       return true;
     }
     case 'right': {
       const it = ring.item;
-      if (it !== null && it.right) it.right();
+      if (it !== null && it.right && (!repeat || it.repeat === true)) it.right();
       return true;
     }
     case 'accept': {

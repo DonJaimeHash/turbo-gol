@@ -2317,8 +2317,9 @@ body {
    game draws on: no blur behind the panels (each backdrop-filter re-reads and blurs what is
    under it every frame), no text or box shadows, no decorative animation, opaque panels. The
    informative animations stay: the blinking overtime clock and low-time clock, the menu's
-   spinner, the loading bar. The rules win over every stylesheet (menu.css, training.css,
-   touch.css) through the class on <html> and !important. */
+   spinner, the loading bar, the 120 ms edge nudge (menu.css .mn-bounce-*: an arrow with nowhere
+   to go, a compositor-only translate). The rules win over every stylesheet (menu.css,
+   training.css, touch.css) through the class on <html> and !important. */
 html.tg-superlow {
   --panel: rgb(10, 13, 24);
 }
@@ -2335,7 +2336,7 @@ html.tg-superlow *::after {
 html.tg-superlow .hud-pop,
 html.tg-superlow .hud-hint,
 html.tg-superlow .hud-controls,
-html.tg-superlow [class*='mn-']:not(.mn-spinner),
+html.tg-superlow [class*='mn-']:not(.mn-spinner):not([class*='mn-bounce-']),
 html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {
   animation: none !important;

@@ -11,10 +11,14 @@ All notable changes to Turbogol are documented here. The format follows
   short pause the focus keeps moving, and it stops at the end of the list instead of jumping
   somewhere else; press again to go on. Past the top of a screen you reach the region and account
   buttons in the top bar, past the bottom the search's CANCEL and the links at the foot of the
-  page, which a controller could not reach before.
+  page, which a controller could not reach before. In Settings, holding ◀ or ▶ on a slider (field
+  of view, sensitivity, volume) keeps sliding it, and holding ↑ or ↓ stops at the last row instead
+  of starting over at the top. A direction you were already holding when the menus, the pause or
+  Settings came up moves nothing until you press it again.
 - Controller shortcuts in the menus: Start opens Settings and Y cancels the search you are in (X on
-  the keyboard). The bumpers, the triggers and Q / E are kept for switching sections and tabs in
-  the menus to come; during a match none of them does anything new.
+  the keyboard). The bumpers and the triggers switch the tabs of Settings, the triggers (and Q / E
+  on the keyboard) those of the leaderboard and of the sign-in screen; during a match none of them
+  does anything new.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
   boost and switch to the ball camera, with your own keys or buttons (keyboard and mouse, or the
@@ -144,7 +148,8 @@ All notable changes to Turbogol are documented here. The format follows
   appears under your finger ignores that touch. While a dialog is open nothing behind it can be
   focused or pressed.
 - An arrow with nowhere to go nudges the focused button a little that way, so you can tell the
-  press arrived (not in Super low, nor with reduced motion).
+  press arrived (in Super low too, as on a TV; not with reduced motion). The focus outline of the
+  last button of a long screen is no longer cut off at the bottom edge.
 - In the pause menu, B on a controller and Backspace no longer throw you out of the match (online
   and in Competitive too, where leaving counts as an abandon): like Esc and Start, they go back to
   the match. Only the QUIT button leaves, and online it still asks a second time. Inside the pause

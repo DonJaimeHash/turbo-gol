@@ -76,3 +76,16 @@ test('DeviceTracker: the last input, a change notified once, pad presses counted
   d.notePadPresses(4);
   assert.deepEqual(seen, ['keyboard', 'pad', 'touch', 'pad']);
 });
+
+test('typedInField: a character, or a keydown with no key (Chrome autofill), in a text field; never throws', () => {
+  const input = { tagName: 'INPUT' };
+  assert.equal(DEV.typedInField({ target: input, key: 'a' }), true);
+  assert.equal(DEV.typedInField({ target: input, key: 'ArrowDown' }), false, 'an arrow says which device');
+  assert.equal(DEV.typedInField({ target: input, key: undefined }), true, 'autofill: no key');
+  assert.equal(DEV.typedInField({ target: { tagName: 'TEXTAREA' }, key: 'x' }), true);
+  assert.equal(DEV.typedInField({ target: { tagName: 'DIV', isContentEditable: true }, key: 'x' }), true);
+  assert.equal(DEV.typedInField({ target: { tagName: 'BUTTON' }, key: 'a' }), false);
+  assert.equal(DEV.typedInField({ target: { tagName: 'BUTTON' }, key: undefined }), false);
+  assert.equal(DEV.typedInField({ target: null, key: 'a' }), false);
+  assert.equal(DEV.typedInField({ target: {}, key: 'a' }), false, 'window / document: no tagName');
+});

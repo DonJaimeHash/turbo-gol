@@ -238,6 +238,12 @@ export class Menu {
   private touchUpAt = -Infinity;
   /** A keydown the fields' capture listener already handled (onKey leaves it). */
   private keyDone: Event | null = null;
+  /**
+   * Keys first pressed while the menus had them (onKey; keyup forgets them). A key's own repeat
+   * of any other (an arrow still steering at the final whistle) moves no focus, as the pad's
+   * repeat after a hand-off (Input.resetMenuRepeat).
+   */
+  private readonly keysDown = new Set<string>();
   private timer = 0;
   private popAt = 0;
   private lastError: string | null = null;
@@ -280,6 +286,7 @@ export class Menu {
     this.root.addEventListener('keydown', (e) => this.onFieldKey(e), true);
     this.installTapGuard();
     window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('keyup', (e) => this.keysDown.delete(e.code));
     host.accounts.subscribe(() => this.refreshChrome());
     void host
       .config()
@@ -350,6 +357,7 @@ export class Menu {
     this.root.hidden = true;
     this.root.parentElement?.classList.remove('mn-open');
     this.visibleNow = false;
+    this.keysDown.clear(); // a key held into the match and out again is no menu key
     this.closeModal();
     if (this.timer !== 0) {
       window.clearInterval(this.timer);
@@ -445,7 +453,8 @@ export class Menu {
   /**
    * The modal's first control; else the control focused last on the screen on top (anywhere, then
    * on its stage, by element or `data-key`); else its `data-autofocus` or first one (a first visit).
-   * Without a fine pointer a text field is never the first (the system keyboard would come up).
+   * Without a fine pointer a text field is never the first, remembered or not (the system keyboard
+   * would come up): the stage's remembered control, else its first that is no field.
    */
   private restoreFocus(): void {
     const skipFields = !finePointer();
@@ -455,7 +464,7 @@ export class Menu {
     }
     const top = this.top();
     if (top === null) return;
-    const targets = this.nav.targets();
+    const targets = skipFields ? this.nav.targets().filter((t) => !isEditable(t)) : this.nav.targets();
     const el = this.memory.recall('last:' + top.id, targets, navKey) ?? this.memory.recall('stage:' + top.id, targets, navKey);
     if (el !== null) this.nav.focus(el);
     else this.nav.first(skipFields);
@@ -525,7 +534,7 @@ export class Menu {
   private onFieldKey(e: KeyboardEvent): void {
     const el = e.target;
     if (!(el instanceof HTMLElement) || !isEditable(el) || !el.hasAttribute('data-nav')) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || typeof e.key !== 'string') return; // Chrome's autofill sends keydowns without a key
     if (isEditing(el)) {
       if (e.key === 'Enter') setEditing(el, false);
       else if (e.key === 'Escape' && this.modalEl === null) {
@@ -550,6 +559,7 @@ export class Menu {
     }
     if (document.querySelector('.hud-settings-panel:not([hidden])')) return; // the Hud's settings screen owns the keys
     if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
+    if (!e.repeat && typeof e.code === 'string') this.keysDown.add(e.code);
     const active = document.activeElement;
     const field = isEditable(active); // a text field's keys are its own, but for the arrows in navigation mode
     const editing = field && isEditing(active);
@@ -600,7 +610,7 @@ export class Menu {
     }
     if (dir !== null) {
       e.preventDefault();
-      this.nav.move(dir, e.repeat);
+      if (!e.repeat || this.keysDown.has(e.code)) this.nav.move(dir, e.repeat);
     }
   }
 
@@ -623,13 +633,15 @@ export class Menu {
   }
 
   /**
-   * A shortcut: the screen on top first (Screen.command), else the menus' own: 'cancel' cancels the
-   * search, 'menu' opens the settings. The sections ('prev' / 'next') arrive with the Tablero
-   * shell. False when nothing took it. Nothing while a modal is up (it keeps the focus).
+   * A shortcut: the screen on top first (Screen.command), else the menus' own: 'tabPrev' / 'tabNext'
+   * step the screen's inner tabs (stepTabs), 'cancel' cancels the search, 'menu' opens the settings.
+   * The sections ('prev' / 'next') arrive with the Tablero shell. False when nothing took it.
+   * Nothing while a modal is up (it keeps the focus).
    */
   command(c: MenuCommand): boolean {
     if (!this.visibleNow || this.modalEl !== null) return false;
     if (this.top()?.command?.(c)) return true;
+    if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
     if (c === 'cancel' && this.host.searchView().active) {
       this.host.cancelSearch();
       return true;
@@ -639,6 +651,26 @@ export class Menu {
       return true;
     }
     return false;
+  }
+
+  /**
+   * The screen's inner tabs (`.mn-tabs` of `.mn-tab`, the picked one `.mn-tab-on`: Leaderboard's
+   * playlists, Profile's sign-in / register / recover), by pad LT / RT or Q / E: the one before /
+   * after is pressed (round), and the focus goes with the pick when it was on the tabs (the screen
+   * rebuilds them). False when the screen shows none.
+   */
+  private stepTabs(d: -1 | 1): boolean {
+    const top = this.top();
+    const strip = top === null ? null : top.el.querySelector<HTMLElement>('.mn-tabs');
+    if (top === null || strip === null) return false;
+    const tabs = Array.from(strip.querySelectorAll<HTMLElement>('.mn-tab'));
+    const i = tabs.findIndex((b) => b.classList.contains('mn-tab-on'));
+    if (i < 0 || tabs.length < 2) return false;
+    const onTabs = strip.contains(document.activeElement);
+    tabs[(i + d + tabs.length) % tabs.length].click();
+    const picked = top.el.querySelector<HTMLElement>('.mn-tabs .mn-tab-on');
+    if (onTabs && picked !== null && !touchMode()) this.nav.focus(picked);
+    return true;
   }
 
   // ---- chrome: top bar, banner, population ---------------------------------------------------

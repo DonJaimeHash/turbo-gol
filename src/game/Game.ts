@@ -1365,6 +1365,7 @@ export class Game implements P2PGameHooks {
   private openPauseSettings(tab?: SettingsTab): void {
     if (!this.paused || this.pauseSettingsOpen || this.menuShown || this.hud.menuVisible) return;
     this.pauseSettingsOpen = true;
+    this.input.resetMenuRepeat(); // a direction held into it walks no list: a new press does
     this.hud.setPauseCovered(true);
     const from = tab === 'experimental' ? 'rules' : 'settings';
     this.hud.openSettingsScreen(
@@ -2869,6 +2870,8 @@ export class Game implements P2PGameHooks {
       this.audio.silence();
       // The pause menu gives the mouse back; the lock is re-requested by the next canvas click.
       this.input.exitPointerLock();
+      // The stick steering through the pause repeats nothing on its ring (Input.resetMenuRepeat).
+      this.input.resetMenuRepeat();
     }
   }
 
@@ -3102,16 +3105,18 @@ export class Game implements P2PGameHooks {
       else if (pa.menuDown) m.action('down', rep);
     } else if (hud.menuVisible) {
       // Keyboard goes straight to the Hud's own listener; only gamepad edges are forwarded. A held
-      // arrow repeats up / down only: left / right on its rows apply at once (Graphics would switch
-      // the quality, a reload, on every repeat).
+      // arrow's repeat (Hud.menuAction): up / down stop at the ends, left / right slide a slider only
+      // (Graphics would switch the quality, a reload, on every repeat). LB / RB and LT / RT: the tabs.
       const rep = pa.menuRepeat;
       if (pa.accept) hud.menuAction('accept');
       else if (pa.back) hud.menuAction('back');
       else if (pa.settings) hud.menuAction('settings');
-      else if (pa.menuLeft && !rep) hud.menuAction('left');
-      else if (pa.menuRight && !rep) hud.menuAction('right');
-      else if (pa.menuUp) hud.menuAction('up');
-      else if (pa.menuDown) hud.menuAction('down');
+      else if (pa.menuPrev || pa.menuTabPrev) hud.menuAction('tabPrev');
+      else if (pa.menuNext || pa.menuTabNext) hud.menuAction('tabNext');
+      else if (pa.menuLeft) hud.menuAction('left', rep);
+      else if (pa.menuRight) hud.menuAction('right', rep);
+      else if (pa.menuUp) hud.menuAction('up', rep);
+      else if (pa.menuDown) hud.menuAction('down', rep);
       else if (pa.menuCancel) hud.menuAction('online');
     } else if (this.training !== null && this.training.phase === 'summary') {
       // The pack summary owns the edges: retry, back to the menu, or pick a shot.
@@ -3460,6 +3465,8 @@ export class Game implements P2PGameHooks {
     // The controls card goes; the next countdown is the next match's first kickoff.
     this.controlsCard.arm();
     this.input.exitPointerLock(); // the menu is mouse-driven
+    // The stick still steering at the final whistle walks no focus: the repeat needs a new press.
+    this.input.resetMenuRepeat();
     this.hud.hideBanner(); // the "X WINS" banner is sticky and would bleed through the menu backdrop
     this.hud.showCountdown(null);
     // The last match's result (score / disconnect reason) as a toast over the menus.

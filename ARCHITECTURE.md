@@ -223,7 +223,9 @@ src/render/
                         rebinding both devices, camera / gameplay sliders, Audio: master volume,
                         Graphics: the quality tier among MenuOptions.qualities, Experimental:
                         experimentalPage.ts; refreshSettings redraws it when the account changes;
-                        pad A / B leave a text field of the screen instead of acting on it), the
+                        pad A / B leave a text field of the screen instead of acting on it; LB / RB,
+                        LT / RT, Q / E switch tabs; a held arrow's repeat stops at the first / last
+                        row and slides only a slider: FocusItem.repeat), the
                         controls card (setControlsCard: big card or slim strip, bottom right)
   controlsCard.ts       the controls card of the first matches and free play, pure: when it shows
                         (ControlsCardPlan: the first 3 matches' kickoff countdown, free play until
@@ -246,7 +248,8 @@ src/input/
                         states and one-shot / menu edges (the pad's LB / RB, LT / RT past 0.5 with
                         a 0.3 re-arm, Y and Start for the menus only; a held D-pad / stick
                         direction repeats after 400 ms, then every 80 ms, on an injectable clock:
-                        menuRepeat), driven by Settings.bindings; pointer lock
+                        menuRepeat; resetMenuRepeat at a hand-off: a held direction needs a new
+                        press), driven by Settings.bindings; pointer lock
                         (the capturing click is masked), one pad poll per frame (beginFrame),
                         latchEdges for menu hand-off, rebind capture (startRebind: armed on the
                         next macrotask, Esc cancels on both devices, wheel only over the cell),
@@ -330,10 +333,13 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
                         presets), lobby matches, settings screen). Focus: three zones (top bar,
                         stage, footer; a modal alone), the last focus per screen (FocusMemory by
                         element or data-key: back to a screen or out of a modal lands where it
-                        was; data-autofocus on a first visit only), modals with aria-modal and the
-                        rest inert. Back order: modal, a field being edited, Screen.back, pop.
-                        MenuCommand shortcuts (Q / E, LB / RB, LT / RT, X / Y, Start, pad X /
-                        Delete) reach Screen.command first. The 450 ms tap guard (touch)
+                        was; data-autofocus on a first visit only; never a text field without a
+                        fine pointer), modals with aria-modal and the rest inert. Back order:
+                        modal, a field being edited, Screen.back, pop. MenuCommand shortcuts
+                        (Q / E, LB / RB, LT / RT, X / Y, Start, pad X / Delete) reach
+                        Screen.command first; LT / RT and Q / E then step a screen's .mn-tabs
+                        (stepTabs). A key's own repeat moves the focus only for a key first
+                        pressed in the menus. The 450 ms tap guard (touch)
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right);
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:

@@ -1340,3 +1340,34 @@ test('pad menu edges never fire while a rebind capture waits (the press is the b
   sample();
   assert.equal(input.padActions.menuTabNext, false, 'nor after it while still held');
 });
+
+test('a direction held through a hand-off repeats no more: resetMenuRepeat / latchEdges need a new press', () => {
+  const { pad, input, at } = clocked();
+  at(-100); // picked up at rest
+  // The stick steering hard in the match (it crossed the threshold there), then the menus appear.
+  pad.axes[GP.AXIS_LX] = 0.9;
+  assert.equal(at(0).right, true, 'the crossing (in the match)');
+  input.resetMenuRepeat(); // Game.showMenu / setPaused(true) / openPauseSettings
+  for (const t of [400, 480, 560, 1500]) {
+    const e = at(t);
+    assert.equal(e.right || e.repeat, false, `still held at ${t} ms: no repeat`);
+  }
+  pad.axes[GP.AXIS_LX] = 0;
+  at(1600);
+  pad.axes[GP.AXIS_LX] = 0.9;
+  assert.equal(at(1700).right, true, 'a new push moves');
+  assert.equal(at(2100).repeat, true, 'and repeats');
+  pad.axes[GP.AXIS_LX] = 0;
+  at(2200);
+  // The D-pad held through latchEdges (a menu closing / opening on a press) likewise.
+  press(pad, GP.DPAD_DOWN);
+  assert.equal(at(3000).down, true);
+  input.latchEdges();
+  const e = at(3400);
+  assert.equal(e.down || e.repeat, false, 'latched: no repeat');
+  assert.equal(at(4000).down, false);
+  release(pad, GP.DPAD_DOWN);
+  at(4100);
+  press(pad, GP.DPAD_DOWN);
+  assert.equal(at(4200).down, true, 'pressed again: moves');
+});

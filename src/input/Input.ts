@@ -1102,11 +1102,23 @@ export class Input {
    * Sample once and discard the result, so presses made since the last sample count as already
    * held: no one-shot edge (ball cam, reset, pause) fires for them on the next sample. Call when
    * a menu closes synchronously on a key / button that may also be bound in game (the first tick
-   * would otherwise see the press as a fresh rising edge: Space = ball cam, pad A...).
+   * would otherwise see the press as a fresh rising edge: Space = ball cam, pad A...). A menu
+   * direction held through it repeats no more (resetMenuRepeat).
    */
   latchEdges(): void {
     this.sample(this.scratch);
     this.consumeActions();
+    this.navHeld = NAV_NONE;
+  }
+
+  /**
+   * Forget the menu direction held for the auto-repeat: it repeats again only after a new press.
+   * Call where a menu takes over from play (the menus after a match, the pause, the pause's
+   * settings): a stick steering hard, or a D-pad held, through that hand-off would otherwise walk
+   * the focus by itself 400 ms later. Nothing is sampled or consumed (safe inside processActions).
+   */
+  resetMenuRepeat(): void {
+    this.navHeld = NAV_NONE;
   }
 
   /** Ignore jump until it is released (so the button press that closed a menu does not jump). */
