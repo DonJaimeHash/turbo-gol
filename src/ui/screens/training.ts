@@ -48,7 +48,7 @@ export function trainingScreen(menu: Menu): Screen {
   const cyclerSlot = h('div.mn-exp-cycler');
   const summary = h('p.mn-note.mn-exp-summary');
   const edit = navButton('mn-btn mn-exp-edit', t('training.editPresets'), () =>
-    menu.host.openSettings(
+    menu.openSettings(
       () => {
         drawExp();
         menu.refocus();

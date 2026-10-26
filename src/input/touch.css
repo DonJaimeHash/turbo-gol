@@ -258,13 +258,16 @@
   display: none;
 }
 
-/* ---- Rotate your phone: portrait on a phone or tablet in touch mode covers everything --------
-   (the Game pauses an offline match on the same turn; a pad player keeps the portrait view). */
+/* ---- Rotate your phone: an upright phone in touch mode, for the match only ------------------
+   The menus work upright (src/ui/styles/shell.css: the tab bar); a match asks to turn the phone
+   (#hud without .mn-open: a match, its pause, a training pack). A tablet (600 wide or more upright)
+   plays either way. The Game pauses an offline match on the same turn (Game.portraitQuery, the
+   same query); a pad player keeps the portrait view. */
 
 .tc-rotate {
   position: absolute;
   inset: 0;
-  z-index: var(--z-rotate); /* above the menus (40), the settings screen (60) and the Turnstile slot (70) */
+  z-index: var(--z-rotate); /* above the HUD, the pause, the settings screen (60) and the Turnstile slot (70) */
   display: none;
   flex-direction: column;
   align-items: center;
@@ -284,8 +287,8 @@
   -webkit-touch-callout: none;
 }
 
-@media (orientation: portrait) and (pointer: coarse) {
-  .tg-touch .tc-rotate {
+@media (orientation: portrait) and (pointer: coarse) and (max-width: 599px) {
+  .tg-touch :not(.mn-open) > .tc-rotate {
     display: flex;
   }
 }

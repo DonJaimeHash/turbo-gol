@@ -58,7 +58,10 @@ html:not(.tg-touch) .trn-summary-card .trn-btn-primary::after {
 }
 
 /* ---- Rows: the bar on the left ------------------------------------------------------------- */
-/* Stacked controls closer than the heel's 15 px (a training pack column, a cycler row) are rows. */
+/* Stacked controls closer than the heel's 15 px (a training pack column, a cycler row, the phone's
+   rail and tabs) are rows. */
+html:not(.tg-touch) .mn .mn-sl-item.mn-focus::after,
+html:not(.tg-touch) .mn .mn-sl-item:focus-visible::after,
 html:not(.tg-touch) .mn .mn-lobby-row.mn-focus::after,
 html:not(.tg-touch) .mn .mn-lobby-row:focus-visible::after,
 html:not(.tg-touch) .mn .mn-pack.mn-focus::after,

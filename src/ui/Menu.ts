@@ -1,35 +1,50 @@
 /**
- * The front-end menus: a top bar (brand, breadcrumb, region / players
- * online, the account chip), a stack of screens in the middle, a bottom bar with the key hints and
- * the matchmaking banner (search timer + cancel) that follows the player across screens. Screens
- * live in src/ui/screens/*; this file owns navigation (keyboard, controller through `action`, mouse),
- * the shared preferences (region, playlists, connection), population polling, toasts and modals.
+ * The front-end menus: the Tablero shell (plan §1.3-1.5) around a stack of screens per section.
  *
- * Touch mode (`tg-touch` on <html>, src/input/TouchControls.ts: the last input used was a finger)
- * adds a '‹' back button to the top bar and drops the key hints and focus rings (menu.css); the
- * menus then focus nothing by themselves (`autoFocus`), so no text field pops up the keyboard, and
- * a tap that began before a screen or a modal came up (or within TAP_GUARD_MS after) presses
- * nothing on it (src/ui/device.ts tapGuarded).
+ * Sections (shell/sections.ts): JUGAR · ENTRENAMIENTO · GARAJE · CLASIFICACIÓN · PERFIL, each with a
+ * root screen; every other screen is stacked on its section's root (Play hub, Casual, the lobbies...
+ * on JUGAR's). Switching sections always lands on the new one's root (a section is a place, not a
+ * history): the top bar's tabs on a PC or a TV (focus = selection), the rail of a phone held
+ * sideways, the tabs of an upright phone, pad LB / RB, keyboard Q / E (a screen's own tabs first),
+ * the account chip (PERFIL) and the wordmark (JUGAR).
  *
- * Focus (src/ui/nav.ts): three zones, the top bar, the stage and the footer (a modal alone while it
- * is up); the last focus is remembered per screen (FocusMemory, by element or `data-key`), so going
- * back to a screen, or closing a modal, puts it where it was (`data-autofocus` counts on a first
- * visit only). Esc / B / Back (`back`): the modal closes, else a field being edited stops editing,
- * else the screen's own back, else the screen pops. Shortcuts (`MenuCommand`): Q / E, pad LB / RB
- * and LT / RT (a screen's own tabs first, then the sections the shell brings), keyboard X / pad Y
- * cancel the search, pad Start opens the settings, pad X / Delete the screen's context action.
+ * The shell, by layout class (device.ts layoutClass, `data-layout` on <html>; src/ui/styles/shell.css):
+ * - the top bar (shell/topbar.ts): wordmark, sections, pills, account chip, Settings; on a stacked
+ *   screen ‹ and the breadcrumbs, each crumb a way back;
+ * - the rail (phone sideways) or the tab bar (upright), shell/rail.ts;
+ * - the hint bar (shell/hintbar.ts): the last input's verbs (shell/hints.ts) and the source link
+ *   (AGPL-3.0) with About; a TV keeps its pills there;
+ * - pills (shell/pills.ts): the region with the connection, the running search (cancel from any
+ *   section, and over Settings: a copy floats above them, `float`), "UPDATE TO PLAY";
+ * - sheets (components/sheet.ts, `modal()`), toasts (components/toast.ts), the blocking "There's a
+ *   new version" sheet (z 65, over Settings too) when the server refused this page.
  *
- * The Game implements MenuHost (what the menus can ask of it) and calls show() / hide() /
- * action(); the menu never touches the sim or the renderer. Styling: src/ui/menu.css (`mn-`).
+ * Back (backModel.ts menuBack): the sheet closes, else a field being edited stops editing, else the
+ * screen's own back, else the stack pops, else another section goes to JUGAR, else JUGAR's root
+ * asks "Leave Turbogol?" (MenuHost.confirmLeave; the system Back reaches it through the Game).
+ *
+ * Focus (src/ui/nav.ts): zones top bar, stage, footer and the phone's tabs, the rail a side zone (◀
+ * from the stage); ↑ from the stage lands on the active section (or ‹), ↓ from the bar on the
+ * stage's remembered control. The last focus is remembered per screen (FocusMemory, by element or
+ * `data-key`); `data-autofocus` counts on a first visit only. Shortcuts (`MenuCommand`): Q / E, pad
+ * LB / RB and LT / RT, keyboard X / pad Y cancel the search (over Settings too), pad Start opens
+ * Settings, pad X / Delete the screen's context action.
+ *
+ * Touch mode (`tg-touch` on <html>): no focus rings, nothing focused by itself, and a tap that began
+ * before a screen or a sheet came up (or within TAP_GUARD_MS after) presses nothing on it.
+ *
+ * The Game implements MenuHost (what the menus can ask of it) and calls show() / hide() / action();
+ * the menu never touches the sim or the renderer. Styling: src/ui/styles/ (`mn-`) and menu.css.
  */
 import './menu.css';
-import { h, setChildren, clock } from './dom';
-import type { Child } from './dom';
+import './styles/index.css';
+import { h, setChildren } from './dom';
 import { FocusMemory, FocusNav, isEditable, isEditing, navKey, setEditing } from './nav';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, tapGuarded } from './device';
+import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
-import { playlistName, regionName, tierName } from './names';
+import { regionName, tierName } from './names';
 import { t } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
@@ -43,7 +58,22 @@ import type { GameMode } from '../sim/constants';
 import type { Difficulty, SettingsTab } from '../render/Hud';
 import type { ThemeId } from '../render/theme';
 import type { ActionId, Device } from '../input/bindings';
-import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
+import { DISCORD_URL, GAME_NAME, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
+import { hashValue } from '../render/hashFlags';
+import { menuBack } from './backModel';
+import { HOME_SECTION, rootSection, sectionDef, sectionOf, stepSection } from './shell/sections';
+import type { SectionId } from './shell/sections';
+import { hintItems } from './shell/hints';
+import { TopBar } from './shell/topbar';
+import { SectionList } from './shell/rail';
+import { HintBar } from './shell/hintbar';
+import { RegionPill, SearchPill, updatePill } from './shell/pills';
+import type { RegionPillState } from './shell/pills';
+import { sheetBox } from './components/sheet';
+import type { SheetSpec } from './components/sheet';
+import { Toasts } from './components/toast';
+import { icon } from './components/icons';
+import { fitAll, uiFitReport } from './fit';
 
 export type SearchKind = 'casual' | 'ranked';
 
@@ -66,6 +96,8 @@ export interface SearchView {
   since: number;
   /** The last failure (shown once as a toast), null when none. */
   error: string | null;
+  /** That failure is the server refusing this page's version (426 reload_required): reload to play online. */
+  reload?: boolean;
 }
 
 export interface MenuConfig {
@@ -118,12 +150,14 @@ export interface MenuHost {
   playLobbyMatch(result: QueueResult | QueueResultP2p): void;
   /**
    * The settings screen (the Hud's: controls, camera, gameplay, audio, graphics, experimental),
-   * on `opts.tab` when given; `onClose` when it is left.
+   * on `opts.tab` when given; `onClose` when it is left. The menus call it through Menu.openSettings.
    */
   openSettings(onClose: () => void, opts?: { tab?: SettingsTab }): void;
+  /** Back on JUGAR's root: "Leave Turbogol?" (the Game holds the system Back guard). */
+  confirmLeave(): void;
   /** The key / button name of an action's live binding on `device`, for a hint text ('—' unbound). */
   keyLabel(action: ActionId, device: Device): string;
-  /** One line about the build (WebGPU / RocketSim version), shown in the footer. */
+  /** One line about the build (WebGPU / RocketSim version), shown in About. */
   readonly info: string;
 }
 
@@ -138,13 +172,20 @@ export interface MenuPrefs {
 const PREFS_KEY = STORAGE_PREFIX + 'menu.v1';
 const POPULATION_EVERY_MS = 10_000;
 const TICK_MS = 250;
-/** The navigation keys in the hint line (key names stay untranslated). */
-const NAV_KEYS = { moveKeys: '↑↓←→ / D-pad', selectKeys: 'Enter / A', backKeys: 'Esc / B' };
 
 /** Touch mode: the last input used was a finger (`tg-touch` on <html>, set by src/input/TouchControls.ts). */
 function touchMode(): boolean {
   return document.documentElement.classList.contains('tg-touch');
 }
+
+/** The last input (device.ts, `data-input` on <html>). */
+function lastInput(): InputKind {
+  const v = document.documentElement.dataset.input;
+  return v === 'pad' || v === 'remote' || v === 'keyboard' || v === 'touch' ? v : 'mouse';
+}
+
+/** `#ui=<screen>` and `window.__uiFit` exist in development and in a VITE_UI_FIT=1 build only (scripts/ui-fit.mjs). */
+const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
 
 function loadPrefs(): MenuPrefs {
   const d: MenuPrefs = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'p2p', leaderboardPlaylist: '2v2' };
@@ -167,16 +208,16 @@ function loadPrefs(): MenuPrefs {
 
 /**
  * What the menus take besides the arrows, accept and back (`Menu.action`): 'prev' / 'next' (pad LB /
- * RB, keyboard Q / E without tabs of the screen's own: the sections, from the Tablero shell on),
- * 'tabPrev' / 'tabNext' (pad LT / RT, keyboard Q / E: a screen's own tabs), 'cancel' (pad Y,
- * keyboard X: cancel the search), 'menu' (pad Start: the settings), 'context' (pad X, Delete: the
- * screen's context action).
+ * RB, keyboard Q / E without tabs of the screen's own: the sections), 'tabPrev' / 'tabNext' (pad LT /
+ * RT, keyboard Q / E: a screen's own tabs), 'cancel' (pad Y, keyboard X: cancel the search), 'menu'
+ * (pad Start: the settings), 'context' (pad X, Delete: the screen's context action).
  */
 export type MenuCommand = 'prev' | 'next' | 'tabPrev' | 'tabNext' | 'cancel' | 'menu' | 'context';
 
 /** One screen of the stack. `el` is built once; show / hide / tick are optional. */
 export interface Screen {
   readonly id: string;
+  /** Its breadcrumb. */
   readonly title: string;
   readonly el: HTMLElement;
   show?(): void;
@@ -191,15 +232,10 @@ export interface Screen {
 
 export type ScreenFactory = (menu: Menu) => Screen;
 
-interface ModalSpec {
-  title: string;
-  body: Child | Child[];
-  actions: Array<{ label: string; primary?: boolean; onClick: () => void | boolean | Promise<void | boolean> }>;
-  /** Esc / B closes it (default true). */
-  dismissable?: boolean;
-  /** Called once when it closes, however (an action, Esc / B, another modal, the menus hiding). */
-  onClose?: () => void;
-}
+type ModalSpec = SheetSpec;
+
+/** How a section switch keeps the focus: on the bar that made it, or the new section's own. */
+type SwitchFocus = 'keep' | 'auto';
 
 export class Menu {
   readonly host: MenuHost;
@@ -210,27 +246,34 @@ export class Menu {
   cfg: MenuConfig | null = null;
 
   private readonly stage: HTMLElement;
-  private readonly topBar: HTMLElement;
-  private readonly bottomBar: HTMLElement;
-  private readonly crumbs: HTMLElement;
-  private readonly chip: HTMLElement;
-  private readonly backButton: HTMLButtonElement;
-  private readonly online: HTMLElement;
-  private readonly banner: HTMLElement;
-  private readonly hints: HTMLElement;
-  private readonly toasts: HTMLElement;
+  private readonly topBar: TopBar;
+  private readonly rail: SectionList;
+  private readonly tabbar: SectionList;
+  private readonly hintBar: HintBar;
+  private readonly pills: HTMLElement;
+  private readonly regionPill: RegionPill;
+  private readonly searchPill: SearchPill;
+  private readonly updateBtn: HTMLButtonElement;
+  /** The search pill over the Hud's settings screen (outside .mn: above z 60), pointer only. */
+  private readonly float: HTMLElement;
+  private readonly floatPill: SearchPill;
+  private readonly toasts: Toasts;
   private readonly modalLayer: HTMLElement;
   private readonly screens = new Map<string, Screen>();
   private readonly factories = new Map<string, ScreenFactory>();
+  private section: SectionId = HOME_SECTION;
+  /** The screens of the section shown, its root first. */
   private stack: Screen[] = [];
   private readonly nav: FocusNav;
-  /** Last focus: 'last:<screen>' anywhere while that screen was on top, 'stage:<screen>' on its stage, 'top' / 'bottom' in the bars. */
+  /** Last focus: 'last:<screen>' anywhere while that screen was on top, 'stage:<screen>' on its stage, '<zone>' in the bars. */
   private readonly memory = new FocusMemory<HTMLElement>();
   private modalEl: HTMLElement | null = null;
   private modalDismiss: (() => void) | null = null;
   private modalOnClose: (() => void) | null = null;
   /** What had the focus when the modal opened: it gets it back when the modal closes. */
   private modalOpener: HTMLElement | null = null;
+  /** The sheet up is not dismissable (Back does nothing). */
+  private modalBlocking = false;
   /** performance.now() of the last screen or modal mounted (or modal closed): the tap guard's reference. */
   private mountedAt = -Infinity;
   /** The last finger / pen down and up (performance.now()), for the tap guard. */
@@ -246,38 +289,60 @@ export class Menu {
   private readonly keysDown = new Set<string>();
   private timer = 0;
   private popAt = 0;
+  /** The last population poll failed (the region pill offers to retry). */
+  private popFailed = false;
   private lastError: string | null = null;
-  private bannerKey = '';
   private visibleNow = false;
+  private searching = false;
+  /** Settings opened from the menus are up (Menu.openSettings). */
+  private settingsOpen = false;
+  /** Settings just closed, in this task (onKey: the closing key is theirs). */
+  private settingsClosing = false;
+  /** The server refused this page's version: the update sheet once, then the pill. */
+  private reloadNeeded = false;
+  private reloadAsked = false;
+  private firstShow = true;
+  private fitQueued = false;
 
   constructor(host: MenuHost, container: HTMLElement) {
     this.host = host;
     this.prefs = loadPrefs();
-    this.crumbs = h('div.mn-crumbs');
-    this.online = h('button.mn-online', { type: 'button', 'data-nav': true, onclick: () => this.open('play') });
-    this.chip = h('button.mn-chip', { type: 'button', 'data-nav': true, onclick: () => this.open('profile') });
-    // Touch mode only (menu.css): a finger has no Esc / B. On the home screen it is hidden but keeps
-    // its place (mount), so the brand does not move when a screen opens.
-    this.backButton = h('button.mn-back', { type: 'button', title: t('menu.back'), 'aria-label': t('menu.back'), onclick: () => this.back() }, '‹');
-    this.topBar = h('header.mn-top', null, this.backButton, h('div.mn-brand', null, h('span.mn-brand-a', null, 'TURBO'), h('span.mn-brand-b', null, 'GOL')), this.crumbs, h('div.mn-top-right', null, this.online, this.chip));
+    this.topBar = new TopBar({
+      brand: () => this.selectSection(HOME_SECTION, 'click'),
+      back: () => this.backOrLeave(),
+      crumb: (i) => this.popTo(i),
+      sectionFocus: (id) => this.selectSection(id, 'focus'),
+      sectionClick: (id) => this.selectSection(id, 'click'),
+      step: (d) => this.stepSection(d),
+      chip: () => this.selectSection('profile', 'click'),
+      settings: () => this.openSettings(),
+    });
+    const listHandlers = {
+      focus: (id: SectionId) => this.selectSection(id, 'focus'),
+      click: (id: SectionId) => this.selectSection(id, 'click'),
+      back: () => this.backOrLeave(),
+      about: () => this.openAbout(),
+    };
+    this.rail = new SectionList('rail', listHandlers);
+    this.tabbar = new SectionList('tabbar', listHandlers);
+    this.hintBar = new HintBar(() => this.openAbout());
+    this.regionPill = new RegionPill(() => this.onRegionPill());
+    this.searchPill = new SearchPill(() => this.openSearchScreen(), () => this.cancelSearch(), true);
+    this.updateBtn = updatePill(() => this.openUpdateSheet());
+    this.pills = h('div.mn-pill-row', null, this.searchPill.el, this.updateBtn, this.regionPill.el);
+    this.topBar.pills.appendChild(this.pills);
     this.stage = h('main.mn-stage');
-    this.banner = h('div.mn-banner', { hidden: true });
-    this.hints = h('div.mn-hints');
-    // AGPL-3.0 section 13: a network game offers its source to the players. The links are focus
-    // targets of the footer zone (↓ past the stage's last control), so a controller reaches them too.
-    const link = (href: string, text: string, title?: string): HTMLAnchorElement => h('a.mn-source', { href, target: '_blank', rel: 'noopener', title, 'data-nav': true }, text);
-    const source = link(SOURCE_URL, t('menu.source'), t('menu.sourceTitle', { license: LICENSE_NAME }));
-    const discord = link(DISCORD_URL, 'Discord', t('menu.discordTitle'));
-    // Narrow screens drop the build line (.mn-info-build), never the source link.
-    this.bottomBar = h('footer.mn-bottom', null, this.banner, this.hints, h('div.mn-info', null, h('span.mn-info-build', null, host.info, ' · '), source, ' · ', link('./third-party-licenses.txt', t('menu.licenses')), ' · ', discord));
-    this.toasts = h('div.mn-toasts');
+    this.toasts = new Toasts();
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
-    this.root = h('div.mn', { hidden: true }, this.topBar, this.stage, this.bottomBar, this.toasts, this.modalLayer);
+    this.root = h('div.mn', { hidden: true }, this.rail.el, this.topBar.el, this.stage, this.hintBar.el, this.tabbar.el, this.toasts.el, this.modalLayer);
+    this.floatPill = new SearchPill(() => undefined, () => this.cancelSearch(), false);
+    this.float = h('div.mn-float', { hidden: true }, this.floatPill.el);
     // RMB is bindable in game: no context menu over the menus.
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
     container.appendChild(this.root);
+    container.appendChild(this.float);
     this.nav = new FocusNav(() => this.zones(), {
-      remembered: (zone, targets) => this.memory.recall(zone.name === 'stage' ? 'stage:' + (this.top()?.id ?? '') : zone.name, targets, navKey),
+      remembered: (zone, targets) => this.zoneEntry(zone, targets),
       restore: () => this.restoreFocus(),
       onFocus: (el, zone) => this.noteFocus(el, zone),
     });
@@ -287,18 +352,17 @@ export class Menu {
     this.installTapGuard();
     window.addEventListener('keydown', (e) => this.onKey(e));
     window.addEventListener('keyup', (e) => this.keysDown.delete(e.code));
+    window.addEventListener('resize', () => this.queueFit());
+    // The hints and the pills' place follow the last input and the layout class (device.ts).
+    new MutationObserver(() => {
+      this.renderHints();
+      this.placePills();
+      this.queueFit();
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-input', 'data-layout', 'class'] });
+    void document.fonts?.ready.then(() => this.queueFit());
     host.accounts.subscribe(() => this.refreshChrome());
-    void host
-      .config()
-      .then((c) => {
-        this.cfg = c;
-        this.populationNow();
-        this.refreshChrome();
-        if (this.visibleNow) this.top()?.show?.();
-      })
-      .catch(() => {
-        this.cfg = { regions: REGIONS, autoRegion: '', oauth: [], online: false };
-      });
+    this.loadConfig();
+    if (UI_FIT) (window as unknown as { __uiFit: () => unknown }).__uiFit = () => uiFitReport(this.root, this.top()?.id ?? '');
   }
 
   register(id: string, f: ScreenFactory): void {
@@ -343,18 +407,23 @@ export class Menu {
 
   /** Show the menus (the screen on top stays: back from a match lands where the search started). */
   show(screenId?: string): void {
-    if (this.stack.length === 0) this.stack = [this.screen('home')];
+    if (this.stack.length === 0) this.stack = [this.screen(sectionDef(this.section).root)];
+    const ui = this.firstShow && UI_FIT ? hashValue(location.hash, 'ui') : null;
+    this.firstShow = false;
+    if (ui !== null && this.factories.has(ui)) screenId = ui; // #ui=<screen>: scripts/ui-fit.mjs
     if (screenId !== undefined) this.open(screenId, true);
     this.root.hidden = false;
     this.root.parentElement?.classList.add('mn-open'); // menu.css hides the in-game HUD behind it
     this.visibleNow = true;
     this.mount();
+    this.placePills();
     if (this.timer === 0) this.timer = window.setInterval(() => this.tick(), TICK_MS);
     this.tick();
   }
 
   hide(): void {
     this.root.hidden = true;
+    this.float.hidden = true;
     this.root.parentElement?.classList.remove('mn-open');
     this.visibleNow = false;
     this.keysDown.clear(); // a key held into the match and out again is no menu key
@@ -366,11 +435,21 @@ export class Menu {
     this.top()?.hide?.();
   }
 
-  /** Push screen `id` (or bring it back to the top when it is already in the stack; `reset` = from home). */
+  /**
+   * Open screen `id`: a section's root opens that section (at its root); another screen is stacked
+   * on its section's root (brought back to the top when already in the stack; `reset`: right on the
+   * root, whatever was stacked).
+   */
   open(id: string, reset = false): void {
     const s = this.screen(id);
+    const sec = sectionOf(id);
     this.top()?.hide?.();
-    if (reset) this.stack = id === 'home' ? [s] : [this.screen('home'), s];
+    if (sec !== this.section) {
+      this.section = sec;
+      this.stack = [];
+    }
+    if (rootSection(id) !== null) this.stack = [s];
+    else if (reset || this.stack.length === 0) this.stack = [this.screen(sectionDef(sec).root), s];
     else {
       const i = this.stack.indexOf(s);
       if (i >= 0) this.stack.length = i + 1;
@@ -382,52 +461,154 @@ export class Menu {
   /** Replace the top screen (a form that turns into its result). */
   replace(id: string): void {
     this.top()?.hide?.();
-    this.stack.pop();
+    if (this.stack.length > 1) this.stack.pop();
     this.open(id);
   }
 
-  /**
-   * Esc / B / the '‹' button / the system Back (Game.onSystemBack): close the modal (unless it is not
-   * dismissable), else stop editing the field being edited (in touch mode that step is skipped: a
-   * finger's field has no navigation mode to go back to, and Android's first Back already hid the
-   * keyboard), else the screen's own back, else pop one screen. False when there was nothing to go
-   * back from (the home screen, no modal): the system Back then asks to leave the game.
-   */
-  back(): boolean {
-    if (this.modalEl && this.modalDismiss) {
-      this.modalDismiss();
-      return true;
-    }
-    const a = document.activeElement;
-    if (a instanceof HTMLElement && isEditing(a) && this.root.contains(a)) {
-      setEditing(a, false);
-      if (!touchMode()) return true;
-      a.blur();
-    }
-    const t = this.top();
-    if (t?.back?.()) return true;
-    if (this.stack.length <= 1) return false;
-    t?.hide?.();
-    this.stack.pop();
+  /** Back to the `i`-th screen of the stack (0: the section's root): a breadcrumb. */
+  private popTo(i: number): void {
+    if (i < 0 || i >= this.stack.length - 1) return;
+    this.top()?.hide?.();
+    this.stack.length = i + 1;
     this.mount();
+  }
+
+  /**
+   * Show section `id` at its root. `how`: 'focus' (its tab got the focus: the focus stays on the
+   * tab), 'click' (a click or a tap: on the section shown, back to its root), 'command' (LB / RB,
+   * Q / E: the focus follows to the new tab when it was on the bar, else the new section's own).
+   */
+  private selectSection(id: SectionId, how: 'focus' | 'click' | 'command'): void {
+    if (!this.visibleNow || this.modalEl !== null) return;
+    if (id === this.section) {
+      if (how !== 'focus' && this.stack.length > 1) this.popTo(0);
+      return;
+    }
+    const onBar = this.onSectionTab(document.activeElement);
+    this.top()?.hide?.();
+    this.section = id;
+    this.stack = [this.screen(sectionDef(id).root)];
+    const focus: SwitchFocus = how === 'focus' || (how === 'click' && onBar) ? 'keep' : 'auto';
+    this.mount(focus);
+    if (how === 'command' && onBar && !touchMode()) this.focusSectionEntry();
+  }
+
+  /** The section before / after (pad LB / RB, Q / E without a screen's own tabs, the bar's ‹ ›). */
+  private stepSection(d: -1 | 1): boolean {
+    const next = stepSection(this.section, d);
+    if (next === null) return false;
+    this.selectSection(next, 'command');
     return true;
   }
 
-  private mount(): void {
+  /** A section tab (the bar, the rail, the tabs) has `el`. */
+  private onSectionTab(el: Element | null): boolean {
+    return el instanceof HTMLElement && el.closest('.mn-secs, .mn-sl-items') !== null && this.root.contains(el);
+  }
+
+  /**
+   * Esc / B / ‹ / the system Back (Game.onSystemBack), in backModel.ts's order. False on JUGAR's
+   * root with no sheet: the caller asks to leave (backOrLeave here, confirmLeave in the Game).
+   */
+  back(): boolean {
+    const a = document.activeElement;
+    const editing = a instanceof HTMLElement && isEditing(a) && this.root.contains(a);
+    // Touch skips the field step (Android's first Back already hid the keyboard): editing just ends.
+    if (editing && touchMode()) {
+      setEditing(a, false);
+      a.blur();
+    }
+    const top = this.top();
+    let screenBack = typeof top?.back === 'function';
+    for (;;) {
+      const step = menuBack({
+        sheet: this.modalEl === null ? 'none' : this.modalDismiss !== null && !this.modalBlocking ? 'dismissable' : 'blocking',
+        editing: editing && !touchMode(),
+        touch: touchMode(),
+        screenBack,
+        depth: this.stack.length,
+        section: this.section,
+      });
+      switch (step) {
+        case 'closeSheet':
+          this.modalDismiss?.();
+          return true;
+        case 'blocked':
+          return true;
+        case 'stopEditing':
+          setEditing(a as HTMLElement, false);
+          return true;
+        case 'screen':
+          if (top?.back?.()) return true;
+          screenBack = false;
+          continue;
+        case 'pop':
+          this.top()?.hide?.();
+          this.stack.pop();
+          this.mount();
+          return true;
+        case 'home':
+          this.selectSection(HOME_SECTION, 'command');
+          return true;
+        default:
+          return false;
+      }
+    }
+  }
+
+  /** Back from a key, the pad or ‹: on JUGAR's root it asks to leave, as the system Back does. */
+  private backOrLeave(): void {
+    if (!this.back() && this.modalEl === null) this.host.confirmLeave();
+  }
+
+  private mount(focus: SwitchFocus = 'auto'): void {
     const top = this.top();
     if (!top) return;
     this.mountedAt = performance.now();
     this.nav.reset();
     setChildren(this.stage, top.el);
     // A screen opens at its top. With the keyboard / pad the first control's focus scrolls there
-    // (autoFocus); touch mode focuses nothing, and the stage would keep the last screen's offset.
-    if (touchMode()) this.stage.scrollTop = 0;
-    setChildren(this.crumbs, ...this.stack.slice(1).flatMap((s, i) => [i > 0 ? h('span.mn-crumb-sep', null, '›') : null, h('span.mn-crumb', null, s.title)]));
-    this.hints.textContent = t(this.stack.length > 1 ? 'menu.hintsBack' : 'menu.hints', NAV_KEYS);
-    this.backButton.classList.toggle('mn-back-off', this.stack.length <= 1);
+    // (autoFocus); touch mode and a switch from the bar focus nothing on the stage.
+    if (touchMode() || focus === 'keep') this.stage.scrollTop = 0;
+    this.renderChrome();
     top.show?.();
     this.refreshChrome();
-    this.autoFocus();
+    this.queueFit();
+    if (focus === 'auto') this.autoFocus();
+  }
+
+  /** The bars for the section and the stack shown: tabs, rail, crumbs, stacked or not, hints. */
+  private renderChrome(): void {
+    const stacked = this.stack.length > 1;
+    this.root.classList.toggle('mn-stacked', stacked);
+    this.topBar.setStacked(stacked);
+    this.rail.setStacked(stacked);
+    this.topBar.setSection(this.section);
+    this.rail.setSection(this.section);
+    this.tabbar.setSection(this.section);
+    if (stacked) this.topBar.setCrumbs([t(sectionDef(this.section).label), ...this.stack.slice(1).map((s) => s.title)]);
+    this.renderHints();
+  }
+
+  private renderHints(): void {
+    this.hintBar.render(hintItems(lastInput(), { searching: this.searching }));
+  }
+
+  /** The pills: the top bar's right side, or the hint bar on a TV (its top bar has no room at 3 m). */
+  private placePills(): void {
+    const tv = document.documentElement.dataset.layout === 'tv';
+    const want = tv ? this.hintBar.mid : this.topBar.pills;
+    if (this.pills.parentElement !== want) want.appendChild(this.pills);
+  }
+
+  /** data-fit (fit.ts) on the next frame, once per frame. */
+  private queueFit(): void {
+    if (this.fitQueued) return;
+    this.fitQueued = true;
+    requestAnimationFrame(() => {
+      this.fitQueued = false;
+      if (this.visibleNow) fitAll(this.root);
+    });
   }
 
   /** Put the focus back on the current screen when nothing has it (after the screen rebuilt its content). */
@@ -451,10 +632,11 @@ export class Menu {
   }
 
   /**
-   * The modal's first control; else the control focused last on the screen on top (anywhere, then
-   * on its stage, by element or `data-key`); else its `data-autofocus` or first one (a first visit).
-   * Without a fine pointer a text field is never the first, remembered or not (the system keyboard
-   * would come up): the stage's remembered control, else its first that is no field.
+   * The modal's first control (its `data-autofocus` one first); else the control focused last on
+   * the screen on top (anywhere, then on its stage, by element or `data-key`); else its
+   * `data-autofocus` or first one (a first visit); else, on a stage with nothing to focus (GARAJE),
+   * the active section. Without a fine pointer a text field is never the first, remembered or not
+   * (the system keyboard would come up).
    */
   private restoreFocus(): void {
     const skipFields = !finePointer();
@@ -468,24 +650,46 @@ export class Menu {
     const el = this.memory.recall('last:' + top.id, targets, navKey) ?? this.memory.recall('stage:' + top.id, targets, navKey);
     if (el !== null) this.nav.focus(el);
     else this.nav.first(skipFields);
+    if (this.nav.current === null) this.focusSectionEntry();
   }
 
-  /** The focus zones (nav.ts): a modal alone, else the top bar, the stage and the footer. */
+  /** The active section's tab (or ‹ on a stacked screen) in whichever bar this layout shows. */
+  private focusSectionEntry(): void {
+    const entry = this.nav.targets().find((e) => e.hasAttribute('data-nav-entry') && !this.stage.contains(e));
+    if (entry !== undefined) this.nav.focus(entry);
+  }
+
+  /** The focus zones (nav.ts): a modal alone, else the rail (a side zone), the top bar, the stage, the footer and the tabs. */
   private zones(): NavZone[] {
     if (this.modalEl !== null) return [{ name: 'modal', el: this.modalEl, main: true }];
     return [
-      { name: 'top', el: this.topBar },
+      { name: 'rail', el: this.rail.el, side: true },
+      { name: 'top', el: this.topBar.el },
       { name: 'stage', el: this.stage, main: true },
-      { name: 'bottom', el: this.bottomBar },
+      { name: 'bottom', el: this.hintBar.el },
+      { name: 'tabs', el: this.tabbar.el },
     ];
   }
 
-  /** A menu control got the focus: remember it for the screen on top and for its zone. */
+  /**
+   * Where an arrow lands entering `zone`: the stage's control focused last on this screen; a bar's
+   * active section (or ‹), so ↑ from the stage goes to the section shown; else the zone's last.
+   */
+  private zoneEntry(zone: NavZone, targets: readonly HTMLElement[]): HTMLElement | null {
+    if (zone.name === 'stage') return this.memory.recall('stage:' + (this.top()?.id ?? ''), targets, navKey);
+    if (zone.name !== 'bottom') {
+      const entry = targets.find((e) => e.hasAttribute('data-nav-entry'));
+      if (entry !== undefined) return entry;
+    }
+    return this.memory.recall(zone.name, targets, navKey);
+  }
+
+  /** A menu control got the focus: remember it for the screen on top and for its zone (a section tab is the bar's, not the screen's). */
   private noteFocus(el: HTMLElement, zone: NavZone | null): void {
     const top = this.top();
     if (zone === null || zone.name === 'modal' || top === null) return;
     const key = navKey(el);
-    this.memory.remember('last:' + top.id, el, key);
+    if (!this.onSectionTab(el)) this.memory.remember('last:' + top.id, el, key);
     this.memory.remember(zone.name === 'stage' ? 'stage:' + top.id : zone.name, el, key);
   }
 
@@ -510,6 +714,9 @@ export class Menu {
       'click',
       (e) => {
         if (!e.isTrusted || (e as MouseEvent).detail === 0) return; // a key's or FocusNav's click
+        // The bars stay put across a mount: a second tap on the rail, the tabs or the top bar is meant.
+        const target = e.target;
+        if (target instanceof Element && target.closest('.mn-rail, .mn-tabbar, .mn-top') !== null) return;
         const p = (e as PointerEvent).pointerType;
         // Older engines' clicks are plain MouseEvents: a finger's when one just lifted.
         const byFinger = p === 'touch' || p === 'pen' || (p === undefined && performance.now() - this.touchUpAt < 800);
@@ -557,7 +764,12 @@ export class Menu {
       this.keyDone = null;
       return;
     }
-    if (document.querySelector('.hud-settings-panel:not([hidden])')) return; // the Hud's settings screen owns the keys
+    if (this.settingsClosing) return;
+    if (this.settingsUp()) {
+      // The Hud's settings screen owns the keys; X cancels the search behind it (not in its text fields).
+      if (e.code === 'KeyX' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditable(document.activeElement) && this.cancelSearch()) e.preventDefault();
+      return;
+    }
     if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
     if (!e.repeat && typeof e.code === 'string') this.keysDown.add(e.code);
     const active = document.activeElement;
@@ -580,12 +792,12 @@ export class Menu {
         break;
       case 'Escape':
         e.preventDefault();
-        this.back();
+        if (!e.repeat) this.backOrLeave();
         return;
       case 'Backspace':
         if (!field) {
           e.preventDefault();
-          this.back();
+          if (!e.repeat) this.backOrLeave();
         }
         return;
       // Shortcuts (MenuCommand), never while a text field has the focus (they are letters there).
@@ -627,27 +839,24 @@ export class Menu {
   action(a: NavDir | 'accept' | 'back' | MenuCommand, repeat = false): void {
     if (!this.visibleNow) return;
     if (a === 'accept') this.nav.accept();
-    else if (a === 'back') this.back();
+    else if (a === 'back') this.backOrLeave();
     else if (a === 'up' || a === 'down' || a === 'left' || a === 'right') this.nav.move(a, repeat);
     else this.command(a);
   }
 
   /**
-   * A shortcut: the screen on top first (Screen.command), else the menus' own: 'tabPrev' / 'tabNext'
-   * step the screen's inner tabs (stepTabs), 'cancel' cancels the search, 'menu' opens the settings.
-   * The sections ('prev' / 'next') arrive with the Tablero shell. False when nothing took it.
-   * Nothing while a modal is up (it keeps the focus).
+   * A shortcut: the screen on top first (Screen.command), else the menus' own: 'prev' / 'next' the
+   * sections, 'tabPrev' / 'tabNext' the screen's inner tabs (stepTabs), 'cancel' the search, 'menu'
+   * the settings. False when nothing took it. Nothing while a modal is up (it keeps the focus).
    */
   command(c: MenuCommand): boolean {
     if (!this.visibleNow || this.modalEl !== null) return false;
     if (this.top()?.command?.(c)) return true;
+    if (c === 'prev' || c === 'next') return this.stepSection(c === 'prev' ? -1 : 1);
     if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
-    if (c === 'cancel' && this.host.searchView().active) {
-      this.host.cancelSearch();
-      return true;
-    }
+    if (c === 'cancel') return this.cancelSearch();
     if (c === 'menu') {
-      this.host.openSettings(() => this.refocus());
+      this.openSettings();
       return true;
     }
     return false;
@@ -673,7 +882,42 @@ export class Menu {
     return true;
   }
 
-  // ---- chrome: top bar, banner, population ---------------------------------------------------
+  /** Cancel the running search (pad Y, keyboard X, the pill's ✕; over Settings too). False when none runs. */
+  cancelSearch(): boolean {
+    if (!this.host.searchView().active) return false;
+    const inPill = this.searchPill.el.contains(document.activeElement);
+    this.host.cancelSearch();
+    this.renderSearch(performance.now());
+    if (inPill) this.refocus(); // the pill went: the screen's focus again, not the page's body
+    return true;
+  }
+
+  /**
+   * The settings screen over the menus (the Hud's), on `opts.tab`; `onClose` when it is left (by
+   * default the focus comes back where it was). While it is up the running search floats above it.
+   */
+  openSettings(onClose: () => void = () => this.refocus(), opts?: { tab?: SettingsTab }): void {
+    if (this.settingsUp()) return;
+    this.settingsOpen = true;
+    this.host.openSettings(() => {
+      this.settingsOpen = false;
+      this.float.hidden = true;
+      // The key that closed them (Esc / Backspace, the Hud's own listener, earlier on the window) is
+      // no Back here too: onKey drops keys until this task ends.
+      this.settingsClosing = true;
+      window.setTimeout(() => (this.settingsClosing = false), 0);
+      onClose();
+      if (this.reloadNeeded && !this.reloadAsked) this.openUpdateSheet();
+    }, opts);
+    this.renderSearch(performance.now());
+  }
+
+  /** The Hud's settings screen is on screen (from these menus, or any other way). */
+  private settingsUp(): boolean {
+    return this.settingsOpen || document.querySelector('.hud-settings-panel:not([hidden])') !== null;
+  }
+
+  // ---- chrome: chip, pills, population ---------------------------------------------------------
 
   refreshChrome(): void {
     const acc = this.host.accounts;
@@ -683,14 +927,118 @@ export class Menu {
       const placed = me.ratings.filter((r) => r.tier !== null).sort((a, b) => b.mmr - a.mmr);
       best = placed[0]?.tier ?? null;
     }
+    const chip = this.topBar.chip;
     if (acc.signedIn && acc.account) {
       const bestTier = tierById(best);
-      setChildren(this.chip, rankBadge(bestTier, 30), h('span.mn-chip-text', null, h('b', null, acc.account.name), h('small', null, best ? bestTier && tierName(bestTier) : t('menu.account'))));
+      setChildren(chip, h('span.mn-chip-avatar', null, rankBadge(bestTier, 30)), h('span.mn-chip-text', null, h('b', null, acc.account.name), h('small', null, best ? bestTier && tierName(bestTier) : t('menu.account'))));
+      chip.setAttribute('aria-label', acc.account.name + '. ' + t('nav.profile'));
     } else {
-      setChildren(this.chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, this.host.guestName()), h('small', null, t('menu.guestSignIn'))));
+      setChildren(chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, this.host.guestName()), h('small', null, t('menu.guestSignIn'))));
+      chip.setAttribute('aria-label', this.host.guestName() + '. ' + t('menu.guestSignIn'));
     }
-    const p = this.population;
-    setChildren(this.online, h('span.mn-dot', { class: p ? 'on' : '' }), h('span', null, this.regionLabel), p ? h('small', null, t('menu.playing', { count: p.playing })) : null);
+    this.regionPill.set(this.regionState());
+  }
+
+  private regionState(): RegionPillState {
+    if (this.cfg === null) return { kind: 'connecting' };
+    if (!this.cfg.online || this.popFailed) return { kind: 'offline' };
+    return { kind: 'online', region: this.regionLabel, playing: this.population?.playing ?? null };
+  }
+
+  /** The server config (regions, sign-in providers, online at all); again from the region pill when it failed. */
+  private loadConfig(): void {
+    void this.host
+      .config()
+      .then((c) => {
+        this.cfg = c;
+        this.popFailed = false;
+        this.populationNow();
+        this.refreshChrome();
+        if (this.visibleNow) this.top()?.show?.();
+      })
+      .catch(() => {
+        this.cfg = { regions: REGIONS, autoRegion: '', oauth: [], online: false };
+        this.refreshChrome();
+      });
+  }
+
+  private onRegionPill(): void {
+    if (this.cfg !== null && (!this.cfg.online || this.popFailed)) {
+      // Offline: RETRY.
+      this.cfg = null;
+      this.popFailed = false;
+      this.refreshChrome();
+      this.loadConfig();
+      return;
+    }
+    this.openRegionSheet();
+  }
+
+  /** The region sheet: automatic (the connection's continent) first, then every region; the current one marked and focused. */
+  private openRegionSheet(): void {
+    const detected = this.cfg?.autoRegion;
+    const auto = isRegion(detected) ? t('common.regionAutoNamed', { region: regionName(detected) }) : t('common.regionAuto');
+    let close = (): void => undefined;
+    const option = (id: RegionId | null, label: string): HTMLButtonElement => {
+      const on = this.prefs.region === id;
+      return h(
+        `button.mn-btn.mn-sheet-option${on ? '.mn-sheet-option-on' : ''}` as 'button',
+        {
+          type: 'button',
+          'data-nav': true,
+          'data-autofocus': on,
+          'aria-current': on ? 'true' : undefined,
+          onclick: () => {
+            this.prefs.region = id;
+            this.savePrefs();
+            this.populationNow();
+            this.refreshChrome();
+            close();
+          },
+        },
+        on ? icon('check') : null,
+        label,
+      );
+    };
+    close = this.modal({
+      title: t('common.region'),
+      body: h('div.mn-sheet-list', null, option(null, auto), ...REGIONS.map((r) => option(r.id, regionName(r.id)))),
+      actions: [{ label: t('lang.cancel'), onClick: () => true }],
+    });
+  }
+
+  /** About: the build, the source (AGPL-3.0), the third-party licenses, Discord. */
+  private openAbout(): void {
+    const link = (href: string, text: string): HTMLAnchorElement => h('a.mn-btn.mn-sheet-option', { href, target: '_blank', rel: 'noopener', 'data-nav': true }, text);
+    this.modal({
+      title: t('nav.aboutTitle', { game: GAME_NAME }),
+      body: [
+        h('p.mn-about-build', null, this.host.info),
+        h('div.mn-sheet-list', null, link(SOURCE_URL, t('menu.sourceTitle', { license: LICENSE_NAME })), link('./third-party-licenses.txt', t('menu.licenses')), link(DISCORD_URL, t('menu.discordTitle'))),
+      ],
+      actions: [{ label: t('nav.close'), onClick: () => true }],
+    });
+  }
+
+  /** The running search's own screen (the pill). */
+  private openSearchScreen(): void {
+    const v = this.host.searchView();
+    if (v.active) this.open(v.kind === 'ranked' ? 'ranked' : 'casual', true);
+  }
+
+  /** "There's a new version": RELOAD NOW focused; NOT NOW leaves the pill. Above Settings (z 65). */
+  private openUpdateSheet(): void {
+    this.reloadAsked = true;
+    this.root.classList.add('mn-blocking');
+    this.modal({
+      title: t('update.title'),
+      body: h('p', null, t('update.text')),
+      actions: [
+        { label: t('update.reload'), primary: true, autofocus: true, onClick: () => location.reload() },
+        { label: t('update.later'), onClick: () => true },
+      ],
+      onClose: () => this.root.classList.remove('mn-blocking'),
+    });
   }
 
   private async pollPopulation(): Promise<void> {
@@ -698,9 +1046,12 @@ export class Menu {
     try {
       const q = this.prefs.region ? '?region=' + this.prefs.region : '';
       const res = await fetch('/api/population' + q, { credentials: 'same-origin' });
-      if (res.ok) this.population = (await res.json()) as PopulationAnswer;
+      if (!res.ok) throw new Error(String(res.status));
+      this.population = (await res.json()) as PopulationAnswer;
+      this.popFailed = false;
     } catch {
       this.population = null;
+      this.popFailed = true;
     }
     this.refreshChrome();
   }
@@ -716,53 +1067,43 @@ export class Menu {
       this.popAt = now + POPULATION_EVERY_MS;
       void this.pollPopulation();
     }
-    this.renderBanner(now);
+    this.renderSearch(now);
     this.top()?.tick?.(now);
   }
 
-  private renderBanner(now: number): void {
+  /** The search pills (the bar's and the one over Settings), a failure's toast, the update sheet. */
+  private renderSearch(now: number): void {
     const v = this.host.searchView();
-    if (v.error !== null && v.error !== this.lastError) this.toast(v.error, 'error');
+    if (v.reload === true && !this.reloadNeeded) {
+      this.reloadNeeded = true;
+      this.updateBtn.hidden = false;
+      this.root.classList.add('mn-pills-more');
+      if (!this.settingsUp()) this.openUpdateSheet();
+    } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) this.toast(v.error, 'error');
     this.lastError = v.error;
-    if (!v.active) {
-      if (!this.banner.hidden) {
-        this.banner.hidden = true;
-        this.bannerKey = '';
-      }
-      return;
+    this.searchPill.set(v, now);
+    const over = v.active && this.settingsUp() && this.visibleNow;
+    this.float.hidden = !over;
+    if (over) this.floatPill.set(v, now);
+    if (v.active !== this.searching) {
+      this.searching = v.active;
+      this.root.classList.toggle('mn-searching', v.active);
+      this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded);
+      this.renderHints();
+      this.queueFit();
     }
-    const key = v.kind + v.modes.join();
-    if (key !== this.bannerKey) {
-      this.bannerKey = key;
-      setChildren(
-        this.banner,
-        h('span.mn-spinner'),
-        h('span.mn-banner-kind', null, v.kind === 'ranked' ? t('menu.searchRanked') : t('menu.searchCasual')),
-        h('span.mn-banner-modes', null, v.modes.map((m) => playlistName(m)).join(' · ')),
-        h('span.mn-banner-time'),
-        h('span.mn-banner-text'),
-        // The footer zone's entry: ↓ past the stage's last control lands on it while a search runs.
-        h('button.mn-banner-cancel', { type: 'button', 'data-nav': true, 'data-nav-entry': true, onclick: () => this.host.cancelSearch() }, t('menu.searchCancel')),
-      );
-    }
-    this.banner.hidden = false;
-    (this.banner.querySelector('.mn-banner-time') as HTMLElement).textContent = clock(now - v.since);
-    (this.banner.querySelector('.mn-banner-text') as HTMLElement).textContent = v.text;
   }
 
-  // ---- toasts / modals --------------------------------------------------------------------------
+  // ---- toasts / sheets --------------------------------------------------------------------------
 
   toast(text: string, kind: 'info' | 'error' | 'ok' = 'info'): void {
-    const t = h(`div.mn-toast.mn-toast-${kind}`, null, text);
-    this.toasts.appendChild(t);
-    window.setTimeout(() => t.classList.add('out'), 4200);
-    window.setTimeout(() => t.remove(), 4800);
+    this.toasts.show(text, kind);
   }
 
   /**
-   * A modal dialog over the current screen; an action returning false keeps it open. Returns a
-   * closer. While it is up the rest of the menus is inert (no focus, no click, no screen reader),
-   * and when it closes the focus goes back to what had it when it opened (the tile that opened it).
+   * A sheet (components/sheet.ts) over the current screen; an action returning false keeps it open.
+   * Returns a closer. While it is up the rest of the menus is inert (no focus, no click, no screen
+   * reader), and when it closes the focus goes back to what had it when it opened.
    */
   modal(spec: ModalSpec): () => void {
     const prev = this.modalEl !== null ? this.modalOpener : null;
@@ -772,24 +1113,10 @@ export class Menu {
     const close = (): void => {
       if (this.modalEl === box) this.closeModal();
     };
-    const actions = h('div.mn-modal-actions', { 'data-nav-row': true });
-    for (const a of spec.actions) {
-      const b = h(`button.mn-btn${a.primary ? '.mn-btn-primary' : ''}` as 'button', { type: 'button', 'data-nav': true }, a.label);
-      b.addEventListener('click', async () => {
-        b.disabled = true;
-        try {
-          const r = await a.onClick();
-          if (r !== false) close();
-        } finally {
-          b.disabled = false;
-        }
-      });
-      actions.appendChild(b);
-    }
-    const body = Array.isArray(spec.body) ? spec.body : [spec.body];
-    const box = h('div.mn-modal', { role: 'dialog', 'aria-modal': 'true', 'aria-label': spec.title }, h('div.mn-modal-title', null, spec.title), h('div.mn-modal-body', null, ...body), actions);
+    const box = sheetBox(spec, close);
     this.modalEl = box;
-    this.modalDismiss = spec.dismissable === false ? () => undefined : close;
+    this.modalBlocking = spec.dismissable === false;
+    this.modalDismiss = close;
     this.modalOnClose = spec.onClose ?? null;
     setChildren(this.modalLayer, box);
     this.modalLayer.hidden = false;
@@ -800,16 +1127,14 @@ export class Menu {
     return close;
   }
 
-  /** The menus under a modal: inert while it is up (the focus cannot leave it, a click on them does nothing). */
+  /** The menus under a sheet: inert while it is up (the focus cannot leave it, a click on them does nothing). */
   private setBackgroundInert(on: boolean): void {
-    this.topBar.inert = on;
-    this.stage.inert = on;
-    this.bottomBar.inert = on;
+    for (const el of [this.rail.el, this.topBar.el, this.stage, this.hintBar.el, this.tabbar.el]) el.inert = on;
   }
 
   /**
-   * Close the modal; `refocus`: give the focus back to what had it when the modal opened (when it
-   * is still there; else the screen's remembered one, restoreFocus). Not when another modal replaces it.
+   * Close the sheet; `refocus`: give the focus back to what had it when the sheet opened (when it
+   * is still there; else the screen's remembered one, restoreFocus). Not when another sheet replaces it.
    */
   private closeModal(refocus = true): void {
     if (!this.modalEl) return;
@@ -819,6 +1144,7 @@ export class Menu {
     this.modalDismiss = null;
     this.modalOnClose = null;
     this.modalOpener = null;
+    this.modalBlocking = false;
     this.modalLayer.hidden = true;
     this.modalLayer.textContent = '';
     if (refocus) {
@@ -833,5 +1159,10 @@ export class Menu {
 
   get modalOpen(): boolean {
     return this.modalEl !== null;
+  }
+
+  /** The section shown (tests, ui-fit). */
+  get currentSection(): SectionId {
+    return this.section;
   }
 }

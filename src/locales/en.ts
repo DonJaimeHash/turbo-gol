@@ -70,27 +70,21 @@ export default {
   'menu.licenses': 'Licenses',
   // Tooltip of the footer Discord link. The community server speaks English, so other languages may say so, as the Spanish does
   'menu.discordTitle': 'Community on Discord',
-  // Key hints in the bottom bar on the home screen. The {...Keys} are key/button names and are not translated. Keep the spacing.
-  'menu.hints': '{moveKeys}  move   ·   {selectKeys}  select',
-  // Key hints in the bottom bar on every other screen (adds back)
-  'menu.hintsBack': '{moveKeys}  move   ·   {selectKeys}  select   ·   {backKeys}  back',
   // Top-bar account chip, under the player name, when signed in with no rank yet
   'menu.account': 'Account',
-  // Top-bar account chip, under the guest name
-  'menu.guestSignIn': 'Guest · Sign in',
+  // Top-bar account chip, under the guest name (it opens PROFILE, where a guest signs in)
+  'menu.guestSignIn': 'Sign in',
   // Top bar: players in a match in the selected region
   'menu.playing': { one: '{count} playing', other: '{count} playing' },
   // Top-bar region when set to automatic, before the server has said which region
   'menu.regionAuto': 'Auto',
   // Top-bar region when set to automatic; {region} is the detected region's name
   'menu.regionAutoNamed': 'Auto · {region}',
-  // Matchmaking banner: the kind of search
+  // Search pill (top bar): the kind of search, before its formats and time ('CASUAL · 2v2 · 0:42')
   'menu.searchRanked': 'COMPETITIVE',
-  // Matchmaking banner: the kind of search
+  // Search pill: the kind of search
   'menu.searchCasual': 'CASUAL',
-  // Matchmaking banner button that stops the search
-  'menu.searchCancel': 'CANCEL',
-  // Tooltip / screen-reader name of the top-bar '‹' button (touch screens): back to the previous screen
+  // Tooltip / screen-reader name of the '‹' button of a stacked screen: back to the previous screen
   'menu.back': 'Back',
   // Dialog on the home screen after the system Back (Android's back gesture or button, a TV remote's
   // BACK, the browser's back button); {game} is the game's name
@@ -197,8 +191,6 @@ export default {
   'home.signIn': 'SIGN IN / CREATE ACCOUNT',
 
   // Play hub, Casual and Competitive (src/ui/screens/play.ts)
-  // Play hub title (breadcrumb)
-  'play.title': 'Play',
   // Play hub tile and Casual screen heading
   'play.casual': 'CASUAL',
   'play.casualSub': 'Unranked · P2P or server',

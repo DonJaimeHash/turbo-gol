@@ -1,0 +1,4 @@
+/* The menus' own sheets, imported by src/ui/Menu.ts after menu.css (the tokens and the focus ring
+   come with src/style.css): the Tablero shell, then its components. */
+@import './shell.css';
+@import './components.css';

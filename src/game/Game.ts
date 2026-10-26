@@ -217,6 +217,7 @@ import {
 import { DEFAULT_MATCH_SECONDS, Match, formatClockSeconds, type MatchEvent } from './Match';
 import { GAME_NAME, STORAGE_PREFIX } from '../brand';
 import { BackGuard } from '../ui/backGuard';
+import { systemBack } from '../ui/backModel';
 import { installDevice, type DeviceTracker } from '../ui/device';
 import { pauseKeyAction, pauseResumeKeys } from './pauseKeys';
 import { CARD_FIRST_MATCHES, ControlsCardPlan, controlsCardRows, localCardSeen, type ControlsCardContent } from '../render/controlsCard';
@@ -881,7 +882,7 @@ export class Game implements P2PGameHooks {
     // Touch screens only: the controls layer goes right after the Hud root and drives Input like a keyboard.
     this.touch = hasTouchScreen() ? new TouchControls(this.hud.root, { kbm: () => settings.bindings.kbm }) : null;
     if (this.touch !== null) this.input.setTouchSource(this.touch.state);
-    this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse)') : null;
+    this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse) and (max-width: 599px)') : null;
     this.installHint = this.touch !== null && installHintDue();
     this.audio = new Audio({ room: !this.cpuLite });
     this.audio.setVolume(settings.audio.volume / 100);
@@ -1164,6 +1165,7 @@ export class Game implements P2PGameHooks {
       searchView: () => game.menuSearchView(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
+      confirmLeave: () => game.confirmLeave(),
       keyLabel: (action, device) => game.input.getLabel(action, device),
       get info() {
         return game.info;
@@ -1209,6 +1211,9 @@ export class Game implements P2PGameHooks {
       text: busy ? (s?.statusText ?? '') : '',
       since: this.searchSince,
       error: error !== null && error.length > 0 ? error : null,
+      // 426 reload_required (a stale page: P2PSession STATUS.reload, OnlineSession's netErrorText):
+      // the menus' blocking sheet instead of a toast.
+      reload: error !== null && error === t('error.queue.reload_required'),
     };
   }
 
@@ -1402,20 +1407,28 @@ export class Game implements P2PGameHooks {
    * One step back inside the game for Android's back gesture / button, a TV remote's BACK, the
    * browser's back, Alt + ← or a mouse's back button (BackGuard), never out of a match: a rebind
    * capture is cancelled; the settings screen goes back (to the pause menu, or to the menus); the
-   * menus close their modal or go back one screen, and on the home screen ask "Leave Turbogol?"
-   * (confirmLeave); a pack summary leaves for the menu (as pad B there); a match being played pauses
-   * and a paused one stays paused (Esc / B / RESUME resume it, QUIT leaves). Nothing while a load
-   * runs behind the loading screen or after the final whistle (the menus come back by themselves).
+   * menus close their sheet, go back one screen or to JUGAR from another section, and on JUGAR's
+   * root ask "Leave Turbogol?" (confirmLeave); a pack summary leaves for the menu (as pad B there);
+   * a match being played pauses and a paused one stays paused (Esc / B / RESUME resume it, QUIT
+   * leaves). Nothing while a load runs behind the loading screen or after the final whistle (the
+   * menus come back by themselves). The order is src/ui/backModel.ts systemBack (tested).
    */
   private onSystemBack(): void {
-    if (this.loadingHold) return;
     const hud = this.hud;
-    if (hud.capturing) this.input.cancelRebind();
-    else if (hud.menuVisible) hud.menuAction('back');
-    else if (this.menu.visible) {
+    const step = systemBack({
+      loading: this.loadingHold,
+      capturing: hud.capturing,
+      hudMenu: hud.menuVisible,
+      menus: this.menu.visible,
+      summary: this.training !== null && this.training.phase === 'summary',
+      playing: this.playing,
+    });
+    if (step === 'cancelCapture') this.input.cancelRebind();
+    else if (step === 'hud') hud.menuAction('back');
+    else if (step === 'menus') {
       if (!this.menu.back()) this.confirmLeave();
-    } else if (this.training !== null && this.training.phase === 'summary') this.stopTraining();
-    else if (this.playing) this.setPaused(true);
+    } else if (step === 'leaveSummary') this.stopTraining();
+    else if (step === 'pause') this.setPaused(true);
   }
 
   /**
@@ -1428,10 +1441,11 @@ export class Game implements P2PGameHooks {
     const guard = this.backGuard;
     if (guard === null) return;
     guard.release();
-    const actions: { label: string; primary?: boolean; onClick: () => void | boolean }[] = [{ label: t('menu.leaveStay'), primary: true, onClick: () => undefined }];
+    const actions: { label: string; primary?: boolean; danger?: boolean; onClick: () => void | boolean }[] = [{ label: t('menu.leaveStay'), primary: true, onClick: () => undefined }];
     if (guard.canLeave) {
       actions.push({
         label: t('menu.leaveGo'),
+        danger: true,
         onClick: () => {
           guard.leave();
           return false; // the page goes; the dialog stays until it does
@@ -3117,7 +3131,8 @@ export class Game implements P2PGameHooks {
       else if (pa.menuRight) hud.menuAction('right', rep);
       else if (pa.menuUp) hud.menuAction('up', rep);
       else if (pa.menuDown) hud.menuAction('down', rep);
-      else if (pa.menuCancel) hud.menuAction('online');
+      // Y over the settings screen opened from the menus: cancel the search running behind it.
+      else if (pa.menuCancel && !(this.menu.visible && this.menu.cancelSearch())) hud.menuAction('online');
     } else if (this.training !== null && this.training.phase === 'summary') {
       // The pack summary owns the edges: retry, back to the menu, or pick a shot.
       this.trainingSummaryActions();
@@ -3254,9 +3269,10 @@ export class Game implements P2PGameHooks {
     if (touch !== null) {
       touch.notePadPresses(this.input.gamepadPresses);
       touchMode = touch.touchMode;
-      // Portrait in touch mode: the rotate screen covers the game (src/input/touch.css), so an
-      // offline match pauses, whether the phone turned or touch mode came on while upright. Online
-      // it goes on (a pause only takes the input away there).
+      // An upright phone in touch mode: the rotate screen covers the match (src/input/touch.css; the
+      // menus work upright, a tablet plays either way), so an offline match pauses, whether the
+      // phone turned or touch mode came on while upright. Online it goes on (a pause only takes the
+      // input away there).
       const q = this.portraitQuery;
       if (touchMode && this.playing && !this.onlineActive && q !== null && q.matches) this.setPaused(true);
       touch.setVisible(this.playing && touchMode, this.training !== null, touchMode && (this.playing || this.canResumeByPointer));
@@ -3440,14 +3456,12 @@ export class Game implements P2PGameHooks {
 
   /**
    * The iPhone's add-to-home-screen toast (installHintDue), once: as soon as the menus are on
-   * screen and not under the settings screen or the rotate-your-phone screen, where it would go
-   * unseen (most phones open the page upright).
+   * screen and not under the settings screen, where it would go unseen (the menus work upright:
+   * the rotate screen is the match's only).
    */
   private updateInstallHint(): void {
     const touch = this.touch;
     if (touch === null || !this.menu.visible || this.hud.menuVisible) return;
-    const q = this.portraitQuery;
-    if (touch.touchMode && q !== null && q.matches) return;
     this.installHint = false;
     noteInstallHintShown();
     this.menu.toast(t('touch.installHint'), 'info');

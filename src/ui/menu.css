@@ -4,22 +4,6 @@
    names are aliases there until the Tablero shell replaces this sheet); the focus ring is
    src/ui/styles/focus.css. Hover only where a pointer can hover (@media (hover: hover)). */
 
-/* The stage veil over the live scene: --mn-backdrop, one static gradient darker at the bars (no
-   tints, no blur; an opaque page on super low, style.css). */
-.mn {
-  position: absolute;
-  inset: 0;
-  z-index: var(--z-menus);
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  font-family: var(--font-body);
-  color: var(--text);
-  pointer-events: auto;
-  background: var(--mn-backdrop);
-  user-select: none;
-  overflow: hidden;
-}
-
 /* The in-game HUD (score, clock, boost...) stays out of sight while the menus are up; the Hud's
    settings screen (.hud-menu) and the Turnstile slot (.hud-turnstile: the anti-bot widget a guest or
    account registration from these menus may need to click) live in the same root and stay visible. */
@@ -32,117 +16,6 @@
   display: none !important;
 }
 
-/* ---- top bar ---------------------------------------------------------------------------------- */
-.mn-top {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 22px) 10px calc(var(--safe-left) + 22px);
-  border-bottom: 1px solid var(--edge);
-  background: var(--surface-0-94);
-}
-
-/* The wordmark: TURBO (white) + GOL (lime), heavy italic, set tight with a lime underscore
-   under GOL. */
-.mn-brand {
-  font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.02em;
-  line-height: 1;
-  white-space: nowrap;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
-}
-.mn-brand-a {
-  color: var(--text);
-}
-.mn-brand-b {
-  position: relative;
-  padding-right: 0.08em;
-  color: var(--brand);
-}
-.mn-brand-b::after {
-  content: '';
-  position: absolute;
-  left: 0.05em;
-  right: 0.1em;
-  bottom: -0.16em;
-  height: 0.12em;
-  border-radius: 0.06em;
-  background: var(--brand);
-  transform: skewX(-20deg);
-}
-
-.mn-crumbs {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  overflow: hidden;
-  white-space: nowrap;
-}
-.mn-crumb:last-child {
-  color: var(--text);
-}
-.mn-crumb-sep {
-  opacity: 0.5;
-}
-
-.mn-top-right {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.mn-online,
-.mn-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  font: inherit;
-  color: var(--text);
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-tile);
-  cursor: pointer;
-}
-.mn-online small {
-  color: var(--text-2);
-}
-.mn-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--text-3);
-}
-.mn-dot.on {
-  background: var(--ok);
-  box-shadow: 0 0 8px var(--ok-glow);
-}
-.mn-chip-text {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.1;
-}
-.mn-chip-text b {
-  font-size: 15px;
-}
-.mn-chip-text small {
-  font-size: 11px;
-  color: var(--text-2);
-  letter-spacing: 0.06em;
-}
-.mn-chip-avatar,
 .mn-avatar {
   display: grid;
   place-items: center;
@@ -154,19 +27,7 @@
   font-weight: 700;
 }
 
-/* ---- stage / bottom --------------------------------------------------------------------------- */
-/* The scrollers (this one, .mn-lobbies, .mn-board, .mn-modal) keep a focused control's ring (6 px
-   out) and heel (15 px under it, focus.css) inside the scroll box: FocusNav scrolls the focus in
-   with block 'nearest' (nav.ts:108), flush with the edge without a scroll padding. */
-.mn-stage {
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--brand-glow) transparent;
-  padding: 22px calc(var(--safe-right) + 22px) 22px calc(var(--safe-left) + 22px);
-  scroll-padding-block: 16px 24px;
-}
-
+/* ---- screens (the stage is src/ui/styles/shell.css) ----------------------------------------- */
 .mn-screen {
   max-width: 1180px;
   margin: 0 auto;
@@ -176,86 +37,6 @@
   from {
     opacity: 0;
     transform: translateY(8px);
-  }
-}
-
-.mn-bottom {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 10px calc(var(--safe-right) + 22px) calc(var(--safe-bottom) + 10px) calc(var(--safe-left) + 22px);
-  border-top: 1px solid var(--edge);
-  background: var(--surface-0-94);
-  font-size: 13px;
-  color: var(--text-2);
-  letter-spacing: 0.05em;
-}
-.mn-hints {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mn-info {
-  margin-left: auto; /* right-aligned when the hints are hidden */
-  opacity: 0.6;
-  white-space: nowrap;
-}
-
-.mn-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 8px 6px 14px;
-  border-radius: var(--r-tile);
-  color: var(--text);
-  background: var(--surface-1-94) linear-gradient(90deg, var(--brand-tint), transparent);
-  border: 1px solid var(--brand-line);
-  font-size: 14px;
-  white-space: nowrap;
-}
-.mn-banner-kind {
-  font-family: var(--font-display);
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.mn-banner-time {
-  font-family: var(--font-display);
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  min-width: 40px;
-}
-.mn-banner-text {
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 260px;
-}
-.mn-banner-cancel {
-  font: inherit;
-  font-family: var(--font-display);
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  padding: 5px 12px;
-  color: var(--text);
-  background: var(--danger-tint);
-  border: 1px solid var(--danger-line);
-  border-radius: var(--r-key);
-  cursor: pointer;
-}
-.mn-spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 3px solid var(--edge-hi);
-  border-top-color: var(--brand);
-  animation: mn-spin 0.9s linear infinite;
-}
-@keyframes mn-spin {
-  to {
-    transform: rotate(360deg);
   }
 }
 
@@ -1394,76 +1175,7 @@
   color: var(--text-2);
 }
 
-/* ---- toasts / modals --------------------------------------------------------------------------- */
-.mn-toasts {
-  position: absolute;
-  right: calc(var(--safe-right) + 18px);
-  bottom: calc(var(--safe-bottom) + 64px);
-  display: grid;
-  gap: 8px;
-  z-index: 3;
-  pointer-events: none;
-}
-.mn-toast {
-  max-width: 420px;
-  padding: 10px 14px;
-  border-radius: var(--r-tile);
-  background: var(--surface-1);
-  border: 1px solid var(--brand-line);
-  box-shadow: var(--shadow-sheet);
-  animation: mn-in var(--dur-toast-in) ease-out;
-  transition: opacity 0.5s;
-}
-.mn-toast.out {
-  opacity: 0;
-}
-.mn-toast-error {
-  border-color: var(--danger);
-  background: var(--surface-1) linear-gradient(90deg, var(--danger-tint), transparent);
-}
-.mn-toast-ok {
-  border-color: var(--ok);
-}
-/* Dialogs: the solid veil (no blur), an opaque card. */
-.mn-modal-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: var(--veil);
-}
-.mn-modal {
-  width: min(560px, 100%);
-  max-height: 90vh;
-  overflow-y: auto;
-  scroll-padding-block: 16px 24px;
-  padding: 22px;
-  border-radius: var(--r-panel);
-  background: var(--surface-1);
-  border: 1px solid var(--brand-line);
-  box-shadow: var(--shadow-sheet);
-  animation: mn-in var(--dur-sheet-in) ease-out;
-}
-.mn-modal-title {
-  font-size: 24px;
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.06em;
-  margin-bottom: 12px;
-}
-.mn-modal-body p {
-  line-height: 1.45;
-}
-.mn-modal-actions {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-  margin-top: 16px;
-  flex-wrap: wrap;
-}
-
+/* ---- the ranked result (leaderboard.ts, a sheet's body) ------------------------------------- */
 .mn-result {
   display: flex;
   gap: 20px;
@@ -1517,17 +1229,6 @@
   .mn-teams {
     grid-template-columns: 1fr;
   }
-  /* The footer keeps its links (AGPL-3.0: the source link stays at every width) and drops the build
-     line; next to a search banner they take a line of their own. */
-  .mn-bottom {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-  .mn-crumbs,
-  .mn-info-build,
-  .mn-online small {
-    display: none;
-  }
   .mn-lobby-head {
     display: none;
   }
@@ -1558,98 +1259,18 @@
   .mn-lobby-top {
     flex-direction: column;
   }
-  .mn-hints {
-    display: none;
-  }
-}
-@media (max-width: 640px) {
-  /* Narrow top bar: the region chip keeps only its status dot, the account chip only the name. */
-  .mn-online > span:not(.mn-dot),
-  .mn-online small {
-    display: none;
-  }
-  .mn-chip-text b {
-    max-width: 96px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-@media (max-width: 520px) {
-  .mn-brand {
-    font-size: 20px;
-  }
-  .mn-top {
-    gap: 10px;
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-  .mn-stage {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-  .mn-chip-text small {
-    display: none;
-  }
-  .mn-banner-text,
-  .mn-banner-modes {
-    display: none;
-  }
 }
 
 /* ---- touch mode -------------------------------------------------------------------------------
-   html.tg-touch (src/input/TouchControls.ts): the last input used was a finger. The top bar gets a
-   back button, the key hints and focus rings go (Menu focuses nothing by itself then), and the menus
-   pan but never zoom (pan-x pan-y: manipulation would keep the pinch zoom on Android). */
-.mn-back {
-  display: none;
-}
-.tg-touch .mn-back {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 44px;
-  height: 44px;
-  padding: 0 0 4px;
-  font: inherit;
-  font-size: 34px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--text);
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-tile);
-  cursor: pointer;
-}
-.tg-touch .mn-back:active {
-  background: var(--surface-3-97);
-  border-color: var(--edge-hi);
-}
-/* Home: nothing to go back to, but the button keeps its place so the brand does not jump. */
-.tg-touch .mn-back.mn-back-off {
-  visibility: hidden;
-}
+   html.tg-touch (src/input/TouchControls.ts): the last input used was a finger. No key hints and no
+   focus rings (Menu focuses nothing by itself then); the menus pan and pinch-zoom (manipulation: no
+   double-tap zoom), only the match's controls (.tc-root) keep every finger to themselves. */
 .tg-touch .mn {
-  touch-action: pan-x pan-y;
-}
-.tg-touch .mn-hints {
-  display: none;
+  touch-action: manipulation;
 }
 /* No focus rings in touch mode: src/ui/styles/focus.css. */
 /* body blocks selection with -webkit-user-select: none, and iOS then refuses to type in the field. */
 .tg-touch .mn-input {
   -webkit-user-select: text;
   -webkit-touch-callout: default;
-}
-
-/* Footer links (source code: AGPL-3.0; third-party licenses; Discord). */
-.mn-source {
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-@media (hover: hover) {
-  .mn-source:hover {
-    color: var(--text);
-  }
 }

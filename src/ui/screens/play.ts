@@ -68,7 +68,7 @@ export function homeScreen(menu: Menu): Screen {
       tile('', 'training', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
       tile('', 'leaderboard', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
       tile('', 'profile', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
-      tile('', 'settings', t('home.settings'), t('home.settingsSub'), () => menu.host.openSettings(() => menu.refocus())),
+      tile('', 'settings', t('home.settings'), t('home.settingsSub'), () => menu.openSettings()),
       // Static: render() rebuilds only `side`, so keyboard / controller focus here survives a refresh.
       tile('mn-tile-lang', 'globe', t('home.language'), LOCALES[language()].name, () => openLanguagePicker(menu)),
     ),
@@ -128,7 +128,8 @@ export function playScreen(menu: Menu): Screen {
     rankedTag.textContent = menu.host.accounts.signedIn ? (p ? t('play.searching', { count: sum(p.ranked) }) : '') : locked;
     rankedSub.textContent = p ? t('play.playingNow', { region: menu.regionLabel, count: p.playing }) : '';
   };
-  return { id: 'play', title: t('play.title'), el, show: tick, tick };
+  // Its breadcrumb is MODES: JUGAR › MODES › CASUAL (the section is JUGAR already).
+  return { id: 'play', title: t('nav.modes'), el, show: tick, tick };
 }
 
 /** Toggle cards for the playlists; at least one stays selected. `extra(p)` adds the per-playlist line. */

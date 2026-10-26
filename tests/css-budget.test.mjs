@@ -25,7 +25,7 @@ const css = new Map(await Promise.all(cssFiles.map(async (f) => [relative(ROOT, 
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
 
 test('the stylesheets the UI is made of are all here', () => {
-  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
+  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/styles/shell.css', 'src/ui/styles/components.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
 });
 
 test('nothing blurs the live scene: no backdrop-filter anywhere in src (CSS or code)', async () => {
@@ -179,12 +179,13 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // Within about 1 % of what Vite's minifier writes (comments, spaces, last semicolons and leading
 // zeros out). Over the plan's §2.7 budget of 70 KB for now, an open decision for the owner: Vite's
 // sheet was 69.1 kB before PR 1, which adds the tokens, the focus ring, the pressed states and the
-// font faces (74.3 kB built, 75,157 B by this measure). The cap is that plus about 0.6 KB, so nothing
-// grows unnoticed, and steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB)
-// and PR 15 menu.css.
-const CSS_BUDGET = 74 * 1024;
+// font faces (75,157 B by this measure); PR 4 adds the shell (styles/shell.css and components.css,
+// about 14.9 KB) and drops the old top bar, footer, banner, toasts and modals of menu.css (about
+// 5.9 KB): 84,994 B. The cap is that plus about 0.6 KB, so nothing grows unnoticed, and steps down
+// to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css.
+const CSS_BUDGET = 85_600;
 
-test(`the CSS stays within ${CSS_BUDGET / 1024} KB minified`, () => {
+test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;
   for (const text of css.values()) {
     total += stripComments(text)

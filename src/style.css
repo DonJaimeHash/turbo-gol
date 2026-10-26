@@ -697,9 +697,9 @@ body {
   z-index: var(--z-settings);
 }
 
-/* Touch mode: it pans but never zooms (manipulation would keep the pinch zoom on Android). */
+/* Touch mode: it pans and pinch-zooms (no double-tap zoom); only the match's controls keep every finger. */
 .tg-touch .hud-menu {
-  touch-action: pan-x pan-y;
+  touch-action: manipulation;
 }
 
 .hud-menu-panel {

@@ -223,6 +223,12 @@ export function customScreen(menu: Menu): Screen {
     title: t('custom.screenTitle'),
     el,
     show: () => {
+      // Still in a lobby (the player went to another section from it): its screen comes back on top.
+      if (menu.host.lobby.inLobby) {
+        queueMicrotask(() => {
+          if (menu.top()?.id === 'custom' && menu.host.lobby.inLobby) menu.open('lobby');
+        });
+      }
       refreshAt = 0;
       setChildren(list, h('div.mn-empty', null, t('custom.loading')));
     },
@@ -316,7 +322,7 @@ export function lobbyCreateScreen(menu: Menu): Screen {
       setChildren(controls, ...settingsControls(s, rules()));
       menu.refocus();
     };
-    return { presets, onEdit: presets === null ? null : () => menu.host.openSettings(back, { tab: 'experimental' }), pick };
+    return { presets, onEdit: presets === null ? null : () => menu.openSettings(back, { tab: 'experimental' }), pick };
   };
   return {
     id: 'lobby-create',
@@ -366,7 +372,7 @@ export function lobbyScreen(menu: Menu): Screen {
         ? null
         : () => {
             close();
-            menu.host.openSettings(() => {
+            menu.openSettings(() => {
               // The lobby may have gone, or started, while the settings were open.
               const now = lobby.state;
               if (now !== null && now.status === 'open' && lobby.isHost) configure(now, { draft, name: name.input.value, pick });
