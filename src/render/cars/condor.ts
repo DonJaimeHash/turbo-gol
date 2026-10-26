@@ -1,20 +1,22 @@
 /**
  * The Cóndor ('condor'): an aero jet racer after the Andean condor gliding. A low lofted fuselage
- * with a hooked beak (an ivory tip over a ridge), a cab-forward bubble canopy, a proud white ruff
- * behind the glass and a low spine running back to a tall swept dorsal fin (an ice-white leading
- * edge) with a T-tail; the fuselage ends in a dark engine bay, twin gunmetal petal afterburners
- * standing out of it (a team glow rim, a near-black bore, a team glowing core inside). One side
- * body per side faired over both wheels: a front fender and a raised rear haunch, each with a real
- * wheel opening over its tyre (a carbon liner under it), joined low by a rocker sill; above the
- * sill a dihedral delta wing (white secondary-feather band on top, carbon below) runs from the
- * fuselage to the haunch. Team glow lamp lines: along each fender's crest, from each wing's root
- * along its leading edge and on along the haunch's shoulder to the tail, along the spine from the
- * ruff to the fin and across the T-tail's trailing edge. Swept slash headlights on the fenders'
- * inboard crests, one wide tail-light band across a carbon valance between the rear tyres. Paint
- * is team colour above a low two-tone line (gloss carbon below it, along the sills) with an
- * ice-white pinstripe, two panel grooves and no chevrons. Wheels: slick tyres on dark aero disc
- * covers with five light turbine vanes, a light ring, six bolts (high) and a team hub; the rear
- * ones a little bigger.
+ * ending in a sharp white beak hooked down to a point (the ruff's white), a cab-forward bubble
+ * canopy, a proud white ruff behind the glass and a low spine running back to a tall swept dorsal
+ * fin (an ice-white leading edge) with a T-tail; the fuselage ends in a dark engine bay, twin
+ * near-black satin petal afterburners standing out of it (a team glow rim, a near-black bore, a
+ * team glowing core inside). One side body per side faired over both wheels: a front fender and a
+ * raised rear haunch, each with a real wheel opening over its tyre (a carbon liner under it),
+ * joined low by a rocker sill; above the sill a dihedral delta wing (white secondary-feather band
+ * on top, carbon below) runs from the fuselage to the haunch. Each haunch ends in a painted bevel
+ * round a dark tail-lamp housing with a red slit across its top: the tail lights sit outboard,
+ * over the rear tyres, and the carbon valance between the tyres stays unlit. Team glow lamp lines:
+ * along the nose's ridge from the canopy down to the beak, along each fender's crest, from each
+ * wing's root along its leading edge and on along the haunch's shoulder to the tail bevel, along
+ * the spine from the ruff to the fin and across the T-tail's trailing edge. Swept slash headlights
+ * on the fenders' inboard crests. Paint is team colour above a low two-tone line (gloss carbon
+ * below it, along the sills) with an ice-white pinstripe, two panel grooves and no chevrons.
+ * Wheels: slick tyres on dark aero disc covers with five light turbine vanes, a light ring, six
+ * bolts (high) and a team hub; the rear ones a little bigger.
  *
  * Designed on the default hitbox in the build frame (kit.hl / hh / hw 58.75 / 17.83 / 41.85):
  * beak 58.6, nozzle exit -58, T-tail top 16.7, body floor -17.6, haunches out to |z| 41.7. The
@@ -96,9 +98,9 @@ const FLOOR = -17.6;
 // Fuselage, beak to tail: x, half width, y0, y1, superellipse exponent (under 2 at the beak: a
 // ridge on top). The tip hooks down; the tail is a wide dark engine bay the afterburners leave.
 const FUSE: readonly (readonly [number, number, number, number, number])[] = [
-  [58.6, 1.3, -14.6, -12.8, 1.6],
-  [57.6, 3.4, -15.3, -10.6, 1.7],
-  [55.8, 5.8, -16.0, -8.2, 1.9],
+  [58.6, 0.5, -17.3, -16.5, 1.8],
+  [57.6, 2.2, -16.4, -12.6, 1.7],
+  [55.2, 4.4, -15.6, -8.8, 1.8],
   [52.5, 8.6, -16.6, -5.6, 2.3],
   [46, 11.6, -17.1, -3.0, 2.8],
   [36, 14.0, -17.4, -1.2, 3],
@@ -109,8 +111,8 @@ const FUSE: readonly (readonly [number, number, number, number, number])[] = [
   [-46, 15.0, -17.0, 3.2, 3.2],
   [-54, 14.6, -16.2, 3.4, 3.4],
 ];
-/** The beak's ivory tip runs forward of this x; the engine bay is the fuselage's tail face. */
-const BEAK_X = 56.2;
+/** The white beak runs forward of this x (a FUSE ring); the engine bay is the fuselage's tail face. */
+const BEAK_X = 55.2;
 const TAIL_X = -54;
 // Canopy and ruff: x, half width, equator y (sunk CAB_FLOOR into the fuselage), top y. The ruff
 // stands proud of the glass and of the spine.
@@ -162,6 +164,9 @@ const SIDE_N = 3;
 const SIDE_NOSE = [57.6, 55.6, 52.6];
 const SIDE_SILL = [21, 12, -12, -21];
 const SIDE_TAIL = -58.3;
+/** The haunch's tail face: a painted bevel this deep (x) and this far in (width, height) round a dark lamp housing. */
+const TAIL_BEVEL = 1.2;
+const TAIL_INSET = 1.3;
 /** Opening clearance over the tyre (uu): the front tyres steer. */
 const FRONT_GAP = 2.5;
 const REAR_GAP = 1.9;
@@ -220,10 +225,8 @@ const PETAL = 0.3;
 
 /** The ruff, the fin's leading edge and the wings' secondary-feather bands: white satin trim (no livery). */
 const WHITE_TRIM: Surface = { color: 0xe6eaf0, metal: 0.1, rough: 0.4, emissive: 0, kind: CAR_KIND.TRIM };
-/** The beak's tip: ivory horn. */
-const IVORY: Surface = { color: 0xe4dcc6, metal: 0.05, rough: 0.45, emissive: 0, kind: CAR_KIND.TRIM };
-/** The afterburner petals: dark gunmetal (the heat tint stays at the lip). */
-const PETALS: Surface = { ...EXHAUST, color: 0x2b3038, metal: 0.85, rough: 0.3 };
+/** The afterburner petals: near-black satin gunmetal, rough enough that no facet glints (the heat tint stays at the lip). */
+const PETALS: Surface = { ...EXHAUST, color: 0x181b20, metal: 0.55, rough: 0.62 };
 /** The afterburners' bores: near black. */
 const THROAT: Surface = { color: 0x0b0d10, metal: 0.3, rough: 0.6, emissive: 0, kind: CAR_KIND.DARK_METAL };
 
@@ -268,11 +271,15 @@ type SideRing = readonly [number, number, number, number, number];
 
 /** The side body's rings with both wheel openings cut, nose to tail. */
 function sideRings(front: Opening, rear: Opening, hi: boolean): SideRing[] {
-  const xs = [...SIDE_NOSE, ...archXs(front, hi ? 7 : 5, -Infinity), ...SIDE_SILL, ...archXs(rear, hi ? 6 : 4, SIDE_TAIL)];
-  return xs.map((x) => {
+  const xs = [...SIDE_NOSE, ...archXs(front, hi ? 7 : 5, -Infinity), ...SIDE_SILL, ...archXs(rear, hi ? 6 : 4, SIDE_TAIL + TAIL_BEVEL)];
+  const rings: SideRing[] = xs.map((x) => {
     const [zc, w, y0, y1] = sideAt(x);
     return [x, zc, w, Math.max(y0, archY(front, x), archY(rear, x)), y1];
   });
+  // The bevel round the tail face: the last ring again, smaller, at the tail.
+  const [, zc, w, y0, y1] = rings[rings.length - 1];
+  rings.push([SIDE_TAIL, zc, w - TAIL_INSET, y0 + TAIL_INSET, y1 - TAIL_INSET]);
+  return rings;
 }
 
 function build(k: BodyKit): void {
@@ -282,10 +289,11 @@ function build(k: BodyKit): void {
   const tail: Surface = hi ? { ...TAILLIGHT, emissive: 1.5 } : { ...TAILLIGHT, color: 0xff0d16, emissive: 0.4 };
   const core: Surface = { ...k.strip, emissive: hi ? 0.6 : 0.3 };
 
-  // Fuselage: the beak (an ivory tip) to the engine bay (its dark tail face).
+  // Fuselage: the beak (a white hooked tip) to the engine bay (its dark tail face).
+  const fuseSeg = hi ? 20 : 10;
   k.pushBy(
-    loft(FUSE.map(([x, w, y0, y1, n]) => sec(x, w, y0, y1, 0, n)), hi ? 20 : 10, 3),
-    (x, _y, _z, nx) => (x > BEAK_X ? IVORY : x < TAIL_X + 0.5 && nx < -0.9 ? TRIM : paint),
+    loft(FUSE.map(([x, w, y0, y1, n]) => sec(x, w, y0, y1, 0, n)), fuseSeg, 3),
+    (x, _y, _z, nx) => (x > BEAK_X ? WHITE_TRIM : x < TAIL_X + 0.5 && nx < -0.9 ? TRIM : paint),
   );
 
   // Canopy with the white ruff behind the glass, then the low spine.
@@ -391,10 +399,14 @@ function build(k: BodyKit): void {
     k.push(hot, core);
   }
 
-  // A carbon valance between the rear tyres under the engine bay with one wide tail-light band
-  // across it.
+  // An unlit carbon valance (the diffuser) between the rear tyres under the engine bay; the tail
+  // lights are two slits across the top of the haunches' dark tail faces.
   k.box(CARBON, 7.8, 5.6, 42, -54.4, FLOOR + 2.8, 0);
-  k.box(tail, 0.5, 1.2, 40, -58.45, -13.4, 0);
+  {
+    const [, zc, w, y0, y1] = rings[rings.length - 1];
+    const ySlit = y1 - (y1 - y0) * 0.3;
+    for (const side of [-1, 1]) k.box(tail, 0.6, 1.1, w * 1.45, SIDE_TAIL - 0.1, ySlit, side * zc);
+  }
 
   // Lamp lines (team glow) along the panel lines. On high a thin diamond (the bloom widens it); on
   // low a wide flat strip standing off the panel, its top facet lit and its bevels dark.
@@ -436,7 +448,7 @@ function build(k: BodyKit): void {
       [r0[1] + (r1[1] - r0[1]) * t, r0[3] + (r1[3] - r0[3]) * t + off, side * 16.5],
       ...WING.slice(1).map(([z, le, , yc]): V3 => [le, yc + off, side * z]),
     ];
-    const haunch = rings.filter(([x]) => x < SIDE_SILL[SIDE_SILL.length - 1]);
+    const haunch = rings.filter(([x]) => x < SIDE_SILL[SIDE_SILL.length - 1] && x > SIDE_TAIL);
     lamp([...wingLe, ...haunch.map(([x, zc, w, y0, y1]) => onRing(x, w, y0, y1, side * zc, SIDE_N, sideSeg, mirror(shoulderA), off))], wide, flat);
   }
   // Along the spine from the ruff to the fin, and across the T-tail's trailing edge.
@@ -450,6 +462,16 @@ function build(k: BodyKit): void {
     hi ? 0.45 : 0.9,
     flat,
   );
+  // Along the nose's ridge from the canopy down to the beak (the culmen).
+  const ridge = (x: number): V3 => {
+    let i = 0;
+    while (i < FUSE.length - 2 && FUSE[i + 1][0] > x) i++;
+    const top = ([rx, w, y0, y1, n]: (typeof FUSE)[number]): V3 => onRing(rx, w, y0, y1, 0, n, fuseSeg, Math.PI / 2, off);
+    const a = top(FUSE[i]);
+    const b = top(FUSE[i + 1]);
+    return [x, a[1] + ((b[1] - a[1]) * (a[0] - x)) / (a[0] - b[0]), 0];
+  };
+  lamp([ridge(48.6), ridge(52.5), ridge(54.9)], hi ? 0.45 : 0.9, flat);
   lamp(
     [
       [-55.8, 16.1, -9.2],
@@ -460,15 +482,15 @@ function build(k: BodyKit): void {
     0.45,
   );
 
-  // Swept slash headlights along the fenders' inboard crests.
+  // Swept slash headlights along the fenders' inboard crests (a ring shorter on low).
   for (const side of [-1, 1]) {
     const slash = (a: number): number => (side > 0 ? a : Math.PI - a);
-    const angles = [0.86, 0.74, 0.62];
+    const angles = [0.88, 0.76, 0.66, 0.58];
     k.push(
       strand(
-        rings.slice(1, 4).map(([x, zc, w, y0, y1], i) => onRing(x, w, y0, y1, side * zc, SIDE_N, sideSeg, slash(Math.PI * angles[i]), 0.1)),
-        0.55,
-        0.4,
+        rings.slice(1, hi ? 5 : 4).map(([x, zc, w, y0, y1], i) => onRing(x, w, y0, y1, side * zc, SIDE_N, sideSeg, slash(Math.PI * angles[i]), 0.15)),
+        0.85,
+        0.45,
         4,
       ),
       HEADLIGHT,
