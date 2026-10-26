@@ -46,7 +46,7 @@ export default {
   'car.condor': 'Cóndor',
   'car.condorDesc': 'Largo y ancho, hecho para planear',
   'car.tero': 'Tero',
-  'car.teroDesc': 'Ligero, rápido y ruidoso: siempre alerta',
+  'car.teroDesc': 'Un compacto de rally, ruidoso y siempre alerta',
   'tier.bronze': 'Bronce',
   'tier.silver': 'Plata',
   'tier.gold': 'Oro',
