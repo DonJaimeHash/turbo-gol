@@ -19,6 +19,7 @@ registerHooks({
 });
 
 const { QUALITIES, TIERS, tier, parseQuality, nextQuality, lowerQuality, pixelRatio, startingQuality, needsReload, drawsFrame, SUPERLOW_PIXELS, LOW_MEMORY_GB, MAX_TOUCH_PIXEL_RATIO } = await import('../src/render/quality.ts');
+const { HELD_FRAME, MENU_FPS, MENU_FPS_LITE, MENU_COVER_LITE, FPS_CAPS, parseFpsCap, frameCap, sceneFps, drawsScene, runsLogic } = await import('../src/render/quality.ts');
 const { THEME_IDS, DEFAULT_THEME, parseTheme, themeWorld, lookOf, lightsOf: themeLights } = await import('../src/render/theme.ts');
 const en = (await import('../src/locales/en.ts')).default;
 const es = (await import('../src/locales/es.ts')).default;
@@ -260,6 +261,80 @@ test('drawsFrame: a 30 fps cap draws every other vsync at 60 Hz, 25 fps at 50 Hz
   assert.equal(run(60, 0), 60, 'no cap');
   assert.equal(drawsFrame(100, -1, 30), true, 'the first frame');
   assert.equal(drawsFrame(100, 200, 30), true, 'a timestamp that went back');
+});
+
+// ---- UI at rest (Game.ts frame): the scene's rate under the menus, held frames, the logic's cadence ----
+
+/** sceneFps with a match on high (no cap) by default; `p` overrides. */
+const pace = (p = {}) => sceneFps({ cover: 'none', cap: 0, lite: false, still: false, animated: true, phone: false, covered: 0, ...p });
+/** Drawn frames per second of `n` animation frames at `hz` with vsync jitter, under `draws(t, last)`. */
+function drawnRate(hz, draws, n = 600) {
+  let last = -1;
+  let drawn = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i * (1000 / hz) + (i % 3 === 0 ? 0.3 : -0.2);
+    if (draws(t, last)) {
+      last = t;
+      drawn++;
+    }
+  }
+  return (drawn / n) * hz;
+}
+
+test('frameCap: the lower of the tier cap and the player limit, 0 = none; parseFpsCap keeps 30 / 60 only', () => {
+  assert.equal(frameCap(0, 0), 0);
+  assert.equal(frameCap(30, 0), 30, 'super low alone');
+  assert.equal(frameCap(0, 60), 60, 'the player limit alone');
+  assert.equal(frameCap(30, 60), 30);
+  assert.equal(frameCap(60, 30), 30);
+  assert.deepEqual(FPS_CAPS, [0, 30, 60]);
+  for (const v of FPS_CAPS) assert.equal(parseFpsCap(v), v);
+  for (const bad of [20, 45, 120, '30', null, undefined, true, {}]) assert.equal(parseFpsCap(bad), 0, String(bad));
+});
+
+test('sceneFps: a match at its cap, the menus at 30 (20 on super low or a mostly covered phone), held under opaque layers', () => {
+  // A match: the tier's cap with the player's limit, whatever the menus said before.
+  assert.equal(pace(), 0, 'high: the display rate');
+  assert.equal(pace({ cap: TIERS.superlow.maxFps, lite: true }), 30, 'super low: 30');
+  assert.equal(pace({ cap: frameCap(0, 60) }), 60, 'a 60 fps limit');
+  // The menus with the stadium showing through.
+  assert.equal(MENU_FPS, 30);
+  assert.equal(MENU_FPS_LITE, 20);
+  assert.equal(pace({ cover: 'partial' }), 30, 'low / high / ultra');
+  assert.equal(pace({ cover: 'partial', cap: 30, lite: true }), 20, 'super low');
+  assert.equal(pace({ cover: 'partial', phone: true, covered: 0.6 }), 30, 'a phone, the scene mostly visible');
+  assert.equal(pace({ cover: 'partial', phone: true, covered: MENU_COVER_LITE }), 30, 'at the threshold');
+  assert.equal(pace({ cover: 'partial', phone: true, covered: 0.86 }), 20, 'a phone, mostly covered');
+  assert.equal(pace({ cover: 'partial', phone: false, covered: 0.86 }), 30, 'the 70 % rule is a phone\'s');
+  assert.equal(pace({ cover: 'partial', cap: frameCap(0, 30) }), 30, 'never above the player limit');
+  // One held frame: the menus' stadium may not move (prefers-reduced-motion, the pref off), an
+  // opaque layer (modal, settings, the rotate screen), an offline pause.
+  assert.equal(pace({ cover: 'partial', animated: false }), HELD_FRAME);
+  assert.equal(pace({ cover: 'opaque' }), HELD_FRAME);
+  assert.equal(pace({ cover: 'opaque', cap: 30, lite: true }), HELD_FRAME);
+  assert.equal(pace({ still: true }), HELD_FRAME, 'offline pause');
+  assert.equal(pace({ still: true, cover: 'partial' }), HELD_FRAME);
+});
+
+test('drawsScene: the paced rates on 60 / 50 / 120 Hz, nothing while held unless something changed', () => {
+  const at = (fps) => (t, last) => drawsScene(t, last, fps, false);
+  assert.ok(Math.abs(drawnRate(60, at(30)) - 30) < 0.5, `menus at 60 Hz: ${drawnRate(60, at(30))}`);
+  assert.ok(Math.abs(drawnRate(60, at(20)) - 20) < 0.5, `super low menus at 60 Hz: ${drawnRate(60, at(20))}`);
+  assert.ok(Math.abs(drawnRate(120, at(20)) - 20) < 0.5, `120 Hz: ${drawnRate(120, at(20))}`);
+  assert.ok(Math.abs(drawnRate(50, at(20)) - 50 / 3) < 0.5, `50 Hz: every third vsync, ${drawnRate(50, at(20))}`);
+  assert.equal(drawnRate(60, at(0)), 60, 'a match without a cap');
+  assert.equal(drawnRate(60, at(HELD_FRAME)), 0, 'held');
+  assert.equal(drawsScene(5000, 4990, HELD_FRAME, true), true, 'a change under the held frame draws it once');
+  assert.equal(drawsScene(5000, 4990, 20, true), true);
+  assert.equal(drawsScene(5000, -1, HELD_FRAME, false), false, 'held from the first frame: only a change draws');
+});
+
+test('runsLogic: a live match keeps its cap, the menus and an offline pause run every animation frame', () => {
+  const logic = (cap, live) => (t, last) => runsLogic(t, last, cap, live);
+  assert.ok(Math.abs(drawnRate(60, logic(30, true)) - 30) < 0.5, 'super low match: 30, as drawsFrame');
+  assert.equal(drawnRate(60, logic(0, true)), 60);
+  assert.equal(drawnRate(60, logic(30, false)), 60, 'super low menus: every frame');
+  assert.equal(drawnRate(144, logic(30, false)), 144);
 });
 
 test('parseQuality reads the tier names and the numbers saved before the third tier', () => {

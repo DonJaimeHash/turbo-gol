@@ -7,8 +7,9 @@
  *   superlow  ("Super low") very weak devices: a 1 GB Android TV on a Mali-G31 (docs/visuals/REWORK.md
  *          "Super low"), set-top boxes, the oldest phones. The direct path of low at about 640x360
  *          (a 230k pixel budget below 1:1, no dynamic resolution: the compositor upscales a fixed
- *          size), 30 fps at most, no MSAA, no shadow maps, and nothing built that costs: no world
- *          bake (a gradient sky dome from the theme's colours, no live layer, no environment map,
+ *          size), 30 fps at most (20 under the menus: sceneFps), no MSAA, no shadow maps, and
+ *          nothing built that costs: no world bake (a gradient sky dome from the theme's colours,
+ *          no live layer, no environment map,
  *          no fog, no IndexedDB: world/liteWorld.ts), no crowd (the stands are painted), no
  *          netting, lamp heads without halos, Lambert / unlit materials for the cars, the ball and
  *          the goals, a small turf texture instead of the blade field, 128 particles kept small on
@@ -157,7 +158,10 @@ export interface TierSpec {
   readonly glare: boolean;
   /** Turf: a small grain texture instead of the blade field and no field map (the unlit turf only). */
   readonly liteTurf: boolean;
-  /** Frames per second at most (0 = the display's rate): extra animation frames are skipped. */
+  /**
+   * Frames per second at most in a match (0 = the display's rate): extra animation frames are
+   * skipped. Under the menus the scene runs slower still (sceneFps).
+   */
   readonly maxFps: number;
   /** The tier starts the WebGL2 backend unless the URL asks for WebGPU (decided before the renderer exists). */
   readonly preferWebGL2: boolean;
@@ -425,6 +429,86 @@ export function drawsFrame(now: number, last: number, maxFps: number): boolean {
   if (!(maxFps > 0) || last < 0) return true;
   const gap = now - last;
   return gap < 0 || gap >= 1000 / maxFps - 2;
+}
+
+/**
+ * "UI at rest" (Game.ts frame): what lies over the 3D scene. 'none': a match, or nothing; 'partial':
+ * the menus with the stadium showing through (Game.setMenuCover, reported by src/ui/Menu.ts);
+ * 'opaque': a layer that hides it (a menu modal, the settings screen, the rotate-your-phone screen).
+ */
+export type SceneCover = 'none' | 'partial' | 'opaque';
+
+/** sceneFps: no frame at all, the last one drawn stays on the canvas until something changes. */
+export const HELD_FRAME = -1;
+/** The scene's rate under the menus (sceneFps); MENU_FPS_LITE on super low and on a phone whose menus hide most of it. */
+export const MENU_FPS = 30;
+export const MENU_FPS_LITE = 20;
+/** A touch screen's menus that hide more than this share of it (src/ui/cover.ts coverShare) draw the scene at MENU_FPS_LITE. */
+export const MENU_COVER_LITE = 0.7;
+
+/** The player's frame limit (GamePrefs.fpsCap: the Graphics row of a later settings page): 0 = the display's rate. */
+export type FpsCap = 0 | 30 | 60;
+export const FPS_CAPS: readonly FpsCap[] = [0, 30, 60];
+
+/** A saved frame limit; anything else is 0 (no limit). Pure. */
+export function parseFpsCap(v: unknown): FpsCap {
+  return v === 30 || v === 60 ? v : 0;
+}
+
+/** The lower of two frame caps (frames per second, 0 = none): the tier's maxFps and the player's limit. Pure. */
+export function frameCap(a: number, b: number): number {
+  if (!(a > 0)) return b > 0 ? b : 0;
+  return b > 0 && b < a ? b : a;
+}
+
+/** What decides the scene's rate (sceneFps), read by the Game every frame. */
+export interface ScenePace {
+  readonly cover: SceneCover;
+  /** The frame cap of a match (frameCap of the tier's maxFps and GamePrefs.fpsCap; 0 = none). */
+  readonly cap: number;
+  /** The tier's CPU trims (TierSpec.cpuLite: super low). */
+  readonly lite: boolean;
+  /** Nothing in the scene moves: an offline pause (the sim stopped, the views and the camera frozen). */
+  readonly still: boolean;
+  /** The menus' stadium may move: GamePrefs.menuSceneAnimated, and no prefers-reduced-motion (the orbit stops). */
+  readonly animated: boolean;
+  /** A touch screen (coarse pointer), and the share of the screen the menus hide (coverShare; 0 elsewhere). */
+  readonly phone: boolean;
+  readonly covered: number;
+}
+
+/**
+ * Frames per second the scene is drawn at (0 = every animation frame, HELD_FRAME = none): a match
+ * at its cap; the menus at MENU_FPS, MENU_FPS_LITE on super low or on a phone whose menus hide
+ * more than MENU_COVER_LITE of it, one held frame when their stadium may not move; one held frame
+ * under an opaque layer and in an offline pause. Never above the cap. Pure.
+ */
+export function sceneFps(p: ScenePace): number {
+  if (p.cover === 'opaque' || p.still) return HELD_FRAME;
+  if (p.cover === 'none') return p.cap;
+  if (!p.animated) return HELD_FRAME;
+  return frameCap(p.cap, p.lite || (p.phone && p.covered > MENU_COVER_LITE) ? MENU_FPS_LITE : MENU_FPS);
+}
+
+/**
+ * Whether the animation frame at `now` (ms) runs the game's logic (input, sim, session) when the
+ * last one that did was at `last` (ms, < 0 = none): a match being played (`live`) keeps its frame
+ * cap (drawsFrame: the frames in between do nothing, the next one carries their time); the menus
+ * and an offline pause run every animation frame, so a pad press is read whatever the scene's
+ * rate (a press shorter than one drawn frame is not lost). Pure.
+ */
+export function runsLogic(now: number, last: number, cap: number, live: boolean): boolean {
+  return !live || drawsFrame(now, last, cap);
+}
+
+/**
+ * Whether the animation frame at `now` (ms) draws the scene at `fps` (sceneFps) when the last
+ * drawn one was at `last` (ms, < 0 = none): as drawsFrame, never for HELD_FRAME, always when
+ * `redraw` (something under the held frame changed: the canvas size, the cover, a rebuilt view). Pure.
+ */
+export function drawsScene(now: number, last: number, fps: number, redraw: boolean): boolean {
+  if (redraw) return true;
+  return fps !== HELD_FRAME && drawsFrame(now, last, fps);
 }
 
 /** The tier below `q` (ultra -> high -> low -> superlow), null below super low. */
