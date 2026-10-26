@@ -29,6 +29,26 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # The menus at the sizes that matter (780x360, 844x390, 960x540 as a TV, 1366x768, 390x844) with the
+  # wide fallback text: no bar of the shell overflows, nothing is cut (scripts/ui-fit.mjs, the Tablero
+  # plan §2.6). Information only until plan PR 6 makes it required.
+  ui-fit:
+    name: UI fit (information)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:client
+        env:
+          VITE_UI_FIT: '1'
+      - run: node scripts/ui-fit.mjs
+
   server:
     name: Server (typecheck, tests)
     runs-on: ubuntu-latest
