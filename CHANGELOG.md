@@ -114,6 +114,9 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- On Super low a quick press of a controller button in the menus (shorter than one frame) could
+  be lost. The menus and the pause now read the controller on every screen refresh, whatever the
+  stadium's frame rate.
 - In about half of the peer-to-peer matches every player's game dealt its own kickoff positions
   (the room's random seed, read as a negative number, meant "pick at random"): the games went out
   of sync at the start and after every goal, and only caught up by copying another player's state
@@ -156,6 +159,11 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- The menus are lighter on phones, TVs and laptops: the stadium behind them now moves at 30 frames
+  per second (20 on Super low, and on a phone whose menus cover most of the screen), and it stops,
+  keeping its last picture, behind Settings, a dialog, the "turn your phone" screen and a paused
+  offline match. Less heat and battery for the same menus; matches run exactly as before. With
+  "reduce motion" on in the system settings, the stadium behind the menus holds still.
 - A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
   netting, LED boards (a big main-sponsor board in the middle of each side wall; the boards change
   every 30 seconds), stands with a crowd and floodlight towers, with cranes, containers and a ship

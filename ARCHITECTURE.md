@@ -88,8 +88,10 @@ src/render/
                         reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU compatibility mode
                         and <= 4 GB devices start on low unless the player chose a tier, super low
                         never raised; never above the GPU's ceiling); needsReload (into or out of
-                        super low); drawsFrame (the frame cap); lowerQuality; menuQualities (super
-                        low listed only for unlocked players) and nextQuality over such a list
+                        super low); drawsFrame (the frame cap); the scene's pace ("UI at rest":
+                        SceneCover, frameCap with the player's FpsCap, sceneFps, runsLogic,
+                        drawsScene); lowerQuality; menuQualities (super low listed only for
+                        unlocked players) and nextQuality over such a list
   bootTier.ts           the boot tier before the renderer exists (the URL's #superlow, the tab's
                         recovery, a GPU of the device that fell to super low (a ceiling known
                         before the backend), the player's choice, super low on a TV with a slow GPU or on
@@ -112,9 +114,10 @@ src/render/
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
                         nomsaa, msaa, nopost, norender, pr, hide)
-  frameStats.ts         `#diag`'s frame rate (1 s min / mean, 5 s mean, frames over 50 / 100 ms)
-                        and CPU per frame (ball prediction, bots, physics step, render), fed by the
-                        Game only with the flag
+  frameStats.ts         `#diag`'s drawn frame rate (1 s min / mean, 5 s mean), the animation frames
+                        the loop ran, the stalls (animation frames over 50 / 100 ms) and CPU per
+                        drawn frame (ball prediction, bots, physics step, render), fed by the Game
+                        only with the flag
   capabilities.ts       what the device can do (readCapabilities at init: compatibility mode, a
                         multisampled HDR target / canvas, float32 filtering, max texture size,
                         colour targets, the GPU key) and adjustTier: a tier without what the device
@@ -315,9 +318,12 @@ src/ui/                 the front-end menus, styled by menu.css (mn-)
   Menu.ts               controller: top bar (breadcrumb, region / players online, account chip),
                         screen stack, bottom bar (key hints + the matchmaking banner with timer and
                         cancel), toasts, modals, shared prefs (region, playlists, connection),
-                        population polling; MenuHost = what the Game provides (search, friendly,
-                        training (with experimental rules), the experimental view (unlocked,
-                        presets), lobby matches, settings screen)
+                        population polling, the 4 Hz tick (1 Hz on super low, DOM written only on
+                        change); MenuHost = what the Game provides (search, friendly, training
+                        (with experimental rules), the experimental view (unlocked, presets), lobby
+                        matches, settings screen, setMenuCover: what the menus leave of the scene)
+  cover.ts              the share of a touch screen the menus hide (a 9 x 5 grid of
+                        elementFromPoint and computed backgrounds), reported with the cover
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
@@ -657,7 +663,10 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
 
 ```
 requestAnimationFrame(t):
-  if !drawsFrame(t, lastDrawn, tier.maxFps): return   // super low: 30 fps, the time carries over
+  live = a match being played (online: the session's match, paused or not)
+  if !runsLogic(t, lastLogic, cap, live): return  // a match keeps its cap (super low: 30; the
+                                          // player's fpsCap), the time carries over; the menus
+                                          // and an offline pause run every animation frame
   dt = clamp(t - last, 0, 0.1); acc += dt
   input.beginFrame()                      // one navigator.getGamepads() per frame
   while acc >= TICK_DT:
@@ -672,10 +681,28 @@ requestAnimationFrame(t):
      acc -= TICK_DT
   processActions()                        // pause / ball cam / reset edges, pad edges → menu
   alpha = acc / TICK_DT
-  chase.update(..., input.look)           // swivel + rear view
-  renderer.render(prev, cur, alpha)      // interpolated transforms, camera, effects, HUD
-                                          // (scoreboard while held, pointer-lock hint)
+  fps = sceneFps(cover, cap, ...)         // UI at rest, below
+  if drawsScene(t, lastDrawn, fps, changed || redraw):
+     chase.update(..., input.look)        // swivel + rear view (the menus: the orbit)
+     renderer.render(prev, cur, alpha)    // interpolated transforms, camera, effects, HUD
+  frameLogic(dt)                          // scoreboard while held, touch controls, pointer-lock
+                                          // hint, GO caption, back to the menus, audio
 ```
+
+**UI at rest** (quality.ts `sceneFps`, Game.ts `frame`): the scene is drawn at the match's cap;
+at 30 fps under the menus (20 on super low, and on a touch screen whose menus hide more than 70 %
+of it: src/ui/cover.ts); and not at all, one held frame, under an opaque layer (a menu modal, the
+settings screen, the rotate-your-phone screen), in an offline pause, and under the menus with
+`prefers-reduced-motion` or `GamePrefs.menuSceneAnimated` off (the orbit stops). The menus report
+what they leave of the scene through `MenuHost.setMenuCover` ('none' / 'partial' / 'opaque'); the
+Game adds its own layers. A held frame is drawn again when something under it changes (a change
+of pace, a resize, rebuilt views, the end of a load, a tab that comes back, a warm-up frame): the
+canvas keeps its last image in between. The input is read on every animation frame outside a
+match, so a pad tap shorter than one drawn frame still moves the focus. Paced and held frames give
+dynamic resolution no interval. The menus' orbit runs on drawn time (it resumes where it stopped);
+`GamePrefs.fpsCap` (30 / 60 / none) and `menuSceneAnimated` have no Settings row yet
+(`Game.setFpsCap`, `Game.setMenuSceneAnimated`). `#diag` shows the drawn rate "of" the animation
+frames.
 
 Online (`Game.onlineActive`) the same frame calls `OnlineSession.advance(dt)` instead of the
 `while` loop: it applies the staged snapshot (rollback + replay), compares the local tick with
