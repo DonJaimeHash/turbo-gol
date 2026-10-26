@@ -38,8 +38,13 @@
  *   ground and in the air, unless the player bound that arrow to an action of their own.
  *
  *   Fixed (not rebindable) menu keys: Enter / Numpad Enter accept, Esc / Backspace back, arrows and
- *   WASD navigate; gamepad A accept, B back, X controls & settings, D-pad or left stick navigate.
- *   (Space is deliberately not a menu key: it is the ball cam toggle.)
+ *   WASD navigate; gamepad A accept, B back, X controls & settings (the menus' context action),
+ *   D-pad or left stick navigate (held: repeated, NAV_REPEAT_DELAY_MS then every NAV_REPEAT_MS),
+ *   and for the menus only LB / RB (menuPrev / menuNext), LT / RT (menuTabPrev / menuTabNext, an
+ *   analog trigger past NAV_TRIGGER_ON), Y (menuCancel) and Start (menuStart: Start is also the
+ *   pause binding's edge). Nothing reads those in a match: the keyboard's menu shortcuts (Q / E / X /
+ *   Delete) are src/ui/Menu.ts's own, only while the menus are up. (Space is deliberately not a menu
+ *   key: it is the ball cam toggle.)
  *
  *   KEYBOARD_ONLY_KBM (preset 'keyboardOnly') differs in: Space jump, Left Shift boost, Z
  *   powerslide / air roll, C ball cam, X rear view (no browser modifier, see bindings.ts).
@@ -92,7 +97,16 @@ export interface InputActions {
   menuDown: boolean;
   menuLeft: boolean;
   menuRight: boolean;
-  /** Open the controls & settings screen / next tab (fixed: gamepad X; the Hud handles the O key itself). */
+  /** The menuUp / Down / Left / Right of this sample are a held direction's auto-repeat, not a press. */
+  menuRepeat: boolean;
+  /** Menu edges of the pad only (src/ui/Menu.ts MenuCommand): LB / RB, LT / RT, Y, Start. */
+  menuPrev: boolean;
+  menuNext: boolean;
+  menuTabPrev: boolean;
+  menuTabNext: boolean;
+  menuCancel: boolean;
+  menuStart: boolean;
+  /** Open the controls & settings screen / next tab; the menus' context action (fixed: gamepad X; the Hud handles the O key itself). */
   settings: boolean;
   /** Training edges (bindable; src/game/TrainingSession.ts): reset shot / ball, previous / next shot, reset car, unlimited boost. */
   trainingReset: boolean;
@@ -120,6 +134,8 @@ export interface InputOptions {
   onChange?: () => void;
   /** Defaults to the global `document` when there is one. */
   document?: DocumentLike | null;
+  /** The clock of the menu auto-repeat (ms; default performance.now), injectable for tests. */
+  now?: () => number;
 }
 
 /**
@@ -233,6 +249,18 @@ AXIS_SENS[I_PITCH_UP] = AXIS_SENS[I_PITCH_DOWN] = AXIS_SENS[I_YAW_L] = AXIS_SENS
 
 /** Left stick deflection that counts as a menu navigation press. */
 const NAV_STICK_THRESHOLD = 0.6;
+/** A held menu direction repeats after this (ms), then every NAV_REPEAT_MS: a TV list walked by holding ↓. */
+export const NAV_REPEAT_DELAY_MS = 400;
+export const NAV_REPEAT_MS = 80;
+/** LT / RT as menu edges: past ON (some TV pads' analog triggers rest a little pressed), re-armed under OFF. */
+const NAV_TRIGGER_ON = 0.5;
+const NAV_TRIGGER_OFF = 0.3;
+/** Menu directions (navHeld). */
+const NAV_NONE = 0;
+const NAV_UP = 1;
+const NAV_DOWN = 2;
+const NAV_LEFT = 3;
+const NAV_RIGHT = 4;
 /** Axis deflection that is captured as a binding by startRebind. */
 const CAPTURE_AXIS_THRESHOLD = 0.6;
 const REBIND_TIMEOUT_MS = 10_000;
@@ -277,6 +305,20 @@ function buttonValue(gp: Gamepad, i: number): number {
   return v > 0 ? (v > 1 ? 1 : v) : b.pressed ? 1 : 0;
 }
 
+/** Menu direction `dir` (NAV_UP...) still held: its D-pad button, or the left stick past the threshold that way. */
+function navStillHeld(gp: Gamepad, dir: number, x: number, y: number): boolean {
+  switch (dir) {
+    case NAV_UP:
+      return buttonPressed(gp, GP.DPAD_UP) || y < -NAV_STICK_THRESHOLD;
+    case NAV_DOWN:
+      return buttonPressed(gp, GP.DPAD_DOWN) || y > NAV_STICK_THRESHOLD;
+    case NAV_LEFT:
+      return buttonPressed(gp, GP.DPAD_LEFT) || x < -NAV_STICK_THRESHOLD;
+    default:
+      return buttonPressed(gp, GP.DPAD_RIGHT) || x > NAV_STICK_THRESHOLD;
+  }
+}
+
 function clearActions(a: InputActions): void {
   a.toggleBallCam = false;
   a.reset = false;
@@ -287,6 +329,13 @@ function clearActions(a: InputActions): void {
   a.menuDown = false;
   a.menuLeft = false;
   a.menuRight = false;
+  a.menuRepeat = false;
+  a.menuPrev = false;
+  a.menuNext = false;
+  a.menuTabPrev = false;
+  a.menuTabNext = false;
+  a.menuCancel = false;
+  a.menuStart = false;
   a.settings = false;
   a.trainingReset = false;
   a.trainingPrev = false;
@@ -306,6 +355,13 @@ function newActions(): InputActions {
     menuDown: false,
     menuLeft: false,
     menuRight: false,
+    menuRepeat: false,
+    menuPrev: false,
+    menuNext: false,
+    menuTabPrev: false,
+    menuTabNext: false,
+    menuCancel: false,
+    menuStart: false,
     settings: false,
     trainingReset: false,
     trainingPrev: false,
@@ -415,6 +471,12 @@ export class Input {
   private readonly stick = new Float64Array(GP_MAX_AXES);
   private prevNavX = 0;
   private prevNavY = 0;
+  /** The menu direction held for the auto-repeat (the one pressed last; NAV_NONE when none) and when it fires next. */
+  private navHeld = NAV_NONE;
+  private navNextAt = 0;
+  /** LT (bit 1) / RT (bit 2) past NAV_TRIGGER_ON and not yet back under NAV_TRIGGER_OFF. */
+  private triggers = 0;
+  private readonly now: () => number;
   /** Gamepad button presses seen so far (see gamepadPresses). */
   private padPresses = 0;
 
@@ -617,6 +679,7 @@ export class Input {
   constructor(target: Window | HTMLElement, settings: Settings, opts?: InputOptions) {
     this.settings = settings;
     this.onChange = opts?.onChange ?? null;
+    this.now = opts?.now ?? (() => performance.now());
     this.doc = opts?.document !== undefined ? opts.document : typeof document !== 'undefined' ? document : null;
     this.target = target;
     const win: EventTarget | null = typeof window !== 'undefined' ? window : null;
@@ -1270,6 +1333,7 @@ export class Input {
 
   /** Dead zones, capture crossings, fixed menu navigation edges. */
   private processGamepad(gp: Gamepad): void {
+    const wasCapturing = this.capture !== null; // a press that ends a capture below fires no menu edge
     const axes = gp.axes;
     const na = Math.min(axes.length, GP_MAX_AXES);
     const stick = this.stick;
@@ -1303,6 +1367,7 @@ export class Input {
     const pa = this.padActions;
     const prev = this.prevButtons;
     const nb = Math.min(gp.buttons.length, GP_MAX_BUTTONS);
+    let pressed = NAV_NONE; // a menu direction pressed in this sample (the last one is the one repeated)
     for (let i = 0; i < nb; i++) {
       const now = buttonPressed(gp, i) ? 1 : 0;
       if (now === 1 && prev[i] === 0) {
@@ -1321,17 +1386,33 @@ export class Input {
             case GP.X:
               a.settings = pa.settings = true;
               break;
+            case GP.Y:
+              a.menuCancel = pa.menuCancel = true;
+              break;
+            case GP.LB:
+              a.menuPrev = pa.menuPrev = true;
+              break;
+            case GP.RB:
+              a.menuNext = pa.menuNext = true;
+              break;
+            case GP.START:
+              a.menuStart = pa.menuStart = true;
+              break;
             case GP.DPAD_UP:
               a.menuUp = pa.menuUp = true;
+              pressed = NAV_UP;
               break;
             case GP.DPAD_DOWN:
               a.menuDown = pa.menuDown = true;
+              pressed = NAV_DOWN;
               break;
             case GP.DPAD_LEFT:
               a.menuLeft = pa.menuLeft = true;
+              pressed = NAV_LEFT;
               break;
             case GP.DPAD_RIGHT:
               a.menuRight = pa.menuRight = true;
+              pressed = NAV_RIGHT;
               break;
             default:
               break;
@@ -1342,17 +1423,74 @@ export class Input {
     }
     for (let i = nb; i < GP_MAX_BUTTONS; i++) prev[i] = 0;
 
+    // LT / RT as menu edges: past NAV_TRIGGER_ON, and again only once back under NAV_TRIGGER_OFF
+    // (a trigger resting a little pressed, or a noisy one, fires once). Tracked during a capture
+    // too, so the press a capture took (in this very sample too) fires nothing afterwards.
+    const lt = buttonValue(gp, GP.LT);
+    const rt = buttonValue(gp, GP.RT);
+    let trig = this.triggers;
+    if (lt >= NAV_TRIGGER_ON && (trig & 1) === 0) {
+      trig |= 1;
+      if (!wasCapturing) a.menuTabPrev = pa.menuTabPrev = true;
+    } else if (lt <= NAV_TRIGGER_OFF) trig &= ~1;
+    if (rt >= NAV_TRIGGER_ON && (trig & 2) === 0) {
+      trig |= 2;
+      if (!wasCapturing) a.menuTabNext = pa.menuTabNext = true;
+    } else if (rt <= NAV_TRIGGER_OFF) trig &= ~2;
+    this.triggers = trig;
+
     // Left stick as a D-pad for menus (edge on crossing the threshold, raw axes).
     const rawX = prevAxes[GP.AXIS_LX];
     const rawY = prevAxes[GP.AXIS_LY];
     if (this.capture === null) {
-      if (rawY < -NAV_STICK_THRESHOLD && this.prevNavY >= -NAV_STICK_THRESHOLD) a.menuUp = pa.menuUp = true;
-      if (rawY > NAV_STICK_THRESHOLD && this.prevNavY <= NAV_STICK_THRESHOLD) a.menuDown = pa.menuDown = true;
-      if (rawX < -NAV_STICK_THRESHOLD && this.prevNavX >= -NAV_STICK_THRESHOLD) a.menuLeft = pa.menuLeft = true;
-      if (rawX > NAV_STICK_THRESHOLD && this.prevNavX <= NAV_STICK_THRESHOLD) a.menuRight = pa.menuRight = true;
+      if (rawY < -NAV_STICK_THRESHOLD && this.prevNavY >= -NAV_STICK_THRESHOLD) {
+        a.menuUp = pa.menuUp = true;
+        pressed = NAV_UP;
+      }
+      if (rawY > NAV_STICK_THRESHOLD && this.prevNavY <= NAV_STICK_THRESHOLD) {
+        a.menuDown = pa.menuDown = true;
+        pressed = NAV_DOWN;
+      }
+      if (rawX < -NAV_STICK_THRESHOLD && this.prevNavX >= -NAV_STICK_THRESHOLD) {
+        a.menuLeft = pa.menuLeft = true;
+        pressed = NAV_LEFT;
+      }
+      if (rawX > NAV_STICK_THRESHOLD && this.prevNavX <= NAV_STICK_THRESHOLD) {
+        a.menuRight = pa.menuRight = true;
+        pressed = NAV_RIGHT;
+      }
     }
     this.prevNavX = rawX;
     this.prevNavY = rawY;
+
+    // Auto-repeat of the direction pressed last, while its D-pad button or the stick holds it:
+    // NAV_REPEAT_DELAY_MS after the press, then every NAV_REPEAT_MS, on the clock (the same at 20
+    // fps and at 144; one repeat at most per sample). A capture stops it.
+    const t = this.now();
+    if (pressed !== NAV_NONE) {
+      this.navHeld = pressed;
+      this.navNextAt = t + NAV_REPEAT_DELAY_MS;
+    } else if (this.navHeld !== NAV_NONE) {
+      if (this.capture !== null || !navStillHeld(gp, this.navHeld, rawX, rawY)) this.navHeld = NAV_NONE;
+      else if (t >= this.navNextAt) {
+        this.navNextAt = t + NAV_REPEAT_MS;
+        a.menuRepeat = pa.menuRepeat = true;
+        switch (this.navHeld) {
+          case NAV_UP:
+            a.menuUp = pa.menuUp = true;
+            break;
+          case NAV_DOWN:
+            a.menuDown = pa.menuDown = true;
+            break;
+          case NAV_LEFT:
+            a.menuLeft = pa.menuLeft = true;
+            break;
+          default:
+            a.menuRight = pa.menuRight = true;
+            break;
+        }
+      }
+    }
   }
 
   /** Radial deadzone with rescaling so the first usable value is 0, not `deadzone`. */
@@ -1395,6 +1533,8 @@ export class Input {
     }
     this.prevNavX = prevAxes[GP.AXIS_LX];
     this.prevNavY = prevAxes[GP.AXIS_LY];
+    this.navHeld = NAV_NONE;
+    this.triggers = 0;
   }
 
   /**
