@@ -355,6 +355,8 @@ const GAMEPLAY_ROWS: ReadonlyArray<{ key: keyof ControlSettings; label: Key }> =
   { key: 'mouseSteeringSensitivity', label: 'settings.mouseSteeringSensitivity' },
   { key: 'invertAirPitch', label: 'settings.invertAirPitch' },
   { key: 'vibration', label: 'settings.vibration' },
+  // Touch screens only (buildGameplayPage): a finger's one-thumb aerial (plan M29).
+  { key: 'touchHoldJump', label: 'settings.touchHoldJump' },
 ];
 
 /** Key names shown in the settings screen's texts: never translated, passed as {placeholders}. */
@@ -1777,6 +1779,7 @@ export class Hud {
     page.appendChild(el('div', 'hud-settings-device', t('settings.gameplayNote')));
     for (const g of GAMEPLAY_ROWS) {
       const key = g.key;
+      if (key === 'touchHoldJump' && !(navigator.maxTouchPoints > 0)) continue;
       const range = CONTROL_RANGES[key];
       const built =
         range === null

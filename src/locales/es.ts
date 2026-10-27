@@ -640,6 +640,7 @@ export default {
   'settings.mouseSteeringSensitivity': 'Sensibilidad de dirección con mouse',
   'settings.invertAirPitch': 'Invertir inclinación en el aire',
   'settings.vibration': 'Vibración del control',
+  'settings.touchHoldJump': 'Táctil: mantener SALTO al deslizar a BOOST',
   'settings.resetGameplay': 'Valores por defecto',
   'settings.audioNote': 'Sonidos del juego',
   'settings.volume': 'Volumen general',

@@ -1116,6 +1116,87 @@ test('router through Input: one thumb on BOOST sliding to JUMP takes off with bo
   input.dispose();
 });
 
+test('router M29: with holdJump, JUMP held stays held through a slide, as BOOST does; off by default', () => {
+  const { ts, router } = routerSetup();
+  assert.equal(router.holdJump, false, 'off by default');
+  router.holdJump = true;
+  router.down(1, 575, 330);
+  router.move(1, 660, 325); // into BOOST: the jump stays held
+  assert.deepEqual(readMap(ts), { jump: 1, boost: 1 });
+  router.move(1, 690, 220); // DRIFT: both kept
+  assert.deepEqual(readMap(ts), { jump: 1, boost: 1, powerslide: 1, airRoll: 1 });
+  router.move(1, 575, 330); // back on JUMP: no second press (no double jump by sliding back)
+  assert.deepEqual(readMap(ts), { jump: 1, boost: 1 });
+  router.up(1, 575, 330);
+  assert.deepEqual(readMap(ts), {});
+  assert.equal(ts.isHeld(TB.JUMP), false, 'every press released exactly once');
+  assert.equal(ts.isHeld(TB.BOOST), false);
+  router.holdJump = false; // the preference off again: JUMP is let go on the slide, as before
+  router.down(2, 575, 330);
+  assert.deepEqual(readMap(ts), { jump: 1 });
+  router.move(2, 660, 325);
+  assert.deepEqual(readMap(ts), { boost: 1 });
+  router.up(2, 660, 325);
+});
+
+test('router M29 through Input: one thumb JUMP → BOOST keeps one jump held (no second jump edge)', () => {
+  const { sample, ts, input } = setup();
+  const router = new TouchRouter(ts, routerSetup().layout);
+  router.holdJump = true;
+  router.down(1, 575, 330);
+  assert.equal(sample().jump, true);
+  router.move(1, 690, 320);
+  for (let i = 0; i < 5; i++) {
+    const out = sample();
+    assert.equal(out.jump, true, 'held all the way');
+    assert.equal(out.boost, true);
+  }
+  router.up(1, 690, 320);
+  const after = sample();
+  assert.equal(after.jump, false);
+  assert.equal(after.boost, false);
+  input.dispose();
+});
+
+test('router: a tap on the scorebug or the open board counts once; a slide off, a cancel or a button does not', () => {
+  const { ts, router, layout } = routerSetup();
+  router.down(1, 150, 40); // the scorebug, but its rectangle is empty: nothing
+  router.up(1, 150, 40);
+  assert.equal(router.scoreTaps, 0);
+  layout.score = { left: 36, top: 12, right: 260, bottom: 58 };
+  router.down(2, 150, 40);
+  assert.equal(router.stickActive, false);
+  router.up(2, 152, 42);
+  assert.equal(router.scoreTaps, 1);
+  router.down(3, 150, 40);
+  router.move(3, 150, 200); // slid off: no tap, and no stick either
+  router.up(3, 150, 40);
+  assert.equal(router.scoreTaps, 1);
+  assert.equal(router.stickActive, false);
+  router.down(4, 150, 40);
+  router.up(4, 150, 40, true); // cancelled
+  assert.equal(router.scoreTaps, 1);
+  layout.board = { left: 120, top: 80, right: 680, bottom: 330 }; // the open board covers BOOST's slop and the zone
+  router.down(5, 300, 200); // on the board, in the stick zone: the board's
+  assert.equal(router.stickActive, false);
+  router.up(5, 300, 200);
+  assert.equal(router.scoreTaps, 2);
+  router.down(6, 575, 330); // JUMP under the board's edge: a hold button wins
+  assert.deepEqual(readMap(ts), { jump: 1 });
+  router.up(6, 575, 330);
+  assert.equal(router.scoreTaps, 2);
+  layout.board = { left: 120, top: 30, right: 680, bottom: 300 }; // over CAM (670, 50): the board's
+  router.down(8, 670, 50);
+  assert.equal(router.pendingTaps, 0);
+  router.up(8, 670, 50);
+  assert.deepEqual(readMap(ts), {});
+  assert.equal(router.scoreTaps, 3);
+  layout.board = { left: 0, top: 0, right: 0, bottom: 0 };
+  router.down(7, 300, 200); // closed again: the stick
+  assert.equal(router.stickActive, true);
+  router.up(7, 300, 200);
+});
+
 // ---- Touch mode decisions (src/input/touchMode.ts) ---------------------------------------
 
 const { keyLeavesTouchMode, pointerTouchMode, MENU_KEYS } = await import('../src/input/touchMode.ts');

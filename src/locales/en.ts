@@ -966,6 +966,8 @@ export default {
   'settings.invertAirPitch': 'Invert air pitch',
   // On / off
   'settings.vibration': 'Controller vibration',
+  // On / off, touch screens only: one thumb sliding from JUMP to BOOST keeps the jump held (a full jump for an aerial)
+  'settings.touchHoldJump': 'Touch: keep JUMP held when sliding to BOOST',
   // Gameplay tab footer button: restore every row
   'settings.resetGameplay': 'Reset gameplay',
   // Audio tab: line over the rows
