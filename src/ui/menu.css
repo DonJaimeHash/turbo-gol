@@ -334,63 +334,6 @@
     background: var(--brand-hi);
   }
 }
-.mn-tile-casual .mn-tile-glyph {
-  color: var(--blue-hi);
-}
-.mn-tile-ranked .mn-tile-glyph {
-  color: var(--rank-gold);
-}
-.mn-tile-custom .mn-tile-glyph {
-  color: var(--info);
-}
-.mn-tile-offline .mn-tile-glyph {
-  color: var(--ok);
-}
-
-.mn-home {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
-  gap: 22px;
-  align-items: start;
-}
-.mn-home-tiles {
-  display: grid;
-  gap: 16px; /* clears the focus heel (15 px under a tile) */
-}
-.mn-home-side {
-  padding: 16px;
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-tile);
-  display: grid;
-  gap: 12px;
-}
-.mn-side-title {
-  font-size: 13px;
-  letter-spacing: 0.22em;
-  color: var(--text-2);
-  text-transform: uppercase;
-}
-.mn-side-text {
-  margin: 0;
-  line-height: 1.4;
-  color: var(--text-2);
-}
-
-.mn-play-tiles {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-.mn-play-tiles .mn-tile {
-  min-height: 130px;
-}
-.mn-play-foot {
-  margin-top: 14px;
-  color: var(--text-2);
-  font-size: 14px;
-}
-
 /* ---- rows: cycler, fields ---------------------------------------------------------------------- */
 .mn-row {
   display: flex;
@@ -1217,11 +1160,9 @@
 
 /* ---- narrow screens ---------------------------------------------------------------------------- */
 @media (max-width: 860px) {
-  .mn-home,
   .mn-profile-guest {
     grid-template-columns: 1fr;
   }
-  .mn-play-tiles,
   .mn-playlists,
   .mn-packs,
   .mn-exp,

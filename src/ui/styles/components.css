@@ -110,8 +110,8 @@
   letter-spacing: 0.04em;
 }
 
-/* 44 on a phone (its ✕ fits inside upright too); 40 in a TV's hint bar, as tall as the bar (PR 5
-   sets the TV's region pill by the plate, 44 there). */
+/* 44 on a phone (its ✕ fits inside upright too); 40 in a TV's hint bar, as tall as the bar (by
+   Inicio's plate, 44: screens/home.css). */
 html[data-shell='rail'] .mn-pill,
 html[data-shell='tabs'] .mn-pill {
   height: 2.75rem;
@@ -133,10 +133,10 @@ html[data-layout='portrait'] .mn-pill-region > :not(.mn-icon):not(.mn-dot),
   display: none;
 }
 
-/* A TV (the pill in its hint bar until PR 5 sets it by the plate): the region's name steps aside,
-   not the state read at 3 m ("● Online", "Offline | RETRY"). */
-html[data-shell='tv'] .mn-pill-region .mn-pill-main,
-html[data-shell='tv'] .mn-pill-region .mn-pill-main + .mn-pill-sep {
+/* A TV's hint bar (Inicio sets the pills by the plate, with room for the region): the region's
+   name steps aside, not the state read at 3 m ("● Online", "Offline | RETRY"). */
+html[data-shell='tv'] .mn-hint .mn-pill-region .mn-pill-main,
+html[data-shell='tv'] .mn-hint .mn-pill-region .mn-pill-main + .mn-pill-sep {
   display: none;
 }
 
@@ -479,6 +479,7 @@ html[data-shell='tabs'] .mn-toasts {
   padding: 0 0.75rem;
   font: 700 var(--t-label) / 1 var(--font-display);
   letter-spacing: var(--track-label);
+  text-transform: uppercase;
   color: var(--text-2);
 }
 

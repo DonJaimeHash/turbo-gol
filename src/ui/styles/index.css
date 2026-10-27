@@ -1,4 +1,6 @@
 /* The menus' own sheets, imported by src/ui/Menu.ts after menu.css (the tokens and the focus ring
-   come with src/style.css): the Tablero shell, then its components. */
+   come with src/style.css): the Tablero shell, its components, the tiles, then each screen's own. */
 @import './shell.css';
 @import './components.css';
+@import './tiles.css';
+@import './screens/home.css';

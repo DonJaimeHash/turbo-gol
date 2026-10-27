@@ -638,9 +638,10 @@ html[data-layout='short'] .mn-top {
 }
 
 /* The TV at 3 m: 27 px of overscan above and below, 48 at the sides; the avatar alone; the pills in
-   the hint bar (Menu.placePills), its About gives way to a running search; a crowded bar fits as
-   one (hintbar.ts data-fit, 16 px at least at the reference view, then the source link's short
-   form, then the parts that give way: fit.ts data-fit-give); opaque bars. */
+   the hint bar (Menu.placePills), its About gives way to a running search, except on Inicio, where
+   the pills sit by the plate; a crowded bar fits as one (hintbar.ts data-fit, 16 px at least at the
+   reference view, then the source link's short form, then the parts that give way: fit.ts
+   data-fit-give); opaque bars. */
 html[data-shell='tv'] .mn-top,
 html[data-shell='tv'] .mn-hint {
   padding: 1.6875rem 3rem 0;
@@ -682,8 +683,8 @@ html[data-shell='tv'] .mn-chip {
 }
 
 html[data-shell='tv'] .mn-chip-text,
-html[data-shell='tv'] .mn-searching .mn-link-about,
-html[data-shell='tv'] .mn-searching .mn-link-sep {
+html[data-shell='tv'] .mn-searching:not([data-screen='home']) .mn-link-about,
+html[data-shell='tv'] .mn-searching:not([data-screen='home']) .mn-link-sep {
   display: none;
 }
 

@@ -1,0 +1,364 @@
+/* JUGAR's root, Inicio (src/ui/screens/home.ts; plan §1.4 "JUGAR (Inicio)", the owner's artboards):
+   the plate, then the tile row anchored at the bottom over the live stadium. One order on every
+   device (hero, CASUAL, CON AMIGOS, CONTRA LA IA, COMPETITIVO); the hero is at the left on a PC and a
+   TV, at the right on a phone held sideways (the thumb), on top upright. Menu.ts writes
+   `data-screen` on .mn. Colours, font sizes and radii as tokens only. */
+
+/* The stadium is the backdrop on every tier (plan §1.7: 20 fps under the menus on super low): no
+   veil, a static scrim under the tile row (none on super low and on a TV: tokens). Every text of
+   Inicio sits on a tile, the plate or a bar, so nothing needs the shell's flat page here. */
+.mn[data-screen='home'] {
+  background: none;
+}
+
+.mn[data-screen='home']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: -1;
+  height: 61%;
+  background: var(--scrim);
+  pointer-events: none;
+}
+
+.mn[data-screen='home'] .mn-stage {
+  padding: 1.5rem calc(3rem + var(--safe-right)) 1rem calc(3rem + var(--safe-left));
+}
+
+/* It fades in without the stacked screens' slide (menu.css mn-in): its tile row sits on the stage's
+   bottom edge, so a slide would make the stage scroll for its 180 ms. */
+.mn-screen.mn-home {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: none;
+  min-height: 100%;
+  margin: 0;
+  animation-name: mn-fade;
+}
+
+@keyframes mn-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.mn-home-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+/* A TV's pills (Menu.placePills: Screen.pillSlot), by the plate as drawn. */
+.mn-home-pills {
+  display: none;
+}
+
+.mn-tiles {
+  margin-top: auto;
+  height: 19.5rem;
+  grid-template: 'hero casual friends' 1fr 'hero ai ranked' 1fr / 1.6fr 1fr 1fr;
+}
+
+/* data-fit minimums (fit.ts --fit-min): a slot never shrinks, past its row it drops its text. */
+.mn-hero-title {
+  --fit-min: 40;
+}
+
+.mn-mtile-title {
+  --fit-min: 20;
+}
+
+.mn-tile-top {
+  --fit-min: 12;
+}
+
+/* ---- Short (1366 x 600): a slim plate, lower tiles ------------------------------------------- */
+html[data-layout='short'] .mn[data-screen='home'] .mn-stage {
+  padding-top: 1rem;
+}
+
+html[data-layout='short'] .mn-plate {
+  height: 3.5rem;
+}
+
+html[data-layout='short'] .mn-plate-avatar {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: var(--t-body);
+}
+
+html[data-layout='short'] .mn-plate-name {
+  font-size: var(--t-body);
+}
+
+html[data-layout='short'] .mn-plate-car > .mn-icon:first-child {
+  width: 2rem;
+  height: 2rem;
+}
+
+html[data-layout='short'] .mn-tiles {
+  height: 17.5rem;
+}
+
+html[data-layout='short'] .mn-hero-main {
+  padding: 1.5rem 1.5rem 1.375rem 1.625rem;
+}
+
+html[data-layout='short'] .mn-hero-title {
+  --fit-min: 36;
+}
+
+html[data-layout='short'] .mn-mtile {
+  padding: 1rem 1.25rem;
+}
+
+/* ---- Phone held sideways: no plate, the hero at the right ------------------------------------ */
+html[data-shell='rail'] .mn[data-screen='home'] .mn-stage {
+  padding: 0 calc(1.5rem + var(--safe-right)) 1rem 0.75rem;
+}
+
+html[data-shell='rail'] .mn-home-top,
+html[data-shell='rail'] .mn-hero-dot,
+html[data-shell='rail'] .mn-hero-busy .mn-tile-top {
+  display: none;
+}
+
+html[data-shell='rail'] .mn-tiles {
+  height: 16.125rem;
+  max-height: calc(100vh - 6.25rem);
+  max-height: calc(100dvh - 6.25rem);
+  grid-template: 'casual friends hero' 1fr 'ai ranked hero' 1fr / 1fr 1fr clamp(13.75rem, 32vw, 15.625rem);
+  gap: 0.625rem;
+}
+
+html[data-shell='rail'] .mn-hero-main {
+  padding: 1.25rem 1.25rem 1.25rem 1.375rem;
+}
+
+html[data-shell='rail'] .mn-hero-title,
+html[data-layout='tablet'] .mn-hero-title {
+  --fit-min: 28;
+}
+
+/* JUGAR AHORA: one line in the display face, two (JUGAR / AHORA) at full size in a wider one. */
+html[data-shell='rail'] .mn-hero-play .mn-hero-title {
+  --fit-min: 40;
+}
+
+html[data-shell='rail'] .mn-hero-bottom {
+  gap: 0.625rem;
+}
+
+/* The queue on one line, the region under it (a touch lighter, as drawn). */
+html[data-shell='rail'] .mn-hero-region {
+  display: block;
+  font-size: var(--t-small);
+}
+
+html[data-shell='rail'] .mn-hero-region,
+html[data-shell='tv'] .mn-hero-region {
+  opacity: 0.925;
+}
+
+/* ---- Upright phone, tablet --------------------------------------------------------------------- */
+html[data-layout='portrait'] .mn[data-screen='home'] .mn-stage {
+  padding: 1rem calc(1rem + var(--safe-right)) 1rem calc(1rem + var(--safe-left));
+}
+
+html[data-layout='portrait'] .mn-plate {
+  width: 100%;
+  height: 4.5rem;
+}
+
+html[data-layout='portrait'] .mn-plate-id,
+html[data-shell='tv'] .mn-plate-id {
+  flex: 1;
+  padding: 0 1rem 0 0.75rem;
+}
+
+html[data-layout='portrait'] .mn-plate-avatar,
+html[data-shell='tv'] .mn-plate-avatar {
+  width: 3rem;
+  height: 3rem;
+}
+
+html[data-layout='portrait'] .mn-plate-name {
+  font-size: var(--t-heading);
+}
+
+/* Upright, the garage half is its car: no label, no chevron (the line keeps its room). */
+html[data-layout='portrait'] .mn-plate-label,
+html[data-layout='portrait'] .mn-plate-car > .mn-icon:last-child {
+  display: none;
+}
+
+/* The hero 168 tall as drawn; a two-line title makes it taller (the upright stage may scroll). */
+html[data-layout='portrait'] .mn-tiles {
+  margin-top: 0;
+  height: auto;
+  grid-template: 'hero hero' minmax(10.5rem, auto) 'casual friends' auto 'ai ranked' auto / 1fr 1fr;
+}
+
+html[data-layout='portrait'] .mn-mtile {
+  min-height: 7.5rem;
+}
+
+html[data-layout='portrait'] .mn-hero-main {
+  padding: 1.25rem;
+}
+
+html[data-layout='portrait'] .mn-hero-bottom {
+  gap: 0.5rem;
+}
+
+html[data-layout='portrait'] .mn-hero-go {
+  width: 3rem;
+  height: 3rem;
+}
+
+html[data-layout='portrait'] .mn-hero-title {
+  --fit-min: 32;
+}
+
+html[data-layout='tablet'] .mn[data-screen='home'] .mn-stage {
+  padding: 1.5rem calc(1.5rem + var(--safe-right)) 1.5rem calc(1.5rem + var(--safe-left));
+}
+
+html[data-layout='tablet'] .mn-tiles {
+  height: 20rem;
+}
+
+/* Phones and tablets: smaller icons and padding; the short subtitle on one line sideways (as
+   drawn), up to two in the tab shell. */
+html[data-shell='rail'] .mn-hero-icon,
+html[data-layout='portrait'] .mn-hero-icon,
+html[data-shell='rail'] .mn-mtile-icon,
+html[data-shell='tabs'] .mn-mtile-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+html[data-shell='rail'] .mn-mtile,
+html[data-shell='tabs'] .mn-mtile {
+  padding: 0.875rem 1rem;
+}
+
+html[data-shell='rail'] .mn-mtile-title {
+  --fit-min: 16;
+}
+
+html[data-shell='tabs'] .mn-mtile-title {
+  --fit-min: 14;
+}
+
+html[data-shell='rail'] .mn-tile-top,
+html[data-shell='tabs'] .mn-tile-top {
+  --fit-min: 14;
+}
+
+html[data-shell='rail'] .mn-mtile-sub,
+html[data-shell='tabs'] .mn-mtile-sub,
+html[data-shell='tv'] .mn-mtile-sub {
+  display: none;
+}
+
+html[data-shell='rail'] .mn-mtile-short,
+html[data-shell='tv'] .mn-mtile-short {
+  display: block;
+}
+
+html[data-shell='tabs'] .mn-mtile-short {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
+
+/* ---- TV: the plate row with the pills, a 340 hero, OK in its circle ---------------------------- */
+html[data-shell='tv'] .mn[data-screen='home'] .mn-stage {
+  padding: 1rem 3rem 2rem;
+}
+
+html[data-shell='tv'] .mn-home-pills {
+  display: flex;
+}
+
+html[data-shell='tv'] .mn-home-pills .mn-pill {
+  height: 2.75rem;
+  font-size: var(--t-small);
+}
+
+html[data-shell='tv'] .mn-plate {
+  width: 18.75rem;
+  height: 4.5rem;
+}
+
+/* The garage half steps aside: the identity button is the whole plate, its ring too. */
+html[data-shell='tv'] .mn-plate-car {
+  display: none;
+}
+
+html[data-shell='tv'] .mn-plate-id {
+  border-radius: var(--r-tile);
+}
+
+html[data-shell='tv'] .mn-tiles {
+  height: 15.875rem;
+  grid-template-columns: 21.25rem 1fr 1fr;
+}
+
+html[data-shell='tv'] .mn-hero-main {
+  padding: 1.375rem 1.375rem 1.375rem 1.5rem;
+}
+
+html[data-shell='tv'] .mn-hero-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+html[data-shell='tv'] .mn-hero .mn-slot {
+  height: 1.875rem;
+}
+
+/* Searching on a TV (a hero too low for ✕ CANCEL under the text): beside the subtitle, which keeps
+   the queue (the region pill is right above, by the plate). */
+html[data-shell='tv'] .mn-hero-busy .mn-hero-main {
+  padding-bottom: 1.375rem;
+}
+
+html[data-shell='tv'] .mn-hero-busy .mn-hero-row {
+  min-height: 3rem;
+  padding-right: 12rem;
+}
+
+html[data-shell='tv'] .mn-hero-busy .mn-hero-dot,
+html[data-shell='tv'] .mn-hero-busy .mn-hero-region {
+  display: none;
+}
+
+html[data-shell='tv'] .mn-hero-go {
+  width: 3rem;
+  height: 3rem;
+}
+
+html[data-shell='tv'] .mn-mtile {
+  padding: 0.75rem 1rem;
+}
+
+html[data-shell='tv'] .mn-mtile-title {
+  --fit-min: 22;
+}
+
+html[data-shell='tv'] .mn-tile-top {
+  --fit-min: 16;
+}
+
+/* The controller message shrinks before it would leave the hero (a face wider than Arial). */
+html[data-shell='tv'] .mn-hero-needpad .mn-tile-top {
+  --fit-min: 12;
+}
