@@ -138,6 +138,11 @@
  * speed, shows "Rules: name" and a RULES pause entry (the settings screen's Experimental tab; the
  * pick there applies once, when it closes: applyFreePlayRules) and saves no records; packs are
  * always stock, and any training whose physics differ from the arena's rebuilds it.
+ * Search practice (MODOS' "While you wait: Free play", startSearchPractice): free play over a menu
+ * search that keeps queueing; the frame watches the session (watchSearchPractice): once it leaves
+ * its queue the one hand-off, practiceToMatch, ends practice under the PARTIDO ENCONTRADO band and
+ * today's found -> match path plays (a failed connect brings the menus back); quitting practice
+ * returns to the menus still searching (stopTraining -> showMenu(true)).
  */
 import * as THREE from 'three/webgpu';
 import type { Difficulty } from '../ai/Bot';
@@ -768,6 +773,8 @@ export class Game implements P2PGameHooks {
   /** The menu search in progress (banner): its kind, playlists and start time. */
   private searchReq: SearchRequest | null = null;
   private searchSince = 0;
+  /** Search practice: free play over the search ('practice'), or its match found and on its way ('entering'). */
+  private searchPractice: 'off' | 'practice' | 'entering' = 'off';
   /** The last match's result, shown as a toast when the menu comes back (null = none). */
   private lastResult: { winner: 0 | 1 | null; blue: number; red: number } | null = null;
   /** A message for that toast instead of the score (a disconnect reason...), or alone without a result. */
@@ -1273,9 +1280,9 @@ export class Game implements P2PGameHooks {
         },
       },
       config: async (): Promise<MenuConfig> => {
-        if (net === null) return { regions: REGIONS, autoRegion: '', oauth: [], online: false };
+        if (net === null) return { regions: REGIONS, autoRegion: '', oauth: [], online: false, botFillMs: null };
         const c = await net.config();
-        return { regions: REGIONS, autoRegion: c.autoRegion ?? '', oauth: c.oauth ?? [], online: true };
+        return { regions: REGIONS, autoRegion: c.autoRegion ?? '', oauth: c.oauth ?? [], online: true, botFillMs: c.botFillMs ?? null };
       },
       guestName: () => (game.online !== null ? game.online.name : t('game.guestName')),
       setGuestName: (name) => {
@@ -1314,6 +1321,7 @@ export class Game implements P2PGameHooks {
         game.searchReq = null;
       },
       searchView: () => game.menuSearchView(),
+      practiceWhileSearching: () => game.startSearchPractice(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
       confirmLeave: (systemBack) => game.confirmLeave(systemBack === true),
@@ -1377,6 +1385,7 @@ export class Game implements P2PGameHooks {
       text: busy ? (s?.statusText ?? '') : '',
       since: this.searchSince,
       region: req?.region ?? null,
+      net: req?.net ?? null,
       error: error !== null && error.length > 0 ? error : null,
       // 426 reload_required (a stale page: P2PSession STATUS.reload, OnlineSession's netErrorText):
       // the menus' blocking sheet instead of a toast.
@@ -1955,8 +1964,12 @@ export class Game implements P2PGameHooks {
 
   /** Make `s` the session the loop hosts (null = offline). The previous one is left first. */
   setSession(s: GameSession | null): void {
-    // An online match replaces the training roster: leave training first (offline roster back).
-    if (s !== null && this.training !== null) this.endTraining();
+    // An online match replaces the training roster: leave training first (offline roster back);
+    // search practice hands off to its match (a P2P search's lone player handed a server match).
+    if (s !== null && this.training !== null) {
+      if (this.searchPractice === 'practice') this.practiceToMatch();
+      else this.endTraining();
+    }
     // Super low still plays online; one line says this device may not keep up (once a session).
     if (s !== null && this.cpuLite && !this.liteOnlineNoticed) {
       this.liteOnlineNoticed = true;
@@ -2006,6 +2019,7 @@ export class Game implements P2PGameHooks {
    * driven by the host through the echoed inputs). Views / effects / scoreboard are rebuilt.
    */
   applyOnlineRoster(w: Welcome): void {
+    this.practiceToMatch(); // search practice still on (the frame's watch had not seen the match found yet)
     const sim = this.sim;
     const roster = w.roster.slice().sort((a, b) => a.slot - b.slot);
     if (roster.length === 0 || roster.length > MAX_CARS) throw new Error(`roster of ${roster.length} cars`);
@@ -2038,6 +2052,7 @@ export class Game implements P2PGameHooks {
    * read: the session then fails instead of playing other physics than the room's.
    */
   applyP2PRoster(w: RoomWelcome): void {
+    this.practiceToMatch(); // search practice still on (the frame's watch had not seen the match found yet)
     const sim = this.sim;
     const roster = w.slots.slice().sort((a, b) => a.slot - b.slot);
     if (roster.length === 0 || roster.length > MAX_CARS) throw new Error(`roster of ${roster.length} cars`);
@@ -2386,7 +2401,7 @@ export class Game implements P2PGameHooks {
    * given with a pack are ignored (with a warning). The arena is kept from one training to the
    * next only while the wanted physics are the same (a pack after experimental free play is stock).
    */
-  startTraining(id: string, opts: { rules?: string | null } = {}): void {
+  startTraining(id: string, opts: { rules?: string | null; keepSession?: boolean } = {}): void {
     const pack = id === FREEPLAY_ID ? null : packById(id);
     if (pack === undefined) {
       console.warn(`Game.startTraining: unknown training id '${id}'`);
@@ -2394,7 +2409,7 @@ export class Game implements P2PGameHooks {
     }
     if (pack !== null && opts.rules != null) console.warn(`Game.startTraining: training packs run stock physics; rules '${opts.rules}' ignored`);
     const session = this.session;
-    if (session !== null && session.state !== 'idle') session.leave();
+    if (session !== null && session.state !== 'idle' && opts.keepSession !== true) session.leave();
     if (this.hud.capturing) this.input.cancelRebind();
     this.hideMenus();
     this.hud.hideBanner();
@@ -2473,10 +2488,65 @@ export class Game implements P2PGameHooks {
    */
   stopTraining(): void {
     if (this.training === null) return;
+    // Search practice: back to the menus with the search still queueing.
+    const keep = this.searchPractice === 'practice';
+    this.searchPractice = 'off';
     this.endTraining();
     this.lastResult = null;
     this.menuNotice = undefined;
-    this.showMenu();
+    this.showMenu(keep);
+  }
+
+  /**
+   * MODOS' "While you wait: Free play" (MenuHost.practiceWhileSearching): free play over the running
+   * menu search, which goes on queueing under it (startTraining keeps the session). The frame
+   * watches it (watchSearchPractice); quitting comes back to the menus still searching.
+   */
+  private startSearchPractice(): void {
+    const s = this.session;
+    if (s === null || !s.busy || this.searchReq === null) return;
+    this.startTraining(FREEPLAY_ID, { keepSession: true });
+    if (this.training === null) return;
+    this.searchPractice = 'practice';
+    this.trainingHud?.setRules(t('search.practiceLine'));
+  }
+
+  /**
+   * Every frame of search practice: the session left its queue (a match found: OnlineSession
+   * 'connecting', P2PSession 'signaling') -> practiceToMatch; a search that ended without one goes
+   * on as plain free play, its reason on the TrainingHud's line (the menus toast it too). Then,
+   * entering, until the match is on screen (sessionMatchOnScreen hides the banner), or back to the
+   * menus when its connection failed (their toast says why).
+   */
+  private watchSearchPractice(): void {
+    const s = this.session;
+    if (this.searchPractice === 'practice') {
+      if (this.training === null) this.searchPractice = 'off';
+      else if (s === null || s.state === 'idle') {
+        this.searchPractice = 'off';
+        this.trainingHud?.setRules(s !== null && s.statusText !== null && s.statusText.length > 0 ? s.statusText : null);
+      } else if (s.state !== 'queue') this.practiceToMatch();
+      return;
+    }
+    if (s !== null && s.inMatch) this.searchPractice = 'off';
+    else if (s === null || s.state === 'idle') {
+      this.searchPractice = 'off';
+      this.hud.hideBanner();
+      this.showMenu();
+    }
+  }
+
+  /**
+   * Search practice found its match: practice ends (the offline roster back, frozen at kickoff
+   * under the PARTIDO ENCONTRADO band, which the frame's watch shows: matchFound) and today's
+   * found -> match path takes over (the session's roster, its kickoff countdown). The one hand-off
+   * from practice to a match (the frame's watch, setSession, the session rosters). No-op unless
+   * practising with a search.
+   */
+  private practiceToMatch(): void {
+    if (this.searchPractice !== 'practice') return;
+    this.searchPractice = 'entering';
+    this.endTraining();
   }
 
   /** Training off without opening the menu (startMatch / an online session take over from here). */
@@ -3185,6 +3255,8 @@ export class Game implements P2PGameHooks {
   private readonly frame = (t: number): void => {
     if (!this.running) return;
     this.raf = requestAnimationFrame(this.frame);
+    // Before the session is read: a search found under practice ends it first (practiceToMatch).
+    if (this.searchPractice !== 'off') this.watchSearchPractice();
     const inMenu = this.menuShown;
     // Online the host / the peers keep running: the pause overlay only takes the input away, and
     // the menu (still up while a P2P room connects) must not stop the session's ready / fallback
@@ -3817,10 +3889,11 @@ export class Game implements P2PGameHooks {
 
   // ---- menu ------------------------------------------------------------------------------
 
-  private showMenu(): void {
+  /** The menus back. `keepSearch`: a session still queueing stays (search practice quit: stopTraining). */
+  private showMenu(keepSearch = false): void {
     // An online match (or one being set up) ends here: sockets closed, offline roster back.
     const session = this.session;
-    if (session !== null && session.state !== 'idle') session.leave();
+    if (session !== null && session.state !== 'idle' && !(keepSearch && session.busy)) session.leave();
     const online = this.online;
     this.setPaused(false);
     this.ballPinned = false;

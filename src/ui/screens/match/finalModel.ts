@@ -11,6 +11,7 @@ import type { RankedResultAnswer, RegionId } from '../../../net/account';
 import { TIERS, tierOf, tierProgress } from '../../../net/rating';
 import type { MenuPrefs } from '../../prefs';
 import type { QueuePick } from '../homeModel';
+import { queueNet, type ModeTab } from '../modesModel';
 
 /** Which kind of match ended: what JUGAR OTRA VEZ repeats. */
 export type FinalKind = 'casual' | 'ranked' | 'ai' | 'lobby';
@@ -99,12 +100,12 @@ export function againAction(kind: FinalKind, prefs: MenuPrefs): AgainAction {
   if (kind === 'ai') return { kind: 'restart' };
   if (kind === 'lobby') return { kind: 'lobby' };
   if (kind === 'ranked') return { kind: 'search', queue: { kind: 'ranked', modes: prefs.rankedModes, region: prefs.region, net: 'server' } };
-  return { kind: 'search', queue: { kind: 'casual', modes: prefs.casualModes, region: prefs.region, net: prefs.net } };
+  return { kind: 'search', queue: { kind: 'casual', modes: prefs.casualModes, region: prefs.region, net: queueNet(prefs.net) } };
 }
 
-/** CAMBIAR MODO: the screen where this kind's format is picked (Menu.register ids; plan PR 6 swaps in its Modos screen). */
-export function changeScreen(kind: FinalKind): string {
-  return kind === 'ranked' ? 'ranked' : kind === 'ai' ? 'friendly' : kind === 'lobby' ? 'custom' : 'casual';
+/** CAMBIAR MODO: MODOS' tab where this kind's format is picked. */
+export function changeTab(kind: FinalKind): ModeTab {
+  return kind === 'ranked' ? 'ranked' : kind === 'ai' ? 'ai' : kind === 'lobby' ? 'lobbies' : 'casual';
 }
 
 /** The rank card: a rating change on its way, done (tier, MMR, change, the way to the next tier), or none to show. */

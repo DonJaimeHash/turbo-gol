@@ -45,7 +45,7 @@ export function ratingCard(r: PlaylistRating, extra?: Node | null): HTMLElement 
     h(
       'div.mn-rating-text',
       null,
-      h('div.mn-rating-playlist', null, `${playlistName(r.playlist)} · ${r.playlist}`),
+      h('div.mn-rating-playlist', null, playlistName(r.playlist)),
       h('div.mn-rating-tier', null, placed && tier ? tierName(tier) : t('badge.unranked')),
       h('div.mn-rating-sub', null, placed ? t('badge.mmr', { mmr: r.mmr }) : t('badge.placement', { played: r.games, total: r.games + r.placementLeft })),
       h('div.mn-rating-sub', null, games > 0 ? t('badge.record', { wins: r.wins, losses: r.losses }) : t('badge.noGames')),

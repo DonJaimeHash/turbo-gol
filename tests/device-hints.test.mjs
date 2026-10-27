@@ -114,3 +114,12 @@ test("the shell declares what gives way in a crowded bar: the strip's sides and 
   // A box with a scope fits last: what it takes from a box inside its scope (the crumbs, the pills' words) stays taken.
   assert.match(await src('fit.ts'), /if \(el\.dataset\.fitScope === undefined\) fitOne\(el\);\s*for \(const el of boxes\) if \(el\.dataset\.fitScope !== undefined\) fitOne\(el\);/);
 });
+
+test("a stacked screen with tabs of its own (MODOS): LB RB and Q E step them, by the screen's name for them", () => {
+  const ctx = { searching: false, stacked: true, ownTabs: true, tabsVerb: 'nav.tabsModes' };
+  assert.equal(flat(H.hintItems('pad', ctx)).at(2), 'pad-lb+pad-rb nav.tabsModes');
+  assert.equal(flat(H.hintItems('keyboard', ctx)).at(2), 'key-q+key-e nav.tabsModes');
+  assert.equal(flat(H.hintItems('pad', { ...ctx, tabsVerb: undefined })).at(2), 'pad-lb+pad-rb nav.tabs', 'without a name: Tabs');
+  assert.equal(flat(H.hintItems('pad', { ...ctx, stacked: false })).at(2), 'pad-lb+pad-rb nav.sections', "on a section's root LB / RB stay the sections'");
+  assert.deepEqual(flat(H.hintItems('remote', ctx)), ['remote-ok nav.select', 'remote-back nav.backRemote']);
+});

@@ -31,6 +31,21 @@ All notable changes to Turbogol are documented here. The format follows
   nothing scrolls but on a small upright phone. On a TV the tile shows the whole queue you search
   (on two lines when it needs them, ✕ CANCEL then keeping just its ✕), and the region stays in its
   pill by your name.
+- The home screen's four modes open one MODES screen, with a tab for each: CASUAL, COMPETITIVE,
+  LOBBIES and VS AI (Q / E on the keyboard, the bumpers or the triggers on a controller switch them).
+  Pick a format, 1v1, 2v2, 3v3 or ANY (whichever fills first), and the search starts; FIND MATCH
+  is ready under your thumb, so from the home screen a Casual match of your format is two presses
+  away. Picking another format while you search restarts the search. Region and, under Advanced,
+  the connection (Auto, P2P or Server) are rows of their own.
+- While you search, the panel shows the clock, the queue, where you are looking, and when bots
+  will join if nobody comes (only when that is how your search works: Competitive never adds
+  bots), with CANCEL SEARCH (X on the keyboard, Y on a controller). "While you wait: Free play"
+  drives the ball around with the search still on; when a match is found, free play ends and the
+  match starts. Leaving free play brings you back to the search.
+- COMPETITIVE for a guest is one SIGN IN button: once you sign in you are back on COMPETITIVE,
+  ready to search. A locked Competitive says why and for how long, with PLAY CASUAL next to it.
+- VS AI has its mode and difficulty side by side and a Stadium row that takes you to the
+  stadiums.
 - A TV without a controller says so on the PLAY NOW tile, and starting a match asks you to connect
   one (CONTINUE ANYWAY plays with the remote). The window closes by itself as soon as a controller
   connects, and that first press starts nothing: press A again to play.
@@ -192,9 +207,7 @@ All notable changes to Turbogol are documented here. The format follows
   move on past it (on Custom lobbies, JOIN and REFRESH can now be reached with a remote); press OK,
   Enter or A, or just type, to edit it, and Enter, Esc / B or ↑ / ↓ to stop editing (a field being
   edited shows a lime line under it). Esc while typing no longer also leaves the screen.
-- On Casual and Competitive, ↓ from any playlist card goes to the Region row (from the left card
-  it used to skip to FIND MATCH), and ↑ comes back to the card you came from: the arrow back
-  retraces your steps across the menus.
+- In the menus the arrow back retraces your steps: ↓ then ↑ comes back to the card you came from.
 - On a phone, a quick double tap no longer presses a button on the next screen, and a dialog that
   appears under your finger ignores that touch. While a dialog is open nothing behind it can be
   focused or pressed.
@@ -398,6 +411,9 @@ All notable changes to Turbogol are documented here. The format follows
   reloads for a few seconds.
 
 ### Removed
+- The Casual, Competitive, Friendly and lobby list screens and their ‹ › pickers (mode, difficulty,
+  connection): MODES has them as tabs. Playlists no longer have names like "Pairs": a format is
+  just 1v1, 2v2 or 3v3, in every language.
 - The result window after a Competitive match (the final screen shows the rank change) and the
   old start menu that was still hidden inside the in-match HUD.
 - The old home screen's Language, Settings and Profile tiles (Settings is the gear at the top and

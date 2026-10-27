@@ -24,7 +24,7 @@ import { rankBadge, tierById } from '../../badges';
 import { difficultyName, regionName, tierName } from '../../names';
 import { cancelledKey } from '../leaderboard';
 import { HERO_SEP } from '../homeModel';
-import { againAction, changeScreen, finalOutcome, finalRows, pickMvp, rankCard } from './finalModel';
+import { againAction, changeTab, finalOutcome, finalRows, pickMvp, rankCard } from './finalModel';
 import type { FinalKind, FinalPlayer, FinalView } from './finalModel';
 
 const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
@@ -89,7 +89,7 @@ export function finalScreen(menu: Menu, source: FinalSource): FinalScreen {
 
   const changeMode = (): void => {
     const v = view;
-    menu.replace(v !== null ? changeScreen(v.kind) : 'casual');
+    menu.replace('modes', v !== null ? changeTab(v.kind) : 'casual');
   };
 
   const regionText = (r: RegionId | null): string | null => {

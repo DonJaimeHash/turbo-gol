@@ -1,6 +1,7 @@
 /**
  * The menus' own preferences, in localStorage `turbogol.menu.v1` (Menu.ts loads and saves them):
- * the region, the playlists picked for Casual and for Competitive, Casual's network, the
+ * the region, the playlists picked for Casual and for Competitive, Casual's connection (MODOS ›
+ * Advanced: auto, P2P or server; screens/modesModel.ts queueNet), the
  * leaderboard's playlist, and the kind of the last search started anywhere, which JUGAR AHORA plays
  * again in one press (screens/homeModel.ts heroQueue). Pure, no DOM: node tests import it.
  */
@@ -13,7 +14,7 @@ export interface MenuPrefs {
   region: RegionId | null;
   casualModes: GameMode[];
   rankedModes: GameMode[];
-  net: 'p2p' | 'server';
+  net: 'auto' | 'p2p' | 'server';
   leaderboardPlaylist: GameMode;
   /** The kind of the last search started anywhere (hero, Casual, Competitive): what JUGAR AHORA repeats. */
   lastQueue: 'casual' | 'ranked';
@@ -22,8 +23,8 @@ export interface MenuPrefs {
 /** The same key as before lastQueue: an older object reads as Casual, no migration. */
 export const PREFS_KEY = STORAGE_PREFIX + 'menu.v1';
 
-/** A first visit: Casual 2v2 in the automatic region (the connection's continent), P2P. */
-export const DEFAULT_PREFS: Readonly<MenuPrefs> = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'p2p', leaderboardPlaylist: '2v2', lastQueue: 'casual' };
+/** A first visit: Casual 2v2 in the automatic region (the connection's continent), the automatic connection. */
+export const DEFAULT_PREFS: Readonly<MenuPrefs> = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'auto', leaderboardPlaylist: '2v2', lastQueue: 'casual' };
 
 /** The prefs stored as `raw` (null when none); anything unreadable takes its default. Pure. */
 export function parsePrefs(raw: string | null): MenuPrefs {
@@ -42,7 +43,7 @@ export function parsePrefs(raw: string | null): MenuPrefs {
     region: isRegion(o.region) ? o.region : null,
     casualModes: modes(o.casualModes) ?? d.casualModes,
     rankedModes: modes(o.rankedModes) ?? d.rankedModes,
-    net: o.net === 'server' ? 'server' : 'p2p',
+    net: o.net === 'server' || o.net === 'p2p' ? o.net : 'auto',
     leaderboardPlaylist: o.leaderboardPlaylist === '1v1' || o.leaderboardPlaylist === '3v3' ? o.leaderboardPlaylist : '2v2',
     lastQueue: o.lastQueue === 'ranked' ? 'ranked' : 'casual',
   };

@@ -70,8 +70,9 @@ test('parsePrefs: defaults for nothing or junk, lastQueue kept only as ranked, a
     assert.equal(p.lastQueue, 'casual', String(raw));
     assert.deepEqual(p.casualModes, ['2v2']);
     assert.equal(p.region, null);
-    assert.equal(p.net, 'p2p');
+    assert.equal(p.net, 'auto');
   }
+  assert.equal(P.parsePrefs(JSON.stringify({ net: 'p2p' })).net, 'p2p', 'a P2P pick stays');
   assert.equal(P.parsePrefs(JSON.stringify({ lastQueue: 'x' })).lastQueue, 'casual');
   assert.equal(P.parsePrefs(JSON.stringify({ lastQueue: 'ranked' })).lastQueue, 'ranked');
   const old = P.parsePrefs(JSON.stringify({ region: 'EU', casualModes: ['1v1', '2v2'], rankedModes: ['3v3'], net: 'server', leaderboardPlaylist: '3v3' }));

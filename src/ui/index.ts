@@ -2,8 +2,8 @@
 import { Menu } from './Menu';
 import type { MenuHost } from './Menu';
 import { homeScreen } from './screens/home';
-import { casualScreen, friendlyScreen, rankedScreen } from './screens/play';
-import { customScreen, lobbyCreateScreen, lobbyScreen } from './screens/custom';
+import { modesScreen } from './screens/modes';
+import { lobbyCreateScreen, lobbyScreen } from './screens/custom';
 import { trainingScreen } from './screens/training';
 import { profileScreen } from './screens/profile';
 import { leaderboardScreen } from './screens/leaderboard';
@@ -16,10 +16,7 @@ export { RankedResults } from './screens/leaderboard';
 export function createMenu(host: MenuHost, container: HTMLElement): Menu {
   const m = new Menu(host, container);
   m.register('home', homeScreen);
-  m.register('casual', casualScreen);
-  m.register('ranked', rankedScreen);
-  m.register('friendly', friendlyScreen);
-  m.register('custom', customScreen);
+  m.register('modes', modesScreen);
   m.register('lobby-create', lobbyCreateScreen);
   m.register('lobby', lobbyScreen);
   m.register('training', trainingScreen);

@@ -10,8 +10,9 @@ import type { Difficulty } from '../render/Hud';
 import type { Quality } from '../render/quality';
 import type { ThemeId } from '../render/theme';
 
+/** A playlist by its format alone ('2v2' in every language: the owner's rule, no "pairs"). */
 export function playlistName(p: Playlist): string {
-  return t(`playlist.${p}`);
+  return p;
 }
 
 export function regionName(id: RegionId): string {

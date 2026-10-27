@@ -25,12 +25,12 @@ export interface QueuePick {
 
 /**
  * What JUGAR AHORA plays: the kind searched last (MenuPrefs.lastQueue, Casual the first time) with
- * that kind's playlists, the region and Casual's network. Competitive only for a signed-in player
+ * that kind's playlists, the region and Casual's queue (auto and P2P: the P2P one). Competitive only for a signed-in player
  * without an abandon ban; anyone else gets Casual. Pure.
  */
 export function heroQueue(p: MenuPrefs, signedIn: boolean, rankedBanned: boolean): QueuePick {
   if (p.lastQueue === 'ranked' && signedIn && !rankedBanned) return { kind: 'ranked', modes: p.rankedModes, region: p.region, net: 'server' };
-  return { kind: 'casual', modes: p.casualModes, region: p.region, net: p.net };
+  return { kind: 'casual', modes: p.casualModes, region: p.region, net: p.net === 'server' ? 'server' : 'p2p' };
 }
 
 /**

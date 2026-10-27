@@ -302,7 +302,7 @@ test('config: GET /api/config is fetched once per client and cached; a failure i
   const b = await h.client.config();
   assert.equal(n, 2, 'the failure was not cached, the success is');
   assert.equal(a, b, 'same object');
-  assert.deepEqual(a, { turnstileSiteKey: 'sk-1', protocol: P.PROTOCOL_VERSION, version: '0.1.0', region: 'EZE', autoRegion: '', oauth: [] });
+  assert.deepEqual(a, { turnstileSiteKey: 'sk-1', protocol: P.PROTOCOL_VERSION, version: '0.1.0', region: 'EZE', autoRegion: '', oauth: [], botFillMs: null });
   // Concurrent callers share one request.
   const h2 = makeClient({ '/api/config': () => jsonResponse(200, CONFIG_OFF) });
   await Promise.all([h2.client.config(), h2.client.config(), h2.client.config()]);
@@ -313,8 +313,11 @@ test('config: GET /api/config is fetched once per client and cached; a failure i
   const h4 = makeClient({ '/api/config': () => jsonResponse(200, 'nope') });
   await assert.rejects(h4.client.config(), (err) => err instanceof NetError && err.code === 'protocol');
   // Lenient parsing: an empty / missing sitekey means no Turnstile.
-  assert.deepEqual(parseServerConfig({ turnstileSiteKey: '' }), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [] });
-  assert.deepEqual(parseServerConfig({}), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [] });
+  assert.deepEqual(parseServerConfig({ turnstileSiteKey: '' }), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [], botFillMs: null });
+  assert.deepEqual(parseServerConfig({}), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [], botFillMs: null });
+  // The server queue's bot fill (MODOS' countdown): a positive number of ms, else none.
+  assert.equal(parseServerConfig({ botFillMs: 10_000 }).botFillMs, 10_000);
+  for (const bad of [0, -1, '10000', Infinity, null]) assert.equal(parseServerConfig({ botFillMs: bad }).botFillMs, null, String(bad));
   assert.deepEqual(parseServerConfig({ autoRegion: 'SA', oauth: ['google', 3] }).oauth, ['google'], 'accounts: providers kept, junk dropped');
   assert.equal(parseServerConfig(null), null);
   // A server without the route (404) means no Turnstile; the answer is cached like any other.
@@ -532,6 +535,34 @@ test('queue: cancel rejects with NetError cancelled; a 401 re-registers the gues
   await c2.queue('3v3');
   assert.equal(guests, 2, 'expired session -> new guest');
   assert.equal(queues, 2);
+});
+
+test('queue: cancelQueue then queue in the same tick (a format change) queues again, after the leave', async () => {
+  let answerLeave = () => {};
+  let queues = 0;
+  const h = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/queue': (init) =>
+      ++queues === 1
+        ? new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+        : jsonResponse(200, { status: 'matched', matchId: 'm3', ticket: 't3', wsUrl: '/ws/m3' }),
+    '/api/leave': () => new Promise((resolve) => (answerLeave = () => resolve(jsonResponse(200, { ok: true, left: true })))),
+  });
+  const api = () => h.calls.map((c) => c.url).filter((u) => u === '/api/queue' || u === '/api/leave');
+  const first = h.client.queue('2v2', 'server');
+  await new Promise((r) => setTimeout(r, 0));
+  h.client.cancelQueue();
+  const second = h.client.queue('3v3', 'server');
+  assert.equal(h.client.queueing, true, 'the new search is the one queueing');
+  await assert.rejects(first, (err) => err instanceof NetError && err.code === 'cancelled');
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(api(), ['/api/queue', '/api/leave'], 'the new join waits for the leave');
+  answerLeave();
+  const m = await second;
+  assert.equal(m.matchId, 'm3');
+  assert.deepEqual(api(), ['/api/queue', '/api/leave', '/api/queue']);
+  assert.equal(h.calls.filter((c) => c.url === '/api/queue')[1].body.mode, '3v3');
+  assert.equal(h.client.queueing, false);
 });
 
 test('queue: 409 active_match rejoins that match with a fresh ticket', async () => {

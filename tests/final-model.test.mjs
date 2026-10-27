@@ -76,8 +76,8 @@ test('PLAY AGAIN repeats the same queue in one press (the kind\'s playlists, as 
   assert.deepEqual(F.againAction('ranked', prefs), { kind: 'search', queue: { kind: 'ranked', modes: ['2v2'], region: 'EU', net: 'server' } });
   assert.deepEqual(F.againAction('ai', prefs), { kind: 'restart' });
   assert.deepEqual(F.againAction('lobby', prefs), { kind: 'lobby' });
-  // CHANGE MODE: that kind's screen on this base.
-  assert.deepEqual(['casual', 'ranked', 'ai', 'lobby'].map(F.changeScreen), ['casual', 'ranked', 'friendly', 'custom']);
+  // CHANGE MODE: that kind's MODOS tab.
+  assert.deepEqual(['casual', 'ranked', 'ai', 'lobby'].map(F.changeTab), ['casual', 'ranked', 'ai', 'lobbies']);
 });
 
 test('the rank card: waiting, pending, cancelled, or the change inside the tier the player is in now', () => {
