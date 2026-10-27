@@ -291,7 +291,8 @@ src/game/
                         reopens the menu at kickoff), the match's end (matchEnded on every path:
                         the FINAL's view, goals credited by creditGoal, the FINAL FINAL_SECONDS
                         later through showMenu, never while a session is busy or in a match; a
-                        ranked result into the FINAL's rank card), matchFound (PARTIDO
+                        ranked result into the FINAL's rank card; a lobby's match tells the lobby
+                        at once, lobby.back, as the FINAL's MENU goes to Inicio), matchFound (PARTIDO
                         ENCONTRADO as a session leaves 'queue'; plan PR 6 calls it too), a
                         Competitive no-show or dodge searched again at once (requeue), system Back (onSystemBack, src/ui/backGuard.ts), the
                         loading screen for long loads (withLoading: switchQuality, switchTheme,
@@ -453,7 +454,9 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         beside it (data-nav-span: Inicio's hero, left ▲ ▼ only for what lies
                         wholly that way, beyondEdge, else the next zone), the way back
                         (NavPath), the focus memory (FocusMemory), fields in navigation or editing
-                        mode (data-editing) and the edge nudge (mn-bounce-*); FocusNav puts them
+                        mode (data-editing), the edge nudge (mn-bounce-*) and heldOver (a key's
+                        repeat held over from the match walks no focus and clicks nothing: the
+                        pause's held QUIT); FocusNav puts them
                         on the DOM and measures each target where it sits (layoutBox: a focused
                         tile's lift or a nudge taken off, so a lifted tile has no neighbour
                         "below" on its row)
