@@ -9,6 +9,8 @@
 }
 
 .mn-screen.mn-modes {
+  /* Text that inherits takes the class's body size (body stays 16 px: a TV's scale is in rem). */
+  font-size: var(--t-body);
   display: grid;
   grid-template-columns: 17.5rem minmax(0, 1fr) 25.375rem;
   gap: 1.5rem;
@@ -910,13 +912,18 @@ html[data-shell='tabs'] .mn-mtab-end {
 
 html[data-shell='tabs'] .mn-modes .mn-mtabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 0;
 }
 
 html[data-shell='tabs'] .mn-modes .mn-mtab {
+  min-width: 0;
   min-height: 3.5rem;
   padding: 0 0.75rem;
+}
+
+html[data-shell='tabs'] .mn-act-summary {
+  white-space: normal;
 }
 
 html[data-shell='tabs'] .mn-formats {
