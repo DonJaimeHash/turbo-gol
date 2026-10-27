@@ -1,10 +1,12 @@
 // Inicio's decisions (plan PR 5; src/ui/screens/homeModel.ts, src/ui/prefs.ts, src/ui/howPlay.ts):
 // the hero's state in priority order, the queue JUGAR AHORA repeats and where it is stored, when
 // the game counts as offline, the subtitle and the two-line titles, who is asked "How will you
-// play?", the bindings that make a player a returning one, and the copy the owner chose.
+// play?", the bindings that make a player a returning one, the copy the owner chose, and how a
+// TV's subtitle gives way.
 //   node --test tests/home-hero.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
 
 registerHooks({
@@ -181,4 +183,15 @@ test("the owner's copy: JUGAR AHORA / JUGAR, Iniciar sesión, partidas de ubicac
     assert.equal(typeof es[k], 'string', 'es ' + k);
   }
   assert.equal(typeof en['nav.modes'], 'string', 'MODOS stays for PR 6');
+});
+
+test("a TV's subtitle never goes under the floor: its region steps aside, the formats go under the kind, then ✕ CANCEL's label and room", async () => {
+  const tile = await readFile(new URL('../src/ui/components/tile.ts', import.meta.url), 'utf8');
+  assert.match(tile, /\{ 'data-fit': '16', 'data-fit-scope': '\.mn-hero' \}/, "the TV's 16, searching too; the hero is its scope");
+  assert.match(tile, /h\('span\.mn-hero-split', \{ 'data-fit-give': '1' \}, HERO_SEP\), h\('span\.mn-hero-formats'/);
+  assert.match(tile, /const lastGive = o\.oneLine \? \{ 'data-fit-give': '2' \} : null;/);
+  assert.match(tile, /icon\('close'\), h\('span', lastGive, t\('lang\.cancel'\)\)/);
+  assert.match(tile, /h\('span\.mn-hero-room', lastGive\)/);
+  const css = await readFile(new URL('../src/ui/styles/screens/home.css', import.meta.url), 'utf8');
+  assert.match(css, /\.mn-hero-split\[data-fit-gone\] \+ \.mn-hero-formats \{\s*display: block;/);
 });

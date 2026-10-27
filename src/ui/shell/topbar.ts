@@ -52,8 +52,9 @@ export class TopBar {
       );
     // data-fit (fit.ts): the strip shrinks as one, to 14 px (16 on a TV: --fit-min in shell.css), then
     // takes the short names (ENTRENAR, RANKING), then the ways to step it beside it give way (‹ ›,
-    // L R, Q E, in its scope, the section bar: the hint bar and the tabs themselves say it too).
-    const list = h('div.mn-secs', { role: 'tablist', 'aria-label': t('nav.sections'), 'data-nav-row': true, 'data-fit': '14', 'data-fit-scope': '.mn-secbar' });
+    // L R, Q E: the hint bar and the tabs themselves say it too), then the pills' words (pills.ts:
+    // a long search beside it), all in its scope, the whole bar.
+    const list = h('div.mn-secs', { role: 'tablist', 'aria-label': t('nav.sections'), 'data-nav-row': true, 'data-fit': '14', 'data-fit-scope': '.mn-top' });
     for (const s of SECTIONS) {
       const label = h('span.mn-sec-label', { 'data-fit-alt': s.short !== s.label ? t(s.short) : undefined }, t(s.label));
       const b = h('button.mn-sec', { type: 'button', role: 'tab', 'aria-selected': 'false', 'data-nav': true, 'data-key': 'sec-' + s.id, onclick: () => hd.sectionClick(s.id) }, label, h('span.mn-sec-bar', { 'aria-hidden': 'true' }));
@@ -61,8 +62,11 @@ export class TopBar {
       this.tabs.set(s.id, b);
       list.appendChild(b);
     }
-    this.crumbs = h('nav.mn-crumbs', { 'aria-label': t('menu.back'), 'data-fit': '14' });
-    this.pills = h('div.mn-pills');
+    // A stacked screen's crumbs fit in the whole bar too: past their own parts, the pills' words
+    // give way (setCrumbs). With no strip (a tablet, a phone), a crowded root squeezes the pills
+    // (shell.css), whose words give way the same way (pills.ts); the pills keep their size.
+    this.crumbs = h('nav.mn-crumbs', { 'aria-label': t('menu.back'), 'data-fit': '14', 'data-fit-scope': '.mn-top' });
+    this.pills = h('div.mn-pills', { 'data-fit': '14' });
     this.chip = h('button.mn-chip.mn-hit', { type: 'button', 'data-nav': true, 'data-key': 'chip', onclick: () => hd.chip() });
     this.el = h(
       'header.mn-top',
@@ -88,7 +92,8 @@ export class TopBar {
   /**
    * The breadcrumbs of a stacked screen: the section, then each screen; all but the last go back
    * there. Too long at their minimum (a fallback face on a tablet), they give way to the screen's
-   * own name (data-fit-give: ‹ still goes back), as upright always does.
+   * own name (data-fit-give: ‹ still goes back), as upright always does; still too long (beside a
+   * long name, the region and its players), the pills' words go (pills.ts: 2, then 3).
    */
   setCrumbs(labels: readonly string[]): void {
     this.crumbs.textContent = '';

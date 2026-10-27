@@ -17,9 +17,12 @@
 //
 // Inicio (plan PR 5) runs every hero state (play, search, offline, lobby, update and the dormant
 // rejoin: window.__homeHero, sample data), ✕ CANCEL focused while searching, and on a TV the play
-// state with a controller too; each also fails a title on more lines than it may take, text out of
-// its tile or under ✕, and prints the hero's title as fitted. Last on a TV, with no controller
-// (headless has none): the hero says it needs one, its press opens the sheet, and a controller that
+// state with a controller too; then Competitive in every format, idle and searching as the Menu
+// runs a search (its own pills, the region's counting players), which fails a format left out of
+// the subtitle and, on a TV, the region's name gone from the plate's row. Each also fails a title
+// on more lines than it may take, text out of its tile or under ✕, and prints the hero's title as
+// fitted. Last on a TV, with no controller (headless has none): the hero says it needs one, its
+// press opens the sheet, and a controller that
 // connects with A held closes the sheet without starting anything (plan PR 5 acceptance): its event
 // first, then (CONTINUE ANYWAY focused) the game's frame first, which reads the press before any
 // event or tick.
@@ -81,6 +84,28 @@ const SIZES = [
 const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'casual', 'ranked', 'friendly', 'custom', 'training', 'garage', 'leaderboard', 'profile'];
 // Inicio's hero states (window.__homeHero), in the order of their priority.
 const HERO_KINDS = ['play', 'search', 'offline', 'lobby', 'update', 'rejoin'];
+// A ranked search of every format as the Menu shows it (a layout check: its parts, not the game's
+// API): the search view, and the region pill counting players (pills.ts PLAYING_SHOWN up; with
+// --online its own count stays); SEARCH_DONE puts both back.
+const RANKED_SEARCH = `(() => {
+  const m = __game.menu;
+  const p = m.regionPill;
+  const since = performance.now() - 42000;
+  const region = document.documentElement.lang === 'es' ? 'Auto · Sudamérica' : 'Auto · South America';
+  window.__uiFitSearch = { view: m.host.searchView, set: p.set };
+  m.host.searchView = () => ({ active: true, kind: 'ranked', modes: ['1v1', '2v2', '3v3'], text: '', since, region: null, error: null, reload: false });
+  const set = p.set.bind(p);
+  p.set = () => set({ kind: 'online', region, playing: 12 });
+  window.__homeHero(null);
+  m.refreshChrome();
+  m.tick();
+  return true;
+})()`;
+const SEARCH_DONE = `(() => { const m = __game.menu; const s = window.__uiFitSearch; m.host.searchView = s.view; m.regionPill.set = s.set; m.refreshChrome(); m.tick(); return true; })()`;
+// Inicio's checks of its own: the hero's subtitle keeps every format (shown, not given way); a TV
+// keeps the region's name in the pill by the plate (the hero's subtitle leaves it out searching).
+const FORMATS = `(() => { const s = document.querySelector('.mn-hero-sub'); const t = s ? s.innerText : ''; return ['1v1', '2v2', '3v3'].filter((m) => !t.includes(m)).map((m) => 'the subtitle lost ' + m + ': ' + JSON.stringify(t)); })()`;
+const TV_REGION = `(() => { const n = document.querySelector('.mn-home-pills .mn-pill-region .mn-pill-main'); return n !== null && n.getBoundingClientRect().width > 0 ? [] : ["the region's name is nowhere on screen (the pill by the plate gave it way)"]; })()`;
 // The TV's controller message (tv.needPad), per language.
 const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
@@ -207,12 +232,13 @@ try {
       console.log(`${head}: the page is in ${pageLang}, expected ${lang}`);
       failures++;
     }
-    /** Ask the page's __uiFit() and print one line: `screen` and its `note` (a hero state). */
-    const check = async (input, screen, note = '') => {
+    /** Ask the page's __uiFit() and print one line: `screen` and its `note` (a hero state); `extra`: failures of the caller's own. */
+    const check = async (input, screen, note = '', extra = []) => {
       const r = await page.eval('window.__uiFit()');
       const small = r.smallText ?? [];
       const home = screen === 'home';
       const bad = [
+        ...extra,
         ...(r.layout !== size.layout ? [`layout: ${r.layout}, expected ${size.layout} (the browser's pointer: ${await page.eval("['fine', 'coarse', 'none'].find((k) => matchMedia('(pointer: ' + k + ')').matches) ?? '?'")})`] : []),
         ...r.shellOverflow.map((x) => 'shell: ' + x),
         ...r.fitOverflow.map((x) => 'fit: ' + x),
@@ -258,6 +284,21 @@ try {
         await sleep(300);
         await check(input, screen, 'play pad');
       }
+      // The longest subtitle, Competitive in every format: idle, then searching as the Menu runs a
+      // search (its own pills: the search view and a region pill counting players, set on its
+      // parts), the pills at their most crowded. Every format stays in the subtitle; a TV keeps
+      // the region's name by the plate (the pills' words the dot and the hero say go first).
+      await page.eval(`(window.__homeHero('play', { ranked: true }), true)`);
+      await sleep(300);
+      await check(input, screen, 'play ranked', await page.eval(FORMATS));
+      await page.eval(RANKED_SEARCH);
+      await sleep(300);
+      await check(input, screen, 'search ranked', [...(await page.eval(FORMATS)), ...(size.tv ? await page.eval(TV_REGION) : [])]);
+      await page.eval(`(document.querySelector('[data-key="hero-x"]')?.focus(), true)`);
+      await sleep(200);
+      await check(input, screen, 'search ranked ✕');
+      await page.eval(`(document.querySelector('[data-key="hero"]')?.focus(), true)`);
+      await page.eval(SEARCH_DONE);
       await page.eval('(window.__homeHero(null), true)');
       await sleep(200);
     }

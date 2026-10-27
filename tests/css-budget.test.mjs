@@ -205,7 +205,8 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // styles/screens/home.css, about 12.5 KB, minus the old home and Play hub rules of menu.css and the
 // old tiles' no-lift rules, about 1.2 KB, plus its review's tablet and TV subtitles and TV pill row:
 // 99,550 B. The cap is that plus about 0.6 KB (the owner's call for PR 5), so nothing grows
-// unnoticed, and steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and
+// unnoticed; the crowded top bar's pills and a TV subtitle's second line take 179 B of it
+// (99,729 B). It steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and
 // PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
 const CSS_BUDGET = 100_150;
 

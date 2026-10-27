@@ -289,9 +289,9 @@ html[data-shell='tv'] .mn[data-screen='home'] .mn-stage {
 }
 
 /* The row fits as one (home.ts data-fit: its text shrinks, then the pills' words give way, as in
-   the hint bar); the plate keeps its size. Beside the search or update pill the region keeps its
-   name here (the hero's subtitle leaves it out while searching): components.css takes it away in
-   a crowded bar. */
+   the hint bar: the region's status and the search's queue first, which the dot and the hero say);
+   the plate keeps its size. Beside the search or update pill the region keeps its name here (the
+   hero's subtitle leaves it out while searching): components.css takes it away in a crowded bar. */
 html[data-shell='tv'] .mn-home-pills {
   display: flex;
   min-width: 0;
@@ -341,22 +341,33 @@ html[data-shell='tv'] .mn-hero .mn-slot {
 }
 
 /* The subtitle on one line, as drawn ("Casual · 2v2 - Sudamérica"): it shrinks to the class's
-   minimum, then its region steps aside (tile.ts oneLine; the region pill is by the plate). */
+   minimum, then its region steps aside (the region pill is by the plate), then the formats go
+   under the queue's kind (tile.ts oneLine: the separator between them gave way). */
 html[data-shell='tv'] .mn-hero-sub {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.mn-hero-split[data-fit-gone] + .mn-hero-formats {
+  display: block;
+}
+
 /* Searching on a TV (a hero too low for ✕ CANCEL under the text): beside the subtitle, which keeps
-   the queue (the region pill is right above, by the plate). */
+   the queue (the region pill is right above, by the plate). ✕'s room is the row's end and a part
+   that gives way last with its label (tile.ts), the ✕ then its icon. */
 html[data-shell='tv'] .mn-hero-busy .mn-hero-main {
   padding-bottom: 1.375rem;
 }
 
 html[data-shell='tv'] .mn-hero-busy .mn-hero-row {
   min-height: 3rem;
-  padding-right: 12rem;
+  padding-right: 3.75rem;
+}
+
+.mn-hero-room {
+  flex: none;
+  width: 7.25rem;
 }
 
 html[data-shell='tv'] .mn-hero-busy .mn-hero-dot,

@@ -6,12 +6,14 @@
  * forms it has (`data-fit-alt`). Still too wide, the parts that may give way go, level by level
  * (`data-fit-give="<n>"`, 1 first, each level with the ones before it), each time fitted again from
  * the full size: inside the box, or inside the ancestor its `data-fit-scope` names (the section
- * strip's ‹ › / L R / Q E beside it). The TV's hint bar: the controller's Settings hint (the gear
- * says it), then the pills' words (their icons stay, the search its clock and ✕), then the hint to
- * cancel the search (the pill's ✕ beside it). Its children size in em (or inherit), so a whole tab
- * strip shrinks as one. The insurance for the fallback fonts (Roboto on a phone or a TV without the
- * display font, a Linux face wider than Arial, #widetext), the longer Spanish texts, and a larger
- * interface size.
+ * strip's and the crumbs' whole top bar: the strip's ‹ › / L R / Q E, then the pills' words; a TV
+ * hero's subtitle, ✕ CANCEL's label). A box with a scope fits after the others, so what it takes
+ * from one inside its scope stays taken. The TV's hint bar: the controller's Settings hint (the
+ * gear says it), then the pills' words (what is said beside them first; their icons stay, the
+ * search its clock and ✕), then the hint to cancel the search (the pill's ✕ beside it). Its
+ * children size in em (or inherit), so a whole tab strip shrinks as one. The insurance for the
+ * fallback fonts (Roboto on a phone or a TV without the display font, a Linux face wider than
+ * Arial, #widetext), the longer Spanish texts, and a larger interface size.
  *
  * The minimum is in px at the layout class's reference view (plan §1.2.3): on a TV that is its
  * width / 960 (--ui-scale, 1 to 2), so a 1920 wide TV keeps 32 CSS px where a 960 one keeps 16; a
@@ -124,7 +126,11 @@ function fitOne(el: HTMLElement): void {
 }
 
 export function fitAll(root: ParentNode): void {
-  for (const el of root.querySelectorAll<HTMLElement>('[data-fit]')) fitOne(el);
+  const boxes = Array.from(root.querySelectorAll<HTMLElement>('[data-fit]'));
+  // A box with a scope last: a box inside its scope gets its own parts back as it fits (the top
+  // bar's pills their words), and the scope's fit, which may take them, has the last word.
+  for (const el of boxes) if (el.dataset.fitScope === undefined) fitOne(el);
+  for (const el of boxes) if (el.dataset.fitScope !== undefined) fitOne(el);
 }
 
 /**

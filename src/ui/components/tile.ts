@@ -14,7 +14,7 @@
 import { h, setChildren } from '../dom';
 import { icon } from './icons';
 import type { IconName } from './icons';
-import { twoLines } from '../screens/homeModel';
+import { HERO_SEP, twoLines } from '../screens/homeModel';
 import type { HeroKind } from '../screens/homeModel';
 import { t } from '../../i18n';
 
@@ -105,15 +105,18 @@ export interface HeroTile {
  * The hero: `div.mn-hero` (a nav row) holding the main button and, while searching, ✕ CANCEL in
  * the same grid cell (no absolute position: the focus ring's position: relative would undo it).
  * `lines`: the speed lines (none on super low: flat lime). `oneLine`: a TV's subtitle on one line,
- * which shrinks to the class's minimum, then lets its region go (fit.ts; the region pill is by the
- * plate there). `press` / `cancel`: the two buttons. The main button is as tall as both rows of
- * tiles beside it (but upright): ▲ ▼ leave it for what lies wholly above or below, else the next
- * zone (nav.ts data-nav-span: the hint bar's links under it, the top bar over a phone's).
+ * which shrinks to the class's minimum, then lets its region go (the region pill is by the plate
+ * there), then sets the queue's formats under its kind; searching, ✕ CANCEL's label gives way last,
+ * with its room beside the subtitle (fit.ts, in the hero: the subtitle's scope). `press` /
+ * `cancel`: the two buttons. The main button is as tall as both rows of tiles beside it (but
+ * upright): ▲ ▼ leave it for what lies wholly above or below, else the next zone (nav.ts
+ * data-nav-span: the hint bar's links under it, the top bar over a phone's).
  */
 export function heroTile(o: { lines: boolean; oneLine: boolean; press: () => void; cancel: () => void }): HeroTile {
   const main = h('button.mn-hero-main', { type: 'button', 'data-nav': true, 'data-nav-span': true, 'data-key': 'hero', 'data-autofocus': true, 'data-fit-box': true, onclick: () => o.press() });
   const lines = o.lines ? speedLines() : null;
-  const x = h('button.mn-hero-x', { type: 'button', 'data-nav': true, 'data-key': 'hero-x', 'aria-label': t('nav.cancelSearch'), onclick: () => o.cancel() }, icon('close'), t('lang.cancel'));
+  const lastGive = o.oneLine ? { 'data-fit-give': '2' } : null;
+  const x = h('button.mn-hero-x', { type: 'button', 'data-nav': true, 'data-key': 'hero-x', 'aria-label': t('nav.cancelSearch'), onclick: () => o.cancel() }, icon('close'), h('span', lastGive, t('lang.cancel')));
   const el = h('div.mn-hero', { 'data-nav-row': true }, main);
   let clock: HTMLElement | null = null;
   const set = (v: HeroView): void => {
@@ -122,21 +125,25 @@ export function heroTile(o: { lines: boolean; oneLine: boolean; press: () => voi
     const tag = v.slot === null ? null : slot(v.slot.text, { icon: v.slot.icon, ink: true, drop: v.slot.icon === undefined });
     if (tag !== null) tag.id = 'mn-hero-slot';
     clock = v.clock !== null ? h('span.mn-hero-clock', null, v.clock) : null;
-    // Beside ✕ (searching), a face wider than Arial may take it under the floor, as the controller
-    // message's (a data-fit shrink).
-    const fit = o.oneLine ? { 'data-fit': busy ? '14' : '16' } : null;
+    // A TV's (fit.ts, never under its floor): the region steps aside (data-fit-alt), the formats go
+    // under the kind ("Competitivo" over "1v1 · 2v2 · 3v3": 1), then ✕'s label and room (2).
+    const fit = o.oneLine ? { 'data-fit': '16', 'data-fit-scope': '.mn-hero' } : null;
     const gone = o.oneLine ? { 'data-fit-alt': '' } : null;
+    const queue = (q: string): HTMLElement => {
+      const i = o.oneLine ? q.indexOf(HERO_SEP) : -1;
+      return i <= 0 ? h('span.mn-hero-queue', null, q) : h('span.mn-hero-queue', null, q.slice(0, i), h('span.mn-hero-split', { 'data-fit-give': '1' }, HERO_SEP), h('span.mn-hero-formats', null, q.slice(i + HERO_SEP.length)));
+    };
     const sub =
       typeof v.sub === 'string'
         ? h('span.mn-hero-sub', fit, v.sub)
-        : h('span.mn-hero-sub', fit, h('span.mn-hero-queue', null, v.sub.queue), v.sub.region !== null ? h('span.mn-hero-dot', gone, v.sub.dot) : null, v.sub.region !== null ? h('span.mn-hero-region', gone, v.sub.region) : null);
+        : h('span.mn-hero-sub', fit, queue(v.sub.queue), v.sub.region !== null ? h('span.mn-hero-dot', gone, v.sub.dot) : null, v.sub.region !== null ? h('span.mn-hero-region', gone, v.sub.region) : null);
     setChildren(
       main,
       lines,
       // The slot never shrinks: past its row it drops its text (data-fit-alt), but a TV's
       // controller message, which shrinks instead (home.css --fit-min there).
       h('span.mn-tile-top', { 'data-fit': '12' }, icon(v.icon, 'mn-hero-icon'), tag),
-      h('span.mn-hero-bottom', null, fitTitle('mn-hero-title', v.title, 40), clock, h('span.mn-hero-row', null, sub, h('span.mn-hero-go', { 'aria-hidden': 'true' }, icon('arrow'), h('b.mn-hero-ok', null, 'OK')))),
+      h('span.mn-hero-bottom', null, fitTitle('mn-hero-title', v.title, 40), clock, h('span.mn-hero-row', null, sub, busy && o.oneLine ? h('span.mn-hero-room', lastGive) : null, h('span.mn-hero-go', { 'aria-hidden': 'true' }, icon('arrow'), h('b.mn-hero-ok', null, 'OK')))),
       busy ? h('span.mn-hero-track', null, h('span.mn-busy')) : null,
     );
     main.setAttribute('aria-label', v.label);

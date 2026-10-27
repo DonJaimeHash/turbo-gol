@@ -17,8 +17,8 @@
  * the account on their own keys; the profile is fetched as the screen shows (the plate's rank,
  * the ban, the chip's rank), and once more when a session restored after that.
  *
- * In development (or a VITE_UI_FIT=1 build) window.__homeHero(kind | null, { pad }) forces a
- * hero state with sample data for the layout check (scripts/ui-fit.mjs).
+ * In development (or a VITE_UI_FIT=1 build) window.__homeHero(kind | null, { pad, ranked }) forces
+ * a hero state with sample data for the layout check (scripts/ui-fit.mjs).
  */
 import { h, clock } from '../dom';
 import { t } from '../../i18n';
@@ -33,7 +33,7 @@ import { plate as createPlate } from '../components/plate';
 import { rankBadge, tierById } from '../badges';
 import { regionName, tierName } from '../names';
 import { DEFAULT_CAR_NAME, HERO_SEP, HERO_SEP_TV, heroQueue, heroState, plateRank, queueParts, subParts } from './homeModel';
-import type { HeroInput, HeroKind, HeroState } from './homeModel';
+import type { HeroInput, HeroKind, HeroState, QueuePick } from './homeModel';
 
 const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
 
@@ -268,16 +268,17 @@ export function homeScreen(menu: Menu): Screen {
   };
 
   if (UI_FIT) {
-    (window as unknown as { __homeHero: (kind: HeroKind | null, opts?: { pad?: boolean }) => void }).__homeHero = (kind, opts) => {
+    // `ranked`: the samples' queue is Competitive in every format (the longest subtitle).
+    (window as unknown as { __homeHero: (kind: HeroKind | null, opts?: { pad?: boolean; ranked?: boolean }) => void }).__homeHero = (kind, opts) => {
       const now = performance.now();
-      const q = heroQueue(menu.prefs, false, false);
+      const q: QueuePick = opts?.ranked === true ? { kind: 'ranked', modes: [...PLAYLISTS], region: null, net: 'server' } : heroQueue(menu.prefs, false, false);
       const sample: Record<HeroKind, HeroState> = {
         play: { kind: 'play', queue: q },
-        search: { kind: 'search', search: { kind: 'casual', modes: q.modes, region: q.region, since: now - 42_000 } },
+        search: { kind: 'search', search: { kind: q.kind, modes: q.modes, region: q.region, since: now - 42_000 } },
         offline: { kind: 'offline' },
         lobby: { kind: 'lobby', lobby: { code: 'ABC234', count: 2, max: 4 } },
         update: { kind: 'update' },
-        rejoin: { kind: 'rejoin', rejoin: { kind: 'casual', modes: q.modes, leftMs: 192_000 } },
+        rejoin: { kind: 'rejoin', rejoin: { kind: q.kind, modes: q.modes, leftMs: 192_000 } },
       };
       forced = kind === null ? null : sample[kind];
       forcePad = opts?.pad === true;
