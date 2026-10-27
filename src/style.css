@@ -831,7 +831,6 @@ body {
   background: var(--surface-1-94);
   border: 1px solid var(--edge);
   border-radius: var(--r-tile);
-  overflow: hidden;
   cursor: pointer;
   transition:
     transform var(--dur-press) ease-out,
@@ -904,6 +903,7 @@ body {
 .hud-hold-fill {
   position: absolute;
   inset: 0;
+  border-radius: inherit;
   background: var(--danger-tint);
   transform: scaleX(0);
   transform-origin: left center;
