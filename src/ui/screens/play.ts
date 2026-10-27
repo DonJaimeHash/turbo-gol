@@ -64,13 +64,13 @@ export function homeScreen(menu: Menu): Screen {
     h(
       'div.mn-home-tiles',
       null,
-      tile('mn-tile-hero', '▶', t('home.play'), t('home.playSub'), () => menu.open('play'), null),
-      tile('', '◎', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
-      tile('', '▲', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
-      tile('', '◆', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
-      tile('', '⚙', t('home.settings'), t('home.settingsSub'), () => menu.host.openSettings(() => menu.refocus())),
+      tile('mn-tile-hero', 'play', t('home.play'), t('home.playSub'), () => menu.open('play'), null),
+      tile('', 'training', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
+      tile('', 'leaderboard', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
+      tile('', 'profile', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
+      tile('', 'settings', t('home.settings'), t('home.settingsSub'), () => menu.openSettings()),
       // Static: render() rebuilds only `side`, so keyboard / controller focus here survives a refresh.
-      tile('mn-tile-lang', '🌐', t('home.language'), LOCALES[language()].name, () => openLanguagePicker(menu)),
+      tile('mn-tile-lang', 'globe', t('home.language'), LOCALES[language()].name, () => openLanguagePicker(menu)),
     ),
     side,
   );
@@ -85,7 +85,8 @@ export function homeScreen(menu: Menu): Screen {
         side,
         h('div.mn-side-title', null, t('home.guestTitle')),
         h('p.mn-side-text', null, t('home.guestText', { playlist1: playlistName('1v1'), playlist2: playlistName('2v2'), playlist3: playlistName('3v3') })),
-        secondary(t('home.signIn'), () => menu.open('profile')),
+        // A key: Back from PERFIL finds it again in the side panel render() rebuilt (FocusMemory).
+        secondary(t('home.signIn'), () => menu.open('profile'), { 'data-key': 'home-signin' }),
       );
     }
   };
@@ -113,40 +114,61 @@ export function playScreen(menu: Menu): Screen {
     h(
       'div.mn-play-tiles',
       null,
-      tile('mn-tile-casual', '◐', t('play.casual'), t('play.casualSub'), () => menu.open('casual'), casualSub),
-      tile('mn-tile-ranked', '★', t('play.ranked'), t('play.rankedSub'), () => menu.open('ranked'), rankedTag),
-      tile('mn-tile-custom', '⌂', t('play.custom'), t('play.customSub'), () => menu.open('custom'), customSub),
-      tile('mn-tile-offline', '◇', t('play.friendly'), t('play.friendlySub'), () => menu.open('friendly')),
+      tile('mn-tile-casual', 'ball', t('play.casual'), t('play.casualSub'), () => menu.open('casual'), casualSub),
+      tile('mn-tile-ranked', 'trophy', t('play.ranked'), t('play.rankedSub'), () => menu.open('ranked'), rankedTag),
+      tile('mn-tile-custom', 'friends', t('play.custom'), t('play.customSub'), () => menu.open('custom'), customSub),
+      tile('mn-tile-offline', 'bot', t('play.friendly'), t('play.friendlySub'), () => menu.open('friendly')),
     ),
     h('div.mn-play-foot', null, rankedSub),
   );
+  // On the menu's tick: each line is written only when its text changed (a write is a new text node and a style pass).
+  const write = (el: HTMLElement, text: string): void => {
+    if (el.textContent !== text) el.textContent = text;
+  };
   const tick = (): void => {
     const p = menu.population;
     const sum = (r: Record<Playlist, number>): number => r['1v1'] + r['2v2'] + r['3v3'];
-    casualSub.textContent = p ? t('play.searching', { count: sum(p.casual) }) : '';
-    customSub.textContent = p ? t('play.lobbies', { count: p.lobbies }) : '';
-    rankedTag.textContent = menu.host.accounts.signedIn ? (p ? t('play.searching', { count: sum(p.ranked) }) : '') : locked;
-    rankedSub.textContent = p ? t('play.playingNow', { region: menu.regionLabel, count: p.playing }) : '';
+    write(casualSub, p ? t('play.searching', { count: sum(p.casual) }) : '');
+    write(customSub, p ? t('play.lobbies', { count: p.lobbies }) : '');
+    write(rankedTag, menu.host.accounts.signedIn ? (p ? t('play.searching', { count: sum(p.ranked) }) : '') : locked);
+    write(rankedSub, p ? t('play.playingNow', { region: menu.regionLabel, count: p.playing }) : '');
   };
-  return { id: 'play', title: t('play.title'), el, show: tick, tick };
+  // Its breadcrumb is MODES: JUGAR › MODES › CASUAL (the section is JUGAR already).
+  return { id: 'play', title: t('nav.modes'), el, show: tick, tick };
 }
 
-/** Toggle cards for the playlists; at least one stays selected. `extra(p)` adds the per-playlist line. */
-function playlistPicker(get: () => GameMode[], set: (m: GameMode[]) => void, extra: (p: Playlist) => Node | null): { el: HTMLElement; refresh: () => void } {
-  const wrap = h('div.mn-playlists');
+/**
+ * Toggle cards for the playlists; at least one stays selected. `extra(p)` builds the per-playlist
+ * line, `extraKey(p)` says what it shows (a plain string). `refresh` runs on the menu's tick: the
+ * line is built and the DOM written only when a card's state or that key changed.
+ */
+function playlistPicker(
+  get: () => GameMode[],
+  set: (m: GameMode[]) => void,
+  extraKey: (p: Playlist) => string,
+  extra: (p: Playlist) => Node | null,
+): { el: HTMLElement; refresh: () => void } {
+  // A row (nav.ts): ▼ from any card goes to what is under the row (the Region row), ▲ back to that card.
+  const wrap = h('div.mn-playlists', { 'data-nav-row': true });
   const cards = new Map<Playlist, HTMLButtonElement>();
+  const shown = new Map<Playlist, string>();
   const refresh = (): void => {
     const sel = get();
     for (const [p, c] of cards) {
-      c.setAttribute('aria-pressed', String(sel.includes(p)));
+      const pressed = String(sel.includes(p));
+      if (c.getAttribute('aria-pressed') !== pressed) c.setAttribute('aria-pressed', pressed);
       const slot = c.querySelector('.mn-pl-extra');
-      if (slot) setChildren(slot, extra(p));
+      const key = extraKey(p);
+      if (slot && shown.get(p) !== key) {
+        shown.set(p, key);
+        setChildren(slot, extra(p));
+      }
     }
   };
   for (const p of PLAYLISTS) {
     const c = h(
       'button.mn-pl',
-      { type: 'button', 'data-nav': true, 'aria-pressed': 'false' },
+      { type: 'button', 'data-nav': true, 'data-key': 'playlist-' + p, 'aria-pressed': 'false' },
       h('span.mn-pl-check', { 'aria-hidden': 'true' }),
       h('span.mn-pl-name', null, playlistName(p)),
       h('span.mn-pl-size', null, t('play.playlistCars', { playlist: p, count: MODES[p] * 2 })),
@@ -176,10 +198,16 @@ function searchButton(menu: Menu, kind: 'casual' | 'ranked', start: () => void):
     else start();
     refresh();
   });
+  // On the screen's tick (4 Hz): the label is written only when it changes; toggle() with a force
+  // writes nothing when the class is already so.
   const refresh = (): void => {
     const v = menu.host.searchView();
-    el.textContent = v.active ? (v.kind === kind ? cancel : cancelOther) : idle;
+    const text = v.active ? (v.kind === kind ? cancel : cancelOther) : idle;
+    if (el.textContent !== text) el.textContent = text;
+    // CANCEL is no lime primary (its hover / pressed lime would outrank the red and leave white text
+    // on lime, menu.css); FIND MATCH is again.
     el.classList.toggle('mn-btn-cancel', v.active);
+    el.classList.toggle('mn-btn-primary', !v.active);
   };
   return { el, refresh };
 }
@@ -191,6 +219,7 @@ export function casualScreen(menu: Menu): Screen {
       menu.prefs.casualModes = m;
       menu.savePrefs();
     },
+    (p) => (menu.population ? String(menu.population.casual[p]) : ''),
     (p) => (menu.population ? h('span', null, t('play.searching', { count: menu.population.casual[p] })) : null),
   );
   const region = regionCycler(menu);
@@ -246,6 +275,11 @@ export function rankedScreen(menu: Menu): Screen {
     },
     (p) => {
       const r = acc.me?.ratings.find((x) => x.playlist === p);
+      const waiting = menu.population ? menu.population.ranked[p] : -1;
+      return r ? `${waiting}|${r.tier}|${r.placementLeft}|${r.games}|${r.mmr}` : String(waiting);
+    },
+    (p) => {
+      const r = acc.me?.ratings.find((x) => x.playlist === p);
       const waiting = menu.population ? t('play.searching', { count: menu.population.ranked[p] }) : '';
       if (!r) return h('span', null, waiting);
       const tier = tierById(r.tier);
@@ -293,11 +327,16 @@ export function rankedScreen(menu: Menu): Screen {
     if (!signed) return;
     picker.refresh();
     go.refresh();
+    // The tick's writes: only what changed (the ban's clock moves once a second).
     const until = acc.me?.rankedBanUntil ?? 0;
     const left = until - Date.now();
-    ban.hidden = left <= 0;
-    if (left > 0) ban.textContent = t('play.rankedBan', { time: clock(left) });
-    go.el.disabled = left > 0 && !menu.host.searchView().active;
+    if (ban.hidden !== left <= 0) ban.hidden = left <= 0;
+    if (left > 0) {
+      const text = t('play.rankedBan', { time: clock(left) });
+      if (ban.textContent !== text) ban.textContent = text;
+    }
+    const disabled = left > 0 && !menu.host.searchView().active;
+    if (go.el.disabled !== disabled) go.el.disabled = disabled;
   };
   return {
     id: 'ranked',

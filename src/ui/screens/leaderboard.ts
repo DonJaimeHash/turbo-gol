@@ -36,11 +36,12 @@ export function leaderboardScreen(menu: Menu): Screen {
   const load = async (): Promise<void> => {
     const p = menu.prefs.leaderboardPlaylist;
     const my = ++seq;
+    // Rebuilt on each pick: the key (Menu's focus memory) keeps the controller on the tab it picked.
     setChildren(tabs, ...PLAYLISTS.map((x) => navButton(`mn-tab${x === p ? ' mn-tab-on' : ''}`, `${playlistName(x)} ${x}`, () => {
       menu.prefs.leaderboardPlaylist = x;
       menu.savePrefs();
       void load();
-    })));
+    }, { 'data-key': 'board-' + x })));
     setChildren(table, h('div.mn-empty', null, t('board.loading')));
     try {
       const b = await menu.host.accounts.leaderboard(p);

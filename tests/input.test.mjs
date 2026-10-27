@@ -1191,3 +1191,275 @@ test('dispose removes listeners, cancels a pending rebind and exits pointer lock
   assert.equal(sample().throttle, 0);
   input.dispose(); // idempotent
 });
+
+// ---- Menu edges of the Tablero (src/ui/Menu.ts MenuCommand) and the held-arrow repeat ---------
+
+const { NAV_REPEAT_DELAY_MS, NAV_REPEAT_MS } = await import('../src/input/Input.ts');
+
+/** An Input on a fake pad with a hand-driven clock (`at(ms)` sets it, then samples). */
+function clocked(pad = makePad()) {
+  padList = [pad];
+  let now = 1000;
+  const target = new FakeTarget();
+  const input = new Input(target, defaultSettings(), { document: new FakeDocument(), now: () => now });
+  const out = emptyControls();
+  const at = (ms) => {
+    now = ms;
+    input.sample(out);
+    const edges = { up: input.padActions.menuUp, down: input.padActions.menuDown, left: input.padActions.menuLeft, right: input.padActions.menuRight, repeat: input.padActions.menuRepeat };
+    input.consumeActions();
+    return edges;
+  };
+  return { pad, input, target, at };
+}
+
+test('pad menu edges: LB / RB, LT / RT, Y and Start fire once per press, mirrored in padActions', () => {
+  const pad = makePad();
+  const { sample, input } = setup({ pad });
+  const once = (button, flag, value = 1) => {
+    press(pad, button, value);
+    sample();
+    assert.equal(input.padActions[flag], true, flag);
+    assert.equal(input.actions[flag], true, flag + ' (actions)');
+    input.consumeActions();
+    sample();
+    assert.equal(input.padActions[flag], false, flag + ': held, no second edge');
+    release(pad, button);
+    sample();
+    input.consumeActions();
+  };
+  once(GP.LB, 'menuPrev');
+  once(GP.RB, 'menuNext');
+  once(GP.LT, 'menuTabPrev', 0.8);
+  once(GP.RT, 'menuTabNext', 0.8);
+  once(GP.Y, 'menuCancel');
+  once(GP.START, 'menuStart');
+  // Start is still the pause binding (Game.processActions reads menuStart first in the menus).
+  press(pad, GP.START);
+  sample();
+  assert.equal(input.padActions.pause, true);
+  assert.equal(input.padActions.menuStart, true);
+});
+
+test('LT / RT menu edges: past 0.5, re-armed only under 0.3 (an analog trigger rocking in between fires once)', () => {
+  const pad = makePad();
+  const { sample, input } = setup({ pad });
+  const fired = [];
+  for (const v of [0.2, 0.45, 0.55, 0.4, 0.6, 0.35, 0.7, 0.25, 0.52, 1, 0]) {
+    press(pad, GP.RT, v);
+    sample();
+    fired.push(input.padActions.menuTabNext);
+    input.consumeActions();
+  }
+  assert.deepEqual(fired, [false, false, true, false, false, false, false, false, true, false, false]);
+});
+
+test('the keyboard never sets the pad-only menu edges, in actions or padActions (Q / E / X / Delete are the menus\' own keys)', () => {
+  const { sample, input, target } = setup();
+  for (const code of ['KeyQ', 'KeyE', 'KeyX', 'Delete', 'Enter', 'Escape', 'ArrowDown', 'Tab', 'Space']) {
+    target.key(code);
+    sample();
+    for (const flag of ['menuPrev', 'menuNext', 'menuTabPrev', 'menuTabNext', 'menuCancel', 'menuStart', 'menuRepeat']) {
+      assert.equal(input.padActions[flag], false, `${code}: padActions.${flag}`);
+      assert.equal(input.actions[flag], false, `${code}: actions.${flag}`);
+    }
+    target.keyUp(code);
+    input.consumeActions();
+  }
+});
+
+test('a held D-pad direction repeats: the press, then 400 ms, then every 80 ms, on the clock', () => {
+  assert.equal(NAV_REPEAT_DELAY_MS, 400);
+  assert.equal(NAV_REPEAT_MS, 80);
+  const { pad, at } = clocked();
+  press(pad, GP.DPAD_DOWN);
+  assert.deepEqual(at(1000), { up: false, down: true, left: false, right: false, repeat: false }, 'the press');
+  assert.equal(at(1200).down, false);
+  assert.equal(at(1399).down, false, 'not before 400 ms');
+  assert.deepEqual(at(1400), { up: false, down: true, left: false, right: false, repeat: true }, 'first repeat at 400 ms');
+  assert.equal(at(1450).down, false);
+  assert.equal(at(1480).repeat, true, 'then every 80 ms');
+  assert.equal(at(1560).down, true);
+  // A long frame (a 20 fps menu, a stall) gives one repeat, not a burst.
+  const after = at(2000);
+  assert.equal(after.down, true);
+  assert.equal(at(2001).down, false);
+  release(pad, GP.DPAD_DOWN);
+  assert.equal(at(2100).down, false, 'released: no more');
+  assert.equal(at(3000).down, false);
+});
+
+test('the repeat follows the direction pressed last, and stops when it is released (even with another still held)', () => {
+  const { pad, at } = clocked();
+  press(pad, GP.DPAD_DOWN);
+  at(0);
+  press(pad, GP.DPAD_RIGHT);
+  assert.equal(at(100).right, true, 'the new press');
+  assert.equal(at(450).down, false, 'down no longer repeats');
+  assert.equal(at(500).right, true, 'right repeats from its own press');
+  release(pad, GP.DPAD_RIGHT);
+  const e = at(700);
+  assert.equal(e.right || e.down, false, 'right released: nothing repeats although down is held');
+});
+
+test('the left stick held past the threshold repeats like the D-pad; a capture stops the repeat', async () => {
+  const { pad, input, at } = clocked();
+  at(-100); // the pad is picked up at rest (an axis already pushed when it is found is no crossing)
+  pad.axes[GP.AXIS_LY] = 0.9;
+  assert.equal(at(0).down, true);
+  assert.equal(at(400).repeat, true);
+  pad.axes[GP.AXIS_LY] = 0.3;
+  assert.equal(at(480).down, false, 'back inside the threshold: stopped');
+  pad.axes[GP.AXIS_LY] = -0.9;
+  assert.equal(at(500).up, true);
+  const p = input.startRebind('jump', 'pad');
+  assert.equal(at(1000).up, false, 'no repeat while a capture waits');
+  input.cancelRebind();
+  await p;
+  assert.equal(at(1500).up, false, 'and none after it until a new press');
+});
+
+test('pad menu edges never fire while a rebind capture waits (the press is the binding)', async () => {
+  const pad = makePad();
+  const { sample, input } = setup({ pad });
+  const p = input.startRebind('boost', 'pad');
+  await armed();
+  press(pad, GP.LB);
+  sample();
+  assert.equal(input.padActions.menuPrev, false);
+  assert.deepEqual(await p, { kind: 'gpButton', index: GP.LB });
+  release(pad, GP.LB);
+  sample();
+  input.consumeActions();
+  const q = input.startRebind('boost', 'pad');
+  await armed();
+  press(pad, GP.RT, 0.9);
+  sample();
+  assert.equal(input.padActions.menuTabNext, false, 'a trigger a capture took fires nothing');
+  assert.deepEqual(await q, { kind: 'gpButton', index: GP.RT });
+  sample();
+  assert.equal(input.padActions.menuTabNext, false, 'nor after it while still held');
+});
+
+test('a direction held through a hand-off repeats no more: resetMenuRepeat / latchEdges need a new press', () => {
+  const { pad, input, at } = clocked();
+  at(-100); // picked up at rest
+  // The stick steering hard in the match (it crossed the threshold there), then the menus appear.
+  pad.axes[GP.AXIS_LX] = 0.9;
+  assert.equal(at(0).right, true, 'the crossing (in the match)');
+  input.resetMenuRepeat(); // Game.showMenu / setPaused(true) / openPauseSettings
+  for (const t of [400, 480, 560, 1500]) {
+    const e = at(t);
+    assert.equal(e.right || e.repeat, false, `still held at ${t} ms: no repeat`);
+  }
+  pad.axes[GP.AXIS_LX] = 0;
+  at(1600);
+  pad.axes[GP.AXIS_LX] = 0.9;
+  assert.equal(at(1700).right, true, 'a new push moves');
+  assert.equal(at(2100).repeat, true, 'and repeats');
+  pad.axes[GP.AXIS_LX] = 0;
+  at(2200);
+  // The D-pad held through latchEdges (a menu closing / opening on a press) likewise.
+  press(pad, GP.DPAD_DOWN);
+  assert.equal(at(3000).down, true);
+  input.latchEdges();
+  const e = at(3400);
+  assert.equal(e.down || e.repeat, false, 'latched: no repeat');
+  assert.equal(at(4000).down, false);
+  release(pad, GP.DPAD_DOWN);
+  at(4100);
+  press(pad, GP.DPAD_DOWN);
+  assert.equal(at(4200).down, true, 'pressed again: moves');
+});
+
+// ---- UI at rest (Game.ts frame): the menus read the pad on every animation frame ----------------
+
+const { runsLogic, drawsScene, sceneFps, FramePacer, TIERS } = await import('../src/render/quality.ts');
+
+/**
+ * Drive Input like Game.frame on a 60 Hz display for `presses` D-pad taps of `ms` each (start phases
+ * spread over a frame), the menus up on super low: the logic runs when runsLogic says (`readEvery`
+ * = true: today's loop; false: a loop that read the pad only on drawn frames), the scene is drawn
+ * at sceneFps. Returns the menuDown edges seen and the drawn frames per second.
+ */
+function menuLoop(ms, presses, readEvery) {
+  const pad = makePad();
+  const { input, out } = setup({ pad });
+  const fps = sceneFps({ cover: 'partial', cap: TIERS.superlow.maxFps, lite: true, still: false, animated: true, phone: false, covered: 0 });
+  const pacer = new FramePacer();
+  const frame = 1000 / 60;
+  const gap = 300; // between taps
+  const starts = Array.from({ length: presses }, (_, i) => 100 + i * gap + (i * 7.3) % frame);
+  const end = 100 + presses * gap + 200;
+  let lastLogic = -1;
+  let lastDraw = -1;
+  let edges = 0;
+  let drawn = 0;
+  for (let t = 0; t < end; t += frame) {
+    const down = starts.some((s) => t >= s && t < s + ms);
+    if (down) press(pad, GP.DPAD_DOWN);
+    else release(pad, GP.DPAD_DOWN);
+    const draw = drawsScene(t, lastDraw, fps, false, pacer);
+    const logic = readEvery ? runsLogic(t, lastLogic, TIERS.superlow.maxFps, false, null) : draw;
+    if (draw) {
+      lastDraw = t;
+      drawn++;
+    }
+    if (!logic) continue;
+    lastLogic = t;
+    input.beginFrame();
+    input.sample(out);
+    if (input.padActions.menuDown) edges++;
+    input.consumeActions();
+  }
+  return { edges, fps: (drawn * 1000) / end };
+}
+
+test('menus at 20 fps (super low): every D-pad tap of 20-60 ms moves the focus once; drawn-frame reads lose some', () => {
+  for (const ms of [20, 30, 40, 50, 60]) {
+    const r = menuLoop(ms, 40, true);
+    assert.equal(r.edges, 40, `${ms} ms taps: ${r.edges} of 40`);
+    assert.ok(Math.abs(r.fps - 20) < 0.6, `the scene at ${r.fps} fps`);
+  }
+  // The same taps read only on the 20 fps drawn frames (the old loop's cadence, slower): lost ones.
+  const old = menuLoop(30, 40, false);
+  assert.ok(old.edges < 40, `drawn-frame reads saw ${old.edges} of 40`);
+});
+
+/**
+ * The same taps in an online pause on super low (Game.ts frame): the match goes on at its 30 fps
+ * cap (runsLogic live, the tier's cap in whole refreshes), each frame of logic samples the pad (the
+ * session's ticks) and the pause menu reads the edges; on the frames between, `between` = true
+ * reads the pad with readEdges (today's loop), false does nothing (before). Returns the edges seen.
+ */
+function onlinePauseLoop(ms, presses, between) {
+  const pad = makePad();
+  const { input, out } = setup({ pad });
+  const frame = 1000 / 60;
+  const gap = 300;
+  const starts = Array.from({ length: presses }, (_, i) => 100 + i * gap + (i * 7.3) % frame);
+  const end = 100 + presses * gap + 200;
+  let lastLogic = -1;
+  let edges = 0;
+  for (let t = 0; t < end; t += frame) {
+    const down = starts.some((s) => t >= s && t < s + ms);
+    if (down) press(pad, GP.DPAD_DOWN);
+    else release(pad, GP.DPAD_DOWN);
+    if (!runsLogic(t, lastLogic, TIERS.superlow.maxFps, true, null)) {
+      if (between) input.readEdges();
+      continue;
+    }
+    lastLogic = t;
+    input.beginFrame();
+    input.sample(out);
+    if (input.actions.menuDown) edges++;
+    input.consumeActions();
+  }
+  return edges;
+}
+
+test('online pause at 30 fps (super low): readEdges between the frames of logic keeps every 20-60 ms D-pad tap', () => {
+  for (const ms of [20, 30, 40, 50, 60]) assert.equal(onlinePauseLoop(ms, 40, true), 40, `${ms} ms taps`);
+  const before = onlinePauseLoop(20, 40, false);
+  assert.ok(before < 40, `logic frames alone saw ${before} of 40`);
+});

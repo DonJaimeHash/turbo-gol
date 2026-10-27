@@ -7,6 +7,25 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Hold a direction on a controller (the D-pad or the left stick) to walk through the menus: after a
+  short pause the focus keeps moving, and it stops at the end of the list instead of jumping
+  somewhere else; press again to go on. Past the top of a screen you reach the region and account
+  buttons in the top bar, past the bottom the search's CANCEL and the links at the foot of the
+  page, which a controller could not reach before. In Settings, holding ◀ or ▶ on a slider (field
+  of view, sensitivity, volume) keeps sliding it, and holding ↑ or ↓ stops at the last row instead
+  of starting over at the top. A direction you were already holding when the menus, the pause or
+  Settings came up moves nothing until you press it again.
+- Controller shortcuts in the menus: Start opens Settings and Y cancels the search you are in (X on
+  the keyboard). The bumpers and the triggers switch the tabs of Settings, the triggers (and Q / E
+  on the keyboard) those of the leaderboard and of the sign-in screen; during a match none of them
+  does anything new.
+- `#widetext` (for contributors): the whole interface in plain Arial, about as wide as Android's
+  Roboto, to see on a desktop which label would not fit without the condensed font. Labels that
+  would not fit shrink a little, then take a shorter name (TRAIN, RANKS), and `node
+  scripts/ui-fit.mjs` checks every menu screen at six sizes with it, in English and Spanish and
+  with the hints of every controller, keyboard and remote (a CI job, for information); `--face
+  Verdana` runs the same check with a face wider than Arial.
+- GARAGE has its place in the menus already, with a "coming soon" panel until the cars arrive.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
   boost and switch to the ball camera, with your own keys or buttons (keyboard and mouse, or the
@@ -121,6 +140,36 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- When a new version of the game is out and yours is too old to play online, a window says so and
+  offers RELOAD NOW (selected), instead of a message that vanished after four seconds; if you say
+  NOT NOW, an "UPDATE TO PLAY" pill stays in the top bar until you reload.
+- Leaving Settings with Esc no longer also goes back a screen in the menus behind it.
+- Super low ("Súper bajo"): the focused button of the pause menu, Settings and the training pack
+  summary was hard to see from the couch; it has the same ring as everywhere else. The match HUD
+  keeps a one-pixel shadow under its text (BOOST, the clock, the countdown read over a bright pitch;
+  the BOOST label is white), every panel is opaque, the menus are drawn on a solid dark page instead
+  of over the stadium (lighter for the TV), and menu transitions are off.
+- The fps / draw-call readout no longer shows in the top right corner of every match: only F3 (or
+  `#stats`) turns it on, as intended.
+- The BLU tag of the scoreboard is readable: dark text on the team blue (it was white on a light
+  blue, under the contrast minimum).
+- The menus remember where you were: going back to a screen (Esc, B, Back), or closing a dialog
+  such as the language list, puts the focus back on the tile or button you left from instead of
+  the first one. A list that refreshes under the focus (lobbies, the leaderboard's tabs, the
+  training packs) keeps your place.
+- Text fields no longer trap the arrows or a TV remote: a field reached with the arrows lets you
+  move on past it (on Custom lobbies, JOIN and REFRESH can now be reached with a remote); press OK,
+  Enter or A, or just type, to edit it, and Enter, Esc / B or ↑ / ↓ to stop editing (a field being
+  edited shows a lime line under it). Esc while typing no longer also leaves the screen.
+- On Casual and Competitive, ↓ from any playlist card goes to the Region row (from the left card
+  it used to skip to FIND MATCH), and ↑ comes back to the card you came from: the arrow back
+  retraces your steps across the menus.
+- On a phone, a quick double tap no longer presses a button on the next screen, and a dialog that
+  appears under your finger ignores that touch. While a dialog is open nothing behind it can be
+  focused or pressed.
+- An arrow with nowhere to go nudges the focused button a little that way, so you can tell the
+  press arrived (in Super low too, as on a TV; not with reduced motion). The focus outline of the
+  last button of a long screen is no longer cut off at the bottom edge.
 - In the pause menu, B on a controller and Backspace no longer throw you out of the match (online
   and in Competitive too, where leaving counts as an abandon): like Esc and Start, they go back to
   the match. Only the QUIT button leaves, and online it still asks a second time. Inside the pause
@@ -131,6 +180,9 @@ All notable changes to Turbogol are documented here. The format follows
   asks "Leave Turbogol?" first; pressing Back again there leaves. Address flags such as `#diag`
   stay in the address. If something still takes the page away during a match (two quick Backs in
   the browser's toolbar, closing the tab, reloading), the browser asks before leaving.
+- On Super low a quick press of a controller button in the menus or the pause menu (shorter than
+  one frame) could be lost. They now read the controller on every screen refresh, whatever the
+  stadium's frame rate, online matches included.
 - In about half of the peer-to-peer matches every player's game dealt its own kickoff positions
   (the room's random seed, read as a negative number, meant "pick at random"): the games went out
   of sync at the start and after every goal, and only caught up by copying another player's state
@@ -173,12 +225,61 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- The menus are a board of five sections: PLAY, TRAINING, GARAGE, LEADERBOARD and PROFILE. On a
+  computer they sit in the top bar next to the logo, your region and connection, your account and
+  Settings; on a TV in the top bar too, with your connection in the bottom bar; on a phone held
+  sideways in a rail on the left (with the source code link at its foot), and on a phone held
+  upright in tabs at the bottom. Pick one with a click or a tap,
+  with the bumpers (LB / RB) or Q / E, or with a TV remote: press up to reach the bar, then left and
+  right (the section opens as soon as you land on it). The logo always takes you back to PLAY.
+- Back is predictable everywhere: it closes a window first, then goes back one screen, then from
+  any section to PLAY, and only on PLAY does it ask "Leave Turbogol?" (KEEP PLAYING is the answer
+  already selected). Esc, Backspace and the controller's B now ask that too on PLAY, as Android's
+  back gesture and a TV remote's BACK already did. A screen you opened inside a section shows a
+  back arrow and the way you came ("PLAY › MODES › CASUAL"): click any step to jump back to it.
+  SIGN IN on Competitive opens your profile on top of it, so Back returns to Competitive. Leaving a
+  custom lobby's screen any other way than its own buttons (another section, the logo, a step of
+  the way back) asks "Leave the lobby?" first, as Back does.
+- The search you started stays in sight on every section, as a pill in the top bar with its time
+  ("CASUAL · 2v2 · 0:42"): open it to go back to the search, press ✕, Y on a controller or X on the
+  keyboard to cancel it. It also floats above Settings, where Y, X and ✕ cancel it too. The old
+  search banner at the bottom of the menus is gone.
+- The region pill shows your region and whether you are online ("● Online", or how many are
+  playing once there are five or more; on a TV just whether you are online); open it to change the
+  region, or press RETRY when the game cannot reach the server. The hint bar at the bottom speaks only the language of what you are holding: the
+  controller's buttons, the keyboard's keys or the TV remote's, and nothing with a mouse. When it
+  runs out of room on a TV, its text gets a little smaller, then the Settings hint goes (the gear
+  at the top says it), then the pills keep just their icons (a search its clock), and while you
+  search, the cancel hint goes (the pill's ✕ is next to it); the source code link always stays on
+  screen.
+- On a phone held upright the menus now work (profile, leaderboard, training...); only a match
+  asks you to turn the phone. A tablet plays either way. You can pinch to zoom the menus; a match
+  starts at its normal size, and its controls and pause menu still keep every finger.
+- Windows, dialogs and short messages share one look: a solid panel in the middle (it rises from
+  the bottom on a phone), and up to three short messages at a time that stay longer when they are
+  longer. The source code link stays on screen (the bottom bar, or the foot of the phone's rail);
+  the licenses, Discord and the game's version are under About next to it.
+- A cleaner interface, the first step of the new menus. Titles, buttons and numbers use one
+  condensed typeface on every device (Barlow Condensed, a free font of 6 KB that comes with the
+  game), so an Android phone or a TV shows the same proportions as Windows did. Panels are solid
+  instead of blurring the stadium behind them (smoother on phones and TVs), the pause, the pack
+  summary and dialogs dim the game more, and one focus ring (white, with a lime mark under it, or a
+  lime bar for a row) shows where you are with a keyboard, a controller or a TV remote; it is never
+  shown to a finger. The menu tiles have drawn icons instead of emoji, and secondary text is a
+  little brighter. Hover effects only happen where a mouse can hover; with reduced motion turned on
+  in your system nothing slides, pops or blinks.
 - The arrow keys drive too (↑ / ↓ accelerate and reverse, ← / → steer, also in the air), next to
   W A S D, unless you bind an arrow to something else. The training keys that used the arrows moved:
   Page Up / Page Down for the previous / next shot, F to put the car back and T for unlimited boost
   in free play (Backspace still resets the shot or the ball). If you had never changed those keys,
   yours move too, unless you already use the new key for something else; the training screen names
   your own keys.
+- The menus are lighter on phones, TVs and laptops: the stadium behind them now moves at 30 frames
+  per second (20 on a phone whose menus cover most of the screen), and it stops, keeping its last
+  picture, behind Settings, a window or dialog, the "turn your phone" screen of a match and a
+  paused offline match. On Super low, where the menus are a solid page, the stadium behind them is
+  not drawn at all. Less heat and battery for the same menus; matches run exactly as before. With
+  "reduce motion" on in the system settings, the stadium behind the menus holds still.
 - A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
   netting, LED boards (a big main-sponsor board in the middle of each side wall; the boards change
   every 30 seconds), stands with a crowd and floodlight towers, with cranes, containers and a ship

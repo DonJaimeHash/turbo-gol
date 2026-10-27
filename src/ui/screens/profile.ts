@@ -64,7 +64,8 @@ export function showRecoveryCodes(menu: Menu, codes: string[], intro: string): v
 }
 
 function onEnter(inputs: HTMLInputElement[], go: () => void): void {
-  for (const i of inputs) i.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+  // Not the Enter / OK that starts editing a field reached with the arrows (Menu.onFieldKey cancels it).
+  for (const i of inputs) i.addEventListener('keydown', (e) => e.key === 'Enter' && !e.defaultPrevented && go());
 }
 
 export function profileScreen(menu: Menu): Screen {
@@ -179,7 +180,7 @@ export function profileScreen(menu: Menu): Screen {
         navButton(`mn-tab${tab === id ? ' mn-tab-on' : ''}`, label, () => {
           tab = id;
           render();
-        }),
+        }, { 'data-key': 'profile-tab-' + id }),
       ),
     );
     const form = tab === 'login' ? loginForm() : tab === 'register' ? registerForm() : recoverForm();

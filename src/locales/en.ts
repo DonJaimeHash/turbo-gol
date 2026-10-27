@@ -62,44 +62,96 @@ export default {
   'tier.division': '{tier} {division}',
 
   // Menu chrome: top bar, footer, key hints, search banner (src/ui/Menu.ts)
-  // Footer link to the game's source code. The AGPL-3.0 requires this link in every language: never drop it.
-  'menu.source': 'Source code',
-  // Tooltip of the source link; {license} is the license id (AGPL-3.0)
+  // The link to the game's source code (hint bar, the phone's rail, About); {license} is the license
+  // id (AGPL-3.0). The AGPL-3.0 requires this link in every language: never drop it.
   'menu.sourceTitle': 'Source code ({license})',
+  // Its short form, where the hint bar is crowded (a TV's pills with a wide system font)
+  'menu.sourceShort': 'Source ({license})',
   // Footer link to the third-party licenses file
   'menu.licenses': 'Licenses',
   // Tooltip of the footer Discord link. The community server speaks English, so other languages may say so, as the Spanish does
   'menu.discordTitle': 'Community on Discord',
-  // Key hints in the bottom bar on the home screen. The {...Keys} are key/button names and are not translated. Keep the spacing.
-  'menu.hints': '{moveKeys}  move   ·   {selectKeys}  select',
-  // Key hints in the bottom bar on every other screen (adds back)
-  'menu.hintsBack': '{moveKeys}  move   ·   {selectKeys}  select   ·   {backKeys}  back',
   // Top-bar account chip, under the player name, when signed in with no rank yet
   'menu.account': 'Account',
-  // Top-bar account chip, under the guest name
-  'menu.guestSignIn': 'Guest · Sign in',
+  // Top-bar account chip, under the guest name (it opens PROFILE, where a guest signs in)
+  'menu.guestSignIn': 'Sign in',
   // Top bar: players in a match in the selected region
   'menu.playing': { one: '{count} playing', other: '{count} playing' },
   // Top-bar region when set to automatic, before the server has said which region
   'menu.regionAuto': 'Auto',
   // Top-bar region when set to automatic; {region} is the detected region's name
   'menu.regionAutoNamed': 'Auto · {region}',
-  // Matchmaking banner: the kind of search
+  // Search pill (top bar): the kind of search, before its formats and time ('CASUAL · 2v2 · 0:42')
   'menu.searchRanked': 'COMPETITIVE',
-  // Matchmaking banner: the kind of search
+  // Search pill: the kind of search
   'menu.searchCasual': 'CASUAL',
-  // Matchmaking banner button that stops the search
-  'menu.searchCancel': 'CANCEL',
-  // Tooltip / screen-reader name of the top-bar '‹' button (touch screens): back to the previous screen
+  // Tooltip / screen-reader name of the '‹' button of a stacked screen: back to the previous screen
   'menu.back': 'Back',
   // Dialog on the home screen after the system Back (Android's back gesture or button, a TV remote's
   // BACK, the browser's back button); {game} is the game's name
   'menu.leaveTitle': 'Leave {game}?',
   // The dialog's text: while it is up, the next Back leaves the page ("Back" is the system button)
   'menu.leaveText': 'Press Back again to leave.',
+  // The same dialog opened by Esc, a controller's B or the menus' ‹ (another press of those closes
+  // it): the LEAVE button is the way out
+  'menu.leaveTextKey': 'Choose LEAVE to close the game.',
+  // ... and when there is no page before the game's to go back to (no LEAVE button)
+  'menu.leaveTextTab': 'To leave, close this tab.',
   // The dialog's buttons, uppercase: close it / go back to the page before the game
   'menu.leaveStay': 'KEEP PLAYING',
   'menu.leaveGo': 'LEAVE',
+
+  // The menu shell (src/ui/shell/*): sections, hints, pills, About, the new-version sheet
+  // The five sections, in the top bar (PC, TV) and the phone's rail: capitals, short (the rail
+  // gives each 91 px at 14 px on a phone held sideways; a longer one shrinks to fit)
+  'nav.play': 'PLAY',
+  'nav.training': 'TRAINING',
+  'nav.garage': 'GARAGE',
+  'nav.leaderboard': 'LEADERBOARD',
+  'nav.profile': 'PROFILE',
+  // The same in an upright phone's tab bar, where five share 390 px: at most about 8 letters
+  'nav.trainingShort': 'TRAIN',
+  'nav.leaderboardShort': 'RANKS',
+  // Breadcrumb of the Play hub (PLAY › MODES › CASUAL)
+  'nav.modes': 'MODES',
+  // Screen-reader name of the section bar; also the hint bar's verb for switching sections
+  'nav.sections': 'Sections',
+  // Hint bar verb for Q / E on a screen with tabs of its own (Leaderboard's playlists)
+  'nav.tabs': 'Tabs',
+  // Hint bar verbs, after a drawn key or button (A, ENTER, OK...)
+  'nav.select': 'Select',
+  'nav.back': 'Back',
+  // The hint bar's Back on a TV remote (its ↩ button)
+  'nav.backRemote': 'Back',
+  'nav.settings': 'Settings',
+  'nav.cancelSearch': 'Cancel search',
+  // Tooltips of the ‹ › beside the sections (mouse)
+  'nav.prevSection': 'Previous section',
+  'nav.nextSection': 'Next section',
+  // Hint bar link and rail button: the About sheet (build, licenses, Discord)
+  'nav.about': 'About',
+  // About sheet title; {game} is the game's name
+  'nav.aboutTitle': 'About {game}',
+  // Closes the About sheet
+  'nav.close': 'CLOSE',
+  // Region pill: the connection is up (below 5 players in a match no count is shown)
+  'pill.online': 'Online',
+  // Region pill: the server cannot be reached; RETRY tries again
+  'pill.offline': 'Offline',
+  'pill.retry': 'RETRY',
+  'pill.connecting': 'Connecting…',
+  // Region pill's screen-reader name; {status} is pill.online or menu.playing
+  'pill.regionLabel': 'Region: {region}, {status}. Change region',
+  // The server refused this page's version (a new one was deployed): a sheet that stays until
+  // answered, then the top bar's pill
+  'update.title': "There's a new version",
+  'update.text': 'Reload the page to keep playing online. It takes a few seconds.',
+  'update.reload': 'RELOAD NOW',
+  'update.later': 'NOT NOW',
+  'update.pill': 'UPDATE TO PLAY',
+  // GARAGE section until the cars arrive
+  'garage.soon': 'COMING SOON',
+  'garage.soonText': 'Cars and stadiums, all in one place.',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   // Rank badge tooltip and rating card while placement matches are still left
@@ -147,8 +199,6 @@ export default {
   'home.signIn': 'SIGN IN / CREATE ACCOUNT',
 
   // Play hub, Casual and Competitive (src/ui/screens/play.ts)
-  // Play hub title (breadcrumb)
-  'play.title': 'Play',
   // Play hub tile and Casual screen heading
   'play.casual': 'CASUAL',
   'play.casualSub': 'Unranked · P2P or server',

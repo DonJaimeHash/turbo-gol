@@ -134,8 +134,9 @@ async function joinFlow(menu: Menu, code: string, locked: boolean): Promise<void
       { label: t('custom.cancel'), onClick: () => true },
     ],
   });
+  // An Enter the menus took (OK on a field in navigation mode starts editing: Menu.onFieldKey) is no submit.
   pw.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void attempt(pw.input.value).then((ok) => ok && close());
+    if (e.key === 'Enter' && !e.defaultPrevented) void attempt(pw.input.value).then((ok) => ok && close());
   });
 }
 
@@ -154,7 +155,7 @@ export function customScreen(menu: Menu): Screen {
     void joinFlow(menu, c, false).catch(() => undefined);
   };
   code.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') join();
+    if (e.key === 'Enter' && !e.defaultPrevented) join(); // not the OK that starts editing (Menu.onFieldKey)
   });
   let refreshAt = 0;
   let loading = false;
@@ -175,7 +176,7 @@ export function customScreen(menu: Menu): Screen {
       // The server refuses a guest anyway (403 account_required): say so without asking it.
       if (guest) menu.toast(t('error.lobby.account_required'), 'error');
       else void joinFlow(menu, l.code, l.locked);
-    }, { 'data-code': l.code, disabled: l.players >= l.max });
+    }, { 'data-code': l.code, 'data-key': 'lobby-' + l.code, disabled: l.players >= l.max });
   };
   const load = async (): Promise<void> => {
     if (loading) return;
@@ -196,9 +197,10 @@ export function customScreen(menu: Menu): Screen {
     'div.mn-custom',
     null,
     screenHead(t('custom.heading'), t('custom.subtitle')),
+    // A row (nav.ts): ◀ ▶ walk CREATE, the code field, JOIN and REFRESH in order, wrapped or not.
     h(
       'div.mn-custom-bar',
-      null,
+      { 'data-nav-row': true },
       primary(t('custom.createLobby'), () => menu.open('lobby-create'), { 'data-autofocus': true }),
       h('div.mn-join', null, code.el, secondary(t('custom.join'), join)),
       secondary(t('custom.refresh'), () => void load()),
@@ -221,6 +223,12 @@ export function customScreen(menu: Menu): Screen {
     title: t('custom.screenTitle'),
     el,
     show: () => {
+      // Still in a lobby (the player went to another section from it): its screen comes back on top.
+      if (menu.host.lobby.inLobby) {
+        queueMicrotask(() => {
+          if (menu.top()?.id === 'custom' && menu.host.lobby.inLobby) menu.open('lobby');
+        });
+      }
       refreshAt = 0;
       setChildren(list, h('div.mn-empty', null, t('custom.loading')));
     },
@@ -314,7 +322,7 @@ export function lobbyCreateScreen(menu: Menu): Screen {
       setChildren(controls, ...settingsControls(s, rules()));
       menu.refocus();
     };
-    return { presets, onEdit: presets === null ? null : () => menu.host.openSettings(back, { tab: 'experimental' }), pick };
+    return { presets, onEdit: presets === null ? null : () => menu.openSettings(back, { tab: 'experimental' }), pick };
   };
   return {
     id: 'lobby-create',
@@ -364,7 +372,7 @@ export function lobbyScreen(menu: Menu): Screen {
         ? null
         : () => {
             close();
-            menu.host.openSettings(() => {
+            menu.openSettings(() => {
               // The lobby may have gone, or started, while the settings were open.
               const now = lobby.state;
               if (now !== null && now.status === 'open' && lobby.isHost) configure(now, { draft, name: name.input.value, pick });
@@ -457,6 +465,29 @@ export function lobbyScreen(menu: Menu): Screen {
     if (menu.top()?.id === 'lobby') menu.open('custom');
   };
 
+  /** "Leave the lobby?": LEAVE leaves it and, once the sheet is gone, `go` takes the player on; STAY keeps it. */
+  const askLeave = (go: () => void): void => {
+    let leaving = false;
+    menu.modal({
+      title: t('custom.leaveTitle'),
+      body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
+      actions: [
+        {
+          label: t('custom.leave'),
+          primary: true,
+          onClick: () => {
+            lobby.leave();
+            leaving = true;
+          },
+        },
+        { label: t('custom.stay'), onClick: () => true },
+      ],
+      onClose: () => {
+        if (leaving) go();
+      },
+    });
+  };
+
   return {
     id: 'lobby',
     title: t('custom.lobbyTitle'),
@@ -471,22 +502,11 @@ export function lobbyScreen(menu: Menu): Screen {
     },
     back: () => {
       if (!lobby.inLobby) return false;
-      menu.modal({
-        title: t('custom.leaveTitle'),
-        body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
-        actions: [
-          {
-            label: t('custom.leave'),
-            primary: true,
-            onClick: () => {
-              lobby.leave();
-              menu.open('custom');
-            },
-          },
-          { label: t('custom.stay'), onClick: () => true },
-        ],
-      });
+      askLeave(() => menu.open('custom'));
       return true;
     },
+    // A section, a crumb, the wordmark, the chip or the search pill: the same question first (a
+    // member who walked away unasked would hold the lobby's next start, LobbyDO's in_game wait).
+    leaveGuard: () => (lobby.inLobby ? askLeave : null),
   };
 }

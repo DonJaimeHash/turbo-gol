@@ -10,10 +10,12 @@ import type { RegionId } from '../../net/account';
 import type { Menu } from '../Menu';
 import { regionName } from '../names';
 import { t } from '../../i18n';
+import { icon } from '../components/icons';
+import type { IconName } from '../components/icons';
 
-/** A big menu tile: icon glyph, title, subtitle, optional corner tag. */
-export function tile(cls: string, glyph: string, title: string, sub: string, onClick: () => void, tag?: Child): HTMLButtonElement {
-  return navButton(`mn-tile ${cls}`, [h('span.mn-tile-glyph', { 'aria-hidden': 'true' }, glyph), h('span.mn-tile-title', null, title), h('span.mn-tile-sub', null, sub), tag ? h('span.mn-tile-tag', null, tag) : null], onClick);
+/** A big menu tile: icon (the sprite of components/icons.ts), title, subtitle, optional corner tag. */
+export function tile(cls: string, glyph: IconName, title: string, sub: string, onClick: () => void, tag?: Child): HTMLButtonElement {
+  return navButton(`mn-tile ${cls}`, [h('span.mn-tile-glyph', { 'aria-hidden': 'true' }, icon(glyph)), h('span.mn-tile-title', null, title), h('span.mn-tile-sub', null, sub), tag ? h('span.mn-tile-tag', null, tag) : null], onClick);
 }
 
 export interface CycleOption<T> {

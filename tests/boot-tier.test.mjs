@@ -157,3 +157,62 @@ test('#diag frame statistics: 1 s min / mean, 5 s mean, long frames after the wa
   assert.equal(s.cpu.step, 0);
   assert.ok(s.fpsMin1 <= s.fpsAvg1);
 });
+
+test('#diag frame statistics: a paced or held scene counts its drawn frames, the animation frames, and no stalls', () => {
+  const fs = new FrameStats();
+  fs.markWarm();
+  let t = 0;
+  const vsync = 1000 / 60;
+  // 3 s of the menus at 20 fps on a 60 Hz display: every third animation frame drawn.
+  for (let i = 0; i < 180; i++) fs.frame((t += vsync), i % 3 === 0, true);
+  let s = fs.snapshot();
+  assert.ok(Math.abs(s.fpsAvg1 - 20) < 1, `drawn ${s.fpsAvg1}`);
+  assert.ok(Math.abs(s.rafAvg1 - 60) < 1.5, `animation frames ${s.rafAvg1}`);
+  assert.ok(Math.abs(s.fpsMin1 - 20) < 1, `slowest drawn ${s.fpsMin1}`);
+  assert.equal(s.over50, 0, 'a paced scene is no stall');
+  // 8 s held (the settings screen): no drawn frame, the windows still close.
+  for (let i = 0; i < 480; i++) fs.frame((t += vsync), false, true);
+  s = fs.snapshot();
+  assert.equal(s.fpsAvg1, 0);
+  assert.equal(s.fpsAvg5, 0);
+  assert.equal(s.fpsMin1, 0);
+  assert.ok(Math.abs(s.rafAvg1 - 60) < 1.5);
+  assert.equal(s.over50, 0);
+  // A stall: one animation frame 120 ms after the previous one.
+  fs.frame((t += 120), false, true);
+  assert.equal(fs.snapshot().over100, 1);
+  assert.equal(fs.snapshot().over50, 1);
+  // Back into a match (not paced): the first drawn frame is measured from the last paced one, no stall.
+  fs.frame((t += vsync), true, false);
+  assert.equal(fs.snapshot().over50, 1);
+});
+
+test('#diag frame statistics: a capped match counts its stalls between drawn frames (a frame the cap should have drawn)', () => {
+  // 10 s of super low's 30 fps on 60 Hz: every other animation frame drawn, the others skipped by
+  // the cap (Game.ts frame: drawn false, paced false); 3 times a drawn frame slips by two refreshes.
+  const run = (paced) => {
+    const fs = new FrameStats();
+    fs.markWarm();
+    const vsync = 1000 / 60;
+    let t = 0;
+    let next = 0;
+    let slips = 0;
+    for (let i = 0; i < 600; i++) {
+      t += vsync;
+      let drawn = i === next;
+      if (drawn && (i === 100 || i === 300 || i === 500)) {
+        drawn = false; // missed: the next drawn one is two refreshes later (66.7 ms)
+        next += 2;
+        slips++;
+      }
+      if (drawn) next += 2;
+      fs.frame(t, drawn, paced);
+    }
+    return { s: fs.snapshot(), slips };
+  };
+  const match = run(false);
+  assert.equal(match.slips, 3);
+  assert.equal(match.s.over50, 3, 'each slipped frame is a 66.7 ms one between drawn frames');
+  assert.equal(match.s.over100, 0);
+  assert.equal(run(true).s.over50, 0, 'the same frames paced: their refreshes were 16.7 ms apart');
+});

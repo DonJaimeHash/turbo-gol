@@ -88,8 +88,11 @@ src/render/
                         reads old 0 / 1 saves; startingQuality (WebGL2, WebGPU compatibility mode
                         and <= 4 GB devices start on low unless the player chose a tier, super low
                         never raised; never above the GPU's ceiling); needsReload (into or out of
-                        super low); drawsFrame (the frame cap); lowerQuality; menuQualities (super
-                        low listed only for unlocked players) and nextQuality over such a list
+                        super low); drawsFrame (the tier's frame cap, in whole refreshes); the
+                        scene's pace ("UI at rest": SceneCover, frameCap with the player's FpsCap,
+                        sceneFps, FramePacer (a rate's average on any display), runsLogic,
+                        drawsScene); lowerQuality; menuQualities (super low listed only for
+                        unlocked players) and nextQuality over such a list
   bootTier.ts           the boot tier before the renderer exists (the URL's #superlow, the tab's
                         recovery, a GPU of the device that fell to super low (a ceiling known
                         before the backend), the player's choice, super low on a TV with a slow GPU or on
@@ -111,9 +114,12 @@ src/render/
   hashFlags.ts          the URL hash flags as whole words with optional values (parseHashFlags,
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
-                        nomsaa, msaa, nopost, norender, pr, hide)
-  frameStats.ts         `#diag`'s frame rate (1 s min / mean, 5 s mean, frames over 50 / 100 ms)
-                        and CPU per frame (ball prediction, bots, physics step, render), fed by the
+                        nomsaa, msaa, nopost, norender, pr, hide, widetext: the UI in plain Arial,
+                        html.tg-widetext set by main.ts, a fit test for the fallback fonts)
+  frameStats.ts         `#diag`'s drawn frame rate (1 s min / mean, 5 s mean), the animation frames
+                        the loop ran, the stalls (frames over 50 / 100 ms: between drawn frames in
+                        a match, between animation frames while the scene is paced or held) and CPU
+                        per drawn frame (ball prediction, bots, physics step, render), fed by the
                         Game only with the flag
   capabilities.ts       what the device can do (readCapabilities at init: compatibility mode, a
                         multisampled HDR target / canvas, float32 filtering, max texture size,
@@ -223,7 +229,9 @@ src/render/
                         rebinding both devices, camera / gameplay sliders, Audio: master volume,
                         Graphics: the quality tier among MenuOptions.qualities, Experimental:
                         experimentalPage.ts; refreshSettings redraws it when the account changes;
-                        pad A / B leave a text field of the screen instead of acting on it), the
+                        pad A / B leave a text field of the screen instead of acting on it; LB / RB,
+                        LT / RT, Q / E switch tabs; a held arrow's repeat stops at the first / last
+                        row and slides only a slider: FocusItem.repeat), the
                         controls card (setControlsCard: big card or slim strip, bottom right)
   controlsCard.ts       the controls card of the first matches and free play, pure: when it shows
                         (ControlsCardPlan: the first 3 matches' kickoff countdown, free play until
@@ -243,7 +251,11 @@ src/input/
                         DEFAULT_PAD, KEYBOARD_ONLY_KBM), the arrows as fixed second driving keys
                         (KBM_SECONDARY), labels, ACTION_ROWS, CameraLook
   Input.ts              keyboard + mouse + gamepad → CarControls, camera look (+ lookSource), held
-                        states and one-shot / menu edges, driven by Settings.bindings; pointer lock
+                        states and one-shot / menu edges (the pad's LB / RB, LT / RT past 0.5 with
+                        a 0.3 re-arm, Y and Start for the menus only; a held D-pad / stick
+                        direction repeats after 400 ms, then every 80 ms, on an injectable clock:
+                        menuRepeat; resetMenuRepeat at a hand-off: a held direction needs a new
+                        press), driven by Settings.bindings; pointer lock
                         (the capturing click is masked), one pad poll per frame (beginFrame),
                         latchEdges for menu hand-off, rebind capture (startRebind: armed on the
                         next macrotask, Esc cancels on both devices, wheel only over the cell),
@@ -315,26 +327,116 @@ src/game/
   startTraining(FREEPLAY_ID, { rules }) is experimental free play: the preset's physics, its game
   speed, the TrainingHud's rules line, the pause menu's RULES applied when the settings close, no
   records)
-src/ui/                 the front-end menus, styled by menu.css (mn-)
+src/ui/                 the front-end menus: the Tablero shell (styles/shell.css, components.css)
+                        around the screens (menu.css until their own PRs), all mn-, on the tokens
+  styles/tokens.css     every colour, type role and scale, space, radius, shadow, layer, motion
+                        and focus value (the Tablero plan §1.2), the display font's @font-face and
+                        its calibrated fallbacks; the old names (--panel, --muted, --mn-*) are
+                        aliases until the PR that rewrites their last user. "UI tokens" below
+  styles/focus.css      the one focus ring of every world (menus .mn-focus / :focus-visible, the
+                        Hud's .hud-focus, the pack summary's default button)
+  styles/shell.css      the shell's grid and bars per html[data-shell] (bar, rail, tabs, tv) in rem
+                        (1 rem = 16 px x --ui-scale; body stays 16 px, so the old screens' px do
+                        not move); styles/components.css: pills, glyphs, sheets, toasts
+  components/icons.ts   the SVG icon sprite (~38 icons on a 24 grid, one hidden <svg> of
+                        <symbol>s mounted by the first icon(); the menu tiles use it)
+  components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
+                        length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons)
+  shell/                sections.ts (the five sections, their roots, stepSection; pure),
+                        hints.ts (the hint bar per last input, root or stacked, a screen's own
+                        tabs or not; pure), topbar.ts (wordmark,
+                        sections with focus = selection, back + crumbs, chip, Settings), rail.ts
+                        (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
+                        About), pills.ts (region / connection, search, update)
+  backModel.ts          the order of Back, pure: menuBack (sheet, field being edited, the
+                        screen's own, pop, another section to JUGAR, JUGAR's root asks to leave),
+                        systemBack (load, key capture, the Hud's screen, menus, pack summary,
+                        match) and stackAfterOpen (where Menu.open leaves the section and its
+                        stack); tests/back-model.test.mjs
+  fit.ts                data-fit: a box shrinks its font 1 px at a time to its minimum (or the
+                        --fit-min a stylesheet sets: 16 on a TV, in px of its 960 wide reference
+                        view: times --ui-scale) while it overflows (its content box: a bar's
+                        overscan stays clear), then takes its short labels (data-fit-alt), then
+                        lets the parts that give way go, a level at a time (data-fit-give, in the
+                        box or in its data-fit-scope: the strip's ‹ › / L R / Q E; a TV hint
+                        bar's controller Settings hint, its pills' words, the cancel hint); the
+                        Menu fits at once on a mount and a change of the hints, the input, the
+                        chip or a pill (before that frame is drawn), on the next frame after a
+                        resize or the fonts; a box not laid out (the strip under a stacked screen)
+                        keeps its last fit; __uiFit() (dev / VITE_UI_FIT=1; it runs a fit queued
+                        for the next frame first) reports overflowing bars, cut labels, a sideways
+                        scroll, rings a clipping box or the screen's edge would cut (an edge
+                        control draws its ring inside: shell.css --ring-offset), shell text under
+                        14 px on a phone or 16 on a TV at its reference view (scripts/ui-fit.mjs,
+                        CI's ui-fit job)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
                         thread is busy), one short line; swallows keys while up; boot and Game
-  Menu.ts               controller: top bar (breadcrumb, region / players online, account chip),
-                        screen stack, bottom bar (key hints + the matchmaking banner with timer and
-                        cancel), toasts, modals, shared prefs (region, playlists, connection),
-                        population polling; MenuHost = what the Game provides (search, friendly,
-                        training (with experimental rules), the experimental view (unlocked,
-                        presets), lobby matches, settings screen)
+  Menu.ts               the shell's controller: five sections (JUGAR · ENTRENAMIENTO · GARAJE ·
+                        CLASIFICACIÓN · PERFIL), each a root screen with stacked screens on it
+                        (open: a root switches section, at its root, but from a stacked screen of
+                        another section it is a detour stacked on it, as Competitive's SIGN IN
+                        opening PERFIL, so Back returns there; a section switch always lands on
+                        the root; a screen whose leaveGuard asks, the lobby, asks before a
+                        section, a crumb, the wordmark, the chip or the search pill take the
+                        player off it), the top bar / rail / tabs / hint bar, the pills (region and
+                        connection with RETRY, the running search on every section and floating
+                        over Settings, "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
+                        new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
+                        shared prefs, population polling, the 4 Hz tick (1 Hz on super low, DOM
+                        written only on change); MenuHost = what the Game provides (search,
+                        friendly, training, the experimental view, lobby matches, settings
+                        screen, confirmLeave with what asked: the system Back or a key,
+                        setMenuCover: what the menus leave of the scene, reportCover: 'partial'
+                        with the share a touch screen's menus hide, measured on every mount,
+                        section switch, sheet or Settings closed, resize and layout change and
+                        once a second; 'opaque' under a sheet and over super low's opaque page).
+                        Focus: zones top bar, stage, footer, tabs
+                        and the rail as a side zone (left / right cross it; a sheet alone); up from
+                        the stage lands on the active section (data-nav-entry), focus = selection
+                        on the section tabs (a pointer's focus is not: its click is; LB / RB, Q / E
+                        and Esc to JUGAR from the bar keep the focus on the bar); the last focus
+                        per screen (FocusMemory by element or
+                        data-key; data-autofocus on a first visit only; never a text field without
+                        a fine pointer); sheets with aria-modal and the rest inert. Back:
+                        backModel.ts (Esc / B / the back button on JUGAR's root ask to leave too).
+                        MenuCommand shortcuts (Q / E, LB / RB, LT / RT, X / Y, Start, pad X /
+                        Delete) reach Screen.command first; LB / RB the sections, LT / RT and Q / E
+                        a screen's .mn-tabs (stepTabs) else the sections; X / Y cancel the search,
+                        over Settings too. A key's own repeat moves the focus only for a key first
+                        pressed in the menus. The 450 ms tap guard (touch): a tap that went down
+                        before a mount, or within 450 ms after, presses nothing on it; on the bars
+                        only after a stacked screen came or went (the rail's and the top bar's
+                        items moved). Menu.hide undoes a pinch zoom of the menus (resetPageZoom).
+  cover.ts              the scene behind the menus: the share of a touch screen they hide (a 9 x 5
+                        grid of elementFromPoint and computed backgrounds; the shell's backdrop
+                        left out), whether that backdrop is an opaque page (opaqueBackground) and
+                        the cover the menus report (menuCover); tests/cover.test.mjs
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
-                        direction; Enter / A activate natively; side controls claim left / right)
+                        direction; Enter / A activate natively; side controls claim left / right);
+                        pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
+                        rowStep, left vertically from unionBox), the way back (NavPath), the focus
+                        memory (FocusMemory), fields in navigation or editing mode (data-editing)
+                        and the edge nudge (mn-bounce-*); FocusNav puts them on the DOM and
+                        measures each target where it sits (layoutBox: a focused tile's lift or
+                        a nudge taken off, so a lifted tile has no neighbour "below" on its row)
+  device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
+                        <html>), html.tg-tv (no pointer at all, or #tv), the layout class by height
+                        and orientation (layoutClass: pc, short, phone, portrait, tablet, tv;
+                        data-layout and data-shell on <html>) and --ui-scale (uiScale), finePointer
+                        (a text field may take a first focus), the tap guard (tapGuarded); pure +
+                        installDevice
   backGuard.ts          system Back (Android gesture / button, TV remote BACK, browser back, Alt +
                         ←, mouse back, GoBack / BrowserBack keys) as Game.onSystemBack: a
                         CloseWatcher kept alive (Android's Back, no user activation needed) and
-                        one sentinel history entry re-armed after each Back (the history Backs);
-                        released while the home screen's "Leave Turbogol?" is up. Mid-match the
-                        Game adds a beforeunload backstop (updateLeaveGuard)
+                        one sentinel history entry re-armed after each Back (the history Backs;
+                        sections are no history entries of their own: backModel.ts walks them);
+                        released while JUGAR's "Leave Turbogol?" is up. Mid-match the Game adds a
+                        beforeunload backstop (updateLeaveGuard)
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
-  screens/              home, play hub, casual, competitive, friendly (play.ts), custom lobby
+  screens/              JUGAR's root (home in play.ts until plan PR 5), play hub (crumb MODES),
+                        casual, competitive, friendly (play.ts), GARAJE's "coming soon" (garage.ts,
+                        until plan PR 8), custom lobby
                         browser / create / lobby (custom.ts: the host's experimental rules row for
                         unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
                         rules line before the match), training (with Experimental free play, its
@@ -454,7 +556,9 @@ src/audio/
 src/main.ts             boot behind the loading screen: wasm load ‖ renderer init + the world's
                         first bake, build arena, settings, Game, warm-up render, start, fade into
                         the menu
-index.html, src/style.css
+index.html, src/style.css (the entry sheet: imports src/ui/styles/tokens.css and focus.css; the
+                        HUD, the loading screen, #widetext and super low)
+public/fonts/           tg-display-v1.woff2 (the display font, 5.6 KB) and its OFL.txt
 tests/                  node tests (node --test): sim harness (wasm, incl. the 8-car layout, 2v2 /
                         3v3 kickoffs, slot compaction), arena mesh validity, arena physics, bot
                         (pure + wasm-backed recovery, near-ball rules), bot team (roles,
@@ -489,7 +593,14 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         bot-bench.mjs (this tree's bots against a git revision's; --preset plays
                         the same seeded matches on stock and experimental physics and compares the
                         step, think(), ball prediction and whole-tick cost, failing when a preset
-                        breaks the state or the predictor), bot-skills.mjs (bot scenarios)
+                        breaks the state or the predictor), bot-skills.mjs (bot scenarios),
+                        ui-fit.mjs (every menu screen at six sizes with #widetext, in English
+                        and Spanish, in a headless Chrome / Edge over CDP: window.__uiFit,
+                        src/ui/fit.ts; a fresh tab per size and language with its device pinned,
+                        a mouse on the desktop sizes; then the hints of every other input on the
+                        screens that change the shell; --face for a fallback wider than Arial,
+                        --online and --long-name for a pill and a chip this page cannot reach
+                        alone, --no-pointer for a runner without one)
 ```
 
 ### Bloom / glow contract (src/render/materials.ts)
@@ -670,7 +781,11 @@ reference Turing GPU, chase camera at kickoff, the module's own share (on / off 
 
 ```
 requestAnimationFrame(t):
-  if !drawsFrame(t, lastDrawn, tier.maxFps): return   // super low: 30 fps, the time carries over
+  live = a match being played (online: the session's match, paused or not)
+  if !runsLogic(t, lastLogic, cap, live, pacer): // a match keeps its cap (super low: 30 in whole
+     if online pause: input.readEdges()   // refreshes; the player's fpsCap at its average), the
+     return                               // time carries over; the menus and an offline pause
+                                          // run every animation frame
   dt = clamp(t - last, 0, 0.1); acc += dt
   input.beginFrame()                      // one navigator.getGamepads() per frame
   while acc >= TICK_DT:
@@ -685,10 +800,44 @@ requestAnimationFrame(t):
      acc -= TICK_DT
   processActions()                        // pause / ball cam / reset edges, pad edges → menu
   alpha = acc / TICK_DT
-  chase.update(..., input.look)           // swivel + rear view
-  renderer.render(prev, cur, alpha)      // interpolated transforms, camera, effects, HUD
-                                          // (scoreboard while held, pointer-lock hint)
+  fps = sceneFps(cover, cap, ...)         // UI at rest, below
+  if drawsScene(t, lastDrawn, fps, changed || redraw, pacer):  // a match: every frame of logic
+     chase.update(..., input.look)        // swivel + rear view (the menus: the orbit)
+     renderer.render(prev, cur, alpha)    // interpolated transforms, camera, effects, HUD
+  frameLogic(dt)                          // scoreboard while held, touch controls, pointer-lock
+                                          // hint, GO caption, back to the menus, audio
 ```
+
+**UI at rest** (quality.ts `sceneFps`, Game.ts `frame`): the scene is drawn at the match's cap; at
+30 fps under the menus (20 on super low when they let it through, and on a touch screen whose menus
+hide more than 70 % of it: src/ui/cover.ts); and not at all, one held frame, under an opaque layer
+(a menu sheet, the menus' own opaque page on super low, the settings screen, a match's
+rotate-your-phone screen), in an offline pause, and under the menus with `prefers-reduced-motion` or
+`GamePrefs.menuSceneAnimated` off (the orbit stops). The Tablero shell reports what it leaves of the
+scene through `MenuHost.setMenuCover` ('none' / 'partial' / 'opaque', Menu.reportCover): 'partial'
+on every section, stacked screen and layout (the bars, the rail or the tabs, the pills and toasts
+count in the measured share of a touch screen: a toast lets the pointer through, so its box is
+hit-tested first, cover.ts atOverlays; GARAJE's almost empty stage measures low), 'opaque'
+under any sheet (region, leave, update once Settings close, the language list, About, a confirm) and while
+`.mn` paints an opaque backdrop (super low's `--mn-backdrop` is `--ink`: the stadium is hidden
+there, so it holds instead of running at 20 fps), 'none' once hidden; the Game adds its own layers
+(the settings screen, the rotate screen of a match: upright menus work, `.mn-open` keeps it away). A
+held frame is drawn again when something under it changes (a change of pace, a resize, rebuilt
+views, the end of a load, a tab that comes back, a warm-up frame): the canvas keeps its last image
+in between. The menus' rates and the player's limit keep their average on any display (`FramePacer`:
+the refresh nearest a deadline that advances one period at a time, pulled a tenth toward the frame
+drawn: 30 fps on 144 / 165 Hz, 20 on 50 Hz, and locked to a 59.94 / 60.05 Hz display without a
+skipped refresh); the tier's own cap counts whole refreshes as it always did (`drawsFrame`: super
+low's 30 is 25 on 50 Hz). The input is read on every animation frame outside a match, and an online
+pause reads the pad between its cap's frames (`Input.readEdges`: the edges wait for the next frame
+of logic), so a pad tap shorter than one drawn frame still moves the focus. Paced and held frames,
+and those under the player's limit (two counts of refreshes, which it would take for late frames),
+give dynamic resolution no interval; the menus start at full resolution
+(`Renderer.resetResolutionScale`), the next match lowers it again under its own load. The menus'
+orbit runs on drawn time (it resumes where it stopped); `GamePrefs.fpsCap` (30 / 60 / none) and
+`menuSceneAnimated` have no Settings row yet (`Game.setFpsCap`, `Game.setMenuSceneAnimated`).
+`#diag` shows the drawn rate "of" the animation frames, and counts a match's stalls between drawn
+frames (as before: a frame the cap should have drawn) and a paced scene's between animation frames.
 
 Online (`Game.onlineActive`) the same frame calls `OnlineSession.advance(dt)` instead of the
 `while` loop: it applies the staged snapshot (rollback + replay), compares the local tick with
@@ -751,7 +900,9 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   tab). The prefs keep the player's pick
   only (`persistPrefs` writes `savedQuality`): a tier the session runs on its own (the URL, auto,
   a ceiling, a fallback) is never saved. Super low's CPU trims (`cpuLite`): `html.tg-superlow`
-  (no blur, shadows or decorative animation in the HUD), boost and speed at 10 Hz, no audio room,
+  (opaque surfaces, a flat lime hero, no box or text shadow but one hard pixel under the HUD's
+  text, no decorative transition or animation by class prefix; the focus ring stays: "UI tokens"
+  below), boost and speed at 10 Hz, no audio room,
   the ball prediction every 8 ticks, a notice when going online.
 * **Tier safety net** (`src/render/tierGuard.ts`, `Game.onGpuFailure`, from `Game.bootDone()` on):
   a GPU validation error, a failed pipeline or WebGL program within 20 s of the boot or a tier
@@ -908,6 +1059,75 @@ locks are marked too). Every other match runs the standard physics, bit for bit.
   bake ~1 s); low 1.6 s warm, 2.7 s cold. WebGL2 low: 2.0-6.2 s to the warm-up (run to run
   variance of the parallel compile on a shared GPU). Before the parallel compile the high tier
   took 5.5-6.1 s (~50 pipelines compiled one after the other).
+
+## UI tokens, focus and the display font
+
+The Tablero redesign (PR 1: base) gives the three UI worlds (the menus `mn-`, the HUD `hud-`, the
+training HUD `trn-`, the touch controls `tc-`) one set of tokens, `src/ui/styles/tokens.css`,
+imported first by `src/style.css`:
+
+* **Colour.** `--ink`, `--surface-0..3` (opaque) and their alpha twins for a surface over the live
+  scene (`--surface-0-94`...), `--edge` / `--edge-hi`, `--text` / `--text-2` / `--text-3` (the 5.6:1
+  floor), the lime `--brand*` (one filled lime thing per screen, plus boost and the goal), team
+  `--blue*` / `--red*` (teams only), `--danger`, `--warn`, `--ok`, `--info`, `--rank-gold` (ranks
+  only), `--lab` (Experimental only), `--focus`, `--veil` (pause, dialogs, the summary: solid, never
+  blurred) and `--scrim`. Nothing in `src/` uses `backdrop-filter` (each one re-reads and blurs the
+  canvas every frame): `tests/css-budget.test.mjs` fails on one.
+* **Type.** Display and Heading roles (titles, buttons, tabs, numerals; always capitals) use
+  `--font-display`; Body and Label keep the system stack they always had, `--font-body` (Bahnschrift
+  on Windows, Roboto on Android, San Francisco on Apple; no Impact). Weights stop at 700. The scale
+  `--t-hero ... --t-label` per class (PC, short screens, phone landscape, phone portrait,
+  `html.tg-tv`) is in rem for the shell's root scale: `html { font-size: 16px x --ui-scale }`
+  (device.ts uiScale: PC by height, 768 = 1, 0.9 to 1.35; a short laptop by height, 600 = 1, 0.9 to
+  1; a phone sideways by height, 390 = 1, up to 1.1, never under 1, so its text keeps 14 px and the
+  rail its 123 px at 360 tall; upright by width, the same; a TV by width, 960 = 1, up to 2), with
+  `body` kept at 16 px so only rem sizes (the shell) follow. No font size or radius literal under
+  `src/ui/styles/` outside tokens.css either (the test again).
+* **Space, radii, shadows, layers, motion:** `--sp-1..8`, `--r-slot / key / tile / panel / pill`,
+  `--shadow-sheet` (static, sheets only), `--z-*` (the order of the HUD, menus, settings, anti-bot,
+  rotate screen and loading screen), `--dur-*` / `--ease*` (transform and opacity only).
+* **Focus** (`src/ui/styles/focus.css`): a 3 px white outline 3 px out, an `--ink` ring in the gap
+  (a spread-only shadow that super low keeps) and a lime heel skewed -20 degrees under the box;
+  rows (lists, settings rows, button stacks, one-stop groups, training packs, cyclers) get a lime
+  bar on their left inside edge instead. Never on a touch screen; 4 px and a 6 px heel under
+  `html.tg-tv`. Every vertical scroller (`.mn-stage`, `.mn-lobbies`, `.mn-board`, `.mn-sheet`,
+  `.hud-menu`, `.hud-settings-body`) has a scroll padding of 16 px (24 under a heel), since the focus
+  is scrolled in with `block: 'nearest'`, flush with the edge; tile grids are 16 px apart, past the
+  heel.
+* **Hover** only inside `@media (hover: hover)`; one pressed state (`scale(.97)`, a step darker, the
+  lime primary to `--brand-deep`) in the menus, the HUD's pause and settings and training; one
+  `prefers-reduced-motion` block for every prefix in `src/style.css` (opacity still fades, 120 ms at
+  most; the search spinner keeps turning).
+* **Super low** is one switch: the alpha twins point at the opaque surfaces, `--brand-grad` at the
+  flat lime, the menus' shell is an opaque page (no full-screen translucent layer), every `mn-` /
+  `hud-` / `trn-` / `tc-` transition and animation is off except the informative ones (spinner,
+  hold, busy stripe, low / overtime clock, key capture, the P2P wait line).
+
+**Display font.** `public/fonts/tg-display-v1.woff2` (5,616 B, 88 glyphs: A-Z, Á É Í Ó Ú Ü Ñ, 0-9,
+v and the UI's punctuation; kern and tabular figures kept) is Barlow Condensed Bold 1.408 (SIL OFL
+1.1, `public/fonts/OFL.txt`, THIRD_PARTY_NOTICES.md) from google/fonts
+`ofl/barlowcondensed/BarlowCondensed-Bold.ttf` (SHA-256 `e476562e...5b65`), cut with fontTools 4.60.1
+(+ brotli):
+
+```
+pyftsubset BarlowCondensed-Bold.ttf --flavor=woff2 --output-file=tg-display-v1.woff2   --unicodes="U+0020-0023,U+0025-0029,U+002B-003B,U+003F,U+0041-005A,U+0076,U+00A0-00A1,U+00B7,U+00BF,U+00C1,U+00C9,U+00CD,U+00D1,U+00D3,U+00D7,U+00DA,U+00DC,U+2013-2014,U+2019,U+2026,U+2039-203A,U+2212"   --layout-features=kern,tnum --no-hinting --desubroutinize   --name-IDs=0,1,2,3,4,5,6,13,14 --name-languages=0x0409 --drop-tables+=DSIG,gasp
+```
+
+Same origin (COEP `require-corp` has nothing to say), preloaded by `index.html`, `font-display:
+swap`, one `unicode-range` with those code points; a new cut is a new versioned name (`-v2`). The
+face's line metrics are overridden (ascent 90 %, descent 20 %) so capitals sit centred in the line
+box. Until it arrives, or if it never does, the stack falls to Windows' Bahnschrift (Bold Condensed
+is 1.1x as wide), then to Android's Roboto Condensed / Roboto through local() faces scaled to the
+same widths (`size-adjust` 83.5 % / 73.2 %, measured on 21 UI labels), then Apple's DIN Condensed /
+Avenir Next Condensed and the condensed system faces.
+`#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it;
+`data-fit` (src/ui/fit.ts) shrinks a label that would not fit, down to its minimum, then takes its
+short form (ENTRENAR, RANKING), and `node scripts/ui-fit.mjs` checks every menu screen at 780x360,
+844x390, 960x540 (TV), 1366x768 (a PC, and a TV) and 390x844 with it, in English and Spanish and
+with the hints of every input (CI job `ui-fit`, information only for now); `--face Verdana`
+(Windows, macOS) or `--face 'DejaVu Sans'` (Linux, CI's second step) runs it with a fallback wider
+than Arial, which must fit too.
+`scripts/copy-notices.mjs` refuses to build with a font and no license next to it.
 
 ## Legal
 
