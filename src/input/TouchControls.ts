@@ -732,6 +732,8 @@ export class TouchControls {
     board.top = panel !== null ? panel.top : 0;
     board.right = panel !== null ? panel.right : 0;
     board.bottom = panel !== null ? panel.bottom : 0;
+    // Opened, but the Game draws the board on its next frame: measured again until it is there.
+    if (this.boardOpen && (panel === null || panel.width === 0)) this.dirty = true;
     const card = this.cardIndex >= 0 ? this.card.getBoundingClientRect() : null;
     this.cardLeft = card !== null ? card.left : 0;
     this.cardTop = card !== null ? card.top : 0;
