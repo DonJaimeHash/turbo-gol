@@ -507,6 +507,15 @@ export default {
   'touch.drift': 'DERRAPE',
   'touch.cam': 'CAM',
   'touch.rotate': 'Gira el teléfono para jugar',
+  'touch.rotateLive': 'El partido sigue: gira el teléfono',
+  'touch.cardStep': '{n} / {total}',
+  'touch.cardOk': 'ENTENDIDO',
+  'touch.card1Title': 'El stick aparece donde apoyas el pulgar',
+  'touch.card1Text': 'Mitad izquierda: empuja para avanzar, tira hacia atrás para frenar.',
+  'touch.card2Title': 'Desliza desde BOOST para mantenerlo',
+  'touch.card2Text': 'SALTO está al lado; DERRAPE gira el auto en el aire.',
+  'touch.card3Title': 'CAM sigue la pelota',
+  'touch.card3Text': 'La pausa está arriba a la derecha. Toca el marcador para ver los equipos.',
   'touch.installHint': 'Juega en pantalla completa: toca Compartir › Agregar a inicio',
 
   // Controls card of the first matches and free play (src/render/controlsCard.ts)

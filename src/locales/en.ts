@@ -746,6 +746,22 @@ export default {
   'touch.cam': 'CAM',
   // Full-screen notice on a phone held upright: the game is played in landscape
   'touch.rotate': 'Turn your phone sideways to play',
+  // The same notice over an online match, which goes on under it (translucent, the score above it)
+  'touch.rotateLive': 'The match goes on: turn your phone',
+  // Three cards before the first touch match, one at a time. Short: a card is about 420 x 170 on a
+  // phone held sideways. {n} of {total} (1 / 3)
+  'touch.cardStep': '{n} / {total}',
+  // Tapping the card shows the next one, uppercase
+  'touch.cardOk': 'GOT IT',
+  // Card 1: the stick floats; it starts where the left thumb lands on the left half
+  'touch.card1Title': 'The stick appears where your thumb lands',
+  'touch.card1Text': 'Left half of the screen: push to drive, pull back to brake.',
+  // Card 2: one thumb slides from BOOST onto JUMP or DRIFT and BOOST stays on
+  'touch.card2Title': 'Slide from BOOST to keep it on',
+  'touch.card2Text': 'JUMP is beside it; DRIFT turns the car in the air.',
+  // Card 3: CAM toggles the ball camera; the pause button is top right; the score opens the teams
+  'touch.card3Title': 'CAM follows the ball',
+  'touch.card3Text': 'Pause is top right. Tap the score to see the teams.',
   // One-time menu toast on an iPhone, whose browser cannot go full screen: Safari's Share button,
   // then its "Add to Home Screen" item (use Safari's own names in your language); › joins the two steps
   'touch.installHint': 'Play full screen: tap Share › Add to Home Screen',

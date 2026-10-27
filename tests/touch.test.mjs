@@ -1197,6 +1197,42 @@ test('router: a tap on the scorebug or the open board counts once; a slide off, 
   router.up(7, 300, 200);
 });
 
+// ---- TouchControls' per-event paths allocate nothing (src/input/TouchControls.ts) --------------
+
+const { readFileSync } = await import('node:fs');
+
+/** The body of method `name` of TouchControls' source (balanced braces from its signature). */
+function methodBody(src, name) {
+  const at = src.search(new RegExp(`\\n  (?:private |readonly )?${name}\\(`));
+  assert.ok(at >= 0, name);
+  const open = src.indexOf('{', at);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(open + 1, i);
+  }
+  return '';
+}
+
+test('TouchControls.paint() and setBoost() allocate nothing: no objects, arrays, closures or strings built per call', () => {
+  const src = readFileSync(new URL('../src/input/TouchControls.ts', import.meta.url), 'utf8');
+  for (const name of ['paint', 'setBoost']) {
+    const body = methodBody(src, name).replace(/\/\/.*$/gm, '');
+    for (const [what, re] of [
+      ['new', /\bnew\s/],
+      ['a closure', /=>|\bfunction\b/],
+      ['an array or object literal', /[=(,]\s*[[{]/],
+      ['a spread', /\.\.\./],
+      ['an allocating call', /\.(?:map|filter|slice|concat|bind|split|join|toFixed)\(|\bString\(|\bArray\.|\bObject\./],
+    ]) assert.doesNotMatch(body, re, `${name}: ${what}`);
+    // The stick's transforms are the one string built, and only when the stick moved (paint writes
+    // what changed); setBoost writes precomputed strings only.
+    const templates = body.split('\n').filter((l) => l.includes('`'));
+    if (name === 'setBoost') assert.deepEqual(templates, []);
+    else for (const l of templates) assert.match(l, /\.style\.transform = /, l.trim());
+  }
+});
+
 // ---- Touch mode decisions (src/input/touchMode.ts) ---------------------------------------
 
 const { keyLeavesTouchMode, pointerTouchMode, MENU_KEYS } = await import('../src/input/touchMode.ts');
