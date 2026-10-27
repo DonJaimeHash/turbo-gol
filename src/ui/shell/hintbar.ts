@@ -24,8 +24,11 @@ export class HintBar {
   constructor(about: () => void) {
     this.hints = h('div.mn-hints');
     this.mid = h('div.mn-hint-mid');
-    // data-fit (fit.ts): crowded (a TV's pills with the wide fallback text), the bar's text comes
-    // down to 14 px (16 on a TV) as one, then the source link takes its short form; never gone.
+    // data-fit (fit.ts): crowded (a TV's pills, a controller's four hints, Spanish, a wide fallback
+    // face), the bar's text comes down to 14 px (16 on a TV, at its reference view) as one, then the
+    // source link takes its short form; then what gives way (data-fit-give): the controller's ≡
+    // Settings (1), the TV's pills' words (2: pills.ts), the hint to cancel the search (3). The
+    // source link never goes (a TV's About gives way to a running search: shell.css).
     this.el = h(
       'footer.mn-hint',
       { 'data-fit': '14' },
@@ -45,12 +48,13 @@ export class HintBar {
     );
   }
 
-  /** The hints; nothing is written when they did not change. */
-  render(items: readonly HintItem[]): void {
+  /** The hints; nothing is written when they did not change (false then: the bar needs no new fit). */
+  render(items: readonly HintItem[]): boolean {
     const key = items.map((i) => i.glyphs.join('+') + ':' + i.verb).join('|');
-    if (key === this.key) return;
+    if (key === this.key) return false;
     this.key = key;
     this.hints.textContent = '';
-    for (const it of items) this.hints.appendChild(h('span.mn-hint-item', null, ...it.glyphs.map(glyph), h('span.mn-hint-verb', null, t(it.verb))));
+    for (const it of items) this.hints.appendChild(h('span.mn-hint-item', { 'data-fit-give': it.give !== undefined ? String(it.give) : undefined }, ...it.glyphs.map(glyph), h('span.mn-hint-verb', null, t(it.verb))));
+    return true;
   }
 }

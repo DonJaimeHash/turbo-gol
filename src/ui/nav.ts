@@ -28,6 +28,9 @@
  *   (Menu.back) and ↑ ↓ leave it.
  * - Edges: an arrow with nowhere to go nudges the focused control 2 px that way (`mn-bounce-*`,
  *   menu.css; none in Super low or with reduced motion).
+ * - Boxes (layoutBox): every pick reads a target where it sits in the layout, without its own lift
+ *   (a focused or hovered tile, --focus-lift) or nudge, so a lifted tile has no neighbour "below"
+ *   it on its own row.
  * No DOM at module level: node tests import it.
  */
 
@@ -85,8 +88,45 @@ function visible(el: HTMLElement): boolean {
   return r.width > 0 && r.height > 0;
 }
 
+/** A computed length in px ('2px', '0'); anything else (a percentage, 'none') counts 0. */
+function px(v: string | undefined): number {
+  if (v === undefined || !(v === '0' || v.endsWith('px'))) return 0;
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * `b` without the translation an element's own `transform` and `translate` put on it (their
+ * computed values: 'matrix(...)', 'matrix3d(...)', '0px -2px', 'none'): a focused or hovered
+ * tile's lift (--focus-lift, 3 px up) or an edge's nudge (mn-bounce) is no move, so a neighbour
+ * on the same row never counts as below the lifted tile. Pure.
+ */
+export function layoutBox(b: NavBox, transform: string, translate: string): NavBox {
+  let dx = 0;
+  let dy = 0;
+  const m = /^matrix(3d)?\(([^)]*)\)$/.exec(transform.trim());
+  if (m !== null) {
+    const v = m[2].split(',').map((s) => Number(s));
+    const x = m[1] !== undefined ? v[12] : v[4];
+    const y = m[1] !== undefined ? v[13] : v[5];
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      dx += x;
+      dy += y;
+    }
+  }
+  if (translate !== '' && translate !== 'none') {
+    const [x, y] = translate.trim().split(/\s+/);
+    dx += px(x);
+    dy += px(y);
+  }
+  if (dx === 0 && dy === 0) return b;
+  return { left: b.left - dx, top: b.top - dy, right: b.right - dx, bottom: b.bottom - dy, width: b.width, height: b.height };
+}
+
+/** Where `el` sits in the layout (layoutBox: its own lift or nudge taken off). */
 function box(el: Element): NavBox {
-  return el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  return layoutBox(el.getBoundingClientRect(), cs.transform, cs.translate);
 }
 
 /**

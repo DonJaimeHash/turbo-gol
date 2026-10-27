@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { readFile } from 'node:fs/promises';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -28,6 +29,16 @@ const flat = (items) => items.map((i) => `${i.glyphs.join('+')} ${i.verb}`);
 test('a controller: A select, B back, LB RB sections, Start settings (+ Y cancel search)', () => {
   assert.deepEqual(flat(H.hintItems('pad', { searching: false })), ['pad-a nav.select', 'pad-b nav.back', 'pad-lb+pad-rb nav.sections', 'pad-start nav.settings']);
   assert.equal(flat(H.hintItems('pad', { searching: true })).at(-1), 'pad-y nav.cancelSearch');
+});
+
+test("a crowded hint bar (a TV with its pills) lets hints go: the controller's Settings first (the gear says it), cancel last (the pill's ✕)", () => {
+  // fit.ts data-fit-give levels (the pills' words are 2, pills.ts).
+  const gives = (input, ctx) => H.hintItems(input, ctx).filter((i) => i.give !== undefined).map((i) => i.give + ' ' + i.glyphs.join('+') + ' ' + i.verb);
+  assert.deepEqual(gives('pad', { searching: false }), ['1 pad-start nav.settings']);
+  assert.deepEqual(gives('pad', { searching: true }), ['1 pad-start nav.settings', '3 pad-y nav.cancelSearch']);
+  assert.deepEqual(gives('keyboard', { searching: true }), ['3 key-x nav.cancelSearch']);
+  for (const stacked of [false, true]) assert.deepEqual(gives('remote', { searching: true, stacked }), [], 'a remote keeps every hint (it cancels on the pill)');
+  for (const input of ['pad', 'keyboard', 'remote']) for (const it of H.hintItems(input, { searching: false })) assert.ok(it.give !== 2, "level 2 is the pills' words");
 });
 
 test('a keyboard: ENTER select, ESC back, Q E sections (+ X cancel search)', () => {
@@ -74,4 +85,23 @@ test('every verb is a text in English and Spanish, and none names a key or a cli
       }
     }
   }
+});
+
+test('fit.ts giveLevels: the levels the parts give way at, lowest first, once each (none and junk left out)', async () => {
+  const { giveLevels } = await import('../src/ui/fit.ts');
+  assert.deepEqual(giveLevels([3, 1, 2, 2, 1]), [1, 2, 3]);
+  assert.deepEqual(giveLevels([0, Number.NaN, -1, 1.5]), []);
+  assert.deepEqual(giveLevels([]), []);
+});
+
+test("the shell declares what gives way in a crowded bar: the strip's sides (in its section bar), the pills' words, the hints' levels", async () => {
+  const src = async (f) => readFile(new URL('../src/ui/' + f, import.meta.url), 'utf8');
+  const top = await src('shell/topbar.ts');
+  assert.match(top, /'span\.mn-sec-side',\s*\{[^}]*'data-fit-give': '1'/);
+  assert.match(top, /'data-fit': '14', 'data-fit-scope': '\.mn-secbar'/);
+  const pills = await src('shell/pills.ts');
+  assert.match(pills, /const WORDS = \{ 'data-fit-give': '2' \}/);
+  assert.ok((pills.match(/, WORDS[,)]/g) ?? []).length >= 8, 'every word of the region, search and update pills');
+  assert.doesNotMatch(pills, /icon\([^)]*\), WORDS|mn-spinner', WORDS|mn-dot\.on', WORDS/, 'icons, the spinner and the dot stay');
+  assert.match(await src('shell/hintbar.ts'), /'data-fit-give': it\.give !== undefined/);
 });

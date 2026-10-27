@@ -49,6 +49,28 @@ test('a row left from its whole box: ▼ from any card of the playlists reaches 
   assert.equal(NAV.pickTarget(NAV.unionBox(cards), 'down', others), 0);
 });
 
+test('layoutBox: a lifted tile is measured where it sits, so ▼ on a bottom row finds nothing beside it (the footer next)', () => {
+  // The Play hub at 1366 x 768 (measured in Edge): CUSTOM LOBBIES focused (lifted 3 px by
+  // --focus-lift), FRIENDLY beside it on the same row.
+  const friendly = R(691, 288.4, 586, 130);
+  const liftedRect = R(93, 285.4, 586, 130);
+  const lifted = NAV.layoutBox(liftedRect, 'matrix(1, 0, 0, 1, 0, -3)', 'none');
+  assert.deepEqual(lifted, R(93, 288.4, 586, 130));
+  // The lifted rectangle alone makes the neighbour 3 px lower look "below" (the bug)...
+  assert.equal(NAV.pickTarget(liftedRect, 'down', [friendly]), 0);
+  // ...where it sits, nothing is below it on that row.
+  assert.equal(NAV.pickTarget(lifted, 'down', [friendly]), -1);
+  assert.equal(NAV.pickTarget(lifted, 'right', [friendly]), 0, '▶ still reaches it');
+  // An edge's nudge (the `translate` property) and a 3d matrix come off too; nothing else changes.
+  assert.deepEqual(NAV.layoutBox(R(10, 22), 'none', '0px 2px'), R(10, 20));
+  assert.deepEqual(NAV.layoutBox(R(12, 20), 'none', '2px'), R(10, 20));
+  assert.deepEqual(NAV.layoutBox(R(10, 17), 'matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -3, 0, 1)', 'none'), R(10, 20));
+  const plain = R(10, 20);
+  assert.equal(NAV.layoutBox(plain, 'none', 'none'), plain);
+  assert.equal(NAV.layoutBox(plain, 'matrix(0.97, 0, 0, 0.97, 0, 0)', 'none'), plain, 'a press (scale) moves no centre');
+  assert.equal(NAV.layoutBox(plain, 'none', '50%'), plain, 'a percentage is not read');
+});
+
 test('NavPath: the opposite arrow retraces the moves (a stack), anything else does not; a path off the focus is dropped', () => {
   const p = new NAV.NavPath();
   p.push('1v1', 'region', 'down');

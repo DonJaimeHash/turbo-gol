@@ -1,22 +1,43 @@
 /**
  * `data-fit="<min px>"` (plan §2.4): a box whose text could outgrow it (the section bar, a rail
- * label, a crumb) declares the smallest size it may take (a stylesheet may raise it for a layout
- * with the `--fit-min` custom property: 16 px on a TV); fitAll shrinks its font 1 px at a time,
- * only while its content overflows it, never below that minimum, and then swaps in the short forms
- * it has (`data-fit-alt`). Its children size in em (or inherit), so a whole tab strip shrinks as
- * one. The insurance for the fallback fonts (Roboto on a phone or a TV without the display font, a
- * Linux face wider than Arial, #widetext) and for a larger interface size. The Menu runs it on the
- * frame after every mount, resize and change of the bars' content, and once the fonts are in. A box
- * that is not laid out (the section strip under a stacked screen's crumbs) keeps the size and the
- * texts it was fitted to, so it comes back fitted, not at full size until the next frame.
+ * label, a crumb, the hint bar) declares the smallest size it may take (a stylesheet may raise it
+ * for a layout with the `--fit-min` custom property: 16 on a TV); fitAll shrinks its font 1 px at a
+ * time, only while its content overflows it, never below that minimum, and then swaps in the short
+ * forms it has (`data-fit-alt`). Still too wide, the parts that may give way go, level by level
+ * (`data-fit-give="<n>"`, 1 first, each level with the ones before it), each time fitted again from
+ * the full size: inside the box, or inside the ancestor its `data-fit-scope` names (the section
+ * strip's ‹ › / L R / Q E beside it). The TV's hint bar: the controller's Settings hint (the gear
+ * says it), then the pills' words (their icons stay, the search its clock and ✕), then the hint to
+ * cancel the search (the pill's ✕ beside it). Its children size in em (or inherit), so a whole tab
+ * strip shrinks as one. The insurance for the fallback fonts (Roboto on a phone or a TV without the
+ * display font, a Linux face wider than Arial, #widetext), the longer Spanish texts, and a larger
+ * interface size.
+ *
+ * The minimum is in px at the layout class's reference view (plan §1.2.3): on a TV that is its
+ * width / 960 (--ui-scale, 1 to 2), so a 1920 wide TV keeps 32 CSS px where a 960 one keeps 16; a
+ * phone's and a PC's px are the screen's own.
+ *
+ * The Menu runs it right after every mount and every change of the hints, the input, the chip or
+ * a pill (before that frame is drawn: a pad's press mounts inside the game loop's frame), on the
+ * frame after a resize, and once the fonts are in. A box that is not laid out (the section strip
+ * under a stacked screen's crumbs) keeps the size, the texts and the parts gone it was fitted to,
+ * so it comes back fitted.
  *
  * In development (or a build with VITE_UI_FIT=1) `window.__uiFit()` reports, after running the fit
  * the last change queued for the next frame (Menu), what a layout check
  * needs (scripts/ui-fit.mjs, plan §2.6): the shell's bars overflowing, `data-fit` boxes still
  * overflowing at their minimum, a horizontal scroll, the stage scrolling, focus rings a clipping
- * ancestor would cut, shell text under the class's minimum (plan §1.2.3: 14 px on a phone, 16 on
- * a TV) and the menus' DOM size.
+ * ancestor or the screen's edge would cut, shell text under the class's minimum (plan §1.2.3: 14 px
+ * on a phone, 16 on a TV at its reference view) and the menus' DOM size.
  */
+
+/** CSS px per px of the layout class's reference view: --ui-scale on a TV (its width / 960), 1 elsewhere. */
+function referencePx(): number {
+  const html = document.documentElement;
+  if (html.dataset.layout !== 'tv') return 1;
+  const s = Number.parseFloat(html.style.getPropertyValue('--ui-scale'));
+  return Number.isFinite(s) && s > 0 ? s : 1;
+}
 
 /** The left and right of `el`'s content box (inside its border and padding: a bar's overscan, the rail's gesture margin). */
 function contentX(el: HTMLElement): [number, number] {
@@ -51,10 +72,21 @@ function shrink(el: HTMLElement, min: number): boolean {
   return !overflows(el);
 }
 
+/** The level a part gives way at (`data-fit-give`), 0 for none. */
+const giveLevel = (g: HTMLElement): number => Number(g.dataset.fitGive) || 0;
+
+/** The levels that occur among `gives`, lowest first. Pure. */
+export function giveLevels(levels: readonly number[]): number[] {
+  return [...new Set(levels.filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+}
+
 /**
- * One data-fit box: its full texts back, shrunk while it overflows; still overflowing at its
- * minimum, the texts that have a short form (`data-fit-alt`, on the box or inside it: ENTRENAR for
- * ENTRENAMIENTO) take it and the box is fitted again. A box that is not laid out is left as it is.
+ * One data-fit box: its full texts back and every part it hid shown, shrunk while it overflows;
+ * still overflowing at its minimum, the texts that have a short form (`data-fit-alt`, on the box or
+ * inside it: ENTRENAR for ENTRENAMIENTO) take it and the box is fitted again; still overflowing,
+ * the parts that give way (`data-fit-give`) go, a level at a time, each time fitted again. A box
+ * that is not laid out is left as it is. A part the fit hid is `display: none` inline and marked
+ * `data-fit-gone`; a part rebuilt since (a pill's new text) shows until the next fit.
  */
 function fitOne(el: HTMLElement): void {
   // Not laid out (hidden in this layout, or under a stacked screen): nothing to measure, and the
@@ -62,14 +94,31 @@ function fitOne(el: HTMLElement): void {
   if (el.offsetParent === null || el.clientWidth === 0) return;
   const alts = [el, ...el.querySelectorAll<HTMLElement>('[data-fit-alt]')].filter((e) => e.dataset.fitAlt !== undefined);
   for (const a of alts) if (a.dataset.fitFull !== undefined) a.textContent = a.dataset.fitFull;
-  el.style.fontSize = '';
-  const min = Number(getComputedStyle(el).getPropertyValue('--fit-min')) || Number(el.dataset.fit) || 12;
-  if (shrink(el, min) || alts.length === 0) return;
-  for (const a of alts) {
-    a.dataset.fitFull = a.textContent ?? '';
-    a.textContent = a.dataset.fitAlt ?? '';
+  const scope = (el.dataset.fitScope !== undefined ? el.closest<HTMLElement>(el.dataset.fitScope) : null) ?? el;
+  const gives = Array.from(scope.querySelectorAll<HTMLElement>('[data-fit-give]'));
+  for (const g of gives) {
+    if (g.dataset.fitGone === undefined) continue;
+    delete g.dataset.fitGone;
+    g.style.removeProperty('display');
   }
-  shrink(el, min);
+  el.style.fontSize = '';
+  const min = (Number(getComputedStyle(el).getPropertyValue('--fit-min')) || Number(el.dataset.fit) || 12) * referencePx();
+  if (shrink(el, min)) return;
+  if (alts.length > 0) {
+    for (const a of alts) {
+      a.dataset.fitFull = a.textContent ?? '';
+      a.textContent = a.dataset.fitAlt ?? '';
+    }
+    if (shrink(el, min)) return;
+  }
+  for (const n of giveLevels(gives.map(giveLevel))) {
+    for (const g of gives) {
+      if (giveLevel(g) > n || g.dataset.fitGone !== undefined) continue;
+      g.dataset.fitGone = '';
+      g.style.display = 'none';
+    }
+    if (shrink(el, min)) return;
+  }
 }
 
 export function fitAll(root: ParentNode): void {
@@ -90,12 +139,13 @@ export interface UiFitReport {
   hScroll: boolean;
   /** The stage scrolls (allowed for long lists; a screen's main action may not need it). */
   stageScroll: boolean;
-  /** Focusable controls whose ring or heel a clipping (overflow: hidden) ancestor would cut. */
+  /** Focusable controls whose ring or heel a clipping ancestor (the menus' root too) or the screen's edge would cut. */
   clippedFocus: string[];
   /**
    * Text in the shell's bars under the class's minimum (14 px on a phone, upright or sideways; 16
-   * on a TV), "(data-fit)" when a data-fit box shrank it (allowed down to its own minimum for the
-   * fallback fonts: the rail's 12).
+   * on a TV at its reference view: times --ui-scale), "(data-fit)" when the data-fit box of a
+   * section list's label or of the rail's foot shrank it (allowed down to its own minimum for the
+   * fallback fonts: the rail's 12, which the upright tab bar's labels share).
    */
   smallText: string[];
   nodes: number;
@@ -132,24 +182,47 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
   }
   const fitOverflow: string[] = [];
   for (const el of root.querySelectorAll<HTMLElement>('[data-fit]')) if (shown(el) && overflows(el)) fitOverflow.push(describe(el));
+  // The ring as focus.css draws it, from the tokens (a TV's is thicker): --focus-w + --focus-gap
+  // around the box, the heel --focus-heel-y + --focus-heel under it (a row has its bar inside
+  // instead), a tile lifted by --focus-lift; an edge control (shell.css: --ring-offset) draws it
+  // inside its own box. Checked against every clipping ancestor up to and including the menus' root (the screen),
+  // and against the screen; inside a scroller (the stage) only sideways above it: it scrolls a
+  // control into view with room for the ring (scroll-padding).
   const clippedFocus: string[] = [];
-  const ring = 6; // --focus-w + --focus-gap
-  const heel = 15; // --focus-heel-y + --focus-heel
+  const hcs = getComputedStyle(html);
+  const token = (name: string, d: number): number => {
+    const v = Number.parseFloat(hcs.getPropertyValue(name));
+    return Number.isFinite(v) ? v : d;
+  };
+  const ring = token('--focus-w', 3) + token('--focus-gap', 3);
+  const heel = token('--focus-heel-y', 11) + token('--focus-heel', 4);
+  const lift = Math.abs(token('--focus-lift', -3));
   for (const el of root.querySelectorAll<HTMLElement>('[data-nav]')) {
     if (!shown(el) || el.closest('[hidden], [inert]') !== null) continue;
     const r = el.getBoundingClientRect();
-    for (let a = el.parentElement; a !== null && a !== root; a = a.parentElement) {
+    const inside = getComputedStyle(el).getPropertyValue('--ring-offset').trim() !== '';
+    const row = el.matches('.mn-sl-item, .mn-lobby-row, .mn-pack, .mn-cycle');
+    const up = el.matches('.mn-tile') ? lift : 0;
+    const o = inside ? 0 : ring;
+    const box = { left: r.left - o, right: r.right + o, top: r.top - o - up, bottom: r.bottom + (inside ? 0 : row ? ring : Math.max(ring, heel)) - up };
+    let cut: string | null = null;
+    let scrolled = false;
+    for (let a = el.parentElement; a !== null && cut === null; a = a.parentElement) {
       const cs = getComputedStyle(a);
-      if (cs.overflowX !== 'hidden' && cs.overflowY !== 'hidden' && cs.overflowX !== 'clip' && cs.overflowY !== 'clip') continue;
-      const b = a.getBoundingClientRect();
-      if (r.left - ring < b.left - 0.5 || r.right + ring > b.right + 0.5 || r.top - ring < b.top - 0.5 || r.bottom + heel > b.bottom + 0.5) {
-        clippedFocus.push(describe(el) + ' in ' + describe(a));
-        break;
+      const clipX = cs.overflowX !== 'visible';
+      const clipY = cs.overflowY === 'hidden' || cs.overflowY === 'clip';
+      if (clipX || clipY) {
+        const b = a.getBoundingClientRect();
+        if ((clipX && (box.left < b.left - 0.5 || box.right > b.right + 0.5)) || (!scrolled && clipY && (box.top < b.top - 0.5 || box.bottom > b.bottom + 0.5))) cut = describe(a);
+        if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') scrolled = true;
       }
+      if (a === root) break;
     }
+    if (cut === null && (box.left < -0.5 || box.right > W + 0.5 || (!scrolled && (box.top < -0.5 || box.bottom > H + 0.5)))) cut = 'the screen';
+    if (cut !== null) clippedFocus.push(describe(el) + ' in ' + cut);
   }
   const layout = html.dataset.layout ?? '';
-  const floor = layout === 'tv' ? 16 : layout === 'phone' || layout === 'portrait' ? 14 : 0;
+  const floor = layout === 'tv' ? 16 * referencePx() : layout === 'phone' || layout === 'portrait' ? 14 : 0;
   const smallText: string[] = [];
   if (floor > 0) {
     for (const bar of root.querySelectorAll<HTMLElement>('.mn-top, .mn-rail, .mn-hint, .mn-tabbar')) {
@@ -158,8 +231,11 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
         if (!shown(el) || !Array.from(el.childNodes).some((n) => n.nodeType === 3 && (n.textContent ?? '').trim() !== '')) continue;
         const px = parseFloat(getComputedStyle(el).fontSize);
         if (px >= floor - 0.05) continue;
+        // Allowed only to the section lists' labels and the rail's foot (plan §1.2.3: the rail's 12;
+        // the upright tab bar shares its labels), shrunk by their own data-fit for a fallback face.
         const fit = el.closest<HTMLElement>('[data-fit]');
-        smallText.push(`${describe(el)} ${px.toFixed(1)}px${fit !== null && fit.style.fontSize !== '' ? ' (data-fit)' : ''}`);
+        const allowed = fit !== null && fit.style.fontSize !== '' && fit.closest('.mn-rail, .mn-tabbar') !== null;
+        smallText.push(`${describe(el)} ${px.toFixed(1)}px${allowed ? ' (data-fit)' : ''}`);
       }
     }
   }

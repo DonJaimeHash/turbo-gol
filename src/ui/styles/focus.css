@@ -12,8 +12,10 @@
    survives html.tg-superlow (A11). ::before and ::after of a focusable belong to the ring:
    decoration goes on a child (a phone's bar gives a few controls a transparent ::before, a bigger
    area to touch that paints nothing: shell.css). A touch screen shows none of it (html.tg-touch:
-   the last input was a finger). Plain selector lists, no :is(): a TV WebView that missed one selector would drop the
-   whole rule. */
+   the last input was a finger). A control against the screen's edge, where the menus' root clips,
+   draws the ring inside its own box and no heel: shell.css sets --ring-offset, --ring-shadow and
+   --ring-heel on it (the layout check reads --ring-offset: src/ui/fit.ts uiFitReport). Plain
+   selector lists, no :is(): a TV WebView that missed one selector would drop the whole rule. */
 
 .mn [data-nav]:focus {
   outline: none;
@@ -30,8 +32,8 @@ html:not(.tg-touch) .trn-summary-card .trn-btn-primary {
   position: relative;
   z-index: 1;
   outline: var(--focus-w) solid var(--focus);
-  outline-offset: var(--focus-gap);
-  box-shadow: 0 0 0 var(--focus-gap) var(--ink) !important;
+  outline-offset: var(--ring-offset, var(--focus-gap));
+  box-shadow: var(--ring-shadow, 0 0 0 var(--focus-gap) var(--ink)) !important;
 }
 
 /* The settings tab strip is one focus stop that scrolls sideways (its own overflow would clip a
@@ -47,7 +49,7 @@ html:not(.tg-touch) .hud-settings-tabs.hud-focus .hud-settings-tab.hud-active {
 html:not(.tg-touch) .mn .mn-focus::after,
 html:not(.tg-touch) .mn [data-nav]:focus-visible::after,
 html:not(.tg-touch) .trn-summary-card .trn-btn-primary::after {
-  content: '';
+  content: var(--ring-heel, '');
   position: absolute;
   left: 30%;
   right: 30%;

@@ -45,14 +45,15 @@ export class TopBar {
     const side = (d: -1 | 1): HTMLElement =>
       h(
         'span.mn-sec-side',
-        { 'aria-hidden': 'true' },
+        { 'aria-hidden': 'true', 'data-fit-give': '1' },
         h('button.mn-sec-arrow', { type: 'button', tabindex: '-1', title: t(d < 0 ? 'nav.prevSection' : 'nav.nextSection'), onclick: () => hd.step(d) }, icon(d < 0 ? 'back' : 'next')),
         h('span.mn-sec-pad', null, glyph(d < 0 ? 'pad-lb' : 'pad-rb')),
         h('span.mn-sec-key', null, glyph(d < 0 ? 'key-q' : 'key-e')),
       );
     // data-fit (fit.ts): the strip shrinks as one, to 14 px (16 on a TV: --fit-min in shell.css), then
-    // takes the short names (ENTRENAR, RANKING).
-    const list = h('div.mn-secs', { role: 'tablist', 'aria-label': t('nav.sections'), 'data-nav-row': true, 'data-fit': '14' });
+    // takes the short names (ENTRENAR, RANKING), then the ways to step it beside it give way (‹ ›,
+    // L R, Q E, in its scope, the section bar: the hint bar and the tabs themselves say it too).
+    const list = h('div.mn-secs', { role: 'tablist', 'aria-label': t('nav.sections'), 'data-nav-row': true, 'data-fit': '14', 'data-fit-scope': '.mn-secbar' });
     for (const s of SECTIONS) {
       const label = h('span.mn-sec-label', { 'data-fit-alt': s.short !== s.label ? t(s.short) : undefined }, t(s.label));
       const b = h('button.mn-sec', { type: 'button', role: 'tab', 'aria-selected': 'false', 'data-nav': true, 'data-key': 'sec-' + s.id, onclick: () => hd.sectionClick(s.id) }, label, h('span.mn-sec-bar', { 'aria-hidden': 'true' }));

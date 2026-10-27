@@ -20,7 +20,8 @@
  * - pills (shell/pills.ts): the region with the connection, the running search (cancel from any
  *   section, and over Settings: a copy floats above them, `float`), "UPDATE TO PLAY";
  * - sheets (components/sheet.ts, `modal()`), toasts (components/toast.ts), the blocking "There's a
- *   new version" sheet (z 65, over Settings too) when the server refused this page.
+ *   new version" sheet when the server refused this page (it waits for Settings to close; z 65
+ *   would keep it above them should both ever be up).
  *
  * Back (backModel.ts menuBack): the sheet closes, else a field being edited stops editing, else the
  * screen's own back, else the stack pops, else another section goes to JUGAR, else JUGAR's root
@@ -88,7 +89,8 @@ import type { SheetSpec } from './components/sheet';
 import { Toasts } from './components/toast';
 import { icon } from './components/icons';
 import { fitAll, uiFitReport } from './fit';
-import { coverShare, menuCover, opaqueBackground, paintsBackground } from './cover';
+import { atOverlays, coverShare, menuCover, opaqueBackground, paintsBackground } from './cover';
+import type { OverlayBox } from './cover';
 import type { SceneCover } from '../render/quality';
 
 export type SearchKind = 'casual' | 'ranked';
@@ -430,7 +432,7 @@ export class Menu {
       shellKey = key;
       this.renderHints();
       this.placePills();
-      this.queueFit();
+      this.fitNow(); // before the frame that shows the new hints (a pad's first press)
       this.measureCover(); // the bars move (the pills to a TV's hint bar, the rail, the tabs)
     }).observe(html, { attributes: true, attributeFilter: ['data-input', 'data-layout', 'class'] });
     void document.fonts?.ready.then(() => this.queueFit());
@@ -676,16 +678,18 @@ export class Menu {
     this.renderChrome();
     top.show?.();
     this.refreshChrome();
-    this.queueFit();
+    // Now, before this frame is drawn: a press of a pad or a remote mounts inside the game loop's
+    // animation frame, and a fit on the next one would show a frame of an unfitted bar first.
+    this.fitNow();
     if (focus === 'auto') this.autoFocus();
-    this.measureCover(); // after the fit (both on the next frame, in this order)
+    this.measureCover(); // after the fit (on the next frame, after layout)
   }
 
   /**
    * Tell the Game what the menus leave of the 3D scene (MenuHost.setMenuCover; quality.ts
-   * sceneFps): nothing once hidden; all of it under a sheet (the update sheet over Settings too)
-   * or while the shell's own backdrop is opaque (super low); else part of it, with the share a
-   * touch screen's menus hide (measureCover). Only a change is sent.
+   * sceneFps): nothing once hidden; all of it under a sheet (the update sheet too) or while the
+   * shell's own backdrop is opaque (super low); else part of it, with the share a touch screen's
+   * menus hide (measureCover). Only a change is sent.
    */
   private reportCover(): void {
     const { level, covered } = menuCover({ visible: this.visibleNow, sheet: this.modalEl !== null, opaqueBackdrop: this.backdropOpaque, covered: this.covered });
@@ -725,7 +729,16 @@ export class Menu {
       this.coverQueued = false;
       if (!this.visibleNow || this.modalEl !== null || this.backdropOpaque) return;
       this.coverAt = performance.now();
-      const share = coverShare(this.root, window.innerWidth, window.innerHeight, (x, y) => document.elementFromPoint(x, y), (el) => paintsBackground(getComputedStyle(el)));
+      // A toast lets clicks through (pointer-events: none), so elementFromPoint never returns it:
+      // the boxes of those up (not on their way out) are hit-tested first.
+      const toasts: OverlayBox[] = [];
+      for (const el of this.toasts.el.children) {
+        if (el.classList.contains('mn-toast-out')) continue;
+        const r = el.getBoundingClientRect();
+        toasts.push({ el, left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+      }
+      const at = atOverlays(toasts, (x, y) => document.elementFromPoint(x, y));
+      const share = coverShare(this.root, window.innerWidth, window.innerHeight, at, (el) => paintsBackground(getComputedStyle(el)));
       if (Number.isNaN(share)) return; // another layer on top (Settings, the loading screen): the last share stands
       this.covered = Math.round(share * 100) / 100;
       this.reportCover();
@@ -753,11 +766,13 @@ export class Menu {
    * The hint bar for the last input and the screen shown (shell/hints.ts); also every tick, as a
    * screen's own tabs come and go (Profile's sign-in forms after signing in). Beside a screen's own
    * tabs Q / E step those: the Q / E keycaps by the section strip step aside (`mn-own-tabs`).
+   * True when the hints or the keycaps changed (the bars need a new fit).
    */
-  private renderHints(): void {
+  private renderHints(): boolean {
     const ownTabs = this.ownTabs() !== null;
-    this.root.classList.toggle('mn-own-tabs', ownTabs);
-    this.hintBar.render(hintItems(lastInput(), { searching: this.searching, stacked: this.stack.length > 1, ownTabs }));
+    const keycaps = this.root.classList.contains('mn-own-tabs') !== ownTabs;
+    if (keycaps) this.root.classList.toggle('mn-own-tabs', ownTabs);
+    return this.hintBar.render(hintItems(lastInput(), { searching: this.searching, stacked: this.stack.length > 1, ownTabs })) || keycaps;
   }
 
   /** The tabs of the screen on top (`.mn-tabs` of `.mn-tab`, the picked one `.mn-tab-on`), null without two of them. */
@@ -776,7 +791,12 @@ export class Menu {
     if (this.pills.parentElement !== want) want.appendChild(this.pills);
   }
 
-  /** data-fit (fit.ts) on the next frame, once per frame. */
+  /** data-fit (fit.ts) now: a mount, new hints, another input, a chip or pill that changed (the frame about to be drawn shows them fitted). */
+  private fitNow(): void {
+    if (this.visibleNow) fitAll(this.root);
+  }
+
+  /** data-fit (fit.ts) on the next frame, once per frame (a resize, the fonts once they are in). */
   private queueFit(): void {
     if (this.fitQueued) return;
     this.fitQueued = true;
@@ -1133,7 +1153,9 @@ export class Menu {
       }
     }
     if (this.regionPill.set(this.regionState())) changed = true;
-    if (changed) this.queueFit(); // the chip's name or the pill's text may have grown: the sections fit again
+    // The chip's name or the pill's text may have grown, and a rebuilt pill shows its words again
+    // (a crowded TV bar had them give way): the bars fit again before this frame.
+    if (changed) this.fitNow();
   }
 
   private regionState(): RegionPillState {
@@ -1226,7 +1248,10 @@ export class Menu {
     else this.open(v.kind === 'ranked' ? 'ranked' : 'casual', true);
   }
 
-  /** "There's a new version": RELOAD NOW focused; NOT NOW leaves the pill. Above Settings (z 65). */
+  /**
+   * "There's a new version": RELOAD NOW focused; NOT NOW leaves the pill. Never opened over Settings
+   * (renderSearch waits, openSettings' close opens it); `.mn-blocking` (z 65) would keep it above them.
+   */
   private openUpdateSheet(): void {
     this.reloadAsked = true;
     this.root.classList.add('mn-blocking');
@@ -1269,7 +1294,7 @@ export class Menu {
     }
     this.renderSearch(now);
     this.top()?.tick?.(now);
-    this.renderHints(); // a screen's own tabs may have come or gone (written on a change only)
+    if (this.renderHints()) this.fitNow(); // a screen's own tabs may have come or gone (written on a change only)
     if (this.coarse && now - this.coverAt >= COVER_EVERY_MS) this.measureCover();
   }
 
@@ -1280,7 +1305,7 @@ export class Menu {
       this.reloadNeeded = true;
       this.updateBtn.hidden = false;
       this.root.classList.add('mn-pills-more');
-      this.queueFit();
+      this.fitNow();
       if (!this.settingsUp()) this.openUpdateSheet();
     } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) this.toast(v.error, 'error');
     this.lastError = v.error;
@@ -1301,7 +1326,7 @@ export class Menu {
       this.root.classList.toggle('mn-searching', v.active);
       this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded);
       this.renderHints();
-      this.queueFit();
+      this.fitNow(); // the pill, the cancel hint, a TV's About that gives way
     }
   }
 

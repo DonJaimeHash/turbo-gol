@@ -85,7 +85,8 @@ export function homeScreen(menu: Menu): Screen {
         side,
         h('div.mn-side-title', null, t('home.guestTitle')),
         h('p.mn-side-text', null, t('home.guestText', { playlist1: playlistName('1v1'), playlist2: playlistName('2v2'), playlist3: playlistName('3v3') })),
-        secondary(t('home.signIn'), () => menu.open('profile')),
+        // A key: Back from PERFIL finds it again in the side panel render() rebuilt (FocusMemory).
+        secondary(t('home.signIn'), () => menu.open('profile'), { 'data-key': 'home-signin' }),
       );
     }
   };
@@ -197,9 +198,12 @@ function searchButton(menu: Menu, kind: 'casual' | 'ranked', start: () => void):
     else start();
     refresh();
   });
+  // On the screen's tick (4 Hz): the label is written only when it changes; toggle() with a force
+  // writes nothing when the class is already so.
   const refresh = (): void => {
     const v = menu.host.searchView();
-    el.textContent = v.active ? (v.kind === kind ? cancel : cancelOther) : idle;
+    const text = v.active ? (v.kind === kind ? cancel : cancelOther) : idle;
+    if (el.textContent !== text) el.textContent = text;
     // CANCEL is no lime primary (its hover / pressed lime would outrank the red and leave white text
     // on lime, menu.css); FIND MATCH is again.
     el.classList.toggle('mn-btn-cancel', v.active);
@@ -323,11 +327,16 @@ export function rankedScreen(menu: Menu): Screen {
     if (!signed) return;
     picker.refresh();
     go.refresh();
+    // The tick's writes: only what changed (the ban's clock moves once a second).
     const until = acc.me?.rankedBanUntil ?? 0;
     const left = until - Date.now();
-    ban.hidden = left <= 0;
-    if (left > 0) ban.textContent = t('play.rankedBan', { time: clock(left) });
-    go.el.disabled = left > 0 && !menu.host.searchView().active;
+    if (ban.hidden !== left <= 0) ban.hidden = left <= 0;
+    if (left > 0) {
+      const text = t('play.rankedBan', { time: clock(left) });
+      if (ban.textContent !== text) ban.textContent = text;
+    }
+    const disabled = left > 0 && !menu.host.searchView().active;
+    if (go.el.disabled !== disabled) go.el.disabled = disabled;
   };
   return {
     id: 'ranked',

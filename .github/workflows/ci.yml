@@ -30,14 +30,15 @@ jobs:
       - run: npm run build
 
   # The menus at the sizes that matter (780x360, 844x390, 960x540 as a TV, 1366x768 as a PC and as a
-  # TV, 390x844) with the wide fallback text: no bar of the shell overflows, nothing is cut
-  # (scripts/ui-fit.mjs, the Tablero plan §2.6; it pins each size's device: this runner has no
-  # pointing device). Information only until plan PR 6 makes it required.
+  # TV, 390x844) with the wide fallback text, in English and Spanish, with the hints of every input:
+  # no bar of the shell overflows, nothing is cut (scripts/ui-fit.mjs, the Tablero plan §2.6; it
+  # pins each size's device: this runner has no pointing device). Then Spanish in DejaVu Sans, a
+  # Linux face wider than Arial. Information only until plan PR 6 makes it required.
   ui-fit:
     name: UI fit (information)
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -49,6 +50,8 @@ jobs:
         env:
           VITE_UI_FIT: '1'
       - run: node scripts/ui-fit.mjs
+      - run: node scripts/ui-fit.mjs --face 'DejaVu Sans' --langs es
+        if: ${{ !cancelled() }}
 
   server:
     name: Server (typecheck, tests)

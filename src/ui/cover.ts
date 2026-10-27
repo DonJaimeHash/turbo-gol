@@ -9,7 +9,7 @@
  *
  * A grid of points over the viewport: a point is covered when the element on top of it, or one of
  * its ancestors inside the menus' root (the root's own backdrop excluded), paints a background of
- * at least half opacity: the bars, the tiles, the panels. Text, gaps and the stage itself let the
+ * at least half opacity: the bars, the tiles, the panels, a toast (hit-tested by its box: atOverlays). Text, gaps and the stage itself let the
  * scene through. A point whose top element lies outside the root (another layer: the settings
  * screen, the loading screen, the anti-bot widget) says nothing and is left out; with most of them
  * out the share is unknown (NaN) and the last one stands. Pure with the two lookups passed in (no
@@ -87,6 +87,24 @@ export function coverShare(root: Element, w: number, h: number, at: (x: number, 
     }
   }
   return inside * 2 > COLS * ROWS ? covered / inside : Number.NaN;
+}
+
+/** A box that hides the scene but lets the pointer through, so elementFromPoint never returns it (a toast). */
+export interface OverlayBox {
+  readonly el: Element;
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+/**
+ * `at` with these boxes hit-tested first (the first one that holds the point): coverShare's lookup
+ * for the layers elementFromPoint passes through (the toasts, pointer-events: none). Pure.
+ */
+export function atOverlays(boxes: readonly OverlayBox[], at: (x: number, y: number) => Element | null): (x: number, y: number) => Element | null {
+  if (boxes.length === 0) return at;
+  return (x, y) => boxes.find((b) => x >= b.left && x <= b.right && y >= b.top && y <= b.bottom)?.el ?? at(x, y);
 }
 
 /** What decides the cover the menus report (Menu.reportCover). */

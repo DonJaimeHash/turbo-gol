@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const { coverShare, menuCover, opaqueBackground, paintsBackground } = await import('../src/ui/cover.ts');
+const { atOverlays, coverShare, menuCover, opaqueBackground, paintsBackground } = await import('../src/ui/cover.ts');
 const { MENU_COVER_LITE, MENU_FPS, MENU_FPS_LITE, HELD_FRAME, sceneFps } = await import('../src/render/quality.ts');
 
 /** A fake element: its parent, whether it paints a background, and `contains` along the parents. */
@@ -109,13 +109,14 @@ function shell(layout, w, h, tile, toast = null) {
   const tileEl = el('tile', stage, true);
   const text = el('text', stage);
   const toastEl = el('toast', el('toasts', root), true);
-  const at = (x, y) => {
-    if (toast !== null && x >= toast.x0 && x <= toast.x1 && y >= toast.y0 && y <= toast.y1) return toastEl;
+  // elementFromPoint never returns a toast (pointer-events: none): the Menu hit-tests its box first.
+  const under = (x, y) => {
     if (layout === 'rail' && x < 123) return bar;
     if (y < 56) return bar; // the top bar
     if (layout === 'tabs' && y > h - 88) return bar; // the link line and the tabs
     return tile(x, y) ? tileEl : text;
   };
+  const at = atOverlays(toast === null ? [] : [{ el: toastEl, left: toast.x0, top: toast.y0, right: toast.x1, bottom: toast.y1 }], under);
   return coverShare(root, w, h, at, (e) => e.paints);
 }
 
@@ -131,9 +132,23 @@ test('coverShare on the shell: a tiled home hides most of a phone, GARAJE\'s alm
   // Upright (390 x 844): top bar, tabs, a list in the upper half only.
   const upright = shell('tabs', 390, 844, (x, y) => y < 420);
   assert.ok(upright > 0.4 && upright < MENU_COVER_LITE, `upright ${upright}`);
-  // A toast over the empty part of GARAJE's stage counts while it is up (measured once a second).
+  // A toast over the empty part of GARAJE's stage counts while it is up (measured once a second;
+  // it lets clicks through, so Menu.measureCover hit-tests the toasts' boxes before elementFromPoint).
   const withToast = shell('rail', 780, 360, (x, y) => x > 300 && x < 520 && y > 150 && y < 260, { x0: 130, x1: 780, y0: 280, y1: 360 });
   assert.ok(withToast > garage, `a toast: ${withToast} over ${garage}`);
+});
+
+test('atOverlays: a box the pointer passes through (a toast) is hit first, elsewhere the lookup decides', () => {
+  const root = el('root');
+  const toast = el('toast', root, true);
+  const below = el('stage', root);
+  const at = atOverlays([{ el: toast, left: 100, top: 300, right: 400, bottom: 340 }], () => below);
+  assert.equal(at(250, 320), toast, 'inside the toast');
+  assert.equal(at(100, 300), toast, 'on its edge');
+  assert.equal(at(99, 320), below, 'beside it');
+  assert.equal(at(250, 341), below, 'under it');
+  const plain = () => below;
+  assert.equal(atOverlays([], plain), plain, 'no toast up: the lookup itself');
 });
 
 test('the stylesheets keep what the cover relies on: super low\'s flat backdrop on .mn, the rotate screen outside the menus', async () => {

@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 // The layout check of the Tablero plan (§2.6): every menu screen, at the sizes that matter, with the
-// wide fallback text (#widetext: plain Arial, about Roboto's width), in a headless Chrome or Edge
-// driven over the DevTools protocol (Node's own WebSocket, no dependency). For each size it loads
-// the game once (#ui=home), opens each screen and asks the page's window.__uiFit() (src/ui/fit.ts):
-// the shell's bars overflowing, data-fit boxes still overflowing at their minimum, a horizontal
-// scroll, focus rings a clipping box would cut, shell text under the class's minimum (14 px on a
-// phone, 16 on a TV). The stage scrolling is reported, not failed (the old screens scroll until
-// their PR rebuilds them; plan PR 5 on), and so is a data-fit box that took its text under that
-// minimum for the wide text (allowed down to the box's own minimum: the rail's 12).
+// wide fallback text (#widetext: plain Arial, about Roboto's width), in both languages (Spanish is
+// the longer) and with the hints of every input, in a headless Chrome or Edge driven over the
+// DevTools protocol (Node's own WebSocket, no dependency). For each size and language it loads the
+// game once (#ui=home), opens each screen and asks the page's window.__uiFit() (src/ui/fit.ts): the
+// shell's bars overflowing, data-fit boxes still overflowing at their minimum, a horizontal scroll,
+// focus rings a clipping box or the screen's edge would cut, shell text under the class's minimum
+// (14 px on a phone, 16 on a TV at its reference view). Then it switches the last input (the hint
+// bar's verbs, the strip's ‹ › / L R / Q E: data-input on <html>, tg-touch for a finger) and checks
+// the screens that change the shell again. The stage scrolling is reported, not failed (the old
+// screens scroll until their PR rebuilds them; plan PR 5 on), and so is a section label that took
+// its text under that minimum for the wide text (allowed down to its own minimum: the rail's 12).
 //
 // Each size gets a fresh tab with the device it stands for: a mouse for the desktop sizes (the
 // browser starts with a fine pointer and hover, --blink-settings: a Linux runner has no pointing
@@ -22,8 +25,14 @@
 //   node scripts/ui-fit.mjs --url http://localhost:5173/                 (a dev server: __uiFit is on)
 //   options: --browser <path> (or UI_FIT_BROWSER), --port <preview port>, --sizes 780x360,960x540,
 //            --screens home,training, --json <file>, --no-widetext,
+//            --langs en,es     the languages (default both: the page's own turbogol.lang),
+//            --inputs <list>   the hint sets after the device's own (default all: keyboard, pad,
+//                              remote, mouse, touch; 'default' for the device's own only),
 //            --face <family>   #widetext in that face instead of Arial: a fallback wider than Arial
 //                              (Verdana on Windows / macOS, 'DejaVu Sans' on Linux) must fit too,
+//            --online          the region pill as a server that answers shows it (a region, the
+//                              players), not 'Offline · RETRY' (no API server here),
+//            --long-name       the account chip signed in, a 16-character name and a rank,
 //            --no-pointer      start the browser without a pointing device (a Linux runner without
 //                              the pin: the desktop sizes then fail as TVs)
 // Exit 1 when the shell overflows anywhere (CI's ui-fit job runs it as information until plan PR 6).
@@ -54,6 +63,14 @@ const SIZES = [
   { name: '390x844', w: 390, h: 844, mobile: true, layout: 'portrait' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'play', 'casual', 'ranked', 'friendly', 'custom', 'training', 'garage', 'leaderboard', 'profile'];
+// After the device's own input, the others on the screens that change the shell: section roots,
+// stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
+const INPUT_SCREENS = ['home', 'casual', 'custom', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
+const LANGS = typeof args.langs === 'string' ? args.langs.split(',') : ['en', 'es'];
+const ALL_INPUTS = ['keyboard', 'pad', 'remote', 'mouse', 'touch'];
+const INPUTS = args.inputs === 'default' ? [] : typeof args.inputs === 'string' ? args.inputs.split(',').filter((x) => ALL_INPUTS.includes(x)) : ALL_INPUTS;
+const ONLINE = args.online === true;
+const LONG_NAME = args['long-name'] === true;
 const WIDETEXT = args['no-widetext'] !== true;
 const FACE = typeof args.face === 'string' ? args.face.replace(/['"\\]/g, '') : null;
 // The pointer the browser starts with (Blink's PointerType / HoverType: 4 fine, 1 none; 2 hover, 1 none).
@@ -221,7 +238,7 @@ try {
     await p.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     return p;
   };
-  for (const size of SIZES) {
+  for (const size of SIZES) for (const lang of LANGS) {
     if (page !== null) {
       const old = page;
       await fetch(`http://127.0.0.1:${cdpPort}/json/close/${old.targetId}`).catch(() => undefined);
@@ -230,26 +247,43 @@ try {
     page = await openPage();
     await page.send('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 1, mobile: size.mobile === true });
     if (size.mobile === true) await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    // The language the page reads as it starts (src/i18n.ts turbogol.lang), and the wide text in
+    // another face (a fallback wider than Arial): over style.css's html.tg-widetext.
+    const pre = [`try { localStorage.setItem('turbogol.lang', ${JSON.stringify(lang)}); } catch {}`];
     if (FACE !== null) {
-      // The wide text in another face (a fallback wider than Arial): over style.css's html.tg-widetext.
       const css = `html.tg-widetext { --font-body: '${FACE}', sans-serif !important; --font-display: '${FACE}', sans-serif !important; }`;
-      await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `document.addEventListener('DOMContentLoaded', () => { const s = document.createElement('style'); s.textContent = ${JSON.stringify(css)}; document.head.appendChild(s); });` });
+      pre.push(`document.addEventListener('DOMContentLoaded', () => { const s = document.createElement('style'); s.textContent = ${JSON.stringify(css)}; document.head.appendChild(s); });`);
     }
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pre.join('\n') });
     const flags = ['ui=home', WIDETEXT ? 'widetext' : '', size.tv ? 'tv' : ''].filter(Boolean).join('&');
     await page.send('Page.navigate', { url: `${base}#${flags}` });
+    const head = `${size.name.padEnd(11)} ${lang}`;
     if (!(await page.until('window.__game && window.__game.menu.visible && typeof window.__uiFit === "function"', 90_000))) {
-      console.log(`${size.name}: the menus never came up (no __uiFit: a build without VITE_UI_FIT=1?)`);
+      console.log(`${head}: the menus never came up (no __uiFit: a build without VITE_UI_FIT=1?)`);
       failures++;
       continue;
     }
     await page.eval('document.fonts.ready.then(() => true)');
+    // The crowded states this page cannot reach without a server or an account, set on the Menu's
+    // own parts (a layout check, not the game's API).
+    if (ONLINE) await page.eval(`(() => { const m = __game.menu; const p = m.regionPill; const set = p.set.bind(p); const region = document.documentElement.lang === 'es' ? 'Auto · Sudamérica' : 'Auto · South America'; p.set = () => set({ kind: 'online', region, playing: 128 }); m.refreshChrome(); return true; })()`);
+    if (LONG_NAME) await page.eval(`(() => { const t = __game.menu.topBar.chip.querySelector('.mn-chip-text'); if (t) { t.querySelector('b').textContent = 'MaximilianoGomez'; t.querySelector('small').textContent = document.documentElement.lang === 'es' ? 'Diamante III' : 'Diamond III'; } window.dispatchEvent(new Event('resize')); return true; })()`);
     // The first section label on screen (the bar's, the rail's or the tabs'), marked for the font query.
     await page.eval(`(() => { const el = [...document.querySelectorAll('.mn-sec-label, .mn-sl-label')].find((e) => e.getBoundingClientRect().width > 0); el?.setAttribute('data-uifit-face', ''); return true; })()`);
     const face = await page.fonts('[data-uifit-face]');
-    console.log(`${size.name.padEnd(11)} layout ${await page.eval('document.documentElement.dataset.layout')}, input ${await page.eval('document.documentElement.dataset.input')}, the bars' text in ${face}`);
-    for (const screen of SCREENS) {
+    const own = await page.eval('document.documentElement.dataset.input');
+    const pageLang = await page.eval('document.documentElement.lang');
+    console.log(`${head} layout ${await page.eval('document.documentElement.dataset.layout')}, input ${own}, language ${pageLang}, the bars' text in ${face}`);
+    if (pageLang !== lang) {
+      console.log(`${head}: the page is in ${pageLang}, expected ${lang}`);
+      failures++;
+    }
+    const runs = [[own, SCREENS], ...INPUTS.filter((x) => x !== own).map((x) => [x, INPUT_SCREENS])];
+    for (const [input, screens] of runs) for (const screen of screens) {
+      // Another last input (device.ts): its hints and the strip's side; the Menu fits the bars on the change.
+      if (input !== own && screen === screens[0]) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(input)}; h.classList.toggle('tg-touch', ${JSON.stringify(input)} === 'touch'); return true; })()`);
       await page.eval(`(__game.menu.open(${JSON.stringify(screen)}, true), true)`);
-      await sleep(400); // a mount and a screen's own first render (__uiFit runs the fit it queued)
+      await sleep(input === own ? 400 : 200); // a mount and a screen's own first render (__uiFit runs the fit it queued)
       const r = await page.eval('window.__uiFit()');
       const small = r.smallText ?? [];
       const bad = [
@@ -262,8 +296,8 @@ try {
       ];
       const shrunk = small.filter((x) => x.endsWith('(data-fit)')).length;
       failures += bad.length;
-      report.push({ size: size.name, face: FACE ?? 'Arial', ...r, bad });
-      console.log(`${size.name.padEnd(11)} ${screen.padEnd(12)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}${shrunk > 0 ? `  (${shrunk} fitted under the minimum)` : ''}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
+      report.push({ size: size.name, lang, input, face: FACE ?? 'Arial', ...r, bad });
+      console.log(`${head} ${input.padEnd(8)} ${screen.padEnd(12)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}${shrunk > 0 ? `  (${shrunk} fitted under the minimum)` : ''}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
     }
   }
   if (typeof args.json === 'string') writeFileSync(args.json, JSON.stringify(report, null, 2));

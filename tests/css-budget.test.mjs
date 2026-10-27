@@ -186,8 +186,9 @@ test('super low: one switch turns off every decorative transition and animation,
 test('the focus ring is outline + pseudo-element + a spread-only ring that super low keeps (A11)', () => {
   const focus = stripComments(css.get('src/ui/styles/focus.css'));
   assert.match(focus, /outline:\s*var\(--focus-w\) solid var\(--focus\)/);
-  // The gap ring outranks super low's `html.tg-superlow * { box-shadow: none !important }` (0,1,1).
-  assert.match(focus, /html:not\(\.tg-touch\) \.mn \.mn-focus,[^{]*\{[^}]*box-shadow:\s*0 0 0 var\(--focus-gap\) var\(--ink\) !important/);
+  // The gap ring outranks super low's `html.tg-superlow * { box-shadow: none !important }` (0,1,1);
+  // an edge control (shell.css --ring-shadow) has it inside instead.
+  assert.match(focus, /html:not\(\.tg-touch\) \.mn \.mn-focus,[^{]*\{[^}]*box-shadow:\s*var\(--ring-shadow, 0 0 0 var\(--focus-gap\) var\(--ink\)\) !important/);
   // Touch shows no ring: every ring rule is scoped to a page whose last input was not a finger.
   for (const r of rules(focus)) if (r.selector !== '.mn [data-nav]:focus') for (const sel of r.selector.split(',')) assert.match(sel.trim(), /^html:not\(\.tg-touch\) /, sel);
   assert.doesNotMatch(focus, /:is\(/, 'plain selector lists (an old TV WebView drops a whole rule it cannot parse)');
