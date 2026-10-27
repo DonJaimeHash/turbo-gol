@@ -1077,6 +1077,13 @@ html[data-input='mouse'] .hud-howto-dbl {
   padding: 4px 8px;
 }
 
+/* A phone's 14 px floor for the lines and the row's labels. */
+.tg-touch .hud-pause-menu .hud-pause-sub,
+.tg-touch .hud-pause-menu .hud-pause-howto,
+.tg-touch .hud-pause-row .hud-pause-label {
+  font-size: 14px;
+}
+
 .tg-touch .hud-pause-quit {
   padding-right: 48px;
 }
