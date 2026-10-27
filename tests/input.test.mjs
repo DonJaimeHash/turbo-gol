@@ -657,6 +657,48 @@ test('blockJumpUntilRelease swallows the held jump until it is released', () => 
   assert.equal(sample().jump, true);
 });
 
+test('blockBoostUntilRelease swallows the held boost until it is released (pad B resuming the pause)', () => {
+  const pad = makePad();
+  const { sample, input } = setup({ pad });
+  press(pad, GP.B);
+  assert.equal(sample().boost, true);
+  input.blockBoostUntilRelease();
+  assert.equal(sample().boost, false);
+  assert.equal(sample().boost, false);
+  release(pad, GP.B);
+  assert.equal(sample().boost, false);
+  press(pad, GP.B);
+  assert.equal(sample().boost, true);
+});
+
+test("Alt + ← / → keep the browser's Back / Forward unless an Alt key is bound; the bare arrows stay cancelled", () => {
+  const key = (target, code, extra = {}) => {
+    const ev = Object.assign(new Event('keydown', { cancelable: true }), { code, ...extra });
+    target.dispatchEvent(ev);
+    return ev;
+  };
+  const { target, settings } = setup();
+  assert.equal(key(target, 'ArrowLeft').defaultPrevented, true);
+  assert.equal(key(target, 'ArrowLeft', { altKey: true, repeat: true }).defaultPrevented, false);
+  assert.equal(key(target, 'ArrowRight', { altKey: true, repeat: true }).defaultPrevented, false);
+  assert.equal(key(target, 'ArrowUp', { altKey: true, repeat: true }).defaultPrevented, true, 'only left / right are history keys');
+  // Air roll on L Alt: Alt + the arrows that steer is a game combo, not a Back.
+  settings.bindings.kbm.airRoll = { kind: 'key', code: 'AltLeft' };
+  const s2 = setup({ settings });
+  assert.equal(key(s2.target, 'ArrowLeft', { altKey: true }).defaultPrevented, true);
+});
+
+test('a back key (BrowserBack / GoBack) is never captured as a binding: the capture waits (the system Back cancels it)', async () => {
+  const { input, target } = setup();
+  const p = input.startRebind('throttle', 'kbm');
+  await armed();
+  target.key('BrowserBack');
+  target.key('Unidentified', { key: 'GoBack' });
+  assert.equal(input.rebinding, true);
+  target.key('KeyI');
+  assert.deepEqual(await p, { kind: 'key', code: 'KeyI' });
+});
+
 test('rumble respects settings.controls.vibration', () => {
   const pad = makePad();
   const calls = [];

@@ -7,6 +7,13 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A controls card for new players: during the kickoff countdown of your first three matches, and
+  at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
+  boost and switch to the ball camera, with your own keys or buttons (keyboard and mouse, or the
+  controller when one is connected; change a binding and the card follows). When the match starts
+  it shrinks to a slim line in the corner for a minute of play. On a touch screen there is no card:
+  the buttons on the screen already say what they do (matches played that way do not count, so a
+  controller connected later still gets its three).
 - Experimental rules in custom lobbies, for signed-in players with Settings > Experimental on: the
   host of a P2P lobby picks Standard, a built-in preset (Low gravity, Fast ball, Bouncy, Arcade)
   or one of their own in "Rules (experimental)", with a button to edit the presets. The lobby list
@@ -114,6 +121,16 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- In the pause menu, B on a controller and Backspace no longer throw you out of the match (online
+  and in Competitive too, where leaving counts as an abandon): like Esc and Start, they go back to
+  the match. Only the QUIT button leaves, and online it still asks a second time. Inside the pause
+  menu's settings, B and Esc go back to the pause menu.
+- Back no longer takes you out of the game: the back gesture or button on Android, BACK on an
+  Android TV remote, the browser's back button, Alt + ← and a mouse's back button now go back one
+  screen in the menus, close a dialog, or pause a match (never leave it). On the home screen Back
+  asks "Leave Turbogol?" first; pressing Back again there leaves. Address flags such as `#diag`
+  stay in the address. If something still takes the page away during a match (two quick Backs in
+  the browser's toolbar, closing the tab, reloading), the browser asks before leaving.
 - In about half of the peer-to-peer matches every player's game dealt its own kickoff positions
   (the room's random seed, read as a negative number, meant "pick at random"): the games went out
   of sync at the start and after every goal, and only caught up by copying another player's state
@@ -156,6 +173,12 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- The arrow keys drive too (↑ / ↓ accelerate and reverse, ← / → steer, also in the air), next to
+  W A S D, unless you bind an arrow to something else. The training keys that used the arrows moved:
+  Page Up / Page Down for the previous / next shot, F to put the car back and T for unlimited boost
+  in free play (Backspace still resets the shot or the ball). If you had never changed those keys,
+  yours move too, unless you already use the new key for something else; the training screen names
+  your own keys.
 - A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
   netting, LED boards (a big main-sponsor board in the middle of each side wall; the boards change
   every 30 seconds), stands with a crowd and floodlight towers, with cranes, containers and a ship

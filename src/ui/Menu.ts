@@ -31,6 +31,7 @@ import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
 import type { Difficulty, SettingsTab } from '../render/Hud';
 import type { ThemeId } from '../render/theme';
+import type { ActionId, Device } from '../input/bindings';
 import { DISCORD_URL, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 
 export type SearchKind = 'casual' | 'ranked';
@@ -109,6 +110,8 @@ export interface MenuHost {
    * on `opts.tab` when given; `onClose` when it is left.
    */
   openSettings(onClose: () => void, opts?: { tab?: SettingsTab }): void;
+  /** The key / button name of an action's live binding on `device`, for a hint text ('—' unbound). */
+  keyLabel(action: ActionId, device: Device): string;
   /** One line about the build (WebGPU / RocketSim version), shown in the footer. */
   readonly info: string;
 }
@@ -172,6 +175,8 @@ interface ModalSpec {
   actions: Array<{ label: string; primary?: boolean; onClick: () => void | boolean | Promise<void | boolean> }>;
   /** Esc / B closes it (default true). */
   dismissable?: boolean;
+  /** Called once when it closes, however (an action, Esc / B, another modal, the menus hiding). */
+  onClose?: () => void;
 }
 
 export class Menu {
@@ -197,6 +202,7 @@ export class Menu {
   private readonly nav: FocusNav;
   private modalEl: HTMLElement | null = null;
   private modalDismiss: (() => void) | null = null;
+  private modalOnClose: (() => void) | null = null;
   private timer = 0;
   private popAt = 0;
   private lastError: string | null = null;
@@ -328,17 +334,23 @@ export class Menu {
     this.open(id);
   }
 
-  back(): void {
+  /**
+   * Esc / B / the '‹' button / the system Back (Game.onSystemBack): close the modal (unless it is not
+   * dismissable), else the screen's own back, else pop one screen. False when there was nothing to
+   * go back from (the home screen, no modal): the system Back then asks to leave the game.
+   */
+  back(): boolean {
     if (this.modalEl && this.modalDismiss) {
       this.modalDismiss();
-      return;
+      return true;
     }
     const t = this.top();
-    if (t?.back?.()) return;
-    if (this.stack.length <= 1) return;
+    if (t?.back?.()) return true;
+    if (this.stack.length <= 1) return false;
     t?.hide?.();
     this.stack.pop();
     this.mount();
+    return true;
   }
 
   private mount(): void {
@@ -381,6 +393,7 @@ export class Menu {
   private onKey(e: KeyboardEvent): void {
     if (!this.visibleNow || this.root.hidden) return;
     if (document.querySelector('.hud-settings-panel:not([hidden])')) return; // the Hud's settings screen owns the keys
+    if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
     const editing = isEditable(document.activeElement);
     let dir: NavDir | null = null;
     switch (e.code) {
@@ -533,6 +546,7 @@ export class Menu {
     const box = h('div.mn-modal', { role: 'dialog', 'aria-label': spec.title }, h('div.mn-modal-title', null, spec.title), h('div.mn-modal-body', null, ...body), actions);
     this.modalEl = box;
     this.modalDismiss = spec.dismissable === false ? () => undefined : close;
+    this.modalOnClose = spec.onClose ?? null;
     setChildren(this.modalLayer, box);
     this.modalLayer.hidden = false;
     this.autoFocus();
@@ -541,11 +555,14 @@ export class Menu {
 
   private closeModal(): void {
     if (!this.modalEl) return;
+    const onClose = this.modalOnClose;
     this.modalEl = null;
     this.modalDismiss = null;
+    this.modalOnClose = null;
     this.modalLayer.hidden = true;
     this.modalLayer.textContent = '';
     this.refocus();
+    if (onClose !== null) onClose();
   }
 
   get modalOpen(): boolean {

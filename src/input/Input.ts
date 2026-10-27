@@ -14,8 +14,8 @@
  *
  *   Action              Keyboard + mouse         Controller (standard mapping, Xbox names)
  *   ------------------  -----------------------  ----------------------------------------
- *   Throttle / reverse  W / S                    RT / LT (analog 0..1)
- *   Steer               A / D                    Left stick X (× steering sensitivity)
+ *   Throttle / reverse  W / S  (and ↑ / ↓)       RT / LT (analog 0..1)
+ *   Steer               A / D  (and ← / →)       Left stick X (× steering sensitivity)
  *   Air pitch           W nose down, S nose up   Left stick Y (forward = nose down)
  *   Air yaw             A / D                    Left stick X (× aerial sensitivity)
  *   Jump                Right mouse button       A
@@ -30,9 +30,12 @@
  *   Pause / menu        Esc                      Start
  *   Reset to kickoff    R                        unbound
  *   Training: reset     Backspace                D-pad ↓  (shot in a pack, ball in free play)
- *   Training: prev/next ← / →                    D-pad ← / →
- *   Free play: car      ↓                        D-pad ↑  (reset car to its spawn)
- *   Free play: boost    ↑                        LB       (toggle unlimited boost)
+ *   Training: prev/next PgUp / PgDn              D-pad ← / →
+ *   Free play: car      F                        D-pad ↑  (reset car to its spawn)
+ *   Free play: boost    T                        LB       (toggle unlimited boost)
+ *
+ *   The arrows are second keys (KBM_SECONDARY, fixed): ↑ / ↓ as W / S, ← / → as A / D, on the
+ *   ground and in the air, unless the player bound that arrow to an action of their own.
  *
  *   Fixed (not rebindable) menu keys: Enter / Numpad Enter accept, Esc / Backspace back, arrows and
  *   WASD navigate; gamepad A accept, B back, X controls & settings, D-pad or left stick navigate.
@@ -65,6 +68,7 @@ import {
   GP,
   GP_MAX_AXES,
   GP_MAX_BUTTONS,
+  KBM_SECONDARY,
   MAX_MOUSE_BUTTON,
   bindingLabel,
   bindingMatchesDevice,
@@ -75,6 +79,7 @@ import {
   type CameraLook,
   type Device,
 } from './bindings';
+import { isBackKey } from '../ui/backGuard';
 
 /** Edge-triggered one-shot actions. Read after `sample()`, then call `consumeActions()`. */
 export interface InputActions {
@@ -163,8 +168,10 @@ interface Capture {
 
 // Duck-typed event views (node has no KeyboardEvent / MouseEvent classes).
 interface KeyLike {
+  key?: unknown;
   code?: unknown;
   repeat?: unknown;
+  altKey?: unknown;
   ctrlKey?: unknown;
   metaKey?: unknown;
 }
@@ -377,10 +384,14 @@ export class Input {
   private readonly tapped = new Set<string>();
   /** Keyboard codes bound to any kbm action (their default browser action is suppressed). */
   private readonly boundKeys = new Set<string>();
+  /** Per action: its KBM_SECONDARY key while no kbm binding uses that key, else null (refreshDerived). */
+  private readonly secondary: (string | null)[] = new Array<string | null>(N).fill(null);
   private mouseHeld = 0;
   private mouseTapped = 0;
   /** Buttons whose current press is the click that captured the mouse (ignored until released). */
   private mouseMask = 0;
+  /** Back / forward buttons whose press ended a rebind capture: their release is cancelled (no history walk). */
+  private mouseEat = 0;
   /** Bit 1 = wheel up, bit 2 = wheel down, since the last sample. */
   private wheelTaps = 0;
   private mouseDX = 0;
@@ -432,6 +443,7 @@ export class Input {
   private kSteer = 1 / PX_FULL_DEFLECTION_AT_5;
 
   private jumpBlocked = false;
+  private boostBlocked = false;
   private capture: Capture | null = null;
   private disposed = false;
 
@@ -449,6 +461,9 @@ export class Input {
         return;
       }
       if (cap.target.device === 'kbm') {
+        // A back key is the system Back (src/ui/backGuard.ts), whose step cancels the capture
+        // (Game.onSystemBack), as Esc does: never a binding (it would pause the match on each press).
+        if (isBackKey(ke)) return;
         e.preventDefault();
         if (!cap.armed || ke.repeat === true || cap.ignoreKeys.has(code)) return;
         this.endCapture({ kind: 'key', code });
@@ -457,8 +472,11 @@ export class Input {
     }
     // Bound keys lose their browser default, except with Ctrl / Meta so reload, DevTools and the
     // like keep working. (Ctrl + W / T / N / Q are browser-reserved anyway: preventDefault cannot
-    // stop them outside the Keyboard Lock API, which is why no preset binds Ctrl.)
-    if (PREVENT_DEFAULT_KEYS.has(code) || (this.boundKeys.has(code) && ke.ctrlKey !== true && ke.metaKey !== true)) e.preventDefault();
+    // stop them outside the Keyboard Lock API, which is why no preset binds Ctrl.) Alt + ← / → keep
+    // theirs, the browser's Back / Forward (Windows, Linux; the system Back: backGuard.ts), unless
+    // the player binds an Alt key (air roll on L Alt + the arrows that steer is a game combo).
+    const historyKey = ke.altKey === true && (code === 'ArrowLeft' || code === 'ArrowRight') && !this.boundKeys.has('AltLeft') && !this.boundKeys.has('AltRight');
+    if (!historyKey && (PREVENT_DEFAULT_KEYS.has(code) || (this.boundKeys.has(code) && ke.ctrlKey !== true && ke.metaKey !== true))) e.preventDefault();
     if (ke.repeat === true) return;
     this.keys.add(code);
     this.tapped.add(code);
@@ -510,7 +528,11 @@ export class Input {
     const bit = 1 << button;
     const cap = this.capture;
     if (cap !== null && cap.target.device === 'kbm') {
-      if (cap.armed && button <= 4 && (cap.ignoreMouse & bit) === 0) this.endCapture({ kind: 'mouse', button });
+      if (cap.armed && button <= 4 && (cap.ignoreMouse & bit) === 0) {
+        // A back / forward button bound here walks the history on its release unless cancelled.
+        if (button >= 3) this.mouseEat |= bit;
+        this.endCapture({ kind: 'mouse', button });
+      }
       return;
     }
     this.mouseHeld |= bit;
@@ -520,9 +542,11 @@ export class Input {
   private readonly onMouseUp = (e: Event): void => {
     const button = (e as MouseLike).button;
     if (!validMouseButton(button)) return;
-    // Back / forward buttons navigate on release; keep them for the game when it has the mouse.
-    if (button >= 3 && (this.locked || e.target === this.lockElement || e.target === this.target)) e.preventDefault();
+    // Back / forward buttons navigate on release; keep them for the game when it has the mouse,
+    // and for the rebind capture that just took one (wherever the pointer is).
     const bit = 1 << button;
+    if (button >= 3 && ((this.mouseEat & bit) !== 0 || this.locked || e.target === this.lockElement || e.target === this.target)) e.preventDefault();
+    this.mouseEat &= ~bit;
     this.mouseHeld &= ~bit;
     if ((this.mouseMask & bit) !== 0) {
       // The click that captured the mouse is over: it was not a tap either.
@@ -796,6 +820,8 @@ export class Input {
             break;
         }
       }
+      const sk = this.secondary[i]; // the arrows drive too (KBM_SECONDARY)
+      if (sk !== null && d === 0 && (keys.has(sk) || tapped.has(sk))) d = 1;
       if (i >= I_LOOK_FIRST && i <= I_LOOK_LAST) {
         kd[i] = d;
         km[i] = m; // look: mouse travel goes through the virtual stick below
@@ -994,6 +1020,10 @@ export class Input {
       if (!jump) this.jumpBlocked = false;
       jump = false;
     }
+    if (this.boostBlocked) {
+      if (!boost) this.boostBlocked = false;
+      boost = false;
+    }
     out.jump = jump;
     out.boost = boost;
     out.handbrake = handbrake;
@@ -1019,6 +1049,11 @@ export class Input {
   /** Ignore jump until it is released (so the button press that closed a menu does not jump). */
   blockJumpUntilRelease(): void {
     this.jumpBlocked = true;
+  }
+
+  /** Ignore boost until it is released (pad B, boost by default, resumes the pause: Game.processActions). */
+  blockBoostUntilRelease(): void {
+    this.boostBlocked = true;
   }
 
   /**
@@ -1177,6 +1212,12 @@ export class Input {
       const b = kbm[ACTION_IDS[i]];
       if (b && b.kind === 'key') bound.add(b.code);
     }
+    // A second key only while the player's own profile leaves it free (their binding wins).
+    const sec = this.secondary;
+    for (let i = 0; i < N; i++) {
+      const code = KBM_SECONDARY[ACTION_IDS[i]];
+      sec[i] = code !== undefined && !bound.has(code) ? code : null;
+    }
   }
 
   /** Rising edges of a bool-ish action: bit 1 = keyboard/mouse, bit 2 = gamepad. */
@@ -1208,6 +1249,7 @@ export class Input {
     this.mouseHeld = 0;
     this.mouseTapped = 0;
     this.mouseMask = 0;
+    this.mouseEat = 0;
     this.wheelTaps = 0;
     this.mouseDX = 0;
     this.mouseDY = 0;

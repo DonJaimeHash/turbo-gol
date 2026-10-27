@@ -1808,6 +1808,206 @@ body {
   animation: hud-fade-in 0.3s ease both;
 }
 
+/* ---- Controls card (bottom right, src/render/controlsCard.ts) -------------------------------
+   The first matches' kickoff countdown and free play: an opaque graphite card (no backdrop
+   blur: it would re-blur the live canvas every frame), rows of keycaps from the live bindings;
+   `.hud-controls-strip` turns it into the slim one-line strip of the next 60 s. Touch screens never
+   get it (the Game passes 'off'; the rule below is the backstop). Sizes follow the viewport
+   height, so a 960 × 540 TV and a 1366 × 768 laptop get the same proportions. */
+
+.hud-controls {
+  --cc-bg: #161a22;
+  --cc-line: #2b313c;
+  --cc-cap: #1f2430;
+  --cc-cap-edge: #4a5262;
+  --cc-soft: #b9c0cc;
+  position: absolute;
+  right: calc(var(--safe-right) + clamp(14px, 2.4vw, 32px));
+  bottom: calc(var(--safe-bottom) + clamp(12px, 2.4vh, 26px));
+  box-sizing: border-box;
+  width: clamp(250px, 44vh, 360px);
+  padding: clamp(10px, 2vh, 16px) clamp(12px, 2.2vh, 18px) clamp(9px, 1.8vh, 14px);
+  display: flex;
+  flex-direction: column;
+  background: var(--cc-bg);
+  border: 1px solid var(--cc-line);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(5, 7, 13, 0.4);
+  color: var(--text);
+  text-shadow: none;
+  animation: hud-fade-in 0.2s ease both;
+}
+
+.hud-controls-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: clamp(4px, 1vh, 8px);
+}
+
+.hud-controls-title {
+  font-size: clamp(14px, 2.4vh, 18px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* The tag: a skewed chip behind upright text. */
+.hud-controls-tag {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  height: clamp(18px, 3.1vh, 24px);
+  padding: 0 12px;
+  font-size: clamp(10px, 1.6vh, 12px);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--cc-soft);
+}
+
+.hud-controls-tag::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: #2a303c;
+  border-radius: 3px;
+  transform: skewX(-20deg);
+}
+
+.hud-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: clamp(30px, 5.5vh, 42px);
+  border-top: 1px solid var(--cc-line);
+}
+
+.hud-controls-label {
+  font-size: clamp(12px, 2.1vh, 16px);
+}
+
+.hud-controls-keys {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-key {
+  box-sizing: border-box;
+  min-width: clamp(22px, 3.7vh, 28px);
+  height: clamp(22px, 3.7vh, 28px);
+  padding: 0 clamp(6px, 1vh, 8px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cc-cap);
+  border: 1px solid var(--cc-cap-edge);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: clamp(11px, 1.8vh, 14px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+/* Controller buttons and sticks: round-ended caps. */
+.hud-key-pad {
+  border-radius: 999px;
+}
+
+.hud-controls-mouse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: clamp(11px, 1.8vh, 14px);
+  white-space: nowrap;
+  color: var(--cc-soft);
+}
+
+.hud-mouse {
+  width: clamp(18px, 3.1vh, 24px);
+  height: clamp(18px, 3.1vh, 24px);
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hud-mouse .hud-mouse-lit {
+  fill: var(--text);
+  stroke: none;
+}
+
+.hud-controls-foot {
+  padding-top: clamp(6px, 1.2vh, 10px);
+  border-top: 1px solid var(--cc-line);
+  font-size: clamp(11px, 1.8vh, 14px);
+  line-height: 1.3;
+  color: var(--cc-soft);
+}
+
+/* The strip: one line (two when it does not fit), no title, no tag, no foot. It stays in the
+   right half, clear of the camera pill at the bottom centre (a 960 px TV, a phone with a pad). */
+.hud-controls.hud-controls-strip {
+  width: auto;
+  max-width: calc(50vw - clamp(14px, 2.4vw, 32px) - 90px);
+  padding: 6px 12px;
+  flex-direction: row;
+  border-radius: 8px;
+}
+
+.hud-controls-strip .hud-controls-head,
+.hud-controls-strip .hud-controls-foot {
+  display: none;
+}
+
+.hud-controls-strip .hud-controls-rows {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 14px;
+  row-gap: 4px;
+}
+
+.hud-controls-strip .hud-controls-row {
+  gap: 6px;
+  min-height: 0;
+  border-top: 0;
+}
+
+.hud-controls-strip .hud-controls-label {
+  font-size: clamp(11px, 1.7vh, 13px);
+  color: var(--cc-soft);
+}
+
+.hud-controls-strip .hud-key {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+.hud-controls-strip .hud-mouse {
+  width: 16px;
+  height: 16px;
+}
+
+.hud-controls-strip .hud-controls-mouse {
+  font-size: clamp(11px, 1.7vh, 13px);
+}
+
+.tc-on .hud-controls {
+  display: none;
+}
+
 /* ---- Animations / responsive ------------------------------------------------------------ */
 
 @keyframes hud-fade-in {
@@ -2134,6 +2334,7 @@ html.tg-superlow *::after {
 
 html.tg-superlow .hud-pop,
 html.tg-superlow .hud-hint,
+html.tg-superlow .hud-controls,
 html.tg-superlow [class*='mn-']:not(.mn-spinner),
 html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {

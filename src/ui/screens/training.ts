@@ -16,6 +16,7 @@ import type { TrainingRecords } from '../../game/trainingRecords';
 import { language, t } from '../../i18n';
 import { presetName, rulesSummary } from '../../render/rulesText';
 import type { Menu, Screen } from '../Menu';
+import type { ActionId, Device } from '../../input/bindings';
 import { cycler, screenHead, tile } from './common';
 
 const CATEGORY_TEXT: Readonly<Record<TrainingCategory, string>> = {
@@ -23,6 +24,20 @@ const CATEGORY_TEXT: Readonly<Record<TrainingCategory, string>> = {
   saving: t('training.savingText'),
   aerial: t('training.aerialText'),
 };
+
+/** 'a / b' of the bound labels ('—' = unbound, left out); '' when none is. */
+function keyPair(a: string, b: string): string {
+  return [a, b].filter((k) => k !== '—').join(' / ');
+}
+
+/** The heading's key line: reset shot and previous / next shot, keyboard then controller ('PgUp / PgDn (D-pad ← / D-pad →)'). */
+function subtitleText(menu: Menu): string {
+  const key = (action: ActionId, device: Device): string => menu.host.keyLabel(action, device);
+  const kbmShots = keyPair(key('trainingPrev', 'kbm'), key('trainingNext', 'kbm'));
+  const padShots = keyPair(key('trainingPrev', 'pad'), key('trainingNext', 'pad'));
+  const shots = kbmShots !== '' && padShots !== '' ? `${kbmShots} (${padShots})` : kbmShots + padShots;
+  return t('training.subtitle', { reset: keyPair(key('trainingReset', 'kbm'), key('trainingReset', 'pad')), shots });
+}
 
 export function trainingScreen(menu: Menu): Screen {
   const grid = h('div.mn-packs');
@@ -68,10 +83,12 @@ export function trainingScreen(menu: Menu): Screen {
     showSummary();
   };
 
+  // The subtitle names the live keys (rebound ones too), written again on every show.
+  const head = screenHead(t('training.title'), subtitleText(menu));
   const el = h(
     'div.mn-training',
     null,
-    screenHead(t('training.title'), t('training.subtitle')),
+    head,
     h('div.mn-training-top', null, tile('mn-tile-hero', '◎', FREEPLAY_NAME.toLocaleUpperCase(language()), t('training.freePlayText'), () => menu.host.startTraining(FREEPLAY_ID)), expBlock),
     grid,
   );
@@ -97,6 +114,8 @@ export function trainingScreen(menu: Menu): Screen {
     setChildren(grid, ...cols);
   };
   const render = (): void => {
+    const sub = head.querySelector('.mn-subtitle');
+    if (sub !== null) sub.textContent = subtitleText(menu);
     draw(menu.host.training.records());
     void menu.host.training
       .sync()

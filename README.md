@@ -70,8 +70,8 @@ npm run dev                      # wrangler dev on http://127.0.0.1:8787 (Vite p
 
 | Action | Keyboard + mouse | Gamepad |
 |---|---|---|
-| Throttle / reverse | W / S | RT / LT |
-| Steer, air yaw | A / D | Left stick |
+| Throttle / reverse | W / S (or ↑ / ↓) | RT / LT |
+| Steer, air yaw | A / D (or ← / →) | Left stick |
 | Jump, double jump, flip | Right mouse button | A |
 | Boost | Left mouse button | B |
 | Slide / air roll | Left Shift | X |
@@ -80,7 +80,9 @@ npm run dev                      # wrangler dev on http://127.0.0.1:8787 (Vite p
 | Pause | Esc | Start |
 
 The mouse turns the camera once you click the field (pointer lock). A keyboard-only preset is in
-**Configuración → Keyboard & Mouse**.
+**Configuración → Keyboard & Mouse**. In the pause menu Esc, Start, B and Backspace go back to the
+match; only QUIT leaves it. Training: Backspace resets the shot or the ball, Page Up / Page Down pick
+the shot, F puts the car back and T toggles unlimited boost in free play.
 
 ## How it is built
 
