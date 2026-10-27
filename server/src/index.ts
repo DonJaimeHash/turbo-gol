@@ -35,7 +35,8 @@
  *                       claims forwarded to the MatchDO in x-* headers plus the internal header;
  *                       bad tickets never touch a DO)
  *   GET  /room/:roomId  same gate with a role 'peer' ticket whose mid is the room id -> RoomDO (phase 2 signaling)
- *   GET  /api/config  -> { turnstileSiteKey: TURNSTILE_SITEKEY | null, protocol, version, region: cf.colo | 'local' }
+ *   GET  /api/config  -> { turnstileSiteKey: TURNSTILE_SITEKEY | null, protocol, version, region: cf.colo | 'local',
+ *                        autoRegion, regions, oauth, accounts, botFillMs: the server queue's bot fill (BOT_FILL_MS) }
  *                        (no auth; the client fetches it once per page load before its first POST /api/guest)
  *   GET  /api/health, GET /api/time
  *   GET  /api/where     -> { edgeColo, country, city?, asn?, ip }: the Cloudflare colo that served the
@@ -85,7 +86,7 @@ import { isRegion, REGIONS } from '../../src/net/account';
 import type { LobbySummary, LobbyTicketAnswer, PopulationAnswer, RegionId } from '../../src/net/account';
 import { INTERNAL_HEADER, createSession, createTicket, internalSecret, randomHex, verifySession, verifyTicket } from './auth';
 import type { SessionClaims, TicketRole } from './auth';
-import { isP2pResult } from './MatchmakerDO';
+import { BOT_FILL_MS, isP2pResult } from './MatchmakerDO';
 import type { AnyQueueResult } from './MatchmakerDO';
 import { RELOAD_REQUIRED, ROOM_PROTOCOL } from './RoomDO';
 import { nodeHealthCheck, nodeRoute } from './nodeRoutes';
@@ -230,7 +231,7 @@ async function internalHeaders(env: Env, region?: string): Promise<Record<string
 function serverConfig(
   request: Request,
   env: Env,
-): { turnstileSiteKey: string | null; protocol: number; version: string; region: string; autoRegion: string; regions: typeof REGIONS; oauth: string[]; accounts: boolean } {
+): { turnstileSiteKey: string | null; protocol: number; version: string; region: string; autoRegion: string; regions: typeof REGIONS; oauth: string[]; accounts: boolean; botFillMs: number } {
   const cf = request.cf;
   const colo = cf && typeof cf.colo === 'string' ? cf.colo : '';
   return {
@@ -242,6 +243,8 @@ function serverConfig(
     regions: REGIONS,
     oauth: enabledProviders(env),
     accounts: true,
+    // When a server queue fills with bots: the menus count it down (MODOS' searching panel).
+    botFillMs: BOT_FILL_MS,
   };
 }
 
