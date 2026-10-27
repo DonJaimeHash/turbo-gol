@@ -50,6 +50,10 @@
 //            --long-name       the account chip signed in, a 16-character name and a rank,
 //            --no-pointer      start the browser without a pointing device (a Linux runner without
 //                              the pin: the desktop sizes then fail as TVs)
+// MODOS (plan PR 6) runs by tab ('modes:casual' ...): Casual and Competitive idle with the action
+// focused, then searching (the panel, as the Menu shows a search: its own search view and pills),
+// CANCEL SEARCH and "While you wait: Free play" focused.
+//
 // Exit 1 when the shell overflows anywhere, or Inicio fails a check (CI's ui-fit job runs it as
 // information until plan PR 6).
 import { spawn, spawnSync } from 'node:child_process';
@@ -81,7 +85,8 @@ const SIZES = [
   { name: '1366x600', w: 1366, h: 600, layout: 'short' },
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'casual', 'ranked', 'friendly', 'custom', 'training', 'garage', 'leaderboard', 'profile'];
+// MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile'];
 // Inicio's hero states (window.__homeHero), in the order of their priority.
 const HERO_KINDS = ['play', 'search', 'offline', 'lobby', 'update', 'rejoin'];
 // A ranked search of every format as the Menu shows it (a layout check: its parts, not the game's
@@ -102,6 +107,23 @@ const RANKED_SEARCH = `(() => {
   return true;
 })()`;
 const SEARCH_DONE = `(() => { const m = __game.menu; const s = window.__uiFitSearch; m.host.searchView = s.view; m.regionPill.set = s.set; m.refreshChrome(); m.tick(); return true; })()`;
+// MODOS' searching panel (plan PR 6): a search of the tab's kind, 4 s in, on the server queue (the
+// bots box shows: its 10 s fill, the config's botFillMs, still ahead of a search started now), the
+// region counting players; SEARCH_DONE puts it back.
+const MODES_SEARCH = (kind) => `(() => {
+  const m = __game.menu;
+  const p = m.regionPill;
+  const since = performance.now() - 4000;
+  const region = document.documentElement.lang === 'es' ? 'Auto · Sudamérica' : 'Auto · South America';
+  window.__uiFitSearch = { view: m.host.searchView, set: p.set };
+  if (m.cfg !== null && !m.cfg.botFillMs) m.cfg.botFillMs = 10000;
+  m.host.searchView = () => ({ active: true, kind: ${JSON.stringify(kind)}, modes: ['1v1', '2v2', '3v3'], text: '', since, region: null, net: 'server', error: null, reload: false });
+  const set = p.set.bind(p);
+  p.set = () => set({ kind: 'online', region, playing: 12 });
+  m.refreshChrome();
+  m.tick();
+  return true;
+})()`;
 // Inicio's checks of its own: the hero's subtitle keeps every format (shown, not given way); a TV
 // keeps the region's name in the pill by the plate (the hero's subtitle leaves it out searching).
 const FORMATS = `(() => { const s = document.querySelector('.mn-hero-sub'); const t = s ? s.innerText : ''; return ['1v1', '2v2', '3v3'].filter((m) => !t.includes(m)).map((m) => 'the subtitle lost ' + m + ': ' + JSON.stringify(t)); })()`;
@@ -111,7 +133,7 @@ const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
-const INPUT_SCREENS = ['home', 'casual', 'custom', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
+const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
 const LANGS = typeof args.langs === 'string' ? args.langs.split(',') : ['en', 'es'];
 const ALL_INPUTS = ['keyboard', 'pad', 'remote', 'mouse', 'touch'];
 const INPUTS = args.inputs === 'default' ? [] : typeof args.inputs === 'string' ? args.inputs.split(',').filter((x) => ALL_INPUTS.includes(x)) : ALL_INPUTS;
@@ -260,8 +282,27 @@ try {
     for (const [input, screens] of runs) for (const screen of screens) {
       // Another last input (device.ts): its hints and the strip's side; the Menu fits the bars on the change.
       if (input !== own && screen === screens[0]) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(input)}; h.classList.toggle('tg-touch', ${JSON.stringify(input)} === 'touch'); return true; })()`);
-      await page.eval(`(__game.menu.open(${JSON.stringify(screen)}, true), true)`);
+      const [id, tab] = screen.split(':');
+      await page.eval(`(__game.menu.open(${JSON.stringify(id)}, true${tab !== undefined ? ', ' + JSON.stringify(tab) : ''}), true)`);
       await sleep(input === own ? 400 : 200); // a mount and a screen's own first render (__uiFit runs the fit it queued)
+      if (id === 'modes' && input === own && (tab === 'casual' || tab === 'ranked')) {
+        // Idle with FIND MATCH (or SIGN IN) focused, then searching every format (the longest
+        // queue line), CANCEL SEARCH focused, then "While you wait: Free play" focused.
+        await page.eval(`(document.querySelector('[data-key="modes-go"]')?.focus(), true)`);
+        await sleep(200);
+        await check(input, screen, 'idle');
+        await page.eval(MODES_SEARCH(tab));
+        await sleep(300);
+        await check(input, screen, 'search');
+        for (const key of ['modes-cancel', 'modes-practice']) {
+          await page.eval(`(document.querySelector('[data-key="${key}"]')?.focus(), true)`);
+          await sleep(200);
+          await check(input, screen, 'search ' + key.slice(6));
+        }
+        await page.eval(SEARCH_DONE);
+        await sleep(200);
+        continue;
+      }
       if (screen !== 'home' || input !== own) {
         await check(input, screen);
         continue;
