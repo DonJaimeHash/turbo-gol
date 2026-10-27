@@ -75,75 +75,55 @@ body {
   display: none !important;
 }
 
-/* ---- Scorebug (top left): [BLU 2] [RED 1] [4:32], a lime accent along its top ----------- */
+/* ---- Scorebug (top left, the owner's: [BLU 1 │ 2:49 │ 0 RED], 46 high at 768, no blur) ------
+   A lime notch under the player's team (.hud-mine-red: under RED); the network bars by the clock
+   online. It reads over the pause's veil (--z-score above --z-veil). Sizes follow the height. */
 
 .hud-top {
   position: absolute;
-  top: calc(var(--safe-top) + clamp(10px, 2vh, 20px));
-  left: calc(var(--safe-left) + clamp(12px, 2vw, 28px));
+  z-index: var(--z-score);
+  top: calc(var(--safe-top) + clamp(10px, 3.4vh, 32px));
+  left: calc(var(--safe-left) + clamp(12px, 2.2vw, 36px));
   display: flex;
 }
 
 .hud-score {
-  position: relative;
   display: flex;
   align-items: stretch;
-  height: clamp(36px, 5.6vh, 52px);
+  height: clamp(36px, 6vh, 56px);
   background: var(--surface-0-94);
   border: 1px solid var(--edge);
-  border-radius: var(--r-key);
+  border-radius: var(--r-tile);
   overflow: hidden;
-}
-
-.hud-score::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: var(--brand);
-  z-index: 1;
-}
-
-.hud-score-team {
-  display: flex;
-  align-items: stretch;
-}
-
-.hud-score-team + .hud-score-team,
-.hud-clock {
-  border-left: 1px solid var(--edge);
 }
 
 .hud-score-tag {
   display: flex;
   align-items: center;
-  padding: 3px clamp(7px, 1.1vh, 11px) 0;
-  font-size: clamp(11px, 1.6vh, 15px);
+  padding: 0 clamp(7px, 1.3vh, 12px);
+  font-size: clamp(11px, 1.8vh, 17px);
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text);
 }
 
-.hud-score-team.hud-blue .hud-score-tag {
+.hud-score-tag.hud-blue {
   color: var(--ink);
   background: var(--blue);
 }
 
-.hud-score-team.hud-red .hud-score-tag {
-  background: linear-gradient(180deg, var(--red), var(--red-deep));
+.hud-score-tag.hud-red {
+  color: var(--text);
+  background: var(--red);
 }
 
 .hud-score-goals {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: clamp(34px, 5vh, 50px);
-  padding: 3px clamp(7px, 1.1vh, 12px) 0;
+  min-width: clamp(32px, 5.5vh, 50px);
   font-family: var(--font-display);
-  font-size: clamp(22px, 3.8vh, 36px);
+  font-size: clamp(22px, 3.9vh, 36px);
   font-weight: 700;
   line-height: 1;
   color: var(--text);
@@ -152,24 +132,78 @@ body {
 .hud-clock {
   display: flex;
   align-items: center;
-  justify-content: center;
-  min-width: clamp(64px, 10vh, 100px);
-  padding: 3px clamp(9px, 1.4vh, 14px) 0;
-  font-family: var(--font-display);
-  font-size: clamp(18px, 3vh, 28px);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  background: var(--surface-1);
+  gap: clamp(6px, 1vh, 10px);
+  padding: 0 clamp(9px, 1.8vh, 16px);
+  background: rgba(5, 7, 13, 0.7);
+  border-left: 1px solid var(--edge);
+  border-right: 1px solid var(--edge);
 }
 
-.hud-clock.hud-clock-low {
+.hud-clock-time {
+  min-width: 2.6em;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: clamp(17px, 2.9vh, 27px);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+}
+
+.hud-clock-time.hud-clock-low {
   color: var(--warn);
 }
 
 /* Overtime: '+m:ss' in lime, blinking (red would read as a team colour). */
-.hud-clock.hud-overtime {
+.hud-clock-time.hud-overtime {
   color: var(--brand);
   animation: hud-blink 1s steps(2, start) infinite;
+}
+
+/* The network bars: three rising bars, lit from the left (data-bars 1 to 3; one is a warning). */
+.hud-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: clamp(10px, 1.8vh, 16px);
+}
+
+.hud-bars i {
+  width: 3px;
+  height: 40%;
+  border-radius: 1px;
+  background: var(--surface-3);
+}
+
+.hud-bars i:nth-child(2) {
+  height: 70%;
+}
+
+.hud-bars i:nth-child(3) {
+  height: 100%;
+}
+
+.hud-bars[data-bars='3'] i,
+.hud-bars[data-bars='2'] i:nth-child(-n + 2) {
+  background: var(--text-2);
+}
+
+.hud-bars[data-bars='1'] i:first-child {
+  background: var(--warn);
+}
+
+.hud-notch {
+  position: absolute;
+  left: 8px;
+  bottom: -9px;
+  width: clamp(48px, 9vh, 80px);
+  height: 4px;
+  background: var(--brand);
+  transform: skewX(-20deg);
+}
+
+.hud-top.hud-mine-red .hud-notch {
+  left: auto;
+  right: 8px;
 }
 
 /* ---- Debug readouts (F3): fps / draw calls / GPU time top right, speed above the boost ----
@@ -261,74 +295,76 @@ body {
   text-shadow: 0 0 12px var(--brand-glow), var(--shadow);
 }
 
-/* ---- Boost (bottom left): slanted bar of ten segments + the amount ----------------------- */
+/* ---- Boost (bottom left, the owner's bigger plate: label 28, bar 244 x 31, value 50 at 768) ----
+   Ten segments 3 px apart on a slanted bar: the fill is one element scaled along x, the gaps a
+   static overlay in the plate's colour. Sizes follow the height. */
 
 .hud-boost {
   position: absolute;
-  left: calc(var(--safe-left) + clamp(14px, 2.4vw, 32px));
-  bottom: calc(var(--safe-bottom) + clamp(12px, 2.4vh, 26px));
+  left: calc(var(--safe-left) + clamp(14px, 2.1vw, 30px));
+  bottom: calc(var(--safe-bottom) + clamp(10px, 2.2vh, 20px));
   display: grid;
   grid-template-columns: auto auto;
   grid-template-areas:
     'label .'
     'bar value';
   align-items: end;
-  column-gap: clamp(8px, 1.2vw, 14px);
-  row-gap: 4px;
+  column-gap: clamp(10px, 2.3vh, 18px);
+  row-gap: clamp(4px, 1vh, 8px);
+  padding: clamp(8px, 1.6vh, 12px) clamp(12px, 2.6vh, 20px) clamp(9px, 1.8vh, 14px) clamp(10px, 2.1vh, 16px);
+  background: var(--surface-0-90);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-key);
 }
 
 .hud-boost-label {
   grid-area: label;
   padding-left: 4px;
-  font-size: clamp(10px, 1.4vh, 12px);
+  font-family: var(--font-display);
+  font-size: clamp(16px, 3.65vh, 30px);
   font-weight: 700;
-  letter-spacing: 0.26em;
+  line-height: 0.9;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-2);
+  color: var(--text);
 }
 
 .hud-boost-bar {
   grid-area: bar;
   position: relative;
-  width: clamp(150px, 22vw, 280px);
-  height: clamp(14px, 2.3vh, 20px);
-  margin-bottom: 0.15em;
+  width: clamp(140px, 31.8vh, 270px);
+  height: clamp(16px, 4vh, 34px);
+  margin: 0 6px 6px 8px;
   transform: skewX(-20deg);
-  background: var(--surface-0-90);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-slot);
+  background: var(--surface-3);
+  border-radius: 2px;
   overflow: hidden;
 }
 
 .hud-boost-fill {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, var(--brand-deep), var(--brand));
+  background: linear-gradient(180deg, var(--brand-hi) 0%, var(--brand) 55%, #a9e622 100%);
   transform-origin: left center;
   transform: scaleX(0.33);
   transition: transform 0.08s linear;
 }
 
-/* The segment gaps: nine cuts at every 10 % (the tenth falls on the right edge). */
+/* The segment gaps: nine 3 px cuts in the plate's colour (the tenth falls on the right edge). */
 .hud-boost-segs {
   position: absolute;
   inset: 0;
-  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 3px), var(--ink) calc(10% - 3px) 10%);
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 3px), var(--surface-0) calc(10% - 3px) 10%);
 }
 
 .hud-boost-value {
   grid-area: value;
-  min-width: 3ch;
+  min-width: 2.2ch;
   font-family: var(--font-display);
-  font-size: clamp(26px, 4.6vh, 42px);
+  font-size: clamp(28px, 6.5vh, 54px);
   font-weight: 700;
-  line-height: 0.9;
+  line-height: 0.85;
   color: var(--brand);
-}
-
-/* Full: the lime edge alone (no glow: a shadow that comes and goes with the tank, B17). */
-.hud-boost.hud-boost-full .hud-boost-bar {
-  border-color: var(--brand);
 }
 
 .hud-boost.hud-boost-low .hud-boost-fill {
@@ -467,17 +503,235 @@ body {
   animation: hud-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) both;
 }
 
-/* ---- Pause menu (Hud.setPaused) -------------------------------------------------------- */
+/* Overtime: its line over the overtime kickoff's countdown (Hud.showOvertime), until GO. */
+.hud-countdown-caption {
+  position: absolute;
+  top: calc(38% - clamp(60px, 12vh, 120px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 22px;
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-top: 3px solid var(--brand);
+  border-radius: var(--r-key);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.hud-countdown-caption b {
+  font-family: var(--font-display);
+  font-size: clamp(20px, 4vh, 36px);
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  color: var(--brand);
+}
+
+.hud-countdown-caption span {
+  font-size: clamp(12px, 1.9vh, 16px);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* ¡GOOOL! (the owner's banner, at 22 %): the word on a slanted slab of the scoring team's colour
+   with a lime heel, the scorer's chip under it. */
+.hud-goal {
+  position: absolute;
+  top: 22%;
+  left: 50%;
+  transform: translate(-50%, 0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(12px, 2.9vh, 22px);
+}
+
+.hud-goal.hud-pop {
+  animation: hud-goal-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+@keyframes hud-goal-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.7);
+  }
+}
+
+.hud-goal-slab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: clamp(64px, 15vh, 128px);
+  padding: 0 clamp(36px, 9.4vh, 80px);
+}
+
+.hud-goal-slab::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  transform: skewX(-20deg);
+  background: linear-gradient(100deg, var(--blue-deep) 0%, var(--blue) 100%);
+  box-shadow: 0 14px 40px rgba(5, 7, 13, 0.45);
+}
+
+.hud-goal.hud-red .hud-goal-slab::before {
+  background: linear-gradient(100deg, var(--red-deep) 0%, var(--red) 100%);
+}
+
+.hud-goal-slab::after {
+  content: '';
+  position: absolute;
+  left: 26%;
+  right: 26%;
+  bottom: -12px;
+  height: 6px;
+  background: var(--brand);
+  transform: skewX(-20deg);
+}
+
+.hud-goal-word {
+  position: relative;
+  font-family: var(--font-display);
+  font-size: clamp(52px, 12.5vh, 104px);
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  text-shadow: 0 3px 0 rgba(5, 7, 13, 0.35);
+  white-space: nowrap;
+}
+
+.hud-goal-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: clamp(32px, 5.2vh, 44px);
+  padding: 0 16px;
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-key);
+  font-size: clamp(14px, 2.35vh, 20px);
+  white-space: nowrap;
+  text-shadow: none;
+}
+
+.hud-goal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--blue);
+}
+
+.hud-goal.hud-red .hud-goal-dot {
+  background: var(--red);
+}
+
+.hud-goal-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.hud-goal-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--edge-hi);
+}
+
+.hud-goal-score {
+  color: var(--text-2);
+}
+
+/* The feed (top centre): at most two chips of 34 (2.5 s each): joined, left, a bot, DEMOLISHED. */
+.hud-feed {
+  position: absolute;
+  top: calc(var(--safe-top) + clamp(10px, 3.4vh, 32px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 2 * clamp(200px, 40vh, 340px));
+}
+
+.hud-feed-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  height: clamp(28px, 4.4vh, 40px);
+  padding: 0 14px 0 10px;
+  overflow: hidden;
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-pill);
+  font-size: clamp(12px, 1.8vh, 15px);
+  color: var(--text);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-shadow: none;
+  animation: hud-fade-in 0.2s ease-out both;
+}
+
+.hud-feed-chip::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.hud-feed-leave::before {
+  background: var(--text-3);
+}
+
+.hud-feed-bot::before {
+  background: var(--info);
+}
+
+.hud-feed-demo {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-color: var(--danger-line);
+}
+
+.hud-feed-demo::before {
+  background: var(--danger);
+}
+
+/* ---- The pause (Hud.setPaused): the veil, the title plate, the dock at the bottom ----------- */
 
 .hud-paused {
   position: absolute;
   inset: 0;
+  z-index: var(--z-veil);
   display: grid;
-  place-content: center;
+  grid-template-rows: minmax(0, 1fr) auto;
   justify-items: center;
-  padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + 12px) calc(var(--safe-left) + 16px);
+  padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + clamp(16px, 9.4vh, 72px)) calc(var(--safe-left) + 16px);
   text-align: center;
   background: var(--veil);
+}
+
+.hud-paused-plate {
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: clamp(14px, 2.6vh, 22px) clamp(24px, 4.2vh, 40px);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+  pointer-events: auto;
 }
 
 .hud-paused-title {
@@ -496,16 +750,47 @@ body {
   width: 72px;
   height: 4px;
   margin: 6px auto 0;
-  border-radius: 2px;
   background: var(--brand);
-  box-shadow: 0 0 12px var(--brand-glow);
+  transform: skewX(-20deg);
+}
+
+/* Online: the match goes on. */
+.hud-paused-live {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-paused-live b {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 5.2vh, 52px);
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  color: var(--warn);
+}
+
+.hud-paused-live b::before {
+  content: '';
+  width: 0.36em;
+  height: 0.36em;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.hud-paused-live span {
+  font-size: clamp(13px, 2vh, 17px);
+  color: var(--text-2);
 }
 
 .hud-paused-sub {
-  margin-top: 6px;
   font-size: clamp(12px, 1.8vh, 16px);
   color: var(--text-2);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
 }
 
 /* A finger has no Esc / Backspace: the key line goes, the buttons stay. */
@@ -513,15 +798,15 @@ body {
   display: none;
 }
 
-/* The buttons, for every input. The veil ignores the pointer (a click or tap on it reaches the
-   canvas and resumes); only the buttons take it. */
+/* The dock, for every input. The veil ignores the pointer (a click or tap on it reaches the
+   canvas and resumes); only the plate and the buttons take it. RESUME takes two units. */
 .hud-pause-menu {
+  z-index: var(--z-dock);
   display: flex;
-  flex-direction: column;
   align-items: stretch;
-  gap: clamp(7px, 1.3vh, 11px);
-  width: min(420px, calc(100vw - 48px));
-  margin-top: clamp(14px, 3.2vh, 30px);
+  gap: clamp(8px, 2vh, 16px);
+  width: min(1000px, calc(100vw - 96px));
+  height: clamp(64px, 17.7vh, 136px);
 }
 
 .hud-pause-menu:empty {
@@ -529,17 +814,19 @@ body {
 }
 
 .hud-pause-btn {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: clamp(10px, 2.3vh, 18px) clamp(12px, 2.3vh, 20px);
   pointer-events: auto;
   touch-action: manipulation;
-  min-height: clamp(40px, 6.2vh, 52px);
-  padding: 8px 22px;
   font: inherit;
-  font-family: var(--font-display);
-  font-size: clamp(14px, 2.3vh, 19px);
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  text-align: left;
   color: var(--text);
   background: var(--surface-1-94);
   border: 1px solid var(--edge);
@@ -549,6 +836,25 @@ body {
     transform var(--dur-press) ease-out,
     border-color 0.12s ease,
     background-color 0.12s ease;
+}
+
+.hud-pause-label {
+  position: relative;
+  font-family: var(--font-display);
+  font-size: clamp(16px, 3.1vh, 26px);
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.hud-pause-sub,
+.hud-pause-howto {
+  position: relative;
+  font-size: clamp(11px, 1.8vh, 14px);
+  line-height: 1.25;
+  color: var(--text-2);
 }
 
 @media (hover: hover) {
@@ -564,9 +870,14 @@ body {
 }
 
 .hud-pause-primary {
+  flex-grow: 2;
   color: var(--brand-ink);
   border-color: var(--brand);
   background: var(--brand-grad);
+}
+
+.hud-pause-primary .hud-pause-label {
+  font-size: clamp(22px, 4.2vh, 36px);
 }
 
 @media (hover: hover) {
@@ -580,36 +891,60 @@ body {
   border-color: var(--danger-line);
 }
 
+.hud-pause-quit .hud-pause-label {
+  color: var(--danger);
+}
+
 .hud-pause-quit.hud-focus {
   border-color: var(--danger);
 }
 
-/* Online, after the first press: the second one leaves the match. */
-.hud-pause-quit.hud-pause-armed {
-  border-color: var(--danger);
+/* QUIT is held (A, Enter, a finger: 1 s) or double-clicked; its line says which for the input. */
+.hud-hold-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
   background: var(--danger-tint);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.15s linear;
 }
 
-/* The training entries: smaller buttons on one row, one focus stop (left / right pick). */
+.hud-holding .hud-hold-fill {
+  transform: scaleX(1);
+  transition-duration: 1s;
+}
+
+.hud-howto-dbl,
+html[data-input='mouse'] .hud-howto-hold {
+  display: none;
+}
+
+html[data-input='mouse'] .hud-howto-dbl {
+  display: block;
+}
+
+.hud-pause-armed .hud-pause-howto {
+  color: var(--text);
+}
+
+/* The training entries: smaller buttons on one row, left / right walk it. */
 .hud-pause-row {
+  flex: 3 1 0;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
   gap: 6px;
-  padding: 3px;
-  margin: 0 -3px;
-  border-radius: var(--r-tile);
-  border: 1px solid transparent;
+  min-width: 0;
 }
 
 .hud-pause-row .hud-pause-btn {
-  flex: 1 1 auto;
-  min-height: clamp(34px, 5vh, 42px);
-  padding: 6px 10px;
-  font-size: clamp(12px, 1.7vh, 14px);
+  justify-content: center;
+  padding: 8px 10px;
+}
+
+.hud-pause-row .hud-pause-label {
+  font-size: clamp(12px, 2vh, 16px);
   font-style: normal;
-  letter-spacing: 0.06em;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 /* Inside a row the picked button only lights while the row has the focus (focus.css). */
@@ -660,29 +995,23 @@ body {
   background: var(--brand-deep);
 }
 
-/* Short landscape phones: a tighter column so the whole menu fits under the title. */
+/* Short landscape phones: a smaller title, a lower dock. */
 @media (max-height: 460px) {
   .hud-paused-title {
     font-size: 34px;
   }
   .hud-pause-menu {
-    gap: 6px;
-    margin-top: 12px;
-  }
-  .hud-pause-btn {
-    min-height: 40px;
-  }
-  .hud-pause-row .hud-pause-btn {
-    min-height: 36px;
+    height: auto;
+    min-height: 56px;
   }
 }
 
-/* ---- The settings overlay (Hud.openSettingsScreen; the old start panel Hud.buildMenu still
-   builds stays hidden and unstyled until the Hud's menu code goes, plan PR 7) ------------------ */
+/* ---- The settings overlay (Hud.openSettingsScreen), over the menus and over the pause alike ---- */
 
 .hud-menu {
   position: absolute;
   inset: 0;
+  z-index: var(--z-settings);
   display: grid;
   place-items: center;
   padding: calc(var(--safe-top) + 16px) 16px calc(var(--safe-bottom) + 16px);
@@ -690,11 +1019,6 @@ body {
   pointer-events: auto;
   overflow: auto;
   scroll-padding: 16px;
-}
-
-/* The settings screen alone, over the front-end menus (Hud.openSettingsScreen). */
-.hud-menu.hud-menu-settings-only {
-  z-index: var(--z-settings);
 }
 
 /* Touch mode: the pause and its settings pan but never zoom (manipulation would keep Android's
@@ -1780,9 +2104,6 @@ body {
   .hud-settings-keys {
     display: none;
   }
-  .hud-boost-bar {
-    width: clamp(110px, 34vw, 180px);
-  }
   .hud-speed {
     bottom: calc(var(--safe-bottom) + 58px);
   }
@@ -2111,7 +2432,7 @@ html.tg-superlow .hud-boost-label {
 }
 
 html.tg-superlow [class*='mn-']:not(.mn-spinner):not(.mn-hold):not(.mn-busy):not([class*='mn-bounce-']),
-html.tg-superlow [class*='hud-']:not(.hud-overtime):not(.hud-clock-low):not(.hud-capturing):not(.hud-netwait),
+html.tg-superlow [class*='hud-']:not(.hud-overtime):not(.hud-clock-low):not(.hud-capturing):not(.hud-netwait):not(.hud-hold-fill),
 html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {
   transition: none !important;

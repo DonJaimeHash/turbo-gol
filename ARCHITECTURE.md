@@ -220,12 +220,19 @@ src/render/
                         pentagons with lime glow rings, stitched seams; BALL_COLORS), blob shadow,
                         ground marker
   Effects.ts            pooled particles, ribbons (boost / streaks / ball), rings, goal flash
-  Hud.ts                DOM HUD: scorebar (score + clock), segmented boost bar, ball indicator,
-                        debug line (F3), Tab
-                        scoreboard, pointer-lock hint, the pause menu (PauseEntry list from the
-                        Game: RESUME, training entries on one row, RULES in experimental free
-                        play, SETTINGS, QUIT; its own focus
-                        ring driven by Input's menu edges), menu + the settings screen (tabs:
+  Hud.ts                DOM HUD (Tablero plan PR 7): the scorebug (TAG n │ clock │ n TAG, the
+                        notch under your team: setTeam, the network bars by the clock: netBars,
+                        over the pause's veil: --z-score), the boost plate, the ball indicator
+                        (kept off the HUD's plates: avoidRects, measured on a resize and as the
+                        controls card comes or goes), debug line (F3), the countdown with the
+                        overtime line over it (showOvertime), the centre for the goal (showGoal:
+                        the scoring team's slab and the scorer's chip) and the whistle only, the
+                        feed (feed: two chips at most at the top), Tab scoreboard, pointer-lock
+                        hint, the pause dock (PauseEntry list from the Game: RESUME, training
+                        entries on one data-nav-row, RULES in experimental free play, SETTINGS,
+                        QUIT held HOLD_MS with A / Enter / a finger or double-clicked: hold,
+                        sub; src/ui/nav.ts FocusNav driven by Input's menu edges through
+                        pauseAction; online "MATCH IN PROGRESS"), the settings screen (tabs:
                         rebinding both devices, camera / gameplay sliders, Audio: master volume,
                         Graphics: the quality tier among MenuOptions.qualities, Experimental:
                         experimentalPage.ts; refreshSettings redraws it when the account changes;
@@ -280,8 +287,14 @@ src/game/
                         a browser-side release pauses like the Esc menu, a click on the paused
                         game resumes and recaptures), pause menu (pauseEntries; SETTINGS opens the
                         settings screen over the paused game, BACK returns; Backspace / pad B
-                        resume; QUIT only: quitToMenu clears the match and reopens the menu at
-                        kickoff), system Back (onSystemBack, src/ui/backGuard.ts), the
+                        resume; QUIT only, held (Input.acceptHeld): quitToMenu clears the match and
+                        reopens the menu at kickoff), the match's end (matchEnded on every path:
+                        the FINAL's view, goals credited by creditGoal, the FINAL FINAL_SECONDS
+                        later through showMenu, never while a session is busy or in a match; a
+                        ranked result into the FINAL's rank card; a lobby's match tells the lobby
+                        at once, lobby.back, as the FINAL's MENU goes to Inicio), matchFound (PARTIDO
+                        ENCONTRADO as a session leaves 'queue'; plan PR 6 calls it too), a
+                        Competitive no-show or dodge searched again at once (requeue), system Back (onSystemBack, src/ui/backGuard.ts), the
                         loading screen for long loads (withLoading: switchQuality, switchTheme,
                         steps with a painted frame between them, the loop held meanwhile), the
                         ball's shadow off in day stadiums (applyBallShadow);
@@ -299,7 +312,7 @@ src/game/
                         resync beyond 8 ticks), stepTick (pack own input, step, send every 2nd
                         tick), host match state (score / clock / frozen / overtime) from events,
                         NetStatsView for the HUD panel; quickMatch(mode, notice, 'ranked') for
-                        ranked (lastRankedMatchId for the result dialog), 'cancelled' event
+                        ranked (lastRankedMatchId for the FINAL's rank card), 'cancelled' event
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer
@@ -342,7 +355,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         styles/tiles.css: the hero and mode tiles, the plate, the slot's variants
                         (the lift is --focus-lift alone: 0 on super low and with reduced motion);
                         styles/screens/<screen>.css: a Tablero screen's own layout per class
-                        (home.css: Inicio; on .mn[data-screen], which Menu.mount writes)
+                        (home.css: Inicio, final.css: the FINAL; on .mn[data-screen], which
+                        Menu.mount writes; found.css: PARTIDO ENCONTRADO)
   components/icons.ts   the SVG icon sprite (~40 icons on a 24 grid, one hidden <svg> of
                         <symbol>s mounted by the first icon(); the menu tiles use it)
   components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
@@ -440,7 +454,9 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         beside it (data-nav-span: Inicio's hero, left ▲ ▼ only for what lies
                         wholly that way, beyondEdge, else the next zone), the way back
                         (NavPath), the focus memory (FocusMemory), fields in navigation or editing
-                        mode (data-editing) and the edge nudge (mn-bounce-*); FocusNav puts them
+                        mode (data-editing), the edge nudge (mn-bounce-*) and heldOver (a key's
+                        repeat held over from the match walks no focus and clicks nothing: the
+                        pause's held QUIT); FocusNav puts them
                         on the DOM and measures each target where it sits (layoutBox: a focused
                         tile's lift or a nudge taken off, so a lifted tile has no neighbour
                         "below" on its row)
@@ -476,6 +492,14 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         rules line before the match), training (with Experimental free play, its
                         rules picker and Edit presets for unlocked players), profile (sign in / up /
                         recover, account actions), leaderboard + ranked result dialog
+                        (RankedResults.watch's `into`: the FINAL's rank card takes the answer
+                        while it is up; else the toast or the dialog as before);
+                        match/final.ts (the FINAL: a screen stacked on Inicio, the shell's bars
+                        aside, PLAY AGAIN focused, Back = MENU; window.__final(kind) samples in
+                        dev / VITE_UI_FIT), match/finalModel.ts (pure: FinalView, goalScorer from
+                        the state buffer's per-car ball-hit tick, pickMvp, againAction,
+                        changeScreen, rankCard; tests/final-model.test.mjs), match/found.ts
+                        (PARTIDO ENCONTRADO, z 45, the tab's title)
 src/net/
   protocol.ts           wire protocol shared with server/ (DONE): one binary frame per message,
                         Input / Snapshot / Ping / Pong packed, Welcome / Event / Error / Kick as
@@ -616,7 +640,8 @@ tests/                  node tests (node --test): sim harness (wasm, incl. the 8
                         experimental-training (free play only, packs
                         stock, createArena before the car, the rebuild, no records, game speed;
                         real arenas with the extreme built-ins), hud-menu (the preset editor over
-                        the real store with a fake row kit), experimental-store (incl. a preset
+                        the real store with a fake row kit; the network bars, the ball indicator's way round the
+                        plates), final-model (the FINAL's decisions and copy), experimental-store (incl. a preset
                         the full account refused), menu-accounts (a 401 write sent again once,
                         never to another account)
 scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle car),
@@ -1165,7 +1190,8 @@ same widths (`size-adjust` 83.5 % / 73.2 %, measured on 21 UI labels), then Appl
 Avenir Next Condensed and the condensed system faces.
 `#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it;
 `data-fit` (src/ui/fit.ts) shrinks a label that would not fit, down to its minimum, then takes its
-short form (ENTRENAR, RANKING), and `node scripts/ui-fit.mjs` checks every menu screen at 780x360,
+short form (ENTRENAR, RANKING), and `node scripts/ui-fit.mjs` checks every menu screen (the FINAL
+with each kind's sample, PLAY AGAIN focused) at 780x360,
 844x390, 960x540 (TV), 1366x768 (a PC, and a TV), 390x844, 1920x1080, 1366x600 and 820x1180 with
 it, in English and Spanish and with the hints of every input (CI job `ui-fit`, information only
 for now); `--face Verdana`

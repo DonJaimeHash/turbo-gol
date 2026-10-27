@@ -150,3 +150,11 @@ test('OPPOSITE pairs every direction', () => {
   assert.equal(NAV.OPPOSITE.up, 'down');
   assert.equal(NAV.OPPOSITE.left, 'right');
 });
+
+test('heldOver: a repeat of a key the menus never saw go down (held from the match) is stale; a press, or its own repeat, is not', () => {
+  const down = new Set(['ArrowUp']);
+  assert.equal(NAV.heldOver({ code: 'Enter', repeat: true }, down), true, "SALIR's held Enter, repeating into the menus");
+  assert.equal(NAV.heldOver({ code: 'ArrowDown', repeat: true }, down), true, 'an arrow still steering at the whistle');
+  assert.equal(NAV.heldOver({ code: 'Enter', repeat: false }, down), false, 'a new press');
+  assert.equal(NAV.heldOver({ code: 'ArrowUp', repeat: true }, down), false, 'the repeat of a press the menus had');
+});

@@ -74,6 +74,15 @@ export function isEditable(el: Element | null): boolean {
   return el.isContentEditable;
 }
 
+/**
+ * A key's repeat that no press in the menus started (`down`: Menu's keysDown), held over from the
+ * match: an arrow still steering at the whistle, Enter / the remote's OK held on the pause's SALIR.
+ * It neither walks the focus nor activates the focused button (Menu.onKey).
+ */
+export function heldOver(e: { readonly code: string; readonly repeat: boolean }, down: ReadonlySet<string>): boolean {
+  return e.repeat && !down.has(e.code);
+}
+
 /** A text field in editing mode (the header: typing, ← → move the caret). */
 export function isEditing(el: Element | null): boolean {
   return isEditable(el) && (el as HTMLElement).hasAttribute('data-editing');
