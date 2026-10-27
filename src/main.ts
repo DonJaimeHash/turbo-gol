@@ -148,6 +148,8 @@ async function boot(): Promise<void> {
     qualitySet: prefs.qualitySet,
     savedQuality: prefs.quality,
     superlowLocked: prefs !== saved,
+    menuSceneAnimated: prefs.menuSceneAnimated,
+    fpsCap: prefs.fpsCap,
     info: `${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · RocketSim ${sim.version} · 120 Hz`,
     loading,
   });

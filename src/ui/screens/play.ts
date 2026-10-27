@@ -120,29 +120,48 @@ export function playScreen(menu: Menu): Screen {
     ),
     h('div.mn-play-foot', null, rankedSub),
   );
+  // On the menu's tick: each line is written only when its text changed (a write is a new text node and a style pass).
+  const write = (el: HTMLElement, text: string): void => {
+    if (el.textContent !== text) el.textContent = text;
+  };
   const tick = (): void => {
     const p = menu.population;
     const sum = (r: Record<Playlist, number>): number => r['1v1'] + r['2v2'] + r['3v3'];
-    casualSub.textContent = p ? t('play.searching', { count: sum(p.casual) }) : '';
-    customSub.textContent = p ? t('play.lobbies', { count: p.lobbies }) : '';
-    rankedTag.textContent = menu.host.accounts.signedIn ? (p ? t('play.searching', { count: sum(p.ranked) }) : '') : locked;
-    rankedSub.textContent = p ? t('play.playingNow', { region: menu.regionLabel, count: p.playing }) : '';
+    write(casualSub, p ? t('play.searching', { count: sum(p.casual) }) : '');
+    write(customSub, p ? t('play.lobbies', { count: p.lobbies }) : '');
+    write(rankedTag, menu.host.accounts.signedIn ? (p ? t('play.searching', { count: sum(p.ranked) }) : '') : locked);
+    write(rankedSub, p ? t('play.playingNow', { region: menu.regionLabel, count: p.playing }) : '');
   };
   // Its breadcrumb is MODES: JUGAR › MODES › CASUAL (the section is JUGAR already).
   return { id: 'play', title: t('nav.modes'), el, show: tick, tick };
 }
 
-/** Toggle cards for the playlists; at least one stays selected. `extra(p)` adds the per-playlist line. */
-function playlistPicker(get: () => GameMode[], set: (m: GameMode[]) => void, extra: (p: Playlist) => Node | null): { el: HTMLElement; refresh: () => void } {
+/**
+ * Toggle cards for the playlists; at least one stays selected. `extra(p)` builds the per-playlist
+ * line, `extraKey(p)` says what it shows (a plain string). `refresh` runs on the menu's tick: the
+ * line is built and the DOM written only when a card's state or that key changed.
+ */
+function playlistPicker(
+  get: () => GameMode[],
+  set: (m: GameMode[]) => void,
+  extraKey: (p: Playlist) => string,
+  extra: (p: Playlist) => Node | null,
+): { el: HTMLElement; refresh: () => void } {
   // A row (nav.ts): ▼ from any card goes to what is under the row (the Region row), ▲ back to that card.
   const wrap = h('div.mn-playlists', { 'data-nav-row': true });
   const cards = new Map<Playlist, HTMLButtonElement>();
+  const shown = new Map<Playlist, string>();
   const refresh = (): void => {
     const sel = get();
     for (const [p, c] of cards) {
-      c.setAttribute('aria-pressed', String(sel.includes(p)));
+      const pressed = String(sel.includes(p));
+      if (c.getAttribute('aria-pressed') !== pressed) c.setAttribute('aria-pressed', pressed);
       const slot = c.querySelector('.mn-pl-extra');
-      if (slot) setChildren(slot, extra(p));
+      const key = extraKey(p);
+      if (slot && shown.get(p) !== key) {
+        shown.set(p, key);
+        setChildren(slot, extra(p));
+      }
     }
   };
   for (const p of PLAYLISTS) {
@@ -196,6 +215,7 @@ export function casualScreen(menu: Menu): Screen {
       menu.prefs.casualModes = m;
       menu.savePrefs();
     },
+    (p) => (menu.population ? String(menu.population.casual[p]) : ''),
     (p) => (menu.population ? h('span', null, t('play.searching', { count: menu.population.casual[p] })) : null),
   );
   const region = regionCycler(menu);
@@ -248,6 +268,11 @@ export function rankedScreen(menu: Menu): Screen {
     (m) => {
       menu.prefs.rankedModes = m;
       menu.savePrefs();
+    },
+    (p) => {
+      const r = acc.me?.ratings.find((x) => x.playlist === p);
+      const waiting = menu.population ? menu.population.ranked[p] : -1;
+      return r ? `${waiting}|${r.tier}|${r.placementLeft}|${r.games}|${r.mmr}` : String(waiting);
     },
     (p) => {
       const r = acc.me?.ratings.find((x) => x.playlist === p);

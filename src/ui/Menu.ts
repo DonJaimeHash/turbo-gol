@@ -78,6 +78,7 @@ import type { SheetSpec } from './components/sheet';
 import { Toasts } from './components/toast';
 import { icon } from './components/icons';
 import { fitAll, uiFitReport } from './fit';
+import type { SceneCover } from '../render/quality';
 
 export type SearchKind = 'casual' | 'ranked';
 
@@ -165,6 +166,12 @@ export interface MenuHost {
   confirmLeave(systemBack?: boolean): void;
   /** The key / button name of an action's live binding on `device`, for a hint text ('—' unbound). */
   keyLabel(action: ActionId, device: Device): string;
+  /**
+   * What the menus leave of the 3D scene (Game.setMenuCover): 'partial' while they are up (with
+   * `covered`, the share of a touch screen they hide: cover.ts), 'opaque' under a modal, 'none'
+   * once hidden. The Game draws the scene at the menus' rate or holds one frame.
+   */
+  setMenuCover(level: SceneCover, covered?: number): void;
   /** One line about the build (WebGPU / RocketSim version), shown in About. */
   readonly info: string;
 }

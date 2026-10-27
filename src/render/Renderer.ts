@@ -62,13 +62,14 @@
  * backend has no timestamp queries). Off by default: the per-frame resolve allocates a promise.
  *
  * Dynamic resolution (tiers with `dynamicResolution`): loop frames pass their rAF timestamp to
- * render(); a DynamicResolution controller (dynamicResolution.ts) turns the intervals (and the GPU
- * time with `#stats`) into a scale between the tier's minResolutionScale and 1. Post tiers apply
- * it to the scene pass (the composite upsamples the scene; bloom, the vignette and FXAA run at
- * full size; the ultra passes that read the scene depth follow it); the direct tier multiplies the
- * canvas' pixel ratio by it (a resize: the controller changes it at most every half second, steps
- * of 0.05 to 0.1, and leaves the reallocation's long frame out of its mean). `stats().resolutionScale`
- * reports it.
+ * render() (a match's, not the menus' paced ones nor those under the player's frame limit: the
+ * Game resets the scale to 1 as the menus open, resetResolutionScale); a DynamicResolution controller
+ * (dynamicResolution.ts) turns the intervals (and the GPU time with `#stats`) into a scale between
+ * the tier's minResolutionScale and 1. Post tiers apply it to the scene pass (the composite
+ * upsamples the scene; bloom, the vignette and FXAA run at full size; the ultra passes that read
+ * the scene depth follow it); the direct tier multiplies the canvas' pixel ratio by it (a resize:
+ * the controller changes it at most every half second, steps of 0.05 to 0.1, and leaves the
+ * reallocation's long frame out of its mean). `stats().resolutionScale` reports it.
  *
  * NaN hygiene (post/pipeline.ts sanitises every pass-target read, materials their glow writes in
  * `glowMrt()`): with `#nancheck` in the URL the renderer reads the scene pass targets and the bloom
@@ -286,7 +287,7 @@ export class Renderer {
   spec: TierSpec;
   /** Stadium theme (setTheme): the lights, the world and the post chain follow it. */
   theme: ThemeId;
-  /** Called after every resize (the chase camera re-applies its horizontal FOV here). */
+  /** Called after every resize (the Game draws a held scene again: the resize cleared the canvas). */
   onResize: (() => void) | null = null;
   /** Why the session runs its tier (bootTier.ts; 'weak' / 'ceiling' / 'nofloat' set at init). */
   tierReason: TierReason = 'default';
@@ -594,6 +595,22 @@ export class Renderer {
   }
 
   /**
+   * Back to full resolution with a fresh controller (its refresh estimate stays) when dynamic
+   * resolution had lowered it: the Game calls it as the menus open, whose paced frames feed the
+   * controller nothing (render), so the scale the match left would stay where the menus' own light
+   * frames used to raise it. Nothing when the scale is already 1.
+   */
+  resetResolutionScale(): void {
+    if (!this.dynamicResolution || this.dynRes.scale >= 1) return;
+    this.dynRes.reset(this.spec.minResolutionScale);
+    this.lastFrameAt = -1;
+    if (this.post === null) return;
+    // As a decision of the controller: the direct tier's canvas size, the post tiers' scene pass.
+    if (this.post.output === 'direct') this.resize();
+    else this.post.setResolutionScale(1);
+  }
+
+  /**
    * Match the drawing buffer to the canvas' CSS size (window resize, the canvas' ResizeObserver and
    * render() when the size changed; also called by setQuality). The pixel ratio follows the device
    * up to the tier's maxPixelRatio and pixel budget, never below 1:1; a tier whose maxPixelRatio is
@@ -624,13 +641,17 @@ export class Renderer {
    * that would add three's own HalfFloat framebuffer and output pass and skip the theme's look.
    *
    * `frameTime`: the frame's requestAnimationFrame timestamp (ms). Loop frames pass it so dynamic
-   * resolution sees the presentation intervals; one-off renders (the boot warm-up) leave it out.
+   * resolution sees the presentation intervals; one-off renders (the boot warm-up) leave it out,
+   * and so do the frames of a paced or held scene (the menus' 30 / 20 fps, Game.ts frame): their
+   * intervals say nothing about the load. Without it the interval chain ends, so the next loop
+   * frame does not count the gap either.
    */
   render(frameTime?: number): void {
     // ResizeObserver callbacks wait for the next rendering update; checking here as well means the
     // frame about to be drawn never uses a stale aspect (two layout reads, no allocation).
     if (this.canvas.clientWidth !== this.cssW || this.canvas.clientHeight !== this.cssH) this.resize();
-    if (frameTime !== undefined) {
+    if (frameTime === undefined) this.lastFrameAt = -1;
+    else {
       // No interval while the page is hidden (a background tab's throttled frames are no load).
       if (this.dynamicResolution && this.lastFrameAt >= 0 && this.post !== null && document.visibilityState !== 'hidden') {
         // GPU time of the last resolved frame when `#stats` timing is on, else intervals only.

@@ -1371,3 +1371,95 @@ test('a direction held through a hand-off repeats no more: resetMenuRepeat / lat
   press(pad, GP.DPAD_DOWN);
   assert.equal(at(4200).down, true, 'pressed again: moves');
 });
+
+// ---- UI at rest (Game.ts frame): the menus read the pad on every animation frame ----------------
+
+const { runsLogic, drawsScene, sceneFps, FramePacer, TIERS } = await import('../src/render/quality.ts');
+
+/**
+ * Drive Input like Game.frame on a 60 Hz display for `presses` D-pad taps of `ms` each (start phases
+ * spread over a frame), the menus up on super low: the logic runs when runsLogic says (`readEvery`
+ * = true: today's loop; false: a loop that read the pad only on drawn frames), the scene is drawn
+ * at sceneFps. Returns the menuDown edges seen and the drawn frames per second.
+ */
+function menuLoop(ms, presses, readEvery) {
+  const pad = makePad();
+  const { input, out } = setup({ pad });
+  const fps = sceneFps({ cover: 'partial', cap: TIERS.superlow.maxFps, lite: true, still: false, animated: true, phone: false, covered: 0 });
+  const pacer = new FramePacer();
+  const frame = 1000 / 60;
+  const gap = 300; // between taps
+  const starts = Array.from({ length: presses }, (_, i) => 100 + i * gap + (i * 7.3) % frame);
+  const end = 100 + presses * gap + 200;
+  let lastLogic = -1;
+  let lastDraw = -1;
+  let edges = 0;
+  let drawn = 0;
+  for (let t = 0; t < end; t += frame) {
+    const down = starts.some((s) => t >= s && t < s + ms);
+    if (down) press(pad, GP.DPAD_DOWN);
+    else release(pad, GP.DPAD_DOWN);
+    const draw = drawsScene(t, lastDraw, fps, false, pacer);
+    const logic = readEvery ? runsLogic(t, lastLogic, TIERS.superlow.maxFps, false, null) : draw;
+    if (draw) {
+      lastDraw = t;
+      drawn++;
+    }
+    if (!logic) continue;
+    lastLogic = t;
+    input.beginFrame();
+    input.sample(out);
+    if (input.padActions.menuDown) edges++;
+    input.consumeActions();
+  }
+  return { edges, fps: (drawn * 1000) / end };
+}
+
+test('menus at 20 fps (super low): every D-pad tap of 20-60 ms moves the focus once; drawn-frame reads lose some', () => {
+  for (const ms of [20, 30, 40, 50, 60]) {
+    const r = menuLoop(ms, 40, true);
+    assert.equal(r.edges, 40, `${ms} ms taps: ${r.edges} of 40`);
+    assert.ok(Math.abs(r.fps - 20) < 0.6, `the scene at ${r.fps} fps`);
+  }
+  // The same taps read only on the 20 fps drawn frames (the old loop's cadence, slower): lost ones.
+  const old = menuLoop(30, 40, false);
+  assert.ok(old.edges < 40, `drawn-frame reads saw ${old.edges} of 40`);
+});
+
+/**
+ * The same taps in an online pause on super low (Game.ts frame): the match goes on at its 30 fps
+ * cap (runsLogic live, the tier's cap in whole refreshes), each frame of logic samples the pad (the
+ * session's ticks) and the pause menu reads the edges; on the frames between, `between` = true
+ * reads the pad with readEdges (today's loop), false does nothing (before). Returns the edges seen.
+ */
+function onlinePauseLoop(ms, presses, between) {
+  const pad = makePad();
+  const { input, out } = setup({ pad });
+  const frame = 1000 / 60;
+  const gap = 300;
+  const starts = Array.from({ length: presses }, (_, i) => 100 + i * gap + (i * 7.3) % frame);
+  const end = 100 + presses * gap + 200;
+  let lastLogic = -1;
+  let edges = 0;
+  for (let t = 0; t < end; t += frame) {
+    const down = starts.some((s) => t >= s && t < s + ms);
+    if (down) press(pad, GP.DPAD_DOWN);
+    else release(pad, GP.DPAD_DOWN);
+    if (!runsLogic(t, lastLogic, TIERS.superlow.maxFps, true, null)) {
+      if (between) input.readEdges();
+      continue;
+    }
+    lastLogic = t;
+    input.beginFrame();
+    input.sample(out);
+    if (input.actions.menuDown) edges++;
+    input.consumeActions();
+  }
+  return edges;
+}
+
+test('online pause at 30 fps (super low): readEdges between the frames of logic keeps every 20-60 ms D-pad tap', () => {
+  for (const ms of [20, 30, 40, 50, 60]) assert.equal(onlinePauseLoop(ms, 40, true), 40, `${ms} ms taps`);
+  const before = onlinePauseLoop(20, 40, false);
+  assert.ok(before < 40, `logic frames alone saw ${before} of 40`);
+});
