@@ -409,6 +409,22 @@ export function bindingsEqual(a: Binding | null, b: Binding | null): boolean {
   }
 }
 
+/**
+ * Some action of a keyboard + mouse profile is bound otherwise than in DEFAULT_KBM: the player
+ * changed it, or picked Keyboard only (src/ui/howPlay.ts asks only a player with the defaults).
+ */
+export function kbmCustomised(p: Readonly<BindingProfile>): boolean {
+  return ACTION_IDS.some((a) => !bindingsEqual(p[a], DEFAULT_KBM[a]));
+}
+
+/**
+ * Some action is bound to a mouse button (jump, boost and rear view by default): a mouse player.
+ * The match's "click to capture the mouse" hint is for them only (Keyboard only keeps the axes).
+ */
+export function usesMouseButton(p: Readonly<BindingProfile>): boolean {
+  return ACTION_IDS.some((a) => p[a]?.kind === 'mouse');
+}
+
 /** True when the binding can be produced by the device's hardware (used to validate saved data). */
 export function bindingMatchesDevice(b: Binding, device: Device): boolean {
   switch (b.kind) {

@@ -10,6 +10,8 @@ export default {
   'lang.title': 'Language',
   'lang.auto': 'Automatic ({language})',
   'lang.busy': 'Stop searching or leave the lobby to change the language',
+  // Over the list: choosing another language reloads the page
+  'lang.reloadNote': 'The game reloads (a few seconds)',
   // Closes the language picker without a change
   'lang.cancel': 'CANCEL',
 
@@ -197,6 +199,64 @@ export default {
   'home.guestText': 'Create an account to get a rank in {playlist1}, {playlist2} and {playlist3}. As a guest you can play Casual, custom lobbies and training.',
   // Button on the home side panel and on the locked Competitive screen
   'home.signIn': 'SIGN IN / CREATE ACCOUNT',
+
+  // Inicio, JUGAR's root (src/ui/screens/home.ts): the hero plays the last queue in one press
+  'home.playNow': 'PLAY NOW',
+  // The same on a TV (less room at 3 m)
+  'home.playNowTv': 'PLAY',
+  // The hero's corner tag: a match always starts (bots fill the empty places)
+  'home.alwaysMatch': 'ALWAYS A MATCH',
+  // The hero while a search runs, over its clock
+  'home.searching': 'SEARCHING',
+  // The hero while the player is in a lobby
+  'home.backToLobby': 'BACK TO THE LOBBY',
+  // Under it: {code} is the lobby's code, {count} / {max} its players and places
+  'home.lobbySub': 'Lobby {code} · {count}/{max}',
+  // The hero while a match of this tab still runs after a reload
+  'home.rejoin': 'BACK TO YOUR MATCH',
+  // Under it: {queue} is 'Casual · 2v2', {time} the match time left (m:ss)
+  'home.rejoinSub': '{queue} · {time} left',
+  // The player plate: a guest's line, an account's without a placed rank
+  'home.guestRank': 'Guest · Unranked',
+  'home.unranked': 'Unranked',
+  // The plate's line on a TV, after the rank; {car} is the car's name
+  'home.carLine': 'Car: {car}',
+  // Screen-reader names of the plate's two buttons; {rank} is a rank ('Gold II · 2v2') or home.unranked
+  'home.plateProfile': 'Profile: {name}, {rank}',
+  'home.plateGarage': 'Garage: your car is {car}',
+
+  // Inicio's mode tiles: a title, a subtitle (PC) and its short form (phone, tablet, TV), a corner tag
+  'modes.casual': 'CASUAL',
+  'modes.casualSub': 'Quick matches, no rank',
+  'modes.casualSubShort': 'Quick, no rank',
+  'modes.friends': 'WITH FRIENDS',
+  'modes.friendsSub': 'Make a lobby, share the link',
+  'modes.friendsSubShort': 'Private lobby, link',
+  // The short form on a TV (no link to share there: a code)
+  'modes.friendsSubTv': 'Make a lobby with a code',
+  // The tag of WITH FRIENDS
+  'modes.lobbies': 'LOBBIES',
+  // Against the bots, offline (also the offline hero's title)
+  'modes.vsAi': 'VS AI',
+  'modes.vsAiSub': '3-min match · offline',
+  'modes.vsAiSubShort': '3 min · offline',
+  'modes.vsAiSlot': 'FRIENDLY',
+  'modes.ranked': 'COMPETITIVE',
+  'modes.rankedSub': 'Climb the ranks · 5 placement matches',
+  'modes.rankedSubShort': 'Climb the ranks',
+
+  // A TV without a controller: the hero's tag, then a sheet at a match's start (it closes by itself
+  // when a controller connects)
+  'tv.needPad': 'YOU NEED A CONTROLLER',
+  'tv.needPadText': 'Connect a controller (USB or Bluetooth) to play',
+  // Starts the match anyway (the remote's arrows drive)
+  'tv.needPadGo': 'CONTINUE ANYWAY',
+
+  // Asked once, at a new PC player's first match (src/ui/howPlay.ts): sets the controls
+  'howPlay.title': 'How will you play?',
+  'howPlay.kbm': 'MOUSE AND KEYBOARD',
+  'howPlay.keyboard': 'KEYBOARD ONLY',
+  'howPlay.pad': 'CONTROLLER',
 
   // Play hub, Casual and Competitive (src/ui/screens/play.ts)
   // Play hub tile and Casual screen heading

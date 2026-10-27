@@ -73,7 +73,7 @@ import type { GameMode } from '../sim/constants';
 import type { Difficulty, SettingsTab } from '../render/Hud';
 import type { ThemeId } from '../render/theme';
 import type { ActionId, Device } from '../input/bindings';
-import { DISCORD_URL, GAME_NAME, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
+import { DISCORD_URL, GAME_NAME, LICENSE_NAME, SOURCE_URL } from '../brand';
 import { hashValue } from '../render/hashFlags';
 import { menuBack, stackAfterOpen } from './backModel';
 import { HOME_SECTION, sectionDef, stepSection } from './shell/sections';
@@ -89,6 +89,8 @@ import type { SheetSpec } from './components/sheet';
 import { Toasts } from './components/toast';
 import { icon } from './components/icons';
 import { fitAll, uiFitReport } from './fit';
+import { PREFS_KEY, parsePrefs } from './prefs';
+import type { MenuPrefs } from './prefs';
 import { atOverlays, coverShare, menuCover, opaqueBackground, paintsBackground } from './cover';
 import type { OverlayBox } from './cover';
 import type { SceneCover } from '../render/quality';
@@ -190,15 +192,6 @@ export interface MenuHost {
   readonly info: string;
 }
 
-export interface MenuPrefs {
-  region: RegionId | null;
-  casualModes: GameMode[];
-  rankedModes: GameMode[];
-  net: 'p2p' | 'server';
-  leaderboardPlaylist: GameMode;
-}
-
-const PREFS_KEY = STORAGE_PREFIX + 'menu.v1';
 const POPULATION_EVERY_MS = 10_000;
 /** A focus this soon after a pointer lifted is that pointer's (a tap focuses between its up and its click). */
 const POINTER_FOCUS_MS = 150;
@@ -222,22 +215,12 @@ function lastInput(): InputKind {
 /** `#ui=<screen>` and `window.__uiFit` exist in development and in a VITE_UI_FIT=1 build only (scripts/ui-fit.mjs). */
 const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
 
+/** The menus' prefs (prefs.ts); the defaults when storage is blocked. */
 function loadPrefs(): MenuPrefs {
-  const d: MenuPrefs = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'p2p', leaderboardPlaylist: '2v2' };
   try {
-    const raw = localStorage.getItem(PREFS_KEY);
-    if (!raw) return d;
-    const o = JSON.parse(raw) as Partial<MenuPrefs>;
-    const modes = (v: unknown): GameMode[] | null => (Array.isArray(v) && v.length > 0 && v.every((m) => m === '1v1' || m === '2v2' || m === '3v3') ? (v as GameMode[]) : null);
-    return {
-      region: isRegion(o.region) ? o.region : null,
-      casualModes: modes(o.casualModes) ?? d.casualModes,
-      rankedModes: modes(o.rankedModes) ?? d.rankedModes,
-      net: o.net === 'server' ? 'server' : 'p2p',
-      leaderboardPlaylist: o.leaderboardPlaylist === '1v1' || o.leaderboardPlaylist === '3v3' ? o.leaderboardPlaylist : '2v2',
-    };
+    return parsePrefs(localStorage.getItem(PREFS_KEY));
   } catch {
-    return d;
+    return parsePrefs(null);
   }
 }
 
