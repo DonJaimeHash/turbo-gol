@@ -537,6 +537,34 @@ test('queue: cancel rejects with NetError cancelled; a 401 re-registers the gues
   assert.equal(queues, 2);
 });
 
+test('queue: cancelQueue then queue in the same tick (a format change) queues again, after the leave', async () => {
+  let answerLeave = () => {};
+  let queues = 0;
+  const h = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/queue': (init) =>
+      ++queues === 1
+        ? new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+        : jsonResponse(200, { status: 'matched', matchId: 'm3', ticket: 't3', wsUrl: '/ws/m3' }),
+    '/api/leave': () => new Promise((resolve) => (answerLeave = () => resolve(jsonResponse(200, { ok: true, left: true })))),
+  });
+  const api = () => h.calls.map((c) => c.url).filter((u) => u === '/api/queue' || u === '/api/leave');
+  const first = h.client.queue('2v2', 'server');
+  await new Promise((r) => setTimeout(r, 0));
+  h.client.cancelQueue();
+  const second = h.client.queue('3v3', 'server');
+  assert.equal(h.client.queueing, true, 'the new search is the one queueing');
+  await assert.rejects(first, (err) => err instanceof NetError && err.code === 'cancelled');
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(api(), ['/api/queue', '/api/leave'], 'the new join waits for the leave');
+  answerLeave();
+  const m = await second;
+  assert.equal(m.matchId, 'm3');
+  assert.deepEqual(api(), ['/api/queue', '/api/leave', '/api/queue']);
+  assert.equal(h.calls.filter((c) => c.url === '/api/queue')[1].body.mode, '3v3');
+  assert.equal(h.client.queueing, false);
+});
+
 test('queue: 409 active_match rejoins that match with a fresh ticket', async () => {
   const calls = [];
   const { client } = makeClient({

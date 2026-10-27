@@ -514,7 +514,7 @@ export class NetClient {
   private reconnectUsed = false;
   private allowReconnect = true;
   private queueAbort: AbortController | null = null;
-  /** A leaveMatch() in flight: the next queue waits for it (the lock must be free before the join). */
+  /** A leaveMatch() / cancelQueue() leave in flight: the next queue waits for it (the lock must be free before the join). */
   private leavePending: Promise<boolean> | null = null;
   /** /api/leave calls made for a 409 / leaveMatch (tests, debug). */
   leaves = 0;
@@ -887,14 +887,30 @@ export class NetClient {
   /**
    * Stop waiting: aborts the long-poll (queue() rejects with 'cancelled') and tells the matchmaker
    * to drop us (POST /api/leave, best effort, no retry) so the bot fill does not open a room we
-   * never join. Without a session yet nothing was queued server-side (the join is skipped).
+   * never join. Without a session yet nothing was queued server-side (the join is skipped). A
+   * queue() right after it (a search restarted with another format) is allowed at once and waits
+   * for that leave, so the leave never drops the new waiter.
    */
   cancelQueue(): void {
     const ctrl = this.queueAbort;
     if (ctrl === null) return;
     ctrl.abort();
+    // The aborted loop's finally runs later: free the slot now (that finally only clears its own).
+    this.queueAbort = null;
     const bearer = this.lastBearer ?? this.guest?.session ?? null;
-    if (bearer !== null) void this.post('/api/leave', this.withRegion({}), bearer).catch(() => undefined);
+    if (bearer === null) return;
+    const prior = this.leavePending;
+    const p: Promise<boolean> = this.post('/api/leave', this.withRegion({}), bearer)
+      .then(
+        (res) => res.ok,
+        () => false,
+      )
+      // A leaveMatch still in flight is waited for too: the next queue sees only this one.
+      .then((ok) => (prior !== null ? prior.then(() => ok) : ok))
+      .finally(() => {
+        if (this.leavePending === p) this.leavePending = null;
+      });
+    this.leavePending = p;
   }
 
   /**
