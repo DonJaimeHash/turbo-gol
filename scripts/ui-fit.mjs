@@ -27,6 +27,10 @@
 // first, then (CONTINUE ANYWAY focused) the game's frame first, which reads the press before any
 // event or tick.
 //
+// The FINAL (plan PR 7) runs each kind's sample (window.__final: ranked with its rank card and a
+// community node's line, casual, against the AI with a full 3v3, a lobby) and fails PLAY AGAIN without
+// the focus (but on a touch screen).
+//
 // Each size gets a fresh tab with the device it stands for: a mouse for the desktop sizes (the
 // browser starts with a fine pointer and hover, --blink-settings: a Linux runner has no pointing
 // device, and a page without one lays out as a TV, device.ts isTv), touch emulation for the phones
@@ -86,7 +90,10 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final'];
+// The FINAL's samples (window.__final, plan PR 7): ranked (the rank card, a community node's line),
+// casual (a loss), against the AI (a draw, a full 3v3), a lobby's match.
+const FINAL_KINDS = ['ranked', 'casual', 'ai', 'lobby'];
 // Inicio's hero states (window.__homeHero), in the order of their priority.
 const HERO_KINDS = ['play', 'search', 'offline', 'lobby', 'update', 'rejoin'];
 // A ranked search of every format as the Menu shows it (a layout check: its parts, not the game's
@@ -282,6 +289,17 @@ try {
     for (const [input, screens] of runs) for (const screen of screens) {
       // Another last input (device.ts): its hints and the strip's side; the Menu fits the bars on the change.
       if (input !== own && screen === screens[0]) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(input)}; h.classList.toggle('tg-touch', ${JSON.stringify(input)} === 'touch'); return true; })()`);
+      if (screen === 'final') {
+        for (const kind of FINAL_KINDS) {
+          await page.eval(`(window.__final(${JSON.stringify(kind)}), true)`);
+          await sleep(400);
+          // The first focus lands with the mount's frame: a slow one at 1920 x 1080 in a headless page.
+          await page.until("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch')", 2_000, 50);
+          await check(input, screen, kind, await page.eval("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch') ? [] : ['PLAY AGAIN is not focused: ' + (document.activeElement?.className ?? null)]"));
+        }
+        await page.eval('(window.__final(null), true)');
+        continue;
+      }
       const [id, tab] = screen.split(':');
       await page.eval(`(__game.menu.open(${JSON.stringify(id)}, true${tab !== undefined ? ', ' + JSON.stringify(tab) : ''}), true)`);
       await sleep(input === own ? 400 : 200); // a mount and a screen's own first render (__uiFit runs the fit it queued)

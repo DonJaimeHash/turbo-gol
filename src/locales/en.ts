@@ -272,8 +272,6 @@ export default {
   'search.bannedLine': 'For leaving matches',
   'search.playCasual': 'PLAY CASUAL',
   // Free play while searching found a match: the banner until the match is on screen
-  'search.found': 'MATCH FOUND',
-  'search.entering': 'Entering…',
   // Free play's line on the training HUD while the search goes on
   'search.practiceLine': 'Finding a match…',
 
@@ -794,6 +792,15 @@ export default {
   'hud.bot': 'BOT',
   // Scoreboard footer; {difficulty} is game.scoreboardEasy / Medium / Hard offline, game.scoreboardOnline / OnlineP2p online
   'hud.botDifficulty': 'Bot difficulty · {difficulty}',
+  // The goal banner, huge, every goal
+  'hud.goal': 'GOOOAL!',
+  // The chip under it: "Blue 1 – 0 Red"
+  'hud.goalScore': '{blueName} {blue} – {red} {redName}',
+  // For a screen reader: who scored and the score, or the score alone
+  'hud.goalBy': '{name} scores. Blue {blue}, Red {red}',
+  'hud.goalLabel': 'Goal. Blue {blue}, Red {red}',
+  // The feed (top centre) when you demolish a car; {count} is how many this match, uppercase
+  'hud.demolished': 'DEMOLISHED · {count}',
 
   // Pause screen (src/render/Hud.ts)
   // Title, huge, uppercase
@@ -812,8 +819,70 @@ export default {
   'pause.rules': 'RULES',
   // Leave the match for the menus
   'pause.quit': 'QUIT',
-  // The QUIT button after one press in an online match: a second one leaves it (may count as an abandon)
-  'pause.quitConfirm': 'LEAVE MATCH?',
+  // Online the match goes on behind the pause: the title says so (a dot before it), uppercase
+  'pause.live': 'MATCH IN PROGRESS',
+  // Under it
+  'pause.liveSub': 'Your car stands still while this menu is open',
+  // Under QUIT: it is held (controller A, Enter, a finger) to leave the match
+  'pause.holdHint': 'Hold to leave',
+  // The same with a mouse: a double click leaves
+  'pause.dblHint': 'Double-click to leave',
+  // Under QUIT in a Competitive match
+  'pause.quitRanked': 'Counts as an abandon',
+
+  // The final screen (src/ui/screens/match/final.ts), about 2 s after the whistle
+  // Its slot's first word ("FINAL · COMPETITIVE · 2V2 · SOUTH AMERICA"), uppercase
+  'final.slot': 'FINAL',
+  // The result, huge, uppercase
+  'final.win': 'VICTORY',
+  'final.loss': 'DEFEAT',
+  'final.draw': 'DRAW',
+  // The kind of match in the slot and on PLAY AGAIN (Casual and Competitive use play.casualTitle / play.rankedTitle)
+  'final.vsAi': 'VS AI',
+  'final.lobby': 'Lobby',
+  // For a screen reader: the card, then the score
+  'final.label': 'Final: {outcome}, Blue {blue}, Red {red}',
+  'final.scoreLabel': 'Blue {blue}, Red {red}. Your team is {team}',
+  // The players table: its name for a screen reader, its column headers (uppercase)
+  'final.players': 'Players',
+  'final.colPlayer': 'PLAYER',
+  'final.colGoals': 'GOALS',
+  // The rank card (Competitive): its label, {mode} is 1V1 / 2V2 / 3V3
+  'final.yourRank': 'YOUR RANK · {mode}',
+  // While the server works the rating change out
+  'final.rankWaiting': 'Working out your rank…',
+  // For a screen reader, next to "+18" / "−12"
+  'final.rankUp': 'Up {mmr} MMR',
+  'final.rankDown': 'Down {mmr} MMR',
+  // Under the bar: what the next tier still takes
+  'final.toNext': '{mmr} MMR to {tier}',
+  // The MVP card: its label (uppercase), then "Name · 2 goals"
+  'final.mvpLabel': 'MVP · YOUR MATCH',
+  'final.goals': { one: '{count} goal', other: '{count} goals' },
+  // A match on a community server: its name, the tag (uppercase) and the rules
+  'final.server': 'Server: {name}',
+  'final.community': 'COMMUNITY SERVER',
+  'final.rules': 'Standard rules',
+  'final.rulesRanked': 'Standard rules · counts for your rank',
+  // The main button: its slot (uppercase), the button, and its line for a lobby match
+  'final.slotQueue': 'SAME QUEUE',
+  'final.slotAi': 'REMATCH',
+  'final.slotLobby': 'YOUR LOBBY',
+  'final.again': 'PLAY AGAIN',
+  'final.backToLobby': 'Back to the lobby',
+  // The other two buttons (uppercase) and their lines
+  'final.change': 'CHANGE MODE',
+  'final.changeSub': 'Casual, VS AI or Lobbies',
+  'final.menu': 'MENU',
+  'final.menuSub': 'Back to Play',
+  // A Competitive match that never started: the toast over Inicio while the search starts again
+  'final.noShow': "A player didn't show up · back in the queue",
+  'final.dodge': 'A player left before the start · back in the queue',
+
+  // MATCH FOUND (src/ui/screens/match/found.ts): the band over any screen as a search finds a match, uppercase
+  'found.title': 'MATCH FOUND',
+  // The browser tab's title meanwhile
+  'found.tab': 'Match found! · Turbogol',
 
   // Settings screen, opened from the pause menu and the menus (src/render/Hud.ts)
   // Top-left button that closes the screen, uppercase (shown after a ‹ arrow)

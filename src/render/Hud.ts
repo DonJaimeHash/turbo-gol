@@ -1,8 +1,12 @@
 /**
- * DOM HUD: the scorebug (top left: BLU / RED chips with their scores, then the clock), the
- * segmented boost bar (bottom left, the speed readout sits above it in debug mode), fps, camera
- * mode, off-screen ball indicator, countdown, banners, the pause menu, the Tab scoreboard, a
- * pointer-lock hint, the start menu and the settings screen (rebinding for keyboard/mouse and
+ * DOM HUD (the Tablero plan PR 7; the owner's hub-partido-pc): the scorebug (top left, in the
+ * order TAG n │ clock │ n TAG, a lime notch under the player's team, the network bars by the
+ * clock online), the boost plate (bottom left, the speed readout above it in debug mode), fps,
+ * camera mode, the off-screen ball indicator (kept off the HUD's plates), the countdown (with the
+ * overtime line over it), the centre for ¡GOOOL! (the scoring team's slab and the scorer's chip)
+ * and the final whistle only, a feed of at most two chips at the top (joined, left, a bot takes
+ * over, DEMOLIDO), the pause as a dock (FocusNav, PARTIDO EN JUEGO online, SALIR held), the Tab
+ * scoreboard, a pointer-lock hint and the settings screen (rebinding for keyboard/mouse and
  * controller, camera and gameplay sliders, the master volume, the graphics quality, the
  * account-only experimental switch and physics preset editor: experimentalPage.ts). Every
  * per-frame setter caches its last value and touches the DOM only when something changed, so
@@ -14,20 +18,17 @@
  * Debug readouts (speed, fps / draw calls / GPU time) are hidden by default; F3 toggles them,
  * and `#stats` or `#debug` in the URL shows them from the start.
  *
- * Menu navigation: the Hud listens to window keydown itself (keyboard); the Game forwards gamepad
- * edges through `menuAction`. While a rebind capture is in progress (`capturing`) both paths are
- * ignored so the captured key / button only reaches Input.startRebind. The pause menu is driven by
- * the Game instead (`pauseAction`, from Input's menu edges: keyboard and pad alike), since the
- * pause / back keys it shares with the match are Input's.
+ * Settings navigation: the Hud listens to window keydown itself (keyboard); the Game forwards
+ * gamepad edges through `menuAction`. While a rebind capture is in progress (`capturing`) both
+ * paths are ignored so the captured key / button only reaches Input.startRebind. The pause dock is
+ * driven by the Game instead (`pauseAction`, from Input's menu edges: keyboard and pad alike, onto
+ * src/ui/nav.ts FocusNav), since the pause / back keys it shares with the match are Input's.
  *
  * Styling lives in src/style.css (classes prefixed `hud-`).
  */
 import {
   ACTION_ROWS,
-  bindingLabel,
   bindingsEqual,
-  DEFAULT_KBM,
-  DEFAULT_PAD,
   type ActionId,
   type Binding,
   type BindingPreset,
@@ -46,36 +47,78 @@ import {
 } from '../settings';
 import { PEER_CAND_LABELS, PEER_STATE_LABELS, type NetStatsView } from '../net/NetStats';
 import { isNodeHost } from '../net/protocol';
-import { MODES, type GameMode } from '../sim/constants';
+import type { GameMode } from '../sim/constants';
 import { t, type Key } from '../i18n';
 import type { CameraSettings } from './Camera';
 import { pageFlags } from './hashFlags';
-import { QUALITIES, nextQuality, type Quality } from './quality';
+import { QUALITIES, type Quality } from './quality';
 import { buildExperimentalPage, type ExperimentalOptions, type ExperimentalPage } from './experimentalPage';
 import type { CardKey, CardView, ControlsCardContent } from './controlsCard';
 import { pauseResumeKeys } from '../game/pauseKeys';
 import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from '../game/Match';
+import { FocusNav } from '../ui/nav';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
 export const DIFFICULTIES: readonly Difficulty[] = ['easy', 'medium', 'hard'];
 /** Menu order of the game modes (every key of MODES). */
 export const GAME_MODES: readonly GameMode[] = ['1v1', '2v2', '3v3'];
 
-/** Info-line text for a mode: '3v3 · 6 cars'. */
-export function modeInfo(mode: GameMode): string {
-  return `${mode} · ${MODES[mode] * 2} cars`;
-}
-
 /** How the clock is displayed: counting down, counting up (unlimited match) or overtime (+m:ss, red). */
 export type ClockMode = 'regulation' | 'unlimited' | 'overtime';
 
-/** ONLINE submenu entries: 'p2p' = Quick match (mesh, phase 2), 'server' = Partida en servidor (phase 1). */
+/** An online session's kind: 'p2p' = the mesh (phase 2), 'server' = a server match (phase 1). */
 export type OnlineKind = 'p2p' | 'server';
-export const ONLINE_KINDS: readonly OnlineKind[] = ['p2p', 'server'];
-export const ONLINE_KIND_LABELS: Readonly<Record<OnlineKind, string>> = {
-  p2p: 'QUICK MATCH  (P2P)',
-  server: 'PARTIDA EN SERVIDOR',
-};
+
+/** The network bars by the clock (3 good, 1 poor) from the round trip and the loss; 0: nothing to show yet. */
+export function netBars(rttMs: number, lossPct: number): 0 | 1 | 2 | 3 {
+  if (!(rttMs > 0)) return 0;
+  if (rttMs >= 200 || lossPct >= 8) return 1;
+  if (rttMs >= 110 || lossPct >= 3) return 2;
+  return 3;
+}
+
+/** A box on the HUD (CSS px of its root) the ball indicator stays out of. */
+export interface HudRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * Where the ball indicator goes when (x, y) falls inside one of `rects` grown by `r` (the glyph's
+ * reach): out along the shortest way that stays on the `w` x `h` screen, else where it was. Pure;
+ * writes `out` (no allocation per frame).
+ */
+export function avoidRects(x: number, y: number, r: number, rects: readonly HudRect[], w: number, h: number, out: { x: number; y: number }): void {
+  out.x = x;
+  out.y = y;
+  for (const b of rects) {
+    const l = b.left - r;
+    const tp = b.top - r;
+    const rt = b.right + r;
+    const bt = b.bottom + r;
+    if (out.x <= l || out.x >= rt || out.y <= tp || out.y >= bt) continue;
+    let best = Infinity;
+    let nx = out.x;
+    let ny = out.y;
+    const tryAt = (cx: number, cy: number): void => {
+      if (cx < r || cx > w - r || cy < r || cy > h - r) return;
+      const d = Math.abs(cx - out.x) + Math.abs(cy - out.y);
+      if (d < best) {
+        best = d;
+        nx = cx;
+        ny = cy;
+      }
+    };
+    tryAt(l, out.y);
+    tryAt(rt, out.y);
+    tryAt(out.x, tp);
+    tryAt(out.x, bt);
+    out.x = nx;
+    out.y = ny;
+  }
+}
 
 /**
  * Menu status string of the online flow's anti-bot step (Turnstile in front of POST /api/guest):
@@ -113,9 +156,6 @@ export interface RebindSource {
 }
 
 export interface MenuOptions {
-  title?: string;
-  subtitle?: string;
-  difficulty: Difficulty;
   quality: Quality;
   /**
    * The tiers Settings > Graphics lists (quality.ts menuQualities: Super low only for a signed-in
@@ -127,21 +167,14 @@ export interface MenuOptions {
   qualityNote?: string;
   /** Settings > Experimental (absent: the page shows the guest's locked line). */
   experimental?: ExperimentalOptions;
-  /** Game mode shown in the Mode row (1v1 / 2v2 / 3v3). */
-  mode: GameMode;
-  onPlay: (difficulty: Difficulty, quality: Quality, mode: GameMode) => void;
-  /** The quality tier picked (the settings screen's Graphics tab; Q in the legacy main menu). */
+  /** The quality tier picked (the settings screen's Graphics tab). */
   onQualityChange?: (quality: Quality) => void;
-  onDifficultyChange?: (difficulty: Difficulty) => void;
-  /** The Mode row changed (arrows, M, pad left / right); the Game rebuilds the roster at once. */
-  onModeChange?: (mode: GameMode) => void;
   /**
    * The live settings object (src/settings.ts). The Camera / Gameplay tabs write into
-   * `settings.camera` / `settings.controls` in place. Together with `input` this enables the
-   * "CONTROLS & SETTINGS" button; without either the button is hidden.
+   * `settings.camera` / `settings.controls` in place. The screen opens only with it and `input`.
    */
   settings?: Settings;
-  /** Rebinding API (Input). Also used for the live controls list under the main menu. */
+  /** Rebinding API (Input). */
   input?: RebindSource;
   /**
    * Fired after every change made in the settings screen (a slider, a toggle, a rebind, a
@@ -153,33 +186,15 @@ export interface MenuOptions {
    * `settings.camera` and the sliders refreshed; `onSettingsChanged` fires right after it.
    */
   onCameraPreset?: (which: 'default' | 'classic') => void;
-  /** [action, binding] rows for the controls list; overrides the generated list when given. */
-  controls?: ReadonlyArray<readonly [string, string]>;
-  /** Small line under the controls (e.g. the active backend). */
-  info?: string;
-  /** Online: shows the ONLINE button and the guest name field (default: when onOnline is given). */
-  onlineEnabled?: boolean;
-  /** Which ONLINE submenu entries exist (default both). */
-  p2pEnabled?: boolean;
-  serverEnabled?: boolean;
-  /** An ONLINE submenu entry was chosen (click, Enter / A on it): quick match of that kind with the selected mode. */
-  onOnline?: (mode: GameMode, kind: OnlineKind) => void;
-  /** Esc / Backspace / pad B in the main menu while a status line is shown: cancel matchmaking. */
-  onOnlineCancel?: () => void;
-  /** Initial value of the guest name field. */
-  guestName?: string;
-  /** The guest name field changed (on blur / Enter). */
-  onNameChange?: (name: string) => void;
 }
 
 /**
- * Gamepad / input layer routes these while the menu is shown (the keyboard goes through the
- * Hud's own listener). 'settings' = open the settings screen (next tab while inside it),
- * 'back' = leave the settings screen, 'up' / 'down' = move the focus, 'mode' = next game mode
- * (M), 'quality' = the next quality tier (Q: superlow -> low -> high -> ultra -> superlow),
- * 'tabPrev' / 'tabNext' = the settings screen's previous / next tab (pad LB / RB and LT / RT; Q / E).
+ * Gamepad / input layer routes these while the settings screen is shown (the keyboard goes
+ * through the Hud's own listener). 'settings' = the next tab, 'back' = leave the screen, 'up' /
+ * 'down' = move the focus, 'tabPrev' / 'tabNext' = the previous / next tab (pad LB / RB and
+ * LT / RT; Q / E).
  */
-export type MenuAction = 'accept' | 'left' | 'right' | 'quality' | 'mode' | 'settings' | 'up' | 'down' | 'back' | 'online' | 'tabPrev' | 'tabNext';
+export type MenuAction = 'accept' | 'left' | 'right' | 'settings' | 'up' | 'down' | 'back' | 'tabPrev' | 'tabNext';
 
 export type SettingsTab = 'kbm' | 'pad' | 'camera' | 'gameplay' | 'audio' | 'graphics' | 'experimental';
 
@@ -197,10 +212,30 @@ export interface PauseEntry {
    * (training), one focus stop for the row (left / right pick); default: a plain wide button.
    */
   readonly kind?: 'primary' | 'quit' | 'row';
-  /** Ask for a second activation first (its label turns into pause.quitConfirm): leaving an online match. */
-  readonly confirm?: boolean;
+  /**
+   * Leaving a match: held for HOLD_MS (A / Enter, a finger) or double-clicked with a mouse; a
+   * plain press or click only says how (the plan's mn-hold, pause.holdHint).
+   */
+  readonly hold?: boolean;
+  /** A line under the label (QUIT in Competitivo: it counts as an abandon). */
+  readonly sub?: () => string | null;
   /** `mouse`: a real mouse click picked it (the Game captures the mouse again on a resume). */
   readonly select: (mouse: boolean) => void;
+}
+
+/** How long QUIT is held (plan §1.7: 1000 ms to leave). */
+export const HOLD_MS = 1000;
+
+/** The feed: chips at once, and how long each stays. */
+const FEED_MAX = 2;
+const FEED_MS = 2500;
+
+/** How far the ball indicator's glyph reaches round its point (the dot, its arrow and its distance). */
+const IND_REACH = 34;
+
+/** The last input was a finger (device.ts: touch draws no ring, focuses nothing). */
+function touchMode(): boolean {
+  return document.documentElement.classList.contains('tg-touch');
 }
 
 /** A real mouse click (not a tap, not a key / pad activation through `.click()`). */
@@ -242,11 +277,6 @@ export interface ScoreboardData {
   /** Which team the human plays on (default 0 = blue). */
   playerTeam?: 0 | 1;
 }
-
-/** Actions listed under the main menu: the driving basics plus ball cam, rear view and pause. */
-export const MENU_CONTROL_ROWS = ACTION_ROWS.filter(
-  (r) => r.group === 'driving' || r.action === 'ballCam' || r.action === 'rearView' || r.action === 'pause',
-);
 
 // The settings screen's tables hold text keys: t() runs when the screen is built (once per page).
 // The language is fixed for the page, so resolving them at import would work too (ACTION_ROWS does).
@@ -455,6 +485,11 @@ export class Hud {
   private readonly scoreBlue: HTMLElement;
   private readonly scoreRed: HTMLElement;
   private readonly clock: HTMLElement;
+  private readonly scoreBox: HTMLElement;
+  /** The network bars by the clock (online; netBars). */
+  private readonly netBarsEl: HTMLElement;
+  private lastBars = -1;
+  private lastTeam = -1;
   private readonly boostValue: HTMLElement;
   private readonly boostFill: HTMLElement;
   private readonly boostBox: HTMLElement;
@@ -466,25 +501,41 @@ export class Hud {
   private readonly ballInd: HTMLElement;
   private readonly ballIndArrow: HTMLElement;
   private readonly ballIndDist: HTMLElement;
+  /** The plates the ball indicator stays out of (measured on a resize and as the controls card comes and goes). */
+  private readonly indRects: HudRect[] = [];
+  private indRectsKey = '';
+  private readonly indAt = { x: 0, y: 0 };
   private readonly countdown: HTMLElement;
+  /** TIEMPO EXTRA over the overtime kickoff's countdown (showOvertime). */
+  private readonly countdownCaption: HTMLElement;
   private readonly banner: HTMLElement;
   private readonly bannerTitle: HTMLElement;
   private readonly bannerSub: HTMLElement;
+  /** ¡GOOOL!: the scoring team's slab, the scorer's chip under it. */
+  private readonly goal: HTMLElement;
+  private readonly goalChip: HTMLElement;
+  private goalTimer = 0;
+  /** The feed (top centre): at most FEED_MAX chips, each FEED_MS. */
+  private readonly feedEl: HTMLElement;
   private readonly paused: HTMLElement;
+  private readonly pausedTitle: HTMLElement;
+  private readonly pausedLive: HTMLElement;
   private readonly pausedSub: HTMLElement;
-  /** The pause menu's buttons (setPaused rebuilds them from the Game's entries). */
+  /** The pause dock's buttons (setPaused rebuilds them from the Game's entries). */
   private readonly pauseMenu: HTMLElement;
-  private readonly pauseRing = new FocusRing();
+  /** Spatial focus over the dock (src/ui/nav.ts), driven by pauseAction. */
+  private readonly pauseNav: FocusNav;
   private pauseOpen = false;
   /** The settings screen is open over the pause menu (setPauseCovered). */
   private pauseCovered = false;
   private pauseEntries: readonly PauseEntry[] = [];
   /** One button per entry, in entry order. */
   private readonly pauseButtons: HTMLButtonElement[] = [];
-  /** The focus stop of each entry, in entry order (the entries of a row share one). */
-  private readonly pauseItemOf: FocusItem[] = [];
-  /** The entry waiting for its second activation (PauseEntry.confirm), or null. */
-  private pauseArmed: PauseEntry | null = null;
+  /** The held entry (PauseEntry.hold), its timer and its button's fill. */
+  private holding: PauseEntry | null = null;
+  private holdTimer = 0;
+  /** The hold came from A / Enter: the Game ends it when they are let go (pauseHoldRelease). */
+  private holdByKey = false;
   private readonly hint: HTMLElement;
   private readonly controls: HTMLElement;
   private readonly controlsTag: HTMLElement;
@@ -508,32 +559,9 @@ export class Hud {
   ];
   private readonly sbFoot: HTMLElement;
 
-  // Main menu.
+  // The settings overlay (openSettingsScreen), the Turnstile slot, the network panel.
   private menu: HTMLElement | null = null;
-  private mainPanel: HTMLElement | null = null;
-  private menuTitle: HTMLElement | null = null;
-  private menuSubtitle: HTMLElement | null = null;
-  private menuHint: HTMLElement | null = null;
-  private menuDifficulty: HTMLElement | null = null;
-  private menuMode: HTMLElement | null = null;
-  private menuQuality: HTMLElement | null = null;
-  private menuControls: HTMLElement | null = null;
-  private menuInfo: HTMLElement | null = null;
-  private settingsButton: HTMLButtonElement | null = null;
-  // Online (phase 1): ONLINE button, matchmaking status line, guest name field, network panel.
-  private menuOnline: HTMLButtonElement | null = null;
-  private onlineSub: HTMLElement | null = null;
-  private readonly onlineButtons: Partial<Record<OnlineKind, HTMLButtonElement>> = {};
-  private readonly onlineKindItems: FocusItem[] = [];
-  private onlineSubOpen = false;
-  private menuStatus: HTMLElement | null = null;
   private readonly turnstileBox: HTMLElement;
-  private nameRow: HTMLElement | null = null;
-  private nameInput: HTMLInputElement | null = null;
-  private onlineItem: FocusItem | null = null;
-  private nameItem: FocusItem | null = null;
-  private lastStatus: string | null = null;
-  private lastStatusError = false;
   private readonly net: HTMLElement;
   private readonly netBody: HTMLElement;
   private readonly netWait: HTMLElement;
@@ -543,15 +571,10 @@ export class Hud {
   private netShown = false;
   private lastNetAt = -1e9;
   private lastNetText = '';
-  private mainItemsAll: FocusItem[] = [];
-  private mainItemsBasic: FocusItem[] = [];
-  private readonly mainRing = new FocusRing();
   private menuOptions: MenuOptions | null = null;
-  private difficulty: Difficulty = 'medium';
   private quality: Quality = 'high';
   /** A picked tier that waits for the online match to end (Game.switchQuality): its line on the Graphics tab. */
   private qualityPending: Quality | null = null;
-  private mode: GameMode = '1v1';
   private debug = false;
 
   // Settings screen.
@@ -625,16 +648,15 @@ export class Hud {
       e.preventDefault();
       return;
     }
-    if (this.menu === null || this.menu.hidden) return;
+    if (this.menu === null || this.menu.hidden || !this.settingsOpen) return;
     // Alt + ← is the browser's Back (BackGuard: the screen goes back), not a value step.
     if (e.altKey) return;
-    const action = this.settingsOpen ? settingsKeyAction(e.code) : mainKeyAction(e.code);
+    const action = settingsKeyAction(e.code);
     if (action !== null) {
       this.menuAction(action, e.repeat); // the key's own repeat: as the pad's (menuAction)
       e.preventDefault();
       return;
     }
-    if (!this.settingsOpen) return;
     switch (e.code) {
       case 'Delete':
         this.clearFocused();
@@ -652,6 +674,7 @@ export class Hud {
   private readonly onResize = (): void => {
     this.rootW = 0;
     this.rootH = 0;
+    this.indRectsKey = '';
   };
 
   constructor(container: HTMLElement) {
@@ -665,19 +688,22 @@ export class Hud {
     this.turnstileBox.hidden = true;
     this.root.appendChild(this.turnstileBox);
 
-    // Scorebug (top left): [BLU 0] [RED 0] [3:00]. The three-letter tags keep the teams apart
-    // without relying on colour alone.
+    // Scorebug (top left), as the owner kept it: [BLU 0 │ 3:00 │ 0 RED], the network bars by the
+    // clock online, a lime notch under the player's team (setTeam). The three-letter tags keep the
+    // teams apart without relying on colour alone. It sits over the pause's veil (--z-score).
     const top = el('div', 'hud-top');
     const board = el('div', 'hud-score');
-    const blue = el('div', 'hud-score-team hud-blue');
     this.scoreBlue = el('span', 'hud-score-goals', '0');
-    blue.append(el('span', 'hud-score-tag', t('hud.tagBlue')), this.scoreBlue);
-    const red = el('div', 'hud-score-team hud-red');
     this.scoreRed = el('span', 'hud-score-goals', '0');
-    red.append(el('span', 'hud-score-tag', t('hud.tagRed')), this.scoreRed);
-    this.clock = el('div', 'hud-clock', formatClockSeconds(DEFAULT_MATCH_SECONDS));
-    board.append(blue, red, this.clock);
-    top.appendChild(board);
+    this.clock = el('span', 'hud-clock-time', formatClockSeconds(DEFAULT_MATCH_SECONDS));
+    this.netBarsEl = el('span', 'hud-bars');
+    this.netBarsEl.append(el('i', ''), el('i', ''), el('i', ''));
+    this.netBarsEl.hidden = true;
+    const clockBox = el('span', 'hud-clock');
+    clockBox.append(this.clock, this.netBarsEl);
+    board.append(el('span', 'hud-score-tag hud-blue', t('hud.tagBlue')), this.scoreBlue, clockBox, this.scoreRed, el('span', 'hud-score-tag hud-red', t('hud.tagRed')));
+    this.scoreBox = board;
+    top.append(board, el('span', 'hud-notch'));
     this.root.appendChild(top);
 
     const fpsBox = el('div', 'hud-fps');
@@ -734,6 +760,10 @@ export class Hud {
     this.countdown = el('div', 'hud-countdown');
     this.countdown.hidden = true;
     this.root.appendChild(this.countdown);
+    this.countdownCaption = el('div', 'hud-countdown-caption');
+    this.countdownCaption.append(el('b', '', t('game.overtime')), el('span', '', t('game.nextGoalWins')));
+    this.countdownCaption.hidden = true;
+    this.root.appendChild(this.countdownCaption);
 
     this.banner = el('div', 'hud-banner');
     this.bannerTitle = el('div', 'hud-banner-title');
@@ -741,6 +771,22 @@ export class Hud {
     this.banner.append(this.bannerTitle, this.bannerSub);
     this.banner.hidden = true;
     this.root.appendChild(this.banner);
+
+    // ¡GOOOL! (the owner's banner): the word on a slab of the scoring team's colour with a lime
+    // heel, the scorer and the score on a chip under it (showGoal).
+    this.goal = el('div', 'hud-goal');
+    this.goal.setAttribute('role', 'status');
+    const slab = el('div', 'hud-goal-slab');
+    slab.append(el('span', 'hud-goal-word', t('hud.goal')));
+    this.goalChip = el('div', 'hud-goal-chip');
+    this.goal.append(slab, this.goalChip);
+    this.goal.hidden = true;
+    this.root.appendChild(this.goal);
+
+    // The feed (top centre): who joined or left, a bot taking over, your demolitions.
+    this.feedEl = el('div', 'hud-feed');
+    this.feedEl.setAttribute('role', 'status');
+    this.root.appendChild(this.feedEl);
 
     // Scoreboard (held Tab / Back): team scores, clock, who is who.
     this.scoreboard = el('div', 'hud-scoreboard');
@@ -765,18 +811,39 @@ export class Hud {
     this.scoreboard.hidden = true;
     this.root.appendChild(this.scoreboard);
 
+    // The pause (plan §1.4 "Pausa"): the veil without blur, the scorebug above it (--z-score), a
+    // title plate (PAUSA; online "● PARTIDO EN JUEGO": the match goes on, the car stands still) and
+    // the dock at the bottom, for every input: the mouse and a finger click its buttons, the
+    // keyboard and the pad move the focus over it (FocusNav; the Game routes Input's menu edges to
+    // pauseAction). Only the plate and the dock take the pointer: a click or tap on the veil still
+    // reaches the canvas (resume). The key line stays for the keyboard (style.css hides it in touch
+    // mode). QUIT is held (PauseEntry.hold): a slip next to RESUME leaves no match.
     this.paused = el('div', 'hud-paused');
+    this.pausedTitle = el('div', 'hud-paused-title', t('pause.title'));
+    this.pausedLive = el('div', 'hud-paused-live');
+    this.pausedLive.append(el('b', '', t('pause.live')), el('span', '', t('pause.liveSub')));
+    this.pausedLive.hidden = true;
     this.pausedSub = el('div', 'hud-paused-sub', t('pause.hintDefault', { resumeKeys: pauseResumeKeys('Esc', 'Start') }));
-    // The pause menu, for every input: the mouse and a finger click its buttons, the keyboard and
-    // the pad move the focus (the Game routes Input's menu edges to pauseAction). Only the buttons
-    // take the pointer: a click or tap on the veil still reaches the canvas (resume). The key line
-    // stays for the keyboard (style.css hides it in touch mode). Online, QUIT asks for a second
-    // press: a slip next to RESUME would leave the match (an abandon in ranked).
+    const plate = el('div', 'hud-paused-plate');
+    plate.append(this.pausedTitle, this.pausedLive, this.pausedSub);
     this.pauseMenu = el('div', 'hud-pause-menu');
-    // DOM focus stays off the buttons: Enter on a clicked button would click it natively on top of
-    // the Game's accept.
+    // DOM focus stays off a clicked button (a mouse has no ring), and Enter / Space never click the
+    // focused one natively: the Game's accept does (pauseAction), once.
     this.pauseMenu.addEventListener('mousedown', (e: MouseEvent) => e.preventDefault());
-    this.paused.append(el('div', 'hud-paused-title', t('pause.title')), this.pausedSub, this.pauseMenu);
+    const noNative = (e: KeyboardEvent): void => {
+      if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') e.preventDefault();
+    };
+    this.pauseMenu.addEventListener('keydown', noNative);
+    this.pauseMenu.addEventListener('keyup', noNative);
+    this.pauseNav = new FocusNav(() => [{ name: 'dock', el: this.pauseMenu, main: true }], {
+      onFocus: (target) => {
+        for (const b of this.pauseMenu.querySelectorAll('.hud-focus')) b.classList.remove('hud-focus');
+        target.classList.add('hud-focus');
+        target.parentElement?.classList.toggle('hud-focus', target.parentElement.classList.contains('hud-pause-row'));
+      },
+    });
+    this.pauseNav.install(this.pauseMenu);
+    this.paused.append(plate, this.pauseMenu);
     this.paused.hidden = true;
     this.root.appendChild(this.paused);
 
@@ -862,34 +929,19 @@ export class Hud {
     this.netWait.hidden = false;
   }
 
-  /**
-   * Matchmaking / connection status under the ONLINE button ('Buscando partido... (2 esperando)',
-   * 'Conectando...', an error); null hides the line. Cached. A visible status closes the submenu.
-   */
-  setOnlineStatus(text: string | null, error = false): void {
-    if (text === this.lastStatus && error === this.lastStatusError) return;
-    this.lastStatus = text;
-    this.lastStatusError = error;
-    const line = this.menuStatus;
-    if (line === null) return;
-    if (text === null) {
-      line.hidden = true;
-      return;
-    }
-    if (!error && this.onlineSubOpen) this.setOnlineSub(false);
-    line.textContent = text;
-    line.hidden = false;
-    line.classList.toggle('hud-error', error);
+  /** The player's team: the lime notch under its side of the scorebug. */
+  setTeam(team: 0 | 1): void {
+    if (team === this.lastTeam) return;
+    this.lastTeam = team;
+    this.scoreBox.parentElement?.classList.toggle('hud-mine-red', team === 1);
   }
 
-  /** The ONLINE submenu (Quick match (P2P) / Partida en servidor) is open. */
-  get onlineMenuOpen(): boolean {
-    return this.onlineSubOpen;
-  }
-
-  /** Current value of the guest name field ('' when the menu was never built). */
-  get guestName(): string {
-    return this.nameInput !== null ? this.nameInput.value : '';
+  /** The network bars by the clock (netBars: 1 to 3); 0 hides them (offline, nothing measured yet). Cached. */
+  setNetBars(bars: 0 | 1 | 2 | 3): void {
+    if (bars === this.lastBars) return;
+    this.lastBars = bars;
+    this.netBarsEl.hidden = bars === 0;
+    this.netBarsEl.dataset.bars = String(bars);
   }
 
   /**
@@ -994,8 +1046,11 @@ export class Hud {
       this.rootW = this.root.clientWidth;
       this.rootH = this.root.clientHeight;
     }
-    const x = Math.round(((nx + 1) * 0.5 * this.rootW) / 2) * 2;
-    const y = Math.round(((1 - ny) * 0.5 * this.rootH) / 2) * 2;
+    this.measurePlates();
+    const at = this.indAt;
+    avoidRects((nx + 1) * 0.5 * this.rootW, (1 - ny) * 0.5 * this.rootH, IND_REACH, this.indRects, this.rootW, this.rootH, at);
+    const x = Math.round(at.x / 2) * 2;
+    const y = Math.round(at.y / 2) * 2;
     const a = Math.round(angleDeg / 2) * 2;
     if (x !== this.indX || y !== this.indY) {
       this.indX = x;
@@ -1014,8 +1069,23 @@ export class Hud {
     }
   }
 
-  /** Kickoff countdown: 3, 2, 1, 'GO' (a token: shown as hud.go); null hides it. */
+  /** The scorebug's, the boost plate's and the controls card's boxes: again after a resize or as the card comes or goes (a few times a match). */
+  private measurePlates(): void {
+    const key = this.controls.hidden ? 'off' : this.controlsView;
+    if (key === this.indRectsKey && this.indRects.length > 0) return;
+    this.indRectsKey = key;
+    const o = this.root.getBoundingClientRect();
+    this.indRects.length = 0;
+    for (const e of [this.scoreBox, this.boostBox, this.controls]) {
+      if (e.hidden) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width > 0) this.indRects.push({ left: r.left - o.left, top: r.top - o.top, right: r.right - o.left, bottom: r.bottom - o.top });
+    }
+  }
+
+  /** Kickoff countdown: 3, 2, 1, 'GO' (a token: shown as hud.go); null hides it. GO and null end the overtime line. */
   showCountdown(n: number | 'GO' | null): void {
+    if (n === null || n === 'GO') this.countdownCaption.hidden = true;
     const text = n === null ? null : n === 'GO' ? this.labelGo : String(n);
     if (text === this.lastCountdown) return;
     this.lastCountdown = text;
@@ -1032,8 +1102,14 @@ export class Hud {
     this.countdown.classList.add('hud-pop');
   }
 
-  /** Centre banner (goal, overtime, winner...), hidden after `ms` (0 = until the next banner). */
+  /** Overtime: "TIEMPO EXTRA · next goal wins" over the overtime kickoff's countdown, until its GO (the centre stays the goal's and the whistle's). */
+  showOvertime(): void {
+    this.countdownCaption.hidden = false;
+  }
+
+  /** Centre banner (the final whistle; a goal is showGoal's), hidden after `ms` (0 = until the next banner). */
   showBanner(title: string, sub = '', ms = 2500, team: 0 | 1 | null = null): void {
+    this.hideGoal();
     this.bannerTitle.textContent = title;
     this.bannerSub.textContent = sub;
     this.bannerSub.hidden = sub.length === 0;
@@ -1057,21 +1133,69 @@ export class Hud {
     if (this.bannerTimer !== 0) window.clearTimeout(this.bannerTimer);
     this.bannerTimer = 0;
     this.banner.hidden = true;
+    this.hideGoal();
   }
 
   /**
-   * Show the pause menu with `entries` (the focus on the first) and `hint` as its key line, or hide
-   * it. Called on pause only (it rebuilds the buttons), never per frame.
+   * ¡GOOOL! for `team`: its slab, and the chip "● scorer │ Azul 1 – 0 Rojo" (the scorer left out
+   * when nobody of that team touched the ball in the play: finalModel.ts goalScorer), for `ms`.
    */
-  setPaused(paused: boolean, entries: readonly PauseEntry[] = [], hint?: string): void {
+  showGoal(team: 0 | 1, scorer: string | null, blue: number, red: number, ms = 2500): void {
+    if (this.bannerTimer !== 0) window.clearTimeout(this.bannerTimer);
+    this.bannerTimer = 0;
+    this.banner.hidden = true;
+    this.goal.classList.toggle('hud-blue', team === 0);
+    this.goal.classList.toggle('hud-red', team === 1);
+    const score = el('span', 'hud-goal-score', t('hud.goalScore', { blue, red, blueName: t('hud.teamBlue'), redName: t('hud.teamRed') }));
+    if (scorer !== null) this.goalChip.replaceChildren(el('i', 'hud-goal-dot'), el('b', 'hud-goal-name', scorer), el('i', 'hud-goal-sep'), score);
+    else this.goalChip.replaceChildren(score);
+    this.goal.setAttribute('aria-label', scorer !== null ? t('hud.goalBy', { name: scorer, blue, red }) : t('hud.goalLabel', { blue, red }));
+    this.goal.hidden = false;
+    this.goal.classList.remove('hud-pop');
+    void this.goal.offsetWidth;
+    this.goal.classList.add('hud-pop');
+    if (this.goalTimer !== 0) window.clearTimeout(this.goalTimer);
+    this.goalTimer = window.setTimeout(() => this.hideGoal(), ms);
+  }
+
+  private hideGoal(): void {
+    if (this.goalTimer !== 0) window.clearTimeout(this.goalTimer);
+    this.goalTimer = 0;
+    this.goal.hidden = true;
+  }
+
+  /** A chip on the feed (top centre) for FEED_MS; the oldest goes when a third comes. `kind` picks its mark. */
+  feed(text: string, kind: 'join' | 'leave' | 'bot' | 'demo' = 'join'): void {
+    const chip = el('div', `hud-feed-chip hud-feed-${kind}`, text);
+    this.feedEl.appendChild(chip);
+    while (this.feedEl.childElementCount > FEED_MAX) this.feedEl.firstElementChild?.remove();
+    window.setTimeout(() => chip.remove(), FEED_MS);
+  }
+
+  /** The feed and the overtime line emptied (a match leaves the screen). */
+  clearFeed(): void {
+    this.feedEl.replaceChildren();
+    this.countdownCaption.hidden = true;
+  }
+
+  /**
+   * Show the pause dock with `entries` (the focus on the first; on none for a finger) and `hint` as
+   * its key line, or hide it. `live`: an online match, which goes on meanwhile ("● PARTIDO EN
+   * JUEGO"). Called on pause only (it rebuilds the buttons), never per frame.
+   */
+  setPaused(paused: boolean, entries: readonly PauseEntry[] = [], hint?: string, live = false): void {
     this.pauseOpen = paused;
     this.pauseCovered = false;
-    this.pauseArmed = null;
+    this.endHold(false);
     this.paused.hidden = !paused;
+    this.root.classList.toggle('hud-pausing', paused);
     if (!paused) {
-      this.pauseRing.use([]);
+      this.pauseMenu.textContent = '';
+      this.pauseButtons.length = 0;
       return;
     }
+    this.pausedTitle.hidden = live;
+    this.pausedLive.hidden = !live;
     if (hint !== undefined) this.pausedSub.textContent = hint;
     this.buildPauseMenu(entries);
   }
@@ -1089,10 +1213,10 @@ export class Hud {
     if (!this.pauseOpen) return;
     this.pauseCovered = covered;
     this.paused.hidden = covered;
-    this.disarmPause();
+    this.endHold(false);
     if (!covered && focusId !== undefined) {
       const i = this.pauseEntries.findIndex((e) => e.id === focusId);
-      if (i >= 0) this.focusPauseEntry(i);
+      if (i >= 0 && !touchMode()) this.pauseNav.focus(this.pauseButtons[i]);
     }
   }
 
@@ -1101,11 +1225,33 @@ export class Hud {
     if (this.pausedSub.textContent !== hint) this.pausedSub.textContent = hint;
   }
 
-  /** Keyboard / pad on the pause menu (Input's menu edges, routed by the Game while paused). */
+  /** Keyboard / pad on the pause dock (Input's menu edges, routed by the Game while paused). */
   pauseAction(action: PauseAction): void {
     if (!this.pauseMenuVisible) return;
-    if (action !== 'accept') this.disarmPause();
-    dispatchFocus(this.pauseRing, action);
+    if (action !== 'accept') {
+      this.endHold(false);
+      this.pauseNav.move(action);
+      return;
+    }
+    const cur = this.pauseNav.current;
+    if (cur === null) {
+      this.pauseNav.first();
+      return;
+    }
+    const entry = this.pauseEntries[this.pauseButtons.indexOf(cur as HTMLButtonElement)];
+    if (entry === undefined) return;
+    if (entry.hold === true) this.startHold(entry, true);
+    else this.activatePause(entry, false);
+  }
+
+  /** A hold started by A / Enter: still waiting for them to be let go (the Game asks Input.acceptHeld). */
+  get pauseHoldByKey(): boolean {
+    return this.holding !== null && this.holdByKey;
+  }
+
+  /** A / Enter let go before the hold filled: it empties again. */
+  pauseHoldRelease(): void {
+    if (this.holdByKey) this.endHold(false);
   }
 
   private buildPauseMenu(entries: readonly PauseEntry[]): void {
@@ -1113,86 +1259,102 @@ export class Hud {
     menu.textContent = '';
     this.pauseEntries = entries;
     const buttons = this.pauseButtons;
-    const itemOf = this.pauseItemOf;
     buttons.length = 0;
-    itemOf.length = 0;
-    const items: FocusItem[] = [];
-    // A run of 'row' entries shares one line and one focus stop (left / right pick, accept clicks).
+    // A run of 'row' entries shares one line (left / right walk it: data-nav-row).
     let row: HTMLElement | null = null;
-    let rowStart = 0;
-    const closeRow = (): void => {
-      if (row === null) return;
-      const item = this.groupItem(row, buttons.slice(rowStart), this.pauseRing);
-      for (let k = rowStart; k < buttons.length; k++) itemOf[k] = item;
-      items.push(item);
-      row = null;
-    };
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+    for (const entry of entries) {
       const kind = entry.kind ?? 'plain';
-      const b = button(`hud-pause-btn hud-pause-${kind}`, entry.label());
-      b.addEventListener('click', (e: MouseEvent) => this.activatePause(entry, isMouseClick(e)));
+      const b = button(`hud-pause-btn hud-pause-${kind}${entry.hold === true ? ' hud-pause-hold' : ''}`, '');
+      b.setAttribute('data-nav', '');
+      this.fillPauseButton(b, entry);
+      b.addEventListener('click', (e: MouseEvent) => {
+        // A press of a held entry says how (its line lights up); the hold or a double click leaves.
+        if (entry.hold === true) this.armHold(b);
+        else this.activatePause(entry, isMouseClick(e));
+      });
+      if (entry.hold === true) {
+        b.addEventListener('dblclick', (e: MouseEvent) => {
+          if (isMouseClick(e)) this.activatePause(entry, true);
+        });
+        b.addEventListener('pointerdown', (e: PointerEvent) => {
+          if (e.pointerType !== 'mouse') this.startHold(entry, false);
+        });
+        const up = (e: PointerEvent): void => {
+          if (e.pointerType !== 'mouse' && !this.holdByKey) this.endHold(false);
+        };
+        b.addEventListener('pointerup', up);
+        b.addEventListener('pointercancel', up);
+        b.addEventListener('pointerleave', up);
+      }
       if (kind === 'row') {
         if (row === null) {
           row = el('div', 'hud-pause-row');
-          rowStart = buttons.length;
+          row.setAttribute('data-nav-row', '');
           menu.appendChild(row);
         }
         row.appendChild(b);
-        buttons.push(b);
-        continue;
+      } else {
+        row = null;
+        menu.appendChild(b);
       }
-      closeRow();
-      menu.appendChild(b);
       buttons.push(b);
-      const item: FocusItem = { el: b, accept: () => this.activatePause(entry, false) };
-      b.addEventListener('pointerdown', () => this.pauseRing.focusItem(item));
-      itemOf[i] = item;
-      items.push(item);
     }
-    closeRow();
-    this.pauseRing.use(items, 0);
+    // The focus starts on the first entry (RESUME), as before; a finger's pause focuses nothing (no ring).
+    if (buttons.length > 0 && !touchMode()) this.pauseNav.focus(buttons[0]);
   }
 
-  /** Put the focus on entry `i` (and pick it inside its row when it is in one). */
-  private focusPauseEntry(i: number): void {
-    const item = this.pauseItemOf[i];
-    const b = this.pauseButtons[i];
-    if (item === undefined || b === undefined) return;
-    this.pauseRing.focusItem(item);
-    if (item.el !== b) b.dispatchEvent(new Event('pointerdown')); // groupItem picks the button on pointerdown
+  /** A button's label and its line (read again after every activation: a toggle changes its label). */
+  private fillPauseButton(b: HTMLButtonElement, entry: PauseEntry): void {
+    const sub = entry.sub?.() ?? null;
+    const parts: HTMLElement[] = [];
+    if (entry.hold === true) parts.push(el('span', 'hud-hold-fill'));
+    parts.push(el('span', 'hud-pause-label', entry.label()));
+    if (sub !== null) parts.push(el('span', 'hud-pause-sub', sub));
+    if (entry.hold === true) parts.push(el('span', 'hud-pause-howto hud-howto-hold', t('pause.holdHint')), el('span', 'hud-pause-howto hud-howto-dbl', t('pause.dblHint')));
+    b.replaceChildren(...parts);
   }
 
   private activatePause(entry: PauseEntry, mouse: boolean): void {
-    if (!this.pauseMenuVisible) return;
-    const i = this.pauseEntries.indexOf(entry);
-    if (i < 0) return;
-    if (entry.confirm === true && this.pauseArmed !== entry) {
-      this.disarmPause();
-      this.pauseArmed = entry;
-      const b = this.pauseButtons[i];
-      b.textContent = t('pause.quitConfirm');
-      b.classList.add('hud-pause-armed');
-      return;
-    }
-    this.disarmPause();
+    if (!this.pauseMenuVisible || !this.pauseEntries.includes(entry)) return;
+    this.endHold(false);
     const entries = this.pauseEntries;
     entry.select(mouse);
     // Still the same menu (a toggle, not resume / quit): its labels may have changed.
     if (this.pauseOpen && this.pauseEntries === entries) {
-      for (let k = 0; k < entries.length; k++) this.pauseButtons[k].textContent = entries[k].label();
+      for (let k = 0; k < entries.length; k++) this.fillPauseButton(this.pauseButtons[k], entries[k]);
     }
   }
 
-  private disarmPause(): void {
-    const armed = this.pauseArmed;
-    if (armed === null) return;
-    this.pauseArmed = null;
-    const i = this.pauseEntries.indexOf(armed);
-    if (i < 0) return;
-    const b = this.pauseButtons[i];
-    b.textContent = armed.label();
+  /** Start filling `entry`'s button: HOLD_MS later it is picked, unless let go first. */
+  private startHold(entry: PauseEntry, byKey: boolean): void {
+    if (!this.pauseMenuVisible || this.holding === entry) return;
+    this.endHold(false);
+    const b = this.pauseButtons[this.pauseEntries.indexOf(entry)];
+    if (b === undefined) return;
+    this.holding = entry;
+    this.holdByKey = byKey;
+    b.classList.add('hud-holding');
+    this.holdTimer = window.setTimeout(() => this.endHold(true), HOLD_MS);
+  }
+
+  /** The hold ends: `done` picks the entry, else its button empties again. */
+  private endHold(done: boolean): void {
+    const entry = this.holding;
+    if (entry === null) return;
+    this.holding = null;
+    this.holdByKey = false;
+    window.clearTimeout(this.holdTimer);
+    this.holdTimer = 0;
+    const b = this.pauseButtons[this.pauseEntries.indexOf(entry)];
+    if (b !== undefined) b.classList.remove('hud-holding');
+    if (done) this.activatePause(entry, false);
+  }
+
+  /** A plain press of a held entry: its how-to line lights up a moment. */
+  private armHold(b: HTMLButtonElement): void {
     b.classList.remove('hud-pause-armed');
+    void b.offsetWidth;
+    b.classList.add('hud-pause-armed');
   }
 
   /**
@@ -1318,81 +1480,12 @@ export class Hud {
     return this.captureRow !== null;
   }
 
-  get selectedDifficulty(): Difficulty {
-    return this.difficulty;
-  }
-
-  get selectedQuality(): Quality {
-    return this.quality;
-  }
-
-  get selectedMode(): GameMode {
-    return this.mode;
-  }
-
-  /**
-   * Make the Mode row show `mode` without firing onModeChange: the Game calls it when it could
-   * not honour the requested mode (a wasm build with a smaller MAX_CARS falls back to 1v1).
-   */
-  setSelectedMode(mode: GameMode): void {
-    if (mode === this.mode) return;
-    this.mode = mode;
-    this.refreshMenu();
-  }
-
-  showMenu(opts: MenuOptions): void {
-    this.menuOptions = opts;
-    this.difficulty = opts.difficulty;
-    this.quality = opts.quality;
-    this.mode = opts.mode;
-    if (this.menu === null) this.buildMenu();
-    const menu = this.menu as HTMLElement;
-    if (this.menuTitle !== null) this.menuTitle.textContent = opts.title ?? 'TURBOGOL';
-    if (this.menuSubtitle !== null) this.menuSubtitle.textContent = opts.subtitle ?? 'RocketSim physics · WebGPU';
-    const canSettings = opts.settings !== undefined && opts.input !== undefined;
-    if (this.settingsButton !== null) this.settingsButton.hidden = !canSettings;
-    const canOnline = opts.onlineEnabled ?? opts.onOnline !== undefined;
-    if (this.menuOnline !== null) this.menuOnline.hidden = !canOnline;
-    if (this.nameRow !== null) this.nameRow.hidden = !canOnline;
-    const p2pBtn = this.onlineButtons.p2p;
-    const serverBtn = this.onlineButtons.server;
-    if (p2pBtn !== undefined) p2pBtn.hidden = !(opts.p2pEnabled ?? true);
-    if (serverBtn !== undefined) serverBtn.hidden = !(opts.serverEnabled ?? true);
-    this.setOnlineSub(false);
-    if (this.nameInput !== null && opts.guestName !== undefined && document.activeElement !== this.nameInput) {
-      this.nameInput.value = opts.guestName;
-    }
-    this.setOnlineStatus(null);
-    if (this.menuHint !== null) {
-      const online = canOnline ? '   ·   N / Y  online (P2P or server)' : '';
-      this.menuHint.textContent = canSettings
-        ? `Enter / A  play${online}   ·   M  mode   ·   Q  quality   ·   O / X  controls & settings`
-        : `Enter / A  play${online}   ·   M  mode   ·   Q  quality`;
-    }
-    this.renderControlsList();
-    this.refreshMenu();
-    this.showMainPanel();
-    this.mainRing.use(this.mainItems(canSettings, canOnline), 0);
-    menu.hidden = false;
-    this.setBallIndicator(false);
-  }
-
-  /** Focusable main-menu items in order, skipping the hidden ONLINE / name / settings entries. */
-  private mainItems(canSettings: boolean, canOnline: boolean): FocusItem[] {
-    const out: FocusItem[] = [];
-    for (const item of this.mainItemsAll) {
-      if (!canOnline && (item === this.onlineItem || item === this.nameItem)) continue;
-      if (!canSettings && item.el === this.settingsButton) continue;
-      out.push(item);
-    }
-    return out;
-  }
-
   hideMenu(): void {
     if (this.menu !== null) {
       this.menu.hidden = true;
-      this.menu.classList.remove('hud-menu-settings-only');
     }
+    // Menu.settingsUp reads the panel: shown, it would keep the menus' keys after Settings closed.
+    if (this.settingsPanel !== null) this.settingsPanel.hidden = true;
     this.settingsOnlyClose = null;
     this.stopPadPoll();
   }
@@ -1408,7 +1501,6 @@ export class Hud {
     this.quality = opts.quality;
     if (this.menu === null) this.buildMenu();
     const menu = this.menu as HTMLElement;
-    menu.classList.add('hud-menu-settings-only');
     menu.hidden = false;
     this.settingsOnlyClose = onClose;
     // `tab`: open on that tab (a screen that sends the player to one: the presets' editor).
@@ -1419,257 +1511,51 @@ export class Hud {
   }
 
   /**
-   * Route gamepad / keyboard navigation to the menu (no-op while hidden or while a rebind
-   * capture is running). Main menu: up/down move the focus (PLAY, Difficulty, Mode, Quality,
-   * Controls & settings), accept activates the focused row (PLAY by default), left/right change
-   * the focused row's value (difficulty / mode; the next quality tier on its row), 'mode' (M)
-   * cycles the mode, 'quality' (Q) steps to the next quality tier, 'settings' opens the settings
-   * screen. Settings screen: up/down focus, left/right adjust (tabs on the tab strip), accept
-   * activates (rebind / toggle / button), 'settings', 'quality' or 'tabNext' = next tab, 'tabPrev'
-   * = the previous one, back closes ('mode' does nothing there). `repeat`: an arrow's auto-repeat
-   * (Input's NAV_REPEAT_*, a key's own): up / down stop at the first / last row instead of wrapping
-   * round, left / right only step a slider (a choice, the tabs or Graphics, a reload, once per press).
+   * Route gamepad / keyboard navigation to the settings screen (no-op while hidden or while a
+   * rebind capture is running): up/down focus, left/right adjust (tabs on the tab strip), accept
+   * activates (rebind / toggle / button), 'settings' or 'tabNext' = next tab, 'tabPrev' = the
+   * previous one, back closes. `repeat`: an arrow's auto-repeat (Input's NAV_REPEAT_*, a key's
+   * own): up / down stop at the first / last row instead of wrapping round, left / right only step
+   * a slider (a choice, the tabs or Graphics, a reload, once per press).
    */
   menuAction(action: MenuAction, repeat = false): void {
-    if (!this.menuVisible || this.menuOptions === null || this.captureRow !== null) return;
-    if (this.settingsOpen) {
-      // A text field of the screen is being typed in (the preset name: the keyboard is up): pad A
-      // or B leaves it (that saves it), up / down leave it and move on; left / right are the field's.
-      const active = typeof document !== 'undefined' ? document.activeElement : null;
-      if (active instanceof HTMLInputElement && active.type === 'text' && this.settingsPanel !== null && this.settingsPanel.contains(active)) {
-        if (action === 'left' || action === 'right') return;
-        active.blur();
-        if (action !== 'up' && action !== 'down') return;
-      }
-      if (dispatchFocus(this.settingsRing, action, repeat)) return;
-      if (action === 'back') this.closeSettings();
-      else if (action === 'quality' || action === 'settings' || action === 'tabNext') this.cycleTab(1);
-      else if (action === 'tabPrev') this.cycleTab(-1);
-      return;
+    if (!this.menuVisible || !this.settingsOpen || this.menuOptions === null || this.captureRow !== null) return;
+    // A text field of the screen is being typed in (the preset name: the keyboard is up): pad A
+    // or B leaves it (that saves it), up / down leave it and move on; left / right are the field's.
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    if (active instanceof HTMLInputElement && active.type === 'text' && this.settingsPanel !== null && this.settingsPanel.contains(active)) {
+      if (action === 'left' || action === 'right') return;
+      active.blur();
+      if (action !== 'up' && action !== 'down') return;
     }
-    if (dispatchFocus(this.mainRing, action, repeat)) return;
-    if (action === 'quality') this.stepQuality(1);
-    else if (action === 'mode') this.cycleMode(1);
-    else if (action === 'settings') this.openSettings();
-    else if (action === 'online') this.online();
-    // 'back' in the main menu closes the ONLINE submenu, else cancels matchmaking.
-    else if (action === 'back') {
-      if (this.onlineSubOpen) this.setOnlineSub(false);
-      else if (this.lastStatus !== null && this.menuOptions.onOnlineCancel) this.menuOptions.onOnlineCancel();
-    }
+    if (dispatchFocus(this.settingsRing, action, repeat)) return;
+    if (action === 'back') this.closeSettings();
+    else if (action === 'settings' || action === 'tabNext') this.cycleTab(1);
+    else if (action === 'tabPrev') this.cycleTab(-1);
   }
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('resize', this.onResize);
     if (this.bannerTimer !== 0) window.clearTimeout(this.bannerTimer);
+    this.hideGoal();
+    this.endHold(false);
     this.stopPadPoll();
     this.root.remove();
   }
 
-  // ---- main menu ---------------------------------------------------------------------------
-
-  /**
-   * The overlay plus the legacy main panel. Nothing shows that panel any more (showMenu has no
-   * caller; openSettingsScreen hides it behind the settings panel), so its texts stay in English,
-   * like modeInfo's.
-   */
+  /** The settings overlay (the panel itself is built on its first open: buildSettings). */
   private buildMenu(): void {
     const menu = el('div', 'hud-menu');
     // Keep DOM focus off the buttons so Enter / Space never fire a native click on top of the
-    // menu's own key handling; RMB over the menu must not open the context menu (it is bindable).
+    // screen's own key handling; RMB over it must not open the context menu (it is bindable).
     menu.addEventListener('mousedown', (e: MouseEvent) => {
       if (e.target instanceof HTMLButtonElement) e.preventDefault();
     });
     menu.addEventListener('contextmenu', (e: Event) => e.preventDefault());
-
-    const panel = el('div', 'hud-menu-panel');
-    this.menuTitle = el('div', 'hud-menu-title');
-    this.menuSubtitle = el('div', 'hud-menu-subtitle');
-    panel.append(this.menuTitle, this.menuSubtitle);
-
-    const play = button('hud-menu-play', 'PLAY');
-    play.addEventListener('click', () => this.play());
-    panel.appendChild(play);
-    // Online (phase 1): quick match in the selected mode, with a status line while it searches.
-    const online = button('hud-menu-online', 'ONLINE');
-    online.addEventListener('click', () => this.online());
-    online.hidden = true;
-    this.menuOnline = online;
-    panel.appendChild(online);
-    // ONLINE submenu: one button per kind (Quick match (P2P) / Partida en servidor).
-    const sub = el('div', 'hud-menu-online-sub');
-    sub.hidden = true;
-    for (const kind of ONLINE_KINDS) {
-      const b = button('hud-menu-online-opt', ONLINE_KIND_LABELS[kind]);
-      b.addEventListener('click', () => this.startOnline(kind));
-      this.onlineButtons[kind] = b;
-      sub.appendChild(b);
-      const item: FocusItem = { el: b, accept: () => this.startOnline(kind), left: () => this.cycleMode(-1), right: () => this.cycleMode(1) };
-      b.addEventListener('pointerdown', () => this.mainRing.focusItem(item));
-      this.onlineKindItems.push(item);
-    }
-    this.onlineSub = sub;
-    panel.appendChild(sub);
-    this.menuStatus = el('div', 'hud-menu-status');
-    this.menuStatus.hidden = true;
-    panel.appendChild(this.menuStatus);
-    this.menuHint = el('div', 'hud-menu-hint', 'Press Enter / A to play');
-    panel.appendChild(this.menuHint);
-
-    const rows = el('div', 'hud-menu-rows');
-    // Guest name (persisted by the online client); typing never reaches the menu keys.
-    const nameRow = el('div', 'hud-menu-row hud-menu-name-row');
-    nameRow.appendChild(el('span', 'hud-menu-row-label', 'Name'));
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.className = 'hud-menu-name';
-    nameInput.maxLength = 16;
-    nameInput.placeholder = 'Guest';
-    nameInput.autocomplete = 'off';
-    nameInput.spellcheck = false;
-    nameInput.tabIndex = -1;
-    nameInput.addEventListener('change', () => {
-      const opts = this.menuOptions;
-      if (opts !== null && opts.onNameChange) opts.onNameChange(nameInput.value);
-    });
-    nameRow.appendChild(nameInput);
-    nameRow.hidden = true;
-    this.nameRow = nameRow;
-    this.nameInput = nameInput;
-    rows.appendChild(nameRow);
-    const diffRow = el('div', 'hud-menu-row');
-    diffRow.appendChild(el('span', 'hud-menu-row-label', 'Difficulty'));
-    const diffCtl = el('span', 'hud-menu-select');
-    const dl = button('hud-menu-arrow', '‹');
-    dl.addEventListener('click', () => this.cycleDifficulty(-1));
-    this.menuDifficulty = el('span', 'hud-menu-value');
-    const dr = button('hud-menu-arrow', '›');
-    dr.addEventListener('click', () => this.cycleDifficulty(1));
-    diffCtl.append(dl, this.menuDifficulty, dr);
-    diffRow.appendChild(diffCtl);
-
-    const modeRow = el('div', 'hud-menu-row');
-    modeRow.appendChild(el('span', 'hud-menu-row-label', 'Mode'));
-    const modeCtl = el('span', 'hud-menu-select');
-    const ml = button('hud-menu-arrow', '‹');
-    ml.addEventListener('click', () => this.cycleMode(-1));
-    this.menuMode = el('span', 'hud-menu-value');
-    const mr = button('hud-menu-arrow', '›');
-    mr.addEventListener('click', () => this.cycleMode(1));
-    modeCtl.append(ml, this.menuMode, mr);
-    modeRow.appendChild(modeCtl);
-
-    const qRow = el('div', 'hud-menu-row');
-    qRow.appendChild(el('span', 'hud-menu-row-label', 'Quality'));
-    const qBtn = button('hud-menu-toggle', '');
-    qBtn.addEventListener('click', () => this.stepQuality(1));
-    this.menuQuality = qBtn;
-    qRow.appendChild(qBtn);
-    rows.append(diffRow, modeRow, qRow);
-    panel.appendChild(rows);
-
-    const settingsBtn = button('hud-menu-settings', 'CONTROLS & SETTINGS');
-    settingsBtn.addEventListener('click', () => this.openSettings());
-    settingsBtn.hidden = true;
-    this.settingsButton = settingsBtn;
-    panel.appendChild(settingsBtn);
-
-    this.menuControls = el('div', 'hud-menu-controls');
-    panel.appendChild(this.menuControls);
-    this.menuInfo = el('div', 'hud-menu-info');
-    panel.appendChild(this.menuInfo);
-    menu.appendChild(panel);
-
-    const diffLeft = (): void => this.cycleDifficulty(-1);
-    const diffRight = (): void => this.cycleDifficulty(1);
-    const modeLeft = (): void => this.cycleMode(-1);
-    const modeRight = (): void => this.cycleMode(1);
-    const qualityLeft = (): void => this.stepQuality(-1);
-    const qualityRight = (): void => this.stepQuality(1);
-    const playItem: FocusItem = { el: play, accept: () => this.play(), left: diffLeft, right: diffRight };
-    const onlineItem: FocusItem = { el: online, accept: () => this.online(), left: modeLeft, right: modeRight };
-    const nameItem: FocusItem = { el: nameRow, accept: () => nameInput.focus() };
-    const diffItem: FocusItem = { el: diffRow, accept: diffRight, left: diffLeft, right: diffRight };
-    const modeItem: FocusItem = { el: modeRow, accept: modeRight, left: modeLeft, right: modeRight };
-    const qualItem: FocusItem = { el: qRow, accept: qualityRight, left: qualityLeft, right: qualityRight };
-    const settingsItem: FocusItem = { el: settingsBtn, accept: () => this.openSettings(), left: diffLeft, right: diffRight };
-    this.onlineItem = onlineItem;
-    this.nameItem = nameItem;
-    this.mainItemsBasic = [playItem, diffItem, modeItem, qualItem];
-    this.mainItemsAll = [playItem, onlineItem, nameItem, diffItem, modeItem, qualItem, settingsItem];
-    for (const item of this.mainItemsAll) item.el.addEventListener('pointerdown', () => this.mainRing.focusItem(item));
-
     menu.hidden = true;
     this.root.appendChild(menu);
     this.menu = menu;
-    this.mainPanel = panel;
-  }
-
-  private play(): void {
-    if (this.menuOptions === null) return;
-    this.menuOptions.onPlay(this.difficulty, this.quality, this.mode);
-  }
-
-  /** ONLINE (button, N, pad Y): toggle the submenu; while matchmaking it does nothing. */
-  private online(): void {
-    const opts = this.menuOptions;
-    if (opts === null || !opts.onOnline || (this.menuOnline !== null && this.menuOnline.hidden)) return;
-    if (this.nameInput !== null && document.activeElement === this.nameInput) this.nameInput.blur();
-    if (this.lastStatus !== null && !this.lastStatusError) return;
-    this.setOnlineSub(!this.onlineSubOpen);
-  }
-
-  private startOnline(kind: OnlineKind): void {
-    const opts = this.menuOptions;
-    const btn = this.onlineButtons[kind];
-    if (opts === null || !opts.onOnline || btn === undefined || btn.hidden) return;
-    if (this.nameInput !== null && document.activeElement === this.nameInput) this.nameInput.blur();
-    this.setOnlineSub(false);
-    opts.onOnline(this.mode, kind);
-  }
-
-  /** Open / close the ONLINE submenu; open, the focus ring holds its entries (Esc / B closes it). */
-  private setOnlineSub(open: boolean): void {
-    if (open === this.onlineSubOpen) return;
-    this.onlineSubOpen = open;
-    if (this.onlineSub !== null) this.onlineSub.hidden = !open;
-    if (this.menuOnline !== null) this.menuOnline.classList.toggle('hud-active', open);
-    const opts = this.menuOptions;
-    if (opts === null) return;
-    if (open) {
-      const items: FocusItem[] = [];
-      for (let i = 0; i < ONLINE_KINDS.length; i++) {
-        const b = this.onlineButtons[ONLINE_KINDS[i]];
-        if (b !== undefined && !b.hidden) items.push(this.onlineKindItems[i]);
-      }
-      this.mainRing.use(items, 0);
-    } else {
-      const canSettings = opts.settings !== undefined && opts.input !== undefined;
-      const canOnline = opts.onlineEnabled ?? opts.onOnline !== undefined;
-      const items = this.mainItems(canSettings, canOnline);
-      let index = 0;
-      for (let i = 0; i < items.length; i++) if (items[i] === this.onlineItem) index = i;
-      this.mainRing.use(items, index);
-    }
-  }
-
-  private cycleMode(dir: number): void {
-    const i = GAME_MODES.indexOf(this.mode);
-    const n = (i + dir + GAME_MODES.length) % GAME_MODES.length;
-    this.mode = GAME_MODES[n];
-    this.refreshMenu();
-    const opts = this.menuOptions;
-    if (opts !== null && opts.onModeChange) opts.onModeChange(this.mode);
-  }
-
-  private cycleDifficulty(dir: number): void {
-    const i = DIFFICULTIES.indexOf(this.difficulty);
-    const n = (i + dir + DIFFICULTIES.length) % DIFFICULTIES.length;
-    this.difficulty = DIFFICULTIES[n];
-    this.refreshMenu();
-    const opts = this.menuOptions;
-    if (opts !== null && opts.onDifficultyChange) opts.onDifficultyChange(this.difficulty);
   }
 
   /**
@@ -1678,64 +1564,6 @@ export class Hud {
    */
   setQualityPending(q: Quality | null): void {
     this.qualityPending = q;
-  }
-
-  /**
-   * Step the tier in menu order among the listed ones (MenuOptions.qualities: superlow -> low ->
-   * high -> ultra when unlocked, wrapping): +1 for Q, a click, accept or right on the Quality row,
-   * -1 for left.
-   */
-  private stepQuality(d: 1 | -1): void {
-    const list = this.menuOptions?.qualities ?? QUALITIES;
-    if (d === 1) this.quality = nextQuality(this.quality, list);
-    else {
-      const back = [...list].reverse();
-      this.quality = nextQuality(this.quality, back.length > 0 ? back : list);
-    }
-    this.refreshMenu();
-    const opts = this.menuOptions;
-    if (opts !== null && opts.onQualityChange) opts.onQualityChange(this.quality);
-  }
-
-  /** Row values plus the info line ('3v3 · 6 cars · WebGPU · RocketSim 2.2.1 · 120 Hz'). */
-  private refreshMenu(): void {
-    if (this.menuDifficulty !== null) this.menuDifficulty.textContent = this.difficulty.toUpperCase();
-    if (this.menuMode !== null) this.menuMode.textContent = this.mode.toUpperCase();
-    if (this.menuQuality !== null) this.menuQuality.textContent = `${t(`quality.${this.quality}`).toUpperCase()}  (Q)`;
-    if (this.menuInfo !== null) {
-      const info = this.menuOptions?.info ?? '';
-      this.menuInfo.textContent = info.length > 0 ? `${modeInfo(this.mode)}  ·  ${info}` : modeInfo(this.mode);
-    }
-  }
-
-  /** Controls list under the main menu, generated from the live bindings ('<kbm> · <pad>'). */
-  private renderControlsList(): void {
-    const list = this.menuControls;
-    const opts = this.menuOptions;
-    if (list === null || opts === null) return;
-    list.textContent = '';
-    if (opts.controls !== undefined) {
-      for (const [action, keys] of opts.controls) list.appendChild(controlRow(action, keys));
-      return;
-    }
-    for (const row of MENU_CONTROL_ROWS) {
-      list.appendChild(controlRow(row.label, `${this.labelFor(row.action, 'kbm')}  ·  ${this.labelFor(row.action, 'pad')}`));
-    }
-    list.appendChild(controlRow('Debug readouts', 'F3'));
-    if (opts.onlineEnabled ?? opts.onOnline !== undefined) list.appendChild(controlRow('Network panel', 'F4'));
-  }
-
-  private labelFor(action: ActionId, device: Device): string {
-    const input = this.menuOptions?.input;
-    if (input !== undefined) return input.getLabel(action, device);
-    return bindingLabel((device === 'kbm' ? DEFAULT_KBM : DEFAULT_PAD)[action]);
-  }
-
-  private showMainPanel(): void {
-    this.settingsOpen = false;
-    if (this.mainPanel !== null) this.mainPanel.hidden = false;
-    if (this.settingsPanel !== null) this.settingsPanel.hidden = true;
-    this.stopPadPoll();
   }
 
   // ---- settings screen ---------------------------------------------------------------------
@@ -1749,7 +1577,6 @@ export class Hud {
     if (opts === null || opts.settings === undefined || opts.input === undefined) return;
     if (this.settingsPanel === null) this.buildSettings();
     this.settingsOpen = true;
-    if (this.mainPanel !== null) this.mainPanel.hidden = true;
     if (this.settingsPanel !== null) this.settingsPanel.hidden = false;
     this.refreshBindLabels('kbm');
     this.refreshBindLabels('pad');
@@ -1768,16 +1595,9 @@ export class Hud {
     }
     if (this.experimentalPage !== null) this.experimentalPage.disarm();
     const only = this.settingsOnlyClose;
-    if (only !== null) {
-      this.showMainPanel();
-      this.hideMenu();
-      only();
-      return;
-    }
-    this.showMainPanel();
-    // Bindings may have changed.
-    this.renderControlsList();
-    this.mainRing.set(this.mainRing.index, false);
+    this.settingsOpen = false;
+    this.hideMenu();
+    if (only !== null) only();
   }
 
   private stopPadPoll(): void {
@@ -2474,43 +2294,6 @@ function dispatchFocus(ring: FocusRing, action: MenuAction, repeat = false): boo
 }
 
 /**
- * Main menu keys. Space is deliberately NOT accept: it is the ball cam toggle, and the key that
- * starts the match is still held when the first tick samples (Enter / A play, as the hint says).
- */
-function mainKeyAction(code: string): MenuAction | null {
-  switch (code) {
-    case 'Enter':
-    case 'NumpadEnter':
-      return 'accept';
-    case 'ArrowLeft':
-    case 'KeyA':
-      return 'left';
-    case 'ArrowRight':
-    case 'KeyD':
-      return 'right';
-    case 'ArrowUp':
-    case 'KeyW':
-      return 'up';
-    case 'ArrowDown':
-    case 'KeyS':
-      return 'down';
-    case 'KeyQ':
-      return 'quality';
-    case 'KeyM':
-      return 'mode';
-    case 'KeyO':
-      return 'settings';
-    case 'KeyN':
-      return 'online';
-    case 'Escape':
-    case 'Backspace':
-      return 'back';
-    default:
-      return null;
-  }
-}
-
-/**
  * Network panel text (NetStatsView -> a few fixed-width lines; called at most 4x/s). A match on a
  * community node gets a `host` line with the node's name, so testers can tell which node they got.
  */
@@ -2576,12 +2359,6 @@ function settingsKeyAction(code: string): MenuAction | null {
     default:
       return null;
   }
-}
-
-function controlRow(action: string, keys: string): HTMLElement {
-  const row = el('div', 'hud-menu-control');
-  row.append(el('span', 'hud-menu-control-action', action), el('span', 'hud-menu-control-keys', keys));
-  return row;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

@@ -140,7 +140,7 @@
  * always stock, and any training whose physics differ from the arena's rebuilds it.
  * Search practice (MODOS' "While you wait: Free play", startSearchPractice): free play over a menu
  * search that keeps queueing; the frame watches the session (watchSearchPractice): once it leaves
- * its queue the one hand-off, practiceToMatch, ends practice under a "MATCH FOUND" banner and
+ * its queue the one hand-off, practiceToMatch, ends practice under the PARTIDO ENCONTRADO band and
  * today's found -> match path plays (a failed connect brings the menus back); quitting practice
  * returns to the menus still searching (stopTraining -> showMenu(true)).
  */
@@ -164,10 +164,14 @@ import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
 import { REGIONS, isPlaylist } from '../net/account';
 import type { RegionId } from '../net/account';
-import type { QueueResult } from '../net/protocol';
+import { isNodeHost, type QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import { createMenu, RankedResults } from '../ui';
 import type { Menu, MenuConfig, MenuHost, SearchRequest, SearchView } from '../ui';
+import { finalScreen, installFinalSample, type FinalScreen } from '../ui/screens/match/final';
+import { goalScorer, type FinalKind, type FinalPlayer, type FinalView } from '../ui/screens/match/finalModel';
+import { MatchFound } from '../ui/screens/match/found';
+import { regionName } from '../ui/names';
 import type { NetStatsView } from '../net/NetStats';
 import { P2PSession, kickoffSeedOf, type P2PGameHooks } from '../net/p2p/P2PSession';
 import type { RoomWelcome } from '../net/p2p/protocol';
@@ -178,7 +182,7 @@ import { BallView } from '../render/Ball';
 import { ChaseCamera, SWIVEL_PITCH_MOUSE_DEG, SWIVEL_PITCH_STICK_DEG, type CameraCarState } from '../render/Camera';
 import { CarView } from '../render/Car';
 import { Effects } from '../render/Effects';
-import { Hud, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow, type SettingsTab } from '../render/Hud';
+import { Hud, netBars, type ClockMode, type MenuOptions, type OnlineKind, type PauseEntry, type ScoreboardData, type ScoreboardRow, type SettingsTab } from '../render/Hud';
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
 import { Renderer, type GpuFailure } from '../render/Renderer';
 import { tierPrefsAfter } from '../render/bootTier';
@@ -222,6 +226,7 @@ import {
   C_ROT,
   C_VEL,
   C_WHEEL_SUSPENSION,
+  H_TICK_COUNT,
   MAX_CARS,
   NUM_BOOST_PADS,
   PADS_OFFSET,
@@ -446,8 +451,8 @@ const HIT_FX_MIN_SPEED = 250;
 const HARD_LANDING_VZ = 550;
 /** Seconds the "GO" caption stays on screen. */
 const GO_CAPTION_SECONDS = 0.8;
-/** Seconds after the final whistle before the menu comes back. */
-const MENU_RETURN_SECONDS = 5;
+/** Seconds after the final whistle before the FINAL comes (plan §1.7: 2 s). */
+const FINAL_SECONDS = 2;
 const FPS_INTERVAL = 0.25;
 /** Menu camera orbit (uu). */
 const MENU_ORBIT_RADIUS = 3600;
@@ -745,6 +750,7 @@ export class Game implements P2PGameHooks {
   private time = 0;
   private snapCamera = true;
   private goCaptionUntil = -1;
+  /** When the FINAL comes (performance.now() seconds: the wall clock, so a slow frame never holds it back), -1 none. */
   private menuReturnAt = -1;
   /** The front-end menus (src/ui): home, play, casual / ranked / custom / friendly, training, profile. */
   readonly menu: Menu;
@@ -773,6 +779,23 @@ export class Game implements P2PGameHooks {
   private lastResult: { winner: 0 | 1 | null; blue: number; red: number } | null = null;
   /** A message for that toast instead of the score (a disconnect reason...), or alone without a result. */
   private menuNotice: string | undefined;
+  /** The FINAL (the menus' 'final' screen, registered here) and the match it shows, null before a match ended. */
+  private finalUi: FinalScreen | null = null;
+  private finalView: FinalView | null = null;
+  /** Goals of each car this match (finalModel.ts goalScorer: the scoring team's last toucher of the play). */
+  private readonly goals = new Uint8Array(MAX_CARS);
+  /** The state buffer's tick at the play's GO: a touch before it scored nothing of this play. */
+  private playFrom = 0;
+  /** What kind of match is on (what the FINAL's PLAY AGAIN repeats). */
+  private matchKind: FinalKind = 'ai';
+  /** The player's demolitions this match (the feed's DEMOLISHED · n). */
+  private demos = 0;
+  /** The session's state on the last frame: 'queue' -> anything but idle is a match found (matchFound). */
+  private sessionStateWas = '';
+  /** PARTIDO ENCONTRADO (z 45, over the menus and the match alike). */
+  private readonly found: MatchFound;
+  /** A Competitive match cancelled before its start (a no-show, a dodge): the search starts again, with why. */
+  private requeue: { req: SearchRequest; text: string } | null = null;
   private fpsFrames = 0;
   private fpsWindowStart = 0;
   private gestureListening = false;
@@ -1011,6 +1034,9 @@ export class Game implements P2PGameHooks {
     });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
+    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView })));
+    installFinalSample(this.menu);
+    this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad }) : null;
     this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.hud.menuVisible && !this.onlineActive });
@@ -1076,7 +1102,7 @@ export class Game implements P2PGameHooks {
   private onExperimentalChange(): void {
     this.checkTierLock();
     if (this.freePlayRules !== null && !this.experimentalUnlocked && !this.pauseSettingsOpen && this.applyFreePlayRules() && this.hud.pauseMenuVisible) {
-      this.hud.setPaused(true, this.pauseEntries(), this.pauseHint()); // RULES goes
+      this.hud.setPaused(true, this.pauseEntries(), this.pauseHint(), this.onlineActive); // RULES goes
     }
     this.hud.refreshSettings(this.settingsOptions());
   }
@@ -1331,6 +1357,7 @@ export class Game implements P2PGameHooks {
     this.searchReq = { ...req, modes: req.modes.slice() };
     this.searchSince = performance.now();
     this.holdForGuest = mode !== this.mode && !this.accounts.signedIn && !guestReady(client);
+    this.matchKind = req.kind;
     if (req.kind === 'ranked') {
       if (online.state !== 'idle') return;
       this.setMode(mode);
@@ -1376,6 +1403,7 @@ export class Game implements P2PGameHooks {
     const mode: GameMode = st !== null && isPlaylist(st.settings.mode) ? st.settings.mode : this.mode;
     if (this.session !== null && this.session.busy) this.session.cancel();
     this.searchReq = null;
+    this.matchKind = 'lobby';
     if ((r as QueueResultP2p).kind !== 'p2p' && st !== null && st.settings.physics !== undefined && st.settings.physics !== null) {
       this.notify(t('p2p.experimentalFailed'));
       this.lobby.back();
@@ -1415,7 +1443,6 @@ export class Game implements P2PGameHooks {
   /** What the settings screen works on, from the menus and from the pause menu alike. */
   private settingsOptions(): MenuOptions {
     return {
-      difficulty: this.difficulty,
       // A pick that waits for the online match to end shows as the selected tier (with its line).
       quality: this.pendingRestart ?? this.quality,
       // Super low is listed for unlocked players only; a device running it on its own (or a pick
@@ -1423,8 +1450,6 @@ export class Game implements P2PGameHooks {
       qualities: menuQualities(this.experimentalUnlocked),
       qualityNote: this.renderer.tierReason === 'chosen' ? t('quality.superlowLocked') : t('settings.qualityAuto'),
       experimental: this.experimentalOptions(),
-      mode: this.mode,
-      onPlay: () => undefined,
       settings: this.settings,
       input: this.input,
       onSettingsChanged: () => this.applySettings(),
@@ -1437,8 +1462,8 @@ export class Game implements P2PGameHooks {
   // ---- pause menu ------------------------------------------------------------------------
 
   /**
-   * The pause menu's entries: RESUME, SETTINGS, QUIT (online it takes a second press: leaving may
-   * count as an abandon); training adds its entries on one row (pack: reset / previous / next shot;
+   * The pause menu's entries: RESUME, SETTINGS, QUIT (held, or double-clicked: a slip next to
+   * RESUME leaves no match; in Competitivo its line says it counts as an abandon); training adds its entries on one row (pack: reset / previous / next shot;
    * free play: reset ball / reset car / unlimited boost) and QUIT leaves training; experimental
    * free play also gets RULES (the settings screen on its Experimental tab). Paused under a pack
    * summary: nothing (the summary's own buttons stay the only ones).
@@ -1448,7 +1473,8 @@ export class Game implements P2PGameHooks {
     const settings: PauseEntry = { id: 'settings', label: () => t('pause.settings'), select: () => this.openPauseSettings() };
     const tr = this.training;
     if (tr === null) {
-      return [resume, settings, { id: 'quit', kind: 'quit', confirm: this.onlineActive, label: () => t('pause.quit'), select: () => this.quitToMenu() }];
+      const ranked = this.onlineActive && this.online !== null && this.session === this.online && this.online.ranked;
+      return [resume, settings, { id: 'quit', kind: 'quit', hold: true, label: () => t('pause.quit'), sub: () => (ranked ? t('pause.quitRanked') : null), select: () => this.quitToMenu() }];
     }
     if (this.trainingHud !== null && this.trainingHud.summaryVisible) return [];
     // The shot entries also resume (as the training keys do while playing).
@@ -1498,6 +1524,8 @@ export class Game implements P2PGameHooks {
   private pauseMenuActions(): void {
     const hud = this.hud;
     if (!hud.pauseMenuVisible) return;
+    // QUIT held with A / Enter: let go before it filled, it empties.
+    if (hud.pauseHoldByKey && !this.input.acceptHeld) hud.pauseHoldRelease();
     const a = this.input.actions;
     if (a.accept) hud.pauseAction('accept');
     else if (a.settings) this.openPauseSettings();
@@ -1531,7 +1559,7 @@ export class Game implements P2PGameHooks {
         this.input.latchEdges();
         if (this.freePlayRules !== null && this.applyFreePlayRules()) {
           // The entries changed with the rules (RULES goes when the player is no longer unlocked).
-          this.hud.setPaused(true, this.pauseEntries(), this.pauseHint());
+          this.hud.setPaused(true, this.pauseEntries(), this.pauseHint(), this.onlineActive);
           this.hud.setPauseCovered(false, this.freePlayRules !== null ? from : 'settings');
           return;
         }
@@ -2164,9 +2192,10 @@ export class Game implements P2PGameHooks {
         this.audio.playGo();
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         this.controlsCard.go();
+        this.playFrom = this.cur[H_TICK_COUNT];
         break;
       case 'goal': {
-        hud.showBanner(t('game.goal'), t('game.teamScores', { team: TEAM_LABEL[e.team], blue: e.blue, red: e.red }), 2500, e.team);
+        this.creditGoal(e.team, e.blue, e.red);
         const b = this.cur;
         const p = this.hitPos;
         p[0] = b[BALL_OFFSET + B_POS];
@@ -2178,14 +2207,12 @@ export class Game implements P2PGameHooks {
         break;
       }
       case 'overtime':
-        hud.showBanner(t('game.overtime'), t('game.nextGoalWins'), 3000);
+        hud.showOvertime();
         break;
       case 'ended': {
         const title = t('game.teamWins', { team: TEAM_NAME[e.winner] });
         hud.showBanner(title, `${blue} – ${red}`, 0, e.winner);
-        this.lastResult = { winner: e.winner, blue, red };
-        this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
-        this.input.exitPointerLock();
+        this.matchEnded(e.winner, blue, red);
         break;
       }
       default:
@@ -2203,7 +2230,7 @@ export class Game implements P2PGameHooks {
   p2pSlotDropped(slot: number, name: string): void {
     const row = this.sbRows[slot];
     if (row !== undefined) row.bot = true; // the Hud diffs the rows by content: the BOT tag appears
-    this.hud.showBanner(t('game.playerDisconnected', { name }), t('game.botTakeover'), 2000);
+    this.hud.feed(`${t('game.playerDisconnected', { name })} · ${t('game.botTakeover')}`, 'bot');
   }
 
   /** P2PGameHooks: the P2P queue answered with a server match (or the mesh never closed): phase 1 takes over. */
@@ -2230,6 +2257,7 @@ export class Game implements P2PGameHooks {
     this.menuReturnAt = -1;
     this.goCaptionUntil = -1;
     this.ballPinned = false;
+    this.newMatchStats();
     this.match.reset();
     this.acc = 0;
     this.snapCamera = true;
@@ -2276,12 +2304,13 @@ export class Game implements P2PGameHooks {
         this.audio.playGo();
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         this.controlsCard.go();
+        this.playFrom = this.cur[H_TICK_COUNT];
         break;
       case 'kickoff':
         hud.showCountdown(null);
         break;
       case 'goal': {
-        hud.showBanner(t('game.goal'), t('game.teamScores', { team: TEAM_LABEL[e.team], blue: e.blue, red: e.red }), 2500, e.team);
+        this.creditGoal(e.team, e.blue, e.red);
         const b = this.cur;
         const p = this.hitPos;
         p[0] = b[BALL_OFFSET + B_POS];
@@ -2293,31 +2322,34 @@ export class Game implements P2PGameHooks {
         break;
       }
       case 'overtime':
-        hud.showBanner(t('game.overtime'), t('game.nextGoalWins'), 3000);
+        hud.showOvertime();
         break;
       case 'ended': {
         const w = e.winner;
         const team: 0 | 1 | null = w === 0 || w === 1 ? w : null;
         const title = team === null ? t('game.draw') : t('game.teamWins', { team: TEAM_NAME[team] });
         hud.showBanner(title, `${e.blue} – ${e.red}`, 0, team);
-        this.lastResult = { winner: team, blue: e.blue, red: e.red };
-        this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
-        this.input.exitPointerLock();
+        this.matchEnded(team, e.blue, e.red);
         break;
       }
+      case 'cancelled':
+        // A Competitive match that never started (a no-show, a dodge): back in the queue at once
+        // (onSessionDisconnected), never a FINAL.
+        if (this.searchReq !== null) this.requeue = { req: this.searchReq, text: t(e.reason === 'dodge' ? 'final.dodge' : 'final.noShow') };
+        break;
       case 'playerJoined':
-        hud.showBanner(t('game.playerJoined', { name: e.name }), '', 1200);
+        hud.feed(t('game.playerJoined', { name: e.name }), 'join');
         break;
       case 'playerLeft': {
         const row = this.sbRows[e.slot];
-        hud.showBanner(t('game.playerLeft', { name: row !== undefined ? row.name : t('game.playerSlot', { slot: e.slot }) }), '', 1500);
+        hud.feed(t('game.playerLeft', { name: row !== undefined ? row.name : t('game.playerSlot', { slot: e.slot }) }), 'leave');
         break;
       }
       case 'botTakeover': {
         // The player quit for good: the host's bot drives that car now (it keeps moving on screen).
         const row = this.sbRows[e.slot];
         if (row !== undefined) row.bot = true; // the Hud diffs the rows by content: the BOT tag appears
-        hud.showBanner(t('game.playerLeft', { name: row !== undefined ? row.name : t('game.playerSlot', { slot: e.slot }) }), t('game.botTakeover'), 2000);
+        hud.feed(`${t('game.playerLeft', { name: row !== undefined ? row.name : t('game.playerSlot', { slot: e.slot }) })} · ${t('game.botTakeover')}`, 'bot');
         break;
       }
       default:
@@ -2327,10 +2359,15 @@ export class Game implements P2PGameHooks {
 
   /** The connection is gone for good: back to the menu with the reason as subtitle. */
   onSessionDisconnected(message: string): void {
+    const requeue = this.requeue;
+    this.requeue = null;
     this.lastResult = null;
-    this.menuNotice = message;
+    this.finalView = null;
+    this.menuNotice = requeue !== null ? requeue.text : message;
     if (!this.menuShown) this.showMenu();
     else if (this.session !== null) this.session.leave();
+    // A match that never started: the same search again (the toast says why).
+    if (requeue !== null) this.menu.startSearch(requeue.req);
   }
 
   /**
@@ -2501,16 +2538,15 @@ export class Game implements P2PGameHooks {
 
   /**
    * Search practice found its match: practice ends (the offline roster back, frozen at kickoff
-   * under a "MATCH FOUND · Entering…" banner) and today's found -> match path takes over (the
-   * session's roster, its kickoff countdown; sessionMatchOnScreen hides the banner). The one
-   * hand-off from practice to a match (the frame's watch, setSession, the session rosters): a
-   * MATCH FOUND interstitial goes in here. No-op unless practising with a search.
+   * under the PARTIDO ENCONTRADO band, which the frame's watch shows: matchFound) and today's
+   * found -> match path takes over (the session's roster, its kickoff countdown). The one hand-off
+   * from practice to a match (the frame's watch, setSession, the session rosters). No-op unless
+   * practising with a search.
    */
   private practiceToMatch(): void {
     if (this.searchPractice !== 'practice') return;
     this.searchPractice = 'entering';
     this.endTraining();
-    this.hud.showBanner(t('search.found'), t('search.entering'), 0);
   }
 
   /** Training off without opening the menu (startMatch / an online session take over from here). */
@@ -3097,7 +3133,7 @@ export class Game implements P2PGameHooks {
   setPaused(p: boolean): void {
     if (this.paused === p) return;
     this.paused = p;
-    if (p) this.hud.setPaused(true, this.pauseEntries(), this.pauseHint());
+    if (p) this.hud.setPaused(true, this.pauseEntries(), this.pauseHint(), this.onlineActive);
     else {
       this.closePauseSettings();
       this.hud.setPaused(false);
@@ -3170,6 +3206,8 @@ export class Game implements P2PGameHooks {
     this.setPaused(false);
     this.menuReturnAt = -1;
     this.ballPinned = false;
+    this.matchKind = 'ai';
+    this.newMatchStats();
     this.bots.reset();
     this.mates.reset();
     this.match.start();
@@ -3415,7 +3453,7 @@ export class Game implements P2PGameHooks {
       else if (pa.menuUp) hud.menuAction('up', rep);
       else if (pa.menuDown) hud.menuAction('down', rep);
       // Y over the settings screen opened from the menus: cancel the search running behind it.
-      else if (pa.menuCancel && !(this.menu.visible && this.menu.cancelSearch())) hud.menuAction('online');
+      else if (pa.menuCancel && this.menu.visible) this.menu.cancelSearch();
     } else if (this.training !== null && this.training.phase === 'summary') {
       // The pack summary owns the edges: retry, back to the menu, or pick a shot.
       this.trainingSummaryActions();
@@ -3536,11 +3574,13 @@ export class Game implements P2PGameHooks {
       hud.setScore(match.score.blue, match.score.red);
       hud.setClock(match.displaySeconds, match.overtime ? 'overtime' : match.isUnlimited ? 'unlimited' : 'regulation');
     }
+    // The notch under the player's team; the network bars by the clock while online.
+    hud.setTeam(this.sbRows[this.playerSlot]?.team === 1 ? 1 : 0);
+    hud.setNetBars(session !== null && sessionActive ? netBars(session.stats.rttMs, session.stats.lossPct) : 0);
     if (session !== null) {
-      // Network panel (F4 / #net, auto while online in debug), the menu's status line, the stall hint.
+      // Network panel (F4 / #net, auto while online in debug), the stall hint.
       hud.setNetAuto(sessionActive);
       if (hud.netVisible) hud.setNetStats(session.stats);
-      if (inMenu) hud.setOnlineStatus(session.statusText, session.statusIsError);
       hud.setNetWait(sessionActive && !inMenu ? session.hint : null);
     }
     // Boost and speed change every frame: 10 Hz on cpuLite (each change rewrites DOM text).
@@ -3610,7 +3650,13 @@ export class Game implements P2PGameHooks {
       this.goCaptionUntil = -1;
       hud.showCountdown(null);
     }
-    if (this.menuReturnAt >= 0 && this.time >= this.menuReturnAt) {
+    // A search that found its match (any session: 'queue' to connecting, signaling...): the band.
+    const st = this.session !== null ? this.session.state : '';
+    if (st !== this.sessionStateWas) {
+      if (this.sessionStateWas === 'queue' && st !== 'idle' && st !== 'queue' && st !== '') this.matchFound();
+      this.sessionStateWas = st;
+    }
+    if (this.menuReturnAt >= 0 && performance.now() * 0.001 >= this.menuReturnAt) {
       this.menuReturnAt = -1;
       // The timer belongs to the match that ended; a session started since (queueing, connecting
       // or already playing the next match) must not be left by it: showMenu() leaves the session.
@@ -3770,6 +3816,77 @@ export class Game implements P2PGameHooks {
     this.menu.toast(t('touch.installHint'), 'info');
   }
 
+  // ---- the match's end, its goals, PARTIDO ENCONTRADO -------------------------------------
+
+  /** A new match: no goals, no demolitions, no FINAL yet, the feed empty. */
+  private newMatchStats(): void {
+    this.goals.fill(0);
+    this.demos = 0;
+    this.playFrom = 0;
+    this.finalView = null;
+    this.hud.clearFeed();
+  }
+
+  /**
+   * A goal for `team` (any path: the offline match, the host, the P2P timeline): its scorer is the
+   * team's last toucher of the play, from the state buffer the client already has (goalScorer);
+   * ¡GOOOL! with the scorer's chip, without it when nobody of that team touched the ball.
+   */
+  private creditGoal(team: 0 | 1, blue: number, red: number): void {
+    const slot = goalScorer(this.cur, team, this.playFrom);
+    if (slot >= 0) this.goals[slot]++;
+    const row = slot >= 0 ? this.sbRows[slot] : undefined;
+    this.hud.showGoal(team, row !== undefined ? this.rowName(row) : null, blue, red);
+  }
+
+  /** A scoreboard row's name, the player's own without its "(You)" (the FINAL and the goal chip say it their way). */
+  private rowName(r: ScoreboardRow): string {
+    if (!r.you) return r.name;
+    return this.accounts.account?.name ?? (this.online !== null ? this.online.name : t('game.guestName'));
+  }
+
+  /**
+   * The final whistle (any path): the result, what the FINAL shows, and FINAL_SECONDS later the
+   * FINAL (frameLogic: only when no session is busy or in a match by then).
+   */
+  private matchEnded(winner: 0 | 1 | null, blue: number, red: number): void {
+    this.lastResult = { winner, blue, red };
+    this.menuReturnAt = performance.now() * 0.001 + FINAL_SECONDS;
+    this.input.exitPointerLock();
+    const me = this.sbRows[this.playerSlot];
+    const players: FinalPlayer[] = this.sbRows.map((r, slot) => ({ name: this.rowName(r), team: r.team, you: r.you, bot: !r.you && r.bot !== false, goals: this.goals[slot] ?? 0 }));
+    const online = this.online;
+    const onServer = online !== null && this.session === online;
+    const host = this.session !== null ? this.session.stats.host : '';
+    const req = this.searchReq;
+    this.finalView = {
+      kind: this.matchKind,
+      winner,
+      team: me !== undefined ? me.team : 0,
+      blue,
+      red,
+      mode: this.mode,
+      region: req !== null ? req.region : null,
+      players,
+      node: isNodeHost(host) ? host.slice(host.indexOf(':') + 1) : null,
+      rankedMatchId: onServer && online.ranked ? online.lastRankedMatchId : null,
+    };
+  }
+
+  /**
+   * A search found its match (the Worker's matched answer, a P2P room): PARTIDO ENCONTRADO over
+   * whatever is on screen, a short cue and the tab's title; the match follows by itself. The one
+   * entry point for it (plan PR 6: a free practice during the search hands off through here).
+   */
+  matchFound(): void {
+    const req = this.searchReq;
+    if (req === null) return;
+    const region = req.region ?? this.menu.regionId;
+    const line = [t(req.kind === 'ranked' ? 'play.rankedTitle' : 'play.casualTitle'), ...req.modes, region !== null ? regionName(region) : null].filter((x) => x !== null).join(' · ');
+    this.found.show(line);
+    this.audio.playMatchFound();
+  }
+
   // ---- menu ------------------------------------------------------------------------------
 
   /** The menus back. `keepSearch`: a session still queueing stays (search practice quit: stopTraining). */
@@ -3787,9 +3904,11 @@ export class Game implements P2PGameHooks {
     this.input.resetMenuRepeat();
     this.hud.hideBanner(); // the "X WINS" banner is sticky and would bleed through the menu backdrop
     this.hud.showCountdown(null);
-    // The last match's result (score / disconnect reason) as a toast over the menus.
+    // The last match's result: the FINAL (plan PR 7: it absorbs the result dialog); a disconnect's
+    // reason as a toast over the menus.
     const result = this.lastResult;
-    if (result !== null) {
+    const final = result !== null ? this.finalView : null;
+    if (result !== null && final === null) {
       const detail = this.menuNotice ?? `${result.blue} – ${result.red}`;
       this.menu.toast(result.winner === null ? t('game.resultDraw', { detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], detail }), 'info');
     }
@@ -3799,10 +3918,15 @@ export class Game implements P2PGameHooks {
     this.lastResult = null;
     this.menuNotice = undefined;
     this.hud.hideMenu();
-    // Back from a custom lobby's match: its screen comes back (its show() tells the lobby, which
-    // starts again only once every member is back), wherever the menus were left.
-    if (this.lobby.inLobby && this.lobby.me?.inGame === true && this.menu.top()?.id !== 'lobby') this.menu.open('lobby');
-    this.menu.show();
+    // Back from a custom lobby's match: the lobby hears it at once (it starts again only once every
+    // member is back). Without a FINAL its screen comes back (its show() tells the lobby), wherever
+    // the menus were left; with one the lobby is told here, as the FINAL's MENÚ and Back go to Inicio
+    // (its PLAY AGAIN opens the lobby).
+    if (this.lobby.inLobby && this.lobby.me?.inGame === true) {
+      if (final !== null) this.lobby.back();
+      else if (this.menu.top()?.id !== 'lobby') this.menu.open('lobby');
+    }
+    this.menu.show(final !== null ? 'final' : undefined);
     this.flushNotices();
     // What an earlier ranked match's wait got while the menus were away comes first. Then, when a
     // ranked match just ended, its rating change once AccountsDO has it (on a community node only
@@ -3811,7 +3935,8 @@ export class Game implements P2PGameHooks {
     const ranked = online !== null ? online.lastRankedMatchId : null;
     if (online !== null && ranked !== null) {
       online.lastRankedMatchId = null;
-      void this.rankedResults.watch(ranked, online.lastRankedOnNode);
+      // Into the FINAL's rank card while it is up for this match; else the old way (held, a dialog).
+      void this.rankedResults.watch(ranked, online.lastRankedOnNode, final !== null ? (r) => this.finalUi?.setRank(ranked, r) ?? false : undefined);
     }
     // A tier picked during the online match that needs a reload (switchQuality): now.
     const pending = this.pendingRestart;
@@ -3842,19 +3967,18 @@ export class Game implements P2PGameHooks {
         this.audio.playGo();
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         this.controlsCard.go();
+        this.playFrom = this.cur[H_TICK_COUNT];
         break;
       case 'goal':
-        hud.showBanner(t('game.goal'), t('game.teamScores', { team: TEAM_LABEL[e.team], blue: e.blue, red: e.red }), 2500, e.team);
+        this.creditGoal(e.team, e.blue, e.red);
         break;
       case 'overtime':
-        hud.showBanner(t('game.overtime'), t('game.nextGoalWins'), 3000);
+        hud.showOvertime();
         break;
       case 'ended': {
         const s = this.match.score;
         hud.showBanner(t('game.teamWins', { team: TEAM_NAME[e.winner] }), `${s.blue} – ${s.red}`, 0, e.winner);
-        this.lastResult = { winner: e.winner, blue: s.blue, red: s.red };
-        this.menuReturnAt = this.time + MENU_RETURN_SECONDS;
-        this.input.exitPointerLock();
+        this.matchEnded(e.winner, s.blue, s.red);
         break;
       }
       default:
@@ -3900,6 +4024,7 @@ export class Game implements P2PGameHooks {
       this.lastBumpFxTick = t;
     }
     this.audio.playCarHit(isDemo ? 1 : 0.6);
+    if (isDemo && bumperId === this.playerCarId && victimId !== this.playerCarId && !this.menuShown && this.training === null) this.hud.feed(t('hud.demolished', { count: ++this.demos }), 'demo');
     if (bumperId === this.playerCarId || victimId === this.playerCarId) {
       this.input.rumble(isDemo ? 1 : 0.5, isDemo ? 0.8 : 0.4, isDemo ? 400 : 140);
     }

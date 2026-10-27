@@ -62,7 +62,7 @@
 import './menu.css';
 import './styles/index.css';
 import { h, setChildren } from './dom';
-import { FocusMemory, FocusNav, isEditable, isEditing, navKey, setEditing } from './nav';
+import { FocusMemory, FocusNav, heldOver, isEditable, isEditing, navKey, setEditing } from './nav';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
 import type { InputKind } from './device';
@@ -639,11 +639,11 @@ export class Menu {
     return null;
   }
 
-  /** Replace the top screen (a form that turns into its result). */
-  replace(id: string): void {
+  /** Replace the top screen (a form that turns into its result); `tab` as in open. */
+  replace(id: string, tab?: string): void {
     this.top()?.hide?.();
     if (this.stack.length > 1) this.stack.pop();
-    this.open(id);
+    this.open(id, false, tab);
   }
 
   /** Back to the `i`-th screen of the stack (0: the section's root): a breadcrumb (a lobby above it asks first). */
@@ -1088,6 +1088,12 @@ export class Menu {
     }
     if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
     if (!e.repeat && typeof e.code === 'string') this.keysDown.add(e.code);
+    // Enter / Space held over from the match (SALIR's hold) would click the focused button on every
+    // repeat (the hero's search): only a press the menus had activates.
+    if ((e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') && heldOver(e, this.keysDown)) {
+      e.preventDefault();
+      return;
+    }
     const active = document.activeElement;
     const field = isEditable(active); // a text field's keys are its own, but for the arrows in navigation mode
     const editing = field && isEditing(active);
@@ -1138,7 +1144,7 @@ export class Menu {
     }
     if (dir !== null) {
       e.preventDefault();
-      if (!e.repeat || this.keysDown.has(e.code)) this.nav.move(dir, e.repeat);
+      if (!heldOver(e, this.keysDown)) this.nav.move(dir, e.repeat);
     }
   }
 

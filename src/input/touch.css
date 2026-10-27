@@ -212,15 +212,23 @@
   display: none;
 }
 
-/* The boost meter leaves the stick's corner for a compact spot under the scorebug. */
+/* The boost meter leaves the stick's corner for a compact plate under the scorebug (clear of its
+   notch; plan PR 9 moves the amount into BOOST). */
 .tc-on .hud-boost {
-  top: calc(var(--safe-top) + clamp(10px, 2vh, 20px) + clamp(36px, 5.6vh, 52px) + 8px);
+  top: calc(var(--safe-top) + clamp(10px, 3.4vh, 32px) + clamp(36px, 6vh, 56px) + 14px);
   bottom: auto;
+  padding: 6px 10px 7px 8px;
+  row-gap: 3px;
+}
+
+.tc-on .hud-boost-label {
+  font-size: clamp(12px, 2.6vh, 18px);
 }
 
 .tc-on .hud-boost-bar {
   width: clamp(96px, 18vw, 170px);
-  height: clamp(10px, 2vh, 16px);
+  height: clamp(10px, 2.4vh, 18px);
+  margin-bottom: 3px;
 }
 
 .tc-on .hud-boost-value {

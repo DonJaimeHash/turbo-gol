@@ -7,6 +7,20 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A final screen two seconds after the whistle: VICTORY, DEFEAT or DRAW, the score, every player
+  by team with their goals (YOU and the MVP marked), and in Competitive your rank card with the MMR
+  you won or lost and what the next tier still takes (it replaces the result window). PLAY AGAIN
+  is one press: the same queue again, a new match against the AI, or back to your lobby. CHANGE
+  MODE and MENU are next to it, and Back is MENU.
+- MATCH FOUND: when a search finds a match, a band says so over whatever screen you are on, with a
+  short sound and the browser tab's title, then the match starts.
+- When a Competitive match is cancelled because a player did not show up, you go straight back
+  into the queue ("A player didn't show up · back in the queue").
+- The goal banner says GOOOAL! (¡GOOOL! in Spanish) on the scoring team's colour, with who scored
+  and the score under it. Players joining or leaving, a bot taking over and your demolitions
+  (DEMOLISHED · 2) are small notes at the top instead of the middle of the screen, and OVERTIME
+  shows over the kickoff countdown.
+- Online, the scorebug shows the connection's bars next to the clock.
 - PLAY opens on a new home screen. Its big PLAY NOW tile plays the queue you searched last in one
   press (Casual 2v2 the first time), and the four modes are one step away: CASUAL, WITH FRIENDS, VS
   AI and COMPETITIVE (a guest sees "Sign in" on its lock). The big tile follows what you are doing:
@@ -255,6 +269,14 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- The match HUD keeps its scorebug (BLU 1 │ 2:49 │ 0 RED) with a lime notch under your team, and
+  the boost meter is bigger, on its own plate. The ball's pointer at the edge of the screen keeps
+  off the scorebug, the boost meter and the controls card.
+- The pause is a row of big buttons at the bottom: RESUME (focused), SETTINGS and QUIT, with the
+  training buttons in between. Online it says MATCH IN PROGRESS (the match goes on) and the scorebug
+  stays readable above it. QUIT is held for a second (A, Enter or a finger) or double-clicked, so a
+  slip next to RESUME never leaves a match; in Competitive it says it counts as an abandon. Esc,
+  Start, B and Backspace resume as before.
 - The menus are a board of five sections: PLAY, TRAINING, GARAGE, LEADERBOARD and PROFILE. On a
   computer they sit in the top bar next to the logo, your region and connection, your account and
   Settings; on a TV in the top bar too, with your connection in the bottom bar; on a phone held
@@ -392,6 +414,8 @@ All notable changes to Turbogol are documented here. The format follows
 - The Casual, Competitive, Friendly and lobby list screens and their ‹ › pickers (mode, difficulty,
   connection): MODES has them as tabs. Playlists no longer have names like "Pairs": a format is
   just 1v1, 2v2 or 3v3, in every language.
+- The result window after a Competitive match (the final screen shows the rank change) and the
+  old start menu that was still hidden inside the in-match HUD.
 - The old home screen's Language, Settings and Profile tiles (Settings is the gear at the top and
   Start on a controller, your profile the account button next to it), its Training and Leaderboard
   tiles (they are sections) and the guest side panel, and the MODES screen: its four modes are on
