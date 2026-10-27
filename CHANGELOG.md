@@ -251,8 +251,8 @@ All notable changes to Turbogol are documented here. The format follows
   any section to PLAY, and only on PLAY does it ask "Leave Turbogol?" (KEEP PLAYING is the answer
   already selected). Esc, Backspace and the controller's B now ask that too on PLAY, as Android's
   back gesture and a TV remote's BACK already did. A screen you opened inside a section shows a
-  back arrow and the way you came ("PLAY › CASUAL"): click any step to jump back to it.
-  SIGN IN on Competitive opens your profile on top of it, so Back returns to Competitive. Leaving a
+  back arrow and the way you came ("PLAY › CASUAL"): click any step to jump back to it. Where the
+  way does not fit (a tablet with a wide fallback font), it shows the screen's name alone. SIGN IN on Competitive opens your profile on top of it, so Back returns to Competitive. Leaving a
   custom lobby's screen any other way than its own buttons (another section, the logo, a step of
   the way back) asks "Leave the lobby?" first, as Back does.
 - The search you started stays in sight on every section, as a pill in the top bar with its time

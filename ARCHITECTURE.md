@@ -431,11 +431,14 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right);
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
-                        rowStep, left vertically from unionBox), the way back (NavPath), the focus
-                        memory (FocusMemory), fields in navigation or editing mode (data-editing)
-                        and the edge nudge (mn-bounce-*); FocusNav puts them on the DOM and
-                        measures each target where it sits (layoutBox: a focused tile's lift or
-                        a nudge taken off, so a lifted tile has no neighbour "below" on its row)
+                        rowStep, left vertically from unionBox), a target as tall as the rows
+                        beside it (data-nav-span: Inicio's hero, left ▲ ▼ only for what lies
+                        wholly that way, beyondEdge, else the next zone), the way back
+                        (NavPath), the focus memory (FocusMemory), fields in navigation or editing
+                        mode (data-editing) and the edge nudge (mn-bounce-*); FocusNav puts them
+                        on the DOM and measures each target where it sits (layoutBox: a focused
+                        tile's lift or a nudge taken off, so a lifted tile has no neighbour
+                        "below" on its row)
   device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
                         <html>), html.tg-tv (no pointer at all, or #tv), the layout class by height
                         and orientation (layoutClass: pc, short, phone, portrait, tablet, tv;
