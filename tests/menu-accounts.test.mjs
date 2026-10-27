@@ -339,6 +339,22 @@ test('RankedResults: what comes while the menus are away waits for them, the res
   assert.deepEqual(other.toasts, []);
 });
 
+test('RankedResults into the FINAL (plan PR 7): the rank card takes the answer while it is up; once it is not, the old way', async () => {
+  const voided = { status: 'cancelled', reason: 'verification_failed:bad_takeover' };
+  // The FINAL is up: the card takes it, no toast, nothing held.
+  const up = await rankedResults((n) => (n < 3 ? { status: 'pending' } : voided));
+  const card = [];
+  await up.results.watch('f'.repeat(64), false, (r) => (card.push(r.status), true));
+  assert.deepEqual(card, ['cancelled']);
+  assert.deepEqual(up.toasts, []);
+  up.results.showHeld();
+  assert.deepEqual(up.toasts, [], 'nothing held for later');
+  // The player left the FINAL first: the card declines, the toast comes as before.
+  const left = await rankedResults((n) => (n < 3 ? { status: 'pending' } : voided));
+  await left.results.watch('f'.repeat(64), false, () => false);
+  assert.deepEqual(left.toasts, [VOIDED]);
+});
+
 class FakeWs {
   static last = null;
   constructor(url, protocols) {

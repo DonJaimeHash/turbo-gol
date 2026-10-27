@@ -110,7 +110,7 @@ export function showRankedResult(menu: Pick<Menu, 'toast' | 'modal'>, r: RankedR
  * The toast of a cancelled ranked result. A community node's match is voided when its replay check
  * fails ('verification_failed:<why>') or cannot run ('unverified'; nodes/control-plane).
  */
-function cancelledKey(reason: string): Key {
+export function cancelledKey(reason: string): Key {
   if (reason === 'not_rated') return 'board.notRated';
   if (reason === 'unverified' || reason.startsWith('verification_failed')) return 'board.voided';
   return 'board.cancelled';
@@ -145,12 +145,21 @@ export class RankedResults {
     this.host = host;
   }
 
-  /** A ranked match just ended (`node`: on a community node): wait for its result and show it. */
-  async watch(matchId: string, node: boolean): Promise<void> {
+  /**
+   * A ranked match just ended (`node`: on a community node): wait for its result and show it.
+   * `into`: the FINAL's rank card, which takes the answer while it is up for that match (true);
+   * otherwise, or once the player has left it, the answer goes the old way (a toast or the dialog).
+   */
+  async watch(matchId: string, node: boolean, into?: (r: RankedResultAnswer) => boolean): Promise<void> {
     const { accounts, menu } = this.host;
     const who = accounts.account?.playerId ?? null;
     const onVerifying = (): void => this.notice(matchId, who, () => menu.toast(t('board.resultVerifying'), 'info'));
     const r = await accounts.waitRankedResult(matchId, undefined, undefined, { node, onVerifying });
+    if (into !== undefined && (accounts.account?.playerId ?? null) === who && into(r)) {
+      this.held.delete(matchId); // a held "verifying" is stale: the card says it all
+      void accounts.fetchMe().catch(() => undefined);
+      return;
+    }
     this.notice(matchId, who, () => showRankedResult(menu, r, node));
     void accounts.fetchMe().catch(() => undefined);
   }

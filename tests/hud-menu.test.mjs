@@ -15,7 +15,7 @@ registerHooks({
   },
 });
 
-const { formatSettingValue, stepDecimals, stepSettingValue, MENU_CONTROL_ROWS, DIFFICULTIES, GAME_MODES, modeInfo, formatNetStats, choiceStep, experimentalTabLabel } = await import('../src/render/Hud.ts');
+const { formatSettingValue, stepDecimals, stepSettingValue, DIFFICULTIES, GAME_MODES, formatNetStats, choiceStep, experimentalTabLabel, netBars, avoidRects } = await import('../src/render/Hud.ts');
 const { experimentalView, stepPreset, stepRuleValue } = await import('../src/render/experimentalPage.ts');
 const RT = await import('../src/render/rulesText.ts');
 const R = await import('../src/game/physicsRules.ts');
@@ -60,19 +60,33 @@ test('every slider range survives a full sweep without float drift', () => {
   }
 });
 
-test('main menu lists the driving rows plus ball cam, rear view and pause', () => {
-  assert.deepEqual(
-    MENU_CONTROL_ROWS.map((r) => r.action),
-    ['throttle', 'reverse', 'steerLeft', 'steerRight', 'jump', 'boost', 'powerslide', 'ballCam', 'rearView', 'pause'],
-  );
+test('the difficulties and the modes the menus offer: every sim mode, in order (the old Hud menu and modeInfo are gone, plan PR 7)', () => {
   assert.deepEqual(DIFFICULTIES, ['easy', 'medium', 'hard']);
-});
-
-test('the Mode row cycles through every sim mode and its info line counts the cars', () => {
   assert.deepEqual(GAME_MODES, ['1v1', '2v2', '3v3']);
   assert.deepEqual([...GAME_MODES].sort(), Object.keys(MODES).sort(), 'menu modes = constants.ts MODES');
-  for (const mode of GAME_MODES) assert.equal(modeInfo(mode), `${mode} · ${MODES[mode] * 2} cars`);
-  assert.equal(modeInfo('3v3'), '3v3 · 6 cars');
+});
+
+test('the network bars by the clock: 3 good, 2 fair, 1 poor by round trip or loss; none before a measure', () => {
+  assert.equal(netBars(0, 0), 0);
+  assert.equal(netBars(-1, 0), 0);
+  assert.equal(netBars(40, 0), 3);
+  assert.equal(netBars(120, 0), 2);
+  assert.equal(netBars(40, 4), 2);
+  assert.equal(netBars(250, 0), 1);
+  assert.equal(netBars(60, 10), 1);
+});
+
+test('the ball indicator steps out of a HUD plate the shortest way that stays on screen', () => {
+  const out = { x: 0, y: 0 };
+  const score = { left: 30, top: 26, right: 282, bottom: 72 };
+  // Pinned to the top edge over the scorebug: below it (to its right would be farther).
+  avoidRects(100, 20, 20, [score], 1366, 768, out);
+  assert.deepEqual(out, { x: 100, y: 92 });
+  avoidRects(270, 20, 20, [score], 1366, 768, out);
+  assert.deepEqual(out, { x: 302, y: 20 });
+  // Clear of every plate: where it was.
+  avoidRects(700, 20, 20, [score], 1366, 768, out);
+  assert.deepEqual(out, { x: 700, y: 20 });
 });
 
 test('network panel: a host line only for a match on a community node', () => {

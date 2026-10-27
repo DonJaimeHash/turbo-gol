@@ -156,6 +156,9 @@
   --t-caption: 0.8125rem; /* 13: the chip's second line (14 on a phone: its floor) */
   --t-nav: 0.875rem; /* 14: the phone's rail and tab bar labels */
   --t-label: 0.75rem; /* 12: slots */
+  --t-result: 5.25rem; /* 84: the FINAL's VICTORY */
+  --t-score: 5rem; /* 80: the FINAL's score */
+  --t-again: 2.5rem; /* 40: the FINAL's PLAY AGAIN (the owner's edit) */
   --track-label: 0.06em;
 
   /* ---- Space, radii, shadows ------------------------------------------------------------------- */
@@ -245,6 +248,9 @@ html[data-shell='tabs'] {
     --t-display: 2.25rem;
     --t-numeral: 4rem;
     --t-title: 1.375rem;
+    --t-result: 4rem;
+    --t-score: 3.75rem;
+    --t-again: 2rem;
   }
 }
 
@@ -254,6 +260,9 @@ html[data-shell='tabs'] {
     --t-hero: 2.75rem;
     --t-display: 1.75rem;
     --t-numeral: 3.5rem;
+    --t-result: 2.5rem;
+    --t-score: 2.5rem;
+    --t-again: 1.5rem;
     --t-title: 1.25rem;
     --t-heading: 1rem;
     --t-body: 0.9375rem;
@@ -269,6 +278,9 @@ html[data-shell='tabs'] {
     --t-hero: 2.5rem;
     --t-display: 1.75rem;
     --t-numeral: 3.5rem;
+    --t-result: 2.5rem;
+    --t-score: 2.5rem;
+    --t-again: 1.75rem;
     --t-title: 1.25rem;
     --t-heading: 1rem;
     --t-body: 1rem;

@@ -728,6 +728,11 @@ export class Input {
     return this.padPresses;
   }
 
+  /** Enter (either) or the pad's A is down now: the pause's QUIT is held with them (Hud.pauseHoldRelease). */
+  get acceptHeld(): boolean {
+    return this.keys.has('Enter') || this.keys.has('NumpadEnter') || this.prevButtons[GP.A] === 1;
+  }
+
   /** True while the game owns the mouse (document.pointerLockElement is set). */
   get pointerLocked(): boolean {
     return this.locked;

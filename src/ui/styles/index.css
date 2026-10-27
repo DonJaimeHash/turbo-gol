@@ -4,3 +4,5 @@
 @import './components.css';
 @import './tiles.css';
 @import './screens/home.css';
+@import './screens/final.css';
+@import './screens/found.css';
