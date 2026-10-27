@@ -221,9 +221,10 @@ All notable changes to Turbogol are documented here. The format follows
 
 ### Changed
 - The menus are a board of five sections: PLAY, TRAINING, GARAGE, LEADERBOARD and PROFILE. On a
-  computer and a TV they sit in the top bar next to the logo, your region and connection, your
-  account and Settings; on a phone held sideways in a rail on the left (with the source code link
-  at its foot), and on a phone held upright in tabs at the bottom. Pick one with a click or a tap,
+  computer they sit in the top bar next to the logo, your region and connection, your account and
+  Settings; on a TV in the top bar too, with your connection in the bottom bar; on a phone held
+  sideways in a rail on the left (with the source code link at its foot), and on a phone held
+  upright in tabs at the bottom. Pick one with a click or a tap,
   with the bumpers (LB / RB) or Q / E, or with a TV remote: press up to reach the bar, then left and
   right (the section opens as soon as you land on it). The logo always takes you back to PLAY.
 - Back is predictable everywhere: it closes a window first, then goes back one screen, then from
@@ -231,17 +232,20 @@ All notable changes to Turbogol are documented here. The format follows
   already selected). Esc, Backspace and the controller's B now ask that too on PLAY, as Android's
   back gesture and a TV remote's BACK already did. A screen you opened inside a section shows a
   back arrow and the way you came ("PLAY › MODES › CASUAL"): click any step to jump back to it.
+  SIGN IN on Competitive opens your profile on top of it, so Back returns to Competitive. Leaving a
+  custom lobby's screen any other way than its own buttons (another section, the logo, a step of
+  the way back) asks "Leave the lobby?" first, as Back does.
 - The search you started stays in sight on every section, as a pill in the top bar with its time
   ("CASUAL · 2v2 · 0:42"): open it to go back to the search, press ✕, Y on a controller or X on the
   keyboard to cancel it. It also floats above Settings, where Y, X and ✕ cancel it too. The old
   search banner at the bottom of the menus is gone.
 - The region pill shows your region and whether you are online ("● Online", or how many are
-  playing once there are five or more); open it to change the region, or press RETRY when the game
-  cannot reach the server. The hint bar at the bottom speaks only the language of what you are holding: the
+  playing once there are five or more; on a TV just whether you are online); open it to change the
+  region, or press RETRY when the game cannot reach the server. The hint bar at the bottom speaks only the language of what you are holding: the
   controller's buttons, the keyboard's keys or the TV remote's, and nothing with a mouse.
 - On a phone held upright the menus now work (profile, leaderboard, training...); only a match
-  asks you to turn the phone. A tablet plays either way. You can pinch to zoom the menus; the match
-  controls still keep every finger.
+  asks you to turn the phone. A tablet plays either way. You can pinch to zoom the menus; a match
+  starts at its normal size, and its controls and pause menu still keep every finger.
 - Windows, dialogs and short messages share one look: a solid panel in the middle (it rises from
   the bottom on a phone), and up to three short messages at a time that stay longer when they are
   longer. The source code link stays on screen (the bottom bar, or the foot of the phone's rail);

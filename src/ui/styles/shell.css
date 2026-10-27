@@ -1,18 +1,11 @@
 /* The Tablero shell (src/ui/Menu.ts, src/ui/shell/*; plan §1.3-1.4): the menus' grid, the top bar
    with the sections, the phone's rail and tabs, the hint bar. Sizes in rem: 1 rem is 16 px at each
-   layout class's reference view, times --ui-scale (src/ui/device.ts: by height on a PC and a phone
-   held sideways, by width upright and on a TV), so the shell grows with the screen; the old
-   screens' px do not (body stays 16 px). html[data-shell] (device.ts shellOf) says where the
-   sections are: bar (a PC, a short laptop: html[data-layout='short']), rail (a phone held
-   sideways), tabs (upright), tv. Colours only as tokens (tests/css-budget.test.mjs). */
-
-html {
-  font-size: calc(16px * var(--ui-scale, 1));
-}
-
-body {
-  font-size: 16px;
-}
+   layout class's reference view, times --ui-scale (tokens.css, src/ui/device.ts: by height on a PC
+   and a phone held sideways, by width upright and on a TV), so the shell grows with the screen;
+   the old screens' px do not (body stays 16 px). html[data-shell] (device.ts shellOf) says where
+   the sections are: bar (a PC, a short laptop: html[data-layout='short']), rail (a phone held
+   sideways), tabs (upright), tv. Colours, font sizes and radii only as tokens
+   (tests/css-budget.test.mjs). */
 
 /* ---- The grid: rail | top / stage / hint / tabs -------------------------------------------- */
 .mn {
@@ -155,7 +148,7 @@ span.mn-crumb {
 .mn-brand {
   flex: none;
   padding: 0;
-  font: italic 700 1.625rem / 1 var(--font-display);
+  font: italic 700 var(--t-wordmark) / 1 var(--font-display);
   letter-spacing: 0.01em;
   color: var(--text);
   background: none;
@@ -225,7 +218,7 @@ html[data-input='mouse'] .mn-sec-arrow {
   color: var(--text-2);
   background: none;
   border: 1px solid var(--edge);
-  border-radius: 8px;
+  border-radius: var(--r-tile);
   cursor: pointer;
 }
 
@@ -250,6 +243,11 @@ html[data-input='keyboard'] .mn-sec-key,
   margin-left: auto;
 }
 
+/* Beside a screen's own tabs Q / E step those (Menu.renderHints): no Q / E keycaps by the sections. */
+html[data-input='keyboard'] .mn-own-tabs .mn-sec-key {
+  display: none;
+}
+
 /* Account chip: avatar 32 (rank ring), name, a second line; opens PERFIL. */
 .mn-chip {
   display: flex;
@@ -262,7 +260,7 @@ html[data-input='keyboard'] .mn-sec-key,
   text-align: left;
   background: var(--surface-1-94);
   border: 1px solid var(--edge);
-  border-radius: 1.375rem;
+  border-radius: var(--r-pill);
   cursor: pointer;
 }
 
@@ -272,7 +270,7 @@ html[data-input='keyboard'] .mn-sec-key,
   place-items: center;
   width: 2rem;
   height: 2rem;
-  font: 700 0.875rem / 1 var(--font-display);
+  font: 700 var(--t-small) / 1 var(--font-display);
   background: var(--surface-3);
   border: 2px solid var(--edge-hi);
   border-radius: 50%;
@@ -288,14 +286,16 @@ html[data-input='keyboard'] .mn-sec-key,
 .mn-chip-text b {
   max-width: 9rem;
   overflow: hidden;
-  font-size: 1rem;
+  font-size: var(--t-body);
   font-weight: 600;
   text-overflow: ellipsis;
 }
 
 .mn-chip-text small {
-  font-size: 0.8125rem;
+  overflow: hidden;
+  font-size: var(--t-caption);
   color: var(--text-2);
+  text-overflow: ellipsis;
 }
 
 @media (hover: hover) {
@@ -334,9 +334,10 @@ html[data-input='keyboard'] .mn-sec-key,
   gap: 0.5rem;
 }
 
+/* As wide as its pills at least: a crowded bar overflows (data-fit shrinks it) rather than the pills
+   sliding under the hints. */
 .mn-hint-mid {
   flex: 1;
-  min-width: 0;
   display: flex;
   justify-content: flex-end;
 }
@@ -367,6 +368,7 @@ html[data-input='keyboard'] .mn-sec-key,
 }
 
 .mn-sl-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   white-space: nowrap;
@@ -375,8 +377,8 @@ html[data-input='keyboard'] .mn-sec-key,
   gap: 0.25rem;
   min-width: 0;
   padding: 0 0.25rem;
-  font: 700 0.875rem / 1 var(--font-display);
-  letter-spacing: 0.02em;
+  font: 700 var(--t-nav) / 1 var(--font-display);
+  letter-spacing: 0.01em;
   text-transform: uppercase;
   color: var(--text-3);
   background: none;
@@ -396,8 +398,20 @@ html[data-input='keyboard'] .mn-sec-key,
 }
 
 .mn-sl-on {
+  letter-spacing: 0.02em;
   color: var(--text);
-  background: var(--surface-3) linear-gradient(var(--brand), var(--brand)) right 50% / 4px 60% no-repeat;
+}
+
+/* The active item's lime mark (a child: ::before and ::after are the focus ring's). */
+.mn-sl-mark {
+  display: none;
+  position: absolute;
+  background: var(--brand);
+  pointer-events: none;
+}
+
+.mn-sl-on .mn-sl-mark {
+  display: block;
 }
 
 /* A phone held sideways: the 123 rail (24 clear of Android's back gesture), a 56 top bar 12 from it
@@ -416,8 +430,23 @@ html[data-shell='rail'] .mn-sl-items {
   flex-direction: column;
 }
 
+/* The full 91 px for a label (123 - 24 - 8): ENTRENAMIENTO stays at 14 px with the display font. */
 html[data-shell='rail'] .mn-sl-item {
   height: 3.5rem;
+  padding: 0;
+}
+
+/* Active: --surface-3 and a 4 px lime bar slanted -20 degrees at the inner edge. */
+html[data-shell='rail'] .mn-sl-on {
+  background: var(--surface-3);
+}
+
+html[data-shell='rail'] .mn-sl-mark {
+  top: 0.75rem;
+  right: 2px;
+  bottom: 0.75rem;
+  width: 4px;
+  transform: skewX(-20deg);
 }
 
 html[data-shell='rail'] .mn-sl-stacked .mn-sl-item {
@@ -435,7 +464,7 @@ html[data-shell='rail'] .mn-sl-foot {
   gap: 0.25rem;
   height: 3.5rem;
   margin-top: auto;
-  font: 700 0.875rem / 1 var(--font-display);
+  font: 700 var(--t-nav) / 1 var(--font-display);
 }
 
 .mn-sl-agpl,
@@ -480,15 +509,22 @@ html[data-shell='rail'] .mn-pills-more .mn-chip {
   padding: 0 0.375rem;
 }
 
+/* A crowded bar (a long name, a wide system font): the chip's text gives way (an ellipsis), never
+   the gear into the 24 px edge. */
+html[data-shell='rail'] .mn-top-right {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 0.5rem;
+}
+
+html[data-shell='rail'] .mn-chip {
+  min-width: 0;
+}
+
 html[data-shell='rail'] .mn-top {
   gap: 0.75rem;
   height: calc(3.5rem + var(--safe-top));
   padding: var(--safe-top) calc(1.5rem + var(--safe-right)) 0 0.75rem;
-}
-
-html[data-shell='rail'] .mn-brand,
-html[data-shell='tabs'] .mn-brand {
-  font-size: 1.5rem;
 }
 
 html[data-shell='rail'] .mn-secbar,
@@ -545,8 +581,31 @@ html[data-shell='tabs'] .mn-tabbar {
   border-radius: 0;
 }
 
-.mn-tabbar .mn-sl-on {
-  background: linear-gradient(var(--brand), var(--brand)) 50% 0 / 40% 4px no-repeat;
+.mn-tabbar .mn-sl-mark {
+  top: 0;
+  left: 30%;
+  right: 30%;
+  height: 4px;
+}
+
+/* A phone's top bar: 56 px to touch around the 44 px pills, chip and gear (`mn-hit`), as drawn,
+   and around the search pill's ✕ (40 to see with a finger). A transparent ::before paints nothing:
+   the ring is the outline's and ::after's (focus.css). */
+html[data-shell='rail'] .mn-hit,
+html[data-shell='tabs'] .mn-hit {
+  position: relative;
+}
+
+html[data-shell='rail'] .mn-hit::before,
+html[data-shell='tabs'] .mn-hit::before {
+  content: '';
+  position: absolute;
+  inset: -0.375rem -0.125rem;
+}
+
+html[data-shell='rail'] .mn-pill-x::before,
+html[data-shell='tabs'] .mn-pill-x::before {
+  inset: -0.5rem;
 }
 
 html[data-layout='short'] .mn-top {
@@ -554,7 +613,8 @@ html[data-layout='short'] .mn-top {
 }
 
 /* The TV at 3 m: 27 px of overscan above and below, 48 at the sides; the avatar alone; the pills in
-   the hint bar (Menu.placePills), its About gives way to a running search; opaque bars. */
+   the hint bar (Menu.placePills), its About gives way to a running search; a crowded bar fits as
+   one (hintbar.ts data-fit, 16 px at least, then the source link's short form); opaque bars. */
 html[data-shell='tv'] .mn-top,
 html[data-shell='tv'] .mn-hint {
   padding: 1.6875rem 3rem 0;
@@ -570,12 +630,21 @@ html[data-shell='tv'] .mn-hint {
   padding: 0 3rem 1.6875rem;
 }
 
-html[data-shell='tv'] .mn-brand {
-  font-size: 1.75rem;
-}
-
+/* Sections at 20 px, 22 apart, a 6 px underline 3 px from the base; the strip and the crumbs keep
+   16 px at least (fit.ts --fit-min): the short names (ENTRENAR, RANKING) take over before that. */
 html[data-shell='tv'] .mn-secs {
   gap: 1.1em;
+}
+
+html[data-shell='tv'] .mn-secs,
+html[data-shell='tv'] .mn-crumbs,
+html[data-shell='tv'] .mn-hint {
+  --fit-min: 16;
+}
+
+html[data-shell='tv'] .mn-sec-bar {
+  bottom: 3px;
+  height: 6px;
 }
 
 html[data-shell='tv'] .mn-chip {
@@ -602,4 +671,9 @@ html[data-shell='tv'] .mn-stage {
 
 html[data-shell='tv'] .mn-pill-row {
   gap: 0.5rem;
+}
+
+/* The pills in a TV's hint bar take its text size (data-fit shrinks the bar as one). */
+html[data-shell='tv'] .mn-hint .mn-pill {
+  font-size: inherit;
 }

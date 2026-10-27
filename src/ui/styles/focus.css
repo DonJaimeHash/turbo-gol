@@ -10,8 +10,9 @@
    overlaps the next row. The gap ring is a spread-only box-shadow (no blur: one solid ring) that
    super low keeps below; the outline and the heel never depended on a shadow, so the ring
    survives html.tg-superlow (A11). ::before and ::after of a focusable belong to the ring:
-   decoration goes on a child. A touch screen shows none of it (html.tg-touch: the last input was
-   a finger). Plain selector lists, no :is(): a TV WebView that missed one selector would drop the
+   decoration goes on a child (a phone's bar gives a few controls a transparent ::before, a bigger
+   area to touch that paints nothing: shell.css). A touch screen shows none of it (html.tg-touch:
+   the last input was a finger). Plain selector lists, no :is(): a TV WebView that missed one selector would drop the
    whole rule. */
 
 .mn [data-nav]:focus {
@@ -80,7 +81,7 @@ html:not(.tg-touch) .hud-settings-actions.hud-focus .hud-settings-action.hud-foc
   bottom: 18%;
   width: 4px;
   height: auto;
-  border-radius: 0 2px 2px 0;
+  border-radius: 0 var(--r-slot) var(--r-slot) 0;
   background: var(--brand);
   transform: none;
   pointer-events: none;

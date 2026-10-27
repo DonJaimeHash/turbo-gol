@@ -62,10 +62,11 @@ export default {
   'tier.division': '{tier} {division}',
 
   // Menu chrome: top bar, footer, key hints, search banner (src/ui/Menu.ts)
-  // Footer link to the game's source code. The AGPL-3.0 requires this link in every language: never drop it.
-  'menu.source': 'Source code',
-  // Tooltip of the source link; {license} is the license id (AGPL-3.0)
+  // The link to the game's source code (hint bar, the phone's rail, About); {license} is the license
+  // id (AGPL-3.0). The AGPL-3.0 requires this link in every language: never drop it.
   'menu.sourceTitle': 'Source code ({license})',
+  // Its short form, where the hint bar is crowded (a TV's pills with a wide system font)
+  'menu.sourceShort': 'Source ({license})',
   // Footer link to the third-party licenses file
   'menu.licenses': 'Licenses',
   // Tooltip of the footer Discord link. The community server speaks English, so other languages may say so, as the Spanish does
@@ -91,6 +92,11 @@ export default {
   'menu.leaveTitle': 'Leave {game}?',
   // The dialog's text: while it is up, the next Back leaves the page ("Back" is the system button)
   'menu.leaveText': 'Press Back again to leave.',
+  // The same dialog opened by Esc, a controller's B or the menus' ‹ (another press of those closes
+  // it): the LEAVE button is the way out
+  'menu.leaveTextKey': 'Choose LEAVE to close the game.',
+  // ... and when there is no page before the game's to go back to (no LEAVE button)
+  'menu.leaveTextTab': 'To leave, close this tab.',
   // The dialog's buttons, uppercase: close it / go back to the page before the game
   'menu.leaveStay': 'KEEP PLAYING',
   'menu.leaveGo': 'LEAVE',
@@ -110,6 +116,8 @@ export default {
   'nav.modes': 'MODES',
   // Screen-reader name of the section bar; also the hint bar's verb for switching sections
   'nav.sections': 'Sections',
+  // Hint bar verb for Q / E on a screen with tabs of its own (Leaderboard's playlists)
+  'nav.tabs': 'Tabs',
   // Hint bar verbs, after a drawn key or button (A, ENTER, OK...)
   'nav.select': 'Select',
   'nav.back': 'Back',

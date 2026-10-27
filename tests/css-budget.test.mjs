@@ -47,6 +47,24 @@ test('colours are written once: no colour literal under src/ui/styles/ outside t
   assert.deepEqual(bad, []);
 });
 
+test('font sizes and radii are written once: none as a literal under src/ui/styles/ outside tokens.css (plan §2.4)', () => {
+  const bad = [];
+  const length = /(?:^|[\s(,])-?(?:\d*\.)?\d+(?:px|rem|em|pt|%|vh|vw|vmin|vmax|ch|ex)\b/;
+  for (const [f, text] of css) {
+    if (!f.startsWith('src/ui/styles/') || f.endsWith('/tokens.css')) continue;
+    const body = stripComments(text);
+    // font-size: a token (or inherit); the font shorthand's size (before the '/' of its line height) too.
+    for (const m of body.matchAll(/font-size:\s*([^;}]+)/g)) if (!/^(?:var\(--t-[\w-]+\)|inherit)$/.test(m[1].trim())) bad.push(`${f}: font-size: ${m[1].trim()}`);
+    for (const m of body.matchAll(/(?:^|[;{\s])font:\s*([^;}]+)/g)) if (length.test(' ' + m[1].split('/')[0])) bad.push(`${f}: font: ${m[1].trim()}`);
+    // border-radius: tokens, 0 or 50 % (a circle), corner by corner.
+    for (const m of body.matchAll(/border-radius:\s*([^;}]+)/g)) {
+      const parts = m[1].trim().split(/\s+/);
+      if (!parts.every((p) => p === '0' || p === '50%' || /^var\(--r-[\w-]+\)$/.test(p))) bad.push(`${f}: border-radius: ${m[1].trim()}`);
+    }
+  }
+  assert.deepEqual(bad, []);
+});
+
 test('the colour tokens of the plan exist (src/ui/styles/tokens.css)', () => {
   const tokens = css.get('src/ui/styles/tokens.css');
   const need = ['ink', 'surface-0', 'surface-1', 'surface-2', 'surface-3', 'edge', 'edge-hi', 'text', 'text-2', 'text-3', 'brand', 'brand-hi', 'brand-deep', 'brand-ink', 'brand-grad', 'blue', 'blue-deep', 'red', 'red-deep', 'danger', 'warn', 'ok', 'info', 'rank-gold', 'lab', 'focus', 'veil', 'scrim'];
@@ -180,10 +198,11 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // zeros out). Over the plan's §2.7 budget of 70 KB for now, an open decision for the owner: Vite's
 // sheet was 69.1 kB before PR 1, which adds the tokens, the focus ring, the pressed states and the
 // font faces (75,157 B by this measure); PR 4 adds the shell (styles/shell.css and components.css,
-// about 15.2 KB) and drops the old top bar, footer, banner, toasts and modals of menu.css (about
-// 5.9 KB): 85,256 B. The cap is that plus about 0.6 KB, so nothing grows unnoticed, and steps down
-// to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css.
-const CSS_BUDGET = 85_850;
+// about 16.5 KB with its review's TV, phone and slot rules) and drops the old top bar, footer,
+// banner, toasts and modals of menu.css (about 5.9 KB): 86,865 B. The cap is that plus about
+// 0.6 KB, so nothing grows unnoticed, and steps down to 70 KB once PR 10 deletes the Hud's settings
+// sheet (about 11 KB) and PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
+const CSS_BUDGET = 87_550;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

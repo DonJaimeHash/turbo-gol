@@ -23,28 +23,30 @@ export class RegionPill {
   private key = '';
 
   constructor(onClick: () => void) {
-    this.el = h('button.mn-pill.mn-pill-region', { type: 'button', 'data-nav': true, 'data-key': 'region', onclick: onClick });
+    this.el = h('button.mn-pill.mn-pill-region.mn-hit', { type: 'button', 'data-nav': true, 'data-key': 'region', onclick: onClick });
   }
 
-  set(s: RegionPillState): void {
+  /** Show `s`; false (and nothing written) when the pill already shows it. */
+  set(s: RegionPillState): boolean {
     const key = JSON.stringify(s);
-    if (key === this.key) return;
+    if (key === this.key) return false;
     this.key = key;
     this.el.textContent = '';
     this.el.classList.toggle('mn-pill-off', s.kind === 'offline');
     if (s.kind === 'connecting') {
       this.el.append(h('span.mn-spinner'), h('span.mn-pill-sub', null, t('pill.connecting')));
       this.el.setAttribute('aria-label', t('pill.connecting'));
-      return;
+      return true;
     }
     if (s.kind === 'offline') {
       this.el.append(icon('offline'), h('span.mn-pill-sub', null, t('pill.offline')), h('span.mn-pill-sep'), h('b.mn-pill-act', null, t('pill.retry')));
       this.el.setAttribute('aria-label', t('pill.offline') + '. ' + t('pill.retry'));
-      return;
+      return true;
     }
     const status = s.playing !== null && s.playing >= PLAYING_SHOWN ? t('menu.playing', { count: s.playing }) : t('pill.online');
     this.el.append(icon('globe'), h('span.mn-pill-main', null, s.region), h('span.mn-pill-sep'), h('span.mn-dot.on'), h('span.mn-pill-sub', null, status));
     this.el.setAttribute('aria-label', t('pill.regionLabel', { region: s.region, status }));
+    return true;
   }
 }
 
@@ -62,8 +64,8 @@ export class SearchPill {
     this.el = h(
       'div.mn-pill.mn-pill-search',
       { hidden: true },
-      h('button.mn-pill-open', { type: 'button', 'data-key': 'search', onclick: onOpen, ...nav }, h('span.mn-spinner'), this.label, this.time),
-      h('button.mn-pill-x', { type: 'button', 'data-key': 'search-x', title: t('nav.cancelSearch'), 'aria-label': t('nav.cancelSearch'), onclick: onCancel, ...nav }, icon('close')),
+      h('button.mn-pill-open.mn-hit', { type: 'button', 'data-key': 'search', onclick: onOpen, ...nav }, h('span.mn-spinner'), this.label, this.time),
+      h('button.mn-pill-x.mn-hit', { type: 'button', 'data-key': 'search-x', title: t('nav.cancelSearch'), 'aria-label': t('nav.cancelSearch'), onclick: onCancel, ...nav }, icon('close')),
     );
   }
 
@@ -84,5 +86,5 @@ export class SearchPill {
 }
 
 export function updatePill(onClick: () => void): HTMLButtonElement {
-  return h('button.mn-pill.mn-pill-update', { type: 'button', 'data-nav': true, 'data-key': 'update', hidden: true, onclick: onClick }, icon('refresh'), h('span.mn-pill-main', null, t('update.pill')));
+  return h('button.mn-pill.mn-pill-update.mn-hit', { type: 'button', 'data-nav': true, 'data-key': 'update', hidden: true, onclick: onClick }, icon('refresh'), h('span.mn-pill-main', null, t('update.pill')));
 }

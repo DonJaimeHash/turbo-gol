@@ -338,34 +338,45 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
   components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
                         length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
-                        hints.ts (the hint bar per last input; pure), topbar.ts (wordmark,
+                        hints.ts (the hint bar per last input, root or stacked, a screen's own
+                        tabs or not; pure), topbar.ts (wordmark,
                         sections with focus = selection, back + crumbs, chip, Settings), rail.ts
                         (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
                         About), pills.ts (region / connection, search, update)
   backModel.ts          the order of Back, pure: menuBack (sheet, field being edited, the
-                        screen's own, pop, another section to JUGAR, JUGAR's root asks to leave)
-                        and systemBack (load, key capture, the Hud's screen, menus, pack summary,
-                        match); tests/back-model.test.mjs
-  fit.ts                data-fit: a box shrinks its font 1 px at a time to its minimum while it
-                        overflows, then takes its short labels (data-fit-alt); __uiFit() (dev /
-                        VITE_UI_FIT=1) reports overflowing bars, cut labels, a sideways scroll, rings
-                        a clipping box would cut (scripts/ui-fit.mjs, CI's ui-fit job)
+                        screen's own, pop, another section to JUGAR, JUGAR's root asks to leave),
+                        systemBack (load, key capture, the Hud's screen, menus, pack summary,
+                        match) and stackAfterOpen (where Menu.open leaves the section and its
+                        stack); tests/back-model.test.mjs
+  fit.ts                data-fit: a box shrinks its font 1 px at a time to its minimum (or the
+                        --fit-min a stylesheet sets: 16 on a TV) while it overflows (its content
+                        box: a bar's overscan stays clear), then takes its short labels
+                        (data-fit-alt); __uiFit() (dev / VITE_UI_FIT=1) reports overflowing bars,
+                        cut labels, a sideways scroll, rings a clipping box would cut, shell text
+                        under 14 px on a phone or 16 on a TV (scripts/ui-fit.mjs, CI's ui-fit job)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
                         thread is busy), one short line; swallows keys while up; boot and Game
   Menu.ts               the shell's controller: five sections (JUGAR · ENTRENAMIENTO · GARAJE ·
                         CLASIFICACIÓN · PERFIL), each a root screen with stacked screens on it
-                        (open: a root switches section, at its root; a section switch always lands
-                        on the root), the top bar / rail / tabs / hint bar, the pills (region and
+                        (open: a root switches section, at its root, but from a stacked screen of
+                        another section it is a detour stacked on it, as Competitive's SIGN IN
+                        opening PERFIL, so Back returns there; a section switch always lands on
+                        the root; a screen whose leaveGuard asks, the lobby, asks before a
+                        section, a crumb, the wordmark, the chip or the search pill take the
+                        player off it), the top bar / rail / tabs / hint bar, the pills (region and
                         connection with RETRY, the running search on every section and floating
                         over Settings, "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
                         shared prefs, population polling; MenuHost = what the Game provides
                         (search, friendly, training, the experimental view, lobby matches,
-                        settings screen, confirmLeave). Focus: zones top bar, stage, footer, tabs
+                        settings screen, confirmLeave with what asked: the system Back or a key).
+                        Focus: zones top bar, stage, footer, tabs
                         and the rail as a side zone (left / right cross it; a sheet alone); up from
                         the stage lands on the active section (data-nav-entry), focus = selection
-                        on the section tabs; the last focus per screen (FocusMemory by element or
+                        on the section tabs (a pointer's focus is not: its click is; LB / RB, Q / E
+                        and Esc to JUGAR from the bar keep the focus on the bar); the last focus
+                        per screen (FocusMemory by element or
                         data-key; data-autofocus on a first visit only; never a text field without
                         a fine pointer); sheets with aria-modal and the rest inert. Back:
                         backModel.ts (Esc / B / the back button on JUGAR's root ask to leave too).
@@ -373,7 +384,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         Delete) reach Screen.command first; LB / RB the sections, LT / RT and Q / E
                         a screen's .mn-tabs (stepTabs) else the sections; X / Y cancel the search,
                         over Settings too. A key's own repeat moves the focus only for a key first
-                        pressed in the menus. The 450 ms tap guard (touch; not on the bars)
+                        pressed in the menus. The 450 ms tap guard (touch): a tap that went down
+                        before a mount, or within 450 ms after, presses nothing on it; on the bars
+                        only after a stacked screen came or went (the rail's and the top bar's
+                        items moved). Menu.hide undoes a pinch zoom of the menus (resetPageZoom).
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right);
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
@@ -995,9 +1009,11 @@ imported first by `src/style.css`:
   on Windows, Roboto on Android, San Francisco on Apple; no Impact). Weights stop at 700. The scale
   `--t-hero ... --t-label` per class (PC, short screens, phone landscape, phone portrait,
   `html.tg-tv`) is in rem for the shell's root scale: `html { font-size: 16px x --ui-scale }`
-  (device.ts uiScale: PC by height, 768 = 1, 0.9 to 1.35; a phone sideways by height, 390 = 1, 0.92
-  to 1.1; upright by width; a TV by width, 960 = 1, up to 2), with `body` kept at 16 px so only rem
-  sizes (the shell) follow.
+  (device.ts uiScale: PC by height, 768 = 1, 0.9 to 1.35; a short laptop by height, 600 = 1, 0.9 to
+  1; a phone sideways by height, 390 = 1, up to 1.1, never under 1, so its text keeps 14 px and the
+  rail its 123 px at 360 tall; upright by width, the same; a TV by width, 960 = 1, up to 2), with
+  `body` kept at 16 px so only rem sizes (the shell) follow. No font size or radius literal under
+  `src/ui/styles/` outside tokens.css either (the test again).
 * **Space, radii, shadows, layers, motion:** `--sp-1..8`, `--r-slot / key / tile / panel / pill`,
   `--shadow-sheet` (static, sheets only), `--z-*` (the order of the HUD, menus, settings, anti-bot,
   rotate screen and loading screen), `--dur-*` / `--ease*` (transform and opacity only).

@@ -2,8 +2,10 @@
  * The hint bar's content (plan §1.6): the verbs of a section root or a stacked screen in the
  * language of the LAST input only (src/ui/device.ts lastInput), never another device's keys:
  *   pad       A Select · B Back · LB RB Sections · ≡ Settings (+ Y Cancel search)
- *   remote    OK Select · ↩ Back · ▲ Sections
- *   keyboard  ENTER Select · ESC Back · Q E Sections (+ X Cancel search)
+ *   remote    OK Select · ↩ Back · ▲ Sections (not on a stacked screen: ▲ lands on ‹ there, the
+ *             section bar steps aside)
+ *   keyboard  ENTER Select · ESC Back · Q E Sections, or Q E Tabs on a screen with tabs of its own
+ *             (Q / E step those there: Menu.tabOrSection, plan §1.5) (+ X Cancel search)
  *   mouse     nothing (the bar keeps its links)
  *   touch     nothing (no bar on a phone; the cards teach)
  * Key and button names are glyphs (components/glyphs.ts), never translated; the verbs are i18n
@@ -23,6 +25,10 @@ export interface HintItem {
 export interface HintContext {
   /** A search is running (its cancel shortcut joins the bar). */
   readonly searching: boolean;
+  /** A screen stacked on its section's root (‹ and the crumbs instead of the section bar). */
+  readonly stacked?: boolean;
+  /** The screen on top has tabs of its own (Leaderboard's playlists, Profile's sign-in forms). */
+  readonly ownTabs?: boolean;
 }
 
 /** The device a glyph belongs to. */
@@ -46,17 +52,19 @@ export function hintItems(input: InputKind, ctx: HintContext): HintItem[] {
       const out: HintItem[] = [
         { glyphs: ['key-enter'], verb: 'nav.select' },
         { glyphs: ['key-esc'], verb: 'nav.back' },
-        { glyphs: ['key-q', 'key-e'], verb: 'nav.sections' },
+        { glyphs: ['key-q', 'key-e'], verb: ctx.ownTabs === true ? 'nav.tabs' : 'nav.sections' },
       ];
       if (ctx.searching) out.push({ glyphs: ['key-x'], verb: 'nav.cancelSearch' });
       return out;
     }
-    case 'remote':
-      return [
+    case 'remote': {
+      const out: HintItem[] = [
         { glyphs: ['remote-ok'], verb: 'nav.select' },
         { glyphs: ['remote-back'], verb: 'nav.backRemote' },
-        { glyphs: ['remote-up'], verb: 'nav.sections' },
       ];
+      if (ctx.stacked !== true) out.push({ glyphs: ['remote-up'], verb: 'nav.sections' });
+      return out;
+    }
     default:
       return [];
   }

@@ -4,8 +4,10 @@
 // driven over the DevTools protocol (Node's own WebSocket, no dependency). For each size it loads
 // the game once (#ui=home), opens each screen and asks the page's window.__uiFit() (src/ui/fit.ts):
 // the shell's bars overflowing, data-fit boxes still overflowing at their minimum, a horizontal
-// scroll, focus rings a clipping box would cut. The stage scrolling is reported, not failed (the
-// old screens scroll until their PR rebuilds them; plan PR 5 on).
+// scroll, focus rings a clipping box would cut, shell text under the class's minimum (14 px on a
+// phone, 16 on a TV). The stage scrolling is reported, not failed (the old screens scroll until
+// their PR rebuilds them; plan PR 5 on), and so is a data-fit box that took its text under that
+// minimum for the wide text (allowed down to the box's own minimum: the rail's 12).
 //
 //   VITE_UI_FIT=1 npm run build:client && node scripts/ui-fit.mjs        (vite preview, a free port)
 //   node scripts/ui-fit.mjs --url http://localhost:5173/                 (a dev server: __uiFit is on)
@@ -193,10 +195,12 @@ try {
       await page.eval(`(__game.menu.open(${JSON.stringify(screen)}, true), true)`);
       await sleep(400); // a mount, its fit on the next frame, a screen's own first render
       const r = await page.eval('window.__uiFit()');
-      const bad = [...r.shellOverflow.map((x) => 'shell: ' + x), ...r.fitOverflow.map((x) => 'fit: ' + x), ...(r.hScroll ? ['horizontal scroll'] : []), ...r.clippedFocus.map((x) => 'ring cut: ' + x)];
+      const small = r.smallText ?? [];
+      const bad = [...r.shellOverflow.map((x) => 'shell: ' + x), ...r.fitOverflow.map((x) => 'fit: ' + x), ...(r.hScroll ? ['horizontal scroll'] : []), ...r.clippedFocus.map((x) => 'ring cut: ' + x), ...small.filter((x) => !x.endsWith('(data-fit)')).map((x) => 'small text: ' + x)];
+      const shrunk = small.filter((x) => x.endsWith('(data-fit)')).length;
       failures += bad.length;
       report.push({ size: size.name, ...r, bad });
-      console.log(`${size.name.padEnd(11)} ${screen.padEnd(12)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
+      console.log(`${size.name.padEnd(11)} ${screen.padEnd(12)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}${shrunk > 0 ? `  (${shrunk} fitted under the minimum)` : ''}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
     }
   }
   if (typeof args.json === 'string') writeFileSync(args.json, JSON.stringify(report, null, 2));

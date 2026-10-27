@@ -48,8 +48,8 @@ export default {
   'tier.division': '{tier} {division}',
 
   // Menu chrome: top bar, footer, key hints, search banner (src/ui/Menu.ts)
-  'menu.source': 'Código fuente',
   'menu.sourceTitle': 'Código fuente ({license})',
+  'menu.sourceShort': 'Código ({license})',
   'menu.licenses': 'Licencias',
   'menu.discordTitle': 'Comunidad en Discord (en inglés)',
   'menu.account': 'Cuenta',
@@ -62,6 +62,8 @@ export default {
   'menu.back': 'Volver',
   'menu.leaveTitle': '¿Salir de {game}?',
   'menu.leaveText': 'Pulsa Atrás otra vez para salir.',
+  'menu.leaveTextKey': 'Elige SALIR para cerrar el juego.',
+  'menu.leaveTextTab': 'Para salir, cierra esta pestaña.',
   'menu.leaveStay': 'SEGUIR JUGANDO',
   'menu.leaveGo': 'SALIR',
   'nav.play': 'JUGAR',
@@ -73,6 +75,7 @@ export default {
   'nav.leaderboardShort': 'RANKING',
   'nav.modes': 'MODOS',
   'nav.sections': 'Secciones',
+  'nav.tabs': 'Pestañas',
   'nav.select': 'Elegir',
   'nav.back': 'Volver',
   'nav.backRemote': 'Atrás',

@@ -6,7 +6,10 @@
  * on JUGAR's). Switching sections always lands on the new one's root (a section is a place, not a
  * history): the top bar's tabs on a PC or a TV (focus = selection), the rail of a phone held
  * sideways, the tabs of an upright phone, pad LB / RB, keyboard Q / E (a screen's own tabs first),
- * the account chip (PERFIL) and the wordmark (JUGAR).
+ * the account chip (PERFIL) and the wordmark (JUGAR). A section's root opened by a stacked screen
+ * of another (Competitive's SIGN IN opens PERFIL) is a detour on top of it instead, so Back comes
+ * back (backModel.ts stackAfterOpen). A screen that asks before it goes (Screen.leaveGuard: a
+ * lobby) asks before any of those, or a crumb, takes the player off it.
  *
  * The shell, by layout class (device.ts layoutClass, `data-layout` on <html>; src/ui/styles/shell.css):
  * - the top bar (shell/topbar.ts): wordmark, sections, pills, account chip, Settings; on a stacked
@@ -31,7 +34,8 @@
  * Settings, pad X / Delete the screen's context action.
  *
  * Touch mode (`tg-touch` on <html>): no focus rings, nothing focused by itself, and a tap that began
- * before a screen or a sheet came up (or within TAP_GUARD_MS after) presses nothing on it.
+ * before a screen or a sheet came up (or within TAP_GUARD_MS after) presses nothing on it (on the
+ * rail and the top bar: after a stacked screen came or went and moved their items).
  *
  * The Game implements MenuHost (what the menus can ask of it) and calls show() / hide() / action();
  * the menu never touches the sim or the renderer. Styling: src/ui/styles/ (`mn-`) and menu.css.
@@ -41,7 +45,7 @@ import './styles/index.css';
 import { h, setChildren } from './dom';
 import { FocusMemory, FocusNav, isEditable, isEditing, navKey, setEditing } from './nav';
 import type { NavDir, NavZone } from './nav';
-import { finePointer, tapGuarded } from './device';
+import { finePointer, resetPageZoom, tapGuarded } from './device';
 import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
 import { regionName, tierName } from './names';
@@ -60,8 +64,8 @@ import type { ThemeId } from '../render/theme';
 import type { ActionId, Device } from '../input/bindings';
 import { DISCORD_URL, GAME_NAME, LICENSE_NAME, SOURCE_URL, STORAGE_PREFIX } from '../brand';
 import { hashValue } from '../render/hashFlags';
-import { menuBack } from './backModel';
-import { HOME_SECTION, rootSection, sectionDef, sectionOf, stepSection } from './shell/sections';
+import { menuBack, stackAfterOpen } from './backModel';
+import { HOME_SECTION, sectionDef, stepSection } from './shell/sections';
 import type { SectionId } from './shell/sections';
 import { hintItems } from './shell/hints';
 import { TopBar } from './shell/topbar';
@@ -153,8 +157,12 @@ export interface MenuHost {
    * on `opts.tab` when given; `onClose` when it is left. The menus call it through Menu.openSettings.
    */
   openSettings(onClose: () => void, opts?: { tab?: SettingsTab }): void;
-  /** Back on JUGAR's root: "Leave Turbogol?" (the Game holds the system Back guard). */
-  confirmLeave(): void;
+  /**
+   * Back on JUGAR's root: "Leave Turbogol?" (the Game holds the system Back guard). `systemBack`:
+   * the system's own Back asked (another one leaves); else Esc, pad B or ‹ (another of those closes
+   * the sheet: its LEAVE button is the way out).
+   */
+  confirmLeave(systemBack?: boolean): void;
   /** The key / button name of an action's live binding on `device`, for a hint text ('—' unbound). */
   keyLabel(action: ActionId, device: Device): string;
   /** One line about the build (WebGPU / RocketSim version), shown in About. */
@@ -171,6 +179,8 @@ export interface MenuPrefs {
 
 const PREFS_KEY = STORAGE_PREFIX + 'menu.v1';
 const POPULATION_EVERY_MS = 10_000;
+/** A focus this soon after a pointer lifted is that pointer's (a tap focuses between its up and its click). */
+const POINTER_FOCUS_MS = 150;
 const TICK_MS = 250;
 
 /** Touch mode: the last input used was a finger (`tg-touch` on <html>, set by src/input/TouchControls.ts). */
@@ -228,6 +238,13 @@ export interface Screen {
   back?(): boolean;
   /** A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context action). */
   command?(c: MenuCommand): boolean;
+  /**
+   * The shell is about to take the player off this screen without its own Back (a section, a
+   * crumb, the wordmark, the chip, the search pill): a function that asks first and calls `go`
+   * once the player agrees (after its sheet closed), or null to let them go. A lobby asks
+   * "Leave the lobby?" (a member who just walked away would hold the next start for everyone).
+   */
+  leaveGuard?(): ((go: () => void) => void) | null;
 }
 
 export type ScreenFactory = (menu: Menu) => Screen;
@@ -276,9 +293,19 @@ export class Menu {
   private modalBlocking = false;
   /** performance.now() of the last screen or modal mounted (or modal closed): the tap guard's reference. */
   private mountedAt = -Infinity;
+  /** performance.now() when the rail and the top bar last changed shape (a stacked screen came or went: ‹ and the crumbs). */
+  private chromeMovedAt = -Infinity;
+  private chromeStacked = false;
   /** The last finger / pen down and up (performance.now()), for the tap guard. */
   private touchDownAt = -Infinity;
   private touchUpAt = -Infinity;
+  /**
+   * A pointer is down (a mouse button), or one just lifted (a finger's tap focuses between its up
+   * and its click): the focus it gives a section tab is no selection, its click is (and the tap
+   * guard sees that one).
+   */
+  private pressing = false;
+  private pointerUpAt = -Infinity;
   /** A keydown the fields' capture listener already handled (onKey leaves it). */
   private keyDone: Event | null = null;
   /**
@@ -303,6 +330,8 @@ export class Menu {
   private reloadAsked = false;
   private firstShow = true;
   private fitQueued = false;
+  /** What the account chip shows (refreshChrome rebuilds it on a change only). */
+  private chipKey = '';
 
   constructor(host: MenuHost, container: HTMLElement) {
     this.host = host;
@@ -353,12 +382,18 @@ export class Menu {
     window.addEventListener('keydown', (e) => this.onKey(e));
     window.addEventListener('keyup', (e) => this.keysDown.delete(e.code));
     window.addEventListener('resize', () => this.queueFit());
-    // The hints and the pills' place follow the last input and the layout class (device.ts).
+    // The hints and the pills' place follow the last input and the layout class (device.ts); the
+    // other classes of <html> (super low, fullscreen...) change nothing here.
+    const html = document.documentElement;
+    let shellKey = '';
     new MutationObserver(() => {
+      const key = [html.dataset.input, html.dataset.layout, html.classList.contains('tg-touch'), html.classList.contains('tg-tv')].join();
+      if (key === shellKey) return;
+      shellKey = key;
       this.renderHints();
       this.placePills();
       this.queueFit();
-    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-input', 'data-layout', 'class'] });
+    }).observe(html, { attributes: true, attributeFilter: ['data-input', 'data-layout', 'class'] });
     void document.fonts?.ready.then(() => this.queueFit());
     host.accounts.subscribe(() => this.refreshChrome());
     this.loadConfig();
@@ -426,6 +461,7 @@ export class Menu {
     this.float.hidden = true;
     this.root.parentElement?.classList.remove('mn-open');
     this.visibleNow = false;
+    resetPageZoom(); // a pinch in the menus does not carry into the match (its controls would sit off screen)
     this.keysDown.clear(); // a key held into the match and out again is no menu key
     this.closeModal();
     if (this.timer !== 0) {
@@ -436,26 +472,28 @@ export class Menu {
   }
 
   /**
-   * Open screen `id`: a section's root opens that section (at its root); another screen is stacked
-   * on its section's root (brought back to the top when already in the stack; `reset`: right on the
-   * root, whatever was stacked).
+   * Open screen `id` (backModel.ts stackAfterOpen): a section's root opens that section (at its
+   * root), but from a stacked screen of another section it is a detour on top of it (Competitive's
+   * SIGN IN opens PERFIL: Back comes back to Competitive); another screen is stacked on its
+   * section's root (brought back to the top when already in the stack; `reset`: right on the root,
+   * whatever was stacked).
    */
   open(id: string, reset = false): void {
-    const s = this.screen(id);
-    const sec = sectionOf(id);
+    const next = stackAfterOpen({ section: this.section, stack: this.stack.map((s) => s.id) }, id, reset);
+    const stack = next.stack.map((x) => this.screen(x));
     this.top()?.hide?.();
-    if (sec !== this.section) {
-      this.section = sec;
-      this.stack = [];
-    }
-    if (rootSection(id) !== null) this.stack = [s];
-    else if (reset || this.stack.length === 0) this.stack = [this.screen(sectionDef(sec).root), s];
-    else {
-      const i = this.stack.indexOf(s);
-      if (i >= 0) this.stack.length = i + 1;
-      else this.stack.push(s);
-    }
+    this.section = next.section;
+    this.stack = stack;
     if (this.visibleNow) this.mount();
+  }
+
+  /** The guard (Screen.leaveGuard) of the first screen above depth `keep` that asks before it goes, null when none does. */
+  private leaveGuard(keep: number): ((go: () => void) => void) | null {
+    for (let i = this.stack.length - 1; i >= keep; i--) {
+      const g = this.stack[i].leaveGuard?.() ?? null;
+      if (g !== null) return g;
+    }
+    return null;
   }
 
   /** Replace the top screen (a form that turns into its result). */
@@ -465,30 +503,47 @@ export class Menu {
     this.open(id);
   }
 
-  /** Back to the `i`-th screen of the stack (0: the section's root): a breadcrumb. */
+  /** Back to the `i`-th screen of the stack (0: the section's root): a breadcrumb (a lobby above it asks first). */
   private popTo(i: number): void {
     if (i < 0 || i >= this.stack.length - 1) return;
+    const guard = this.leaveGuard(i + 1);
+    if (guard !== null) {
+      guard(() => this.popTo(i));
+      return;
+    }
     this.top()?.hide?.();
     this.stack.length = i + 1;
     this.mount();
   }
 
   /**
-   * Show section `id` at its root. `how`: 'focus' (its tab got the focus: the focus stays on the
-   * tab), 'click' (a click or a tap: on the section shown, back to its root), 'command' (LB / RB,
-   * Q / E: the focus follows to the new tab when it was on the bar, else the new section's own).
+   * Show section `id` at its root. `how`: 'focus' (its tab got the focus from the arrows or Tab:
+   * the focus stays on the tab; a pointer's focus is not one, its click is), 'click' (a click or a
+   * tap: on the section shown, back to its root), 'command' (LB / RB, Q / E: the focus follows to
+   * the new tab when it was on the bar, else the new section's own).
+   * A screen that asks before it goes (a lobby: Screen.leaveGuard) asks first.
    */
   private selectSection(id: SectionId, how: 'focus' | 'click' | 'command'): void {
-    if (!this.visibleNow || this.modalEl !== null) return;
+    if (!this.visibleNow || this.modalEl !== null || (how === 'focus' && (this.pressing || performance.now() - this.pointerUpAt < POINTER_FOCUS_MS))) return;
     if (id === this.section) {
       if (how !== 'focus' && this.stack.length > 1) this.popTo(0);
+      return;
+    }
+    const guard = this.leaveGuard(0);
+    if (guard !== null) {
+      // A tab that took the focus is no switch yet: the focus goes back to the section shown, so
+      // STAY returns it there (not to that tab, which would ask again), and LEAVE moves it on.
+      if (how === 'focus') this.focusSectionEntry();
+      guard(() => this.selectSection(id, how === 'focus' ? 'command' : how));
       return;
     }
     const onBar = this.onSectionTab(document.activeElement);
     this.top()?.hide?.();
     this.section = id;
     this.stack = [this.screen(sectionDef(id).root)];
-    const focus: SwitchFocus = how === 'focus' || (how === 'click' && onBar) ? 'keep' : 'auto';
+    // From the bar the focus stays on it: on the tab that took it, or (LB / RB, Q / E, Esc's way
+    // to JUGAR) on the new one; the stage's first control would pull a remote off the bar.
+    const focus: SwitchFocus = how === 'focus' || onBar ? 'keep' : 'auto';
     this.mount(focus);
     if (how === 'command' && onBar && !touchMode()) this.focusSectionEntry();
   }
@@ -558,7 +613,7 @@ export class Menu {
 
   /** Back from a key, the pad or ‹: on JUGAR's root it asks to leave, as the system Back does. */
   private backOrLeave(): void {
-    if (!this.back() && this.modalEl === null) this.host.confirmLeave();
+    if (!this.back() && this.modalEl === null) this.host.confirmLeave(false);
   }
 
   private mount(focus: SwitchFocus = 'auto'): void {
@@ -580,6 +635,10 @@ export class Menu {
   /** The bars for the section and the stack shown: tabs, rail, crumbs, stacked or not, hints. */
   private renderChrome(): void {
     const stacked = this.stack.length > 1;
+    if (stacked !== this.chromeStacked) {
+      this.chromeStacked = stacked;
+      this.chromeMovedAt = performance.now();
+    }
     this.root.classList.toggle('mn-stacked', stacked);
     this.topBar.setStacked(stacked);
     this.rail.setStacked(stacked);
@@ -590,8 +649,24 @@ export class Menu {
     this.renderHints();
   }
 
+  /**
+   * The hint bar for the last input and the screen shown (shell/hints.ts); also every tick, as a
+   * screen's own tabs come and go (Profile's sign-in forms after signing in). Beside a screen's own
+   * tabs Q / E step those: the Q / E keycaps by the section strip step aside (`mn-own-tabs`).
+   */
   private renderHints(): void {
-    this.hintBar.render(hintItems(lastInput(), { searching: this.searching }));
+    const ownTabs = this.ownTabs() !== null;
+    this.root.classList.toggle('mn-own-tabs', ownTabs);
+    this.hintBar.render(hintItems(lastInput(), { searching: this.searching, stacked: this.stack.length > 1, ownTabs }));
+  }
+
+  /** The tabs of the screen on top (`.mn-tabs` of `.mn-tab`, the picked one `.mn-tab-on`), null without two of them. */
+  private ownTabs(): { strip: HTMLElement; tabs: HTMLElement[]; on: number } | null {
+    const strip = this.top()?.el.querySelector<HTMLElement>('.mn-tabs') ?? null;
+    if (strip === null) return null;
+    const tabs = Array.from(strip.querySelectorAll<HTMLElement>('.mn-tab'));
+    const on = tabs.findIndex((b) => b.classList.contains('mn-tab-on'));
+    return on < 0 || tabs.length < 2 ? null : { strip, tabs, on };
   }
 
   /** The pills: the top bar's right side, or the hint bar on a TV (its top bar has no room at 3 m). */
@@ -696,8 +771,11 @@ export class Menu {
   /**
    * Touch: a tap whose finger went down before the last screen or modal was mounted, or within
    * TAP_GUARD_MS after (device.ts), is no click on it (a double tap on a tile would press what the
-   * next screen has under it; a modal that came up under a finger). Trusted pointer clicks only:
-   * Enter / Space and the controller's A (FocusNav.accept: el.click()) always go through.
+   * next screen has under it; a modal that came up under a finger). The bars stay put across a
+   * mount, so a second tap on them is meant, but for the rail and the top bar when a stacked
+   * screen came or went (their ‹ and crumbs moved the items: a double tap on a rail item would
+   * press the one that slid under the finger). Trusted pointer clicks only: Enter / Space and the
+   * controller's A (FocusNav.accept: el.click()) always go through.
    */
   private installTapGuard(): void {
     const finger = (e: Event): boolean => {
@@ -705,8 +783,15 @@ export class Menu {
       return p === 'touch' || p === 'pen';
     };
     this.root.addEventListener('pointerdown', (e) => {
+      this.pressing = true;
       if (finger(e)) this.touchDownAt = performance.now();
     }, true);
+    for (const type of ['pointerup', 'pointercancel']) {
+      window.addEventListener(type, () => {
+        this.pressing = false;
+        this.pointerUpAt = performance.now();
+      }, true);
+    }
     this.root.addEventListener('pointerup', (e) => {
       if (finger(e)) this.touchUpAt = performance.now();
     }, true);
@@ -714,15 +799,18 @@ export class Menu {
       'click',
       (e) => {
         if (!e.isTrusted || (e as MouseEvent).detail === 0) return; // a key's or FocusNav's click
-        // The bars stay put across a mount: a second tap on the rail, the tabs or the top bar is meant.
         const target = e.target;
-        if (target instanceof Element && target.closest('.mn-rail, .mn-tabbar, .mn-top') !== null) return;
+        const bar = target instanceof Element ? target.closest('.mn-rail, .mn-tabbar, .mn-top') : null;
+        const since = bar === null ? this.mountedAt : bar.classList.contains('mn-tabbar') ? -Infinity : this.chromeMovedAt;
         const p = (e as PointerEvent).pointerType;
         // Older engines' clicks are plain MouseEvents: a finger's when one just lifted.
         const byFinger = p === 'touch' || p === 'pen' || (p === undefined && performance.now() - this.touchUpAt < 800);
-        if (byFinger && tapGuarded(this.touchDownAt, this.mountedAt)) {
+        if (byFinger && tapGuarded(this.touchDownAt, since)) {
           e.preventDefault();
           e.stopImmediatePropagation();
+          // Nor does it leave the focus there (a later pad press would start from that control).
+          const hit = target instanceof Element ? target.closest('[data-nav]') : null;
+          if (hit instanceof HTMLElement && hit === document.activeElement) hit.blur();
         }
       },
       true,
@@ -870,11 +958,9 @@ export class Menu {
    */
   private stepTabs(d: -1 | 1): boolean {
     const top = this.top();
-    const strip = top === null ? null : top.el.querySelector<HTMLElement>('.mn-tabs');
-    if (top === null || strip === null) return false;
-    const tabs = Array.from(strip.querySelectorAll<HTMLElement>('.mn-tab'));
-    const i = tabs.findIndex((b) => b.classList.contains('mn-tab-on'));
-    if (i < 0 || tabs.length < 2) return false;
+    const own = this.ownTabs();
+    if (top === null || own === null) return false;
+    const { strip, tabs, on: i } = own;
     const onTabs = strip.contains(document.activeElement);
     tabs[(i + d + tabs.length) % tabs.length].click();
     const picked = top.el.querySelector<HTMLElement>('.mn-tabs .mn-tab-on');
@@ -885,10 +971,8 @@ export class Menu {
   /** Cancel the running search (pad Y, keyboard X, the pill's ✕; over Settings too). False when none runs. */
   cancelSearch(): boolean {
     if (!this.host.searchView().active) return false;
-    const inPill = this.searchPill.el.contains(document.activeElement);
     this.host.cancelSearch();
-    this.renderSearch(performance.now());
-    if (inPill) this.refocus(); // the pill went: the screen's focus again, not the page's body
+    this.renderSearch(performance.now()); // the pill goes (its focus back to the screen)
     return true;
   }
 
@@ -919,6 +1003,10 @@ export class Menu {
 
   // ---- chrome: chip, pills, population ---------------------------------------------------------
 
+  /**
+   * The account chip and the region pill, written only when what they show changed (the population
+   * poll every 10 s and each accounts event call this); then the bars fit again (data-fit).
+   */
   refreshChrome(): void {
     const acc = this.host.accounts;
     const me = acc.me;
@@ -927,17 +1015,24 @@ export class Menu {
       const placed = me.ratings.filter((r) => r.tier !== null).sort((a, b) => b.mmr - a.mmr);
       best = placed[0]?.tier ?? null;
     }
-    const chip = this.topBar.chip;
-    if (acc.signedIn && acc.account) {
-      const bestTier = tierById(best);
-      setChildren(chip, h('span.mn-chip-avatar', null, rankBadge(bestTier, 30)), h('span.mn-chip-text', null, h('b', null, acc.account.name), h('small', null, best ? bestTier && tierName(bestTier) : t('menu.account'))));
-      chip.setAttribute('aria-label', acc.account.name + '. ' + t('nav.profile'));
-    } else {
-      setChildren(chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, this.host.guestName()), h('small', null, t('menu.guestSignIn'))));
-      chip.setAttribute('aria-label', this.host.guestName() + '. ' + t('menu.guestSignIn'));
+    const signed = acc.signedIn && acc.account !== null;
+    const chipKey = signed ? 'a|' + (acc.account?.name ?? '') + '|' + (best ?? '') : 'g|' + this.host.guestName();
+    let changed = false;
+    if (chipKey !== this.chipKey) {
+      this.chipKey = chipKey;
+      changed = true;
+      const chip = this.topBar.chip;
+      if (signed && acc.account) {
+        const bestTier = tierById(best);
+        setChildren(chip, h('span.mn-chip-avatar', null, rankBadge(bestTier, 30)), h('span.mn-chip-text', null, h('b', null, acc.account.name), h('small', null, best ? bestTier && tierName(bestTier) : t('menu.account'))));
+        chip.setAttribute('aria-label', acc.account.name + '. ' + t('nav.profile'));
+      } else {
+        setChildren(chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, this.host.guestName()), h('small', null, t('menu.guestSignIn'))));
+        chip.setAttribute('aria-label', this.host.guestName() + '. ' + t('menu.guestSignIn'));
+      }
     }
-    this.regionPill.set(this.regionState());
-    this.queueFit(); // the chip's name or the pill's text may have grown: the sections fit again
+    if (this.regionPill.set(this.regionState())) changed = true;
+    if (changed) this.queueFit(); // the chip's name or the pill's text may have grown: the sections fit again
   }
 
   private regionState(): RegionPillState {
@@ -1021,10 +1116,13 @@ export class Menu {
     });
   }
 
-  /** The running search's own screen (the pill). */
+  /** The running search's own screen (the pill; a lobby on screen asks first). */
   private openSearchScreen(): void {
     const v = this.host.searchView();
-    if (v.active) this.open(v.kind === 'ranked' ? 'ranked' : 'casual', true);
+    if (!v.active) return;
+    const guard = this.leaveGuard(1);
+    if (guard !== null) guard(() => this.openSearchScreen());
+    else this.open(v.kind === 'ranked' ? 'ranked' : 'casual', true);
   }
 
   /** "There's a new version": RELOAD NOW focused; NOT NOW leaves the pill. Above Settings (z 65). */
@@ -1070,6 +1168,7 @@ export class Menu {
     }
     this.renderSearch(now);
     this.top()?.tick?.(now);
+    this.renderHints(); // a screen's own tabs may have come or gone (written on a change only)
   }
 
   /** The search pills (the bar's and the one over Settings), a failure's toast, the update sheet. */
@@ -1083,6 +1182,14 @@ export class Menu {
       if (!this.settingsUp()) this.openUpdateSheet();
     } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) this.toast(v.error, 'error');
     this.lastError = v.error;
+    // A search that ends (cancelled, a failure, the server) takes its pill away: the focus it had
+    // goes back to the screen, not to the page's body (blurred first: a hidden control keeps the
+    // focus until the next frame's rendering, and refocus fills only an empty focus).
+    const a = document.activeElement;
+    if (!v.active && a instanceof HTMLElement && this.searchPill.el.contains(a)) {
+      a.blur();
+      this.refocus();
+    }
     this.searchPill.set(v, now);
     const over = v.active && this.settingsUp() && this.visibleNow;
     if (this.float.hidden === over) this.float.hidden = !over; // written on a change only (4 Hz)

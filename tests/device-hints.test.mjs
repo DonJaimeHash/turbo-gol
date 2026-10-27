@@ -39,6 +39,17 @@ test('a TV remote: OK select, the back button, the up arrow to the sections (a s
   for (const searching of [false, true]) assert.deepEqual(flat(H.hintItems('remote', { searching })), ['remote-ok nav.select', 'remote-back nav.backRemote', 'remote-up nav.sections']);
 });
 
+test('a keyboard on a screen with tabs of its own: Q E step those (Leaderboard, Profile)', () => {
+  assert.deepEqual(flat(H.hintItems('keyboard', { searching: false, ownTabs: true })), ['key-enter nav.select', 'key-esc nav.back', 'key-q+key-e nav.tabs']);
+  assert.equal(flat(H.hintItems('keyboard', { searching: false, stacked: true })).at(-1), 'key-q+key-e nav.sections', 'Q / E still step the sections on a stacked screen');
+  assert.equal(flat(H.hintItems('pad', { searching: false, ownTabs: true })).at(2), 'pad-lb+pad-rb nav.sections', "a controller's LB / RB stay the sections' (LT / RT step the tabs)");
+});
+
+test('a TV remote on a stacked screen: no "▲ Sections" (▲ lands on ‹ there, the section bar steps aside)', () => {
+  assert.deepEqual(flat(H.hintItems('remote', { searching: false, stacked: true })), ['remote-ok nav.select', 'remote-back nav.backRemote']);
+  assert.equal(flat(H.hintItems('remote', { searching: false, ownTabs: true })).at(-1), 'remote-up nav.sections');
+});
+
 test('a mouse and a finger: no hints', () => {
   for (const input of ['mouse', 'touch']) for (const searching of [false, true]) assert.deepEqual(H.hintItems(input, { searching }), []);
 });
@@ -46,14 +57,16 @@ test('a mouse and a finger: no hints', () => {
 test("no input shows another device's keys", () => {
   for (const input of INPUTS) {
     for (const searching of [false, true]) {
-      for (const it of H.hintItems(input, { searching })) for (const g of it.glyphs) assert.equal(H.glyphDevice(g), input, `${input}: ${g}`);
+      for (const stacked of [false, true]) {
+        for (const ownTabs of [false, true]) for (const it of H.hintItems(input, { searching, stacked, ownTabs })) for (const g of it.glyphs) assert.equal(H.glyphDevice(g), input, `${input}: ${g}`);
+      }
     }
   }
 });
 
 test('every verb is a text in English and Spanish, and none names a key or a click', () => {
   for (const input of INPUTS) {
-    for (const it of H.hintItems(input, { searching: true })) {
+    for (const it of [...H.hintItems(input, { searching: true }), ...H.hintItems(input, { searching: true, ownTabs: true })]) {
       for (const msgs of [en, es]) {
         const text = msgs[it.verb];
         assert.equal(typeof text, 'string', it.verb);

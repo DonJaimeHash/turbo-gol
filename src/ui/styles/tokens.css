@@ -141,15 +141,19 @@
   --font-display: 'TG Display', 'Bahnschrift', 'TG Display Condensed Fallback', 'TG Display Wide Fallback', 'DIN Condensed', 'Avenir Next Condensed', 'Roboto Condensed', 'sans-serif-condensed', 'Arial Narrow', system-ui, sans-serif;
   --font: var(--font-body);
   --font-mono: 'Cascadia Mono', 'Consolas', 'SF Mono', Menlo, ui-monospace, monospace;
-  /* The scale at each class's reference view (1 rem = 16 px there; the root scale arrives with the
-     shell, PR 4). Phone landscape and short screens below, the TV under html.tg-tv. */
+  /* The scale at each class's reference view (1 rem = 16 px there: the root scale below). Phone
+     landscape and short screens below, the TV under html.tg-tv. */
   --t-hero: 3.5rem; /* 56: PLAY NOW */
   --t-display: 2.75rem; /* 44: screen titles */
   --t-numeral: 5.5rem; /* 88: search clock, result */
   --t-title: 1.5rem; /* 24: tile titles */
+  --t-sheet: 1.75rem; /* 28: a sheet's title */
+  --t-wordmark: 1.625rem; /* 26: the top bar's TURBOGOL (24 on a phone, 28 on a TV) */
   --t-heading: 1.125rem; /* 18: sections, tabs, buttons */
-  --t-body: 1rem; /* 16 */
+  --t-body: 1rem; /* 16: also the account chip's name */
   --t-small: 0.875rem; /* 14: subtitles, help */
+  --t-caption: 0.8125rem; /* 13: the chip's second line (14 on a phone: its floor) */
+  --t-nav: 0.875rem; /* 14: the phone's rail and tab bar labels */
   --t-label: 0.75rem; /* 12: slots */
   --track-label: 0.06em;
 
@@ -216,6 +220,23 @@
   --safe-left: env(safe-area-inset-left, 0px);
 }
 
+/* The root: 1 rem is 16 px at each layout class's reference view, times its device factor
+   (src/ui/device.ts uiScale: --ui-scale on <html>), so what the shell writes in rem grows with the
+   screen; the old screens' px do not, and the page's own text stays 16 px. */
+html {
+  font-size: calc(16px * var(--ui-scale, 1));
+}
+
+body {
+  font-size: 16px;
+}
+
+/* The bars of a phone (the rail sideways, the tabs upright): a smaller wordmark. */
+html[data-shell='rail'],
+html[data-shell='tabs'] {
+  --t-wordmark: 1.5rem;
+}
+
 /* Short screens (a 1366 x 600 laptop, not a phone): the big roles come down. */
 @media (max-height: 600px) and (min-width: 900px) {
   :root {
@@ -236,6 +257,7 @@
     --t-heading: 1rem;
     --t-body: 0.9375rem;
     --t-small: 0.875rem;
+    --t-caption: 0.875rem;
     --t-label: 0.875rem;
   }
 }
@@ -250,6 +272,7 @@
     --t-heading: 1rem;
     --t-body: 1rem;
     --t-small: 0.875rem;
+    --t-caption: 0.875rem;
     --t-label: 0.875rem;
   }
 }
@@ -263,7 +286,9 @@ html.tg-tv {
   --t-heading: 1.25rem;
   --t-body: 1.125rem;
   --t-small: 1.125rem;
+  --t-caption: 1rem;
   --t-label: 1rem;
+  --t-wordmark: 1.75rem;
   --focus-w: 4px;
   --focus-heel: 6px;
 }

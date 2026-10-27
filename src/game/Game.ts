@@ -1165,7 +1165,7 @@ export class Game implements P2PGameHooks {
       searchView: () => game.menuSearchView(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
-      confirmLeave: () => game.confirmLeave(),
+      confirmLeave: (systemBack) => game.confirmLeave(systemBack === true),
       keyLabel: (action, device) => game.input.getLabel(action, device),
       get info() {
         return game.info;
@@ -1426,18 +1426,20 @@ export class Game implements P2PGameHooks {
     if (step === 'cancelCapture') this.input.cancelRebind();
     else if (step === 'hud') hud.menuAction('back');
     else if (step === 'menus') {
-      if (!this.menu.back()) this.confirmLeave();
+      if (!this.menu.back()) this.confirmLeave(true);
     } else if (step === 'leaveSummary') this.stopTraining();
     else if (step === 'pause') this.setPaused(true);
   }
 
   /**
-   * System Back on the home screen: "Leave Turbogol?". While it is up the next Back leaves the page
-   * (BackGuard.release: the browser's own Back, to the page before or out of the app); KEEP PLAYING,
-   * Esc / B or anything else that closes it arms the guard again. LEAVE (only when there is a page
-   * before the game's) goes back there.
+   * Back on the home screen: "Leave Turbogol?". While it is up the next system Back leaves the
+   * page (BackGuard.release: the browser's own Back, to the page before or out of the app); KEEP
+   * PLAYING, Esc / B or anything else that closes it arms the guard again. LEAVE (only when there is
+   * a page before the game's) goes back there. Its text says so for what opened it: the system Back
+   * ("Press Back again"), or Esc, pad B or the menus' ‹, whose next press closes it (choose LEAVE;
+   * with no page before, close the tab).
    */
-  private confirmLeave(): void {
+  private confirmLeave(systemBack: boolean): void {
     const guard = this.backGuard;
     if (guard === null) return;
     guard.release();
@@ -1452,7 +1454,8 @@ export class Game implements P2PGameHooks {
         },
       });
     }
-    this.menu.modal({ title: t('menu.leaveTitle', { game: GAME_NAME }), body: t('menu.leaveText'), actions, onClose: () => guard.resume() });
+    const body = systemBack ? t('menu.leaveText') : guard.canLeave ? t('menu.leaveTextKey') : t('menu.leaveTextTab');
+    this.menu.modal({ title: t('menu.leaveTitle', { game: GAME_NAME }), body, actions, onClose: () => guard.resume() });
   }
 
   /** A match is under way, paused too (not training, not after the final whistle): leaving the page now loses it, online as an abandon. */
@@ -3495,6 +3498,9 @@ export class Game implements P2PGameHooks {
     this.lastResult = null;
     this.menuNotice = undefined;
     this.hud.hideMenu();
+    // Back from a custom lobby's match: its screen comes back (its show() tells the lobby, which
+    // starts again only once every member is back), wherever the menus were left.
+    if (this.lobby.inLobby && this.lobby.me?.inGame === true && this.menu.top()?.id !== 'lobby') this.menu.open('lobby');
     this.menu.show();
     this.flushNotices();
     // What an earlier ranked match's wait got while the menus were away comes first. Then, when a

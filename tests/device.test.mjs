@@ -104,15 +104,24 @@ test('layoutClass: by height and orientation, never by width alone; the TV whate
   assert.equal(DEV.layoutClass(1920, 1080, true), 'tv');
 });
 
-test('uiScale: 1 at each class reference view, clamped (PC 0.9 to 1.35, phone 0.92 to 1.1, TV 1 to 2)', () => {
+test('uiScale: 1 at each class reference view, clamped (PC 0.9 to 1.35, short 0.9 to 1, phone 1 to 1.1, TV 1 to 2)', () => {
   const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} vs ${b}`);
   near(DEV.uiScale('pc', 1366, 768), 1);
   near(DEV.uiScale('pc', 1920, 1080), 1.35);
-  near(DEV.uiScale('short', 1366, 600), 0.9);
+  near(DEV.uiScale('pc', 1280, 720), 720 / 768);
+  near(DEV.uiScale('pc', 1280, 640), 0.9);
+  // A short laptop is 1 at its own 600 (a 56 bar, 18 px sections), less only when shorter.
+  near(DEV.uiScale('short', 1366, 600), 1);
+  near(DEV.uiScale('short', 1280, 560), 560 / 600);
+  near(DEV.uiScale('short', 1280, 500), 0.9);
+  // A phone never under 1: 14 px text and the 123 px rail at 780 x 360 too.
   near(DEV.uiScale('phone', 844, 390), 1);
-  near(DEV.uiScale('phone', 780, 360), 360 / 390);
-  near(DEV.uiScale('phone', 640, 300), 0.92);
+  near(DEV.uiScale('phone', 780, 360), 1);
+  near(DEV.uiScale('phone', 640, 300), 1);
+  near(DEV.uiScale('phone', 915, 412), 412 / 390);
   near(DEV.uiScale('portrait', 390, 844), 1);
+  near(DEV.uiScale('portrait', 360, 780), 1);
+  near(DEV.uiScale('tablet', 768, 1024), 1.1);
   near(DEV.uiScale('tv', 960, 540), 1);
   near(DEV.uiScale('tv', 962, 541), 962 / 960);
   near(DEV.uiScale('tv', 1920, 1080), 2);

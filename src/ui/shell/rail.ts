@@ -1,11 +1,12 @@
 /**
  * The sections where a phone has them (plan §1.3):
  * - `mn-rail` (a phone held sideways): 123 px plus the left safe area, 24 px clear of Android's back
- *   gesture, the five sections as 56 px items (icon + label), and at its foot the source link
+ *   gesture, the five sections as 56 px items (icon + label; the active one on --surface-3 with a
+ *   lime bar slanted at its inner edge, `mn-sl-mark`), and at its foot the source link
  *   (AGPL-3.0, always on screen) with the About sheet beside it. On a stacked screen a ‹ item comes
  *   first and the items come down to 48 px (7 x 48 + 16 fits 360).
  * - `mn-tabbar` (an upright phone or tablet): 64 px plus the bottom safe area, the five sections
- *   with their short names.
+ *   with their short names, the active one with a lime bar on top.
  * Focus = selection, as the top bar's tabs. A tap on the section already shown goes to its root.
  * Built on call, nothing at import.
  */
@@ -36,6 +37,7 @@ export class SectionList {
         { type: 'button', role: 'tab', 'aria-selected': 'false', 'data-nav': true, 'data-key': `${kind}-${s.id}`, onclick: () => hd.click(s.id) },
         icon(s.icon),
         h('span.mn-sl-label', { 'data-fit': '12', 'data-fit-alt': rail && s.short !== s.label ? t(s.short) : undefined }, t(rail ? s.label : s.short)),
+        h('span.mn-sl-mark', { 'aria-hidden': 'true' }),
       );
       b.addEventListener('focusin', () => hd.focus(s.id));
       this.items.set(s.id, b);

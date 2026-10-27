@@ -14,7 +14,7 @@ export function garageScreen(_menu: Menu): Screen {
     'div.mn-garage',
     null,
     screenHead(t('nav.garage')),
-    h('div.mn-soon', null, h('span.mn-soon-icon', { 'aria-hidden': 'true' }, icon('garage')), h('span.mn-soon-slot', null, t('garage.soon')), h('p.mn-soon-text', null, t('garage.soonText'))),
+    h('div.mn-soon', null, h('span.mn-soon-icon', { 'aria-hidden': 'true' }, icon('garage')), h('span.mn-slot', null, t('garage.soon')), h('p.mn-soon-text', null, t('garage.soonText'))),
   );
   return { id: 'garage', title: t('nav.garage'), el };
 }

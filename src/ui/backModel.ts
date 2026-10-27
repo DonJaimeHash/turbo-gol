@@ -19,9 +19,43 @@
  *   4. a stacked screen: it pops, with its focus remembered;
  *   5. a section other than JUGAR: back to JUGAR;
  *   6. JUGAR's root: "Leave Turbogol?" with KEEP PLAYING focused.
+ *
+ * And where opening a screen leaves the section and its stack (stackAfterOpen, Menu.open): what
+ * the pops of step 4 walk back down.
  */
 import type { SectionId } from './shell/sections';
-import { HOME_SECTION } from './shell/sections';
+import { HOME_SECTION, rootSection, sectionDef, sectionOf } from './shell/sections';
+
+/** The section shown and its stack of screen ids, its root first (Menu.open). */
+export interface StackState {
+  readonly section: SectionId;
+  readonly stack: readonly string[];
+}
+
+/** `stack` up to `id` when it holds it (the screen comes back to the top), else with `id` on top. */
+function upTo(stack: readonly string[], id: string): string[] {
+  const i = stack.indexOf(id);
+  return i >= 0 ? stack.slice(0, i + 1) : [...stack, id];
+}
+
+/**
+ * Where opening screen `id` leaves the menus (Menu.open):
+ * - a section's root: that section, at its root; but opened by a stacked screen of another
+ *   section (Competitive's SIGN IN opens PERFIL) it is a detour stacked on that screen, so Back,
+ *   ‹ and the crumbs come back to it (the bar still shows the section the player is in);
+ * - any other screen: stacked on its section's root, brought back to the top when already in the
+ *   stack; `reset`: right on the root, whatever was stacked.
+ */
+export function stackAfterOpen(s: StackState, id: string, reset = false): StackState {
+  const root = rootSection(id);
+  if (root !== null) {
+    if (root !== s.section && !reset && s.stack.length > 1) return { section: s.section, stack: upTo(s.stack, id) };
+    return { section: root, stack: [id] };
+  }
+  const sec = sectionOf(id);
+  if (reset || sec !== s.section || s.stack.length === 0) return { section: sec, stack: [sectionDef(sec).root, id] };
+  return { section: sec, stack: upTo(s.stack, id) };
+}
 
 export type SheetKind = 'none' | 'dismissable' | 'blocking';
 

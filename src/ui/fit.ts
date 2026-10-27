@@ -1,6 +1,7 @@
 /**
  * `data-fit="<min px>"` (plan §2.4): a box whose text could outgrow it (the section bar, a rail
- * label, a crumb) declares the smallest size it may take; fitAll shrinks its font 1 px at a time,
+ * label, a crumb) declares the smallest size it may take (a stylesheet may raise it for a layout
+ * with the `--fit-min` custom property: 16 px on a TV); fitAll shrinks its font 1 px at a time,
  * only while its content overflows it, never below that minimum, and then swaps in the short forms
  * it has (`data-fit-alt`). Its children size in em (or inherit), so a whole tab strip shrinks as one. The insurance for the fallback fonts (Roboto on
  * a phone or a TV without the display font, #widetext) and for a larger interface size. The Menu
@@ -9,12 +10,30 @@
  * In development (or a build with VITE_UI_FIT=1) `window.__uiFit()` reports what a layout check
  * needs (scripts/ui-fit.mjs, plan §2.6): the shell's bars overflowing, `data-fit` boxes still
  * overflowing at their minimum, a horizontal scroll, the stage scrolling, focus rings a clipping
- * ancestor would cut, and the menus' DOM size.
+ * ancestor would cut, shell text under the class's minimum (plan §1.2.3: 14 px on a phone, 16 on
+ * a TV) and the menus' DOM size.
  */
 
-/** Overflowing by more than half a pixel (sub-pixel layout). */
+/** The left and right of `el`'s content box (inside its border and padding: a bar's overscan, the rail's gesture margin). */
+function contentX(el: HTMLElement): [number, number] {
+  const cs = getComputedStyle(el);
+  const b = el.getBoundingClientRect();
+  return [b.left + (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.paddingLeft) || 0), b.right - (parseFloat(cs.borderRightWidth) || 0) - (parseFloat(cs.paddingRight) || 0)];
+}
+
+/**
+ * Overflowing by more than half a pixel (sub-pixel layout): its scroll width, or (a padded bar) a
+ * child out of its content box, into the padding that scrollWidth does not count.
+ */
 function overflows(el: HTMLElement): boolean {
-  return el.scrollWidth > el.clientWidth + 0.5;
+  if (el.scrollWidth > el.clientWidth + 0.5) return true;
+  if (el.children.length === 0) return false;
+  const [left, right] = contentX(el);
+  for (const c of el.children) {
+    const r = c.getBoundingClientRect();
+    if (r.width > 0 && (r.right > right + 0.5 || r.left < left - 0.5)) return true;
+  }
+  return false;
 }
 
 /** Shrink `el` 1 px at a time while it overflows, down to its minimum; true when it fits. */
@@ -38,7 +57,7 @@ function fitOne(el: HTMLElement): void {
   for (const a of alts) if (a.dataset.fitFull !== undefined) a.textContent = a.dataset.fitFull;
   el.style.fontSize = '';
   if (el.offsetParent === null || el.clientWidth === 0) return; // not laid out (hidden in this layout)
-  const min = Number(el.dataset.fit) || 12;
+  const min = Number(getComputedStyle(el).getPropertyValue('--fit-min')) || Number(el.dataset.fit) || 12;
   if (shrink(el, min) || alts.length === 0) return;
   for (const a of alts) {
     a.dataset.fitFull = a.textContent ?? '';
@@ -57,7 +76,7 @@ export interface UiFitReport {
   height: number;
   scale: string;
   screen: string;
-  /** Bars of the shell (top, rail, hint, tabs) whose content overflows them or leaves the screen. */
+  /** Bars of the shell (top, rail, hint, tabs) whose content overflows them (sideways: their content box, the overscan and the gesture margin kept clear) or leaves the screen. */
   shellOverflow: string[];
   /** data-fit boxes that still overflow at their minimum. */
   fitOverflow: string[];
@@ -67,6 +86,12 @@ export interface UiFitReport {
   stageScroll: boolean;
   /** Focusable controls whose ring or heel a clipping (overflow: hidden) ancestor would cut. */
   clippedFocus: string[];
+  /**
+   * Text in the shell's bars under the class's minimum (14 px on a phone, upright or sideways; 16
+   * on a TV), "(data-fit)" when a data-fit box shrank it (allowed down to its own minimum for the
+   * fallback fonts: the rail's 12).
+   */
+  smallText: string[];
   nodes: number;
 }
 
@@ -92,10 +117,11 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
     // Sideways only: a focused control's heel may hang below its bar (focus.css), which is no overflow.
     if (bar.scrollWidth > bar.clientWidth + 1) shellOverflow.push(describe(bar) + ' overflows');
     const box = bar.getBoundingClientRect();
+    const [left, right] = contentX(bar);
     for (const el of bar.querySelectorAll<HTMLElement>('button, a, .mn-pill, .mn-hint-item, .mn-crumbs')) {
       if (!shown(el)) continue;
       const r = el.getBoundingClientRect();
-      if (r.right > box.right + 1 || r.left < box.left - 1 || r.bottom > box.bottom + 1 || r.top < box.top - 1 || r.right > W + 1) shellOverflow.push(describe(el));
+      if (r.right > right + 1 || r.left < left - 1 || r.bottom > box.bottom + 1 || r.top < box.top - 1 || r.right > W + 1) shellOverflow.push(describe(el));
     }
   }
   const fitOverflow: string[] = [];
@@ -116,9 +142,24 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
       }
     }
   }
+  const layout = html.dataset.layout ?? '';
+  const floor = layout === 'tv' ? 16 : layout === 'phone' || layout === 'portrait' ? 14 : 0;
+  const smallText: string[] = [];
+  if (floor > 0) {
+    for (const bar of root.querySelectorAll<HTMLElement>('.mn-top, .mn-rail, .mn-hint, .mn-tabbar')) {
+      if (!shown(bar)) continue;
+      for (const el of bar.querySelectorAll<HTMLElement>('*')) {
+        if (!shown(el) || !Array.from(el.childNodes).some((n) => n.nodeType === 3 && (n.textContent ?? '').trim() !== '')) continue;
+        const px = parseFloat(getComputedStyle(el).fontSize);
+        if (px >= floor - 0.05) continue;
+        const fit = el.closest<HTMLElement>('[data-fit]');
+        smallText.push(`${describe(el)} ${px.toFixed(1)}px${fit !== null && fit.style.fontSize !== '' ? ' (data-fit)' : ''}`);
+      }
+    }
+  }
   const stage = root.querySelector<HTMLElement>('.mn-stage');
   return {
-    layout: html.dataset.layout ?? '',
+    layout,
     width: W,
     height: H,
     scale: html.style.getPropertyValue('--ui-scale'),
@@ -128,6 +169,7 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
     hScroll: html.scrollWidth > W + 1 || document.body.scrollWidth > W + 1,
     stageScroll: stage !== null && stage.scrollHeight > stage.clientHeight + 1,
     clippedFocus,
+    smallText,
     nodes: root.querySelectorAll('*').length,
   };
 }

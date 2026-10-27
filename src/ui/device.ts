@@ -99,20 +99,25 @@ const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.m
 
 /**
  * The device factor of `--ui-scale` (1 rem = 16 px x the factor at each class's reference view):
- * PC and short screens by height (768 tall = 1, 0.9 to 1.35), a phone held sideways by height
- * (390 = 1, 0.92 to 1.1), an upright phone or tablet by width (390 = 1, 0.92 to 1.1), a TV by
- * width (960 = 1, up to 2: the real TV reports 962 x 541). The "Interface size" setting (PR 11)
- * multiplies it. Pure.
+ * a PC by height (768 tall = 1, 0.9 to 1.35); a short screen by height too, but 1 at its own 600
+ * (0.9 to 1: the plan's "Bajo" column, a 56 bar and 18 px sections at 1366 x 600); a phone held
+ * sideways by height (390 = 1, up to 1.1) and an upright phone or tablet by width (390 = 1, up to
+ * 1.1), never under 1: a phone's text stays at 14 px or more and the rail at the owner's 123 px with
+ * 24 clear of Android's back gesture (5 x 56 + 56 + 16 = 352 fits a 360 tall phone at 1; the plan's
+ * 0.92 floor took them to 12.9 and 113 there); a TV by width (960 = 1, up to 2: the real TV reports
+ * 962 x 541). The "Interface size" setting (PR 11) multiplies it. Pure.
  */
 export function uiScale(cls: LayoutClass, w: number, h: number): number {
   switch (cls) {
     case 'tv':
       return clamp(w / 960, 1, 2);
     case 'phone':
-      return clamp(h / 390, 0.92, 1.1);
+      return clamp(h / 390, 1, 1.1);
     case 'portrait':
     case 'tablet':
-      return clamp(w / 390, 0.92, 1.1);
+      return clamp(w / 390, 1, 1.1);
+    case 'short':
+      return clamp(h / 600, 0.9, 1);
     default:
       return clamp(h / 768, 0.9, 1.35);
   }
@@ -137,6 +142,23 @@ export function installLayout(): void {
   };
   apply();
   window.addEventListener('resize', apply);
+}
+
+/**
+ * Undo a pinch zoom (the menus may be zoomed: plan PR 4) when a match takes the screen, where the
+ * touch controls must sit where they belong: the viewport is pinned to scale 1 for a moment, then
+ * free again. Nothing when not zoomed, or without a visual viewport.
+ */
+export function resetPageZoom(): void {
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+  if (!vv || vv.scale <= 1.01) return;
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (meta === null) return;
+  const was = meta.content;
+  meta.content = was + ', maximum-scale=1';
+  window.setTimeout(() => {
+    meta.content = was;
+  }, 300);
 }
 
 /** The last input used (no DOM: installDevice feeds it). */

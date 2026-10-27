@@ -465,6 +465,29 @@ export function lobbyScreen(menu: Menu): Screen {
     if (menu.top()?.id === 'lobby') menu.open('custom');
   };
 
+  /** "Leave the lobby?": LEAVE leaves it and, once the sheet is gone, `go` takes the player on; STAY keeps it. */
+  const askLeave = (go: () => void): void => {
+    let leaving = false;
+    menu.modal({
+      title: t('custom.leaveTitle'),
+      body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
+      actions: [
+        {
+          label: t('custom.leave'),
+          primary: true,
+          onClick: () => {
+            lobby.leave();
+            leaving = true;
+          },
+        },
+        { label: t('custom.stay'), onClick: () => true },
+      ],
+      onClose: () => {
+        if (leaving) go();
+      },
+    });
+  };
+
   return {
     id: 'lobby',
     title: t('custom.lobbyTitle'),
@@ -479,22 +502,11 @@ export function lobbyScreen(menu: Menu): Screen {
     },
     back: () => {
       if (!lobby.inLobby) return false;
-      menu.modal({
-        title: t('custom.leaveTitle'),
-        body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
-        actions: [
-          {
-            label: t('custom.leave'),
-            primary: true,
-            onClick: () => {
-              lobby.leave();
-              menu.open('custom');
-            },
-          },
-          { label: t('custom.stay'), onClick: () => true },
-        ],
-      });
+      askLeave(() => menu.open('custom'));
       return true;
     },
+    // A section, a crumb, the wordmark, the chip or the search pill: the same question first (a
+    // member who walked away unasked would hold the lobby's next start, LobbyDO's in_game wait).
+    leaveGuard: () => (lobby.inLobby ? askLeave : null),
   };
 }

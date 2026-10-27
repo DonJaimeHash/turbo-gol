@@ -12,6 +12,7 @@ import { t } from '../../i18n';
 import { icon } from '../components/icons';
 import { glyph } from '../components/glyphs';
 import { SECTIONS } from './sections';
+import { GAME_NAME } from '../../brand';
 import type { SectionId } from './sections';
 
 export interface TopBarHandlers {
@@ -49,7 +50,8 @@ export class TopBar {
         h('span.mn-sec-pad', null, glyph(d < 0 ? 'pad-lb' : 'pad-rb')),
         h('span.mn-sec-key', null, glyph(d < 0 ? 'key-q' : 'key-e')),
       );
-    // data-fit (fit.ts): the strip shrinks as one, to 14 px, then takes the short names (ENTRENAR, RANKING).
+    // data-fit (fit.ts): the strip shrinks as one, to 14 px (16 on a TV: --fit-min in shell.css), then
+    // takes the short names (ENTRENAR, RANKING).
     const list = h('div.mn-secs', { role: 'tablist', 'aria-label': t('nav.sections'), 'data-nav-row': true, 'data-fit': '14' });
     for (const s of SECTIONS) {
       const label = h('span.mn-sec-label', { 'data-fit-alt': s.short !== s.label ? t(s.short) : undefined }, t(s.label));
@@ -60,15 +62,15 @@ export class TopBar {
     }
     this.crumbs = h('nav.mn-crumbs', { 'aria-label': t('menu.back'), 'data-fit': '14' });
     this.pills = h('div.mn-pills');
-    this.chip = h('button.mn-chip', { type: 'button', 'data-nav': true, 'data-key': 'chip', onclick: () => hd.chip() });
+    this.chip = h('button.mn-chip.mn-hit', { type: 'button', 'data-nav': true, 'data-key': 'chip', onclick: () => hd.chip() });
     this.el = h(
       'header.mn-top',
       null,
       h('button.mn-back', { type: 'button', 'data-nav': true, 'data-nav-entry': true, 'data-key': 'back', title: t('menu.back'), 'aria-label': t('menu.back'), onclick: () => hd.back() }, icon('back')),
       this.crumbs,
-      h('button.mn-brand', { type: 'button', tabindex: '-1', title: t('nav.play'), 'aria-label': 'Turbogol', onclick: () => hd.brand() }, h('span.mn-brand-a', null, 'TURBO'), h('span.mn-brand-b', null, 'GOL')),
+      h('button.mn-brand', { type: 'button', tabindex: '-1', title: t('nav.play'), 'aria-label': GAME_NAME, onclick: () => hd.brand() }, h('span.mn-brand-a', null, 'TURBO'), h('span.mn-brand-b', null, 'GOL')),
       h('div.mn-secbar', null, side(-1), list, side(1)),
-      h('div.mn-top-right', null, this.pills, this.chip, h('button.mn-gear', { type: 'button', 'data-nav': true, 'data-key': 'gear', title: t('nav.settings'), 'aria-label': t('nav.settings'), onclick: () => hd.settings() }, icon('settings'))),
+      h('div.mn-top-right', null, this.pills, this.chip, h('button.mn-gear.mn-hit', { type: 'button', 'data-nav': true, 'data-key': 'gear', title: t('nav.settings'), 'aria-label': t('nav.settings'), onclick: () => hd.settings() }, icon('settings'))),
     );
   }
 

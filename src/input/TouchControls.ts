@@ -31,8 +31,10 @@
  * screens only:
  *   - `autoFullscreen`: on Android a finger tap outside the controls goes fullscreen in landscape;
  *   - `installHintDue` / `noteInstallHintShown`: the iPhone's one-time add-to-home-screen hint;
- *   - iOS Safari's pinch zoom (gesturestart) is cancelled on the controls and the game's canvas
- *     only: the menus may be zoomed (the Tablero plan, PR 4). Never without a touch screen: on a
+ *   - iOS Safari's pinch zoom (gesturestart) is cancelled but in the menus (`.mn-open`: the
+ *     front-end menus and the settings over them), never on the controls or the game's canvas:
+ *     the menus may be zoomed (the Tablero plan, PR 4), a match and its pause not (the menus
+ *     undo a zoom when they hide: device.ts resetPageZoom). Never without a touch screen: on a
  *     Mac it would block the trackpad's pinch zoom.
  */
 import './touch.css';
@@ -277,10 +279,10 @@ export class TouchControls {
     e.preventDefault();
   };
 
-  /** iOS Safari's pinch zoom (it ignores user-scalable=no): not on the controls or the game's canvas (document, not passive); the menus may zoom. */
+  /** iOS Safari's pinch zoom (it ignores user-scalable=no): in the menus only, never on the controls, the canvas or a match's pause (document, not passive). */
   private readonly onGestureStart = (e: Event): void => {
     const t = e.target;
-    if (!(t instanceof Element) || t.closest('.tc-root') !== null || t.tagName === 'CANVAS') e.preventDefault();
+    if (!(t instanceof Element) || t.closest('.mn-open') === null || t.closest('.tc-root') !== null || t.tagName === 'CANVAS') e.preventDefault();
   };
 
   /** Touch mode: the last pointer pressed anywhere (window, capture phase, passive). */
