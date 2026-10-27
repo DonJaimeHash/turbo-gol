@@ -1,16 +1,26 @@
 #!/usr/bin/env node
-// The layout check of the Tablero plan (§2.6): every menu screen, at the sizes that matter, with the
-// wide fallback text (#widetext: plain Arial, about Roboto's width), in both languages (Spanish is
-// the longer) and with the hints of every input, in a headless Chrome or Edge driven over the
-// DevTools protocol (Node's own WebSocket, no dependency). For each size and language it loads the
-// game once (#ui=home), opens each screen and asks the page's window.__uiFit() (src/ui/fit.ts): the
-// shell's bars overflowing, data-fit boxes still overflowing at their minimum, a horizontal scroll,
-// focus rings a clipping box or the screen's edge would cut, shell text under the class's minimum
-// (14 px on a phone, 16 on a TV at its reference view). Then it switches the last input (the hint
-// bar's verbs, the strip's ‹ › / L R / Q E: data-input on <html>, tg-touch for a finger) and checks
-// the screens that change the shell again. The stage scrolling is reported, not failed (the old
-// screens scroll until their PR rebuilds them; plan PR 5 on), and so is a section label that took
-// its text under that minimum for the wide text (allowed down to its own minimum: the rail's 12).
+// The layout check of the Tablero plan (§2.6): every menu screen, at the sizes that matter (the two
+// phones held sideways, the TV at 960 and 1366, a PC at 1366 x 768, 1920 x 1080 and 1366 x 600, an
+// upright phone and a tablet), with the wide fallback text (#widetext: plain Arial, about Roboto's
+// width), in both languages (Spanish is the longer) and with the hints of every input, in a
+// headless Chrome or Edge driven over the DevTools protocol (scripts/cdp.mjs). For each size and
+// language it loads the game once (#ui=home), opens each screen and asks the page's
+// window.__uiFit() (src/ui/fit.ts): the shell's bars overflowing, data-fit boxes still
+// overflowing at their minimum, a horizontal scroll,
+// focus rings a clipping box or the screen's edge would cut, text of the shell and of Inicio under
+// the class's minimum (14 px on a phone, 16 on a TV at its reference view). Then it switches the
+// last input (the hint bar's verbs, the strip's ‹ › / L R / Q E: data-input on <html>, tg-touch for
+// a finger) and checks the screens that change the shell again. The stage scrolling is reported,
+// not failed (the old screens scroll until their PR rebuilds them), but on Inicio, which fails it
+// but upright (360 x 640 may scroll there); a label that took its text under that minimum for the
+// wide text is reported too (allowed down to its own minimum: the rail's 12, a tile's).
+//
+// Inicio (plan PR 5) runs every hero state (play, search, offline, lobby, update and the dormant
+// rejoin: window.__homeHero, sample data), ✕ CANCEL focused while searching, and on a TV the play
+// state with a controller too; each also fails a title on more lines than it may take, text out of
+// its tile or under ✕, and prints the hero's title as fitted. Last on a TV, with no controller
+// (headless has none): the hero says it needs one, its press opens the sheet, and a controller that
+// connects with A held closes the sheet without starting anything (plan PR 5 acceptance).
 //
 // Each size gets a fresh tab with the device it stands for: a mouse for the desktop sizes (the
 // browser starts with a fine pointer and hover, --blink-settings: a Linux runner has no pointing
@@ -35,13 +45,14 @@
 //            --long-name       the account chip signed in, a 16-character name and a rank,
 //            --no-pointer      start the browser without a pointing device (a Linux runner without
 //                              the pin: the desktop sizes then fail as TVs)
-// Exit 1 when the shell overflows anywhere (CI's ui-fit job runs it as information until plan PR 6).
+// Exit 1 when the shell overflows anywhere, or Inicio fails a check (CI's ui-fit job runs it as
+// information until plan PR 6).
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Page, findBrowser, freePort, sleep, waitHttp } from './cdp.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const args = {};
@@ -61,8 +72,15 @@ const SIZES = [
   { name: '1366x768', w: 1366, h: 768, layout: 'pc' },
   { name: '1366x768-tv', w: 1366, h: 768, tv: true, layout: 'tv' },
   { name: '390x844', w: 390, h: 844, mobile: true, layout: 'portrait' },
+  { name: '1920x1080', w: 1920, h: 1080, layout: 'pc' },
+  { name: '1366x600', w: 1366, h: 600, layout: 'short' },
+  { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'casual', 'ranked', 'friendly', 'custom', 'training', 'garage', 'leaderboard', 'profile'];
+// Inicio's hero states (window.__homeHero), in the order of their priority.
+const HERO_KINDS = ['play', 'search', 'offline', 'lobby', 'update', 'rejoin'];
+// The TV's controller message (tv.needPad), per language.
+const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
 const INPUT_SCREENS = ['home', 'casual', 'custom', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
@@ -75,98 +93,6 @@ const WIDETEXT = args['no-widetext'] !== true;
 const FACE = typeof args.face === 'string' ? args.face.replace(/['"\\]/g, '') : null;
 // The pointer the browser starts with (Blink's PointerType / HoverType: 4 fine, 1 none; 2 hover, 1 none).
 const POINTER = args['no-pointer'] === true ? 'primaryPointerType=1,availablePointerTypes=1,primaryHoverType=1,availableHoverTypes=1' : 'primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function findBrowser() {
-  const env = typeof args.browser === 'string' ? args.browser : process.env.UI_FIT_BROWSER;
-  if (env) return env;
-  const candidates =
-    process.platform === 'win32'
-      ? ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe']
-      : process.platform === 'darwin'
-        ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge']
-        : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-  const hit = candidates.find((p) => existsSync(p));
-  if (!hit) throw new Error('no Chrome / Edge found: pass --browser <path> or set UI_FIT_BROWSER');
-  return hit;
-}
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const s = createServer();
-    s.on('error', reject);
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address();
-      s.close(() => resolve(port));
-    });
-  });
-}
-
-async function waitHttp(url, ms) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    try {
-      const r = await fetch(url);
-      if (r.ok) return true;
-    } catch {
-      /* not up yet */
-    }
-    await sleep(250);
-  }
-  return false;
-}
-
-/** One CDP page session. */
-class Page {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    ws.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      const p = m.id !== undefined ? this.pending.get(m.id) : undefined;
-      if (!p) return;
-      this.pending.delete(m.id);
-      if (m.error) p.reject(new Error(JSON.stringify(m.error)));
-      else p.resolve(m.result);
-    };
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
-    return r.result?.value;
-  }
-  /** The faces the platform used for the text of the first element matching `selector` (CSS.getPlatformFontsForNode). */
-  async fonts(selector) {
-    try {
-      const { root } = await this.send('DOM.getDocument', { depth: 0 });
-      const { nodeId } = await this.send('DOM.querySelector', { nodeId: root.nodeId, selector });
-      if (!nodeId) return '?';
-      const { fonts } = await this.send('CSS.getPlatformFontsForNode', { nodeId });
-      return fonts.map((f) => f.familyName + (f.isCustomFont ? ' (web font)' : '')).join(', ') || '?';
-    } catch {
-      return '?';
-    }
-  }
-  async until(expression, ms) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      try {
-        if (await this.eval(`!!(${expression})`)) return true;
-      } catch {
-        /* navigating */
-      }
-      await sleep(300);
-    }
-    return false;
-  }
-}
-
 let preview = null;
 let browser = null;
 let page = null;
@@ -216,7 +142,7 @@ try {
     if (!(await waitHttp(base, 30_000)) || exited) throw new Error(`vite preview did not start on ${port} (build first: VITE_UI_FIT=1 npm run build:client; is the port taken?)`);
   }
   const cdpPort = await freePort();
-  browser = spawn(findBrowser(), ['--headless=new', `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, `--blink-settings=${POINTER}`, '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', '--mute-audio', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: 'ignore' });
+  browser = spawn(findBrowser(args.browser), ['--headless=new', `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, `--blink-settings=${POINTER}`, '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', '--mute-audio', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: 'ignore' });
   if (!(await waitHttp(`http://127.0.0.1:${cdpPort}/json/version`, 30_000))) throw new Error('the browser did not start');
   /** A fresh tab: its own emulation, nothing carried from the size before. */
   const openPage = async () => {
@@ -278,26 +204,101 @@ try {
       console.log(`${head}: the page is in ${pageLang}, expected ${lang}`);
       failures++;
     }
+    /** Ask the page's __uiFit() and print one line: `screen` and its `note` (a hero state). */
+    const check = async (input, screen, note = '') => {
+      const r = await page.eval('window.__uiFit()');
+      const small = r.smallText ?? [];
+      const home = screen === 'home';
+      const bad = [
+        ...(r.layout !== size.layout ? [`layout: ${r.layout}, expected ${size.layout} (the browser's pointer: ${await page.eval("['fine', 'coarse', 'none'].find((k) => matchMedia('(pointer: ' + k + ')').matches) ?? '?'")})`] : []),
+        ...r.shellOverflow.map((x) => 'shell: ' + x),
+        ...r.fitOverflow.map((x) => 'fit: ' + x),
+        ...(r.fitLines ?? []).map((x) => 'lines: ' + x),
+        ...(r.spill ?? []).map((x) => 'spill: ' + x),
+        ...(r.hScroll ? ['horizontal scroll'] : []),
+        // Inicio never scrolls but upright (360 x 640 may).
+        ...(home && r.stageScroll && r.layout !== 'portrait' ? ['the stage scrolls'] : []),
+        ...r.clippedFocus.map((x) => 'ring cut: ' + x),
+        ...small.filter((x) => !x.endsWith('(data-fit)')).map((x) => 'small text: ' + x),
+      ];
+      const shrunk = small.filter((x) => x.endsWith('(data-fit)')).length;
+      const hero = home && r.hero ? `  hero ${JSON.stringify(r.hero.text)} ${r.hero.lines} line(s) @${r.hero.size}` : '';
+      failures += bad.length;
+      report.push({ size: size.name, lang, input, face: FACE ?? 'Arial', note, ...r, bad });
+      console.log(`${head} ${input.padEnd(8)} ${(screen + (note ? ' ' + note : '')).padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}${shrunk > 0 ? `  (${shrunk} fitted under the minimum)` : ''}${hero}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
+    };
     const runs = [[own, SCREENS], ...INPUTS.filter((x) => x !== own).map((x) => [x, INPUT_SCREENS])];
     for (const [input, screens] of runs) for (const screen of screens) {
       // Another last input (device.ts): its hints and the strip's side; the Menu fits the bars on the change.
       if (input !== own && screen === screens[0]) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(input)}; h.classList.toggle('tg-touch', ${JSON.stringify(input)} === 'touch'); return true; })()`);
       await page.eval(`(__game.menu.open(${JSON.stringify(screen)}, true), true)`);
       await sleep(input === own ? 400 : 200); // a mount and a screen's own first render (__uiFit runs the fit it queued)
-      const r = await page.eval('window.__uiFit()');
-      const small = r.smallText ?? [];
-      const bad = [
-        ...(r.layout !== size.layout ? [`layout: ${r.layout}, expected ${size.layout} (the browser's pointer: ${await page.eval("['fine', 'coarse', 'none'].find((k) => matchMedia('(pointer: ' + k + ')').matches) ?? '?'")})`] : []),
-        ...r.shellOverflow.map((x) => 'shell: ' + x),
-        ...r.fitOverflow.map((x) => 'fit: ' + x),
-        ...(r.hScroll ? ['horizontal scroll'] : []),
-        ...r.clippedFocus.map((x) => 'ring cut: ' + x),
-        ...small.filter((x) => !x.endsWith('(data-fit)')).map((x) => 'small text: ' + x),
-      ];
-      const shrunk = small.filter((x) => x.endsWith('(data-fit)')).length;
-      failures += bad.length;
-      report.push({ size: size.name, lang, input, face: FACE ?? 'Arial', ...r, bad });
-      console.log(`${head} ${input.padEnd(8)} ${screen.padEnd(12)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}${shrunk > 0 ? `  (${shrunk} fitted under the minimum)` : ''}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
+      if (screen !== 'home' || input !== own) {
+        await check(input, screen);
+        continue;
+      }
+      // Inicio with the device's own input: every hero state, ✕ focused while searching, a TV's
+      // play state with a controller too, then the live state again.
+      for (const kind of HERO_KINDS) {
+        await page.eval(`(window.__homeHero(${JSON.stringify(kind)}), true)`);
+        await sleep(300);
+        await check(input, screen, kind);
+        if (kind === 'search') {
+          await page.eval(`(document.querySelector('[data-key="hero-x"]')?.focus(), true)`);
+          await sleep(200);
+          await check(input, screen, 'search ✕');
+          await page.eval(`(document.querySelector('[data-key="hero"]')?.focus(), true)`);
+        }
+      }
+      if (size.tv) {
+        await page.eval(`(window.__homeHero('play', { pad: true }), true)`);
+        await sleep(300);
+        await check(input, screen, 'play pad');
+      }
+      await page.eval('(window.__homeHero(null), true)');
+      await sleep(200);
+    }
+    // Last on a TV (it leaves a fake controller in this tab): no controller, the slot says so; the
+    // hero's press opens the sheet; a controller connecting with A held (the press that reveals
+    // one) closes it and starts nothing.
+    if (size.tv && SCREENS.includes('home')) {
+      const fail = (why) => {
+        failures++;
+        console.log(`${head} ${own.padEnd(8)} ${'home need-pad'.padEnd(20)} FAIL\n    ${why}`);
+      };
+      await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(own)}; h.classList.remove('tg-touch'); __game.menu.open('home', true); return true; })()`);
+      await sleep(400);
+      const want = NEED_PAD[lang];
+      const slot = await page.eval(`(() => { const s = document.querySelector('.mn-hero.mn-hero-needpad .mn-slot'); const i = document.querySelector('.mn-hero-icon'); return { text: s?.textContent ?? null, icon: i !== null && i.getBoundingClientRect().width > 0 }; })()`);
+      if (slot.text !== want) fail(`the hero's slot reads ${JSON.stringify(slot.text)}, expected ${JSON.stringify(want)}`);
+      else if (!slot.icon) fail("the hero's own icon is gone");
+      else {
+        await page.eval(`(document.querySelector('[data-key="hero"]').focus(), __game.menu.action('accept'), true)`);
+        await sleep(300);
+        const sheet = await page.eval(`document.querySelector('.mn-sheet')?.getAttribute('aria-label') ?? null`);
+        const r = await page.eval('window.__uiFit()');
+        const over = [...r.shellOverflow, ...r.fitOverflow, ...r.clippedFocus, ...(r.hScroll ? ['horizontal scroll'] : [])];
+        if (sheet !== want) fail(`the sheet is ${JSON.stringify(sheet)}, expected ${JSON.stringify(want)}`);
+        else if (over.length > 0) fail('the sheet: ' + over.join('; '));
+        else {
+          await page.eval(`(() => {
+            const pad = { index: 0, id: 'ui-fit pad', connected: true, mapping: 'standard', timestamp: 0, axes: [0, 0, 0, 0], buttons: Array.from({ length: 17 }, (_, i) => ({ pressed: i === 0, touched: i === 0, value: i === 0 ? 1 : 0 })) };
+            window.__uiFitPad = pad;
+            navigator.getGamepads = () => [pad];
+            const e = new Event('gamepadconnected');
+            Object.defineProperty(e, 'gamepad', { value: pad });
+            window.dispatchEvent(e);
+            return true;
+          })()`);
+          await sleep(300);
+          await page.eval(`(window.__uiFitPad.buttons[0] = { pressed: false, touched: false, value: 0 }, true)`);
+          await sleep(1200); // a super low tick
+          const after = await page.eval(`({ sheet: document.querySelector('.mn-sheet') !== null, needPad: document.querySelector('.mn-hero-needpad') !== null, focus: document.activeElement?.dataset?.key ?? null, searching: __game.menu.host.searchView().active, menus: __game.menu.visible })`);
+          const wrong = [after.sheet ? 'the sheet is still up' : '', after.needPad ? 'the hero still asks for a controller' : '', after.focus !== 'hero' ? `the focus is on ${after.focus}, not the hero` : '', after.searching ? 'a search started' : '', !after.menus ? 'a match started' : ''].filter(Boolean);
+          if (wrong.length > 0) fail(wrong.join('; '));
+          else console.log(`${head} ${own.padEnd(8)} ${'home need-pad'.padEnd(20)} ok  (slot and sheet "${want}"; a controller with A held closed it, nothing started, the focus on the hero)`);
+        }
+      }
     }
   }
   if (typeof args.json === 'string') writeFileSync(args.json, JSON.stringify(report, null, 2));

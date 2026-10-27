@@ -26,9 +26,11 @@
  * In development (or a build with VITE_UI_FIT=1) `window.__uiFit()` reports, after running the fit
  * the last change queued for the next frame (Menu), what a layout check
  * needs (scripts/ui-fit.mjs, plan §2.6): the shell's bars overflowing, `data-fit` boxes still
- * overflowing at their minimum, a horizontal scroll, the stage scrolling, focus rings a clipping
- * ancestor or the screen's edge would cut, shell text under the class's minimum (plan §1.2.3: 14 px
- * on a phone, 16 on a TV at its reference view) and the menus' DOM size.
+ * overflowing at their minimum, a title on more lines than it may take (`data-fit-lines`), text
+ * leaving its tile (`data-fit-box`) or under ✕ CANCEL, a horizontal scroll, the stage scrolling,
+ * focus rings a clipping ancestor or the screen's edge would cut, text of the shell and of a
+ * Tablero screen (`data-tablero`: Inicio) under the class's minimum (plan §1.2.3: 14 px on a phone,
+ * 16 on a TV at its reference view), the hero's title as fitted, and the menus' DOM size.
  */
 
 /** CSS px per px of the layout class's reference view: --ui-scale on a TV (its width / 960), 1 elsewhere. */
@@ -147,6 +149,15 @@ export interface UiFitReport {
   shellOverflow: string[];
   /** data-fit boxes that still overflow at their minimum. */
   fitOverflow: string[];
+  /** Titles on more lines than their `data-fit-lines` (the two-line form wrapping again). */
+  fitLines: string[];
+  /**
+   * Text or an icon leaving its tile (`data-fit-box`: the hero, a mode tile; the speed lines and the
+   * busy stripe aside), ✕ CANCEL leaving the hero or over its title, clock or subtitle.
+   */
+  spill: string[];
+  /** The hero's title as fitted: its text, lines and font size; null without a hero. */
+  hero: { text: string; lines: number; size: string } | null;
   /** The page scrolls sideways. */
   hScroll: boolean;
   /** The stage scrolls (allowed for long lists; a screen's main action may not need it). */
@@ -154,10 +165,11 @@ export interface UiFitReport {
   /** Focusable controls whose ring or heel a clipping ancestor (the menus' root too) or the screen's edge would cut. */
   clippedFocus: string[];
   /**
-   * Text in the shell's bars under the class's minimum (14 px on a phone, upright or sideways; 16
-   * on a TV at its reference view: times --ui-scale), "(data-fit)" when the data-fit box of a
-   * section list's label or of the rail's foot shrank it (allowed down to its own minimum for the
-   * fallback fonts: the rail's 12, which the upright tab bar's labels share).
+   * Text in the shell's bars and on a Tablero screen (`data-tablero`) under the class's minimum
+   * (14 px on a phone, upright or sideways; 16 on a TV at its reference view: times --ui-scale),
+   * "(data-fit)" when a data-fit box shrank it for the fallback fonts (allowed down to its own
+   * minimum): a section list's label or the rail's foot (the rail's 12, which the upright tab
+   * bar's labels share), a tile's text.
    */
   smallText: string[];
   nodes: number;
@@ -194,6 +206,47 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
   }
   const fitOverflow: string[] = [];
   for (const el of root.querySelectorAll<HTMLElement>('[data-fit]')) if (shown(el) && overflows(el)) fitOverflow.push(describe(el));
+  const lineCount = (el: HTMLElement): number => {
+    const lh = parseFloat(getComputedStyle(el).lineHeight);
+    return lh > 0 ? Math.round(el.getBoundingClientRect().height / lh) : 1;
+  };
+  const fitLines: string[] = [];
+  for (const el of root.querySelectorAll<HTMLElement>('[data-fit-lines]')) {
+    if (!shown(el)) continue;
+    const n = lineCount(el);
+    if (n > Number(el.dataset.fitLines)) fitLines.push(`${describe(el)} ${n} lines`);
+  }
+  const spill: string[] = [];
+  const out = (r: DOMRect, b: DOMRect): number => Math.max(r.right - b.right, b.left - r.left, r.bottom - b.bottom, b.top - r.top);
+  for (const box of root.querySelectorAll<HTMLElement>('[data-fit-box]')) {
+    if (!shown(box)) continue;
+    const b = box.getBoundingClientRect();
+    for (const e of box.querySelectorAll('*')) {
+      if (!shown(e) || e.closest('.mn-hero-lines, .mn-hero-track') !== null) continue;
+      const by = out(e.getBoundingClientRect(), b);
+      if (by > 1) spill.push(`${describe(e)} out of ${describe(box)} by ${Math.round(by)}`);
+    }
+  }
+  const x = root.querySelector<HTMLElement>('.mn-hero-x');
+  const heroEl = x?.closest<HTMLElement>('.mn-hero') ?? null;
+  if (x !== null && heroEl !== null && shown(x)) {
+    const xr = x.getBoundingClientRect();
+    if (out(xr, heroEl.getBoundingClientRect()) > 1) spill.push(describe(x) + ' out of the hero');
+    for (const e of heroEl.querySelectorAll<HTMLElement>('.mn-hero-title, .mn-hero-clock, .mn-hero-sub')) {
+      if (!shown(e)) continue;
+      // The text's own extent, not its box (a subtitle's box spans the row).
+      const range = document.createRange();
+      range.selectNodeContents(e);
+      for (const r of range.getClientRects()) {
+        if (r.width > 0 && r.left < xr.right && r.right > xr.left && r.top < xr.bottom && r.bottom > xr.top) {
+          spill.push(describe(x) + ' over ' + describe(e));
+          break;
+        }
+      }
+    }
+  }
+  const title = root.querySelector<HTMLElement>('.mn-hero-title');
+  const hero = title !== null && shown(title) ? { text: title.textContent ?? '', lines: lineCount(title), size: getComputedStyle(title).fontSize } : null;
   // The ring as focus.css draws it, from the tokens (a TV's is thicker): --focus-w + --focus-gap
   // around the box, the heel --focus-heel-y + --focus-heel under it (a row has its bar inside
   // instead), a tile lifted by --focus-lift; an edge control (shell.css: --ring-offset) draws it
@@ -214,7 +267,7 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
     const r = el.getBoundingClientRect();
     const inside = getComputedStyle(el).getPropertyValue('--ring-offset').trim() !== '';
     const row = el.matches('.mn-sl-item, .mn-lobby-row, .mn-pack, .mn-cycle');
-    const up = el.matches('.mn-tile') ? lift : 0;
+    const up = el.matches('.mn-tile, .mn-mtile, .mn-hero-main') ? lift : 0;
     const o = inside ? 0 : ring;
     const box = { left: r.left - o, right: r.right + o, top: r.top - o - up, bottom: r.bottom + (inside ? 0 : row ? ring : Math.max(ring, heel)) - up };
     let cut: string | null = null;
@@ -237,16 +290,20 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
   const floor = layout === 'tv' ? 16 * referencePx() : layout === 'phone' || layout === 'portrait' ? 14 : 0;
   const smallText: string[] = [];
   if (floor > 0) {
-    for (const bar of root.querySelectorAll<HTMLElement>('.mn-top, .mn-rail, .mn-hint, .mn-tabbar')) {
+    for (const bar of root.querySelectorAll<HTMLElement>('.mn-top, .mn-rail, .mn-hint, .mn-tabbar, [data-tablero]')) {
       if (!shown(bar)) continue;
+      const tablero = bar.hasAttribute('data-tablero');
       for (const el of bar.querySelectorAll<HTMLElement>('*')) {
         if (!shown(el) || !Array.from(el.childNodes).some((n) => n.nodeType === 3 && (n.textContent ?? '').trim() !== '')) continue;
+        // A TV's pills on Inicio are the shell's (checked with the bars).
+        if (tablero && el.closest('.mn-pill-row') !== null) continue;
         const px = parseFloat(getComputedStyle(el).fontSize);
         if (px >= floor - 0.05) continue;
         // Allowed only to the section lists' labels and the rail's foot (plan §1.2.3: the rail's 12;
-        // the upright tab bar shares its labels), shrunk by their own data-fit for a fallback face.
+        // the upright tab bar shares its labels) and to a Tablero screen's text, shrunk by their
+        // own data-fit for a fallback face.
         const fit = el.closest<HTMLElement>('[data-fit]');
-        const allowed = fit !== null && fit.style.fontSize !== '' && fit.closest('.mn-rail, .mn-tabbar') !== null;
+        const allowed = fit !== null && fit.style.fontSize !== '' && (tablero || fit.closest('.mn-rail, .mn-tabbar') !== null);
         smallText.push(`${describe(el)} ${px.toFixed(1)}px${allowed ? ' (data-fit)' : ''}`);
       }
     }
@@ -260,6 +317,9 @@ export function uiFitReport(root: HTMLElement, screen: string): UiFitReport {
     screen,
     shellOverflow,
     fitOverflow,
+    fitLines,
+    spill,
+    hero,
     hScroll: html.scrollWidth > W + 1 || document.body.scrollWidth > W + 1,
     stageScroll: stage !== null && stage.scrollHeight > stage.clientHeight + 1,
     clippedFocus,
