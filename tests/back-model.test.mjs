@@ -76,7 +76,7 @@ test('a walk of Back from a stacked screen in another section ends on the leave 
 
 test('opening a screen: a section root opens its section; a stacked screen goes on its root, back to the top when there', () => {
   const at = (section, ...stack) => ({ section, stack });
-  assert.deepEqual(B.stackAfterOpen(at('play', 'home'), 'training'), at('training', 'training'), 'the home tile: a section switch');
+  assert.deepEqual(B.stackAfterOpen(at('play', 'home'), 'training'), at('training', 'training'), 'a section opened from a root (the bar, the plate): a section switch');
   assert.deepEqual(B.stackAfterOpen(at('training', 'training'), 'leaderboard'), at('leaderboard', 'leaderboard'));
   assert.deepEqual(B.stackAfterOpen(at('play', 'home', 'play', 'casual'), 'home'), at('play', 'home'), "JUGAR's root from its own stack");
   assert.deepEqual(B.stackAfterOpen(at('play', 'home'), 'play'), at('play', 'home', 'play'));
@@ -92,7 +92,7 @@ test("Competitive's SIGN IN opens PERFIL as a detour: Back comes back to Competi
   assert.deepEqual(st, { section: 'play', stack: ['home', 'play', 'ranked', 'profile'] }, 'stacked on Competitive, JUGAR still the section');
   assert.equal(B.menuBack(menu({ section: st.section, depth: st.stack.length })), 'pop', 'Back pops PERFIL');
   assert.deepEqual(st.stack.slice(0, -1), ranked.stack);
-  // From a section root it is a plain switch (the home tile, the chip): Back goes to JUGAR.
+  // From a section root it is a plain switch (the plate's PERFIL, the chip): Back goes to JUGAR.
   assert.deepEqual(B.stackAfterOpen({ section: 'play', stack: ['home'] }, 'profile'), { section: 'profile', stack: ['profile'] });
   assert.equal(B.menuBack(menu({ section: 'profile', depth: 1 })), 'home');
   // The search pill (reset) and a reload always land on a section's own stack.

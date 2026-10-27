@@ -3,11 +3,11 @@
  * language of the LAST input only (src/ui/device.ts lastInput), never another device's keys:
  *   pad       A Select · B Back · LB RB Sections · ≡ Settings (+ Y Cancel search); a crowded bar
  *             (a TV's, with its pills) drops ≡ Settings first (`give` 1: the gear is in the top
- *             bar), the cancel hint last (`give` 3: the search pill's ✕ is beside it)
+ *             bar), the cancel hint last (`give` 4: the search pill's ✕ is beside it)
  *   remote    OK Select · ↩ Back · ▲ Sections (not on a stacked screen: ▲ lands on ‹ there, the
  *             section bar steps aside)
  *   keyboard  ENTER Select · ESC Back · Q E Sections, or Q E Tabs on a screen with tabs of its own
- *             (Q / E step those there: Menu.tabOrSection, plan §1.5) (+ X Cancel search, `give` 3)
+ *             (Q / E step those there: Menu.tabOrSection, plan §1.5) (+ X Cancel search, `give` 4)
  *   mouse     nothing (the bar keeps its links)
  *   touch     nothing (no bar on a phone; the cards teach)
  * Key and button names are glyphs (components/glyphs.ts), never translated; the verbs are i18n
@@ -23,8 +23,8 @@ export interface HintItem {
   readonly glyphs: readonly GlyphId[];
   readonly verb: Key;
   /**
-   * The level it gives way at in a crowded bar (fit.ts data-fit-give; the pills' words are 2): 1
-   * for the controller's Settings (the top bar's gear says it), 3 for cancelling the search (the
+   * The level it gives way at in a crowded bar (fit.ts data-fit-give; the pills' words are 2 and 3):
+   * 1 for the controller's Settings (the top bar's gear says it), 4 for cancelling the search (the
    * search pill's ✕ beside it).
    */
   readonly give?: number;
@@ -53,7 +53,7 @@ export function hintItems(input: InputKind, ctx: HintContext): HintItem[] {
         { glyphs: ['pad-lb', 'pad-rb'], verb: 'nav.sections' },
         { glyphs: ['pad-start'], verb: 'nav.settings', give: 1 },
       ];
-      if (ctx.searching) out.push({ glyphs: ['pad-y'], verb: 'nav.cancelSearch', give: 3 });
+      if (ctx.searching) out.push({ glyphs: ['pad-y'], verb: 'nav.cancelSearch', give: 4 });
       return out;
     }
     case 'keyboard': {
@@ -62,7 +62,7 @@ export function hintItems(input: InputKind, ctx: HintContext): HintItem[] {
         { glyphs: ['key-esc'], verb: 'nav.back' },
         { glyphs: ['key-q', 'key-e'], verb: ctx.ownTabs === true ? 'nav.tabs' : 'nav.sections' },
       ];
-      if (ctx.searching) out.push({ glyphs: ['key-x'], verb: 'nav.cancelSearch', give: 3 });
+      if (ctx.searching) out.push({ glyphs: ['key-x'], verb: 'nav.cancelSearch', give: 4 });
       return out;
     }
     case 'remote': {

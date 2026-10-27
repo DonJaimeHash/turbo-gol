@@ -244,6 +244,20 @@ html[data-input='keyboard'] .mn-sec-key,
   margin-left: auto;
 }
 
+/* A crowded bar (a tablet's, a phone's) squeezes its pills, never the gear off the screen: their
+   words give way (topbar.ts data-fit); the chip keeps its name to 9 rem (an ellipsis past it). */
+.mn-top-right,
+.mn-pills {
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+/* Its pills' areas to touch (.mn-hit::before) inside the box that fit.ts measures. */
+.mn-pills {
+  margin-right: -0.25rem;
+  padding-right: 0.25rem;
+}
+
 /* Beside a screen's own tabs Q / E step those (Menu.renderHints): no Q / E keycaps by the sections. */
 html[data-input='keyboard'] .mn-own-tabs .mn-sec-key {
   display: none;
@@ -532,11 +546,9 @@ html[data-shell='rail'] .mn-pills-more .mn-chip {
   padding: 0 0.375rem;
 }
 
-/* A crowded bar (a long name, a wide system font): the chip's text gives way (an ellipsis), never
-   the gear into the 24 px edge. */
+/* A crowded bar (a long name, a wide system font): the chip's text gives way too (an ellipsis),
+   never the gear into the 24 px edge. */
 html[data-shell='rail'] .mn-top-right {
-  flex: 0 1 auto;
-  min-width: 0;
   gap: 0.5rem;
 }
 
@@ -638,9 +650,10 @@ html[data-layout='short'] .mn-top {
 }
 
 /* The TV at 3 m: 27 px of overscan above and below, 48 at the sides; the avatar alone; the pills in
-   the hint bar (Menu.placePills), its About gives way to a running search; a crowded bar fits as
-   one (hintbar.ts data-fit, 16 px at least at the reference view, then the source link's short
-   form, then the parts that give way: fit.ts data-fit-give); opaque bars. */
+   the hint bar (Menu.placePills), its About gives way to a running search, except on Inicio, where
+   the pills sit by the plate; a crowded bar fits as one (hintbar.ts data-fit, 16 px at least at the
+   reference view, then the source link's short form, then the parts that give way: fit.ts
+   data-fit-give); opaque bars. */
 html[data-shell='tv'] .mn-top,
 html[data-shell='tv'] .mn-hint {
   padding: 1.6875rem 3rem 0;
@@ -682,8 +695,8 @@ html[data-shell='tv'] .mn-chip {
 }
 
 html[data-shell='tv'] .mn-chip-text,
-html[data-shell='tv'] .mn-searching .mn-link-about,
-html[data-shell='tv'] .mn-searching .mn-link-sep {
+html[data-shell='tv'] .mn-searching:not([data-screen='home']) .mn-link-about,
+html[data-shell='tv'] .mn-searching:not([data-screen='home']) .mn-link-sep {
   display: none;
 }
 

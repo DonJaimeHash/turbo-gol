@@ -7,6 +7,23 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- PLAY opens on a new home screen. Its big PLAY NOW tile plays the queue you searched last in one
+  press (Casual 2v2 the first time), and the four modes are one step away: CASUAL, WITH FRIENDS, VS
+  AI and COMPETITIVE (a guest sees "Sign in" on its lock). The big tile follows what you are doing:
+  RELOAD NOW when a new version is out, BACK TO THE LOBBY, SEARCHING with its clock and ✕ CANCEL,
+  and VS AI when the game cannot reach the server. Above it, your name and rank (to PROFILE) and
+  your car (to GARAGE). It is laid out for each screen: the big tile on the left on a computer and a
+  TV, on the right under your thumb on a phone held sideways, on top on a phone held upright, and
+  nothing scrolls but on a small upright phone. On a TV the tile shows the whole queue you search
+  (on two lines when it needs them, ✕ CANCEL then keeping just its ✕), and the region stays in its
+  pill by your name.
+- A TV without a controller says so on the PLAY NOW tile, and starting a match asks you to connect
+  one (CONTINUE ANYWAY plays with the remote). The window closes by itself as soon as a controller
+  connects, and that first press starts nothing: press A again to play.
+- The first time you start a match on a computer, the game asks how you will play: mouse and
+  keyboard, keyboard only (Space jumps, Shift boosts) or a controller. It asks once, never if you
+  already changed your keys, saw the controls card or pressed with a controller. With the keyboard
+  only, the match no longer asks you to click to capture the mouse.
 - Hold a direction on a controller (the D-pad or the left stick) to walk through the menus: after a
   short pause the focus keeps moving, and it stops at the end of the list instead of jumping
   somewhere else; press again to go on. Past the top of a screen you reach the region and account
@@ -236,8 +253,8 @@ All notable changes to Turbogol are documented here. The format follows
   any section to PLAY, and only on PLAY does it ask "Leave Turbogol?" (KEEP PLAYING is the answer
   already selected). Esc, Backspace and the controller's B now ask that too on PLAY, as Android's
   back gesture and a TV remote's BACK already did. A screen you opened inside a section shows a
-  back arrow and the way you came ("PLAY › MODES › CASUAL"): click any step to jump back to it.
-  SIGN IN on Competitive opens your profile on top of it, so Back returns to Competitive. Leaving a
+  back arrow and the way you came ("PLAY › CASUAL"): click any step to jump back to it. Where the
+  way does not fit (a tablet with a wide fallback font), it shows the screen's name alone. SIGN IN on Competitive opens your profile on top of it, so Back returns to Competitive. Leaving a
   custom lobby's screen any other way than its own buttons (another section, the logo, a step of
   the way back) asks "Leave the lobby?" first, as Back does.
 - The search you started stays in sight on every section, as a pill in the top bar with its time
@@ -249,9 +266,12 @@ All notable changes to Turbogol are documented here. The format follows
   region, or press RETRY when the game cannot reach the server. The hint bar at the bottom speaks only the language of what you are holding: the
   controller's buttons, the keyboard's keys or the TV remote's, and nothing with a mouse. When it
   runs out of room on a TV, its text gets a little smaller, then the Settings hint goes (the gear
-  at the top says it), then the pills keep just their icons (a search its clock), and while you
-  search, the cancel hint goes (the pill's ✕ is next to it); the source code link always stays on
-  screen.
+  at the top says it), then the pills give up their words, first the ones said next to them (the
+  player count, whose dot says you are online; the search's queue), down to their icons (a search
+  its clock), and while you search, the cancel hint goes (the pill's ✕ is next to it); the source
+  code link always stays on screen. A top bar that runs out of room (a long name and the player
+  count on a tablet or a phone, a Competitive search of every format next to a computer's sections)
+  does the same with its pills instead of pushing Settings off the screen.
 - On a phone held upright the menus now work (profile, leaderboard, training...); only a match
   asks you to turn the phone. A tablet plays either way. You can pinch to zoom the menus; a match
   starts at its normal size, and its controls and pause menu still keep every finger.
@@ -278,8 +298,9 @@ All notable changes to Turbogol are documented here. The format follows
   per second (20 on a phone whose menus cover most of the screen), and it stops, keeping its last
   picture, behind Settings, a window or dialog, the "turn your phone" screen of a match and a
   paused offline match. On Super low, where the menus are a solid page, the stadium behind them is
-  not drawn at all. Less heat and battery for the same menus; matches run exactly as before. With
-  "reduce motion" on in the system settings, the stadium behind the menus holds still.
+  not drawn at all, but behind PLAY's home screen (below). Less heat and battery for the same
+  menus; matches run exactly as before. With "reduce motion" on in the system settings, the
+  stadium behind the menus holds still.
 - A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
   netting, LED boards (a big main-sponsor board in the middle of each side wall; the boards change
   every 30 seconds), stands with a crowd and floodlight towers, with cranes, containers and a ship
@@ -349,6 +370,16 @@ All notable changes to Turbogol are documented here. The format follows
   evenly lit pitch with clear mowing stripes and crisp lines (no dark patches), a lit crowd in the
   team colours, a brighter picture in every stadium, lighter pine forests in the alpine valley,
   and the cage drawn by its steel frame without the wire netting. High and Ultra are unchanged.
+- On Super low the stadium stays live behind PLAY's home screen, at 20 frames per second, with
+  solid tiles over it; every other menu keeps the solid page.
+- Language moved to PROFILE (until Settings has it), and says before you pick that the game
+  reloads for a few seconds.
+
+### Removed
+- The old home screen's Language, Settings and Profile tiles (Settings is the gear at the top and
+  Start on a controller, your profile the account button next to it), its Training and Leaderboard
+  tiles (they are sections) and the guest side panel, and the MODES screen: its four modes are on
+  the home screen now.
 
 ### Security
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and

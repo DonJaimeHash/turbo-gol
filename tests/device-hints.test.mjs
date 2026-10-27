@@ -32,13 +32,13 @@ test('a controller: A select, B back, LB RB sections, Start settings (+ Y cancel
 });
 
 test("a crowded hint bar (a TV with its pills) lets hints go: the controller's Settings first (the gear says it), cancel last (the pill's ✕)", () => {
-  // fit.ts data-fit-give levels (the pills' words are 2, pills.ts).
+  // fit.ts data-fit-give levels (the pills' words are 2 and 3, pills.ts).
   const gives = (input, ctx) => H.hintItems(input, ctx).filter((i) => i.give !== undefined).map((i) => i.give + ' ' + i.glyphs.join('+') + ' ' + i.verb);
   assert.deepEqual(gives('pad', { searching: false }), ['1 pad-start nav.settings']);
-  assert.deepEqual(gives('pad', { searching: true }), ['1 pad-start nav.settings', '3 pad-y nav.cancelSearch']);
-  assert.deepEqual(gives('keyboard', { searching: true }), ['3 key-x nav.cancelSearch']);
+  assert.deepEqual(gives('pad', { searching: true }), ['1 pad-start nav.settings', '4 pad-y nav.cancelSearch']);
+  assert.deepEqual(gives('keyboard', { searching: true }), ['4 key-x nav.cancelSearch']);
   for (const stacked of [false, true]) assert.deepEqual(gives('remote', { searching: true, stacked }), [], 'a remote keeps every hint (it cancels on the pill)');
-  for (const input of ['pad', 'keyboard', 'remote']) for (const it of H.hintItems(input, { searching: false })) assert.ok(it.give !== 2, "level 2 is the pills' words");
+  for (const input of ['pad', 'keyboard', 'remote']) for (const searching of [false, true]) for (const it of H.hintItems(input, { searching })) assert.ok(it.give !== 2 && it.give !== 3, "levels 2 and 3 are the pills' words");
 });
 
 test('a keyboard: ENTER select, ESC back, Q E sections (+ X cancel search)', () => {
@@ -94,14 +94,23 @@ test('fit.ts giveLevels: the levels the parts give way at, lowest first, once ea
   assert.deepEqual(giveLevels([]), []);
 });
 
-test("the shell declares what gives way in a crowded bar: the strip's sides (in its section bar), the pills' words, the hints' levels", async () => {
+test("the shell declares what gives way in a crowded bar: the strip's sides and the pills' words (in the whole bar), the hints' levels", async () => {
   const src = async (f) => readFile(new URL('../src/ui/' + f, import.meta.url), 'utf8');
   const top = await src('shell/topbar.ts');
   assert.match(top, /'span\.mn-sec-side',\s*\{[^}]*'data-fit-give': '1'/);
-  assert.match(top, /'data-fit': '14', 'data-fit-scope': '\.mn-secbar'/);
+  // The strip and a stacked screen's crumbs fit in the whole bar (its pills' words go after their
+  // own parts); a root's pills with no strip (a tablet, a phone) fit on their own.
+  assert.match(top, /'div\.mn-secs', \{[^}]*'data-fit': '14', 'data-fit-scope': '\.mn-top'/);
+  assert.match(top, /'nav\.mn-crumbs', \{[^}]*'data-fit': '14', 'data-fit-scope': '\.mn-top'/);
+  assert.match(top, /'div\.mn-pills', \{ 'data-fit': '14' \}/);
   const pills = await src('shell/pills.ts');
-  assert.match(pills, /const WORDS = \{ 'data-fit-give': '2' \}/);
-  assert.ok((pills.match(/, WORDS[,)]/g) ?? []).length >= 8, 'every word of the region, search and update pills');
-  assert.doesNotMatch(pills, /icon\([^)]*\), WORDS|mn-spinner', WORDS|mn-dot\.on', WORDS/, 'icons, the spinner and the dot stay');
+  assert.match(pills, /const ECHO = \{ 'data-fit-give': '2' \};\s*const WORDS = \{ 'data-fit-give': '3' \}/);
+  assert.ok((pills.match(/, (WORDS|ECHO)[,)]/g) ?? []).length >= 8, 'every word of the region, search and update pills');
+  // First what is said beside them (the region's status by its dot, the search's queue by Inicio's hero), then the region's name.
+  assert.match(pills, /h\('span\.mn-pill-main', WORDS, s\.region\), h\('span\.mn-pill-sep', ECHO\), h\('span\.mn-dot\.on'\), h\('span\.mn-pill-sub', ECHO, status\)/);
+  assert.match(pills, /this\.label = h\('span\.mn-pill-main', ECHO\)/);
+  assert.doesNotMatch(pills, /icon\([^)]*\), (WORDS|ECHO)|mn-spinner', (WORDS|ECHO)|mn-dot\.on', (WORDS|ECHO)/, 'icons, the spinner and the dot stay');
   assert.match(await src('shell/hintbar.ts'), /'data-fit-give': it\.give !== undefined/);
+  // A box with a scope fits last: what it takes from a box inside its scope (the crumbs, the pills' words) stays taken.
+  assert.match(await src('fit.ts'), /if \(el\.dataset\.fitScope === undefined\) fitOne\(el\);\s*for \(const el of boxes\) if \(el\.dataset\.fitScope !== undefined\) fitOne\(el\);/);
 });

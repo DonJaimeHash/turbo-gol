@@ -5,6 +5,8 @@
  * sign out). Passwords go through AccountClient (hashed in the browser before they leave).
  * Usernames and passwords are checked here first (usernameIssue / passwordIssue, the same rules
  * AccountClient and the server apply) so the form shows the reason in the player's language.
+ * Both views end with the language (IDIOMA: components/language.ts, a reload) until Settings ›
+ * Game has it (PR 11).
  */
 import { h, setChildren, copyText, navButton } from '../dom';
 import { AccountError } from '../../net/AccountClient';
@@ -13,7 +15,8 @@ import type { AccountIssue, MeInfo, OAuthProvider } from '../../net/account';
 import { ratingCard } from '../badges';
 import type { Menu, Screen } from '../Menu';
 import { field, primary, screenHead, secondary, section } from './common';
-import { language, t } from '../../i18n';
+import { openLanguagePicker } from '../components/language';
+import { LOCALES, language, t } from '../../i18n';
 
 const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
 
@@ -353,7 +356,8 @@ export function profileScreen(menu: Menu): Screen {
     menu.refocus();
   };
 
-  const el = h('div.mn-profile', null, screenHead(t('profile.heading')), body);
+  // After `body`, so it stays through the guest / account swap (render).
+  const el = h('div.mn-profile', null, screenHead(t('profile.heading')), body, section(t('lang.heading'), secondary(LOCALES[language()].name, () => openLanguagePicker(menu), { 'data-key': 'lang' })));
   return {
     id: 'profile',
     title: t('profile.title'),

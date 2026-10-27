@@ -49,9 +49,29 @@ test('a row left from its whole box: ▼ from any card of the playlists reaches 
   assert.equal(NAV.pickTarget(NAV.unionBox(cards), 'down', others), 0);
 });
 
+test("beyondEdge: a target as tall as the rows beside it (Inicio's hero) has nothing beside it below or above", () => {
+  // Inicio at 1366 x 768: the hero over both rows at the left, CASUAL / CONTRA LA IA at its right,
+  // the plate above it, the hint bar's link under it (another zone).
+  const hero = R(48, 400, 550, 312);
+  const casual = R(614, 400, 344, 148);
+  const ai = R(614, 564, 344, 148);
+  const plate = R(48, 88, 379, 88);
+  assert.equal(NAV.pickTarget(hero, 'down', [casual, ai]), 1, 'the centre rule: CONTRA LA IA counts as below');
+  assert.equal(NAV.beyondEdge(hero, 'down', ai), false);
+  assert.equal(NAV.beyondEdge(hero, 'up', casual), false);
+  assert.equal(NAV.beyondEdge(hero, 'up', plate), true);
+  // Upright, the tiles are wholly under the hero; 2 px of slack, as pickTarget's.
+  const upright = R(16, 156, 358, 172);
+  assert.equal(NAV.beyondEdge(upright, 'down', R(16, 344, 171, 120)), true);
+  assert.equal(NAV.beyondEdge(upright, 'down', R(16, 327, 171, 120)), true);
+  assert.equal(NAV.beyondEdge(upright, 'down', R(16, 320, 171, 120)), false);
+  assert.equal(NAV.beyondEdge(hero, 'right', casual), true);
+  assert.equal(NAV.beyondEdge(casual, 'left', hero), true);
+});
+
 test('layoutBox: a lifted tile is measured where it sits, so ▼ on a bottom row finds nothing beside it (the footer next)', () => {
-  // The Play hub at 1366 x 768 (measured in Edge): CUSTOM LOBBIES focused (lifted 3 px by
-  // --focus-lift), FRIENDLY beside it on the same row.
+  // Two tiles side by side at 1366 x 768 (measured in Edge on the old Play hub, gone in PR 5): the
+  // left one focused (lifted 3 px by --focus-lift), the other beside it on the same row.
   const friendly = R(691, 288.4, 586, 130);
   const liftedRect = R(93, 285.4, 586, 130);
   const lifted = NAV.layoutBox(liftedRect, 'matrix(1, 0, 0, 1, 0, -3)', 'none');

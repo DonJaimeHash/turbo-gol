@@ -25,7 +25,7 @@ const css = new Map(await Promise.all(cssFiles.map(async (f) => [relative(ROOT, 
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
 
 test('the stylesheets the UI is made of are all here', () => {
-  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/styles/shell.css', 'src/ui/styles/components.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
+  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/styles/shell.css', 'src/ui/styles/components.css', 'src/ui/styles/tiles.css', 'src/ui/styles/screens/home.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
 });
 
 test('nothing blurs the live scene: no backdrop-filter anywhere in src (CSS or code)', async () => {
@@ -200,10 +200,15 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // sheet was 69.1 kB before PR 1, which adds the tokens, the focus ring, the pressed states and the
 // font faces (75,157 B by this measure); PR 4 adds the shell (styles/shell.css and components.css,
 // about 16.5 KB with its review's TV, phone and slot rules) and drops the old top bar, footer,
-// banner, toasts and modals of menu.css (about 5.9 KB): 86,865 B. The cap is that plus about
-// 0.6 KB, so nothing grows unnoticed, and steps down to 70 KB once PR 10 deletes the Hud's settings
-// sheet (about 11 KB) and PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 87_550;
+// banner, toasts and modals of menu.css (about 5.9 KB): 86,865 B; its review's follow-up 87,430 B.
+// PR 5 adds the Inicio: styles/tiles.css (hero, mode tile, plate; PR 6, 8 and 13 reuse them) and
+// styles/screens/home.css, about 12.5 KB, minus the old home and Play hub rules of menu.css and the
+// old tiles' no-lift rules, about 1.2 KB, plus its review's tablet and TV subtitles and TV pill row:
+// 99,550 B. The cap is that plus about 0.6 KB (the owner's call for PR 5), so nothing grows
+// unnoticed; the crowded top bar's pills and a TV subtitle's second line take 179 B of it
+// (99,729 B). It steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and
+// PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
+const CSS_BUDGET = 100_150;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

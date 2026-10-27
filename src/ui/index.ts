@@ -1,7 +1,8 @@
 /** The menus with every screen registered (the Game creates one). */
 import { Menu } from './Menu';
 import type { MenuHost } from './Menu';
-import { casualScreen, friendlyScreen, homeScreen, playScreen, rankedScreen } from './screens/play';
+import { homeScreen } from './screens/home';
+import { casualScreen, friendlyScreen, rankedScreen } from './screens/play';
 import { customScreen, lobbyCreateScreen, lobbyScreen } from './screens/custom';
 import { trainingScreen } from './screens/training';
 import { profileScreen } from './screens/profile';
@@ -15,7 +16,6 @@ export { RankedResults } from './screens/leaderboard';
 export function createMenu(host: MenuHost, container: HTMLElement): Menu {
   const m = new Menu(host, container);
   m.register('home', homeScreen);
-  m.register('play', playScreen);
   m.register('casual', casualScreen);
   m.register('ranked', rankedScreen);
   m.register('friendly', friendlyScreen);

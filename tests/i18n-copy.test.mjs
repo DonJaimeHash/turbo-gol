@@ -34,8 +34,6 @@ const KNOWN = {
   'es:playlist.3v3:modeNames': 'PR 6',
   'en:play.playlistCars:modeNames': 'PR 6',
   'es:play.playlistCars:modeNames': 'PR 6',
-  'en:play.accountLocked:emoji': 'PR 6 (the lock is the sprite icon)',
-  'es:play.accountLocked:emoji': 'PR 6',
   'es:training.shotBreakaway:modeNames': 'PR 13 (training: the breakaway shot gets a name that is not a mode)',
 };
 

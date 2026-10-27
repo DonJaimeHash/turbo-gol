@@ -1859,16 +1859,6 @@ body {
     transition-property: opacity !important;
     transition-duration: 0.12s !important;
   }
-  .mn .mn-tile.mn-focus,
-  .mn .mn-tile:focus-visible {
-    transform: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) and (hover: hover) {
-  .mn .mn-tile:hover {
-    transform: none;
-  }
 }
 
 /* ---- Loading screen (src/ui/LoadingOverlay.ts) and the boot error page (src/main.ts) -------
@@ -2097,6 +2087,8 @@ html.tg-superlow {
      straight on the stage (titles, subtitles, list heads) did not read over the stands. */
   --mn-backdrop: var(--ink);
   --shadow: var(--shadow-lite);
+  /* No lift on a focused or hovered tile (the ring says it): every tile reads this token. */
+  --focus-lift: 0px;
 }
 
 html.tg-superlow *,
@@ -2124,16 +2116,4 @@ html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {
   transition: none !important;
   animation: none !important;
-}
-
-/* No lift on a focused or hovered tile (the ring says it). */
-html.tg-superlow .mn .mn-tile.mn-focus,
-html.tg-superlow .mn .mn-tile:focus-visible {
-  transform: none;
-}
-
-@media (hover: hover) {
-  html.tg-superlow .mn .mn-tile:hover {
-    transform: none;
-  }
 }

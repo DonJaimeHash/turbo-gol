@@ -18,6 +18,9 @@
  * - Rows (`data-nav-row` on a container): ◀ ▶ walk its targets in DOM order, wrapped or stacked too
  *   (rowStep); ▲ ▼ leave it from the row's whole box (unionBox), so what is under a row does not
  *   depend on which member had the focus, and coming back into it lands on the member focused last.
+ * - A target as tall as the rows beside it (`data-nav-span`: Inicio's hero) is left with ▲ ▼ only
+ *   for what lies wholly that way (beyondEdge), else for the next zone: a tile beside it is not
+ *   "below" it because its centre is lower.
  * - The way back (NavPath): the opposite arrow undoes the last move, as a stack (▼ ▼ ▲ ▲ retraces
  *   the path), while that target is still visible and still that way.
  * - Memory (FocusMemory): the last focus per scope (Menu: per screen and per zone), found again by
@@ -175,6 +178,20 @@ export function pickTarget(from: NavBox, dir: NavDir, rects: readonly NavBox[]):
     }
   }
   return best;
+}
+
+/** `r` lies wholly beyond `from`'s edge going `dir` (pickTarget's 2 px of slack): data-nav-span's candidates. Pure. */
+export function beyondEdge(from: NavBox, dir: NavDir, r: NavBox): boolean {
+  switch (dir) {
+    case 'down':
+      return r.top >= from.bottom - 2;
+    case 'up':
+      return r.bottom <= from.top + 2;
+    case 'right':
+      return r.left >= from.right - 2;
+    default:
+      return r.right <= from.left + 2;
+  }
 }
 
 /** The member of a row of `n` after `i` moving `dir` (◀ ▶ walk the DOM order), -1 past either end. Pure. */
@@ -467,7 +484,9 @@ export class FocusNav {
       // is left from its last member, as anything else (its box would reach back up past it).
       const rowBox = members !== null && !horizontal ? unionBox(members.map(box)) : null;
       const src = rowBox !== null && rowBox.height <= from.height * 1.5 ? rowBox : from;
-      const all = this.targets(zone).filter((e) => e !== cur && (members === null || !members.includes(e)));
+      // Out of a target that spans the rows beside it: only what lies wholly that way, else the next zone.
+      const span = !horizontal && cur.closest('[data-nav-span]') !== null;
+      const all = this.targets(zone).filter((e) => e !== cur && (members === null || !members.includes(e)) && (!span || beyondEdge(src, dir, box(e))));
       const i = pickTarget(src, dir, all.map(box));
       if (i >= 0) next = horizontal ? all[i] : this.intoRow(all[i]);
     }

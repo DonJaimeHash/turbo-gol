@@ -8,8 +8,12 @@ import type { Messages } from '../i18n';
 export default {
   // Language picker
   'lang.title': 'Language',
+  // PERFIL's section heading over the language row (in capitals, as the other headings)
+  'lang.heading': 'LANGUAGE',
   'lang.auto': 'Automatic ({language})',
   'lang.busy': 'Stop searching or leave the lobby to change the language',
+  // Over the list: choosing another language reloads the page
+  'lang.reloadNote': 'The game reloads (a few seconds)',
   // Closes the language picker without a change
   'lang.cancel': 'CANCEL',
 
@@ -112,7 +116,7 @@ export default {
   // The same in an upright phone's tab bar, where five share 390 px: at most about 8 letters
   'nav.trainingShort': 'TRAIN',
   'nav.leaderboardShort': 'RANKS',
-  // Breadcrumb of the Play hub (PLAY › MODES › CASUAL)
+  // The modes screen's breadcrumb (PLAY › MODES › CASUAL: plan PR 6)
   'nav.modes': 'MODES',
   // Screen-reader name of the section bar; also the hint bar's verb for switching sections
   'nav.sections': 'Sections',
@@ -173,51 +177,80 @@ export default {
   // Region selector option: automatic; {region} is the detected region's name
   'common.regionAutoNamed': 'Automatic ({region})',
 
-  // Home screen (src/ui/screens/play.ts)
-  // Home screen title (breadcrumb)
+  // Inicio, PLAY's root (src/ui/screens/home.ts)
+  // Its title (breadcrumb)
   'home.title': 'Home',
-  // Home tile and heading of the Play hub
-  'home.play': 'PLAY',
-  'home.playSub': 'Casual · Competitive · Lobbies · Friendly',
-  'home.training': 'TRAINING',
-  'home.trainingSub': 'Free play and shot packs',
-  'home.leaderboard': 'LEADERBOARD',
-  'home.leaderboardSub': "The season's best",
-  'home.profile': 'PROFILE',
-  'home.profileSub': 'Account, ranks and stats',
-  'home.settings': 'SETTINGS',
-  'home.settingsSub': 'Controls, audio and graphics',
-  // Home tile that opens the language picker; its subtitle is the current language's own name
-  'home.language': 'LANGUAGE',
-  // {season} is the season number; shown uppercase by CSS
-  'home.season': 'Season {season}',
-  'home.loadingProfile': 'Loading your profile…',
-  'home.guestTitle': 'Play Competitive',
-  // {playlist1}..{playlist3} are the playlist names (playlist.1v1, playlist.2v2, playlist.3v3)
-  'home.guestText': 'Create an account to get a rank in {playlist1}, {playlist2} and {playlist3}. As a guest you can play Casual, custom lobbies and training.',
-  // Button on the home side panel and on the locked Competitive screen
+  // The button of the locked Competitive screen (a guest)
   'home.signIn': 'SIGN IN / CREATE ACCOUNT',
+  // The hero: plays the last queue in one press
+  'home.playNow': 'PLAY NOW',
+  // The same on a TV (less room at 3 m)
+  'home.playNowTv': 'PLAY',
+  // The hero's corner tag: a match always starts (bots fill the empty places)
+  'home.alwaysMatch': 'ALWAYS A MATCH',
+  // The hero while a search runs, over its clock
+  'home.searching': 'SEARCHING',
+  // The hero while the player is in a lobby
+  'home.backToLobby': 'BACK TO THE LOBBY',
+  // Under it: {code} is the lobby's code, {count} / {max} its players and places
+  'home.lobbySub': 'Lobby {code} · {count}/{max}',
+  // The hero while a match of this tab still runs after a reload
+  'home.rejoin': 'BACK TO YOUR MATCH',
+  // Under it: {queue} is 'Casual · 2v2', {time} the match time left (m:ss)
+  'home.rejoinSub': '{queue} · {time} left',
+  // The player plate: a guest's line, an account's without a placed rank
+  'home.guestRank': 'Guest · Unranked',
+  'home.unranked': 'Unranked',
+  // The plate's line on a TV, after the rank; {car} is the car's name
+  'home.carLine': 'Car: {car}',
+  // Screen-reader names of the plate's two buttons; {rank} is a rank ('Gold II · 2v2') or home.unranked
+  'home.plateProfile': 'Profile: {name}, {rank}',
+  'home.plateGarage': 'Garage: your car is {car}',
 
-  // Play hub, Casual and Competitive (src/ui/screens/play.ts)
-  // Play hub tile and Casual screen heading
+  // Inicio's mode tiles: a title, a subtitle (PC) and its short form (phone, tablet, TV), a corner tag
+  'modes.casual': 'CASUAL',
+  'modes.casualSub': 'Quick matches, no rank',
+  'modes.casualSubShort': 'Quick, no rank',
+  'modes.friends': 'WITH FRIENDS',
+  'modes.friendsSub': 'Make a lobby, share the link',
+  'modes.friendsSubShort': 'Private lobby, link',
+  // The short form on a TV (no link to share there: a code)
+  'modes.friendsSubTv': 'Make a lobby with a code',
+  // The tag of WITH FRIENDS
+  'modes.lobbies': 'LOBBIES',
+  // Against the bots, offline (also the offline hero's title)
+  'modes.vsAi': 'VS AI',
+  'modes.vsAiSub': '3-min match · offline',
+  'modes.vsAiSubShort': '3 min · offline',
+  'modes.vsAiSlot': 'FRIENDLY',
+  'modes.ranked': 'COMPETITIVE',
+  'modes.rankedSub': 'Climb the ranks · 5 placement matches',
+  'modes.rankedSubShort': 'Climb the ranks',
+  // COMPETITIVE's lock tag for a guest where menu.guestSignIn does not fit (a phone, a tablet)
+  'modes.signInShort': 'Sign in',
+
+  // A TV without a controller: the hero's tag, then a sheet at a match's start (it closes by itself
+  // when a controller connects)
+  'tv.needPad': 'YOU NEED A CONTROLLER',
+  'tv.needPadText': 'Connect a controller (USB or Bluetooth) to play',
+  // Starts the match anyway (the remote's arrows drive)
+  'tv.needPadGo': 'CONTINUE ANYWAY',
+
+  // Asked once, at a new PC player's first match (src/ui/howPlay.ts): sets the controls
+  'howPlay.title': 'How will you play?',
+  'howPlay.kbm': 'MOUSE AND KEYBOARD',
+  'howPlay.keyboard': 'KEYBOARD ONLY',
+  'howPlay.pad': 'CONTROLLER',
+
+  // Casual and Competitive (src/ui/screens/play.ts)
+  // Casual screen heading
   'play.casual': 'CASUAL',
-  'play.casualSub': 'Unranked · P2P or server',
-  // Play hub tile and Competitive screen heading
+  // Competitive screen heading
   'play.ranked': 'COMPETITIVE',
-  'play.rankedSub': 'Rank per playlist · server',
-  'play.custom': 'CUSTOM LOBBIES',
-  'play.customSub': 'Public and private lobbies',
-  // Play hub tile and Friendly screen heading
+  // Friendly screen heading
   'play.friendly': 'FRIENDLY',
-  'play.friendlySub': 'Offline against the AI',
   // Players searching for a match right now
   'play.searching': { one: '{count} searching', other: '{count} searching' },
-  // Open custom lobbies
-  'play.lobbies': { one: '{count} lobby', other: '{count} lobbies' },
-  // Corner tag of the Competitive tile for guests: an account is needed
-  'play.accountLocked': '🔒 Account',
-  // {region} is the matchmaking region label ('Auto · Europe')
-  'play.playingNow': { one: '{region} · {count} playing now', other: '{region} · {count} playing now' },
   // {playlist} is the mode id ('2v2'), {count} the cars on the field
   'play.playlistCars': { one: '{playlist} · {count} car', other: '{playlist} · {count} cars' },
   'play.search': 'FIND MATCH',

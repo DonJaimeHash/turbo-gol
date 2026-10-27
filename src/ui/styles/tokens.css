@@ -147,6 +147,7 @@
   --t-display: 2.75rem; /* 44: screen titles */
   --t-numeral: 5.5rem; /* 88: search clock, result */
   --t-title: 1.5rem; /* 24: tile titles */
+  --t-name: 1.25rem; /* 20: the player plate's name */
   --t-sheet: 1.75rem; /* 28: a sheet's title */
   --t-wordmark: 1.625rem; /* 26: the top bar's TURBOGOL (24 on a phone, 28 on a TV) */
   --t-heading: 1.125rem; /* 18: sections, tabs, buttons */
@@ -275,6 +276,20 @@ html[data-shell='tabs'] {
     --t-caption: 0.875rem;
     --t-label: 0.875rem;
   }
+}
+
+/* Reduced motion: no lift on a focused or hovered tile (the ring says it); one token for every tile. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --focus-lift: 0px;
+  }
+}
+
+/* A TV's menus: opaque surfaces and no scrim (plan §1.4 TV). */
+html.tg-tv .mn {
+  --surface-1-94: var(--surface-1);
+  --surface-2-97: var(--surface-2);
+  --scrim: none;
 }
 
 /* The TV at 3 m (html.tg-tv arrives with the shell, PR 4): larger roles, a thicker ring. */

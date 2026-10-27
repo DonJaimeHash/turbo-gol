@@ -1,8 +1,10 @@
 /**
- * Home, the Play hub and the queue screens: Casual (several playlists at once, region, P2P or
- * server), Competitive (accounts only: rank per playlist, placement, abandon ban) and Friendly
- * (offline against the AI). Play -> Casual / Competitive / Custom lobbies / Friendly; Training
- * lives next to Play. The home screen also holds the language picker (src/i18n.ts).
+ * The queue screens on Inicio's tiles: Casual (several playlists at once, region, P2P or server),
+ * Competitive (accounts only: rank per playlist, placement, abandon ban) and Friendly (offline
+ * against the AI). Their FIND MATCH and PLAY start through Menu.beforeMatch (a TV asks for a
+ * controller, a new PC player how they will play), and a search started here is the queue JUGAR
+ * AHORA repeats (Menu.startSearch). Inicio itself is screens/home.ts; the language picker moved to
+ * PERFIL (components/language.ts).
  */
 import { h, setChildren, clock } from '../dom';
 import { PLAYLISTS } from '../../net/account';
@@ -12,130 +14,11 @@ import type { GameMode } from '../../sim/constants';
 import { DIFFICULTIES } from '../../render/Hud';
 import type { Difficulty } from '../../render/Hud';
 import { THEME_IDS, type ThemeId } from '../../render/theme';
-import { LOCALES, language, savedLanguage, setLanguage, systemLanguage, t } from '../../i18n';
-import type { LanguageCode } from '../../i18n';
+import { t } from '../../i18n';
 import { difficultyName, playlistName, themeName, tierName } from '../names';
-import { rankBadge, ratingCard, tierById } from '../badges';
+import { rankBadge, tierById } from '../badges';
 import type { Menu, Screen } from '../Menu';
-import { cycler, primary, regionCycler, screenHead, secondary, section, tile } from './common';
-
-/**
- * The language list: automatic (the system's language) first, then every shipped language by its
- * own name; the saved choice is marked. A change reloads the page (setLanguage), which would drop
- * a search or a lobby, so then the picker only explains why.
- */
-function openLanguagePicker(menu: Menu): void {
-  const busy = (): boolean => menu.host.searchView().active || menu.host.lobby.inLobby;
-  if (busy()) {
-    menu.toast(t('lang.busy'));
-    return;
-  }
-  const saved = savedLanguage();
-  let close = (): void => undefined;
-  const choose = (code: LanguageCode | null): void => {
-    if (code === saved) close();
-    else if (busy()) {
-      close();
-      menu.toast(t('lang.busy'));
-    } else setLanguage(code);
-  };
-  const option = (code: LanguageCode | null, label: string): HTMLButtonElement => {
-    const on = code === saved;
-    return h(
-      `button.mn-btn${on ? '.mn-btn-primary' : ''}` as 'button',
-      { type: 'button', 'data-nav': true, 'data-autofocus': on, 'aria-current': on ? 'true' : undefined, lang: code ?? undefined, onclick: () => choose(code) },
-      on ? h('span', { 'aria-hidden': 'true' }, '✓ ') : null,
-      label,
-    );
-  };
-  const codes = Object.keys(LOCALES) as LanguageCode[];
-  close = menu.modal({
-    title: t('lang.title'),
-    body: h('div.mn-oauth.mn-lang-list', null, option(null, t('lang.auto', { language: LOCALES[systemLanguage()].name })), ...codes.map((c) => option(c, LOCALES[c].name))),
-    actions: [{ label: t('lang.cancel'), onClick: () => true }],
-  });
-}
-
-export function homeScreen(menu: Menu): Screen {
-  const side = h('aside.mn-home-side');
-  const el = h(
-    'div.mn-home',
-    null,
-    h(
-      'div.mn-home-tiles',
-      null,
-      tile('mn-tile-hero', 'play', t('home.play'), t('home.playSub'), () => menu.open('play'), null),
-      tile('', 'training', t('home.training'), t('home.trainingSub'), () => menu.open('training')),
-      tile('', 'leaderboard', t('home.leaderboard'), t('home.leaderboardSub'), () => menu.open('leaderboard')),
-      tile('', 'profile', t('home.profile'), t('home.profileSub'), () => menu.open('profile')),
-      tile('', 'settings', t('home.settings'), t('home.settingsSub'), () => menu.openSettings()),
-      // Static: render() rebuilds only `side`, so keyboard / controller focus here survives a refresh.
-      tile('mn-tile-lang', 'globe', t('home.language'), LOCALES[language()].name, () => openLanguagePicker(menu)),
-    ),
-    side,
-  );
-  const render = (): void => {
-    const acc = menu.host.accounts;
-    if (acc.signedIn && acc.me) {
-      setChildren(side, h('div.mn-side-title', null, t('home.season', { season: acc.me.season })), ...acc.me.ratings.map((r) => ratingCard(r)));
-    } else if (acc.signedIn) {
-      setChildren(side, h('div.mn-side-title', null, t('home.loadingProfile')));
-    } else {
-      setChildren(
-        side,
-        h('div.mn-side-title', null, t('home.guestTitle')),
-        h('p.mn-side-text', null, t('home.guestText', { playlist1: playlistName('1v1'), playlist2: playlistName('2v2'), playlist3: playlistName('3v3') })),
-        // A key: Back from PERFIL finds it again in the side panel render() rebuilt (FocusMemory).
-        secondary(t('home.signIn'), () => menu.open('profile'), { 'data-key': 'home-signin' }),
-      );
-    }
-  };
-  return {
-    id: 'home',
-    title: t('home.title'),
-    el,
-    show: () => {
-      render();
-      if (menu.host.accounts.signedIn) void menu.host.accounts.fetchMe().then(render, () => undefined);
-    },
-  };
-}
-
-export function playScreen(menu: Menu): Screen {
-  const casualSub = h('span');
-  const rankedSub = h('span');
-  const customSub = h('span');
-  const rankedTag = h('span');
-  const locked = t('play.accountLocked');
-  const el = h(
-    'div.mn-play',
-    null,
-    screenHead(t('home.play')),
-    h(
-      'div.mn-play-tiles',
-      null,
-      tile('mn-tile-casual', 'ball', t('play.casual'), t('play.casualSub'), () => menu.open('casual'), casualSub),
-      tile('mn-tile-ranked', 'trophy', t('play.ranked'), t('play.rankedSub'), () => menu.open('ranked'), rankedTag),
-      tile('mn-tile-custom', 'friends', t('play.custom'), t('play.customSub'), () => menu.open('custom'), customSub),
-      tile('mn-tile-offline', 'bot', t('play.friendly'), t('play.friendlySub'), () => menu.open('friendly')),
-    ),
-    h('div.mn-play-foot', null, rankedSub),
-  );
-  // On the menu's tick: each line is written only when its text changed (a write is a new text node and a style pass).
-  const write = (el: HTMLElement, text: string): void => {
-    if (el.textContent !== text) el.textContent = text;
-  };
-  const tick = (): void => {
-    const p = menu.population;
-    const sum = (r: Record<Playlist, number>): number => r['1v1'] + r['2v2'] + r['3v3'];
-    write(casualSub, p ? t('play.searching', { count: sum(p.casual) }) : '');
-    write(customSub, p ? t('play.lobbies', { count: p.lobbies }) : '');
-    write(rankedTag, menu.host.accounts.signedIn ? (p ? t('play.searching', { count: sum(p.ranked) }) : '') : locked);
-    write(rankedSub, p ? t('play.playingNow', { region: menu.regionLabel, count: p.playing }) : '');
-  };
-  // Its breadcrumb is MODES: JUGAR › MODES › CASUAL (the section is JUGAR already).
-  return { id: 'play', title: t('nav.modes'), el, show: tick, tick };
-}
+import { cycler, primary, regionCycler, screenHead, section } from './common';
 
 /**
  * Toggle cards for the playlists; at least one stays selected. `extra(p)` builds the per-playlist
@@ -187,7 +70,7 @@ function playlistPicker(
   return { el: wrap, refresh };
 }
 
-/** The search button: FIND MATCH while idle, CANCEL while this kind of search runs. */
+/** The search button: FIND MATCH while idle (`start`), CANCEL while this kind of search runs. */
 function searchButton(menu: Menu, kind: 'casual' | 'ranked', start: () => void): { el: HTMLButtonElement; refresh: () => void } {
   const idle = t('play.search');
   const cancel = t('play.cancelSearch');
@@ -236,7 +119,7 @@ export function casualScreen(menu: Menu): Screen {
     },
   );
   const go = searchButton(menu, 'casual', () =>
-    menu.host.search({ kind: 'casual', modes: menu.prefs.casualModes, region: menu.prefs.region, net: menu.prefs.net }),
+    menu.beforeMatch(() => menu.startSearch({ kind: 'casual', modes: menu.prefs.casualModes, region: menu.prefs.region, net: menu.prefs.net })),
   );
   const el = h(
     'div.mn-queue',
@@ -298,7 +181,7 @@ export function rankedScreen(menu: Menu): Screen {
     },
   );
   const region = regionCycler(menu);
-  const go = searchButton(menu, 'ranked', () => menu.host.search({ kind: 'ranked', modes: menu.prefs.rankedModes, region: menu.prefs.region, net: 'server' }));
+  const go = searchButton(menu, 'ranked', () => menu.beforeMatch(() => menu.startSearch({ kind: 'ranked', modes: menu.prefs.rankedModes, region: menu.prefs.region, net: 'server' })));
   const signedInView = h(
     'div',
     null,
@@ -381,7 +264,7 @@ export function friendlyScreen(menu: Menu): Screen {
     null,
     screenHead(t('play.friendly'), t('friendly.intro')),
     section(t('friendly.match'), modeC.el, diffC.el, theme.el),
-    h('div.mn-actions', null, primary(t('friendly.play'), () => menu.host.playFriendly(mode, difficulty), { 'data-autofocus': true })),
+    h('div.mn-actions', null, primary(t('friendly.play'), () => menu.beforeMatch(() => menu.host.playFriendly(mode, difficulty)), { 'data-autofocus': true })),
   );
   return {
     id: 'friendly',

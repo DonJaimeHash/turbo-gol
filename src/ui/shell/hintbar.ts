@@ -27,8 +27,8 @@ export class HintBar {
     // data-fit (fit.ts): crowded (a TV's pills, a controller's four hints, Spanish, a wide fallback
     // face), the bar's text comes down to 14 px (16 on a TV, at its reference view) as one, then the
     // source link takes its short form; then what gives way (data-fit-give): the controller's ≡
-    // Settings (1), the TV's pills' words (2: pills.ts), the hint to cancel the search (3). The
-    // source link never goes (a TV's About gives way to a running search: shell.css).
+    // Settings (1), the TV's pills' words (2 and 3: pills.ts), the hint to cancel the search (4).
+    // The source link never goes (a TV's About gives way to a running search: shell.css).
     this.el = h(
       'footer.mn-hint',
       { 'data-fit': '14' },

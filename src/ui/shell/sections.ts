@@ -3,8 +3,8 @@
  * CLASIFICACIÓN · PERFIL, in that order on every device (the top bar on a PC and a TV, the rail on
  * a phone held sideways, the tab bar on an upright one). Each section has a root screen; every
  * other screen is stacked on the root of the section it belongs to (SCREEN_SECTION: today all of
- * them are JUGAR's: the Play hub, Casual, Competitive, Friendly, the lobbies). Pure, no DOM: node
- * tests import it (tests/back-model.test.mjs).
+ * them are JUGAR's: Casual, Competitive, Friendly, the lobbies, stacked on Inicio). Pure, no DOM:
+ * node tests import it (tests/back-model.test.mjs).
  */
 import type { Key } from '../../i18n';
 import type { IconName } from '../components/icons';
