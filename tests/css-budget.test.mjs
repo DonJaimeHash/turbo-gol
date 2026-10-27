@@ -209,7 +209,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // (99,729 B). PR 7 adds the FINAL (styles/screens/final.css, about 10.2 KB with its short, phone and
 // upright layouts), PARTIDO ENCONTRADO (found.css, 1.2 KB) and the match HUD as drawn (the goal slab,
 // the feed, the overtime line, the pause dock, the scorebug and the boost plate: about 4.8 KB more
-// than the rules they replace): 116,564 B, the cap that plus about 0.6 KB. It steps down to 70 KB
+// than the rules they replace): 116,612 B, the cap that plus about 0.6 KB. It steps down to 70 KB
 // once PR 10 deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css. Raising it is the
 // owner's call, recorded in the PR.
 const CSS_BUDGET = 117_150;
