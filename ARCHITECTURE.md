@@ -328,7 +328,8 @@ src/game/
   speed, the TrainingHud's rules line, the pause menu's RULES applied when the settings close, no
   records)
 src/ui/                 the front-end menus: the Tablero shell (styles/shell.css, components.css)
-                        around the screens (menu.css until their own PRs), all mn-, on the tokens
+                        around the screens (Inicio on styles/tiles.css and screens/home.css; the
+                        others on menu.css until their own PRs), all mn-, on the tokens
   styles/tokens.css     every colour, type role and scale, space, radius, shadow, layer, motion
                         and focus value (the Tablero plan §1.2), the display font's @font-face and
                         its calibrated fallbacks; the old names (--panel, --muted, --mn-*) are
@@ -337,11 +338,18 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         Hud's .hud-focus, the pack summary's default button)
   styles/shell.css      the shell's grid and bars per html[data-shell] (bar, rail, tabs, tv) in rem
                         (1 rem = 16 px x --ui-scale; body stays 16 px, so the old screens' px do
-                        not move); styles/components.css: pills, glyphs, sheets, toasts
-  components/icons.ts   the SVG icon sprite (~38 icons on a 24 grid, one hidden <svg> of
+                        not move); styles/components.css: pills, glyphs, sheets, toasts, the slot;
+                        styles/tiles.css: the hero and mode tiles, the plate, the slot's variants
+                        (the lift is --focus-lift alone: 0 on super low and with reduced motion);
+                        styles/screens/<screen>.css: a Tablero screen's own layout per class
+                        (home.css: Inicio; on .mn[data-screen], which Menu.mount writes)
+  components/icons.ts   the SVG icon sprite (~40 icons on a 24 grid, one hidden <svg> of
                         <symbol>s mounted by the first icon(); the menu tiles use it)
   components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
-                        length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons)
+                        length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons),
+                        tile.ts (the hero: one button whose parts are rebuilt per state, ✕ CANCEL
+                        in its grid cell; a mode tile; the slot), plate.ts (who you are · your
+                        car), language.ts (the language sheet, PERFIL's IDIOMA row)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
                         hints.ts (the hint bar per last input, root or stacked, a screen's own
                         tabs or not; pure), topbar.ts (wordmark,
@@ -367,8 +375,11 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         for the next frame first) reports overflowing bars, cut labels, a sideways
                         scroll, rings a clipping box or the screen's edge would cut (an edge
                         control draws its ring inside: shell.css --ring-offset), shell text under
-                        14 px on a phone or 16 on a TV at its reference view (scripts/ui-fit.mjs,
-                        CI's ui-fit job)
+                        14 px on a phone or 16 on a TV at its reference view (the shell's bars
+                        and a Tablero screen, data-tablero), and on Inicio a title on more lines
+                        than data-fit-lines, text out of its tile (data-fit-box) or under ✕, the
+                        hero's title as fitted (scripts/ui-fit.mjs, CI's ui-fit job); restoreGiven
+                        shows a moved part again (a TV's pills off its hint bar)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
                         thread is busy), one short line; swallows keys while up; boot and Game
@@ -383,14 +394,19 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         connection with RETRY, the running search on every section and floating
                         over Settings, "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
-                        shared prefs, population polling, the 4 Hz tick (1 Hz on super low, DOM
-                        written only on change); MenuHost = what the Game provides (search,
+                        shared prefs (prefs.ts), population polling, the 4 Hz tick (1 Hz on super
+                        low, DOM written only on change); MenuHost = what the Game provides (search,
                         friendly, training, the experimental view, lobby matches, settings
                         screen, confirmLeave with what asked: the system Back or a key,
                         setMenuCover: what the menus leave of the scene, reportCover: 'partial'
                         with the share a touch screen's menus hide, measured on every mount,
                         section switch, sheet or Settings closed, resize and layout change and
-                        once a second; 'opaque' under a sheet and over super low's opaque page).
+                        once a second; 'opaque' under a sheet and over super low's opaque page,
+                        which Inicio drops: data-screen on the root, readBackdrop). A match's
+                        start goes through beforeMatch (a TV without a controller: openNeedPad, a
+                        sheet a connecting controller closes after latching its press; a new PC
+                        player: openHowPlay, howPlay.ts), a search through startSearch (lastQueue);
+                        a TV's pills sit in the screen's pillSlot (Inicio's plate row).
                         Focus: zones top bar, stage, footer, tabs
                         and the rail as a side zone (left / right cross it; a sheet alone); up from
                         the stage lands on the active section (data-nav-entry), focus = selection
@@ -433,10 +449,20 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         sections are no history entries of their own: backModel.ts walks them);
                         released while JUGAR's "Leave Turbogol?" is up. Mid-match the Game adds a
                         beforeunload backstop (updateLeaveGuard)
+  prefs.ts              the menus' prefs (turbogol.menu.v1: region, playlists, Casual's network,
+                        the leaderboard's playlist, lastQueue: the kind searched last, which
+                        JUGAR AHORA repeats); parsePrefs, pure
+  howPlay.ts            "How will you play?": howPlayAsk (a new PC player pressing with the mouse
+                        or the keyboard; a controller's press answers it; never a returning
+                        player), the answer in turbogol.howPlay.v1; pure + storage
   dom.ts, badges.ts     h() builder, nav buttons, CSS-drawn rank badges and rating cards
-  screens/              JUGAR's root (home in play.ts until plan PR 5), play hub (crumb MODES),
-                        casual, competitive, friendly (play.ts), GARAJE's "coming soon" (garage.ts,
-                        until plan PR 8), custom lobby
+  screens/              JUGAR's root, Inicio (home.ts: the plate, the hero and the four mode tiles,
+                        rendered on a key's change, a TV's controller slot, window.__homeHero in
+                        dev / VITE_UI_FIT; homeModel.ts, pure: the hero's state in priority order,
+                        heroQueue (lastQueue, Competitive only signed in and not banned), isOffline
+                        (no Worker or two failed population polls), queueParts, twoLines,
+                        plateRank; tests/home-hero.test.mjs), casual, competitive, friendly
+                        (play.ts), GARAJE's "coming soon" (garage.ts, until plan PR 8), custom lobby
                         browser / create / lobby (custom.ts: the host's experimental rules row for
                         unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
                         rules line before the match), training (with Experimental free play, its
@@ -590,13 +616,20 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         own goals by last-toucher attribution, bumps, stuck time, throughput;
                         fails on a > 10 s dead ball or an own-goal streak), stock-trace.mjs (the
                         golden stock trace runs; --write re-records them for a deliberate change),
+                        cdp.mjs (a headless Chrome / Edge over DevTools with Node's WebSocket:
+                        Page, findBrowser, freePort, waitHttp; for ui-fit and play-timing),
+                        play-timing.mjs (one press on JUGAR AHORA to a real match, against a dev
+                        server and the local Worker: boot→menus reported, press→match failed over
+                        15 s; --net server, --first for "How will you play?", --port / --url),
                         bot-bench.mjs (this tree's bots against a git revision's; --preset plays
                         the same seeded matches on stock and experimental physics and compares the
                         step, think(), ball prediction and whole-tick cost, failing when a preset
                         breaks the state or the predictor), bot-skills.mjs (bot scenarios),
-                        ui-fit.mjs (every menu screen at six sizes with #widetext, in English
+                        ui-fit.mjs (every menu screen at nine sizes with #widetext, in English
                         and Spanish, in a headless Chrome / Edge over CDP: window.__uiFit,
-                        src/ui/fit.ts; a fresh tab per size and language with its device pinned,
+                        src/ui/fit.ts; Inicio in every hero state, ✕ focused, a TV with a
+                        controller, then a TV's controller sheet closed by a fake controller with
+                        A held; a fresh tab per size and language with its device pinned,
                         a mouse on the desktop sizes; then the hints of every other input on the
                         screens that change the shell; --face for a fallback wider than Arial,
                         --online and --long-name for a pill and a chip this page cannot reach
@@ -1123,8 +1156,9 @@ Avenir Next Condensed and the condensed system faces.
 `#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it;
 `data-fit` (src/ui/fit.ts) shrinks a label that would not fit, down to its minimum, then takes its
 short form (ENTRENAR, RANKING), and `node scripts/ui-fit.mjs` checks every menu screen at 780x360,
-844x390, 960x540 (TV), 1366x768 (a PC, and a TV) and 390x844 with it, in English and Spanish and
-with the hints of every input (CI job `ui-fit`, information only for now); `--face Verdana`
+844x390, 960x540 (TV), 1366x768 (a PC, and a TV), 390x844, 1920x1080, 1366x600 and 820x1180 with
+it, in English and Spanish and with the hints of every input (CI job `ui-fit`, information only
+for now); `--face Verdana`
 (Windows, macOS) or `--face 'DejaVu Sans'` (Linux, CI's second step) runs it with a fallback wider
 than Arial, which must fit too.
 `scripts/copy-notices.mjs` refuses to build with a font and no license next to it.
