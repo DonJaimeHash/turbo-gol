@@ -271,6 +271,8 @@ try {
         for (const kind of FINAL_KINDS) {
           await page.eval(`(window.__final(${JSON.stringify(kind)}), true)`);
           await sleep(400);
+          // The first focus lands with the mount's frame: a slow one at 1920 x 1080 in a headless page.
+          await page.until("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch')", 2_000, 50);
           await check(input, screen, kind, await page.eval("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch') ? [] : ['PLAY AGAIN is not focused: ' + (document.activeElement?.className ?? null)]"));
         }
         await page.eval('(window.__final(null), true)');

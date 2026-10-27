@@ -448,7 +448,8 @@
 /* ---- The dock: PLAY AGAIN (2 units, lime), CHANGE MODE, MENU --------------------------------- */
 .mn-final-dock {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
+  /* A wide fallback face shrinks the titles (data-fit), never pushes MENU off the screen. */
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 1rem;
   height: 8.5rem;
   flex: none;
@@ -532,6 +533,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
+  min-width: 0;
 }
 
 .mn-final-alt-text b {
