@@ -354,13 +354,21 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         match) and stackAfterOpen (where Menu.open leaves the section and its
                         stack); tests/back-model.test.mjs
   fit.ts                data-fit: a box shrinks its font 1 px at a time to its minimum (or the
-                        --fit-min a stylesheet sets: 16 on a TV) while it overflows (its content
-                        box: a bar's overscan stays clear), then takes its short labels
-                        (data-fit-alt); a box not laid out (the strip under a stacked screen)
+                        --fit-min a stylesheet sets: 16 on a TV, in px of its 960 wide reference
+                        view: times --ui-scale) while it overflows (its content box: a bar's
+                        overscan stays clear), then takes its short labels (data-fit-alt), then
+                        lets the parts that give way go, a level at a time (data-fit-give, in the
+                        box or in its data-fit-scope: the strip's ‹ › / L R / Q E; a TV hint
+                        bar's controller Settings hint, its pills' words, the cancel hint); the
+                        Menu fits at once on a mount and a change of the hints, the input, the
+                        chip or a pill (before that frame is drawn), on the next frame after a
+                        resize or the fonts; a box not laid out (the strip under a stacked screen)
                         keeps its last fit; __uiFit() (dev / VITE_UI_FIT=1; it runs a fit queued
                         for the next frame first) reports overflowing bars, cut labels, a sideways
-                        scroll, rings a clipping box would cut, shell text under 14 px on a phone
-                        or 16 on a TV (scripts/ui-fit.mjs, CI's ui-fit job)
+                        scroll, rings a clipping box or the screen's edge would cut (an edge
+                        control draws its ring inside: shell.css --ring-offset), shell text under
+                        14 px on a phone or 16 on a TV at its reference view (scripts/ui-fit.mjs,
+                        CI's ui-fit job)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
                         thread is busy), one short line; swallows keys while up; boot and Game
@@ -409,7 +417,9 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
                         rowStep, left vertically from unionBox), the way back (NavPath), the focus
                         memory (FocusMemory), fields in navigation or editing mode (data-editing)
-                        and the edge nudge (mn-bounce-*); FocusNav puts them on the DOM
+                        and the edge nudge (mn-bounce-*); FocusNav puts them on the DOM and
+                        measures each target where it sits (layoutBox: a focused tile's lift or
+                        a nudge taken off, so a lifted tile has no neighbour "below" on its row)
   device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
                         <html>), html.tg-tv (no pointer at all, or #tv), the layout class by height
                         and orientation (layoutClass: pc, short, phone, portrait, tablet, tv;
@@ -584,10 +594,13 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         the same seeded matches on stock and experimental physics and compares the
                         step, think(), ball prediction and whole-tick cost, failing when a preset
                         breaks the state or the predictor), bot-skills.mjs (bot scenarios),
-                        ui-fit.mjs (every menu screen at six sizes with #widetext in a headless
-                        Chrome / Edge over CDP: window.__uiFit, src/ui/fit.ts; a fresh tab per
-                        size with its device pinned, a mouse on the desktop sizes; --face for a
-                        fallback wider than Arial, --no-pointer for a runner without one)
+                        ui-fit.mjs (every menu screen at six sizes with #widetext, in English
+                        and Spanish, in a headless Chrome / Edge over CDP: window.__uiFit,
+                        src/ui/fit.ts; a fresh tab per size and language with its device pinned,
+                        a mouse on the desktop sizes; then the hints of every other input on the
+                        screens that change the shell; --face for a fallback wider than Arial,
+                        --online and --long-name for a pill and a chip this page cannot reach
+                        alone, --no-pointer for a runner without one)
 ```
 
 ### Bloom / glow contract (src/render/materials.ts)
@@ -803,8 +816,9 @@ rotate-your-phone screen), in an offline pause, and under the menus with `prefer
 `GamePrefs.menuSceneAnimated` off (the orbit stops). The Tablero shell reports what it leaves of the
 scene through `MenuHost.setMenuCover` ('none' / 'partial' / 'opaque', Menu.reportCover): 'partial'
 on every section, stacked screen and layout (the bars, the rail or the tabs, the pills and toasts
-count in the measured share of a touch screen, GARAJE's almost empty stage measures low), 'opaque'
-under any sheet (region, leave, update over Settings, the language list, About, a confirm) and while
+count in the measured share of a touch screen: a toast lets the pointer through, so its box is
+hit-tested first, cover.ts atOverlays; GARAJE's almost empty stage measures low), 'opaque'
+under any sheet (region, leave, update once Settings close, the language list, About, a confirm) and while
 `.mn` paints an opaque backdrop (super low's `--mn-backdrop` is `--ink`: the stadium is hidden
 there, so it holds instead of running at 20 fps), 'none' once hidden; the Game adds its own layers
 (the settings screen, the rotate screen of a match: upright menus work, `.mn-open` keeps it away). A
@@ -1109,9 +1123,10 @@ Avenir Next Condensed and the condensed system faces.
 `#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it;
 `data-fit` (src/ui/fit.ts) shrinks a label that would not fit, down to its minimum, then takes its
 short form (ENTRENAR, RANKING), and `node scripts/ui-fit.mjs` checks every menu screen at 780x360,
-844x390, 960x540 (TV), 1366x768 (a PC, and a TV) and 390x844 with it (CI job `ui-fit`, information
-only for now); `--face Verdana` (Windows, macOS) or `--face 'DejaVu Sans'` (Linux) runs it with a
-fallback wider than Arial, which must fit too.
+844x390, 960x540 (TV), 1366x768 (a PC, and a TV) and 390x844 with it, in English and Spanish and
+with the hints of every input (CI job `ui-fit`, information only for now); `--face Verdana`
+(Windows, macOS) or `--face 'DejaVu Sans'` (Linux, CI's second step) runs it with a fallback wider
+than Arial, which must fit too.
 `scripts/copy-notices.mjs` refuses to build with a font and no license next to it.
 
 ## Legal

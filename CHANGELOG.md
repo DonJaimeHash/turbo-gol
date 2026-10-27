@@ -22,8 +22,9 @@ All notable changes to Turbogol are documented here. The format follows
 - `#widetext` (for contributors): the whole interface in plain Arial, about as wide as Android's
   Roboto, to see on a desktop which label would not fit without the condensed font. Labels that
   would not fit shrink a little, then take a shorter name (TRAIN, RANKS), and `node
-  scripts/ui-fit.mjs` checks every menu screen at six sizes with it (a CI job, for information);
-  `--face Verdana` runs the same check with a face wider than Arial.
+  scripts/ui-fit.mjs` checks every menu screen at six sizes with it, in English and Spanish and
+  with the hints of every controller, keyboard and remote (a CI job, for information); `--face
+  Verdana` runs the same check with a face wider than Arial.
 - GARAGE has its place in the menus already, with a "coming soon" panel until the cars arrive.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
@@ -246,7 +247,11 @@ All notable changes to Turbogol are documented here. The format follows
 - The region pill shows your region and whether you are online ("● Online", or how many are
   playing once there are five or more; on a TV just whether you are online); open it to change the
   region, or press RETRY when the game cannot reach the server. The hint bar at the bottom speaks only the language of what you are holding: the
-  controller's buttons, the keyboard's keys or the TV remote's, and nothing with a mouse.
+  controller's buttons, the keyboard's keys or the TV remote's, and nothing with a mouse. When it
+  runs out of room on a TV, its text gets a little smaller, then the Settings hint goes (the gear
+  at the top says it), then the pills keep just their icons (a search its clock), and while you
+  search, the cancel hint goes (the pill's ✕ is next to it); the source code link always stays on
+  screen.
 - On a phone held upright the menus now work (profile, leaderboard, training...); only a match
   asks you to turn the phone. A tablet plays either way. You can pinch to zoom the menus; a match
   starts at its normal size, and its controls and pause menu still keep every finger.
