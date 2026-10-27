@@ -208,7 +208,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // unnoticed; the crowded top bar's pills and a TV subtitle's second line take 179 B of it
 // (99,729 B). PR 6 adds MODOS (styles/screens/modes.css: its tabs, formats, rows, mn-seg,
 // mn-picker, the action zone and the searching panel per class, about 13.6 KB) minus the old
-// playlist cards and the guest's locked card of menu.css (about 1.5 KB): 111,953 B, and the cap is
+// playlist cards and the guest's locked card of menu.css (about 1.5 KB): 111,923 B, and the cap is
 // that plus about 0.6 KB again. It steps down to 70 KB once PR 10 deletes the Hud's settings sheet
 // (about 11 KB) and PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
 const CSS_BUDGET = 112_550;
