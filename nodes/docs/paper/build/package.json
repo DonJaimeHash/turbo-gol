@@ -1,0 +1,18 @@
+{
+  "name": "turbogol-paper-build",
+  "private": true,
+  "description": "Builds the community-nodes paper (English canonical edition and Spanish translation) to PDF.",
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:en && npm run build:es",
+    "build:en": "node build.mjs ../en ../out/Turbogol-community-network-of-verifiable-match-servers.pdf",
+    "build:es": "node build.mjs ../es ../out/Turbogol-red-comunitaria-servidores-verificables.pdf",
+    "check:math": "node mathcheck.mjs ../en/paper.md && node mathcheck.mjs ../es/paper.md",
+    "check:overflow": "node overflow.mjs ../en && node overflow.mjs ../es"
+  },
+  "dependencies": {
+    "katex": "0.16.11",
+    "markdown-it": "14.1.0",
+    "markdown-it-texmath": "1.0.0"
+  }
+}

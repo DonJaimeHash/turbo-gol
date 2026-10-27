@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="936" viewBox="0 0 760 936" font-family="'Segoe UI', Arial, sans-serif" font-size="12">
+  <title>Ciclo de vida de una partida clasificatoria en un nodo</title>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d2433"/></marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="8.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2f6f0e"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="760" height="936" fill="#ffffff"/>
+
+  <!-- Líneas de vida -->
+  <g stroke="#6b7280" stroke-width="1" stroke-dasharray="4 4">
+    <line x1="64" y1="58" x2="64" y2="916"/>
+    <line x1="190" y1="58" x2="190" y2="916"/>
+    <line x1="316" y1="58" x2="316" y2="916"/>
+    <line x1="442" y1="58" x2="442" y2="916"/>
+    <line x1="568" y1="58" x2="568" y2="916"/>
+    <line x1="694" y1="58" x2="694" y2="916"/>
+  </g>
+
+  <!-- Cabeceras -->
+  <rect x="8" y="12" width="112" height="46" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="64" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Jugadores</text>
+  <text x="64" y="49" text-anchor="middle" fill="#6b7280">navegadores</text>
+
+  <rect x="134" y="12" width="112" height="46" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="190" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Emparejador</text>
+  <text x="190" y="49" text-anchor="middle" fill="#6b7280">de la región</text>
+
+  <rect x="260" y="12" width="112" height="46" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="2"/>
+  <text x="316" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Plano de control</text>
+  <text x="316" y="49" text-anchor="middle" fill="#6b7280">registro de nodos</text>
+
+  <rect x="386" y="12" width="112" height="46" rx="8" fill="#fdf4e7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="442" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Nodo anfitrión</text>
+  <text x="442" y="49" text-anchor="middle" fill="#6b7280">de un operador</text>
+
+  <rect x="512" y="12" width="112" height="46" rx="8" fill="#f2f5ee" stroke="#2f6f0e" stroke-width="1.5"/>
+  <text x="568" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Verificador</text>
+  <text x="568" y="49" text-anchor="middle" fill="#6b7280">nodo del proyecto</text>
+
+  <rect x="638" y="12" width="112" height="46" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="694" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Cuentas</text>
+  <text x="694" y="49" text-anchor="middle" fill="#6b7280">calificaciones</text>
+
+  <!-- Fases -->
+  <g fill="none" stroke="#6b7280" stroke-width="1.2">
+    <path d="M40,80 H34 V272 H40"/>
+    <path d="M40,282 H34 V400 H40"/>
+    <path d="M40,406 H34 V572 H40"/>
+    <path d="M40,580 H34 V840 H40"/>
+    <path d="M40,848 H34 V908 H40"/>
+  </g>
+  <g text-anchor="middle" font-weight="700" fill="#6b7280">
+    <text transform="translate(26,176) rotate(-90)">Colocación</text>
+    <text transform="translate(26,341) rotate(-90)">Partida</text>
+    <text transform="translate(26,489) rotate(-90)">Informe y sorteo</text>
+    <text transform="translate(26,710) rotate(-90)">Verificación</text>
+    <text transform="translate(26,878) rotate(-90)">Resultado</text>
+  </g>
+
+  <!-- 1. Pedido de colocación -->
+  <line x1="190" y1="96" x2="316" y2="96" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="253" y="89" text-anchor="middle" fill="#1d2433">pide colocación</text>
+
+  <!-- 2. Asignación -->
+  <line x1="316" y1="134" x2="442" y2="134" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="379" y="127" text-anchor="middle" fill="#1d2433">asignar</text>
+
+  <!-- 3. Aceptación -->
+  <line x1="442" y1="170" x2="316" y2="170" stroke="#1d2433" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah)"/>
+  <text x="379" y="163" text-anchor="middle" fill="#1d2433">acepta + URL wss</text>
+
+  <!-- 4. Boletos -->
+  <line x1="316" y1="222" x2="190" y2="222" stroke="#1d2433" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah)"/>
+  <text x="253" y="201" text-anchor="middle" fill="#1d2433">nodo + boletos</text>
+  <text x="253" y="215" text-anchor="middle" fill="#1d2433">firmados (90 s)</text>
+
+  <!-- 5. Respuesta a los jugadores -->
+  <line x1="190" y1="262" x2="64" y2="262" stroke="#1d2433" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah)"/>
+  <text x="127" y="255" text-anchor="middle" fill="#1d2433">URL + boleto</text>
+
+  <!-- 6. Conexión directa -->
+  <line x1="64" y1="314" x2="442" y2="314" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="127" y="293" text-anchor="middle" fill="#1d2433">conecta por wss,</text>
+  <text x="127" y="307" text-anchor="middle" fill="#1d2433">directo al nodo</text>
+
+  <!-- Nota: partida -->
+  <rect x="342" y="322" width="200" height="74" rx="8" fill="#fdf4e7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="442" y="340" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Partida a 120 Hz</text>
+  <text x="442" y="356" text-anchor="middle" fill="#1d2433">graba las entradas aplicadas,</text>
+  <text x="442" y="372" text-anchor="middle" fill="#1d2433">un resumen cada 120 ticks</text>
+  <text x="442" y="388" text-anchor="middle" fill="#1d2433">y el registro final</text>
+
+  <!-- 7. Repetición, subida con una petición firmada -->
+  <line x1="442" y1="432" x2="316" y2="432" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="379" y="411" text-anchor="middle" fill="#1d2433">repetición (petición</text>
+  <text x="379" y="425" text-anchor="middle" fill="#1d2433">firmada + SHA-256)</text>
+
+  <!-- 8. Informe -->
+  <line x1="442" y1="468" x2="316" y2="468" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="379" y="461" text-anchor="middle" fill="#1d2433">informe de fin</text>
+
+  <!-- Nota: sorteo -->
+  <rect x="194" y="482" width="244" height="88" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="316" y="499" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Sorteo de verificación</text>
+  <text x="316" y="515" text-anchor="middle" fill="#1d2433">clasificatoria o nodo en prueba: p = 1</text>
+  <text x="316" y="530" text-anchor="middle" fill="#1d2433">casual, comunitario activo: p = 0.2</text>
+  <text x="316" y="545" text-anchor="middle" fill="#1d2433">casual, nodo del proyecto: p = 0</text>
+  <text x="316" y="561" text-anchor="middle" fill="#6b7280">no muestreada: sin puntos</text>
+
+  <!-- 9. Trabajo de verificación -->
+  <line x1="316" y1="604" x2="568" y2="604" stroke="#2f6f0e" stroke-width="1.5" marker-end="url(#ahg)"/>
+  <text x="379" y="583" text-anchor="middle" fill="#1d2433">trabajo de</text>
+  <text x="379" y="597" text-anchor="middle" fill="#1d2433">verificación</text>
+
+  <!-- Nota: resimulación -->
+  <rect x="458" y="618" width="220" height="98" rx="8" fill="#f2f5ee" stroke="#2f6f0e" stroke-width="1.5"/>
+  <text x="568" y="637" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Resimulación</text>
+  <text x="568" y="653" text-anchor="middle" fill="#1d2433">descarga la repetición (petición</text>
+  <text x="568" y="669" text-anchor="middle" fill="#1d2433">firmada) y comprueba su SHA-256;</text>
+  <text x="568" y="685" text-anchor="middle" fill="#1d2433">resimula desde el tick 1;</text>
+  <text x="568" y="701" text-anchor="middle" fill="#1d2433">compara resúmenes, marcador y fin</text>
+
+  <!-- 10. Veredicto -->
+  <line x1="568" y1="740" x2="316" y2="740" stroke="#2f6f0e" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ahg)"/>
+  <text x="505" y="733" text-anchor="middle" fill="#1d2433">veredicto</text>
+
+  <!-- Nota: aplicar el veredicto -->
+  <rect x="216" y="756" width="200" height="80" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="316" y="775" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Aplicar el veredicto</text>
+  <text x="316" y="792" text-anchor="middle" fill="#1d2433">compara con el informe</text>
+  <text x="316" y="809" text-anchor="middle" fill="#1d2433">y con su propio reloj;</text>
+  <text x="316" y="826" text-anchor="middle" fill="#6b7280">el resultado sale del veredicto</text>
+
+  <!-- 11. Resultado a cuentas -->
+  <line x1="316" y1="866" x2="694" y2="866" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="505" y="845" text-anchor="middle" fill="#1d2433">calificaciones</text>
+  <text x="505" y="859" text-anchor="middle" fill="#1d2433">y abandonos</text>
+
+  <!-- 12. Liberar bloqueos -->
+  <line x1="316" y1="900" x2="190" y2="900" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="253" y="893" text-anchor="middle" fill="#1d2433">liberar bloqueos</text>
+</svg>
