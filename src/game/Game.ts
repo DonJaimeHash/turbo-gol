@@ -146,7 +146,8 @@ import { Audio, type AudioState } from '../audio/Audio';
 import { Input } from '../input/Input';
 import { TouchControls, autoFullscreen, hasTouchScreen, installHintDue, noteInstallHintShown } from '../input/TouchControls';
 import { t } from '../i18n';
-import type { ServerAssignment } from '../net/NetClient';
+import { sessionValid } from '../net/NetClient';
+import type { NetClient, ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
 import { TrainingStore } from './trainingStore';
 import { ExperimentalStore, type ExperimentalProblem } from './experimentalStore';
@@ -496,6 +497,11 @@ const SCOREBOARD_DIFFICULTY: Readonly<Record<Difficulty, string>> = {
 const SCOREBOARD_ONLINE = t('game.scoreboardOnline');
 const SCOREBOARD_ONLINE_P2P = t('game.scoreboardOnlineP2p');
 
+/** The client holds a guest session for its name: a queue needs no registration first (NetClient.ensureGuest). */
+function guestReady(c: NetClient): boolean {
+  return sessionValid(c.guest) && c.guest.name === c.name;
+}
+
 /** Read the saved difficulty / quality / mode / theme / scene pace (falls back to defaults when storage is unavailable). */
 export function loadPrefs(): GamePrefs {
   const touch = hasCoarsePointer();
@@ -769,6 +775,14 @@ export class Game implements P2PGameHooks {
   private installHint: boolean;
   /** Frames left that render the normally hidden meshes so their pipelines compile (see warmUp). */
   private warmFrames = 0;
+  /**
+   * A menu search switched the roster while its guest registers (a new player's first queue: POST
+   * /api/guest, then the queue): the scene holds its frame until that answer (heldForGuest). The
+   * new cars' first frame compiles their pipelines (seconds on a weak GPU, and over Inicio's live
+   * stadium it comes at once): it would hold the answer back, and with it the queue request. It
+   * runs during the queue's wait instead.
+   */
+  private holdForGuest = false;
   /** A warm-up behind the loading screen: the ball casts its shadow whatever the stadium (applyBallShadow). */
   private warmBallShadow = false;
   /** A load runs behind the loading screen (withLoading): the loop neither renders nor reads input. */
@@ -1308,6 +1322,7 @@ export class Game implements P2PGameHooks {
     const mode = req.modes[0];
     this.searchReq = { ...req, modes: req.modes.slice() };
     this.searchSince = performance.now();
+    this.holdForGuest = mode !== this.mode && !this.accounts.signedIn && !guestReady(client);
     if (req.kind === 'ranked') {
       if (online.state !== 'idle') return;
       this.setMode(mode);
@@ -2830,6 +2845,16 @@ export class Game implements P2PGameHooks {
     this.setWarm(false);
   }
 
+  /** The scene holds its frame while a search's guest registers after a roster switch (holdForGuest). */
+  private heldForGuest(): boolean {
+    if (!this.holdForGuest) return false;
+    const s = this.session;
+    const client = this.online?.client;
+    if (s !== null && s.busy && client !== undefined && !guestReady(client)) return true;
+    this.holdForGuest = false; // registered (the queue request has left), cancelled or failed
+    return false;
+  }
+
   /**
    * The boot's warm-up: the same as warmUp, but every pipeline (hidden meshes included) is first
    * compiled in parallel (Renderer.precompile: on WebGPU one frame whose pipelines are all created
@@ -3208,7 +3233,7 @@ export class Game implements P2PGameHooks {
     // nothing else in whole refreshes (no pacer: drawsFrame); the menus' rates and the player's
     // limit at their average (scenePace).
     const rate = live && fps === cap ? 0 : fps;
-    const draw = drawsScene(t, this.lastDrawAt, rate, changed || this.redraw || this.warmFrames > 0, cover === 'none' && ownCap ? null : this.scenePace);
+    const draw = !this.heldForGuest() && drawsScene(t, this.lastDrawAt, rate, changed || this.redraw || this.warmFrames > 0, cover === 'none' && ownCap ? null : this.scenePace);
     // A paced or held scene's stalls are between animation frames, a match's between drawn ones (frameStats.ts).
     if (diagStats !== null) diagStats.frame(t, draw, fps !== cap);
     if (draw) {
