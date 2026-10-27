@@ -2,11 +2,12 @@
  * The front-end menus: the Tablero shell (plan §1.3-1.5) around a stack of screens per section.
  *
  * Sections (shell/sections.ts): JUGAR · ENTRENAMIENTO · GARAJE · CLASIFICACIÓN · PERFIL, each with a
- * root screen; every other screen is stacked on its section's root (Play hub, Casual, the lobbies...
- * on JUGAR's). Switching sections always lands on the new one's root (a section is a place, not a
- * history): the top bar's tabs on a PC or a TV (focus = selection), the rail of a phone held
- * sideways, the tabs of an upright phone, pad LB / RB, keyboard Q / E (a screen's own tabs first),
- * the account chip (PERFIL) and the wordmark (JUGAR). A section's root opened by a stacked screen
+ * root screen (JUGAR's: Inicio, screens/home.ts); every other screen is stacked on its section's
+ * root (Casual, Competitive, the lobbies, Friendly... on Inicio). Switching sections always lands
+ * on the new one's root (a section is a place, not a history): the top bar's tabs on a PC or a TV
+ * (focus = selection), the rail of a phone held sideways, the tabs of an upright phone, pad LB /
+ * RB, keyboard Q / E (a screen's own tabs first), the account chip (PERFIL) and the wordmark
+ * (JUGAR). A section's root opened by a stacked screen
  * of another (Competitive's SIGN IN opens PERFIL) is a detour on top of it instead, so Back comes
  * back (backModel.ts stackAfterOpen). A screen that asks before it goes (Screen.leaveGuard: a
  * lobby) asks before any of those, or a crumb, takes the player off it.
@@ -16,12 +17,17 @@
  *   screen ‹ and the breadcrumbs, each crumb a way back;
  * - the rail (phone sideways) or the tab bar (upright), shell/rail.ts;
  * - the hint bar (shell/hintbar.ts): the last input's verbs (shell/hints.ts) and the source link
- *   (AGPL-3.0) with About; a TV keeps its pills there;
+ *   (AGPL-3.0) with About; a TV keeps its pills there, but on Inicio, by the plate (Screen.pillSlot);
  * - pills (shell/pills.ts): the region with the connection, the running search (cancel from any
  *   section, and over Settings: a copy floats above them, `float`), "UPDATE TO PLAY";
  * - sheets (components/sheet.ts, `modal()`), toasts (components/toast.ts), the blocking "There's a
  *   new version" sheet when the server refused this page (it waits for Settings to close; z 65
  *   would keep it above them should both ever be up).
+ *
+ * A match's start (Menu.beforeMatch: the hero, FIND MATCH, Friendly's PLAY): a TV without a
+ * controller asks for one first (a sheet that closes by itself when one connects, the press that
+ * revealed it starting nothing), and a new PC player is asked "How will you play?" once (howPlay.ts).
+ * A search started anywhere is the queue JUGAR AHORA repeats (startSearch: MenuPrefs.lastQueue).
  *
  * Back (backModel.ts menuBack): the sheet closes, else a field being edited stops editing, else the
  * screen's own back, else the stack pops, else another section goes to JUGAR, else JUGAR's root
@@ -42,7 +48,8 @@
  * scene (MenuHost.setMenuCover, reportCover): part of it while they are up, with the share a touch
  * screen's menus hide (cover.ts, measureCover: on a mount, a section switch, a sheet closed,
  * Settings closed, a resize or a layout change, and once a second on the tick), all of it under a
- * sheet and while the shell's own backdrop is opaque (super low's flat page), none once hidden; the
+ * sheet and while the shell's own backdrop is opaque (super low's flat page, but on Inicio, whose
+ * tiles sit on the live stadium: `data-screen` on the root, readBackdrop), none once hidden; the
  * Game adds its own layers (Settings, the rotate screen) and draws the scene at the menus' rate or
  * holds one frame (src/render/quality.ts sceneFps). The tick (`tick`: the pills, the screen's
  * counters, the hints) runs at 4 Hz, 1 Hz on super low (`tg-superlow` on <html>), and writes the
@@ -88,9 +95,14 @@ import { sheetBox } from './components/sheet';
 import type { SheetSpec } from './components/sheet';
 import { Toasts } from './components/toast';
 import { icon } from './components/icons';
-import { fitAll, uiFitReport } from './fit';
+import type { IconName } from './components/icons';
+import { fitAll, restoreGiven, uiFitReport } from './fit';
 import { PREFS_KEY, parsePrefs } from './prefs';
 import type { MenuPrefs } from './prefs';
+import { howPlayAsk, readHowPlay, writeHowPlay } from './howPlay';
+import type { ControlScheme } from './howPlay';
+import { isOffline } from './screens/homeModel';
+import { localCardSeen } from '../render/controlsCard';
 import { atOverlays, coverShare, menuCover, opaqueBackground, paintsBackground } from './cover';
 import type { OverlayBox } from './cover';
 import type { SceneCover } from '../render/quality';
@@ -114,6 +126,8 @@ export interface SearchView {
   text: string;
   /** performance.now() when the search started. */
   since: number;
+  /** The running search's region (null = automatic). */
+  region: RegionId | null;
   /** The last failure (shown once as a toast), null when none. */
   error: string | null;
   /** That failure is the server refusing this page's version (426 reload_required): reload to play online. */
@@ -190,6 +204,14 @@ export interface MenuHost {
   setMenuCover(level: SceneCover, covered?: number): void;
   /** One line about the build (WebGPU / RocketSim version), shown in About. */
   readonly info: string;
+  /** A controller is connected (Input.hasGamepad): a TV without one asks for it before a match. */
+  padConnected(): boolean;
+  /** "How will you play?" answered (howPlay.ts): keyboard only applies its preset (saved as Settings › Controls saves it). */
+  setControlScheme(s: ControlScheme): void;
+  /** Presses made so far count as held (Input.latchEdges): the A that revealed a controller presses nothing more. */
+  latchInput(): void;
+  /** The keyboard + mouse bindings are the player's own (bindings.ts kbmCustomised): a returning player. */
+  controlsCustomised(): boolean;
 }
 
 const POPULATION_EVERY_MS = 10_000;
@@ -242,6 +264,8 @@ export interface Screen {
   hide?(): void;
   /** Every TICK_MS while the screen is on top and the menu is visible. */
   tick?(now: number): void;
+  /** Where a TV puts the pills while this screen is on top (Inicio: by the plate); else its hint bar. */
+  readonly pillSlot?: HTMLElement;
   /** Esc / B on this screen: return true to swallow it (e.g. a sub-view closes first). */
   back?(): boolean;
   /** A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context action). */
@@ -326,6 +350,8 @@ export class Menu {
   private popAt = 0;
   /** The last population poll failed (the region pill offers to retry). */
   private popFailed = false;
+  /** Population polls failed in a row (the hero counts two as offline: homeModel.ts isOffline). */
+  private popFails = 0;
   private lastError: string | null = null;
   private visibleNow = false;
   private searching = false;
@@ -350,6 +376,12 @@ export class Menu {
   private covered = 0;
   private coverQueued = false;
   private coverAt = 0;
+  /** The "you need a controller" sheet is up: its closer (a controller connecting closes it). */
+  private needPadClose: (() => void) | null = null;
+  /** A controller was connected at the last check (tick). */
+  private padWas = false;
+  /** Menu.action's 'accept' is running: the press is a controller's (data-input says so only after this frame). */
+  private padAccept = false;
 
   constructor(host: MenuHost, container: HTMLElement) {
     this.host = host;
@@ -420,6 +452,8 @@ export class Menu {
     }).observe(html, { attributes: true, attributeFilter: ['data-input', 'data-layout', 'class'] });
     void document.fonts?.ready.then(() => this.queueFit());
     host.accounts.subscribe(() => this.refreshChrome());
+    // After Input's own listener (the Game creates the Input first): hasGamepad already says so.
+    window.addEventListener('gamepadconnected', () => this.onPadChange());
     this.loadConfig();
     // The report of what the next frame shows: a fit the last change queued runs first (the check
     // reads the page a fixed pause after a mount, and the frame that would run it can come later:
@@ -464,10 +498,64 @@ export class Menu {
 
   /** The region the matchmaker uses: the chosen one, else the automatic one. */
   get regionLabel(): string {
-    const id = this.prefs.region ?? (isRegion(this.cfg?.autoRegion) ? this.cfg?.autoRegion : null);
-    const r = REGIONS.find((x) => x.id === id);
+    const r = REGIONS.find((x) => x.id === this.regionId);
     if (this.prefs.region !== null) return r ? regionName(r.id) : '?';
     return r ? t('menu.regionAutoNamed', { region: regionName(r.id) }) : t('menu.regionAuto');
+  }
+
+  /** The region the matchmaker uses: the chosen one, else the automatic one; null before the server said which. */
+  get regionId(): RegionId | null {
+    const auto = this.cfg?.autoRegion;
+    return this.prefs.region ?? (isRegion(auto) ? auto : null);
+  }
+
+  /** The server refused this page's version (Inicio's hero: RELOAD NOW). */
+  get updateNeeded(): boolean {
+    return this.reloadNeeded;
+  }
+
+  /** No Worker, or two population polls in a row failed (homeModel.ts isOffline: the hero's VS AI). */
+  get offline(): boolean {
+    return isOffline(this.cfg, this.popFails);
+  }
+
+  /**
+   * Start a search (Inicio's hero, Casual's and Competitive's FIND MATCH): its kind is the queue
+   * JUGAR AHORA repeats (MenuPrefs.lastQueue); the pill, the hints and the screen on top follow at
+   * once (renderSearch).
+   */
+  startSearch(req: SearchRequest): void {
+    this.prefs.lastQueue = req.kind;
+    this.savePrefs();
+    this.host.search(req);
+    this.renderSearch(performance.now());
+  }
+
+  /**
+   * Before a match starts (`go`): a TV without a controller asks for one (openNeedPad); a new PC
+   * player is asked how they will play, once (howPlay.ts: never at boot, never for a controller's
+   * press, which answers it, never a returning player).
+   */
+  beforeMatch(go: () => void): void {
+    const html = document.documentElement;
+    const tv = html.classList.contains('tg-tv');
+    if (tv && !this.host.padConnected()) return this.openNeedPad(go);
+    const ask = howPlayAsk({
+      tv,
+      layout: html.dataset.layout ?? '',
+      touch: touchMode(),
+      input: this.padAccept ? 'pad' : lastInput(),
+      answered: readHowPlay() !== null,
+      returning: localCardSeen.read() > 0 || this.host.controlsCustomised(),
+    });
+    if (ask === 'pad') writeHowPlay('pad');
+    if (ask === 'ask') return this.openHowPlay(go);
+    go();
+  }
+
+  /** data-fit (fit.ts) now: a screen's text changed (the frame about to be drawn shows it fitted). */
+  refit(): void {
+    this.fitNow();
   }
 
   /** Show the menus (the screen on top stays: back from a match lands where the search started). */
@@ -655,6 +743,11 @@ export class Menu {
     this.mountedAt = performance.now();
     this.nav.reset();
     setChildren(this.stage, top.el);
+    // Which screen is up, for the stylesheets (Inicio's backdrop and stage, a TV's About), where a
+    // TV's pills go, and whether the shell's backdrop is opaque here (Inicio drops it).
+    this.root.dataset.screen = top.id;
+    this.placePills();
+    this.readBackdrop();
     // A screen opens at its top. With the keyboard / pad the first control's focus scrolls there
     // (autoFocus); touch mode and a switch from the bar focus nothing on the stage.
     if (touchMode() || focus === 'keep') this.stage.scrollTop = 0;
@@ -767,11 +860,17 @@ export class Menu {
     return on < 0 || tabs.length < 2 ? null : { strip, tabs, on };
   }
 
-  /** The pills: the top bar's right side, or the hint bar on a TV (its top bar has no room at 3 m). */
+  /**
+   * The pills: the top bar's right side, or on a TV (its top bar has no room at 3 m) the screen's
+   * own place for them (Screen.pillSlot: Inicio's, by the plate), else the hint bar. Out of a
+   * crowded bar, the words it took away come back (fit.ts restoreGiven).
+   */
   private placePills(): void {
     const tv = document.documentElement.dataset.layout === 'tv';
-    const want = tv ? this.hintBar.mid : this.topBar.pills;
-    if (this.pills.parentElement !== want) want.appendChild(this.pills);
+    const want = tv ? (this.top()?.pillSlot ?? this.hintBar.mid) : this.topBar.pills;
+    if (this.pills.parentElement === want) return;
+    want.appendChild(this.pills);
+    restoreGiven(this.pills);
   }
 
   /** data-fit (fit.ts) now: a mount, new hints, another input, a chip or pill that changed (the frame about to be drawn shows them fitted). */
@@ -1029,8 +1128,15 @@ export class Menu {
    */
   action(a: NavDir | 'accept' | 'back' | MenuCommand, repeat = false): void {
     if (!this.visibleNow) return;
-    if (a === 'accept') this.nav.accept();
-    else if (a === 'back') this.backOrLeave();
+    if (a === 'accept') {
+      // Its click runs inside (FocusNav.accept): beforeMatch knows the press is a controller's.
+      this.padAccept = true;
+      try {
+        this.nav.accept();
+      } finally {
+        this.padAccept = false;
+      }
+    } else if (a === 'back') this.backOrLeave();
     else if (a === 'up' || a === 'down' || a === 'left' || a === 'right') this.nav.move(a, repeat);
     else this.command(a);
   }
@@ -1154,9 +1260,13 @@ export class Menu {
       .then((c) => {
         this.cfg = c;
         this.popFailed = false;
+        this.popFails = 0;
         this.populationNow();
         this.refreshChrome();
-        if (this.visibleNow) this.top()?.show?.();
+        if (this.visibleNow) {
+          this.top()?.show?.();
+          this.fitNow(); // what the screen shows with the config (Inicio's region), as a mount fits it
+        }
       })
       .catch(() => {
         this.cfg = { regions: REGIONS, autoRegion: '', oauth: [], online: false };
@@ -1169,6 +1279,7 @@ export class Menu {
       // Offline: RETRY.
       this.cfg = null;
       this.popFailed = false;
+      this.popFails = 0;
       this.refreshChrome();
       this.loadConfig();
       return;
@@ -1222,13 +1333,79 @@ export class Menu {
     });
   }
 
-  /** The running search's own screen (the pill; a lobby on screen asks first). */
-  private openSearchScreen(): void {
+  /** The running search's own screen (the pill, Inicio's hero while searching; a lobby on screen asks first). */
+  openSearchScreen(): void {
     const v = this.host.searchView();
     if (!v.active) return;
     const guard = this.leaveGuard(1);
     if (guard !== null) guard(() => this.openSearchScreen());
     else this.open(v.kind === 'ranked' ? 'ranked' : 'casual', true);
+  }
+
+  /**
+   * A TV without a controller, at a match's start: CLOSE focused, CONTINUE ANYWAY plays with the
+   * remote. A controller connecting closes it (onPadChange), and the press that revealed it starts
+   * nothing (latched first): the hero then says ALWAYS A MATCH, and one more A plays.
+   */
+  private openNeedPad(go: () => void): void {
+    let close = (): void => undefined;
+    close = this.modal({
+      title: t('tv.needPad'),
+      body: h('p', null, t('tv.needPadText')),
+      actions: [
+        {
+          label: t('tv.needPadGo'),
+          onClick: () => {
+            close();
+            go();
+          },
+        },
+        { label: t('nav.close'), autofocus: true, onClick: () => true },
+      ],
+      onClose: () => {
+        if (this.needPadClose === close) this.needPadClose = null;
+      },
+    });
+    this.needPadClose = close;
+  }
+
+  /**
+   * A controller connected (its event, or the tick's check): the "you need a controller" sheet
+   * goes, its revealing press latched first, and the screen follows at once (a TV's hero).
+   */
+  private onPadChange(): void {
+    if (!this.host.padConnected()) return;
+    this.padWas = true;
+    const close = this.needPadClose;
+    if (close !== null) {
+      this.host.latchInput();
+      close();
+    }
+    if (this.visibleNow) this.top()?.tick?.(performance.now());
+  }
+
+  /**
+   * "How will you play?", once (beforeMatch): MOUSE AND KEYBOARD focused, KEYBOARD ONLY, CONTROLLER.
+   * A choice is stored and sets the controls, then the match starts (a controller not connected
+   * yet: the "you need a controller" sheet first, from the same opener). CANCEL and Back store
+   * nothing and play nothing.
+   */
+  private openHowPlay(go: () => void): void {
+    let close = (): void => undefined;
+    const choose = (s: ControlScheme): void => {
+      close();
+      writeHowPlay(s);
+      this.host.setControlScheme(s);
+      if (s === 'pad' && !this.host.padConnected()) this.openNeedPad(go);
+      else go();
+    };
+    const option = (s: ControlScheme, icons: readonly IconName[], label: string, autofocus = false): HTMLButtonElement =>
+      h('button.mn-btn.mn-sheet-option', { type: 'button', 'data-nav': true, 'data-autofocus': autofocus, onclick: () => choose(s) }, ...icons.map((i) => icon(i)), label);
+    close = this.modal({
+      title: t('howPlay.title'),
+      body: h('div.mn-sheet-list', null, option('kbm', ['mouse', 'keyboard'], t('howPlay.kbm'), true), option('keyboard', ['keyboard'], t('howPlay.keyboard')), option('pad', ['pad'], t('howPlay.pad'))),
+      actions: [{ label: t('lang.cancel'), onClick: () => true }],
+    });
   }
 
   /**
@@ -1257,9 +1434,11 @@ export class Menu {
       if (!res.ok) throw new Error(String(res.status));
       this.population = (await res.json()) as PopulationAnswer;
       this.popFailed = false;
+      this.popFails = 0;
     } catch {
       this.population = null;
       this.popFailed = true;
+      this.popFails++;
     }
     this.refreshChrome();
   }
@@ -1271,6 +1450,12 @@ export class Menu {
 
   private tick(): void {
     const now = performance.now();
+    // Chrome may expose a controller without the event (on its first press): checked here too.
+    const pad = this.host.padConnected();
+    if (pad !== this.padWas) {
+      this.padWas = pad;
+      if (pad) this.onPadChange();
+    }
     if (now >= this.popAt) {
       this.popAt = now + POPULATION_EVERY_MS;
       void this.pollPopulation();
@@ -1309,6 +1494,9 @@ export class Menu {
       this.root.classList.toggle('mn-searching', v.active);
       this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded);
       this.renderHints();
+      // The screen follows in this frame (Inicio's hero: SEARCHING and ✕, or JUGAR AHORA again),
+      // not on its next tick (a second later on super low).
+      if (this.visibleNow) this.top()?.tick?.(now);
       this.fitNow(); // the pill, the cancel hint, a TV's About that gives way
     }
   }

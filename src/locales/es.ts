@@ -112,25 +112,9 @@ export default {
   'common.regionAuto': 'Automática',
   'common.regionAutoNamed': 'Automática ({region})',
 
-  // Home screen (src/ui/screens/play.ts)
+  // Inicio (src/ui/screens/home.ts)
   'home.title': 'Inicio',
-  'home.play': 'JUGAR',
-  'home.playSub': 'Casual · Competitivo · Salas · Amistoso',
-  'home.training': 'ENTRENAMIENTO',
-  'home.trainingSub': 'Práctica libre y packs de tiros',
-  'home.leaderboard': 'CLASIFICACIÓN',
-  'home.leaderboardSub': 'Los mejores de la temporada',
-  'home.profile': 'PERFIL',
-  'home.profileSub': 'Cuenta, rangos y estadísticas',
-  'home.settings': 'CONFIGURACIÓN',
-  'home.settingsSub': 'Controles, audio y gráficos',
-  'home.language': 'IDIOMA',
-  'home.season': 'Temporada {season}',
-  'home.loadingProfile': 'Cargando tu perfil…',
-  'home.guestTitle': 'Juega Competitivo',
-  'home.guestText': 'Crea una cuenta para tener tu rango en {playlist1}, {playlist2} y {playlist3}. Como invitado puedes jugar Casual, salas y entrenamiento.',
   'home.signIn': 'INICIAR SESIÓN / CREAR CUENTA',
-
   'home.playNow': 'JUGAR AHORA',
   'home.playNowTv': 'JUGAR',
   'home.alwaysMatch': 'SIEMPRE HAY PARTIDO',
@@ -170,19 +154,11 @@ export default {
   'howPlay.keyboard': 'SOLO TECLADO',
   'howPlay.pad': 'CONTROL',
 
-  // Play hub, Casual and Competitive (src/ui/screens/play.ts)
+  // Casual and Competitive (src/ui/screens/play.ts)
   'play.casual': 'CASUAL',
-  'play.casualSub': 'Sin rango · P2P o servidor',
   'play.ranked': 'COMPETITIVO',
-  'play.rankedSub': 'Rango por playlist · servidor',
-  'play.custom': 'PARTIDAS PERSONALIZADAS',
-  'play.customSub': 'Salas públicas y privadas',
   'play.friendly': 'AMISTOSO',
-  'play.friendlySub': 'Offline contra la IA',
   'play.searching': { one: '{count} buscando', other: '{count} buscando' },
-  'play.lobbies': { one: '{count} sala', other: '{count} salas' },
-  'play.accountLocked': '🔒 Cuenta',
-  'play.playingNow': { one: '{region} · {count} jugando ahora', other: '{region} · {count} jugando ahora' },
   'play.playlistCars': { one: '{playlist} · {count} auto', other: '{playlist} · {count} autos' },
   'play.search': 'BUSCAR PARTIDA',
   'play.cancelSearch': 'CANCELAR BÚSQUEDA',

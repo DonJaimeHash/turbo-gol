@@ -62,7 +62,7 @@ const SIZES = [
   { name: '1366x768-tv', w: 1366, h: 768, tv: true, layout: 'tv' },
   { name: '390x844', w: 390, h: 844, mobile: true, layout: 'portrait' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'play', 'casual', 'ranked', 'friendly', 'custom', 'training', 'garage', 'leaderboard', 'profile'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'casual', 'ranked', 'friendly', 'custom', 'training', 'garage', 'leaderboard', 'profile'];
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
 const INPUT_SCREENS = ['home', 'casual', 'custom', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));

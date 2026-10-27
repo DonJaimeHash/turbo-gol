@@ -237,6 +237,7 @@ import { installDevice, type DeviceTracker } from '../ui/device';
 import { pauseKeyAction, pauseResumeKeys } from './pauseKeys';
 import { CARD_FIRST_MATCHES, ControlsCardPlan, controlsCardRows, localCardSeen, type ControlsCardContent } from '../render/controlsCard';
 import type { Device } from '../input/bindings';
+import { kbmCustomised, usesMouseButton } from '../input/bindings';
 import { OnlineSession } from './OnlineSession';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
 import {
@@ -1281,6 +1282,18 @@ export class Game implements P2PGameHooks {
       get info() {
         return game.info;
       },
+      padConnected: () => game.input.hasGamepad,
+      // Keyboard only: its preset, saved as Settings › Controls saves it (Input calls applySettings).
+      // Only a player with the default bindings is ever asked, so nothing of their own is lost.
+      setControlScheme: (s) => {
+        if (s === 'keyboard') game.input.applyPreset('kbm', 'keyboardOnly');
+      },
+      // Polled now: a controller that just connected is in no frame's snapshot yet (beginFrame).
+      latchInput: () => {
+        game.input.beginFrame();
+        game.input.latchEdges();
+      },
+      controlsCustomised: () => kbmCustomised(game.settings.bindings.kbm),
     };
   }
 
@@ -1321,6 +1334,7 @@ export class Game implements P2PGameHooks {
       modes: req?.modes ?? [],
       text: busy ? (s?.statusText ?? '') : '',
       since: this.searchSince,
+      region: req?.region ?? null,
       error: error !== null && error.length > 0 ? error : null,
       // 426 reload_required (a stale page: P2PSession STATUS.reload, OnlineSession's netErrorText):
       // the menus' blocking sheet instead of a toast.
@@ -3491,8 +3505,9 @@ export class Game implements P2PGameHooks {
       if (this.backGuard !== null) this.backGuard.arm();
       if (this.device !== null) this.device.notePadPresses(presses);
     }
-    // Mouse look needs the pointer lock; pad players (a controller connected) and fingers are not nagged.
-    hud.showHint(this.canPointerLock && !this.input.pointerLocked && !this.input.hasGamepad && this.playing && !touchMode ? POINTER_LOCK_HINT : null);
+    // Mouse look needs the pointer lock; pad players (a controller connected), fingers and keyboard-only
+    // players (no action on a mouse button: their live bindings) are not nagged.
+    hud.showHint(this.canPointerLock && !this.input.pointerLocked && !this.input.hasGamepad && this.playing && !touchMode && usesMouseButton(this.settings.bindings.kbm) ? POINTER_LOCK_HINT : null);
     if (this.goCaptionUntil >= 0 && this.time >= this.goCaptionUntil) {
       this.goCaptionUntil = -1;
       hud.showCountdown(null);

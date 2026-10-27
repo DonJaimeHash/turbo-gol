@@ -125,6 +125,18 @@ export function fitAll(root: ParentNode): void {
   for (const el of root.querySelectorAll<HTMLElement>('[data-fit]')) fitOne(el);
 }
 
+/**
+ * Show again every part a fit took away inside `el` (data-fit-gone): moved out of the box that
+ * hid them, no fit of that box brings them back (a TV's pills, from its hint bar to Inicio's
+ * plate row: Menu.placePills).
+ */
+export function restoreGiven(el: ParentNode): void {
+  for (const g of el.querySelectorAll<HTMLElement>('[data-fit-gone]')) {
+    delete g.dataset.fitGone;
+    g.style.removeProperty('display');
+  }
+}
+
 export interface UiFitReport {
   layout: string;
   width: number;

@@ -114,7 +114,7 @@ export default {
   // The same in an upright phone's tab bar, where five share 390 px: at most about 8 letters
   'nav.trainingShort': 'TRAIN',
   'nav.leaderboardShort': 'RANKS',
-  // Breadcrumb of the Play hub (PLAY › MODES › CASUAL)
+  // The modes screen's breadcrumb (PLAY › MODES › CASUAL: plan PR 6)
   'nav.modes': 'MODES',
   // Screen-reader name of the section bar; also the hint bar's verb for switching sections
   'nav.sections': 'Sections',
@@ -175,32 +175,12 @@ export default {
   // Region selector option: automatic; {region} is the detected region's name
   'common.regionAutoNamed': 'Automatic ({region})',
 
-  // Home screen (src/ui/screens/play.ts)
-  // Home screen title (breadcrumb)
+  // Inicio, PLAY's root (src/ui/screens/home.ts)
+  // Its title (breadcrumb)
   'home.title': 'Home',
-  // Home tile and heading of the Play hub
-  'home.play': 'PLAY',
-  'home.playSub': 'Casual · Competitive · Lobbies · Friendly',
-  'home.training': 'TRAINING',
-  'home.trainingSub': 'Free play and shot packs',
-  'home.leaderboard': 'LEADERBOARD',
-  'home.leaderboardSub': "The season's best",
-  'home.profile': 'PROFILE',
-  'home.profileSub': 'Account, ranks and stats',
-  'home.settings': 'SETTINGS',
-  'home.settingsSub': 'Controls, audio and graphics',
-  // Home tile that opens the language picker; its subtitle is the current language's own name
-  'home.language': 'LANGUAGE',
-  // {season} is the season number; shown uppercase by CSS
-  'home.season': 'Season {season}',
-  'home.loadingProfile': 'Loading your profile…',
-  'home.guestTitle': 'Play Competitive',
-  // {playlist1}..{playlist3} are the playlist names (playlist.1v1, playlist.2v2, playlist.3v3)
-  'home.guestText': 'Create an account to get a rank in {playlist1}, {playlist2} and {playlist3}. As a guest you can play Casual, custom lobbies and training.',
-  // Button on the home side panel and on the locked Competitive screen
+  // The button of the locked Competitive screen (a guest)
   'home.signIn': 'SIGN IN / CREATE ACCOUNT',
-
-  // Inicio, JUGAR's root (src/ui/screens/home.ts): the hero plays the last queue in one press
+  // The hero: plays the last queue in one press
   'home.playNow': 'PLAY NOW',
   // The same on a TV (less room at 3 m)
   'home.playNowTv': 'PLAY',
@@ -258,26 +238,15 @@ export default {
   'howPlay.keyboard': 'KEYBOARD ONLY',
   'howPlay.pad': 'CONTROLLER',
 
-  // Play hub, Casual and Competitive (src/ui/screens/play.ts)
-  // Play hub tile and Casual screen heading
+  // Casual and Competitive (src/ui/screens/play.ts)
+  // Casual screen heading
   'play.casual': 'CASUAL',
-  'play.casualSub': 'Unranked · P2P or server',
-  // Play hub tile and Competitive screen heading
+  // Competitive screen heading
   'play.ranked': 'COMPETITIVE',
-  'play.rankedSub': 'Rank per playlist · server',
-  'play.custom': 'CUSTOM LOBBIES',
-  'play.customSub': 'Public and private lobbies',
-  // Play hub tile and Friendly screen heading
+  // Friendly screen heading
   'play.friendly': 'FRIENDLY',
-  'play.friendlySub': 'Offline against the AI',
   // Players searching for a match right now
   'play.searching': { one: '{count} searching', other: '{count} searching' },
-  // Open custom lobbies
-  'play.lobbies': { one: '{count} lobby', other: '{count} lobbies' },
-  // Corner tag of the Competitive tile for guests: an account is needed
-  'play.accountLocked': '🔒 Account',
-  // {region} is the matchmaking region label ('Auto · Europe')
-  'play.playingNow': { one: '{region} · {count} playing now', other: '{region} · {count} playing now' },
   // {playlist} is the mode id ('2v2'), {count} the cars on the field
   'play.playlistCars': { one: '{playlist} · {count} car', other: '{playlist} · {count} cars' },
   'play.search': 'FIND MATCH',
