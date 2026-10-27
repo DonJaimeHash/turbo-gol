@@ -32,7 +32,7 @@ import type { HeroSub, HeroView } from '../components/tile';
 import { plate as createPlate } from '../components/plate';
 import { rankBadge, tierById } from '../badges';
 import { regionName, tierName } from '../names';
-import { DEFAULT_CAR_NAME, HERO_SEP, HERO_SEP_TV, heroQueue, heroState, plateRank, queueParts } from './homeModel';
+import { DEFAULT_CAR_NAME, HERO_SEP, HERO_SEP_TV, heroQueue, heroState, plateRank, queueParts, subParts } from './homeModel';
 import type { HeroInput, HeroKind, HeroState } from './homeModel';
 
 const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
@@ -47,9 +47,11 @@ export function homeScreen(menu: Menu): Screen {
   const touch = (): boolean => html.classList.contains('tg-touch');
   const car = DEFAULT_CAR_NAME;
   const plate = createPlate({ profile: () => menu.open('profile'), garage: () => menu.open('garage') });
-  const pills = h('div.mn-home-pills');
+  // A TV's pills by the plate (Screen.pillSlot), fitted as the hint bar fits them there.
+  const pills = h('div.mn-home-pills', { 'data-fit': '16' });
   const hero = heroTile({
     lines,
+    oneLine: tv,
     press: () => press(),
     cancel: () => {
       menu.cancelSearch();
@@ -134,12 +136,17 @@ export function homeScreen(menu: Menu): Screen {
         subText = q.text;
         break;
       }
-      case 'offline':
+      case 'offline': {
+        // In two parts, as a queue and its region: "sin conexión" on its own line on a phone, the
+        // part that steps aside on a TV (whose short form is the CONTRA LA IA tile's there).
+        subText = t(tv ? 'modes.vsAiSubShort' : 'modes.vsAiSub');
+        const p = subParts(subText);
         icon = 'bot';
         tag = needPad ? padSlot : { text: t('pill.offline') };
         title = t('modes.vsAi');
-        sub = subText = t('modes.vsAiSub');
+        sub = { queue: p.queue, dot: HERO_SEP, region: p.region };
         break;
+      }
       case 'lobby':
         icon = 'friends';
         title = t('home.backToLobby');
@@ -154,7 +161,9 @@ export function homeScreen(menu: Menu): Screen {
         const q = queueParts(s.rejoin.kind, s.rejoin.modes, null, names).queue;
         tag = needPad ? padSlot : null;
         title = t('home.rejoin');
-        sub = subText = t('home.rejoinSub', { queue: q, time: clock(s.rejoin.leftMs) });
+        subText = t('home.rejoinSub', { queue: q, time: clock(s.rejoin.leftMs) });
+        const p = subParts(subText); // the time left as the offline hero's second part
+        sub = { queue: p.queue, dot: HERO_SEP, region: p.region };
         break;
       }
     }
@@ -199,7 +208,9 @@ export function homeScreen(menu: Menu): Screen {
     }
     if (key === rankedKey) return false;
     rankedKey = key;
-    ranked.setSlot(key === 'guest' ? slot(t('menu.guestSignIn'), { icon: 'lock', body: true, drop: true }) : key === 'ban' ? slot('', { icon: 'lock' }) : null);
+    // A guest's "Iniciar sesión" takes its short form in a narrow tile (a phone, a tablet), before
+    // the lock would stand alone.
+    ranked.setSlot(key === 'guest' ? slot(t('menu.guestSignIn'), { icon: 'lock', body: true, short: t('modes.signInShort'), drop: true }) : key === 'ban' ? slot('', { icon: 'lock' }) : null);
     return true;
   };
 

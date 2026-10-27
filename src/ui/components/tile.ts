@@ -29,12 +29,15 @@ export interface SlotOptions {
   body?: boolean;
   /** A crowded top row takes the text away (fit.ts data-fit-alt ""); an icon stays. */
   drop?: boolean;
+  /** Its short form, which a crowded top row takes first ("Entrar" for "Iniciar sesión"), then (`drop`) none. */
+  short?: string;
 }
 
 /** A slot: its text, after an icon when it has one (an icon alone: an empty text). */
 export function slot(text: string, opts: SlotOptions = {}): HTMLElement {
   const cls = `span.mn-slot${opts.ink === true ? '.mn-slot-ink' : ''}${opts.body === true ? '.mn-slot-body' : ''}`;
-  const alt = opts.drop === true ? { 'data-fit-alt': '' } : null;
+  // A short form first (data-fit-alt), then the text goes (data-fit-give); without one, it goes at once.
+  const alt = opts.short !== undefined ? { 'data-fit-alt': opts.short, 'data-fit-give': opts.drop === true ? '1' : undefined } : opts.drop === true ? { 'data-fit-alt': '' } : null;
   if (opts.icon === undefined) return h(cls as 'span', alt, text);
   return h(cls as 'span', null, icon(opts.icon), text !== '' ? h('span', alt, text) : null);
 }
@@ -67,7 +70,11 @@ function speedLines(): HTMLElement {
   return h('span.mn-hero-lines', { 'aria-hidden': 'true' }, svg);
 }
 
-/** The hero's subtitle: one text, or a queue and its region (the dot between them: ' · ', a TV's ' - '). */
+/**
+ * The hero's subtitle: one text, or a queue and its region (the dot between them: ' · ', a TV's
+ * ' - '; a two-part text such as "Partido de 3 min · sin conexión" takes the same form). A phone and
+ * a tablet set the region on its own line; a TV keeps one line and lets it step aside.
+ */
 export type HeroSub = string | { queue: string; dot: string; region: string | null };
 
 /** What the hero shows (screens/home.ts heroView). */
@@ -97,10 +104,14 @@ export interface HeroTile {
 /**
  * The hero: `div.mn-hero` (a nav row) holding the main button and, while searching, ✕ CANCEL in
  * the same grid cell (no absolute position: the focus ring's position: relative would undo it).
- * `lines`: the speed lines (none on super low: flat lime). `press` / `cancel`: the two buttons.
+ * `lines`: the speed lines (none on super low: flat lime). `oneLine`: a TV's subtitle on one line,
+ * which shrinks to the class's minimum, then lets its region go (fit.ts; the region pill is by the
+ * plate there). `press` / `cancel`: the two buttons. The main button is as tall as both rows of
+ * tiles beside it (but upright): ▲ ▼ leave it for what lies wholly above or below, else the next
+ * zone (nav.ts data-nav-span: the hint bar's links under it, the top bar over a phone's).
  */
-export function heroTile(o: { lines: boolean; press: () => void; cancel: () => void }): HeroTile {
-  const main = h('button.mn-hero-main', { type: 'button', 'data-nav': true, 'data-key': 'hero', 'data-autofocus': true, 'data-fit-box': true, onclick: () => o.press() });
+export function heroTile(o: { lines: boolean; oneLine: boolean; press: () => void; cancel: () => void }): HeroTile {
+  const main = h('button.mn-hero-main', { type: 'button', 'data-nav': true, 'data-nav-span': true, 'data-key': 'hero', 'data-autofocus': true, 'data-fit-box': true, onclick: () => o.press() });
   const lines = o.lines ? speedLines() : null;
   const x = h('button.mn-hero-x', { type: 'button', 'data-nav': true, 'data-key': 'hero-x', 'aria-label': t('nav.cancelSearch'), onclick: () => o.cancel() }, icon('close'), t('lang.cancel'));
   const el = h('div.mn-hero', { 'data-nav-row': true }, main);
@@ -111,10 +122,14 @@ export function heroTile(o: { lines: boolean; press: () => void; cancel: () => v
     const tag = v.slot === null ? null : slot(v.slot.text, { icon: v.slot.icon, ink: true, drop: v.slot.icon === undefined });
     if (tag !== null) tag.id = 'mn-hero-slot';
     clock = v.clock !== null ? h('span.mn-hero-clock', null, v.clock) : null;
+    // Beside ✕ (searching), a face wider than Arial may take it under the floor, as the controller
+    // message's (a data-fit shrink).
+    const fit = o.oneLine ? { 'data-fit': busy ? '14' : '16' } : null;
+    const gone = o.oneLine ? { 'data-fit-alt': '' } : null;
     const sub =
       typeof v.sub === 'string'
-        ? h('span.mn-hero-sub', null, v.sub)
-        : h('span.mn-hero-sub', null, h('span.mn-hero-queue', null, v.sub.queue), v.sub.region !== null ? h('span.mn-hero-dot', null, v.sub.dot) : null, v.sub.region !== null ? h('span.mn-hero-region', null, v.sub.region) : null);
+        ? h('span.mn-hero-sub', fit, v.sub)
+        : h('span.mn-hero-sub', fit, h('span.mn-hero-queue', null, v.sub.queue), v.sub.region !== null ? h('span.mn-hero-dot', gone, v.sub.dot) : null, v.sub.region !== null ? h('span.mn-hero-region', gone, v.sub.region) : null);
     setChildren(
       main,
       lines,

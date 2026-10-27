@@ -382,6 +382,12 @@ export class Menu {
   private padWas = false;
   /** Menu.action's 'accept' is running: the press is a controller's (data-input says so only after this frame). */
   private padAccept = false;
+  /**
+   * The section tab the focus fell back to on a stage with nothing to focus (restoreFocus: GARAJE),
+   * until anything else takes the focus: no choice of the bar's, so a switch from there (Back to
+   * JUGAR) lands where the stage's own focus was, as from any other screen.
+   */
+  private barFallback: HTMLElement | null = null;
 
   constructor(host: MenuHost, container: HTMLElement) {
     this.host = host;
@@ -658,7 +664,8 @@ export class Menu {
       guard(() => this.selectSection(id, how === 'focus' ? 'command' : how));
       return;
     }
-    const onBar = this.onSectionTab(document.activeElement);
+    const active = document.activeElement;
+    const onBar = this.onSectionTab(active) && active !== this.barFallback;
     this.top()?.hide?.();
     this.section = id;
     this.stack = [this.screen(sectionDef(id).root)];
@@ -927,7 +934,9 @@ export class Menu {
     const el = this.memory.recall('last:' + top.id, targets, navKey) ?? this.memory.recall('stage:' + top.id, targets, navKey);
     if (el !== null) this.nav.focus(el);
     else this.nav.first(skipFields);
-    if (this.nav.current === null) this.focusSectionEntry();
+    if (this.nav.current !== null) return;
+    this.focusSectionEntry();
+    this.barFallback = this.nav.current;
   }
 
   /** The active section's tab (or ‹ on a stacked screen) in whichever bar this layout shows. */
@@ -963,6 +972,7 @@ export class Menu {
 
   /** A menu control got the focus: remember it for the screen on top and for its zone (a section tab is the bar's, not the screen's). */
   private noteFocus(el: HTMLElement, zone: NavZone | null): void {
+    if (el !== this.barFallback) this.barFallback = null;
     const top = this.top();
     if (zone === null || zone.name === 'modal' || top === null) return;
     const key = navKey(el);
@@ -1128,6 +1138,16 @@ export class Menu {
    */
   action(a: NavDir | 'accept' | 'back' | MenuCommand, repeat = false): void {
     if (!this.visibleNow) return;
+    // The press that revealed a controller (Chrome exposes one on its first press), when the game's
+    // frame sees it before the event and the tick do: with "You need a controller" up it only
+    // closes the sheet, whichever button had the focus (CONTINUE ANYWAY would play). This call
+    // consumes its edge; the event or the tick first: onPadChange, which latches it.
+    if (this.needPadClose !== null && !this.padWas && this.host.padConnected()) {
+      this.padWas = true;
+      this.needPadClose();
+      this.top()?.tick?.(performance.now());
+      return;
+    }
     if (a === 'accept') {
       // Its click runs inside (FocusNav.accept): beforeMatch knows the press is a controller's.
       this.padAccept = true;
@@ -1344,8 +1364,8 @@ export class Menu {
 
   /**
    * A TV without a controller, at a match's start: CLOSE focused, CONTINUE ANYWAY plays with the
-   * remote. A controller connecting closes it (onPadChange), and the press that revealed it starts
-   * nothing (latched first): the hero then says ALWAYS A MATCH, and one more A plays.
+   * remote. A controller connecting closes it (onPadChange; its press seen first: action), and the
+   * press that revealed it starts nothing: the hero then says ALWAYS A MATCH, and one more A plays.
    */
   private openNeedPad(go: () => void): void {
     let close = (): void => undefined;

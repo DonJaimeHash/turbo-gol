@@ -7,6 +7,7 @@ import type { Translation } from '../i18n';
 
 export default {
   'lang.title': 'Idioma',
+  'lang.heading': 'IDIOMA',
   'lang.auto': 'Automático ({language})',
   'lang.busy': 'Cancela la búsqueda o sal de la sala para cambiar el idioma',
   'lang.reloadNote': 'El juego se recarga (unos segundos)',
@@ -144,6 +145,7 @@ export default {
   'modes.ranked': 'COMPETITIVO',
   'modes.rankedSub': 'Sube de rango · 5 partidas de ubicación',
   'modes.rankedSubShort': 'Sube de rango',
+  'modes.signInShort': 'Entrar',
 
   'tv.needPad': 'NECESITAS UN CONTROL',
   'tv.needPadText': 'Conecta un control (USB o Bluetooth) para jugar',

@@ -109,6 +109,16 @@ export function queueParts(kind: 'casual' | 'ranked', modes: readonly GameMode[]
 }
 
 /**
+ * A two-part subtitle ("Partido de 3 min · sin conexión") split at its last separator, set as a
+ * queue and its region are (a phone's second line, the part a TV lets go); one part when it has
+ * none. Pure.
+ */
+export function subParts(text: string): { queue: string; region: string | null } {
+  const i = text.lastIndexOf(HERO_SEP);
+  return i <= 0 ? { queue: text, region: null } : { queue: text.slice(0, i), region: text.slice(i + HERO_SEP.length) };
+}
+
+/**
  * A title's two-line form (fit.ts data-fit-alt): split at the space that balances the two lines
  * best ("JUGAR AHORA" -> "JUGAR\nAHORA"); a single word stays as it is. Pure.
  */

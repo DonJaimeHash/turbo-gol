@@ -357,7 +357,7 @@ export function profileScreen(menu: Menu): Screen {
   };
 
   // After `body`, so it stays through the guest / account swap (render).
-  const el = h('div.mn-profile', null, screenHead(t('profile.heading')), body, section(t('lang.title'), secondary(LOCALES[language()].name, () => openLanguagePicker(menu), { 'data-key': 'lang' })));
+  const el = h('div.mn-profile', null, screenHead(t('profile.heading')), body, section(t('lang.heading'), secondary(LOCALES[language()].name, () => openLanguagePicker(menu), { 'data-key': 'lang' })));
   return {
     id: 'profile',
     title: t('profile.title'),

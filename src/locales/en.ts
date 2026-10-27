@@ -8,6 +8,8 @@ import type { Messages } from '../i18n';
 export default {
   // Language picker
   'lang.title': 'Language',
+  // PERFIL's section heading over the language row (in capitals, as the other headings)
+  'lang.heading': 'LANGUAGE',
   'lang.auto': 'Automatic ({language})',
   'lang.busy': 'Stop searching or leave the lobby to change the language',
   // Over the list: choosing another language reloads the page
@@ -224,6 +226,8 @@ export default {
   'modes.ranked': 'COMPETITIVE',
   'modes.rankedSub': 'Climb the ranks · 5 placement matches',
   'modes.rankedSubShort': 'Climb the ranks',
+  // COMPETITIVE's lock tag for a guest where menu.guestSignIn does not fit (a phone, a tablet)
+  'modes.signInShort': 'Sign in',
 
   // A TV without a controller: the hero's tag, then a sheet at a match's start (it closes by itself
   // when a controller connects)

@@ -85,13 +85,17 @@ export class TopBar {
     }
   }
 
-  /** The breadcrumbs of a stacked screen: the section, then each screen; all but the last go back there. */
+  /**
+   * The breadcrumbs of a stacked screen: the section, then each screen; all but the last go back
+   * there. Too long at their minimum (a fallback face on a tablet), they give way to the screen's
+   * own name (data-fit-give: ‹ still goes back), as upright always does.
+   */
   setCrumbs(labels: readonly string[]): void {
     this.crumbs.textContent = '';
     labels.forEach((label, i) => {
-      if (i > 0) this.crumbs.appendChild(h('span.mn-crumb-sep', { 'aria-hidden': 'true' }, '›'));
       const last = i === labels.length - 1;
-      this.crumbs.appendChild(last ? h('span.mn-crumb', { 'aria-current': 'page' }, label) : h('button.mn-crumb', { type: 'button', 'data-nav': true, 'data-key': 'crumb-' + i, onclick: () => this.hd.crumb(i) }, label));
+      if (i > 0) this.crumbs.appendChild(h('span.mn-crumb-sep', { 'aria-hidden': 'true', 'data-fit-give': '1' }, '›'));
+      this.crumbs.appendChild(last ? h('span.mn-crumb', { 'aria-current': 'page' }, label) : h('button.mn-crumb', { type: 'button', 'data-nav': true, 'data-key': 'crumb-' + i, 'data-fit-give': '1', onclick: () => this.hd.crumb(i) }, label));
     });
   }
 

@@ -20,7 +20,9 @@
 // state with a controller too; each also fails a title on more lines than it may take, text out of
 // its tile or under ✕, and prints the hero's title as fitted. Last on a TV, with no controller
 // (headless has none): the hero says it needs one, its press opens the sheet, and a controller that
-// connects with A held closes the sheet without starting anything (plan PR 5 acceptance).
+// connects with A held closes the sheet without starting anything (plan PR 5 acceptance): its event
+// first, then (CONTINUE ANYWAY focused) the game's frame first, which reads the press before any
+// event or tick.
 //
 // Each size gets a fresh tab with the device it stands for: a mouse for the desktop sizes (the
 // browser starts with a fine pointer and hover, --blink-settings: a Linux runner has no pointing
@@ -81,6 +83,7 @@ const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['h
 const HERO_KINDS = ['play', 'search', 'offline', 'lobby', 'update', 'rejoin'];
 // The TV's controller message (tv.needPad), per language.
 const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
+const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
 const INPUT_SCREENS = ['home', 'casual', 'custom', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
@@ -293,10 +296,38 @@ try {
           await sleep(300);
           await page.eval(`(window.__uiFitPad.buttons[0] = { pressed: false, touched: false, value: 0 }, true)`);
           await sleep(1200); // a super low tick
-          const after = await page.eval(`({ sheet: document.querySelector('.mn-sheet') !== null, needPad: document.querySelector('.mn-hero-needpad') !== null, focus: document.activeElement?.dataset?.key ?? null, searching: __game.menu.host.searchView().active, menus: __game.menu.visible })`);
-          const wrong = [after.sheet ? 'the sheet is still up' : '', after.needPad ? 'the hero still asks for a controller' : '', after.focus !== 'hero' ? `the focus is on ${after.focus}, not the hero` : '', after.searching ? 'a search started' : '', !after.menus ? 'a match started' : ''].filter(Boolean);
-          if (wrong.length > 0) fail(wrong.join('; '));
-          else console.log(`${head} ${own.padEnd(8)} ${'home need-pad'.padEnd(20)} ok  (slot and sheet "${want}"; a controller with A held closed it, nothing started, the focus on the hero)`);
+          const state = `({ sheet: document.querySelector('.mn-sheet') !== null, needPad: document.querySelector('.mn-hero-needpad') !== null, focus: document.activeElement?.dataset?.key ?? null, searching: __game.menu.host.searchView().active, menus: __game.menu.visible })`;
+          const wrongOf = (after) => [after.sheet ? 'the sheet is still up' : '', after.needPad ? 'the hero still asks for a controller' : '', after.focus !== 'hero' ? `the focus is on ${after.focus}, not the hero` : '', after.searching ? 'a search started' : '', !after.menus ? 'a match started' : ''].filter(Boolean);
+          const wrong = wrongOf(await page.eval(state));
+          if (wrong.length > 0) fail('its event first: ' + wrong.join('; '));
+          else {
+            // The controller goes, the sheet again with CONTINUE ANYWAY focused, then the game's own
+            // frame (Game.frame in the menus) reads the revealing press before any event or tick.
+            await page.eval('(navigator.getGamepads = () => [], true)');
+            await sleep(1500); // the loop drops the pad, a super low tick sees it gone
+            await page.eval(`(document.querySelector('[data-key="hero"]').focus(), __game.menu.action('accept'), true)`);
+            await sleep(300);
+            const go = await page.eval(`(() => { const b = [...document.querySelectorAll('.mn-sheet button')].find((e) => e.textContent.includes(${JSON.stringify(NEED_PAD_GO[lang])})); b?.focus(); return b !== undefined && document.activeElement === b; })()`);
+            if (!go) fail(`the second sheet has no focused ${JSON.stringify(NEED_PAD_GO[lang])}`);
+            else {
+              await page.eval(`(() => {
+                const pad = window.__uiFitPad;
+                pad.buttons[0] = { pressed: true, touched: true, value: 1 };
+                navigator.getGamepads = () => [pad];
+                const g = __game;
+                g.input.beginFrame();
+                g.input.sample(g.playerControls);
+                g.processActions();
+                return true;
+              })()`);
+              await sleep(300);
+              await page.eval(`(window.__uiFitPad.buttons[0] = { pressed: false, touched: false, value: 0 }, true)`);
+              await sleep(1200);
+              const late = wrongOf(await page.eval(state));
+              if (late.length > 0) fail('the frame first: ' + late.join('; '));
+              else console.log(`${head} ${own.padEnd(8)} ${'home need-pad'.padEnd(20)} ok  (slot and sheet "${want}"; a controller with A held closed it, its event or the game's frame first, nothing started, the focus on the hero)`);
+            }
+          }
         }
       }
     }

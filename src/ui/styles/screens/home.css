@@ -124,6 +124,7 @@ html[data-shell='rail'] .mn[data-screen='home'] .mn-stage {
 
 html[data-shell='rail'] .mn-home-top,
 html[data-shell='rail'] .mn-hero-dot,
+html[data-layout='tablet'] .mn-hero-dot,
 html[data-shell='rail'] .mn-hero-busy .mn-tile-top {
   display: none;
 }
@@ -154,13 +155,16 @@ html[data-shell='rail'] .mn-hero-bottom {
   gap: 0.625rem;
 }
 
-/* The queue on one line, the region under it (a touch lighter, as drawn). */
-html[data-shell='rail'] .mn-hero-region {
+/* The queue on one line, the region under it (a touch lighter, as drawn); a tablet's hero, as
+   narrow, too. */
+html[data-shell='rail'] .mn-hero-region,
+html[data-layout='tablet'] .mn-hero-region {
   display: block;
   font-size: var(--t-small);
 }
 
 html[data-shell='rail'] .mn-hero-region,
+html[data-layout='tablet'] .mn-hero-region,
 html[data-shell='tv'] .mn-hero-region {
   opacity: 0.925;
 }
@@ -284,16 +288,27 @@ html[data-shell='tv'] .mn[data-screen='home'] .mn-stage {
   padding: 1rem 3rem 2rem;
 }
 
+/* The row fits as one (home.ts data-fit: its text shrinks, then the pills' words give way, as in
+   the hint bar); the plate keeps its size. Beside the search or update pill the region keeps its
+   name here (the hero's subtitle leaves it out while searching): components.css takes it away in
+   a crowded bar. */
 html[data-shell='tv'] .mn-home-pills {
   display: flex;
+  min-width: 0;
+  font-size: var(--t-small);
 }
 
 html[data-shell='tv'] .mn-home-pills .mn-pill {
   height: 2.75rem;
-  font-size: var(--t-small);
+  font-size: inherit;
+}
+
+html[data-shell='tv'] .mn-home-pills .mn-pill-region > :not(.mn-icon):not(.mn-dot) {
+  display: revert;
 }
 
 html[data-shell='tv'] .mn-plate {
+  flex: none;
   width: 18.75rem;
   height: 4.5rem;
 }
@@ -323,6 +338,14 @@ html[data-shell='tv'] .mn-hero-icon {
 
 html[data-shell='tv'] .mn-hero .mn-slot {
   height: 1.875rem;
+}
+
+/* The subtitle on one line, as drawn ("Casual · 2v2 - Sudamérica"): it shrinks to the class's
+   minimum, then its region steps aside (tile.ts oneLine; the region pill is by the plate). */
+html[data-shell='tv'] .mn-hero-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Searching on a TV (a hero too low for ✕ CANCEL under the text): beside the subtitle, which keeps

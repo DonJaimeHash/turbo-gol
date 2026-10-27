@@ -98,6 +98,14 @@ test('queueParts: the kind and the formats, the region apart; the separators', (
   assert.equal(M.HERO_SEP_TV, ' - ');
 });
 
+test('subParts: a two-part subtitle at its last separator (the offline hero), one part without one', () => {
+  assert.deepEqual(M.subParts(es['modes.vsAiSub']), { queue: 'Partido de 3 min', region: 'sin conexión' });
+  assert.deepEqual(M.subParts(en['modes.vsAiSubShort']), { queue: '3 min', region: 'offline' });
+  assert.deepEqual(M.subParts('A · B · C'), { queue: 'A · B', region: 'C' });
+  assert.deepEqual(M.subParts(es['update.title']), { queue: es['update.title'], region: null });
+  for (const msgs of [en, es]) for (const k of ['modes.vsAiSub', 'modes.vsAiSubShort']) assert.notEqual(M.subParts(msgs[k]).region, null, k);
+});
+
 test('twoLines: split at the most balanced space; one word stays', () => {
   assert.equal(M.twoLines('JUGAR AHORA'), 'JUGAR\nAHORA');
   assert.equal(M.twoLines('PLAY'), 'PLAY');
@@ -151,13 +159,15 @@ const NEW_KEYS = [
   'home.guestRank', 'home.unranked', 'home.carLine', 'home.plateProfile', 'home.plateGarage',
   'modes.casual', 'modes.casualSub', 'modes.casualSubShort', 'modes.friends', 'modes.friendsSub', 'modes.friendsSubShort', 'modes.friendsSubTv', 'modes.lobbies',
   'modes.vsAi', 'modes.vsAiSub', 'modes.vsAiSubShort', 'modes.vsAiSlot', 'modes.ranked', 'modes.rankedSub', 'modes.rankedSubShort',
-  'tv.needPad', 'tv.needPadText', 'tv.needPadGo', 'howPlay.title', 'howPlay.kbm', 'howPlay.keyboard', 'howPlay.pad', 'lang.reloadNote',
+  'modes.signInShort', 'tv.needPad', 'tv.needPadText', 'tv.needPadGo', 'howPlay.title', 'howPlay.kbm', 'howPlay.keyboard', 'howPlay.pad', 'lang.reloadNote', 'lang.heading',
 ];
 
 test("the owner's copy: JUGAR AHORA / JUGAR, Iniciar sesión, partidas de ubicación, the reload note; no reassurance lines", () => {
   assert.equal(es['home.playNow'], 'JUGAR AHORA');
   assert.equal(es['home.playNowTv'], 'JUGAR');
   assert.equal(es['menu.guestSignIn'], 'Iniciar sesión');
+  assert.ok(es['modes.signInShort'].length < es['menu.guestSignIn'].length, 'the lock tag of a narrow tile is shorter');
+  assert.equal(es['lang.heading'], es['lang.heading'].toUpperCase(), "PERFIL's headings are in capitals");
   assert.match(es['modes.rankedSub'], /partidas de ubicación/);
   assert.equal(es['lang.reloadNote'], 'El juego se recarga (unos segundos)');
   for (const [lang, msgs] of [['en', en], ['es', es]]) {
