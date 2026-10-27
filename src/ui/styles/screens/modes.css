@@ -457,13 +457,11 @@ html[data-input='pad'] .mn-keys-pad {
 }
 
 .mn-act-summary {
-  overflow: hidden;
   font-family: var(--font-display);
   font-size: var(--t-name);
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  white-space: nowrap;
 }
 
 .mn-act-line {
@@ -703,8 +701,9 @@ html[data-shell='rail'] .mn-mtab-end {
   display: none;
 }
 
-html[data-shell='tv'] .mn-act-summary {
-  white-space: normal;
+/* The searching tab keeps its spinner; the clock is the panel's and the pill's. */
+html[data-shell='tv'] .mn-mtab-clock {
+  display: none;
 }
 
 html[data-shell='tv'] .mn-mtab-sub,
@@ -848,10 +847,6 @@ html[data-shell='rail'] .mn-act {
   border-radius: var(--r-tile);
 }
 
-html[data-shell='rail'] .mn-act-summary {
-  white-space: normal;
-}
-
 html[data-shell='rail'] .mn-act-go {
   min-height: 4.5rem;
   margin-top: 0.75rem;
@@ -922,8 +917,12 @@ html[data-shell='tabs'] .mn-modes .mn-mtab {
   padding: 0 0.75rem;
 }
 
-html[data-shell='tabs'] .mn-act-summary {
-  white-space: normal;
+html[data-shell='tabs'] .mn-modes .mn-mtab > .mn-icon {
+  display: none;
+}
+
+html[data-shell='tabs'] .mn-mtab-name {
+  font-size: var(--t-heading);
 }
 
 html[data-shell='tabs'] .mn-formats {
