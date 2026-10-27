@@ -1484,6 +1484,8 @@ export class Hud {
     if (this.menu !== null) {
       this.menu.hidden = true;
     }
+    // Menu.settingsUp reads the panel: shown, it would keep the menus' keys after Settings closed.
+    if (this.settingsPanel !== null) this.settingsPanel.hidden = true;
     this.settingsOnlyClose = null;
     this.stopPadPoll();
   }
