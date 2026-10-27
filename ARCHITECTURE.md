@@ -366,8 +366,13 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         view: times --ui-scale) while it overflows (its content box: a bar's
                         overscan stays clear), then takes its short labels (data-fit-alt), then
                         lets the parts that give way go, a level at a time (data-fit-give, in the
-                        box or in its data-fit-scope: the strip's ‹ › / L R / Q E; a TV hint
-                        bar's controller Settings hint, its pills' words, the cancel hint); the
+                        box or in its data-fit-scope: the strip's and the crumbs' whole top bar,
+                        the strip's ‹ › / L R / Q E, then its pills' words; a TV hero's subtitle,
+                        ✕ CANCEL's label; a box with a scope fits last); a TV hint bar's
+                        controller Settings hint, then its pills' words (what their dot or
+                        Inicio's hero says first: pills.ts 2, 3), then the cancel hint; a
+                        tablet's or a phone's top bar squeezes its pills to their icons the same
+                        way, the chip's name keeping its 9 rem; the
                         Menu fits at once on a mount and a change of the hints, the input, the
                         chip or a pill (before that frame is drawn), on the next frame after a
                         resize or the fonts; a box not laid out (the strip under a stacked screen)
@@ -631,7 +636,9 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         ui-fit.mjs (every menu screen at nine sizes with #widetext, in English
                         and Spanish, in a headless Chrome / Edge over CDP: window.__uiFit,
                         src/ui/fit.ts; Inicio in every hero state, ✕ focused, a TV with a
-                        controller, then a TV's controller sheet closed by a fake controller with
+                        controller, Competitive in every format idle and searching with the
+                        Menu's own pills (every format in the subtitle, a TV's region by the
+                        plate), then a TV's controller sheet closed by a fake controller with
                         A held; a fresh tab per size and language with its device pinned,
                         a mouse on the desktop sizes; then the hints of every other input on the
                         screens that change the shell; --face for a fallback wider than Arial,

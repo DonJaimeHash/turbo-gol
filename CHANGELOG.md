@@ -14,7 +14,9 @@ All notable changes to Turbogol are documented here. The format follows
   and VS AI when the game cannot reach the server. Above it, your name and rank (to PROFILE) and
   your car (to GARAGE). It is laid out for each screen: the big tile on the left on a computer and a
   TV, on the right under your thumb on a phone held sideways, on top on a phone held upright, and
-  nothing scrolls but on a small upright phone.
+  nothing scrolls but on a small upright phone. On a TV the tile shows the whole queue you search
+  (on two lines when it needs them, ✕ CANCEL then keeping just its ✕), and the region stays in its
+  pill by your name.
 - A TV without a controller says so on the PLAY NOW tile, and starting a match asks you to connect
   one (CONTINUE ANYWAY plays with the remote). The window closes by itself as soon as a controller
   connects, and that first press starts nothing: press A again to play.
@@ -264,9 +266,12 @@ All notable changes to Turbogol are documented here. The format follows
   region, or press RETRY when the game cannot reach the server. The hint bar at the bottom speaks only the language of what you are holding: the
   controller's buttons, the keyboard's keys or the TV remote's, and nothing with a mouse. When it
   runs out of room on a TV, its text gets a little smaller, then the Settings hint goes (the gear
-  at the top says it), then the pills keep just their icons (a search its clock), and while you
-  search, the cancel hint goes (the pill's ✕ is next to it); the source code link always stays on
-  screen.
+  at the top says it), then the pills give up their words, first the ones said next to them (the
+  player count, whose dot says you are online; the search's queue), down to their icons (a search
+  its clock), and while you search, the cancel hint goes (the pill's ✕ is next to it); the source
+  code link always stays on screen. A top bar that runs out of room (a long name and the player
+  count on a tablet or a phone, a Competitive search of every format next to a computer's sections)
+  does the same with its pills instead of pushing Settings off the screen.
 - On a phone held upright the menus now work (profile, leaderboard, training...); only a match
   asks you to turn the phone. A tablet plays either way. You can pinch to zoom the menus; a match
   starts at its normal size, and its controls and pause menu still keep every finger.
