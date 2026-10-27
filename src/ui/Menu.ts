@@ -436,7 +436,13 @@ export class Menu {
     void document.fonts?.ready.then(() => this.queueFit());
     host.accounts.subscribe(() => this.refreshChrome());
     this.loadConfig();
-    if (UI_FIT) (window as unknown as { __uiFit: () => unknown }).__uiFit = () => uiFitReport(this.root, this.top()?.id ?? '');
+    // The report of what the next frame shows: a fit the last change queued runs first (the check
+    // reads the page a fixed pause after a mount, and the frame that would run it can come later:
+    // a slow headless frame, a background tab), never one nobody asked for.
+    if (UI_FIT) (window as unknown as { __uiFit: () => unknown }).__uiFit = () => {
+      if (this.fitQueued && this.visibleNow) fitAll(this.root);
+      return uiFitReport(this.root, this.top()?.id ?? '');
+    };
   }
 
   register(id: string, f: ScreenFactory): void {

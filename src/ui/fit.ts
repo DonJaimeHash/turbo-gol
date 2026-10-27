@@ -3,11 +3,15 @@
  * label, a crumb) declares the smallest size it may take (a stylesheet may raise it for a layout
  * with the `--fit-min` custom property: 16 px on a TV); fitAll shrinks its font 1 px at a time,
  * only while its content overflows it, never below that minimum, and then swaps in the short forms
- * it has (`data-fit-alt`). Its children size in em (or inherit), so a whole tab strip shrinks as one. The insurance for the fallback fonts (Roboto on
- * a phone or a TV without the display font, #widetext) and for a larger interface size. The Menu
- * runs it on every mount, resize and once the fonts are in.
+ * it has (`data-fit-alt`). Its children size in em (or inherit), so a whole tab strip shrinks as
+ * one. The insurance for the fallback fonts (Roboto on a phone or a TV without the display font, a
+ * Linux face wider than Arial, #widetext) and for a larger interface size. The Menu runs it on the
+ * frame after every mount, resize and change of the bars' content, and once the fonts are in. A box
+ * that is not laid out (the section strip under a stacked screen's crumbs) keeps the size and the
+ * texts it was fitted to, so it comes back fitted, not at full size until the next frame.
  *
- * In development (or a build with VITE_UI_FIT=1) `window.__uiFit()` reports what a layout check
+ * In development (or a build with VITE_UI_FIT=1) `window.__uiFit()` reports, after running the fit
+ * the last change queued for the next frame (Menu), what a layout check
  * needs (scripts/ui-fit.mjs, plan §2.6): the shell's bars overflowing, `data-fit` boxes still
  * overflowing at their minimum, a horizontal scroll, the stage scrolling, focus rings a clipping
  * ancestor would cut, shell text under the class's minimum (plan §1.2.3: 14 px on a phone, 16 on
@@ -50,13 +54,15 @@ function shrink(el: HTMLElement, min: number): boolean {
 /**
  * One data-fit box: its full texts back, shrunk while it overflows; still overflowing at its
  * minimum, the texts that have a short form (`data-fit-alt`, on the box or inside it: ENTRENAR for
- * ENTRENAMIENTO) take it and the box is fitted again.
+ * ENTRENAMIENTO) take it and the box is fitted again. A box that is not laid out is left as it is.
  */
 function fitOne(el: HTMLElement): void {
+  // Not laid out (hidden in this layout, or under a stacked screen): nothing to measure, and the
+  // last fit stays, so the box shows fitted when it comes back (the next pass refits it from scratch).
+  if (el.offsetParent === null || el.clientWidth === 0) return;
   const alts = [el, ...el.querySelectorAll<HTMLElement>('[data-fit-alt]')].filter((e) => e.dataset.fitAlt !== undefined);
   for (const a of alts) if (a.dataset.fitFull !== undefined) a.textContent = a.dataset.fitFull;
   el.style.fontSize = '';
-  if (el.offsetParent === null || el.clientWidth === 0) return; // not laid out (hidden in this layout)
   const min = Number(getComputedStyle(el).getPropertyValue('--fit-min')) || Number(el.dataset.fit) || 12;
   if (shrink(el, min) || alts.length === 0) return;
   for (const a of alts) {
