@@ -1,8 +1,11 @@
 /**
  * How much of the screen the menus hide from the 3D scene behind them (the Game's "UI at rest",
  * src/render/quality.ts sceneFps: a phone's menus that hide more than MENU_COVER_LITE of it draw
- * the scene at 20 fps instead of 30). Menu.ts measures it on touch screens when a screen mounts,
- * a modal closes or the viewport changes, and reports it with the cover (MenuHost.setMenuCover).
+ * the scene at 20 fps instead of 30). Menu.ts measures it on touch screens when a screen mounts
+ * (a section switch too), a sheet or Settings close, the viewport or the layout class changes and
+ * once a second, and reports it with the cover (MenuHost.setMenuCover). The shell's own backdrop
+ * is left out of the share; when it is opaque (super low's flat page: opaqueBackground) the menus
+ * hide all of the scene and report 'opaque' instead.
  *
  * A grid of points over the viewport: a point is covered when the element on top of it, or one of
  * its ancestors inside the menus' root (the root's own backdrop excluded), paints a background of
@@ -12,6 +15,8 @@
  * out the share is unknown (NaN) and the last one stands. Pure with the two lookups passed in (no
  * DOM at module level: node tests import it).
  */
+
+import type { SceneCover } from '../render/quality';
 
 /** The grid: COLS x ROWS points at the centres of equal cells. */
 const COLS = 9;
@@ -48,6 +53,18 @@ export function paintsBackground(s: BackgroundStyle): boolean {
 }
 
 /**
+ * Whether a computed style paints an opaque page: a colour of full opacity and no image (the
+ * shell's backdrop on super low, --mn-backdrop = --ink). A gradient counts as see-through (the
+ * shell's usual veil lets the stadium through between its stops). Pure.
+ */
+export function opaqueBackground(s: BackgroundStyle): boolean {
+  if (s.backgroundImage !== '' && s.backgroundImage !== 'none') return false;
+  const c = s.backgroundColor.trim();
+  if (c === '' || c === 'transparent') return false;
+  return alphaOf(c) >= 1;
+}
+
+/**
  * The share (0..1) of a `w` x `h` viewport that `root`'s descendants hide, NaN when another layer
  * is on top of most of it: `at(x, y)` is the top element there (document.elementFromPoint),
  * `paints(el)` its background test (paintsBackground of its computed style). Pure.
@@ -70,4 +87,27 @@ export function coverShare(root: Element, w: number, h: number, at: (x: number, 
     }
   }
   return inside * 2 > COLS * ROWS ? covered / inside : Number.NaN;
+}
+
+/** What decides the cover the menus report (Menu.reportCover). */
+export interface MenuCoverState {
+  /** The menus are up (Menu.show; hide sends 'none'). */
+  readonly visible: boolean;
+  /** A sheet is up (Menu.modal: a confirm, the region, leave, update or language sheet, About). */
+  readonly sheet: boolean;
+  /** The shell's own backdrop is opaque (opaqueBackground: super low's flat page). */
+  readonly opaqueBackdrop: boolean;
+  /** The share of a touch screen the menus hide (coverShare, rounded; 0 elsewhere). */
+  readonly covered: number;
+}
+
+/**
+ * The cover the menus report to the Game (MenuHost.setMenuCover) and its share: 'none' once hidden;
+ * 'opaque' under a sheet (its veil and panel take the screen) or over an opaque backdrop; else
+ * 'partial' with the share measured. The share goes with 'partial' only. Pure.
+ */
+export function menuCover(s: MenuCoverState): { level: SceneCover; covered: number } {
+  if (!s.visible) return { level: 'none', covered: 0 };
+  if (s.sheet || s.opaqueBackdrop) return { level: 'opaque', covered: 0 };
+  return { level: 'partial', covered: s.covered };
 }

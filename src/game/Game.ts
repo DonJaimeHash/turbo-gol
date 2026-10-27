@@ -57,10 +57,11 @@
  * message and no more reloads).
  *
  * UI at rest (`frame`, quality.ts sceneFps): the scene is drawn at the match's frame cap (the
- * tier's maxFps and the player's GamePrefs.fpsCap), at 30 fps under the menus (20 on super low,
- * and on a phone whose menus hide more than 70 % of it), and not at all (one held frame, drawn
- * again only when something under it changes: `redraw`) under an opaque layer (a menu modal, the
- * settings screen, the rotate-your-phone screen), in an offline pause and, under the menus, with
+ * tier's maxFps and the player's GamePrefs.fpsCap), at 30 fps under the menus (20 on super low
+ * when they let it through, and on a phone whose menus hide more than 70 % of it), and not at all
+ * (one held frame, drawn again only when something under it changes: `redraw`) under an opaque
+ * layer (a menu sheet, the menus' own opaque page on super low, the settings screen, the
+ * rotate-your-phone screen of a match), in an offline pause and, under the menus, with
  * prefers-reduced-motion or GamePrefs.menuSceneAnimated off. The menus say what they leave of the
  * scene (`setMenuCover`, src/ui/Menu.ts). The menus' rates and the player's limit keep their
  * average on any display (quality.ts FramePacer: 30 on 144 / 165 Hz), the tier's own cap counts
@@ -1163,7 +1164,8 @@ export class Game implements P2PGameHooks {
   /**
    * What the menus leave of the scene (src/ui/Menu.ts, through MenuHost): 'partial' while they are
    * up with the stadium showing through (`covered`: the share of a touch screen they hide,
-   * src/ui/cover.ts), 'opaque' under their modal, 'none' once hidden. The loop draws the scene at
+   * src/ui/cover.ts), 'opaque' under a sheet or over their own opaque page (super low), 'none' once
+   * hidden. The loop draws the scene at
    * the menus' rate or holds one frame (quality.ts sceneFps, `frame`).
    */
   setMenuCover(level: SceneCover, covered = 0): void {
@@ -1183,10 +1185,13 @@ export class Game implements P2PGameHooks {
     this.persistPrefs();
   }
 
-  /** The rotate-your-phone screen is up (src/input/touch.css: touch mode, upright on a touch screen): it hides everything. */
+  /**
+   * The rotate-your-phone screen is up (src/input/touch.css: touch mode, a phone held upright, and
+   * no menus: they work upright, only a match asks to turn the phone): it hides everything.
+   */
   private get rotateShown(): boolean {
     const q = this.portraitQuery;
-    return this.touch !== null && this.touch.touchMode && q !== null && q.matches;
+    return this.touch !== null && this.touch.touchMode && !this.menu.visible && q !== null && q.matches;
   }
 
   /**

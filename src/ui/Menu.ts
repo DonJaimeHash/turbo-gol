@@ -37,6 +37,16 @@
  * before a screen or a sheet came up (or within TAP_GUARD_MS after) presses nothing on it (on the
  * rail and the top bar: after a stacked screen came or went and moved their items).
  *
+ * The scene behind (plan §2.7, "UI at rest"): the menus tell the Game what they leave of the 3D
+ * scene (MenuHost.setMenuCover, reportCover): part of it while they are up, with the share a touch
+ * screen's menus hide (cover.ts, measureCover: on a mount, a section switch, a sheet closed,
+ * Settings closed, a resize or a layout change, and once a second on the tick), all of it under a
+ * sheet and while the shell's own backdrop is opaque (super low's flat page), none once hidden; the
+ * Game adds its own layers (Settings, the rotate screen) and draws the scene at the menus' rate or
+ * holds one frame (src/render/quality.ts sceneFps). The tick (`tick`: the pills, the screen's
+ * counters, the hints) runs at 4 Hz, 1 Hz on super low (`tg-superlow` on <html>), and writes the
+ * DOM only when a text changed.
+ *
  * The Game implements MenuHost (what the menus can ask of it) and calls show() / hide() / action();
  * the menu never touches the sim or the renderer. Styling: src/ui/styles/ (`mn-`) and menu.css.
  */
@@ -78,6 +88,7 @@ import type { SheetSpec } from './components/sheet';
 import { Toasts } from './components/toast';
 import { icon } from './components/icons';
 import { fitAll, uiFitReport } from './fit';
+import { coverShare, menuCover, opaqueBackground, paintsBackground } from './cover';
 import type { SceneCover } from '../render/quality';
 
 export type SearchKind = 'casual' | 'ranked';
@@ -168,8 +179,9 @@ export interface MenuHost {
   keyLabel(action: ActionId, device: Device): string;
   /**
    * What the menus leave of the 3D scene (Game.setMenuCover): 'partial' while they are up (with
-   * `covered`, the share of a touch screen they hide: cover.ts), 'opaque' under a modal, 'none'
-   * once hidden. The Game draws the scene at the menus' rate or holds one frame.
+   * `covered`, the share of a touch screen they hide: cover.ts), 'opaque' under a sheet or an
+   * opaque backdrop (super low), 'none' once hidden. The Game draws the scene at the menus' rate
+   * or holds one frame.
    */
   setMenuCover(level: SceneCover, covered?: number): void;
   /** One line about the build (WebGPU / RocketSim version), shown in About. */
@@ -189,6 +201,10 @@ const POPULATION_EVERY_MS = 10_000;
 /** A focus this soon after a pointer lifted is that pointer's (a tap focuses between its up and its click). */
 const POINTER_FOCUS_MS = 150;
 const TICK_MS = 250;
+/** The same on super low (`tg-superlow`: the 1 GB TV): the search pill's clock still moves every second. */
+const TICK_MS_LITE = 1000;
+/** A touch screen re-measures the share its menus hide this often (ms, on the tick): content loads, toasts come and go. */
+const COVER_EVERY_MS = 1000;
 
 /** Touch mode: the last input used was a finger (`tg-touch` on <html>, set by src/input/TouchControls.ts). */
 function touchMode(): boolean {
@@ -339,6 +355,16 @@ export class Menu {
   private fitQueued = false;
   /** What the account chip shows (refreshChrome rebuilds it on a change only). */
   private chipKey = '';
+  /** A coarse primary pointer (phones, tablets): the share the menus hide is measured (measureCover). */
+  private readonly coarse: boolean;
+  /** The shell's own backdrop is opaque (super low's flat page, style.css --mn-backdrop): the menus hide all of the scene. */
+  private backdropOpaque = false;
+  /** The last cover told to the Game (reportCover), the share measured, a measurement queued and its time. */
+  private coverSent: SceneCover | null = null;
+  private coveredSent = -1;
+  private covered = 0;
+  private coverQueued = false;
+  private coverAt = 0;
 
   constructor(host: MenuHost, container: HTMLElement) {
     this.host = host;
@@ -388,18 +414,24 @@ export class Menu {
     this.installTapGuard();
     window.addEventListener('keydown', (e) => this.onKey(e));
     window.addEventListener('keyup', (e) => this.keysDown.delete(e.code));
-    window.addEventListener('resize', () => this.queueFit());
+    this.coarse = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+    window.addEventListener('resize', () => {
+      this.queueFit();
+      this.measureCover();
+    });
     // The hints and the pills' place follow the last input and the layout class (device.ts); the
     // other classes of <html> (super low, fullscreen...) change nothing here.
     const html = document.documentElement;
     let shellKey = '';
     new MutationObserver(() => {
+      this.readBackdrop();
       const key = [html.dataset.input, html.dataset.layout, html.classList.contains('tg-touch'), html.classList.contains('tg-tv')].join();
       if (key === shellKey) return;
       shellKey = key;
       this.renderHints();
       this.placePills();
       this.queueFit();
+      this.measureCover(); // the bars move (the pills to a TV's hint bar, the rail, the tabs)
     }).observe(html, { attributes: true, attributeFilter: ['data-input', 'data-layout', 'class'] });
     void document.fonts?.ready.then(() => this.queueFit());
     host.accounts.subscribe(() => this.refreshChrome());
@@ -457,9 +489,11 @@ export class Menu {
     this.root.hidden = false;
     this.root.parentElement?.classList.add('mn-open'); // menu.css hides the in-game HUD behind it
     this.visibleNow = true;
+    this.readBackdrop();
+    this.reportCover();
     this.mount();
     this.placePills();
-    if (this.timer === 0) this.timer = window.setInterval(() => this.tick(), TICK_MS);
+    if (this.timer === 0) this.timer = window.setInterval(() => this.tick(), document.documentElement.classList.contains('tg-superlow') ? TICK_MS_LITE : TICK_MS);
     this.tick();
   }
 
@@ -471,6 +505,7 @@ export class Menu {
     resetPageZoom(); // a pinch in the menus does not carry into the match (its controls would sit off screen)
     this.keysDown.clear(); // a key held into the match and out again is no menu key
     this.closeModal();
+    this.reportCover();
     if (this.timer !== 0) {
       window.clearInterval(this.timer);
       this.timer = 0;
@@ -637,6 +672,58 @@ export class Menu {
     this.refreshChrome();
     this.queueFit();
     if (focus === 'auto') this.autoFocus();
+    this.measureCover(); // after the fit (both on the next frame, in this order)
+  }
+
+  /**
+   * Tell the Game what the menus leave of the 3D scene (MenuHost.setMenuCover; quality.ts
+   * sceneFps): nothing once hidden; all of it under a sheet (the update sheet over Settings too)
+   * or while the shell's own backdrop is opaque (super low); else part of it, with the share a
+   * touch screen's menus hide (measureCover). Only a change is sent.
+   */
+  private reportCover(): void {
+    const { level, covered } = menuCover({ visible: this.visibleNow, sheet: this.modalEl !== null, opaqueBackdrop: this.backdropOpaque, covered: this.covered });
+    if (level === this.coverSent && covered === this.coveredSent) return;
+    this.coverSent = level;
+    this.coveredSent = covered;
+    this.host.setMenuCover(level, covered);
+  }
+
+  /**
+   * Whether the shell paints an opaque page of its own under the screens (cover.ts
+   * opaqueBackground of .mn's computed background: super low's --mn-backdrop is --ink, a flat
+   * colour; elsewhere a translucent gradient lets the stadium through). Read as the menus show and
+   * when <html>'s classes change (the tier's class); a change is reported.
+   */
+  private readBackdrop(): void {
+    if (!this.visibleNow) return;
+    const opaque = opaqueBackground(getComputedStyle(this.root));
+    if (opaque === this.backdropOpaque) return;
+    this.backdropOpaque = opaque;
+    this.reportCover();
+  }
+
+  /**
+   * On a touch screen, measure the share of it the menus hide (cover.ts: a 9 x 5 grid of
+   * elementFromPoint and computed backgrounds: the bars, the rail or the tabs, the pills, the
+   * tiles, a toast) on the next frame, after layout and the fit: when a screen mounts (a section
+   * switch, a stacked screen, a crumb), a sheet or Settings close, the viewport or the layout class
+   * changes, and once a second on the tick (a list that loaded, a toast, the loading screen gone).
+   * GARAJE's almost empty stage measures low like any other. Nothing on other devices (the 20 fps
+   * rule is a phone's), under a sheet or an opaque backdrop (all of it is hidden then).
+   */
+  private measureCover(): void {
+    if (!this.coarse || this.coverQueued) return;
+    this.coverQueued = true;
+    requestAnimationFrame(() => {
+      this.coverQueued = false;
+      if (!this.visibleNow || this.modalEl !== null || this.backdropOpaque) return;
+      this.coverAt = performance.now();
+      const share = coverShare(this.root, window.innerWidth, window.innerHeight, (x, y) => document.elementFromPoint(x, y), (el) => paintsBackground(getComputedStyle(el)));
+      if (Number.isNaN(share)) return; // another layer on top (Settings, the loading screen): the last share stands
+      this.covered = Math.round(share * 100) / 100;
+      this.reportCover();
+    });
   }
 
   /** The bars for the section and the stack shown: tabs, rail, crumbs, stacked or not, hints. */
@@ -997,6 +1084,7 @@ export class Menu {
       // no Back here too: onKey drops keys until this task ends.
       this.settingsClosing = true;
       window.setTimeout(() => (this.settingsClosing = false), 0);
+      this.measureCover(); // the share under them was left out (another layer): measured again
       onClose();
       if (this.reloadNeeded && !this.reloadAsked) this.openUpdateSheet();
     }, opts);
@@ -1176,6 +1264,7 @@ export class Menu {
     this.renderSearch(now);
     this.top()?.tick?.(now);
     this.renderHints(); // a screen's own tabs may have come or gone (written on a change only)
+    if (this.coarse && now - this.coverAt >= COVER_EVERY_MS) this.measureCover();
   }
 
   /** The search pills (the bar's and the one over Settings), a failure's toast, the update sheet. */
@@ -1239,6 +1328,7 @@ export class Menu {
     this.setBackgroundInert(true);
     this.mountedAt = performance.now();
     this.nav.reset();
+    this.reportCover(); // the scene holds one frame under the sheet
     this.autoFocus();
     return close;
   }
@@ -1264,6 +1354,9 @@ export class Menu {
     this.modalLayer.hidden = true;
     this.modalLayer.textContent = '';
     if (refocus) {
+      // Not when another sheet replaces this one (modal: the cover stays 'opaque').
+      this.reportCover();
+      this.measureCover();
       this.setBackgroundInert(false);
       this.mountedAt = performance.now();
       this.nav.reset();
