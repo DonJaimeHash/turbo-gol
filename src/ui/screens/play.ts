@@ -112,14 +112,14 @@ export function casualScreen(menu: Menu): Screen {
       { value: 'p2p', label: t('play.netP2p') },
       { value: 'server', label: t('play.netServer') },
     ],
-    () => menu.prefs.net,
+    () => (menu.prefs.net === 'server' ? 'server' : 'p2p'),
     (v) => {
       menu.prefs.net = v;
       menu.savePrefs();
     },
   );
   const go = searchButton(menu, 'casual', () =>
-    menu.beforeMatch(() => menu.startSearch({ kind: 'casual', modes: menu.prefs.casualModes, region: menu.prefs.region, net: menu.prefs.net })),
+    menu.beforeMatch(() => menu.startSearch({ kind: 'casual', modes: menu.prefs.casualModes, region: menu.prefs.region, net: menu.prefs.net === 'server' ? 'server' : 'p2p' })),
   );
   const el = h(
     'div.mn-queue',
