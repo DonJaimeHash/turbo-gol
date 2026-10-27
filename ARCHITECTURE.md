@@ -273,6 +273,16 @@ src/input/
                         TouchState = Input's TouchSource (stick + per-button finger count and tap
                         latch, releaseAll), stickVector (radial deadzone + gain, up = +y),
                         hitCircle, the TB buttons → actions mapping (copied from DEFAULT_KBM)
+  touchRouter.ts        TouchRouter, pure: which finger drives the stick, holds JUMP / BOOST /
+                        DRIFT (a slide off BOOST keeps it held; off JUMP too with holdJump, the
+                        controls.touchHoldJump preference: plan M29), taps PAUSE / CAM / RESET,
+                        and taps the scorebug or the open board (scoreTaps)
+  TouchControls.ts      the touch overlay (.tc-root, touch.css; created only with a touch screen):
+                        measures the layout from its CSS, routes every finger through TouchRouter,
+                        paint() and setBoost() (BOOST's amount and level at 10 Hz) allocate
+                        nothing; the scoreboard tap (scoreboardOpen), the three first-match cards
+                        (cardsUp, turbogol.touchCards), the rotate notice (setLive: translucent
+                        over a live online match, the scorebug above it), touch mode (tg-touch)
 src/settings.ts         Settings { controls, camera, bindings, audio }: defaults, ranges,
                         validation, localStorage load / save. One live object shared by Input,
                         ChaseCamera and the Hud; Game.applySettings() persists and re-applies
@@ -285,7 +295,9 @@ src/game/
                         pipeline warm-up, goal-pause ball pin, audio / HUD glue, settings glue,
                         pointer lock (canvas click captures, menu / pause / whistle / blur release,
                         a browser-side release pauses like the Esc menu, a click on the paused
-                        game resumes and recaptures), pause menu (pauseEntries; SETTINGS opens the
+                        game resumes and recaptures; a finger's tap there does nothing: the touch
+                        pause, laid out for two thumbs by style.css, resumes on RESUME where BOOST
+                        was), pause menu (pauseEntries; SETTINGS opens the
                         settings screen over the paused game, BACK returns; Backspace / pad B
                         resume; QUIT only, held (Input.acceptHeld): quitToMenu clears the match and
                         reopens the menu at kickoff), the match's end (matchEnded on every path:
@@ -685,8 +697,11 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         controller, Competitive in every format idle and searching with the
                         Menu's own pills (every format in the subtitle, a TV's region by the
                         plate), then a TV's controller sheet closed by a fake controller with
-                        A held; a fresh tab per size and language with its device pinned,
-                        a mouse on the desktop sizes; then the hints of every other input on the
+                        A held; last on the touch sizes the touch match (an offline match in
+                        touch mode: the controls' edges and overlaps, each first-match card, the
+                        board, the touch pause with RESUME over BOOST's centre, free play's,
+                        upright the rotate notice); a fresh tab per size and language with its
+                        device pinned, a mouse on the desktop sizes; then the hints of every other input on the
                         screens that change the shell; --face for a fallback wider than Arial,
                         --online and --long-name for a pill and a chip this page cannot reach
                         alone, --no-pointer for a runner without one)
@@ -893,7 +908,7 @@ requestAnimationFrame(t):
   if drawsScene(t, lastDrawn, fps, changed || redraw, pacer):  // a match: every frame of logic
      chase.update(..., input.look)        // swivel + rear view (the menus: the orbit)
      renderer.render(prev, cur, alpha)    // interpolated transforms, camera, effects, HUD
-  frameLogic(dt)                          // scoreboard while held, touch controls, pointer-lock
+  frameLogic(dt)                          // scoreboard while held (or tapped open), touch controls, pointer-lock
                                           // hint, GO caption, back to the menus, audio
 ```
 
