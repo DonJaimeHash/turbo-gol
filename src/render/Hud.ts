@@ -817,9 +817,10 @@ export class Hud {
     // title plate (PAUSA; online "● PARTIDO EN JUEGO": the match goes on, the car stands still) and
     // the dock at the bottom, for every input: the mouse and a finger click its buttons, the
     // keyboard and the pad move the focus over it (FocusNav; the Game routes Input's menu edges to
-    // pauseAction). Only the plate and the dock take the pointer: a click or tap on the veil still
-    // reaches the canvas (resume). The key line stays for the keyboard (style.css hides it in touch
-    // mode). QUIT is held (PauseEntry.hold): a slip next to RESUME leaves no match.
+    // pauseAction). Only the plate and the dock take the pointer: a click on the veil still reaches
+    // the canvas (resume; a finger's tap there does nothing, Game.onCanvasPointerDown). The key line
+    // stays for the keyboard (style.css hides it in touch mode, and lays the dock out for two
+    // thumbs). QUIT is held (PauseEntry.hold): a slip next to RESUME leaves no match.
     this.paused = el('div', 'hud-paused');
     this.pausedTitle = el('div', 'hud-paused-title', t('pause.title'));
     this.pausedLive = el('div', 'hud-paused-live');

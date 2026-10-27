@@ -107,8 +107,12 @@
  *
  * Touch screens (navigator.maxTouchPoints > 0) also get the on-screen controls (`touch`,
  * src/input/TouchControls.ts), Input's touch source: shown while a match is played in touch mode
- * (the last input used was a finger), which also drops the pointer-lock hint; a tap on the paused
- * game resumes it without a phantom boost, and turning a phone to portrait pauses an offline match.
+ * (the last input used was a finger), which also drops the pointer-lock hint; a finger's tap on
+ * the paused game does nothing (the touch pause resumes on RESUME, where BOOST was: style.css), and
+ * turning a phone to portrait pauses an offline match (online it goes on under a translucent notice:
+ * `touch.setLive`). BOOST shows the amount (`touch.setBoost`), a tap on the scorebug opens the full
+ * scoreboard (`touch.scoreboardOpen`, as the held binding), and an offline first touch match waits
+ * for the three first-match cards (`touch.cardsUp`).
  * On Android a finger tap outside the controls goes fullscreen in landscape (autoFullscreen) and
  * leaving fullscreen mid-match pauses it; an iPhone (no element fullscreen) gets a one-time
  * add-to-home-screen toast in the menus. Without a touch screen none of it exists.
@@ -878,14 +882,16 @@ export class Game implements P2PGameHooks {
 
   /**
    * Mouse look: a mouse click on the canvas while a match is being played captures the mouse.
-   * A click / tap on the paused game resumes it first (resume and recapture in one action).
-   * The HUD overlay is a sibling of the canvas, so clicks on PLAY or the menu never get here.
+   * A click on the paused game resumes it first (resume and recapture in one action); a finger's
+   * tap there does nothing (plan M25: the touch pause resumes on REANUDAR only, under the BOOST
+   * thumb). The HUD overlay is a sibling of the canvas, so clicks on PLAY or the menu never get here.
    */
   private readonly onCanvasPointerDown = (e: PointerEvent): void => {
     // A finger / pen on a touch screen: no compatibility mousedown, which Input would read as a
     // click (a boost tick on resume). Without a touch screen a pen keeps acting as a mouse.
-    if (this.touch !== null && e.pointerType !== 'mouse') e.preventDefault();
-    if (this.canResumeByPointer) this.setPaused(false);
+    const finger = this.touch !== null && e.pointerType !== 'mouse';
+    if (finger) e.preventDefault();
+    if (this.canResumeByPointer && !finger) this.setPaused(false);
     if (e.pointerType !== 'mouse' || this.canvas === null || !this.canPointerLock) return;
     if (!this.playing || this.input.pointerLocked) return;
     // The button of this click is masked by Input until released: it is not a boost / jump.
@@ -3293,7 +3299,8 @@ export class Game implements P2PGameHooks {
       this.alpha = session.advance(dt);
       // The menu is pad-driven while a room connects: keep polling the gamepad.
       if (inMenu) this.input.sample(this.playerControls);
-    } else if (!inMenu && !this.paused && !this.loadingHold) {
+    } else if (!inMenu && !this.paused && !this.loadingHold && !(this.touch !== null && this.touch.cardsUp)) {
+      // Offline, the first touch match waits for its cards (TouchControls.cardsUp).
       // Experimental free play's game speed slows the sim clock (never above 1: fewer ticks, no extra work).
       this.acc = accumulate(this.acc, dt, this.training !== null ? this.trainingSpeed : 1, MAX_FRAME_DT);
       while (this.acc >= TICK_DT) {
@@ -3589,6 +3596,8 @@ export class Game implements P2PGameHooks {
       hud.setBoost(cur[po + C_BOOST]);
       hud.setSpeed(this.camState.speed, cur[po + C_IS_SUPERSONIC] > 0.5);
     }
+    // BOOST's own number on the touch controls (10 Hz inside; the plate is hidden in touch mode).
+    if (this.touch !== null) this.touch.setBoost(cur[po + C_BOOST], this.time);
 
     const ds = diagStats;
     const tr = ds !== null ? performance.now() : 0;
@@ -3633,6 +3642,7 @@ export class Game implements P2PGameHooks {
       const q = this.portraitQuery;
       if (touchMode && this.playing && !this.onlineActive && q !== null && q.matches) this.setPaused(true);
       touch.setVisible(this.playing && touchMode, this.training !== null, touchMode && (this.playing || this.canResumeByPointer));
+      touch.setLive(this.onlineActive);
     }
     this.updateControlsCard(dt, inMenu, touchMode);
     this.updateLeaveGuard();
@@ -3686,10 +3696,10 @@ export class Game implements P2PGameHooks {
     this.audio.update(dt, as);
   }
 
-  /** The Tab / Back scoreboard: shown while the binding is held (never over the menu). */
+  /** The Tab / Back scoreboard: shown while the binding is held or a tap on the touch scorebug opened it (never over the menu). */
   private updateScoreboard(inMenu: boolean): void {
     const d = this.scoreboardData;
-    if (inMenu || !this.input.held.scoreboard) {
+    if (inMenu || !(this.input.held.scoreboard || (this.touch !== null && this.touch.scoreboardOpen))) {
       this.hud.showScoreboard(false, d);
       return;
     }
