@@ -542,10 +542,12 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   WebGL2 context is created without it).
 - **30 fps at most** (`maxFps`, Game.ts `drawsFrame`): the animation frames in between do nothing,
   the next drawn one carries their time (the sim keeps its 120 Hz clock: 4 ticks a frame). Under
-  the menus the scene drops to 20 fps (an average: 2 and 3 refreshes in turn on a 50 Hz set), and
-  to one held frame under the settings screen, a modal or an offline pause (ARCHITECTURE.md "UI at
-  rest"); the menus still read the remote and the pad on every animation frame, and an online
-  pause reads them between its 30 fps frames too.
+  the menus the scene holds one frame: the Tablero shell is one opaque page on super low
+  (`--mn-backdrop: var(--ink)`), so the menus report it as opaque and nothing is drawn behind it
+  (20 fps, an average of 2 and 3 refreshes in turn on a 50 Hz set, if a later shell lets the
+  stadium through); one held frame as well under the settings screen, a sheet or an offline pause
+  (ARCHITECTURE.md "UI at rest"); the menus still read the remote and the pad on every animation
+  frame, and an online pause reads them between its 30 fps frames too.
 - **Backend**: WebGL2 unless `#webgpu` asks for the A/B (one 8-bit pass, the canvas depth
   discarded before present, no Dawn heaps in the browser's process on a 1 GB device). The backend
   and the world are chosen when the renderer is created, so a switch into or out of super low saves
@@ -651,8 +653,8 @@ drops the flag from the address. Captures: `tv-superlow-<theme>.png` and `tv-sup
 (the visual lab's shots folder, outside the repo).
 
 Not measured on the TV yet (the next runs, in order): `#diag` with the site data cleared (Auto
-should say `superlow (tv-gpu)` on WebGL2 at 640x360 and 30 fps in a match, 20 "of 60 rAF" in the
-menus, 0 under Settings), the same with `#webgpu` (the
+should say `superlow (tv-gpu)` on WebGL2 at 640x360 and 30 fps in a match, 0 "of 60 rAF" in the
+menus and under Settings), the same with `#webgpu` (the
 backend A/B, with MemAvailable), `#norender` (the CPU ceiling), `#pr=1` / `#pr=0.5` (does the cost
 follow the pixels), a 5-minute 2v2 with `#diag=audit` (fps, frames over 100 ms, GL errors, the
 prediction's worst frame), and the load time to the menu. Still open: a custom WebGL2 context with

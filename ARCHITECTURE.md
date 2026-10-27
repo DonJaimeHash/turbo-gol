@@ -356,9 +356,11 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
   fit.ts                data-fit: a box shrinks its font 1 px at a time to its minimum (or the
                         --fit-min a stylesheet sets: 16 on a TV) while it overflows (its content
                         box: a bar's overscan stays clear), then takes its short labels
-                        (data-fit-alt); __uiFit() (dev / VITE_UI_FIT=1) reports overflowing bars,
-                        cut labels, a sideways scroll, rings a clipping box would cut, shell text
-                        under 14 px on a phone or 16 on a TV (scripts/ui-fit.mjs, CI's ui-fit job)
+                        (data-fit-alt); a box not laid out (the strip under a stacked screen)
+                        keeps its last fit; __uiFit() (dev / VITE_UI_FIT=1; it runs a fit queued
+                        for the next frame first) reports overflowing bars, cut labels, a sideways
+                        scroll, rings a clipping box would cut, shell text under 14 px on a phone
+                        or 16 on a TV (scripts/ui-fit.mjs, CI's ui-fit job)
   LoadingOverlay.ts     the loading screen (#overlay, also in index.html for the first paint):
                         wordmark, a progress bar eased by CSS transitions (it moves while the main
                         thread is busy), one short line; swallows keys while up; boot and Game
@@ -373,10 +375,14 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         connection with RETRY, the running search on every section and floating
                         over Settings, "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
-                        shared prefs, population polling; MenuHost = what the Game provides
-                        (search, friendly, training, the experimental view, lobby matches,
-                        settings screen, confirmLeave with what asked: the system Back or a key,
-                        setMenuCover: what the menus leave of the scene).
+                        shared prefs, population polling, the 4 Hz tick (1 Hz on super low, DOM
+                        written only on change); MenuHost = what the Game provides (search,
+                        friendly, training, the experimental view, lobby matches, settings
+                        screen, confirmLeave with what asked: the system Back or a key,
+                        setMenuCover: what the menus leave of the scene, reportCover: 'partial'
+                        with the share a touch screen's menus hide, measured on every mount,
+                        section switch, sheet or Settings closed, resize and layout change and
+                        once a second; 'opaque' under a sheet and over super low's opaque page).
                         Focus: zones top bar, stage, footer, tabs
                         and the rail as a side zone (left / right cross it; a sheet alone); up from
                         the stage lands on the active section (data-nav-entry), focus = selection
@@ -394,8 +400,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         before a mount, or within 450 ms after, presses nothing on it; on the bars
                         only after a stacked screen came or went (the rail's and the top bar's
                         items moved). Menu.hide undoes a pinch zoom of the menus (resetPageZoom).
-  cover.ts              the share of a touch screen the menus hide (a 9 x 5 grid of
-                        elementFromPoint and computed backgrounds), reported with the cover
+  cover.ts              the scene behind the menus: the share of a touch screen they hide (a 9 x 5
+                        grid of elementFromPoint and computed backgrounds; the shell's backdrop
+                        left out), whether that backdrop is an opaque page (opaqueBackground) and
+                        the cover the menus report (menuCover); tests/cover.test.mjs
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
                         direction; Enter / A activate natively; side controls claim left / right);
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
@@ -576,8 +584,10 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         the same seeded matches on stock and experimental physics and compares the
                         step, think(), ball prediction and whole-tick cost, failing when a preset
                         breaks the state or the predictor), bot-skills.mjs (bot scenarios),
-                        ui-fit.mjs (every menu screen at five sizes with #widetext in a headless
-                        Chrome / Edge over CDP: window.__uiFit, src/ui/fit.ts)
+                        ui-fit.mjs (every menu screen at six sizes with #widetext in a headless
+                        Chrome / Edge over CDP: window.__uiFit, src/ui/fit.ts; a fresh tab per
+                        size with its device pinned, a mouse on the desktop sizes; --face for a
+                        fallback wider than Arial, --no-pointer for a runner without one)
 ```
 
 ### Bloom / glow contract (src/render/materials.ts)
@@ -785,29 +795,35 @@ requestAnimationFrame(t):
                                           // hint, GO caption, back to the menus, audio
 ```
 
-**UI at rest** (quality.ts `sceneFps`, Game.ts `frame`): the scene is drawn at the match's cap;
-at 30 fps under the menus (20 on super low, and on a touch screen whose menus hide more than 70 %
-of it: src/ui/cover.ts); and not at all, one held frame, under an opaque layer (a menu modal, the
-settings screen, the rotate-your-phone screen), in an offline pause, and under the menus with
-`prefers-reduced-motion` or `GamePrefs.menuSceneAnimated` off (the orbit stops). The menus report
-what they leave of the scene through `MenuHost.setMenuCover` ('none' / 'partial' / 'opaque'); the
-Game adds its own layers. A held frame is drawn again when something under it changes (a change
-of pace, a resize, rebuilt views, the end of a load, a tab that comes back, a warm-up frame): the
-canvas keeps its last image in between. The menus' rates and the player's limit keep their
-average on any display (`FramePacer`: the refresh nearest a deadline that advances one period at a
-time, pulled a tenth toward the frame drawn: 30 fps on 144 / 165 Hz, 20 on 50 Hz, and locked to a
-59.94 / 60.05 Hz display without a skipped refresh); the tier's own cap counts whole refreshes as
-it always did (`drawsFrame`: super low's 30 is 25 on 50 Hz). The input is read on every animation
-frame outside a match, and an online pause reads the pad between its cap's frames
-(`Input.readEdges`: the edges wait for the next frame of logic), so a pad tap shorter than one
-drawn frame still moves the focus. Paced and held frames, and those under the player's limit (two
-counts of refreshes, which it would take for late frames), give dynamic resolution no interval; the
-menus start at full resolution (`Renderer.resetResolutionScale`), the next match lowers it again
-under its own load. The menus' orbit runs on drawn time (it resumes where it stopped);
-`GamePrefs.fpsCap` (30 / 60 / none) and `menuSceneAnimated` have no Settings row yet
-(`Game.setFpsCap`, `Game.setMenuSceneAnimated`). `#diag` shows the drawn rate "of" the animation
-frames, and counts a match's stalls between drawn frames (as before: a frame the cap should have
-drawn) and a paced scene's between animation frames.
+**UI at rest** (quality.ts `sceneFps`, Game.ts `frame`): the scene is drawn at the match's cap; at
+30 fps under the menus (20 on super low when they let it through, and on a touch screen whose menus
+hide more than 70 % of it: src/ui/cover.ts); and not at all, one held frame, under an opaque layer
+(a menu sheet, the menus' own opaque page on super low, the settings screen, a match's
+rotate-your-phone screen), in an offline pause, and under the menus with `prefers-reduced-motion` or
+`GamePrefs.menuSceneAnimated` off (the orbit stops). The Tablero shell reports what it leaves of the
+scene through `MenuHost.setMenuCover` ('none' / 'partial' / 'opaque', Menu.reportCover): 'partial'
+on every section, stacked screen and layout (the bars, the rail or the tabs, the pills and toasts
+count in the measured share of a touch screen, GARAJE's almost empty stage measures low), 'opaque'
+under any sheet (region, leave, update over Settings, the language list, About, a confirm) and while
+`.mn` paints an opaque backdrop (super low's `--mn-backdrop` is `--ink`: the stadium is hidden
+there, so it holds instead of running at 20 fps), 'none' once hidden; the Game adds its own layers
+(the settings screen, the rotate screen of a match: upright menus work, `.mn-open` keeps it away). A
+held frame is drawn again when something under it changes (a change of pace, a resize, rebuilt
+views, the end of a load, a tab that comes back, a warm-up frame): the canvas keeps its last image
+in between. The menus' rates and the player's limit keep their average on any display (`FramePacer`:
+the refresh nearest a deadline that advances one period at a time, pulled a tenth toward the frame
+drawn: 30 fps on 144 / 165 Hz, 20 on 50 Hz, and locked to a 59.94 / 60.05 Hz display without a
+skipped refresh); the tier's own cap counts whole refreshes as it always did (`drawsFrame`: super
+low's 30 is 25 on 50 Hz). The input is read on every animation frame outside a match, and an online
+pause reads the pad between its cap's frames (`Input.readEdges`: the edges wait for the next frame
+of logic), so a pad tap shorter than one drawn frame still moves the focus. Paced and held frames,
+and those under the player's limit (two counts of refreshes, which it would take for late frames),
+give dynamic resolution no interval; the menus start at full resolution
+(`Renderer.resetResolutionScale`), the next match lowers it again under its own load. The menus'
+orbit runs on drawn time (it resumes where it stopped); `GamePrefs.fpsCap` (30 / 60 / none) and
+`menuSceneAnimated` have no Settings row yet (`Game.setFpsCap`, `Game.setMenuSceneAnimated`).
+`#diag` shows the drawn rate "of" the animation frames, and counts a match's stalls between drawn
+frames (as before: a frame the cap should have drawn) and a paced scene's between animation frames.
 
 Online (`Game.onlineActive`) the same frame calls `OnlineSession.advance(dt)` instead of the
 `while` loop: it applies the staged snapshot (rollback + replay), compares the local tick with
@@ -1093,7 +1109,9 @@ Avenir Next Condensed and the condensed system faces.
 `#widetext` replaces every family with plain Arial (Roboto's width) to test a layout without it;
 `data-fit` (src/ui/fit.ts) shrinks a label that would not fit, down to its minimum, then takes its
 short form (ENTRENAR, RANKING), and `node scripts/ui-fit.mjs` checks every menu screen at 780x360,
-844x390, 960x540 (TV), 1366x768 and 390x844 with it (CI job `ui-fit`, information only for now).
+844x390, 960x540 (TV), 1366x768 (a PC, and a TV) and 390x844 with it (CI job `ui-fit`, information
+only for now); `--face Verdana` (Windows, macOS) or `--face 'DejaVu Sans'` (Linux) runs it with a
+fallback wider than Arial, which must fit too.
 `scripts/copy-notices.mjs` refuses to build with a font and no license next to it.
 
 ## Legal

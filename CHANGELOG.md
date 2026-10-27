@@ -22,7 +22,8 @@ All notable changes to Turbogol are documented here. The format follows
 - `#widetext` (for contributors): the whole interface in plain Arial, about as wide as Android's
   Roboto, to see on a desktop which label would not fit without the condensed font. Labels that
   would not fit shrink a little, then take a shorter name (TRAIN, RANKS), and `node
-  scripts/ui-fit.mjs` checks every menu screen at five sizes with it (a CI job, for information).
+  scripts/ui-fit.mjs` checks every menu screen at six sizes with it (a CI job, for information);
+  `--face Verdana` runs the same check with a face wider than Arial.
 - GARAGE has its place in the menus already, with a "coming soon" panel until the cars arrive.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
@@ -269,9 +270,10 @@ All notable changes to Turbogol are documented here. The format follows
   yours move too, unless you already use the new key for something else; the training screen names
   your own keys.
 - The menus are lighter on phones, TVs and laptops: the stadium behind them now moves at 30 frames
-  per second (20 on Super low, and on a phone whose menus cover most of the screen), and it stops,
-  keeping its last picture, behind Settings, a dialog, the "turn your phone" screen and a paused
-  offline match. Less heat and battery for the same menus; matches run exactly as before. With
+  per second (20 on a phone whose menus cover most of the screen), and it stops, keeping its last
+  picture, behind Settings, a window or dialog, the "turn your phone" screen of a match and a
+  paused offline match. On Super low, where the menus are a solid page, the stadium behind them is
+  not drawn at all. Less heat and battery for the same menus; matches run exactly as before. With
   "reduce motion" on in the system settings, the stadium behind the menus holds still.
 - A new look: the match is played in a floodlit night harbour, inside a steel cage with wire
   netting, LED boards (a big main-sponsor board in the middle of each side wall; the boards change
