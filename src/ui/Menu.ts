@@ -3,8 +3,8 @@
  *
  * Sections (shell/sections.ts): JUGAR · ENTRENAMIENTO · GARAJE · CLASIFICACIÓN · PERFIL, each with a
  * root screen (JUGAR's: Inicio, screens/home.ts); every other screen is stacked on its section's
- * root (Casual, Competitive, the lobbies, Friendly... on Inicio). Switching sections always lands
- * on the new one's root (a section is a place, not a history): the top bar's tabs on a PC or a TV
+ * root (MODOS, a lobby, its creation... on Inicio). Switching sections always lands on the new
+ * one's root (a section is a place, not a history): the top bar's tabs on a PC or a TV
  * (focus = selection), the rail of a phone held sideways, the tabs of an upright phone, pad LB /
  * RB, keyboard Q / E (a screen's own tabs first), the account chip (PERFIL) and the wordmark
  * (JUGAR). A section's root opened by a stacked screen
@@ -24,7 +24,7 @@
  *   new version" sheet when the server refused this page (it waits for Settings to close; z 65
  *   would keep it above them should both ever be up).
  *
- * A match's start (Menu.beforeMatch: the hero, FIND MATCH, Friendly's PLAY): a TV without a
+ * A match's start (Menu.beforeMatch: the hero, MODOS' FIND MATCH and PLAY): a TV without a
  * controller asks for one first (a sheet that closes by itself when one connects, the press that
  * revealed it starting nothing), and a new PC player is asked "How will you play?" once (howPlay.ts).
  * A search started anywhere is the queue JUGAR AHORA repeats (startSearch: MenuPrefs.lastQueue).
@@ -37,8 +37,9 @@
  * from the stage); ↑ from the stage lands on the active section (or ‹), ↓ from the bar on the
  * stage's remembered control. The last focus is remembered per screen (FocusMemory, by element or
  * `data-key`); `data-autofocus` counts on a first visit only. Shortcuts (`MenuCommand`): Q / E, pad
- * LB / RB and LT / RT, keyboard X / pad Y cancel the search (over Settings too), pad Start opens
- * Settings, pad X / Delete the screen's context action.
+ * LB / RB and LT / RT (a stacked screen's own tabs take all of them: MODOS, Screen.command),
+ * keyboard X / pad Y cancel the search (over Settings too), pad Start opens Settings, pad X /
+ * Delete the screen's context action.
  *
  * Touch mode (`tg-touch` on <html>): no focus rings, nothing focused by itself, and a tap that began
  * before a screen or a sheet came up (or within TAP_GUARD_MS after) presses nothing on it (on the
@@ -68,6 +69,7 @@ import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
 import { regionName, tierName } from './names';
 import { t } from '../i18n';
+import type { Key } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
 import type { LobbyClient } from '../net/LobbyClient';
 import type { TrainingRecordsView } from '../game/trainingStore';
@@ -128,6 +130,8 @@ export interface SearchView {
   since: number;
   /** The running search's region (null = automatic). */
   region: RegionId | null;
+  /** The queue it joined (MODOS' bots countdown: which path fills with bots, and when); null when none runs. */
+  net?: 'p2p' | 'server' | null;
   /** The last failure (shown once as a toast), null when none. */
   error: string | null;
   /** That failure is the server refusing this page's version (426 reload_required): reload to play online. */
@@ -139,6 +143,8 @@ export interface MenuConfig {
   autoRegion: string;
   oauth: string[];
   online: boolean;
+  /** The server queue's bot fill, ms (GET /api/config botFillMs: MODOS' "bots join in"), null when the Worker did not say. */
+  botFillMs: number | null;
 }
 
 /** What the menus see of the experimental features (Settings > Experimental). */
@@ -180,6 +186,11 @@ export interface MenuHost {
   search(req: SearchRequest): void;
   cancelSearch(): void;
   searchView(): SearchView;
+  /**
+   * Free play with the running search alive (MODOS' "While you wait: Free play"): a match found
+   * ends it and plays (Game.practiceToMatch); quitting it comes back to the menus still searching.
+   */
+  practiceWhileSearching(): void;
   /** A custom lobby started: join this member's match. */
   playLobbyMatch(result: QueueResult | QueueResultP2p): void;
   /**
@@ -270,6 +281,10 @@ export interface Screen {
   back?(): boolean;
   /** A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context action). */
   command?(c: MenuCommand): boolean;
+  /** Menu.open's `tab`, before the screen mounts (MODOS: the tab Inicio's tile or the search asked for). */
+  setTab?(tab: string): void;
+  /** What its own tabs are, for the hint bar (MODOS: "Modes"); else "Tabs". */
+  readonly tabsVerb?: Key;
   /**
    * The shell is about to take the player off this screen without its own Back (a section, a
    * crumb, the wordmark, the chip, the search pill): a function that asks first and calls `go`
@@ -603,11 +618,12 @@ export class Menu {
    * root), but from a stacked screen of another section it is a detour on top of it (Competitive's
    * SIGN IN opens PERFIL: Back comes back to Competitive); another screen is stacked on its
    * section's root (brought back to the top when already in the stack; `reset`: right on the root,
-   * whatever was stacked).
+   * whatever was stacked). `tab`: the screen's tab to show (Screen.setTab: MODOS').
    */
-  open(id: string, reset = false): void {
+  open(id: string, reset = false, tab?: string): void {
     const next = stackAfterOpen({ section: this.section, stack: this.stack.map((s) => s.id) }, id, reset);
     const stack = next.stack.map((x) => this.screen(x));
+    if (tab !== undefined) this.screen(id).setTab?.(tab);
     this.top()?.hide?.();
     this.section = next.section;
     this.stack = stack;
@@ -855,7 +871,7 @@ export class Menu {
     const ownTabs = this.ownTabs() !== null;
     const keycaps = this.root.classList.contains('mn-own-tabs') !== ownTabs;
     if (keycaps) this.root.classList.toggle('mn-own-tabs', ownTabs);
-    return this.hintBar.render(hintItems(lastInput(), { searching: this.searching, stacked: this.stack.length > 1, ownTabs })) || keycaps;
+    return this.hintBar.render(hintItems(lastInput(), { searching: this.searching, stacked: this.stack.length > 1, ownTabs, tabsVerb: this.top()?.tabsVerb })) || keycaps;
   }
 
   /** The tabs of the screen on top (`.mn-tabs` of `.mn-tab`, the picked one `.mn-tab-on`), null without two of them. */
@@ -1289,7 +1305,7 @@ export class Menu {
         }
       })
       .catch(() => {
-        this.cfg = { regions: REGIONS, autoRegion: '', oauth: [], online: false };
+        this.cfg = { regions: REGIONS, autoRegion: '', oauth: [], online: false, botFillMs: null };
         this.refreshChrome();
       });
   }
@@ -1307,8 +1323,8 @@ export class Menu {
     this.openRegionSheet();
   }
 
-  /** The region sheet: automatic (the connection's continent) first, then every region; the current one marked and focused. */
-  private openRegionSheet(): void {
+  /** The region sheet (the region pill, MODOS' Region row): automatic (the connection's continent) first, then every region; the current one marked and focused. */
+  openRegionSheet(): void {
     const detected = this.cfg?.autoRegion;
     const auto = isRegion(detected) ? t('common.regionAutoNamed', { region: regionName(detected) }) : t('common.regionAuto');
     let close = (): void => undefined;
@@ -1353,13 +1369,13 @@ export class Menu {
     });
   }
 
-  /** The running search's own screen (the pill, Inicio's hero while searching; a lobby on screen asks first). */
+  /** The running search's own screen, MODOS on its tab (the pill, Inicio's hero while searching; a lobby on screen asks first). */
   openSearchScreen(): void {
     const v = this.host.searchView();
     if (!v.active) return;
     const guard = this.leaveGuard(1);
     if (guard !== null) guard(() => this.openSearchScreen());
-    else this.open(v.kind === 'ranked' ? 'ranked' : 'casual', true);
+    else this.open('modes', true, v.kind === 'ranked' ? 'ranked' : 'casual');
   }
 
   /**

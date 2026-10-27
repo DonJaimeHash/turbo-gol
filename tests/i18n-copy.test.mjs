@@ -26,14 +26,6 @@ const RULES = {
 
 /** `${lang}:${key}:${rule}` -> the plan PR that rewrites the text. Only ever shrinks. */
 const KNOWN = {
-  'en:playlist.1v1:modeNames': 'PR 6 (modes by format)',
-  'en:playlist.2v2:modeNames': 'PR 6',
-  'en:playlist.3v3:modeNames': 'PR 6',
-  'es:playlist.1v1:modeNames': 'PR 6',
-  'es:playlist.2v2:modeNames': 'PR 6',
-  'es:playlist.3v3:modeNames': 'PR 6',
-  'en:play.playlistCars:modeNames': 'PR 6',
-  'es:play.playlistCars:modeNames': 'PR 6',
   'es:training.shotBreakaway:modeNames': 'PR 13 (training: the breakaway shot gets a name that is not a mode)',
 };
 

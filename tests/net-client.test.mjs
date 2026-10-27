@@ -302,7 +302,7 @@ test('config: GET /api/config is fetched once per client and cached; a failure i
   const b = await h.client.config();
   assert.equal(n, 2, 'the failure was not cached, the success is');
   assert.equal(a, b, 'same object');
-  assert.deepEqual(a, { turnstileSiteKey: 'sk-1', protocol: P.PROTOCOL_VERSION, version: '0.1.0', region: 'EZE', autoRegion: '', oauth: [] });
+  assert.deepEqual(a, { turnstileSiteKey: 'sk-1', protocol: P.PROTOCOL_VERSION, version: '0.1.0', region: 'EZE', autoRegion: '', oauth: [], botFillMs: null });
   // Concurrent callers share one request.
   const h2 = makeClient({ '/api/config': () => jsonResponse(200, CONFIG_OFF) });
   await Promise.all([h2.client.config(), h2.client.config(), h2.client.config()]);
@@ -313,8 +313,11 @@ test('config: GET /api/config is fetched once per client and cached; a failure i
   const h4 = makeClient({ '/api/config': () => jsonResponse(200, 'nope') });
   await assert.rejects(h4.client.config(), (err) => err instanceof NetError && err.code === 'protocol');
   // Lenient parsing: an empty / missing sitekey means no Turnstile.
-  assert.deepEqual(parseServerConfig({ turnstileSiteKey: '' }), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [] });
-  assert.deepEqual(parseServerConfig({}), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [] });
+  assert.deepEqual(parseServerConfig({ turnstileSiteKey: '' }), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [], botFillMs: null });
+  assert.deepEqual(parseServerConfig({}), { turnstileSiteKey: null, protocol: 0, version: '', region: '', autoRegion: '', oauth: [], botFillMs: null });
+  // The server queue's bot fill (MODOS' countdown): a positive number of ms, else none.
+  assert.equal(parseServerConfig({ botFillMs: 10_000 }).botFillMs, 10_000);
+  for (const bad of [0, -1, '10000', Infinity, null]) assert.equal(parseServerConfig({ botFillMs: bad }).botFillMs, null, String(bad));
   assert.deepEqual(parseServerConfig({ autoRegion: 'SA', oauth: ['google', 3] }).oauth, ['google'], 'accounts: providers kept, junk dropped');
   assert.equal(parseServerConfig(null), null);
   // A server without the route (404) means no Turnstile; the answer is cached like any other.

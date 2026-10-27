@@ -1,13 +1,15 @@
 /**
  * The hint bar's content (plan §1.6): the verbs of a section root or a stacked screen in the
  * language of the LAST input only (src/ui/device.ts lastInput), never another device's keys:
- *   pad       A Select · B Back · LB RB Sections · ≡ Settings (+ Y Cancel search); a crowded bar
+ *   pad       A Select · B Back · LB RB Sections, or LB RB Modes on a stacked screen with tabs of
+ *             its own (MODOS: they step those there, plan §1.5) · ≡ Settings (+ Y Cancel search); a crowded bar
  *             (a TV's, with its pills) drops ≡ Settings first (`give` 1: the gear is in the top
  *             bar), the cancel hint last (`give` 4: the search pill's ✕ is beside it)
  *   remote    OK Select · ↩ Back · ▲ Sections (not on a stacked screen: ▲ lands on ‹ there, the
  *             section bar steps aside)
  *   keyboard  ENTER Select · ESC Back · Q E Sections, or Q E Tabs on a screen with tabs of its own
- *             (Q / E step those there: Menu.tabOrSection, plan §1.5) (+ X Cancel search, `give` 4)
+ *             (Q / E step those there: Menu.tabOrSection, plan §1.5; MODOS names them "Modes")
+ *             (+ X Cancel search, `give` 4)
  *   mouse     nothing (the bar keeps its links)
  *   touch     nothing (no bar on a phone; the cards teach)
  * Key and button names are glyphs (components/glyphs.ts), never translated; the verbs are i18n
@@ -35,8 +37,10 @@ export interface HintContext {
   readonly searching: boolean;
   /** A screen stacked on its section's root (‹ and the crumbs instead of the section bar). */
   readonly stacked?: boolean;
-  /** The screen on top has tabs of its own (Leaderboard's playlists, Profile's sign-in forms). */
+  /** The screen on top has tabs of its own (Leaderboard's playlists, Profile's sign-in forms, MODOS' modes). */
   readonly ownTabs?: boolean;
+  /** What those tabs are (Screen.tabsVerb: MODOS' "Modes"); "Tabs" without. */
+  readonly tabsVerb?: Key;
 }
 
 /** The device a glyph belongs to. */
@@ -50,7 +54,8 @@ export function hintItems(input: InputKind, ctx: HintContext): HintItem[] {
       const out: HintItem[] = [
         { glyphs: ['pad-a'], verb: 'nav.select' },
         { glyphs: ['pad-b'], verb: 'nav.back' },
-        { glyphs: ['pad-lb', 'pad-rb'], verb: 'nav.sections' },
+        // A stacked screen's own tabs take LB / RB (the section bar is not there: Menu.command).
+        { glyphs: ['pad-lb', 'pad-rb'], verb: ctx.stacked === true && ctx.ownTabs === true ? (ctx.tabsVerb ?? 'nav.tabs') : 'nav.sections' },
         { glyphs: ['pad-start'], verb: 'nav.settings', give: 1 },
       ];
       if (ctx.searching) out.push({ glyphs: ['pad-y'], verb: 'nav.cancelSearch', give: 4 });
@@ -60,7 +65,7 @@ export function hintItems(input: InputKind, ctx: HintContext): HintItem[] {
       const out: HintItem[] = [
         { glyphs: ['key-enter'], verb: 'nav.select' },
         { glyphs: ['key-esc'], verb: 'nav.back' },
-        { glyphs: ['key-q', 'key-e'], verb: ctx.ownTabs === true ? 'nav.tabs' : 'nav.sections' },
+        { glyphs: ['key-q', 'key-e'], verb: ctx.ownTabs === true ? (ctx.tabsVerb ?? 'nav.tabs') : 'nav.sections' },
       ];
       if (ctx.searching) out.push({ glyphs: ['key-x'], verb: 'nav.cancelSearch', give: 4 });
       return out;

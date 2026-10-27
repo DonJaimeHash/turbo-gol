@@ -409,81 +409,6 @@
   font-size: 13px;
 }
 
-/* ---- playlists --------------------------------------------------------------------------------- */
-.mn-playlists {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-.mn-pl {
-  position: relative;
-  display: grid;
-  gap: 4px;
-  justify-items: start;
-  text-align: left;
-  padding: 16px 16px 14px 48px;
-  min-height: 110px;
-  font: inherit;
-  color: var(--text);
-  background: var(--surface-1-94);
-  border: 2px solid var(--edge);
-  border-radius: var(--r-tile);
-  cursor: pointer;
-}
-.mn-pl[aria-pressed='true'] {
-  border-color: var(--brand);
-  background: var(--surface-1-94) linear-gradient(135deg, var(--brand-tint), transparent);
-}
-.mn-pl-check {
-  position: absolute;
-  left: 14px;
-  top: 18px;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--r-key);
-  border: 2px solid var(--edge-hi);
-}
-.mn-pl[aria-pressed='true'] .mn-pl-check {
-  color: var(--brand-ink);
-  background: var(--brand);
-  border-color: var(--text);
-}
-.mn-pl[aria-pressed='true'] .mn-pl-check::after {
-  content: '✓';
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 14px;
-}
-.mn-pl-name {
-  font-size: 22px;
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.06em;
-}
-.mn-pl-size {
-  font-size: 13px;
-  color: var(--text-2);
-}
-.mn-pl-extra {
-  font-size: 13px;
-  color: var(--brand-hi);
-}
-.mn-pl-rank {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.mn-pl-rank > span {
-  display: grid;
-  line-height: 1.2;
-}
-.mn-pl-rank small {
-  color: var(--text-2);
-}
-
 .mn-ban {
   margin: 0 0 14px;
   padding: 10px 14px;
@@ -491,31 +416,6 @@
   color: var(--text);
   background: var(--danger-tint);
   border: 1px solid var(--danger-line);
-}
-
-.mn-locked {
-  max-width: 620px;
-  margin: 30px auto;
-  padding: 28px;
-  text-align: center;
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-panel);
-}
-.mn-locked-icon {
-  font-size: 40px;
-}
-.mn-locked-title {
-  margin: 8px 0;
-  font-size: 24px;
-  font-weight: 700;
-}
-.mn-locked p {
-  color: var(--text-2);
-  line-height: 1.45;
-}
-.mn-locked .mn-actions {
-  justify-content: center;
 }
 
 /* ---- rank badges -------------------------------------------------------------------------------
@@ -1163,7 +1063,6 @@
   .mn-profile-guest {
     grid-template-columns: 1fr;
   }
-  .mn-playlists,
   .mn-packs,
   .mn-exp,
   .mn-profile-ratings,

@@ -273,6 +273,8 @@ export interface ServerConfig {
   autoRegion?: string;
   /** Sign-in providers the server has credentials for ('google', 'discord'). */
   oauth?: string[];
+  /** The server queue's bot fill, ms (MatchmakerDO BOT_FILL_MS: the menus' "bots join in"); null from an older Worker. */
+  botFillMs?: number | null;
 }
 
 /** POST /api/guest body. */
@@ -292,6 +294,7 @@ export function parseServerConfig(v: unknown): ServerConfig | null {
     region: typeof o.region === 'string' ? o.region : '',
     autoRegion: typeof o.autoRegion === 'string' ? o.autoRegion : '',
     oauth: Array.isArray(o.oauth) ? o.oauth.filter((x): x is string => typeof x === 'string') : [],
+    botFillMs: typeof o.botFillMs === 'number' && Number.isFinite(o.botFillMs) && o.botFillMs > 0 ? o.botFillMs : null,
   };
 }
 

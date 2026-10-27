@@ -3,9 +3,10 @@
  * (who you are · GARAJE · Dune), then a row of tiles anchored at the bottom over the live stadium:
  * the hero, JUGAR AHORA (JUGAR on a TV), which plays the last queue in one press (Casual 2v2 the
  * first time: homeModel.ts heroQueue), and the four modes, CASUAL, CON AMIGOS, CONTRA LA IA and
- * COMPETITIVO (a guest sees "Iniciar sesión" on its lock). One DOM order on every device; the CSS
- * grid moves the tiles (styles/screens/home.css): the hero at the left on a PC and a TV, at the
- * right on a phone held sideways (the thumb), on top upright.
+ * COMPETITIVO (a guest sees "Iniciar sesión" on its lock), each opening MODOS on its tab
+ * (screens/modes.ts). One DOM order on every device; the CSS grid moves the tiles
+ * (styles/screens/home.css): the hero at the left on a PC and a TV, at the right on a phone held
+ * sideways (the thumb), on top upright.
  *
  * The hero follows the player (homeModel.ts heroState): RELOAD NOW after a refused version, back
  * to your match (PR 12), back to the lobby, the running search (its clock and ✕ CANCEL), VS AI
@@ -58,12 +59,12 @@ export function homeScreen(menu: Menu): Screen {
       if (!touch()) hero.main.focus({ preventScroll: true });
     },
   });
-  const ranked = modeTile({ cls: 'mn-mtile-ranked', key: 'mode-ranked', icon: 'rank', slot: null, title: t('modes.ranked'), sub: t('modes.rankedSub'), short: t('modes.rankedSubShort'), open: () => menu.open('ranked') });
+  const ranked = modeTile({ cls: 'mn-mtile-ranked', key: 'mode-ranked', icon: 'rank', slot: null, title: t('modes.ranked'), sub: t('modes.rankedSub'), short: t('modes.rankedSubShort'), open: () => menu.open('modes', false, 'ranked') });
   const tiles = [
-    modeTile({ cls: 'mn-mtile-casual', key: 'mode-casual', icon: 'ball', slot: slot(PLAYLISTS.join(HERO_SEP), { drop: true }), title: t('modes.casual'), sub: t('modes.casualSub'), short: t('modes.casualSubShort'), open: () => menu.open('casual') }),
+    modeTile({ cls: 'mn-mtile-casual', key: 'mode-casual', icon: 'ball', slot: slot(PLAYLISTS.join(HERO_SEP), { drop: true }), title: t('modes.casual'), sub: t('modes.casualSub'), short: t('modes.casualSubShort'), open: () => menu.open('modes', false, 'casual') }),
     // A TV has no link to share: a code (PR 14 types it on the phone).
-    modeTile({ cls: 'mn-mtile-friends', key: 'mode-friends', icon: 'friends', slot: slot(t('modes.lobbies'), { drop: true }), title: t('modes.friends'), sub: t('modes.friendsSub'), short: t(tv ? 'modes.friendsSubTv' : 'modes.friendsSubShort'), open: () => menu.open('custom') }),
-    modeTile({ cls: 'mn-mtile-ai', key: 'mode-ai', icon: 'bot', slot: slot(t('modes.vsAiSlot'), { drop: true }), title: t('modes.vsAi'), sub: t('modes.vsAiSub'), short: t('modes.vsAiSubShort'), open: () => menu.open('friendly') }),
+    modeTile({ cls: 'mn-mtile-friends', key: 'mode-friends', icon: 'friends', slot: slot(t('modes.lobbies'), { drop: true }), title: t('modes.friends'), sub: t('modes.friendsSub'), short: t(tv ? 'modes.friendsSubTv' : 'modes.friendsSubShort'), open: () => menu.open('modes', false, 'lobbies') }),
+    modeTile({ cls: 'mn-mtile-ai', key: 'mode-ai', icon: 'bot', slot: slot(t('modes.vsAiSlot'), { drop: true }), title: t('modes.vsAi'), sub: t('modes.vsAiSub'), short: t('modes.vsAiSubShort'), open: () => menu.open('modes', false, 'ai') }),
     ranked,
   ];
   const el = h('section.mn-home', { 'data-tablero': true }, h('div.mn-home-top', { 'data-nav-row': true }, plate.el, pills), h('div.mn-tiles', null, hero.el, ...tiles.map((x) => x.el)));

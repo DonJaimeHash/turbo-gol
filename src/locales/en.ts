@@ -17,10 +17,7 @@ export default {
   // Closes the language picker without a change
   'lang.cancel': 'CANCEL',
 
-  // Names of shared ids (src/ui/names.ts)
-  'playlist.1v1': 'One-on-one',
-  'playlist.2v2': 'Pairs',
-  'playlist.3v3': 'Trios',
+  // Names of shared ids (src/ui/names.ts; a playlist is named by its format alone: 1v1, 2v2, 3v3)
   'region.SA': 'South America',
   'region.NA': 'North America',
   'region.EU': 'Europe',
@@ -122,6 +119,8 @@ export default {
   'nav.sections': 'Sections',
   // Hint bar verb for Q / E on a screen with tabs of its own (Leaderboard's playlists)
   'nav.tabs': 'Tabs',
+  // The same on MODES, whose tabs are the modes (Q E / LB RB step them)
+  'nav.tabsModes': 'Modes',
   // Hint bar verbs, after a drawn key or button (A, ENTER, OK...)
   'nav.select': 'Select',
   'nav.back': 'Back',
@@ -180,8 +179,6 @@ export default {
   // Inicio, PLAY's root (src/ui/screens/home.ts)
   // Its title (breadcrumb)
   'home.title': 'Home',
-  // The button of the locked Competitive screen (a guest)
-  'home.signIn': 'SIGN IN / CREATE ACCOUNT',
   // The hero: plays the last queue in one press
   'home.playNow': 'PLAY NOW',
   // The same on a TV (less room at 3 m)
@@ -229,6 +226,57 @@ export default {
   // COMPETITIVE's lock tag for a guest where menu.guestSignIn does not fit (a phone, a tablet)
   'modes.signInShort': 'Sign in',
 
+  // MODES (src/ui/screens/modes.ts): its tabs (the titles above), the second line of two of them, and
+  // a guest's on COMPETITIVE
+  'modes.tabLobbiesSub': 'With friends, by code',
+  'modes.tabAiSub': 'Friendly · offline',
+  'modes.rankedLocked': 'Needs an account',
+  'modes.rankedIntro': 'One rank per format. Leaving a match locks Competitive.',
+  'modes.format': 'FORMAT',
+  // Region's row is common.region; this row opens the connection sheet
+  'modes.advanced': 'Advanced',
+  'modes.connection': 'Connection',
+  // The Advanced row's value; {net} is modes.netAuto / netP2p / netServer
+  'modes.connectionValue': 'Connection: {net}',
+  'modes.netAuto': 'Auto',
+  'modes.netP2p': 'P2P',
+  'modes.netServer': 'Server',
+  // Each choice's line in the connection sheet
+  'modes.netAutoHelp': 'The matchmaker picks: P2P with other players, a server if you play alone',
+  'modes.netP2pHelp': 'Cars sync directly between players; alone, a server with bots',
+  'modes.netServerHelp': 'A server in your region; bots join sooner',
+  // LOBBIES' action zone, over CREATE LOBBY
+  'modes.lobbiesAction': 'Make a lobby and share its code',
+  // The formats: a playlist is its format (1v1, 2v2, 3v3); ANY is whichever fills first
+  'format.any': 'ANY',
+  'format.anySub': '1v1, 2v2 or 3v3',
+  'format.fastest': 'FASTEST',
+  // The action zone and the searching panel (plan §1.4.1)
+  'search.find': 'FIND MATCH',
+  'search.title': 'FINDING A MATCH',
+  'search.unranked': 'UNRANKED',
+  'search.rankedTag': 'RANKED',
+  // {format} is '2v2' or format.anySub, {region} a region's name
+  'search.where': 'Looking for {format} in {region}',
+  // Followed by the time left (m:ss)
+  'search.bots': 'Bots join in',
+  'search.always': "There's always a match: if nobody comes, you play bots.",
+  'search.cancel': 'CANCEL SEARCH',
+  // Followed by training.freePlay, underlined: free play with the search still on
+  'search.whileWaiting': 'While you wait:',
+  'search.formatRestarts': 'Changing the format restarts the search.',
+  'search.needsAccount': 'Competitive needs an account',
+  'search.signIn': 'SIGN IN',
+  // {time} is duration() of the ban left: '24 hr'
+  'search.banned': 'Competitive locked · {time}',
+  'search.bannedLine': 'For leaving matches',
+  'search.playCasual': 'PLAY CASUAL',
+  // Free play while searching found a match: the banner until the match is on screen
+  'search.found': 'MATCH FOUND',
+  'search.entering': 'Entering…',
+  // Free play's line on the training HUD while the search goes on
+  'search.practiceLine': 'Finding a match…',
+
   // A TV without a controller: the hero's tag, then a sheet at a match's start (it closes by itself
   // when a controller connects)
   'tv.needPad': 'YOU NEED A CONTROLLER',
@@ -242,54 +290,20 @@ export default {
   'howPlay.keyboard': 'KEYBOARD ONLY',
   'howPlay.pad': 'CONTROLLER',
 
-  // Casual and Competitive (src/ui/screens/play.ts)
-  // Casual screen heading
-  'play.casual': 'CASUAL',
-  // Competitive screen heading
-  'play.ranked': 'COMPETITIVE',
-  // Friendly screen heading
-  'play.friendly': 'FRIENDLY',
-  // Players searching for a match right now
-  'play.searching': { one: '{count} searching', other: '{count} searching' },
-  // {playlist} is the mode id ('2v2'), {count} the cars on the field
-  'play.playlistCars': { one: '{playlist} · {count} car', other: '{playlist} · {count} cars' },
-  'play.search': 'FIND MATCH',
-  'play.cancelSearch': 'CANCEL SEARCH',
-  // A search of the other kind (Casual / Competitive) is running
-  'play.cancelOtherSearch': 'CANCEL OTHER SEARCH',
-  'play.connection': 'Connection',
-  'play.netP2p': 'P2P (recommended)',
-  'play.netServer': 'Server',
-  'play.casualIntro': 'Quick unranked matches. Pick one or more playlists: you join whichever finds a match first.',
-  'play.playlists': 'PLAYLISTS',
-  'play.options': 'OPTIONS',
-  'play.casualNote': 'P2P: cars sync directly between players (less lag within one region). If nobody else is searching, you play against bots on a server.',
-  // Casual screen title (breadcrumb)
+  // Casual and Competitive by name in a sentence (Inicio's hero subtitle: home.ts)
   'play.casualTitle': 'Casual',
-  // Still in placement matches
-  'play.unranked': 'Unranked',
   // Placement matches played / needed
   'play.placement': 'Placement {games}/{total}',
-  'play.mmr': '{mmr} MMR',
-  // The ban lengths grow with each abandon (src/net/rating.ts ABANDON_BANS_MS)
-  'play.rankedNote': 'Competitive is played on authoritative servers. The first 5 matches of each playlist are placement matches. Leaving a match counts as a loss and locks Competitive (5 min, 15 min, 1 h, 24 h).',
-  'play.rankedNeedsAccount': 'Competitive needs an account',
-  'play.rankedGuestText': 'Guests have no rank. Create a free account (username and password, or Google / Discord if enabled) and start your placement matches.',
-  'play.rankedIntro': 'One rank per playlist. Your MMR goes up or down depending on who you beat.',
   // {time} is a live m:ss countdown
   'play.rankedBan': 'Competitive locked for leaving matches: {time}',
-  // Competitive screen title (breadcrumb)
   'play.rankedTitle': 'Competitive',
 
-  // Friendly match (src/ui/screens/play.ts)
-  // Friendly screen title (breadcrumb)
-  'friendly.title': 'Friendly',
+  // MODES' VS AI tab (src/ui/screens/modes.ts)
   'friendly.mode': 'Mode',
   'friendly.difficulty': 'AI difficulty',
   // Where the match is played (the stadium's setting: harbour, canyon...); purely visual
   'friendly.theme': 'Stadium',
   'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
-  'friendly.match': 'MATCH',
   // Starts the friendly match
   'friendly.play': 'PLAY',
 
@@ -321,7 +335,6 @@ export default {
   'custom.noLobbies': 'No public lobbies in {region}. Create one!',
   // Under the lobby list: how many public lobbies, and the region
   'custom.lobbyCount': { one: '{count} lobby · {region}', other: '{count} lobbies · {region}' },
-  'custom.heading': 'CUSTOM LOBBIES',
   'custom.subtitle': 'Public lobbies in your region, or private ones by code. They never change your rank.',
   // Button on the lobby browser and heading of the create screen
   'custom.createLobby': 'CREATE LOBBY',
@@ -333,8 +346,6 @@ export default {
   'custom.colHost': 'Host',
   'custom.colNet': 'Network',
   'custom.colState': 'Status',
-  // Breadcrumb title of the lobby browser
-  'custom.screenTitle': 'Custom lobbies',
   'custom.loading': 'Loading lobbies…',
   // Lobby settings labels (settingMode ... settingLength)
   'custom.settingMode': 'Mode',
@@ -367,8 +378,8 @@ export default {
   'custom.joining': 'Joining the lobby…',
   'custom.notInLobby': "You're not in a lobby",
   'custom.back': 'BACK',
-  // Lobby summary line, e.g. 'Pairs 2v2 · P2P · 5 min · Public'. {lock} is ' · 🔒' when the lobby has a password, else empty.
-  'custom.info': '{playlist} {mode} · {net} · {length} · {visibility}{lock}',
+  // Lobby summary line, e.g. '2v2 · P2P · 5 min · Public'. {lock} is ' · 🔒' when the lobby has a password, else empty.
+  'custom.info': '{mode} · {net} · {length} · {visibility}{lock}',
   'custom.public': 'Public',
   'custom.private': 'Private',
   // Label next to the lobby's join code
