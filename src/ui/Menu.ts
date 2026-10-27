@@ -61,7 +61,7 @@
 import './menu.css';
 import './styles/index.css';
 import { h, setChildren } from './dom';
-import { FocusMemory, FocusNav, isEditable, isEditing, navKey, setEditing } from './nav';
+import { FocusMemory, FocusNav, heldOver, isEditable, isEditing, navKey, setEditing } from './nav';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
 import type { InputKind } from './device';
@@ -1072,6 +1072,12 @@ export class Menu {
     }
     if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
     if (!e.repeat && typeof e.code === 'string') this.keysDown.add(e.code);
+    // Enter / Space held over from the match (SALIR's hold) would click the focused button on every
+    // repeat (the hero's search): only a press the menus had activates.
+    if ((e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') && heldOver(e, this.keysDown)) {
+      e.preventDefault();
+      return;
+    }
     const active = document.activeElement;
     const field = isEditable(active); // a text field's keys are its own, but for the arrows in navigation mode
     const editing = field && isEditing(active);
@@ -1122,7 +1128,7 @@ export class Menu {
     }
     if (dir !== null) {
       e.preventDefault();
-      if (!e.repeat || this.keysDown.has(e.code)) this.nav.move(dir, e.repeat);
+      if (!heldOver(e, this.keysDown)) this.nav.move(dir, e.repeat);
     }
   }
 
