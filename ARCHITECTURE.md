@@ -326,10 +326,15 @@ src/game/
   (Game.ts: startTraining / stopTraining run a one-car arena through trainingTick instead of tick;
   startTraining(FREEPLAY_ID, { rules }) is experimental free play: the preset's physics, its game
   speed, the TrainingHud's rules line, the pause menu's RULES applied when the settings close, no
-  records)
+  records; startSearchPractice is free play over a menu search that keeps queueing (MODOS' "While
+  you wait: Free play"): the frame's watchSearchPractice sees the session leave its queue and
+  hands off through one function, practiceToMatch (training off, "MATCH FOUND · Entering…",
+  today's found -> match path; setSession and the session rosters call it too), a failed connect
+  shows the menus, and quitting practice keeps the search: stopTraining -> showMenu(true))
 src/ui/                 the front-end menus: the Tablero shell (styles/shell.css, components.css)
-                        around the screens (Inicio on styles/tiles.css and screens/home.css; the
-                        others on menu.css until their own PRs), all mn-, on the tokens
+                        around the screens (Inicio on styles/tiles.css and screens/home.css, MODOS
+                        on screens/modes.css; the others on menu.css until their own PRs), all
+                        mn-, on the tokens
   styles/tokens.css     every colour, type role and scale, space, radius, shadow, layer, motion
                         and focus value (the Tablero plan §1.2), the display font's @font-face and
                         its calibrated fallbacks; the old names (--panel, --muted, --mn-*) are
@@ -342,14 +347,17 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         styles/tiles.css: the hero and mode tiles, the plate, the slot's variants
                         (the lift is --focus-lift alone: 0 on super low and with reduced motion);
                         styles/screens/<screen>.css: a Tablero screen's own layout per class
-                        (home.css: Inicio; on .mn[data-screen], which Menu.mount writes)
+                        (home.css: Inicio, modes.css: MODOS; on .mn[data-screen], which Menu.mount
+                        writes)
   components/icons.ts   the SVG icon sprite (~40 icons on a 24 grid, one hidden <svg> of
                         <symbol>s mounted by the first icon(); the menu tiles use it)
   components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
                         length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons),
                         tile.ts (the hero: one button whose parts are rebuilt per state, ✕ CANCEL
                         in its grid cell; a mode tile; the slot), plate.ts (who you are · your
-                        car), language.ts (the language sheet, PERFIL's IDIOMA row)
+                        car), language.ts (the language sheet, PERFIL's IDIOMA row), seg.ts
+                        (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
+                        (mn-picker: a 56 px row with its value and ›, opening a sheet)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
                         hints.ts (the hint bar per last input, root or stacked, a screen's own
                         tabs or not; pure), topbar.ts (wordmark,
@@ -410,7 +418,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         which Inicio drops: data-screen on the root, readBackdrop). A match's
                         start goes through beforeMatch (a TV without a controller: openNeedPad, a
                         sheet a connecting controller closes after latching its press; a new PC
-                        player: openHowPlay, howPlay.ts), a search through startSearch (lastQueue);
+                        player: openHowPlay, howPlay.ts), a search through startSearch (lastQueue)
+                        and its own screen is MODOS on the search's tab (openSearchScreen);
                         a TV's pills sit in the screen's pillSlot (Inicio's plate row).
                         Focus: zones top bar, stage, footer, tabs
                         and the rail as a side zone (left / right cross it; a sheet alone); up from
@@ -422,8 +431,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         a fine pointer); sheets with aria-modal and the rest inert. Back:
                         backModel.ts (Esc / B / the back button on JUGAR's root ask to leave too).
                         MenuCommand shortcuts (Q / E, LB / RB, LT / RT, X / Y, Start, pad X /
-                        Delete) reach Screen.command first; LB / RB the sections, LT / RT and Q / E
-                        a screen's .mn-tabs (stepTabs) else the sections; X / Y cancel the search,
+                        Delete) reach Screen.command first (MODOS takes Q / E, LB / RB and LT / RT
+                        for its tabs: no section bar on a stacked screen); LB / RB the sections,
+                        LT / RT and Q / E a screen's .mn-tabs (stepTabs) else the sections; X / Y
+                        cancel the search,
                         over Settings too. A key's own repeat moves the focus only for a key first
                         pressed in the menus. The 450 ms tap guard (touch): a tap that went down
                         before a mount, or within 450 ms after, presses nothing on it; on the bars
@@ -457,7 +468,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         sections are no history entries of their own: backModel.ts walks them);
                         released while JUGAR's "Leave Turbogol?" is up. Mid-match the Game adds a
                         beforeunload backstop (updateLeaveGuard)
-  prefs.ts              the menus' prefs (turbogol.menu.v1: region, playlists, Casual's network,
+  prefs.ts              the menus' prefs (turbogol.menu.v1: region, playlists, Casual's connection
+                        (auto, the default, and P2P join the P2P queue; server the server one),
                         the leaderboard's playlist, lastQueue: the kind searched last, which
                         JUGAR AHORA repeats); parsePrefs, pure
   howPlay.ts            "How will you play?": howPlayAsk (a new PC player pressing with the mouse
@@ -469,9 +481,19 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         dev / VITE_UI_FIT; homeModel.ts, pure: the hero's state in priority order,
                         heroQueue (lastQueue, Competitive only signed in and not banned), isOffline
                         (no Worker or two failed population polls), queueParts, twoLines,
-                        plateRank; tests/home-hero.test.mjs), casual, competitive, friendly
-                        (play.ts), GARAJE's "coming soon" (garage.ts, until plan PR 8), custom lobby
-                        browser / create / lobby (custom.ts: the host's experimental rules row for
+                        plateRank; tests/home-hero.test.mjs); MODOS (modes.ts, stacked on Inicio,
+                        each tile opening it on its tab: Menu.open's tab, Screen.setTab): vertical
+                        tabs CASUAL · COMPETITIVO · SALAS · CONTRA LA IA (Q / E, LB / RB, LT / RT
+                        step them: Screen.command; the hint bar names them, Screen.tabsVerb), the
+                        2 x 2 formats (a press picks and searches, restarting a running search of
+                        that kind), Region and Advanced (connection) rows, VS AI's mn-seg and
+                        Stadium row, the lobby list (custom.ts lobbyBrowser), and the action zone:
+                        FIND MATCH / SIGN IN (PERFIL as a detour, back on a sign-in) / a ban's
+                        reason / PLAY / CREATE LOBBY, or the searching panel with "bots join in"
+                        (modesModel.ts, pure: tabs, formats, queueNet, botsCountdown from
+                        /api/config's botFillMs or P2P_FILL_WAIT_MS, countShown, actionKind;
+                        tests/modes.test.mjs), GARAJE's "coming soon" (garage.ts, until plan PR
+                        8), custom lobby create / lobby (custom.ts: the host's experimental rules row for
                         unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
                         rules line before the match), training (with Experimental free play, its
                         rules picker and Edit presets for unlocked players), profile (sign in / up /
