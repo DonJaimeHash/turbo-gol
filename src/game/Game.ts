@@ -3845,10 +3845,14 @@ export class Game implements P2PGameHooks {
     this.lastResult = null;
     this.menuNotice = undefined;
     this.hud.hideMenu();
-    // Back from a custom lobby's match: its screen comes back (its show() tells the lobby, which
-    // starts again only once every member is back), wherever the menus were left.
-    // The FINAL's PLAY AGAIN goes back to it after a lobby's match.
-    if (final === null && this.lobby.inLobby && this.lobby.me?.inGame === true && this.menu.top()?.id !== 'lobby') this.menu.open('lobby');
+    // Back from a custom lobby's match: the lobby hears it at once (it starts again only once every
+    // member is back). Without a FINAL its screen comes back (its show() tells the lobby), wherever
+    // the menus were left; with one the lobby is told here, as the FINAL's MENÚ and Back go to Inicio
+    // (its PLAY AGAIN opens the lobby).
+    if (this.lobby.inLobby && this.lobby.me?.inGame === true) {
+      if (final !== null) this.lobby.back();
+      else if (this.menu.top()?.id !== 'lobby') this.menu.open('lobby');
+    }
     this.menu.show(final !== null ? 'final' : undefined);
     this.flushNotices();
     // What an earlier ranked match's wait got while the menus were away comes first. Then, when a
