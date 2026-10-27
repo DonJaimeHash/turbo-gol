@@ -1,0 +1,925 @@
+/* MODOS (src/ui/screens/modes.ts; plan §1.4 "Modos", §1.4.1, the owner's artboard): the tabs, the
+   tab's own content and the action zone. A PC's grid is the artboard's (280 · 1fr · 406, gap 24,
+   from y 88 to the hint bar); a short PC and a TV keep it narrower; a phone held sideways puts the
+   tabs in a row over two columns (the content, the action rail at the thumb); upright, one column.
+   Colours, font sizes and radii as tokens only. */
+
+.mn[data-screen='modes'] .mn-stage {
+  padding: 1.5rem calc(3rem + var(--safe-right)) 1rem calc(3rem + var(--safe-left));
+}
+
+.mn-screen.mn-modes {
+  display: grid;
+  grid-template-columns: 17.5rem minmax(0, 1fr) 25.375rem;
+  gap: 1.5rem;
+  max-width: none;
+  /* The stage's height, so the format grid gives way on a low screen (what still does not fit scrolls). */
+  height: 100%;
+  margin: 0;
+}
+
+.mn-modes-side,
+.mn-modes-main,
+.mn-modes-queue,
+.mn-modes-ai {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mn-modes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 1.75rem;
+}
+
+.mn-modes-label {
+  font-size: var(--t-label);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+
+/* The keys that step the tabs, in the last input's language (the hint bar says what they do). */
+.mn-modes-keys,
+.mn-act-keys {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.mn-keys-kb,
+.mn-keys-pad {
+  display: none;
+  gap: 0.375rem;
+}
+
+html[data-input='keyboard'] .mn-keys-kb,
+html[data-input='pad'] .mn-keys-pad {
+  display: flex;
+}
+
+/* ---- the tabs: 76 high, the name 20 and one line 14; the picked one --surface-3 with a lime bar ---- */
+.mn-modes .mn-mtabs {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+}
+
+.mn-modes .mn-mtab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  min-height: 4.75rem;
+  padding: 0 1.5rem 0 1rem;
+  font-family: var(--font-body);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  color: var(--text);
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-modes .mn-mtab > .mn-icon {
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  color: var(--text-2);
+}
+
+.mn-modes .mn-mtab.mn-tab-on {
+  color: var(--text);
+  background: var(--surface-3-97);
+  border-color: var(--edge-hi);
+}
+
+.mn-modes .mn-mtab.mn-tab-on > .mn-icon {
+  color: var(--brand);
+}
+
+.mn-mtab-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3125rem;
+  line-height: 1.1;
+}
+
+.mn-mtab-name {
+  font-family: var(--font-display);
+  font-size: var(--t-name);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.mn-mtab-sub {
+  overflow: hidden;
+  font-size: var(--t-small);
+  color: var(--text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mn-mtab-end {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mn-mtab-end .mn-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--text-3);
+}
+
+.mn-mtab-mark {
+  display: none;
+}
+
+.mn-tab-on > .mn-mtab-mark {
+  display: block;
+  position: absolute;
+  right: 0.5625rem;
+  top: calc(50% - 1rem);
+  width: 4px;
+  height: 2rem;
+  background: var(--brand);
+  transform: skewX(-20deg);
+}
+
+/* ---- the center: title 44, a line, FORMAT 2 x 2, the note, Region and Advanced ---- */
+.mn-modes-title {
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: var(--t-display);
+  font-weight: 700;
+  font-style: italic;
+  line-height: 0.95;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.mn-modes-intro {
+  margin: 0.625rem 0 0;
+  font-size: var(--t-body);
+  line-height: 1.3;
+  color: var(--text-2);
+}
+
+.mn-modes-queue {
+  flex: 1;
+  margin-top: 1.375rem;
+}
+
+.mn-formats {
+  flex: 0 1 20.375rem;
+  min-height: 9rem;
+  max-width: 34.8125rem;
+  margin-top: 0.625rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1rem;
+}
+
+.mn-format {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  min-height: 0;
+  padding: 1.125rem 1.25rem;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--surface-1-96);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+  cursor: pointer;
+}
+
+.mn-format[aria-pressed='true'] {
+  background: var(--surface-3-97);
+  border-color: var(--edge-hi);
+}
+
+@media (hover: hover) {
+  .mn-format:hover,
+  .mn-modes .mn-mtab:hover,
+  .mn-picker:hover,
+  .mn-seg-opt:hover {
+    border-color: var(--edge-hi);
+  }
+}
+
+.mn-format-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 1.5rem;
+}
+
+.mn-format-top > .mn-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--text-2);
+}
+
+.mn-format-teams {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.mn-format-car {
+  width: 9px;
+  height: 1.375rem;
+  border-radius: var(--r-slot);
+  transform: skewX(-20deg);
+}
+
+.mn-format-blue {
+  background: var(--blue);
+}
+
+.mn-format-red {
+  background: var(--red);
+}
+
+.mn-format-vs {
+  margin: 0 0.375rem;
+  font-size: var(--t-label);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+
+.mn-format-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.mn-format-name {
+  font-family: var(--font-display);
+  font-size: var(--t-title);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.mn-format-sub {
+  overflow: hidden;
+  font-size: var(--t-small);
+  color: var(--text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mn-modes-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.875rem 0 0;
+  font-size: var(--t-small);
+  color: var(--text-2);
+}
+
+.mn-modes-note[hidden],
+.mn-modes [hidden] {
+  display: none;
+}
+
+.mn-modes-note .mn-icon {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.mn-modes-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-top: auto;
+  padding-top: 1rem;
+}
+
+/* mn-picker: a 56 row, its icon, name, value and › */
+.mn-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3.5rem;
+  padding: 0 1rem;
+  font: inherit;
+  font-size: var(--t-body);
+  text-align: left;
+  color: var(--text);
+  background: var(--surface-1-96);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+  cursor: pointer;
+}
+
+.mn-picker > .mn-icon {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--text-2);
+}
+
+.mn-picker-label {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.mn-picker-value {
+  overflow: hidden;
+  color: var(--text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* mn-seg: options of at least 48 in a 48 well; the picked one --surface-3 with a lime dash */
+.mn-modes-ai {
+  flex: 1;
+  gap: 1rem;
+  margin-top: 1.375rem;
+}
+
+.mn-modes-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mn-seg {
+  display: flex;
+  gap: 0.25rem;
+  max-width: 34.8125rem;
+  padding: 0.25rem;
+  background: var(--surface-0-96);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-seg-opt {
+  position: relative;
+  flex: 1;
+  min-width: 3rem;
+  min-height: 3rem;
+  font: inherit;
+  font-size: var(--t-heading);
+  font-weight: 600;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-key);
+  cursor: pointer;
+}
+
+.mn-seg-opt[aria-checked='true'] {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+/* The pick's lime dash, a background (the ::before / ::after of a focusable are the focus ring's). */
+.mn-seg-opt[aria-checked='true'] {
+  background-image: linear-gradient(var(--brand), var(--brand));
+  background-size: 1.5rem 3px;
+  background-position: 50% calc(100% - 0.375rem);
+  background-repeat: no-repeat;
+}
+
+/* ---- LOBBIES: today's list in the tab ---- */
+.mn-modes-lobbies {
+  flex: 1;
+  min-height: 0;
+  margin-top: 1rem;
+}
+
+.mn-modes-lobbies .mn-custom-bar {
+  margin-top: 0;
+}
+
+/* The list's own sizes (menu.css) up to the class's floor until PR 12 rebuilds it. */
+.mn-modes-lobbies .mn-field-label,
+.mn-modes-lobbies .mn-lobby-head,
+.mn-modes-lobbies .mn-lobbies-status {
+  font-size: var(--t-label);
+}
+
+.mn-modes-lobbies .mn-btn {
+  font-size: var(--t-small);
+}
+
+/* ---- the action zone: aligned at the bottom, a panel ---- */
+.mn-modes-act {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mn-act {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 1.625rem 1.75rem 1.75rem;
+  background: var(--surface-1-96);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+}
+
+.mn-act-idle,
+.mn-act-search {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mn-act-summary {
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: var(--t-name);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.mn-act-line {
+  margin: 0.5rem 0 0;
+  font-size: var(--t-small);
+  color: var(--text-2);
+}
+
+.mn-act-go {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 4rem;
+  margin-top: 1.25rem;
+  padding: 0 1rem 0 1.25rem;
+  font-size: var(--t-heading);
+}
+
+.mn-act-go > .mn-icon {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.mn-act-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.mn-act-title {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: var(--t-small);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--brand);
+}
+
+.mn-act-clock {
+  margin-top: 0.875rem;
+  font-family: var(--font-display);
+  font-size: var(--t-numeral);
+  font-weight: 700;
+  font-style: italic;
+  line-height: 0.9;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.mn-act-queue {
+  margin-top: 0.75rem;
+  font-family: var(--font-display);
+  font-size: var(--t-name);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.mn-act-where {
+  margin-top: 0.375rem;
+  font-size: var(--t-small);
+  color: var(--text-2);
+}
+
+.mn-act-bots {
+  margin-top: 1.25rem;
+  padding: 0.875rem 1rem 1rem;
+  background: var(--surface-0-90);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-act-bots-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: var(--t-body);
+}
+
+.mn-act-bots-row > span {
+  flex: 1;
+}
+
+.mn-act-bots-row .mn-icon {
+  flex: none;
+  width: 1.375rem;
+  height: 1.375rem;
+  color: var(--text-2);
+}
+
+.mn-act-bots-time {
+  font-size: var(--t-name);
+  font-variant-numeric: tabular-nums;
+}
+
+.mn-act-bar {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  padding: 0 0.25rem;
+}
+
+.mn-act-bar > span {
+  flex: 1;
+  height: 0.625rem;
+  background: var(--surface-3);
+  transform: skewX(-20deg);
+}
+
+.mn-act-bar > span.on {
+  background: var(--brand);
+}
+
+.mn-act-always {
+  margin: 0.625rem 0 0;
+  font-size: var(--t-small);
+  color: var(--text-3);
+}
+
+.mn-act-cancel {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  min-height: 3.5rem;
+  margin-top: 1.25rem;
+  padding: 0 0.875rem 0 1.25rem;
+  font-size: var(--t-heading);
+  text-align: left;
+  background: transparent;
+  border-color: var(--edge-hi);
+}
+
+.mn-act-cancel > span:not(.mn-act-keys) {
+  flex: 1;
+}
+
+.mn-act-practice {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-height: 2.75rem;
+  margin-top: 0.5rem;
+  padding: 0 0.25rem;
+  font: inherit;
+  font-size: var(--t-small);
+  text-align: left;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.mn-act-practice u {
+  color: var(--text);
+  text-underline-offset: 3px;
+}
+
+.mn-act-practice .mn-icon,
+.mn-act-cancel > .mn-icon {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/* The lime stripe that runs under the panel while it searches (informative: it runs on super low). */
+.mn-act-stripe {
+  position: absolute;
+  left: 1rem;
+  right: 1rem;
+  bottom: 0;
+  height: 4px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border-radius: var(--r-slot);
+}
+
+.mn-net-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  text-align: left;
+}
+
+.mn-net-text small {
+  font-size: var(--t-small);
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+/* ---- a short PC: the same grid, lower ---- */
+html[data-layout='short'] .mn[data-screen='modes'] .mn-stage {
+  padding-top: 1rem;
+}
+
+html[data-layout='short'] .mn-modes .mn-mtab {
+  min-height: 4rem;
+}
+
+html[data-layout='short'] .mn-act {
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+html[data-layout='short'] .mn-act-bots {
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
+}
+
+html[data-layout='short'] .mn-act-always,
+html[data-layout='short'] .mn-modes-intro {
+  display: none;
+}
+
+/* ---- a TV: narrower columns at its scale, no extra lines ---- */
+html[data-shell='tv'] .mn-screen.mn-modes {
+  grid-template-columns: 14rem minmax(0, 1fr) 17rem;
+  gap: 1rem;
+}
+
+html[data-shell='tv'] .mn[data-screen='modes'] .mn-stage {
+  padding: 0.75rem 3rem 0.5rem;
+}
+
+html[data-shell='tv'] .mn-modes .mn-mtab {
+  min-height: 3.5rem;
+  padding: 0 1rem 0 0.75rem;
+  gap: 0.625rem;
+}
+
+/* The tab's own icon gives way to its name (the lock, or the search's clock, stays). */
+html[data-shell='tv'] .mn-modes .mn-mtab > .mn-icon,
+html[data-shell='rail'] .mn-modes .mn-mtab > .mn-icon,
+html[data-shell='rail'] .mn-mtab-end {
+  display: none;
+}
+
+html[data-shell='tv'] .mn-act-summary {
+  white-space: normal;
+}
+
+html[data-shell='tv'] .mn-mtab-sub,
+html[data-shell='tv'] .mn-format-tag,
+html[data-shell='tv'] .mn-format-sub,
+html[data-shell='tv'] .mn-act-tag,
+html[data-shell='tv'] .mn-modes-intro,
+html[data-shell='tv'] .mn-act-always,
+html[data-shell='tv'] .mn-act-bar,
+html[data-shell='tv'] .mn-act-line,
+html[data-shell='tv'] .mn-act-where,
+html[data-shell='tv'] .mn-modes-note {
+  display: none;
+}
+
+html[data-shell='tv'] .mn-modes-queue,
+html[data-shell='tv'] .mn-modes-ai {
+  margin-top: 0.75rem;
+}
+
+html[data-shell='tv'] .mn-formats {
+  min-height: 6rem;
+  gap: 0.75rem;
+}
+
+html[data-shell='tv'] .mn-picker {
+  min-height: 3rem;
+}
+
+html[data-shell='tv'] .mn-format {
+  padding: 0.75rem 1rem;
+}
+
+html[data-shell='tv'] .mn-modes-rows {
+  padding-top: 0.75rem;
+}
+
+html[data-shell='tv'] .mn-act {
+  padding: 1rem;
+}
+
+html[data-shell='tv'] .mn-act-clock {
+  margin-top: 0.5rem;
+  font-size: var(--t-display);
+}
+
+html[data-shell='tv'] .mn-act-bots,
+html[data-shell='tv'] .mn-act-cancel {
+  margin-top: 0.75rem;
+}
+
+/* ---- a phone held sideways: the tabs in a row, the content, the action rail of 200 at the thumb ---- */
+html[data-shell='rail'] .mn[data-screen='modes'] .mn-stage {
+  padding: 0.625rem calc(1.5rem + var(--safe-right)) 0.625rem 0.75rem;
+}
+
+html[data-shell='rail'] .mn-screen.mn-modes {
+  grid-template-columns: minmax(0, 1fr) 12.5rem;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.625rem;
+}
+
+html[data-shell='rail'] .mn-modes-side {
+  grid-column: 1 / -1;
+}
+
+html[data-shell='rail'] .mn-modes-head,
+html[data-shell='rail'] .mn-modes-title,
+html[data-shell='rail'] .mn-modes-intro,
+html[data-shell='rail'] .mn-modes-queue > .mn-modes-label,
+html[data-shell='rail'] .mn-mtab-sub,
+html[data-shell='rail'] .mn-format-sub,
+html[data-shell='rail'] .mn-format-top,
+html[data-shell='rail'] .mn-act-line,
+html[data-shell='rail'] .mn-act-always,
+html[data-shell='rail'] .mn-act-bar,
+html[data-shell='rail'] .mn-act-where,
+html[data-shell='rail'] .mn-modes-note {
+  display: none;
+}
+
+html[data-shell='rail'] .mn-modes .mn-mtabs {
+  flex-direction: row;
+  margin: 0;
+}
+
+html[data-shell='rail'] .mn-modes .mn-mtab {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0 0.5rem;
+  gap: 0.375rem;
+}
+
+html[data-shell='rail'] .mn-mtab-name {
+  font-size: var(--t-small);
+}
+
+html[data-shell='rail'] .mn-tab-on > .mn-mtab-mark {
+  top: auto;
+  bottom: 0;
+  left: 25%;
+  right: auto;
+  width: 50%;
+  height: 3px;
+}
+
+html[data-shell='rail'] .mn-modes-queue,
+html[data-shell='rail'] .mn-modes-ai,
+html[data-shell='rail'] .mn-modes-lobbies {
+  margin-top: 0;
+}
+
+html[data-shell='rail'] .mn-formats {
+  flex: 1 1 auto;
+  min-height: 6rem;
+  margin-top: 0;
+  gap: 0.5rem;
+}
+
+html[data-shell='rail'] .mn-format {
+  justify-content: center;
+  padding: 0.5rem 0.875rem;
+}
+
+html[data-shell='rail'] .mn-modes-rows {
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+html[data-shell='rail'] .mn-picker {
+  min-height: 2.75rem;
+}
+
+html[data-shell='rail'] .mn-modes-ai {
+  gap: 0.5rem;
+}
+
+html[data-shell='rail'] .mn-act {
+  padding: 0.75rem;
+  border-radius: var(--r-tile);
+}
+
+html[data-shell='rail'] .mn-act-summary {
+  white-space: normal;
+}
+
+html[data-shell='rail'] .mn-act-go {
+  min-height: 4.5rem;
+  margin-top: 0.75rem;
+}
+
+html[data-shell='rail'] .mn-act-clock {
+  margin-top: 0.375rem;
+  font-size: var(--t-display);
+}
+
+html[data-shell='rail'] .mn-act-queue {
+  margin-top: 0.25rem;
+  font-size: var(--t-small);
+}
+
+html[data-shell='rail'] .mn-act-bots {
+  margin-top: 0.5rem;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+html[data-shell='rail'] .mn-act-tag {
+  display: none;
+}
+
+html[data-shell='rail'] .mn-act-bots-row {
+  font-size: var(--t-small);
+}
+
+html[data-shell='rail'] .mn-act-cancel {
+  min-height: 3rem;
+  margin-top: 0.5rem;
+  padding: 0 0.75rem;
+  font-size: var(--t-small);
+}
+
+html[data-shell='rail'] .mn-act-keys {
+  display: none;
+}
+
+/* ---- upright (a phone, a tablet): one column, the tabs in a row on top, the action under it all ---- */
+html[data-shell='tabs'] .mn[data-screen='modes'] .mn-stage {
+  padding: 1rem;
+}
+
+html[data-shell='tabs'] .mn-screen.mn-modes {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  height: auto;
+}
+
+html[data-shell='tabs'] .mn-modes-head,
+html[data-shell='tabs'] .mn-mtab-sub,
+html[data-shell='tabs'] .mn-mtab-end {
+  display: none;
+}
+
+html[data-shell='tabs'] .mn-modes .mn-mtabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+}
+
+html[data-shell='tabs'] .mn-modes .mn-mtab {
+  min-height: 3.5rem;
+  padding: 0 0.75rem;
+}
+
+html[data-shell='tabs'] .mn-formats {
+  flex: none;
+  height: 12rem;
+}
