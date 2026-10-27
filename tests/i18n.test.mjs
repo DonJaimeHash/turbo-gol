@@ -135,16 +135,16 @@ test('netErrorText: a server code by its error.queue text ({time} from retryAfte
   assert.equal(netErrorText(new NetError('turnstile', 'turnstile error 300030')), en['error.queue.turnstile_failed'], 'a widget that failed in the page');
   // A code the client has no queue text for: the generic line, never the server's (English developer) message.
   assert.equal(I.hasServerText('queue', 'left'), false);
-  assert.equal(netErrorText(new NetError('http', 'rejoin failed (410 left: you left this match)', 410, server('left', 'you left this match (its bots drive your car): queue again'))), 'Server error (410)');
-  assert.equal(netErrorText(new NetError('http', "queue failed (400 bad_mode: mode must be '1v1')", 400, server('bad_mode', "mode must be '1v1' | '2v2' | '3v3'"))), 'Server error (400)');
-  assert.equal(netErrorText(new NetError('http', 'queue failed (400 bad_region)', 400, server('bad_region', 'bad_region'))), 'Server error (400)');
+  assert.equal(netErrorText(new NetError('http', 'rejoin failed (410 left: you left this match)', 410, server('left', 'you left this match (its bots drive your car): queue again'))), 'Server error');
+  assert.equal(netErrorText(new NetError('http', "queue failed (400 bad_mode: mode must be '1v1')", 400, server('bad_mode', "mode must be '1v1' | '2v2' | '3v3'"))), 'Server error');
+  assert.equal(netErrorText(new NetError('http', 'queue failed (400 bad_region)', 400, server('bad_region', 'bad_region'))), 'Server error');
   assert.equal(netErrorText(new NetError('http', 'queue failed (503 matchmaking_off)', 503, server('matchmaking_off', 'matchmaking_off'))), en['error.queue.matchmaking_off']);
 });
 
 test('netErrorText: a NetError without a server code gets the generic text of its kind, never the developer message', () => {
   assert.equal(netErrorText(new NetError('network', 'queue request failed: TypeError: fetch failed')), en['error.network']);
-  assert.equal(netErrorText(new NetError('http', 'queue failed (502)', 502)), 'Server error (502)');
-  assert.equal(netErrorText(new NetError('http', 'session rejected', 401)), 'Server error (401)');
+  assert.equal(netErrorText(new NetError('http', 'queue failed (502)', 502)), 'Server error');
+  assert.equal(netErrorText(new NetError('http', 'session rejected', 401)), 'Server error');
   assert.equal(netErrorText(new NetError('protocol', 'matched without ticket / wsUrl')), en['error.protocol']);
   assert.equal(netErrorText(new NetError('state', 'already queueing')), en['error.unexpected']);
 });

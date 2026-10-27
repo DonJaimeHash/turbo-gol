@@ -51,9 +51,13 @@
  *   inputs          sendInputs(firstTick, count, packed, ackTick) into one reusable buffer
  *   clock           a ping 4x/s; the pong feeds ClockSync (median rtt / jitter / offset, host tick
  *                   estimate); snapshot tick gaps feed the loss estimate; bytes in / out are counted
- *   reconnect       one POST /api/rejoin { matchId } + reconnect when the socket closes with a code
+ *   reconnect       POST /api/rejoin { matchId } + reconnect when the socket closes with a code
  *                   other than 1000 or 4000 'replaced' (a newer socket of ours took the slot: final),
- *                   unless the client closed it or was kicked
+ *                   unless the client closed it or was kicked: up to RECONNECT_TRIES tries in a row
+ *                   (RECONNECT_DELAYS_MS apart; a Welcome starts the count again), each one a socket
+ *                   that drops before its Welcome or a rejoin the network or the server's load
+ *                   refused (no answer, 429, 5xx); a rejoin answering 404 / 410 (the match is over)
+ *                   ends them. `reconnectAttempt` is the try under way (the HUD's "attempt 2/5")
  *
  * The HTTP and WebSocket implementations are injectable (fetch / WebSocket by default) so the
  * logic runs in node tests with fakes. No allocations on the per-message path beyond the
@@ -142,6 +146,8 @@ export interface NetClientOptions {
   /** null disables persistence (tests). Defaults to window.localStorage when available. */
   storage?: StorageLike | null;
   pingIntervalMs?: number;
+  /** The waits before each reconnection try (RECONNECT_DELAYS_MS; tests). */
+  reconnectDelaysMs?: readonly number[];
   /**
    * The element the Turnstile widget renders into (the Hud's container), read when a guest is
    * registered and the server has a sitekey. null / absent = the challenge cannot run.
@@ -395,6 +401,10 @@ function describe(err: unknown): string {
 }
 
 const WS_OPEN = 1;
+/** Reconnection tries in a row after a dropped match socket, and the wait before each (ms). */
+export const RECONNECT_TRIES = 5;
+export const RECONNECT_DELAYS_MS: readonly number[] = [0, 1_000, 2_000, 4_000, 6_000];
+
 /** Host close code: this socket was replaced by a newer one for the same slot (MatchDO); no rejoin. */
 export const CLOSE_REPLACED = 4000;
 
@@ -468,6 +478,8 @@ export class NetClient {
   messagesOut = 0;
   snapshotsIn = 0;
   reconnects = 0;
+  /** The reconnection try under way (1..RECONNECT_TRIES), 0 when none is. */
+  reconnectAttempt = 0;
   /** Client clock (now()) when the last snapshot arrived; -1 before the first. */
   lastSnapshotAt = -1;
   /** From the last snapshot. */
@@ -511,7 +523,10 @@ export class NetClient {
   private ws: WebSocketLike | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closedByUs = false;
-  private reconnectUsed = false;
+  /** Reconnection tries since the last Welcome. */
+  private reconnectTries = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly reconnectDelays: readonly number[];
   private allowReconnect = true;
   private queueAbort: AbortController | null = null;
   /** A leaveMatch() / cancelQueue() leave in flight: the next queue waits for it (the lock must be free before the join). */
@@ -557,6 +572,7 @@ export class NetClient {
     this.now = opts.now ?? defaultNow;
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
     this.pingIntervalMs = opts.pingIntervalMs ?? PING_INTERVAL_MS;
+    this.reconnectDelays = opts.reconnectDelaysMs ?? RECONNECT_DELAYS_MS;
     this.turnstileContainer = opts.turnstileContainer ?? (() => null);
     this.turnstileLoader = opts.turnstileLoader;
     const rec = loadGuestRecord(this.storage);
@@ -812,7 +828,7 @@ export class NetClient {
             // Worker freed the lock) -> queue again, once.
             try {
               const m = await this.rejoin(body.matchId);
-              this.reconnectUsed = false; // a fresh assignment gets its own reconnect budget
+              this.reconnectTries = 0; // a fresh assignment gets its own reconnect budget
               this.allowReconnect = true;
               return { kind: 'server', matchId: m.matchId, ticket: m.ticket, wsUrl: m.wsUrl, ...(kind === 'ranked' ? { ranked: true } : {}) };
             } catch (err) {
@@ -838,7 +854,7 @@ export class NetClient {
           const matchId = (q as QueueResult).matchId;
           if (typeof matchId !== 'string') throw new NetError('protocol', 'matched without matchId');
           this.matchId = matchId;
-          this.reconnectUsed = false;
+          this.reconnectTries = 0;
           this.allowReconnect = true;
           const out: ServerAssignment = { kind: 'server', matchId, ticket: q.ticket, wsUrl: q.wsUrl };
           if ((q as QueueResult).ranked === true) out.ranked = true;
@@ -1022,8 +1038,19 @@ export class NetClient {
 
   // ---- socket ----------------------------------------------------------------------------
 
-  /** Open the match socket; the ticket travels in the subprotocol list (browsers cannot set headers). */
+  /**
+   * Open the match socket of a new assignment (its own reconnection tries); the ticket travels in
+   * the subprotocol list (browsers cannot set headers).
+   */
   connect(wsUrl: string, ticket: string): void {
+    this.reconnectTries = 0;
+    this.reconnectAttempt = 0;
+    this.allowReconnect = true;
+    this.openSocket(wsUrl, ticket);
+  }
+
+  private openSocket(wsUrl: string, ticket: string): void {
+    this.stopReconnect();
     this.closeSocket(1000, 'reconnect');
     this.closedByUs = false;
     this.welcome = null;
@@ -1054,6 +1081,7 @@ export class NetClient {
   /** Close the socket (code 1000 = leaving on purpose: no reconnect). */
   close(code = 1000, reason = ''): void {
     this.closedByUs = true;
+    this.stopReconnect();
     this.cancelQueue();
     this.closeSocket(code, reason);
   }
@@ -1181,6 +1209,8 @@ export class NetClient {
         }
         this.welcome = w;
         this.matchId = w.matchId;
+        this.reconnectTries = 0; // back in: a later drop gets every try again
+        this.reconnectAttempt = 0;
         if (this.onWelcome) this.onWelcome(w);
         return;
       }
@@ -1216,24 +1246,54 @@ export class NetClient {
     if (ws !== this.ws) return;
     this.ws = null;
     this.stopPing();
-    const canRejoin =
-      !this.closedByUs && this.allowReconnect && !this.reconnectUsed && code !== 1000 && code !== CLOSE_REPLACED && this.matchId !== null;
+    const canRejoin = !this.closedByUs && this.allowReconnect && code !== 1000 && code !== CLOSE_REPLACED && this.matchId !== null;
     if (!canRejoin) {
+      this.reconnectAttempt = 0;
       if (this.onClose) this.onClose(code, reason, false);
       return;
     }
-    this.reconnectUsed = true;
+    this.reconnectNext(code, reason);
+  }
+
+  /** The next reconnection try after its wait, or the final onClose once RECONNECT_TRIES are spent. */
+  private reconnectNext(code: number, reason: string): void {
+    if (this.reconnectTries >= RECONNECT_TRIES) {
+      this.reconnectAttempt = 0;
+      if (this.onClose) this.onClose(code, reason, false);
+      return;
+    }
+    const delay = this.reconnectDelays[Math.min(this.reconnectTries, this.reconnectDelays.length - 1)];
+    this.reconnectTries++;
+    this.reconnectAttempt = this.reconnectTries;
     this.reconnects++;
     if (this.onClose) this.onClose(code, reason, true);
-    this.rejoin(this.matchId as string).then(
-      (m) => {
-        if (this.closedByUs) return;
-        this.connect(m.wsUrl, m.ticket);
-      },
-      (err: unknown) => {
-        if (this.onClose) this.onClose(code, err instanceof NetError ? err.message : `rejoin failed: ${describe(err)}`, false);
-      },
-    );
+    this.stopReconnect();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.closedByUs) return;
+      this.rejoin(this.matchId as string).then(
+        (m) => {
+          if (!this.closedByUs) this.openSocket(m.wsUrl, m.ticket);
+        },
+        (err: unknown) => {
+          if (this.closedByUs) return;
+          // No answer, the server's load (429, 5xx): the next try. Anything else (404 / 410: the
+          // match is over; a refused session): the end.
+          const transient = !(err instanceof NetError) || err.code === 'network' || err.status === 429 || err.status >= 500;
+          const why = err instanceof NetError ? err.message : `rejoin failed: ${describe(err)}`;
+          if (transient) this.reconnectNext(code, why);
+          else {
+            this.reconnectAttempt = 0;
+            if (this.onClose) this.onClose(code, why, false);
+          }
+        },
+      );
+    }, delay);
+  }
+
+  private stopReconnect(): void {
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
 
   /**

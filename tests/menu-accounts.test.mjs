@@ -122,9 +122,9 @@ test("AccountClient: a code without a server text still gets the client's text; 
   answer = res(400, { error: 'new_code', message: 'A server text' });
   await rejects((e) => e.code === 'new_code' && e.message === 'A server text');
   answer = res(400, { error: 'bad_request', message: 'bad_request' });
-  await rejects((e) => e.code === 'bad_request' && e.message === 'Server error (400)');
+  await rejects((e) => e.code === 'bad_request' && e.message === 'Server error');
   answer = { ok: false, status: 502, json: async () => JSON.parse('<html>') };
-  await rejects((e) => e.code === 'http' && e.status === 502 && e.message === 'Server error (502)');
+  await rejects((e) => e.code === 'http' && e.status === 502 && e.message === 'Server error');
 });
 
 test('AccountClient: sessionForQueue refreshes near expiry (one request for concurrent callers); a 401 refresh signs out', async () => {
@@ -443,7 +443,7 @@ test("LobbyClient: a refused request carries the client's text for the code, els
   answer = res(503, { error: 'matchmaking_off', message: 'matchmaking_off' });
   await rejects((e) => e.code === 'matchmaking_off' && e.message === 'Matchmaking is paused, try again later');
   answer = res(401, { error: 'unauthorized', message: 'unauthorized' });
-  await rejects((e) => e.code === 'unauthorized' && e.message === 'Server error (401)');
+  await rejects((e) => e.code === 'unauthorized' && e.message === 'Server error');
 });
 
 test('LobbyClient: a server close reports the reason once (kicked)', async () => {

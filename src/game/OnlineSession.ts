@@ -29,11 +29,18 @@
  * queue rejoins through its 409; after the final whistle the match frees the locks itself. On a
  * community node (Welcome.hostColo 'node:<name>') that leave is the only way out, so the first
  * Welcome renews an account's Bearer early and a 401 on the leave is retried once.
+ *
+ * Reconnection (plan PR 12): while NetClient tries again (up to RECONNECT_TRIES), `hint` is the
+ * HUD's top-centre line "Reconnecting… (attempt 2/5)", then "Back in the match" for BACK_MS once a
+ * Welcome comes; the close code goes to the console only. The match is kept in sessionStorage
+ * (rejoinStore.ts) from the first Welcome, so a lost connection or a reload can come back to it
+ * (rejoin(): POST /api/rejoin, then the socket as for a new assignment).
  */
 import { TICK_MS, LeadAdjuster, computeLead } from '../net/ClockSync';
 import { assembleInputs, INPUT_MAX_PER_PACKET } from '../net/InputRing';
-import { NetClient, NetError, type MatchAssignment, type NetClientOptions } from '../net/NetClient';
+import { NetClient, NetError, RECONNECT_TRIES, type MatchAssignment, type NetClientOptions } from '../net/NetClient';
 import { netErrorText } from '../net/netErrorText';
+import { outcomeOf, type Outcome } from '../net/outcome';
 import { RateMeter, newNetStatsView, resetNetStatsView, type NetStatsView } from '../net/NetStats';
 import { RollbackPredictor, type RollbackSim } from '../net/Prediction';
 import { TICK_RATE, isNodeHost, type MatchEvent, type SnapshotPacket, type Welcome } from '../net/protocol';
@@ -44,6 +51,7 @@ import type { RocketSim } from '../sim/RocketSimBridge';
 import { MAX_CARS, MAX_STATE_BYTES, PACKED_INPUT_BYTES, TICK_DT, packControls, type CarControls } from '../sim/types';
 import type { Game } from './Game';
 import { DEFAULT_MATCH_SECONDS, formatClockSeconds } from './Match';
+import { clearRejoin, readRejoin, saveRejoin, type RejoinRecord } from './rejoinStore';
 
 /**
  * The bridge as the predictor sees it. The save / load / hash / packed-controls methods are added
@@ -87,6 +95,8 @@ const STATS_INTERVAL_MS = 250;
  * this is left on it (sessions last 1 h): a 3-minute match with a long overtime fits easily.
  */
 const NODE_BEARER_MIN_VALID_MS = 15 * 60_000;
+/** How long "Back in the match" stays after a reconnection (plan §6.13: 1.5 s). */
+const BACK_MS = 1_500;
 
 /** User-facing text for a failure (a NetError by its server code or kind, netErrorText). */
 function describe(err: unknown): string {
@@ -104,6 +114,8 @@ export class OnlineSession {
   notice = '';
   /** Last failure (shown in the menu until the next attempt). */
   error: string | null = null;
+  /** What that failure leaves the player to do (src/net/outcome.ts). */
+  errorOutcome: Outcome = 'retry';
   mode: GameMode = '1v1';
   /** The current match is ranked (queue kind 'ranked'): rated by the server when it ends. */
   ranked = false;
@@ -173,6 +185,10 @@ export class OnlineSession {
   private matchId: string | null = null;
   /** The connection was lost for good (disconnect()): leaving then keeps the server lock (the rejoin path). */
   private lost = false;
+  /** NetClient is trying to get the socket back (handleClose's `reconnecting`). */
+  private reconnecting = false;
+  /** now() until which the HUD says "Back in the match". */
+  private backUntil = 0;
 
   constructor(game: Game, opts: OnlineSessionOptions = {}) {
     this.game = game;
@@ -220,9 +236,20 @@ export class OnlineSession {
     return this.predictor !== null ? this.predictor.errorOffsetBall : null;
   }
 
-  /** In-match hint line (none in phase 1: the host never waits for a player). */
+  /** In-match hint line: the reconnection's try, then "Back in the match" (the host never waits for a player). */
   get hint(): string | null {
-    return null;
+    if (this.reconnecting) return t('online.reconnectTry', { n: Math.max(1, this.client.reconnectAttempt), max: RECONNECT_TRIES });
+    return this.now() < this.backUntil ? t('online.back') : null;
+  }
+
+  /** The hint is good news ("Back in the match"), not a wait. */
+  get hintOk(): boolean {
+    return !this.reconnecting && this.now() < this.backUntil;
+  }
+
+  /** The server match this tab may join again (rejoinStore.ts), or null. */
+  get rejoinable(): RejoinRecord | null {
+    return readRejoin();
   }
 
   /** Text for the menu status line (null = nothing to show). */
@@ -273,7 +300,7 @@ export class OnlineSession {
             this.status = '';
             return;
           }
-          this.fail(describe(err));
+          this.fail(describe(err), outcomeOf(err as NetError));
         },
       );
   }
@@ -294,6 +321,38 @@ export class OnlineSession {
     this.matchId = m.matchId;
     this.lost = false;
     this.client.connect(m.wsUrl, m.ticket);
+  }
+
+  /**
+   * Back into the server match `r` (a lost connection's VOLVER A ENTRAR, Inicio's "Back to your
+   * match"): POST /api/rejoin for a fresh ticket, then the socket as for a new assignment. No-op
+   * unless idle. A match that is over (404 / 410) is forgotten and the menu says so.
+   */
+  rejoin(r: RejoinRecord): void {
+    if (this.state !== 'idle') return;
+    this.mode = r.modes[0];
+    this.ranked = r.kind === 'ranked';
+    this.error = null;
+    this.notice = '';
+    this.state = 'connecting';
+    this.status = t('online.rejoining');
+    this.matchId = r.matchId;
+    this.lost = false;
+    const attempt = ++this.attempt;
+    this.client.rejoin(r.matchId).then(
+      (m) => {
+        if (attempt === this.attempt && this.state === 'connecting') this.client.connect(m.wsUrl, m.ticket);
+      },
+      (err: unknown) => {
+        if (attempt !== this.attempt) return;
+        console.warn('rejoin failed', err);
+        const over = err instanceof NetError && (err.status === 404 || err.status === 410);
+        if (over) clearRejoin();
+        // Nothing to quit: the server freed (or kept) the lock itself.
+        this.matchId = null;
+        this.fail(over ? t('online.matchOver') : describe(err), over ? 'gone' : outcomeOf(err as NetError));
+      },
+    );
   }
 
   /** Abort matchmaking / connecting (Esc, B, PLAY). The roster is restored if it was rebuilt. */
@@ -341,6 +400,7 @@ export class OnlineSession {
     const id = this.matchId;
     this.matchId = null;
     if (id === null || this.lost || this.state === 'ended') return;
+    clearRejoin();
     void this.client.leaveMatch(id, { connected: this.welcome !== null, retryRejected: isNodeHost(this.welcome?.hostColo) });
   }
 
@@ -490,11 +550,15 @@ export class OnlineSession {
       // On a community node the leave is the only way out of the match and it reuses the Bearer of
       // the queue: renew an account's now when it would not outlast a long match.
       if (isNodeHost(w.hostColo)) void this.client.refreshBearer(NODE_BEARER_MIN_VALID_MS);
+      this.matchId = w.matchId;
+      this.keepRejoin(w.matchLengthSeconds > 0 ? w.matchLengthSeconds : null);
     } else {
       // Same match after a rejoin: the next snapshot resyncs the state; forget the stale ring.
       existing.reset();
       this.status = '';
+      if (this.reconnecting) this.backUntil = this.now() + BACK_MS;
     }
+    this.reconnecting = false;
     this.client.sendReady();
   }
 
@@ -541,6 +605,7 @@ export class OnlineSession {
         this.frozen = true;
         break;
       case 'overtime':
+        this.keepRejoin(null);
         this.overtime = true;
         this.clockSeconds = 0;
         this.clockTick = e.tick;
@@ -550,6 +615,7 @@ export class OnlineSession {
         this.clockSeconds = e.seconds;
         this.clockTick = e.tick;
         this.clockKnown = true;
+        if (!this.overtime && this.matchLength > 0) this.keepRejoin(e.seconds);
         break;
       case 'ended':
         this.score.blue = e.blue;
@@ -557,6 +623,7 @@ export class OnlineSession {
         this.winner = e.winner;
         this.frozen = true;
         this.state = 'ended';
+        clearRejoin();
         if (this.ranked && this.matchId !== null) {
           this.lastRankedMatchId = this.matchId;
           this.lastRankedOnNode = isNodeHost(this.welcome?.hostColo);
@@ -569,6 +636,7 @@ export class OnlineSession {
         this.game.onOnlineEvent(e);
         this.error = e.reason === 'dodge' ? t('online.cancelledDodge') : t('online.cancelledNoShow');
         this.lost = false;
+        clearRejoin();
         this.game.onOnlineDisconnected(this.error);
         return;
       default:
@@ -585,17 +653,22 @@ export class OnlineSession {
 
   private handleClose(code: number, reason: string, reconnecting: boolean): void {
     if (!this.active) return;
+    // The code and the reason are for the console (and F4's panel), never the player's text.
+    console.warn(`match socket closed (${code}${reason.length > 0 ? `: ${reason}` : ''})${reconnecting ? `: reconnecting, try ${this.client.reconnectAttempt}/${RECONNECT_TRIES}` : ''}`);
+    this.reconnecting = reconnecting;
     if (reconnecting) {
       this.status = t('online.reconnecting');
       return;
     }
     if (this.state === 'ended') return; // the whistle already scheduled the menu
-    this.disconnect(t('online.connectionLost', { detail: `${code}${reason.length > 0 ? `: ${reason}` : ''}` }));
+    this.disconnect(t('online.connectionLost'));
   }
 
   private handleError(code: string, message: string): void {
     if (code === 'kick') {
-      const text = t('online.kicked', { reason: message });
+      console.warn(`kicked from the match: ${message}`);
+      clearRejoin();
+      const text = t('online.kicked');
       if (this.active) this.disconnect(text);
       else this.fail(text);
       return;
@@ -609,8 +682,9 @@ export class OnlineSession {
 
   // ---- internals -------------------------------------------------------------------------
 
-  /** Matchmaking / connecting failed: back to idle with the error on the menu. */
-  private fail(message: string): void {
+  /** Matchmaking / connecting failed: back to idle with the error on the menu (and what it leaves to do). */
+  private fail(message: string, outcome: Outcome = 'retry'): void {
+    this.errorOutcome = outcome;
     this.attempt++;
     this.client.close(1000, 'failed');
     const hadRoster = this.predictor !== null;
@@ -621,6 +695,17 @@ export class OnlineSession {
     if (hadRoster) this.game.restoreOfflineRoster();
   }
 
+  /**
+   * The rejoin record of the match on screen, its regulation time ending `secondsLeft` from now
+   * (null: unknown, unlimited or overtime). Server matches only (this session never plays a P2P room).
+   */
+  private keepRejoin(secondsLeft: number | null): void {
+    const id = this.matchId;
+    if (id === null || this.state === 'ended') return;
+    const now = Date.now();
+    saveRejoin({ matchId: id, kind: this.ranked ? 'ranked' : 'casual', modes: [this.mode], endsAt: secondsLeft === null ? null : now + secondsLeft * 1000, savedAt: now });
+  }
+
   /** The socket died mid-match: the Game shows the menu (which leaves the session, keeping the server lock). */
   private disconnect(message: string): void {
     this.error = message;
@@ -629,6 +714,8 @@ export class OnlineSession {
   }
 
   private teardown(): void {
+    this.reconnecting = false;
+    this.backUntil = 0;
     this.predictor = null;
     this.welcome = null;
     this.matchId = null;
