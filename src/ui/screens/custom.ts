@@ -1,6 +1,7 @@
 /**
  * Custom matches: the public lobby browser (a list per region: name, playlist, players, host,
- * lock), joining by code (private lobbies), creating a lobby, and
+ * lock) and joining by code (private lobbies), the part MODOS' LOBBIES tab shows (lobbyBrowser:
+ * screens/modes.ts, whose action zone has CREATE LOBBY), creating a lobby, and
  * the lobby itself: the code to share, the two teams, the host's settings, kick and start. When the
  * host starts, every member gets its match through the lobby socket (LobbyClient.onMatch) and the
  * Game plays it; back in the menu the member reports `back` and the lobby opens again.
@@ -22,10 +23,12 @@ import { DEFAULT_MATCH_SECONDS } from '../../game/Match';
 import { isStock, parseLobbyRules, sameValues, snapshotOf, type RulesSnapshot } from '../../game/physicsRules';
 import type { ListedPreset } from '../../game/experimentalStore';
 import { t } from '../../i18n';
-import { playlistName } from '../names';
 import { lobbyRulesLine, presetName } from '../../render/rulesText';
 import type { Menu, Screen } from '../Menu';
 import { cycler, field, primary, screenHead, secondary, section } from './common';
+
+/** The lobby list again: MODOS on its LOBBIES tab (back from a lobby, a lobby closed or left). */
+const toList = (menu: Menu): void => menu.open('modes', false, 'lobbies');
 
 const REFRESH_MS = 5_000;
 
@@ -134,12 +137,18 @@ async function joinFlow(menu: Menu, code: string, locked: boolean): Promise<void
       { label: t('custom.cancel'), onClick: () => true },
     ],
   });
+  // An Enter the menus took (OK on a field in navigation mode starts editing: Menu.onFieldKey) is no submit.
   pw.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void attempt(pw.input.value).then((ok) => ok && close());
+    if (e.key === 'Enter' && !e.defaultPrevented) void attempt(pw.input.value).then((ok) => ok && close());
   });
 }
 
-export function customScreen(menu: Menu): Screen {
+/**
+ * The lobby browser, a part of MODOS' LOBBIES tab: the join-by-code row with REFRESH, the list of
+ * the region's public lobbies (every REFRESH_MS on the screen's tick while the tab is shown) and its
+ * count. `show` as the tab shows (the list loads again), `tick` on the Menu's tick.
+ */
+export function lobbyBrowser(menu: Menu): { el: HTMLElement; show: () => void; tick: (now: number) => void } {
   const list = h('div.mn-lobbies');
   const status = h('div.mn-lobbies-status');
   const code = field(t('custom.codeField'), { placeholder: 'ABC234', maxLength: 7 });
@@ -154,7 +163,7 @@ export function customScreen(menu: Menu): Screen {
     void joinFlow(menu, c, false).catch(() => undefined);
   };
   code.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') join();
+    if (e.key === 'Enter' && !e.defaultPrevented) join(); // not the OK that starts editing (Menu.onFieldKey)
   });
   let refreshAt = 0;
   let loading = false;
@@ -166,7 +175,7 @@ export function customScreen(menu: Menu): Screen {
     const tag = exp ? h('span.mn-tag.mn-tag-exp', { title: rules !== null ? t('custom.rulesInfo', { summary: lobbyRulesLine(rules) }) : '' }, (guest ? '🔒 ' : '') + t('custom.tagExperimental')) : null;
     return navButton('mn-lobby-row', [
       h('span.mn-lobby-name', null, l.locked ? '🔒 ' : '', l.name, tag !== null ? ' ' : '', tag),
-      h('span.mn-lobby-mode', null, `${playlistName(l.mode)} ${l.mode}`),
+      h('span.mn-lobby-mode', null, l.mode),
       h('span.mn-lobby-players', null, `${l.players}/${l.max}`),
       h('span.mn-lobby-host', null, l.host),
       h('span.mn-lobby-net', null, netLabel(l.net)),
@@ -175,7 +184,7 @@ export function customScreen(menu: Menu): Screen {
       // The server refuses a guest anyway (403 account_required): say so without asking it.
       if (guest) menu.toast(t('error.lobby.account_required'), 'error');
       else void joinFlow(menu, l.code, l.locked);
-    }, { 'data-code': l.code, disabled: l.players >= l.max });
+    }, { 'data-code': l.code, 'data-key': 'lobby-' + l.code, disabled: l.players >= l.max });
   };
   const load = async (): Promise<void> => {
     if (loading) return;
@@ -195,14 +204,8 @@ export function customScreen(menu: Menu): Screen {
   const el = h(
     'div.mn-custom',
     null,
-    screenHead(t('custom.heading'), t('custom.subtitle')),
-    h(
-      'div.mn-custom-bar',
-      null,
-      primary(t('custom.createLobby'), () => menu.open('lobby-create'), { 'data-autofocus': true }),
-      h('div.mn-join', null, code.el, secondary(t('custom.join'), join)),
-      secondary(t('custom.refresh'), () => void load()),
-    ),
+    // A row (nav.ts): ◀ ▶ walk the code field, JOIN and REFRESH in order, wrapped or not.
+    h('div.mn-custom-bar', { 'data-nav-row': true }, h('div.mn-join', null, code.el, secondary(t('custom.join'), join)), secondary(t('custom.refresh'), () => void load())),
     h(
       'div.mn-lobby-head',
       null,
@@ -217,8 +220,6 @@ export function customScreen(menu: Menu): Screen {
     status,
   );
   return {
-    id: 'custom',
-    title: t('custom.screenTitle'),
     el,
     show: () => {
       refreshAt = 0;
@@ -270,7 +271,7 @@ function settingsControls(s: LobbySettings, rules: RulesControls | null = null):
     syncRules();
   }
   return [
-    cycler<Playlist>(t('custom.settingMode'), PLAYLISTS.map((p) => ({ value: p, label: `${playlistName(p)} (${p})` })), () => s.mode, (v) => (s.mode = v)).el,
+    cycler<Playlist>(t('custom.settingMode'), PLAYLISTS.map((p) => ({ value: p, label: p })), () => s.mode, (v) => (s.mode = v)).el,
     cycler<'public' | 'private'>(t('custom.settingVisibility'), [{ value: 'public', label: t('custom.visibilityPublicListed') }, { value: 'private', label: t('custom.visibilityPrivateCode') }], () => s.visibility, (v) => (s.visibility = v)).el,
     cycler<'p2p' | 'server'>(t('custom.settingNet'), [{ value: 'p2p', label: t('custom.netP2pRecommended') }, { value: 'server', label: t('custom.netServer') }], () => s.net, (v) => {
       s.net = v;
@@ -314,7 +315,7 @@ export function lobbyCreateScreen(menu: Menu): Screen {
       setChildren(controls, ...settingsControls(s, rules()));
       menu.refocus();
     };
-    return { presets, onEdit: presets === null ? null : () => menu.host.openSettings(back, { tab: 'experimental' }), pick };
+    return { presets, onEdit: presets === null ? null : () => menu.openSettings(back, { tab: 'experimental' }), pick };
   };
   return {
     id: 'lobby-create',
@@ -364,7 +365,7 @@ export function lobbyScreen(menu: Menu): Screen {
         ? null
         : () => {
             close();
-            menu.host.openSettings(() => {
+            menu.openSettings(() => {
               // The lobby may have gone, or started, while the settings were open.
               const now = lobby.state;
               if (now !== null && now.status === 'open' && lobby.isHost) configure(now, { draft, name: name.input.value, pick });
@@ -398,14 +399,13 @@ export function lobbyScreen(menu: Menu): Screen {
     const s = lobby.state;
     if (!s) {
       setChildren(teams, h('div.mn-empty', null, lobby.status === 'connecting' ? t('custom.joining') : t('custom.notInLobby')));
-      setChildren(actions, secondary(t('custom.back'), () => menu.open('custom')));
+      setChildren(actions, secondary(t('custom.back'), () => toList(menu)));
       return;
     }
     const rules = lobbyRules(s.settings.physics ?? null);
     const title = el.querySelector('.mn-lobby-title') as HTMLElement;
     setChildren(title, s.settings.name, rules !== null ? ' ' : null, rules !== null ? h('span.mn-tag.mn-tag-exp', null, t('custom.tagExperimental')) : null);
     info.textContent = t('custom.info', {
-      playlist: playlistName(s.settings.mode),
       mode: s.settings.mode,
       net: netLabel(s.settings.net),
       length: lengthLabel(s.settings.matchLengthSeconds),
@@ -438,7 +438,7 @@ export function lobbyScreen(menu: Menu): Screen {
       isHost ? secondary(t('custom.configure'), () => configure(s), { disabled: s.status !== 'open' }) : null,
       secondary(t('custom.leaveLobby'), () => {
         lobby.leave();
-        menu.open('custom');
+        toList(menu);
       }),
     );
     // Keep the controller's place across re-renders (by the button's text: the language is fixed for the page).
@@ -454,7 +454,30 @@ export function lobbyScreen(menu: Menu): Screen {
   lobby.onError = (_code, message) => menu.toast(message, 'error');
   lobby.onClosed = (reason) => {
     menu.toast(lobbyCloseText(reason), reason === 'kicked' ? 'error' : 'info');
-    if (menu.top()?.id === 'lobby') menu.open('custom');
+    if (menu.top()?.id === 'lobby') toList(menu);
+  };
+
+  /** "Leave the lobby?": LEAVE leaves it and, once the sheet is gone, `go` takes the player on; STAY keeps it. */
+  const askLeave = (go: () => void): void => {
+    let leaving = false;
+    menu.modal({
+      title: t('custom.leaveTitle'),
+      body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
+      actions: [
+        {
+          label: t('custom.leave'),
+          primary: true,
+          onClick: () => {
+            lobby.leave();
+            leaving = true;
+          },
+        },
+        { label: t('custom.stay'), onClick: () => true },
+      ],
+      onClose: () => {
+        if (leaving) go();
+      },
+    });
   };
 
   return {
@@ -471,22 +494,11 @@ export function lobbyScreen(menu: Menu): Screen {
     },
     back: () => {
       if (!lobby.inLobby) return false;
-      menu.modal({
-        title: t('custom.leaveTitle'),
-        body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
-        actions: [
-          {
-            label: t('custom.leave'),
-            primary: true,
-            onClick: () => {
-              lobby.leave();
-              menu.open('custom');
-            },
-          },
-          { label: t('custom.stay'), onClick: () => true },
-        ],
-      });
+      askLeave(() => toList(menu));
       return true;
     },
+    // A section, a crumb, the wordmark, the chip or the search pill: the same question first (a
+    // member who walked away unasked would hold the lobby's next start, LobbyDO's in_game wait).
+    leaveGuard: () => (lobby.inLobby ? askLeave : null),
   };
 }

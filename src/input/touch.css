@@ -1,14 +1,16 @@
 /*
- * On-screen touch controls (src/input/TouchControls.ts). Every class is prefixed `tc-`; the palette,
- * font, shadow and safe-area insets come from the custom properties in src/style.css (:root).
+ * On-screen touch controls (src/input/TouchControls.ts). Every class is prefixed `tc-`; colours,
+ * type, layers and safe-area insets are the tokens of src/ui/styles/tokens.css. The see-through
+ * whites and inks of the stick and the buttons are this layer's own (it has to show the pitch
+ * under a thumb); PR 9 of the Tablero plan redraws them.
  *
  * The layer is in #hud right after the Hud root and shows only with `tc-show` (a match played in
  * touch mode). The rules under `.tc-on` (on #hud while that match is on screen in touch mode,
  * played or paused, so the HUD does not reshuffle behind the pause screen) move or hide the parts
  * of the match / training HUD the controls replace, so a phone driven by a pad keeps the usual
  * HUD. Sizes follow the viewport height (dvh, vh where dvh is missing) with px clamps; insets add
- * the safe areas. Only transforms move anything, and nothing uses backdrop-filter (expensive on
- * phone GPUs).
+ * the safe areas. Only transforms move anything, and nothing blurs what is under it (expensive on
+ * phone GPUs: no backdrop blur anywhere, tests/css-budget.test.mjs).
  *
  * The TouchControls root routes every finger itself (hit tests on the measured circles), so its
  * children never take the pointer.
@@ -37,7 +39,7 @@
   -webkit-user-select: none;
   user-select: none;
   color: var(--text);
-  font-family: var(--font);
+  font-family: var(--font-display);
   font-stretch: condensed;
   text-shadow: var(--shadow);
 }
@@ -114,9 +116,10 @@
   border-radius: 50%;
   background: rgba(7, 10, 20, 0.4);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.08em;
   line-height: 1;
+  text-transform: uppercase;
   white-space: nowrap;
   transition:
     transform 0.06s,
@@ -126,7 +129,7 @@
 
 .tc-btn.tc-down {
   transform: scale(0.92);
-  border-color: #fff;
+  border-color: var(--text);
   background: rgba(244, 247, 255, 0.26);
 }
 
@@ -135,14 +138,14 @@
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-boost);
   height: var(--tc-boost);
-  border-color: rgba(198, 255, 46, 0.75);
+  border-color: var(--brand-line);
   color: var(--brand);
   font-size: clamp(14px, 4vh, 20px);
 }
 
 .tc-boost.tc-down {
   border-color: var(--brand);
-  background: rgba(198, 255, 46, 0.3);
+  background: var(--brand-glow);
 }
 
 .tc-jump {
@@ -179,12 +182,12 @@
 
 .tc-cam {
   right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-small) + var(--tc-gap));
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* Ball cam on: lit like the Hud's camera pill. */
 .tc-cam.tc-cam-on {
-  border-color: rgba(198, 255, 46, 0.75);
+  border-color: var(--brand-line);
   color: var(--brand);
 }
 
@@ -209,15 +212,23 @@
   display: none;
 }
 
-/* The boost meter leaves the stick's corner for a compact spot under the scorebug. */
+/* The boost meter leaves the stick's corner for a compact plate under the scorebug (clear of its
+   notch; plan PR 9 moves the amount into BOOST). */
 .tc-on .hud-boost {
-  top: calc(var(--safe-top) + clamp(10px, 2vh, 20px) + clamp(36px, 5.6vh, 52px) + 8px);
+  top: calc(var(--safe-top) + clamp(10px, 3.4vh, 32px) + clamp(36px, 6vh, 56px) + 14px);
   bottom: auto;
+  padding: 6px 10px 7px 8px;
+  row-gap: 3px;
+}
+
+.tc-on .hud-boost-label {
+  font-size: clamp(12px, 2.6vh, 18px);
 }
 
 .tc-on .hud-boost-bar {
   width: clamp(96px, 18vw, 170px);
-  height: clamp(10px, 2vh, 16px);
+  height: clamp(10px, 2.4vh, 18px);
+  margin-bottom: 3px;
 }
 
 .tc-on .hud-boost-value {
@@ -239,13 +250,7 @@
   visibility: hidden;
 }
 
-/* Debug readouts (F3) under the small buttons. Without debug the fps readout stays hidden here
-   (style.css's later `.hud-fps` display wins over its own `display: none`, and the readout would
-   show through the PAUSE button). */
-.tc-on .hud-root:not(.hud-debug) .hud-fps {
-  display: none;
-}
-
+/* Debug readouts (F3) under the small buttons (hidden without debug: style.css .hud-fps). */
 .tc-on .hud-fps {
   top: calc(var(--safe-top) + clamp(16px, 4vh, 24px) + clamp(48px, 12vh, 60px) + 8px);
 }
@@ -261,13 +266,16 @@
   display: none;
 }
 
-/* ---- Rotate your phone: portrait on a phone or tablet in touch mode covers everything --------
-   (the Game pauses an offline match on the same turn; a pad player keeps the portrait view). */
+/* ---- Rotate your phone: an upright phone in touch mode, for the match only ------------------
+   The menus work upright (src/ui/styles/shell.css: the tab bar); a match asks to turn the phone
+   (#hud without .mn-open: a match, its pause, a training pack). A tablet (600 wide or more upright)
+   plays either way. The Game pauses an offline match on the same turn (Game.portraitQuery, the
+   same query); a pad player keeps the portrait view. */
 
 .tc-rotate {
   position: absolute;
   inset: 0;
-  z-index: 80; /* above the menus (40), the settings screen (60) and the Turnstile slot (70) */
+  z-index: var(--z-rotate); /* above the HUD, the pause, the settings screen (60) and the Turnstile slot (70) */
   display: none;
   flex-direction: column;
   align-items: center;
@@ -276,7 +284,7 @@
   padding: calc(var(--safe-top) + 24px) calc(var(--safe-right) + 24px) calc(var(--safe-bottom) + 24px) calc(var(--safe-left) + 24px);
   background: var(--ink);
   color: var(--text);
-  font-family: var(--font);
+  font-family: var(--font-body);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -287,8 +295,8 @@
   -webkit-touch-callout: none;
 }
 
-@media (orientation: portrait) and (pointer: coarse) {
-  .tg-touch .tc-rotate {
+@media (orientation: portrait) and (pointer: coarse) and (max-width: 599px) {
+  .tg-touch :not(.mn-open) > .tc-rotate {
     display: flex;
   }
 }
@@ -318,12 +326,9 @@
   }
 }
 
+/* Reduced motion (the rest is the one block of src/style.css): the phone rests turned. */
 @media (prefers-reduced-motion: reduce) {
   .tc-rotate-phone {
-    animation: none;
     transform: rotate(-90deg);
-  }
-  .tc-btn {
-    transition: none;
   }
 }

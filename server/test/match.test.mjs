@@ -510,3 +510,13 @@ test('Worker /api/leave forwards { playerId, matchId } to the matchmaker (matchI
   );
   assert.ok(h.mmCalls.every((c) => c.path === '/leave'));
 });
+
+test("Worker /api/config hands the client the server queue's bot fill (MatchmakerDO BOT_FILL_MS: the menus' bots countdown)", async () => {
+  const { BOT_FILL_MS } = await import('../src/MatchmakerDO.ts');
+  const { env } = workerEnv({ status: 200, body: {} });
+  const res = await worker.fetch(new Request('http://127.0.0.1:8787/api/config'), env);
+  assert.equal(res.status, 200);
+  const cfg = await res.json();
+  assert.equal(cfg.botFillMs, BOT_FILL_MS);
+  assert.equal(cfg.botFillMs, 10_000, 'the constant the server queue fills with');
+});

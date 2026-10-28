@@ -49,11 +49,12 @@
  *
  * #diag=audit also drains gl.getError() and audits each linked program (link status, limits) on
  * every refresh; plain #diag only counts them (a status read can wait on a compile without
- * KHR_parallel_shader_compile). The panel also shows the frame rate (frameStats.ts), the CPU per
- * frame of the ball prediction, the bots, the physics step and the render call, the wasm memory,
- * the pipelines, why the session runs its tier (bootTier.ts), the pointer, the secure context and
- * the pixel ratio, logs one JSON line every 5 s ('[diag-json] {...}') and has a button that loses
- * the context or the device (`__diag.loseContext()`): the safety net's test.
+ * KHR_parallel_shader_compile). The panel also shows the drawn frame rate and the animation frames
+ * the loop ran (frameStats.ts: under the menus the scene is drawn slower or held, Game.ts), the
+ * stalls, the CPU per frame of the ball prediction, the bots, the physics step and the render
+ * call, the wasm memory, the pipelines, why the session runs its tier (bootTier.ts), the pointer,
+ * the secure context and the pixel ratio, logs one JSON line every 5 s ('[diag-json] {...}') and
+ * has a button that loses the context or the device (`__diag.loseContext()`): the safety net's test.
  *
  * Cost: nothing without the flags (one string test at boot). With #diag the context or device is
  * wrapped once (shader sources, link status read back once a second): diagnostics only.
@@ -792,7 +793,7 @@ export class GpuDiag {
     const st = diagStats !== null ? diagStats.snapshot() : null;
     if (st !== null) {
       const ms = (v: number): string => v.toFixed(2);
-      lines.push(`fps  1 s min ${st.fpsMin1.toFixed(1)} avg ${st.fpsAvg1.toFixed(1)} | 5 s avg ${st.fpsAvg5.toFixed(1)} | frames > 50 ms ${st.over50}, > 100 ms ${st.over100} (since warm-up)`);
+      lines.push(`fps  1 s min ${st.fpsMin1.toFixed(1)} avg ${st.fpsAvg1.toFixed(1)} of ${st.rafAvg1.toFixed(0)} rAF | 5 s avg ${st.fpsAvg5.toFixed(1)} | frames > 50 ms ${st.over50}, > 100 ms ${st.over100} (since warm-up)`);
       lines.push(`cpu  ms/frame: ball pred ${ms(st.cpu.pred)} (worst ${ms(st.predMax)}) | bots ${ms(st.cpu.bots)} | step ${ms(st.cpu.step)} | render ${ms(st.cpu.render)} | wasm ${(s.wasmBytes / 1048576).toFixed(1)} MB`);
     }
     const pipelines = (this.gpu as unknown as { _pipelines?: { caches?: Map<unknown, unknown> } })._pipelines?.caches?.size ?? -1;
@@ -831,6 +832,7 @@ export class GpuDiag {
           ratio: +s.pixelRatio.toFixed(4),
           fps1: st !== null ? [+st.fpsMin1.toFixed(1), +st.fpsAvg1.toFixed(1)] : null,
           fps5: st !== null ? +st.fpsAvg5.toFixed(1) : null,
+          raf1: st !== null ? +st.rafAvg1.toFixed(1) : null,
           over50: st?.over50 ?? null,
           over100: st?.over100 ?? null,
           cpu: st !== null ? { pred: +st.cpu.pred.toFixed(2), predMax: +st.predMax.toFixed(2), bots: +st.cpu.bots.toFixed(2), step: +st.cpu.step.toFixed(2), render: +st.cpu.render.toFixed(2) } : null,

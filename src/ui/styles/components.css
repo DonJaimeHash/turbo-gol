@@ -1,0 +1,504 @@
+/* The shell's components (plan §1.3): pills (src/ui/shell/pills.ts), drawn keys and buttons
+   (components/glyphs.ts), sheets (components/sheet.ts), toasts (components/toast.ts), the
+   search spinner, the slot and GARAJE's "coming soon" panel. rem as in shell.css; colours, font
+   sizes and radii as tokens only (tests/css-budget.test.mjs). */
+
+/* ---- Pills: 36 tall (44 on a phone and a TV), round ends -------------------------------------- */
+.mn-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.25rem;
+  padding: 0 0.875rem;
+  font: 600 var(--t-small) / 1 var(--font-body);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
+.mn-pill .mn-icon {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+}
+
+.mn-pill-main {
+  color: var(--text);
+}
+
+.mn-pill-sep {
+  width: 1px;
+  height: 1rem;
+  background: var(--edge-hi);
+}
+
+.mn-pill-act {
+  color: var(--text);
+}
+
+.mn-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.mn-dot.on {
+  background: var(--ok);
+}
+
+/* Search: [spinner CASUAL · 2v2 0:42] [✕], two buttons in one pill. */
+.mn-pill-search {
+  gap: 0.25rem;
+  padding: 0 0.25rem 0 0.75rem;
+  border-color: var(--brand-line);
+  cursor: default;
+}
+
+.mn-pill-open,
+.mn-pill-x {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 100%;
+  padding: 0;
+  font: inherit;
+  color: var(--text);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.mn-pill-open .mn-pill-main {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.mn-pill-time {
+  min-width: 2.5em;
+  font-weight: 700;
+}
+
+.mn-pill-x {
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--surface-3);
+}
+
+.tg-touch .mn-pill-x {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.mn-pill-update {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.mn-pill-update .mn-pill-main {
+  color: var(--warn);
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* 44 on a phone (its ✕ fits inside upright too); 40 in a TV's hint bar, as tall as the bar (by
+   Inicio's plate, 44: screens/home.css). */
+html[data-shell='rail'] .mn-pill,
+html[data-shell='tabs'] .mn-pill {
+  height: 2.75rem;
+}
+
+html[data-shell='tv'] .mn-pill {
+  height: 2.5rem;
+}
+
+/* Upright and searching: the search pill is its spinner, clock and ✕; the region pill steps aside. */
+html[data-layout='portrait'] .mn-searching .mn-pill-region,
+html[data-layout='portrait'] .mn-pill-search .mn-pill-main {
+  display: none;
+}
+
+/* Upright and beside the search or update pill: the region pill is its icon and status dot. */
+html[data-layout='portrait'] .mn-pill-region > :not(.mn-icon):not(.mn-dot),
+.mn-pills-more .mn-pill-region > :not(.mn-icon):not(.mn-dot) {
+  display: none;
+}
+
+/* A TV's hint bar (Inicio sets the pills by the plate, with room for the region): the region's
+   name steps aside, not the state read at 3 m ("● Online", "Offline | RETRY"). */
+html[data-shell='tv'] .mn-hint .mn-pill-region .mn-pill-main,
+html[data-shell='tv'] .mn-hint .mn-pill-region .mn-pill-main + .mn-pill-sep {
+  display: none;
+}
+
+@media (hover: hover) {
+  .mn-pill-region:hover,
+  .mn-pill-update:hover {
+    border-color: var(--edge-hi);
+    background: var(--surface-2-97);
+  }
+  .mn-pill-x:hover {
+    background: var(--surface-2);
+  }
+}
+
+/* Over the Hud's settings screen (Menu.float, outside .mn): the search pill, top centre; upright at
+   the bottom, clear of the settings' title. */
+.mn-float {
+  position: absolute;
+  top: calc(var(--safe-top) + 0.75rem);
+  left: 50%;
+  z-index: var(--z-over-settings);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+html[data-layout='portrait'] .mn-float {
+  top: auto;
+  bottom: calc(var(--safe-bottom) + 1rem);
+}
+
+.mn-float[hidden],
+.mn-float [hidden] {
+  display: none;
+}
+
+.mn-spinner {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border: 3px solid var(--edge-hi);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: mn-spin 0.9s linear infinite;
+}
+
+@keyframes mn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Glyphs: a pad's face buttons, bumpers, Start; keycaps; a remote's round buttons ------------- */
+.mn-glyph,
+.mn-key {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text);
+  background: var(--surface-3);
+  border: 1px solid var(--edge-hi);
+  font: 700 var(--t-label) / 1 var(--font-body);
+}
+
+.mn-glyph {
+  min-width: 1.375rem;
+  height: 1.375rem;
+  border-radius: 50%;
+}
+
+.mn-glyph svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.mn-glyph-dot {
+  fill: var(--text-3);
+}
+
+.mn-glyph-dot-on {
+  fill: var(--text);
+}
+
+.mn-glyph-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.mn-glyph-letter {
+  font: 700 var(--t-small) / 1 var(--font-display);
+  color: var(--text);
+}
+
+.mn-glyph-bumper {
+  width: 2.125rem;
+  height: 1.25rem;
+  border-radius: var(--r-key);
+  transform: skewX(-20deg);
+}
+
+.mn-glyph-bumper > span {
+  transform: skewX(20deg);
+}
+
+.mn-glyph-start {
+  width: 1.5rem;
+  border-radius: var(--r-slot);
+}
+
+.mn-glyph-round {
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 0.25rem;
+  border-radius: var(--r-pill);
+}
+
+.mn-key {
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 0.375rem;
+  border-bottom-width: 2px;
+  border-radius: var(--r-key);
+  font-family: var(--font-display);
+  font-size: var(--t-small);
+  background: var(--surface-1);
+}
+
+/* The TV at 3 m (plan §1.6): face buttons, the remote's and keys 34, bumpers 42 x 24. */
+html.tg-tv .mn-glyph,
+html.tg-tv .mn-key {
+  min-width: 2.125rem;
+  height: 2.125rem;
+}
+
+html.tg-tv .mn-glyph svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+html.tg-tv .mn-glyph-bumper {
+  min-width: 0;
+  width: 2.625rem;
+  height: 1.5rem;
+}
+
+html.tg-tv .mn-glyph-start {
+  width: 2.125rem;
+}
+
+/* ---- Sheets: centred, 560 wide at most (from the bottom on a phone), the veil behind ------------ */
+.mn-modal-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: var(--veil);
+}
+
+.mn-sheet {
+  width: min(35rem, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  scroll-padding-block: 16px 24px;
+  padding: 1.5rem;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-sheet);
+  animation: mn-sheet-in var(--dur-sheet-in) var(--ease);
+}
+
+.mn-sheet-title {
+  margin-bottom: 0.75rem;
+  font: italic 700 var(--t-sheet) / 1.1 var(--font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.mn-sheet-body {
+  color: var(--text-2);
+  font-size: var(--t-body);
+  line-height: 1.45;
+}
+
+.mn-sheet-body p {
+  margin: 0 0 0.5rem;
+}
+
+.mn-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.mn-sheet-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* Short options side by side where the sheet is wide (seven regions fit a TV without a scroll). */
+.mn-sheet-grid {
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+}
+
+.mn-sheet-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: left;
+  text-decoration: none;
+}
+
+.mn-sheet-option .mn-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.mn-sheet-option-on {
+  background: var(--surface-3);
+}
+
+.mn-about-build {
+  font-size: var(--t-small);
+}
+
+@keyframes mn-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+}
+
+html[data-shell='rail'] .mn-modal-layer,
+html[data-layout='portrait'] .mn-modal-layer {
+  align-items: end;
+  padding: 0;
+}
+
+html[data-shell='rail'] .mn-sheet,
+html[data-layout='portrait'] .mn-sheet {
+  max-height: 90%;
+  padding-bottom: calc(1.5rem + var(--safe-bottom));
+  border-radius: var(--r-panel) var(--r-panel) 0 0;
+}
+
+/* ---- Toasts: bottom right, above the sheets ------------------------------------------------ */
+.mn-toasts {
+  position: absolute;
+  right: calc(var(--safe-right) + 1.5rem);
+  bottom: calc(var(--safe-bottom) + 3.5rem);
+  z-index: 6;
+  display: grid;
+  gap: 0.5rem;
+  max-width: min(26rem, calc(100% - 2rem));
+  pointer-events: none;
+}
+
+.mn-toast {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.75rem 1rem;
+  font-size: var(--t-small);
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-tile);
+  box-shadow: var(--shadow-sheet);
+  animation: mn-sheet-in var(--dur-toast-in) var(--ease);
+  transition:
+    opacity var(--dur-toast-out),
+    transform var(--dur-toast-out);
+}
+
+.mn-toast-out {
+  opacity: 0;
+  transform: translateY(0.5rem);
+}
+
+.mn-toast-icon {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--info);
+}
+
+.mn-toast-error {
+  border-color: var(--danger-line);
+}
+
+.mn-toast-error .mn-toast-icon {
+  color: var(--danger);
+}
+
+.mn-toast-ok .mn-toast-icon {
+  color: var(--ok);
+}
+
+html[data-shell='rail'] .mn-toasts {
+  bottom: calc(var(--safe-bottom) + 0.75rem);
+}
+
+html[data-shell='tabs'] .mn-toasts {
+  right: 1rem;
+  bottom: calc(var(--safe-bottom) + 6.5rem);
+}
+
+/* ---- GARAJE until the cars land: one quiet panel ------------------------------------------- */
+.mn-soon {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  max-width: 36rem;
+  padding: 1.5rem;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+}
+
+.mn-soon-icon .mn-icon {
+  width: 3rem;
+  height: 3rem;
+  color: var(--text-2);
+}
+
+/* ---- Slot (mn-slot, plan §1.3): a Label on a background slanted -20 degrees (on ::before, not
+   focusable), the text upright; 24 tall (28 on a TV). */
+.mn-slot {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  height: 1.5rem;
+  padding: 0 0.75rem;
+  font: 700 var(--t-label) / 1 var(--font-display);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.mn-slot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--surface-3);
+  border-radius: var(--r-slot);
+  transform: skewX(-20deg);
+}
+
+html.tg-tv .mn-slot {
+  height: 1.75rem;
+}
+
+.mn-soon-text {
+  margin: 0;
+  font-size: var(--t-body);
+  color: var(--text-2);
+}

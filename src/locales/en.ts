@@ -8,15 +8,16 @@ import type { Messages } from '../i18n';
 export default {
   // Language picker
   'lang.title': 'Language',
+  // PERFIL's section heading over the language row (in capitals, as the other headings)
+  'lang.heading': 'LANGUAGE',
   'lang.auto': 'Automatic ({language})',
   'lang.busy': 'Stop searching or leave the lobby to change the language',
+  // Over the list: choosing another language reloads the page
+  'lang.reloadNote': 'The game reloads (a few seconds)',
   // Closes the language picker without a change
   'lang.cancel': 'CANCEL',
 
-  // Names of shared ids (src/ui/names.ts)
-  'playlist.1v1': 'One-on-one',
-  'playlist.2v2': 'Pairs',
-  'playlist.3v3': 'Trios',
+  // Names of shared ids (src/ui/names.ts; a playlist is named by its format alone: 1v1, 2v2, 3v3)
   'region.SA': 'South America',
   'region.NA': 'North America',
   'region.EU': 'Europe',
@@ -62,36 +63,98 @@ export default {
   'tier.division': '{tier} {division}',
 
   // Menu chrome: top bar, footer, key hints, search banner (src/ui/Menu.ts)
-  // Footer link to the game's source code. The AGPL-3.0 requires this link in every language: never drop it.
-  'menu.source': 'Source code',
-  // Tooltip of the source link; {license} is the license id (AGPL-3.0)
+  // The link to the game's source code (hint bar, the phone's rail, About); {license} is the license
+  // id (AGPL-3.0). The AGPL-3.0 requires this link in every language: never drop it.
   'menu.sourceTitle': 'Source code ({license})',
+  // Its short form, where the hint bar is crowded (a TV's pills with a wide system font)
+  'menu.sourceShort': 'Source ({license})',
   // Footer link to the third-party licenses file
   'menu.licenses': 'Licenses',
   // Tooltip of the footer Discord link. The community server speaks English, so other languages may say so, as the Spanish does
   'menu.discordTitle': 'Community on Discord',
-  // Key hints in the bottom bar on the home screen. The {...Keys} are key/button names and are not translated. Keep the spacing.
-  'menu.hints': '{moveKeys}  move   ·   {selectKeys}  select',
-  // Key hints in the bottom bar on every other screen (adds back)
-  'menu.hintsBack': '{moveKeys}  move   ·   {selectKeys}  select   ·   {backKeys}  back',
   // Top-bar account chip, under the player name, when signed in with no rank yet
   'menu.account': 'Account',
-  // Top-bar account chip, under the guest name
-  'menu.guestSignIn': 'Guest · Sign in',
+  // Top-bar account chip, under the guest name (it opens PROFILE, where a guest signs in)
+  'menu.guestSignIn': 'Sign in',
   // Top bar: players in a match in the selected region
   'menu.playing': { one: '{count} playing', other: '{count} playing' },
   // Top-bar region when set to automatic, before the server has said which region
   'menu.regionAuto': 'Auto',
   // Top-bar region when set to automatic; {region} is the detected region's name
   'menu.regionAutoNamed': 'Auto · {region}',
-  // Matchmaking banner: the kind of search
+  // Search pill (top bar): the kind of search, before its formats and time ('CASUAL · 2v2 · 0:42')
   'menu.searchRanked': 'COMPETITIVE',
-  // Matchmaking banner: the kind of search
+  // Search pill: the kind of search
   'menu.searchCasual': 'CASUAL',
-  // Matchmaking banner button that stops the search
-  'menu.searchCancel': 'CANCEL',
-  // Tooltip / screen-reader name of the top-bar '‹' button (touch screens): back to the previous screen
+  // Tooltip / screen-reader name of the '‹' button of a stacked screen: back to the previous screen
   'menu.back': 'Back',
+  // Dialog on the home screen after the system Back (Android's back gesture or button, a TV remote's
+  // BACK, the browser's back button); {game} is the game's name
+  'menu.leaveTitle': 'Leave {game}?',
+  // The dialog's text: while it is up, the next Back leaves the page ("Back" is the system button)
+  'menu.leaveText': 'Press Back again to leave.',
+  // The same dialog opened by Esc, a controller's B or the menus' ‹ (another press of those closes
+  // it): the LEAVE button is the way out
+  'menu.leaveTextKey': 'Choose LEAVE to close the game.',
+  // ... and when there is no page before the game's to go back to (no LEAVE button)
+  'menu.leaveTextTab': 'To leave, close this tab.',
+  // The dialog's buttons, uppercase: close it / go back to the page before the game
+  'menu.leaveStay': 'KEEP PLAYING',
+  'menu.leaveGo': 'LEAVE',
+
+  // The menu shell (src/ui/shell/*): sections, hints, pills, About, the new-version sheet
+  // The five sections, in the top bar (PC, TV) and the phone's rail: capitals, short (the rail
+  // gives each 91 px at 14 px on a phone held sideways; a longer one shrinks to fit)
+  'nav.play': 'PLAY',
+  'nav.training': 'TRAINING',
+  'nav.garage': 'GARAGE',
+  'nav.leaderboard': 'LEADERBOARD',
+  'nav.profile': 'PROFILE',
+  // The same in an upright phone's tab bar, where five share 390 px: at most about 8 letters
+  'nav.trainingShort': 'TRAIN',
+  'nav.leaderboardShort': 'RANKS',
+  // The modes screen's breadcrumb (PLAY › MODES › CASUAL: plan PR 6)
+  'nav.modes': 'MODES',
+  // Screen-reader name of the section bar; also the hint bar's verb for switching sections
+  'nav.sections': 'Sections',
+  // Hint bar verb for Q / E on a screen with tabs of its own (Leaderboard's playlists)
+  'nav.tabs': 'Tabs',
+  // The same on MODES, whose tabs are the modes (Q E / LB RB step them)
+  'nav.tabsModes': 'Modes',
+  // Hint bar verbs, after a drawn key or button (A, ENTER, OK...)
+  'nav.select': 'Select',
+  'nav.back': 'Back',
+  // The hint bar's Back on a TV remote (its ↩ button)
+  'nav.backRemote': 'Back',
+  'nav.settings': 'Settings',
+  'nav.cancelSearch': 'Cancel search',
+  // Tooltips of the ‹ › beside the sections (mouse)
+  'nav.prevSection': 'Previous section',
+  'nav.nextSection': 'Next section',
+  // Hint bar link and rail button: the About sheet (build, licenses, Discord)
+  'nav.about': 'About',
+  // About sheet title; {game} is the game's name
+  'nav.aboutTitle': 'About {game}',
+  // Closes the About sheet
+  'nav.close': 'CLOSE',
+  // Region pill: the connection is up (below 5 players in a match no count is shown)
+  'pill.online': 'Online',
+  // Region pill: the server cannot be reached; RETRY tries again
+  'pill.offline': 'Offline',
+  'pill.retry': 'RETRY',
+  'pill.connecting': 'Connecting…',
+  // Region pill's screen-reader name; {status} is pill.online or menu.playing
+  'pill.regionLabel': 'Region: {region}, {status}. Change region',
+  // The server refused this page's version (a new one was deployed): a sheet that stays until
+  // answered, then the top bar's pill
+  'update.title': "There's a new version",
+  'update.text': 'Reload the page to keep playing online. It takes a few seconds.',
+  'update.reload': 'RELOAD NOW',
+  'update.later': 'NOT NOW',
+  'update.pill': 'UPDATE TO PLAY',
+  // GARAGE section until the cars arrive
+  'garage.soon': 'COMING SOON',
+  'garage.soonText': 'Cars and stadiums, all in one place.',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   // Rank badge tooltip and rating card while placement matches are still left
@@ -113,92 +176,132 @@ export default {
   // Region selector option: automatic; {region} is the detected region's name
   'common.regionAutoNamed': 'Automatic ({region})',
 
-  // Home screen (src/ui/screens/play.ts)
-  // Home screen title (breadcrumb)
+  // Inicio, PLAY's root (src/ui/screens/home.ts)
+  // Its title (breadcrumb)
   'home.title': 'Home',
-  // Home tile and heading of the Play hub
-  'home.play': 'PLAY',
-  'home.playSub': 'Casual · Competitive · Lobbies · Friendly',
-  'home.training': 'TRAINING',
-  'home.trainingSub': 'Free play and shot packs',
-  'home.leaderboard': 'LEADERBOARD',
-  'home.leaderboardSub': "The season's best",
-  'home.profile': 'PROFILE',
-  'home.profileSub': 'Account, ranks and stats',
-  'home.settings': 'SETTINGS',
-  'home.settingsSub': 'Controls, audio and graphics',
-  // Home tile that opens the language picker; its subtitle is the current language's own name
-  'home.language': 'LANGUAGE',
-  // {season} is the season number; shown uppercase by CSS
-  'home.season': 'Season {season}',
-  'home.loadingProfile': 'Loading your profile…',
-  'home.guestTitle': 'Play Competitive',
-  // {playlist1}..{playlist3} are the playlist names (playlist.1v1, playlist.2v2, playlist.3v3)
-  'home.guestText': 'Create an account to get a rank in {playlist1}, {playlist2} and {playlist3}. As a guest you can play Casual, custom lobbies and training.',
-  // Button on the home side panel and on the locked Competitive screen
-  'home.signIn': 'SIGN IN / CREATE ACCOUNT',
+  // The hero: plays the last queue in one press
+  'home.playNow': 'PLAY NOW',
+  // The same on a TV (less room at 3 m)
+  'home.playNowTv': 'PLAY',
+  // The hero's corner tag: a match always starts (bots fill the empty places)
+  'home.alwaysMatch': 'ALWAYS A MATCH',
+  // The hero while a search runs, over its clock
+  'home.searching': 'SEARCHING',
+  // The hero while the player is in a lobby
+  'home.backToLobby': 'BACK TO THE LOBBY',
+  // Under it: {code} is the lobby's code, {count} / {max} its players and places
+  'home.lobbySub': 'Lobby {code} · {count}/{max}',
+  // The hero while a match of this tab still runs after a reload
+  'home.rejoin': 'BACK TO YOUR MATCH',
+  // Under it: {queue} is 'Casual · 2v2', {time} the match time left (m:ss)
+  'home.rejoinSub': '{queue} · {time} left',
+  // The player plate: a guest's line, an account's without a placed rank
+  'home.guestRank': 'Guest · Unranked',
+  'home.unranked': 'Unranked',
+  // The plate's line on a TV, after the rank; {car} is the car's name
+  'home.carLine': 'Car: {car}',
+  // Screen-reader names of the plate's two buttons; {rank} is a rank ('Gold II · 2v2') or home.unranked
+  'home.plateProfile': 'Profile: {name}, {rank}',
+  'home.plateGarage': 'Garage: your car is {car}',
 
-  // Play hub, Casual and Competitive (src/ui/screens/play.ts)
-  // Play hub title (breadcrumb)
-  'play.title': 'Play',
-  // Play hub tile and Casual screen heading
-  'play.casual': 'CASUAL',
-  'play.casualSub': 'Unranked · P2P or server',
-  // Play hub tile and Competitive screen heading
-  'play.ranked': 'COMPETITIVE',
-  'play.rankedSub': 'Rank per playlist · server',
-  'play.custom': 'CUSTOM LOBBIES',
-  'play.customSub': 'Public and private lobbies',
-  // Play hub tile and Friendly screen heading
-  'play.friendly': 'FRIENDLY',
-  'play.friendlySub': 'Offline against the AI',
-  // Players searching for a match right now
-  'play.searching': { one: '{count} searching', other: '{count} searching' },
-  // Open custom lobbies
-  'play.lobbies': { one: '{count} lobby', other: '{count} lobbies' },
-  // Corner tag of the Competitive tile for guests: an account is needed
-  'play.accountLocked': '🔒 Account',
-  // {region} is the matchmaking region label ('Auto · Europe')
-  'play.playingNow': { one: '{region} · {count} playing now', other: '{region} · {count} playing now' },
-  // {playlist} is the mode id ('2v2'), {count} the cars on the field
-  'play.playlistCars': { one: '{playlist} · {count} car', other: '{playlist} · {count} cars' },
-  'play.search': 'FIND MATCH',
-  'play.cancelSearch': 'CANCEL SEARCH',
-  // A search of the other kind (Casual / Competitive) is running
-  'play.cancelOtherSearch': 'CANCEL OTHER SEARCH',
-  'play.connection': 'Connection',
-  'play.netP2p': 'P2P (recommended)',
-  'play.netServer': 'Server',
-  'play.casualIntro': 'Quick unranked matches. Pick one or more playlists: you join whichever finds a match first.',
-  'play.playlists': 'PLAYLISTS',
-  'play.options': 'OPTIONS',
-  'play.casualNote': 'P2P: cars sync directly between players (less lag within one region). If nobody else is searching, you play against bots on a server.',
-  // Casual screen title (breadcrumb)
+  // Inicio's mode tiles: a title, a subtitle (PC) and its short form (phone, tablet, TV), a corner tag
+  'modes.casual': 'CASUAL',
+  'modes.casualSub': 'Quick matches, no rank',
+  'modes.casualSubShort': 'Quick, no rank',
+  'modes.friends': 'WITH FRIENDS',
+  'modes.friendsSub': 'Make a lobby, share the link',
+  'modes.friendsSubShort': 'Private lobby, link',
+  // The short form on a TV (no link to share there: a code)
+  'modes.friendsSubTv': 'Make a lobby with a code',
+  // The tag of WITH FRIENDS
+  'modes.lobbies': 'LOBBIES',
+  // Against the bots, offline (also the offline hero's title)
+  'modes.vsAi': 'VS AI',
+  'modes.vsAiSub': '3-min match · offline',
+  'modes.vsAiSubShort': '3 min · offline',
+  'modes.vsAiSlot': 'FRIENDLY',
+  'modes.ranked': 'COMPETITIVE',
+  'modes.rankedSub': 'Climb the ranks · 5 placement matches',
+  'modes.rankedSubShort': 'Climb the ranks',
+  // COMPETITIVE's lock tag for a guest where menu.guestSignIn does not fit (a phone, a tablet)
+  'modes.signInShort': 'Sign in',
+
+  // MODES (src/ui/screens/modes.ts): its tabs (the titles above), the second line of two of them, and
+  // a guest's on COMPETITIVE
+  'modes.tabLobbiesSub': 'With friends, by code',
+  'modes.tabAiSub': 'Friendly · offline',
+  'modes.rankedLocked': 'Needs an account',
+  'modes.rankedIntro': 'One rank per format. Leaving a match locks Competitive.',
+  'modes.format': 'FORMAT',
+  // Region's row is common.region; this row opens the connection sheet
+  'modes.advanced': 'Advanced',
+  'modes.connection': 'Connection',
+  // The Advanced row's value; {net} is modes.netAuto / netP2p / netServer
+  'modes.connectionValue': 'Connection: {net}',
+  'modes.netAuto': 'Auto',
+  'modes.netP2p': 'P2P',
+  'modes.netServer': 'Server',
+  // Each choice's line in the connection sheet
+  'modes.netAutoHelp': 'The matchmaker picks: P2P with other players, a server if you play alone',
+  'modes.netP2pHelp': 'Cars sync directly between players; alone, a server with bots',
+  'modes.netServerHelp': 'A server in your region; bots join sooner',
+  // LOBBIES' action zone, over CREATE LOBBY
+  'modes.lobbiesAction': 'Make a lobby and share its code',
+  // The formats: a playlist is its format (1v1, 2v2, 3v3); ANY is whichever fills first
+  'format.any': 'ANY',
+  'format.anySub': '1v1, 2v2 or 3v3',
+  'format.fastest': 'FASTEST',
+  // The action zone and the searching panel (plan §1.4.1)
+  'search.find': 'FIND MATCH',
+  'search.title': 'FINDING A MATCH',
+  'search.unranked': 'UNRANKED',
+  'search.rankedTag': 'RANKED',
+  // {format} is '2v2' or format.anySub, {region} a region's name
+  'search.where': 'Looking for {format} in {region}',
+  // Followed by the time left (m:ss)
+  'search.bots': 'Bots join in',
+  'search.always': "There's always a match: if nobody comes, you play bots.",
+  'search.cancel': 'CANCEL SEARCH',
+  // Followed by training.freePlay, underlined: free play with the search still on
+  'search.whileWaiting': 'While you wait:',
+  'search.formatRestarts': 'Changing the format restarts the search.',
+  'search.needsAccount': 'Competitive needs an account',
+  'search.signIn': 'SIGN IN',
+  // {time} is duration() of the ban left: '24 hr'
+  'search.banned': 'Competitive locked · {time}',
+  'search.bannedLine': 'For leaving matches',
+  'search.playCasual': 'PLAY CASUAL',
+  // Free play while searching found a match: the banner until the match is on screen
+  // Free play's line on the training HUD while the search goes on
+  'search.practiceLine': 'Finding a match…',
+
+  // A TV without a controller: the hero's tag, then a sheet at a match's start (it closes by itself
+  // when a controller connects)
+  'tv.needPad': 'YOU NEED A CONTROLLER',
+  'tv.needPadText': 'Connect a controller (USB or Bluetooth) to play',
+  // Starts the match anyway (the remote's arrows drive)
+  'tv.needPadGo': 'CONTINUE ANYWAY',
+
+  // Asked once, at a new PC player's first match (src/ui/howPlay.ts): sets the controls
+  'howPlay.title': 'How will you play?',
+  'howPlay.kbm': 'MOUSE AND KEYBOARD',
+  'howPlay.keyboard': 'KEYBOARD ONLY',
+  'howPlay.pad': 'CONTROLLER',
+
+  // Casual and Competitive by name in a sentence (Inicio's hero subtitle: home.ts)
   'play.casualTitle': 'Casual',
-  // Still in placement matches
-  'play.unranked': 'Unranked',
   // Placement matches played / needed
   'play.placement': 'Placement {games}/{total}',
-  'play.mmr': '{mmr} MMR',
-  // The ban lengths grow with each abandon (src/net/rating.ts ABANDON_BANS_MS)
-  'play.rankedNote': 'Competitive is played on authoritative servers. The first 5 matches of each playlist are placement matches. Leaving a match counts as a loss and locks Competitive (5 min, 15 min, 1 h, 24 h).',
-  'play.rankedNeedsAccount': 'Competitive needs an account',
-  'play.rankedGuestText': 'Guests have no rank. Create a free account (username and password, or Google / Discord if enabled) and start your placement matches.',
-  'play.rankedIntro': 'One rank per playlist. Your MMR goes up or down depending on who you beat.',
   // {time} is a live m:ss countdown
   'play.rankedBan': 'Competitive locked for leaving matches: {time}',
-  // Competitive screen title (breadcrumb)
   'play.rankedTitle': 'Competitive',
 
-  // Friendly match (src/ui/screens/play.ts)
-  // Friendly screen title (breadcrumb)
-  'friendly.title': 'Friendly',
+  // MODES' VS AI tab (src/ui/screens/modes.ts)
   'friendly.mode': 'Mode',
   'friendly.difficulty': 'AI difficulty',
   // Where the match is played (the stadium's setting: harbour, canyon...); purely visual
   'friendly.theme': 'Stadium',
   'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
-  'friendly.match': 'MATCH',
   // Starts the friendly match
   'friendly.play': 'PLAY',
 
@@ -230,7 +333,6 @@ export default {
   'custom.noLobbies': 'No public lobbies in {region}. Create one!',
   // Under the lobby list: how many public lobbies, and the region
   'custom.lobbyCount': { one: '{count} lobby · {region}', other: '{count} lobbies · {region}' },
-  'custom.heading': 'CUSTOM LOBBIES',
   'custom.subtitle': 'Public lobbies in your region, or private ones by code. They never change your rank.',
   // Button on the lobby browser and heading of the create screen
   'custom.createLobby': 'CREATE LOBBY',
@@ -242,8 +344,6 @@ export default {
   'custom.colHost': 'Host',
   'custom.colNet': 'Network',
   'custom.colState': 'Status',
-  // Breadcrumb title of the lobby browser
-  'custom.screenTitle': 'Custom lobbies',
   'custom.loading': 'Loading lobbies…',
   // Lobby settings labels (settingMode ... settingLength)
   'custom.settingMode': 'Mode',
@@ -276,8 +376,8 @@ export default {
   'custom.joining': 'Joining the lobby…',
   'custom.notInLobby': "You're not in a lobby",
   'custom.back': 'BACK',
-  // Lobby summary line, e.g. 'Pairs 2v2 · P2P · 5 min · Public'. {lock} is ' · 🔒' when the lobby has a password, else empty.
-  'custom.info': '{playlist} {mode} · {net} · {length} · {visibility}{lock}',
+  // Lobby summary line, e.g. '2v2 · P2P · 5 min · Public'. {lock} is ' · 🔒' when the lobby has a password, else empty.
+  'custom.info': '{mode} · {net} · {length} · {visibility}{lock}',
   'custom.public': 'Public',
   'custom.private': 'Private',
   // Label next to the lobby's join code
@@ -650,6 +750,27 @@ export default {
   // then its "Add to Home Screen" item (use Safari's own names in your language); › joins the two steps
   'touch.installHint': 'Play full screen: tap Share › Add to Home Screen',
 
+  // Controls card (src/render/controlsCard.ts): during the kickoff countdown of the first matches
+  // and in free play, then a slim strip in a corner. Short: it shares the screen with the match.
+  // Card title, uppercase
+  'controls.title': 'CONTROLS',
+  // Tag next to the title in the very first match, uppercase
+  'controls.tagFirst': 'YOUR FIRST MATCH',
+  // Tag next to the title in the next ones; {n} of {total} (2 of 3), uppercase
+  'controls.tagMatch': 'MATCH {n} OF {total}',
+  // Row names; the keys / buttons of the player's own bindings come after them
+  'controls.drive': 'Drive',
+  'controls.steer': 'Steer',
+  'controls.jump': 'Jump',
+  'controls.boost': 'Boost',
+  'controls.ballCam': 'Ball cam',
+  // Mouse buttons in words, next to a small mouse drawing
+  'controls.mouseLeft': 'Left click',
+  'controls.mouseRight': 'Right click',
+  'controls.mouseMiddle': 'Wheel click',
+  // Line under the rows; {tab} is settings.tabKbm or settings.tabPad
+  'controls.change': 'Change them in Settings › {tab}',
+
   // In-match HUD (src/render/Hud.ts). Short: it shares a 375 px phone screen with the touch controls.
   // Scorebug team tags (top left, next to the score), uppercase, about 3 letters
   'hud.tagBlue': 'BLU',
@@ -671,14 +792,24 @@ export default {
   'hud.bot': 'BOT',
   // Scoreboard footer; {difficulty} is game.scoreboardEasy / Medium / Hard offline, game.scoreboardOnline / OnlineP2p online
   'hud.botDifficulty': 'Bot difficulty · {difficulty}',
+  // The goal banner, huge, every goal
+  'hud.goal': 'GOOOAL!',
+  // The chip under it: "Blue 1 – 0 Red"
+  'hud.goalScore': '{blueName} {blue} – {red} {redName}',
+  // For a screen reader: who scored and the score, or the score alone
+  'hud.goalBy': '{name} scores. Blue {blue}, Red {red}',
+  'hud.goalLabel': 'Goal. Blue {blue}, Red {red}',
+  // The feed (top centre) when you demolish a car; {count} is how many this match, uppercase
+  'hud.demolished': 'DEMOLISHED · {count}',
 
   // Pause screen (src/render/Hud.ts)
   // Title, huge, uppercase
   'pause.title': 'PAUSED',
-  // Line under the title; {resumeKeys} and {quitKeys} are key names (Esc / Start, Backspace / B), not translated. Keep the spacing.
-  'pause.hintDefault': '{resumeKeys} to resume  ·  {quitKeys} to quit',
+  // Line under the title; {resumeKeys} are key names (Esc / Start / B), not translated. Every one of
+  // them resumes (B and Backspace too): only the QUIT button leaves the match.
+  'pause.hintDefault': '{resumeKeys} to resume',
   // The same line with the player's pause keys; a mouse click on the game also resumes
-  'pause.hint': '{resumeKeys} or click to resume  ·  {quitKeys} to quit',
+  'pause.hint': '{resumeKeys} or click to resume',
   // Pause menu buttons (mouse, keys, controller and touch), uppercase
   // Back to the match
   'pause.resume': 'RESUME',
@@ -688,8 +819,70 @@ export default {
   'pause.rules': 'RULES',
   // Leave the match for the menus
   'pause.quit': 'QUIT',
-  // The QUIT button after one press in an online match: a second one leaves it (may count as an abandon)
-  'pause.quitConfirm': 'LEAVE MATCH?',
+  // Online the match goes on behind the pause: the title says so (a dot before it), uppercase
+  'pause.live': 'MATCH IN PROGRESS',
+  // Under it
+  'pause.liveSub': 'Your car stands still while this menu is open',
+  // Under QUIT: it is held (controller A, Enter, a finger) to leave the match
+  'pause.holdHint': 'Hold to leave',
+  // The same with a mouse: a double click leaves
+  'pause.dblHint': 'Double-click to leave',
+  // Under QUIT in a Competitive match
+  'pause.quitRanked': 'Counts as an abandon',
+
+  // The final screen (src/ui/screens/match/final.ts), about 2 s after the whistle
+  // Its slot's first word ("FINAL · COMPETITIVE · 2V2 · SOUTH AMERICA"), uppercase
+  'final.slot': 'FINAL',
+  // The result, huge, uppercase
+  'final.win': 'VICTORY',
+  'final.loss': 'DEFEAT',
+  'final.draw': 'DRAW',
+  // The kind of match in the slot and on PLAY AGAIN (Casual and Competitive use play.casualTitle / play.rankedTitle)
+  'final.vsAi': 'VS AI',
+  'final.lobby': 'Lobby',
+  // For a screen reader: the card, then the score
+  'final.label': 'Final: {outcome}, Blue {blue}, Red {red}',
+  'final.scoreLabel': 'Blue {blue}, Red {red}. Your team is {team}',
+  // The players table: its name for a screen reader, its column headers (uppercase)
+  'final.players': 'Players',
+  'final.colPlayer': 'PLAYER',
+  'final.colGoals': 'GOALS',
+  // The rank card (Competitive): its label, {mode} is 1V1 / 2V2 / 3V3
+  'final.yourRank': 'YOUR RANK · {mode}',
+  // While the server works the rating change out
+  'final.rankWaiting': 'Working out your rank…',
+  // For a screen reader, next to "+18" / "−12"
+  'final.rankUp': 'Up {mmr} MMR',
+  'final.rankDown': 'Down {mmr} MMR',
+  // Under the bar: what the next tier still takes
+  'final.toNext': '{mmr} MMR to {tier}',
+  // The MVP card: its label (uppercase), then "Name · 2 goals"
+  'final.mvpLabel': 'MVP · YOUR MATCH',
+  'final.goals': { one: '{count} goal', other: '{count} goals' },
+  // A match on a community server: its name, the tag (uppercase) and the rules
+  'final.server': 'Server: {name}',
+  'final.community': 'COMMUNITY SERVER',
+  'final.rules': 'Standard rules',
+  'final.rulesRanked': 'Standard rules · counts for your rank',
+  // The main button: its slot (uppercase), the button, and its line for a lobby match
+  'final.slotQueue': 'SAME QUEUE',
+  'final.slotAi': 'REMATCH',
+  'final.slotLobby': 'YOUR LOBBY',
+  'final.again': 'PLAY AGAIN',
+  'final.backToLobby': 'Back to the lobby',
+  // The other two buttons (uppercase) and their lines
+  'final.change': 'CHANGE MODE',
+  'final.changeSub': 'Casual, VS AI or Lobbies',
+  'final.menu': 'MENU',
+  'final.menuSub': 'Back to Play',
+  // A Competitive match that never started: the toast over Inicio while the search starts again
+  'final.noShow': "A player didn't show up · back in the queue",
+  'final.dodge': 'A player left before the start · back in the queue',
+
+  // MATCH FOUND (src/ui/screens/match/found.ts): the band over any screen as a search finds a match, uppercase
+  'found.title': 'MATCH FOUND',
+  // The browser tab's title meanwhile
+  'found.tab': 'Match found! · Turbogol',
 
   // Settings screen, opened from the pause menu and the menus (src/render/Hud.ts)
   // Top-left button that closes the screen, uppercase (shown after a ‹ arrow)
@@ -718,6 +911,8 @@ export default {
   'settings.groupGame': 'Game',
   // One line over the keyboard & mouse list (cut with … when the screen is narrow)
   'settings.mouseNote': 'Mouse buttons and wheel are bindable · mouse movement swivels the camera',
+  // Keyboard & Mouse tab, under the mouse note: the arrow keys are fixed second keys for driving
+  'settings.arrowsNote': 'The arrow keys drive too, unless you bind them to something else',
   // Tooltip of a binding cell
   'settings.rebindTitle': 'Click to rebind',
   // Tooltip of the disabled × next to the pause binding
@@ -942,8 +1137,8 @@ export default {
   'training.screenTitle': 'Training',
   // Screen heading, uppercase
   'training.title': 'TRAINING',
-  // Keep the key names (Backspace, D-pad, arrows) as they are
-  'training.subtitle': 'The shot starts when you touch a control. Backspace / D-pad ↓ resets the shot, ← → switch shots.',
+  // {reset} and {shots} are key names from the player's bindings, e.g. "Backspace / D-pad ↓" and "PgUp / PgDn (D-pad ← / D-pad →)"
+  'training.subtitle': 'The shot starts when you touch a control. {reset} resets the shot, {shots} switch shots.',
   // Subtitle of the Free play tile
   'training.freePlayText': 'You, the ball and unlimited boost',
   // Under the Shooting category

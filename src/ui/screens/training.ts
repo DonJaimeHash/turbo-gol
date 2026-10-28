@@ -16,6 +16,7 @@ import type { TrainingRecords } from '../../game/trainingRecords';
 import { language, t } from '../../i18n';
 import { presetName, rulesSummary } from '../../render/rulesText';
 import type { Menu, Screen } from '../Menu';
+import type { ActionId, Device } from '../../input/bindings';
 import { cycler, screenHead, tile } from './common';
 
 const CATEGORY_TEXT: Readonly<Record<TrainingCategory, string>> = {
@@ -24,16 +25,30 @@ const CATEGORY_TEXT: Readonly<Record<TrainingCategory, string>> = {
   aerial: t('training.aerialText'),
 };
 
+/** 'a / b' of the bound labels ('—' = unbound, left out); '' when none is. */
+function keyPair(a: string, b: string): string {
+  return [a, b].filter((k) => k !== '—').join(' / ');
+}
+
+/** The heading's key line: reset shot and previous / next shot, keyboard then controller ('PgUp / PgDn (D-pad ← / D-pad →)'). */
+function subtitleText(menu: Menu): string {
+  const key = (action: ActionId, device: Device): string => menu.host.keyLabel(action, device);
+  const kbmShots = keyPair(key('trainingPrev', 'kbm'), key('trainingNext', 'kbm'));
+  const padShots = keyPair(key('trainingPrev', 'pad'), key('trainingNext', 'pad'));
+  const shots = kbmShots !== '' && padShots !== '' ? `${kbmShots} (${padShots})` : kbmShots + padShots;
+  return t('training.subtitle', { reset: keyPair(key('trainingReset', 'kbm'), key('trainingReset', 'pad')), shots });
+}
+
 export function trainingScreen(menu: Menu): Screen {
   const grid = h('div.mn-packs');
 
   // Experimental free play (unlocked players only): the tile, the Rules cycler, a summary, Edit presets.
   const exp = (): Menu['host']['experimental'] => menu.host.experimental;
-  const expTile = tile('mn-tile-exp', '◈', t('training.expFreePlay').toLocaleUpperCase(language()), t('training.expFreePlayText'), () => menu.host.startTraining(FREEPLAY_ID, { rules: exp().store.lastUsed() }), t('training.tagExp'));
+  const expTile = tile('mn-tile-exp', 'lab', t('training.expFreePlay').toLocaleUpperCase(language()), t('training.expFreePlayText'), () => menu.host.startTraining(FREEPLAY_ID, { rules: exp().store.lastUsed() }), t('training.tagExp'));
   const cyclerSlot = h('div.mn-exp-cycler');
   const summary = h('p.mn-note.mn-exp-summary');
   const edit = navButton('mn-btn mn-exp-edit', t('training.editPresets'), () =>
-    menu.host.openSettings(
+    menu.openSettings(
       () => {
         drawExp();
         menu.refocus();
@@ -68,11 +83,13 @@ export function trainingScreen(menu: Menu): Screen {
     showSummary();
   };
 
+  // The subtitle names the live keys (rebound ones too), written again on every show.
+  const head = screenHead(t('training.title'), subtitleText(menu));
   const el = h(
     'div.mn-training',
     null,
-    screenHead(t('training.title'), t('training.subtitle')),
-    h('div.mn-training-top', null, tile('mn-tile-hero', '◎', FREEPLAY_NAME.toLocaleUpperCase(language()), t('training.freePlayText'), () => menu.host.startTraining(FREEPLAY_ID)), expBlock),
+    head,
+    h('div.mn-training-top', null, tile('mn-tile-hero', 'training', FREEPLAY_NAME.toLocaleUpperCase(language()), t('training.freePlayText'), () => menu.host.startTraining(FREEPLAY_ID)), expBlock),
     grid,
   );
   const draw = (records: TrainingRecords): void => {
@@ -90,13 +107,18 @@ export function trainingScreen(menu: Menu): Screen {
             h('span.mn-pack-diff', null, DIFFICULTY_LABELS[d]),
             h('span.mn-pack-shots', null, t('training.packShots', { count: pack.shots.length, seconds: pack.timeLimitSeconds })),
             h('span.mn-pack-best', null, rec ? t('training.best', { best: rec.best, total: pack.shots.length }) : t('training.notPlayed')),
-          ], () => menu.host.startTraining(pack.id));
+          ], () => menu.host.startTraining(pack.id), { 'data-key': 'pack-' + pack.id });
         }),
       ),
     );
+    // The records sync redraws the grid: a controller's focus on a pack comes back to it (by key).
+    const had = typeof document !== 'undefined' && grid.contains(document.activeElement);
     setChildren(grid, ...cols);
+    if (had) menu.refocus();
   };
   const render = (): void => {
+    const sub = head.querySelector('.mn-subtitle');
+    if (sub !== null) sub.textContent = subtitleText(menu);
     draw(menu.host.training.records());
     void menu.host.training
       .sync()

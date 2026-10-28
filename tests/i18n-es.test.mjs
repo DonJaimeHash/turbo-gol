@@ -155,7 +155,12 @@ test('HUD and controls: Spanish labels, key names kept as they are', async () =>
   const { ACTION_ROWS } = await import('../src/input/bindings.ts');
   assert.equal(ACTION_ROWS.find((r) => r.action === 'throttle').label, 'Acelerar');
   assert.equal(I.t('hud.go'), '¡YA!');
-  assert.equal(I.t('pause.hint', { resumeKeys: 'Esc / Start', quitKeys: 'Backspace / B' }), 'Esc / Start o clic para reanudar  ·  Backspace / B para salir');
+  // Nothing but QUIT leaves a match: the line names only the keys that resume (B among them).
+  assert.equal(I.t('pause.hint', { resumeKeys: 'Esc / Start / B' }), 'Esc / Start / B o clic para reanudar');
+  assert.equal(I.t('pause.hintDefault', { resumeKeys: 'Esc / Start / B' }), 'Esc / Start / B para reanudar');
+  assert.equal(I.t('menu.leaveTitle', { game: 'Turbogol' }), '¿Salir de Turbogol?');
+  assert.equal(I.t('controls.tagFirst'), 'TU PRIMER PARTIDO');
+  assert.equal(I.t('controls.change', { tab: I.t('settings.tabKbm') }), 'Cámbialos en Configuración › Teclado y mouse');
   assert.equal(I.t('trainingHud.attempts', { count: 1 }), '1 intento');
   assert.equal(I.t('trainingHud.attempts', { count: 3 }), '3 intentos');
 });

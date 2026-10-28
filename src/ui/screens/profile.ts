@@ -5,6 +5,8 @@
  * sign out). Passwords go through AccountClient (hashed in the browser before they leave).
  * Usernames and passwords are checked here first (usernameIssue / passwordIssue, the same rules
  * AccountClient and the server apply) so the form shows the reason in the player's language.
+ * Both views end with the language (IDIOMA: components/language.ts, a reload) until Settings ›
+ * Game has it (PR 11).
  */
 import { h, setChildren, copyText, navButton } from '../dom';
 import { AccountError } from '../../net/AccountClient';
@@ -13,7 +15,8 @@ import type { AccountIssue, MeInfo, OAuthProvider } from '../../net/account';
 import { ratingCard } from '../badges';
 import type { Menu, Screen } from '../Menu';
 import { field, primary, screenHead, secondary, section } from './common';
-import { language, t } from '../../i18n';
+import { openLanguagePicker } from '../components/language';
+import { LOCALES, language, t } from '../../i18n';
 
 const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
 
@@ -64,7 +67,8 @@ export function showRecoveryCodes(menu: Menu, codes: string[], intro: string): v
 }
 
 function onEnter(inputs: HTMLInputElement[], go: () => void): void {
-  for (const i of inputs) i.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+  // Not the Enter / OK that starts editing a field reached with the arrows (Menu.onFieldKey cancels it).
+  for (const i of inputs) i.addEventListener('keydown', (e) => e.key === 'Enter' && !e.defaultPrevented && go());
 }
 
 export function profileScreen(menu: Menu): Screen {
@@ -179,7 +183,7 @@ export function profileScreen(menu: Menu): Screen {
         navButton(`mn-tab${tab === id ? ' mn-tab-on' : ''}`, label, () => {
           tab = id;
           render();
-        }),
+        }, { 'data-key': 'profile-tab-' + id }),
       ),
     );
     const form = tab === 'login' ? loginForm() : tab === 'register' ? registerForm() : recoverForm();
@@ -352,7 +356,8 @@ export function profileScreen(menu: Menu): Screen {
     menu.refocus();
   };
 
-  const el = h('div.mn-profile', null, screenHead(t('profile.heading')), body);
+  // After `body`, so it stays through the guest / account swap (render).
+  const el = h('div.mn-profile', null, screenHead(t('profile.heading')), body, section(t('lang.heading'), secondary(LOCALES[language()].name, () => openLanguagePicker(menu), { 'data-key': 'lang' })));
   return {
     id: 'profile',
     title: t('profile.title'),

@@ -56,6 +56,8 @@ export interface PageItem {
   right?: () => void;
   accept?: () => void;
   clear?: () => void;
+  /** left / right follow a held arrow's auto-repeat (a range's stepper; the Hud's FocusItem.repeat). */
+  repeat?: boolean;
 }
 
 /** How Super low stands for the player: their pick, run by the device on its own, or simply listed. */
@@ -273,6 +275,7 @@ function valueRow(kit: PageKit, f: PhysicsField, set: (v: number) => void, curre
     left: () => step(-1),
     right: () => step(1),
     accept: stepper ? undefined : () => step(0),
+    repeat: stepper,
     clear: () => {
       const c = current();
       if (c.editable && c.value !== f.default) set(f.default);

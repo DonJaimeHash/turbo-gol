@@ -14,8 +14,8 @@
  *
  *   Action              Keyboard + mouse         Controller (standard mapping, Xbox names)
  *   ------------------  -----------------------  ----------------------------------------
- *   Throttle / reverse  W / S                    RT / LT (analog 0..1)
- *   Steer               A / D                    Left stick X (× steering sensitivity)
+ *   Throttle / reverse  W / S  (and ↑ / ↓)       RT / LT (analog 0..1)
+ *   Steer               A / D  (and ← / →)       Left stick X (× steering sensitivity)
  *   Air pitch           W nose down, S nose up   Left stick Y (forward = nose down)
  *   Air yaw             A / D                    Left stick X (× aerial sensitivity)
  *   Jump                Right mouse button       A
@@ -30,20 +30,29 @@
  *   Pause / menu        Esc                      Start
  *   Reset to kickoff    R                        unbound
  *   Training: reset     Backspace                D-pad ↓  (shot in a pack, ball in free play)
- *   Training: prev/next ← / →                    D-pad ← / →
- *   Free play: car      ↓                        D-pad ↑  (reset car to its spawn)
- *   Free play: boost    ↑                        LB       (toggle unlimited boost)
+ *   Training: prev/next PgUp / PgDn              D-pad ← / →
+ *   Free play: car      F                        D-pad ↑  (reset car to its spawn)
+ *   Free play: boost    T                        LB       (toggle unlimited boost)
+ *
+ *   The arrows are second keys (KBM_SECONDARY, fixed): ↑ / ↓ as W / S, ← / → as A / D, on the
+ *   ground and in the air, unless the player bound that arrow to an action of their own.
  *
  *   Fixed (not rebindable) menu keys: Enter / Numpad Enter accept, Esc / Backspace back, arrows and
- *   WASD navigate; gamepad A accept, B back, X controls & settings, D-pad or left stick navigate.
- *   (Space is deliberately not a menu key: it is the ball cam toggle.)
+ *   WASD navigate; gamepad A accept, B back, X controls & settings (the menus' context action),
+ *   D-pad or left stick navigate (held: repeated, NAV_REPEAT_DELAY_MS then every NAV_REPEAT_MS),
+ *   and for the menus only LB / RB (menuPrev / menuNext), LT / RT (menuTabPrev / menuTabNext, an
+ *   analog trigger past NAV_TRIGGER_ON), Y (menuCancel) and Start (menuStart: Start is also the
+ *   pause binding's edge). Nothing reads those in a match: the keyboard's menu shortcuts (Q / E / X /
+ *   Delete) are src/ui/Menu.ts's own, only while the menus are up. (Space is deliberately not a menu
+ *   key: it is the ball cam toggle.)
  *
  *   KEYBOARD_ONLY_KBM (preset 'keyboardOnly') differs in: Space jump, Left Shift boost, Z
  *   powerslide / air roll, C ball cam, X rear view (no browser modifier, see bindings.ts).
  *
  * Per frame: `beginFrame()` polls the gamepad once (navigator.getGamepads() allocates) and every
  * `sample()` of that frame reuses it; `latchEdges()` turns presses made while a menu was closing
- * into "already held" so they fire no one-shot edge on the first tick.
+ * into "already held" so they fire no one-shot edge on the first tick; `readEdges()` polls and
+ * samples on a frame that runs no logic, keeping the edges for the next one.
  *
  * Mouse: the camera swivel is a VIRTUAL STICK. Each tick the mouse delta (pixels × k, where
  * sensitivity 5 ≈ a 300 px swipe for full deflection) is added to a 2D vector clamped to unit
@@ -65,6 +74,7 @@ import {
   GP,
   GP_MAX_AXES,
   GP_MAX_BUTTONS,
+  KBM_SECONDARY,
   MAX_MOUSE_BUTTON,
   bindingLabel,
   bindingMatchesDevice,
@@ -75,6 +85,7 @@ import {
   type CameraLook,
   type Device,
 } from './bindings';
+import { isBackKey } from '../ui/backGuard';
 
 /** Edge-triggered one-shot actions. Read after `sample()`, then call `consumeActions()`. */
 export interface InputActions {
@@ -87,7 +98,16 @@ export interface InputActions {
   menuDown: boolean;
   menuLeft: boolean;
   menuRight: boolean;
-  /** Open the controls & settings screen / next tab (fixed: gamepad X; the Hud handles the O key itself). */
+  /** The menuUp / Down / Left / Right of this sample are a held direction's auto-repeat, not a press. */
+  menuRepeat: boolean;
+  /** Menu edges of the pad only (src/ui/Menu.ts MenuCommand): LB / RB, LT / RT, Y, Start. */
+  menuPrev: boolean;
+  menuNext: boolean;
+  menuTabPrev: boolean;
+  menuTabNext: boolean;
+  menuCancel: boolean;
+  menuStart: boolean;
+  /** Open the controls & settings screen / next tab; the menus' context action (fixed: gamepad X; the Hud handles the O key itself). */
   settings: boolean;
   /** Training edges (bindable; src/game/TrainingSession.ts): reset shot / ball, previous / next shot, reset car, unlimited boost. */
   trainingReset: boolean;
@@ -115,6 +135,8 @@ export interface InputOptions {
   onChange?: () => void;
   /** Defaults to the global `document` when there is one. */
   document?: DocumentLike | null;
+  /** The clock of the menu auto-repeat (ms; default performance.now), injectable for tests. */
+  now?: () => number;
 }
 
 /**
@@ -163,8 +185,10 @@ interface Capture {
 
 // Duck-typed event views (node has no KeyboardEvent / MouseEvent classes).
 interface KeyLike {
+  key?: unknown;
   code?: unknown;
   repeat?: unknown;
+  altKey?: unknown;
   ctrlKey?: unknown;
   metaKey?: unknown;
 }
@@ -226,6 +250,18 @@ AXIS_SENS[I_PITCH_UP] = AXIS_SENS[I_PITCH_DOWN] = AXIS_SENS[I_YAW_L] = AXIS_SENS
 
 /** Left stick deflection that counts as a menu navigation press. */
 const NAV_STICK_THRESHOLD = 0.6;
+/** A held menu direction repeats after this (ms), then every NAV_REPEAT_MS: a TV list walked by holding ↓. */
+export const NAV_REPEAT_DELAY_MS = 400;
+export const NAV_REPEAT_MS = 80;
+/** LT / RT as menu edges: past ON (some TV pads' analog triggers rest a little pressed), re-armed under OFF. */
+const NAV_TRIGGER_ON = 0.5;
+const NAV_TRIGGER_OFF = 0.3;
+/** Menu directions (navHeld). */
+const NAV_NONE = 0;
+const NAV_UP = 1;
+const NAV_DOWN = 2;
+const NAV_LEFT = 3;
+const NAV_RIGHT = 4;
 /** Axis deflection that is captured as a binding by startRebind. */
 const CAPTURE_AXIS_THRESHOLD = 0.6;
 const REBIND_TIMEOUT_MS = 10_000;
@@ -270,6 +306,20 @@ function buttonValue(gp: Gamepad, i: number): number {
   return v > 0 ? (v > 1 ? 1 : v) : b.pressed ? 1 : 0;
 }
 
+/** Menu direction `dir` (NAV_UP...) still held: its D-pad button, or the left stick past the threshold that way. */
+function navStillHeld(gp: Gamepad, dir: number, x: number, y: number): boolean {
+  switch (dir) {
+    case NAV_UP:
+      return buttonPressed(gp, GP.DPAD_UP) || y < -NAV_STICK_THRESHOLD;
+    case NAV_DOWN:
+      return buttonPressed(gp, GP.DPAD_DOWN) || y > NAV_STICK_THRESHOLD;
+    case NAV_LEFT:
+      return buttonPressed(gp, GP.DPAD_LEFT) || x < -NAV_STICK_THRESHOLD;
+    default:
+      return buttonPressed(gp, GP.DPAD_RIGHT) || x > NAV_STICK_THRESHOLD;
+  }
+}
+
 function clearActions(a: InputActions): void {
   a.toggleBallCam = false;
   a.reset = false;
@@ -280,6 +330,13 @@ function clearActions(a: InputActions): void {
   a.menuDown = false;
   a.menuLeft = false;
   a.menuRight = false;
+  a.menuRepeat = false;
+  a.menuPrev = false;
+  a.menuNext = false;
+  a.menuTabPrev = false;
+  a.menuTabNext = false;
+  a.menuCancel = false;
+  a.menuStart = false;
   a.settings = false;
   a.trainingReset = false;
   a.trainingPrev = false;
@@ -299,6 +356,13 @@ function newActions(): InputActions {
     menuDown: false,
     menuLeft: false,
     menuRight: false,
+    menuRepeat: false,
+    menuPrev: false,
+    menuNext: false,
+    menuTabPrev: false,
+    menuTabNext: false,
+    menuCancel: false,
+    menuStart: false,
     settings: false,
     trainingReset: false,
     trainingPrev: false,
@@ -377,10 +441,14 @@ export class Input {
   private readonly tapped = new Set<string>();
   /** Keyboard codes bound to any kbm action (their default browser action is suppressed). */
   private readonly boundKeys = new Set<string>();
+  /** Per action: its KBM_SECONDARY key while no kbm binding uses that key, else null (refreshDerived). */
+  private readonly secondary: (string | null)[] = new Array<string | null>(N).fill(null);
   private mouseHeld = 0;
   private mouseTapped = 0;
   /** Buttons whose current press is the click that captured the mouse (ignored until released). */
   private mouseMask = 0;
+  /** Back / forward buttons whose press ended a rebind capture: their release is cancelled (no history walk). */
+  private mouseEat = 0;
   /** Bit 1 = wheel up, bit 2 = wheel down, since the last sample. */
   private wheelTaps = 0;
   private mouseDX = 0;
@@ -404,6 +472,12 @@ export class Input {
   private readonly stick = new Float64Array(GP_MAX_AXES);
   private prevNavX = 0;
   private prevNavY = 0;
+  /** The menu direction held for the auto-repeat (the one pressed last; NAV_NONE when none) and when it fires next. */
+  private navHeld = NAV_NONE;
+  private navNextAt = 0;
+  /** LT (bit 1) / RT (bit 2) past NAV_TRIGGER_ON and not yet back under NAV_TRIGGER_OFF. */
+  private triggers = 0;
+  private readonly now: () => number;
   /** Gamepad button presses seen so far (see gamepadPresses). */
   private padPresses = 0;
 
@@ -432,6 +506,7 @@ export class Input {
   private kSteer = 1 / PX_FULL_DEFLECTION_AT_5;
 
   private jumpBlocked = false;
+  private boostBlocked = false;
   private capture: Capture | null = null;
   private disposed = false;
 
@@ -449,6 +524,9 @@ export class Input {
         return;
       }
       if (cap.target.device === 'kbm') {
+        // A back key is the system Back (src/ui/backGuard.ts), whose step cancels the capture
+        // (Game.onSystemBack), as Esc does: never a binding (it would pause the match on each press).
+        if (isBackKey(ke)) return;
         e.preventDefault();
         if (!cap.armed || ke.repeat === true || cap.ignoreKeys.has(code)) return;
         this.endCapture({ kind: 'key', code });
@@ -457,8 +535,11 @@ export class Input {
     }
     // Bound keys lose their browser default, except with Ctrl / Meta so reload, DevTools and the
     // like keep working. (Ctrl + W / T / N / Q are browser-reserved anyway: preventDefault cannot
-    // stop them outside the Keyboard Lock API, which is why no preset binds Ctrl.)
-    if (PREVENT_DEFAULT_KEYS.has(code) || (this.boundKeys.has(code) && ke.ctrlKey !== true && ke.metaKey !== true)) e.preventDefault();
+    // stop them outside the Keyboard Lock API, which is why no preset binds Ctrl.) Alt + ← / → keep
+    // theirs, the browser's Back / Forward (Windows, Linux; the system Back: backGuard.ts), unless
+    // the player binds an Alt key (air roll on L Alt + the arrows that steer is a game combo).
+    const historyKey = ke.altKey === true && (code === 'ArrowLeft' || code === 'ArrowRight') && !this.boundKeys.has('AltLeft') && !this.boundKeys.has('AltRight');
+    if (!historyKey && (PREVENT_DEFAULT_KEYS.has(code) || (this.boundKeys.has(code) && ke.ctrlKey !== true && ke.metaKey !== true))) e.preventDefault();
     if (ke.repeat === true) return;
     this.keys.add(code);
     this.tapped.add(code);
@@ -510,7 +591,11 @@ export class Input {
     const bit = 1 << button;
     const cap = this.capture;
     if (cap !== null && cap.target.device === 'kbm') {
-      if (cap.armed && button <= 4 && (cap.ignoreMouse & bit) === 0) this.endCapture({ kind: 'mouse', button });
+      if (cap.armed && button <= 4 && (cap.ignoreMouse & bit) === 0) {
+        // A back / forward button bound here walks the history on its release unless cancelled.
+        if (button >= 3) this.mouseEat |= bit;
+        this.endCapture({ kind: 'mouse', button });
+      }
       return;
     }
     this.mouseHeld |= bit;
@@ -520,9 +605,11 @@ export class Input {
   private readonly onMouseUp = (e: Event): void => {
     const button = (e as MouseLike).button;
     if (!validMouseButton(button)) return;
-    // Back / forward buttons navigate on release; keep them for the game when it has the mouse.
-    if (button >= 3 && (this.locked || e.target === this.lockElement || e.target === this.target)) e.preventDefault();
+    // Back / forward buttons navigate on release; keep them for the game when it has the mouse,
+    // and for the rebind capture that just took one (wherever the pointer is).
     const bit = 1 << button;
+    if (button >= 3 && ((this.mouseEat & bit) !== 0 || this.locked || e.target === this.lockElement || e.target === this.target)) e.preventDefault();
+    this.mouseEat &= ~bit;
     this.mouseHeld &= ~bit;
     if ((this.mouseMask & bit) !== 0) {
       // The click that captured the mouse is over: it was not a tap either.
@@ -593,6 +680,7 @@ export class Input {
   constructor(target: Window | HTMLElement, settings: Settings, opts?: InputOptions) {
     this.settings = settings;
     this.onChange = opts?.onChange ?? null;
+    this.now = opts?.now ?? (() => performance.now());
     this.doc = opts?.document !== undefined ? opts.document : typeof document !== 'undefined' ? document : null;
     this.target = target;
     const win: EventTarget | null = typeof window !== 'undefined' ? window : null;
@@ -638,6 +726,11 @@ export class Input {
    */
   get gamepadPresses(): number {
     return this.padPresses;
+  }
+
+  /** Enter (either) or the pad's A is down now: the pause's QUIT is held with them (Hud.pauseHoldRelease). */
+  get acceptHeld(): boolean {
+    return this.keys.has('Enter') || this.keys.has('NumpadEnter') || this.prevButtons[GP.A] === 1;
   }
 
   /** True while the game owns the mouse (document.pointerLockElement is set). */
@@ -796,6 +889,8 @@ export class Input {
             break;
         }
       }
+      const sk = this.secondary[i]; // the arrows drive too (KBM_SECONDARY)
+      if (sk !== null && d === 0 && (keys.has(sk) || tapped.has(sk))) d = 1;
       if (i >= I_LOOK_FIRST && i <= I_LOOK_LAST) {
         kd[i] = d;
         km[i] = m; // look: mouse travel goes through the virtual stick below
@@ -994,6 +1089,10 @@ export class Input {
       if (!jump) this.jumpBlocked = false;
       jump = false;
     }
+    if (this.boostBlocked) {
+      if (!boost) this.boostBlocked = false;
+      boost = false;
+    }
     out.jump = jump;
     out.boost = boost;
     out.handbrake = handbrake;
@@ -1009,16 +1108,44 @@ export class Input {
    * Sample once and discard the result, so presses made since the last sample count as already
    * held: no one-shot edge (ball cam, reset, pause) fires for them on the next sample. Call when
    * a menu closes synchronously on a key / button that may also be bound in game (the first tick
-   * would otherwise see the press as a fresh rising edge: Space = ball cam, pad A...).
+   * would otherwise see the press as a fresh rising edge: Space = ball cam, pad A...). A menu
+   * direction held through it repeats no more (resetMenuRepeat).
    */
   latchEdges(): void {
     this.sample(this.scratch);
     this.consumeActions();
+    this.navHeld = NAV_NONE;
+  }
+
+  /**
+   * Forget the menu direction held for the auto-repeat: it repeats again only after a new press.
+   * Call where a menu takes over from play (the menus after a match, the pause, the pause's
+   * settings): a stick steering hard, or a D-pad held, through that hand-off would otherwise walk
+   * the focus by itself 400 ms later. Nothing is sampled or consumed (safe inside processActions).
+   */
+  resetMenuRepeat(): void {
+    this.navHeld = NAV_NONE;
+  }
+
+  /**
+   * Poll the gamepad and sample once into a scratch, keeping the edges: for an animation frame
+   * that runs no logic while a menu is up over a match that keeps its frame cap (Game.ts frame: an
+   * online pause on super low). The edges wait in `actions` / `padActions` for the next frame's
+   * consumeActions, so a press shorter than one frame of logic still reaches the menu.
+   */
+  readEdges(): void {
+    this.beginFrame();
+    this.sample(this.scratch);
   }
 
   /** Ignore jump until it is released (so the button press that closed a menu does not jump). */
   blockJumpUntilRelease(): void {
     this.jumpBlocked = true;
+  }
+
+  /** Ignore boost until it is released (pad B, boost by default, resumes the pause: Game.processActions). */
+  blockBoostUntilRelease(): void {
+    this.boostBlocked = true;
   }
 
   /**
@@ -1177,6 +1304,12 @@ export class Input {
       const b = kbm[ACTION_IDS[i]];
       if (b && b.kind === 'key') bound.add(b.code);
     }
+    // A second key only while the player's own profile leaves it free (their binding wins).
+    const sec = this.secondary;
+    for (let i = 0; i < N; i++) {
+      const code = KBM_SECONDARY[ACTION_IDS[i]];
+      sec[i] = code !== undefined && !bound.has(code) ? code : null;
+    }
   }
 
   /** Rising edges of a bool-ish action: bit 1 = keyboard/mouse, bit 2 = gamepad. */
@@ -1208,6 +1341,7 @@ export class Input {
     this.mouseHeld = 0;
     this.mouseTapped = 0;
     this.mouseMask = 0;
+    this.mouseEat = 0;
     this.wheelTaps = 0;
     this.mouseDX = 0;
     this.mouseDY = 0;
@@ -1228,6 +1362,7 @@ export class Input {
 
   /** Dead zones, capture crossings, fixed menu navigation edges. */
   private processGamepad(gp: Gamepad): void {
+    const wasCapturing = this.capture !== null; // a press that ends a capture below fires no menu edge
     const axes = gp.axes;
     const na = Math.min(axes.length, GP_MAX_AXES);
     const stick = this.stick;
@@ -1261,6 +1396,7 @@ export class Input {
     const pa = this.padActions;
     const prev = this.prevButtons;
     const nb = Math.min(gp.buttons.length, GP_MAX_BUTTONS);
+    let pressed = NAV_NONE; // a menu direction pressed in this sample (the last one is the one repeated)
     for (let i = 0; i < nb; i++) {
       const now = buttonPressed(gp, i) ? 1 : 0;
       if (now === 1 && prev[i] === 0) {
@@ -1279,17 +1415,33 @@ export class Input {
             case GP.X:
               a.settings = pa.settings = true;
               break;
+            case GP.Y:
+              a.menuCancel = pa.menuCancel = true;
+              break;
+            case GP.LB:
+              a.menuPrev = pa.menuPrev = true;
+              break;
+            case GP.RB:
+              a.menuNext = pa.menuNext = true;
+              break;
+            case GP.START:
+              a.menuStart = pa.menuStart = true;
+              break;
             case GP.DPAD_UP:
               a.menuUp = pa.menuUp = true;
+              pressed = NAV_UP;
               break;
             case GP.DPAD_DOWN:
               a.menuDown = pa.menuDown = true;
+              pressed = NAV_DOWN;
               break;
             case GP.DPAD_LEFT:
               a.menuLeft = pa.menuLeft = true;
+              pressed = NAV_LEFT;
               break;
             case GP.DPAD_RIGHT:
               a.menuRight = pa.menuRight = true;
+              pressed = NAV_RIGHT;
               break;
             default:
               break;
@@ -1300,17 +1452,74 @@ export class Input {
     }
     for (let i = nb; i < GP_MAX_BUTTONS; i++) prev[i] = 0;
 
+    // LT / RT as menu edges: past NAV_TRIGGER_ON, and again only once back under NAV_TRIGGER_OFF
+    // (a trigger resting a little pressed, or a noisy one, fires once). Tracked during a capture
+    // too, so the press a capture took (in this very sample too) fires nothing afterwards.
+    const lt = buttonValue(gp, GP.LT);
+    const rt = buttonValue(gp, GP.RT);
+    let trig = this.triggers;
+    if (lt >= NAV_TRIGGER_ON && (trig & 1) === 0) {
+      trig |= 1;
+      if (!wasCapturing) a.menuTabPrev = pa.menuTabPrev = true;
+    } else if (lt <= NAV_TRIGGER_OFF) trig &= ~1;
+    if (rt >= NAV_TRIGGER_ON && (trig & 2) === 0) {
+      trig |= 2;
+      if (!wasCapturing) a.menuTabNext = pa.menuTabNext = true;
+    } else if (rt <= NAV_TRIGGER_OFF) trig &= ~2;
+    this.triggers = trig;
+
     // Left stick as a D-pad for menus (edge on crossing the threshold, raw axes).
     const rawX = prevAxes[GP.AXIS_LX];
     const rawY = prevAxes[GP.AXIS_LY];
     if (this.capture === null) {
-      if (rawY < -NAV_STICK_THRESHOLD && this.prevNavY >= -NAV_STICK_THRESHOLD) a.menuUp = pa.menuUp = true;
-      if (rawY > NAV_STICK_THRESHOLD && this.prevNavY <= NAV_STICK_THRESHOLD) a.menuDown = pa.menuDown = true;
-      if (rawX < -NAV_STICK_THRESHOLD && this.prevNavX >= -NAV_STICK_THRESHOLD) a.menuLeft = pa.menuLeft = true;
-      if (rawX > NAV_STICK_THRESHOLD && this.prevNavX <= NAV_STICK_THRESHOLD) a.menuRight = pa.menuRight = true;
+      if (rawY < -NAV_STICK_THRESHOLD && this.prevNavY >= -NAV_STICK_THRESHOLD) {
+        a.menuUp = pa.menuUp = true;
+        pressed = NAV_UP;
+      }
+      if (rawY > NAV_STICK_THRESHOLD && this.prevNavY <= NAV_STICK_THRESHOLD) {
+        a.menuDown = pa.menuDown = true;
+        pressed = NAV_DOWN;
+      }
+      if (rawX < -NAV_STICK_THRESHOLD && this.prevNavX >= -NAV_STICK_THRESHOLD) {
+        a.menuLeft = pa.menuLeft = true;
+        pressed = NAV_LEFT;
+      }
+      if (rawX > NAV_STICK_THRESHOLD && this.prevNavX <= NAV_STICK_THRESHOLD) {
+        a.menuRight = pa.menuRight = true;
+        pressed = NAV_RIGHT;
+      }
     }
     this.prevNavX = rawX;
     this.prevNavY = rawY;
+
+    // Auto-repeat of the direction pressed last, while its D-pad button or the stick holds it:
+    // NAV_REPEAT_DELAY_MS after the press, then every NAV_REPEAT_MS, on the clock (the same at 20
+    // fps and at 144; one repeat at most per sample). A capture stops it.
+    const t = this.now();
+    if (pressed !== NAV_NONE) {
+      this.navHeld = pressed;
+      this.navNextAt = t + NAV_REPEAT_DELAY_MS;
+    } else if (this.navHeld !== NAV_NONE) {
+      if (this.capture !== null || !navStillHeld(gp, this.navHeld, rawX, rawY)) this.navHeld = NAV_NONE;
+      else if (t >= this.navNextAt) {
+        this.navNextAt = t + NAV_REPEAT_MS;
+        a.menuRepeat = pa.menuRepeat = true;
+        switch (this.navHeld) {
+          case NAV_UP:
+            a.menuUp = pa.menuUp = true;
+            break;
+          case NAV_DOWN:
+            a.menuDown = pa.menuDown = true;
+            break;
+          case NAV_LEFT:
+            a.menuLeft = pa.menuLeft = true;
+            break;
+          default:
+            a.menuRight = pa.menuRight = true;
+            break;
+        }
+      }
+    }
   }
 
   /** Radial deadzone with rescaling so the first usable value is 0, not `deadzone`. */
@@ -1353,6 +1562,8 @@ export class Input {
     }
     this.prevNavX = prevAxes[GP.AXIS_LX];
     this.prevNavY = prevAxes[GP.AXIS_LY];
+    this.navHeld = NAV_NONE;
+    this.triggers = 0;
   }
 
   /**

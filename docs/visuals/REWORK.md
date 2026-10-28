@@ -541,7 +541,13 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   1280x720 UI surface, and about 640x360 on any other screen. No dynamic resolution, no MSAA (the
   WebGL2 context is created without it).
 - **30 fps at most** (`maxFps`, Game.ts `drawsFrame`): the animation frames in between do nothing,
-  the next drawn one carries their time (the sim keeps its 120 Hz clock: 4 ticks a frame).
+  the next drawn one carries their time (the sim keeps its 120 Hz clock: 4 ticks a frame). Under
+  the menus the scene holds one frame: the Tablero shell is one opaque page on super low
+  (`--mn-backdrop: var(--ink)`), so the menus report it as opaque and nothing is drawn behind it
+  (20 fps, an average of 2 and 3 refreshes in turn on a 50 Hz set, if a later shell lets the
+  stadium through); one held frame as well under the settings screen, a sheet or an offline pause
+  (ARCHITECTURE.md "UI at rest"); the menus still read the remote and the pad on every animation
+  frame, and an online pause reads them between its 30 fps frames too.
 - **Backend**: WebGL2 unless `#webgpu` asks for the A/B (one 8-bit pass, the canvas depth
   discarded before present, no Dawn heaps in the browser's process on a 1 GB device). The backend
   and the world are chosen when the renderer is created, so a switch into or out of super low saves
@@ -566,8 +572,9 @@ Settings > Graphics with its hint). It is low's direct path with nothing built t
   pixels), no flash shells; additive materials in one pass (`forceSinglePass`), team tints as
   uniforms and wheel / pad instance buffers past the uniform-buffer limit so every car shares its
   programs (`SHARED_INSTANCING_CAPACITY`).
-- **CPU** (`cpuLite`): `html.tg-superlow` takes the HUD's blur, shadows and decorative animations
-  off (opaque panels), the boost and speed readouts update at 10 Hz, the audio has no convolver
+- **CPU** (`cpuLite`): `html.tg-superlow` takes the shadows and decorative transitions and
+  animations off by class prefix and makes every panel and the menus' shell opaque (nothing blurs the canvas on any tier
+  since the Tablero tokens: ARCHITECTURE.md "UI tokens"), the boost and speed readouts update at 10 Hz, the audio has no convolver
   room, the ball prediction refreshes every 8 ticks (the bots read it by age; the wasm's 720-tick
   horizon is unchanged), and going online shows one line ("Super low: online matches may not run
   smoothly on this device"). Physics stays at 120 Hz.
@@ -646,7 +653,8 @@ drops the flag from the address. Captures: `tv-superlow-<theme>.png` and `tv-sup
 (the visual lab's shots folder, outside the repo).
 
 Not measured on the TV yet (the next runs, in order): `#diag` with the site data cleared (Auto
-should say `superlow (tv-gpu)` on WebGL2 at 640x360 and 30 fps), the same with `#webgpu` (the
+should say `superlow (tv-gpu)` on WebGL2 at 640x360 and 30 fps in a match, 0 "of 60 rAF" in the
+menus and under Settings), the same with `#webgpu` (the
 backend A/B, with MemAvailable), `#norender` (the CPU ceiling), `#pr=1` / `#pr=0.5` (does the cost
 follow the pixels), a 5-minute 2v2 with `#diag=audit` (fps, frames over 100 ms, GL errors, the
 prediction's worst frame), and the load time to the menu. Still open: a custom WebGL2 context with
@@ -717,7 +725,9 @@ Fixed:
   within the noise of the shared desktop GPU at 2889x1623 (`#pr=3`).
 - **The pad's focus vanished on two buttons under `html.tg-superlow`**: the pause menu's RESUME
   and the legacy menu's PLAY showed focus only with a box-shadow ring, which super low removes; a
-  plain outline replaces it there.
+  plain outline replaced it there, and since the Tablero base (src/ui/styles/focus.css) every
+  focus in the menus, the HUD and the pack summary is one outline + gap ring + lime heel / bar that
+  super low keeps.
 
 Still open (minor, measured here):
 

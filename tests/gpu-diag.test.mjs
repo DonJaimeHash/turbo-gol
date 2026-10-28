@@ -155,6 +155,9 @@ test('hash flags: whole words with optional values; #hide never turns on #net; #
   assert.equal(parseHashFlags('#tv&nofloatrt').nofloatrt, true);
   assert.equal(parseHashFlags('#webgl2').webgl2, true);
   assert.equal(parseHashFlags('#nopost&norender').norender, true);
+  assert.equal(parseHashFlags('#widetext&superlow').widetext, true);
+  assert.equal(parseHashFlags('#widetexts').widetext, false);
+  assert.equal(off.widetext, false);
   assert.equal(hashValue('#a=1&b', 'b'), '');
   assert.equal(hashValue('#a=1&b', 'c'), null);
   assert.equal(withoutTierFlags('#superlow&diag'), '#diag');

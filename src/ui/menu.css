@@ -1,32 +1,8 @@
 /* Front-end menus (src/ui), Turbogol look: graphite surfaces, the volt-lime brand accent for
    primary actions and focus, team azure / crimson only where a team is meant. Every class is
-   prefixed mn-. Uses the tokens of src/style.css (:root --brand, --blue, --red, --font, --text,
-   --muted...). */
-
-.mn {
-  --mn-bg: rgba(8, 10, 14, 0.88);
-  --mn-card: rgba(22, 26, 34, 0.82);
-  --mn-card-hi: rgba(38, 44, 56, 0.92);
-  --mn-edge: rgba(220, 230, 245, 0.14);
-  --mn-edge-hi: rgba(198, 255, 46, 0.75);
-  --mn-gold: #ffcf5a;
-  --mn-red: #ff5a5a;
-  --mn-green: #4ee08a;
-  position: absolute;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  font-family: var(--font);
-  color: var(--text);
-  pointer-events: auto;
-  background:
-    linear-gradient(180deg, rgba(6, 8, 12, 0.92) 0%, rgba(6, 8, 12, 0.55) 22%, rgba(6, 8, 12, 0.55) 70%, rgba(6, 8, 12, 0.95) 100%),
-    radial-gradient(90% 70% at 10% 100%, rgba(198, 255, 46, 0.12), transparent 60%),
-    radial-gradient(80% 60% at 92% 0%, rgba(58, 155, 255, 0.12), transparent 60%);
-  user-select: none;
-  overflow: hidden;
-}
+   prefixed mn-. Colours, type, radii and layers come from src/ui/styles/tokens.css (the --mn-*
+   names are aliases there until the Tablero shell replaces this sheet); the focus ring is
+   src/ui/styles/focus.css. Hover only where a pointer can hover (@media (hover: hover)). */
 
 /* The in-game HUD (score, clock, boost...) stays out of sight while the menus are up; the Hud's
    settings screen (.hud-menu) and the Turnstile slot (.hud-turnstile: the anti-bot widget a guest or
@@ -40,114 +16,6 @@
   display: none !important;
 }
 
-/* ---- top bar ---------------------------------------------------------------------------------- */
-.mn-top {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 22px) 10px calc(var(--safe-left) + 22px);
-  border-bottom: 1px solid var(--mn-edge);
-  background: linear-gradient(180deg, rgba(12, 14, 20, 0.96), rgba(12, 14, 20, 0.62));
-}
-
-/* The wordmark: TURBO (white) + GOL (lime), heavy italic, set tight with a lime underscore
-   under GOL. */
-.mn-brand {
-  font-size: 28px;
-  font-weight: 900;
-  font-style: italic;
-  letter-spacing: 0.02em;
-  line-height: 1;
-  white-space: nowrap;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
-}
-.mn-brand-a {
-  color: var(--text);
-}
-.mn-brand-b {
-  position: relative;
-  padding-right: 0.08em;
-  color: var(--brand);
-}
-.mn-brand-b::after {
-  content: '';
-  position: absolute;
-  left: 0.05em;
-  right: 0.1em;
-  bottom: -0.16em;
-  height: 0.12em;
-  border-radius: 0.06em;
-  background: var(--brand);
-  transform: skewX(-20deg);
-}
-
-.mn-crumbs {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-size: 15px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
-  overflow: hidden;
-  white-space: nowrap;
-}
-.mn-crumb:last-child {
-  color: var(--text);
-}
-.mn-crumb-sep {
-  opacity: 0.5;
-}
-
-.mn-top-right {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.mn-online,
-.mn-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  font: inherit;
-  color: var(--text);
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.mn-online small {
-  color: var(--muted);
-}
-.mn-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #6b7280;
-}
-.mn-dot.on {
-  background: var(--mn-green);
-  box-shadow: 0 0 8px var(--mn-green);
-}
-.mn-chip-text {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.1;
-}
-.mn-chip-text b {
-  font-size: 15px;
-}
-.mn-chip-text small {
-  font-size: 11px;
-  color: var(--muted);
-  letter-spacing: 0.06em;
-}
-.mn-chip-avatar,
 .mn-avatar {
   display: grid;
   place-items: center;
@@ -155,19 +23,11 @@
   height: 30px;
   border-radius: 50%;
   color: var(--brand-ink);
-  background: linear-gradient(135deg, var(--brand), var(--brand-deep));
-  font-weight: 900;
+  background: var(--brand-grad);
+  font-weight: 700;
 }
 
-/* ---- stage / bottom --------------------------------------------------------------------------- */
-.mn-stage {
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(198, 255, 46, 0.45) transparent;
-  padding: 22px calc(var(--safe-right) + 22px) 22px calc(var(--safe-left) + 22px);
-}
-
+/* ---- screens (the stage is src/ui/styles/shell.css) ----------------------------------------- */
 .mn-screen {
   max-width: 1180px;
   margin: 0 auto;
@@ -180,125 +40,51 @@
   }
 }
 
-.mn-bottom {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 10px calc(var(--safe-right) + 22px) calc(var(--safe-bottom) + 10px) calc(var(--safe-left) + 22px);
-  border-top: 1px solid var(--mn-edge);
-  background: rgba(10, 12, 16, 0.92);
-  font-size: 13px;
-  color: var(--muted);
-  letter-spacing: 0.05em;
-}
-.mn-hints {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mn-info {
-  margin-left: auto; /* right-aligned when the hints are hidden */
-  opacity: 0.6;
-  white-space: nowrap;
-}
-
-.mn-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 8px 6px 14px;
-  border-radius: 8px;
-  color: var(--text);
-  background: linear-gradient(90deg, rgba(198, 255, 46, 0.22), rgba(198, 255, 46, 0.06));
-  border: 1px solid var(--mn-edge-hi);
-  font-size: 14px;
-  white-space: nowrap;
-}
-.mn-banner-kind {
-  font-weight: 900;
-  letter-spacing: 0.12em;
-}
-.mn-banner-time {
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  min-width: 40px;
-}
-.mn-banner-text {
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 260px;
-}
-.mn-banner-cancel {
-  font: inherit;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  padding: 5px 12px;
-  color: #fff;
-  background: rgba(255, 90, 90, 0.25);
-  border: 1px solid rgba(255, 120, 120, 0.7);
-  border-radius: 6px;
-  cursor: pointer;
-}
-.mn-spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 3px solid rgba(255, 255, 255, 0.25);
-  border-top-color: var(--brand);
-  animation: mn-spin 0.9s linear infinite;
-}
-@keyframes mn-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* ---- headings / sections ---------------------------------------------------------------------- */
 .mn-head {
   margin-bottom: 18px;
 }
 .mn-title {
   margin: 0;
+  font-family: var(--font-display);
   font-size: clamp(30px, 5vh, 46px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.05em;
   line-height: 1;
+  text-transform: uppercase;
   text-shadow: var(--shadow);
 }
 .mn-subtitle {
   margin-top: 8px;
   max-width: 760px;
-  color: var(--muted);
+  color: var(--text-2);
   font-size: 15px;
   line-height: 1.35;
 }
 .mn-section {
   margin: 0 0 18px;
   padding: 16px 18px;
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge);
-  border-radius: 12px;
-  backdrop-filter: blur(8px);
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
 }
 .mn-section-title {
   margin: 0 0 12px;
   font-size: 13px;
   letter-spacing: 0.22em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 .mn-note {
   margin: 10px 0 0;
-  color: var(--muted);
+  color: var(--text-2);
   font-size: 13px;
   line-height: 1.4;
 }
 .mn-empty {
   padding: 24px;
   text-align: center;
-  color: var(--muted);
+  color: var(--text-2);
 }
 .mn-actions {
   display: flex;
@@ -306,54 +92,74 @@
   align-items: center;
   margin-top: 6px;
 }
-/* The search / play button of a queue screen stays in view at the bottom of the stage. */
+/* The search / play button of a queue screen stays in view at the bottom of the stage, above a
+   focused control scrolled under it (focus.css lifts the focused one to z-index 1). */
 .mn-queue > .mn-actions {
   position: sticky;
+  z-index: 2;
   bottom: -22px;
   margin: 0 -22px -22px;
   padding: 14px 22px 22px;
-  background: linear-gradient(180deg, transparent, rgba(6, 8, 12, 0.92) 40%);
+  background: linear-gradient(180deg, transparent, var(--surface-0-94) 40%);
 }
 .mn-actions-wrap {
   flex-wrap: wrap;
 }
 
-/* ---- buttons / focus --------------------------------------------------------------------------- */
+/* ---- buttons / pressed ----------------------------------------------------------------------------
+   Buttons are the Heading role: the display face, always capitals (the OAuth buttons keep their
+   providers' wording). The focus ring is src/ui/styles/focus.css. */
 .mn-btn {
   font: inherit;
+  font-family: var(--font-display);
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.1em;
+  text-transform: uppercase;
   padding: 11px 18px;
   color: var(--text);
-  background: var(--mn-card-hi);
-  border: 1px solid var(--mn-edge);
-  border-radius: 8px;
+  background: var(--surface-2-97);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-tile);
   cursor: pointer;
-  transition: transform 0.08s, background 0.12s, border-color 0.12s;
+  transition:
+    transform var(--dur-press) ease-out,
+    background-color 0.12s,
+    border-color 0.12s;
 }
-.mn-btn:hover {
-  background: rgba(54, 62, 78, 0.96);
+@media (hover: hover) {
+  .mn-btn:hover {
+    background: var(--surface-3-97);
+  }
 }
+/* Unavailable: the dim text colour, never a faint opacity (contrast stays >= 4.5:1). */
 .mn-btn:disabled {
-  opacity: 0.45;
+  color: var(--text-3);
+  background: var(--surface-1-94);
+  border-color: var(--edge);
   cursor: default;
 }
-/* Primary action: solid lime with dark ink. */
+/* Primary action: solid lime with dark ink (flat lime on super low). */
 .mn-btn-primary {
   color: var(--brand-ink);
-  background: linear-gradient(180deg, #d9ff6a, var(--brand) 55%, #a9e622);
+  background: var(--brand-grad);
   border-color: transparent;
   text-shadow: none;
 }
-.mn-btn-primary:hover {
-  filter: brightness(1.06);
-  background: linear-gradient(180deg, #d9ff6a, var(--brand) 55%, #a9e622);
+@media (hover: hover) {
+  .mn-btn-primary:hover {
+    background: var(--brand-hi);
+  }
+}
+.mn-btn-primary:disabled {
+  color: var(--text-3);
+  background: var(--surface-1-94);
+  border-color: var(--edge);
 }
 .mn-btn-big {
   font-size: 20px;
   font-style: italic;
-  font-weight: 900;
+  font-weight: 700;
   padding: 14px 34px;
   letter-spacing: 0.16em;
 }
@@ -362,27 +168,68 @@
   padding: 6px 10px;
 }
 .mn-btn-cancel {
-  color: #fff;
-  background: linear-gradient(180deg, #4a1d24, #2e1218);
-  border-color: rgba(255, 120, 135, 0.7);
+  color: var(--text);
+  background: var(--surface-1-94) linear-gradient(180deg, var(--danger-tint), transparent);
+  border-color: var(--danger-line);
 }
 
-.mn [data-nav]:focus {
-  outline: none;
+/* Pressed (one rule for the menus' controls): a 3 % squeeze, a step darker; the primary deepens. */
+.mn [data-nav]:active:not(:disabled):not(input) {
+  transform: scale(0.97);
 }
-/* Focus: a white outline with a lime halo, visible on dark cards and on the lime hero tile. */
-.mn .mn-focus,
-.mn [data-nav]:focus-visible {
-  outline: 3px solid #fff;
-  outline-offset: 2px;
-  box-shadow: 0 0 0 6px rgba(198, 255, 46, 0.4), 0 0 24px rgba(198, 255, 46, 0.45);
+.mn .mn-btn:active:not(:disabled):not(.mn-btn-primary) {
+  background: var(--surface-3-97);
+}
+.mn .mn-btn-primary:active:not(:disabled) {
+  background: var(--brand-deep);
+}
+/* An arrow with nowhere to go (nav.ts bounce): a 2 px nudge that way. `translate`, so it adds to a
+   tile's own transform. Super low keeps it (style.css: informative, the TV's only cue at an edge);
+   reduced motion never has it. */
+@media (prefers-reduced-motion: no-preference) {
+  .mn .mn-bounce-up,
+  .mn .mn-bounce-down,
+  .mn .mn-bounce-left,
+  .mn .mn-bounce-right {
+    animation: mn-bounce 0.12s ease-out;
+  }
+}
+.mn-bounce-up {
+  --mn-bounce: 0 -2px;
+}
+.mn-bounce-down {
+  --mn-bounce: 0 2px;
+}
+.mn-bounce-left {
+  --mn-bounce: -2px 0;
+}
+.mn-bounce-right {
+  --mn-bounce: 2px 0;
+}
+@keyframes mn-bounce {
+  50% {
+    translate: var(--mn-bounce);
+  }
+}
+/* A text field's modes (nav.ts): reached with the arrows it shows no caret (the arrows move on);
+   editing (OK / Enter, typing, a click or a tap) shows the caret and a lime underline (a background
+   image, so Super low, which drops every box shadow, keeps it). */
+.mn .mn-input:not([data-editing]) {
+  caret-color: transparent;
+}
+.mn .mn-input[data-editing] {
+  background-image: linear-gradient(var(--brand), var(--brand));
+  background-size: 100% 3px;
+  background-position: 0 100%;
+  background-repeat: no-repeat;
 }
 
 /* ---- tiles ------------------------------------------------------------------------------------- */
+/* No overflow clip on a tile: the focus heel sits under it (focus.css); its texts clip themselves. */
 .mn-tile {
   position: relative;
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   grid-template-rows: auto auto;
   column-gap: 16px;
   align-items: center;
@@ -390,19 +237,28 @@
   padding: 18px 20px;
   font: inherit;
   color: var(--text);
-  background: linear-gradient(135deg, rgba(32, 38, 50, 0.92), rgba(16, 19, 26, 0.92));
-  border: 1px solid var(--mn-edge);
-  border-left: 4px solid rgba(198, 255, 46, 0.55);
-  border-radius: 12px;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-left: 4px solid var(--brand-deep);
+  border-radius: var(--r-tile);
   cursor: pointer;
-  transition: transform 0.1s, border-color 0.12s, background 0.12s;
-  overflow: hidden;
+  transition:
+    transform var(--dur-lift) var(--ease-lift),
+    border-color 0.12s,
+    background-color 0.12s;
 }
-.mn-tile:hover,
-.mn-tile.mn-focus {
-  transform: translateY(-2px);
-  border-color: var(--mn-edge-hi);
-  background: linear-gradient(135deg, rgba(48, 56, 72, 0.95), rgba(24, 28, 38, 0.95));
+.mn-tile.mn-focus,
+.mn-tile:focus-visible {
+  transform: translateY(var(--focus-lift));
+  background: var(--surface-2-97);
+}
+@media (hover: hover) {
+  .mn-tile:hover {
+    transform: translateY(var(--focus-lift));
+    border-color: var(--edge-hi);
+    border-left-color: var(--brand-deep);
+    background: var(--surface-2-97);
+  }
 }
 .mn-tile-glyph {
   grid-row: span 2;
@@ -411,33 +267,49 @@
   width: 52px;
   height: 52px;
   font-size: 26px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--r-tile);
+  background: var(--surface-3);
+  border: 1px solid var(--edge-hi);
+}
+/* The sprite icons (src/ui/components/icons.ts): one em, in the text colour. */
+.mn-icon {
+  display: block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  overflow: visible;
 }
 .mn-tile-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-display);
   font-size: 22px;
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .mn-tile-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--text-2);
 }
 .mn-tile-tag {
   position: absolute;
   top: 10px;
   right: 12px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-2);
   letter-spacing: 0.06em;
 }
-/* The hero tile (PLAY / free practice): a lime slab with dark ink. */
+/* The hero tile (PLAY / free practice): a lime slab with dark ink (flat lime on super low). */
 .mn-tile-hero {
   padding: 26px 24px;
   color: var(--brand-ink);
-  background: linear-gradient(120deg, #dcff6e, var(--brand) 48%, #93d81c);
+  background: var(--brand-grad);
   border-color: transparent;
 }
 .mn-tile-hero .mn-tile-title {
@@ -445,74 +317,23 @@
 }
 .mn-tile-hero .mn-tile-sub,
 .mn-tile-hero .mn-tile-tag {
-  color: rgba(13, 22, 0, 0.72);
+  color: var(--brand-ink);
 }
 .mn-tile-hero .mn-tile-glyph {
-  background: rgba(13, 22, 0, 0.12);
-  border-color: rgba(13, 22, 0, 0.22);
+  background: var(--brand-hi);
+  border-color: var(--brand-deep);
 }
-.mn-tile-hero:hover,
-.mn-tile-hero.mn-focus {
+.mn-tile-hero.mn-focus,
+.mn-tile-hero:focus-visible {
   border-color: transparent;
-  background: linear-gradient(120deg, #e8ff94, #d3ff55 48%, #a2e62c);
+  background: var(--brand-grad);
 }
-.mn-tile-casual .mn-tile-glyph {
-  color: var(--blue-hi);
+@media (hover: hover) {
+  .mn-tile-hero:hover {
+    border-color: transparent;
+    background: var(--brand-hi);
+  }
 }
-.mn-tile-ranked .mn-tile-glyph {
-  color: var(--mn-gold);
-}
-.mn-tile-custom .mn-tile-glyph {
-  color: #c79bff;
-}
-.mn-tile-offline .mn-tile-glyph {
-  color: #9fe6b8;
-}
-
-.mn-home {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
-  gap: 22px;
-  align-items: start;
-}
-.mn-home-tiles {
-  display: grid;
-  gap: 12px;
-}
-.mn-home-side {
-  padding: 16px;
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge);
-  border-radius: 12px;
-  display: grid;
-  gap: 12px;
-}
-.mn-side-title {
-  font-size: 13px;
-  letter-spacing: 0.22em;
-  color: var(--muted);
-  text-transform: uppercase;
-}
-.mn-side-text {
-  margin: 0;
-  line-height: 1.4;
-  color: var(--muted);
-}
-
-.mn-play-tiles {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-.mn-play-tiles .mn-tile {
-  min-height: 130px;
-}
-.mn-play-foot {
-  margin-top: 14px;
-  color: var(--muted);
-  font-size: 14px;
-}
-
 /* ---- rows: cycler, fields ---------------------------------------------------------------------- */
 .mn-row {
   display: flex;
@@ -522,7 +343,7 @@
   padding: 6px 0;
 }
 .mn-row + .mn-row {
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--edge);
 }
 .mn-row-label {
   font-size: 16px;
@@ -538,14 +359,14 @@
   font: inherit;
   font-size: 16px;
   color: var(--text);
-  background: rgba(10, 12, 18, 0.8);
-  border: 1px solid var(--mn-edge);
-  border-radius: 8px;
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-tile);
   cursor: pointer;
 }
 .mn-cycle-arrow {
   color: var(--brand);
-  font-weight: 900;
+  font-weight: 700;
   padding: 0 4px;
 }
 .mn-cycle-value {
@@ -561,7 +382,7 @@
 .mn-field-label {
   font-size: 13px;
   letter-spacing: 0.1em;
-  color: var(--muted);
+  color: var(--text-2);
   text-transform: uppercase;
 }
 .mn-input {
@@ -569,135 +390,36 @@
   font-size: 17px;
   padding: 10px 12px;
   color: var(--text);
-  background: rgba(6, 8, 12, 0.85);
-  border: 1px solid var(--mn-edge);
-  border-radius: 8px;
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-tile);
   user-select: text;
 }
 .mn-input:focus {
   border-color: var(--brand);
 }
 .mn-input::placeholder {
-  color: rgba(244, 247, 255, 0.3);
+  color: var(--text-3);
 }
 .mn-field-bad .mn-input {
-  border-color: var(--mn-red);
+  border-color: var(--danger);
 }
 .mn-field-error {
-  color: #ff9b9b;
+  color: var(--danger);
   font-size: 13px;
-}
-
-/* ---- playlists --------------------------------------------------------------------------------- */
-.mn-playlists {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-.mn-pl {
-  position: relative;
-  display: grid;
-  gap: 4px;
-  justify-items: start;
-  text-align: left;
-  padding: 16px 16px 14px 48px;
-  min-height: 110px;
-  font: inherit;
-  color: var(--text);
-  background: rgba(12, 14, 20, 0.75);
-  border: 2px solid var(--mn-edge);
-  border-radius: 12px;
-  cursor: pointer;
-}
-.mn-pl[aria-pressed='true'] {
-  border-color: var(--brand);
-  background: linear-gradient(135deg, rgba(198, 255, 46, 0.2), rgba(14, 17, 24, 0.9));
-}
-.mn-pl-check {
-  position: absolute;
-  left: 14px;
-  top: 18px;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  border: 2px solid var(--mn-edge-hi);
-}
-.mn-pl[aria-pressed='true'] .mn-pl-check {
-  color: var(--brand-ink);
-  background: var(--brand);
-  border-color: #fff;
-}
-.mn-pl[aria-pressed='true'] .mn-pl-check::after {
-  content: '✓';
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  font-weight: 900;
-  font-size: 14px;
-}
-.mn-pl-name {
-  font-size: 22px;
-  font-weight: 900;
-  font-style: italic;
-  letter-spacing: 0.06em;
-}
-.mn-pl-size {
-  font-size: 13px;
-  color: var(--muted);
-}
-.mn-pl-extra {
-  font-size: 13px;
-  color: #dfffa0;
-}
-.mn-pl-rank {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.mn-pl-rank > span {
-  display: grid;
-  line-height: 1.2;
-}
-.mn-pl-rank small {
-  color: var(--muted);
 }
 
 .mn-ban {
   margin: 0 0 14px;
   padding: 10px 14px;
-  border-radius: 8px;
-  color: #ffd4d4;
-  background: rgba(255, 70, 70, 0.16);
-  border: 1px solid rgba(255, 110, 110, 0.5);
+  border-radius: var(--r-tile);
+  color: var(--text);
+  background: var(--danger-tint);
+  border: 1px solid var(--danger-line);
 }
 
-.mn-locked {
-  max-width: 620px;
-  margin: 30px auto;
-  padding: 28px;
-  text-align: center;
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge);
-  border-radius: 14px;
-}
-.mn-locked-icon {
-  font-size: 40px;
-}
-.mn-locked-title {
-  margin: 8px 0;
-  font-size: 24px;
-  font-weight: 900;
-}
-.mn-locked p {
-  color: var(--muted);
-  line-height: 1.45;
-}
-.mn-locked .mn-actions {
-  justify-content: center;
-}
-
-/* ---- rank badges ------------------------------------------------------------------------------- */
+/* ---- rank badges -------------------------------------------------------------------------------
+   Each family's metal (--c1 / --c2) is the badge's own illustration palette, not a UI colour. */
 .mn-badge {
   --badge: 56px;
   --c1: #6b7280;
@@ -728,7 +450,7 @@
   width: calc(var(--badge) * 0.09);
   height: calc(var(--badge) * 0.09);
   border-radius: 50%;
-  background: #fff;
+  background: var(--text);
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
 }
 .mn-badge-unranked {
@@ -777,9 +499,9 @@
   gap: 14px;
   align-items: center;
   padding: 12px;
-  border-radius: 10px;
-  background: rgba(12, 14, 20, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--r-tile);
+  background: var(--surface-0-94);
+  border: 1px solid var(--edge);
 }
 .mn-rating-text {
   display: grid;
@@ -788,16 +510,16 @@
 .mn-rating-playlist {
   font-size: 12px;
   letter-spacing: 0.16em;
-  color: var(--muted);
+  color: var(--text-2);
   text-transform: uppercase;
 }
 .mn-rating-tier {
   font-size: 20px;
-  font-weight: 900;
+  font-weight: 700;
 }
 .mn-rating-sub {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* ---- custom matches ---------------------------------------------------------------------------- */
@@ -832,15 +554,18 @@
 .mn-lobby-head {
   font-size: 12px;
   letter-spacing: 0.14em;
-  color: var(--muted);
+  color: var(--text-2);
   text-transform: uppercase;
 }
+/* One scroller: 12 px of padding and 16 px of scroll padding, so a focused row's ring (6 px out,
+   focus.css) is never cut by the scroll box. */
 .mn-lobbies {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   max-height: 52vh;
   overflow-y: auto;
-  padding: 4px;
+  padding: 12px;
+  scroll-padding: 16px;
 }
 .mn-lobby-row {
   width: 100%;
@@ -848,25 +573,28 @@
   font-size: 15px;
   text-align: left;
   color: var(--text);
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge);
-  border-radius: 8px;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
   cursor: pointer;
 }
-.mn-lobby-row:hover {
-  background: var(--mn-card-hi);
+@media (hover: hover) {
+  .mn-lobby-row:hover {
+    background: var(--surface-2-97);
+    border-color: var(--edge-hi);
+  }
 }
 .mn-lobby-row:disabled {
-  opacity: 0.5;
+  color: var(--text-3);
 }
 .mn-lobby-name {
-  font-weight: 800;
+  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mn-lobby-host {
-  color: var(--muted);
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -874,7 +602,7 @@
 .mn-lobbies-status {
   margin-top: 8px;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 .mn-lobby-top {
@@ -886,11 +614,11 @@
 }
 .mn-lobby-title {
   font-size: clamp(26px, 4.5vh, 40px);
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
 }
 .mn-lobby-info {
-  color: var(--muted);
+  color: var(--text-2);
   margin-top: 4px;
 }
 .mn-lobby-code {
@@ -898,24 +626,26 @@
   gap: 10px;
   align-items: center;
   padding: 10px 14px;
-  border-radius: 10px;
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge-hi);
+  border-radius: var(--r-tile);
+  background: var(--surface-1-94);
+  border: 1px solid var(--brand-line);
 }
 .mn-lobby-code-label {
   font-size: 12px;
   letter-spacing: 0.2em;
-  color: var(--muted);
+  color: var(--text-2);
 }
 .mn-lobby-code-value {
+  font-family: var(--font-display);
   font-size: 28px;
-  font-weight: 900;
+  font-weight: 700;
   letter-spacing: 0.22em;
+  text-transform: uppercase;
   font-variant-numeric: tabular-nums;
 }
 .mn-lobby-status {
   margin: 6px 0 14px;
-  color: #dfffa0;
+  color: var(--brand-hi);
 }
 .mn-teams {
   display: grid;
@@ -925,27 +655,30 @@
 }
 .mn-team {
   padding: 14px;
-  border-radius: 12px;
+  border-radius: var(--r-tile);
   display: grid;
   gap: 8px;
   align-content: start;
 }
-/* Team columns of a custom lobby (src/ui/screens/custom.ts): mn-team-blue / mn-team-red. */
+/* Team columns of a custom lobby (src/ui/screens/custom.ts): mn-team-blue / mn-team-red. The team
+   colour is the top edge and a wash fading into the surface. */
 .mn-team-blue {
-  background: linear-gradient(180deg, rgba(58, 155, 255, 0.34), rgba(10, 26, 58, 0.78));
-  border: 1px solid rgba(110, 175, 255, 0.65);
+  background: var(--surface-1-94) linear-gradient(180deg, var(--blue-glow), transparent 70%);
+  border: 1px solid var(--blue-deep);
   border-top: 4px solid var(--blue);
 }
 .mn-team-red {
-  background: linear-gradient(180deg, rgba(212, 32, 57, 0.34), rgba(52, 8, 16, 0.78));
-  border: 1px solid rgba(255, 110, 130, 0.6);
+  background: var(--surface-1-94) linear-gradient(180deg, var(--red-glow), transparent 70%);
+  border: 1px solid var(--red-deep);
   border-top: 4px solid var(--red);
 }
 .mn-team-title {
+  font-family: var(--font-display);
   font-size: 18px;
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 .mn-member {
   display: flex;
@@ -953,16 +686,16 @@
   gap: 8px;
   min-height: 44px;
   padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.35);
+  border-radius: var(--r-tile);
+  background: var(--surface-0-94);
 }
 .mn-member-you {
-  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline: 2px solid var(--edge-hi);
 }
 .mn-member-bot {
-  color: var(--muted);
+  color: var(--text-2);
   font-style: italic;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--surface-1-94);
 }
 .mn-member-name {
   flex: 1;
@@ -975,21 +708,21 @@
   font-size: 11px;
   letter-spacing: 0.1em;
   padding: 2px 6px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--muted);
+  border-radius: var(--r-slot);
+  background: var(--surface-3);
+  color: var(--text-2);
 }
 .mn-tag-live {
-  background: rgba(78, 224, 138, 0.2);
-  color: var(--mn-green);
+  background: var(--ok-tint);
+  color: var(--ok);
 }
 /* Experimental rules (custom.ts): the EXP tag (lobby list, lobby title), the lobby's rules line,
-   the host's rules row with its note and EDIT PRESETS. */
+   the host's rules row with its note and EDIT PRESETS. Violet: Experimental's own colour. */
 .mn-tag-exp {
-  background: rgba(255, 207, 90, 0.18);
-  color: var(--mn-gold);
+  background: var(--surface-3);
+  color: var(--lab);
   font-style: normal;
-  font-weight: 800;
+  font-weight: 700;
   vertical-align: middle;
 }
 .mn-lobby-title .mn-tag-exp {
@@ -997,27 +730,31 @@
 }
 .mn-lobby-rules {
   margin-top: 6px;
-  color: var(--mn-gold);
+  color: var(--lab);
 }
 .mn-rules {
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--edge);
 }
 .mn-rules-note {
   margin: 0 0 8px;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--text-2);
 }
 .mn-rules > .mn-btn {
   margin: 2px 0 6px;
 }
 .mn-kick {
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   padding: 4px 8px;
-  color: #ffd4d4;
-  background: rgba(255, 70, 70, 0.2);
-  border: 1px solid rgba(255, 110, 110, 0.5);
-  border-radius: 6px;
+  color: var(--danger);
+  background: var(--danger-tint);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-key);
   cursor: pointer;
 }
 
@@ -1040,9 +777,9 @@
   gap: 8px;
   align-content: center;
   padding: 12px 16px;
-  border: 1px solid var(--mn-edge);
-  border-radius: 12px;
-  background: var(--mn-card);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+  background: var(--surface-1-94);
 }
 .mn-exp-side .mn-row {
   padding: 0;
@@ -1058,20 +795,25 @@
   justify-self: start;
 }
 .mn-tile-exp {
-  border-left-color: #c79bff;
+  border-left-color: var(--lab);
+}
+@media (hover: hover) {
+  .mn-tile-exp:hover {
+    border-left-color: var(--lab);
+  }
 }
 .mn-tile-exp .mn-tile-glyph,
 .mn-tile-exp .mn-tile-tag {
-  color: #c79bff;
+  color: var(--lab);
 }
 .mn-tile-exp .mn-tile-tag {
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.14em;
 }
 .mn-packs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 .mn-pack-col {
   display: grid;
@@ -1084,11 +826,12 @@
 }
 .mn-pack-cat b {
   font-size: 22px;
+  font-weight: 700;
   font-style: italic;
   letter-spacing: 0.08em;
 }
 .mn-pack-cat small {
-  color: var(--muted);
+  color: var(--text-2);
 }
 .mn-pack {
   display: grid;
@@ -1097,32 +840,32 @@
   padding: 14px 16px;
   font: inherit;
   color: var(--text);
-  border-radius: 10px;
-  border: 1px solid var(--mn-edge);
-  background: var(--mn-card);
+  border-radius: var(--r-tile);
+  border: 1px solid var(--edge);
+  background: var(--surface-1-94);
   cursor: pointer;
   border-left-width: 5px;
 }
 .mn-pack-easy {
-  border-left-color: #4ee08a;
+  border-left-color: var(--ok);
 }
 .mn-pack-medium {
-  border-left-color: #ffcf5a;
+  border-left-color: var(--warn);
 }
 .mn-pack-hard {
-  border-left-color: #ff5a5a;
+  border-left-color: var(--danger);
 }
 .mn-pack-done {
-  background: linear-gradient(135deg, rgba(78, 224, 138, 0.18), var(--mn-card));
+  background: var(--surface-1-94) linear-gradient(135deg, var(--ok-tint), transparent);
 }
 .mn-pack-diff {
   font-size: 18px;
-  font-weight: 900;
+  font-weight: 700;
 }
 .mn-pack-shots,
 .mn-pack-best {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
 /* ---- profile / auth ---------------------------------------------------------------------------- */
@@ -1134,9 +877,9 @@
 }
 .mn-auth {
   padding: 18px;
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge);
-  border-radius: 12px;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
 }
 .mn-tabs {
   display: flex;
@@ -1146,13 +889,15 @@
 }
 .mn-tab {
   font: inherit;
-  font-weight: 800;
+  font-family: var(--font-display);
+  font-weight: 700;
   letter-spacing: 0.1em;
+  text-transform: uppercase;
   padding: 9px 14px;
-  color: var(--muted);
+  color: var(--text-2);
   background: transparent;
-  border: 1px solid var(--mn-edge);
-  border-radius: 8px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
   cursor: pointer;
 }
 .mn-tab-on {
@@ -1171,8 +916,15 @@
 }
 .mn-or {
   text-align: center;
-  color: var(--muted);
+  color: var(--text-2);
   font-size: 13px;
+}
+/* The providers' own button colours and wording (their brand rules): no display face, no capitals. */
+.mn-btn.mn-oauth-google,
+.mn-btn.mn-oauth-discord {
+  font-family: var(--font-body);
+  text-transform: none;
+  letter-spacing: 0.04em;
 }
 .mn-oauth-google {
   background: #fff;
@@ -1195,7 +947,7 @@
 }
 .mn-profile-name {
   font-size: 30px;
-  font-weight: 900;
+  font-weight: 700;
   font-style: italic;
 }
 .mn-profile-ratings {
@@ -1214,8 +966,8 @@
   letter-spacing: 0.14em;
   padding: 8px;
   text-align: center;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.45);
+  border-radius: var(--r-key);
+  background: var(--surface-0);
   user-select: all;
 }
 
@@ -1225,6 +977,7 @@
   gap: 4px;
   max-height: 58vh;
   overflow-y: auto;
+  scroll-padding-block: 16px;
 }
 .mn-board-row {
   display: grid;
@@ -1232,21 +985,21 @@
   gap: 10px;
   align-items: center;
   padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(12, 14, 20, 0.7);
+  border-radius: var(--r-tile);
+  background: var(--surface-1-94);
 }
 .mn-board-head {
   background: transparent;
   font-size: 12px;
   letter-spacing: 0.14em;
-  color: var(--muted);
+  color: var(--text-2);
   text-transform: uppercase;
 }
 .mn-board-you {
-  outline: 2px solid var(--mn-gold);
+  outline: 2px solid var(--rank-gold);
 }
 .mn-board-rank {
-  font-weight: 900;
+  font-weight: 700;
 }
 .mn-board-name {
   display: flex;
@@ -1258,82 +1011,14 @@
 }
 .mn-board-mmr {
   font-variant-numeric: tabular-nums;
-  font-weight: 800;
+  font-weight: 700;
 }
 .mn-board-foot {
   margin-top: 10px;
-  color: var(--muted);
+  color: var(--text-2);
 }
 
-/* ---- toasts / modals --------------------------------------------------------------------------- */
-.mn-toasts {
-  position: absolute;
-  right: calc(var(--safe-right) + 18px);
-  bottom: calc(var(--safe-bottom) + 64px);
-  display: grid;
-  gap: 8px;
-  z-index: 3;
-  pointer-events: none;
-}
-.mn-toast {
-  max-width: 420px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: rgba(22, 26, 34, 0.96);
-  border: 1px solid var(--mn-edge-hi);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  animation: mn-in 0.2s ease-out;
-  transition: opacity 0.5s;
-}
-.mn-toast.out {
-  opacity: 0;
-}
-.mn-toast-error {
-  border-color: rgba(255, 110, 110, 0.8);
-  background: rgba(70, 14, 14, 0.96);
-}
-.mn-toast-ok {
-  border-color: rgba(78, 224, 138, 0.8);
-}
-.mn-modal-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: rgba(2, 4, 10, 0.7);
-  backdrop-filter: blur(4px);
-}
-.mn-modal {
-  width: min(560px, 100%);
-  max-height: 90vh;
-  overflow-y: auto;
-  padding: 22px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(32, 37, 48, 0.98), rgba(12, 14, 20, 0.98));
-  border: 1px solid var(--mn-edge-hi);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);
-  animation: mn-in 0.16s ease-out;
-}
-.mn-modal-title {
-  font-size: 24px;
-  font-weight: 900;
-  font-style: italic;
-  letter-spacing: 0.06em;
-  margin-bottom: 12px;
-}
-.mn-modal-body p {
-  line-height: 1.45;
-}
-.mn-modal-actions {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-  margin-top: 16px;
-  flex-wrap: wrap;
-}
-
+/* ---- the ranked result (leaderboard.ts, a sheet's body) ------------------------------------- */
 .mn-result {
   display: flex;
   gap: 20px;
@@ -1342,30 +1027,30 @@
 }
 .mn-result-tier {
   font-size: 26px;
-  font-weight: 900;
+  font-weight: 700;
 }
 .mn-result-mmr {
   font-size: 18px;
   margin: 4px 0 8px;
 }
 .mn-result-mmr .up {
-  color: var(--mn-green);
-  font-weight: 900;
+  color: var(--ok);
+  font-weight: 700;
 }
 .mn-result-mmr .down {
-  color: var(--mn-red);
-  font-weight: 900;
+  color: var(--danger);
+  font-weight: 700;
 }
 .mn-result-change {
   margin-top: 8px;
-  color: var(--mn-gold);
-  font-weight: 800;
+  color: var(--rank-gold);
+  font-weight: 700;
 }
 .mn-progress {
   width: 240px;
   height: 8px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--surface-3);
   overflow: hidden;
 }
 .mn-progress-fill {
@@ -1375,28 +1060,14 @@
 
 /* ---- narrow screens ---------------------------------------------------------------------------- */
 @media (max-width: 860px) {
-  .mn-home,
   .mn-profile-guest {
     grid-template-columns: 1fr;
   }
-  .mn-play-tiles,
-  .mn-playlists,
   .mn-packs,
   .mn-exp,
   .mn-profile-ratings,
   .mn-teams {
     grid-template-columns: 1fr;
-  }
-  /* The footer keeps its links (AGPL-3.0: the source link stays at every width) and drops the build
-     line; next to a search banner they take a line of their own. */
-  .mn-bottom {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-  .mn-crumbs,
-  .mn-info-build,
-  .mn-online small {
-    display: none;
   }
   .mn-lobby-head {
     display: none;
@@ -1428,100 +1099,18 @@
   .mn-lobby-top {
     flex-direction: column;
   }
-  .mn-hints {
-    display: none;
-  }
-}
-@media (max-width: 640px) {
-  /* Narrow top bar: the region chip keeps only its status dot, the account chip only the name. */
-  .mn-online > span:not(.mn-dot),
-  .mn-online small {
-    display: none;
-  }
-  .mn-chip-text b {
-    max-width: 96px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-@media (max-width: 520px) {
-  .mn-brand {
-    font-size: 20px;
-  }
-  .mn-top {
-    gap: 10px;
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-  .mn-stage {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-  .mn-chip-text small {
-    display: none;
-  }
-  .mn-banner-text,
-  .mn-banner-modes {
-    display: none;
-  }
 }
 
 /* ---- touch mode -------------------------------------------------------------------------------
-   html.tg-touch (src/input/TouchControls.ts): the last input used was a finger. The top bar gets a
-   back button, the key hints and focus rings go (Menu focuses nothing by itself then), and the menus
-   pan but never zoom (pan-x pan-y: manipulation would keep the pinch zoom on Android). */
-.mn-back {
-  display: none;
-}
-.tg-touch .mn-back {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 44px;
-  height: 44px;
-  padding: 0 0 4px;
-  font: inherit;
-  font-size: 34px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--text);
-  background: var(--mn-card);
-  border: 1px solid var(--mn-edge);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.tg-touch .mn-back:active {
-  background: var(--mn-card-hi);
-  border-color: var(--mn-edge-hi);
-}
-/* Home: nothing to go back to, but the button keeps its place so the brand does not jump. */
-.tg-touch .mn-back.mn-back-off {
-  visibility: hidden;
-}
+   html.tg-touch (src/input/TouchControls.ts): the last input used was a finger. No key hints and no
+   focus rings (Menu focuses nothing by itself then); the menus pan and pinch-zoom (manipulation: no
+   double-tap zoom), only the match's controls (.tc-root) keep every finger to themselves. */
 .tg-touch .mn {
-  touch-action: pan-x pan-y;
+  touch-action: manipulation;
 }
-.tg-touch .mn-hints {
-  display: none;
-}
-.tg-touch .mn .mn-focus,
-.tg-touch .mn [data-nav]:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
+/* No focus rings in touch mode: src/ui/styles/focus.css. */
 /* body blocks selection with -webkit-user-select: none, and iOS then refuses to type in the field. */
 .tg-touch .mn-input {
   -webkit-user-select: text;
   -webkit-touch-callout: default;
-}
-
-/* Footer links (source code: AGPL-3.0; third-party licenses; Discord). */
-.mn-source {
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.mn-source:hover {
-  color: var(--text);
 }

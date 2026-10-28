@@ -7,7 +7,11 @@
  */
 import { ACTION_IDS, type BindingProfile } from './bindings';
 
-/** Fixed menu keys (Input's menu navigation, src/ui/Menu.ts, the Hud's menus): a press turns touch mode off. */
+/**
+ * Fixed menu keys (Input's menu navigation, src/ui/Menu.ts, the Hud's menus): a press turns touch
+ * mode off. Q / E (tabs, sections), X (cancel the search) and Delete (the context action) are the
+ * menus' shortcuts (Menu.onKey).
+ */
 export const MENU_KEYS: ReadonlySet<string> = new Set([
   'Enter',
   'NumpadEnter',
@@ -23,6 +27,10 @@ export const MENU_KEYS: ReadonlySet<string> = new Set([
   'KeyA',
   'KeyS',
   'KeyD',
+  'KeyQ',
+  'KeyE',
+  'KeyX',
+  'Delete',
 ]);
 
 /** Keys that never mean the keyboard is in use: phone volume / media keys, launcher and browser keys. */

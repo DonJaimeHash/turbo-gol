@@ -604,6 +604,20 @@ export class Audio {
   }
 
   /**
+   * MATCH FOUND (src/ui/screens/match/found.ts): the countdown's warm A rising to its E a fifth
+   * up, 90 ms apart, short and bright (it may sound over the menus or a free practice).
+   */
+  playMatchFound(): void {
+    const ctx = this.ready();
+    if (ctx === null) return;
+    const t = ctx.currentTime;
+    const v = this.voice(ctx, 0.6, 0.12);
+    this.click(ctx, v, t, 2200, 0.04);
+    this.note(ctx, v, t, 880, 0.1, { ratios: [1, 2], amps: [1, 0.35], decays: [0.18, 0.12], attack: 0.003, hold: 0.05, wave: 'warm' });
+    this.note(ctx, v, t + 0.09, 1320, 0.1, { ratios: [1, 2], amps: [1, 0.3], decays: [0.3, 0.16], attack: 0.003, hold: 0.08, wave: 'warm' });
+  }
+
+  /**
    * Boost pad pickup. Small: a light blip rising onto D6, a glassy FM sparkle (sidebands on the D5
    * series) fading into the tone, over a hollow D5 and a touch of warm D4; short and soft, since it
    * can repeat several times a second, and a hair of random pitch so a row of pads does not sound
