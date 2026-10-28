@@ -145,6 +145,11 @@ export interface SearchView {
   reload?: boolean;
   /** What that failure leaves the player to do (src/net/outcome.ts); absent: retry. */
   outcome?: Outcome;
+  /**
+   * That failure ended what the menus started (a search, a rejoin: REINTENTAR runs it again);
+   * false for a lobby's match (its member goes back to the Sala): the sheet only closes.
+   */
+  retry?: boolean;
 }
 
 export interface MenuConfig {
@@ -1548,7 +1553,7 @@ export class Menu {
       this.fitNow();
       if (!this.settingsUp()) this.openUpdateSheet();
     } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) {
-      this.failure(v.error, v.outcome ?? 'retry', this.lastTry ?? undefined);
+      this.failure(v.error, v.outcome ?? 'retry', v.retry === false ? undefined : (this.lastTry ?? undefined));
     }
     this.lastError = v.error;
     // A search that ends (cancelled, a failure, the server) takes its pill away: the focus it had

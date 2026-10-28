@@ -686,6 +686,8 @@ export default {
   'error.lobby.start_failed': "Couldn't start the match, try again",
   // Generic: the server names the player
   'error.lobby.member_busy': 'A player is still in another match',
+  // START while a member's socket is away (LobbyDO's grace, plan PR 12)
+  'error.lobby.member_away': 'A player is reconnecting',
   'error.lobby.capacity': 'All servers are busy, try again in a minute',
   // The server switched matchmaking off (creating a lobby). Same text as error.queue.matchmaking_off
   // (Spanish players keep the generic error.server line here: src/i18n.ts SERVER_DETAIL_CODES)

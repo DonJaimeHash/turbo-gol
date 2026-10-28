@@ -1405,6 +1405,8 @@ export class Game implements P2PGameHooks {
       // the menus' blocking sheet instead of a toast.
       reload: error !== null && error === t('error.queue.reload_required'),
       outcome: error !== null ? (s?.errorOutcome ?? 'retry') : undefined,
+      // A lobby's match is no search of the menus: its failure has nothing for REINTENTAR to run.
+      retry: this.matchKind !== 'lobby',
     };
   }
 
@@ -2384,8 +2386,11 @@ export class Game implements P2PGameHooks {
     const online = this.online;
     const lost = requeue === null && online !== null && this.session === online && online.rejoinable !== null;
     const ranked = online !== null && online.ranked;
-    // A match that never started asks nothing of the player: back in the queue (outcome.ts 'requeue').
-    this.menuNotice = requeue !== null ? `${requeue.text} · ${t('outcome.requeue')}` : lost ? undefined : message;
+    // A match that never started asks nothing of the player: back in the queue (outcome.ts 'requeue'),
+    // one toast that says so (final.noShow / final.dodge); the session's own error would be a failed
+    // step (a sheet with REINTENTAR) over the search that runs again.
+    this.menuNotice = requeue !== null ? requeue.text : lost ? undefined : message;
+    if (requeue !== null && online !== null) online.error = null;
     if (!this.menuShown) this.showMenu();
     else if (this.session !== null) this.session.leave();
     // A match that never started: the same search again (the toast says why).

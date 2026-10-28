@@ -477,6 +477,7 @@ export default {
   'error.lobby.too_many': 'Hay más jugadores que lugares en ese modo',
   'error.lobby.start_failed': 'No se pudo iniciar la partida, inténtalo de nuevo',
   'error.lobby.member_busy': 'Un jugador todavía está en otra partida',
+  'error.lobby.member_away': 'Un jugador se está reconectando',
   'error.lobby.capacity': 'Todos los servidores están ocupados, inténtalo de nuevo en un minuto',
   'error.lobby.matchmaking_off': 'La búsqueda de partidas está en pausa, inténtalo más tarde',
   'error.lobby.account_required': 'Sala experimental: inicia sesión para entrar',

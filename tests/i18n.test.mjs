@@ -123,6 +123,14 @@ test('every error.<surface>.<code> key names a surface serverText knows; Spanish
   }
 });
 
+test("every refusal of a lobby's socket (LobbyDO fail) has a text of its own: no Spanish server line in another language", () => {
+  const src = readFileSync(new URL('../server/src/LobbyDO.ts', import.meta.url), 'utf8');
+  const codes = new Set([...src.matchAll(/\bfail\('([a-z_]+)'/g)].map((m) => m[1]));
+  codes.delete('unknown'); // a message this client never sends
+  assert.ok(codes.has('member_away'), 'the scan finds the refusals');
+  for (const code of codes) assert.ok(typeof en['error.lobby.' + code] === 'string', `error.lobby.${code}`);
+});
+
 const { NetError } = await import('../src/net/NetClient.ts');
 const { netErrorText } = await import('../src/net/netErrorText.ts');
 
