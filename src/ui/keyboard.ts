@@ -3,9 +3,9 @@
  * account sheets, a lobby's code). Chrome on Android resizes only the visual viewport when the
  * keyboard opens (the layout viewport, and the menus' fixed shell, keep their height), so a field
  * low on the page would type unseen under it. While a keyboard covers the bottom, the menus' root
- * carries its height as `--kb-inset` (the stage and the phone's sheets make that much room at
- * their end: shell.css, components.css) and the focused field is scrolled to sit above it, in its
- * own scroller. keyboardInset is pure (tests/keyboard-inset.test.mjs).
+ * carries its height as `--kb-inset` (PERFIL's stage makes that much room at its end, a phone's
+ * sheet rises above it: profile.css, components.css) and the focused field is scrolled to sit
+ * above it, in its own scroller. keyboardInset is pure (tests/keyboard-inset.test.mjs).
  */
 
 /** Under this many px the bottom is a browser bar or rounding, not a keyboard. */
@@ -45,7 +45,8 @@ export function installKeyboardInset(root: HTMLElement): void {
   if (vv == null) return;
   let last = 0;
   const apply = (): void => {
-    const inset = keyboardInset(window.innerHeight, vv.offsetTop, vv.height);
+    // A pinch zoom shrinks the visual viewport too: no keyboard then.
+    const inset = vv.scale > 1.01 ? 0 : keyboardInset(window.innerHeight, vv.offsetTop, vv.height);
     if (inset !== last) {
       last = inset;
       if (inset > 0) root.style.setProperty('--kb-inset', `${inset}px`);

@@ -494,6 +494,7 @@ export function profileScreen(menu: Menu): Screen {
           ? accountView({ name: acc.account?.name ?? '', me: acc.me, nodes: nodes !== null && nodes.who === who ? nodes.list : [] })
           : guestView();
     setChildren(body, view);
+    menu.refit(); // a new view's name and titles (data-fit)
     menu.refocus();
   };
 

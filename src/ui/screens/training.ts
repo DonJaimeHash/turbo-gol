@@ -141,6 +141,7 @@ export function trainingScreen(menu: Menu): Screen {
     const had = document.activeElement === how.el || document.activeElement === lab.el || document.activeElement === howRow.el;
     (on ? how.el : lab.el).replaceWith(on ? lab.el : how.el);
     extra.hidden = !on;
+    if (el.isConnected) menu.refit(); // the tile that came in (data-fit)
     if (had) menu.refocus();
   };
 
