@@ -212,10 +212,13 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // (styles/screens/final.css, about 10.2 KB with its short, phone and upright layouts), PARTIDO
 // ENCONTRADO (found.css, 1.2 KB) and the match HUD as drawn (the goal slab, the feed, the overtime
 // line, the pause dock, the scorebug and the boost plate: about 4.8 KB more than the rules they
-// replace). Both together: 128,806 B, the cap that plus about 0.6 KB. It steps down to 70 KB once
-// PR 10 deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css. Raising it is the owner's
-// call, recorded in the PR.
-const CSS_BUDGET = 129_400;
+// replace). Both together: 128,806 B, the cap that plus about 0.6 KB. PR 9 adds the touch match:
+// BOOST's amount and level, the moved CAM / RESET, the first-match cards, the live rotate notice
+// (touch.css, about 2.1 KB more) and the two-thumb touch pause with its half-moon hold (style.css,
+// about 2 KB, with the phone's 14 px floor for its lines): 132,990 B, the cap that plus about
+// 0.6 KB. It steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and
+// PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
+const CSS_BUDGET = 133_600;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;
