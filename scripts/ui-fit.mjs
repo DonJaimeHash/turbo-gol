@@ -62,6 +62,11 @@
 //            --long-name       the account chip signed in, a 16-character name and a rank,
 //            --no-pointer      start the browser without a pointing device (a Linux runner without
 //                              the pin: the desktop sizes then fail as TVs)
+// The interface size (Settings > Game, plan PR 11): a TV's runs are at its own 125 %; then every
+// size runs the screens again with the device's own input at the largest size Ajustes lists there
+// (device.ts interfaceSizes: 150 % on a computer or a TV, 130 on a tablet, 115 on a phone held
+// sideways; none past the device's own on a 360 tall or 390 wide phone), noted 'ui <size>%';
+// --ui-size <pct> forces one, --no-ui-size skips the pass. Inicio may scroll there.
 // MODOS (plan PR 6) runs by tab ('modes:casual' ...): Casual and Competitive idle with the action
 // focused, then searching (the panel, as the Menu shows a search: its own search view and pills),
 // CANCEL SEARCH and "While you wait: Free play" focused.
@@ -219,6 +224,7 @@ const INPUTS = args.inputs === 'default' ? [] : typeof args.inputs === 'string' 
 const ONLINE = args.online === true;
 const LONG_NAME = args['long-name'] === true;
 const WIDETEXT = args['no-widetext'] !== true;
+const UI_SIZE = args['no-ui-size'] !== true;
 const FACE = typeof args.face === 'string' ? args.face.replace(/['"\\]/g, '') : null;
 // The pointer the browser starts with (Blink's PointerType / HoverType: 4 fine, 1 none; 2 hover, 1 none).
 const POINTER = args['no-pointer'] === true ? 'primaryPointerType=1,availablePointerTypes=1,primaryHoverType=1,availableHoverTypes=1' : 'primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2';
@@ -352,7 +358,8 @@ try {
         ...(r.spill ?? []).map((x) => 'spill: ' + x),
         ...(r.hScroll ? ['horizontal scroll'] : []),
         // Inicio never scrolls but upright (360 x 640 may).
-        ...(home && r.stageScroll && r.layout !== 'portrait' ? ['the stage scrolls'] : []),
+        // Nor at a larger interface size than the device's own (it may, as every other screen).
+        ...(home && r.stageScroll && r.layout !== 'portrait' && !note.startsWith('ui ') ? ['the stage scrolls'] : []),
         ...r.clippedFocus.map((x) => 'ring cut: ' + x),
         ...small.filter((x) => !x.endsWith('(data-fit)')).map((x) => 'small text: ' + x),
       ];
@@ -436,6 +443,26 @@ try {
       await page.eval(`(document.querySelector('[data-key="hero"]')?.focus(), true)`);
       await page.eval(SEARCH_DONE);
       await page.eval('(window.__homeHero(null), true)');
+      await sleep(200);
+    }
+    // The largest interface size of this class (the live settings, as Ajustes writes them), then
+    // back to the device's own: the next tab reads the same storage.
+    if (UI_SIZE) {
+      // The largest the player can pick here: Ajustes' own option (or --ui-size <pct>).
+      await page.eval(`(__game.menu.open('settings', true, 'game'), true)`);
+      await sleep(300);
+      const big = Number(args['ui-size']) || (await page.eval(`Math.max(...[...document.querySelectorAll('[data-key^="set-ui-size-"]')].filter((b) => !b.hidden).map((b) => parseInt(b.textContent, 10)))`));
+      const setSize = (v) => page.eval(`(() => { const g = __game; g.settings.ui.size = ${v}; g.applySettings(); return true; })()`);
+      await setSize(big);
+      await sleep(300);
+      // Nothing larger than the device's own listed here (a short phone held sideways): no pass.
+      for (const screen of big > (size.tv ? 125 : 100) ? SCREENS.filter((x) => x !== 'touch' && x !== 'final') : []) {
+        const [id, tab] = screen.split(':');
+        await page.eval(`(__game.menu.open(${JSON.stringify(id)}, true${tab !== undefined ? ', ' + JSON.stringify(tab) : ''}), true)`);
+        await sleep(400);
+        await check(own, screen, `ui ${big}%`);
+      }
+      await setSize(0);
       await sleep(200);
     }
     // The touch match (plan PR 9), last on a touch size (it plays a match in this tab).
