@@ -1241,7 +1241,8 @@ export class Game implements P2PGameHooks {
 
   /**
    * The rotate-your-phone screen is up (src/input/touch.css: touch mode, a phone held upright, and
-   * no menus: they work upright, only a match asks to turn the phone): it hides everything.
+   * no menus: they work upright, only a match asks to turn the phone): offline it hides everything,
+   * online it is a scrim over the live match with the scorebug above it.
    */
   private get rotateShown(): boolean {
     const q = this.portraitQuery;
@@ -1250,10 +1251,12 @@ export class Game implements P2PGameHooks {
 
   /**
    * What lies over the scene (quality.ts sceneFps): the settings screen (over the menus or the
-   * pause) and the rotate-your-phone screen hide it; else what the menus reported while they are up.
+   * pause) and, offline, the rotate-your-phone screen hide it; else what the menus reported while
+   * they are up. Online the rotate notice covers nothing: the match goes on under it, and render()
+   * keeps its scorebug (clock, score) current, on #superlow too where the notice is opaque.
    */
   private sceneCover(): SceneCover {
-    if (this.hud.menuVisible || this.rotateShown) return 'opaque';
+    if (this.hud.menuVisible || (this.rotateShown && !this.onlineActive)) return 'opaque';
     return this.menu.visible ? this.menuCover : 'none';
   }
 

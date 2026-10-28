@@ -915,8 +915,9 @@ requestAnimationFrame(t):
 **UI at rest** (quality.ts `sceneFps`, Game.ts `frame`): the scene is drawn at the match's cap; at
 30 fps under the menus (20 on super low when they let it through, and on a touch screen whose menus
 hide more than 70 % of it: src/ui/cover.ts); and not at all, one held frame, under an opaque layer
-(a menu sheet, the menus' own opaque page on super low, the settings screen, a match's
-rotate-your-phone screen), in an offline pause, and under the menus with `prefers-reduced-motion` or
+(a menu sheet, the menus' own opaque page on super low, the settings screen, an offline match's
+rotate-your-phone screen: online the match and its scorebug go on under it), in an offline pause,
+and under the menus with `prefers-reduced-motion` or
 `GamePrefs.menuSceneAnimated` off (the orbit stops). The Tablero shell reports what it leaves of the
 scene through `MenuHost.setMenuCover` ('none' / 'partial' / 'opaque', Menu.reportCover): 'partial'
 on every section, stacked screen and layout (the bars, the rail or the tabs, the pills and toasts
