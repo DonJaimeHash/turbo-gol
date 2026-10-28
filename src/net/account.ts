@@ -181,6 +181,20 @@ export interface RegisterAnswer extends AccountSession {
   recoveryCodes: string[];
 }
 
+/**
+ * POST /api/auth/tv/start (a TV signing in with the phone): the code the TV shows, the device
+ * secret only the TV holds (it polls with it), when the code expires (epoch ms) and how often to poll.
+ */
+export interface TvStartAnswer {
+  code: string;
+  secret: string;
+  expiresAt: number;
+  pollMs: number;
+}
+
+/** POST /api/auth/tv/poll: still waiting for the phone, or the session (and the refresh cookie) as a sign-in gives. */
+export type TvPollAnswer = { state: 'pending' } | (AccountSession & { state: 'approved' });
+
 /** One playlist's ranked standing as the menus show it. */
 export interface PlaylistRating {
   playlist: Playlist;
