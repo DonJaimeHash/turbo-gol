@@ -219,9 +219,10 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // 0.6 KB. PR 13 adds ENTRENAMIENTO, CLASIFICACIÓN and PERFIL (styles/screens/training.css,
 // leaderboard.css and profile.css, about 12.6 KB with their phone, TV and short layouts and the
 // shared controls' type roles there) and the training HUD's shapes, fold and tally (0.3 KB), minus
-// the old training, board, profile and tile rules of menu.css (4.8 KB): 141,144 B, the cap that
-// plus about 0.6 KB. It steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about
-// 11 KB) and PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
+// the old training, board, profile and tile rules of menu.css (4.8 KB), with a phone's sheet over
+// its keyboard: 141,234 B, the cap that plus about 0.5 KB. It steps down to 70 KB once PR 10
+// deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css. Raising it is the owner's
+// call, recorded in the PR.
 const CSS_BUDGET = 141_750;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
