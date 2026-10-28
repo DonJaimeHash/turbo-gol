@@ -232,7 +232,8 @@ export class AccountClient {
       /* no JSON body */
     }
     // A code without a server text (a sign-in rate_limited...) still gets its own text when the client has one.
-    const message = serverText('account', code, serverMessage) || t('error.server', { status: res.status });
+    const message = serverText('account', code, serverMessage) || t('error.server');
+    if (message === t('error.server')) console.warn(`account: answered ${res.status} ${code}`);
     throw new AccountError(message, res.status, code, retry);
   }
 

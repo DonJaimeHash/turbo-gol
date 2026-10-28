@@ -2,8 +2,9 @@
  * The menus' own preferences, in localStorage `turbogol.menu.v1` (Menu.ts loads and saves them):
  * the region, the playlists picked for Casual and for Competitive, Casual's connection (MODOS ›
  * Advanced: auto, P2P or server; screens/modesModel.ts queueNet), the
- * leaderboard's playlist, and the kind of the last search started anywhere, which JUGAR AHORA plays
- * again in one press (screens/homeModel.ts heroQueue). Pure, no DOM: node tests import it.
+ * leaderboard's playlist, the kind of the last search started anywhere, which JUGAR AHORA plays
+ * again in one press (screens/homeModel.ts heroQueue), and the format of the last lobby the player
+ * had (CREATE LOBBY AND SHARE's: screens/lobbyModel.ts lobbyFormat). Pure, no DOM: node tests import it.
  */
 import { isRegion } from '../net/account';
 import type { RegionId } from '../net/account';
@@ -18,13 +19,15 @@ export interface MenuPrefs {
   leaderboardPlaylist: GameMode;
   /** The kind of the last search started anywhere (hero, Casual, Competitive): what JUGAR AHORA repeats. */
   lastQueue: 'casual' | 'ranked';
+  /** The format of the last lobby this player created or set (null: none yet). */
+  lobbyMode: GameMode | null;
 }
 
 /** The same key as before lastQueue: an older object reads as Casual, no migration. */
 export const PREFS_KEY = STORAGE_PREFIX + 'menu.v1';
 
 /** A first visit: Casual 2v2 in the automatic region (the connection's continent), the automatic connection. */
-export const DEFAULT_PREFS: Readonly<MenuPrefs> = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'auto', leaderboardPlaylist: '2v2', lastQueue: 'casual' };
+export const DEFAULT_PREFS: Readonly<MenuPrefs> = { region: null, casualModes: ['2v2'], rankedModes: ['2v2'], net: 'auto', leaderboardPlaylist: '2v2', lastQueue: 'casual', lobbyMode: null };
 
 /** The prefs stored as `raw` (null when none); anything unreadable takes its default. Pure. */
 export function parsePrefs(raw: string | null): MenuPrefs {
@@ -46,5 +49,6 @@ export function parsePrefs(raw: string | null): MenuPrefs {
     net: o.net === 'server' || o.net === 'p2p' ? o.net : 'auto',
     leaderboardPlaylist: o.leaderboardPlaylist === '1v1' || o.leaderboardPlaylist === '3v3' ? o.leaderboardPlaylist : '2v2',
     lastQueue: o.lastQueue === 'ranked' ? 'ranked' : 'casual',
+    lobbyMode: o.lobbyMode === '1v1' || o.lobbyMode === '2v2' || o.lobbyMode === '3v3' ? o.lobbyMode : null,
   };
 }

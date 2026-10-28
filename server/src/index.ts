@@ -29,6 +29,8 @@
  *                       403 'account_required' (a lobby with them takes signed-in players only)
  *   POST /api/lobbies/join { code, password? } Bearer -> LobbyTicketAnswer; a guest into a lobby with
  *                       experimental rules: 403 'account_required' (LobbyDO)
+ *   GET  /api/lobbies/peek?code= (no auth)            -> LobbySummary of the lobby with that code (a join
+ *                       link's "Join lobby ABC234 · 2v2 · 2/4?"); 404 no_lobby, 410 closed
  *   GET  /api/ice     Bearer session                    -> { iceServers }: Cloudflare STUN always, plus 10-minute TURN
  *                       credentials minted per request when TURN_KEY_ID / TURN_KEY_TOKEN are set (env.ts)
  *   GET  /ws/:matchId   Sec-WebSocket-Protocol: tg1, ticket.<jwt>  -> 101 (ticket verified here,
@@ -475,6 +477,28 @@ async function lobbyTicket(request: Request, env: Env, session: SessionClaims, l
 }
 
 /**
+ * GET /api/lobbies/peek?code=: the summary of the lobby a join link names (public or private: the
+ * code is what a private lobby shares), before the player joins. Rate-limited like the list.
+ */
+async function peekLobby(request: Request, env: Env, url: URL): Promise<Response> {
+  if (rateLimited('ll:' + clientIp(request), LIMIT_LOBBY_LIST_PER_IP, Date.now())) return error(429, 'rate_limited');
+  const code = normalizeCode(url.searchParams.get('code'));
+  if (code === null) return error(400, 'bad_code', 'El código tiene 6 letras o números');
+  const r = await lobbyDir(env).fetch('https://lobbies/resolve?code=' + code, { headers: await internalHeaders(env) });
+  if (!r.ok) return new Response(r.body, r);
+  const { lobbyId } = (await r.json()) as { lobbyId: string };
+  let id: DurableObjectId;
+  try {
+    id = env.LOBBY.idFromString(lobbyId);
+  } catch {
+    return error(404, 'no_lobby');
+  }
+  const res = await env.LOBBY.get(id).fetch('https://lobby/internal/peek', { headers: await internalHeaders(env) });
+  if (!res.ok) return new Response(res.body, res);
+  return json(await res.json(), 200, { 'cache-control': 'no-store' });
+}
+
+/**
  * POST /api/lobbies { name, password?, mode, visibility, net, matchLengthSeconds, physics?, region? }:
  * a new lobby hosted by the caller (guests too, but never with experimental rules: `physics` needs
  * an account session, 403 account_required; LobbyDO checks the rules themselves).
@@ -760,6 +784,7 @@ export default {
       else if (request.method === 'GET' && path === '/api/lobbies') res = await listLobbies(request, env, url);
       else if (request.method === 'POST' && path === '/api/lobbies') res = await createLobby(request, env);
       else if (request.method === 'POST' && path === '/api/lobbies/join') res = await joinLobby(request, env);
+      else if (request.method === 'GET' && path === '/api/lobbies/peek') res = await peekLobby(request, env, url);
       else if (request.method === 'POST' && path === '/api/guest') res = await guest(request, env);
       else if (request.method === 'POST' && path === '/api/queue') res = await queue(request, env);
       else if (request.method === 'POST' && path === '/api/rejoin') res = await rejoin(request, env);

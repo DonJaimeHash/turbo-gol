@@ -155,6 +155,7 @@ import { Audio, type AudioState } from '../audio/Audio';
 import { Input } from '../input/Input';
 import { TouchControls, autoFullscreen, hasTouchScreen, installHintDue, noteInstallHintShown } from '../input/TouchControls';
 import { t } from '../i18n';
+import type { Outcome } from '../net/outcome';
 import { sessionValid } from '../net/NetClient';
 import type { NetClient, ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
@@ -166,7 +167,10 @@ import { STOCK_ARENA_FINGERPRINT, accumulate, buildTrainingArena, needsTrainingA
 import type { ExperimentalContext, ExperimentalOptions, SuperlowStatus } from '../render/experimentalPage';
 import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
-import { REGIONS, isPlaylist } from '../net/account';
+import { installJoinLink } from '../ui/screens/lobby';
+import { installSalaSamples } from '../ui/screens/lobbySamples';
+import { openLostSheet } from '../ui/screens/match/lost';
+import { REGIONS, isPlaylist, isRegion } from '../net/account';
 import type { RegionId } from '../net/account';
 import { isNodeHost, type QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
@@ -406,6 +410,10 @@ export interface GameSession {
   readonly statusIsError: boolean;
   /** In-match hint ('Esperando a <name>…'), null when none. */
   readonly hint: string | null;
+  /** The hint is good news ("Back in the match"): the HUD's line in --ok, not blinking. */
+  readonly hintOk?: boolean;
+  /** What the last failure (statusText while idle) leaves the player to do (src/net/outcome.ts); absent: retry. */
+  readonly errorOutcome?: Outcome;
   /** Visual error offsets (uu) for the player's car and the ball (phase 1 rollback), null / absent otherwise. */
   readonly errorOffsetCar?: Float32Array | null;
   readonly errorOffsetBall?: Float32Array | null;
@@ -1045,6 +1053,8 @@ export class Game implements P2PGameHooks {
     });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
+    // A join link (#sala=ABC234) on this load or a later hashchange: its sheet once the menus are up.
+    if (typeof window !== 'undefined' && typeof history !== 'undefined') installJoinLink(this.menu);
     this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
@@ -1058,6 +1068,7 @@ export class Game implements P2PGameHooks {
     this.menu.register('settings', (m) => settingsScreen(m, this.menuSettings));
     this.pauseSettings = new SettingsOverlay(opts.hudContainer, () => this.settingsOptions());
     installFinalSample(this.menu);
+    installSalaSamples(this.menu);
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad }) : null;
@@ -1346,6 +1357,9 @@ export class Game implements P2PGameHooks {
       searchView: () => game.menuSearchView(),
       practiceWhileSearching: () => game.startSearchPractice(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
+      rejoinable: () => (game.online !== null ? game.online.rejoinable : null),
+      rejoinMatch: () => game.rejoinMatch(),
+      firstOnline: () => !game.accounts.signedIn && (game.online === null || game.online.client.guest === null),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
       confirmLeave: (systemBack) => game.confirmLeave(systemBack === true),
       keyLabel: (action, device) => game.input.getLabel(action, device),
@@ -1413,6 +1427,9 @@ export class Game implements P2PGameHooks {
       // 426 reload_required (a stale page: P2PSession STATUS.reload, OnlineSession's netErrorText):
       // the menus' blocking sheet instead of a toast.
       reload: error !== null && error === t('error.queue.reload_required'),
+      outcome: error !== null ? (s?.errorOutcome ?? 'retry') : undefined,
+      // A lobby's match is no search of the menus: its failure has nothing for REINTENTAR to run.
+      retry: this.matchKind !== 'lobby',
     };
   }
 
@@ -2389,17 +2406,48 @@ export class Game implements P2PGameHooks {
     }
   }
 
-  /** The connection is gone for good: back to the menu with the reason as subtitle. */
+  /**
+   * The connection is gone for good: back to the menu with the reason as a toast; a server match
+   * that still runs (OnlineSession.rejoinable) gets the lost sheet instead (REJOIN / MENU, plan PR 12).
+   */
   onSessionDisconnected(message: string): void {
     const requeue = this.requeue;
     this.requeue = null;
     this.lastResult = null;
     this.finalView = null;
-    this.menuNotice = requeue !== null ? requeue.text : message;
+    const online = this.online;
+    const lost = requeue === null && online !== null && this.session === online && online.rejoinable !== null;
+    const ranked = online !== null && online.ranked;
+    // A match that never started asks nothing of the player: back in the queue (outcome.ts 'requeue'),
+    // one toast that says so (final.noShow / final.dodge); the session's own error would be a failed
+    // step (a sheet with REINTENTAR) over the search that runs again.
+    this.menuNotice = requeue !== null ? requeue.text : lost ? undefined : message;
+    if (requeue !== null && online !== null) online.error = null;
     if (!this.menuShown) this.showMenu();
     else if (this.session !== null) this.session.leave();
     // A match that never started: the same search again (the toast says why).
     if (requeue !== null) this.menu.startSearch(requeue.req);
+    if (lost) openLostSheet(this.menu, ranked);
+  }
+
+  /**
+   * Back into the server match this tab lost or left by a reload (rejoinStore.ts; MenuHost.rejoinMatch:
+   * the lost sheet's REJOIN, Inicio's BACK TO YOUR MATCH): the menus show it as a search connecting.
+   */
+  private rejoinMatch(): void {
+    const online = this.online;
+    const rec = online !== null ? online.rejoinable : null;
+    if (online === null || rec === null) return;
+    if (this.session !== null && this.session.busy) this.session.cancel();
+    if (online.state !== 'idle') return;
+    const region = online.client.region;
+    this.searchReq = { kind: rec.kind, modes: rec.modes.slice(), region: isRegion(region) ? region : null, net: 'server' };
+    this.searchSince = performance.now();
+    this.matchKind = rec.kind;
+    this.setMode(rec.modes[0]);
+    this.menuReturnAt = -1;
+    this.setSession(online);
+    online.rejoin(rec);
   }
 
   /**
@@ -3609,7 +3657,7 @@ export class Game implements P2PGameHooks {
       // Network panel (F4 / #net, auto while online in debug), the stall hint.
       hud.setNetAuto(sessionActive);
       if (hud.netVisible) hud.setNetStats(session.stats);
-      hud.setNetWait(sessionActive && !inMenu ? session.hint : null);
+      hud.setNetWait(sessionActive && !inMenu ? session.hint : null, session.hintOk === true);
     }
     // Boost and speed change every frame: 10 Hz on cpuLite (each change rewrites DOM text).
     if (!this.cpuLite || this.time - this.hudAt >= HUD_LITE_INTERVAL || this.time < this.hudAt) {
@@ -3956,7 +4004,7 @@ export class Game implements P2PGameHooks {
     const final = result !== null ? this.finalView : null;
     if (result !== null && final === null) {
       const detail = this.menuNotice ?? `${result.blue} – ${result.red}`;
-      this.menu.toast(result.winner === null ? t('game.resultDraw', { detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], detail }), 'info');
+      this.menu.toast(result.winner === null ? t('game.resultDraw', { result: detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], result: detail }), 'info');
     }
     else if (this.menuNotice !== undefined && this.menuNotice.length > 0) this.menu.toast(this.menuNotice, 'info');
     if (this.tierNotice !== null) this.menu.toast(this.tierNotice, 'info');

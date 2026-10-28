@@ -571,9 +571,11 @@ export class Hud {
   }
 
   /** In-match wait line (a P2P stall: 'Esperando a <name>…'); null hides it. Cached. */
-  setNetWait(text: string | null): void {
+  /** The in-match wait line (top centre); `ok`: good news ("Back in the match"), steady and in --ok. */
+  setNetWait(text: string | null, ok = false): void {
     if (text === this.lastNetWait) return;
     this.lastNetWait = text;
+    this.netWait.classList.toggle('hud-netwait-ok', ok);
     if (text === null) {
       this.netWait.hidden = true;
       return;

@@ -5,6 +5,7 @@
 @import './tiles.css';
 @import './screens/home.css';
 @import './screens/modes.css';
+@import './screens/lobby.css';
 @import './screens/final.css';
 @import './screens/found.css';
 @import './screens/settings.css';

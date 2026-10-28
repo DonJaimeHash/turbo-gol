@@ -64,6 +64,21 @@ interface SideHandlers {
   navRight?: () => void;
 }
 
+/**
+ * A field's own ▲ ▼ while it is being edited (components/codecells.ts: the cell's character steps
+ * through the alphabet): true when it took the press, else ▲ ▼ end the editing and move on.
+ */
+export interface EditStepHandlers {
+  navUp?: () => boolean;
+  navDown?: () => boolean;
+}
+
+export function onEditStep(el: HTMLElement, up: () => boolean, down: () => boolean): void {
+  const s = el as HTMLElement & EditStepHandlers;
+  s.navUp = up;
+  s.navDown = down;
+}
+
 export function onNavSide(el: HTMLElement, left: () => void, right: () => void): void {
   const s = el as HTMLElement & SideHandlers;
   s.navLeft = left;
@@ -475,6 +490,9 @@ export class FocusNav {
         caretStep(cur, dir === 'left' ? -1 : 1);
         return true;
       }
+      const own = cur as HTMLElement & EditStepHandlers;
+      const stepped = dir === 'up' ? own.navUp?.() : own.navDown?.();
+      if (stepped === true) return true;
       setEditing(cur, false); // ↑ ↓ leave the field's editing and move on
     }
     const side = cur as HTMLElement & SideHandlers;

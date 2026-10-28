@@ -143,8 +143,8 @@ export default {
   'pill.offline': 'Offline',
   'pill.retry': 'RETRY',
   'pill.connecting': 'Connecting…',
-  // Region pill's screen-reader name; {status} is pill.online or menu.playing
-  'pill.regionLabel': 'Region: {region}, {status}. Change region',
+  // Region pill's screen-reader name; {state} is pill.online or menu.playing
+  'pill.regionLabel': 'Region: {region}, {state}. Change region',
   // The server refused this page's version (a new one was deployed): a sheet that stays until
   // answered, then the top bar's pill
   'update.title': "There's a new version",
@@ -417,6 +417,88 @@ export default {
   // Short tag of a lobby with experimental rules (lobby list, lobby title)
   'custom.tagExperimental': 'EXP',
 
+  // Salas and the lobby (plan PR 12: src/ui/screens/lobby.ts, custom.ts, components/codecells.ts)
+  // MODOS › SALAS' primary: a private lobby with the last format, then its screen
+  'lobby.createShare': 'CREATE LOBBY AND SHARE',
+  // The empty list's own button (the same private lobby)
+  'lobby.createPrivate': 'CREATE PRIVATE LOBBY',
+  // The primary while the player is in a lobby; {code} as 'ABC 234'
+  'lobby.backTo': 'BACK TO LOBBY {code}',
+  'lobby.joinCode': 'JOIN WITH CODE',
+  'lobby.joinCodeSub': '6 letters or numbers',
+  'lobby.public': 'PUBLIC LOBBIES',
+  // Empty list; {region} is the region's name
+  'lobby.empty': 'No public lobbies in {region}',
+  // A list row's state slot
+  'lobby.rowOpen': 'OPEN',
+  'lobby.rowInMatch': 'IN MATCH',
+  'lobby.rowFull': 'FULL',
+  // Pressing a full / playing row says why
+  'lobby.whyFull': 'That lobby is full',
+  'lobby.whyInMatch': "That lobby is playing a match: try when it's over",
+  // The code entry (mn-codecells) sheet
+  'lobby.codeTitle': 'Join with code',
+  'lobby.codeLabel': 'Lobby code',
+  'lobby.join': 'JOIN',
+  // The lobby screen
+  'lobby.share': 'SHARE',
+  // navigator.share's text; {code} as 'ABC 234', {game} the game's name
+  'lobby.shareText': 'Join my {game} lobby {code}',
+  'lobby.linkCopied': 'Link copied',
+  'lobby.codeCopied': 'Code copied',
+  // The TV's share sheet: the QR, the code, the short link
+  'lobby.qrTitle': 'Scan to join',
+  'lobby.start': 'START',
+  // A member's toggle (informative: the host can start anyway)
+  'lobby.ready': 'READY',
+  // The "…" menu
+  'lobby.more': 'More',
+  'lobby.settings': 'SETTINGS',
+  'lobby.leave': 'LEAVE LOBBY',
+  'lobby.reconnecting': 'Reconnecting to the lobby…',
+  // Tags on a member's row
+  'lobby.tagHost': 'HOST',
+  'lobby.tagYou': 'YOU',
+  'lobby.tagReady': 'READY',
+  'lobby.tagAway': 'RECONNECTING',
+  'lobby.tagInMatch': 'IN MATCH',
+  'lobby.openSlot': 'Open · bot',
+  // The member sheet; {team} is BLUE / RED
+  'lobby.moveTo': 'MOVE TO {team}',
+  'lobby.makeHost': 'MAKE HOST',
+  'lobby.kick': 'KICK',
+  'lobby.kickTitle': 'Kick {name}?',
+  'lobby.kickBody': "They can't come back to this lobby.",
+  // Leaving the lobby screen for another place; {code} as 'ABC 234'
+  'lobby.leaveTitle': 'Leave lobby {code}?',
+  'lobby.leaveHost': 'The player here longest becomes the host.',
+  // Go on, still in the lobby (the pill brings it back)
+  'lobby.keep': 'KEEP THE LOBBY',
+  'lobby.cancel': 'CANCEL',
+  // The pill while in a lobby elsewhere ('· 2/4' follows); {code} as 'ABC234'
+  'lobby.pill': 'LOBBY {code}',
+  'lobby.pillBack': 'BACK',
+  // A join link's sheet; {mode} is 1v1 / 2v2 / 3v3
+  'lobby.joinAsk': 'Join lobby {code} · {mode} · {count}/{max}?',
+  'lobby.joinAskCode': 'Join lobby {code}?',
+  'lobby.yourName': 'Your name',
+  // In another lobby already: joining this one leaves it
+  'lobby.swap': 'You leave lobby {code}.',
+
+  // A lost server match (plan PR 12: src/ui/screens/match/lost.ts)
+  'lost.title': 'Your connection dropped',
+  'lost.body': 'The match goes on without you',
+  'lost.ranked': 'You can come back from Competitive',
+  'lost.rejoin': 'REJOIN',
+  'lost.menu': 'MENU',
+
+  // What a failed online step offers (src/net/outcome.ts)
+  'outcome.retry': 'RETRY',
+  'outcome.wait': 'TRY AGAIN IN 1 MIN',
+  'outcome.requeue': 'BACK IN THE QUEUE',
+  'outcome.reload': 'RELOAD',
+  'outcome.close': 'CLOSE',
+
   // Profile and account forms (src/ui/screens/profile.ts)
   // Screen title (window / back stack)
   'profile.title': 'Profile',
@@ -547,8 +629,8 @@ export default {
   'net.lobby.sessionFailed': "Couldn't create the guest session",
 
   // Failed requests with no text of their own (accounts, lobbies, matchmaking)
-  // A server error without a text for its code; {status} is the HTTP status (429, 503...)
-  'error.server': 'Server error ({status})',
+  // A server error without a text for its code (the status goes to the console only)
+  'error.server': 'Server error',
   // A request could not reach the server (offline, server down)
   'error.network': 'No connection to the server',
   // The server answered something this page does not understand
@@ -604,6 +686,8 @@ export default {
   'error.lobby.start_failed': "Couldn't start the match, try again",
   // Generic: the server names the player
   'error.lobby.member_busy': 'A player is still in another match',
+  // START while a member's socket is away (LobbyDO's grace, plan PR 12)
+  'error.lobby.member_away': 'A player is reconnecting',
   'error.lobby.capacity': 'All servers are busy, try again in a minute',
   // The server switched matchmaking off (creating a lobby). Same text as error.queue.matchmaking_off
   // (Spanish players keep the generic error.server line here: src/i18n.ts SERVER_DETAIL_CODES)
@@ -648,10 +732,17 @@ export default {
   'online.p2pAnswer': 'The server answered a server search with a P2P match',
   'online.cancelledDodge': 'Match cancelled: a player left before the start',
   'online.cancelledNoShow': "Match cancelled: a player didn't connect in time",
-  // {detail}: the socket close code and reason, not translated ('1006', '1011: overload')
-  'online.connectionLost': 'Connection lost ({detail})',
-  // {reason}: the server's reason, not translated ('rate')
-  'online.kicked': 'Kicked: {reason}',
+  // The match socket is gone for good (the close code goes to the console only)
+  'online.connectionLost': 'Your connection dropped',
+  // The HUD's top-centre line while the socket comes back; {n} of {max} tries
+  'online.reconnectTry': 'Reconnecting… (attempt {n}/{max})',
+  // For 1.5 s once it is back
+  'online.back': 'Back in the match',
+  // Joining a server match again (a lost connection's REJOIN, Inicio's BACK TO YOUR MATCH)
+  'online.rejoining': 'Back to your match…',
+  'online.matchOver': 'That match is over',
+  // The host removed this player (the reason goes to the console only)
+  'online.kicked': 'You were removed from the match',
 
   // P2P match status lines (src/net/p2p/P2PSession.ts), shown in the menu search banner and toasts
   'p2p.queue': 'Finding a match…',
@@ -675,10 +766,10 @@ export default {
   'p2p.badSlots': { one: 'Room with {count} slot', other: 'Room with {count} slots' },
   'p2p.slotGap': 'Room with non-contiguous slots',
   'p2p.badSlot': 'Invalid player slot {slot}',
-  // {message}: the engine's error, not translated
-  'p2p.engine': 'Engine: {message}',
-  // {detail}: the socket close code and reason, not translated ('1006')
-  'p2p.roomClosed': 'Room closed ({detail})',
+  // The physics engine failed (its error goes to the console only)
+  'p2p.engine': 'The game engine failed: reload the page',
+  // The room's socket closed (the code goes to the console only)
+  'p2p.roomClosed': 'The match room closed',
   // An experimental lobby's match could not connect: there is no server match to fall back to
   'p2p.experimentalFailed': 'Could not connect the players: experimental matches have no server fallback',
   // The room refused this page: its arena does not run the lobby's rules
@@ -1389,10 +1480,10 @@ export default {
   'game.scoreboardOnline': 'online',
   // ...a peer-to-peer match
   'game.scoreboardOnlineP2p': 'online (P2P)',
-  // Menu toast after a match; {team} is game.teamBlue / game.teamRed, {detail} the final score (blue – red) or the disconnect reason. Keep the spacing.
-  'game.resultWin': '{team} wins  ·  {detail}',
-  // Menu toast after a drawn match; {detail} as in game.resultWin
-  'game.resultDraw': 'Draw  ·  {detail}',
+  // Menu toast after a match; {team} is game.teamBlue / game.teamRed, {result} the final score (blue – red) or why the match ended. Keep the spacing.
+  'game.resultWin': '{team} wins  ·  {result}',
+  // Menu toast after a drawn match; {result} as in game.resultWin
+  'game.resultDraw': 'Draw  ·  {result}',
   // Toast after creating an account with Google / Discord; {name} is the new account name. The profile opens right after
   'game.welcomeNew': 'Welcome, {name}! You can change your name in your profile.',
   // Toast after linking a Google / Discord login to the signed-in account

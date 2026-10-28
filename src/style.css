@@ -1121,7 +1121,8 @@ html[data-input='mouse'] .hud-howto-dbl {
   transition-delay: 0.5s;
 }
 
-/* In-match wait line (a P2P stall: 'Esperando a <name>…'), top centre. */
+/* In-match wait line (a P2P stall: 'Esperando a <name>…'; a server match reconnecting:
+   'Reconectando… (intento 2/5)'), top centre. */
 .hud-netwait {
   position: absolute;
   top: calc(var(--safe-top) + 24px);
@@ -1138,6 +1139,11 @@ html[data-input='mouse'] .hud-howto-dbl {
   text-shadow: var(--shadow);
   animation: hud-blink 1.6s steps(2, start) infinite;
   pointer-events: none;
+}
+/* "De vuelta en el partido" (OnlineSession.hintOk): good news, steady. */
+.hud-netwait.hud-netwait-ok {
+  color: var(--ok);
+  animation: none;
 }
 
 /* Turnstile widget slot (Hud.turnstileContainer, NetClient's anti-bot challenge): `hidden` (display
