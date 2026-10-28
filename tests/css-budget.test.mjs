@@ -192,7 +192,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
   // Touch shows no ring: every ring rule is scoped to a page whose last input was not a finger.
   for (const r of rules(focus)) if (r.selector !== '.mn [data-nav]:focus') for (const sel of r.selector.split(',')) assert.match(sel.trim(), /^html:not\(\.tg-touch\) /, sel);
   assert.doesNotMatch(focus, /:is\(/, 'plain selector lists (an old TV WebView drops a whole rule it cannot parse)');
-  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.hud-settings-row.hud-focus', '.trn-summary-card .trn-btn-primary', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
+  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.hud-settings-row.hud-focus', '.trn-summary-card .trn-btn.mn-focus', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
 });
 
 // Within about 1 % of what Vite's minifier writes (comments, spaces, last semicolons and leading
@@ -216,9 +216,13 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // BOOST's amount and level, the moved CAM / RESET, the first-match cards, the live rotate notice
 // (touch.css, about 2.1 KB more) and the two-thumb touch pause with its half-moon hold (style.css,
 // about 2 KB, with the phone's 14 px floor for its lines): 132,990 B, the cap that plus about
-// 0.6 KB. It steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and
-// PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 133_600;
+// 0.6 KB. PR 13 adds ENTRENAMIENTO, CLASIFICACIÓN and PERFIL (styles/screens/training.css,
+// leaderboard.css and profile.css, about 12.6 KB with their phone, TV and short layouts and the
+// shared controls' type roles there) and the training HUD's shapes, fold and tally (0.3 KB), minus
+// the old training, board, profile and tile rules of menu.css (4.8 KB): 141,144 B, the cap that
+// plus about 0.6 KB. It steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about
+// 11 KB) and PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
+const CSS_BUDGET = 141_750;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;
