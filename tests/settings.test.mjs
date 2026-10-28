@@ -148,3 +148,27 @@ test('touch and interface settings: valid values kept, a missing key reads its d
   assert.deepEqual(bad.ui, DEFAULT_UI);
   assert.deepEqual(mergeSettings({ touch: null, ui: 'big' }).touch, DEFAULT_TOUCH);
 });
+
+test('the music volume sits beside PR 11 groups: a save from before either loads unchanged, the rest at defaults', () => {
+  const music = (audio) => mergeSettings({ audio }).audio.music;
+  assert.equal(music({ music: 25 }), 25);
+  assert.equal(music({ music: 0 }), 0, 'no music is a valid choice');
+  assert.equal(music({ music: 140 }), 100);
+  for (const bad of ['loud', NaN, null, true]) assert.equal(music({ music: bad }), DEFAULT_AUDIO.music, String(bad));
+  assert.deepEqual(DEFAULT_AUDIO, { volume: 70, music: 50 });
+  assert.equal(DEFAULT_AUDIO.music % VOLUME_RANGE[2], 0, 'the default sits on the slider grid');
+  // Before the music: PR 11's groups saved, no audio.music.
+  const noMusic = mergeSettings({ audio: { volume: 40 }, touch: { size: 'L', lefty: true }, ui: { size: 115, motion: 'on' }, rev: 2 });
+  assert.deepEqual(noMusic.audio, { volume: 40, music: DEFAULT_AUDIO.music });
+  assert.deepEqual(noMusic.touch, { ...DEFAULT_TOUCH, size: 'L', lefty: true });
+  assert.deepEqual(noMusic.ui, { size: 115, motion: 'on' });
+  // Before PR 11: the music saved, no touch or ui group.
+  const noPr11 = mergeSettings({ audio: { volume: 40, music: 15 }, rev: 2 });
+  assert.deepEqual(noPr11.audio, { volume: 40, music: 15 });
+  assert.deepEqual(noPr11.touch, DEFAULT_TOUCH);
+  assert.deepEqual(noPr11.ui, DEFAULT_UI);
+  // Every group saved together comes back as it was.
+  const all = mergeSettings({ audio: { volume: 35, music: 80 }, touch: { size: 'S', opacity: 60, lefty: true, stick: 'fixed', deadzone: 0.2, vibration: false }, ui: { size: 150, motion: 'off' } });
+  assert.deepEqual(mergeSettings(JSON.parse(JSON.stringify(all))), all);
+  assert.deepEqual(defaultSettings().audio, DEFAULT_AUDIO);
+});
