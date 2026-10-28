@@ -43,3 +43,17 @@ test("the list's notice and your standing", () => {
   assert.equal(M.standing(true, false), 'placement');
   assert.equal(M.standing(true, true), 'you');
 });
+
+test("a shortcut by its source: a controller's LT / RT page (whatever data-input says yet), the keyboard's Q / E step the tabs", () => {
+  assert.equal(M.boardCommand('tabNext', true, false), 'pageDown');
+  assert.equal(M.boardCommand('tabPrev', true, false), 'pageUp');
+  assert.equal(M.boardCommand('tabNext', false, false), null);
+  assert.equal(M.boardCommand('tabPrev', false, true), null);
+  // Pad X and Delete: your row; the keyboard's X too, unless it cancels a search; pad Y never.
+  assert.equal(M.boardCommand('context', true, false), 'me');
+  assert.equal(M.boardCommand('context', false, true), 'me');
+  assert.equal(M.boardCommand('cancel', false, false), 'me');
+  assert.equal(M.boardCommand('cancel', false, true), null);
+  assert.equal(M.boardCommand('cancel', true, false), null);
+  assert.equal(M.boardCommand('next', true, false), null);
+});

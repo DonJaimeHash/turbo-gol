@@ -31,15 +31,10 @@ import { onNavSide } from '../nav';
 import { icon } from '../components/icons';
 import { glyph } from '../components/glyphs';
 import { screenHead } from './common';
-import { listNotice, pageStep, rowsPerPage, standing, stepPlaylist, youIndex } from './leaderboardModel';
+import { boardCommand, listNotice, pageStep, rowsPerPage, standing, stepPlaylist, youIndex } from './leaderboardModel';
 import type { Standing } from './leaderboardModel';
 
 const STAND_TEXT: Readonly<Record<Standing, Key>> = { guest: 'board.signIn', placement: 'board.playPlacement', you: 'board.goToMe' };
-
-/** The last input (device.ts `data-input` on <html>): a controller's LT / RT page the list, the keyboard's Q / E step the tabs. */
-function lastInput(): string {
-  return document.documentElement.dataset.input ?? 'mouse';
-}
 
 export function leaderboardScreen(menu: Menu): Screen {
   const acc = menu.host.accounts;
@@ -79,6 +74,18 @@ export function leaderboardScreen(menu: Menu): Screen {
     tabEls.set(p, { el, rank });
   });
   const tabs = h('div.mn-tabs.mn-lb-tabs', { role: 'tablist', 'aria-label': t('board.title'), 'data-nav-row': true }, ...[...tabEls.values()].map((x) => x.el));
+  // ▲ back into the tabs (the row's memory, the way back: the tab focused last, not the picked one
+  // after Q / E or ◀ ▶ on a row) lands on the picked tab: focus = selection. A click keeps its own.
+  let pressed = false;
+  tabs.addEventListener('pointerdown', () => (pressed = true), true);
+  tabs.addEventListener('click', () => (pressed = false));
+  tabs.addEventListener('focusin', (e) => {
+    const click = pressed;
+    pressed = false;
+    const on = tabEls.get(current())?.el;
+    if (click || on === undefined || e.target === on || tabs.contains(e.relatedTarget as Node | null)) return;
+    on.focus({ preventScroll: true });
+  });
   const standLabel = h('span.mn-lb-stand-label');
   const standKeys = h('span.mn-act-keys.mn-lb-stand-keys', { 'aria-hidden': 'true' }, h('span.mn-keys-kb', null, glyph('key-x')), h('span.mn-keys-pad', null, glyph('pad-x')));
   const stand = h('button.mn-btn.mn-lb-stand', { type: 'button', 'data-nav': true, 'data-key': 'board-stand', onclick: () => onStand() }, icon('rank'), standLabel, standKeys);
@@ -139,6 +146,8 @@ export function leaderboardScreen(menu: Menu): Screen {
       const on = id === p;
       x.el.classList.toggle('mn-tab-on', on);
       x.el.setAttribute('aria-selected', String(on));
+      // A first visit's focus: the picked tab (focus = selection), as MODOS does.
+      x.el.toggleAttribute('data-autofocus', on);
       // Your rank in each playlist (an account's, from /api/me).
       const r = signedIn() ? (sample !== null ? null : acc.me?.ratings.find((x2) => x2.playlist === id)) : null;
       const tier = r ? tierById(r.tier) : null;
@@ -249,15 +258,13 @@ export function leaderboardScreen(menu: Menu): Screen {
     page(e.code === 'PageUp' ? -1 : 1);
   });
 
-  const command = (c: MenuCommand): boolean => {
+  const command = (c: MenuCommand, pad: boolean): boolean => {
     // A controller's triggers page the list; the keyboard's Q / E (the same commands) step the tabs (Menu.stepTabs).
-    if ((c === 'tabPrev' || c === 'tabNext') && lastInput() === 'pad') {
-      page(c === 'tabPrev' ? -1 : 1);
-      return true;
-    }
-    // Pad X ('context'), Delete; the keyboard's X ('cancel') only while no search runs (it cancels that first).
-    if (c === 'context' || (c === 'cancel' && lastInput() === 'keyboard' && !menu.host.searchView().active)) return goToMe();
-    return false;
+    const k = boardCommand(c, pad, menu.host.searchView().active);
+    if (k === 'me') return goToMe();
+    if (k === null) return false;
+    page(k === 'pageUp' ? -1 : 1);
+    return true;
   };
 
   // The samples exist in development and in a VITE_UI_FIT=1 build only (read here: node tests import this module).

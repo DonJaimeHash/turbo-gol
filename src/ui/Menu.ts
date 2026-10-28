@@ -280,8 +280,11 @@ export interface Screen {
   readonly pillSlot?: HTMLElement;
   /** Esc / B on this screen: return true to swallow it (e.g. a sub-view closes first). */
   back?(): boolean;
-  /** A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context action). */
-  command?(c: MenuCommand): boolean;
+  /**
+   * A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context
+   * action). `pad`: a controller's press (Menu.action; data-input says so only after this frame).
+   */
+  command?(c: MenuCommand, pad: boolean): boolean;
   /** Menu.open's `tab`, before the screen mounts (MODOS: the tab Inicio's tile or the search asked for). */
   setTab?(tab: string): void;
   /** What its own tabs are, for the hint bar (MODOS: "Modes"); else "Tabs". */
@@ -1183,17 +1186,18 @@ export class Menu {
       }
     } else if (a === 'back') this.backOrLeave();
     else if (a === 'up' || a === 'down' || a === 'left' || a === 'right') this.nav.move(a, repeat);
-    else this.command(a);
+    else this.command(a, true);
   }
 
   /**
    * A shortcut: the screen on top first (Screen.command), else the menus' own: 'prev' / 'next' the
    * sections, 'tabPrev' / 'tabNext' the screen's inner tabs (stepTabs), 'cancel' the search, 'menu'
    * the settings. False when nothing took it. Nothing while a modal is up (it keeps the focus).
+   * `pad`: it came from a controller (action), not the keyboard's Q / E / X / Delete.
    */
-  command(c: MenuCommand): boolean {
+  command(c: MenuCommand, pad = false): boolean {
     if (!this.visibleNow || this.modalEl !== null) return false;
-    if (this.top()?.command?.(c)) return true;
+    if (this.top()?.command?.(c, pad)) return true;
     if (c === 'prev' || c === 'next') return this.stepSection(c === 'prev' ? -1 : 1);
     if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
     if (c === 'cancel') return this.cancelSearch();

@@ -5,6 +5,7 @@
  * notice a button: retry, sign in, play the placement matches, go to your row). tests/leaderboard.test.mjs.
  */
 import type { LeaderboardEntry, Playlist } from '../../net/account';
+import type { MenuCommand } from '../Menu';
 
 /** The playlist beside `p` that way, null at either end. */
 export function stepPlaylist(list: readonly Playlist[], p: Playlist, d: -1 | 1): Playlist | null {
@@ -45,4 +46,16 @@ export type Standing = 'guest' | 'placement' | 'you';
 
 export function standing(signedIn: boolean, you: boolean): Standing {
   return !signedIn ? 'guest' : you ? 'you' : 'placement';
+}
+
+/**
+ * A shortcut on the board, by its source (`pad`: a controller's press, Menu.action; data-input says
+ * pad only after its first press's frame): LT / RT a page; pad X, Delete and the keyboard's X while
+ * no search runs (it cancels that first; pad Y never) your row; null for the rest (Q / E: the tabs, Menu.stepTabs).
+ */
+export type BoardCommand = 'pageUp' | 'pageDown' | 'me' | null;
+
+export function boardCommand(c: MenuCommand, pad: boolean, searching: boolean): BoardCommand {
+  if ((c === 'tabPrev' || c === 'tabNext') && pad) return c === 'tabPrev' ? 'pageUp' : 'pageDown';
+  return c === 'context' || (c === 'cancel' && !pad && !searching) ? 'me' : null;
 }
