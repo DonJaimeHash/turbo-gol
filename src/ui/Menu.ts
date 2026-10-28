@@ -1232,10 +1232,14 @@ export class Menu {
   /**
    * Ajustes (screens/settings: the Game's view as a screen stacked on the one shown, whatever its
    * section), on `opts.tab`; `onClose` once it left the stack (by default the focus comes back where
-   * it was). The update sheet waits for it to close.
+   * it was). The update sheet waits for it to close. Already open (under PERFIL's detour): back to
+   * it, on `opts.tab`.
    */
   openSettings(onClose: () => void = () => this.refocus(), opts?: { tab?: SettingsTab }): void {
-    if (this.settingsUp()) return;
+    if (this.settingsUp()) {
+      if (this.stacked('settings') && this.top()?.id !== 'settings') this.open('settings', false, opts?.tab);
+      return;
+    }
     this.settingsOpen = true;
     this.host.openSettings(() => {
       this.settingsOpen = false;
