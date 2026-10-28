@@ -38,11 +38,15 @@ import { qrSvg } from '../components/qr';
 import { codeCells } from '../components/codecells';
 import { field } from './common';
 import { configureLobby, lengthLabel, lobbyRules, netLabel } from './custom';
-import { joinLink, linkCode, lobbyFormat, shareWay, shortLink, spacedCode, withoutLink } from './lobbyModel';
+import { hasLink, joinLink, linkCode, lobbyFormat, shareWay, shortLink, spacedCode, withoutLink } from './lobbyModel';
 
 
-/** The lobby list again: MODOS on its SALAS tab (back from a lobby, a lobby closed or left). */
-export const toList = (menu: Menu): void => menu.open('modes', false, 'lobbies');
+/**
+ * The lobby list again: MODOS on its SALAS tab right on JUGAR's root (back from a lobby, a lobby
+ * closed or left), whatever opened the Sala: from Inicio (a join link, the lobby pill, the hero) a
+ * stacked MODOS would sit above the Sala, and Back would come back to it.
+ */
+export const toList = (menu: Menu): void => menu.open('modes', true, 'lobbies');
 
 const touch = (): boolean => document.documentElement.classList.contains('tg-touch');
 const tv = (): boolean => document.documentElement.classList.contains('tg-tv');
@@ -224,9 +228,11 @@ export function installJoinLink(menu: Menu): void {
   let pending: string | null = null;
   let timer = 0;
   const take = (): void => {
+    if (!hasLink(location.hash)) return;
+    // A link whose code does not parse goes too (a reload would only meet it again).
     const code = linkCode(location.hash);
-    if (code === null) return;
     history.replaceState(history.state, '', location.pathname + location.search + withoutLink(location.hash));
+    if (code === null) return;
     pending = code;
     tryOpen();
   };
@@ -527,6 +533,12 @@ export function lobbyScreen(menu: Menu): Screen {
     title: t('custom.lobbyTitle'),
     el,
     show: () => {
+      // No lobby any more (it closed during a match, a kick): no Sala either, the list instead.
+      if (!lobby.inLobby) {
+        queueMicrotask(() => {
+          if (menu.top()?.id === 'lobby' && !lobby.inLobby) toList(menu);
+        });
+      }
       shown = true;
       if (lobby.me?.inGame) lobby.back(); // back from the lobby's match
       render();

@@ -57,6 +57,17 @@ test('the join link: built on the origin, read among other flags, taken out of t
   assert.equal(M.withoutLink('#sala=ABC234'), '');
 });
 
+test('a broken join link (a cut or hand-edited escape) is no code, never a throw, and still goes', () => {
+  for (const hash of ['#sala=%', '#sala=%E0%A4%A', '#tv&sala=%zz', '#sala=AB%E0']) {
+    assert.equal(M.linkCode(hash), null, hash);
+    assert.equal(M.hasLink(hash), true, hash);
+  }
+  assert.equal(M.withoutLink('#tv&sala=%zz'), '#tv');
+  assert.equal(M.hasLink('#tv&superlow'), false);
+  assert.equal(M.hasLink('#salami=ABC234'), false);
+  assert.equal(M.linkCode('#sala=ABC%20234'), 'ABC234', 'a good escape still decodes');
+});
+
 test("a new lobby's format: the last lobby's, else Casual's single pick, else 2v2; a row's state", () => {
   assert.equal(M.lobbyFormat({ lobbyMode: '3v3', casualModes: ['1v1'] }), '3v3');
   assert.equal(M.lobbyFormat({ lobbyMode: null, casualModes: ['1v1'] }), '1v1');

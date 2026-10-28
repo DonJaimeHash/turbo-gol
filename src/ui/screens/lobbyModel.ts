@@ -59,11 +59,27 @@ export function shortLink(link: string): string {
   return link.replace(/^[a-z]+:\/\//i, '');
 }
 
-/** The code a hash carries (`#sala=abc-234`, among other flags: `#tv&sala=ABC234`), or null. */
+/** The hash has a join link's key (`#sala=…`), whether or not its code parses. */
+export function hasLink(hash: string): boolean {
+  return hash
+    .replace(/^#/, '')
+    .split('&')
+    .some((p) => p.split('=')[0] === LINK_KEY);
+}
+
+/**
+ * The code a hash carries (`#sala=abc-234`, among other flags: `#tv&sala=ABC234`), or null; a
+ * broken escape (a link a chat app cut short: `#sala=AB%E0`) is no code, never a throw.
+ */
 export function linkCode(hash: string): string | null {
   for (const part of hash.replace(/^#/, '').split('&')) {
     const [k, v] = part.split('=');
-    if (k === LINK_KEY && v !== undefined) return fullCode(decodeURIComponent(v));
+    if (k !== LINK_KEY || v === undefined) continue;
+    try {
+      return fullCode(decodeURIComponent(v));
+    } catch {
+      return null;
+    }
   }
   return null;
 }
