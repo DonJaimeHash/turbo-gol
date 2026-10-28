@@ -98,8 +98,7 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SETTINGS_TABS = ['controls', 'camera', 'game', 'audio', 'graphics', 'experimental'].map((t) => 'settings:' + t);
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', ...SETTINGS_TABS, 'touch'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', 'touch'];
 // The FINAL's samples (window.__final, plan PR 7): ranked (the rank card, a community node's line),
 // casual (a loss), against the AI (a draw, a full 3v3), a lobby's match.
 const FINAL_KINDS = ['ranked', 'casual', 'ai', 'lobby'];
@@ -149,7 +148,7 @@ const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
-const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile', 'settings:controls'].filter((x) => SCREENS.includes(x));
+const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
 // The touch match's checks (window context): what is wrong on screen now, from the controls' and the
 // pause's own boxes. `boost` is BOOST's centre measured while the controls were up.
 const TOUCH_CHECK = (state, boost) => `(() => {
@@ -223,6 +222,11 @@ const WIDETEXT = args['no-widetext'] !== true;
 const FACE = typeof args.face === 'string' ? args.face.replace(/['"\\]/g, '') : null;
 // The pointer the browser starts with (Blink's PointerType / HoverType: 4 fine, 1 none; 2 hover, 1 none).
 const POINTER = args['no-pointer'] === true ? 'primaryPointerType=1,availablePointerTypes=1,primaryHoverType=1,availableHoverTypes=1' : 'primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2';
+// Ajustes (plan PR 10): each of its six tabs with the device's own input, before the touch match;
+// CONTROLES with every other input's hints too (its own tabs: L / R, Q / E).
+if (typeof args.screens !== 'string') SCREENS.splice(SCREENS.includes('touch') ? SCREENS.indexOf('touch') : SCREENS.length, 0, ...['controls', 'camera', 'game', 'audio', 'graphics', 'experimental'].map((t) => 'settings:' + t));
+if (SCREENS.includes('settings:controls')) INPUT_SCREENS.push('settings:controls');
+
 let preview = null;
 let browser = null;
 let page = null;
