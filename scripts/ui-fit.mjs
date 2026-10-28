@@ -58,6 +58,11 @@
 // focused, then searching (the panel, as the Menu shows a search: its own search view and pills),
 // CANCEL SEARCH and "While you wait: Free play" focused.
 //
+// The Salas (plan PR 12) run their samples (window.__sala, screens/lobby.ts installSalaSamples): the
+// Sala with 1 to 6 members, reconnecting, a TV's QR sheet, the code entry (mn-codecells), a join
+// link's sheet, the lobby pill on Inicio, the lost connection's sheet; then the HUD's reconnection
+// line ("Reconnecting… (attempt 2/5)", "Back in the match") must stay on screen and unclipped.
+//
 // Exit 1 when the shell overflows anywhere, or Inicio fails a check (CI's ui-fit job runs it as
 // information until plan PR 6).
 import { spawn, spawnSync } from 'node:child_process';
@@ -90,7 +95,11 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', 'sala'];
+// The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
+const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
+// The HUD's reconnection line, per language: the try and the way back (OnlineSession.hint).
+const NET_LINES = { en: ['Reconnecting… (attempt 2/5)', 'Back in the match'], es: ['Reconectando… (intento 2/5)', 'De vuelta en el partido'] };
 // The FINAL's samples (window.__final, plan PR 7): ranked (the rank card, a community node's line),
 // casual (a loss), against the AI (a draw, a full 3v3), a lobby's match.
 const FINAL_KINDS = ['ranked', 'casual', 'ai', 'lobby'];
@@ -140,7 +149,7 @@ const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
-const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
+const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile', 'sala'].filter((x) => SCREENS.includes(x));
 const LANGS = typeof args.langs === 'string' ? args.langs.split(',') : ['en', 'es'];
 const ALL_INPUTS = ['keyboard', 'pad', 'remote', 'mouse', 'touch'];
 const INPUTS = args.inputs === 'default' ? [] : typeof args.inputs === 'string' ? args.inputs.split(',').filter((x) => ALL_INPUTS.includes(x)) : ALL_INPUTS;
@@ -298,6 +307,40 @@ try {
           await check(input, screen, kind, await page.eval("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch') ? [] : ['PLAY AGAIN is not focused: ' + (document.activeElement?.className ?? null)]"));
         }
         await page.eval('(window.__final(null), true)');
+        continue;
+      }
+      if (screen === 'sala') {
+        // Every sample with the device's own input; the Sala of 4 with the others (their hints).
+        const kinds = input === own ? SALA_KINDS.filter(([k]) => k !== 'qr' || size.tv) : [['members', 4]];
+        for (const [kind, n] of kinds) {
+          await page.eval(`(window.__sala(${JSON.stringify(kind)}, ${n}), true)`);
+          await sleep(input === own ? 400 : 250);
+          await check(input, screen, n > 0 && kind !== 'join' && kind !== 'pill' ? `${kind} ${n}` : kind);
+        }
+        await page.eval('(window.__sala(null), true)');
+        await sleep(200);
+        if (input !== own) continue;
+        // The HUD's reconnection line, the menus away: on screen, its text whole.
+        const lines = NET_LINES[lang] ?? NET_LINES.en;
+        const bad = await page.eval(`(() => {
+          const g = __game;
+          const out = [];
+          g.menu.hide();
+          for (const [text, ok] of [[${JSON.stringify(lines[0])}, false], [${JSON.stringify(lines[1])}, true]]) {
+            g.hud.setNetWait(text, ok);
+            const el = document.querySelector('.hud-netwait');
+            const r = el.getBoundingClientRect();
+            if (r.width === 0) out.push(text + ': not shown');
+            if (r.left < 0 || r.right > innerWidth || r.top < 0 || r.bottom > innerHeight) out.push(text + ': off the screen');
+            if (el.scrollWidth > el.clientWidth + 1) out.push(text + ': cut');
+          }
+          g.hud.setNetWait(null);
+          g.menu.show();
+          return out;
+        })()`);
+        failures += bad.length;
+        console.log(`${head} ${input.padEnd(8)} ${'hud reconnect'.padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL\n    ' + bad.join('\n    ')}`);
+        await sleep(300);
         continue;
       }
       const [id, tab] = screen.split(':');
