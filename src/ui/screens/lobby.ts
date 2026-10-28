@@ -270,7 +270,7 @@ export function openQr(menu: Menu, code: string): void {
 
 export function lobbyScreen(menu: Menu): Screen {
   const lobby = menu.host.lobby;
-  const name = h('h1.mn-sala-name', { 'data-fit': '18' });
+  const name = h('h1.mn-sala-name'); // a player's own name: cut with an ellipsis when long
   const info = h('p.mn-sala-info');
   const rulesLine = h('p.mn-sala-rules', { hidden: true });
   const codeValue = h('span.mn-sala-code-value');

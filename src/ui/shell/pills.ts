@@ -127,9 +127,12 @@ export class LobbyPill {
     this.el.hidden = s === null;
     this.el.textContent = '';
     if (s === null) return true;
-    const main = t('lobby.pill', { code: s.code, count: s.count ?? '—', max: s.max ?? '—' });
-    this.el.append(s.reconnecting ? h('span.mn-spinner') : icon('friends'), h('span.mn-pill-main', null, main), h('span.mn-pill-sep', WORDS), h('b.mn-pill-act', WORDS, t('lobby.pillBack')));
-    this.el.setAttribute('aria-label', `${main}. ${t('lobby.pillBack')}`);
+    // In a crowded bar the count goes first, then the words, down to the icon (Inicio's hero, the
+    // Sala and the label say them).
+    const main = t('lobby.pill', { code: s.code });
+    const count = ` · ${s.count ?? '—'}/${s.max ?? '—'}`;
+    this.el.append(s.reconnecting ? h('span.mn-spinner') : icon('friends'), h('span.mn-pill-main', WORDS, main), h('span.mn-pill-sub', ECHO, count), h('span.mn-pill-sep', WORDS), h('b.mn-pill-act', WORDS, t('lobby.pillBack')));
+    this.el.setAttribute('aria-label', `${main}${count}. ${t('lobby.pillBack')}`);
     return true;
   }
 }

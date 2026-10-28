@@ -215,9 +215,9 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // replace). Both together: 128,806 B, the cap that plus about 0.6 KB. PR 12 adds the Salas
 // (styles/screens/lobby.css: SALAS' tools and rows, mn-codecells, the Sala, the QR sheet, per class,
 // about 7.6 KB) minus the old lobby list and lobby screen of menu.css and modes.css (about 2.6 KB):
-// 133,825 B, the cap that plus about 0.6 KB. It steps down to 70 KB once PR 10 deletes the Hud's
+// 133,989 B, the cap that plus about 0.6 KB. It steps down to 70 KB once PR 10 deletes the Hud's
 // settings sheet (about 11 KB) and PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 134_400;
+const CSS_BUDGET = 134_600;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

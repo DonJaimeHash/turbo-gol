@@ -388,6 +388,8 @@ export class Menu {
   private lastSearch: SearchRequest | null = null;
   private visibleNow = false;
   private searching = false;
+  /** The lobby pill is up (renderLobbyPill). */
+  private lobbyPillUp = false;
   /** Settings opened from the menus are up (Menu.openSettings). */
   private settingsOpen = false;
   /** Settings just closed, in this task (onKey: the closing key is theirs). */
@@ -1559,7 +1561,7 @@ export class Menu {
     if (v.active !== this.searching) {
       this.searching = v.active;
       this.root.classList.toggle('mn-searching', v.active);
-      this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded);
+      this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded || this.lobbyPillUp);
       this.renderHints();
       // The screen follows in this frame (Inicio's hero: SEARCHING and ✕, or JUGAR AHORA again),
       // not on its next tick (a second later on super low).
@@ -1583,7 +1585,9 @@ export class Menu {
       a.blur();
       this.refocus();
     }
-    this.root.classList.toggle('mn-pills-lobby', show);
+    // A crowded bar, as beside the search pill: the chip and the region pill give their words first.
+    this.lobbyPillUp = show;
+    this.root.classList.toggle('mn-pills-more', show || this.searching || this.reloadNeeded);
     this.fitNow();
   }
 

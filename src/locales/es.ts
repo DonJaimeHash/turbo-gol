@@ -324,7 +324,7 @@ export default {
   'lobby.leaveHost': 'El que lleva más tiempo pasa a ser el anfitrión.',
   'lobby.keep': 'MANTENER LA SALA',
   'lobby.cancel': 'CANCELAR',
-  'lobby.pill': 'SALA {code} · {count}/{max}',
+  'lobby.pill': 'SALA {code}',
   'lobby.pillBack': 'VOLVER',
   'lobby.joinAsk': '¿Unirte a la sala {code} · {mode} · {count}/{max}?',
   'lobby.joinAskCode': '¿Unirte a la sala {code}?',

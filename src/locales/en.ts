@@ -475,8 +475,8 @@ export default {
   // Go on, still in the lobby (the pill brings it back)
   'lobby.keep': 'KEEP THE LOBBY',
   'lobby.cancel': 'CANCEL',
-  // The pill while in a lobby elsewhere; {code} as 'ABC234'
-  'lobby.pill': 'LOBBY {code} · {count}/{max}',
+  // The pill while in a lobby elsewhere ('· 2/4' follows); {code} as 'ABC234'
+  'lobby.pill': 'LOBBY {code}',
   'lobby.pillBack': 'BACK',
   // A join link's sheet; {mode} is 1v1 / 2v2 / 3v3
   'lobby.joinAsk': 'Join lobby {code} · {mode} · {count}/{max}?',
