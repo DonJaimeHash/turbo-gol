@@ -1158,7 +1158,7 @@ test('router M29 through Input: one thumb JUMP → BOOST keeps one jump held (no
   input.dispose();
 });
 
-test('router: a tap on the scorebug or the open board counts once; a slide off, a cancel or a button does not', () => {
+test('router: a tap on the scorebug or the open board counts once; a slide off, a cancel or a button does not; a free stick wins the board in its zone', () => {
   const { ts, router, layout } = routerSetup();
   router.down(1, 150, 40); // the scorebug, but its rectangle is empty: nothing
   router.up(1, 150, 40);
@@ -1177,20 +1177,30 @@ test('router: a tap on the scorebug or the open board counts once; a slide off, 
   router.up(4, 150, 40, true); // cancelled
   assert.equal(router.scoreTaps, 1);
   layout.board = { left: 120, top: 80, right: 680, bottom: 330 }; // the open board covers BOOST's slop and the zone
-  router.down(5, 300, 200); // on the board, in the stick zone: the board's
-  assert.equal(router.stickActive, false);
-  router.up(5, 300, 200);
+  router.down(5, 300, 200); // on the board, in the stick zone: the stick drives, and the board counts at once
+  assert.equal(router.stickActive, true);
   assert.equal(router.scoreTaps, 2);
+  router.move(5, 300, 140);
+  assert.equal(readMap(ts).throttle, 1);
+  router.down(9, 200, 250); // a second finger there while the stick is taken: the board's
+  router.up(9, 200, 250);
+  assert.equal(router.scoreTaps, 3);
+  router.up(5, 300, 140);
+  assert.equal(router.scoreTaps, 3, 'the stick finger lifts on the board: no second count');
+  router.down(10, 500, 200); // on the board outside the zone: the board's
+  assert.equal(router.stickActive, false);
+  router.up(10, 500, 200);
+  assert.equal(router.scoreTaps, 4);
   router.down(6, 575, 330); // JUMP under the board's edge: a hold button wins
   assert.deepEqual(readMap(ts), { jump: 1 });
   router.up(6, 575, 330);
-  assert.equal(router.scoreTaps, 2);
+  assert.equal(router.scoreTaps, 4);
   layout.board = { left: 120, top: 30, right: 680, bottom: 300 }; // over CAM (670, 50): the board's
   router.down(8, 670, 50);
   assert.equal(router.pendingTaps, 0);
   router.up(8, 670, 50);
   assert.deepEqual(readMap(ts), {});
-  assert.equal(router.scoreTaps, 3);
+  assert.equal(router.scoreTaps, 5);
   layout.board = { left: 0, top: 0, right: 0, bottom: 0 };
   router.down(7, 300, 200); // closed again: the stick
   assert.equal(router.stickActive, true);

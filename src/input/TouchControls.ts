@@ -32,13 +32,15 @@
  *     the page going hidden and when the overlay hides;
  *   - a finger on a first-match card is the card's (it never reaches the router): lifted on it,
  *     the next card; one that lands within CARD_GUARD_MS of a card showing does nothing (a double
- *     tap on PLAY in the menus).
+ *     tap on PLAY in the menus). Online (`setLive`), where the match goes on under the card, a
+ *     finger on it in the stick zone is the stick's.
  *
  * BOOST shows `setBoost`'s amount (the Game, every frame; written at 10 Hz from precomputed
  * strings, so it allocates nothing either) with the Hud plate's empty / low / full states; in
  * touch mode the plate itself is hidden (touch.css). A tap on the scorebug (TouchRouter's
  * `scoreTaps`) opens the full scoreboard (`scoreboardOpen`, which the Game shows as it shows the
- * held Tab one) and a tap on it or on the board closes it; it closes as the overlay hides.
+ * held Tab one) and a tap on it or on the board closes it, as does a thumb landing on the board in
+ * the stick zone (it drives); it closes as the overlay hides.
  *
  * The cards (plan §6.10, C3): the first time the controls come up on a device, three cards one at
  * a time (how to drive; JUMP and BOOST; CAM and PAUSE), remembered in localStorage (how many were
@@ -321,13 +323,15 @@ export class TouchControls {
     } catch {
       /* the pointer is already gone */
     }
-    if (this.onCard(e.clientX, e.clientY)) {
-      // The card's (lifted on it: the next one); too soon after it showed, nothing.
+    if (this.onCard(e.clientX, e.clientY) && !(this.live && this.inZone(e.clientX, e.clientY))) {
+      // The card's (lifted on it: the next one); too soon after it showed, nothing. Online the
+      // match goes on under it: a finger there in the stick zone drives (GOT IT is outside it).
       if (this.cardFinger < 0 && e.timeStamp - this.cardAt >= CARD_GUARD_MS) this.cardFinger = e.pointerId;
       return;
     }
     this.router.holdJump = this.holdJump();
     this.router.down(e.pointerId, e.clientX, e.clientY);
+    this.syncBoard();
     this.paint();
   };
 
@@ -346,10 +350,7 @@ export class TouchControls {
       return;
     }
     this.router.up(e.pointerId, e.clientX, e.clientY, e.type !== 'pointerup');
-    if (this.router.scoreTaps !== this.scoreTapsSeen) {
-      this.scoreTapsSeen = this.router.scoreTaps;
-      this.setBoard(!this.boardOpen);
-    }
+    this.syncBoard();
     this.paint();
   };
 
@@ -618,6 +619,19 @@ export class TouchControls {
   /** (x, y) on the card that is up. */
   private onCard(x: number, y: number): boolean {
     return this.cardIndex >= 0 && x >= this.cardLeft && x < this.cardRight && y >= this.cardTop && y < this.cardBottom;
+  }
+
+  /** (x, y) in the stick zone (as measured). */
+  private inZone(x: number, y: number): boolean {
+    const z = this.layout.zone;
+    return x >= z.left && x < z.right && y >= z.top && y < z.bottom;
+  }
+
+  /** The router counted a tap on the scorebug or the board (on a lift, or a thumb landing on the board to drive): open / close it. */
+  private syncBoard(): void {
+    if (this.router.scoreTaps === this.scoreTapsSeen) return;
+    this.scoreTapsSeen = this.router.scoreTaps;
+    this.setBoard(!this.boardOpen);
   }
 
   /** Open or close the full scoreboard; the board's box is measured again before the next finger. */

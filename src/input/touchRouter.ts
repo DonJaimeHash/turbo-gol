@@ -24,8 +24,10 @@
  *   RESET        away cancels it, and no slide ever reaches them.
  *   Scorebug     a tap (lifted on it) on the scorebug, or on the open scoreboard's panel, counts
  *                in `scoreTaps`: the overlay opens or closes the full scoreboard. Off JUMP, BOOST
- *                and DRIFT only (the board covers the tap buttons under it), before the stick
- *                zone; empty rectangles (the default) are never hit.
+ *                and DRIFT only (the board covers the tap buttons under it). The scorebug comes
+ *                before the stick zone; the board does not: a finger that lands on it in the zone
+ *                while the stick is free takes the stick and counts at once (the board closes
+ *                as the thumb drives again). Empty rectangles (the default) are never hit.
  *
  * Each finger releases what it holds exactly once (the first of up / cancel / lost capture), so
  * TouchState's per-button finger counts stay right with any number of fingers.
@@ -224,13 +226,18 @@ export class TouchRouter {
       this.fingers.set(id, { kind: F_TAP, button: b, keepBoost: false, keepJump: false });
       return;
     }
-    if (this.onScore(x, y)) {
+    const z = layout.zone;
+    const inZone = x >= z.left && x < z.right && y >= z.top && y < z.bottom;
+    const stickFree = this.stickId < 0;
+    // The scorebug before the zone (it sits above it); the open board after a free stick: a thumb
+    // back on the stick drives, and closes the board it landed on.
+    if (inRect(layout.score, x, y) || (inRect(layout.board, x, y) && !(inZone && stickFree))) {
       this.fingers.set(id, { kind: F_SCORE, button: -1, keepBoost: false, keepJump: false });
       return;
     }
-    const z = layout.zone;
-    if (x >= z.left && x < z.right && y >= z.top && y < z.bottom) {
-      if (this.stickId < 0) {
+    if (inZone) {
+      if (stickFree) {
+        if (inRect(layout.board, x, y)) this.scoreTapCount++;
         this.stickId = id;
         const s = layout.bounds;
         const reach = STICK_EDGE_REACH * layout.stickRadius;
