@@ -717,6 +717,8 @@ export class Game implements P2PGameHooks {
    * would leave the match (an abandon), so it waits for the menus (showMenu); null when none.
    */
   private pendingRestart: Quality | null = null;
+  /** That reload waits for the match's FINAL to go too (its result first): finalLeft. */
+  private restartAfterFinal = false;
   difficulty: Difficulty;
   /** Smoothed drawn frames per second (updated 4x/s). */
   fps = 0;
@@ -1038,7 +1040,7 @@ export class Game implements P2PGameHooks {
     });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
-    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView })));
+    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => this.restartAfterFinal && this.pendingRestart !== null, left: () => this.finalLeft() })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
       focus: (el) => {
@@ -3929,6 +3931,10 @@ export class Game implements P2PGameHooks {
       if (final !== null) this.lobby.back();
       else if (this.menu.top()?.id !== 'lobby') this.menu.open('lobby');
     }
+    // A tier picked during the online match that needs a reload (switchQuality): now, or once the
+    // FINAL goes (finalLeft), so the player sees the result first.
+    const pending = this.pendingRestart;
+    this.restartAfterFinal = pending !== null && final !== null;
     this.menu.show(final !== null ? 'final' : undefined);
     this.flushNotices();
     // What an earlier ranked match's wait got while the menus were away comes first. Then, when a
@@ -3941,12 +3947,20 @@ export class Game implements P2PGameHooks {
       // Into the FINAL's rank card while it is up for this match; else the old way (held, a dialog).
       void this.rankedResults.watch(ranked, online.lastRankedOnNode, final !== null ? (r) => this.finalUi?.setRank(ranked, r) ?? false : undefined);
     }
-    // A tier picked during the online match that needs a reload (switchQuality): now.
-    const pending = this.pendingRestart;
-    if (pending !== null) {
+    if (pending !== null && !this.restartAfterFinal) {
       this.pendingRestart = null;
       void this.restartOn(pending, null);
     }
+  }
+
+  /** The FINAL went (final.ts): a tier picked during its online match restarts the game now. */
+  private finalLeft(): void {
+    if (!this.restartAfterFinal) return;
+    this.restartAfterFinal = false;
+    const pending = this.pendingRestart;
+    if (pending === null) return; // a pick in Ajustes over the FINAL replaced it (switchQuality)
+    this.pendingRestart = null;
+    void this.restartOn(pending, null);
   }
 
   // ---- events ----------------------------------------------------------------------------

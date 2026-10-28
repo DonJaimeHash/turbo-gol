@@ -79,6 +79,14 @@ test('GRÁFICOS: a trial counts 10 s down from the switch; the memory tag is for
   assert.equal(M.memoryTag('ultra', undefined), false, 'unknown (Firefox, Safari, http): no tag');
 });
 
+test('the line under the cards: a pick waiting for the online match first (Super low, no card lit, too); a device on Super low its note', () => {
+  const cards = ['low', 'high', 'ultra'];
+  assert.equal(M.qualityLine('superlow', cards, 'superlow'), 'afterOnline', 'Super low switched on in an online match');
+  assert.equal(M.qualityLine('low', cards, 'low'), 'afterOnline', 'switched off in one');
+  assert.equal(M.qualityLine('superlow', cards, null), 'note', 'a device running it (its note; empty when picked)');
+  assert.equal(M.qualityLine('high', cards, null), null);
+});
+
 test('sliders: the thumb and the default mark on the track, a pointer snapped to the grid', () => {
   assert.equal(M.sliderPercent(110, 60, 110), 100);
   assert.equal(M.sliderPercent(85, 60, 110), 50);

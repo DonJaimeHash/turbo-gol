@@ -11,7 +11,8 @@ All notable changes to Turbogol are documented here. The format follows
   HUD stay sharp), a frame rate limit (30, 60 or no limit), the animated stadium in the menus, and
   RESET GRAPHICS for those three. A card under the tabs says your settings save themselves.
 - Super low mode is a switch in Settings › Graphics for everyone, guests included: flat surfaces,
-  no effects, for very modest devices. It restarts the game (online, once you leave the match).
+  no effects, for very modest devices. It restarts the game (online, once you leave the match's
+  result).
   It no longer needs an account or Experimental, and it changes nothing about how a match plays
   or counts.
 - New in Settings › Game: the language (the game reloads in a few seconds), the interface size

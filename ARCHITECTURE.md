@@ -1036,7 +1036,8 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   parallel, all behind the loading screen; into or out of super low it saves the prefs and
   reloads the page (`restartOn`: its own backend and world), except in an online match, where the
   reload would leave it: the pick waits for the menus (`pendingRestart`, its line on the Graphics
-  tab). The prefs keep the player's pick
+  tab), and for the match's FINAL to go when one is up (`finalLeft`: its JUGAR OTRA VEZ then goes
+  to Inicio first). The prefs keep the player's pick
   only (`persistPrefs` writes `savedQuality`): a tier the session runs on its own (the URL, auto,
   a ceiling, a fallback) is never saved. Super low's CPU trims (`cpuLite`): `html.tg-superlow`
   (opaque surfaces, a flat lime hero, no box or text shadow but one hard pixel under the HUD's

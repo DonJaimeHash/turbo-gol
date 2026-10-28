@@ -76,6 +76,8 @@ test('PLAY AGAIN repeats the same queue in one press (the kind\'s playlists, as 
   assert.deepEqual(F.againAction('ranked', prefs), { kind: 'search', queue: { kind: 'ranked', modes: ['2v2'], region: 'EU', net: 'server' } });
   assert.deepEqual(F.againAction('ai', prefs), { kind: 'restart' });
   assert.deepEqual(F.againAction('lobby', prefs), { kind: 'lobby' });
+  // A Super low pick waiting for the FINAL to go (its reload): the FINAL goes first, nothing starts.
+  for (const k of ['casual', 'ranked', 'ai', 'lobby']) assert.deepEqual(F.againAction(k, prefs, true), { kind: 'home' });
   // CHANGE MODE: that kind's MODOS tab.
   assert.deepEqual(['casual', 'ranked', 'ai', 'lobby'].map(F.changeTab), ['casual', 'ranked', 'ai', 'lobbies']);
 });

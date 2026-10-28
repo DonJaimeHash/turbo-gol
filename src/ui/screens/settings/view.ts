@@ -67,6 +67,7 @@ import {
   keptSection,
   memoryTag,
   openingSection,
+  qualityLine,
   startTrial,
   stepSettingsTab,
   trialSecondsLeft,
@@ -1055,7 +1056,8 @@ export class SettingsView {
       setText(this.trialText, t('settings.qualityReverting', { quality: t(`quality.${tr.from}`), seconds: trialSecondsLeft(tr, performance.now()) }));
       setText(this.trialRevert, t('settings.qualityRevert', { quality: t(`quality.${tr.from}`).toLocaleUpperCase() }));
     }
-    const line = !o.qualities.includes(lit) ? o.qualityNote : o.pending !== null ? t('settings.qualityAfterOnline') : '';
+    const kind = qualityLine(lit, o.qualities, o.pending);
+    const line = kind === 'afterOnline' ? t('settings.qualityAfterOnline') : kind === 'note' ? o.qualityNote : '';
     setText(this.qualityLine, line);
     this.qualityLine.hidden = line === '';
   }
