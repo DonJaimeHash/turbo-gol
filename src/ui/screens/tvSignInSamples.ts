@@ -50,7 +50,7 @@ export function installTvSamples(menu: Menu): void {
       case 'tv':
       case 'tv-expired':
         guestProfile();
-        tvSheet(menu, kind === 'tv' ? { kind: 'code', s: { code: 'ABC234', secret: '', expiresAt: Date.now() + 272_000, pollMs: 3000 } } : { kind: 'expired' }, noop, noop);
+        tvSheet(menu, kind === 'tv' ? { kind: 'code', s: { code: 'ABC234', secret: '', expiresAt: Date.now() + 272_000, ttlMs: 272_000, pollMs: 3000 }, until: performance.now() + 272_000 } : { kind: 'expired' }, noop, noop);
         return;
       case 'tvlink-signin':
         menu.open('home', true);

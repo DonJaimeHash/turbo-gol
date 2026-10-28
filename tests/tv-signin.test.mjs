@@ -90,6 +90,22 @@ test('/tv: the countdown; a code kept for 5 minutes across a sign-in (an empty o
   for (const raw of [null, '{', '"x"', JSON.stringify({ code: 'ABCO23', at }), JSON.stringify({ code: 5, at }), JSON.stringify({ code: 'ABC234', at: at + 5000 })]) assert.equal(M.pendingCode(raw, at), null, String(raw));
 });
 
+test('/tv: a TV whose clock is minutes off the server still gets its code\'s whole life (counted on its own clock from ttlMs)', () => {
+  // The server's answer: expiresAt on its clock, ttlMs the life from now. The TV's Date.now() runs 6 minutes ahead.
+  const server = 1_800_000_000_000;
+  const answer = { expiresAt: server + 300_000, ttlMs: 300_000 };
+  const tvWall = server + 360_000;
+  assert.equal(M.timeLeft(answer.expiresAt, tvWall), '0:00', 'the server\'s expiresAt against the TV\'s clock: gone at once');
+  const t0 = 12_345.6; // performance.now() at the answer
+  const until = M.tvDeadline(answer.ttlMs, t0);
+  assert.equal(M.timeLeft(until, t0), '5:00');
+  assert.equal(M.timeLeft(until, t0 + 299_000), '0:01');
+  assert.ok(t0 + 299_999 < until && t0 + 300_000 >= until);
+  assert.equal(M.tvDeadline(3_600_000, 0), M.PENDING_MS, 'never longer than a code\'s life');
+  assert.equal(M.tvDeadline(-5, 0), 0);
+  assert.equal(M.tvDeadline(Number.NaN, 0), M.PENDING_MS);
+});
+
 test('AccountClient: tvStart, tvPoll pending then approved (adopted only by signInWith), tvConfirm with the Bearer', async () => {
   const calls = [];
   const session = { kind: 'account', playerId: 'u1', name: 'Ana', session: 'jwt', expiresAt: Date.now() + 3_600_000 };
@@ -98,7 +114,7 @@ test('AccountClient: tvStart, tvPoll pending then approved (adopted only by sign
     storage: null,
     fetchFn: async (url, init) => {
       calls.push({ url, body: init.body ? JSON.parse(init.body) : null, auth: init.headers.authorization ?? null });
-      if (url === '/api/auth/tv/start') return res(200, { code: 'ABC234', secret: 's'.repeat(43), expiresAt: Date.now() + 300_000, pollMs: 3000 });
+      if (url === '/api/auth/tv/start') return res(200, { code: 'ABC234', secret: 's'.repeat(43), expiresAt: Date.now() + 300_000, ttlMs: 300_000, pollMs: 3000 });
       if (url === '/api/auth/tv/poll') return res(200, approve ? { ...session, state: 'approved' } : { state: 'pending' });
       if (url === '/api/auth/tv/confirm') return init.headers.authorization ? res(200, { ok: true }) : res(401, { error: 'unauthorized' });
       if (url === '/api/auth/login') return res(200, session);

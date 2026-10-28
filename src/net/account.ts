@@ -183,12 +183,15 @@ export interface RegisterAnswer extends AccountSession {
 
 /**
  * POST /api/auth/tv/start (a TV signing in with the phone): the code the TV shows, the device
- * secret only the TV holds (it polls with it), when the code expires (epoch ms) and how often to poll.
+ * secret only the TV holds (it polls with it), when the code expires (the server's epoch ms), its
+ * life from now (`ttlMs`: what the TV counts down on its own clock, which can be minutes off the
+ * server's) and how often to poll.
  */
 export interface TvStartAnswer {
   code: string;
   secret: string;
   expiresAt: number;
+  ttlMs: number;
   pollMs: number;
 }
 

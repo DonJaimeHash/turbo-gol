@@ -627,7 +627,7 @@ async function tvStart(c: RouteContext): Promise<Response> {
   const secret = base64urlEncode(randomBytes(32));
   const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-start', { ip: ipOf(c.request), secret: await sha256Hex(secret) });
   if (!r.ok) return pass(r.res);
-  const out: TvStartAnswer = { code: r.data.code, secret, expiresAt: r.data.expiresAt, pollMs: TV_POLL_MS };
+  const out: TvStartAnswer = { code: r.data.code, secret, expiresAt: r.data.expiresAt, ttlMs: Math.max(0, r.data.expiresAt - Date.now()), pollMs: TV_POLL_MS };
   return noStore(json(out));
 }
 

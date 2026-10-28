@@ -43,14 +43,24 @@ export function withoutTvCode(hash: string): string {
   return rest.length > 0 ? '#' + rest : '';
 }
 
-/** m:ss until `expiresAt` (epoch ms), '0:00' past it. */
-export function timeLeft(expiresAt: number, now: number): string {
-  const s = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+/** m:ss until `until`, '0:00' past it (both on one clock: `now`'s). */
+export function timeLeft(until: number, now: number): string {
+  const s = Math.max(0, Math.ceil((until - now) / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 /** A code kept for after a sign-in (sessionStorage, JSON { code, at }) lasts this long, a TV code's life. */
 export const PENDING_MS = 5 * 60_000;
+
+/**
+ * When a TV's code ends on the TV's own clock (`now`: performance.now()): its life from the start
+ * answer (`ttlMs`), at most a code's life. Never the server's `expiresAt` against Date.now(): a TV
+ * box's clock can be minutes off, and one ahead would end every code at once. The poll's
+ * tv_code_expired stays the authority.
+ */
+export function tvDeadline(ttlMs: number, now: number): number {
+  return now + Math.max(0, Math.min(Number.isFinite(ttlMs) ? ttlMs : PENDING_MS, PENDING_MS));
+}
 
 /** The kept code ('' = the page was open without one), null when there is none or it is stale. */
 export function pendingCode(raw: string | null, now: number): string | null {

@@ -26,13 +26,16 @@ import type { SheetSpec } from '../components/sheet';
 import { qrSvg } from '../components/qr';
 import { codeCells } from '../components/codecells';
 import { CODE_LENGTH, spacedCode } from './lobbyModel';
-import { isTvPath, pendingCode, timeLeft, tvHashCode, tvLink, tvShortLink, withoutTvCode } from './tvSignInModel';
+import { isTvPath, pendingCode, timeLeft, tvDeadline, tvHashCode, tvLink, tvShortLink, withoutTvCode } from './tvSignInModel';
 import { errText } from './profile';
 import { STORAGE_PREFIX } from '../../brand';
 import { t } from '../../i18n';
 
-/** A TV sheet's state: asking for a code, showing one (`s`), expired, or a failed start (`error`). */
-export type TvSheet = { kind: 'starting' } | { kind: 'code'; s: TvStartAnswer } | { kind: 'expired' } | { kind: 'failed'; error: string };
+/**
+ * A TV sheet's state: asking for a code, showing one (`s`, ending at `until` on performance.now()'s
+ * clock: tvDeadline), expired, or a failed start (`error`).
+ */
+export type TvSheet = { kind: 'starting' } | { kind: 'code'; s: TvStartAnswer; until: number } | { kind: 'expired' } | { kind: 'failed'; error: string };
 
 /**
  * The TV's sheet of `state` (`sample`: no server, nothing polled: the layout check). `again`: NUEVO
@@ -45,7 +48,7 @@ export function tvSheet(menu: Menu, state: TvSheet, again: () => void, onClose: 
   let body: HTMLElement;
   if (state.kind === 'code') {
     const link = tvLink(location.origin, state.s.code);
-    left = h('span.mn-tvsign-left', null, t('tvsign.expiresIn', { time: timeLeft(state.s.expiresAt, Date.now()) }));
+    left = h('span.mn-tvsign-left', null, t('tvsign.expiresIn', { time: timeLeft(state.until, performance.now()) }));
     body = h(
       'div.mn-sala-qr.mn-tvsign',
       null,
@@ -86,11 +89,13 @@ export function openTvSignIn(menu: Menu): void {
     acc.tvStart().then(
       (s) => {
         if (epoch !== mine) return;
-        const { left, close } = show({ kind: 'code', s });
+        const until = tvDeadline(s.ttlMs, performance.now());
+        const { left, close } = show({ kind: 'code', s, until });
         const at = epoch;
         tick = window.setInterval(() => {
-          if (Date.now() >= s.expiresAt) show({ kind: 'expired' });
-          else if (left !== null) left.textContent = t('tvsign.expiresIn', { time: timeLeft(s.expiresAt, Date.now()) });
+          const now = performance.now();
+          if (now >= until) show({ kind: 'expired' });
+          else if (left !== null) left.textContent = t('tvsign.expiresIn', { time: timeLeft(until, now) });
         }, 1000);
         const poll = async (): Promise<void> => {
           if (epoch !== at) return;

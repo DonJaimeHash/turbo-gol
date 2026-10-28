@@ -164,10 +164,11 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   const s = await call(env, '/api/auth/tv/start', { ip: ip(0), origin: null });
   assert.equal(s.status, 200);
   assert.equal(s.headers.get('cache-control'), 'no-store');
-  const { code, secret, expiresAt, pollMs } = s.json;
+  const { code, secret, expiresAt, ttlMs, pollMs } = s.json;
   assert.match(code, /^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{6}$/);
   assert.ok(Buffer.from(secret, 'base64url').length >= 16, 'a device secret of at least 128 bits');
   assert.ok(expiresAt - Date.now() <= 5 * 60_000 && expiresAt - Date.now() > 4 * 60_000);
+  assert.ok(ttlMs <= 5 * 60_000 && ttlMs > 4 * 60_000, 'the life from now, for a TV whose clock is off the server\'s');
   assert.ok(pollMs >= 1000);
   assert.equal(JSON.stringify([...obj.tv.codes.values()]).includes(secret), false, 'the object keeps only its hash');
   let r = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: { code, secret } });
