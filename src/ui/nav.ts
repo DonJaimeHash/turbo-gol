@@ -317,6 +317,16 @@ export class FocusMemory<T> {
   }
 }
 
+/** A side control that takes a held arrow's repeat too (a slider), where a choice takes one step per press. */
+interface RepeatHandler {
+  navRepeat?: boolean;
+}
+
+/** `el`'s ◀ ▶ (onNavSide) follow a held arrow's auto-repeat: the settings' sliders slide. */
+export function onNavRepeat(el: HTMLElement): void {
+  (el as HTMLElement & RepeatHandler).navRepeat = true;
+}
+
 /** An element's stable key for the memory (`data-key`), null without one. */
 export function navKey(el: Element): string | null {
   return el.getAttribute('data-key');
@@ -450,7 +460,8 @@ export class FocusNav {
     const side = cur as HTMLElement & SideHandlers;
     const claim = dir === 'left' ? side.navLeft : dir === 'right' ? side.navRight : undefined;
     if (claim) {
-      if (!repeat) claim(); // a held arrow does not spin a choice (a stadium switch reloads the scene)
+      // A held arrow does not spin a choice (a stadium switch reloads the scene); a slider slides.
+      if (!repeat || (cur as HTMLElement & RepeatHandler).navRepeat === true) claim();
       return true;
     }
     const zone = this.zoneOf(cur);
