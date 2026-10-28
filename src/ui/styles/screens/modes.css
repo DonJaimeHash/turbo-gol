@@ -915,3 +915,8 @@ html[data-ui-big][data-shell='bar'] .mn-screen.mn-modes {
   grid-template-columns: 14rem minmax(0, 1fr) 17rem;
   gap: 1rem;
 }
+
+/* As on a TV, the searching tab keeps its spinner and its name; the clock is the panel's and the pill's. */
+html[data-ui-big][data-shell='bar'] .mn-mtab-clock {
+  display: none;
+}

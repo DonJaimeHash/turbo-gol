@@ -229,11 +229,11 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // 141,232 B on its own. PR 12 and PR 10 together: 138,182 B; with PR 13 too: 146,398 B. PR 11 adds
 // Ajustes' new rows (the "saved" card under the rail, the language picker, the touch controls'
 // size, opacity and mirrored side) and reduced motion as a class (the player's choice over the
-// system's): 134,441 B on PR 10 alone; with PR 12 and PR 13: 147,901 B, then 147,843 B (PERFIL's
-// foot without IDIOMA, the training panel on the right of left-handed controls), the cap that plus
-// about 0.6 KB. It steps down to 70 KB once PR 15 deletes menu.css. Raising it is the owner's call,
-// recorded in the PR.
-const CSS_BUDGET = 148_450;
+// system's): 134,441 B on PR 10 alone; with PR 12 and PR 13: 147,901 B, then 147,907 B (PERFIL's
+// foot without IDIOMA, the training panel on the right of left-handed controls, MODOS' searching
+// tab without its clock at 150 %), the cap that plus about 0.6 KB. It steps down to 70 KB once
+// PR 15 deletes menu.css. Raising it is the owner's call, recorded in the PR.
+const CSS_BUDGET = 148_500;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;
