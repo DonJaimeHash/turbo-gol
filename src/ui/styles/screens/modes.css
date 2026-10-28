@@ -929,3 +929,9 @@ html[data-shell='tabs'] .mn-formats {
   flex: none;
   height: 12rem;
 }
+
+/* ---- 150 % on a computer (device.ts data-ui-big): the TV's narrower columns ---- */
+html[data-ui-big][data-shell='bar'] .mn-screen.mn-modes {
+  grid-template-columns: 14rem minmax(0, 1fr) 17rem;
+  gap: 1rem;
+}

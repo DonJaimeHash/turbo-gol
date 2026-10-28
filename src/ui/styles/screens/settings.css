@@ -1,6 +1,7 @@
 /* AJUSTES (src/ui/screens/settings/*; plan §1.4, dir-hub §6.9, the owner's hub-ajustes-pc): the rail
    of tabs (256 wide, rows of 56) and the page (a panel with its own scroll), rows of 56 (64 on a
-   TV): mn-slider, mn-switch, mn-bind, the quality cards, the Experimental page's own hud- classes;
+   TV): mn-slider, mn-switch, mn-seg, mn-bind, the language picker, the quality cards, the
+   Experimental page's own hud- classes; "Se guarda solo" under the rail (the bar and the TV only);
    the same component over the pause (z 60, .mn-set-over). Upright the rail is a strip over the
    page; on a phone held sideways it sits narrow beside the shell's rail. After menu.css: its
    .mn-tabs / .mn-tab (the hint bar's "own tabs") are restyled here. Tokens only. */
@@ -135,6 +136,44 @@
   transform: skewX(-20deg);
 }
 
+/* "Se guarda solo": a card under the rail, its check in --ok (the bar and the TV: a phone's rail
+   and the upright strip have no room for it, nor the pause). */
+.mn-set-saved {
+  flex: none;
+  margin-top: 1rem;
+  padding: 1rem;
+  font-size: var(--t-small);
+  line-height: 1.35;
+  color: var(--text-2);
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-set-saved-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mn-set-saved-title > .mn-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--ok);
+}
+
+.mn-set-saved-text {
+  margin: 0.375rem 0 0;
+}
+
+html[data-shell='rail'] .mn-set-saved,
+html[data-shell='tabs'] .mn-set-saved,
+.mn-set-over .mn-set-saved {
+  display: none;
+}
+
 /* ---- the page ---- */
 .mn-set-page {
   padding: 1.625rem 2rem 1.25rem;
@@ -204,7 +243,6 @@
 
 .mn-set-warn,
 .mn-set-conflict,
-.hud-exp-confirm,
 .hud-exp-status {
   color: var(--warn);
 }
@@ -439,7 +477,11 @@ html.tg-tv .mn-set-tab {
 }
 
 .mn-set-action,
+.mn-set-picker,
 .hud-settings-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
   min-height: 2.75rem;
   padding: 0 1rem;
   font-family: var(--font-display);
@@ -465,6 +507,18 @@ html:not(.tg-touch) .mn-focus > .hud-settings-action.hud-focus {
 .hud-exp-armed {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+/* The language picker: the language and a › (the sheet). */
+.mn-set-picker {
+  flex: none;
+  text-transform: none;
+}
+
+.mn-set-action > .mn-icon,
+.mn-set-picker > .mn-icon {
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 .mn-slider-step:active,
@@ -747,6 +801,7 @@ html[data-shell='tabs'] .mn-slider-track {
   .mn-set-tab:hover:not(.mn-tab-on),
   .mn-qcard:hover:not(.mn-qcard-on),
   .mn-set-action:hover,
+  .mn-set-picker:hover,
   .mn-bind-cell:hover {
     background-color: var(--surface-2);
   }

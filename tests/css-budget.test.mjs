@@ -219,9 +219,12 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // 0.6 KB. PR 10 deletes the Hud's settings sheet (style.css and focus.css, about 11.1 KB) and adds
 // Ajustes as drawn (styles/screens/settings.css: the rail, the rows, sliders, switches, bindings,
 // the quality cards, the Experimental page, the pause overlay, per class; about 11.1 KB): 132,999 B,
-// the cap that plus about 0.6 KB, unchanged. It steps down to 70 KB once PR 15 deletes menu.css.
+// the cap that plus about 0.6 KB, unchanged. PR 11 adds Ajustes' new rows (the "saved" card
+// under the rail, the language picker, the touch controls' size, opacity and mirrored side) and
+// reduced motion as a class (the player's choice over the system's): 134,397 B, the cap that plus
+// about 0.6 KB. It steps down to 70 KB once PR 15 deletes menu.css.
 // Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 133_600;
+const CSS_BUDGET = 135_000;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;
