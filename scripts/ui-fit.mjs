@@ -31,6 +31,14 @@
 // community node's line, casual, against the AI with a full 3v3, a lobby) and fails PLAY AGAIN without
 // the focus (but on a touch screen).
 //
+// The touch match (plan PR 9, 'touch'), last on the touch sizes: an offline match in touch mode
+// (Game.startMatch), its controls, each first-match card, the full scoreboard, the touch pause, and
+// free play's pause with its training row; upright, the rotate notice. It fails a control nearer
+// than 24 px to the right edge or the stick nearer than 28 to the left, two controls overlapping,
+// the boost plate on screen, RESUME not over BOOST's centre, a card over JUMP / BOOST / DRIFT or
+// its GOT IT under 56 px, anything off screen, text out of its box, a card's or the pause's text
+// under 14 px and a control's label under 12.
+//
 // Each size gets a fresh tab with the device it stands for: a mouse for the desktop sizes (the
 // browser starts with a fine pointer and hover, --blink-settings: a Linux runner has no pointing
 // device, and a page without one lays out as a TV, device.ts isTv), touch emulation for the phones
@@ -95,7 +103,7 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', 'sala'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', 'touch', 'sala'];
 // The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
 const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
 // The HUD's reconnection line, per language: the try and the way back (OnlineSession.hint).
@@ -150,6 +158,70 @@ const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
 const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile', 'sala'].filter((x) => SCREENS.includes(x));
+// The touch match's checks (window context): what is wrong on screen now, from the controls' and the
+// pause's own boxes. `boost` is BOOST's centre measured while the controls were up.
+const TOUCH_CHECK = (state, boost) => `(() => {
+  const W = innerWidth, H = innerHeight, bad = [];
+  const box = (e) => e.getBoundingClientRect();
+  const shown = (e) => e !== null && box(e).width > 0 && getComputedStyle(e).visibility !== 'hidden';
+  const name = (e) => (e.className.baseVal ?? e.className).split(' ').filter((c) => /^(tc|hud)-/.test(c)).slice(-1)[0] ?? e.tagName;
+  const off = (e) => { const r = box(e); return r.left < -0.5 || r.top < -0.5 || r.right > W + 0.5 || r.bottom > H + 0.5; };
+  const over = (a, b) => { const r = box(a), q = box(b); return r.left < q.right - 0.5 && q.left < r.right - 0.5 && r.top < q.bottom - 0.5 && q.top < r.bottom - 0.5; };
+  /** Text of el's leaves under px, or out of its box (wider or taller than its parent's content). */
+  const text = (root, px) => { for (const e of root.querySelectorAll('*')) { if (!shown(e) || e.children.length > 0 || !e.textContent.trim()) continue; const f = parseFloat(getComputedStyle(e).fontSize); if (f < px - 0.05) bad.push(name(e) + ' text ' + f.toFixed(1) + 'px: ' + JSON.stringify(e.textContent.trim())); if (e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).display !== 'inline') bad.push(name(e) + ' text overflows: ' + JSON.stringify(e.textContent.trim())); } };
+  const btns = [...document.querySelectorAll('.tc-root.tc-show .tc-btn')].filter(shown);
+  if (${JSON.stringify(state)} === 'play' || ${JSON.stringify(state)}.startsWith('card') || ${JSON.stringify(state)} === 'board') {
+    if (btns.length < 5) bad.push('only ' + btns.length + ' touch controls up');
+    for (const b of btns) {
+      const r = box(b);
+      if (W - r.right < 24 - 0.5) bad.push(name(b) + ' ' + (W - r.right).toFixed(1) + ' px from the right edge');
+      if (off(b)) bad.push(name(b) + ' off screen');
+      for (const l of b.querySelectorAll('div, span')) { const q = box(l); if (!l.textContent.trim()) continue; if (q.width > 0 && (q.width > r.width - 6 || parseFloat(getComputedStyle(l).fontSize) < 11.95)) bad.push(name(b) + ' label ' + JSON.stringify(l.textContent) + ' ' + q.width.toFixed(0) + ' wide @' + getComputedStyle(l).fontSize); }
+    }
+    for (let i = 0; i < btns.length; i++) for (let j = i + 1; j < btns.length; j++) { const a = box(btns[i]), b = box(btns[j]); if (Math.hypot(a.left + a.width / 2 - b.left - b.width / 2, a.top + a.height / 2 - b.top - b.height / 2) < (a.width + b.width) / 2 - 0.5) bad.push(name(btns[i]) + ' overlaps ' + name(btns[j])); }
+    if (box(document.querySelector('.tc-stick')).left < 28 - 0.5) bad.push('the stick nearer than 28 px to the left edge');
+    if (shown(document.querySelector('.hud-boost'))) bad.push('the boost plate shows in touch mode');
+    const bug = document.querySelector('.hud-top');
+    for (const b of btns) if (over(bug, b)) bad.push('the scorebug under ' + name(b));
+  }
+  if (${JSON.stringify(state)}.startsWith('card')) {
+    const card = document.querySelector('.tc-card');
+    if (!shown(card)) bad.push('no card');
+    else {
+      if (off(card)) bad.push('the card is off screen');
+      for (const b of document.querySelectorAll('.tc-jump, .tc-boost, .tc-drift')) if (over(card, b)) bad.push('the card covers ' + name(b));
+      if (box(document.querySelector('.tc-card-ok')).height < 56 - 0.5) bad.push('GOT IT under 56 px');
+      text(card, 14);
+    }
+  }
+  if (${JSON.stringify(state)} === 'board') {
+    const p = document.querySelector('.hud-sb-panel');
+    if (!shown(p)) bad.push('the scoreboard is not up'); else if (off(p)) bad.push('the scoreboard is off screen');
+  }
+  if (${JSON.stringify(state)}.startsWith('pause')) {
+    const items = [...document.querySelectorAll('.hud-pause-menu .hud-pause-btn')].filter(shown);
+    const plate = document.querySelector('.hud-paused-plate');
+    const bug = document.querySelector('.hud-top');
+    if (items.length < 3) bad.push('only ' + items.length + ' pause buttons');
+    for (const e of [...items, plate]) if (off(e)) bad.push(name(e) + ' off screen: ' + JSON.stringify(e.innerText.replace(/\\s+/g, ' ')));
+    const all = [...items, plate, bug];
+    for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (over(all[i], all[j])) bad.push(JSON.stringify(all[i].innerText.replace(/\\s+/g, ' ')) + ' overlaps ' + JSON.stringify(all[j].innerText.replace(/\\s+/g, ' ')));
+    const resume = document.querySelector('.hud-pause-primary');
+    const r = box(resume);
+    const b = ${JSON.stringify(boost)};
+    if (!(r.left <= b.x && b.x <= r.right && r.top <= b.y && b.y <= r.bottom)) bad.push('RESUME is not over the centre of BOOST (' + b.x.toFixed(0) + ', ' + b.y.toFixed(0) + ')');
+    if (W - r.right < 24 - 0.5) bad.push('RESUME ' + (W - r.right).toFixed(1) + ' px from the right edge');
+    for (const e of items) if (e !== resume && !e.closest('.hud-pause-row') && box(e).left < 28 - 0.5) bad.push(name(e) + ' nearer than 28 px to the left edge');
+    for (const e of items) text(e, 14);
+    text(plate, 14);
+  }
+  if (${JSON.stringify(state)} === 'rotate') {
+    const n = document.querySelector('.tc-rotate');
+    if (!shown(n)) bad.push('no rotate notice upright');
+    else { if (off(n.querySelector('.tc-rotate-text'))) bad.push('the notice is off screen'); text(n, 14); }
+  }
+  return bad;
+})()`;
 const LANGS = typeof args.langs === 'string' ? args.langs.split(',') : ['en', 'es'];
 const ALL_INPUTS = ['keyboard', 'pad', 'remote', 'mouse', 'touch'];
 const INPUTS = args.inputs === 'default' ? [] : typeof args.inputs === 'string' ? args.inputs.split(',').filter((x) => ALL_INPUTS.includes(x)) : ALL_INPUTS;
@@ -294,7 +366,7 @@ try {
       report.push({ size: size.name, lang, input, face: FACE ?? 'Arial', note, ...r, bad });
       console.log(`${head} ${input.padEnd(8)} ${(screen + (note ? ' ' + note : '')).padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}${shrunk > 0 ? `  (${shrunk} fitted under the minimum)` : ''}${hero}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
     };
-    const runs = [[own, SCREENS], ...INPUTS.filter((x) => x !== own).map((x) => [x, INPUT_SCREENS])];
+    const runs = [[own, SCREENS.filter((x) => x !== 'touch')], ...INPUTS.filter((x) => x !== own).map((x) => [x, INPUT_SCREENS])];
     for (const [input, screens] of runs) for (const screen of screens) {
       // Another last input (device.ts): its hints and the strip's side; the Menu fits the bars on the change.
       if (input !== own && screen === screens[0]) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(input)}; h.classList.toggle('tg-touch', ${JSON.stringify(input)} === 'touch'); return true; })()`);
@@ -403,6 +475,52 @@ try {
       await page.eval(SEARCH_DONE);
       await page.eval('(window.__homeHero(null), true)');
       await sleep(200);
+    }
+    // The touch match (plan PR 9), last on a touch size (it plays a match in this tab).
+    if (size.mobile === true && SCREENS.includes('touch')) {
+      const line = async (note, bad) => {
+        failures += bad.length;
+        report.push({ size: size.name, lang, input: 'touch', face: FACE ?? 'Arial', note: 'touch ' + note, bad });
+        console.log(`${head} ${'touch'.padEnd(8)} ${('touch ' + note).padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL'}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
+      };
+      // A finger's page: the match starts in touch mode; the cards are each shown in turn (showCard),
+      // then counted as seen so the later states have none.
+      await page.eval(`(() => { const h = document.documentElement; h.dataset.input = 'touch'; h.classList.add('tg-touch'); __game.startMatch(); return true; })()`);
+      if (size.layout === 'portrait') {
+        await sleep(1200);
+        await line('rotate', await page.eval(TOUCH_CHECK('rotate', null)));
+      } else if (!(await page.until('__game.touch !== null && __game.touch.visible', 15_000, 100))) await line('play', ['the touch controls never came up']);
+      else {
+        await sleep(400);
+        for (let i = 0; i < 3; i++) {
+          await page.eval(`(__game.touch.showCard(${i}), true)`);
+          await sleep(250);
+          await line(`card ${i + 1}`, await page.eval(TOUCH_CHECK(`card${i + 1}`, null)));
+        }
+        await page.eval(`(() => { localStorage.setItem('turbogol.touchCards', '3'); __game.touch.seen = 3; __game.touch.showCard(3); return true; })()`);
+        await sleep(250);
+        await line('play', await page.eval(TOUCH_CHECK('play', null)));
+        // The board as a tap on the scorebug opens it (the overlay's own switch).
+        await page.eval('(__game.touch.setBoard(true), true)');
+        // The Game shows it on its next frame of logic (a slow one in a headless page).
+        await page.until("document.querySelector('.hud-sb-panel').getBoundingClientRect().width > 0", 5_000, 100);
+        await line('board', await page.eval(TOUCH_CHECK('board', null)));
+        await page.eval('(__game.touch.setBoard(false), true)');
+        const boost = await page.eval(`(() => { const r = document.querySelector('.tc-boost').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+        await page.eval('(__game.setPaused(true), true)');
+        await sleep(400);
+        await line('pause', await page.eval(TOUCH_CHECK('pause', boost)));
+        await page.eval(`(__game.quitToMenu(), __game.startTraining('freeplay'), true)`);
+        if (await page.until('__game.touch.visible', 15_000, 100)) {
+          await sleep(400);
+          await line('free play', await page.eval(TOUCH_CHECK('play', null)));
+          await page.eval('(__game.setPaused(true), true)');
+          await sleep(400);
+          await line('pause free play', await page.eval(TOUCH_CHECK('pause', boost)));
+        } else await line('free play', ['free play never came up in touch mode']);
+      }
+      await page.eval(`(() => { if (__game.training !== null) __game.stopTraining(); else __game.quitToMenu(); return true; })()`);
+      await page.until('__game.menu.visible', 10_000, 100);
     }
     // Last on a TV (it leaves a fake controller in this tab): no controller, the slot says so; the
     // hero's press opens the sheet; a controller connecting with A held (the press that reveals

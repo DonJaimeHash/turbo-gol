@@ -798,8 +798,9 @@ body {
   display: none;
 }
 
-/* The dock, for every input. The veil ignores the pointer (a click or tap on it reaches the
-   canvas and resumes); only the plate and the buttons take it. RESUME takes two units. */
+/* The dock, for every input. The veil ignores the pointer (a click on it reaches the canvas and
+   resumes; a finger's tap does nothing); only the plate and the buttons take it. RESUME takes two
+   units. Touch mode lays it out for two thumbs (below). */
 .hud-pause-menu {
   z-index: var(--z-dock);
   display: flex;
@@ -1004,6 +1005,132 @@ html[data-input='mouse'] .hud-howto-dbl {
     height: auto;
     min-height: 56px;
   }
+}
+
+/* The touch pause (plan M25, Tel-H; touch mode only, the same buttons): two thumbs. RESUME is a
+   lime pill at BOOST's own inset, so it covers BOOST's centre at every size (the thumb that boosted
+   resumes without moving); SETTINGS and QUIT (and RULES) stack up from the left thumb's corner,
+   clear of the back gesture; the training row sits over RESUME in the thumb's arc; the plate is
+   compact, under the scorebug. A finger on the veil does nothing (Game.onCanvasPointerDown). The
+   last input decides: a key or a pad press puts the dock back. QUIT's hold (Hud.startHold, 1 s)
+   fills two half-moons in a ring. */
+.tg-touch .hud-paused-plate {
+  align-self: start;
+  margin-top: clamp(52px, 15vh, 72px);
+  padding: 8px 20px 10px;
+}
+
+.tg-touch .hud-paused-title {
+  font-size: clamp(28px, 8vh, 44px);
+}
+
+.tg-touch .hud-pause-menu {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: auto;
+  height: auto;
+}
+
+.tg-touch .hud-pause-menu > * {
+  position: absolute;
+  bottom: calc(var(--safe-bottom) + 24px);
+}
+
+.tg-touch .hud-pause-menu > .hud-pause-btn {
+  left: calc(var(--safe-left) + 28px);
+  width: 160px;
+  height: 56px;
+  justify-content: center;
+  padding: 6px 16px;
+}
+
+.tg-touch .hud-pause-menu > :nth-last-child(2) {
+  bottom: calc(var(--safe-bottom) + 92px);
+}
+
+.tg-touch .hud-pause-menu > :nth-last-child(3) {
+  bottom: calc(var(--safe-bottom) + 160px);
+}
+
+.tg-touch .hud-pause-menu > .hud-pause-primary {
+  left: auto;
+  right: calc(var(--safe-right) + 24px);
+  bottom: calc(var(--safe-bottom) + 24px);
+  width: 168px;
+  height: 96px;
+  align-items: center;
+  border-radius: 48px;
+}
+
+.tg-touch .hud-pause-menu > .hud-pause-row {
+  right: calc(var(--safe-right) + 24px);
+  bottom: calc(var(--safe-bottom) + 132px);
+  height: 56px;
+  gap: 8px;
+}
+
+.tg-touch .hud-pause-row .hud-pause-btn {
+  flex: 0 0 auto;
+  min-width: 56px;
+  max-width: 104px;
+  padding: 4px 8px;
+}
+
+/* A phone's 14 px floor for the lines and the row's labels. */
+.tg-touch .hud-pause-menu .hud-pause-sub,
+.tg-touch .hud-pause-menu .hud-pause-howto,
+.tg-touch .hud-pause-row .hud-pause-label {
+  font-size: 14px;
+}
+
+.tg-touch .hud-pause-quit {
+  padding-right: 48px;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill {
+  inset: auto;
+  top: calc(50% - 13px);
+  right: 12px;
+  width: 26px;
+  height: 26px;
+  overflow: hidden;
+  border: 2px solid var(--danger-line);
+  border-radius: 50%;
+  background: none;
+  transform: none;
+  transition: none;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill::before,
+.tg-touch .hud-pause-quit .hud-hold-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  background: var(--danger);
+  transform: scaleY(0);
+  transform-origin: center bottom;
+  transition: transform 0.15s linear;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill::before {
+  left: 0;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill::after {
+  right: 0;
+}
+
+.tg-touch .hud-holding .hud-hold-fill::before,
+.tg-touch .hud-holding .hud-hold-fill::after {
+  transform: scaleY(1);
+  transition-duration: 0.5s;
+}
+
+.tg-touch .hud-holding .hud-hold-fill::after {
+  transition-delay: 0.5s;
 }
 
 /* ---- The settings overlay (Hud.openSettingsScreen), over the menus and over the pause alike ---- */

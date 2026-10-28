@@ -7,6 +7,21 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Playing with your fingers: BOOST shows how much boost you have, with a level that fills the
+  button, and the boost bar under the score is gone. CAM moved down into your right thumb's reach,
+  next to JUMP and DRIFT (RESET sits above it in training), PAUSE is alone in the top right
+  corner, and DRIFT is no longer blue. The stick, JUMP and BOOST stay exactly where they were.
+- On a touch screen, tap the score to see both teams; tap it again (or the board) to close it.
+- Your first match on a phone or tablet starts with three short cards: how to drive, JUMP and
+  BOOST, and CAM and PAUSE. A tap on each one moves on; against the AI the match waits for you,
+  and the game remembers you have seen them.
+- The pause on a touch screen is laid out for two thumbs: RESUME is a big button right where BOOST
+  was, so the thumb that paused resumes without moving, and SETTINGS and QUIT are under your left
+  thumb. Hold QUIT for a second (the ring fills) to leave; a tap anywhere else does nothing.
+- A setting for touch players, in Settings › Gameplay: keep JUMP held when you slide your thumb from
+  JUMP to BOOST, for full-height aerials with one thumb (off by default).
+- Online, turning your phone upright no longer hides the match: the notice "The match goes on: turn
+  your phone" lets you see the game and the score behind it.
 - Playing with friends takes a few presses and no code to read out. In MODES › LOBBIES, CREATE
   LOBBY AND SHARE makes a private lobby with the format you played last and opens it with SHARE
   selected: on a phone it opens your share sheet, on a computer it copies the link, on a TV it
