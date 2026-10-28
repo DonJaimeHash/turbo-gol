@@ -1,0 +1,220 @@
+/* ENTRENAMIENTO (src/ui/screens/training.ts; plan PR 13, dir-hub §6.5): the head, then Inicio's tile
+   grid (home.css .mn-tiles and its areas per class: the hero, then the mode tiles' four cells, which
+   the packs and HOW TO PLAY / LAB take here), and an unlocked player's row under it. The level
+   marks, the pack sheet's levels and the controls card. Colours, font sizes and radii as tokens. */
+
+/* The stage of ENTRENAMIENTO, CLASIFICACIÓN and PERFIL: Inicio's margins, per class below. */
+.mn[data-screen='training'] .mn-stage,
+.mn[data-screen='leaderboard'] .mn-stage,
+.mn[data-screen='profile'] .mn-stage {
+  padding: 1.5rem calc(3rem + var(--safe-right)) 1rem calc(3rem + var(--safe-left));
+}
+
+/* The shared controls of menu.css (px until plan PR 15) at the class's type roles on these screens. */
+.mn-train .mn-subtitle,
+.mn-board .mn-subtitle,
+.mn-profile .mn-subtitle,
+.mn-profile .mn-field-label,
+.mn-profile .mn-section-title,
+.mn-profile .mn-note,
+.mn-profile .mn-or,
+.mn-profile .mn-rating-playlist,
+.mn-profile .mn-rating-sub {
+  font-size: var(--t-small);
+}
+
+.mn-board .mn-btn,
+.mn-profile .mn-btn,
+.mn-profile .mn-rating-tier {
+  font-size: var(--t-heading);
+}
+
+.mn-screen.mn-train {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: none;
+  min-height: 100%;
+  margin: 0;
+  font-size: var(--t-body);
+}
+
+.mn-trn-shooting {
+  grid-area: casual;
+}
+
+.mn-trn-saving {
+  grid-area: friends;
+}
+
+.mn-trn-aerial {
+  grid-area: ai;
+}
+
+.mn-trn-how,
+.mn-trn-lab {
+  grid-area: ranked;
+}
+
+.mn-slot-lab {
+  color: var(--lab);
+}
+
+.mn-trn-lab .mn-mtile-icon {
+  color: var(--lab);
+}
+
+/* ---- A level's mark by its shape: filled ✓ passed, a dot played, hollow never --------------- */
+.mn-trn-marks {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+}
+
+.mn-trn-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid var(--text-3);
+  border-radius: 50%;
+}
+
+.mn-trn-mark-tried {
+  border-color: var(--text-2);
+}
+
+.mn-trn-mark-tried::before {
+  content: '';
+  width: 0.375rem;
+  height: 0.375rem;
+  background: var(--text-2);
+  border-radius: 50%;
+}
+
+.mn-trn-mark-done {
+  color: var(--brand-ink);
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.mn-trn-mark .mn-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.mn-trn-extra .mn-picker {
+  width: 100%;
+}
+
+/* ---- The pack sheet: three big levels -------------------------------------------------------- */
+.mn-trn-level {
+  gap: 1rem;
+  min-height: 4.5rem;
+}
+
+.mn-trn-level .mn-trn-mark {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.mn-trn-level .mn-trn-mark .mn-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.mn-trn-level-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.mn-trn-level-text small,
+.mn-trn-level-best {
+  font-family: var(--font-body);
+  font-size: var(--t-small);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-2);
+}
+
+.mn-trn-level-best {
+  flex: none;
+}
+
+/* ---- HOW TO PLAY: the device, then a row per control --------------------------------------- */
+.mn-ctrl-device {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  color: var(--text-2);
+}
+
+.mn-ctrl-device .mn-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--brand);
+}
+
+.mn-ctrlcard {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.mn-ctrl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.75rem;
+  background: var(--surface-2);
+  border-radius: var(--r-key);
+}
+
+.mn-ctrl-keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.375rem;
+}
+
+/* ---- Per class: the three screens' stage as Inicio's ------------------------------------------- */
+html[data-shell='rail'] .mn[data-screen='training'] .mn-stage,
+html[data-shell='rail'] .mn[data-screen='leaderboard'] .mn-stage,
+html[data-shell='rail'] .mn[data-screen='profile'] .mn-stage {
+  padding: 0.75rem calc(1.5rem + var(--safe-right)) 1rem 0.75rem;
+}
+
+html[data-layout='portrait'] .mn[data-screen='training'] .mn-stage,
+html[data-layout='portrait'] .mn[data-screen='leaderboard'] .mn-stage,
+html[data-layout='portrait'] .mn[data-screen='profile'] .mn-stage {
+  padding: 1rem calc(1rem + var(--safe-right)) 1rem calc(1rem + var(--safe-left));
+}
+
+html[data-layout='tablet'] .mn[data-screen='training'] .mn-stage,
+html[data-layout='tablet'] .mn[data-screen='leaderboard'] .mn-stage,
+html[data-layout='tablet'] .mn[data-screen='profile'] .mn-stage {
+  padding: 1.5rem calc(1.5rem + var(--safe-right)) 1.5rem calc(1.5rem + var(--safe-left));
+}
+
+html[data-shell='tv'] .mn[data-screen='training'] .mn-stage,
+html[data-shell='tv'] .mn[data-screen='leaderboard'] .mn-stage,
+html[data-shell='tv'] .mn[data-screen='profile'] .mn-stage {
+  padding: 1rem 3rem 1.5rem;
+}
+
+/* Sideways, the rail names the section and the HUD the reset key: the tiles take the height (as Inicio's). */
+html[data-shell='rail'] .mn-train .mn-head {
+  display: none;
+}
+
+/* PRÁCTICA LIBRE is wider than JUGAR AHORA (home.css keeps that one at 40 sideways). */
+html[data-shell='rail'] .mn-train .mn-hero-title {
+  --fit-min: 28;
+}
