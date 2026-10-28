@@ -40,6 +40,8 @@ export interface ControlSettings {
 export interface AudioSettings {
   /** Master volume, 0..100 (%). */
   volume: number;
+  /** Music volume under the master, 0..100 (%). */
+  music: number;
 }
 
 export interface Settings {
@@ -63,9 +65,10 @@ export const DEFAULT_CONTROL_SETTINGS: Readonly<ControlSettings> = {
 
 export const DEFAULT_AUDIO: Readonly<AudioSettings> = {
   volume: 70,
+  music: 50,
 };
 
-/** Slider range of the master volume: [min, max, step]. */
+/** Slider range of the master and music volumes: [min, max, step]. */
 export const VOLUME_RANGE: readonly [number, number, number] = [0, 100, 5];
 
 /** Ranges for the settings sliders. */
@@ -172,6 +175,7 @@ export function mergeSettings(raw: unknown): Settings {
   }
   const au = r.audio ?? {};
   s.audio.volume = num(au.volume, VOLUME_RANGE[0], VOLUME_RANGE[1], DEFAULT_AUDIO.volume);
+  s.audio.music = num(au.music, VOLUME_RANGE[0], VOLUME_RANGE[1], DEFAULT_AUDIO.music);
   const b = r.bindings ?? {};
   for (const device of ['kbm', 'pad'] as const) {
     const prof = b[device];

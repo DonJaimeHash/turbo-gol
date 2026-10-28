@@ -395,6 +395,8 @@ const HIT_FX_MIN_SPEED = 250;
 const HARD_LANDING_VZ = 550;
 /** Seconds the "GO" caption stays on screen. */
 const GO_CAPTION_SECONDS = 0.8;
+/** The music switches to its tension mode for the last seconds of regulation (and overtime). */
+const MUSIC_TENSION_SECONDS = 30;
 /** Seconds after the final whistle before the menu comes back. */
 const MENU_RETURN_SECONDS = 5;
 const FPS_INTERVAL = 0.25;
@@ -648,6 +650,8 @@ export class Game implements P2PGameHooks {
   private readonly hitPos: [number, number, number] = [0, 0, 0];
   private readonly camState: CameraCarState = { grounded: true, speed: 0, supersonic: false };
   private readonly audioState: AudioState = { speed: 0, forwardSpeed: 0, boosting: false, supersonic: false, grounded: true, throttle: 0 };
+  /** The match clock is in its last MUSIC_TENSION_SECONDS or in overtime (set with the HUD clock). */
+  private musicTension = false;
   private readonly menuLook = new THREE.Vector3(0, 200, 0);
   /** One row per roster entry ('You', 'Bot 1'...), rebuilt by applyRoster(); the Hud diffs them. */
   private readonly sbRows: ScoreboardRow[] = [];
@@ -857,6 +861,7 @@ export class Game implements P2PGameHooks {
     this.installHint = this.touch !== null && installHintDue();
     this.audio = new Audio({ room: !this.cpuLite });
     this.audio.setVolume(settings.audio.volume / 100);
+    this.audio.setMusicVolume(settings.audio.music / 100);
 
     // Initial snapshots so the first frame renders the kickoff state.
     sim.sync();
@@ -2713,6 +2718,7 @@ export class Game implements P2PGameHooks {
     if (!this.onlineActive) this.sim.setCarDodgeDeadzone(this.playerCarId, s.controls.dodgeDeadzone);
     this.chase.applyProjection(this.renderer.camera);
     this.audio.setVolume(s.audio.volume / 100);
+    this.audio.setMusicVolume(s.audio.music / 100);
   }
 
   /** Cars take no input: kickoff countdown, goal pause, after the final whistle, in the menu. */
@@ -3052,9 +3058,11 @@ export class Game implements P2PGameHooks {
     if (session !== null && sessionActive) {
       hud.setScore(session.score.blue, session.score.red);
       hud.setClock(session.displaySeconds, session.clockMode);
+      this.musicTension = session.clockMode === 'overtime' || (session.clockMode === 'regulation' && session.displaySeconds <= MUSIC_TENSION_SECONDS);
     } else {
       hud.setScore(match.score.blue, match.score.red);
       hud.setClock(match.displaySeconds, match.overtime ? 'overtime' : match.isUnlimited ? 'unlimited' : 'regulation');
+      this.musicTension = this.training === null && (match.overtime || (!match.isUnlimited && match.displaySeconds <= MUSIC_TENSION_SECONDS));
     }
     if (session !== null) {
       // Network panel (F4 / #net, auto while online in debug), the menu's status line, the stall hint.
@@ -3120,6 +3128,8 @@ export class Game implements P2PGameHooks {
       as.throttle = this.playerControls.throttle;
     }
     this.audio.update(dt, as);
+    // Music: the menu theme, the match, the tension of the last seconds and overtime.
+    this.audio.setMusic(inMenu ? 'menu' : this.musicTension ? 'tension' : 'play', this.paused && !inMenu);
 
     // The frame's rAF timestamp (ms) drives dynamic resolution.
     const frameMs = this.lastTime * 1000;

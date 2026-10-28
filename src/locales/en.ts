@@ -777,7 +777,9 @@ export default {
   'settings.audioNote': 'Game sounds',
   // Audio tab slider: the volume of every sound, 0-100 %
   'settings.volume': 'Master volume',
-  // Audio tab footer button: the volume back to its default
+  // Audio tab slider: the volume of the music, 0-100 % (under the master volume)
+  'settings.music': 'Music',
+  // Audio tab footer button: the volumes back to their defaults
   'settings.resetAudio': 'Reset audio',
   // Graphics tab: line over the rows (a change shows the loading screen for a moment)
   'settings.graphicsNote': 'A quality change reloads the stadium for a moment',

@@ -24,9 +24,15 @@
  * One-shots: a voice plus layers from the toolkit at the end of the class (a contact click, pitched
  * bodies with several partials, additive and FM notes, filtered noise), so every sound is a full
  * spectrum rather than one tone; 10-30 nodes each, event-driven, a handful per second at most.
+ *
+ * Music: one AudioWorkletNode running the procedural score (music/engine.ts, all synthesis on the
+ * audio thread, no files) → music gain → master. The module loads asynchronously after the graph
+ * is built; until then (or without AudioWorklet support) there is simply no music.
  */
 import type { Team } from '../sim/types';
 import { EngineModel, IDLE_RPM, REDLINE_RPM } from './engine';
+import type { MusicMode } from './music/engine';
+import musicWorkletUrl from './music/worklet.ts?worker&url';
 
 export interface AudioState {
   /** Car speed in uu/s (0..2300). */
@@ -50,6 +56,8 @@ const BALL_HIT_MIN_INTERVAL = 0.04;
 const CAR_HIT_MIN_INTERVAL = 0.06;
 const BOOST_START_MIN_INTERVAL = 0.05;
 const DEMOLITION_MIN_INTERVAL = 0.08;
+/** Music bus gain at a music volume of 1 (the score renders near -14 dBFS RMS; it sits under the SFX). */
+const MUSIC_LEVEL = 0.4;
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
@@ -112,6 +120,13 @@ export class Audio {
   private windBand: BiquadFilterNode | null = null;
   private windLfo: OscillatorNode | null = null;
   private windGain: GainNode | null = null;
+
+  // Music
+  private musicNode: AudioWorkletNode | null = null;
+  private musicGain: GainNode | null = null;
+  private musicVolume = 0.5;
+  private musicMode: MusicMode = 'off';
+  private musicPaused = false;
 
   private volume = 0.7;
   private smoothSpeed = 0;
@@ -185,6 +200,26 @@ export class Audio {
 
   getVolume(): number {
     return this.volume;
+  }
+
+  /** Music volume 0..1 (under the master volume). */
+  setMusicVolume(v: number): void {
+    this.musicVolume = clamp01(v);
+    if (this.ctx !== null && this.musicGain !== null) {
+      this.musicGain.gain.setTargetAtTime(this.musicVolume * MUSIC_LEVEL, this.ctx.currentTime, 0.05);
+    }
+  }
+
+  /**
+   * What the music plays: 'menu', 'play', 'tension' (the end of a match, overtime) or 'off', and
+   * whether the game is paused (filtered and quieter). Cheap to call every frame: only a change is
+   * sent to the audio thread, where mode changes land on the next bar.
+   */
+  setMusic(mode: MusicMode, paused: boolean): void {
+    if (mode === this.musicMode && paused === this.musicPaused) return;
+    this.musicMode = mode;
+    this.musicPaused = paused;
+    this.musicNode?.port.postMessage({ type: 'state', mode, paused });
   }
 
   /** Drive the continuous layers. Call once per rendered frame with the player's car state. */
@@ -305,6 +340,8 @@ export class Audio {
     this.smoothSpeed = 0;
     this.prevThrottle = 0;
     this.engine.reset();
+    // The music stays, held down like a pause (the next setMusic() restores it).
+    this.setMusic(this.musicMode, true);
     const ctx = this.ctx;
     if (ctx === null || ctx.state !== 'running') return;
     const t = ctx.currentTime;
@@ -474,6 +511,8 @@ export class Audio {
   playGoal(team: Team): void {
     const ctx = this.ready();
     if (ctx === null) return;
+    // The music breaks down under the celebration, rises and drops into the next kickoff.
+    this.musicNode?.port.postMessage({ type: 'goal' });
     const t = ctx.currentTime;
     const base = team === 0 ? 196 : 220; // G3 for blue, A3 for red
     const horn = this.voice(ctx, 1, 0.6);
@@ -642,9 +681,12 @@ export class Audio {
       this.boostHumB?.stop();
       this.windSrc?.stop();
       this.windLfo?.stop();
+      this.musicNode?.disconnect();
     } catch {
       /* already stopped */
     }
+    this.musicNode = null;
+    this.musicGain = null;
     void ctx.close().catch(() => undefined);
     this.ctx = null;
     this.master = null;
@@ -709,6 +751,7 @@ export class Audio {
     sfx.gain.value = 1;
     sfx.connect(master);
     this.sfx = sfx;
+    this.buildMusic(ctx, master);
 
     // One-shots: their own dry bus plus a send into one shared short room (a convolver over a
     // synthetic stereo impulse made here, 0.55 s). The continuous layers stay on sfx, unchanged.
@@ -906,6 +949,32 @@ export class Audio {
     this.windBand = windBand;
     this.windLfo = windLfo;
     this.windGain = windGain;
+  }
+
+  /**
+   * Music bus (gain → master) and its worklet. addModule is asynchronous: the node joins when the
+   * module is ready and gets the current state then. Lite (no room) runs the score's lite voicing.
+   */
+  private buildMusic(ctx: AudioContext, master: GainNode): void {
+    const gain = ctx.createGain();
+    gain.gain.value = this.musicVolume * MUSIC_LEVEL;
+    gain.connect(master);
+    this.musicGain = gain;
+    if (typeof AudioWorkletNode === 'undefined' || ctx.audioWorklet === undefined) return;
+    ctx.audioWorklet
+      .addModule(musicWorkletUrl)
+      .then(() => {
+        if (this.ctx !== ctx || this.disposed) return;
+        const node = new AudioWorkletNode(ctx, 'turbogol-music', {
+          numberOfInputs: 0,
+          outputChannelCount: [2],
+          processorOptions: { lite: !this.withRoom },
+        });
+        node.connect(gain);
+        node.port.postMessage({ type: 'state', mode: this.musicMode, paused: this.musicPaused });
+        this.musicNode = node;
+      })
+      .catch(() => undefined);
   }
 
   /** Filtered noise with an exponential decay, `delay` seconds from now, on the sfx bus (the engine pops). `sweepTo` optionally sweeps the filter down. */

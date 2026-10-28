@@ -523,6 +523,7 @@ export default {
   'settings.resetGameplay': 'Valores por defecto',
   'settings.audioNote': 'Sonidos del juego',
   'settings.volume': 'Volumen general',
+  'settings.music': 'Música',
   'settings.resetAudio': 'Valores por defecto',
   'settings.graphicsNote': 'Cambiar la calidad recarga el estadio por un momento',
   'settings.quality': 'Calidad gráfica',

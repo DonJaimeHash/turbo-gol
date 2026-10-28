@@ -1928,7 +1928,7 @@ export class Hud {
     return { page, items, actions, footer: this.groupItem(actions, [reset]) };
   }
 
-  /** Audio: the master volume (settings.audio, applied by the Game's onSettingsChanged). */
+  /** Audio: the master and music volumes (settings.audio, applied by the Game's onSettingsChanged). */
   private buildAudioPage(): PageBuild {
     const page = el('div', 'hud-settings-page');
     page.appendChild(el('div', 'hud-settings-device', t('settings.audioNote')));
@@ -1945,6 +1945,19 @@ export class Hud {
       },
     );
     page.appendChild(volume.row);
+    const music = this.sliderRow(
+      t('settings.music'),
+      VOLUME_RANGE,
+      '%',
+      () => this.liveSettings?.audio.music ?? DEFAULT_AUDIO.music,
+      (v) => {
+        const st = this.liveSettings;
+        if (st === null) return;
+        st.audio.music = v;
+        this.notifySettingsChanged();
+      },
+    );
+    page.appendChild(music.row);
     const reset = button('hud-settings-action', t('settings.resetAudio'));
     reset.addEventListener('click', () => {
       const st = this.liveSettings;
@@ -1955,7 +1968,7 @@ export class Hud {
     });
     const actions = el('div', 'hud-settings-actions');
     actions.appendChild(reset);
-    return { page, items: [volume.item], actions, footer: this.groupItem(actions, [reset]) };
+    return { page, items: [volume.item, music.item], actions, footer: this.groupItem(actions, [reset]) };
   }
 
   /**
