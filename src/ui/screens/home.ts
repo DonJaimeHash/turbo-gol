@@ -303,6 +303,7 @@ export function homeScreen(menu: Menu): Screen {
     show: () => {
       heroKey = clockText = plateKey = rankedKey = '';
       fetchMe();
+      menu.host.prewarmAntiBot?.(); // a guest's first JUGAR then rarely waits for the anti-bot check
       render(performance.now(), false);
     },
     tick: render,

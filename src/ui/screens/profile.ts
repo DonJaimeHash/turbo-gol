@@ -8,7 +8,8 @@
  * password, recovery codes, link a provider, sign out), COMUNIDAD (Discord, host a server, the
  * source), ACERCA DE (version, licences, the technical line).
  *
- * A guest, one column for the arrows: CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's
+ * A guest, one column for the arrows: on a TV first INICIAR SESIÓN CON EL TELÉFONO (focused: the
+ * code and its QR in a sheet, screens/tvSignIn.ts), then CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's
  * two tabs (`.mn-tabs`, a nav row: Q / E step them, the hint bar says so), then the tab's form
  * ("Forgot your password?" under the sign-in form is a link to the recovery form), the guest name. Fields say what a
  * phone keyboard's Enter does (enterkeyhint: next, then go / done) and Enter does it (onEnter); the
@@ -38,6 +39,7 @@ import { LOCALES, language, t } from '../../i18n';
 import type { Key } from '../../i18n';
 import { DISCORD_URL, GAME_NAME, SOURCE_URL } from '../../brand';
 import { version } from '../../../package.json';
+import { openTvSignIn } from './tvSignIn';
 
 /** A node's state in words (nodes/shared/controlProtocol.ts NodeStatus). */
 const NODE_STATE: Readonly<Record<MyNode['status'], Key>> = {
@@ -57,7 +59,8 @@ const HOST_GUIDE = (): string => `${SOURCE_URL}/blob/main/nodes/${language() ===
 
 const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
 
-function errText(e: unknown): string {
+/** An account error in the player's words (a throttle with its seconds). */
+export function errText(e: unknown): string {
   if (e instanceof AccountError) {
     if (e.code === 'throttled' && e.retryAfterMs > 0) return t('profile.retryAfter', { message: e.message, seconds: Math.ceil(e.retryAfterMs / 1000) });
     return e.message;
@@ -135,6 +138,7 @@ export function profileScreen(menu: Menu): Screen {
   const acc = menu.host.accounts;
   const body = h('div.mn-profile-body');
   const touch = (): boolean => document.documentElement.classList.contains('tg-touch');
+  const tv = (): boolean => document.documentElement.classList.contains('tg-tv');
   let tab: GuestTab = 'login';
   /** The signed-in account's community nodes (GET /nodes/mine), by account. */
   let nodes: { who: string; list: MyNode[] } | null = null;
@@ -243,7 +247,7 @@ export function profileScreen(menu: Menu): Screen {
   const guestView = (): HTMLElement => {
     const hero = h(
       `button.mn-tab.mn-prof-hero${tab === 'register' ? '.mn-tab-on' : ''}` as 'button',
-      { type: 'button', role: 'tab', 'aria-selected': String(tab === 'register'), 'data-nav': true, 'data-key': 'profile-tab-register', 'data-autofocus': true, onclick: () => pickTab('register') },
+      { type: 'button', role: 'tab', 'aria-selected': String(tab === 'register'), 'data-nav': true, 'data-key': 'profile-tab-register', 'data-autofocus': !tv(), onclick: () => pickTab('register') },
       h('span.mn-tile-top', null, icon('profile', 'mn-mtile-icon'), slot(t('profile.registerSlot'), { ink: true })),
       h('span.mn-prof-hero-title', { 'data-fit': '20' }, t('profile.registerFree')),
       h('span.mn-mtab-mark', { 'aria-hidden': 'true' }),
@@ -255,6 +259,15 @@ export function profileScreen(menu: Menu): Screen {
       h('span.mn-prof-signin-title', { 'data-fit': '16' }, t('profile.tabSignIn')),
       h('span.mn-mtab-mark', { 'aria-hidden': 'true' }),
     );
+    // A TV: no typing at all, the phone signs it in (the keypad still serves the forms below).
+    const phone = tv()
+      ? h(
+          'button.mn-prof-phone',
+          { type: 'button', 'data-nav': true, 'data-key': 'profile-phone', 'data-autofocus': true, onclick: () => openTvSignIn(menu) },
+          icon('touch', 'mn-mtile-icon'),
+          h('span.mn-prof-phone-text', null, h('span.mn-prof-phone-title', { 'data-fit': '16' }, t('tvsign.tile')), h('span.mn-prof-phone-sub', null, t('tvsign.tileSub'))),
+        )
+      : null;
     const form = tab === 'login' ? loginForm() : tab === 'register' ? registerForm() : recoverForm();
     const name = field(t('profile.guestName'), { maxLength: 16, value: menu.host.guestName(), enterkeyhint: 'done' });
     const saveName = (): void => {
@@ -267,9 +280,11 @@ export function profileScreen(menu: Menu): Screen {
     return h(
       'div.mn-prof-guest',
       null,
+      phone,
       h('div.mn-tabs.mn-prof-tabs', { role: 'tablist', 'aria-label': t('profile.heading'), 'data-nav-row': true }, hero, signIn),
       h('div.mn-prof-form', null, form),
-      h('div.mn-prof-guestname', null, name.el, secondary(t('profile.saveName'), saveName, { 'data-key': 'profile-save-name' })),
+      // A row for the arrows: ▶ from the name is SAVE NAME, not the wide button of the form above (a TV's remote).
+      h('div.mn-prof-guestname', { 'data-nav-row': true }, name.el, secondary(t('profile.saveName'), saveName, { 'data-key': 'profile-save-name' })),
     );
   };
 
