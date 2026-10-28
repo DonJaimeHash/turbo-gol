@@ -1,8 +1,10 @@
 /*
- * On-screen touch controls (src/input/TouchControls.ts). Every class is prefixed `tc-`; colours,
- * type, layers and safe-area insets are the tokens of src/ui/styles/tokens.css. The see-through
- * whites and inks of the stick and the buttons are this layer's own (it has to show the pitch
- * under a thumb); PR 9 of the Tablero plan redraws them.
+ * On-screen touch controls (src/input/TouchControls.ts; the Tablero plan PR 9, the owner's
+ * hub-partido-tel). Every class is prefixed `tc-`; colours, type, layers and safe-area insets are
+ * the tokens of src/ui/styles/tokens.css. The see-through inks of the stick and the buttons are
+ * this layer's own (it has to show the pitch under a thumb). The stick, JUMP, BOOST and DRIFT stay
+ * where players' thumbs know them; CAM moved into the right thumb's arc, RESET above it, PAUSE is
+ * alone in the corner.
  *
  * The layer is in #hud right after the Hud root and shows only with `tc-show` (a match played in
  * touch mode). The rules under `.tc-on` (on #hud while that match is on screen in touch mode,
@@ -27,6 +29,7 @@
   --tc-jump: clamp(72px, 22vh, 116px);
   --tc-drift: clamp(56px, 17vh, 88px);
   --tc-small: clamp(48px, 12vh, 60px);
+  --tc-cam: clamp(52px, 14.4vh, 64px);
   --tc-stick: clamp(104px, 34vh, 168px);
   /* The stick never starts this close to the left edge (Android's back gesture lives there). */
   --tc-left: max(28px, calc(var(--safe-left) + 20px));
@@ -51,6 +54,7 @@
     --tc-jump: clamp(72px, 22dvh, 116px);
     --tc-drift: clamp(56px, 17dvh, 88px);
     --tc-small: clamp(48px, 12dvh, 60px);
+    --tc-cam: clamp(52px, 14.4dvh, 64px);
     --tc-stick: clamp(104px, 34dvh, 168px);
   }
 }
@@ -112,9 +116,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px solid rgba(255, 255, 255, 0.32);
+  border: 2px solid var(--edge-hi);
   border-radius: 50%;
-  background: rgba(7, 10, 20, 0.4);
+  background: rgba(14, 17, 23, 0.72);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -133,18 +137,66 @@
   background: rgba(244, 247, 255, 0.26);
 }
 
+/* BOOST: lime-edged, the amount and its name inside, the level rising from the bottom (a full
+   layer moved by translateY at 10 Hz, clipped by the circle: TouchControls.setBoost); empty, low
+   and full as the Hud's plate. */
 .tc-boost {
   right: calc(var(--safe-right) + var(--tc-edge));
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-boost);
   height: var(--tc-boost);
-  border-color: var(--brand-line);
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+  border: 3px solid var(--brand);
+  color: var(--text);
+}
+
+.tc-boost-level {
+  position: absolute;
+  inset: 0;
+  background: rgba(198, 255, 46, 0.24);
+  border-top: 2px solid rgba(198, 255, 46, 0.85);
+  transform: translateY(100%);
+}
+
+.tc-boost-num {
+  position: relative;
+  font-size: clamp(26px, 9.7vh, 42px);
+  line-height: 0.9;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-boost-name {
+  position: relative;
+  font-size: clamp(11px, 3.6vh, 15px);
+  letter-spacing: 0.06em;
   color: var(--brand);
-  font-size: clamp(14px, 4vh, 20px);
+}
+
+.tc-boost-low .tc-boost-num,
+.tc-boost-low .tc-boost-name {
+  color: var(--warn);
+}
+
+.tc-boost-low .tc-boost-level {
+  background: rgba(255, 209, 102, 0.24);
+  border-top-color: var(--warn);
+}
+
+.tc-boost-empty .tc-boost-num {
+  color: var(--text-3);
+}
+
+.tc-boost-full {
+  box-shadow:
+    0 0 18px var(--brand-glow),
+    0 4px 14px rgba(0, 0, 0, 0.35);
 }
 
 .tc-boost.tc-down {
-  border-color: var(--brand);
+  border-color: var(--brand-hi);
   background: var(--brand-glow);
 }
 
@@ -153,36 +205,49 @@
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-jump);
   height: var(--tc-jump);
+  border: 2.5px solid var(--text);
   font-size: clamp(13px, 3.6vh, 18px);
 }
 
+/* DRIFT is neutral (plan M48: azure only means a team). */
 .tc-drift {
   right: calc(var(--safe-right) + var(--tc-edge) + (var(--tc-boost) - var(--tc-drift)) / 2);
   bottom: calc(var(--safe-bottom) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
   width: var(--tc-drift);
   height: var(--tc-drift);
-  border-color: rgba(156, 207, 255, 0.6);
-  color: var(--blue-hi);
-  font-size: clamp(11px, 3vh, 15px);
-  letter-spacing: 0.04em;
+  font-size: clamp(12px, 3.6vh, 16px);
+  letter-spacing: 0.02em;
 }
 
-/* ---- Small tap buttons, top right: PAUSE, CAM, RESET (training only) ------------------------- */
+/* ---- Small tap buttons: PAUSE alone top right; CAM in the thumb's arc (JUMP's column, DRIFT's
+   row), RESET above it in training ------------------------------------------------------------- */
 
 .tc-small {
-  top: calc(var(--safe-top) + clamp(16px, 4vh, 24px));
-  width: var(--tc-small);
-  height: var(--tc-small);
   font-size: clamp(11px, 3vh, 14px);
 }
 
 .tc-pause {
+  top: calc(var(--safe-top) + clamp(16px, 4vh, 24px));
   right: calc(var(--safe-right) + var(--tc-edge));
+  width: var(--tc-small);
+  height: var(--tc-small);
+  border-width: 1.5px;
+  background: rgba(14, 17, 23, 0.86);
+}
+
+.tc-cam,
+.tc-reset {
+  right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap) + (var(--tc-jump) - var(--tc-cam)) / 2);
+  width: var(--tc-cam);
+  height: var(--tc-cam);
 }
 
 .tc-cam {
-  right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-small) + var(--tc-gap));
-  color: var(--text-2);
+  bottom: calc(var(--safe-bottom) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap) + (var(--tc-drift) - var(--tc-cam)) / 2);
+  flex-direction: column;
+  gap: 2px;
+  font-size: clamp(12px, 3.6vh, 15px);
+  letter-spacing: 0.04em;
 }
 
 /* Ball cam on: lit like the Hud's camera pill. */
@@ -192,17 +257,103 @@
 }
 
 .tc-reset {
-  right: calc(var(--safe-right) + var(--tc-edge) + 2 * (var(--tc-small) + var(--tc-gap)));
+  bottom: calc(var(--safe-bottom) + var(--tc-edge) + var(--tc-boost) + 2 * var(--tc-gap) + (var(--tc-drift) + var(--tc-cam)) / 2);
 }
 
 .tc-root:not(.tc-train) .tc-reset {
   display: none;
 }
 
-.tc-btn svg {
+.tc-btn .tc-icon {
   width: 44%;
   height: 44%;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+}
+
+.tc-cam .tc-icon {
+  width: 38%;
+  height: 38%;
+}
+
+/* ---- The first-match cards (TouchControls.showCard): one opaque card at a time, high in the
+   middle, clear of the thumbs; a tap on it is GOT IT ------------------------------------------- */
+
+.tc-cards {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--safe-top) + clamp(52px, 15vh, 120px));
+  display: flex;
+  justify-content: center;
+}
+
+.tc-cards[hidden] {
+  display: none;
+}
+
+.tc-card {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 10px 14px;
+  width: min(400px, 48vw);
+  padding: 14px 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-sheet);
+  font-family: var(--font-body);
+  text-shadow: none;
+}
+
+.tc-card-icon {
+  width: 48px;
+  height: 48px;
+  color: var(--brand);
+}
+
+.tc-card-icon .tc-icon {
+  width: 100%;
+  height: 100%;
+}
+
+.tc-card-words {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tc-card-step {
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+.tc-card-title {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.tc-card-text {
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--text-2);
+}
+
+.tc-card-ok {
+  grid-column: 1 / -1;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  padding: 0 24px;
+  border-radius: var(--r-tile);
+  background: var(--brand-grad);
+  color: var(--brand-ink);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 /* ---- The HUD while the controls are up ------------------------------------------------------- */
@@ -212,42 +363,19 @@
   display: none;
 }
 
-/* The boost meter leaves the stick's corner for a compact plate under the scorebug (clear of its
-   notch; plan PR 9 moves the amount into BOOST). */
+/* The amount lives in BOOST: no plate (plan M32), in a match and in training alike. */
 .tc-on .hud-boost {
-  top: calc(var(--safe-top) + clamp(10px, 3.4vh, 32px) + clamp(36px, 6vh, 56px) + 14px);
-  bottom: auto;
-  padding: 6px 10px 7px 8px;
-  row-gap: 3px;
+  display: none;
 }
 
-.tc-on .hud-boost-label {
-  font-size: clamp(12px, 2.6vh, 18px);
+/* The board a tap on the scorebug opens lies over CAM / RESET (TouchRouter: it takes their taps). */
+.tc-on .hud-scoreboard {
+  z-index: calc(var(--z-touch) + 1);
 }
 
-.tc-on .hud-boost-bar {
-  width: clamp(96px, 18vw, 170px);
-  height: clamp(10px, 2.4vh, 18px);
-  margin-bottom: 3px;
-}
-
-.tc-on .hud-boost-value {
-  font-size: clamp(20px, 4vh, 32px);
-}
-
-/* Training hides the scorebug and puts its wide panel there: the meter goes to the bottom centre,
-   between the resting stick and JUMP (the "drive to start" line sits above it). */
-.tc-on.trn-on .hud-boost {
-  top: auto;
-  bottom: calc(var(--safe-bottom) + clamp(12px, 2.4vh, 26px));
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-/* Training paused: the pause menu (style.css .hud-pause-menu, with the training entries) reaches the
-   bottom centre on a short screen; the meter is back on resume. */
-.tc-on.trn-on:has(.trn-paused) .hud-boost {
-  visibility: hidden;
+/* The scorebug is a tap target (the full scoreboard): the owner's phone size. */
+.tc-on .hud-score {
+  height: clamp(40px, 11.8vh, 46px);
 }
 
 /* Debug readouts (F3) under the small buttons (hidden without debug: style.css .hud-fps). */
@@ -270,7 +398,8 @@
    The menus work upright (src/ui/styles/shell.css: the tab bar); a match asks to turn the phone
    (#hud without .mn-open: a match, its pause, a training pack). A tablet (600 wide or more upright)
    plays either way. The Game pauses an offline match on the same turn (Game.portraitQuery, the
-   same query); a pad player keeps the portrait view. */
+   same query); a pad player keeps the portrait view. Online the match goes on (.tc-live on #hud):
+   the notice is a scrim over the live game, its words low, the scorebug above it (plan M31). */
 
 .tc-rotate {
   position: absolute;
@@ -299,6 +428,23 @@
   .tg-touch :not(.mn-open) > .tc-rotate {
     display: flex;
   }
+  .tg-touch .tc-live:not(.mn-open) .hud-top {
+    z-index: calc(var(--z-rotate) + 1);
+  }
+  .tg-touch .tc-live:not(.mn-open) > .tc-root {
+    visibility: hidden;
+  }
+}
+
+.tc-rotate.tc-rotate-live {
+  justify-content: flex-end;
+  padding-bottom: calc(var(--safe-bottom) + 18vh);
+  background: var(--scrim);
+}
+
+/* Super low: no full-screen translucent layer (the scorebug still reads above it). */
+html.tg-superlow .tc-rotate.tc-rotate-live {
+  background: var(--ink);
 }
 
 .tc-rotate-phone {

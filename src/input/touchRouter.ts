@@ -13,13 +13,21 @@
  *                nothing.
  *   JUMP, BOOST,  a finger that lands on one (a forgiving hit circle, HIT_SLOP) holds it. Sliding
  *   DRIFT        into another of the three switches to it, except that a finger which held BOOST
- *                keeps it held until it lifts (boost + jump or drift with one thumb). Leaving a
- *                button for empty space keeps it held: only reaching another one switches, so a
- *                thumb resting in the gap never flickers between two buttons (each new press of
- *                JUMP would be another jump). A finger that lands in the right half off every
- *                button holds nothing until it slides onto one.
+ *                keeps it held until it lifts (boost + jump or drift with one thumb), and with
+ *                `holdJump` (the player's preference, off by default: plan M29) a finger which held
+ *                JUMP does the same, so a one-thumb aerial keeps its full jump. Leaving a button
+ *                for empty space keeps it held: only reaching another one switches, so a thumb
+ *                resting in the gap never flickers between two buttons (each new press of JUMP
+ *                would be another jump). A finger that lands in the right half off every button
+ *                holds nothing until it slides onto one.
  *   PAUSE, CAM,  tap only: a finger that lands on one fires it once when it lifts there; sliding
  *   RESET        away cancels it, and no slide ever reaches them.
+ *   Scorebug     a tap (lifted on it) on the scorebug, or on the open scoreboard's panel, counts
+ *                in `scoreTaps`: the overlay opens or closes the full scoreboard. Off JUMP, BOOST
+ *                and DRIFT only (the board covers the tap buttons under it). The scorebug comes
+ *                before the stick zone; the board does not: a finger that lands on it in the zone
+ *                while the stick is free takes the stick and counts at once (the board closes
+ *                as the thumb drives again). Empty rectangles (the default) are never hit.
  *
  * Each finger releases what it holds exactly once (the first of up / cancel / lost capture), so
  * TouchState's per-button finger counts stay right with any number of fingers.
@@ -51,6 +59,10 @@ export interface TouchLayout {
   stickRadius: number;
   /** One circle per TB index. */
   buttons: TouchCircle[];
+  /** The scorebug: a tap opens / closes the full scoreboard. Empty = none. */
+  score: TouchRect;
+  /** The open scoreboard's panel (empty while it is closed): a tap closes it. */
+  board: TouchRect;
 }
 
 /** The buttons a finger holds and slides between. */
@@ -72,6 +84,7 @@ const F_STICK = 0;
 const F_HOLD = 1;
 const F_TAP = 2;
 const F_NONE = 3;
+const F_SCORE = 4;
 
 interface Finger {
   kind: number;
@@ -79,6 +92,8 @@ interface Finger {
   button: number;
   /** F_HOLD: the finger left BOOST for another button and still holds it. */
   keepBoost: boolean;
+  /** F_HOLD: the finger left JUMP for another button and still holds it (holdJump). */
+  keepJump: boolean;
 }
 
 /** An empty layout: nothing is hit and every landing does nothing. */
@@ -88,7 +103,14 @@ export function emptyLayout(): TouchLayout {
     zone: { left: 0, top: 0, right: 0, bottom: 0 },
     stickRadius: 0,
     buttons: Array.from({ length: TOUCH_BUTTON_COUNT }, () => ({ cx: 0, cy: 0, r: 0 })),
+    score: { left: 0, top: 0, right: 0, bottom: 0 },
+    board: { left: 0, top: 0, right: 0, bottom: 0 },
   };
+}
+
+/** (x, y) inside `r` (right and bottom excluded); an empty rectangle holds nothing. */
+function inRect(r: TouchRect, x: number, y: number): boolean {
+  return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
 /** The button of `list` nearest to (x, y) in radii, if within `slop` radii; -1 for none. */
@@ -129,6 +151,12 @@ export class TouchRouter {
   private kx = 0;
   private ky = 0;
   private readonly vec: StickVector = { x: 0, y: 0 };
+  private scoreTapCount = 0;
+  /**
+   * M29's symmetric hold: a finger that held JUMP keeps it held until it lifts, as BOOST does (the
+   * preference controls.touchHoldJump). Read when a finger leaves JUMP.
+   */
+  holdJump = false;
 
   constructor(state: TouchState, layout: TouchLayout = emptyLayout()) {
     this.state = state;
@@ -168,6 +196,11 @@ export class TouchRouter {
     return this.fingers.size;
   }
 
+  /** Taps on the scorebug or the open board so far (a running count: a change opens / closes it). */
+  get scoreTaps(): number {
+    return this.scoreTapCount;
+  }
+
   /** Bit per TB index: a finger is on that tap button and would fire it if lifted now. */
   get pendingTaps(): number {
     const taps = this.taps;
@@ -183,32 +216,42 @@ export class TouchRouter {
     let b = buttonAt(layout, HOLD_BUTTONS, x, y, HIT_SLOP);
     if (b >= 0) {
       this.state.press(b as TouchButton);
-      this.fingers.set(id, { kind: F_HOLD, button: b, keepBoost: false });
+      this.fingers.set(id, { kind: F_HOLD, button: b, keepBoost: false, keepJump: false });
       return;
     }
-    b = buttonAt(layout, TAP_BUTTONS, x, y, HIT_SLOP);
+    // The open board lies over CAM / RESET (drawn above them), never over a hold button.
+    b = inRect(layout.board, x, y) ? -1 : buttonAt(layout, TAP_BUTTONS, x, y, HIT_SLOP);
     if (b >= 0) {
       this.taps[b]++;
-      this.fingers.set(id, { kind: F_TAP, button: b, keepBoost: false });
+      this.fingers.set(id, { kind: F_TAP, button: b, keepBoost: false, keepJump: false });
       return;
     }
     const z = layout.zone;
-    if (x >= z.left && x < z.right && y >= z.top && y < z.bottom) {
-      if (this.stickId < 0) {
+    const inZone = x >= z.left && x < z.right && y >= z.top && y < z.bottom;
+    const stickFree = this.stickId < 0;
+    // The scorebug before the zone (it sits above it); the open board after a free stick: a thumb
+    // back on the stick drives, and closes the board it landed on.
+    if (inRect(layout.score, x, y) || (inRect(layout.board, x, y) && !(inZone && stickFree))) {
+      this.fingers.set(id, { kind: F_SCORE, button: -1, keepBoost: false, keepJump: false });
+      return;
+    }
+    if (inZone) {
+      if (stickFree) {
+        if (inRect(layout.board, x, y)) this.scoreTapCount++;
         this.stickId = id;
         const s = layout.bounds;
         const reach = STICK_EDGE_REACH * layout.stickRadius;
         this.cx = inside(x, s.left, s.right, reach);
         this.cy = inside(y, s.top, s.bottom, reach);
         this.aim(x, y);
-        this.fingers.set(id, { kind: F_STICK, button: -1, keepBoost: false });
+        this.fingers.set(id, { kind: F_STICK, button: -1, keepBoost: false, keepJump: false });
       } else {
-        this.fingers.set(id, { kind: F_NONE, button: -1, keepBoost: false });
+        this.fingers.set(id, { kind: F_NONE, button: -1, keepBoost: false, keepJump: false });
       }
       return;
     }
     // The right half: nothing yet, a slide onto JUMP / BOOST / DRIFT presses it.
-    this.fingers.set(id, { kind: x >= z.right ? F_HOLD : F_NONE, button: -1, keepBoost: false });
+    this.fingers.set(id, { kind: x >= z.right ? F_HOLD : F_NONE, button: -1, keepBoost: false, keepJump: false });
   }
 
   /** A tracked finger moved to (x, y). */
@@ -233,6 +276,9 @@ export class TouchRouter {
         }
         break;
       }
+      case F_SCORE:
+        if (!this.onScore(x, y)) f.kind = F_NONE; // slid off: no tap
+        break;
       default:
         break;
     }
@@ -258,6 +304,7 @@ export class TouchRouter {
       case F_HOLD:
         if (f.button >= 0) state.release(f.button as TouchButton);
         if (f.keepBoost) state.release(TB.BOOST);
+        if (f.keepJump) state.release(TB.JUMP);
         break;
       case F_TAP: {
         this.taps[f.button]--;
@@ -268,6 +315,9 @@ export class TouchRouter {
         }
         break;
       }
+      case F_SCORE:
+        if (!cancel && this.onScore(x, y)) this.scoreTapCount++;
+        break;
       default:
         break;
     }
@@ -296,13 +346,20 @@ export class TouchRouter {
     this.ky = dy * k;
   }
 
-  /** A holding finger reached button `b`: switch to it (BOOST, once held, stays held). */
+  /** (x, y) on the scorebug or the open board. */
+  private onScore(x: number, y: number): boolean {
+    return inRect(this.layout.score, x, y) || inRect(this.layout.board, x, y);
+  }
+
+  /** A holding finger reached button `b`: switch to it (BOOST, once held, stays held; JUMP too with holdJump). */
   private slide(f: Finger, b: number): void {
     const state = this.state;
     const from = f.button;
     if (from === TB.BOOST) f.keepBoost = true;
+    else if (from === TB.JUMP && this.holdJump) f.keepJump = true;
     else if (from >= 0) state.release(from as TouchButton);
     if (b === TB.BOOST && f.keepBoost) f.keepBoost = false; // back on BOOST, which this finger still holds
+    else if (b === TB.JUMP && f.keepJump) f.keepJump = false; // back on JUMP: no second jump
     else state.press(b as TouchButton);
     f.button = b;
   }

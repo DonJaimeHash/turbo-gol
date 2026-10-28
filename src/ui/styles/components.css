@@ -374,10 +374,11 @@ html.tg-tv .mn-glyph-start {
   }
 }
 
+/* A phone's keyboard up (src/ui/keyboard.ts --kb-inset): the sheet rises above it. */
 html[data-shell='rail'] .mn-modal-layer,
 html[data-layout='portrait'] .mn-modal-layer {
   align-items: end;
-  padding: 0;
+  padding: 0 0 var(--kb-inset, 0);
 }
 
 html[data-shell='rail'] .mn-sheet,

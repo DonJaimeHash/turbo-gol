@@ -694,7 +694,7 @@ test('cancel while connecting restores the offline roster; a room error / close 
   env.room.onClose(1006, '');
   assert.equal(session.state, 'idle');
   assert.equal(session.statusIsError, true);
-  assert.ok(session.statusText.startsWith('Room closed (1006'));
+  assert.equal(session.statusText, 'The match room closed', 'the close code goes to the console only');
   assert.equal(client.queued.length, 2, 'no automatic queue after the welcome');
 });
 
@@ -726,7 +726,7 @@ test('a room socket closed before the welcome (the upgrade was refused, e.g. 403
   assert.notEqual(env.room, first);
   env.room.onClose(1006, '');
   assert.equal(session.state, 'idle');
-  assert.ok(session.statusText.startsWith('Room closed (1006'));
+  assert.equal(session.statusText, 'The match room closed', 'the close code goes to the console only');
   assert.equal(client.queued.length, 2, 'once per quick match');
   assert.equal(client.leaves, 2);
   assert.deepEqual(game.log, [], 'no handover, no roster');
@@ -1126,7 +1126,7 @@ test('welcome: out-of-range room parameters fall back to the defaults; a throwin
   await flush();
   env2.room.onWelcome(welcomeFor(0, SLOTS_1V1));
   assert.equal(bad.state, 'idle');
-  assert.ok(bad.statusText.startsWith('Engine: window 1000'));
+  assert.equal(bad.statusText, 'The game engine failed: reload the page', 'the engine error goes to the console only');
   assert.deepEqual(env2.game.log.at(-1), ['restore'], 'the arena had been replaced: offline roster back');
   assert.ok(env2.room.disposed);
   void game;
@@ -1553,7 +1553,7 @@ test('leaving a room releases the lock (POST /api/leave) on fallback, leave, can
   const f = await connectingSession(SLOTS_1V1, 0);
   f.room.onError('bad', 'room says no');
   assert.equal(f.session.state, 'idle');
-  assert.equal(f.session.error, 'room says no (bad)');
+  assert.equal(f.session.error, 'room says no', 'the code goes to the console only');
   assert.equal(f.client.leaves, 1);
   // leave after the start (the final whistle / menu)
   const s = await startedSession();
@@ -1576,7 +1576,7 @@ test("the room's 'signal_dropped' error goes to the mesh (re-offer bookkeeping) 
   assert.deepEqual(env.mesh.dropped, [1]);
   env.room.onError('rate', 'too fast');
   assert.equal(env.session.state, 'idle');
-  assert.equal(env.session.error, 'too fast (rate)');
+  assert.equal(env.session.error, 'too fast', 'the code goes to the console only');
 });
 
 test('debug log: queue result, state changes, welcome, ready, start, drop and leave are recorded; lines() formats them oldest first', async () => {
@@ -1731,7 +1731,7 @@ test('queue refusals with a server code get a clear menu line: 429 no_show (retr
   session.quickMatch('1v1');
   client.queued[3].reject(new NetError('http', 'queue failed (503)', 503));
   await flush();
-  assert.equal(session.statusText, 'Server error (503)');
+  assert.equal(session.statusText, 'Server error');
   session.quickMatch('1v1');
   client.queued[4].reject(new NetError('network', 'queue request failed: TypeError: fetch failed'));
   await flush();

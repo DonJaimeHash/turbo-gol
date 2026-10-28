@@ -86,6 +86,19 @@ test('opening a screen: a section root opens its section; a stacked screen goes 
   assert.deepEqual(B.stackAfterOpen(at('leaderboard', 'leaderboard'), 'casual'), at('play', 'home', 'casual'), "another section's screen: on its own root");
 });
 
+test('the lobby list after a Sala (lobby.ts toList: MODOS, reset): Back goes to Inicio, whatever opened the Sala', () => {
+  const at = (section, ...stack) => ({ section, stack });
+  // From Inicio (a join link, the lobby pill, the hero) the Sala is right on JUGAR's root.
+  const fromHome = B.stackAfterOpen(at('play', 'home'), 'lobby');
+  assert.deepEqual(fromHome, at('play', 'home', 'lobby'));
+  assert.deepEqual(B.stackAfterOpen(fromHome, 'modes'), at('play', 'home', 'lobby', 'modes'), 'without reset MODOS would sit above the Sala');
+  for (const from of [fromHome, at('play', 'home', 'modes', 'lobby')]) {
+    const list = B.stackAfterOpen(from, 'modes', true);
+    assert.deepEqual(list, at('play', 'home', 'modes'), from.stack.join(' > '));
+    assert.equal(B.menuBack(menu({ section: list.section, depth: list.stack.length })), 'pop', 'Back pops MODOS to Inicio');
+  }
+});
+
 test("Competitive's SIGN IN opens PERFIL as a detour: Back comes back to Competitive", () => {
   const ranked = { section: 'play', stack: ['home', 'play', 'ranked'] };
   const st = B.stackAfterOpen(ranked, 'profile');

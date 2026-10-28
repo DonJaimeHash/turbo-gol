@@ -7,6 +7,81 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- TRAINING has a new look: FREE PLAY is the big tile, then SHOOTING (start here), SAVING and
+  AERIALS, each with three marks for its levels (filled with a ✓ when you passed it, a dot once you
+  played it, empty before). A pack opens its three levels as big buttons with your best run and the
+  seconds per shot. HOW TO PLAY shows every control of what you are holding: keyboard and mouse, a
+  controller, or the touch controls. The line under the title names your own reset keys.
+- At the end of a pack, AGAIN, NEXT LEVEL (up to Expert) and TRAINING work with the arrows or the
+  D-pad and Enter or A, a click or a tap; B or Esc go back to TRAINING. During a pack each shot shows
+  a ✓ or a ✕ and the panel counts your hits and misses; its key hints fold away after 10 seconds,
+  and on a touch screen they talk about the ↺ button.
+- The LEADERBOARD switches 1v1, 2v2 and 3v3 in place, with your rank on each. One list of rows with
+  the rank in words, your own row in gold; GO TO MY POSITION (X) jumps to it, the triggers or
+  PgUp / PgDn move a page, and ◀ ▶ change the playlist from anywhere on the board. On a phone the
+  rows are cards.
+- PROFILE: your rank badge and name, the season's three ranks, and, if you host a community server,
+  MY SERVER with its state in words, the matches it hosted and its version. ACCOUNT AND SECURITY
+  folds your account's options away; COMMUNITY links to Discord, hosting a server and the source
+  code; ABOUT shows the version and the licences. A guest gets CREATE A FREE ACCOUNT and SIGN IN
+  side by side, and "Forgot your password?" right under the sign-in form.
+- On a phone, the field you type in stays in sight above the keyboard, and the keyboard's Enter
+  says Next until the last field, which sends the form.
+- Settings is now a screen like the rest of the menus: six tabs on the left (CONTROLS, CAMERA,
+  GAME, AUDIO, GRAPHICS, EXPERIMENTAL) with every setting you had, kept as you saved it. CONTROLS
+  shows only what you play with (touch, controller, keyboard and mouse) and opens on the one you
+  used last. Sliders have − and + and a mark at their default; switches read NO │ YES. Back from
+  Settings returns to the screen you opened it from.
+- From the pause, SETTINGS opens the same screen over the match. Online the match goes on behind
+  it and the score stays at the top.
+- Graphics quality as cards: choose one and it applies; unless you press KEEP within 10 seconds,
+  the quality you had comes back by itself. With a controller or a TV remote, ◀ ▶ only move
+  between the cards, nothing changes until you press A.
+- Changing a key or button: on a controller hold B for a second to cancel (a short press of B binds
+  B), X or Delete clears a binding, and the screen tells you when the key you chose already does
+  something else.
+- Playing with your fingers: BOOST shows how much boost you have, with a level that fills the
+  button, and the boost bar under the score is gone. CAM moved down into your right thumb's reach,
+  next to JUMP and DRIFT (RESET sits above it in training), PAUSE is alone in the top right
+  corner, and DRIFT is no longer blue. The stick, JUMP and BOOST stay exactly where they were.
+- On a touch screen, tap the score to see both teams; tap it again (or the board) to close it.
+- Your first match on a phone or tablet starts with three short cards: how to drive, JUMP and
+  BOOST, and CAM and PAUSE. A tap on each one moves on; against the AI the match waits for you,
+  and the game remembers you have seen them.
+- The pause on a touch screen is laid out for two thumbs: RESUME is a big button right where BOOST
+  was, so the thumb that paused resumes without moving, and SETTINGS and QUIT are under your left
+  thumb. Hold QUIT for a second (the ring fills) to leave; a tap anywhere else does nothing.
+- A setting for touch players, in Settings › Controls › Touch: keep JUMP held when you slide your thumb from
+  JUMP to BOOST, for full-height aerials with one thumb (off by default).
+- Online, turning your phone upright no longer hides the match: the notice "The match goes on: turn
+  your phone" lets you see the game and the score behind it.
+- Playing with friends takes a few presses and no code to read out. In MODES › LOBBIES, CREATE
+  LOBBY AND SHARE makes a private lobby with the format you played last and opens it with SHARE
+  selected: on a phone it opens your share sheet, on a computer it copies the link, on a TV it
+  shows a QR code with the code and the link in big letters. Your friend opens the link and presses
+  JOIN ("Join lobby ABC234 · 2v2 · 2/4?"); the first time, their name is already filled in and can
+  stay as it is. The link works when the game is already open too.
+- The lobby screen shows its code in big letters (tap it on a phone to copy it), the two teams side
+  by side, and a bar at the bottom: START for the host, READY for everyone else, and "…" with
+  SETTINGS and LEAVE LOBBY. Pressing a player gives the host Move · Make host · Kick (a kick asks
+  first: "Kick Ana? They can't come back to this lobby."), and anyone can move themselves.
+- JOIN WITH CODE opens six boxes for the code: type it, paste it, or with a TV remote step each box
+  through the letters with ▲ ▼; it joins on its own once the sixth character is typed. Only the
+  letters and numbers a code can have get in (no I, O, 0 or 1).
+- The public lobby list shows each lobby's name, format, players and whether it is OPEN, IN MATCH
+  or FULL; a full one still tells you why when you press it. With none in your region, CREATE
+  PRIVATE LOBBY is right there.
+- Leaving a lobby's screen for another section asks first: LEAVE LOBBY, KEEP THE LOBBY or CANCEL.
+  Kept, a "LOBBY ABC234 · 2/4 · BACK" pill in the top bar takes you back to it.
+- A lobby survives a dropped connection: if you switch to another app on your phone and come back,
+  the game reconnects on its own ("Reconnecting to the lobby…") and you are still in it, still the
+  host. The others see you as RECONNECTING for up to 40 seconds before your place is freed.
+- In a server match, a dropped connection is retried up to five times while you play
+  ("Reconnecting… (attempt 2/5)", then "Back in the match"). If it cannot come back, a window says
+  "Your connection dropped · The match goes on without you" with REJOIN and MENU, and after a
+  reload the home screen offers BACK TO YOUR MATCH while it is still on.
+- Every online problem now says what you can do about it: RETRY, TRY AGAIN IN 1 MIN, BACK IN THE
+  QUEUE or RELOAD.
 - A final screen two seconds after the whistle: VICTORY, DEFEAT or DRAW, the score, every player
   by team with their goals (YOU and the MVP marked), and in Competitive your rank card with the MMR
   you won or lost and what the next tier still takes (it replaces the result window). PLAY AGAIN
@@ -269,6 +344,8 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- Error messages no longer show technical codes ("Server error (503)", "Connection lost (1006)"):
+  they say what happened, and the code goes to the developer console and the network panel (F4).
 - The match HUD keeps its scorebug (BLU 1 │ 2:49 │ 0 RED) with a lime notch under your team, and
   the boost meter is bigger, on its own plate. The ball's pointer at the edge of the screen keeps
   off the scorebug, the boost meter and the controls card.

@@ -4,10 +4,10 @@
    names are aliases there until the Tablero shell replaces this sheet); the focus ring is
    src/ui/styles/focus.css. Hover only where a pointer can hover (@media (hover: hover)). */
 
-/* The in-game HUD (score, clock, boost...) stays out of sight while the menus are up; the Hud's
-   settings screen (.hud-menu) and the Turnstile slot (.hud-turnstile: the anti-bot widget a guest or
-   account registration from these menus may need to click) live in the same root and stay visible. */
-.mn-open .hud-root > :not(.hud-menu):not(.hud-turnstile) {
+/* The in-game HUD (score, clock, boost...) stays out of sight while the menus are up; the Turnstile
+   slot (.hud-turnstile: the anti-bot widget a guest or account registration from these menus may
+   need to click) lives in the same root and stays visible. */
+.mn-open .hud-root > :not(.hud-turnstile) {
   visibility: hidden;
 }
 
@@ -224,53 +224,6 @@
   background-repeat: no-repeat;
 }
 
-/* ---- tiles ------------------------------------------------------------------------------------- */
-/* No overflow clip on a tile: the focus heel sits under it (focus.css); its texts clip themselves. */
-.mn-tile {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  column-gap: 16px;
-  align-items: center;
-  text-align: left;
-  padding: 18px 20px;
-  font: inherit;
-  color: var(--text);
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-left: 4px solid var(--brand-deep);
-  border-radius: var(--r-tile);
-  cursor: pointer;
-  transition:
-    transform var(--dur-lift) var(--ease-lift),
-    border-color 0.12s,
-    background-color 0.12s;
-}
-.mn-tile.mn-focus,
-.mn-tile:focus-visible {
-  transform: translateY(var(--focus-lift));
-  background: var(--surface-2-97);
-}
-@media (hover: hover) {
-  .mn-tile:hover {
-    transform: translateY(var(--focus-lift));
-    border-color: var(--edge-hi);
-    border-left-color: var(--brand-deep);
-    background: var(--surface-2-97);
-  }
-}
-.mn-tile-glyph {
-  grid-row: span 2;
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  font-size: 26px;
-  border-radius: var(--r-tile);
-  background: var(--surface-3);
-  border: 1px solid var(--edge-hi);
-}
 /* The sprite icons (src/ui/components/icons.ts): one em, in the text colour. */
 .mn-icon {
   display: block;
@@ -278,61 +231,6 @@
   width: 1em;
   height: 1em;
   overflow: visible;
-}
-.mn-tile-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.mn-tile-sub {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 13px;
-  color: var(--text-2);
-}
-.mn-tile-tag {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  font-size: 12px;
-  color: var(--text-2);
-  letter-spacing: 0.06em;
-}
-/* The hero tile (PLAY / free practice): a lime slab with dark ink (flat lime on super low). */
-.mn-tile-hero {
-  padding: 26px 24px;
-  color: var(--brand-ink);
-  background: var(--brand-grad);
-  border-color: transparent;
-}
-.mn-tile-hero .mn-tile-title {
-  font-size: 34px;
-}
-.mn-tile-hero .mn-tile-sub,
-.mn-tile-hero .mn-tile-tag {
-  color: var(--brand-ink);
-}
-.mn-tile-hero .mn-tile-glyph {
-  background: var(--brand-hi);
-  border-color: var(--brand-deep);
-}
-.mn-tile-hero.mn-focus,
-.mn-tile-hero:focus-visible {
-  border-color: transparent;
-  background: var(--brand-grad);
-}
-@media (hover: hover) {
-  .mn-tile-hero:hover {
-    border-color: transparent;
-    background: var(--brand-hi);
-  }
 }
 /* ---- rows: cycler, fields ---------------------------------------------------------------------- */
 .mn-row {
@@ -522,188 +420,7 @@
   color: var(--text-2);
 }
 
-/* ---- custom matches ---------------------------------------------------------------------------- */
-.mn-custom-bar {
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-.mn-join {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-}
-.mn-join .mn-field {
-  margin: 0;
-}
-.mn-code-input {
-  width: 130px;
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
-}
-.mn-lobby-head,
-.mn-lobby-row {
-  display: grid;
-  grid-template-columns: minmax(0, 2.2fr) 1.2fr 0.8fr 1.2fr 0.8fr 0.9fr;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 14px;
-}
-.mn-lobby-head {
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--text-2);
-  text-transform: uppercase;
-}
-/* One scroller: 12 px of padding and 16 px of scroll padding, so a focused row's ring (6 px out,
-   focus.css) is never cut by the scroll box. */
-.mn-lobbies {
-  display: grid;
-  gap: 8px;
-  max-height: 52vh;
-  overflow-y: auto;
-  padding: 12px;
-  scroll-padding: 16px;
-}
-.mn-lobby-row {
-  width: 100%;
-  font: inherit;
-  font-size: 15px;
-  text-align: left;
-  color: var(--text);
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-tile);
-  cursor: pointer;
-}
-@media (hover: hover) {
-  .mn-lobby-row:hover {
-    background: var(--surface-2-97);
-    border-color: var(--edge-hi);
-  }
-}
-.mn-lobby-row:disabled {
-  color: var(--text-3);
-}
-.mn-lobby-name {
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mn-lobby-host {
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mn-lobbies-status {
-  margin-top: 8px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-
-.mn-lobby-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 18px;
-  margin-bottom: 10px;
-}
-.mn-lobby-title {
-  font-size: clamp(26px, 4.5vh, 40px);
-  font-weight: 700;
-  font-style: italic;
-}
-.mn-lobby-info {
-  color: var(--text-2);
-  margin-top: 4px;
-}
-.mn-lobby-code {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 14px;
-  border-radius: var(--r-tile);
-  background: var(--surface-1-94);
-  border: 1px solid var(--brand-line);
-}
-.mn-lobby-code-label {
-  font-size: 12px;
-  letter-spacing: 0.2em;
-  color: var(--text-2);
-}
-.mn-lobby-code-value {
-  font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  font-variant-numeric: tabular-nums;
-}
-.mn-lobby-status {
-  margin: 6px 0 14px;
-  color: var(--brand-hi);
-}
-.mn-teams {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
-}
-.mn-team {
-  padding: 14px;
-  border-radius: var(--r-tile);
-  display: grid;
-  gap: 8px;
-  align-content: start;
-}
-/* Team columns of a custom lobby (src/ui/screens/custom.ts): mn-team-blue / mn-team-red. The team
-   colour is the top edge and a wash fading into the surface. */
-.mn-team-blue {
-  background: var(--surface-1-94) linear-gradient(180deg, var(--blue-glow), transparent 70%);
-  border: 1px solid var(--blue-deep);
-  border-top: 4px solid var(--blue);
-}
-.mn-team-red {
-  background: var(--surface-1-94) linear-gradient(180deg, var(--red-glow), transparent 70%);
-  border: 1px solid var(--red-deep);
-  border-top: 4px solid var(--red);
-}
-.mn-team-title {
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-.mn-member {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 8px 10px;
-  border-radius: var(--r-tile);
-  background: var(--surface-0-94);
-}
-.mn-member-you {
-  outline: 2px solid var(--edge-hi);
-}
-.mn-member-bot {
-  color: var(--text-2);
-  font-style: italic;
-  background: var(--surface-1-94);
-}
-.mn-member-name {
-  flex: 1;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ---- custom lobbies: the tags (the Sala and the list: styles/screens/lobby.css) ---- */
 .mn-tag {
   font-size: 11px;
   letter-spacing: 0.1em;
@@ -725,13 +442,6 @@
   font-weight: 700;
   vertical-align: middle;
 }
-.mn-lobby-title .mn-tag-exp {
-  font-size: 14px;
-}
-.mn-lobby-rules {
-  margin-top: 6px;
-  color: var(--lab);
-}
 .mn-rules {
   border-top: 1px solid var(--edge);
 }
@@ -743,144 +453,8 @@
 .mn-rules > .mn-btn {
   margin: 2px 0 6px;
 }
-.mn-kick {
-  font: inherit;
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 4px 8px;
-  color: var(--danger);
-  background: var(--danger-tint);
-  border: 1px solid var(--danger-line);
-  border-radius: var(--r-key);
-  cursor: pointer;
-}
-
-/* ---- training ---------------------------------------------------------------------------------- */
-.mn-training-top {
-  margin-bottom: 16px;
-}
-.mn-training-top .mn-tile {
-  width: 100%;
-}
-/* Experimental free play (unlocked players): its tile beside the rules picker. */
-.mn-exp {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
-  margin-top: 14px;
-}
-.mn-exp-side {
-  display: grid;
-  gap: 8px;
-  align-content: center;
-  padding: 12px 16px;
-  border: 1px solid var(--edge);
-  border-radius: var(--r-tile);
-  background: var(--surface-1-94);
-}
-.mn-exp-side .mn-row {
-  padding: 0;
-}
-.mn-exp-side .mn-cycle {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.mn-exp-summary {
-  margin: 0;
-}
-.mn-exp-edit {
-  justify-self: start;
-}
-.mn-tile-exp {
-  border-left-color: var(--lab);
-}
-@media (hover: hover) {
-  .mn-tile-exp:hover {
-    border-left-color: var(--lab);
-  }
-}
-.mn-tile-exp .mn-tile-glyph,
-.mn-tile-exp .mn-tile-tag {
-  color: var(--lab);
-}
-.mn-tile-exp .mn-tile-tag {
-  font-weight: 700;
-  letter-spacing: 0.14em;
-}
-.mn-packs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-.mn-pack-col {
-  display: grid;
-  gap: 10px;
-  align-content: start;
-}
-.mn-pack-cat {
-  display: grid;
-  padding: 4px 2px;
-}
-.mn-pack-cat b {
-  font-size: 22px;
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.08em;
-}
-.mn-pack-cat small {
-  color: var(--text-2);
-}
-.mn-pack {
-  display: grid;
-  gap: 2px;
-  text-align: left;
-  padding: 14px 16px;
-  font: inherit;
-  color: var(--text);
-  border-radius: var(--r-tile);
-  border: 1px solid var(--edge);
-  background: var(--surface-1-94);
-  cursor: pointer;
-  border-left-width: 5px;
-}
-.mn-pack-easy {
-  border-left-color: var(--ok);
-}
-.mn-pack-medium {
-  border-left-color: var(--warn);
-}
-.mn-pack-hard {
-  border-left-color: var(--danger);
-}
-.mn-pack-done {
-  background: var(--surface-1-94) linear-gradient(135deg, var(--ok-tint), transparent);
-}
-.mn-pack-diff {
-  font-size: 18px;
-  font-weight: 700;
-}
-.mn-pack-shots,
-.mn-pack-best {
-  font-size: 13px;
-  color: var(--text-2);
-}
 
 /* ---- profile / auth ---------------------------------------------------------------------------- */
-.mn-profile-guest {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
-  gap: 20px;
-  align-items: start;
-}
-.mn-auth {
-  padding: 18px;
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-tile);
-}
 .mn-tabs {
   display: flex;
   gap: 6px;
@@ -934,27 +508,6 @@
   background: #5865f2;
   color: #fff;
 }
-.mn-profile-id {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.mn-profile-id .mn-avatar {
-  width: 64px;
-  height: 64px;
-  font-size: 30px;
-}
-.mn-profile-name {
-  font-size: 30px;
-  font-weight: 700;
-  font-style: italic;
-}
-.mn-profile-ratings {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
 .mn-codes {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -969,53 +522,6 @@
   border-radius: var(--r-key);
   background: var(--surface-0);
   user-select: all;
-}
-
-/* ---- leaderboard ------------------------------------------------------------------------------- */
-.mn-board {
-  display: grid;
-  gap: 4px;
-  max-height: 58vh;
-  overflow-y: auto;
-  scroll-padding-block: 16px;
-}
-.mn-board-row {
-  display: grid;
-  grid-template-columns: 70px minmax(0, 2fr) 1.2fr 0.8fr 0.8fr 0.9fr;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: var(--r-tile);
-  background: var(--surface-1-94);
-}
-.mn-board-head {
-  background: transparent;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--text-2);
-  text-transform: uppercase;
-}
-.mn-board-you {
-  outline: 2px solid var(--rank-gold);
-}
-.mn-board-rank {
-  font-weight: 700;
-}
-.mn-board-name {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  font-weight: 700;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.mn-board-mmr {
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-}
-.mn-board-foot {
-  margin-top: 10px;
-  color: var(--text-2);
 }
 
 /* ---- the ranked result (leaderboard.ts, a sheet's body) ------------------------------------- */
@@ -1060,34 +566,6 @@
 
 /* ---- narrow screens ---------------------------------------------------------------------------- */
 @media (max-width: 860px) {
-  .mn-profile-guest {
-    grid-template-columns: 1fr;
-  }
-  .mn-packs,
-  .mn-exp,
-  .mn-profile-ratings,
-  .mn-teams {
-    grid-template-columns: 1fr;
-  }
-  .mn-lobby-head {
-    display: none;
-  }
-  .mn-lobby-row {
-    grid-template-columns: 1fr auto auto;
-  }
-  .mn-lobby-host,
-  .mn-lobby-net,
-  .mn-lobby-state {
-    display: none;
-  }
-  .mn-board-row {
-    grid-template-columns: 50px minmax(0, 1fr) 70px;
-  }
-  .mn-board-tier,
-  .mn-board-games,
-  .mn-board-wr {
-    display: none;
-  }
   .mn-cycle {
     min-width: 0;
     width: 100%;
@@ -1095,9 +573,6 @@
   .mn-row {
     flex-direction: column;
     align-items: stretch;
-  }
-  .mn-lobby-top {
-    flex-direction: column;
   }
 }
 

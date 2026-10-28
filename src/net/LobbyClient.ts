@@ -14,7 +14,19 @@
  *
  * A refused request (AccountError) or a lobby socket 'error' (onError) carries the player's text:
  * the error.lobby.* text of the server's code (serverText, src/i18n.ts), else the server's message,
- * else a generic one (error.server with the status; error.lobby.start_failed on the socket).
+ * else a generic one (error.server, the status to the console only; error.lobby.start_failed on the
+ * socket).
+ *
+ * Reconnection (plan PR 12): a socket that drops without a reason that ends the stay (kicked,
+ * closed, replaced by another tab, left) puts the client in 'reconnecting' and it joins again by
+ * code, quietly, with RECONNECT_DELAYS_MS between tries for RECONNECT_WINDOW_MS (the server keeps
+ * the place for LobbyDO's LOBBY_GRACE_MS, and an existing member is admitted again as it was, host
+ * included). The tab coming back into view (visibilitychange) and the network coming back (online)
+ * try at once; a visible tab whose open socket answers no ping within PONG_WAIT_MS (a phone that put
+ * the browser away keeps a dead socket) counts as dropped. A refusal that ends it (kicked, no lobby,
+ * closed, full) or the window running out closes the stay (onClosed).
+ *
+ * peek(code): GET /api/lobbies/peek, the summary a join link's sheet shows before the join.
  */
 import { WS_SUBPROTOCOL, WS_TICKET_PREFIX } from './protocol';
 import type { QueueResult } from './protocol';
@@ -23,11 +35,20 @@ import type { LobbyClientMsg, LobbyServerMsg, LobbySettings, LobbyState, LobbySu
 import { AccountError } from './AccountClient';
 import { resolveWsUrl } from './NetClient';
 import type { FetchLike, ResponseLike, WebSocketFactory, WebSocketLike } from './NetClient';
-import { serverText, t } from '../i18n';
+import { hasServerText, serverText, t } from '../i18n';
 
 const PING_MS = 25_000;
+/** Waits between reconnection tries (ms; the last one repeats) and how long they go on. */
+export const RECONNECT_DELAYS_MS: readonly number[] = [500, 1_500, 3_000, 5_000, 8_000];
+export const RECONNECT_WINDOW_MS = 90_000;
+/** A visible tab's check of an open socket: no pong (or any frame) this soon after a ping -> dropped. */
+export const PONG_WAIT_MS = 4_000;
+/** Lobby socket closes that end the stay (LobbyDO): kicked, closed, replaced by another tab; 1000 = left. */
+const CLOSE_FINAL: Record<number, string> = { 4003: 'kicked', 4004: 'ended', 4000: 'replaced', 1000: 'left' };
+/** Refusals of the join again that end it: the lobby is gone, or this player has no place in it any more. */
+const JOIN_FINAL: Record<string, string> = { kicked: 'kicked', no_lobby: 'ended', closed: 'ended', full: 'lost', bad_password: 'lost', account_required: 'lost' };
 
-export type LobbyStatus = 'idle' | 'connecting' | 'open' | 'closed';
+export type LobbyStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
 
 export interface LobbyClientOptions {
   apiBase?: string;
@@ -35,6 +56,13 @@ export interface LobbyClientOptions {
   webSocketFactory?: WebSocketFactory;
   /** The Bearer session to use (NetClient.ensureGuest: the account when signed in, else the guest). */
   bearer: () => Promise<string>;
+  /** Where visibilitychange / online come from (default the page's document and window; null in tests: none). */
+  events?: { doc: Pick<Document, 'addEventListener'> & { readonly hidden: boolean }; win: Pick<Window, 'addEventListener'> } | null;
+  /** Reconnection timing (tests). */
+  reconnectDelaysMs?: readonly number[];
+  reconnectWindowMs?: number;
+  pongWaitMs?: number;
+  now?: () => number;
 }
 
 export interface LobbyCreate {
@@ -74,6 +102,8 @@ export class LobbyClient {
   /** The server refused something in the lobby: its code and the player's text for it. */
   onError: ((code: string, message: string) => void) | null = null;
   onClosed: ((reason: string) => void) | null = null;
+  /** The status changed between 'open' and 'reconnecting' ("Reconectando a la sala…"). */
+  onStatus: (() => void) | null = null;
 
   private readonly apiBase: string;
   private readonly fetchFn: FetchLike;
@@ -81,16 +111,42 @@ export class LobbyClient {
   private readonly bearer: () => Promise<string>;
   private ws: WebSocketLike | null = null;
   private ping: ReturnType<typeof setInterval> | null = null;
+  private readonly delays: readonly number[];
+  private readonly windowMs: number;
+  private readonly pongWaitMs: number;
+  private readonly now: () => number;
+  /** Reconnecting: when the tries stop, the next try's timer, the tries so far, a try in flight. */
+  private reconnectUntil = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private tries = 0;
+  private trying = false;
+  /** The visible tab's ping check (PONG_WAIT_MS). */
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: LobbyClientOptions) {
     this.apiBase = opts.apiBase ?? '';
     this.fetchFn = opts.fetchFn ?? ((url, init) => fetch(url, init) as unknown as Promise<ResponseLike>);
     this.makeWs = opts.webSocketFactory ?? ((url, protocols) => new WebSocket(url, protocols) as unknown as WebSocketLike);
     this.bearer = opts.bearer;
+    this.delays = opts.reconnectDelaysMs ?? RECONNECT_DELAYS_MS;
+    this.windowMs = opts.reconnectWindowMs ?? RECONNECT_WINDOW_MS;
+    this.pongWaitMs = opts.pongWaitMs ?? PONG_WAIT_MS;
+    this.now = opts.now ?? (() => Date.now());
+    const ev = opts.events === undefined ? (typeof document !== 'undefined' && typeof window !== 'undefined' ? { doc: document, win: window } : null) : opts.events;
+    if (ev !== null) {
+      ev.doc.addEventListener('visibilitychange', () => {
+        if (!ev.doc.hidden) this.wake();
+      });
+      ev.win.addEventListener('online', () => this.wake());
+    }
   }
 
   get inLobby(): boolean {
-    return this.status === 'connecting' || this.status === 'open';
+    return this.status === 'connecting' || this.status === 'open' || this.status === 'reconnecting';
+  }
+
+  get reconnecting(): boolean {
+    return this.status === 'reconnecting';
   }
 
   get me(): LobbyState['members'][number] | null {
@@ -133,10 +189,17 @@ export class LobbyClient {
         /* no body */
       }
       // Never an empty fallback: a code the Spanish server details but sent bare (a lobby list
-      // rate_limited, a create refused with matchmaking_off) keeps the generic text in Spanish, as before.
-      throw new AccountError(serverText('lobby', code, serverMessage || t('error.server', { status: res.status })), res.status, code);
+      // rate_limited, a create refused with matchmaking_off) keeps the generic text in Spanish, as
+      // before. The status goes to the console, never into the player's text.
+      if (!hasServerText('lobby', code) && serverMessage === '') console.warn(`lobby: ${path} answered ${res.status} ${code}`);
+      throw new AccountError(serverText('lobby', code, serverMessage || t('error.server')), res.status, code);
     }
     return (await res.json()) as T;
+  }
+
+  /** The lobby a join link names, before joining it (no session: a first visit by a link has none). */
+  peek(code: string): Promise<LobbySummary> {
+    return this.call<LobbySummary>('/api/lobbies/peek?code=' + encodeURIComponent(code), undefined, false);
   }
 
   async list(region: RegionId | null): Promise<LobbySummary[]> {
@@ -171,12 +234,15 @@ export class LobbyClient {
   private open(answer: LobbyTicketAnswer): void {
     this.lobbyId = answer.lobbyId;
     this.code = answer.code;
-    this.status = 'connecting';
+    if (this.status !== 'reconnecting') this.status = 'connecting';
     const ws = this.makeWs(resolveWsUrl(answer.wsUrl), [WS_SUBPROTOCOL, WS_TICKET_PREFIX + answer.ticket]);
     this.ws = ws;
     ws.onopen = () => {
       if (ws !== this.ws) return;
+      const back = this.status === 'reconnecting';
       this.status = 'open';
+      this.stopRetry();
+      if (back && this.onStatus) this.onStatus();
       this.ping = setInterval(() => {
         try {
           ws.send('ping');
@@ -186,7 +252,9 @@ export class LobbyClient {
       }, PING_MS);
     };
     ws.onmessage = (ev) => {
-      if (ws !== this.ws || typeof ev.data !== 'string' || ev.data === 'pong') return;
+      if (ws !== this.ws || typeof ev.data !== 'string') return;
+      this.stopPongCheck(); // any frame says the socket lives
+      if (ev.data === 'pong') return;
       let m: LobbyServerMsg;
       try {
         m = JSON.parse(ev.data) as LobbyServerMsg;
@@ -209,16 +277,122 @@ export class LobbyClient {
     };
     ws.onclose = (ev) => {
       if (ws !== this.ws) return;
-      this.finish(ev.reason || (ev.code === 4003 ? 'kicked' : 'lost'));
+      const final = CLOSE_FINAL[ev.code];
+      if (final !== undefined) this.finish(ev.code === 4004 && ev.reason ? ev.reason : final);
+      else this.dropped(`${ev.code}${ev.reason ? ' ' + ev.reason : ''}`);
     };
     ws.onerror = () => {
       /* onclose follows */
     };
   }
 
+  /**
+   * The socket dropped without ending the stay: 'reconnecting', the join again by code at once and
+   * then every RECONNECT_DELAYS_MS while the window lasts. `why` (the close code) goes to the console.
+   */
+  private dropped(why: string): void {
+    console.warn(`lobby: the socket dropped (${why}): reconnecting`);
+    this.stopPing();
+    this.stopPongCheck();
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.onclose = null;
+      ws.onmessage = null;
+      try {
+        ws.close(1000, 'reconnect');
+      } catch {
+        /* closed */
+      }
+    }
+    if (this.status !== 'reconnecting') {
+      this.status = 'reconnecting';
+      this.reconnectUntil = this.now() + this.windowMs;
+      this.tries = 0;
+      if (this.onStatus) this.onStatus();
+      this.scheduleRetry(0);
+      return;
+    }
+    // A reconnection's socket that did not hold: the next try after the wait.
+    if (this.now() >= this.reconnectUntil) this.finish('lost');
+    else this.scheduleRetry(this.delays[Math.min(this.tries++, this.delays.length - 1)]);
+  }
+
+  private scheduleRetry(ms: number): void {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.retry();
+    }, ms);
+  }
+
+  private stopRetry(): void {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.tries = 0;
+  }
+
+  /** One join again by code (an existing member: the same place); a refusal that ends it closes the stay. */
+  private async retry(): Promise<void> {
+    if (this.status !== 'reconnecting' || this.trying || this.code === null) return;
+    this.trying = true;
+    const code = this.code;
+    let answer: LobbyTicketAnswer | null = null;
+    let final: string | null = null;
+    try {
+      answer = await this.call<LobbyTicketAnswer>('/api/lobbies/join', { code, password: this.password ?? undefined });
+    } catch (e) {
+      final = e instanceof AccountError ? (JOIN_FINAL[e.code] ?? null) : null;
+      console.warn(`lobby: reconnect try ${this.tries + 1} failed: ${e instanceof AccountError ? `${e.status} ${e.code}` : String(e)}`);
+    } finally {
+      this.trying = false;
+    }
+    if (this.status !== 'reconnecting' || this.code !== code) return; // left meanwhile
+    if (answer !== null) {
+      this.open(answer);
+      return;
+    }
+    if (final !== null || this.now() >= this.reconnectUntil) {
+      this.finish(final ?? 'lost');
+      return;
+    }
+    this.scheduleRetry(this.delays[Math.min(this.tries++, this.delays.length - 1)]);
+  }
+
+  /**
+   * The tab is visible again or the network is back: a reconnection tries at once; an open socket
+   * is pinged and counts as dropped when nothing comes back within PONG_WAIT_MS.
+   */
+  private wake(): void {
+    if (this.status === 'reconnecting') {
+      if (this.trying || this.ws !== null) return; // a try, or its socket, on the way
+      this.scheduleRetry(0);
+      return;
+    }
+    const ws = this.ws;
+    if (this.status !== 'open' || ws === null || this.pongTimer !== null) return;
+    try {
+      ws.send('ping');
+    } catch {
+      this.dropped('send failed');
+      return;
+    }
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = null;
+      if (this.ws === ws && this.status === 'open') this.dropped('no pong');
+    }, this.pongWaitMs);
+  }
+
+  private stopPongCheck(): void {
+    if (this.pongTimer !== null) clearTimeout(this.pongTimer);
+    this.pongTimer = null;
+  }
+
   private finish(reason: string): void {
     const was = this.inLobby;
     this.stopPing();
+    this.stopPongCheck();
+    this.stopRetry();
     const ws = this.ws;
     this.ws = null;
     if (ws) {
@@ -262,6 +436,20 @@ export class LobbyClient {
     this.send({ t: 'kick', member });
   }
 
+  /** The host hands the lobby to `member`. */
+  makeHost(member: string): void {
+    this.send({ t: 'host', member });
+  }
+
+  /** The host moves `member` to `team` (one's own move: setTeam). */
+  move(member: string, team: 0 | 1): void {
+    this.send({ t: 'move', member, team });
+  }
+
+  setReady(ready: boolean): void {
+    this.send({ t: 'ready', ready });
+  }
+
   start(): void {
     this.send({ t: 'start' });
   }
@@ -274,7 +462,12 @@ export class LobbyClient {
   /** Leave the lobby for good (closes the socket). Silent: no onClosed. */
   leave(): void {
     if (!this.ws) {
+      // Reconnecting: no socket to say it on; the server's grace removes the place.
+      this.stopRetry();
       this.status = 'idle';
+      this.state = null;
+      this.lobbyId = null;
+      this.code = null;
       return;
     }
     this.send({ t: 'leave' });

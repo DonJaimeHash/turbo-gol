@@ -99,7 +99,7 @@ src/render/
                         1 GB: autoSuperlow, probeGpu, readBootSignals), the TierReason #diag shows,
                         tierPrefsAfter (the prefs keep the player's pick only; 'lock') and
                         gateTierPrefs (a locked player's saved super low reads as Performance, not chosen)
-  experimentalPage.ts   Settings > Experimental: a guest's locked line, the switch (a second press
+  experimentalPage.ts   Ajustes › EXPERIMENTAL (its host's PageKit: src/ui/screens/settings/expKit.ts): a guest's locked line, the switch (a second press
                         when turning it off restarts on Performance), what it unlocks, Super low's
                         line and the preset editor (picker over the built-ins and the player's
                         presets, New / Duplicate / Rename / Delete, the name field, one stepper or
@@ -232,14 +232,9 @@ src/render/
                         entries on one data-nav-row, RULES in experimental free play, SETTINGS,
                         QUIT held HOLD_MS with A / Enter / a finger or double-clicked: hold,
                         sub; src/ui/nav.ts FocusNav driven by Input's menu edges through
-                        pauseAction; online "MATCH IN PROGRESS"), the settings screen (tabs:
-                        rebinding both devices, camera / gameplay sliders, Audio: master volume,
-                        Graphics: the quality tier among MenuOptions.qualities, Experimental:
-                        experimentalPage.ts; refreshSettings redraws it when the account changes;
-                        pad A / B leave a text field of the screen instead of acting on it; LB / RB,
-                        LT / RT, Q / E switch tabs; a held arrow's repeat stops at the first / last
-                        row and slides only a slider: FocusItem.repeat), the
-                        controls card (setControlsCard: big card or slim strip, bottom right)
+                        pauseAction; online "MATCH IN PROGRESS"; setPauseCovered: Ajustes over it,
+                        src/ui/screens/settings/overlay.ts), the controls card (setControlsCard: big
+                        card or slim strip, bottom right); its own keys are F3 and F4
   controlsCard.ts       the controls card of the first matches and free play, pure: when it shows
                         (ControlsCardPlan: the first 3 matches' kickoff countdown, free play until
                         the car moves, then a strip for 60 s of play; the count in localStorage)
@@ -265,7 +260,8 @@ src/input/
                         press), driven by Settings.bindings; pointer lock
                         (the capturing click is masked), one pad poll per frame (beginFrame),
                         latchEdges for menu hand-off, rebind capture (startRebind: armed on the
-                        next macrotask, Esc cancels on both devices, wheel only over the cell),
+                        next macrotask, Esc cancels on both devices, a pad's B binds on its release
+                        and held CAPTURE_CANCEL_HOLD_MS cancels, wheel only over the cell),
                         presets, vibration; an optional TouchSource (setTouchSource: read once per
                         sample, clamped to 0..1, summed into the keyboard column, so touch drives
                         the same modifiers and edges, never padActions or the camera look)
@@ -273,9 +269,19 @@ src/input/
                         TouchState = Input's TouchSource (stick + per-button finger count and tap
                         latch, releaseAll), stickVector (radial deadzone + gain, up = +y),
                         hitCircle, the TB buttons → actions mapping (copied from DEFAULT_KBM)
+  touchRouter.ts        TouchRouter, pure: which finger drives the stick, holds JUMP / BOOST /
+                        DRIFT (a slide off BOOST keeps it held; off JUMP too with holdJump, the
+                        controls.touchHoldJump preference: plan M29), taps PAUSE / CAM / RESET,
+                        and taps the scorebug or the open board (scoreTaps)
+  TouchControls.ts      the touch overlay (.tc-root, touch.css; created only with a touch screen):
+                        measures the layout from its CSS, routes every finger through TouchRouter,
+                        paint() and setBoost() (BOOST's amount and level at 10 Hz) allocate
+                        nothing; the scoreboard tap (scoreboardOpen), the three first-match cards
+                        (cardsUp, turbogol.touchCards), the rotate notice (setLive: translucent
+                        over a live online match, the scorebug above it), touch mode (tg-touch)
 src/settings.ts         Settings { controls, camera, bindings, audio }: defaults, ranges,
                         validation, localStorage load / save. One live object shared by Input,
-                        ChaseCamera and the Hud; Game.applySettings() persists and re-applies
+                        ChaseCamera and Ajustes; Game.applySettings() persists and re-applies
 src/game/
   Match.ts              match rules state machine (kickoff countdown, goal reset, clock, overtime)
   Game.ts               fixed-step loop: input → controls → bot teams → sim.step → sync →
@@ -285,8 +291,11 @@ src/game/
                         pipeline warm-up, goal-pause ball pin, audio / HUD glue, settings glue,
                         pointer lock (canvas click captures, menu / pause / whistle / blur release,
                         a browser-side release pauses like the Esc menu, a click on the paused
-                        game resumes and recaptures), pause menu (pauseEntries; SETTINGS opens the
-                        settings screen over the paused game, BACK returns; Backspace / pad B
+                        game resumes and recaptures; a finger's tap there does nothing: the touch
+                        pause, laid out for two thumbs by style.css, resumes on RESUME where BOOST
+                        was), pause menu (pauseEntries; SETTINGS and pad X open Ajustes over the
+                        paused game, z 60: SettingsOverlay, online the match goes on and its
+                        scorebug is raised into the overlay's bar; its Back returns; Backspace / pad B
                         resume; QUIT only, held (Input.acceptHeld): quitToMenu clears the match and
                         reopens the menu at kickoff), the match's end (matchEnded on every path:
                         the FINAL's view, goals credited by creditGoal, the FINAL FINAL_SECONDS
@@ -312,7 +321,14 @@ src/game/
                         resync beyond 8 ticks), stepTick (pack own input, step, send every 2nd
                         tick), host match state (score / clock / frozen / overtime) from events,
                         NetStatsView for the HUD panel; quickMatch(mode, notice, 'ranked') for
-                        ranked (lastRankedMatchId for the FINAL's rank card), 'cancelled' event
+                        ranked (lastRankedMatchId for the FINAL's rank card), 'cancelled' event;
+                        `hint` while NetClient reconnects ("Reconectando… (intento 2/5)", then "De
+                        vuelta en el partido" 1.5 s: the HUD's top-centre line), the server match
+                        kept for a way back (rejoinStore.ts, sessionStorage) and rejoin() (Menu.rejoin:
+                        a failed one's REINTENTAR rejoins again), the failure's outcome
+                        (src/net/outcome.ts); the close code in the console and F4's state line only
+  rejoinStore.ts        the server match this tab may join again: matchId, kind, formats, the end of
+                        its regulation time; read by Inicio's hero and the lost sheet
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer
@@ -343,7 +359,12 @@ src/game/
   you wait: Free play"): the frame's watchSearchPractice sees the session leave its queue and
   hands off through one function, practiceToMatch (training off, "MATCH FOUND · Entering…",
   today's found -> match path; setSession and the session rosters call it too), a failed connect
-  shows the menus, and quitting practice keeps the search: stopTraining -> showMenu(true))
+  shows the menus, and quitting practice keeps the search: stopTraining -> showMenu(true). The pack
+  summary (src/render/TrainingHud.ts, plan PR 13: AGAIN · NEXT LEVEL · TRAINING, a FocusNav of its
+  own) takes the frame's edges while it is up: trainingSummaryActions routes the arrows / D-pad
+  (before the pad's previous / next shot, which share the D-pad's ◀ ▶) and accept to it, the reset
+  key retries, back is stopTraining; NEXT LEVEL is trainingNextLevel (trainingModel.ts nextLevel).
+  The panel's hints follow the device in use, a finger's too (touch mode: the ↺ button))
 src/ui/                 the front-end menus: the Tablero shell (styles/shell.css, components.css)
                         around the screens (Inicio on styles/tiles.css and screens/home.css, MODOS
                         on screens/modes.css; the others on menu.css until their own PRs), all
@@ -353,7 +374,7 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         its calibrated fallbacks; the old names (--panel, --muted, --mn-*) are
                         aliases until the PR that rewrites their last user. "UI tokens" below
   styles/focus.css      the one focus ring of every world (menus .mn-focus / :focus-visible, the
-                        Hud's .hud-focus, the pack summary's default button)
+                        Hud's .hud-focus, the pack summary's buttons: their own FocusNav)
   styles/shell.css      the shell's grid and bars per html[data-shell] (bar, rail, tabs, tv) in rem
                         (1 rem = 16 px x --ui-scale; body stays 16 px, so the old screens' px do
                         not move); styles/components.css: pills, glyphs, sheets, toasts, the slot;
@@ -361,7 +382,28 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         (the lift is --focus-lift alone: 0 on super low and with reduced motion);
                         styles/screens/<screen>.css: a Tablero screen's own layout per class
                         (home.css: Inicio, modes.css: MODOS, final.css: the FINAL; on
-                        .mn[data-screen], which Menu.mount writes; found.css: PARTIDO ENCONTRADO)
+                        .mn[data-screen], which Menu.mount writes; found.css: PARTIDO ENCONTRADO;
+                        settings.css: Ajustes, in the menus and over the pause; training.css,
+                        leaderboard.css, profile.css: plan PR 13's, training.css also the three's
+                        stage per class and menu.css's shared controls at the class's type roles
+                        there)
+  screens/settings/     Ajustes (plan PR 10): model.ts (pure: the six tabs, CONTROLES' device
+                        sections, the camera preset, the quality trial, the memory tag, a binding's
+                        conflict, the sliders' maths; tests/settings-model.test.mjs), view.ts
+                        (SettingsView, the one component: the rail of tabs and each tab's page,
+                        every setting with its saved key; CONTROLES per device detected, the last
+                        input's first, sensitivities then mn-bind rows; CÁMARA's presets; JUEGO;
+                        AUDIO; GRÁFICOS as cards, applied with A and back by themselves in 10 s
+                        unless kept; EXPERIMENTAL), expKit.ts (experimentalPage.ts's PageKit: its
+                        PageItems as FocusNav targets), screen.ts (the Menu screen 'settings', a
+                        screen of every section: stacked on the one shown, backModel.ts
+                        EVERY_SECTION; its rail a side zone of its own, Screen.zones; the scene
+                        holds one frame under it, Screen.holdsScene; a binding's capture takes the
+                        keys, Screen.keysTaken), overlay.ts (the same view over the pause on a
+                        .mn root: its bar, its FocusNav, its keys; the Game routes the pad).
+                        Back inside: a capture cancels, then the page's focus goes to its tab
+  components/rows.ts    mn-set-row, mn-slider (− track +, the default's mark, ◀ ▶ with the
+                        repeat: nav.ts onNavRepeat, a sideways drag), mn-switch (NO │ SÍ)
   components/icons.ts   the SVG icon sprite (~40 icons on a 24 grid, one hidden <svg> of
                         <symbol>s mounted by the first icon(); the menu tiles use it)
   components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
@@ -377,11 +419,17 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         sections with focus = selection, back + crumbs, chip, Settings), rail.ts
                         (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
                         About), pills.ts (region / connection, search, update)
+  keyboard.ts           a phone's keyboard over a form: the visual viewport's shrink (Chrome on
+                        Android resizes only that) as --kb-inset on .mn (PERFIL's stage makes that
+                        room at its end, a phone's sheet rises above it) and the focused field scrolled above it in its own
+                        scroller; keyboardInset / scrollToShow pure (tests/keyboard-inset.test.mjs);
+                        installed once by the Menu
   backModel.ts          the order of Back, pure: menuBack (sheet, field being edited, the
                         screen's own, pop, another section to JUGAR, JUGAR's root asks to leave),
-                        systemBack (load, key capture, the Hud's screen, menus, pack summary,
+                        systemBack (load, key capture, Ajustes over the pause, menus, pack summary,
                         match) and stackAfterOpen (where Menu.open leaves the section and its
-                        stack); tests/back-model.test.mjs
+                        stack; Ajustes, a screen of every section, stacks on the one shown);
+                        tests/back-model.test.mjs
   fit.ts                data-fit: a box shrinks its font 1 px at a time to its minimum (or the
                         --fit-min a stylesheet sets: 16 on a TV, in px of its 960 wide reference
                         view: times --ui-scale) while it overflows (its content box: a bar's
@@ -417,8 +465,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         the root; a screen whose leaveGuard asks, the lobby, asks before a
                         section, a crumb, the wordmark, the chip or the search pill take the
                         player off it), the top bar / rail / tabs / hint bar, the pills (region and
-                        connection with RETRY, the running search on every section and floating
-                        over Settings, "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
+                        connection with RETRY, the running search on every section (Ajustes is one
+                        of them), "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
                         shared prefs (prefs.ts), population polling, the 4 Hz tick (1 Hz on super
                         low, DOM written only on change); MenuHost = what the Game provides (search,
@@ -458,12 +506,16 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         left out), whether that backdrop is an opaque page (opaqueBackground) and
                         the cover the menus report (menuCover); tests/cover.test.mjs
   nav.ts                spatial focus navigation (arrows / D-pad pick the nearest target in that
-                        direction; Enter / A activate natively; side controls claim left / right);
+                        direction; Enter / A activate natively; side controls claim left / right,
+                        a slider with a held arrow's repeat too: onNavRepeat; a target is its
+                        first zone's, so a zone inside another keeps its own: Ajustes' rail);
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
                         rowStep, left vertically from unionBox), a target as tall as the rows
                         beside it (data-nav-span: Inicio's hero, left ▲ ▼ only for what lies
-                        wholly that way, beyondEdge, else the next zone), the way back
-                        (NavPath), the focus memory (FocusMemory), fields in navigation or editing
+                        wholly that way, beyondEdge, else the next zone), a list's lines
+                        (data-nav-line: Ajustes' rows, ▲ ▼ read each target as wide as its
+                        line, lineSpan, so a narrow switch between two sliders is next), the way
+                        back (NavPath), the focus memory (FocusMemory), fields in navigation or editing
                         mode (data-editing), the edge nudge (mn-bounce-*) and heldOver (a key's
                         repeat held over from the match walks no focus and clicks nothing: the
                         pause's held QUIT); FocusNav puts them
@@ -502,33 +554,63 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         step them: Screen.command; the hint bar names them, Screen.tabsVerb), the
                         2 x 2 formats (a press picks and searches, restarting a running search of
                         that kind), Region and Advanced (connection) rows, VS AI's mn-seg and
-                        Stadium row, the lobby list (custom.ts lobbyBrowser), and the action zone:
-                        FIND MATCH / SIGN IN (PERFIL as a detour, back on a sign-in) / a ban's
-                        reason / PLAY / CREATE LOBBY, or the searching panel with "bots join in"
+                        Stadium row, SALAS' part (custom.ts lobbyBrowser: JOIN WITH CODE, the region,
+                        the public rows with their OPEN / IN MATCH / FULL slot, the empty line), and
+                        the action zone: FIND MATCH / SIGN IN (PERFIL as a detour, back on a sign-in)
+                        / a ban's reason / PLAY / CREATE LOBBY AND SHARE (BACK TO LOBBY in one), or
+                        the searching panel with "bots join in"
                         (modesModel.ts, pure: tabs, formats, queueNet, botsCountdown from
                         /api/config's botFillMs or P2P_FILL_WAIT_MS, countShown, actionKind;
                         tests/modes.test.mjs), GARAJE's "coming soon" (garage.ts, until plan PR
-                        8), custom lobby create / lobby (custom.ts: the host's experimental rules row for
-                        unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
-                        rules line before the match), training (with Experimental free play, its
-                        rules picker and Edit presets for unlocked players), profile (sign in / up /
-                        recover, account actions), leaderboard + ranked result dialog
+                        8), the Salas (plan PR 12; lobby.ts: CREATE LOBBY AND SHARE, JOIN WITH CODE
+                        in a sheet, the join link #sala=ABC234 on a load or a hashchange with its
+                        sheet, and the Sala: the code giant, SHARE by device, the teams side by side,
+                        a member's sheet Move · Make host · Kick, the action bar START / READY and
+                        "…", "Reconnecting to the lobby…", the leave sheet with KEEP THE LOBBY;
+                        window.__sala samples in dev / VITE_UI_FIT; custom.ts: the host's SETTINGS
+                        with the experimental rules row for unlocked players, P2P only, EDIT
+                        PRESETS; the EXP tag; lobbyModel.ts, pure: the code alphabet and cells,
+                        the link, the new lobby's format, a row's state, shareWay;
+                        tests/lobby-model.test.mjs); ENTRENAMIENTO (training.ts, plan PR 13: Inicio's
+                        tile grid with the hero PRÁCTICA LIBRE, TIROS / ATAJADAS / AÉREOS with their
+                        level marks by shape, HOW TO PLAY's controls sheet for the device in use,
+                        LAB for an unlocked player (its presets' sheet, EDIT PRESETS) with HOW TO
+                        PLAY as a row; a pack's sheet of three levels; trainingModel.ts, pure:
+                        markOf, categoryMarks, firstOpen, nextLevel, trainDevice;
+                        tests/training-screen.test.mjs); CLASIFICACIÓN (leaderboard.ts: the tabs
+                        in place, ◀ ▶ from a tab or a row (onNavSide, never past either end), one
+                        scroller of data-nav rows, your standing (GO TO MY POSITION: pad X, keyboard
+                        X with no search, Delete; a guest's SIGN IN; the placement matches),
+                        LT / RT (a controller's: Screen.command's `pad`, the press's source) and
+                        PgUp / PgDn pages, the picked tab the first focus, window.__board samples in dev / VITE_UI_FIT; leaderboardModel.ts,
+                        pure; tests/leaderboard.test.mjs) + ranked result dialog
                         (RankedResults.watch's `into`: the FINAL's rank card takes the answer
-                        while it is up; else the toast or the dialog as before);
+                        while it is up; else the toast or the dialog as before); PERFIL
+                        (profile.ts: the identity tile, TEMPORADA, MI SERVIDOR from
+                        AccountClient.myNodes (GET /nodes/mine; none on a fork or local dev),
+                        CUENTA Y SEGURIDAD folded, COMUNIDAD, ACERCA DE and IDIOMA as one nav row;
+                        a guest's CREAR CUENTA GRATIS / INICIAR SESIÓN as the screen's .mn-tabs over
+                        their form, the recovery link, the guest name; fields with enterkeyhint
+                        and Enter to the next one; the view follows a session that comes or goes;
+                        window.__profile samples in dev / VITE_UI_FIT);
                         match/final.ts (the FINAL: a screen stacked on Inicio, the shell's bars
                         aside, PLAY AGAIN focused, Back = MENU; window.__final(kind) samples in
                         dev / VITE_UI_FIT), match/finalModel.ts (pure: FinalView, goalScorer from
                         the state buffer's per-car ball-hit tick, pickMvp, againAction,
                         changeScreen, rankCard; tests/final-model.test.mjs), match/found.ts
-                        (PARTIDO ENCONTRADO, z 45, the tab's title)
+                        (PARTIDO ENCONTRADO, z 45, the tab's title), match/lost.ts (a server match
+                        lost for good: REJOIN / MENU in a sheet)
 src/net/
   protocol.ts           wire protocol shared with server/ (DONE): one binary frame per message,
                         Input / Snapshot / Ping / Pong packed, Welcome / Event / Error / Kick as
                         JSON; fnv1a32; the HTTP control-plane types (GuestSession, QueueResult)
   NetClient.ts          guest record (localStorage), queue long-poll (401 re-register, 409 ->
                         rejoin, cancel -> /api/leave), WebSocket with ['tg1', 'ticket.<jwt>'],
-                        input / ready / ping senders, message dispatch, one automatic rejoin;
+                        input / ready / ping senders, message dispatch, up to RECONNECT_TRIES (5)
+                        automatic rejoins per drop (reconnectAttempt; a Welcome starts again);
                         fetch / WebSocket / clock / storage injectable (node tests)
+  outcome.ts            what a failed online step leaves to do (retry, wait, requeue, reload,
+                        gone) and its action's label: Menu.failure's sheet; codes never in a text
   ClockSync.ts          4-timestamp rtt / offset / host-tick estimate (medians over 16 pongs),
                         computeLead, LeadAdjuster (bufferHint -> +-1 tick per second)
   InputRing.ts          256-tick ring of the player's packed inputs, assembleInputs (newest 2 +
@@ -547,8 +629,10 @@ src/net/
                         the experimental switch and presets (each call for the account that made
                         it: a refresh that hands back another account never gets it); a listener
                         list (subscribe) and the { name, id } hint the boot reads (readAccountHint)
-  LobbyClient.ts        custom lobbies: list / create / join by code, the lobby socket (state,
-                        match result per member, back, kick, settings)
+  LobbyClient.ts        custom lobbies: list / peek / create / join by code, the lobby socket (state,
+                        match result per member, back, kick, host, move, ready, settings); a drop
+                        joins again by code for 90 s ('reconnecting'; visibilitychange / online
+                        try at once, a visible tab's silent socket counts as dropped)
   p2p/                  phase 2: peer-to-peer deterministic rollback (docs/online/PHASE2.md)
     protocol.ts         signaling JSON (RoomWelcome with the room's physics, signal relay, ready
                         with the arena's physicsFp, start, drop,
@@ -614,7 +698,10 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
                         minute), leaderboard, ranked result; server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
-                        admit (password, kick list), start through the matchmaker's /custom;
+                        admit (password, kick list), start through the matchmaker's /custom; a
+                        dropped member kept LOBBY_GRACE_MS (40 s, host role included) before the
+                        alarm removes it; host / move / ready; /internal/peek (GET
+                        /api/lobbies/peek, a join link's sheet);
                         experimental rules (P2P only, strict) only while every member is signed
                         in: guests refused at create, admit, upgrade, settings and start
   src/LobbyDirectoryDO.ts  join codes -> lobby ids and the public list per region
@@ -685,8 +772,11 @@ scripts/                headless node runs: smoke-sim.mjs (one Bot vs an idle ca
                         controller, Competitive in every format idle and searching with the
                         Menu's own pills (every format in the subtitle, a TV's region by the
                         plate), then a TV's controller sheet closed by a fake controller with
-                        A held; a fresh tab per size and language with its device pinned,
-                        a mouse on the desktop sizes; then the hints of every other input on the
+                        A held; last on the touch sizes the touch match (an offline match in
+                        touch mode: the controls' edges and overlaps, each first-match card, the
+                        board, the touch pause with RESUME over BOOST's centre, free play's,
+                        upright the rotate notice); a fresh tab per size and language with its
+                        device pinned, a mouse on the desktop sizes; then the hints of every other input on the
                         screens that change the shell; --face for a fallback wider than Arial,
                         --online and --long-name for a pill and a chip this page cannot reach
                         alone, --no-pointer for a runner without one)
@@ -893,15 +983,16 @@ requestAnimationFrame(t):
   if drawsScene(t, lastDrawn, fps, changed || redraw, pacer):  // a match: every frame of logic
      chase.update(..., input.look)        // swivel + rear view (the menus: the orbit)
      renderer.render(prev, cur, alpha)    // interpolated transforms, camera, effects, HUD
-  frameLogic(dt)                          // scoreboard while held, touch controls, pointer-lock
+  frameLogic(dt)                          // scoreboard while held (or tapped open), touch controls, pointer-lock
                                           // hint, GO caption, back to the menus, audio
 ```
 
 **UI at rest** (quality.ts `sceneFps`, Game.ts `frame`): the scene is drawn at the match's cap; at
 30 fps under the menus (20 on super low when they let it through, and on a touch screen whose menus
 hide more than 70 % of it: src/ui/cover.ts); and not at all, one held frame, under an opaque layer
-(a menu sheet, the menus' own opaque page on super low, the settings screen, a match's
-rotate-your-phone screen), in an offline pause, and under the menus with `prefers-reduced-motion` or
+(a menu sheet, the menus' own opaque page on super low, the settings screen, an offline match's
+rotate-your-phone screen: online the match and its scorebug go on under it), in an offline pause,
+and under the menus with `prefers-reduced-motion` or
 `GamePrefs.menuSceneAnimated` off (the orbit stops). The Tablero shell reports what it leaves of the
 scene through `MenuHost.setMenuCover` ('none' / 'partial' / 'opaque', Menu.reportCover): 'partial'
 on every section, stacked screen and layout (the bars, the rail or the tabs, the pills and toasts
@@ -1180,7 +1271,7 @@ imported first by `src/style.css`:
   rows (lists, settings rows, button stacks, one-stop groups, training packs, cyclers) get a lime
   bar on their left inside edge instead. Never on a touch screen; 4 px and a 6 px heel under
   `html.tg-tv`. Every vertical scroller (`.mn-stage`, `.mn-lobbies`, `.mn-board`, `.mn-sheet`,
-  `.hud-menu`, `.hud-settings-body`) has a scroll padding of 16 px (24 under a heel), since the focus
+  `.mn-set-body`, `.mn-set-tabs`) has a scroll padding of 16 px (24 under a heel), since the focus
   is scrolled in with `block: 'nearest'`, flush with the edge; tile grids are 16 px apart, past the
   heel.
 * **Hover** only inside `@media (hover: hover)`; one pressed state (`scale(.97)`, a step darker, the

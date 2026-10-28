@@ -38,6 +38,8 @@ export interface ControlSettings {
   invertAirPitch: boolean;
   /** Controller vibration. */
   vibration: boolean;
+  /** Touch: a thumb that slides from JUMP to BOOST keeps the jump held until it lifts, as BOOST does (plan M29). */
+  touchHoldJump: boolean;
 }
 
 export interface AudioSettings {
@@ -64,6 +66,7 @@ export const DEFAULT_CONTROL_SETTINGS: Readonly<ControlSettings> = {
   mouseSteeringSensitivity: 5,
   invertAirPitch: false,
   vibration: true,
+  touchHoldJump: false,
 };
 
 export const DEFAULT_AUDIO: Readonly<AudioSettings> = {
@@ -85,6 +88,7 @@ export const CONTROL_RANGES: Readonly<Record<keyof ControlSettings, readonly [nu
   mouseSteeringSensitivity: [1, 10, 0.5],
   invertAirPitch: null,
   vibration: null,
+  touchHoldJump: null,
 };
 
 export const CAMERA_RANGES: Readonly<Record<keyof CameraSettings, readonly [number, number, number]>> = {

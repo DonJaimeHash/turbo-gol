@@ -18,11 +18,14 @@
  * - the rail (phone sideways) or the tab bar (upright), shell/rail.ts;
  * - the hint bar (shell/hintbar.ts): the last input's verbs (shell/hints.ts) and the source link
  *   (AGPL-3.0) with About; a TV keeps its pills there, but on Inicio, by the plate (Screen.pillSlot);
- * - pills (shell/pills.ts): the region with the connection, the running search (cancel from any
+ * - pills (shell/pills.ts): the lobby the player is in when not on its screen ("LOBBY ABC234 ·
+ *   2/4 · BACK", plan PR 12), the region with the connection, the running search (cancel from any
  *   section, and over Settings: a copy floats above them, `float`), "UPDATE TO PLAY";
  * - sheets (components/sheet.ts, `modal()`), toasts (components/toast.ts), the blocking "There's a
  *   new version" sheet when the server refused this page (it waits for Settings to close; z 65
- *   would keep it above them should both ever be up).
+ *   would keep it above them should both ever be up), and a failed online step's sheet
+ *   (`failure()`: its text and the one action src/net/outcome.ts gives it; a search's REINTENTAR
+ *   searches the same again).
  *
  * A match's start (Menu.beforeMatch: the hero, MODOS' FIND MATCH and PLAY): a TV without a
  * controller asks for one first (a sheet that closes by itself when one connects, the press that
@@ -63,6 +66,7 @@ import './menu.css';
 import './styles/index.css';
 import { h, setChildren } from './dom';
 import { FocusMemory, FocusNav, heldOver, isEditable, isEditing, navKey, setEditing } from './nav';
+import { installKeyboardInset } from './keyboard';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
 import type { InputKind } from './device';
@@ -79,7 +83,8 @@ import { REGIONS, isRegion } from '../net/account';
 import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
-import type { Difficulty, SettingsTab } from '../render/Hud';
+import type { Difficulty } from '../render/Hud';
+import type { SettingsTab } from './screens/settings/model';
 import type { ThemeId } from '../render/theme';
 import type { ActionId, Device } from '../input/bindings';
 import { DISCORD_URL, GAME_NAME, LICENSE_NAME, SOURCE_URL } from '../brand';
@@ -91,7 +96,7 @@ import { hintItems } from './shell/hints';
 import { TopBar } from './shell/topbar';
 import { SectionList } from './shell/rail';
 import { HintBar } from './shell/hintbar';
-import { RegionPill, SearchPill, updatePill } from './shell/pills';
+import { LobbyPill, RegionPill, SearchPill, updatePill } from './shell/pills';
 import type { RegionPillState } from './shell/pills';
 import { sheetBox } from './components/sheet';
 import type { SheetSpec } from './components/sheet';
@@ -108,6 +113,10 @@ import { localCardSeen } from '../render/controlsCard';
 import { atOverlays, coverShare, menuCover, opaqueBackground, paintsBackground } from './cover';
 import type { OverlayBox } from './cover';
 import type { SceneCover } from '../render/quality';
+import { MODES } from '../sim/constants';
+import { OUTCOME_ACTION } from '../net/outcome';
+import type { Outcome } from '../net/outcome';
+import type { RejoinRecord } from '../game/rejoinStore';
 
 export type SearchKind = 'casual' | 'ranked';
 
@@ -136,6 +145,13 @@ export interface SearchView {
   error: string | null;
   /** That failure is the server refusing this page's version (426 reload_required): reload to play online. */
   reload?: boolean;
+  /** What that failure leaves the player to do (src/net/outcome.ts); absent: retry. */
+  outcome?: Outcome;
+  /**
+   * That failure ended what the menus started (a search, a rejoin: REINTENTAR runs it again);
+   * false for a lobby's match (its member goes back to the Sala): the sheet only closes.
+   */
+  retry?: boolean;
 }
 
 export interface MenuConfig {
@@ -193,6 +209,12 @@ export interface MenuHost {
   practiceWhileSearching(): void;
   /** A custom lobby started: join this member's match. */
   playLobbyMatch(result: QueueResult | QueueResultP2p): void;
+  /** The server match this tab may join again (rejoinStore.ts: a reload, a lost connection), or null. */
+  rejoinable(): RejoinRecord | null;
+  /** Join it again (POST /api/rejoin; Inicio's BACK TO YOUR MATCH, a lost connection's REJOIN). */
+  rejoinMatch(): void;
+  /** A guest that never played online in this browser (no session yet): a join link asks for a name. */
+  firstOnline(): boolean;
   /**
    * The settings screen (the Hud's: controls, camera, gameplay, audio, graphics, experimental),
    * on `opts.tab` when given; `onClose` when it is left. The menus call it through Menu.openSettings.
@@ -279,12 +301,21 @@ export interface Screen {
   readonly pillSlot?: HTMLElement;
   /** Esc / B on this screen: return true to swallow it (e.g. a sub-view closes first). */
   back?(): boolean;
-  /** A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context action). */
-  command?(c: MenuCommand): boolean;
+  /**
+   * A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context
+   * action). `pad`: a controller's press (Menu.action; data-input says so only after this frame).
+   */
+  command?(c: MenuCommand, pad: boolean): boolean;
   /** Menu.open's `tab`, before the screen mounts (MODOS: the tab Inicio's tile or the search asked for). */
   setTab?(tab: string): void;
   /** What its own tabs are, for the hint bar (MODOS: "Modes"); else "Tabs". */
   readonly tabsVerb?: Key;
+  /** The scene holds one frame under it (Ajustes: nothing behind it moves, the menus report 'opaque'). */
+  readonly holdsScene?: boolean;
+  /** It takes every key itself now (Ajustes waiting for a binding's key): the menus' keys stand aside. */
+  keysTaken?(): boolean;
+  /** Focus zones of its own, before the shell's (Ajustes' rail: a side zone, crossed with ◀ ▶ only). */
+  zones?(): NavZone[];
   /**
    * The shell is about to take the player off this screen without its own Back (a section, a
    * crumb, the wordmark, the chip, the search pill): a function that asks first and calls `go`
@@ -315,12 +346,10 @@ export class Menu {
   private readonly tabbar: SectionList;
   private readonly hintBar: HintBar;
   private readonly pills: HTMLElement;
+  private readonly lobbyPill: LobbyPill;
   private readonly regionPill: RegionPill;
   private readonly searchPill: SearchPill;
   private readonly updateBtn: HTMLButtonElement;
-  /** The search pill over the Hud's settings screen (outside .mn: above z 60), pointer only. */
-  private readonly float: HTMLElement;
-  private readonly floatPill: SearchPill;
   private readonly toasts: Toasts;
   private readonly modalLayer: HTMLElement;
   private readonly screens = new Map<string, Screen>();
@@ -368,12 +397,14 @@ export class Menu {
   /** Population polls failed in a row (the hero counts two as offline: homeModel.ts isOffline). */
   private popFails = 0;
   private lastError: string | null = null;
+  /** What a failed search's REINTENTAR runs again: the last search started, or a rejoin (rejoin()). */
+  private lastTry: (() => void) | null = null;
   private visibleNow = false;
   private searching = false;
+  /** The lobby pill is up (renderLobbyPill). */
+  private lobbyPillUp = false;
   /** Settings opened from the menus are up (Menu.openSettings). */
   private settingsOpen = false;
-  /** Settings just closed, in this task (onKey: the closing key is theirs). */
-  private settingsClosing = false;
   /** The server refused this page's version: the update sheet once, then the pill. */
   private reloadNeeded = false;
   private reloadAsked = false;
@@ -429,24 +460,24 @@ export class Menu {
     this.regionPill = new RegionPill(() => this.onRegionPill());
     this.searchPill = new SearchPill(() => this.openSearchScreen(), () => this.cancelSearch(), true);
     this.updateBtn = updatePill(() => this.openUpdateSheet());
-    this.pills = h('div.mn-pill-row', null, this.searchPill.el, this.updateBtn, this.regionPill.el);
+    this.lobbyPill = new LobbyPill(() => this.open('lobby'));
+    this.pills = h('div.mn-pill-row', null, this.lobbyPill.el, this.searchPill.el, this.updateBtn, this.regionPill.el);
     this.topBar.pills.appendChild(this.pills);
     this.stage = h('main.mn-stage');
     this.toasts = new Toasts();
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
     this.root = h('div.mn', { hidden: true }, this.rail.el, this.topBar.el, this.stage, this.hintBar.el, this.tabbar.el, this.toasts.el, this.modalLayer);
-    this.floatPill = new SearchPill(() => undefined, () => this.cancelSearch(), false);
-    this.float = h('div.mn-float', { hidden: true }, this.floatPill.el);
     // RMB is bindable in game: no context menu over the menus.
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
     container.appendChild(this.root);
-    container.appendChild(this.float);
     this.nav = new FocusNav(() => this.zones(), {
       remembered: (zone, targets) => this.zoneEntry(zone, targets),
       restore: () => this.restoreFocus(),
       onFocus: (el, zone) => this.noteFocus(el, zone),
     });
     this.nav.install(this.root);
+    // A phone's keyboard over a form: the focused field stays above it (keyboard.ts).
+    installKeyboardInset(this.root);
     // Capture, before a field's own Enter (custom.ts JOIN, profile.ts sign-in): the fields' modes.
     this.root.addEventListener('keydown', (e) => this.onFieldKey(e), true);
     this.installTapGuard();
@@ -509,6 +540,11 @@ export class Menu {
     return this.stack.at(-1) ?? null;
   }
 
+  /** Screen `id` is in the section's stack (on top or under a detour). */
+  stacked(id: string): boolean {
+    return this.stack.some((s) => s.id === id);
+  }
+
   savePrefs(): void {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(this.prefs));
@@ -546,10 +582,17 @@ export class Menu {
    * once (renderSearch).
    */
   startSearch(req: SearchRequest): void {
+    this.lastTry = () => this.beforeMatch(() => this.startSearch(req));
     this.prefs.lastQueue = req.kind;
     this.savePrefs();
     this.host.search(req);
     this.renderSearch(performance.now());
+  }
+
+  /** Back into the server match this tab lost (MenuHost.rejoinMatch): Inicio's hero, the lost sheet. */
+  rejoin(): void {
+    this.lastTry = () => this.beforeMatch(() => this.rejoin());
+    this.host.rejoinMatch();
   }
 
   /**
@@ -599,7 +642,6 @@ export class Menu {
 
   hide(): void {
     this.root.hidden = true;
-    this.float.hidden = true;
     this.root.parentElement?.classList.remove('mn-open');
     this.visibleNow = false;
     resetPageZoom(); // a pinch in the menus does not carry into the match (its controls would sit off screen)
@@ -771,27 +813,34 @@ export class Menu {
     this.root.dataset.screen = top.id;
     this.placePills();
     this.readBackdrop();
+    this.reportCover(); // a screen that holds the scene (Ajustes) came or went
     // A screen opens at its top. With the keyboard / pad the first control's focus scrolls there
     // (autoFocus); touch mode and a switch from the bar focus nothing on the stage.
     if (touchMode() || focus === 'keep') this.stage.scrollTop = 0;
     this.renderChrome();
     top.show?.();
     this.refreshChrome();
+    this.renderLobbyPill();
     // Now, before this frame is drawn: a press of a pad or a remote mounts inside the game loop's
     // animation frame, and a fit on the next one would show a frame of an unfitted bar first.
     this.fitNow();
     if (focus === 'auto') this.autoFocus();
     this.measureCover(); // after the fit (on the next frame, after layout)
+    // Ajustes gone from under the screen shown (PERFIL's detour left by a crumb, the chip, a
+    // section): it closes as when it is left from the top (screens/settings/screen.ts).
+    if (!this.stacked('settings')) this.screens.get('settings')?.hide?.();
   }
 
   /**
    * Tell the Game what the menus leave of the 3D scene (MenuHost.setMenuCover; quality.ts
-   * sceneFps): nothing once hidden; all of it under a sheet (the update sheet too) or while the
-   * shell's own backdrop is opaque (super low); else part of it, with the share a touch screen's
-   * menus hide (measureCover). Only a change is sent.
+   * sceneFps): nothing once hidden; all of it under a sheet (the update sheet too), while the
+   * shell's own backdrop is opaque (super low) or under a screen that holds the scene (Ajustes);
+   * else part of it, with the share a touch screen's menus hide (measureCover). Only a change is
+   * sent.
    */
   private reportCover(): void {
-    const { level, covered } = menuCover({ visible: this.visibleNow, sheet: this.modalEl !== null, opaqueBackdrop: this.backdropOpaque, covered: this.covered });
+    const opaque = this.backdropOpaque || this.top()?.holdsScene === true;
+    const { level, covered } = menuCover({ visible: this.visibleNow, sheet: this.modalEl !== null, opaqueBackdrop: opaque, covered: this.covered });
     if (level === this.coverSent && covered === this.coveredSent) return;
     this.coverSent = level;
     this.coveredSent = covered;
@@ -965,6 +1014,7 @@ export class Menu {
   private zones(): NavZone[] {
     if (this.modalEl !== null) return [{ name: 'modal', el: this.modalEl, main: true }];
     return [
+      ...(this.top()?.zones?.() ?? []),
       { name: 'rail', el: this.rail.el, side: true },
       { name: 'top', el: this.topBar.el },
       { name: 'stage', el: this.stage, main: true },
@@ -1080,12 +1130,7 @@ export class Menu {
       this.keyDone = null;
       return;
     }
-    if (this.settingsClosing) return;
-    if (this.settingsUp()) {
-      // The Hud's settings screen owns the keys; X cancels the search behind it (not in its text fields).
-      if (e.code === 'KeyX' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditable(document.activeElement) && this.cancelSearch()) e.preventDefault();
-      return;
-    }
+    if (this.top()?.keysTaken?.() === true) return; // Ajustes' capture: the key is the binding
     if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
     if (!e.repeat && typeof e.code === 'string') this.keysDown.add(e.code);
     // Enter / Space held over from the match (SALIR's hold) would click the focused button on every
@@ -1180,17 +1225,18 @@ export class Menu {
       }
     } else if (a === 'back') this.backOrLeave();
     else if (a === 'up' || a === 'down' || a === 'left' || a === 'right') this.nav.move(a, repeat);
-    else this.command(a);
+    else this.command(a, true);
   }
 
   /**
    * A shortcut: the screen on top first (Screen.command), else the menus' own: 'prev' / 'next' the
    * sections, 'tabPrev' / 'tabNext' the screen's inner tabs (stepTabs), 'cancel' the search, 'menu'
    * the settings. False when nothing took it. Nothing while a modal is up (it keeps the focus).
+   * `pad`: it came from a controller (action), not the keyboard's Q / E / X / Delete.
    */
-  command(c: MenuCommand): boolean {
+  command(c: MenuCommand, pad = false): boolean {
     if (!this.visibleNow || this.modalEl !== null) return false;
-    if (this.top()?.command?.(c)) return true;
+    if (this.top()?.command?.(c, pad)) return true;
     if (c === 'prev' || c === 'next') return this.stepSection(c === 'prev' ? -1 : 1);
     if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
     if (c === 'cancel') return this.cancelSearch();
@@ -1228,29 +1274,28 @@ export class Menu {
   }
 
   /**
-   * The settings screen over the menus (the Hud's), on `opts.tab`; `onClose` when it is left (by
-   * default the focus comes back where it was). While it is up the running search floats above it.
+   * Ajustes (screens/settings: the Game's view as a screen stacked on the one shown, whatever its
+   * section), on `opts.tab`; `onClose` once it left the stack (by default the focus comes back where
+   * it was). The update sheet waits for it to close. Already open (under PERFIL's detour): back to
+   * it, on `opts.tab`.
    */
   openSettings(onClose: () => void = () => this.refocus(), opts?: { tab?: SettingsTab }): void {
-    if (this.settingsUp()) return;
+    if (this.settingsUp()) {
+      if (this.stacked('settings') && this.top()?.id !== 'settings') this.open('settings', false, opts?.tab);
+      return;
+    }
     this.settingsOpen = true;
     this.host.openSettings(() => {
       this.settingsOpen = false;
-      this.float.hidden = true;
-      // The key that closed them (Esc / Backspace, the Hud's own listener, earlier on the window) is
-      // no Back here too: onKey drops keys until this task ends.
-      this.settingsClosing = true;
-      window.setTimeout(() => (this.settingsClosing = false), 0);
-      this.measureCover(); // the share under them was left out (another layer): measured again
       onClose();
       if (this.reloadNeeded && !this.reloadAsked) this.openUpdateSheet();
     }, opts);
-    this.renderSearch(performance.now());
+    this.open('settings');
   }
 
-  /** The Hud's settings screen is on screen (from these menus, or any other way). */
+  /** Ajustes is up (opened by openSettings, or on top any other way: Menu.open). */
   private settingsUp(): boolean {
-    return this.settingsOpen || document.querySelector('.hud-settings-panel:not([hidden])') !== null;
+    return this.settingsOpen || this.top()?.id === 'settings';
   }
 
   // ---- chrome: chip, pills, population ---------------------------------------------------------
@@ -1503,6 +1548,7 @@ export class Menu {
       void this.pollPopulation();
     }
     this.renderSearch(now);
+    this.renderLobbyPill();
     this.top()?.tick?.(now);
     if (this.renderHints()) this.fitNow(); // a screen's own tabs may have come or gone (written on a change only)
     if (this.coarse && now - this.coverAt >= COVER_EVERY_MS) this.measureCover();
@@ -1517,7 +1563,9 @@ export class Menu {
       this.root.classList.add('mn-pills-more');
       this.fitNow();
       if (!this.settingsUp()) this.openUpdateSheet();
-    } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) this.toast(v.error, 'error');
+    } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) {
+      this.failure(v.error, v.outcome ?? 'retry', v.retry === false ? undefined : (this.lastTry ?? undefined));
+    }
     this.lastError = v.error;
     // A search that ends (cancelled, a failure, the server) takes its pill away: the focus it had
     // goes back to the screen, not to the page's body (blurred first: a hidden control keeps the
@@ -1528,13 +1576,10 @@ export class Menu {
       this.refocus();
     }
     this.searchPill.set(v, now);
-    const over = v.active && this.settingsUp() && this.visibleNow;
-    if (this.float.hidden === over) this.float.hidden = !over; // written on a change only (4 Hz)
-    if (over) this.floatPill.set(v, now);
     if (v.active !== this.searching) {
       this.searching = v.active;
       this.root.classList.toggle('mn-searching', v.active);
-      this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded);
+      this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded || this.lobbyPillUp);
       this.renderHints();
       // The screen follows in this frame (Inicio's hero: SEARCHING and ✕, or JUGAR AHORA again),
       // not on its next tick (a second later on super low).
@@ -1543,10 +1588,62 @@ export class Menu {
     }
   }
 
+  /**
+   * The lobby pill: shown while the player is in a lobby (reconnecting too) and its screen is not on
+   * top; written on a change only (the bars fit again then).
+   */
+  private renderLobbyPill(): void {
+    const lobby = this.host.lobby;
+    const st = lobby.state;
+    const show = this.visibleNow && lobby.inLobby && this.top()?.id !== 'lobby';
+    const changed = this.lobbyPill.set(show ? { code: st?.code ?? lobby.code ?? '', count: st !== null ? st.members.length : null, max: st !== null ? MODES[st.settings.mode] * 2 : null, reconnecting: lobby.reconnecting } : null);
+    if (!changed) return;
+    const a = document.activeElement;
+    if (!show && a instanceof HTMLElement && this.lobbyPill.el.contains(a)) {
+      a.blur();
+      this.refocus();
+    }
+    // A crowded bar, as beside the search pill: the chip and the region pill give their words first.
+    this.lobbyPillUp = show;
+    this.root.classList.toggle('mn-pills-more', show || this.searching || this.reloadNeeded);
+    this.fitNow();
+  }
+
   // ---- toasts / sheets --------------------------------------------------------------------------
 
   toast(text: string, kind: 'info' | 'error' | 'ok' = 'info'): void {
     this.toasts.show(text, kind);
+  }
+
+  /**
+   * A failed online step (src/net/outcome.ts): its text as the title and the one thing left to do,
+   * in a sheet (an error that asks for an action never goes in a toast): REINTENTAR runs `retry`,
+   * RECARGAR reloads, REINTENTA EN 1 MIN and CERRAR close it. A requeue asks nothing of the player (a
+   * toast says it); over Settings or another sheet it is a toast as well.
+   */
+  failure(text: string, outcome: Outcome, retry?: () => void): void {
+    // Nothing to try again here: the sheet only closes, and says so.
+    const label = t(outcome === 'retry' && retry === undefined ? 'outcome.close' : OUTCOME_ACTION[outcome]);
+    if (outcome === 'requeue' || this.settingsUp() || this.modalEl !== null || !this.visibleNow) {
+      this.toast(outcome === 'requeue' ? `${text} · ${label}` : text, outcome === 'requeue' ? 'info' : 'error');
+      return;
+    }
+    const canRetry = outcome === 'retry' && retry !== undefined;
+    this.modal({
+      title: text,
+      body: [],
+      actions: [
+        {
+          label,
+          primary: true,
+          onClick: () => {
+            if (outcome === 'reload') location.reload();
+            else if (canRetry) queueMicrotask(retry); // once the sheet is gone (a new one may follow)
+          },
+        },
+        ...(canRetry ? [{ label: t('lobby.cancel'), onClick: () => true }] : []),
+      ],
+    });
   }
 
   /**

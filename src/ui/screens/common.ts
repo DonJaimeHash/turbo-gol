@@ -1,6 +1,6 @@
 /**
- * Shared menu controls: big navigation tiles, a value cycler (‹ value ›, left / right on the
- * controller), segmented buttons, text fields with a label and an error line, a region picker.
+ * Shared menu controls: a value cycler (‹ value ›, left / right on the controller), text fields
+ * with a label and an error line, a region picker, sections, heads and buttons.
  */
 import { h, navButton } from '../dom';
 import type { Child } from '../dom';
@@ -10,13 +10,6 @@ import type { RegionId } from '../../net/account';
 import type { Menu } from '../Menu';
 import { regionName } from '../names';
 import { t } from '../../i18n';
-import { icon } from '../components/icons';
-import type { IconName } from '../components/icons';
-
-/** A big menu tile: icon (the sprite of components/icons.ts), title, subtitle, optional corner tag. */
-export function tile(cls: string, glyph: IconName, title: string, sub: string, onClick: () => void, tag?: Child): HTMLButtonElement {
-  return navButton(`mn-tile ${cls}`, [h('span.mn-tile-glyph', { 'aria-hidden': 'true' }, icon(glyph)), h('span.mn-tile-title', null, title), h('span.mn-tile-sub', null, sub), tag ? h('span.mn-tile-tag', null, tag) : null], onClick);
-}
 
 export interface CycleOption<T> {
   value: T;
@@ -46,8 +39,11 @@ export function cycler<T>(label: string, options: readonly CycleOption<T>[], get
   return { el: h('div.mn-row', null, h('span.mn-row-label', null, label), btn), refresh };
 }
 
-/** A labelled text field with an error line under it. */
-export function field(label: string, opts: { type?: string; placeholder?: string; autocomplete?: string; maxLength?: number; value?: string } = {}): { el: HTMLElement; input: HTMLInputElement; error: (msg: string | null) => void } {
+/**
+ * A labelled text field with an error line under it. `enterkeyhint`: what a phone keyboard's Enter
+ * says ('next' on a form's fields but the last, 'go' / 'done' on that one: profile.ts onEnter).
+ */
+export function field(label: string, opts: { type?: string; placeholder?: string; autocomplete?: string; maxLength?: number; value?: string; enterkeyhint?: 'next' | 'go' | 'done' } = {}): { el: HTMLElement; input: HTMLInputElement; error: (msg: string | null) => void } {
   const input = h('input.mn-input', {
     type: opts.type ?? 'text',
     placeholder: opts.placeholder ?? '',
@@ -55,6 +51,7 @@ export function field(label: string, opts: { type?: string; placeholder?: string
     maxLength: opts.maxLength ?? 64,
     value: opts.value ?? '',
     spellcheck: false,
+    enterKeyHint: opts.enterkeyhint,
     'data-nav': true,
   });
   const err = h('div.mn-field-error', { hidden: true });

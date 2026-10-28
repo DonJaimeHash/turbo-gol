@@ -96,22 +96,47 @@
 }
 
 .trn-dot {
-  width: 12px;
-  height: 12px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: var(--surface-3);
-  border: 1px solid var(--edge-hi);
+  border: 2px solid var(--edge-hi);
   box-sizing: border-box;
+  font: 700 10px / 1 var(--font-body);
+  color: var(--ink);
 }
 
+/* By shape, not by colour alone: a pass is a filled ✓, a miss a filled ✕, a shot to play hollow. */
 .trn-dot.trn-dot-pass {
   background: var(--ok);
   border-color: var(--ok);
 }
 
+.trn-dot.trn-dot-pass::before {
+  content: '✓';
+}
+
 .trn-dot.trn-dot-fail {
   background: var(--danger);
   border-color: var(--danger);
+}
+
+.trn-dot.trn-dot-fail::before {
+  content: '✕';
+}
+
+.trn-tally {
+  margin-top: 6px;
+  font-size: clamp(12px, 1.6vh, 14px);
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+/* Folded 10 s in (TrainingHud FOLD_MS): the key hints and the attempts step aside. */
+.trn-folded .trn-keys,
+.trn-folded .trn-attempts {
+  display: none;
 }
 
 .trn-dot.trn-dot-current {
@@ -249,13 +274,13 @@
 
 /* ---- Buttons (the pack summary) ---------------------------------------------------------- */
 
-/* The default button (RETRY: pad A / Enter) wears the focus ring of src/ui/styles/focus.css. */
+/* The focused button (AGAIN at first: pad A / Enter) wears the focus ring of src/ui/styles/focus.css. */
 .trn-btn {
   pointer-events: auto;
   cursor: pointer;
   font: inherit;
   font-family: var(--font-display);
-  font-size: clamp(13px, 1.9vh, 16px);
+  font-size: clamp(14px, 1.9vh, 16px);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -324,7 +349,7 @@
 }
 
 .trn-summary-pack {
-  font-size: clamp(13px, 1.9vh, 16px);
+  font-size: clamp(14px, 1.9vh, 16px);
   color: var(--text-2);
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -350,7 +375,7 @@
 
 .trn-summary-best {
   margin-top: 6px;
-  font-size: clamp(13px, 2vh, 18px);
+  font-size: clamp(14px, 2vh, 18px);
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -377,7 +402,7 @@
 /* 16 px: clear of the default button's focus heel. */
 .trn-summary-hint {
   margin-top: 16px;
-  font-size: clamp(11px, 1.5vh, 13px);
+  font-size: clamp(12px, 1.5vh, 13px);
   color: var(--text-2);
   letter-spacing: 0.06em;
 }

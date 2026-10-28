@@ -26,9 +26,9 @@
  * reloads the page (quality.ts needsReload). Super low that a device runs on its own (a weak TV,
  * the URL, the safety net) is not the player's pick: the switch goes off without a reload.
  *
- * The page is built once with the rest of the settings screen (Hud.buildSettings) and only shows,
+ * The page is built once with the rest of Ajustes (src/ui/screens/settings/view.ts) and only shows,
  * hides and rewrites its lines afterwards (`refresh`), so nothing here runs per frame. It makes its
- * elements through the Hud's PageKit only, so node tests drive it with a fake kit;
+ * elements through a PageKit only (Ajustes': settings/expKit.ts), so node tests drive it with a fake kit;
  * `experimentalView` is its pure part (tests/hud-menu.test.mjs).
  */
 import { t, type Key } from '../i18n';
@@ -49,14 +49,14 @@ import {
 import type { ExperimentalStore, ListedPreset } from '../game/experimentalStore';
 import { fieldLabel, formatRuleValue, presetName, rulesSummary, standardText } from './rulesText';
 
-/** A focus stop of the settings screen (the Hud's FocusItem). */
+/** A focus stop of the page (Ajustes makes it a FocusNav target: settings/expKit.ts). */
 export interface PageItem {
   el: HTMLElement;
   left?: () => void;
   right?: () => void;
   accept?: () => void;
   clear?: () => void;
-  /** left / right follow a held arrow's auto-repeat (a range's stepper; the Hud's FocusItem.repeat). */
+  /** left / right follow a held arrow's auto-repeat (a range's stepper; nav.ts onNavRepeat). */
   repeat?: boolean;
 }
 
@@ -169,7 +169,7 @@ export function stepRuleValue(f: PhysicsField, v: number, dir: -1 | 0 | 1): numb
   return grid[Math.min(grid.length - 1, Math.max(0, i + dir))];
 }
 
-/** What the page takes from the Hud: its elements, its toggle row and its focus ring. */
+/** What the page takes from its host (Ajustes: settings/expKit.ts): its elements, its toggle row and its focus. */
 export interface PageKit {
   /** A block element (a div) with `className` and `text`. */
   line(className: string, text?: string): HTMLElement;
@@ -178,9 +178,9 @@ export interface PageKit {
   /** A one-line text field; `onCommit(value)` when it is left changed (Enter, Esc, a tap elsewhere). */
   textInput(className: string, maxLength: number, onCommit: (value: string) => void): HTMLInputElement;
   toggleRow(label: string, get: () => boolean, set: (v: boolean) => void): { row: HTMLElement; item: PageItem; refresh: () => void };
-  /** A pointer on `el` focuses `item` (as the Hud's own rows do). */
+  /** `el` is the focus stop of `item` (a pointer on it focuses it). */
   bindFocus(el: HTMLElement, item: PageItem): void;
-  /** The page's focus stops changed (a row shown or hidden): the Hud reads `items()` again. */
+  /** The page's focus stops changed (a row shown or hidden): the host puts the focus back on the screen. */
   relayout?(): void;
 }
 
@@ -562,7 +562,7 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
       deleteArmed = null;
       resetArmed = null;
     }
-    // The Hud shows this tab's actions with the tab (selectTab): the button itself hides, so a guest,
+    // Ajustes shows this tab's actions with the tab (selectTab): the button itself hides, so a guest,
     // a switch that is off or a built-in never shows Reset, whenever the tab is selected.
     resetBtn.hidden = !v.editor || !mine;
     if (!v.editor) return;
@@ -586,7 +586,7 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
     resetBtn.classList.toggle('hud-exp-armed', mine && resetArmed === cur?.id);
     reset.refresh();
   };
-  /** After an action: redraw, and let the Hud read the focus stops again (rows may have come or gone). */
+  /** After an action: redraw, and let the host know the focus stops changed (rows may have come or gone). */
   const update = (): void => {
     refresh();
     kit.relayout?.();

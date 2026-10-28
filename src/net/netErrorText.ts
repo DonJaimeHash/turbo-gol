@@ -20,7 +20,7 @@ export function netErrorText(err: NetError): string {
     case 'network':
       return t('error.network');
     case 'http':
-      return t('error.server', { status: err.status });
+      return t('error.server'); // the status is in err.message (the console's)
     case 'protocol':
       return t('error.protocol');
     default:

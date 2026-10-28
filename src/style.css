@@ -798,8 +798,9 @@ body {
   display: none;
 }
 
-/* The dock, for every input. The veil ignores the pointer (a click or tap on it reaches the
-   canvas and resumes); only the plate and the buttons take it. RESUME takes two units. */
+/* The dock, for every input. The veil ignores the pointer (a click on it reaches the canvas and
+   resumes; a finger's tap does nothing); only the plate and the buttons take it. RESUME takes two
+   units. Touch mode lays it out for two thumbs (below). */
 .hud-pause-menu {
   z-index: var(--z-dock);
   display: flex;
@@ -971,27 +972,15 @@ html[data-input='mouse'] .hud-howto-dbl {
 
 /* Pressed: the HUD's one pressed state (menu.css has the menus' twin), the only feedback a finger
    gets (touch draws no ring): a 3 % squeeze in --dur-press and a step darker; lime deepens. */
-.hud-pause-btn:active,
-.hud-settings-back:active,
-.hud-settings-tab:active,
-.hud-settings-action:active:not(:disabled),
-.hud-bind-cell:active,
-.hud-toggle:active,
-.hud-choice-opt:active,
-.hud-rule-btn:active:not(:disabled) {
+.hud-pause-btn:active {
   transform: scale(0.97);
 }
 
-.hud-pause-btn:active:not(.hud-pause-primary),
-.hud-settings-back:active,
-.hud-settings-action:active:not(:disabled),
-.hud-bind-cell:active:not(.hud-capturing),
-.hud-rule-btn:active:not(:disabled) {
+.hud-pause-btn:active:not(.hud-pause-primary) {
   background-color: var(--surface-3-97);
 }
 
-.hud-pause-primary:active,
-.hud-toggle.hud-on:active {
+.hud-pause-primary:active {
   background: var(--brand-deep);
 }
 
@@ -1006,43 +995,134 @@ html[data-input='mouse'] .hud-howto-dbl {
   }
 }
 
-/* ---- The settings overlay (Hud.openSettingsScreen), over the menus and over the pause alike ---- */
+/* The touch pause (plan M25, Tel-H; touch mode only, the same buttons): two thumbs. RESUME is a
+   lime pill at BOOST's own inset, so it covers BOOST's centre at every size (the thumb that boosted
+   resumes without moving); SETTINGS and QUIT (and RULES) stack up from the left thumb's corner,
+   clear of the back gesture; the training row sits over RESUME in the thumb's arc; the plate is
+   compact, under the scorebug. A finger on the veil does nothing (Game.onCanvasPointerDown). The
+   last input decides: a key or a pad press puts the dock back. QUIT's hold (Hud.startHold, 1 s)
+   fills two half-moons in a ring. */
+.tg-touch .hud-paused-plate {
+  align-self: start;
+  margin-top: clamp(52px, 15vh, 72px);
+  padding: 8px 20px 10px;
+}
 
-.hud-menu {
+.tg-touch .hud-paused-title {
+  font-size: clamp(28px, 8vh, 44px);
+}
+
+.tg-touch .hud-pause-menu {
   position: absolute;
   inset: 0;
-  z-index: var(--z-settings);
-  display: grid;
-  place-items: center;
-  padding: calc(var(--safe-top) + 16px) 16px calc(var(--safe-bottom) + 16px);
-  background: var(--veil);
-  pointer-events: auto;
-  overflow: auto;
-  scroll-padding: 16px;
+  display: block;
+  width: auto;
+  height: auto;
 }
 
-/* Touch mode: the pause and its settings pan but never zoom (manipulation would keep Android's
-   pinch zoom, and a match zoomed in puts its controls off screen); the settings over the menus
-   pan and pinch-zoom like the menus (no double-tap zoom). */
-.tg-touch .hud-menu {
-  touch-action: pan-x pan-y;
+.tg-touch .hud-pause-menu > * {
+  position: absolute;
+  bottom: calc(var(--safe-bottom) + 24px);
 }
 
-.tg-touch .mn-open .hud-menu {
-  touch-action: manipulation;
+.tg-touch .hud-pause-menu > .hud-pause-btn {
+  left: calc(var(--safe-left) + 28px);
+  width: 160px;
+  height: 56px;
+  justify-content: center;
+  padding: 6px 16px;
 }
 
-.hud-menu-panel {
-  width: min(92vw, 520px);
-  padding: clamp(18px, 3vh, 32px) clamp(18px, 3vw, 36px);
-  background: var(--surface-1-96);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-panel);
-  text-align: center;
-  box-shadow: var(--shadow-sheet);
+.tg-touch .hud-pause-menu > :nth-last-child(2) {
+  bottom: calc(var(--safe-bottom) + 92px);
 }
 
-/* In-match wait line (a P2P stall: 'Esperando a <name>…'), top centre. */
+.tg-touch .hud-pause-menu > :nth-last-child(3) {
+  bottom: calc(var(--safe-bottom) + 160px);
+}
+
+.tg-touch .hud-pause-menu > .hud-pause-primary {
+  left: auto;
+  right: calc(var(--safe-right) + 24px);
+  bottom: calc(var(--safe-bottom) + 24px);
+  width: 168px;
+  height: 96px;
+  align-items: center;
+  border-radius: 48px;
+}
+
+.tg-touch .hud-pause-menu > .hud-pause-row {
+  right: calc(var(--safe-right) + 24px);
+  bottom: calc(var(--safe-bottom) + 132px);
+  height: 56px;
+  gap: 8px;
+}
+
+.tg-touch .hud-pause-row .hud-pause-btn {
+  flex: 0 0 auto;
+  min-width: 56px;
+  max-width: 104px;
+  padding: 4px 8px;
+}
+
+/* A phone's 14 px floor for the lines and the row's labels. */
+.tg-touch .hud-pause-menu .hud-pause-sub,
+.tg-touch .hud-pause-menu .hud-pause-howto,
+.tg-touch .hud-pause-row .hud-pause-label {
+  font-size: 14px;
+}
+
+.tg-touch .hud-pause-quit {
+  padding-right: 48px;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill {
+  inset: auto;
+  top: calc(50% - 13px);
+  right: 12px;
+  width: 26px;
+  height: 26px;
+  overflow: hidden;
+  border: 2px solid var(--danger-line);
+  border-radius: 50%;
+  background: none;
+  transform: none;
+  transition: none;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill::before,
+.tg-touch .hud-pause-quit .hud-hold-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  background: var(--danger);
+  transform: scaleY(0);
+  transform-origin: center bottom;
+  transition: transform 0.15s linear;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill::before {
+  left: 0;
+}
+
+.tg-touch .hud-pause-quit .hud-hold-fill::after {
+  right: 0;
+}
+
+.tg-touch .hud-holding .hud-hold-fill::before,
+.tg-touch .hud-holding .hud-hold-fill::after {
+  transform: scaleY(1);
+  transition-duration: 0.5s;
+}
+
+.tg-touch .hud-holding .hud-hold-fill::after {
+  transition-delay: 0.5s;
+}
+
+/* In-match wait line (a P2P stall: 'Esperando a <name>…'; a server match reconnecting:
+   'Reconectando… (intento 2/5)'), top centre. */
 .hud-netwait {
   position: absolute;
   top: calc(var(--safe-top) + 24px);
@@ -1060,10 +1140,15 @@ html[data-input='mouse'] .hud-howto-dbl {
   animation: hud-blink 1.6s steps(2, start) infinite;
   pointer-events: none;
 }
+/* "De vuelta en el partido" (OnlineSession.hintOk): good news, steady. */
+.hud-netwait.hud-netwait-ok {
+  color: var(--ok);
+  animation: none;
+}
 
 /* Turnstile widget slot (Hud.turnstileContainer, NetClient's anti-bot challenge): `hidden` (display
    none via .hud-root [hidden]) unless a challenge is rendered. Above every menu layer (src/ui menus
-   z-index 40, the settings-only screen 60); with appearance 'interaction-only' it stays blank until
+   z-index 40, Ajustes over the pause 60); with appearance 'interaction-only' it stays blank until
    Cloudflare needs a click, then the 300x65 widget shows in the middle of the screen, clear of the
    search banner and the sticky action buttons. */
 .hud-turnstile {
@@ -1080,29 +1165,6 @@ html[data-input='mouse'] .hud-howto-dbl {
 
 .hud-turnstile iframe {
   max-width: 100%;
-}
-
-.hud-menu-name {
-  flex: 0 1 180px;
-  min-width: 0;
-  padding: 6px 10px;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-align: right;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-key);
-  outline: none;
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-.hud-menu-name:focus {
-  border-color: var(--brand);
-  background: var(--brand-tint);
 }
 
 /* ---- Network panel (F4 / #net): top left, under the scorebug ------------------------------ */
@@ -1136,574 +1198,6 @@ html[data-input='mouse'] .hud-howto-dbl {
   font-size: 11px;
   white-space: pre;
   color: var(--text);
-}
-
-/* ---- Settings screen (same panel look, wider, scrolls inside) ----------------------------- */
-
-.hud-menu-panel.hud-settings-panel {
-  width: min(100%, 760px);
-  /* One height for every tab (the long binding lists scroll inside): a tab switch never resizes it. */
-  height: min(660px, calc(100vh - var(--safe-top) - var(--safe-bottom) - 32px));
-  height: min(660px, calc(100dvh - var(--safe-top) - var(--safe-bottom) - 32px));
-  max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 32px);
-  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 32px);
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  text-align: left;
-  overflow: hidden;
-}
-
-/* Header, tab strip and footer keep their size; only the body scrolls. */
-.hud-settings-head,
-.hud-settings-tabs,
-.hud-settings-foot {
-  flex: 0 0 auto;
-}
-
-.hud-settings-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 18px 10px;
-}
-
-.hud-settings-back {
-  padding: 6px 12px;
-  font: inherit;
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-key);
-  cursor: pointer;
-  text-shadow: none;
-}
-
-@media (hover: hover) {
-  .hud-settings-back:hover {
-    background: var(--surface-3);
-  }
-}
-
-/* Touch mode: a thumb-sized target. */
-.tg-touch .hud-settings-back {
-  min-width: 44px;
-  min-height: 44px;
-  padding: 10px 16px;
-}
-
-.hud-settings-title {
-  font-family: var(--font-display);
-  font-size: clamp(18px, 3vh, 26px);
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
-  color: var(--text);
-  text-shadow: none;
-  border-left: 4px solid var(--brand);
-  padding-left: 10px;
-}
-
-.hud-settings-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--edge);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.hud-settings-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.hud-settings-tab {
-  flex: 1 0 auto;
-  padding: 10px 12px;
-  font: inherit;
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  color: var(--text-2);
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: var(--r-key) var(--r-key) 0 0;
-  cursor: pointer;
-  text-shadow: none;
-}
-
-@media (hover: hover) {
-  .hud-settings-tab:hover {
-    color: var(--text);
-  }
-}
-
-.hud-settings-tab.hud-active {
-  color: var(--text);
-  border-bottom-color: var(--brand);
-}
-
-.hud-settings-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 8px 14px 12px;
-  /* FocusRing scrolls a row in with block 'nearest' (Hud.ts:419): keep the ring (6 px out,
-     focus.css) inside the scroll box (the plan's anti-clip rule). */
-  scroll-padding-block: 16px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--edge-hi) transparent;
-}
-
-.hud-settings-page {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.hud-settings-device {
-  padding: 6px 10px 8px;
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  color: var(--blue-hi);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.hud-settings-device.hud-pad-missing {
-  color: var(--text-2);
-}
-
-.hud-settings-group {
-  margin: 10px 10px 3px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-
-.hud-settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 10px 5px 14px;
-  border-radius: var(--r-tile);
-  border: 1px solid transparent;
-}
-
-@media (hover: hover) {
-  .hud-settings-row:hover {
-    background: var(--surface-2);
-  }
-}
-
-.hud-settings-label {
-  font-size: 13px;
-  letter-spacing: 0.04em;
-}
-
-.hud-settings-ctl {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-}
-
-.hud-slider-row .hud-settings-ctl {
-  flex: 1 1 55%;
-  max-width: 320px;
-}
-
-.hud-bind-cell {
-  min-width: 128px;
-  padding: 6px 10px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-key);
-  cursor: pointer;
-  text-shadow: none;
-}
-
-@media (hover: hover) {
-  .hud-bind-cell:hover {
-    background: var(--surface-3);
-  }
-}
-
-.hud-bind-cell.hud-capturing {
-  color: var(--warn);
-  border-color: var(--warn);
-  background: var(--warn-tint);
-  animation: hud-blink 1s steps(2, start) infinite;
-}
-
-.hud-bind-row.hud-unbound .hud-bind-cell {
-  color: var(--text-2);
-}
-
-.hud-bind-clear {
-  width: 26px;
-  height: 26px;
-  font: inherit;
-  font-size: 16px;
-  line-height: 1;
-  color: var(--text-2);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: var(--r-key);
-  cursor: pointer;
-  text-shadow: none;
-}
-
-@media (hover: hover) {
-  .hud-bind-clear:hover {
-    color: var(--danger);
-    border-color: var(--danger-line);
-  }
-}
-
-.hud-bind-row.hud-unbound .hud-bind-clear {
-  visibility: hidden;
-}
-
-.hud-bind-clear.hud-bind-locked {
-  visibility: hidden;
-}
-
-/* While a capture waits for a key / button, nothing else in the panel reacts to the pointer... */
-.hud-settings-panel.hud-settings-capturing .hud-settings-head,
-.hud-settings-panel.hud-settings-capturing .hud-settings-tabs,
-.hud-settings-panel.hud-settings-capturing .hud-settings-body,
-.hud-settings-panel.hud-settings-capturing .hud-settings-foot {
-  pointer-events: none;
-}
-
-/* ...except BACK and the capturing cell, which cancel it (a wheel over the cell binds the wheel). */
-.hud-settings-panel.hud-settings-capturing .hud-settings-back,
-.hud-settings-panel.hud-settings-capturing .hud-bind-cell.hud-capturing {
-  pointer-events: auto;
-}
-
-.hud-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  flex: 1 1 auto;
-  width: 100%;
-  height: 4px;
-  margin: 0;
-  border-radius: 2px;
-  outline: none;
-  background: linear-gradient(90deg, var(--brand) var(--p, 0%), var(--surface-3) var(--p, 0%));
-  cursor: pointer;
-}
-
-.hud-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--text);
-  border: 2px solid var(--brand);
-  box-shadow: 0 0 6px var(--brand-glow);
-}
-
-.hud-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--text);
-  border: 2px solid var(--brand);
-  box-shadow: 0 0 6px var(--brand-glow);
-}
-
-.hud-slider::-moz-range-track {
-  background: transparent;
-}
-
-.hud-slider-value {
-  min-width: 5ch;
-  text-align: right;
-  font-size: 13px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.hud-toggle {
-  min-width: 64px;
-  padding: 6px 12px;
-  font: inherit;
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  background: var(--surface-2);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-pill);
-  cursor: pointer;
-  text-shadow: none;
-}
-
-.hud-toggle.hud-on {
-  color: var(--brand-ink);
-  background: var(--brand);
-  border-color: var(--brand);
-}
-
-/* A segmented choice (Graphics: the quality tier). */
-.hud-choice {
-  gap: 0;
-  padding: 2px;
-  background: var(--surface-2);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-pill);
-}
-
-.hud-choice-opt {
-  min-width: 64px;
-  padding: 6px 14px;
-  font: inherit;
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  background: none;
-  border: 0;
-  border-radius: var(--r-pill);
-  cursor: pointer;
-  text-shadow: none;
-}
-
-@media (hover: hover) {
-  .hud-choice-opt:hover {
-    color: var(--text);
-  }
-}
-
-.hud-choice-opt.hud-on {
-  color: var(--brand-ink);
-  background: var(--brand);
-}
-
-.tg-touch .hud-choice-opt {
-  min-height: 40px;
-}
-
-/* The line under a choice (what the selected tier is for). */
-.hud-settings-hint {
-  padding: 2px 10px 8px;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  color: var(--text-2);
-}
-
-/* Settings > Experimental (src/render/experimentalPage.ts): the guest's line wraps on a phone; the
-   switch's "press again" stands out. */
-.hud-settings-device.hud-exp-locked {
-  white-space: normal;
-  line-height: 1.45;
-}
-
-.hud-settings-hint.hud-exp-confirm {
-  color: var(--danger);
-}
-
-.hud-settings-device.hud-exp-match {
-  white-space: normal;
-  line-height: 1.45;
-}
-
-/* The preset editor: the picker, its buttons and name, then one row per value: the name with its
-   standard value under it, then "− value +" (a range) or "‹ value ›" (a choice or a toggle). A
-   changed value is lime; a built-in's rows are dimmed and inert. Touch mode: 44 px targets. */
-.hud-exp-title {
-  margin-top: 14px;
-}
-
-/* The name column shrinks and wraps (long Spanish labels on a phone): the controls keep one column. */
-.hud-rule-head {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.hud-rule-std {
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--text-2);
-}
-
-.hud-settings-ctl.hud-rule-ctl {
-  gap: 4px;
-}
-
-.hud-rule-btn {
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  font: inherit;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-key);
-  cursor: pointer;
-  text-shadow: none;
-}
-
-@media (hover: hover) {
-  .hud-rule-btn:hover:not(:disabled) {
-    background: var(--surface-3);
-  }
-}
-
-/* At its end: the dim text colour, never a faint opacity (contrast stays >= 4.5:1). */
-.hud-rule-btn:disabled {
-  color: var(--text-3);
-  background: none;
-  border-color: var(--edge);
-  cursor: default;
-}
-
-.tg-touch .hud-rule-btn {
-  width: 44px;
-  height: 44px;
-}
-
-.hud-rule-value {
-  min-width: 9ch;
-  text-align: center;
-  font-size: 13px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.hud-rule-changed .hud-rule-value {
-  color: var(--brand);
-}
-
-.hud-rule-locked .hud-settings-label,
-.hud-rule-locked .hud-rule-value {
-  opacity: 0.6;
-}
-
-.hud-exp-picker .hud-rule-value {
-  min-width: 15ch;
-  color: var(--text);
-}
-
-.hud-exp-buttons {
-  margin: 0 8px 4px;
-}
-
-.hud-settings-action:disabled {
-  color: var(--text-3);
-  background: none;
-  border-color: var(--edge);
-  cursor: default;
-}
-
-.hud-settings-action.hud-exp-armed {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-
-.tg-touch .hud-exp-buttons .hud-settings-action,
-.tg-touch .hud-exp-actions .hud-settings-action {
-  min-height: 44px;
-}
-
-.hud-menu-name.hud-exp-name {
-  flex: 0 1 240px;
-  text-align: left;
-}
-
-.hud-settings-hint.hud-exp-status {
-  color: var(--warn);
-}
-
-.hud-settings-hint.hud-exp-summary {
-  color: var(--text);
-}
-
-.hud-settings-hint.hud-exp-live {
-  color: var(--blue-hi);
-}
-
-.hud-settings-foot {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 18px 14px;
-  border-top: 1px solid var(--edge);
-}
-
-.hud-settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 2px;
-  border-radius: var(--r-tile);
-}
-
-.hud-settings-action {
-  padding: 8px 14px 8px 16px;
-  font: inherit;
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--edge-hi);
-  border-radius: var(--r-key);
-  cursor: pointer;
-  text-shadow: none;
-}
-
-@media (hover: hover) {
-  .hud-settings-action:hover {
-    background: var(--surface-3);
-  }
-}
-
-.hud-settings-actions.hud-focus .hud-settings-action.hud-focus {
-  background: var(--surface-3);
-}
-
-.hud-settings-keys {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--text-2);
 }
 
 /* ---- Scoreboard (held Tab / Back) ------------------------------------------------------- */
@@ -2101,9 +1595,7 @@ html[data-input='mouse'] .hud-howto-dbl {
   .hud-hint {
     bottom: calc(var(--safe-bottom) + 34px);
   }
-  .hud-settings-keys {
-    display: none;
-  }
+
   .hud-speed {
     bottom: calc(var(--safe-bottom) + 58px);
   }
@@ -2128,35 +1620,7 @@ html[data-input='mouse'] .hud-howto-dbl {
     top: calc(var(--safe-top) + clamp(56px, 9vh, 84px));
     max-width: calc(100vw - 32px);
   }
-  .hud-menu {
-    padding: calc(var(--safe-top) + 6px) 6px calc(var(--safe-bottom) + 6px);
-  }
-  .hud-menu-panel.hud-settings-panel {
-    width: 100%;
-    height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 12px);
-    height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 12px);
-    max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 12px);
-    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 12px);
-    border-radius: 8px;
-  }
-  .hud-settings-head {
-    padding: 10px 12px 8px;
-  }
-  .hud-settings-body {
-    padding: 6px 8px 10px;
-  }
-  .hud-settings-row {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-  .hud-slider-row .hud-settings-ctl {
-    flex-basis: 100%;
-    max-width: none;
-  }
-  .hud-bind-cell {
-    min-width: 96px;
-    font-size: 12px;
-  }
+
   .hud-sb-teams {
     grid-template-columns: 1fr;
   }
@@ -2431,8 +1895,8 @@ html.tg-superlow .hud-boost-label {
   color: var(--text);
 }
 
-html.tg-superlow [class*='mn-']:not(.mn-spinner):not(.mn-hold):not(.mn-busy):not([class*='mn-bounce-']),
-html.tg-superlow [class*='hud-']:not(.hud-overtime):not(.hud-clock-low):not(.hud-capturing):not(.hud-netwait):not(.hud-hold-fill),
+html.tg-superlow [class*='mn-']:not(.mn-spinner):not(.mn-hold):not(.mn-busy):not(.mn-bind-capturing):not([class*='mn-bounce-']),
+html.tg-superlow [class*='hud-']:not(.hud-overtime):not(.hud-clock-low):not(.hud-netwait):not(.hud-hold-fill),
 html.tg-superlow [class*='trn-'],
 html.tg-superlow [class*='tc-'] {
   transition: none !important;
