@@ -632,6 +632,11 @@ html.tg-set-live .hud-top {
   right: calc(var(--safe-right) + 3rem);
 }
 
+/* The wait line (style.css .hud-netwait: "Reconectando… (intento 2/5)") over it too, top centre. */
+html.tg-set-live .hud-netwait {
+  z-index: var(--z-over-settings);
+}
+
 /* ---- per class ---- */
 html.tg-tv .mn-set {
   grid-template-columns: 15.5rem minmax(0, 1fr);

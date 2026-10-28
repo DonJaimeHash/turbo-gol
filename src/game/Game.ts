@@ -3707,8 +3707,13 @@ export class Game implements P2PGameHooks {
     const cur = this.cur;
     const po = this.playerOff;
     this.updateScoreboard(inMenu);
-    // Ajustes over an online match holds the scene: its scorebug, raised over it, still follows the match.
-    if (this.pauseSettings.isOpen && this.onlineActive) this.updateScorebug();
+    // Ajustes over an online match holds the scene: its scorebug, raised over it, still follows the
+    // match, and so does the wait line (a P2P stall, a server match reconnecting), raised too.
+    if (this.pauseSettings.isOpen && this.onlineActive) {
+      this.updateScorebug();
+      const session = this.session;
+      if (session !== null) hud.setNetWait(session.active && !inMenu ? session.hint : null, session.hintOk === true);
+    }
     // Training's panel (its setters skip unchanged values): the pause's Unlimited boost shows at once over a held frame.
     if (this.training !== null) this.updateTrainingHud();
     // On-screen controls (touch screens): up while a match is played in touch mode, the HUD in its
