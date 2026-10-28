@@ -12,9 +12,9 @@ import { onNavRepeat, onNavSide } from '../nav';
 import { t } from '../../i18n';
 import { formatSettingValue, sliderPercent, stepSettingValue, valueAt } from '../screens/settings/model';
 
-/** A row: `label` (and a line of help under it) beside `control`. */
+/** A row: `label` (and a line of help under it) beside `control`; a line of its page's list for ▲ ▼ (nav.ts). */
 export function setRow(label: string, control: HTMLElement, help?: string): HTMLElement {
-  return h('div.mn-set-row', null, h('span.mn-set-row-text', null, h('span.mn-set-row-label', null, label), help ? h('span.mn-set-row-help', null, help) : null), control);
+  return h('div.mn-set-row', { 'data-nav-line': true }, h('span.mn-set-row-text', null, h('span.mn-set-row-label', null, label), help ? h('span.mn-set-row-help', null, help) : null), control);
 }
 
 export interface Slider {

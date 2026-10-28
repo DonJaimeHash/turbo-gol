@@ -21,6 +21,9 @@
  * - A target as tall as the rows beside it (`data-nav-span`: Inicio's hero) is left with ▲ ▼ only
  *   for what lies wholly that way (beyondEdge), else for the next zone: a tile beside it is not
  *   "below" it because its centre is lower.
+ * - A list's lines (`data-nav-line`: a settings row, its label at the left, its control at the
+ *   right): ▲ ▼ read every target on one as wide as its line (lineSpan), so the next line is the
+ *   one below, whatever width its control has (a narrow switch between two wide sliders).
  * - The way back (NavPath): the opposite arrow undoes the last move, as a stack (▼ ▼ ▲ ▲ retraces
  *   the path), while that target is still visible and still that way.
  * - Memory (FocusMemory): the last focus per scope (Menu: per screen and per zone), found again by
@@ -139,6 +142,17 @@ export function layoutBox(b: NavBox, transform: string, translate: string): NavB
 function box(el: Element): NavBox {
   const cs = getComputedStyle(el);
   return layoutBox(el.getBoundingClientRect(), cs.transform, cs.translate);
+}
+
+/** `b` as wide as `line` (its height its own): a target on a list's line, for ▲ ▼. Pure. */
+export function lineSpan(b: NavBox, line: NavBox): NavBox {
+  return { left: line.left, top: b.top, right: line.right, bottom: b.bottom, width: line.width, height: b.height };
+}
+
+/** `b` (`el`'s box by default) for ▲ ▼: as wide as its `data-nav-line` when it is on one (lineSpan). */
+function lineBox(el: Element, b: NavBox = box(el)): NavBox {
+  const line = el.closest('[data-nav-line]');
+  return line === null ? b : lineSpan(b, line.getBoundingClientRect());
 }
 
 /**
@@ -513,7 +527,7 @@ export class FocusNav {
       // Out of a target that spans the rows beside it: only what lies wholly that way, else the next zone.
       const span = !horizontal && cur.closest('[data-nav-span]') !== null;
       const all = this.targets(zone).filter((e) => e !== cur && (members === null || !members.includes(e)) && (!span || beyondEdge(src, dir, box(e))));
-      const i = pickTarget(src, dir, all.map(box));
+      const i = horizontal ? pickTarget(src, dir, all.map(box)) : pickTarget(lineBox(cur, src), dir, all.map((e) => lineBox(e)));
       if (i >= 0) next = horizontal ? all[i] : this.intoRow(all[i]);
     }
     if (next === null && !repeat) next = horizontal ? this.crossSide(zone, from, dir) : this.crossZone(zone, from, dir);

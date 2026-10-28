@@ -492,8 +492,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         pickTarget unchanged, plus pure zones (zoneEntryIndex), rows (data-nav-row:
                         rowStep, left vertically from unionBox), a target as tall as the rows
                         beside it (data-nav-span: Inicio's hero, left ▲ ▼ only for what lies
-                        wholly that way, beyondEdge, else the next zone), the way back
-                        (NavPath), the focus memory (FocusMemory), fields in navigation or editing
+                        wholly that way, beyondEdge, else the next zone), a list's lines
+                        (data-nav-line: Ajustes' rows, ▲ ▼ read each target as wide as its
+                        line, lineSpan, so a narrow switch between two sliders is next), the way
+                        back (NavPath), the focus memory (FocusMemory), fields in navigation or editing
                         mode (data-editing), the edge nudge (mn-bounce-*) and heldOver (a key's
                         repeat held over from the match walks no focus and clicks nothing: the
                         pause's held QUIT); FocusNav puts them
