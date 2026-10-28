@@ -1372,6 +1372,8 @@ export default {
   // shows it uppercased, with the tag), the preset picker and the button to the preset editor
   'training.expFreePlay': 'Experimental free play',
   'training.expFreePlayText': 'Free play with your own physics',
+  // The LAB tile's line where the long one has no room (a larger interface size)
+  'training.expFreePlayShort': 'Your own physics',
   'training.editPresets': 'Edit presets',
   // Pack category
   'training.catShooting': 'Shooting',

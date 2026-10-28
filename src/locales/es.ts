@@ -917,6 +917,7 @@ export default {
   'training.freePlay': 'Práctica libre',
   'training.expFreePlay': 'Práctica libre experimental',
   'training.expFreePlayText': 'Práctica libre con tu propia física',
+  'training.expFreePlayShort': 'Con tu propia física',
   'training.editPresets': 'Editar presets',
   'training.catShooting': 'Tiros',
   'training.catSaving': 'Atajadas',
