@@ -52,8 +52,9 @@ padPickup: sound({
 3. If the sound can fire many times in a row, give it a `minInterval`. Collisions use one, so
    stacked contacts on one frame do not pile up.
 
-The older `audio.playBallHit(...)`-style methods are one-line shortcuts to `play()` for the
-events the game already fires.
+The game's own events (hits, jumps, pads, the countdown) are all played this way from
+`src/game/Game.ts`. A goal calls `audio.play('goal', team)` and then `audio.musicGoal()`, which
+gives the music its goal break.
 
 ### Add a continuous layer
 
@@ -101,7 +102,7 @@ paused)`):
 - `tension`, for the last 30 s and overtime
 - `off`
 
-Mode changes land on the next bar. A goal (`playGoal`) plays the track's `goal` break and then its
+Mode changes land on the next bar. A goal (`audio.musicGoal()`) plays the track's `goal` break and then its
 `afterGoal` section. The lead melody is generated from the track's scale, motifs and cadences, one
 8-bar phrase at a time, so it never loops identically.
 

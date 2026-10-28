@@ -18,7 +18,6 @@
  * because of the autoplay policy); every method is a no-op while the context is not running, so
  * stale events never pile up and burst out on resume.
  */
-import type { Team } from '../sim/types';
 import type { MusicMode } from './music/engine';
 import musicWorkletUrl from './music/worklet.ts?worker&url';
 import { SfxKit } from './sfx/kit';
@@ -191,55 +190,12 @@ export class Audio {
     for (const layer of this.layers) layer.silence(ctx.currentTime);
   }
 
-  // ---- Game events ----------------------------------------------------------------------------
-  // Named shortcuts for the sounds the game plays (each one is its catalog entry in sfx/sounds.ts).
-
-  /** Car hits the ball, `strength` 0..1 (relative speed / 3000). */
-  playBallHit(strength: number): void {
-    this.play('ballHit', strength);
-  }
-
-  /** Car-car bump, `strength` 0..1 (0.6 a bump, 1 a demolition's). */
-  playCarHit(strength: number): void {
-    this.play('carHit', strength);
-  }
-
-  /** A car blown up, `strength` 0..1 (lower with the distance from the camera). */
-  playDemolition(strength: number): void {
-    this.play('demolition', strength);
-  }
-
-  playJump(): void {
-    this.play('jump');
-  }
-
-  playDodge(): void {
-    this.play('dodge');
-  }
-
-  playLand(hard: boolean): void {
-    this.play('land', hard);
-  }
-
-  /** The goal celebration; the music breaks down under it, rises and drops into the next kickoff. */
-  playGoal(team: Team): void {
-    if (this.play('goal', team)) this.musicNode?.port.postMessage({ type: 'goal' });
-  }
-
-  playCountdownTick(): void {
-    this.play('countdownTick');
-  }
-
-  playGo(): void {
-    this.play('go');
-  }
-
-  playMatchFound(): void {
-    this.play('matchFound');
-  }
-
-  playPadPickup(big: boolean): void {
-    this.play('padPickup', big);
+  /**
+   * A goal was scored: the music breaks down under the celebration (play('goal', team)), rises and
+   * drops into the next kickoff. Only in a match's modes, and only while sound plays.
+   */
+  musicGoal(): void {
+    if (this.running) this.musicNode?.port.postMessage({ type: 'goal' });
   }
 
   dispose(): void {

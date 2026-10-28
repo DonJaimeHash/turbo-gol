@@ -7,6 +7,16 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Music, made entirely in code (no audio files). A calm theme plays in the menus and an
+  electronic track plays during a match. The track builds up, breaks down after every goal and
+  drops back in at kickoff. It gets more intense in the last 30 seconds and in overtime, and it
+  goes quieter and darker while paused. The new **Music** slider is in SETTINGS → AUDIO (50 % by
+  default).
+- Audio (for contributors): `src/audio/README.md` says where every sound is and how to add or
+  replace one. Sound effects are a catalog in `src/audio/sfx/sounds.ts`, played with
+  `audio.play('name', ...)`. A song is a data file in `src/audio/music/tracks/` (tempo, chords,
+  patterns and the sections for each mode). To hear a song without the game, run `node
+  scripts/render-music.mjs out.wav --track=id`, which renders it to a WAV.
 - TRAINING has a new look: FREE PLAY is the big tile, then SHOOTING (start here), SAVING and
   AERIALS, each with three marks for its levels (filled with a ✓ when you passed it, a dot once you
   played it, empty before). A pack opens its three levels as big buttons with your best run and the

@@ -2238,12 +2238,12 @@ export class Game implements P2PGameHooks {
     switch (e.type) {
       case 'countdown':
         hud.showCountdown(e.n);
-        this.audio.playCountdownTick();
+        this.audio.play('countdownTick');
         this.cardCountdown();
         break;
       case 'go':
         hud.showCountdown('GO');
-        this.audio.playGo();
+        this.audio.play('go');
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         this.controlsCard.go();
         this.playFrom = this.cur[H_TICK_COUNT];
@@ -2256,7 +2256,8 @@ export class Game implements P2PGameHooks {
         p[1] = b[BALL_OFFSET + B_POS + 1];
         p[2] = b[BALL_OFFSET + B_POS + 2];
         this.effects.onGoal(e.team, p);
-        this.audio.playGoal(e.team);
+        this.audio.play('goal', e.team);
+        this.audio.musicGoal();
         this.input.rumble(0.6, 0.6, 350);
         break;
       }
@@ -2350,12 +2351,12 @@ export class Game implements P2PGameHooks {
     switch (e.type) {
       case 'countdown':
         hud.showCountdown(e.n);
-        this.audio.playCountdownTick();
+        this.audio.play('countdownTick');
         this.cardCountdown();
         break;
       case 'go':
         hud.showCountdown('GO');
-        this.audio.playGo();
+        this.audio.play('go');
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         this.controlsCard.go();
         this.playFrom = this.cur[H_TICK_COUNT];
@@ -2371,7 +2372,8 @@ export class Game implements P2PGameHooks {
         p[1] = b[BALL_OFFSET + B_POS + 1];
         p[2] = b[BALL_OFFSET + B_POS + 2];
         this.effects.onGoal(e.team, p);
-        this.audio.playGoal(e.team);
+        this.audio.play('goal', e.team);
+        this.audio.musicGoal();
         this.input.rumble(0.6, 0.6, 350);
         break;
       }
@@ -2818,8 +2820,8 @@ export class Game implements P2PGameHooks {
     const attempts = tr.attempts[index];
     th.showResult(pass, TRAINING_RESULT_TITLE[reason], t('game.trainingShot', { shot: index + 1, total: tr.shotCount, attempt: attempts }), RESULT_SECONDS * 1000);
     // Goals already played the goal sound (onSimGoal); a save / timeout gets a short cue.
-    if (reason === 'save') this.audio.playGo();
-    else if (reason === 'timeout') this.audio.playCountdownTick();
+    if (reason === 'save') this.audio.play('go');
+    else if (reason === 'timeout') this.audio.play('countdownTick');
   }
 
   private trainingPackSummary(summary: TrainingSummary): void {
@@ -4018,7 +4020,7 @@ export class Game implements P2PGameHooks {
     const region = req.region ?? this.menu.regionId;
     const line = [t(req.kind === 'ranked' ? 'play.rankedTitle' : 'play.casualTitle'), ...req.modes, region !== null ? regionName(region) : null].filter((x) => x !== null).join(' · ');
     this.found.show(line);
-    this.audio.playMatchFound();
+    this.audio.play('matchFound');
   }
 
   // ---- menu ------------------------------------------------------------------------------
@@ -4092,12 +4094,12 @@ export class Game implements P2PGameHooks {
         break;
       case 'countdown':
         hud.showCountdown(e.n);
-        this.audio.playCountdownTick();
+        this.audio.play('countdownTick');
         this.cardCountdown();
         break;
       case 'go':
         hud.showCountdown('GO');
-        this.audio.playGo();
+        this.audio.play('go');
         this.goCaptionUntil = this.time + GO_CAPTION_SECONDS;
         this.controlsCard.go();
         this.playFrom = this.cur[H_TICK_COUNT];
@@ -4136,7 +4138,8 @@ export class Game implements P2PGameHooks {
     this.pinPos[0] = p[0];
     this.pinPos[1] = p[1];
     this.effects.onGoal(team, p);
-    this.audio.playGoal(team);
+    this.audio.play('goal', team);
+    this.audio.musicGoal();
     this.input.rumble(0.6, 0.6, 350);
   }
 
@@ -4156,7 +4159,7 @@ export class Game implements P2PGameHooks {
       if (t - this.lastBumpFxTick < BUMP_FX_MIN_TICKS_ONLINE) return;
       this.lastBumpFxTick = t;
     }
-    this.audio.playCarHit(isDemo ? 1 : 0.6);
+    this.audio.play('carHit', isDemo ? 1 : 0.6);
     if (isDemo && bumperId === this.playerCarId && victimId !== this.playerCarId && !this.menuShown && this.training === null) this.hud.feed(t('hud.demolished', { count: ++this.demos }), 'demo');
     if (bumperId === this.playerCarId || victimId === this.playerCarId) {
       this.input.rumble(isDemo ? 1 : 0.5, isDemo ? 0.8 : 0.4, isDemo ? 400 : 140);
@@ -4175,7 +4178,7 @@ export class Game implements P2PGameHooks {
       const d = Math.hypot(x - c.x, y - c.y, z - c.z);
       strength = Math.min(1, Math.max(0.2, 1.15 - d / 7000));
     }
-    this.audio.playDemolition(strength);
+    this.audio.play('demolition', strength);
   }
 
   private onSimBallHit(carId: number, relSpeed: number): void {
@@ -4193,7 +4196,7 @@ export class Game implements P2PGameHooks {
     p[1] = b[BALL_OFFSET + B_POS + 1];
     p[2] = b[BALL_OFFSET + B_POS + 2];
     this.effects.onBallHit(p, relSpeed);
-    this.audio.playBallHit(relSpeed / 3000);
+    this.audio.play('ballHit', relSpeed / 3000);
     if (carId === this.playerCarId) this.input.rumble(Math.min(1, relSpeed / 2500), 0.3, 90);
   }
 
@@ -4211,7 +4214,7 @@ export class Game implements P2PGameHooks {
       const dx = cur[po + C_POS] - pad[0];
       const dy = cur[po + C_POS + 1] - pad[1];
       if (dx * dx + dy * dy < PAD_SOUND_DIST * PAD_SOUND_DIST) {
-        this.audio.playPadPickup(big);
+        this.audio.play('padPickup', big);
         this.input.rumble(big ? 0.4 : 0.15, 0.2, big ? 120 : 60);
       }
     }
@@ -4222,11 +4225,11 @@ export class Game implements P2PGameHooks {
     const prev = this.prev;
     const cur = this.cur;
     const o = this.playerOff;
-    if (prev[o + C_HAS_JUMPED] < 0.5 && cur[o + C_HAS_JUMPED] > 0.5) this.audio.playJump();
-    if (prev[o + C_IS_FLIPPING] < 0.5 && cur[o + C_IS_FLIPPING] > 0.5) this.audio.playDodge();
-    else if (prev[o + C_HAS_DOUBLE_JUMPED] < 0.5 && cur[o + C_HAS_DOUBLE_JUMPED] > 0.5) this.audio.playJump();
+    if (prev[o + C_HAS_JUMPED] < 0.5 && cur[o + C_HAS_JUMPED] > 0.5) this.audio.play('jump');
+    if (prev[o + C_IS_FLIPPING] < 0.5 && cur[o + C_IS_FLIPPING] > 0.5) this.audio.play('dodge');
+    else if (prev[o + C_HAS_DOUBLE_JUMPED] < 0.5 && cur[o + C_HAS_DOUBLE_JUMPED] > 0.5) this.audio.play('jump');
     if (prev[o + C_IS_ON_GROUND] < 0.5 && cur[o + C_IS_ON_GROUND] > 0.5 && prev[o + C_HAS_JUMPED] > 0.5) {
-      this.audio.playLand(prev[o + C_VEL + 2] < -HARD_LANDING_VZ);
+      this.audio.play('land', prev[o + C_VEL + 2] < -HARD_LANDING_VZ);
     }
   }
 
