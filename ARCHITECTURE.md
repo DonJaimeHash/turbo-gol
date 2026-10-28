@@ -333,7 +333,9 @@ src/game/
                         a failed one's REINTENTAR rejoins again), the failure's outcome
                         (src/net/outcome.ts); the close code in the console and F4's state line only
   rejoinStore.ts        the server match this tab may join again: matchId, kind, formats, the end of
-                        its regulation time; read by Inicio's hero and the lost sheet
+                        its regulation time; read by Inicio's hero and the lost sheet. And the Sala
+                        across a reload the game runs itself (Super low's restart: Game.restartOn
+                        saves it, lobby.ts installLobbyReturn joins it again by code and opens it)
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer

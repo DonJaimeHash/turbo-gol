@@ -139,3 +139,23 @@ test('back to your match: kept while the match can still run, then forgotten', (
   assert.equal(R.readRejoin(now, s), null);
   assert.equal(R.readRejoin(now, null), null, 'no storage: nothing');
 });
+
+test("the Sala across the game's own reload: read once, inside the reconnection window", () => {
+  const s = new MemStore();
+  const now = 1_000_000;
+  const stay = { code: 'ABC234', password: null, savedAt: now };
+  R.saveLobbyStay(stay, s);
+  assert.deepEqual(R.takeLobbyStay(now + 5_000, s), stay);
+  assert.equal(R.takeLobbyStay(now + 5_000, s), null, 'once: the next page does not join it again');
+  R.saveLobbyStay({ ...stay, password: 'pw' }, s);
+  assert.equal(R.takeLobbyStay(now + 1_000, s).password, 'pw');
+  R.saveLobbyStay(stay, s);
+  assert.equal(R.takeLobbyStay(now + R.LOBBY_STAY_MS, s), null, 'too late: the place is gone');
+  assert.equal(s.getItem(R.LOBBY_STAY_KEY), null);
+  s.setItem(R.LOBBY_STAY_KEY, '{bad');
+  assert.equal(R.takeLobbyStay(now, s), null);
+  assert.equal(s.getItem(R.LOBBY_STAY_KEY), null, 'an unreadable one goes too');
+  s.setItem(R.LOBBY_STAY_KEY, JSON.stringify({ code: '', password: null, savedAt: now }));
+  assert.equal(R.takeLobbyStay(now, s), null);
+  assert.equal(R.takeLobbyStay(now, null), null, 'no storage: nothing');
+});

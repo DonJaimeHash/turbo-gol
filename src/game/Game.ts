@@ -166,7 +166,7 @@ import { STOCK_ARENA_FINGERPRINT, accumulate, buildTrainingArena, needsTrainingA
 import type { ExperimentalContext, ExperimentalOptions } from '../render/experimentalPage';
 import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
-import { installJoinLink } from '../ui/screens/lobby';
+import { installJoinLink, installLobbyReturn } from '../ui/screens/lobby';
 import { installSalaSamples } from '../ui/screens/lobbySamples';
 import { openLostSheet } from '../ui/screens/match/lost';
 import { REGIONS, isPlaylist, isRegion } from '../net/account';
@@ -262,6 +262,7 @@ import { CARD_FIRST_MATCHES, ControlsCardPlan, controlsCardRows, localCardSeen, 
 import type { Device } from '../input/bindings';
 import { kbmCustomised, usesMouseButton } from '../input/bindings';
 import { OnlineSession } from './OnlineSession';
+import { saveLobbyStay } from './rejoinStore';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, TRAINING_DIFFICULTIES, TRAINING_PACKS, packById, type TrainingShot } from './trainingPacks';
 import { nextLevel } from '../ui/screens/trainingModel';
 import {
@@ -1051,7 +1052,11 @@ export class Game implements P2PGameHooks {
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     // A join link (#sala=ABC234) on this load or a later hashchange: its sheet once the menus are up.
-    if (typeof window !== 'undefined' && typeof history !== 'undefined') installJoinLink(this.menu);
+    // The Sala a reload of the game's own left (restartOn): joined again, its screen.
+    if (typeof window !== 'undefined' && typeof history !== 'undefined') {
+      installJoinLink(this.menu);
+      installLobbyReturn(this.menu);
+    }
     this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => this.restartAfterFinal && this.pendingRestart !== null, left: () => this.finalLeft() })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
@@ -1838,6 +1843,10 @@ export class Game implements P2PGameHooks {
         /* the reload still starts on the lower tier (its ceiling) */
       }
     }
+    // The Sala this tab is in: the next page joins it again (lobby.ts installLobbyReturn), as the
+    // reload's dropped socket keeps the place (LobbyDO).
+    const lobby = this.lobby;
+    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now() });
     this.loadingHold = true;
     return this.loading.show(fallback !== null ? fallbackText(fallback) : t('loading.restart')).then(() => {
       window.location.reload();
