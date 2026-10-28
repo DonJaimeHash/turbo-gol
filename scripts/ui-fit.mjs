@@ -98,7 +98,8 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', 'touch'];
+const SETTINGS_TABS = ['controls', 'camera', 'game', 'audio', 'graphics', 'experimental'].map((t) => 'settings:' + t);
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', ...SETTINGS_TABS, 'touch'];
 // The FINAL's samples (window.__final, plan PR 7): ranked (the rank card, a community node's line),
 // casual (a loss), against the AI (a draw, a full 3v3), a lobby's match.
 const FINAL_KINDS = ['ranked', 'casual', 'ai', 'lobby'];
@@ -148,7 +149,7 @@ const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
-const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile'].filter((x) => SCREENS.includes(x));
+const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile', 'settings:controls'].filter((x) => SCREENS.includes(x));
 // The touch match's checks (window context): what is wrong on screen now, from the controls' and the
 // pause's own boxes. `boost` is BOOST's centre measured while the controls were up.
 const TOUCH_CHECK = (state, boost) => `(() => {
