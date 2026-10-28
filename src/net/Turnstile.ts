@@ -9,7 +9,9 @@
  *   getToken()       renders an invisible widget (appearance 'interaction-only': it only shows up
  *                    when Cloudflare wants an interaction) into a container, resolves with the
  *                    token from the callback, rejects on error-callback / unsupported / timeout
- *                    (60 s) / abort, and always removes the widget again (turnstile.remove)
+ *                    (60 s) / abort, and always removes the widget again (turnstile.remove);
+ *                    `onInteractive` says when Cloudflare wants an interaction (the widget shows)
+ *                    and when that is over (before / after-interactive-callback)
  *
  * The loader is injectable (`load` in getToken's options) so the flow runs in node tests with a
  * fake API. Nothing here touches `window` / `document` at module level.
@@ -42,6 +44,9 @@ export interface TurnstileRenderOptions {
   'expired-callback'?: () => void;
   'timeout-callback'?: () => void;
   'unsupported-callback'?: () => void;
+  /** The challenge needs the player (the widget shows) / no longer. */
+  'before-interactive-callback'?: () => void;
+  'after-interactive-callback'?: () => void;
 }
 
 export interface TurnstileApi {
@@ -60,6 +65,8 @@ export interface GetTokenOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   action?: string;
+  /** Cloudflare wants an interaction (true) / no longer (false: answered, or the challenge ended). */
+  onInteractive?: (on: boolean) => void;
 }
 
 interface TurnstileGlobals {
@@ -138,12 +145,19 @@ export function getToken(siteKey: string, container: HTMLElement, opts: GetToken
         let widgetId: string | undefined;
         let settled = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
+        let interactive = false;
+        const setInteractive = (on: boolean): void => {
+          if (on === interactive) return;
+          interactive = on;
+          opts.onInteractive?.(on);
+        };
         const onAbort = (): void => finish('', 'turnstile cancelled');
         const finish = (token: string, message: string): void => {
           if (settled) return;
           settled = true;
           if (timer !== null) clearTimeout(timer);
           if (signal !== undefined) signal.removeEventListener('abort', onAbort);
+          setInteractive(false);
           if (widgetId !== undefined) {
             try {
               api.remove(widgetId);
@@ -179,6 +193,10 @@ export function getToken(siteKey: string, container: HTMLElement, opts: GetToken
             'expired-callback': () => finish('', 'turnstile token expired'),
             'timeout-callback': () => finish('', 'turnstile timeout'),
             'unsupported-callback': () => finish('', 'turnstile unsupported browser'),
+            'before-interactive-callback': () => {
+              if (!settled) setInteractive(true);
+            },
+            'after-interactive-callback': () => setInteractive(false),
           });
         } catch (err) {
           finish('', `turnstile render failed: ${err instanceof Error ? err.message : String(err)}`);

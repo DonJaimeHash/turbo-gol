@@ -16,6 +16,8 @@
  *   layout           widetext (every UI family becomes plain Arial, about 1.5x the display face
  *                    and as wide as Android's Roboto: html.tg-widetext, src/style.css), so a label
  *                    that only fits in a condensed face shows up on a desktop
+ *   input            keys (every key event's key, code and keyCode on screen, and the input and
+ *                    history events: a real TV's BACK, CH+ / CH− and system keyboard; src/ui/keysOverlay.ts)
  */
 
 export interface HashFlags {
@@ -41,6 +43,8 @@ export interface HashFlags {
   readonly norender: boolean;
   /** `#widetext`: the UI in plain Arial (a fit test for the fallback fonts). */
   readonly widetext: boolean;
+  /** `#keys`: the key events on screen (src/ui/keysOverlay.ts). */
+  readonly keys: boolean;
   /** `#pr=<x>`: the drawing buffer's pixel ratio (0 = no override). */
   readonly pr: number;
   /** `#hide=a,b`: mesh names drawn invisible every frame. */
@@ -89,6 +93,7 @@ export function parseHashFlags(hash: string): HashFlags {
     nopost: has('nopost'),
     norender: has('norender'),
     widetext: has('widetext'),
+    keys: has('keys'),
     pr: Number.isFinite(pr) && pr > 0 ? Math.min(4, Math.max(0.1, pr)) : 0,
     hide: hide !== null ? hide.split(',').map((s) => s.trim()).filter((s) => s.length > 0) : [],
   };

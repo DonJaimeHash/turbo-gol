@@ -388,6 +388,144 @@ html[data-layout='portrait'] .mn-sheet {
   border-radius: var(--r-panel) var(--r-panel) 0 0;
 }
 
+/* ---- mn-keypad (components/keypad.ts): a remote's keys, over the sheets ----------------------- */
+.mn-keypad-layer {
+  z-index: 5;
+}
+
+.mn-keypad {
+  display: grid;
+  gap: 0.375rem;
+  width: min(40rem, 100%);
+  padding: 1.25rem;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-sheet);
+}
+
+.mn-keypad[data-kind='code'] {
+  width: min(32rem, 100%);
+}
+
+.mn-keypad-head {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.mn-keypad-label {
+  color: var(--text-2);
+  font-size: var(--t-small);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The text so far, with the editing field's lime underline and caret. */
+.mn-keypad-shown {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 3rem;
+  padding: 0 0.75rem;
+  overflow: hidden;
+  color: var(--text);
+  font: 600 var(--t-title) / 1 var(--font-display);
+  white-space: pre;
+  background: var(--surface-2);
+  border-bottom: 2px solid var(--brand);
+  border-radius: var(--r-tile) var(--r-tile) 0 0;
+}
+
+.mn-keypad-long {
+  justify-content: flex-end;
+}
+
+.mn-keypad-caret {
+  flex: none;
+  width: 2px;
+  height: 1.25em;
+  margin-left: 2px;
+  background: var(--brand);
+}
+
+.mn-keypad-row {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 0.375rem;
+}
+
+.mn-keypad[data-kind='code'] .mn-keypad-row {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+}
+
+.mn-keypad-row.mn-keypad-actions {
+  grid-template-columns: 2fr 2fr 3fr 3fr;
+  margin-top: 0.25rem;
+}
+
+.mn-keypad[data-kind='code'] .mn-keypad-row.mn-keypad-actions {
+  grid-template-columns: 1fr 1fr;
+}
+
+.mn-kp-key {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0;
+  color: var(--text);
+  font: 700 var(--t-heading) / 1 var(--font-display);
+  letter-spacing: 0.04em;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-tile);
+  cursor: pointer;
+}
+
+.mn-kp-done {
+  color: var(--brand-ink);
+  background: var(--brand-grad);
+  border-color: transparent;
+}
+
+.mn-kp-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/* On a phone too it stands in the middle, clear of the edges (its focus rings whole), not a bottom sheet. */
+html[data-shell='rail'] .mn-keypad-layer,
+html[data-layout='portrait'] .mn-keypad-layer {
+  align-items: center;
+  padding: 0.5rem;
+}
+
+/* Phones held sideways: 360 px of height for five rows of keys. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .mn-keypad {
+    gap: 0.25rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .mn-keypad-head {
+    margin-bottom: 0.25rem;
+  }
+
+  .mn-keypad-shown {
+    min-height: 2.25rem;
+  }
+
+  .mn-kp-key {
+    min-height: 2.25rem;
+  }
+}
+
+/* The anti-bot sheet (Menu.antiBotAsk): room for Cloudflare's widget, which shows over it. */
+.mn-antibot-slot {
+  height: 5rem;
+}
+
 /* ---- Toasts: bottom right, above the sheets ------------------------------------------------ */
 .mn-toasts {
   position: absolute;

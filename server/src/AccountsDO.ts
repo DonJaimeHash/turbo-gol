@@ -27,6 +27,13 @@
  *   POST /experimental/set { userId, enabled }                       -> ExperimentalAnswer | 404
  *   POST /presets/upsert  { userId, preset }                         -> ExperimentalAnswer | 400 bad_preset | 409 too_many | 404
  *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
+ *   POST /tv-start        { ip, secret }                             -> { code, expiresAt } | 503 busy
+ *   POST /tv-confirm      { code, userId, username, ip }             -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
+ *                                                                     | 409 tv_code_used | 429 throttled
+ *   POST /tv-poll         { code, secret, refresh }                  -> { state: 'pending' } | UserRef (approved: the
+ *                                                                     refresh row added) | 410 | 409 | 403 bad_secret
+ *     The TV's sign-in with the phone (tvCodes.ts, in memory): `secret` is the SHA-256 of the
+ *     device secret the Worker made, `refresh` the hash of the refresh token it issues on approval.
  *
  * Brute force (in memory, per object = global): a username with LOGIN_FAILS_FREE failures in the
  * window is throttled with a doubling delay up to LOGIN_LOCK_MAX_MS; an IP with LOGIN_IP_MAX failures
@@ -37,6 +44,7 @@ import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
+import { TvCodes, tvCode } from './tvCodes';
 import type { PasswordRecord, RankedResultInput } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
@@ -92,6 +100,8 @@ async function body<T>(request: Request): Promise<T | null> {
 export class AccountsDO extends DurableObject<Env> {
   private readonly store: AccountStore;
   private readonly fails = new Map<string, FailEntry>();
+  /** The TV sign-in codes (tvCodes.ts): minutes long, so memory is enough. */
+  readonly tv = new TvCodes();
   /** The clock (tests inject their own). */
   now: () => number = () => Date.now();
 
@@ -107,6 +117,7 @@ export class AccountsDO extends DurableObject<Env> {
   override async alarm(): Promise<void> {
     this.store.prune(this.now());
     for (const [k, e] of this.fails) if (this.now() - e.first > LOGIN_WINDOW_MS && e.lockedUntil <= this.now()) this.fails.delete(k);
+    this.tv.sweep(this.now(), true);
     await this.ctx.storage.setAlarm(Date.now() + PRUNE_EVERY_MS);
   }
 
@@ -253,6 +264,32 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'already_linked') return error(409, 'already_linked', 'Esa cuenta ya está vinculada a otro usuario');
         if (r === 'no_user') return error(403, 'no_user');
         return json(r);
+      }
+      case '/tv-start': {
+        if (!isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
+        const r = this.tv.start(b.ip, b.secret, now);
+        return r === 'full' ? error(503, 'busy', 'Demasiados códigos ahora, inténtalo en un minuto') : json(r);
+      }
+      case '/tv-confirm': {
+        const code = tvCode(b.code);
+        if (code === null || typeof b.userId !== 'string' || typeof b.username !== 'string' || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
+        const r = this.tv.confirm(code, { userId: b.userId, username: b.username }, b.ip, now);
+        if (typeof r === 'object') return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: r.throttled }, 429);
+        if (r === 'wrong') return error(404, 'tv_code_wrong', 'Ese código no existe');
+        if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
+        if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
+        return json({ ok: true });
+      }
+      case '/tv-poll': {
+        const code = tvCode(b.code);
+        if (code === null || !isHex(b.secret, 64) || !isHex(b.refresh, 64)) return error(400, 'bad_request');
+        const r = this.tv.poll(code, b.secret, now);
+        if (r === 'pending') return json({ state: 'pending' });
+        if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
+        if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
+        if (r === 'bad_secret') return error(403, 'bad_secret');
+        const u = s.signedIn(r.userId, b.refresh, now);
+        return u === null ? error(403, 'banned', 'Cuenta suspendida') : json(u);
       }
       case '/rename': {
         if (typeof b.userId !== 'string' || typeof b.username !== 'string' || usernameProblem(b.username) !== null) return error(400, 'bad_request');

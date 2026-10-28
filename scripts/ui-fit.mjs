@@ -86,6 +86,13 @@
 // link's sheet, the lobby pill on Inicio, the lost connection's sheet; then the HUD's reconnection
 // line ("Reconnecting… (attempt 2/5)", "Back in the match") must stay on screen and unclipped.
 //
+// The TV's typing and sign-in (plan PR 14, 'tv': window.__tvSignIn, screens/tvSignInSamples.ts): mn-keypad
+// over PERFIL's guest name, its password and the code cells' sheet where there is no fine pointer (the
+// TVs, the phones, the tablet), which fails it off screen, a key under 32 x 24 px or its text cut, no
+// key focused, or a password's text shown; the TV's sign-in sheet (a code, expired) on the TVs; the
+// phone's /tv sheets (sign in first, the code, the question with a long name, a refusal) and the
+// anti-bot sheet everywhere.
+//
 // Exit 1 when the shell overflows anywhere, or Inicio fails a check (CI's ui-fit job runs it as
 // information until plan PR 6).
 import { spawn, spawnSync } from 'node:child_process';
@@ -118,9 +125,28 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'training:lab', 'summary', 'garage', 'leaderboard', 'leaderboard:rows', 'leaderboard:below', 'leaderboard:guest', 'profile', 'profile:account', 'profile:operator', 'final', 'touch', 'sala'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'training:lab', 'summary', 'garage', 'leaderboard', 'leaderboard:rows', 'leaderboard:below', 'leaderboard:guest', 'profile', 'profile:account', 'profile:operator', 'final', 'touch', 'sala', 'tv'];
 // The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
 const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
+// PR 14's samples (window.__tvSignIn): the keypad's where no fine pointer, 'tv*' on a TV, the rest everywhere.
+const TV_KINDS = ['keypad', 'keypad-password', 'keypad-code', 'tv', 'tv-expired', 'tvlink-signin', 'tvlink-code', 'tvlink-ask', 'tvlink-refused', 'antibot'];
+/** The keypad on screen, its keys big enough and whole, one focused, a password in dots. */
+const KEYPAD_CHECK = (kind) => `(() => {
+  const out = [];
+  const k = document.querySelector('.mn-keypad');
+  if (!__game.menu.keypadOpen || k === null) return ['the keypad did not open'];
+  const r = k.getBoundingClientRect();
+  if (r.left < -0.5 || r.top < -0.5 || r.right > innerWidth + 0.5 || r.bottom > innerHeight + 0.5) out.push('keypad off screen: ' + [r.left, r.top, r.right, r.bottom].map(Math.round).join(','));
+  for (const b of k.querySelectorAll('.mn-kp-key')) {
+    const q = b.getBoundingClientRect();
+    if (q.height < 32 || q.width < 24) out.push('key too small: ' + b.dataset.key + ' ' + Math.round(q.width) + 'x' + Math.round(q.height));
+    if (b.scrollWidth > b.clientWidth + 1) out.push('key text cut: ' + b.dataset.key);
+  }
+  if (!document.activeElement?.classList.contains('mn-kp-key')) out.push('no key focused');
+  const text = k.querySelector('.mn-keypad-text')?.textContent ?? '';
+  if (${JSON.stringify(kind)} === 'keypad-password' && !/^•*$/.test(text)) out.push('the password shows: ' + text.length + ' chars');
+  return out;
+})()`;
 // The HUD's reconnection line, per language: the try and the way back (OnlineSession.hint).
 const NET_LINES = { en: ['Reconnecting… (attempt 2/5)', 'Back in the match'], es: ['Reconectando… (intento 2/5)', 'De vuelta en el partido'] };
 // The FINAL's samples (window.__final, plan PR 7): ranked (the rank card, a community node's line),
@@ -473,6 +499,17 @@ try {
         await sleep(300);
         return;
       }
+      if (screen === 'tv') {
+        const kinds = input !== own ? [] : TV_KINDS.filter((k) => (k.startsWith('keypad') ? size.tv || size.mobile : k === 'tv' || k === 'tv-expired' ? size.tv : true));
+        for (const kind of kinds) {
+          await page.eval(`(window.__tvSignIn(${JSON.stringify(kind)}), true)`);
+          await sleep(400);
+          await check(input, screen, at(kind), kind.startsWith('keypad') ? await page.eval(KEYPAD_CHECK(kind)) : []);
+        }
+        await page.eval('(window.__tvSignIn(null), true)');
+        await sleep(200);
+        return;
+      }
       if (screen === 'summary') {
         // A pack's summary (plan PR 13) over the training HUD, then back to the menus.
         await page.eval(`(__game.startTraining('shooting-medium'), true)`);
@@ -573,7 +610,8 @@ try {
       await sleep(300);
       // Nothing larger than the device's own listed here (a short phone held sideways): no pass.
       // Every screen as the device's own input runs it (its states and samples: the Salas', PR 13's
-      // training, summary, board and profile), that input back on the page first.
+      // training, summary, board and profile, PR 14's keypad and sign-in sheets), that input back on
+      // the page first.
       const pass = big > (size.tv ? 125 : 100) ? SCREENS.filter((x) => x !== 'touch' && x !== 'final') : [];
       if (pass.length > 0) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(own)}; h.classList.toggle('tg-touch', ${JSON.stringify(own)} === 'touch'); return true; })()`);
       for (const screen of pass) await runScreen(own, screen, `ui ${big}%`);

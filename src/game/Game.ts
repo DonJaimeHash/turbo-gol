@@ -167,6 +167,8 @@ import type { ExperimentalContext, ExperimentalOptions } from '../render/experim
 import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
 import { installJoinLink, installLobbyReturn } from '../ui/screens/lobby';
+import { installTvLink } from '../ui/screens/tvSignIn';
+import { installTvSamples } from '../ui/screens/tvSignInSamples';
 import { installSalaSamples } from '../ui/screens/lobbySamples';
 import { openLostSheet } from '../ui/screens/match/lost';
 import { REGIONS, isPlaylist, isRegion } from '../net/account';
@@ -1053,10 +1055,14 @@ export class Game implements P2PGameHooks {
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     // A join link (#sala=ABC234) on this load or a later hashchange: its sheet once the menus are up.
     // The Sala a reload of the game's own left (restartOn): joined again, its screen.
+    // The phone's /tv page (a TV's sign-in), and a code kept across a sign-in's round trip.
     if (typeof window !== 'undefined' && typeof history !== 'undefined') {
       installJoinLink(this.menu);
       installLobbyReturn(this.menu);
+      installTvLink(this.menu);
     }
+    // The anti-bot check that wants the player: the menus' sheet, CANCEL ends it.
+    online.client.onAntiBotAsk = (asking) => this.menu.antiBotAsk(asking, () => online.client.cancelChallenge());
     this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => this.restartAfterFinal && this.pendingRestart !== null, left: () => this.finalLeft() })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
@@ -1072,6 +1078,7 @@ export class Game implements P2PGameHooks {
     this.pauseSettings = new SettingsOverlay(opts.hudContainer, () => this.settingsOptions());
     installFinalSample(this.menu);
     installSalaSamples(this.menu);
+    installTvSamples(this.menu);
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad, ui: this.settings.ui }) : null;
@@ -1286,6 +1293,7 @@ export class Game implements P2PGameHooks {
         const c = await net.config();
         return { regions: REGIONS, autoRegion: c.autoRegion ?? '', oauth: c.oauth ?? [], online: true, botFillMs: c.botFillMs ?? null };
       },
+      prewarmAntiBot: () => net?.prewarmAntiBot(),
       guestName: () => (game.online !== null ? game.online.name : t('game.guestName')),
       setGuestName: (name) => {
         if (game.online !== null) game.online.setName(name);

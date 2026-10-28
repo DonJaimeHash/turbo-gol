@@ -7,6 +7,19 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- On a TV, sign in with your phone: PROFILE starts with SIGN IN WITH YOUR PHONE, which shows a
+  short code and its QR. Open turbo-gol.com/tv on a phone where you are signed in, check the code and
+  press CONFIRM: the TV signs in by itself and goes back to where you were (FIND MATCH after
+  Competitive's SIGN IN). A code lasts 5 minutes and works once; NEW CODE gets another. Signed out on
+  the phone, sign in there first and the code waits for you. The phone asks you to confirm only a
+  code you see on a TV in front of you: a link someone sent you would give that TV your account.
+- Typing with a TV remote or a controller: OK or A on a name, a password or a lobby code opens
+  on-screen keys (letters, numbers, . - _ @, upper or lower case, delete, space). DONE keeps the
+  text, Back too. A mouse or a keyboard types as before.
+- With a TV remote, CH+ and CH− do what a controller's triggers do: they page the leaderboard and
+  switch a screen's tabs.
+- The anti-bot check runs ahead when PLAY opens, so starting a match or creating an account rarely
+  waits for it. If Cloudflare ever needs you to answer it, a sheet says why, and CANCEL stops it.
 - New in Settings › Graphics: Resolution scale (50 to 125 %: lower is smoother, the text and the
   HUD stay sharp), a frame rate limit (30, 60 or no limit), the animated stadium in the menus, and
   RESET GRAPHICS for those three. A card under the tabs says your settings save themselves.

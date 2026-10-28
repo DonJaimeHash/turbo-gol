@@ -4,12 +4,15 @@
  * the server's alphabet gets in (screens/lobbyModel.ts cleanCode: no I, O, 0 or 1). The field is the
  * focus target (`data-nav`, Menu's field modes: OK starts editing, ◀ ▶ move the caret, Back stops).
  * While editing, ▲ ▼ (a remote, a pad: nav.ts's navUp / navDown claims) step the character of the
- * cell under the caret through the alphabet, so a remote alone can enter a code. Typing or pasting
- * the sixth character submits (`onFull`); OK on a full code does too. Built on call.
+ * cell under the caret through the alphabet, so a remote alone can enter a code. Without a fine
+ * pointer OK opens mn-keypad on the code's alphabet instead (components/keypad.ts): its LISTO with six
+ * characters joins, its Back keeps them. Typing or pasting the sixth character submits (`onFull`);
+ * OK on a full code does too. Built on call.
  */
 import { h } from '../dom';
 import { CODE_LENGTH, cleanCode, cycleCell } from '../screens/lobbyModel';
 import { isEditing, onEditStep, setEditing } from '../nav';
+import { onKeypad } from './keypad';
 
 export interface CodeCells {
   readonly el: HTMLElement;
@@ -91,6 +94,15 @@ export function codeCells(label: string, onFull: (code: string) => void): CodeCe
     return true;
   };
   onEditStep(input, () => step(1), () => step(-1));
+  onKeypad(input, {
+    kind: 'code',
+    write: (v, done) => {
+      input.value = cleanCode(v);
+      last = input.value;
+      render();
+      if (done && last.length === CODE_LENGTH) onFull(last);
+    },
+  });
   return {
     el,
     input,

@@ -600,6 +600,43 @@ export default {
   'profile.generate': 'GENERATE',
   'profile.newCodesIntro': 'Your new codes:',
 
+  // mn-keypad (src/ui/components/keypad.ts): the on-screen keys of a TV remote or a controller.
+  // The case and delete keys are drawn (abc / ABC, an arrow): these name them for a screen reader
+  'keypad.case': 'Upper or lower case',
+  'keypad.delete': 'Delete',
+  'keypad.space': 'SPACE',
+  'keypad.done': 'DONE',
+  // PERFIL on a TV (src/ui/screens/tvSignIn.ts): sign in with the account open on a phone. {link}: turbo-gol.com/tv
+  'tvsign.tile': 'SIGN IN WITH YOUR PHONE',
+  'tvsign.tileSub': 'No typing on the TV',
+  'tvsign.title': 'Sign in with your phone',
+  'tvsign.line': 'Go to {link} with your account signed in and enter this code',
+  // {time}: m:ss
+  'tvsign.expiresIn': 'Expires in {time}',
+  'tvsign.expired': 'The code expired',
+  'tvsign.newCode': 'NEW CODE',
+  'tvsign.cancel': 'CANCEL',
+  'tvsign.starting': 'Getting a code…',
+  'tvsign.qr': 'Scan to sign in on the TV',
+  // The phone's /tv page (src/ui/screens/tvSignIn.ts installTvLink); {name}: the phone's account
+  'tvlink.title': 'Sign in on the TV',
+  'tvlink.codeLabel': 'TV code',
+  'tvlink.enterCode': 'Enter the code the TV shows',
+  'tvlink.continue': 'CONTINUE',
+  'tvlink.ask': 'Sign in on the TV as {name}?',
+  'tvlink.askNote': 'Confirm only if this code is on a TV in front of you right now. If someone sent you this link, cancel: that TV would play as you.',
+  'tvlink.confirm': 'CONFIRM',
+  'tvlink.cancel': 'CANCEL',
+  'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',
+  'tvlink.signIn': 'SIGN IN',
+  'tvlink.done': 'Done: the TV signs in in a moment',
+  'tvlink.otherCode': 'ANOTHER CODE',
+  // The anti-bot check wants an interaction (Turnstile): a sheet with the reason; CANCEL stops it
+  'antibot.title': 'Quick check',
+  'antibot.body': 'Cloudflare wants to make sure you are a person: answer the check on screen.',
+  'antibot.bodyTv': "Cloudflare asks for a check a remote can't answer. Cancel and try again in a while.",
+  'antibot.cancel': 'CANCEL',
+
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Choose a username',
   // USERNAME_MIN / USERNAME_MAX (3, 16)
@@ -680,6 +717,10 @@ export default {
   // Physics presets (Settings > Experimental): the account already holds 10
   'error.account.too_many': '10 presets at most: delete one first',
   'error.account.bad_preset': 'Invalid preset',
+  // The TV's sign-in with the phone (the /tv page's CONFIRM)
+  'error.account.tv_code_wrong': "That code doesn't exist: check it on the TV",
+  'error.account.tv_code_expired': 'The code expired: get a new one on the TV',
+  'error.account.tv_code_used': 'That code was already used',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
