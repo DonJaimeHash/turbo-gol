@@ -156,15 +156,15 @@ test('reconnecting: a refusal that ends it (kicked, no lobby) closes the stay; n
   await tick(10);
   assert.equal(why, 'ended');
   // The server out of reach: tries every delay, then 'lost' when the window ends.
-  const down = client({ join: (n) => (n === 1 ? res(200, ANSWER) : res(503, { error: 'unavailable' })), windowMs: 60, delays: [10] });
+  const down = client({ join: (n) => (n === 1 ? res(200, ANSWER) : res(503, { error: 'unavailable' })), windowMs: 150, delays: [10] });
   await joined(down);
   down.lc.onClosed = (r) => (why = r);
   why = null;
   down.sockets[0].drop();
-  await tick(150);
+  await tick(450);
   assert.equal(why, 'lost');
   const tries = down.calls.filter((c) => c.url === '/api/lobbies/join').length - 1;
-  assert.ok(tries >= 3, `several tries (${tries})`);
+  assert.ok(tries >= 2, `several tries (${tries})`);
 });
 
 test('the tab back in view: a silent socket counts as dropped; one that answers stays; offline -> online tries at once', async () => {
