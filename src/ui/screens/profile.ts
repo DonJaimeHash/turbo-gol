@@ -32,6 +32,7 @@ import { regionName } from '../names';
 import type { Menu, Screen } from '../Menu';
 import { field, primary, screenHead, secondary, section } from './common';
 import { openLanguagePicker } from '../components/language';
+import { finePointer } from '../device';
 import { icon } from '../components/icons';
 import type { IconName } from '../components/icons';
 import { slot } from '../components/tile';
@@ -237,11 +238,14 @@ export function profileScreen(menu: Menu): Screen {
     return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, h('p.mn-prof-form-title', null, t('profile.tabRecover')), user.el, code.el, pass.el, primary(t('profile.resetPassword'), () => void go(), { 'data-key': 'profile-go' }));
   };
 
-  /** A guest's form: the tab's, its first field focused (but on a touch screen: the tap shows the keyboard). */
+  /**
+   * A guest's form: the tab's, its first field focused for typing where there is a fine pointer (a
+   * touch screen's tap shows the keyboard; a TV's OK on the field, reached with ▼, opens mn-keypad).
+   */
   const pickTab = (id: GuestTab): void => {
     tab = id;
     render();
-    if (!touch()) body.querySelector<HTMLElement>('.mn-form .mn-input')?.focus();
+    if (!touch() && finePointer()) body.querySelector<HTMLElement>('.mn-form .mn-input')?.focus();
   };
 
   const guestView = (): HTMLElement => {

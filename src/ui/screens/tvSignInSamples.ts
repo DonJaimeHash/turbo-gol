@@ -21,6 +21,11 @@ export type TvSample = 'keypad' | 'keypad-password' | 'keypad-code' | 'tv' | 'tv
 export function installTvSamples(menu: Menu): void {
   if (!UI_FIT) return;
   const noop = (): void => undefined;
+  /** PERFIL as a guest (an account's or an operator's sample left by ui-fit's profile cases goes). */
+  const guestProfile = (): void => {
+    menu.open('profile', true);
+    (window as unknown as { __profile?: (kind: null) => void }).__profile?.(null);
+  };
   const keypadOn = (selector: string): void => {
     const f = document.querySelector<HTMLInputElement>(selector);
     if (f !== null) menu.openKeypad(f);
@@ -34,7 +39,7 @@ export function installTvSamples(menu: Menu): void {
         return;
       case 'keypad':
       case 'keypad-password':
-        menu.open('profile', true);
+        guestProfile();
         keypadOn(kind === 'keypad' ? '.mn-prof-guestname .mn-input' : '.mn-prof-form input[type=password]');
         return;
       case 'keypad-code':
@@ -44,7 +49,7 @@ export function installTvSamples(menu: Menu): void {
         return;
       case 'tv':
       case 'tv-expired':
-        menu.open('profile', true);
+        guestProfile();
         tvSheet(menu, kind === 'tv' ? { kind: 'code', s: { code: 'ABC234', secret: '', expiresAt: Date.now() + 272_000, pollMs: 3000 } } : { kind: 'expired' }, noop, noop);
         return;
       case 'tvlink-signin':
