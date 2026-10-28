@@ -26,6 +26,7 @@ import { t } from '../../i18n';
 import { PLAYLISTS, isRegion } from '../../net/account';
 import type { RegionId } from '../../net/account';
 import { MODES } from '../../sim/constants';
+import { rejoinLeftMs } from '../../game/rejoinStore';
 import type { GameMode } from '../../sim/constants';
 import type { Menu, Screen } from '../Menu';
 import { heroTile, modeTile, slot } from '../components/tile';
@@ -89,13 +90,19 @@ export function homeScreen(menu: Menu): Screen {
   };
   const names = { casual: t('play.casualTitle'), ranked: t('play.rankedTitle') };
 
+  /** The server match this tab may join again (rejoinStore.ts), while no search runs (a rejoin under way is one). */
+  const rejoinOf = (searching: boolean): HeroInput['rejoin'] => {
+    const r = searching ? null : host.rejoinable();
+    return r === null ? null : { kind: r.kind, modes: r.modes, leftMs: rejoinLeftMs(r) };
+  };
+
   const input = (): HeroInput => {
     const v = host.searchView();
     const lobby = host.lobby;
     const st = lobby.state;
     return {
       updateNeeded: menu.updateNeeded,
-      rejoin: null, // PR 12 (sessionStorage)
+      rejoin: rejoinOf(v.active),
       lobby: !lobby.inLobby ? null : st !== null ? { code: st.code, count: st.members.length, max: MODES[st.settings.mode] * 2 } : { code: lobby.code ?? '', count: null, max: null },
       search: v.active && v.kind !== null ? { kind: v.kind, modes: v.modes, region: v.region, since: v.since } : null,
       offline: menu.offline,
@@ -264,7 +271,8 @@ export function homeScreen(menu: Menu): Screen {
         location.reload();
         return;
       case 'rejoin':
-        return; // PR 12
+        menu.beforeMatch(() => menu.rejoin());
+        return;
     }
   };
 

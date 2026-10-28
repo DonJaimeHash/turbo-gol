@@ -105,6 +105,7 @@ function makeClient(routes, opts = {}) {
       return s;
     },
     pingIntervalMs: 1e9,
+    reconnectDelaysMs: [0], // the reconnection's tries without their waits
     ...opts,
   });
   return { client, sockets, calls, setTime: (v) => (t = v), now: () => t };
@@ -408,13 +409,13 @@ test('OnlineSession.leave (quit from the menu) POSTs /api/leave { matchId } with
 });
 
 test('OnlineSession: no /api/leave after the connection was lost for good (the rejoin path keeps the lock) nor after the whistle', async () => {
-  // Lost: the socket drops, the one automatic rejoin fails, the Game shows the menu (-> leave()).
+  // Lost: the socket drops, the automatic rejoins fail (RECONNECT_TRIES), the Game shows the menu (-> leave()).
   const rec = leaveRecorder();
   let disconnected = null;
   const s = await playingSession({ '/api/leave': rec.route, '/api/rejoin': () => jsonResponse(503, { error: 'unavailable' }) });
   s.game.onOnlineDisconnected = (msg) => (disconnected = msg);
   s.ws.dropped(1006, 'network');
-  await flush();
+  for (let i = 0; i < 20 && disconnected === null; i++) await flush();
   assert.ok(disconnected !== null, 'the session reported the lost connection');
   s.session.leave();
   await flush();

@@ -16,7 +16,9 @@
  *   only when true for the path the search takes (modesModel.ts botsCountdown: the server queue's
  *   botFillMs from /api/config, the P2P queue's P2P_FILL_WAIT_MS), CANCEL SEARCH (keyboard X, pad
  *   Y, the pill's ✕ too) and "While you wait: Free play" (MenuHost.practiceWhileSearching).
- * - SALAS: the lobby browser of today (custom.ts lobbyBrowser) in the tab; CREATE LOBBY is the action.
+ * - SALAS (PR 12): JOIN WITH CODE, the region and the public list (custom.ts lobbyBrowser) in the tab;
+ *   the action is CREATE LOBBY AND SHARE (screens/lobby.ts createAndShare), BACK TO LOBBY ABC 234
+ *   while the player is in one (kept with KEEP THE LOBBY: the screen no longer comes back by itself).
  * - CONTRA LA IA: mode and difficulty as mn-seg, the Stadium row (GARAJE, where the stadiums are),
  *   PLAY.
  *
@@ -46,6 +48,8 @@ import { seg } from '../components/seg';
 import { picker } from '../components/picker';
 import { PLAYING_SHOWN } from '../shell/pills';
 import { lobbyBrowser } from './custom';
+import { createAndShare } from './lobby';
+import { spacedCode } from './lobbyModel';
 import { FORMATS, MODE_TABS, NET_PICKS, actionKind, botsCountdown, botsSegments, countShown, formatOf, isModeTab, modesOf, queueNet, stepTab } from './modesModel';
 import type { ActionKind, Format, ModeTab, NetPick } from './modesModel';
 
@@ -238,7 +242,7 @@ export function modesScreen(menu: Menu): Screen {
         menu.beforeMatch(() => host.playFriendly(aiMode, aiDifficulty));
         return;
       case 'lobbies':
-        menu.open('lobby-create');
+        void createAndShare(menu); // in a lobby: its screen
         return;
       case 'searching':
         break;
@@ -285,7 +289,6 @@ export function modesScreen(menu: Menu): Screen {
     if (touch()) return;
     if (onTabs) tabEls.get(id)?.el.focus({ preventScroll: true });
     else if (changed) go.focus({ preventScroll: true });
-    if (tab === 'lobbies' && host.lobby.inLobby) queueMicrotask(() => menu.open('lobby'));
   };
 
   // ---- render: only what changed ----
@@ -409,11 +412,13 @@ export function modesScreen(menu: Menu): Screen {
           lineText = t('modes.vsAiSub');
           label = t('friendly.play');
           break;
-        case 'lobbies':
+        case 'lobbies': {
+          const code = host.lobby.inLobby ? (host.lobby.state?.code ?? host.lobby.code) : null;
           sum = t('modes.lobbies');
-          lineText = t('modes.lobbiesAction');
-          label = t('custom.createLobby');
+          lineText = code !== null ? '' : t('modes.lobbiesAction');
+          label = code !== null ? t('lobby.backTo', { code: spacedCode(code) }) : t('lobby.createShare');
           break;
+        }
         default:
           sum = queue;
           lineText = kind === 'ranked' ? t('modes.rankedSub') : t('search.always');
@@ -453,11 +458,7 @@ export function modesScreen(menu: Menu): Screen {
       aiDifficulty = host.difficulty;
       lastTab = null;
       lastState = null;
-      if (tab === 'lobbies') {
-        lobbies.show();
-        // Still in a lobby (the player went to another section from it): its screen comes back on top.
-        if (host.lobby.inLobby) queueMicrotask(() => menu.top()?.id === 'modes' && tab === 'lobbies' && host.lobby.inLobby && menu.open('lobby'));
-      }
+      if (tab === 'lobbies') lobbies.show();
       if (acc.signedIn) void acc.fetchMe().then(() => shown && render(performance.now()), () => undefined);
       render(performance.now());
     },

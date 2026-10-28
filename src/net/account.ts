@@ -342,6 +342,10 @@ export interface LobbyMember {
   guest: boolean;
   /** Still playing the lobby's last match. */
   inGame: boolean;
+  /** Its socket dropped: the place is kept for the grace (LobbyDO LOBBY_GRACE_MS), then it goes. Absent from an older Worker: false. */
+  away?: boolean;
+  /** Said LISTO (informative: the host's start never waits for it). Absent from an older Worker: false. */
+  ready?: boolean;
 }
 
 export interface LobbyState {
@@ -376,6 +380,11 @@ export type LobbyClientMsg =
   | { t: 'team'; team: 0 | 1 }
   | { t: 'settings'; settings: Partial<LobbySettings>; password?: string | null }
   | { t: 'kick'; member: string }
+  /** The host hands the lobby to another member. */
+  | { t: 'host'; member: string }
+  /** The host moves another member to `team` (a member's own move is 'team'). */
+  | { t: 'move'; member: string; team: 0 | 1 }
+  | { t: 'ready'; ready: boolean }
   | { t: 'start' }
   | { t: 'back' }
   | { t: 'leave' };

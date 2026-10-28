@@ -61,9 +61,9 @@ test('AccountClient: a bare code gets its es.ts text, else the generic one (`|| 
     [msg(401, 'bad_credentials', 'Usuario o contraseña incorrectos'), 'Usuario o contraseña incorrectos'],
     [msg(429, 'throttled', 'Demasiados intentos, espera un momento', { retryAfterMs: 5000 }), 'Demasiados intentos, espera un momento'],
     [msg(503, 'turnstile_unconfigured', 'TURNSTILE_SECRET must be set outside local dev'), 'TURNSTILE_SECRET must be set outside local dev'],
-    [bare(400, 'bad_request'), 'Error del servidor (400)'],
-    [bare(401, 'unauthorized'), 'Error del servidor (401)'],
-    [{ ok: false, status: 502, json: async () => JSON.parse('<html>') }, 'Error del servidor (502)'],
+    [bare(400, 'bad_request'), 'Error del servidor'],
+    [bare(401, 'unauthorized'), 'Error del servidor'],
+    [{ ok: false, status: 502, json: async () => JSON.parse('<html>') }, 'Error del servidor'],
   ];
   for (const [answer, want] of cases) {
     const a = new AC.AccountClient({ fetchFn: async () => answer, storage: null });
@@ -75,11 +75,11 @@ test('AccountClient: a bare code gets its es.ts text, else the generic one (`|| 
 
 test('LobbyClient: a bare detail code keeps the generic text (`serverMessage || error.server`); socket refusals keep the server text', async () => {
   const http = [
-    [bare(429, 'rate_limited'), 'Error del servidor (429)'],
+    [bare(429, 'rate_limited'), 'Error del servidor'],
     [msg(429, 'rate_limited', 'Creaste demasiadas salas, espera un minuto'), 'Creaste demasiadas salas, espera un minuto'],
-    [bare(503, 'matchmaking_off'), 'Error del servidor (503)'],
-    [bare(401, 'unauthorized'), 'Error del servidor (401)'],
-    [bare(400, 'bad_name'), 'Error del servidor (400)'],
+    [bare(503, 'matchmaking_off'), 'Error del servidor'],
+    [bare(401, 'unauthorized'), 'Error del servidor'],
+    [bare(400, 'bad_name'), 'Error del servidor'],
     [msg(403, 'bad_password', 'Contraseña incorrecta'), 'Contraseña incorrecta'],
     [msg(404, 'no_lobby', 'No existe una sala con ese código'), 'No existe una sala con ese código'],
   ];
@@ -119,7 +119,7 @@ test('matchmaking lines: es.ts texts, the no-show wait in seconds below two minu
   assert.equal(netErrorText(new NetError('http', 'x', 403, server('account_required', 'Inicia sesión para jugar Competitivo'))), 'Inicia sesión para jugar Competitivo');
   assert.equal(netErrorText(new NetError('turnstile', 'x', 503, server('turnstile_unconfigured', 'TURNSTILE_SITEKEY ...'))), 'Verificación anti-bots no configurada en el servidor, inténtalo más tarde');
   assert.equal(netErrorText(new NetError('turnstile', 'turnstile error 300030')), 'Falló la verificación anti-bots, inténtalo de nuevo');
-  assert.equal(netErrorText(new NetError('http', 'x', 410, server('left', 'you left this match (its bots drive your car): queue again'))), 'Error del servidor (410)');
+  assert.equal(netErrorText(new NetError('http', 'x', 410, server('left', 'you left this match (its bots drive your car): queue again'))), 'Error del servidor');
   assert.equal(netErrorText(new NetError('network', 'queue request failed: TypeError')), 'No hay conexión con el servidor');
   const noShow = (left) => `Partidas P2P bloqueadas ${left}: dejaste varias salas sin conectarte (las partidas en servidor siguen disponibles)`;
   assert.equal(P2P.noShowStatus(42_100), noShow('43 s'));
@@ -143,8 +143,8 @@ test('status lines: the Spanish of before (three dots on the server search, the 
 test('match banners and toasts: the Spanish Game.ts wrote before the translations', () => {
   assert.equal(I.t('game.playerDisconnected', { name: 'Pepe' }), 'Pepe se desconectó');
   assert.equal(I.t('game.botTakeover'), 'Su auto pasa a la IA');
-  assert.equal(I.t('game.resultWin', { team: I.t('game.teamBlue'), detail: '2 – 1' }), 'Ganó Azul  ·  2 – 1');
-  assert.equal(I.t('game.resultDraw', { detail: '1 – 1' }), 'Empate  ·  1 – 1');
+  assert.equal(I.t('game.resultWin', { team: I.t('game.teamBlue'), result: '2 – 1' }), 'Ganó Azul  ·  2 – 1');
+  assert.equal(I.t('game.resultDraw', { result: '1 – 1' }), 'Empate  ·  1 – 1');
   assert.equal(I.t('game.welcomeNew', { name: 'Pepe' }), '¡Te damos la bienvenida, Pepe! Puedes cambiar tu nombre en el perfil.');
   assert.equal(I.t('game.accountLinked'), 'Cuenta vinculada');
   assert.equal(I.t('profile.hello', { name: 'Pepe' }), 'Hola, Pepe');
@@ -169,8 +169,9 @@ test('es.ts is neutral Spanish: tú, no voseo (podés, elegí, creá, sos, vos)'
   const es = (await import('../src/locales/es.ts')).default;
   const texts = Object.values(es).flatMap((v) => (typeof v === 'string' ? [v] : Object.values(v)));
   // Voseo: present tense in -ás / -és / -ís (podés, tenés, elegís) and imperatives in -á / -é / -í
-  // (creá, hacé, elegí); the few standard words with those endings are allowed.
-  const allowed = new Set(['está', 'estás', 'más', 'demás', 'también', 'qué', 'así', 'aquí', 'sí', 'después', 'según', 'aún', 'esté', 'guardé', 'atrás', 'país', 'inglés']);
+  // (creá, hacé, elegí); the few standard words with those endings are allowed (a future in the
+  // third person too: the owner's "No podrá volver a esta sala").
+  const allowed = new Set(['está', 'estás', 'más', 'demás', 'también', 'qué', 'así', 'aquí', 'sí', 'después', 'según', 'aún', 'esté', 'guardé', 'atrás', 'país', 'inglés', 'podrá']);
   const bad = [];
   for (const text of texts) {
     for (const m of text.matchAll(/(?<![\p{L}])(\p{L}+(?:á|é|í|ás|és|ís))(?![\p{L}])/gu)) {
