@@ -1,42 +1,43 @@
 /**
- * Custom matches: the public lobby browser (a list per region: name, playlist, players, host,
- * lock) and joining by code (private lobbies), the part MODOS' LOBBIES tab shows (lobbyBrowser:
- * screens/modes.ts, whose action zone has CREATE LOBBY), creating a lobby, and
- * the lobby itself: the code to share, the two teams, the host's settings, kick and start. When the
- * host starts, every member gets its match through the lobby socket (LobbyClient.onMatch) and the
- * Game plays it; back in the menu the member reports `back` and the lobby opens again.
+ * MODOS › SALAS' part (plan §6.4, PR 12; lobbyBrowser: screens/modes.ts, whose action zone has CREATE
+ * LOBBY AND SHARE): the JOIN WITH CODE tile (mn-codecells in a sheet, screens/lobby.ts), the region
+ * (mn-picker: the region sheet), and the region's public lobbies in 56 px rows (name, format,
+ * players / places, a state slot: OPEN, IN MATCH, FULL; a full or playing row stays focusable and its
+ * press says why), or "No public lobbies in {region}" with CREATE PRIVATE LOBBY. Also the host's
+ * SETTINGS dialog (configureLobby) and the labels the Sala shares.
  *
  * Experimental rules (Settings > Experimental presets, src/game/physicsRules.ts): a signed-in host
  * with the switch on picks them in the settings ("Rules (experimental)": Standard, the built-ins,
  * the player's own presets; P2P only, so switching to a server match clears them; EDIT PRESETS
- * opens Settings > Experimental and comes back with the draft kept). The lobby list tags such a
- * lobby EXP (🔒 EXP for a guest, who cannot join it) and the lobby screen shows the rules line
- * before the match. The server enforces all of it (LobbyDO, the matchmaker, RoomDO).
+ * opens Settings > Experimental and comes back with the draft kept). The list tags such a lobby EXP
+ * (with a lock for a guest, who cannot join it) and the Sala shows the rules line before the match.
+ * The server enforces all of it (LobbyDO, the matchmaker, RoomDO).
  */
-import { h, setChildren, copyText, navButton } from '../dom';
+import { h, setChildren } from '../dom';
 import { LOBBY_LENGTHS, PLAYLISTS } from '../../net/account';
-import type { LobbyMember, LobbySettings, LobbyState, LobbySummary, Playlist } from '../../net/account';
+import type { LobbySettings, LobbyState, LobbySummary, Playlist } from '../../net/account';
 import { AccountError } from '../../net/AccountClient';
-import { lobbyCloseText } from '../../net/LobbyClient';
-import { MODES } from '../../sim/constants';
-import { DEFAULT_MATCH_SECONDS } from '../../game/Match';
 import { isStock, parseLobbyRules, sameValues, snapshotOf, type RulesSnapshot } from '../../game/physicsRules';
 import type { ListedPreset } from '../../game/experimentalStore';
 import { t } from '../../i18n';
 import { lobbyRulesLine, presetName } from '../../render/rulesText';
-import type { Menu, Screen } from '../Menu';
-import { cycler, field, primary, screenHead, secondary, section } from './common';
-
-/** The lobby list again: MODOS on its LOBBIES tab (back from a lobby, a lobby closed or left). */
-const toList = (menu: Menu): void => menu.open('modes', false, 'lobbies');
+import type { Menu } from '../Menu';
+import { regionName } from '../names';
+import { icon } from '../components/icons';
+import { picker } from '../components/picker';
+import { slot } from '../components/tile';
+import { cycler, field, secondary } from './common';
+import { createAndShare, joinFlow, openCodeEntry } from './lobby';
+import { rowState } from './lobbyModel';
+import type { RowState } from './lobbyModel';
 
 const REFRESH_MS = 5_000;
 
-function lengthLabel(s: number): string {
+export function lengthLabel(s: number): string {
   return s === 0 ? t('custom.noLimit') : t('custom.minutes', { count: s / 60 });
 }
 
-function netLabel(n: 'p2p' | 'server'): string {
+export function netLabel(n: 'p2p' | 'server'): string {
   return n === 'p2p' ? t('custom.netP2p') : t('custom.netServer');
 }
 
@@ -45,7 +46,7 @@ function errText(e: unknown): string {
 }
 
 /** A lobby's experimental rules as the server sent them, checked as strictly as the server does (null: standard, or not readable here). */
-function lobbyRules(raw: unknown): RulesSnapshot | null {
+export function lobbyRules(raw: unknown): RulesSnapshot | null {
   const r = parseLobbyRules(raw);
   return r === 'bad' ? null : r;
 }
@@ -106,123 +107,80 @@ interface RulesControls {
   pick: { id: string | null };
 }
 
-/** Join a lobby (asking for the password when it is locked) and open the lobby screen. */
-async function joinFlow(menu: Menu, code: string, locked: boolean): Promise<void> {
-  const lobby = menu.host.lobby;
-  const attempt = async (pw: string | null): Promise<boolean> => {
-    try {
-      await lobby.join(code, pw);
-      menu.open('lobby');
-      return true;
-    } catch (e) {
-      if (e instanceof AccountError && e.code === 'bad_password') {
-        menu.toast(t('custom.wrongPassword'), 'error');
-        return false;
-      }
-      menu.toast(errText(e), 'error');
-      return true;
-    }
-  };
-  if (!locked) {
-    await attempt(null);
-    return;
-  }
-  const pw = field(t('custom.joinPassword'), { type: 'password', maxLength: 32, autocomplete: 'off' });
-  pw.input.setAttribute('data-autofocus', '');
-  const close = menu.modal({
-    title: t('custom.joinTitle', { code }),
-    body: [h('p', null, t('custom.joinLocked')), pw.el],
-    actions: [
-      { label: t('custom.join'), primary: true, onClick: () => attempt(pw.input.value) },
-      { label: t('custom.cancel'), onClick: () => true },
-    ],
-  });
-  // An Enter the menus took (OK on a field in navigation mode starts editing: Menu.onFieldKey) is no submit.
-  pw.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.defaultPrevented) void attempt(pw.input.value).then((ok) => ok && close());
-  });
-}
+const ROW_STATE: Record<RowState, 'lobby.rowOpen' | 'lobby.rowInMatch' | 'lobby.rowFull'> = { open: 'lobby.rowOpen', inMatch: 'lobby.rowInMatch', full: 'lobby.rowFull' };
 
 /**
- * The lobby browser, a part of MODOS' LOBBIES tab: the join-by-code row with REFRESH, the list of
- * the region's public lobbies (every REFRESH_MS on the screen's tick while the tab is shown) and its
- * count. `show` as the tab shows (the list loads again), `tick` on the Menu's tick.
+ * The SALAS tab's part: the JOIN WITH CODE tile and the region row, then the public list (loaded
+ * every REFRESH_MS on the screen's tick while the tab is shown). `show` as the tab shows (the list
+ * loads again), `tick` on the Menu's tick.
  */
 export function lobbyBrowser(menu: Menu): { el: HTMLElement; show: () => void; tick: (now: number) => void } {
   const list = h('div.mn-lobbies');
-  const status = h('div.mn-lobbies-status');
-  const code = field(t('custom.codeField'), { placeholder: 'ABC234', maxLength: 7 });
-  code.input.classList.add('mn-code-input');
-  const join = (): void => {
-    const c = code.input.value.trim();
-    if (c.length < 6) {
-      code.error(t('custom.codeInvalid'));
-      return;
-    }
-    code.error(null);
-    void joinFlow(menu, c, false).catch(() => undefined);
+  const status = h('p.mn-lobbies-status', { hidden: true });
+  const joinTile = h(
+    'button.mn-lobby-join',
+    { type: 'button', 'data-nav': true, 'data-key': 'lobby-join-code', onclick: () => openCodeEntry(menu) },
+    icon('code'),
+    h('span.mn-lobby-join-text', null, h('b', null, t('lobby.joinCode')), h('small', null, t('lobby.joinCodeSub'))),
+    icon('next'),
+  );
+  const region = picker('lobbies-region', 'globe', t('common.region'), () => menu.openRegionSheet());
+  /** The region's name for the empty line ("No public lobbies in South America"). */
+  const regionText = (): string => {
+    const r = menu.regionId;
+    return r !== null ? regionName(r) : menu.regionLabel;
   };
-  code.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.defaultPrevented) join(); // not the OK that starts editing (Menu.onFieldKey)
-  });
   let refreshAt = 0;
   let loading = false;
   const row = (l: LobbySummary): HTMLElement => {
-    // Experimental rules: an EXP tag (🔒 for a guest, who cannot join), the rules on hover.
+    // Experimental rules: an EXP tag (a lock for a guest, who cannot join), the rules on hover.
     const exp = l.experimental === true;
     const guest = exp && !menu.host.accounts.signedIn;
     const rules = exp ? lobbyRules(l.physics) : null;
-    const tag = exp ? h('span.mn-tag.mn-tag-exp', { title: rules !== null ? t('custom.rulesInfo', { summary: lobbyRulesLine(rules) }) : '' }, (guest ? '🔒 ' : '') + t('custom.tagExperimental')) : null;
-    return navButton('mn-lobby-row', [
-      h('span.mn-lobby-name', null, l.locked ? '🔒 ' : '', l.name, tag !== null ? ' ' : '', tag),
+    const tag = exp ? h('span.mn-tag.mn-tag-exp', { title: rules !== null ? t('custom.rulesInfo', { summary: lobbyRulesLine(rules) }) : '' }, guest ? icon('lock') : null, t('custom.tagExperimental')) : null;
+    const st = rowState(l);
+    const press = (): void => {
+      // A full or playing lobby says why; the server refuses a guest an experimental one anyway (403 account_required).
+      if (st === 'full') menu.toast(t('lobby.whyFull'), 'info');
+      else if (st === 'inMatch') menu.toast(t('lobby.whyInMatch'), 'info');
+      else if (guest) menu.toast(t('error.lobby.account_required'), 'error');
+      else void joinFlow(menu, l.code, l.locked);
+    };
+    return h(
+      `button.mn-lobby-row.mn-lobby-${st}` as 'button',
+      { type: 'button', 'data-nav': true, 'data-code': l.code, 'data-key': 'lobby-' + l.code, onclick: press },
+      h('span.mn-lobby-name', null, l.locked ? icon('lock') : null, h('span', null, l.name), tag),
       h('span.mn-lobby-mode', null, l.mode),
       h('span.mn-lobby-players', null, `${l.players}/${l.max}`),
-      h('span.mn-lobby-host', null, l.host),
-      h('span.mn-lobby-net', null, netLabel(l.net)),
-      h('span.mn-lobby-state', null, l.inGame ? t('custom.rowInGame') : l.players >= l.max ? t('custom.rowFull') : t('custom.rowOpen')),
-    ], () => {
-      // The server refuses a guest anyway (403 account_required): say so without asking it.
-      if (guest) menu.toast(t('error.lobby.account_required'), 'error');
-      else void joinFlow(menu, l.code, l.locked);
-    }, { 'data-code': l.code, 'data-key': 'lobby-' + l.code, disabled: l.players >= l.max });
+      h('span.mn-lobby-state', null, slot(t(ROW_STATE[st]), { ink: st === 'open' })),
+    );
   };
+  const empty = (): HTMLElement =>
+    h('div.mn-lobbies-empty', null, h('p', null, t('lobby.empty', { region: regionText() })), secondary(t('lobby.createPrivate'), () => void createAndShare(menu), { 'data-key': 'lobby-create-private' }));
   const load = async (): Promise<void> => {
     if (loading) return;
     loading = true;
+    region.set(menu.regionLabel);
     try {
       const lobbies = await menu.host.lobby.list(menu.prefs.region);
       const focusedCode = (document.activeElement as HTMLElement | null)?.getAttribute?.('data-code') ?? null;
-      setChildren(list, ...(lobbies.length > 0 ? lobbies.map(row) : [h('div.mn-empty', null, t('custom.noLobbies', { region: menu.regionLabel }))]));
-      status.textContent = t('custom.lobbyCount', { count: lobbies.length, region: menu.regionLabel });
-      if (focusedCode) (list.querySelector(`[data-code="${focusedCode}"]`) as HTMLElement | null)?.focus();
+      setChildren(list, ...(lobbies.length > 0 ? lobbies.map(row) : [empty()]));
+      status.hidden = true;
+      if (focusedCode) (list.querySelector(`[data-code="${focusedCode}"]`) as HTMLElement | null)?.focus({ preventScroll: true });
+      menu.refit();
     } catch (e) {
+      status.hidden = false;
       status.textContent = errText(e);
     } finally {
       loading = false;
     }
   };
-  const el = h(
-    'div.mn-custom',
-    null,
-    // A row (nav.ts): ◀ ▶ walk the code field, JOIN and REFRESH in order, wrapped or not.
-    h('div.mn-custom-bar', { 'data-nav-row': true }, h('div.mn-join', null, code.el, secondary(t('custom.join'), join)), secondary(t('custom.refresh'), () => void load())),
-    h(
-      'div.mn-lobby-head',
-      null,
-      h('span', null, t('custom.colName')),
-      h('span', null, t('custom.colMode')),
-      h('span', null, t('custom.colPlayers')),
-      h('span', null, t('custom.colHost')),
-      h('span', null, t('custom.colNet')),
-      h('span', null, t('custom.colState')),
-    ),
-    list,
-    status,
-  );
+  const el = h('div.mn-custom', null, h('div.mn-lobby-tools', null, joinTile, region.el), h('span.mn-modes-label', null, t('lobby.public')), list, status);
   return {
     el,
     show: () => {
       refreshAt = 0;
+      region.set(menu.regionLabel);
       setChildren(list, h('div.mn-empty', null, t('custom.loading')));
     },
     tick: (now) => {
@@ -234,7 +192,7 @@ export function lobbyBrowser(menu: Menu): { el: HTMLElement; show: () => void; t
 }
 
 /**
- * The settings controls shared by "create" and the host's "configure" dialog. With `rules`, the
+ * The settings controls of the host's SETTINGS dialog (configureLobby). With `rules`, the
  * experimental rules row (P2P only: hidden, and the rules cleared, while the connection is Server).
  */
 function settingsControls(s: LobbySettings, rules: RulesControls | null = null): HTMLElement[] {
@@ -282,223 +240,51 @@ function settingsControls(s: LobbySettings, rules: RulesControls | null = null):
   ];
 }
 
-export function lobbyCreateScreen(menu: Menu): Screen {
-  const s: LobbySettings = { name: '', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS, physics: null };
-  const name = field(t('custom.nameField'), { maxLength: 24 });
-  const pw = field(t('custom.passwordOptional'), { type: 'password', maxLength: 32, placeholder: t('custom.noPassword') });
-  const controls = h('div');
-  const create = primary(t('custom.create'), async () => {
-    const n = name.input.value.trim();
-    if (n.length < 3) {
-      name.error(t('custom.nameLength'));
-      return;
-    }
-    name.error(null);
-    s.name = n;
-    create.disabled = true;
-    try {
-      await menu.host.lobby.create({ settings: { ...s }, password: pw.input.value.length > 0 ? pw.input.value : null, region: menu.prefs.region });
-      menu.replace('lobby');
-    } catch (e) {
-      menu.toast(errText(e), 'error');
-    } finally {
-      create.disabled = false;
-    }
-  });
-  const el = h('div.mn-queue', null, screenHead(t('custom.createLobby'), t('custom.createSubtitle')), section(t('custom.lobbySection'), name.el, controls, pw.el), h('div.mn-actions', null, create));
-  // The rules row for an unlocked player; EDIT PRESETS comes back to this screen with its choices.
-  const pick = { id: null as string | null };
-  const rules = (): RulesControls => {
-    const presets = lobbyPresets(menu);
-    if (presets === null) s.physics = null; // signed out or switched off meanwhile
-    const back = (): void => {
-      setChildren(controls, ...settingsControls(s, rules()));
-      menu.refocus();
-    };
-    return { presets, onEdit: presets === null ? null : () => menu.openSettings(back, { tab: 'experimental' }), pick };
-  };
-  return {
-    id: 'lobby-create',
-    title: t('custom.createTitle'),
-    el,
-    show: () => {
-      const who = menu.host.accounts.account?.name ?? menu.host.guestName();
-      // Every translation must survive the server's name sanitizer (tests/i18n-lobby-name.test.mjs).
-      if (name.input.value.length === 0) name.input.value = t('custom.defaultName', { name: who }).slice(0, 24);
-      setChildren(controls, ...settingsControls(s, rules()));
-    },
-  };
-}
-
-export function lobbyScreen(menu: Menu): Screen {
+/**
+ * The host's SETTINGS dialog (the Sala's "…"): name, format, visibility, connection, length, the
+ * experimental rules row for an unlocked player, the password. `kept`: the draft (typed name, picked
+ * rules) to reopen with, back from EDIT PRESETS. A format change is remembered for the next lobby.
+ */
+export function configureLobby(menu: Menu, s: LobbyState, kept?: { draft: LobbySettings; name: string; pick: { id: string | null } }): void {
   const lobby = menu.host.lobby;
-  const codeEl = h('div.mn-lobby-code');
-  const info = h('div.mn-lobby-info');
-  const rulesLine = h('div.mn-lobby-rules', { hidden: true });
-  const teams = h('div.mn-teams');
-  const actions = h('div.mn-actions');
-  const statusLine = h('div.mn-lobby-status');
-  const el = h('div.mn-lobby', null, h('div.mn-lobby-top', null, h('div', null, h('div.mn-lobby-title'), info, rulesLine), codeEl), statusLine, teams, actions);
-  let shown = false;
-
-  const memberRow = (m: LobbyMember, s: LobbyState): HTMLElement => {
-    const meHost = s.members.find((x) => x.id === s.you)?.host === true;
-    return h(
-      `div.mn-member${m.id === s.you ? '.mn-member-you' : ''}` as 'div',
-      null,
-      h('span.mn-member-name', null, m.host ? '♛ ' : '', m.name),
-      m.guest ? h('span.mn-tag', null, t('custom.tagGuest')) : null,
-      m.inGame ? h('span.mn-tag.mn-tag-live', null, t('custom.tagInMatch')) : null,
-      meHost && m.id !== s.you ? navButton('mn-kick', t('custom.kick'), () => lobby.kick(m.id)) : null,
-    );
-  };
-
-  /** The host's settings dialog; `kept`: the draft (typed name, picked rules) to reopen with, back from EDIT PRESETS. */
-  const configure = (s: LobbyState, kept?: { draft: LobbySettings; name: string; pick: { id: string | null } }): void => {
-    const draft: LobbySettings = kept?.draft ?? { ...s.settings };
-    const pick = kept?.pick ?? { id: null };
-    const name = field(t('custom.nameField'), { maxLength: 24, value: kept?.name ?? draft.name });
-    const pw = field(s.hasPassword ? t('custom.newPassword') : t('custom.passwordOptional'), { type: 'password', maxLength: 32 });
-    const presets = lobbyPresets(menu);
-    const onEdit =
-      presets === null
-        ? null
-        : () => {
-            close();
-            menu.openSettings(() => {
-              // The lobby may have gone, or started, while the settings were open.
-              const now = lobby.state;
-              if (now !== null && now.status === 'open' && lobby.isHost) configure(now, { draft, name: name.input.value, pick });
-              else menu.refocus();
-            }, { tab: 'experimental' });
-          };
-    const close = menu.modal({
-      title: t('custom.configureTitle'),
-      body: [name.el, ...settingsControls(draft, { presets, onEdit, pick }), pw.el],
-      actions: [
-        {
-          label: t('custom.save'),
-          primary: true,
-          onClick: () => {
-            const n = name.input.value.trim();
-            if (n.length < 3) {
-              name.error(t('custom.nameLength'));
-              return false;
-            }
-            draft.name = n;
-            lobby.updateSettings(draft, pw.input.value.length > 0 ? pw.input.value : s.hasPassword ? null : undefined);
-            return true;
-          },
+  const draft: LobbySettings = kept?.draft ?? { ...s.settings };
+  const pick = kept?.pick ?? { id: null };
+  const name = field(t('custom.nameField'), { maxLength: 24, value: kept?.name ?? draft.name });
+  const pw = field(s.hasPassword ? t('custom.newPassword') : t('custom.passwordOptional'), { type: 'password', maxLength: 32 });
+  const presets = lobbyPresets(menu);
+  const onEdit =
+    presets === null
+      ? null
+      : () => {
+          close();
+          menu.openSettings(() => {
+            // The lobby may have gone, or started, while the settings were open.
+            const now = lobby.state;
+            if (now !== null && now.status === 'open' && lobby.isHost) configureLobby(menu, now, { draft, name: name.input.value, pick });
+            else menu.refocus();
+          }, { tab: 'experimental' });
+        };
+  const close = menu.modal({
+    title: t('custom.configureTitle'),
+    body: [name.el, ...settingsControls(draft, { presets, onEdit, pick }), pw.el],
+    actions: [
+      {
+        label: t('custom.save'),
+        primary: true,
+        onClick: () => {
+          const n = name.input.value.trim();
+          if (n.length < 3) {
+            name.error(t('custom.nameLength'));
+            return false;
+          }
+          draft.name = n;
+          menu.prefs.lobbyMode = draft.mode;
+          menu.savePrefs();
+          lobby.updateSettings(draft, pw.input.value.length > 0 ? pw.input.value : s.hasPassword ? null : undefined);
+          return true;
         },
-        { label: t('custom.cancel'), onClick: () => true },
-      ],
-    });
-  };
-
-  const render = (): void => {
-    const s = lobby.state;
-    if (!s) {
-      setChildren(teams, h('div.mn-empty', null, lobby.status === 'connecting' ? t('custom.joining') : t('custom.notInLobby')));
-      setChildren(actions, secondary(t('custom.back'), () => toList(menu)));
-      return;
-    }
-    const rules = lobbyRules(s.settings.physics ?? null);
-    const title = el.querySelector('.mn-lobby-title') as HTMLElement;
-    setChildren(title, s.settings.name, rules !== null ? ' ' : null, rules !== null ? h('span.mn-tag.mn-tag-exp', null, t('custom.tagExperimental')) : null);
-    info.textContent = t('custom.info', {
-      mode: s.settings.mode,
-      net: netLabel(s.settings.net),
-      length: lengthLabel(s.settings.matchLengthSeconds),
-      visibility: s.settings.visibility === 'public' ? t('custom.public') : t('custom.private'),
-      lock: s.hasPassword ? ' · 🔒' : '',
-    });
-    // Every member sees the experimental rules before the match.
-    rulesLine.hidden = rules === null;
-    rulesLine.textContent = rules !== null ? t('custom.rulesInfo', { summary: lobbyRulesLine(rules) }) : '';
-    setChildren(codeEl, h('span.mn-lobby-code-label', null, t('custom.codeLabel')), h('span.mn-lobby-code-value', null, s.code), navButton('mn-btn mn-btn-small', t('custom.copy'), () => void copyText(s.code).then((ok) => menu.toast(ok ? t('custom.copied') : t('custom.copyFailed'), ok ? 'ok' : 'error'))));
-    const per = MODES[s.settings.mode];
-    const col = (team: 0 | 1): HTMLElement => {
-      const ms = s.members.filter((m) => m.team === team);
-      const slots: HTMLElement[] = ms.map((m) => memberRow(m, s));
-      for (let i = ms.length; i < per; i++) slots.push(h('div.mn-member.mn-member-bot', null, h('span.mn-member-name', null, t('custom.botSlot'))));
-      return h(`div.mn-team.mn-team-${team === 0 ? 'blue' : 'red'}` as 'div', null, h('div.mn-team-title', null, team === 0 ? t('custom.teamBlue') : t('custom.teamRed')), ...slots);
-    };
-    setChildren(teams, col(0), col(1));
-    const me = s.members.find((m) => m.id === s.you);
-    const isHost = me?.host === true;
-    statusLine.textContent =
-      s.status === 'in_game' ? t('custom.statusInGame') : s.status === 'starting' ? t('custom.statusStarting') : isHost ? t('custom.statusHost') : t('custom.statusWaiting');
-    const other = me ? (me.team === 0 ? 1 : 0) : 0;
-    const otherFull = s.members.filter((m) => m.team === other).length >= per;
-    const focused = (document.activeElement as HTMLElement | null)?.textContent ?? '';
-    setChildren(
-      actions,
-      isHost ? primary(t('custom.start'), () => lobby.start(), { disabled: s.status !== 'open' }) : null,
-      secondary(otherFull ? t('custom.otherTeamFull') : t('custom.switchTeam'), () => lobby.setTeam(other), { disabled: otherFull || s.status !== 'open' }),
-      isHost ? secondary(t('custom.configure'), () => configure(s), { disabled: s.status !== 'open' }) : null,
-      secondary(t('custom.leaveLobby'), () => {
-        lobby.leave();
-        toList(menu);
-      }),
-    );
-    // Keep the controller's place across re-renders (by the button's text: the language is fixed for the page).
-    const again = Array.from(el.querySelectorAll<HTMLElement>('[data-nav]')).find((b) => b.textContent === focused);
-    if (again) again.focus({ preventScroll: true });
-    else menu.refocus();
-  };
-
-  lobby.onState = () => {
-    if (shown) render();
-  };
-  lobby.onMatch = (r) => menu.host.playLobbyMatch(r);
-  lobby.onError = (_code, message) => menu.toast(message, 'error');
-  lobby.onClosed = (reason) => {
-    menu.toast(lobbyCloseText(reason), reason === 'kicked' ? 'error' : 'info');
-    if (menu.top()?.id === 'lobby') toList(menu);
-  };
-
-  /** "Leave the lobby?": LEAVE leaves it and, once the sheet is gone, `go` takes the player on; STAY keeps it. */
-  const askLeave = (go: () => void): void => {
-    let leaving = false;
-    menu.modal({
-      title: t('custom.leaveTitle'),
-      body: h('p', null, lobby.isHost ? t('custom.leaveHost') : t('custom.leaveMember')),
-      actions: [
-        {
-          label: t('custom.leave'),
-          primary: true,
-          onClick: () => {
-            lobby.leave();
-            leaving = true;
-          },
-        },
-        { label: t('custom.stay'), onClick: () => true },
-      ],
-      onClose: () => {
-        if (leaving) go();
       },
-    });
-  };
-
-  return {
-    id: 'lobby',
-    title: t('custom.lobbyTitle'),
-    el,
-    show: () => {
-      shown = true;
-      if (lobby.me?.inGame) lobby.back(); // back from the lobby's match
-      render();
-    },
-    hide: () => {
-      shown = false;
-    },
-    back: () => {
-      if (!lobby.inLobby) return false;
-      askLeave(() => toList(menu));
-      return true;
-    },
-    // A section, a crumb, the wordmark, the chip or the search pill: the same question first (a
-    // member who walked away unasked would hold the lobby's next start, LobbyDO's in_game wait).
-    leaveGuard: () => (lobby.inLobby ? askLeave : null),
-  };
+      { label: t('custom.cancel'), onClick: () => true },
+    ],
+  });
 }

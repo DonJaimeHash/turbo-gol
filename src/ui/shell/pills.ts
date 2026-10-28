@@ -54,7 +54,7 @@ export class RegionPill {
     }
     const status = s.playing !== null && s.playing >= PLAYING_SHOWN ? t('menu.playing', { count: s.playing }) : t('pill.online');
     this.el.append(icon('globe'), h('span.mn-pill-main', WORDS, s.region), h('span.mn-pill-sep', ECHO), h('span.mn-dot.on'), h('span.mn-pill-sub', ECHO, status));
-    this.el.setAttribute('aria-label', t('pill.regionLabel', { region: s.region, status }));
+    this.el.setAttribute('aria-label', t('pill.regionLabel', { region: s.region, state: status }));
     return true;
   }
 }
@@ -96,4 +96,43 @@ export class SearchPill {
 
 export function updatePill(onClick: () => void): HTMLButtonElement {
   return h('button.mn-pill.mn-pill-update.mn-hit', { type: 'button', 'data-nav': true, 'data-key': 'update', hidden: true, onclick: onClick }, icon('refresh'), h('span.mn-pill-main', WORDS, t('update.pill')));
+}
+
+/** What the lobby pill shows: the lobby's code, its players and places (null before its first state), the socket away. */
+export interface LobbyPillState {
+  code: string;
+  count: number | null;
+  max: number | null;
+  reconnecting: boolean;
+}
+
+/**
+ * The lobby pill (plan §6.4, PR 12): "LOBBY ABC234 · 2/4 · BACK" while the player is in a lobby
+ * and not on its screen (the Sala kept with MANTENER LA SALA, a section switched to); it opens the
+ * lobby. A spinner instead of the icon while the lobby socket reconnects.
+ */
+export class LobbyPill {
+  readonly el: HTMLButtonElement;
+  private key = '';
+
+  constructor(onClick: () => void) {
+    this.el = h('button.mn-pill.mn-pill-lobby.mn-hit', { type: 'button', 'data-nav': true, 'data-key': 'lobby-pill', hidden: true, onclick: onClick });
+  }
+
+  /** Show `s` (null: hidden); false (and nothing written) when the pill already shows it. */
+  set(s: LobbyPillState | null): boolean {
+    const key = s === null ? '' : JSON.stringify(s);
+    if (key === this.key) return false;
+    this.key = key;
+    this.el.hidden = s === null;
+    this.el.textContent = '';
+    if (s === null) return true;
+    // In a crowded bar the count goes first, then the words, down to the icon (Inicio's hero, the
+    // Sala and the label say them).
+    const main = t('lobby.pill', { code: s.code });
+    const count = ` · ${s.count ?? '—'}/${s.max ?? '—'}`;
+    this.el.append(s.reconnecting ? h('span.mn-spinner') : icon('friends'), h('span.mn-pill-main', WORDS, main), h('span.mn-pill-sub', ECHO, count), h('span.mn-pill-sep', WORDS), h('b.mn-pill-act', WORDS, t('lobby.pillBack')));
+    this.el.setAttribute('aria-label', `${main}${count}. ${t('lobby.pillBack')}`);
+    return true;
+  }
 }

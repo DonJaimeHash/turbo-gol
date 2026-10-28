@@ -215,10 +215,13 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // replace). Both together: 128,806 B, the cap that plus about 0.6 KB. PR 9 adds the touch match:
 // BOOST's amount and level, the moved CAM / RESET, the first-match cards, the live rotate notice
 // (touch.css, about 2.1 KB more) and the two-thumb touch pause with its half-moon hold (style.css,
-// about 2 KB, with the phone's 14 px floor for its lines): 132,990 B, the cap that plus about
-// 0.6 KB. It steps down to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and
-// PR 15 menu.css. Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 133_600;
+// about 2 KB, with the phone's 14 px floor for its lines): 132,990 B. PR 12 adds the Salas
+// (styles/screens/lobby.css: SALAS' tools and rows, mn-codecells, the Sala, the QR sheet, per class,
+// about 7.6 KB) minus the old lobby list and lobby screen of menu.css and modes.css (about 2.6 KB):
+// 133,989 B on its own. Both together: 138,173 B, the cap that plus about 0.6 KB. It steps down
+// to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css. Raising it
+// is the owner's call, recorded in the PR.
+const CSS_BUDGET = 138_800;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

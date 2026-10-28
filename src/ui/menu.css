@@ -522,188 +522,7 @@
   color: var(--text-2);
 }
 
-/* ---- custom matches ---------------------------------------------------------------------------- */
-.mn-custom-bar {
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-.mn-join {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-}
-.mn-join .mn-field {
-  margin: 0;
-}
-.mn-code-input {
-  width: 130px;
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
-}
-.mn-lobby-head,
-.mn-lobby-row {
-  display: grid;
-  grid-template-columns: minmax(0, 2.2fr) 1.2fr 0.8fr 1.2fr 0.8fr 0.9fr;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 14px;
-}
-.mn-lobby-head {
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--text-2);
-  text-transform: uppercase;
-}
-/* One scroller: 12 px of padding and 16 px of scroll padding, so a focused row's ring (6 px out,
-   focus.css) is never cut by the scroll box. */
-.mn-lobbies {
-  display: grid;
-  gap: 8px;
-  max-height: 52vh;
-  overflow-y: auto;
-  padding: 12px;
-  scroll-padding: 16px;
-}
-.mn-lobby-row {
-  width: 100%;
-  font: inherit;
-  font-size: 15px;
-  text-align: left;
-  color: var(--text);
-  background: var(--surface-1-94);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-tile);
-  cursor: pointer;
-}
-@media (hover: hover) {
-  .mn-lobby-row:hover {
-    background: var(--surface-2-97);
-    border-color: var(--edge-hi);
-  }
-}
-.mn-lobby-row:disabled {
-  color: var(--text-3);
-}
-.mn-lobby-name {
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mn-lobby-host {
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mn-lobbies-status {
-  margin-top: 8px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-
-.mn-lobby-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 18px;
-  margin-bottom: 10px;
-}
-.mn-lobby-title {
-  font-size: clamp(26px, 4.5vh, 40px);
-  font-weight: 700;
-  font-style: italic;
-}
-.mn-lobby-info {
-  color: var(--text-2);
-  margin-top: 4px;
-}
-.mn-lobby-code {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 14px;
-  border-radius: var(--r-tile);
-  background: var(--surface-1-94);
-  border: 1px solid var(--brand-line);
-}
-.mn-lobby-code-label {
-  font-size: 12px;
-  letter-spacing: 0.2em;
-  color: var(--text-2);
-}
-.mn-lobby-code-value {
-  font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  font-variant-numeric: tabular-nums;
-}
-.mn-lobby-status {
-  margin: 6px 0 14px;
-  color: var(--brand-hi);
-}
-.mn-teams {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
-}
-.mn-team {
-  padding: 14px;
-  border-radius: var(--r-tile);
-  display: grid;
-  gap: 8px;
-  align-content: start;
-}
-/* Team columns of a custom lobby (src/ui/screens/custom.ts): mn-team-blue / mn-team-red. The team
-   colour is the top edge and a wash fading into the surface. */
-.mn-team-blue {
-  background: var(--surface-1-94) linear-gradient(180deg, var(--blue-glow), transparent 70%);
-  border: 1px solid var(--blue-deep);
-  border-top: 4px solid var(--blue);
-}
-.mn-team-red {
-  background: var(--surface-1-94) linear-gradient(180deg, var(--red-glow), transparent 70%);
-  border: 1px solid var(--red-deep);
-  border-top: 4px solid var(--red);
-}
-.mn-team-title {
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  font-style: italic;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-.mn-member {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 8px 10px;
-  border-radius: var(--r-tile);
-  background: var(--surface-0-94);
-}
-.mn-member-you {
-  outline: 2px solid var(--edge-hi);
-}
-.mn-member-bot {
-  color: var(--text-2);
-  font-style: italic;
-  background: var(--surface-1-94);
-}
-.mn-member-name {
-  flex: 1;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* ---- custom lobbies: the tags (the Sala and the list: styles/screens/lobby.css) ---- */
 .mn-tag {
   font-size: 11px;
   letter-spacing: 0.1em;
@@ -725,13 +544,6 @@
   font-weight: 700;
   vertical-align: middle;
 }
-.mn-lobby-title .mn-tag-exp {
-  font-size: 14px;
-}
-.mn-lobby-rules {
-  margin-top: 6px;
-  color: var(--lab);
-}
 .mn-rules {
   border-top: 1px solid var(--edge);
 }
@@ -742,20 +554,6 @@
 }
 .mn-rules > .mn-btn {
   margin: 2px 0 6px;
-}
-.mn-kick {
-  font: inherit;
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 4px 8px;
-  color: var(--danger);
-  background: var(--danger-tint);
-  border: 1px solid var(--danger-line);
-  border-radius: var(--r-key);
-  cursor: pointer;
 }
 
 /* ---- training ---------------------------------------------------------------------------------- */
@@ -1065,20 +863,8 @@
   }
   .mn-packs,
   .mn-exp,
-  .mn-profile-ratings,
-  .mn-teams {
+  .mn-profile-ratings {
     grid-template-columns: 1fr;
-  }
-  .mn-lobby-head {
-    display: none;
-  }
-  .mn-lobby-row {
-    grid-template-columns: 1fr auto auto;
-  }
-  .mn-lobby-host,
-  .mn-lobby-net,
-  .mn-lobby-state {
-    display: none;
   }
   .mn-board-row {
     grid-template-columns: 50px minmax(0, 1fr) 70px;
@@ -1095,9 +881,6 @@
   .mn-row {
     flex-direction: column;
     align-items: stretch;
-  }
-  .mn-lobby-top {
-    flex-direction: column;
   }
 }
 

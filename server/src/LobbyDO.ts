@@ -7,6 +7,7 @@
  *
  *   POST /internal/create { lobbyId, code, region, socketBase, settings, password?, host: { playerId, name, guest } }
  *   POST /internal/admit  { playerId, name, guest, password? } -> { ok } | 403 bad_password / kicked | 409 full | 410 closed
+ *   GET  /internal/peek   -> LobbySummary | 410 closed (the join link's sheet: GET /api/lobbies/peek)
  *   GET  /lobby (upgrade, through the Worker's /lobby/<id> gate with a role 'lobby' ticket)
  *
  * Flow: the Worker admits a player (password, room, kick list), mints a lobby ticket and the
@@ -17,6 +18,15 @@
  * member's { t: 'back' } brings it back to 'open'. The host leaving hands the lobby to the
  * longest-standing member; the last member leaving (or idling past IDLE_CLOSE_MS without sockets)
  * closes it and removes it from LobbyDirectoryDO. Custom matches are never rated.
+ *
+ * A dropped socket is no leave (plan PR 12): the member is `away` for LOBBY_GRACE_MS, its place and
+ * its host role kept, and a socket of the same player (POST /api/lobbies/join again: an existing
+ * member is admitted without the password or the room check) brings it back; the alarm removes it
+ * once the grace is over and only then hands the host on (to a member still connected first). An
+ * explicit { t: 'leave' } or a kick removes at once. The start waits for nobody away
+ * ('member_away'). The host may also hand the lobby over ({ t: 'host' }) and move another member
+ * ({ t: 'move' }); a member says LISTO ({ t: 'ready' }: shown to all, the start never waits for it,
+ * cleared by a team change and by the start).
  *
  * Experimental rules (LobbySettings.physics, a copy of a signed-in host's preset: src/game/
  * physicsRules.ts parseLobbyRules, strict; a snapshot that changes nothing is standard physics):
@@ -49,6 +59,8 @@ const IN_GAME_RESET_MS = 40 * 60_000;
 const MAX_FRAME = 2048;
 const CLOSE_KICKED = 4003;
 const CLOSE_CLOSED = 4004;
+/** How long a member whose socket dropped keeps its place (and the host role): plan PR 12, 30 to 45 s. */
+export const LOBBY_GRACE_MS = 40_000;
 
 interface MemberRec {
   id: string;
@@ -58,6 +70,10 @@ interface MemberRec {
   team: 0 | 1;
   joinedAt: number;
   inGame: boolean;
+  /** When its last socket dropped (absent: connected); removed LOBBY_GRACE_MS later by the alarm. */
+  awayAt?: number;
+  /** Said LISTO. */
+  ready?: boolean;
 }
 
 interface AdmitRec {
@@ -214,6 +230,7 @@ export class LobbyDO extends DurableObject<Env> {
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') return this.upgrade(request);
     if (request.method === 'POST' && url.pathname === '/internal/create') return this.create(request);
     if (request.method === 'POST' && url.pathname === '/internal/admit') return this.admit(request);
+    if (request.method === 'GET' && url.pathname === '/internal/peek') return this.rec && !this.closed ? json(this.summary()) : error(410, 'closed', 'La sala ya no existe');
     return error(404, 'not_found');
   }
 
@@ -295,6 +312,8 @@ export class LobbyDO extends DurableObject<Env> {
       rec.members.push(member);
       if (rec.hostId === '') rec.hostId = member.id;
     }
+    // Back within the grace: the same place, the same role.
+    delete member.awayAt;
     rec.admits = rec.admits.filter((a) => a.playerId !== playerId && a.until > now);
     rec.lastSocketAt = now;
     await this.ctx.storage.put('jti:' + jti, now);
@@ -336,6 +355,29 @@ export class LobbyDO extends DurableObject<Env> {
         if (msg.team === me.team) return;
         if (rec.members.filter((m) => m.team === msg.team).length >= this.perTeam()) return fail('team_full', 'Ese equipo está completo');
         me.team = msg.team;
+        me.ready = false;
+        break;
+      }
+      case 'move': {
+        if (!isHost) return fail('not_host', 'Solo el anfitrión mueve jugadores');
+        if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
+        if (msg.team !== 0 && msg.team !== 1) return fail('bad_team', 'Equipo inválido');
+        const target = rec.members.find((m) => m.id === msg.member);
+        if (!target || target.team === msg.team) return;
+        if (rec.members.filter((m) => m.team === msg.team).length >= this.perTeam()) return fail('team_full', 'Ese equipo está completo');
+        target.team = msg.team;
+        target.ready = false;
+        break;
+      }
+      case 'host': {
+        if (!isHost) return fail('not_host', 'Solo el anfitrión puede pasar la sala');
+        const target = rec.members.find((m) => m.id === msg.member);
+        if (!target || target.id === me.id) return;
+        rec.hostId = target.id;
+        break;
+      }
+      case 'ready': {
+        me.ready = msg.ready === true;
         break;
       }
       case 'settings': {
@@ -373,6 +415,7 @@ export class LobbyDO extends DurableObject<Env> {
         if (!isHost) return fail('not_host', 'Solo el anfitrión inicia la partida');
         if (rec.status !== 'open') return fail('busy', 'La partida ya empezó');
         if (rec.members.some((m) => m.inGame)) return fail('busy', 'Hay jugadores que todavía están en la partida anterior');
+        if (rec.members.some((m) => m.awayAt !== undefined)) return fail('member_away', 'Alguien se está reconectando');
         if (lobbyPhysics(rec.settings) !== null) {
           if (rec.members.some((m) => m.guest)) return fail('guests_present', 'Hay invitados en la sala: deben iniciar sesión o salir');
           if (rec.settings.net !== 'p2p' || rec.members.length < 2) return fail('experimental_p2p_only', 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores');
@@ -404,9 +447,14 @@ export class LobbyDO extends DurableObject<Env> {
     const rec = this.rec;
     if (!rec || this.closed) return;
     const me = this.memberOf(ws);
-    rec.lastSocketAt = Date.now();
-    // A member playing the lobby's match keeps its place (a reload during the match rejoins by code).
-    if (me && !me.inGame && this.ctx.getWebSockets(me.id).every((s) => s === ws || s.readyState !== WebSocket.OPEN)) this.removeMember(me);
+    const now = Date.now();
+    rec.lastSocketAt = now;
+    // A member playing the lobby's match keeps its place (a reload during the match rejoins by code);
+    // any other is away for the grace (the alarm removes it then), unless another socket of its is open.
+    if (me && !me.inGame && me.awayAt === undefined && this.ctx.getWebSockets(me.id).every((s) => s === ws || s.readyState !== WebSocket.OPEN)) {
+      me.awayAt = now;
+      await this.alarmBy(now + LOBBY_GRACE_MS);
+    }
     await this.afterChange();
   }
 
@@ -420,6 +468,13 @@ export class LobbyDO extends DurableObject<Env> {
     if (!rec || this.closed) return;
     const now = Date.now();
     const sockets = this.ctx.getWebSockets().length;
+    // The grace is over: the member goes, and the host role with it.
+    const gone = rec.members.filter((m) => m.awayAt !== undefined && now - m.awayAt >= LOBBY_GRACE_MS);
+    for (const m of gone) this.removeMember(m);
+    if (gone.length > 0) {
+      await this.afterChange();
+      if (this.closed) return;
+    }
     if (rec.status === 'in_game' && now - rec.statusAt > IN_GAME_RESET_MS) {
       for (const m of rec.members) m.inGame = false;
       rec.status = 'open';
@@ -431,7 +486,16 @@ export class LobbyDO extends DurableObject<Env> {
     }
     await this.save();
     await this.publish(); // directory heartbeat
-    await this.ctx.storage.setAlarm(now + ALARM_MS);
+    // The next heartbeat, or the next grace to end when that comes first.
+    const graceEnd = Math.min(...rec.members.map((m) => (m.awayAt !== undefined ? m.awayAt + LOBBY_GRACE_MS : Infinity)));
+    await this.ctx.storage.setAlarm(Math.min(now + ALARM_MS, graceEnd));
+  }
+
+  /** The alarm at `at` at the latest (an earlier one stays). */
+  private async alarmBy(at: number): Promise<void> {
+    const storage = this.ctx.storage;
+    const cur = typeof storage.getAlarm === 'function' ? await storage.getAlarm() : null;
+    if (cur === null || cur === undefined || at < cur) await storage.setAlarm(at);
   }
 
   // ---- internals ----------------------------------------------------------------------------
@@ -447,7 +511,8 @@ export class LobbyDO extends DurableObject<Env> {
     const rec = this.rec;
     if (!rec) return;
     rec.members = rec.members.filter((x) => x !== m);
-    if (rec.hostId === m.id) rec.hostId = rec.members.slice().sort((a, b) => a.joinedAt - b.joinedAt)[0]?.id ?? '';
+    // The longest-standing member takes over, one still connected first.
+    if (rec.hostId === m.id) rec.hostId = rec.members.slice().sort((a, b) => Number(a.awayAt !== undefined) - Number(b.awayAt !== undefined) || a.joinedAt - b.joinedAt)[0]?.id ?? '';
   }
 
   private async afterChange(): Promise<void> {
@@ -500,6 +565,7 @@ export class LobbyDO extends DurableObject<Env> {
     rec.status = 'in_game';
     rec.statusAt = now;
     for (const m of rec.members) {
+      m.ready = false;
       const r = results[m.playerId];
       if (!r) continue;
       if (typeof r.wsUrl === 'string' && r.wsUrl.startsWith('/')) r.wsUrl = rec.socketBase + r.wsUrl;
@@ -511,7 +577,7 @@ export class LobbyDO extends DurableObject<Env> {
 
   private stateFor(memberId: string): LobbyState {
     const rec = this.rec as LobbyRecord;
-    const members: LobbyMember[] = rec.members.map((m) => ({ id: m.id, name: m.name, team: m.team, host: m.id === rec.hostId, guest: m.guest, inGame: m.inGame }));
+    const members: LobbyMember[] = rec.members.map((m) => ({ id: m.id, name: m.name, team: m.team, host: m.id === rec.hostId, guest: m.guest, inGame: m.inGame, away: m.awayAt !== undefined, ready: m.ready === true }));
     return { code: rec.code, settings: { ...rec.settings, physics: lobbyPhysics(rec.settings) }, hasPassword: rec.pwHash !== null, region: rec.region, members, you: memberId, status: rec.status };
   }
 

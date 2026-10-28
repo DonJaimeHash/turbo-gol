@@ -1,7 +1,7 @@
 // What the game never says, in English or Spanish (the Tablero plan §1.8 "Prohibido"): no shop words
 // (cars are never bought, nothing is sold), no emoji in a translated text (icons are the SVG sprite
 // of src/ui/components/icons.ts), modes named only by format (1v1, 2v2, 3v3: no "Pairs", "Tríos",
-// "Mano a mano", no "N cars"), and no raw error codes in front of a player.
+// "Mano a mano", no "N cars"), and no raw error codes in front of a player, nor a slot for one.
 //
 // The texts that still break a rule today are listed in KNOWN, each with the PR of the plan that
 // rewrites it; that PR deletes its line. The list may only shrink: a listed key that no longer
@@ -22,6 +22,9 @@ const RULES = {
   modeNames: { en: /\b(?:one-on-one|pairs|trios)\b|\{count\} cars?\b|\b\d+ cars\b/i, es: /\b(?:mano a mano|parejas|tr[ií]os)\b|\{count\} autos?\b|\b\d+ autos\b/i },
   // Raw codes: an HTTP status or a close code in brackets, 1006 anywhere.
   rawCodes: { en: /\(\d{3,4}\b|\b1006\b/, es: /\(\d{3,4}\b|\b1006\b/ },
+  // ...nor a slot one would fill (plan PR 12): the HTTP status, a close code and its reason, a
+  // server's raw reason go to the console and F4's panel; src/net/outcome.ts says what is left to do.
+  codeSlots: { en: /\{(?:status|detail|reason)\}/, es: /\{(?:status|detail|reason)\}/ },
 };
 
 /** `${lang}:${key}:${rule}` -> the plan PR that rewrites the text. Only ever shrinks. */
@@ -67,4 +70,7 @@ test('the rules catch what they are for', () => {
   assert.ok(!RULES.modeNames.es.test('los autos se sincronizan'));
   assert.ok(RULES.rawCodes.en.test('Connection lost (1006)'));
   assert.ok(!RULES.rawCodes.en.test('Server error ({status})'));
+  assert.ok(RULES.codeSlots.en.test('Server error ({status})'));
+  assert.ok(RULES.codeSlots.es.test('Conexión perdida ({detail})'));
+  assert.ok(!RULES.codeSlots.en.test('Lobby {code} · {count}/{max}'), "a lobby's join code is no error code");
 });

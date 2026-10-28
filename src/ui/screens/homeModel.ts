@@ -5,8 +5,8 @@
  * the page.
  *
  * The hero shows the first state that applies (plan PR 5): a new version (the server refused this
- * page) > back to your match (a match of this tab still running after a reload: PR 12, null until
- * then) > back to the lobby > the running search > offline (the Worker unreachable, or two
+ * page) > back to your match (a server match of this tab still running after a reload or a lost
+ * connection: rejoinStore.ts) > back to the lobby > the running search > offline (the Worker unreachable, or two
  * population polls in a row failed: one slow poll is no reason to swap the match for a bot game) >
  * play (the last queue).
  */
@@ -57,7 +57,7 @@ export interface HeroLobby {
   max: number | null;
 }
 
-/** A match of this tab still running after a reload (PR 12). */
+/** A server match of this tab still running after a reload or a lost connection (PR 12: rejoinStore.ts). */
 export interface HeroRejoin {
   kind: 'casual' | 'ranked';
   modes: GameMode[];
