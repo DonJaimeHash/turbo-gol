@@ -312,7 +312,14 @@ src/game/
                         resync beyond 8 ticks), stepTick (pack own input, step, send every 2nd
                         tick), host match state (score / clock / frozen / overtime) from events,
                         NetStatsView for the HUD panel; quickMatch(mode, notice, 'ranked') for
-                        ranked (lastRankedMatchId for the FINAL's rank card), 'cancelled' event
+                        ranked (lastRankedMatchId for the FINAL's rank card), 'cancelled' event;
+                        `hint` while NetClient reconnects ("Reconectando… (intento 2/5)", then "De
+                        vuelta en el partido" 1.5 s: the HUD's top-centre line), the server match
+                        kept for a way back (rejoinStore.ts, sessionStorage) and rejoin() (Menu.rejoin:
+                        a failed one's REINTENTAR rejoins again), the failure's outcome
+                        (src/net/outcome.ts); the close code in the console and F4's state line only
+  rejoinStore.ts        the server match this tab may join again: matchId, kind, formats, the end of
+                        its regulation time; read by Inicio's hero and the lost sheet
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer
@@ -502,15 +509,24 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         step them: Screen.command; the hint bar names them, Screen.tabsVerb), the
                         2 x 2 formats (a press picks and searches, restarting a running search of
                         that kind), Region and Advanced (connection) rows, VS AI's mn-seg and
-                        Stadium row, the lobby list (custom.ts lobbyBrowser), and the action zone:
-                        FIND MATCH / SIGN IN (PERFIL as a detour, back on a sign-in) / a ban's
-                        reason / PLAY / CREATE LOBBY, or the searching panel with "bots join in"
+                        Stadium row, SALAS' part (custom.ts lobbyBrowser: JOIN WITH CODE, the region,
+                        the public rows with their OPEN / IN MATCH / FULL slot, the empty line), and
+                        the action zone: FIND MATCH / SIGN IN (PERFIL as a detour, back on a sign-in)
+                        / a ban's reason / PLAY / CREATE LOBBY AND SHARE (BACK TO LOBBY in one), or
+                        the searching panel with "bots join in"
                         (modesModel.ts, pure: tabs, formats, queueNet, botsCountdown from
                         /api/config's botFillMs or P2P_FILL_WAIT_MS, countShown, actionKind;
                         tests/modes.test.mjs), GARAJE's "coming soon" (garage.ts, until plan PR
-                        8), custom lobby create / lobby (custom.ts: the host's experimental rules row for
-                        unlocked players, P2P only, EDIT PRESETS; the EXP tag, 🔒 for a guest; the
-                        rules line before the match), training (with Experimental free play, its
+                        8), the Salas (plan PR 12; lobby.ts: CREATE LOBBY AND SHARE, JOIN WITH CODE
+                        in a sheet, the join link #sala=ABC234 on a load or a hashchange with its
+                        sheet, and the Sala: the code giant, SHARE by device, the teams side by side,
+                        a member's sheet Move · Make host · Kick, the action bar START / READY and
+                        "…", "Reconnecting to the lobby…", the leave sheet with KEEP THE LOBBY;
+                        window.__sala samples in dev / VITE_UI_FIT; custom.ts: the host's SETTINGS
+                        with the experimental rules row for unlocked players, P2P only, EDIT
+                        PRESETS; the EXP tag; lobbyModel.ts, pure: the code alphabet and cells,
+                        the link, the new lobby's format, a row's state, shareWay;
+                        tests/lobby-model.test.mjs), training (with Experimental free play, its
                         rules picker and Edit presets for unlocked players), profile (sign in / up /
                         recover, account actions), leaderboard + ranked result dialog
                         (RankedResults.watch's `into`: the FINAL's rank card takes the answer
@@ -520,15 +536,19 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         dev / VITE_UI_FIT), match/finalModel.ts (pure: FinalView, goalScorer from
                         the state buffer's per-car ball-hit tick, pickMvp, againAction,
                         changeScreen, rankCard; tests/final-model.test.mjs), match/found.ts
-                        (PARTIDO ENCONTRADO, z 45, the tab's title)
+                        (PARTIDO ENCONTRADO, z 45, the tab's title), match/lost.ts (a server match
+                        lost for good: REJOIN / MENU in a sheet)
 src/net/
   protocol.ts           wire protocol shared with server/ (DONE): one binary frame per message,
                         Input / Snapshot / Ping / Pong packed, Welcome / Event / Error / Kick as
                         JSON; fnv1a32; the HTTP control-plane types (GuestSession, QueueResult)
   NetClient.ts          guest record (localStorage), queue long-poll (401 re-register, 409 ->
                         rejoin, cancel -> /api/leave), WebSocket with ['tg1', 'ticket.<jwt>'],
-                        input / ready / ping senders, message dispatch, one automatic rejoin;
+                        input / ready / ping senders, message dispatch, up to RECONNECT_TRIES (5)
+                        automatic rejoins per drop (reconnectAttempt; a Welcome starts again);
                         fetch / WebSocket / clock / storage injectable (node tests)
+  outcome.ts            what a failed online step leaves to do (retry, wait, requeue, reload,
+                        gone) and its action's label: Menu.failure's sheet; codes never in a text
   ClockSync.ts          4-timestamp rtt / offset / host-tick estimate (medians over 16 pongs),
                         computeLead, LeadAdjuster (bufferHint -> +-1 tick per second)
   InputRing.ts          256-tick ring of the player's packed inputs, assembleInputs (newest 2 +
@@ -547,8 +567,10 @@ src/net/
                         the experimental switch and presets (each call for the account that made
                         it: a refresh that hands back another account never gets it); a listener
                         list (subscribe) and the { name, id } hint the boot reads (readAccountHint)
-  LobbyClient.ts        custom lobbies: list / create / join by code, the lobby socket (state,
-                        match result per member, back, kick, settings)
+  LobbyClient.ts        custom lobbies: list / peek / create / join by code, the lobby socket (state,
+                        match result per member, back, kick, host, move, ready, settings); a drop
+                        joins again by code for 90 s ('reconnecting'; visibilitychange / online
+                        try at once, a visible tab's silent socket counts as dropped)
   p2p/                  phase 2: peer-to-peer deterministic rollback (docs/online/PHASE2.md)
     protocol.ts         signaling JSON (RoomWelcome with the room's physics, signal relay, ready
                         with the arena's physicsFp, start, drop,
@@ -614,7 +636,10 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
                         minute), leaderboard, ranked result; server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
-                        admit (password, kick list), start through the matchmaker's /custom;
+                        admit (password, kick list), start through the matchmaker's /custom; a
+                        dropped member kept LOBBY_GRACE_MS (40 s, host role included) before the
+                        alarm removes it; host / move / ready; /internal/peek (GET
+                        /api/lobbies/peek, a join link's sheet);
                         experimental rules (P2P only, strict) only while every member is signed
                         in: guests refused at create, admit, upgrade, settings and start
   src/LobbyDirectoryDO.ts  join codes -> lobby ids and the public list per region

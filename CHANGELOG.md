@@ -7,6 +7,33 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Playing with friends takes a few presses and no code to read out. In MODES › LOBBIES, CREATE
+  LOBBY AND SHARE makes a private lobby with the format you played last and opens it with SHARE
+  selected: on a phone it opens your share sheet, on a computer it copies the link, on a TV it
+  shows a QR code with the code and the link in big letters. Your friend opens the link and presses
+  JOIN ("Join lobby ABC234 · 2v2 · 2/4?"); the first time, their name is already filled in and can
+  stay as it is. The link works when the game is already open too.
+- The lobby screen shows its code in big letters (tap it on a phone to copy it), the two teams side
+  by side, and a bar at the bottom: START for the host, READY for everyone else, and "…" with
+  SETTINGS and LEAVE LOBBY. Pressing a player gives the host Move · Make host · Kick (a kick asks
+  first: "Kick Ana? They can't come back to this lobby."), and anyone can move themselves.
+- JOIN WITH CODE opens six boxes for the code: type it, paste it, or with a TV remote step each box
+  through the letters with ▲ ▼; it joins on its own once the sixth character is typed. Only the
+  letters and numbers a code can have get in (no I, O, 0 or 1).
+- The public lobby list shows each lobby's name, format, players and whether it is OPEN, IN MATCH
+  or FULL; a full one still tells you why when you press it. With none in your region, CREATE
+  PRIVATE LOBBY is right there.
+- Leaving a lobby's screen for another section asks first: LEAVE LOBBY, KEEP THE LOBBY or CANCEL.
+  Kept, a "LOBBY ABC234 · 2/4 · BACK" pill in the top bar takes you back to it.
+- A lobby survives a dropped connection: if you switch to another app on your phone and come back,
+  the game reconnects on its own ("Reconnecting to the lobby…") and you are still in it, still the
+  host. The others see you as RECONNECTING for up to 40 seconds before your place is freed.
+- In a server match, a dropped connection is retried up to five times while you play
+  ("Reconnecting… (attempt 2/5)", then "Back in the match"). If it cannot come back, a window says
+  "Your connection dropped · The match goes on without you" with REJOIN and MENU, and after a
+  reload the home screen offers BACK TO YOUR MATCH while it is still on.
+- Every online problem now says what you can do about it: RETRY, TRY AGAIN IN 1 MIN, BACK IN THE
+  QUEUE or RELOAD.
 - A final screen two seconds after the whistle: VICTORY, DEFEAT or DRAW, the score, every player
   by team with their goals (YOU and the MVP marked), and in Competitive your rank card with the MMR
   you won or lost and what the next tier still takes (it replaces the result window). PLAY AGAIN
@@ -269,6 +296,8 @@ All notable changes to Turbogol are documented here. The format follows
   night sky.
 
 ### Changed
+- Error messages no longer show technical codes ("Server error (503)", "Connection lost (1006)"):
+  they say what happened, and the code goes to the developer console and the network panel (F4).
 - The match HUD keeps its scorebug (BLU 1 │ 2:49 │ 0 RED) with a lime notch under your team, and
   the boost meter is bigger, on its own plate. The ball's pointer at the edge of the screen keeps
   off the scorebug, the boost meter and the controls card.
