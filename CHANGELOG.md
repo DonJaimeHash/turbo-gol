@@ -7,6 +7,19 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Settings is now a screen like the rest of the menus: six tabs on the left (CONTROLS, CAMERA,
+  GAME, AUDIO, GRAPHICS, EXPERIMENTAL) with every setting you had, kept as you saved it. CONTROLS
+  shows only what you play with (touch, controller, keyboard and mouse) and opens on the one you
+  used last. Sliders have − and + and a mark at their default; switches read NO │ YES. Back from
+  Settings returns to the screen you opened it from.
+- From the pause, SETTINGS opens the same screen over the match. Online the match goes on behind
+  it and the score stays at the top.
+- Graphics quality as cards: choose one and it applies; unless you press KEEP within 10 seconds,
+  the quality you had comes back by itself. With a controller or a TV remote, ◀ ▶ only move
+  between the cards, nothing changes until you press A.
+- Changing a key or button: on a controller hold B for a second to cancel (a short press of B binds
+  B), X or Delete clears a binding, and the screen tells you when the key you chose already does
+  something else.
 - Playing with your fingers: BOOST shows how much boost you have, with a level that fills the
   button, and the boost bar under the score is gone. CAM moved down into your right thumb's reach,
   next to JUMP and DRIFT (RESET sits above it in training), PAUSE is alone in the top right
@@ -18,7 +31,7 @@ All notable changes to Turbogol are documented here. The format follows
 - The pause on a touch screen is laid out for two thumbs: RESUME is a big button right where BOOST
   was, so the thumb that paused resumes without moving, and SETTINGS and QUIT are under your left
   thumb. Hold QUIT for a second (the ring fills) to leave; a tap anywhere else does nothing.
-- A setting for touch players, in Settings › Gameplay: keep JUMP held when you slide your thumb from
+- A setting for touch players, in Settings › Controls › Touch: keep JUMP held when you slide your thumb from
   JUMP to BOOST, for full-height aerials with one thumb (off by default).
 - Online, turning your phone upright no longer hides the match: the notice "The match goes on: turn
   your phone" lets you see the game and the score behind it.

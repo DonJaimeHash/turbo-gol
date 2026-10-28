@@ -613,6 +613,11 @@ html:not(.tg-touch) .mn-focus > .hud-settings-action.hud-focus {
   border-radius: var(--r-tile);
 }
 
+.mn-set-back > .mn-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
 .mn-set-bar-title {
   font-family: var(--font-display);
   font-size: var(--t-heading);
