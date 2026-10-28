@@ -525,6 +525,7 @@ export class TouchControls {
     const alpha = String(Math.min(1, Math.max(0.3, st.opacity / 100)));
     if (root.style.getPropertyValue('--tc-alpha') !== alpha) root.style.setProperty('--tc-alpha', alpha);
     root.classList.toggle('tc-lefty', st.lefty);
+    this.router.mirrored = st.lefty;
     this.router.fixedStick = st.stick === 'fixed';
     this.router.deadzone = st.deadzone;
     this.vibrate = st.vibration && canVibrate();

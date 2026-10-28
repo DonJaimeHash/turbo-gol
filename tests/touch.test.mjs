@@ -1044,6 +1044,23 @@ test('router: a landing hits within HIT_SLOP radii, a slide needs the button its
   assert.deepEqual(readMap(ts), {});
 });
 
+test('router, left-handed: the zone on the right, a landing on the left half off every button slides onto JUMP', () => {
+  const { ts, router, layout } = routerSetup();
+  // routerSetup mirrored as tc-lefty measures it.
+  layout.zone = { left: 400, top: 72, right: 770, bottom: 400 };
+  for (const b of layout.buttons) b.cx = 800 - b.cx;
+  router.mirrored = true;
+  router.down(1, 300, 200); // the buttons' half, off every button: holds nothing yet
+  assert.deepEqual(readMap(ts), {});
+  router.move(1, 225, 330); // onto JUMP
+  assert.deepEqual(readMap(ts), { jump: 1 }, 'sliding onto a button presses it');
+  router.up(1, 225, 330);
+  router.down(2, 600, 250); // the zone: the stick
+  assert.equal(router.stickActive, true);
+  router.up(2, 600, 250);
+  assert.deepEqual(readMap(ts), {});
+});
+
 test('router: tap buttons fire once on a lift over them; sliding away or a cancel does not; hidden ones never hit', () => {
   const { ts, router } = routerSetup();
   router.down(1, 740, 50);

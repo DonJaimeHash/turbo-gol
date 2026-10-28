@@ -277,7 +277,8 @@ src/input/
   TouchControls.ts      the touch overlay (.tc-root, touch.css; created only with a touch screen):
                         measures the layout from its CSS, routes every finger through TouchRouter,
                         applies settings.touch (applySettings: --tc-k size, --tc-alpha opacity,
-                        tc-lefty mirrors the logical insets, the router's stick and deadzone, a
+                        tc-lefty mirrors the logical insets and the router's side
+                        (mirrored: the buttons' half), the router's stick and deadzone, a
                         press's pulse where navigator.vibrate exists),
                         paint() and setBoost() (BOOST's amount and level at 10 Hz) allocate
                         nothing; the scoreboard tap (scoreboardOpen), the three first-match cards

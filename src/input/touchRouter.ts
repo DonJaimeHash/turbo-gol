@@ -166,6 +166,8 @@ export class TouchRouter {
   fixedStick = false;
   /** The stick's radial deadzone (stickVector). */
   deadzone = 0.12;
+  /** Left-handed (tc-lefty): the zone on the right, the buttons on the left of it. */
+  mirrored = false;
 
   constructor(state: TouchState, layout: TouchLayout = emptyLayout()) {
     this.state = state;
@@ -260,8 +262,10 @@ export class TouchRouter {
       }
       return;
     }
-    // The right half: nothing yet, a slide onto JUMP / BOOST / DRIFT presses it.
-    this.fingers.set(id, { kind: x >= z.right ? F_HOLD : F_NONE, button: -1, keepBoost: false, keepJump: false });
+    // The buttons' half (the right one, the left when mirrored): nothing yet, a slide onto JUMP /
+    // BOOST / DRIFT presses it.
+    const buttonSide = this.mirrored ? x < z.left : x >= z.right;
+    this.fingers.set(id, { kind: buttonSide ? F_HOLD : F_NONE, button: -1, keepBoost: false, keepJump: false });
   }
 
   /** A tracked finger moved to (x, y). */
