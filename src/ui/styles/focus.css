@@ -1,7 +1,7 @@
 /* The one focus ring (tokens: --focus-*, src/ui/styles/tokens.css), for every input that moves a
    focus: the menus' real DOM focus (.mn-focus / :focus-visible, src/ui/nav.ts), the HUD's
    FocusRing (.hud-focus: the pause menu and the settings screen, src/render/Hud.ts) and the
-   training summary's default button (pad A / Enter retries the pack, Game.trainingSummaryActions).
+   training summary's buttons (their own FocusNav: .mn-focus, src/render/TrainingHud.ts).
 
    A --focus-w white outline --focus-gap out, a ring of --ink filling that gap (it reads on lime, on
    a panel and on the live pitch) and a lime heel skewed -20 degrees from 30 % to 70 % of the width,
@@ -28,7 +28,7 @@ html:not(.tg-touch) .hud-pause-menu > .hud-pause-btn.hud-focus,
 html:not(.tg-touch) .hud-pause-row.hud-focus .hud-pause-btn.hud-focus,
 html:not(.tg-touch) .hud-settings-row.hud-focus,
 html:not(.tg-touch) .hud-settings-actions.hud-focus .hud-settings-action.hud-focus,
-html:not(.tg-touch) .trn-summary-card .trn-btn-primary {
+html:not(.tg-touch) .trn-summary-card .trn-btn.mn-focus {
   position: relative;
   z-index: 1;
   outline: var(--focus-w) solid var(--focus);
@@ -48,7 +48,7 @@ html:not(.tg-touch) .hud-settings-tabs.hud-focus .hud-settings-tab.hud-active {
 /* ---- Heel ---------------------------------------------------------------------------------- */
 html:not(.tg-touch) .mn .mn-focus::after,
 html:not(.tg-touch) .mn [data-nav]:focus-visible::after,
-html:not(.tg-touch) .trn-summary-card .trn-btn-primary::after {
+html:not(.tg-touch) .trn-summary-card .trn-btn.mn-focus::after {
   content: var(--ring-heel, '');
   position: absolute;
   left: 30%;
