@@ -545,8 +545,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         in place, ◀ ▶ from a tab or a row (onNavSide, never past either end), one
                         scroller of data-nav rows, your standing (GO TO MY POSITION: pad X, keyboard
                         X with no search, Delete; a guest's SIGN IN; the placement matches),
-                        LT / RT (a controller's: Screen.command by the last input) and PgUp / PgDn
-                        pages, window.__board samples in dev / VITE_UI_FIT; leaderboardModel.ts,
+                        LT / RT (a controller's: Screen.command's `pad`, the press's source) and
+                        PgUp / PgDn pages, the picked tab the first focus, window.__board samples in dev / VITE_UI_FIT; leaderboardModel.ts,
                         pure; tests/leaderboard.test.mjs) + ranked result dialog
                         (RankedResults.watch's `into`: the FINAL's rank card takes the answer
                         while it is up; else the toast or the dialog as before); PERFIL
