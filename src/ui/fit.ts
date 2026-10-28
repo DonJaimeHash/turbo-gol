@@ -35,12 +35,17 @@
  * 16 on a TV at its reference view), the hero's title as fitted, and the menus' DOM size.
  */
 
-/** CSS px per px of the layout class's reference view: --ui-scale on a TV (its width / 960), 1 elsewhere. */
+/**
+ * CSS px per px of the layout class's reference view: --ui-scale on a TV (its width / 960), 1
+ * elsewhere; without the player's interface size (`data-ui-factor`, device.ts): a larger
+ * interface may give its text back down to the class's own minimum where there is no room.
+ */
 function referencePx(): number {
   const html = document.documentElement;
   if (html.dataset.layout !== 'tv') return 1;
   const s = Number.parseFloat(html.style.getPropertyValue('--ui-scale'));
-  return Number.isFinite(s) && s > 0 ? s : 1;
+  const f = Number.parseFloat(html.dataset.uiFactor ?? '1');
+  return Number.isFinite(s) && s > 0 ? s / (Number.isFinite(f) && f > 0 ? f : 1) : 1;
 }
 
 /** The left and right of `el`'s content box (inside its border and padding: a bar's overscan, the rail's gesture margin). */

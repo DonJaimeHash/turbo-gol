@@ -196,16 +196,6 @@ test('the copy is per account; sign-out keeps it; the boot unlock reads the { na
   srv.who = A;
   assert.equal(store.enabled(), true, 'the copy outlived the sign-out');
   assert.equal(store.presets()[0].name, 'Low gravity');
-  assert.equal(X.ExperimentalStore.unlockedAtBoot(storage), false, 'no hint: a guest');
-  storage.setItem(ACCOUNT_HINT_KEY, JSON.stringify({ name: 'Tomi', id: A }));
-  assert.equal(X.ExperimentalStore.unlockedAtBoot(storage), true);
-  storage.setItem(ACCOUNT_HINT_KEY, JSON.stringify({ name: 'Tomi' }));
-  assert.equal(X.ExperimentalStore.unlockedAtBoot(storage), false, 'a hint from before the id');
-  storage.setItem(ACCOUNT_HINT_KEY, JSON.stringify({ name: 'Other', id: B }));
-  assert.equal(X.ExperimentalStore.unlockedAtBoot(storage), false, 'that account has it off');
-  assert.equal(X.ExperimentalStore.unlockedAtBoot(null), false);
-  const throwing = { getItem: () => { throw new Error('SecurityError'); } };
-  assert.equal(X.ExperimentalStore.unlockedAtBoot(throwing), false);
 });
 
 test('edits are local at once and pushed debounced (or on flush / another pick); an edit during the request stays dirty', async () => {

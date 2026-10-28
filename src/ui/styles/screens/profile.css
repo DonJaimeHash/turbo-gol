@@ -290,22 +290,14 @@
   height: 1.125rem;
 }
 
-/* ---- ACERCA DE and IDIOMA ------------------------------------------------------------------------ */
-.mn-prof-foot {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-  gap: 0 1.5rem;
-  align-items: start;
-}
-
+/* ---- ACERCA DE ----------------------------------------------------------------------------------- */
 .mn-prof-about {
   margin: 0 0 0.5rem;
   overflow-wrap: anywhere;
 }
 
 /* ---- Per class ------------------------------------------------------------------------------------ */
-html[data-layout='portrait'] .mn-prof-account,
-html[data-layout='portrait'] .mn-prof-foot {
+html[data-layout='portrait'] .mn-prof-account {
   grid-template-columns: minmax(0, 1fr);
 }
 

@@ -5,6 +5,10 @@
  * end time from the clock; an explicit quit, the whistle, a cancelled match or a rejoin that says the
  * match is over clear it. P2P rooms are never written (the server never rejoins one). Inicio's hero
  * reads it (homeModel.ts HeroRejoin). Pure but for the storage, which is injectable (tests).
+ *
+ * The Sala this tab is in goes the same way across a reload the game runs itself (Super low's
+ * restart, Game.restartOn: LOBBY_STAY_KEY): the next page joins it again by code (lobby.ts
+ * installLobbyReturn), as a dropped socket does (LobbyDO keeps the place, host included).
  */
 import type { GameMode } from '../sim/constants';
 import { STORAGE_PREFIX } from '../brand';
@@ -77,6 +81,44 @@ export function clearRejoin(store: StorageLike | null = session()): void {
   } catch {
     /* blocked */
   }
+}
+
+export const LOBBY_STAY_KEY = STORAGE_PREFIX + 'lobbyStay';
+/** A Sala's record is joined again this long after the reload at most (LobbyClient's RECONNECT_WINDOW_MS). */
+export const LOBBY_STAY_MS = 90_000;
+
+export interface LobbyStay {
+  code: string;
+  /** The password typed to join or create it (LobbyClient.password). */
+  password: string | null;
+  /** Date.now() of the write (just before the reload). */
+  savedAt: number;
+}
+
+export function saveLobbyStay(s: LobbyStay, store: StorageLike | null = session()): void {
+  try {
+    store?.setItem(LOBBY_STAY_KEY, JSON.stringify(s));
+  } catch {
+    /* storage full or blocked: the reload leaves the Sala, as a closed tab does */
+  }
+}
+
+/** The Sala to join again at `now`, read once (the record goes), else null. */
+export function takeLobbyStay(now = Date.now(), store: StorageLike | null = session()): LobbyStay | null {
+  if (store === null) return null;
+  let v: unknown = null;
+  try {
+    const raw = store.getItem(LOBBY_STAY_KEY);
+    if (raw === null) return null;
+    store.removeItem(LOBBY_STAY_KEY);
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (v === null || typeof v !== 'object') return null;
+  const r = v as LobbyStay;
+  const ok = typeof r.code === 'string' && r.code.length > 0 && (r.password === null || typeof r.password === 'string') && typeof r.savedAt === 'number' && now - r.savedAt >= 0 && now - r.savedAt < LOBBY_STAY_MS;
+  return ok ? { code: r.code, password: r.password, savedAt: r.savedAt } : null;
 }
 
 /** The time left to show for `r` at `now` (ms, 0 when unknown). */

@@ -20,6 +20,21 @@ All notable changes to Turbogol are documented here. The format follows
   switch a screen's tabs.
 - The anti-bot check runs ahead when PLAY opens, so starting a match or creating an account rarely
   waits for it. If Cloudflare ever needs you to answer it, a sheet says why, and CANCEL stops it.
+- New in Settings › Graphics: Resolution scale (50 to 125 %: lower is smoother, the text and the
+  HUD stay sharp), a frame rate limit (30, 60 or no limit), the animated stadium in the menus, and
+  RESET GRAPHICS for those three. A card under the tabs says your settings save themselves.
+- Super low mode is a switch in Settings › Graphics for everyone, guests included: flat surfaces,
+  no effects, for very modest devices. It restarts the game (online, once you leave the match's
+  result; in a lobby you are back in it after the restart, still its host).
+  It no longer needs an account or Experimental, and it changes nothing about how a match plays
+  or counts.
+- New in Settings › Game: the language (it moves there from PROFILE; the game reloads in a few
+  seconds), the interface size (100 to 150 %, as big as your screen allows; a TV keeps its usual
+  125 %) and reduced motion (follow your system, always or never).
+- New in Settings › Controls › Touch: button size (S, M, L), opacity, a left-handed layout (stick
+  on the right, buttons on the left), a fixed or floating stick, the stick's deadzone, and a short
+  vibration on each press (Android). They change the controls at once, in the menus or from the
+  pause.
 - TRAINING has a new look: FREE PLAY is the big tile, then SHOOTING (start here), SAVING and
   AERIALS, each with three marks for its levels (filled with a ✓ when you passed it, a dot once you
   played it, empty before). A pack opens its three levels as big buttons with your best run and the

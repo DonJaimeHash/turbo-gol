@@ -546,6 +546,16 @@ html[data-shell='rail'] .mn-pills-more .mn-chip {
   padding: 0 0.375rem;
 }
 
+/* A tablet past its own interface size (device.ts data-ui-factor) does the same: at 130 % a long name
+   beside the search pill left the crumbs no room. */
+html[data-shell='tabs']:not([data-ui-factor='1']) .mn-pills-more .mn-chip-text {
+  display: none;
+}
+
+html[data-shell='tabs']:not([data-ui-factor='1']) .mn-pills-more .mn-chip {
+  padding: 0 0.375rem;
+}
+
 /* A crowded bar (a long name, a wide system font): the chip's text gives way too (an ellipsis),
    never the gear into the 24 px edge. */
 html[data-shell='rail'] .mn-top-right {

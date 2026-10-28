@@ -29,6 +29,7 @@ import { lobbyCloseText } from '../../net/LobbyClient';
 import { outcomeOf } from '../../net/outcome';
 import { MODES } from '../../sim/constants';
 import { DEFAULT_MATCH_SECONDS } from '../../game/Match';
+import { takeLobbyStay } from '../../game/rejoinStore';
 import { GAME_NAME } from '../../brand';
 import { t } from '../../i18n';
 import { lobbyRulesLine } from '../../render/rulesText';
@@ -249,6 +250,30 @@ export function installJoinLink(menu: Menu): void {
   };
   window.addEventListener('hashchange', take);
   take();
+}
+
+/**
+ * Back into the Sala a reload the game ran itself left (Super low's restart: Game.restartOn saves it,
+ * rejoinStore.ts takeLobbyStay): joined again by code once the menus are up, as a dropped socket's
+ * reconnection does (LobbyDO admits the member again as it was, host included, so nobody else
+ * notices more than RECONNECTING), then its screen. A Sala that is gone meanwhile says why.
+ */
+export function installLobbyReturn(menu: Menu): void {
+  const stay = takeLobbyStay();
+  if (stay === null) return;
+  const go = (): void => {
+    if (!menu.visible || menu.modalOpen) {
+      window.setTimeout(go, 400);
+      return;
+    }
+    const lobby = menu.host.lobby;
+    if (lobby.inLobby) return; // a join link's sheet got there first
+    lobby.join(stay.code, stay.password).then(
+      () => menu.open('lobby'),
+      (e: unknown) => menu.toast(errText(e), 'error'),
+    );
+  };
+  go();
 }
 
 /** The Sala's settings line: "2v2 · P2P · 5 min · Private". */

@@ -132,6 +132,16 @@ export function memoryTag(q: Quality, memoryGb: number | undefined): boolean {
 }
 
 /**
+ * GRÁFICOS' line under the cards: a pick that waits for the online match to end says so first
+ * (Super low's too, which lights no card); else a lit tier no card shows (a device on Super low)
+ * gets its note (empty when the player picked it). Pure.
+ */
+export function qualityLine(lit: Quality, cards: readonly Quality[], pending: Quality | null): 'afterOnline' | 'note' | null {
+  if (pending !== null) return 'afterOnline';
+  return cards.includes(lit) ? null : 'note';
+}
+
+/**
  * A segmented choice whose options may be partly listed (Graphics: Super low only when unlocked):
  * the value `dir` steps reach from `value` among `listed`, in the order of `all`. Left / right (-1 /
  * +1) stop at the ends; accept (0) wraps. From a value that is not listed (a device running Super

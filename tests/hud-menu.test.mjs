@@ -19,7 +19,7 @@ const { formatSettingValue, stepDecimals, stepSettingValue, DIFFICULTIES, GAME_M
 const { experimentalView, stepPreset, stepRuleValue } = await import('../src/render/experimentalPage.ts');
 const RT = await import('../src/render/rulesText.ts');
 const R = await import('../src/game/physicsRules.ts');
-const { QUALITIES, menuQualities } = await import('../src/render/quality.ts');
+const { QUALITIES, CARD_QUALITIES } = await import('../src/render/quality.ts');
 const { newNetStatsView } = await import('../src/net/NetStats.ts');
 const { CAMERA_RANGES, CONTROL_RANGES } = await import('../src/settings.ts');
 const { MODES } = await import('../src/sim/constants.ts');
@@ -106,15 +106,13 @@ test('network panel: a host line only for a match on a community node', () => {
 
 // ---- Settings > Graphics and Settings > Experimental (pure parts) -----------------------------------
 
-test('Graphics list: a guest steps among Performance / High / Ultra; a device on Super low by itself lights nothing and steps to the nearest listed tier', () => {
-  const locked = menuQualities(false);
-  const unlocked = menuQualities(true);
-  assert.equal(choiceStep(QUALITIES, unlocked, 'low', -1), 'superlow', 'unlocked: Super low is one step left of Performance');
-  assert.equal(choiceStep(QUALITIES, locked, 'low', -1), null, 'locked: nothing left of Performance');
+test('Graphics cards: Performance / High / Ultra (Super low is the switch under them); a device on Super low lights nothing and steps to the nearest card', () => {
+  const locked = CARD_QUALITIES;
+  assert.equal(choiceStep(QUALITIES, locked, 'low', -1), null, 'nothing left of Performance');
   assert.equal(choiceStep(QUALITIES, locked, 'low', 1), 'high');
   assert.equal(choiceStep(QUALITIES, locked, 'ultra', 1), null, 'no wrap on left / right');
   assert.equal(choiceStep(QUALITIES, locked, 'ultra', 0), 'low', 'accept wraps');
-  // Super low running on its own (a TV), not listed: no chip lit, the first step goes up to Performance.
+  // Super low running (its switch on, or a TV on its own), not a card: none lit, the first step goes up to Performance.
   assert.equal(locked.includes('superlow'), false);
   assert.equal(choiceStep(QUALITIES, locked, 'superlow', 1), 'low');
   assert.equal(choiceStep(QUALITIES, locked, 'superlow', 0), 'low');
@@ -129,25 +127,21 @@ test('Experimental tab: the same label for a guest, no emoji (the rail draws the
   assert.equal(experimentalTabLabel(false), 'Experimental');
 });
 
-const STATE = { available: true, enabled: false, offRestarts: false, superlow: 'listed' };
+const STATE = { available: true, enabled: false };
 
 test('Experimental page lines: the guest gets the locked line only; the switch shows its details when on; the editor needs the presets and the switch', () => {
-  const none = { locked: true, switchRow: false, confirm: false, details: false, editor: false, match: false, superlowKey: 'settings.experimentalSuperlowListed' };
-  assert.deepEqual(experimentalView(null, false), none);
-  assert.deepEqual(experimentalView({ ...STATE, available: false }, false, true, 'match'), none, 'a guest: nothing, whatever the context');
-  assert.deepEqual(experimentalView(STATE, false), { locked: false, switchRow: true, confirm: false, details: false, editor: false, match: false, superlowKey: 'settings.experimentalSuperlowListed' });
+  const none = { locked: true, switchRow: false, details: false, editor: false, match: false };
+  assert.deepEqual(experimentalView(null), none);
+  assert.deepEqual(experimentalView({ ...STATE, available: false }, true, 'match'), none, 'a guest: nothing, whatever the context');
+  assert.deepEqual(experimentalView(STATE), { locked: false, switchRow: true, details: false, editor: false, match: false });
   const on = { ...STATE, enabled: true };
-  assert.equal(experimentalView(on, false).details, true);
-  assert.equal(experimentalView({ ...on, superlow: 'chosen' }, false).superlowKey, 'settings.experimentalSuperlowChosen');
-  assert.equal(experimentalView({ ...on, superlow: 'auto' }, false).superlowKey, 'settings.qualityAuto');
-  assert.equal(experimentalView({ ...on, offRestarts: true }, true).confirm, true);
-  assert.equal(experimentalView({ ...on, offRestarts: false }, true).confirm, false, 'nothing to confirm without a restart');
-  assert.equal(experimentalView(on, false).editor, false, 'no presets: no editor');
-  assert.equal(experimentalView(on, false, true).editor, true);
-  assert.equal(experimentalView(on, false, true, 'training').editor, true);
-  assert.equal(experimentalView(STATE, false, true).editor, false, 'the switch off hides the editor');
-  assert.deepEqual([experimentalView(on, false, true, 'match').editor, experimentalView(on, false, true, 'match').match], [false, true], 'a match: its rules, read-only');
-  assert.equal(experimentalView(STATE, false, true, 'match').match, true, "the room decided: a member's switch is not checked");
+  assert.equal(experimentalView(on).details, true);
+  assert.equal(experimentalView(on).editor, false, 'no presets: no editor');
+  assert.equal(experimentalView(on, true).editor, true);
+  assert.equal(experimentalView(on, true, 'training').editor, true);
+  assert.equal(experimentalView(STATE, true).editor, false, 'the switch off hides the editor');
+  assert.deepEqual([experimentalView(on, true, 'match').editor, experimentalView(on, true, 'match').match], [false, true], 'a match: its rules, read-only');
+  assert.equal(experimentalView(STATE, true, 'match').match, true, "the room decided: a member's switch is not checked");
 });
 
 test('preset picker and value steps: wrap through the presets; ranges stop at their ends, accept wraps a choice', () => {
@@ -271,7 +265,7 @@ test('Experimental page: focus stops only on shown rows; turning it off with Sup
   opts = { state: () => state, setEnabled: (on) => { sets.push(on); state = { ...state, enabled: on }; } };
   page.refresh();
   assert.deepEqual(page.items(), [], 'a guest: no switch to focus');
-  const [locked, note, row, confirm, unlocks, superlow, matchLine, editor] = page.page.children;
+  const [locked, note, row, unlocks, matchLine, editor] = page.page.children;
   assert.equal(locked.hidden, false);
   assert.equal(row.hidden, true);
   assert.equal(editor.hidden, true);
@@ -289,29 +283,13 @@ test('Experimental page: focus stops only on shown rows; turning it off with Sup
   assert.deepEqual(sets, [true]);
   page.refresh();
   assert.equal(unlocks.hidden, false);
-  assert.equal(superlow.textContent, 'Super low is now listed in Graphics');
+  assert.equal(unlocks.textContent, 'Unlocks Experimental free play and lobby rules', 'Super low is not among them (Graphics, everyone)');
   assert.equal(matchLine.hidden, true);
   assert.equal(editor.hidden, true, 'no presets in the options: no editor');
-  // Super low is the player's pick: the first press only asks.
-  state = { ...state, offRestarts: true, superlow: 'chosen' };
-  page.refresh();
-  assert.equal(superlow.textContent, 'Super low is your graphics quality');
+  // Off at once: nothing restarts.
   page.items()[0].accept();
-  assert.deepEqual(sets, [true], 'not yet');
-  assert.equal(confirm.hidden, false);
-  assert.equal(confirm.textContent, 'Press again: Performance graphics, restarts');
-  assert.equal(row.on, true, 'still on');
-  page.disarm();
-  assert.equal(confirm.hidden, true, 'leaving the tab forgets the first press');
-  page.items()[0].accept();
-  page.items()[0].accept();
-  assert.deepEqual(sets, [true, false], 'the second press turns it off');
-  assert.equal(confirm.hidden, true);
-  // Super low only running on its own: off at once.
-  state = { ...STATE, enabled: true, offRestarts: false, superlow: 'auto' };
-  page.refresh();
-  page.items()[0].accept();
-  assert.deepEqual(sets, [true, false, false]);
+  assert.deepEqual(sets, [true, false]);
+  assert.equal(row.on, false);
 });
 
 /** The editor over a real ExperimentalStore (memory storage, a fake account that accepts everything). */
@@ -343,7 +321,7 @@ async function editorPage(context = 'menu') {
   const opts = { state: () => state, setEnabled: () => undefined, presets: store, context, matchRules: 'Low gravity · Gravity 50%' };
   const page = fakePage(buildExperimentalPage, () => opts);
   page.refresh();
-  const editor = page.page.children[7];
+  const editor = page.page.children[5];
   const find = (cls) => {
     const out = [];
     const walk = (e) => {

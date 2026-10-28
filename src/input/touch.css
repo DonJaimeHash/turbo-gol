@@ -17,6 +17,11 @@
  * The TouchControls root routes every finger itself (hit tests on the measured circles), so its
  * children never take the pointer.
  *
+ * Settings > Controls > Touch (TouchControls.applySettings): --tc-k scales the stick and the
+ * buttons (S 0.85, M 1, L 1.15), --tc-alpha their opacity; `tc-lefty` mirrors them (the insets are
+ * logical, the root's direction flips them; PAUSE keeps its physical corner, the scorebug is
+ * the HUD's).
+ *
  * Touch mode (`tg-touch` on <html>) rules of other components live with them: the menus' back
  * button, hints and focus rings in src/ui/menu.css, the pause screen's RESUME / QUIT in
  * src/style.css, the training panels in src/render/training.css.
@@ -25,12 +30,12 @@
 .tc-root {
   --tc-edge: 24px;
   --tc-gap: clamp(10px, 3vh, 20px);
-  --tc-boost: clamp(84px, 27vh, 136px);
-  --tc-jump: clamp(72px, 22vh, 116px);
-  --tc-drift: clamp(56px, 17vh, 88px);
-  --tc-small: clamp(48px, 12vh, 60px);
-  --tc-cam: clamp(52px, 14.4vh, 64px);
-  --tc-stick: clamp(104px, 34vh, 168px);
+  --tc-boost: calc(clamp(84px, 27vh, 136px) * var(--tc-k, 1));
+  --tc-jump: calc(clamp(72px, 22vh, 116px) * var(--tc-k, 1));
+  --tc-drift: calc(clamp(56px, 17vh, 88px) * var(--tc-k, 1));
+  --tc-small: calc(clamp(48px, 12vh, 60px) * var(--tc-k, 1));
+  --tc-cam: calc(clamp(52px, 14.4vh, 64px) * var(--tc-k, 1));
+  --tc-stick: calc(clamp(104px, 34vh, 168px) * var(--tc-k, 1));
   /* The stick never starts this close to the left edge (Android's back gesture lives there). */
   --tc-left: max(28px, calc(var(--safe-left) + 20px));
   position: absolute;
@@ -50,17 +55,27 @@
 @supports (height: 1dvh) {
   .tc-root {
     --tc-gap: clamp(10px, 3dvh, 20px);
-    --tc-boost: clamp(84px, 27dvh, 136px);
-    --tc-jump: clamp(72px, 22dvh, 116px);
-    --tc-drift: clamp(56px, 17dvh, 88px);
-    --tc-small: clamp(48px, 12dvh, 60px);
-    --tc-cam: clamp(52px, 14.4dvh, 64px);
-    --tc-stick: clamp(104px, 34dvh, 168px);
+    --tc-boost: calc(clamp(84px, 27dvh, 136px) * var(--tc-k, 1));
+    --tc-jump: calc(clamp(72px, 22dvh, 116px) * var(--tc-k, 1));
+    --tc-drift: calc(clamp(56px, 17dvh, 88px) * var(--tc-k, 1));
+    --tc-small: calc(clamp(48px, 12dvh, 60px) * var(--tc-k, 1));
+    --tc-cam: calc(clamp(52px, 14.4dvh, 64px) * var(--tc-k, 1));
+    --tc-stick: calc(clamp(104px, 34dvh, 168px) * var(--tc-k, 1));
   }
 }
 
 .tc-root.tc-show {
   display: block;
+}
+
+/* Left-handed: the stick on the right, the buttons on the left (their logical insets); PAUSE's is
+   physical, the cards' text reads as ever. */
+.tc-root.tc-lefty {
+  direction: rtl;
+}
+
+.tc-lefty .tc-cards {
+  direction: ltr;
 }
 
 .tc-root * {
@@ -71,28 +86,28 @@
 
 .tc-zone {
   position: absolute;
-  left: var(--tc-left);
+  inset-inline-start: var(--tc-left);
   top: 18%;
-  right: 50%;
+  inset-inline-end: 50%;
   bottom: 0;
 }
 
 /* Resting faintly at the bottom left; a finger in the zone moves it under the finger (transform). */
 .tc-stick {
   position: absolute;
-  left: calc(var(--tc-left) + clamp(12px, 5vw, 72px));
+  inset-inline-start: calc(var(--tc-left) + clamp(12px, 5vw, 72px));
   bottom: calc(var(--safe-bottom) + clamp(16px, 7vh, 48px));
   width: var(--tc-stick);
   height: var(--tc-stick);
   border: 2px solid rgba(255, 255, 255, 0.24);
   border-radius: 50%;
   background: radial-gradient(circle, rgba(7, 10, 20, 0.12) 0 45%, rgba(7, 10, 20, 0.42));
-  opacity: 0.45;
+  opacity: calc(0.45 * var(--tc-alpha, 1));
   will-change: transform;
 }
 
 .tc-stick.tc-stick-on {
-  opacity: 0.95;
+  opacity: calc(0.95 * var(--tc-alpha, 1));
   border-color: rgba(255, 255, 255, 0.4);
 }
 
@@ -125,6 +140,7 @@
   line-height: 1;
   text-transform: uppercase;
   white-space: nowrap;
+  opacity: var(--tc-alpha, 1);
   transition:
     transform 0.06s,
     background-color 0.06s,
@@ -141,7 +157,7 @@
    layer moved by translateY at 10 Hz, clipped by the circle: TouchControls.setBoost); empty, low
    and full as the Hud's plate. */
 .tc-boost {
-  right: calc(var(--safe-right) + var(--tc-edge));
+  inset-inline-end: calc(var(--safe-right) + var(--tc-edge));
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-boost);
   height: var(--tc-boost);
@@ -201,7 +217,7 @@
 }
 
 .tc-jump {
-  right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
+  inset-inline-end: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-jump);
   height: var(--tc-jump);
@@ -211,7 +227,7 @@
 
 /* DRIFT is neutral (plan M48: azure only means a team). */
 .tc-drift {
-  right: calc(var(--safe-right) + var(--tc-edge) + (var(--tc-boost) - var(--tc-drift)) / 2);
+  inset-inline-end: calc(var(--safe-right) + var(--tc-edge) + (var(--tc-boost) - var(--tc-drift)) / 2);
   bottom: calc(var(--safe-bottom) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
   width: var(--tc-drift);
   height: var(--tc-drift);
@@ -237,7 +253,7 @@
 
 .tc-cam,
 .tc-reset {
-  right: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap) + (var(--tc-jump) - var(--tc-cam)) / 2);
+  inset-inline-end: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap) + (var(--tc-jump) - var(--tc-cam)) / 2);
   width: var(--tc-cam);
   height: var(--tc-cam);
 }
@@ -473,8 +489,6 @@ html.tg-superlow .tc-rotate.tc-rotate-live {
 }
 
 /* Reduced motion (the rest is the one block of src/style.css): the phone rests turned. */
-@media (prefers-reduced-motion: reduce) {
-  .tc-rotate-phone {
-    transform: rotate(-90deg);
-  }
+html.tg-reduce-motion .tc-rotate-phone {
+  transform: rotate(-90deg);
 }
