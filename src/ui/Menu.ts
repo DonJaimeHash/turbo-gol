@@ -79,7 +79,8 @@ import { REGIONS, isRegion } from '../net/account';
 import type { QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
 import type { GameMode } from '../sim/constants';
-import type { Difficulty, SettingsTab } from '../render/Hud';
+import type { Difficulty } from '../render/Hud';
+import type { SettingsTab } from './screens/settings/model';
 import type { ThemeId } from '../render/theme';
 import type { ActionId, Device } from '../input/bindings';
 import { DISCORD_URL, GAME_NAME, LICENSE_NAME, SOURCE_URL } from '../brand';
@@ -285,6 +286,12 @@ export interface Screen {
   setTab?(tab: string): void;
   /** What its own tabs are, for the hint bar (MODOS: "Modes"); else "Tabs". */
   readonly tabsVerb?: Key;
+  /** The scene holds one frame under it (Ajustes: nothing behind it moves, the menus report 'opaque'). */
+  readonly holdsScene?: boolean;
+  /** It takes every key itself now (Ajustes waiting for a binding's key): the menus' keys stand aside. */
+  keysTaken?(): boolean;
+  /** Focus zones of its own, before the shell's (Ajustes' rail: a side zone, crossed with ◀ ▶ only). */
+  zones?(): NavZone[];
   /**
    * The shell is about to take the player off this screen without its own Back (a section, a
    * crumb, the wordmark, the chip, the search pill): a function that asks first and calls `go`
@@ -318,9 +325,6 @@ export class Menu {
   private readonly regionPill: RegionPill;
   private readonly searchPill: SearchPill;
   private readonly updateBtn: HTMLButtonElement;
-  /** The search pill over the Hud's settings screen (outside .mn: above z 60), pointer only. */
-  private readonly float: HTMLElement;
-  private readonly floatPill: SearchPill;
   private readonly toasts: Toasts;
   private readonly modalLayer: HTMLElement;
   private readonly screens = new Map<string, Screen>();
@@ -372,8 +376,6 @@ export class Menu {
   private searching = false;
   /** Settings opened from the menus are up (Menu.openSettings). */
   private settingsOpen = false;
-  /** Settings just closed, in this task (onKey: the closing key is theirs). */
-  private settingsClosing = false;
   /** The server refused this page's version: the update sheet once, then the pill. */
   private reloadNeeded = false;
   private reloadAsked = false;
@@ -435,12 +437,9 @@ export class Menu {
     this.toasts = new Toasts();
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
     this.root = h('div.mn', { hidden: true }, this.rail.el, this.topBar.el, this.stage, this.hintBar.el, this.tabbar.el, this.toasts.el, this.modalLayer);
-    this.floatPill = new SearchPill(() => undefined, () => this.cancelSearch(), false);
-    this.float = h('div.mn-float', { hidden: true }, this.floatPill.el);
     // RMB is bindable in game: no context menu over the menus.
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
     container.appendChild(this.root);
-    container.appendChild(this.float);
     this.nav = new FocusNav(() => this.zones(), {
       remembered: (zone, targets) => this.zoneEntry(zone, targets),
       restore: () => this.restoreFocus(),
@@ -507,6 +506,11 @@ export class Menu {
 
   top(): Screen | null {
     return this.stack.at(-1) ?? null;
+  }
+
+  /** Screen `id` is in the section's stack (on top or under a detour). */
+  stacked(id: string): boolean {
+    return this.stack.some((s) => s.id === id);
   }
 
   savePrefs(): void {
@@ -599,7 +603,6 @@ export class Menu {
 
   hide(): void {
     this.root.hidden = true;
-    this.float.hidden = true;
     this.root.parentElement?.classList.remove('mn-open');
     this.visibleNow = false;
     resetPageZoom(); // a pinch in the menus does not carry into the match (its controls would sit off screen)
@@ -771,6 +774,7 @@ export class Menu {
     this.root.dataset.screen = top.id;
     this.placePills();
     this.readBackdrop();
+    this.reportCover(); // a screen that holds the scene (Ajustes) came or went
     // A screen opens at its top. With the keyboard / pad the first control's focus scrolls there
     // (autoFocus); touch mode and a switch from the bar focus nothing on the stage.
     if (touchMode() || focus === 'keep') this.stage.scrollTop = 0;
@@ -786,12 +790,14 @@ export class Menu {
 
   /**
    * Tell the Game what the menus leave of the 3D scene (MenuHost.setMenuCover; quality.ts
-   * sceneFps): nothing once hidden; all of it under a sheet (the update sheet too) or while the
-   * shell's own backdrop is opaque (super low); else part of it, with the share a touch screen's
-   * menus hide (measureCover). Only a change is sent.
+   * sceneFps): nothing once hidden; all of it under a sheet (the update sheet too), while the
+   * shell's own backdrop is opaque (super low) or under a screen that holds the scene (Ajustes);
+   * else part of it, with the share a touch screen's menus hide (measureCover). Only a change is
+   * sent.
    */
   private reportCover(): void {
-    const { level, covered } = menuCover({ visible: this.visibleNow, sheet: this.modalEl !== null, opaqueBackdrop: this.backdropOpaque, covered: this.covered });
+    const opaque = this.backdropOpaque || this.top()?.holdsScene === true;
+    const { level, covered } = menuCover({ visible: this.visibleNow, sheet: this.modalEl !== null, opaqueBackdrop: opaque, covered: this.covered });
     if (level === this.coverSent && covered === this.coveredSent) return;
     this.coverSent = level;
     this.coveredSent = covered;
@@ -965,6 +971,7 @@ export class Menu {
   private zones(): NavZone[] {
     if (this.modalEl !== null) return [{ name: 'modal', el: this.modalEl, main: true }];
     return [
+      ...(this.top()?.zones?.() ?? []),
       { name: 'rail', el: this.rail.el, side: true },
       { name: 'top', el: this.topBar.el },
       { name: 'stage', el: this.stage, main: true },
@@ -1080,12 +1087,7 @@ export class Menu {
       this.keyDone = null;
       return;
     }
-    if (this.settingsClosing) return;
-    if (this.settingsUp()) {
-      // The Hud's settings screen owns the keys; X cancels the search behind it (not in its text fields).
-      if (e.code === 'KeyX' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditable(document.activeElement) && this.cancelSearch()) e.preventDefault();
-      return;
-    }
+    if (this.top()?.keysTaken?.() === true) return; // Ajustes' capture: the key is the binding
     if (e.altKey) return; // Alt + ← is the browser's Back: the system Back goes back (BackGuard), the focus stays
     if (!e.repeat && typeof e.code === 'string') this.keysDown.add(e.code);
     // Enter / Space held over from the match (SALIR's hold) would click the focused button on every
@@ -1228,29 +1230,24 @@ export class Menu {
   }
 
   /**
-   * The settings screen over the menus (the Hud's), on `opts.tab`; `onClose` when it is left (by
-   * default the focus comes back where it was). While it is up the running search floats above it.
+   * Ajustes (screens/settings: the Game's view as a screen stacked on the one shown, whatever its
+   * section), on `opts.tab`; `onClose` once it left the stack (by default the focus comes back where
+   * it was). The update sheet waits for it to close.
    */
   openSettings(onClose: () => void = () => this.refocus(), opts?: { tab?: SettingsTab }): void {
     if (this.settingsUp()) return;
     this.settingsOpen = true;
     this.host.openSettings(() => {
       this.settingsOpen = false;
-      this.float.hidden = true;
-      // The key that closed them (Esc / Backspace, the Hud's own listener, earlier on the window) is
-      // no Back here too: onKey drops keys until this task ends.
-      this.settingsClosing = true;
-      window.setTimeout(() => (this.settingsClosing = false), 0);
-      this.measureCover(); // the share under them was left out (another layer): measured again
       onClose();
       if (this.reloadNeeded && !this.reloadAsked) this.openUpdateSheet();
     }, opts);
-    this.renderSearch(performance.now());
+    this.open('settings');
   }
 
-  /** The Hud's settings screen is on screen (from these menus, or any other way). */
+  /** Ajustes is up (opened by openSettings, or on top any other way: Menu.open). */
   private settingsUp(): boolean {
-    return this.settingsOpen || document.querySelector('.hud-settings-panel:not([hidden])') !== null;
+    return this.settingsOpen || this.top()?.id === 'settings';
   }
 
   // ---- chrome: chip, pills, population ---------------------------------------------------------
@@ -1528,9 +1525,6 @@ export class Menu {
       this.refocus();
     }
     this.searchPill.set(v, now);
-    const over = v.active && this.settingsUp() && this.visibleNow;
-    if (this.float.hidden === over) this.float.hidden = !over; // written on a change only (4 Hz)
-    if (over) this.floatPill.set(v, now);
     if (v.active !== this.searching) {
       this.searching = v.active;
       this.root.classList.toggle('mn-searching', v.active);

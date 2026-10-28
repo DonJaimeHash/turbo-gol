@@ -190,7 +190,7 @@
   --z-menus: 40;
   --z-cards: 45;
   --z-settings: 60;
-  --z-over-settings: 62; /* the running search over the settings screen (src/ui/Menu.ts float) */
+  --z-over-settings: 62; /* the live scorebug over Ajustes over an online pause (styles/screens/settings.css) */
   --z-update: 65;
   --z-antibot: 70;
   --z-rotate: 80;

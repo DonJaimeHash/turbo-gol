@@ -382,10 +382,16 @@ export class FocusNav {
     this.opts = opts;
   }
 
-  /** The visible targets of `zone`, or of every zone. */
+  /**
+   * The visible targets of `zone`, or of every zone. A target is its first zone's: a zone inside
+   * another (Ajustes' rail, a side zone in the stage) keeps its own out of the outer one.
+   */
   targets(zone?: NavZone): HTMLElement[] {
     const out: HTMLElement[] = [];
-    for (const z of zone ? [zone] : this.zones()) for (const e of z.el.querySelectorAll<HTMLElement>('[data-nav]')) if (visible(e)) out.push(e);
+    const zs = this.zones();
+    for (const z of zone ? [zone] : zs) {
+      for (const e of z.el.querySelectorAll<HTMLElement>('[data-nav]')) if (visible(e) && zs.find((o) => o.el.contains(e))?.el === z.el) out.push(e);
+    }
     return out;
   }
 

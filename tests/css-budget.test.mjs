@@ -25,7 +25,7 @@ const css = new Map(await Promise.all(cssFiles.map(async (f) => [relative(ROOT, 
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
 
 test('the stylesheets the UI is made of are all here', () => {
-  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/styles/shell.css', 'src/ui/styles/components.css', 'src/ui/styles/tiles.css', 'src/ui/styles/screens/home.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
+  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/styles/shell.css', 'src/ui/styles/components.css', 'src/ui/styles/tiles.css', 'src/ui/styles/screens/home.css', 'src/ui/styles/screens/settings.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
 });
 
 test('nothing blurs the live scene: no backdrop-filter anywhere in src (CSS or code)', async () => {
@@ -131,9 +131,9 @@ test('the type scale has every class of the plan: PC, short screens, phone lands
   assert.match(scope('@media (max-height: 600px) and (min-width: 900px)'), /--t-hero:/);
 });
 
-test('one pressed state: the menus, the HUD (pause and settings) and training squeeze to .97', () => {
+test('one pressed state: the menus (Ajustes too), the HUD pause and training squeeze to .97', () => {
   const all = [...css.values()].flatMap(blocks);
-  for (const target of ['.mn [data-nav]:active', '.hud-pause-btn:active', '.hud-settings-action:active', '.hud-choice-opt:active', '.trn-btn:active']) {
+  for (const target of ['.mn [data-nav]:active', '.hud-pause-btn:active', '.mn-slider-step:active', '.hud-rule-btn:active', '.trn-btn:active']) {
     const hit = all.find((b) => b.selector.split(',').some((sel) => sel.trim().startsWith(target)) && /transform:\s*scale\(0?\.97\)/.test(b.body));
     assert.ok(hit, target);
   }
@@ -192,7 +192,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
   // Touch shows no ring: every ring rule is scoped to a page whose last input was not a finger.
   for (const r of rules(focus)) if (r.selector !== '.mn [data-nav]:focus') for (const sel of r.selector.split(',')) assert.match(sel.trim(), /^html:not\(\.tg-touch\) /, sel);
   assert.doesNotMatch(focus, /:is\(/, 'plain selector lists (an old TV WebView drops a whole rule it cannot parse)');
-  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.hud-settings-row.hud-focus', '.trn-summary-card .trn-btn-primary', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
+  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.mn .mn-set-row-ctl.mn-focus', '.trn-summary-card .trn-btn-primary', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
 });
 
 // Within about 1 % of what Vite's minifier writes (comments, spaces, last semicolons and leading

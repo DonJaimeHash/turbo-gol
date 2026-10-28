@@ -4,10 +4,10 @@
    names are aliases there until the Tablero shell replaces this sheet); the focus ring is
    src/ui/styles/focus.css. Hover only where a pointer can hover (@media (hover: hover)). */
 
-/* The in-game HUD (score, clock, boost...) stays out of sight while the menus are up; the Hud's
-   settings screen (.hud-menu) and the Turnstile slot (.hud-turnstile: the anti-bot widget a guest or
-   account registration from these menus may need to click) live in the same root and stay visible. */
-.mn-open .hud-root > :not(.hud-menu):not(.hud-turnstile) {
+/* The in-game HUD (score, clock, boost...) stays out of sight while the menus are up; the Turnstile
+   slot (.hud-turnstile: the anti-bot widget a guest or account registration from these menus may
+   need to click) lives in the same root and stays visible. */
+.mn-open .hud-root > :not(.hud-turnstile) {
   visibility: hidden;
 }
 
