@@ -786,6 +786,9 @@ export class Menu {
     this.fitNow();
     if (focus === 'auto') this.autoFocus();
     this.measureCover(); // after the fit (on the next frame, after layout)
+    // Ajustes gone from under the screen shown (PERFIL's detour left by a crumb, the chip, a
+    // section): it closes as when it is left from the top (screens/settings/screen.ts).
+    if (!this.stacked('settings')) this.screens.get('settings')?.hide?.();
   }
 
   /**
