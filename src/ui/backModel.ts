@@ -24,7 +24,7 @@
  * the pops of step 4 walk back down.
  */
 import type { SectionId } from './shell/sections';
-import { HOME_SECTION, rootSection, sectionDef, sectionOf } from './shell/sections';
+import { EVERY_SECTION, HOME_SECTION, rootSection, sectionDef, sectionOf } from './shell/sections';
 
 /** The section shown and its stack of screen ids, its root first (Menu.open). */
 export interface StackState {
@@ -44,7 +44,8 @@ function upTo(stack: readonly string[], id: string): string[] {
  *   section (Competitive's SIGN IN opens PERFIL) it is a detour stacked on that screen, so Back,
  *   ‹ and the crumbs come back to it (the bar still shows the section the player is in);
  * - any other screen: stacked on its section's root, brought back to the top when already in the
- *   stack; `reset`: right on the root, whatever was stacked.
+ *   stack; `reset`: right on the root, whatever was stacked. A screen of every section (Ajustes:
+ *   EVERY_SECTION) is the section shown's: stacked on whatever is up, so Back returns there.
  */
 export function stackAfterOpen(s: StackState, id: string, reset = false): StackState {
   const root = rootSection(id);
@@ -52,7 +53,7 @@ export function stackAfterOpen(s: StackState, id: string, reset = false): StackS
     if (root !== s.section && !reset && s.stack.length > 1) return { section: s.section, stack: upTo(s.stack, id) };
     return { section: root, stack: [id] };
   }
-  const sec = sectionOf(id);
+  const sec = EVERY_SECTION.includes(id) ? s.section : sectionOf(id);
   if (reset || sec !== s.section || s.stack.length === 0) return { section: sec, stack: [sectionDef(sec).root, id] };
   return { section: sec, stack: upTo(s.stack, id) };
 }

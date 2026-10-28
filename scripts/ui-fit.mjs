@@ -231,6 +231,11 @@ const WIDETEXT = args['no-widetext'] !== true;
 const FACE = typeof args.face === 'string' ? args.face.replace(/['"\\]/g, '') : null;
 // The pointer the browser starts with (Blink's PointerType / HoverType: 4 fine, 1 none; 2 hover, 1 none).
 const POINTER = args['no-pointer'] === true ? 'primaryPointerType=1,availablePointerTypes=1,primaryHoverType=1,availableHoverTypes=1' : 'primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2';
+// Ajustes (plan PR 10): each of its six tabs with the device's own input, before the touch match;
+// CONTROLES with every other input's hints too (its own tabs: L / R, Q / E).
+if (typeof args.screens !== 'string') SCREENS.splice(SCREENS.includes('touch') ? SCREENS.indexOf('touch') : SCREENS.length, 0, ...['controls', 'camera', 'game', 'audio', 'graphics', 'experimental'].map((t) => 'settings:' + t));
+if (SCREENS.includes('settings:controls')) INPUT_SCREENS.push('settings:controls');
+
 let preview = null;
 let browser = null;
 let page = null;
