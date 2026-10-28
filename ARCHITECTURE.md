@@ -26,7 +26,7 @@ Object running the same physics (phase 1).
 | Bundler    | Vite 8 (Rolldown)                          | fast, native wasm/worker support |
 | Physics    | RocketSim 2.2.1 → WASM via Emscripten      | deterministic car/ball physics, ~100k ticks/s |
 | Rendering  | three.js r186 `three/webgpu` + TSL         | WebGPU with WebGL2 fallback, node materials |
-| Audio      | Web Audio synthesis                        | no sample files |
+| Audio      | Web Audio synthesis + an AudioWorklet (music) | no sample files; the music follows the match |
 | Input      | Keyboard + mouse (Pointer Lock) + Gamepad API | default keyboard / mouse and controller layouts, rebindable |
 
 ## Coordinate systems
@@ -763,8 +763,23 @@ docs/online/            PHASE1.md, PHASE2.md (the designs), DECISIONS.md (confir
 docs/experimental.md    Settings > Experimental for players (turning it on, presets, every value
                         with its range, lobbies, what never counts) and for developers (the cost
                         bench, where the code is, what deploying it needs)
-src/audio/
-  Audio.ts              synthesized engine/boost/impact/goal sounds driven by sim events
+src/audio/              all synthesized, no sample files; README.md: how to add or replace a sound or a song
+  Audio.ts              the AudioContext and the mix (one-shots, continuous layers, music, master);
+                        play(name, ...args), update(dt, carState), setMusic(mode, paused), volumes
+  engine.ts             the car engine's model (rpm through the gears, shifts, load)
+  sfx/sounds.ts         the sound catalog: one entry per one-shot (ballHit, goal, jump...), each
+                        with its own args and an optional minInterval
+  sfx/kit.ts            the toolkit the sounds are built with (voice, body, note, fm, noiseLayer,
+                        click, rattle, flutter) over the dry / saturated / room buses
+  sfx/layers.ts         continuous layers that follow the player's car (engine, boost, wind)
+  sfx/assets.ts         buffers made once: noise, the room's impulse, clicks, the goal crowd
+  music/engine.ts       the music engine: a fixed band (kick, clap, hats, bass, pad, lead, arp,
+                        fx) and a 16th-step sequencer that plays a track; runs in the worklet and
+                        in Node (scripts/render-music.mjs renders a WAV)
+  music/track.ts        what a track is (Track, Section, Chord); music/tracks/: the songs as
+                        data (kickoff.ts) and the TRACKS registry with DEFAULT_TRACK
+  music/dsp.ts          per-sample filters, saw, reverb parts, PRNG
+  music/worklet.ts      the 'turbogol-music' AudioWorkletProcessor (bundled with ?worker&url)
 src/main.ts             boot behind the loading screen: wasm load ‖ renderer init + the world's
                         first bake, build arena, settings, Game, warm-up render, start, fade into
                         the menu

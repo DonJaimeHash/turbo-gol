@@ -739,22 +739,27 @@ export class SettingsView {
   }
 
   private buildAudio(): [HTMLElement, HTMLElement | null] {
-    const text = t('settings.volume');
-    const volume = slider(
-      'volume',
-      text,
-      VOLUME_RANGE,
-      ' %',
-      () => this.live?.audio.volume ?? DEFAULT_AUDIO.volume,
-      (v) => {
-        const st = this.live;
-        if (st === null) return;
-        st.audio.volume = v;
-        this.changed();
-      },
-      DEFAULT_AUDIO.volume,
-    );
-    this.refreshers.push(volume.refresh);
+    const page = h('div.mn-set-audio');
+    // The master volume, then the music's own level under it.
+    for (const [key, label] of [['volume', 'settings.volume'], ['music', 'settings.music']] as const) {
+      const text = t(label);
+      const sl = slider(
+        key,
+        text,
+        VOLUME_RANGE,
+        ' %',
+        () => this.live?.audio[key] ?? DEFAULT_AUDIO[key],
+        (v) => {
+          const st = this.live;
+          if (st === null) return;
+          st.audio[key] = v;
+          this.changed();
+        },
+        DEFAULT_AUDIO[key],
+      );
+      this.refreshers.push(sl.refresh);
+      page.append(setRow(text, sl.el));
+    }
     const reset = this.actionButton('reset-audio', t('settings.resetAudio'), () => {
       const st = this.live;
       if (st === null) return;
@@ -762,7 +767,7 @@ export class SettingsView {
       this.refreshAll();
       this.changed();
     });
-    return [h('div.mn-set-audio', null, setRow(text, volume.el)), reset];
+    return [page, reset];
   }
 
   private buildGraphics(): [HTMLElement, HTMLElement | null] {
