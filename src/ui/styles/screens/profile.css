@@ -1,0 +1,326 @@
+/* PERFIL (src/ui/screens/profile.ts; plan PR 13, dir-hub §6.8). An account: two columns on a PC (the
+   identity tile, TEMPORADA and MI SERVIDOR; CUENTA Y SEGURIDAD folded and COMUNIDAD), then ACERCA DE
+   and IDIOMA. A guest: one column (the arrows only go up and down it): CREAR CUENTA GRATIS (lime)
+   beside INICIAR SESIÓN, their form, the guest name. One column on a phone; the stage scrolls (and makes room for a
+   phone's keyboard: keyboard.ts --kb-inset). Colours, font sizes and radii as tokens only. */
+
+/* Room under the last field for a phone's keyboard (keyboard.ts): the field scrolls up above it. */
+.mn[data-screen='profile'] .mn-stage::after {
+  content: '';
+  display: block;
+  height: var(--kb-inset, 0);
+}
+
+.mn-screen.mn-profile {
+  max-width: 72rem;
+  font-size: var(--t-body);
+}
+
+.mn-profile .mn-section {
+  margin-top: 1.25rem;
+}
+
+/* ---- A guest ------------------------------------------------------------------------------------- */
+.mn-prof-guest {
+  display: grid;
+  gap: 1rem;
+  max-width: 48rem;
+}
+
+.mn-tabs.mn-prof-tabs {
+  flex-wrap: nowrap;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.mn-tab.mn-prof-hero,
+.mn-tab.mn-prof-signin {
+  position: relative;
+  display: flex;
+  text-align: left;
+  letter-spacing: 0;
+  text-transform: none;
+  border-radius: var(--r-tile);
+}
+
+.mn-tab.mn-prof-hero {
+  flex: 1.5;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 9rem;
+  padding: 1.25rem 1.5rem;
+  color: var(--brand-ink);
+  background: var(--brand-grad);
+  border: 0;
+}
+
+.mn-prof-hero-title {
+  font: 600 var(--t-display) / 1 var(--font-display);
+  text-transform: uppercase;
+}
+
+.mn-tab.mn-prof-signin {
+  flex: 1;
+  align-items: center;
+  gap: 0.875rem;
+  min-height: 4.5rem;
+  padding: 0 1.5rem 0 1.25rem;
+  color: var(--text);
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+}
+
+.mn-tab.mn-prof-signin.mn-tab-on {
+  background: var(--surface-3-97);
+  border-color: var(--edge-hi);
+}
+
+.mn-prof-signin-title {
+  font: 600 var(--t-title) / 1 var(--font-display);
+  text-transform: uppercase;
+}
+
+.mn-prof-hero > .mn-mtab-mark {
+  background: var(--brand-ink);
+}
+
+.mn-prof-form {
+  padding: 1.25rem 1.5rem;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-prof-form-title {
+  margin: 0 0 0.75rem;
+  font: 600 var(--t-heading) / 1.2 var(--font-display);
+  letter-spacing: 0.04em;
+}
+
+.mn-link.mn-prof-forgot {
+  margin-top: 0.5rem;
+}
+
+.mn-prof-guestname {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.mn-prof-guestname .mn-field {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+/* ---- An account --------------------------------------------------------------------------------- */
+.mn-prof-account {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 0 1.5rem;
+  align-items: start;
+}
+
+.mn-prof-col > :first-child {
+  margin-top: 0;
+}
+
+.mn-prof-id {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-prof-id .mn-avatar {
+  flex: none;
+  width: 3.5rem;
+  height: 3.5rem;
+  font-size: var(--t-title);
+}
+
+.mn-prof-id-text {
+  min-width: 0;
+}
+
+.mn-profile-name {
+  --fit-min: 16;
+  overflow: hidden;
+  font: 600 var(--t-display) / 1.05 var(--font-display);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mn-prof-ranks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem;
+}
+
+.mn-prof-nodes {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.mn-prof-node {
+  display: grid;
+  gap: 0.375rem;
+  padding: 1rem 1.25rem;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-prof-node-head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.mn-prof-node-head .mn-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--brand);
+}
+
+.mn-prof-node-name {
+  overflow: hidden;
+  font: 600 var(--t-heading) / 1.2 var(--font-display);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mn-prof-node-region {
+  margin-left: auto;
+  font-size: var(--t-small);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.mn-prof-node-state {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  color: var(--warn);
+}
+
+.mn-prof-node-state[data-ok='true'] {
+  color: var(--ok);
+}
+
+.mn-prof-node-state .mn-dot {
+  background: currentColor;
+}
+
+.mn-prof-node-reason {
+  margin: 0;
+  font-size: var(--t-small);
+  color: var(--text-2);
+}
+
+.mn-prof-node-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0.25rem 0 0;
+  font-size: var(--t-small);
+}
+
+.mn-prof-node-facts dt {
+  color: var(--text-2);
+}
+
+.mn-prof-node-facts dd {
+  margin: 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* CUENTA Y SEGURIDAD: a disclosure row, its actions under it. */
+.mn-prof-fold {
+  width: 100%;
+}
+
+.mn-prof-fold > .mn-prof-fold-chev {
+  transition: transform var(--dur-tab) var(--ease);
+}
+
+.mn-prof-fold[aria-expanded='true'] > .mn-prof-fold-chev {
+  transform: rotate(90deg);
+}
+
+.mn-prof-acct {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.mn-prof-acct[hidden] {
+  display: none;
+}
+
+.mn-prof-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mn-btn.mn-prof-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-decoration: none;
+}
+
+.mn-prof-link .mn-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+/* ---- ACERCA DE and IDIOMA ------------------------------------------------------------------------ */
+.mn-prof-foot {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 0 1.5rem;
+  align-items: start;
+}
+
+.mn-prof-about {
+  margin: 0 0 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Per class ------------------------------------------------------------------------------------ */
+html[data-layout='portrait'] .mn-prof-account,
+html[data-layout='portrait'] .mn-prof-foot {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-layout='portrait'] .mn-tabs.mn-prof-tabs {
+  flex-direction: column;
+}
+
+html[data-shell='rail'] .mn-tab.mn-prof-hero,
+html[data-layout='portrait'] .mn-tab.mn-prof-hero {
+  min-height: 6.5rem;
+  padding: 1rem 1.25rem;
+}
+
+html[data-shell='rail'] .mn-prof-hero-title,
+html[data-layout='portrait'] .mn-prof-hero-title,
+html[data-shell='rail'] .mn-profile-name,
+html[data-layout='portrait'] .mn-profile-name {
+  font-size: var(--t-title);
+}
+
+html[data-shell='rail'] .mn-prof-form,
+html[data-layout='portrait'] .mn-prof-form {
+  padding: 1rem;
+}
