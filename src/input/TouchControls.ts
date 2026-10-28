@@ -35,6 +35,12 @@
  *     tap on PLAY in the menus). Online (`setLive`), where the match goes on under the card, a
  *     finger on it in the stick zone is the stick's.
  *
+ * Settings > Controls > Touch (`applySettings`, the player's settings.touch): the size (--tc-k) and
+ * the opacity (--tc-alpha) of the stick and the buttons, the mirrored layout for the left-handed
+ * (`tc-lefty`: touch.css's logical insets under direction: rtl; PAUSE stays in its corner), a
+ * fixed stick and its deadzone (the router's), and a short pulse on each new press of a button
+ * (`canVibrate`: navigator.vibrate, Android). The layout is measured again after a change.
+ *
  * BOOST shows `setBoost`'s amount (the Game, every frame; written at 10 Hz from precomputed
  * strings, so it allocates nothing either) with the Hud plate's empty / low / full states; in
  * touch mode the plate itself is hidden (touch.css). A tap on the scorebug (TouchRouter's
@@ -62,6 +68,7 @@ import { STORAGE_PREFIX } from '../brand';
 import { t, type Key } from '../i18n';
 import { icon, type IconName } from '../ui/components/icons';
 import type { BindingProfile } from './bindings';
+import { TOUCH_SIZE_SCALE, type TouchSettings } from '../settings';
 import { TB, TOUCH_BUTTON_COUNT, TouchState, type TouchButton } from './touchState';
 import { TouchRouter, emptyLayout, type TouchLayout } from './touchRouter';
 import { keyLeavesTouchMode, pointerTouchMode, shouldAutoFullscreen, shouldShowInstallHint, type PlatformEnv } from './touchMode';
@@ -71,11 +78,21 @@ export function hasTouchScreen(): boolean {
   return typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
 }
 
+/** The browser can vibrate (navigator.vibrate: Android's; iOS has none): Settings > Controls > Touch lists the row only then. */
+export function canVibrate(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+}
+
+/** A press's pulse (ms): felt, not a buzz. */
+const PRESS_PULSE_MS = 12;
+
 export interface TouchControlsOptions {
   /** The live keyboard + mouse profile (settings.bindings.kbm): a press of a key bound there turns touch mode off. */
   kbm(): Readonly<BindingProfile>;
   /** The player's M29 preference (settings.controls.touchHoldJump): JUMP held through a slide, as BOOST. */
   holdJump(): boolean;
+  /** The player's touch settings (settings.touch), read again by applySettings. */
+  settings(): Readonly<TouchSettings>;
 }
 
 /** BOOST's number and level per whole amount, built once: setBoost writes them without allocating. */
@@ -261,6 +278,9 @@ export class TouchControls {
   private readonly cardTitle: HTMLElement;
   private readonly cardText: HTMLElement;
   private readonly holdJump: () => boolean;
+  private readonly settings: () => Readonly<TouchSettings>;
+  /** A pulse on each new press (settings.touch.vibration, where the browser can). */
+  private vibrate = false;
   private readonly zone: HTMLElement;
   private readonly stick: HTMLElement;
   private readonly knob: HTMLElement;
@@ -420,6 +440,7 @@ export class TouchControls {
   constructor(hudRoot: HTMLElement, opts: TouchControlsOptions) {
     this.kbm = opts.kbm;
     this.holdJump = opts.holdJump;
+    this.settings = opts.settings;
     const container = hudRoot.parentElement ?? hudRoot;
     this.container = container;
     this.router = new TouchRouter(this.state, this.layout);
@@ -492,6 +513,22 @@ export class TouchControls {
     document.addEventListener('gesturestart', this.onGestureStart, { passive: false });
 
     this.setTouchMode(coarsePointer());
+    this.applySettings();
+  }
+
+  /** Settings > Controls > Touch changed (and once at the start): size, opacity, side, stick, deadzone, vibration. */
+  applySettings(): void {
+    const st = this.settings();
+    const root = this.root;
+    const k = String(TOUCH_SIZE_SCALE[st.size] ?? 1);
+    if (root.style.getPropertyValue('--tc-k') !== k) root.style.setProperty('--tc-k', k);
+    const alpha = String(Math.min(1, Math.max(0.3, st.opacity / 100)));
+    if (root.style.getPropertyValue('--tc-alpha') !== alpha) root.style.setProperty('--tc-alpha', alpha);
+    root.classList.toggle('tc-lefty', st.lefty);
+    this.router.fixedStick = st.stick === 'fixed';
+    this.router.deadzone = st.deadzone;
+    this.vibrate = st.vibration && canVibrate();
+    this.dirty = true;
   }
 
   /** The last input used was a finger (or a pen): `tg-touch` is on <html>. */
@@ -725,6 +762,8 @@ export class TouchControls {
     layout.stickRadius = s.offsetWidth / 2;
     this.stickRestX = ox + s.offsetLeft + s.offsetWidth / 2;
     this.stickRestY = oy + s.offsetTop + s.offsetHeight / 2;
+    layout.stickHome.x = this.stickRestX;
+    layout.stickHome.y = this.stickRestY;
     for (let i = 0; i < TOUCH_BUTTON_COUNT; i++) {
       const e = this.buttons[i];
       const c = layout.buttons[i];
@@ -786,6 +825,8 @@ export class TouchControls {
     for (let i = 0; i < TOUCH_BUTTON_COUNT; i++) if (state.isHeld(i as TouchButton)) mask |= 1 << i;
     const changed = mask ^ this.paintedMask;
     if (changed === 0) return;
+    // A button newly pressed: the player's pulse (a tap's lift clears its bit, never pulses).
+    if (this.vibrate && (changed & mask) !== 0) navigator.vibrate(PRESS_PULSE_MS);
     this.paintedMask = mask;
     for (let i = 0; i < TOUCH_BUTTON_COUNT; i++) if ((changed & (1 << i)) !== 0) this.buttons[i].classList.toggle('tc-down', (mask & (1 << i)) !== 0);
   }
