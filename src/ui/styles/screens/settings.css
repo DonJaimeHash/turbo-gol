@@ -806,3 +806,8 @@ html[data-shell='tabs'] .mn-slider-track {
     background-color: var(--surface-2);
   }
 }
+
+/* A row's options stay on one line (SIN LÍMITE). */
+.mn-set-row .mn-seg-opt {
+  white-space: nowrap;
+}

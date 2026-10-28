@@ -95,9 +95,9 @@ export interface RebindSource {
 export interface SettingsOptions {
   /** The tier lit: the running one, or a pick waiting for the online match to end. */
   readonly quality: Quality;
-  /** The tiers listed (quality.ts menuQualities: Super low only for unlocked players). */
+  /** The tiers shown as cards (quality.ts CARD_QUALITIES: Super low is the switch under them). */
   readonly qualities: readonly Quality[];
-  /** The line while the running tier is not listed (a device on Super low by itself). */
+  /** The line while the running tier is no card (a device on Super low by itself; '' for the player's own pick). */
   readonly qualityNote: string;
   /** A pick that waits for the online match to end (it reloads the page), or null. */
   readonly pending: Quality | null;
@@ -267,6 +267,7 @@ export class SettingsView {
   // GRÁFICOS
   private readonly cards = new Map<Quality, { el: HTMLButtonElement; tag: HTMLElement }>();
   private uiSizes: Seg<number> | null = null;
+  private uiSizeRow: HTMLElement | null = null;
   private langValue: HTMLElement | null = null;
   private readonly savedLine: HTMLElement;
   private qualityLine: HTMLElement | null = null;
@@ -669,7 +670,8 @@ export class SettingsView {
     );
     this.uiSizes = sizes;
     this.refreshers.push(sizes.refresh);
-    page.append(setRow(sizeText, sizes.el));
+    this.uiSizeRow = setRow(sizeText, sizes.el);
+    page.append(this.uiSizeRow);
     const motionText = t('settings.reducedMotion');
     const motion = seg<MotionPref>(
       'set-motion',
@@ -861,12 +863,15 @@ export class SettingsView {
       const saved = savedLanguage();
       setText(this.langValue, saved === null ? t('lang.auto', { language: LOCALES[systemLanguage()].name }) : LOCALES[saved].name);
     }
-    if (this.uiSizes !== null) {
+    if (this.uiSizes !== null && this.uiSizeRow !== null) {
+      // This screen's sizes (a turn changes them); one alone (a small phone): no row.
       const listed = interfaceSizes(layoutNow(), window.innerWidth, window.innerHeight);
       this.uiSizes.buttons.forEach((b, i) => {
         const off = !listed.includes(ALL_UI_SIZES[i]);
         if (b.hidden !== off) b.hidden = off;
       });
+      const alone = listed.length < 2;
+      if (this.uiSizeRow.hidden !== alone) this.uiSizeRow.hidden = alone;
     }
   }
 
