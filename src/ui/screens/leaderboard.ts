@@ -1,65 +1,295 @@
 /**
- * Leaderboard (top 100 of the season per playlist, placed players only) and the ranked result
- * dialog shown after a rated match: win / loss, MMR before -> after, the tier change, placement
- * progress and an abandon ban when there was one. RankedResults waits for that result and keeps
- * what comes while the menus are away until they are back.
+ * CLASIFICACIÓN (plan PR 13, dir-hub §6.7): the top 100 of the season per playlist (placed players
+ * only), and the ranked result dialog shown after a rated match: win / loss, MMR before -> after,
+ * the tier change, placement progress and an abandon ban when there was one. RankedResults waits
+ * for that result and keeps what comes while the menus are away until they are back.
+ *
+ * The board: the tabs 1v1 · 2v2 · 3v3 in place (M tiles, your badge and rank on each when signed
+ * in), your standing beside them (GO TO MY POSITION, a guest's SIGN IN to see it, or the placement
+ * matches still to play: each one a button), then ONE scroller of 56 px rows (`data-nav`: #,
+ * badge, name, the rank in words, rating, matches; yours in gold, pinned under the list when you
+ * are outside the top). What the list cannot show (loading, an error with RETRY, nobody placed yet)
+ * takes its place. A phone shows the rows as cards (leaderboard.css).
+ *
+ * Keys (leaderboardModel.ts): ▲ ▼ step the rows (held: the key's and the D-pad's repeat), ◀ ▶ on a
+ * row or a tab step the playlist (not past 1v1 or 3v3: the phone's rail is that way), LT / RT (pad)
+ * and PgUp / PgDn (keyboard) move a page, X (pad X, keyboard X while no search runs, Delete) goes to
+ * your row; Q / E step the tabs (Menu.stepTabs). The playlist is remembered (prefs.ts).
+ * In development (or a VITE_UI_FIT=1 build) window.__board(kind | null) shows sample rows
+ * (scripts/ui-fit.mjs).
  */
-import { h, setChildren, navButton, clock } from '../dom';
+import { h, setChildren, clock } from '../dom';
 import type { AccountClient } from '../../net/AccountClient';
 import { PLAYLISTS } from '../../net/account';
-import type { LeaderboardEntry, RankedResultAnswer } from '../../net/account';
-import { tierProgress } from '../../net/rating';
+import type { LeaderboardAnswer, LeaderboardEntry, Playlist, RankedResultAnswer } from '../../net/account';
+import { TIERS, tierProgress } from '../../net/rating';
 import { t, type Key } from '../../i18n';
 import { rankBadge, tierById } from '../badges';
 import { playlistName, tierName } from '../names';
-import type { Menu, Screen } from '../Menu';
+import type { Menu, MenuCommand, Screen } from '../Menu';
+import { onNavSide } from '../nav';
+import { icon } from '../components/icons';
+import { glyph } from '../components/glyphs';
 import { screenHead } from './common';
+import { listNotice, pageStep, rowsPerPage, standing, stepPlaylist, youIndex } from './leaderboardModel';
+import type { Standing } from './leaderboardModel';
+
+const STAND_TEXT: Readonly<Record<Standing, Key>> = { guest: 'board.signIn', placement: 'board.playPlacement', you: 'board.goToMe' };
+
+/** The last input (device.ts `data-input` on <html>): a controller's LT / RT page the list, the keyboard's Q / E step the tabs. */
+function lastInput(): string {
+  return document.documentElement.dataset.input ?? 'mouse';
+}
 
 export function leaderboardScreen(menu: Menu): Screen {
-  const tabs = h('div.mn-tabs');
-  const table = h('div.mn-board');
-  const foot = h('div.mn-board-foot');
+  const acc = menu.host.accounts;
+  let board: LeaderboardAnswer | null = null;
+  let loading = true;
+  let failed = false;
+  /** window.__board's sample (UI_FIT), null: the server's answer. */
+  let sample: { board: LeaderboardAnswer; signedIn: boolean } | null = null;
   let seq = 0;
-  const row = (e: LeaderboardEntry, you: boolean): HTMLElement => {
-    const tier = tierById(e.tier);
-    return h(
-      `div.mn-board-row${you ? '.mn-board-you' : ''}` as 'div',
-      null,
-      h('span.mn-board-rank', null, `#${e.rank}`),
-      h('span.mn-board-name', null, rankBadge(tier, 26), e.name),
-      h('span.mn-board-tier', null, tier ? tierName(tier) : t('board.unranked')),
-      h('span.mn-board-mmr', null, String(e.mmr)),
-      h('span.mn-board-games', null, String(e.games)),
-      h('span.mn-board-wr', null, e.games > 0 ? t('board.winRate', { percent: Math.round((100 * e.wins) / e.games) }) : '-'),
+  /** After a playlist switch from the list: the row index to focus once the new one is in (-1: none). */
+  let wantRow = -1;
+  const touch = (): boolean => document.documentElement.classList.contains('tg-touch');
+  const signedIn = (): boolean => sample?.signedIn ?? acc.signedIn;
+
+  // ---- the tabs and your standing ----
+  const tabEls = new Map<Playlist, { el: HTMLButtonElement; rank: HTMLElement }>();
+  PLAYLISTS.forEach((p, i) => {
+    const rank = h('span.mn-lb-tab-rank');
+    const el = h(
+      'button.mn-tab.mn-lb-tab',
+      { type: 'button', role: 'tab', 'aria-selected': 'false', 'data-nav': true, 'data-key': 'board-' + p, onclick: () => pick(p) },
+      h('b.mn-lb-tab-name', null, playlistName(p)),
+      rank,
+      h('span.mn-mtab-mark', { 'aria-hidden': 'true' }),
     );
+    // ◀ ▶ on a tab: the tab beside it, picked, the focus with it (focus = selection); past either end the arrow goes on.
+    const beside = (d: -1 | 1): (() => void) | null => {
+      const q = PLAYLISTS[i + d];
+      return q === undefined
+        ? null
+        : () => {
+            pick(q);
+            if (!touch()) tabEls.get(q)?.el.focus({ preventScroll: true });
+          };
+    };
+    onNavSide(el, beside(-1), beside(1));
+    tabEls.set(p, { el, rank });
+  });
+  const tabs = h('div.mn-tabs.mn-lb-tabs', { role: 'tablist', 'aria-label': t('board.title'), 'data-nav-row': true }, ...[...tabEls.values()].map((x) => x.el));
+  const standLabel = h('span.mn-lb-stand-label');
+  const standKeys = h('span.mn-act-keys.mn-lb-stand-keys', { 'aria-hidden': 'true' }, h('span.mn-keys-kb', null, glyph('key-x')), h('span.mn-keys-pad', null, glyph('pad-x')));
+  const stand = h('button.mn-btn.mn-lb-stand', { type: 'button', 'data-nav': true, 'data-key': 'board-stand', onclick: () => onStand() }, icon('rank'), standLabel, standKeys);
+  const top = h('div.mn-lb-top', null, tabs, stand);
+
+  // ---- the one scroller ----
+  const colHead = h(
+    'div.mn-lb-row.mn-lb-cols',
+    { 'aria-hidden': 'true' },
+    h('span.mn-lb-pos', null, '#'),
+    h('span.mn-lb-badge'),
+    h('span.mn-lb-name', null, t('board.colPlayer')),
+    h('span.mn-lb-tier', null, t('board.colTier')),
+    h('span.mn-lb-mmr', null, t('board.colRating')),
+    h('span.mn-lb-games', null, t('board.colGames')),
+  );
+  const list = h('div.mn-lb-list', { role: 'list' });
+  const pinned = h('div.mn-lb-pinned', { hidden: true });
+  const total = h('p.mn-lb-total');
+  const el = h('section.mn-board', { 'data-tablero': true }, screenHead(t('board.title'), t('board.subtitle')), top, colHead, list, pinned, total);
+
+  const current = (): Playlist => menu.prefs.leaderboardPlaylist;
+  const rows = (): HTMLElement[] => [...el.querySelectorAll<HTMLElement>('.mn-lb-row[data-nav]')];
+
+  /** One row: `you` in gold. ◀ ▶ step the playlist from it (not past either end). */
+  const row = (e: LeaderboardEntry, key: string, you: boolean): HTMLElement => {
+    const tier = tierById(e.tier);
+    const words = tier ? tierName(tier) : t('board.unranked');
+    const r = h(
+      `div.mn-lb-row${you ? '.mn-lb-you' : ''}` as 'div',
+      { role: 'listitem', tabindex: '-1', 'data-nav': true, 'data-key': key, 'aria-label': t('board.rowLabel', { rank: e.rank, name: e.name, tier: words, mmr: e.mmr, games: e.games }) },
+      h('span.mn-lb-pos', null, `#${e.rank}`),
+      h('span.mn-lb-badge', null, rankBadge(tier, 32)),
+      h('span.mn-lb-name', null, e.name),
+      h('span.mn-lb-tier', null, words),
+      h('span.mn-lb-mmr', null, String(e.mmr)),
+      h('span.mn-lb-games', null, String(e.games)),
+    );
+    // ◀ past 1v1 goes on (a phone's rail is that way); ▶ past 3v3 does nothing (no tab "beside" a row).
+    const i = PLAYLISTS.indexOf(current());
+    onNavSide(r, i > 0 ? () => step(-1) : null, () => step(1));
+    return r;
   };
-  const load = async (): Promise<void> => {
-    const p = menu.prefs.leaderboardPlaylist;
-    const my = ++seq;
-    // Rebuilt on each pick: the key (Menu's focus memory) keeps the controller on the tab it picked.
-    setChildren(tabs, ...PLAYLISTS.map((x) => navButton(`mn-tab${x === p ? ' mn-tab-on' : ''}`, playlistName(x), () => {
-      menu.prefs.leaderboardPlaylist = x;
-      menu.savePrefs();
-      void load();
-    }, { 'data-key': 'board-' + x })));
-    setChildren(table, h('div.mn-empty', null, t('board.loading')));
-    try {
-      const b = await menu.host.accounts.leaderboard(p);
-      if (my !== seq) return;
-      const youName = b.you?.name;
-      const head = h('div.mn-board-row.mn-board-head', null, h('span', null, '#'), h('span', null, t('board.colPlayer')), h('span', null, t('board.colTier')), h('span', null, 'MMR'), h('span', null, t('board.colGames')), h('span', null, t('board.colWinRate')));
-      setChildren(table, head, ...(b.entries.length > 0 ? b.entries.map((e) => row(e, e.name === youName)) : [h('div.mn-empty', null, t('board.empty'))]));
-      foot.textContent = '';
-      if (b.you && !b.entries.some((e) => e.name === b.you?.name)) setChildren(foot, row(b.you, true));
-      else if (!b.you) foot.textContent = menu.host.accounts.signedIn ? t('board.playPlacement') : t('board.signIn');
-      foot.appendChild(h('div.mn-note', null, t('board.total', { count: b.total, season: b.season })));
-    } catch (e) {
-      if (my === seq) setChildren(table, h('div.mn-empty', null, e instanceof Error ? e.message : String(e)));
+
+  /** Focus a row as the arrows do, in sight inside the one scroller (`center`: GO TO MY POSITION). */
+  const focusRow = (r: HTMLElement | undefined, center = false): void => {
+    if (r === undefined || touch()) {
+      r?.scrollIntoView({ block: 'center' });
+      return;
     }
-    menu.refocus();
+    r.focus({ preventScroll: true });
+    r.scrollIntoView({ block: center ? 'center' : 'nearest' });
   };
-  const el = h('div.mn-leaderboard', null, screenHead(t('board.title'), t('board.subtitle')), tabs, table, foot);
-  return { id: 'leaderboard', title: t('board.screenTitle'), el, show: () => void load() };
+
+  const draw = (): void => {
+    const p = current();
+    for (const [id, x] of tabEls) {
+      const on = id === p;
+      x.el.classList.toggle('mn-tab-on', on);
+      x.el.setAttribute('aria-selected', String(on));
+      // Your rank in each playlist (an account's, from /api/me).
+      const r = signedIn() ? (sample !== null ? null : acc.me?.ratings.find((x2) => x2.playlist === id)) : null;
+      const tier = r ? tierById(r.tier) : null;
+      const placed = r !== null && r !== undefined && r.placementLeft === 0;
+      setChildren(x.rank, r ? rankBadge(placed ? tier : null, 24) : null, r ? h('span', null, placed && tier ? tierName(tier) : t('board.placementShort', { played: r.games, total: r.games + r.placementLeft })) : null);
+    }
+    const b = board;
+    const notice = listNotice(loading, failed, b?.entries.length ?? 0);
+    const you = b?.you ?? null;
+    const yi = b !== null ? youIndex(b.entries, you) : -1;
+    const had = el.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.key ?? null : null;
+    if (notice === null && b !== null) setChildren(list, ...b.entries.map((e, i) => row(e, i === yi ? 'board-you' : 'row-' + i, i === yi)));
+    else
+      setChildren(
+        list,
+        notice === 'error'
+          ? h('button.mn-btn.mn-lb-notice', { type: 'button', 'data-nav': true, 'data-key': 'board-retry', onclick: () => void load() }, icon('refresh'), h('span', null, t('board.failed')))
+          : h('p.mn-lb-note', null, t(notice === 'loading' ? 'board.loading' : 'board.empty')),
+      );
+    // You, below the top: your row pinned under the list.
+    const below = notice === null && you !== null && yi < 0;
+    pinned.hidden = !below;
+    setChildren(pinned, below && you !== null ? row(you, 'board-you', true) : null);
+    total.textContent = b !== null && notice === null ? t('board.total', { count: b.total, season: b.season }) : '';
+    // Your standing beside the tabs (nothing while loading or after an error).
+    const s = standing(signedIn(), you !== null);
+    stand.hidden = loading || failed;
+    stand.dataset.kind = s;
+    standLabel.textContent = t(STAND_TEXT[s]);
+    standKeys.hidden = s !== 'you';
+    // The focus: the row asked for (a playlist switch from the list), else back on what had it (the retry, a tab).
+    if (wantRow >= 0 && notice === null) {
+      const rs = [...list.children] as HTMLElement[];
+      focusRow(rs[Math.min(wantRow, rs.length - 1)]);
+      wantRow = -1;
+    } else if (had !== null && !el.contains(document.activeElement)) menu.refocus();
+  };
+
+  const load = async (): Promise<void> => {
+    const my = ++seq;
+    if (sample !== null) {
+      board = { ...sample.board, playlist: current() };
+      loading = failed = false;
+      draw();
+      return;
+    }
+    loading = true;
+    failed = false;
+    draw();
+    try {
+      const b = await acc.leaderboard(current());
+      if (my !== seq) return;
+      board = b;
+      loading = false;
+    } catch {
+      if (my !== seq) return;
+      board = null;
+      loading = false;
+      failed = true;
+    }
+    if (el.isConnected) draw();
+  };
+
+  /** A playlist (a tab's press, ◀ ▶, Q / E through Menu.stepTabs). */
+  const pick = (p: Playlist): void => {
+    if (p === current()) return;
+    menu.prefs.leaderboardPlaylist = p;
+    menu.savePrefs();
+    void load();
+  };
+  /** ◀ ▶ on a row: the playlist beside this one, the focus at that row's place in it. */
+  const step = (d: -1 | 1): void => {
+    const p = stepPlaylist(PLAYLISTS, current(), d);
+    if (p === null) return;
+    wantRow = Math.max(0, rows().indexOf(document.activeElement as HTMLElement));
+    pick(p);
+  };
+
+  /** LT / RT, PgUp / PgDn: a page of rows (the focus on none yet: the first). */
+  const page = (d: -1 | 1): void => {
+    const rs = [...list.querySelectorAll<HTMLElement>('.mn-lb-row')];
+    if (rs.length === 0) return;
+    const n = rowsPerPage(list.clientHeight, rs[0].offsetHeight);
+    focusRow(rs[pageStep(rs.indexOf(document.activeElement as HTMLElement), rs.length, n, d)]);
+  };
+  const goToMe = (): boolean => {
+    const me = el.querySelector<HTMLElement>('.mn-lb-you');
+    if (me === null) return false;
+    focusRow(me, true);
+    return true;
+  };
+  const onStand = (): void => {
+    switch (stand.dataset.kind as Standing) {
+      case 'guest':
+        menu.open('profile');
+        break;
+      case 'placement':
+        menu.open('modes', false, 'ranked');
+        break;
+      default:
+        goToMe();
+    }
+  };
+
+  el.addEventListener('keydown', (e) => {
+    if ((e.code !== 'PageUp' && e.code !== 'PageDown') || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    page(e.code === 'PageUp' ? -1 : 1);
+  });
+
+  const command = (c: MenuCommand): boolean => {
+    // A controller's triggers page the list; the keyboard's Q / E (the same commands) step the tabs (Menu.stepTabs).
+    if ((c === 'tabPrev' || c === 'tabNext') && lastInput() === 'pad') {
+      page(c === 'tabPrev' ? -1 : 1);
+      return true;
+    }
+    // Pad X ('context'), Delete; the keyboard's X ('cancel') only while no search runs (it cancels that first).
+    if (c === 'context' || (c === 'cancel' && lastInput() === 'keyboard' && !menu.host.searchView().active)) return goToMe();
+    return false;
+  };
+
+  // The samples exist in development and in a VITE_UI_FIT=1 build only (read here: node tests import this module).
+  if (import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1') {
+    (window as unknown as { __board: (kind: 'rows' | 'below' | 'guest' | null) => void }).__board = (kind) => {
+      sample = kind === null ? null : { board: sampleBoard(kind), signedIn: kind !== 'guest' };
+      void load();
+    };
+  }
+
+  return {
+    id: 'leaderboard',
+    title: t('board.screenTitle'),
+    el,
+    show: () => {
+      void load();
+      if (acc.signedIn) void acc.fetchMe().then(() => el.isConnected && draw(), () => undefined);
+    },
+    command,
+  };
+}
+
+/** Sample rows for the layout check (window.__board): 100 placed players, long names; yours 7th, 140th or none. */
+function sampleBoard(kind: 'rows' | 'below' | 'guest'): LeaderboardAnswer {
+  const names = ['MaximilianoGomez', 'Ñandú_Veloz', 'xX_Turbo_Xx', 'Carpincho', 'Pampero99', 'LaTeroDeOro'];
+  const placed = TIERS.filter((x) => x.min > 0);
+  const entries: LeaderboardEntry[] = Array.from({ length: 100 }, (_, i) => {
+    const tier = placed[Math.max(0, placed.length - 1 - Math.floor(i / 6))] ?? TIERS[0];
+    return { rank: i + 1, name: i === 6 && kind === 'rows' ? 'MiCuenta' : `${names[i % names.length]}${i > 5 ? i : ''}`, mmr: 2400 - i * 9, tier: tier.id, games: 300 - i, wins: 160 - i };
+  });
+  const you = kind === 'rows' ? entries[6] : kind === 'below' ? { rank: 140, name: 'MaximilianoGomez', mmr: 1210, tier: TIERS[4]?.id ?? TIERS[0].id, games: 41, wins: 20 } : null;
+  return { playlist: '2v2', season: 1, entries, you, total: 1234 };
 }
 
 /**
