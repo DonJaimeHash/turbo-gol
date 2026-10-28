@@ -634,7 +634,7 @@ html.tg-set-live .hud-top {
 
 /* ---- per class ---- */
 html.tg-tv .mn-set {
-  grid-template-columns: 13rem minmax(0, 1fr);
+  grid-template-columns: 15.5rem minmax(0, 1fr);
 }
 
 html.tg-tv .mn-slider-track {
