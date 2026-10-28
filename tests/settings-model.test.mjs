@@ -106,3 +106,84 @@ test('Ajustes stacks on the screen shown, whatever its section (Back returns the
   // A guest's SIGN IN from it: PERFIL as a detour on top, Back comes back.
   assert.deepEqual(stackAfterOpen({ section: 'play', stack: ['home', 'settings'] }, 'profile'), { section: 'play', stack: ['home', 'settings', 'profile'] });
 });
+
+test("a guest's SIGN IN comes back to EXPERIMENTAL: from a detour on PERFIL, and from Ajustes over PERFIL's root", async () => {
+  const { settingsScreen } = await import('../src/ui/screens/settings/screen.ts');
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  // Menu's stack (open, back, openSettings, mount's hide of an unstacked Ajustes) around the screen.
+  const make = (section, stack) => {
+    const subs = [];
+    const accounts = { signedIn: false, subscribe: (f) => subs.push(f) };
+    const view = { isOpen: false, tab: null, waitingSignIn: false, open(tab) { this.isOpen = true; this.tab = tab ?? 'controls'; }, close() { this.isOpen = false; this.waitingSignIn = false; }, resume() {}, suspend() {} };
+    const screens = new Map();
+    const menu = {
+      host: { accounts },
+      section,
+      stack,
+      visible: true,
+      top: () => screens.get(menu.stack.at(-1)) ?? { id: menu.stack.at(-1) },
+      stacked: (id) => menu.stack.includes(id),
+      mount() {
+        menu.top().show?.();
+        if (!menu.stacked('settings')) screens.get('settings').hide();
+      },
+      open(id) {
+        const next = stackAfterOpen({ section: menu.section, stack: menu.stack }, id);
+        menu.top().hide?.();
+        ({ section: menu.section, stack: menu.stack } = next);
+        menu.mount();
+      },
+      back() {
+        menu.top().hide?.();
+        menu.stack = menu.stack.slice(0, -1);
+        menu.mount();
+      },
+      openSettings(_onClose, opts) {
+        view.open(opts?.tab ?? null);
+        menu.open('settings');
+      },
+    };
+    screens.set('settings', settingsScreen(menu, view));
+    const signIn = async () => {
+      view.waitingSignIn = true;
+      menu.open('profile');
+      await tick();
+    };
+    const signedIn = async () => {
+      accounts.signedIn = true;
+      for (const f of subs) f();
+      await tick();
+    };
+    return { menu, view, signIn, signedIn };
+  };
+  const detour = make('play', ['home']);
+  detour.menu.openSettings(undefined, { tab: 'experimental' });
+  await detour.signIn();
+  assert.deepEqual(detour.menu.stack, ['home', 'settings', 'profile'], 'PERFIL a detour over Ajustes');
+  assert.equal(detour.view.isOpen, true);
+  await detour.signedIn();
+  assert.deepEqual(detour.menu.stack, ['home', 'settings']);
+  assert.equal(detour.view.tab, 'experimental');
+
+  const own = make('profile', ['profile']);
+  own.menu.openSettings();
+  own.view.tab = 'experimental';
+  await own.signIn();
+  assert.deepEqual(own.menu.stack, ['profile'], "PERFIL's root: Ajustes left the stack");
+  assert.equal(own.view.isOpen, false);
+  await own.signedIn();
+  assert.deepEqual(own.menu.stack, ['profile', 'settings'], 'Ajustes again, over PERFIL');
+  assert.equal(own.view.isOpen, true);
+  assert.equal(own.view.tab, 'experimental');
+
+  const left = make('profile', ['profile']);
+  left.menu.openSettings();
+  await left.signIn();
+  left.menu.open('home');
+  await tick();
+  left.menu.open('profile');
+  await tick();
+  await left.signedIn();
+  assert.deepEqual(left.menu.stack, ['profile'], 'PERFIL left before the sign-in: no Ajustes');
+  assert.equal(left.view.isOpen, false);
+});

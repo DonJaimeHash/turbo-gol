@@ -76,7 +76,7 @@ test('parsePrefs: defaults for nothing or junk, lastQueue kept only as ranked, a
   assert.equal(P.parsePrefs(JSON.stringify({ lastQueue: 'x' })).lastQueue, 'casual');
   assert.equal(P.parsePrefs(JSON.stringify({ lastQueue: 'ranked' })).lastQueue, 'ranked');
   const old = P.parsePrefs(JSON.stringify({ region: 'EU', casualModes: ['1v1', '2v2'], rankedModes: ['3v3'], net: 'server', leaderboardPlaylist: '3v3' }));
-  assert.deepEqual(old, { region: 'EU', casualModes: ['1v1', '2v2'], rankedModes: ['3v3'], net: 'server', leaderboardPlaylist: '3v3', lastQueue: 'casual' });
+  assert.deepEqual(old, { region: 'EU', casualModes: ['1v1', '2v2'], rankedModes: ['3v3'], net: 'server', leaderboardPlaylist: '3v3', lastQueue: 'casual', lobbyMode: null });
   assert.equal(P.PREFS_KEY, 'turbogol.menu.v1', 'the same key: no migration');
   // Each parse is a fresh object: a change to one never reaches the defaults.
   P.parsePrefs(null).casualModes.push('3v3');

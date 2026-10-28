@@ -21,7 +21,7 @@
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
 import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
+import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { STORAGE_PREFIX } from '../brand';
 import { MAX_PRESETS, parsePresetList } from '../game/physicsRules';
@@ -232,7 +232,8 @@ export class AccountClient {
       /* no JSON body */
     }
     // A code without a server text (a sign-in rate_limited...) still gets its own text when the client has one.
-    const message = serverText('account', code, serverMessage) || t('error.server', { status: res.status });
+    const message = serverText('account', code, serverMessage) || t('error.server');
+    if (message === t('error.server')) console.warn(`account: answered ${res.status} ${code}`);
     throw new AccountError(message, res.status, code, retry);
   }
 
@@ -464,6 +465,21 @@ export class AccountClient {
   async leaderboard(playlist: Playlist): Promise<LeaderboardAnswer> {
     const s = await this.sessionForQueue().catch(() => null);
     return this.jsonOrFail<LeaderboardAnswer>(await this.call('/api/leaderboard?playlist=' + playlist, undefined, s?.session));
+  }
+
+  /**
+   * The signed-in account's community nodes (GET /nodes/mine, the operator route the node pages
+   * use): [] for an account without one, and where the Worker has no nodes (a fork, local dev: 404,
+   * or an answer that is not the route's JSON). Rejects for a guest or on a network / server error.
+   */
+  async myNodes(): Promise<MyNode[]> {
+    const res = await this.call('/nodes/mine', undefined, await this.bearer());
+    if (res.status === 404) return [];
+    const b = await this.jsonOrFail<{ nodes?: unknown }>(res).catch((e: unknown): { nodes?: unknown } => {
+      if (e instanceof AccountError) throw e;
+      return {}; // not JSON: the dev server's page
+    });
+    return Array.isArray(b.nodes) ? (b.nodes as MyNode[]) : [];
   }
 
   async rankedResult(matchId: string): Promise<RankedResultAnswer> {

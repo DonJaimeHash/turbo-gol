@@ -154,6 +154,7 @@ import { Audio, type AudioState } from '../audio/Audio';
 import { Input } from '../input/Input';
 import { TouchControls, autoFullscreen, hasTouchScreen, installHintDue, noteInstallHintShown } from '../input/TouchControls';
 import { t } from '../i18n';
+import type { Outcome } from '../net/outcome';
 import { sessionValid } from '../net/NetClient';
 import type { NetClient, ServerAssignment } from '../net/NetClient';
 import { AccountClient, oauthErrorText, parseAuthHash } from '../net/AccountClient';
@@ -165,7 +166,10 @@ import { STOCK_ARENA_FINGERPRINT, accumulate, buildTrainingArena, needsTrainingA
 import type { ExperimentalContext, ExperimentalOptions } from '../render/experimentalPage';
 import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
-import { REGIONS, isPlaylist } from '../net/account';
+import { installJoinLink } from '../ui/screens/lobby';
+import { installSalaSamples } from '../ui/screens/lobbySamples';
+import { openLostSheet } from '../ui/screens/match/lost';
+import { REGIONS, isPlaylist, isRegion } from '../net/account';
 import type { RegionId } from '../net/account';
 import { isNodeHost, type QueueResult } from '../net/protocol';
 import type { QueueResultP2p } from '../net/p2p/protocol';
@@ -258,7 +262,8 @@ import { CARD_FIRST_MATCHES, ControlsCardPlan, controlsCardRows, localCardSeen, 
 import type { Device } from '../input/bindings';
 import { kbmCustomised, usesMouseButton } from '../input/bindings';
 import { OnlineSession } from './OnlineSession';
-import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
+import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, TRAINING_DIFFICULTIES, TRAINING_PACKS, packById, type TrainingShot } from './trainingPacks';
+import { nextLevel } from '../ui/screens/trainingModel';
 import {
   FREEPLAY_GOAL_PAUSE_SECONDS,
   RESULT_SECONDS,
@@ -408,6 +413,10 @@ export interface GameSession {
   readonly statusIsError: boolean;
   /** In-match hint ('Esperando a <name>…'), null when none. */
   readonly hint: string | null;
+  /** The hint is good news ("Back in the match"): the HUD's line in --ok, not blinking. */
+  readonly hintOk?: boolean;
+  /** What the last failure (statusText while idle) leaves the player to do (src/net/outcome.ts); absent: retry. */
+  readonly errorOutcome?: Outcome;
   /** Visual error offsets (uu) for the player's car and the ball (phase 1 rollback), null / absent otherwise. */
   readonly errorOffsetCar?: Float32Array | null;
   readonly errorOffsetBall?: Float32Array | null;
@@ -864,7 +873,8 @@ export class Game implements P2PGameHooks {
   private readonly trainingBall: TrainingBallSample = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 };
   private readonly trainingYpr: [number, number, number] = [0, 0, 0];
   /** Which device the training key hints were built for (null = rebuild). */
-  private trainingHintsPad: boolean | null = null;
+  /** The device the training hints were last written for (null: write them on the next frame). */
+  private trainingHintsDevice: TrainingHints['device'] | null = null;
   /** The TrainingSession's view of the Game (sim placement, banners, summary). */
   private readonly trainingHooks: TrainingHooks = {
     placeShot: (shot) => this.trainingPlaceShot(shot),
@@ -1040,6 +1050,8 @@ export class Game implements P2PGameHooks {
     });
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
+    // A join link (#sala=ABC234) on this load or a later hashchange: its sheet once the menus are up.
+    if (typeof window !== 'undefined' && typeof history !== 'undefined') installJoinLink(this.menu);
     this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => this.restartAfterFinal && this.pendingRestart !== null, left: () => this.finalLeft() })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
@@ -1054,6 +1066,7 @@ export class Game implements P2PGameHooks {
     this.menu.register('settings', (m) => settingsScreen(m, this.menuSettings));
     this.pauseSettings = new SettingsOverlay(opts.hudContainer, () => this.settingsOptions());
     installFinalSample(this.menu);
+    installSalaSamples(this.menu);
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad, ui: this.settings.ui }) : null;
@@ -1307,6 +1320,9 @@ export class Game implements P2PGameHooks {
       searchView: () => game.menuSearchView(),
       practiceWhileSearching: () => game.startSearchPractice(),
       playLobbyMatch: (r) => game.playLobbyMatch(r),
+      rejoinable: () => (game.online !== null ? game.online.rejoinable : null),
+      rejoinMatch: () => game.rejoinMatch(),
+      firstOnline: () => !game.accounts.signedIn && (game.online === null || game.online.client.guest === null),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
       confirmLeave: (systemBack) => game.confirmLeave(systemBack === true),
       keyLabel: (action, device) => game.input.getLabel(action, device),
@@ -1374,6 +1390,9 @@ export class Game implements P2PGameHooks {
       // 426 reload_required (a stale page: P2PSession STATUS.reload, OnlineSession's netErrorText):
       // the menus' blocking sheet instead of a toast.
       reload: error !== null && error === t('error.queue.reload_required'),
+      outcome: error !== null ? (s?.errorOutcome ?? 'retry') : undefined,
+      // A lobby's match is no search of the menus: its failure has nothing for REINTENTAR to run.
+      retry: this.matchKind !== 'lobby',
     };
   }
 
@@ -2345,17 +2364,48 @@ export class Game implements P2PGameHooks {
     }
   }
 
-  /** The connection is gone for good: back to the menu with the reason as subtitle. */
+  /**
+   * The connection is gone for good: back to the menu with the reason as a toast; a server match
+   * that still runs (OnlineSession.rejoinable) gets the lost sheet instead (REJOIN / MENU, plan PR 12).
+   */
   onSessionDisconnected(message: string): void {
     const requeue = this.requeue;
     this.requeue = null;
     this.lastResult = null;
     this.finalView = null;
-    this.menuNotice = requeue !== null ? requeue.text : message;
+    const online = this.online;
+    const lost = requeue === null && online !== null && this.session === online && online.rejoinable !== null;
+    const ranked = online !== null && online.ranked;
+    // A match that never started asks nothing of the player: back in the queue (outcome.ts 'requeue'),
+    // one toast that says so (final.noShow / final.dodge); the session's own error would be a failed
+    // step (a sheet with REINTENTAR) over the search that runs again.
+    this.menuNotice = requeue !== null ? requeue.text : lost ? undefined : message;
+    if (requeue !== null && online !== null) online.error = null;
     if (!this.menuShown) this.showMenu();
     else if (this.session !== null) this.session.leave();
     // A match that never started: the same search again (the toast says why).
     if (requeue !== null) this.menu.startSearch(requeue.req);
+    if (lost) openLostSheet(this.menu, ranked);
+  }
+
+  /**
+   * Back into the server match this tab lost or left by a reload (rejoinStore.ts; MenuHost.rejoinMatch:
+   * the lost sheet's REJOIN, Inicio's BACK TO YOUR MATCH): the menus show it as a search connecting.
+   */
+  private rejoinMatch(): void {
+    const online = this.online;
+    const rec = online !== null ? online.rejoinable : null;
+    if (online === null || rec === null) return;
+    if (this.session !== null && this.session.busy) this.session.cancel();
+    if (online.state !== 'idle') return;
+    const region = online.client.region;
+    this.searchReq = { kind: rec.kind, modes: rec.modes.slice(), region: isRegion(region) ? region : null, net: 'server' };
+    this.searchSince = performance.now();
+    this.matchKind = rec.kind;
+    this.setMode(rec.modes[0]);
+    this.menuReturnAt = -1;
+    this.setSession(online);
+    online.rejoin(rec);
   }
 
   /**
@@ -2420,7 +2470,7 @@ export class Game implements P2PGameHooks {
     const th = this.ensureTrainingHud();
     th.show(pack !== null ? pack.name : this.freePlayRules !== null ? t('training.expFreePlay') : FREEPLAY_NAME, pack === null ? 0 : pack.shots.length, pack === null);
     th.setRules(this.freePlayRules !== null ? t('trainingHud.rulesLine', { name: this.freePlayRules.name }) : null);
-    this.trainingHintsPad = null;
+    this.trainingHintsDevice = null;
     // Free play shows the controls card until the car moves; a pack has its own key hints.
     if (pack === null) this.controlsCard.freePlay();
     else this.controlsCard.clear();
@@ -2578,6 +2628,7 @@ export class Game implements P2PGameHooks {
     // The summary's buttons (the pause entries are the Hud's pause menu: pauseEntries).
     const th = new TrainingHud(this.hud.root.parentElement ?? this.hud.root, {
       onRetryPack: () => this.trainingRetryPack(),
+      onNextLevel: () => this.trainingNextLevel(),
       onQuit: () => this.stopTraining(),
     });
     this.trainingHud = th;
@@ -2638,16 +2689,22 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * Pack summary edges: accept (Enter / pad A) or the reset key retries the pack, back (Esc /
-   * Backspace's menu edge / pad B) leaves for the menu, next / previous reopen a shot to practise
-   * (the run's results stay, the summary does not come back for it).
+   * Pack summary edges: accept (Enter / pad A) presses its focused button (AGAIN at first), the
+   * reset key retries the pack, back (Esc / Backspace's menu edge / pad B) leaves for ENTRENAMIENTO,
+   * the arrows / D-pad walk its buttons (TrainingHud's FocusNav: the D-pad's ◀ ▶ are the pad's
+   * previous / next shot too, the buttons come first), the keyboard's next / previous (PgDn / PgUp)
+   * reopen a shot to practise (the run's results stay, the summary does not come back for it).
    */
   private trainingSummaryActions(): void {
     const tr = this.training;
-    if (tr === null) return;
+    const th = this.trainingHud;
+    if (tr === null || th === null) return;
     const a = this.input.actions;
-    if (a.accept || a.trainingReset || a.reset) this.trainingRetryPack();
+    const dir = a.menuLeft ? 'left' : a.menuRight ? 'right' : a.menuUp ? 'up' : a.menuDown ? 'down' : null;
+    if (a.accept) th.summaryAccept();
+    else if (a.trainingReset || a.reset) this.trainingRetryPack();
     else if (a.back) this.stopTraining();
+    else if (dir !== null) th.summaryMove(dir, this.input.padActions.menuRepeat);
     else if (a.trainingNext || a.trainingPrev) {
       if (this.trainingHud !== null) this.trainingHud.hideSummary();
       this.input.blockJumpUntilRelease();
@@ -2664,6 +2721,13 @@ export class Game implements P2PGameHooks {
     this.input.blockJumpUntilRelease();
     this.setPaused(false);
     tr.retryPack();
+  }
+
+  /** The summary's NEXT LEVEL: the same category's next pack (TrainingHud shows it only when there is one). */
+  private trainingNextLevel(): void {
+    const pack = this.training?.pack ?? null;
+    const next = pack === null ? null : nextLevel(TRAINING_PACKS, pack.id, TRAINING_DIFFICULTIES);
+    if (next !== null) this.startTraining(next.id);
   }
 
   /** Free play: unlimited boost on / off (the wrapper refills to 100 every tick while on). */
@@ -2715,7 +2779,7 @@ export class Game implements P2PGameHooks {
     const tr = this.training;
     const th = this.trainingHud;
     if (tr === null || tr.pack === null || th === null) return;
-    th.showSummary(tr.pack.name, summary, tr.results);
+    th.showSummary(tr.pack.name, summary, tr.results, nextLevel(TRAINING_PACKS, tr.pack.id, TRAINING_DIFFICULTIES)?.name ?? null);
     this.input.exitPointerLock(); // the summary is clicked
   }
 
@@ -2768,10 +2832,11 @@ export class Game implements P2PGameHooks {
     const th = this.trainingHud;
     if (tr === null || th === null) return;
     th.setPaused(this.paused);
-    const pad = this.input.hasGamepad;
-    if (pad !== this.trainingHintsPad) {
-      this.trainingHintsPad = pad;
-      th.setHints(this.trainingHints(pad));
+    // A finger (touch mode) gets the ↺ button's hints; else the keys of the device that is there.
+    const device = this.touch !== null && this.touch.touchMode ? 'touch' : this.input.hasGamepad ? 'pad' : 'kbm';
+    if (device !== this.trainingHintsDevice) {
+      this.trainingHintsDevice = device;
+      th.setHints(this.trainingHints(device));
     }
     const pack = tr.pack;
     if (pack === null) {
@@ -2788,8 +2853,9 @@ export class Game implements P2PGameHooks {
   }
 
   /** Key hint labels from the live bindings of the device in use (allocates: only when the device changes). */
-  private trainingHints(pad: boolean): TrainingHints {
+  private trainingHints(device: TrainingHints['device']): TrainingHints {
     const input = this.input;
+    const pad = device === 'pad';
     const dev = pad ? 'pad' : 'kbm';
     return {
       reset: input.getLabel('trainingReset', dev),
@@ -2800,6 +2866,7 @@ export class Game implements P2PGameHooks {
       pause: input.getLabel('pause', dev),
       accept: pad ? 'A' : 'Enter',
       back: pad ? 'B' : 'Esc',
+      device,
     };
   }
 
@@ -3568,7 +3635,7 @@ export class Game implements P2PGameHooks {
       // Network panel (F4 / #net, auto while online in debug), the stall hint.
       hud.setNetAuto(sessionActive);
       if (hud.netVisible) hud.setNetStats(session.stats);
-      hud.setNetWait(sessionActive && !inMenu ? session.hint : null);
+      hud.setNetWait(sessionActive && !inMenu ? session.hint : null, session.hintOk === true);
     }
     // Boost and speed change every frame: 10 Hz on cpuLite (each change rewrites DOM text).
     if (!this.cpuLite || this.time - this.hudAt >= HUD_LITE_INTERVAL || this.time < this.hudAt) {
@@ -3618,8 +3685,13 @@ export class Game implements P2PGameHooks {
     const cur = this.cur;
     const po = this.playerOff;
     this.updateScoreboard(inMenu);
-    // Ajustes over an online match holds the scene: its scorebug, raised over it, still follows the match.
-    if (this.pauseSettings.isOpen && this.onlineActive) this.updateScorebug();
+    // Ajustes over an online match holds the scene: its scorebug, raised over it, still follows the
+    // match, and so does the wait line (a P2P stall, a server match reconnecting), raised too.
+    if (this.pauseSettings.isOpen && this.onlineActive) {
+      this.updateScorebug();
+      const session = this.session;
+      if (session !== null) hud.setNetWait(session.active && !inMenu ? session.hint : null, session.hintOk === true);
+    }
     // Training's panel (its setters skip unchanged values): the pause's Unlimited boost shows at once over a held frame.
     if (this.training !== null) this.updateTrainingHud();
     // On-screen controls (touch screens): up while a match is played in touch mode, the HUD in its
@@ -3915,7 +3987,7 @@ export class Game implements P2PGameHooks {
     const final = result !== null ? this.finalView : null;
     if (result !== null && final === null) {
       const detail = this.menuNotice ?? `${result.blue} – ${result.red}`;
-      this.menu.toast(result.winner === null ? t('game.resultDraw', { detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], detail }), 'info');
+      this.menu.toast(result.winner === null ? t('game.resultDraw', { result: detail }) : t('game.resultWin', { team: TEAM_LABEL[result.winner], result: detail }), 'info');
     }
     else if (this.menuNotice !== undefined && this.menuNotice.length > 0) this.menu.toast(this.menuNotice, 'info');
     if (this.tierNotice !== null) this.menu.toast(this.tierNotice, 'info');

@@ -18,11 +18,14 @@
  * - the rail (phone sideways) or the tab bar (upright), shell/rail.ts;
  * - the hint bar (shell/hintbar.ts): the last input's verbs (shell/hints.ts) and the source link
  *   (AGPL-3.0) with About; a TV keeps its pills there, but on Inicio, by the plate (Screen.pillSlot);
- * - pills (shell/pills.ts): the region with the connection, the running search (cancel from any
+ * - pills (shell/pills.ts): the lobby the player is in when not on its screen ("LOBBY ABC234 ·
+ *   2/4 · BACK", plan PR 12), the region with the connection, the running search (cancel from any
  *   section, and over Settings: a copy floats above them, `float`), "UPDATE TO PLAY";
  * - sheets (components/sheet.ts, `modal()`), toasts (components/toast.ts), the blocking "There's a
  *   new version" sheet when the server refused this page (it waits for Settings to close; z 65
- *   would keep it above them should both ever be up).
+ *   would keep it above them should both ever be up), and a failed online step's sheet
+ *   (`failure()`: its text and the one action src/net/outcome.ts gives it; a search's REINTENTAR
+ *   searches the same again).
  *
  * A match's start (Menu.beforeMatch: the hero, MODOS' FIND MATCH and PLAY): a TV without a
  * controller asks for one first (a sheet that closes by itself when one connects, the press that
@@ -63,6 +66,7 @@ import './menu.css';
 import './styles/index.css';
 import { h, setChildren } from './dom';
 import { FocusMemory, FocusNav, heldOver, isEditable, isEditing, navKey, setEditing } from './nav';
+import { installKeyboardInset } from './keyboard';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
 import type { InputKind } from './device';
@@ -92,7 +96,7 @@ import { hintItems } from './shell/hints';
 import { TopBar } from './shell/topbar';
 import { SectionList } from './shell/rail';
 import { HintBar } from './shell/hintbar';
-import { RegionPill, SearchPill, updatePill } from './shell/pills';
+import { LobbyPill, RegionPill, SearchPill, updatePill } from './shell/pills';
 import type { RegionPillState } from './shell/pills';
 import { sheetBox } from './components/sheet';
 import type { SheetSpec } from './components/sheet';
@@ -109,6 +113,10 @@ import { localCardSeen } from '../render/controlsCard';
 import { atOverlays, coverShare, menuCover, opaqueBackground, paintsBackground } from './cover';
 import type { OverlayBox } from './cover';
 import type { SceneCover } from '../render/quality';
+import { MODES } from '../sim/constants';
+import { OUTCOME_ACTION } from '../net/outcome';
+import type { Outcome } from '../net/outcome';
+import type { RejoinRecord } from '../game/rejoinStore';
 
 export type SearchKind = 'casual' | 'ranked';
 
@@ -137,6 +145,13 @@ export interface SearchView {
   error: string | null;
   /** That failure is the server refusing this page's version (426 reload_required): reload to play online. */
   reload?: boolean;
+  /** What that failure leaves the player to do (src/net/outcome.ts); absent: retry. */
+  outcome?: Outcome;
+  /**
+   * That failure ended what the menus started (a search, a rejoin: REINTENTAR runs it again);
+   * false for a lobby's match (its member goes back to the Sala): the sheet only closes.
+   */
+  retry?: boolean;
 }
 
 export interface MenuConfig {
@@ -194,6 +209,12 @@ export interface MenuHost {
   practiceWhileSearching(): void;
   /** A custom lobby started: join this member's match. */
   playLobbyMatch(result: QueueResult | QueueResultP2p): void;
+  /** The server match this tab may join again (rejoinStore.ts: a reload, a lost connection), or null. */
+  rejoinable(): RejoinRecord | null;
+  /** Join it again (POST /api/rejoin; Inicio's BACK TO YOUR MATCH, a lost connection's REJOIN). */
+  rejoinMatch(): void;
+  /** A guest that never played online in this browser (no session yet): a join link asks for a name. */
+  firstOnline(): boolean;
   /**
    * The settings screen (the Hud's: controls, camera, gameplay, audio, graphics, experimental),
    * on `opts.tab` when given; `onClose` when it is left. The menus call it through Menu.openSettings.
@@ -280,8 +301,11 @@ export interface Screen {
   readonly pillSlot?: HTMLElement;
   /** Esc / B on this screen: return true to swallow it (e.g. a sub-view closes first). */
   back?(): boolean;
-  /** A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context action). */
-  command?(c: MenuCommand): boolean;
+  /**
+   * A shortcut (MenuCommand) on this screen: return true when it handled it (its tabs, its context
+   * action). `pad`: a controller's press (Menu.action; data-input says so only after this frame).
+   */
+  command?(c: MenuCommand, pad: boolean): boolean;
   /** Menu.open's `tab`, before the screen mounts (MODOS: the tab Inicio's tile or the search asked for). */
   setTab?(tab: string): void;
   /** What its own tabs are, for the hint bar (MODOS: "Modes"); else "Tabs". */
@@ -322,6 +346,7 @@ export class Menu {
   private readonly tabbar: SectionList;
   private readonly hintBar: HintBar;
   private readonly pills: HTMLElement;
+  private readonly lobbyPill: LobbyPill;
   private readonly regionPill: RegionPill;
   private readonly searchPill: SearchPill;
   private readonly updateBtn: HTMLButtonElement;
@@ -372,8 +397,12 @@ export class Menu {
   /** Population polls failed in a row (the hero counts two as offline: homeModel.ts isOffline). */
   private popFails = 0;
   private lastError: string | null = null;
+  /** What a failed search's REINTENTAR runs again: the last search started, or a rejoin (rejoin()). */
+  private lastTry: (() => void) | null = null;
   private visibleNow = false;
   private searching = false;
+  /** The lobby pill is up (renderLobbyPill). */
+  private lobbyPillUp = false;
   /** Settings opened from the menus are up (Menu.openSettings). */
   private settingsOpen = false;
   /** The server refused this page's version: the update sheet once, then the pill. */
@@ -431,7 +460,8 @@ export class Menu {
     this.regionPill = new RegionPill(() => this.onRegionPill());
     this.searchPill = new SearchPill(() => this.openSearchScreen(), () => this.cancelSearch(), true);
     this.updateBtn = updatePill(() => this.openUpdateSheet());
-    this.pills = h('div.mn-pill-row', null, this.searchPill.el, this.updateBtn, this.regionPill.el);
+    this.lobbyPill = new LobbyPill(() => this.open('lobby'));
+    this.pills = h('div.mn-pill-row', null, this.lobbyPill.el, this.searchPill.el, this.updateBtn, this.regionPill.el);
     this.topBar.pills.appendChild(this.pills);
     this.stage = h('main.mn-stage');
     this.toasts = new Toasts();
@@ -446,6 +476,8 @@ export class Menu {
       onFocus: (el, zone) => this.noteFocus(el, zone),
     });
     this.nav.install(this.root);
+    // A phone's keyboard over a form: the focused field stays above it (keyboard.ts).
+    installKeyboardInset(this.root);
     // Capture, before a field's own Enter (custom.ts JOIN, profile.ts sign-in): the fields' modes.
     this.root.addEventListener('keydown', (e) => this.onFieldKey(e), true);
     this.installTapGuard();
@@ -550,10 +582,17 @@ export class Menu {
    * once (renderSearch).
    */
   startSearch(req: SearchRequest): void {
+    this.lastTry = () => this.beforeMatch(() => this.startSearch(req));
     this.prefs.lastQueue = req.kind;
     this.savePrefs();
     this.host.search(req);
     this.renderSearch(performance.now());
+  }
+
+  /** Back into the server match this tab lost (MenuHost.rejoinMatch): Inicio's hero, the lost sheet. */
+  rejoin(): void {
+    this.lastTry = () => this.beforeMatch(() => this.rejoin());
+    this.host.rejoinMatch();
   }
 
   /**
@@ -781,6 +820,7 @@ export class Menu {
     this.renderChrome();
     top.show?.();
     this.refreshChrome();
+    this.renderLobbyPill();
     // Now, before this frame is drawn: a press of a pad or a remote mounts inside the game loop's
     // animation frame, and a fit on the next one would show a frame of an unfitted bar first.
     this.fitNow();
@@ -1187,17 +1227,18 @@ export class Menu {
       }
     } else if (a === 'back') this.backOrLeave();
     else if (a === 'up' || a === 'down' || a === 'left' || a === 'right') this.nav.move(a, repeat);
-    else this.command(a);
+    else this.command(a, true);
   }
 
   /**
    * A shortcut: the screen on top first (Screen.command), else the menus' own: 'prev' / 'next' the
    * sections, 'tabPrev' / 'tabNext' the screen's inner tabs (stepTabs), 'cancel' the search, 'menu'
    * the settings. False when nothing took it. Nothing while a modal is up (it keeps the focus).
+   * `pad`: it came from a controller (action), not the keyboard's Q / E / X / Delete.
    */
-  command(c: MenuCommand): boolean {
+  command(c: MenuCommand, pad = false): boolean {
     if (!this.visibleNow || this.modalEl !== null) return false;
-    if (this.top()?.command?.(c)) return true;
+    if (this.top()?.command?.(c, pad)) return true;
     if (c === 'prev' || c === 'next') return this.stepSection(c === 'prev' ? -1 : 1);
     if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
     if (c === 'cancel') return this.cancelSearch();
@@ -1509,6 +1550,7 @@ export class Menu {
       void this.pollPopulation();
     }
     this.renderSearch(now);
+    this.renderLobbyPill();
     this.top()?.tick?.(now);
     if (this.renderHints()) this.fitNow(); // a screen's own tabs may have come or gone (written on a change only)
     if (this.coarse && now - this.coverAt >= COVER_EVERY_MS) this.measureCover();
@@ -1523,7 +1565,9 @@ export class Menu {
       this.root.classList.add('mn-pills-more');
       this.fitNow();
       if (!this.settingsUp()) this.openUpdateSheet();
-    } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) this.toast(v.error, 'error');
+    } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) {
+      this.failure(v.error, v.outcome ?? 'retry', v.retry === false ? undefined : (this.lastTry ?? undefined));
+    }
     this.lastError = v.error;
     // A search that ends (cancelled, a failure, the server) takes its pill away: the focus it had
     // goes back to the screen, not to the page's body (blurred first: a hidden control keeps the
@@ -1537,7 +1581,7 @@ export class Menu {
     if (v.active !== this.searching) {
       this.searching = v.active;
       this.root.classList.toggle('mn-searching', v.active);
-      this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded);
+      this.root.classList.toggle('mn-pills-more', v.active || this.reloadNeeded || this.lobbyPillUp);
       this.renderHints();
       // The screen follows in this frame (Inicio's hero: SEARCHING and ✕, or JUGAR AHORA again),
       // not on its next tick (a second later on super low).
@@ -1546,10 +1590,62 @@ export class Menu {
     }
   }
 
+  /**
+   * The lobby pill: shown while the player is in a lobby (reconnecting too) and its screen is not on
+   * top; written on a change only (the bars fit again then).
+   */
+  private renderLobbyPill(): void {
+    const lobby = this.host.lobby;
+    const st = lobby.state;
+    const show = this.visibleNow && lobby.inLobby && this.top()?.id !== 'lobby';
+    const changed = this.lobbyPill.set(show ? { code: st?.code ?? lobby.code ?? '', count: st !== null ? st.members.length : null, max: st !== null ? MODES[st.settings.mode] * 2 : null, reconnecting: lobby.reconnecting } : null);
+    if (!changed) return;
+    const a = document.activeElement;
+    if (!show && a instanceof HTMLElement && this.lobbyPill.el.contains(a)) {
+      a.blur();
+      this.refocus();
+    }
+    // A crowded bar, as beside the search pill: the chip and the region pill give their words first.
+    this.lobbyPillUp = show;
+    this.root.classList.toggle('mn-pills-more', show || this.searching || this.reloadNeeded);
+    this.fitNow();
+  }
+
   // ---- toasts / sheets --------------------------------------------------------------------------
 
   toast(text: string, kind: 'info' | 'error' | 'ok' = 'info'): void {
     this.toasts.show(text, kind);
+  }
+
+  /**
+   * A failed online step (src/net/outcome.ts): its text as the title and the one thing left to do,
+   * in a sheet (an error that asks for an action never goes in a toast): REINTENTAR runs `retry`,
+   * RECARGAR reloads, REINTENTA EN 1 MIN and CERRAR close it. A requeue asks nothing of the player (a
+   * toast says it); over Settings or another sheet it is a toast as well.
+   */
+  failure(text: string, outcome: Outcome, retry?: () => void): void {
+    // Nothing to try again here: the sheet only closes, and says so.
+    const label = t(outcome === 'retry' && retry === undefined ? 'outcome.close' : OUTCOME_ACTION[outcome]);
+    if (outcome === 'requeue' || this.settingsUp() || this.modalEl !== null || !this.visibleNow) {
+      this.toast(outcome === 'requeue' ? `${text} · ${label}` : text, outcome === 'requeue' ? 'info' : 'error');
+      return;
+    }
+    const canRetry = outcome === 'retry' && retry !== undefined;
+    this.modal({
+      title: text,
+      body: [],
+      actions: [
+        {
+          label,
+          primary: true,
+          onClick: () => {
+            if (outcome === 'reload') location.reload();
+            else if (canRetry) queueMicrotask(retry); // once the sheet is gone (a new one may follow)
+          },
+        },
+        ...(canRetry ? [{ label: t('lobby.cancel'), onClick: () => true }] : []),
+      ],
+    });
   }
 
   /**

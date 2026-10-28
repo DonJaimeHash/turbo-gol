@@ -1,7 +1,7 @@
 /**
  * Drawn keys and buttons for the hint bar and the section bar (plan §1.6), never a maker's colours
  * or symbols: a controller's face button is a circle with a 4-dot diamond, its position filled, and
- * the standard mapping's letter; a bumper an L / R pill skewed -20°; Start a ≡ box; a keyboard key a
+ * the standard mapping's letter; a bumper an L / R pill skewed -20° (a trigger LT / RT); Start a ≡ box; a keyboard key a
  * keycap; a TV remote's OK, Back (↩) and ▲ round buttons. Decorative (aria-hidden): the verb next to
  * them says what they do. Built on call, nothing at import.
  */
@@ -47,12 +47,18 @@ export function glyph(id: GlyphId): HTMLElement {
       return face('A', 2);
     case 'pad-b':
       return face('B', 1);
+    case 'pad-x':
+      return face('X', 3);
     case 'pad-y':
       return face('Y', 0);
     case 'pad-lb':
       return bumper('L');
     case 'pad-rb':
       return bumper('R');
+    case 'pad-lt':
+      return bumper('LT');
+    case 'pad-rt':
+      return bumper('RT');
     case 'pad-start':
       return h('span.mn-glyph.mn-glyph-start', null, '≡');
     case 'key-enter':
@@ -65,6 +71,10 @@ export function glyph(id: GlyphId): HTMLElement {
       return key('E');
     case 'key-x':
       return key('X');
+    case 'key-pgup':
+      return key('PgUp');
+    case 'key-pgdn':
+      return key('PgDn');
     case 'remote-ok':
       return round('OK');
     case 'remote-back':

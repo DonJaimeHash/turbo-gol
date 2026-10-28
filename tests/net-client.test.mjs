@@ -18,7 +18,7 @@ registerHooks({
 const P = await import('../src/net/protocol.ts');
 const { ClockSync, TICK_MS, median } = await import('../src/net/ClockSync.ts');
 const { LossEstimator, RateMeter } = await import('../src/net/NetStats.ts');
-const { NetClient, NetError, resolveWsUrl, sanitizeName, loadGuestRecord, saveGuestRecord, GUEST_STORAGE_KEY, sessionValid, parseServerConfig } =
+const { NetClient, NetError, RECONNECT_TRIES, resolveWsUrl, sanitizeName, loadGuestRecord, saveGuestRecord, GUEST_STORAGE_KEY, sessionValid, parseServerConfig } =
   await import('../src/net/NetClient.ts');
 const { getToken, TURNSTILE_TOKEN_TIMEOUT_MS } = await import('../src/net/Turnstile.ts');
 const T = await import('../src/sim/types.ts');
@@ -1022,38 +1022,62 @@ test('sendInputs packs the batch into one reusable buffer; snapshots / events / 
   assert.equal(got.snapshots.length, 2);
 });
 
-test('reconnect once through /api/rejoin on an abnormal close; never on 1000 or after close()', async () => {
+test('reconnect through /api/rejoin on an abnormal close, up to RECONNECT_TRIES in a row (a Welcome starts again); never on 1000 or after close()', async () => {
   let rejoins = 0;
-  const h = makeClient({
-    '/api/guest': () => jsonResponse(200, GUEST),
-    '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm9', ticket: 'T1', wsUrl: '/ws/m9' }),
-    '/api/rejoin': (init) => {
-      rejoins++;
-      assert.deepEqual(JSON.parse(init.body), { matchId: 'm9' });
-      assert.equal(init.headers.authorization, `Bearer ${GUEST.session}`);
-      return jsonResponse(200, { status: 'matched', matchId: 'm9', ticket: 'T2', wsUrl: '/ws/m9' });
+  let rejoinAnswer = () => jsonResponse(200, { status: 'matched', matchId: 'm9', ticket: 'T' + (rejoins + 1), wsUrl: '/ws/m9' });
+  const h = makeClient(
+    {
+      '/api/guest': () => jsonResponse(200, GUEST),
+      '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm9', ticket: 'T1', wsUrl: '/ws/m9' }),
+      '/api/rejoin': (init) => {
+        rejoins++;
+        assert.deepEqual(JSON.parse(init.body), { matchId: 'm9' });
+        assert.equal(init.headers.authorization, `Bearer ${GUEST.session}`);
+        return rejoinAnswer();
+      },
     },
-  });
+    { reconnectDelaysMs: [0] },
+  );
   const { client, sockets } = h;
   const closes = [];
-  client.onClose = (code, reason, reconnecting) => closes.push([code, reconnecting]);
+  client.onClose = (code, reason, reconnecting) => closes.push([code, reconnecting, client.reconnectAttempt]);
+  const settle = async () => {
+    for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+  };
   const m = await client.queue('1v1');
   client.connect(m.wsUrl, m.ticket);
   sockets[0].open();
   sockets[0].dropped(1006, 'network');
-  await new Promise((r) => setTimeout(r, 0));
-  await new Promise((r) => setTimeout(r, 0));
+  await settle();
   assert.equal(rejoins, 1);
   assert.equal(sockets.length, 2);
   assert.deepEqual(sockets[1].protocols, ['tg1', 'ticket.T2']);
-  assert.deepEqual(closes, [[1006, true]]);
+  assert.deepEqual(closes, [[1006, true, 1]]);
   assert.equal(client.reconnects, 1);
-  // Second drop: no further attempt.
-  sockets[1].open();
-  sockets[1].dropped(1006, 'again');
-  await new Promise((r) => setTimeout(r, 0));
-  assert.equal(rejoins, 1);
-  assert.deepEqual(closes[1], [1006, false]);
+  // The new socket drops before its Welcome: the next try, until RECONNECT_TRIES are spent.
+  for (let i = 1; i < RECONNECT_TRIES; i++) {
+    sockets.at(-1).open();
+    sockets.at(-1).dropped(1006, 'again');
+    await settle();
+  }
+  assert.equal(rejoins, RECONNECT_TRIES);
+  assert.deepEqual(closes.map((c) => c[2]), [1, 2, 3, 4, 5], 'the try under way, 1 to 5');
+  sockets.at(-1).open();
+  sockets.at(-1).dropped(1006, 'again');
+  await settle();
+  assert.equal(rejoins, RECONNECT_TRIES, 'no sixth try');
+  assert.deepEqual(closes.at(-1), [1006, false, 0]);
+  // A rejoin the network failed is a try too; one answering 410 (the match is over) ends them.
+  const h4 = makeClient({ '/api/guest': () => jsonResponse(200, GUEST), '/api/rejoin': () => jsonResponse(410, { error: 'match_over' }) }, { reconnectDelaysMs: [0] });
+  h4.client.matchId = 'm4';
+  const c4 = [];
+  h4.client.onClose = (code, reason, r) => c4.push(r);
+  h4.client.connect('/ws/m4', 't');
+  h4.sockets[0].open();
+  h4.sockets[0].dropped(1006, 'network');
+  await settle();
+  assert.deepEqual(c4, [true, false], 'one try, then the end');
+  rejoinAnswer = () => jsonResponse(200, {});
 
   // A clean 1000 never reconnects.
   const h2 = makeClient({ '/api/rejoin': () => jsonResponse(200, { ticket: 'x', wsUrl: '/ws/x' }) });

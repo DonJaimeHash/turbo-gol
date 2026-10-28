@@ -42,7 +42,7 @@
  * noShowStatus(retryAfterMs). A room socket that closes before the welcome (the room refused the
  * upgrade: browsers only show 1006; e.g. 403 'left' for a join that got there after the no-show
  * grace, or an expired ticket) releases the lock and queues again by itself, once per quickMatch
- * (STATUS.requeue); a second one fails to the menu (p2p.roomClosed, 'Room closed (...)').
+ * (STATUS.requeue); a second one fails to the menu (p2p.roomClosed, its close code to the console).
  * Any other failed queue request reads as netErrorText (src/net/netErrorText.ts).
  *
  * Debug: `log` (P2PLog, 256-entry ring, window.__game.p2p.log) gets one line per event from the
@@ -111,6 +111,7 @@ import {
 import { Match, type MatchEvent } from '../../game/Match';
 import { TICK_MS } from '../ClockSync';
 import { NetClient, NetError, type ServerAssignment, type P2pAssignment } from '../NetClient';
+import { outcomeOf, type Outcome } from '../outcome';
 import { netErrorText } from '../netErrorText';
 import {
   NET_STATS_MAX_PEERS,
@@ -492,6 +493,8 @@ export class P2PSession {
   status = '';
   /** Last failure (shown in the menu until the next attempt). */
   error: string | null = null;
+  /** What that failure leaves the player to do (src/net/outcome.ts). */
+  errorOutcome: Outcome = 'retry';
   mode: GameMode = '1v1';
 
   readonly client: NetClient;
@@ -800,7 +803,7 @@ export class P2PSession {
             return;
           }
           this.log.push('queue.error', logText(err));
-          this.fail(describe(err));
+          this.fail(describe(err), outcomeOf(err as NetError));
         },
       );
   }
@@ -1534,7 +1537,8 @@ export class P2PSession {
     try {
       engine = this.engineFactory(sim, slots.length, this.humanSlots, this.mySlot, hooks, { inputDelay: this.inputDelay, window, hashEvery: this.hashEvery });
     } catch (err) {
-      this.fail(t('p2p.engine', { message: describe(err) }));
+      console.error('P2P engine:', describe(err));
+      this.fail(t('p2p.engine'), 'reload');
       return;
     }
     if (engine.onDesync !== undefined) engine.onDesync = hooks.onDesync;
@@ -1672,12 +1676,13 @@ export class P2PSession {
     if (code === P2P_ERROR_RELOAD || code === P2P_ERROR_BAD_PHYSICS) {
       // Another P2P protocol in the welcome: this page is stale, only a reload helps.
       this.log.push('room.reload', message);
-      if (this.state === 'signaling' || this.state === 'connecting') this.fail(STATUS.reload);
+      if (this.state === 'signaling' || this.state === 'connecting') this.fail(STATUS.reload, 'reload');
       else this.error = STATUS.reload;
       return;
     }
     if (this.state === 'signaling' || this.state === 'connecting') {
-      this.fail(`${message} (${code})`);
+      console.warn(`P2P room error ${code}: ${message}`); // the code for the console, the text for the player
+      this.fail(message);
       return;
     }
     this.error = message;
@@ -1698,7 +1703,8 @@ export class P2PSession {
       return;
     }
     if (this.state === 'signaling' || this.state === 'connecting') {
-      this.fail(t('p2p.roomClosed', { detail: `${code}${reason.length > 0 ? `: ${reason}` : ''}` }));
+      console.warn(`P2P room closed (${code}${reason.length > 0 ? `: ${reason}` : ''})`);
+      this.fail(t('p2p.roomClosed'));
       return;
     }
     // Mid-match the room is only needed for drops: the mesh keeps the match going, unless a drop
@@ -1842,9 +1848,10 @@ export class P2PSession {
     }
   }
 
-  /** Matchmaking / signaling / connecting failed: back to idle with the error on the menu. */
-  private fail(message: string): void {
+  /** Matchmaking / signaling / connecting failed: back to idle with the error on the menu (and what it leaves to do). */
+  private fail(message: string, outcome: Outcome = 'retry'): void {
     this.log.push('fail', message);
+    this.errorOutcome = outcome;
     this.attempt++;
     this.client.cancelQueue();
     const hadRoster = this.rosterApplied;

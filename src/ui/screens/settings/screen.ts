@@ -6,7 +6,9 @@
  * the menus showing another screen (Menu.mount also when it went from under another one); PERFIL
  * over it (a guest's SIGN IN) keeps it open but held (SettingsView.suspend: no capture, no trial,
  * no timer), as the menus hidden over it do (a match found), and a sign-in there comes back here.
- * The scene holds one frame under it (Screen.holdsScene).
+ * Over PERFIL itself (the bar walked to the gear) that SIGN IN finds PERFIL in the stack, at its
+ * root: Ajustes leaves the stack and closes, and a sign-in while PERFIL is still up opens it again
+ * on EXPERIMENTAL. The scene holds one frame under it (Screen.holdsScene).
  */
 import { t } from '../../../i18n';
 import type { Menu, Screen } from '../../Menu';
@@ -16,10 +18,17 @@ import type { SettingsView } from './view';
 export function settingsScreen(menu: Menu, view: SettingsView): Screen {
   /** Menu.open's tab for the next entry (none: CONTROLES). */
   let tab: SettingsTab | null = null;
+  /** A guest's SIGN IN closed it over PERFIL's root: a sign-in while PERFIL stays up opens it again. */
+  let reopenOnSignIn = false;
   menu.host.accounts.subscribe(() => {
-    if (!view.waitingSignIn || !menu.host.accounts.signedIn) return;
-    view.waitingSignIn = false;
-    if (menu.top()?.id === 'profile') menu.back();
+    if (!menu.host.accounts.signedIn) return;
+    if (view.waitingSignIn) {
+      view.waitingSignIn = false;
+      if (menu.top()?.id === 'profile') menu.back();
+    } else if (reopenOnSignIn) {
+      reopenOnSignIn = false;
+      if (menu.visible && menu.top()?.id === 'profile') menu.openSettings(undefined, { tab: 'experimental' });
+    }
   });
   return {
     id: 'settings',
@@ -33,16 +42,20 @@ export function settingsScreen(menu: Menu, view: SettingsView): Screen {
       else tab = next;
     },
     show: () => {
+      reopenOnSignIn = false;
       if (!view.isOpen) view.open(tab);
       else view.resume();
       tab = null;
     },
     // After the Menu changed its stack (hide runs first): closed once it left the stack, held while
-    // another screen or the match is over it.
+    // another screen or the match is over it. Menu.mount runs it on every screen shown without
+    // Ajustes in the stack: one other than PERFIL drops the reopen.
     hide: () =>
       queueMicrotask(() => {
-        if (!menu.stacked('settings')) view.close();
-        else if (!menu.visible || menu.top()?.id !== 'settings') view.suspend();
+        if (!menu.stacked('settings')) {
+          reopenOnSignIn = (reopenOnSignIn || view.waitingSignIn) && menu.top()?.id === 'profile';
+          view.close();
+        } else if (!menu.visible || menu.top()?.id !== 'settings') view.suspend();
       }),
     back: () => view.back(),
     command: (c) => view.command(c),

@@ -192,7 +192,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
   // Touch shows no ring: every ring rule is scoped to a page whose last input was not a finger.
   for (const r of rules(focus)) if (r.selector !== '.mn [data-nav]:focus') for (const sel of r.selector.split(',')) assert.match(sel.trim(), /^html:not\(\.tg-touch\) /, sel);
   assert.doesNotMatch(focus, /:is\(/, 'plain selector lists (an old TV WebView drops a whole rule it cannot parse)');
-  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.mn .mn-set-row-ctl.mn-focus', '.trn-summary-card .trn-btn-primary', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
+  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.mn .mn-set-row-ctl.mn-focus', '.trn-summary-card .trn-btn.mn-focus', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
 });
 
 // Within about 1 % of what Vite's minifier writes (comments, spaces, last semicolons and leading
@@ -216,15 +216,23 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // BOOST's amount and level, the moved CAM / RESET, the first-match cards, the live rotate notice
 // (touch.css, about 2.1 KB more) and the two-thumb touch pause with its half-moon hold (style.css,
 // about 2 KB, with the phone's 14 px floor for its lines): 132,990 B, the cap that plus about
-// 0.6 KB. PR 10 deletes the Hud's settings sheet (style.css and focus.css, about 11.1 KB) and adds
-// Ajustes as drawn (styles/screens/settings.css: the rail, the rows, sliders, switches, bindings,
-// the quality cards, the Experimental page, the pause overlay, per class; about 11.1 KB): 132,999 B,
-// the cap that plus about 0.6 KB, unchanged. PR 11 adds Ajustes' new rows (the "saved" card
-// under the rail, the language picker, the touch controls' size, opacity and mirrored side) and
-// reduced motion as a class (the player's choice over the system's): 134,441 B, the cap that plus
-// about 0.6 KB. It steps down to 70 KB once PR 15 deletes menu.css.
-// Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 135_000;
+// 0.6 KB. PR 12 adds the Salas (styles/screens/lobby.css: SALAS' tools and rows, mn-codecells, the
+// Sala, the QR sheet, per class, about 7.6 KB) minus the old lobby list and lobby screen of menu.css
+// and modes.css (about 2.6 KB): 133,989 B on its own, 138,173 B with PR 9. PR 10 deletes the Hud's
+// settings sheet (style.css and focus.css, about 11.1 KB) and adds Ajustes as drawn
+// (styles/screens/settings.css: the rail, the rows, sliders, switches, bindings, the quality cards,
+// the Experimental page, the pause overlay, per class; about 11.1 KB): 132,999 B on its own. PR 13
+// adds ENTRENAMIENTO, CLASIFICACIÓN and PERFIL (styles/screens/training.css, leaderboard.css and
+// profile.css, about 12.6 KB with their phone, TV and short layouts and the shared controls' type
+// roles there) and the training HUD's shapes, fold and tally (0.3 KB), minus the old training,
+// board, profile and tile rules of menu.css (4.8 KB), with a phone's sheet over its keyboard:
+// 141,232 B on its own. PR 12 and PR 10 together: 138,182 B; with PR 13 too: 146,398 B. PR 11 adds
+// Ajustes' new rows (the "saved" card under the rail, the language picker, the touch controls'
+// size, opacity and mirrored side) and reduced motion as a class (the player's choice over the
+// system's): 134,441 B on PR 10 alone; with PR 12 and PR 13: 147,901 B, the cap that plus about
+// 0.6 KB. It steps down to 70 KB once PR 15 deletes menu.css. Raising it is the owner's call,
+// recorded in the PR.
+const CSS_BUDGET = 148_500;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

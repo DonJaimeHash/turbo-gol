@@ -64,10 +64,26 @@ interface SideHandlers {
   navRight?: () => void;
 }
 
-export function onNavSide(el: HTMLElement, left: () => void, right: () => void): void {
+/**
+ * A field's own ▲ ▼ while it is being edited (components/codecells.ts: the cell's character steps
+ * through the alphabet): true when it took the press, else ▲ ▼ end the editing and move on.
+ */
+export interface EditStepHandlers {
+  navUp?: () => boolean;
+  navDown?: () => boolean;
+}
+
+export function onEditStep(el: HTMLElement, up: () => boolean, down: () => boolean): void {
+  const s = el as HTMLElement & EditStepHandlers;
+  s.navUp = up;
+  s.navDown = down;
+}
+
+/** `left` / `right` claim that arrow for `el`; null leaves it to the spatial pick (the board's first and last tab). */
+export function onNavSide(el: HTMLElement, left: (() => void) | null, right: (() => void) | null): void {
   const s = el as HTMLElement & SideHandlers;
-  s.navLeft = left;
-  s.navRight = right;
+  s.navLeft = left ?? undefined;
+  s.navRight = right ?? undefined;
 }
 
 export function isEditable(el: Element | null): boolean {
@@ -475,6 +491,9 @@ export class FocusNav {
         caretStep(cur, dir === 'left' ? -1 : 1);
         return true;
       }
+      const own = cur as HTMLElement & EditStepHandlers;
+      const stepped = dir === 'up' ? own.navUp?.() : own.navDown?.();
+      if (stepped === true) return true;
       setEditing(cur, false); // ↑ ↓ leave the field's editing and move on
     }
     const side = cur as HTMLElement & SideHandlers;

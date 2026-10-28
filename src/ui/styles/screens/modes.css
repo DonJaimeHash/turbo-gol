@@ -408,27 +408,7 @@ html[data-input='pad'] .mn-keys-pad {
   background-repeat: no-repeat;
 }
 
-/* ---- LOBBIES: today's list in the tab ---- */
-.mn-modes-lobbies {
-  flex: 1;
-  min-height: 0;
-  margin-top: 1rem;
-}
-
-.mn-modes-lobbies .mn-custom-bar {
-  margin-top: 0;
-}
-
-/* The list's own sizes (menu.css) up to the class's floor until PR 12 rebuilds it. */
-.mn-modes-lobbies .mn-field-label,
-.mn-modes-lobbies .mn-lobby-head,
-.mn-modes-lobbies .mn-lobbies-status {
-  font-size: var(--t-label);
-}
-
-.mn-modes-lobbies .mn-btn {
-  font-size: var(--t-small);
-}
+/* ---- SALAS: the tab's part is styles/screens/lobby.css (PR 12) ---- */
 
 /* ---- the action zone: aligned at the bottom, a panel ---- */
 .mn-modes-act {
