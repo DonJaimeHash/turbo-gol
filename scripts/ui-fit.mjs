@@ -428,7 +428,11 @@ try {
         for (const kind of FINAL_KINDS) {
           await page.eval(`(window.__final(${JSON.stringify(kind)}), true)`);
           await sleep(400);
-          // The first focus lands with the mount's frame: a slow one at 1920 x 1080 in a headless page.
+          // The first focus lands with the mount's frame (Menu.autoFocus: the next animation frame), a
+          // slow one at 1920 x 1080 in a headless page: SwiftShader draws the stadium on the CPU, and the
+          // first 1920 x 1080 page of a CI run waited past 2 s for it (8fa31c1, d36fbb5; 1.9 s on 2c11269).
+          // Two frames past the mount however long they take (10 s at most), then the focus.
+          await page.eval('new Promise((r) => { const t = setTimeout(() => r(false), 10_000); requestAnimationFrame(() => requestAnimationFrame(() => (clearTimeout(t), r(true)))); })');
           await page.until("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch')", 2_000, 50);
           await check(input, screen, at(kind), await page.eval("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch') ? [] : ['PLAY AGAIN is not focused: ' + (document.activeElement?.className ?? null)]"));
         }
