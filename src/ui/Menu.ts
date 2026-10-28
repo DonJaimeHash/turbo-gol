@@ -63,6 +63,7 @@ import './menu.css';
 import './styles/index.css';
 import { h, setChildren } from './dom';
 import { FocusMemory, FocusNav, heldOver, isEditable, isEditing, navKey, setEditing } from './nav';
+import { installKeyboardInset } from './keyboard';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
 import type { InputKind } from './device';
@@ -447,6 +448,8 @@ export class Menu {
       onFocus: (el, zone) => this.noteFocus(el, zone),
     });
     this.nav.install(this.root);
+    // A phone's keyboard over a form: the focused field stays above it (keyboard.ts).
+    installKeyboardInset(this.root);
     // Capture, before a field's own Enter (custom.ts JOIN, profile.ts sign-in): the fields' modes.
     this.root.addEventListener('keydown', (e) => this.onFieldKey(e), true);
     this.installTapGuard();

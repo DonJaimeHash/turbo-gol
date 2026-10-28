@@ -432,6 +432,11 @@ export default {
   'profile.tabSignIn': 'SIGN IN',
   'profile.tabRegister': 'CREATE ACCOUNT',
   'profile.tabRecover': 'RECOVER',
+  // A guest's hero (it opens the sign-up form) and its tag
+  'profile.registerFree': 'CREATE A FREE ACCOUNT',
+  'profile.registerSlot': '30 s',
+  // The link under the sign-in form
+  'profile.forgot': 'Forgot your password?',
   // Separator above the Google / Discord buttons
   'profile.or': 'or',
   // provider: Google or Discord
@@ -455,8 +460,6 @@ export default {
   'profile.resetPassword': 'RESET PASSWORD',
   // count: recovery codes still unused
   'profile.passwordReset': { one: 'Password changed. {count} code left.', other: 'Password changed. {count} codes left.' },
-  'profile.playAsGuest': 'PLAY AS A GUEST',
-  'profile.guestNote': 'Casual, custom lobbies and training need no account. Competitive and the leaderboard do.',
   'profile.guestName': 'Guest name',
   'profile.saveName': 'SAVE NAME',
   'profile.guestNameSaved': 'Guest name saved',
@@ -470,6 +473,27 @@ export default {
   'profile.abandonsBanned': 'Matches abandoned in 24 h: {count} · Competitive locked for {minutes} min',
   'profile.season': 'SEASON {season}',
   'profile.account': 'ACCOUNT',
+  // The folded account actions
+  'profile.accountSecurity': 'Account and security',
+  // A community node operator's section and its nodes
+  'profile.myServer': 'MY SERVER',
+  'profile.nodePending': 'Waiting for its first check',
+  'profile.nodeProbation': 'On trial: {count} of {total} matches',
+  'profile.nodeActive': 'Active',
+  'profile.nodeSuspended': 'Paused',
+  'profile.nodeBanned': 'Removed',
+  'profile.nodeOffline': 'offline',
+  'profile.nodeMatches': 'Matches hosted',
+  'profile.nodeVersion': 'Version',
+  'profile.nodeUpdate': '{version} · update it',
+  'profile.community': 'COMMUNITY',
+  // The Discord server speaks English
+  'profile.discord': 'Discord (in English)',
+  'profile.hostServer': 'Host a server',
+  'profile.source': 'Source code',
+  'profile.about': 'ABOUT',
+  // {protocol}: the online protocol's number
+  'profile.version': '{game} {version} · protocol {protocol}',
   'profile.rename': 'CHANGE NAME',
   'profile.changePassword': 'CHANGE PASSWORD',
   // For an account that signs in only with Google / Discord
@@ -697,13 +721,19 @@ export default {
   'board.colTier': 'Rank',
   // Column header: matches played
   'board.colGames': 'Matches',
-  // Column header: win rate
-  'board.colWinRate': 'Win %',
-  // Win-rate cell; {percent} is a whole number
-  'board.winRate': '{percent}%',
+  // The rating column
+  'board.colRating': 'MMR',
+  // A row for a screen reader
+  'board.rowLabel': '#{rank} {name}, {tier}, {mmr} MMR, {games} matches',
+  // The button that scrolls to your row (X)
+  'board.goToMe': 'GO TO MY POSITION',
+  // A tab's rank while placing ({played} of {total} placement matches)
+  'board.placementShort': 'Placement {played}/{total}',
+  // The board did not load (a button)
+  'board.failed': "Couldn't load it · RETRY",
   'board.empty': 'Nobody has finished placement in this playlist yet.',
-  'board.playPlacement': 'Play 5 placement matches to show up here.',
-  'board.signIn': 'Sign in to see your position.',
+  'board.playPlacement': 'Play your 5 placement matches',
+  'board.signIn': 'Sign in to see your position',
   // Footer: placed players in this playlist and the season number
   'board.total': { one: '{count} ranked player · Season {season}', other: '{count} ranked players · Season {season}' },
   // No tier yet (placement matches not finished)
@@ -1153,18 +1183,44 @@ export default {
   'training.screenTitle': 'Training',
   // Screen heading, uppercase
   'training.title': 'TRAINING',
-  // {reset} and {shots} are key names from the player's bindings, e.g. "Backspace / D-pad ↓" and "PgUp / PgDn (D-pad ← / D-pad →)"
-  'training.subtitle': 'The shot starts when you touch a control. {reset} resets the shot, {shots} switch shots.',
+  // The subtitle on a keyboard or a controller: {reset} and {car} are the live keys of that device, e.g. "Backspace", "F" or "D-pad ↓", "D-pad ↑"
+  'training.subKeys': '{reset} resets the shot · {car} resets the car',
+  // The subtitle on a touch screen (↺ is the training's reset button)
+  'training.subTouch': 'Tap ↺ to reset the shot',
   // Subtitle of the Free play tile
   'training.freePlayText': 'You, the ball and unlimited boost',
+  // Under the Free play hero's title
+  'training.freePlaySub': 'No clock',
+  // The Shooting tile's tag (the pack to start with)
+  'training.startHere': 'START HERE',
+  // A pack's level mark, for a screen reader ({level}: Beginner...)
+  'training.markDone': '{level}: passed',
+  'training.markTried': '{level}: best {best}/{total}',
+  'training.markNone': '{level}: not played',
+  // A level in the pack sheet
+  'training.packLine': { one: '{count} shot · {seconds} s per shot', other: '{count} shots · {seconds} s per shot' },
+  // The tile (and the sheet) with every control of the device in use
+  'training.howTo': 'How to play',
+  'training.howToSub': 'Every control',
+  'training.howKbm': 'Keyboard and mouse',
+  'training.howPad': 'Controller',
+  'training.howTouch': 'Touch',
+  'training.howResetShot': 'Reset the shot',
+  'training.howResetCar': 'Reset the car',
+  // The touch reset button, as drawn
+  'training.howResetTouch': '↺',
+  'training.howStick': 'Stick',
+  'training.howStickWhere': 'Drive and steer: the left half of the screen',
+  'training.howBoostSlide': 'Boost: slide from it to keep it on',
+  // Experimental free play's tile (accounts with Settings › Experimental on)
+  'training.labTitle': 'Experimental',
+  'training.tagLab': 'LAB',
   // Under the Shooting category
   'training.shootingText': 'Shoot at the rival goal',
   // Under the Saving category
   'training.savingText': 'Stop the shots at your goal',
   // Under the Aerials category
   'training.aerialText': 'High balls: jump and fly',
-  // Pack button: shot count and the seconds per shot
-  'training.packShots': { one: '{count} shot · {seconds} s', other: '{count} shots · {seconds} s' },
   // Best run: shots passed / shots in the pack
   'training.best': 'Best: {best}/{total}',
   'training.notPlayed': 'Not played',
@@ -1174,8 +1230,6 @@ export default {
   // shows it uppercased, with the tag), the preset picker and the button to the preset editor
   'training.expFreePlay': 'Experimental free play',
   'training.expFreePlayText': 'Free play with your own physics',
-  'training.tagExp': 'EXP',
-  'training.rules': 'Rules',
   'training.editPresets': 'Edit presets',
   // Pack category
   'training.catShooting': 'Shooting',
@@ -1281,10 +1335,10 @@ export default {
   'trainingHud.rulesLine': 'Rules: {name}',
   // Pack summary title
   'trainingHud.packComplete': 'Pack complete',
-  // Pack summary button: play the pack again
-  'trainingHud.retryPack': 'Retry pack',
-  // Pack summary button
-  'trainingHud.backToMenu': 'Back to menu',
+  // The pack summary's buttons
+  'trainingHud.again': 'AGAIN',
+  'trainingHud.nextLevel': 'NEXT LEVEL',
+  'trainingHud.toTraining': 'TRAINING',
   // Key hints in the panel, one line each. {key} is a key/button name and is not translated. Keep the spacing.
   'trainingHud.keyResetBall': '{key}  reset ball',
   'trainingHud.keyResetCar': '{key}  reset car',
@@ -1295,7 +1349,15 @@ export default {
   // {prev} and {next} are key/button names
   'trainingHud.keyPrevNext': '{prev} / {next}  previous / next shot',
   // Key hints under the pack summary. The {...} are key/button names and are not translated. Keep the spacing.
-  'trainingHud.summaryHint': '{accept} / {reset}  retry pack   ·   {back}  back to menu   ·   {prev} / {next}  pick a shot',
+  'trainingHud.summaryHint': '{reset}  again   ·   {back}  training   ·   {prev} / {next}  pick a shot',
+  // The same with a controller (its D-pad walks the buttons)
+  'trainingHud.summaryHintPad': '{reset}  again   ·   {back}  training',
+  // The run's hits and misses under the shot dots
+  'trainingHud.tally': '✓ {hits}  ·  ✕ {misses}',
+  // The panel's hints on a touch screen
+  'trainingHud.touchResetAll': '{key}  reset car and ball',
+  'trainingHud.touchPausePack': 'Pause: previous / next shot',
+  'trainingHud.touchPauseFree': 'Pause: unlimited boost',
   // Panel: current shot number out of the pack's shots, then the shot's name (training.shot* keys)
   'trainingHud.shot': 'Shot {index} / {total}  ·  {name}',
   // Panel: tries at the current shot so far
