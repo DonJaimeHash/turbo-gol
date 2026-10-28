@@ -45,6 +45,19 @@ export default {
   'theme.harbour-night': 'Night harbour',
   'theme.canyon-sunset': 'Red canyon',
   'theme.alpine-day': 'Alpine valley',
+  // Cosmetic cars (src/game/cosmetics.ts): the garage and the shop. The names are invented proper
+  // names, Spanish words kept as they are (the pampas wind, the capybara, the condor, the southern
+  // lapwing); each *Desc is the car's one line under its name
+  'car.dune': 'Dune',
+  'car.duneDesc': 'Bubble canopy, roll hoop and knobby tyres: the all-rounder',
+  'car.pampero': 'Pampero',
+  'car.pamperoDesc': 'Low and sharp, like the cold wind of the pampas',
+  'car.carpincho': 'Carpincho',
+  'car.carpinchoDesc': 'Round, sturdy and unflappable, like the capybara',
+  'car.condor': 'Cóndor',
+  'car.condorDesc': 'Long and wide, built to glide',
+  'car.tero': 'Tero',
+  'car.teroDesc': 'A compact rally hatch, loud and always on the alert',
   'tier.bronze': 'Bronze',
   'tier.silver': 'Silver',
   'tier.gold': 'Gold',
@@ -146,9 +159,6 @@ export default {
   'update.reload': 'RELOAD NOW',
   'update.later': 'NOT NOW',
   'update.pill': 'UPDATE TO PLAY',
-  // GARAGE section until the cars arrive
-  'garage.soon': 'COMING SOON',
-  'garage.soonText': 'Cars and stadiums, all in one place.',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   // Rank badge tooltip and rating card while placement matches are still left
@@ -197,6 +207,62 @@ export default {
   // Screen-reader names of the plate's two buttons; {rank} is a rank ('Gold II · 2v2') or home.unranked
   'home.plateProfile': 'Profile: {name}, {rank}',
   'home.plateGarage': 'Garage: your car is {car}',
+
+  // Garage (src/ui/screens/garage.ts): the cars and the hosts' shop. Host points are earned only by
+  // running a community server (nodes/docs/RECOMPENSAS.md): never bought, won by playing or traded.
+  // Never state a rate (points per minute or per match): it depends on verification and the region.
+  'garage.heading': 'GARAGE',
+  'garage.subtitle': 'Every car drives the same: only the look changes',
+  // A car card's state; {points} is a formatted number of host points
+  'garage.stateEquipped': 'Equipped',
+  'garage.stateOwned': 'Owned',
+  'garage.stateClaimable': 'Claim · {points} pts',
+  'garage.stateLocked': 'Locked · {points} pts',
+  // A car whose body is still being built: it cannot be claimed yet
+  'garage.stateSoon': 'Coming soon',
+  // Shown over the car on screen when it is not the one the player drives (a look only)
+  'garage.previewTag': 'PREVIEW',
+  'garage.equip': 'EQUIP',
+  // {points} is the car's price, formatted
+  'garage.claim': 'CLAIM FOR {points} PTS',
+  // Under the car the player drives
+  'garage.equippedNow': 'You drive this car',
+  // An owned car whose body is not built yet draws the default car
+  'garage.bodySoon': 'Its body is on the way: until then it looks like the Dune',
+  // Why the car on screen cannot be claimed; {cost} and {balance} are formatted numbers
+  'garage.needSignIn': 'Sign in to collect cars',
+  'garage.needPoints': 'You need {cost} host points; you have {balance}',
+  'garage.needFrozen': 'Your claims are paused',
+  'garage.needMatches': 'Your server needs a verified match first',
+  'garage.needUnavailable': 'It cannot be claimed right now',
+  'garage.needLoading': 'Loading…',
+  'garage.soonText': 'Coming soon: its body is still being built',
+  // Claim confirmation; {car} is the car's name, {cost} {balance} {after} formatted numbers
+  'garage.claimTitle': 'Claim {car}?',
+  'garage.claimText': '{car} costs {cost} host points: your balance goes from {balance} to {after}.',
+  'garage.claimConfirm': 'CLAIM',
+  'garage.claimCancel': 'CANCEL',
+  // Toasts; {car} is the car's name
+  'garage.claimed': '{car} is yours',
+  'garage.equipped': '{car} equipped',
+  // The host points panel; {points}, {earned} and {spent} are formatted numbers
+  'garage.wallet': 'HOST POINTS',
+  'garage.points': '{points} pts',
+  'garage.earnedSpent': 'Earned {earned} · Spent {spent}',
+  'garage.frozenVerification': 'Claims paused: a match on your server failed verification. A maintainer will review it.',
+  'garage.frozen': 'Claims paused while a maintainer reviews your account',
+  'garage.loading': 'Loading your host points…',
+  'garage.retry': 'RETRY',
+  // How points are earned: shown to an account with none to spend
+  'garage.hostTitle': 'How to earn host points',
+  'garage.hostText': 'Host points come only from running a community server: every verified match it hosts adds some. Playing or trading never earns them.',
+  'garage.hostTesting': 'Community servers are in testing: ask on Discord if you want to run one.',
+  // Links: the community servers' docs, the Discord server
+  'garage.hostDocs': 'HOW TO RUN A SERVER',
+  'garage.hostDiscord': 'ASK ON DISCORD',
+  // For a guest (the button under it is home.signIn)
+  'garage.guestTitle': 'Collect cars',
+  'garage.guestText': 'New cars are claimed with host points, which accounts earn by running a community server. Sign in or create an account to see yours.',
 
   // Inicio's mode tiles: a title, a subtitle (PC) and its short form (phone, tablet, TV), a corner tag
   'modes.casual': 'CASUAL',
@@ -721,6 +787,16 @@ export default {
   'error.account.tv_code_wrong': "That code doesn't exist: check it on the TV",
   'error.account.tv_code_expired': 'The code expired: get a new one on the TV',
   'error.account.tv_code_used': 'That code was already used',
+  // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
+  'error.account.not_owned': 'That car is not yours yet',
+  'error.account.bad_car': 'Unknown car',
+  // Claiming with host points (the garage)
+  'error.account.unknown_item': 'That item does not exist',
+  'error.account.bad_item': 'That item does not exist',
+  'error.account.not_available': 'That item cannot be claimed yet',
+  'error.account.frozen': 'Your claims are paused until a maintainer reviews your server',
+  'error.account.insufficient': 'Not enough host points',
+  'error.account.requires_matches': 'Your server needs a verified match first',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',

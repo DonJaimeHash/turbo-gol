@@ -14,12 +14,15 @@
  *   POST /nodes/tokens           { region, name? } with x-operator-id / x-operator-name (an account the Worker found in
  *                                NODE_TRUSTED_OPERATORS; checked again here) -> a one-time token and its install line;
  *                                10 per account per day
- *   GET  /nodes/mine             x-operator-id -> that operator's nodes
+ *   GET  /nodes/mine             x-operator-id -> that operator's nodes and its rewards (Ledger.summary)
  *   GET  /nodes/admin/nodes      the maintainers' routes, x-operator-id / x-operator-name as for tokens (checked
  *   POST /nodes/admin/status     again here): every node in full; { nodeId, status, reason } (ControlPlane.setStatus);
  *   POST /nodes/admin/drain      { nodeId, reason } (one-way: the node comes back with a restart on its machine);
  *   POST /nodes/admin/update     channel.json read again and every node below its minimum told to update;
- *   POST /nodes/admin/reprobe    { nodeId }: its /healthz checked now. Each call is an ALERT line naming who made it
+ *   POST /nodes/admin/reprobe    { nodeId }: its /healthz checked now;
+ *   POST /nodes/admin/grant      { account, item }, /revoke { account, item }, /unfreeze { account }: an account's
+ *                                items and wallet, passed on to AccountsDO (/host-grant, -revoke, -unfreeze). Each
+ *                                call is an ALERT line naming who made it
  *   POST /internal/place | /internal/rejoin | /internal/leave, GET /internal/status: the matchmaker's (nodeApi.ts)
  *   POST /internal/health        the cron's (index.ts scheduled, every 5 minutes): /healthz of every trusted wss
  *                                node online, or in service and seen by the object in the last hour, 5 s each
@@ -28,7 +31,10 @@
  * State (nodeStore.ts, SQLite): the tokens, nodes and matches the control plane writes through,
  * and the outbox of settled matches, written in the transaction that settles each one and
  * delivered to AccountsDO and the matchmakers by the alarm (nodeOutcome.ts). The rewards ledger
- * is kept in memory only (stage 1): only trusted nodes host, and they earn nothing.
+ * too: a scored match's entry and its operator's totals in that same transaction (with the
+ * outbox's /host-credit to the operator's account, and /host-freeze after a failed verification),
+ * its repeat notes as they come; Ledger.restore reads them back at every start. Only community
+ * nodes earn: a project node's matches have no entry (ControlPlane.applyVerdict).
  *
  * A start without sockets is cold (a deploy drops every socket): the control plane gives its nodes
  * the restart grace before it voids anything for silence. A wake after a hibernation keeps the
@@ -65,6 +71,9 @@ import { compareVersions } from '../../nodes/shared/controlProtocol';
 import type { HeartbeatData, NodeStatus, RegisterAnswer, RegisterRequest, ReleaseChannel } from '../../nodes/shared/controlProtocol';
 import { importPrivateKey, sign, verifyWith } from '../../nodes/shared/edcrypto';
 import { REGIONS, isRegion } from '../../src/net/account';
+import { seatCar } from '../../src/net/cosmetics';
+import { CATALOG, catalogItem } from '../../nodes/control-plane/shop';
+import { accountsCall } from './accountRoutes';
 import { checkInternal } from './auth';
 import { carriesPhysics, error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
@@ -152,7 +161,9 @@ export function parsePlace(v: unknown): PlaceRequest | null {
   for (const h of b.humans as unknown[]) {
     const x = (typeof h === 'object' && h !== null ? h : {}) as Record<string, unknown>;
     if (!isStr(x.playerId, 64) || !isStr(x.name, 32)) return null;
-    humans.push({ playerId: x.playerId, name: x.name, ...(x.account === true ? { account: true } : {}), ...(isNum(x.accountAgeDays) ? { accountAgeDays: x.accountAgeDays } : {}) });
+    // The car stays with the match (MatchEntry.humans: the rejoin's `cars`); one the catalog does not know is dropped.
+    const car = seatCar(x.car);
+    humans.push({ playerId: x.playerId, name: x.name, ...(x.account === true ? { account: true } : {}), ...(isNum(x.accountAgeDays) ? { accountAgeDays: x.accountAgeDays } : {}), ...(car !== undefined ? { car } : {}) });
   }
   const out: PlaceRequest = { mode: b.mode, region: b.region, ranked: b.ranked, matchLengthSeconds: b.matchLengthSeconds, humans };
   if (b.teams !== undefined) {
@@ -310,6 +321,9 @@ export class NodeRegistryDO extends DurableObject<Env> {
         if (note) this.note([note]);
       });
       registry.restore(rows);
+      // The rewards ledger as the store kept it: the repeat decay, the leaderboard and the summaries go on after a deploy.
+      const ledger = new Ledger({ onNote: (n) => store.ledgerNote(n) });
+      ledger.restore(store.ledgerSnapshot(Date.now()), Date.now());
       const cp = new ControlPlane({
         controlPrivateKey: env.NODE_CONTROL_PRIVATE_KEY,
         controlPublicKey: env.NODE_CONTROL_PUBLIC_KEY,
@@ -319,7 +333,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
         // Whatever R2 holds: the control plane checks it at every use and keeps the last good one.
         channel: () => this.channel as ReleaseChannel,
         registry,
-        ledger: new Ledger(),
+        ledger,
         replays: {
           put: async (id, bytes) => {
             await env.NODE_REPLAYS.put(id, bytes);
@@ -750,6 +764,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
       {
         operator: { id, trusted: cp.registry.isTrusted(id) },
         nodes: cp.registry.byOperator(id).map((n) => mineView(cp, n)),
+        // The ledger's view (30 days, all time): the wallet to spend it is the account's (GET /api/me/shop).
+        rewards: cp.ledger.summary(id, Date.now()),
       },
       200,
       { 'cache-control': 'no-store' },
@@ -777,7 +793,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!b || !isHex(b.matchId, 64) || !isStr(b.playerId, 64)) return error(400, 'bad_request');
     if (!this.keyOk) return error(REJOIN_STATUS.offline, 'offline');
     const r = await cp.rejoin(b.matchId, b.playerId);
-    return r.ok ? json({ ticket: r.ticket, wsUrl: r.wsUrl } satisfies RejoinTicket) : error(REJOIN_STATUS[r.code], r.code);
+    return r.ok ? json({ ticket: r.ticket, wsUrl: r.wsUrl, ...(r.cars ? { cars: r.cars } : {}) } satisfies RejoinTicket) : error(REJOIN_STATUS[r.code], r.code);
   }
 
   private async leave(request: Request, cp: ControlPlane): Promise<Response> {
@@ -857,6 +873,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (request.method === 'GET' && what === 'nodes') return this.adminNodes(cp, actor);
     if (request.method !== 'POST') return error(404, 'not_found');
     if (what === 'update') return await this.adminUpdate(cp, actor);
+    if (what === 'grant' || what === 'revoke' || what === 'unfreeze') return await this.adminInventory(request, actor, what);
     if (what !== 'status' && what !== 'drain' && what !== 'reprobe') return error(404, 'not_found');
     const b = await readJson<{ nodeId?: unknown; status?: unknown; reason?: unknown }>(request);
     if (!b || !isHex(b.nodeId, 16)) return error(400, 'bad_node_id', 'nodeId: the 16 hex characters of a node');
@@ -934,6 +951,25 @@ export class NodeRegistryDO extends DurableObject<Env> {
     const below = ch ? cp.registry.list().filter((n) => n.online && compareVersions(n.build.version, ch.minimum) < 0) : [];
     this.audit(`ALERT admin ${actor}: the nodes were told the channel again (${ch ? `stable ${ch.stable}, minimum ${ch.minimum}` : 'no valid channel'}): ${below.length} online below its minimum`);
     return json({ channel: ch, below: below.map((n) => ({ nodeId: n.nodeId, name: n.name, version: n.build.version })) });
+  }
+
+  /**
+   * POST /nodes/admin/grant { account, item }, /revoke { account, item }, /unfreeze { account }: an
+   * account's items and wallet in AccountsDO (accountStore.ts host_claims, host_freeze), each an
+   * ALERT naming who did it and what AccountsDO answered (audit). A grant is a claim that costs
+   * nothing, whatever the item's status: a test account's car, or what a mistake took; a revoke
+   * gives a claim's cost back; an unfreeze lets the claims of an operator under review go on. The
+   * answer is AccountsDO's, as it is.
+   */
+  private async adminInventory(request: Request, actor: string, what: 'grant' | 'revoke' | 'unfreeze'): Promise<Response> {
+    const b = await readJson<{ account?: unknown; item?: unknown }>(request);
+    if (!b || !isHex(b.account, 16)) return error(400, 'bad_account', 'account: the 16 hex characters of an account id');
+    const item = what === 'unfreeze' ? null : typeof b.item === 'string' ? catalogItem(b.item) : undefined;
+    if (item === undefined) return error(400, 'unknown_item', `item: one of ${CATALOG.map((i) => i.id).join(', ')}`);
+    const res = await accountsCall(this.env, '/host-' + what, item === null ? { userId: b.account } : { userId: b.account, item: item.id });
+    const text = await res.text();
+    this.audit(`ALERT admin ${actor}: ${what}${item ? ` ${item.id}` : ''} for account ${b.account} -> ${res.status} ${text.slice(0, 120)}`);
+    return new Response(text, { status: res.status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
   }
 
   /**

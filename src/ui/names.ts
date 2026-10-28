@@ -4,6 +4,7 @@
  * translated (src/i18n.ts).
  */
 import { t } from '../i18n';
+import type { CarId } from '../game/cosmetics';
 import type { Playlist, RegionId } from '../net/account';
 import type { Tier } from '../net/rating';
 import type { Difficulty } from '../render/Hud';
@@ -31,6 +32,16 @@ export function qualityName(q: Quality): string {
 /** A stadium theme: 'Night harbour', 'Red canyon'... */
 export function themeName(id: ThemeId): string {
   return t(`theme.${id}`);
+}
+
+/** A cosmetic car (src/game/cosmetics.ts): 'Dune', 'Pampero'... */
+export function carName(id: CarId): string {
+  return t(`car.${id}`);
+}
+
+/** A cosmetic car's one line under its name. */
+export function carDescription(id: CarId): string {
+  return t(`car.${id}Desc`);
 }
 
 const ROMAN = ['I', 'II', 'III'];

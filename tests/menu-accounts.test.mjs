@@ -629,3 +629,45 @@ test('AccountClient experimental calls: a refresh that hands back another accoun
   await assert.rejects(a.setExperimental(true), (e) => e.code === 'unauthorized');
   assert.deepEqual(sent, [], "Tomi's switch never reaches Bea's account");
 });
+
+test("AccountClient cars and the hosts' shop: Bearer, paths and bodies; a car pick adopts the session it answers; refusals carry the player's text", async () => {
+  let carStatus = 200;
+  const srv = fakeServer({
+    '/api/me/items': () => res(200, { items: ['host-badge', 'pampero'], car: 'pampero', cars: ['dune', 'pampero'] }),
+    '/api/me/car': (b) => (carStatus === 200 ? res(200, { ...SESSION('Tomi', Date.now() + 3600_000), session: 'jwt-Tomi-2', car: b.car }) : res(409, { error: 'not_owned', message: 'Ese auto no es tuyo todavía' })),
+    '/api/me/shop': () => res(200, { items: [{ id: 'pampero', kind: 'car', name: 'Pampero', description: '', cost: 1500, status: 'soon', owned: true, claimable: false, nameKey: 'car.pampero' }], wallet: { earned: 40, spent: 0, balance: 40, frozen: null } }),
+    '/api/me/shop/claim': (b) => (b.item === 'tero' ? res(409, { error: 'insufficient', message: 'insufficient' }) : res(200, { item: b.item, claimed: true, wallet: { earned: 1600, spent: 1500, balance: 100, frozen: null }, items: [b.item] })),
+    '/api/auth/refresh': () => res(401, { error: 'bad_refresh' }),
+  });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
+  await assert.rejects(a.fetchItems(), (e) => e instanceof AC.AccountError && e.code === 'unauthorized', 'a guest: no request');
+  assert.equal(srv.calls.length, 0);
+  a.account = SESSION('Tomi', Date.now() + 3600_000);
+  assert.deepEqual(await a.fetchItems(), { items: ['host-badge', 'pampero'], car: 'pampero', cars: ['dune', 'pampero'] });
+  assert.deepEqual(srv.calls.at(-1), { path: '/api/me/items', method: 'GET', body: undefined, headers: srv.calls.at(-1).headers });
+  assert.equal(srv.calls.at(-1).headers.authorization, 'Bearer jwt-Tomi');
+  let changes = 0;
+  a.subscribe(() => changes++);
+  const s = await a.selectCar('pampero');
+  assert.deepEqual(srv.calls.at(-1).body, { car: 'pampero' });
+  assert.equal(s.car, 'pampero');
+  assert.equal(a.account.session, 'jwt-Tomi-2', 'the fresh session is the one the next queue carries');
+  assert.equal(a.account.car, 'pampero');
+  assert.equal(changes, 1, 'the listeners (the Garage) hear of it');
+  carStatus = 409;
+  await assert.rejects(a.selectCar('tero'), (e) => e instanceof AC.AccountError && e.code === 'not_owned' && e.status === 409 && e.message === 'That car is not yours yet');
+  assert.equal(a.account.car, 'pampero', 'refused: nothing adopted');
+  const shop = await a.fetchShop();
+  assert.equal(shop.items[0].owned, true);
+  assert.deepEqual(shop.wallet, { earned: 40, spent: 0, balance: 40, frozen: null });
+  const c = await a.claimItem('condor');
+  assert.deepEqual(srv.calls.at(-1).body, { item: 'condor' });
+  assert.deepEqual(c, { item: 'condor', claimed: true, wallet: { earned: 1600, spent: 1500, balance: 100, frozen: null }, items: ['condor'] });
+  await assert.rejects(a.claimItem('tero'), (e) => e instanceof AC.AccountError && e.code === 'insufficient' && e.message === 'Not enough host points');
+  // A session whose car this page does not know: no car (the default one).
+  a.account = null;
+  srv.calls.length = 0;
+  const odd = new AC.AccountClient({ fetchFn: fakeServer({ '/api/auth/login': () => res(200, { ...SESSION('Tomi', Date.now() + 3600_000), car: 'batmobile' }) }).fetchFn, storage: null });
+  await odd.login('Tomi', 'correct horse battery');
+  assert.equal('car' in odd.account, false);
+});

@@ -266,3 +266,29 @@ test('node tickets: audience, match, expiry, wrong key', async () => {
   const forged = parts[0] + '.' + Buffer.from(JSON.stringify({ ...c, slot: 0 })).toString('base64url') + '.' + parts[2];
   assert.equal(await verifyNodeTicket(pub, forged, 'm'.repeat(32), 'nodeA', now), null, 'tampered claims');
 });
+
+test('ledger restore: what the store kept (entries, notes, totals) rebuilds the same ledger: totals, leaderboard, summaries and the 24 h repeat decay', () => {
+  const notes = [];
+  const L = new Ledger({ onNote: (n) => notes.push(n) });
+  const five = 5 * 60_000;
+  const p = (id) => ({ playerId: id, connectedMs: five, account: true, accountAgeDays: 30 });
+  const base = { nodeId: 'n1', operatorId: 'op', region: 'SA', mode: '1v1', ranked: false, verified: true, endReason: 'rules', tickLagP99Ms: 2, underrunRate: 0 };
+  const DAY = 24 * 60 * 60_000;
+  const t0 = 100 * DAY;
+  const old = L.record({ ...base, matchId: 'old', at: t0 - 31 * DAY, players: [p('x'), p('y')] }, 1);
+  const e1 = L.record({ ...base, matchId: 'm1', at: t0, players: [p('p1'), p('p2')] }, 1.5);
+  L.noteGroup('op', ['p2', 'p1', 'op'], t0 + 1);
+  L.noteGroup('op', ['op'], t0 + 2); // nobody counted: no note
+  assert.deepEqual(notes, [{ operatorId: 'op', playerIds: ['p2', 'p1', 'op'], at: t0 + 1 }]);
+  const R = new Ledger();
+  R.restore({ entries: [e1, old], notes, totals: [{ operatorId: 'op', earned: L.earned('op'), verified: L.verifiedMatches('op') }] }, t0 + 10);
+  assert.equal(R.earned('op'), L.earned('op'));
+  assert.equal(R.verifiedMatches('op'), 2);
+  assert.deepEqual(R.leaderboard(t0 + 10), L.leaderboard(t0 + 10));
+  assert.deepEqual(R.summary('op', t0 + 10), L.summary('op', t0 + 10));
+  assert.deepEqual(R.recent(t0 + 10).map((e) => e.matchId), ['m1'], 'past the window: dropped (its points stay in the totals)');
+  const next = { ...base, matchId: 'm2', at: t0 + 20, players: [p('p1'), p('p2')] };
+  assert.equal(R.record(next, 1).repeat, L.record(next, 1).repeat, 'the same decay');
+  assert.equal(R.record({ ...next, matchId: 'm3', at: t0 + 30 }, 1).repeat, 1 / 4);
+  assert.equal(R.record({ ...next, matchId: 'm4', at: t0 + DAY + 25 }, 1).repeat, 1 / 2, 'a day after the first ones only m3 is still in the window');
+});

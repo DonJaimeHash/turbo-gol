@@ -1129,3 +1129,49 @@ test('Worker /api/leave passes connected: false on to the matchmaker, and nothin
   );
   assert.equal(w.nodes.calls.length, 0, 'the matchmaker calls the node, not the Worker');
 });
+
+// ---- cosmetic cars on node matches (src/net/cosmetics.ts) ----------------------------------------------
+
+test("a node match's cars: the placement takes each human's car, account and age (the control plane keeps them; the node's assignment never has them), the result carries the cars by slot; none at all when every seat drives the default", async () => {
+  const h = await makeMm();
+  const seatA = { car: 'tero', account: true, accountAgeDays: 12.7 };
+  assert.equal((await h.join(A, 'server', '1v1', seatA)).json.status, 'waiting');
+  const qb = await h.join(B, 'server', '1v1', { car: 'not-a-car', account: true });
+  const qa = await h.join(A, 'server', '1v1', seatA);
+  const place = h.nodes.of('/internal/place')[0].body;
+  assert.deepEqual(place.humans, [
+    { playerId: A, name: 'P-a1b2', account: true, accountAgeDays: 12, car: 'tero' },
+    { playerId: B, name: 'P-0123', account: true },
+  ]);
+  assert.deepEqual(qa.json.cars, ['tero', null], 'by slot (the placement put A in slot 0)');
+  assert.deepEqual(qb.json.cars, qa.json.cars, 'every seat gets the whole match');
+  assert.equal(qa.json.node, true);
+  await h.call('/release', { matchId: qa.json.matchId, playerIds: [A, B] });
+  // Nobody on another car: the result is exactly what it was before cars.
+  const [pa] = await h.pair(A, B);
+  assert.equal('cars' in pa.json, false);
+  assert.deepEqual(Object.keys(pa.json).sort(), ['matchId', 'node', 'status', 'ticket', 'wsUrl']);
+});
+
+test("Worker /api/rejoin of a node match passes the match's cars on; a `cars` of another shape is dropped and the ticket still counts", async () => {
+  const P = 'c0ffee00c0ffee00'; // its own rejoin budget (10 a minute per player)
+  const token = await tokenOf(P);
+  const id = hex64();
+  let w = workerEnv();
+  w.nodes.rejoin = (body) => ({ body: { ticket: 'again.' + body.playerId, wsUrl: `${NODE_URL}/m/${body.matchId}`, cars: [null, 'condor'] } });
+  let r = await post(w.env, '/api/rejoin', { matchId: id }, token);
+  assert.deepEqual(r.json, { status: 'matched', matchId: id, ticket: 'again.' + P, wsUrl: `${NODE_URL}/m/${id}`, node: true, cars: [null, 'condor'] });
+  w = workerEnv();
+  w.nodes.rejoin = (body) => ({ body: { ticket: 't', wsUrl: `${NODE_URL}/m/${body.matchId}`, cars: ['x'] } });
+  r = await post(w.env, '/api/rejoin', { matchId: id }, token);
+  assert.equal(r.status, 200);
+  assert.equal('cars' in r.json, false);
+  const url = `${NODE_URL}/m/x`;
+  for (const junk of [['x'], 'tero', [1, 2], Array(7).fill(null), { 0: 'tero' }]) assert.deepEqual(API.rejoinTicketOf({ ticket: 't', wsUrl: url, cars: junk }), { ticket: 't', wsUrl: url }, JSON.stringify(junk));
+  assert.deepEqual(API.rejoinTicketOf({ ticket: 't', wsUrl: url, cars: ['tero', null] }), { ticket: 't', wsUrl: url, cars: ['tero', null] });
+  assert.equal(API.rejoinTicketOf({ ticket: 't', wsUrl: '/m/x', cars: ['tero'] }), null, 'cars never make a ticket of what is none');
+  // A queue answer from the matchmaker keeps its cars too.
+  const onNode = workerEnv({ joinAnswer: { status: 'matched', matchId: id, ticket: 'n', wsUrl: `${NODE_URL}/m/${id}`, node: true, cars: ['tero', null] } });
+  r = await post(onNode.env, '/api/queue', { mode: '1v1', kind: 'server' }, token);
+  assert.deepEqual(r.json.cars, ['tero', null]);
+});

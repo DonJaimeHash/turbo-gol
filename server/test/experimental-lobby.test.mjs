@@ -2,7 +2,8 @@
 // that comes with them: "what matters for P2P and ranked matches is the DEFAULT physics; the
 // experimental counts for nothing". Covered here:
 //   - LobbyDO: the rules in the settings (strict, P2P only), every guest gate (create, admit, the
-//     socket upgrade, settings, start), the summary's EXP flag, the /custom body;
+//     socket upgrade, settings, start), the summary's EXP flag, the /custom body (and, beside the
+//     rules, the cosmetic car each member's seat keeps);
 //   - the Worker: a guest's lobby with rules (403 account_required), the casual and ranked queues
 //     never take rules (400 experimental_lobby_only);
 //   - the standard-physics-only paths refuse rules whoever sends them: MatchDO /internal/create,
@@ -196,12 +197,12 @@ function fakeNs(handler) {
 
 const jti = () => Array.from({ length: 32 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
 
-/** A LobbyDO created by `host` with `settings`; returns helpers for admits, sockets and messages. */
-async function makeLobby(settings, host = { playerId: 'host1', name: 'Ana', guest: false }) {
+/** A LobbyDO created by `host` with `settings` (`env` adds bindings: ACCOUNTS); returns helpers for admits, sockets and messages. */
+async function makeLobby(settings, host = { playerId: 'host1', name: 'Ana', guest: false }, env = {}) {
   const ctx = new FakeLobbyCtx();
   const mm = fakeNs((path, body) => (path === '/custom' ? { results: Object.fromEntries(body.members.map((m) => [m.playerId, { status: 'matched', kind: 'p2p', roomId: 'r', ticket: 't', wsUrl: '/room/r' }])) } : { ok: true }));
   const dir = fakeNs(() => ({ ok: true }));
-  const lobby = new L.LobbyDO(ctx, { JWT_SECRET: SECRET, MATCHMAKER: mm.ns, LOBBY_DIR: dir.ns });
+  const lobby = new L.LobbyDO(ctx, { JWT_SECRET: SECRET, MATCHMAKER: mm.ns, LOBBY_DIR: dir.ns, ...env });
   const secret = await internalSecret(SECRET);
   const post = async (path, body) => {
     const res = await lobby.fetch(new Request('https://lobby' + path, { method: 'POST', headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' }, body: JSON.stringify(body) }));
@@ -295,6 +296,72 @@ test('LobbyDO: the start hands the rules to the matchmaker (/custom physics); wi
   await plain.upgrade('acct2');
   await plain.send(p, { t: 'start' });
   assert.equal(plain.mm.calls.find((c) => c.path === '/custom').body.physics, null);
+});
+
+test("LobbyDO (cosmetic cars, not rules): each member's seat keeps the car its admit brought; the state shows it, the start hands it to /custom, a fresh admit takes the new one", async () => {
+  const h = await makeLobby({ name: 'Sala', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 }, { playerId: 'host1', name: 'Ana', guest: false, car: 'tero' });
+  const host = (await h.upgrade('host1')).ws;
+  assert.equal((await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false, car: 'pampero' })).status, 200);
+  const b = (await h.upgrade('acct2')).ws;
+  assert.equal((await h.post('/internal/admit', { playerId: 'guest3', name: 'Caro', guest: true, car: 'ferrari' })).status, 200);
+  await h.upgrade('guest3');
+  const members = () => host.of('state').at(-1).lobby.members.map((m) => [m.name, m.car ?? null]);
+  assert.deepEqual(members(), [['Ana', 'tero'], ['Beto', 'pampero'], ['Caro', null]], 'a junk car is dropped');
+  // Beto picked another car and came back through a fresh admit (another tab).
+  await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false, car: 'condor' });
+  await h.upgrade('acct2');
+  assert.deepEqual(members()[1], ['Beto', 'condor']);
+  await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false });
+  await h.upgrade('acct2');
+  assert.deepEqual(members()[1], ['Beto', null], 'back on the default car');
+  await h.send(host, { t: 'start' });
+  const custom = h.mm.calls.find((c) => c.path === '/custom');
+  assert.deepEqual(custom.body.members.map((m) => [m.playerId, m.car ?? null]), [['host1', 'tero'], ['acct2', null], ['guest3', null]]);
+  assert.equal(b.of('match').length, 0, 'the replaced socket gets nothing');
+});
+
+test('LobbyDO (cosmetic cars): each start reads the signed-in members\' cars again from AccountsDO (a pick or a revoke since the admit applies); no answer in time keeps the admits\' cars', async () => {
+  const SETTINGS = { name: 'Sala', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 };
+  let answer = { cars: { host1: 'dune', acct2: 'condor', guest3: 'tero' } };
+  const accounts = fakeNs((path) => (typeof answer === 'function' ? answer(path) : answer));
+  const h = await makeLobby(SETTINGS, { playerId: 'host1', name: 'Ana', guest: false, car: 'tero' }, { ACCOUNTS: accounts.ns });
+  const host = (await h.upgrade('host1')).ws;
+  await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false, car: 'pampero' });
+  await h.upgrade('acct2');
+  await h.post('/internal/admit', { playerId: 'guest3', name: 'Caro', guest: true });
+  await h.upgrade('guest3');
+  await h.post('/internal/admit', { playerId: 'acct4', name: 'Dani', guest: false, car: 'carpincho' });
+  await h.upgrade('acct4');
+  await h.send(host, { t: 'start' });
+  // Ana's tero was revoked (dune now), Beto equipped condor in the garage, Dani's account is gone
+  // (left out: the default car); a guest is never asked for, whatever an answer says of it.
+  assert.deepEqual(accounts.calls.map((c) => [c.path, c.body.userIds]), [['/equipped', ['host1', 'acct2', 'acct4']]]);
+  const custom = (n) => h.mm.calls.filter((c) => c.path === '/custom')[n].body.members.map((m) => [m.playerId, m.car ?? null]);
+  assert.deepEqual(custom(0), [['host1', null], ['acct2', 'condor'], ['guest3', null], ['acct4', null]]);
+  assert.deepEqual(host.of('state').at(-1).lobby.members.map((m) => [m.name, m.car ?? null]), [['Ana', null], ['Beto', 'condor'], ['Caro', null], ['Dani', null]], 'the state shows them too');
+  // Next match: AccountsDO is down (a 500, then a hang): the cars stay as the last start left them.
+  for (const ws of h.ctx.getWebSockets()) await h.send(ws, { t: 'back' });
+  answer = () => new RealResponse('{}', { status: 500 });
+  await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false, car: 'pampero' });
+  await h.upgrade('acct2');
+  await h.send(host, { t: 'start' });
+  assert.deepEqual(custom(1), [['host1', null], ['acct2', 'pampero'], ['guest3', null], ['acct4', null]], 'a 500: the admits\' cars');
+});
+
+test('LobbyDO (cosmetic cars): a start waits at most EQUIPPED_TIMEOUT_MS for AccountsDO, then seats the admits\' cars', async (t) => {
+  let asked = false;
+  const hang = { idFromName: (n) => n, get: () => ({ fetch: () => ((asked = true), new Promise(() => {})) }) };
+  const h = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 }, { playerId: 'host1', name: 'Ana', guest: false, car: 'tero' }, { ACCOUNTS: hang });
+  const host = (await h.upgrade('host1')).ws;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const started = h.send(host, { t: 'start' });
+  // The wait is armed before AccountsDO is asked (which never answers here).
+  for (let i = 0; i < 100 && !asked; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(asked, true);
+  assert.equal(h.mm.calls.filter((c) => c.path === '/custom').length, 0, 'still waiting');
+  t.mock.timers.tick(1500);
+  await started;
+  assert.deepEqual(h.mm.calls.find((c) => c.path === '/custom').body.members.map((m) => m.car ?? null), ['tero']);
 });
 
 // ---- the Worker -----------------------------------------------------------------------------------

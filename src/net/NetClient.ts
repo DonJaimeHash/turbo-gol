@@ -60,6 +60,10 @@
  *                   that drops before its Welcome or a rejoin the network or the server's load
  *                   refused (no answer, 429, 5xx); a rejoin answering 404 / 410 (the match is over)
  *                   ends them. `reconnectAttempt` is the try under way (the HUD's "attempt 2/5")
+ *   cars            a community node's match has its cars by slot in the queue result and the rejoin
+ *                   answer only (src/net/cosmetics.ts MatchedCars, nodeCarsOf: [] when every seat
+ *                   drives the default): MatchAssignment.cars and `matchCars`, which the Game reads
+ *                   instead of the node's Welcome (a MatchDO's Welcome has them, matchCars null)
  *
  * The HTTP and WebSocket implementations are injectable (fetch / WebSocket by default) so the
  * logic runs in node tests with fakes. No allocations on the per-message path beyond the
@@ -93,6 +97,8 @@ import {
   type SnapshotPacket,
   type Welcome,
 } from './protocol';
+import { nodeCarsOf, type CosmeticQueueResult } from './cosmetics';
+import type { CarId } from '../game/cosmetics';
 
 export const GUEST_STORAGE_KEY = STORAGE_PREFIX + 'guest';
 export const PING_INTERVAL_MS = 250;
@@ -199,6 +205,13 @@ export interface MatchAssignment {
   matchId: string;
   ticket: string;
   wsUrl: string;
+  /**
+   * A community node's match: each slot's car (src/net/cosmetics.ts MatchedCars, null = the
+   * default car; [] = every seat on the default car), always present on one (nodeCarsOf): the only
+   * cars of that match, a car in the node's own Welcome is never read. Absent for a MatchDO match
+   * (its Welcome has them).
+   */
+  cars?: Array<CarId | null>;
 }
 
 /** POST /api/queue `kind`: a Durable Object host (phase 1) or a P2P signaling room (phase 2). */
@@ -474,6 +487,13 @@ export class NetClient {
   guest: GuestSession | null;
   welcome: Welcome | null = null;
   matchId: string | null = null;
+  /**
+   * The cars of the match being joined (MatchAssignment.cars): the last matched queue result's or
+   * rejoin answer's when it is a node match (seatCars then reads only these, never the node's
+   * Welcome), null = not one (the Welcome's roster entries carry theirs). OnlineSession.joinAssigned
+   * sets it for a match assigned elsewhere (a lobby, a P2P queue).
+   */
+  matchCars: Array<CarId | null> | null = null;
 
   // Counters (monotonic; NetStats turns them into rates).
   bytesIn = 0;
@@ -808,7 +828,7 @@ export class NetClient {
     // Phase 1 shape: the plain server assignment (a p2p answer to a server queue is a protocol error).
     return this.queueKind(mode, 'server', kindOrWaiting).then((a) => {
       if (a.kind !== 'server') throw new NetError('protocol', 'server queue answered with a p2p room');
-      return { matchId: a.matchId, ticket: a.ticket, wsUrl: a.wsUrl };
+      return { matchId: a.matchId, ticket: a.ticket, wsUrl: a.wsUrl, ...(a.cars ? { cars: a.cars } : {}) };
     });
   }
 
@@ -816,6 +836,7 @@ export class NetClient {
     if (this.queueAbort !== null) throw new NetError('state', 'already queueing');
     const ctrl = new AbortController();
     this.queueAbort = ctrl;
+    this.matchCars = null;
     try {
       let session = await this.ensureGuest(ctrl.signal);
       let reRegistered = false;
@@ -874,7 +895,7 @@ export class NetClient {
               const m = await this.rejoin(body.matchId);
               this.reconnectTries = 0; // a fresh assignment gets its own reconnect budget
               this.allowReconnect = true;
-              return { kind: 'server', matchId: m.matchId, ticket: m.ticket, wsUrl: m.wsUrl, ...(kind === 'ranked' ? { ranked: true } : {}) };
+              return { kind: 'server', matchId: m.matchId, ticket: m.ticket, wsUrl: m.wsUrl, ...(m.cars ? { cars: m.cars } : {}), ...(kind === 'ranked' ? { ranked: true } : {}) };
             } catch (err) {
               if (recovered || !(err instanceof NetError) || (err.status !== 404 && err.status !== 410)) throw err;
               recovered = true;
@@ -902,6 +923,11 @@ export class NetClient {
           this.allowReconnect = true;
           const out: ServerAssignment = { kind: 'server', matchId, ticket: q.ticket, wsUrl: q.wsUrl };
           if ((q as QueueResult).ranked === true) out.ranked = true;
+          // A node match's cars by slot, from the Worker ([] when all drive the default; the node's
+          // own Welcome is never read for them); a field of another shape is dropped.
+          const cars = nodeCarsOf(q);
+          this.matchCars = cars ?? null;
+          if (cars) out.cars = cars;
           return out;
         }
         const waiting = (q as QueueResult).waiting;
@@ -1350,10 +1376,13 @@ export class NetClient {
     // 404 no_match / 410 match_over, match_reset: the room is gone (the Worker frees our lock);
     // 410 p2p_room: a P2P room id (never rejoinable; POST /api/leave frees that lock).
     if (!res.ok) throw await httpError('rejoin', res);
-    const q = (await res.json()) as QueueResult;
+    const q = (await res.json()) as CosmeticQueueResult;
     if (typeof q.ticket !== 'string' || typeof q.wsUrl !== 'string') throw new NetError('protocol', 'rejoin without ticket / wsUrl');
     this.matchId = q.matchId ?? matchId;
-    return { matchId: this.matchId, ticket: q.ticket, wsUrl: q.wsUrl };
+    // A node match's answer carries its cars again (NodeRegistryDO keeps them with the match).
+    const cars = nodeCarsOf(q);
+    this.matchCars = cars ?? null;
+    return { matchId: this.matchId, ticket: q.ticket, wsUrl: q.wsUrl, ...(cars ? { cars } : {}) };
   }
 
   private closeSocket(code: number, reason: string): void {

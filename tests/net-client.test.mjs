@@ -1245,3 +1245,71 @@ test('a queue cancelled while waiting for another challenge gives up without ren
   assert.equal(api.rendered.length, 1, 'the cancelled queue never rendered');
   assert.equal(calls.some((c) => c.url === '/api/guest' || c.url === '/api/queue'), false);
 });
+
+test('a page from before the cars: a Welcome whose roster carries `car` (src/net/cosmetics.ts) is taken as it is, nothing refused', () => {
+  const { client, sockets } = makeClient({});
+  const got = { welcome: null, errors: [] };
+  client.onWelcome = (w) => (got.welcome = w);
+  client.onError = (code) => got.errors.push(code);
+  client.connect('ws://h/ws/m', 'T');
+  const ws = sockets[0];
+  ws.open();
+  const roster = [{ carId: 1, slot: 0, team: 0, name: 'A', kind: 'player', car: 'tero' }, { carId: 2, slot: 1, team: 1, name: 'Bot', kind: 'bot' }];
+  const welcome = { protocol: P.PROTOCOL_VERSION, matchId: 'm', mode: '1v1', tickRate: 120, carId: 1, slot: 0, roster, tick: 0, matchLengthSeconds: 300 };
+  ws.deliver(encodeJson(MsgType.Welcome, welcome));
+  assert.deepEqual(got.welcome, welcome);
+  assert.deepEqual(got.errors, []);
+  assert.equal(ws.closed ?? null, null, 'the socket stays open');
+});
+
+test('a community node match: its cars by slot ride on the queue result and the rejoin answer (MatchAssignment.cars, matchCars); a field of another shape is dropped', async () => {
+  const answers = [
+    { status: 'matched', matchId: 'n1', ticket: 'T1', wsUrl: 'wss://node/ws/n1', node: true, cars: ['tero', null, null, 'pampero'] },
+    { status: 'matched', matchId: 'm2', ticket: 'T2', wsUrl: '/ws/m2' },
+    { status: 'matched', matchId: 'n3', ticket: 'T3', wsUrl: 'wss://node/ws/n3', node: true, cars: ['tero', 'batmobile'] },
+  ];
+  let i = 0;
+  const h = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/queue': () => jsonResponse(200, answers[i++]),
+    '/api/rejoin': () => jsonResponse(200, { status: 'matched', matchId: 'n1', ticket: 'T9', wsUrl: 'wss://node/ws/n1', node: true, cars: ['tero', null, null, 'pampero'] }),
+  });
+  const a = await h.client.queue('2v2', 'server');
+  assert.deepEqual(a, { kind: 'server', matchId: 'n1', ticket: 'T1', wsUrl: 'wss://node/ws/n1', cars: ['tero', null, null, 'pampero'] });
+  assert.deepEqual(h.client.matchCars, ['tero', null, null, 'pampero'], 'what the Welcome is read with (OnlineSession)');
+  const plain = await h.client.queue('1v1');
+  assert.deepEqual(plain, { matchId: 'm2', ticket: 'T2', wsUrl: '/ws/m2' }, 'a MatchDO match: no cars field (its Welcome has them)');
+  assert.equal(h.client.matchCars, null, 'a new queue forgets the last match cars');
+  const junk = await h.client.queue('1v1', 'server');
+  assert.deepEqual(junk.cars, [], 'an unknown car id: the field is dropped (every seat on the default car, never the node\'s Welcome), the match still joined');
+  assert.deepEqual(h.client.matchCars, []);
+  // The rejoin answer of a node match carries them again (the socket came back, or a reloaded page).
+  const r = await h.client.rejoin('n1');
+  assert.deepEqual(r, { matchId: 'n1', ticket: 'T9', wsUrl: 'wss://node/ws/n1', cars: ['tero', null, null, 'pampero'] });
+  assert.deepEqual(h.client.matchCars, ['tero', null, null, 'pampero']);
+});
+
+test('queue: 409 active_match of a node match rejoins it with its cars on the assignment', async () => {
+  const { client } = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/queue': () => jsonResponse(409, { error: 'active_match', matchId: 'n7' }),
+    '/api/rejoin': () => jsonResponse(200, { status: 'matched', matchId: 'n7', ticket: 'T7', wsUrl: 'wss://node/ws/n7', node: true, cars: [null, 'condor'] }),
+  });
+  const a = await client.queue('1v1', 'server');
+  assert.deepEqual(a, { kind: 'server', matchId: 'n7', ticket: 'T7', wsUrl: 'wss://node/ws/n7', cars: [null, 'condor'] });
+  assert.deepEqual(client.matchCars, [null, 'condor']);
+});
+
+test('a community node match where every seat drives the default car (no `cars` field) still reads only the Worker\'s list: matchCars [], not null', async () => {
+  const h = makeClient({
+    '/api/guest': () => jsonResponse(200, GUEST),
+    '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'n1', ticket: 'T1', wsUrl: 'wss://node/ws/n1', node: true }),
+    '/api/rejoin': () => jsonResponse(200, { status: 'matched', matchId: 'n1', ticket: 'T2', wsUrl: 'wss://node/ws/n1', node: true }),
+  });
+  const a = await h.client.queue('1v1', 'server');
+  assert.deepEqual(a, { kind: 'server', matchId: 'n1', ticket: 'T1', wsUrl: 'wss://node/ws/n1', cars: [] });
+  assert.deepEqual(h.client.matchCars, []);
+  h.client.matchCars = null;
+  assert.deepEqual((await h.client.rejoin('n1')).cars, []);
+  assert.deepEqual(h.client.matchCars, []);
+});

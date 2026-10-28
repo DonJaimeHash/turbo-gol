@@ -213,11 +213,18 @@ src/render/
                         frames, pads; forwards setTheme / setWarmUp to the turf and the stadium
   Camera.ts             chase camera (ball cam / car cam, camera settings & rules, field clamp,
                         camera swivel from CameraLook, rear view); keeps Settings.camera by reference
-  Car.ts                procedural dune runner (body with canopy + roll hoop, knobby wheels, twin
-                        plasma boost jets, blob), one shared surface material for all cars:
-                        per-vertex surface kinds (CAR_KIND) for flake paint under clearcoat,
-                        carbon, glass, metals, tyres, HDR lamps; the body and wheel pipelines
-                        build only their own graph
+  Car.ts                CarView (a body from cars/, its wheels, twin plasma boost jets, blob;
+                        setBody swaps the body in place), one shared surface material for all
+                        cars: per-vertex surface kinds (CAR_KIND) for flake paint under
+                        clearcoat, carbon, glass, metals, tyres, HDR lamps, the body's livery in
+                        five per-object uniforms (one pipeline for every body); the body and
+                        wheel pipelines build only their own graph
+  cars/                 the car bodies (docs/cars.md): types.ts (CarBodySpec, the contract),
+                        kit.ts (surfaces, lofts, the BodyKit, resolveWheels, buildBody and its
+                        containment guard), wheels.ts (wheel styles: knobby, slick), one module
+                        per catalog car (dune.ts, the dune runner, the default car; pampero.ts,
+                        carpincho.ts, condor.ts, tero.ts), index.ts (the registry),
+                        cache.ts (geometry shared per body / team / detail, reference-counted)
   Ball.ts               procedural panelled ball (truncated icosahedron: pearl hexagons, graphite
                         pentagons with lime glow rings, stitched seams; BALL_COLORS), blob shadow,
                         ground marker
@@ -357,6 +364,14 @@ src/game/
                         account, debounced pushes to /api/me/presets,
                         offline edits kept dirty, a preset the full account refused waits for room
                         (said once), deletes need the server; nothing for a guest
+  cosmetics.ts          the cosmetic cars, pure data with no imports (never in the nodes' bundle):
+                        CarId in menu order, name / description keys, price in host points, status
+                        ('soon' until a body exists); every car is a Standard car
+  carSelection.ts       the player's car pick (localStorage), only a car the player is entitled to
+                        (entitledCars, where the inventory will plug in); the preview gate of
+                        #car / #showroom (a dev server or a VITE_PREVIEW_CARS=1 build), and
+                        PREVIEW_ALL_CARS (a VITE_PREVIEW_CARS=1 build only: a guest gets every car
+                        offline, the garage says so; folded away in production builds)
   experimentalTraining.ts experimental free play, pure: rules for free play only (packs always stock,
                         a locked player stock), the arena plan (mutators, fingerprint, game speed),
                         createArena before the car, the rebuild when the physics differ (a pack
@@ -664,6 +679,11 @@ src/net/
                         password rules, clientPasswordKey (PBKDF2 in the browser), regions
   rating.ts             Weng-Lin (OpenSkill) Bradley-Terry team rating, abandon rules, tiers,
                         placement, MMR scale, abandon ban ladder (shared with server/)
+  cosmetics.ts          the cars online (never in the nodes' bundle): a seat's car on the wire as
+                        extensions of the bundled types (CosmeticWelcome roster, MatchedCars by
+                        slot for node matches; RoomSlot.car is in p2p/protocol.ts), absent = the
+                        default car; the inventory and hosts' shop answers (ItemsAnswer, ShopAnswer,
+                        ClaimAnswer) shared with server/
   AccountClient.ts      sign in / up / recover / OAuth redirects, 1 h Bearer refreshed from the
                         HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
                         the experimental switch and presets (each call for the account that made
@@ -736,11 +756,14 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         a report or record that carries experimental rules is refused; the TV
                         sign-in codes in memory (tvCodes.ts: 6 of the lobby alphabet, 5 min, one
                         use, the device secret's hash compared in constant time, 10 failed confirms
-                        per account and per IP in 15 min, 5 live codes per IP)
+                        per account and per IP in 15 min, 5 live codes per IP); the hosts' shop
+                        (never pruned): credits from the node outbox, claims and grants (the
+                        inventory), freezes, the car each account drives (signed into its session)
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
-                        minute), leaderboard, ranked result, /api/auth/tv/start | confirm | poll (a
+                        minute), /api/me/items, /api/me/car, /api/me/shop and its claim (account
+                        only), leaderboard, ranked result, /api/auth/tv/start | confirm | poll (a
                         TV signed in by the phone: the session and cookie as login gives them);
                         server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,

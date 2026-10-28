@@ -2093,3 +2093,23 @@ test('two sessions on the real RollbackEngine + wasm + BotTeams with experimenta
   const boost = sims[0].buf[sims[0].carOffset(1) + T.C_BOOST];
   assert.ok(boost > 99, `a bot car keeps a full tank under boost use 0 (${boost})`);
 });
+
+test('a page from before the cars: room slots that carry `car` (src/net/cosmetics.ts) build the same roster and start as before', async () => {
+  const slots = SLOTS_2V2.map((s) => (s.kind === 'peer' ? { ...s, car: 'tero' } : s));
+  const env = await startedSession(slots, 0);
+  assert.deepEqual(env.engine.humanSlots, [0, 2]);
+  assert.equal(env.session.state, 'countdown');
+  // RoomClient itself: the welcome goes through untouched.
+  let socket = null;
+  const client = new RoomClient({ now: () => 0, pingIntervalMs: 1_000_000, webSocketFactory: () => (socket = { readyState: 0, protocol: '', send() {}, close() {} }) });
+  const welcomes = [];
+  const errors = [];
+  client.onWelcome = (w) => welcomes.push(w);
+  client.onError = (code) => errors.push(code);
+  client.connect('/room/r1', 'TK');
+  socket.readyState = 1;
+  socket.onopen({});
+  socket.onmessage({ data: JSON.stringify(welcomeFor(0, slots)) });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(welcomes[0].slots.map((s) => s.car ?? null), ['tero', null, 'tero', null]);
+});

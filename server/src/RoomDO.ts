@@ -8,7 +8,7 @@
  * object can be evicted and woken by the next frame.
  *
  * Lifecycle
- *   create    POST /internal/create (matchmaker): roster (slots: peer / bot, names, playerIds), mode,
+ *   create    POST /internal/create (matchmaker): roster (slots: peer / bot, names, playerIds, a peer's car), mode,
  *             seed (random uint32), region, createdAt, physics (a custom lobby's experimental rules,
  *             null = standard: checked strictly again, 400 bad_physics; with rules every peer slot
  *             must carry guest: false, else 403 account_required) -> storage; 'unused'
@@ -92,6 +92,8 @@ import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import { parseLobbyRules } from '../../src/game/physicsRules';
 import type { RulesSnapshot } from '../../src/game/physicsRules';
 import { physicsFingerprint } from '../../src/sim/mutators';
+import { seatCar } from '../../src/net/cosmetics';
+import type { CarId } from '../../src/game/cosmetics';
 // Type-only: node's strip-only loader cannot load that module's `const enum` and
 // server/test/room.test.mjs imports this file. The numeric defaults are mirrored below and checked
 // against the protocol's literal types by tsc.
@@ -144,6 +146,8 @@ export interface RoomSlotRecord {
   kind: 'peer' | 'bot';
   name: string;
   playerId?: string;
+  /** A peer seat's car (the matchmaker's roster; absent = the default car): every welcome and 'peerJoined' carries it. */
+  car?: CarId;
 }
 
 export interface RoomRecord {
@@ -540,7 +544,9 @@ export class RoomDO extends DurableObject<Env> {
         peers++;
         // Only a room with experimental rules reads it: a seat is signed in when it says guest: false.
         if (e.guest !== false) guests++;
-        slots.push({ slot: i, team: e.team, kind: 'peer', name: e.name, playerId: e.playerId });
+        // A car the catalog does not know is dropped (the default car), never refused.
+        const car = seatCar(e.car);
+        slots.push({ slot: i, team: e.team, kind: 'peer', name: e.name, playerId: e.playerId, ...(car !== undefined ? { car } : {}) });
       } else {
         slots.push({ slot: i, team: e.team, kind: 'bot', name: e.name });
       }
@@ -1122,6 +1128,7 @@ export class RoomDO extends DurableObject<Env> {
     const ws = this.live[slot];
     const att = ws !== null ? this.attOf(ws) : null;
     const out: RoomSlot = { slot: e.slot, team: e.team, name: e.name, kind: e.kind, connected: ws !== null };
+    if (e.car !== undefined) out.car = e.car;
     if (att !== null) out.peerId = att.peerId;
     if (ws === null && e.kind === 'peer' && this.state.left[slot]) out.left = true;
     return out;

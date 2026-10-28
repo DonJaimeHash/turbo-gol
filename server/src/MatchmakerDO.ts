@@ -2,8 +2,10 @@
  * MatchmakerDO: one instance per region ('mm:' + region), reached only through the Worker with
  * the internal shared-secret header.
  *
- *   POST /join    { playerId, name, mode, kind?, doDisabled? }
+ *   POST /join    { playerId, name, mode, kind?, doDisabled?, car?, account?, accountAgeDays? }
  *                                            -> QueueResult | QueueResultP2p (matched right away) or 'waiting';
+ *                                               car / account / accountAgeDays: the session's (index.ts seatFields),
+ *                                               kept with the seat (HumanEntry) and copied into every roster;
  *                                               409 { error: 'active_match', matchId, kind } while a match / room of the
  *                                               player is REALLY alive: a lock older than LOCK_VERIFY_AFTER_MS is
  *                                               verified first (RoomDO /internal/presence: the player's slot has a
@@ -69,8 +71,10 @@
  *            as phase 1, answered in the phase 1 QueueResult shape). Rooms get a random uint32
  *            seed (kickoff deal + bot RNG on every peer) and tickets with role 'peer'.
  * Humans alternate teams (1st blue, 2nd red, ...); slot order is blue humans, blue bots, red
- * humans, red bots. The roster is registered in the target object (POST /internal/create)
- * BEFORE the tickets go out, so a ticket always points at a prepared room. While that create (or a
+ * humans, red bots. Each human seat carries its car (src/net/cosmetics.ts: absent = the default,
+ * which every bot drives): the MatchDO roster, the RoomDO slots, and for a node match the result's
+ * `cars` by slot (the node itself never gets them). The roster is registered in the target object
+ * (POST /internal/create) BEFORE the tickets go out, so a ticket always points at a prepared room. While that create (or a
  * node placement) is in flight the humans are in `forming`: a concurrent /join for one of them
  * answers 'waiting' and its /poll waits for the outcome, instead of queueing a ghost waiter
  * (outgoing fetches do not close the input gate).
@@ -123,6 +127,9 @@ import { isRegion } from '../../src/net/account';
 import { parseLobbyRules } from '../../src/game/physicsRules';
 import type { RulesSnapshot } from '../../src/game/physicsRules';
 import type { QueueResult } from '../../src/net/protocol';
+import { carsBySlot, seatCar } from '../../src/net/cosmetics';
+import type { CosmeticQueueResult } from '../../src/net/cosmetics';
+import type { CarId } from '../../src/game/cosmetics';
 // Type-only (node's strip-only loader rejects that module's const enum; server/test/room.test.mjs
 // imports this file). P2P_FILL_WAIT mirrors P2P_FILL_WAIT_MS and is checked against it by tsc.
 import type { P2P_FILL_WAIT_MS, QueueResultP2p } from '../../src/net/p2p/protocol';
@@ -182,9 +189,7 @@ export interface QueueRating {
   sigma: number;
 }
 
-interface Waiter {
-  playerId: string;
-  name: string;
+interface Waiter extends HumanEntry {
   /** Every playlist the player searches at once (several at once); the waiter sits in each of those queues. */
   modes: GameModeId[];
   kind: QueueKind;
@@ -283,6 +288,11 @@ interface JoinBody {
   doDisabled?: unknown;
   /** Never accepted: experimental rules exist only in custom lobbies (400 experimental_lobby_only). */
   physics?: unknown;
+  /** From the session (index.ts seatFields), never the client's body: the account's car (absent: the default car) ... */
+  car?: unknown;
+  /** ... and, for the rewards weight of a node match, that it is an account and its age in days. */
+  account?: unknown;
+  accountAgeDays?: unknown;
 }
 
 /** POST /custom: a custom lobby's start (LobbyDO): fixed teams, bots in the free slots. */
@@ -372,7 +382,7 @@ export function buildTeamRoster<K extends string>(perTeam: number, teams: readon
   const roster: Array<RosterSlot<K>> = [];
   for (const team of [0, 1] as const) {
     const hs = teams[team].slice(0, perTeam);
-    for (const h of hs) roster.push({ slot: roster.length, team, kind: humanKind, name: h.name, playerId: h.playerId });
+    for (const h of hs) roster.push(seatOf(roster.length, team, humanKind, h));
     for (let b = hs.length; b < perTeam; b++) roster.push({ slot: roster.length, team, kind: 'bot', name: `Bot ${b + 1}` });
   }
   return roster;
@@ -480,6 +490,11 @@ export interface HumanEntry {
   name: string;
   /** /custom only: false for a signed-in lobby member (a room with experimental rules needs it of every seat). */
   guest?: boolean;
+  /** The car the seat drives (the session's, or the lobby member's), copied into the roster; absent: the default car. */
+  car?: CarId;
+  /** A registered account and its age: the rewards weight of a node match (PlaceBody humans; ledger.ts). */
+  account?: boolean;
+  accountAgeDays?: number;
 }
 
 export interface RosterSlot<K extends string> {
@@ -488,6 +503,13 @@ export interface RosterSlot<K extends string> {
   kind: K | 'bot';
   name: string;
   playerId?: string;
+  /** A human seat's car (src/net/cosmetics.ts SeatCar): the MatchDO's welcome and the RoomDO's slots carry it; bots drive the default. */
+  car?: CarId;
+}
+
+/** A human's roster slot: the fields both roster builders copy, its car included when it has one. */
+function seatOf<K extends string>(slot: number, team: 0 | 1, kind: K, h: HumanEntry): RosterSlot<K> {
+  return { slot, team, kind, name: h.name, playerId: h.playerId, ...(h.car !== undefined ? { car: h.car } : {}) };
 }
 
 /**
@@ -501,7 +523,7 @@ export function buildRoster<K extends string>(perTeam: number, humans: readonly 
   const red: HumanEntry[] = [];
   for (let i = 0; i < humans.length; i++) (i % 2 === 0 ? blue : red).push(humans[i]);
   const addTeam = (team: 0 | 1, hs: HumanEntry[]): void => {
-    for (const h of hs) roster.push({ slot: roster.length, team, kind: humanKind, name: h.name, playerId: h.playerId });
+    for (const h of hs) roster.push(seatOf(roster.length, team, humanKind, h));
     for (let b = hs.length; b < perTeam; b++) roster.push({ slot: roster.length, team, kind: 'bot', name: `Bot ${b + 1}` });
   };
   addTeam(0, blue);
@@ -676,6 +698,10 @@ export class MatchmakerDO extends DurableObject<Env> {
       if (r === null) return error(400, 'bad_ratings');
       ratings = r;
     }
+    // The seat's car and rewards weight (the Worker's, from the session): a field of another shape is dropped.
+    const car = seatCar(body.car);
+    const account = body.account === true;
+    const accountAgeDays = typeof body.accountAgeDays === 'number' && Number.isFinite(body.accountAgeDays) && body.accountAgeDays >= 0 ? Math.floor(body.accountAgeDays) : undefined;
     await this.readNodes(now); // before any state is read: the steps below must not wait on I/O
     // D9 lets this server / ranked queue wait for a node; where none can host now (nodesHere)
     // there is nothing to wait for, and it is refused as without the nodes.
@@ -727,6 +753,10 @@ export class MatchmakerDO extends DurableObject<Env> {
     if (waiter) {
       waiter.lastSeen = now;
       waiter.name = body.name;
+      // A session refreshed meanwhile may carry another car (POST /api/me/car): the newest one sits.
+      waiter.car = car;
+      waiter.account = account;
+      waiter.accountAgeDays = accountAgeDays;
       if (ratings) waiter.ratings = ratings;
     } else {
       const roomKind: RoomKind = kind === 'p2p' ? 'p2p' : 'server';
@@ -736,7 +766,7 @@ export class MatchmakerDO extends DurableObject<Env> {
       if (this.activeRooms(now, roomKind) >= capacityOf(roomKind) && !(roomKind === 'server' && this.nodesHere([playerId], now))) {
         return error(503, 'capacity', 'all rooms are busy, try again in a minute');
       }
-      waiter = { playerId, name: body.name, modes, kind, joinedAt: now, lastSeen: now, resolvers: [], ratings };
+      waiter = { playerId, name: body.name, car, account, accountAgeDays, modes, kind, joinedAt: now, lastSeen: now, resolvers: [], ratings };
       for (const m of modes) this.queue({ mode: m, kind }).push(waiter);
     }
     for (const m of modes) {
@@ -1085,13 +1115,15 @@ export class MatchmakerDO extends DurableObject<Env> {
     const teams: [HumanEntry[], HumanEntry[]] = [[], []];
     const seen = new Set<string>();
     let guests = false;
-    for (const m of body.members as Array<{ playerId?: unknown; name?: unknown; team?: unknown; guest?: unknown }>) {
+    for (const m of body.members as Array<{ playerId?: unknown; name?: unknown; team?: unknown; guest?: unknown; car?: unknown }>) {
       if (!m || typeof m.playerId !== 'string' || typeof m.name !== 'string' || (m.team !== 0 && m.team !== 1) || seen.has(m.playerId)) return error(400, 'bad_members');
       seen.add(m.playerId);
       // Signed in only when the lobby says so (a member without the flag counts as a guest).
       const guest = m.guest !== false;
       if (guest) guests = true;
-      teams[m.team].push({ playerId: m.playerId, name: m.name, guest });
+      // The member's car as the lobby took it from its session; one of another shape is dropped.
+      const car = seatCar(m.car);
+      teams[m.team].push({ playerId: m.playerId, name: m.name, guest, ...(car !== undefined ? { car } : {}) });
     }
     if (seen.size === 0 || teams[0].length > perTeam || teams[1].length > perTeam) return error(400, 'bad_members');
     const length = typeof body.matchLengthSeconds === 'number' && body.matchLengthSeconds >= 0 && body.matchLengthSeconds <= 1800 ? Math.floor(body.matchLengthSeconds) : undefined;
@@ -1348,6 +1380,9 @@ export class MatchmakerDO extends DurableObject<Env> {
         if (opts.ranked) await this.rankedLock(placed.matchId, humans, until);
         const tickets = new Map(placed.tickets.map((t) => [t.playerId, t.ticket]));
         const names = new Map(humans.map((h) => [h.playerId, h.name]));
+        // The node never hears of cars (placeOnNode): its welcome has none, so the result carries them by slot.
+        const carOf = new Map(humans.map((h) => [h.playerId, h.car]));
+        const cars = carsBySlot(MODES[mode] * 2, placed.tickets.map((t) => ({ slot: t.slot, car: carOf.get(t.playerId) })));
         await this.issue(
           humans,
           placed.tickets.map((t) => ({ slot: t.slot, team: t.team, name: names.get(t.playerId) ?? '', playerId: t.playerId })),
@@ -1356,7 +1391,7 @@ export class MatchmakerDO extends DurableObject<Env> {
           until,
           now,
           (seat) => tickets.get(seat.playerId) as string, // placementFor: one ticket per human
-          (ticket) => ({ status: 'matched', matchId: placed.matchId, ticket, wsUrl: placed.wsUrl, node: true, ...(opts.ranked ? { ranked: true } : {}) }) satisfies QueueResult,
+          (ticket) => ({ status: 'matched', matchId: placed.matchId, ticket, wsUrl: placed.wsUrl, node: true, ...(opts.ranked ? { ranked: true } : {}), ...(cars ? { cars } : {}) }) satisfies CosmeticQueueResult,
         );
         return placed.matchId;
       }
@@ -1446,7 +1481,10 @@ export class MatchmakerDO extends DurableObject<Env> {
    * nodes know, the back-off after hosts 0 or a failed call (NO_HOSTS_BACKOFF_MS), no node free,
    * an error, no answer within nodeTimeoutMs, or an answer that is not a placement for exactly
    * these humans. Formation never fails because of the nodes. Stage 1 sends no transports (the
-   * default is wss) and no account fields (the project's nodes earn nothing).
+   * default is wss). Each human goes with what the control plane keeps of it and never hands a
+   * node: whether it is an account and its age (the rewards weight of a community node's points,
+   * ledger.ts; the project's nodes earn nothing) and its car (MatchEntry.humans, for the rejoin's
+   * `cars`: the assignment's roster is built field by field, so a node's is the same as without).
    */
   private async placeOnNode(mode: GameModeId, humans: readonly HumanEntry[], now: number, length: number, opts: FormOptions): Promise<Placement | null> {
     const env = this.env;
@@ -1456,7 +1494,13 @@ export class MatchmakerDO extends DurableObject<Env> {
       region: this.region,
       ranked: opts.ranked === true,
       matchLengthSeconds: length,
-      humans: humans.map((h) => ({ playerId: h.playerId, name: h.name })),
+      humans: humans.map((h) => ({
+        playerId: h.playerId,
+        name: h.name,
+        ...(h.account === true ? { account: true } : {}),
+        ...(h.accountAgeDays !== undefined ? { accountAgeDays: h.accountAgeDays } : {}),
+        ...(h.car !== undefined ? { car: h.car } : {}),
+      })),
       ...(opts.teams ? { teams: { blue: opts.teams[0].map((h) => h.playerId), red: opts.teams[1].map((h) => h.playerId) } } : {}),
     };
     try {
