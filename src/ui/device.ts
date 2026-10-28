@@ -182,11 +182,15 @@ export function reducesMotion(pref: MotionPref, system: boolean): boolean {
 /** The interface settings in force (installDevice, applyUiSettings) and the layout's apply. */
 let uiNow: Readonly<UiSettings> = { size: 0, motion: 'system' };
 let relayout: (() => void) | null = null;
-let motionQuery: MediaQueryList | null = null;
+/**
+ * The system's prefers-reduced-motion, kept by its change event. Not read from the query each
+ * frame: Chromium then drops the query's change events (the class would stop following it).
+ */
+let systemReduce = false;
 
 /** Reduced motion now (`html.tg-reduce-motion`): the Game's menus hold their stadium still with it. */
 export function motionReduced(): boolean {
-  return reducesMotion(uiNow.motion, motionQuery?.matches === true);
+  return reducesMotion(uiNow.motion, systemReduce);
 }
 
 function applyMotion(): void {
@@ -322,8 +326,12 @@ export function typedInField(e: Pick<KeyboardEvent, 'target' | 'key'>): boolean 
 export function installDevice(opts: { tvFlag: boolean; padConnected: () => boolean; ui?: Readonly<UiSettings> }): DeviceTracker {
   const html = document.documentElement;
   uiNow = { size: opts.ui?.size ?? 0, motion: opts.ui?.motion ?? 'system' };
-  motionQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-  motionQuery?.addEventListener('change', applyMotion);
+  const motionQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  systemReduce = motionQuery?.matches === true;
+  motionQuery?.addEventListener('change', (e) => {
+    systemReduce = e.matches;
+    applyMotion();
+  });
   applyMotion();
   const pointer = pointerKind();
   const tv = isTv(pointer, opts.tvFlag);
