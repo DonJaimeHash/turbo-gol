@@ -630,7 +630,7 @@ export default {
   'tvlink.enterCode': 'Enter the code the TV shows',
   'tvlink.continue': 'CONTINUE',
   'tvlink.ask': 'Sign in on the TV as {name}?',
-  'tvlink.askNote': 'The TV signs in with this account.',
+  'tvlink.askNote': 'Confirm only if this code is on a TV in front of you right now. If someone sent you this link, cancel: that TV would play as you.',
   'tvlink.confirm': 'CONFIRM',
   'tvlink.cancel': 'CANCEL',
   'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',

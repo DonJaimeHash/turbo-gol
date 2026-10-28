@@ -449,7 +449,7 @@ export default {
   'tvlink.enterCode': 'Escribe el código que muestra la TV',
   'tvlink.continue': 'CONTINUAR',
   'tvlink.ask': '¿Iniciar sesión en la TV como {name}?',
-  'tvlink.askNote': 'La TV entra con esta cuenta.',
+  'tvlink.askNote': 'Confirma solo si ves este código ahora en una TV frente a ti. Si alguien te mandó este enlace, cancela: esa TV jugaría con tu cuenta.',
   'tvlink.confirm': 'CONFIRMAR',
   'tvlink.cancel': 'CANCELAR',
   'tvlink.signInFirst': 'Primero inicia sesión en este teléfono; después confirma la TV.',

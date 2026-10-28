@@ -11,7 +11,8 @@ All notable changes to Turbogol are documented here. The format follows
   short code and its QR. Open turbo-gol.com/tv on a phone where you are signed in, check the code and
   press CONFIRM: the TV signs in by itself and goes back to where you were (FIND MATCH after
   Competitive's SIGN IN). A code lasts 5 minutes and works once; NEW CODE gets another. Signed out on
-  the phone, sign in there first and the code waits for you.
+  the phone, sign in there first and the code waits for you. The phone asks you to confirm only a
+  code you see on a TV in front of you: a link someone sent you would give that TV your account.
 - Typing with a TV remote or a controller: OK or A on a name, a password or a lobby code opens
   on-screen keys (letters, numbers, . - _ @, upper or lower case, delete, space). DONE keeps the
   text, Back too. A mouse or a keyboard types as before.
