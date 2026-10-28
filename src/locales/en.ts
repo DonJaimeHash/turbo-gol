@@ -1213,7 +1213,6 @@ export default {
   'training.howStickWhere': 'Drive and steer: the left half of the screen',
   'training.howBoostSlide': 'Boost: slide from it to keep it on',
   // Experimental free play's tile (accounts with Settings › Experimental on)
-  'training.labTitle': 'Experimental',
   'training.tagLab': 'LAB',
   // Under the Shooting category
   'training.shootingText': 'Shoot at the rival goal',

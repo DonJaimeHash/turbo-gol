@@ -805,7 +805,6 @@ export default {
   'training.howStick': 'Stick',
   'training.howStickWhere': 'Manejar y girar: la mitad izquierda de la pantalla',
   'training.howBoostSlide': 'Boost: desliza desde él para mantenerlo',
-  'training.labTitle': 'Experimental',
   'training.tagLab': 'LAB',
   'training.shootingText': 'Anota en la portería rival',
   'training.savingText': 'Ataja los tiros a tu portería',

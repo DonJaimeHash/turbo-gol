@@ -56,11 +56,8 @@
   grid-area: ranked;
 }
 
-.mn-slot-lab {
-  color: var(--lab);
-}
-
-.mn-trn-lab .mn-mtile-icon {
+.mn-trn-lab .mn-mtile-icon,
+.mn-trn-lab .mn-mtile-title {
   color: var(--lab);
 }
 

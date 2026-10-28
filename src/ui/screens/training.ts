@@ -112,8 +112,7 @@ export function trainingScreen(menu: Menu): Screen {
     packs.set(cat, { el: tile.el, marks });
   }
   const how = modeTile({ cls: 'mn-trn-how', key: 'how', icon: 'info', slot: null, title: upper(t('training.howTo')), sub: t('training.howToSub'), short: t('training.howToSub'), open: () => openHow() });
-  const lab = modeTile({ cls: 'mn-trn-lab', key: 'lab', icon: 'lab', slot: slot(t('training.tagLab')), title: upper(t('training.labTitle')), sub: t('training.expFreePlayText'), short: t('training.expFreePlayText'), open: () => openLab() });
-  lab.el.querySelector('.mn-slot')?.classList.add('mn-slot-lab');
+  const lab = modeTile({ cls: 'mn-trn-lab', key: 'lab', icon: 'lab', slot: null, title: t('training.tagLab'), sub: t('training.expFreePlayText'), short: t('training.expFreePlayText'), open: () => openLab() });
   const howRow = picker('how-row', 'info', t('training.howTo'), () => openHow());
   const tiles = h('div.mn-tiles.mn-trn-tiles', null, hero.el, ...[...packs.values()].map((p) => p.el), how.el);
   const extra = h('div.mn-trn-extra', { hidden: true }, howRow.el);
