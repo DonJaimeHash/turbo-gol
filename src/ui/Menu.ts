@@ -69,6 +69,8 @@ import { FocusMemory, FocusNav, heldOver, isEditable, isEditing, navKey, setEdit
 import { installKeyboardInset } from './keyboard';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
+import { keypadBox, keypadSpec, keypadWrite } from './components/keypad';
+import type { KeypadView } from './components/keypad';
 import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
 import { regionName, tierName } from './names';
@@ -179,6 +181,8 @@ export interface MenuHost {
   readonly training: TrainingRecordsView;
   readonly experimental: ExperimentalMenuView;
   config(): Promise<MenuConfig>;
+  /** Solve the anti-bot check ahead (Inicio shown: NetClient.prewarmAntiBot). */
+  prewarmAntiBot?(): void;
   /** The guest name (online as a guest) and its setter. */
   guestName(): string;
   setGuestName(name: string): void;
@@ -352,6 +356,12 @@ export class Menu {
   private readonly updateBtn: HTMLButtonElement;
   private readonly toasts: Toasts;
   private readonly modalLayer: HTMLElement;
+  /** mn-keypad's layer, over the sheets (openKeypad). */
+  private readonly keypadLayer: HTMLElement;
+  /** The anti-bot sheet is up: closes it without cancelling the check (antiBotAsk). */
+  private antiBotClose: (() => void) | null = null;
+  /** The keypad up: its view and the field it writes to. */
+  private keypad: { view: KeypadView; field: HTMLInputElement } | null = null;
   private readonly screens = new Map<string, Screen>();
   private readonly factories = new Map<string, ScreenFactory>();
   private section: SectionId = HOME_SECTION;
@@ -466,7 +476,8 @@ export class Menu {
     this.stage = h('main.mn-stage');
     this.toasts = new Toasts();
     this.modalLayer = h('div.mn-modal-layer', { hidden: true });
-    this.root = h('div.mn', { hidden: true }, this.rail.el, this.topBar.el, this.stage, this.hintBar.el, this.tabbar.el, this.toasts.el, this.modalLayer);
+    this.keypadLayer = h('div.mn-modal-layer.mn-keypad-layer', { hidden: true });
+    this.root = h('div.mn', { hidden: true }, this.rail.el, this.topBar.el, this.stage, this.hintBar.el, this.tabbar.el, this.toasts.el, this.modalLayer, this.keypadLayer);
     // RMB is bindable in game: no context menu over the menus.
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
     container.appendChild(this.root);
@@ -646,6 +657,7 @@ export class Menu {
     this.visibleNow = false;
     resetPageZoom(); // a pinch in the menus does not carry into the match (its controls would sit off screen)
     this.keysDown.clear(); // a key held into the match and out again is no menu key
+    this.dropKeypad();
     this.closeModal();
     this.reportCover();
     if (this.timer !== 0) {
@@ -663,6 +675,7 @@ export class Menu {
    * whatever was stacked). `tab`: the screen's tab to show (Screen.setTab: MODOS').
    */
   open(id: string, reset = false, tab?: string): void {
+    this.closeKeypad(false); // a screen opened under the keypad (a join link): what was typed goes to its field first
     const next = stackAfterOpen({ section: this.section, stack: this.stack.map((s) => s.id) }, id, reset);
     const stack = next.stack.map((x) => this.screen(x));
     if (tab !== undefined) this.screen(id).setTab?.(tab);
@@ -752,6 +765,11 @@ export class Menu {
    * root with no sheet: the caller asks to leave (backOrLeave here, confirmLeave in the Game).
    */
   back(): boolean {
+    // The keypad first: it closes, what was typed stays in its field.
+    if (this.keypad !== null) {
+      this.closeKeypad(false);
+      return true;
+    }
     const a = document.activeElement;
     const editing = a instanceof HTMLElement && isEditing(a) && this.root.contains(a);
     // Touch skips the field step (Android's first Back already hid the keyboard): editing just ends.
@@ -827,8 +845,10 @@ export class Menu {
     if (focus === 'auto') this.autoFocus();
     this.measureCover(); // after the fit (on the next frame, after layout)
     // Ajustes gone from under the screen shown (PERFIL's detour left by a crumb, the chip, a
-    // section): it closes as when it is left from the top (screens/settings/screen.ts).
+    // section): it closes as when it is left from the top (screens/settings/screen.ts). The FINAL
+    // gone (from under Ajustes too): what waited for it runs (its hide, final.ts).
     if (!this.stacked('settings')) this.screens.get('settings')?.hide?.();
+    if (!this.stacked('final')) this.screens.get('final')?.hide?.();
   }
 
   /**
@@ -1012,6 +1032,7 @@ export class Menu {
 
   /** The focus zones (nav.ts): a modal alone, else the rail (a side zone), the top bar, the stage, the footer and the tabs. */
   private zones(): NavZone[] {
+    if (this.keypad !== null) return [{ name: 'keypad', el: this.keypad.view.el, main: true }];
     if (this.modalEl !== null) return [{ name: 'modal', el: this.modalEl, main: true }];
     return [
       ...(this.top()?.zones?.() ?? []),
@@ -1119,7 +1140,7 @@ export class Menu {
     }
     if (e.key === 'Enter') {
       e.preventDefault();
-      setEditing(el, true);
+      if (!this.openKeypad(el)) setEditing(el, true);
       this.keyDone = e;
     } else if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') setEditing(el, true);
   }
@@ -1143,6 +1164,16 @@ export class Menu {
     const field = isEditable(active); // a text field's keys are its own, but for the arrows in navigation mode
     const editing = field && isEditing(active);
     const plain = !e.ctrlKey && !e.metaKey;
+    // A remote's CH+ / CH− (PageUp / PageDown on most TV browsers, ChannelUp / ChannelDown on
+    // others) and a keyboard's PgUp / PgDn are the pad's LT / RT: the board pages, a screen's own
+    // tabs step. Not over a field; held, they repeat (the board's pages).
+    const channel = e.key === 'ChannelUp' || e.code === 'PageUp' ? -1 : e.key === 'ChannelDown' || e.code === 'PageDown' ? 1 : 0;
+    if (channel !== 0) {
+      if (field || !plain) return;
+      e.preventDefault();
+      if (!heldOver(e, this.keysDown)) this.command(channel < 0 ? 'tabPrev' : 'tabNext', true);
+      return;
+    }
     let dir: NavDir | null = null;
     switch (e.code) {
       case 'ArrowUp':
@@ -1216,6 +1247,8 @@ export class Menu {
       return;
     }
     if (a === 'accept') {
+      const f = this.nav.current;
+      if (f !== null && isEditable(f) && !isEditing(f) && this.openKeypad(f)) return;
       // Its click runs inside (FocusNav.accept): beforeMatch knows the press is a controller's.
       this.padAccept = true;
       try {
@@ -1231,11 +1264,12 @@ export class Menu {
   /**
    * A shortcut: the screen on top first (Screen.command), else the menus' own: 'prev' / 'next' the
    * sections, 'tabPrev' / 'tabNext' the screen's inner tabs (stepTabs), 'cancel' the search, 'menu'
-   * the settings. False when nothing took it. Nothing while a modal is up (it keeps the focus).
+   * the settings. False when nothing took it. Nothing while a modal or the keypad is up (it keeps
+   * the focus; under the keypad, CH+ / CH− or LT / RT would change the screen its field is on).
    * `pad`: it came from a controller (action), not the keyboard's Q / E / X / Delete.
    */
   command(c: MenuCommand, pad = false): boolean {
-    if (!this.visibleNow || this.modalEl !== null) return false;
+    if (!this.visibleNow || this.modalEl !== null || this.keypad !== null) return false;
     if (this.top()?.command?.(c, pad)) return true;
     if (c === 'prev' || c === 'next') return this.stepSection(c === 'prev' ? -1 : 1);
     if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
@@ -1499,6 +1533,35 @@ export class Menu {
    * "There's a new version": RELOAD NOW focused; NOT NOW leaves the pill. Never opened over Settings
    * (renderSearch waits, openSettings' close opens it); `.mn-blocking` (z 65) would keep it above them.
    */
+  /**
+   * The anti-bot check wants the player (NetClient.onAntiBotAsk): a sheet with the reason in words
+   * (on a TV: a remote cannot answer it) and CANCELAR, focusable, which ends the check (`cancel`), as
+   * Back does; it goes by itself once the check is answered (`asking` false). The widget shows over
+   * the menus (style.css .hud-turnstile), the sheet keeps a slot clear for it.
+   */
+  antiBotAsk(asking: boolean, cancel: () => void): void {
+    if (!asking) {
+      this.antiBotClose?.();
+      return;
+    }
+    if (this.antiBotClose !== null) return;
+    const tv = document.documentElement.classList.contains('tg-tv');
+    let answered = false;
+    const close = this.modal({
+      title: t('antibot.title'),
+      body: [h('p', null, t(tv ? 'antibot.bodyTv' : 'antibot.body')), h('div.mn-antibot-slot', { 'aria-hidden': 'true' })],
+      actions: [{ label: t('antibot.cancel'), onClick: () => true }],
+      onClose: () => {
+        this.antiBotClose = null;
+        if (!answered) cancel();
+      },
+    });
+    this.antiBotClose = () => {
+      answered = true;
+      close();
+    };
+  }
+
   private openUpdateSheet(): void {
     this.reloadAsked = true;
     this.root.classList.add('mn-blocking');
@@ -1652,6 +1715,9 @@ export class Menu {
    * reader), and when it closes the focus goes back to what had it when it opened.
    */
   modal(spec: ModalSpec): () => void {
+    // The keypad on a screen's field: closed as by Back (the text in the field, which opens the
+    // sheet: it gets the focus back). Over a sheet, it goes with the sheet (closeModal).
+    if (this.modalEl === null) this.closeKeypad(false);
     const prev = this.modalEl !== null ? this.modalOpener : null;
     this.closeModal(false);
     const a = document.activeElement;
@@ -1685,6 +1751,7 @@ export class Menu {
    */
   private closeModal(refocus = true): void {
     if (!this.modalEl) return;
+    this.dropKeypad();
     const onClose = this.modalOnClose;
     const opener = this.modalOpener;
     this.modalEl = null;
@@ -1705,6 +1772,59 @@ export class Menu {
       else this.refocus();
     }
     if (onClose !== null) onClose();
+  }
+
+  /**
+   * OK / A on a text field with no fine pointer (a TV remote, a phone's controller): mn-keypad
+   * (components/keypad.ts) over the screen and any sheet, the rest inert, the focus on its first
+   * key. False with a fine pointer (the field edits as before) or when it is up already.
+   */
+  openKeypad(field: HTMLElement): boolean {
+    if (finePointer() || !(field instanceof HTMLInputElement) || this.keypad !== null || !this.root.contains(field)) return false;
+    const spec = keypadSpec(field);
+    const label = field.getAttribute('aria-label') ?? field.closest('label')?.querySelector('.mn-field-label')?.textContent ?? '';
+    const view = keypadBox({ label, value: field.value, kind: spec.kind ?? 'text', masked: field.type === 'password', max: field.maxLength > 0 ? field.maxLength : 64, done: () => this.closeKeypad(true), focus: (el) => this.nav.focus(el) });
+    this.keypad = { view, field };
+    setChildren(this.keypadLayer, view.el);
+    this.keypadLayer.hidden = false;
+    this.modalLayer.inert = true;
+    this.setBackgroundInert(true);
+    this.mountedAt = performance.now();
+    this.nav.reset();
+    this.nav.first();
+    return true;
+  }
+
+  /** The keypad down, its text written to its field (`done`: LISTO, else Back), the focus back on the field. */
+  private closeKeypad(done: boolean): void {
+    const k = this.keypad;
+    if (k === null) return;
+    this.dropKeypad();
+    // The text first (its input event would put a focused field in editing mode), then the field
+    // in navigation mode, as the arrows leave it (gone when LISTO joined: the sheet refocuses).
+    const spec = keypadSpec(k.field);
+    const value = k.view.value();
+    if (spec.write) spec.write(value, done);
+    else keypadWrite(k.field, value);
+    if (k.field.isConnected && this.nav.targets().includes(k.field)) this.nav.focus(k.field);
+    else this.refocus(); // its screen rebuilt under it: the remote is never left on nothing
+  }
+
+  /** The keypad gone without a word (its sheet closed, the menus hid). */
+  private dropKeypad(): void {
+    if (this.keypad === null) return;
+    this.keypad = null;
+    this.keypadLayer.hidden = true;
+    this.keypadLayer.textContent = '';
+    this.modalLayer.inert = false;
+    this.setBackgroundInert(this.modalEl !== null);
+    this.mountedAt = performance.now();
+    this.nav.reset();
+  }
+
+  /** mn-keypad is up (tests, ui-fit). */
+  get keypadOpen(): boolean {
+    return this.keypad !== null;
   }
 
   get modalOpen(): boolean {

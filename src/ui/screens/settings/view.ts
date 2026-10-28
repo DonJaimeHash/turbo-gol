@@ -7,31 +7,56 @@
  *   when there are more, the last input's first), its sensitivities first, then its bindings
  *   (mn-bind: the key or button cell, A captures it, ✕ / Delete / pad X clears it; Esc cancels a
  *   capture, a controller's B held 1 s too, Input.ts; another action on the same key is said, not
- *   swapped) and its layouts.
+ *   swapped) and its layouts. TÁCTIL: the hold-JUMP switch, then the controls' size, opacity, side,
+ *   stick, deadzone and vibration (settings.touch; vibration only where the browser can).
  * - CÁMARA: the presets by name (the default marked), then the sliders with the default's mark.
- * - JUEGO and AUDIO: the rest of the old Gameplay rows and the master volume, each with its reset.
- * - GRÁFICOS: the tiers as cards (Super low only for unlocked players, quality.ts menuQualities); the
- *   running one always lit (ACTUAL); ◀ ▶ only move the focus, A applies; the old tier comes back by
- *   itself 10 s later unless kept (a tier that reloads the page has no trial: it restarts).
+ * - JUEGO: the rest of the old Gameplay rows, then INTERFAZ: the language (the menus only: a picker
+ *   sheet, a reload), the interface size (the sizes the layout class lists) and reduced motion
+ *   (settings.ui, src/ui/device.ts); its reset. AUDIO: the master volume and its reset.
+ * - GRÁFICOS: Performance, High and Ultra as cards (quality.ts CARD_QUALITIES); the running one
+ *   always lit (ACTUAL); ◀ ▶ only move the focus, A applies; the old tier comes back by itself 10 s
+ *   later unless kept (a tier that reloads the page has no trial: it restarts). Then OPCIONES: the
+ *   resolution scale, the frame limit, the menus' animated stadium and the Super low switch
+ *   (everyone's; A only: it restarts the game, online once the match is left); RESTABLECER
+ *   GRÁFICOS puts the three options back (the tier is a pick of its own).
  * - EXPERIMENTAL: src/render/experimentalPage.ts through expKit.ts; a guest gets its locked line and,
  *   in the menus, SIGN IN (PERFIL as a detour: a sign-in comes back here).
+ *
+ * Under the rail, "Se guarda solo": every change is saved at once, in this browser.
  *
  * Back, inside: a capture cancels, then the focus goes from the page to its tab; the host closes it
  * after (backModel's sheet and field steps are the host's). Built on the first open; nothing runs
  * per frame (a 500 ms timer while open and in sight: the controller's status, the trial's clock).
  */
 import { h, navButton, setChildren } from '../../dom';
-import { t, type Key } from '../../../i18n';
+import { LOCALES, savedLanguage, systemLanguage, t, type Key } from '../../../i18n';
 import { ACTION_ROWS, bindingsEqual, type ActionId, type Binding, type BindingPreset, type Device } from '../../../input/bindings';
-import { CAMERA_RANGES, CLASSIC_CAMERA_DEFAULTS, CONTROL_RANGES, DEFAULT_AUDIO, DEFAULT_CAMERA, DEFAULT_CONTROL_SETTINGS, VOLUME_RANGE, type ControlSettings, type Settings } from '../../../settings';
+import {
+  CAMERA_RANGES,
+  CLASSIC_CAMERA_DEFAULTS,
+  CONTROL_RANGES,
+  DEFAULT_AUDIO,
+  DEFAULT_CAMERA,
+  DEFAULT_CONTROL_SETTINGS,
+  DEFAULT_TOUCH,
+  DEFAULT_UI,
+  TOUCH_DEADZONE_RANGE,
+  TOUCH_OPACITY_RANGE,
+  VOLUME_RANGE,
+  type ControlSettings,
+  type MotionPref,
+  type Settings,
+  type TouchSize,
+} from '../../../settings';
 import type { CameraSettings } from '../../../render/Camera';
-import { QUALITIES, needsReload, type Quality } from '../../../render/quality';
+import { CARD_QUALITIES, DEFAULT_RESOLUTION_SCALE, RESOLUTION_SCALE_RANGE, needsReload, type FpsCap, type Quality } from '../../../render/quality';
+import { canVibrate } from '../../../input/TouchControls';
 import { buildExperimentalPage, type ExperimentalOptions, type ExperimentalPage } from '../../../render/experimentalPage';
 import { icon } from '../../components/icons';
 import { glyph } from '../../components/glyphs';
 import { seg, type Seg } from '../../components/seg';
 import { setRow, slider, toggleSwitch, type Slider, type Switch } from '../../components/rows';
-import { finePointer, type InputKind } from '../../device';
+import { finePointer, interfaceSize, interfaceSizes, layoutClass, type InputKind, type LayoutClass } from '../../device';
 import { experimentalKit, pageItemOf } from './expKit';
 import {
   SETTINGS_TABS,
@@ -42,6 +67,7 @@ import {
   keptSection,
   memoryTag,
   openingSection,
+  qualityLine,
   startTrial,
   stepSettingsTab,
   trialSecondsLeft,
@@ -70,9 +96,9 @@ export interface RebindSource {
 export interface SettingsOptions {
   /** The tier lit: the running one, or a pick waiting for the online match to end. */
   readonly quality: Quality;
-  /** The tiers listed (quality.ts menuQualities: Super low only for unlocked players). */
+  /** The tiers shown as cards (quality.ts CARD_QUALITIES: Super low is the switch under them). */
   readonly qualities: readonly Quality[];
-  /** The line while the running tier is not listed (a device on Super low by itself). */
+  /** The line while the running tier is no card (a device on Super low by itself; '' for the player's own pick). */
   readonly qualityNote: string;
   /** A pick that waits for the online match to end (it reloads the page), or null. */
   readonly pending: Quality | null;
@@ -87,6 +113,13 @@ export interface SettingsOptions {
   onCameraPreset(): void;
   /** A tier picked: switched behind the loading screen (settled when it is done). */
   onQualityChange(q: Quality): Promise<void>;
+  /** The Super low switch: on restarts into it, off back to Performance (or drops a pick still waiting for the online match). */
+  onSuperlow(on: boolean): Promise<void>;
+  /** GRÁFICOS' options (the Game's prefs). */
+  graphics(): { readonly resolutionScale: number; readonly fpsCap: FpsCap; readonly menuSceneAnimated: boolean };
+  setResolutionScale(pct: number): void;
+  setFpsCap(cap: FpsCap): void;
+  setMenuSceneAnimated(on: boolean): void;
 }
 
 /** What the host gives the view. */
@@ -99,6 +132,8 @@ export interface SettingsHooks {
   refocus(): void;
   /** A guest's SIGN IN (the menus: PERFIL as a detour). */
   signIn?(): void;
+  /** JUEGO's language picker (the menus only: the change reloads the page). */
+  language?(): void;
 }
 
 const QUALITY_HINTS: Readonly<Record<Quality, Key>> = {
@@ -154,6 +189,12 @@ const CONTROL_ROWS: Readonly<Record<ControlSection | 'game', ReadonlyArray<{ key
   ],
 };
 
+/** TÁCTIL's sizes, in order. */
+const TOUCH_SIZES: readonly TouchSize[] = ['S', 'M', 'L'];
+
+/** Every interface size a class may list (device.ts interfaceSizes): the seg shows its class's. */
+const ALL_UI_SIZES: readonly number[] = [100, 115, 125, 130, 150];
+
 /** The camera presets' values (field of view / distance / height), shown after their names. */
 const PRESET_VALUES: Readonly<Record<CameraPreset, string>> = { default: '110/270/100', classic: '90/270/100' };
 
@@ -162,6 +203,12 @@ interface BindRow {
   readonly device: Device;
   readonly row: HTMLElement;
   readonly cell: HTMLButtonElement;
+}
+
+/** The layout class now (device.ts, `data-layout` on <html>; before it is set, from the window). */
+function layoutNow(): LayoutClass {
+  const v = document.documentElement.dataset.layout;
+  return v === 'pc' || v === 'short' || v === 'phone' || v === 'portrait' || v === 'tablet' || v === 'tv' ? v : layoutClass(window.innerWidth, window.innerHeight, false);
 }
 
 /** The last input (device.ts, `data-input` on <html>). */
@@ -220,6 +267,10 @@ export class SettingsView {
 
   // GRÁFICOS
   private readonly cards = new Map<Quality, { el: HTMLButtonElement; tag: HTMLElement }>();
+  private uiSizes: Seg<number> | null = null;
+  private uiSizeRow: HTMLElement | null = null;
+  private langValue: HTMLElement | null = null;
+  private readonly savedLine: HTMLElement;
   private qualityLine: HTMLElement | null = null;
   private trialBar: HTMLElement | null = null;
   private trialText: HTMLElement | null = null;
@@ -261,11 +312,13 @@ export class SettingsView {
     this.expLock = h('small.mn-set-tab-sub', { hidden: true }, t('settings.signInShort'));
     this.tabButtons.get('experimental')?.querySelector('.mn-set-tab-text')?.append(this.expLock);
     const keys = h('span.mn-modes-keys', { 'aria-hidden': 'true' }, h('span.mn-keys-kb', null, glyph('key-q'), glyph('key-e')), h('span.mn-keys-pad', null, glyph('pad-lb'), glyph('pad-rb')));
+    this.savedLine = h('p.mn-set-saved-text');
     this.rail = h(
       'nav.mn-set-side',
       { 'aria-label': t('settings.tabsLabel') },
       h('div.mn-set-side-head', null, h('span.mn-set-label', null, t('settings.section')), keys),
       h('div.mn-tabs.mn-set-tabs', { role: 'tablist', 'aria-orientation': 'vertical', 'aria-label': t('settings.tabsLabel') }, ...this.tabButtons.values()),
+      h('div.mn-set-saved', null, h('span.mn-set-saved-title', null, icon('check'), t('settings.savedTitle')), this.savedLine),
     );
     this.title = h('h1.mn-set-title', { 'data-fit': '20' });
     this.sub = h('p.mn-set-sub');
@@ -506,7 +559,8 @@ export class SettingsView {
         el.append(this.padStatus);
       } else if (s === 'kbm') el.append(h('p.mn-set-note', null, t('settings.mouseNote')), h('p.mn-set-note', null, t('settings.arrowsNote')));
       for (const r of CONTROL_ROWS[s]) el.append(this.controlRow(r.key, r.label));
-      if (s !== 'touch') el.append(...this.bindList(s));
+      if (s === 'touch') el.append(...this.touchRows());
+      else el.append(...this.bindList(s));
       this.sectionEls.set(s, el);
       page.append(el);
     }
@@ -595,15 +649,93 @@ export class SettingsView {
   }
 
   private buildGame(): [HTMLElement, HTMLElement | null] {
-    const page = h('div.mn-set-game', null, ...CONTROL_ROWS.game.map((r) => this.controlRow(r.key, r.label)));
+    const page = h('div.mn-set-game', null, ...CONTROL_ROWS.game.map((r) => this.controlRow(r.key, r.label)), this.group(t('settings.groupInterface')));
+    const language = this.hooks.language;
+    if (language !== undefined) {
+      this.langValue = h('span.mn-set-picker-value');
+      const picker = navButton('mn-set-picker.mn-set-row-ctl', [this.langValue, icon('next')], language, { 'data-key': 'set-language', 'aria-label': t('lang.title') });
+      page.append(setRow(t('lang.title'), picker, t('lang.reloadNote')));
+    }
+    const sizeText = t('settings.uiSize');
+    const sizes = seg<number>(
+      'set-ui-size',
+      sizeText,
+      ALL_UI_SIZES.map((v) => ({ value: v, label: `${v} %` })),
+      () => interfaceSize(layoutNow(), this.live?.ui.size ?? DEFAULT_UI.size),
+      (v) => {
+        const st = this.live;
+        if (st === null) return;
+        st.ui.size = v;
+        this.changed();
+      },
+    );
+    this.uiSizes = sizes;
+    this.refreshers.push(sizes.refresh);
+    this.uiSizeRow = setRow(sizeText, sizes.el);
+    page.append(this.uiSizeRow);
+    const motionText = t('settings.reducedMotion');
+    const motion = seg<MotionPref>(
+      'set-motion',
+      motionText,
+      [
+        { value: 'system', label: t('settings.motionSystem') },
+        { value: 'on', label: t('settings.on') },
+        { value: 'off', label: t('settings.off') },
+      ],
+      () => this.live?.ui.motion ?? DEFAULT_UI.motion,
+      (v) => {
+        const st = this.live;
+        if (st === null) return;
+        st.ui.motion = v;
+        this.changed();
+      },
+    );
+    this.refreshers.push(motion.refresh);
+    page.append(setRow(motionText, motion.el, t('settings.reducedMotionHelp')));
     const reset = this.actionButton('reset-game', t('settings.resetGameplay'), () => {
       const st = this.live;
       if (st === null) return;
       Object.assign(st.controls, DEFAULT_CONTROL_SETTINGS);
+      Object.assign(st.ui, DEFAULT_UI);
       this.refreshAll();
       this.changed(true);
     });
     return [page, reset];
+  }
+
+  /** TÁCTIL's rows of settings.touch, after the hold-JUMP switch. */
+  private touchRows(): HTMLElement[] {
+    const touch = (): Settings['touch'] => this.live?.touch ?? DEFAULT_TOUCH;
+    const write = (fn: (t: Settings['touch']) => void): void => {
+      const st = this.live;
+      if (st === null) return;
+      fn(st.touch);
+      this.changed();
+    };
+    const rows: HTMLElement[] = [];
+    const add = (label: Key, ctl: { el: HTMLElement; refresh(): void }, help?: Key): void => {
+      this.refreshers.push(ctl.refresh);
+      rows.push(setRow(t(label), ctl.el, help !== undefined ? t(help) : undefined));
+    };
+    add('settings.touchSize', seg<TouchSize>('set-tc-size', t('settings.touchSize'), TOUCH_SIZES.map((v) => ({ value: v, label: v })), () => touch().size, (v) => write((x) => (x.size = v))));
+    add('settings.touchOpacity', slider('set-tc-opacity', t('settings.touchOpacity'), TOUCH_OPACITY_RANGE, ' %', () => touch().opacity, (v) => write((x) => (x.opacity = v)), DEFAULT_TOUCH.opacity));
+    add('settings.touchLefty', toggleSwitch('set-tc-lefty', t('settings.touchLefty'), () => touch().lefty, (v) => write((x) => (x.lefty = v))), 'settings.touchLeftyHelp');
+    add(
+      'settings.touchStick',
+      seg<'floating' | 'fixed'>(
+        'set-tc-stick',
+        t('settings.touchStick'),
+        [
+          { value: 'floating', label: t('settings.touchStickFloating') },
+          { value: 'fixed', label: t('settings.touchStickFixed') },
+        ],
+        () => touch().stick,
+        (v) => write((x) => (x.stick = v)),
+      ),
+    );
+    add('settings.touchDeadzone', slider('set-tc-deadzone', t('settings.touchDeadzone'), TOUCH_DEADZONE_RANGE, '', () => touch().deadzone, (v) => write((x) => (x.deadzone = v)), DEFAULT_TOUCH.deadzone));
+    if (canVibrate()) add('settings.touchVibration', toggleSwitch('set-tc-vibration', t('settings.touchVibration'), () => touch().vibration, (v) => write((x) => (x.vibration = v))));
+    return rows;
   }
 
   private buildAudio(): [HTMLElement, HTMLElement | null] {
@@ -640,7 +772,7 @@ export class SettingsView {
 
   private buildGraphics(): [HTMLElement, HTMLElement | null] {
     const row = h('div.mn-qcards', { role: 'radiogroup', 'aria-label': t('settings.quality'), 'data-nav-row': true });
-    for (const q of QUALITIES) {
+    for (const q of CARD_QUALITIES) {
       const tag = h('span.mn-qcard-tag');
       const bars = h('span.mn-qcard-bars', { 'aria-hidden': 'true' }, ...[1, 2, 3].map((i) => h(`span.mn-qcard-bar${i <= QUALITY_BARS[q] ? '.mn-qcard-bar-on' : ''}` as 'span')));
       const el = h(
@@ -659,7 +791,45 @@ export class SettingsView {
     this.trialRevert = this.actionButton('q-revert', '', () => this.revertTrial());
     this.trialBar = h('div.mn-qtrial', { hidden: true, role: 'alert' }, this.trialText, h('div.mn-set-buttons', { 'data-nav-row': true }, this.trialKeep, this.trialRevert));
     const page = h('div.mn-set-graphics', null, h('h2.mn-set-group', null, t('settings.quality')), row, this.trialBar, this.qualityLine, h('p.mn-set-note', null, icon('info'), t('settings.qualityTrialNote')));
-    return [page, null];
+    page.append(this.group(t('settings.graphicsOptions')));
+    const g = () => this.opts?.graphics() ?? null;
+    const add = (label: Key, ctl: { el: HTMLElement; refresh(): void }, help: Key): void => {
+      this.refreshers.push(ctl.refresh);
+      page.append(setRow(t(label), ctl.el, t(help)));
+    };
+    add(
+      'settings.resolutionScale',
+      slider('set-res-scale', t('settings.resolutionScale'), RESOLUTION_SCALE_RANGE, ' %', () => g()?.resolutionScale ?? DEFAULT_RESOLUTION_SCALE, (v) => this.opts?.setResolutionScale(v), DEFAULT_RESOLUTION_SCALE),
+      'settings.resolutionScaleHelp',
+    );
+    add(
+      'settings.fpsCap',
+      seg<FpsCap>(
+        'set-fps-cap',
+        t('settings.fpsCap'),
+        [
+          { value: 30, label: '30' },
+          { value: 60, label: '60' },
+          { value: 0, label: t('settings.fpsNone') },
+        ],
+        () => g()?.fpsCap ?? 0,
+        (v) => this.opts?.setFpsCap(v),
+      ),
+      'settings.fpsCapHelp',
+    );
+    add('settings.menuScene', toggleSwitch('set-menu-scene', t('settings.menuScene'), () => g()?.menuSceneAnimated ?? true, (v) => this.opts?.setMenuSceneAnimated(v)), 'settings.menuSceneHelp');
+    // Super low restarts the game: A (or a click) only, never ◀ ▶ (as the cards).
+    add('settings.superlow', toggleSwitch('set-superlow', t('settings.superlow'), () => this.opts?.quality === 'superlow', (v) => void this.pickSuperlow(v), false), 'settings.superlowHelp');
+    const reset = this.actionButton('reset-graphics', t('settings.resetGraphics'), () => {
+      const o = this.opts;
+      if (o === null) return;
+      o.setResolutionScale(DEFAULT_RESOLUTION_SCALE);
+      o.setFpsCap(0);
+      o.setMenuSceneAnimated(true);
+      this.refreshAll();
+    });
+    reset.prepend(icon('refresh'));
+    return [page, reset];
   }
 
   private buildExperimental(): [HTMLElement, HTMLElement | null] {
@@ -694,6 +864,21 @@ export class SettingsView {
     this.expLock.hidden = !guest;
     this.tabButtons.get('experimental')?.setAttribute('aria-label', guest ? `${experimentalTabLabel(false)}: ${t('settings.signInShort')}` : experimentalTabLabel(true));
     if (this.expSignIn !== null) this.expSignIn.hidden = !guest;
+    setText(this.savedLine, t(guest ? 'settings.savedGuest' : 'settings.savedAccount'));
+    if (this.langValue !== null) {
+      const saved = savedLanguage();
+      setText(this.langValue, saved === null ? t('lang.auto', { language: LOCALES[systemLanguage()].name }) : LOCALES[saved].name);
+    }
+    if (this.uiSizes !== null && this.uiSizeRow !== null) {
+      // This screen's sizes (a turn changes them); one alone (a small phone): no row.
+      const listed = interfaceSizes(layoutNow(), window.innerWidth, window.innerHeight);
+      this.uiSizes.buttons.forEach((b, i) => {
+        const off = !listed.includes(ALL_UI_SIZES[i]);
+        if (b.hidden !== off) b.hidden = off;
+      });
+      const alone = listed.length < 2;
+      if (this.uiSizeRow.hidden !== alone) this.uiSizeRow.hidden = alone;
+    }
   }
 
   /** The devices detected now (a controller comes and goes): the sections and their picker. */
@@ -876,7 +1061,8 @@ export class SettingsView {
       setText(this.trialText, t('settings.qualityReverting', { quality: t(`quality.${tr.from}`), seconds: trialSecondsLeft(tr, performance.now()) }));
       setText(this.trialRevert, t('settings.qualityRevert', { quality: t(`quality.${tr.from}`).toLocaleUpperCase() }));
     }
-    const line = !o.qualities.includes(lit) ? o.qualityNote : o.pending !== null ? t('settings.qualityAfterOnline') : '';
+    const kind = qualityLine(lit, o.qualities, o.pending);
+    const line = kind === 'afterOnline' ? t('settings.qualityAfterOnline') : kind === 'note' ? o.qualityNote : '';
     setText(this.qualityLine, line);
     this.qualityLine.hidden = line === '';
   }
@@ -911,6 +1097,15 @@ export class SettingsView {
     this.trial = back === q || this.held ? null : startTrial(back, q, performance.now());
     this.refreshQuality();
     if (this.trial !== null && this.trialKeep !== null && !touchMode() && this.openNow) this.hooks.focus(this.trialKeep);
+  }
+
+  /** The Super low switch: on restarts into it, off back to Performance (Game.settingsOptions onSuperlow). */
+  private async pickSuperlow(on: boolean): Promise<void> {
+    const o = this.opts;
+    if (o === null || this.switching || on === (o.quality === 'superlow')) return;
+    this.endTrial();
+    await o.onSuperlow(on);
+    this.refresh();
   }
 
   /** KEEP (or Ajustes left): the tier stays. */

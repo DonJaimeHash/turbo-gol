@@ -87,8 +87,11 @@ export interface Switch {
   refresh(): void;
 }
 
-/** NO │ SÍ: ◀ NO, ▶ SÍ, A / Enter / a click on the switch flips it, a click on a side picks that side. */
-export function toggleSwitch(key: string, label: string, get: () => boolean, set: (v: boolean) => void): Switch {
+/**
+ * NO │ SÍ: ◀ NO, ▶ SÍ, A / Enter / a click on the switch flips it, a click on a side picks that side.
+ * `sides` false: ◀ ▶ leave it alone (a switch that restarts the game takes A only, as a quality card).
+ */
+export function toggleSwitch(key: string, label: string, get: () => boolean, set: (v: boolean) => void, sides = true): Switch {
   const no = h('span.mn-switch-opt', null, t('settings.off'));
   const yes = h('span.mn-switch-opt', null, t('settings.on'));
   const pick = (v: boolean): void => {
@@ -115,7 +118,7 @@ export function toggleSwitch(key: string, label: string, get: () => boolean, set
     no.classList.toggle('mn-switch-on', !on);
     yes.classList.toggle('mn-switch-on', on);
   };
-  onNavSide(el, () => pick(false), () => pick(true));
+  if (sides) onNavSide(el, () => pick(false), () => pick(true));
   refresh();
   return { el, refresh };
 }

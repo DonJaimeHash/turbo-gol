@@ -290,22 +290,14 @@
   height: 1.125rem;
 }
 
-/* ---- ACERCA DE and IDIOMA ------------------------------------------------------------------------ */
-.mn-prof-foot {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
-  gap: 0 1.5rem;
-  align-items: start;
-}
-
+/* ---- ACERCA DE ----------------------------------------------------------------------------------- */
 .mn-prof-about {
   margin: 0 0 0.5rem;
   overflow-wrap: anywhere;
 }
 
 /* ---- Per class ------------------------------------------------------------------------------------ */
-html[data-layout='portrait'] .mn-prof-account,
-html[data-layout='portrait'] .mn-prof-foot {
+html[data-layout='portrait'] .mn-prof-account {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -329,4 +321,53 @@ html[data-layout='portrait'] .mn-profile-name {
 html[data-shell='rail'] .mn-prof-form,
 html[data-layout='portrait'] .mn-prof-form {
   padding: 1rem;
+}
+
+/* ---- A TV: sign in with the phone (screens/tvSignIn.ts) -------------------------------------- */
+.mn-prof-phone {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  min-height: 4.5rem;
+  padding: 0.75rem 1.5rem 0.75rem 1.25rem;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  background: var(--surface-1-94);
+  border: 1px solid var(--edge-hi);
+  border-radius: var(--r-tile);
+  cursor: pointer;
+}
+
+.mn-prof-phone-text {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.mn-prof-phone-title {
+  font: 600 var(--t-title) / 1 var(--font-display);
+  text-transform: uppercase;
+}
+
+.mn-prof-phone-sub,
+.mn-tvsign-line,
+.mn-tvsign-left {
+  color: var(--text-2);
+  font-size: var(--t-body);
+}
+
+.mn-tvsign-line {
+  max-width: 17rem;
+}
+
+.mn-tvsign-state {
+  font-size: var(--t-heading);
+}
+
+/* The phone's question: the code as big as the TV writes it, to compare. */
+.mn-tvlink-code {
+  display: block;
+  margin: 0.25rem 0 0.75rem;
+  color: var(--text);
 }

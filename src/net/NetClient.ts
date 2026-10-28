@@ -8,7 +8,9 @@
  *                   (GUEST_STORAGE_KEY). With a sitekey the token comes from a Turnstile widget
  *                   rendered into the Hud's container (Turnstile.getToken; onTurnstile reports the
  *                   challenge to the UI); 403 turnstile_failed / 503 turnstile_unconfigured and a
- *                   client-side challenge failure reject with NetError 'turnstile'
+ *                   client-side challenge failure reject with NetError 'turnstile'. Inicio pre-warms
+ *                   one token (prewarmAntiBot, kept WARM_MS) for the next registration; a check that
+ *                   wants the player says so (onAntiBotAsk: the menus' sheet, its CANCEL ends it)
  *   matchmaking     POST /api/queue { mode, kind, p2pProtocol? } (Bearer session) long-poll loop
  *                   until 'matched' (a 'p2p' queue states P2P_PROTOCOL_VERSION: a stale page gets
  *                   426 reload_required);
@@ -96,6 +98,8 @@ export const GUEST_STORAGE_KEY = STORAGE_PREFIX + 'guest';
 export const PING_INTERVAL_MS = 250;
 /** A guest session is renewed when it expires within this many ms. */
 const SESSION_MIN_REMAINING_MS = 60_000;
+/** A pre-warmed Turnstile token is kept this long (Cloudflare accepts one for 300 s). */
+export const WARM_MS = 270_000;
 
 // ---- Injectable environment ----------------------------------------------------------------
 
@@ -497,6 +501,11 @@ export class NetClient {
   onError: ((code: string, message: string) => void) | null = null;
   /** A Turnstile challenge started (true) / finished (false), for the menu's status line. */
   onTurnstile: ((active: boolean) => void) | null = null;
+  /** The check on screen wants the player (true: the menus' sheet, its CANCEL is cancelChallenge) / no longer (false). */
+  onAntiBotAsk: ((asking: boolean) => void) | null = null;
+  /** A token solved ahead (prewarmAntiBot), for the next challenge. */
+  private warm: { token: string; at: number } | null = null;
+  private warming = false;
 
   /**
    * Anti-bot flows run one at a time (exclusive): the Hud has a single widget slot that
@@ -696,6 +705,29 @@ export class NetClient {
   }
 
   /**
+   * Inicio opened: with a sitekey and no guest session stored, solve the check now and keep its
+   * token for the next registration (a guest's, a sign-up's), so JUGAR rarely waits for it. A check
+   * that wants an interaction is dropped quietly: the registration's own asks the player.
+   */
+  prewarmAntiBot(): void {
+    if (this.warming || (this.warm !== null && this.now() - this.warm.at < WARM_MS)) return;
+    if (sessionValid(this.guest) && this.guest.name === this.name) return;
+    this.warming = true;
+    void (async () => {
+      try {
+        const siteKey = (await this.config()).turnstileSiteKey;
+        if (siteKey === null) return;
+        const token = await this.exclusive(undefined, () => this.challenge(siteKey, undefined, true));
+        this.warm = { token, at: this.now() };
+      } catch {
+        /* offline, refused, wanted a click: the next registration runs its own check */
+      } finally {
+        this.warming = false;
+      }
+    })();
+  }
+
+  /**
    * Ends the anti-bot challenge on screen and drops the flows waiting for the widget (the menus
    * closed into a match: nobody is there to solve it). They reject with NetError 'cancelled'.
    */
@@ -726,8 +758,15 @@ export class NetClient {
     }
   }
 
-  /** One Turnstile challenge in the Hud's container; onTurnstile brackets it for the status line. Run under exclusive(). */
-  private async challenge(siteKey: string, signal?: AbortSignal): Promise<string> {
+  /**
+   * One Turnstile challenge in the Hud's container (or the pre-warmed token, while fresh);
+   * onTurnstile brackets it for the status line, onAntiBotAsk an interaction. `quiet`: the pre-warm,
+   * which reports nothing and gives up on an interaction. Run under exclusive().
+   */
+  private async challenge(siteKey: string, signal?: AbortSignal, quiet = false): Promise<string> {
+    const warm = this.warm;
+    this.warm = null;
+    if (warm !== null && this.now() - warm.at < WARM_MS) return warm.token;
     const container = this.turnstileContainer();
     if (container === null) throw new NetError('turnstile', 'no element to render the Turnstile widget into');
     const ctrl = new AbortController();
@@ -737,9 +776,14 @@ export class NetClient {
       else signal.addEventListener('abort', onAbort);
     }
     this.challengeAbort = ctrl;
-    if (this.onTurnstile) this.onTurnstile(true);
+    if (this.onTurnstile && !quiet) this.onTurnstile(true);
+    const onInteractive = (on: boolean): void => {
+      if (quiet) {
+        if (on) ctrl.abort();
+      } else if (this.onAntiBotAsk) this.onAntiBotAsk(on);
+    };
     try {
-      return await turnstileToken(siteKey, container, { load: this.turnstileLoader, signal: ctrl.signal });
+      return await turnstileToken(siteKey, container, { load: this.turnstileLoader, signal: ctrl.signal, onInteractive });
     } catch (err) {
       if (signal !== undefined && signal.aborted) throw new NetError('cancelled', 'queue cancelled');
       if (ctrl.signal.aborted) throw new NetError('cancelled', 'challenge cancelled');
@@ -747,7 +791,7 @@ export class NetClient {
     } finally {
       if (signal !== undefined) signal.removeEventListener('abort', onAbort);
       if (this.challengeAbort === ctrl) this.challengeAbort = null;
-      if (this.onTurnstile) this.onTurnstile(false);
+      if (this.onTurnstile && !quiet) this.onTurnstile(false);
     }
   }
 

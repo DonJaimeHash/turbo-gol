@@ -5,7 +5,8 @@
  * the short Bearer session (1 h) refreshed from the HttpOnly refresh cookie, the profile (/api/me:
  * ratings per playlist, ranked ban, the experimental switch), the leaderboard, the rating change of
  * a ranked match, the account's training records (/api/me/training) and its experimental switch
- * and physics presets (/api/me/experimental, /api/me/presets: src/game/experimentalStore.ts).
+ * and physics presets (/api/me/experimental, /api/me/presets: src/game/experimentalStore.ts), a
+ * TV's sign-in with the phone (/api/auth/tv/*: the TV starts and polls, the phone confirms).
  *
  * Persistence: the refresh token is an HttpOnly cookie the page cannot read; localStorage only keeps
  * a hint (ACCOUNT_HINT_KEY: "this browser was signed in as X", `{ name, id }`) so a guest's page
@@ -21,7 +22,7 @@
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
 import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer } from './account';
+import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvPollAnswer, TvStartAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { STORAGE_PREFIX } from '../brand';
 import { MAX_PRESETS, parsePresetList } from '../game/physicsRules';
@@ -343,6 +344,33 @@ export class AccountClient {
   }
 
   /** Full-page redirect target of the "Sign in with Google / Discord" buttons (`link`: add it to the signed-in account). */
+  // ---- the TV's sign-in with the phone (server/src/tvCodes.ts) -----------------------------------
+
+  /** A TV: a code to show and the device secret to poll with (POST /api/auth/tv/start, no session). */
+  async tvStart(): Promise<TvStartAnswer> {
+    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', {}));
+  }
+
+  /**
+   * A TV: the phone's answer so far. Approved, the session comes back NOT adopted yet: the caller
+   * closes its sheet first, then signInWith (the return with intent runs on the change).
+   */
+  async tvPoll(code: string, secret: string): Promise<TvPollAnswer> {
+    const r = await this.jsonOrFail<TvPollAnswer>(await this.call('/api/auth/tv/poll', { code, secret }));
+    if (r.state === 'approved' && !isSession(r)) throw new AccountError(t('error.server'), 200, 'protocol');
+    return r;
+  }
+
+  /** The approved TV's session (tvPoll), adopted as a sign-in's. */
+  signInWith(s: AccountSession): AccountSession {
+    return this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt });
+  }
+
+  /** The phone (/tv): this account signs the TV showing `code` in (POST /api/auth/tv/confirm). */
+  async tvConfirm(code: string): Promise<void> {
+    await this.jsonOrFail<{ ok: true }>(await this.call('/api/auth/tv/confirm', { code }, await this.bearer()));
+  }
+
   oauthUrl(provider: OAuthProvider, link = false): string {
     return `${this.apiBase}/api/auth/oauth/${provider}/start${link ? '?link=1' : ''}`;
   }

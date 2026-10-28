@@ -44,6 +44,14 @@
   border-radius: var(--r-tile);
 }
 
+/* Left-handed touch controls (Settings > Controls > Touch, touch.css tc-lefty): their buttons take
+   the left side, ↺ and CAM over JUMP, so the panel goes right, clear of PAUSE (its top-right corner
+   in touch.css: 24 px in, 69 px wide at size L). */
+.tc-on > .tc-root.tc-lefty ~ .trn-root .trn-panel {
+  right: calc(var(--safe-right) + 105px);
+  left: auto;
+}
+
 .trn-title {
   font-family: var(--font-display);
   font-size: clamp(15px, 2.4vh, 22px);

@@ -8,7 +8,8 @@
  * password, recovery codes, link a provider, sign out), COMUNIDAD (Discord, host a server, the
  * source), ACERCA DE (version, licences, the technical line).
  *
- * A guest, one column for the arrows: CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's
+ * A guest, one column for the arrows: on a TV first INICIAR SESIÓN CON EL TELÉFONO (focused: the
+ * code and its QR in a sheet, screens/tvSignIn.ts), then CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's
  * two tabs (`.mn-tabs`, a nav row: Q / E step them, the hint bar says so), then the tab's form
  * ("Forgot your password?" under the sign-in form is a link to the recovery form), the guest name. Fields say what a
  * phone keyboard's Enter does (enterkeyhint: next, then go / done) and Enter does it (onEnter); the
@@ -16,8 +17,8 @@
  * Competitive's SIGN IN goes back there (modes.ts: the return with intent). Passwords go through
  * AccountClient (hashed in the browser before they leave). Usernames and passwords are checked here
  * first (usernameIssue / passwordIssue, the same rules AccountClient and the server apply) so the
- * form shows the reason in the player's language. Both views end with the language (IDIOMA:
- * components/language.ts, a reload) until Settings › Game has it (PR 11).
+ * form shows the reason in the player's language. Both views end with ACERCA DE (the language is
+ * Settings › Game's Idioma, PR 11).
  * In development (or a VITE_UI_FIT=1 build) window.__profile(kind | null) shows an account's or an
  * operator's sample (scripts/ui-fit.mjs).
  */
@@ -30,14 +31,15 @@ import { ratingCard, rankBadge, tierById } from '../badges';
 import { regionName } from '../names';
 import type { Menu, Screen } from '../Menu';
 import { field, primary, screenHead, secondary, section } from './common';
-import { openLanguagePicker } from '../components/language';
+import { finePointer } from '../device';
 import { icon } from '../components/icons';
 import type { IconName } from '../components/icons';
 import { slot } from '../components/tile';
-import { LOCALES, language, t } from '../../i18n';
+import { language, t } from '../../i18n';
 import type { Key } from '../../i18n';
 import { DISCORD_URL, GAME_NAME, SOURCE_URL } from '../../brand';
 import { version } from '../../../package.json';
+import { openTvSignIn } from './tvSignIn';
 
 /** A node's state in words (nodes/shared/controlProtocol.ts NodeStatus). */
 const NODE_STATE: Readonly<Record<MyNode['status'], Key>> = {
@@ -57,7 +59,8 @@ const HOST_GUIDE = (): string => `${SOURCE_URL}/blob/main/nodes/${language() ===
 
 const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
 
-function errText(e: unknown): string {
+/** An account error in the player's words (a throttle with its seconds). */
+export function errText(e: unknown): string {
   if (e instanceof AccountError) {
     if (e.code === 'throttled' && e.retryAfterMs > 0) return t('profile.retryAfter', { message: e.message, seconds: Math.ceil(e.retryAfterMs / 1000) });
     return e.message;
@@ -135,6 +138,7 @@ export function profileScreen(menu: Menu): Screen {
   const acc = menu.host.accounts;
   const body = h('div.mn-profile-body');
   const touch = (): boolean => document.documentElement.classList.contains('tg-touch');
+  const tv = (): boolean => document.documentElement.classList.contains('tg-tv');
   let tab: GuestTab = 'login';
   /** The signed-in account's community nodes (GET /nodes/mine), by account. */
   let nodes: { who: string; list: MyNode[] } | null = null;
@@ -233,17 +237,20 @@ export function profileScreen(menu: Menu): Screen {
     return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, h('p.mn-prof-form-title', null, t('profile.tabRecover')), user.el, code.el, pass.el, primary(t('profile.resetPassword'), () => void go(), { 'data-key': 'profile-go' }));
   };
 
-  /** A guest's form: the tab's, its first field focused (but on a touch screen: the tap shows the keyboard). */
+  /**
+   * A guest's form: the tab's, its first field focused for typing where there is a fine pointer (a
+   * touch screen's tap shows the keyboard; a TV's OK on the field, reached with ▼, opens mn-keypad).
+   */
   const pickTab = (id: GuestTab): void => {
     tab = id;
     render();
-    if (!touch()) body.querySelector<HTMLElement>('.mn-form .mn-input')?.focus();
+    if (!touch() && finePointer()) body.querySelector<HTMLElement>('.mn-form .mn-input')?.focus();
   };
 
   const guestView = (): HTMLElement => {
     const hero = h(
       `button.mn-tab.mn-prof-hero${tab === 'register' ? '.mn-tab-on' : ''}` as 'button',
-      { type: 'button', role: 'tab', 'aria-selected': String(tab === 'register'), 'data-nav': true, 'data-key': 'profile-tab-register', 'data-autofocus': true, onclick: () => pickTab('register') },
+      { type: 'button', role: 'tab', 'aria-selected': String(tab === 'register'), 'data-nav': true, 'data-key': 'profile-tab-register', 'data-autofocus': !tv(), onclick: () => pickTab('register') },
       h('span.mn-tile-top', null, icon('profile', 'mn-mtile-icon'), slot(t('profile.registerSlot'), { ink: true })),
       h('span.mn-prof-hero-title', { 'data-fit': '20' }, t('profile.registerFree')),
       h('span.mn-mtab-mark', { 'aria-hidden': 'true' }),
@@ -255,6 +262,15 @@ export function profileScreen(menu: Menu): Screen {
       h('span.mn-prof-signin-title', { 'data-fit': '16' }, t('profile.tabSignIn')),
       h('span.mn-mtab-mark', { 'aria-hidden': 'true' }),
     );
+    // A TV: no typing at all, the phone signs it in (the keypad still serves the forms below).
+    const phone = tv()
+      ? h(
+          'button.mn-prof-phone',
+          { type: 'button', 'data-nav': true, 'data-key': 'profile-phone', 'data-autofocus': true, onclick: () => openTvSignIn(menu) },
+          icon('touch', 'mn-mtile-icon'),
+          h('span.mn-prof-phone-text', null, h('span.mn-prof-phone-title', { 'data-fit': '16' }, t('tvsign.tile')), h('span.mn-prof-phone-sub', null, t('tvsign.tileSub'))),
+        )
+      : null;
     const form = tab === 'login' ? loginForm() : tab === 'register' ? registerForm() : recoverForm();
     const name = field(t('profile.guestName'), { maxLength: 16, value: menu.host.guestName(), enterkeyhint: 'done' });
     const saveName = (): void => {
@@ -267,9 +283,11 @@ export function profileScreen(menu: Menu): Screen {
     return h(
       'div.mn-prof-guest',
       null,
+      phone,
       h('div.mn-tabs.mn-prof-tabs', { role: 'tablist', 'aria-label': t('profile.heading'), 'data-nav-row': true }, hero, signIn),
       h('div.mn-prof-form', null, form),
-      h('div.mn-prof-guestname', null, name.el, secondary(t('profile.saveName'), saveName, { 'data-key': 'profile-save-name' })),
+      // A row for the arrows: ▶ from the name is SAVE NAME, not the wide button of the form above (a TV's remote).
+      h('div.mn-prof-guestname', { 'data-nav-row': true }, name.el, secondary(t('profile.saveName'), saveName, { 'data-key': 'profile-save-name' })),
     );
   };
 
@@ -370,14 +388,13 @@ export function profileScreen(menu: Menu): Screen {
     );
   };
 
-  /** ACERCA DE and IDIOMA, under either view. */
+  /** ACERCA DE, under either view. */
   const about = section(
     t('profile.about'),
     h('p.mn-prof-about', null, t('profile.version', { game: GAME_NAME, version, protocol: PROTOCOL_VERSION })),
     h('p.mn-note.mn-prof-about', null, menu.host.info),
     h('div.mn-prof-links', null, h('a.mn-btn.mn-prof-link', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener', 'data-nav': true, 'data-key': 'profile-licenses' }, icon('info'), h('span', null, t('menu.licenses')))),
   );
-  const lang = section(t('lang.heading'), secondary(LOCALES[language()].name, () => openLanguagePicker(menu), { 'data-key': 'lang' }));
 
   const renameDialog = (): void => {
     const hasPw = acc.me?.hasPassword !== false;
@@ -519,9 +536,8 @@ export function profileScreen(menu: Menu): Screen {
     };
   }
 
-  // After `body`, so it stays through the guest / account swap (render). ACERCA DE and IDIOMA are one
-  // row for the arrows (◀ ▶ between them; ▼ from either column lands in it, nav.ts data-nav-row).
-  const el = h('div.mn-profile', { 'data-tablero': true }, screenHead(t('profile.heading')), body, h('div.mn-prof-foot', { 'data-nav-row': true }, about, lang));
+  // After `body`, so it stays through the guest / account swap (render).
+  const el = h('div.mn-profile', { 'data-tablero': true }, screenHead(t('profile.heading')), body, about);
   // A session that comes or goes while PERFIL is up (restored at boot, signed out elsewhere): the
   // other view; an account's /api/me as it comes in (after a sign-up, a rename). A guest's view
   // stays as it is through every other change (a half-typed form).

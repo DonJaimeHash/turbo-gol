@@ -1,8 +1,11 @@
 /**
- * Player settings (the settings screen: controls, camera, gameplay, audio), persisted in
- * localStorage. Pure data + load/save. Input.ts mutates `controls` and `bindings` in place,
- * Camera.ts reads `camera`, the Game hands `audio` to the sound engine; call saveSettings() after a
- * change. The graphics quality is not here: it is saved with the Game's prefs (Game.ts).
+ * Player settings (the settings screen: controls, camera, gameplay, audio, the touch controls, the
+ * interface), persisted in localStorage. Pure data + load/save. Input.ts mutates `controls` and
+ * `bindings` in place, Camera.ts reads `camera`, the Game hands `audio` to the sound engine,
+ * `touch` to the touch controls and `ui` to src/ui/device.ts; call saveSettings() after a change.
+ * The graphics quality is not here: it is saved with the Game's prefs (Game.ts), and so are the
+ * other Graphics rows (resolution scale, frame limit, the menus' stadium). Every group and field is
+ * read over its default (mergeSettings): a save from before a field reads as its default.
  */
 import type { CameraSettings } from './render/Camera';
 import { STORAGE_PREFIX } from './brand';
@@ -49,11 +52,44 @@ export interface AudioSettings {
   music: number;
 }
 
+/** The on-screen touch controls (Settings > Controls > Touch; src/input/TouchControls.ts). */
+export interface TouchSettings {
+  /** The buttons' and the stick's size: S 85 %, M 100 %, L 115 % (TOUCH_SIZE_SCALE). */
+  size: TouchSize;
+  /** The buttons' and the stick's opacity, 30..100 (%). */
+  opacity: number;
+  /** Mirrored: the stick on the right, the buttons on the left (PAUSE stays in its corner). */
+  lefty: boolean;
+  /** 'floating': the stick starts where the thumb lands; 'fixed': it stays at its resting place. */
+  stick: 'floating' | 'fixed';
+  /** The stick's radial deadzone, 0.05..0.3 (touchState.ts stickVector). */
+  deadzone: number;
+  /** A short pulse on each press of a button (navigator.vibrate: Android). */
+  vibration: boolean;
+}
+
+export type TouchSize = 'S' | 'M' | 'L';
+
+/** --tc-k per size (src/input/touch.css). */
+export const TOUCH_SIZE_SCALE: Readonly<Record<TouchSize, number>> = { S: 0.85, M: 1, L: 1.15 };
+
+/** The interface (Settings > Game; src/ui/device.ts). */
+export interface UiSettings {
+  /** Interface size, % (device.ts INTERFACE_SIZES); 0: the device's own (125 on a TV, 100 elsewhere). */
+  size: number;
+  /** Reduced motion: 'system' follows prefers-reduced-motion, 'on' always, 'off' never. */
+  motion: MotionPref;
+}
+
+export type MotionPref = 'system' | 'on' | 'off';
+
 export interface Settings {
   controls: ControlSettings;
   camera: CameraSettings;
   bindings: BindingProfiles;
   audio: AudioSettings;
+  touch: TouchSettings;
+  ui: UiSettings;
 }
 
 export const DEFAULT_CONTROL_SETTINGS: Readonly<ControlSettings> = {
@@ -76,6 +112,24 @@ export const DEFAULT_AUDIO: Readonly<AudioSettings> = {
 
 /** Slider range of the master and music volumes: [min, max, step]. */
 export const VOLUME_RANGE: readonly [number, number, number] = [0, 100, 5];
+
+export const DEFAULT_TOUCH: Readonly<TouchSettings> = {
+  size: 'M',
+  opacity: 100,
+  lefty: false,
+  stick: 'floating',
+  deadzone: 0.12,
+  vibration: true,
+};
+
+/** Slider ranges of the touch controls: [min, max, step]. */
+export const TOUCH_OPACITY_RANGE: readonly [number, number, number] = [30, 100, 5];
+export const TOUCH_DEADZONE_RANGE: readonly [number, number, number] = [0.05, 0.3, 0.01];
+
+export const DEFAULT_UI: Readonly<UiSettings> = { size: 0, motion: 'system' };
+
+/** The interface sizes a save may hold (%; 0: the device's own). */
+export const UI_SIZES: readonly number[] = [0, 100, 115, 125, 130, 150];
 
 /** Ranges for the settings sliders. */
 export const CONTROL_RANGES: Readonly<Record<keyof ControlSettings, readonly [number, number, number] | null>> = {
@@ -131,7 +185,7 @@ const STORAGE_KEY = STORAGE_PREFIX + 'settings.v1';
 export const SETTINGS_REV = 2;
 
 export function defaultSettings(): Settings {
-  return { controls: { ...DEFAULT_CONTROL_SETTINGS }, camera: { ...DEFAULT_CAMERA }, bindings: defaultProfiles(), audio: { ...DEFAULT_AUDIO } };
+  return { controls: { ...DEFAULT_CONTROL_SETTINGS }, camera: { ...DEFAULT_CAMERA }, bindings: defaultProfiles(), audio: { ...DEFAULT_AUDIO }, touch: { ...DEFAULT_TOUCH }, ui: { ...DEFAULT_UI } };
 }
 
 function num(v: unknown, lo: number, hi: number, fallback: number): number {
@@ -169,7 +223,15 @@ function isBinding(v: unknown): v is Binding {
 export function mergeSettings(raw: unknown): Settings {
   const s = defaultSettings();
   if (typeof raw !== 'object' || raw === null) return s;
-  const r = raw as { controls?: Record<string, unknown>; camera?: Record<string, unknown>; bindings?: Record<string, unknown>; audio?: Record<string, unknown>; rev?: unknown };
+  const r = raw as {
+    controls?: Record<string, unknown>;
+    camera?: Record<string, unknown>;
+    bindings?: Record<string, unknown>;
+    audio?: Record<string, unknown>;
+    touch?: Record<string, unknown>;
+    ui?: Record<string, unknown>;
+    rev?: unknown;
+  };
   const c = r.controls ?? {};
   const cs = s.controls;
   for (const k of Object.keys(DEFAULT_CONTROL_SETTINGS) as (keyof ControlSettings)[]) {
@@ -189,6 +251,16 @@ export function mergeSettings(raw: unknown): Settings {
   const au = r.audio ?? {};
   s.audio.volume = num(au.volume, VOLUME_RANGE[0], VOLUME_RANGE[1], DEFAULT_AUDIO.volume);
   s.audio.music = num(au.music, VOLUME_RANGE[0], VOLUME_RANGE[1], DEFAULT_AUDIO.music);
+  const tc = typeof r.touch === 'object' && r.touch !== null ? r.touch : {};
+  if (tc.size === 'S' || tc.size === 'M' || tc.size === 'L') s.touch.size = tc.size;
+  s.touch.opacity = num(tc.opacity, TOUCH_OPACITY_RANGE[0], TOUCH_OPACITY_RANGE[1], DEFAULT_TOUCH.opacity);
+  if (typeof tc.lefty === 'boolean') s.touch.lefty = tc.lefty;
+  if (tc.stick === 'fixed' || tc.stick === 'floating') s.touch.stick = tc.stick;
+  s.touch.deadzone = num(tc.deadzone, TOUCH_DEADZONE_RANGE[0], TOUCH_DEADZONE_RANGE[1], DEFAULT_TOUCH.deadzone);
+  if (typeof tc.vibration === 'boolean') s.touch.vibration = tc.vibration;
+  const ui = typeof r.ui === 'object' && r.ui !== null ? r.ui : {};
+  if (typeof ui.size === 'number' && UI_SIZES.includes(ui.size)) s.ui.size = ui.size;
+  if (ui.motion === 'on' || ui.motion === 'off' || ui.motion === 'system') s.ui.motion = ui.motion;
   const b = r.bindings ?? {};
   for (const device of ['kbm', 'pad'] as const) {
     const prof = b[device];

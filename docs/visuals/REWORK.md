@@ -585,9 +585,8 @@ Before the renderer exists: `#superlow` in the URL, or the tab's recovery after 
 device, force it for that page load (never saved); then a GPU of this device that fell back to
 super low (`tierGuard.ts readSuperlowBoot`: the ceilings are keyed by a backend that does not
 exist yet, so a ceiling at super low also leaves a backend-free record; 'ceiling', capping even the
-player's tier, not while their own pick across a reload is tried); then the player's choice (super low is a
-pick only for a signed-in player with Settings > Experimental's switch on: anyone else's saved pick
-reads as Performance, not chosen, so the rules below still apply: `gateTierPrefs`); then auto: a device
+player's tier, not while their own pick across a reload is tried); then the player's choice (super low
+is everyone's pick since the Tablero plan's PR 11: Settings > Graphics' switch); then auto: a device
 with no pointer (a TV) whose GPU (a throwaway WebGL2 context, WEBGL_debug_renderer_info, lost at
 once) is on the slow list (Mali-G31, G51, G52, T7xx, T8xx, PowerVR GE8xxx), or `deviceMemory` <= 1;
 else the saved or default tier. Phones keep low. After init the old rules apply (low on weak

@@ -1,7 +1,7 @@
 /**
  * Settings > Experimental (docs: the experimental design, section 10.1): the account-only switch
  * and the physics preset editor. Guests see one locked line. A signed-in player sees a note, the
- * switch and, while it is on, what it unlocks, how Super low stands for them and the editor:
+ * switch and, while it is on, what it unlocks and the editor:
  *
  *   Rules    ‹ Low gravity ›          the presets: the built-ins (read-only) first, then the
  *                                      player's own; the pick is the store's lastUsed
@@ -21,10 +21,8 @@
  * the screen closes (the Game rebuilds the arena then, never per edit); 'match' (an experimental
  * P2P match) shows the room's rules as one read-only line.
  *
- * Turning the switch off while the player's own graphics pick is Super low takes a second press
- * ("Press again: Performance graphics, restarts"): the Game then switches to Performance, which
- * reloads the page (quality.ts needsReload). Super low that a device runs on its own (a weak TV,
- * the URL, the safety net) is not the player's pick: the switch goes off without a reload.
+ * Super low is not here: it is everyone's, Settings > Graphics' switch (it changes only how the
+ * stadium is drawn), so the switch never restarts the game.
  *
  * The page is built once with the rest of Ajustes (src/ui/screens/settings/view.ts) and only shows,
  * hides and rewrites its lines afterwards (`refresh`), so nothing here runs per frame. It makes its
@@ -60,18 +58,12 @@ export interface PageItem {
   repeat?: boolean;
 }
 
-/** How Super low stands for the player: their pick, run by the device on its own, or simply listed. */
-export type SuperlowStatus = 'chosen' | 'auto' | 'listed';
-
 /** What the page shows, from the Game (Game.settingsOptions). */
 export interface ExperimentalPageState {
   /** A signed-in player (a guest gets the locked line only). */
   readonly available: boolean;
   /** The switch. */
   readonly enabled: boolean;
-  /** Turning it off restarts the game: the player's own pick is Super low. */
-  readonly offRestarts: boolean;
-  readonly superlow: SuperlowStatus;
 }
 
 /** Where the settings screen was opened (ExperimentalOptions.context). */
@@ -83,7 +75,7 @@ export type PresetSource = Pick<ExperimentalStore, 'list' | 'presets' | 'lastUse
 /** Settings > Experimental, in MenuOptions (the Game fills it; absent: the page shows the locked line). */
 export interface ExperimentalOptions {
   state(): ExperimentalPageState;
-  /** The switch was set (after the second press when turning it off restarts). */
+  /** The switch was set. */
   setEnabled(on: boolean): void;
   /** The page came on screen: a good moment to pull the account's state (experimentalStore.ts sync). */
   onOpen?(): void;
@@ -105,22 +97,13 @@ export interface ExperimentalView {
   readonly locked: boolean;
   /** The note and the switch. */
   readonly switchRow: boolean;
-  /** "Press again: Performance graphics, restarts". */
-  readonly confirm: boolean;
-  /** What it unlocks and Super low's line (the switch is on). */
+  /** What it unlocks (the switch is on). */
   readonly details: boolean;
   /** The preset editor (the switch is on, the player has presets, not in a match). */
   readonly editor: boolean;
   /** The room's rules, read-only ('match'). */
   readonly match: boolean;
-  readonly superlowKey: Key;
 }
-
-const SUPERLOW_KEYS: Readonly<Record<SuperlowStatus, Key>> = {
-  chosen: 'settings.experimentalSuperlowChosen',
-  auto: 'settings.qualityAuto',
-  listed: 'settings.experimentalSuperlowListed',
-};
 
 const GROUP_KEYS: Readonly<Record<PhysicsGroup, Key>> = {
   world: 'rules.groupWorld',
@@ -130,20 +113,17 @@ const GROUP_KEYS: Readonly<Record<PhysicsGroup, Key>> = {
 };
 
 /**
- * The lines for `s`, with the off press waiting for its second press (`armed`), `editor` when the
- * options carry the presets, in `context`. Pure. A match's rules show whatever the switch says (a
+ * The lines for `s`, `editor` when the options carry the presets, in `context`. Pure. A match's rules show whatever the switch says (a
  * member's switch is never checked: the room decided); the editor needs the switch.
  */
-export function experimentalView(s: ExperimentalPageState | null, armed: boolean, editor = false, context: ExperimentalContext = 'menu'): ExperimentalView {
-  if (s === null || !s.available) return { locked: true, switchRow: false, confirm: false, details: false, editor: false, match: false, superlowKey: SUPERLOW_KEYS.listed };
+export function experimentalView(s: ExperimentalPageState | null, editor = false, context: ExperimentalContext = 'menu'): ExperimentalView {
+  if (s === null || !s.available) return { locked: true, switchRow: false, details: false, editor: false, match: false };
   return {
     locked: false,
     switchRow: true,
-    confirm: s.enabled && armed && s.offRestarts,
     details: s.enabled,
     editor: s.enabled && editor && context !== 'match',
     match: context === 'match',
-    superlowKey: SUPERLOW_KEYS[s.superlow],
   };
 }
 
@@ -303,7 +283,6 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
   const actions = kit.line('hud-settings-actions hud-exp-actions');
   const locked = kit.line('hud-settings-device hud-exp-locked', t('settings.experimentalLocked'));
   const note = kit.line('hud-settings-device', t('settings.experimentalNote'));
-  let armed = false;
   const opts = (): ExperimentalOptions | null => options();
   const state = (): ExperimentalPageState | null => opts()?.state() ?? null;
   const source = (): PresetSource | null => opts()?.presets ?? null;
@@ -314,18 +293,11 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
       const o = opts();
       const s = o?.state() ?? null;
       if (o === null || s === null || !s.available) return;
-      if (!on && s.offRestarts && !armed) {
-        armed = true; // the first press only asks
-      } else {
-        armed = false;
-        o.setEnabled(on);
-      }
+      o.setEnabled(on);
       update();
     },
   );
-  const confirm = kit.line('hud-settings-hint hud-exp-confirm', t('settings.experimentalOffRestart'));
   const unlocks = kit.line('hud-settings-hint', t('settings.experimentalUnlocks'));
-  const superlow = kit.line('hud-settings-hint');
   const matchLine = kit.line('hud-settings-device hud-exp-match');
 
   // ---- the editor ----------------------------------------------------------------------------
@@ -532,25 +504,20 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
   actions.append(resetBtn);
   const reset = buttonGroup(actions, [resetBtn], kit);
 
-  page.append(locked, note, toggle.row, confirm, unlocks, superlow, matchLine, editorBlock);
+  page.append(locked, note, toggle.row, unlocks, matchLine, editorBlock);
 
   const view = (): ExperimentalView => {
     const o = opts();
-    return experimentalView(o?.state() ?? null, armed, o?.presets !== undefined, o?.context ?? 'menu');
+    return experimentalView(o?.state() ?? null, o?.presets !== undefined, o?.context ?? 'menu');
   };
 
   const refresh = (): void => {
     const o = opts();
-    const s = o?.state() ?? null;
     const v = view();
-    if (!v.confirm) armed = false;
     locked.hidden = !v.locked;
     note.hidden = !v.switchRow;
     toggle.row.hidden = !v.switchRow;
-    confirm.hidden = !v.confirm;
     unlocks.hidden = !v.details;
-    superlow.hidden = !v.details;
-    if (s !== null && v.details) superlow.textContent = t(v.superlowKey);
     matchLine.hidden = !v.match;
     if (v.match) matchLine.textContent = o?.matchRules ?? '';
     toggle.refresh();
@@ -610,7 +577,6 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
     },
     refresh,
     disarm: () => {
-      armed = false;
       deleteArmed = null;
       resetArmed = null;
       message = null;

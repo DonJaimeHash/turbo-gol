@@ -1044,6 +1044,23 @@ test('router: a landing hits within HIT_SLOP radii, a slide needs the button its
   assert.deepEqual(readMap(ts), {});
 });
 
+test('router, left-handed: the zone on the right, a landing on the left half off every button slides onto JUMP', () => {
+  const { ts, router, layout } = routerSetup();
+  // routerSetup mirrored as tc-lefty measures it.
+  layout.zone = { left: 400, top: 72, right: 770, bottom: 400 };
+  for (const b of layout.buttons) b.cx = 800 - b.cx;
+  router.mirrored = true;
+  router.down(1, 300, 200); // the buttons' half, off every button: holds nothing yet
+  assert.deepEqual(readMap(ts), {});
+  router.move(1, 225, 330); // onto JUMP
+  assert.deepEqual(readMap(ts), { jump: 1 }, 'sliding onto a button presses it');
+  router.up(1, 225, 330);
+  router.down(2, 600, 250); // the zone: the stick
+  assert.equal(router.stickActive, true);
+  router.up(2, 600, 250);
+  assert.deepEqual(readMap(ts), {});
+});
+
 test('router: tap buttons fire once on a lift over them; sliding away or a cancel does not; hidden ones never hit', () => {
   const { ts, router } = routerSetup();
   router.down(1, 740, 50);
@@ -1311,4 +1328,42 @@ test('install hint: an iPhone in a browser tab, once; never at home screen, on A
   for (const name of ['iPhoneHomeScreen', 'androidPhone', 'androidWebView', 'iPad', 'desktopChrome', 'touchLaptop', 'macSafari']) {
     assert.equal(shouldShowInstallHint(PLATFORMS[name], false), false, name);
   }
+});
+
+test('router: a fixed stick (Settings > Controls > Touch) centres on its resting place wherever the thumb lands; the deadzone is the player\'s', () => {
+  const { ts, router, layout } = routerSetup();
+  layout.stickHome = { x: 140, y: 300 };
+  router.fixedStick = true;
+  router.down(1, 200, 250);
+  assert.deepEqual([router.stickX, router.stickY], [140, 300], 'the resting centre, not the landing point');
+  near(ts.stickX, stickVector(60, -50, 60).x);
+  near(ts.stickY, stickVector(60, -50, 60).y);
+  router.up(1, 200, 250);
+  router.fixedStick = false;
+  router.deadzone = 0.3;
+  router.down(2, 150, 250);
+  router.move(2, 150, 235); // 15 px = 0.25 radii: inside a 0.3 deadzone, outside the default 0.12
+  assert.deepEqual([ts.stickX, ts.stickY], [0, 0]);
+  router.deadzone = 0.12;
+  router.move(2, 150, 234);
+  assert.ok(ts.stickY > 0, 'the default deadzone lets it through');
+  router.up(2, 150, 234);
+});
+
+const touchCss = readFileSync(new URL('../src/input/touch.css', import.meta.url), 'utf8');
+
+test('touch.css: every size follows --tc-k, the stick and the buttons --tc-alpha; the mirrored layout flips logical insets, PAUSE keeps its corner', () => {
+  for (const v of ['boost', 'jump', 'drift', 'small', 'cam', 'stick']) {
+    const sizes = touchCss.match(new RegExp(`--tc-${v}: [^;]+;`, 'g')) ?? [];
+    assert.equal(sizes.length, 2, `--tc-${v}: the vh and the dvh set`);
+    for (const d of sizes) assert.match(d, /\* var\(--tc-k, 1\)\)/, d);
+  }
+  assert.match(touchCss, /\.tc-root\.tc-lefty \{\s*direction: rtl;/);
+  for (const cls of ['zone', 'stick', 'boost', 'jump', 'drift']) {
+    const rule = touchCss.match(new RegExp(`\n\.tc-${cls} \{[^}]*\}`))?.[0] ?? '';
+    assert.doesNotMatch(rule, /\n {2}(left|right):/, `.tc-${cls} uses logical insets`);
+  }
+  assert.match(touchCss.match(/\n\.tc-pause \{[^}]*\}/)?.[0] ?? '', /\n {2}right:/, 'PAUSE stays top right');
+  assert.match(touchCss, /opacity: calc\(0\.45 \* var\(--tc-alpha, 1\)\)/);
+  assert.match(touchCss, /opacity: var\(--tc-alpha, 1\);/);
 });

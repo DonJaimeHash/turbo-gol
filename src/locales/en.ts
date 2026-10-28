@@ -9,7 +9,6 @@ export default {
   // Language picker
   'lang.title': 'Language',
   // PERFIL's section heading over the language row (in capitals, as the other headings)
-  'lang.heading': 'LANGUAGE',
   'lang.auto': 'Automatic ({language})',
   'lang.busy': 'Stop searching or leave the lobby to change the language',
   // Over the list: choosing another language reloads the page
@@ -37,11 +36,6 @@ export default {
   'quality.fallback': 'Your device does not support {from}: using {to}',
   // Toast when an online match starts on Super low (it still connects)
   'quality.superlowOnline': 'Super low: online matches may not run smoothly on this device',
-  // Toast when the player's own Super low pick is no longer allowed (signed out, another account,
-  // experimental features off): the game keeps running, the next start uses Performance
-  'quality.superlowLocked': 'Super low is for signed-in players with experimental features on: Performance from the next start',
-  // Toast after a start that found a saved Super low pick this player may not make: the game runs on Performance
-  'quality.superlowLockedBoot': 'Super low is for signed-in players with experimental features on: using Performance',
   // The graphics device was lost (src/render/tierGuard.ts lossStep): the loading line before the
   // page reloads, the second time it reloads on Super low, the third time it stops
   'gpu.lostReload': 'The graphics device stopped: restarting…',
@@ -606,6 +600,43 @@ export default {
   'profile.generate': 'GENERATE',
   'profile.newCodesIntro': 'Your new codes:',
 
+  // mn-keypad (src/ui/components/keypad.ts): the on-screen keys of a TV remote or a controller.
+  // The case and delete keys are drawn (abc / ABC, an arrow): these name them for a screen reader
+  'keypad.case': 'Upper or lower case',
+  'keypad.delete': 'Delete',
+  'keypad.space': 'SPACE',
+  'keypad.done': 'DONE',
+  // PERFIL on a TV (src/ui/screens/tvSignIn.ts): sign in with the account open on a phone. {link}: turbo-gol.com/tv
+  'tvsign.tile': 'SIGN IN WITH YOUR PHONE',
+  'tvsign.tileSub': 'No typing on the TV',
+  'tvsign.title': 'Sign in with your phone',
+  'tvsign.line': 'Go to {link} with your account signed in and enter this code',
+  // {time}: m:ss
+  'tvsign.expiresIn': 'Expires in {time}',
+  'tvsign.expired': 'The code expired',
+  'tvsign.newCode': 'NEW CODE',
+  'tvsign.cancel': 'CANCEL',
+  'tvsign.starting': 'Getting a code…',
+  'tvsign.qr': 'Scan to sign in on the TV',
+  // The phone's /tv page (src/ui/screens/tvSignIn.ts installTvLink); {name}: the phone's account
+  'tvlink.title': 'Sign in on the TV',
+  'tvlink.codeLabel': 'TV code',
+  'tvlink.enterCode': 'Enter the code the TV shows',
+  'tvlink.continue': 'CONTINUE',
+  'tvlink.ask': 'Sign in on the TV as {name}?',
+  'tvlink.askNote': 'Confirm only if this code is on a TV in front of you right now. If someone sent you this link, cancel: that TV would play as you.',
+  'tvlink.confirm': 'CONFIRM',
+  'tvlink.cancel': 'CANCEL',
+  'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',
+  'tvlink.signIn': 'SIGN IN',
+  'tvlink.done': 'Done: the TV signs in in a moment',
+  'tvlink.otherCode': 'ANOTHER CODE',
+  // The anti-bot check wants an interaction (Turnstile): a sheet with the reason; CANCEL stops it
+  'antibot.title': 'Quick check',
+  'antibot.body': 'Cloudflare wants to make sure you are a person: answer the check on screen.',
+  'antibot.bodyTv': "Cloudflare asks for a check a remote can't answer. Cancel and try again in a while.",
+  'antibot.cancel': 'CANCEL',
+
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Choose a username',
   // USERNAME_MIN / USERNAME_MAX (3, 16)
@@ -686,6 +717,10 @@ export default {
   // Physics presets (Settings > Experimental): the account already holds 10
   'error.account.too_many': '10 presets at most: delete one first',
   'error.account.bad_preset': 'Invalid preset',
+  // The TV's sign-in with the phone (the /tv page's CONFIRM)
+  'error.account.tv_code_wrong': "That code doesn't exist: check it on the TV",
+  'error.account.tv_code_expired': 'The code expired: get a new one on the TV',
+  'error.account.tv_code_used': 'That code was already used',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
@@ -1158,19 +1193,52 @@ export default {
   // the player cannot pick it: no tier is lit
   'settings.qualityAuto': 'This device runs Super low on its own',
   // Experimental tab (src/render/experimentalPage.ts). A guest sees only this line
-  'settings.experimentalLocked': 'Sign in to try experimental features: Super low graphics and custom physics in free play and P2P lobbies',
+  'settings.experimentalLocked': 'Sign in to try experimental features: custom physics in free play and P2P lobbies',
   // Line over the switch
   'settings.experimentalNote': 'Features being tested: they may change or go away',
   // The switch's label (settings.on / settings.off)
   'settings.experimentalSwitch': 'Experimental features',
   // Under the switch while it is on
-  'settings.experimentalUnlocks': 'Unlocks Super low graphics, Experimental free play and lobby rules',
-  // After the first press to turn the switch off while the player's graphics are Super low
-  'settings.experimentalOffRestart': 'Press again: Performance graphics, restarts',
-  // Super low's line while the switch is on: the player picked it / it is listed now
-  // (or settings.qualityAuto when the device runs it on its own)
-  'settings.experimentalSuperlowChosen': 'Super low is your graphics quality',
-  'settings.experimentalSuperlowListed': 'Super low is now listed in Graphics',
+  'settings.experimentalUnlocks': 'Unlocks Experimental free play and lobby rules',
+  // Graphics tab: the group under the quality cards
+  'settings.graphicsOptions': 'Options',
+  // Graphics rows (the owner's Ajustes drawing), each with its help line
+  'settings.resolutionScale': 'Resolution scale',
+  'settings.resolutionScaleHelp': 'Lower is smoother; text and the HUD always stay sharp.',
+  'settings.fpsCap': 'Frame rate limit',
+  'settings.fpsCapHelp': 'Set it to 30 to save battery and heat.',
+  // The frame limit's third option, uppercase
+  'settings.fpsNone': 'NO LIMIT',
+  'settings.menuScene': 'Animated stadium in the menus',
+  'settings.menuSceneHelp': 'Turn it off so the menus use less battery.',
+  // On / off for everyone: flat surfaces, no effects (a restart)
+  'settings.superlow': 'Super low mode',
+  'settings.superlowHelp': 'Flat surfaces and no effects, for very modest devices. Restarts the game.',
+  // Graphics' head button: the options above back to their defaults (not the quality), uppercase
+  'settings.resetGraphics': 'RESET GRAPHICS',
+  // Game tab: the group of the interface rows
+  'settings.groupInterface': 'Interface',
+  // Game tab: the size of the menus' text and boxes (100 / 115 / 130 / 150 %)
+  'settings.uiSize': 'Interface size',
+  'settings.reducedMotion': 'Reduced motion',
+  'settings.reducedMotionHelp': 'Nothing slides or bounces in the menus.',
+  // Reduced motion's first option: follow the system's setting
+  'settings.motionSystem': 'SYSTEM',
+  // Controls > Touch rows: the buttons' size (S / M / L), their opacity, the mirrored layout,
+  // where the stick starts (where the thumb lands / always in its place), its deadzone, vibration
+  'settings.touchSize': 'Button size',
+  'settings.touchOpacity': 'Opacity',
+  'settings.touchLefty': 'Left-handed',
+  'settings.touchLeftyHelp': 'Stick on the right, buttons on the left.',
+  'settings.touchStick': 'Stick',
+  'settings.touchStickFloating': 'FLOATING',
+  'settings.touchStickFixed': 'FIXED',
+  'settings.touchDeadzone': 'Stick deadzone',
+  'settings.touchVibration': 'Vibrate on press',
+  // The card under the settings rail: every change is saved at once, in this browser
+  'settings.savedTitle': 'Saved automatically',
+  'settings.savedGuest': 'As a guest, your settings stay in this browser.',
+  'settings.savedAccount': 'Your settings stay in this browser.',
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',
@@ -1347,6 +1415,8 @@ export default {
   // shows it uppercased, with the tag), the preset picker and the button to the preset editor
   'training.expFreePlay': 'Experimental free play',
   'training.expFreePlayText': 'Free play with your own physics',
+  // The LAB tile's line where the long one has no room (a larger interface size)
+  'training.expFreePlayShort': 'Your own physics',
   'training.editPresets': 'Edit presets',
   // Pack category
   'training.catShooting': 'Shooting',

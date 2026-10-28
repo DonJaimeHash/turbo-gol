@@ -71,6 +71,11 @@
  * the controller changes it at most every half second, steps of 0.05 to 0.1, and leaves the
  * reallocation's long frame out of its mean). `stats().resolutionScale` reports it.
  *
+ * The player's resolution scale (Settings > Graphics, 50-125 %: setResolutionBase) multiplies the
+ * canvas' pixel ratio on every tier, so dynamic resolution moves under it as before; the drawing
+ * buffer never passes caps.maxTextureSize on either side (quality.ts scaledPixelRatio: 4096 in
+ * WebGPU compatibility mode). The HUD and the menus are the page's own: always sharp.
+ *
  * NaN hygiene (post/pipeline.ts sanitises every pass-target read, materials their glow writes in
  * `glowMrt()`): with `#nancheck` in the URL the renderer reads the scene pass targets and the bloom
  * result back every NANCHECK_EVERY frames and logs '[nancheck] ...' counters (NaN / Inf / negative
@@ -94,7 +99,7 @@ import { DynamicResolution } from './dynamicResolution';
 import { setGlowTargets } from './materials';
 import { createLighting, type Lighting } from './post/lighting';
 import { buildPostChain, type PostChain } from './post/pipeline';
-import { parseQuality, pixelRatio, startingQuality, tier, type Quality, type TierSpec } from './quality';
+import { parseQuality, pixelRatio, scaledPixelRatio, startingQuality, tier, type Quality, type TierSpec } from './quality';
 import { GpuDiag, addThreeConsoleHook, hiddenFeatures, installAdapterEmulation, installGlEmulation } from './gpuDiag';
 import { DEFAULT_THEME, themeWorld, type ThemeId } from './theme';
 import { RECOVER_KEY, TRY_TIER_KEY, readCeiling, readSuperlowBoot, writeCeiling, type FailureKind } from './tierGuard';
@@ -307,6 +312,8 @@ export class Renderer {
   /** Dynamic resolution (tiers with `dynamicResolution`): scales the scene pass to hold the refresh rate. */
   private readonly dynRes = new DynamicResolution();
   private dynamicResolution = false;
+  /** The player's resolution scale (1 = 100 %): setResolutionBase. */
+  private resolutionBase = 1;
   /** requestAnimationFrame timestamp (ms) of the previous loop frame; -1 after a tier switch. */
   private lastFrameAt = -1;
   private gpuSum = 0;
@@ -610,6 +617,14 @@ export class Renderer {
     else this.post.setResolutionScale(1);
   }
 
+  /** The player's resolution scale (1 = 100 %, Settings > Graphics) over the tier's pixel ratio: a resize when it changed. */
+  setResolutionBase(scale: number): void {
+    const s = scale > 0 ? scale : 1;
+    if (s === this.resolutionBase) return;
+    this.resolutionBase = s;
+    this.resize();
+  }
+
   /**
    * Match the drawing buffer to the canvas' CSS size (window resize, the canvas' ResizeObserver and
    * render() when the size changed; also called by setQuality). The pixel ratio follows the device
@@ -626,7 +641,8 @@ export class Renderer {
     // The direct tier's dynamic resolution is the canvas' own pixel ratio (no scene pass to scale).
     const scale = this.dynamicResolution && spec.output === 'direct' ? this.dynRes.scale : 1;
     // `#pr=<x>`: a fixed pixel ratio (the TV's R1-R3 runs: does the cost follow the pixels?).
-    const ratio = this.flags.pr > 0 ? this.flags.pr : pixelRatio(spec, window.devicePixelRatio, touch, w, h, this.caps.maxTextureSize) * scale;
+    const max = this.caps.maxTextureSize;
+    const ratio = this.flags.pr > 0 ? this.flags.pr : scaledPixelRatio(pixelRatio(spec, window.devicePixelRatio, touch, w, h, max) * scale, this.resolutionBase, w, h, max);
     this.gpu.setPixelRatio(ratio);
     this.gpu.setSize(w, h, false);
     this.camera.aspect = w / h;

@@ -91,17 +91,17 @@ src/render/
                         super low); drawsFrame (the tier's frame cap, in whole refreshes); the
                         scene's pace ("UI at rest": SceneCover, frameCap with the player's FpsCap,
                         sceneFps, FramePacer (a rate's average on any display), runsLogic,
-                        drawsScene); lowerQuality; menuQualities (super low listed only for
-                        unlocked players) and nextQuality over such a list
+                        drawsScene); lowerQuality; CARD_QUALITIES (Graphics' cards: super low is
+                        the switch under them, everyone's) and nextQuality over such a list; the
+                        player's resolution scale (parseResolutionScale, 50-125 %, and
+                        scaledPixelRatio: never past the device's largest render target)
   bootTier.ts           the boot tier before the renderer exists (the URL's #superlow, the tab's
                         recovery, a GPU of the device that fell to super low (a ceiling known
                         before the backend), the player's choice, super low on a TV with a slow GPU or on
                         1 GB: autoSuperlow, probeGpu, readBootSignals), the TierReason #diag shows,
-                        tierPrefsAfter (the prefs keep the player's pick only; 'lock') and
-                        gateTierPrefs (a locked player's saved super low reads as Performance, not chosen)
-  experimentalPage.ts   Ajustes › EXPERIMENTAL (its host's PageKit: src/ui/screens/settings/expKit.ts): a guest's locked line, the switch (a second press
-                        when turning it off restarts on Performance), what it unlocks, Super low's
-                        line and the preset editor (picker over the built-ins and the player's
+                        tierPrefsAfter (the prefs keep the player's pick only)
+  experimentalPage.ts   Ajustes › EXPERIMENTAL (its host's PageKit: src/ui/screens/settings/expKit.ts): a guest's locked line, the switch, what it
+                        unlocks and the preset editor (picker over the built-ins and the player's
                         presets, New / Duplicate / Rename / Delete, the name field, one stepper or
                         cycler per value on its grid with the standard value, the summary line,
                         Reset to standard); contexts menu / training (experimental free play's
@@ -115,7 +115,9 @@ src/render/
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
                         nomsaa, msaa, nopost, norender, pr, hide, widetext: the UI in plain Arial,
-                        html.tg-widetext set by main.ts, a fit test for the fallback fonts)
+                        html.tg-widetext set by main.ts, a fit test for the fallback fonts; keys:
+                        every key event's key / code / keyCode on screen, src/ui/keysOverlay.ts,
+                        for a real TV's BACK, CH+ / CH− and system keyboard)
   frameStats.ts         `#diag`'s drawn frame rate (1 s min / mean, 5 s mean), the animation frames
                         the loop ran, the stalls (frames over 50 / 100 ms: between drawn frames in
                         a match, between animation frames while the scene is paced or held) and CPU
@@ -272,14 +274,19 @@ src/input/
   touchRouter.ts        TouchRouter, pure: which finger drives the stick, holds JUMP / BOOST /
                         DRIFT (a slide off BOOST keeps it held; off JUMP too with holdJump, the
                         controls.touchHoldJump preference: plan M29), taps PAUSE / CAM / RESET,
-                        and taps the scorebug or the open board (scoreTaps)
+                        and taps the scorebug or the open board (scoreTaps); a fixed stick
+                        (fixedStick: centred on layout.stickHome) and the player's deadzone
   TouchControls.ts      the touch overlay (.tc-root, touch.css; created only with a touch screen):
                         measures the layout from its CSS, routes every finger through TouchRouter,
+                        applies settings.touch (applySettings: --tc-k size, --tc-alpha opacity,
+                        tc-lefty mirrors the logical insets and the router's side
+                        (mirrored: the buttons' half), the router's stick and deadzone, a
+                        press's pulse where navigator.vibrate exists),
                         paint() and setBoost() (BOOST's amount and level at 10 Hz) allocate
                         nothing; the scoreboard tap (scoreboardOpen), the three first-match cards
                         (cardsUp, turbogol.touchCards), the rotate notice (setLive: translucent
                         over a live online match, the scorebug above it), touch mode (tg-touch)
-src/settings.ts         Settings { controls, camera, bindings, audio }: defaults, ranges,
+src/settings.ts         Settings { controls, camera, bindings, audio, touch, ui }: defaults, ranges,
                         validation, localStorage load / save. One live object shared by Input,
                         ChaseCamera and Ajustes; Game.applySettings() persists and re-applies
 src/game/
@@ -328,7 +335,9 @@ src/game/
                         a failed one's REINTENTAR rejoins again), the failure's outcome
                         (src/net/outcome.ts); the close code in the console and F4's state line only
   rejoinStore.ts        the server match this tab may join again: matchId, kind, formats, the end of
-                        its regulation time; read by Inicio's hero and the lost sheet
+                        its regulation time; read by Inicio's hero and the lost sheet. And the Sala
+                        across a reload the game runs itself (Super low's restart: Game.restartOn
+                        saves it, lobby.ts installLobbyReturn joins it again by code and opens it)
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer
@@ -345,7 +354,7 @@ src/game/
                         automatic names (shared with server/; the physics core maps the integers to
                         the wasm and the bots, src/sim/mutators.ts)
   experimentalStore.ts  an account's Settings > Experimental switch and presets: a local copy per
-                        account (read at boot: unlockedAtBoot), debounced pushes to /api/me/presets,
+                        account, debounced pushes to /api/me/presets,
                         offline edits kept dirty, a preset the full account refused waits for room
                         (said once), deletes need the server; nothing for a guest
   experimentalTraining.ts experimental free play, pure: rules for free play only (packs always stock,
@@ -387,14 +396,18 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         leaderboard.css, profile.css: plan PR 13's, training.css also the three's
                         stage per class and menu.css's shared controls at the class's type roles
                         there)
-  screens/settings/     Ajustes (plan PR 10): model.ts (pure: the six tabs, CONTROLES' device
+  screens/settings/     Ajustes (plan PR 10, its new rows PR 11): model.ts (pure: the six tabs, CONTROLES' device
                         sections, the camera preset, the quality trial, the memory tag, a binding's
                         conflict, the sliders' maths; tests/settings-model.test.mjs), view.ts
                         (SettingsView, the one component: the rail of tabs and each tab's page,
                         every setting with its saved key; CONTROLES per device detected, the last
-                        input's first, sensitivities then mn-bind rows; CÁMARA's presets; JUEGO;
-                        AUDIO; GRÁFICOS as cards, applied with A and back by themselves in 10 s
-                        unless kept; EXPERIMENTAL), expKit.ts (experimentalPage.ts's PageKit: its
+                        input's first, sensitivities then mn-bind rows, TÁCTIL's settings.touch;
+                        CÁMARA's presets; JUEGO with INTERFAZ: Idioma (components/language.ts's
+                        sheet), the interface size, reduced motion; AUDIO; GRÁFICOS as cards,
+                        applied with A and back by themselves in 10 s unless kept, then the
+                        resolution scale, the frame limit, the animated stadium, the Super low
+                        switch (A only) and RESTABLECER GRÁFICOS; EXPERIMENTAL; "Se guarda solo"
+                        under the rail), expKit.ts (experimentalPage.ts's PageKit: its
                         PageItems as FocusNav targets), screen.ts (the Menu screen 'settings', a
                         screen of every section: stacked on the one shown, backModel.ts
                         EVERY_SECTION; its rail a side zone of its own, Screen.zones; the scene
@@ -403,16 +416,24 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         .mn root: its bar, its FocusNav, its keys; the Game routes the pad).
                         Back inside: a capture cancels, then the page's focus goes to its tab
   components/rows.ts    mn-set-row, mn-slider (− track +, the default's mark, ◀ ▶ with the
-                        repeat: nav.ts onNavRepeat, a sideways drag), mn-switch (NO │ SÍ)
+                        repeat: nav.ts onNavRepeat, a sideways drag), mn-switch (NO │ SÍ; A
+                        only for one that restarts the game)
   components/icons.ts   the SVG icon sprite (~40 icons on a 24 grid, one hidden <svg> of
                         <symbol>s mounted by the first icon(); the menu tiles use it)
   components/           sheet.ts (the one dialog: Menu.modal mounts it), toast.ts (max 3, 4-10 s by
                         length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons),
                         tile.ts (the hero: one button whose parts are rebuilt per state, ✕ CANCEL
                         in its grid cell; a mode tile; the slot), plate.ts (who you are · your
-                        car), language.ts (the language sheet, PERFIL's IDIOMA row), seg.ts
+                        car), language.ts (the language sheet, Settings › Game's Idioma), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
-                        (mn-picker: a 56 px row with its value and ›, opening a sheet)
+                        (mn-picker: a 56 px row with its value and ›, opening a sheet), keypad.ts
+                        (mn-keypad, plan PR 14: the on-screen keys Menu.openKeypad mounts over the
+                        sheets when OK / A lands on a field without a fine pointer: A–Z / 0–9 and
+                        . - _ @, the case, ⌫, SPACE, DONE, ◀ ▶ along a row (onNavSide, round); DONE
+                        writes the field and returns to it, Back keeps the text; a password in dots;
+                        a field registers its own keys and write with onKeypad, as codecells.ts
+                        does for the code alphabet: DONE with six joins; pure keypadRows /
+                        keypadType / keypadShown, tests/tv-signin.test.mjs)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
                         hints.ts (the hint bar per last input, root or stacked, a screen's own
                         tabs or not; pure), topbar.ts (wordmark,
@@ -466,7 +487,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         section, a crumb, the wordmark, the chip or the search pill take the
                         player off it), the top bar / rail / tabs / hint bar, the pills (region and
                         connection with RETRY, the running search on every section (Ajustes is one
-                        of them), "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
+                        of them), "UPDATE TO PLAY"), sheets (modal), mn-keypad's layer over them (OK /
+                        A on a field without a fine pointer: openKeypad, its own zone, Back closes it
+                        first), the anti-bot sheet (antiBotAsk), CH+ / CH− (PageUp / PageDown,
+                        ChannelUp / ChannelDown) as LT / RT, toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
                         shared prefs (prefs.ts), population polling, the 4 Hz tick (1 Hz on super
                         low, DOM written only on change); MenuHost = what the Game provides (search,
@@ -525,7 +549,11 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
   device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
                         <html>), html.tg-tv (no pointer at all, or #tv), the layout class by height
                         and orientation (layoutClass: pc, short, phone, portrait, tablet, tv;
-                        data-layout and data-shell on <html>) and --ui-scale (uiScale), finePointer
+                        data-layout and data-shell on <html>) and --ui-scale (uiScale times the
+                        player's interface size: interfaceSizes per class and screen,
+                        interfaceFactor, a TV counting from its usual 125 %; data-ui-factor for
+                        fit.ts), reduced motion (html.tg-reduce-motion: the system's or the
+                        player's, applyUiSettings, motionReduced), finePointer
                         (a text field may take a first focus), the tap guard (tapGuarded); pure +
                         installDevice
   backGuard.ts          system Back (Android gesture / button, TV remote BACK, browser back, Alt +
@@ -588,11 +616,20 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         while it is up; else the toast or the dialog as before); PERFIL
                         (profile.ts: the identity tile, TEMPORADA, MI SERVIDOR from
                         AccountClient.myNodes (GET /nodes/mine; none on a fork or local dev),
-                        CUENTA Y SEGURIDAD folded, COMUNIDAD, ACERCA DE and IDIOMA as one nav row;
+                        CUENTA Y SEGURIDAD folded, COMUNIDAD, ACERCA DE (the language is Ajustes › JUEGO's);
                         a guest's CREAR CUENTA GRATIS / INICIAR SESIÓN as the screen's .mn-tabs over
                         their form, the recovery link, the guest name; fields with enterkeyhint
                         and Enter to the next one; the view follows a session that comes or goes;
-                        window.__profile samples in dev / VITE_UI_FIT);
+                        window.__profile samples in dev / VITE_UI_FIT; on a TV a guest's first
+                        tile is SIGN IN WITH YOUR PHONE); tvSignIn.ts (plan PR 14: the TV's sheet,
+                        AccountClient.tvStart / tvPoll, the code in Display 44 and its QR, the time
+                        left, NEW CODE once expired, signInWith after the sheet closed so the
+                        return with intent runs; the phone's /tv page, installTvLink: the path back
+                        to /, the code from the hash kept 5 min in sessionStorage across a sign-in,
+                        sign in first / the code cells / "Sign in on the TV as {name}?" CONFIRM /
+                        CANCEL / the refusal in words; tvSignInModel.ts pure: the link, the hash's
+                        code, the countdown, the kept code; window.__tvSignIn samples in dev /
+                        VITE_UI_FIT, tvSignInSamples.ts);
                         match/final.ts (the FINAL: a screen stacked on Inicio, the shell's bars
                         aside, PLAY AGAIN focused, Back = MENU; window.__final(kind) samples in
                         dev / VITE_UI_FIT), match/finalModel.ts (pure: FinalView, goalScorer from
@@ -608,7 +645,10 @@ src/net/
                         rejoin, cancel -> /api/leave), WebSocket with ['tg1', 'ticket.<jwt>'],
                         input / ready / ping senders, message dispatch, up to RECONNECT_TRIES (5)
                         automatic rejoins per drop (reconnectAttempt; a Welcome starts again);
-                        fetch / WebSocket / clock / storage injectable (node tests)
+                        the anti-bot token pre-warmed when Inicio shows (prewarmAntiBot, WARM_MS,
+                        used once; a pre-warm wanting a click gives up quietly) and the check that
+                        wants the player reported (onAntiBotAsk: Menu.antiBotAsk's sheet, CANCEL =
+                        cancelChallenge); fetch / WebSocket / clock / storage injectable (node tests)
   outcome.ts            what a failed online step leaves to do (retry, wait, requeue, reload,
                         gone) and its action's label: Menu.failure's sheet; codes never in a text
   ClockSync.ts          4-timestamp rtt / offset / host-tick estimate (medians over 16 pongs),
@@ -628,7 +668,8 @@ src/net/
                         HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
                         the experimental switch and presets (each call for the account that made
                         it: a refresh that hands back another account never gets it); a listener
-                        list (subscribe) and the { name, id } hint the boot reads (readAccountHint)
+                        list (subscribe) and the { name, id } hint the boot reads (readAccountHint);
+                        a TV's sign-in with the phone (tvStart / tvPoll / signInWith, tvConfirm)
   LobbyClient.ts        custom lobbies: list / peek / create / join by code, the lobby socket (state,
                         match result per member, back, kick, host, move, ready, settings); a drop
                         joins again by code for 90 s ('reconnecting'; visibilitychange / online
@@ -692,11 +733,16 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
   src/AccountsDO.ts     the one SQLite object for every account (accountStore.ts): users,
                         refresh tokens, ratings, ranked results / abandons / bans / locks, training
                         records, the experimental switch and presets, login throttle, daily prune;
-                        a report or record that carries experimental rules is refused
+                        a report or record that carries experimental rules is refused; the TV
+                        sign-in codes in memory (tvCodes.ts: 6 of the lobby alphabet, 5 min, one
+                        use, the device secret's hash compared in constant time, 10 failed confirms
+                        per account and per IP in 15 min, 5 live codes per IP)
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
-                        minute), leaderboard, ranked result; server-side PBKDF2 of the client key
+                        minute), leaderboard, ranked result, /api/auth/tv/start | confirm | poll (a
+                        TV signed in by the phone: the session and cookie as login gives them);
+                        server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
                         admit (password, kick list), start through the matchmaker's /custom; a
                         dropped member kept LOBBY_GRACE_MS (40 s, host role included) before the
@@ -1084,15 +1130,17 @@ for `MAX_CARS = 8` (`types.ts`), the UI stops at 3v3.
   Phones and tablets start on low, desktops on high; WebGL2, WebGPU compatibility mode and <= 4 GB
   devices on low unless the player chose a tier; a TV on a slow GPU or a 1 GB device on super low
   (bootTier.ts, before the renderer: super low runs WebGL2). Settings > Graphics (from the menus or
-  the pause menu) picks the tier; super low is a pick only for a signed-in player with Settings >
-  Experimental's switch on (guests see Performance / High / Ultra; a device that runs super low on
-  its own keeps it, no chip lit; a locked player's saved pick reads as Performance at the next
-  start: main.ts gateTierPrefs, and Game.checkTierLock on sign-out / switch off, without a reload); `switchQuality` rebuilds every view and the render path
+  the pause menu) picks the tier: Performance / High / Ultra as cards, and "Super low mode" as a
+  switch for everyone, guests included (it only changes how the stadium is drawn; on, no card is
+  lit; off is Performance, picked, so a TV's own super low does not come back); its other rows are
+  the Game's prefs: the resolution scale (Renderer.setResolutionBase), the frame limit and the
+  menus' animated stadium; `switchQuality` rebuilds every view and the render path
   (~30 ms), waits for the world's bake at the new sizes and compiles the new pipelines in
   parallel, all behind the loading screen; into or out of super low it saves the prefs and
   reloads the page (`restartOn`: its own backend and world), except in an online match, where the
   reload would leave it: the pick waits for the menus (`pendingRestart`, its line on the Graphics
-  tab). The prefs keep the player's pick
+  tab), and for the match's FINAL to go when one is up (`finalLeft`: its JUGAR OTRA VEZ then goes
+  to Inicio first). The prefs keep the player's pick
   only (`persistPrefs` writes `savedQuality`): a tier the session runs on its own (the URL, auto,
   a ceiling, a fallback) is never saved. Super low's CPU trims (`cpuLite`): `html.tg-superlow`
   (opaque surfaces, a flat lime hero, no box or text shadow but one hard pixel under the HUD's
@@ -1275,7 +1323,10 @@ imported first by `src/style.css`:
   `html.tg-tv`) is in rem for the shell's root scale: `html { font-size: 16px x --ui-scale }`
   (device.ts uiScale: PC by height, 768 = 1, 0.9 to 1.35; a short laptop by height, 600 = 1, 0.9 to
   1; a phone sideways by height, 390 = 1, up to 1.1, never under 1, so its text keeps 14 px and the
-  rail its 123 px at 360 tall; upright by width, the same; a TV by width, 960 = 1, up to 2), with
+  rail its 123 px at 360 tall; upright by width, the same; a TV by width, 960 = 1, up to 2) times
+  Settings › Game's interface size (device.ts interfaceFactor: 150 % on a computer, 130 on a
+  tablet, 115 on a phone where its bars have room; a TV's 125 % is its usual look, 100 its only
+  smaller step), with
   `body` kept at 16 px so only rem sizes (the shell) follow. No font size or radius literal under
   `src/ui/styles/` outside tokens.css either (the test again).
 * **Space, radii, shadows, layers, motion:** `--sp-1..8`, `--r-slot / key / tile / panel / pill`,

@@ -15,11 +15,10 @@
  * cost nothing measurable.
  */
 import { Game, addRoster, loadPrefs } from './game/Game';
-import { ExperimentalStore } from './game/experimentalStore';
-import { gateTierPrefs } from './render/bootTier';
 import { t } from './i18n';
 import { pageFlags } from './render/hashFlags';
 import { LoadingOverlay, afterPaint, paintedFrames } from './ui/LoadingOverlay';
+import { installKeysOverlay } from './ui/keysOverlay';
 import type { GameMode } from './sim/constants';
 import { Renderer } from './render/Renderer';
 import { loadSettings } from './settings';
@@ -37,6 +36,8 @@ const overlay = byId<HTMLDivElement>('overlay');
 const loading = new LoadingOverlay(overlay);
 // #widetext: every UI family becomes Arial (src/style.css html.tg-widetext), before the first layout.
 if (pageFlags().widetext) document.documentElement.classList.add('tg-widetext');
+// #keys: every key event on screen (a real TV's BACK, CH+ / CH−, its system keyboard).
+if (pageFlags().keys) installKeysOverlay();
 
 function describe(err: unknown): string {
   if (err instanceof Error) return err.stack ?? err.message;
@@ -67,13 +68,9 @@ function showError(title: string, hint: string, err: unknown): void {
 async function boot(): Promise<void> {
   const canvas = byId<HTMLCanvasElement>('game-canvas');
   const hudContainer = byId<HTMLDivElement>('hud');
-  // Super low is a pick for signed-in players with experimental features on (Settings >
-  // Experimental): the account is not restored yet, so the hint's id and that account's local copy
-  // decide (experimentalStore.ts). Anyone else's saved pick of it starts as Performance, not chosen
-  // (bootTier.ts gateTierPrefs: a weak TV still gets super low by itself); the Game saves that and
-  // says so once the menus are up (Game.bootDone).
-  const saved = loadPrefs();
-  const prefs = gateTierPrefs(saved, ExperimentalStore.unlockedAtBoot());
+  // The tier (Super low too: everyone's pick, Settings > Graphics' switch), the scene's pace, the
+  // resolution scale, the theme and the last mode.
+  const prefs = loadPrefs();
   // Controls / camera / bindings (Settings > Controls & Camera), persisted by the Game on change.
   const settings = loadSettings();
 
@@ -147,9 +144,9 @@ async function boot(): Promise<void> {
     difficulty: prefs.difficulty,
     qualitySet: prefs.qualitySet,
     savedQuality: prefs.quality,
-    superlowLocked: prefs !== saved,
     menuSceneAnimated: prefs.menuSceneAnimated,
     fpsCap: prefs.fpsCap,
+    resolutionScale: prefs.resolutionScale,
     info: `${renderer.isWebGPU ? 'WebGPU' : 'WebGL2'} · RocketSim ${sim.version} · 120 Hz`,
     loading,
   });

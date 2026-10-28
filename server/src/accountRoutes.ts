@@ -27,6 +27,16 @@
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
  *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
  *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | /#auth=error:<code>
+ *   POST /api/auth/tv/start   (no session)                      -> TvStartAnswer: a TV signing in with the phone
+ *   POST /api/auth/tv/confirm Bearer (account) { code }         -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
+ *                             | 409 tv_code_used | 429 throttled: the phone binds the code to its account, once
+ *   POST /api/auth/tv/poll    { code, secret }                  -> { state: 'pending' } | AccountSession & { state:
+ *                             'approved' } + refresh cookie (as login) | 410 | 409 | 403 bad_secret
+ *     The device-code pattern (tvCodes.ts in the AccountsDO): the code is 6 of the lobby alphabet and
+ *     lives 5 minutes; the secret (32 random bytes) goes only to the TV and only its SHA-256 to the
+ *     object, compared in constant time; an approved poll wipes the binding (one use). Limits: start
+ *     10 a minute per IP (and 5 live codes per IP), poll 60, confirm 30 a minute per IP plus 10
+ *     failed confirms (wrong, expired or used codes) per account and per IP in 15 minutes.
  *
  * `password` is always the client key (src/net/account.ts clientPasswordKey: PBKDF2 in the browser),
  * never the typed password. The server stores PBKDF2-SHA256(clientKey, random salt, 100,000) — the
@@ -48,8 +58,9 @@ import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './e
 import { base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
-import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer } from '../../src/net/account';
+import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, UserRef } from './accountStore';
+import { TV_POLL_MS, tvCode } from './tvCodes';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 
 export const ACCOUNT_SESSION_TTL_SECONDS = 60 * 60;
@@ -605,6 +616,46 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
   return redirect(r.data.created ? '/#auth=new' : st.link ? '/#auth=linked' : '/#auth=ok', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
 }
 
+// ---- TV sign-in with the phone ------------------------------------------------------------------
+
+const LIMIT_TV_START = 10;
+const LIMIT_TV_POLL = 60;
+const LIMIT_TV_CONFIRM = 30;
+
+async function tvStart(c: RouteContext): Promise<Response> {
+  if (c.limited('tvs:' + ipOf(c.request), LIMIT_TV_START)) return error(429, 'rate_limited');
+  const secret = base64urlEncode(randomBytes(32));
+  const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-start', { ip: ipOf(c.request), secret: await sha256Hex(secret) });
+  if (!r.ok) return pass(r.res);
+  const out: TvStartAnswer = { code: r.data.code, secret, expiresAt: r.data.expiresAt, ttlMs: Math.max(0, r.data.expiresAt - Date.now()), pollMs: TV_POLL_MS };
+  return noStore(json(out));
+}
+
+async function tvConfirm(c: RouteContext): Promise<Response> {
+  if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('tvc:' + ipOf(c.request), LIMIT_TV_CONFIRM)) return error(429, 'rate_limited');
+  const b = await readJson<{ code?: unknown }>(c.request);
+  const code = tvCode(b?.code);
+  if (code === null) return error(400, 'bad_request');
+  return pass(await accountsCall(c.env, '/tv-confirm', { code, userId: s.sub, username: s.name, ip: ipOf(c.request) }));
+}
+
+async function tvPoll(c: RouteContext): Promise<Response> {
+  if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
+  if (c.limited('tvp:' + ipOf(c.request), LIMIT_TV_POLL)) return error(429, 'rate_limited');
+  const b = await readJson<{ code?: unknown; secret?: unknown }>(c.request);
+  const code = tvCode(b?.code);
+  if (code === null || typeof b?.secret !== 'string' || b.secret.length === 0 || b.secret.length > 128) return error(400, 'bad_request');
+  const refreshTok = newRefreshToken();
+  const r = await accountsJson<UserRef | { state: 'pending' }>(c.env, '/tv-poll', { code, secret: await sha256Hex(b.secret), refresh: await sha256Hex(refreshTok) });
+  if (!r.ok) return noStore(pass(r.res));
+  if ('state' in r.data) return noStore(json(r.data));
+  const out: TvPollAnswer = { ...(await accountSession(c.env, r.data)), state: 'approved' };
+  return withCookies(json(out), [refreshCookie(refreshTok)]);
+}
+
 /** Dispatch; null when the path is not an account route. */
 export async function accountRoute(c: RouteContext, url: URL): Promise<Response | null> {
   const p = url.pathname;
@@ -622,6 +673,9 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/me/experimental') return experimentalSet(c);
     if (p === '/api/me/presets') return presetUpsert(c);
     if (p === '/api/me/presets/delete') return presetDelete(c);
+    if (p === '/api/auth/tv/start') return tvStart(c);
+    if (p === '/api/auth/tv/confirm') return tvConfirm(c);
+    if (p === '/api/auth/tv/poll') return tvPoll(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);
