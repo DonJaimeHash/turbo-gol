@@ -420,7 +420,7 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons),
                         tile.ts (the hero: one button whose parts are rebuilt per state, ✕ CANCEL
                         in its grid cell; a mode tile; the slot), plate.ts (who you are · your
-                        car), language.ts (the language sheet, PERFIL's IDIOMA row), seg.ts
+                        car), language.ts (the language sheet, Settings › Game's Idioma), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
                         (mn-picker: a 56 px row with its value and ›, opening a sheet)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
@@ -602,7 +602,7 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         while it is up; else the toast or the dialog as before); PERFIL
                         (profile.ts: the identity tile, TEMPORADA, MI SERVIDOR from
                         AccountClient.myNodes (GET /nodes/mine; none on a fork or local dev),
-                        CUENTA Y SEGURIDAD folded, COMUNIDAD, ACERCA DE and IDIOMA as one nav row;
+                        CUENTA Y SEGURIDAD folded, COMUNIDAD, ACERCA DE (the language is Ajustes › JUEGO's);
                         a guest's CREAR CUENTA GRATIS / INICIAR SESIÓN as the screen's .mn-tabs over
                         their form, the recovery link, the guest name; fields with enterkeyhint
                         and Enter to the next one; the view follows a session that comes or goes;

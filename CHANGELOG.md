@@ -15,9 +15,9 @@ All notable changes to Turbogol are documented here. The format follows
   result).
   It no longer needs an account or Experimental, and it changes nothing about how a match plays
   or counts.
-- New in Settings › Game: the language (the game reloads in a few seconds), the interface size
-  (100 to 150 %, as big as your screen allows; a TV keeps its usual 125 %) and reduced motion
-  (follow your system, always or never).
+- New in Settings › Game: the language (it moves there from PROFILE; the game reloads in a few
+  seconds), the interface size (100 to 150 %, as big as your screen allows; a TV keeps its usual
+  125 %) and reduced motion (follow your system, always or never).
 - New in Settings › Controls › Touch: button size (S, M, L), opacity, a left-handed layout (stick
   on the right, buttons on the left), a fixed or floating stick, the stick's deadzone, and a short
   vibration on each press (Android). They change the controls at once, in the menus or from the

@@ -9,7 +9,6 @@ export default {
   // Language picker
   'lang.title': 'Language',
   // PERFIL's section heading over the language row (in capitals, as the other headings)
-  'lang.heading': 'LANGUAGE',
   'lang.auto': 'Automatic ({language})',
   'lang.busy': 'Stop searching or leave the lobby to change the language',
   // Over the list: choosing another language reloads the page

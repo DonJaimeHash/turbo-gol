@@ -1,9 +1,8 @@
 /**
- * The language sheet (Settings › Game's Idioma, and PERFIL's IDIOMA row): automatic (the
- * system's language) first, then every shipped language by its own name, the saved choice marked
- * and focused, as the region sheet lists its regions. A change reloads the page (src/i18n.ts
- * setLanguage), which the sheet says first; that would drop a search or a lobby, so then it only
- * explains why not. Built on call.
+ * The language sheet (Settings › Game's Idioma): automatic (the system's language) first, then
+ * every shipped language by its own name, the saved choice marked and focused, as the region sheet
+ * lists its regions. A change reloads the page (src/i18n.ts setLanguage), which the sheet says
+ * first; that would drop a search or a lobby, so then it only explains why not. Built on call.
  */
 import { h } from '../dom';
 import { icon } from './icons';

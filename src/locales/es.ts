@@ -7,7 +7,6 @@ import type { Translation } from '../i18n';
 
 export default {
   'lang.title': 'Idioma',
-  'lang.heading': 'IDIOMA',
   'lang.auto': 'Automático ({language})',
   'lang.busy': 'Cancela la búsqueda o sal de la sala para cambiar el idioma',
   'lang.reloadNote': 'El juego se recarga (unos segundos)',
