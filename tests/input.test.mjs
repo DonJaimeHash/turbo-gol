@@ -1072,10 +1072,11 @@ test('a pad detected during a capture with axes resting at -1 binds the pressed 
   sample();
   assert.equal(input.rebinding, true);
   padList = [pad];
-  press(pad, GP.B); // the press that wakes the pad is the one being bound
+  press(pad, GP.B); // the press that wakes the pad is the one being bound (B: on its release)
+  sample();
+  release(pad, GP.B);
   sample();
   assert.deepEqual(await p, { kind: 'gpButton', index: GP.B });
-  release(pad, GP.B);
   input.consumeActions();
   // The menu stick: a pad appearing with LY resting at -1 is not a "menu up" press either.
   padList = [];
@@ -1317,6 +1318,32 @@ test('the left stick held past the threshold repeats like the D-pad; a capture s
   input.cancelRebind();
   await p;
   assert.equal(at(1500).up, false, 'and none after it until a new press');
+});
+
+test('a pad capture: B binds on its release, held 1 s it cancels and leaves the binding (Ajustes: hold B to cancel)', async () => {
+  const { pad, input, at } = clocked();
+  const before = input.getBinding('boost', 'pad');
+  let p = input.startRebind('boost', 'pad');
+  await armed();
+  press(pad, GP.B);
+  at(2000);
+  assert.equal(input.rebinding, true, 'B down: still waiting');
+  release(pad, GP.B);
+  at(2400);
+  assert.deepEqual(await p, { kind: 'gpButton', index: GP.B }, 'a short press binds B');
+  input.setBinding('boost', 'pad', before);
+  p = input.startRebind('boost', 'pad');
+  await armed();
+  press(pad, GP.B);
+  at(3000);
+  at(3999);
+  assert.equal(input.rebinding, true, 'not a second yet');
+  at(4000);
+  assert.equal(await p, null, 'held 1 s: cancelled');
+  assert.deepEqual(input.getBinding('boost', 'pad'), before, 'the binding is left as it was');
+  release(pad, GP.B);
+  assert.equal(at(4100).up, false);
+  assert.equal(input.padActions.back, false, 'its release is no Back');
 });
 
 test('pad menu edges never fire while a rebind capture waits (the press is the binding)', async () => {

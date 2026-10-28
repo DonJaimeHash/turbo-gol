@@ -181,6 +181,8 @@ interface Capture {
   ignoreMouse: number;
   /** Wheel events are captured only over this element (null = anywhere). */
   wheelTarget: EventTarget | null;
+  /** A pad capture's B went down then (the clock's ms; -1: not held): its release binds it, CAPTURE_CANCEL_HOLD_MS held cancels. */
+  holdB: number;
 }
 
 // Duck-typed event views (node has no KeyboardEvent / MouseEvent classes).
@@ -265,6 +267,8 @@ const NAV_RIGHT = 4;
 /** Axis deflection that is captured as a binding by startRebind. */
 const CAPTURE_AXIS_THRESHOLD = 0.6;
 const REBIND_TIMEOUT_MS = 10_000;
+/** A controller's B held this long during a pad capture cancels it (Ajustes: "Hold B to cancel"); a shorter press binds B. */
+export const CAPTURE_CANCEL_HOLD_MS = 1000;
 /** Mouse travel for full deflection at sensitivity 5 (k = sensitivity / (5 × this)). */
 const PX_FULL_DEFLECTION_AT_5 = 300;
 const SENS_REF = 5;
@@ -1197,7 +1201,8 @@ export class Input {
   /**
    * Capture the next press on `device` as the binding of `action`: kbm = any key, mouse button
    * 0–4 or a wheel turn over `wheelTarget` (anywhere when omitted); pad = a button edge or an
-   * axis crossing ±0.6. Escape cancels a capture on either device. Resolves with the new binding
+   * axis crossing ±0.6, B on its release (held CAPTURE_CANCEL_HOLD_MS it cancels). Escape cancels a
+   * capture on either device. Resolves with the new binding
    * (already applied with setBinding) or null on cancel / 10 s timeout. Driving input is ignored
    * while capturing. A pending capture is cancelled by a new one. The capture arms on the next
    * macrotask, so the press whose handler called this never ends it, and keys / buttons already
@@ -1214,6 +1219,7 @@ export class Input {
         ignoreKeys: new Set(this.keys),
         ignoreMouse: this.mouseHeld,
         wheelTarget: wheelTarget ?? null,
+        holdB: -1,
       };
       setTimeout(() => {
         cap.armed = true;
@@ -1403,7 +1409,11 @@ export class Input {
         this.padPresses++;
         const cap = this.capture;
         if (cap !== null) {
-          if (cap.armed && cap.target.device === 'pad') this.endCapture({ kind: 'gpButton', index: i });
+          // B binds on its release: held CAPTURE_CANCEL_HOLD_MS it cancels instead (below).
+          if (cap.armed && cap.target.device === 'pad') {
+            if (i === GP.B) cap.holdB = this.now();
+            else this.endCapture({ kind: 'gpButton', index: i });
+          }
         } else {
           switch (i) {
             case GP.A:
@@ -1448,9 +1458,12 @@ export class Input {
           }
         }
       }
+      if (now === 0 && prev[i] === 1 && i === GP.B && this.capture !== null && this.capture.holdB >= 0) this.endCapture({ kind: 'gpButton', index: GP.B });
       prev[i] = now;
     }
     for (let i = nb; i < GP_MAX_BUTTONS; i++) prev[i] = 0;
+    const held = this.capture;
+    if (held !== null && held.holdB >= 0 && this.now() - held.holdB >= CAPTURE_CANCEL_HOLD_MS) this.endCapture(null);
 
     // LT / RT as menu edges: past NAV_TRIGGER_ON, and again only once back under NAV_TRIGGER_OFF
     // (a trigger resting a little pressed, or a noisy one, fires once). Tracked during a capture

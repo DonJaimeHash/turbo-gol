@@ -42,6 +42,9 @@ export function rootSection(screenId: string): SectionId | null {
   return SECTIONS.find((s) => s.root === screenId)?.id ?? null;
 }
 
+/** Screens of every section (Ajustes, from the top bar's gear or Start anywhere): stacked on the screen shown (backModel.ts stackAfterOpen). */
+export const EVERY_SECTION: readonly string[] = ['settings'];
+
 /** The section a screen belongs to: its own for a root, JUGAR for every stacked screen of today. */
 export function sectionOf(screenId: string): SectionId {
   return rootSection(screenId) ?? HOME_SECTION;

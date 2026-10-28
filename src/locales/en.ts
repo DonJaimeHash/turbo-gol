@@ -991,14 +991,13 @@ export default {
   // The browser tab's title meanwhile
   'found.tab': 'Match found! · Turbogol',
 
-  // Settings screen, opened from the pause menu and the menus (src/render/Hud.ts)
-  // Top-left button that closes the screen, uppercase (shown after a ‹ arrow)
-  'settings.back': 'BACK',
-  // Screen title, uppercase
-  'settings.title': 'SETTINGS',
-  // Tab: key bindings for keyboard and mouse
+  // Ajustes, from the menus and over the pause (src/ui/screens/settings/*): a rail of tabs (shown
+  // uppercase), each tab's page of rows
+  // Tab: the device sections below (bindings and their sensitivities)
+  'settings.tabControls': 'Controls',
+  // Controls' sections, one per device detected (also in controls.change)
+  'settings.tabTouch': 'Touch',
   'settings.tabKbm': 'Keyboard & Mouse',
-  // Tab: button bindings for a gamepad
   'settings.tabPad': 'Controller',
   'settings.tabCamera': 'Camera',
   // Tab: sensitivities, deadzones and other control options
@@ -1007,8 +1006,38 @@ export default {
   'settings.tabAudio': 'Audio',
   // Tab: graphics quality
   'settings.tabGraphics': 'Graphics',
-  // Tab: features being tested, for signed-in players (a guest's tab gets a lock after it)
+  // Tab: features being tested, for signed-in players (a guest's tab gets a lock and settings.signInShort under it)
   'settings.tabExperimental': 'Experimental',
+  // The rail's name for a screen reader
+  'settings.tabsLabel': 'Settings sections',
+  // Over the rail, uppercase, beside the keys that step it
+  'settings.section': 'SECTION',
+  // Under a guest's Experimental tab
+  'settings.signInShort': 'Sign in',
+  // After a slider's value for a screen reader: its default ({value} with its unit)
+  'settings.defaultValue': 'default {value}',
+  // The − and + beside a slider, for a screen reader (the slider's name follows)
+  'settings.less': 'Less',
+  'settings.more': 'More',
+  // After the default camera preset's name
+  'settings.default': 'default',
+  // Camera: the row of the named presets
+  'settings.cameraPreset': 'Preset',
+  // Over a device's binding list
+  'settings.bindHelpPad': 'A changes · hold B to cancel · X clears',
+  'settings.bindHelpKbm': 'Enter changes · Esc cancels · Del clears',
+  // In settings.pressButton's {cancelKey}: hold the controller's B button
+  'settings.holdB': 'hold B',
+  // After a binding: another action already uses that key ({key} the key, {action} the other action)
+  'settings.bindConflict': '{key} is also {action}',
+  // Graphics cards: the running one's tag, uppercase; a heavy tier on a device with little memory
+  'settings.qualityCurrent': 'CURRENT',
+  'settings.qualityMemory': 'Needs memory',
+  // After a tier was applied: keep it, or back to the one before ({quality}, uppercase) in {seconds}
+  'settings.qualityKeep': 'KEEP',
+  'settings.qualityRevert': 'BACK TO {quality}',
+  'settings.qualityReverting': 'Back to {quality} in {seconds} s unless you keep it',
+  'settings.qualityTrialNote': 'After you apply another quality you have 10 s to keep it; if not, it goes back by itself.',
   // Group titles of the binding lists (shown uppercase by the style)
   'settings.groupDriving': 'Driving',
   // Car controls while flying
@@ -1020,11 +1049,9 @@ export default {
   'settings.mouseNote': 'Mouse buttons and wheel are bindable · mouse movement swivels the camera',
   // Keyboard & Mouse tab, under the mouse note: the arrow keys are fixed second keys for driving
   'settings.arrowsNote': 'The arrow keys drive too, unless you bind them to something else',
-  // Tooltip of a binding cell
-  'settings.rebindTitle': 'Click to rebind',
   // Tooltip of the disabled × next to the pause binding
   'settings.pauseLockedTitle': 'Pause cannot be unbound',
-  // Tooltip of the × next to a binding; {key} is the Delete key name (Del)
+  // The ✕ next to a binding, for a screen reader; {key} is the action's name
   'settings.unbindTitle': 'Unbind ({key})',
   // Inside the binding cell while it waits for the new key, lowercase; {cancelKey} is a key name (Esc)
   'settings.pressKey': 'press a key… ({cancelKey} cancels)',
@@ -1115,8 +1142,6 @@ export default {
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',
-  // Key hints at the bottom (hidden on phones). The {...Keys} are key names (↑ ↓, ← →, Enter / A, Del, Q E / X, Esc / B) and are not translated. Keep the spacing.
-  'settings.keys': '{navKeys} navigate   ·   {adjustKeys} adjust   ·   {selectKeys} select   ·   {clearKeys} clear   ·   {tabKeys} tabs   ·   {backKeys} back',
 
   // Bindable actions, one row each on the controls screen under the settings.group* titles
   // (src/input/bindings.ts ACTION_ROWS). Key and button names are never translated. Keep them short:

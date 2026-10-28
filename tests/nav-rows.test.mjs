@@ -145,6 +145,19 @@ test('zoneEntryIndex: remembered > the zone entry > the pick that way > the near
   assert.equal(NAV.zoneEntryIndex(from, 'down', [], -1, -1), -1, 'an empty zone');
 });
 
+test("lineSpan: on a list's lines ▼ goes to the line below, a narrow switch between two wide sliders too", () => {
+  // CONTROLES › TECLADO Y MOUSE at 1366 x 768: two slider tracks and the right-aligned switch between them.
+  const track = R(913, 305, 240, 44);
+  const sw = R(1139, 359, 142, 48);
+  const next = R(913, 417, 240, 44);
+  assert.equal(NAV.pickTarget(track, 'down', [sw, next]), 1, 'by their own boxes the next track wins: the switch is skipped');
+  const line = (b) => NAV.lineSpan(b, R(600, b.top - 6, 690, 56));
+  assert.equal(NAV.pickTarget(line(track), 'down', [line(sw), line(next)]), 0, 'as wide as their lines: the switch');
+  assert.equal(NAV.pickTarget(line(sw), 'down', [line(track), line(next)]), 1, 'then the track under it');
+  assert.equal(NAV.pickTarget(line(next), 'up', [line(track), line(sw)]), 1, 'and ▲ back the same way');
+  assert.deepEqual(NAV.lineSpan(sw, R(600, 350, 690, 56)), { left: 600, top: 359, right: 1290, bottom: 407, width: 690, height: 48 }, 'its own height');
+});
+
 test('OPPOSITE pairs every direction', () => {
   for (const d of ['up', 'down', 'left', 'right']) assert.equal(NAV.OPPOSITE[NAV.OPPOSITE[d]], d);
   assert.equal(NAV.OPPOSITE.up, 'down');

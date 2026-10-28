@@ -25,7 +25,7 @@ const css = new Map(await Promise.all(cssFiles.map(async (f) => [relative(ROOT, 
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
 
 test('the stylesheets the UI is made of are all here', () => {
-  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/styles/shell.css', 'src/ui/styles/components.css', 'src/ui/styles/tiles.css', 'src/ui/styles/screens/home.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
+  for (const f of ['src/style.css', 'src/ui/styles/tokens.css', 'src/ui/styles/focus.css', 'src/ui/styles/shell.css', 'src/ui/styles/components.css', 'src/ui/styles/tiles.css', 'src/ui/styles/screens/home.css', 'src/ui/styles/screens/settings.css', 'src/ui/menu.css', 'src/render/training.css', 'src/input/touch.css']) assert.ok(css.has(f), f);
 });
 
 test('nothing blurs the live scene: no backdrop-filter anywhere in src (CSS or code)', async () => {
@@ -131,9 +131,9 @@ test('the type scale has every class of the plan: PC, short screens, phone lands
   assert.match(scope('@media (max-height: 600px) and (min-width: 900px)'), /--t-hero:/);
 });
 
-test('one pressed state: the menus, the HUD (pause and settings) and training squeeze to .97', () => {
+test('one pressed state: the menus (Ajustes too), the HUD pause and training squeeze to .97', () => {
   const all = [...css.values()].flatMap(blocks);
-  for (const target of ['.mn [data-nav]:active', '.hud-pause-btn:active', '.hud-settings-action:active', '.hud-choice-opt:active', '.trn-btn:active']) {
+  for (const target of ['.mn [data-nav]:active', '.hud-pause-btn:active', '.mn-slider-step:active', '.hud-rule-btn:active', '.trn-btn:active']) {
     const hit = all.find((b) => b.selector.split(',').some((sel) => sel.trim().startsWith(target)) && /transform:\s*scale\(0?\.97\)/.test(b.body));
     assert.ok(hit, target);
   }
@@ -192,7 +192,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
   // Touch shows no ring: every ring rule is scoped to a page whose last input was not a finger.
   for (const r of rules(focus)) if (r.selector !== '.mn [data-nav]:focus') for (const sel of r.selector.split(',')) assert.match(sel.trim(), /^html:not\(\.tg-touch\) /, sel);
   assert.doesNotMatch(focus, /:is\(/, 'plain selector lists (an old TV WebView drops a whole rule it cannot parse)');
-  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.hud-settings-row.hud-focus', '.trn-summary-card .trn-btn-primary', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
+  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.mn .mn-set-row-ctl.mn-focus', '.trn-summary-card .trn-btn-primary', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
 });
 
 // Within about 1 % of what Vite's minifier writes (comments, spaces, last semicolons and leading
@@ -215,12 +215,15 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // replace). Both together: 128,806 B, the cap that plus about 0.6 KB. PR 9 adds the touch match:
 // BOOST's amount and level, the moved CAM / RESET, the first-match cards, the live rotate notice
 // (touch.css, about 2.1 KB more) and the two-thumb touch pause with its half-moon hold (style.css,
-// about 2 KB, with the phone's 14 px floor for its lines): 132,990 B. PR 12 adds the Salas
-// (styles/screens/lobby.css: SALAS' tools and rows, mn-codecells, the Sala, the QR sheet, per class,
-// about 7.6 KB) minus the old lobby list and lobby screen of menu.css and modes.css (about 2.6 KB):
-// 133,989 B on its own. Both together: 138,173 B, the cap that plus about 0.6 KB. It steps down
-// to 70 KB once PR 10 deletes the Hud's settings sheet (about 11 KB) and PR 15 menu.css. Raising it
-// is the owner's call, recorded in the PR.
+// about 2 KB, with the phone's 14 px floor for its lines): 132,990 B, the cap that plus about
+// 0.6 KB. PR 12 adds the Salas (styles/screens/lobby.css: SALAS' tools and rows, mn-codecells, the
+// Sala, the QR sheet, per class, about 7.6 KB) minus the old lobby list and lobby screen of menu.css
+// and modes.css (about 2.6 KB): 133,989 B on its own, 138,173 B with PR 9. PR 10 deletes the Hud's
+// settings sheet (style.css and focus.css, about 11.1 KB) and adds Ajustes as drawn
+// (styles/screens/settings.css: the rail, the rows, sliders, switches, bindings, the quality cards,
+// the Experimental page, the pause overlay, per class; about 11.1 KB): 132,999 B on its own. PR 12
+// and PR 10 together: 138,182 B, the cap that plus about 0.6 KB. It steps down to 70 KB once PR 15
+// deletes menu.css. Raising it is the owner's call, recorded in the PR.
 const CSS_BUDGET = 138_800;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
