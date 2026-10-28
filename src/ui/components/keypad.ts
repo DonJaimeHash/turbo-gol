@@ -156,8 +156,15 @@ export function keypadBox(o: KeypadOptions): KeypadView {
     ...rows,
     h('div.mn-keypad-row.mn-keypad-actions', null, ...actions),
   );
+  // The OK that opened it, held: its repeats press no key (only a press made here does).
+  let fresh = false;
   // A keyboard meanwhile (a TV's own, a phone's Bluetooth one): its characters type, Backspace deletes.
   el.addEventListener('keydown', (e) => {
+    if (!e.repeat) fresh = true;
+    else if (!fresh && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey || typeof e.key !== 'string') return;
     if (e.key === 'Backspace') {
       if (value.length === 0) return; // Back (Menu.onKey)

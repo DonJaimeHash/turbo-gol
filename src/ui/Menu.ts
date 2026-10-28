@@ -1162,13 +1162,13 @@ export class Menu {
     const editing = field && isEditing(active);
     const plain = !e.ctrlKey && !e.metaKey;
     // A remote's CH+ / CH− (PageUp / PageDown on most TV browsers, ChannelUp / ChannelDown on
-    // others) are the pad's LT / RT: the board pages, a screen's own tabs step. Not over a field,
-    // nor when a screen took the key itself (the board's own PageUp / PageDown).
+    // others) and a keyboard's PgUp / PgDn are the pad's LT / RT: the board pages, a screen's own
+    // tabs step. Not over a field; held, they repeat (the board's pages).
     const channel = e.key === 'ChannelUp' || e.code === 'PageUp' ? -1 : e.key === 'ChannelDown' || e.code === 'PageDown' ? 1 : 0;
     if (channel !== 0) {
-      if (field || !plain || e.repeat || e.defaultPrevented) return;
+      if (field || !plain) return;
       e.preventDefault();
-      this.command(channel < 0 ? 'tabPrev' : 'tabNext', true);
+      if (!heldOver(e, this.keysDown)) this.command(channel < 0 ? 'tabPrev' : 'tabNext', true);
       return;
     }
     let dir: NavDir | null = null;

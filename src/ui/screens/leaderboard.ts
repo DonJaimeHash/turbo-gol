@@ -13,7 +13,7 @@
  *
  * Keys (leaderboardModel.ts): ▲ ▼ step the rows (held: the key's and the D-pad's repeat), ◀ ▶ on a
  * row or a tab step the playlist (not past 1v1 or 3v3: the phone's rail is that way), LT / RT (pad)
- * and PgUp / PgDn (keyboard) move a page, X (pad X, keyboard X while no search runs, Delete) goes to
+ * and PgUp / PgDn (keyboard, a TV remote's CH+ / CH−: Menu.onKey gives them as LT / RT) move a page, X (pad X, keyboard X while no search runs, Delete) goes to
  * your row; Q / E step the tabs (Menu.stepTabs). The playlist is remembered (prefs.ts).
  * In development (or a VITE_UI_FIT=1 build) window.__board(kind | null) shows sample rows
  * (scripts/ui-fit.mjs).
@@ -251,12 +251,6 @@ export function leaderboardScreen(menu: Menu): Screen {
         goToMe();
     }
   };
-
-  el.addEventListener('keydown', (e) => {
-    if ((e.code !== 'PageUp' && e.code !== 'PageDown') || e.ctrlKey || e.metaKey || e.altKey) return;
-    e.preventDefault();
-    page(e.code === 'PageUp' ? -1 : 1);
-  });
 
   const command = (c: MenuCommand, pad: boolean): boolean => {
     // A controller's triggers page the list; the keyboard's Q / E (the same commands) step the tabs (Menu.stepTabs).
