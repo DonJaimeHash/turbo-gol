@@ -31,6 +31,15 @@
 // community node's line, casual, against the AI with a full 3v3, a lobby) and fails PLAY AGAIN without
 // the focus (but on a touch screen).
 //
+// ENTRENAMIENTO, CLASIFICACIÓN and PERFIL (plan PR 13) run their states: training also as an
+// account with Settings › Experimental on ('training:lab': the LAB tile, HOW TO PLAY as a row), the
+// board with 100 sample rows and yours among them or under them, then as a guest (window.__board),
+// the profile as a guest, an account and a community node operator (window.__profile). 'summary': a
+// pack's summary over the training HUD (TrainingHud.showSummary, sample results), which fails it
+// off screen, text out of its box or under 14 px on a phone (12 elsewhere), a button something
+// covers (the touch controls) or under 44 px for a finger, and AGAIN without the focus (but on a
+// touch screen).
+//
 // The touch match (plan PR 9, 'touch'), last on the touch sizes: an offline match in touch mode
 // (Game.startMatch), its controls, each first-match card, the full scoreboard, the touch pause, and
 // free play's pause with its training row; upright, the rotate notice. It fails a control nearer
@@ -103,7 +112,7 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'garage', 'leaderboard', 'profile', 'final', 'touch', 'sala'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'training:lab', 'summary', 'garage', 'leaderboard', 'leaderboard:rows', 'leaderboard:below', 'leaderboard:guest', 'profile', 'profile:account', 'profile:operator', 'final', 'touch', 'sala'];
 // The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
 const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
 // The HUD's reconnection line, per language: the try and the way back (OnlineSession.hint).
@@ -152,6 +161,34 @@ const MODES_SEARCH = (kind) => `(() => {
 // keeps the region's name in the pill by the plate (the hero's subtitle leaves it out searching).
 const FORMATS = `(() => { const s = document.querySelector('.mn-hero-sub'); const t = s ? s.innerText : ''; return ['1v1', '2v2', '3v3'].filter((m) => !t.includes(m)).map((m) => 'the subtitle lost ' + m + ': ' + JSON.stringify(t)); })()`;
 const TV_REGION = `(() => { const n = document.querySelector('.mn-home-pills .mn-pill-region .mn-pill-main'); return n !== null && n.getBoundingClientRect().width > 0 ? [] : ["the region's name is nowhere on screen (the pill by the plate gave it way)"]; })()`;
+// A pack's summary (plan PR 13): its checks, in the page (see SCREENS' note).
+const SUMMARY_CHECK = `(() => {
+  const W = innerWidth, H = innerHeight, bad = [];
+  const touch = document.documentElement.classList.contains('tg-touch');
+  const card = document.querySelector('.trn-summary-card');
+  if (card === null || card.getBoundingClientRect().width === 0) return ['the summary is not up'];
+  const off = (e) => { const r = e.getBoundingClientRect(); return r.left < -0.5 || r.top < -0.5 || r.right > W + 0.5 || r.bottom > H + 0.5; };
+  const say = (e) => JSON.stringify(e.textContent.trim().slice(0, 40));
+  if (off(card)) bad.push('the summary is off screen');
+  const min = document.documentElement.dataset.layout === 'phone' || document.documentElement.dataset.layout === 'portrait' ? 14 : 12;
+  for (const e of card.querySelectorAll('*')) {
+    if (e.children.length > 0 || !e.textContent.trim() || e.getBoundingClientRect().width === 0) continue;
+    const f = parseFloat(getComputedStyle(e).fontSize);
+    if (f < min - 0.05) bad.push('text ' + f.toFixed(1) + 'px: ' + say(e));
+    if (e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).display !== 'inline') bad.push('text overflows: ' + say(e));
+  }
+  for (const b of card.querySelectorAll('.trn-btn')) {
+    if (b.hidden) continue;
+    const r = b.getBoundingClientRect();
+    if (off(b)) bad.push(say(b) + ' off screen');
+    if (touch && b.offsetHeight < 44) bad.push(say(b) + ' under 44 px: ' + b.offsetHeight);
+    // Upright, the rotate notice is over the whole training (turn the phone to play): not a cover.
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (top !== b && !b.contains(top) && (top === null || top.closest('.tc-rotate') === null)) bad.push(say(b) + ' is covered by ' + (top === null ? null : top.className || top.tagName));
+  }
+  if (!touch && !(document.activeElement && document.activeElement.classList.contains('trn-btn-primary'))) bad.push('AGAIN is not focused: ' + (document.activeElement ? document.activeElement.className : null));
+  return bad;
+})()`;
 // The TV's controller message (tv.needPad), per language.
 const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
@@ -420,8 +457,30 @@ try {
         await sleep(300);
         continue;
       }
+      if (screen === 'summary') {
+        // A pack's summary (plan PR 13) over the training HUD, then back to the menus.
+        await page.eval(`(__game.startTraining('shooting-medium'), true)`);
+        await page.until('__game.training !== null && __game.trainingHud !== null', 10_000, 100);
+        await sleep(400);
+        await page.eval(`(__game.trainingHud.showSummary(__game.training.pack.name, { passed: 5, total: 7, best: 6, newBest: false }, ['pass', 'fail', 'pass', 'pass', 'fail', 'pass', 'pass'], 'next'), true)`);
+        await sleep(900); // its pop (0.35 s of scale) over, on a slow headless frame too
+        const bad = await page.eval(SUMMARY_CHECK);
+        failures += bad.length;
+        report.push({ size: size.name, lang, input, face: FACE ?? 'Arial', note: 'summary', bad });
+        console.log(`${head} ${input.padEnd(8)} ${'summary'.padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL'}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
+        await page.eval('(__game.stopTraining(), true)');
+        await page.until('__game.menu.visible', 10_000, 100);
+        await sleep(300);
+        continue;
+      }
       const [id, tab] = screen.split(':');
-      await page.eval(`(__game.menu.open(${JSON.stringify(id)}, true${tab !== undefined ? ', ' + JSON.stringify(tab) : ''}), true)`);
+      // PR 13's states are samples on the screen itself (the tab is a sample's kind there, not Menu.open's).
+      const sampled = id === 'training' || id === 'leaderboard' || id === 'profile';
+      // An account with Settings › Experimental on (training:lab): its view's switch, set on the page.
+      if (id === 'training') await page.eval(`(() => { const x = __game.menu.host.experimental; window.__uiFitLab ??= Object.getOwnPropertyDescriptor(x, 'unlocked') ?? { value: x.unlocked }; Object.defineProperty(x, 'unlocked', ${tab === 'lab' ? '{ get: () => true, configurable: true }' : 'window.__uiFitLab'}); return true; })()`);
+      await page.eval(`(__game.menu.open(${JSON.stringify(id)}, true${tab !== undefined && !sampled ? ', ' + JSON.stringify(tab) : ''}), true)`);
+      if (id === 'leaderboard') await page.eval(`(window.__board(${JSON.stringify(tab ?? null)}), true)`);
+      if (id === 'profile') await page.eval(`(window.__profile(${JSON.stringify(tab ?? null)}), true)`);
       await sleep(input === own ? 400 : 200); // a mount and a screen's own first render (__uiFit runs the fit it queued)
       if (id === 'modes' && input === own && (tab === 'casual' || tab === 'ranked')) {
         // Idle with FIND MATCH (or SIGN IN) focused, then searching every format (the longest

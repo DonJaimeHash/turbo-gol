@@ -262,7 +262,8 @@ import { CARD_FIRST_MATCHES, ControlsCardPlan, controlsCardRows, localCardSeen, 
 import type { Device } from '../input/bindings';
 import { kbmCustomised, usesMouseButton } from '../input/bindings';
 import { OnlineSession } from './OnlineSession';
-import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, packById, type TrainingShot } from './trainingPacks';
+import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, TRAINING_DIFFICULTIES, TRAINING_PACKS, packById, type TrainingShot } from './trainingPacks';
+import { nextLevel } from '../ui/screens/trainingModel';
 import {
   FREEPLAY_GOAL_PAUSE_SECONDS,
   RESULT_SECONDS,
@@ -870,7 +871,8 @@ export class Game implements P2PGameHooks {
   private readonly trainingBall: TrainingBallSample = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 };
   private readonly trainingYpr: [number, number, number] = [0, 0, 0];
   /** Which device the training key hints were built for (null = rebuild). */
-  private trainingHintsPad: boolean | null = null;
+  /** The device the training hints were last written for (null: write them on the next frame). */
+  private trainingHintsDevice: TrainingHints['device'] | null = null;
   /** The TrainingSession's view of the Game (sim placement, banners, summary). */
   private readonly trainingHooks: TrainingHooks = {
     placeShot: (shot) => this.trainingPlaceShot(shot),
@@ -2512,7 +2514,7 @@ export class Game implements P2PGameHooks {
     const th = this.ensureTrainingHud();
     th.show(pack !== null ? pack.name : this.freePlayRules !== null ? t('training.expFreePlay') : FREEPLAY_NAME, pack === null ? 0 : pack.shots.length, pack === null);
     th.setRules(this.freePlayRules !== null ? t('trainingHud.rulesLine', { name: this.freePlayRules.name }) : null);
-    this.trainingHintsPad = null;
+    this.trainingHintsDevice = null;
     // Free play shows the controls card until the car moves; a pack has its own key hints.
     if (pack === null) this.controlsCard.freePlay();
     else this.controlsCard.clear();
@@ -2670,6 +2672,7 @@ export class Game implements P2PGameHooks {
     // The summary's buttons (the pause entries are the Hud's pause menu: pauseEntries).
     const th = new TrainingHud(this.hud.root.parentElement ?? this.hud.root, {
       onRetryPack: () => this.trainingRetryPack(),
+      onNextLevel: () => this.trainingNextLevel(),
       onQuit: () => this.stopTraining(),
     });
     this.trainingHud = th;
@@ -2730,16 +2733,22 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * Pack summary edges: accept (Enter / pad A) or the reset key retries the pack, back (Esc /
-   * Backspace's menu edge / pad B) leaves for the menu, next / previous reopen a shot to practise
-   * (the run's results stay, the summary does not come back for it).
+   * Pack summary edges: accept (Enter / pad A) presses its focused button (AGAIN at first), the
+   * reset key retries the pack, back (Esc / Backspace's menu edge / pad B) leaves for ENTRENAMIENTO,
+   * the arrows / D-pad walk its buttons (TrainingHud's FocusNav: the D-pad's ◀ ▶ are the pad's
+   * previous / next shot too, the buttons come first), the keyboard's next / previous (PgDn / PgUp)
+   * reopen a shot to practise (the run's results stay, the summary does not come back for it).
    */
   private trainingSummaryActions(): void {
     const tr = this.training;
-    if (tr === null) return;
+    const th = this.trainingHud;
+    if (tr === null || th === null) return;
     const a = this.input.actions;
-    if (a.accept || a.trainingReset || a.reset) this.trainingRetryPack();
+    const dir = a.menuLeft ? 'left' : a.menuRight ? 'right' : a.menuUp ? 'up' : a.menuDown ? 'down' : null;
+    if (a.accept) th.summaryAccept();
+    else if (a.trainingReset || a.reset) this.trainingRetryPack();
     else if (a.back) this.stopTraining();
+    else if (dir !== null) th.summaryMove(dir, this.input.padActions.menuRepeat);
     else if (a.trainingNext || a.trainingPrev) {
       if (this.trainingHud !== null) this.trainingHud.hideSummary();
       this.input.blockJumpUntilRelease();
@@ -2756,6 +2765,13 @@ export class Game implements P2PGameHooks {
     this.input.blockJumpUntilRelease();
     this.setPaused(false);
     tr.retryPack();
+  }
+
+  /** The summary's NEXT LEVEL: the same category's next pack (TrainingHud shows it only when there is one). */
+  private trainingNextLevel(): void {
+    const pack = this.training?.pack ?? null;
+    const next = pack === null ? null : nextLevel(TRAINING_PACKS, pack.id, TRAINING_DIFFICULTIES);
+    if (next !== null) this.startTraining(next.id);
   }
 
   /** Free play: unlimited boost on / off (the wrapper refills to 100 every tick while on). */
@@ -2807,7 +2823,7 @@ export class Game implements P2PGameHooks {
     const tr = this.training;
     const th = this.trainingHud;
     if (tr === null || tr.pack === null || th === null) return;
-    th.showSummary(tr.pack.name, summary, tr.results);
+    th.showSummary(tr.pack.name, summary, tr.results, nextLevel(TRAINING_PACKS, tr.pack.id, TRAINING_DIFFICULTIES)?.name ?? null);
     this.input.exitPointerLock(); // the summary is clicked
   }
 
@@ -2860,10 +2876,11 @@ export class Game implements P2PGameHooks {
     const th = this.trainingHud;
     if (tr === null || th === null) return;
     th.setPaused(this.paused);
-    const pad = this.input.hasGamepad;
-    if (pad !== this.trainingHintsPad) {
-      this.trainingHintsPad = pad;
-      th.setHints(this.trainingHints(pad));
+    // A finger (touch mode) gets the ↺ button's hints; else the keys of the device that is there.
+    const device = this.touch !== null && this.touch.touchMode ? 'touch' : this.input.hasGamepad ? 'pad' : 'kbm';
+    if (device !== this.trainingHintsDevice) {
+      this.trainingHintsDevice = device;
+      th.setHints(this.trainingHints(device));
     }
     const pack = tr.pack;
     if (pack === null) {
@@ -2880,8 +2897,9 @@ export class Game implements P2PGameHooks {
   }
 
   /** Key hint labels from the live bindings of the device in use (allocates: only when the device changes). */
-  private trainingHints(pad: boolean): TrainingHints {
+  private trainingHints(device: TrainingHints['device']): TrainingHints {
     const input = this.input;
+    const pad = device === 'pad';
     const dev = pad ? 'pad' : 'kbm';
     return {
       reset: input.getLabel('trainingReset', dev),
@@ -2892,6 +2910,7 @@ export class Game implements P2PGameHooks {
       pause: input.getLabel('pause', dev),
       accept: pad ? 'A' : 'Enter',
       back: pad ? 'B' : 'Esc',
+      device,
     };
   }
 

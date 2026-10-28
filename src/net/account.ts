@@ -243,6 +243,24 @@ export interface LeaderboardAnswer {
   total: number;
 }
 
+/**
+ * One of the caller's community nodes (GET /nodes/mine, server/src/NodeRegistryDO.ts mineView): the
+ * part PERFIL's MI SERVIDOR shows. `status` as nodes/shared/controlProtocol.ts NodeStatus;
+ * `counters.verified`: matches it hosted whose result was verified, all time.
+ */
+export interface MyNode {
+  nodeId: string;
+  name: string | null;
+  region: string;
+  status: 'pending' | 'probation' | 'active' | 'suspended' | 'banned';
+  statusReason: string | null;
+  suspendedUntil: number | null;
+  online: boolean;
+  counters: { verified: number; probationVerified: number };
+  version: string;
+  compatible: boolean;
+}
+
 /** GET /api/ranked/result?matchId=: the caller's rating change of a finished ranked match. */
 export type RankedResultAnswer =
   | { status: 'pending' }

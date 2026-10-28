@@ -2,14 +2,18 @@
  * Training HUD (free play and shot packs, src/game/TrainingSession.ts): a DOM overlay next to the
  * match Hud, styled by ./training.css (classes prefixed `trn-`).
  *
- *   top left      pack name, "Shot n / N · <shot name>", attempts, one dot per shot (pass / fail /
- *                 none, the current one ringed) and the shot timer bar; free play shows its
- *                 unlimited-boost state instead (experimental free play also "Rules: <preset>",
- *                 setRules); under it the training key hints, from the live
- *                 bindings of the device in use (kept in the panel: the bottom centre belongs to
- *                 the Hud's pointer-lock hint and camera mode)
+ *   top left      pack name, "Shot n / N · <shot name>", attempts, one dot per shot by shape (✓
+ *                 passed, ✕ missed, hollow to play; the current one ringed), the hits and misses
+ *                 so far and the shot timer bar; free play shows its unlimited-boost state
+ *                 instead (experimental free play also "Rules: <preset>", setRules); under it the
+ *                 training key hints, from the live bindings of the device in use (a finger: the
+ *                 ↺ button and the pause), kept in the panel (the bottom centre belongs to the
+ *                 Hud's pointer-lock hint and camera mode). The panel folds after FOLD_MS: the
+ *                 hints and the attempts step aside, the shot, its dots and the clock stay
  *   centre        "drive to start" while a shot waits for the first input, the success / fail
- *                 banner, the pack summary panel (passed / total, best, retry / back to menu)
+ *                 banner, the pack summary (passed / total, best, the dots, AGAIN · NEXT LEVEL ·
+ *                 TRAINING: a FocusNav of its own, which the Game drives with the arrows / D-pad
+ *                 and Enter / A while it is up, and a click or a tap)
  *   pause         the Hud's pause menu carries the training entries (Reset shot / Previous /
  *                 Next, free play: Reset ball / Reset car / Unlimited boost; built by the Game);
  *                 while it is up this overlay only hides its key hints and the "drive" prompt
@@ -22,11 +26,18 @@
 import './training.css';
 import type { ShotOutcome, TrainingSummary } from '../game/TrainingSession';
 import { t } from '../i18n';
+import { FocusNav } from '../ui/nav';
+import type { NavDir } from '../ui/nav';
+
+/** The panel folds this long after a pack or free play opens (plan PR 13). */
+const FOLD_MS = 10_000;
 
 /** What the pack summary's buttons do (the Game wires them to the session). */
 export interface TrainingHudActions {
   onRetryPack(): void;
-  /** Leave training for the menu. */
+  /** The same category's next level (the summary shows the button only when there is one). */
+  onNextLevel(): void;
+  /** Leave training for the menu (ENTRENAMIENTO). */
   onQuit(): void;
 }
 
@@ -41,6 +52,8 @@ export interface TrainingHints {
   /** The menu accept / back keys for the summary panel (fixed, per device). */
   accept: string;
   back: string;
+  /** The device in use: a finger gets the ↺ button and the pause instead of keys. */
+  device: 'kbm' | 'pad' | 'touch';
 }
 
 function el(tag: string, className: string, text?: string): HTMLElement {
@@ -56,6 +69,7 @@ function button(className: string, text: string, onClick: () => void): HTMLButto
   b.className = className;
   b.textContent = text;
   b.tabIndex = -1;
+  b.setAttribute('data-nav', '');
   b.addEventListener('click', (e) => {
     e.preventDefault();
     onClick();
@@ -83,6 +97,8 @@ export class TrainingHud {
   private readonly shotLine: HTMLElement;
   private readonly attemptsLine: HTMLElement;
   private readonly dots: HTMLElement;
+  /** "✓ 3 · ✕ 1": the hits and misses of this run. */
+  private readonly tally: HTMLElement;
   private readonly timer: HTMLElement;
   private readonly timerFill: HTMLElement;
   private readonly timerText: HTMLElement;
@@ -98,6 +114,10 @@ export class TrainingHud {
   private readonly sumBest: HTMLElement;
   private readonly sumDots: HTMLElement;
   private readonly sumHint: HTMLElement;
+  private readonly sumAgain: HTMLButtonElement;
+  private readonly sumNext: HTMLButtonElement;
+  /** The summary's own focus: the Game's arrows / D-pad and Enter / A while it is up. */
+  private readonly sumNav: FocusNav;
   /** The unlimited boost texts of the panel line, built once. */
   private readonly boostText: { lineOn: string; lineOff: string };
 
@@ -121,6 +141,8 @@ export class TrainingHud {
   private lastSumHint = '';
   private shotCount = 0;
   private bannerTimer = 0;
+  private foldTimer = 0;
+  private lastTally = '';
 
   constructor(container: HTMLElement, actions: TrainingHudActions) {
     this.container = container;
@@ -139,6 +161,7 @@ export class TrainingHud {
     this.shotLine = el('div', 'trn-shot', '');
     this.attemptsLine = el('div', 'trn-attempts', '');
     this.dots = el('div', 'trn-dots');
+    this.tally = el('div', 'trn-tally', '');
     this.timer = el('div', 'trn-timer');
     const track = el('div', 'trn-timer-track');
     this.timerFill = el('div', 'trn-timer-fill');
@@ -147,7 +170,7 @@ export class TrainingHud {
     this.timer.append(track, this.timerText);
     this.boostLine = el('div', 'trn-boost', '');
     this.keys = el('div', 'trn-keys', '');
-    this.panel.append(this.title, this.rulesLine, this.shotLine, this.attemptsLine, this.dots, this.timer, this.boostLine, this.keys);
+    this.panel.append(this.title, this.rulesLine, this.shotLine, this.attemptsLine, this.dots, this.tally, this.timer, this.boostLine, this.keys);
 
     this.start = el('div', 'trn-start', t('trainingHud.start'));
     this.start.hidden = true;
@@ -167,14 +190,21 @@ export class TrainingHud {
     this.sumBest = el('div', 'trn-summary-best', '');
     this.sumDots = el('div', 'trn-dots trn-summary-dots');
     const row = el('div', 'trn-summary-buttons');
-    row.append(
-      button('trn-btn trn-btn-primary', t('trainingHud.retryPack'), () => this.actions.onRetryPack()),
-      button('trn-btn', t('trainingHud.backToMenu'), () => this.actions.onQuit()),
-    );
+    row.setAttribute('data-nav-row', '');
+    this.sumAgain = button('trn-btn trn-btn-primary', t('trainingHud.again'), () => this.actions.onRetryPack());
+    this.sumAgain.setAttribute('data-autofocus', '');
+    this.sumNext = button('trn-btn', t('trainingHud.nextLevel'), () => this.actions.onNextLevel());
+    row.append(this.sumAgain, this.sumNext, button('trn-btn', t('trainingHud.toTraining'), () => this.actions.onQuit()));
     this.sumHint = el('div', 'trn-summary-hint', '');
     card.append(this.sumPack, done, this.sumScore, this.sumBest, this.sumDots, row, this.sumHint);
     this.summary.appendChild(card);
     this.summary.hidden = true;
+    this.sumNav = new FocusNav(() => (this.summary.hidden ? [] : [{ name: 'summary', el: card, main: true }]));
+    this.sumNav.install(card);
+    // Enter on a focused button would click it natively too: the Game's accept edge presses it (summaryAccept).
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') e.preventDefault();
+    });
 
     this.root.append(this.panel, this.start, this.banner, this.summary);
     container.appendChild(this.root);
@@ -211,9 +241,20 @@ export class TrainingHud {
     this.lastTimerShown = null;
     this.lastWaiting = null;
     this.lastBoost = null;
+    this.lastTally = '';
+    this.tally.hidden = freeplay;
     this.hideResult();
     this.hideSummary();
     this.setPaused(false);
+    this.fold(false);
+    this.foldTimer = window.setTimeout(() => this.fold(true), FOLD_MS);
+  }
+
+  /** The panel folded (FOLD_MS after it opened: the hints and the attempts step aside) or whole. */
+  private fold(on: boolean): void {
+    if (this.foldTimer !== 0) window.clearTimeout(this.foldTimer);
+    this.foldTimer = 0;
+    this.panel.classList.toggle('trn-folded', on);
   }
 
   /** The panel's title (experimental free play turning plain: the rules went). */
@@ -231,6 +272,7 @@ export class TrainingHud {
     this.open = false;
     this.root.hidden = true;
     this.container.classList.remove('trn-on');
+    this.fold(false);
     this.hideResult();
     this.hideSummary();
   }
@@ -240,26 +282,31 @@ export class TrainingHud {
    * when a label changed. Not per frame: the Game calls it when the device in use changes.
    */
   setHints(h: TrainingHints): void {
-    const text = this.freeplay
-      ? [
-          t('trainingHud.keyResetBall', { key: h.reset }),
-          t('trainingHud.keyResetCar', { key: h.resetCar }),
-          t('trainingHud.keyBoost', { key: h.boost }),
-          t('trainingHud.keyPause', { key: h.pause }),
-        ].join('\n')
-      : [
-          t('trainingHud.keyResetShot', { key: h.reset }),
-          t('trainingHud.keyPrevNext', { prev: h.prev, next: h.next }),
-          t('trainingHud.keyPause', { key: h.pause }),
-        ].join('\n');
+    const touch = h.device === 'touch';
+    const text = touch
+      ? [t(this.freeplay ? 'trainingHud.touchResetAll' : 'trainingHud.keyResetShot', { key: '↺' }), t(this.freeplay ? 'trainingHud.touchPauseFree' : 'trainingHud.touchPausePack')].join('\n')
+      : this.freeplay
+        ? [
+            t('trainingHud.keyResetBall', { key: h.reset }),
+            t('trainingHud.keyResetCar', { key: h.resetCar }),
+            t('trainingHud.keyBoost', { key: h.boost }),
+            t('trainingHud.keyPause', { key: h.pause }),
+          ].join('\n')
+        : [
+            t('trainingHud.keyResetShot', { key: h.reset }),
+            t('trainingHud.keyPrevNext', { prev: h.prev, next: h.next }),
+            t('trainingHud.keyPause', { key: h.pause }),
+          ].join('\n');
     if (text !== this.lastHints) {
       this.lastHints = text;
       this.keys.textContent = text;
     }
-    const sum = t('trainingHud.summaryHint', { accept: h.accept, reset: h.reset, back: h.back, prev: h.prev, next: h.next });
+    // A controller's D-pad ◀ ▶ walk the summary's buttons (no shot picking there); a finger taps them.
+    const sum = touch ? '' : t(h.device === 'pad' ? 'trainingHud.summaryHintPad' : 'trainingHud.summaryHint', { reset: h.reset, back: h.back, prev: h.prev, next: h.next });
     if (sum !== this.lastSumHint) {
       this.lastSumHint = sum;
       this.sumHint.textContent = sum;
+      this.sumHint.hidden = sum === '';
     }
   }
 
@@ -338,8 +385,12 @@ export class TrainingHud {
     this.banner.hidden = true;
   }
 
-  /** The end-of-pack panel (also hides the result banner and the start prompt). */
-  showSummary(packName: string, s: TrainingSummary, results: readonly (ShotOutcome | null)[]): void {
+  /**
+   * The end-of-pack panel (also hides the result banner and the start prompt). `next`: the next
+   * level's name for NEXT LEVEL, null after the hardest (the button goes). AGAIN takes the focus
+   * (but on a touch screen, which shows no ring).
+   */
+  showSummary(packName: string, s: TrainingSummary, results: readonly (ShotOutcome | null)[], next: string | null): void {
     this.hideResult();
     this.setWaiting(false);
     this.sumPack.textContent = packName;
@@ -349,14 +400,32 @@ export class TrainingHud {
     const els: HTMLElement[] = [];
     this.buildDots(this.sumDots, els, results.length);
     for (let i = 0; i < els.length; i++) this.paintDot(els[i], results[i] === 'pass' ? 1 : results[i] === 'fail' ? 2 : 0, false);
+    this.sumNext.hidden = next === null;
+    this.sumNext.title = next ?? '';
     this.summary.hidden = false;
     this.root.classList.add('trn-summary-on');
     pop(this.summary);
+    this.sumNav.reset();
+    if (!document.documentElement.classList.contains('tg-touch')) this.sumNav.focus(this.sumAgain);
   }
 
   hideSummary(): void {
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && this.summary.contains(a)) a.blur();
     this.summary.hidden = true;
     this.root.classList.remove('trn-summary-on');
+  }
+
+  /** The summary's arrows / D-pad (`repeat`: a held one's auto-repeat). */
+  summaryMove(dir: NavDir, repeat = false): void {
+    if (!this.summary.hidden) this.sumNav.move(dir, repeat);
+  }
+
+  /** Enter / A on the summary: its focused button (AGAIN when none has the focus yet). */
+  summaryAccept(): void {
+    if (this.summary.hidden) return;
+    if (this.sumNav.current === null) this.sumAgain.click();
+    else this.sumNav.accept();
   }
 
   get summaryVisible(): boolean {
@@ -389,13 +458,25 @@ export class TrainingHud {
 
   private syncDots(els: readonly HTMLElement[], results: readonly (ShotOutcome | null)[], current: number): void {
     const state = this.dotState;
+    let changed = this.lastTally === '';
     for (let i = 0; i < els.length && i < results.length; i++) {
       const r = results[i];
       const v = r === 'pass' ? 1 : r === 'fail' ? 2 : 0;
       if (v !== state[i]) {
         state[i] = v;
+        changed = true;
         this.paintDot(els[i], v, i === current);
       }
+    }
+    if (changed) {
+      let hits = 0;
+      let misses = 0;
+      for (let i = 0; i < state.length; i++) {
+        if (state[i] === 1) hits++;
+        else if (state[i] === 2) misses++;
+      }
+      this.lastTally = t('trainingHud.tally', { hits, misses });
+      this.tally.textContent = this.lastTally;
     }
     if (current !== this.dotCurrent) {
       const old = this.dotCurrent;
