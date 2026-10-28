@@ -20,6 +20,7 @@ import { gateTierPrefs } from './render/bootTier';
 import { t } from './i18n';
 import { pageFlags } from './render/hashFlags';
 import { LoadingOverlay, afterPaint, paintedFrames } from './ui/LoadingOverlay';
+import { installKeysOverlay } from './ui/keysOverlay';
 import type { GameMode } from './sim/constants';
 import { Renderer } from './render/Renderer';
 import { loadSettings } from './settings';
@@ -37,6 +38,8 @@ const overlay = byId<HTMLDivElement>('overlay');
 const loading = new LoadingOverlay(overlay);
 // #widetext: every UI family becomes Arial (src/style.css html.tg-widetext), before the first layout.
 if (pageFlags().widetext) document.documentElement.classList.add('tg-widetext');
+// #keys: every key event on screen (a real TV's BACK, CH+ / CH−, its system keyboard).
+if (pageFlags().keys) installKeysOverlay();
 
 function describe(err: unknown): string {
   if (err instanceof Error) return err.stack ?? err.message;
