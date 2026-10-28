@@ -189,6 +189,8 @@ export class OnlineSession {
   private reconnecting = false;
   /** now() until which the HUD says "Back in the match". */
   private backUntil = 0;
+  /** The last close code and reason of the match socket: F4's panel (and the console), never a player text. */
+  private lastClose = '';
 
   constructor(game: Game, opts: OnlineSessionOptions = {}) {
     this.game = game;
@@ -654,7 +656,8 @@ export class OnlineSession {
   private handleClose(code: number, reason: string, reconnecting: boolean): void {
     if (!this.active) return;
     // The code and the reason are for the console (and F4's panel), never the player's text.
-    console.warn(`match socket closed (${code}${reason.length > 0 ? `: ${reason}` : ''})${reconnecting ? `: reconnecting, try ${this.client.reconnectAttempt}/${RECONNECT_TRIES}` : ''}`);
+    this.lastClose = `${code}${reason.length > 0 ? `: ${reason}` : ''}`;
+    console.warn(`match socket closed (${this.lastClose})${reconnecting ? `: reconnecting, try ${this.client.reconnectAttempt}/${RECONNECT_TRIES}` : ''}`);
     this.reconnecting = reconnecting;
     if (reconnecting) {
       this.status = t('online.reconnecting');
@@ -716,6 +719,7 @@ export class OnlineSession {
   private teardown(): void {
     this.reconnecting = false;
     this.backUntil = 0;
+    this.lastClose = '';
     this.predictor = null;
     this.welcome = null;
     this.matchId = null;
@@ -751,7 +755,7 @@ export class OnlineSession {
     const s = this.stats;
     const c = this.client;
     const p = this.predictor;
-    s.state = this.state;
+    s.state = this.lastClose !== '' ? `${this.state}  (last close ${this.lastClose})` : this.state;
     s.kind = 'server';
     s.rttMs = c.rtt;
     s.jitterMs = c.jitter;

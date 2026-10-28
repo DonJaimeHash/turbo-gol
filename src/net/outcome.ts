@@ -9,7 +9,7 @@
  *   gone     CERRAR                 the thing is over or closed to this player (no lobby, kicked,
  *                                   full, the match ended): trying again would not help
  * The codes themselves (HTTP status, server code, close code) go to the console and F4's panel,
- * never into the text. Pure (tests/outcome.test.mjs).
+ * never into the text. Pure (tests/lobby-model.test.mjs).
  */
 import type { Key } from '../i18n';
 

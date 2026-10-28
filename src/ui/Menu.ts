@@ -384,8 +384,8 @@ export class Menu {
   /** Population polls failed in a row (the hero counts two as offline: homeModel.ts isOffline). */
   private popFails = 0;
   private lastError: string | null = null;
-  /** The last search started (startSearch): what a failed search's REINTENTAR searches again. */
-  private lastSearch: SearchRequest | null = null;
+  /** What a failed search's REINTENTAR runs again: the last search started, or a rejoin (rejoin()). */
+  private lastTry: (() => void) | null = null;
   private visibleNow = false;
   private searching = false;
   /** The lobby pill is up (renderLobbyPill). */
@@ -567,11 +567,17 @@ export class Menu {
    * once (renderSearch).
    */
   startSearch(req: SearchRequest): void {
-    this.lastSearch = req;
+    this.lastTry = () => this.beforeMatch(() => this.startSearch(req));
     this.prefs.lastQueue = req.kind;
     this.savePrefs();
     this.host.search(req);
     this.renderSearch(performance.now());
+  }
+
+  /** Back into the server match this tab lost (MenuHost.rejoinMatch): Inicio's hero, the lost sheet. */
+  rejoin(): void {
+    this.lastTry = () => this.beforeMatch(() => this.rejoin());
+    this.host.rejoinMatch();
   }
 
   /**
@@ -1542,8 +1548,7 @@ export class Menu {
       this.fitNow();
       if (!this.settingsUp()) this.openUpdateSheet();
     } else if (v.error !== null && v.error !== this.lastError && v.reload !== true) {
-      const again = this.lastSearch;
-      this.failure(v.error, v.outcome ?? 'retry', again !== null ? () => this.beforeMatch(() => this.startSearch(again)) : undefined);
+      this.failure(v.error, v.outcome ?? 'retry', this.lastTry ?? undefined);
     }
     this.lastError = v.error;
     // A search that ends (cancelled, a failure, the server) takes its pill away: the focus it had
@@ -1604,7 +1609,8 @@ export class Menu {
    * toast says it); over Settings or another sheet it is a toast as well.
    */
   failure(text: string, outcome: Outcome, retry?: () => void): void {
-    const label = t(OUTCOME_ACTION[outcome]);
+    // Nothing to try again here: the sheet only closes, and says so.
+    const label = t(outcome === 'retry' && retry === undefined ? 'outcome.close' : OUTCOME_ACTION[outcome]);
     if (outcome === 'requeue' || this.settingsUp() || this.modalEl !== null || !this.visibleNow) {
       this.toast(outcome === 'requeue' ? `${text} · ${label}` : text, outcome === 'requeue' ? 'info' : 'error');
       return;

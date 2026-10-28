@@ -271,7 +271,7 @@ export function homeScreen(menu: Menu): Screen {
         location.reload();
         return;
       case 'rejoin':
-        menu.beforeMatch(() => host.rejoinMatch());
+        menu.beforeMatch(() => menu.rejoin());
         return;
     }
   };
