@@ -1220,8 +1220,9 @@ imported first by `src/style.css`:
   (device.ts uiScale: PC by height, 768 = 1, 0.9 to 1.35; a short laptop by height, 600 = 1, 0.9 to
   1; a phone sideways by height, 390 = 1, up to 1.1, never under 1, so its text keeps 14 px and the
   rail its 123 px at 360 tall; upright by width, the same; a TV by width, 960 = 1, up to 2) times
-  Settings › Game's interface size (device.ts interfaceFactor: 150 % on a computer or a TV, 130 on
-  a tablet, 115 on a phone where its bars have room; a TV's 125 % is its usual look), with
+  Settings › Game's interface size (device.ts interfaceFactor: 150 % on a computer, 130 on a
+  tablet, 115 on a phone where its bars have room; a TV's 125 % is its usual look, 100 its only
+  smaller step), with
   `body` kept at 16 px so only rem sizes (the shell) follow. No font size or radius literal under
   `src/ui/styles/` outside tokens.css either (the test again).
 * **Space, radii, shadows, layers, motion:** `--sp-1..8`, `--r-slot / key / tile / panel / pill`,

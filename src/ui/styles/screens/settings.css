@@ -1,7 +1,7 @@
 /* AJUSTES (src/ui/screens/settings/*; plan §1.4, dir-hub §6.9, the owner's hub-ajustes-pc): the rail
    of tabs (256 wide, rows of 56) and the page (a panel with its own scroll), rows of 56 (64 on a
    TV): mn-slider, mn-switch, mn-seg, mn-bind, the language picker, the quality cards, the
-   Experimental page's own hud- classes; "Se guarda solo" under the rail (the bar and the TV only);
+   Experimental page's own hud- classes; "Se guarda solo" under the rail (a computer's only);
    the same component over the pause (z 60, .mn-set-over). Upright the rail is a strip over the
    page; on a phone held sideways it sits narrow beside the shell's rail. After menu.css: its
    .mn-tabs / .mn-tab (the hint bar's "own tabs") are restyled here. Tokens only. */
@@ -136,9 +136,11 @@
   transform: skewX(-20deg);
 }
 
-/* "Se guarda solo": a card under the rail, its check in --ok (the bar and the TV: a phone's rail
-   and the upright strip have no room for it, nor the pause). */
+/* "Se guarda solo": a card under the rail, its check in --ok, on a computer at its own interface
+   size, in the menus (anywhere else the six tabs need its room: a TV, a short laptop, a larger
+   size, a phone, the pause). */
 .mn-set-saved {
+  display: none;
   flex: none;
   margin-top: 1rem;
   padding: 1rem;
@@ -168,10 +170,8 @@
   margin: 0.375rem 0 0;
 }
 
-html[data-shell='rail'] .mn-set-saved,
-html[data-shell='tabs'] .mn-set-saved,
-.mn-set-over .mn-set-saved {
-  display: none;
+html[data-layout='pc'][data-ui-factor='1'] .mn[data-screen='settings'] .mn-set-saved {
+  display: block;
 }
 
 /* ---- the page ---- */
@@ -807,7 +807,7 @@ html[data-shell='tabs'] .mn-slider-track {
   }
 }
 
-/* A row's options stay on one line (SIN LÍMITE). */
-.mn-set-row .mn-seg-opt {
+/* The frame limit's options stay on one line (SIN LÍMITE). */
+.mn-set-graphics .mn-seg-opt {
   white-space: nowrap;
 }

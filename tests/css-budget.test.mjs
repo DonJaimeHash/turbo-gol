@@ -221,7 +221,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // the quality cards, the Experimental page, the pause overlay, per class; about 11.1 KB): 132,999 B,
 // the cap that plus about 0.6 KB, unchanged. PR 11 adds Ajustes' new rows (the "saved" card
 // under the rail, the language picker, the touch controls' size, opacity and mirrored side) and
-// reduced motion as a class (the player's choice over the system's): 134,397 B, the cap that plus
+// reduced motion as a class (the player's choice over the system's): 134,441 B, the cap that plus
 // about 0.6 KB. It steps down to 70 KB once PR 15 deletes menu.css.
 // Raising it is the owner's call, recorded in the PR.
 const CSS_BUDGET = 135_000;

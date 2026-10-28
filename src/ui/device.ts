@@ -129,15 +129,16 @@ export function uiScale(cls: LayoutClass, w: number, h: number): number {
 
 /**
  * Settings > Game's interface sizes a layout class lists (%) on a `w` x `h` screen: what its
- * screens hold (scripts/ui-fit.mjs runs the menus and Ajustes at the largest). A TV's steps are
- * coarser; a computer goes to 150; a tablet stops at 130 (the bar's pills); a phone at 115 (plan
- * §1.2), held sideways from 390 tall (the rail of a 360 tall one is full), upright from 450 wide
- * (a 390 wide one's bar is). Pure.
+ * screens hold (scripts/ui-fit.mjs runs the menus and Ajustes at the largest). A TV stays at its
+ * usual 125 % or comes down to 100 (its section strip and Inicio's tiles are full at 3 m with a
+ * wider fallback face); a computer goes to 150; a tablet stops at 130 (the bar's pills); a phone at
+ * 115 (plan §1.2), held sideways from 390 tall (the rail of a 360 tall one is full), upright from
+ * 450 wide (a 390 wide one's bar is). Pure.
  */
 export function interfaceSizes(cls: LayoutClass, w: number, h: number): readonly number[] {
   switch (cls) {
     case 'tv':
-      return [100, 125, 150];
+      return [100, 125];
     case 'phone':
       return h >= 390 ? [100, 115] : [100];
     case 'portrait':
@@ -165,7 +166,7 @@ export function interfaceSize(cls: LayoutClass, saved: number): number {
 
 /**
  * The factor of --ui-scale for a saved interface size (%, 0 = the device's own) on a class and a
- * `w` x `h` screen: the size over the class's default (a TV: 100 % is 0.8, 150 % is 1.2), never
+ * `w` x `h` screen: the size over the class's default (a TV: 100 % is 0.8 of its usual look), never
  * past the largest the class lists there (the same save upright and sideways). Pure.
  */
 export function interfaceFactor(cls: LayoutClass, saved: number, w: number, h: number): number {

@@ -64,8 +64,8 @@
 //                              the pin: the desktop sizes then fail as TVs)
 // The interface size (Settings > Game, plan PR 11): a TV's runs are at its own 125 %; then every
 // size runs the screens again with the device's own input at the largest size Ajustes lists there
-// (device.ts interfaceSizes: 150 % on a computer or a TV, 130 on a tablet, 115 on a phone held
-// sideways; none past the device's own on a 360 tall or 390 wide phone), noted 'ui <size>%';
+// (device.ts interfaceSizes: 150 % on a computer, 130 on a tablet, 115 on a phone held sideways;
+// none past the device's own on a TV or a 360 tall or 390 wide phone), noted 'ui <size>%';
 // --ui-size <pct> forces one, --no-ui-size skips the pass. Inicio may scroll there.
 // MODOS (plan PR 6) runs by tab ('modes:casual' ...): Casual and Competitive idle with the action
 // focused, then searching (the panel, as the Menu shows a search: its own search view and pills),
