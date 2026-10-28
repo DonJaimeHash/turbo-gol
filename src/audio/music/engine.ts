@@ -1,32 +1,32 @@
 /**
- * Procedural match music: the composition and the synthesis in one plain module (no Web Audio),
- * so the same code runs in the AudioWorklet (worklet.ts) and offline in Node
- * (scripts/render-music.mjs writes a WAV to listen to). No imports: Node strips the types and runs
- * this file as is.
+ * The music engine: a fixed band of instruments that plays a track (track.ts, the songs in
+ * tracks/), all synthesized per sample in plain TypeScript (no Web Audio), so the same code runs
+ * in the AudioWorklet (worklet.ts) and offline in Node (scripts/render-music.mjs writes a WAV to
+ * listen to). It imports only modules of the same kind (dsp.ts, track.ts).
  *
- * Style: electronic, 126 BPM, D minor (the relative of F major). A step sequencer on 16ths drives
- * eight instruments, all synthesized per sample:
+ * A step sequencer on 16ths drives eight instruments:
  *   kick   sine with a falling pitch + a click, saturated; every kick ducks bass / pad / arp (sidechain)
  *   clap   three noise bursts and a tail through a band-pass; snare (rolls) = noise + a 190 Hz body
  *   hats   high-passed noise, closed and open
  *   bass   two detuned polyBLEP saws + a sine sub through a resonant low-pass with an envelope, saturated
  *   pad    one to three detuned saws per chord note, spread left / right, low-passed
  *   lead   saw + square pluck, mono, into a ping-pong delay and the reverb
- *   arp    soft triangle plucks on 16ths over the chord (drop / tension only)
+ *   arp    soft triangle plucks on 16ths over the chord
  *   fx     noise riser into a drop, crash and a sub boom on the drop
  * Sends: a ping-pong delay (dotted eighth) and a small Schroeder reverb; master: a stereo low-pass
  * (pause / goal sweeps), gain and a soft clip.
  *
- * Form: modes are menu (intro: pad, bass, soft hats), play (groove 8 → lead 8 → break 4 → drop 8,
- * looping) and tension (the last 30 s and overtime: drop-like sections with the arp). Mode changes
- * land on the next bar; goal() cuts the drums at the next 16th, sweeps the filter down for the rest
- * of the bar and two more, rises and drops. The lead melody is generated per 8-bar phrase from a
+ * Form: each mode loops its track's sections (Track.forms); mode changes land on the next bar;
+ * goal() cuts the drums at the next 16th, plays the track's goal break for the rest of the bar
+ * and its bars, then its afterGoal section. The lead melody is generated per 8-bar phrase from a
  * seed (a motif, its sequence and a cadence on the chord), so the music never loops identically.
  *
  * Allocation-free while rendering: every voice and buffer is made in the constructor.
  */
+import { Allpass, Comb, Rng, Svf, blepSaw, mtof } from './dsp';
+import type { Chord, MusicMode, Section, Track } from './track';
 
-export type MusicMode = 'off' | 'menu' | 'play' | 'tension';
+export type { MusicMode } from './track';
 
 export interface MusicState {
   mode: MusicMode;
@@ -34,205 +34,11 @@ export interface MusicState {
   paused: boolean;
 }
 
-const BPM = 126;
 const STEPS_PER_BAR = 16;
 const MIN_LEVEL = 1e-5;
 
-// ---- Harmony ------------------------------------------------------------------------------------
-
-interface Chord {
-  /** Bass root, MIDI (octave 1-2). */
-  bass: number;
-  /** Pad voicing, MIDI (around middle C). */
-  pad: readonly number[];
-  /** Chord tones for the lead and the arp (any octave: matched by pitch class). */
-  pcs: readonly number[];
-}
-
-const DM: Chord = { bass: 38, pad: [62, 65, 69], pcs: [2, 5, 9] };
-const BB: Chord = { bass: 34, pad: [62, 65, 70], pcs: [10, 2, 5] };
-const F: Chord = { bass: 41, pad: [60, 65, 69], pcs: [5, 9, 0] };
-const C: Chord = { bass: 36, pad: [60, 64, 67], pcs: [0, 4, 7] };
-const GM: Chord = { bass: 43, pad: [62, 67, 70], pcs: [7, 10, 2] };
-const A: Chord = { bass: 33, pad: [61, 64, 69], pcs: [9, 1, 4] };
-/** One chord per bar. A: the main loop; B: the lift into the drops (A major leads back to D). */
-const PROGS: readonly (readonly Chord[])[] = [
-  [DM, BB, F, C],
-  [BB, C, DM, A],
-  [GM, BB, C, A],
-];
-/** Lead range, D natural minor A4..D6 (C# over the A chord is taken from its pitch classes). */
-const LEAD_SCALE = [69, 70, 72, 74, 76, 77, 79, 81, 82, 84, 86];
-
-/** Rhythm motifs for the lead: [step, length in steps] pairs within one bar. */
-const MOTIFS: readonly (readonly number[])[] = [
-  [0, 2, 3, 2, 6, 2, 8, 1, 10, 2, 14, 2],
-  [0, 3, 3, 3, 6, 4, 12, 2, 14, 2],
-  [2, 2, 4, 2, 6, 2, 10, 3, 13, 3],
-  [0, 1, 2, 1, 3, 2, 6, 2, 8, 4, 14, 2],
-  [0, 3, 3, 3, 6, 2, 8, 3, 11, 5],
-];
-const CADENCES: readonly (readonly number[])[] = [
-  [0, 3, 3, 3, 6, 10],
-  [0, 2, 2, 2, 4, 12],
-  [0, 6, 6, 10],
-];
-
-// ---- Arrangement --------------------------------------------------------------------------------
-
-interface Section {
-  bars: number;
-  /** 0 none, 1 broken groove, 2 four on the floor. */
-  kick: number;
-  clap: boolean;
-  /** 0 none, 1 off-beat eighths, 2 sixteenths with accents and open hats. */
-  hats: number;
-  /** 0 none, 1 one long note per bar, 2 the syncopated pattern. */
-  bass: number;
-  pad: number;
-  lead: number;
-  arp: boolean;
-  /** Progression index into PROGS. */
-  prog: number;
-  /** Bars of noise riser at the end. */
-  riser: number;
-  /** A snare roll over the last bar. */
-  roll: boolean;
-  /** Crash (and a sub boom) on the first beat. */
-  crash: boolean;
-  /** Master low-pass target, Hz. */
-  cutoff: number;
-}
-
-const S = (o: Partial<Section>): Section => ({
-  bars: 8, kick: 0, clap: false, hats: 0, bass: 0, pad: 1, lead: 0, arp: false, prog: 0, riser: 0, roll: false, crash: false, cutoff: 20000, ...o,
-});
-
-const INTRO = S({ hats: 1, bass: 1, pad: 1, cutoff: 2200 });
-const INTRO_LEAD = S({ hats: 1, bass: 1, pad: 1, lead: 0.6, cutoff: 2800 });
-const GROOVE = S({ kick: 1, clap: true, hats: 1, bass: 2, pad: 0.6, crash: true });
-const LEAD = S({ kick: 1, clap: true, hats: 2, bass: 2, pad: 0.6, lead: 1, roll: true });
-const BREAK = S({ bars: 4, bass: 1, pad: 1, lead: 0.8, prog: 1, riser: 2, roll: true, cutoff: 2600 });
-const DROP = S({ kick: 2, clap: true, hats: 2, bass: 2, pad: 0.8, lead: 1, arp: true, prog: 1, crash: true });
-const TENSION_A = S({ kick: 2, clap: true, hats: 2, bass: 2, pad: 0.8, lead: 1, arp: true, prog: 2, crash: true, roll: true });
-const TENSION_B = S({ kick: 2, clap: true, hats: 2, bass: 2, pad: 0.8, lead: 1, arp: true, prog: 1, crash: true, roll: true });
-/** After a goal: drums out, the filter closes, a riser over the last bar. */
-const GOAL = S({ bars: 2, bass: 1, pad: 1, prog: 1, riser: 1, cutoff: 500 });
-
-const FORMS: Record<Exclude<MusicMode, 'off'>, readonly Section[]> = {
-  menu: [INTRO, INTRO, INTRO_LEAD, INTRO],
-  play: [GROOVE, LEAD, BREAK, DROP],
-  tension: [TENSION_A, TENSION_B],
-};
-
-// ---- DSP building blocks ------------------------------------------------------------------------
-
-function mtof(m: number): number {
-  return 440 * Math.pow(2, (m - 69) / 12);
-}
-
-/** PolyBLEP-corrected saw, -1..1, at `phase` (0..1) with phase increment `dt`. */
-function blepSaw(phase: number, dt: number): number {
-  let v = 2 * phase - 1;
-  if (phase < dt) {
-    const t = phase / dt;
-    v -= t + t - t * t - 1;
-  } else if (phase > 1 - dt) {
-    const t = (phase - 1) / dt;
-    v -= t * t + t + t + 1;
-  }
-  return v;
-}
-
-/** Topology-preserving state-variable filter (stable under fast cutoff changes). */
-class Svf {
-  private ic1 = 0;
-  private ic2 = 0;
-  private a1 = 0;
-  private a2 = 0;
-  private a3 = 0;
-  private k = 1;
-  low = 0;
-  band = 0;
-  high = 0;
-
-  set(fc: number, q: number, sr: number): void {
-    const f = fc < 20 ? 20 : fc > sr * 0.45 ? sr * 0.45 : fc;
-    const g = Math.tan((Math.PI * f) / sr);
-    this.k = 1 / q;
-    this.a1 = 1 / (1 + g * (g + this.k));
-    this.a2 = g * this.a1;
-    this.a3 = g * this.a2;
-  }
-
-  run(x: number): void {
-    const v3 = x - this.ic2;
-    const v1 = this.a1 * this.ic1 + this.a2 * v3;
-    const v2 = this.ic2 + this.a2 * this.ic1 + this.a3 * v3;
-    this.ic1 = 2 * v1 - this.ic1;
-    this.ic2 = 2 * v2 - this.ic2;
-    this.low = v2;
-    this.band = v1;
-    this.high = x - this.k * v1 - v2;
-  }
-
-  reset(): void {
-    this.ic1 = this.ic2 = this.low = this.band = this.high = 0;
-  }
-}
-
-/** Schroeder comb with a damped feedback path. */
-class Comb {
-  private readonly buf: Float32Array;
-  private i = 0;
-  private store = 0;
-  constructor(len: number) {
-    this.buf = new Float32Array(len);
-  }
-  run(x: number, fb: number, damp: number): number {
-    const y = this.buf[this.i];
-    this.store = y * (1 - damp) + this.store * damp;
-    this.buf[this.i] = x + this.store * fb;
-    if (++this.i >= this.buf.length) this.i = 0;
-    return y;
-  }
-}
-
-class Allpass {
-  private readonly buf: Float32Array;
-  private i = 0;
-  constructor(len: number) {
-    this.buf = new Float32Array(len);
-  }
-  run(x: number): number {
-    const b = this.buf[this.i];
-    this.buf[this.i] = x + b * 0.5;
-    if (++this.i >= this.buf.length) this.i = 0;
-    return b - x;
-  }
-}
-
-/** Small deterministic PRNG (mulberry32). */
-class Rng {
-  private s: number;
-  constructor(seed: number) {
-    this.s = seed >>> 0;
-  }
-  next(): number {
-    let t = (this.s = (this.s + 0x6d2b79f5) >>> 0);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-  /** White noise sample, -1..1. */
-  noise(): number {
-    return this.next() * 2 - 1;
-  }
-}
-
-// ---- The engine ---------------------------------------------------------------------------------
-
 export class MusicEngine {
+  private readonly track: Track;
   private readonly sr: number;
   private readonly lite: boolean;
   private readonly seed: number;
@@ -250,7 +56,7 @@ export class MusicEngine {
   private targetMode: MusicMode = 'off';
   private paused = false;
   private goalPending = false;
-  private section: Section = INTRO;
+  private section: Section;
 
   // Master
   private level = 0;
@@ -361,13 +167,15 @@ export class MusicEngine {
   private readonly apL: Allpass[];
   private readonly apR: Allpass[];
 
-  constructor(sampleRate: number, opts: { lite?: boolean; seed?: number } = {}) {
+  constructor(sampleRate: number, track: Track, opts: { lite?: boolean; seed?: number } = {}) {
+    this.track = track;
+    this.section = track.forms.menu[0];
     this.sr = sampleRate;
     this.lite = opts.lite ?? false;
     this.seed = opts.seed ?? 0x7a3b;
     this.rng = new Rng(this.seed);
     this.noiseRng = new Rng(0x51ed);
-    this.samplesPerStep = (sampleRate * 60) / BPM / 4;
+    this.samplesPerStep = (sampleRate * 60) / track.bpm / 4;
     this.delayLen = Math.round(this.samplesPerStep * 3); // dotted eighth
     this.delayL = new Float32Array(this.delayLen);
     this.delayR = new Float32Array(this.delayLen);
@@ -414,7 +222,7 @@ export class MusicEngine {
     this.formIndex = 0;
     this.stepClock = 0;
     this.step = 0;
-    this.enterSection(FORMS[mode as Exclude<MusicMode, 'off'>][0]);
+    this.enterSection(this.track.forms[mode as Exclude<MusicMode, 'off'>][0]);
     this.bar = -1; // the first step's nextBar() starts bar 0
   }
 
@@ -422,7 +230,7 @@ export class MusicEngine {
     this.section = sec;
     this.bar = 0;
     this.phrase++;
-    this.makeMelody(PROGS[sec.prog]);
+    this.makeMelody(this.track.progressions[sec.prog]);
     if (sec.crash) {
       this.crashAmp = 0.3;
       this.crashMul = this.decay(2.2);
@@ -444,15 +252,15 @@ export class MusicEngine {
       }
       this.mode = this.targetMode;
       this.formIndex = 0;
-      this.enterSection(FORMS[this.mode as Exclude<MusicMode, 'off'>][0]);
+      this.enterSection(this.track.forms[this.mode as Exclude<MusicMode, 'off'>][0]);
       return;
     }
     if (++this.bar < sec.bars) return;
-    if (sec === GOAL) {
-      this.enterSection(this.mode === 'tension' ? TENSION_A : DROP);
+    if (sec === this.track.goal) {
+      this.enterSection(this.track.afterGoal[this.mode === 'tension' ? 'tension' : 'play']);
       return;
     }
-    const form = FORMS[this.mode as Exclude<MusicMode, 'off'>];
+    const form = this.track.forms[this.mode as Exclude<MusicMode, 'off'>];
     this.formIndex = (this.formIndex + 1) % form.length;
     this.enterSection(form[this.formIndex]);
   }
@@ -464,20 +272,21 @@ export class MusicEngine {
     if (this.goalPending) {
       this.goalPending = false;
       // The rest of this bar plus the section's bars: count the current bar as -1.
-      this.section = GOAL;
+      this.section = this.track.goal;
       this.bar = -1;
-      this.padTarget = GOAL.pad;
+      this.padTarget = this.track.goal.pad;
       this.phrase++;
     }
     const sec = this.section;
     const st = this.step;
     const bar = this.bar < 0 ? 0 : this.bar;
-    const chord = PROGS[sec.prog][bar % 4];
+    const track = this.track;
+    const chord = track.progressions[sec.prog][bar % 4];
     const r = this.rng;
     const lastBar = this.bar === sec.bars - 1;
 
     // Kick
-    if (sec.kick === 2 ? st % 4 === 0 : sec.kick === 1 && (st === 0 || st === 6 || st === 10 || (st === 14 && bar % 4 === 3))) {
+    if (sec.kick === 2 ? st % 4 === 0 : sec.kick === 1 && track.brokenKick[bar % 4].indexOf(st) >= 0) {
       if (!(sec.roll && lastBar && st >= 12)) this.trigKick(1);
     }
     // Clap on 2 and 4
@@ -495,7 +304,7 @@ export class MusicEngine {
     if (sec.bass === 1 && st === 0) this.trigBass(chord.bass, 15, 0.7);
     else if (sec.bass === 2) {
       // [step, semitones over the root, length]
-      const p = BASS_PATTERN;
+      const p = track.bassPattern;
       for (let i = 0; i < p.length; i += 3) {
         if (p[i] === st) this.trigBass(chord.bass + p[i + 1], p[i + 2], p[i + 1] === 0 ? 1 : 0.85);
       }
@@ -573,11 +382,12 @@ export class MusicEngine {
   }
 
   private trigArp(chord: Chord, st: number): void {
-    // Chord tones from D4 up, in order, 1-2-3-4-2-3-4-5...
-    const order = ARP_ORDER[st];
+    // Chord tones from the track's arpFrom up, in its arpOrder.
+    const order = this.track.arpOrder[st];
     const pcs = chord.pcs;
     const pc = pcs[order % 3];
-    let n = 62 + ((((pc - 62) % 12) + 12) % 12);
+    const from = this.track.arpFrom;
+    let n = from + ((((pc - from) % 12) + 12) % 12);
     n += 12 * Math.floor(order / 3);
     this.arpFreq = mtof(n);
     this.arpPhase = 0;
@@ -598,37 +408,38 @@ export class MusicEngine {
    */
   private makeMelody(prog: readonly Chord[]): void {
     const r = new Rng(this.seed + this.phrase * 7919);
+    const { motifs, cadences, leadScale: scale } = this.track;
     const mel = this.melody;
     const len = this.melodyLen;
     mel.fill(-1);
     len.fill(0);
-    const mA = MOTIFS[Math.floor(r.next() * MOTIFS.length)];
-    const mB = MOTIFS[Math.floor(r.next() * MOTIFS.length)];
-    let pos = 3 + Math.floor(r.next() * 4); // index into LEAD_SCALE
+    const mA = motifs[Math.floor(r.next() * motifs.length)];
+    const mB = motifs[Math.floor(r.next() * motifs.length)];
+    let pos = 3 + Math.floor(r.next() * 4); // index into the scale
     const writeBar = (bar: number, motif: readonly number[], chord: Chord, cadence: boolean): void => {
       for (let i = 0; i < motif.length; i += 2) {
         const st = motif[i];
         const last = i + 2 >= motif.length;
         const strong = st % 8 === 0 || i === 0;
-        if (cadence && last) pos = nearestTone(pos, chord.pcs[0]);
-        else if (strong) pos = nearestChordTone(pos, chord.pcs);
+        if (cadence && last) pos = nearestTone(scale, pos, chord.pcs[0]);
+        else if (strong) pos = nearestChordTone(scale, pos, chord);
         else {
           const x = r.next();
           if (x < 0.6) pos += r.next() < 0.5 ? -1 : 1;
-          else if (x < 0.85) pos = nearestChordTone(pos + (r.next() < 0.5 ? -2 : 2), chord.pcs);
+          else if (x < 0.85) pos = nearestChordTone(scale, pos + (r.next() < 0.5 ? -2 : 2), chord);
         }
         // Keep it in range, drift back towards the middle.
         if (pos < 1) pos = 2;
-        if (pos > LEAD_SCALE.length - 2) pos = LEAD_SCALE.length - 3;
-        let note = LEAD_SCALE[pos];
-        // C over the A chord becomes C#.
-        if (note % 12 === 0 && chord.pcs.indexOf(1) >= 0) note += 1;
+        if (pos > scale.length - 2) pos = scale.length - 3;
+        let note = scale[pos];
+        const alter = chord.alter;
+        if (alter !== undefined && note % 12 === alter[0]) note += ((alter[1] - alter[0] + 18) % 12) - 6;
         mel[bar * 16 + st] = note;
         len[bar * 16 + st] = motif[i + 1];
       }
     };
-    const cad1 = CADENCES[Math.floor(r.next() * CADENCES.length)];
-    const cad2 = CADENCES[Math.floor(r.next() * CADENCES.length)];
+    const cad1 = cadences[Math.floor(r.next() * cadences.length)];
+    const cad2 = cadences[Math.floor(r.next() * cadences.length)];
     const start = pos;
     writeBar(0, mA, prog[0], false);
     writeBar(1, mB, prog[1], false);
@@ -914,17 +725,15 @@ export class MusicEngine {
   }
 }
 
-/** [step, semitones over the root, length in steps]: syncopated, root-heavy, octave and fifth. */
-const BASS_PATTERN = [0, 0, 3, 3, 0, 2, 6, 12, 2, 8, 0, 3, 11, 0, 2, 14, 7, 2];
-/** Arp: index into the chord tones (0-2, +3 per octave) for each 16th. */
-const ARP_ORDER = [0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4, 5, 3, 4, 5, 6];
-
-function nearestChordTone(pos: number, pcs: readonly number[]): number {
+/** Index of the scale note nearest to `pos` that is a chord tone (or a note the chord alters into one). */
+function nearestChordTone(scale: readonly number[], pos: number, chord: Chord): number {
+  const pcs = chord.pcs;
+  const alter = chord.alter;
   let best = pos;
   let bestD = 99;
-  for (let i = 0; i < LEAD_SCALE.length; i++) {
-    const pc = LEAD_SCALE[i] % 12;
-    const isTone = pcs.indexOf(pc) >= 0 || (pc === 0 && pcs.indexOf(1) >= 0);
+  for (let i = 0; i < scale.length; i++) {
+    const pc = scale[i] % 12;
+    const isTone = pcs.indexOf(pc) >= 0 || (alter !== undefined && pc === alter[0] && pcs.indexOf(alter[1]) >= 0);
     if (!isTone) continue;
     const d = Math.abs(i - pos);
     if (d < bestD) {
@@ -935,11 +744,12 @@ function nearestChordTone(pos: number, pcs: readonly number[]): number {
   return best;
 }
 
-function nearestTone(pos: number, pc: number): number {
+/** Index of the scale note of pitch class `pc` nearest to `pos`. */
+function nearestTone(scale: readonly number[], pos: number, pc: number): number {
   let best = pos;
   let bestD = 99;
-  for (let i = 0; i < LEAD_SCALE.length; i++) {
-    if (LEAD_SCALE[i] % 12 !== pc) continue;
+  for (let i = 0; i < scale.length; i++) {
+    if (scale[i] % 12 !== pc) continue;
     const d = Math.abs(i - pos);
     if (d < bestD) {
       bestD = d;

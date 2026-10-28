@@ -1,9 +1,11 @@
 /**
  * AudioWorklet processor 'turbogol-music': runs the MusicEngine (engine.ts) on the audio thread,
- * stereo out. Messages from the main thread (Audio.ts): { type: 'state', mode, paused } and
- * { type: 'goal' }. Bundled by Vite through `?worker&url` and loaded with audioWorklet.addModule.
+ * stereo out, playing processorOptions.track (an id from tracks/index.ts; default DEFAULT_TRACK).
+ * Messages from the main thread (Audio.ts): { type: 'state', mode, paused } and { type: 'goal' }.
+ * Bundled by Vite through `?worker&url` and loaded with audioWorklet.addModule.
  */
 import { MusicEngine, type MusicState } from './engine';
+import { trackById } from './tracks';
 
 // The AudioWorkletGlobalScope is not in TypeScript's DOM lib.
 declare const sampleRate: number;
@@ -20,8 +22,8 @@ class MusicProcessor extends AudioWorkletProcessor {
 
   constructor(options?: { processorOptions?: unknown }) {
     super(options);
-    const opts = (options?.processorOptions ?? {}) as { lite?: boolean };
-    this.engine = new MusicEngine(sampleRate, { lite: opts.lite === true, seed: (Math.random() * 0x7fffffff) | 0 });
+    const opts = (options?.processorOptions ?? {}) as { lite?: boolean; track?: string };
+    this.engine = new MusicEngine(sampleRate, trackById(opts.track), { lite: opts.lite === true, seed: (Math.random() * 0x7fffffff) | 0 });
     this.port.onmessage = (e: MessageEvent<MusicMessage>): void => {
       const m = e.data;
       if (m.type === 'goal') this.engine.goal();
