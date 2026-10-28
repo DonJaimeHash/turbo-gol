@@ -21,6 +21,9 @@
  * - A target as tall as the rows beside it (`data-nav-span`: Inicio's hero) is left with ▲ ▼ only
  *   for what lies wholly that way (beyondEdge), else for the next zone: a tile beside it is not
  *   "below" it because its centre is lower.
+ * - A list's lines (`data-nav-line`: a settings row, its label at the left, its control at the
+ *   right): ▲ ▼ read every target on one as wide as its line (lineSpan), so the next line is the
+ *   one below, whatever width its control has (a narrow switch between two wide sliders).
  * - The way back (NavPath): the opposite arrow undoes the last move, as a stack (▼ ▼ ▲ ▲ retraces
  *   the path), while that target is still visible and still that way.
  * - Memory (FocusMemory): the last focus per scope (Menu: per screen and per zone), found again by
@@ -59,6 +62,21 @@ const PATH_MAX = 24;
 interface SideHandlers {
   navLeft?: () => void;
   navRight?: () => void;
+}
+
+/**
+ * A field's own ▲ ▼ while it is being edited (components/codecells.ts: the cell's character steps
+ * through the alphabet): true when it took the press, else ▲ ▼ end the editing and move on.
+ */
+export interface EditStepHandlers {
+  navUp?: () => boolean;
+  navDown?: () => boolean;
+}
+
+export function onEditStep(el: HTMLElement, up: () => boolean, down: () => boolean): void {
+  const s = el as HTMLElement & EditStepHandlers;
+  s.navUp = up;
+  s.navDown = down;
 }
 
 /** `left` / `right` claim that arrow for `el`; null leaves it to the spatial pick (the board's first and last tab). */
@@ -140,6 +158,17 @@ export function layoutBox(b: NavBox, transform: string, translate: string): NavB
 function box(el: Element): NavBox {
   const cs = getComputedStyle(el);
   return layoutBox(el.getBoundingClientRect(), cs.transform, cs.translate);
+}
+
+/** `b` as wide as `line` (its height its own): a target on a list's line, for ▲ ▼. Pure. */
+export function lineSpan(b: NavBox, line: NavBox): NavBox {
+  return { left: line.left, top: b.top, right: line.right, bottom: b.bottom, width: line.width, height: b.height };
+}
+
+/** `b` (`el`'s box by default) for ▲ ▼: as wide as its `data-nav-line` when it is on one (lineSpan). */
+function lineBox(el: Element, b: NavBox = box(el)): NavBox {
+  const line = el.closest('[data-nav-line]');
+  return line === null ? b : lineSpan(b, line.getBoundingClientRect());
 }
 
 /**
@@ -318,6 +347,16 @@ export class FocusMemory<T> {
   }
 }
 
+/** A side control that takes a held arrow's repeat too (a slider), where a choice takes one step per press. */
+interface RepeatHandler {
+  navRepeat?: boolean;
+}
+
+/** `el`'s ◀ ▶ (onNavSide) follow a held arrow's auto-repeat: the settings' sliders slide. */
+export function onNavRepeat(el: HTMLElement): void {
+  (el as HTMLElement & RepeatHandler).navRepeat = true;
+}
+
 /** An element's stable key for the memory (`data-key`), null without one. */
 export function navKey(el: Element): string | null {
   return el.getAttribute('data-key');
@@ -373,10 +412,16 @@ export class FocusNav {
     this.opts = opts;
   }
 
-  /** The visible targets of `zone`, or of every zone. */
+  /**
+   * The visible targets of `zone`, or of every zone. A target is its first zone's: a zone inside
+   * another (Ajustes' rail, a side zone in the stage) keeps its own out of the outer one.
+   */
   targets(zone?: NavZone): HTMLElement[] {
     const out: HTMLElement[] = [];
-    for (const z of zone ? [zone] : this.zones()) for (const e of z.el.querySelectorAll<HTMLElement>('[data-nav]')) if (visible(e)) out.push(e);
+    const zs = this.zones();
+    for (const z of zone ? [zone] : zs) {
+      for (const e of z.el.querySelectorAll<HTMLElement>('[data-nav]')) if (visible(e) && zs.find((o) => o.el.contains(e))?.el === z.el) out.push(e);
+    }
     return out;
   }
 
@@ -446,12 +491,16 @@ export class FocusNav {
         caretStep(cur, dir === 'left' ? -1 : 1);
         return true;
       }
+      const own = cur as HTMLElement & EditStepHandlers;
+      const stepped = dir === 'up' ? own.navUp?.() : own.navDown?.();
+      if (stepped === true) return true;
       setEditing(cur, false); // ↑ ↓ leave the field's editing and move on
     }
     const side = cur as HTMLElement & SideHandlers;
     const claim = dir === 'left' ? side.navLeft : dir === 'right' ? side.navRight : undefined;
     if (claim) {
-      if (!repeat) claim(); // a held arrow does not spin a choice (a stadium switch reloads the scene)
+      // A held arrow does not spin a choice (a stadium switch reloads the scene); a slider slides.
+      if (!repeat || (cur as HTMLElement & RepeatHandler).navRepeat === true) claim();
       return true;
     }
     const zone = this.zoneOf(cur);
@@ -497,7 +546,7 @@ export class FocusNav {
       // Out of a target that spans the rows beside it: only what lies wholly that way, else the next zone.
       const span = !horizontal && cur.closest('[data-nav-span]') !== null;
       const all = this.targets(zone).filter((e) => e !== cur && (members === null || !members.includes(e)) && (!span || beyondEdge(src, dir, box(e))));
-      const i = pickTarget(src, dir, all.map(box));
+      const i = horizontal ? pickTarget(src, dir, all.map(box)) : pickTarget(lineBox(cur, src), dir, all.map((e) => lineBox(e)));
       if (i >= 0) next = horizontal ? all[i] : this.intoRow(all[i]);
     }
     if (next === null && !repeat) next = horizontal ? this.crossSide(zone, from, dir) : this.crossZone(zone, from, dir);

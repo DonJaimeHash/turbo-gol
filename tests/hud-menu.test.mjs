@@ -124,9 +124,9 @@ test('Graphics list: a guest steps among Performance / High / Ultra; a device on
   assert.equal(choiceStep(QUALITIES, [], 'high', 1), null);
 });
 
-test('Experimental tab: a lock on the label for a guest', () => {
+test('Experimental tab: the same label for a guest, no emoji (the rail draws the lock)', () => {
   assert.equal(experimentalTabLabel(true), 'Experimental');
-  assert.equal(experimentalTabLabel(false), 'Experimental 🔒');
+  assert.equal(experimentalTabLabel(false), 'Experimental');
 });
 
 const STATE = { available: true, enabled: false, offRestarts: false, superlow: 'listed' };

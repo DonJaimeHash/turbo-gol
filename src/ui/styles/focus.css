@@ -1,6 +1,6 @@
 /* The one focus ring (tokens: --focus-*, src/ui/styles/tokens.css), for every input that moves a
-   focus: the menus' real DOM focus (.mn-focus / :focus-visible, src/ui/nav.ts), the HUD's
-   FocusRing (.hud-focus: the pause menu and the settings screen, src/render/Hud.ts) and the
+   focus: the menus' real DOM focus (.mn-focus / :focus-visible, src/ui/nav.ts; Ajustes over the
+   pause too, on a .mn root), the pause dock's (.hud-focus, src/render/Hud.ts) and the
    training summary's buttons (their own FocusNav: .mn-focus, src/render/TrainingHud.ts).
 
    A --focus-w white outline --focus-gap out, a ring of --ink filling that gap (it reads on lime, on
@@ -26,23 +26,12 @@ html:not(.tg-touch) .mn .mn-focus,
 html:not(.tg-touch) .mn [data-nav]:focus-visible,
 html:not(.tg-touch) .hud-pause-menu > .hud-pause-btn.hud-focus,
 html:not(.tg-touch) .hud-pause-row.hud-focus .hud-pause-btn.hud-focus,
-html:not(.tg-touch) .hud-settings-row.hud-focus,
-html:not(.tg-touch) .hud-settings-actions.hud-focus .hud-settings-action.hud-focus,
 html:not(.tg-touch) .trn-summary-card .trn-btn.mn-focus {
   position: relative;
   z-index: 1;
   outline: var(--focus-w) solid var(--focus);
   outline-offset: var(--ring-offset, var(--focus-gap));
   box-shadow: var(--ring-shadow, 0 0 0 var(--focus-gap) var(--ink)) !important;
-}
-
-/* The settings tab strip is one focus stop that scrolls sideways (its own overflow would clip a
-   ring outside the tab): the active tab draws it inside. */
-html:not(.tg-touch) .hud-settings-tabs.hud-focus .hud-settings-tab.hud-active {
-  outline: var(--focus-w) solid var(--focus);
-  outline-offset: calc(-1 * var(--focus-w));
-  box-shadow: inset 0 0 0 calc(var(--focus-w) + var(--focus-gap)) var(--ink) !important;
-  background: var(--surface-3);
 }
 
 /* ---- Heel ---------------------------------------------------------------------------------- */
@@ -62,19 +51,23 @@ html:not(.tg-touch) .trn-summary-card .trn-btn.mn-focus::after {
 
 /* ---- Rows: the bar on the left ------------------------------------------------------------- */
 /* Stacked controls closer than the heel's 15 px (a training pack column, a cycler row, the phone's
-   rail and tabs) are rows. */
+   rail and tabs, Ajustes' tabs and rows) are rows. */
 html:not(.tg-touch) .mn .mn-sl-item.mn-focus::after,
 html:not(.tg-touch) .mn .mn-sl-item:focus-visible::after,
 html:not(.tg-touch) .mn .mn-lobby-row.mn-focus::after,
 html:not(.tg-touch) .mn .mn-lobby-row:focus-visible::after,
+html:not(.tg-touch) .mn .mn-sala .mn-member.mn-focus::after,
+html:not(.tg-touch) .mn .mn-sala .mn-member:focus-visible::after,
 html:not(.tg-touch) .mn .mn-pack.mn-focus::after,
 html:not(.tg-touch) .mn .mn-pack:focus-visible::after,
 html:not(.tg-touch) .mn .mn-cycle.mn-focus::after,
 html:not(.tg-touch) .mn .mn-cycle:focus-visible::after,
+html:not(.tg-touch) .mn .mn-set-tab.mn-focus::after,
+html:not(.tg-touch) .mn .mn-set-tab:focus-visible::after,
+html:not(.tg-touch) .mn .mn-set-row-ctl.mn-focus::after,
+html:not(.tg-touch) .mn .mn-set-row-ctl:focus-visible::after,
 html:not(.tg-touch) .hud-pause-menu > .hud-pause-btn.hud-focus::after,
-html:not(.tg-touch) .hud-pause-row.hud-focus .hud-pause-btn.hud-focus::after,
-html:not(.tg-touch) .hud-settings-row.hud-focus::after,
-html:not(.tg-touch) .hud-settings-actions.hud-focus .hud-settings-action.hud-focus::after {
+html:not(.tg-touch) .hud-pause-row.hud-focus .hud-pause-btn.hud-focus::after {
   content: '';
   position: absolute;
   left: 0;
@@ -92,9 +85,4 @@ html:not(.tg-touch) .hud-settings-actions.hud-focus .hud-settings-action.hud-foc
 /* On a lime button the bar is ink. */
 html:not(.tg-touch) .hud-pause-menu > .hud-pause-primary.hud-focus::after {
   background: var(--brand-ink);
-}
-
-/* A focused row is a step lighter than its neighbours (the ring is the cue; this is the area). */
-html:not(.tg-touch) .hud-settings-row.hud-focus {
-  background: var(--surface-2);
 }
