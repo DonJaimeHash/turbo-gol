@@ -10,7 +10,9 @@
  *                is kept STICK_EDGE_REACH radii inside the screen, so a thumb that lands near the
  *                bottom or left edge can still reach full reverse / pitch up / left (it then
  *                starts slightly deflected toward that edge). A second finger in the zone does
- *                nothing.
+ *                nothing. With `fixedStick` (Settings > Controls > Touch) the centre is the
+ *                stick's resting place (`stickHome`) wherever the finger lands in the zone. The
+ *                deadzone is the player's (`deadzone`, stickVector's 0.12 by default).
  *   JUMP, BOOST,  a finger that lands on one (a forgiving hit circle, HIT_SLOP) holds it. Sliding
  *   DRIFT        into another of the three switches to it, except that a finger which held BOOST
  *                keeps it held until it lifts (boost + jump or drift with one thumb), and with
@@ -57,6 +59,8 @@ export interface TouchLayout {
   zone: TouchRect;
   /** Finger offset from the stick centre for full deflection, px. */
   stickRadius: number;
+  /** The stick's resting centre: a fixed stick's centre. */
+  stickHome: { x: number; y: number };
   /** One circle per TB index. */
   buttons: TouchCircle[];
   /** The scorebug: a tap opens / closes the full scoreboard. Empty = none. */
@@ -102,6 +106,7 @@ export function emptyLayout(): TouchLayout {
     bounds: { left: 0, top: 0, right: 0, bottom: 0 },
     zone: { left: 0, top: 0, right: 0, bottom: 0 },
     stickRadius: 0,
+    stickHome: { x: 0, y: 0 },
     buttons: Array.from({ length: TOUCH_BUTTON_COUNT }, () => ({ cx: 0, cy: 0, r: 0 })),
     score: { left: 0, top: 0, right: 0, bottom: 0 },
     board: { left: 0, top: 0, right: 0, bottom: 0 },
@@ -157,6 +162,10 @@ export class TouchRouter {
    * preference controls.touchHoldJump). Read when a finger leaves JUMP.
    */
   holdJump = false;
+  /** The stick stays at its resting place (layout.stickHome) instead of following the landing finger. */
+  fixedStick = false;
+  /** The stick's radial deadzone (stickVector). */
+  deadzone = 0.12;
 
   constructor(state: TouchState, layout: TouchLayout = emptyLayout()) {
     this.state = state;
@@ -241,8 +250,9 @@ export class TouchRouter {
         this.stickId = id;
         const s = layout.bounds;
         const reach = STICK_EDGE_REACH * layout.stickRadius;
-        this.cx = inside(x, s.left, s.right, reach);
-        this.cy = inside(y, s.top, s.bottom, reach);
+        const home = this.fixedStick ? layout.stickHome : null;
+        this.cx = home !== null ? home.x : inside(x, s.left, s.right, reach);
+        this.cy = home !== null ? home.y : inside(y, s.top, s.bottom, reach);
         this.aim(x, y);
         this.fingers.set(id, { kind: F_STICK, button: -1, keepBoost: false, keepJump: false });
       } else {
@@ -338,7 +348,7 @@ export class TouchRouter {
     const dx = x - this.cx;
     const dy = y - this.cy;
     const r = this.layout.stickRadius;
-    const v = stickVector(dx, dy, r, undefined, undefined, this.vec);
+    const v = stickVector(dx, dy, r, this.deadzone, undefined, this.vec);
     this.state.setStick(v.x, v.y);
     const d = Math.hypot(dx, dy);
     const k = d > r && d > 0 ? r / d : 1;

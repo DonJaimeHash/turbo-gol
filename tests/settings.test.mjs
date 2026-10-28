@@ -113,3 +113,38 @@ test('the master volume is a number in 0..100 (%); anything else falls back to t
   assert.equal((max - min) % step, 0, 'the slider reaches both ends');
   assert.equal(DEFAULT_AUDIO.volume % step, 0, 'the default sits on the slider grid');
 });
+
+const { DEFAULT_TOUCH, DEFAULT_UI, TOUCH_OPACITY_RANGE, TOUCH_DEADZONE_RANGE } = await import('../src/settings.ts');
+
+test('PR 11 groups are additive: a save from before them loads unchanged, its new groups at their defaults', () => {
+  const old = {
+    controls: { ...DEFAULT_CONTROL_SETTINGS, steeringSensitivity: 2, touchHoldJump: true },
+    camera: { ...DEFAULT_CAMERA, fov: 95 },
+    audio: { volume: 40 },
+    bindings: { kbm: { boost: { kind: 'key', code: 'KeyF' } } },
+    rev: 2,
+  };
+  const s = mergeSettings(JSON.parse(JSON.stringify(old)));
+  assert.equal(s.controls.steeringSensitivity, 2);
+  assert.equal(s.controls.touchHoldJump, true);
+  assert.equal(s.camera.fov, 95);
+  assert.equal(s.audio.volume, 40);
+  assert.deepEqual(s.bindings.kbm.boost, { kind: 'key', code: 'KeyF' });
+  assert.deepEqual(s.touch, DEFAULT_TOUCH);
+  assert.deepEqual(s.ui, DEFAULT_UI);
+  assert.deepEqual(DEFAULT_UI, { size: 0, motion: 'system' }, "the interface size: the device's own");
+  assert.deepEqual(defaultSettings().touch, { size: 'M', opacity: 100, lefty: false, stick: 'floating', deadzone: 0.12, vibration: true }, "today's controls");
+});
+
+test('touch and interface settings: valid values kept, a missing key reads its default, garbage falls back field by field', () => {
+  const s = mergeSettings({ touch: { size: 'L', opacity: 55, lefty: true, stick: 'fixed', deadzone: 0.2, vibration: false }, ui: { size: 150, motion: 'on' } });
+  assert.deepEqual(s.touch, { size: 'L', opacity: 55, lefty: true, stick: 'fixed', deadzone: 0.2, vibration: false });
+  assert.deepEqual(s.ui, { size: 150, motion: 'on' });
+  const partial = mergeSettings({ touch: { lefty: true }, ui: { motion: 'off' } });
+  assert.deepEqual(partial.touch, { ...DEFAULT_TOUCH, lefty: true });
+  assert.deepEqual(partial.ui, { ...DEFAULT_UI, motion: 'off' });
+  const bad = mergeSettings({ touch: { size: 'XL', opacity: 5, lefty: 'yes', stick: 'free', deadzone: 9, vibration: 1 }, ui: { size: 120, motion: true } });
+  assert.deepEqual(bad.touch, { ...DEFAULT_TOUCH, opacity: TOUCH_OPACITY_RANGE[0], deadzone: TOUCH_DEADZONE_RANGE[1] });
+  assert.deepEqual(bad.ui, DEFAULT_UI);
+  assert.deepEqual(mergeSettings({ touch: null, ui: 'big' }).touch, DEFAULT_TOUCH);
+});

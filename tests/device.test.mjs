@@ -127,3 +127,32 @@ test('uiScale: 1 at each class reference view, clamped (PC 0.9 to 1.35, short 0.
   near(DEV.uiScale('tv', 1920, 1080), 2);
   near(DEV.uiScale('tv', 800, 450), 1);
 });
+
+test("interface size (Settings > Game): each class's sizes; 0 is the device's own, 125 % on a TV (its usual look); a phone held sideways stops at 115", () => {
+  assert.deepEqual(DEV.interfaceSizes('pc', 1366, 768), [100, 115, 130, 150]);
+  assert.deepEqual(DEV.interfaceSizes('short', 1366, 600), [100, 115, 130, 150]);
+  assert.deepEqual(DEV.interfaceSizes('tablet', 820, 1180), [100, 115, 130]);
+  assert.deepEqual(DEV.interfaceSizes('portrait', 390, 844), [100], "a 390 wide phone's bar is full upright");
+  assert.deepEqual(DEV.interfaceSizes('portrait', 480, 900), [100, 115]);
+  assert.deepEqual(DEV.interfaceSizes('tv', 960, 540), [100, 125, 150]);
+  assert.deepEqual(DEV.interfaceSizes('phone', 844, 390), [100, 115]);
+  assert.deepEqual(DEV.interfaceSizes('phone', 780, 360), [100], "a 360 tall phone's rail is full");
+  assert.equal(DEV.interfaceSize('tv', 0), 125);
+  assert.equal(DEV.interfaceSize('pc', 0), 100);
+  assert.equal(DEV.interfaceSize('pc', 130), 130);
+  assert.equal(DEV.interfaceFactor('tv', 0, 960, 540), 1, "a TV's 125 % is the look it always had");
+  assert.equal(DEV.interfaceFactor('tv', 100, 960, 540), 0.8);
+  assert.equal(DEV.interfaceFactor('tv', 150, 960, 540), 1.2);
+  assert.equal(DEV.interfaceFactor('pc', 0, 1366, 768), 1);
+  assert.equal(DEV.interfaceFactor('pc', 150, 1366, 768), 1.5);
+  assert.equal(DEV.interfaceFactor('tablet', 150, 820, 1180), 1.3, 'a save of 150 from a computer: the tablet stops at 130');
+  assert.equal(DEV.interfaceFactor('phone', 130, 844, 390), 1.15, 'the same save upright and sideways');
+  assert.equal(DEV.interfaceFactor('phone', 115, 780, 360), 1);
+});
+
+test('reduced motion: System follows prefers-reduced-motion, Yes always, No never', () => {
+  assert.equal(DEV.reducesMotion('system', true), true);
+  assert.equal(DEV.reducesMotion('system', false), false);
+  assert.equal(DEV.reducesMotion('on', false), true);
+  assert.equal(DEV.reducesMotion('off', true), false);
+});
