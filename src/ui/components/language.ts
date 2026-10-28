@@ -1,5 +1,5 @@
 /**
- * The language sheet (PERFIL's IDIOMA row until Settings › Game has it, PR 11): automatic (the
+ * The language sheet (Settings › Game's Idioma, and PERFIL's IDIOMA row): automatic (the
  * system's language) first, then every shipped language by its own name, the saved choice marked
  * and focused, as the region sheet lists its regions. A change reloads the page (src/i18n.ts
  * setLanguage), which the sheet says first; that would drop a search or a lobby, so then it only
