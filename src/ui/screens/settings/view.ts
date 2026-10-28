@@ -18,7 +18,7 @@
  *
  * Back, inside: a capture cancels, then the focus goes from the page to its tab; the host closes it
  * after (backModel's sheet and field steps are the host's). Built on the first open; nothing runs
- * per frame (a 500 ms timer while open: the controller's status, the trial's clock).
+ * per frame (a 500 ms timer while open and in sight: the controller's status, the trial's clock).
  */
 import { h, navButton, setChildren } from '../../dom';
 import { t, type Key } from '../../../i18n';
@@ -183,6 +183,8 @@ export class SettingsView {
   private opts: SettingsOptions | null = null;
   private built = false;
   private openNow = false;
+  /** Open but out of sight (suspend): under PERFIL's detour, or the menus hidden by a match. */
+  private held = false;
   private tab: SettingsTab = 'controls';
   private onClose: (() => void) | null = null;
   private timer = 0;
@@ -301,30 +303,59 @@ export class SettingsView {
     this.opts = this.options();
     if (!this.built) this.build();
     this.openNow = true;
+    this.held = false;
     this.firstFocus = true;
     this.onClose = onClose;
     this.exp?.disarm();
     this.updateSections(true);
     this.refreshAll();
     this.selectTab(tab ?? 'controls');
-    if (this.timer === 0) this.timer = window.setInterval(() => this.tick(), 500);
+    this.startTimer();
   }
 
   /** Left (the host's Back, a pop, the match taking over): a capture is cancelled, a tier on trial kept. */
   close(): void {
     if (!this.openNow) return;
     this.openNow = false;
+    this.held = false;
     if (this.capture !== null) this.opts?.input.cancelRebind();
     this.endTrial();
     this.exp?.disarm();
-    if (this.timer !== 0) {
-      window.clearInterval(this.timer);
-      this.timer = 0;
-    }
+    this.stopTimer();
     this.waitingSignIn = false;
     const done = this.onClose;
     this.onClose = null;
     done?.();
+  }
+
+  /**
+   * Out of sight but still stacked (PERFIL's detour over it, the menus hidden by a match found): as
+   * on close, a capture is cancelled and a tier on trial kept; the timer stops until resume.
+   */
+  suspend(): void {
+    if (!this.openNow || this.held) return;
+    this.held = true;
+    if (this.capture !== null) this.opts?.input.cancelRebind();
+    this.endTrial();
+    this.stopTimer();
+  }
+
+  /** Shown again after suspend: the options read again, the timer back. */
+  resume(): void {
+    if (!this.openNow) return;
+    this.held = false;
+    this.refresh();
+    this.startTimer();
+  }
+
+  private startTimer(): void {
+    if (this.timer === 0) this.timer = window.setInterval(() => this.tick(), 500);
+  }
+
+  private stopTimer(): void {
+    if (this.timer === 0) return;
+    window.clearInterval(this.timer);
+    this.timer = 0;
   }
 
   /** Read the options again and redraw (an account change, the experimental switch, a tier waiting). */
@@ -710,7 +741,7 @@ export class SettingsView {
   }
 
   private tick(): void {
-    if (!this.openNow) return;
+    if (!this.openNow || this.held) return;
     if (this.tab === 'controls') {
       this.updatePadStatus();
       if (this.capture === null) this.updateSections();
@@ -871,7 +902,8 @@ export class SettingsView {
       this.switching = false;
     }
     this.opts = this.options();
-    this.trial = back === q ? null : startTrial(back, q, performance.now());
+    // Out of sight by now (a match found during the switch): the new tier stays, as on leaving.
+    this.trial = back === q || this.held ? null : startTrial(back, q, performance.now());
     this.refreshQuality();
     if (this.trial !== null && this.trialKeep !== null && !touchMode() && this.openNow) this.hooks.focus(this.trialKeep);
   }
@@ -883,13 +915,13 @@ export class SettingsView {
     this.trial = null;
     this.refreshQuality();
     const card = this.cards.get(this.opts?.quality ?? 'high')?.el;
-    if (keep && card !== undefined && this.openNow && !touchMode()) this.hooks.focus(card);
+    if (keep && card !== undefined && this.openNow && !this.held && !touchMode()) this.hooks.focus(card);
   }
 
   /** BACK TO, or the trial's 10 s ran out: the old tier again. */
   private revertTrial(): void {
     const tr = this.trial;
-    if (tr === null) return;
+    if (tr === null || this.held) return;
     const focusBack = this.trialBar?.contains(document.activeElement) === true;
     this.trial = null;
     const o = this.opts;
@@ -900,7 +932,7 @@ export class SettingsView {
       this.switching = false;
       this.refresh();
       const card = this.cards.get(tr.from)?.el;
-      if (focusBack && card !== undefined && this.openNow && !touchMode()) this.hooks.focus(card);
+      if (focusBack && card !== undefined && this.openNow && !this.held && !touchMode()) this.hooks.focus(card);
     });
   }
 }

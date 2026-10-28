@@ -3,8 +3,10 @@
  * backModel's Back) around the Game's SettingsView. Menu.openSettings opens the view first (with what
  * runs when it closes: the Game's, the caller's); a plain Menu.open('settings', …, tab) (scripts/
  * ui-fit.mjs) opens it here. It closes once the screen leaves the stack: Back, a crumb, a section,
- * the menus showing another screen; PERFIL over it (a guest's SIGN IN) keeps it open, and a sign-in
- * there comes back here. The scene holds one frame under it (Screen.holdsScene).
+ * the menus showing another screen (Menu.mount also when it went from under another one); PERFIL
+ * over it (a guest's SIGN IN) keeps it open but held (SettingsView.suspend: no capture, no trial,
+ * no timer), as the menus hidden over it do (a match found), and a sign-in there comes back here.
+ * The scene holds one frame under it (Screen.holdsScene).
  */
 import { t } from '../../../i18n';
 import type { Menu, Screen } from '../../Menu';
@@ -32,11 +34,16 @@ export function settingsScreen(menu: Menu, view: SettingsView): Screen {
     },
     show: () => {
       if (!view.isOpen) view.open(tab);
-      else view.refresh();
+      else view.resume();
       tab = null;
     },
-    // After the Menu changed its stack (hide runs first): closed only once it left the stack.
-    hide: () => queueMicrotask(() => !menu.stacked('settings') && view.close()),
+    // After the Menu changed its stack (hide runs first): closed once it left the stack, held while
+    // another screen or the match is over it.
+    hide: () =>
+      queueMicrotask(() => {
+        if (!menu.stacked('settings')) view.close();
+        else if (!menu.visible || menu.top()?.id !== 'settings') view.suspend();
+      }),
     back: () => view.back(),
     command: (c) => view.command(c),
     keysTaken: () => view.capturing,
