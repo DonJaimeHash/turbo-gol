@@ -69,7 +69,7 @@ import { FocusMemory, FocusNav, heldOver, isEditable, isEditing, navKey, setEdit
 import { installKeyboardInset } from './keyboard';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
-import { keypadBox, keypadSpec } from './components/keypad';
+import { keypadBox, keypadSpec, keypadWrite } from './components/keypad';
 import type { KeypadView } from './components/keypad';
 import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
@@ -1805,10 +1805,7 @@ export class Menu {
     const spec = keypadSpec(k.field);
     const value = k.view.value();
     if (spec.write) spec.write(value, done);
-    else if (value !== k.field.value) {
-      k.field.value = value;
-      k.field.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    else keypadWrite(k.field, value);
     if (k.field.isConnected && this.nav.targets().includes(k.field)) this.nav.focus(k.field);
     else this.refocus(); // its screen rebuilt under it: the remote is never left on nothing
   }

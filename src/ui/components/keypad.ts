@@ -57,7 +57,18 @@ export function keypadShown(value: string, masked: boolean): string {
   return masked ? '•'.repeat([...value].length) : value;
 }
 
-/** A field's own keypad: its keys and where the text goes (default: the value, then an input event). */
+/**
+ * The default write on LISTO / Back: the value, then the events a typed edit ends with (input, then
+ * change as its blur would send: EXPERIMENTAL's preset name commits on change). Nothing when unchanged.
+ */
+export function keypadWrite(field: Pick<HTMLInputElement, 'value' | 'dispatchEvent'>, value: string): void {
+  if (value === field.value) return;
+  field.value = value;
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+  field.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** A field's own keypad: its keys and where the text goes (default: keypadWrite). */
 export interface KeypadSpec {
   kind?: KeypadKind;
   /** The text on LISTO (`done`) or Back. */

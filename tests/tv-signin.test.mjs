@@ -63,6 +63,17 @@ test('keypad: typing holds the field maxLength, a code its alphabet in capitals 
   assert.equal(K.keypadShown('Javi', false), 'Javi');
 });
 
+test('keypad: LISTO / Back write the field as a typed edit ends, input then change with the new value; nothing when unchanged', () => {
+  // A field that commits on change (Ajustes › EXPERIMENTAL's preset name, expKit.ts).
+  const field = Object.assign(new EventTarget(), { value: 'Mis reglas 1' });
+  const seen = [];
+  for (const type of ['input', 'change']) field.addEventListener(type, (e) => seen.push(`${e.type}:${field.value}:${e.bubbles}`));
+  K.keypadWrite(field, 'TV1');
+  assert.deepEqual(seen, ['input:TV1:true', 'change:TV1:true']);
+  K.keypadWrite(field, 'TV1');
+  assert.equal(seen.length, 2, 'the same text: no events');
+});
+
 test('/tv: the link carries the code in the hash only; a flag is no code; the hash keeps its flags', () => {
   assert.equal(M.tvLink('https://turbo-gol.com/', 'ABC234'), 'https://turbo-gol.com/tv#ABC234');
   assert.ok(!M.tvLink('https://turbo-gol.com', 'ABC234').includes('?'));
