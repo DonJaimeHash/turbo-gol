@@ -7,6 +7,26 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- TRAINING has a new look: FREE PLAY is the big tile, then SHOOTING (start here), SAVING and
+  AERIALS, each with three marks for its levels (filled with a ✓ when you passed it, a dot once you
+  played it, empty before). A pack opens its three levels as big buttons with your best run and the
+  seconds per shot. HOW TO PLAY shows every control of what you are holding: keyboard and mouse, a
+  controller, or the touch controls. The line under the title names your own reset keys.
+- At the end of a pack, AGAIN, NEXT LEVEL (up to Expert) and TRAINING work with the arrows or the
+  D-pad and Enter or A, a click or a tap; B or Esc go back to TRAINING. During a pack each shot shows
+  a ✓ or a ✕ and the panel counts your hits and misses; its key hints fold away after 10 seconds,
+  and on a touch screen they talk about the ↺ button.
+- The LEADERBOARD switches 1v1, 2v2 and 3v3 in place, with your rank on each. One list of rows with
+  the rank in words, your own row in gold; GO TO MY POSITION (X) jumps to it, the triggers or
+  PgUp / PgDn move a page, and ◀ ▶ change the playlist from anywhere on the board. On a phone the
+  rows are cards.
+- PROFILE: your rank badge and name, the season's three ranks, and, if you host a community server,
+  MY SERVER with its state in words, the matches it hosted and its version. ACCOUNT AND SECURITY
+  folds your account's options away; COMMUNITY links to Discord, hosting a server and the source
+  code; ABOUT shows the version and the licences. A guest gets CREATE A FREE ACCOUNT and SIGN IN
+  side by side, and "Forgot your password?" right under the sign-in form.
+- On a phone, the field you type in stays in sight above the keyboard, and the keyboard's Enter
+  says Next until the last field, which sends the form.
 - Settings is now a screen like the rest of the menus: six tabs on the left (CONTROLS, CAMERA,
   GAME, AUDIO, GRAPHICS, EXPERIMENTAL) with every setting you had, kept as you saved it. CONTROLS
   shows only what you play with (touch, controller, keyboard and mouse) and opens on the one you

@@ -29,7 +29,6 @@ const RULES = {
 
 /** `${lang}:${key}:${rule}` -> the plan PR that rewrites the text. Only ever shrinks. */
 const KNOWN = {
-  'es:training.shotBreakaway:modeNames': 'PR 13 (training: the breakaway shot gets a name that is not a mode)',
 };
 
 const values = (v) => (typeof v === 'string' ? [v] : Object.values(v));

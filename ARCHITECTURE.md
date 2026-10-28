@@ -359,7 +359,12 @@ src/game/
   you wait: Free play"): the frame's watchSearchPractice sees the session leave its queue and
   hands off through one function, practiceToMatch (training off, "MATCH FOUND · Entering…",
   today's found -> match path; setSession and the session rosters call it too), a failed connect
-  shows the menus, and quitting practice keeps the search: stopTraining -> showMenu(true))
+  shows the menus, and quitting practice keeps the search: stopTraining -> showMenu(true). The pack
+  summary (src/render/TrainingHud.ts, plan PR 13: AGAIN · NEXT LEVEL · TRAINING, a FocusNav of its
+  own) takes the frame's edges while it is up: trainingSummaryActions routes the arrows / D-pad
+  (before the pad's previous / next shot, which share the D-pad's ◀ ▶) and accept to it, the reset
+  key retries, back is stopTraining; NEXT LEVEL is trainingNextLevel (trainingModel.ts nextLevel).
+  The panel's hints follow the device in use, a finger's too (touch mode: the ↺ button))
 src/ui/                 the front-end menus: the Tablero shell (styles/shell.css, components.css)
                         around the screens (Inicio on styles/tiles.css and screens/home.css, MODOS
                         on screens/modes.css; the others on menu.css until their own PRs), all
@@ -369,7 +374,7 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         its calibrated fallbacks; the old names (--panel, --muted, --mn-*) are
                         aliases until the PR that rewrites their last user. "UI tokens" below
   styles/focus.css      the one focus ring of every world (menus .mn-focus / :focus-visible, the
-                        Hud's .hud-focus, the pack summary's default button)
+                        Hud's .hud-focus, the pack summary's buttons: their own FocusNav)
   styles/shell.css      the shell's grid and bars per html[data-shell] (bar, rail, tabs, tv) in rem
                         (1 rem = 16 px x --ui-scale; body stays 16 px, so the old screens' px do
                         not move); styles/components.css: pills, glyphs, sheets, toasts, the slot;
@@ -378,7 +383,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         styles/screens/<screen>.css: a Tablero screen's own layout per class
                         (home.css: Inicio, modes.css: MODOS, final.css: the FINAL; on
                         .mn[data-screen], which Menu.mount writes; found.css: PARTIDO ENCONTRADO;
-                        settings.css: Ajustes, in the menus and over the pause)
+                        settings.css: Ajustes, in the menus and over the pause; training.css,
+                        leaderboard.css, profile.css: plan PR 13's, training.css also the three's
+                        stage per class and menu.css's shared controls at the class's type roles
+                        there)
   screens/settings/     Ajustes (plan PR 10): model.ts (pure: the six tabs, CONTROLES' device
                         sections, the camera preset, the quality trial, the memory tag, a binding's
                         conflict, the sliders' maths; tests/settings-model.test.mjs), view.ts
@@ -411,6 +419,11 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         sections with focus = selection, back + crumbs, chip, Settings), rail.ts
                         (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
                         About), pills.ts (region / connection, search, update)
+  keyboard.ts           a phone's keyboard over a form: the visual viewport's shrink (Chrome on
+                        Android resizes only that) as --kb-inset on .mn (PERFIL's stage makes that
+                        room at its end, a phone's sheet rises above it) and the focused field scrolled above it in its own
+                        scroller; keyboardInset / scrollToShow pure (tests/keyboard-inset.test.mjs);
+                        installed once by the Menu
   backModel.ts          the order of Back, pure: menuBack (sheet, field being edited, the
                         screen's own, pop, another section to JUGAR, JUGAR's root asks to leave),
                         systemBack (load, key capture, Ajustes over the pause, menus, pack summary,
@@ -558,11 +571,28 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         with the experimental rules row for unlocked players, P2P only, EDIT
                         PRESETS; the EXP tag; lobbyModel.ts, pure: the code alphabet and cells,
                         the link, the new lobby's format, a row's state, shareWay;
-                        tests/lobby-model.test.mjs), training (with Experimental free play, its
-                        rules picker and Edit presets for unlocked players), profile (sign in / up /
-                        recover, account actions), leaderboard + ranked result dialog
+                        tests/lobby-model.test.mjs); ENTRENAMIENTO (training.ts, plan PR 13: Inicio's
+                        tile grid with the hero PRÁCTICA LIBRE, TIROS / ATAJADAS / AÉREOS with their
+                        level marks by shape, HOW TO PLAY's controls sheet for the device in use,
+                        LAB for an unlocked player (its presets' sheet, EDIT PRESETS) with HOW TO
+                        PLAY as a row; a pack's sheet of three levels; trainingModel.ts, pure:
+                        markOf, categoryMarks, firstOpen, nextLevel, trainDevice;
+                        tests/training-screen.test.mjs); CLASIFICACIÓN (leaderboard.ts: the tabs
+                        in place, ◀ ▶ from a tab or a row (onNavSide, never past either end), one
+                        scroller of data-nav rows, your standing (GO TO MY POSITION: pad X, keyboard
+                        X with no search, Delete; a guest's SIGN IN; the placement matches),
+                        LT / RT (a controller's: Screen.command's `pad`, the press's source) and
+                        PgUp / PgDn pages, the picked tab the first focus, window.__board samples in dev / VITE_UI_FIT; leaderboardModel.ts,
+                        pure; tests/leaderboard.test.mjs) + ranked result dialog
                         (RankedResults.watch's `into`: the FINAL's rank card takes the answer
-                        while it is up; else the toast or the dialog as before);
+                        while it is up; else the toast or the dialog as before); PERFIL
+                        (profile.ts: the identity tile, TEMPORADA, MI SERVIDOR from
+                        AccountClient.myNodes (GET /nodes/mine; none on a fork or local dev),
+                        CUENTA Y SEGURIDAD folded, COMUNIDAD, ACERCA DE and IDIOMA as one nav row;
+                        a guest's CREAR CUENTA GRATIS / INICIAR SESIÓN as the screen's .mn-tabs over
+                        their form, the recovery link, the guest name; fields with enterkeyhint
+                        and Enter to the next one; the view follows a session that comes or goes;
+                        window.__profile samples in dev / VITE_UI_FIT);
                         match/final.ts (the FINAL: a screen stacked on Inicio, the shell's bars
                         aside, PLAY AGAIN focused, Back = MENU; window.__final(kind) samples in
                         dev / VITE_UI_FIT), match/finalModel.ts (pure: FinalView, goalScorer from

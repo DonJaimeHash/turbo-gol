@@ -79,10 +79,11 @@ export function onEditStep(el: HTMLElement, up: () => boolean, down: () => boole
   s.navDown = down;
 }
 
-export function onNavSide(el: HTMLElement, left: () => void, right: () => void): void {
+/** `left` / `right` claim that arrow for `el`; null leaves it to the spatial pick (the board's first and last tab). */
+export function onNavSide(el: HTMLElement, left: (() => void) | null, right: (() => void) | null): void {
   const s = el as HTMLElement & SideHandlers;
-  s.navLeft = left;
-  s.navRight = right;
+  s.navLeft = left ?? undefined;
+  s.navRight = right ?? undefined;
 }
 
 export function isEditable(el: Element | null): boolean {

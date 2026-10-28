@@ -19,7 +19,7 @@ import type { InputKind } from '../device';
 import type { Key } from '../../i18n';
 
 /** A drawn key or button: `pad-*` a controller's, `key-*` a keyboard's, `remote-*` a TV remote's. */
-export type GlyphId = 'pad-a' | 'pad-b' | 'pad-y' | 'pad-lb' | 'pad-rb' | 'pad-start' | 'key-enter' | 'key-esc' | 'key-q' | 'key-e' | 'key-x' | 'remote-ok' | 'remote-back' | 'remote-up';
+export type GlyphId = 'pad-a' | 'pad-b' | 'pad-x' | 'pad-y' | 'pad-lb' | 'pad-rb' | 'pad-lt' | 'pad-rt' | 'pad-start' | 'key-enter' | 'key-esc' | 'key-q' | 'key-e' | 'key-x' | 'key-pgup' | 'key-pgdn' | 'remote-ok' | 'remote-back' | 'remote-up';
 
 export interface HintItem {
   readonly glyphs: readonly GlyphId[];

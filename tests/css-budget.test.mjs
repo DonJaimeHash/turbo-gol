@@ -192,7 +192,7 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
   // Touch shows no ring: every ring rule is scoped to a page whose last input was not a finger.
   for (const r of rules(focus)) if (r.selector !== '.mn [data-nav]:focus') for (const sel of r.selector.split(',')) assert.match(sel.trim(), /^html:not\(\.tg-touch\) /, sel);
   assert.doesNotMatch(focus, /:is\(/, 'plain selector lists (an old TV WebView drops a whole rule it cannot parse)');
-  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.mn .mn-set-row-ctl.mn-focus', '.trn-summary-card .trn-btn-primary', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
+  for (const target of ['.hud-pause-menu > .hud-pause-btn.hud-focus', '.mn .mn-set-row-ctl.mn-focus', '.trn-summary-card .trn-btn.mn-focus', '.mn .mn-focus']) assert.ok(focus.includes(target), target);
 });
 
 // Within about 1 % of what Vite's minifier writes (comments, spaces, last semicolons and leading
@@ -221,10 +221,15 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // and modes.css (about 2.6 KB): 133,989 B on its own, 138,173 B with PR 9. PR 10 deletes the Hud's
 // settings sheet (style.css and focus.css, about 11.1 KB) and adds Ajustes as drawn
 // (styles/screens/settings.css: the rail, the rows, sliders, switches, bindings, the quality cards,
-// the Experimental page, the pause overlay, per class; about 11.1 KB): 132,999 B on its own. PR 12
-// and PR 10 together: 138,182 B, the cap that plus about 0.6 KB. It steps down to 70 KB once PR 15
-// deletes menu.css. Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 138_800;
+// the Experimental page, the pause overlay, per class; about 11.1 KB): 132,999 B on its own. PR 13
+// adds ENTRENAMIENTO, CLASIFICACIÓN and PERFIL (styles/screens/training.css, leaderboard.css and
+// profile.css, about 12.6 KB with their phone, TV and short layouts and the shared controls' type
+// roles there) and the training HUD's shapes, fold and tally (0.3 KB), minus the old training,
+// board, profile and tile rules of menu.css (4.8 KB), with a phone's sheet over its keyboard:
+// 141,232 B on its own. PR 12 and PR 10 together: 138,182 B; with PR 13 too: 146,398 B, the cap
+// that plus about 0.6 KB. It steps down to 70 KB once PR 15 deletes menu.css. Raising it is the
+// owner's call, recorded in the PR.
+const CSS_BUDGET = 147_000;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;
