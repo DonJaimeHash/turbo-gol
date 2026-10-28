@@ -675,6 +675,7 @@ export class Menu {
    * whatever was stacked). `tab`: the screen's tab to show (Screen.setTab: MODOS').
    */
   open(id: string, reset = false, tab?: string): void {
+    this.closeKeypad(false); // a screen opened under the keypad (a join link): what was typed goes to its field first
     const next = stackAfterOpen({ section: this.section, stack: this.stack.map((s) => s.id) }, id, reset);
     const stack = next.stack.map((x) => this.screen(x));
     if (tab !== undefined) this.screen(id).setTab?.(tab);
@@ -1261,11 +1262,12 @@ export class Menu {
   /**
    * A shortcut: the screen on top first (Screen.command), else the menus' own: 'prev' / 'next' the
    * sections, 'tabPrev' / 'tabNext' the screen's inner tabs (stepTabs), 'cancel' the search, 'menu'
-   * the settings. False when nothing took it. Nothing while a modal is up (it keeps the focus).
+   * the settings. False when nothing took it. Nothing while a modal or the keypad is up (it keeps
+   * the focus; under the keypad, CH+ / CH− or LT / RT would change the screen its field is on).
    * `pad`: it came from a controller (action), not the keyboard's Q / E / X / Delete.
    */
   command(c: MenuCommand, pad = false): boolean {
-    if (!this.visibleNow || this.modalEl !== null) return false;
+    if (!this.visibleNow || this.modalEl !== null || this.keypad !== null) return false;
     if (this.top()?.command?.(c, pad)) return true;
     if (c === 'prev' || c === 'next') return this.stepSection(c === 'prev' ? -1 : 1);
     if ((c === 'tabPrev' || c === 'tabNext') && this.stepTabs(c === 'tabPrev' ? -1 : 1)) return true;
@@ -1711,6 +1713,9 @@ export class Menu {
    * reader), and when it closes the focus goes back to what had it when it opened.
    */
   modal(spec: ModalSpec): () => void {
+    // The keypad on a screen's field: closed as by Back (the text in the field, which opens the
+    // sheet: it gets the focus back). Over a sheet, it goes with the sheet (closeModal).
+    if (this.modalEl === null) this.closeKeypad(false);
     const prev = this.modalEl !== null ? this.modalOpener : null;
     this.closeModal(false);
     const a = document.activeElement;
@@ -1803,6 +1808,7 @@ export class Menu {
       k.field.dispatchEvent(new Event('input', { bubbles: true }));
     }
     if (k.field.isConnected && this.nav.targets().includes(k.field)) this.nav.focus(k.field);
+    else this.refocus(); // its screen rebuilt under it: the remote is never left on nothing
   }
 
   /** The keypad gone without a word (its sheet closed, the menus hid). */
