@@ -7,6 +7,18 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- On a TV, sign in with your phone: PROFILE starts with SIGN IN WITH YOUR PHONE, which shows a
+  short code and its QR. Open turbo-gol.com/tv on a phone where you are signed in, check the code and
+  press CONFIRM: the TV signs in by itself and goes back to where you were (FIND MATCH after
+  Competitive's SIGN IN). A code lasts 5 minutes and works once; NEW CODE gets another. Signed out on
+  the phone, sign in there first and the code waits for you.
+- Typing with a TV remote or a controller: OK or A on a name, a password or a lobby code opens
+  on-screen keys (letters, numbers, . - _ @, upper or lower case, delete, space). DONE keeps the
+  text, Back too. A mouse or a keyboard types as before.
+- With a TV remote, CH+ and CH− do what a controller's triggers do: they page the leaderboard and
+  switch a screen's tabs.
+- The anti-bot check runs ahead when PLAY opens, so starting a match or creating an account rarely
+  waits for it. If Cloudflare ever needs you to answer it, a sheet says why, and CANCEL stops it.
 - TRAINING has a new look: FREE PLAY is the big tile, then SHOOTING (start here), SAVING and
   AERIALS, each with three marks for its levels (filled with a ✓ when you passed it, a dot once you
   played it, empty before). A pack opens its three levels as big buttons with your best run and the

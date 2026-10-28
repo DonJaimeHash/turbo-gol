@@ -115,7 +115,9 @@ src/render/
                         pageFlags: diag / audit, stats, debug, net, nancheck, worldnocache,
                         webgl2, webgpu, superlow, tv, lowgpu, compat, nof32filter, nofloatrt,
                         nomsaa, msaa, nopost, norender, pr, hide, widetext: the UI in plain Arial,
-                        html.tg-widetext set by main.ts, a fit test for the fallback fonts)
+                        html.tg-widetext set by main.ts, a fit test for the fallback fonts; keys:
+                        every key event's key / code / keyCode on screen, src/ui/keysOverlay.ts,
+                        for a real TV's BACK, CH+ / CH− and system keyboard)
   frameStats.ts         `#diag`'s drawn frame rate (1 s min / mean, 5 s mean), the animation frames
                         the loop ran, the stalls (frames over 50 / 100 ms: between drawn frames in
                         a match, between animation frames while the scene is paced or held) and CPU
@@ -412,7 +414,14 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         in its grid cell; a mode tile; the slot), plate.ts (who you are · your
                         car), language.ts (the language sheet, PERFIL's IDIOMA row), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
-                        (mn-picker: a 56 px row with its value and ›, opening a sheet)
+                        (mn-picker: a 56 px row with its value and ›, opening a sheet), keypad.ts
+                        (mn-keypad, plan PR 14: the on-screen keys Menu.openKeypad mounts over the
+                        sheets when OK / A lands on a field without a fine pointer: A–Z / 0–9 and
+                        . - _ @, the case, ⌫, SPACE, DONE, ◀ ▶ along a row (onNavSide, round); DONE
+                        writes the field and returns to it, Back keeps the text; a password in dots;
+                        a field registers its own keys and write with onKeypad, as codecells.ts
+                        does for the code alphabet: DONE with six joins; pure keypadRows /
+                        keypadType / keypadShown, tests/tv-signin.test.mjs)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
                         hints.ts (the hint bar per last input, root or stacked, a screen's own
                         tabs or not; pure), topbar.ts (wordmark,
@@ -466,7 +475,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         section, a crumb, the wordmark, the chip or the search pill take the
                         player off it), the top bar / rail / tabs / hint bar, the pills (region and
                         connection with RETRY, the running search on every section (Ajustes is one
-                        of them), "UPDATE TO PLAY"), sheets (modal), toasts, the blocking
+                        of them), "UPDATE TO PLAY"), sheets (modal), mn-keypad's layer over them (OK /
+                        A on a field without a fine pointer: openKeypad, its own zone, Back closes it
+                        first), the anti-bot sheet (antiBotAsk), CH+ / CH− (PageUp / PageDown,
+                        ChannelUp / ChannelDown) as LT / RT, toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
                         shared prefs (prefs.ts), population polling, the 4 Hz tick (1 Hz on super
                         low, DOM written only on change); MenuHost = what the Game provides (search,
@@ -592,7 +604,16 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         a guest's CREAR CUENTA GRATIS / INICIAR SESIÓN as the screen's .mn-tabs over
                         their form, the recovery link, the guest name; fields with enterkeyhint
                         and Enter to the next one; the view follows a session that comes or goes;
-                        window.__profile samples in dev / VITE_UI_FIT);
+                        window.__profile samples in dev / VITE_UI_FIT; on a TV a guest's first
+                        tile is SIGN IN WITH YOUR PHONE); tvSignIn.ts (plan PR 14: the TV's sheet,
+                        AccountClient.tvStart / tvPoll, the code in Display 44 and its QR, the time
+                        left, NEW CODE once expired, signInWith after the sheet closed so the
+                        return with intent runs; the phone's /tv page, installTvLink: the path back
+                        to /, the code from the hash kept 5 min in sessionStorage across a sign-in,
+                        sign in first / the code cells / "Sign in on the TV as {name}?" CONFIRM /
+                        CANCEL / the refusal in words; tvSignInModel.ts pure: the link, the hash's
+                        code, the countdown, the kept code; window.__tvSignIn samples in dev /
+                        VITE_UI_FIT, tvSignInSamples.ts);
                         match/final.ts (the FINAL: a screen stacked on Inicio, the shell's bars
                         aside, PLAY AGAIN focused, Back = MENU; window.__final(kind) samples in
                         dev / VITE_UI_FIT), match/finalModel.ts (pure: FinalView, goalScorer from
@@ -608,7 +629,10 @@ src/net/
                         rejoin, cancel -> /api/leave), WebSocket with ['tg1', 'ticket.<jwt>'],
                         input / ready / ping senders, message dispatch, up to RECONNECT_TRIES (5)
                         automatic rejoins per drop (reconnectAttempt; a Welcome starts again);
-                        fetch / WebSocket / clock / storage injectable (node tests)
+                        the anti-bot token pre-warmed when Inicio shows (prewarmAntiBot, WARM_MS,
+                        used once; a pre-warm wanting a click gives up quietly) and the check that
+                        wants the player reported (onAntiBotAsk: Menu.antiBotAsk's sheet, CANCEL =
+                        cancelChallenge); fetch / WebSocket / clock / storage injectable (node tests)
   outcome.ts            what a failed online step leaves to do (retry, wait, requeue, reload,
                         gone) and its action's label: Menu.failure's sheet; codes never in a text
   ClockSync.ts          4-timestamp rtt / offset / host-tick estimate (medians over 16 pongs),
@@ -628,7 +652,8 @@ src/net/
                         HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
                         the experimental switch and presets (each call for the account that made
                         it: a refresh that hands back another account never gets it); a listener
-                        list (subscribe) and the { name, id } hint the boot reads (readAccountHint)
+                        list (subscribe) and the { name, id } hint the boot reads (readAccountHint);
+                        a TV's sign-in with the phone (tvStart / tvPoll / signInWith, tvConfirm)
   LobbyClient.ts        custom lobbies: list / peek / create / join by code, the lobby socket (state,
                         match result per member, back, kick, host, move, ready, settings); a drop
                         joins again by code for 90 s ('reconnecting'; visibilitychange / online
@@ -692,11 +717,16 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
   src/AccountsDO.ts     the one SQLite object for every account (accountStore.ts): users,
                         refresh tokens, ratings, ranked results / abandons / bans / locks, training
                         records, the experimental switch and presets, login throttle, daily prune;
-                        a report or record that carries experimental rules is refused
+                        a report or record that carries experimental rules is refused; the TV
+                        sign-in codes in memory (tvCodes.ts: 6 of the lobby alphabet, 5 min, one
+                        use, the device secret's hash compared in constant time, 10 failed confirms
+                        per account and per IP in 15 min, 5 live codes per IP)
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
-                        minute), leaderboard, ranked result; server-side PBKDF2 of the client key
+                        minute), leaderboard, ranked result, /api/auth/tv/start | confirm | poll (a
+                        TV signed in by the phone: the session and cookie as login gives them);
+                        server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
                         admit (password, kick list), start through the matchmaker's /custom; a
                         dropped member kept LOBBY_GRACE_MS (40 s, host role included) before the
