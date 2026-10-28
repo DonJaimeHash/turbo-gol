@@ -681,3 +681,25 @@ test('lighting: each shadow frustum holds the whole arena box (field + goals, fl
   }
   lighting.dispose();
 });
+
+const { parseResolutionScale, scaledPixelRatio, RESOLUTION_SCALE_RANGE, DEFAULT_RESOLUTION_SCALE } = await import('../src/render/quality.ts');
+
+test('resolution scale (Settings > Graphics): a pref saved before it reads 100; snapped to 5 % inside 50-125', () => {
+  assert.equal(DEFAULT_RESOLUTION_SCALE, 100);
+  assert.deepEqual(RESOLUTION_SCALE_RANGE, [50, 125, 5]);
+  for (const v of [undefined, null, 'big', NaN, Infinity]) assert.equal(parseResolutionScale(v), 100, String(v));
+  assert.equal(parseResolutionScale(85), 85);
+  assert.equal(parseResolutionScale(87), 85);
+  assert.equal(parseResolutionScale(10), 50);
+  assert.equal(parseResolutionScale(400), 125);
+});
+
+test('scaledPixelRatio: the scale multiplies the tier ratio; no side passes the device limit (4096 in WebGPU compatibility)', () => {
+  assert.equal(scaledPixelRatio(1, 0.5, 1366, 768), 0.5);
+  assert.equal(scaledPixelRatio(2, 1.25, 1366, 768, 4096), 2.5);
+  // 125 % of a 2x 1920-wide canvas would be 4800 wide: capped at 4096.
+  const r = scaledPixelRatio(2, 1.25, 1920, 1080, 4096);
+  assert.ok(Math.floor(1920 * r) <= 4096 && Math.floor(1080 * r) <= 4096);
+  assert.ok(Math.abs(r - 4096 / 1920) < 1e-9);
+  assert.equal(scaledPixelRatio(1, 0, 800, 600), 1, 'no scale: the tier ratio');
+});

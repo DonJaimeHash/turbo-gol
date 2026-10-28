@@ -5,9 +5,8 @@
  *
  *   account   the server (GET / POST /api/me/experimental, /api/me/presets through `remote`) plus
  *             a local copy per account under experimentalKey(playerId): { enabled, enabledDirty,
- *             presets, dirty, lastUsed }. Reads come from the copy at once (the boot reads it
- *             before the account is restored: `unlockedAtBoot`); sync() pushes what this browser
- *             changed, then pulls the account's state.
+ *             presets, dirty, lastUsed }. Reads come from the copy at once; sync() pushes what
+ *             this browser changed, then pulls the account's state.
  *
  * Writes:
  *   - the switch is saved here at once and sent to the server right away; offline it stays
@@ -29,7 +28,6 @@
  * the UI. Sign-out keeps the copy (the next sign-in of that account reads it), like training.
  */
 import { STORAGE_PREFIX } from '../brand';
-import { readAccountHint } from '../net/AccountClient';
 import type { ExperimentalAnswer } from '../net/account';
 import { sanitizeLobbyName } from '../net/account';
 import {
@@ -176,22 +174,6 @@ export class ExperimentalStore {
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.newId = opts.newId ?? (() => newPresetId());
     this.now = opts.now ?? Date.now;
-  }
-
-  /**
-   * Whether the boot may treat this browser's player as unlocked, before the account is restored:
-   * the account hint names an id (a hint from before the id: locked) whose local copy has the
-   * switch on. main.ts gates the saved super low pick with it (bootTier.ts gateTierPrefs).
-   */
-  static unlockedAtBoot(storage: StorageLike | null = defaultTrainingStorage()): boolean {
-    const id = readAccountHint(storage)?.id ?? null;
-    if (id === null || storage === null) return false;
-    try {
-      const raw = storage.getItem(experimentalKey(id));
-      return raw !== null && parseExperimentalCache(JSON.parse(raw)).enabled;
-    } catch {
-      return false;
-    }
   }
 
   /** Call `fn` after every change of the state (a local edit, a server answer); returns the unsubscribe. */

@@ -446,7 +446,7 @@ export const MENU_FPS_LITE = 20;
 /** A touch screen's menus that hide more than this share of it (src/ui/cover.ts coverShare) draw the scene at MENU_FPS_LITE. */
 export const MENU_COVER_LITE = 0.7;
 
-/** The player's frame limit (GamePrefs.fpsCap: the Graphics row of a later settings page): 0 = the display's rate. */
+/** The player's frame limit (GamePrefs.fpsCap: Settings > Graphics' row): 0 = the display's rate. */
 export type FpsCap = 0 | 30 | 60;
 export const FPS_CAPS: readonly FpsCap[] = [0, 30, 60];
 
@@ -582,17 +582,33 @@ export function lowerQuality(q: Quality): Quality | null {
   return i > 0 ? QUALITIES[i - 1] : null;
 }
 
-/** The tiers a player without experimental features may pick (bootTier.ts gateTierPrefs). */
-export const LOCKED_QUALITIES: readonly Quality[] = ['low', 'high', 'ultra'];
+/**
+ * The tiers Settings > Graphics shows as cards. Super low is not one of them: it is the "Super low
+ * mode" switch under them, everyone's (it only changes how the stadium is drawn, never the
+ * physics, the ranking or what a match counts for). A device on Super low lights no card.
+ */
+export const CARD_QUALITIES: readonly Quality[] = ['low', 'high', 'ultra'];
+
+/** Settings > Graphics' resolution scale (GamePrefs.resolutionScale, %): [min, max, step], and its default. */
+export const RESOLUTION_SCALE_RANGE: readonly [number, number, number] = [50, 125, 5];
+export const DEFAULT_RESOLUTION_SCALE = 100;
+
+/** A saved resolution scale (%): snapped to the range's grid, inside it; anything else is the default. Pure. */
+export function parseResolutionScale(v: unknown): number {
+  const [min, max, step] = RESOLUTION_SCALE_RANGE;
+  if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_RESOLUTION_SCALE;
+  return Math.min(max, Math.max(min, Math.round(v / step) * step));
+}
 
 /**
- * The tiers Settings > Graphics lists: every tier for a signed-in player with experimental
- * features on (`unlocked`, src/game/experimentalStore.ts), else all but super low. Only the pick
- * is gated: a device still starts on super low by itself (bootTier.ts auto, the URL, the tab's
- * recovery, a ceiling) and the safety net still falls into it (`lowerQuality`). Pure.
+ * The drawing buffer's pixel ratio with the player's resolution scale (`scale`, 1 = 100 %) over
+ * the tier's own `ratio` (pixelRatio, dynamic resolution's scale included): never past
+ * `maxTextureSize` on either side of a `cssW` x `cssH` canvas (4096 in WebGPU compatibility
+ * mode), so 125 % on a big screen stops at the device's largest render target. Pure.
  */
-export function menuQualities(unlocked: boolean): readonly Quality[] {
-  return unlocked ? QUALITIES : LOCKED_QUALITIES;
+export function scaledPixelRatio(ratio: number, scale: number, cssW: number, cssH: number, maxTextureSize = Infinity): number {
+  const r = ratio * (scale > 0 ? scale : 1);
+  return Math.min(r, maxTextureSize / Math.max(1, cssW, cssH));
 }
 
 /**

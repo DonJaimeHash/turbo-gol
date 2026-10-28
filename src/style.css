@@ -1632,18 +1632,18 @@ html[data-input='mouse'] .hud-howto-dbl {
 
 /* ---- Reduced motion: one block for every prefix (menu.css, training.css and touch.css have none
    of their own) --------------------------------------------------------------------------------
-   Nothing slides, pops, lifts or blinks; a change of opacity still fades, in 120 ms at most. The
-   search spinner keeps turning (it says a search is running); the loading bar has its own block
-   below; the rotate screen's phone rests turned (touch.css). */
-@media (prefers-reduced-motion: reduce) {
-  [class*='mn-']:not(.mn-spinner),
-  [class*='hud-'],
-  [class*='trn-'],
-  [class*='tc-'] {
-    animation: none !important;
-    transition-property: opacity !important;
-    transition-duration: 0.12s !important;
-  }
+   html.tg-reduce-motion (src/ui/device.ts): the system's prefers-reduced-motion, or Settings >
+   Game's Yes (its No ignores the system). Nothing slides, pops, lifts or blinks; a change of
+   opacity still fades, in 120 ms at most. The search spinner keeps turning (it says a search is
+   running); the loading bar has its own block below (the system's: it shows before the game);
+   the rotate screen's phone rests turned (touch.css). */
+html.tg-reduce-motion [class*='mn-']:not(.mn-spinner),
+html.tg-reduce-motion [class*='hud-'],
+html.tg-reduce-motion [class*='trn-'],
+html.tg-reduce-motion [class*='tc-'] {
+  animation: none !important;
+  transition-property: opacity !important;
+  transition-duration: 0.12s !important;
 }
 
 /* ---- Loading screen (src/ui/LoadingOverlay.ts) and the boot error page (src/main.ts) -------

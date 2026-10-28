@@ -93,10 +93,15 @@ export function finalRows(players: readonly FinalPlayer[], team: 0 | 1): FinalPl
   return players.filter((p) => p.team === team).sort((a, b) => Number(b.you) - Number(a.you));
 }
 
-/** What JUGAR OTRA VEZ does: the same queue (that kind's playlists, as Inicio's hero repeats it), a new match against the AI, or back to the lobby. */
-export type AgainAction = { readonly kind: 'search'; readonly queue: QueuePick } | { readonly kind: 'restart' } | { readonly kind: 'lobby' };
+/**
+ * What JUGAR OTRA VEZ does: the same queue (that kind's playlists, as Inicio's hero repeats it), a
+ * new match against the AI, or back to the lobby. `reloadWaits`: a tier picked during the online
+ * match waits for the FINAL to go (the game restarts): it goes, as MENÚ, before anything starts.
+ */
+export type AgainAction = { readonly kind: 'search'; readonly queue: QueuePick } | { readonly kind: 'restart' } | { readonly kind: 'lobby' } | { readonly kind: 'home' };
 
-export function againAction(kind: FinalKind, prefs: MenuPrefs): AgainAction {
+export function againAction(kind: FinalKind, prefs: MenuPrefs, reloadWaits = false): AgainAction {
+  if (reloadWaits) return { kind: 'home' };
   if (kind === 'ai') return { kind: 'restart' };
   if (kind === 'lobby') return { kind: 'lobby' };
   if (kind === 'ranked') return { kind: 'search', queue: { kind: 'ranked', modes: prefs.rankedModes, region: prefs.region, net: 'server' } };

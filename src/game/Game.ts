@@ -79,21 +79,20 @@
  * the wasm's) and going online shows a one-line notice. Physics stays at 120 Hz.
  *
  * Experimental features (Settings > Experimental, `experimental`: src/game/experimentalStore.ts):
- * a signed-in player's switch and physics presets. Super low is a pick only for an unlocked player
- * (`experimentalUnlocked`: signed in, switch on): the Graphics tab lists it for them alone
- * (quality.ts menuQualities), main.ts gates a saved pick at boot (bootTier.ts gateTierPrefs), and
- * every account or switch change re-checks it (`checkTierLock`: a locked player's saved super low
- * becomes Performance from the next start, said in a toast, nothing reloads). Devices that run
- * super low on their own keep it. The same unlocked player gets experimental free play (the
- * training screen's tile: startTraining(FREEPLAY_ID, { rules }), see Training below).
+ * a signed-in player's switch and physics presets; an unlocked player (`experimentalUnlocked`:
+ * signed in, switch on) gets experimental free play (the training screen's tile:
+ * startTraining(FREEPLAY_ID, { rules }), see Training below). Super low is not one of them: it is
+ * everyone's pick (Settings > Graphics' switch), as it changes only how the stadium is drawn.
  *
  * `#diag` (src/render/frameStats.ts): the loop feeds the frame times and the CPU of the ball
  * prediction, the bots, the physics step and the render call; nothing is measured without it.
  *
- * Settings (src/settings.ts: controls, camera, bindings, audio) are one live object shared by Input
- * (reads bindings / sensitivities, mutates them from the settings screen), ChaseCamera (reads
- * `camera` by reference) and the Hud (sliders). Every change ends in `applySettings()`: save to
- * localStorage, re-apply the dodge deadzone to the sim, the camera projection and the volume.
+ * Settings (src/settings.ts: controls, camera, bindings, audio, touch, ui) are one live object
+ * shared by Input (reads bindings / sensitivities, mutates them from the settings screen),
+ * ChaseCamera (reads `camera` by reference), the touch controls (`touch`) and Ajustes. Every
+ * change ends in `applySettings()`: save to localStorage, re-apply the dodge deadzone to the sim,
+ * the camera projection, the volume, the touch controls' look and feel and the interface (size,
+ * reduced motion: src/ui/device.ts).
  *
  * Day stadiums (themeWorld(theme).night false) give the ball no shadow (`applyBallShadow`): under
  * a low sun it lands far from the ball and reads as a second landing marker. Only the ball mesh's
@@ -164,10 +163,10 @@ import { ExperimentalStore, type ExperimentalProblem } from './experimentalStore
 import { MAX_PRESETS, canonicalValues, type PhysicsValues } from './physicsRules';
 import { arenaMutators } from '../sim/mutators';
 import { STOCK_ARENA_FINGERPRINT, accumulate, buildTrainingArena, needsTrainingArena, planTrainingArena, trainingRules, type TrainingArenaPlan } from './experimentalTraining';
-import type { ExperimentalContext, ExperimentalOptions, SuperlowStatus } from '../render/experimentalPage';
+import type { ExperimentalContext, ExperimentalOptions } from '../render/experimentalPage';
 import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
-import { installJoinLink } from '../ui/screens/lobby';
+import { installJoinLink, installLobbyReturn } from '../ui/screens/lobby';
 import { installSalaSamples } from '../ui/screens/lobbySamples';
 import { openLostSheet } from '../ui/screens/match/lost';
 import { REGIONS, isPlaylist, isRegion } from '../net/account';
@@ -194,13 +193,14 @@ import { Hud, netBars, type ClockMode, type OnlineKind, type PauseEntry, type Sc
 import { SettingsView, type SettingsOptions } from '../ui/screens/settings/view';
 import { SettingsOverlay } from '../ui/screens/settings/overlay';
 import { settingsScreen } from '../ui/screens/settings/screen';
+import { openLanguagePicker } from '../ui/components/language';
 import type { SettingsTab } from '../ui/screens/settings/model';
 import { TrainingHud, type TrainingHints } from '../render/TrainingHud';
 import { Renderer, type GpuFailure } from '../render/Renderer';
 import { tierPrefsAfter } from '../render/bootTier';
 import { diagSources, diagStats, enableDiagStats } from '../render/frameStats';
 import { emulatedDevice, pageFlags, withoutTierFlags } from '../render/hashFlags';
-import { FramePacer, HELD_FRAME, drawsScene, frameCap, menuQualities, needsReload, parseFpsCap, parseQuality, pauseHolds, runsLogic, sceneFps, type FpsCap, type Quality, type SceneCover } from '../render/quality';
+import { CARD_QUALITIES, FramePacer, HELD_FRAME, drawsScene, frameCap, needsReload, parseFpsCap, parseQuality, parseResolutionScale, pauseHolds, runsLogic, sceneFps, type FpsCap, type Quality, type SceneCover } from '../render/quality';
 import {
   BACKGROUND_LOSS_MS,
   FALLBACK_WINDOW_MS,
@@ -256,12 +256,13 @@ import { DEFAULT_MATCH_SECONDS, Match, formatClockSeconds, type MatchEvent } fro
 import { GAME_NAME, STORAGE_PREFIX } from '../brand';
 import { BackGuard } from '../ui/backGuard';
 import { systemBack } from '../ui/backModel';
-import { installDevice, type DeviceTracker } from '../ui/device';
+import { applyUiSettings, installDevice, motionReduced, type DeviceTracker } from '../ui/device';
 import { pauseKeyAction, pauseResumeKeys } from './pauseKeys';
 import { CARD_FIRST_MATCHES, ControlsCardPlan, controlsCardRows, localCardSeen, type ControlsCardContent } from '../render/controlsCard';
 import type { Device } from '../input/bindings';
 import { kbmCustomised, usesMouseButton } from '../input/bindings';
 import { OnlineSession } from './OnlineSession';
+import { saveLobbyStay } from './rejoinStore';
 import { FREEPLAY_BALL, FREEPLAY_CAR_SPAWN, FREEPLAY_ID, FREEPLAY_NAME, TRAINING_DIFFICULTIES, TRAINING_PACKS, packById, type TrainingShot } from './trainingPacks';
 import { nextLevel } from '../ui/screens/trainingModel';
 import {
@@ -307,15 +308,12 @@ export interface GameOptions {
    * the player picks a tier in the menu.
    */
   savedQuality?: Quality;
-  /**
-   * The saved pick was super low and this player may not pick it (bootTier.ts gateTierPrefs in
-   * main.ts): the prefs above already read Performance; the menus say why once they are up.
-   */
-  superlowLocked?: boolean;
   /** GamePrefs.menuSceneAnimated (true when omitted). */
   menuSceneAnimated?: boolean;
   /** GamePrefs.fpsCap (0 = none when omitted). */
   fpsCap?: FpsCap;
+  /** GamePrefs.resolutionScale (%, 100 when omitted). */
+  resolutionScale?: number;
   /** Regulation length in seconds (0 = unlimited). */
   matchLengthSeconds?: number;
   /** Text shown in the menu footer (backend, version...). */
@@ -338,11 +336,16 @@ export interface GamePrefs {
   theme: ThemeId;
   /**
    * The menus' stadium moves (the orbit camera at the menus' rate); off, it is one held frame
-   * (quality.ts sceneFps). No Settings row yet (Graphics, a later page): setMenuSceneAnimated.
+   * (quality.ts sceneFps). Settings > Graphics' "Animated stadium in the menus": setMenuSceneAnimated.
    */
   menuSceneAnimated: boolean;
-  /** The player's frame limit on top of the tier's (quality.ts FpsCap; 0 = none). No Settings row yet: setFpsCap. */
+  /** The player's frame limit on top of the tier's (quality.ts FpsCap; 0 = none): Settings > Graphics, setFpsCap. */
   fpsCap: FpsCap;
+  /**
+   * Settings > Graphics' resolution scale (%, quality.ts RESOLUTION_SCALE_RANGE): it multiplies
+   * the tier's pixel ratio (Renderer.setResolutionBase). Saves from before it read 100.
+   */
+  resolutionScale: number;
 }
 
 /**
@@ -529,10 +532,10 @@ function guestReady(c: NetClient): boolean {
   return sessionValid(c.guest) && c.guest.name === c.name;
 }
 
-/** Read the saved difficulty / quality / mode / theme / scene pace (falls back to defaults when storage is unavailable). */
+/** Read the saved difficulty / quality / mode / theme / scene pace / resolution scale (falls back to defaults when storage is unavailable). */
 export function loadPrefs(): GamePrefs {
   const touch = hasCoarsePointer();
-  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 'low' : 'high', mode: '1v1', qualitySet: false, theme: DEFAULT_THEME, menuSceneAnimated: true, fpsCap: 0 };
+  const prefs: GamePrefs = { difficulty: 'medium', quality: touch ? 'low' : 'high', mode: '1v1', qualitySet: false, theme: DEFAULT_THEME, menuSceneAnimated: true, fpsCap: 0, resolutionScale: parseResolutionScale(undefined) };
   try {
     const raw = window.localStorage.getItem(PREFS_KEY);
     if (raw !== null) {
@@ -547,6 +550,7 @@ export function loadPrefs(): GamePrefs {
       prefs.theme = parseTheme(parsed.theme) ?? DEFAULT_THEME;
       prefs.menuSceneAnimated = parsed.menuSceneAnimated !== false;
       prefs.fpsCap = parseFpsCap(parsed.fpsCap);
+      prefs.resolutionScale = parseResolutionScale(parsed.resolutionScale);
     }
   } catch {
     /* private mode / storage disabled */
@@ -710,11 +714,10 @@ export class Game implements P2PGameHooks {
   private menuCovered = 0;
   /** A coarse primary pointer (phones, tablets): menus that hide most of the screen draw the scene at 20 fps (sceneFps). */
   private readonly coarse: boolean;
-  /** prefers-reduced-motion, followed live: the menus' stadium holds still (one held frame). */
-  private reduceMotion = false;
-  /** GamePrefs.menuSceneAnimated and fpsCap (setMenuSceneAnimated / setFpsCap). */
+  /** GamePrefs.menuSceneAnimated, fpsCap and resolutionScale (setMenuSceneAnimated / setFpsCap / setResolutionScale). */
   private menuSceneAnimated: boolean;
   private fpsCap: FpsCap;
+  private resolutionScale: number;
   /** Loop time of the last HUD boost / speed update (cpuLite: 10 Hz). */
   private hudAt = -1;
   /** The super low online notice was shown this session. */
@@ -724,6 +727,8 @@ export class Game implements P2PGameHooks {
    * would leave the match (an abandon), so it waits for the menus (showMenu); null when none.
    */
   private pendingRestart: Quality | null = null;
+  /** That reload waits for the match's FINAL to go too (its result first): finalLeft. */
+  private restartAfterFinal = false;
   difficulty: Difficulty;
   /** Smoothed drawn frames per second (updated 4x/s). */
   fps = 0;
@@ -779,8 +784,6 @@ export class Game implements P2PGameHooks {
   readonly experimental: ExperimentalStore;
   /** The account whose experimental state was pulled this page (one sync per sign-in), null = none yet. */
   private experimentalSyncedFor: string | null = null;
-  /** The boot gated a saved super low pick (GameOptions.superlowLocked): told once the menus are up. */
-  private readonly superlowLockedAtBoot: boolean;
   /** Lines for the menus' next toast while a screen covers them (the settings screen, a match). */
   private readonly pendingNotices: string[] = [];
   /** Custom lobbies (the lobby socket lives across the lobby's matches). */
@@ -957,9 +960,10 @@ export class Game implements P2PGameHooks {
     this.difficulty = opts.difficulty ?? 'medium';
     this.qualitySet = opts.qualitySet ?? false;
     this.savedQuality = opts.savedQuality ?? this.quality;
-    this.superlowLockedAtBoot = opts.superlowLocked === true;
     this.menuSceneAnimated = opts.menuSceneAnimated !== false;
     this.fpsCap = parseFpsCap(opts.fpsCap);
+    this.resolutionScale = parseResolutionScale(opts.resolutionScale);
+    this.renderer.setResolutionBase(this.resolutionScale / 100);
     this.coarse = hasCoarsePointer();
     this.cpuLite = opts.renderer.spec.cpuLite;
     this.predEvery = this.cpuLite ? BALL_PRED_EVERY_LITE : BALL_PRED_EVERY;
@@ -1002,19 +1006,11 @@ export class Game implements P2PGameHooks {
     this.hud = new Hud(opts.hudContainer);
     this.loading = opts.loading ?? new LoadingOverlay(overlayHost(opts.hudContainer));
     // Touch screens only: the controls layer goes right after the Hud root and drives Input like a keyboard.
-    this.touch = hasTouchScreen() ? new TouchControls(this.hud.root, { kbm: () => settings.bindings.kbm, holdJump: () => settings.controls.touchHoldJump }) : null;
+    this.touch = hasTouchScreen() ? new TouchControls(this.hud.root, { kbm: () => settings.bindings.kbm, holdJump: () => settings.controls.touchHoldJump, settings: () => settings.touch }) : null;
     if (this.touch !== null) this.input.setTouchSource(this.touch.state);
     this.portraitQuery = this.touch !== null && typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait) and (pointer: coarse) and (max-width: 599px)') : null;
     this.installHint = this.touch !== null && installHintDue();
-    // The menus' stadium holds still under prefers-reduced-motion (sceneFps), followed live; a
-    // resize clears the canvas, so a held frame is drawn again.
-    const motion = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-    if (motion !== null) {
-      this.reduceMotion = motion.matches;
-      motion.addEventListener('change', () => {
-        this.reduceMotion = motion.matches;
-      });
-    }
+    // A resize clears the canvas, so a held frame is drawn again.
     this.renderer.onResize = () => {
       this.redraw = true;
     };
@@ -1056,8 +1052,12 @@ export class Game implements P2PGameHooks {
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     // A join link (#sala=ABC234) on this load or a later hashchange: its sheet once the menus are up.
-    if (typeof window !== 'undefined' && typeof history !== 'undefined') installJoinLink(this.menu);
-    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView })));
+    // The Sala a reload of the game's own left (restartOn): joined again, its screen.
+    if (typeof window !== 'undefined' && typeof history !== 'undefined') {
+      installJoinLink(this.menu);
+      installLobbyReturn(this.menu);
+    }
+    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => this.restartAfterFinal && this.pendingRestart !== null, left: () => this.finalLeft() })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
       focus: (el) => {
@@ -1066,6 +1066,7 @@ export class Game implements P2PGameHooks {
       },
       refocus: () => this.menu.refocus(),
       signIn: () => this.menu.open('profile'),
+      language: () => openLanguagePicker(this.menu),
     });
     this.menu.register('settings', (m) => settingsScreen(m, this.menuSettings));
     this.pauseSettings = new SettingsOverlay(opts.hudContainer, () => this.settingsOptions());
@@ -1073,7 +1074,7 @@ export class Game implements P2PGameHooks {
     installSalaSamples(this.menu);
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
-    this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad }) : null;
+    this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad, ui: this.settings.ui }) : null;
     this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.onlineActive });
     accounts.subscribe(() => this.onAccountChange());
     this.experimental.subscribe(() => this.onExperimentalChange());
@@ -1130,62 +1131,21 @@ export class Game implements P2PGameHooks {
   }
 
   /**
-   * The experimental state changed: the Super low lock, experimental free play when the player is
-   * no longer unlocked (signed out, the switch off on another device: stock physics at once; while
-   * the settings screen is open over it, when that closes), and the settings screen when it is open.
+   * The experimental state changed: experimental free play when the player is no longer unlocked
+   * (signed out, the switch off on another device: stock physics at once; while the settings
+   * screen is open over it, when that closes), and the settings screen when it is open.
    */
   private onExperimentalChange(): void {
-    this.checkTierLock();
     if (this.freePlayRules !== null && !this.experimentalUnlocked && !this.pauseSettings.isOpen && this.applyFreePlayRules() && this.hud.pauseMenuVisible) {
       this.hud.setPaused(true, this.pauseEntries(), this.pauseHint(), this.onlineActive); // RULES goes
     }
     this.refreshSettings();
   }
 
-  /**
-   * Super low is a pick for unlocked players only. When this player can no longer pick it (signed
-   * out, a failed refresh, another account, the switch off here or on another device) a saved
-   * super low pick turns into Performance, not chosen (bootTier.ts tierPrefsAfter 'lock'), saved
-   * now and used from the next start; nothing reloads, and a pick into super low waiting for the
-   * online match to end is dropped. A device that runs super low on its own keeps it.
-   */
-  private checkTierLock(): void {
-    if (this.experimentalUnlocked) return;
-    if (this.pendingRestart === 'superlow') {
-      this.pendingRestart = null;
-      this.refreshSettings();
-    }
-    if (!this.qualitySet || this.savedQuality !== 'superlow') return;
-    const prefs = tierPrefsAfter({ quality: this.savedQuality, qualitySet: this.qualitySet }, { kind: 'lock' });
-    this.qualitySet = prefs.qualitySet;
-    this.savedQuality = prefs.quality;
-    this.persistPrefs();
-    this.notify(t('quality.superlowLocked'));
-  }
-
-  /**
-   * The switch from Settings > Experimental (the page asked twice when this restarts). Off while
-   * the player's own pick is super low: Performance first (a reload, quality.ts needsReload, or a
-   * wait for the end of an online match), so the lock has nothing left to say; a pick into super
-   * low still waiting for the online match is simply dropped.
-   */
+  /** The switch from Settings > Experimental: a signed-in player's own. */
   private setExperimentalEnabled(on: boolean): void {
     if (!this.accounts.signedIn) return;
-    if (!on) {
-      if (this.pendingRestart === 'superlow') void this.switchQuality(this.quality);
-      else if (this.qualitySet && this.savedQuality === 'superlow') void this.switchQuality('low');
-    }
     this.experimental.setEnabled(on);
-  }
-
-  /** Turning the switch off restarts the game: the player's own pick is super low (not one waiting for an online match). */
-  private experimentalOffRestarts(): boolean {
-    return this.qualitySet && this.savedQuality === 'superlow' && this.pendingRestart === null;
-  }
-
-  private superlowStatus(): SuperlowStatus {
-    if ((this.qualitySet && this.savedQuality === 'superlow') || this.pendingRestart === 'superlow') return 'chosen';
-    return this.quality === 'superlow' ? 'auto' : 'listed';
   }
 
   /**
@@ -1203,8 +1163,6 @@ export class Game implements P2PGameHooks {
       state: () => ({
         available: this.accounts.signedIn,
         enabled: this.experimental.enabled(),
-        offRestarts: this.experimentalOffRestarts(),
-        superlow: this.superlowStatus(),
       }),
       setEnabled: (on) => this.setExperimentalEnabled(on),
       onOpen: () => {
@@ -1255,15 +1213,23 @@ export class Game implements P2PGameHooks {
     this.menuCovered = covered;
   }
 
-  /** The player's frame limit on top of the tier's (GamePrefs.fpsCap; its Settings row comes later), saved. */
+  /** The player's frame limit on top of the tier's (GamePrefs.fpsCap: Settings > Graphics), saved. */
   setFpsCap(cap: FpsCap): void {
     this.fpsCap = parseFpsCap(cap);
     this.persistPrefs();
   }
 
-  /** Whether the menus' stadium moves (GamePrefs.menuSceneAnimated; its Settings row comes later), saved. */
+  /** Whether the menus' stadium moves (GamePrefs.menuSceneAnimated: Settings > Graphics), saved. */
   setMenuSceneAnimated(on: boolean): void {
     this.menuSceneAnimated = on;
+    this.persistPrefs();
+  }
+
+  /** The resolution scale (%, GamePrefs.resolutionScale: Settings > Graphics), applied at once and saved. */
+  setResolutionScale(pct: number): void {
+    this.resolutionScale = parseResolutionScale(pct);
+    this.renderer.setResolutionBase(this.resolutionScale / 100);
+    this.redraw = true;
     this.persistPrefs();
   }
 
@@ -1486,10 +1452,9 @@ export class Game implements P2PGameHooks {
     return {
       // A pick that waits for the online match to end shows as the selected tier (with its line).
       quality: this.pendingRestart ?? this.quality,
-      // Super low is listed for unlocked players only; a device running it on its own (or a pick
-      // made before the lock) lights no card and gets its line.
-      qualities: menuQualities(this.experimentalUnlocked),
-      qualityNote: this.renderer.tierReason === 'chosen' ? t('quality.superlowLocked') : t('settings.qualityAuto'),
+      // Super low is the switch under the cards (everyone's), not a card: on it, no card is lit.
+      qualities: CARD_QUALITIES,
+      qualityNote: this.renderer.tierReason === 'chosen' ? '' : t('settings.qualityAuto'),
       pending: this.pendingRestart,
       experimental: this.experimentalOptions(),
       settings: this.settings,
@@ -1498,6 +1463,13 @@ export class Game implements P2PGameHooks {
       onCameraPreset: () => this.chase.applyProjection(this.renderer.camera),
       // GRÁFICOS: the switch runs behind the loading screen; Ajustes stays open under it.
       onQualityChange: (q) => this.switchQuality(q),
+      // Off: Performance (a TV's own Super low would come back with no pick), or the running tier
+      // again when the switch's pick still waits for the online match to end.
+      onSuperlow: (on) => this.switchQuality(on ? 'superlow' : this.pendingRestart === 'superlow' || this.quality !== 'superlow' ? this.quality : 'low'),
+      graphics: () => ({ resolutionScale: this.resolutionScale, fpsCap: this.fpsCap, menuSceneAnimated: this.menuSceneAnimated }),
+      setResolutionScale: (pct) => this.setResolutionScale(pct),
+      setFpsCap: (cap) => this.setFpsCap(cap),
+      setMenuSceneAnimated: (on) => this.setMenuSceneAnimated(on),
     };
   }
 
@@ -1766,10 +1738,6 @@ export class Game implements P2PGameHooks {
    * stalls on nothing.
    */
   switchQuality(q: Quality, fallback: Fallback | null = null): Promise<void> {
-    // Super low is a pick for unlocked players only (the Graphics tab lists it for them alone): a
-    // pick of it from a locked player (a stale or tampered chip) changes nothing. The tier guard's
-    // fallbacks are not picks and still reach it.
-    if (fallback === null && q === 'superlow' && !this.experimentalUnlocked) return Promise.resolve();
     // A new pick replaces one that waits for the online match to end (back to the running tier:
     // the prefs keep that one again).
     if (fallback === null && this.pendingRestart !== null) {
@@ -1779,8 +1747,8 @@ export class Game implements P2PGameHooks {
     }
     if (q === this.quality) {
       if (fallback !== null) this.tierGuard.arm(); // nothing to fall back to: the guard listens again
-      // The lit chip picked: the running tier becomes the player's pick when the prefs hold another
-      // (a Super low pick the lock turned into Performance earlier this session, then unlocked again).
+      // The lit card (or Super low's switch on a device running it by itself) picked: the running
+      // tier becomes the player's pick when the prefs hold another.
       else if (!this.qualitySet || this.savedQuality !== q) this.choose(q);
       return Promise.resolve();
     }
@@ -1875,6 +1843,10 @@ export class Game implements P2PGameHooks {
         /* the reload still starts on the lower tier (its ceiling) */
       }
     }
+    // The Sala this tab is in: the next page joins it again (lobby.ts installLobbyReturn), as the
+    // reload's dropped socket keeps the place (LobbyDO).
+    const lobby = this.lobby;
+    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now() });
     this.loadingHold = true;
     return this.loading.show(fallback !== null ? fallbackText(fallback) : t('loading.restart')).then(() => {
       window.location.reload();
@@ -1915,13 +1887,6 @@ export class Game implements P2PGameHooks {
       /* storage unavailable */
     }
     if (notice !== null) this.showTierNotice(notice);
-    // The boot read a saved super low pick this player may not make (main.ts gateTierPrefs): the
-    // prefs keep Performance from now on, and the player is told, unless the device runs super low
-    // by itself anyway (then nothing changed on screen).
-    if (this.superlowLockedAtBoot) {
-      this.persistPrefs();
-      if (this.quality !== 'superlow') this.notify(t('quality.superlowLockedBoot'));
-    }
   }
 
   /**
@@ -3226,7 +3191,7 @@ export class Game implements P2PGameHooks {
   private persistPrefs(): void {
     // The player's tier (or the saved default), never the one the session runs on its own: super
     // low from the URL or the tab's recovery, low on a weak backend, a GPU's ceiling, a fallback.
-    savePrefs({ difficulty: this.difficulty, quality: this.savedQuality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme, menuSceneAnimated: this.menuSceneAnimated, fpsCap: this.fpsCap });
+    savePrefs({ difficulty: this.difficulty, quality: this.savedQuality, mode: this.mode, qualitySet: this.qualitySet, theme: this.theme, menuSceneAnimated: this.menuSceneAnimated, fpsCap: this.fpsCap, resolutionScale: this.resolutionScale });
   }
 
   setPaused(p: boolean): void {
@@ -3264,6 +3229,8 @@ export class Game implements P2PGameHooks {
     if (!this.onlineActive) this.sim.setCarDodgeDeadzone(this.playerCarId, s.controls.dodgeDeadzone);
     this.chase.applyProjection(this.renderer.camera);
     this.audio.setVolume(s.audio.volume / 100);
+    this.touch?.applySettings();
+    if (this.device !== null) applyUiSettings(s.ui);
   }
 
   /** Cars take no input: kickoff countdown, goal pause, after the final whistle, in the menu. */
@@ -3427,7 +3394,8 @@ export class Game implements P2PGameHooks {
       cap,
       lite: this.cpuLite,
       still,
-      animated: this.menuSceneAnimated && !this.reduceMotion,
+      // Reduced motion (the system's, or Settings > Game's Yes): the menus' stadium holds still.
+      animated: this.menuSceneAnimated && !motionReduced(),
       phone: this.coarse,
       covered: this.menuCovered,
     });
@@ -4044,6 +4012,10 @@ export class Game implements P2PGameHooks {
       if (final !== null) this.lobby.back();
       else if (this.menu.top()?.id !== 'lobby') this.menu.open('lobby');
     }
+    // A tier picked during the online match that needs a reload (switchQuality): now, or once the
+    // FINAL goes (finalLeft), so the player sees the result first.
+    const pending = this.pendingRestart;
+    this.restartAfterFinal = pending !== null && final !== null;
     this.menu.show(final !== null ? 'final' : undefined);
     this.flushNotices();
     // What an earlier ranked match's wait got while the menus were away comes first. Then, when a
@@ -4056,12 +4028,20 @@ export class Game implements P2PGameHooks {
       // Into the FINAL's rank card while it is up for this match; else the old way (held, a dialog).
       void this.rankedResults.watch(ranked, online.lastRankedOnNode, final !== null ? (r) => this.finalUi?.setRank(ranked, r) ?? false : undefined);
     }
-    // A tier picked during the online match that needs a reload (switchQuality): now.
-    const pending = this.pendingRestart;
-    if (pending !== null) {
+    if (pending !== null && !this.restartAfterFinal) {
       this.pendingRestart = null;
       void this.restartOn(pending, null);
     }
+  }
+
+  /** The FINAL went (final.ts): a tier picked during its online match restarts the game now. */
+  private finalLeft(): void {
+    if (!this.restartAfterFinal) return;
+    this.restartAfterFinal = false;
+    const pending = this.pendingRestart;
+    if (pending === null) return; // a pick in Ajustes over the FINAL replaced it (switchQuality)
+    this.pendingRestart = null;
+    void this.restartOn(pending, null);
   }
 
   // ---- events ----------------------------------------------------------------------------

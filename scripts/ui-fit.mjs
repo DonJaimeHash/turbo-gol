@@ -71,6 +71,12 @@
 //            --long-name       the account chip signed in, a 16-character name and a rank,
 //            --no-pointer      start the browser without a pointing device (a Linux runner without
 //                              the pin: the desktop sizes then fail as TVs)
+// The interface size (Settings > Game, plan PR 11): a TV's runs are at its own 125 %; then every
+// size runs the screens again (their states and samples, Inicio once; not the FINAL or the touch
+// match) with the device's own input at the largest size Ajustes lists there
+// (device.ts interfaceSizes: 150 % on a computer, 130 on a tablet, 115 on a phone held sideways;
+// none past the device's own on a TV or a 360 tall or 390 wide phone), noted 'ui <size>%';
+// --ui-size <pct> forces one, --no-ui-size skips the pass. Inicio may scroll there.
 // MODOS (plan PR 6) runs by tab ('modes:casual' ...): Casual and Competitive idle with the action
 // focused, then searching (the panel, as the Menu shows a search: its own search view and pills),
 // CANCEL SEARCH and "While you wait: Free play" focused.
@@ -265,6 +271,7 @@ const INPUTS = args.inputs === 'default' ? [] : typeof args.inputs === 'string' 
 const ONLINE = args.online === true;
 const LONG_NAME = args['long-name'] === true;
 const WIDETEXT = args['no-widetext'] !== true;
+const UI_SIZE = args['no-ui-size'] !== true;
 const FACE = typeof args.face === 'string' ? args.face.replace(/['"\\]/g, '') : null;
 // The pointer the browser starts with (Blink's PointerType / HoverType: 4 fine, 1 none; 2 hover, 1 none).
 const POINTER = args['no-pointer'] === true ? 'primaryPointerType=1,availablePointerTypes=1,primaryHoverType=1,availableHoverTypes=1' : 'primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2';
@@ -398,7 +405,8 @@ try {
         ...(r.spill ?? []).map((x) => 'spill: ' + x),
         ...(r.hScroll ? ['horizontal scroll'] : []),
         // Inicio never scrolls but upright (360 x 640 may).
-        ...(home && r.stageScroll && r.layout !== 'portrait' ? ['the stage scrolls'] : []),
+        // Nor at a larger interface size than the device's own (it may, as every other screen).
+        ...(home && r.stageScroll && r.layout !== 'portrait' && !note.startsWith('ui ') ? ['the stage scrolls'] : []),
         ...r.clippedFocus.map((x) => 'ring cut: ' + x),
         ...small.filter((x) => !x.endsWith('(data-fit)')).map((x) => 'small text: ' + x),
       ];
@@ -409,19 +417,27 @@ try {
       console.log(`${head} ${input.padEnd(8)} ${(screen + (note ? ' ' + note : '')).padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL'}${r.stageScroll ? '  (stage scrolls)' : ''}${shrunk > 0 ? `  (${shrunk} fitted under the minimum)` : ''}${hero}  nodes ${r.nodes}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
     };
     const runs = [[own, SCREENS.filter((x) => x !== 'touch')], ...INPUTS.filter((x) => x !== own).map((x) => [x, INPUT_SCREENS])];
-    for (const [input, screens] of runs) for (const screen of screens) {
-      // Another last input (device.ts): its hints and the strip's side; the Menu fits the bars on the change.
-      if (input !== own && screen === screens[0]) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(input)}; h.classList.toggle('tg-touch', ${JSON.stringify(input)} === 'touch'); return true; })()`);
+    /**
+     * One screen with `input`: its states and samples, as the device's own input runs them (the
+     * others: the screen as it opens). `ui`: the interface-size pass's note ('ui 150%') before each
+     * state's; Inicio is one check there.
+     */
+    const runScreen = async (input, screen, ui = '') => {
+      const at = (note = '') => [ui, note].filter(Boolean).join(' ');
       if (screen === 'final') {
         for (const kind of FINAL_KINDS) {
           await page.eval(`(window.__final(${JSON.stringify(kind)}), true)`);
           await sleep(400);
-          // The first focus lands with the mount's frame: a slow one at 1920 x 1080 in a headless page.
+          // The first focus lands with the mount's frame (Menu.autoFocus: the next animation frame), a
+          // slow one at 1920 x 1080 in a headless page: SwiftShader draws the stadium on the CPU, and the
+          // first 1920 x 1080 page of a CI run waited past 2 s for it (8fa31c1, d36fbb5; 1.9 s on 2c11269).
+          // Two frames past the mount however long they take (10 s at most), then the focus.
+          await page.eval('new Promise((r) => { const t = setTimeout(() => r(false), 10_000); requestAnimationFrame(() => requestAnimationFrame(() => (clearTimeout(t), r(true)))); })');
           await page.until("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch')", 2_000, 50);
-          await check(input, screen, kind, await page.eval("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch') ? [] : ['PLAY AGAIN is not focused: ' + (document.activeElement?.className ?? null)]"));
+          await check(input, screen, at(kind), await page.eval("document.activeElement?.dataset?.key === 'final-again' || document.documentElement.classList.contains('tg-touch') ? [] : ['PLAY AGAIN is not focused: ' + (document.activeElement?.className ?? null)]"));
         }
         await page.eval('(window.__final(null), true)');
-        continue;
+        return;
       }
       if (screen === 'sala') {
         // Every sample with the device's own input; the Sala of 4 with the others (their hints).
@@ -429,11 +445,11 @@ try {
         for (const [kind, n] of kinds) {
           await page.eval(`(window.__sala(${JSON.stringify(kind)}, ${n}), true)`);
           await sleep(input === own ? 400 : 250);
-          await check(input, screen, n > 0 && kind !== 'join' && kind !== 'pill' ? `${kind} ${n}` : kind);
+          await check(input, screen, at(n > 0 && kind !== 'join' && kind !== 'pill' ? `${kind} ${n}` : kind));
         }
         await page.eval('(window.__sala(null), true)');
         await sleep(200);
-        if (input !== own) continue;
+        if (input !== own) return;
         // The HUD's reconnection line, the menus away: on screen, its text whole.
         const lines = NET_LINES[lang] ?? NET_LINES.en;
         const bad = await page.eval(`(() => {
@@ -453,9 +469,9 @@ try {
           return out;
         })()`);
         failures += bad.length;
-        console.log(`${head} ${input.padEnd(8)} ${'hud reconnect'.padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL\n    ' + bad.join('\n    ')}`);
+        console.log(`${head} ${input.padEnd(8)} ${at('hud reconnect').padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL\n    ' + bad.join('\n    ')}`);
         await sleep(300);
-        continue;
+        return;
       }
       if (screen === 'summary') {
         // A pack's summary (plan PR 13) over the training HUD, then back to the menus.
@@ -466,12 +482,12 @@ try {
         await sleep(900); // its pop (0.35 s of scale) over, on a slow headless frame too
         const bad = await page.eval(SUMMARY_CHECK);
         failures += bad.length;
-        report.push({ size: size.name, lang, input, face: FACE ?? 'Arial', note: 'summary', bad });
-        console.log(`${head} ${input.padEnd(8)} ${'summary'.padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL'}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
+        report.push({ size: size.name, lang, input, face: FACE ?? 'Arial', note: at('summary'), bad });
+        console.log(`${head} ${input.padEnd(8)} ${at('summary').padEnd(20)} ${bad.length === 0 ? 'ok' : 'FAIL'}${bad.length ? '\n    ' + bad.join('\n    ') : ''}`);
         await page.eval('(__game.stopTraining(), true)');
         await page.until('__game.menu.visible', 10_000, 100);
         await sleep(300);
-        continue;
+        return;
       }
       const [id, tab] = screen.split(':');
       // PR 13's states are samples on the screen itself (the tab is a sample's kind there, not Menu.open's).
@@ -487,40 +503,40 @@ try {
         // queue line), CANCEL SEARCH focused, then "While you wait: Free play" focused.
         await page.eval(`(document.querySelector('[data-key="modes-go"]')?.focus(), true)`);
         await sleep(200);
-        await check(input, screen, 'idle');
+        await check(input, screen, at('idle'));
         await page.eval(MODES_SEARCH(tab));
         await sleep(300);
-        await check(input, screen, 'search');
+        await check(input, screen, at('search'));
         for (const key of ['modes-cancel', 'modes-practice']) {
           await page.eval(`(document.querySelector('[data-key="${key}"]')?.focus(), true)`);
           await sleep(200);
-          await check(input, screen, 'search ' + key.slice(6));
+          await check(input, screen, at('search ' + key.slice(6)));
         }
         await page.eval(SEARCH_DONE);
         await sleep(200);
-        continue;
+        return;
       }
-      if (screen !== 'home' || input !== own) {
-        await check(input, screen);
-        continue;
+      if (screen !== 'home' || input !== own || ui !== '') {
+        await check(input, screen, at());
+        return;
       }
       // Inicio with the device's own input: every hero state, ✕ focused while searching, a TV's
       // play state with a controller too, then the live state again.
       for (const kind of HERO_KINDS) {
         await page.eval(`(window.__homeHero(${JSON.stringify(kind)}), true)`);
         await sleep(300);
-        await check(input, screen, kind);
+        await check(input, screen, at(kind));
         if (kind === 'search') {
           await page.eval(`(document.querySelector('[data-key="hero-x"]')?.focus(), true)`);
           await sleep(200);
-          await check(input, screen, 'search ✕');
+          await check(input, screen, at('search ✕'));
           await page.eval(`(document.querySelector('[data-key="hero"]')?.focus(), true)`);
         }
       }
       if (size.tv) {
         await page.eval(`(window.__homeHero('play', { pad: true }), true)`);
         await sleep(300);
-        await check(input, screen, 'play pad');
+        await check(input, screen, at('play pad'));
       }
       // The longest subtitle, Competitive in every format: idle, then searching as the Menu runs a
       // search (its own pills: the search view and a region pill counting players, set on its
@@ -528,16 +544,40 @@ try {
       // the region's name by the plate (the pills' words the dot and the hero say go first).
       await page.eval(`(window.__homeHero('play', { ranked: true }), true)`);
       await sleep(300);
-      await check(input, screen, 'play ranked', await page.eval(FORMATS));
+      await check(input, screen, at('play ranked'), await page.eval(FORMATS));
       await page.eval(RANKED_SEARCH);
       await sleep(300);
-      await check(input, screen, 'search ranked', [...(await page.eval(FORMATS)), ...(size.tv ? await page.eval(TV_REGION) : [])]);
+      await check(input, screen, at('search ranked'), [...(await page.eval(FORMATS)), ...(size.tv ? await page.eval(TV_REGION) : [])]);
       await page.eval(`(document.querySelector('[data-key="hero-x"]')?.focus(), true)`);
       await sleep(200);
-      await check(input, screen, 'search ranked ✕');
+      await check(input, screen, at('search ranked ✕'));
       await page.eval(`(document.querySelector('[data-key="hero"]')?.focus(), true)`);
       await page.eval(SEARCH_DONE);
       await page.eval('(window.__homeHero(null), true)');
+      await sleep(200);
+    };
+    for (const [input, screens] of runs) for (const screen of screens) {
+      // Another last input (device.ts): its hints and the strip's side; the Menu fits the bars on the change.
+      if (input !== own && screen === screens[0]) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(input)}; h.classList.toggle('tg-touch', ${JSON.stringify(input)} === 'touch'); return true; })()`);
+      await runScreen(input, screen);
+    }
+    // The largest interface size of this class (the live settings, as Ajustes writes them), then
+    // back to the device's own: the next tab reads the same storage.
+    if (UI_SIZE) {
+      // The largest the player can pick here: Ajustes' own option (or --ui-size <pct>).
+      await page.eval(`(__game.menu.open('settings', true, 'game'), true)`);
+      await sleep(300);
+      const big = Number(args['ui-size']) || (await page.eval(`Math.max(...[...document.querySelectorAll('[data-key^="set-ui-size-"]')].filter((b) => !b.hidden).map((b) => parseInt(b.textContent, 10)))`));
+      const setSize = (v) => page.eval(`(() => { const g = __game; g.settings.ui.size = ${v}; g.applySettings(); return true; })()`);
+      await setSize(big);
+      await sleep(300);
+      // Nothing larger than the device's own listed here (a short phone held sideways): no pass.
+      // Every screen as the device's own input runs it (its states and samples: the Salas', PR 13's
+      // training, summary, board and profile), that input back on the page first.
+      const pass = big > (size.tv ? 125 : 100) ? SCREENS.filter((x) => x !== 'touch' && x !== 'final') : [];
+      if (pass.length > 0) await page.eval(`(() => { const h = document.documentElement; h.dataset.input = ${JSON.stringify(own)}; h.classList.toggle('tg-touch', ${JSON.stringify(own)} === 'touch'); return true; })()`);
+      for (const screen of pass) await runScreen(own, screen, `ui ${big}%`);
+      await setSize(0);
       await sleep(200);
     }
     // The touch match (plan PR 9), last on a touch size (it plays a match in this tab).

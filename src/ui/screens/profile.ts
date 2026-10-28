@@ -16,8 +16,8 @@
  * Competitive's SIGN IN goes back there (modes.ts: the return with intent). Passwords go through
  * AccountClient (hashed in the browser before they leave). Usernames and passwords are checked here
  * first (usernameIssue / passwordIssue, the same rules AccountClient and the server apply) so the
- * form shows the reason in the player's language. Both views end with the language (IDIOMA:
- * components/language.ts, a reload) until Settings › Game has it (PR 11).
+ * form shows the reason in the player's language. Both views end with ACERCA DE (the language is
+ * Settings › Game's Idioma, PR 11).
  * In development (or a VITE_UI_FIT=1 build) window.__profile(kind | null) shows an account's or an
  * operator's sample (scripts/ui-fit.mjs).
  */
@@ -30,11 +30,10 @@ import { ratingCard, rankBadge, tierById } from '../badges';
 import { regionName } from '../names';
 import type { Menu, Screen } from '../Menu';
 import { field, primary, screenHead, secondary, section } from './common';
-import { openLanguagePicker } from '../components/language';
 import { icon } from '../components/icons';
 import type { IconName } from '../components/icons';
 import { slot } from '../components/tile';
-import { LOCALES, language, t } from '../../i18n';
+import { language, t } from '../../i18n';
 import type { Key } from '../../i18n';
 import { DISCORD_URL, GAME_NAME, SOURCE_URL } from '../../brand';
 import { version } from '../../../package.json';
@@ -370,14 +369,13 @@ export function profileScreen(menu: Menu): Screen {
     );
   };
 
-  /** ACERCA DE and IDIOMA, under either view. */
+  /** ACERCA DE, under either view. */
   const about = section(
     t('profile.about'),
     h('p.mn-prof-about', null, t('profile.version', { game: GAME_NAME, version, protocol: PROTOCOL_VERSION })),
     h('p.mn-note.mn-prof-about', null, menu.host.info),
     h('div.mn-prof-links', null, h('a.mn-btn.mn-prof-link', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener', 'data-nav': true, 'data-key': 'profile-licenses' }, icon('info'), h('span', null, t('menu.licenses')))),
   );
-  const lang = section(t('lang.heading'), secondary(LOCALES[language()].name, () => openLanguagePicker(menu), { 'data-key': 'lang' }));
 
   const renameDialog = (): void => {
     const hasPw = acc.me?.hasPassword !== false;
@@ -519,9 +517,8 @@ export function profileScreen(menu: Menu): Screen {
     };
   }
 
-  // After `body`, so it stays through the guest / account swap (render). ACERCA DE and IDIOMA are one
-  // row for the arrows (◀ ▶ between them; ▼ from either column lands in it, nav.ts data-nav-row).
-  const el = h('div.mn-profile', { 'data-tablero': true }, screenHead(t('profile.heading')), body, h('div.mn-prof-foot', { 'data-nav-row': true }, about, lang));
+  // After `body`, so it stays through the guest / account swap (render).
+  const el = h('div.mn-profile', { 'data-tablero': true }, screenHead(t('profile.heading')), body, about);
   // A session that comes or goes while PERFIL is up (restored at boot, signed out elsewhere): the
   // other view; an account's /api/me as it comes in (after a sign-up, a rename). A guest's view
   // stays as it is through every other change (a half-typed form).

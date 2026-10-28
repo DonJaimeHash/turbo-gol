@@ -33,6 +33,10 @@ const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
 export interface FinalSource {
   /** The match that ended, null when none (the screen then shows nothing and goes back). */
   finalView(): FinalView | null;
+  /** A tier picked during the online match waits for the FINAL to go: its reload (Game.pendingRestart). */
+  reloadWaits(): boolean;
+  /** The FINAL is off the stack (MENÚ, Back, a section, a crumb, CAMBIAR MODO): what waited for it runs. */
+  left(): void;
 }
 
 const KIND_NAME: Readonly<Record<FinalKind, 'play.casualTitle' | 'play.rankedTitle' | 'final.vsAi' | 'final.lobby'>> = {
@@ -70,7 +74,11 @@ export function finalScreen(menu: Menu, source: FinalSource): FinalScreen {
       menu.back();
       return;
     }
-    const a = againAction(v.kind, menu.prefs);
+    const a = againAction(v.kind, menu.prefs, source.reloadWaits());
+    if (a.kind === 'home') {
+      menu.back();
+      return;
+    }
     if (a.kind === 'lobby') return menu.replace('lobby');
     if (a.kind === 'restart') {
       // Off the FINAL first: the menus that come back after this match open on Inicio.
@@ -258,6 +266,9 @@ export function finalScreen(menu: Menu, source: FinalSource): FinalScreen {
     show,
     hide: () => {
       sampleKind = null;
+      // Off the stack, not under a screen on top of it (Ajustes) or the menus hidden: Menu.mount
+      // calls this again once the stack no longer holds it.
+      if (!menu.stacked('final')) source.left();
     },
     setRank: (matchId, r) => {
       if (view === null || view.rankedMatchId !== matchId || menu.top()?.id !== 'final' || !menu.visible) return false;

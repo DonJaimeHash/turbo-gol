@@ -14,10 +14,14 @@
  * - The tap guard (`tapGuarded`, Menu): a tap whose finger went down before a menu screen or sheet
  *   was mounted, or within TAP_GUARD_MS after, is no press on it (a double tap on a tile landing on
  *   the next screen, a sheet that came up under a finger).
+ * - Settings > Game's interface size (`interfaceFactor`: it multiplies --ui-scale) and reduced
+ *   motion (`html.tg-reduce-motion`: the system's prefers-reduced-motion, or the player's Yes / No),
+ *   applied by installDevice and again on every change (applyUiSettings).
  * No DOM at module level: node tests import it (tests/device.test.mjs).
  */
 import { BACK_KEYS } from './backGuard';
 import { pointerKind, type PointerKind } from '../render/bootTier';
+import type { MotionPref, UiSettings } from '../settings';
 
 export type InputKind = 'pad' | 'remote' | 'keyboard' | 'mouse' | 'touch';
 
@@ -105,7 +109,7 @@ const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.m
  * 1.1), never under 1: a phone's text stays at 14 px or more and the rail at the owner's 123 px with
  * 24 clear of Android's back gesture (5 x 56 + 56 + 16 = 352 fits a 360 tall phone at 1; the plan's
  * 0.92 floor took them to 12.9 and 113 there); a TV by width (960 = 1, up to 2: the real TV reports
- * 962 x 541). The "Interface size" setting (PR 11) multiplies it. Pure.
+ * 962 x 541). The interface size (interfaceFactor) multiplies it. Pure.
  */
 export function uiScale(cls: LayoutClass, w: number, h: number): number {
   switch (cls) {
@@ -124,9 +128,97 @@ export function uiScale(cls: LayoutClass, w: number, h: number): number {
 }
 
 /**
+ * Settings > Game's interface sizes a layout class lists (%) on a `w` x `h` screen: what its
+ * screens hold (scripts/ui-fit.mjs runs the menus and Ajustes at the largest). A TV stays at its
+ * usual 125 % or comes down to 100 (its section strip and Inicio's tiles are full at 3 m with a
+ * wider fallback face); a computer goes to 150; a tablet stops at 130 (the bar's pills); a phone at
+ * 115 (plan §1.2), held sideways from 390 tall (the rail of a 360 tall one is full), upright from
+ * 450 wide (a 390 wide one's bar is). Pure.
+ */
+export function interfaceSizes(cls: LayoutClass, w: number, h: number): readonly number[] {
+  switch (cls) {
+    case 'tv':
+      return [100, 125];
+    case 'phone':
+      return h >= 390 ? [100, 115] : [100];
+    case 'portrait':
+      return w >= 450 ? [100, 115] : [100];
+    case 'tablet':
+      return [100, 115, 130];
+    default:
+      return [100, 115, 130, 150];
+  }
+}
+
+/**
+ * The size a class gets with no choice saved (UiSettings.size 0): 125 % on a TV (read at 3 m), 100
+ * elsewhere. A TV's 125 % is the look it has always had (plan §1.2: its roles at 3 m are its tokens,
+ * html.tg-tv, over its own scale), so its sizes count from there. Pure.
+ */
+export function defaultInterfaceSize(cls: LayoutClass): number {
+  return cls === 'tv' ? 125 : 100;
+}
+
+/** The size a saved choice (%, 0 = the device's own) shows on a class: the default for 0, else the choice. Pure. */
+export function interfaceSize(cls: LayoutClass, saved: number): number {
+  return saved > 0 ? saved : defaultInterfaceSize(cls);
+}
+
+/**
+ * The factor of --ui-scale for a saved interface size (%, 0 = the device's own) on a class and a
+ * `w` x `h` screen: the size over the class's default (a TV: 100 % is 0.8 of its usual look), never
+ * past the largest the class lists there (the same save upright and sideways). Pure.
+ */
+export function interfaceFactor(cls: LayoutClass, saved: number, w: number, h: number): number {
+  const sizes = interfaceSizes(cls, w, h);
+  return Math.min(interfaceSize(cls, saved), sizes[sizes.length - 1]) / defaultInterfaceSize(cls);
+}
+
+/** Reduced motion from the player's choice and the system's prefers-reduced-motion. Pure. */
+export function reducesMotion(pref: MotionPref, system: boolean): boolean {
+  return pref === 'on' || (pref === 'system' && system);
+}
+
+/** The interface settings in force (installDevice, applyUiSettings) and the layout's apply. */
+let uiNow: Readonly<UiSettings> = { size: 0, motion: 'system' };
+let relayout: (() => void) | null = null;
+/**
+ * The system's prefers-reduced-motion, kept by its change event. Not read from the query each
+ * frame: Chromium then drops the query's change events (the class would stop following it).
+ */
+let systemReduce = false;
+
+/** Reduced motion now (`html.tg-reduce-motion`): the Game's menus hold their stadium still with it. */
+export function motionReduced(): boolean {
+  return reducesMotion(uiNow.motion, systemReduce);
+}
+
+function applyMotion(): void {
+  document.documentElement.classList.toggle('tg-reduce-motion', motionReduced());
+}
+
+/**
+ * Settings > Game changed the interface size or reduced motion: applied at once (a resize event
+ * after a new size, so the Menu fits its boxes again and the canvas follows). Nothing when neither
+ * changed.
+ */
+export function applyUiSettings(ui: Readonly<UiSettings>): void {
+  if (ui.size === uiNow.size && ui.motion === uiNow.motion) return;
+  const resized = ui.size !== uiNow.size;
+  uiNow = { size: ui.size, motion: ui.motion };
+  if (typeof document === 'undefined') return;
+  applyMotion();
+  if (resized && relayout !== null) {
+    relayout();
+    window.dispatchEvent(new Event('resize'));
+  }
+}
+
+/**
  * Once, in the browser (installDevice, after `tg-tv`): `data-layout` and `--ui-scale` on <html>,
- * again on every resize and turn. The root font size follows (src/ui/styles/shell.css), so everything the
- * shell writes in rem scales with the screen; the old screens' px do not.
+ * again on every resize and turn and when the interface size changes. The root font size follows
+ * (src/ui/styles/shell.css), so everything the shell writes in rem scales with the screen; the old
+ * screens' px do not.
  */
 export function installLayout(): void {
   const html = document.documentElement;
@@ -137,10 +229,17 @@ export function installLayout(): void {
     if (html.dataset.layout !== cls) html.dataset.layout = cls;
     const shell = shellOf(cls);
     if (html.dataset.shell !== shell) html.dataset.shell = shell;
-    const s = uiScale(cls, w, h).toFixed(3);
+    const f = interfaceFactor(cls, uiNow.size, w, h);
+    const s = (uiScale(cls, w, h) * f).toFixed(3);
     if (html.style.getPropertyValue('--ui-scale') !== s) html.style.setProperty('--ui-scale', s);
+    // The player's share of it: fit.ts keeps the class's own minimum (a larger size may give way).
+    const fs = String(f);
+    if (html.dataset.uiFactor !== fs) html.dataset.uiFactor = fs;
+    // 150 % on a computer: MODOS takes the TV's narrower columns (styles/screens/modes.css).
+    html.toggleAttribute('data-ui-big', f >= 1.4);
   };
   apply();
+  relayout = apply;
   window.addEventListener('resize', apply);
 }
 
@@ -224,8 +323,16 @@ export function typedInField(e: Pick<KeyboardEvent, 'target' | 'key'>): boolean 
  * passive: nothing is cancelled) and mirrored as `data-input` on <html>. `padConnected` (Input.hasGamepad) tells a remote's arrows from a
  * keyboard's on a TV; the Game reports pad presses per frame (DeviceTracker.notePadPresses).
  */
-export function installDevice(opts: { tvFlag: boolean; padConnected: () => boolean }): DeviceTracker {
+export function installDevice(opts: { tvFlag: boolean; padConnected: () => boolean; ui?: Readonly<UiSettings> }): DeviceTracker {
   const html = document.documentElement;
+  uiNow = { size: opts.ui?.size ?? 0, motion: opts.ui?.motion ?? 'system' };
+  const motionQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  systemReduce = motionQuery?.matches === true;
+  motionQuery?.addEventListener('change', (e) => {
+    systemReduce = e.matches;
+    applyMotion();
+  });
+  applyMotion();
   const pointer = pointerKind();
   const tv = isTv(pointer, opts.tvFlag);
   html.classList.toggle('tg-tv', tv);

@@ -9,7 +9,6 @@ export default {
   // Language picker
   'lang.title': 'Language',
   // PERFIL's section heading over the language row (in capitals, as the other headings)
-  'lang.heading': 'LANGUAGE',
   'lang.auto': 'Automatic ({language})',
   'lang.busy': 'Stop searching or leave the lobby to change the language',
   // Over the list: choosing another language reloads the page
@@ -37,11 +36,6 @@ export default {
   'quality.fallback': 'Your device does not support {from}: using {to}',
   // Toast when an online match starts on Super low (it still connects)
   'quality.superlowOnline': 'Super low: online matches may not run smoothly on this device',
-  // Toast when the player's own Super low pick is no longer allowed (signed out, another account,
-  // experimental features off): the game keeps running, the next start uses Performance
-  'quality.superlowLocked': 'Super low is for signed-in players with experimental features on: Performance from the next start',
-  // Toast after a start that found a saved Super low pick this player may not make: the game runs on Performance
-  'quality.superlowLockedBoot': 'Super low is for signed-in players with experimental features on: using Performance',
   // The graphics device was lost (src/render/tierGuard.ts lossStep): the loading line before the
   // page reloads, the second time it reloads on Super low, the third time it stops
   'gpu.lostReload': 'The graphics device stopped: restarting…',
@@ -1156,19 +1150,52 @@ export default {
   // the player cannot pick it: no tier is lit
   'settings.qualityAuto': 'This device runs Super low on its own',
   // Experimental tab (src/render/experimentalPage.ts). A guest sees only this line
-  'settings.experimentalLocked': 'Sign in to try experimental features: Super low graphics and custom physics in free play and P2P lobbies',
+  'settings.experimentalLocked': 'Sign in to try experimental features: custom physics in free play and P2P lobbies',
   // Line over the switch
   'settings.experimentalNote': 'Features being tested: they may change or go away',
   // The switch's label (settings.on / settings.off)
   'settings.experimentalSwitch': 'Experimental features',
   // Under the switch while it is on
-  'settings.experimentalUnlocks': 'Unlocks Super low graphics, Experimental free play and lobby rules',
-  // After the first press to turn the switch off while the player's graphics are Super low
-  'settings.experimentalOffRestart': 'Press again: Performance graphics, restarts',
-  // Super low's line while the switch is on: the player picked it / it is listed now
-  // (or settings.qualityAuto when the device runs it on its own)
-  'settings.experimentalSuperlowChosen': 'Super low is your graphics quality',
-  'settings.experimentalSuperlowListed': 'Super low is now listed in Graphics',
+  'settings.experimentalUnlocks': 'Unlocks Experimental free play and lobby rules',
+  // Graphics tab: the group under the quality cards
+  'settings.graphicsOptions': 'Options',
+  // Graphics rows (the owner's Ajustes drawing), each with its help line
+  'settings.resolutionScale': 'Resolution scale',
+  'settings.resolutionScaleHelp': 'Lower is smoother; text and the HUD always stay sharp.',
+  'settings.fpsCap': 'Frame rate limit',
+  'settings.fpsCapHelp': 'Set it to 30 to save battery and heat.',
+  // The frame limit's third option, uppercase
+  'settings.fpsNone': 'NO LIMIT',
+  'settings.menuScene': 'Animated stadium in the menus',
+  'settings.menuSceneHelp': 'Turn it off so the menus use less battery.',
+  // On / off for everyone: flat surfaces, no effects (a restart)
+  'settings.superlow': 'Super low mode',
+  'settings.superlowHelp': 'Flat surfaces and no effects, for very modest devices. Restarts the game.',
+  // Graphics' head button: the options above back to their defaults (not the quality), uppercase
+  'settings.resetGraphics': 'RESET GRAPHICS',
+  // Game tab: the group of the interface rows
+  'settings.groupInterface': 'Interface',
+  // Game tab: the size of the menus' text and boxes (100 / 115 / 130 / 150 %)
+  'settings.uiSize': 'Interface size',
+  'settings.reducedMotion': 'Reduced motion',
+  'settings.reducedMotionHelp': 'Nothing slides or bounces in the menus.',
+  // Reduced motion's first option: follow the system's setting
+  'settings.motionSystem': 'SYSTEM',
+  // Controls > Touch rows: the buttons' size (S / M / L), their opacity, the mirrored layout,
+  // where the stick starts (where the thumb lands / always in its place), its deadzone, vibration
+  'settings.touchSize': 'Button size',
+  'settings.touchOpacity': 'Opacity',
+  'settings.touchLefty': 'Left-handed',
+  'settings.touchLeftyHelp': 'Stick on the right, buttons on the left.',
+  'settings.touchStick': 'Stick',
+  'settings.touchStickFloating': 'FLOATING',
+  'settings.touchStickFixed': 'FIXED',
+  'settings.touchDeadzone': 'Stick deadzone',
+  'settings.touchVibration': 'Vibrate on press',
+  // The card under the settings rail: every change is saved at once, in this browser
+  'settings.savedTitle': 'Saved automatically',
+  'settings.savedGuest': 'As a guest, your settings stay in this browser.',
+  'settings.savedAccount': 'Your settings stay in this browser.',
   // On / off switch of a row, uppercase (also in trainingHud.boost*)
   'settings.on': 'ON',
   'settings.off': 'OFF',
@@ -1345,6 +1372,8 @@ export default {
   // shows it uppercased, with the tag), the preset picker and the button to the preset editor
   'training.expFreePlay': 'Experimental free play',
   'training.expFreePlayText': 'Free play with your own physics',
+  // The LAB tile's line where the long one has no room (a larger interface size)
+  'training.expFreePlayShort': 'Your own physics',
   'training.editPresets': 'Edit presets',
   // Pack category
   'training.catShooting': 'Shooting',

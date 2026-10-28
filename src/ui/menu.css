@@ -185,14 +185,12 @@
 }
 /* An arrow with nowhere to go (nav.ts bounce): a 2 px nudge that way. `translate`, so it adds to a
    tile's own transform. Super low keeps it (style.css: informative, the TV's only cue at an edge);
-   reduced motion never has it. */
-@media (prefers-reduced-motion: no-preference) {
-  .mn .mn-bounce-up,
-  .mn .mn-bounce-down,
-  .mn .mn-bounce-left,
-  .mn .mn-bounce-right {
-    animation: mn-bounce 0.12s ease-out;
-  }
+   reduced motion (html.tg-reduce-motion) never has it. */
+html:not(.tg-reduce-motion) .mn .mn-bounce-up,
+html:not(.tg-reduce-motion) .mn .mn-bounce-down,
+html:not(.tg-reduce-motion) .mn .mn-bounce-left,
+html:not(.tg-reduce-motion) .mn .mn-bounce-right {
+  animation: mn-bounce 0.12s ease-out;
 }
 .mn-bounce-up {
   --mn-bounce: 0 -2px;
