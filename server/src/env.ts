@@ -1,6 +1,15 @@
 import type { IceServer } from '../../src/net/p2p/protocol';
 import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 
+/**
+ * The part of the Email Service binding (`send_email`) the Worker uses: one message with a text and
+ * an html body. Declared here rather than as a `types` entry, because server/tsconfig.json is frozen
+ * (nodes/dist/releases inputs). Errors reject with a `code` such as E_RATE_LIMIT_EXCEEDED.
+ */
+export interface MailBinding {
+  send(m: { to: string; from: string | { email: string; name: string }; subject: string; html: string; text: string; headers?: Record<string, string> }): Promise<unknown>;
+}
+
 /** Bindings and vars declared in wrangler.jsonc (+ secrets from .dev.vars / `wrangler secret put`). */
 export interface Env {
   MATCH: DurableObjectNamespace;
@@ -23,6 +32,26 @@ export interface Env {
   DISCORD_CLIENT_SECRET?: string;
   /** Var, optional: the public origin for OAuth redirect URIs (default: the request's own origin). */
   PUBLIC_ORIGIN?: string;
+  /**
+   * Mail (src/mail.ts, docs/online/MAIL.md). The Email Service binding (wrangler.jsonc
+   * `send_email`). Only src/mail.ts may touch it, through chooseMailer (a test fails otherwise).
+   * Under `wrangler dev` it is wrangler's local simulation: the binding has no `remote` flag, so a
+   * local run never reaches the real service and needs no Cloudflare login.
+   */
+  EMAIL?: MailBinding;
+  /**
+   * Secret, production only: '1' lets chooseMailer send real mail (with EMAIL, on a host that is
+   * not loopback). Never in wrangler.jsonc, .dev.vars or .env (tests check the committed files).
+   */
+  MAIL_LIVE?: string;
+  /** Var: the sender, `Turbogol <no-reply@turbo-gol.com>`, on the verified sending domain. */
+  MAIL_FROM?: string;
+  /** Var: the origin every link in a mail points at (https://turbo-gol.com); a loopback host uses its own. */
+  MAIL_LINK_ORIGIN?: string;
+  /** Var: the day's mail across every lane (src/mailCaps.ts); 100 when unset or not a positive integer. */
+  EMAIL_DAILY_CAP?: string | number;
+  /** `.dev.vars` only: '1' opens the dev-only routes (the stub's outbox) on a loopback host, never elsewhere. */
+  DEV_AUTH?: string;
   FLAGS: KVNamespace;
   /** Workers Assets (wrangler.jsonc `assets`): the Vite build in ../dist, served for every path outside /api, /ws, /room and /lobby. */
   ASSETS?: Fetcher;
