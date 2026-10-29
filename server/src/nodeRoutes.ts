@@ -16,6 +16,12 @@
  *                                     No Origin check: the object's challenge is the gate
  *   PUT|GET  /nodes/replays/<id>      a replay (id: 64 hex), signed by the node -> the object, which checks the
  *                                     signature before it reads the body; 413 over 16 MiB
+ *   GET      /nodes/replays           the public replay list (anyone, guests included; src/net/replays.ts):
+ *                                     ?before=<ms> pages it; the first page cached 30 s per isolate; 60 a minute
+ *   GET      /nodes/replays/<id>/view a listed match's replay made public (replayIndex.ts: the header rebuilt
+ *                                     from the control plane's record, no account or node id), its SHA-256
+ *                                     checked against the index; 404 for a void, unlisted or expired match;
+ *                                     edge-cached, immutable; 30 a minute
  *   POST     /nodes/tokens            { region, name? }, Bearer account session of a NODE_TRUSTED_OPERATORS account
  *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB
  *   GET      /nodes/mine              Bearer account session -> the caller's own nodes
@@ -36,7 +42,7 @@
  *
  * The object trusts what the Worker forwards: only the headers a node sends get through
  * (FORWARDED), and x-client-ip, x-operator-id and x-operator-name are always set here. CORS only on
- * tokens, mine and status, the routes a page calls; the rest is for nodes and curl. The limits
+ * tokens, mine, status, the shop and the replay list, the routes a page calls; the rest is for nodes and curl. The limits
  * here are per isolate (index.ts rateLimited), per minute except two: registrations per address
  * per hour and tokens per account per day, the object's own limits, which only the object holds
  * across isolates. Here they keep junk from reaching it: every route that reaches the object has
@@ -52,6 +58,9 @@ import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperator
 import type { Env, NodesEnv } from './env';
 import { NODE_ROUTES, nodesStub } from './nodeApi';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
+import { PUBLIC_REPLAY_MAX_BYTES, publicReplay } from './replayIndex';
+import type { ReplayIndexRow } from './replayIndex';
+import { sha256Hex } from '../../nodes/shared/edcrypto';
 
 /** What the index.ts router hands over: its rate limiter, the session and its CORS headers. */
 export interface NodeRouteContext {
@@ -82,6 +91,11 @@ const LIMIT_STATUS_PER_IP = 60;
 const LIMIT_MINE_PER_ACCOUNT = 30;
 const LIMIT_ADMIN_PER_ACCOUNT = 30;
 const STATUS_TTL_MS = 10_000;
+/** The public replay list (anyone, guests included): a page per request at most, the first one cached. */
+const LIMIT_REPLAY_LIST_PER_IP = 60;
+/** A public replay: read from R2, hashed and rewritten (replayIndex.ts publicReplay) on an edge-cache miss. */
+const LIMIT_REPLAY_VIEW_PER_IP = 30;
+const REPLAY_LIST_TTL_MS = 30_000;
 /** The maintainers' routes and the method of each. */
 const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST', grant: 'POST', revoke: 'POST', unfreeze: 'POST' };
 
@@ -93,7 +107,8 @@ const RELEASE_KEY = /^(?:\d{1,6}\.\d{1,6}\.\d{1,6}\/)?[A-Za-z0-9][A-Za-z0-9._-]{
 const VERSIONED = /^\d+\.\d+\.\d+\//;
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const REPLAY_PATH = /^\/nodes\/replays\/([0-9a-f]{64})$/;
-const CORS_PATHS = new Set(['/nodes/tokens', '/nodes/mine', '/nodes/status', '/nodes/shop', '/nodes/shop/claim']);
+const REPLAY_VIEW_PATH = /^\/nodes\/replays\/([0-9a-f]{64})\/view$/;
+const CORS_PATHS = new Set(['/nodes/tokens', '/nodes/mine', '/nodes/status', '/nodes/shop', '/nodes/shop/claim', '/nodes/replays']);
 /** Request headers the object may see from a caller (the WebSocket upgrade's, a node's signed upload). */
 const FORWARDED = new Set([
   'content-type',
@@ -126,6 +141,7 @@ const TYPES: Record<string, string> = {
 };
 
 let statusCache: { at: number; body: string } | null = null;
+let replayListCache: { at: number; body: string } | null = null;
 
 export async function nodeRoute(c: NodeRouteContext): Promise<Response> {
   const path = c.url.pathname;
@@ -192,6 +208,9 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     return toRegistry(env, c.request, path, operator(s));
   }
   if (method === 'GET' && path === '/nodes/status') return status(c, env, who);
+  if (method === 'GET' && path === '/nodes/replays') return replayList(c, env, who);
+  const view = REPLAY_VIEW_PATH.exec(path);
+  if (view && method === 'GET') return replayView(c, env, who, view[1]);
   const admin = path.startsWith('/nodes/admin/') ? path.slice('/nodes/admin/'.length) : '';
   if (Object.hasOwn(ADMIN_ROUTES, admin) && ADMIN_ROUTES[admin] === method) {
     if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
@@ -252,6 +271,85 @@ async function status(c: NodeRouteContext, env: NodesEnv, who: string): Promise<
     statusCache = { at: now, body: await res.text() };
   }
   return new Response(statusCache.body, { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${STATUS_TTL_MS / 1000}` } });
+}
+
+/**
+ * GET /nodes/replays[?before=<ms>]: the public replay list (src/net/replays.ts), a page of the
+ * object's index. The first page is kept REPLAY_LIST_TTL_MS by each isolate (the object also
+ * serves every heartbeat); a later page always asks it, under the per-address limit.
+ */
+async function replayList(c: NodeRouteContext, env: NodesEnv, who: string): Promise<Response> {
+  if (c.limited('nrl:' + who, LIMIT_REPLAY_LIST_PER_IP)) return error(429, 'rate_limited');
+  const now = Date.now();
+  const raw = c.url.searchParams.get('before');
+  // A cursor is a settle time in the past; anything else (junk, 0, the future) is the first page, the cached one.
+  const before = raw !== null && /^\d{1,16}$/.test(raw) && Number(raw) > 0 && Number(raw) < now ? raw : null;
+  const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${REPLAY_LIST_TTL_MS / 1000}`, ...c.cors };
+  if (before === null && replayListCache && now - replayListCache.at <= REPLAY_LIST_TTL_MS) return new Response(replayListCache.body, { headers });
+  const res = await toRegistry(env, new Request(c.request.url, { method: 'GET' }), NODE_ROUTES.replays + (before !== null ? `?before=${before}` : ''));
+  if (!res.ok) {
+    await res.body?.cancel();
+    return error(503, 'nodes_unavailable');
+  }
+  const body = await res.text();
+  if (before === null) replayListCache = { at: now, body };
+  return new Response(body, { headers });
+}
+
+/** The edge cache of the Worker's location (absent outside workerd: the tests). */
+function edgeCache(): Cache | null {
+  const g = globalThis as { caches?: { default?: Cache } };
+  return g.caches?.default ?? null;
+}
+
+/**
+ * GET /nodes/replays/<matchId>/view: a listed match's replay, made public (replayIndex.ts
+ * publicReplay: the header rebuilt from the control plane's record, no account id, no node id). The
+ * bytes come from R2 here, never through the object, and must still be the ones the node uploaded
+ * (their SHA-256 is the index's). The answer never changes once listed: it is kept in the edge cache
+ * (Cache API: a Worker's own responses are not cached otherwise), so a match watched by many asks
+ * neither the object nor R2 again, and a day in any browser.
+ */
+async function replayView(c: NodeRouteContext, env: NodesEnv, who: string, matchId: string): Promise<Response> {
+  if (c.limited('nrv:' + who, LIMIT_REPLAY_VIEW_PER_IP)) return error(429, 'rate_limited');
+  const cache = edgeCache();
+  const key = new Request(`${c.url.origin}/nodes/replays/${matchId}/view`, { method: 'GET' });
+  const hit = cache ? await cache.match(key) : undefined;
+  if (hit) return hit;
+  const res = await toRegistry(env, new Request(c.request.url, { method: 'GET' }), `${NODE_ROUTES.replays}/${matchId}`);
+  if (!res.ok) {
+    await res.body?.cancel();
+    return res.status === 404 ? error(404, 'no_replay') : error(503, 'nodes_unavailable');
+  }
+  const entry = (await res.json()) as ReplayIndexRow;
+  const obj = await env.NODE_REPLAYS.get(matchId);
+  if (!obj) return error(404, 'no_replay');
+  if (obj.size > PUBLIC_REPLAY_MAX_BYTES) {
+    await obj.body.cancel();
+    return error(404, 'no_replay');
+  }
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  if ((await sha256Hex(bytes)) !== entry.sha) return error(404, 'no_replay');
+  let out: Uint8Array;
+  try {
+    out = publicReplay(bytes, entry.item);
+  } catch {
+    return error(404, 'no_replay');
+  }
+  const headers = {
+    'content-type': 'application/octet-stream',
+    'content-length': String(out.length),
+    'cache-control': 'public, max-age=86400, immutable',
+    'x-content-type-options': 'nosniff',
+  };
+  if (cache) {
+    try {
+      await cache.put(key, new Response(out.slice(), { headers }));
+    } catch {
+      /* a miss next time */
+    }
+  }
+  return new Response(out, { headers });
 }
 
 /** A file of R2 NODE_RELEASES: a checked key, its type, and caching that fits what it is. */
