@@ -54,6 +54,7 @@ propuestos en los informes, que quedan vigentes salvo cambio explícito.
 - Cron Worker cada 5–15 min proyecta el gasto y flipea flags en KV (`p2p_only`, `turn_cf_disabled`, `turn_self_disabled`, `do_disabled`, `vm_disabled`, `matchmaking_off`).
 - DOs de partida con TTL duro de 10 min, lobbies hibernables sin timers, `limits.cpu_ms` bajo, nada sin ticket crea un DO.
 - Alertas de presupuesto de Cloudflare a US$ 15 / 30 / 45 + Usage Report a webhook + mails de tráfico de Hetzner, como respaldo (son informativas y llegan al día siguiente).
+- Estado (oct 2026): el cron que proyecta el gasto todavía no existe; los interruptores son manuales (`matchmaking_off`, `do_disabled`, `vm_disabled` y `nodes_off`, que corta las rutas del plano de control de los nodos). Qué corta cada uno y qué sigue andando: `server/README.md`, «Kill switches». Los límites de pedidos por sesión, cuenta o red están en `server/src/limits.ts`.
 
 ## Mediciones pendientes (se obtienen en las fases 1 y 2)
 

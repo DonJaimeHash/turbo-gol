@@ -87,7 +87,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `MATCH_LENGTH_SECONDS` | var | regulation length (300) |
 | `REGION_OVERRIDE` | var | force a matchmaking region (empty = `request.cf.continent`, `dev` locally) |
 | `TURN_KEY_ID`, `TURN_KEY_TOKEN` | secrets, optional (both or none) | a Cloudflare Realtime TURN key: the room welcome then appends 10-minute TURN credentials minted per request (`POST .../turn/keys/{id}/credentials/generate-ice-servers`, `{ ttl: 600 }`); unset = STUN only (`stun.cloudflare.com:3478`) |
-| `FLAGS` | KV | `matchmaking_off`, `do_disabled` (`1`/`true`/`on`) -> 503 (with the nodes on for a player, `do_disabled` refuses only its P2P queue: server and ranked matches wait for a node, where one can host: see "Community nodes"); `nodes_on`: absent or `0` off, `1` everyone, or a comma-separated list of account ids (a canary) whose matches may go to a community node; `vm_disabled` (`1`/`true`/`on`) turns the nodes off whatever `nodes_on` says (see "Community nodes") |
+| `FLAGS` | KV | `matchmaking_off`, `do_disabled` (`1`/`true`/`on`) -> 503 (with the nodes on for a player, `do_disabled` refuses only its P2P queue: server and ranked matches wait for a node, where one can host: see "Community nodes"); `nodes_on`: absent or `0` off, `1` everyone, or a comma-separated list of account ids (a canary) whose matches may go to a community node; `vm_disabled` (`1`/`true`/`on`) turns the nodes off whatever `nodes_on` says (see "Community nodes"); `nodes_off` stops the node control plane's routes (see "Kill switches") |
 | `NODES`, `NODE_REPLAYS`, `NODE_RELEASES` | Durable Object, R2, R2 | community nodes: the NodeRegistryDO, the replays the nodes upload, the signed releases and `channel.json` (see "Community nodes") |
 | `NODE_CONTROL_PRIVATE_KEY` | secret, optional | the Ed25519 key (PKCS#8, `npm run keys` in `nodes/`) that signs the players' node tickets; without it no match goes to a node |
 | `NODE_CONTROL_PUBLIC_KEY` | var | its public half, handed to every node at registration; a pair that does not match places nothing (ALERT) |
@@ -351,12 +351,31 @@ channel's minimum) is an `ALERT`, one until the node answers again whatever the 
 into: it catches an expired certificate while the node's heartbeats look fine. Without the node
 settings a run calls nothing.
 
-**The switches are manual.** `matchmaking_off`, `do_disabled` and `vm_disabled` in KV `FLAGS`
-are set by hand (`npx wrangler kv key put vm_disabled 1 --binding FLAGS --remote`; `kv key delete`
-undoes it), and a change takes a minute or two to land (KV propagation, then the Worker's 60 s
-cache). `vm_disabled` wins over `nodes_on` (`src/env.ts` `nodesMode`): with it set no new match
-goes to a node. No cron flips any of them on cost: the spend-control cron of
-`docs/online/DECISIONS.md` does not exist, and the only cron is the health check above.
+**The switches are manual.** The KV `FLAGS` switches ("Kill switches" below) are set by hand
+(`npx wrangler kv key put vm_disabled 1 --binding FLAGS --remote`; `kv key delete` undoes it), and
+a change takes a minute or two to land (KV propagation, then the Worker's 60 s cache). `vm_disabled`
+wins over `nodes_on` (`src/env.ts` `nodesMode`): with it set no new match goes to a node. No cron
+flips any of them on cost: the spend-control cron of `docs/online/DECISIONS.md` does not exist, and
+the only cron is the health check above.
+
+## Kill switches
+
+Each is a KV `FLAGS` key set to `1` (or `true` / `on`) by hand, with no deploy:
+`npx wrangler kv key put <flag> 1 --binding FLAGS --remote`, and `kv key delete` to undo it. A change
+lands within a minute or two.
+
+| Flag | What it stops | What goes on |
+|---|---|---|
+| `matchmaking_off` | `POST /api/queue` and `POST /api/lobbies`: 503 `matchmaking_off` (no new match, room or lobby) | matches and lobbies already open, sign-in, the menus |
+| `do_disabled` | every new socket to a MatchDO, RoomDO or LobbyDO (`/ws`, `/room`, `/lobby`: 503) and the P2P queue; with the nodes on for a player, its server and ranked queues wait for a node instead | node matches; sockets already open |
+| `vm_disabled` | no new match goes to a community node, whatever `nodes_on` says | the control plane and the nodes' sockets; matches already on a node |
+| `nodes_off` | every `/nodes/*` route that would reach the NodeRegistryDO: registration, the control socket's upgrade, replay uploads and downloads, tokens, `/nodes/mine`, `/nodes/status`, the replay list and view, the maintainers' routes (503 `nodes_off`, the object never asked), and the cron's health check. Set `vm_disabled` with it: sockets already open stay, and the matchmaker still reaches the object directly | the node releases and the installers (edge-cached), the shop aliases (AccountsDO) |
+
+What no flag stops, and what bounds it instead: guest sessions (Turnstile and the per-network
+limit), the account routes (their limits, "Rate limits" below) and TURN credentials (the room
+welcome mints them only while the `TURN_KEY_ID` / `TURN_KEY_TOKEN` secrets are set, which
+`nodes/docs/PRODUCCION.md` keeps for after a TURN budget; the standalone `GET /api/ice` route is gone). A cron that reads usage and sets these flags
+itself is not built (see `docs/online/DECISIONS.md`).
 
 ## Rate limits
 

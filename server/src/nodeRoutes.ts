@@ -42,6 +42,9 @@
  *   POST     /nodes/admin/unfreeze    the account (NodeRegistryDO.ts)
  *   GET      /nodes/shop              aliases of GET /api/me/shop and POST /api/me/shop/claim (accountRoutes.ts,
  *   POST     /nodes/shop/claim        AccountsDO): answered with or without the node settings
+ * The KV flag nodes_off (server/README.md, "Kill switches") stops every route here that would reach
+ * the object, and the cron's call: 503 'nodes_off', the object never asked. The releases and the
+ * shop aliases go on.
  * Anything else under /nodes/ is a 404: the WebRTC signaling is not open in stage 1, and the
  * reference server's /dev/* routes never exist here. Without the node settings (nodesConfigured: a
  * fork, local dev) every route that needs the object is a 404 too.
@@ -60,7 +63,7 @@
 import { requireAccount, shopClaim, shopGet } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
-import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
+import { JSON_MAX_BYTES, error, flag, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
 import { NODE_ROUTES, nodesStub } from './nodeApi';
 import { edgeCache, widePrefix } from './limits';
@@ -241,7 +244,7 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
  * the node settings (a fork, local dev) it does nothing at all. Never throws.
  */
 export async function nodeHealthCheck(env: Env): Promise<void> {
-  if (!nodesConfigured(env) || !env.JWT_SECRET) return;
+  if (!nodesConfigured(env) || !env.JWT_SECRET || (await flag(env, 'nodes_off'))) return;
   try {
     const res = await nodesStub(env).fetch(new Request('https://nodes' + NODE_ROUTES.health, { method: 'POST', headers: { [INTERNAL_HEADER]: await internalSecret(env.JWT_SECRET) } }));
     const text = await res.text();
@@ -266,6 +269,11 @@ function operator(s: SessionClaims): Record<string, string> {
  * FORWARDED headers, the internal header, and `set`, which overwrites whatever the caller sent.
  */
 async function toRegistry(env: NodesEnv, request: Request, path: string, set: Record<string, string> = {}): Promise<Response> {
+  // The control plane's kill switch: read after the route's own limit, so a refused request costs no KV read.
+  if (await flag(env, 'nodes_off')) {
+    await request.body?.cancel().catch(() => undefined);
+    return error(503, 'nodes_off', 'the community nodes are paused: try again later');
+  }
   const fwd = new Request('https://nodes' + path, request);
   for (const k of [...fwd.headers.keys()]) if (!FORWARDED.has(k)) fwd.headers.delete(k);
   fwd.headers.set(INTERNAL_HEADER, await internalSecret(env.JWT_SECRET));

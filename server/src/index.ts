@@ -72,7 +72,9 @@
  * its p2p queue (server and ranked matches then wait for a node; where none can host now, the
  * matchmaker refuses them itself: doDisabled in its /join). nodes_on (absent: off; '1':
  * everyone; a list of account ids: a canary) lets matches go to community nodes, vm_disabled turns
- * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts).
+ * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts). nodes_off
+ * stops every /nodes/* route that would reach the NodeRegistryDO (503 before the object; the cron's
+ * call too): the control plane's kill switch. server/README.md lists which flag stops what.
  */
 import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';

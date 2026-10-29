@@ -1028,3 +1028,31 @@ test('GET /nodes/replays: a cursor of 0, from the future or not a number is the 
   for (const q of ['0', String(Date.now() + 86_400_000), 'abc', '-5', '99999999999999999']) assert.equal((await req(env, 'GET', `/nodes/replays?before=${q}`)).status, 200);
   assert.equal(env.NODES.seen.length, asked, 'none of them reached the object');
 });
+
+test('the kill switch nodes_off: every route that reaches the object answers 503 nodes_off before it, the cron calls nothing; releases and the shop go on', async () => {
+  const reads = [];
+  const env = makeEnv({ FLAGS: { get: async (name) => (reads.push(name), name === 'nodes_off' ? '1' : null) } });
+  const op = { Authorization: 'Bearer ' + (await accountToken(PROJECT)) };
+  const node = { 'x-node-id': 'f'.repeat(16), 'x-node-ts': '1', 'x-node-sig': 'sig', 'x-replay-sha256': 'c'.repeat(64) };
+  const routes = [
+    ['POST', '/nodes/register', { body: '{}' }],
+    ['GET', '/nodes/connect', { headers: { Upgrade: 'websocket' } }],
+    ['PUT', '/nodes/replays/' + 'ab'.repeat(32), { headers: node, body: new Uint8Array(10) }],
+    ['GET', '/nodes/replays/' + 'ab'.repeat(32), { headers: node }],
+    ['POST', '/nodes/tokens', { headers: op, body: '{"region":"SA"}' }],
+    ['GET', '/nodes/mine', { headers: op }],
+    ['GET', '/nodes/admin/nodes', { headers: op }],
+  ];
+  for (const [method, path, o] of routes) {
+    const res = await req(env, method, path, o);
+    assert.equal(res.status, 503, path);
+    assert.equal((await jsonOf(res)).error, 'nodes_off', path);
+  }
+  assert.equal(env.NODES.seen.length, 0, 'the object never heard of them');
+  const waits = [];
+  await worker.scheduled({ cron: '*/5 * * * *', scheduledTime: Date.now() }, env, { waitUntil: (p) => waits.push(p), passThroughOnException() {} });
+  await Promise.all(waits);
+  assert.equal(env.NODES.seen.length, 0, 'nor of the cron');
+  assert.equal((await req(env, 'GET', '/nodes/releases/install.sh')).status, 200, 'the installers go on');
+  assert.ok(reads.every((n) => n === 'nodes_off'));
+});
