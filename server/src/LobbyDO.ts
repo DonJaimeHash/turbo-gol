@@ -342,7 +342,8 @@ export class LobbyDO extends DurableObject<Env> {
       if (rec.pwHash !== null) {
         if (!validPassword(b.password) || (await lobbyPasswordHash(rec.lobbyId, b.password)) !== rec.pwHash) return error(403, 'bad_password', 'Contraseña incorrecta');
       }
-      const pending = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId).length;
+      // Pending seats: admits of players who are not members yet (a member's fresh admit, a reload's, holds no extra seat).
+      const pending = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId && !rec.members.some((m) => m.playerId === a.playerId)).length;
       if (rec.members.length + pending >= this.perTeam() * 2) return error(409, 'full', 'La sala está llena');
     }
     rec.admits = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId);
@@ -359,6 +360,8 @@ export class LobbyDO extends DurableObject<Env> {
     const jti = h.get('x-jti') ?? '';
     if (!/^[0-9a-f]{32}$/.test(jti)) return error(403, 'bad_ticket');
     if (await this.ctx.storage.get('jti:' + jti)) return error(403, 'ticket_used');
+    // Kicked: whatever admit it holds (one taken while it was still a member) brings it back no more.
+    if (rec.kicked.includes(playerId)) return error(403, 'kicked', 'El anfitrión te expulsó de esta sala');
     const now = Date.now();
     let member = rec.members.find((m) => m.playerId === playerId);
     const admit = rec.admits.find((a) => a.playerId === playerId && a.until > now);
@@ -476,6 +479,7 @@ export class LobbyDO extends DurableObject<Env> {
         const target = rec.members.find((m) => m.id === msg.member);
         if (!target || target.id === me.id) return;
         rec.kicked.push(target.playerId);
+        rec.admits = rec.admits.filter((a) => a.playerId !== target.playerId);
         this.removeMember(target);
         for (const s of this.ctx.getWebSockets(target.id)) s.close(CLOSE_KICKED, 'kicked');
         break;

@@ -394,3 +394,30 @@ test('LobbyDO: normal starts are never throttled: a refused start (capacity) can
   assert.equal(host.last().status, 'in_game', 'the next match');
   assert.equal(host.of('error').filter((e) => e.code === 'start_cooldown').length, 0);
 });
+
+// ---- rt-5: a kick sticks ---------------------------------------------------------------------------
+
+test('LobbyDO: a kicked member cannot come back with an admit taken before the kick (403 kicked at the socket); its admit no longer holds a seat', async () => {
+  const h = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'private', net: 'p2p', matchLengthSeconds: 300 });
+  const host = await h.upgrade('host1');
+  const grief = await h.join('grief');
+  // Still a member: a fresh join skips the password and the room check and leaves an admit behind.
+  assert.equal((await h.admit('grief')).status, 200);
+  await h.send(host, { t: 'kick', member: byName(host.last(), 'grief').id });
+  assert.equal(grief.closed.code, 4003);
+  const back = await h.upgrade('grief');
+  assert.equal(back.refused, 403, 'the pre-kick admit is refused at the socket');
+  assert.equal(back.json.error, 'kicked');
+  assert.deepEqual(host.last().members.map((m) => m.name), ['Ana'], 'still out');
+  assert.equal((await h.admit('grief')).json.error, 'kicked', 'and a new admit too');
+  // The seat is free for somebody else at once.
+  assert.equal((await h.admit('bea')).status, 200, 'not full: the kicked admit is gone');
+});
+
+test("LobbyDO: a member's fresh admit (a reload, another tab) does not count as a pending seat for the others", async () => {
+  const h = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'private', net: 'p2p', matchLengthSeconds: 300 });
+  await h.upgrade('host1');
+  assert.equal((await h.admit('host1')).status, 200, 'the host joins again by code (a reload)');
+  assert.equal((await h.admit('bea')).status, 200, 'one seat of two is taken: bea gets the other');
+  assert.equal((await h.admit('caro')).status, 409, 'now it is full');
+});
