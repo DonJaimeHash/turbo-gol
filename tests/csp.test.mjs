@@ -1,6 +1,6 @@
 // The game page's security headers (public/_headers, which Workers Static Assets applies to every
-// page it serves: /, /tv and the SPA fallback): an enforced Content-Security-Policy the whole game
-// works under, and HSTS. Read against the code that needs each source; no browser.
+// page it serves: /, /tv, the SPA fallback and the replay viewer): an enforced Content-Security-Policy
+// the whole game works under, and HSTS. Read against the code that needs each source; no browser.
 //   node --test tests/csp.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,14 +83,34 @@ test('the policy locks down what an injected script could use', () => {
     assert.ok(!src(d).includes('*') && !src(d).includes('https:') && !src(d).includes('http:'), `${d} has a wildcard`);
 });
 
-test("index.html's inline scripts are exactly the hashes script-src lists, and it has no inline handlers", () => {
-  const html = read('index.html');
-  const inline = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter((m) => !/\bsrc=/.test(m[1])).map((m) => sha256(m[2]));
-  assert.ok(inline.length > 0, 'the /tv/ redirect is inline');
+/** The pages the build emits: vite.config.ts's rollupOptions.input (index.html, replay.html...). */
+function builtPages() {
+  const pages = [...read('vite.config.ts').matchAll(/new URL\('\.\/([\w.-]+\.html)', import\.meta\.url\)/g)].map((m) => m[1]);
+  // One page is the default (no input): index.html.
+  return pages.length > 0 ? pages : ['index.html'];
+}
+
+const inlineScripts = (html) => [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)].filter((m) => !/\bsrc=/.test(m[1])).map((m) => m[2]);
+
+test("every page's inline scripts are exactly the hashes script-src lists, and no page has inline handlers", () => {
+  const pages = builtPages();
+  // Every HTML file at the root is a page of the build, and every page is checked (a new page
+  // added to one list and not the other fails here).
+  const atRoot = readdirSync(ROOT).filter((f) => f.endsWith('.html'));
+  assert.deepEqual([...pages].sort(), [...atRoot].sort(), 'vite.config.ts rollupOptions.input vs the root *.html files');
+  assert.ok(pages.includes('index.html') && pages.includes('replay.html'), `pages: ${pages.join(', ')}`);
+  const inline = [];
+  for (const page of pages) {
+    const html = read(page);
+    const hashes = inlineScripts(html).map(sha256);
+    if (page === 'index.html') assert.ok(hashes.length > 0, 'the /tv/ redirect is inline');
+    for (const h of hashes) inline.push(`${page} ${h}`);
+    assert.doesNotMatch(html, /\son[a-z]+\s*=/i, `${page}: an inline event handler (on...=) never runs under this CSP`);
+    assert.doesNotMatch(html, /javascript:/i, `${page}: a javascript: URL never runs under this CSP`);
+  }
   const listed = src('script-src').filter((s) => s.startsWith("'sha256-"));
-  assert.deepEqual([...listed].sort(), [...inline].sort(), 'update the sha256 in public/_headers with the inline script (tests print the right one)');
-  assert.doesNotMatch(html, /\son[a-z]+\s*=/i, 'an inline event handler (on...=) never runs under this CSP');
-  assert.doesNotMatch(html, /javascript:/i);
+  const needed = [...new Set(inline.map((s) => s.split(' ')[1]))];
+  assert.deepEqual([...listed].sort(), [...needed].sort(), `update the sha256 in public/_headers with the inline scripts:\n  ${inline.join('\n  ')}`);
 });
 
 test('the game works under it: wasm, the music worklet, the sockets and the community nodes', () => {

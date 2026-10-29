@@ -1,12 +1,12 @@
 # Response headers for the static files (Workers Static Assets reads this file from dist/; it is
 # not served itself). The API routes (/api, /ws, /room, /lobby, /nodes) run the Worker and are
-# unaffected. Every page of the game is index.html served from here: /, /tv and any other path
-# (the SPA fallback), so this one rule covers them all.
+# unaffected. Every page is served from here: index.html (/, /tv and any other path: the SPA
+# fallback) and replay.html (the replay viewer, /replay.html), so this one rule covers them all.
 #
 # Content-Security-Policy, checked against the code by tests/csp.test.mjs:
 #   script-src   the build's own modules (the music's AudioWorklet too), 'wasm-unsafe-eval' for the
-#                physics wasm, the sha256 of index.html's one inline script (the /tv/ redirect; the
-#                test fails when the script changes without its hash), Turnstile, and Cloudflare Web
+#                physics wasm, the sha256 of each page's inline scripts (today only index.html's /tv/
+#                redirect; the test fails when one changes without its hash), Turnstile, and Cloudflare Web
 #                Analytics' beacon, which the zone injects (it reports to /cdn-cgi/rum: 'self').
 #   style-src    'unsafe-inline': the icon sprite and the debug overlays set style attributes.
 #   connect-src  the API and the match, room and lobby sockets ('self'), and the community nodes:
