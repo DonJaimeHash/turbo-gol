@@ -70,8 +70,10 @@ npx wrangler secret put DISCORD_CLIENT_ID
 npx wrangler secret put DISCORD_CLIENT_SECRET
 ```
 
-Para probarlo en local, poné los mismos valores en `server/.dev.vars` junto con
-`PUBLIC_ORIGIN=http://localhost:5173`, y registrá esa URL de retorno en un cliente OAuth de desarrollo. Una cuenta nueva por OAuth
+Para probarlo en local, crea un cliente OAuth de desarrollo aparte, con la URL de retorno
+`http://localhost:5173/api/auth/oauth/<proveedor>/callback`, y pon su Client ID y su Client Secret
+en `server/.dev.vars` junto con `PUBLIC_ORIGIN=http://localhost:5173`. Nunca pongas ahí los valores
+de producción: `.dev.vars` es texto plano en la PC. Una cuenta nueva por OAuth
 toma el nombre del proveedor (por ejemplo `Ana` o `Ana42` si ya existe) y se puede renombrar una
 vez desde el Perfil.
 

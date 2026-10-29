@@ -34,6 +34,12 @@ npm install
 npm run dev            # the game at http://localhost:5173 (offline modes work without the backend)
 ```
 
+The dev server only answers this machine. To try the game on a phone or a TV on the same Wi-Fi,
+start it with `TG_LAN=1 npm run dev` (PowerShell: `$env:TG_LAN=1; npm run dev`) and open the
+Network address it prints. Every device on that network can then load it and reach your local
+Worker through it, so do this only on a network you trust and stop it when you are done. It never
+serves `.dev.vars`, `.env*`, `.wrangler/`, `private/`, `.claude/` or the nodes' keys.
+
 Online modes run against a local backend (no Cloudflare account needed):
 
 ```sh

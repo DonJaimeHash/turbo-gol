@@ -50,21 +50,21 @@ commit `dead8ec` (19/10/2026).
 
 ### El VPS
 
-- [x] **Comprado** el 19/10/2026 por 24 meses: Hostinger KVM 2 en Campinas, Brasil (2 vCPU, 8 GB,
-  100 GB, 8 TB de transferencia por mes, Ubuntu 26.04). El precio real está en
+- [x] **Comprado** el 19/10/2026 por 24 meses: un VPS cerca de São Paulo (2 vCPU, Ubuntu 26.04;
+  el proveedor y el plan, en las notas del mantenedor). El precio real está en
   `docs/online/DECISIONS.md`.
-- [x] **Endurecido** (M1, M2): acceso solo con clave, firewall con 22, 80 y 443, fail2ban,
+- [x] **Endurecido** (M1, M2): acceso solo con clave, firewall con SSH, HTTP y HTTPS, fail2ban,
   actualizaciones de seguridad sin reinicios automáticos.
 - [x] **Con nombre y certificado** (M3): `sp1.turbo-gol.com`, registros A y AAAA solo DNS, y un
   certificado de Let's Encrypt en Caddy.
-- [x] **Medido:** las pruebas de `nodes/` pasan en el VPS; el benchmark da de 52 a 77 partidas
-  con el 60 % de un núcleo; 12 partidas de 3 minutos grabadas en la PC del mantenedor y en el VPS
+- [x] **Medido:** las pruebas de `nodes/` pasan en el VPS; el benchmark da la capacidad de D20;
+  12 partidas de 3 minutos grabadas en la PC del mantenedor y en el VPS
   verifican igual en las dos máquinas, en los dos sentidos (`nodes/scripts/xmachine.mjs`).
 - [ ] **(Opcional) medir el camino por el proxy de Cloudflare** antes de confirmar D4.
-- [ ] **La CPU bajo carga sostenida,** antes de instalar el nodo: los créditos de CPU de Hostinger
+- [ ] **La CPU bajo carga sostenida,** antes de instalar el nodo: los créditos de CPU del plan
   pueden frenarla, y el resultado decide el `--matches` de la instalación (D20).
-- [x] **Nodo instalado** el 20/10/2026: `sao-paulo-1`, release 0.2.0, activo, con `--matches 15`
-  (D20 con el benchmark de 52; se sube con la prueba de CPU bajo carga) y `node.json` respaldado
+- [x] **Nodo instalado** el 20/10/2026: `sao-paulo-1`, release 0.2.0, activo, con la capacidad de
+  D20 (se sube con la prueba de CPU bajo carga) y `node.json` respaldado
   (M11, M12). El instalador de la 0.2.0 lo registró como "Ubuntu" por un bug con
   `/etc/os-release`, ya corregido; ver `VPS-SAO-PAULO.md`.
 
@@ -371,11 +371,11 @@ quedan en el log.
 | M5 | **Hecho (19/10/2026)**: las claves de control y de releases de producción, generadas fuera de `nodes/.keys/` (que sigue siendo de desarrollo) y respaldadas en el gestor de contraseñas. La pública de releases va a P12 (`nodes/release-key.pub`) y la de control a `NODE_CONTROL_PUBLIC_KEY` (P19); las privadas, a M6 y M7, y después se borran del disco | — | P12, el deploy de [6] |
 | M6 | **Hecho (20/10/2026)**: los entornos `releases` (secreto `TGN_RELEASE_PRIVATE_KEY`) y `releases-r2` (secreto `CLOUDFLARE_R2_TOKEN`, un token solo de R2, y la variable `CLOUDFLARE_ACCOUNT_ID`), los dos solo desde tags `node-v*`, sin bypass de administrador y con DonJaimeHash como revisor | — | P14, las releases |
 | M7 | **Hecho (20/10/2026)**: los buckets `turbogol-node-replays` (sus objetos vencen a los 30 días) y `turbogol-node-releases`, y los secretos `NODE_CONTROL_PRIVATE_KEY` y `NODE_TRUSTED_OPERATORS`, cargados con `wrangler versions secret put` | — | P19, P20 |
-| M8 | **Hecho (20/10/2026)**: el token de `server/.env` tiene R2 de lectura y escritura; [3] a [8] se desplegaron juntos con `npm run deploy -- --nodes-off` (versión `6cde682b`) | — | La instalación |
+| M8 | **Hecho (20/10/2026)**: el token de deploy tiene acceso a R2; [3] a [8] se desplegaron juntos con `npm run deploy -- --nodes-off` (versión `6cde682b`) | — | La instalación |
 | M9 | **Hecho (20/10/2026)**: el tag `node-v0.2.0` en `138bca9`, con las dos aprobaciones (firma y subida) | — | M10 | **Hecho (20/10/2026)**: `npm run deploy` escribió el canal en 0.2.0/0.2.0 (versión `588ad3a3`) | — | M11 | **Hecho (20/10/2026)**: el token, desde una sesión de la cuenta del proyecto | — | La instalación |
 | M10 | El primer deploy que escribe el canal (P21): `npm run deploy` (`--nodes-off` ya no hace falta, y tampoco lo frena) escribe el canal en 0.2.0/0.2.0 y despliega. Comprobar con los comandos del paso 4 de "Antes de instalar el nodo", en `VPS-SAO-PAULO.md` | Después de M9, a una hora tranquila | M11 |
 | M11 | El token de registro, con la línea de consola de "Instalar el nodo" en `VPS-SAO-PAULO.md`, desde una pestaña de turbo-gol.com con la sesión de la cuenta del proyecto: refresca la sesión y hace `POST /nodes/tokens` con `{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer. Pegarlo en la línea de instalación: vale una hora y una sola vez | Justo antes de instalar | La instalación |
-| M12 | **Hecho (20/10/2026)**: `node.json` copiado a la carpeta privada de la PC del mantenedor, para pasarlo al gestor de contraseñas. Falta, si se quiere, una instantánea del VPS en el panel de Hostinger | — | — |
+| M12 | **Hecho (20/10/2026)**: `node.json` copiado a la carpeta privada de la PC del mantenedor, para pasarlo al gestor de contraseñas. Falta, si se quiere, una instantánea del VPS en el panel del proveedor | — | — |
 | M13 | **Hecho (20/10/2026)**: el canal `#node-alerts` de Discord, solo del equipo (creado desde `private/discord`), y su webhook en el secreto `NODE_ALERT_WEBHOOK` | — | El canary |
 | M14 | **Hecho (20/10/2026)**: [7] y [8] desplegados con el flag apagado | — | El canary |
 | M15 | **Hecho (21/10/2026)**: canary con la cuenta del proyecto (una casual contra bots) y con dos invitados (una casual contra bots y una 1v1 entre los dos), todas en `node:sao-paulo-1`, sin cortes ni strikes; a las 00:32 UTC, `nodes_on` en `1`. `vm_disabled` queda como interruptor. **Falta** una ranked de verdad en el nodo, con dos cuentas que no sean la del proyecto (ver abajo) | — | La apertura |
@@ -388,7 +388,7 @@ aviso.
 
 - [x] **Una casual desde un navegador** (21/10/2026), con la conexión en "Servidor": contra bots
   con la cuenta del proyecto y con un invitado, y una 1v1 entre dos invitados. El panel de red
-  dice `host node:sao-paulo-1`. Latencia desde Córdoba: 41 ms, jitter de 0,8 ms, ninguna
+  dice `host node:sao-paulo-1`. Latencia desde la PC del mantenedor: 41 ms, jitter de 0,8 ms, ninguna
   desincronización.
 - [ ] **Una ranked desde un navegador,** con dos cuentas que no sean la del proyecto, viendo el
   resultado en la pantalla de fin de partida (la verificación la hace el mismo VPS).
@@ -397,7 +397,7 @@ aviso.
 - [ ] Cerrar la pestaña en una ranked: cuenta como abandono, como en `MatchDO` (P7).
 - [ ] Un deploy del Worker en medio de una partida: no se anula, y se califica después de la
   gracia.
-- [ ] Un reinicio duro del VPS desde el panel de Hostinger en medio de una partida: se anula como
+- [ ] Un reinicio duro del VPS desde el panel del proveedor en medio de una partida: se anula como
   `node_restarted` o `node_offline`, sin penalizar a los jugadores y sin no-shows. Un `reboot`
   normal no sirve para esta prueba: primero drena las partidas.
 - [ ] Una actualización del nodo con partidas en curso: drenan y el nodo vuelve.
@@ -747,18 +747,19 @@ como la gracia de 90 s de P4 o los 12 intentos de P8, y se revisan con cada PR.
   en el gestor de contraseñas. La firma corre en un trabajo propio que no instala nada y solo usa
   `node:crypto` (P13), y el token de R2 va en otro entorno, `releases-r2` (M6). Nunca la clave de
   desarrollo que firmó la 0.1.0.
-- **D19. El tope de tráfico del VPS.** **Propuesta:** `--egress-cap-gb 3800`. El contador del
-  nodo solo cuenta lo que mandan las partidas que terminan (`node/runtime.ts:514-519`), por mes
-  calendario UTC (`:617-620`); con 3800, dos meses UTC parciales siguen entrando en los 8 TB del
-  plan. Subirlo cuando el panel de Hostinger confirme qué día se reinicia la transferencia.
+- **D19. El tope de tráfico del VPS.** **Propuesta:** un `--egress-cap-gb` con el que dos meses UTC
+  parciales entren en la transferencia mensual del plan (el valor, en las notas del mantenedor).
+  El contador del nodo solo cuenta lo que mandan las partidas que terminan
+  (`node/runtime.ts:514-519`), por mes calendario UTC (`:617-620`). Subirlo cuando el panel del
+  proveedor confirme qué día se reinicia la transferencia.
 - **D20. La capacidad declarada del VPS.** **Propuesta:** `floor(cpu × 0,6 / 2)`, con el `cpu`
-  más conservador del benchmark: hoy, 15 partidas. Ese `cpu` ya cuenta con el 60 % de un núcleo
+  más conservador del benchmark. Ese `cpu` ya cuenta con el 60 % de un núcleo
   (600 ms de CPU por segundo de reloj, `node/bench.ts:77`), para dejar margen. El 0,6 extra es
-  por los créditos de CPU: si se acaban, Hostinger deja cada vCPU en su base del 60 %, y con el
+  por los créditos de CPU: si se acaban, el plan deja cada vCPU en su base, y con el
   0,6 las partidas siguen usando el 60 % de lo que queda (un 36 % del núcleo). El 2, porque la
   verificación corre en el mismo hilo que las partidas (`node/runtime.ts:540-567`) y cuesta otra
   simulación por ranked. Si la prueba de CPU bajo carga no muestra freno, el 0,6 sobra:
-  `floor(cpu / 2)`, 26 con las mediciones de hoy. Se revisa cuando una semana de heartbeats
+  `floor(cpu / 2)`. Se revisa cuando una semana de heartbeats
   muestre margen.
 
 ### Para las etapas siguientes

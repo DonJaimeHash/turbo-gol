@@ -1,4 +1,5 @@
 # Local secrets for `wrangler dev` (copy to .dev.vars; never committed). Production: `npx wrangler secret put <NAME>`.
+# Development values only, never a production one (a separate development OAuth client, a throwaway key).
 # Signs sessions, match tickets and the Worker <-> Durable Object internal header: a long random string.
 JWT_SECRET=change-me-to-a-long-random-string
 # Required outside local dev (POST /api/guest answers 503 'turnstile_unconfigured' without it on a deploy).

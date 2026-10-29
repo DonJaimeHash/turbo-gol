@@ -1,10 +1,25 @@
 # Response headers for the static files (Workers Static Assets reads this file from dist/; it is
-# not served itself). The API routes (/api, /ws, /room, /lobby) run the Worker and are unaffected.
+# not served itself). The API routes (/api, /ws, /room, /lobby, /nodes) run the Worker and are
+# unaffected. Every page is served from here: index.html (/, /tv and any other path: the SPA
+# fallback) and replay.html (the replay viewer, /replay.html), so this one rule covers them all.
+#
+# Content-Security-Policy, checked against the code by tests/csp.test.mjs:
+#   script-src   the build's own modules (the music's AudioWorklet too), 'wasm-unsafe-eval' for the
+#                physics wasm, the sha256 of each page's inline scripts (today only index.html's /tv/
+#                redirect; the test fails when one changes without its hash), Turnstile, and Cloudflare Web
+#                Analytics' beacon, which the zone injects (it reports to /cdn-cgi/rum: 'self').
+#   style-src    'unsafe-inline': the icon sprite and the debug overlays set style attributes.
+#   connect-src  the API and the match, room and lobby sockets ('self'), and the community nodes:
+#                wss:// hosts on any domain.
+#   frame-src    the Turnstile challenge. frame-ancestors 'none': never in a frame (X-Frame-Options too).
+# Strict-Transport-Security: HTTPS only, for a year, subdomains included (sp1 serves only HTTPS).
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   X-Frame-Options: DENY
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-OLpvSajAB4kwvloMmj2FyovlRe1qITBh8oF1/nh19cA=' https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss:; frame-src https://challenges.cloudflare.com; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
 
 # No long-lived Cache-Control on /assets/* although Vite content-hashes them: a request for a missing
 # asset (an old tab during a deploy) gets the SPA fallback index.html, and _headers rules match the
