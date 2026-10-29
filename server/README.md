@@ -31,11 +31,15 @@ server/
   src/nodeWatch.ts      what it watches in the nodes on top of the control plane (offline, traffic, tick lag, waits)
                         and the cron's /healthz probe
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
+  src/mail.ts           the mailer (docs/online/MAIL.md): chooseMailer (live only with EMAIL, MAIL_LIVE=1 and a host
+                        that is not loopback; the stub otherwise), linkOrigin, deliver, the dev outbox. Nothing calls it yet
+  src/mailTemplates.ts  every mail (M1-M12) in es and en, text and html; src/mailCaps.ts: lanes, caps, the kill flag
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
   test/room.test.mjs    phase 2 pure logic: start / drop decisions, roster + slot assignment, p2p formation timing, ICE list
   test/smoke.mjs        phase 1 end-to-end against a running wrangler dev or a deploy (root: `npm run smoke:online` / `npm run smoke:remote`)
   test/smoke-p2p.mjs    phase 2 end-to-end: two guests -> p2p room -> signaling, start, drops (grace alarm, majority) -> lone-human fallback
+  test/mail.test.mjs    the mailer, the stub, every template in es and en, the caps; a fake binding, nothing is sent
 ```
 
 ## Run locally
@@ -83,6 +87,12 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `JWT_SECRET` | secret (`.dev.vars` locally) | signs sessions, tickets and the Worker<->DO internal header |
 | `TURNSTILE_SECRET` | secret, required on a deploy | when set, `POST /api/guest` and `POST /api/auth/register` require a valid Turnstile token (outside local dev a missing secret answers 503 `turnstile_unconfigured`) |
 | `TURNSTILE_SITEKEY` | var (public), paired with the secret | the widget sitekey, handed to the browser by `GET /api/config`; empty = no widget (local dev) |
+| `EMAIL` | `send_email` binding (Email Service) | the mailer's (`src/mail.ts`, the only file that reads it; [docs/online/MAIL.md](../docs/online/MAIL.md)). No `"remote": true`: `wrangler dev` then simulates it locally (a file, no mail, no login), and a deploy binds the real service. Nothing calls it yet |
+| `MAIL_LIVE` | secret, production only | `1` lets `chooseMailer` send real mail, with `EMAIL` and on a host that is not loopback (so never under `wrangler dev`); unset = the stub, which sends nothing. Never in `wrangler.jsonc`, `.dev.vars` or `.env` (a test checks the committed files) |
+| `MAIL_FROM`, `MAIL_LINK_ORIGIN` | vars | the sender (`Turbogol <no-reply@turbo-gol.com>`) and the origin of every link in a mail (`https://turbo-gol.com`; a loopback host uses its own) |
+| `EMAIL_DAILY_CAP` | var | the day's mail across all lanes (default 100): sign-up mail stops at 60 %, account mail at 90 %, notices at 100 %. Set it to 80 % of the Email Service quota |
+| `DEV_AUTH` | your own `.dev.vars` only | `1` opens the stub's outbox (`GET /api/dev/mail`, once mounted) on a loopback host; closed anywhere else whatever its value |
+| `email_off` | KV `FLAGS` key | `1` / `true` / `on` stops every mail lane, no deploy (see docs/online/MAIL.md) |
 | `VITE_ORIGINS` | var, optional | comma-separated allowed browser origins for CORS and WebSocket `Origin`; empty = any (`*`). Under `wrangler dev` (the Worker reached on a loopback host) a loopback page origin such as the Vite dev server on any port is always accepted, so the committed production list does not block local play |
 | `MATCH_LENGTH_SECONDS` | var | regulation length (300) |
 | `REGION_OVERRIDE` | var | force a matchmaking region (empty = `request.cf.continent`, `dev` locally) |
