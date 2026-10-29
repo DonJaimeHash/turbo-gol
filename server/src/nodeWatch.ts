@@ -32,6 +32,7 @@ import type { NodeRecord } from '../../nodes/control-plane/registry';
 import { compareVersions, reachMessage } from '../../nodes/shared/controlProtocol';
 import { randomB64, verifyWith } from '../../nodes/shared/edcrypto';
 import type { FetchFn } from './nodeAlerts';
+import { readCapped } from './env';
 
 /** A node's matches are void after NODE_OFFLINE_MS (60 s) of silence; this long, someone should look. */
 export const OFFLINE_ALERT_MS = 2 * 60_000;
@@ -44,6 +45,92 @@ export const UPDATE_ALERT_MS = 2 * 60 * 60_000;
 /** The cron probes a node online now or seen by the object within this long. */
 export const HEALTHZ_RECENT_MS = 60 * 60_000;
 export const HEALTHZ_TIMEOUT_MS = 5_000;
+/** A node's /healthz answer is a few hundred bytes of JSON: past this much it is not read on. */
+export const HEALTHZ_MAX_BYTES = 16 * 1024;
+
+// ---- what a node may have the object fetch ---------------------------------------------------------
+
+/** The four bytes of a dotted IPv4 address (the URL parser already turned every other IPv4 form into one), or null. */
+function ipv4Bytes(host: string): number[] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const b = m.slice(1).map(Number);
+  return b.every((x) => x <= 255) ? b : null;
+}
+
+/** An IPv4 address on the public internet: not private, loopback, link-local, CGNAT, documentation, benchmark, multicast or reserved. */
+function publicV4([a, b, c]: number[]): boolean {
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && (b === 168 || (b === 0 && (c === 0 || c === 2)))) return false;
+  if (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) return false;
+  if (a === 203 && b === 0 && c === 113) return false;
+  return true;
+}
+
+/** The eight 16-bit groups of an IPv6 address (an embedded IPv4 tail included), or null. */
+function ipv6Words(h: string): number[] | null {
+  let s = h.toLowerCase();
+  const tail = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(s);
+  if (tail) {
+    const b = ipv4Bytes(tail[1]);
+    if (!b) return null;
+    s = s.slice(0, -tail[1].length) + ((b[0] << 8) | b[1]).toString(16) + ':' + ((b[2] << 8) | b[3]).toString(16);
+  }
+  const [head, rest] = s.split('::', 2);
+  const front = head ? head.split(':') : [];
+  const back = rest ? rest.split(':') : [];
+  const groups = rest === undefined ? front : [...front, ...Array<string>(Math.max(0, 8 - front.length - back.length)).fill('0'), ...back];
+  if (groups.length !== 8 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  return groups.map((g) => parseInt(g, 16));
+}
+
+/** An IPv6 address on the public internet (an IPv4-mapped or NAT64 one by its IPv4 address). */
+function publicV6(w: number[]): boolean {
+  const zeros = (n: number) => w.slice(0, n).every((x) => x === 0);
+  if (zeros(8) || (zeros(7) && w[7] === 1)) return false; // :: and ::1
+  if (zeros(5) && w[5] === 0xffff) return publicV4([w[6] >> 8, w[6] & 255, w[7] >> 8, w[7] & 255]); // ::ffff:a.b.c.d
+  if (w[0] === 0x64 && w[1] === 0xff9b && w.slice(2, 6).every((x) => x === 0)) return publicV4([w[6] >> 8, w[6] & 255, w[7] >> 8, w[7] & 255]);
+  if ((w[0] & 0xfe00) === 0xfc00 || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xff00) === 0xff00) return false; // ULA, link-local, multicast
+  if (w[0] === 0x2001 && w[1] === 0xdb8) return false; // documentation
+  if (w[0] === 0x100 && w.slice(1, 4).every((x) => x === 0)) return false; // discard
+  return (w[0] & 0xe000) === 0x2000; // global unicast only
+}
+
+/**
+ * A URL a node handed us (its publicUrl, as /healthz) that the object may fetch: http(s), no
+ * credentials, and a public host: no loopback (unless `allowLoopback`: the object itself runs on
+ * a loopback base, wrangler dev), no private, link-local or reserved address, no single-label or
+ * LAN-only name. A name that resolves to a private address cannot be told here; a Worker's fetch
+ * reaches the public internet only.
+ */
+export function probeTargetOk(u: string, allowLoopback = false): boolean {
+  let url: URL;
+  try {
+    url = new URL(u);
+  } catch {
+    return false;
+  }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username !== '' || url.password !== '') return false;
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  const v4 = ipv4Bytes(host);
+  const v6 = host.startsWith('[') ? ipv6Words(host.slice(1, -1)) : null;
+  const loopback = host === 'localhost' || host.endsWith('.localhost') || (v4 !== null && v4[0] === 127) || (v6 !== null && v6.slice(0, 7).every((x) => x === 0) && v6[7] === 1);
+  if (loopback) return allowLoopback;
+  if (v4) return publicV4(v4);
+  if (host.startsWith('[')) return v6 !== null && publicV6(v6);
+  if (!host.includes('.')) return false;
+  return !/\.(?:local|localdomain|internal|intranet|lan|home|corp|home\.arpa)$/.test(host);
+}
+
+/** A node's JSON answer read through readCapped: SyntaxError when it is not JSON, an Error past `max` bytes (never read on). */
+export async function readJsonCapped(res: Response, max: number = HEALTHZ_MAX_BYTES): Promise<unknown> {
+  const bytes = await readCapped(res, max);
+  if (bytes === null) throw new Error(`an answer over ${max} bytes`);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 
 /** A line for the object's log; one that starts with ALERT is posted under `key` (alertKey of the line when absent). */
 export interface WatchNote {

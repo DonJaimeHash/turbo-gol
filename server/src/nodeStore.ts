@@ -64,6 +64,8 @@ export class NodeStore implements RegistryStore, MatchStore {
   /** Called after outbox rows were written: the object delivers them right away. */
   private readonly onOutbox: () => void;
   private readonly now: () => number;
+  /** Each node's row as last written or read (node(): an unchanged one is not written again). */
+  private readonly written = new Map<string, string>();
 
   constructor(sql: SqlLike, tx: <T>(fn: () => T) => T, onOutbox: () => void = () => undefined, now: () => number = () => Date.now()) {
     this.sql = sql;
@@ -115,6 +117,7 @@ export class NodeStore implements RegistryStore, MatchStore {
       .exec<{ node_id: string; operator_id: string; public_key: string; data: string }>('SELECT node_id, operator_id, public_key, data FROM nodes')
       .toArray()
       .map((r) => ({ nodeId: r.node_id, operatorId: r.operator_id, publicKey: r.public_key, data: r.data }));
+    for (const n of nodes) this.written.set(n.nodeId, `${n.operatorId}\n${n.publicKey}\n${n.data}`);
     const matches = s
       .exec<{ match_id: string; node_id: string; state: string; done_at: number; data: string }>('SELECT match_id, node_id, state, done_at, data FROM node_matches')
       .toArray()
@@ -133,8 +136,15 @@ export class NodeStore implements RegistryStore, MatchStore {
 
   // ---- RegistryStore ------------------------------------------------------------------------
 
+  /**
+   * A node's row, written only when what it holds changed: the registry saves at every hello (and
+   * its live fields, which the row leaves out, change at every heartbeat), and a node repeating the
+   * same hello must not cost a row write each time.
+   */
   node(n: NodeRecord): void {
     const r = nodeToRow(n);
+    const row = `${r.operatorId}\n${r.publicKey}\n${r.data}`;
+    if (this.written.get(r.nodeId) === row) return;
     this.sql.exec(
       'INSERT INTO nodes (node_id, operator_id, public_key, data) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET operator_id = excluded.operator_id, public_key = excluded.public_key, data = excluded.data',
       r.nodeId,
@@ -142,13 +152,19 @@ export class NodeStore implements RegistryStore, MatchStore {
       r.publicKey,
       r.data,
     );
+    this.written.set(r.nodeId, row);
   }
 
   register(t: TokenRecord, n: NodeRecord): void {
-    this.tx(() => {
-      this.tokens([t]);
-      this.node(n);
-    });
+    try {
+      this.tx(() => {
+        this.tokens([t]);
+        this.node(n);
+      });
+    } catch (e) {
+      this.written.delete(n.nodeId); // rolled back: the row is not what was last written
+      throw e;
+    }
   }
 
   tokens(ts: TokenRecord[]): void {

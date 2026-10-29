@@ -117,11 +117,15 @@ export function error(status: number, code: string, message?: string): Response 
 export const JSON_MAX_BYTES = 4096;
 
 /**
- * The body, or null when it is longer than `max` bytes. Reading stops there: a body sent without
- * a Content-Length (chunked, HTTP/2) is never buffered whole before it is found too big.
+ * The body (of a request, or of a response: a node's /healthz answer), or null when it is longer
+ * than `max` bytes. Reading stops there: a body sent without a Content-Length (chunked, HTTP/2) is
+ * never buffered whole before it is found too big.
  */
-export async function readCapped(request: Request, max: number): Promise<Uint8Array | null> {
-  if (Number(request.headers.get('content-length') ?? 0) > max) return null;
+export async function readCapped(request: Pick<Request, 'headers' | 'body'>, max: number): Promise<Uint8Array | null> {
+  if (Number(request.headers.get('content-length') ?? 0) > max) {
+    await request.body?.cancel().catch(() => undefined);
+    return null;
+  }
   const reader = request.body?.getReader();
   if (!reader) return new Uint8Array(0);
   const chunks: Uint8Array[] = [];

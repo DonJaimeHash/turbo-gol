@@ -1523,3 +1523,97 @@ test('a node coming back from an address it logged in from keeps a slot, through
   await logIn(h, back, node);
   assert.equal(back.of('welcome').length, 1);
 });
+
+// ---- a logged-in node's control socket -----------------------------------------------------------------
+
+/** Count the node rows written from now on (a trigger on the object's own SQLite). */
+function countNodeWrites(h) {
+  h.ctx.db.exec('CREATE TABLE IF NOT EXISTS node_writes (n INTEGER); CREATE TRIGGER IF NOT EXISTS node_write AFTER UPDATE ON nodes BEGIN INSERT INTO node_writes VALUES (1); END;');
+  h.ctx.db.exec('DELETE FROM node_writes');
+  return () => h.ctx.db.prepare('SELECT COUNT(*) AS n FROM node_writes').get().n;
+}
+
+test('the same hello again writes no row; a node past 30 hellos in 10 minutes has its socket closed (1008)', async () => {
+  const h = await boot(makeEnv());
+  const { node, ws } = await liveNode(h);
+  const writes = countNodeWrites(h);
+  for (let i = 0; i < 200; i++) {
+    clock += 1000;
+    await send(h, ws, { t: 'hello', data: helloOf(node) });
+  }
+  assert.equal(writes(), 0, 'a repeated hello is dropped');
+  assert.equal(ws.closed, null);
+  let accepted = 0;
+  for (let i = 1; i <= 40 && ws.closed === null; i++) {
+    clock += 1000;
+    await send(h, ws, { t: 'hello', data: helloOf(node, { egressCapGB: i }) });
+    if (ws.closed === null) accepted++;
+  }
+  assert.deepEqual(ws.closed, { code: 1008, reason: 'too many hellos' });
+  assert.equal(accepted, D.HELLOS_PER_WINDOW - 1, 'the login hello counted too');
+  assert.ok(writes() <= D.HELLOS_PER_WINDOW, 'one row write per hello taken at most');
+});
+
+test('publicUrl changes: four an hour per node, the fifth closes its socket; the probe never fetches a private or loopback address', async () => {
+  const h = await boot(makeEnv());
+  const { node, ws } = await liveNode(h);
+  const fetched = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    fetched.push(new URL(String(url)).host);
+    return realFetch(url, init);
+  };
+  try {
+    for (const publicUrl of ['wss://10.0.0.5', 'wss://[fd00::5]', 'wss://localhost:8443', 'wss://169.254.169.254', 'wss://a2.turbo-gol.test']) {
+      clock += 1000;
+      await send(h, ws, { t: 'hello', data: helloOf(node, { publicUrl }) });
+      await sleep(5);
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(ws.closed, { code: 1008, reason: 'too many address changes' });
+  assert.deepEqual(fetched.filter((x) => !x.endsWith('.turbo-gol.test')), [], 'never a private or loopback target');
+  assert.ok(lines.some((l) => /probe sao-paulo-1 failed: Error: refused target/.test(l)), 'the refusal is the probe failure');
+});
+
+test('a ban closes the node live socket at once (4403), after telling it; a frame on a banned node socket closes it too', async () => {
+  const h = await boot(makeEnv());
+  const { node, ws } = await liveNode(h);
+  const r = await call(h, 'POST', '/nodes/admin/status', { body: { nodeId: node.nodeId, status: 'banned', reason: 'test' }, headers: { 'x-operator-id': PROJECT } });
+  assert.equal(r.status, 200);
+  assert.equal(ws.of('status').at(-1)?.status, 'banned', 'told first');
+  assert.deepEqual(ws.closed, { code: 4403, reason: 'banned' });
+  const other = await liveNode(h, { ip: '203.0.113.2', publicUrl: 'wss://sp2.turbo-gol.test' });
+  h.obj.cp.registry.setStatus(other.node.nodeId, 'banned', 'strikes');
+  await send(h, other.ws, { t: 'heartbeat', data: beat() });
+  assert.deepEqual(other.ws.closed, { code: 4403, reason: 'banned' });
+});
+
+test('frames: a node steady traffic never trips the budget; a flood on one socket closes it (1008) once its burst is spent', async () => {
+  const h = await boot(makeEnv());
+  const { ws } = await liveNode(h);
+  for (let i = 0; i < 300; i++) {
+    clock += 1000;
+    await send(h, ws, { t: 'heartbeat', data: beat() });
+  }
+  assert.equal(ws.closed, null);
+  const other = await liveNode(h, { ip: '203.0.113.3', publicUrl: 'wss://sp3.turbo-gol.test' });
+  let sent = 0;
+  for (; sent < 200 && other.ws.closed === null; sent++) await send(h, other.ws, { t: 'heartbeat', data: beat() });
+  assert.deepEqual(other.ws.closed, { code: 1008, reason: 'too many messages' });
+  assert.ok(sent <= D.FRAME_BURST + 1, `closed within its burst (${sent})`);
+});
+
+test('the probe of a publicUrl reads at most 16 KB of its answer', async () => {
+  const h = await boot(makeEnv());
+  const node = await registerNode(h, { publicUrl: 'wss://big.turbo-gol.test' });
+  const big = stream(Array.from({ length: 64 }, () => new Uint8Array(64 * 1024).fill(32)));
+  node.fail = () => new RealResponse(big.body);
+  const ws = await connect(h, node);
+  lines.length = 0;
+  await send(h, ws, { t: 'hello', data: helloOf(node) });
+  await waitFor(() => lines.some((l) => l.includes('probe sao-paulo-1 failed')), 'the probe fails');
+  assert.ok(lines.some((l) => l.includes('an answer over 16384 bytes')), lines.join('\n'));
+  assert.ok(big.pulls <= 2, `stopped at the cap (${big.pulls} chunks pulled)`);
+});

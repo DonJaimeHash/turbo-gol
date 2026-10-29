@@ -87,7 +87,7 @@ import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
 import { REPLAY_PAGE } from '../../src/net/replays';
 import type { ReplayList } from '../../src/net/replays';
-import { HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz } from './nodeWatch';
+import { HEALTHZ_MAX_BYTES, HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz, probeTargetOk, readJsonCapped } from './nodeWatch';
 import type { WatchNote } from './nodeWatch';
 
 /** The alarm's period while anything needs it. */
@@ -143,6 +143,36 @@ export const LOGIN_ADDR_TTL_MS = 30 * DAY_MS;
 /** Their meta row: [address, last login (ms)] pairs, rewritten at most hourly per address. */
 const LOGIN_ADDRS_KEY = 'login_addrs';
 if (PENDING_UNKNOWN_MAX + PENDING_KNOWN_MAX >= MAX_UNAUTHENTICATED) throw new Error('the pending pools must stay below the control plane cap');
+
+/**
+ * A node's control socket, throttled here before the control plane sees a frame: a token bucket of
+ * FRAME_BURST frames refilled at FRAME_RATE a second (a node sends a heartbeat every few seconds;
+ * a reconnect sends its hello, a heartbeat and its unacknowledged reports at once). Past it the
+ * socket is closed (1008). Each hello rewrites the node's row and may start a probe of the URL it
+ * names: the same hello again is dropped, a node gets HELLOS_PER_WINDOW hellos in HELLO_WINDOW_MS
+ * (its sockets together) and PUBLIC_URL_CHANGES_PER_HOUR new publicUrls; past either the socket is
+ * closed (1008). A banned node's socket is closed (4403) at its next frame, and at once when a
+ * maintainer bans it.
+ */
+export const FRAME_BURST = 64;
+export const FRAME_RATE = 20;
+export const HELLOS_PER_WINDOW = 30;
+export const HELLO_WINDOW_MS = 10 * 60_000;
+export const PUBLIC_URL_CHANGES_PER_HOUR = 4;
+
+/** The hello in a frame, or null: a frame that names no hello is not parsed (one that might hide it behind an escape is). */
+function helloIn(message: string): { publicUrl: unknown } | null {
+  if (!message.includes('hello') && !message.includes('\\u')) return null;
+  let m: unknown;
+  try {
+    m = JSON.parse(message);
+  } catch {
+    return null; // the control plane closes it (bad json)
+  }
+  if (typeof m !== 'object' || m === null || (m as { t?: unknown }).t !== 'hello') return null;
+  const d = (m as { data?: unknown }).data;
+  return { publicUrl: typeof d === 'object' && d !== null ? (d as { publicUrl?: unknown }).publicUrl : undefined };
+}
 
 /** Where a socket still to log in came from (x-client-ip), and whether a node logged in from there lately. */
 interface Pending {
@@ -294,6 +324,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
   /** The addresses nodes logged in from (limitKey) and when, oldest first; kept in meta. */
   private loginAddrs = new Map<string, number>();
   private lastBusyLog = 0;
+  /** Each socket's frame budget (FRAME_BURST, FRAME_RATE) and the last hello it carried. */
+  private readonly frames = new WeakMap<WebSocket, { tokens: number; at: number }>();
+  private readonly lastHello = new WeakMap<WebSocket, string>();
+  /** The object runs on a loopback base (wrangler dev): a node on this machine may be probed. */
+  private loopbackOk = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -343,6 +378,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!this.keyOk) this.log('ALERT NODE_CONTROL_PUBLIC_KEY is not the public half of NODE_CONTROL_PRIVATE_KEY: no placement, registration or rejoin until they match');
     await this.refreshChannel();
     const base = env.NODES_PUBLIC_BASE.replace(/\/+$/, '');
+    const baseHost = new URL(base).hostname;
+    this.loopbackOk = baseHost === 'localhost' || baseHost === '127.0.0.1' || baseHost === '[::1]' || baseHost.endsWith('.localhost');
     try {
       store.migrate();
       const rows = store.load(Date.now());
@@ -379,8 +416,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
             return o ? new Uint8Array(await o.arrayBuffer()) : null;
           },
         },
-        // Its reachability probes, through the object's fetch like the cron's.
-        fetchJson: async (u) => (await this.fetchFn(u, { signal: AbortSignal.timeout(HEALTHZ_TIMEOUT_MS) })).json(),
+        // Its reachability probes, through the object's fetch like the cron's: a public target only, 5 s, no redirect, at most HEALTHZ_MAX_BYTES read.
+        fetchJson: (u) => this.probeJson(u),
         store,
         now: () => Date.now(),
         log,
@@ -466,6 +503,12 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!cp || !s) return this.link(ws).close(4401, 'log in again');
     if (typeof message !== 'string') return this.link(ws).close(1003, 'text only');
     if (message.length > MAX_FRAME_CHARS) return this.link(ws).close(1009, 'frame too big');
+    if (!this.frameAllowed(ws)) return this.link(ws).close(1008, 'too many messages');
+    if (s.nodeId !== null && !s.closed) {
+      const refused = this.helloRefused(ws, s.nodeId, cp, message);
+      if (refused === 'drop') return;
+      if (refused !== null) return this.link(ws).close(refused.code, refused.reason);
+    }
     // It never throws for what a node sends; a store that fails on a report rejects (no ack: the node sends it again).
     await cp.onMessage(s, message).catch((e: unknown) => this.log(`node message failed: ${String(e)}`));
     const p = this.pending.get(ws);
@@ -711,6 +754,50 @@ export class NodeRegistryDO extends DurableObject<Env> {
     this.sessions.set(server, cp.open(this.link(server)));
     await this.ensureAlarm();
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** One more frame of this socket's budget (FRAME_BURST, refilled at FRAME_RATE a second); false once it is spent. */
+  private frameAllowed(ws: WebSocket): boolean {
+    const now = Date.now();
+    const b = this.frames.get(ws) ?? { tokens: FRAME_BURST, at: now };
+    b.tokens = Math.min(FRAME_BURST, b.tokens + (Math.max(0, now - b.at) / 1000) * FRAME_RATE);
+    b.at = now;
+    this.frames.set(ws, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
+  /**
+   * A logged-in socket's frame before the control plane takes it: a banned node's socket closes
+   * (4403); the same hello again is dropped; a node past its hellos or its publicUrl changes closes
+   * (1008). null: the frame goes on.
+   */
+  private helloRefused(ws: WebSocket, nodeId: string, cp: ControlPlane, message: string): 'drop' | { code: number; reason: string } | null {
+    const n = cp.registry.node(nodeId);
+    if (n?.status === 'banned') return { code: 4403, reason: 'banned' };
+    const hello = helloIn(message);
+    if (!hello) return null;
+    if (this.lastHello.get(ws) === message) return 'drop';
+    if (this.limited('hello:' + nodeId, HELLOS_PER_WINDOW, HELLO_WINDOW_MS)) return { code: 1008, reason: 'too many hellos' };
+    const url = typeof hello.publicUrl === 'string' ? hello.publicUrl.replace(/\/$/, '') : null;
+    if (n && n.transports.includes('wss') && url !== null && url !== n.publicUrl && this.limited('url:' + nodeId, PUBLIC_URL_CHANGES_PER_HOUR, HOUR_MS)) {
+      return { code: 1008, reason: 'too many address changes' };
+    }
+    this.lastHello.set(ws, message);
+    return null;
+  }
+
+  /** The control plane's probe of a node's publicUrl (GET <it>/healthz?nonce=): what probeTargetOk allows, 5 s, no redirect, a capped read. */
+  private async probeJson(u: string): Promise<unknown> {
+    if (!probeTargetOk(u, this.loopbackOk)) throw new Error('refused target (not a public address)');
+    const res = await this.fetchFn(u, { signal: AbortSignal.timeout(HEALTHZ_TIMEOUT_MS), redirect: 'manual' });
+    return readJsonCapped(res, HEALTHZ_MAX_BYTES);
+  }
+
+  /** Close the live control sockets of a node (a ban). */
+  private closeNode(nodeId: string, code: number, reason: string): void {
+    for (const ws of this.ctx.getWebSockets()) if (this.sessions.get(ws)?.nodeId === nodeId) this.link(ws).close(code, reason);
   }
 
   /**
@@ -1053,6 +1140,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!ADMIN_STATUSES.includes(status as NodeStatus)) return error(400, 'bad_status', `status: ${ADMIN_STATUSES.join(', ')}`);
     const was = n.status;
     cp.setStatus(n.nodeId, status as NodeStatus, reason);
+    // The node was told (a 'status' message); a banned one's socket goes now, not at its next login.
+    if (n.status === 'banned') this.closeNode(n.nodeId, 4403, 'banned');
     this.audit(`ALERT admin ${actor}: node ${label(n)} ${was} -> ${n.status}${was === n.status ? ' (no change)' : ''}${reason ? `: ${reason}` : ''}`);
     this.watch.statusSet(n);
     this.keepOffline();

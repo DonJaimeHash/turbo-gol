@@ -503,3 +503,41 @@ test('names and versions a node sent are cut before they reach a line', () => {
   assert.equal(W.clip('abc', 3), 'abc');
   assert.equal(W.clip('abcd', 3), 'ab…');
 });
+
+test('probeTargetOk: a public host only (every IPv4 form the URL parser knows); loopback only when the object runs on one', () => {
+  for (const u of ['https://sp1.turbo-gol.com/healthz?nonce=x', 'https://203.0.114.9:8443/healthz', 'https://[2606:4700::1111]/healthz', 'http://n.example']) assert.equal(W.probeTargetOk(u), true, u);
+  for (const u of [
+    'https://127.0.0.1/healthz',
+    'https://localhost/healthz',
+    'https://a.localhost',
+    'https://10.1.2.3',
+    'https://172.16.0.1',
+    'https://172.31.255.255',
+    'https://192.168.1.1',
+    'https://169.254.169.254/latest',
+    'https://100.64.0.1',
+    'https://0.0.0.0',
+    'https://224.0.0.1',
+    'https://0x7f.1',
+    'https://2130706433',
+    'https://017700000001',
+    'https://[::1]',
+    'https://[::]',
+    'https://[fd00::1]',
+    'https://[fe80::1]',
+    'https://[::ffff:10.0.0.1]',
+    'https://[::ffff:7f00:1]',
+    'https://[64:ff9b::a00:1]',
+    'https://[2001:db8::1]',
+    'https://intranet',
+    'https://printer.local',
+    'https://x.internal',
+    'https://user:pw@n.example',
+    'ftp://n.example',
+    'not a url',
+  ]) {
+    assert.equal(W.probeTargetOk(u), false, u);
+  }
+  assert.equal(W.probeTargetOk('https://127.0.0.1:9000/healthz', true), true, 'wrangler dev: a node on this machine');
+  assert.equal(W.probeTargetOk('https://10.0.0.1', true), false, 'still never a private one');
+});
