@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
 // The local Worker's port (`wrangler dev`, 8787 by default): another one for a second checkout's
@@ -41,6 +42,11 @@ export default defineConfig({
     sourcemap: false,
     assetsInlineLimit: 0,
     rollupOptions: {
+      // The game, and the replay viewer (src/replay/main.ts): its own page, reached from PROFILE.
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        replay: fileURLToPath(new URL('./replay.html', import.meta.url)),
+      },
       output: {
         // Vite 8 (Rolldown) only accepts the function form.
         manualChunks: (id: string): string | undefined => (id.includes('/node_modules/three/') ? 'three' : undefined),
