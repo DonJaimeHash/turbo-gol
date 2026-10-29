@@ -495,8 +495,11 @@ export class NetClient {
   /** The packet (and its `state` view) is only valid during the callback: copy what you keep. */
   onSnapshot: ((pkt: SnapshotPacket) => void) | null = null;
   onEvent: ((e: MatchEvent) => void) | null = null;
-  /** `reconnecting` = a rejoin is in progress; a second onClose with false follows if it fails. */
-  onClose: ((code: number, reason: string, reconnecting: boolean) => void) | null = null;
+  /**
+   * `reconnecting` = a rejoin is in progress; a second onClose with false follows if it fails.
+   * `gone`: that rejoin found the match over (404 / 410), nothing to come back to.
+   */
+  onClose: ((code: number, reason: string, reconnecting: boolean, gone?: boolean) => void) | null = null;
   /** Error / Kick messages from the host and protocol problems. */
   onError: ((code: string, message: string) => void) | null = null;
   /** A Turnstile challenge started (true) / finished (false), for the menu's status line. */
@@ -1328,7 +1331,7 @@ export class NetClient {
           if (transient) this.reconnectNext(code, why);
           else {
             this.reconnectAttempt = 0;
-            if (this.onClose) this.onClose(code, why, false);
+            if (this.onClose) this.onClose(code, why, false, err instanceof NetError && (err.status === 404 || err.status === 410));
           }
         },
       );

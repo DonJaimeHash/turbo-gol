@@ -1057,16 +1057,20 @@ export class Game implements P2PGameHooks {
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     // A join link (#sala=ABC234) on this load or a later hashchange: its sheet once the menus are up.
-    // The Sala a reload of the game's own left (restartOn): joined again, its screen.
+    // The Sala a reload left (the game's own, restartOn, or the player's: pagehide, not a page kept
+    // in the back/forward cache): joined again, its screen.
     // The phone's /tv page (a TV's sign-in), and a code kept across a sign-in's round trip.
     if (typeof window !== 'undefined' && typeof history !== 'undefined') {
       installJoinLink(this.menu);
       installLobbyReturn(this.menu);
+      window.addEventListener('pagehide', (e) => {
+        if (!e.persisted) this.keepLobby();
+      });
       installTvLink(this.menu);
     }
     // The anti-bot check that wants the player: the menus' sheet, CANCEL ends it.
     online.client.onAntiBotAsk = (asking) => this.menu.antiBotAsk(asking, () => online.client.cancelChallenge());
-    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => this.restartAfterFinal && this.pendingRestart !== null, left: () => this.finalLeft() })));
+    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => (this.restartAfterFinal && this.pendingRestart !== null ? t(`quality.${this.pendingRestart}`) : null), left: () => this.finalLeft() })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
       focus: (el) => {
@@ -1298,7 +1302,10 @@ export class Game implements P2PGameHooks {
         const c = await net.config();
         return { regions: REGIONS, autoRegion: c.autoRegion ?? '', oauth: c.oauth ?? [], online: true, botFillMs: c.botFillMs ?? null };
       },
-      prewarmAntiBot: () => net?.prewarmAntiBot(),
+      // A guest's only: an account (or a page that was one: its hint) registers no guest.
+      prewarmAntiBot: () => {
+        if (!game.accounts.signedIn && game.accounts.hintName === null) net?.prewarmAntiBot();
+      },
       guestName: () => (game.online !== null ? game.online.name : t('game.guestName')),
       setGuestName: (name) => {
         if (game.online !== null) game.online.setName(name);
@@ -1446,7 +1453,7 @@ export class Game implements P2PGameHooks {
     this.setMode(mode);
     this.menuReturnAt = -1;
     this.setSession(online);
-    online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl });
+    online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl }, '', true);
   }
 
   /**
@@ -1768,6 +1775,13 @@ export class Game implements P2PGameHooks {
     }
     // Into or out of super low: its own backend and world, a new page (quality.ts needsReload).
     if (needsReload(this.quality, q)) {
+      // A running search would end with the page: refused, as the language picker does (the
+      // Graphics tab shows the running tier again).
+      if (fallback === null && !this.onlineActive && this.session !== null && this.session.busy) {
+        this.notify(t('settings.qualityBusy'));
+        this.refreshSettings();
+        return Promise.resolve();
+      }
       // In an online match the reload would leave it (an abandon): the pick is saved now and the
       // page restarts once the menus are back (showMenu); the Graphics tab says so.
       if (fallback === null && this.onlineActive) {
@@ -1857,14 +1871,22 @@ export class Game implements P2PGameHooks {
         /* the reload still starts on the lower tier (its ceiling) */
       }
     }
-    // The Sala this tab is in: the next page joins it again (lobby.ts installLobbyReturn), as the
-    // reload's dropped socket keeps the place (LobbyDO).
-    const lobby = this.lobby;
-    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now() });
+    this.keepLobby();
     this.loadingHold = true;
     return this.loading.show(fallback !== null ? fallbackText(fallback) : t('loading.restart')).then(() => {
       window.location.reload();
     });
+  }
+
+  /**
+   * The Sala this tab is in, for the next page (restartOn, and pagehide: any reload): it joins it
+   * again (lobby.ts installLobbyReturn), as the reload's dropped socket keeps the place (LobbyDO), and
+   * opens it when it was on the stack (the FINAL's MENÚ goes to Inicio: so does the page after the
+   * reload), never over a match under way (Inicio's hero rejoins a server one; its FINAL goes back).
+   */
+  private keepLobby(): void {
+    const lobby = this.lobby;
+    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now(), open: this.menu.stacked('lobby') && this.session?.inMatch !== true });
   }
 
   /** The tier the player picked (switch `switchId`) has run through the fallback window: lift a lower ceiling to it. */
@@ -2424,7 +2446,8 @@ export class Game implements P2PGameHooks {
     if (this.session !== null && this.session.busy) this.session.cancel();
     if (online.state !== 'idle') return;
     const region = online.client.region;
-    this.searchReq = { kind: rec.kind, modes: rec.modes.slice(), region: isRegion(region) ? region : null, net: 'server' };
+    // A lobby's match shows as a Casual search while it connects; its FINAL goes back to the lobby.
+    this.searchReq = { kind: rec.kind === 'ranked' ? 'ranked' : 'casual', modes: rec.modes.slice(), region: isRegion(region) ? region : null, net: 'server' };
     this.searchSince = performance.now();
     this.matchKind = rec.kind;
     this.setMode(rec.modes[0]);

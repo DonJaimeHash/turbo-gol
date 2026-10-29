@@ -205,16 +205,16 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   assert.equal(r.json.error, 'tv_code_used');
 });
 
-test('Worker: a code expires at 5 minutes (confirm and poll say so), a wrong secret is refused and consumes nothing', async () => {
+test('Worker: a code expires at 5 minutes (confirm and poll say so), a wrong secret answers as an unknown code and consumes nothing', async () => {
   const { env, obj } = makeEnv();
   const ip = ips();
   const ana = await account(obj, 'Ana');
   const { code, secret } = (await call(env, '/api/auth/tv/start', { ip: ip(0) })).json;
   let r = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: { code, secret: secret.slice(0, -2) + (secret.endsWith('AA') ? 'BB' : 'AA') } });
-  assert.equal(r.status, 403);
-  assert.equal(r.json.error, 'bad_secret');
-  r = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: { code: 'ZZZZZZ', secret } });
-  assert.equal(r.status, 410, 'an unknown code is gone');
+  const unknown = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: { code: code === 'ZZZZZZ' ? 'YYYYYY' : 'ZZZZZZ', secret } });
+  assert.equal(unknown.status, 410, 'an unknown code is gone');
+  assert.deepEqual([r.status, r.json], [unknown.status, unknown.json], 'a live code with a wrong secret: the same answer, nothing tells it apart');
+  assert.deepEqual((await call(env, '/api/auth/tv/poll', { ip: ip(0), body: { code, secret } })).json, { state: 'pending' }, 'the code is still there');
   for (const body of [{}, { code }, { code, secret: 5 }, { code: 'ABC', secret }]) assert.equal((await call(env, '/api/auth/tv/poll', { ip: ip(0), body })).status, 400, JSON.stringify(body));
   const t0 = Date.now();
   obj.now = () => t0 + 5 * 60_000 + 1;
@@ -253,12 +253,13 @@ test('Worker: only an account confirms (401 / 403 for a guest), from this origin
   assert.equal((await call(env, '/api/auth/tv/confirm', { ip: ip(1), token: ana.token, body: { code } })).status, 200, 'the code is still there');
 });
 
-test('Worker: brute force: 10 failed confirms per account and per IP, then every confirm is refused (the right code too)', async () => {
+test('Worker: brute force: 10 failed confirms per account, then every confirm of it is refused (the right code too)', async () => {
   const { env, obj } = makeEnv();
   const ip = ips();
   const ana = await account(obj, 'Ana');
   const beto = await account(obj, 'Beto');
   const { code } = (await call(env, '/api/auth/tv/start', { ip: ip(0) })).json;
+  obj.tv.wokeAt = Date.now() - TV.TV_CODE_TTL_MS; // awake for a code's life: an unknown code is wrong
   const wrong = code === 'ZZZZZZ' ? 'YYYYYY' : 'ZZZZZZ';
   for (let i = 0; i < TV.TV_CONFIRM_FAILS; i++) {
     const r = await call(env, '/api/auth/tv/confirm', { ip: ip(1), token: ana.token, body: { code: wrong } });
@@ -272,9 +273,7 @@ test('Worker: brute force: 10 failed confirms per account and per IP, then every
   r = await call(env, '/api/auth/tv/confirm', { ip: ip(2), token: ana.token, body: { code } });
   assert.equal(r.status, 429, 'the account, from another IP');
   r = await call(env, '/api/auth/tv/confirm', { ip: ip(1), token: beto.token, body: { code } });
-  assert.equal(r.status, 429, 'the IP, with another account');
-  r = await call(env, '/api/auth/tv/confirm', { ip: ip(3), token: beto.token, body: { code } });
-  assert.equal(r.status, 200, 'another account from another IP');
+  assert.equal(r.status, 200, 'another account on the same IP (a shared one: a carrier, a school)');
   // The window ends: the account may try again.
   obj.now = () => Date.now() + TV.TV_FAIL_WINDOW_MS + 1;
   const late = await call(env, '/api/auth/tv/confirm', { ip: ip(4), token: ana.token, body: { code: wrong } });
@@ -294,4 +293,88 @@ test('Worker: rate limits per IP on start (10 a minute), poll (60) and confirm (
   for (let i = 0; i < 30; i++) await call(env, '/api/auth/tv/confirm', { ip: ip(2), token: ana.token, body: { code: 'ZZZZZZ' } });
   const r = await call(env, '/api/auth/tv/confirm', { ip: ip(2), token: ana.token, body: { code } });
   assert.equal(r.status, 429);
+});
+
+// ---- the hardening after PR 14's review (PR 17) --------------------------------------------
+
+test('tvCodes: an IPv6 address counts by its /64; the caps count live codes; the rows past TV_ROWS_MAX lose their oldest tombstones', () => {
+  assert.equal(TV.ipKey('203.0.113.7'), '203.0.113.7');
+  assert.equal(TV.ipKey('2001:db8::1'), '2001:db8:0:0');
+  assert.equal(TV.ipKey('2001:0DB8:0000:0001:aaaa:bbbb:cccc:dddd'), '2001:db8:0:1');
+  assert.equal(TV.ipKey('2001:db8:0:1::'), '2001:db8:0:1');
+  assert.equal(TV.ipKey('::1'), '0:0:0:0');
+  assert.equal(TV.ipKey('fe80::1%eth0'), 'fe80:0:0:0');
+  // One /64, many addresses: one IP's five live codes.
+  const t = new TV.TvCodes();
+  const first = t.start('2001:db8::1', H('a'), 0).code;
+  for (let i = 2; i <= 9; i++) t.start(`2001:db8::${i}`, H('a'), 0);
+  assert.equal(t.size, TV.TV_CODES_PER_IP, 'the /64 holds five');
+  assert.equal(t.poll(first, H('a'), 1), 'expired', 'its oldest went');
+  // The global cap counts live codes: expired ones (tombstones until their keep) do not fill it.
+  const TTL = TV.TV_CODE_TTL_MS;
+  const full = new TV.TvCodes();
+  const oldest = full.start('ip0', H('a'), 0).code;
+  for (let i = 1; i < TV.TV_CODES_MAX; i++) full.start('ip' + i, H('a'), 0);
+  assert.equal(full.start('one-more', H('a'), 0), 'full');
+  // Expired (tombstones until their keep), they do not fill it: 2,000 new codes.
+  const b0 = full.start('later0', H('b'), TTL).code;
+  for (let i = 1; i < TV.TV_CODES_MAX; i++) assert.notEqual(full.start('later' + i, H('b'), TTL), 'full', `new code ${i}`);
+  assert.equal(full.size, TV.TV_ROWS_MAX);
+  assert.equal(full.start('over', H('b'), TTL), 'full', '2,000 live: refused');
+  // One is used (a tombstone now): the next code takes the oldest tombstone's row, never a live code's.
+  assert.equal(full.confirm(b0, { userId: 'u', username: 'Ana' }, 'phone', TTL), 'ok');
+  assert.equal(full.poll(b0, H('b'), TTL).userId, 'u');
+  assert.notEqual(full.start('newest', H('c'), TTL + 1), 'full');
+  assert.equal(full.size, TV.TV_ROWS_MAX, 'one tombstone went for it');
+  assert.equal(full.codes.has(oldest), false, 'the oldest');
+  assert.equal(full.poll(b0, H('b'), TTL + 1), 'used', 'a newer tombstone stays');
+});
+
+test('tvCodes: failed confirms: 10 per account, 50 per IP (a shared one); an unknown code just after a wake is expired (maybe lost), later wrong', () => {
+  const t = new TV.TvCodes();
+  t.start('tv', H('a'), 0);
+  t.wokeAt = -TV.TV_CODE_TTL_MS;
+  const ip = '198.51.100.9';
+  for (let u = 0; u < 5; u++) {
+    for (let i = 0; i < TV.TV_CONFIRM_FAILS; i++) assert.equal(t.confirm('ZZZZZZ', { userId: 'u' + u, username: 'P' + u }, ip, 1), 'wrong');
+    assert.deepEqual(Object.keys(t.confirm('ZZZZZZ', { userId: 'u' + u, username: 'P' + u }, ip, 1)), ['throttled'], 'that account is throttled');
+  }
+  assert.equal(TV.TV_CONFIRM_IP_FAILS, 5 * TV.TV_CONFIRM_FAILS);
+  assert.deepEqual(Object.keys(t.confirm('ZZZZZZ', { userId: 'fresh', username: 'F' }, ip, 1)), ['throttled'], '50 failures: the IP too');
+  assert.equal(t.confirm('ZZZZZZ', { userId: 'fresh', username: 'F' }, '2001:db8::5', 1), 'wrong', 'another IP');
+  // A woken object (the codes are in memory: an eviction drops them).
+  const w = new TV.TvCodes();
+  assert.equal(w.confirm('ZZZZZZ', { userId: 'u', username: 'Ana' }, 'ip', 1000), 'expired', 'just woke: maybe a code it lost');
+  assert.equal(w.confirm('YYYYYY', { userId: 'u', username: 'Ana' }, 'ip', 1000 + TV.TV_CODE_TTL_MS), 'wrong', 'a code\'s life later: wrong');
+  assert.equal(w.poll('ZZZZZZ', H('a'), 1000), 'expired');
+});
+
+test('Worker: a suspended account confirms nothing (403 banned on the phone); suspended or deleted after the confirm, the TV hears banned or expired', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await account(obj, 'Ana');
+  const beto = await account(obj, 'Beto');
+  const sql = (q, ...b) => obj.store.sql.exec(q, ...b);
+  const one = (await call(env, '/api/auth/tv/start', { ip: ip(0) })).json;
+  sql('UPDATE users SET banned = 1 WHERE id = ?', ana.id);
+  let r = await call(env, '/api/auth/tv/confirm', { ip: ip(1), token: ana.token, body: { code: one.code } });
+  assert.equal(r.status, 403);
+  assert.equal(r.json.error, 'banned');
+  assert.deepEqual((await call(env, '/api/auth/tv/poll', { ip: ip(0), body: one })).json, { state: 'pending' }, 'the code stays');
+  // Banned between the confirm and the poll.
+  assert.equal((await call(env, '/api/auth/tv/confirm', { ip: ip(1), token: beto.token, body: { code: one.code } })).status, 200);
+  sql('UPDATE users SET banned = 1 WHERE id = ?', beto.id);
+  r = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: one });
+  assert.equal(r.status, 403);
+  assert.equal(r.json.error, 'banned');
+  assert.equal(r.headers.get('set-cookie'), null);
+  // Deleted between the confirm and the poll: the approval went with it.
+  const cleo = await account(obj, 'Cleo');
+  const two = (await call(env, '/api/auth/tv/start', { ip: ip(0) })).json;
+  assert.equal((await call(env, '/api/auth/tv/confirm', { ip: ip(1), token: cleo.token, body: { code: two.code } })).status, 200);
+  sql('DELETE FROM users WHERE id = ?', cleo.id);
+  r = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: two });
+  assert.equal(r.status, 410);
+  assert.equal(r.json.error, 'tv_code_expired');
+  assert.equal(r.headers.get('set-cookie'), null);
 });

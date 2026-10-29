@@ -295,6 +295,8 @@ export default {
   'friendly.difficulty': 'AI difficulty',
   // Where the match is played (the stadium's setting: harbour, canyon...); purely visual
   'friendly.theme': 'Stadium',
+  // Under the stadium sheet's title (components/stadium.ts): the pick is not for this match only
+  'friendly.themeNote': 'Used in all your matches and behind the menus',
   'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
   // Starts the friendly match
   'friendly.play': 'PLAY',
@@ -478,6 +480,9 @@ export default {
   'lobby.yourName': 'Your name',
   // In another lobby already: joining this one leaves it
   'lobby.swap': 'You leave lobby {code}.',
+  // A restart (Super low) took longer than the server keeps a place in the lobby
+  'lobby.stayLate': 'Lobby {code} went on without you: join it again with its code',
+  'lobby.stayBack': 'Back in lobby {code}: you took a while, the host may have changed',
 
   // A lost server match (plan PR 12: src/ui/screens/match/lost.ts)
   'lost.title': 'Your connection dropped',
@@ -721,6 +726,8 @@ export default {
   'error.account.tv_code_wrong': "That code doesn't exist: check it on the TV",
   'error.account.tv_code_expired': 'The code expired: get a new one on the TV',
   'error.account.tv_code_used': 'That code was already used',
+  // The server holds too many TV codes at once
+  'error.account.busy': 'Too many codes right now, try again in a minute',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
@@ -831,6 +838,8 @@ export default {
   'p2p.roomClosed': 'The match room closed',
   // An experimental lobby's match could not connect: there is no server match to fall back to
   'p2p.experimentalFailed': 'Could not connect the players: experimental matches have no server fallback',
+  // A lobby's P2P room that never connected: back in the lobby (never the public queue)
+  'p2p.lobbyFailed': 'Could not connect the players: back to the lobby',
   // The room refused this page: its arena does not run the lobby's rules
   'p2p.physicsMismatch': "Your game could not apply the lobby's rules: reload the page",
 
@@ -1047,6 +1056,11 @@ export default {
   'final.changeSub': 'Casual, VS AI or Lobbies',
   'final.menu': 'MENU',
   'final.menuSub': 'Back to Play',
+  // The main button while a graphics pick waits for the FINAL (Super low: the game restarts first); {quality} = the tier's name
+  'final.slotRestart': 'GRAPHICS',
+  'final.restart': 'RESTART',
+  'final.restartHome': 'Applies {quality} · back to Play',
+  'final.restartLobby': 'Applies {quality} · back to the lobby',
   // A Competitive match that never started: the toast over Inicio while the search starts again
   'final.noShow': "A player didn't show up · back in the queue",
   'final.dodge': 'A player left before the start · back in the queue',
@@ -1189,6 +1203,8 @@ export default {
   // In place of the hint when the picked tier needs a restart (into or out of Super low) during an
   // online match: it waits until the player leaves the match
   'settings.qualityAfterOnline': 'Applies when you leave the online match (the game restarts)',
+  // Into or out of Super low restarts the game, which would end the search
+  'settings.qualityBusy': 'Stop searching to switch Super low on or off',
   // In place of the hint when the device runs Super low by itself (a weak TV, the safety net) and
   // the player cannot pick it: no tier is lit
   'settings.qualityAuto': 'This device runs Super low on its own',

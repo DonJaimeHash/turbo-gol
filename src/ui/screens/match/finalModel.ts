@@ -101,7 +101,8 @@ export function finalRows(players: readonly FinalPlayer[], team: 0 | 1): FinalPl
 export type AgainAction = { readonly kind: 'search'; readonly queue: QueuePick } | { readonly kind: 'restart' } | { readonly kind: 'lobby' } | { readonly kind: 'home' };
 
 export function againAction(kind: FinalKind, prefs: MenuPrefs, reloadWaits = false): AgainAction {
-  if (reloadWaits) return { kind: 'home' };
+  // A reload waits for the FINAL to go: no search under it (Inicio), a lobby's member back to it.
+  if (reloadWaits) return kind === 'lobby' ? { kind: 'lobby' } : { kind: 'home' };
   if (kind === 'ai') return { kind: 'restart' };
   if (kind === 'lobby') return { kind: 'lobby' };
   if (kind === 'ranked') return { kind: 'search', queue: { kind: 'ranked', modes: prefs.rankedModes, region: prefs.region, net: 'server' } };

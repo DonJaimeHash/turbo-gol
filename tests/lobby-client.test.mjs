@@ -127,6 +127,29 @@ test('a dropped socket joins again by code (same password), quietly: reconnectin
   assert.equal(closed, null, 'no close reported');
 });
 
+test("leave() while a socket still connects (a reconnection's try) says 'leave' once it opens, then closes it", async () => {
+  const h = client();
+  await joined(h);
+  h.sockets[0].drop(1006);
+  await tick(10);
+  assert.equal(h.sockets.length, 2, "the reconnection's socket");
+  const ws = h.sockets[1];
+  assert.equal(ws.readyState, 0, 'still connecting');
+  h.lc.leave();
+  assert.equal(h.lc.status, 'idle');
+  assert.equal(h.lc.inLobby, false);
+  assert.deepEqual(ws.sent, [], 'nothing sent before it opened');
+  ws.open();
+  assert.deepEqual(ws.sent.map((d) => JSON.parse(d)), [{ t: 'leave' }], 'the leave: the place goes now, the host passes on now');
+  assert.equal(ws.readyState, 3, 'closed after it');
+  assert.equal(h.lc.status, 'idle', 'the late open changes nothing for the client');
+  // An open socket: the leave as before.
+  const o = client();
+  await joined(o);
+  o.lc.leave();
+  assert.deepEqual(o.sockets[0].sent.map((d) => JSON.parse(d)), [{ t: 'leave' }]);
+});
+
 test('a close that ends the stay never reconnects: kicked, the lobby closed, another tab, left', async () => {
   for (const [code, reason, want] of [[4003, '', 'kicked'], [4004, 'idle', 'idle'], [4000, 'replaced', 'replaced']]) {
     const h = client();

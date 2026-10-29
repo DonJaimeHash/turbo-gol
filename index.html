@@ -2,6 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!-- /tv/ (a trailing slash) would load the build's relative ./assets from /tv/assets: the phone's /tv page without it, its #CODE kept. -->
+    <script>
+      if (location.pathname === '/tv/') location.replace('/tv' + location.search + location.hash);
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#11151d" />

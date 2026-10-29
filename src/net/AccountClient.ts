@@ -281,10 +281,12 @@ export class AccountClient {
   /**
    * A Bearer session that is valid for a few more minutes (refreshed when needed), null for a
    * guest. `minValidMs` asks for longer: a match on a community node is left only through
-   * POST /api/leave, with the Bearer the match started with (NetClient.refreshBearer).
+   * POST /api/leave, with the Bearer the match started with (NetClient.refreshBearer). A restore
+   * still on its way (a page load) is waited for: a Sala joined again after a reload joins as the
+   * account's member, not as a new guest.
    */
   async sessionForQueue(minValidMs = REFRESH_MARGIN_MS): Promise<AccountSession | null> {
-    const a = this.account;
+    const a = this.account ?? (this.refreshing !== null ? await this.refreshing : null);
     if (a === null) return null;
     if (a.expiresAt - this.now() > minValidMs) return a;
     return this.refresh();

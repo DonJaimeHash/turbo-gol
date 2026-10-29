@@ -5,7 +5,8 @@
  * inputs (`inputType`, `data`: a system keyboard often sends keyCode 229 and an input event instead)
  * and the history's popstate (a BACK that the browser turned into a step back). The last 14, newest
  * first, at the top right; it takes no pointer and no focus. A password field's characters show as
- * dots. Installed by main.ts for the page load.
+ * dots, and so do a keyboard's while the keypad is up over a password (its focus is on a key, not the
+ * field: mn-keypad[data-masked]). Installed by main.ts for the page load.
  */
 const KEEP = 14;
 
@@ -20,7 +21,7 @@ export function installKeysOverlay(): void {
     lines.length = Math.min(lines.length, KEEP);
     box.textContent = lines.join('\n');
   };
-  const secret = (e: Event): boolean => e.target instanceof HTMLInputElement && e.target.type === 'password';
+  const secret = (e: Event): boolean => (e.target instanceof HTMLInputElement && e.target.type === 'password') || document.querySelector('.mn-keypad[data-masked]') !== null;
   const key = (e: KeyboardEvent): void => {
     const k = secret(e) && typeof e.key === 'string' && e.key.length === 1 ? '•' : e.key;
     add(`${e.type === 'keydown' ? 'down' : 'up  '} key=${JSON.stringify(k)} code=${JSON.stringify(secret(e) ? '' : e.code)} keyCode=${secret(e) ? 0 : e.keyCode}${e.repeat ? ' repeat' : ''}`);

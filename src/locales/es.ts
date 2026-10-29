@@ -193,6 +193,7 @@ export default {
   'friendly.mode': 'Modo',
   'friendly.difficulty': 'Dificultad de la IA',
   'friendly.theme': 'Estadio',
+  'friendly.themeNote': 'Se usa en todos tus partidos y de fondo en los menús',
   'friendly.intro': 'Un partido offline de 3 minutos contra la IA. Tus compañeros, si los hay, también son bots.',
   'friendly.play': 'JUGAR',
 
@@ -327,6 +328,8 @@ export default {
   'lobby.joinAskCode': '¿Unirte a la sala {code}?',
   'lobby.yourName': 'Tu nombre',
   'lobby.swap': 'Sales de la sala {code}.',
+  'lobby.stayLate': 'La sala {code} siguió sin ti: únete otra vez con su código',
+  'lobby.stayBack': 'De vuelta en la sala {code}: tardaste y puede que el anfitrión haya cambiado',
 
   'lost.title': 'Se cortó tu conexión',
   'lost.body': 'El partido sigue sin ti',
@@ -511,6 +514,7 @@ export default {
   'error.account.tv_code_wrong': 'Ese código no existe: revísalo en la TV',
   'error.account.tv_code_expired': 'El código caducó: pide uno nuevo en la TV',
   'error.account.tv_code_used': 'Ese código ya se usó',
+  'error.account.busy': 'Demasiados códigos ahora, inténtalo en un minuto',
   'error.lobby.rate_limited': 'Demasiados intentos, espera un minuto',
   'error.lobby.bad_name': 'El nombre de la sala tiene que tener entre 3 y 24 caracteres',
   'error.lobby.bad_code': 'El código tiene 6 letras o números',
@@ -582,6 +586,7 @@ export default {
   'p2p.engine': 'Falló el motor del juego: recarga la página',
   'p2p.roomClosed': 'Se cerró la sala del partido',
   'p2p.experimentalFailed': 'No se pudo conectar a los jugadores: las partidas experimentales no pasan a un servidor',
+  'p2p.lobbyFailed': 'No se pudo conectar a los jugadores: de vuelta en la sala',
   'p2p.physicsMismatch': 'Tu juego no pudo aplicar las reglas de la sala: recarga la página',
 
   // Leaderboard and the Competitive result dialog (src/ui/screens/leaderboard.ts)
@@ -713,6 +718,10 @@ export default {
   'final.changeSub': 'Casual, Contra la IA o Salas',
   'final.menu': 'MENÚ',
   'final.menuSub': 'Volver a Jugar',
+  'final.slotRestart': 'GRÁFICOS',
+  'final.restart': 'REINICIAR',
+  'final.restartHome': 'Aplica {quality} · vuelves a Jugar',
+  'final.restartLobby': 'Aplica {quality} · vuelves a la sala',
   'final.noShow': 'Un jugador no se presentó · de vuelta en la cola',
   'final.dodge': 'Un jugador se fue antes del inicio · de vuelta en la cola',
 
@@ -796,6 +805,7 @@ export default {
   'settings.qualityHighHint': 'Equilibrio entre detalle y fluidez',
   'settings.qualityUltraHint': 'Todos los efectos, para una tarjeta gráfica potente',
   'settings.qualityAfterOnline': 'Se aplica al salir de la partida online (el juego se reinicia)',
+  'settings.qualityBusy': 'Cancela la búsqueda para activar o quitar Súper bajo',
   'settings.qualityAuto': 'Este dispositivo usa Súper bajo por su cuenta',
   'settings.experimentalLocked': 'Inicia sesión para probar las funciones experimentales: física personalizada en la práctica libre y en salas P2P',
   'settings.experimentalNote': 'Funciones en prueba: pueden cambiar o desaparecer',
