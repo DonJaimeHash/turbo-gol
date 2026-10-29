@@ -473,12 +473,13 @@ test('LobbyDO: one player gets 5 wrong guesses per 10 minutes; a friend with the
 test('LobbyDO: a new password needs 4 characters (create 400 short_password, settings error short_password with nothing changed); a lobby made before keeps its short one', async () => {
   const h = await makeLobby();
   const host = await h.upgrade('host1');
-  await h.send(host, { t: 'settings', settings: { name: 'Otra sala' }, password: 'abc' });
+  // The host is a guest: a setting a guest host may change (sec/guest-names drops a guest's title).
+  await h.send(host, { t: 'settings', settings: { visibility: 'private' }, password: 'abc' });
   assert.equal(host.of('error').at(-1).code, 'short_password');
-  assert.equal(host.last().settings.name, 'Sala', 'the refused save changed nothing');
+  assert.equal(host.last().settings.visibility, 'public', 'the refused save changed nothing');
   assert.equal(host.last().hasPassword, false);
-  await h.send(host, { t: 'settings', settings: { name: 'Otra sala' }, password: 'abcd' });
-  assert.equal(host.last().settings.name, 'Otra sala');
+  await h.send(host, { t: 'settings', settings: { visibility: 'private' }, password: 'abcd' });
+  assert.equal(host.last().settings.visibility, 'private');
   assert.equal(host.last().hasPassword, true);
   // POST /internal/create with a short password.
   const ctx = new FakeLobbyCtx();
