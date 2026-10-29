@@ -368,7 +368,11 @@ per isolate and 60 per location, `/api/rejoin` 10 and 60, `/api/leave` 30 and 60
 it is, an IPv6 address by its /64, so fresh addresses of one subscriber share one count. Since a
 school or an ISP's CGNAT puts hundreds of players behind one IPv4 address (and a school LAN behind
 one /64), the per-network limits are set for a crowd: 1,200 a minute on the frequent routes, 120 on
-a new guest. The binding is approximate and per location, not one global count: a determined
+a new guest. The account routes that call the single AccountsDO are limited before the call
+(`src/index.ts` with `limits.ts` `accountGate`): `/api/me`, `/api/ranked/result` and the leaderboard's
+own row 60 a minute per account (and 1,200 per network), password and recovery codes 10, logout
+and refresh 1,200 per network; logout and refresh never ask the object about a cookie that is not
+a refresh token's shape, and the leaderboard's own row is cached 15 s per account. The binding is approximate and per location, not one global count: a determined
 attacker with many addresses still needs a Cloudflare WAF rate-limiting rule (zone level) or the
 platform's DDoS protection.
 

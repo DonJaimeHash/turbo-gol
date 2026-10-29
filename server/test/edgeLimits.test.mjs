@@ -222,3 +222,90 @@ test('rejoin and leave count per session first, and per network only past a crow
   assert.ok(env.RL_60.keys.some((k) => k.startsWith('leave:')) && env.RL_1200.keys.some((k) => k === 'leaveNet:' + ip));
 });
 
+// ---- the account routes, before the AccountsDO ---------------------------------------------------------
+
+test('logout: a cookie that is no refresh token never reaches the AccountsDO (the answer is the same); a real one does', async () => {
+  const env = makeEnv();
+  for (const junk of ['x', 'y'.repeat(128), 'a'.repeat(42), 'a'.repeat(44), 'a'.repeat(42) + '=']) {
+    const res = await req(env, 'POST', '/api/auth/logout', { headers: { Cookie: '__Host-tg_rt=' + junk } });
+    assert.equal(res.status, 200, junk);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.match(res.headers.get('set-cookie') ?? '', /__Host-tg_rt=;.*Max-Age=0/);
+  }
+  assert.deepEqual(env.ACCOUNTS.calls, []);
+  const res = await req(env, 'POST', '/api/auth/logout', { headers: { Cookie: '__Host-tg_rt=' + 'Ab9_-'.repeat(8) + 'xyz' } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(env.ACCOUNTS.calls, ['/logout']);
+});
+
+test('refresh: a cookie that is no refresh token is 401 bad_refresh with the cookie cleared, as the object answers, without asking it', async () => {
+  const env = makeEnv();
+  const res = await req(env, 'POST', '/api/auth/refresh', { headers: { Cookie: '__Host-tg_rt=' + 'z'.repeat(100) } });
+  assert.equal(res.status, 401);
+  assert.equal((await res.json()).error, 'bad_refresh');
+  assert.match(res.headers.get('set-cookie') ?? '', /__Host-tg_rt=;.*Max-Age=0/);
+  assert.deepEqual(env.ACCOUNTS.calls, []);
+  const real = await req(env, 'POST', '/api/auth/refresh', { headers: { Cookie: '__Host-tg_rt=' + 'Q'.repeat(43) } });
+  assert.equal(real.status, 401, 'the fake object holds no row');
+  assert.equal(env.ACCOUNTS.calls.length, 1);
+});
+
+test('logout and refresh: limited per network before the object (the binding refuses: no AccountsDO call)', async () => {
+  const ip = ip4();
+  const seen = new Map([
+    ['logout:' + ip, 1200],
+    ['refresh:' + ip, 1200],
+  ]);
+  const env = makeEnv({ RL_1200: fakeBinding(1200, seen) });
+  const cookie = { Cookie: '__Host-tg_rt=' + 'Q'.repeat(43) };
+  assert.equal((await req(env, 'POST', '/api/auth/logout', { ip, headers: cookie })).status, 429);
+  assert.equal((await req(env, 'POST', '/api/auth/refresh', { ip, headers: cookie })).status, 429);
+  assert.deepEqual(env.ACCOUNTS.calls, []);
+});
+
+test('GET /api/me and GET /api/ranked/result: 60 a minute per account, the 61st never reaches the object; another account is not affected', async () => {
+  for (const path of ['/api/me', '/api/ranked/result?matchId=' + 'cd'.repeat(32)]) {
+    const env = makeEnv();
+    const bearer = await accountToken();
+    for (let i = 1; i <= 60; i++) assert.equal((await req(env, 'GET', path, { bearer })).status, 200, `${path} #${i}`);
+    const over = await req(env, 'GET', path, { bearer });
+    assert.equal(over.status, 429, path);
+    assert.equal(env.ACCOUNTS.calls.length, 60, path);
+    assert.equal((await req(env, 'GET', path, { bearer: await accountToken() })).status, 200, 'another account');
+  }
+});
+
+test('GET /api/me: a hundred accounts behind one IPv4 address are all served', async () => {
+  const env = makeEnv({ RL_60: fakeBinding(60), RL_1200: fakeBinding(1200) });
+  const school = ip4();
+  for (let i = 0; i < 100; i++) assert.equal((await req(env, 'GET', '/api/me', { ip: school, bearer: await accountToken() })).status, 200, `account #${i + 1}`);
+});
+
+test("the leaderboard: an account's own row is asked once per 15 s per playlist, and its lookups are limited per account", async () => {
+  const env = makeEnv();
+  const sub = accountId();
+  const bearer = await accountToken(sub);
+  const a = await (await req(env, 'GET', '/api/leaderboard?playlist=1v1', { bearer })).json();
+  const b = await (await req(env, 'GET', '/api/leaderboard?playlist=1v1', { bearer })).json();
+  assert.deepEqual(a.you, { rank: 7, mu: 30 });
+  assert.deepEqual(b.you, a.you);
+  const you = env.ACCOUNTS.calls.filter((c) => c.includes('userId='));
+  assert.deepEqual(you, [`/leaderboard?playlist=1v1&limit=1&userId=${sub}`], 'one lookup for both');
+  await req(env, 'GET', '/api/leaderboard?playlist=2v2', { bearer });
+  assert.equal(env.ACCOUNTS.calls.filter((c) => c.includes('userId=')).length, 2, 'another playlist is its own row');
+  for (let i = 4; i <= 60; i++) await req(env, 'GET', '/api/leaderboard?playlist=1v1', { bearer });
+  assert.equal((await req(env, 'GET', '/api/leaderboard?playlist=1v1', { bearer })).status, 429);
+  assert.equal((await req(env, 'GET', '/api/leaderboard?playlist=1v1')).status, 200, 'the board without a session is not counted per account');
+});
+
+test('password and recovery codes: 10 a minute per account, before the object', async () => {
+  for (const path of ['/api/auth/password', '/api/auth/recovery-codes']) {
+    const env = makeEnv();
+    const bearer = await accountToken();
+    for (let i = 1; i <= 10; i++) assert.notEqual((await req(env, 'POST', path, { bearer, body: {} })).status, 429, `${path} #${i}`);
+    const before = env.ACCOUNTS.calls.length;
+    assert.equal((await req(env, 'POST', path, { bearer, body: {} })).status, 429);
+    assert.equal(env.ACCOUNTS.calls.length, before, 'no object call for the 11th');
+  }
+});
+

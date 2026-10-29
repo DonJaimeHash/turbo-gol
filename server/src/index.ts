@@ -57,7 +57,8 @@
  *
  * Rate limits: limits.ts holds every one in a single table (per session, account or network, a
  * cheap in-isolate count first, then a Workers Rate Limiting binding shared by the isolates of a
- * Cloudflare location; 429 'rate_limited').
+ * Cloudflare location; 429 'rate_limited'). The account routes' limits are checked here, before
+ * accountRoute runs (accountGate), so a request over them never reaches the AccountsDO.
  * Turnstile: outside local dev (wrangler dev on localhost / 127.0.0.1) POST /api/guest requires
  * TURNSTILE_SECRET; a deploy without it answers 503 'turnstile_unconfigured', as does one with the
  * secret but no TURNSTILE_SITEKEY var when the request carries no token (the browser only renders
@@ -77,7 +78,7 @@ import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
-import { clientIp, isolateLimited, limiter, overLimit, subjectsOf } from './limits';
+import { accountGate, clientIp, isolateLimited, limiter, overLimit, subjectsOf } from './limits';
 import type { LimitName } from './limits';
 import type { RankedCheck } from './accountStore';
 import { normalizeCode } from './LobbyDirectoryDO';
@@ -760,19 +761,24 @@ export default {
     let res: Response;
     try {
       const acct = path.startsWith('/api/auth/') || path === '/api/me' || path.startsWith('/api/me/') || path === '/api/leaderboard' || path === '/api/ranked/result';
-      const routed = acct
-        ? await accountRoute(
+      let routed: Response | null = null;
+      if (acct) {
+        const session = await bearerSession(request, env);
+        // The account routes' limits (limits.ts accountGate), before any AccountsDO call.
+        routed =
+          (await overLimits(request, env, session, accountGate(request.method, path))) ??
+          (await accountRoute(
             {
               env,
               request,
-              session: await bearerSession(request, env),
+              session,
               originAllowed: (o) => originAllowed(request, env, o),
               antiBot: (token) => turnstileGate(request, env, token),
               limited: (key, max) => isolateLimited(key, max, Date.now()),
             },
             url,
-          )
-        : null;
+          ));
+      }
       if (routed !== null) res = routed;
       else if (request.method === 'GET' && path === '/api/population') res = await population(request, env, url);
       else if (request.method === 'GET' && path === '/api/lobbies') res = await listLobbies(request, env, url);

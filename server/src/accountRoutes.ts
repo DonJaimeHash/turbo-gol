@@ -31,7 +31,8 @@
  *                             404 unknown_item | 409 not_available / frozen / insufficient / requires_matches;
  *                             items and shop: 60 reads, car and claim 30 writes a minute per account; a guest
  *                             gets 403 account_required (GET /nodes/shop and POST /nodes/shop/claim: the same)
- *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist)
+ *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist; an
+ *                             account's own row 15 s per account)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
  *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
  *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | /#auth=error:<code>
@@ -154,6 +155,9 @@ export function recoveryCodeHash(code: string): Promise<string> {
 function newRefreshToken(): string {
   return base64urlEncode(randomBytes(32));
 }
+
+/** The shape newRefreshToken makes (32 bytes, base64url, no padding): any other cookie value names no row, so no AccountsDO call is made for it. */
+const REFRESH_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
 // ---- cookies -----------------------------------------------------------------------------------
 
@@ -307,6 +311,8 @@ async function refresh(c: RouteContext): Promise<Response> {
   if (c.limited('refresh:' + ipOf(c.request), 60)) return error(429, 'rate_limited');
   const token = cookieOf(c.request, REFRESH_COOKIE);
   if (!token || token.length > 128) return withCookies(error(401, 'no_refresh'), []);
+  // What the object answers for a token it does not hold, without asking it.
+  if (!REFRESH_TOKEN_RE.test(token)) return withCookies(error(401, 'bad_refresh'), [clearCookie(REFRESH_COOKIE)]);
   const next = newRefreshToken();
   const r = await accountsJson<UserRef>(c.env, '/refresh', { old: await sha256Hex(token), next: await sha256Hex(next) });
   if (!r.ok) return withCookies(pass(r.res), [clearCookie(REFRESH_COOKIE)]);
@@ -316,7 +322,7 @@ async function refresh(c: RouteContext): Promise<Response> {
 async function logout(c: RouteContext): Promise<Response> {
   if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
   const token = cookieOf(c.request, REFRESH_COOKIE);
-  if (token && token.length <= 128) await accountsCall(c.env, '/logout', { hash: await sha256Hex(token) });
+  if (token && REFRESH_TOKEN_RE.test(token)) await accountsCall(c.env, '/logout', { hash: await sha256Hex(token) });
   return withCookies(json({ ok: true }), [clearCookie(REFRESH_COOKIE)]);
 }
 
@@ -538,6 +544,22 @@ async function me(c: RouteContext): Promise<Response> {
 
 const boardCache = new Map<string, { at: number; data: LeaderboardAnswer }>();
 const BOARD_TTL_MS = 30_000;
+/** An account's own row ('you'), per playlist and account, this long per isolate: the board around it is cached 30 s. */
+export const YOU_TTL_MS = 15_000;
+const YOU_CACHE_MAX = 10_000;
+const youCache = new Map<string, { at: number; you: LeaderboardAnswer['you'] }>();
+
+/** The cached 'you' of `key`, or undefined when there is none fresh. */
+function cachedYou(key: string, now: number): LeaderboardAnswer['you'] | undefined {
+  const e = youCache.get(key);
+  return e && now - e.at <= YOU_TTL_MS ? e.you : undefined;
+}
+
+function keepYou(key: string, now: number, you: LeaderboardAnswer['you']): void {
+  youCache.delete(key);
+  if (youCache.size >= YOU_CACHE_MAX) youCache.delete(youCache.keys().next().value as string);
+  youCache.set(key, { at: now, you });
+}
 
 async function leaderboard(c: RouteContext, url: URL): Promise<Response> {
   const playlist = url.searchParams.get('playlist');
@@ -552,8 +574,16 @@ async function leaderboard(c: RouteContext, url: URL): Promise<Response> {
   }
   let you = null;
   if (c.session?.acct === 1) {
-    const r = await accountsJson<LeaderboardAnswer>(c.env, `/leaderboard?playlist=${playlist}&limit=1&userId=${c.session.sub}`);
-    if (r.ok) you = r.data.you;
+    const key = playlist + ':' + c.session.sub;
+    const hit = cachedYou(key, now);
+    if (hit !== undefined) you = hit;
+    else {
+      const r = await accountsJson<LeaderboardAnswer>(c.env, `/leaderboard?playlist=${playlist}&limit=1&userId=${c.session.sub}`);
+      if (r.ok) {
+        you = r.data.you;
+        keepYou(key, now, you);
+      }
+    }
   }
   return json({ ...cached.data, you } satisfies LeaderboardAnswer, 200, { 'cache-control': 'no-store' });
 }

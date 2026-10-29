@@ -38,6 +38,20 @@
  *                                       lobbyJoinNet     network     1200  RL_1200
  *   GET  /api/lobbies, /api/lobbies/peek lobbyList       network     1200  -        served from a 3 s cache per isolate
  *   GET  /api/population                population       network     1200  -        cached 5 s per isolate; every menu asks every 10 s
+ *   POST /api/auth/logout               logout           network     1200  RL_1200  no session: the cookie is the only key (one AccountsDO call)
+ *   POST /api/auth/refresh              refresh          network     1200  RL_1200  every page load and every hour of an account
+ *   POST /api/auth/login                login            network      120  RL_120   two AccountsDO calls and a PBKDF2 each
+ *   POST /api/auth/register             register         network      120  RL_120
+ *   POST /api/auth/recover              recover          network      120  RL_120
+ *   GET  /api/auth/oauth/<p>/start      oauthStart       network      120  RL_120
+ *   POST /api/auth/password             password         account       10  RL_10    a PBKDF2 and an AccountsDO write
+ *   POST /api/auth/recovery-codes       recoveryCodes    account       10  RL_10    an AccountsDO write
+ *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
+ *                                       meNet            network     1200  RL_1200
+ *   GET  /api/ranked/result             rankedResult     account       60  RL_60    polled every 1-3 s for two minutes after a ranked match
+ *                                       rankedResultNet  network     1200  RL_1200
+ *   GET  /api/leaderboard               leaderboardYou   account       60  RL_60    the account's own row: one AccountsDO call (cached 15 s)
+ *                                       leaderboardNet   network     1200  RL_1200  the board itself is cached 30 s per isolate
  *
  * Limits kept where they are (in-isolate only, per minute unless stated; the object ones hold
  * across isolates because there is one object):
@@ -90,8 +104,54 @@ export const LIMITS = {
   lobbyJoinNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   lobbyList: { by: 'network', isolate: 1200 },
   population: { by: 'network', isolate: 1200 },
+  logout: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  refresh: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  login: { by: 'network', isolate: 120, edge: 'RL_120' },
+  register: { by: 'network', isolate: 120, edge: 'RL_120' },
+  recover: { by: 'network', isolate: 120, edge: 'RL_120' },
+  oauthStart: { by: 'network', isolate: 120, edge: 'RL_120' },
+  password: { by: 'account', isolate: 10, edge: 'RL_10' },
+  recoveryCodes: { by: 'account', isolate: 10, edge: 'RL_10' },
+  me: { by: 'account', isolate: 60, edge: 'RL_60' },
+  meNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  rankedResult: { by: 'account', isolate: 60, edge: 'RL_60' },
+  rankedResultNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  leaderboardYou: { by: 'account', isolate: 60, edge: 'RL_60' },
+  leaderboardNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
 } as const satisfies Record<string, LimitRule>;
 export type LimitName = keyof typeof LIMITS;
+
+/**
+ * The account routes' rules (accountRoutes.ts), checked by index.ts before the route runs so the
+ * single AccountsDO is never asked for a request over its limit. [] for every other route.
+ */
+export function accountGate(method: string, path: string): readonly LimitName[] {
+  if (method === 'POST') {
+    switch (path) {
+      case '/api/auth/logout':
+        return ['logout'];
+      case '/api/auth/refresh':
+        return ['refresh'];
+      case '/api/auth/login':
+        return ['login'];
+      case '/api/auth/register':
+        return ['register'];
+      case '/api/auth/recover':
+        return ['recover'];
+      case '/api/auth/password':
+        return ['password'];
+      case '/api/auth/recovery-codes':
+        return ['recoveryCodes'];
+    }
+    return [];
+  }
+  if (method !== 'GET') return [];
+  if (path === '/api/me') return ['me', 'meNet'];
+  if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
+  if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
+  if (/^\/api\/auth\/oauth\/(?:google|discord)\/start$/.test(path)) return ['oauthStart'];
+  return [];
+}
 
 // ---- who a limit counts ---------------------------------------------------------------------------
 
@@ -183,4 +243,3 @@ export async function overLimit(limit: Limiter, names: readonly LimitName[], s: 
   for (const n of names) if (await limit(n, s[LIMITS[n].by])) return n;
   return null;
 }
-
