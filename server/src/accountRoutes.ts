@@ -401,21 +401,44 @@ async function register(c: RouteContext): Promise<Response> {
   return withCookies(json(out), [refreshCookie(refresh)]);
 }
 
-/** Look the user up and check the password; a missing user still costs one hash (no timing oracle). */
-async function checkCredentials(c: RouteContext, username: string, clientKey: string): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
-  const begin = await accountsJson<{ found: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request) });
+/**
+ * A username under attack (AccountsDO auth-begin's `slow`: many failures on it from anywhere) is
+ * slowed down, never locked: each sign-in on it needs a solved Turnstile check. Null = go on; else
+ * the refusal (403 turnstile_required asks the client for one). Where the gate is off (local dev,
+ * TURNSTILE_DISABLED) nothing can be asked, and the per-network counters are what remains.
+ */
+async function slowDown(c: RouteContext, slow: boolean | undefined, token: unknown): Promise<Response | null> {
+  if (slow !== true) return null;
+  if (token === undefined) return (await c.antiBot(undefined)) === null ? null : error(403, 'turnstile_required', 'Confirma que no eres un robot para seguir');
+  return c.antiBot(token);
+}
+
+/**
+ * Look the user up and check the password; a missing user, or one without a password, still costs
+ * one hash (no timing oracle) and gets the same answer (bad_credentials: nothing tells an OAuth-only
+ * account apart). `human`: a sign-in's Turnstile token (the slow-down of a username under attack);
+ * absent for a check behind a Bearer (a password change, a re-authentication), which has none.
+ */
+async function checkCredentials(c: RouteContext, username: string, clientKey: string, human?: { token: unknown }): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
+  const begin = await accountsJson<{ found: boolean; slow?: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request) });
   if (!begin.ok) return { ok: false, res: pass(begin.res) };
   const d = begin.data;
+  if (human !== undefined) {
+    const blocked = await slowDown(c, d.slow, human.token);
+    if (blocked !== null) return { ok: false, res: blocked };
+  }
+  const refused = { ok: false as const, res: error(401, 'bad_credentials', 'Usuario o contraseña incorrectos') };
   if (!d.found) {
     await serverHash(clientKey, '00'.repeat(16));
     await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false });
-    return { ok: false, res: error(401, 'bad_credentials', 'Usuario o contraseña incorrectos') };
+    return refused;
   }
   const cred = d as Credentials;
+  if (!cred.hash) await serverHash(clientKey, '00'.repeat(16)); // the same time as a wrong password's
   const good = await verifyPassword(clientKey, cred);
   if (!good) {
     await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false });
-    return { ok: false, res: error(401, cred.hash ? 'bad_credentials' : 'no_password', cred.hash ? 'Usuario o contraseña incorrectos' : 'Esta cuenta entra con Google o Discord') };
+    return refused;
   }
   if (cred.banned) return { ok: false, res: error(403, 'banned', 'Cuenta suspendida') };
   return { ok: true, cred };
@@ -423,9 +446,9 @@ async function checkCredentials(c: RouteContext, username: string, clientKey: st
 
 async function login(c: RouteContext): Promise<Response> {
   if (c.limited('login:' + ipOf(c.request), 30)) return error(429, 'rate_limited');
-  const b = await readJson<{ username?: unknown; password?: unknown }>(c.request);
+  const b = await readJson<{ username?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || !isClientKey(b.password)) return error(400, 'bad_request');
-  const chk = await checkCredentials(c, b.username, b.password);
+  const chk = await checkCredentials(c, b.username, b.password, { token: b.turnstileToken });
   if (!chk.ok) return chk.res;
   const refresh = newRefreshToken();
   const fin = await accountsJson<UserRef>(c.env, '/auth-finish', { userId: chk.cred.userId, username: b.username, ip: ipOf(c.request), ok: true, refresh: await grantFor(refresh, c.request) });
@@ -456,8 +479,13 @@ async function logout(c: RouteContext): Promise<Response> {
 
 async function recover(c: RouteContext): Promise<Response> {
   if (c.limited('recover:' + ipOf(c.request), 10)) return error(429, 'rate_limited');
-  const b = await readJson<{ username?: unknown; code?: unknown; password?: unknown }>(c.request);
+  const b = await readJson<{ username?: unknown; code?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || typeof b.code !== 'string' || b.code.length > 32 || !isClientKey(b.password)) return error(400, 'bad_request');
+  // The same counters and slow-down as a sign-in's (AccountsDO /recover throttles the pair again).
+  const begin = await accountsJson<{ slow?: boolean }>(c.env, '/auth-begin', { username: b.username, ip: ipOf(c.request) });
+  if (!begin.ok) return pass(begin.res);
+  const blocked = await slowDown(c, begin.data.slow, b.turnstileToken);
+  if (blocked !== null) return blocked;
   const refreshTok = newRefreshToken();
   const r = await accountsJson<UserRef & { codesLeft: number }>(c.env, '/recover', {
     username: b.username,

@@ -866,6 +866,8 @@ export default {
   // Unlinking the only way left to sign in
   'error.account.last_method': "It's your only way to sign in: link another one first",
   'error.account.not_linked': "That account isn't linked",
+  // Many failed sign-ins on this username from anywhere: the next one needs the anti-bot check
+  'error.account.turnstile_required': "Confirm you're not a robot to go on",
   // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
   'error.account.not_owned': 'That car is not yours yet',
   'error.account.bad_car': 'Unknown car',

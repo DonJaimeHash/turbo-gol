@@ -619,6 +619,7 @@ export default {
   'error.account.provider_set': 'Tu cuenta ya tiene otra cuenta de ese proveedor: desvincúlala primero',
   'error.account.last_method': 'Es tu única forma de entrar: vincula otra antes',
   'error.account.not_linked': 'Esa cuenta no está vinculada',
+  'error.account.turnstile_required': 'Confirma que no eres un robot para seguir',
   'error.account.not_owned': 'Ese auto todavía no es tuyo',
   'error.account.bad_car': 'Auto desconocido',
   'error.account.unknown_item': 'Ese ítem no existe',

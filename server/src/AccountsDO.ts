@@ -5,7 +5,7 @@
  * MatchDO reports ranked matches; the matchmaker never talks to it (the Worker passes ratings in).
  *
  *   POST /register        { username, pw, recovery, refresh }        -> UserRef | 409 username_taken
- *   POST /auth-begin      { username, ip }                           -> Credentials | { found: false } | 429 throttled
+ *   POST /auth-begin      { username, ip }                           -> (Credentials | { found: false }) & { slow } | 429 throttled
  *   POST /auth-finish     { userId?, username, ip, ok, refresh? }    -> UserRef (ok) | { ok: false }
  *   POST /refresh         { old, oldFamily?, next }                  -> UserRef | 401 bad_refresh | 401 refresh_reused
  *                                                                     (the family revoked) | 409 refresh_race (two tabs)
@@ -63,16 +63,21 @@
  *   POST /host-revoke     { userId, item }                           -> { revoked, refunded, items }
  *   POST /host-unfreeze   { userId }                                 -> { unfrozen }
  *
- * Brute force (in memory, per object = global): a username with LOGIN_FAILS_FREE failures in the
- * window is throttled with a doubling delay up to LOGIN_LOCK_MAX_MS; an IP with LOGIN_IP_MAX failures
- * per window too. Recovery attempts share the same counters. A daily alarm prunes old rows.
+ * Brute force (in memory, per object = global), counted per (username, network) pair: a pair with
+ * LOGIN_FAILS_FREE failures in the window is throttled with a doubling delay up to
+ * LOGIN_LOCK_MAX_MS, so failures from elsewhere never lock the owner out of their own account. A
+ * network (an IPv4 address or an IPv6 /64: tvCodes.ts ipKey) with LOGIN_IP_MAX failures is throttled
+ * too, and an IPv6 /48 with LOGIN_WIDE_MAX (one free allocation holds 65,536 /64s). A username with
+ * LOGIN_USER_SLOW failures from anywhere is slowed down, never locked: auth-begin says `slow` and
+ * the Worker then asks every sign-in on it for a solved Turnstile check. Recovery attempts share
+ * the same counters. A daily alarm prunes old rows.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
-import { TvCodes, tvCode } from './tvCodes';
+import { TvCodes, ipKey, tvCode, wideKey } from './tvCodes';
 import type { TvWhere } from './tvCodes';
 import type { HostCredit, PasswordRecord, RankedResultInput, RefreshGrant } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
@@ -88,7 +93,12 @@ const EQUIPPED_MAX = 6;
 export const LOGIN_FAILS_FREE = 5;
 const LOGIN_LOCK_BASE_MS = 30_000;
 export const LOGIN_LOCK_MAX_MS = 15 * 60_000;
-const LOGIN_IP_MAX = 30;
+/** Failures per network (an IPv4 address, shared by a household or a campus, or an IPv6 /64) before it is throttled. */
+export const LOGIN_IP_MAX = 50;
+/** Failures per IPv6 /48 before it is throttled. */
+export const LOGIN_WIDE_MAX = 300;
+/** Failures on one username from anywhere before its sign-ins need a solved check (never a lock). */
+export const LOGIN_USER_SLOW = 10;
 const PRUNE_EVERY_MS = 24 * 60 * 60_000;
 const BODY_MAX = 16_384;
 /**
@@ -243,16 +253,32 @@ export class AccountsDO extends DurableObject<Env> {
   private fail(keys: readonly string[], now: number): void {
     for (const k of keys) {
       const e = nextFail(this.fails.get(k), now);
-      // An IP gets more room than one username (a household / campus shares an address).
-      if (k.startsWith('ip:') && e.count < LOGIN_IP_MAX) e.lockedUntil = 0;
+      // A network gets more room than one pair (a household / campus shares an address); a
+      // username's own count only slows it down (slowFor), it never locks the owner out.
+      if (k.startsWith('u:') || (k.startsWith('ip:') && e.count < LOGIN_IP_MAX) || (k.startsWith('w:') && e.count < LOGIN_WIDE_MAX)) e.lockedUntil = 0;
       this.fails.set(k, e);
     }
   }
 
+  /**
+   * The counters of a sign-in or a recovery: [the (username, network) pair, the username, the
+   * network (ipKey: an IPv4 address or an IPv6 /64), the IPv6 /48]; the pair's first, so a
+   * success clears it (keys[0]).
+   */
   private failKeys(username: string, ip: unknown): string[] {
-    const keys = ['u:' + usernameKey(username)];
-    if (typeof ip === 'string' && ip.length > 0 && ip.length < 64) keys.push('ip:' + ip);
+    const user = usernameKey(username);
+    const net = typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? ipKey(ip) : '';
+    const keys = ['up:' + user + '|' + net, 'u:' + user];
+    if (net !== '') keys.push('ip:' + net);
+    const wide = typeof ip === 'string' && ip.includes(':') ? wideKey(ip) : null;
+    if (wide !== null) keys.push('w:' + wide);
     return keys;
+  }
+
+  /** The username has failed LOGIN_USER_SLOW times in the window, from anywhere: its sign-ins need a solved check. */
+  private slowFor(username: string, now: number): boolean {
+    const e = this.fails.get('u:' + usernameKey(username));
+    return e !== undefined && now - e.first <= LOGIN_WINDOW_MS && e.count >= LOGIN_USER_SLOW;
   }
 
   private async post(path: string, request: Request, now: number): Promise<Response> {
@@ -276,7 +302,8 @@ export class AccountsDO extends DurableObject<Env> {
         const wait = this.throttled(this.failKeys(b.username, b.ip), now);
         if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
         const c = s.credentials(b.username);
-        return json(c === null ? { found: false } : { found: true, ...c });
+        const slow = this.slowFor(b.username, now);
+        return json(c === null ? { found: false, slow } : { found: true, ...c, slow });
       }
       case '/auth-finish': {
         if (typeof b.username !== 'string') return error(400, 'bad_request');

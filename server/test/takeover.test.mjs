@@ -762,3 +762,72 @@ test('auth-8: under wrangler dev a loopback page (Vite on another port) passes; 
   assert.equal(await at('https://turbo-gol.com/api/auth/login', 'https://evil.example'), 403, 'an empty list lets no stranger in here');
   assert.equal(await at('https://turbo-gol.com/api/auth/login', 'https://turbo-gol.com'), 200);
 });
+
+// ---- auth-5: sign-in lockout per (username, network), a slow-down rather than a lock, one answer ----
+
+const login = (env, username, password, ip, extra = {}) => post(env, '/api/auth/login', { ip, body: { username, password, ...extra } });
+
+test('auth-5: failures from other networks never lock the owner out: 20 wrong passwords from 20 IPs, the owner signs in from home', async () => {
+  const { env, obj } = makeEnv();
+  obj.store.register('victima', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
+  for (let i = 0; i < 20; i++) assert.equal((await login(env, 'victima', KEY2, `192.0.2.${i + 1}`)).status, 401, `attacker ${i + 1}`);
+  const own = await login(env, 'victima', KEY, '198.51.100.200');
+  assert.equal(own.status, 200, JSON.stringify(own.json));
+  // Recovery shares the counters: the owner's code still works from home too.
+  const r = await post(env, '/api/auth/recover', { ip: '198.51.100.200', body: { username: 'victima', code: 'XXXX-XXXX', password: KEY } });
+  assert.equal(r.status, 401, 'a wrong code: wrong, not throttled');
+  assert.equal(r.json.error, 'bad_recovery');
+});
+
+test('auth-5: one (username, network) pair is throttled after 5 failures; the same username from another network is not', async () => {
+  const { env, obj } = makeEnv();
+  obj.store.register('pareja', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
+  for (let i = 0; i < 5; i++) await login(env, 'pareja', KEY2, '203.0.113.77');
+  const same = await login(env, 'pareja', KEY, '203.0.113.77');
+  assert.equal(same.status, 429);
+  assert.equal(same.json.error, 'throttled');
+  assert.equal((await login(env, 'pareja', KEY, '203.0.113.78')).status, 200);
+});
+
+test('auth-5: an IPv6 /64 counts as one network (50 failures across its addresses, then throttled), and a /48 as one block (300)', async () => {
+  const { env, obj } = makeEnv();
+  const ADO = await import('../src/AccountsDO.ts');
+  assert.equal(ADO.LOGIN_IP_MAX, 50);
+  assert.equal(ADO.LOGIN_WIDE_MAX, 300);
+  obj.store.register('objetivo', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
+  // A sprayer: one guess for each of 50 usernames, each from a fresh address of one /64.
+  for (let i = 0; i < 50; i++) assert.equal((await login(env, 'user' + i, KEY2, `2001:db8:5:6::${(i + 1).toString(16)}`)).status, 401);
+  const r = await login(env, 'objetivo', KEY, '2001:db8:5:6::ffff');
+  assert.equal(r.status, 429, 'the /64 is one network');
+  assert.equal((await login(env, 'objetivo', KEY, '2001:db8:5:7::1')).status, 200, 'the next /64 is not');
+  // The /48: 300 failures across its /64s.
+  for (let i = 0; i < 300; i++) await login(env, 'u' + i, KEY2, `2001:db8:9:${i.toString(16)}::1`);
+  assert.equal((await login(env, 'objetivo', KEY, '2001:db8:9:ffff::1')).status, 429, 'the /48 is one block');
+});
+
+test('auth-5: one answer: an OAuth-only account\'s username and a wrong password say bad_credentials, as any other', async () => {
+  const { env } = makeEnv();
+  const ip = ips();
+  const o = await oauth(env, 'discord', 'd-solo', { ip: ip(0) });
+  const name = (await refresh(env, o.rt, ip(0))).json.name;
+  const a = await login(env, name, KEY2, ip(1));
+  const b = await login(env, 'nadie-existe', KEY2, ip(1));
+  assert.deepEqual([a.status, a.json.error], [401, 'bad_credentials']);
+  assert.deepEqual([a.json], [b.json], 'the same body as an unknown username');
+});
+
+test('auth-5: a username under attack is slowed down, not locked: past 10 failures from anywhere, each sign-in on it needs a solved Turnstile check', async () => {
+  const { env, obj } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
+  obj.store.register('famosa', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
+  assert.equal((await login(env, 'famosa', KEY, '198.51.100.9')).status, 200, 'no check while nobody attacks it');
+  for (let i = 0; i < 10; i++) await login(env, 'famosa', KEY2, `192.0.2.${100 + i}`);
+  const noToken = await login(env, 'famosa', KEY, '198.51.100.9');
+  assert.equal(noToken.status, 403);
+  assert.equal(noToken.json.error, 'turnstile_required');
+  assert.equal((await login(env, 'famosa', KEY, '198.51.100.9', { turnstileToken: 'bad-token' })).status, 403);
+  const ok = await login(env, 'famosa', KEY, '198.51.100.9', { turnstileToken: 'good-token' });
+  assert.equal(ok.status, 200, 'the owner solves it once and is in');
+  // An unknown username past 10 failures says the same (nothing tells it apart).
+  for (let i = 0; i < 10; i++) await login(env, 'fantasma', KEY2, `192.0.2.${150 + i}`);
+  assert.equal((await login(env, 'fantasma', KEY2, '198.51.100.9')).json.error, 'turnstile_required');
+});

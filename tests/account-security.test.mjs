@@ -182,3 +182,21 @@ test('auth-3: PERFIL sends a first password, new codes without a password, a lin
   assert.match(src, /acc\.oauthUrl\(p, 'reauth'\)/, 'the provider round trip');
   assert.match(src, /await acc\.reauth\(pass\.input\.value\)/, 'or the password');
 });
+
+// ---- auth-5: a username under attack asks the sign-in for the anti-bot check ---------------------
+
+test('auth-5: a sign-in the server slows down (403 turnstile_required) is sent once more with a solved token; other refusals are not retried', async () => {
+  let tokens = 0;
+  const { acc, calls } = client(
+    { '/api/auth/login': (body) => (body.turnstileToken === 'tok' ? res(200, SESSION()) : res(403, { error: 'turnstile_required' })) },
+    { antiBot: async () => (tokens++, 'tok') },
+  );
+  const s = await acc.login('Ana', 'una contraseña');
+  assert.equal(s.name, 'Ana');
+  assert.equal(tokens, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].body.turnstileToken, 'tok');
+  const { acc: banned, calls: c2 } = client({ '/api/auth/login': () => res(403, { error: 'banned' }) }, { antiBot: async () => 'tok' });
+  await assert.rejects(banned.login('Ana', 'una contraseña'), (e) => e.code === 'banned');
+  assert.equal(c2.length, 1);
+});

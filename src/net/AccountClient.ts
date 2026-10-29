@@ -373,17 +373,38 @@ export class AccountClient {
     return r;
   }
 
+  /**
+   * POST `path` with `body`; when the server slows a username under attack down (403
+   * turnstile_required), once more with a solved anti-bot token (NetClient.antiBotToken).
+   */
+  private async callHuman(path: string, body: Record<string, unknown>): Promise<ResponseLike> {
+    const res = await this.call(path, body);
+    if (res.status !== 403) return res;
+    // Read once, handed on as read: the caller's jsonOrFail reads it again.
+    const data: unknown = await res.json().catch(() => null);
+    const read: ResponseLike = { ok: res.ok, status: res.status, json: async () => data, text: async () => JSON.stringify(data) };
+    if ((data as { error?: unknown } | null)?.error !== 'turnstile_required') return read;
+    let token: string | null;
+    try {
+      token = await this.antiBot();
+    } catch {
+      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
+    }
+    if (token === null) return read;
+    return this.call(path, { ...body, turnstileToken: token });
+  }
+
   async login(username: string, password: string): Promise<AccountSession> {
     if (username.trim().length === 0 || password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
-    const res = await this.call('/api/auth/login', { username: username.trim(), password: await clientPasswordKey(username.trim(), password) });
+    const res = await this.callHuman('/api/auth/login', { username: username.trim(), password: await clientPasswordKey(username.trim(), password) });
     const s = await this.jsonOrFail<AccountSession>(res);
-    return this.adopt(s);
+    return this.adopt(sessionPart(s));
   }
 
   async recover(username: string, code: string, newPassword: string): Promise<AccountSession & { codesLeft: number }> {
     const p = passwordIssue(newPassword, username);
     if (p !== null) throw issueError(p, 'bad_password');
-    const res = await this.call('/api/auth/recover', { username: username.trim(), code, password: await clientPasswordKey(username.trim(), newPassword) });
+    const res = await this.callHuman('/api/auth/recover', { username: username.trim(), code, password: await clientPasswordKey(username.trim(), newPassword) });
     const s = await this.jsonOrFail<AccountSession & { codesLeft: number }>(res);
     this.adopt(sessionPart(s));
     return s;
