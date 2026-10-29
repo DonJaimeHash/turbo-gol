@@ -382,9 +382,9 @@ export class AccountClient {
     return r;
   }
 
-  /** The approved TV's session (tvPoll), adopted as a sign-in's. */
+  /** The approved TV's session (tvPoll), adopted as a sign-in's, with the car it carries. */
   signInWith(s: AccountSession): AccountSession {
-    return this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt });
+    return this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt, ...(s.car !== undefined ? { car: s.car } : {}) });
   }
 
   /** The phone (/tv): this account signs the TV showing `code` in (POST /api/auth/tv/confirm). */
