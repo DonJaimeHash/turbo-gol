@@ -80,6 +80,13 @@ The served bytes are the node's upload: the Worker checks the R2 object's SHA-25
 control plane recorded at upload (the index keeps it) and answers 404 otherwise. Only the header is
 rewritten; the records after it are copied byte for byte, so the re-simulation is the recorded one.
 
+That re-simulation agreeing with the recording's own checkpoints proves nothing about a match no
+verifier checked: its node wrote the inputs and the checkpoints alike. So the view says whether a
+verifier re-simulated the match (`x-replay-verified: 1` or `0`, the index's `verified`), and the
+viewer shows the green "Checked against the recording" only for `1`. An unverified match says "Not
+verified: only the community server that hosted this match vouches for it", and a file opened from
+the device says it is a local file.
+
 ## How it is built
 
 **Index** (`server/src/replayIndex.ts`, `server/src/nodeStore.ts`): a `replay_index` table in the

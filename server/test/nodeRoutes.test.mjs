@@ -1167,7 +1167,7 @@ test('hide my name: while AccountsDO cannot answer, nothing is served (503, neve
   });
 });
 
-test('GET /nodes/replays/<id>/view: the public bytes of a served match, kept 3 hours (not immutable), noindex; 404 for an unlisted, a too recent or a missing one', async () => {
+test('GET /nodes/replays/<id>/view: the public bytes of a served match, x-replay-verified 1 or 0, kept 3 hours (not immutable), noindex; 404 for an unlisted, a too recent or a missing one', async () => {
   const good = hex64('a');
   const casual = hex64('c');
   const recent = hex64('4');
@@ -1185,6 +1185,7 @@ test('GET /nodes/replays/<id>/view: the public bytes of a served match, kept 3 h
   assert.equal(res.headers.get('content-type'), 'application/octet-stream');
   assert.equal(res.headers.get('cache-control'), 'public, max-age=10800', 'a delist or a hidden name reaches every copy within 3 hours');
   assert.equal(res.headers.get('x-robots-tag'), 'noindex');
+  assert.equal(res.headers.get('x-replay-verified'), '1', 'a rated match: a verifier re-simulated it');
   const r = decodeReplay(new Uint8Array(await res.arrayBuffer()));
   assert.deepEqual(
     r.header.roster.map((e) => [e.name, e.playerId]),
@@ -1193,7 +1194,7 @@ test('GET /nodes/replays/<id>/view: the public bytes of a served match, kept 3 h
       ['Rival', ''],
     ],
   );
-  assert.equal((await req(env, 'GET', `/nodes/replays/${casual}/view`)).status, 200, 'an unsampled casual match too');
+  assert.equal((await req(env, 'GET', `/nodes/replays/${casual}/view`)).headers.get('x-replay-verified'), '0', 'an unsampled casual match: the node’s word');
   const early = await req(env, 'GET', `/nodes/replays/${recent}/view`);
   assert.equal(early.status, 404, 'its first hour: not viewable');
   assert.equal(early.headers.get('x-robots-tag'), 'noindex');

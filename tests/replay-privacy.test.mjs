@@ -1,7 +1,9 @@
-// The public replays' privacy, the browser's side (audit pr60-1; the server's side:
+// The public replays' privacy, the browser's side (audit pr60-1 and pr60-6; the server's side:
 // server/test/nodeRoutes.test.mjs and server/test/replay-names.test.mjs). A hidden name ('Jugador 3'
-// on the wire) and a guest's in this page's language; PERFIL's switch through AccountClient
-// (GET / POST /api/me/replay-name). This file is the English page (node's default).
+// on the wire) and a guest's in this page's language; the viewer's green "Checked against the
+// recording" only for a match a verifier checked (x-replay-verified), honest words for an
+// unverified match and a local file; the list's opaque cursor; PERFIL's switch through
+// AccountClient (GET / POST /api/me/replay-name). This file is the English page (node's default).
 // Run: node --test tests/replay-privacy.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,6 +44,51 @@ test('a hidden name: "Jugador N" on the wire (the slot + 1), "Player N" on an En
   assert.equal(N.replayName('Ana'), 'Ana');
   assert.equal(es['replay.hiddenName'], 'Jugador {n}');
   assert.equal(en['replay.hiddenName'], 'Player {n}');
+});
+
+test('the viewer’s notice: green "Checked against the recording" only for a match a verifier checked; an unverified one and a local file say so', () => {
+  const base = { divergedAt: -1, otherBuild: false, checked: 3, endTick: 25_000, time: '0:00' };
+  assert.deepEqual(N.replayNotice({ ...base, source: { kind: 'server', verified: true } }), { key: 'replay.checked', ok: true, hideMs: 4000 });
+  const casual = N.replayNotice({ ...base, source: { kind: 'server', verified: false } });
+  assert.equal(casual.key, 'replay.unverifiedNotice');
+  assert.equal(casual.ok, false, 'never the green check: the node wrote the inputs and the checkpoints alike');
+  assert.ok(casual.hideMs > 4000);
+  const file = N.replayNotice({ ...base, source: { kind: 'file' } });
+  assert.equal(file.key, 'replay.localNotice');
+  assert.equal(file.ok, false);
+  // What the recording itself says comes first, whoever checked it.
+  assert.deepEqual(N.replayNotice({ ...base, divergedAt: 600, time: '0:05', source: { kind: 'server', verified: true } }), { key: 'replay.diverged', params: { time: '0:05' }, ok: false, hideMs: null });
+  assert.equal(N.replayNotice({ ...base, otherBuild: true, source: { kind: 'file' } }).key, 'replay.buildWarning');
+  assert.equal(N.replayNotice({ ...base, checked: 0, source: { kind: 'server', verified: true } }), null, 'nothing checked: nothing to say');
+  for (const k of ['replay.unverifiedNotice', 'replay.localNotice']) {
+    assert.ok(en[k] && es[k], k);
+    assert.doesNotMatch(en[k], /Checked against the recording/);
+  }
+  assert.match(es['replay.unverifiedNotice'], /^Sin verificar/);
+  assert.match(es['replay.localNotice'], /^Archivo local/);
+});
+
+test('the viewer reads the view’s x-replay-verified and plays a local or dev file as one; main.ts never shows the green check by itself', async () => {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    seen.push(String(url));
+    if (String(url).includes('/view')) return new Response(new Uint8Array([1, 2, 3]), { headers: { 'x-replay-verified': String(url).includes('aa') ? '1' : '0' } });
+    return new Response(JSON.stringify({ matches: [], next: null }), { headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    assert.equal((await R.fetchReplayView('aa'.repeat(32))).verified, true);
+    assert.equal((await R.fetchReplayView('bb'.repeat(32))).verified, false);
+    await R.fetchReplayList('489375.' + 'c'.repeat(64) + '.' + 'd'.repeat(32));
+    assert.equal(seen.at(-1), `/nodes/replays?before=489375.${'c'.repeat(64)}.${'d'.repeat(32)}`, 'the cursor goes back as the server signed it');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const main = await src('../src/replay/main.ts');
+  assert.match(main, /replayNotice\(/);
+  assert.doesNotMatch(main, /t\('replay\.checked'\)/, 'the decision is names.ts replayNotice');
+  assert.match(main, /from: \{ kind: 'file' \}/, 'a local file is one');
+  assert.match(main, /from: \{ kind: 'server', verified: v\.verified \}/);
 });
 
 test('the list says when a match shows up and that its time is rounded; names in the list and the player go through replayName', async () => {

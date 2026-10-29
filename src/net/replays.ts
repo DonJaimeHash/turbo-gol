@@ -6,7 +6,8 @@
  *                                        (REPLAY_PAGE); `next` is an opaque cursor the Worker signed
  *   GET /nodes/replays/<matchId>/view    that match's replay, made public: the header carries no
  *                                        account id, no node id and no start time, and the names
- *                                        are the control plane's own (never the node's word)
+ *                                        are the control plane's own (never the node's word); the
+ *                                        REPLAY_VERIFIED_HEADER says whether a verifier checked it
  *
  * Only matches the control plane settled without voiding them are listed (rated, or unrated
  * casual: `verified` says whether a verifier re-simulated it). A match shows up an hour after it
@@ -16,6 +17,9 @@
  */
 
 export const REPLAY_PAGE = 30;
+
+/** The view's response header: '1' when a verifier re-simulated the match and it held, '0' when only its node says so. */
+export const REPLAY_VERIFIED_HEADER = 'x-replay-verified';
 
 /**
  * The wire form of a hidden name: 'Jugador N', N the slot + 1 (1-8), Spanish like a guest's
@@ -86,4 +90,12 @@ export async function fetchReplayList(before: string | null = null): Promise<Rep
 /** URL of a match's public replay. */
 export function replayUrl(matchId: string): string {
   return `/nodes/replays/${matchId}/view`;
+}
+
+/** A match's public replay and whether a verifier checked it; null when it is not (or no longer) served. */
+export async function fetchReplayView(matchId: string): Promise<{ bytes: Uint8Array; verified: boolean } | null> {
+  const res = await fetch(replayUrl(matchId));
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return { bytes: new Uint8Array(await res.arrayBuffer()), verified: res.headers.get(REPLAY_VERIFIED_HEADER) === '1' };
 }

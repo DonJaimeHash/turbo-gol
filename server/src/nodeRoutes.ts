@@ -32,7 +32,7 @@
  *   GET      /nodes/replays/<id>/view a served match's replay made public (replayIndex.ts: the header rebuilt
  *                                     from the control plane's record, no account or node id, no start time,
  *                                     hidden names as 'Jugador N'), its SHA-256 checked against the index;
- *                                     404 for a void, unlisted, too recent, expired or
+ *                                     x-replay-verified 1 or 0; 404 for a void, unlisted, too recent, expired or
  *                                     delisted match, kept 5 minutes in the edge cache (a day, with an ALERT
  *                                     line, for a listed one that fails the checks); edge- and browser-cached 3
  *                                     hours (a delist, a hidden name reach every copy by then); replayView /
@@ -95,6 +95,7 @@ import type { LimitName, Limiter } from './limits';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 import { PUBLIC_REPLAY_MAX_BYTES, publicReplay } from './replayIndex';
 import type { ReplayIndexRow } from './replayIndex';
+import { REPLAY_VERIFIED_HEADER } from '../../src/net/replays';
 import type { ReplayList } from '../../src/net/replays';
 import { sha256Hex } from '../../nodes/shared/edcrypto';
 
@@ -561,6 +562,7 @@ async function replayView(c: NodeRouteContext, env: NodesEnv, matchId: string): 
     'cache-control': `public, max-age=${REPLAY_VIEW_MAX_AGE_S}`,
     'x-content-type-options': 'nosniff',
     'x-robots-tag': 'noindex',
+    [REPLAY_VERIFIED_HEADER]: entry.item.verified ? '1' : '0',
   };
   if (cache) {
     try {
