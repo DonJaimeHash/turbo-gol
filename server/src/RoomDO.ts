@@ -70,7 +70,9 @@
  *             socket, no ticket ever reached the room: the matchmaker counts a strike)
  *   cleanup   sockets closed (1000), locks + capacity released at the region matchmaker (the
  *             players that never showed up are named in `noShow`, so the matchmaker can back off
- *             repeat no-shows), storage wiped; hard TTL 20 min after create (alarm)
+ *             repeat no-shows), storage wiped; hard TTL 20 min after create (alarm); a room that has
+ *             not started NOT_READY_MS after its last peer joined (sockets open, nobody ready: a
+ *             client falls back after FALLBACK_MS = 10 s) is cleaned up then ('not_ready', rt-3)
  *
  * Experimental rules (RoomRecord.physics): the welcome of EVERY socket carries them (first, late
  * and replacement sockets: null = standard), every peer builds its arena with them, and the
@@ -152,6 +154,8 @@ export const EMPTY_MS = 60_000;
 export const UNUSED_MS = 90_000;
 /** Hard TTL from create; the matchmaker's lock for a p2p room is a little longer than this. */
 export const ROOM_TTL_MS = 20 * 60_000;
+/** A room not started this long after its last peer joined is cleaned up (its locks and capacity freed). */
+export const NOT_READY_MS = 60_000;
 const ALARM_SLACK_MS = 250;
 const CLOSE_REPLACED = 4000;
 const WS_OPEN = 1;
@@ -208,6 +212,8 @@ interface RoomState {
   /** The no-show pass (NO_SHOW_MS after create) ran: its alarm is not re-armed. */
   noShowDone: boolean;
   nextGen: number;
+  /** When the last socket was admitted (null: none yet): the NOT_READY_MS cleanup of a room that never starts. */
+  lastJoinAt: number | null;
 }
 
 /** What GET /internal/presence answers the matchmaker (RoomDO.presence). */
@@ -380,6 +386,7 @@ function freshState(): RoomState {
     dropCheckAt: null,
     noShowDone: false,
     nextGen: 0,
+    lastJoinAt: null,
   };
 }
 
@@ -388,6 +395,7 @@ function upgradeState(st: RoomState): RoomState {
   if (!Array.isArray(st.left) || st.left.length !== MAX_CARS) st.left = new Array<boolean>(MAX_CARS).fill(false);
   if (!Array.isArray(st.arrived) || st.arrived.length !== MAX_CARS) st.arrived = new Array<boolean>(MAX_CARS).fill(false);
   if (typeof st.noShowDone !== 'boolean') st.noShowDone = false;
+  if (typeof st.lastJoinAt !== 'number') st.lastJoinAt = null;
   return st;
 }
 
@@ -460,6 +468,12 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     const st = this.state;
+    if (st.startAt === null && st.lastJoinAt !== null && now >= st.lastJoinAt + NOT_READY_MS - ALARM_SLACK_MS) {
+      // Sockets open, nobody starting: a client gives the mesh FALLBACK_MS and leaves; whatever is
+      // still here holds a room (and locks) for nothing.
+      await this.cleanup('not_ready');
+      return;
+    }
     if (!st.noShowDone && now >= rec.createdAt + NO_SHOW_MS - ALARM_SLACK_MS) {
       // The join grace is over: whoever has not connected is not coming (its ticket is refused
       // from now on); the peers waiting for it stop waiting and the start is re-evaluated.
@@ -801,6 +815,7 @@ export class RoomDO extends DurableObject<Env> {
     st.cur[slot] = gen;
     st.closedAt[slot] = 0;
     st.emptyAt = null;
+    st.lastJoinAt = now;
     await this.persist();
     await this.rearm();
 
@@ -1272,6 +1287,7 @@ export class RoomDO extends DurableObject<Env> {
     if (!st.noShowDone && st.startAt === null && rec.createdAt + NO_SHOW_MS < at) at = rec.createdAt + NO_SHOW_MS;
     if (st.emptyAt !== null && st.emptyAt < at) at = st.emptyAt;
     if (st.dropCheckAt !== null && st.dropCheckAt < at) at = st.dropCheckAt;
+    if (st.startAt === null && st.lastJoinAt !== null && st.lastJoinAt + NOT_READY_MS < at) at = st.lastJoinAt + NOT_READY_MS;
     await this.ctx.storage.setAlarm(at);
   }
 }

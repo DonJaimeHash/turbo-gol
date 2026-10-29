@@ -290,3 +290,35 @@ test('decideDrop / mutualDrop: a lone vote never drops a live target; a closed o
   assert.equal(R.mutualDrop(reports, 1, 0), null);
   assert.deepEqual(R.mutualDrop([...reports, { slot: 0, from: 1, atTick: 44 }], 1, 0), { a: 40, b: 44 });
 });
+
+// ---- rt-3: a room that never starts is cleaned up -------------------------------------------------
+
+test('RoomDO: sockets open and nobody ready: NOT_READY_MS after the last peer joined the room is cleaned up and frees its locks and capacity', async () => {
+  const h = await makeRoom(ONE_V_ONE);
+  const a = await h.join(0);
+  advance(2_000);
+  const b = await h.join(1);
+  const joinedAt = clock;
+  advance(R.NO_SHOW_MS);
+  await h.alarm(); // the no-show pass: both here
+  assert.equal(h.ctx.storage.alarm, joinedAt + R.NOT_READY_MS, 'the alarm is armed for it');
+  advance(R.NOT_READY_MS - R.NO_SHOW_MS - 5_000);
+  await h.alarm(); // an early wake-up changes nothing
+  assert.equal(a.readyState, 1);
+  advance(5_000);
+  await h.alarm();
+  assert.deepEqual(a.closed, { code: 1000, reason: 'not_ready' });
+  assert.deepEqual(b.closed, { code: 1000, reason: 'not_ready' });
+  await Promise.all(h.ctx.waits);
+  const rel = h.mm.calls.filter((c) => c.path === '/release').at(-1);
+  assert.equal(rel.body.closeRoom, true, 'the capacity entry goes too');
+  assert.deepEqual(rel.body.playerIds.sort(), ['pa', 'pb']);
+});
+
+test('RoomDO: a room whose peers connect and say ready within seconds starts as before, and NOT_READY_MS never touches a running match', async () => {
+  const h = await makeRoom(ONE_V_ONE);
+  const [a] = await h.started();
+  advance(R.NOT_READY_MS * 3);
+  await h.alarm();
+  assert.equal(a.readyState, 1, 'started: the match runs to its TTL');
+});
