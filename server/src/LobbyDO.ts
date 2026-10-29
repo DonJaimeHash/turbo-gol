@@ -69,6 +69,19 @@ const IN_GAME_RESET_MS = 40 * 60_000;
 const MAX_FRAME = 2048;
 const CLOSE_KICKED = 4003;
 const CLOSE_CLOSED = 4004;
+/**
+ * Message budget per socket (every frame that changes the lobby is a storage write, a broadcast and,
+ * through publish, a request to the one LobbyDirectoryDO): LOBBY_MSG_BURST, refilled 5 a second.
+ * A lobby screen sends a handful a minute (LISTO, a team, the settings, INICIAR); a frame over the
+ * budget is dropped, and LOBBY_OVER_BURST dropped frames (refilled 1 a second) close the socket
+ * with 1008 'rate' (held arrow keys on a TV stay far below it).
+ */
+export const LOBBY_MSG_BURST = 20;
+const LOBBY_MSG_REFILL_PER_MS = 5 / 1000;
+export const LOBBY_OVER_BURST = 40;
+const LOBBY_OVER_REFILL_PER_MS = 1 / 1000;
+/** The directory row is upserted at most this often; a change in between goes out with the next alarm (alarmBy). */
+export const PUBLISH_MIN_MS = 5_000;
 /** How long a member whose socket dropped keeps its place (and the host role): plan PR 12, 30 to 45 s. */
 export const LOBBY_GRACE_MS = 40_000;
 
@@ -228,6 +241,11 @@ export class LobbyDO extends DurableObject<Env> {
   private rec: LobbyRecord | null = null;
   private loaded: Promise<void>;
   private closed = false;
+  /** Per-socket message budget (in memory: a wake-up starts every socket full). */
+  private readonly buckets = new WeakMap<WebSocket, { tokens: number; over: number; at: number }>();
+  /** The last directory payload sent and when (publish); a change within PUBLISH_MIN_MS waits for the alarm. */
+  private pubKey: string | null = null;
+  private pubAt = -Infinity;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -364,6 +382,9 @@ export class LobbyDO extends DurableObject<Env> {
     await this.loaded;
     const rec = this.rec;
     if (!rec || this.closed) return;
+    const budget = this.takeToken(ws, Date.now());
+    if (budget === 'close') return ws.close(1008, 'rate');
+    if (budget === 'drop') return;
     if (typeof message !== 'string' || message.length > MAX_FRAME) return ws.close(1008, 'bad frame');
     let msg: LobbyClientMsg;
     try {
@@ -375,6 +396,8 @@ export class LobbyDO extends DurableObject<Env> {
     if (!me) return ws.close(1008, 'not a member');
     const isHost = me.id === rec.hostId;
     const fail = (code: string, message: string): void => this.send(ws, { t: 'error', code, message });
+    // A frame that changes nothing (LISTO again, the settings as they are) writes, broadcasts and publishes nothing.
+    const before = JSON.stringify(rec);
     switch (msg.t) {
       case 'team': {
         if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
@@ -474,7 +497,28 @@ export class LobbyDO extends DurableObject<Env> {
       default:
         return fail('unknown', 'Mensaje desconocido');
     }
+    if (this.rec !== null && JSON.stringify(this.rec) === before) return;
     await this.afterChange();
+  }
+
+  /** One frame of `ws`'s budget: 'ok', 'drop' (over it) or 'close' (LOBBY_OVER_BURST dropped). */
+  private takeToken(ws: WebSocket, now: number): 'ok' | 'drop' | 'close' {
+    let b = this.buckets.get(ws);
+    if (b === undefined) {
+      b = { tokens: LOBBY_MSG_BURST, over: LOBBY_OVER_BURST, at: now };
+      this.buckets.set(ws, b);
+    }
+    const dt = now > b.at ? now - b.at : 0;
+    b.at = now;
+    b.tokens = Math.min(LOBBY_MSG_BURST, b.tokens + dt * LOBBY_MSG_REFILL_PER_MS);
+    b.over = Math.min(LOBBY_OVER_BURST, b.over + dt * LOBBY_OVER_REFILL_PER_MS);
+    if (b.tokens >= 1) {
+      b.tokens -= 1;
+      return 'ok';
+    }
+    if (b.over < 1) return 'close';
+    b.over -= 1;
+    return 'drop';
   }
 
   override async webSocketClose(ws: WebSocket, _code: number, _reason: string): Promise<void> {
@@ -523,7 +567,7 @@ export class LobbyDO extends DurableObject<Env> {
       return;
     }
     await this.save();
-    await this.publish(); // directory heartbeat
+    await this.publish(true); // directory heartbeat (and any change publish held back)
     // The next heartbeat, or the next grace to end when that comes first.
     const graceEnd = Math.min(...rec.members.map((m) => (m.awayAt !== undefined ? m.awayAt + LOBBY_GRACE_MS : Infinity)));
     await this.ctx.storage.setAlarm(Math.min(now + ALARM_MS, graceEnd));
@@ -726,10 +770,27 @@ export class LobbyDO extends DurableObject<Env> {
     }
   }
 
-  private publish(): Promise<void> {
+  /**
+   * The lobby's row in LobbyDirectoryDO, the one object every lobby, list, join and population count
+   * shares: sent when it changed, at most once every PUBLISH_MIN_MS (a change in between is sent by
+   * the alarm, armed for then); `heartbeat` (the alarm) sends it whatever it is, keeping it fresh.
+   */
+  private async publish(heartbeat = false): Promise<void> {
     const rec = this.rec;
-    if (!rec || this.closed) return Promise.resolve();
-    return this.directory('/upsert', { code: rec.code, lobbyId: rec.lobbyId, visibility: rec.settings.visibility, summary: this.summary() });
+    if (!rec || this.closed) return;
+    const payload = { code: rec.code, lobbyId: rec.lobbyId, visibility: rec.settings.visibility, summary: this.summary() };
+    const key = JSON.stringify(payload);
+    const now = Date.now();
+    if (!heartbeat) {
+      if (key === this.pubKey) return;
+      if (now - this.pubAt < PUBLISH_MIN_MS) {
+        await this.alarmBy(this.pubAt + PUBLISH_MIN_MS);
+        return;
+      }
+    }
+    this.pubKey = key;
+    this.pubAt = now;
+    await this.directory('/upsert', payload);
   }
 
   private async close(reason: string): Promise<void> {

@@ -1,11 +1,15 @@
 /**
  * LobbyDirectoryDO: one object ('lobbies-v1') that knows every live custom lobby: join codes ->
  * lobby ids (public and private lobbies alike) and the public list the menus show. Each LobbyDO
- * keeps its row fresh (/upsert on every change plus a heartbeat from its alarm) and removes it when
+ * keeps its row fresh (/upsert on a change, at most every PUBLISH_MIN_MS, plus a heartbeat from its alarm) and removes it when
  * it closes; rows not refreshed for STALE_MS are dropped (a lobby that died without saying so).
  * Reached only with the internal header.
  *
- *   POST /allocate { lobbyId }                   -> { code }      a fresh unique code
+ *   POST /allocate { lobbyId, owner?, ip? }      -> { code }      a fresh unique code; 429 too_many_lobbies when
+ *                                                                 `owner` (the creating session) already has
+ *                                                                 MAX_LOBBIES_PER_OWNER live lobbies, or the IPv6 /64
+ *                                                                 of `ip` MAX_LOBBIES_PER_NET (an IPv4 address is
+ *                                                                 never counted: a school or a carrier shares one)
  *   POST /upsert   { code, lobbyId, visibility, summary }
  *   POST /remove   { code, lobbyId }
  *   GET  /resolve?code=                          -> { lobbyId } | 404
@@ -13,7 +17,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { error, json, readJson } from './env';
+import { error, json, limitKey, readJson } from './env';
 import { checkInternal } from './auth';
 import type { LobbySummary, LobbyVisibility } from '../../src/net/account';
 
@@ -23,6 +27,10 @@ export const CODE_LENGTH = 6;
 const STALE_MS = 15 * 60_000;
 const LIST_MAX = 100;
 const SWEEP_MS = 10 * 60_000;
+/** Live lobbies one session may have created (a lobby lives on up to IDLE_CLOSE_MS after its host's socket drops). */
+export const MAX_LOBBIES_PER_OWNER = 3;
+/** ... and one IPv6 /64 (a household): every guest session there costs a Turnstile solve only. */
+export const MAX_LOBBIES_PER_NET = 10;
 
 export function randomCode(): string {
   const b = new Uint8Array(CODE_LENGTH);
@@ -46,6 +54,27 @@ interface Row {
   visibility: LobbyVisibility;
   summary: LobbySummary | null;
   updatedAt: number;
+  /** The session that created the lobby (/allocate), kept by every upsert: the per-owner cap. */
+  owner?: string;
+  /** Its IPv6 /64 (limitKey), absent for IPv4: the per-network cap. */
+  net?: string;
+}
+
+/** The IPv6 /64 a per-network cap counts (limitKey); null for IPv4 (shared by whole schools and carriers) or nothing. */
+export function lobbyNetOf(ip: unknown): string | null {
+  return typeof ip === 'string' && ip.includes(':') && !ip.includes('.') ? limitKey(ip) : null;
+}
+
+/** Live rows (fresher than STALE_MS) with `owner` / with `net`. Pure. */
+export function liveLobbiesOf(rows: Iterable<Row>, owner: string | null, net: string | null, now: number): { owner: number; net: number } {
+  let o = 0;
+  let n = 0;
+  for (const r of rows) {
+    if (now - r.updatedAt >= STALE_MS) continue;
+    if (owner !== null && r.owner === owner) o++;
+    if (net !== null && r.net === net) n++;
+  }
+  return { owner: o, net: n };
 }
 
 /** The public list: the caller's region first, open lobbies with room before full / in-game ones, then by players. Pure. */
@@ -105,12 +134,16 @@ export class LobbyDirectoryDO extends DurableObject<Env> {
       return r && now - r.updatedAt < STALE_MS ? json({ lobbyId: r.lobbyId }) : error(404, 'no_lobby', 'No existe una sala con ese código');
     }
     if (request.method !== 'POST') return error(404, 'not_found');
-    const b = await readJson<{ lobbyId?: unknown; code?: unknown; visibility?: unknown; summary?: unknown }>(request);
+    const b = await readJson<{ lobbyId?: unknown; code?: unknown; visibility?: unknown; summary?: unknown; owner?: unknown; ip?: unknown }>(request);
     if (!b || typeof b.lobbyId !== 'string') return error(400, 'bad_request');
     if (url.pathname === '/allocate') {
+      const owner = typeof b.owner === 'string' && b.owner.length > 0 ? b.owner : null;
+      const net = lobbyNetOf(b.ip);
+      const live = liveLobbiesOf(this.rows.values(), owner, net, now);
+      if (live.owner >= MAX_LOBBIES_PER_OWNER || live.net >= MAX_LOBBIES_PER_NET) return error(429, 'too_many_lobbies', 'Ya tienes salas abiertas: cierra una antes de crear otra');
       let code = randomCode();
       while (this.rows.has(code)) code = randomCode();
-      const row: Row = { lobbyId: b.lobbyId, visibility: 'private', summary: null, updatedAt: now };
+      const row: Row = { lobbyId: b.lobbyId, visibility: 'private', summary: null, updatedAt: now, ...(owner !== null ? { owner } : {}), ...(net !== null ? { net } : {}) };
       this.rows.set(code, row);
       await this.ctx.storage.put('c:' + code, row);
       return json({ code });
@@ -121,6 +154,8 @@ export class LobbyDirectoryDO extends DurableObject<Env> {
     if (cur && cur.lobbyId !== b.lobbyId) return error(409, 'code_owned'); // a stale lobby must not overwrite a newer owner
     if (url.pathname === '/upsert') {
       const row: Row = { lobbyId: b.lobbyId, visibility: b.visibility === 'public' ? 'public' : 'private', summary: (b.summary as LobbySummary) ?? null, updatedAt: now };
+      if (cur?.owner !== undefined) row.owner = cur.owner;
+      if (cur?.net !== undefined) row.net = cur.net;
       this.rows.set(code, row);
       await this.ctx.storage.put('c:' + code, row);
       return json({ ok: true });

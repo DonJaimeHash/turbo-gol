@@ -540,7 +540,8 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
   const region = regionOf(request, env, b.region);
   const id = env.LOBBY.newUniqueId();
   const lobbyId = id.toString();
-  const alloc = await lobbyDir(env).fetch('https://lobbies/allocate', { method: 'POST', headers: await internalHeaders(env), body: JSON.stringify({ lobbyId }) });
+  // owner / ip: the directory caps live lobbies per session and per IPv6 /64 (429 too_many_lobbies).
+  const alloc = await lobbyDir(env).fetch('https://lobbies/allocate', { method: 'POST', headers: await internalHeaders(env), body: JSON.stringify({ lobbyId, owner: session.sub, ip: clientIp(request) }) });
   if (!alloc.ok) return new Response(alloc.body, alloc);
   const { code } = (await alloc.json()) as { code: string };
   const u = new URL(request.url);

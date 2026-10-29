@@ -611,6 +611,7 @@ export default {
   'error.lobby.guests_present': 'Los invitados no pueden jugar con reglas experimentales: deben iniciar sesión o salir',
   'error.lobby.experimental_p2p_only': 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores',
   'error.lobby.bad_physics': 'Reglas inválidas',
+  'error.lobby.too_many_lobbies': 'Ya tienes salas abiertas: cierra una antes de crear otra',
   'error.queue.rate_limited': 'Demasiados intentos, espera un minuto',
   'error.queue.account_required': 'Inicia sesión para jugar Competitivo',
   'error.queue.ranked_ban': 'Competitivo bloqueado por abandonar partidas: {time}',
