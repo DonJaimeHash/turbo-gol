@@ -4,9 +4,11 @@
  *   config          GET /api/config once per page load (ServerConfig: turnstileSiteKey, protocol,
  *                   version, region), fetched lazily before the first guest registration; a failed
  *                   fetch is not cached
- *   guest session   POST /api/guest { name, turnstileToken? } -> GuestSession, kept in localStorage
- *                   (GUEST_STORAGE_KEY). With a sitekey the token comes from a Turnstile widget
- *                   rendered into the Hud's container (Turnstile.getToken; onTurnstile reports the
+ *   guest session   POST /api/guest { turnstileToken? } -> GuestSession, kept in localStorage
+ *                   (GUEST_STORAGE_KEY). The name is the server's ('Invitado 4821' from the player id,
+ *                   src/net/guestName.ts): a guest never chooses or changes it, and each page shows it
+ *                   in its own language (src/ui/names.ts playerName). With a sitekey the token comes
+ *                   from a Turnstile widget rendered into the Hud's container (Turnstile.getToken; onTurnstile reports the
  *                   challenge to the UI); 403 turnstile_failed / 503 turnstile_unconfigured and a
  *                   client-side challenge failure reject with NetError 'turnstile'. Inicio pre-warms
  *                   one token (prewarmAntiBot, kept WARM_MS) for the next registration; a check that
@@ -98,6 +100,7 @@ import {
   type Welcome,
 } from './protocol';
 import { nodeCarsOf, type CosmeticQueueResult } from './cosmetics';
+import { guestNameOf } from './guestName';
 import type { CarId } from '../game/cosmetics';
 
 export const GUEST_STORAGE_KEY = STORAGE_PREFIX + 'guest';
@@ -279,8 +282,8 @@ export function parseIceServers(v: unknown): IceServer[] | null {
   return out;
 }
 
+/** localStorage 'turbogol.guest': the guest session (a `name` stored by an older page is ignored). */
 export interface GuestRecord {
-  name: string;
   session: GuestSession | null;
 }
 
@@ -300,9 +303,8 @@ export interface ServerConfig {
   botFillMs?: number | null;
 }
 
-/** POST /api/guest body. */
+/** POST /api/guest body: no name, the server names every guest (a name sent anyway is ignored). */
 interface GuestRequest {
-  name: string;
   turnstileToken?: string;
 }
 
@@ -323,39 +325,30 @@ export function parseServerConfig(v: unknown): ServerConfig | null {
 
 // ---- Guest persistence ---------------------------------------------------------------------
 
-export function defaultGuestName(): string {
-  return `Guest${Math.floor(100 + Math.random() * 900)}`;
-}
-
-/** Trim and bound a display name; empty falls back to a generated one. */
-export function sanitizeName(name: string): string {
-  const n = name.replace(/\s+/g, ' ').trim().slice(0, 16);
-  return n.length > 0 ? n : defaultGuestName();
-}
-
 function isGuestSession(v: unknown): v is GuestSession {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   return typeof o.playerId === 'string' && typeof o.name === 'string' && typeof o.session === 'string' && typeof o.expiresAt === 'number';
 }
 
+/**
+ * The stored guest session. A `name` beside it (a page that let guests choose one) is ignored, and so
+ * is the one inside a session signed before the server named guests: it shows the server's name for
+ * that id, as the server reads that session now (verifySession).
+ */
 export function loadGuestRecord(storage: StorageLike | null): GuestRecord {
-  const rec: GuestRecord = { name: '', session: null };
-  if (storage === null) {
-    rec.name = defaultGuestName();
-    return rec;
-  }
+  const rec: GuestRecord = { session: null };
+  if (storage === null) return rec;
   try {
     const raw = storage.getItem(GUEST_STORAGE_KEY);
     if (raw !== null) {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof parsed.name === 'string') rec.name = parsed.name;
-      if (isGuestSession(parsed.session)) rec.session = parsed.session;
+      const s = parsed.session;
+      if (isGuestSession(s)) rec.session = /^[0-9a-f]{16}$/.test(s.playerId) ? { ...s, name: guestNameOf(s.playerId) } : s;
     }
   } catch {
     /* storage disabled / corrupt */
   }
-  if (rec.name.length === 0) rec.name = rec.session?.name ?? defaultGuestName();
   return rec;
 }
 
@@ -482,8 +475,6 @@ export class NetClient {
   readonly clock = new ClockSync();
   readonly loss = new LossEstimator();
 
-  /** Display name (persisted with the guest record). */
-  name: string;
   guest: GuestSession | null;
   welcome: Welcome | null = null;
   matchId: string | null = null;
@@ -607,18 +598,14 @@ export class NetClient {
     this.reconnectDelays = opts.reconnectDelaysMs ?? RECONNECT_DELAYS_MS;
     this.turnstileContainer = opts.turnstileContainer ?? (() => null);
     this.turnstileLoader = opts.turnstileLoader;
-    const rec = loadGuestRecord(this.storage);
-    this.name = rec.name;
-    this.guest = rec.session;
+    this.guest = loadGuestRecord(this.storage).session;
   }
 
   // ---- guest / queue ---------------------------------------------------------------------
 
-  setName(name: string): void {
-    const n = sanitizeName(name);
-    if (n === this.name) return;
-    this.name = n;
-    saveGuestRecord(this.storage, { name: this.name, session: this.guest });
+  /** The guest's name, the server's wire form ('Invitado 4821'; src/ui/names.ts playerName shows it), '' before the first session. */
+  get name(): string {
+    return this.guest?.name ?? '';
   }
 
   /**
@@ -662,7 +649,7 @@ export class NetClient {
   }
 
   /**
-   * The stored session, or a fresh one from POST /api/guest (also when the name changed). With a
+   * The stored session, or a fresh one from POST /api/guest. With a
    * sitekey in the config a Turnstile token is obtained first (the widget lives in the container
    * from the options; `signal` cancels the challenge). Rejects with NetError 'turnstile' when the
    * check fails on either side.
@@ -686,10 +673,10 @@ export class NetClient {
     });
   }
 
-  /** The stored guest session when it is still valid for the current name (and remembered as the bearer). */
+  /** The stored guest session when it is still valid (and remembered as the bearer). */
   private storedGuest(): GuestSession | null {
     const g = this.guest;
-    if (!sessionValid(g) || g.name !== this.name) return null;
+    if (!sessionValid(g)) return null;
     this.lastBearer = g.session;
     this.lastBearerPlayer = g.playerId;
     return g;
@@ -698,7 +685,7 @@ export class NetClient {
   /** POST /api/guest, with a Turnstile token first when the config has a sitekey. Run under exclusive(). */
   private async registerGuest(signal?: AbortSignal): Promise<GuestSession> {
     const cfg = await this.config();
-    const req: GuestRequest = { name: this.name };
+    const req: GuestRequest = {};
     if (cfg.turnstileSiteKey !== null) req.turnstileToken = await this.challenge(cfg.turnstileSiteKey, signal);
     const res = await this.post('/api/guest', req, null);
     if (!res.ok) {
@@ -713,8 +700,7 @@ export class NetClient {
     this.guest = body;
     this.lastBearer = body.session;
     this.lastBearerPlayer = body.playerId;
-    if (body.name.length > 0) this.name = body.name;
-    saveGuestRecord(this.storage, { name: this.name, session: body });
+    saveGuestRecord(this.storage, { session: body });
     return body;
   }
 
@@ -734,7 +720,7 @@ export class NetClient {
    */
   prewarmAntiBot(): void {
     if (this.warming || (this.warm !== null && this.now() - this.warm.at < WARM_MS)) return;
-    if (sessionValid(this.guest) && this.guest.name === this.name) return;
+    if (sessionValid(this.guest)) return;
     this.warming = true;
     void (async () => {
       try {

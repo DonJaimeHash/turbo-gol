@@ -503,3 +503,62 @@ test('names and versions a node sent are cut before they reach a line', () => {
   assert.equal(W.clip('abc', 3), 'abc');
   assert.equal(W.clip('abcd', 3), 'ab…');
 });
+
+test('probeTargetOk: a public host only (every IPv4 form the URL parser knows); loopback only when the object runs on one', () => {
+  for (const u of ['https://sp1.turbo-gol.com/healthz?nonce=x', 'https://203.0.114.9:8443/healthz', 'https://[2606:4700::1111]/healthz', 'http://n.example']) assert.equal(W.probeTargetOk(u), true, u);
+  for (const u of [
+    'https://127.0.0.1/healthz',
+    'https://localhost/healthz',
+    'https://a.localhost',
+    'https://10.1.2.3',
+    'https://172.16.0.1',
+    'https://172.31.255.255',
+    'https://192.168.1.1',
+    'https://169.254.169.254/latest',
+    'https://100.64.0.1',
+    'https://0.0.0.0',
+    'https://224.0.0.1',
+    'https://0x7f.1',
+    'https://2130706433',
+    'https://017700000001',
+    'https://[::1]',
+    'https://[::]',
+    'https://[fd00::1]',
+    'https://[fe80::1]',
+    'https://[::ffff:10.0.0.1]',
+    'https://[::ffff:7f00:1]',
+    'https://[64:ff9b::a00:1]',
+    'https://[2001:db8::1]',
+    'https://intranet',
+    'https://printer.local',
+    'https://x.internal',
+    'https://user:pw@n.example',
+    'ftp://n.example',
+    'not a url',
+  ]) {
+    assert.equal(W.probeTargetOk(u), false, u);
+  }
+  assert.equal(W.probeTargetOk('https://127.0.0.1:9000/healthz', true), true, 'wrangler dev: a node on this machine');
+  assert.equal(W.probeTargetOk('https://10.0.0.1', true), false, 'still never a private one');
+});
+
+test('probeHealthz: at most 16 KB of an answer is read; a private address is never fetched; a redirect is not followed', async () => {
+  const n = rec();
+  let pulls = 0;
+  const f = fakeFetch(async () => {
+    const chunk = new Uint8Array(64 * 1024).fill(32);
+    return new Response(new ReadableStream({ pull(c) { if (pulls++ >= 64) return c.close(); c.enqueue(chunk); } }, { highWaterMark: 0 }));
+  });
+  assert.deepEqual(await W.probeHealthz(n, f), { ok: false, kind: 'answer', detail: 'an answer over 16384 bytes' });
+  assert.ok(pulls <= 2, `stopped at the cap (${pulls})`);
+  const none = fakeFetch(() => new Response('{}'));
+  for (const publicUrl of ['wss://10.0.0.9', 'wss://[fd00::9]', 'wss://127.0.0.1:9443']) {
+    const r = await W.probeHealthz(rec({ publicUrl }), none);
+    assert.deepEqual([r.ok, r.kind], [false, 'network'], publicUrl);
+  }
+  assert.equal(none.calls.length, 0, 'nothing fetched');
+  assert.equal((await W.probeHealthz(rec({ publicUrl: 'wss://127.0.0.1:9443' }), healthzFetch(), 5000, true)).ok, true, 'a loopback node under wrangler dev');
+  const moved = fakeFetch(() => new Response(null, { status: 301, headers: { location: 'https://10.0.0.1/' } }));
+  assert.deepEqual(await W.probeHealthz(n, moved), { ok: false, kind: 'http', detail: 'HTTP 301' });
+  assert.equal(moved.calls[0].init.redirect, 'manual');
+});

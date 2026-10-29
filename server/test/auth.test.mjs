@@ -45,7 +45,7 @@ test('session: sign / verify round trip, 24 h expiry', async () => {
   const c = await A.verifySession(SECRET, token, now + 1000);
   assert.ok(c);
   assert.equal(c.sub, '0123456789abcdef');
-  assert.equal(c.name, 'Alice');
+  assert.equal(c.name, 'Invitado 9743', "a guest's name is the server's, from its id (guest-names.test.mjs)");
   assert.equal(c.exp - c.iat, A.SESSION_TTL_SECONDS);
   // expired
   assert.equal(await A.verifySession(SECRET, token, now + (A.SESSION_TTL_SECONDS + 1) * 1000), null);
@@ -109,6 +109,67 @@ test('internal secret is stable per JWT secret and differs between secrets', asy
   assert.equal(await A.checkInternal('s1', req), true);
   assert.equal(await A.checkInternal('s2', req), false);
   assert.equal(await A.checkInternal('s1', new Request('https://x/')), false);
+});
+
+// ---- Security 3 (auth-9): typed tokens, a domain-separated internal secret ----------------------
+
+test('auth-9: a ticket never verifies as a session, a session never as a ticket; both say their typ', async () => {
+  const now = 1_700_000_000_000;
+  const mid = 'a'.repeat(64);
+  for (const role of ['player', 'peer', 'lobby']) {
+    const ticket = await A.createTicket(SECRET, { sub: '0123456789abcdef', mid, team: 0, slot: 0, name: 'Ana', role }, now);
+    assert.equal(JSON.parse(new TextDecoder().decode(A.base64urlDecode(ticket.split('.')[1]))).typ, 't');
+    assert.equal(await A.verifySession(SECRET, ticket, now), null, `a ${role} ticket is no Bearer session`);
+    assert.ok(await A.verifyTicket(SECRET, ticket, mid, now, role));
+  }
+  const { token } = await A.createSession(SECRET, '0123456789abcdef', 'Ana', now);
+  assert.equal(JSON.parse(new TextDecoder().decode(A.base64urlDecode(token.split('.')[1]))).typ, 's');
+  assert.ok(await A.verifySession(SECRET, token, now));
+  // Any other typ (an OAuth state's 'oa', a made-up one) is no session, even with a session's claims.
+  const iat = Math.floor(now / 1000);
+  for (const typ of ['oa', 't', 'x']) assert.equal(await A.verifySession(SECRET, await A.signJwt(SECRET, { typ, sub: '0123456789abcdef', name: 'Ana', iat, exp: iat + 60 }), now), null, typ);
+  // A ticket-shaped token typed as a session is still refused as a ticket.
+  assert.equal(await A.verifyTicket(SECRET, await A.signJwt(SECRET, { typ: 's', sub: '0123456789abcdef', mid, team: 0, slot: 0, role: 'player', name: 'Ana', iat, exp: iat + 60, jti: 'b'.repeat(32) }), mid, now), null);
+});
+
+test('auth-9: tokens signed before the types keep working for their life (no sign-out at the deploy), a legacy ticket stays a ticket only', async () => {
+  const now = 1_700_000_000_000;
+  const iat = Math.floor(now / 1000);
+  const mid = 'c'.repeat(64);
+  const legacyGuest = await A.signJwt(SECRET, { sub: '0123456789abcdef', name: 'Ana', iat, exp: iat + A.SESSION_TTL_SECONDS });
+  // Checked by its id: with sec/guest-names a guest's name is the server's ('Invitado NNNN'), whatever the token says.
+  const guest = await A.verifySession(SECRET, legacyGuest, now);
+  assert.equal(guest?.sub, '0123456789abcdef', 'an untyped 24 h guest session');
+  assert.notEqual(guest.acct, 1);
+  const legacyAccount = await A.signJwt(SECRET, { sub: '0123456789abcdef', name: 'Ana', iat, exp: iat + 3600, acct: 1, car: 'pampero' });
+  assert.equal((await A.verifySession(SECRET, legacyAccount, now)).acct, 1, 'an untyped 1 h account session');
+  const legacyTicket = await A.signJwt(SECRET, { sub: '0123456789abcdef', mid, team: 1, slot: 2, role: 'peer', name: 'Ana', iat, exp: iat + 90, jti: 'd'.repeat(32) });
+  assert.ok(await A.verifyTicket(SECRET, legacyTicket, mid, now, 'peer'), 'an untyped 90 s ticket still opens its socket');
+  assert.equal(await A.verifySession(SECRET, legacyTicket, now), null, 'but is no Bearer session');
+});
+
+test('auth-9: the TV scope and the fresh sign-in are an account session\'s only; a TV never carries a fresh sign-in', async () => {
+  const now = 1_700_000_000_000;
+  const iat = Math.floor(now / 1000);
+  const sign = (c) => A.signJwt(SECRET, { typ: 's', sub: '0123456789abcdef', name: 'Ana', iat, exp: iat + 600, ...c });
+  assert.deepEqual([(await A.verifySession(SECRET, await sign({ acct: 1, tv: 1 }), now)).tv], [1]);
+  assert.equal((await A.verifySession(SECRET, await sign({ acct: 1, aat: iat }), now)).aat, iat);
+  assert.equal((await A.verifySession(SECRET, await sign({ tv: 1, aat: iat }), now)).tv, undefined, 'a guest claims no scope');
+  assert.equal((await A.verifySession(SECRET, await sign({ aat: iat }), now)).aat, undefined);
+  assert.equal((await A.verifySession(SECRET, await sign({ acct: 1, tv: 1, aat: iat }), now)).aat, undefined, 'a TV never has a fresh sign-in');
+  assert.equal((await A.verifySession(SECRET, await sign({ acct: 1, tv: 2 }), now)).tv, undefined);
+});
+
+test('auth-9: the internal secret is HKDF-derived, apart from the token key: not the HMAC of any label under it', async () => {
+  const enc = new TextEncoder();
+  const v = await A.internalSecret('s1');
+  assert.match(v, /^[0-9a-f]{64}$/);
+  const hex = (b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  const hmac = await crypto.subtle.importKey('raw', enc.encode('s1'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  assert.notEqual(v, hex(await crypto.subtle.sign('HMAC', hmac, enc.encode('turbogol-internal-v1'))), 'not the v1 value (an HMAC under the JWT key)');
+  const ikm = await crypto.subtle.importKey('raw', enc.encode('s1'), 'HKDF', false, ['deriveBits']);
+  const want = hex(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('turbogol/hkdf/v2'), info: enc.encode('internal-auth') }, ikm, 256));
+  assert.equal(v, want);
 });
 
 test('randomHex', () => {

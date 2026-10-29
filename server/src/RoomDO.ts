@@ -18,10 +18,10 @@
  *             'left': its lock may have been freed and the player seated elsewhere; a ticket
  *             outlives the join grace), single-use jti (storage), acceptWebSocket with tags
  *             [peerId, 'slot:<n>'] (a second socket for the same slot replaces the first: 4000
- *             'replaced'), RoomWelcome (+ 'start' and the drops so far when the match already
- *             started), 'peerJoined' to the others. The TURN credential fetch in between opens the
- *             input gate (up to 3 s): meanwhile the slot is `joining` (in memory: the no-show pass
- *             skips it, so the start keeps waiting for it) and the gone check runs again after it.
+ *             'replaced'), RoomWelcome with STUN only (+ 'start' and the drops so far when the
+ *             match already started), 'peerJoined' to the others. The slot is `joining` while
+ *             its upgrade runs (in memory: the no-show pass skips it) and the gone check runs
+ *             again before the accept.
  *             A verified ticket of the slot reaching the room marks it `arrived` (persisted): the
  *             player showed up, so it is never named a no-show; one that arrives after its slot was
  *             given up (a slow join past the grace: 403 'left') also asks the matchmaker to take
@@ -41,12 +41,30 @@
  *             no-show grace passes; no-show: a slot that has not connected NO_SHOW_MS after create
  *             is declared left (alarm): 'peerLeft' { slot, peerId: '' } to the others, which then
  *             start without it (its ticket is refused from then on); ping -> pong;
+ *             turn -> { type: 'turn', iceServers } (cost-2): TURN credentials minted for this
+ *             seat on demand (its mesh did not connect), never in the welcome: only with the TURN
+ *             secrets set and turn_cf_disabled off (read first), one ask per socket every
+ *             TURN_ASK_GAP_MS, TURN_PER_SLOT asks per seat (granted or refused) and
+ *             TURN_PER_PLAYER_PER_DAY per player (the region's matchmaker, POST /turn-quota: no
+ *             answer = no), ttl = the room's remaining life; kept in the state and revoked when the
+ *             seat's socket goes and at the cleanup; refused = { iceServers: [] };
  *             unreachable { slot, atTick } (atTick = the first tick the
  *             reporter has no input of that slot for; ignored before the start: a dead link is then
- *             the client's own fallback) -> 'drop' { slot, atTick: min(reported) } when a majority
- *             of the other live peers (the only other one in 1v1) reported that slot, or when its
- *             own socket closed > 5 s ago (re-checked by an alarm); hashReport -> kept in memory
- *             for /internal/status
+ *             the client's own fallback; slot = the reporter's own: it gives its seat up, its frame
+ *             loop stalled and it lost a link, and is dropped at once at min(its atTick, the reports
+ *             about it), P2PSession.handlePeerDead) -> 'drop' { slot, atTick: min(reported) } when a majority
+ *             of the other live peers reported that slot, or when its own socket closed > 5 s ago
+ *             (re-checked by an alarm). With one other live peer (1v1, two humans and bots) a lone
+ *             report does not drop a target whose own room socket is open and whose match loop is
+ *             running (a 'ready' or 'hashReport' within TARGET_SILENT_MS: pings do not count, a
+ *             hidden tab keeps pinging): the room cannot tell which side broke the link, so the
+ *             reporter cannot pick who leaves. When the target reports the reporter as well (a dead
+ *             link both ways, both sockets alive) both are dropped, each at its reported tick; a
+ *             target that goes quiet is dropped by the alarm re-check. A reporter's repeated report
+ *             only ever lowers its tick, and a report that changes nothing writes nothing; at most
+ *             REPORT_BURST reports that change something per socket (one more every
+ *             REPORT_REFILL_MS), the rest are ignored; hashReport -> kept in memory for
+ *             /internal/status
  *   close     'peerLeft' to the others; the player's matchmaker lock is released at once (the lock
  *             lives as long as the signaling socket: a peer that leaves, reloads or falls back to a
  *             Durable Object match can queue again immediately; it cannot rejoin this room: a P2P
@@ -60,9 +78,12 @@
  *             is marked left and announced ('peerLeft' with an empty peerId) so the others stop
  *             waiting for it; the answer's `noShow` tells whether the player never showed up (no
  *             socket, no ticket ever reached the room: the matchmaker counts a strike)
- *   cleanup   sockets closed (1000), locks + capacity released at the region matchmaker (the
+ *   cleanup   sockets closed (1000), the TURN credentials minted for the room revoked, locks +
+ *             capacity released at the region matchmaker (the
  *             players that never showed up are named in `noShow`, so the matchmaker can back off
- *             repeat no-shows), storage wiped; hard TTL 20 min after create (alarm)
+ *             repeat no-shows), storage wiped; hard TTL 20 min after create (alarm); a room that has
+ *             not started NOT_READY_MS after its last peer joined (sockets open, nobody ready: a
+ *             client falls back after FALLBACK_MS = 10 s) is cleaned up then ('not_ready', rt-3)
  *
  * Experimental rules (RoomRecord.physics): the welcome of EVERY socket carries them (first, late
  * and replacement sockets: null = standard), every peer builds its arena with them, and the
@@ -83,7 +104,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { error, iceServersFor, isMode, json, readJson } from './env';
+import { TURN_ASK_GAP_MS, TURN_MIN_TTL_SECONDS, TURN_PER_SLOT, error, iceServersFor, isMode, json, readJson, revokeTurnCredential, stunOnly, turnConfigured, turnKilled, turnUsernames } from './env';
 import type { GameModeId } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret, randomHex } from './auth';
 import { TICK_RATE, WS_SUBPROTOCOL } from '../../src/net/protocol';
@@ -131,11 +152,23 @@ export const MIN_HUMANS = 2;
 export const DROP_LEAD_TICKS = 0;
 /** A slot whose socket closed this long ago is dropped on the first unreachable report. */
 export const CLOSE_GRACE_MS = 5_000;
+/**
+ * A target whose match loop sent nothing for this long counts as silent: one report then drops it
+ * (rt-4). The loop's frames are 'ready' and 'hashReport', which P2PSession sends every
+ * HASH_REPORT_EVERY_MS (10 s) from its frame loop, also while it waits for a peer; a ping does
+ * not count (RoomClient's timer keeps pinging from a hidden tab whose loop has stopped).
+ */
+export const TARGET_SILENT_MS = 25_000;
+/** 'unreachable' reports that change the room's state, per socket: a burst, then one per REPORT_REFILL_MS (rt-m2). */
+export const REPORT_BURST = 8;
+export const REPORT_REFILL_MS = 2_000;
 /** Cleanup after the last socket closed / after create with no socket at all (tickets last 90 s). */
 export const EMPTY_MS = 60_000;
 export const UNUSED_MS = 90_000;
 /** Hard TTL from create; the matchmaker's lock for a p2p room is a little longer than this. */
 export const ROOM_TTL_MS = 20 * 60_000;
+/** A room not started this long after its last peer joined is cleaned up (its locks and capacity freed). */
+export const NOT_READY_MS = 60_000;
 const ALARM_SLACK_MS = 250;
 const CLOSE_REPLACED = 4000;
 const WS_OPEN = 1;
@@ -192,6 +225,12 @@ interface RoomState {
   /** The no-show pass (NO_SHOW_MS after create) ran: its alarm is not re-armed. */
   noShowDone: boolean;
   nextGen: number;
+  /** When the last socket was admitted (null: none yet): the NOT_READY_MS cleanup of a room that never starts. */
+  lastJoinAt: number | null;
+  /** TURN credentials minted for the seats (their usernames): revoked when the seat goes and at the cleanup. */
+  turn: Array<{ slot: number; user: string }>;
+  /** TURN asks per slot that reached the player's quota (granted or not): TURN_PER_SLOT at most. */
+  turnAsks: number[];
 }
 
 /** What GET /internal/presence answers the matchmaker (RoomDO.presence). */
@@ -226,7 +265,15 @@ interface Attachment {
   peerId: string;
   playerId: string;
   ready: boolean;
+  /**
+   * The last frame of this peer's match loop (ms: the admit, 'ready', a 'hashReport'; refreshed in
+   * the attachment every SEEN_EVERY_MS): the target liveness of decideDrop. Pings do not count.
+   */
+  seenAt?: number;
 }
+
+/** How stale the attachment's seenAt may get before a message rewrites it. */
+const SEEN_EVERY_MS = 5_000;
 
 interface HashReport {
   tick: number;
@@ -302,6 +349,8 @@ export interface DropQuery {
   others: readonly number[];
   /** Milliseconds since the target's own socket closed; null while it is connected or never was. */
   closedAgoMs: number | null;
+  /** The target's own room socket is open and talking (TARGET_SILENT_MS): a lone vote is not enough then. Absent = false. */
+  targetLive?: boolean;
   closeGraceMs?: number;
   leadTicks?: number;
 }
@@ -310,7 +359,9 @@ export interface DropQuery {
  * Drop `target` when a majority of `others` reported it unreachable (any single report when the
  * target's socket has been closed for more than the grace), at min(reported atTick) + lead (lead
  * 0: see DROP_LEAD_TICKS). Reports from slots outside `others` (dropped peers, the target itself,
- * bots) do not count.
+ * bots) do not count. A single vote never drops a target that is `targetLive` (its room socket open
+ * and talking): with one other peer that vote is the whole majority, and the reporter would choose
+ * who leaves the match (rt-4; mutualDrop handles a link dead both ways).
  */
 export function decideDrop(q: DropQuery): { atTick: number } | null {
   const grace = q.closeGraceMs ?? CLOSE_GRACE_MS;
@@ -323,8 +374,23 @@ export function decideDrop(q: DropQuery): { atTick: number } | null {
     if (r.atTick < minTick) minTick = r.atTick;
   }
   if (votes === 0) return null;
-  if (votes >= majorityOf(q.others.length) || (q.closedAgoMs !== null && q.closedAgoMs > grace)) return { atTick: minTick + lead };
+  if (q.closedAgoMs !== null && q.closedAgoMs > grace) return { atTick: minTick + lead };
+  if (votes >= majorityOf(q.others.length) && !(votes < 2 && q.targetLive === true)) return { atTick: minTick + lead };
   return null;
+}
+
+/**
+ * Two live peers that each reported the other (the link between them is dead both ways and both
+ * room sockets are alive): the ticks to drop each of them at (min reported + lead), or null. Pure.
+ */
+export function mutualDrop(reports: readonly UnreachableReport[], a: number, b: number, leadTicks: number = DROP_LEAD_TICKS): { a: number; b: number } | null {
+  let aTick = -1;
+  let bTick = -1;
+  for (const r of reports) {
+    if (r.slot === a && r.from === b && (aTick < 0 || r.atTick < aTick)) aTick = r.atTick;
+    if (r.slot === b && r.from === a && (bTick < 0 || r.atTick < bTick)) bTick = r.atTick;
+  }
+  return aTick >= 0 && bTick >= 0 ? { a: aTick + leadTicks, b: bTick + leadTicks } : null;
 }
 
 function freshState(): RoomState {
@@ -340,6 +406,9 @@ function freshState(): RoomState {
     dropCheckAt: null,
     noShowDone: false,
     nextGen: 0,
+    lastJoinAt: null,
+    turn: [],
+    turnAsks: new Array<number>(MAX_CARS).fill(0),
   };
 }
 
@@ -348,6 +417,9 @@ function upgradeState(st: RoomState): RoomState {
   if (!Array.isArray(st.left) || st.left.length !== MAX_CARS) st.left = new Array<boolean>(MAX_CARS).fill(false);
   if (!Array.isArray(st.arrived) || st.arrived.length !== MAX_CARS) st.arrived = new Array<boolean>(MAX_CARS).fill(false);
   if (typeof st.noShowDone !== 'boolean') st.noShowDone = false;
+  if (typeof st.lastJoinAt !== 'number') st.lastJoinAt = null;
+  if (!Array.isArray(st.turn)) st.turn = [];
+  if (!Array.isArray(st.turnAsks) || st.turnAsks.length !== MAX_CARS) st.turnAsks = new Array<number>(MAX_CARS).fill(0);
   return st;
 }
 
@@ -371,6 +443,8 @@ export class RoomDO extends DurableObject<Env> {
   private readonly live: Array<WebSocket | null> = new Array<WebSocket | null>(MAX_CARS).fill(null);
   private readonly atts = new WeakMap<WebSocket, Attachment>();
   private readonly buckets = new WeakMap<WebSocket, { tokens: number; at: number }>();
+  /** The 'unreachable' budget per socket (REPORT_BURST, REPORT_REFILL_MS). */
+  private readonly reportBuckets = new WeakMap<WebSocket, { tokens: number; at: number }>();
   private readonly hashes = new Map<number, HashReport>();
   /**
    * Upgrades of each slot past the ownership checks and not finished yet (in memory: a request in
@@ -378,6 +452,10 @@ export class RoomDO extends DurableObject<Env> {
    * no-show pass skips the slot, so a player that reached the room within the grace is waited for.
    */
   private readonly joining = new Uint8Array(MAX_CARS);
+  /** A 'turn' request of the slot is being served (its mint is an outgoing fetch): a second one waits for nothing. */
+  private readonly turnBusy = new Uint8Array(MAX_CARS);
+  /** When each socket last asked for TURN (TURN_ASK_GAP_MS between two asks; in memory). */
+  private readonly turnAskAt = new WeakMap<WebSocket, number>();
   private cleaned = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -418,6 +496,12 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     const st = this.state;
+    if (st.startAt === null && st.lastJoinAt !== null && now >= st.lastJoinAt + NOT_READY_MS - ALARM_SLACK_MS) {
+      // Sockets open, nobody starting: a client gives the mesh FALLBACK_MS and leaves; whatever is
+      // still here holds a room (and locks) for nothing.
+      await this.cleanup('not_ready');
+      return;
+    }
     if (!st.noShowDone && now >= rec.createdAt + NO_SHOW_MS - ALARM_SLACK_MS) {
       // The join grace is over: whoever has not connected is not coming (its ticket is refused
       // from now on); the peers waiting for it stop waiting and the start is re-evaluated.
@@ -483,6 +567,7 @@ export class RoomDO extends DurableObject<Env> {
           return;
         }
         att.ready = true;
+        att.seenAt = now;
         ws.serializeAttachment(att);
         await this.maybeStart(now);
         return;
@@ -493,7 +578,11 @@ export class RoomDO extends DurableObject<Env> {
       }
       case 'unreachable': {
         if (!isUint32(msg.slot) || !isUint32(msg.atTick)) return;
-        await this.onUnreachable(att.slot, msg.slot, msg.atTick, now);
+        await this.onUnreachable(ws, att.slot, msg.slot, msg.atTick, now);
+        return;
+      }
+      case 'turn': {
+        await this.onTurn(ws, att);
         return;
       }
       case 'hashReport': {
@@ -501,6 +590,11 @@ export class RoomDO extends DurableObject<Env> {
         const agree = isUint32(msg.agree) ? msg.agree : 0;
         const disagree = isUint32(msg.disagree) ? msg.disagree : 0;
         this.hashes.set(att.slot, { tick: msg.tick, hash: msg.hash, agree, disagree, at: now });
+        // The match loop runs: the drop vote sees this peer alive (kept in the attachment across hibernation).
+        if (att.seenAt === undefined || now - att.seenAt >= SEEN_EVERY_MS) {
+          att.seenAt = now;
+          ws.serializeAttachment(att);
+        }
         return;
       }
       default:
@@ -678,18 +772,15 @@ export class RoomDO extends DurableObject<Env> {
     this.joining[slot]++;
     let admitted = false;
     try {
-      // Outgoing fetch (TURN credentials): the input gate is not held meanwhile (the slot is
-      // `joining`: the no-show pass skips it), so the room AND the slot are re-checked afterwards:
-      // /internal/leave (the player's own /api/leave, a stale-lock release) may have given it up.
-      // Minted per socket, never cached (10 min credentials).
-      const iceServers = await iceServersFor(this.env);
+      // No TURN here (cost-2): the welcome carries STUN only, a seat asks for TURN once its ticket
+      // was used ('turn'). The room AND the slot are re-checked all the same.
       if (!this.record || this.cleaned) return error(404, 'no_room');
       if (this.isGone(slot)) return error(403, 'left', 'this slot left the room (single-use seat)');
       // Single use of the ticket, checked last so a transient failure above does not burn it.
       if (await this.ctx.storage.get('jti:' + jti)) return error(403, 'ticket_used');
       await this.ctx.storage.put('jti:' + jti, true);
       admitted = true;
-      return await this.admit(rec, slot, playerId, iceServers);
+      return await this.admit(rec, slot, playerId, stunOnly());
     } finally {
       this.joining[slot]--;
       if (!admitted) await this.afterFailedJoin(slot);
@@ -747,13 +838,14 @@ export class RoomDO extends DurableObject<Env> {
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [peerId, 'slot:' + slot]);
-    const att: Attachment = { slot, gen, peerId, playerId, ready: false };
+    const att: Attachment = { slot, gen, peerId, playerId, ready: false, seenAt: now };
     server.serializeAttachment(att);
     this.atts.set(server, att);
     this.live[slot] = server;
     st.cur[slot] = gen;
     st.closedAt[slot] = 0;
     st.emptyAt = null;
+    st.lastJoinAt = now;
     await this.persist();
     await this.rearm();
 
@@ -783,6 +875,88 @@ export class RoomDO extends DurableObject<Env> {
     }
     if (!replaced) this.broadcast({ type: 'peerJoined', slot: this.roomSlot(slot) }, server);
     return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': WS_SUBPROTOCOL } });
+  }
+
+  /**
+   * A seat asks for TURN (its mesh did not connect): checked (configured, one ask per socket every
+   * TURN_ASK_GAP_MS, TURN_PER_SLOT asks per seat, the kill flag, then the player's daily quota at
+   * the matchmaker), then minted for the room's remaining life and recorded for the revoke.
+   * Anything refused answers an empty list. Every ask that reaches the quota counts against the
+   * seat, refused or not, so a seat costs the matchmaker TURN_PER_SLOT calls at most; the kill flag
+   * is read first (cached), so while it is on nothing reaches the quota.
+   */
+  private async onTurn(ws: WebSocket, att: Attachment): Promise<void> {
+    const rec = this.record;
+    const st = this.state;
+    const slot = att.slot;
+    const none = (): void => this.send(ws, { type: 'turn', iceServers: [] });
+    if (!rec || !turnConfigured(this.env) || this.turnBusy[slot] === 1) return none();
+    const asked = this.turnAskAt.get(ws);
+    const at = Date.now();
+    if (asked !== undefined && at - asked < TURN_ASK_GAP_MS) return none();
+    this.turnAskAt.set(ws, at);
+    if (st.turnAsks[slot] >= TURN_PER_SLOT) return none();
+    this.turnBusy[slot] = 1;
+    try {
+      if (await turnKilled(this.env)) return none();
+      if (!this.record || this.cleaned || st.cur[slot] !== att.gen) return;
+      st.turnAsks[slot]++;
+      await this.persist();
+      if (!(await this.turnQuota(rec, att.playerId))) return none();
+      const now = Date.now();
+      const ttl = Math.max(TURN_MIN_TTL_SECONDS, Math.ceil((rec.createdAt + ROOM_TTL_MS - now) / 1000));
+      const list = await iceServersFor(this.env, fetch, ttl);
+      const users = turnUsernames(list);
+      // Outgoing fetches above: the seat may be gone meanwhile (closed, replaced, the room cleaned).
+      if (!this.record || this.cleaned || st.cur[slot] !== att.gen) {
+        this.revoke(users);
+        return;
+      }
+      if (users.length === 0) return none();
+      for (const user of users) st.turn.push({ slot, user });
+      await this.persist();
+      this.send(ws, { type: 'turn', iceServers: list });
+    } finally {
+      this.turnBusy[slot] = 0;
+    }
+  }
+
+  /** The player's daily TURN quota at the region's matchmaker (POST /turn-quota): true = mint. No answer = no. */
+  private async turnQuota(rec: RoomRecord, playerId: string): Promise<boolean> {
+    const env = this.env;
+    try {
+      const secret = await internalSecret(env.JWT_SECRET);
+      const res = await env.MATCHMAKER.get(env.MATCHMAKER.idFromName('mm:' + rec.region)).fetch('https://matchmaker/turn-quota', {
+        method: 'POST',
+        headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
+        body: JSON.stringify({ playerId }),
+      });
+      if (!res.ok) {
+        await res.body?.cancel();
+        return false;
+      }
+      const b = (await res.json()) as { ok?: unknown };
+      return b.ok === true;
+    } catch (e) {
+      console.error('RoomDO: turn quota failed (no TURN)', e);
+      return false;
+    }
+  }
+
+  /** Revoke TURN credentials in the background (best effort). */
+  private revoke(users: readonly string[]): void {
+    if (users.length === 0) return;
+    const env = this.env;
+    this.ctx.waitUntil(Promise.all(users.map((u) => revokeTurnCredential(env, u))).then(() => undefined));
+  }
+
+  /** The slot's TURN credentials out of the state, revoked (the caller persists). */
+  private revokeSlot(slot: number): void {
+    const st = this.state;
+    const mine = st.turn.filter((t) => t.slot === slot);
+    if (mine.length === 0) return;
+    st.turn = st.turn.filter((t) => t.slot !== slot);
+    this.revoke(mine.map((t) => t.user));
   }
 
   // ---- room logic -------------------------------------------------------------------------
@@ -837,15 +1011,27 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
-  private async onUnreachable(from: number, target: number, atTick: number, now: number): Promise<void> {
+  private async onUnreachable(ws: WebSocket, from: number, target: number, atTick: number, now: number): Promise<void> {
     const rec = this.record;
-    if (!rec || target === from || target >= rec.slots.length || rec.slots[target].kind !== 'peer') return;
+    if (!rec || target >= rec.slots.length || rec.slots[target].kind !== 'peer') return;
     const st = this.state;
     // Before the start a dead link is a mesh failure the client handles itself (its fallback);
     // kicking the target would strand it with a drop of its own slot, and a closed socket is
     // already dropped at tick 0 by maybeStart.
     if (st.startAt === null) return;
     if (this.isDropped(from)) return;
+    if (target === from) {
+      // A self-report: this peer's own frame loop stalled (a hidden tab, a long hitch) and it lost
+      // a link, most likely because its peers found it silent; it gives its seat up so the ones
+      // that kept playing stay. Only ever its own seat. Dropped at once, at the smallest tick
+      // anyone reported for it (its own tick = what its peers acknowledged of it).
+      if (!this.takeReportToken(ws, now)) return;
+      let at = atTick;
+      for (const r of st.reports) if (r.slot === from && r.atTick < at) at = r.atTick;
+      this.dropSlot(from, at + DROP_LEAD_TICKS);
+      await this.persist();
+      return;
+    }
     const prior = st.dropped.find((d) => d.slot === target);
     if (prior) {
       // Already announced: repeat it to this reporter only (it may have missed the broadcast).
@@ -853,12 +1039,44 @@ export class RoomDO extends DurableObject<Env> {
       if (ws !== null) this.send(ws, { type: 'drop', slot: prior.slot, atTick: prior.atTick });
       return;
     }
+    // Only the smallest tick of a reporter matters (the drop goes at the minimum): a repeat that does
+    // not lower it changes nothing and writes nothing (rt-m2); a change takes from the report budget.
     const existing = st.reports.find((r) => r.slot === target && r.from === from);
-    if (existing) existing.atTick = atTick;
-    else st.reports.push({ slot: target, from, atTick });
+    const changes = existing === undefined || atTick < existing.atTick;
+    if (changes) {
+      if (!this.takeReportToken(ws, now)) return;
+      if (existing) existing.atTick = atTick;
+      else st.reports.push({ slot: target, from, atTick });
+    }
+    const checkAt = st.dropCheckAt;
+    const drops = st.dropped.length;
+    // Evaluated on a repeat as well: the target may have gone quiet since.
     this.evaluateDrop(target, now);
+    if (!changes && st.dropped.length === drops && st.dropCheckAt === checkAt) return;
     await this.persist();
-    await this.rearm();
+    if (st.dropCheckAt !== checkAt) await this.rearm();
+  }
+
+  /** One report of `ws`'s 'unreachable' budget (REPORT_BURST, then one per REPORT_REFILL_MS). */
+  private takeReportToken(ws: WebSocket, now: number): boolean {
+    let b = this.reportBuckets.get(ws);
+    if (b === undefined) {
+      b = { tokens: REPORT_BURST, at: now };
+      this.reportBuckets.set(ws, b);
+    }
+    b.tokens = Math.min(REPORT_BURST, b.tokens + Math.max(0, now - b.at) / REPORT_REFILL_MS);
+    b.at = now;
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
+  /** The slot's room socket is open and its match loop sent a frame within TARGET_SILENT_MS. */
+  private talking(slot: number, now: number): boolean {
+    const ws = this.live[slot];
+    if (ws === null) return false;
+    const att = this.attOf(ws);
+    return att !== null && att.seenAt !== undefined && now - att.seenAt < TARGET_SILENT_MS;
   }
 
   /** Apply decideDrop to the reports about `target`; schedules the grace re-check when its socket is closed. */
@@ -869,9 +1087,27 @@ export class RoomDO extends DurableObject<Env> {
     const others: number[] = [];
     for (const s of rec.slots) if (s.kind === 'peer' && s.slot !== target && !this.isDropped(s.slot)) others.push(s.slot);
     const closedAgoMs = st.cur[target] === 0 && st.closedAt[target] > 0 ? now - st.closedAt[target] : null;
-    const d = decideDrop({ target, reports: st.reports, others, closedAgoMs });
+    const targetLive = closedAgoMs === null && this.talking(target, now);
+    const d = decideDrop({ target, reports: st.reports, others, closedAgoMs, targetLive });
     if (d) {
       this.dropSlot(target, d.atTick);
+      return;
+    }
+    if (others.length === 1 && targetLive) {
+      // A lone report against a peer that is alive: dropped only if it reports the reporter too
+      // (the link is dead both ways: both go, neither picks), or once it goes quiet (the alarm).
+      const other = others[0];
+      const both = this.talking(other, now) ? mutualDrop(st.reports, target, other) : null;
+      if (both !== null) {
+        this.dropSlot(target, both.a);
+        this.dropSlot(other, both.b);
+        return;
+      }
+      if (st.reports.some((r) => r.slot === target && r.from === other)) {
+        const att = this.attOf(this.live[target] as WebSocket);
+        const at = (att?.seenAt ?? now) + TARGET_SILENT_MS + 50;
+        if (st.dropCheckAt === null || at < st.dropCheckAt) st.dropCheckAt = at;
+      }
       return;
     }
     if (closedAgoMs !== null) {
@@ -903,6 +1139,7 @@ export class RoomDO extends DurableObject<Env> {
     const att = this.attOf(ws);
     this.atts.delete(ws);
     this.buckets.delete(ws);
+    this.reportBuckets.delete(ws);
     const rec = this.record;
     if (!att || !rec || this.cleaned) return;
     const st = this.state;
@@ -911,6 +1148,7 @@ export class RoomDO extends DurableObject<Env> {
     st.cur[att.slot] = 0;
     st.closedAt[att.slot] = now;
     st.left[att.slot] = true; // single-use ticket: this slot never comes back
+    this.revokeSlot(att.slot); // its TURN credentials die with the seat
     this.broadcast({ type: 'peerLeft', slot: att.slot, peerId: att.peerId }, null);
     this.release([att.playerId], false);
     if (this.connectedCount() === 0) st.emptyAt = now + EMPTY_MS;
@@ -944,6 +1182,9 @@ export class RoomDO extends DurableObject<Env> {
       }
     }
     this.live.fill(null);
+    // Every TURN credential of the room dies with it (they would outlive it by their ttl).
+    this.revoke(this.state.turn.map((t) => t.user));
+    this.state.turn = [];
     if (rec) {
       const ids: string[] = [];
       const noShow: string[] = [];
@@ -1032,7 +1273,7 @@ export class RoomDO extends DurableObject<Env> {
         return null;
       }
       if (!isRecord(raw) || typeof raw.slot !== 'number' || typeof raw.gen !== 'number' || typeof raw.peerId !== 'string' || typeof raw.playerId !== 'string') return null;
-      a = { slot: raw.slot, gen: raw.gen, peerId: raw.peerId, playerId: raw.playerId, ready: raw.ready === true };
+      a = { slot: raw.slot, gen: raw.gen, peerId: raw.peerId, playerId: raw.playerId, ready: raw.ready === true, ...(typeof raw.seenAt === 'number' ? { seenAt: raw.seenAt } : {}) };
       this.atts.set(ws, a);
     }
     return a;
@@ -1174,6 +1415,7 @@ export class RoomDO extends DurableObject<Env> {
     if (!st.noShowDone && st.startAt === null && rec.createdAt + NO_SHOW_MS < at) at = rec.createdAt + NO_SHOW_MS;
     if (st.emptyAt !== null && st.emptyAt < at) at = st.emptyAt;
     if (st.dropCheckAt !== null && st.dropCheckAt < at) at = st.dropCheckAt;
+    if (st.startAt === null && st.lastJoinAt !== null && st.lastJoinAt + NOT_READY_MS < at) at = st.lastJoinAt + NOT_READY_MS;
     await this.ctx.storage.setAlarm(at);
   }
 }

@@ -50,7 +50,8 @@ import type { Env } from './env';
 import { error, json, readJson } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret } from './auth';
 import { MODES } from '../../src/sim/constants';
-import { LOBBY_LENGTHS, isPlaylist, sanitizeLobbyName } from '../../src/net/account';
+import { LOBBY_LENGTHS, isPlaylist, lobbyNameIssue, sanitizeLobbyName } from '../../src/net/account';
+import { guestNameOf } from '../../src/net/guestName';
 import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import { parseLobbyRules } from '../../src/game/physicsRules';
 import type { RulesSnapshot } from '../../src/game/physicsRules';
@@ -69,6 +70,57 @@ const IN_GAME_RESET_MS = 40 * 60_000;
 const MAX_FRAME = 2048;
 const CLOSE_KICKED = 4003;
 const CLOSE_CLOSED = 4004;
+/**
+ * Message budget per socket (every frame that changes the lobby is a storage write, a broadcast and,
+ * through publish, a request to the one LobbyDirectoryDO): LOBBY_MSG_BURST, refilled 5 a second.
+ * A lobby screen sends a handful a minute (LISTO, a team, the settings, INICIAR); a frame over the
+ * budget is dropped, and LOBBY_OVER_BURST dropped frames (refilled 1 a second) close the socket
+ * with 1008 'rate' (held arrow keys on a TV stay far below it).
+ */
+export const LOBBY_MSG_BURST = 20;
+const LOBBY_MSG_REFILL_PER_MS = 5 / 1000;
+export const LOBBY_OVER_BURST = 40;
+const LOBBY_OVER_REFILL_PER_MS = 1 / 1000;
+/** The directory row is upserted at most this often; a change in between goes out with the next alarm (alarmBy). */
+export const PUBLISH_MIN_MS = 5_000;
+/**
+ * INICIAR at most this often (each one reaches the region's matchmaker, a lock check of every busy
+ * member and, with a signed-in member, AccountsDO): START_MIN_MS after any start, START_AGAIN_MS
+ * after one that formed a match, and after a refused one a wait that doubles (3, 6, 12 s) up to
+ * START_MAX_BACKOFF_MS; a start inside the wait answers 'start_cooldown'.
+ */
+export const START_MIN_MS = 3_000;
+/**
+ * A server match (net 'server', or a lone member's) with a guest in it lasts at most this long
+ * (mirrors MatchmakerDO GUEST_MAX_MATCH_SECONDS, which refuses it too: 400 guest_length): a guest
+ * cannot hold a MatchDO for 600 s or an unlimited match.
+ */
+export const GUEST_SERVER_MAX_SECONDS = 300;
+export const START_AGAIN_MS = 5_000;
+export const START_MAX_BACKOFF_MS = 30_000;
+
+/**
+ * Password guesses (authz-6, rt-6). A wrong guess takes a token from the lobby's bucket
+ * (PW_LOBBY_BURST, one back every PW_LOBBY_REFILL_MS) and counts against the guessing player
+ * (PW_PLAYER_MAX per PW_WINDOW_MS); with the bucket empty or the player over its count every
+ * password attempt on the lobby answers 429 'password_locked' (retryAfterMs) before the password
+ * is even looked at, and the host is told once. Persisted with the lobby (a guess wakes it).
+ * A new password needs PW_MIN_LENGTH characters; guesses of 1 to 32 are still compared (a lobby
+ * made before the rule keeps its password).
+ */
+export const PW_LOBBY_BURST = 10;
+export const PW_LOBBY_REFILL_MS = 30_000;
+export const PW_PLAYER_MAX = 5;
+export const PW_WINDOW_MS = 10 * 60_000;
+export const PW_MIN_LENGTH = 4;
+/** Guessing players remembered per lobby (the oldest goes first). */
+const PW_PLAYERS_KEPT = 64;
+
+/** When the next start may go after `fails` refused starts in a row (0: one that formed a match), from `now`. Pure. */
+export function nextStartAt(fails: number, now: number): number {
+  if (fails <= 0) return now + START_AGAIN_MS;
+  return now + Math.min(START_MAX_BACKOFF_MS, START_MIN_MS * 2 ** (fails - 1));
+}
 /** How long a member whose socket dropped keeps its place (and the host role): plan PR 12, 30 to 45 s. */
 export const LOBBY_GRACE_MS = 40_000;
 
@@ -123,6 +175,22 @@ export interface LobbyRecord {
   admits: AdmitRec[];
   kicked: string[];
   lastSocketAt: number;
+  /** No start before this (START_MIN_MS, nextStartAt; absent in records of older builds = now). */
+  startNext?: number;
+  /** Refused starts in a row (the back-off of nextStartAt). */
+  startFails?: number;
+  /** The lobby's password-guess bucket (absent: full). */
+  pwBucket?: { tokens: number; at: number };
+  /** Wrong guesses per player in the current PW_WINDOW_MS window (absent: none). */
+  pwFails?: Array<{ playerId: string; n: number; first: number }>;
+  /** When the host was last told its password is being guessed (once per PW_WINDOW_MS). */
+  pwWarnedAt?: number;
+}
+
+/** The lobby bucket refilled to `now` (PW_LOBBY_BURST, one token per PW_LOBBY_REFILL_MS). Pure. */
+export function pwTokens(b: { tokens: number; at: number } | undefined, now: number): number {
+  if (b === undefined) return PW_LOBBY_BURST;
+  return Math.min(PW_LOBBY_BURST, b.tokens + Math.max(0, now - b.at) / PW_LOBBY_REFILL_MS);
 }
 
 // ---- pure helpers (server/test/lobby.test.mjs) ------------------------------------------------
@@ -171,8 +239,14 @@ export function lobbyPasswordHash(lobbyId: string, pw: string): Promise<string> 
   });
 }
 
+/** A guess worth comparing (1 to 32 characters: lobbies made before PW_MIN_LENGTH keep theirs). */
 function validPassword(v: unknown): v is string {
   return typeof v === 'string' && v.length >= 1 && v.length <= 32;
+}
+
+/** A password a host may set now: PW_MIN_LENGTH to 32 characters. */
+function validNewPassword(v: unknown): v is string {
+  return typeof v === 'string' && v.length >= PW_MIN_LENGTH && v.length <= 32;
 }
 
 /** The lobby's experimental rules (null = standard; a record written before the field: none). */
@@ -187,6 +261,7 @@ function parseSettings(v: unknown, base: LobbySettings): LobbySettings | string 
   if (o.name !== undefined) {
     const n = sanitizeLobbyName(o.name);
     if (n === null) return 'bad_name';
+    if (lobbyNameIssue(n) !== null) return 'name_reserved';
     out.name = n;
   }
   if (o.mode !== undefined) {
@@ -222,17 +297,62 @@ export function defaultLobbySettings(name: string): LobbySettings {
 
 export { parseSettings as parseLobbySettings };
 
+/**
+ * The settings a host's message may change (guest names, spec PR 1): a guest host never titles the
+ * lobby, so its `name` is dropped; an account's `name` equal to the stored title is no change (a lobby
+ * inherited from a guest keeps 'Invitado 4821', and saving the format does not trip the title check).
+ */
+export function hostSettings(v: unknown, guestHost: boolean, title: string): unknown {
+  if (!v || typeof v !== 'object' || !('name' in v)) return v;
+  const o = v as Record<string, unknown>;
+  if (!guestHost && o.name !== title) return v;
+  const { name: _drop, ...rest } = o;
+  return rest;
+}
+
+const PLAYER_ID = /^[0-9a-f]{16}$/;
+
+/**
+ * A record written before guests got the server's names (src/net/guestName.ts): each guest member
+ * and admit gets its 'Invitado NNNN', and a title refused now (a guest's 'Soporte Turbogol' of
+ * before) becomes the host's name. Run on load; true when anything changed.
+ */
+export function settleGuestNames(rec: LobbyRecord): boolean {
+  let changed = false;
+  for (const m of [...rec.members, ...rec.admits]) {
+    if (!m.guest || !PLAYER_ID.test(m.playerId)) continue;
+    const name = guestNameOf(m.playerId);
+    if (m.name !== name) {
+      m.name = name;
+      changed = true;
+    }
+  }
+  const host = rec.members.find((m) => m.id === rec.hostId);
+  const title = rec.settings.name;
+  if (host !== undefined && lobbyNameIssue(title) !== null && !rec.members.some((m) => m.name === title)) {
+    rec.settings = { ...rec.settings, name: host.name };
+    changed = true;
+  }
+  return changed;
+}
+
 // ---- the object -------------------------------------------------------------------------------
 
 export class LobbyDO extends DurableObject<Env> {
   private rec: LobbyRecord | null = null;
   private loaded: Promise<void>;
   private closed = false;
+  /** Per-socket message budget (in memory: a wake-up starts every socket full). */
+  private readonly buckets = new WeakMap<WebSocket, { tokens: number; over: number; at: number }>();
+  /** The last directory payload sent and when (publish); a change within PUBLISH_MIN_MS waits for the alarm. */
+  private pubKey: string | null = null;
+  private pubAt = -Infinity;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.loaded = ctx.blockConcurrencyWhile(async () => {
       this.rec = (await ctx.storage.get<LobbyRecord>('lobby')) ?? null;
+      if (this.rec !== null) settleGuestNames(this.rec); // the alarm's save and publish keep it
     });
     // A plain 'ping' text frame is answered without waking the object (keep-alive through proxies).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
@@ -263,11 +383,13 @@ export class LobbyDO extends DurableObject<Env> {
     if (!b || typeof b.lobbyId !== 'string' || typeof b.code !== 'string' || typeof b.region !== 'string' || typeof b.socketBase !== 'string' || !b.host || typeof b.host.playerId !== 'string' || typeof b.host.name !== 'string') {
       return error(400, 'bad_request');
     }
-    const settings = parseSettings(b.settings, defaultLobbySettings('Sala de ' + b.host.name));
+    // The default title is the host's name (a guest's 'Invitado 4821': every viewer reads it in their own
+    // language, src/ui/names.ts lobbyTitle); a guest's `name` is dropped, an account's is checked.
+    const settings = parseSettings(hostSettings(b.settings, b.host.guest === true, ''), defaultLobbySettings(b.host.name));
     if (typeof settings === 'string') return error(400, settings);
     // The Worker refuses a guest's rules already; checked again here (every door checks).
     if (lobbyPhysics(settings) !== null && b.host.guest === true) return error(403, 'account_required', 'Inicia sesión para crear una sala experimental');
-    if (b.password !== undefined && b.password !== null && !validPassword(b.password)) return error(400, 'bad_password');
+    if (b.password !== undefined && b.password !== null && !validNewPassword(b.password)) return error(400, 'short_password', `La contraseña tiene que tener entre ${PW_MIN_LENGTH} y 32 caracteres`);
     const now = Date.now();
     this.rec = {
       lobbyId: b.lobbyId,
@@ -276,7 +398,7 @@ export class LobbyDO extends DurableObject<Env> {
       socketBase: b.socketBase,
       createdAt: now,
       settings,
-      pwHash: validPassword(b.password) ? await lobbyPasswordHash(b.lobbyId, b.password) : null,
+      pwHash: validNewPassword(b.password) ? await lobbyPasswordHash(b.lobbyId, b.password) : null,
       members: [],
       hostId: '',
       nextMember: 1,
@@ -303,9 +425,16 @@ export class LobbyDO extends DurableObject<Env> {
     const member = rec.members.find((m) => m.playerId === b.playerId);
     if (!member) {
       if (rec.pwHash !== null) {
-        if (!validPassword(b.password) || (await lobbyPasswordHash(rec.lobbyId, b.password)) !== rec.pwHash) return error(403, 'bad_password', 'Contraseña incorrecta');
+        if (!validPassword(b.password)) return error(403, 'bad_password', 'Contraseña incorrecta');
+        const locked = this.passwordLocked(b.playerId, now);
+        if (locked > 0) return json({ error: 'password_locked', message: 'Demasiados intentos con la contraseña de esta sala, espera unos minutos', retryAfterMs: locked }, 429);
+        if ((await lobbyPasswordHash(rec.lobbyId, b.password)) !== rec.pwHash) {
+          await this.wrongPassword(b.playerId, now);
+          return error(403, 'bad_password', 'Contraseña incorrecta');
+        }
       }
-      const pending = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId).length;
+      // Pending seats: admits of players who are not members yet (a member's fresh admit, a reload's, holds no extra seat).
+      const pending = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId && !rec.members.some((m) => m.playerId === a.playerId)).length;
       if (rec.members.length + pending >= this.perTeam() * 2) return error(409, 'full', 'La sala está llena');
     }
     rec.admits = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId);
@@ -322,6 +451,8 @@ export class LobbyDO extends DurableObject<Env> {
     const jti = h.get('x-jti') ?? '';
     if (!/^[0-9a-f]{32}$/.test(jti)) return error(403, 'bad_ticket');
     if (await this.ctx.storage.get('jti:' + jti)) return error(403, 'ticket_used');
+    // Kicked: whatever admit it holds (one taken while it was still a member) brings it back no more.
+    if (rec.kicked.includes(playerId)) return error(403, 'kicked', 'El anfitrión te expulsó de esta sala');
     const now = Date.now();
     let member = rec.members.find((m) => m.playerId === playerId);
     const admit = rec.admits.find((a) => a.playerId === playerId && a.until > now);
@@ -364,6 +495,9 @@ export class LobbyDO extends DurableObject<Env> {
     await this.loaded;
     const rec = this.rec;
     if (!rec || this.closed) return;
+    const budget = this.takeToken(ws, Date.now());
+    if (budget === 'close') return ws.close(1008, 'rate');
+    if (budget === 'drop') return;
     if (typeof message !== 'string' || message.length > MAX_FRAME) return ws.close(1008, 'bad frame');
     let msg: LobbyClientMsg;
     try {
@@ -375,6 +509,8 @@ export class LobbyDO extends DurableObject<Env> {
     if (!me) return ws.close(1008, 'not a member');
     const isHost = me.id === rec.hostId;
     const fail = (code: string, message: string): void => this.send(ws, { t: 'error', code, message });
+    // A frame that changes nothing (LISTO again, the settings as they are) writes, broadcasts and publishes nothing.
+    const before = JSON.stringify(rec);
     switch (msg.t) {
       case 'team': {
         if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
@@ -410,8 +546,8 @@ export class LobbyDO extends DurableObject<Env> {
       case 'settings': {
         if (!isHost) return fail('not_host', 'Solo el anfitrión cambia la configuración');
         if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
-        const next = parseSettings(msg.settings, rec.settings);
-        if (typeof next === 'string') return fail(next, next === 'experimental_p2p_only' ? 'Las reglas experimentales necesitan una partida P2P' : 'Configuración inválida');
+        const next = parseSettings(hostSettings(msg.settings, me.guest, rec.settings.name), rec.settings);
+        if (typeof next === 'string') return fail(next, next === 'experimental_p2p_only' ? 'Las reglas experimentales necesitan una partida P2P' : next === 'name_reserved' ? 'Ese nombre de sala no está permitido' : 'Configuración inválida');
         // Experimental rules: every member signed in.
         if (lobbyPhysics(next) !== null && rec.members.some((m) => m.guest)) return fail('guests_present', 'Hay invitados en la sala: deben iniciar sesión o salir');
         if (next.mode !== rec.settings.mode) {
@@ -419,13 +555,18 @@ export class LobbyDO extends DurableObject<Env> {
           if (fit === null) return fail('too_many', 'Hay más jugadores que lugares en ese modo');
           for (const m of rec.members) m.team = fit.get(m.id) ?? m.team;
         }
+        // Checked before anything changes: a refused password leaves the settings as they were.
+        if (msg.password !== undefined && msg.password !== null && !validNewPassword(msg.password)) return fail('short_password', `La contraseña tiene que tener entre ${PW_MIN_LENGTH} y 32 caracteres`);
+        const pwHash = msg.password === undefined ? rec.pwHash : msg.password === null ? null : await lobbyPasswordHash(rec.lobbyId, msg.password);
         rec.settings = next;
         // ... and no guest admitted before may still come in (its socket would be refused anyway).
         if (lobbyPhysics(next) !== null) rec.admits = rec.admits.filter((a) => !a.guest);
-        if (msg.password === null) rec.pwHash = null;
-        else if (msg.password !== undefined) {
-          if (!validPassword(msg.password)) return fail('bad_password', 'La contraseña puede tener de 1 a 32 caracteres');
-          rec.pwHash = await lobbyPasswordHash(rec.lobbyId, msg.password);
+        if (pwHash !== rec.pwHash) {
+          // A new password: the guesses at the old one count no more.
+          rec.pwHash = pwHash;
+          delete rec.pwBucket;
+          delete rec.pwFails;
+          delete rec.pwWarnedAt;
         }
         break;
       }
@@ -434,6 +575,7 @@ export class LobbyDO extends DurableObject<Env> {
         const target = rec.members.find((m) => m.id === msg.member);
         if (!target || target.id === me.id) return;
         rec.kicked.push(target.playerId);
+        rec.admits = rec.admits.filter((a) => a.playerId !== target.playerId);
         this.removeMember(target);
         for (const s of this.ctx.getWebSockets(target.id)) s.close(CLOSE_KICKED, 'kicked');
         break;
@@ -446,6 +588,11 @@ export class LobbyDO extends DurableObject<Env> {
         if (lobbyPhysics(rec.settings) !== null) {
           if (rec.members.some((m) => m.guest)) return fail('guests_present', 'Hay invitados en la sala: deben iniciar sesión o salir');
           if (rec.settings.net !== 'p2p' || rec.members.length < 2) return fail('experimental_p2p_only', 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores');
+        }
+        if (Date.now() < (rec.startNext ?? 0)) return fail('start_cooldown', 'Espera unos segundos antes de volver a iniciar');
+        const length = rec.settings.matchLengthSeconds;
+        if ((rec.settings.net === 'server' || rec.members.length < 2) && rec.members.some((m) => m.guest) && (length === 0 || length > GUEST_SERVER_MAX_SECONDS)) {
+          return fail('guest_length', 'Las partidas en servidor con invitados duran hasta 5 minutos: elige una duración más corta');
         }
         await this.start(ws);
         return;
@@ -474,7 +621,58 @@ export class LobbyDO extends DurableObject<Env> {
       default:
         return fail('unknown', 'Mensaje desconocido');
     }
+    if (this.rec !== null && JSON.stringify(this.rec) === before) return;
     await this.afterChange();
+  }
+
+  /** Milliseconds `playerId`'s password attempts stay refused on this lobby (0: it may guess). */
+  private passwordLocked(playerId: string, now: number): number {
+    const rec = this.rec as LobbyRecord;
+    const tokens = pwTokens(rec.pwBucket, now);
+    const lobbyWait = tokens >= 1 ? 0 : Math.ceil((1 - tokens) * PW_LOBBY_REFILL_MS);
+    const mine = rec.pwFails?.find((f) => f.playerId === playerId && now - f.first < PW_WINDOW_MS);
+    const playerWait = mine !== undefined && mine.n >= PW_PLAYER_MAX ? mine.first + PW_WINDOW_MS - now : 0;
+    return Math.max(lobbyWait, playerWait);
+  }
+
+  /** A wrong guess: a token of the lobby's bucket and one more for the player (persisted); the host hears of an empty bucket once. */
+  private async wrongPassword(playerId: string, now: number): Promise<void> {
+    const rec = this.rec as LobbyRecord;
+    const left = pwTokens(rec.pwBucket, now) - 1;
+    rec.pwBucket = { tokens: Math.max(0, left), at: now };
+    const fails = (rec.pwFails ?? []).filter((f) => now - f.first < PW_WINDOW_MS);
+    const mine = fails.find((f) => f.playerId === playerId);
+    if (mine !== undefined) mine.n++;
+    else fails.push({ playerId, n: 1, first: now });
+    rec.pwFails = fails.length > PW_PLAYERS_KEPT ? fails.slice(fails.length - PW_PLAYERS_KEPT) : fails;
+    // The bucket ran dry (the next attempts are refused before the compare): the host hears it once per window.
+    const warn = left < 1 && (rec.pwWarnedAt === undefined || now - rec.pwWarnedAt >= PW_WINDOW_MS);
+    if (warn) rec.pwWarnedAt = now;
+    await this.save();
+    if (warn) {
+      const host = rec.members.find((m) => m.id === rec.hostId);
+      if (host !== undefined) for (const ws of this.ctx.getWebSockets(host.id)) this.send(ws, { t: 'error', code: 'password_attempts', message: 'Alguien está probando contraseñas en tu sala: las entradas con contraseña quedan en pausa unos minutos' });
+    }
+  }
+
+  /** One frame of `ws`'s budget: 'ok', 'drop' (over it) or 'close' (LOBBY_OVER_BURST dropped). */
+  private takeToken(ws: WebSocket, now: number): 'ok' | 'drop' | 'close' {
+    let b = this.buckets.get(ws);
+    if (b === undefined) {
+      b = { tokens: LOBBY_MSG_BURST, over: LOBBY_OVER_BURST, at: now };
+      this.buckets.set(ws, b);
+    }
+    const dt = now > b.at ? now - b.at : 0;
+    b.at = now;
+    b.tokens = Math.min(LOBBY_MSG_BURST, b.tokens + dt * LOBBY_MSG_REFILL_PER_MS);
+    b.over = Math.min(LOBBY_OVER_BURST, b.over + dt * LOBBY_OVER_REFILL_PER_MS);
+    if (b.tokens >= 1) {
+      b.tokens -= 1;
+      return 'ok';
+    }
+    if (b.over < 1) return 'close';
+    b.over -= 1;
+    return 'drop';
   }
 
   override async webSocketClose(ws: WebSocket, _code: number, _reason: string): Promise<void> {
@@ -523,7 +721,7 @@ export class LobbyDO extends DurableObject<Env> {
       return;
     }
     await this.save();
-    await this.publish(); // directory heartbeat
+    await this.publish(true); // directory heartbeat (and any change publish held back)
     // The next heartbeat, or the next grace to end when that comes first.
     const graceEnd = Math.min(...rec.members.map((m) => (m.awayAt !== undefined ? m.awayAt + LOBBY_GRACE_MS : Infinity)));
     await this.ctx.storage.setAlarm(Math.min(now + ALARM_MS, graceEnd));
@@ -619,6 +817,7 @@ export class LobbyDO extends DurableObject<Env> {
   private async start(hostWs: WebSocket): Promise<void> {
     const rec = this.rec as LobbyRecord;
     rec.status = 'starting';
+    rec.startNext = Date.now() + START_MIN_MS;
     this.broadcastState();
     const env = this.env;
     const fresh = await this.equippedCars(rec.members);
@@ -654,6 +853,8 @@ export class LobbyDO extends DurableObject<Env> {
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
       rec.status = 'open';
+      rec.startFails = (rec.startFails ?? 0) + 1;
+      rec.startNext = nextStartAt(rec.startFails, Date.now());
       this.send(hostWs, { t: 'error', code: body.error ?? 'start_failed', message: body.message ?? 'No se pudo iniciar la partida, inténtalo de nuevo' });
       await this.afterChange();
       return;
@@ -662,6 +863,8 @@ export class LobbyDO extends DurableObject<Env> {
     const now = Date.now();
     rec.status = 'in_game';
     rec.statusAt = now;
+    rec.startFails = 0;
+    rec.startNext = nextStartAt(0, now);
     for (const m of rec.members) {
       m.ready = false;
       const r = results[m.playerId];
@@ -726,10 +929,27 @@ export class LobbyDO extends DurableObject<Env> {
     }
   }
 
-  private publish(): Promise<void> {
+  /**
+   * The lobby's row in LobbyDirectoryDO, the one object every lobby, list, join and population count
+   * shares: sent when it changed, at most once every PUBLISH_MIN_MS (a change in between is sent by
+   * the alarm, armed for then); `heartbeat` (the alarm) sends it whatever it is, keeping it fresh.
+   */
+  private async publish(heartbeat = false): Promise<void> {
     const rec = this.rec;
-    if (!rec || this.closed) return Promise.resolve();
-    return this.directory('/upsert', { code: rec.code, lobbyId: rec.lobbyId, visibility: rec.settings.visibility, summary: this.summary() });
+    if (!rec || this.closed) return;
+    const payload = { code: rec.code, lobbyId: rec.lobbyId, visibility: rec.settings.visibility, summary: this.summary() };
+    const key = JSON.stringify(payload);
+    const now = Date.now();
+    if (!heartbeat) {
+      if (key === this.pubKey) return;
+      if (now - this.pubAt < PUBLISH_MIN_MS) {
+        await this.alarmBy(this.pubAt + PUBLISH_MIN_MS);
+        return;
+      }
+    }
+    this.pubKey = key;
+    this.pubAt = now;
+    await this.directory('/upsert', payload);
   }
 
   private async close(reason: string): Promise<void> {

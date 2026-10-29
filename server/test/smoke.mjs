@@ -52,6 +52,7 @@ registerHooks({
 
 const P = await import('../../src/net/protocol.ts');
 const T = await import('../../src/sim/types.ts');
+const { GUEST_NAME_RE, guestNameOf } = await import('../../src/net/guestName.ts');
 
 // ---- options ---------------------------------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -163,7 +164,8 @@ let canCreateGuests = SESSION.length === 0;
 if (SESSION.length > 0) {
   const claims = jwtPayload(SESSION);
   check(claims !== null && typeof claims.sub === 'string', `SESSION is a JWT (sub ${claims?.sub ?? '?'}, name ${claims?.name ?? '?'}, exp ${claims?.exp ? new Date(claims.exp * 1000).toISOString() : '?'})`);
-  playerName = typeof claims?.name === 'string' ? claims.name : null;
+  // A guest's name is the server's for its id, whatever an older session carries (verifySession).
+  playerName = claims?.acct !== 1 && typeof claims?.sub === 'string' ? guestNameOf(claims.sub) : typeof claims?.name === 'string' ? claims.name : null;
   log('guest creation skipped (SESSION given)');
 } else {
   const guest = await api('/api/guest', { name: 'Smoke Tester' });
@@ -180,7 +182,7 @@ if (SESSION.length > 0) {
   }
   session = guest.json.session;
   playerName = guest.json.name;
-  check(guest.json.name === 'Smoke Tester', `name sanitised: ${guest.json.name}`);
+  check(GUEST_NAME_RE.test(guest.json.name) && guest.json.name === guestNameOf(guest.json.playerId), `the server names the guest (the name sent is ignored): ${guest.json.name}`);
 }
 const noAuth = await api('/api/queue', { mode: MODE });
 check(noAuth.status === 401, `POST /api/queue without a session -> ${noAuth.status}`);

@@ -47,12 +47,12 @@ import type { ThemeId } from '../../render/theme';
 import { SOURCE_URL } from '../../brand';
 import { icon } from '../components/icons';
 import { glyph } from '../components/glyphs';
-import { onNavSide } from '../nav';
+import { onNavSide, onNavTo } from '../nav';
 import { qrSvg } from '../components/qr';
 import { carSilhouette } from '../components/carSilhouettes';
 import { garageRow, type GarageRow } from '../components/carRow';
 import { chooseStadium, stadiumOptions } from '../components/stadium';
-import { detailView, earnIsLime, pointsCard, PREVIEW_MS, REDEEM_HOLD_MS, redeemBalance, rowLine, type Line } from './garageModel';
+import { detailView, earnIsLime, pointsCard, PREVIEW_MS, REDEEM_HOLD_MS, redeemBalance, revealDelta, rowLine, type Line } from './garageModel';
 
 /** How a community server is hosted (the nodes' README, in the page's language when there is one). */
 function guideUrl(): string {
@@ -92,7 +92,12 @@ export function garageScreen(menu: Menu): Screen {
   const html = document.documentElement;
   const tv = (): boolean => html.classList.contains('tg-tv');
   let tab: Tab = 'cars';
-  /** The row picked on screen, null = the equipped car's (each show starts there). */
+  /** Menu.open's tab (Screen.setTab), for the show that follows. */
+  let askedTab: Tab | null = null;
+  /**
+   * The row picked on screen, null = the equipped car's. A new visit starts there (Screen.show's
+   * `anew`); Back, ‹, a crumb or the sign-in on PERFIL come back to the car the player left.
+   */
   let selected: CarId | null = null;
   let stadium: ThemeId = host.theme;
   /** An equip is on its way (the button waits). */
@@ -164,7 +169,11 @@ export function garageScreen(menu: Menu): Screen {
   const detName = h('b.mn-gar-det-name');
   const detPrice = h('span.mn-gar-det-price');
   const detReason = h('p.mn-gar-det-reason');
-  const detAction = h('button.mn-btn.mn-gar-act', { type: 'button', 'data-nav': true, 'data-nav-line': true, 'data-key': 'garage-act', onclick: () => act() });
+  // The action names its car (or stadium) on a line of its own where the card's head is hidden (a
+  // phone held sideways, garage.css): the list may show one row there, the action says whose it is.
+  const detActFor = h('span.mn-gar-act-for');
+  const detActText = h('span.mn-gar-act-text');
+  const detAction = h('button.mn-btn.mn-gar-act', { type: 'button', 'data-nav': true, 'data-nav-line': true, 'data-key': 'garage-act', onclick: () => act() }, detActFor, detActText);
   const detail = h('div.mn-gar-detail', null, h('div.mn-gar-det-head', null, detName, detPrice), detReason, detAction);
   const right = h('section.mn-gar-right', null, compact, tabs, list, detail);
 
@@ -174,7 +183,10 @@ export function garageScreen(menu: Menu): Screen {
    * ◀ from the right column crosses the stage to the left column's control (SIGN IN, else GANA
    * PUNTOS), ▶ from there back to the row picked. The rows and the action are lines (nav.ts): ▶
    * from them bounces, never up to the ESTADIOS tab (its focus would switch the list), and without
-   * a left column (a phone) ◀ goes to the rail, else bounces.
+   * a left column (a phone) ◀ goes to the rail, else bounces. ▲ in the list goes to the row above,
+   * wherever the list is scrolled (a row half under its top edge is no nearer than the tabs), and
+   * from its first row to the tab selected: the two tabs tie in the spatial pick (AUTOS first),
+   * and AUTOS' focus would switch ESTADIOS back to the cars.
    */
   const updateSides = (): void => {
     const visible = (e: HTMLElement): boolean => e.getClientRects().length > 0;
@@ -182,11 +194,28 @@ export function garageScreen(menu: Menu): Screen {
     const on = visible(left) && leftOne() !== null;
     const toLeft = on ? () => leftOne()?.focus({ preventScroll: true }) : null;
     const toRow = on ? () => (tab === 'cars' ? rows.get(view().selected.id) : stadiumRows.get(stadium))?.el.focus({ preventScroll: true }) : null;
-    for (const r of [...rows.values(), ...stadiumRows.values()]) onNavSide(r.el, toLeft, null);
+    for (const r of [...rows.values(), ...stadiumRows.values()]) {
+      onNavSide(r.el, toLeft, null);
+      onNavTo(r.el, 'up', () => {
+        if (r.el.parentElement !== list) return null;
+        const above = r.el.previousElementSibling;
+        return above instanceof HTMLElement ? above : (tabEls.get(tab) ?? null);
+      });
+    }
     onNavSide(detAction, toLeft, null);
     onNavSide(earn, null, toRow);
     const b = pointsBody.querySelector<HTMLElement>('[data-nav]');
     if (b !== null) onNavSide(b, null, toRow);
+  };
+
+  /** The row last brought into the list's view (render: once per pick, so a finger's scroll of the list stays). */
+  let revealed: HTMLElement | null = null;
+  /** `row` wholly in the list's view, the list alone scrolled (block 'nearest', its scroll padding kept: the page never moves). */
+  const reveal = (row: HTMLElement): void => {
+    if (!list.contains(row)) return;
+    const pad = Number.parseFloat(getComputedStyle(list).scrollPaddingTop) || 0;
+    const d = revealDelta(row.getBoundingClientRect(), list.getBoundingClientRect(), pad);
+    if (d !== 0) list.scrollTop += d;
   };
 
   /** Rebuild `box` only when what it shows changed (`key`): a focused button inside it keeps the focus. */
@@ -280,7 +309,9 @@ export function garageScreen(menu: Menu): Screen {
   const drawCars = (v: GarageView): void => {
     for (const c of v.cars) rows.get(c.id)?.set(lineText(rowLine(c)), c.state, c.selected);
     const equipped = v.cars.find((c) => c.state === 'equipped') ?? v.cars[0];
-    for (const c of v.cars) rows.get(c.id)?.el.toggleAttribute('data-autofocus', c.id === equipped.id);
+    // The first focus with nothing remembered: the row picked (a new visit: the car driven), so a
+    // return whose remembered control went (SIGN IN after the sign-in) keeps the car.
+    for (const c of v.cars) rows.get(c.id)?.el.toggleAttribute('data-autofocus', c.selected);
     yourName.textContent = carName(equipped.id);
     yourFree.hidden = equipped.price > 0;
     yourDesc.textContent = carDescription(equipped.id);
@@ -290,7 +321,8 @@ export function garageScreen(menu: Menu): Screen {
     setChildren(detPrice, ...(s.price > 0 ? price(s.price) : [h('span.mn-gar-pts-unit', null, t('garage.freeTag'))]));
     writeReason(d.reason !== null ? lineText(d.reason) : '', d.tone);
     detAction.hidden = d.button === null;
-    detAction.textContent = d.button === 'equip' ? t('garage.equip') : t('garage.redeem', { points: formatPoints(s.price) });
+    detActFor.textContent = carName(s.id);
+    detActText.textContent = d.button === 'equip' ? t('garage.equip') : t('garage.redeem', { points: formatPoints(s.price) });
     detAction.classList.toggle('mn-btn-primary', d.lime);
     detAction.classList.toggle('mn-gar-act-off', !d.lime);
     detAction.setAttribute('aria-busy', busy ? 'true' : 'false');
@@ -301,7 +333,7 @@ export function garageScreen(menu: Menu): Screen {
       const row = stadiumRows.get(id);
       if (row === undefined) continue;
       row.set(on ? t('garage.stadiumInUse') : '', on ? 'inUse' : 'free', id === stadium);
-      row.el.toggleAttribute('data-autofocus', on);
+      row.el.toggleAttribute('data-autofocus', id === stadium);
       if (on) row.el.setAttribute('aria-current', 'true');
       else row.el.removeAttribute('aria-current');
     }
@@ -309,7 +341,8 @@ export function garageScreen(menu: Menu): Screen {
     setChildren(detPrice);
     writeReason(t('garage.stadiumNote'), 'plain');
     detAction.hidden = stadium === host.theme;
-    detAction.textContent = t('garage.stadiumUse');
+    detActFor.textContent = themeName(stadium);
+    detActText.textContent = t('garage.stadiumUse');
     detAction.classList.add('mn-btn-primary');
     detAction.classList.remove('mn-gar-act-off');
     detAction.setAttribute('aria-busy', 'false');
@@ -331,7 +364,13 @@ export function garageScreen(menu: Menu): Screen {
     const want = tab === 'cars' ? [...rows.values()] : [...stadiumRows.values()];
     // The other tab's rows: a focus in the list goes to the new list's pick (Q / E, LT / RT from a row).
     const listFocused = list.contains(document.activeElement);
-    if (list.firstElementChild !== want[0].el) setChildren(list, ...want.map((r) => r.el));
+    if (list.firstElementChild !== want[0].el) {
+      setChildren(list, ...want.map((r) => r.el));
+      // Both tabs' rows share the scroller: the new ones start at their top (its scroll was the
+      // other tab's, its first row clipped under the tabs), then their pick comes into view below.
+      list.scrollTop = 0;
+      revealed = null;
+    }
     const actFocused = document.activeElement === detAction;
     drawPoints(v);
     earn.classList.toggle('mn-gar-earn-lime', earnIsLime(v));
@@ -340,6 +379,12 @@ export function garageScreen(menu: Menu): Screen {
     const pickedRow = tab === 'cars' ? rows.get(v.selected.id) : stadiumRows.get(stadium);
     // An equip made the action go (the car is driven now): the focus back on its row.
     if ((listFocused && !list.contains(document.activeElement)) || (actFocused && detAction.hidden)) pickedRow?.el.focus({ preventScroll: true });
+    // A new pick (or the other tab's): its row in the list's view, once the detail took its new
+    // height (a locked car's action makes it taller and the list shorter: a phone held sideways).
+    if (shown && pickedRow !== undefined && pickedRow.el !== revealed) {
+      revealed = pickedRow.el;
+      reveal(pickedRow.el);
+    }
     updateSides();
     // The car driven again after an equip, a claim or a tab away from the cars.
     if (shown && previewed !== null && (tab !== 'cars' || v.selected.state === 'equipped')) setPreview(null);
@@ -465,19 +510,31 @@ export function garageScreen(menu: Menu): Screen {
     });
   };
 
-  /** How points are earned: the guide's QR (a phone opens it), and on a page with a pointer the guide itself. */
+  /**
+   * No new tab can open from here: a TV, a remote, or a controller (its A carries no user
+   * activation, so window.open is blocked: Menu.padPress for the press running now, data-input
+   * for the input in use).
+   */
+  const noPopup = (): boolean => tv() || menu.padPress || html.dataset.input === 'pad' || html.dataset.input === 'remote';
+
+  /**
+   * How points are earned: the guide's QR (a phone opens it), and with a mouse, a keyboard or a
+   * finger the guide itself in a new tab. With a controller as on a TV: the QR and CERRAR only.
+   */
   const openGuide = (): void => {
     const url = guideUrl();
     closeSheet = menu.modal({
       title: t('garage.guideTitle'),
       body: h('div.mn-gar-guide', null, qrSvg(url, t('garage.guideTitle')), h('div.mn-gar-guide-text', null, h('p', null, t('garage.guideText')), h('p.mn-gar-redeem-note', null, t('garage.guideScan')))),
-      actions: tv()
+      actions: noPopup()
         ? [{ label: t('outcome.close'), primary: true, onClick: () => true }]
         : [
             {
               label: t('garage.guideOpen'),
               primary: true,
               onClick: () => {
+                // A controller picked up with the sheet up: the tab cannot open, the QR stays.
+                if (menu.padPress) return false;
                 window.open(url, '_blank', 'noopener');
               },
             },
@@ -488,17 +545,17 @@ export function garageScreen(menu: Menu): Screen {
 
   /** GANA PUNTOS: the guide in a new tab, or (a TV, a remote, a controller: no pop-up from a pad press) its sheet. */
   const earnClick = (e: MouseEvent): void => {
-    const input = html.dataset.input;
-    if (!tv() && input !== 'pad' && input !== 'remote') return;
+    if (!noPopup()) return;
     e.preventDefault();
     openGuide();
   };
 
-  // A sign-in on PERFIL (SIGN IN here): back to GARAJE (its points, its cars).
+  // A sign-in on PERFIL (SIGN IN here): back to GARAJE (its points, its cars) as Back would come,
+  // on the car and the control the player left (Menu.backTo: PERFIL is a detour on it).
   host.accounts.subscribe(() => {
     if (!waitSignIn || !host.accounts.signedIn) return;
     waitSignIn = false;
-    if (menu.top()?.id === 'profile') menu.open('garage');
+    if (menu.top()?.id === 'profile') menu.backTo('garage');
   });
 
   /** The stage's box as viewport fractions (CSS order), the whole screen when it has no room. */
@@ -536,20 +593,28 @@ export function garageScreen(menu: Menu): Screen {
     el,
     tabsVerb: 'garage.tabsVerb',
     setTab: (id) => {
-      if (id === 'cars' || id === 'stadiums') tab = id;
+      if (id === 'cars' || id === 'stadiums') askedTab = id;
     },
-    show: () => {
+    show: (anew) => {
       shown = true;
-      selected = null;
-      stadium = host.theme;
+      // A new visit: the cars, the car driven, the stadium in use; a return keeps what was picked.
+      if (anew) {
+        tab = 'cars';
+        selected = null;
+        stadium = host.theme;
+      }
+      if (askedTab !== null) tab = askedTab;
+      askedTab = null;
       waitSignIn = false;
       previewed = null;
+      revealed = null; // the pick in view again (the list kept its scroll while away)
       unsubscribe?.();
       unsubscribe = store().subscribe(() => {
         if (shown) render();
       });
       render();
       place();
+      schedulePreview(true); // a return: the car picked in the showroom again (hide put the car driven back)
       resized?.observe(stage);
       window.addEventListener('resize', place);
       // The account's cars, what it can redeem and its points (a guest reads nothing).
@@ -557,7 +622,6 @@ export function garageScreen(menu: Menu): Screen {
     },
     hide: () => {
       shown = false;
-      tab = 'cars';
       window.clearTimeout(previewTimer);
       unsubscribe?.();
       unsubscribe = null;

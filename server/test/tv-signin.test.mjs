@@ -67,7 +67,8 @@ function txOn(db) {
 function makeEnv() {
   const db = new DatabaseSync(':memory:');
   let alarm = null;
-  const env = { JWT_SECRET: SECRET, VITE_ORIGINS: ORIGIN, FLAGS: { get: async () => null } };
+  // tv/start's Turnstile gate is off here (its own tests: takeover.test.mjs).
+  const env = { JWT_SECRET: SECRET, VITE_ORIGINS: ORIGIN, FLAGS: { get: async () => null }, TURNSTILE_DISABLED: '1' };
   const ctx = {
     storage: { sql: sqlOn(db), transactionSync: txOn(db), getAlarm: async () => alarm, setAlarm: async (t) => void (alarm = t) },
     blockConcurrencyWhile: (fn) => fn(),
@@ -124,12 +125,13 @@ test('tvCodes: six of the lobby alphabet, unique, 5 minutes; the per-IP cap repl
   const fixed = new TV.TvCodes((len) => new Uint8Array(len).fill(n++ < 6 ? 0 : 1));
   assert.equal(fixed.start('x', H('a'), 0).code, 'AAAAAA');
   assert.equal(fixed.start('x', H('a'), 0).code, 'BBBBBB');
+  // An IPv4 address (a carrier's NAT may share it: Security 3 gives it TV_CODES_PER_IPV4).
   const p = new TV.TvCodes();
   const first = p.start('home', H('a'), 0).code;
-  for (let i = 1; i < TV.TV_CODES_PER_IP; i++) p.start('home', H('a'), 0);
-  assert.equal(p.size, TV.TV_CODES_PER_IP);
+  for (let i = 1; i < TV.TV_CODES_PER_IPV4; i++) p.start('home', H('a'), 0);
+  assert.equal(p.size, TV.TV_CODES_PER_IPV4);
   p.start('home', H('a'), 0);
-  assert.equal(p.size, TV.TV_CODES_PER_IP, 'still five live codes for that IP');
+  assert.equal(p.size, TV.TV_CODES_PER_IPV4, 'still that many live codes for that IP');
   assert.equal(p.poll(first, H('a'), 1), 'expired', 'the oldest went');
   const full = new TV.TvCodes();
   for (let i = 0; i < TV.TV_CODES_MAX; i++) full.start('ip' + i, H('a'), 0);
@@ -161,14 +163,16 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   const { env, obj } = makeEnv();
   const ip = ips();
   const ana = await account(obj, 'Ana');
-  const s = await call(env, '/api/auth/tv/start', { ip: ip(0), origin: null });
+  // Only from the game's page (Security 3: every POST /api/auth/* fails closed without an Origin).
+  assert.equal((await call(env, '/api/auth/tv/start', { ip: ip(0), origin: null })).status, 403);
+  const s = await call(env, '/api/auth/tv/start', { ip: ip(0) });
   assert.equal(s.status, 200);
   assert.equal(s.headers.get('cache-control'), 'no-store');
   const { code, secret, expiresAt, ttlMs, pollMs } = s.json;
   assert.match(code, /^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{6}$/);
   assert.ok(Buffer.from(secret, 'base64url').length >= 16, 'a device secret of at least 128 bits');
-  assert.ok(expiresAt - Date.now() <= 5 * 60_000 && expiresAt - Date.now() > 4 * 60_000);
-  assert.ok(ttlMs <= 5 * 60_000 && ttlMs > 4 * 60_000, 'the life from now, for a TV whose clock is off the server\'s');
+  assert.ok(expiresAt - Date.now() <= TV.TV_CODE_TTL_MS && expiresAt - Date.now() > TV.TV_CODE_TTL_MS - 60_000);
+  assert.ok(ttlMs <= TV.TV_CODE_TTL_MS && ttlMs > TV.TV_CODE_TTL_MS - 60_000,'the life from now, for a TV whose clock is off the server\'s');
   assert.ok(pollMs >= 1000);
   assert.equal(JSON.stringify([...obj.tv.codes.values()]).includes(secret), false, 'the object keeps only its hash');
   let r = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: { code, secret } });
@@ -187,10 +191,13 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   assert.equal(r.json.name, 'Ana');
   assert.ok(r.json.expiresAt > Date.now());
   const tvCookie = r.headers.get('set-cookie');
-  assert.match(tvCookie, /^__Host-tg_rt=[A-Za-z0-9_-]{43};/);
+  assert.match(tvCookie, /^__Host-tg_rt=[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43};/, 'a family part and a secret (Security 3)');
   const login = await call(env, '/api/auth/login', { ip: ip(2), body: { username: 'Ana', password: KEY } });
   assert.equal(login.status, 200);
-  assert.equal(cookieFlags(tvCookie), cookieFlags(login.headers.get('set-cookie')), 'the same cookie flags as login');
+  // Login also sets the device cookie (Security 3 review): compare with its refresh cookie.
+  const loginRt = login.headers.getSetCookie().find((c) => c.startsWith('__Host-tg_rt='));
+  assert.equal(cookieFlags(tvCookie), cookieFlags(loginRt), 'the same cookie flags as login');
+  assert.ok(!/__Host-tg_dv=/.test(tvCookie), 'a TV gets no device cookie: it signed in with no password');
   assert.match(cookieFlags(tvCookie), /HttpOnly; Secure; SameSite=Strict/);
   // The TV's refresh cookie is a real session: it refreshes.
   const again = await call(env, '/api/auth/refresh', { ip: ip(0), cookie: tvCookie.split(';')[0] });
@@ -286,7 +293,7 @@ test('Worker: rate limits per IP on start (10 a minute), poll (60) and confirm (
   const ana = await account(obj, 'Ana');
   for (let i = 0; i < 10; i++) assert.equal((await call(env, '/api/auth/tv/start', { ip: ip(0) })).status, 200, `start ${i + 1}`);
   assert.equal((await call(env, '/api/auth/tv/start', { ip: ip(0) })).status, 429);
-  assert.equal(obj.tv.size, TV.TV_CODES_PER_IP, 'five live codes for that IP at most');
+  assert.equal(obj.tv.size, Math.min(10, TV.TV_CODES_PER_IPV4), 'an IPv4 address: TV_CODES_PER_IPV4 live codes at most');
   const { code, secret } = (await call(env, '/api/auth/tv/start', { ip: ip(1) })).json;
   for (let i = 0; i < 60; i++) assert.equal((await call(env, '/api/auth/tv/poll', { ip: ip(1), body: { code, secret } })).status, 200);
   assert.equal((await call(env, '/api/auth/tv/poll', { ip: ip(1), body: { code, secret } })).status, 429);

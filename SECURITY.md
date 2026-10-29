@@ -15,9 +15,14 @@ Include the steps to reproduce, the impact, and any proof of concept. You will g
 
 ## Scope notes for self-hosters
 
-- Secrets (`JWT_SECRET`, `TURNSTILE_SECRET`, OAuth client secrets, Cloudflare API tokens) live in
-  `server/.dev.vars` (local) or Wrangler secrets (deploy). They must never be committed; the
-  repository ignores `.env*` and `.dev.vars*` files.
+- Secrets (`JWT_SECRET`, `TURNSTILE_SECRET`, OAuth client secrets, the node control key) live in
+  Wrangler secrets for a deploy; the deploy's Cloudflare API token in `server/.env`, or use
+  `wrangler login`. `server/.dev.vars` is for local development only: give it development values
+  (a throwaway `JWT_SECRET`, a separate development OAuth client), never production ones. None of
+  these files may be committed; the repository ignores `.env*` and `.dev.vars*` files.
+- The Vite dev server listens on 127.0.0.1 only and refuses `.dev.vars`, `.env*`, `.wrangler/`,
+  `private/`, `.claude/` and the nodes' keys. `TG_LAN=1` puts it on the network for a test on a
+  phone or a TV: do that only on a network you trust.
 - Values in `server/wrangler.jsonc` (Worker name, KV namespace id, Turnstile *site* key, allowed
   origins) are public configuration, not secrets. Forks must replace them with their own.
 - Turn the anti-bot check on (`TURNSTILE_DISABLED` = `"0"` with a site key and secret) before

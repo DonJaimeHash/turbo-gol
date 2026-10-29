@@ -198,7 +198,7 @@ import type { Menu, MenuConfig, MenuHost, SearchRequest, SearchView } from '../u
 import { finalScreen, installFinalSample, type FinalScreen } from '../ui/screens/match/final';
 import { goalScorer, type FinalKind, type FinalPlayer, type FinalView } from '../ui/screens/match/finalModel';
 import { MatchFound } from '../ui/screens/match/found';
-import { regionName } from '../ui/names';
+import { playerName, regionName } from '../ui/names';
 import type { NetStatsView } from '../net/NetStats';
 import { P2PSession, kickoffSeedOf, type P2PGameHooks } from '../net/p2p/P2PSession';
 import type { RoomWelcome } from '../net/p2p/protocol';
@@ -445,8 +445,8 @@ export interface GameSession {
   /** Visual error offsets (uu) for the player's car and the ball (phase 1 rollback), null / absent otherwise. */
   readonly errorOffsetCar?: Float32Array | null;
   readonly errorOffsetBall?: Float32Array | null;
+  /** The guest's name (the server's wire form; '' before the first session). */
   readonly name: string;
-  setName(name: string): void;
   /** Run the session's ticks for a frame of `dt` seconds; returns the interpolation alpha. */
   advance(dt: number): number;
   cancel(): void;
@@ -583,9 +583,9 @@ const SCOREBOARD_DIFFICULTY: Readonly<Record<Difficulty, string>> = {
 const SCOREBOARD_ONLINE = t('game.scoreboardOnline');
 const SCOREBOARD_ONLINE_P2P = t('game.scoreboardOnlineP2p');
 
-/** The client holds a guest session for its name: a queue needs no registration first (NetClient.ensureGuest). */
+/** The client holds a valid guest session: a queue needs no registration first (NetClient.ensureGuest). */
 function guestReady(c: NetClient): boolean {
-  return sessionValid(c.guest) && c.guest.name === c.name;
+  return sessionValid(c.guest);
 }
 
 /** Read the saved difficulty / quality / mode / theme / scene pace / resolution scale (falls back to defaults when storage is unavailable). */
@@ -1185,8 +1185,9 @@ export class Game implements P2PGameHooks {
       if (auth === null) return;
       if (auth.kind === 'error') this.menu.toast(oauthErrorText(auth.code), 'error');
       else if (a !== null) {
-        this.menu.toast(auth.kind === 'new' ? t('game.welcomeNew', { name: a.name }) : auth.kind === 'linked' ? t('game.accountLinked') : t('profile.hello', { name: a.name }), 'ok');
-        if (auth.kind === 'new') this.menu.open('profile');
+        this.menu.toast(auth.kind === 'new' ? t('game.welcomeNew', { name: a.name }) : auth.kind === 'linked' ? t('game.accountLinked') : auth.kind === 'reauth' ? t('profile.reauthDone') : t('profile.hello', { name: a.name }), 'ok');
+        // A re-authentication came back: to PERFIL, where the change it was for waits.
+        if (auth.kind === 'new' || auth.kind === 'reauth') this.menu.open('profile');
       }
       void this.accounts.fetchMe().catch(() => undefined);
     });
@@ -1388,11 +1389,8 @@ export class Game implements P2PGameHooks {
       prewarmAntiBot: () => {
         if (!game.accounts.signedIn && game.accounts.hintName === null) net?.prewarmAntiBot();
       },
-      guestName: () => (game.online !== null ? game.online.name : t('game.guestName')),
-      setGuestName: (name) => {
-        if (game.online !== null) game.online.setName(name);
-        if (game.p2p !== null) game.p2p.setName(name);
-      },
+      // The server's name for this guest (its wire form: Menu shows it through playerName), the word before its first session.
+      guestName: () => game.online?.name || t('game.guestName'),
       bearer: async () => {
         if (net === null) throw new Error('offline');
         return (await net.ensureGuest()).session;
@@ -1429,7 +1427,6 @@ export class Game implements P2PGameHooks {
       playLobbyMatch: (r) => game.playLobbyMatch(r),
       rejoinable: () => (game.online !== null ? game.online.rejoinable : null),
       rejoinMatch: () => game.rejoinMatch(),
-      firstOnline: () => !game.accounts.signedIn && (game.online === null || game.online.client.guest === null),
       openSettings: (onClose, opts) => game.openSettingsScreen(onClose, opts?.tab),
       confirmLeave: (systemBack) => game.confirmLeave(systemBack === true),
       keyLabel: (action, device) => game.input.getLabel(action, device),
@@ -2177,7 +2174,9 @@ export class Game implements P2PGameHooks {
     rows.length = 0;
     for (let i = 0; i < roster.length; i++) {
       const r = roster[i];
-      rows.push({ name: i === w.slot ? t('game.nameYou', { name: r.name }) : r.name, team: r.team, you: i === w.slot, bot: r.kind === 'bot' });
+      // Display names from here on (the HUD, the goal chip, the FINAL): a guest's in this page's language.
+      const name = playerName(r.name);
+      rows.push({ name: i === w.slot ? t('game.nameYou', { name }) : name, team: r.team, you: i === w.slot, bot: r.kind === 'bot' });
     }
     this.installSessionRoster(ids, w.slot, seatCars(roster, cars));
   }
@@ -2224,7 +2223,8 @@ export class Game implements P2PGameHooks {
     rows.length = 0;
     for (let i = 0; i < roster.length; i++) {
       const r = roster[i];
-      rows.push({ name: i === me ? t('game.nameYou', { name: r.name }) : r.name, team: r.team, you: i === me, bot: r.kind === 'bot' });
+      const name = playerName(r.name); // display names, as applyOnlineRoster
+      rows.push({ name: i === me ? t('game.nameYou', { name }) : name, team: r.team, you: i === me, bot: r.kind === 'bot' });
     }
     this.installSessionRoster(ids, me, seatCars(roster));
   }
@@ -2499,7 +2499,7 @@ export class Game implements P2PGameHooks {
         if (this.searchReq !== null) this.requeue = { req: this.searchReq, text: t(e.reason === 'dodge' ? 'final.dodge' : 'final.noShow') };
         break;
       case 'playerJoined':
-        hud.feed(t('game.playerJoined', { name: e.name }), 'join');
+        hud.feed(t('game.playerJoined', { name: playerName(e.name) }), 'join');
         break;
       case 'playerLeft': {
         const row = this.sbRows[e.slot];
@@ -4250,7 +4250,7 @@ export class Game implements P2PGameHooks {
   /** A scoreboard row's name, the player's own without its "(You)" (the FINAL and the goal chip say it their way). */
   private rowName(r: ScoreboardRow): string {
     if (!r.you) return r.name;
-    return this.accounts.account?.name ?? (this.online !== null ? this.online.name : t('game.guestName'));
+    return this.accounts.account?.name ?? playerName(this.online?.name || t('game.guestName'));
   }
 
   /**

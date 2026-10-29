@@ -10,10 +10,10 @@ import { askSheet, codeSheet, refusedSheet, signInFirstSheet, tvSheet } from './
 
 const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
 
-export type TvSample = 'keypad' | 'keypad-password' | 'keypad-code' | 'tv' | 'tv-expired' | 'tvlink-signin' | 'tvlink-code' | 'tvlink-ask' | 'tvlink-refused' | 'antibot';
+export type TvSample = 'keypad-password' | 'keypad-code' | 'tv' | 'tv-expired' | 'tvlink-signin' | 'tvlink-code' | 'tvlink-ask' | 'tvlink-refused' | 'antibot';
 
 /**
- * window.__tvSignIn(kind | null): mn-keypad over PERFIL's guest name, its password (dots) and the
+ * window.__tvSignIn(kind | null): mn-keypad over PERFIL's password (dots) and the
  * code cells' sheet (without a fine pointer only: Menu.openKeypad); the TV's sheet with a code and
  * expired; the phone's /tv sheets (sign in first, the code, the question with a long name, a
  * refusal); the anti-bot sheet. No server. null puts it all back. Nothing in a release build.
@@ -37,10 +37,9 @@ export function installTvSamples(menu: Menu): void {
       case null:
         menu.open('home', true);
         return;
-      case 'keypad':
       case 'keypad-password':
         guestProfile();
-        keypadOn(kind === 'keypad' ? '.mn-prof-guestname .mn-input' : '.mn-prof-form input[type=password]');
+        keypadOn('.mn-prof-form input[type=password]');
         return;
       case 'keypad-code':
         menu.open('modes', true, 'lobbies');
@@ -62,7 +61,7 @@ export function installTvSamples(menu: Menu): void {
         return;
       case 'tvlink-ask':
         menu.open('home', true);
-        askSheet(menu, 'MaximilianoGomez', 'ABC234', () => Promise.resolve(), noop);
+        askSheet(menu, 'MaximilianoGomez', 'ABC234', { where: { country: 'AR', city: 'San Miguel de Tucumán', asn: 7303, org: 'Telecom Argentina S.A.' }, sameNetwork: false, sameCountry: false, createdAt: 0 }, () => Promise.resolve(), noop);
         return;
       case 'tvlink-refused':
         menu.open('home', true);

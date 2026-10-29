@@ -19,7 +19,7 @@ propuestos en los informes, que quedan vigentes salvo cambio explícito.
 | # | Decisión | Elegido |
 |---|---|---|
 | 1 | Topología casual (unranked, salas privadas) | **P2P con rollback determinista en malla de inputs** entre los 2–6 navegadores (estilo GGPO). Cero costo de servidor por partida. (confirmada) |
-| 2 | Topología ranked | **Autoridad en servidor**: VPS en **São Paulo** (~~unos US$ 7/mes: Hostinger / Linode / Vultr~~ → **actualizada 2026-10-19**: Hostinger KVM 2 en Campinas, con el precio real en el presupuesto de abajo) para SAM; **Hetzner** (Ashburn o Falkenstein, ~US$ 6–12/mes) para NA/EU. Hetzner además corre el coturn de respaldo y el verificador de replays. (confirmada) |
+| 2 | Topología ranked | **Autoridad en servidor**: VPS en **São Paulo** (~~unos US$ 7/mes: Hostinger / Linode / Vultr~~ → **actualizada 2026-10-19**: comprado, con el precio real en el presupuesto de abajo; el proveedor y el plan, en las notas del mantenedor) para SAM; **Hetzner** (Ashburn o Falkenstein, ~US$ 6–12/mes) para NA/EU. Hetzner además corre el coturn de respaldo y el verificador de replays. (confirmada) |
 | 3 | Transporte | **WebRTC DataChannel** `{ordered:false, maxRetransmits:0}` para inputs/estado + canal confiable para eventos; **fallback WebSocket** al mismo endpoint (DO o servidor vía proxy de Cloudflare). (confirmada) |
 | 4 | Fases | **Fase 1**: autoridad en Durable Object + WebSocket para tener online en días y medir (RTT/jitter desde Argentina, jitter de `setInterval` en DO, determinismo por hash). **Fase 2**: P2P rollback en malla. **Fase 3**: VPS São Paulo + Hetzner (ranked, coturn, verificador). **Fase 4**: NA/EU, WebTransport, espectadores vía SFU. (confirmada) |
 | 5 | Cuentas | ~~Solo invitados~~ → **actualizada 2026-10-15**: invitados para casual / salas / entrenamiento; **cuentas registradas** (usuario + contraseña, y Google / Discord cuando estén sus secretos) obligatorias para ranked y con MMR por playlist. Guardadas en un Durable Object con SQLite (`AccountsDO`) en vez de D1 (sin permisos ni recursos extra). Detalle: `ACCOUNTS.md`. (confirmada) |
@@ -32,7 +32,7 @@ propuestos en los informes, que quedan vigentes salvo cambio explícito.
 |---|---|
 | Workers Paid (base) | 5 |
 | Hetzner (NA/EU ranked + coturn + verificador) | 6–12 |
-| VPS São Paulo (ranked SAM): Hostinger KVM 2 en Campinas, 24 meses pagados por adelantado (US$ 210,96, hasta 2028-10-19); renueva a US$ 14,99 / mes | 8,79 + impuestos (con tarjeta argentina, 21 % de IVA: ≈ 10,64) |
+| VPS São Paulo (ranked SAM): 24 meses pagados por adelantado (US$ 210,96); renueva a US$ 14,99 / mes | 8,79 + impuestos (con tarjeta argentina, 21 % de IVA: ≈ 10,64) |
 | Reserva para uso de Durable Objects (fase 1 y plan B) y TURN sobre los 1.000 GB gratis: lo que queda hasta el tope (con Hetzner en 12, 22; en 6, 28) | 22–28 |
 | **Total** | **≤ 50** |
 
@@ -54,6 +54,7 @@ propuestos en los informes, que quedan vigentes salvo cambio explícito.
 - Cron Worker cada 5–15 min proyecta el gasto y flipea flags en KV (`p2p_only`, `turn_cf_disabled`, `turn_self_disabled`, `do_disabled`, `vm_disabled`, `matchmaking_off`).
 - DOs de partida con TTL duro de 10 min, lobbies hibernables sin timers, `limits.cpu_ms` bajo, nada sin ticket crea un DO.
 - Alertas de presupuesto de Cloudflare a US$ 15 / 30 / 45 + Usage Report a webhook + mails de tráfico de Hetzner, como respaldo (son informativas y llegan al día siguiente).
+- Estado (oct 2026): el cron que proyecta el gasto todavía no existe; los interruptores son manuales (`matchmaking_off`, `do_disabled`, `vm_disabled` y `nodes_off`, que corta las rutas del plano de control de los nodos). Qué corta cada uno y qué sigue andando: `server/README.md`, «Kill switches». Los límites de pedidos por sesión, cuenta o red están en `server/src/limits.ts`.
 
 ## Mediciones pendientes (se obtienen en las fases 1 y 2)
 

@@ -12,7 +12,16 @@
  * Tables
  *   users            id, username (display), ukey (unique, usernameKey), password hash/salt/iterations
  *                    (null for an OAuth-only account), recovery code hashes (JSON), google / discord ids
- *   refresh          sha256(refresh token) -> user, sliding expiry (REFRESH_TTL_MS)
+ *                    and when each was linked (null for a link from before it was kept). A linked id is
+ *                    never replaced: linking another one needs the unlink first (unlink refuses the
+ *                    last way in), and linking needs a device that proved a credential just before
+ *   refresh          sha256(refresh token) -> user, sliding expiry (REFRESH_TTL_MS); its family (one sign-in
+ *                    on one device: every token rotated from it), kind ('web' | 'tv': a TV signed in with
+ *                    the phone, a limited scope), when that device signed in and last proved a credential
+ *                    (auth_at: a re-authentication moves it), the token it was rotated from (prev_hash)
+ *                    and where the device signed in (country, city: the device list). A token of a known
+ *                    family that is no longer its live one comes back only from a copy: the family is
+ *                    revoked (rotate 'reused'), except within REFRESH_RACE_MS of its rotation (two tabs).
  *   ratings          (user, playlist, season) -> mu, sigma, games, wins, losses, peak
  *   ranked_matches   one row per reported / cancelled ranked match (idempotency + results)
  *   ranked_players   per player of a ranked match: before / after, outcome, ban started
@@ -39,7 +48,7 @@
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
-import { PLAYLISTS, usernameKey } from '../../src/net/account';
+import { looksLikeDomain, PLAYLISTS, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
 import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { TrainingRecords } from '../../src/game/trainingRecords';
@@ -70,6 +79,12 @@ export const SEASON = 1;
 export const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
 /** Refresh tokens kept per account (oldest dropped): one per browser / device. */
 export const REFRESH_PER_USER = 10;
+/** A TV's tokens, counted apart: approving TVs never signs a browser out. */
+export const TV_REFRESH_PER_USER = 5;
+/** A TV's sign-in lasts this long from its start, refreshed or not (no sliding). */
+export const TV_FAMILY_MAX_MS = 30 * 24 * 60 * 60_000;
+/** A rotated token presented again this soon after its rotation is two tabs racing, not a copy. */
+export const REFRESH_RACE_MS = 30_000;
 export const RENAME_EVERY_MS = 30 * 24 * 60 * 60_000;
 /** Ranked results / cancellations are kept this long (GET /api/ranked/result, idempotency). */
 const RANKED_KEEP_MS = 30 * 24 * 60 * 60_000;
@@ -87,9 +102,40 @@ export interface Credentials extends Partial<PasswordRecord> {
   banned: boolean;
 }
 
+/** What kind of device a refresh family signs in: a browser, or a TV signed in with the phone (a limited scope). */
+export type SessionKind = 'web' | 'tv';
+
+/**
+ * A refresh token to store: its hash, its family (accountRoutes.ts familyOf: from the token's
+ * family part; absent = a family of its own, as before families), its kind and where the device
+ * signed in (request.cf, coarse).
+ */
+export interface RefreshGrant {
+  hash: string;
+  family?: string | null;
+  kind?: SessionKind;
+  country?: string | null;
+  city?: string | null;
+}
+
+/** One signed-in device of an account (GET /api/auth/sessions). */
+export interface DeviceRow {
+  id: string;
+  kind: SessionKind;
+  signedInAt: number;
+  lastUsedAt: number;
+  country: string | null;
+  city: string | null;
+  current: boolean;
+}
+
 export interface UserRef {
   userId: string;
   username: string;
+  /** The session is a TV's (refresh kind 'tv'): its token carries the limited scope. */
+  tv?: boolean;
+  /** When the device last proved a credential (ms); absent or 0 = never (a TV, a token from before families). */
+  authAt?: number;
   /** The car the account drives (equippedCar: one it still owns, else the default): what its session carries. */
   car?: CarId;
   /** When the account was created (ms): its age weighs its minutes on a community node (ledger.ts). */
@@ -128,6 +174,20 @@ export interface RankedCheck {
   active: { matchId: string; region: string } | null;
 }
 
+/** ALTER TABLE ADD COLUMN once: SQLite has no IF NOT EXISTS for a column, so a later run's "duplicate column" is the done case. */
+function addColumn(s: SqlLike, table: string, def: string): void {
+  try {
+    s.exec(`ALTER TABLE ${table} ADD COLUMN ${def}`);
+  } catch (e) {
+    if (!/duplicate column/i.test(String((e as Error)?.message ?? e))) throw e;
+  }
+}
+
+/** A device's id in the list: its family, or for a token from before families its own hash's first half (never the token). */
+function deviceId(r: Row): string {
+  return r.family !== null && r.family !== undefined ? str(r.family) : str(r.hash).slice(0, 32);
+}
+
 function num(v: SqlValue | undefined): number {
   return typeof v === 'number' ? v : Number(v ?? 0);
 }
@@ -158,6 +218,7 @@ export function usernameFromDisplay(display: string): string {
     .replace(/^[^A-Za-z0-9]+/, '')
     .replace(/[_.-]+$/, '');
   s = s.slice(0, 16);
+  if (looksLikeDomain(s)) s = s.replace(/\./g, '_'); // a Discord name 'tg-verify.com' never becomes a web-address username
   const k = s.toLowerCase();
   if (k.startsWith('guest') || k.startsWith('bot') || k === 'admin') s = 'P' + s.slice(0, 15);
   while (s.length < 3) s += String(Math.floor(Math.random() * 10));
@@ -184,6 +245,10 @@ export class AccountStore {
     s.exec(`CREATE TABLE IF NOT EXISTS refresh (
       hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)`);
     s.exec('CREATE INDEX IF NOT EXISTS refresh_user ON refresh(user_id)');
+    // Families (Security 3): columns added to the table of before; a row from before has none (a family of its own).
+    for (const col of ['family TEXT', "kind TEXT NOT NULL DEFAULT 'web'", 'auth_at INTEGER NOT NULL DEFAULT 0', 'family_at INTEGER NOT NULL DEFAULT 0', 'prev_hash TEXT', 'country TEXT', 'city TEXT']) addColumn(s, 'refresh', col);
+    s.exec('CREATE INDEX IF NOT EXISTS refresh_family ON refresh(family)');
+    for (const col of ['google_linked_at INTEGER', 'discord_linked_at INTEGER']) addColumn(s, 'users', col);
     s.exec(`CREATE TABLE IF NOT EXISTS ratings (
       user_id TEXT NOT NULL, playlist TEXT NOT NULL, season INTEGER NOT NULL,
       mu REAL NOT NULL, sigma REAL NOT NULL, games INTEGER NOT NULL DEFAULT 0,
@@ -245,7 +310,7 @@ export class AccountStore {
   }
 
   /** A new password account; 'taken' when the username (case-insensitive) exists. */
-  register(username: string, pw: PasswordRecord, recoveryHashes: readonly string[], refreshHash: string, now: number): UserRef | 'taken' {
+  register(username: string, pw: PasswordRecord, recoveryHashes: readonly string[], refreshHash: string | RefreshGrant, now: number): UserRef | 'taken' {
     return this.tx(() => {
       if (this.usernameTaken(username)) return 'taken' as const;
       const id = this.freshId();
@@ -254,7 +319,7 @@ export class AccountStore {
         id, username, usernameKey(username), pw.hash, pw.salt, pw.iter, JSON.stringify(recoveryHashes), now, now,
       );
       this.addRefresh(id, refreshHash, now);
-      return { userId: id, username, car: DEFAULT_CAR, createdAt: now };
+      return { userId: id, username, car: DEFAULT_CAR, createdAt: now, authAt: now };
     });
   }
 
@@ -281,53 +346,142 @@ export class AccountStore {
     return u === null ? null : this.credentials(str(u.username));
   }
 
-  /** A successful sign-in: last_login and a new refresh token. */
-  signedIn(userId: string, refreshHash: string, now: number): UserRef | null {
+  /** A successful sign-in: last_login and a new refresh token (`kind` 'tv': a TV the phone approved, which proved no credential). */
+  signedIn(userId: string, refreshHash: string | RefreshGrant, now: number): UserRef | null {
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1) return null;
       this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, userId);
-      this.addRefresh(userId, refreshHash, now);
-      return this.refOf(u);
+      const tv = typeof refreshHash !== 'string' && refreshHash.kind === 'tv';
+      this.addRefresh(userId, refreshHash, now, tv ? 0 : now);
+      return { ...this.refOf(u), ...(tv ? { tv: true } : { authAt: now }) };
     });
   }
 
-  addRefresh(userId: string, hash: string, now: number): void {
-    this.sql.exec('INSERT OR REPLACE INTO refresh (hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)', hash, userId, now, now + REFRESH_TTL_MS);
-    const rows = this.sql.exec<{ hash: string }>('SELECT hash FROM refresh WHERE user_id = ? ORDER BY created_at DESC', userId).toArray();
-    for (let i = REFRESH_PER_USER; i < rows.length; i++) this.sql.exec('DELETE FROM refresh WHERE hash = ?', rows[i].hash);
+  /**
+   * Store a refresh token. `authAt`: when the device proved a credential (a sign-in: now; a TV:
+   * never); `familyAt` and `prevHash`: a rotation's (the family's start, the token it replaced).
+   * Past REFRESH_PER_USER browsers (TV_REFRESH_PER_USER TVs) the oldest of that kind goes.
+   */
+  addRefresh(userId: string, grant: string | RefreshGrant, now: number, authAt: number = now, familyAt: number = now, prevHash: string | null = null): void {
+    const g: RefreshGrant = typeof grant === 'string' ? { hash: grant } : grant;
+    const kind: SessionKind = g.kind === 'tv' ? 'tv' : 'web';
+    const expires = kind === 'tv' ? Math.min(now + REFRESH_TTL_MS, familyAt + TV_FAMILY_MAX_MS) : now + REFRESH_TTL_MS;
+    this.sql.exec(
+      'INSERT OR REPLACE INTO refresh (hash, user_id, created_at, expires_at, family, kind, auth_at, family_at, prev_hash, country, city) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      g.hash, userId, now, expires, g.family ?? null, kind, kind === 'tv' ? 0 : authAt, familyAt, prevHash, g.country ?? null, g.city ?? null,
+    );
+    const rows = this.sql.exec<{ hash: string }>('SELECT hash FROM refresh WHERE user_id = ? AND kind = ? ORDER BY created_at DESC', userId, kind).toArray();
+    for (let i = kind === 'tv' ? TV_REFRESH_PER_USER : REFRESH_PER_USER; i < rows.length; i++) this.sql.exec('DELETE FROM refresh WHERE hash = ?', rows[i].hash);
   }
 
-  /** Swap a refresh token for a new one (rotation); null when unknown, expired or the account is banned. */
-  rotateRefresh(oldHash: string, newHash: string, now: number): UserRef | null {
+  /** Swap a refresh token for a new one (rotation); null when unknown, expired, reused or the account is banned. */
+  rotateRefresh(oldHash: string, next: string | RefreshGrant, now: number): UserRef | null {
+    const r = this.rotate(oldHash, null, next, now);
+    return typeof r === 'string' ? null : r;
+  }
+
+  /**
+   * A rotation with reuse detection: the token's row goes and `next` takes its place in the same
+   * family (its kind, sign-in time, credential proof and place kept). `oldFamily`: the family the
+   * presented token names (accountRoutes.ts familyOf). A token that is not a live one, of a family
+   * that has a live token, was copied (a thief's, or the owner's after a thief rotated it): the
+   * whole family is revoked ('reused'), unless the live token was rotated from this very one less
+   * than REFRESH_RACE_MS ago ('race': two tabs of one browser; its cookie already holds the new
+   * one). 'unknown': no such token or family, expired, or a banned account.
+   */
+  rotate(oldHash: string, oldFamily: string | null, next: string | RefreshGrant, now: number): UserRef | 'unknown' | 'race' | 'reused' {
     return this.tx(() => {
-      const r = this.sql.exec('SELECT user_id, expires_at FROM refresh WHERE hash = ?', oldHash).toArray()[0];
-      if (!r) return null;
+      const r = this.sql.exec('SELECT * FROM refresh WHERE hash = ?', oldHash).toArray()[0];
+      if (!r) {
+        if (oldFamily === null) return 'unknown' as const;
+        const live = this.sql.exec('SELECT prev_hash, created_at FROM refresh WHERE family = ?', oldFamily).toArray();
+        if (live.length === 0) return 'unknown' as const;
+        if (live.some((x) => str(x.prev_hash) === oldHash && now - num(x.created_at) < REFRESH_RACE_MS)) return 'race' as const;
+        this.sql.exec('DELETE FROM refresh WHERE family = ?', oldFamily);
+        return 'reused' as const;
+      }
       this.sql.exec('DELETE FROM refresh WHERE hash = ?', oldHash);
-      if (num(r.expires_at) <= now) return null;
+      if (num(r.expires_at) <= now) return 'unknown' as const;
       const u = this.userById(str(r.user_id));
-      if (u === null || num(u.banned) === 1) return null;
-      this.addRefresh(str(u.id), newHash, now);
-      return this.refOf(u);
+      if (u === null || num(u.banned) === 1) return 'unknown' as const;
+      const g: RefreshGrant = typeof next === 'string' ? { hash: next } : next;
+      const had = r.family !== null && r.family !== undefined;
+      // A family's token always rotates into the same family (the Worker keeps its family part).
+      if (had && g.family !== undefined && g.family !== null && g.family !== str(r.family)) return 'unknown' as const;
+      const family = had ? str(r.family) : (g.family ?? null);
+      const kind: SessionKind = str(r.kind) === 'tv' ? 'tv' : 'web';
+      const familyAt = num(r.family_at) > 0 ? num(r.family_at) : num(r.created_at);
+      const authAt = num(r.auth_at);
+      const where = { country: r.country === null || r.country === undefined ? null : str(r.country), city: r.city === null || r.city === undefined ? null : str(r.city) };
+      this.addRefresh(str(u.id), { hash: g.hash, family, kind, ...where }, now, authAt, familyAt, oldHash);
+      return { ...this.refOf(u), ...(kind === 'tv' ? { tv: true } : authAt > 0 ? { authAt } : {}) };
     });
   }
 
-  /** The account behind a refresh token without rotating it (OAuth linking); null when invalid. */
-  refreshOwner(hash: string, now: number): UserRef | null {
-    const r = this.sql.exec('SELECT user_id, expires_at FROM refresh WHERE hash = ?', hash).toArray()[0];
+  /** The account behind a refresh token without rotating it, the device's kind, id and credential proof; null when invalid or banned. */
+  refreshOwner(hash: string, now: number): (UserRef & { kind: SessionKind; device: string }) | null {
+    const r = this.sql.exec('SELECT * FROM refresh WHERE hash = ?', hash).toArray()[0];
     if (!r || num(r.expires_at) <= now) return null;
     const u = this.userById(str(r.user_id));
-    return u === null ? null : this.refOf(u);
+    if (u === null || num(u.banned) === 1) return null;
+    const kind: SessionKind = str(r.kind) === 'tv' ? 'tv' : 'web';
+    return { ...this.refOf(u), kind, device: deviceId(r), ...(kind === 'tv' ? { tv: true } : { authAt: num(r.auth_at) }) };
   }
 
-  deleteRefresh(hash: string): void {
+  /**
+   * Sign this device out: its token and every other one of its family. `family`: the family the
+   * presented token names (accountRoutes.ts familyOf), revoked even when that token is no longer
+   * the live one: a copy rotated by someone else first (the thief's newer chain) goes too.
+   */
+  deleteRefresh(hash: string, family: string | null = null): void {
+    const r = this.sql.exec('SELECT family FROM refresh WHERE hash = ?', hash).toArray()[0];
     this.sql.exec('DELETE FROM refresh WHERE hash = ?', hash);
+    if (r && r.family !== null && r.family !== undefined) this.sql.exec('DELETE FROM refresh WHERE family = ?', str(r.family));
+    if (family !== null) this.sql.exec('DELETE FROM refresh WHERE family = ?', family);
   }
 
-  /** Sign out everywhere (password change / recovery), keeping `except` (the caller's own token) when given. */
-  deleteRefreshOf(userId: string, except?: string): void {
+  /** The account's signed-in devices (one per family), the latest used first; `currentHash`: the caller's token, marked current. */
+  devices(userId: string, now: number, currentHash: string | null): DeviceRow[] {
+    const rows = this.sql.exec('SELECT * FROM refresh WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC', userId, now).toArray();
+    const out = new Map<string, DeviceRow>();
+    for (const r of rows) {
+      const id = deviceId(r);
+      const known = out.get(id);
+      if (known !== undefined) {
+        if (str(r.hash) === currentHash) known.current = true;
+        continue;
+      }
+      out.set(id, {
+        id,
+        kind: str(r.kind) === 'tv' ? 'tv' : 'web',
+        signedInAt: num(r.family_at) > 0 ? num(r.family_at) : num(r.created_at),
+        lastUsedAt: num(r.created_at),
+        country: r.country === null || r.country === undefined ? null : str(r.country),
+        city: r.city === null || r.city === undefined ? null : str(r.city),
+        current: currentHash !== null && str(r.hash) === currentHash,
+      });
+    }
+    return [...out.values()];
+  }
+
+  /** Sign out the device `id` (devices) of the account; how many tokens went. */
+  revokeDevice(userId: string, id: string): number {
+    return this.tx(() => {
+      const rows = this.sql.exec('SELECT hash, family FROM refresh WHERE user_id = ?', userId).toArray().filter((r) => deviceId(r) === id);
+      for (const r of rows) this.sql.exec('DELETE FROM refresh WHERE hash = ?', str(r.hash));
+      return rows.length;
+    });
+  }
+
+  /** Sign out everywhere (PERFIL's every device, a password change, a recovery), keeping `except` (the caller's own token) when given; how many went. */
+  deleteRefreshOf(userId: string, except?: string): number {
+    const n = except
+      ? this.sql.exec('SELECT COUNT(*) AS n FROM refresh WHERE user_id = ? AND hash != ?', userId, except).toArray()[0]
+      : this.sql.exec('SELECT COUNT(*) AS n FROM refresh WHERE user_id = ?', userId).toArray()[0];
     if (except) this.sql.exec('DELETE FROM refresh WHERE user_id = ? AND hash != ?', userId, except);
     else this.sql.exec('DELETE FROM refresh WHERE user_id = ?', userId);
+    return n ? num(n.n) : 0;
   }
 
   setPassword(userId: string, pw: PasswordRecord): boolean {
@@ -350,7 +504,7 @@ export class AccountStore {
    * Password reset with a recovery code: the code (its hash) is consumed, the password replaced and
    * every session signed out; a new refresh token for this browser. Null when the user / code do not match.
    */
-  recover(username: string, codeHash: string, pw: PasswordRecord, refreshHash: string, now: number): (UserRef & { codesLeft: number }) | null {
+  recover(username: string, codeHash: string, pw: PasswordRecord, refreshHash: string | RefreshGrant, now: number): (UserRef & { codesLeft: number }) | null {
     return this.tx(() => {
       const u = this.userByKey(usernameKey(username));
       if (u === null || num(u.banned) === 1) return null;
@@ -362,32 +516,36 @@ export class AccountStore {
       this.sql.exec('UPDATE users SET recovery = ?, pw_hash = ?, pw_salt = ?, pw_iter = ?, last_login = ? WHERE id = ?', JSON.stringify(codes), pw.hash, pw.salt, pw.iter, now, id);
       this.deleteRefreshOf(id);
       this.addRefresh(id, refreshHash, now);
-      return { ...this.refOf(u), codesLeft: codes.length };
+      return { ...this.refOf(u), authAt: now, codesLeft: codes.length };
     });
   }
 
   /**
    * Sign in (or sign up) with an OAuth identity. `linkTo` = the signed-in account that asked to
    * link it (profile screen). A new account takes `suggested` (made unique with a numeric suffix).
+   * A link never replaces the account's own id of that provider ('provider_set': an unlink comes
+   * first) and a suspended account links nothing ('no_user').
    */
-  oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string, now: number): (UserRef & { created: boolean }) | 'already_linked' | 'no_user' {
+  oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'already_linked' | 'provider_set' | 'no_user' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
     return this.tx(() => {
       const owner = this.sql.exec(`SELECT id, username, banned, created_at FROM users WHERE ${col} = ?`, providerId).toArray()[0];
       if (linkTo !== null) {
         const me = this.userById(linkTo);
-        if (me === null) return 'no_user' as const;
+        if (me === null || num(me.banned) === 1) return 'no_user' as const;
         if (owner && str(owner.id) !== linkTo) return 'already_linked' as const;
-        this.sql.exec(`UPDATE users SET ${col} = ? WHERE id = ?`, providerId, linkTo);
+        const current = me[col];
+        if (current !== null && current !== undefined && str(current) !== providerId) return 'provider_set' as const;
+        if (current === null || current === undefined) this.sql.exec(`UPDATE users SET ${col} = ?, ${col === 'google_sub' ? 'google' : 'discord'}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, providerId, now, linkTo);
         this.addRefresh(linkTo, refreshHash, now);
-        return { ...this.refOf(me), created: false };
+        return { ...this.refOf(me), authAt: now, created: false };
       }
       if (owner) {
         if (num(owner.banned) === 1) return 'no_user' as const;
         const id = str(owner.id);
         this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
         this.addRefresh(id, refreshHash, now);
-        return { ...this.refOf(owner), created: false };
+        return { ...this.refOf(owner), authAt: now, created: false };
       }
       let name = usernameFromDisplay(suggested);
       for (let n = 0; this.usernameTaken(name); n++) {
@@ -395,9 +553,55 @@ export class AccountStore {
         name = name.slice(0, 16 - suffix.length) + suffix;
       }
       const id = this.freshId();
-      this.sql.exec(`INSERT INTO users (id, username, ukey, ${col}, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?)`, id, name, usernameKey(name), providerId, now, now);
+      this.sql.exec(`INSERT INTO users (id, username, ukey, ${col}, ${provider}_linked_at, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?)`, id, name, usernameKey(name), providerId, now, now, now);
       this.addRefresh(id, refreshHash, now);
-      return { userId: id, username: name, car: DEFAULT_CAR, createdAt: now, created: true };
+      return { userId: id, username: name, car: DEFAULT_CAR, createdAt: now, authAt: now, created: true };
+    });
+  }
+
+  /**
+   * A re-authentication with a provider (PERFIL's "confirm it is you"): the identity must already
+   * be one of `userId`'s; then a new token for this browser, its credential proof now. 'mismatch'
+   * for another account's identity or none (nothing signs in, nothing is created).
+   */
+  oauthReauth(provider: OAuthProvider, providerId: string, userId: string, refreshHash: string | RefreshGrant, now: number): UserRef | 'mismatch' | 'no_user' {
+    const col = provider === 'google' ? 'google_sub' : 'discord_id';
+    return this.tx(() => {
+      const me = this.userById(userId);
+      if (me === null || num(me.banned) === 1) return 'no_user' as const;
+      if (me[col] === null || me[col] === undefined || str(me[col]) !== providerId) return 'mismatch' as const;
+      this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, userId);
+      this.addRefresh(userId, refreshHash, now);
+      return { ...this.refOf(me), authAt: now };
+    });
+  }
+
+  /** A re-authentication with the password (the Worker checked it): this browser's token proves a credential now; null when it is not the account's or a TV's. */
+  markFresh(userId: string, refreshHash: string, now: number): UserRef | null {
+    return this.tx(() => {
+      const r = this.sql.exec("SELECT expires_at FROM refresh WHERE hash = ? AND user_id = ? AND kind = 'web'", refreshHash, userId).toArray()[0];
+      if (!r || num(r.expires_at) <= now) return null;
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return null;
+      this.sql.exec('UPDATE refresh SET auth_at = ? WHERE hash = ?', now, refreshHash);
+      return { ...this.refOf(u), authAt: now };
+    });
+  }
+
+  /**
+   * Remove a provider from the account (PERFIL's unlink): 'last_method' when it is the only way in
+   * left (no password and no other provider), 'not_linked' when the account has none of it.
+   */
+  unlink(userId: string, provider: OAuthProvider): 'ok' | 'last_method' | 'not_linked' | 'no_user' {
+    const col = provider === 'google' ? 'google_sub' : 'discord_id';
+    return this.tx(() => {
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
+      if (u[col] === null || u[col] === undefined) return 'not_linked' as const;
+      const ways = [u.pw_hash, u.google_sub, u.discord_id].filter((v) => v !== null && v !== undefined).length;
+      if (ways <= 1) return 'last_method' as const;
+      this.sql.exec(`UPDATE users SET ${col} = NULL, ${provider}_linked_at = NULL WHERE id = ?`, userId);
+      return 'ok' as const;
     });
   }
 
@@ -448,7 +652,11 @@ export class AccountStore {
     if (u.google_sub !== null && u.google_sub !== undefined) providers.push('google');
     if (u.discord_id !== null && u.discord_id !== undefined) providers.push('discord');
     const renamedAt = num(u.renamed_at);
+    const linkedAt: NonNullable<MeInfo['linkedAt']> = {};
+    if (providers.includes('google') && num(u.google_linked_at) > 0) linkedAt.google = num(u.google_linked_at);
+    if (providers.includes('discord') && num(u.discord_linked_at) > 0) linkedAt.discord = num(u.discord_linked_at);
     return {
+      linkedAt,
       playerId: userId,
       name: str(u.username),
       createdAt: num(u.created_at),

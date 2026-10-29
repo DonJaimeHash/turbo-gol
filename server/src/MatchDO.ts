@@ -25,7 +25,11 @@
  *               (a MAX_ACTIVE_ROOMS slot) alive meanwhile
  *   end         'ended' event + final snapshot, sockets closed (1000) 2 s later, storage wiped,
  *               matchmaker locks released (scoped to this matchId)
- *   alarm       90 s after create: shutdown when nobody ever connected (tickets never used); then
+ *   idle        a casual match (not ranked) whose every human sent no input (an input packet with
+ *               any control set) for IDLE_END_MS ends with the usual whistle ('ended' at the score
+ *               as it is), then shuts down: an idle socket no longer holds a MAX_ACTIVE_ROOMS slot
+ *               for the whole match (rt-3, cost-6); a reconnect gets RECONNECT_GRACE_MS of it back
+ *   alarm       45 s after create: shutdown when nobody ever connected (tickets never used); then
  *               regulation + 10 min: a match still running (unlimited overtime) gets an 'ended'
  *               event (leader wins, -1 when tied) and a final snapshot before shutdown('ttl')
  *   restart     a deploy / eviction / crash mid-match loses the sim (memory only): the constructor
@@ -85,8 +89,13 @@ const START_GRACE_MS = 5_000;
 const EMPTY_SHUTDOWN_MS = 15_000;
 const END_LINGER_MS = 2_000;
 const TTL_AFTER_MATCH_MS = 10 * 60_000;
-/** A room whose tickets were never used (no socket, loop never started) is dropped at this age. */
-const UNUSED_ALARM_MS = 90_000;
+/** A room whose tickets were never used (no socket, loop never started) is dropped at this age (a client connects within seconds of its ticket). */
+export const UNUSED_ALARM_MS = 45_000;
+/** A casual match where no human touched a control for this long ends (the whistle, then shutdown). */
+export const IDLE_END_MS = 60_000;
+/** What a reconnecting slot gets back of IDLE_END_MS (a reload must not end the match under it). */
+export const RECONNECT_GRACE_MS = 20_000;
+const IDLE_CHECK_MS = 1_000;
 const ALARM_SLACK_MS = 1_000;
 /** Ranked: every player must be connected and ready this long after the create, or the match is cancelled (absent players: an abandon each). */
 export const RANKED_JOIN_MS = 45_000;
@@ -202,6 +211,9 @@ export class MatchDO extends DurableObject<Env> {
   /** Ranked bookkeeping (memory only: a restart cancels a ranked match anyway): when the slot's socket closed (0 = connected or never). */
   private readonly discSince = new Float64Array(MAX_CARS);
   private forfeitCheckAt = 0;
+  /** When each slot last sent an input with a control set (memory only, like the sim); the idle end. */
+  private readonly activeAt = new Float64Array(MAX_CARS);
+  private idleCheckAt = 0;
   /** The ranked result (or cancellation) went out: shutdown must not send another. */
   private rankedReported = false;
   /** Welcome.hostColo: from storage, else from the trace started by ensureHost (COLO_UNKNOWN until then). */
@@ -491,6 +503,8 @@ export class MatchDO extends DurableObject<Env> {
     this.liveSockets++;
     this.emptySince = -1;
     this.discSince[slot] = 0;
+    // Back after a drop: a little of the idle window, not a fresh one (a rejoin loop keeps no match alive).
+    if (this.activeAt[slot] < now - IDLE_END_MS + RECONNECT_GRACE_MS) this.activeAt[slot] = now - IDLE_END_MS + RECONNECT_GRACE_MS;
     host.setConnected(slot, true);
     server.addEventListener('message', (ev) => this.onMessage(c, ev));
     server.addEventListener('close', () => this.onClose(c));
@@ -560,6 +574,14 @@ export class MatchDO extends DurableObject<Env> {
         const pkt = this.inputPkt;
         if (!decodeInput(buf, pkt)) return this.kick(c, 1008, 'bad input');
         host.addInputs(c.slot, pkt.firstTick, pkt.count, pkt.packed, 0);
+        // Any control set (a stick, a trigger, a button): the human is playing (the idle end).
+        const packed = pkt.packed;
+        for (let k = 0, n = pkt.count * PACKED_INPUT_BYTES; k < n; k++) {
+          if (packed[k] !== 0) {
+            this.activeAt[c.slot] = now;
+            break;
+          }
+        }
         return;
       }
       case MsgType.Ping: {
@@ -700,6 +722,8 @@ export class MatchDO extends DurableObject<Env> {
     void this.ctx.storage.put('started', true);
     host.start();
     this.lastNow = Date.now();
+    this.activeAt.fill(this.lastNow);
+    this.idleCheckAt = this.lastNow + IDLE_CHECK_MS;
     this.acc = 0;
     this.interval = setInterval(() => this.onInterval(), INTERVAL_MS);
   }
@@ -724,6 +748,13 @@ export class MatchDO extends DurableObject<Env> {
         if (host.events.length > 0) this.flushEvents(host);
         if (host.ended) {
           this.onEnded();
+          return;
+        }
+      }
+      if (this.record !== null && this.record.ranked !== true && now >= this.idleCheckAt) {
+        this.idleCheckAt = now + IDLE_CHECK_MS;
+        if (this.allIdle(now)) {
+          this.endIdle();
           return;
         }
       }
@@ -780,6 +811,30 @@ export class MatchDO extends DurableObject<Env> {
     this.endTimer = setTimeout(() => {
       this.endTimer = null;
       void this.shutdown('ended');
+    }, END_LINGER_MS);
+  }
+
+  /** Every human of the match (not left; connected or not) has touched no control for IDLE_END_MS. */
+  private allIdle(now: number): boolean {
+    const rec = this.record;
+    if (!rec) return false;
+    let humans = 0;
+    for (let i = 0; i < rec.roster.length; i++) {
+      if (rec.roster[i].kind !== 'player' || this.leftSlots[i] === 1) continue;
+      humans++;
+      if (now - this.activeAt[i] < IDLE_END_MS) return false;
+    }
+    return humans > 0;
+  }
+
+  /** Nobody plays (allIdle): the whistle at the score as it is, the usual linger, then shutdown('idle'). */
+  private endIdle(): void {
+    if (this.ended) return;
+    this.endByTtl();
+    void this.ctx.storage.put('ended', true);
+    this.endTimer = setTimeout(() => {
+      this.endTimer = null;
+      void this.shutdown('idle');
     }, END_LINGER_MS);
   }
 

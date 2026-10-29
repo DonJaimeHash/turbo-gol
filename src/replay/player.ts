@@ -46,6 +46,7 @@ import {
 import wasmUrl from '../sim/wasm/rocketsim.wasm?url';
 import { drawsFrame } from '../render/quality';
 import { goalScorer } from '../ui/screens/match/finalModel';
+import { playerName } from '../ui/names';
 import { clockText, el } from './list';
 
 /** Longest frame the loop catches up on (s). */
@@ -207,6 +208,8 @@ export async function startPlayer(o: PlayerOptions): Promise<() => void> {
   const scene = renderer.scene;
   const q = renderer.quality;
   const roster = r.header.roster;
+  /** Each slot's name as shown: a guest's server name ('Invitado 4821') in this page's language. */
+  const shownName = roster.map((e) => playerName(e.name));
   const endTick = endTickOf(r);
 
   let run = await newRun(r, o.mesh);
@@ -228,13 +231,13 @@ export async function startPlayer(o: PlayerOptions): Promise<() => void> {
   const offsets: number[] = [];
   const slots: number[] = [];
   const tags: HTMLElement[] = [];
-  for (const e of roster) {
+  for (const [i, e] of roster.entries()) {
     const team = run.sim.teamOf(e.slot);
     cars.push(new CarView(scene, config, team, q));
     effects.registerCar(e.slot, team);
     slots.push(e.slot);
     offsets.push(run.sim.carOffset(e.slot));
-    const tag = el(`div.rp-tag.${e.team === 0 ? 'rp-blue' : 'rp-red'}`, null, e.name);
+    const tag = el(`div.rp-tag.${e.team === 0 ? 'rp-blue' : 'rp-red'}`, null, shownName[i]);
     o.tagsRoot.append(tag);
     tags.push(tag);
   }
@@ -252,7 +255,7 @@ export async function startPlayer(o: PlayerOptions): Promise<() => void> {
   speedSel.value = '1';
   const camSel = el('select.rp-btn', { 'aria-label': t('replay.camera') }) as HTMLSelectElement;
   camSel.append(el('option', { value: '0' }, `0 · ${t('replay.broadcast')}`));
-  roster.forEach((e, i) => camSel.append(el('option', { value: String(i + 1) }, `${i + 1} · ${e.name}`)));
+  roster.forEach((_e, i) => camSel.append(el('option', { value: String(i + 1) }, `${i + 1} · ${shownName[i]}`)));
   const seek = el('input', { type: 'range', min: '0', max: String(endTick), step: '1', value: '0', 'aria-label': t('replay.title') }) as HTMLInputElement;
   const marks = el('div.rp-marks');
   for (const g of o.scan.goals) {
@@ -377,7 +380,7 @@ export async function startPlayer(o: PlayerOptions): Promise<() => void> {
       } else if (e.type === 'overtime') hud.showOvertime();
       else if (e.type === 'goal') {
         const g = goalAt.get(e.tick);
-        const scorer = g && g.slot >= 0 ? (roster[g.slot]?.name ?? null) : null;
+        const scorer = g && g.slot >= 0 ? (shownName[g.slot] ?? null) : null;
         hud.showGoal(e.team, scorer, e.blue, e.red);
       } else if (e.type === 'ended') showEnd(e.winner, e.blue, e.red);
     }

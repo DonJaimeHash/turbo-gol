@@ -34,12 +34,23 @@ npm install
 npm run dev            # the game at http://localhost:5173 (offline modes work without the backend)
 ```
 
+The dev server only answers this machine. To try the game on a phone or a TV on the same Wi-Fi,
+start it with `TG_LAN=1 npm run dev` (PowerShell: `$env:TG_LAN=1; npm run dev`) and open the
+Network address it prints. Every device on that network can then load it and reach your local
+Worker through it, so do this only on a network you trust and stop it when you are done. It never
+serves `.dev.vars`, `.env*`, `.wrangler/`, `private/`, `.claude/` or the nodes' keys.
+
 Online modes run against a local backend (no Cloudflare account needed):
 
 ```sh
 cd server && npm install && cp .dev.vars.example .dev.vars   # then set JWT_SECRET to any long random string
 npm run dev            # wrangler dev on http://127.0.0.1:8787; Vite proxies /api, /ws, /room and /lobby to it
 ```
+
+Local runs never send real mail and need no Cloudflare login: the `send_email` binding is simulated
+by wrangler, and the Worker's mailer is a stub on any loopback host. Never add `"remote": true` to that
+binding, and never put `MAIL_LIVE` in `.dev.vars` or `.env` (wrangler loads both): it is a production
+secret. See [docs/online/MAIL.md](docs/online/MAIL.md).
 
 The physics engine is prebuilt (`src/sim/wasm/rocketsim.wasm` is committed). You only need the
 Emscripten SDK if you change the C++ wrapper or the physics library: see `native/README.md`.

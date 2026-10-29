@@ -222,12 +222,9 @@ export class OnlineSession {
     return this.state === 'queue' || this.state === 'connecting';
   }
 
+  /** The guest's name (the server's wire form; '' before the first session). */
   get name(): string {
     return this.client.name;
-  }
-
-  setName(name: string): void {
-    this.client.setName(name);
   }
 
   /** A match is on screen and taking input (the GameSession view; 'ended' keeps rendering but takes none). */

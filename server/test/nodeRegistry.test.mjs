@@ -1471,3 +1471,252 @@ test("the maintainers' inventory routes: grant, revoke and unfreeze go to Accoun
     `**ALERT** \`${actor}: grant pampero for account ${A} -> 404\``,
   ]);
 });
+
+// ---- the control socket under a flood of anonymous upgrades -----------------------------------------
+
+/** Open /nodes/connect from `ip` (the Worker's x-client-ip) and hand back the socket; nothing is answered yet. */
+async function upgrade(h, ip) {
+  const headers = { [INTERNAL_HEADER]: secret, Upgrade: 'websocket' };
+  if (ip) headers['x-client-ip'] = ip;
+  const res = await h.obj.fetch(new Request('https://nodes/nodes/connect', { headers }));
+  assert.equal(res.upgraded, true);
+  return h.ctx.sockets.at(-1);
+}
+
+/** The node answers the challenge its socket got. */
+async function logIn(h, ws, node) {
+  const challenge = ws.of('challenge')[0];
+  await h.obj.webSocketMessage(ws, JSON.stringify({ t: 'auth', nodeId: node.nodeId, sig: await sign(node.key, authMessage(node.nodeId, challenge.nonce)) }));
+}
+
+test('anonymous upgrades from one network churn their own sockets: a node between its challenge and its login is not pushed out', async () => {
+  const h = await boot(makeEnv());
+  const node = await registerNode(h);
+  const ws = await upgrade(h, '198.51.100.20');
+  answer(h, ws, node);
+  const flood = [];
+  for (let i = 1; i <= 100; i++) flood.push(await upgrade(h, `2001:db8:6:7::${i.toString(16)}`));
+  assert.equal(ws.closed, null, 'the node socket stays open');
+  await logIn(h, ws, node);
+  assert.equal(ws.of('welcome').length, 1, 'logged in after the flood');
+  assert.equal(flood.filter((w) => w.closed === null).length, D.PENDING_PER_ADDRESS, 'one /64 keeps PENDING_PER_ADDRESS sockets at most');
+  assert.deepEqual(flood[0].closed, { code: 1013, reason: 'busy' });
+  assert.ok(D.PENDING_UNKNOWN_MAX + D.PENDING_KNOWN_MAX < 64, 'the pools stay below the control plane cap (MAX_UNAUTHENTICATED)');
+});
+
+test('a node coming back from an address it logged in from keeps a slot, through a deploy, under a flood from many prefixes', async () => {
+  const env = makeEnv();
+  let h = await boot(env);
+  const node = await registerNode(h);
+  const first = await upgrade(h, '198.51.100.21');
+  await logIn(h, first, node);
+  assert.equal(first.of('welcome').length, 1);
+  first.close(1012, 'deploy');
+  h = await boot(env, new FakeCtx(h.ctx.db));
+  for (let i = 0; i < 60; i++) await upgrade(h, `2001:db8:${(0x100 + i).toString(16)}::1`);
+  const back = await upgrade(h, '198.51.100.21');
+  answer(h, back, node);
+  for (let i = 60; i < 160; i++) await upgrade(h, `2001:db8:${(0x100 + i).toString(16)}::1`);
+  assert.equal(back.closed, null, 'the returning node keeps its place');
+  const open = h.ctx.sockets.filter((w) => w.closed === null).length;
+  assert.ok(open <= D.PENDING_UNKNOWN_MAX + 1, `at most the unknown pool and the node (${open})`);
+  await logIn(h, back, node);
+  assert.equal(back.of('welcome').length, 1);
+});
+
+// ---- a logged-in node's control socket -----------------------------------------------------------------
+
+/** Count the node rows written from now on (a trigger on the object's own SQLite). */
+function countNodeWrites(h) {
+  h.ctx.db.exec('CREATE TABLE IF NOT EXISTS node_writes (n INTEGER); CREATE TRIGGER IF NOT EXISTS node_write AFTER UPDATE ON nodes BEGIN INSERT INTO node_writes VALUES (1); END;');
+  h.ctx.db.exec('DELETE FROM node_writes');
+  return () => h.ctx.db.prepare('SELECT COUNT(*) AS n FROM node_writes').get().n;
+}
+
+test('the same hello again writes no row; a node past 30 hellos in 10 minutes has its socket closed (1008)', async () => {
+  const h = await boot(makeEnv());
+  const { node, ws } = await liveNode(h);
+  const writes = countNodeWrites(h);
+  for (let i = 0; i < 200; i++) {
+    clock += 1000;
+    await send(h, ws, { t: 'hello', data: helloOf(node) });
+  }
+  assert.equal(writes(), 0, 'a repeated hello is dropped');
+  assert.equal(ws.closed, null);
+  let accepted = 0;
+  for (let i = 1; i <= 40 && ws.closed === null; i++) {
+    clock += 1000;
+    await send(h, ws, { t: 'hello', data: helloOf(node, { egressCapGB: i }) });
+    if (ws.closed === null) accepted++;
+  }
+  assert.deepEqual(ws.closed, { code: 1008, reason: 'too many hellos' });
+  assert.equal(accepted, D.HELLOS_PER_WINDOW - 1, 'the login hello counted too');
+  assert.ok(writes() <= D.HELLOS_PER_WINDOW, 'one row write per hello taken at most');
+});
+
+test('publicUrl changes: four an hour per node, the fifth closes its socket; the probe never fetches a private or loopback address', async () => {
+  const h = await boot(makeEnv());
+  const { node, ws } = await liveNode(h);
+  const fetched = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    fetched.push(new URL(String(url)).host);
+    return realFetch(url, init);
+  };
+  try {
+    for (const publicUrl of ['wss://10.0.0.5', 'wss://[fd00::5]', 'wss://localhost:8443', 'wss://169.254.169.254', 'wss://a2.turbo-gol.test']) {
+      clock += 1000;
+      await send(h, ws, { t: 'hello', data: helloOf(node, { publicUrl }) });
+      await sleep(5);
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(ws.closed, { code: 1008, reason: 'too many address changes' });
+  assert.deepEqual(fetched.filter((x) => !x.endsWith('.turbo-gol.test')), [], 'never a private or loopback target');
+  assert.ok(lines.some((l) => /probe sao-paulo-1 failed: Error: refused target/.test(l)), 'the refusal is the probe failure');
+});
+
+test('a ban closes the node live socket at once (4403), after telling it; a frame on a banned node socket closes it too', async () => {
+  const h = await boot(makeEnv());
+  const { node, ws } = await liveNode(h);
+  const r = await call(h, 'POST', '/nodes/admin/status', { body: { nodeId: node.nodeId, status: 'banned', reason: 'test' }, headers: { 'x-operator-id': PROJECT } });
+  assert.equal(r.status, 200);
+  assert.equal(ws.of('status').at(-1)?.status, 'banned', 'told first');
+  assert.deepEqual(ws.closed, { code: 4403, reason: 'banned' });
+  const other = await liveNode(h, { ip: '203.0.113.2', publicUrl: 'wss://sp2.turbo-gol.test' });
+  h.obj.cp.registry.setStatus(other.node.nodeId, 'banned', 'strikes');
+  await send(h, other.ws, { t: 'heartbeat', data: beat() });
+  assert.deepEqual(other.ws.closed, { code: 4403, reason: 'banned' });
+});
+
+test('frames: a node steady traffic never trips the budget; a flood on one socket closes it (1008) once its burst is spent', async () => {
+  const h = await boot(makeEnv());
+  const { ws } = await liveNode(h);
+  for (let i = 0; i < 300; i++) {
+    clock += 1000;
+    await send(h, ws, { t: 'heartbeat', data: beat() });
+  }
+  assert.equal(ws.closed, null);
+  const other = await liveNode(h, { ip: '203.0.113.3', publicUrl: 'wss://sp3.turbo-gol.test' });
+  let sent = 0;
+  for (; sent < 200 && other.ws.closed === null; sent++) await send(h, other.ws, { t: 'heartbeat', data: beat() });
+  assert.deepEqual(other.ws.closed, { code: 1008, reason: 'too many messages' });
+  assert.ok(sent <= D.FRAME_BURST + 1, `closed within its burst (${sent})`);
+});
+
+test('the probe of a publicUrl reads at most 16 KB of its answer', async () => {
+  const h = await boot(makeEnv());
+  const node = await registerNode(h, { publicUrl: 'wss://big.turbo-gol.test' });
+  const big = stream(Array.from({ length: 64 }, () => new Uint8Array(64 * 1024).fill(32)));
+  node.fail = () => new RealResponse(big.body);
+  const ws = await connect(h, node);
+  lines.length = 0;
+  await send(h, ws, { t: 'hello', data: helloOf(node) });
+  await waitFor(() => lines.some((l) => l.includes('probe sao-paulo-1 failed')), 'the probe fails');
+  assert.ok(lines.some((l) => l.includes('an answer over 16384 bytes')), lines.join('\n'));
+  assert.ok(big.pulls <= 2, `stopped at the cap (${big.pulls} chunks pulled)`);
+});
+
+// ---- replay uploads in the one object ----------------------------------------------------------------
+
+/** A body that hands out `chunks` once `open()` was called; `pulls` counts the chunks taken. */
+function gated(chunks) {
+  let open;
+  const gate = new Promise((r) => (open = r));
+  const g = { pulls: 0, open: () => open() };
+  g.body = new ReadableStream(
+    {
+      async pull(c) {
+        await gate;
+        if (g.pulls >= chunks.length) return c.close();
+        c.enqueue(chunks[g.pulls++]);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return g;
+}
+
+test('replay uploads: one per match at a time (429), two per node; a stored replay answers its retry without a second read, another one 409', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { node } = await liveNode(h);
+  const ids = [];
+  for (let i = 0; i < 3; i++) ids.push((await call(h, 'POST', '/internal/place', { body: placeBody({ humans: humans('p' + i + 'a', 'p' + i + 'b') }) })).json.placement.matchId);
+  const bytes = new Uint8Array(3000).map((_, i) => i & 0xff);
+  const sha = await sha256Hex(bytes);
+  const put = async (id, body, { digest = sha, length } = {}) =>
+    h.obj.fetch(
+      new Request(`https://nodes/nodes/replays/${id}`, {
+        method: 'PUT',
+        duplex: 'half',
+        body,
+        headers: {
+          [INTERNAL_HEADER]: secret,
+          'x-node-id': node.nodeId,
+          'x-node-ts': String(clock),
+          'x-node-sig': await sign(node.key, replayRequestMessage('PUT', id, digest, clock)),
+          'x-replay-sha256': digest,
+          ...(length !== undefined ? { 'content-length': String(length) } : {}),
+        },
+      }),
+    );
+  const a = gated([bytes]);
+  const first = put(ids[0], a.body, { length: bytes.length });
+  await sleep(5);
+  const again = await within(2000, put(ids[0], gated([bytes]).body, { length: bytes.length }), 'a second upload of the match is answered before its body is read');
+  assert.deepEqual([again.status, (await again.json()).error], [429, 'upload_in_progress'], 'the same match while its upload is read');
+  const b = gated([bytes]);
+  const second = put(ids[1], b.body, { length: bytes.length });
+  await sleep(5);
+  const third = await within(2000, put(ids[2], gated([bytes]).body, { length: bytes.length }), 'a third upload of the node is answered before its body is read');
+  assert.deepEqual([third.status, (await third.json()).error], [429, 'busy'], 'a third upload of one node');
+  a.open();
+  b.open();
+  assert.equal((await first).status, 200);
+  assert.equal((await second).status, 200);
+  assert.deepEqual(env.NODE_REPLAYS.objects.get(ids[0]), bytes);
+  const retry = gated([bytes]);
+  retry.open();
+  const r = await put(ids[0], retry.body, { length: bytes.length });
+  assert.equal(r.status, 200, 'its retry after a lost answer');
+  assert.equal(retry.pulls, 0, 'not read again');
+  const other = new Uint8Array(3000).fill(7);
+  const o = gated([other]);
+  o.open();
+  const r2 = await put(ids[0], o.body, { digest: await sha256Hex(other), length: other.length });
+  assert.deepEqual([r2.status, (await r2.json()).error], [409, 'already_uploaded']);
+  assert.deepEqual(env.NODE_REPLAYS.objects.get(ids[0]), bytes, 'the stored replay stays');
+});
+
+test('replay uploads: a budget of bytes in flight across nodes (503 busy, tried again by the node); a body longer than it declared is refused', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const one = await liveNode(h);
+  const id = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json.placement.matchId;
+  const bytes = new Uint8Array(3000).map((_, i) => (i * 7) & 0xff);
+  const sha = await sha256Hex(bytes);
+  const put = async (body, length) =>
+    h.obj.fetch(
+      new Request(`https://nodes/nodes/replays/${id}`, {
+        method: 'PUT',
+        duplex: 'half',
+        body,
+        headers: { [INTERNAL_HEADER]: secret, 'x-node-id': one.node.nodeId, 'x-node-ts': String(clock), 'x-node-sig': await sign(one.node.key, replayRequestMessage('PUT', id, sha, clock)), 'x-replay-sha256': sha, 'content-length': String(length) },
+      }),
+    );
+  h.obj.replayBudget = 2000;
+  const r = await within(2000, put(gated([bytes]).body, bytes.length), 'an upload over the budget is answered before its body is read');
+  assert.deepEqual([r.status, (await r.json()).error], [503, 'busy'], 'over the budget: tried again later');
+  h.obj.replayBudget = D.REPLAY_INFLIGHT_BYTES;
+  const longer = gated([bytes, bytes]);
+  longer.open();
+  const r2 = await put(longer.body, bytes.length);
+  assert.deepEqual([r2.status, (await r2.json()).error], [400, 'bad_length']);
+  assert.equal(env.NODE_REPLAYS.objects.has(id), false);
+  const ok = gated([bytes.slice(0, 1000), bytes.slice(1000)]);
+  ok.open();
+  assert.equal((await put(ok.body, bytes.length)).status, 200);
+  assert.deepEqual(env.NODE_REPLAYS.objects.get(id), bytes);
+});

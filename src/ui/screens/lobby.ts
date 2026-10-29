@@ -2,7 +2,7 @@
  * The Sala (plan §6.4, PR 12) and the ways into it: CREATE LOBBY AND SHARE (a private lobby with
  * the last format, MODOS › SALAS and the empty list), JOIN WITH CODE (mn-codecells in a sheet), a
  * list row, and a join link (`#sala=ABC234`, on a cold load or a hashchange: "Join lobby ABC234 ·
- * 2v2 · 2/4?" with JOIN, and "Your name" the first time a guest goes online).
+ * 2v2 · 2/4?" with JOIN; a guest's name is the server's, never asked).
  *
  * The screen: the lobby's name and settings line, the code giant ("ABC 234": a press copies it,
  * which on a phone is its tap), SHARE (screens/lobbyModel.ts shareWay: the system's share sheet on
@@ -22,8 +22,8 @@
  * its one action. Built per screen; the lobby callbacks are set when the screen is first made.
  */
 import { h, setChildren, copyText, navButton } from '../dom';
-import { sanitizeLobbyName } from '../../net/account';
-import type { LobbyMember, LobbySettings, LobbyState } from '../../net/account';
+import type { LobbyMember, LobbyState } from '../../net/account';
+import type { LobbyCreate } from '../../net/LobbyClient';
 import { AccountError } from '../../net/AccountClient';
 import { lobbyCloseText } from '../../net/LobbyClient';
 import { outcomeOf } from '../../net/outcome';
@@ -33,6 +33,7 @@ import { takeLobbyStay } from '../../game/rejoinStore';
 import { GAME_NAME } from '../../brand';
 import { t } from '../../i18n';
 import { lobbyRulesLine } from '../../render/rulesText';
+import { lobbyTitle, playerName } from '../names';
 import type { Menu, Screen } from '../Menu';
 import { icon } from '../components/icons';
 import { qrSvg } from '../components/qr';
@@ -76,11 +77,8 @@ export async function createAndShare(menu: Menu): Promise<void> {
   }
   if (creating) return;
   creating = true;
-  const who = menu.host.accounts.account?.name ?? menu.host.guestName();
-  // Every translation survives the server's name rules (tests/i18n-lobby-name.test.mjs); a name that
-  // would not (a guest name the sanitizer drops) falls back to the plain word.
-  const name = sanitizeLobbyName(t('custom.defaultName', { name: who }).slice(0, 24)) ?? t('custom.lobbyTitle');
-  const settings: LobbySettings = { name, mode: lobbyFormat(menu.prefs), visibility: 'private', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS, physics: null };
+  // No title: the server's default is the host's name, which every viewer reads in their own language (names.ts lobbyTitle).
+  const settings: LobbyCreate['settings'] = { mode: lobbyFormat(menu.prefs), visibility: 'private', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS, physics: null };
   try {
     await lobby.create({ settings, password: null, region: menu.prefs.region });
     freshLobby = true;
@@ -198,19 +196,16 @@ export async function askJoin(menu: Menu, code: string): Promise<void> {
 /** The join link's sheet itself (askJoin; the layout check's sample, lobbySamples.ts). */
 export function joinSheet(menu: Menu, code: string, title: string, locked: boolean): void {
   const lobby = menu.host.lobby;
-  const name = menu.host.firstOnline() ? field(t('lobby.yourName'), { maxLength: 16, value: menu.host.guestName() }) : null;
   const swap = lobby.inLobby && lobby.code !== null ? h('p', null, t('lobby.swap', { code: spacedCode(lobby.code) })) : null;
   menu.modal({
     title,
-    body: [name?.el ?? null, swap],
+    body: [swap],
     actions: [
       {
         label: t('lobby.join'),
         primary: true,
         autofocus: true,
         onClick: () => {
-          const n = name?.input.value.trim() ?? '';
-          if (name !== null && n.length > 0 && n !== menu.host.guestName()) menu.host.setGuestName(n);
           queueMicrotask(() => void joinFlow(menu, code, locked));
           return true;
         },
@@ -300,6 +295,11 @@ function infoLine(s: LobbyState): string {
 
 const TEAM_KEY = { 0: 'custom.teamBlue', 1: 'custom.teamRed' } as const;
 
+/** The lobby's title as this page shows it: the server's default (the host's name) in its language. */
+export function salaTitle(s: LobbyState): string {
+  return lobbyTitle(s.settings.name, s.members.find((m) => m.host)?.name ?? '');
+}
+
 /** A TV's SHARE: the join link's QR, the code and the short link, big (a TV has no share sheet). */
 export function openQr(menu: Menu, code: string): void {
   const url = joinLink(location.origin, code);
@@ -384,7 +384,7 @@ export function lobbyScreen(menu: Menu): Screen {
   const openMore = (): void => {
     const s = state();
     menu.modal({
-      title: s !== null ? s.settings.name : t('custom.lobbyTitle'),
+      title: s !== null ? salaTitle(s) : t('custom.lobbyTitle'),
       body: [],
       actions: [
         ...(lobby.isHost && s !== null && !busy()
@@ -437,12 +437,12 @@ export function lobbyScreen(menu: Menu): Screen {
     }
     if (actions.length === 0) return;
     actions.push({ label: t('lobby.cancel'), onClick: () => undefined });
-    menu.modal({ title: m.name, body: [], actions });
+    menu.modal({ title: playerName(m.name), body: [], actions });
   };
 
   const askKick = (m: LobbyMember): void => {
     menu.modal({
-      title: t('lobby.kickTitle', { name: m.name }),
+      title: t('lobby.kickTitle', { name: playerName(m.name) }),
       body: h('p', null, t('lobby.kickBody')),
       actions: [
         { label: t('lobby.kick'), danger: true, onClick: () => lobby.kick(m.id) },
@@ -459,7 +459,7 @@ export function lobbyScreen(menu: Menu): Screen {
       m.away === true ? h('span.mn-tag.mn-tag-away', null, t('lobby.tagAway')) : m.inGame ? h('span.mn-tag.mn-tag-live', null, t('lobby.tagInMatch')) : m.ready === true ? h('span.mn-tag.mn-tag-ready', null, t('lobby.tagReady')) : null,
       m.guest ? h('span.mn-tag', null, t('custom.tagGuest')) : null,
     ];
-    const kids = [h('span.mn-member-name', null, m.name), h('span.mn-member-tags', null, ...tags)];
+    const kids = [h('span.mn-member-name', null, playerName(m.name)), h('span.mn-member-tags', null, ...tags)];
     const cls = `mn-member${mine ? ' mn-member-you' : ''}${m.away === true ? ' mn-member-away' : ''}`;
     // Only a row with something to do is a button (the host's, one's own).
     if (lobby.isHost || mine) return navButton(cls, kids, () => openMember(m), { 'data-key': 'member-' + m.id });
@@ -476,7 +476,7 @@ export function lobbyScreen(menu: Menu): Screen {
     go.hidden = false;
     const focusedKey = (document.activeElement as HTMLElement | null)?.dataset?.key ?? null;
     const rules = lobbyRules(s.settings.physics ?? null);
-    setChildren(name, s.settings.name, rules !== null ? ' ' : null, rules !== null ? h('span.mn-tag.mn-tag-exp', null, t('custom.tagExperimental')) : null);
+    setChildren(name, salaTitle(s), rules !== null ? ' ' : null, rules !== null ? h('span.mn-tag.mn-tag-exp', null, t('custom.tagExperimental')) : null);
     info.textContent = infoLine(s) + (s.hasPassword ? ' · ' : '');
     if (s.hasPassword) info.append(icon('lock'));
     rulesLine.hidden = rules === null;

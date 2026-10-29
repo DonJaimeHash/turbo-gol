@@ -23,6 +23,9 @@ export default {
   'region.AS': 'Asia',
   'region.OC': 'Oceania',
   'region.AF': 'Africa',
+  // A guest's name: the server names every guest 'Invitado 4821' (src/net/guestName.ts) and each
+  // page shows it in its language (src/ui/names.ts playerName); {n} is its four digits
+  'guest.name': 'Guest {n}',
   'difficulty.easy': 'Easy',
   'difficulty.medium': 'Normal',
   'difficulty.hard': 'Hard',
@@ -199,8 +202,8 @@ export default {
   'home.rejoin': 'BACK TO YOUR MATCH',
   // Under it: {queue} is 'Casual · 2v2', {time} the match time left (m:ss)
   'home.rejoinSub': '{queue} · {time} left',
-  // The player plate: a guest's line, an account's without a placed rank
-  'home.guestRank': 'Guest · Unranked',
+  // The player plate: a guest's line under its name ('Guest 4821'), an account's without a placed rank
+  'home.guestRank': 'No account · Unranked',
   'home.unranked': 'Unranked',
   // The plate's line on a TV, after the rank; {car} is the car's name
   'home.carLine': 'Car: {car}',
@@ -445,8 +448,10 @@ export default {
   'custom.lobbySection': 'LOBBY',
   // Breadcrumb title of the create screen
   'custom.createTitle': 'Create lobby',
-  // Default lobby name; {name} is the player (up to 16 characters). The server keeps only letters, digits, spaces and _ . - ! ? # and at most 24 characters: no apostrophes, quotes, colons, commas or brackets, and at most 8 characters besides {name} (tests/i18n-lobby-name.test.mjs).
+  // Default lobby title, shown for the server's default (the host's name; src/ui/names.ts lobbyTitle); {name} is the host (up to 16 characters, a guest's 'Guest 4821'). Keep it to letters, digits, spaces and _ . - ! ? #, at most 8 characters besides {name}: no apostrophes, quotes, colons, commas or brackets (tests/i18n-lobby-name.test.mjs).
   'custom.defaultName': 'Lobby {name}',
+  // The host's SETTINGS as a guest: the lobby's title cannot be changed, and why
+  'custom.guestTitle': 'With an account you can name your lobby.',
   'custom.tagGuest': 'GUEST',
   'custom.tagInMatch': 'IN MATCH',
   // Host button: remove a player from the lobby
@@ -562,7 +567,6 @@ export default {
   // A join link's sheet; {mode} is 1v1 / 2v2 / 3v3
   'lobby.joinAsk': 'Join lobby {code} · {mode} · {count}/{max}?',
   'lobby.joinAskCode': 'Join lobby {code}?',
-  'lobby.yourName': 'Your name',
   // In another lobby already: joining this one leaves it
   'lobby.swap': 'You leave lobby {code}.',
   // A restart (Super low) took longer than the server keeps a place in the lobby
@@ -589,6 +593,8 @@ export default {
   'profile.heading': 'PROFILE',
   // A server error and the wait before retrying, in whole seconds (rounded up)
   'profile.retryAfter': '{message} ({seconds} s)',
+  // An account past its daily cap of failed sign-ins from new browsers (server/src/AccountsDO.ts LOGIN_USER_DAY_MAX)
+  'profile.retryTomorrow': 'Too many attempts on this account from new devices. Sign in from a device you have used before, or try again tomorrow.',
   'profile.codesTitle': 'Recovery codes',
   'profile.codesNote': "Each code works once to reset your password if you forget it. There's no email recovery: keep them somewhere safe.",
   'profile.copy': 'COPY',
@@ -626,9 +632,8 @@ export default {
   'profile.resetPassword': 'RESET PASSWORD',
   // count: recovery codes still unused
   'profile.passwordReset': { one: 'Password changed. {count} code left.', other: 'Password changed. {count} codes left.' },
-  'profile.guestName': 'Guest name',
-  'profile.saveName': 'SAVE NAME',
-  'profile.guestNameSaved': 'Guest name saved',
+  // PROFILE as a guest, under the sign-in forms; {name} is its name ('Guest 4821'): the server's, a new one with each guest session
+  'profile.guestLine': "You're playing as {name}, a temporary name. With an account you choose your own.",
   'profile.loading': 'Loading…',
   // date: the sign-up date; providers: how the account signs in, e.g. 'password, Google'
   'profile.since': 'Member since {date} · {providers}',
@@ -667,8 +672,43 @@ export default {
   'profile.newCodes': 'NEW RECOVERY CODES',
   // provider: GOOGLE or DISCORD (upper case)
   'profile.link': 'LINK {provider}',
+  // A provider on the account and when it was linked ({date}); without a date: linked before it was kept
+  'profile.linkedOn': '{provider} · linked on {date}',
+  'profile.linkedWith': '{provider} · linked',
+  'profile.unlink': 'UNLINK {provider}',
+  'profile.unlinkTitle': 'Unlink {provider}?',
+  'profile.unlinkNote': "You won't be able to sign in to this account with {provider} any more.",
+  'profile.unlinkConfirm': 'UNLINK',
+  'profile.unlinked': '{provider} unlinked',
+  // "Confirm it's you" before a change to how the account signs in (linking, unlinking, a first password)
+  'profile.reauthTitle': "Confirm it's you",
+  'profile.reauthNote': 'To change how you sign in, sign in again with one of your methods.',
+  'profile.reauthWith': 'SIGN IN WITH {provider}',
+  'profile.reauthConfirm': 'CONFIRM',
+  // Back in PERFIL after confirming: the change can be made now
+  'profile.reauthDone': 'Done: you can make the change now',
   'profile.signOut': 'SIGN OUT',
   'profile.signedOut': 'Signed out',
+  // PERFIL's devices (Security 3): every browser or TV signed in to the account, each one's sign-out
+  'profile.devices': 'DEVICES',
+  'profile.devicesTitle': 'Devices signed in',
+  'profile.devicesNote': "If you don't recognise one, sign it out.",
+  'profile.deviceBrowser': 'Browser',
+  // A TV signed in with the phone (it plays, but changes nothing on the account)
+  'profile.deviceTv': 'TV (with the phone)',
+  // {date}: when the device signed in; {last}: its last use
+  'profile.deviceWhen': 'Since {date} · last used {last}',
+  'profile.deviceThis': 'this device',
+  'profile.deviceSignOut': 'SIGN IT OUT',
+  'profile.deviceSignedOut': 'That device is signed out',
+  // Sign out on every device, this one too (any account: with Google or Discord as well)
+  // PERFIL on a TV signed in with the phone: its limited scope in words
+  'profile.tvScopeNote': 'This TV signed in with your phone: it plays with your account, but account changes (name, password, linking, redeeming) are made on the phone.',
+  'profile.signOutAll': 'SIGN OUT ON EVERY DEVICE',
+  'profile.signOutAllTitle': 'Sign out on every device?',
+  'profile.signOutAllNote': 'Every device, this one too. Then you sign in again with your account.',
+  'profile.signOutAllConfirm': 'SIGN OUT EVERYWHERE',
+  'profile.signedOutAll': 'Signed out on every device',
   'profile.renameTitle': 'Change name',
   'profile.renameNote': 'You can change it once every 30 days.',
   'profile.newName': 'New name',
@@ -711,10 +751,15 @@ export default {
   // The phone's /tv page (src/ui/screens/tvSignIn.ts installTvLink); {name}: the phone's account
   'tvlink.title': 'Sign in on the TV',
   'tvlink.codeLabel': 'TV code',
-  'tvlink.enterCode': 'Enter the code the TV shows',
+  'tvlink.enterCode': 'Type the code shown on the TV in front of you',
   'tvlink.continue': 'CONTINUE',
   'tvlink.ask': 'Sign in on the TV as {name}?',
-  'tvlink.askNote': 'Confirm only if this code is on a TV in front of you right now. If someone sent you this link, cancel: that TV would play as you.',
+  'tvlink.askNote': 'Confirm only if this code is on a TV in front of you right now. If someone sent it to you or asked you to type it, cancel: that TV would play as you.',
+  // {place}: the TV's city, country code and network as Cloudflare saw its start ("Córdoba, AR · Telecom")
+  'tvlink.where': 'The TV is in {place}.',
+  'tvlink.whereUnknown': "We don't know where that TV is.",
+  'tvlink.sameNetwork': "It's on your network.",
+  'tvlink.otherCountry': "That TV is in another country than you: if it isn't yours, cancel.",
   'tvlink.confirm': 'CONFIRM',
   'tvlink.cancel': 'CANCEL',
   'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',
@@ -733,6 +778,7 @@ export default {
   'account.issue.usernameLength': 'The username must be {min} to {max} characters long',
   'account.issue.usernameChars': 'Use only letters, numbers, "_", "-" or "." (starting with a letter or number)',
   'account.issue.usernameReserved': 'That name is reserved',
+  'account.issue.usernameDomain': 'The username can\'t look like a web address (like "name.com")',
   // PASSWORD_MIN (8)
   'account.issue.passwordShort': { one: 'The password must be at least {count} character', other: 'The password must be at least {count} characters' },
   // PASSWORD_MAX (128)
@@ -752,6 +798,8 @@ export default {
   'auth.oauthExpired': 'The sign-in expired, try again',
   // Any other OAuth error code
   'auth.oauthFailed': "Couldn't sign in, try again",
+  // A link or a re-authentication started without a valid session in this browser
+  'auth.oauthLinkExpired': 'Your session ended: sign in again and try once more',
   // The Turnstile challenge failed before sign-up
   'auth.antiBotFailed': 'Anti-bot check failed, try again',
   // Sign-in with an empty username or password
@@ -813,6 +861,19 @@ export default {
   'error.account.tv_code_used': 'That code was already used',
   // The server holds too many TV codes at once
   'error.account.busy': 'Too many codes right now, try again in a minute',
+  // A TV signed in with the phone tried an account change (a credential, a link, redeeming, approving another TV)
+  'error.account.tv_session': "A TV signed in with the phone can't do that: do it on your phone",
+  // Linking, unlinking or a first password needs a sign-in from the last few minutes
+  'error.account.reauth_required': "Confirm it's you: sign in again with your account",
+  // The re-authentication came back with another Google / Discord account than this one's
+  'error.account.reauth_mismatch': "That isn't the account you sign in with",
+  // Linking a provider the account already has another identity of
+  'error.account.provider_set': 'Your account already has another account of that provider: unlink it first',
+  // Unlinking the only way left to sign in
+  'error.account.last_method': "It's your only way to sign in: link another one first",
+  'error.account.not_linked': "That account isn't linked",
+  // Many failed sign-ins on this username from anywhere: the next one needs the anti-bot check
+  'error.account.turnstile_required': "Confirm you're not a robot to go on",
   // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
   'error.account.not_owned': 'That car is not yours yet',
   'error.account.bad_car': 'Unknown car',
@@ -828,6 +889,8 @@ export default {
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
   // Generic: the server says what is wrong with the name
   'error.lobby.bad_name': 'The lobby name must be 3 to 24 characters',
+  // The title reads as a guest's name, the game's or its staff's (src/net/account.ts lobbyNameIssue)
+  'error.lobby.name_reserved': 'That lobby name is not allowed',
   // Same text as custom.codeInvalid
   'error.lobby.bad_code': 'The code is 6 letters or numbers',
   'error.lobby.no_lobby': "There's no lobby with that code",
@@ -860,6 +923,12 @@ export default {
   // Experimental rules with the server connection, or a lobby with a single player
   'error.lobby.experimental_p2p_only': 'Experimental rules need a P2P match with at least 2 players',
   'error.lobby.bad_physics': 'Invalid rules',
+  'error.lobby.too_many_lobbies': 'You already have open lobbies: close one before creating another',
+  'error.lobby.start_cooldown': 'Wait a few seconds before starting again',
+  'error.lobby.guest_length': 'Server matches with guests last up to 5 minutes: pick a shorter length or sign in',
+  'error.lobby.short_password': 'The password needs 4 to 32 characters',
+  'error.lobby.password_locked': 'Too many password attempts on this lobby, wait a few minutes',
+  'error.lobby.password_attempts': 'Someone is trying passwords on your lobby: joining with the password is paused for a few minutes',
   // Matchmaking: Casual and Competitive searches (POST /api/queue, /api/rejoin, the guest session)
   'error.queue.rate_limited': 'Too many attempts, wait a minute',
   'error.queue.account_required': 'Sign in to play Competitive',
@@ -870,6 +939,7 @@ export default {
   // {time}: what is left of the lock, in the page language ('5 min', '43 sec'). The player was placed in P2P matches and never joined them
   'error.queue.no_show': 'P2P matches locked for {time}: you skipped several matches you were placed in (server matches still work)',
   'error.queue.capacity': 'All servers are busy, try again in a minute',
+  'error.queue.guest_limit': 'Too many guest matches from your network: sign in to play more',
   // The page is older than the server (after an update)
   'error.queue.reload_required': "There's a new version of the game: reload the page",
   // The server switched matchmaking off
@@ -1734,7 +1804,7 @@ export default {
   'game.welcomeNew': 'Welcome, {name}! You can change your name in your profile.',
   // Toast after linking a Google / Discord login to the signed-in account
   'game.accountLinked': 'Account linked',
-  // Guest name in the menus when the game runs without an online server (online guests get a generated name like Guest123, which is never translated)
+  // Guest name in the menus before the first guest session (and without an online server); online the server names the guest, shown as guest.name ('Guest 4821')
   'game.guestName': 'Guest',
 
   // Error page that replaces the loading screen when the game cannot start (src/main.ts). The error
