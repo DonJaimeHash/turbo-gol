@@ -299,6 +299,9 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- You can choose the stadium again. In MODES › VS AI, Stadium opened an empty GARAGE; now it opens
+  the list of stadiums (Night harbour, Red canyon, Alpine valley) with yours marked. Pick one with
+  a click, a tap, Enter, A or OK: it is saved and used in all your matches and behind the menus.
 - Lobbies: when the players of a lobby's match could not connect to each other, the game put them in
   the public Casual queue on a server; now they are back in their lobby, which says so, and the host
   can start again.
