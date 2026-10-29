@@ -405,10 +405,11 @@ function makeSession() {
   const sim = new FakeSim();
   const game = makeGame(sim);
   const client = new FakeClient();
-  const env = { sim, game, client, room: null, mesh: null, engine: null, t: 5000 };
+  const env = { sim, game, client, room: null, mesh: null, engine: null, t: 5000, hidden: false };
   const session = new P2PSession(game, {
     client,
     now: () => env.t,
+    hidden: () => env.hidden,
     engineFactory: (s, n, humans, me, hooks, opts) => (env.engine = new FakeEngine(s, n, humans, me, hooks, opts)),
     roomFactory: (opts) => (env.room = new FakeRoom(opts)),
     meshFactory: (opts) => (env.mesh = new FakeMesh(opts)),
@@ -795,6 +796,77 @@ test('a dead peer link is reported to the room as unreachable at the current pre
   mesh.onPeerDead(1);
   assert.deepEqual(env.room.sent.at(-1), { type: 'unreachable', slot: 1, atTick: engine.tick });
   assert.equal(session.peersDead, 1);
+});
+
+/** A packet from `slot` acknowledging our inputs up to `ackTick` (the peer's ack: our seat's drop tick is that + 1). */
+function ackFrom(env, slot, ackTick) {
+  const out = new Uint8Array(P.INPUT_HDR + PACKED_INPUT_BYTES);
+  const len = P.encodeP2pInput(out, ackTick + 1, 1, ackTick, ackTick, new Int8Array(PACKED_INPUT_BYTES), 0);
+  env.mesh.onGame(slot, out.subarray(0, len));
+}
+
+/** A started 1v1 with a few hundred ms of play, its frame loop running every ~16 ms. */
+async function playing1v1() {
+  const env = await startedSession(SLOTS_1V1, 0);
+  for (let i = 0; i < 30; i++) {
+    env.t = env.startAtLocal + i * 16 + 1;
+    env.session.advance(0.016);
+  }
+  ackFrom(env, 1, 40);
+  return env;
+}
+
+test('a peer whose own frame loop stalled 3 s and then loses its link gives its own seat up (once), never reports the peer that kept playing', async () => {
+  const env = await playing1v1();
+  const { session, mesh, room } = env;
+  // The loop is held (a hitch, a tab switch): no advance() for 3 s; the peer found us silent and
+  // closed its link, whose close event arrives while we are still stalled.
+  env.t += 3_000;
+  mesh.onPeerDead(1);
+  const reports = room.sent.filter((m) => m.type === 'unreachable');
+  assert.deepEqual(reports, [{ type: 'unreachable', slot: 0, atTick: 41 }], 'our own slot, at the tick the peer acknowledged + 1');
+  // Another dead-link event changes nothing: one self-report.
+  mesh.onPeerDead(1);
+  assert.equal(room.sent.filter((m) => m.type === 'unreachable').length, 1);
+  assert.ok(session.log.lines().some((l) => /peerDead\.self/.test(l)));
+  // The room drops our seat: we leave the match as before.
+  room.onDrop(0, 41);
+  assert.deepEqual(env.game.log.at(-1), ['disconnected', STATUS.droppedMe]);
+});
+
+test('the link dying just after our stall ended (within SELF_STALL_RECENT_MS) is ours too; a stall long ago is not, and neither is a link that dies while we run', async () => {
+  const env = await playing1v1();
+  env.t += 2_500; // stalled, then resumed: the gap is seen by the next frame
+  env.session.advance(0.016);
+  env.t += SESSION.SELF_STALL_RECENT_MS - 500;
+  env.session.advance(0.016);
+  env.mesh.onPeerDead(1);
+  assert.deepEqual(env.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [0]);
+
+  const env2 = await playing1v1();
+  env2.t += 2_500;
+  env2.session.advance(0.016);
+  for (let i = 0; i < 300; i++) {
+    env2.t += 16;
+    env2.session.advance(0.016); // ~5 s of normal frames after the stall
+  }
+  env2.mesh.onPeerDead(1);
+  assert.deepEqual(env2.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [1], 'the peer is reported as before');
+
+  const env3 = await playing1v1();
+  env3.t += 16;
+  env3.session.advance(0.016);
+  env3.mesh.onPeerDead(1);
+  assert.deepEqual(env3.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [1], 'a running loop reports the peer');
+});
+
+test('a hidden page gives its own seat up when it loses a link; a self-report pending when the room socket dies ends the match', async () => {
+  const env = await playing1v1();
+  env.hidden = true;
+  env.mesh.onPeerDead(1);
+  assert.deepEqual(env.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [0]);
+  env.room.onClose(1006, '');
+  assert.deepEqual(env.game.log.at(-1), ['disconnected', STATUS.lostRoom]);
 });
 
 test('confirmed-timeline hooks: countdown events, kickoff resets with seed + n, goal detection, the whistle ends the session', async () => {

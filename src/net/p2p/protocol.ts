@@ -179,7 +179,10 @@ export type RoomClientMessage =
   | { type: 'ping'; t0: number }
   /** My mesh is not connecting (ICE trouble): mint TURN credentials for my seat (answered with 'turn'). */
   | { type: 'turn' }
-  /** My P2P connection to `slot` is dead (after the mesh timeout); the room decides the drop tick. */
+  /**
+   * My P2P connection to `slot` is dead (after the mesh timeout); the room decides the drop tick.
+   * `slot` = my own: my frame loop stalled and I lost a link, I give my seat up (dropped at once).
+   */
   | { type: 'unreachable'; slot: number; atTick: number }
   /** Confirmed-tick hash summary for monitoring (the vote itself happens peer to peer). */
   | { type: 'hashReport'; tick: number; hash: number; agree: number; disagree: number };

@@ -50,7 +50,9 @@
  *             seat's socket goes and at the cleanup; refused = { iceServers: [] };
  *             unreachable { slot, atTick } (atTick = the first tick the
  *             reporter has no input of that slot for; ignored before the start: a dead link is then
- *             the client's own fallback) -> 'drop' { slot, atTick: min(reported) } when a majority
+ *             the client's own fallback; slot = the reporter's own: it gives its seat up, its frame
+ *             loop stalled and it lost a link, and is dropped at once at min(its atTick, the reports
+ *             about it), P2PSession.handlePeerDead) -> 'drop' { slot, atTick: min(reported) } when a majority
  *             of the other live peers reported that slot, or when its own socket closed > 5 s ago
  *             (re-checked by an alarm). With one other live peer (1v1, two humans and bots) a lone
  *             report does not drop a target whose own room socket is open and whose match loop is
@@ -1011,13 +1013,25 @@ export class RoomDO extends DurableObject<Env> {
 
   private async onUnreachable(ws: WebSocket, from: number, target: number, atTick: number, now: number): Promise<void> {
     const rec = this.record;
-    if (!rec || target === from || target >= rec.slots.length || rec.slots[target].kind !== 'peer') return;
+    if (!rec || target >= rec.slots.length || rec.slots[target].kind !== 'peer') return;
     const st = this.state;
     // Before the start a dead link is a mesh failure the client handles itself (its fallback);
     // kicking the target would strand it with a drop of its own slot, and a closed socket is
     // already dropped at tick 0 by maybeStart.
     if (st.startAt === null) return;
     if (this.isDropped(from)) return;
+    if (target === from) {
+      // A self-report: this peer's own frame loop stalled (a hidden tab, a long hitch) and it lost
+      // a link, most likely because its peers found it silent; it gives its seat up so the ones
+      // that kept playing stay. Only ever its own seat. Dropped at once, at the smallest tick
+      // anyone reported for it (its own tick = what its peers acknowledged of it).
+      if (!this.takeReportToken(ws, now)) return;
+      let at = atTick;
+      for (const r of st.reports) if (r.slot === from && r.atTick < at) at = r.atTick;
+      this.dropSlot(from, at + DROP_LEAD_TICKS);
+      await this.persist();
+      return;
+    }
     const prior = st.dropped.find((d) => d.slot === target);
     if (prior) {
       // Already announced: repeat it to this reporter only (it may have missed the broadcast).

@@ -15,10 +15,11 @@
 // a reused ticket is refused -> A signals B (fake offer) and B receives it with from = A's slot ->
 // ping/pong -> both 'ready' -> both receive 'start' with the same startAt ~1.5 s ahead (an
 // 'unreachable' sent before the start is ignored) -> A reports slot B unreachable at tick 100: no
-// drop (B's room socket is alive and talking: a lone report never picks who leaves) -> B reports A
-// at tick 120 (the link is dead both ways) -> both receive 'drop' { slot: B, atTick: 100 } and
-// 'drop' { slot: A, atTick: 120 } -> A closes: B gets 'peerLeft' and A can queue again at once (its
-// lock is released with the socket) -> B closes. 2v2 with four humans: grace-alarm drop and majority drop; a
+// drop (B's match loop reported a hash just now: a lone report never picks who leaves) -> B gives
+// its own seat up (its loop stalled: 'unreachable' about its own slot, tick 110) -> both receive
+// 'drop' { slot: B, atTick: 100 } (the smallest tick reported for B, no lead) -> a repeated report
+// gets the same drop -> A closes: B gets 'peerLeft' and A can queue again at once (its lock is
+// released with the socket) -> B closes. 2v2 with four humans: grace-alarm drop and majority drop; a
 // second 2v2 where an unready peer leaves -> 'start' for the three ready ones + its drop at tick 0.
 // Lock release (8d / 8e): a signal to a slot without a socket answers error 'signal_dropped' { to };
 // /api/rejoin with a room id -> 410 p2p_room; a peer that closes its room socket before the start
@@ -368,16 +369,16 @@ check(startA !== null && startB !== null && startA.startAt === startB.startAt, `
 check(startA !== null && startA.startAt - startA.now === START_DELAY_MS, `startAt is now + ${START_DELAY_MS} ms on the server clock (got +${startA ? startA.startAt - startA.now : '?'})`);
 B.send({ type: 'hashReport', tick: 30, hash: 123456, agree: 1, disagree: 0 });
 
-// ---- 7. unreachable -> drop (1v1: a lone report about a live peer drops nobody; a link dead both ways drops both) ----
+// ---- 7. unreachable -> drop (1v1: a lone report about a live peer drops nobody; the stalled peer gives its seat up) ----
 A.send({ type: 'unreachable', slot: slotB, atTick: 100 });
 await sleep(300);
-check(!A.inbox.some((m) => m.type === 'drop') && !B.inbox.some((m) => m.type === 'drop'), "no drop on a lone report: B's room socket is alive");
-B.send({ type: 'unreachable', slot: slotA, atTick: 120 });
+check(!A.inbox.some((m) => m.type === 'drop') && !B.inbox.some((m) => m.type === 'drop'), "no drop on a lone report: B's match loop is alive");
+B.send({ type: 'unreachable', slot: slotB, atTick: 110 });
 const [dropA, dropB] = await Promise.all([expectNext(A, 'drop'), expectNext(B, 'drop')]);
-const [dropA2, dropB2] = await Promise.all([expectNext(A, 'drop'), expectNext(B, 'drop')]);
-const pairOf = (x, y) => [x, y].filter((d) => d !== null).map((d) => `${d.slot}@${d.atTick}`).sort().join(' ');
-const want = [`${slotA}@${120 + DROP_LEAD_TICKS}`, `${slotB}@${100 + DROP_LEAD_TICKS}`].sort().join(' ');
-check(pairOf(dropA, dropA2) === want && pairOf(dropB, dropB2) === want, `a link dead both ways: both received both drops (${pairOf(dropA, dropA2)})`);
+check(dropA !== null && dropB !== null && dropA.slot === slotB && dropB.slot === slotB && dropA.atTick === 100 + DROP_LEAD_TICKS && dropB.atTick === dropA.atTick, `B gave its seat up: both received drop { slot: ${slotB}, atTick: ${dropA?.atTick} }`);
+A.send({ type: 'unreachable', slot: slotB, atTick: 130 });
+const dropAgain = await expectNext(A, 'drop');
+check(dropAgain !== null && dropAgain.atTick === 100 + DROP_LEAD_TICKS, 'a repeated report gets the same drop again (idempotent)');
 // B was dropped: its lock is free -> B can queue again right away (then leaves the queue)
 {
   const pending = api('/api/queue', { mode: '2v2', kind: 'p2p', p2pProtocol: P2P_PROTOCOL }, sessionB);

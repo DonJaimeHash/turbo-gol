@@ -272,6 +272,46 @@ for (const [name, slots, bSlot] of [['1v1', ONE_V_ONE, 1], ['two humans and bots
   });
 }
 
+// Review: a 2-3 s stall of one side (a hitch, a tab switch) makes the other side's mesh close the
+// link; the stalled side then sees it die. It gives its own seat up instead of reporting back.
+test('RoomDO 1v1: a peer whose own loop stalled gives its seat up (unreachable about its own slot): it alone is dropped, at the smallest reported tick; the one that kept playing stays', async () => {
+  const h = await makeRoom(ONE_V_ONE);
+  const [a, b] = await h.started();
+  advance(5_000);
+  await loopFrame(h, a, 600);
+  await loopFrame(h, b, 600);
+  advance(2_500);
+  await h.send(a, { type: 'unreachable', slot: 1, atTick: 500 }); // A found B silent
+  assert.deepEqual(dropsOf(a), [], "B's loop reported 2.5 s ago: A's word alone does not drop it");
+  await h.send(b, { type: 'unreachable', slot: 1, atTick: 503 }); // B: my loop stalled, I lost A
+  for (const ws of [a, b]) assert.deepEqual(dropsOf(ws), [[1, 500]], 'B is dropped at the smallest tick reported for it');
+  await h.send(b, { type: 'unreachable', slot: 0, atTick: 490 });
+  assert.deepEqual(dropsOf(a), [[1, 500]], 'a dropped peer cannot drop the other');
+  await h.send(a, { type: 'unreachable', slot: 1, atTick: 520 });
+  assert.deepEqual(dropsOf(a), [[1, 500], [1, 500]], 'a repeat gets the same drop again');
+  assert.equal(a.readyState, 1);
+  const rel = h.mm.calls.filter((c) => c.path === '/release').map((c) => c.body.playerIds).flat();
+  assert.deepEqual(rel, ['pb'], "B's lock is freed, A's is kept");
+});
+
+test('RoomDO: a self-report drops the reporter only, at its own tick when nobody reported it; before the start it is ignored', async () => {
+  const h = await makeRoom(TWO_HUMANS_2V2);
+  const a = await h.join(0);
+  const b = await h.join(2);
+  await h.send(b, { type: 'unreachable', slot: 2, atTick: 10 });
+  await h.send(a, { type: 'ready' });
+  await h.send(b, { type: 'ready' });
+  assert.deepEqual(dropsOf(a), [], 'not started yet: the client falls back by itself');
+  advance(20_000);
+  await h.send(b, { type: 'unreachable', slot: 2, atTick: 1234 });
+  for (const ws of [a, b]) assert.deepEqual(dropsOf(ws), [[2, 1234]]);
+  // A self-report in a 3-human room: only the reporter goes.
+  const h3 = await makeRoom(THREE_HUMANS);
+  const ws = await h3.started();
+  await h3.send(ws[0], { type: 'unreachable', slot: 0, atTick: 50 });
+  assert.deepEqual(dropsOf(ws[1]), [[0, 50]], 'in a 3-human room as well: only the reporter');
+});
+
 test('RoomDO: a closed target is still dropped on one report after the close grace; three or more humans still vote by majority', async () => {
   const h = await makeRoom(ONE_V_ONE);
   const [a, b] = await h.started();

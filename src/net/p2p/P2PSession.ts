@@ -128,7 +128,7 @@ import { fnv1a32 } from '../protocol';
 import type { ClockMode } from '../../render/Hud';
 import { duration, language, t } from '../../i18n';
 import { P2PLog } from './DebugLog';
-import { Mesh, assembleGamePacket, type MeshOptions } from './Mesh';
+import { GAME_DEAD_MS, Mesh, assembleGamePacket, type MeshOptions } from './Mesh';
 import {
   HASH_LEN,
   INPUT_HDR,
@@ -201,8 +201,19 @@ export const DESYNC_GIVE_UP_AT = 5;
 /** Confirmed-tick checkpoints kept per tick (>= the engine's snapshot ring: a drop rewind lands inside it). */
 export const CHECKPOINT_TICKS = P2P_HISTORY_TICKS_DEFAULT;
 const STATS_INTERVAL_MS = 250;
-/** Hash summaries to the room: this often, plus at once after a disagreeing vote (the room only monitors; the vote is peer to peer). */
+/**
+ * Hash summaries to the room: this often, plus at once after a disagreeing vote (the room only
+ * monitors; the vote is peer to peer). Sent from the frame loop, also while the engine waits for a
+ * peer: the room reads them as "this peer's match loop runs" (RoomDO TARGET_SILENT_MS).
+ */
 export const HASH_REPORT_EVERY_MS = 10_000;
+/**
+ * A frame loop that did not run for this long stalled (a hidden tab, a locked phone, a long
+ * hitch): its peers may have found it silent (GAME_DEAD_MS) and closed their links.
+ */
+export const SELF_STALL_MS = 1_000;
+/** ... and a link that dies this soon after such a stall ended was most likely lost to it. */
+export const SELF_STALL_RECENT_MS = GAME_DEAD_MS + 1_000;
 /** Bot difficulty of a P2P room (a room constant: every peer must use the same). */
 export const P2P_BOT_DIFFICULTY = 'medium';
 /** The red team's seed is offset from the room seed so the two teams do not share a noise stream. */
@@ -460,6 +471,12 @@ export interface P2PSessionOptions {
   roomFactory?: (opts: RoomClientOptions) => RoomLike;
   meshFactory?: (opts: MeshOptions) => MeshLike;
   now?: () => number;
+  /** The page is hidden (default: document.hidden; none outside a browser). */
+  hidden?: () => boolean;
+}
+
+function defaultHidden(): boolean {
+  return typeof document !== 'undefined' && document.hidden === true;
 }
 
 /** A checkpoint found in the ring (reused result object). */
@@ -544,6 +561,12 @@ export class P2PSession {
 
   private readonly game: P2PGameHooks;
   private readonly now: () => number;
+  private readonly hidden: () => boolean;
+  /** The last advance() (local clock; -1: none yet) and when a stall of SELF_STALL_MS or more last ended. */
+  private lastFrameAt = -1;
+  private stallEndAt = -1;
+  /** This room was told we give our seat up ('unreachable' about our own slot): its drop is pending. */
+  private selfReported = false;
   private readonly engineFactory: EngineFactory;
   private readonly roomFactory: (opts: RoomClientOptions) => RoomLike;
   private readonly meshFactory: (opts: MeshOptions) => MeshLike;
@@ -656,6 +679,7 @@ export class P2PSession {
   constructor(game: P2PGameHooks, opts: P2PSessionOptions) {
     this.game = game;
     this.now = opts.now ?? defaultNow;
+    this.hidden = opts.hidden ?? defaultHidden;
     this.engineFactory = opts.engineFactory;
     this.roomFactory = opts.roomFactory ?? ((o) => new RoomClient(o));
     this.meshFactory = opts.meshFactory ?? ((o) => new Mesh(o));
@@ -872,6 +896,11 @@ export class P2PSession {
   advance(dt: number): number {
     void dt; // the P2P clock is wall-clock based (startAtLocal), not accumulated frame time
     const now = this.now();
+    if (this.lastFrameAt >= 0 && now - this.lastFrameAt >= SELF_STALL_MS) {
+      this.stallEndAt = now;
+      this.log.push('loop.stall', `${(now - this.lastFrameAt).toFixed(0)} ms without a frame`);
+    }
+    this.lastFrameAt = now;
     const mesh = this.mesh;
     if (mesh !== null) mesh.update(now);
     if (this.state === 'connecting') {
@@ -1497,6 +1526,8 @@ export class P2PSession {
     this.dropAt.fill(-1);
     this.peerGone.fill(0);
     this.reportedDead.fill(0);
+    this.selfReported = false;
+    this.stallEndAt = -1;
     this.peerAck.fill(0);
     this.peerNewest.fill(0);
     this.peerContig.fill(0);
@@ -1676,6 +1707,12 @@ export class P2PSession {
    * reporters, so nobody has to guess an input below the drop tick. Before the start a dead link
    * is a mesh failure: advanceConnecting falls back (the room ignores pre-start reports anyway).
    * Without a room socket nobody can coordinate the drop and the match would stall for good.
+   *
+   * When it was our own frame loop that stalled (selfStalled: the page is hidden, or no frame ran
+   * for SELF_STALL_MS just now) the peer most likely found US silent and closed the link: we give
+   * our own seat up instead ('unreachable' about our slot, once), so the peer that kept playing
+   * stays in the match. Reporting it back would make the room drop both of us (RoomDO: a link
+   * dead both ways between two live loops).
    */
   private handlePeerDead(slot: number): void {
     this.peersDead++;
@@ -1686,11 +1723,40 @@ export class P2PSession {
       this.disconnect(STATUS.lostRoom);
       return;
     }
+    if (this.selfStalled(this.now())) {
+      if (this.selfReported) return;
+      this.selfReported = true;
+      const own = this.ownDropTick();
+      this.log.push('peerDead.self', `slot ${slot}: my frame loop stalled, giving my seat up at tick ${own}`);
+      room.unreachable(this.mySlot, own);
+      return;
+    }
     const engine = this.engine;
     const contig = engine !== null && engine.contiguousInputTick !== undefined ? engine.contiguousInputTick(slot) : -1;
     const at = contig >= 0 ? contig + 1 : engine !== null ? engine.tick : 0;
     this.reportedDead[slot] = 1;
     room.unreachable(slot, at);
+  }
+
+  /** Our own frame loop stalled: the page is hidden, no frame for SELF_STALL_MS now, or such a stall ended SELF_STALL_RECENT_MS ago or less. */
+  private selfStalled(now: number): boolean {
+    if (this.hidden()) return true;
+    if (this.lastFrameAt >= 0 && now - this.lastFrameAt >= SELF_STALL_MS) return true;
+    return this.stallEndAt >= 0 && now - this.stallEndAt <= SELF_STALL_RECENT_MS;
+  }
+
+  /**
+   * The tick our seat can be dropped at by everyone: the first tick some live peer may lack an
+   * input of ours for (min over the live peers of the tick it acknowledged + 1).
+   */
+  private ownDropTick(): number {
+    let at = -1;
+    for (let s = 0; s < this.numSlots; s++) {
+      if (this.isPeer[s] === 0 || s === this.mySlot || this.dropAt[s] >= 0) continue;
+      const t = this.peerAck[s] + 1;
+      if (at < 0 || t < at) at = t;
+    }
+    return at >= 0 ? at : this.engine !== null ? this.engine.tick : 0;
   }
 
   private handleRoomError(code: string, message: string): void {
@@ -1746,6 +1812,8 @@ export class P2PSession {
         return;
       }
     }
+    // Our own seat was given up and its drop never came.
+    if (this.selfReported) this.disconnect(STATUS.lostRoom);
   }
 
   // ---- mesh --------------------------------------------------------------------------------
