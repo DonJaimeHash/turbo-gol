@@ -131,7 +131,6 @@ test('plateRank: the best placed rating by MMR, none while placing', () => {
     M.plateRank({ ratings: [{ playlist: '1v1', mmr: 900, tier: 'silver' }, { playlist: '2v2', mmr: 1200, tier: 'gold' }, { playlist: '3v3', mmr: 2000, tier: null }] }),
     { tier: 'gold', playlist: '2v2' },
   );
-  assert.equal(M.DEFAULT_CAR_NAME, 'Dune');
 });
 
 test('howPlayAsk: only a new PC player, by mouse or keyboard; a pad press answers by itself', () => {

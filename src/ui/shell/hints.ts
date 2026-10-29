@@ -1,7 +1,8 @@
 /**
  * The hint bar's content (plan §1.6): the verbs of a section root or a stacked screen in the
  * language of the LAST input only (src/ui/device.ts lastInput), never another device's keys:
- *   pad       A Select · B Back · LB RB Sections, or LB RB Modes on a stacked screen with tabs of
+ *   pad       A Select · B Back · LB RB Sections (+ LT RT Tabs on a root with tabs of its own:
+ *             GARAJE names them "Cars or stadiums"), or LB RB Modes on a stacked screen with tabs of
  *             its own (MODOS: they step those there, plan §1.5) · ≡ Settings (+ Y Cancel search); a crowded bar
  *             (a TV's, with its pills) drops ≡ Settings first (`give` 1: the gear is in the top
  *             bar), the cancel hint last (`give` 4: the search pill's ✕ is beside it)
@@ -58,6 +59,8 @@ export function hintItems(input: InputKind, ctx: HintContext): HintItem[] {
         { glyphs: ['pad-lb', 'pad-rb'], verb: ctx.stacked === true && ctx.ownTabs === true ? (ctx.tabsVerb ?? 'nav.tabs') : 'nav.sections' },
         { glyphs: ['pad-start'], verb: 'nav.settings', give: 1 },
       ];
+      // A root's own tabs (GARAJE, CLASIFICACIÓN, PERFIL's forms) step with LT / RT (plan §1.5).
+      if (ctx.stacked !== true && ctx.ownTabs === true) out.splice(3, 0, { glyphs: ['pad-lt', 'pad-rt'], verb: ctx.tabsVerb ?? 'nav.tabs', give: 2 });
       if (ctx.searching) out.push({ glyphs: ['pad-y'], verb: 'nav.cancelSearch', give: 4 });
       return out;
     }

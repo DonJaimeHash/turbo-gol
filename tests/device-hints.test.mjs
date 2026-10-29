@@ -54,6 +54,10 @@ test('a keyboard on a screen with tabs of its own: Q E step those (Leaderboard, 
   assert.deepEqual(flat(H.hintItems('keyboard', { searching: false, ownTabs: true })), ['key-enter nav.select', 'key-esc nav.back', 'key-q+key-e nav.tabs']);
   assert.equal(flat(H.hintItems('keyboard', { searching: false, stacked: true })).at(-1), 'key-q+key-e nav.sections', 'Q / E still step the sections on a stacked screen');
   assert.equal(flat(H.hintItems('pad', { searching: false, ownTabs: true })).at(2), 'pad-lb+pad-rb nav.sections', "a controller's LB / RB stay the sections' (LT / RT step the tabs)");
+  // ...and the bar says so (plan §1.5: GARAJE's "LT RT Cars or stadiums"); not on a stacked screen, where LB / RB step them.
+  assert.equal(flat(H.hintItems('pad', { searching: false, ownTabs: true, tabsVerb: 'garage.tabsVerb' })).at(3), 'pad-lt+pad-rt garage.tabsVerb');
+  assert.ok(!flat(H.hintItems('pad', { searching: false, ownTabs: true, stacked: true })).some((x) => x.startsWith('pad-lt')));
+  assert.ok(!flat(H.hintItems('pad', { searching: false })).some((x) => x.startsWith('pad-lt')), 'no tabs, no LT RT');
 });
 
 test('a TV remote on a stacked screen: no "▲ Sections" (▲ lands on ‹ there, the section bar steps aside)', () => {

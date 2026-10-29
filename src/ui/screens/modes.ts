@@ -134,7 +134,7 @@ export function modesScreen(menu: Menu): Screen {
   const lobbiesPart = h('div.mn-modes-lobbies', { hidden: true }, lobbies.el);
   const modeSeg = seg<GameMode>('ai-mode', t('friendly.mode'), PLAYLISTS.map((p) => ({ value: p, label: p })), () => aiMode, (v) => (aiMode = v));
   const diffSeg = seg<Difficulty>('ai-diff', t('friendly.difficulty'), DIFFICULTIES.map((d) => ({ value: d, label: difficultyName(d) })), () => aiDifficulty, (v) => (aiDifficulty = v));
-  const stadium = picker('ai-stadium', 'stadium', t('friendly.theme'), () => menu.open('garage'));
+  const stadium = picker('ai-stadium', 'stadium', t('friendly.theme'), () => menu.open('garage', false, 'stadiums'));
   const aiPart = h(
     'div.mn-modes-ai',
     { hidden: true },

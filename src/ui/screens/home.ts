@@ -33,8 +33,8 @@ import { heroTile, modeTile, slot } from '../components/tile';
 import type { HeroSub, HeroView } from '../components/tile';
 import { plate as createPlate } from '../components/plate';
 import { rankBadge, tierById } from '../badges';
-import { regionName, tierName } from '../names';
-import { DEFAULT_CAR_NAME, HERO_SEP, HERO_SEP_TV, heroQueue, heroState, plateRank, queueParts, subParts } from './homeModel';
+import { carName, regionName, tierName } from '../names';
+import { HERO_SEP, HERO_SEP_TV, heroQueue, heroState, plateRank, queueParts, subParts } from './homeModel';
 import type { HeroInput, HeroKind, HeroState, QueuePick } from './homeModel';
 
 const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
@@ -47,7 +47,6 @@ export function homeScreen(menu: Menu): Screen {
   const tv = html.classList.contains('tg-tv');
   const lines = !html.classList.contains('tg-superlow');
   const touch = (): boolean => html.classList.contains('tg-touch');
-  const car = DEFAULT_CAR_NAME;
   const plate = createPlate({ profile: () => menu.open('profile'), garage: () => menu.open('garage') });
   // A TV's pills by the plate (Screen.pillSlot), fitted as the hint bar fits them there.
   const pills = h('div.mn-home-pills', { 'data-fit': '16' });
@@ -184,7 +183,9 @@ export function homeScreen(menu: Menu): Screen {
     const signed = acc.signedIn && acc.account !== null;
     const name = signed && acc.account !== null ? acc.account.name : host.guestName();
     const best = signed ? plateRank(acc.me) : null;
-    const key = [signed, name, best?.tier ?? '', best?.playlist ?? ''].join('|');
+    // GARAJE · the car driven (an equip, a sign-in that brings the account's car).
+    const car = carName(host.garage.store.equipped);
+    const key = [signed, name, best?.tier ?? '', best?.playlist ?? '', car].join('|');
     if (key === plateKey) return false;
     plateKey = key;
     const tier = best !== null ? tierById(best.tier) : null;

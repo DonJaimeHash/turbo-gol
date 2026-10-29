@@ -73,7 +73,7 @@ import { keypadBox, keypadSpec, keypadWrite } from './components/keypad';
 import type { KeypadView } from './components/keypad';
 import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
-import { regionName, tierName } from './names';
+import { formatPoints, regionName, tierName } from './names';
 import { t } from '../i18n';
 import type { Key } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
@@ -100,7 +100,7 @@ import { hintItems } from './shell/hints';
 import { TopBar } from './shell/topbar';
 import { SectionList } from './shell/rail';
 import { HintBar } from './shell/hintbar';
-import { LobbyPill, RegionPill, SearchPill, updatePill } from './shell/pills';
+import { LobbyPill, PointsPill, RegionPill, SearchPill, updatePill } from './shell/pills';
 import type { RegionPillState } from './shell/pills';
 import { sheetBox } from './components/sheet';
 import type { SheetSpec } from './components/sheet';
@@ -366,6 +366,7 @@ export class Menu {
   private readonly hintBar: HintBar;
   private readonly pills: HTMLElement;
   private readonly lobbyPill: LobbyPill;
+  private readonly pointsPill = new PointsPill();
   private readonly regionPill: RegionPill;
   private readonly searchPill: SearchPill;
   private readonly updateBtn: HTMLButtonElement;
@@ -454,7 +455,7 @@ export class Menu {
   /** Menu.action's 'accept' is running: the press is a controller's (data-input says so only after this frame). */
   private padAccept = false;
   /**
-   * The section tab the focus fell back to on a stage with nothing to focus (restoreFocus: GARAJE),
+   * The section tab the focus fell back to on a stage with nothing to focus (restoreFocus),
    * until anything else takes the focus: no choice of the bar's, so a switch from there (Back to
    * JUGAR) lands where the stage's own focus was, as from any other screen.
    */
@@ -486,7 +487,7 @@ export class Menu {
     this.searchPill = new SearchPill(() => this.openSearchScreen(), () => this.cancelSearch(), true);
     this.updateBtn = updatePill(() => this.openUpdateSheet());
     this.lobbyPill = new LobbyPill(() => this.open('lobby'));
-    this.pills = h('div.mn-pill-row', null, this.lobbyPill.el, this.searchPill.el, this.updateBtn, this.regionPill.el);
+    this.pills = h('div.mn-pill-row', null, this.lobbyPill.el, this.searchPill.el, this.updateBtn, this.regionPill.el, this.pointsPill.el);
     this.topBar.pills.appendChild(this.pills);
     this.stage = h('main.mn-stage');
     this.toasts = new Toasts();
@@ -854,6 +855,7 @@ export class Menu {
     top.show?.();
     this.refreshChrome();
     this.renderLobbyPill();
+    this.renderPointsPill();
     // Now, before this frame is drawn: a press of a pad or a remote mounts inside the game loop's
     // animation frame, and a fit on the next one would show a frame of an unfitted bar first.
     this.fitNow();
@@ -1018,7 +1020,7 @@ export class Menu {
   /**
    * The modal's first control (its `data-autofocus` one first); else the control focused last on
    * the screen on top (anywhere, then on its stage, by element or `data-key`); else its
-   * `data-autofocus` or first one (a first visit); else, on a stage with nothing to focus (GARAJE),
+   * `data-autofocus` or first one (a first visit); else, on a stage with nothing to focus,
    * the active section. Without a fine pointer a text field is never the first, remembered or not
    * (the system keyboard would come up).
    */
@@ -1627,6 +1629,7 @@ export class Menu {
     }
     this.renderSearch(now);
     this.renderLobbyPill();
+    this.renderPointsPill();
     this.top()?.tick?.(now);
     if (this.renderHints()) this.fitNow(); // a screen's own tabs may have come or gone (written on a change only)
     if (this.coarse && now - this.coverAt >= COVER_EVERY_MS) this.measureCover();
@@ -1685,6 +1688,18 @@ export class Menu {
     this.lobbyPillUp = show;
     this.root.classList.toggle('mn-pills-more', show || this.searching || this.reloadNeeded);
     this.fitNow();
+  }
+
+  /**
+   * The points pill: on GARAJE's and PERFIL's roots (a guest's 0 too), the balance the garage read
+   * last; an account's shop is read once when PERFIL comes first. Written on a change only.
+   */
+  private renderPointsPill(): void {
+    const id = this.top()?.id;
+    const show = this.visibleNow && (id === 'garage' || id === 'profile');
+    const g = this.host.garage.store;
+    if (show && g.signedIn && g.shop === null && !g.loading && g.error === null) void g.refresh();
+    if (this.pointsPill.set(show ? formatPoints(g.shop?.wallet.balance ?? 0) : null)) this.fitNow();
   }
 
   // ---- toasts / sheets --------------------------------------------------------------------------
