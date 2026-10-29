@@ -29,9 +29,10 @@
  *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
  *   POST /tv-start        { ip, secret }                             -> { code, expiresAt } | 503 busy
  *   POST /tv-confirm      { code, userId, username, ip }             -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
- *                                                                     | 409 tv_code_used | 429 throttled
+ *                                                                     | 409 tv_code_used | 429 throttled | 403 banned
  *   POST /tv-poll         { code, secret, refresh }                  -> { state: 'pending' } | UserRef (approved: the
- *                                                                     refresh row added) | 410 | 409 | 403 bad_secret
+ *                                                                     refresh row added) | 410 (a wrong secret too: as
+ *                                                                     an unknown code) | 409 | 403 banned
  *     The TV's sign-in with the phone (tvCodes.ts, in memory): `secret` is the SHA-256 of the
  *     device secret the Worker made, `refresh` the hash of the refresh token it issues on approval.
  *   GET  /items?userId=                                              -> ItemsAnswer | 404
@@ -300,6 +301,8 @@ export class AccountsDO extends DurableObject<Env> {
       case '/tv-confirm': {
         const code = tvCode(b.code);
         if (code === null || typeof b.userId !== 'string' || typeof b.username !== 'string' || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
+        // A suspended account grants no TV (its Bearer may still be valid): said on the phone, at once.
+        if (s.credentialsById(b.userId)?.banned === true) return error(403, 'banned', 'Cuenta suspendida');
         const r = this.tv.confirm(code, { userId: b.userId, username: b.username }, b.ip, now);
         if (typeof r === 'object') return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: r.throttled }, 429);
         if (r === 'wrong') return error(404, 'tv_code_wrong', 'Ese código no existe');
@@ -314,9 +317,10 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'pending') return json({ state: 'pending' });
         if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
         if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
-        if (r === 'bad_secret') return error(403, 'bad_secret');
         const u = s.signedIn(r.userId, b.refresh, now);
-        return u === null ? error(403, 'banned', 'Cuenta suspendida') : json(u);
+        if (u !== null) return json(u);
+        // Suspended after the confirm: the TV says so; deleted meanwhile: the approval went with it.
+        return s.credentialsById(r.userId)?.banned === true ? error(403, 'banned', 'Cuenta suspendida') : error(410, 'tv_code_expired', 'El código caducó');
       }
       case '/rename': {
         if (typeof b.userId !== 'string' || typeof b.username !== 'string' || usernameProblem(b.username) !== null) return error(400, 'bad_request');

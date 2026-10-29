@@ -341,10 +341,13 @@ src/game/
                         kept for a way back (rejoinStore.ts, sessionStorage) and rejoin() (Menu.rejoin:
                         a failed one's REINTENTAR rejoins again), the failure's outcome
                         (src/net/outcome.ts); the close code in the console and F4's state line only
-  rejoinStore.ts        the server match this tab may join again: matchId, kind, formats, the end of
-                        its regulation time; read by Inicio's hero and the lost sheet. And the Sala
-                        across a reload the game runs itself (Super low's restart: Game.restartOn
-                        saves it, lobby.ts installLobbyReturn joins it again by code and opens it)
+  rejoinStore.ts        the server match this tab may join again: matchId, kind (casual, ranked or a
+                        lobby's), formats, the end of its regulation time; read by Inicio's hero and
+                        the lost sheet. And the Sala across any reload (Game.keepLobby on pagehide
+                        and Super low's restart, lobby.ts installLobbyReturn joins it again by code
+                        and opens it when it was on the stack, never over a match): as it was for
+                        LobbyDO's grace (LOBBY_STAY_MS = LOBBY_GRACE_MS), by code up to LobbyClient's
+                        RECONNECT_WINDOW_MS (LOBBY_STAY_LATE_MS; a test pins both), then it says gone
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer
@@ -439,7 +442,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons),
                         tile.ts (the hero: one button whose parts are rebuilt per state, ✕ CANCEL
                         in its grid cell; a mode tile; the slot), plate.ts (who you are · your
-                        car), language.ts (the language sheet, Settings › Game's Idioma), seg.ts
+                        car), language.ts (the language sheet, Settings › Game's Idioma), stadium.ts
+                        (the stadium sheet, MODOS › CONTRA LA IA's Stadium row: every theme, the
+                        current one marked; a pick runs MenuHost.setTheme behind the loading screen;
+                        pure stadiumOptions / chooseStadium, tests/stadium-picker.test.mjs), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
                         (mn-picker: a 56 px row with its value and ›, opening a sheet), hold.ts
                         (hold to confirm: a pointer, Enter / Space / OK, or a pad's A through
@@ -460,6 +466,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
                         About), pills.ts (region / connection, search, update, the server points
                         on GARAJE and PERFIL)
+  channelKeys.ts        CH+ / CH− and PgUp / PgDn however a remote sends them (code, key, Tizen's
+                        XF86 keys and keyCodes): Menu.onKey and Ajustes over the pause; pure
   keyboard.ts           a phone's keyboard over a form: the visual viewport's shrink (Chrome on
                         Android resizes only that) as --kb-inset on .mn (PERFIL's stage makes that
                         room at its end, a phone's sheet rises above it) and the focused field scrolled above it in its own
@@ -509,8 +517,9 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         connection with RETRY, the running search on every section (Ajustes is one
                         of them), "UPDATE TO PLAY"), sheets (modal), mn-keypad's layer over them (OK /
                         A on a field without a fine pointer: openKeypad, its own zone, Back closes it
-                        first), the anti-bot sheet (antiBotAsk), CH+ / CH− (PageUp / PageDown,
-                        ChannelUp / ChannelDown) as LT / RT, toasts, the blocking
+                        first), the anti-bot sheet (antiBotAsk), CH+ / CH− (channelKeys.ts: PageUp /
+                        PageDown by code or key, ChannelUp / ChannelDown, Tizen's XF86 keys) as LT /
+                        RT, else a page scroll on a screen without tabs (pageScroll), toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
                         shared prefs (prefs.ts), population polling, the 4 Hz tick (1 Hz on super
                         low, DOM written only on change); MenuHost = what the Game provides (search,
@@ -532,8 +541,13 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         on the section tabs (a pointer's focus is not: its click is; LB / RB, Q / E
                         and Esc to JUGAR from the bar keep the focus on the bar); the last focus
                         per screen (FocusMemory by element or
-                        data-key; data-autofocus on a first visit only; never a text field without
-                        a fine pointer); sheets with aria-modal and the rest inert. Back:
+                        data-key; Back, ‹, a crumb or a section come back to it, while Menu.open
+                        of a screen not on top is a new visit that starts on its data-autofocus
+                        or Screen.firstFocus control; ▼ from the bar into a screen with nothing
+                        remembered lands there too; Screen.floor keeps ▼ on a long page; never a
+                        text field without a fine pointer); sheets with aria-modal and the rest
+                        inert. Menu.open's detour stacks a section's root on another root
+                        (CLASIFICACIÓN's SIGN IN: PERFIL). Back:
                         backModel.ts (Esc / B / the back button on JUGAR's root ask to leave too).
                         MenuCommand shortcuts (Q / E, LB / RB, LT / RT, X / Y, Start, pad X /
                         Delete) reach Screen.command first (MODOS takes Q / E, LB / RB and LT / RT
@@ -557,15 +571,23 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         rowStep, left vertically from unionBox), a target as tall as the rows
                         beside it (data-nav-span: Inicio's hero, left ▲ ▼ only for what lies
                         wholly that way, beyondEdge, else the next zone), a list's lines
-                        (data-nav-line: Ajustes' rows, ▲ ▼ read each target as wide as its
-                        line, lineSpan, so a narrow switch between two sliders is next), the way
+                        (data-nav-line: Ajustes' rows, CLASIFICACIÓN's rows, ▲ ▼ read each
+                        target as wide as its line, lineSpan, so a narrow switch between two
+                        sliders is next; ◀ ▶ stay on the line, past its ends a side zone or
+                        the bounce; a row that is a line, GRÁFICOS' cards, is left whole
+                        however it wraps: rowLeaveBox), a zone's floor (▼ past its last target
+                        bounces: Ajustes), a target's own way (onNavTo: the pinned row's ▲),
+                        what a scroller the focus is not in has scrolled out of sight (▲ ▼ skip
+                        it: outOfSight, so the pinned row's ▼ goes to the footer), a
+                        side claim that takes nothing (returns false: it bounces), the way
                         back (NavPath), the focus memory (FocusMemory), fields in navigation or editing
                         mode (data-editing), the edge nudge (mn-bounce-*) and heldOver (a key's
                         repeat held over from the match walks no focus and clicks nothing: the
                         pause's held QUIT); FocusNav puts them
                         on the DOM and measures each target where it sits (layoutBox: a focused
                         tile's lift or a nudge taken off, so a lifted tile has no neighbour
-                        "below" on its row)
+                        "below" on its row); tests/nav-rows.test.mjs (pure), tests/nav-focus.test.mjs
+                        (FocusNav's moves on a small fake DOM)
   device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
                         <html>), html.tg-tv (no pointer at all, or #tv), the layout class by height
                         and orientation (layoutClass: pc, short, phone, portrait, tablet, tv;
@@ -733,7 +755,8 @@ src/net/
     P2PSession.ts       the P2P match inside the frame loop: quickMatch (or joinAssigned: a
                         custom lobby's room; with experimental rules the arena and both BotTeams
                         follow RoomWelcome.physics, 'ready' carries the fingerprint the wasm reads
-                        back, and there is no server fallback: a failure goes back to the lobby)
+                        back; any lobby's room has no server fallback: a mesh that fails goes back
+                        to the lobby, STATUS.lobbyFailed, never the public queue)
                         -> room -> mesh ->
                         ready -> start -> wall-clock ticks (canAdvance: stall hint / timesync
                         skip), engine hooks (seeded BotTeams + Match on the confirmed timeline
@@ -773,10 +796,12 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         records, the experimental switch and presets, login throttle, daily prune;
                         a report or record that carries experimental rules is refused; the TV
                         sign-in codes in memory (tvCodes.ts: 6 of the lobby alphabet, 5 min, one
-                        use, the device secret's hash compared in constant time, 10 failed confirms
-                        per account and per IP in 15 min, 5 live codes per IP); the hosts' shop
-                        (never pruned): credits from the node outbox, claims and grants (the
-                        inventory), freezes, the car each account drives (signed into its session)
+                        use, the device secret's hash compared in constant time, a wrong secret
+                        answered as an unknown code, 10 failed confirms per account and 50 per IP in
+                        15 min, 5 live codes per IP and 2,000 in all, an IPv6 /64 as one IP); the
+                        hosts' shop (never pruned): credits from the node outbox, claims and grants
+                        (the inventory), freezes, the car each account drives (signed into its
+                        session)
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
@@ -787,7 +812,8 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
                         admit (password, kick list), start through the matchmaker's /custom; a
                         dropped member kept LOBBY_GRACE_MS (40 s, host role included) before the
-                        alarm removes it; host / move / ready; /internal/peek (GET
+                        alarm removes it (one in the lobby's match: once somebody is back from
+                        it; the last one out of it opens the lobby); host / move / ready; /internal/peek (GET
                         /api/lobbies/peek, a join link's sheet);
                         experimental rules (P2P only, strict) only while every member is signed
                         in: guests refused at create, admit, upgrade, settings and start

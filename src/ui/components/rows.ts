@@ -89,7 +89,8 @@ export interface Switch {
 
 /**
  * NO │ SÍ: ◀ NO, ▶ SÍ, A / Enter / a click on the switch flips it, a click on a side picks that side.
- * `sides` false: ◀ ▶ leave it alone (a switch that restarts the game takes A only, as a quality card).
+ * `sides` false: ◀ ▶ leave it alone and bounce (a switch that restarts the game takes A only, as a
+ * quality card), the focus stays on it.
  */
 export function toggleSwitch(key: string, label: string, get: () => boolean, set: (v: boolean) => void, sides = true): Switch {
   const no = h('span.mn-switch-opt', null, t('settings.off'));
@@ -119,6 +120,7 @@ export function toggleSwitch(key: string, label: string, get: () => boolean, set
     yes.classList.toggle('mn-switch-on', on);
   };
   if (sides) onNavSide(el, () => pick(false), () => pick(true));
+  else onNavSide(el, () => false, () => false);
   refresh();
   return { el, refresh };
 }

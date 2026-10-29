@@ -39,7 +39,7 @@ jobs:
     name: UI fit (information)
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

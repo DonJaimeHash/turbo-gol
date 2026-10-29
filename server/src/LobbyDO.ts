@@ -25,7 +25,10 @@
  * its host role kept, and a socket of the same player (POST /api/lobbies/join again: an existing
  * member is admitted without the password or the room check) brings it back; the alarm removes it
  * once the grace is over and only then hands the host on (to a member still connected first). An
- * explicit { t: 'leave' } or a kick removes at once. The start waits for nobody away
+ * explicit { t: 'leave' } or a kick removes at once. A member in the lobby's match keeps its place
+ * without a socket while the match lasts (a reload comes back by code); once somebody is back from
+ * it, the grace runs for that member too, and the last one in the match going (a kick, the end of
+ * the grace) opens the lobby, as the last 'back' does. The start waits for nobody away
  * ('member_away'). The host may also hand the lobby over ({ t: 'host' }) and move another member
  * ({ t: 'move' }); a member says LISTO ({ t: 'ready' }: shown to all, the start never waits for it,
  * cleared by a team change and by the start).
@@ -449,10 +452,18 @@ export class LobbyDO extends DurableObject<Env> {
       }
       case 'back': {
         me.inGame = false;
-        if (rec.status === 'in_game' && !rec.members.some((m) => m.inGame)) {
-          rec.status = 'open';
-          rec.statusAt = Date.now();
+        // Somebody is back, so the match is over (or this one left it): a member still in it with no
+        // socket (a reload that never came back to the lobby, a closed tab) gets the grace from now.
+        const now = Date.now();
+        let away = false;
+        for (const m of rec.members) {
+          if (m.inGame && m.awayAt === undefined && this.ctx.getWebSockets(m.id).every((s) => s.readyState !== WebSocket.OPEN)) {
+            m.awayAt = now;
+            away = true;
+          }
         }
+        if (away) await this.alarmBy(now + LOBBY_GRACE_MS);
+        this.reopenIfOver();
         break;
       }
       case 'leave': {
@@ -473,9 +484,12 @@ export class LobbyDO extends DurableObject<Env> {
     const me = this.memberOf(ws);
     const now = Date.now();
     rec.lastSocketAt = now;
-    // A member playing the lobby's match keeps its place (a reload during the match rejoins by code);
-    // any other is away for the grace (the alarm removes it then), unless another socket of its is open.
-    if (me && !me.inGame && me.awayAt === undefined && this.ctx.getWebSockets(me.id).every((s) => s === ws || s.readyState !== WebSocket.OPEN)) {
+    // A member playing the lobby's match keeps its place while it lasts (a reload during the match
+    // comes back by code: lobby.ts installLobbyReturn), until somebody is back from it (a member from
+    // before the start no longer in it: its 'back'); any other is away for the grace (the alarm
+    // removes it then), unless another socket of its is open.
+    const playing = me !== null && me.inGame && !rec.members.some((m) => !m.inGame && m.joinedAt < rec.statusAt);
+    if (me && !playing && me.awayAt === undefined && this.ctx.getWebSockets(me.id).every((s) => s === ws || s.readyState !== WebSocket.OPEN)) {
       me.awayAt = now;
       await this.alarmBy(now + LOBBY_GRACE_MS);
     }
@@ -537,6 +551,17 @@ export class LobbyDO extends DurableObject<Env> {
     rec.members = rec.members.filter((x) => x !== m);
     // The longest-standing member takes over, one still connected first.
     if (rec.hostId === m.id) rec.hostId = rec.members.slice().sort((a, b) => Number(a.awayAt !== undefined) - Number(b.awayAt !== undefined) || a.joinedAt - b.joinedAt)[0]?.id ?? '';
+    // The last one still in the lobby's match gone (a kick, the grace): the lobby opens.
+    this.reopenIfOver();
+  }
+
+  /** The lobby's match is over once no member plays it any more: 'open' again (INICIAR). */
+  private reopenIfOver(): void {
+    const rec = this.rec;
+    if (rec && rec.status === 'in_game' && !rec.members.some((m) => m.inGame)) {
+      rec.status = 'open';
+      rec.statusAt = Date.now();
+    }
   }
 
   private async afterChange(): Promise<void> {

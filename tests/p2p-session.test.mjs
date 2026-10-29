@@ -1899,12 +1899,36 @@ test('an experimental room has no server fallback: a mesh that never completes, 
   assert.equal(env.session.state, 'idle');
   assert.equal(env.session.error, STATUS.experimentalFailed);
   assert.equal(env.game.log.filter((l) => l[0] === 'handover').length, 0);
-  // The same room with standard rules keeps today's fallback.
-  env = experimentalSession(null);
+});
+
+test("a lobby's room with standard rules never falls back to the public queue: a mesh that fails (or everybody else gone) goes back to the lobby; a quick match's still hands over", async () => {
+  let env = experimentalSession(null);
   env.session.advance(0);
   env.t += FALLBACK_MS + 1;
   env.session.advance(0);
-  assert.deepEqual(env.game.log.at(-1), ['handover', '1v1', null, STATUS.fallback]);
+  assert.equal(env.session.state, 'idle');
+  assert.equal(env.session.error, STATUS.lobbyFailed);
+  assert.equal(env.game.log.filter((l) => l[0] === 'handover').length, 0, 'never the Casual server queue');
+  assert.deepEqual(env.failed, [STATUS.lobbyFailed], 'the Game takes the member back to its lobby');
+  assert.equal(env.client.leaves, 1, 'the room lock is released');
+  assert.ok(env.session.log.has('handover.refused'));
+  env = experimentalSession(null);
+  env.mesh.connected = true;
+  env.session.advance(0);
+  env.room.onPeerLeft(1, 'p1');
+  env.session.advance(0);
+  assert.equal(env.session.error, STATUS.lobbyFailed);
+  assert.equal(env.game.log.filter((l) => l[0] === 'handover').length, 0);
+  // The same session, then a quick match: its fallback still hands over (the lobby room's rule went with it).
+  const { session, client, game } = env;
+  session.quickMatch('1v1');
+  client.queued.at(-1).resolve({ kind: 'p2p', roomId: 'room2', ticket: 'T2', wsUrl: '/room/room2' });
+  await flush();
+  env.room.onWelcome(welcomeFor(0, SLOTS_1V1));
+  session.advance(0);
+  env.t += FALLBACK_MS + 1;
+  session.advance(0);
+  assert.deepEqual(game.log.at(-1), ['handover', '1v1', null, STATUS.fallback]);
 });
 
 test("the room's physics_mismatch fails the session with its own line; a welcome the client cannot read says reload", () => {

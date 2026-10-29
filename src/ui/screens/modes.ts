@@ -19,8 +19,8 @@
  * - SALAS (PR 12): JOIN WITH CODE, the region and the public list (custom.ts lobbyBrowser) in the tab;
  *   the action is CREATE LOBBY AND SHARE (screens/lobby.ts createAndShare), BACK TO LOBBY ABC 234
  *   while the player is in one (kept with KEEP THE LOBBY: the screen no longer comes back by itself).
- * - CONTRA LA IA: mode and difficulty as mn-seg, the Stadium row (GARAJE, where the stadiums are),
- *   PLAY.
+ * - CONTRA LA IA: mode and difficulty as mn-seg, the Stadium row (components/stadium.ts' sheet: the
+ *   theme of every match and of the menus' stage), PLAY.
  *
  * Shortcuts (Screen.command): Q / E (keyboard), LB / RB and LT / RT (pad) step the tabs, round: on
  * a stacked screen the section bar is not there (plan §1.5); the hint bar calls them "Modes"
@@ -46,6 +46,7 @@ import { glyph } from '../components/glyphs';
 import { slot } from '../components/tile';
 import { seg } from '../components/seg';
 import { picker } from '../components/picker';
+import { openStadiumPicker } from '../components/stadium';
 import { PLAYING_SHOWN } from '../shell/pills';
 import { lobbyBrowser } from './custom';
 import { createAndShare } from './lobby';
@@ -134,7 +135,7 @@ export function modesScreen(menu: Menu): Screen {
   const lobbiesPart = h('div.mn-modes-lobbies', { hidden: true }, lobbies.el);
   const modeSeg = seg<GameMode>('ai-mode', t('friendly.mode'), PLAYLISTS.map((p) => ({ value: p, label: p })), () => aiMode, (v) => (aiMode = v));
   const diffSeg = seg<Difficulty>('ai-diff', t('friendly.difficulty'), DIFFICULTIES.map((d) => ({ value: d, label: difficultyName(d) })), () => aiDifficulty, (v) => (aiDifficulty = v));
-  const stadium = picker('ai-stadium', 'stadium', t('friendly.theme'), () => menu.open('garage', false, 'stadiums'));
+  const stadium = picker('ai-stadium', 'stadium', t('friendly.theme'), () => openStadiumPicker(menu, () => stadium.set(themeName(host.theme))));
   const aiPart = h(
     'div.mn-modes-ai',
     { hidden: true },

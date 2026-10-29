@@ -83,7 +83,10 @@
 // --ui-size <pct> forces one, --no-ui-size skips the pass. Inicio may scroll there.
 // MODOS (plan PR 6) runs by tab ('modes:casual' ...): Casual and Competitive idle with the action
 // focused, then searching (the panel, as the Menu shows a search: its own search view and pills),
-// CANCEL SEARCH and "While you wait: Free play" focused.
+// CANCEL SEARCH and "While you wait: Free play" focused. CONTRA LA IA opens its Stadium sheet
+// (plan PR 16), which fails it off screen, a stadium's name cut, under 44 px for a finger, the
+// current one not marked or (but on a touch screen) not focused, and CANCEL not giving the focus
+// back to the row.
 //
 // The Salas (plan PR 12) run their samples (window.__sala, screens/lobby.ts installSalaSamples): the
 // Sala with 1 to 6 members, reconnecting, a TV's QR sheet, the code entry (mn-codecells), a join
@@ -174,6 +177,28 @@ const RANKED_SEARCH = `(() => {
   m.refreshChrome();
   m.tick();
   return true;
+})()`;
+// CONTRA LA IA's Stadium sheet (plan PR 16): its checks, in the page.
+const STADIUM_CHECK = `(() => {
+  const out = [];
+  const sh = document.querySelector('.mn-sheet');
+  if (sh === null) return ['the stadium sheet did not open'];
+  const label = document.querySelector('[data-key="ai-stadium"] .mn-picker-label')?.textContent ?? '';
+  if (sh.getAttribute('aria-label') !== label) out.push('the sheet is ' + JSON.stringify(sh.getAttribute('aria-label')) + ', not ' + JSON.stringify(label));
+  const r = sh.getBoundingClientRect();
+  if (r.left < -0.5 || r.top < -0.5 || r.right > innerWidth + 0.5 || r.bottom > innerHeight + 0.5) out.push('sheet off screen: ' + [r.left, r.top, r.right, r.bottom].map(Math.round).join(','));
+  const touch = document.documentElement.classList.contains('tg-touch');
+  const opts = [...sh.querySelectorAll('[data-key^="stadium-"]')];
+  if (opts.length < 2) out.push(opts.length + ' stadiums listed');
+  for (const b of opts) {
+    if (b.scrollWidth > b.clientWidth + 1) out.push('name cut: ' + b.dataset.key);
+    if (touch && b.getBoundingClientRect().height < 44) out.push('under 44 px for a finger: ' + b.dataset.key);
+  }
+  const current = 'stadium-' + __game.menu.host.theme;
+  const marked = opts.filter((b) => b.getAttribute('aria-current') === 'true').map((b) => b.dataset.key);
+  if (marked.join() !== current) out.push('marked ' + JSON.stringify(marked) + ', not ' + current);
+  if (!touch && document.activeElement?.dataset?.key !== current) out.push('the focus is on ' + (document.activeElement?.dataset?.key ?? document.activeElement?.className ?? null) + ', not ' + current);
+  return out;
 })()`;
 const SEARCH_DONE = `(() => { const m = __game.menu; const s = window.__uiFitSearch; m.host.searchView = s.view; m.regionPill.set = s.set; m.refreshChrome(); m.tick(); return true; })()`;
 // MODOS' searching panel (plan PR 6): a search of the tab's kind, 4 s in, on the server queue (the
@@ -558,6 +583,22 @@ try {
         }
         await page.eval(SEARCH_DONE);
         await sleep(200);
+        return;
+      }
+      if (id === 'modes' && input === own && tab === 'ai') {
+        // As it opens, then the Stadium sheet (its first focus with the next frame, as Menu.modal
+        // gives it), then CANCEL: the focus back on the row (but on a touch screen).
+        await check(input, screen, at());
+        await page.eval(`(() => { const row = document.querySelector('[data-key="ai-stadium"]'); row?.focus({ preventScroll: true }); row?.click(); return true; })()`);
+        await page.until(`document.querySelector('.mn-sheet') !== null && (document.documentElement.classList.contains('tg-touch') || document.activeElement?.dataset?.key?.startsWith('stadium-') === true)`, 3_000, 50);
+        // Its rise over (a phone's from the bottom: 24 px low until then), however slow the frames.
+        await sleep(200);
+        await page.eval(`((document.querySelector('.mn-sheet')?.getAnimations({ subtree: true }) ?? []).forEach((a) => a.finish()), true)`);
+        await check(input, screen, at('stadium'), await page.eval(STADIUM_CHECK));
+        await page.eval(`([...document.querySelectorAll('.mn-sheet .mn-sheet-actions button')].at(-1)?.click(), true)`);
+        await sleep(300);
+        const back = await page.eval(`(() => { const a = document.activeElement; return document.querySelector('.mn-sheet') === null && (document.documentElement.classList.contains('tg-touch') || a?.dataset?.key === 'ai-stadium') ? [] : ['after CANCEL: ' + (document.querySelector('.mn-sheet') !== null ? 'the sheet is still up' : 'the focus is on ' + (a?.dataset?.key ?? a?.className ?? null))]; })()`);
+        await check(input, screen, at('stadium cancel'), back);
         return;
       }
       if (screen !== 'home' || input !== own || ui !== '') {

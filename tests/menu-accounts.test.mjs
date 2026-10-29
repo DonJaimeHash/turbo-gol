@@ -152,6 +152,20 @@ test('AccountClient: sessionForQueue refreshes near expiry (one request for conc
   assert.equal(a.hintName, null);
 });
 
+test("AccountClient.sessionForQueue during a page load's restore: the account's session, not a guest's", async () => {
+  let answer = null;
+  const srv = fakeServer({ '/api/auth/refresh': () => new Promise((r) => (answer = r)) });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: memStorage(), now: () => 1_000_000 });
+  const restoring = a.restore();
+  // A Sala joined again after a reload asks while the refresh cookie is still being read.
+  const asked = a.sessionForQueue();
+  while (answer === null) await new Promise((r) => setTimeout(r, 1));
+  answer(res(200, SESSION('Tomi', 1_000_000 + 3600_000)));
+  assert.equal((await asked)?.session, 'jwt-Tomi', 'waited for the restore');
+  assert.equal((await restoring).name, 'Tomi');
+  assert.equal(srv.calls.length, 1, 'one refresh');
+});
+
 test('AccountClient.sessionForQueue(minValidMs): a match on a community node asks for a Bearer that outlasts it', async () => {
   let now = 1_000_000;
   let refreshes = 0;

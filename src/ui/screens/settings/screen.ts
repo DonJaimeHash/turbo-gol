@@ -62,5 +62,8 @@ export function settingsScreen(menu: Menu, view: SettingsView): Screen {
     keysTaken: () => view.capturing,
     // The rail beside the page: ◀ ▶ cross to it, ▲ ▼ never land on it from the page.
     zones: () => [{ name: 'set-rail', el: view.rail, side: true }],
+    // ▼ past the page's last row stays on it (not the source link); an open starts on its first control.
+    floor: true,
+    firstFocus: () => view.firstControl(),
   };
 }
