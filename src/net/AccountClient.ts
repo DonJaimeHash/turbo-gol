@@ -25,7 +25,7 @@
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
 import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvPollAnswer, TvStartAnswer } from './account';
+import type { AccountIssue, AccountSession, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { claimAnswerOf, itemsAnswerOf, shopAnswerOf } from './cosmetics';
 import type { ClaimAnswer, ItemsAnswer, ShopAnswer } from './cosmetics';
@@ -68,13 +68,16 @@ function issueError(issue: AccountIssue, code: 'bad_username' | 'bad_password'):
   return new AccountError(t(`account.issue.${issue.code}`, issue.params), 400, code);
 }
 
-/** What `#auth=...` in the URL says after an OAuth round trip (consumed once). */
-export type AuthHashResult = { kind: 'ok' | 'new' | 'linked' } | { kind: 'error'; code: string };
+/** What `#auth=...` in the URL says after an OAuth round trip (consumed once); 'reauth': PERFIL's "confirm it is you" came back. */
+export type AuthHashResult = { kind: 'ok' | 'new' | 'linked' | 'reauth' } | { kind: 'error'; code: string };
+
+/** How long after a credential proof (a sign-in, a re-authentication) the client counts it fresh: a little under the server's 10 minutes. */
+export const FRESH_MS = 9 * 60_000;
 
 export function parseAuthHash(hash: string): AuthHashResult | null {
   const m = /(?:^#|&)auth=([a-z]+)(?::([a-z_]+))?/.exec(hash);
   if (!m) return null;
-  if (m[1] === 'ok' || m[1] === 'new' || m[1] === 'linked') return { kind: m[1] };
+  if (m[1] === 'ok' || m[1] === 'new' || m[1] === 'linked' || m[1] === 'reauth') return { kind: m[1] };
   if (m[1] === 'error') return { kind: 'error', code: m[2] ?? 'unknown' };
   return null;
 }
@@ -90,6 +93,16 @@ export function oauthErrorText(code: string): string {
       return t('auth.oauthDisabled');
     case 'bad_state':
       return t('auth.oauthExpired');
+    case 'tv_session':
+      return t('error.account.tv_session');
+    case 'provider_set':
+      return t('error.account.provider_set');
+    case 'reauth_required':
+      return t('error.account.reauth_required');
+    case 'reauth_mismatch':
+      return t('error.account.reauth_mismatch');
+    case 'link_expired':
+      return t('auth.oauthLinkExpired');
     default:
       return t('auth.oauthFailed');
   }
@@ -100,6 +113,24 @@ function isSession(v: unknown): v is AccountSession {
   const o = v as Record<string, unknown>;
   return o.kind === 'account' && typeof o.playerId === 'string' && typeof o.name === 'string' && typeof o.session === 'string' && typeof o.expiresAt === 'number';
 }
+
+/** Only an AccountSession's own fields of an answer that carries more (a sign-up's codes, a TV poll's state). */
+function sessionPart(s: AccountSession): AccountSession {
+  const out: AccountSession = { kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt };
+  if (s.car !== undefined) out.car = s.car;
+  if (s.tv === true) out.tv = true;
+  if (typeof s.authAt === 'number' && s.authAt > 0) out.authAt = s.authAt;
+  return out;
+}
+
+function isDevice(v: unknown): v is DeviceSession {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.id === 'string' && (o.kind === 'web' || o.kind === 'tv') && typeof o.signedInAt === 'number' && typeof o.lastUsedAt === 'number' && typeof o.current === 'boolean';
+}
+
+/** The wait before a refresh that another tab won is asked again (its cookie is the new one by then). */
+const REFRESH_RACE_RETRY_MS = 400;
 
 export interface AccountClientOptions {
   apiBase?: string;
@@ -264,6 +295,12 @@ export class AccountClient {
       let res: ResponseLike;
       try {
         res = await this.call('/api/auth/refresh', {});
+        // 409 refresh_race: another tab of this browser rotated the shared cookie a moment ago; the
+        // browser holds the new one now, so asking again succeeds (once: nothing is revoked by it).
+        if (res.status === 409) {
+          await this.sleep(REFRESH_RACE_RETRY_MS);
+          res = await this.call('/api/auth/refresh', {});
+        }
       } catch {
         return this.account; // offline: keep what we have
       }
@@ -332,23 +369,44 @@ export class AccountClient {
     if (token !== null) body.turnstileToken = token;
     const res = await this.call('/api/auth/register', body);
     const r = await this.jsonOrFail<RegisterAnswer>(res);
-    this.adopt({ kind: 'account', playerId: r.playerId, name: r.name, session: r.session, expiresAt: r.expiresAt });
+    this.adopt(sessionPart(r));
     return r;
+  }
+
+  /**
+   * POST `path` with `body`; when the server slows a username under attack down (403
+   * turnstile_required), once more with a solved anti-bot token (NetClient.antiBotToken).
+   */
+  private async callHuman(path: string, body: Record<string, unknown>): Promise<ResponseLike> {
+    const res = await this.call(path, body);
+    if (res.status !== 403) return res;
+    // Read once, handed on as read: the caller's jsonOrFail reads it again.
+    const data: unknown = await res.json().catch(() => null);
+    const read: ResponseLike = { ok: res.ok, status: res.status, json: async () => data, text: async () => JSON.stringify(data) };
+    if ((data as { error?: unknown } | null)?.error !== 'turnstile_required') return read;
+    let token: string | null;
+    try {
+      token = await this.antiBot();
+    } catch {
+      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
+    }
+    if (token === null) return read;
+    return this.call(path, { ...body, turnstileToken: token });
   }
 
   async login(username: string, password: string): Promise<AccountSession> {
     if (username.trim().length === 0 || password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
-    const res = await this.call('/api/auth/login', { username: username.trim(), password: await clientPasswordKey(username.trim(), password) });
+    const res = await this.callHuman('/api/auth/login', { username: username.trim(), password: await clientPasswordKey(username.trim(), password) });
     const s = await this.jsonOrFail<AccountSession>(res);
-    return this.adopt(s);
+    return this.adopt(sessionPart(s));
   }
 
   async recover(username: string, code: string, newPassword: string): Promise<AccountSession & { codesLeft: number }> {
     const p = passwordIssue(newPassword, username);
     if (p !== null) throw issueError(p, 'bad_password');
-    const res = await this.call('/api/auth/recover', { username: username.trim(), code, password: await clientPasswordKey(username.trim(), newPassword) });
+    const res = await this.callHuman('/api/auth/recover', { username: username.trim(), code, password: await clientPasswordKey(username.trim(), newPassword) });
     const s = await this.jsonOrFail<AccountSession & { codesLeft: number }>(res);
-    this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt });
+    this.adopt(sessionPart(s));
     return s;
   }
 
@@ -358,18 +416,55 @@ export class AccountClient {
     } catch {
       /* the local state goes anyway */
     }
+    this.signedOutHere();
+  }
+
+  private signedOutHere(): void {
     this.account = null;
     this.me = null;
     this.setHint(null);
     this.changed();
   }
 
+  // ---- signed-in devices (PERFIL) -------------------------------------------------------------
+
+  /** The account's signed-in devices (GET /api/auth/sessions), this browser marked `current`. */
+  async sessions(): Promise<DeviceSession[]> {
+    const r = (await this.ownCall('/api/auth/sessions')) as { sessions?: unknown } | null;
+    return Array.isArray(r?.sessions) ? r.sessions.filter(isDevice) : [];
+  }
+
+  /** Sign another device out (POST /api/auth/sessions/revoke; PERFIL offers it for the others only: this one signs out with logout). */
+  async revokeSession(id: string): Promise<void> {
+    await this.ownCall('/api/auth/sessions/revoke', { id });
+  }
+
+  /** Sign out on every device, this one too (POST /api/auth/sessions/revoke-all): an OAuth-only account's way to end a stolen session. */
+  async signOutEverywhere(): Promise<void> {
+    await this.ownCall('/api/auth/sessions/revoke-all', {});
+    this.signedOutHere();
+  }
+
   /** Full-page redirect target of the "Sign in with Google / Discord" buttons (`link`: add it to the signed-in account). */
   // ---- the TV's sign-in with the phone (server/src/tvCodes.ts) -----------------------------------
 
-  /** A TV: a code to show and the device secret to poll with (POST /api/auth/tv/start, no session). */
+  /**
+   * A TV: a code to show and the device secret to poll with (POST /api/auth/tv/start, no session),
+   * after the anti-bot check (NetClient.antiBotToken: a token per code when the server wants one).
+   */
   async tvStart(): Promise<TvStartAnswer> {
-    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', {}));
+    let token: string | null;
+    try {
+      token = await this.antiBot();
+    } catch {
+      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
+    }
+    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', token !== null ? { turnstileToken: token } : {}));
+  }
+
+  /** The phone (/tv), before it confirms: where the TV showing `code` is (POST /api/auth/tv/info). */
+  async tvInfo(code: string): Promise<TvInfoAnswer> {
+    return this.jsonOrFail<TvInfoAnswer>(await this.call('/api/auth/tv/info', { code }, await this.bearer()));
   }
 
   /**
@@ -384,7 +479,7 @@ export class AccountClient {
 
   /** The approved TV's session (tvPoll), adopted as a sign-in's, with the car it carries. */
   signInWith(s: AccountSession): AccountSession {
-    return this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt, ...(s.car !== undefined ? { car: s.car } : {}) });
+    return this.adopt(sessionPart(s));
   }
 
   /** The phone (/tv): this account signs the TV showing `code` in (POST /api/auth/tv/confirm). */
@@ -392,8 +487,39 @@ export class AccountClient {
     await this.jsonOrFail<{ ok: true }>(await this.call('/api/auth/tv/confirm', { code }, await this.bearer()));
   }
 
-  oauthUrl(provider: OAuthProvider, link = false): string {
-    return `${this.apiBase}/api/auth/oauth/${provider}/start${link ? '?link=1' : ''}`;
+  /**
+   * Full-page redirect target of the provider buttons: a sign-in, `link` (PERFIL's VINCULAR, true
+   * or 'link': this browser must have proved a credential in the last minutes, see fresh) or
+   * 'reauth' (PERFIL's "confirm it is you" with a provider already on the account).
+   */
+  oauthUrl(provider: OAuthProvider, link: boolean | 'link' | 'reauth' = false): string {
+    const q = link === 'reauth' ? '?reauth=1' : link ? '?link=1' : '';
+    return `${this.apiBase}/api/auth/oauth/${provider}/start${q}`;
+  }
+
+  /**
+   * This browser proved a credential a few minutes ago (a sign-in or a re-authentication: the
+   * session's authAt), so a link, an unlink, a first password or a maintainer's work goes straight
+   * through; false for a TV (its scope never allows them) and when it is too old.
+   */
+  fresh(): boolean {
+    const a = this.account;
+    return a !== null && a.tv !== true && typeof a.authAt === 'number' && this.now() - a.authAt < FRESH_MS;
+  }
+
+  /** A password account confirms it is them (POST /api/auth/reauth): the session comes back fresh. */
+  async reauth(password: string): Promise<AccountSession> {
+    const name = this.account?.name ?? '';
+    if (password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth', { password: await clientPasswordKey(name, password) }, await this.bearer()));
+    if (!isSession(s) || s.playerId !== this.account?.playerId) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+    return this.adopt(sessionPart(s));
+  }
+
+  /** Take a provider off the account (POST /api/auth/unlink; never its last way in: 409 last_method). */
+  async unlink(provider: OAuthProvider): Promise<void> {
+    await this.ownCall('/api/auth/unlink', { provider });
+    await this.fetchMe();
   }
 
   private async bearer(): Promise<string> {

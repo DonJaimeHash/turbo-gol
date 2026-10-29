@@ -29,7 +29,10 @@
  *                                     checked against the index; 404 for a void, unlisted or expired match;
  *                                     edge-cached, immutable; 30 a minute
  *   POST     /nodes/tokens            { region, name? }, Bearer account session of a NODE_TRUSTED_OPERATORS account
- *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB
+ *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB.
+ *                                     Like every maintainer route: never a TV's session (403 tv_session), and one
+ *                                     whose device proved a credential in the last MAINTAINER_FRESH_S (a sign-in
+ *                                     or PERFIL's "confirm it's you"; else 403 reauth_required)
  *   GET      /nodes/mine              Bearer account session -> the caller's own nodes
  *   GET      /nodes/status            the public list of nodes, cached 10 s
  *   GET      /nodes/admin/nodes       the maintainers' routes, Bearer account session of a NODE_TRUSTED_OPERATORS
@@ -60,7 +63,7 @@
  * The cron (index.ts scheduled, every 5 minutes) calls nodeHealthCheck: one call to the object,
  * which probes the trusted nodes' /healthz; nothing at all without the node settings.
  */
-import { requireAccount, shopClaim, shopGet } from './accountRoutes';
+import { requireAccount, requireFresh, requirePrimary, shopClaim, shopGet } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, flag, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
@@ -104,6 +107,11 @@ const LIMIT_REPLAY_GET_PER_IP = 60;
 const LIMIT_STATUS_PER_IP = 60;
 const LIMIT_MINE_PER_ACCOUNT = 30;
 const LIMIT_ADMIN_PER_ACCOUNT = 30;
+/**
+ * A maintainer's session must come from a sign-in (or a re-authentication) this recent: a stolen
+ * 1-hour Bearer or refresh cookie alone grants no item, mints no trusted node and drains nothing.
+ */
+export const MAINTAINER_FRESH_S = 15 * 60;
 const STATUS_TTL_MS = 10_000;
 /** The public replay list (anyone, guests included): a page per request at most, the first one cached. */
 const LIMIT_REPLAY_LIST_PER_IP = 60;
@@ -210,9 +218,11 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   }
   if (method === 'POST' && path === '/nodes/tokens') {
     if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
-    const s = requireAccount({ session: await c.session() });
+    const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project creates node tokens for now');
+    const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+    if (fresh instanceof Response) return fresh;
     if (c.limited('ntok:' + s.sub, LIMIT_TOKENS_PER_ACCOUNT, DAY_MS)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, operator(s));
   }
@@ -229,9 +239,11 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   const admin = path.startsWith('/nodes/admin/') ? path.slice('/nodes/admin/'.length) : '';
   if (Object.hasOwn(ADMIN_ROUTES, admin) && ADMIN_ROUTES[admin] === method) {
     if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
-    const s = requireAccount({ session: await c.session() });
+    const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project maintains the nodes');
+    const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+    if (fresh instanceof Response) return fresh;
     if (c.limited('nadm:' + s.sub, LIMIT_ADMIN_PER_ACCOUNT)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, operator(s));
   }

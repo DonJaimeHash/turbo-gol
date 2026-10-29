@@ -195,6 +195,29 @@ export interface AccountSession {
    * while it owns it, else the default car. Absent from servers before cars: the default car.
    */
   car?: CarId;
+  /** A TV signed in with the phone: a limited scope (no credential, link, redeem or device changes there). */
+  tv?: true;
+  /** When this device last proved a credential (ms): a sign-in or a re-authentication. Absent = never (a TV). */
+  authAt?: number;
+}
+
+/** One signed-in device of the account (GET /api/auth/sessions): PERFIL's device list. */
+export interface DeviceSession {
+  /** Opaque: POST /api/auth/sessions/revoke { id }. */
+  id: string;
+  kind: 'web' | 'tv';
+  /** When the device signed in, and when it last renewed its session (ms). */
+  signedInAt: number;
+  lastUsedAt: number;
+  /** Where it signed in (ISO country code, city), when known. */
+  country: string | null;
+  city: string | null;
+  /** This browser. */
+  current: boolean;
+}
+
+export interface SessionsAnswer {
+  sessions: DeviceSession[];
 }
 
 export interface RegisterAnswer extends AccountSession {
@@ -214,6 +237,18 @@ export interface TvStartAnswer {
   expiresAt: number;
   ttlMs: number;
   pollMs: number;
+}
+
+/**
+ * POST /api/auth/tv/info: where the TV showing a code is (Cloudflare's view of its start: country
+ * code, city, network name, each null when unknown), whether the phone asking is on its network
+ * (the same address or IPv6 /64) or in its country, and when the code was made (server ms).
+ */
+export interface TvInfoAnswer {
+  where: { country: string | null; city: string | null; asn: number | null; org: string | null } | null;
+  sameNetwork: boolean;
+  sameCountry: boolean;
+  createdAt: number;
 }
 
 /** POST /api/auth/tv/poll: still waiting for the phone, or the session (and the refresh cookie) as a sign-in gives. */
@@ -241,6 +276,8 @@ export interface MeInfo {
   providers: Array<'password' | OAuthProvider>;
   /** False for an OAuth account that never set a password (it cannot use the password form). */
   hasPassword: boolean;
+  /** When each linked provider was linked (ms); absent for a link from before it was kept. Absent from older servers. */
+  linkedAt?: Partial<Record<OAuthProvider, number>>;
   /** The username may be changed again from this time (ms), 0 = now. */
   renameAt: number;
   ratings: PlaylistRating[];

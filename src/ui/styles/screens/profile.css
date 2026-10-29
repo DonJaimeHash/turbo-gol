@@ -169,6 +169,22 @@
   border-radius: var(--r-tile);
 }
 
+/* CUENTA Y SEGURIDAD's linked providers and the DISPOSITIVOS sheet (Security 3): one row each, its button under its lines. */
+.mn-prof-device {
+  display: grid;
+  justify-items: start;
+  gap: 0.375rem;
+  padding-block: 0.625rem;
+}
+
+.mn-prof-device + .mn-prof-device {
+  border-top: 1px solid var(--edge);
+}
+
+.mn-prof-device p {
+  margin: 0;
+}
+
 .mn-prof-node-head {
   display: flex;
   align-items: center;

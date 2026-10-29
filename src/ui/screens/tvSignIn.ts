@@ -13,21 +13,24 @@
  * back to / at once (a reload is the game). Signed out: "Sign in on this phone first" with INICIAR
  * SESIÓN (PERFIL): only then is the code kept in sessionStorage (5 minutes), so the sign-in (or
  * Google's round trip) comes back to it; CANCELAR or Back there forgets it. Signed in: the code
- * cells when the link had no code, then "Sign in on the TV as {name}?" with the code big, CONFIRMAR
- * / CANCELAR: nothing is granted before CONFIRMAR. A refusal says why in words (wrong, expired,
- * used, too many tries, a suspended account) with OTRO CÓDIGO when another code can help.
+ * cells, always empty: the code the TV in front of you shows is typed, never taken from the link
+ * (Security 3: a link, or a QR, can come from anyone, and one tap on it would sign their TV in).
+ * Then "Sign in on the TV as {name}?" with the code big, where that TV is (country, city and
+ * network at its start: POST /api/auth/tv/info), a warning when it is in another country, and
+ * CONFIRMAR / CANCELAR: nothing is granted before CONFIRMAR. A refusal says why in words (wrong,
+ * expired, used, too many tries, a suspended account) with OTRO CÓDIGO when another code can help.
  * In development (or a VITE_UI_FIT=1 build) window.__tvSignIn shows each sheet with sample data
  * (screens/tvSignInSamples.ts, scripts/ui-fit.mjs).
  */
 import { h } from '../dom';
 import { AccountError } from '../../net/AccountClient';
-import type { TvStartAnswer } from '../../net/account';
+import type { TvInfoAnswer, TvStartAnswer } from '../../net/account';
 import type { Menu } from '../Menu';
 import type { SheetSpec } from '../components/sheet';
 import { qrSvg } from '../components/qr';
 import { codeCells } from '../components/codecells';
 import { CODE_LENGTH, spacedCode } from './lobbyModel';
-import { isTvPath, pendingCode, timeLeft, tvDeadline, tvHashCode, tvLink, tvShortLink, withoutTvCode } from './tvSignInModel';
+import { isTvPath, pendingCode, timeLeft, tvDeadline, tvHashCode, tvLink, tvPlace, tvShortLink, withoutTvCode } from './tvSignInModel';
 import { errText } from './profile';
 import { STORAGE_PREFIX } from '../../brand';
 import { t } from '../../i18n';
@@ -219,11 +222,23 @@ export function codeSheet(menu: Menu, prefill: string, next: (code: string) => v
   });
 }
 
-/** "Sign in on the TV as {name}?": CONFIRMAR grants it (`confirm`: the request, its refusal thrown). */
-export function askSheet(menu: Menu, name: string, code: string, confirm: () => Promise<void>, refused: (e: unknown) => void): void {
+/**
+ * "Sign in on the TV as {name}?" with where that TV is (`info`: POST /api/auth/tv/info) and a
+ * warning when it is in another country than the phone: CONFIRMAR grants it (`confirm`: the
+ * request, its refusal thrown).
+ */
+export function askSheet(menu: Menu, name: string, code: string, info: TvInfoAnswer | null, confirm: () => Promise<void>, refused: (e: unknown) => void): void {
+  const place = info === null ? null : tvPlace(info.where);
+  const where = place !== null ? t('tvlink.where', { place }) : t('tvlink.whereUnknown');
+  const near = info?.sameNetwork === true ? t('tvlink.sameNetwork') : info !== null && info.where?.country != null && !info.sameCountry ? t('tvlink.otherCountry') : null;
   menu.modal({
     title: t('tvlink.ask', { name }),
-    body: [h('b.mn-sala-qr-code.mn-tvlink-code', null, spacedCode(code)), h('p.mn-note', null, t('tvlink.askNote'))],
+    body: [
+      h('b.mn-sala-qr-code.mn-tvlink-code', null, spacedCode(code)),
+      h('p', null, where),
+      near !== null ? h(info?.sameNetwork === true ? 'p.mn-note' : 'p.mn-ban', null, near) : null,
+      h('p.mn-note', null, t('tvlink.askNote')),
+    ],
     actions: [
       {
         label: t('tvlink.confirm'),
@@ -280,16 +295,16 @@ export function installTvLink(menu: Menu): void {
     }
     // Signed in: nothing waits for a round trip any more (a reload does not bring the sheet back).
     forget();
-    const ask = (c: string): void =>
-      askSheet(
-        menu,
-        acc.account?.name ?? '',
-        c,
-        () => acc.tvConfirm(c),
-        (e) => refusedSheet(menu, e, () => codeSheet(menu, '', ask)),
+    const again = (e: unknown): void => refusedSheet(menu, e, () => codeSheet(menu, '', ask));
+    const ask = (c: string): void => {
+      void acc.tvInfo(c).then(
+        (info) => askSheet(menu, acc.account?.name ?? '', c, info, () => acc.tvConfirm(c), again),
+        again,
       );
-    if (code.length < CODE_LENGTH) codeSheet(menu, code, ask);
-    else ask(code);
+    };
+    // The code is typed, never the link's: whoever sent the link (or the QR) picked its code, and
+    // only the TV in front of the player shows the right one (the link's code only brought them here).
+    codeSheet(menu, '', ask);
   };
   // Signed in on PERFIL while the code waited: back to it.
   acc.subscribe(() => {
