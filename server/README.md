@@ -15,7 +15,7 @@ server/
                         .wasm rule, assets (../dist = the Vite build, served from the Worker's origin; only /api/*, /ws/*,
                         /room/*, /lobby/* and /nodes/* run the Worker)
   .dev.vars             local secrets (JWT_SECRET) for wrangler dev
-  src/index.ts          HTTP router + WebSocket gates (/ws and /room: ticket verified at the edge), /api/ice, /api/config,
+  src/index.ts          HTTP router + WebSocket gates (/ws and /room: ticket verified at the edge), /api/config,
                         /api/where, asset fallback
   src/auth.ts           HS256 JWT on WebCrypto: sessions (24 h), tickets (90 s, jti; role 'player' | 'peer'), internal header
   src/env.ts            Env bindings / vars / secrets, JSON helpers, iceServersFor (STUN + optional Cloudflare TURN credentials)
@@ -86,7 +86,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `VITE_ORIGINS` | var, optional | comma-separated allowed browser origins for CORS and WebSocket `Origin`; empty = any (`*`). Under `wrangler dev` (the Worker reached on a loopback host) a loopback page origin such as the Vite dev server on any port is always accepted, so the committed production list does not block local play |
 | `MATCH_LENGTH_SECONDS` | var | regulation length (300) |
 | `REGION_OVERRIDE` | var | force a matchmaking region (empty = `request.cf.continent`, `dev` locally) |
-| `TURN_KEY_ID`, `TURN_KEY_TOKEN` | secrets, optional (both or none) | a Cloudflare Realtime TURN key: `GET /api/ice` and the room welcome then append 10-minute TURN credentials minted per request (`POST .../turn/keys/{id}/credentials/generate-ice-servers`, `{ ttl: 600 }`); unset = STUN only (`stun.cloudflare.com:3478`) |
+| `TURN_KEY_ID`, `TURN_KEY_TOKEN` | secrets, optional (both or none) | a Cloudflare Realtime TURN key: the room welcome then appends 10-minute TURN credentials minted per request (`POST .../turn/keys/{id}/credentials/generate-ice-servers`, `{ ttl: 600 }`); unset = STUN only (`stun.cloudflare.com:3478`) |
 | `FLAGS` | KV | `matchmaking_off`, `do_disabled` (`1`/`true`/`on`) -> 503 (with the nodes on for a player, `do_disabled` refuses only its P2P queue: server and ranked matches wait for a node, where one can host: see "Community nodes"); `nodes_on`: absent or `0` off, `1` everyone, or a comma-separated list of account ids (a canary) whose matches may go to a community node; `vm_disabled` (`1`/`true`/`on`) turns the nodes off whatever `nodes_on` says (see "Community nodes") |
 | `NODES`, `NODE_REPLAYS`, `NODE_RELEASES` | Durable Object, R2, R2 | community nodes: the NodeRegistryDO, the replays the nodes upload, the signed releases and `channel.json` (see "Community nodes") |
 | `NODE_CONTROL_PRIVATE_KEY` | secret, optional | the Ed25519 key (PKCS#8, `npm run keys` in `nodes/`) that signs the players' node tickets; without it no match goes to a node |
@@ -104,7 +104,6 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `POST /api/queue` | `{ mode: '1v1'|'2v2'|'3v3', kind?: 'p2p'|'server' }` (default `p2p`), `Authorization: Bearer <session>` | long-poll up to 25 s: `QueueResultP2p { status: 'matched', kind: 'p2p', roomId, ticket, wsUrl: ws(s)://host/room/<roomId> }`, the phase 1 `{ status: 'matched', matchId, ticket, wsUrl: .../ws/<matchId> }` (kind `server`, or the p2p fallback of a lone human; with the nodes on, `node: true` and the community node's own `wss://` address and ticket) or `{ status: 'waiting', waiting }` (call again); `409 { error: 'active_match', matchId, kind }` while a match / room of yours is alive (a room cannot be rejoined: its lock is freed when your room socket closes; a node match answers kind `server` with `node: true`) |
 | `POST /api/rejoin` | `{ matchId }`, Bearer | a fresh ticket for a server or node match that still has you in its roster (reconnection; p2p rooms have no rejoin: 410 `p2p_room`; a match you quit with `/api/leave { matchId }`: 410 `left`, or 404 when you were its last human: your quit ended it). A node match answers its node's ticket and `wss://` address with `node: true`, and 503 while the node is out of reach (your lock stays: try again); an id that names no match: 404, and its lock is freed |
 | `POST /api/leave` | `{ matchId?, connected? }`, Bearer | `{ ok, left, released }`: drops you from the queue if you are still waiting (the menu's Esc / BACK calls it, so the bot fill does not open a room nobody joins) and frees your P2P room lock. With the `matchId` of your server match (an explicit quit: the client's menu) that lock is freed too and the MatchDO closes your socket (1000 `left`) and hands your car to its bots for good; without a `matchId` a server match is not affected (queueing for a server match again answers `409 active_match` and the client rejoins it). A node match is quit the same way, but its node is told first: when it does not take the leave (out of reach, no answer in 8 s) the lock stays and `released` is false (like every lock, it holds only in its region; a Competitive match is also locked across regions). A leave while your match is being formed still counts: you are not put back in the queue, and a node match or P2P room formed meanwhile is left (a node one with `connected: false`). `connected: false` (you never got into the match) only goes to a node |
-| `GET /api/ice` | Bearer | `{ iceServers }` for `RTCPeerConnection`: `[{ urls: ['stun:stun.cloudflare.com:3478'] }]` plus the TURN entry when the TURN secrets are set (minted per call, 30 per player per minute) |
 | `GET /ws/:matchId` | `Sec-WebSocket-Protocol: tg1, ticket.<jwt>` (role `player`) | 101 with `Sec-WebSocket-Protocol: tg1`; 400/401/403 before any Durable Object is touched |
 | `GET /room/:roomId` | same, with a role `peer` ticket whose `mid` is the room id | 101 to the RoomDO: first message `RoomWelcome` (JSON; see `src/net/p2p/protocol.ts`) |
 | `GET /api/health` | | `{ ok, version, protocol }` |
@@ -377,15 +376,15 @@ goes to a node. No cron flips any of them on cost: the spend-control cron of
 * A **RoomDO** costs almost nothing: it hibernates between messages (no timers, one alarm for the
   cleanup / TTL) and the game traffic never touches it; during a match it only sees pings, hash
   reports (4/s per peer) and the occasional `unreachable`. TURN relay bandwidth is the budget item
-  to watch (1,000 GB/month included); `/api/ice` mints credentials per request, 30 per player per
-  minute.
+  to watch (1,000 GB/month included); the room welcome mints credentials for each seated peer
+  (the standalone `GET /api/ice` route is gone: no client called it, and it handed TURN to any guest).
 
 ## Phases
 
 Phase 1: DO authority over WebSocket, guest accounts, full-state snapshots, bots, measurements
 (RTT / jitter from Argentina, `setInterval` jitter inside the DO, hash determinism in the smoke test).
-Phase 2 (this, server side): the p2p queue kind, signaling rooms, `/api/ice` with optional
-Cloudflare TURN; the client side (rollback engine, WebRTC mesh, room client, P2P session) lives in
+Phase 2 (this, server side): the p2p queue kind, signaling rooms, ICE servers with optional
+Cloudflare TURN in the room welcome; the client side (rollback engine, WebRTC mesh, room client, P2P session) lives in
 `src/net/p2p/`. Later: VPS authority + replay verification for ranked (phase 3), WebRTC transport
 for server matches, snapshot quantisation / deltas, D1 for MMR / bans, OAuth, spend-control cron
 flipping the KV flags, handing a dropped player's car to the team AI in server matches.

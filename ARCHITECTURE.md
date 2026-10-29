@@ -767,7 +767,7 @@ src/net/
                         resync / abandon, drops, NetStatsView, fallback to OnlineSession
 server/                 Cloudflare Workers backend (own package, wrangler; server/README.md)
   src/index.ts          Worker: /api/guest, /api/queue { mode, kind } (long-poll), /api/rejoin,
-                        /api/leave, /api/ice (STUN + optional TURN credentials), /ws/:matchId and
+                        /api/leave, /ws/:matchId and
                         /room/:roomId (one gate: ticket verified at the edge, role 'player' /
                         'peer', claims forwarded in headers; Origin checked against VITE_ORIGINS,
                         loopback page origins accepted while the Worker runs on a loopback host);

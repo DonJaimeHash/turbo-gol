@@ -34,8 +34,6 @@
  *                       experimental rules: 403 'account_required' (LobbyDO)
  *   GET  /api/lobbies/peek?code= (no auth)            -> LobbySummary of the lobby with that code (a join
  *                       link's "Join lobby ABC234 · 2v2 · 2/4?"); 404 no_lobby, 410 closed
- *   GET  /api/ice     Bearer session                    -> { iceServers }: Cloudflare STUN always, plus 10-minute TURN
- *                       credentials minted per request when TURN_KEY_ID / TURN_KEY_TOKEN are set (env.ts)
  *   GET  /ws/:matchId   Sec-WebSocket-Protocol: tg1, ticket.<jwt>  -> 101 (ticket verified here,
  *                       claims forwarded to the MatchDO in x-* headers plus the internal header;
  *                       bad tickets never touch a DO)
@@ -63,7 +61,6 @@
  *   /api/queue   20 per playerId
  *   /api/rejoin  10 per playerId and 30 per client IP      each call mints a ticket (join banner spam)
  *   /api/leave   30 per client IP
- *   /api/ice     30 per playerId                           each call may mint TURN credentials
  *   /nodes/*     see nodeRoutes.ts (the NodeRegistryDO holds the hourly and daily ones)
  * Turnstile: outside local dev (wrangler dev on localhost / 127.0.0.1) POST /api/guest requires
  * TURNSTILE_SECRET; a deploy without it answers 503 'turnstile_unconfigured', as does one with the
@@ -81,7 +78,7 @@
  * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts).
  */
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
+import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
 import type { RankedCheck } from './accountStore';
@@ -116,7 +113,6 @@ const LIMIT_GUEST_PER_IP = 10;
 const LIMIT_REJOIN_PER_PLAYER = 10;
 const LIMIT_REJOIN_PER_IP = 30;
 const LIMIT_LEAVE_PER_IP = 30;
-const LIMIT_ICE_PER_PLAYER = 30;
 const LIMIT_LOBBY_CREATE_PER_PLAYER = 5;
 const LIMIT_LOBBY_JOIN_PER_PLAYER = 20;
 const LIMIT_LOBBY_LIST_PER_IP = 60;
@@ -589,14 +585,6 @@ async function joinLobby(request: Request, env: Env): Promise<Response> {
   return json(await lobbyTicket(request, env, session, lobbyId, code));
 }
 
-/** GET /api/ice: what to hand RTCPeerConnection (see env.ts: STUN always, TURN when configured; minted per call). */
-async function ice(request: Request, env: Env): Promise<Response> {
-  const session = await bearerSession(request, env);
-  if (!session) return error(401, 'unauthorized');
-  if (rateLimited('i:' + session.sub, LIMIT_ICE_PER_PLAYER, Date.now())) return error(429, 'rate_limited');
-  return json({ iceServers: await iceServersFor(env) }, 200, { 'cache-control': 'no-store' });
-}
-
 async function rejoin(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
@@ -812,7 +800,6 @@ export default {
       else if (request.method === 'POST' && path === '/api/queue') res = await queue(request, env);
       else if (request.method === 'POST' && path === '/api/rejoin') res = await rejoin(request, env);
       else if (request.method === 'POST' && path === '/api/leave') res = await leave(request, env);
-      else if (request.method === 'GET' && path === '/api/ice') res = await ice(request, env);
       else res = error(404, 'not_found');
     } catch (e) {
       console.error('api error', e);
