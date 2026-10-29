@@ -425,7 +425,14 @@ export function profileScreen(menu: Menu): Screen {
     t('profile.about'),
     h('p.mn-prof-about', null, t('profile.version', { game: GAME_NAME, version, protocol: PROTOCOL_VERSION })),
     h('p.mn-note.mn-prof-about', null, menu.host.info),
-    h('div.mn-prof-links', null, h('a.mn-btn.mn-prof-link', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener', 'data-nav': true, 'data-key': 'profile-licenses' }, icon('info'), h('span', null, t('menu.licenses')))),
+    h(
+      'div.mn-prof-links',
+      null,
+      // Same tab: the viewer is its own page (replay.html), with a way back. Not on a TV: that page has
+      // no remote or controller navigation yet.
+      tv() ? null : h('a.mn-btn.mn-prof-link', { href: './replay.html', 'data-nav': true, 'data-key': 'profile-replays' }, icon('play'), h('span', null, t('profile.replays'))),
+      h('a.mn-btn.mn-prof-link', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener', 'data-nav': true, 'data-key': 'profile-licenses' }, icon('info'), h('span', null, t('menu.licenses'))),
+    ),
   );
 
   const renameDialog = (): void => {
