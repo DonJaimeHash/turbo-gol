@@ -89,3 +89,46 @@ test('auth-1: an approved TV session keeps its tv flag (PERFIL then shows only i
   assert.equal('state' in acc.account, false, 'only the session is adopted');
   assert.doesNotMatch(AC.oauthErrorText('tv_session'), /^error\.|Couldn't sign in/);
 });
+
+// ---- auth-1 / client-1 / tv-1: the phone types the code and sees where the TV is; the TV solves the check ----
+
+test('auth-1: the TV\'s start sends the anti-bot token (one per code), a failed check says so', async () => {
+  let n = 0;
+  const { acc, calls } = client(
+    { '/api/auth/tv/start': () => res(200, { code: 'ABC234', secret: 's'.repeat(43), expiresAt: Date.now() + 240_000, ttlMs: 240_000, pollMs: 3000 }) },
+    { antiBot: async () => 'tok-' + ++n },
+  );
+  await acc.tvStart();
+  await acc.tvStart();
+  assert.deepEqual(calls.map((c) => c.body), [{ turnstileToken: 'tok-1' }, { turnstileToken: 'tok-2' }]);
+  const { acc: broken } = client({}, { antiBot: async () => Promise.reject(new Error('widget')) });
+  await assert.rejects(broken.tvStart(), (e) => e.code === 'turnstile_failed');
+});
+
+test('auth-1: the phone asks where the TV is with its Bearer (POST /api/auth/tv/info), and words it', async () => {
+  const where = { country: 'AR', city: 'Córdoba', asn: 7303, org: 'Telecom Argentina' };
+  const { acc, calls } = client({
+    '/api/auth/refresh': () => res(200, SESSION()),
+    '/api/auth/tv/info': () => res(200, { where, sameNetwork: false, sameCountry: true, createdAt: 1 }),
+  });
+  await acc.restore();
+  const info = await acc.tvInfo('ABC234');
+  assert.deepEqual(calls.at(-1).body, { code: 'ABC234' });
+  assert.equal(calls.at(-1).headers.authorization, 'Bearer jwt-ana');
+  const M = await import('../src/ui/screens/tvSignInModel.ts');
+  assert.equal(M.tvPlace(info.where), 'Córdoba, AR · Telecom Argentina');
+  assert.equal(M.tvPlace({ country: 'AR', city: null, asn: null, org: null }), 'AR');
+  assert.equal(M.tvPlace({ country: 'AR', city: 'Rosario', asn: 1, org: 'Coop. Ltda.' }), 'Rosario, AR · Coop. Ltda', 'the sentence puts its own dot');
+  assert.equal(M.tvPlace({ country: null, city: null, asn: null, org: null }), null);
+  assert.equal(M.tvPlace(null), null);
+});
+
+test('auth-1 / client-1: the /tv page never confirms the link\'s code in one tap: the entry is always empty and typed, the place shown before CONFIRMAR', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/ui/screens/tvSignIn.ts', import.meta.url), 'utf8');
+  const install = src.slice(src.indexOf('export function installTvLink'));
+  assert.match(install, /codeSheet\(menu, '', ask\)/, 'the code cells start empty');
+  assert.doesNotMatch(install, /\bask\(code\)/, 'the link\'s code never goes to the CONFIRMAR sheet');
+  assert.doesNotMatch(install, /codeSheet\(menu, code\b/, 'nor into the cells');
+  assert.match(install, /acc\.tvInfo\(c\)/, 'where the TV is, asked before the sheet');
+});

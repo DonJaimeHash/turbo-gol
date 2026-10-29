@@ -25,7 +25,7 @@
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
 import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvPollAnswer, TvStartAnswer } from './account';
+import type { AccountIssue, AccountSession, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { claimAnswerOf, itemsAnswerOf, shopAnswerOf } from './cosmetics';
 import type { ClaimAnswer, ItemsAnswer, ShopAnswer } from './cosmetics';
@@ -416,9 +416,23 @@ export class AccountClient {
   /** Full-page redirect target of the "Sign in with Google / Discord" buttons (`link`: add it to the signed-in account). */
   // ---- the TV's sign-in with the phone (server/src/tvCodes.ts) -----------------------------------
 
-  /** A TV: a code to show and the device secret to poll with (POST /api/auth/tv/start, no session). */
+  /**
+   * A TV: a code to show and the device secret to poll with (POST /api/auth/tv/start, no session),
+   * after the anti-bot check (NetClient.antiBotToken: a token per code when the server wants one).
+   */
   async tvStart(): Promise<TvStartAnswer> {
-    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', {}));
+    let token: string | null;
+    try {
+      token = await this.antiBot();
+    } catch {
+      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
+    }
+    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', token !== null ? { turnstileToken: token } : {}));
+  }
+
+  /** The phone (/tv), before it confirms: where the TV showing `code` is (POST /api/auth/tv/info). */
+  async tvInfo(code: string): Promise<TvInfoAnswer> {
+    return this.jsonOrFail<TvInfoAnswer>(await this.call('/api/auth/tv/info', { code }, await this.bearer()));
   }
 
   /**

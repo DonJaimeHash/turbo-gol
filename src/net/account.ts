@@ -224,6 +224,18 @@ export interface TvStartAnswer {
   pollMs: number;
 }
 
+/**
+ * POST /api/auth/tv/info: where the TV showing a code is (Cloudflare's view of its start: country
+ * code, city, network name, each null when unknown), whether the phone asking is on its network
+ * (the same address or IPv6 /64) or in its country, and when the code was made (server ms).
+ */
+export interface TvInfoAnswer {
+  where: { country: string | null; city: string | null; asn: number | null; org: string | null } | null;
+  sameNetwork: boolean;
+  sameCountry: boolean;
+  createdAt: number;
+}
+
 /** POST /api/auth/tv/poll: still waiting for the phone, or the session (and the refresh cookie) as a sign-in gives. */
 export type TvPollAnswer = { state: 'pending' } | (AccountSession & { state: 'approved' });
 

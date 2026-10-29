@@ -39,7 +39,11 @@
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
  *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
  *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | /#auth=error:<code>
- *   POST /api/auth/tv/start   (no session)                      -> TvStartAnswer: a TV signing in with the phone
+ *   POST /api/auth/tv/start   { turnstileToken? } (no session)  -> TvStartAnswer: a TV signing in with the phone (the
+ *                             Turnstile gate as POST /api/guest; 503 busy when its network holds too many codes)
+ *   POST /api/auth/tv/info    Bearer (account) { code }         -> TvInfoAnswer: where that TV is (request.cf at its
+ *                             start), on the phone's network or in its country; the refusals of confirm (and
+ *                             counted with them). The phone shows it before CONFIRMAR, the code always typed
  *   POST /api/auth/tv/confirm Bearer (account) { code }         -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
  *                             | 409 tv_code_used | 429 throttled | 403 banned: the phone binds the code to its
  *                             account, once
@@ -80,7 +84,7 @@ import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './e
 import { base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
-import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
+import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, RefreshGrant, UserRef } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -189,6 +193,16 @@ function geoOf(request: Request): { country: string | null; city: string | null 
   const country = cf && typeof cf.country === 'string' && /^[A-Z]{2}$/.test(cf.country) ? cf.country : null;
   const city = cf && typeof cf.city === 'string' && cf.city.length > 0 ? cf.city.slice(0, 64) : null;
   return { country, city };
+}
+
+/** Where a request comes from with its network (request.cf): what the phone sees of a TV before it confirms. */
+function whereOfRequest(request: Request): { country: string | null; city: string | null; asn: number | null; org: string | null } {
+  const cf = request.cf;
+  return {
+    ...geoOf(request),
+    asn: cf && typeof cf.asn === 'number' && Number.isInteger(cf.asn) ? cf.asn : null,
+    org: cf && typeof cf.asOrganization === 'string' && cf.asOrganization.length > 0 ? cf.asOrganization.slice(0, 64) : null,
+  };
 }
 
 /** What AccountsDO stores of a new refresh token (accountStore.ts RefreshGrant): never the token. */
@@ -808,11 +822,30 @@ const LIMIT_TV_CONFIRM = 30;
 
 async function tvStart(c: RouteContext): Promise<Response> {
   if (c.limited('tvs:' + ipKey(ipOf(c.request)), LIMIT_TV_START)) return error(429, 'rate_limited');
+  // Each code costs a solved check (the TV renders it as a guest's start does): a script filling
+  // the table, or minting a code per phishing click, pays one per code.
+  const b = await readJson<{ turnstileToken?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  const blocked = await c.antiBot(b.turnstileToken);
+  if (blocked !== null) return blocked;
   const secret = base64urlEncode(randomBytes(32));
-  const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-start', { ip: ipOf(c.request), secret: await sha256Hex(secret) });
+  const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-start', { ip: ipOf(c.request), secret: await sha256Hex(secret), where: whereOfRequest(c.request) });
   if (!r.ok) return pass(r.res);
   const out: TvStartAnswer = { code: r.data.code, secret, expiresAt: r.data.expiresAt, ttlMs: Math.max(0, r.data.expiresAt - Date.now()), pollMs: TV_POLL_MS };
   return noStore(json(out));
+}
+
+/** POST /api/auth/tv/info { code }: where the TV is, for the phone's sheet before CONFIRMAR (RFC 8628 section 5.4). */
+async function tvInfo(c: RouteContext): Promise<Response> {
+  if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  if (c.limited('tvc:' + ipKey(ipOf(c.request)), LIMIT_TV_CONFIRM)) return error(429, 'rate_limited');
+  const b = await readJson<{ code?: unknown }>(c.request);
+  const code = tvCode(b?.code);
+  if (code === null) return error(400, 'bad_request');
+  const r = await accountsJson<TvInfoAnswer>(c.env, '/tv-info', { code, userId: s.sub, username: s.name, ip: ipOf(c.request), phone: whereOfRequest(c.request) });
+  return noStore(r.ok ? json(r.data) : pass(r.res));
 }
 
 async function tvConfirm(c: RouteContext): Promise<Response> {
@@ -860,6 +893,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/me/presets') return presetUpsert(c);
     if (p === '/api/me/presets/delete') return presetDelete(c);
     if (p === '/api/auth/tv/start') return tvStart(c);
+    if (p === '/api/auth/tv/info') return tvInfo(c);
     if (p === '/api/auth/tv/confirm') return tvConfirm(c);
     if (p === '/api/auth/tv/poll') return tvPoll(c);
     if (p === '/api/me/car') return carSet(c);

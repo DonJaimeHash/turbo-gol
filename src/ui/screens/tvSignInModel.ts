@@ -4,6 +4,7 @@
  * sign-in's round trip. No DOM.
  */
 import { CODE_ALPHABET, CODE_LENGTH } from './lobbyModel';
+import type { TvInfoAnswer } from '../../net/account';
 
 /** The phone's page that confirms a TV (the SPA answers it: server/wrangler.jsonc not_found_handling). */
 export const TV_PATH = '/tv';
@@ -60,6 +61,19 @@ export const PENDING_MS = 5 * 60_000;
  */
 export function tvDeadline(ttlMs: number, now: number): number {
   return now + Math.max(0, Math.min(Number.isFinite(ttlMs) ? ttlMs : PENDING_MS, PENDING_MS));
+}
+
+/**
+ * Where the TV is, as the phone's sheet says it before CONFIRMAR: "Córdoba, AR · Telecom" (city,
+ * country code, network), null when Cloudflare knew nothing of its start.
+ */
+export function tvPlace(where: TvInfoAnswer['where']): string | null {
+  if (where === null) return null;
+  const known = (s: string | null): s is string => typeof s === 'string' && s.length > 0;
+  const place = [where.city, where.country].filter(known).join(', ');
+  const parts = [place, where.org].filter(known);
+  // The sentence ends it: a network named "… S.A." loses its own last dot.
+  return parts.length > 0 ? parts.join(' · ').replace(/[.]+$/, '') : null;
 }
 
 /** The kept code ('' = the page was open without one), null when there is none or it is stale. */

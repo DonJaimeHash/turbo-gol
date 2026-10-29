@@ -62,7 +62,7 @@ export function installTvSamples(menu: Menu): void {
         return;
       case 'tvlink-ask':
         menu.open('home', true);
-        askSheet(menu, 'MaximilianoGomez', 'ABC234', () => Promise.resolve(), noop);
+        askSheet(menu, 'MaximilianoGomez', 'ABC234', { where: { country: 'AR', city: 'San Miguel de Tucumán', asn: 7303, org: 'Telecom Argentina S.A.' }, sameNetwork: false, sameCountry: false, createdAt: 0 }, () => Promise.resolve(), noop);
         return;
       case 'tvlink-refused':
         menu.open('home', true);

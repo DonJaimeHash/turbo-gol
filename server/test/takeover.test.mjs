@@ -403,3 +403,89 @@ test('auth-1: a TV\'s sign-in lasts 30 days from its start, refreshed or not; ap
   assert.equal(kinds.filter((k) => k === 'tv').length, 5, 'five TVs at most');
   assert.equal(kinds.filter((k) => k === 'web').length, 10);
 });
+
+// ---- auth-1 / client-1 / tv-1: where the TV is, Turnstile; auth-7 / cost-7 / client-3: the code table ----
+
+test('auth-1 / auth-7: POST /api/auth/tv/start asks a solved Turnstile check when the gate is on', async () => {
+  const { env } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
+  const ip = ips();
+  for (const body of [{}, { turnstileToken: 'bad-token' }]) {
+    const r = await post(env, '/api/auth/tv/start', { ip: ip(0), body });
+    assert.equal(r.status, 403, JSON.stringify(body));
+    assert.equal(r.json.error, 'turnstile_failed');
+  }
+  const ok = await post(env, '/api/auth/tv/start', { ip: ip(0), body: { turnstileToken: 'good-token' } });
+  assert.equal(ok.status, 200);
+  assert.match(ok.json.code, /^[A-Z2-9]{6}$/);
+});
+
+test('auth-7 / cost-7 / client-3: one IPv6 /48 holds 20 live codes at most (the 21st start from it: 503 busy); the table never fills for other networks', async () => {
+  const { env, obj } = makeEnv();
+  for (let i = 0; i < 20; i++) assert.equal((await post(env, '/api/auth/tv/start', { ip: `2001:db8:77:${i.toString(16)}::1` })).status, 200, `/64 number ${i}`);
+  const busy = await post(env, '/api/auth/tv/start', { ip: '2001:db8:77:ff::1' });
+  assert.equal(busy.status, 503);
+  assert.equal(busy.json.error, 'busy');
+  assert.equal((await post(env, '/api/auth/tv/start', { ip: '2001:db8:78::1' })).status, 200, 'another /48');
+  assert.equal((await post(env, '/api/auth/tv/start', { ip: '198.51.100.20' })).status, 200, 'a real TV elsewhere');
+  // The audit's run: 400 /64s of one /48, 5 starts each, straight at the object.
+  const t = obj.tv;
+  for (let i = 0; i < 400; i++) for (let j = 0; j < 5; j++) t.start(`2001:db8:99:${i.toString(16)}::${j + 1}`, 'a'.repeat(64), Date.now());
+  assert.ok(t.size < 100, `the /48 holds ${t.size} codes, not 2,000`);
+  assert.notEqual(t.start('203.0.113.50', 'a'.repeat(64), Date.now()), 'full');
+});
+
+test('auth-7: the table: 20 live codes per IPv4 address (a carrier NAT), 100 per /24, 20,000 in all; an unclaimed code lives 4 minutes, a confirmed one 30 s more for its poll', async () => {
+  const TV = await import('../src/tvCodes.ts');
+  assert.equal(TV.TV_CODES_PER_IPV4, 20);
+  assert.equal(TV.TV_CODES_PER_24, 100);
+  assert.equal(TV.TV_CODES_PER_48, 20);
+  assert.equal(TV.TV_CODES_MAX, 20_000);
+  assert.equal(TV.TV_CODE_TTL_MS, 4 * 60_000);
+  assert.equal(TV.wideKey('203.0.113.7'), '203.0.113');
+  assert.equal(TV.wideKey('2001:db8:5:6::1'), '2001:db8:5');
+  assert.equal(TV.wideKey('local'), null);
+  const t = new TV.TvCodes();
+  for (let i = 0; i < 100; i++) assert.notEqual(t.start(`203.0.113.${i % 5}`, 'a'.repeat(64), 0), 'busy', `start ${i}`);
+  assert.equal(t.start('203.0.113.99', 'a'.repeat(64), 0), 'busy', 'the /24 holds 100');
+  assert.notEqual(t.start('203.0.114.1', 'a'.repeat(64), 0), 'busy');
+  const { code } = t.start('198.51.100.1', 'b'.repeat(64), 0);
+  assert.equal(t.confirm(code, { userId: 'u', username: 'Ana' }, '198.51.100.1', TV.TV_CODE_TTL_MS - 1000), 'ok');
+  assert.equal(t.poll(code, 'b'.repeat(64), TV.TV_CODE_TTL_MS + 20_000).userId, 'u', 'confirmed at the last second, polled after: still the TV\'s');
+  const late = t.start('198.51.100.2', 'c'.repeat(64), 0).code;
+  assert.equal(t.poll(late, 'c'.repeat(64), TV.TV_CODE_TTL_MS), 'expired');
+});
+
+test('auth-1 / client-1: the phone sees where the TV is before it confirms (country, city, network at its start), and whether it is on its network or in its country', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  const st = await post(env, '/api/auth/tv/start', { ip: ip(1), cf: { country: 'NG', city: 'Lagos', asn: 64500, asOrganization: 'Some Hosting Ltd' } });
+  // The phone at home in Argentina: another country, another network.
+  const far = await post(env, '/api/auth/tv/info', { ip: ip(2), bearer: ana.bearer, body: { code: st.json.code }, cf: { country: 'AR', city: 'Córdoba' } });
+  assert.equal(far.status, 200);
+  assert.deepEqual(far.json.where, { country: 'NG', city: 'Lagos', asn: 64500, org: 'Some Hosting Ltd' });
+  assert.equal(far.json.sameNetwork, false);
+  assert.equal(far.json.sameCountry, false);
+  // On the TV's own Wi-Fi.
+  const home = await post(env, '/api/auth/tv/info', { ip: ip(1), bearer: ana.bearer, body: { code: st.json.code }, cf: { country: 'NG' } });
+  assert.deepEqual([home.json.sameNetwork, home.json.sameCountry], [true, true]);
+  // Info binds nothing: the TV still waits.
+  assert.deepEqual((await post(env, '/api/auth/tv/poll', { ip: ip(1), body: { code: st.json.code, secret: st.json.secret } })).json, { state: 'pending' });
+  // A guest, or a TV session, asks nothing.
+  const g = await AUTH.createSession(SECRET, '0123456789abcdef', 'Invitado');
+  assert.equal((await post(env, '/api/auth/tv/info', { ip: ip(2), bearer: g.token, body: { code: st.json.code } })).status, 403);
+  const tv = await tvSignIn(env, ana.bearer, ip);
+  const r = await post(env, '/api/auth/tv/info', { ip: ip(2), bearer: tv.bearer, body: { code: st.json.code } });
+  assert.equal(r.json.error, 'tv_session');
+});
+
+test('auth-1: a wrong code asked at /tv/info counts as a failed confirm (10 per account, then throttled)', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  obj.tv.wokeAt = Date.now() - 10 * 60_000; // awake for longer than a code's life: an unknown code is wrong
+  for (let i = 0; i < 10; i++) assert.equal((await post(env, '/api/auth/tv/info', { ip: ip(1), bearer: ana.bearer, body: { code: 'ZZZZZZ' } })).status, 404);
+  const st = await post(env, '/api/auth/tv/start', { ip: ip(2) });
+  const r = await post(env, '/api/auth/tv/confirm', { ip: ip(3), bearer: ana.bearer, body: { code: st.json.code } });
+  assert.equal(r.status, 429, 'enumerating codes through info spends the same budget');
+});

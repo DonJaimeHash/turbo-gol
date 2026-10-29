@@ -731,10 +731,15 @@ export default {
   // The phone's /tv page (src/ui/screens/tvSignIn.ts installTvLink); {name}: the phone's account
   'tvlink.title': 'Sign in on the TV',
   'tvlink.codeLabel': 'TV code',
-  'tvlink.enterCode': 'Enter the code the TV shows',
+  'tvlink.enterCode': 'Type the code shown on the TV in front of you',
   'tvlink.continue': 'CONTINUE',
   'tvlink.ask': 'Sign in on the TV as {name}?',
-  'tvlink.askNote': 'Confirm only if this code is on a TV in front of you right now. If someone sent you this link, cancel: that TV would play as you.',
+  'tvlink.askNote': 'Confirm only if this code is on a TV in front of you right now. If someone sent it to you or asked you to type it, cancel: that TV would play as you.',
+  // {place}: the TV's city, country code and network as Cloudflare saw its start ("Córdoba, AR · Telecom")
+  'tvlink.where': 'The TV is in {place}.',
+  'tvlink.whereUnknown': "We don't know where that TV is.",
+  'tvlink.sameNetwork': "It's on your network.",
+  'tvlink.otherCountry': "That TV is in another country than you: if it isn't yours, cancel.",
   'tvlink.confirm': 'CONFIRM',
   'tvlink.cancel': 'CANCEL',
   'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',

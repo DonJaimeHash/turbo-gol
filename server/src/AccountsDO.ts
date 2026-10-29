@@ -33,7 +33,10 @@
  *   POST /experimental/set { userId, enabled }                       -> ExperimentalAnswer | 404
  *   POST /presets/upsert  { userId, preset }                         -> ExperimentalAnswer | 400 bad_preset | 409 too_many | 404
  *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
- *   POST /tv-start        { ip, secret }                             -> { code, expiresAt } | 503 busy
+ *   POST /tv-start        { ip, secret, where? }                     -> { code, expiresAt } | 503 busy (the table, or the
+ *                                                                     caller's /48 or /24, is full)
+ *   POST /tv-info         { code, userId, username, ip, phone? }     -> TvInfo (where the TV is, the phone's network and
+ *                                                                     country beside it) | the refusals of /tv-confirm
  *   POST /tv-confirm      { code, userId, username, ip }             -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
  *                                                                     | 409 tv_code_used | 429 throttled | 403 banned
  *   POST /tv-poll         { code, secret, refresh }                  -> { state: 'pending' } | UserRef (approved: the
@@ -62,6 +65,7 @@ import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
 import { TvCodes, tvCode } from './tvCodes';
+import type { TvWhere } from './tvCodes';
 import type { HostCredit, PasswordRecord, RankedResultInput, RefreshGrant } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
@@ -120,6 +124,19 @@ export function grantOf(v: unknown): RefreshGrant | null {
   const country = typeof g.country === 'string' && /^[A-Z]{2}$/.test(g.country) ? g.country : null;
   const city = typeof g.city === 'string' && g.city.length > 0 && g.city.length <= 64 ? g.city : null;
   return { hash: g.hash, family: typeof g.family === 'string' ? g.family : null, kind: g.kind === 'tv' ? 'tv' : 'web', country, city };
+}
+
+/** A TvWhere from a request (the Worker's request.cf), each part checked; null when there is none. */
+export function whereOf(v: unknown): TvWhere | null {
+  if (!v || typeof v !== 'object') return null;
+  const w = v as Record<string, unknown>;
+  const text = (x: unknown): string | null => (typeof x === 'string' && x.length > 0 && x.length <= 64 ? x : null);
+  return {
+    country: typeof w.country === 'string' && /^[A-Z]{2}$/.test(w.country) ? w.country : null,
+    city: text(w.city),
+    asn: Number.isInteger(w.asn) && (w.asn as number) > 0 ? (w.asn as number) : null,
+    org: text(w.org),
+  };
 }
 
 function isHashList(v: unknown, max: number): v is string[] {
@@ -336,8 +353,20 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/tv-start': {
         if (!isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
-        const r = this.tv.start(b.ip, b.secret, now);
+        const r = this.tv.start(b.ip, b.secret, now, whereOf(b.where));
+        if (r === 'busy') return error(503, 'busy', 'Demasiados códigos desde tu red, inténtalo en unos minutos');
         return r === 'full' ? error(503, 'busy', 'Demasiados códigos ahora, inténtalo en un minuto') : json(r);
+      }
+      case '/tv-info': {
+        const code = tvCode(b.code);
+        if (code === null || typeof b.userId !== 'string' || typeof b.username !== 'string' || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
+        if (s.credentialsById(b.userId)?.banned === true) return error(403, 'banned', 'Cuenta suspendida');
+        const r = this.tv.info(code, { userId: b.userId, username: b.username }, b.ip, now, whereOf(b.phone));
+        if (typeof r === 'object' && 'throttled' in r) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: r.throttled }, 429);
+        if (r === 'wrong') return error(404, 'tv_code_wrong', 'Ese código no existe');
+        if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
+        if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
+        return json(r);
       }
       case '/tv-confirm': {
         const code = tvCode(b.code);
