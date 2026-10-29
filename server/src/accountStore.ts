@@ -12,6 +12,9 @@
  * Tables
  *   users            id, username (display), ukey (unique, usernameKey), password hash/salt/iterations
  *                    (null for an OAuth-only account), recovery code hashes (JSON), google / discord ids
+ *                    and when each was linked (null for a link from before it was kept). A linked id is
+ *                    never replaced: linking another one needs the unlink first (unlink refuses the
+ *                    last way in), and linking needs a device that proved a credential just before
  *   refresh          sha256(refresh token) -> user, sliding expiry (REFRESH_TTL_MS); its family (one sign-in
  *                    on one device: every token rotated from it), kind ('web' | 'tv': a TV signed in with
  *                    the phone, a limited scope), when that device signed in and last proved a credential
@@ -244,6 +247,7 @@ export class AccountStore {
     // Families (Security 3): columns added to the table of before; a row from before has none (a family of its own).
     for (const col of ['family TEXT', "kind TEXT NOT NULL DEFAULT 'web'", 'auth_at INTEGER NOT NULL DEFAULT 0', 'family_at INTEGER NOT NULL DEFAULT 0', 'prev_hash TEXT', 'country TEXT', 'city TEXT']) addColumn(s, 'refresh', col);
     s.exec('CREATE INDEX IF NOT EXISTS refresh_family ON refresh(family)');
+    for (const col of ['google_linked_at INTEGER', 'discord_linked_at INTEGER']) addColumn(s, 'users', col);
     s.exec(`CREATE TABLE IF NOT EXISTS ratings (
       user_id TEXT NOT NULL, playlist TEXT NOT NULL, season INTEGER NOT NULL,
       mu REAL NOT NULL, sigma REAL NOT NULL, games INTEGER NOT NULL DEFAULT 0,
@@ -513,16 +517,20 @@ export class AccountStore {
   /**
    * Sign in (or sign up) with an OAuth identity. `linkTo` = the signed-in account that asked to
    * link it (profile screen). A new account takes `suggested` (made unique with a numeric suffix).
+   * A link never replaces the account's own id of that provider ('provider_set': an unlink comes
+   * first) and a suspended account links nothing ('no_user').
    */
-  oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'already_linked' | 'no_user' {
+  oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'already_linked' | 'provider_set' | 'no_user' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
     return this.tx(() => {
       const owner = this.sql.exec(`SELECT id, username, banned, created_at FROM users WHERE ${col} = ?`, providerId).toArray()[0];
       if (linkTo !== null) {
         const me = this.userById(linkTo);
-        if (me === null) return 'no_user' as const;
+        if (me === null || num(me.banned) === 1) return 'no_user' as const;
         if (owner && str(owner.id) !== linkTo) return 'already_linked' as const;
-        this.sql.exec(`UPDATE users SET ${col} = ? WHERE id = ?`, providerId, linkTo);
+        const current = me[col];
+        if (current !== null && current !== undefined && str(current) !== providerId) return 'provider_set' as const;
+        if (current === null || current === undefined) this.sql.exec(`UPDATE users SET ${col} = ?, ${col === 'google_sub' ? 'google' : 'discord'}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, providerId, now, linkTo);
         this.addRefresh(linkTo, refreshHash, now);
         return { ...this.refOf(me), authAt: now, created: false };
       }
@@ -539,9 +547,55 @@ export class AccountStore {
         name = name.slice(0, 16 - suffix.length) + suffix;
       }
       const id = this.freshId();
-      this.sql.exec(`INSERT INTO users (id, username, ukey, ${col}, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?)`, id, name, usernameKey(name), providerId, now, now);
+      this.sql.exec(`INSERT INTO users (id, username, ukey, ${col}, ${provider}_linked_at, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?)`, id, name, usernameKey(name), providerId, now, now, now);
       this.addRefresh(id, refreshHash, now);
       return { userId: id, username: name, car: DEFAULT_CAR, createdAt: now, authAt: now, created: true };
+    });
+  }
+
+  /**
+   * A re-authentication with a provider (PERFIL's "confirm it is you"): the identity must already
+   * be one of `userId`'s; then a new token for this browser, its credential proof now. 'mismatch'
+   * for another account's identity or none (nothing signs in, nothing is created).
+   */
+  oauthReauth(provider: OAuthProvider, providerId: string, userId: string, refreshHash: string | RefreshGrant, now: number): UserRef | 'mismatch' | 'no_user' {
+    const col = provider === 'google' ? 'google_sub' : 'discord_id';
+    return this.tx(() => {
+      const me = this.userById(userId);
+      if (me === null || num(me.banned) === 1) return 'no_user' as const;
+      if (me[col] === null || me[col] === undefined || str(me[col]) !== providerId) return 'mismatch' as const;
+      this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, userId);
+      this.addRefresh(userId, refreshHash, now);
+      return { ...this.refOf(me), authAt: now };
+    });
+  }
+
+  /** A re-authentication with the password (the Worker checked it): this browser's token proves a credential now; null when it is not the account's or a TV's. */
+  markFresh(userId: string, refreshHash: string, now: number): UserRef | null {
+    return this.tx(() => {
+      const r = this.sql.exec("SELECT expires_at FROM refresh WHERE hash = ? AND user_id = ? AND kind = 'web'", refreshHash, userId).toArray()[0];
+      if (!r || num(r.expires_at) <= now) return null;
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return null;
+      this.sql.exec('UPDATE refresh SET auth_at = ? WHERE hash = ?', now, refreshHash);
+      return { ...this.refOf(u), authAt: now };
+    });
+  }
+
+  /**
+   * Remove a provider from the account (PERFIL's unlink): 'last_method' when it is the only way in
+   * left (no password and no other provider), 'not_linked' when the account has none of it.
+   */
+  unlink(userId: string, provider: OAuthProvider): 'ok' | 'last_method' | 'not_linked' | 'no_user' {
+    const col = provider === 'google' ? 'google_sub' : 'discord_id';
+    return this.tx(() => {
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
+      if (u[col] === null || u[col] === undefined) return 'not_linked' as const;
+      const ways = [u.pw_hash, u.google_sub, u.discord_id].filter((v) => v !== null && v !== undefined).length;
+      if (ways <= 1) return 'last_method' as const;
+      this.sql.exec(`UPDATE users SET ${col} = NULL, ${provider}_linked_at = NULL WHERE id = ?`, userId);
+      return 'ok' as const;
     });
   }
 
@@ -592,7 +646,11 @@ export class AccountStore {
     if (u.google_sub !== null && u.google_sub !== undefined) providers.push('google');
     if (u.discord_id !== null && u.discord_id !== undefined) providers.push('discord');
     const renamedAt = num(u.renamed_at);
+    const linkedAt: NonNullable<MeInfo['linkedAt']> = {};
+    if (providers.includes('google') && num(u.google_linked_at) > 0) linkedAt.google = num(u.google_linked_at);
+    if (providers.includes('discord') && num(u.discord_linked_at) > 0) linkedAt.discord = num(u.discord_linked_at);
     return {
+      linkedAt,
       playerId: userId,
       name: str(u.username),
       createdAt: num(u.created_at),

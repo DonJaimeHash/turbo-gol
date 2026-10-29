@@ -667,6 +667,21 @@ export default {
   'profile.newCodes': 'NEW RECOVERY CODES',
   // provider: GOOGLE or DISCORD (upper case)
   'profile.link': 'LINK {provider}',
+  // A provider on the account and when it was linked ({date}); without a date: linked before it was kept
+  'profile.linkedOn': '{provider} · linked on {date}',
+  'profile.linkedWith': '{provider} · linked',
+  'profile.unlink': 'UNLINK {provider}',
+  'profile.unlinkTitle': 'Unlink {provider}?',
+  'profile.unlinkNote': "You won't be able to sign in to this account with {provider} any more.",
+  'profile.unlinkConfirm': 'UNLINK',
+  'profile.unlinked': '{provider} unlinked',
+  // "Confirm it's you" before a change to how the account signs in (linking, unlinking, a first password)
+  'profile.reauthTitle': "Confirm it's you",
+  'profile.reauthNote': 'To change how you sign in, sign in again with one of your methods.',
+  'profile.reauthWith': 'SIGN IN WITH {provider}',
+  'profile.reauthConfirm': 'CONFIRM',
+  // Back in PERFIL after confirming: the change can be made now
+  'profile.reauthDone': 'Done: you can make the change now',
   'profile.signOut': 'SIGN OUT',
   'profile.signedOut': 'Signed out',
   // PERFIL's devices (Security 3): every browser or TV signed in to the account, each one's sign-out
@@ -777,6 +792,8 @@ export default {
   'auth.oauthExpired': 'The sign-in expired, try again',
   // Any other OAuth error code
   'auth.oauthFailed': "Couldn't sign in, try again",
+  // A link or a re-authentication started without a valid session in this browser
+  'auth.oauthLinkExpired': 'Your session ended: sign in again and try once more',
   // The Turnstile challenge failed before sign-up
   'auth.antiBotFailed': 'Anti-bot check failed, try again',
   // Sign-in with an empty username or password
@@ -840,6 +857,15 @@ export default {
   'error.account.busy': 'Too many codes right now, try again in a minute',
   // A TV signed in with the phone tried an account change (a credential, a link, redeeming, approving another TV)
   'error.account.tv_session': "A TV signed in with the phone can't do that: do it on your phone",
+  // Linking, unlinking or a first password needs a sign-in from the last few minutes
+  'error.account.reauth_required': "Confirm it's you: sign in again with your account",
+  // The re-authentication came back with another Google / Discord account than this one's
+  'error.account.reauth_mismatch': "That isn't the account you sign in with",
+  // Linking a provider the account already has another identity of
+  'error.account.provider_set': 'Your account already has another account of that provider: unlink it first',
+  // Unlinking the only way left to sign in
+  'error.account.last_method': "It's your only way to sign in: link another one first",
+  'error.account.not_linked': "That account isn't linked",
   // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
   'error.account.not_owned': 'That car is not yours yet',
   'error.account.bad_car': 'Unknown car',

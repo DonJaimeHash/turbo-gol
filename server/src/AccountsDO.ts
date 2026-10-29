@@ -19,7 +19,14 @@
  *   POST /password        { userId, pw, keep? }                      -> { ok } (other sessions signed out)
  *   POST /recovery        { userId, hashes }                         -> { ok }
  *   POST /recover         { username, code, pw, refresh, ip }        -> UserRef & { codesLeft } | 401 | 429
- *   POST /oauth           { provider, providerId, name, linkTo, refresh } -> UserRef & { created } | 409
+ *   POST /oauth           { provider, providerId, name, linkTo, refresh, replace? } -> UserRef & { created } | 409
+ *                                                                     already_linked (another account's) | 409 provider_set
+ *                                                                     (the account has another of it) | 403 no_user (suspended);
+ *                                                                     `replace`: the device that asked (its tokens go: the
+ *                                                                     browser takes the new one), gone meanwhile = 401 link_expired
+ *   POST /oauth-reauth    { provider, providerId, userId, refresh, replace } -> UserRef | 409 reauth_mismatch
+ *   POST /reauth          { userId, hash }                           -> UserRef (that token proves a credential now) | 401
+ *   POST /unlink          { userId, provider }                       -> { ok } | 409 last_method | 404 not_linked
  *   POST /rename          { userId, username }                       -> UserRef | 409 taken | 429 too_soon
  *   GET  /me?userId=                                                 -> MeInfo | 404
  *   POST /ranked-check    { userId, playlists }                      -> RankedCheck
@@ -346,10 +353,41 @@ export class AccountsDO extends DurableObject<Env> {
         const refresh = grantOf(b.refresh);
         if (typeof b.name !== 'string' || refresh === null) return error(400, 'bad_request');
         const linkTo = typeof b.linkTo === 'string' ? b.linkTo : null;
+        // A link comes from a device that is still signed in (PERFIL's): signed out meanwhile, nothing links.
+        const replace = typeof b.replace === 'string' && /^[0-9a-f]{32}$/.test(b.replace) ? b.replace : null;
+        if (linkTo !== null && (replace === null || !s.devices(linkTo, now, null).some((d) => d.id === replace && d.kind === 'web'))) return error(401, 'link_expired');
         const r = s.oauth(provider, b.providerId, b.name, linkTo, { ...refresh, kind: 'web' }, now);
         if (r === 'already_linked') return error(409, 'already_linked', 'Esa cuenta ya está vinculada a otro usuario');
+        if (r === 'provider_set') return error(409, 'provider_set', 'Tu cuenta ya tiene otra cuenta de ese proveedor: desvincúlala primero');
         if (r === 'no_user') return error(403, 'no_user');
+        if (linkTo !== null && replace !== null) s.revokeDevice(linkTo, replace);
         return json(r);
+      }
+      case '/oauth-reauth': {
+        const provider = b.provider as OAuthProvider;
+        const refresh = grantOf(b.refresh);
+        if (!OAUTH_PROVIDERS.includes(provider) || typeof b.providerId !== 'string' || b.providerId.length === 0 || b.providerId.length > 128) return error(400, 'bad_request');
+        if (typeof b.userId !== 'string' || refresh === null || !isHex(b.replace, 32)) return error(400, 'bad_request');
+        if (!s.devices(b.userId, now, null).some((d) => d.id === b.replace && d.kind === 'web')) return error(401, 'link_expired');
+        const r = s.oauthReauth(provider, b.providerId, b.userId, { ...refresh, kind: 'web' }, now);
+        if (r === 'mismatch') return error(409, 'reauth_mismatch', 'Esa no es la cuenta con la que entras');
+        if (r === 'no_user') return error(403, 'no_user');
+        s.revokeDevice(b.userId, b.replace);
+        return json(r);
+      }
+      case '/reauth': {
+        if (typeof b.userId !== 'string' || !isHex(b.hash, 64)) return error(400, 'bad_request');
+        const r = s.markFresh(b.userId, b.hash, now);
+        return r === null ? error(401, 'no_refresh') : json(r);
+      }
+      case '/unlink': {
+        const provider = b.provider as OAuthProvider;
+        if (typeof b.userId !== 'string' || !OAUTH_PROVIDERS.includes(provider)) return error(400, 'bad_request');
+        const r = s.unlink(b.userId, provider);
+        if (r === 'last_method') return error(409, 'last_method', 'Es tu única forma de entrar: vincula otra antes');
+        if (r === 'not_linked') return error(404, 'not_linked', 'Esa cuenta no está vinculada');
+        if (r === 'no_user') return error(404, 'no_user');
+        return json({ ok: true });
       }
       case '/tv-start': {
         if (!isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');

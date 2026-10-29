@@ -68,13 +68,16 @@ function issueError(issue: AccountIssue, code: 'bad_username' | 'bad_password'):
   return new AccountError(t(`account.issue.${issue.code}`, issue.params), 400, code);
 }
 
-/** What `#auth=...` in the URL says after an OAuth round trip (consumed once). */
-export type AuthHashResult = { kind: 'ok' | 'new' | 'linked' } | { kind: 'error'; code: string };
+/** What `#auth=...` in the URL says after an OAuth round trip (consumed once); 'reauth': PERFIL's "confirm it is you" came back. */
+export type AuthHashResult = { kind: 'ok' | 'new' | 'linked' | 'reauth' } | { kind: 'error'; code: string };
+
+/** How long after a credential proof (a sign-in, a re-authentication) the client counts it fresh: a little under the server's 10 minutes. */
+export const FRESH_MS = 9 * 60_000;
 
 export function parseAuthHash(hash: string): AuthHashResult | null {
   const m = /(?:^#|&)auth=([a-z]+)(?::([a-z_]+))?/.exec(hash);
   if (!m) return null;
-  if (m[1] === 'ok' || m[1] === 'new' || m[1] === 'linked') return { kind: m[1] };
+  if (m[1] === 'ok' || m[1] === 'new' || m[1] === 'linked' || m[1] === 'reauth') return { kind: m[1] };
   if (m[1] === 'error') return { kind: 'error', code: m[2] ?? 'unknown' };
   return null;
 }
@@ -92,6 +95,14 @@ export function oauthErrorText(code: string): string {
       return t('auth.oauthExpired');
     case 'tv_session':
       return t('error.account.tv_session');
+    case 'provider_set':
+      return t('error.account.provider_set');
+    case 'reauth_required':
+      return t('error.account.reauth_required');
+    case 'reauth_mismatch':
+      return t('error.account.reauth_mismatch');
+    case 'link_expired':
+      return t('auth.oauthLinkExpired');
     default:
       return t('auth.oauthFailed');
   }
@@ -455,8 +466,39 @@ export class AccountClient {
     await this.jsonOrFail<{ ok: true }>(await this.call('/api/auth/tv/confirm', { code }, await this.bearer()));
   }
 
-  oauthUrl(provider: OAuthProvider, link = false): string {
-    return `${this.apiBase}/api/auth/oauth/${provider}/start${link ? '?link=1' : ''}`;
+  /**
+   * Full-page redirect target of the provider buttons: a sign-in, `link` (PERFIL's VINCULAR, true
+   * or 'link': this browser must have proved a credential in the last minutes, see fresh) or
+   * 'reauth' (PERFIL's "confirm it is you" with a provider already on the account).
+   */
+  oauthUrl(provider: OAuthProvider, link: boolean | 'link' | 'reauth' = false): string {
+    const q = link === 'reauth' ? '?reauth=1' : link ? '?link=1' : '';
+    return `${this.apiBase}/api/auth/oauth/${provider}/start${q}`;
+  }
+
+  /**
+   * This browser proved a credential a few minutes ago (a sign-in or a re-authentication: the
+   * session's authAt), so a link, an unlink, a first password or a maintainer's work goes straight
+   * through; false for a TV (its scope never allows them) and when it is too old.
+   */
+  fresh(): boolean {
+    const a = this.account;
+    return a !== null && a.tv !== true && typeof a.authAt === 'number' && this.now() - a.authAt < FRESH_MS;
+  }
+
+  /** A password account confirms it is them (POST /api/auth/reauth): the session comes back fresh. */
+  async reauth(password: string): Promise<AccountSession> {
+    const name = this.account?.name ?? '';
+    if (password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth', { password: await clientPasswordKey(name, password) }, await this.bearer()));
+    if (!isSession(s) || s.playerId !== this.account?.playerId) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+    return this.adopt(sessionPart(s));
+  }
+
+  /** Take a provider off the account (POST /api/auth/unlink; never its last way in: 409 last_method). */
+  async unlink(provider: OAuthProvider): Promise<void> {
+    await this.ownCall('/api/auth/unlink', { provider });
+    await this.fetchMe();
   }
 
   private async bearer(): Promise<string> {

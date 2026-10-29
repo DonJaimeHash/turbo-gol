@@ -321,6 +321,18 @@ export function profileScreen(menu: Menu): Screen {
     const banLeft = me ? me.rankedBanUntil - Date.now() : 0;
     const providers = (menu.cfg?.oauth ?? []) as OAuthProvider[];
     const linkable = providers.filter((p) => me && !me.providers.includes(p));
+    const linked = (me?.providers ?? []).filter((p): p is OAuthProvider => p !== 'password');
+    // An unlink never takes the last way in (the server refuses it too: last_method).
+    const ways = me?.providers.length ?? 0;
+    const linkedRow = (p: OAuthProvider): HTMLElement => {
+      const at = me?.linkedAt?.[p];
+      return h(
+        'div.mn-prof-device',
+        null,
+        h('p', null, typeof at === 'number' ? t('profile.linkedOn', { provider: PROVIDER_NAMES[p], date: shortDate(at) }) : t('profile.linkedWith', { provider: PROVIDER_NAMES[p] })),
+        ways > 1 ? secondary(t('profile.unlink', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => unlinkDialog(p), { 'data-key': 'profile-unlink-' + p }) : null,
+      );
+    };
     const abandons = (m: MeInfo): string =>
       banLeft > 0 ? t('profile.abandonsBanned', { count: m.abandons24h, minutes: Math.ceil(banLeft / 60000) }) : t('profile.abandons', { count: m.abandons24h });
     const top = best(me);
@@ -351,7 +363,9 @@ export function profileScreen(menu: Menu): Screen {
       secondary(t('profile.rename'), () => renameDialog(), { 'data-key': 'profile-rename' }),
       me?.hasPassword !== false ? secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' }) : secondary(t('profile.setPassword'), () => passwordDialog(), { 'data-key': 'profile-password' }),
       secondary(t('profile.newCodes'), () => codesDialog(), { 'data-key': 'profile-codes' }),
-      ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => (window.location.href = acc.oauthUrl(p, true)), { 'data-key': 'profile-link-' + p })),
+      ...linked.map(linkedRow),
+      // A link needs a credential proved on this browser in the last minutes: confirm it is you first.
+      ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true))), { 'data-key': 'profile-link-' + p })),
       secondary(t('profile.devices'), () => devicesDialog(), { 'data-key': 'profile-devices' }),
       secondary(
         t('profile.signOut'),
@@ -512,6 +526,77 @@ export function profileScreen(menu: Menu): Screen {
     });
   };
 
+
+  /**
+   * Run `go` once this browser proved a credential in the last minutes (AccountClient.fresh): at
+   * once when it did, else after "confirm it is you": a provider already on the account (a round
+   * trip that comes back to PERFIL, then the player taps again) or the password here.
+   */
+  const fresh = (go: () => void): void => {
+    if (acc.fresh()) {
+      go();
+      return;
+    }
+    const me = acc.me;
+    const own = (me?.providers ?? []).filter((p): p is OAuthProvider => p !== 'password' && ((menu.cfg?.oauth ?? []) as string[]).includes(p));
+    const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password' });
+    const withPassword = me?.hasPassword === true;
+    menu.modal({
+      title: t('profile.reauthTitle'),
+      body: [h('p.mn-note', null, t('profile.reauthNote')), ...own.map((p) => secondary(t('profile.reauthWith', { provider: PROVIDER_NAMES[p] }), () => (window.location.href = acc.oauthUrl(p, 'reauth')), { 'data-key': 'profile-reauth-' + p })), withPassword ? pass.el : null],
+      actions: [
+        ...(withPassword
+          ? [
+              {
+                label: t('profile.reauthConfirm'),
+                primary: true,
+                onClick: async (): Promise<boolean> => {
+                  pass.error(null);
+                  try {
+                    await acc.reauth(pass.input.value);
+                    queueMicrotask(go);
+                    return true;
+                  } catch (e) {
+                    pass.error(errText(e));
+                    return false;
+                  }
+                },
+              },
+            ]
+          : []),
+        { label: t('profile.cancel'), onClick: () => true },
+      ],
+    });
+  };
+
+  /** DESVINCULAR: one provider off the account (never the last way in), after "confirm it is you". */
+  const unlinkDialog = (p: OAuthProvider): void => {
+    menu.modal({
+      title: t('profile.unlinkTitle', { provider: PROVIDER_NAMES[p] }),
+      body: h('p.mn-note', null, t('profile.unlinkNote', { provider: PROVIDER_NAMES[p] })),
+      actions: [
+        {
+          label: t('profile.unlinkConfirm'),
+          danger: true,
+          onClick: () => {
+            queueMicrotask(() =>
+              fresh(() => {
+                void acc.unlink(p).then(
+                  () => {
+                    menu.toast(t('profile.unlinked', { provider: PROVIDER_NAMES[p] }), 'ok');
+                    render();
+                  },
+                  (e: unknown) => menu.toast(errText(e), 'error'),
+                );
+              }),
+            );
+            return true;
+          },
+        },
+        { label: t('profile.cancel'), autofocus: true, onClick: () => true },
+      ],
+    });
+  };
 
   /** One device in words: a browser or a TV, where it signed in, since when and its last use. */
   const deviceRow = (d: DeviceSession): HTMLElement => {

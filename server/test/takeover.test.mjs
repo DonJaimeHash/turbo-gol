@@ -489,3 +489,138 @@ test('auth-1: a wrong code asked at /tv/info counts as a failed confirm (10 per 
   const r = await post(env, '/api/auth/tv/confirm', { ip: ip(3), bearer: ana.bearer, body: { code: st.json.code } });
   assert.equal(r.status, 429, 'enumerating codes through info spends the same budget');
 });
+
+// ---- auth-2 / authz-1: linking never overwrites, needs a fresh primary sign-in, and unlink ------
+
+const MIN = 60_000;
+/** Run fn with the AccountsDO's clock moved by ms (a sign-in "11 minutes ago"). */
+async function at(obj, ms, fn) {
+  obj.now = () => Date.now() + ms;
+  try {
+    return await fn();
+  } finally {
+    obj.now = () => Date.now();
+  }
+}
+const userRow = (obj, id) => obj.store.sql.exec('SELECT * FROM users WHERE id = ?', id).toArray()[0];
+
+test('auth-2: a link never replaces the account\'s own Google id (409 provider_set), even from a fresh session', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const v = await oauth(env, 'google', 'victim-sub', { ip: ip(0) });
+  const fresh = await refresh(env, v.rt, ip(0));
+  const victimId = fresh.json.playerId;
+  // Whoever holds this browser's cookie right after the victim's sign-in links the attacker's own Google.
+  const atk = await oauth(env, 'google', 'attacker-sub', { query: '?link=1', cookie: '__Host-tg_rt=' + fresh.rt, ip: ip(1) });
+  assert.equal(atk.done.location, '/#auth=error:provider_set');
+  assert.equal(userRow(obj, victimId).google_sub, 'victim-sub', 'unchanged');
+  const back = await oauth(env, 'google', 'victim-sub', { ip: ip(0) });
+  assert.equal((await refresh(env, back.rt, ip(0))).json.playerId, victimId, "the victim's Google still opens the victim's account");
+  const atkSignIn = await oauth(env, 'google', 'attacker-sub', { ip: ip(1) });
+  assert.equal(atkSignIn.done.location, '/#auth=new', "the attacker's Google is a new account of its own");
+});
+
+test('authz-1: a second provider needs a credential proved on this browser in the last 10 minutes; a stolen older cookie links nothing', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  // A Google-only account that signed in 11 minutes ago: its cookie (stolen or not) is not fresh.
+  const old = await at(obj, -11 * MIN, () => oauth(env, 'google', 'g-ana', { ip: ip(0) }));
+  const s0 = await refresh(env, old.rt, ip(0));
+  const id = s0.json.playerId;
+  const rt = s0.rt;
+  const tryLink = await req(env, 'GET', '/api/auth/oauth/discord/start?link=1', { ip: ip(1), cookie: '__Host-tg_rt=' + rt, origin: null });
+  assert.equal(tryLink.location, '/#auth=error:reauth_required', 'never sent to the provider');
+  assert.equal(userRow(obj, id).discord_id, null);
+  // The owner confirms it is them with the Google already on the account, then links Discord.
+  const re = await oauth(env, 'google', 'g-ana', { query: '?reauth=1', cookie: '__Host-tg_rt=' + rt, ip: ip(0) });
+  assert.equal(re.done.location, '/#auth=reauth');
+  assert.equal((await refresh(env, rt, ip(0))).status, 401, 'the old token of this browser was replaced');
+  const s = await refresh(env, re.rt, ip(0));
+  assert.ok(Math.abs(claims(s.json.session).aat - Date.now() / 1000) < 5, 'the session says the credential is fresh');
+  const link = await oauth(env, 'discord', 'd-ana', { query: '?link=1', cookie: '__Host-tg_rt=' + s.rt, ip: ip(0) });
+  assert.equal(link.done.location, '/#auth=linked');
+  assert.equal(userRow(obj, id).discord_id, 'd-ana');
+  assert.ok(userRow(obj, id).discord_linked_at > 0);
+  const me = await req(env, 'GET', '/api/me', { ip: ip(0), bearer: (await refresh(env, link.rt, ip(0))).json.session });
+  assert.deepEqual(me.json.providers, ['google', 'discord']);
+  assert.ok(me.json.linkedAt.google > 0 && me.json.linkedAt.discord > 0, 'PERFIL shows when each was linked');
+});
+
+test('authz-1: re-authenticating with an identity that is not the account\'s signs nobody in and makes nothing; a link without a valid cookie never turns into a sign-up', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const a = await oauth(env, 'google', 'g-ana', { ip: ip(0) });
+  const users = () => obj.store.sql.exec('SELECT COUNT(*) AS n FROM users').toArray()[0].n;
+  const before = users();
+  const rt = (await refresh(env, a.rt, ip(0))).rt;
+  const wrong = await oauth(env, 'google', 'g-someone-else', { query: '?reauth=1', cookie: '__Host-tg_rt=' + rt, ip: ip(0) });
+  assert.equal(wrong.done.location, '/#auth=error:reauth_mismatch');
+  assert.equal(wrong.rt, null, 'no cookie');
+  assert.equal(users(), before, 'no account made');
+  assert.equal((await refresh(env, rt, ip(0))).status, 200, 'and this browser is still signed in');
+  for (const cookie of [undefined, '__Host-tg_rt=nope.nope']) {
+    const r = await req(env, 'GET', '/api/auth/oauth/discord/start?link=1', { ip: ip(1), cookie, origin: null });
+    assert.equal(r.location, '/#auth=error:link_expired', String(cookie));
+  }
+  assert.equal(users(), before);
+});
+
+test('authz-1: a suspended account links nothing', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const a = await oauth(env, 'google', 'g-ban', { ip: ip(0) });
+  const s = await refresh(env, a.rt, ip(0));
+  const id = s.json.playerId;
+  // Suspended between its fresh sign-in and the link's callback.
+  const start = await req(env, 'GET', '/api/auth/oauth/discord/start?link=1', { ip: ip(0), cookie: '__Host-tg_rt=' + s.rt, origin: null });
+  obj.store.sql.exec('UPDATE users SET banned = 1 WHERE id = ?', id);
+  identity.discord = { id: 'd-ban', username: 'x' };
+  const nonce = new URL(start.location).searchParams.get('state');
+  const cb = await req(env, 'GET', `/api/auth/oauth/discord/callback?code=x&state=${nonce}`, { ip: ip(0), cookie: '__Host-tg_oa=' + cookieOf(start, '__Host-tg_oa'), origin: null });
+  assert.match(cb.location, /^\/#auth=error:/);
+  assert.equal(userRow(obj, id).discord_id, null);
+});
+
+test('authz-1: unlink: a fresh session only, never the last way in; then another one links', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const a = await oauth(env, 'google', 'g-uno', { ip: ip(0) });
+  let s = await refresh(env, a.rt, ip(0));
+  const id = s.json.playerId;
+  // Google only: its last way in.
+  let r = await post(env, '/api/auth/unlink', { ip: ip(0), bearer: s.json.session, body: { provider: 'google' } });
+  assert.equal(r.status, 409);
+  assert.equal(r.json.error, 'last_method');
+  const l = await oauth(env, 'discord', 'd-uno', { query: '?link=1', cookie: '__Host-tg_rt=' + s.rt, ip: ip(0) });
+  assert.equal(l.done.location, '/#auth=linked');
+  s = await refresh(env, l.rt, ip(0));
+  // A Bearer whose sign-in is 11 minutes old is refused.
+  const nowS = Math.floor(Date.now() / 1000);
+  const stale = await AUTH.signJwt(SECRET, { typ: 's', sub: id, name: 'x', iat: nowS, exp: nowS + 600, acct: 1, aat: nowS - 11 * 60 });
+  r = await post(env, '/api/auth/unlink', { ip: ip(0), bearer: stale, body: { provider: 'google' } });
+  assert.equal(r.json.error, 'reauth_required');
+  r = await post(env, '/api/auth/unlink', { ip: ip(0), bearer: s.json.session, body: { provider: 'google' } });
+  assert.equal(r.status, 200);
+  assert.equal(userRow(obj, id).google_sub, null);
+  assert.equal((await post(env, '/api/auth/unlink', { ip: ip(0), bearer: s.json.session, body: { provider: 'discord' } })).json.error, 'last_method');
+  assert.equal((await post(env, '/api/auth/unlink', { ip: ip(0), bearer: s.json.session, body: { provider: 'google' } })).status, 404, 'not linked');
+  // Now another Google may be linked.
+  const g2 = await oauth(env, 'google', 'g-dos', { query: '?link=1', cookie: '__Host-tg_rt=' + s.rt, ip: ip(0) });
+  assert.equal(g2.done.location, '/#auth=linked');
+  assert.equal(userRow(obj, id).google_sub, 'g-dos');
+});
+
+test('authz-1: a password account re-authenticates with its password (POST /api/auth/reauth): its session and cookie become fresh', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await at(obj, -11 * MIN, () => passwordAccount(env, obj, 'Ana', ip(0)));
+  const s = await refresh(env, ana.rt, ip(0));
+  assert.ok(claims(s.json.session).aat < Date.now() / 1000 - 600, 'signed in 11 minutes ago');
+  const bad = await post(env, '/api/auth/reauth', { ip: ip(0), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { password: KEY2 } });
+  assert.equal(bad.status, 401);
+  const ok = await post(env, '/api/auth/reauth', { ip: ip(0), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { password: KEY } });
+  assert.equal(ok.status, 200);
+  assert.ok(Math.abs(claims(ok.json.session).aat - Date.now() / 1000) < 5);
+  const link = await oauth(env, 'discord', 'd-ana', { query: '?link=1', cookie: '__Host-tg_rt=' + s.rt, ip: ip(0) });
+  assert.equal(link.done.location, '/#auth=linked', 'the cookie is fresh too');
+});

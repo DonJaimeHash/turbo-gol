@@ -261,6 +261,8 @@ export interface MeInfo {
   providers: Array<'password' | OAuthProvider>;
   /** False for an OAuth account that never set a password (it cannot use the password form). */
   hasPassword: boolean;
+  /** When each linked provider was linked (ms); absent for a link from before it was kept. Absent from older servers. */
+  linkedAt?: Partial<Record<OAuthProvider, number>>;
   /** The username may be changed again from this time (ms), 0 = now. */
   renameAt: number;
   ratings: PlaylistRating[];

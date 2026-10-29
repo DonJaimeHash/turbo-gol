@@ -37,8 +37,20 @@
  *                             gets 403 account_required (GET /nodes/shop and POST /nodes/shop/claim: the same)
  *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
- *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
- *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | /#auth=error:<code>
+ *   GET  /api/auth/oauth/:provider/start[?link=1 | ?reauth=1]   -> 302 to Google / Discord (state + PKCE)
+ *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | new | linked | reauth | error:<code>
+ *     link=1 (PERFIL's VINCULAR) needs this browser's refresh cookie, not a TV's, and a credential
+ *     proved on it in the last REAUTH_WINDOW_S (a sign-in, or reauth=1 just before); otherwise the
+ *     start answers /#auth=error:reauth_required (or link_expired without a valid cookie) and never
+ *     turns into a sign-up. A link never replaces the account's own id of that provider (409
+ *     provider_set: POST /api/auth/unlink first). reauth=1 signs in again with a provider already
+ *     on the account (another identity: /#auth=error:reauth_mismatch, nothing signed in or made)
+ *     and moves this browser's credential proof to now. Either way this browser's old token goes
+ *     and the callback's new one takes its place.
+ *   POST /api/auth/reauth     Bearer { password } (refresh cookie) -> AccountSession: the password re-proved, the
+ *                             cookie's credential proof now (a password account's re-authentication)
+ *   POST /api/auth/unlink     Bearer (fresh) { provider }       -> { ok } | 409 last_method (the only way in left) |
+ *                             404 not_linked | 403 reauth_required
  *   POST /api/auth/tv/start   { turnstileToken? } (no session)  -> TvStartAnswer: a TV signing in with the phone (the
  *                             Turnstile gate as POST /api/guest; 503 busy when its network holds too many codes)
  *   POST /api/auth/tv/info    Bearer (account) { code }         -> TvInfoAnswer: where that TV is (request.cf at its
@@ -92,6 +104,12 @@ import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
 import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
 
 export const ACCOUNT_SESSION_TTL_SECONDS = 60 * 60;
+/**
+ * How recent a device's credential proof must be (its sign-in, or a re-authentication) to change
+ * the account's ways in: link or unlink a provider, set a first password, new recovery codes for an
+ * account without one.
+ */
+export const REAUTH_WINDOW_S = 10 * 60;
 export const SERVER_KDF_ITERATIONS = 100_000;
 export const REFRESH_COOKIE = '__Host-tg_rt';
 const OAUTH_COOKIE = '__Host-tg_oa';
@@ -410,6 +428,18 @@ export function requireAccount(c: Pick<RouteContext, 'session'>): SessionClaims 
   if (!c.session) return error(401, 'unauthorized');
   if (c.session.acct !== 1) return error(403, 'account_required', 'Necesitas una cuenta (no de invitado)');
   return c.session;
+}
+
+/**
+ * An account's session, not a TV's, whose device proved a credential (a sign-in or a
+ * re-authentication: the aat claim) within `windowS`: otherwise 403 reauth_required, and PERFIL
+ * asks the player to confirm it is them first.
+ */
+export function requireFresh(c: Pick<RouteContext, 'session'>, windowS: number = REAUTH_WINDOW_S, nowS: number = nowSeconds()): SessionClaims | Response {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  if (typeof s.aat !== 'number' || nowS - s.aat > windowS || s.aat > nowS + 60) return error(403, 'reauth_required', 'Confirma que eres tú: vuelve a entrar con tu cuenta');
+  return s;
 }
 
 /**
@@ -740,7 +770,12 @@ interface OAuthState {
   p: OAuthProvider;
   v: string;
   n: string;
+  /** The account to link the identity to (link=1), or null. */
   link: string | null;
+  /** The account to re-authenticate (reauth=1): the identity must already be its. */
+  re?: string;
+  /** The device that asked (accountStore.ts devices id): its token is replaced by the callback's. */
+  dev?: string;
   exp: number;
 }
 
@@ -749,19 +784,26 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
   if (!cfg) return error(404, 'provider_disabled');
   if (c.limited('oauth:' + ipOf(c.request), 20)) return error(429, 'rate_limited');
   let link: string | null = null;
-  if (url.searchParams.get('link') === '1') {
+  let re: string | undefined;
+  let dev: string | undefined;
+  const mode = url.searchParams.get('link') === '1' ? 'link' : url.searchParams.get('reauth') === '1' ? 'reauth' : 'signin';
+  if (mode !== 'signin') {
+    // This browser's own signed-in device: never a TV's, and for a link one that just proved a
+    // credential. Without one the start says so, it never turns into a sign-in or a sign-up.
     const token = cookieOf(c.request, REFRESH_COOKIE);
-    if (token) {
-      const r = await accountsJson<UserRef & { kind: string }>(c.env, '/refresh-owner', { hash: await sha256Hex(token) });
-      // A TV's session never links a provider to the account (its scope is limited).
-      if (r.ok && r.data.kind === 'tv') return redirect('/#auth=error:tv_session');
-      if (r.ok) link = r.data.userId;
-    }
+    const r = token && token.length <= 128 ? await accountsJson<UserRef & { kind: string; device: string }>(c.env, '/refresh-owner', { hash: await sha256Hex(token) }) : null;
+    if (r === null || !r.ok) return redirect('/#auth=error:link_expired');
+    if (r.data.kind === 'tv') return redirect('/#auth=error:tv_session');
+    const authAt = typeof r.data.authAt === 'number' ? r.data.authAt : 0;
+    if (mode === 'link' && (authAt <= 0 || Date.now() - authAt > REAUTH_WINDOW_S * 1000)) return redirect('/#auth=error:reauth_required');
+    if (mode === 'link') link = r.data.userId;
+    else re = r.data.userId;
+    dev = r.data.device;
   }
   const verifier = base64urlEncode(randomBytes(32));
   const challenge = base64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(verifier))));
   const nonce = base64urlEncode(randomBytes(16));
-  const state: OAuthState = { typ: 'oa', p: provider, v: verifier, n: nonce, link, exp: nowSeconds() + OAUTH_TTL_S };
+  const state: OAuthState = { typ: 'oa', p: provider, v: verifier, n: nonce, link, ...(re !== undefined ? { re } : {}), ...(dev !== undefined ? { dev } : {}), exp: nowSeconds() + OAUTH_TTL_S };
   const cookie = `${OAUTH_COOKIE}=${await signJwt(c.env.JWT_SECRET, state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${OAUTH_TTL_S}`;
   const q = new URLSearchParams({
     client_id: cfg.clientId,
@@ -809,9 +851,59 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
   const ident = await oauthIdentity(cfg, provider, code, st.v, `${publicOrigin(c.env, c.request)}/api/auth/oauth/${provider}/callback`);
   if (!ident) return fail('provider_error');
   const refreshTok = newRefreshToken();
-  const r = await accountsJson<UserRef & { created: boolean }>(c.env, '/oauth', { provider, providerId: ident.id, name: ident.name, linkTo: st.link, refresh: await grantFor(refreshTok, c.request) });
-  if (!r.ok) return fail(r.res.status === 409 ? 'already_linked' : 'account_error');
+  const refresh = await grantFor(refreshTok, c.request);
+  if (typeof st.re === 'string') {
+    const r = await accountsJson<UserRef>(c.env, '/oauth-reauth', { provider, providerId: ident.id, userId: st.re, refresh, replace: st.dev });
+    if (!r.ok) return fail(await codeOf(r.res, 'account_error'));
+    return redirect('/#auth=reauth', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
+  }
+  const r = await accountsJson<UserRef & { created: boolean }>(c.env, '/oauth', { provider, providerId: ident.id, name: ident.name, linkTo: st.link, refresh, ...(st.link !== null ? { replace: st.dev } : {}) });
+  if (!r.ok) return fail(await codeOf(r.res, 'account_error'));
   return redirect(r.data.created ? '/#auth=new' : st.link ? '/#auth=linked' : '/#auth=ok', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
+}
+
+/** An AccountsDO refusal's code for the /#auth=error: hash (only the ones the client words), else `fallback`. */
+async function codeOf(res: Response, fallback: string): Promise<string> {
+  try {
+    const b = (await res.json()) as { error?: unknown };
+    return typeof b.error === 'string' && ['already_linked', 'provider_set', 'reauth_mismatch', 'link_expired'].includes(b.error) ? b.error : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * POST /api/auth/reauth { password }: a password account confirms it is them (PERFIL, before a
+ * link, an unlink or a maintainer's work): the password checked as a sign-in's (the same throttles),
+ * then this browser's token proves a credential now and the session says so (aat).
+ */
+async function reauth(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  if (c.limited('reauth:' + s.sub, 10)) return error(429, 'rate_limited');
+  const b = await readJson<{ password?: unknown }>(c.request);
+  if (!b || !isClientKey(b.password)) return error(400, 'bad_request');
+  const token = cookieOf(c.request, REFRESH_COOKIE);
+  if (!token || token.length > 128) return error(401, 'no_refresh');
+  const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
+  if (!me.ok) return pass(me.res);
+  if (!me.data.hasPassword) return error(400, 'no_password', 'Esta cuenta entra con Google o Discord');
+  const chk = await checkCredentials(c, me.data.name, b.password);
+  if (!chk.ok) return chk.res;
+  if (chk.cred.userId !== s.sub) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
+  const r = await accountsJson<UserRef>(c.env, '/reauth', { userId: s.sub, hash: await sha256Hex(token) });
+  if (!r.ok) return pass(r.res);
+  return json(await accountSession(c.env, r.data), 200, { 'cache-control': 'no-store' });
+}
+
+/** POST /api/auth/unlink { provider }: one provider off the account, never its last way in. */
+async function unlink(c: RouteContext): Promise<Response> {
+  const s = requireFresh(c);
+  if (s instanceof Response) return s;
+  if (c.limited('unlink:' + s.sub, 10)) return error(429, 'rate_limited');
+  const b = await readJson<{ provider?: unknown }>(c.request);
+  if (!b || !OAUTH_PROVIDERS.includes(b.provider as OAuthProvider)) return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/unlink', { userId: s.sub, provider: b.provider }));
 }
 
 // ---- TV sign-in with the phone ------------------------------------------------------------------
@@ -899,6 +991,8 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/me/car') return carSet(c);
     if (p === '/api/me/shop/claim') return shopClaim(c);
     if (p === '/api/auth/sessions/revoke') return sessionRevoke(c);
+    if (p === '/api/auth/reauth') return reauth(c);
+    if (p === '/api/auth/unlink') return unlink(c);
     if (p === '/api/auth/sessions/revoke-all') return sessionsRevokeAll(c);
   }
   if (m === 'GET') {

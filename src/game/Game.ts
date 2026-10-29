@@ -1185,8 +1185,9 @@ export class Game implements P2PGameHooks {
       if (auth === null) return;
       if (auth.kind === 'error') this.menu.toast(oauthErrorText(auth.code), 'error');
       else if (a !== null) {
-        this.menu.toast(auth.kind === 'new' ? t('game.welcomeNew', { name: a.name }) : auth.kind === 'linked' ? t('game.accountLinked') : t('profile.hello', { name: a.name }), 'ok');
-        if (auth.kind === 'new') this.menu.open('profile');
+        this.menu.toast(auth.kind === 'new' ? t('game.welcomeNew', { name: a.name }) : auth.kind === 'linked' ? t('game.accountLinked') : auth.kind === 'reauth' ? t('profile.reauthDone') : t('profile.hello', { name: a.name }), 'ok');
+        // A re-authentication came back: to PERFIL, where the change it was for waits.
+        if (auth.kind === 'new' || auth.kind === 'reauth') this.menu.open('profile');
       }
       void this.accounts.fetchMe().catch(() => undefined);
     });

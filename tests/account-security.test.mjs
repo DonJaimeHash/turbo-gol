@@ -132,3 +132,40 @@ test('auth-1 / client-1: the /tv page never confirms the link\'s code in one tap
   assert.doesNotMatch(install, /codeSheet\(menu, code\b/, 'nor into the cells');
   assert.match(install, /acc\.tvInfo\(c\)/, 'where the TV is, asked before the sheet');
 });
+
+// ---- auth-2 / authz-1: a link after a fresh sign-in, re-authentication, unlink -------------------
+
+test('auth-2: PERFIL links only right after a sign-in (fresh), else it asks "confirm it is you"; a TV never is fresh', async () => {
+  let now = 1_800_000_000_000;
+  const { acc } = client({ '/api/auth/refresh': () => res(200, SESSION({ authAt: now - 60_000 })) }, { now: () => now });
+  await acc.restore();
+  assert.equal(acc.fresh(), true, 'signed in a minute ago');
+  now += 9 * 60_000;
+  assert.equal(acc.fresh(), false, 'nine minutes later: confirm first');
+  acc.signInWith({ ...SESSION({ tv: true, authAt: now }) });
+  assert.equal(acc.fresh(), false, 'a TV, whatever it says');
+  assert.equal(acc.oauthUrl('discord', true), '/api/auth/oauth/discord/start?link=1');
+  assert.equal(acc.oauthUrl('google', 'reauth'), '/api/auth/oauth/google/start?reauth=1');
+  assert.equal(acc.oauthUrl('google'), '/api/auth/oauth/google/start');
+  assert.deepEqual(AC.parseAuthHash('#auth=reauth'), { kind: 'reauth' });
+  for (const code of ['provider_set', 'reauth_required', 'reauth_mismatch', 'link_expired']) assert.doesNotMatch(AC.oauthErrorText(code), /^error\.|^auth\.|Couldn't sign in/, code);
+});
+
+test('authz-1: a password re-authentication sends the client key with the Bearer and adopts the fresh session; unlink asks the server and reloads the profile', async () => {
+  const { acc, calls } = client({
+    '/api/auth/refresh': () => res(200, SESSION()),
+    '/api/auth/reauth': (body) => (body.password.length === 64 ? res(200, SESSION({ session: 'jwt-fresh', authAt: Date.now() })) : res(400, {})),
+    '/api/auth/unlink': () => res(200, { ok: true }),
+    '/api/me': () => res(200, { playerId: 'abcdef0123456789', name: 'Ana', providers: ['discord'], hasPassword: false, linkedAt: { discord: 5 } }),
+  });
+  await acc.restore();
+  await acc.reauth('una contraseña');
+  const r = calls.find((c) => c.path === '/api/auth/reauth');
+  assert.match(r.body.password, /^[0-9a-f]{64}$/, 'never the typed password');
+  assert.equal(r.headers.authorization, 'Bearer jwt-ana');
+  assert.equal(acc.account.session, 'jwt-fresh');
+  assert.equal(acc.fresh(), true);
+  await acc.unlink('google');
+  assert.deepEqual(calls.find((c) => c.path === '/api/auth/unlink').body, { provider: 'google' });
+  assert.deepEqual(acc.me.linkedAt, { discord: 5 });
+});
