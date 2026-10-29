@@ -241,10 +241,12 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // 10.8 KB; components.css' hold to confirm, 0.4 KB) minus the "coming soon" panel (0.4 KB), the
 // cars' first Garage stub never landing: 161,809 B (main 150,734 B), the cap that plus about 0.6 KB.
 // With PR 18's touch controls (touch.css: the left-handed safe area, PAUSE and CAM opaque, 0.2 KB)
-// beside it: 162,009 B, the cap that plus about 0.6 KB.
+// beside it: 162,009 B, the cap that plus about 0.6 KB. GARAJE's fixes once #55 was live (a phone
+// held sideways: the action names its car on a line of its own, about 0.2 KB): 162,252 B (main
+// 162,009 B), the cap that plus about 0.6 KB.
 // It steps down to 70 KB once PR 15 deletes menu.css. Raising it is the owner's call, recorded in
 // the PR.
-const CSS_BUDGET = 162_600;
+const CSS_BUDGET = 162_850;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

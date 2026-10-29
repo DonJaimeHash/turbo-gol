@@ -53,3 +53,22 @@ test('GARAJE: a new visit starts on the car driven; Back, a crumb or the sign-in
   assert.match(GARAGE, /el\.toggleAttribute\('data-autofocus', c\.selected\)/);
   assert.match(GARAGE, /row\.el\.toggleAttribute\('data-autofocus', id === stadium\)/);
 });
+
+const CSS = read('src/ui/styles/screens/garage.css');
+
+test('a phone held sideways: the row picked stays in view, the action names its car', () => {
+  const render = body(GARAGE, '  function render(): void {');
+  // Once per pick, after the detail took its new height; the list alone scrolls (revealDelta).
+  assert.match(render, /if \(shown && pickedRow !== undefined && pickedRow\.el !== revealed\) \{\s*revealed = pickedRow\.el;\s*reveal\(pickedRow\.el\);\s*\}/);
+  assert.ok(render.indexOf('reveal(pickedRow.el)') > render.indexOf('drawCars(v)'), 'after the detail is drawn');
+  const reveal = body(GARAGE, '  const reveal = (row: HTMLElement): void => {');
+  assert.match(reveal, /list\.scrollTop \+= d/);
+  assert.doesNotMatch(reveal, /scrollIntoView/, 'the page never moves');
+  // The action: its car's name and its label, the name shown only on the rail (its head is hidden there).
+  assert.match(GARAGE, /h\('button\.mn-btn\.mn-gar-act', \{[^}]*\}, detActFor, detActText\)/);
+  assert.match(GARAGE, /detActFor\.textContent = carName\(s\.id\);/);
+  assert.match(GARAGE, /detActFor\.textContent = themeName\(stadium\);/);
+  assert.match(CSS, /\.mn-gar-act-for \{\s*display: none;\s*\}/);
+  assert.match(CSS, /html\[data-shell='rail'\] \.mn-gar-act-for \{\s*display: block;/);
+  assert.match(CSS, /html\[data-shell='rail'\] \.mn-gar-det-head,\s*html\[data-layout='portrait'\] \.mn-gar-det-head \{\s*display: none;/, 'the head the name stands in for');
+});

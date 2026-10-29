@@ -103,6 +103,19 @@ test('the points card waits for the shop, then shows its balance', () => {
   assert.deepEqual([s.lime, s.press], [false, null], 'the shop has not answered: nothing to press yet');
 });
 
+test('revealDelta: the row picked comes wholly into the list as block nearest would (a phone held sideways)', () => {
+  // 844 x 390, Pampero tapped: the detail grew from 38 to 100 px, the list shrank to 178..268 and
+  // the row slid down to 252..310 (16 px of it in sight). Scroll padding 8 px.
+  const list = { top: 178, bottom: 268 };
+  assert.equal(M.revealDelta({ top: 252, bottom: 310 }, list, 8), 50, 'down until its bottom clears the padding');
+  assert.equal(M.revealDelta({ top: 186, bottom: 244 }, list, 8), 0, 'already in view: nothing moves');
+  assert.equal(M.revealDelta({ top: 120, bottom: 178 }, list, 8), -66, 'above the view: up to its top');
+  // 667 x 375: a view of 59 px for a 58 px row, the row cut by the fold.
+  assert.equal(M.revealDelta({ top: 252, bottom: 310 }, { top: 178, bottom: 253 }, 8), 65);
+  // A row taller than the view shows its top.
+  assert.equal(M.revealDelta({ top: 260, bottom: 400 }, list, 8), 74);
+});
+
 test('the preview rests 300 ms; redeeming is held 700 ms (plan §1.4.2, §1.7)', () => {
   assert.equal(M.PREVIEW_MS, 300);
   assert.equal(M.REDEEM_HOLD_MS, 700);

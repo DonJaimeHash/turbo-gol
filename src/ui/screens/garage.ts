@@ -52,7 +52,7 @@ import { qrSvg } from '../components/qr';
 import { carSilhouette } from '../components/carSilhouettes';
 import { garageRow, type GarageRow } from '../components/carRow';
 import { chooseStadium, stadiumOptions } from '../components/stadium';
-import { detailView, earnIsLime, pointsCard, PREVIEW_MS, REDEEM_HOLD_MS, redeemBalance, rowLine, type Line } from './garageModel';
+import { detailView, earnIsLime, pointsCard, PREVIEW_MS, REDEEM_HOLD_MS, redeemBalance, revealDelta, rowLine, type Line } from './garageModel';
 
 /** How a community server is hosted (the nodes' README, in the page's language when there is one). */
 function guideUrl(): string {
@@ -169,7 +169,11 @@ export function garageScreen(menu: Menu): Screen {
   const detName = h('b.mn-gar-det-name');
   const detPrice = h('span.mn-gar-det-price');
   const detReason = h('p.mn-gar-det-reason');
-  const detAction = h('button.mn-btn.mn-gar-act', { type: 'button', 'data-nav': true, 'data-nav-line': true, 'data-key': 'garage-act', onclick: () => act() });
+  // The action names its car (or stadium) on a line of its own where the card's head is hidden (a
+  // phone held sideways, garage.css): the list may show one row there, the action says whose it is.
+  const detActFor = h('span.mn-gar-act-for');
+  const detActText = h('span.mn-gar-act-text');
+  const detAction = h('button.mn-btn.mn-gar-act', { type: 'button', 'data-nav': true, 'data-nav-line': true, 'data-key': 'garage-act', onclick: () => act() }, detActFor, detActText);
   const detail = h('div.mn-gar-detail', null, h('div.mn-gar-det-head', null, detName, detPrice), detReason, detAction);
   const right = h('section.mn-gar-right', null, compact, tabs, list, detail);
 
@@ -192,6 +196,16 @@ export function garageScreen(menu: Menu): Screen {
     onNavSide(earn, null, toRow);
     const b = pointsBody.querySelector<HTMLElement>('[data-nav]');
     if (b !== null) onNavSide(b, null, toRow);
+  };
+
+  /** The row last brought into the list's view (render: once per pick, so a finger's scroll of the list stays). */
+  let revealed: HTMLElement | null = null;
+  /** `row` wholly in the list's view, the list alone scrolled (block 'nearest', its scroll padding kept: the page never moves). */
+  const reveal = (row: HTMLElement): void => {
+    if (!list.contains(row)) return;
+    const pad = Number.parseFloat(getComputedStyle(list).scrollPaddingTop) || 0;
+    const d = revealDelta(row.getBoundingClientRect(), list.getBoundingClientRect(), pad);
+    if (d !== 0) list.scrollTop += d;
   };
 
   /** Rebuild `box` only when what it shows changed (`key`): a focused button inside it keeps the focus. */
@@ -297,7 +311,8 @@ export function garageScreen(menu: Menu): Screen {
     setChildren(detPrice, ...(s.price > 0 ? price(s.price) : [h('span.mn-gar-pts-unit', null, t('garage.freeTag'))]));
     writeReason(d.reason !== null ? lineText(d.reason) : '', d.tone);
     detAction.hidden = d.button === null;
-    detAction.textContent = d.button === 'equip' ? t('garage.equip') : t('garage.redeem', { points: formatPoints(s.price) });
+    detActFor.textContent = carName(s.id);
+    detActText.textContent = d.button === 'equip' ? t('garage.equip') : t('garage.redeem', { points: formatPoints(s.price) });
     detAction.classList.toggle('mn-btn-primary', d.lime);
     detAction.classList.toggle('mn-gar-act-off', !d.lime);
     detAction.setAttribute('aria-busy', busy ? 'true' : 'false');
@@ -316,7 +331,8 @@ export function garageScreen(menu: Menu): Screen {
     setChildren(detPrice);
     writeReason(t('garage.stadiumNote'), 'plain');
     detAction.hidden = stadium === host.theme;
-    detAction.textContent = t('garage.stadiumUse');
+    detActFor.textContent = themeName(stadium);
+    detActText.textContent = t('garage.stadiumUse');
     detAction.classList.add('mn-btn-primary');
     detAction.classList.remove('mn-gar-act-off');
     detAction.setAttribute('aria-busy', 'false');
@@ -347,6 +363,12 @@ export function garageScreen(menu: Menu): Screen {
     const pickedRow = tab === 'cars' ? rows.get(v.selected.id) : stadiumRows.get(stadium);
     // An equip made the action go (the car is driven now): the focus back on its row.
     if ((listFocused && !list.contains(document.activeElement)) || (actFocused && detAction.hidden)) pickedRow?.el.focus({ preventScroll: true });
+    // A new pick (or the other tab's): its row in the list's view, once the detail took its new
+    // height (a locked car's action makes it taller and the list shorter: a phone held sideways).
+    if (shown && pickedRow !== undefined && pickedRow.el !== revealed) {
+      revealed = pickedRow.el;
+      reveal(pickedRow.el);
+    }
     updateSides();
     // The car driven again after an equip, a claim or a tab away from the cars.
     if (shown && previewed !== null && (tab !== 'cars' || v.selected.state === 'equipped')) setPreview(null);
@@ -558,6 +580,7 @@ export function garageScreen(menu: Menu): Screen {
       askedTab = null;
       waitSignIn = false;
       previewed = null;
+      revealed = null; // the pick in view again (the list kept its scroll while away)
       unsubscribe?.();
       unsubscribe = store().subscribe(() => {
         if (shown) render();
