@@ -12,7 +12,7 @@
  * - 'code': the lobby alphabet only (lobbyModel.ts CODE_ALPHABET), capitals, six at most (the code
  *   cells: components/codecells.ts registers it with onKeypad).
  * A password field shows dots, never its text (nor in a label or a hint). The field's maxLength holds.
- * The pure part (keypadRows, keypadType, keypadShown) is unit-tested (tests/keypad.test.mjs);
+ * The pure part (keypadRows, keypadType, keypadShown) is unit-tested (tests/tv-signin.test.mjs);
  * keypadBox builds the DOM on call.
  */
 import { h } from '../dom';
@@ -162,7 +162,8 @@ export function keypadBox(o: KeypadOptions): KeypadView {
   }
   const el = h(
     'div.mn-keypad',
-    { role: 'dialog', 'aria-modal': 'true', 'aria-label': o.label, 'data-kind': o.kind },
+    // data-masked: a password's keypad (`#keys`, keysOverlay.ts, then shows no key either).
+    { role: 'dialog', 'aria-modal': 'true', 'aria-label': o.label, 'data-kind': o.kind, 'data-masked': o.masked ? 'true' : undefined },
     h('div.mn-keypad-head', null, h('span.mn-keypad-label', null, o.label), shown),
     ...rows,
     h('div.mn-keypad-row.mn-keypad-actions', null, ...actions),
