@@ -45,10 +45,27 @@
  *   loadout          user -> the car it picked (src/game/cosmetics.ts CarId); it drives it while it
  *                    owns it (the default car is everyone's), else the default car
  * Balance = sum(credits) - sum(claims), never below 0: a claim needs its whole cost, credits never go.
+ *
+ * The sign-in work (the design's data model, schema version 2: migrateTo2). Columns added to users:
+ * the verified address (email, email_canon: UNIQUE where set, only from a proof of the mailbox or an
+ * authoritative provider; email_verified_at, email_proof), a provider's unproved address
+ * (email_hint, email_hint_canon, email_hint_from: never mailed, cleared when any account claims that
+ * canon), email_locked_until, the password's format (pw_v 0 none, 1 the legacy key salted with the
+ * username, 2 the current key; pw_kid, the server pepper), lang and tz for mail, dev_sub, the
+ * deletion (delete_requested_at, delete_purge_at) and unsub_id; to refresh: auth_lvl and method.
+ * New tables (only hashes or HMACs of secrets and of throttle keys; an address only while its token
+ * lives, or its undo):
+ *   mail_tokens      one mailed proof (a link and maybe a code), by its token's hash
+ *   email_holds      an old canon held during an email change's 7-day undo (counts as taken)
+ *   consents         append-only: the state is the newest row per (user, kind)
+ *   auth_throttle    durable failure counters; mail_rate, mail_day: the mail caps and the day's lanes
+ *   deleted_ids      ids of purged accounts: freshId never hands one out again (nodes are keyed by it)
+ *   sanction_marks   a ban or abandon penalty that outlives a purge; protected_skel: names to protect
+ *   meta             schema_version (absent = 1), legacy_seen
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
-import { looksLikeDomain, PLAYLISTS, usernameKey } from '../../src/net/account';
+import { emailCanon, looksLikeDomain, normalizeEmail, PLAYLISTS, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
 import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { TrainingRecords } from '../../src/game/trainingRecords';
@@ -89,6 +106,22 @@ export const RENAME_EVERY_MS = 30 * 24 * 60 * 60_000;
 /** Ranked results / cancellations are kept this long (GET /api/ranked/result, idempotency). */
 const RANKED_KEEP_MS = 30 * 24 * 60 * 60_000;
 export const LEADERBOARD_MAX = 100;
+/** meta.schema_version this build migrates to (migrateTo2); absent = 1, main before the sign-in work. */
+export const SCHEMA_VERSION = 2;
+/** users.pw_v of a password hashed from today's client key (account.ts clientPasswordKey, salted with the username). */
+export const PW_V_LEGACY = 1;
+const DAY_MS = 24 * 60 * 60_000;
+/** The daily prune keeps a used or expired mail token this long past its expiry. */
+export const MAIL_TOKEN_KEEP_MS = DAY_MS;
+/** A throttle row outside its window (the longest is a day) and not locked goes at the daily prune. */
+export const THROTTLE_KEEP_MS = DAY_MS;
+/** A mail_rate row whose hour and day windows both started this long ago goes (both are over). */
+export const MAIL_RATE_KEEP_MS = DAY_MS;
+/** mail_day rows (one per UTC day and lane) are kept this many days. */
+export const MAIL_DAY_KEEP_DAYS = 30;
+
+/** How an account's address was proved (users.email_proof): a code or link of ours, Google as authoritative, or the dev sign-in. */
+export type EmailProof = 'mail' | 'google' | 'dev';
 
 export interface PasswordRecord {
   hash: string;
@@ -286,6 +319,86 @@ export class AccountStore {
       PRIMARY KEY (user_id, item_id))`);
     s.exec('CREATE TABLE IF NOT EXISTS host_freeze (user_id TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, cleared_at INTEGER NOT NULL DEFAULT 0)');
     s.exec('CREATE TABLE IF NOT EXISTS loadout (user_id TEXT PRIMARY KEY, car TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+    this.migrateTo2();
+  }
+
+  /** meta.schema_version: 1 when absent (a database from before the sign-in work, or a new one). */
+  schemaVersion(): number {
+    const r = this.sql.exec("SELECT v FROM meta WHERE k = 'schema_version'").toArray()[0];
+    const v = r ? Number(str(r.v)) : 1;
+    return Number.isInteger(v) && v >= 1 ? v : 1;
+  }
+
+  /**
+   * Version 2 (the sign-in design's data model), on production's live accounts: additive only. It
+   * adds columns with defaults and new tables and indexes, never drops, renames or rewrites a
+   * column, and runs in the AccountsDO's blockConcurrencyWhile, so no request sees it half done. The
+   * once-only part is one transaction: the columns, the tables, pw_v = 1 for every password of
+   * before (all of them are the legacy key) and schema_version 2 go together, or none does and the
+   * next start does it all again. Later starts only repair pw_v: a build from before it (a
+   * rollback) writes a password with pw_v 0, which always means a legacy key.
+   */
+  private migrateTo2(): void {
+    const s = this.sql;
+    s.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+    if (this.schemaVersion() >= 2) {
+      s.exec('UPDATE users SET pw_v = ? WHERE pw_hash IS NOT NULL AND pw_v = 0', PW_V_LEGACY);
+      return;
+    }
+    this.tx(() => {
+      for (const col of [
+        'email TEXT',
+        'email_canon TEXT',
+        'email_verified_at INTEGER NOT NULL DEFAULT 0',
+        "email_proof TEXT NOT NULL DEFAULT ''",
+        'email_hint TEXT',
+        'email_hint_canon TEXT',
+        "email_hint_from TEXT NOT NULL DEFAULT ''",
+        'email_locked_until INTEGER NOT NULL DEFAULT 0',
+        'pw_v INTEGER NOT NULL DEFAULT 0',
+        "pw_kid TEXT NOT NULL DEFAULT ''",
+        "lang TEXT NOT NULL DEFAULT ''",
+        "tz TEXT NOT NULL DEFAULT ''",
+        'dev_sub TEXT',
+        'delete_requested_at INTEGER NOT NULL DEFAULT 0',
+        'delete_purge_at INTEGER NOT NULL DEFAULT 0',
+        'unsub_id TEXT',
+      ]) addColumn(s, 'users', col);
+      for (const col of ['auth_lvl INTEGER NOT NULL DEFAULT 0', "method TEXT NOT NULL DEFAULT ''"]) addColumn(s, 'refresh', col);
+      // SQLite cannot add UNIQUE with ADD COLUMN: partial indexes do it (every value is NULL here).
+      s.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_canon ON users(email_canon) WHERE email_canon IS NOT NULL');
+      s.exec('CREATE INDEX IF NOT EXISTS users_email_hint ON users(email_hint_canon) WHERE email_hint_canon IS NOT NULL');
+      s.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_dev_sub ON users(dev_sub) WHERE dev_sub IS NOT NULL');
+      s.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_unsub ON users(unsub_id) WHERE unsub_id IS NOT NULL');
+      s.exec('CREATE INDEX IF NOT EXISTS users_purge ON users(delete_purge_at) WHERE delete_purge_at > 0');
+      s.exec(`CREATE TABLE IF NOT EXISTS mail_tokens (
+        hash TEXT PRIMARY KEY, nonce TEXT NOT NULL, purpose TEXT NOT NULL, user_id TEXT,
+        email TEXT NOT NULL, email_canon TEXT NOT NULL, attempt_hash TEXT, code_hash TEXT,
+        code_expires_at INTEGER NOT NULL DEFAULT 0, code_tries INTEGER NOT NULL DEFAULT 0, resends INTEGER NOT NULL DEFAULT 0,
+        payload TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+        used_at INTEGER NOT NULL DEFAULT 0, used_by TEXT)`);
+      s.exec('CREATE INDEX IF NOT EXISTS mail_tokens_user ON mail_tokens(user_id, purpose)');
+      s.exec('CREATE INDEX IF NOT EXISTS mail_tokens_canon ON mail_tokens(email_canon, purpose)');
+      s.exec('CREATE INDEX IF NOT EXISTS mail_tokens_attempt ON mail_tokens(attempt_hash)');
+      s.exec('CREATE INDEX IF NOT EXISTS mail_tokens_exp ON mail_tokens(expires_at)');
+      s.exec('CREATE TABLE IF NOT EXISTS email_holds (canon TEXT PRIMARY KEY, user_id TEXT NOT NULL, email TEXT NOT NULL, until INTEGER NOT NULL)');
+      s.exec(`CREATE TABLE IF NOT EXISTS consents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, kind TEXT NOT NULL, version TEXT NOT NULL,
+        granted INTEGER NOT NULL, source TEXT NOT NULL, at INTEGER NOT NULL)`);
+      s.exec('CREATE INDEX IF NOT EXISTS consents_user ON consents(user_id, kind, id)');
+      s.exec('CREATE TABLE IF NOT EXISTS auth_throttle (key TEXT PRIMARY KEY, count INTEGER NOT NULL, first_at INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0)');
+      s.exec('CREATE TABLE IF NOT EXISTS mail_rate (key TEXT PRIMARY KEY, hour_at INTEGER NOT NULL, hour_n INTEGER NOT NULL, day_at INTEGER NOT NULL, day_n INTEGER NOT NULL)');
+      s.exec(`CREATE TABLE IF NOT EXISTS mail_day (
+        day TEXT NOT NULL, lane TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+        paused_until INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, lane))`);
+      s.exec('CREATE TABLE IF NOT EXISTS deleted_ids (id TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+      s.exec(`CREATE TABLE IF NOT EXISTS sanction_marks (
+        key TEXT PRIMARY KEY, until INTEGER NOT NULL, ban_until INTEGER NOT NULL DEFAULT 0,
+        lock_until INTEGER NOT NULL DEFAULT 0, abandons INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL)`);
+      s.exec('CREATE TABLE IF NOT EXISTS protected_skel (skel TEXT PRIMARY KEY, user_id TEXT NOT NULL, why TEXT NOT NULL)');
+      s.exec('UPDATE users SET pw_v = ? WHERE pw_hash IS NOT NULL', PW_V_LEGACY);
+      s.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?)", String(SCHEMA_VERSION));
+    });
   }
 
   // ---- users ------------------------------------------------------------------------------------
@@ -302,10 +415,11 @@ export class AccountStore {
     return this.userByKey(usernameKey(username)) !== null;
   }
 
+  /** A new account id: never one in use, nor one of a purged account (deleted_ids: nodes and their points are keyed by it). */
   private freshId(): string {
     for (;;) {
       const id = randomId();
-      if (this.userById(id) === null) return id;
+      if (this.userById(id) === null && this.sql.exec('SELECT 1 AS x FROM deleted_ids WHERE id = ?', id).toArray().length === 0) return id;
     }
   }
 
@@ -315,8 +429,8 @@ export class AccountStore {
       if (this.usernameTaken(username)) return 'taken' as const;
       const id = this.freshId();
       this.sql.exec(
-        'INSERT INTO users (id, username, ukey, pw_hash, pw_salt, pw_iter, recovery, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        id, username, usernameKey(username), pw.hash, pw.salt, pw.iter, JSON.stringify(recoveryHashes), now, now,
+        'INSERT INTO users (id, username, ukey, pw_hash, pw_salt, pw_iter, pw_v, recovery, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        id, username, usernameKey(username), pw.hash, pw.salt, pw.iter, PW_V_LEGACY, JSON.stringify(recoveryHashes), now, now,
       );
       this.addRefresh(id, refreshHash, now);
       return { userId: id, username, car: DEFAULT_CAR, createdAt: now, authAt: now };
@@ -487,7 +601,7 @@ export class AccountStore {
   setPassword(userId: string, pw: PasswordRecord): boolean {
     const u = this.userById(userId);
     if (u === null) return false;
-    this.sql.exec('UPDATE users SET pw_hash = ?, pw_salt = ?, pw_iter = ? WHERE id = ?', pw.hash, pw.salt, pw.iter, userId);
+    this.sql.exec('UPDATE users SET pw_hash = ?, pw_salt = ?, pw_iter = ?, pw_v = ? WHERE id = ?', pw.hash, pw.salt, pw.iter, PW_V_LEGACY, userId);
     return true;
   }
 
@@ -513,7 +627,7 @@ export class AccountStore {
       if (i < 0) return null;
       codes.splice(i, 1);
       const id = str(u.id);
-      this.sql.exec('UPDATE users SET recovery = ?, pw_hash = ?, pw_salt = ?, pw_iter = ?, last_login = ? WHERE id = ?', JSON.stringify(codes), pw.hash, pw.salt, pw.iter, now, id);
+      this.sql.exec('UPDATE users SET recovery = ?, pw_hash = ?, pw_salt = ?, pw_iter = ?, pw_v = ?, last_login = ? WHERE id = ?', JSON.stringify(codes), pw.hash, pw.salt, pw.iter, PW_V_LEGACY, now, id);
       this.deleteRefreshOf(id);
       this.addRefresh(id, refreshHash, now);
       return { ...this.refOf(u), authAt: now, codesLeft: codes.length };
@@ -605,6 +719,56 @@ export class AccountStore {
     });
   }
 
+  // ---- email (the sign-in design's data model; the routes that prove a mailbox come later) ---------
+
+  /** Some account other than `userId` claims `canon`, or an email change's undo holds it for another account (I2). */
+  private canonTaken(canon: string, userId: string): boolean {
+    if (this.sql.exec('SELECT 1 AS x FROM users WHERE email_canon = ? AND id != ?', canon, userId).toArray().length > 0) return true;
+    return this.sql.exec('SELECT 1 AS x FROM email_holds WHERE canon = ? AND user_id != ?', canon, userId).toArray().length > 0;
+  }
+
+  /**
+   * The account's verified address becomes `email`, which the caller proved (I1: a code or link of
+   * ours, or an authoritative Google address). The address and its canon are derived here from what
+   * was typed (I9). 'taken' when another account claims that canon or holds it for an undo (I2; the
+   * partial UNIQUE index stands behind this). In the same transaction the account's own hint goes,
+   * and so does every other account's hint of that canon (a hint never points at a claimed address).
+   */
+  claimEmail(userId: string, email: string, proof: EmailProof, now: number): 'ok' | 'taken' | 'bad_email' | 'no_user' {
+    const address = normalizeEmail(email);
+    const canon = emailCanon(email);
+    if (address === null || canon === null) return 'bad_email';
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      if (this.canonTaken(canon, userId)) return 'taken' as const;
+      this.sql.exec(
+        "UPDATE users SET email = ?, email_canon = ?, email_verified_at = ?, email_proof = ?, email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE id = ?",
+        address, canon, now, proof, userId,
+      );
+      this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", canon, userId);
+      return 'ok' as const;
+    });
+  }
+
+  /**
+   * A provider's address that is not proved (Discord's, or a Google address that is not
+   * authoritative) becomes the account's hint: it finds a match and prefills "confirm your email",
+   * and is never mailed. 'claimed' when an account (this one too) claims its canon or an undo holds
+   * it: no hint is ever written for such a canon.
+   */
+  setEmailHint(userId: string, email: string, from: OAuthProvider): 'ok' | 'claimed' | 'bad_email' | 'no_user' {
+    const address = normalizeEmail(email);
+    const canon = emailCanon(email);
+    if (address === null || canon === null) return 'bad_email';
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      const claimed = this.sql.exec('SELECT 1 AS x FROM users WHERE email_canon = ?', canon).toArray().length > 0;
+      if (claimed || this.sql.exec('SELECT 1 AS x FROM email_holds WHERE canon = ?', canon).toArray().length > 0) return 'claimed' as const;
+      this.sql.exec('UPDATE users SET email_hint = ?, email_hint_canon = ?, email_hint_from = ? WHERE id = ?', address, canon, from, userId);
+      return 'ok' as const;
+    });
+  }
+
   /** Change the username (once per RENAME_EVERY_MS; a fresh OAuth account may rename at once). */
   rename(userId: string, username: string, now: number): UserRef | 'taken' | 'too_soon' | 'no_user' {
     return this.tx(() => {
@@ -644,7 +808,17 @@ export class AccountStore {
     return r ? num(r.n) : 0;
   }
 
-  me(userId: string, now: number): MeInfo | null {
+  /** The newest news consent of the account is a grant (consents: append-only, the newest row per kind counts). */
+  private newsGranted(userId: string): boolean {
+    const r = this.sql.exec("SELECT granted FROM consents WHERE user_id = ? AND kind = 'news' ORDER BY id DESC LIMIT 1", userId).toArray()[0];
+    return r !== undefined && num(r.granted) === 1;
+  }
+
+  /**
+   * `legacyClosed`: the cutoff for passwords without a verified email has passed (the design's
+   * LEGACY_PASSWORD_UNTIL; none yet), so such a password no longer counts as a way in.
+   */
+  me(userId: string, now: number, legacyClosed: boolean = false): MeInfo | null {
     const u = this.userById(userId);
     if (u === null) return null;
     const providers: MeInfo['providers'] = [];
@@ -655,6 +829,8 @@ export class AccountStore {
     const linkedAt: NonNullable<MeInfo['linkedAt']> = {};
     if (providers.includes('google') && num(u.google_linked_at) > 0) linkedAt.google = num(u.google_linked_at);
     if (providers.includes('discord') && num(u.discord_linked_at) > 0) linkedAt.discord = num(u.discord_linked_at);
+    const email = u.email_canon !== null && u.email_canon !== undefined && u.email !== null && u.email !== undefined ? str(u.email) : null;
+    const passwordCounts = providers.includes('password') && (email !== null || !legacyClosed);
     return {
       linkedAt,
       playerId: userId,
@@ -668,6 +844,13 @@ export class AccountStore {
       abandons24h: this.abandonsInWindow(userId, now),
       season: SEASON,
       experimental: this.experimentalEnabled(userId),
+      email,
+      emailHint: u.email_hint !== null && u.email_hint !== undefined ? str(u.email_hint) : null,
+      emailVerified: email !== null,
+      legacy: num(u.pw_v) === PW_V_LEGACY,
+      news: this.newsGranted(userId),
+      deletionAt: num(u.delete_purge_at),
+      waysIn: providers.filter((p) => p !== 'password').length + (passwordCounts ? 1 : 0),
     };
   }
 
@@ -1094,7 +1277,13 @@ export class AccountStore {
     });
   }
 
-  /** Daily cleanup: expired refresh tokens, locks and bans, old abandons and ranked results (never the hosts' shop). */
+  /**
+   * Daily cleanup: expired refresh tokens, locks and bans, old abandons and ranked results (never
+   * the hosts' shop); and the sign-in tables: mail tokens a day past their expiry, undo holds past
+   * their end, throttle rows outside their window and unlocked, mail caps whose windows are over,
+   * the mail days older than 30 days and sanction marks past their end. Never the consents (the
+   * log), the tombstones (deleted_ids) or meta.
+   */
   prune(now: number): void {
     this.tx(() => {
       this.sql.exec('DELETE FROM refresh WHERE expires_at <= ?', now);
@@ -1104,6 +1293,13 @@ export class AccountStore {
       const old = now - RANKED_KEEP_MS;
       this.sql.exec('DELETE FROM ranked_players WHERE match_id IN (SELECT match_id FROM ranked_matches WHERE ended_at <= ?)', old);
       this.sql.exec('DELETE FROM ranked_matches WHERE ended_at <= ?', old);
+      this.sql.exec('DELETE FROM mail_tokens WHERE expires_at <= ?', now - MAIL_TOKEN_KEEP_MS);
+      this.sql.exec('DELETE FROM email_holds WHERE until <= ?', now);
+      this.sql.exec('DELETE FROM auth_throttle WHERE first_at <= ? AND locked_until <= ?', now - THROTTLE_KEEP_MS, now);
+      this.sql.exec('DELETE FROM mail_rate WHERE hour_at <= ? AND day_at <= ?', now - MAIL_RATE_KEEP_MS, now - MAIL_RATE_KEEP_MS);
+      // mail_day.day is a UTC date (mailCaps.ts mailDay): the rows of days before the kept ones go.
+      this.sql.exec('DELETE FROM mail_day WHERE day < ?', new Date(now - MAIL_DAY_KEEP_DAYS * DAY_MS).toISOString().slice(0, 10));
+      this.sql.exec('DELETE FROM sanction_marks WHERE until <= ?', now);
     });
   }
 }
