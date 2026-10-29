@@ -313,7 +313,12 @@ export interface Screen {
   /** Its breadcrumb. */
   readonly title: string;
   readonly el: HTMLElement;
-  show?(): void;
+  /**
+   * The screen is up. `anew`: Menu.open made it a new visit (its focus memory went, it starts on its
+   * first control); false when Back, ‹, a crumb, a section, the end of a match or the server's
+   * config bring it back, so it shows what the player left (GARAJE: the car picked).
+   */
+  show?(anew: boolean): void;
   hide?(): void;
   /** Every TICK_MS while the screen is on top and the menu is visible. */
   tick?(now: number): void;
@@ -391,6 +396,8 @@ export class Menu {
   private readonly nav: FocusNav;
   /** Last focus: 'last:<screen>' anywhere while that screen was on top, 'stage:<screen>' on its stage, '<zone>' in the bars. */
   private readonly memory = new FocusMemory<HTMLElement>();
+  /** The screen Menu.open made a new visit, until it mounts (Screen.show's `anew`). */
+  private anewId: string | null = null;
   private modalEl: HTMLElement | null = null;
   private modalDismiss: (() => void) | null = null;
   private modalOnClose: (() => void) | null = null;
@@ -570,6 +577,14 @@ export class Menu {
     return this.visibleNow;
   }
 
+  /**
+   * The click running now is a controller's A (Menu.action's accept; data-input says so only after
+   * this frame): it carries no user activation, so no pop-up or new tab can open from it.
+   */
+  get padPress(): boolean {
+    return this.padAccept;
+  }
+
   top(): Screen | null {
     return this.stack.at(-1) ?? null;
   }
@@ -698,14 +713,15 @@ export class Menu {
    * whatever was stacked). `tab`: the screen's tab to show (Screen.setTab: MODOS'). `detour`: a
    * section's root opened from another section's root stacks on it too (CLASIFICACIÓN's SIGN IN).
    * A screen not on top already is a new visit: its focus memory goes, so it starts on its first
-   * control (data-autofocus, Screen.firstFocus); Back, ‹, a crumb or a section come back to a
-   * screen with its memory.
+   * control (data-autofocus, Screen.firstFocus), and its show is told so (Screen.show's `anew`);
+   * Back, ‹, a crumb or a section come back to a screen with its memory.
    */
   open(id: string, reset = false, tab?: string, detour = false): void {
     this.closeKeypad(false); // a screen opened under the keypad (a join link): what was typed goes to its field first
     if (this.top()?.id !== id) {
       this.memory.forget('last:' + id);
       this.memory.forget('stage:' + id);
+      this.anewId = id;
     }
     const next = stackAfterOpen({ section: this.section, stack: this.stack.map((s) => s.id) }, id, reset, detour);
     const stack = next.stack.map((x) => this.screen(x));
@@ -730,6 +746,17 @@ export class Menu {
     this.top()?.hide?.();
     if (this.stack.length > 1) this.stack.pop();
     this.open(id, false, tab);
+  }
+
+  /**
+   * Back to screen `id` when it is under the one on top, as its crumb goes (popTo: a return, with
+   * its focus memory; GARAJE's sign-in on the PERFIL detour it opened); else Menu.open.
+   */
+  backTo(id: string): void {
+    this.closeKeypad(false);
+    const i = this.stack.findIndex((s) => s.id === id);
+    if (i >= 0 && i < this.stack.length - 1) this.popTo(i);
+    else this.open(id);
   }
 
   /** Back to the `i`-th screen of the stack (0: the section's root): a breadcrumb (a lobby above it asks first). */
@@ -854,6 +881,8 @@ export class Menu {
   private mount(focus: SwitchFocus = 'auto'): void {
     const top = this.top();
     if (!top) return;
+    const anew = this.anewId === top.id;
+    this.anewId = null;
     this.mountedAt = performance.now();
     this.nav.reset();
     setChildren(this.stage, top.el);
@@ -867,7 +896,7 @@ export class Menu {
     // (autoFocus); touch mode and a switch from the bar focus nothing on the stage.
     if (touchMode() || focus === 'keep') this.stage.scrollTop = 0;
     this.renderChrome();
-    top.show?.();
+    top.show?.(anew);
     this.refreshChrome();
     this.renderLobbyPill();
     this.renderPointsPill();
@@ -1459,7 +1488,7 @@ export class Menu {
         this.populationNow();
         this.refreshChrome();
         if (this.visibleNow) {
-          this.top()?.show?.();
+          this.top()?.show?.(false);
           this.fitNow(); // what the screen shows with the config (Inicio's region), as a mount fits it
         }
       })

@@ -548,6 +548,11 @@ html:not(.tg-touch) .mn .mn-car-row:focus-visible::after {
   font-size: var(--t-heading);
 }
 
+/* The car (or stadium) the action is for, on its own line: only where the card's head is hidden. */
+.mn-gar-act-for {
+  display: none;
+}
+
 /* A car out of reach: CANJEAR stays, never lime, in the inactive text colour (its press explains). */
 .mn .mn-gar-act.mn-gar-act-off {
   color: var(--text-3);
@@ -717,6 +722,20 @@ html[data-layout='portrait'] .mn-gar-det-head {
 html[data-shell='rail'] .mn .mn-gar-act,
 html[data-layout='portrait'] .mn .mn-gar-act {
   min-height: 3.5rem;
+}
+
+/* Sideways the list may show one row: the action names its car above its label, in its own height. */
+html[data-shell='rail'] .mn .mn-gar-act {
+  padding-block: 0.25rem;
+}
+
+html[data-shell='rail'] .mn-gar-act-for {
+  display: block;
+  overflow: hidden;
+  font-size: var(--t-label);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Upright: the car on top, the column under it; a tablet keeps its two cards beside the column */

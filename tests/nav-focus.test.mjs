@@ -185,6 +185,62 @@ test('a line: ▶ past its last control bounces; a switch that takes A only boun
   assert.notEqual(focused(), cap[1]);
 });
 
+/**
+ * Ajustes on a TV at 960 x 540, the controls' page scrolled down to the binding rows (measured): the
+ * page's body scrolls (190..432), the dodge deadzone's slider far above its view, a binding row
+ * (bind-pad-airRoll: its key, its ✕) in it, the line above it a slider in sight.
+ */
+function bindings(rowAttrs) {
+  fakeDom();
+  const tab0 = el({ ...NAVI, 'data-nav-entry': '' }, R(20, 200, 200, 56));
+  const rail = el({}, R(0, 180, 240, 300), tab0);
+  const hidden = el(NAVI, R(560, -596, 240, 44)); // set-dodgeDeadzone, scrolled out above
+  const shown = el(NAVI, R(560, 236, 240, 44)); // another slider, in sight, on the line above
+  const cell = el(NAVI, R(760, 300, 150, 44));
+  const clear = el(NAVI, R(920, 300, 44, 44));
+  const body = el({}, R(300, 190, 700, 242), el(LINE, R(300, -600, 700, 56), hidden), el(LINE, R(300, 230, 700, 56), shown), el(rowAttrs, R(300, 296, 700, 52), cell, clear));
+  body.scroll = 4000;
+  const page = el({}, R(300, 180, 700, 300), body);
+  const f = new NAV.FocusNav(() => [
+    { name: 'set-rail', el: rail, side: true },
+    { name: 'stage', el: page, main: true, floor: true },
+  ]);
+  return { f, tab0, hidden, shown, cell, clear };
+}
+
+test('◀ ▶ never pick a control out of sight: not the slider scrolled out above a binding row', () => {
+  // The row as it was (a row, not a line), with no slider in sight that way: ◀ from its key.
+  const a = bindings({ 'data-nav-row': '' });
+  a.shown.attrs.hidden = ''; // no other slider: the hidden one is the spatial pick's only one that way
+  a.f.focus(a.cell);
+  assert.equal(a.f.move('left'), true);
+  assert.equal(focused(), a.tab0, 'the rail, not the dodge deadzone 900 px above (a second ◀ would change it)');
+  assert.notEqual(focused(), a.hidden);
+  // The same slider in sight is still a sideways pick for a loose target (diagonal moves stay).
+  const b = bindings({ 'data-nav-row': '' });
+  b.f.focus(b.cell);
+  b.f.move('left');
+  assert.equal(focused(), b.shown, 'not a line: the spatial pick takes the slider above');
+});
+
+test('a binding row is a line: ◀ past its key goes to the rail, ▶ past its ✕ bounces', () => {
+  const { f, tab0, shown, hidden, cell, clear } = bindings({ 'data-nav-row': '', ...LINE });
+  f.focus(clear);
+  assert.equal(f.move('left'), true);
+  assert.equal(focused(), cell, 'its key first');
+  assert.equal(f.move('left'), true);
+  assert.equal(focused(), tab0, 'then the rail, not the slider in sight on the line above');
+  assert.ok(focused() !== shown && focused() !== hidden);
+  f.focus(clear);
+  assert.equal(f.move('right'), false);
+  assert.equal(focused(), clear);
+  assert.ok(bounced(clear));
+  // settings/view.ts bindList: the binding rows and the layouts' row under them are lines.
+  const view = readFileSync(new URL('../src/ui/screens/settings/view.ts', import.meta.url), 'utf8');
+  assert.match(view, /h\('div\.mn-bind', \{ 'data-nav-row': true, 'data-nav-line': true \}/);
+  assert.match(view, /'div\.mn-set-buttons',\s*\{ 'data-nav-row': true, 'data-nav-line': true \},\s*this\.actionButton\(`layout-\$\{device\}`/);
+});
+
 test("a floor: ▼ past the page's last line stays on it; without one it goes on to the footer", () => {
   const a = ajustes(true);
   a.f.focus(a.btn);
@@ -311,4 +367,49 @@ test("GARAJE: ▶ on a row or on the detail's action (lines) bounces, never up t
   assert.match(row, /'button\.mn-car-row',\s*\{[^}]*'data-nav-line': true/);
   const garage = readFileSync(new URL('../src/ui/screens/garage.ts', import.meta.url), 'utf8');
   assert.match(garage, /h\('button\.mn-btn\.mn-gar-act', \{[^}]*'data-nav-line': true/);
+});
+
+test("GARAJE: ▲ in the list goes to the row above, and from its first row to the tab selected", () => {
+  fakeDom();
+  // A TV at 960 x 540 on ESTADIOS: the two tabs side by side over the list, its first row under both.
+  const tabCars = el(NAVI, R(653, 105, 140, 48));
+  const tabStadiums = el(NAVI, R(801, 105, 140, 48));
+  const tabs = el({ 'data-nav-row': '' }, null, tabCars, tabStadiums);
+  const rows = [165, 229, 293].map((y) => el({ ...NAVI, ...LINE }, R(653, y, 288, 60)));
+  const list = el({}, R(653, 157, 288, 175), ...rows);
+  const page = el({}, R(0, 90, 960, 400), tabs, list);
+  const f = new NAV.FocusNav(() => [{ name: 'stage', el: page, main: true }]);
+  f.focus(rows[0]);
+  f.move('up');
+  assert.equal(focused(), tabCars, 'the spatial pick alone: a tie, AUTOS first (its focus would switch the list to the cars)');
+  // AUTOS scrolled (CH+ back on Condor): Carpincho at the list's top, Pampero half under its edge,
+  // its centre no nearer than the tabs'.
+  const carsTab = el(NAVI, R(653, 105, 140, 48));
+  const stadiumsTab = el(NAVI, R(801, 105, 140, 48));
+  const cars = [37, 99, 165, 229].map((y) => el({ ...NAVI, ...LINE }, R(653, y, 288, 60)));
+  const carList = el({}, R(653, 157, 288, 139), ...cars);
+  carList.scroll = 600;
+  const page2 = el({}, R(0, 90, 960, 400), el({ 'data-nav-row': '' }, null, carsTab, stadiumsTab), carList);
+  const g = new NAV.FocusNav(() => [{ name: 'stage', el: page2, main: true }]);
+  g.focus(cars[2]);
+  g.move('up');
+  assert.ok(focused() === carsTab || focused() === stadiumsTab, 'the spatial pick alone: up to the tabs, past Pampero');
+  // garage.ts updateSides: a row's ▲ is the row before it in the list, the first row's the tab selected.
+  for (const [list_, selected] of [
+    [rows, tabStadiums],
+    [cars, carsTab],
+  ]) {
+    for (const [i, r] of list_.entries()) NAV.onNavTo(r, 'up', () => list_[i - 1] ?? selected);
+  }
+  f.focus(rows[0]);
+  f.move('up');
+  assert.equal(focused(), tabStadiums, 'ESTADIOS stays');
+  f.focus(rows[1]);
+  f.move('up');
+  assert.equal(focused(), rows[0], 'a row under another: the row above');
+  g.focus(cars[2]);
+  g.move('up');
+  assert.equal(focused(), cars[1], 'the row above, half out of sight (FocusNav scrolls it in)');
+  const garage = readFileSync(new URL('../src/ui/screens/garage.ts', import.meta.url), 'utf8');
+  assert.match(garage, /onNavTo\(r\.el, 'up', \(\) => \{\s*if \(r\.el\.parentElement !== list\) return null;\s*const above = r\.el\.previousElementSibling;\s*return above instanceof HTMLElement \? above : \(tabEls\.get\(tab\) \?\? null\);\s*\}\);/, 'every row of both lists');
 });

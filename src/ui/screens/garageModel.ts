@@ -110,6 +110,19 @@ export function earnIsLime(v: GarageView): boolean {
   return !v.cars.some((c) => c.state === 'claimable');
 }
 
+/**
+ * How far the list scrolls (px, down is +) for `row` to be wholly in its `view` (both boxes on
+ * screen), `pad` (its scroll padding) inside each edge, as block 'nearest' does: 0 when it is
+ * already; a row taller than the view shows its top. The row picked after a pick or a tab's swap
+ * (garage.ts reveal: a locked car's action makes the detail taller and the list shorter).
+ */
+export function revealDelta(row: { readonly top: number; readonly bottom: number }, view: { readonly top: number; readonly bottom: number }, pad: number): number {
+  const above = row.top - (view.top + pad);
+  if (above < 0) return above;
+  const below = row.bottom - (view.bottom - pad);
+  return below > 0 ? Math.min(below, above) : 0;
+}
+
 /** The redeem sheet's "Saldo: 2.100 → 600": the balance before and after, never below 0. */
 export function redeemBalance(price: number, balance: number): { readonly from: number; readonly to: number } {
   const from = Math.max(0, Math.floor(balance));
