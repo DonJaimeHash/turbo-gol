@@ -1,10 +1,11 @@
 // The shared focus code's moves (src/ui/nav.ts FocusNav) on a small fake DOM: a list's lines, a row
 // that is a line, a zone's floor, a target's own way (onNavTo), a side claim that takes nothing and
 // a scrolled list's hidden rows.
-// The geometry is measured from the screens it stands for (Ajustes on a TV, CLASIFICACIÓN on a PC).
+// The geometry is measured from the screens it stands for (Ajustes on a TV, CLASIFICACIÓN and GARAJE on a PC).
 //   node --test tests/nav-focus.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 
 registerHooks({
@@ -276,4 +277,38 @@ test('a scrolled list: ▼ from the pinned row under it goes to the footer, not 
   assert.equal(focused(), rows[0], 'from above: its first row in sight');
   assert.equal(NAV.clippedOut(R(107, 661, 1152, 56), R(107, 300, 1152, 322)), true);
   assert.equal(NAV.clippedOut(R(107, 601, 1152, 56), R(107, 300, 1152, 322)), false, 'cut by the fold, still in sight');
+});
+
+test("GARAJE: ▶ on a row or on the detail's action (lines) bounces, never up to the ESTADIOS tab", () => {
+  fakeDom();
+  // A guest on a PC: SIGN IN at the left, the tabs over the list, a row picked, the action under the list.
+  const signin = el(NAVI, R(113, 458, 152, 64));
+  const tabCars = el(NAVI, R(961, 86, 152, 48));
+  const tabStadiums = el(NAVI, R(1121, 86, 152, 48));
+  const rows = [146, 222, 298].map((y) => el({ ...NAVI, ...LINE }, R(961, y, 312, 68)));
+  const act = el({ ...NAVI, ...LINE }, R(979, 604, 274, 52));
+  const page = el({}, R(93, 86, 1180, 620), signin, tabCars, tabStadiums, ...rows, act);
+  for (const e of [...rows, act]) NAV.onNavSide(e, () => signin.focus(), null); // garage.ts updateSides
+  const f = new NAV.FocusNav(() => [{ name: 'stage', el: page, main: true }]);
+  for (const e of [...rows, act]) {
+    f.focus(e);
+    assert.equal(f.move('right'), false);
+    assert.equal(focused(), e, 'the row picked stays, the tab (its focus switches the list) is not reached');
+    assert.ok(bounced(e));
+  }
+  f.focus(rows[1]);
+  assert.equal(f.move('left'), true);
+  assert.equal(focused(), signin, '◀ still crosses the stage to the left column');
+  // Not a line: the spatial pick takes the ESTADIOS tab, up and to the right.
+  const loose = el(NAVI, R(961, 298, 312, 68));
+  const page2 = el({}, R(93, 86, 1180, 620), tabCars, tabStadiums, loose);
+  const g = new NAV.FocusNav(() => [{ name: 'stage', el: page2, main: true }]);
+  g.focus(loose);
+  g.move('right');
+  assert.equal(focused(), tabStadiums);
+  // The screen's rows (components/carRow.ts garageRow) and its action (screens/garage.ts) are lines.
+  const row = readFileSync(new URL('../src/ui/components/carRow.ts', import.meta.url), 'utf8');
+  assert.match(row, /'button\.mn-car-row',\s*\{[^}]*'data-nav-line': true/);
+  const garage = readFileSync(new URL('../src/ui/screens/garage.ts', import.meta.url), 'utf8');
+  assert.match(garage, /h\('button\.mn-btn\.mn-gar-act', \{[^}]*'data-nav-line': true/);
 });

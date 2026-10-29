@@ -164,7 +164,7 @@ export function garageScreen(menu: Menu): Screen {
   const detName = h('b.mn-gar-det-name');
   const detPrice = h('span.mn-gar-det-price');
   const detReason = h('p.mn-gar-det-reason');
-  const detAction = h('button.mn-btn.mn-gar-act', { type: 'button', 'data-nav': true, 'data-key': 'garage-act', onclick: () => act() });
+  const detAction = h('button.mn-btn.mn-gar-act', { type: 'button', 'data-nav': true, 'data-nav-line': true, 'data-key': 'garage-act', onclick: () => act() });
   const detail = h('div.mn-gar-detail', null, h('div.mn-gar-det-head', null, detName, detPrice), detReason, detAction);
   const right = h('section.mn-gar-right', null, compact, tabs, list, detail);
 
@@ -172,8 +172,9 @@ export function garageScreen(menu: Menu): Screen {
 
   /**
    * ◀ from the right column crosses the stage to the left column's control (SIGN IN, else GANA
-   * PUNTOS), ▶ from there back to the row picked; without a left column (a phone) the arrows are
-   * the spatial pick's (the rail).
+   * PUNTOS), ▶ from there back to the row picked. The rows and the action are lines (nav.ts): ▶
+   * from them bounces, never up to the ESTADIOS tab (its focus would switch the list), and without
+   * a left column (a phone) ◀ goes to the rail, else bounces.
    */
   const updateSides = (): void => {
     const visible = (e: HTMLElement): boolean => e.getClientRects().length > 0;

@@ -4,7 +4,8 @@
  * ✓ for the one in use, and its state line ("Equipado · Gratis", "Bloqueado · 1.500 pts"); the row
  * picked has the lime bar on its left, a locked car the lock on its well. `data-state` carries the
  * state for the stylesheet (a locked car's outline in --edge-hi, one to come dashed). `set` writes
- * only what changed, so a focused row keeps its focus. Built on call.
+ * only what changed, so a focused row keeps its focus. A row is a list's line (`data-nav-line`,
+ * ui/nav.ts): ◀ ▶ never leave it for the tab above it. Built on call.
  */
 import { h } from '../dom';
 import { icon } from './icons';
@@ -23,7 +24,7 @@ export function garageRow(key: string, art: Element, name: string, onClick: (e: 
   const line = h('span.mn-car-state');
   const el = h(
     'button.mn-car-row',
-    { type: 'button', 'data-nav': true, 'data-key': key, 'aria-pressed': 'false', onclick: (e: MouseEvent) => onClick(e) },
+    { type: 'button', 'data-nav': true, 'data-nav-line': true, 'data-key': key, 'aria-pressed': 'false', onclick: (e: MouseEvent) => onClick(e) },
     h('span.mn-car-well', null, art, lock),
     h('span.mn-car-text', null, h('b.mn-car-name', null, h('span', null, name), check), line),
   );

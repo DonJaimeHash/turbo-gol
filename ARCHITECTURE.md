@@ -452,7 +452,7 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         (hold to confirm: a pointer, Enter / Space / OK, or a pad's A through
                         MenuHost.acceptHeld; a release or a repeat after it presses nothing),
                         carSilhouettes.ts (the five cars' outlines on a 72 x 36 grid), carRow.ts
-                        (GARAJE's list row), keypad.ts
+                        (GARAJE's list row, a line), keypad.ts
                         (mn-keypad, plan PR 14: the on-screen keys Menu.openKeypad mounts over the
                         sheets when OK / A lands on a field without a fine pointer: A–Z / 0–9 and
                         . - _ @, the case, ⌫, SPACE, DONE, ◀ ▶ along a row (onNavSide, round); DONE
@@ -642,7 +642,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         once the focus rested 300 ms, A on the row picked to its action; EQUIPAR
                         (Garage.equip), CANJEAR's sheet held 700 ms (SheetAction.hold) →
                         Garage.claim → EQUIPAR AHORA, a locked car's CANJEAR never lime with its
-                        reason, its press explaining; ◀ ▶ cross the stage (onNavSide); ESTADIOS:
+                        reason, its press explaining; ◀ ▶ cross the stage (onNavSide), the rows
+                        and the action are lines (data-nav-line: ▶ bounces); ESTADIOS:
                         the three themes, USAR = chooseStadium (components/stadium.ts); .mn[data-screen='garage']
                         drops the shell's backdrop, super low's too; window.__garage samples in dev
                         / VITE_UI_FIT; garageModel.ts, pure: rowLine, detailView, pointsCard,

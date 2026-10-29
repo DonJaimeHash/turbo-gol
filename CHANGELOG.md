@@ -16,6 +16,7 @@ All notable changes to Turbogol are documented here. The format follows
   turning in the middle, and on the right CARS │ STADIUMS (Q / E, LT / RT, CH+ / CH−), a row per
   car with its outline and its state (Equipped, Yours, Redeemable, Locked · 1,500 pts) and the
   card of the car you picked with its action. Resting on a car for a moment shows it on yours.
+  ▶ on a row (the arrows, a controller, a remote) stays on it instead of switching to STADIUMS.
   EQUIP drives it from your next match, offline and online. A car is redeemed with server points:
   hold CONFIRM for a moment (A, Enter, OK, a mouse button or a finger) and it is yours.
 - Server points are earned only by hosting a community server, never sold, never won by playing,
