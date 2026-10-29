@@ -11,7 +11,8 @@
  *   POST /refresh         { old, oldFamily?, next }                  -> UserRef | 401 bad_refresh | 401 refresh_reused
  *                                                                     (the family revoked) | 409 refresh_race (two tabs)
  *   POST /refresh-owner   { hash }                                   -> UserRef & { kind, device } | 404
- *   POST /logout          { hash }                                   (that device: its whole family)
+ *   POST /logout          { hash, family? }                          (that device: its whole family, the one the
+ *                                                                     token names too, live or rotated)
  *   POST /sessions        { userId, current? }                       -> { sessions: DeviceRow[] }
  *   POST /sessions/revoke { userId, id }                             -> { revoked } (that device's tokens)
  *   POST /sessions/revoke-all { userId }                             -> { revoked } (every device, this one too)
@@ -343,7 +344,7 @@ export class AccountsDO extends DurableObject<Env> {
         return r ? json(r) : error(404, 'bad_refresh');
       }
       case '/logout': {
-        if (isHex(b.hash, 64)) s.deleteRefresh(b.hash);
+        if (isHex(b.hash, 64)) s.deleteRefresh(b.hash, isHex(b.family, 32) ? b.family : null);
         return json({ ok: true });
       }
       case '/sessions': {

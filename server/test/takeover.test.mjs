@@ -873,3 +873,38 @@ test('auth-5 (review): a password checked behind a stolen session is throttled p
   assert.deepEqual([again.status, again.json.error], [429, 'throttled']);
   assert.ok(again.json.retryAfterMs > 55_000, 'the next wait is 60 s');
 });
+
+test('auth-4 (review): signing out revokes the whole family: that cookie, an older copy, and a thief\'s newer chain all get 401; the account\'s other devices stay', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  // The cookie this browser holds and an older copy of its family; a second browser of the account.
+  const ana = await passwordAccount(env, obj, 'Salida', ip(0));
+  const older = ana.rt;
+  const now = await refresh(env, older, ip(0));
+  assert.equal(now.status, 200);
+  const other = await login(env, 'Salida', KEY, ip(3));
+  assert.equal(other.status, 200);
+  const out = await post(env, '/api/auth/logout', { ip: ip(0), cookie: '__Host-tg_rt=' + now.rt });
+  assert.equal(out.status, 200);
+  assert.match(setCookies(out).join('\n'), /__Host-tg_rt=;[^\n]*Max-Age=0/, 'the cookie is cleared');
+  assert.equal((await refresh(env, now.rt, ip(0))).status, 401, 'the signed-out cookie no longer refreshes');
+  assert.equal((await refresh(env, older, ip(0))).status, 401, 'nor does an older copy of its family');
+  assert.equal((await refresh(env, cookieOf(other, '__Host-tg_rt'), ip(3))).status, 200, 'another device of the account stays signed in');
+  // A thief copied a cookie and rotated it first; the owner signs out with the copy the browser still holds.
+  const bea = await passwordAccount(env, obj, 'Salida2', ip(1));
+  const t1 = await refresh(env, bea.rt, ip(2));
+  const t2 = await refresh(env, t1.rt, ip(2));
+  assert.equal(t2.status, 200);
+  assert.equal((await post(env, '/api/auth/logout', { ip: ip(1), cookie: '__Host-tg_rt=' + bea.rt })).status, 200);
+  assert.equal((await refresh(env, t2.rt, ip(2))).status, 401, "the thief's newer token goes with the family");
+});
+
+test('auth-4 (review): REFRESH_TOKEN_RE takes every cookie this code mints and every token from before families, nothing else (the merge with sec/edge-limits keeps it)', async () => {
+  const { env, obj } = makeEnv();
+  const ana = await passwordAccount(env, obj, 'Forma', ips()(0));
+  assert.match(ana.rt, A.REFRESH_TOKEN_RE, 'a family token');
+  assert.match(Buffer.from(new Uint8Array(32).fill(9)).toString('base64url'), A.REFRESH_TOKEN_RE, 'a 43-character token from before');
+  for (const bad of ['', 'x', 'a'.repeat(42), 'a'.repeat(44), 'a'.repeat(21) + '.' + 'b'.repeat(43), 'a'.repeat(22) + '.' + 'b'.repeat(42), 'a'.repeat(22) + '!' + 'b'.repeat(43)]) {
+    assert.doesNotMatch(bad, A.REFRESH_TOKEN_RE, JSON.stringify(bad));
+  }
+});

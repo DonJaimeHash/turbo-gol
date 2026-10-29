@@ -428,11 +428,16 @@ export class AccountStore {
     return { ...this.refOf(u), kind, device: deviceId(r), ...(kind === 'tv' ? { tv: true } : { authAt: num(r.auth_at) }) };
   }
 
-  /** Sign this device out: its token and every other one of its family. */
-  deleteRefresh(hash: string): void {
+  /**
+   * Sign this device out: its token and every other one of its family. `family`: the family the
+   * presented token names (accountRoutes.ts familyOf), revoked even when that token is no longer
+   * the live one: a copy rotated by someone else first (the thief's newer chain) goes too.
+   */
+  deleteRefresh(hash: string, family: string | null = null): void {
     const r = this.sql.exec('SELECT family FROM refresh WHERE hash = ?', hash).toArray()[0];
     this.sql.exec('DELETE FROM refresh WHERE hash = ?', hash);
     if (r && r.family !== null && r.family !== undefined) this.sql.exec('DELETE FROM refresh WHERE family = ?', str(r.family));
+    if (family !== null) this.sql.exec('DELETE FROM refresh WHERE family = ?', family);
   }
 
   /** The account's signed-in devices (one per family), the latest used first; `currentHash`: the caller's token, marked current. */

@@ -6,7 +6,8 @@
  *   POST /api/auth/login      { username, password }            -> AccountSession + refresh cookie
  *   POST /api/auth/refresh    (refresh cookie)                  -> AccountSession (token rotated) | 401 (a copied token:
  *                             its whole family revoked) | 409 refresh_race (another tab rotated it: retry, cookie kept)
- *   POST /api/auth/logout     (refresh cookie)                  -> { ok } + cookie cleared (this device)
+ *   POST /api/auth/logout     (refresh cookie)                  -> { ok } + cookie cleared (this device: its whole
+ *                             family, a copy rotated meanwhile too)
  *   GET  /api/auth/sessions   Bearer (account, not a TV) [cookie] -> SessionsAnswer: the signed-in devices
  *   POST /api/auth/sessions/revoke Bearer { id }                -> { revoked } (that device signed out)
  *   POST /api/auth/sessions/revoke-all Bearer                   -> { revoked } + cookie cleared (every device, this one too)
@@ -204,6 +205,14 @@ export function recoveryCodeHash(code: string): Promise<string> {
 function newRefreshToken(familyPart?: string): string {
   return (familyPart ?? base64urlEncode(randomBytes(16))) + '.' + base64urlEncode(randomBytes(32));
 }
+
+/**
+ * Every refresh cookie this code takes: newRefreshToken's "<22>.<43>", or a token from before
+ * families (43 alone, still live for up to 30 days). Any other value names no row. MERGE NOTE:
+ * sec/edge-limits has a REFRESH_TOKEN_RE of the 43-character form alone; keep this one, or every
+ * rotated cookie is refused (everyone signed out at their next refresh) and logout revokes nothing.
+ */
+export const REFRESH_TOKEN_RE = /^(?:[A-Za-z0-9_-]{22}\.)?[A-Za-z0-9_-]{43}$/;
 
 /** A token's family part, or null for a token from before families. */
 function familyPartOf(token: string): string | null {
@@ -470,6 +479,8 @@ async function refresh(c: RouteContext): Promise<Response> {
   if (c.limited('refresh:' + ipOf(c.request), 60)) return error(429, 'rate_limited');
   const token = cookieOf(c.request, REFRESH_COOKIE);
   if (!token || token.length > 128) return withCookies(error(401, 'no_refresh'), []);
+  // What the object answers for a token it does not hold, without asking it.
+  if (!REFRESH_TOKEN_RE.test(token)) return withCookies(error(401, 'bad_refresh'), [clearCookie(REFRESH_COOKIE)]);
   // The next token keeps this one's family part: a copy of either names the same family.
   const next = newRefreshToken(familyPartOf(token) ?? undefined);
   const r = await accountsJson<UserRef>(c.env, '/refresh', { old: await sha256Hex(token), oldFamily: await familyOf(token), next: await grantFor(next, c.request) });
@@ -482,7 +493,8 @@ async function refresh(c: RouteContext): Promise<Response> {
 async function logout(c: RouteContext): Promise<Response> {
   if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
   const token = cookieOf(c.request, REFRESH_COOKIE);
-  if (token && token.length <= 128) await accountsCall(c.env, '/logout', { hash: await sha256Hex(token) });
+  // The whole family the cookie names goes, even when this copy was rotated meanwhile (a thief's newer chain).
+  if (token && REFRESH_TOKEN_RE.test(token)) await accountsCall(c.env, '/logout', { hash: await sha256Hex(token), family: await familyOf(token) });
   return withCookies(json({ ok: true }), [clearCookie(REFRESH_COOKIE)]);
 }
 
