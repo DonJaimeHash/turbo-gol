@@ -160,6 +160,8 @@ export interface PageKit {
   toggleRow(label: string, get: () => boolean, set: (v: boolean) => void): { row: HTMLElement; item: PageItem; refresh: () => void };
   /** `el` is the focus stop of `item` (a pointer on it focuses it). */
   bindFocus(el: HTMLElement, item: PageItem): void;
+  /** Start typing in `input` (RENAME, OK on the name): the host's way (a TV's keypad at once); without one, focused with its text selected. */
+  editText?(input: HTMLInputElement): void;
   /** The page's focus stops changed (a row shown or hidden): the host puts the focus back on the screen. */
   relayout?(): void;
 }
@@ -377,8 +379,7 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
   const onRename = (): void => {
     if (!own(currentPreset())) return;
     group.pick(renameBtn);
-    nameInput.focus();
-    nameInput.select();
+    editName();
   };
   const onDelete = (): void => {
     const src = source();
@@ -436,13 +437,14 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
     update();
   });
   nameRow.append(kit.line('hud-settings-label', t('rules.name')), nameInput);
-  const nameItem: PageItem = {
-    el: nameRow,
-    accept: () => {
+  function editName(): void {
+    if (kit.editText) kit.editText(nameInput);
+    else {
       nameInput.focus();
       nameInput.select();
-    },
-  };
+    }
+  }
+  const nameItem: PageItem = { el: nameRow, accept: editName };
   kit.bindFocus(nameRow, nameItem);
 
   const status = kit.line('hud-settings-hint hud-exp-status');
@@ -532,6 +534,7 @@ export function buildExperimentalPage(kit: PageKit, options: () => ExperimentalO
     // Ajustes shows this tab's actions with the tab (selectTab): the button itself hides, so a guest,
     // a switch that is off or a built-in never shows Reset, whenever the tab is selected.
     resetBtn.hidden = !v.editor || !mine;
+    actions.hidden = resetBtn.hidden; // its one button gone: no empty (0×0) focus stop left in the page head
     if (!v.editor) return;
     const src = source() as PresetSource;
     pickerValue.textContent = cur === null ? '' : presetName(cur);

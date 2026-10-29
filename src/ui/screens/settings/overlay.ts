@@ -113,7 +113,9 @@ export class SettingsOverlay {
     if (touchMode() || !this.isOpen) return;
     const a = document.activeElement;
     if (a instanceof HTMLElement && this.root.contains(a) && a.hasAttribute('data-nav') && a.getClientRects().length > 0) return;
-    this.nav.first(true);
+    const own = this.view.firstControl();
+    if (own !== null && !isEditable(own)) this.nav.focus(own);
+    else this.nav.first(true);
     if (this.nav.current === null) this.nav.focus(this.view.activeTab);
   }
 

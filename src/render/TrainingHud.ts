@@ -52,8 +52,11 @@ export interface TrainingHints {
   /** The menu accept / back keys for the summary panel (fixed, per device). */
   accept: string;
   back: string;
-  /** The device in use: a finger gets the ↺ button and the pause instead of keys. */
-  device: 'kbm' | 'pad' | 'touch';
+  /**
+   * The device in use: a finger gets the ↺ button and the pause instead of keys; a TV remote (no
+   * controller) only what it has: Back pauses, OK and Back on the summary.
+   */
+  device: 'kbm' | 'pad' | 'touch' | 'remote';
 }
 
 function el(tag: string, className: string, text?: string): HTMLElement {
@@ -283,26 +286,29 @@ export class TrainingHud {
    */
   setHints(h: TrainingHints): void {
     const touch = h.device === 'touch';
+    const remote = h.device === 'remote';
     const text = touch
       ? [t(this.freeplay ? 'trainingHud.touchResetAll' : 'trainingHud.keyResetShot', { key: '↺' }), t(this.freeplay ? 'trainingHud.touchPauseFree' : 'trainingHud.touchPausePack')].join('\n')
-      : this.freeplay
-        ? [
-            t('trainingHud.keyResetBall', { key: h.reset }),
-            t('trainingHud.keyResetCar', { key: h.resetCar }),
-            t('trainingHud.keyBoost', { key: h.boost }),
-            t('trainingHud.keyPause', { key: h.pause }),
-          ].join('\n')
-        : [
-            t('trainingHud.keyResetShot', { key: h.reset }),
-            t('trainingHud.keyPrevNext', { prev: h.prev, next: h.next }),
-            t('trainingHud.keyPause', { key: h.pause }),
-          ].join('\n');
+      : remote
+        ? t('trainingHud.keyPause', { key: h.back }) // a remote's Back pauses; its other keys do nothing here
+        : this.freeplay
+          ? [
+              t('trainingHud.keyResetBall', { key: h.reset }),
+              t('trainingHud.keyResetCar', { key: h.resetCar }),
+              t('trainingHud.keyBoost', { key: h.boost }),
+              t('trainingHud.keyPause', { key: h.pause }),
+            ].join('\n')
+          : [
+              t('trainingHud.keyResetShot', { key: h.reset }),
+              t('trainingHud.keyPrevNext', { prev: h.prev, next: h.next }),
+              t('trainingHud.keyPause', { key: h.pause }),
+            ].join('\n');
     if (text !== this.lastHints) {
       this.lastHints = text;
       this.keys.textContent = text;
     }
     // A controller's D-pad ◀ ▶ walk the summary's buttons (no shot picking there); a finger taps them.
-    const sum = touch ? '' : t(h.device === 'pad' ? 'trainingHud.summaryHintPad' : 'trainingHud.summaryHint', { reset: h.reset, back: h.back, prev: h.prev, next: h.next });
+    const sum = touch ? '' : t(remote ? 'trainingHud.summaryHintRemote' : h.device === 'pad' ? 'trainingHud.summaryHintPad' : 'trainingHud.summaryHint', { reset: h.reset, accept: h.accept, back: h.back, prev: h.prev, next: h.next });
     if (sum !== this.lastSumHint) {
       this.lastSumHint = sum;
       this.sumHint.textContent = sum;
@@ -395,8 +401,10 @@ export class TrainingHud {
     this.setWaiting(false);
     this.sumPack.textContent = packName;
     this.sumScore.textContent = `${s.passed} / ${s.total}`;
-    this.sumBest.textContent = s.newBest ? t('trainingHud.newBest') : t('trainingHud.best', { best: s.best, total: s.total });
-    this.sumBest.classList.toggle('trn-new-best', s.newBest);
+    // A first run with no shot passed is no record to cheer (it is still the one stored).
+    const record = s.newBest && s.passed > 0;
+    this.sumBest.textContent = record ? t('trainingHud.newBest') : t('trainingHud.best', { best: s.best, total: s.total });
+    this.sumBest.classList.toggle('trn-new-best', record);
     const els: HTMLElement[] = [];
     this.buildDots(this.sumDots, els, results.length);
     for (let i = 0; i < els.length; i++) this.paintDot(els[i], results[i] === 'pass' ? 1 : results[i] === 'fail' ? 2 : 0, false);

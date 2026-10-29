@@ -1367,3 +1367,16 @@ test('touch.css: every size follows --tc-k, the stick and the buttons --tc-alpha
   assert.match(touchCss, /opacity: calc\(0\.45 \* var\(--tc-alpha, 1\)\)/);
   assert.match(touchCss, /opacity: var\(--tc-alpha, 1\);/);
 });
+
+test('touch.css: left-handed, the safe areas swap sides with the buttons and their text stays left to right; PAUSE and CAM stay opaque', () => {
+  const lefty = touchCss.match(/\n\.tc-root\.tc-lefty \{[^}]*\}/)?.[0] ?? '';
+  assert.match(lefty, /--tc-safe-start: var\(--safe-right\);/);
+  assert.match(lefty, /--tc-safe-end: var\(--safe-left\);/);
+  for (const cls of ['boost', 'jump', 'drift']) {
+    const rule = touchCss.match(new RegExp(`\n\.tc-${cls} \{[^}]*\}`))?.[0] ?? '';
+    assert.match(rule, /inset-inline-end: calc\(var\(--tc-safe-end\)/, `.tc-${cls}: the buttons' side's safe area`);
+  }
+  assert.match(touchCss, /--tc-left: max\(28px, calc\(var\(--tc-safe-start\) \+ 20px\)\);/, "the stick's side's");
+  assert.match(touchCss, /\.tc-lefty \.tc-btn > \* \{\s*direction: ltr;/);
+  assert.match(touchCss, /\.tc-pause,\s*\.tc-cam \{\s*opacity: 1;/);
+});

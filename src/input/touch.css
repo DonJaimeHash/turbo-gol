@@ -18,9 +18,11 @@
  * children never take the pointer.
  *
  * Settings > Controls > Touch (TouchControls.applySettings): --tc-k scales the stick and the
- * buttons (S 0.85, M 1, L 1.15), --tc-alpha their opacity; `tc-lefty` mirrors them (the insets are
- * logical, the root's direction flips them; PAUSE keeps its physical corner, the scorebug is
- * the HUD's).
+ * buttons (S 0.85, M 1, L 1.15), --tc-alpha the opacity of the stick and the driving buttons
+ * (PAUSE and CAM stay whole: they have to be found); `tc-lefty` mirrors them (the insets are
+ * logical, the root's direction flips them, and --tc-safe-start / --tc-safe-end follow with the
+ * safe areas; the buttons' own text stays left to right; PAUSE keeps its physical corner, the
+ * scorebug is the HUD's).
  *
  * Touch mode (`tg-touch` on <html>) rules of other components live with them: the menus' back
  * button, hints and focus rings in src/ui/menu.css, the pause screen's RESUME / QUIT in
@@ -36,8 +38,11 @@
   --tc-small: calc(clamp(48px, 12vh, 60px) * var(--tc-k, 1));
   --tc-cam: calc(clamp(52px, 14.4vh, 64px) * var(--tc-k, 1));
   --tc-stick: calc(clamp(104px, 34vh, 168px) * var(--tc-k, 1));
-  /* The stick never starts this close to the left edge (Android's back gesture lives there). */
-  --tc-left: max(28px, calc(var(--safe-left) + 20px));
+  /* The safe areas on the stick's side and on the buttons' (swapped for the left-handed). */
+  --tc-safe-start: var(--safe-left);
+  --tc-safe-end: var(--safe-right);
+  /* The stick never starts this close to its edge (Android's back gesture lives there). */
+  --tc-left: max(28px, calc(var(--tc-safe-start) + 20px));
   position: absolute;
   inset: 0;
   display: none;
@@ -72,6 +77,12 @@
    physical, the cards' text reads as ever. */
 .tc-root.tc-lefty {
   direction: rtl;
+  --tc-safe-start: var(--safe-right);
+  --tc-safe-end: var(--safe-left);
+}
+
+.tc-lefty .tc-btn > * {
+  direction: ltr;
 }
 
 .tc-lefty .tc-cards {
@@ -157,7 +168,7 @@
    layer moved by translateY at 10 Hz, clipped by the circle: TouchControls.setBoost); empty, low
    and full as the Hud's plate. */
 .tc-boost {
-  inset-inline-end: calc(var(--safe-right) + var(--tc-edge));
+  inset-inline-end: calc(var(--tc-safe-end) + var(--tc-edge));
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-boost);
   height: var(--tc-boost);
@@ -217,7 +228,7 @@
 }
 
 .tc-jump {
-  inset-inline-end: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
+  inset-inline-end: calc(var(--tc-safe-end) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
   bottom: calc(var(--safe-bottom) + var(--tc-edge));
   width: var(--tc-jump);
   height: var(--tc-jump);
@@ -227,7 +238,7 @@
 
 /* DRIFT is neutral (plan M48: azure only means a team). */
 .tc-drift {
-  inset-inline-end: calc(var(--safe-right) + var(--tc-edge) + (var(--tc-boost) - var(--tc-drift)) / 2);
+  inset-inline-end: calc(var(--tc-safe-end) + var(--tc-edge) + (var(--tc-boost) - var(--tc-drift)) / 2);
   bottom: calc(var(--safe-bottom) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap));
   width: var(--tc-drift);
   height: var(--tc-drift);
@@ -251,9 +262,15 @@
   background: rgba(14, 17, 23, 0.86);
 }
 
+/* Not see-through with the controls' opacity: at 30 % the pause and the camera are still found. */
+.tc-pause,
+.tc-cam {
+  opacity: 1;
+}
+
 .tc-cam,
 .tc-reset {
-  inset-inline-end: calc(var(--safe-right) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap) + (var(--tc-jump) - var(--tc-cam)) / 2);
+  inset-inline-end: calc(var(--tc-safe-end) + var(--tc-edge) + var(--tc-boost) + var(--tc-gap) + (var(--tc-jump) - var(--tc-cam)) / 2);
   width: var(--tc-cam);
   height: var(--tc-cam);
 }

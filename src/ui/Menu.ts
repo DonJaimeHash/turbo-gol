@@ -321,6 +321,10 @@ export interface Screen {
   keysTaken?(): boolean;
   /** Focus zones of its own, before the shell's (Ajustes' rail: a side zone, crossed with ◀ ▶ only). */
   zones?(): NavZone[];
+  /** ▼ past its last row stays on it (a bounce), never the footer: a long page (Ajustes). */
+  readonly floor?: boolean;
+  /** Its first focus when nothing is remembered, before the main zone's first (Ajustes: its page's first control, not the head's reset). */
+  firstFocus?(): HTMLElement | null;
   /**
    * The shell is about to take the player off this screen without its own Back (a section, a
    * crumb, the wordmark, the chip, the search pill): a function that asks first and calls `go`
@@ -675,11 +679,19 @@ export class Menu {
    * root), but from a stacked screen of another section it is a detour on top of it (Competitive's
    * SIGN IN opens PERFIL: Back comes back to Competitive); another screen is stacked on its
    * section's root (brought back to the top when already in the stack; `reset`: right on the root,
-   * whatever was stacked). `tab`: the screen's tab to show (Screen.setTab: MODOS').
+   * whatever was stacked). `tab`: the screen's tab to show (Screen.setTab: MODOS'). `detour`: a
+   * section's root opened from another section's root stacks on it too (CLASIFICACIÓN's SIGN IN).
+   * A screen not on top already is a new visit: its focus memory goes, so it starts on its first
+   * control (data-autofocus, Screen.firstFocus); Back, ‹, a crumb or a section come back to a
+   * screen with its memory.
    */
-  open(id: string, reset = false, tab?: string): void {
+  open(id: string, reset = false, tab?: string, detour = false): void {
     this.closeKeypad(false); // a screen opened under the keypad (a join link): what was typed goes to its field first
-    const next = stackAfterOpen({ section: this.section, stack: this.stack.map((s) => s.id) }, id, reset);
+    if (this.top()?.id !== id) {
+      this.memory.forget('last:' + id);
+      this.memory.forget('stage:' + id);
+    }
+    const next = stackAfterOpen({ section: this.section, stack: this.stack.map((s) => s.id) }, id, reset, detour);
     const stack = next.stack.map((x) => this.screen(x));
     if (tab !== undefined) this.screen(id).setTab?.(tab);
     this.top()?.hide?.();
@@ -1019,7 +1031,8 @@ export class Menu {
     const top = this.top();
     if (top === null) return;
     const targets = skipFields ? this.nav.targets().filter((t) => !isEditable(t)) : this.nav.targets();
-    const el = this.memory.recall('last:' + top.id, targets, navKey) ?? this.memory.recall('stage:' + top.id, targets, navKey);
+    const own = top.firstFocus?.() ?? null;
+    const el = this.memory.recall('last:' + top.id, targets, navKey) ?? this.memory.recall('stage:' + top.id, targets, navKey) ?? (own !== null && targets.includes(own) ? own : null);
     if (el !== null) this.nav.focus(el);
     else this.nav.first(skipFields);
     if (this.nav.current !== null) return;
@@ -1041,18 +1054,25 @@ export class Menu {
       ...(this.top()?.zones?.() ?? []),
       { name: 'rail', el: this.rail.el, side: true },
       { name: 'top', el: this.topBar.el },
-      { name: 'stage', el: this.stage, main: true },
+      { name: 'stage', el: this.stage, main: true, floor: this.top()?.floor === true },
       { name: 'bottom', el: this.hintBar.el },
       { name: 'tabs', el: this.tabbar.el },
     ];
   }
 
   /**
-   * Where an arrow lands entering `zone`: the stage's control focused last on this screen; a bar's
-   * active section (or ‹), so ↑ from the stage goes to the section shown; else the zone's last.
+   * Where an arrow lands entering `zone`: the stage's control focused last on this screen, else its
+   * first focus (Screen.firstFocus, data-autofocus: ▼ from a section tab that switched to it lands
+   * where the screen starts, at any interface size; ▶ from Ajustes' rail on its page's first
+   * control); a bar's active section (or ‹), so ↑ from the stage goes to the section shown; else
+   * the zone's last.
    */
   private zoneEntry(zone: NavZone, targets: readonly HTMLElement[]): HTMLElement | null {
-    if (zone.name === 'stage') return this.memory.recall('stage:' + (this.top()?.id ?? ''), targets, navKey);
+    if (zone.name === 'stage') {
+      const top = this.top();
+      const own = top?.firstFocus?.() ?? null;
+      return this.memory.recall('stage:' + (top?.id ?? ''), targets, navKey) ?? (own !== null && targets.includes(own) ? own : null) ?? targets.find((e) => e.hasAttribute('data-autofocus')) ?? null;
+    }
     if (zone.name !== 'bottom') {
       const entry = targets.find((e) => e.hasAttribute('data-nav-entry'));
       if (entry !== undefined) return entry;

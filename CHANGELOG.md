@@ -333,6 +333,30 @@ All notable changes to Turbogol are documented here. The format follows
   busy server has its own message.
 - The anti-bot check no longer runs ahead for a signed-in account, and no longer logs two warnings in
   the browser console on every page.
+- Moving with the arrows, a controller or a TV remote:
+  - ◀ ▶ on a row of Settings stay on that row: at its ends they go to the tabs on the left or stop,
+    instead of jumping to a control on another row (Reduced motion, Super low on a TV).
+  - ▼ past the last row of Settings stops there instead of leaving for the "Source code" link.
+  - Settings always opens on the first control of its page, however you open it (the gear, Start,
+    EDIT PRESETS), and Back from RESET goes to the tab first.
+  - On a TV, ▼ from Performance goes to Resolution scale, not to Ultra below it, and ▲ comes back
+    into the quality cards.
+  - Opening a screen again (the lobby pill, PROFILE after SIGN IN) starts on its main button
+    instead of where you left it the last time; Back still returns where you were.
+  - ▼ from PROFILE in the top bar of a TV lands on SIGN IN WITH YOUR PHONE at every interface size.
+  - Leaderboard: ◀ on a 1v1 row keeps your place; from your pinned row ▲ goes to the list's last
+    row, ▼ to the footer instead of the list's hidden rows, ◀ ▶ keep you on it, and the triggers
+    page from there instead of jumping to #1; Home and End go to the first and last row; "Sign in
+    to see your position" brings you back to the leaderboard once you sign in.
+  - RENAME a preset on a TV opens the on-screen keys with one OK.
+- Picking a quality in Settings during an online match keeps it at once, with no 10-second trial,
+  so a second loading screen never covers the match. A ranked result waits until Settings closes.
+- The interface size options follow the phone when it turns while Settings is open.
+- Left-handed touch controls keep clear of the notch on the side they moved to, and the opacity
+  setting no longer fades PAUSE and CAM. "Vibrate on press" shows only on phones and tablets.
+- Training: a first run with no shot passed no longer says "New best!", and with a TV remote the
+  hints name only its own keys (Back to pause; OK and Back on the summary).
+- MY SERVER counts the probation matches the servers really need, not a fixed 20.
 - When a new version of the game is out and yours is too old to play online, a window says so and
   offers RELOAD NOW (selected), instead of a message that vanished after four seconds; if you say
   NOT NOW, an "UPDATE TO PLAY" pill stays in the top bar until you reload.

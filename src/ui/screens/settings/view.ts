@@ -102,6 +102,8 @@ export interface SettingsOptions {
   readonly qualityNote: string;
   /** A pick that waits for the online match to end (it reloads the page), or null. */
   readonly pending: Quality | null;
+  /** An online match runs under Ajustes (the pause): a picked tier stays at once, no trial (its revert would be a second loading screen over the live match). */
+  readonly liveMatch?: boolean;
   /** Absent: the guest's locked line. */
   readonly experimental?: ExperimentalOptions;
   /** The live settings: the rows write into it in place. */
@@ -130,6 +132,8 @@ export interface SettingsHooks {
   focus(el: HTMLElement): void;
   /** A row came or went under the focus: the host puts it back on the screen. */
   refocus(): void;
+  /** A field to type in with no fine pointer (a TV remote, a controller): the host's keypad, true when it came up (the menus'). */
+  keypad?(field: HTMLInputElement): boolean;
   /** A guest's SIGN IN (the menus: PERFIL as a detour). */
   signIn?(): void;
   /** JUEGO's language picker (the menus only: the change reloads the page). */
@@ -444,9 +448,15 @@ export class SettingsView {
     if (tab === 'experimental') this.opts?.experimental?.onOpen?.();
   }
 
+  /** The page's first control (below its head: never RESTABLECER), the first focus of an open; null when it shows none. */
+  firstControl(): HTMLElement | null {
+    for (const e of this.body.querySelectorAll<HTMLElement>('[data-nav]')) if (e.getClientRects().length > 0 && e.closest('[hidden]') === null) return e;
+    return null;
+  }
+
   /**
-   * Back inside the view: a capture cancels; the focus in the page goes to its tab. False when
-   * nothing is left to undo here (the host closes the view).
+   * Back inside the view: a capture cancels; the focus in the page (its head's reset too) goes to
+   * its tab. False when nothing is left to undo here (the host closes the view).
    */
   back(): boolean {
     if (this.capture !== null) {
@@ -454,7 +464,7 @@ export class SettingsView {
       return true;
     }
     const a = document.activeElement;
-    if (!touchMode() && a instanceof HTMLElement && this.body.contains(a)) {
+    if (!touchMode() && a instanceof HTMLElement && this.page.contains(a)) {
       this.hooks.focus(this.activeTab);
       return true;
     }
@@ -771,7 +781,8 @@ export class SettingsView {
   }
 
   private buildGraphics(): [HTMLElement, HTMLElement | null] {
-    const row = h('div.mn-qcards', { role: 'radiogroup', 'aria-label': t('settings.quality'), 'data-nav-row': true });
+    // One line of the page however it wraps (a TV: two and one): ▲ ▼ leave the cards whole, ◀ ▶ walk them.
+    const row = h('div.mn-qcards', { role: 'radiogroup', 'aria-label': t('settings.quality'), 'data-nav-row': true, 'data-nav-line': true });
     for (const q of CARD_QUALITIES) {
       const tag = h('span.mn-qcard-tag');
       const bars = h('span.mn-qcard-bars', { 'aria-hidden': 'true' }, ...[1, 2, 3].map((i) => h(`span.mn-qcard-bar${i <= QUALITY_BARS[q] ? '.mn-qcard-bar-on' : ''}` as 'span')));
@@ -834,9 +845,12 @@ export class SettingsView {
 
   private buildExperimental(): [HTMLElement, HTMLElement | null] {
     const page = buildExperimentalPage(
-      experimentalKit(() => {
-        if (this.openNow && this.tab === 'experimental') this.hooks.refocus();
-      }),
+      experimentalKit(
+        () => {
+          if (this.openNow && this.tab === 'experimental') this.hooks.refocus();
+        },
+        (input) => this.hooks.keypad?.(input) === true,
+      ),
       () => this.opts?.experimental ?? null,
     );
     this.exp = page;
@@ -869,16 +883,30 @@ export class SettingsView {
       const saved = savedLanguage();
       setText(this.langValue, saved === null ? t('lang.auto', { language: LOCALES[systemLanguage()].name }) : LOCALES[saved].name);
     }
-    if (this.uiSizes !== null && this.uiSizeRow !== null) {
-      // This screen's sizes (a turn changes them); one alone (a small phone): no row.
-      const listed = interfaceSizes(layoutNow(), window.innerWidth, window.innerHeight);
-      this.uiSizes.buttons.forEach((b, i) => {
-        const off = !listed.includes(ALL_UI_SIZES[i]);
-        if (b.hidden !== off) b.hidden = off;
-      });
-      const alone = listed.length < 2;
-      if (this.uiSizeRow.hidden !== alone) this.uiSizeRow.hidden = alone;
+    this.refreshSizes();
+  }
+
+  /** The interface sizes this screen lists (a turn changes them: the timer reads them again); one alone (a small phone): no row. */
+  private refreshSizes(): void {
+    if (this.uiSizes === null || this.uiSizeRow === null) return;
+    const listed = interfaceSizes(layoutNow(), window.innerWidth, window.innerHeight);
+    const had = this.uiSizeRow.contains(document.activeElement);
+    let changed = false;
+    this.uiSizes.buttons.forEach((b, i) => {
+      const off = !listed.includes(ALL_UI_SIZES[i]);
+      if (b.hidden === off) return;
+      b.hidden = off;
+      changed = true;
+    });
+    const alone = listed.length < 2;
+    if (this.uiSizeRow.hidden !== alone) {
+      this.uiSizeRow.hidden = alone;
+      changed = true;
     }
+    this.uiSizes.refresh();
+    // The focused size went with the turn: back on the screen.
+    const a = document.activeElement;
+    if (changed && had && this.openNow && (!(a instanceof HTMLElement) || a === document.body || a.closest('[hidden]') !== null)) this.hooks.refocus();
   }
 
   /** The devices detected now (a controller comes and goes): the sections and their picker. */
@@ -936,6 +964,7 @@ export class SettingsView {
       this.updatePadStatus();
       if (this.capture === null) this.updateSections();
     }
+    if (this.tab === 'game') this.refreshSizes();
     const tr = this.trial;
     if (tr !== null && !this.switching) {
       if (trialSecondsLeft(tr, performance.now()) <= 0) this.revertTrial();
@@ -1093,8 +1122,8 @@ export class SettingsView {
       this.switching = false;
     }
     this.opts = this.options();
-    // Out of sight by now (a match found during the switch): the new tier stays, as on leaving.
-    this.trial = back === q || this.held ? null : startTrial(back, q, performance.now());
+    // Out of sight by now (a match found during the switch), or over a live match: the new tier stays, as on leaving.
+    this.trial = back === q || this.held || o.liveMatch === true ? null : startTrial(back, q, performance.now());
     this.refreshQuality();
     if (this.trial !== null && this.trialKeep !== null && !touchMode() && this.openNow) this.hooks.focus(this.trialKeep);
   }

@@ -78,9 +78,14 @@ export function hasTouchScreen(): boolean {
   return typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
 }
 
-/** The browser can vibrate (navigator.vibrate: Android's; iOS has none): Settings > Controls > Touch lists the row only then. */
+/**
+ * The browser can vibrate a phone or a tablet (navigator.vibrate: Android's; iOS has none):
+ * Settings > Controls > Touch lists the row only then. Desktop Chromium has the call too, on a
+ * touch laptop as well, where it does nothing: a fine primary pointer counts as none.
+ */
 export function canVibrate(): boolean {
-  return typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+  if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return false;
+  return typeof matchMedia !== 'function' || matchMedia('(pointer: coarse)').matches;
 }
 
 /** A press's pulse (ms): felt, not a buzz. */
