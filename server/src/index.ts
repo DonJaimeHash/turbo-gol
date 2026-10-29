@@ -29,9 +29,11 @@
  *                       Without a matchId a server lock stays (a reload / network drop rejoins on the next queue's 409).
  *                       A node match is quit the same way, the node first: its lock stays (released: false) when the
  *                       node did not take the leave. connected: false (never got in) is passed on to the node only
- *   POST /api/lobbies { name, password?, mode, visibility, net, matchLengthSeconds, physics?, region? } Bearer
+ *   POST /api/lobbies { name?, password?, mode, visibility, net, matchLengthSeconds, physics?, region? } Bearer
  *                    -> LobbyTicketAnswer (LobbyDO.ts); `physics` (experimental rules) from a guest session:
- *                       403 'account_required' (a lobby with them takes signed-in players only)
+ *                       403 'account_required' (a lobby with them takes signed-in players only). The title is
+ *                       the host's name unless an account sends one: a guest's `name` is ignored, an account's
+ *                       reserved one (src/net/account.ts lobbyNameIssue) answers 400 'name_reserved'
  *   POST /api/lobbies/join { code, password? } Bearer -> LobbyTicketAnswer; a guest into a lobby with
  *                       experimental rules: 403 'account_required' (LobbyDO)
  *   GET  /api/lobbies/peek?code= (no auth)            -> LobbySummary of the lobby with that code (a join
@@ -89,7 +91,7 @@ import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
 import type { RankedCheck } from './accountStore';
 import { normalizeCode } from './LobbyDirectoryDO';
 import { sanitizeLobbyName } from './LobbyDO';
-import { isRegion, REGIONS } from '../../src/net/account';
+import { isRegion, lobbyNameIssue, REGIONS } from '../../src/net/account';
 import { guestNameOf } from '../../src/net/guestName';
 import type { LobbySummary, LobbyTicketAnswer, PopulationAnswer, RegionId } from '../../src/net/account';
 import { INTERNAL_HEADER, createSession, createTicket, internalSecret, randomHex, verifySession, verifyTicket } from './auth';
@@ -539,8 +541,11 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
   if (b.region !== undefined && !isRegion(b.region)) return error(400, 'bad_region');
   // Experimental rules are for signed-in players only (null = standard physics, anyone).
   if (carriesPhysics(b) && session.acct !== 1) return error(403, 'account_required', 'Inicia sesión para crear una sala experimental');
-  const name = b.name === undefined ? 'Sala de ' + session.name : sanitizeLobbyName(b.name);
+  // The title: the host's name (LobbyDO's default, each viewer reads it in their own language) unless an
+  // account names it. A guest never titles a lobby: its `name` is ignored.
+  const name = session.acct !== 1 || b.name === undefined ? undefined : sanitizeLobbyName(b.name);
   if (name === null) return error(400, 'bad_name', 'El nombre de la sala tiene que tener entre 3 y 24 caracteres');
+  if (name !== undefined && lobbyNameIssue(name) !== null) return error(400, 'name_reserved', 'Ese nombre de sala no está permitido');
   const region = regionOf(request, env, b.region);
   const id = env.LOBBY.newUniqueId();
   const lobbyId = id.toString();
@@ -556,7 +561,7 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
       code,
       region,
       socketBase: (u.protocol === 'https:' ? 'wss://' : 'ws://') + u.host,
-      settings: { name, mode: b.mode, visibility: b.visibility, net: b.net, matchLengthSeconds: b.matchLengthSeconds, physics: b.physics },
+      settings: { ...(name !== undefined ? { name } : {}), mode: b.mode, visibility: b.visibility, net: b.net, matchLengthSeconds: b.matchLengthSeconds, physics: b.physics },
       password: typeof b.password === 'string' && b.password.length > 0 ? b.password : null,
       host: { playerId: session.sub, name: session.name, guest: session.acct !== 1, ...(session.car !== undefined ? { car: session.car } : {}) },
     }),

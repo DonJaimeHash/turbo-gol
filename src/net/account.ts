@@ -333,6 +333,63 @@ export function sanitizeLobbyName(v: unknown): string | null {
   return s.length >= LOBBY_NAME_MIN && s.length <= LOBBY_NAME_MAX ? s : null;
 }
 
+/**
+ * Cyrillic and Greek letters that read as Latin ones (lowercase: a capital is lowered first, so
+ * 'Ѕ' and 'Τ' come through 'ѕ' and 'τ'): what a lobby title looks like, not what it spells.
+ */
+const LOOKALIKE: Readonly<Record<string, string>> = {
+  а: 'a', в: 'b', е: 'e', ё: 'e', і: 'i', ї: 'i', ј: 'j', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x', ѕ: 's', ԁ: 'd', ӏ: 'l', ɡ: 'g', ı: 'i',
+  α: 'a', β: 'b', ε: 'e', ι: 'i', κ: 'k', μ: 'm', ν: 'n', ο: 'o', ρ: 'p', τ: 't', υ: 'u', χ: 'x', ϲ: 'c',
+};
+/** Digits and letters that stand in for others (0→o 1→i l→i 3→e 4→a 5→s 7→t 8→b). */
+const STAND_IN: Readonly<Record<string, string>> = { '0': 'o', '1': 'i', l: 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '8': 'b' };
+
+/** NFKC, accents dropped, lowercase, the look-alikes as the Latin letter they read as. */
+function foldLookalikes(s: string): string {
+  return s
+    .normalize('NFKC')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/./gsu, (ch) => LOOKALIKE[ch] ?? ch);
+}
+
+/** A word's skeleton: the stand-ins mapped, then rn→m and vv→w ('Adm1n' and 'admin' are one). */
+function wordSkeleton(word: string): string {
+  return word
+    .replace(/./gsu, (ch) => STAND_IN[ch] ?? ch)
+    .replace(/rn/g, 'm')
+    .replace(/vv/g, 'w');
+}
+
+/** A title's words, folded (letters and digits; spaces and _ . - ! ? # separate them). */
+function titleWords(title: string): string[] {
+  return foldLookalikes(title)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length > 0)
+    .map(wordSkeleton);
+}
+
+/** Words a lobby title may not hold: it would read as the game's staff or as official. */
+const STAFF_WORDS = new Set(['admin', 'soporte', 'support', 'staff', 'moderador', 'moderator', 'oficial', 'official'].map(wordSkeleton));
+const GAME_SKELETON = wordSkeleton('turbogol');
+
+/**
+ * Why a lobby title is refused for everyone (null: allowed), after sanitizeLobbyName: 'name_reserved'
+ * when it reads as a guest's name ('Invitado 4821', 'Guest 4821': a guest's lobby carries that
+ * name, src/net/guestName.ts), as the game ('Turbogol', 'Turbo Gol', 'T0rb0g0l', Cyrillic look-alikes)
+ * or with a word of the staff ('Soporte', 'Ѕoporte', 'Adm1n', 'Sala oficial'). Folded: accents
+ * dropped, Cyrillic and Greek look-alikes as Latin letters, the digit stand-ins mapped. The server's
+ * own default title (the host's name) is never checked (server/src/LobbyDO.ts).
+ */
+export function lobbyNameIssue(title: string): 'name_reserved' | null {
+  if (/^(?:invitado|guest)\s*\d+$/.test(foldLookalikes(title).trim())) return 'name_reserved';
+  const words = titleWords(title);
+  if (words.join('').includes(GAME_SKELETON)) return 'name_reserved';
+  if (words.some((w) => STAFF_WORDS.has(w))) return 'name_reserved';
+  return null;
+}
+
 export type LobbyNet = 'p2p' | 'server';
 export type LobbyVisibility = 'public' | 'private';
 /** Match length options of a custom lobby (seconds; 0 = unlimited). */

@@ -1,7 +1,10 @@
 // Guest names assigned by the server (spec PR 1; audit auth-10, authz-5, rt-7): POST /api/guest
 // ignores a chosen name and answers 'Invitado NNNN' from the player id; verifySession rewrites the
-// name an older guest session carries (an account's stays), so every route reads the server's.
-// 'cloudflare:workers' is stubbed. Run from server/: npm test
+// name an older guest session carries (an account's stays); a guest never titles a lobby (create
+// and the host's settings); an account's title that reads as a guest, the game or its staff
+// answers name_reserved, while a lobby inherited from a guest saves its other settings; LobbyDO
+// renames the guests of a record written before. 'cloudflare:workers' is stubbed. Run from
+// server/: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -29,7 +32,7 @@ const L = await import('../src/LobbyDO.ts');
 const worker = (await import('../src/index.ts')).default;
 const { INTERNAL_HEADER, internalSecret, signJwt, createSession, verifySession } = await import('../src/auth.ts');
 const { GUEST_NAME_RE, guestNameOf } = await import('../../src/net/guestName.ts');
-const { usernameIssue } = await import('../../src/net/account.ts');
+const { lobbyNameIssue, usernameIssue } = await import('../../src/net/account.ts');
 
 const SECRET = 'guest-names-test-secret';
 const ORIGIN = 'https://turbo-gol.com';
@@ -144,7 +147,8 @@ function fakeNs(handler) {
 }
 
 const jti = () => Array.from({ length: 32 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
-const hexId = (n) => n.toString(16).padStart(16, '0');
+/** A 16-hex player id whose first 32 bits are `n` (so each one has its own Invitado NNNN). */
+const hexId = (n) => n.toString(16).padStart(8, '0') + '00c0ffee';
 
 /** A LobbyDO on `ctx` (a fresh one, or one over a stored record: a wake-up). */
 async function lobbyOn(ctx = new FakeLobbyCtx()) {
@@ -247,4 +251,119 @@ test("every route reads the session's name: an older guest session joins a lobby
   const admit = w.lobby.calls.find((c) => c.path === '/internal/admit');
   assert.equal(admit.body.name, guestNameOf(GUEST_ID));
   assert.equal(admit.body.guest, true);
+});
+
+// ---- lobby titles ---------------------------------------------------------------------------------
+
+test("Worker: a guest's POST /api/lobbies { name: 'Soporte Turbogol' } gets the host's name as its title; an account's default too", async () => {
+  const w = workerEnv();
+  const g = await call(w.env, 'POST', '/api/lobbies', { token: await oldGuestToken('Bea'), body: { ...SETTINGS, name: 'Soporte Turbogol' } });
+  assert.equal(g.status, 200, JSON.stringify(g.json));
+  let create = w.lobby.calls.filter((c) => c.path === '/internal/create').at(-1);
+  assert.equal('name' in create.body.settings, false, "a guest's name is never sent on");
+  assert.deepEqual(create.body.host, { playerId: GUEST_ID, name: guestNameOf(GUEST_ID), guest: true });
+  // An account without a name: the default (its username, LobbyDO's), no 'Sala de ' from the server.
+  const a = await call(w.env, 'POST', '/api/lobbies', { token: await accountToken(), body: SETTINGS });
+  assert.equal(a.status, 200);
+  create = w.lobby.calls.filter((c) => c.path === '/internal/create').at(-1);
+  assert.equal('name' in create.body.settings, false);
+  assert.equal(create.body.host.name, 'Ana');
+  const named = await call(w.env, 'POST', '/api/lobbies', { token: await accountToken(), body: { ...SETTINGS, name: '  Los   del barrio ' } });
+  assert.equal(named.status, 200);
+  assert.equal(w.lobby.calls.filter((c) => c.path === '/internal/create').at(-1).body.settings.name, 'Los del barrio');
+});
+
+test("Worker: an account's title 'Invitado 1234', 'Soporte Turbogol' or 'Ѕoporte' answers 400 name_reserved, nothing created", async () => {
+  const w = workerEnv();
+  let n = 0;
+  for (const name of ['Invitado 1234', 'Soporte Turbogol', 'Ѕoporte', 'TurboGol', 'Turbo Gol', 'Turb0g0l', 'Тurbogol', 'Adm1n', 'Sala oficial', 'Guest 4821', 'staff_room']) {
+    // An account each (the create limit counts per player).
+    const r = await call(w.env, 'POST', '/api/lobbies', { token: await accountToken(hexId(0xa000 + ++n)), body: { ...SETTINGS, name } });
+    assert.equal(r.status, 400, name);
+    assert.equal(r.json.error, 'name_reserved', name);
+  }
+  assert.equal(w.dir.calls.length + w.lobby.calls.length, 0, 'no code, no lobby');
+});
+
+test('lobbyNameIssue: what it refuses, and the titles it leaves alone', () => {
+  for (const bad of ['Invitado 4821', 'invitado 0001', 'Ιnvitado 4821', 'Soporte', 'SOPORTE TG', 'Ѕoporte', 'S0p0rte', 'Sopórte', 'support', 'Supp0rt', 'Admin', 'Adm1n', 'Ana_Admin', 'staff', 'St4ff', 'Moderador', 'moderator', 'Oficial', 'Sala oficial', 'official', '0fficial', 'turbogol', 'Turbogol', 'TURBO GOL', 'Turbo_Gol', 'Turb0g0l', 'Turbogoi', 'Тurbоgоl', 'Τurbogol', 'Sala Turbogol!']) {
+    assert.equal(lobbyNameIssue(bad), 'name_reserved', bad);
+  }
+  for (const ok of ['Sala de Ana', 'Lobby Ana', 'Los del barrio', 'Turbo', 'Gol de oro', 'Oficina', 'Administradores del 3v3', 'Sala 4821', 'Invitados bienvenidos', 'Bot 1', 'Ana', 'Constantinopla_9', 'Ronda #3!', 'Мой лобби']) {
+    assert.equal(lobbyNameIssue(ok), null, ok);
+  }
+});
+
+test("LobbyDO: a guest host's create and settings never set the title; the account it passes to may, within the rules", async () => {
+  const h = await lobbyOn();
+  const guest = hexId(0x4242);
+  const wire = guestNameOf(guest);
+  assert.equal((await h.create({ ...SETTINGS, name: 'Soporte Turbogol' }, { playerId: guest, name: wire, guest: true })).status, 200);
+  assert.equal(h.summary().name, wire, 'the title is the host wire name');
+  const host = await h.upgrade(guest);
+  // The guest host's settings: the name is dropped, the rest applies.
+  await h.send(host, { t: 'settings', settings: { name: 'Admin', mode: '3v3' } });
+  assert.deepEqual(host.of('error'), []);
+  let st = host.last();
+  assert.equal(st.settings.name, wire);
+  assert.equal(st.settings.mode, '3v3');
+  // An account joins and the guest hands it the lobby.
+  const acct = await h.join(ACCOUNT_ID, 'Ana', false);
+  await h.send(host, { t: 'host', member: acct.last().you });
+  // Its format change with no name, or with the stored title as it is: saved, the title kept.
+  await h.send(acct, { t: 'settings', settings: { mode: '1v1' } });
+  assert.deepEqual(acct.of('error'), [], 'no name: saved');
+  await h.send(acct, { t: 'settings', settings: { name: wire, mode: '2v2', visibility: 'private' } });
+  assert.deepEqual(acct.of('error'), [], 'the inherited Invitado NNNN: saved as it is');
+  st = acct.last();
+  assert.equal(st.settings.name, wire);
+  assert.equal(st.settings.mode, '2v2');
+  assert.equal(st.settings.visibility, 'private');
+  // A new title: checked (refused ones answer name_reserved and change nothing), else taken.
+  for (const name of ['Invitado 1234', 'Soporte Turbogol', 'Ѕoporte']) {
+    await h.send(acct, { t: 'settings', settings: { name, mode: '1v1' } });
+    assert.equal(acct.of('error').at(-1).code, 'name_reserved', name);
+  }
+  assert.equal(acct.last().settings.mode, '2v2', 'a refused title changes nothing');
+  await h.send(acct, { t: 'settings', settings: { name: 'Los del barrio' } });
+  assert.equal(acct.last().settings.name, 'Los del barrio');
+});
+
+test("LobbyDO: an account host's create checks its title (name_reserved), never its default (the username)", async () => {
+  const refused = await lobbyOn();
+  const r = await refused.create({ ...SETTINGS, name: 'Soporte' }, { playerId: ACCOUNT_ID, name: 'Ana', guest: false });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, 'name_reserved');
+  // A username the title rules would refuse ('TurboGolFan') is still its own lobby's default.
+  const own = await lobbyOn();
+  assert.equal((await own.create(SETTINGS, { playerId: ACCOUNT_ID, name: 'TurboGolFan', guest: false })).status, 200);
+  assert.equal(own.summary().name, 'TurboGolFan');
+});
+
+test("LobbyDO: a record written before (chosen guest names, a guest's title) comes back with each guest's Invitado NNNN", async () => {
+  const first = await lobbyOn();
+  const g1 = hexId(0x1111);
+  const g2 = hexId(0x2222);
+  assert.equal((await first.create(SETTINGS, { playerId: g1, name: guestNameOf(g1), guest: true })).status, 200);
+  await first.upgrade(g1);
+  await first.join(ACCOUNT_ID, 'Ana', false);
+  await first.join(g2, guestNameOf(g2), true);
+  await first.admit(hexId(0x3333), 'Pending', true);
+  // As a deploy before this rule left it: the names and the title the guests chose.
+  const stored = first.ctx.storage.map.get('lobby');
+  stored.members[0].name = 'Admin';
+  stored.members[2].name = 'Bot 1';
+  stored.admits.find((a) => a.playerId === hexId(0x3333)).name = 'Moderador';
+  stored.settings.name = 'Soporte Turbogol';
+  // A wake-up: a new object over the same storage.
+  const again = await lobbyOn(new FakeLobbyCtx(first.ctx.storage));
+  const peek = await again.req('GET', '/internal/peek');
+  assert.equal(peek.json.host, guestNameOf(g1), 'the host, renamed');
+  assert.equal(peek.json.name, guestNameOf(g1), "the guest's title: the host's name");
+  await again.lobby.alarm(); // the heartbeat saves and publishes it
+  const rec = again.ctx.storage.map.get('lobby');
+  assert.deepEqual(rec.members.map((m) => m.name), [guestNameOf(g1), 'Ana', guestNameOf(g2)], "the account's name stays");
+  assert.equal(rec.admits.find((a) => a.playerId === hexId(0x3333)).name, guestNameOf(hexId(0x3333)), 'a pending admit too');
+  assert.equal(again.summary().host, guestNameOf(g1));
+  assert.equal(L.settleGuestNames(structuredClone(rec)), false, 'nothing left to change');
 });

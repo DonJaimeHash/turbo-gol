@@ -50,7 +50,8 @@ import type { Env } from './env';
 import { error, json, readJson } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret } from './auth';
 import { MODES } from '../../src/sim/constants';
-import { LOBBY_LENGTHS, isPlaylist, sanitizeLobbyName } from '../../src/net/account';
+import { LOBBY_LENGTHS, isPlaylist, lobbyNameIssue, sanitizeLobbyName } from '../../src/net/account';
+import { guestNameOf } from '../../src/net/guestName';
 import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import { parseLobbyRules } from '../../src/game/physicsRules';
 import type { RulesSnapshot } from '../../src/game/physicsRules';
@@ -187,6 +188,7 @@ function parseSettings(v: unknown, base: LobbySettings): LobbySettings | string 
   if (o.name !== undefined) {
     const n = sanitizeLobbyName(o.name);
     if (n === null) return 'bad_name';
+    if (lobbyNameIssue(n) !== null) return 'name_reserved';
     out.name = n;
   }
   if (o.mode !== undefined) {
@@ -222,6 +224,45 @@ export function defaultLobbySettings(name: string): LobbySettings {
 
 export { parseSettings as parseLobbySettings };
 
+/**
+ * The settings a host's message may change (guest names, spec PR 1): a guest host never titles the
+ * lobby, so its `name` is dropped; an account's `name` equal to the stored title is no change (a lobby
+ * inherited from a guest keeps 'Invitado 4821', and saving the format does not trip the title check).
+ */
+export function hostSettings(v: unknown, guestHost: boolean, title: string): unknown {
+  if (!v || typeof v !== 'object' || !('name' in v)) return v;
+  const o = v as Record<string, unknown>;
+  if (!guestHost && o.name !== title) return v;
+  const { name: _drop, ...rest } = o;
+  return rest;
+}
+
+const PLAYER_ID = /^[0-9a-f]{16}$/;
+
+/**
+ * A record written before guests got the server's names (src/net/guestName.ts): each guest member
+ * and admit gets its 'Invitado NNNN', and a title refused now (a guest's 'Soporte Turbogol' of
+ * before) becomes the host's name. Run on load; true when anything changed.
+ */
+export function settleGuestNames(rec: LobbyRecord): boolean {
+  let changed = false;
+  for (const m of [...rec.members, ...rec.admits]) {
+    if (!m.guest || !PLAYER_ID.test(m.playerId)) continue;
+    const name = guestNameOf(m.playerId);
+    if (m.name !== name) {
+      m.name = name;
+      changed = true;
+    }
+  }
+  const host = rec.members.find((m) => m.id === rec.hostId);
+  const title = rec.settings.name;
+  if (host !== undefined && lobbyNameIssue(title) !== null && !rec.members.some((m) => m.name === title)) {
+    rec.settings = { ...rec.settings, name: host.name };
+    changed = true;
+  }
+  return changed;
+}
+
 // ---- the object -------------------------------------------------------------------------------
 
 export class LobbyDO extends DurableObject<Env> {
@@ -233,6 +274,7 @@ export class LobbyDO extends DurableObject<Env> {
     super(ctx, env);
     this.loaded = ctx.blockConcurrencyWhile(async () => {
       this.rec = (await ctx.storage.get<LobbyRecord>('lobby')) ?? null;
+      if (this.rec !== null) settleGuestNames(this.rec); // the alarm's save and publish keep it
     });
     // A plain 'ping' text frame is answered without waking the object (keep-alive through proxies).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
@@ -263,7 +305,9 @@ export class LobbyDO extends DurableObject<Env> {
     if (!b || typeof b.lobbyId !== 'string' || typeof b.code !== 'string' || typeof b.region !== 'string' || typeof b.socketBase !== 'string' || !b.host || typeof b.host.playerId !== 'string' || typeof b.host.name !== 'string') {
       return error(400, 'bad_request');
     }
-    const settings = parseSettings(b.settings, defaultLobbySettings('Sala de ' + b.host.name));
+    // The default title is the host's name (a guest's 'Invitado 4821': every viewer reads it in their own
+    // language, src/ui/names.ts lobbyTitle); a guest's `name` is dropped, an account's is checked.
+    const settings = parseSettings(hostSettings(b.settings, b.host.guest === true, ''), defaultLobbySettings(b.host.name));
     if (typeof settings === 'string') return error(400, settings);
     // The Worker refuses a guest's rules already; checked again here (every door checks).
     if (lobbyPhysics(settings) !== null && b.host.guest === true) return error(403, 'account_required', 'Inicia sesión para crear una sala experimental');
@@ -410,8 +454,8 @@ export class LobbyDO extends DurableObject<Env> {
       case 'settings': {
         if (!isHost) return fail('not_host', 'Solo el anfitrión cambia la configuración');
         if (rec.status !== 'open') return fail('busy', 'Espera a que termine la partida');
-        const next = parseSettings(msg.settings, rec.settings);
-        if (typeof next === 'string') return fail(next, next === 'experimental_p2p_only' ? 'Las reglas experimentales necesitan una partida P2P' : 'Configuración inválida');
+        const next = parseSettings(hostSettings(msg.settings, me.guest, rec.settings.name), rec.settings);
+        if (typeof next === 'string') return fail(next, next === 'experimental_p2p_only' ? 'Las reglas experimentales necesitan una partida P2P' : next === 'name_reserved' ? 'Ese nombre de sala no está permitido' : 'Configuración inválida');
         // Experimental rules: every member signed in.
         if (lobbyPhysics(next) !== null && rec.members.some((m) => m.guest)) return fail('guests_present', 'Hay invitados en la sala: deben iniciar sesión o salir');
         if (next.mode !== rec.settings.mode) {
