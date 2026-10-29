@@ -18,6 +18,8 @@
  *   ledger_totals every operator's all-time points and verified matches (countsAsHosted: one that
  *                 served someone else), updated in the same transaction as its entry
  *   ledger_notes  the repeat decay's notes of matches that earned nothing by themselves, kept 24 h
+ *   replay_index  the public replay list (replayIndex.ts): one row per settled, not voided match
+ *                 with a replay, written with the match it settles; kept as long as R2 keeps replays
  * Ledger.restore reads the three back at every start (ledgerSnapshot): a deploy keeps the decay,
  * the leaderboard and the summaries. The points themselves go to the operator's account (AccountsDO
  * host_credits, through the outbox), which keeps them for good.
@@ -32,6 +34,9 @@ import type { NodeRecord, TokenRecord } from '../../nodes/control-plane/registry
 import type { SqlLike } from './accountStore';
 import { outcomeCalls } from './nodeOutcome';
 import type { OutcomeCall } from './nodeOutcome';
+import { REPLAY_INDEX_DAYS, replayIndexItem } from './replayIndex';
+import type { ReplayIndexRow } from './replayIndex';
+import type { ReplayListItem } from '../../src/net/replays';
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -88,6 +93,8 @@ export class NodeStore implements RegistryStore, MatchStore {
     s.exec('CREATE TABLE IF NOT EXISTS ledger_totals (operator_id TEXT PRIMARY KEY, earned REAL NOT NULL, verified INTEGER NOT NULL)');
     s.exec('CREATE TABLE IF NOT EXISTS ledger_notes (operator_id TEXT NOT NULL, players TEXT NOT NULL, at INTEGER NOT NULL)');
     s.exec('CREATE INDEX IF NOT EXISTS ledger_notes_at ON ledger_notes (at)');
+    s.exec('CREATE TABLE IF NOT EXISTS replay_index (match_id TEXT PRIMARY KEY, at INTEGER NOT NULL, sha TEXT NOT NULL, data TEXT NOT NULL)');
+    s.exec('CREATE INDEX IF NOT EXISTS replay_index_at ON replay_index (at)');
     const v = s.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'state_version'").toArray()[0]?.v;
     if (v === undefined) {
       s.exec("INSERT INTO meta (k, v) VALUES ('state_version', ?)", String(STATE_VERSION));
@@ -185,7 +192,36 @@ export class NodeStore implements RegistryStore, MatchStore {
         this.sql.exec('INSERT INTO outbox (match_id, target, path, body, attempts, next_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)', c.matchId, c.target, c.path, c.body, now, now);
       }
     });
+    // Outside the settling transaction and never thrown: a row that fails only leaves the match unlisted.
+    try {
+      const listed = replayIndexItem(m, o);
+      if (listed && m.replaySha) this.replayRow(listed, m.replaySha, now);
+    } catch (e) {
+      console.error(`replay index ${m.assign.matchId}: ${String(e)}`);
+    }
     this.onOutbox();
+  }
+
+  // ---- the public replay index -------------------------------------------------------------
+
+  private replayRow(item: ReplayListItem, sha: string, now: number): void {
+    this.sql.exec('INSERT INTO replay_index (match_id, at, sha, data) VALUES (?, ?, ?, ?) ON CONFLICT(match_id) DO NOTHING', item.matchId, item.at, sha, JSON.stringify(item));
+    this.sql.exec('DELETE FROM replay_index WHERE at < ?', now - REPLAY_INDEX_DAYS * DAY_MS);
+  }
+
+  /** The listed matches settled before `before` (ms), newest first, at most `limit`; rows R2 no longer keeps are left out. */
+  replayList(before: number, limit: number): ReplayListItem[] {
+    const since = this.now() - REPLAY_INDEX_DAYS * DAY_MS;
+    return this.sql
+      .exec<{ data: string }>('SELECT data FROM replay_index WHERE at < ? AND at >= ? ORDER BY at DESC, match_id DESC LIMIT ?', before, since, limit)
+      .toArray()
+      .map((r) => JSON.parse(r.data) as ReplayListItem);
+  }
+
+  /** One listed match and its replay's SHA-256, or null. */
+  replayEntry(matchId: string): ReplayIndexRow | null {
+    const r = this.sql.exec<{ sha: string; data: string }>('SELECT sha, data FROM replay_index WHERE match_id = ?', matchId).toArray()[0];
+    return r ? { item: JSON.parse(r.data) as ReplayListItem, sha: r.sha } : null;
   }
 
   drop(matchId: string): void {
