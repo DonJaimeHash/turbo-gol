@@ -336,10 +336,11 @@ src/game/
                         (src/net/outcome.ts); the close code in the console and F4's state line only
   rejoinStore.ts        the server match this tab may join again: matchId, kind (casual, ranked or a
                         lobby's), formats, the end of its regulation time; read by Inicio's hero and
-                        the lost sheet. And the Sala across a reload the game runs itself (Super
-                        low's restart: Game.restartOn saves it, lobby.ts installLobbyReturn joins it
-                        again by code and opens it when it was on the stack) for LobbyDO's grace
-                        (LOBBY_STAY_MS = LOBBY_GRACE_MS, a test pins them; later it says it is gone)
+                        the lost sheet. And the Sala across any reload (Game.keepLobby on pagehide
+                        and Super low's restart, lobby.ts installLobbyReturn joins it again by code
+                        and opens it when it was on the stack, never over a match): as it was for
+                        LobbyDO's grace (LOBBY_STAY_MS = LOBBY_GRACE_MS), by code up to LobbyClient's
+                        RECONNECT_WINDOW_MS (LOBBY_STAY_LATE_MS; a test pins both), then it says gone
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer
@@ -753,7 +754,8 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,
                         admit (password, kick list), start through the matchmaker's /custom; a
                         dropped member kept LOBBY_GRACE_MS (40 s, host role included) before the
-                        alarm removes it; host / move / ready; /internal/peek (GET
+                        alarm removes it (one in the lobby's match: once somebody is back from
+                        it; the last one out of it opens the lobby); host / move / ready; /internal/peek (GET
                         /api/lobbies/peek, a join link's sheet);
                         experimental rules (P2P only, strict) only while every member is signed
                         in: guests refused at create, admit, upgrade, settings and start

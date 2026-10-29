@@ -303,14 +303,17 @@ All notable changes to Turbogol are documented here. The format follows
   the public Casual queue on a server; now they are back in their lobby, which says so, and the host
   can start again.
 - Lobbies: a lobby's server match you rejoined with REJOIN came back as Casual, so PLAY AGAIN looked
-  for a Casual match; it goes back to the lobby. Leaving a lobby while the game was reconnecting to
+  for a Casual match; it goes back to the lobby. Reloading the page in a lobby, in its match too,
+  brings you back into the lobby. A player who left the lobby's match by a reload or a closed tab
+  and never came back kept the lobby "in a match" for 40 minutes, and even a kick did not free it;
+  now that player goes 40 seconds after the others are back, and a kick frees it at once. Leaving a lobby while the game was reconnecting to
   it now frees your place (and passes the host on) at once instead of 40 seconds later. MAKE HOST is
   no longer offered for a player who is reconnecting. The lobby's format is remembered for your next
   CREATE LOBBY AND SHARE as soon as it changes, after a reload too. The region pill no longer says
   "Offline" for a few seconds after a lobby reconnects.
-- Lobbies and Super low: after the restart you are back in your lobby only while the server still
-  keeps your place (40 seconds, it used to try for 90 and come back as a new player); a slower
-  restart says the lobby went on without you. Leaving a lobby's result with MENU lands on Play after
+- Lobbies and Super low: a restart slower than the 40 seconds the server keeps your place still joins
+  the lobby again by its code, up to 90 seconds, and now says the host may have changed; a slower one
+  says the lobby went on without you instead of nothing. Leaving a lobby's result with MENU lands on Play after
   the restart, as the button says.
 - Online: a match that ended while your connection was coming back, or whose server closed it, says
   "That match is over" instead of "Your connection dropped" with a REJOIN that could not work.

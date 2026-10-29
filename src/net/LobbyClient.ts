@@ -93,7 +93,7 @@ export class LobbyClient {
   state: LobbyState | null = null;
   lobbyId: string | null = null;
   code: string | null = null;
-  /** The password typed to join / create (kept so a reload-free rejoin works). */
+  /** The password typed to join / create, or the host's new one (kept so a rejoin, a reload's too, works). */
   password: string | null = null;
 
   onState: ((s: LobbyState) => void) | null = null;
@@ -429,6 +429,8 @@ export class LobbyClient {
   }
 
   updateSettings(settings: Partial<LobbySettings>, password?: string | null): void {
+    // The host's new password opens the lobby again after a reload past the grace (rejoinStore.ts LobbyStay).
+    if (password !== undefined) this.password = password;
     this.send(password === undefined ? { t: 'settings', settings } : { t: 'settings', settings, password });
   }
 

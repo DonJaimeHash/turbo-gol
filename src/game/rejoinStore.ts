@@ -6,8 +6,8 @@
  * match is over clear it. P2P rooms are never written (the server never rejoins one). Inicio's hero
  * reads it (homeModel.ts HeroRejoin). Pure but for the storage, which is injectable (tests).
  *
- * The Sala this tab is in goes the same way across a reload the game runs itself (Super low's
- * restart, Game.restartOn: LOBBY_STAY_KEY): the next page joins it again by code (lobby.ts
+ * The Sala this tab is in goes the same way across any reload (the player's, Super low's restart:
+ * Game.keepLobby on pagehide, LOBBY_STAY_KEY): the next page joins it again by code (lobby.ts
  * installLobbyReturn), as a dropped socket does (LobbyDO keeps the place, host included).
  */
 import type { GameMode } from '../sim/constants';
@@ -86,11 +86,15 @@ export function clearRejoin(store: StorageLike | null = session()): void {
 
 export const LOBBY_STAY_KEY = STORAGE_PREFIX + 'lobbyStay';
 /**
- * A Sala's record is joined again this long after the reload at most: LobbyDO's LOBBY_GRACE_MS (the
- * server keeps the place and the host role that long; tests/lobby-model.test.mjs pins them equal).
- * Later the place is gone: the page says so (`late`) instead of joining as somebody new.
+ * A Sala's record read within this long of the reload comes back as it was: LobbyDO's LOBBY_GRACE_MS
+ * (the server keeps the place and the host role that long; tests/lobby-model.test.mjs pins them
+ * equal). Later (`late`) the place may be gone: joined again all the same while LOBBY_STAY_LATE_MS
+ * lasts (the code and the password still open it), maybe as somebody new; past that the page says
+ * the Sala went on without this player (`gone`).
  */
 export const LOBBY_STAY_MS = 40_000;
+/** LobbyClient's RECONNECT_WINDOW_MS: a dropped socket tries to join again this long too (the test pins them). */
+export const LOBBY_STAY_LATE_MS = 90_000;
 
 export interface LobbyStay {
   code: string;
@@ -100,8 +104,10 @@ export interface LobbyStay {
   savedAt: number;
   /** The Sala's screen opens after the join (it was on the menus' stack); else the menus stay on Inicio. */
   open?: boolean;
-  /** Read past LOBBY_STAY_MS: not joined again. */
+  /** Read past LOBBY_STAY_MS: joined again, the place maybe gone (the host role passed on). */
   late?: boolean;
+  /** Read past LOBBY_STAY_LATE_MS: not joined again. */
+  gone?: boolean;
 }
 
 export function saveLobbyStay(s: LobbyStay, store: StorageLike | null = session()): void {
@@ -112,7 +118,7 @@ export function saveLobbyStay(s: LobbyStay, store: StorageLike | null = session(
   }
 }
 
-/** The Sala to join again at `now`, read once (the record goes), `late` past LOBBY_STAY_MS, else null. */
+/** The Sala to join again at `now`, read once (the record goes): `late` past LOBBY_STAY_MS, `gone` past LOBBY_STAY_LATE_MS; else null. */
 export function takeLobbyStay(now = Date.now(), store: StorageLike | null = session()): LobbyStay | null {
   if (store === null) return null;
   let v: unknown = null;
@@ -129,7 +135,8 @@ export function takeLobbyStay(now = Date.now(), store: StorageLike | null = sess
   const ok = typeof r.code === 'string' && r.code.length > 0 && (r.password === null || typeof r.password === 'string') && typeof r.savedAt === 'number' && now - r.savedAt >= 0;
   if (!ok) return null;
   const stay: LobbyStay = { code: r.code, password: r.password, savedAt: r.savedAt, open: r.open !== false };
-  return now - r.savedAt < LOBBY_STAY_MS ? stay : { ...stay, late: true };
+  const age = now - r.savedAt;
+  return age < LOBBY_STAY_MS ? stay : age < LOBBY_STAY_LATE_MS ? { ...stay, late: true } : { ...stay, gone: true };
 }
 
 /** The time left to show for `r` at `now` (ms, 0 when unknown). */

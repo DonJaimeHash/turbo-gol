@@ -480,6 +480,7 @@ export default {
   'lobby.swap': 'You leave lobby {code}.',
   // A restart (Super low) took longer than the server keeps a place in the lobby
   'lobby.stayLate': 'Lobby {code} went on without you: join it again with its code',
+  'lobby.stayBack': 'Back in lobby {code}: you took a while, the host may have changed',
 
   // A lost server match (plan PR 12: src/ui/screens/match/lost.ts)
   'lost.title': 'Your connection dropped',

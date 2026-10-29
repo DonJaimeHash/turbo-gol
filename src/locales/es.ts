@@ -328,6 +328,7 @@ export default {
   'lobby.yourName': 'Tu nombre',
   'lobby.swap': 'Sales de la sala {code}.',
   'lobby.stayLate': 'La sala {code} siguió sin ti: únete otra vez con su código',
+  'lobby.stayBack': 'De vuelta en la sala {code}: tardaste y puede que el anfitrión haya cambiado',
 
   'lost.title': 'Se cortó tu conexión',
   'lost.body': 'El partido sigue sin ti',

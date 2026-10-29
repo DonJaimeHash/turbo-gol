@@ -141,7 +141,7 @@ test('back to your match: kept while the match can still run, then forgotten', (
   assert.equal(R.readRejoin(now, null), null, 'no storage: nothing');
 });
 
-test("the Sala across the game's own reload: read once, inside the server's grace; its screen opens unless it was off the stack", () => {
+test('the Sala across a reload: read once; as it was inside the server grace, joined again by code to 90 s; its screen opens unless it was off the stack', () => {
   const s = new MemStore();
   const now = 1_000_000;
   const stay = { code: 'ABC234', password: null, savedAt: now };
@@ -155,12 +155,27 @@ test("the Sala across the game's own reload: read once, inside the server's grac
   R.saveLobbyStay({ ...stay, password: 'pw' }, s);
   assert.equal(R.takeLobbyStay(now + 1_000, s).password, 'pw');
   R.saveLobbyStay(stay, s);
-  assert.equal(R.takeLobbyStay(now + R.LOBBY_STAY_MS, s).late, true, 'too late: the place is gone (the page says so)');
-  // The saved Sala lasts the server's grace, no longer (LobbyDO.ts LOBBY_GRACE_MS: the place and the host role).
+  assert.equal(R.takeLobbyStay(now + R.LOBBY_STAY_MS - 1, s).late, undefined, 'within the grace: back as it was');
+  // Past the grace, a slow restart (a weak TV's Super low): joined again by code all the same, maybe as somebody new.
+  R.saveLobbyStay({ ...stay, password: 'pw', open: false }, s);
+  assert.deepEqual(R.takeLobbyStay(now + R.LOBBY_STAY_MS, s), { ...stay, password: 'pw', open: false, late: true }, '40 s: late, still joined (code, password, screen)');
+  R.saveLobbyStay(stay, s);
+  const slow = R.takeLobbyStay(now + R.LOBBY_STAY_LATE_MS - 1, s);
+  assert.equal(slow.late, true);
+  assert.equal(slow.gone, undefined, 'under 90 s: joined again');
+  R.saveLobbyStay(stay, s);
+  const gone = R.takeLobbyStay(now + R.LOBBY_STAY_LATE_MS, s);
+  assert.equal(gone.gone, true, 'past the reconnection window: not joined (the page says the Sala went on)');
+  // The place lasts the server's grace (LobbyDO.ts LOBBY_GRACE_MS: the place and the host role); the
+  // join again by code lasts as long as a dropped socket's tries (LobbyClient.ts RECONNECT_WINDOW_MS).
   const lobbyDo = readFileSync(new URL('../server/src/LobbyDO.ts', import.meta.url), 'utf8');
   const grace = /export const LOBBY_GRACE_MS = ([\d_]+);/.exec(lobbyDo);
   assert.ok(grace !== null, 'LobbyDO.ts names its grace');
   assert.equal(R.LOBBY_STAY_MS, Number(grace[1].replace(/_/g, '')), 'the saved Sala and the server grace agree');
+  const client = readFileSync(new URL('../src/net/LobbyClient.ts', import.meta.url), 'utf8');
+  const window = /export const RECONNECT_WINDOW_MS = ([\d_]+);/.exec(client);
+  assert.ok(window !== null, 'LobbyClient.ts names its reconnection window');
+  assert.equal(R.LOBBY_STAY_LATE_MS, Number(window[1].replace(/_/g, '')), 'the late join and the reconnection window agree');
   assert.equal(s.getItem(R.LOBBY_STAY_KEY), null);
   s.setItem(R.LOBBY_STAY_KEY, '{bad');
   assert.equal(R.takeLobbyStay(now, s), null);
