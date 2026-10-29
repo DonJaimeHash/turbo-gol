@@ -208,61 +208,80 @@ export default {
   'home.plateProfile': 'Profile: {name}, {rank}',
   'home.plateGarage': 'Garage: your car is {car}',
 
-  // Garage (src/ui/screens/garage.ts): the cars and the hosts' shop. Host points are earned only by
-  // running a community server (nodes/docs/RECOMPENSAS.md): never bought, won by playing or traded.
-  // Never state a rate (points per minute or per match): it depends on verification and the region.
-  'garage.heading': 'GARAGE',
-  'garage.subtitle': 'Every car drives the same: only the look changes',
-  // A car card's state; {points} is a formatted number of host points
+  // GARAJE (src/ui/screens/garage.ts, plan §1.4.2): the cars and the stadiums. Server points are
+  // earned only by hosting a community server (nodes/docs/RECOMPENSAS.md): never bought, won by
+  // playing or traded, and nothing is paid. Never state a rate (points per minute or per match): it
+  // depends on verification and the region. {points}, {have}, {missing}, {from}, {to} are formatted numbers
+  'garage.tabCars': 'CARS',
+  'garage.tabStadiums': 'STADIUMS',
+  // The hint bar's verb for the two tabs (LT RT / Q E)
+  'garage.tabsVerb': 'Cars or stadiums',
+  // The card of the car driven, its corner, the free car's line
+  'garage.yourCar': 'YOUR CAR',
+  'garage.equippedTag': 'EQUIPPED',
+  'garage.free': 'Free for everyone',
+  'garage.freeTag': 'FREE',
+  // The unit after a number of points
+  'garage.pts': 'PTS',
+  'garage.signIn': 'SIGN IN',
+  'garage.guest': 'You play as a guest',
+  'garage.paused': 'Redeeming paused · check My server in your profile',
+  // The lime card: every car's price, then how points are earned; its short form on a phone
+  'garage.eachCar': 'EACH CAR · {points} PTS',
+  'garage.earn': 'EARN POINTS BY HOSTING A COMMUNITY SERVER',
+  'garage.earnSub': 'On your PC or a VPS · see the guide',
+  'garage.earnShort': 'How to earn points',
+  // A row's state
   'garage.stateEquipped': 'Equipped',
-  'garage.stateOwned': 'Owned',
-  'garage.stateClaimable': 'Claim · {points} pts',
+  'garage.stateEquippedFree': 'Equipped · Free',
+  'garage.stateOwned': 'Yours',
+  'garage.stateClaimable': 'Redeemable · {points} pts',
   'garage.stateLocked': 'Locked · {points} pts',
-  // A car whose body is still being built: it cannot be claimed yet
+  // A car whose body is still being built: it cannot be redeemed yet
   'garage.stateSoon': 'Coming soon',
-  // Shown over the car on screen when it is not the one the player drives (a look only)
-  'garage.previewTag': 'PREVIEW',
+  // The detail card's action and the line under it
   'garage.equip': 'EQUIP',
-  // {points} is the car's price, formatted
-  'garage.claim': 'CLAIM FOR {points} PTS',
-  // Under the car the player drives
-  'garage.equippedNow': 'You drive this car',
-  // An owned car whose body is not built yet draws the default car
-  'garage.bodySoon': 'Its body is on the way: until then it looks like the Dune',
-  // Why the car on screen cannot be claimed; {cost} and {balance} are formatted numbers
-  'garage.needSignIn': 'Sign in to collect cars',
-  'garage.needPoints': 'You need {cost} host points; you have {balance}',
-  'garage.needFrozen': 'Your claims are paused',
+  'garage.redeem': 'REDEEM FOR {points} PTS',
+  'garage.inUse': 'You drive it in your next match',
+  'garage.needSignIn': 'Sign in to redeem',
+  'garage.missing': 'You have {have} pts: {missing} to go',
+  'garage.needFrozen': 'Redeeming paused',
   'garage.needMatches': 'Your server needs a verified match first',
-  'garage.needUnavailable': 'It cannot be claimed right now',
+  'garage.needUnavailable': 'It cannot be redeemed right now',
   'garage.needLoading': 'Loading…',
-  'garage.soonText': 'Coming soon: its body is still being built',
-  // Claim confirmation; {car} is the car's name, {cost} {balance} {after} formatted numbers
-  'garage.claimTitle': 'Claim {car}?',
-  'garage.claimText': '{car} costs {cost} host points: your balance goes from {balance} to {after}.',
-  'garage.claimConfirm': 'CLAIM',
-  'garage.claimCancel': 'CANCEL',
-  // Toasts; {car} is the car's name
-  'garage.claimed': '{car} is yours',
-  'garage.equipped': '{car} equipped',
-  // The host points panel; {points}, {earned} and {spent} are formatted numbers
-  'garage.wallet': 'HOST POINTS',
-  'garage.points': '{points} pts',
-  'garage.earnedSpent': 'Earned {earned} · Spent {spent}',
-  'garage.frozenVerification': 'Claims paused: a match on your server failed verification. A maintainer will review it.',
-  'garage.frozen': 'Claims paused while a maintainer reviews your account',
-  'garage.loading': 'Loading your host points…',
+  'garage.soonText': 'Its body is still being built',
+  // The redeem sheet; {car} is the car's name
+  'garage.redeemTitle': 'Redeem {car}',
+  'garage.cost': 'Cost: {points} server points',
+  'garage.balance': 'Balance: {from} → {to}',
+  'garage.noPay': 'Nothing is paid: cars come only with server points, never by playing',
+  'garage.cancel': 'CANCEL',
+  'garage.hold': 'HOLD TO CONFIRM',
+  // After it
+  'garage.redeemed': '{car} is yours',
+  'garage.same': 'Same handling, same hitbox: only the look changes',
+  'garage.equipNow': 'EQUIP NOW',
+  'garage.done': 'DONE',
+  'garage.failTitle': "We couldn't redeem it",
+  'garage.failText': 'Nothing was spent.',
   'garage.retry': 'RETRY',
-  // How points are earned: shown to an account with none to spend
-  'garage.hostTitle': 'How to earn host points',
-  'garage.hostText': 'Host points come only from running a community server: every verified match it hosts adds some. Playing or trading never earns them.',
-  'garage.hostTesting': 'Community servers are in testing: ask on Discord if you want to run one.',
-  // Links: the community servers' docs, the Discord server
-  'garage.hostDocs': 'HOW TO RUN A SERVER',
-  'garage.hostDiscord': 'ASK ON DISCORD',
-  // For a guest (the button under it is home.signIn)
-  'garage.guestTitle': 'Collect cars',
-  'garage.guestText': 'New cars are claimed with host points, which accounts earn by running a community server. Sign in or create an account to see yours.',
+  // Toast; {car} is the car's name
+  'garage.equipped': '{car} equipped',
+  'garage.loading': 'Loading your points…',
+  // How points are earned (GANA PUNTOS, a locked car's REDEEM): the guide and its QR
+  'garage.guideTitle': 'How to earn server points',
+  'garage.guideText': 'Host a community server on your PC or a VPS: every verified match it hosts adds points. Playing never earns them.',
+  'garage.guideScan': 'Scan it to open the guide on your phone.',
+  'garage.guideOpen': 'OPEN THE GUIDE',
+  // ESTADIOS
+  'garage.stadiumInUse': 'In use',
+  'garage.stadiumUse': 'USE THIS STADIUM',
+  'garage.stadiumNote': 'Used in your offline matches, in training and behind the menus',
+  // Server points everywhere (PUNTOS DE SERVIDOR card, the bar's pill)
+  'points.title': 'SERVER POINTS',
+  'points.only': 'Earned only by hosting a community server. Never sold.',
+  // The bar's pill on GARAJE and PERFIL, after the number
+  'points.words': 'server points',
 
   // Inicio's mode tiles: a title, a subtitle (PC) and its short form (phone, tablet, TV), a corner tag
   'modes.casual': 'CASUAL',
@@ -790,12 +809,12 @@ export default {
   // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
   'error.account.not_owned': 'That car is not yours yet',
   'error.account.bad_car': 'Unknown car',
-  // Claiming with host points (the garage)
+  // Redeeming with server points (the garage)
   'error.account.unknown_item': 'That item does not exist',
   'error.account.bad_item': 'That item does not exist',
-  'error.account.not_available': 'That item cannot be claimed yet',
-  'error.account.frozen': 'Your claims are paused until a maintainer reviews your server',
-  'error.account.insufficient': 'Not enough host points',
+  'error.account.not_available': 'That item cannot be redeemed yet',
+  'error.account.frozen': 'Redeeming is paused until a maintainer reviews your server',
+  'error.account.insufficient': 'Not enough server points',
   'error.account.requires_matches': 'Your server needs a verified match first',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often

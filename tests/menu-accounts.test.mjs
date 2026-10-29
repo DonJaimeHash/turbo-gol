@@ -663,7 +663,7 @@ test("AccountClient cars and the hosts' shop: Bearer, paths and bodies; a car pi
   const c = await a.claimItem('condor');
   assert.deepEqual(srv.calls.at(-1).body, { item: 'condor' });
   assert.deepEqual(c, { item: 'condor', claimed: true, wallet: { earned: 1600, spent: 1500, balance: 100, frozen: null }, items: ['condor'] });
-  await assert.rejects(a.claimItem('tero'), (e) => e instanceof AC.AccountError && e.code === 'insufficient' && e.message === 'Not enough host points');
+  await assert.rejects(a.claimItem('tero'), (e) => e instanceof AC.AccountError && e.code === 'insufficient' && e.message === 'Not enough server points');
   // A session whose car this page does not know: no car (the default one).
   a.account = null;
   srv.calls.length = 0;

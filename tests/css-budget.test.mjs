@@ -236,10 +236,13 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // centred and sideways layouts, the anti-bot sheet's slot, about 2 KB) and the TV's sign-in with the
 // phone (profile.css: PERFIL's tile, the sheet's lines, the /tv question's code, about 0.7 KB):
 // 149,103 B on main without PR 11; with PR 11: 150,735 B, the cap that plus about 0.6 KB. PR 8
-// brings the cars with their first Garage as a working stub (menu.css' garage rules, about 3.6 KB,
-// until PR 8 redraws GARAJE): 154,373 B, the cap that plus about 0.6 KB. It steps down to 70 KB
-// once PR 15 deletes menu.css. Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 154_950;
+// adds GARAJE as drawn (styles/screens/garage.css: the three cards, the tabs, the rows and their
+// outlines, the detail card, the redeem and guide sheets, the points pill, per class, about
+// 10.8 KB; components.css' hold to confirm, 0.4 KB) minus the "coming soon" panel (0.4 KB), the
+// cars' first Garage stub never landing: 161,809 B (main 150,734 B), the cap that plus about 0.6 KB.
+// It steps down to 70 KB once PR 15 deletes menu.css. Raising it is the owner's call, recorded in
+// the PR.
+const CSS_BUDGET = 162_400;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;
