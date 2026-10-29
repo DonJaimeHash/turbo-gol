@@ -92,7 +92,12 @@ export function garageScreen(menu: Menu): Screen {
   const html = document.documentElement;
   const tv = (): boolean => html.classList.contains('tg-tv');
   let tab: Tab = 'cars';
-  /** The row picked on screen, null = the equipped car's (each show starts there). */
+  /** Menu.open's tab (Screen.setTab), for the show that follows. */
+  let askedTab: Tab | null = null;
+  /**
+   * The row picked on screen, null = the equipped car's. A new visit starts there (Screen.show's
+   * `anew`); Back, ‹, a crumb or the sign-in on PERFIL come back to the car the player left.
+   */
   let selected: CarId | null = null;
   let stadium: ThemeId = host.theme;
   /** An equip is on its way (the button waits). */
@@ -280,7 +285,9 @@ export function garageScreen(menu: Menu): Screen {
   const drawCars = (v: GarageView): void => {
     for (const c of v.cars) rows.get(c.id)?.set(lineText(rowLine(c)), c.state, c.selected);
     const equipped = v.cars.find((c) => c.state === 'equipped') ?? v.cars[0];
-    for (const c of v.cars) rows.get(c.id)?.el.toggleAttribute('data-autofocus', c.id === equipped.id);
+    // The first focus with nothing remembered: the row picked (a new visit: the car driven), so a
+    // return whose remembered control went (SIGN IN after the sign-in) keeps the car.
+    for (const c of v.cars) rows.get(c.id)?.el.toggleAttribute('data-autofocus', c.selected);
     yourName.textContent = carName(equipped.id);
     yourFree.hidden = equipped.price > 0;
     yourDesc.textContent = carDescription(equipped.id);
@@ -301,7 +308,7 @@ export function garageScreen(menu: Menu): Screen {
       const row = stadiumRows.get(id);
       if (row === undefined) continue;
       row.set(on ? t('garage.stadiumInUse') : '', on ? 'inUse' : 'free', id === stadium);
-      row.el.toggleAttribute('data-autofocus', on);
+      row.el.toggleAttribute('data-autofocus', id === stadium);
       if (on) row.el.setAttribute('aria-current', 'true');
       else row.el.removeAttribute('aria-current');
     }
@@ -494,11 +501,12 @@ export function garageScreen(menu: Menu): Screen {
     openGuide();
   };
 
-  // A sign-in on PERFIL (SIGN IN here): back to GARAJE (its points, its cars).
+  // A sign-in on PERFIL (SIGN IN here): back to GARAJE (its points, its cars) as Back would come,
+  // on the car and the control the player left (Menu.backTo: PERFIL is a detour on it).
   host.accounts.subscribe(() => {
     if (!waitSignIn || !host.accounts.signedIn) return;
     waitSignIn = false;
-    if (menu.top()?.id === 'profile') menu.open('garage');
+    if (menu.top()?.id === 'profile') menu.backTo('garage');
   });
 
   /** The stage's box as viewport fractions (CSS order), the whole screen when it has no room. */
@@ -536,12 +544,18 @@ export function garageScreen(menu: Menu): Screen {
     el,
     tabsVerb: 'garage.tabsVerb',
     setTab: (id) => {
-      if (id === 'cars' || id === 'stadiums') tab = id;
+      if (id === 'cars' || id === 'stadiums') askedTab = id;
     },
-    show: () => {
+    show: (anew) => {
       shown = true;
-      selected = null;
-      stadium = host.theme;
+      // A new visit: the cars, the car driven, the stadium in use; a return keeps what was picked.
+      if (anew) {
+        tab = 'cars';
+        selected = null;
+        stadium = host.theme;
+      }
+      if (askedTab !== null) tab = askedTab;
+      askedTab = null;
       waitSignIn = false;
       previewed = null;
       unsubscribe?.();
@@ -550,6 +564,7 @@ export function garageScreen(menu: Menu): Screen {
       });
       render();
       place();
+      schedulePreview(true); // a return: the car picked in the showroom again (hide put the car driven back)
       resized?.observe(stage);
       window.addEventListener('resize', place);
       // The account's cars, what it can redeem and its points (a guest reads nothing).
@@ -557,7 +572,6 @@ export function garageScreen(menu: Menu): Screen {
     },
     hide: () => {
       shown = false;
-      tab = 'cars';
       window.clearTimeout(previewTimer);
       unsubscribe?.();
       unsubscribe = null;
