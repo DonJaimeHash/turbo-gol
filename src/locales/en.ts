@@ -1053,6 +1053,11 @@ export default {
   'final.changeSub': 'Casual, VS AI or Lobbies',
   'final.menu': 'MENU',
   'final.menuSub': 'Back to Play',
+  // The main button while a graphics pick waits for the FINAL (Super low: the game restarts first); {quality} = the tier's name
+  'final.slotRestart': 'GRAPHICS',
+  'final.restart': 'RESTART',
+  'final.restartHome': 'Applies {quality} · back to Play',
+  'final.restartLobby': 'Applies {quality} · back to the lobby',
   // A Competitive match that never started: the toast over Inicio while the search starts again
   'final.noShow': "A player didn't show up · back in the queue",
   'final.dodge': 'A player left before the start · back in the queue',
@@ -1195,6 +1200,8 @@ export default {
   // In place of the hint when the picked tier needs a restart (into or out of Super low) during an
   // online match: it waits until the player leaves the match
   'settings.qualityAfterOnline': 'Applies when you leave the online match (the game restarts)',
+  // Into or out of Super low restarts the game, which would end the search
+  'settings.qualityBusy': 'Stop searching to switch Super low on or off',
   // In place of the hint when the device runs Super low by itself (a weak TV, the safety net) and
   // the player cannot pick it: no tier is lit
   'settings.qualityAuto': 'This device runs Super low on its own',

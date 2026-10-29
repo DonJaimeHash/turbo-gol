@@ -716,6 +716,10 @@ export default {
   'final.changeSub': 'Casual, Contra la IA o Salas',
   'final.menu': 'MENÚ',
   'final.menuSub': 'Volver a Jugar',
+  'final.slotRestart': 'GRÁFICOS',
+  'final.restart': 'REINICIAR',
+  'final.restartHome': 'Aplica {quality} · vuelves a Jugar',
+  'final.restartLobby': 'Aplica {quality} · vuelves a la sala',
   'final.noShow': 'Un jugador no se presentó · de vuelta en la cola',
   'final.dodge': 'Un jugador se fue antes del inicio · de vuelta en la cola',
 
@@ -799,6 +803,7 @@ export default {
   'settings.qualityHighHint': 'Equilibrio entre detalle y fluidez',
   'settings.qualityUltraHint': 'Todos los efectos, para una tarjeta gráfica potente',
   'settings.qualityAfterOnline': 'Se aplica al salir de la partida online (el juego se reinicia)',
+  'settings.qualityBusy': 'Cancela la búsqueda para activar o quitar Súper bajo',
   'settings.qualityAuto': 'Este dispositivo usa Súper bajo por su cuenta',
   'settings.experimentalLocked': 'Inicia sesión para probar las funciones experimentales: física personalizada en la práctica libre y en salas P2P',
   'settings.experimentalNote': 'Funciones en prueba: pueden cambiar o desaparecer',

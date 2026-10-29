@@ -33,8 +33,11 @@ const UI_FIT = import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1';
 export interface FinalSource {
   /** The match that ended, null when none (the screen then shows nothing and goes back). */
   finalView(): FinalView | null;
-  /** A tier picked during the online match waits for the FINAL to go: its reload (Game.pendingRestart). */
-  reloadWaits(): boolean;
+  /**
+   * A tier picked during the online match waits for the FINAL to go: its reload (Game.pendingRestart),
+   * by the tier's name (the main button says what it will do), null when none waits.
+   */
+  reloadWaits(): string | null;
   /** The FINAL is off the stack (MENÚ, Back, a section, a crumb, CAMBIAR MODO): what waited for it runs. */
   left(): void;
 }
@@ -74,7 +77,7 @@ export function finalScreen(menu: Menu, source: FinalSource): FinalScreen {
       menu.back();
       return;
     }
-    const a = againAction(v.kind, menu.prefs, source.reloadWaits());
+    const a = againAction(v.kind, menu.prefs, source.reloadWaits() !== null);
     if (a.kind === 'home') {
       menu.back();
       return;
@@ -228,11 +231,15 @@ export function finalScreen(menu: Menu, source: FinalSource): FinalScreen {
       node,
     );
     card.setAttribute('aria-label', t('final.label', { outcome: t(`final.${outcome}`), blue: v.blue, red: v.red }));
-    const againSlot = v.kind === 'lobby' ? t('final.slotLobby') : v.kind === 'ai' ? t('final.slotAi') : t('final.slotQueue');
+    // A reload waiting (Súper bajo picked in the match): the button restarts the game first, and says so.
+    const reload = source.reloadWaits();
+    const againSlot = reload !== null ? t('final.slotRestart') : v.kind === 'lobby' ? t('final.slotLobby') : v.kind === 'ai' ? t('final.slotAi') : t('final.slotQueue');
+    const title = reload !== null ? t('final.restart') : t('final.again');
+    const sub = reload === null ? queueLine(v) : t(v.kind === 'lobby' ? 'final.restartLobby' : 'final.restartHome', { quality: reload });
     setChildren(
       again,
       h('span.mn-final-again-icon', { 'aria-hidden': 'true' }, icon('refresh')),
-      h('span.mn-final-again-text', null, slot(againSlot, { ink: true }), h('span.mn-final-again-title', { 'data-fit': '24' }, t('final.again')), h('span.mn-final-again-sub', null, queueLine(v))),
+      h('span.mn-final-again-text', null, slot(againSlot, { ink: true }), h('span.mn-final-again-title', { 'data-fit': '24' }, title), h('span.mn-final-again-sub', null, sub)),
       h('span.mn-hero-go', { 'aria-hidden': 'true' }, icon('arrow')),
     );
     setChildren(change, icon('refresh', 'mn-final-alt-icon'), h('span.mn-final-alt-text', null, h('b', null, t('final.change')), h('span', null, t('final.changeSub'))));

@@ -1066,7 +1066,7 @@ export class Game implements P2PGameHooks {
     }
     // The anti-bot check that wants the player: the menus' sheet, CANCEL ends it.
     online.client.onAntiBotAsk = (asking) => this.menu.antiBotAsk(asking, () => online.client.cancelChallenge());
-    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => this.restartAfterFinal && this.pendingRestart !== null, left: () => this.finalLeft() })));
+    this.menu.register('final', (m) => (this.finalUi = finalScreen(m, { finalView: () => this.finalView, reloadWaits: () => (this.restartAfterFinal && this.pendingRestart !== null ? t(`quality.${this.pendingRestart}`) : null), left: () => this.finalLeft() })));
     this.menuSettings = new SettingsView(() => this.settingsOptions(), {
       place: 'menu',
       focus: (el) => {
@@ -1765,6 +1765,13 @@ export class Game implements P2PGameHooks {
     }
     // Into or out of super low: its own backend and world, a new page (quality.ts needsReload).
     if (needsReload(this.quality, q)) {
+      // A running search would end with the page: refused, as the language picker does (the
+      // Graphics tab shows the running tier again).
+      if (fallback === null && !this.onlineActive && this.session !== null && this.session.busy) {
+        this.notify(t('settings.qualityBusy'));
+        this.refreshSettings();
+        return Promise.resolve();
+      }
       // In an online match the reload would leave it (an abandon): the pick is saved now and the
       // page restarts once the menus are back (showMenu); the Graphics tab says so.
       if (fallback === null && this.onlineActive) {
