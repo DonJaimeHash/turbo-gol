@@ -54,6 +54,7 @@
  *                                       rankedResultNet  network     1200  RL_1200
  *   GET  /api/leaderboard               leaderboardYou   account       60  RL_60    the account's own row: one AccountsDO call (cached 15 s)
  *                                       leaderboardNet   network     1200  RL_1200  the board itself is cached 30 s per isolate
+ *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
  *
  * Limits kept where they are (in-isolate only, per minute unless stated; the object ones hold
  * across isolates because there is one object):
@@ -121,6 +122,7 @@ export const LIMITS = {
   rankedResultNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   leaderboardYou: { by: 'account', isolate: 60, edge: 'RL_60' },
   leaderboardNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
 } as const satisfies Record<string, LimitRule>;
 export type LimitName = keyof typeof LIMITS;
 

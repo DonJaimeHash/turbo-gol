@@ -727,7 +727,7 @@ async function websocket(request: Request, env: Env, gate: SocketGate, matchId: 
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     for (const prefix of ['/ws/', '/room/', '/lobby/'] as const) {
@@ -746,6 +746,8 @@ export default {
         limited: (key, max, windowMs) => isolateLimited(key, max, Date.now(), windowMs),
         limit: limiter(env),
         cors: corsHeaders(request, env),
+        // Absent where the caller passes no context (the tests): nothing then outlives the answer.
+        waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined,
       });
     }
     // ---- the game (Workers Assets): everything outside /api, /ws, /room, /lobby and /nodes ----

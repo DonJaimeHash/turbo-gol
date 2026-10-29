@@ -6,10 +6,13 @@
  *
  *   GET      /nodes/whoami            { ip }: the address the installer is seen from (CF-Connecting-IP)
  *   GET|HEAD /nodes/releases/channel  channel.json of R2 NODE_RELEASES, checked ({ stable, minimum } as X.Y.Z;
- *                                     503 otherwise, so a launcher keeps the release it runs), never cached.
+ *                                     503 otherwise, so a launcher keeps the release it runs), no-store on the
+ *                                     wire and read from R2 at most every 30 s per isolate (CHANNEL_TTL_MS).
  *                                     Its own route: the launcher asks for 'channel', with no extension
- *   GET|HEAD /nodes/releases/<key>    a release file: <version>/<file> (immutable) or a root file such as
- *                                     launcher.mjs or install.sh (revalidated by ETag); never a listing
+ *   GET|HEAD /nodes/releases/<key>    a release file: <version>/<file> (immutable: from the edge cache after
+ *                                     its first copy) or a root file such as launcher.mjs or install.sh
+ *                                     (revalidated by ETag, without a body read); never a listing.
+ *                                     Every release route: 1,200 a minute per network (limits.ts nodeReleases)
  *   POST     /nodes/register          RegisterRequest -> the object, with the caller's address (x-client-ip); 413
  *                                     over 4 KB declared (the object reads at most that much of any body)
  *   GET      /nodes/connect           a node's control WebSocket -> the object; its 101 passes through as it is.
@@ -57,6 +60,7 @@ import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
 import { NODE_ROUTES, nodesStub } from './nodeApi';
+import { edgeCache } from './limits';
 import type { Limiter } from './limits';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 import { PUBLIC_REPLAY_MAX_BYTES, publicReplay } from './replayIndex';
@@ -78,6 +82,8 @@ export interface NodeRouteContext {
   limit: Limiter;
   /** CORS headers for this request (index.ts corsHeaders). */
   cors: Record<string, string>;
+  /** The request's waitUntil (index.ts fetch's context): the edge cache's copy of a release file is written after the answer. */
+  waitUntil?: (p: Promise<unknown>) => void;
 }
 
 /** The object's own limits (NodeRegistryDO.ts), here per isolate: junk stops before the object. */
@@ -299,12 +305,6 @@ async function replayList(c: NodeRouteContext, env: NodesEnv, who: string): Prom
   return new Response(body, { headers });
 }
 
-/** The edge cache of the Worker's location (absent outside workerd: the tests). */
-function edgeCache(): Cache | null {
-  const g = globalThis as { caches?: { default?: Cache } };
-  return g.caches?.default ?? null;
-}
-
 /**
  * GET /nodes/replays/<matchId>/view: a listed match's replay, made public (replayIndex.ts
  * publicReplay: the header rebuilt from the control plane's record, no account id, no node id). The
@@ -355,42 +355,98 @@ async function replayView(c: NodeRouteContext, env: NodesEnv, who: string, match
   return new Response(out, { headers });
 }
 
-/** A file of R2 NODE_RELEASES: a checked key, its type, and caching that fits what it is. */
+/**
+ * A file of R2 NODE_RELEASES: a checked key, its type, and caching that fits what it is. Limited
+ * per network before the bucket. A version's files never change, so they are served from the
+ * location's edge cache (Cache API) once one copy went out, without an R2 read; a HEAD or a
+ * conditional GET of a root file reads only what it needs (R2's onlyIf: a matching ETag fetches
+ * no body).
+ */
 async function release(c: NodeRouteContext, raw: string): Promise<Response> {
   const bucket = c.env.NODE_RELEASES;
   if (!bucket) return error(404, 'not_found');
+  if (await c.limit('nodeReleases', limitKey(c.ip))) return error(429, 'rate_limited');
   let key: string;
   try {
     key = decodeURIComponent(raw);
   } catch {
     return error(404, 'not_found');
   }
-  if (key === 'channel' || key === 'channel.json') return channel(bucket, c.request.method === 'HEAD');
+  const head = c.request.method === 'HEAD';
+  if (key === 'channel' || key === 'channel.json') return channel(bucket, head);
   // The URL parser already resolved every '..' segment; one hidden behind an encoded slash is refused here.
   if (!RELEASE_KEY.test(key) || key.includes('..')) return error(404, 'not_found');
-  const obj = c.request.method === 'HEAD' ? await bucket.head(key) : await bucket.get(key);
+  const versioned = VERSIONED.test(key);
+  const cache = versioned ? edgeCache() : null;
+  // One key per file: the query string and the caller's headers never make another copy.
+  const cacheKey = cache ? `${c.url.origin}/nodes/releases/${key}` : '';
+  const inm = c.request.headers.get('If-None-Match');
+  if (cache) {
+    const hit = await cache.match(cacheKey).catch(() => undefined);
+    if (hit) return fromCopy(hit, head, inm);
+  }
+  const obj = head ? await bucket.head(key) : await bucket.get(key, inm ? { onlyIf: c.request.headers } : undefined);
   if (!obj) return error(404, 'not_found');
   const dot = key.lastIndexOf('.');
   const headers = new Headers({
     'content-type': (dot > key.lastIndexOf('/') ? TYPES[key.slice(dot)] : undefined) ?? 'application/octet-stream',
     etag: obj.httpEtag,
     // A version's files never change (a new release is a new version); the root ones (the launcher, the installers) do.
-    'cache-control': VERSIONED.test(key) ? 'public, max-age=31536000, immutable' : 'no-cache',
+    'cache-control': versioned ? 'public, max-age=31536000, immutable' : 'no-cache',
     'x-content-type-options': 'nosniff',
   });
   const body = 'body' in obj ? (obj as R2ObjectBody).body : null;
-  if (c.request.headers.get('If-None-Match') === obj.httpEtag) {
+  // R2 sends no body when the condition says the caller's copy is current (a weak or listed ETag too).
+  if (inm === obj.httpEtag || (!head && body === null)) {
     await body?.cancel();
     return new Response(null, { status: 304, headers });
   }
   headers.set('content-length', String(obj.size));
-  return new Response(body, { status: 200, headers });
+  if (head) return new Response(null, { status: 200, headers });
+  // A conditional GET whose ETag did not match: R2 skipped nothing, `body` is there (onlyIf only skips on a match).
+  const res = new Response(body, { status: 200, headers });
+  if (cache && c.waitUntil) c.waitUntil(cache.put(cacheKey, res.clone()).catch(() => undefined));
+  return res;
 }
 
-/** GET /nodes/releases/channel: the channel the launchers follow, only when it reads as one. */
-async function channel(bucket: R2Bucket, head: boolean): Promise<Response> {
+/** A versioned file from the edge cache: 304 for its ETag, headers only for a HEAD. */
+function fromCopy(hit: Response, head: boolean, inm: string | null): Response {
+  const headers = new Headers(hit.headers);
+  if (inm !== null && inm === headers.get('etag')) {
+    void hit.body?.cancel();
+    headers.delete('content-length');
+    return new Response(null, { status: 304, headers });
+  }
+  if (head) {
+    void hit.body?.cancel();
+    return new Response(null, { status: 200, headers });
+  }
+  return new Response(hit.body, { status: 200, headers });
+}
+
+/** How long an isolate keeps the channel's answer: a new release reaches the launchers this much later. */
+export const CHANNEL_TTL_MS = 30_000;
+const channelCache = new WeakMap<R2Bucket, { at: number; status: number; body: string }>();
+
+/**
+ * GET /nodes/releases/channel: the channel the launchers follow, only when it reads as one. The
+ * answer (a 404 or a 503 too) is kept CHANNEL_TTL_MS per isolate: one R2 read per isolate and
+ * half minute, whoever asks. On the wire it stays no-store.
+ */
+async function channel(bucket: R2Bucket, head: boolean, now: number = Date.now()): Promise<Response> {
+  let c = channelCache.get(bucket);
+  if (!c || now - c.at > CHANNEL_TTL_MS) {
+    c = { at: now, ...(await readChannel(bucket)) };
+    channelCache.set(bucket, c);
+  }
+  const res = new Response(head ? null : c.body, { status: c.status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
+  return res;
+}
+
+async function readChannel(bucket: R2Bucket): Promise<{ status: number; body: string }> {
+  const answer = (r: Response) => r.text().then((body) => ({ status: r.status, body }));
   const o = await bucket.get('channel.json');
-  if (!o) return error(404, 'no_channel');
+  if (!o) return answer(error(404, 'no_channel'));
   let v: unknown = null;
   try {
     v = JSON.parse(await o.text());
@@ -400,8 +456,7 @@ async function channel(bucket: R2Bucket, head: boolean): Promise<Response> {
   const ch = (typeof v === 'object' && v !== null ? v : {}) as { stable?: unknown; minimum?: unknown };
   if (typeof ch.stable !== 'string' || !SEMVER.test(ch.stable) || typeof ch.minimum !== 'string' || !SEMVER.test(ch.minimum)) {
     // The object raises the ALERT when it reads it; a launcher that gets this keeps the release it runs.
-    return error(503, 'bad_channel');
+    return answer(error(503, 'bad_channel'));
   }
-  const res = json({ stable: ch.stable, minimum: ch.minimum }, 200, { 'cache-control': 'no-store' });
-  return head ? new Response(null, res) : res;
+  return { status: 200, body: JSON.stringify({ stable: ch.stable, minimum: ch.minimum }) };
 }
