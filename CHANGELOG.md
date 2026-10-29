@@ -7,6 +7,26 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Four new cars: Pampero (a low, sharp wedge), Carpincho (a round, sturdy off-roader), Cóndor (a long
+  jet racer with a tail fin) and Tero (a compact rally hatch), beside the Dune, which stays free
+  for everyone. Every car drives the same: same handling, same hitbox, only the look changes, so
+  ranked and every counted match are untouched. Other players see your car online, in server
+  matches and in lobbies.
+- GARAGE, as drawn: your car on the left with your server points and how to earn them, the car
+  turning in the middle, and on the right CARS │ STADIUMS (Q / E, LT / RT, CH+ / CH−), a row per
+  car with its outline and its state (Equipped, Yours, Redeemable, Locked · 1,500 pts) and the
+  card of the car you picked with its action. Resting on a car for a moment shows it on yours.
+  ▶ on a row (the arrows, a controller, a remote) stays on it instead of switching to STADIUMS.
+  EQUIP drives it from your next match, offline and online. A car is redeemed with server points:
+  hold CONFIRM for a moment (A, Enter, OK, a mouse button or a finger) and it is yours.
+- Server points are earned only by hosting a community server, never sold, never won by playing,
+  and nothing is ever paid. Until hosting opens to everyone nobody has points, so the four cars
+  show as locked and REDEEM explains how points are earned: EARN POINTS BY HOSTING A COMMUNITY
+  SERVER opens the guide (on a TV, or with a controller, as a QR for your phone). Your points also
+  show in the top bar in GARAGE and PROFILE.
+- STADIUMS in GARAGE: Night harbour, Red canyon and Alpine valley, the same list as MODES › VS AI's
+  Stadium row; the one you pick is used in your offline matches, in training and behind the menus.
+- The player plate on PLAY shows the car you drive (GARAGE · Pampero).
 - Music, made entirely in code (no audio files). A calm theme plays in the menus and an
   electronic track plays during a match. The track builds up, breaks down after every goal and
   drops back in at kickoff. It gets more intense in the last 30 seconds and in overtime, and it
@@ -184,7 +204,6 @@ All notable changes to Turbogol are documented here. The format follows
   scripts/ui-fit.mjs` checks every menu screen at six sizes with it, in English and Spanish and
   with the hints of every controller, keyboard and remote (a CI job, for information); `--face
   Verdana` runs the same check with a face wider than Arial.
-- GARAGE has its place in the menus already, with a "coming soon" panel until the cars arrive.
 - A controls card for new players: during the kickoff countdown of your first three matches, and
   at the start of free play, a card in the bottom right corner shows how to drive, steer, jump,
   boost and switch to the ball camera, with your own keys or buttons (keyboard and mouse, or the

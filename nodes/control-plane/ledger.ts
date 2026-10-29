@@ -22,6 +22,11 @@
  *   - guests and accounts younger than NEW_ACCOUNT_DAYS weigh 0.25
  *   - the same group of players on the same operator decays within 24 h
  *   - a failed verification is worth 0, suspends the node and freezes the operator's wallet
+ *
+ * Persistence (the NodeRegistryDO, server/src/nodeStore.ts): each entry is written with the match it
+ * scores (MatchEntry.ledger, in the transaction that settles it), the group notes through onNote,
+ * the all-time totals beside them; restore() reads them back at every start, so the 24 h repeat
+ * decay, the 30-day leaderboard and the operators' summaries survive a deploy.
  */
 import type { EndReason, GameMode } from '../shared/controlProtocol';
 
@@ -94,6 +99,18 @@ function round2(x: number): number {
   return Math.round(x * 100) / 100;
 }
 
+/**
+ * A verified hosted match that counts as one (verifiedMatches, the free badge's
+ * minVerifiedMatches): verified and worth points, so it served someone other than the operator. A
+ * match the operator played alone on their own node (vs bots, or with a no-show) is verified all
+ * the same but earns 0: it counts for nothing, as their own minutes. AccountsDO counts its
+ * host_credits rows by the same rule (server/src/accountStore.ts verifiedHosted), the
+ * NodeRegistryDO's ledger_totals too (server/src/nodeStore.ts).
+ */
+export function countsAsHosted(e: Pick<LedgerEntry, 'verified' | 'points'>): boolean {
+  return e.verified && e.points > 0;
+}
+
 export interface OperatorSummary {
   operatorId: string;
   /** Points earned over the last WINDOW_DAYS (activity). */
@@ -105,11 +122,77 @@ export interface OperatorSummary {
   byNode: Record<string, { points: number; matches: number }>;
 }
 
+/** One more match of a group on an operator that earned nothing by itself (noteGroup): the repeat decay counts it. */
+export interface GroupNote {
+  operatorId: string;
+  playerIds: string[];
+  at: number;
+}
+
+/** An operator's all-time points and verified matches (countsAsHosted: what earned() and verifiedMatches() answer). */
+export interface OperatorTotal {
+  operatorId: string;
+  earned: number;
+  verified: number;
+}
+
+/** What a restart reads back: the window's entries, the notes of the repeat window and every operator's totals. */
+export interface LedgerSnapshot {
+  entries: readonly LedgerEntry[];
+  notes: readonly GroupNote[];
+  totals: readonly OperatorTotal[];
+}
+
+export interface LedgerOptions {
+  /** A group note was taken (noteGroup): the store keeps it for the repeat window. */
+  onNote?: (note: GroupNote) => void;
+}
+
+/** The repeat decay's key: the operator and the players it counts (everyone but the operator), sorted. */
+function groupKey(operatorId: string, playerIds: readonly string[]): { key: string; counted: number } {
+  const counted = playerIds.filter((p) => p !== operatorId).sort();
+  return { key: operatorId + '|' + counted.join(','), counted: counted.length };
+}
+
 export class Ledger {
   private readonly entries: LedgerEntry[] = [];
   private readonly groups = new Map<string, number[]>();
   private readonly totals = new Map<string, number>();
   private readonly verified = new Map<string, number>();
+  private readonly onNote: ((note: GroupNote) => void) | null;
+
+  constructor(opts: LedgerOptions = {}) {
+    this.onNote = opts.onNote ?? null;
+  }
+
+  /**
+   * Load what the store kept (a fresh ledger, at the start): the entries of the last WINDOW_DAYS in
+   * time order, the repeat groups of the last 24 h rebuilt from them and from the notes exactly as
+   * record() and noteGroup() build them, and the totals as written.
+   */
+  restore(s: LedgerSnapshot, now: number): void {
+    this.entries.length = 0;
+    this.groups.clear();
+    this.totals.clear();
+    this.verified.clear();
+    const since = now - WINDOW_DAYS * DAY_MS;
+    this.entries.push(...s.entries.filter((e) => e.at >= since).sort((a, b) => a.at - b.at));
+    const note = (key: string, at: number) => {
+      if (now - at >= REPEAT_WINDOW_MS) return;
+      const times = this.groups.get(key);
+      if (times) times.push(at);
+      else this.groups.set(key, [at]);
+    };
+    for (const e of this.entries) note(groupKey(e.operatorId, e.players.map((p) => p.playerId)).key, e.at);
+    for (const n of s.notes) {
+      const g = groupKey(n.operatorId, n.playerIds);
+      if (g.counted > 0) note(g.key, n.at);
+    }
+    for (const t of s.totals) {
+      this.totals.set(t.operatorId, round2(t.earned));
+      if (t.verified > 0) this.verified.set(t.operatorId, t.verified);
+    }
+  }
 
   /** Score a match and append it. `regionFactorValue` comes from the control plane's demand / supply view. */
   record(input: CreditInput, regionFactorValue: number): LedgerEntry {
@@ -126,7 +209,7 @@ export class Ledger {
     }
     const quality = qualityFactor(input.tickLagP99Ms, input.underrunRate);
     this.prune(input.at);
-    const key = input.operatorId + '|' + counted.sort().join(',');
+    const key = groupKey(input.operatorId, counted).key;
     const times = (this.groups.get(key) ?? []).filter((t) => input.at - t < REPEAT_WINDOW_MS);
     const repeat = counted.length === 0 ? 0 : 1 / (1 + times.length);
     times.push(input.at);
@@ -144,7 +227,7 @@ export class Ledger {
     };
     this.entries.push(entry);
     this.totals.set(input.operatorId, round2((this.totals.get(input.operatorId) ?? 0) + points));
-    if (input.verified) this.verified.set(input.operatorId, (this.verified.get(input.operatorId) ?? 0) + 1);
+    if (countsAsHosted(entry)) this.verified.set(input.operatorId, (this.verified.get(input.operatorId) ?? 0) + 1);
     return entry;
   }
 
@@ -155,12 +238,12 @@ export class Ledger {
    * match were verified.
    */
   noteGroup(operatorId: string, playerIds: readonly string[], at: number): void {
-    const counted = playerIds.filter((p) => p !== operatorId);
-    if (counted.length === 0) return;
-    const key = operatorId + '|' + [...counted].sort().join(',');
+    const { key, counted } = groupKey(operatorId, playerIds);
+    if (counted === 0) return;
     const times = (this.groups.get(key) ?? []).filter((t) => at - t < REPEAT_WINDOW_MS);
     times.push(at);
     this.groups.set(key, times);
+    this.onNote?.({ operatorId, playerIds: [...playerIds], at });
   }
 
   /** Drop entries older than the window and stale repeat groups (the totals stay). */
@@ -179,7 +262,7 @@ export class Ledger {
     return this.totals.get(operatorId) ?? 0;
   }
 
-  /** Verified matches an operator's nodes ever hosted. */
+  /** Verified matches an operator's nodes ever hosted for someone else (countsAsHosted). */
   verifiedMatches(operatorId: string): number {
     return this.verified.get(operatorId) ?? 0;
   }

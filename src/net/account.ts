@@ -11,6 +11,7 @@
  */
 
 import type { RulesSnapshot, StoredPreset } from '../game/physicsRules';
+import type { CarId } from '../game/cosmetics';
 
 export const CLIENT_KDF_ITERATIONS = 200_000;
 const CLIENT_KDF_SALT_PREFIX = 'turbogol/account/v1/';
@@ -174,6 +175,11 @@ export interface AccountSession {
   name: string;
   session: string;
   expiresAt: number;
+  /**
+   * The car this session seats the account with online (src/net/cosmetics.ts): the one it picked
+   * while it owns it, else the default car. Absent from servers before cars: the default car.
+   */
+  car?: CarId;
 }
 
 export interface RegisterAnswer extends AccountSession {
@@ -381,6 +387,8 @@ export interface LobbyMember {
   away?: boolean;
   /** Said LISTO (informative: the host's start never waits for it). Absent from an older Worker: false. */
   ready?: boolean;
+  /** The car the member's seat drives (its session's when it came in); absent: the default car. */
+  car?: CarId;
 }
 
 export interface LobbyState {

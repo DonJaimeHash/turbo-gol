@@ -1,6 +1,7 @@
 // The stadium sheet (src/ui/components/stadium.ts, plan PR 16): MODOS › CONTRA LA IA's Stadium row
 // opens it (it opened GARAJE's "coming soon", and nothing called setTheme), it lists every theme
-// once, the current one marked, and a pick switches the theme unless it is the current one.
+// once, the current one marked, and a pick switches the theme unless it is the current one;
+// GARAJE › ESTADIOS (PR 8) lists and applies them with the same two functions.
 //   node --test tests/stadium-picker.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,4 +59,12 @@ test("MODOS' Stadium row opens the stadium sheet, not GARAJE", () => {
   assert.ok(row !== undefined, 'the row');
   assert.match(row, /openStadiumPicker\(menu\b/);
   assert.doesNotMatch(row, /open\('garage'\)/);
+});
+
+test("GARAJE › ESTADIOS uses the sheet's selector: the same list, the same mark, the same apply", () => {
+  const src = readFileSync(new URL('../src/ui/screens/garage.ts', import.meta.url), 'utf8');
+  assert.match(src, /import \{ chooseStadium, stadiumOptions \} from '\.\.\/components\/stadium'/);
+  assert.match(src, /stadiumOptions\(host\.theme\)/, 'the rows and the mark');
+  assert.match(src, /chooseStadium\(host, stadium\)/, 'USAR');
+  assert.doesNotMatch(src, /setTheme\(/, 'no switch of its own');
 });

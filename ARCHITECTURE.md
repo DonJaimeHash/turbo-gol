@@ -213,11 +213,18 @@ src/render/
                         frames, pads; forwards setTheme / setWarmUp to the turf and the stadium
   Camera.ts             chase camera (ball cam / car cam, camera settings & rules, field clamp,
                         camera swivel from CameraLook, rear view); keeps Settings.camera by reference
-  Car.ts                procedural dune runner (body with canopy + roll hoop, knobby wheels, twin
-                        plasma boost jets, blob), one shared surface material for all cars:
-                        per-vertex surface kinds (CAR_KIND) for flake paint under clearcoat,
-                        carbon, glass, metals, tyres, HDR lamps; the body and wheel pipelines
-                        build only their own graph
+  Car.ts                CarView (a body from cars/, its wheels, twin plasma boost jets, blob;
+                        setBody swaps the body in place), one shared surface material for all
+                        cars: per-vertex surface kinds (CAR_KIND) for flake paint under
+                        clearcoat, carbon, glass, metals, tyres, HDR lamps, the body's livery in
+                        five per-object uniforms (one pipeline for every body); the body and
+                        wheel pipelines build only their own graph
+  cars/                 the car bodies (docs/cars.md): types.ts (CarBodySpec, the contract),
+                        kit.ts (surfaces, lofts, the BodyKit, resolveWheels, buildBody and its
+                        containment guard), wheels.ts (wheel styles: knobby, slick), one module
+                        per catalog car (dune.ts, the dune runner, the default car; pampero.ts,
+                        carpincho.ts, condor.ts, tero.ts), index.ts (the registry),
+                        cache.ts (geometry shared per body / team / detail, reference-counted)
   Ball.ts               procedural panelled ball (truncated icosahedron: pearl hexagons, graphite
                         pentagons with lime glow rings, stitched seams; BALL_COLORS), blob shadow,
                         ground marker
@@ -360,6 +367,14 @@ src/game/
                         account, debounced pushes to /api/me/presets,
                         offline edits kept dirty, a preset the full account refused waits for room
                         (said once), deletes need the server; nothing for a guest
+  cosmetics.ts          the cosmetic cars, pure data with no imports (never in the nodes' bundle):
+                        CarId in menu order, name / description keys, price in server points, status
+                        ('soon' until a body exists); every car is a Standard car
+  carSelection.ts       the player's car pick (localStorage), only a car the player is entitled to
+                        (entitledCars, where the inventory will plug in); the preview gate of
+                        #car / #showroom (a dev server or a VITE_PREVIEW_CARS=1 build), and
+                        PREVIEW_ALL_CARS (a VITE_PREVIEW_CARS=1 build only: a guest gets every car
+                        offline, the garage says so; folded away in production builds)
   experimentalTraining.ts experimental free play, pure: rules for free play only (packs always stock,
                         a locked player stock), the arena plan (mutators, fingerprint, game speed),
                         createArena before the car, the rebuild when the physics differ (a pack
@@ -430,9 +445,14 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         car), language.ts (the language sheet, Settings › Game's Idioma), stadium.ts
                         (the stadium sheet, MODOS › CONTRA LA IA's Stadium row: every theme, the
                         current one marked; a pick runs MenuHost.setTheme behind the loading screen;
-                        pure stadiumOptions / chooseStadium, tests/stadium-picker.test.mjs), seg.ts
+                        pure stadiumOptions / chooseStadium, GARAJE › ESTADIOS' too,
+                        tests/stadium-picker.test.mjs), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
-                        (mn-picker: a 56 px row with its value and ›, opening a sheet), keypad.ts
+                        (mn-picker: a 56 px row with its value and ›, opening a sheet), hold.ts
+                        (hold to confirm: a pointer, Enter / Space / OK, or a pad's A through
+                        MenuHost.acceptHeld; a release or a repeat after it presses nothing),
+                        carSilhouettes.ts (the five cars' outlines on a 72 x 36 grid), carRow.ts
+                        (GARAJE's list row, a line), keypad.ts
                         (mn-keypad, plan PR 14: the on-screen keys Menu.openKeypad mounts over the
                         sheets when OK / A lands on a field without a fine pointer: A–Z / 0–9 and
                         . - _ @, the case, ⌫, SPACE, DONE, ◀ ▶ along a row (onNavSide, round); DONE
@@ -442,10 +462,11 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         keypadType / keypadShown, tests/tv-signin.test.mjs)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
                         hints.ts (the hint bar per last input, root or stacked, a screen's own
-                        tabs or not; pure), topbar.ts (wordmark,
+                        tabs or not, a pad's LT RT for a root's own tabs; pure), topbar.ts (wordmark,
                         sections with focus = selection, back + crumbs, chip, Settings), rail.ts
                         (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
-                        About), pills.ts (region / connection, search, update)
+                        About), pills.ts (region / connection, search, update, the server points
+                        on GARAJE and PERFIL)
   channelKeys.ts        CH+ / CH− and PgUp / PgDn however a remote sends them (code, key, Tizen's
                         XF86 keys and keyCodes): Menu.onKey and Ajustes over the pause; pure
   keyboard.ts           a phone's keyboard over a form: the visual viewport's shrink (Chrome on
@@ -611,8 +632,22 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         the searching panel with "bots join in"
                         (modesModel.ts, pure: tabs, formats, queueNet, botsCountdown from
                         /api/config's botFillMs or P2P_FILL_WAIT_MS, countShown, actionKind;
-                        tests/modes.test.mjs), GARAJE's "coming soon" (garage.ts, until plan PR
-                        8), the Salas (plan PR 12; lobby.ts: CREATE LOBBY AND SHARE, JOIN WITH CODE
+                        tests/modes.test.mjs), GARAJE (garage.ts, plan PR 8, the owner's drawing:
+                        TU AUTO, PUNTOS DE SERVIDOR (a guest's 0 and SIGN IN: PERFIL as a
+                        detour, back here on Back or a sign-in), GANA PUNTOS (the guide: a new tab, or with a pad, a remote or on a
+                        TV a sheet with its QR) on the left; the showroom in the stage between
+                        (MenuHost.garage.showroom on show, null on hide, measured on a layout
+                        change); AUTOS │ ESTADIOS as .mn-tabs, a row per car (components/carRow.ts),
+                        the detail card; focus = selection, the preview (MenuHost.garage.preview)
+                        once the focus rested 300 ms, A on the row picked to its action; EQUIPAR
+                        (Garage.equip), CANJEAR's sheet held 700 ms (SheetAction.hold) →
+                        Garage.claim → EQUIPAR AHORA, a locked car's CANJEAR never lime with its
+                        reason, its press explaining; ◀ ▶ cross the stage (onNavSide), the rows
+                        and the action are lines (data-nav-line: ▶ bounces); ESTADIOS:
+                        the three themes, USAR = chooseStadium (components/stadium.ts); .mn[data-screen='garage']
+                        drops the shell's backdrop, super low's too; window.__garage samples in dev
+                        / VITE_UI_FIT; garageModel.ts, pure: rowLine, detailView, pointsCard,
+                        earnIsLime, redeemBalance; tests/garage-screen.test.mjs), the Salas (plan PR 12; lobby.ts: CREATE LOBBY AND SHARE, JOIN WITH CODE
                         in a sheet, the join link #sala=ABC234 on a load or a hashchange with its
                         sheet, and the Sala: the code giant, SHARE by device, the teams side by side,
                         a member's sheet Move · Make host · Kick, the action bar START / READY and
@@ -686,6 +721,11 @@ src/net/
                         password rules, clientPasswordKey (PBKDF2 in the browser), regions
   rating.ts             Weng-Lin (OpenSkill) Bradley-Terry team rating, abandon rules, tiers,
                         placement, MMR scale, abandon ban ladder (shared with server/)
+  cosmetics.ts          the cars online (never in the nodes' bundle): a seat's car on the wire as
+                        extensions of the bundled types (CosmeticWelcome roster, MatchedCars by
+                        slot for node matches; RoomSlot.car is in p2p/protocol.ts), absent = the
+                        default car; the inventory and hosts' shop answers (ItemsAnswer, ShopAnswer,
+                        ClaimAnswer) shared with server/
   AccountClient.ts      sign in / up / recover / OAuth redirects, 1 h Bearer refreshed from the
                         HttpOnly cookie, /api/me, training records, leaderboard, ranked result polling,
                         the experimental switch and presets (each call for the account that made
@@ -760,11 +800,15 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         sign-in codes in memory (tvCodes.ts: 6 of the lobby alphabet, 5 min, one
                         use, the device secret's hash compared in constant time, a wrong secret
                         answered as an unknown code, 10 failed confirms per account and 50 per IP in
-                        15 min, 5 live codes per IP and 2,000 in all, an IPv6 /64 as one IP)
+                        15 min, 5 live codes per IP and 2,000 in all, an IPv6 /64 as one IP); the
+                        hosts' shop (never pruned): credits from the node outbox, claims and grants
+                        (the inventory), freezes, the car each account drives (signed into its
+                        session)
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a
-                        minute), leaderboard, ranked result, /api/auth/tv/start | confirm | poll (a
+                        minute), /api/me/items, /api/me/car, /api/me/shop and its claim (account
+                        only), leaderboard, ranked result, /api/auth/tv/start | confirm | poll (a
                         TV signed in by the phone: the session and cookie as login gives them);
                         server-side PBKDF2 of the client key
   src/LobbyDO.ts        one per custom lobby (hibernating): members / teams / host / settings,

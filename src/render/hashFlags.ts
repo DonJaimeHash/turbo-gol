@@ -18,6 +18,12 @@
  *                    that only fits in a condensed face shows up on a desktop
  *   input            keys (every key event's key, code and keyCode on screen, and the input and
  *                    history events: a real TV's BACK, CH+ / CH− and system keyboard; src/ui/keysOverlay.ts)
+ *   car previews     car=<id>[,<id>...] (the offline roster's cars in roster order, owned or not:
+ *                    the player's first, then the bots'; an empty entry keeps that slot's own car),
+ *                    showroom[=<yaw>[,<pitch>[,<slot>]]] (the showroom camera at boot, menu hidden:
+ *                    a fixed angle in degrees, or a slow orbit when bare, on roster entry <slot>,
+ *                    the player by default). Read only where previews are allowed: a dev server or
+ *                    a VITE_PREVIEW_CARS=1 build (src/game/carSelection.ts previewCarsAllowed).
  */
 
 export interface HashFlags {
@@ -49,6 +55,29 @@ export interface HashFlags {
   readonly pr: number;
   /** `#hide=a,b`: mesh names drawn invisible every frame. */
   readonly hide: readonly string[];
+  /** `#car=<id>[,<id>...]`: the car ids to preview per roster entry (unchecked here; '' = that slot's own), [] without the flag. */
+  readonly cars: readonly string[];
+  /** `#showroom`: the showroom camera's angles and car, null without the flag. */
+  readonly showroom: ShowroomView | null;
+}
+
+/** `#showroom=<yaw>[,<pitch>[,<slot>]]`, angles in degrees; null = not given (a bare `#showroom` orbits the player's car). */
+export interface ShowroomView {
+  readonly yawDeg: number | null;
+  readonly pitchDeg: number | null;
+  /** The roster entry framed (0 = the player offline; a 1v1's red bot is 1). */
+  readonly slot: number | null;
+}
+
+/** The view of a `#showroom` value ('' when bare, null when absent); a non-number is not given. */
+export function parseShowroom(value: string | null): ShowroomView | null {
+  if (value === null) return null;
+  const [yaw, pitch, slot] = value.split(',').map((s) => (s.trim().length > 0 ? Number(s) : Number.NaN));
+  return {
+    yawDeg: Number.isFinite(yaw) ? yaw : null,
+    pitchDeg: pitch !== undefined && Number.isFinite(pitch) ? pitch : null,
+    slot: slot !== undefined && Number.isInteger(slot) && slot >= 0 ? slot : null,
+  };
 }
 
 /** The value of flag `name` in `hash`: '' for a bare flag, null when absent. */
@@ -72,6 +101,7 @@ export function parseHashFlags(hash: string): HashFlags {
   const diag = hashValue(hash, 'diag');
   const pr = Number(hashValue(hash, 'pr') ?? '');
   const hide = hashValue(hash, 'hide');
+  const car = hashValue(hash, 'car');
   return {
     diag: diag !== null,
     audit: diag === 'audit',
@@ -96,6 +126,8 @@ export function parseHashFlags(hash: string): HashFlags {
     keys: has('keys'),
     pr: Number.isFinite(pr) && pr > 0 ? Math.min(4, Math.max(0.1, pr)) : 0,
     hide: hide !== null ? hide.split(',').map((s) => s.trim()).filter((s) => s.length > 0) : [],
+    cars: car !== null && car.length > 0 ? car.split(',').map((s) => s.trim()) : [],
+    showroom: parseShowroom(hashValue(hash, 'showroom')),
   };
 }
 

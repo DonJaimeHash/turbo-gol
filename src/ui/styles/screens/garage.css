@@ -1,0 +1,736 @@
+/* GARAJE (src/ui/screens/garage.ts; plan §1.4.2, PR 8; the owner's hub-garaje-pc): the left column
+   (TU AUTO, PUNTOS DE SERVIDOR, GANA PUNTOS), the stage in the middle where the showroom camera
+   frames the car (measured by the screen) and the right column (AUTOS │ ESTADIOS, the list, the
+   detail card). The shell's backdrop steps aside on this screen (data-screen, read by the Menu as it
+   mounts: super low's flat page too, the cards stay opaque). Slanted and chamfered shapes are drawn
+   on a background layer (a card's ::before, a control's first child) so a focus ring is never
+   clipped. A phone held sideways keeps the right column (the car beside it), upright and a tablet
+   put the car on top; a TV shows two cards on the left. Colours, font sizes and radii as tokens only. */
+
+.mn[data-screen='garage'] {
+  background: var(--mn-backdrop-garage);
+}
+
+html.tg-superlow .mn[data-screen='garage'] {
+  background: none;
+}
+
+.mn-garage {
+  display: grid;
+  grid-template: 'left stage right' minmax(0, 1fr) / 19.75rem minmax(0, 1fr) 19.5rem;
+  height: 100%;
+  min-height: 0;
+  font-size: var(--t-body);
+}
+
+/* The car's box: empty, the showroom shows through it. */
+.mn-gar-stage {
+  grid-area: stage;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---- The left column: three cards ------------------------------------------------------------- */
+/* It scrolls on its own when a large interface size outgrows it (a short screen at 150 %). */
+.mn-gar-left {
+  grid-area: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  scroll-padding-block: 0.5rem 1.5rem;
+  padding: 0.5rem 0.5rem 1.5rem;
+  margin: -0.5rem -0.5rem -1.5rem;
+}
+
+.mn-gar-card,
+.mn-gar-detail {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  padding: 1.125rem 1.25rem 1.25rem;
+}
+
+.mn-gar-card::before,
+.mn-gar-detail::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  clip-path: polygon(0 0, 100% 0, 100% 66%, calc(100% - 1.625rem) 100%, 0 100%);
+}
+
+.mn-gar-label {
+  font: 700 var(--t-small) / 1.15 var(--font-body);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.mn-gar-corner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 1.75rem;
+  padding: 0 0.75rem 0 1.375rem;
+  font: 700 var(--t-small) / 1 var(--font-body);
+  letter-spacing: var(--track-label);
+  color: var(--ink);
+  background: var(--text);
+  clip-path: polygon(0.625rem 0, 100% 0, 100% 100%, 0 100%);
+}
+
+.mn-gar-corner .mn-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  stroke-width: 3;
+}
+
+.mn-gar-your-name {
+  margin: 0.375rem 0 0;
+  font: 700 var(--t-car) / 0.9 var(--font-display);
+  font-style: italic;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* The lime dash under the name. */
+.mn-gar-your-name::after {
+  content: '';
+  display: block;
+  width: 2.5rem;
+  height: 0.25rem;
+  margin-top: 0.5rem;
+  background: var(--brand);
+}
+
+.mn-gar-free {
+  margin-top: 0.625rem;
+  font-weight: 600;
+  font-size: var(--t-body);
+}
+
+.mn-gar-desc,
+.mn-gar-text {
+  margin: 0.375rem 0 0;
+  font-size: var(--t-small);
+  line-height: 1.35;
+  color: var(--text-2);
+}
+
+/* PUNTOS DE SERVIDOR: the glyph, the number, PTS. */
+.mn-gar-balance {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.mn-gar-balance-icon {
+  align-self: center;
+  width: 2rem;
+  height: 2rem;
+  color: var(--brand);
+}
+
+.mn-gar-balance-num {
+  font: 700 var(--t-points) / 0.9 var(--font-display);
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+}
+
+.mn-gar-balance-unit {
+  font: 700 var(--t-title) / 1 var(--font-display);
+  color: var(--text-2);
+}
+
+.mn-gar-signin {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-top: auto;
+  padding-top: 0.75rem;
+}
+
+.mn .mn-gar-signin-btn {
+  min-height: 3.5rem;
+  font-size: var(--t-heading);
+}
+
+.mn-gar-guest {
+  font-size: var(--t-small);
+  color: var(--text-2);
+}
+
+.mn-gar-warn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+  font-size: var(--t-small);
+  color: var(--warn);
+}
+
+.mn-gar-warn .mn-icon {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+/* GANA PUNTOS: a neutral card, lime while nothing can be redeemed (then CANJEAR is the lime one). */
+.mn-gar-earn {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1.125rem 1.25rem;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.mn-gar-earn > .mn-gar-earn-bg {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-hi);
+  clip-path: polygon(0 0, 100% 0, 100% 66%, calc(100% - 1.25rem) 100%, 0 100%);
+}
+
+.mn-gar-earn-lime {
+  color: var(--brand-ink);
+}
+
+.mn-gar-earn-lime > .mn-gar-earn-bg {
+  background: var(--brand-grad);
+  border-color: transparent;
+}
+
+.mn-gar-earn-lime .mn-gar-label {
+  color: var(--brand-ink);
+}
+
+.mn-gar-earn-title {
+  font: 700 var(--t-title) / 1 var(--font-display);
+  font-style: italic;
+  text-transform: uppercase;
+}
+
+.mn-gar-earn-sub {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-weight: 600;
+  font-size: var(--t-small);
+}
+
+.mn-gar-earn-sub .mn-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* ---- The right column: tabs, list, detail ----------------------------------------------------- */
+.mn-gar-right {
+  grid-area: right;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+.mn-tabs.mn-gar-tabs {
+  display: flex;
+  flex: none;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.mn-tab.mn-gar-tab {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-width: 0;
+  height: 3rem;
+  padding: 0 1rem;
+  font: 700 var(--t-heading) / 1 var(--font-display);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  background: none;
+  border: 0;
+}
+
+.mn-gar-tab > .mn-gar-tab-bg {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  transform: skewX(-20deg);
+}
+
+.mn-tab.mn-gar-tab.mn-tab-on {
+  color: var(--text);
+}
+
+.mn-tab-on > .mn-gar-tab-bg {
+  background: var(--surface-3);
+  border-color: var(--edge-hi);
+  border-bottom: 3px solid var(--brand);
+}
+
+/* A phone's points line ("0 PTS · Cómo ganar puntos ›"): GANA PUNTOS' and the points card's place. */
+.mn-gar-compact {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  font: 600 var(--t-small) / 1 var(--font-body);
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-tile);
+}
+
+.mn-gar-compact > .mn-icon:last-child {
+  width: 1rem;
+  height: 1rem;
+  margin-left: auto;
+}
+
+.mn-gar-pts-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--brand);
+}
+
+.mn-gar-pts-num {
+  font: 700 var(--t-heading) / 1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.mn-gar-pts-unit {
+  font: 700 var(--t-small) / 1 var(--font-body);
+  color: var(--text-2);
+}
+
+.mn-gar-compact-sep {
+  color: var(--text-3);
+}
+
+/* The list scrolls on its own (a short screen, a phone): the detail stays in view. */
+.mn-gar-list {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  scroll-padding-block: 0.5rem;
+  /* Room for a row's focus ring inside the scroller. */
+  padding: 0.5rem;
+  margin: -0.5rem;
+}
+
+/* ---- A row (components/carRow.ts) ------------------------------------------------------------- */
+.mn-car-row {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.875rem;
+  min-height: 4.25rem;
+  padding: 0.375rem 1.75rem 0.375rem 0.5rem;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-left: 0.375rem solid var(--edge);
+  border-radius: var(--r-slot);
+  cursor: pointer;
+}
+
+/* The focus is the ring alone: the row picked has the lime edge already (focus = selection). */
+html:not(.tg-touch) .mn .mn-car-row.mn-focus::after,
+html:not(.tg-touch) .mn .mn-car-row:focus-visible::after {
+  content: none;
+}
+
+.mn-car-row.mn-car-on {
+  background: var(--surface-3);
+  border-color: var(--edge-hi);
+  border-left-color: var(--brand);
+}
+
+@media (hover: hover) {
+  .mn-car-row:hover {
+    background: var(--surface-2);
+  }
+
+  .mn-car-row.mn-car-on:hover {
+    background: var(--surface-3);
+  }
+}
+
+.mn-car-well {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 4.75rem;
+  height: 2.75rem;
+  color: var(--text);
+  background: var(--ink);
+  border-radius: var(--r-slot);
+}
+
+.mn-car-row[data-state='locked'] .mn-car-well,
+.mn-car-row[data-state='soon'] .mn-car-well {
+  color: var(--edge-hi);
+}
+
+.mn-car-lock {
+  position: absolute;
+  top: 0.125rem;
+  right: 0.25rem;
+  display: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--text-2);
+}
+
+.mn-car-row[data-state='locked'] .mn-car-lock {
+  display: block;
+}
+
+.mn-car-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.mn-car-name {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font: 700 var(--t-name) / 1 var(--font-display);
+  font-style: italic;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.mn-car-check {
+  display: none;
+  width: 1rem;
+  height: 1rem;
+  color: var(--brand);
+  stroke-width: 3;
+}
+
+.mn-car-row[data-state='equipped'] .mn-car-check,
+.mn-car-row[data-state='inUse'] .mn-car-check {
+  display: block;
+}
+
+.mn-car-state {
+  overflow: hidden;
+  font-size: var(--t-small);
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-car-state:empty {
+  display: none;
+}
+
+/* The outline (components/carSilhouettes.ts): strokes in the text colour, the wheels in ink. */
+.mn-car-sil {
+  width: 4rem;
+  height: 2rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.mn-car-sil-wheel {
+  fill: var(--ink);
+}
+
+.mn-car-row[data-state='soon'] .mn-car-sil-body {
+  stroke-dasharray: 3 3;
+}
+
+.mn-gar-stadium-icon {
+  width: 2rem;
+  height: 2rem;
+}
+
+/* ---- The detail card ---------------------------------------------------------------------------- */
+.mn-gar-detail {
+  flex: none;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem 1rem 1.125rem;
+}
+
+.mn-gar-detail::before {
+  background: var(--surface-0);
+  border-color: var(--edge);
+}
+
+.mn-gar-det-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.mn-gar-det-name {
+  overflow: hidden;
+  padding-right: 0.15em;
+  font: 700 var(--t-title) / 1 var(--font-display);
+  font-style: italic;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-gar-det-price {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.mn-gar-det-reason {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+  font-size: var(--t-small);
+  line-height: 1.3;
+  color: var(--text-2);
+}
+
+.mn-gar-det-reason[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.mn-gar-det-reason .mn-icon {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+}
+
+.mn .mn-gar-act {
+  min-height: 3.25rem;
+  font-size: var(--t-heading);
+}
+
+/* A car out of reach: CANJEAR stays, never lime, in the inactive text colour (its press explains). */
+.mn .mn-gar-act.mn-gar-act-off {
+  color: var(--text-3);
+  background: var(--surface-1);
+  border-color: var(--edge);
+}
+
+/* ---- The redeem and guide sheets ------------------------------------------------------------- */
+.mn-gar-redeem,
+.mn-gar-guide {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.mn-gar-redeem-sil {
+  flex: none;
+  width: 7rem;
+  height: 3.5rem;
+  color: var(--text);
+}
+
+.mn-gar-redeem-lines,
+.mn-gar-guide-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.mn-gar-guide-text p {
+  margin: 0;
+}
+
+.mn-gar-redeem-balance {
+  font: 700 var(--t-sheet) / 1.1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.mn-gar-redeem-note {
+  margin: 0;
+  font-size: var(--t-small);
+  color: var(--text-2);
+}
+
+.mn-gar-guide .mn-qr {
+  flex: none;
+  width: 10rem;
+  height: 10rem;
+}
+
+/* ---- The bar's points pill (shell/pills.ts PointsPill) ---------------------------------------- */
+/* A phone held upright: no room in its bar (GARAJE's points line says it). */
+html[data-shell='tabs'] .mn-pill-points {
+  display: none;
+}
+
+.mn-pill-points .mn-icon {
+  color: var(--brand);
+}
+
+.mn-pill-points .mn-pill-main {
+  color: var(--text);
+}
+
+/* ---- Short PC: the cards lose their long lines ------------------------------------------------ */
+html[data-layout='short'] .mn-gar-desc,
+html[data-layout='short'] .mn-gar-earn-sub {
+  display: none;
+}
+
+html[data-layout='short'] .mn-gar-your-name {
+  font-size: var(--t-display);
+}
+
+html[data-layout='short'] .mn-gar-balance-num {
+  font-size: var(--t-display);
+}
+
+html[data-layout='short'] .mn-gar-card,
+html[data-layout='short'] .mn-gar-earn {
+  padding-block: 0.75rem;
+}
+
+html[data-layout='short'] .mn-car-row {
+  min-height: 3.5rem;
+}
+
+/* ---- TV: two cards on the left (TU AUTO is the list's ✓ and the detail) -------------------------- */
+html[data-shell='tv'] .mn-garage {
+  grid-template-columns: 16.5rem minmax(0, 1fr) 19rem;
+}
+
+html[data-shell='tv'] .mn-gar-your,
+html[data-shell='tv'] .mn-gar-earn .mn-gar-label,
+html[data-shell='tv'] .mn-gar-earn-sub,
+html[data-shell='tv'] .mn-gar-guest {
+  display: none;
+}
+
+html[data-shell='tv'] .mn-gar-balance-num {
+  font-size: var(--t-display);
+}
+
+html[data-shell='tv'] .mn-gar-signin-btn {
+  flex: 1;
+}
+
+html[data-shell='tv'] .mn-gar-earn-title {
+  font-size: var(--t-heading);
+}
+
+html[data-shell='tv'] .mn-gar-card,
+html[data-shell='tv'] .mn-gar-earn {
+  padding: 0.875rem 1rem;
+}
+
+html[data-shell='tv'] .mn-car-row {
+  gap: 0.625rem;
+  padding-right: 0.75rem;
+}
+
+html[data-shell='tv'] .mn-car-well {
+  width: 4rem;
+}
+
+html[data-shell='tv'] .mn-car-row {
+  min-height: 3.75rem;
+}
+
+/* ---- A phone held sideways: the car on the left 58 %, a column of 290 on the right ------------ */
+html[data-shell='rail'] .mn-garage {
+  grid-template: 'stage right' minmax(0, 1fr) / minmax(0, 1fr) 18.125rem;
+}
+
+html[data-shell='rail'] .mn-gar-left,
+html[data-layout='portrait'] .mn-gar-left,
+html[data-layout='tablet'] .mn-gar-your {
+  display: none;
+}
+
+html[data-shell='rail'] .mn-gar-compact,
+html[data-layout='portrait'] .mn-gar-compact {
+  display: flex;
+}
+
+html[data-shell='rail'] .mn-gar-right {
+  gap: 0.5rem;
+}
+
+html[data-shell='rail'] .mn-car-row,
+html[data-layout='portrait'] .mn-car-row {
+  min-height: 3.5rem;
+}
+
+html[data-shell='rail'] .mn-gar-detail,
+html[data-layout='portrait'] .mn-gar-detail {
+  gap: 0.375rem;
+  padding: 0.625rem 0.75rem;
+}
+
+html[data-shell='rail'] .mn-gar-det-head,
+html[data-layout='portrait'] .mn-gar-det-head {
+  display: none;
+}
+
+html[data-shell='rail'] .mn .mn-gar-act,
+html[data-layout='portrait'] .mn .mn-gar-act {
+  min-height: 3.5rem;
+}
+
+/* ---- Upright: the car on top, the column under it; a tablet keeps its two cards beside the column */
+html[data-layout='portrait'] .mn-garage {
+  grid-template: 'stage' 34% 'right' minmax(0, 1fr) / minmax(0, 1fr);
+}
+
+html[data-layout='tablet'] .mn-garage {
+  grid-template: 'stage stage' 40% 'left right' minmax(0, 1fr) / minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+html[data-layout='portrait'] .mn-gar-redeem,
+html[data-layout='portrait'] .mn-gar-guide {
+  flex-direction: column;
+  align-items: flex-start;
+}

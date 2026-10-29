@@ -127,6 +127,8 @@
   /* The old menus' stage veil (src/ui/menu.css .mn): darker at the bars so text on the bare stage
      reads over the scene; super low makes it opaque (style.css). The Tablero shell uses --scrim. */
   --mn-backdrop: linear-gradient(180deg, rgba(5, 7, 13, 0.92) 0%, rgba(5, 7, 13, 0.55) 22%, rgba(5, 7, 13, 0.55) 70%, rgba(5, 7, 13, 0.95) 100%);
+  /* GARAJE: the car shows through the middle; the bars and the hint bar keep a shade (styles/screens/garage.css). */
+  --mn-backdrop-garage: linear-gradient(180deg, rgba(5, 7, 13, 0.6) 0%, rgba(5, 7, 13, 0) 16%, rgba(5, 7, 13, 0) 62%, rgba(5, 7, 13, 0.85) 100%);
 
   /* ---- Type -------------------------------------------------------------------------------------
      Display (italic capitals: hero, screen titles, results, big clocks) and Heading (upright
@@ -159,6 +161,8 @@
   --t-result: 5.25rem; /* 84: the FINAL's VICTORY */
   --t-score: 5rem; /* 80: the FINAL's score */
   --t-again: 2.5rem; /* 40: the FINAL's PLAY AGAIN (the owner's edit) */
+  --t-car: 4.125rem; /* 66: GARAJE's TU AUTO */
+  --t-points: 4rem; /* 64: GARAJE's server points */
   --track-label: 0.06em;
 
   /* ---- Space, radii, shadows ------------------------------------------------------------------- */

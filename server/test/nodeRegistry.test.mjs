@@ -1317,3 +1317,157 @@ test('the maintainers’ routes: a trusted account only; the list, status, drain
   assert.deepEqual([off.status, off.json.error], [409, 'offline']);
   assert.ok(lines.at(-1).endsWith('not drained, it is offline: asked by a maintainer'), lines.at(-1));
 });
+
+// ---- cosmetic cars on node matches, the hosts' points kept, the maintainers' inventory routes ---------
+
+const { REPEAT_WINDOW_MS, WINDOW_DAYS } = await import('../../nodes/control-plane/ledger.ts');
+const C1 = 'c1c1c1c1c1c1c1c1';
+const C2 = 'c2c2c2c2c2c2c2c2';
+
+test('parsePlace keeps a known car with each human (for the rejoin answer) and drops one of another shape; nothing else changes', () => {
+  const p = D.parsePlace(placeBody({ humans: [{ playerId: A, name: 'P0', car: 'tero', account: true, accountAgeDays: 9 }, { playerId: B, name: 'P1', car: 'ferrari' }] }));
+  assert.deepEqual(p.humans, [{ playerId: A, name: 'P0', account: true, accountAgeDays: 9, car: 'tero' }, { playerId: B, name: 'P1' }]);
+  assert.deepEqual(D.parsePlace(placeBody()).humans, humans(A, B), 'a placement without cars: as before');
+});
+
+test('a node match with cars: the assignment the node gets is byte for byte the one without (no car reaches a 0.3.0 node); the rejoin answer carries them, through a deploy too', async () => {
+  const env = makeEnv();
+  let h = await boot(env);
+  const { ws } = await liveNode(h);
+  const plain = await call(h, 'POST', '/internal/place', { body: placeBody() });
+  const withCars = await call(h, 'POST', '/internal/place', { body: placeBody({ humans: [{ playerId: A, name: 'P0', car: 'tero' }, { playerId: B, name: 'P1' }] }) });
+  assert.equal(withCars.status, 200, JSON.stringify(withCars.json));
+  const assigns = ws.of('assign').map((m) => m.match);
+  assert.equal(assigns.length, 2);
+  // The id and the kickoff seed are random per match; everything else must be the same bytes.
+  const bytes = (a) => JSON.stringify({ ...a, matchId: 'x', kickoffSeed: 0 });
+  assert.equal(bytes(assigns[1]), bytes(assigns[0]));
+  assert.ok(!JSON.stringify(ws.sent).includes('tero'), 'nothing the node is sent names a car');
+  assert.deepEqual(Object.keys(assigns[1].roster[0]).sort(), ['kind', 'name', 'playerId', 'slot', 'team']);
+  const id = withCars.json.placement.matchId;
+  assert.deepEqual(JSON.parse(rows(h, 'node_matches').find((r) => r.match_id === id).data).humans[0], { playerId: A, name: 'P0', car: 'tero' }, 'kept with the match');
+  let rj = await call(h, 'POST', '/internal/rejoin', { body: { matchId: id, playerId: B } });
+  assert.deepEqual(rj.json.cars, ['tero', null]);
+  rj = await call(h, 'POST', '/internal/rejoin', { body: { matchId: plain.json.placement.matchId, playerId: A } });
+  assert.equal('cars' in rj.json, false, 'every seat on the default car: no field');
+  ws.close(1012, 'deploy');
+  h = await boot(env, new FakeCtx(h.ctx.db));
+  rj = await call(h, 'POST', '/internal/rejoin', { body: { matchId: id, playerId: A } });
+  assert.deepEqual([rj.status, rj.json.cars], [200, ['tero', null]], 'restored from the row');
+});
+
+/**
+ * A placed match of `h` settled by hand, as the control plane settles one: `score` records its
+ * ledger entry (at `at`, for `players`) and `freeze` is set, as applyVerdict does.
+ */
+async function settleByHand(h, { score = false, at = clock, players, freeze, outcome } = {}) {
+  const { placement } = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json;
+  const m = h.obj.cp.matches.get(placement.matchId);
+  m.state = 'done';
+  m.doneAt = clock;
+  m.ledger = score ? scoreOn(h, placement.matchId, at, players) : null;
+  if (freeze) m.freeze = freeze;
+  m.outcome = outcome ?? { kind: 'unrated', matchId: placement.matchId, nodeId: m.nodeId, blue: 1, red: 0, verified: true };
+  h.obj.store.finished(m, m.outcome);
+  return m;
+}
+
+/** A community operator's scored match (what ControlPlane.applyVerdict records), on `h`'s own ledger. */
+const scoreOn = (h, matchId, at = clock, players = [A, B]) =>
+  h.obj.cp.ledger.record(
+    { matchId, nodeId: 'n1', operatorId: STRANGER, region: 'SA', mode: '1v1', ranked: false, verified: true, endReason: 'rules', players: players.map((p) => ({ playerId: p, connectedMs: 5 * 60_000, account: true, accountAgeDays: 30 })), tickLagP99Ms: 2, underrunRate: 0, at },
+    1.5,
+  );
+
+test("the hosts' points: a scored match writes its ledger entry, its operator's totals and the /host-credit row in the transaction that settles it; a failed verification /host-freeze", async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  await liveNode(h);
+  const m = await settleByHand(h, { score: true });
+  const e = m.ledger;
+  const id = m.assign.matchId;
+  assert.ok(e.points > 0);
+  assert.deepEqual(rows(h, 'ledger_entries').map((r) => [r.match_id, r.operator_id]), [[id, STRANGER]]);
+  assert.deepEqual(rows(h, 'ledger_totals').map((r) => ({ ...r })), [{ operator_id: STRANGER, earned: e.points, verified: 1 }]);
+  assert.deepEqual(rows(h, 'outbox').map((r) => r.path), ['/host-credit', '/release'], 'in the same transaction as the settled row');
+  await h.ctx.settle();
+  const credit = env.ACCOUNTS.calls.find((c) => c.path === '/host-credit');
+  assert.deepEqual(credit, { name: 'accounts-v1', path: '/host-credit', body: { matchId: id, userId: STRANGER, nodeId: 'n1', points: e.points, verified: true, at: clock } });
+  assert.equal(rows(h, 'outbox').length, 0, 'delivered');
+  // A failed verification: the operator's wallet freezes, with the time the match settled.
+  clock += 1000;
+  const f = await settleByHand(h, { freeze: { operatorId: STRANGER, reason: 'verification_failed:x' } });
+  await h.ctx.settle();
+  const freeze = env.ACCOUNTS.calls.find((c) => c.path === '/host-freeze');
+  assert.deepEqual(freeze.body, { userId: STRANGER, reason: 'verification_failed:x', at: f.doneAt });
+  // A match with neither (every project node's): no AccountsDO call at all.
+  const before = env.ACCOUNTS.calls.length;
+  await settleByHand(h);
+  await h.ctx.settle();
+  assert.equal(env.ACCOUNTS.calls.length, before);
+  assert.equal(m.ledger, e);
+});
+
+test('the ledger survives a deploy: the leaderboard, the totals, /nodes/mine rewards and the 24 h repeat decay (its notes too); entries past 30 days go, their points stay in the totals', async () => {
+  const env = makeEnv();
+  let h = await boot(env);
+  const { ws } = await liveNode(h);
+  const old = (await settleByHand(h, { score: true, at: clock - (WINDOW_DAYS + 1) * 24 * 60 * 60_000, players: [C1, C2] })).ledger;
+  assert.equal(rows(h, 'ledger_entries').length, 0, 'out of the window at once');
+  const e1 = (await settleByHand(h, { score: true })).ledger;
+  assert.equal(e1.repeat, 1);
+  h.obj.cp.ledger.noteGroup(STRANGER, [B, A], clock + 1); // an unsampled match of the same group
+  assert.equal(rows(h, 'ledger_notes').length, 1);
+  await h.ctx.settle();
+  ws.close(1012, 'deploy');
+  clock += 60_000;
+  h = await boot(env, new FakeCtx(h.ctx.db));
+  const L = h.obj.cp.ledger;
+  assert.equal(L.earned(STRANGER), Math.round((old.points + e1.points) * 100) / 100, 'all time');
+  assert.equal(L.verifiedMatches(STRANGER), 2);
+  assert.deepEqual(L.leaderboard(clock), [{ operatorId: STRANGER, points: e1.points }], 'the window only');
+  const status = await call(h, 'GET', '/nodes/status');
+  assert.deepEqual(status.json.hosts, [{ name: STRANGER.slice(0, 6), points: e1.points }]);
+  const mine = await call(h, 'GET', '/nodes/mine', { headers: { 'x-operator-id': STRANGER } });
+  assert.deepEqual([mine.json.rewards.operatorId, mine.json.rewards.points30d, mine.json.rewards.matches30d, mine.json.rewards.earned], [STRANGER, e1.points, 1, L.earned(STRANGER)]);
+  // The same group again within 24 h: the entry and the note before the deploy both count.
+  const e2 = scoreOn(h, 'ef'.repeat(32));
+  assert.equal(e2.repeat, 1 / 3);
+  // A day later the decay is over (and the notes are pruned at the next start).
+  clock += REPEAT_WINDOW_MS;
+  assert.equal(scoreOn(h, '12'.repeat(32)).repeat, 1);
+  h = await boot(env, new FakeCtx(h.ctx.db));
+  assert.equal(rows(h, 'ledger_notes').length, 0);
+});
+
+test("the maintainers' inventory routes: grant, revoke and unfreeze go to AccountsDO as they are answered, each an ALERT naming the account; a trusted account only", async () => {
+  const { h, env } = await watched();
+  env.ACCOUNTS.answer = (name, path, body) => new RealResponse(JSON.stringify(path === '/host-unfreeze' ? { unfrozen: true } : path === '/host-grant' ? { granted: true, items: [body.item] } : { revoked: true, refunded: 0, items: [] }), { headers: { 'content-type': 'application/json' } });
+  const admin = { 'x-operator-id': PROJECT, 'x-operator-name': encodeURIComponent('Proyecto Señor') };
+  const run = (what, body, headers = admin) => call(h, 'POST', '/nodes/admin/' + what, { body, headers });
+  assert.equal((await run('grant', { account: A, item: 'tero' }, { 'x-operator-id': STRANGER })).status, 403);
+  assert.equal((await run('grant', { account: 'nope', item: 'tero' })).json.error, 'bad_account');
+  assert.equal((await run('grant', { account: A, item: 'car-next-1' })).json.error, 'unknown_item');
+  assert.equal((await run('revoke', { account: A })).json.error, 'unknown_item');
+  assert.equal(env.ACCOUNTS.calls.length, 0, 'nothing reached AccountsDO');
+  const g = await run('grant', { account: A, item: 'tero' });
+  assert.deepEqual([g.status, g.json], [200, { granted: true, items: ['tero'] }]);
+  assert.deepEqual((await run('revoke', { account: A, item: 'tero' })).json, { revoked: true, refunded: 0, items: [] });
+  assert.deepEqual((await run('unfreeze', { account: B, item: 'ignored' })).json, { unfrozen: true });
+  assert.deepEqual(env.ACCOUNTS.calls.map((c) => [c.name, c.path, c.body]), [
+    ['accounts-v1', '/host-grant', { userId: A, item: 'tero' }],
+    ['accounts-v1', '/host-revoke', { userId: A, item: 'tero' }],
+    ['accounts-v1', '/host-unfreeze', { userId: B }],
+  ]);
+  // AccountsDO's refusal is passed on as it is.
+  env.ACCOUNTS.answer = () => new RealResponse('{"error":"no_user"}', { status: 404 });
+  assert.deepEqual((await run('grant', { account: A, item: 'pampero' })).json, { error: 'no_user' });
+  await h.ctx.settle();
+  const actor = 'admin Proyecto Señor (a1b2c3d4e5f60718)';
+  assert.deepEqual(posted().map((p) => p.replace(/ -> (\d+) .*`$/, ' -> $1`')), [
+    `**ALERT** \`${actor}: grant tero for account ${A} -> 200\``,
+    `**ALERT** \`${actor}: revoke tero for account ${A} -> 200\``,
+    `**ALERT** \`${actor}: unfreeze for account ${B} -> 200\``,
+    `**ALERT** \`${actor}: grant pampero for account ${A} -> 404\``,
+  ]);
+});

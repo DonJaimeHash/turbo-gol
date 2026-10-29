@@ -23,6 +23,14 @@
  *                             src/game/physicsRules.ts, MAX_PRESETS per account, one per request (a whole
  *                             list would overrun the 4 KB body), last write wins (the server's updatedAt);
  *                             30 writes and 60 reads a minute per account; a guest gets 403 account_required
+ *   GET  /api/me/items        Bearer (account)                  -> ItemsAnswer { items, car, cars } (src/net/cosmetics.ts)
+ *   POST /api/me/car          Bearer (account) { car }          -> AccountSession with that car (the default
+ *                             car, or one the account owns: 409 not_owned; 400 bad_car): its next seats drive it
+ *   GET  /api/me/shop         Bearer (account)                  -> ShopAnswer { items, wallet }: the hosts' shop
+ *   POST /api/me/shop/claim   Bearer (account) { item }         -> ClaimAnswer { item, claimed, wallet, items } |
+ *                             404 unknown_item | 409 not_available / frozen / insufficient / requires_matches;
+ *                             items and shop: 60 reads, car and claim 30 writes a minute per account; a guest
+ *                             gets 403 account_required (GET /nodes/shop and POST /nodes/shop/claim: the same)
  *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
  *   GET  /api/auth/oauth/:provider/start[?link=1]               -> 302 to Google / Discord (state + PKCE)
@@ -46,7 +54,9 @@
  * AccountsDO only stores and compares rows.
  *
  * Tokens: an account session is the same HS256 session as a guest's (index.ts bearerSession) with
- * `acct: 1` and a 1 h life; the refresh token (32 random bytes, stored as SHA-256) travels only in
+ * `acct: 1` and a 1 h life, the car the account drives (`car`, only when it is not the default one:
+ * AccountsDO hands the session only a car the account still owns) and when it was created
+ * (`since`, seconds: its rewards weight on a community node); the refresh token (32 random bytes, stored as SHA-256) travels only in
  * the `__Host-tg_rt` cookie (HttpOnly, Secure, SameSite=Strict, Path=/, 30 days sliding, rotated on
  * every refresh). SameSite=Strict plus the Origin check below keep other sites from using it.
  * OAuth: the state cookie `__Host-tg_oa` (SameSite=Lax: it must survive the provider's redirect back)
@@ -64,6 +74,8 @@ import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, 
 import type { Credentials, PasswordRecord, UserRef } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
+import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
+import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
 
 export const ACCOUNT_SESSION_TTL_SECONDS = 60 * 60;
 export const SERVER_KDF_ITERATIONS = 100_000;
@@ -196,11 +208,20 @@ function pass(res: Response): Response {
 
 // ---- sessions -----------------------------------------------------------------------------------
 
-export async function accountSession(env: Env, u: UserRef, nowMs: number = Date.now()): Promise<AccountSession> {
+/**
+ * `capExp` (seconds): the session never outlives it. A route that re-signs from the Bearer alone
+ * (POST /api/me/car) passes the Bearer's own exp, so only a sign-in or the refresh cookie (both
+ * refuse a banned account, and a password change or logout drops the cookies) ever extends one.
+ */
+export async function accountSession(env: Env, u: UserRef, nowMs: number = Date.now(), capExp?: number): Promise<AccountSession> {
   const iat = nowSeconds(nowMs);
-  const exp = iat + ACCOUNT_SESSION_TTL_SECONDS;
+  const exp = Math.min(iat + ACCOUNT_SESSION_TTL_SECONDS, capExp ?? Infinity);
+  const car = u.car ?? DEFAULT_CAR;
   const claims: SessionClaims = { sub: u.userId, name: u.username, iat, exp, acct: 1 };
-  return { kind: 'account', playerId: u.userId, name: u.username, session: await signJwt(env.JWT_SECRET, claims), expiresAt: exp * 1000 };
+  // Absent = the default car on every path (the seats, the rosters): the token carries only another one.
+  if (car !== DEFAULT_CAR) claims.car = car;
+  if (typeof u.createdAt === 'number' && u.createdAt > 0) claims.since = nowSeconds(u.createdAt);
+  return { kind: 'account', playerId: u.userId, name: u.username, session: await signJwt(env.JWT_SECRET, claims), expiresAt: exp * 1000, car };
 }
 
 /** A cookie-carrying POST from a page of another origin is refused (SameSite=Strict already blocks most). */
@@ -452,6 +473,60 @@ async function presetDelete(c: RouteContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/presets/delete', { userId: s.sub, id: b.id }));
 }
 
+// ---- cars and the hosts' shop ---------------------------------------------------------------------
+
+/** Inventory and shop reads per account and minute; picking a car and claiming share the writes. */
+export const LIMIT_COSMETIC_READS = 60;
+export const LIMIT_COSMETIC_WRITES = 30;
+
+/** What the cosmetic routes read of a request (the /nodes/shop aliases hand in nodeRoutes.ts's). */
+export type CosmeticContext = Pick<RouteContext, 'env' | 'request' | 'session' | 'limited'>;
+
+/** GET /api/me/items: the account's items, its car and the cars it may drive (CarSelection's entitlement). */
+async function itemsGet(c: CosmeticContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('cos:' + s.sub, LIMIT_COSMETIC_READS)) return error(429, 'rate_limited');
+  return noStore(await accountsCall(c.env, '/items?userId=' + encodeURIComponent(s.sub)));
+}
+
+/**
+ * POST /api/me/car { car }: the default car or one the account owns (AccountsDO checks it, and
+ * refuses a banned account), then the session re-signed with it: the next queue or lobby seats the
+ * account with it. It keeps the Bearer's exp: unlike a rename (once per 30 days) this route can be
+ * called every minute, and a fresh hour each time would keep a stolen or banned token alive forever.
+ */
+async function carSet(c: CosmeticContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('cow:' + s.sub, LIMIT_COSMETIC_WRITES)) return error(429, 'rate_limited');
+  const b = await readJson<{ car?: unknown }>(c.request);
+  if (!b || !isCarId(b.car)) return error(400, 'bad_car', 'Auto desconocido');
+  const r = await accountsJson<UserRef>(c.env, '/car', { userId: s.sub, car: b.car });
+  if (!r.ok) return noStore(r.res);
+  return json(await accountSession(c.env, r.data, Date.now(), s.exp), 200, { 'cache-control': 'no-store' });
+}
+
+/** GET /api/me/shop: the hosts' shop as the account sees it, and its wallet. */
+export async function shopGet(c: CosmeticContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('cos:' + s.sub, LIMIT_COSMETIC_READS)) return error(429, 'rate_limited');
+  return noStore(await accountsCall(c.env, '/shop?userId=' + encodeURIComponent(s.sub)));
+}
+
+/** POST /api/me/shop/claim { item }: one claim, in AccountsDO's transaction (a retry spends nothing twice). */
+export async function shopClaim(c: CosmeticContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('cow:' + s.sub, LIMIT_COSMETIC_WRITES)) return error(429, 'rate_limited');
+  const b = await readJson<{ item?: unknown; itemId?: unknown }>(c.request);
+  // `itemId`: the reference server's name for it (nodes/control-plane/devServer.ts, nodes/web/host.html).
+  const item = b?.item ?? b?.itemId;
+  if (typeof item !== 'string' || !ITEM_ID_RE.test(item)) return error(400, 'bad_item');
+  return noStore(await accountsCall(c.env, '/shop/claim', { userId: s.sub, item }));
+}
+
 async function me(c: RouteContext): Promise<Response> {
   const s = requireAccount(c);
   if (s instanceof Response) return s;
@@ -678,10 +753,14 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/tv/start') return tvStart(c);
     if (p === '/api/auth/tv/confirm') return tvConfirm(c);
     if (p === '/api/auth/tv/poll') return tvPoll(c);
+    if (p === '/api/me/car') return carSet(c);
+    if (p === '/api/me/shop/claim') return shopClaim(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);
     if (p === '/api/me/experimental') return experimentalGet(c);
+    if (p === '/api/me/items') return itemsGet(c);
+    if (p === '/api/me/shop') return shopGet(c);
     if (p === '/api/leaderboard') return leaderboard(c, url);
     if (p === '/api/ranked/result') return rankedResult(c, url);
     const o = /^\/api\/auth\/oauth\/(google|discord)\/(start|callback)$/.exec(p);

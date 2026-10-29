@@ -36,7 +36,8 @@
  * Guards: <= 8 sockets, frames <= 512 B, a token bucket over every incoming message per socket
  * (burst 128, 150/s; exceeding it closes with 1008 'rate'), input packets <= 6 + 1 per host tick
  * per slot (extras are dropped), any malformed frame closes the socket with 1008. The Welcome
- * roster carries no playerId (the session subject stays server side).
+ * roster carries no playerId (the session subject stays server side); each entry carries its seat's
+ * car (src/net/cosmetics.ts CosmeticWelcome: absent = the default car), a rejoin's welcome too.
  *
  * Measurements: the Welcome carries `hostColo`, the Cloudflare colo this object runs in, read once
  * per isolate from https://cloudflare.com/cdn-cgi/trace (started with the host pre-warm, 5 s cap,
@@ -64,7 +65,9 @@ import {
   encodeJson,
   encodePong,
 } from '../../src/net/protocol';
-import type { InputPacket, MatchEvent, Welcome } from '../../src/net/protocol';
+import type { InputPacket, MatchEvent } from '../../src/net/protocol';
+import { seatCar } from '../../src/net/cosmetics';
+import type { CosmeticWelcome, SeatCar } from '../../src/net/cosmetics';
 import { MAX_CARS, PACKED_INPUT_BYTES } from '../../src/sim/types';
 import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 
@@ -134,7 +137,8 @@ export interface MatchRecord {
   matchId: string;
   mode: GameModeId;
   region: string;
-  roster: RosterEntry[];
+  /** Each seat with its car (src/net/cosmetics.ts: absent = the default car); RoomHost reads only the RosterEntry fields. */
+  roster: Array<RosterEntry & SeatCar>;
   matchLengthSeconds: number;
   createdAt: number;
   /** Ranked (accounts only): no start without every player, forfeit when a team is gone, the result goes to AccountsDO. */
@@ -292,7 +296,11 @@ export class MatchDO extends DurableObject<Env> {
       matchId: body.matchId,
       mode: body.mode ?? '1v1',
       region: typeof body.region === 'string' ? body.region : '?',
-      roster: body.roster,
+      // Field by field: a car the catalog does not know is dropped (the seat drives the default), never refused.
+      roster: body.roster.map((e) => {
+        const car = seatCar(e.car);
+        return { slot: e.slot, team: e.team, kind: e.kind, name: e.name, ...(e.playerId !== undefined ? { playerId: e.playerId } : {}), ...(car !== undefined ? { car } : {}) };
+      }),
       matchLengthSeconds: typeof body.matchLengthSeconds === 'number' ? body.matchLengthSeconds : DEFAULT_MATCH_SECONDS,
       createdAt: typeof body.createdAt === 'number' ? body.createdAt : Date.now(),
       ranked: body.ranked === true,
@@ -488,15 +496,16 @@ export class MatchDO extends DurableObject<Env> {
     server.addEventListener('close', () => this.onClose(c));
     server.addEventListener('error', () => this.onClose(c));
 
-    const welcome: Welcome = {
+    const welcome: CosmeticWelcome = {
       protocol: PROTOCOL_VERSION,
       matchId: rec.matchId,
       mode: rec.mode,
       tickRate: TICK_RATE,
       carId: this.arena ? this.arena.carIds[slot] : 0,
       slot,
-      // A slot whose player left is the host's bot now (the BOT tag on a rejoiner's scoreboard).
-      roster: rec.roster.map((e, i) => ({ carId: this.arena ? this.arena.carIds[i] : 0, slot: e.slot, team: e.team, name: e.name, kind: this.leftSlots[i] === 1 ? 'bot' : e.kind })),
+      // A slot whose player left is the host's bot now (the BOT tag on a rejoiner's scoreboard), in
+      // the same car: its body does not change under the bot. `car` absent = the default car.
+      roster: rec.roster.map((e, i) => ({ carId: this.arena ? this.arena.carIds[i] : 0, slot: e.slot, team: e.team, name: e.name, kind: this.leftSlots[i] === 1 ? 'bot' : e.kind, ...(e.car !== undefined ? { car: e.car } : {}) })),
       tick: host.currentTick,
       matchLengthSeconds: rec.matchLengthSeconds,
       hostColo,

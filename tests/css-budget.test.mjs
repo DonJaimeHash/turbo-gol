@@ -235,9 +235,16 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // beside the search pill). PR 14 adds mn-keypad (components.css: the keys, their rows, a phone's
 // centred and sideways layouts, the anti-bot sheet's slot, about 2 KB) and the TV's sign-in with the
 // phone (profile.css: PERFIL's tile, the sheet's lines, the /tv question's code, about 0.7 KB):
-// 149,103 B on main without PR 11; with PR 11: 150,735 B, the cap that plus about 0.6 KB. It steps
-// down to 70 KB once PR 15 deletes menu.css. Raising it is the owner's call, recorded in the PR.
-const CSS_BUDGET = 151_350;
+// 149,103 B on main without PR 11; with PR 11: 150,735 B, the cap that plus about 0.6 KB. PR 8
+// adds GARAJE as drawn (styles/screens/garage.css: the three cards, the tabs, the rows and their
+// outlines, the detail card, the redeem and guide sheets, the points pill, per class, about
+// 10.8 KB; components.css' hold to confirm, 0.4 KB) minus the "coming soon" panel (0.4 KB), the
+// cars' first Garage stub never landing: 161,809 B (main 150,734 B), the cap that plus about 0.6 KB.
+// With PR 18's touch controls (touch.css: the left-handed safe area, PAUSE and CAM opaque, 0.2 KB)
+// beside it: 162,009 B, the cap that plus about 0.6 KB.
+// It steps down to 70 KB once PR 15 deletes menu.css. Raising it is the owner's call, recorded in
+// the PR.
+const CSS_BUDGET = 162_600;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

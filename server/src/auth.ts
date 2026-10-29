@@ -1,7 +1,8 @@
 /**
  * HS256 JSON Web Tokens on WebCrypto (works in workerd and in node >= 20). Two token kinds:
  *
- *   session  { sub, name, iat, exp }                              24 h, Bearer for /api/*
+ *   session  { sub, name, iat, exp }                              24 h, Bearer for /api/*; an account's
+ *            (accountRoutes.ts, 1 h) adds { acct: 1, car?, since? }
  *   ticket   { sub, mid, team, slot, role, name, iat, exp, jti }  90 s, one WebSocket upgrade;
  *            role 'player' -> /ws/<mid> (MatchDO, phase 1), role 'peer' -> /room/<mid> (RoomDO, phase 2)
  *
@@ -9,6 +10,8 @@
  * exported timingSafeEqual is for comparing the internal shared-secret header. Nothing here
  * touches storage: single use of a ticket's jti is enforced by the MatchDO / RoomDO.
  */
+import { isCarId } from '../../src/game/cosmetics';
+import type { CarId } from '../../src/game/cosmetics';
 
 export const SESSION_TTL_SECONDS = 24 * 60 * 60;
 export const TICKET_TTL_SECONDS = 90;
@@ -20,6 +23,14 @@ export interface SessionClaims {
   exp: number;
   /** 1 = a registered account (accountRoutes.ts, 1 h, refreshed from the cookie); absent = a guest. Only accounts may queue ranked. */
   acct?: 1;
+  /**
+   * An account's car (src/game/cosmetics.ts CarId): AccountsDO signs only one the account owns at
+   * that moment, and never the default car (absent = the default). The matchmaker seats it from
+   * here, never from a request body. Kept by verifySession only on an account session.
+   */
+  car?: CarId;
+  /** An account's creation time (seconds): its age weighs its minutes on a community node (nodes/control-plane/ledger.ts). */
+  since?: number;
 }
 
 /** 'player': a seat in a MatchDO match (phase 1); 'peer': a seat in a RoomDO signaling room (phase 2); 'lobby': a custom lobby's socket (LobbyDO). */
@@ -146,6 +157,10 @@ export async function createSession(secret: string, playerId: string, name: stri
 export async function verifySession(secret: string, token: string, nowMs: number = Date.now()): Promise<SessionClaims | null> {
   const c = await verifyJwt<SessionClaims>(secret, token, nowSeconds(nowMs));
   if (!c || typeof c.sub !== 'string' || !/^[0-9a-f]{16}$/.test(c.sub) || typeof c.name !== 'string') return null;
+  // An account's claims only, and only a car the catalog knows (one retired later, or a guest
+  // session that carries one, drives the default car): dropped, never a refused session.
+  if (c.car !== undefined && !(c.acct === 1 && isCarId(c.car))) delete c.car;
+  if (c.since !== undefined && !(c.acct === 1 && typeof c.since === 'number' && Number.isFinite(c.since))) delete c.since;
   return c;
 }
 

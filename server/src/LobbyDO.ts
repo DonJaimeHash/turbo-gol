@@ -5,8 +5,10 @@
  * (JSON text frames, src/net/account.ts LobbyServerMsg / LobbyClientMsg): a lobby where nobody
  * talks costs nothing; the whole state lives in one storage record so a wake-up rebuilds it.
  *
- *   POST /internal/create { lobbyId, code, region, socketBase, settings, password?, host: { playerId, name, guest } }
- *   POST /internal/admit  { playerId, name, guest, password? } -> { ok } | 403 bad_password / kicked | 409 full | 410 closed
+ *   POST /internal/create { lobbyId, code, region, socketBase, settings, password?, host: { playerId, name, guest, car? } }
+ *   POST /internal/admit  { playerId, name, guest, password?, car? } -> { ok } | 403 bad_password / kicked | 409 full | 410 closed
+ *                         (car: the session's, src/net/cosmetics.ts; the member's seat drives it, LobbyMember shows it;
+ *                         each start reads every signed-in member's car again from AccountsDO /equipped)
  *   GET  /internal/peek   -> LobbySummary | 410 closed (the join link's sheet: GET /api/lobbies/peek)
  *   GET  /lobby (upgrade, through the Worker's /lobby/<id> gate with a role 'lobby' ticket)
  *
@@ -53,10 +55,15 @@ import { DEFAULT_MATCH_SECONDS } from '../../src/game/Match';
 import { parseLobbyRules } from '../../src/game/physicsRules';
 import type { RulesSnapshot } from '../../src/game/physicsRules';
 import type { LobbyClientMsg, LobbyMember, LobbyServerMsg, LobbySettings, LobbyState, LobbySummary } from '../../src/net/account';
+import { seatCar } from '../../src/net/cosmetics';
+import { DEFAULT_CAR } from '../../src/game/cosmetics';
+import type { CarId } from '../../src/game/cosmetics';
 
 const ADMIT_TTL_MS = 90_000;
 const IDLE_CLOSE_MS = 2 * 60_000;
 const MAX_AGE_MS = 6 * 60 * 60_000;
+/** How long a start waits for AccountsDO's cars (equippedCars) before it seats the admits' ones. */
+const EQUIPPED_TIMEOUT_MS = 1500;
 const ALARM_MS = 60_000;
 const IN_GAME_RESET_MS = 40 * 60_000;
 const MAX_FRAME = 2048;
@@ -77,6 +84,11 @@ interface MemberRec {
   awayAt?: number;
   /** Said LISTO. */
   ready?: boolean;
+  /**
+   * The car the member's seat drives (absent = the default car): its admit's, then what AccountsDO
+   * says at each start (equippedCars); the start hands it to /custom.
+   */
+  car?: CarId;
 }
 
 interface AdmitRec {
@@ -84,6 +96,14 @@ interface AdmitRec {
   name: string;
   guest: boolean;
   until: number;
+  /** The admitted session's car (the Worker's, from the session claim; never the client's body). */
+  car?: CarId;
+}
+
+/** `{ car }` when `v` is a car the catalog knows, else nothing: a field of another shape is dropped. */
+function carField(v: unknown): { car?: CarId } {
+  const car = seatCar(v);
+  return car !== undefined ? { car } : {};
 }
 
 export interface LobbyRecord {
@@ -239,7 +259,7 @@ export class LobbyDO extends DurableObject<Env> {
 
   private async create(request: Request): Promise<Response> {
     if (this.rec) return error(409, 'exists');
-    const b = await readJson<{ lobbyId?: unknown; code?: unknown; region?: unknown; socketBase?: unknown; settings?: unknown; password?: unknown; host?: { playerId?: unknown; name?: unknown; guest?: unknown } }>(request);
+    const b = await readJson<{ lobbyId?: unknown; code?: unknown; region?: unknown; socketBase?: unknown; settings?: unknown; password?: unknown; host?: { playerId?: unknown; name?: unknown; guest?: unknown; car?: unknown } }>(request);
     if (!b || typeof b.lobbyId !== 'string' || typeof b.code !== 'string' || typeof b.region !== 'string' || typeof b.socketBase !== 'string' || !b.host || typeof b.host.playerId !== 'string' || typeof b.host.name !== 'string') {
       return error(400, 'bad_request');
     }
@@ -262,7 +282,7 @@ export class LobbyDO extends DurableObject<Env> {
       nextMember: 1,
       status: 'open',
       statusAt: now,
-      admits: [{ playerId: b.host.playerId, name: b.host.name, guest: b.host.guest === true, until: now + ADMIT_TTL_MS }],
+      admits: [{ playerId: b.host.playerId, name: b.host.name, guest: b.host.guest === true, until: now + ADMIT_TTL_MS, ...carField(b.host.car) }],
       kicked: [],
       lastSocketAt: now,
     };
@@ -275,7 +295,7 @@ export class LobbyDO extends DurableObject<Env> {
   private async admit(request: Request): Promise<Response> {
     const rec = this.rec;
     if (!rec || this.closed) return error(410, 'closed', 'La sala ya no existe');
-    const b = await readJson<{ playerId?: unknown; name?: unknown; guest?: unknown; password?: unknown }>(request);
+    const b = await readJson<{ playerId?: unknown; name?: unknown; guest?: unknown; password?: unknown; car?: unknown }>(request);
     if (!b || typeof b.playerId !== 'string' || typeof b.name !== 'string') return error(400, 'bad_request');
     if (rec.kicked.includes(b.playerId)) return error(403, 'kicked', 'El anfitrión te expulsó de esta sala');
     if (b.guest === true && lobbyPhysics(rec.settings) !== null) return error(403, 'account_required', 'Sala experimental: inicia sesión para entrar');
@@ -289,7 +309,7 @@ export class LobbyDO extends DurableObject<Env> {
       if (rec.members.length + pending >= this.perTeam() * 2) return error(409, 'full', 'La sala está llena');
     }
     rec.admits = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId);
-    rec.admits.push({ playerId: b.playerId, name: b.name, guest: b.guest === true, until: now + ADMIT_TTL_MS });
+    rec.admits.push({ playerId: b.playerId, name: b.name, guest: b.guest === true, until: now + ADMIT_TTL_MS, ...carField(b.car) });
     await this.save();
     return json({ ok: true });
   }
@@ -311,9 +331,13 @@ export class LobbyDO extends DurableObject<Env> {
       if (admit.guest && lobbyPhysics(rec.settings) !== null) return error(403, 'account_required');
       const team = teamForNewMember(rec.members, this.perTeam());
       if (team === null) return error(409, 'full');
-      member = { id: 'm' + rec.nextMember++, playerId, name: admit.name, guest: admit.guest, team, joinedAt: now, inGame: false };
+      member = { id: 'm' + rec.nextMember++, playerId, name: admit.name, guest: admit.guest, team, joinedAt: now, inGame: false, ...carField(admit.car) };
       rec.members.push(member);
       if (rec.hostId === '') rec.hostId = member.id;
+    } else if (admit) {
+      // A member back through a fresh admit (another tab, a reload) sits in the car its session has now.
+      if (admit.car !== undefined) member.car = admit.car;
+      else delete member.car;
     }
     // Back within the grace: the same place, the same role.
     delete member.awayAt;
@@ -553,11 +577,60 @@ export class LobbyDO extends DurableObject<Env> {
     await this.publish();
   }
 
+  /**
+   * The car each signed-in member drives now (AccountsDO POST /equipped: the loadout while it is
+   * still owned), read at every start: an admit's car would otherwise stay for the lobby's whole
+   * life (up to MAX_AGE_MS, the socket stays open through the matches), past a maintainer's revoke,
+   * and a car equipped in the garage meanwhile would never apply. An account the answer leaves out
+   * (banned, gone) drives the default car. Null without a signed-in member, or when AccountsDO
+   * does not answer within EQUIPPED_TIMEOUT_MS: the start keeps the admits' cars.
+   */
+  private async equippedCars(members: readonly MemberRec[]): Promise<Record<string, unknown> | null> {
+    const userIds = members.filter((m) => !m.guest).map((m) => m.playerId);
+    if (userIds.length === 0) return null;
+    const env = this.env;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const ask = (async (): Promise<Record<string, unknown> | null> => {
+        const res = await env.ACCOUNTS.get(env.ACCOUNTS.idFromName('accounts-v1')).fetch('https://accounts/equipped', {
+          method: 'POST',
+          headers: { [INTERNAL_HEADER]: await internalSecret(env.JWT_SECRET), 'content-type': 'application/json' },
+          body: JSON.stringify({ userIds }),
+        });
+        if (!res.ok) {
+          await res.body?.cancel();
+          return null;
+        }
+        const b = (await res.json()) as { cars?: unknown };
+        return typeof b.cars === 'object' && b.cars !== null && !Array.isArray(b.cars) ? (b.cars as Record<string, unknown>) : null;
+      })();
+      const late = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), EQUIPPED_TIMEOUT_MS);
+      });
+      return await Promise.race([ask, late]);
+    } catch (e) {
+      console.error('LobbyDO: equipped cars failed', e);
+      return null;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
   private async start(hostWs: WebSocket): Promise<void> {
     const rec = this.rec as LobbyRecord;
     rec.status = 'starting';
     this.broadcastState();
     const env = this.env;
+    const fresh = await this.equippedCars(rec.members);
+    if (this.closed || this.rec === null) return;
+    if (fresh !== null) {
+      for (const m of rec.members) {
+        if (m.guest) continue;
+        const car = seatCar(fresh[m.playerId]);
+        if (car !== undefined && car !== DEFAULT_CAR) m.car = car;
+        else delete m.car;
+      }
+    }
     let res: Response;
     try {
       res = await env.MATCHMAKER.get(env.MATCHMAKER.idFromName('mm:' + rec.region)).fetch('https://matchmaker/custom', {
@@ -568,7 +641,7 @@ export class LobbyDO extends DurableObject<Env> {
           mode: rec.settings.mode,
           matchLengthSeconds: rec.settings.matchLengthSeconds,
           // `guest`: the matchmaker and RoomDO refuse experimental rules for a guest too.
-          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team, guest: m.guest })),
+          members: rec.members.map((m) => ({ playerId: m.playerId, name: m.name, team: m.team, guest: m.guest, ...(m.car !== undefined ? { car: m.car } : {}) })),
           // Experimental rules travel as the copy the lobby holds (the matchmaker checks them again).
           physics: lobbyPhysics(rec.settings),
         }),
@@ -602,7 +675,7 @@ export class LobbyDO extends DurableObject<Env> {
 
   private stateFor(memberId: string): LobbyState {
     const rec = this.rec as LobbyRecord;
-    const members: LobbyMember[] = rec.members.map((m) => ({ id: m.id, name: m.name, team: m.team, host: m.id === rec.hostId, guest: m.guest, inGame: m.inGame, away: m.awayAt !== undefined, ready: m.ready === true }));
+    const members: LobbyMember[] = rec.members.map((m) => ({ id: m.id, name: m.name, team: m.team, host: m.id === rec.hostId, guest: m.guest, inGame: m.inGame, away: m.awayAt !== undefined, ready: m.ready === true, ...(m.car !== undefined ? { car: m.car } : {}) }));
     return { code: rec.code, settings: { ...rec.settings, physics: lobbyPhysics(rec.settings) }, hasPassword: rec.pwHash !== null, region: rec.region, members, you: memberId, status: rec.status };
   }
 

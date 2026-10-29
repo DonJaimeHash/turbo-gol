@@ -22,6 +22,20 @@
  *   experimental     user -> Settings > Experimental's switch (src/game/experimentalStore.ts)
  *   presets          (user, preset) -> one physics preset: its name and canonical values as JSON
  *                    (src/game/physicsRules.ts), MAX_PRESETS per account, last write wins
+ *
+ * The hosts' shop (nodes/control-plane/shop.ts: its catalog and its claim rule, one source with the
+ * reference server; nodes/docs/RECOMPENSAS.md: points come only from hosting a community node, are
+ * never bought, won or traded). Never pruned:
+ *   host_credits     match_id -> the points a verified match on one of the account's nodes earned
+ *                    (the NodeRegistryDO's outbox, /host-credit: idempotent by match_id)
+ *   host_claims      (user, item) -> what the account owns: a claim (its cost) or a maintainer's
+ *                    grant (cost 0); one row per item, so a retried claim spends nothing twice
+ *   host_freeze      user -> a failed verification on one of its nodes (/host-freeze): no claims
+ *                    while `at` > `cleared_at` (a maintainer's unfreeze); an event from before the
+ *                    unfreeze, delivered again by the outbox, freezes nothing
+ *   loadout          user -> the car it picked (src/game/cosmetics.ts CarId); it drives it while it
+ *                    owns it (the default car is everyone's), else the default car
+ * Balance = sum(credits) - sum(claims), never below 0: a claim needs its whole cost, credits never go.
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
@@ -32,6 +46,12 @@ import type { TrainingRecords } from '../../src/game/trainingRecords';
 import { MAX_PRESETS, parsePresetList } from '../../src/game/physicsRules';
 import type { StoredPreset } from '../../src/game/physicsRules';
 import type { ExperimentalAnswer } from '../../src/net/account';
+import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
+import type { CarId } from '../../src/game/cosmetics';
+import { CATALOG, catalogItem, catalogView, claimBlock, round2 } from '../../nodes/control-plane/shop';
+import type { ClaimState } from '../../nodes/control-plane/shop';
+import { entitledCarsOf } from '../../src/net/cosmetics';
+import type { ClaimAnswer, ClaimRefusal, ItemsAnswer, ShopAnswer, Wallet } from '../../src/net/cosmetics';
 
 export type SqlValue = ArrayBuffer | string | number | null;
 export type Row = Record<string, SqlValue>;
@@ -70,6 +90,20 @@ export interface Credentials extends Partial<PasswordRecord> {
 export interface UserRef {
   userId: string;
   username: string;
+  /** The car the account drives (equippedCar: one it still owns, else the default): what its session carries. */
+  car?: CarId;
+  /** When the account was created (ms): its age weighs its minutes on a community node (ledger.ts). */
+  createdAt?: number;
+}
+
+/** POST /host-credit: one verified match on a community node of the account (nodeOutcome.ts). */
+export interface HostCredit {
+  matchId: string;
+  userId: string;
+  nodeId: string;
+  points: number;
+  verified: boolean;
+  at: number;
 }
 
 export interface RankedPlayerInput {
@@ -178,6 +212,15 @@ export class AccountStore {
     s.exec(`CREATE TABLE IF NOT EXISTS presets (
       user_id TEXT NOT NULL, preset_id TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL,
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (user_id, preset_id))`);
+    s.exec(`CREATE TABLE IF NOT EXISTS host_credits (
+      match_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, points REAL NOT NULL,
+      verified INTEGER NOT NULL, at INTEGER NOT NULL)`);
+    s.exec('CREATE INDEX IF NOT EXISTS host_credits_user ON host_credits(user_id)');
+    s.exec(`CREATE TABLE IF NOT EXISTS host_claims (
+      user_id TEXT NOT NULL, item_id TEXT NOT NULL, cost REAL NOT NULL, at INTEGER NOT NULL, source TEXT NOT NULL,
+      PRIMARY KEY (user_id, item_id))`);
+    s.exec('CREATE TABLE IF NOT EXISTS host_freeze (user_id TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, cleared_at INTEGER NOT NULL DEFAULT 0)');
+    s.exec('CREATE TABLE IF NOT EXISTS loadout (user_id TEXT PRIMARY KEY, car TEXT NOT NULL, updated_at INTEGER NOT NULL)');
   }
 
   // ---- users ------------------------------------------------------------------------------------
@@ -211,8 +254,14 @@ export class AccountStore {
         id, username, usernameKey(username), pw.hash, pw.salt, pw.iter, JSON.stringify(recoveryHashes), now, now,
       );
       this.addRefresh(id, refreshHash, now);
-      return { userId: id, username };
+      return { userId: id, username, car: DEFAULT_CAR, createdAt: now };
     });
+  }
+
+  /** What a session of the account carries: its name, the car it drives and its creation time. */
+  private refOf(u: Row): UserRef {
+    const userId = str(u.id);
+    return { userId, username: str(u.username), car: this.equippedCar(userId), createdAt: num(u.created_at) };
   }
 
   credentials(username: string): Credentials | null {
@@ -239,7 +288,7 @@ export class AccountStore {
       if (u === null || num(u.banned) === 1) return null;
       this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, userId);
       this.addRefresh(userId, refreshHash, now);
-      return { userId, username: str(u.username) };
+      return this.refOf(u);
     });
   }
 
@@ -259,7 +308,7 @@ export class AccountStore {
       const u = this.userById(str(r.user_id));
       if (u === null || num(u.banned) === 1) return null;
       this.addRefresh(str(u.id), newHash, now);
-      return { userId: str(u.id), username: str(u.username) };
+      return this.refOf(u);
     });
   }
 
@@ -268,7 +317,7 @@ export class AccountStore {
     const r = this.sql.exec('SELECT user_id, expires_at FROM refresh WHERE hash = ?', hash).toArray()[0];
     if (!r || num(r.expires_at) <= now) return null;
     const u = this.userById(str(r.user_id));
-    return u === null ? null : { userId: str(u.id), username: str(u.username) };
+    return u === null ? null : this.refOf(u);
   }
 
   deleteRefresh(hash: string): void {
@@ -313,7 +362,7 @@ export class AccountStore {
       this.sql.exec('UPDATE users SET recovery = ?, pw_hash = ?, pw_salt = ?, pw_iter = ?, last_login = ? WHERE id = ?', JSON.stringify(codes), pw.hash, pw.salt, pw.iter, now, id);
       this.deleteRefreshOf(id);
       this.addRefresh(id, refreshHash, now);
-      return { userId: id, username: str(u.username), codesLeft: codes.length };
+      return { ...this.refOf(u), codesLeft: codes.length };
     });
   }
 
@@ -324,21 +373,21 @@ export class AccountStore {
   oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string, now: number): (UserRef & { created: boolean }) | 'already_linked' | 'no_user' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
     return this.tx(() => {
-      const owner = this.sql.exec(`SELECT id, username, banned FROM users WHERE ${col} = ?`, providerId).toArray()[0];
+      const owner = this.sql.exec(`SELECT id, username, banned, created_at FROM users WHERE ${col} = ?`, providerId).toArray()[0];
       if (linkTo !== null) {
         const me = this.userById(linkTo);
         if (me === null) return 'no_user' as const;
         if (owner && str(owner.id) !== linkTo) return 'already_linked' as const;
         this.sql.exec(`UPDATE users SET ${col} = ? WHERE id = ?`, providerId, linkTo);
         this.addRefresh(linkTo, refreshHash, now);
-        return { userId: linkTo, username: str(me.username), created: false };
+        return { ...this.refOf(me), created: false };
       }
       if (owner) {
         if (num(owner.banned) === 1) return 'no_user' as const;
         const id = str(owner.id);
         this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
         this.addRefresh(id, refreshHash, now);
-        return { userId: id, username: str(owner.username), created: false };
+        return { ...this.refOf(owner), created: false };
       }
       let name = usernameFromDisplay(suggested);
       for (let n = 0; this.usernameTaken(name); n++) {
@@ -348,7 +397,7 @@ export class AccountStore {
       const id = this.freshId();
       this.sql.exec(`INSERT INTO users (id, username, ukey, ${col}, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?)`, id, name, usernameKey(name), providerId, now, now);
       this.addRefresh(id, refreshHash, now);
-      return { userId: id, username: name, created: true };
+      return { userId: id, username: name, car: DEFAULT_CAR, createdAt: now, created: true };
     });
   }
 
@@ -361,7 +410,7 @@ export class AccountStore {
       const other = this.userByKey(usernameKey(username));
       if (other !== null && str(other.id) !== userId) return 'taken' as const;
       this.sql.exec('UPDATE users SET username = ?, ukey = ?, renamed_at = ? WHERE id = ?', username, usernameKey(username), now, userId);
-      return { userId, username };
+      return { ...this.refOf(u), username };
     });
   }
 
@@ -663,7 +712,181 @@ export class AccountStore {
     });
   }
 
-  /** Daily cleanup: expired refresh tokens, locks and bans, old abandons and ranked results. */
+  // ---- cars and the hosts' shop -------------------------------------------------------------------
+
+  /** Item ids the account owns (claimed or granted), sorted. */
+  itemIds(userId: string): string[] {
+    return this.sql
+      .exec('SELECT item_id FROM host_claims WHERE user_id = ? ORDER BY item_id', userId)
+      .toArray()
+      .map((r) => str(r.item_id));
+  }
+
+  ownsItem(userId: string, itemId: string): boolean {
+    return this.sql.exec('SELECT 1 AS x FROM host_claims WHERE user_id = ? AND item_id = ?', userId, itemId).toArray().length > 0;
+  }
+
+  /** The car the account drives: its pick while it still owns that car (the default car is everyone's), else the default car. */
+  equippedCar(userId: string): CarId {
+    const r = this.sql.exec('SELECT car FROM loadout WHERE user_id = ?', userId).toArray()[0];
+    const car = r ? str(r.car) : '';
+    return isCarId(car) && (car === DEFAULT_CAR || this.ownsItem(userId, car)) ? car : DEFAULT_CAR;
+  }
+
+  /** POST /equipped (a lobby's start, LobbyDO): the car each of `userIds` drives now; an unknown or banned account is left out. */
+  equippedCars(userIds: readonly string[]): Record<string, CarId> {
+    const out: Record<string, CarId> = {};
+    for (const id of userIds) {
+      const u = this.userById(id);
+      if (u !== null && num(u.banned) !== 1) out[id] = this.equippedCar(id);
+    }
+    return out;
+  }
+
+  /** GET /api/me/items: the owned item ids, the car driven and every car the account may drive. */
+  items(userId: string): ItemsAnswer | 'no_user' {
+    if (this.userById(userId) === null) return 'no_user';
+    const items = this.itemIds(userId);
+    return { items, car: this.equippedCar(userId), cars: entitledCarsOf(items) };
+  }
+
+  /**
+   * POST /api/me/car: drive `car` from the next session on (the default car, or one the account
+   * owns); that session's UserRef. A banned account is 'no_user', as signedIn and refresh refuse it.
+   */
+  setCar(userId: string, car: CarId, now: number): UserRef | 'not_owned' | 'no_user' {
+    return this.tx(() => {
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
+      if (car !== DEFAULT_CAR && !this.ownsItem(userId, car)) return 'not_owned' as const;
+      this.sql.exec(
+        'INSERT INTO loadout (user_id, car, updated_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET car = excluded.car, updated_at = excluded.updated_at',
+        userId, car, now,
+      );
+      return this.refOf(u);
+    });
+  }
+
+  /** Why the account's claims are paused (a failed verification not cleared yet), or null. */
+  frozen(userId: string): string | null {
+    const r = this.sql.exec('SELECT reason, at, cleared_at FROM host_freeze WHERE user_id = ?', userId).toArray()[0];
+    return r && num(r.at) > num(r.cleared_at) ? str(r.reason) : null;
+  }
+
+  /**
+   * Verified matches the account's nodes hosted for someone else (nodes/control-plane/ledger.ts
+   * countsAsHosted: verified and worth points): one the operator played alone counts for nothing,
+   * not even toward the free badge.
+   */
+  private verifiedHosted(userId: string): number {
+    return num(this.sql.exec('SELECT COUNT(*) AS n FROM host_credits WHERE user_id = ? AND verified = 1 AND points > 0', userId).toArray()[0]?.n);
+  }
+
+  /** Points earned hosting (all time), spent on claims, the balance (never below 0) and the freeze. */
+  wallet(userId: string): Wallet {
+    const earned = round2(num(this.sql.exec('SELECT COALESCE(SUM(points), 0) AS p FROM host_credits WHERE user_id = ?', userId).toArray()[0]?.p));
+    const spent = round2(num(this.sql.exec('SELECT COALESCE(SUM(cost), 0) AS c FROM host_claims WHERE user_id = ?', userId).toArray()[0]?.c));
+    return { earned, spent, balance: Math.max(0, round2(earned - spent)), frozen: this.frozen(userId) };
+  }
+
+  private claimState(userId: string): ClaimState {
+    const owned = new Set(this.itemIds(userId));
+    return { owns: (id) => owned.has(id), frozen: this.frozen(userId), verifiedMatches: this.verifiedHosted(userId), balance: this.wallet(userId).balance };
+  }
+
+  /** GET /api/me/shop: the catalog as the account sees it (shop.ts catalogView) and its wallet. */
+  shop(userId: string): ShopAnswer | 'no_user' {
+    if (this.userById(userId) === null) return 'no_user';
+    return { items: catalogView(CATALOG, this.claimState(userId)), wallet: this.wallet(userId) };
+  }
+
+  /**
+   * POST /api/me/shop/claim, one transaction: the item is in the catalog and available, the wallet is
+   * not frozen and holds its cost (shop.ts claimBlock) -> it is owned and its cost spent. Idempotent
+   * per (account, item): an item already owned answers claimed: false and spends nothing.
+   */
+  claim(userId: string, itemId: string, now: number): ClaimAnswer | Exclude<ClaimRefusal, 'owned'> | 'no_user' {
+    return this.tx(() => {
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
+      const it = catalogItem(itemId);
+      if (!it) return 'unknown_item' as const;
+      const done = (claimed: boolean): ClaimAnswer => ({ item: it.id, claimed, wallet: this.wallet(userId), items: this.itemIds(userId) });
+      if (this.ownsItem(userId, it.id)) return done(false);
+      const blocked = claimBlock(it, this.claimState(userId));
+      if (blocked !== null && blocked !== 'owned') return blocked;
+      this.sql.exec("INSERT INTO host_claims (user_id, item_id, cost, at, source) VALUES (?, ?, ?, ?, 'claim')", userId, it.id, it.cost, now);
+      return done(true);
+    });
+  }
+
+  /** POST /host-credit (the outbox of a settled node match): recorded once per match id; false when it already was. */
+  hostCredit(c: HostCredit): boolean {
+    return this.tx(() => {
+      if (this.sql.exec('SELECT 1 AS x FROM host_credits WHERE match_id = ?', c.matchId).toArray().length > 0) return false;
+      this.sql.exec('INSERT INTO host_credits (match_id, user_id, node_id, points, verified, at) VALUES (?, ?, ?, ?, ?, ?)', c.matchId, c.userId, c.nodeId, round2(c.points), c.verified ? 1 : 0, c.at);
+      return true;
+    });
+  }
+
+  /**
+   * POST /host-freeze (a failed verification on a node of the account, at `at`): claims pause. A
+   * freeze in force keeps its first reason; an event from before the last unfreeze (the outbox
+   * delivering it again) changes nothing. True when it froze the wallet.
+   */
+  hostFreeze(userId: string, reason: string, at: number): boolean {
+    return this.tx(() => {
+      const r = this.sql.exec('SELECT at, cleared_at FROM host_freeze WHERE user_id = ?', userId).toArray()[0];
+      if (r && (num(r.at) > num(r.cleared_at) || at <= num(r.cleared_at))) return false;
+      this.sql.exec(
+        'INSERT INTO host_freeze (user_id, reason, at, cleared_at) VALUES (?, ?, ?, 0) ON CONFLICT (user_id) DO UPDATE SET reason = excluded.reason, at = excluded.at',
+        userId, reason, at,
+      );
+      return true;
+    });
+  }
+
+  /** POST /host-unfreeze (a maintainer, after the review): claims go on. True when the wallet was frozen. */
+  unfreeze(userId: string, now: number): boolean {
+    return this.tx(() => {
+      const r = this.sql.exec('SELECT at, cleared_at FROM host_freeze WHERE user_id = ?', userId).toArray()[0];
+      if (!r || num(r.at) <= num(r.cleared_at)) return false;
+      // Cleared from the event on at least: a clock behind the event's must not leave it in force.
+      this.sql.exec('UPDATE host_freeze SET cleared_at = ? WHERE user_id = ?', Math.max(now, num(r.at)), userId);
+      return true;
+    });
+  }
+
+  /**
+   * POST /host-grant (a maintainer): the account owns `itemId`, whatever its status, for nothing (a
+   * test account's car, or what a mistake took). `granted` false when it already owned it.
+   */
+  grant(userId: string, itemId: string, now: number): { granted: boolean; items: string[] } | 'unknown_item' | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      if (!catalogItem(itemId)) return 'unknown_item' as const;
+      const owned = this.ownsItem(userId, itemId);
+      if (!owned) this.sql.exec("INSERT INTO host_claims (user_id, item_id, cost, at, source) VALUES (?, ?, 0, ?, 'grant')", userId, itemId, now);
+      return { granted: !owned, items: this.itemIds(userId) };
+    });
+  }
+
+  /**
+   * POST /host-revoke (a maintainer): the account no longer owns `itemId`. A claim's cost goes back
+   * to its balance (points are never taken away), and a revoked car it drove gives way to the default.
+   */
+  revoke(userId: string, itemId: string): { revoked: boolean; refunded: number; items: string[] } {
+    return this.tx(() => {
+      const r = this.sql.exec('SELECT cost FROM host_claims WHERE user_id = ? AND item_id = ?', userId, itemId).toArray()[0];
+      if (r) {
+        this.sql.exec('DELETE FROM host_claims WHERE user_id = ? AND item_id = ?', userId, itemId);
+        this.sql.exec('DELETE FROM loadout WHERE user_id = ? AND car = ?', userId, itemId);
+      }
+      return { revoked: r !== undefined, refunded: r ? round2(num(r.cost)) : 0, items: this.itemIds(userId) };
+    });
+  }
+
+  /** Daily cleanup: expired refresh tokens, locks and bans, old abandons and ranked results (never the hosts' shop). */
   prune(now: number): void {
     this.tx(() => {
       this.sql.exec('DELETE FROM refresh WHERE expires_at <= ?', now);

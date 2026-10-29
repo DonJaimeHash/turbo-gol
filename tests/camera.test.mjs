@@ -16,7 +16,7 @@ registerHooks({
 });
 
 const THREE = await import('three/webgpu');
-const { ChaseCamera, DEFAULT_CAMERA_SETTINGS, clampToArena, swivelTarget, SWIVEL_PITCH_STICK_DEG, SWIVEL_PITCH_MOUSE_DEG } =
+const { ChaseCamera, DEFAULT_CAMERA_SETTINGS, clampToArena, hasViewShift, setViewShift, swivelTarget, SWIVEL_PITCH_STICK_DEG, SWIVEL_PITCH_MOUSE_DEG } =
   await import('../src/render/Camera.ts');
 const { ARENA, KICKOFF_SPAWNS } = await import('../src/sim/constants.ts');
 const { DEFAULT_CAMERA } = await import('../src/settings.ts');
@@ -427,4 +427,26 @@ test('settings: a full object is kept by reference (live sliders), a partial one
   assert.notEqual(none.settings, DEFAULT_CAMERA_SETTINGS);
   none.settings.fov = 1;
   assert.equal(DEFAULT_CAMERA.fov, 110);
+});
+
+test('view shift: the garage frame moves the image without squeezing it (setViewShift keeps the aspect)', () => {
+  const wide = 1900 / 810;
+  const cam = new THREE.PerspectiveCamera(35, wide, 10, 40000);
+  const plain = cam.projectionMatrix.clone();
+  setViewShift(cam, 0.2, -0.1);
+  // three's setViewOffset(1, 1, ...) set the aspect to 1: every later frame drew a square view
+  // stretched over the wide window (a visit to the garage, then the match).
+  assert.equal(cam.aspect, wide, 'aspect kept');
+  assert.ok(hasViewShift(cam, 0.2, -0.1), 'the shift is the one asked for');
+  assert.ok(!hasViewShift(cam, 0.2, 0), 'another shift is not');
+  const m = cam.projectionMatrix.elements;
+  assert.ok(Math.abs(m[0] - plain.elements[0]) < 1e-12 && Math.abs(m[5] - plain.elements[5]) < 1e-12, 'same scale on both axes: nothing stretched');
+  assert.ok(Math.abs(m[8]) > 0.1 && Math.abs(m[9]) > 0.05, 'centre moved');
+  // A resize keeps the shift as a fraction of the new view, and clearing it leaves the aspect alone.
+  cam.aspect = 844 / 390;
+  cam.updateProjectionMatrix();
+  assert.ok(hasViewShift(cam, 0.2, -0.1), 'still the same fractions after a resize');
+  cam.clearViewOffset();
+  assert.equal(cam.aspect, 844 / 390, 'clearing the shift keeps the aspect');
+  assert.ok(!hasViewShift(cam, 0.2, -0.1));
 });

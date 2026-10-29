@@ -5,7 +5,8 @@
  *   sheet, or retries when offline;
  * - search: spinner · "CASUAL · 2v2 · 0:42" (the search's own screen), and ✕ (cancel; pad Y,
  *   keyboard X anywhere in the menus); a copy without focus floats over Settings (Menu.float);
- * - update: "UPDATE TO PLAY" (--warn) once the server refused this page's version (the sheet again).
+ * - update: "UPDATE TO PLAY" (--warn) once the server refused this page's version (the sheet again);
+ * - points: "≡ 2.100 server points" on GARAJE and PERFIL (PointsPill, not a focus stop).
  * Each writes the page only when its text changed (Menu.tick runs at 4 Hz). In a crowded bar (a
  * TV's hint bar or Inicio's plate row, the top bar of a tablet or a phone) their words give way
  * (`data-fit-give`, fit.ts) in two steps: first what is said beside them too (2: the region's
@@ -133,6 +134,38 @@ export class LobbyPill {
     const count = ` · ${s.count ?? '—'}/${s.max ?? '—'}`;
     this.el.append(s.reconnecting ? h('span.mn-spinner') : icon('friends'), h('span.mn-pill-main', WORDS, main), h('span.mn-pill-sub', ECHO, count), h('span.mn-pill-sep', WORDS), h('b.mn-pill-act', WORDS, t('lobby.pillBack')));
     this.el.setAttribute('aria-label', `${main}${count}. ${t('lobby.pillBack')}`);
+    return true;
+  }
+}
+
+/** The points pill's words: the first to give way in a crowded bar (the glyph says it, GARAJE's card in words). */
+const FIRST = { 'data-fit-give': '1' };
+
+/**
+ * The points pill (plan PR 8): "≡ 0 server points" on GARAJE and PERFIL, a guest's 0 too, last
+ * before the chip (none in a phone's upright bar: GARAJE's points line). Information only (GARAJE's
+ * points card and its guide say the rest), so no focus stop; in a crowded bar its words go first,
+ * then the whole pill with the other pills' words (3).
+ */
+export class PointsPill {
+  readonly el: HTMLElement;
+  private key = '';
+
+  constructor() {
+    // Still too crowded without its words (a TV's hint bar, a large interface size), it goes with the others' words.
+    this.el = h('span.mn-pill.mn-pill-points', { hidden: true, ...WORDS });
+  }
+
+  /** Show `points` (formatted; null: hidden); false (and nothing written) when the pill already shows it. */
+  set(points: string | null): boolean {
+    const key = points ?? '';
+    if (key === this.key) return false;
+    this.key = key;
+    this.el.hidden = points === null;
+    this.el.textContent = '';
+    if (points === null) return true;
+    this.el.append(icon('points'), h('b.mn-pill-main', null, points), h('span.mn-pill-sub', FIRST, t('points.words')));
+    this.el.setAttribute('aria-label', `${points} ${t('points.words')}`);
     return true;
   }
 }

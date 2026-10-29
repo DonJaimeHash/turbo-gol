@@ -35,6 +35,16 @@
  *                                                                     an unknown code) | 409 | 403 banned
  *     The TV's sign-in with the phone (tvCodes.ts, in memory): `secret` is the SHA-256 of the
  *     device secret the Worker made, `refresh` the hash of the refresh token it issues on approval.
+ *   GET  /items?userId=                                              -> ItemsAnswer | 404
+ *   POST /car             { userId, car }                            -> UserRef (the session to mint) | 400 bad_car | 409 not_owned | 404
+ *   POST /equipped        { userIds } (a lobby's start, LobbyDO)     -> { cars: { [userId]: CarId } } (unknown / banned left out)
+ *   GET  /shop?userId=                                               -> ShopAnswer | 404
+ *   POST /shop/claim      { userId, item }                           -> ClaimAnswer | 404 unknown_item | 409 <ClaimRefusal> | 404
+ *   POST /host-credit     HostCredit (the NodeRegistryDO's outbox)    -> { ok, applied } (once per matchId)
+ *   POST /host-freeze     { userId, reason, at } (the outbox)        -> { ok, applied }
+ *   POST /host-grant      { userId, item } (a maintainer, through the NodeRegistryDO) -> { granted, items } | 404
+ *   POST /host-revoke     { userId, item }                           -> { revoked, refunded, items }
+ *   POST /host-unfreeze   { userId }                                 -> { unfrozen }
  *
  * Brute force (in memory, per object = global): a username with LOGIN_FAILS_FREE failures in the
  * window is throttled with a doubling delay up to LOGIN_LOCK_MAX_MS; an IP with LOGIN_IP_MAX failures
@@ -46,19 +56,28 @@ import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
 import { TvCodes, tvCode } from './tvCodes';
-import type { PasswordRecord, RankedResultInput } from './accountStore';
+import type { HostCredit, PasswordRecord, RankedResultInput } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import type { OAuthProvider, Playlist } from '../../src/net/account';
+import { isCarId } from '../../src/game/cosmetics';
+import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
 
 const LOGIN_WINDOW_MS = 15 * 60_000;
+/** The most accounts one /equipped asks for (a lobby's members: a 3v3). */
+const EQUIPPED_MAX = 6;
 export const LOGIN_FAILS_FREE = 5;
 const LOGIN_LOCK_BASE_MS = 30_000;
 export const LOGIN_LOCK_MAX_MS = 15 * 60_000;
 const LOGIN_IP_MAX = 30;
 const PRUNE_EVERY_MS = 24 * 60 * 60_000;
 const BODY_MAX = 16_384;
+/**
+ * More points than one match can earn (six players for an hour at the top region factor, sampled
+ * at 1 in 5 is about 5,400): a /host-credit that says more is junk, refused.
+ */
+const HOST_CREDIT_MAX = 100_000;
 
 interface FailEntry {
   count: number;
@@ -154,6 +173,14 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/experimental': {
         const r = this.store.experimental(p.get('userId') ?? '');
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/items': {
+        const r = this.store.items(p.get('userId') ?? '');
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/shop': {
+        const r = this.store.shop(p.get('userId') ?? '');
         return r === 'no_user' ? error(404, 'no_user') : json(r);
       }
     }
@@ -327,6 +354,49 @@ export class AccountsDO extends DurableObject<Env> {
         if (typeof b.id !== 'string' || !PRESET_ID_RE.test(b.id)) return error(400, 'bad_preset');
         const r = s.deletePreset(b.userId, b.id);
         return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/car': {
+        if (typeof b.userId !== 'string') return error(400, 'bad_request');
+        if (!isCarId(b.car)) return error(400, 'bad_car');
+        const r = s.setCar(b.userId, b.car, now);
+        if (r === 'not_owned') return error(409, 'not_owned', 'Ese auto no es tuyo todavía');
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/equipped': {
+        const ids = b.userIds;
+        if (!Array.isArray(ids) || ids.length > EQUIPPED_MAX || !ids.every((id): id is string => typeof id === 'string' && id.length <= 64)) return error(400, 'bad_request');
+        return json({ cars: s.equippedCars(ids) });
+      }
+      case '/shop/claim': {
+        if (typeof b.userId !== 'string' || typeof b.item !== 'string' || !ITEM_ID_RE.test(b.item)) return error(400, 'bad_request');
+        const r = s.claim(b.userId, b.item, now);
+        if (r === 'no_user') return error(404, 'no_user');
+        if (r === 'unknown_item') return error(404, 'unknown_item');
+        return typeof r === 'string' ? error(409, r) : json(r);
+      }
+      case '/host-credit': {
+        const c = b as Partial<HostCredit>;
+        if (!isHex(c.matchId, 64) || !isHex(c.userId, 16) || typeof c.nodeId !== 'string' || c.nodeId.length > 64) return error(400, 'bad_request');
+        if (typeof c.points !== 'number' || !Number.isFinite(c.points) || c.points < 0 || c.points > HOST_CREDIT_MAX || typeof c.verified !== 'boolean' || typeof c.at !== 'number') return error(400, 'bad_request');
+        return json({ ok: true, applied: s.hostCredit({ matchId: c.matchId, userId: c.userId, nodeId: c.nodeId, points: c.points, verified: c.verified, at: c.at }) });
+      }
+      case '/host-freeze': {
+        if (!isHex(b.userId, 16) || typeof b.reason !== 'string' || typeof b.at !== 'number' || !(b.at > 0)) return error(400, 'bad_request');
+        return json({ ok: true, applied: s.hostFreeze(b.userId, b.reason.slice(0, 120), b.at) });
+      }
+      case '/host-grant': {
+        if (typeof b.userId !== 'string' || typeof b.item !== 'string') return error(400, 'bad_request');
+        const r = s.grant(b.userId, b.item, now);
+        if (r === 'no_user') return error(404, 'no_user');
+        return r === 'unknown_item' ? error(404, 'unknown_item') : json(r);
+      }
+      case '/host-revoke': {
+        if (typeof b.userId !== 'string' || typeof b.item !== 'string') return error(400, 'bad_request');
+        return json(s.revoke(b.userId, b.item));
+      }
+      case '/host-unfreeze': {
+        if (typeof b.userId !== 'string') return error(400, 'bad_request');
+        return json({ unfrozen: s.unfreeze(b.userId, now) });
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');

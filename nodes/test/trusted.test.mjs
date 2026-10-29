@@ -71,14 +71,14 @@ test('the trusted verifier (Sao Paulo VPS) verifies community matches; the queue
     assert.equal(out.verdict.code, 'ok', out.verdict.message);
     assert.ok(out.ledger.points > 0);
 
-    // Juan's points: the free host badge can be claimed; announced cars cannot yet.
+    // Juan's points: the free host badge can be claimed; announced items cannot yet.
     const shop = await get(`${cp.url}/nodes/shop`, { 'x-dev-operator': juan.op });
     assert.ok(shop.wallet.balance > 0);
     assert.equal(shop.items.find((i) => i.id === 'badge-host').claimable, true);
     const claim = await post(`${cp.url}/nodes/shop/claim`, { itemId: 'badge-host' }, { 'x-dev-operator': juan.op });
     assert.equal(claim.status, 200, JSON.stringify(claim.body));
-    const car = await post(`${cp.url}/nodes/shop/claim`, { itemId: 'car-next-1' }, { 'x-dev-operator': juan.op });
-    assert.equal(car.body.error, 'not_available');
+    const soon = await post(`${cp.url}/nodes/shop/claim`, { itemId: 'boost-next-1' }, { 'x-dev-operator': juan.op });
+    assert.equal(soon.body.error, 'not_available');
     assert.deepEqual((await get(`${cp.url}/nodes/inventory`, { 'x-dev-operator': juan.op })).items, ['badge-host']);
     // The project's machine earns nothing.
     assert.equal((await get(`${cp.url}/nodes/shop`, { 'x-dev-operator': sp.op })).wallet.earned, 0);

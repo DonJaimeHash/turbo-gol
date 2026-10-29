@@ -31,6 +31,11 @@ const RULES = {
 const KNOWN = {
 };
 
+// The owner's own words, kept as drawn (plan PR 8, the Garage's PUNTOS DE SERVIDOR card): "Nunca se
+// venden" (never sold) trips the shop rule's vend\w* while saying what the rule is for. One key and
+// one rule each, never a pattern; a text that no longer trips it fails below (delete its line).
+const ALLOWED = new Set(['es:points.only:shop']);
+
 const values = (v) => (typeof v === 'string' ? [v] : Object.values(v));
 
 function offenders() {
@@ -47,13 +52,13 @@ function offenders() {
 
 test('no shop words, emoji, mode names or raw codes in a new text', () => {
   const found = offenders();
-  const fresh = [...found].filter((k) => !(k in KNOWN));
+  const fresh = [...found].filter((k) => !(k in KNOWN) && !ALLOWED.has(k));
   assert.deepEqual(fresh, [], 'a text breaks a copy rule (en.ts / es.ts)');
 });
 
 test('the known offenders are still offenders (delete a line once its PR rewrote the text)', () => {
   const found = offenders();
-  const stale = Object.keys(KNOWN).filter((k) => !found.has(k));
+  const stale = [...Object.keys(KNOWN), ...ALLOWED].filter((k) => !found.has(k));
   assert.deepEqual(stale, []);
 });
 

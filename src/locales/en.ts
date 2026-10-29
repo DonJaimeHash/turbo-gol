@@ -45,6 +45,19 @@ export default {
   'theme.harbour-night': 'Night harbour',
   'theme.canyon-sunset': 'Red canyon',
   'theme.alpine-day': 'Alpine valley',
+  // Cosmetic cars (src/game/cosmetics.ts): the garage and the shop. The names are invented proper
+  // names, Spanish words kept as they are (the pampas wind, the capybara, the condor, the southern
+  // lapwing); each *Desc is the car's one line under its name
+  'car.dune': 'Dune',
+  'car.duneDesc': 'Bubble canopy, roll hoop and knobby tyres: the all-rounder',
+  'car.pampero': 'Pampero',
+  'car.pamperoDesc': 'Low and sharp, like the cold wind of the pampas',
+  'car.carpincho': 'Carpincho',
+  'car.carpinchoDesc': 'Round, sturdy and unflappable, like the capybara',
+  'car.condor': 'Cóndor',
+  'car.condorDesc': 'Long and wide, built to glide',
+  'car.tero': 'Tero',
+  'car.teroDesc': 'A compact rally hatch, loud and always on the alert',
   'tier.bronze': 'Bronze',
   'tier.silver': 'Silver',
   'tier.gold': 'Gold',
@@ -146,9 +159,6 @@ export default {
   'update.reload': 'RELOAD NOW',
   'update.later': 'NOT NOW',
   'update.pill': 'UPDATE TO PLAY',
-  // GARAGE section until the cars arrive
-  'garage.soon': 'COMING SOON',
-  'garage.soonText': 'Cars and stadiums, all in one place.',
 
   // Rank badges and rating cards (src/ui/badges.ts)
   // Rank badge tooltip and rating card while placement matches are still left
@@ -197,6 +207,81 @@ export default {
   // Screen-reader names of the plate's two buttons; {rank} is a rank ('Gold II · 2v2') or home.unranked
   'home.plateProfile': 'Profile: {name}, {rank}',
   'home.plateGarage': 'Garage: your car is {car}',
+
+  // GARAJE (src/ui/screens/garage.ts, plan §1.4.2): the cars and the stadiums. Server points are
+  // earned only by hosting a community server (nodes/docs/RECOMPENSAS.md): never bought, won by
+  // playing or traded, and nothing is paid. Never state a rate (points per minute or per match): it
+  // depends on verification and the region. {points}, {have}, {missing}, {from}, {to} are formatted numbers
+  'garage.tabCars': 'CARS',
+  'garage.tabStadiums': 'STADIUMS',
+  // The hint bar's verb for the two tabs (LT RT / Q E)
+  'garage.tabsVerb': 'Cars or stadiums',
+  // The card of the car driven, its corner, the free car's line
+  'garage.yourCar': 'YOUR CAR',
+  'garage.equippedTag': 'EQUIPPED',
+  'garage.free': 'Free for everyone',
+  'garage.freeTag': 'FREE',
+  // The unit after a number of points
+  'garage.pts': 'PTS',
+  'garage.signIn': 'SIGN IN',
+  'garage.guest': 'You play as a guest',
+  'garage.paused': 'Redeeming paused · check My server in your profile',
+  // The lime card: every car's price, then how points are earned; its short form on a phone
+  'garage.eachCar': 'EACH CAR · {points} PTS',
+  'garage.earn': 'EARN POINTS BY HOSTING A COMMUNITY SERVER',
+  'garage.earnSub': 'On your PC or a VPS · see the guide',
+  'garage.earnShort': 'How to earn points',
+  // A row's state
+  'garage.stateEquipped': 'Equipped',
+  'garage.stateEquippedFree': 'Equipped · Free',
+  'garage.stateOwned': 'Yours',
+  'garage.stateClaimable': 'Redeemable · {points} pts',
+  'garage.stateLocked': 'Locked · {points} pts',
+  // A car whose body is still being built: it cannot be redeemed yet
+  'garage.stateSoon': 'Coming soon',
+  // The detail card's action and the line under it
+  'garage.equip': 'EQUIP',
+  'garage.redeem': 'REDEEM FOR {points} PTS',
+  'garage.inUse': 'You drive it in your next match',
+  'garage.needSignIn': 'Sign in to redeem',
+  'garage.missing': 'You have {have} pts: {missing} to go',
+  'garage.needFrozen': 'Redeeming paused',
+  'garage.needMatches': 'Your server needs a verified match first',
+  'garage.needUnavailable': 'It cannot be redeemed right now',
+  'garage.needLoading': 'Loading…',
+  'garage.soonText': 'Its body is still being built',
+  // The redeem sheet; {car} is the car's name
+  'garage.redeemTitle': 'Redeem {car}',
+  'garage.cost': 'Cost: {points} server points',
+  'garage.balance': 'Balance: {from} → {to}',
+  'garage.noPay': 'Nothing is paid: cars come only with server points, never by playing',
+  'garage.cancel': 'CANCEL',
+  'garage.hold': 'HOLD TO CONFIRM',
+  // After it
+  'garage.redeemed': '{car} is yours',
+  'garage.same': 'Same handling, same hitbox: only the look changes',
+  'garage.equipNow': 'EQUIP NOW',
+  'garage.done': 'DONE',
+  'garage.failTitle': "We couldn't redeem it",
+  'garage.failText': 'Nothing was spent.',
+  'garage.retry': 'RETRY',
+  // Toast; {car} is the car's name
+  'garage.equipped': '{car} equipped',
+  'garage.loading': 'Loading your points…',
+  // How points are earned (GANA PUNTOS, a locked car's REDEEM): the guide and its QR
+  'garage.guideTitle': 'How to earn server points',
+  'garage.guideText': 'Host a community server on your PC or a VPS: every verified match it hosts adds points. Playing never earns them.',
+  'garage.guideScan': 'Scan it to open the guide on your phone.',
+  'garage.guideOpen': 'OPEN THE GUIDE',
+  // ESTADIOS
+  'garage.stadiumInUse': 'In use',
+  'garage.stadiumUse': 'USE THIS STADIUM',
+  'garage.stadiumNote': 'Used in your offline matches, in training and behind the menus',
+  // Server points everywhere (PUNTOS DE SERVIDOR card, the bar's pill)
+  'points.title': 'SERVER POINTS',
+  'points.only': 'Earned only by hosting a community server. Never sold.',
+  // The bar's pill on GARAJE and PERFIL, after the number
+  'points.words': 'server points',
 
   // Inicio's mode tiles: a title, a subtitle (PC) and its short form (phone, tablet, TV), a corner tag
   'modes.casual': 'CASUAL',
@@ -728,6 +813,16 @@ export default {
   'error.account.tv_code_used': 'That code was already used',
   // The server holds too many TV codes at once
   'error.account.busy': 'Too many codes right now, try again in a minute',
+  // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
+  'error.account.not_owned': 'That car is not yours yet',
+  'error.account.bad_car': 'Unknown car',
+  // Redeeming with server points (the garage)
+  'error.account.unknown_item': 'That item does not exist',
+  'error.account.bad_item': 'That item does not exist',
+  'error.account.not_available': 'That item cannot be redeemed yet',
+  'error.account.frozen': 'Redeeming is paused until a maintainer reviews your server',
+  'error.account.insufficient': 'Not enough server points',
+  'error.account.requires_matches': 'Your server needs a verified match first',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',

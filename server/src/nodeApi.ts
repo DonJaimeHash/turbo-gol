@@ -20,6 +20,7 @@ import type { ControlPlane, LeaveResult, PlaceRequest, Placement, RejoinAnswer }
 import type { BuildId } from '../../nodes/shared/controlProtocol';
 import { PROTOCOL_VERSION } from '../../src/net/protocol';
 import { ROCKETSIM_WASM_SHA256 } from '../../src/sim/wasm/rocketsim.sha256';
+import { carsOf } from '../../src/net/cosmetics';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { SERVER_VERSION, isHex, withTimeout } from './env';
 import type { Env } from './env';
@@ -73,7 +74,7 @@ export interface LeaveBody extends NodePlayerBody {
   connected?: boolean;
 }
 
-/** The 200 of /internal/rejoin: a fresh ticket and the node's own URL (absolute: not the Worker's /ws/). */
+/** The 200 of /internal/rejoin: a fresh ticket and the node's own URL (absolute: not the Worker's /ws/), and the match's cars. */
 export type RejoinTicket = Omit<Extract<RejoinAnswer, { ok: true }>, 'ok'>;
 
 /** Why a player cannot rejoin (ControlPlane.rejoin). */
@@ -185,10 +186,16 @@ export function placementFor(answer: unknown, playerIds: readonly string[]): Pla
   return left.size === 0 ? (p as Placement) : null;
 }
 
-/** The ticket in a 200 of POST /internal/rejoin when it is one, as placementFor checks a placement's: a non-empty ticket and the node's own wss:// URL. */
+/**
+ * The ticket in a 200 of POST /internal/rejoin when it is one, as placementFor checks a placement's:
+ * a non-empty ticket and the node's own wss:// URL; with the match's `cars` when they read as such
+ * (src/net/cosmetics.ts carsOf: any other shape is dropped, the ticket still counts).
+ */
 export function rejoinTicketOf(body: unknown): RejoinTicket | null {
-  const { ticket, wsUrl } = (typeof body === 'object' && body !== null ? body : {}) as Partial<RejoinTicket>;
-  return typeof ticket === 'string' && ticket.length > 0 && isWss(wsUrl) ? { ticket, wsUrl } : null;
+  const { ticket, wsUrl, cars } = (typeof body === 'object' && body !== null ? body : {}) as Partial<Record<keyof RejoinTicket, unknown>>;
+  if (typeof ticket !== 'string' || ticket.length === 0 || !isWss(wsUrl)) return null;
+  const known = carsOf(cars);
+  return known ? { ticket, wsUrl, cars: known } : { ticket, wsUrl };
 }
 
 function isWss(v: unknown): v is string {

@@ -57,7 +57,17 @@ From the repository root the same things are `npm run dev:api`, `npm run test:se
 replay of the applied inputs between snapshots) runs with the root `npm test`. The Vite dev server
 proxies `/api`, `/ws` and `/room` to `127.0.0.1:8787` (see `vite.config.ts`); `wsUrl` is absolute
 (the Worker's own origin, `ws://127.0.0.1:8787/ws/<id>` or `/room/<id>` in dev), so the browser
-opens the socket straight to the Worker. From the Claude desktop app the `api` entry in
+opens the socket straight to the Worker. A second checkout beside the first runs its Worker on
+another port with that port in both flags, and Vite with `TG_API_PORT` set to it:
+
+```sh
+npx wrangler dev --port 8788 --host 127.0.0.1:8788 --persist-to .wrangler/state-8788   # in server/
+TG_API_PORT=8788 npx vite --port 5174 --strictPort                                    # at the root
+```
+
+Without `--host` the Worker still builds every `wsUrl` (matches, P2P rooms, lobbies) on
+`127.0.0.1:8787`, the `dev.host` pinned in `wrangler.jsonc`: the browser would open its sockets
+against the other checkout's Worker, whose `JWT_SECRET` refuses the ticket. From the Claude desktop app the `api` entry in
 `.claude/launch.json` starts this server.
 
 The Worker also serves the game itself from `../dist` (Workers Assets, see "Deploy"): wrangler
@@ -107,7 +117,8 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `POST /nodes/tokens` | `{ region, name? }`, Bearer account session of a `NODE_TRUSTED_OPERATORS` account | a one-time node token (1 h) and its Linux install line; 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 10 per account per day |
 | `GET /nodes/mine` | Bearer account session | the caller's own nodes (30 per account per minute) |
 | `GET /nodes/status` | | the public list of nodes (no addresses), cached 10 s |
-| `GET /nodes/admin/nodes`, `POST /nodes/admin/status`, `/drain`, `/update`, `/reprobe` | Bearer account session of a `NODE_TRUSTED_OPERATORS` account; `{ nodeId, status, reason? }`, `{ nodeId, reason? }`, no body, `{ nodeId }` | the maintainers' routes (see "Community nodes"): 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 30 per account per minute; every call is an `ALERT` naming the account |
+| `GET /nodes/admin/nodes`, `POST /nodes/admin/status`, `/drain`, `/update`, `/reprobe`, `/grant`, `/revoke`, `/unfreeze` | Bearer account session of a `NODE_TRUSTED_OPERATORS` account; `{ nodeId, status, reason? }`, `{ nodeId, reason? }`, no body, `{ nodeId }`, `{ account, item }`, `{ account, item }`, `{ account }` | the maintainers' routes (see "Community nodes"): 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 30 per account per minute; every call is an `ALERT` naming the account. `grant` / `revoke` / `unfreeze` act on an account's items and wallet in AccountsDO (`account`: its 16-hex id; `item`: a catalog id of `nodes/control-plane/shop.ts`, 400 `unknown_item` otherwise): a grant is a claim that costs nothing, whatever the item's status; a revoke gives a claim's cost back (and the account drives the default car if it was that one); an unfreeze lets a frozen wallet claim again |
+| `GET /nodes/shop`, `POST /nodes/shop/claim` | Bearer account session; `{ item }` (or `itemId`) | aliases of `GET /api/me/shop` and `POST /api/me/shop/claim` (the hosts' shop lives in AccountsDO): answered with or without the node settings; 401, 403 `account_required` for a guest |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 
 Rate limit: 20 `POST /api/queue` per playerId per minute (in-memory per isolate, best effort).
@@ -256,7 +267,8 @@ then go out with the next `npm run deploy`, at a quiet hour like any deploy.
 `vars.NODE_CONTROL_PUBLIC_KEY` must be the public half of that private key: the object checks the
 pair at every start and, when it does not match, logs an ALERT and places no match, registers no
 node and mints no rejoin ticket. Without the private key (local dev, a fork that runs no nodes) no
-match ever goes to a node and every `/nodes/*` route but `whoami` and the releases answers 404;
+match ever goes to a node and every `/nodes/*` route but `whoami`, the releases and the shop aliases
+(`/nodes/shop`, `/nodes/shop/claim`) answers 404;
 without `NODE_TRUSTED_OPERATORS` nobody can create a node token (403 `not_trusted`). To try the
 routes under `wrangler dev`, put a development pair in `.dev.vars` (both halves: a `.dev.vars`
 value overrides the committed var).
@@ -318,6 +330,9 @@ await admin('status', { nodeId, status: 'suspended', reason }); // probation | a
 await admin('drain', { nodeId, reason });                       // no new matches, it idles once they end (one-way)
 await admin('update', {});                                       // channel.json read now, nodes below its minimum told to update
 await admin('reprobe', { nodeId });                              // its /healthz now; back into wss placement if it passes
+await admin('grant', { account, item });                         // an item for free (a test account's car, what a mistake took)
+await admin('revoke', { account, item });                        // the item goes, its cost comes back to the wallet
+await admin('unfreeze', { account });                            // a wallet frozen by a failed verification claims again
 ```
 
 Each call logs an `ALERT` with the account's name and id, the list too (it shows the nodes'

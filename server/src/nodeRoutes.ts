@@ -24,10 +24,15 @@
  *   POST     /nodes/admin/status      account (401 without one, 403 for any other), 30 a minute per account, 413
  *   POST     /nodes/admin/drain       over 4 KB: every node in full; { nodeId, status, reason }; { nodeId, reason };
  *   POST     /nodes/admin/update      the channel read again and the nodes below its minimum told to update;
- *   POST     /nodes/admin/reprobe     { nodeId }. Every call is an ALERT line naming the account (NodeRegistryDO.ts)
- * Anything else under /nodes/ is a 404: the WebRTC signaling and the shop are not open in stage 1,
- * and the reference server's /dev/* routes never exist here. Without the node settings
- * (nodesConfigured: a fork, local dev) every route that needs the object is a 404 too.
+ *   POST     /nodes/admin/reprobe     { nodeId };
+ *   POST     /nodes/admin/grant       { account, item }, /revoke { account, item }, /unfreeze { account }: an
+ *   POST     /nodes/admin/revoke      account's items and wallet in AccountsDO. Every call is an ALERT line naming
+ *   POST     /nodes/admin/unfreeze    the account (NodeRegistryDO.ts)
+ *   GET      /nodes/shop              aliases of GET /api/me/shop and POST /api/me/shop/claim (accountRoutes.ts,
+ *   POST     /nodes/shop/claim        AccountsDO): answered with or without the node settings
+ * Anything else under /nodes/ is a 404: the WebRTC signaling is not open in stage 1, and the
+ * reference server's /dev/* routes never exist here. Without the node settings (nodesConfigured: a
+ * fork, local dev) every route that needs the object is a 404 too.
  *
  * The object trusts what the Worker forwards: only the headers a node sends get through
  * (FORWARDED), and x-client-ip, x-operator-id and x-operator-name are always set here. CORS only on
@@ -40,7 +45,7 @@
  * The cron (index.ts scheduled, every 5 minutes) calls nodeHealthCheck: one call to the object,
  * which probes the trusted nodes' /healthz; nothing at all without the node settings.
  */
-import { requireAccount } from './accountRoutes';
+import { requireAccount, shopClaim, shopGet } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
@@ -78,7 +83,7 @@ const LIMIT_MINE_PER_ACCOUNT = 30;
 const LIMIT_ADMIN_PER_ACCOUNT = 30;
 const STATUS_TTL_MS = 10_000;
 /** The maintainers' routes and the method of each. */
-const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST' };
+const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST', grant: 'POST', revoke: 'POST', unfreeze: 'POST' };
 
 /**
  * A release key: an optional X.Y.Z/ directory, then one file name. Nothing else is ever looked up in
@@ -88,7 +93,7 @@ const RELEASE_KEY = /^(?:\d{1,6}\.\d{1,6}\.\d{1,6}\/)?[A-Za-z0-9][A-Za-z0-9._-]{
 const VERSIONED = /^\d+\.\d+\.\d+\//;
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const REPLAY_PATH = /^\/nodes\/replays\/([0-9a-f]{64})$/;
-const CORS_PATHS = new Set(['/nodes/tokens', '/nodes/mine', '/nodes/status']);
+const CORS_PATHS = new Set(['/nodes/tokens', '/nodes/mine', '/nodes/status', '/nodes/shop', '/nodes/shop/claim']);
 /** Request headers the object may see from a caller (the WebSocket upgrade's, a node's signed upload). */
 const FORWARDED = new Set([
   'content-type',
@@ -144,6 +149,12 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   if (method === 'GET' && path === '/nodes/whoami') return json({ ip: c.request.headers.get('CF-Connecting-IP') }, 200, { 'cache-control': 'no-store' });
   if ((method === 'GET' || method === 'HEAD') && path.startsWith('/nodes/releases/')) return release(c, path.slice('/nodes/releases/'.length));
   const env = c.env;
+  // The hosts' shop lives in AccountsDO: a fork without nodes still has it (nothing to earn there).
+  if ((method === 'GET' && path === '/nodes/shop') || (method === 'POST' && path === '/nodes/shop/claim')) {
+    if (!env.JWT_SECRET) return error(404, 'not_found');
+    const s = { env, request: c.request, session: await c.session(), limited: (key: string, max: number) => c.limited(key, max) };
+    return method === 'GET' ? shopGet(s) : shopClaim(s);
+  }
   if (!nodesConfigured(env) || !env.JWT_SECRET) return error(404, 'not_found');
   const who = limitKey(c.ip);
   if (method === 'POST' && path === '/nodes/register') {

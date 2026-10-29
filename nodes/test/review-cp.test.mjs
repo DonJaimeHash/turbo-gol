@@ -1117,3 +1117,31 @@ test('a control key that does not import fails each ticket it would sign, not th
   }
   assert.deepEqual(rejections, []);
 });
+
+test("a failed verification on a community node freezes its operator's wallet with the match (MatchEntry.freeze, settled with it); a project node's never", async () => {
+  for (const trusted of [false, true]) {
+    const env = await setup({ status: 'active', trusted });
+    const p = await env.place([human('a'), human('b')], { ranked: true });
+    env.advance(6_000);
+    await env.cp.leave(p.matchId, 'b'.repeat(16));
+    const { entry } = await env.finish(p, { play: { stopAt: 700, endReason: 'forfeit', forfeitTeam: 1 }, mutate: leaveAtEnd(1), report: { result: { endReason: 'left' } } });
+    assert.equal(entry.outcome.reason, 'verification_failed:report_mismatch');
+    if (trusted) assert.equal(entry.freeze, undefined, 'the project never freezes itself');
+    else assert.deepEqual(entry.freeze, { operatorId: env.registry.node(env.nodeId).operatorId, reason: `verification_failed:${p.matchId}` });
+  }
+});
+
+test('cars: a human’s car stays with the match (humans, the rejoin’s cars by slot) and never in the assignment the node gets', async () => {
+  const env = await setup({ status: 'active' });
+  const p = await env.place([human('a', { car: 'tero' }), human('b')]);
+  const assign = env.toNode.filter((m) => m.t === 'assign').at(-1).match;
+  assert.ok(!JSON.stringify(assign).includes('tero'));
+  assert.deepEqual(Object.keys(assign.roster[0]).sort(), ['kind', 'name', 'playerId', 'slot', 'team']);
+  const m = env.cp.matches.get(p.matchId);
+  assert.equal(m.humans[0].car, 'tero');
+  const r = await env.cp.rejoin(p.matchId, 'b'.repeat(16));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.cars, ['tero', null]);
+  const plain = await env.place([human('c'), human('d')]);
+  assert.equal('cars' in (await env.cp.rejoin(plain.matchId, 'c'.repeat(16))), false);
+});

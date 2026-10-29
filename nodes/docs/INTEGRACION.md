@@ -17,15 +17,20 @@ CI corre su chequeo de tipos y sus pruebas en cada PR.
 
 Aplicado en [6] (#28): `server/src/NodeRegistryDO.ts`, un Durable Object con una sola instancia
 (`nodes-v1`, creada cerca de São Paulo) que envuelve `ControlPlane`, `Registry` y `Ledger` de
-`control-plane/`. `Shop` llega con la tienda, en la etapa 2.
+`control-plane/`. La tienda no vive acá sino en `AccountsDO` (la opción A del plan de autos: la
+billetera, los canjes, el inventario y el auto elegido de cada cuenta); el DO guarda el puntaje.
 
 - **Persistencia:** nodos, tokens y partidas (las sin terminar, las que esperan su verificación y
   las terminadas con su resultado) van a su SQLite (`server/src/nodeStore.ts`), con escrituras
   síncronas como en `AccountsDO`, más la bandeja de salida de esos resultados hasta entregarlos,
   escrita en la misma transacción que la partida terminada. Con filas de otra `STATE_VERSION`, el
-  objeto no arranca: deja un `ALERT` y no las toca. Los asientos del ledger, los canjes y los
-  inventarios se suman en la etapa 2, cuando haya nodos que ganan puntos: hasta entonces el ledger
-  vive en memoria.
+  objeto no arranca: deja un `ALERT` y no las toca. El ledger también: cada asiento se escribe con
+  la partida que puntúa (`ledger_entries`, y los totales del operador en `ledger_totals`, en la
+  misma transacción), las notas de la repetición a medida que llegan (`ledger_notes`, 24 h), y
+  `Ledger.restore` los lee al arrancar: un deploy conserva la repetición, el ranking de 30 días y
+  los resúmenes de `/nodes/mine`. Los puntos van a la cuenta del operador por la bandeja
+  (`/host-credit`, una vez por partida) y una verificación fallida congela sus canjes
+  (`/host-freeze`): `AccountsDO` los guarda para siempre.
 - **Conexiones de nodos:** con la Hibernation API (`ctx.acceptWebSocket`), como `RoomDO`. Las
   sesiones de `ControlPlane` viven en memoria (`control-plane/controlPlane.ts:320`), así que cada
   socket guarda su nodo (`{ nodeId }`) como adjunto al entrar. Un DO que despierta de una
@@ -100,11 +105,13 @@ antes de mandar al sitio. `whoami` y las releases se responden en el Worker; el 
 
 Cualquier otra ruta bajo `/nodes/` responde 404, y sin la configuración de los nodos
 (`nodesConfigured`: un fork, el desarrollo local) también todas las que van al DO. Después de la
-etapa 1 se suman la señalización WebRTC (`POST /nodes/rtc/<nodo>/<partida>/ice` y `.../offer`, a
-`rtcIce` y `rtcOffer`, con un límite de 10 por IP por minuto), la tienda (`GET /nodes/shop` y
-`POST /nodes/shop/claim`, con la sesión de cuenta: los invitados no canjean) y `GET /api/me/items`,
-el inventario de la cuenta para que el juego desbloquee ítems. Las rutas `/dev/*` del servidor de
-referencia no existen en el Worker. CORS, solo en `tokens`, `mine` y `status`.
+etapa 1 se suma la señalización WebRTC (`POST /nodes/rtc/<nodo>/<partida>/ice` y `.../offer`, a
+`rtcIce` y `rtcOffer`, con un límite de 10 por IP por minuto). La tienda ya está, en `AccountsDO`
+y con la sesión de cuenta (los invitados no canjean): `GET /api/me/shop`, `POST /api/me/shop/claim`,
+`GET /api/me/items` (el inventario, para que el juego desbloquee ítems) y `POST /api/me/car` (el
+auto elegido, que firma la sesión), con `GET /nodes/shop` y `POST /nodes/shop/claim` como alias
+(responden también sin la configuración de los nodos). Las rutas `/dev/*` del servidor de
+referencia no existen en el Worker. CORS, solo en `tokens`, `mine`, `status` y la tienda.
 
 Límites, con una IPv6 contada por su /64: `register`, 5 por dirección por hora, y `tokens`, 10 por
 cuenta por día, los lleva el DO, en memoria (un deploy los pone en cero); el Worker los repite por
@@ -191,6 +198,8 @@ if (placed) {
 | `rated` | `POST /ranked-result { matchId, playlist, region, winner, blue, red, players }`, el mismo cuerpo que `MatchDO.reportRanked` |
 | `void` de una ranked | `POST /ranked-cancel { matchId, playlist, region, players, noShows, reason }`. Un outcome `void` no trae `playlist` ni `region` (`control-plane/controlPlane.ts:162`): salen de la asignación de la partida |
 | `unrated`, o `void` de una casual | nada; los puntos de una `unrated` ya quedaron en el ledger |
+| con puntos (un nodo de la comunidad) | `POST /host-credit { matchId, userId, nodeId, points, verified, at }` a la cuenta del operador, una vez por partida |
+| verificación fallida (un nodo de la comunidad) | `POST /host-freeze { userId, reason, at }`: sus canjes en pausa hasta un `POST /nodes/admin/unfreeze` |
 | cualquiera | `POST /release` al matchmaker de la región, como `MatchDO.shutdown` |
 
 Aplicado en [6] (#28), en `server/src/nodeOutcome.ts`. El DO escribe estas llamadas en su bandeja
@@ -225,8 +234,9 @@ new NetClient({ ...opciones, webSocketFactory: nodeAwareSocketFactory() })
 ## 6. Operación
 
 - Alertas cuando una verificación falla: hoy queda en el log como `ALERT`. Conviene un webhook.
-- Endpoint de administración para `setStatus`, `drain`, `shop.unfreeze` y el catálogo. Un
-  drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): el nodo solo vuelve a tomar
+- Endpoints de administración: `setStatus` y `drain` están (`/nodes/admin/status`, `drain`), y
+  la tienda tiene `/nodes/admin/grant`, `revoke` y `unfreeze`. El catálogo es código
+  (`src/game/cosmetics.ts` y `control-plane/shop.ts`). Un drenaje no tiene vuelta atrás (`node/runtime.ts:570-575`): el nodo solo vuelve a tomar
   partidas cuando se reinicia.
 - Releases: `.github/workflows/node-release.yml`, con un tag `node-vX.Y.Z` en un commit de
   `main`: arma la release sin firmar, la firma en el entorno `releases` y la sube a R2 desde el

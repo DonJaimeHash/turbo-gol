@@ -31,6 +31,10 @@
 // community node's line, casual, against the AI with a full 3v3, a lobby) and fails PLAY AGAIN without
 // the focus (but on a touch screen).
 //
+// GARAJE (plan PR 8) runs as the page's guest (the live screen, each input), then its samples
+// (window.__garage): an account at 0 points, with enough to redeem, with a car owned, the stadiums'
+// tab, the redeem sheet, the guide's sheet (its QR) and an account whose redeeming is paused.
+//
 // ENTRENAMIENTO, CLASIFICACIÓN and PERFIL (plan PR 13) run their states: training also as an
 // account with Settings › Experimental on ('training:lab': the LAB tile, HOW TO PLAY as a row), the
 // board with 100 sample rows and yours among them or under them, then as a guest (window.__board),
@@ -128,7 +132,7 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'training:lab', 'summary', 'garage', 'leaderboard', 'leaderboard:rows', 'leaderboard:below', 'leaderboard:guest', 'profile', 'profile:account', 'profile:operator', 'final', 'touch', 'sala', 'tv'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'training:lab', 'summary', 'garage', 'garage:account', 'garage:points', 'garage:owned', 'garage:stadiums', 'garage:redeem', 'garage:guide', 'garage:paused', 'leaderboard', 'leaderboard:rows', 'leaderboard:below', 'leaderboard:guest', 'profile', 'profile:account', 'profile:operator', 'final', 'touch', 'sala', 'tv'];
 // The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
 const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
 // PR 14's samples (window.__tvSignIn): the keypad's where no fine pointer, 'tv*' on a TV, the rest everywhere.
@@ -251,7 +255,7 @@ const NEED_PAD = { en: 'YOU NEED A CONTROLLER', es: 'NECESITAS UN CONTROL' };
 const NEED_PAD_GO = { en: 'CONTINUE ANYWAY', es: 'SEGUIR IGUAL' };
 // After the device's own input, the others on the screens that change the shell: section roots,
 // stacked screens (‹ and the crumbs, no strip), the ones with tabs of their own (Q / E step those).
-const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'leaderboard', 'profile', 'sala'].filter((x) => SCREENS.includes(x));
+const INPUT_SCREENS = ['home', 'modes:casual', 'modes:lobbies', 'training', 'garage', 'leaderboard', 'profile', 'sala'].filter((x) => SCREENS.includes(x));
 // The touch match's checks (window context): what is wrong on screen now, from the controls' and the
 // pause's own boxes. `boost` is BOOST's centre measured while the controls were up.
 const TOUCH_CHECK = (state, boost) => `(() => {
@@ -553,12 +557,15 @@ try {
       }
       const [id, tab] = screen.split(':');
       // PR 13's states are samples on the screen itself (the tab is a sample's kind there, not Menu.open's).
-      const sampled = id === 'training' || id === 'leaderboard' || id === 'profile';
+      const sampled = id === 'training' || id === 'leaderboard' || id === 'profile' || id === 'garage';
+      // GARAJE's samples (plan PR 8, window.__garage): put away before another screen (its sheet too).
+      if (id !== 'garage') await page.eval('(window.__garage?.(null), true)');
       // An account with Settings › Experimental on (training:lab): its view's switch, set on the page.
       if (id === 'training') await page.eval(`(() => { const x = __game.menu.host.experimental; window.__uiFitLab ??= Object.getOwnPropertyDescriptor(x, 'unlocked') ?? { value: x.unlocked }; Object.defineProperty(x, 'unlocked', ${tab === 'lab' ? '{ get: () => true, configurable: true }' : 'window.__uiFitLab'}); return true; })()`);
       await page.eval(`(__game.menu.open(${JSON.stringify(id)}, true${tab !== undefined && !sampled ? ', ' + JSON.stringify(tab) : ''}), true)`);
       if (id === 'leaderboard') await page.eval(`(window.__board(${JSON.stringify(tab ?? null)}), true)`);
       if (id === 'profile') await page.eval(`(window.__profile(${JSON.stringify(tab ?? null)}), true)`);
+      if (id === 'garage') await page.eval(`(window.__garage(${JSON.stringify(tab ?? null)}), true)`);
       await sleep(input === own ? 400 : 200); // a mount and a screen's own first render (__uiFit runs the fit it queued)
       if (id === 'modes' && input === own && (tab === 'casual' || tab === 'ranked')) {
         // Idle with FIND MATCH (or SIGN IN) focused, then searching every format (the longest

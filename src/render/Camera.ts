@@ -373,6 +373,26 @@ export class ChaseCamera {
 }
 
 /**
+ * Move the projection's centre by (`ox`, `oy`), fractions of the view (the garage's showroom
+ * frame, Game.placeShowroomCamera), KEEPING the camera's aspect. three's setViewOffset sets
+ * `aspect` to fullWidth / fullHeight, so a view passed as 1 x 1 squeezed every later frame into a
+ * square: a wide window drew the match stretched sideways after a visit to the garage, until the
+ * next resize. Here the full view is `aspect` wide and 1 high, so the offset stays a fraction of
+ * it and survives a resize (Renderer.resize rewrites the aspect; updateProjectionMatrix scales the
+ * offset by width / fullWidth).
+ */
+export function setViewShift(camera: THREE.PerspectiveCamera, ox: number, oy: number): void {
+  const aspect = camera.aspect;
+  camera.setViewOffset(aspect, 1, ox * aspect, oy, aspect, 1);
+}
+
+/** The view is shifted by (`ox`, `oy`) (setViewShift), within float noise. */
+export function hasViewShift(camera: THREE.PerspectiveCamera, ox: number, oy: number): boolean {
+  const v = camera.view;
+  return v !== null && v.enabled && Math.abs(v.offsetX / v.fullWidth - ox) < 1e-9 && Math.abs(v.offsetY / v.fullHeight - oy) < 1e-9;
+}
+
+/**
  * Pull a point inside the arena shell (three coords: x side, z length, y up) with ARENA_INSET
  * margin: side / back walls, the ceiling, the rounded corners (pulled back along the corner
  * radius) and the goal lanes (allowed to extend into the chambers while below the crossbar).

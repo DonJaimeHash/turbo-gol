@@ -24,6 +24,8 @@ export const ICON_PATHS = {
   lock: 'M6 11h12v10H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3',
   globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 1 0 0-18M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18',
   server: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01',
+  // Server points (GARAJE, the bar's pill): three slanted bars, the owner's drawing.
+  points: 'M6.5 3.5h15l-1.6 4.5h-15zM4.9 9.75h15l-1.6 4.5h-15zM3.3 16h15l-1.6 4.5h-15z',
   search: 'M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 1 0 0-13M15.5 15.5 20 20',
   friends: 'M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 1 0 0 7M2.5 20a6.5 6.5 0 0 1 13 0M16 4.3a3.5 3.5 0 0 1 0 6.4M18 14.5a6.5 6.5 0 0 1 3.5 5.5',
   bot: 'M5 8h14v11H5zM12 4v4M9 13h.01M15 13h.01M9.5 16.5h5M2 12v3M22 12v3',

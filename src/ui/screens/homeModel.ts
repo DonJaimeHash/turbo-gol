@@ -149,10 +149,3 @@ export function plateRank(me: { ratings: readonly PlateRating[] } | null): { tie
   for (const r of me?.ratings ?? []) if (r.tier !== null && (best === null || r.mmr > best.mmr)) best = r;
   return best !== null && best.tier !== null ? { tier: best.tier, playlist: best.playlist } : null;
 }
-
-/**
- * The car on the plate until the cars land (Dune, the free one): a proper name, the same in every
- * language.
- * PR 8: read menu.host.garage.store.equipped and show t(CARS.find((c) => c.id === id).nameKey).
- */
-export const DEFAULT_CAR_NAME = 'Dune';
