@@ -205,7 +205,7 @@ test('RoomDO 1v1: a lone unreachable report about a peer whose room socket is al
   const h = await makeRoom(ONE_V_ONE);
   const [a, b] = await h.started();
   advance(10_000);
-  await h.send(b, { type: 'ping', t0: 1 }); // B is alive and talking
+  await h.send(b, { type: 'hashReport', tick: 600, hash: 1, agree: 1, disagree: 0 }); // B's match loop runs
   await h.send(a, { type: 'unreachable', slot: 1, atTick: 500 });
   assert.deepEqual(dropsOf(b), [], 'B is not dropped on A\'s word');
   assert.deepEqual(dropsOf(a), []);
@@ -220,21 +220,57 @@ test('RoomDO with two humans and bots: the lone report stands until the target g
   const [a, , b] = await h.started();
   await h.send(a, { type: 'unreachable', slot: 2, atTick: 300 });
   assert.deepEqual(dropsOf(a), []);
-  // B keeps pinging for a while: still alive at every re-check.
-  for (let i = 0; i < 3; i++) {
-    advance(15_000);
-    await h.send(b, { type: 'ping', t0: i });
-    await h.send(a, { type: 'ping', t0: i });
+  // B's match loop keeps reporting its hashes (every 10 s) for a while: alive at every re-check.
+  for (let i = 0; i < 6; i++) {
+    advance(10_000);
+    await h.send(b, { type: 'hashReport', tick: 300 + i, hash: 1, agree: 1, disagree: 0 });
+    await h.send(a, { type: 'hashReport', tick: 300, hash: 1, agree: 1, disagree: 0 });
     if (h.ctx.storage.alarm !== null && h.ctx.storage.alarm <= clock) await h.alarm();
   }
   assert.deepEqual(dropsOf(a), [], 'alive: no drop');
-  // B goes quiet (a half-open socket): past TARGET_SILENT_MS the re-check drops it at A's tick.
+  // B's loop stops (a frozen page): past TARGET_SILENT_MS the re-check drops it at A's tick.
   advance(R.TARGET_SILENT_MS + 1_000);
-  await h.send(a, { type: 'ping', t0: 9 });
+  await h.send(a, { type: 'hashReport', tick: 300, hash: 1, agree: 1, disagree: 0 });
   assert.ok(h.ctx.storage.alarm !== null && h.ctx.storage.alarm <= clock, 'a re-check is due');
   await h.alarm();
   assert.deepEqual(dropsOf(a), [[2, 300]]);
 });
+
+const loopFrame = (h, ws, tick) => h.send(ws, { type: 'hashReport', tick, hash: 7, agree: 1, disagree: 0 });
+
+// Review: a hidden tab stops requestAnimationFrame (no game packets, no hashReport) while RoomClient's
+// timer keeps pinging every 15 s (ROOM_PING_INTERVAL_MATCH_MS). Its peer must not wait for it for good.
+for (const [name, slots, bSlot] of [['1v1', ONE_V_ONE, 1], ['two humans and bots', TWO_HUMANS_2V2, 2]]) {
+  test(`RoomDO ${name}: a peer whose tab is hidden (pings only) is dropped once its match loop has been quiet TARGET_SILENT_MS; the one that waited is never dropped`, async () => {
+    const h = await makeRoom(slots);
+    const ws = await h.started();
+    const a = ws[0];
+    const b = ws[bSlot];
+    for (let i = 0; i < 3; i++) {
+      advance(10_000);
+      await loopFrame(h, a, 600 * (i + 1));
+      await loopFrame(h, b, 600 * (i + 1));
+    }
+    const lastLoopOfB = clock;
+    advance(4_000); // B's tab goes hidden; A's mesh finds it silent 2 s later and reports it
+    await h.send(a, { type: 'unreachable', slot: bSlot, atTick: 2000 });
+    let droppedAt = -1;
+    for (let t = 0; t < 600_000 && droppedAt < 0; t += 1_000) {
+      advance(1_000);
+      if (t % 15_000 === 0) await h.send(b, { type: 'ping', t0: t }); // the timer, not the loop
+      if (t % 10_000 === 0) await loopFrame(h, a, 2000); // A's loop runs (stalled, waiting for B)
+      if (h.ctx.storage.alarm !== null && h.ctx.storage.alarm <= clock) await h.alarm();
+      if (dropsOf(a).length > 0) droppedAt = clock;
+    }
+    assert.deepEqual(dropsOf(a), [[bSlot, 2000]], 'B is dropped at the tick A reported');
+    // (main has no TARGET_SILENT_MS: it drops B on A's first report)
+    assert.ok(droppedAt - lastLoopOfB <= (R.TARGET_SILENT_MS ?? 25_000) + 2_000, `A waited ${(droppedAt - lastLoopOfB) / 1000} s after B's loop stopped`);
+    // B comes back: its mesh finds the link A closed and reports A. A stays: B's word no longer counts.
+    await h.send(b, { type: 'unreachable', slot: 0, atTick: 1990 });
+    assert.deepEqual(dropsOf(a), [[bSlot, 2000]], 'A, who waited, is not dropped');
+    assert.equal(a.readyState, 1);
+  });
+}
 
 test('RoomDO: a closed target is still dropped on one report after the close grace; three or more humans still vote by majority', async () => {
   const h = await makeRoom(ONE_V_ONE);

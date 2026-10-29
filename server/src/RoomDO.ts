@@ -53,8 +53,9 @@
  *             the client's own fallback) -> 'drop' { slot, atTick: min(reported) } when a majority
  *             of the other live peers reported that slot, or when its own socket closed > 5 s ago
  *             (re-checked by an alarm). With one other live peer (1v1, two humans and bots) a lone
- *             report does not drop a target whose own room socket is open and talking (a message
- *             within TARGET_SILENT_MS): the room cannot tell which side broke the link, so the
+ *             report does not drop a target whose own room socket is open and whose match loop is
+ *             running (a 'ready' or 'hashReport' within TARGET_SILENT_MS: pings do not count, a
+ *             hidden tab keeps pinging): the room cannot tell which side broke the link, so the
  *             reporter cannot pick who leaves. When the target reports the reporter as well (a dead
  *             link both ways, both sockets alive) both are dropped, each at its reported tick; a
  *             target that goes quiet is dropped by the alarm re-check. A reporter's repeated report
@@ -150,10 +151,12 @@ export const DROP_LEAD_TICKS = 0;
 /** A slot whose socket closed this long ago is dropped on the first unreachable report. */
 export const CLOSE_GRACE_MS = 5_000;
 /**
- * A target whose room socket sent nothing for this long counts as silent (the clients ping every
- * 15 s and report hashes every 10 s during a match): one report then drops it (rt-4).
+ * A target whose match loop sent nothing for this long counts as silent: one report then drops it
+ * (rt-4). The loop's frames are 'ready' and 'hashReport', which P2PSession sends every
+ * HASH_REPORT_EVERY_MS (10 s) from its frame loop, also while it waits for a peer; a ping does
+ * not count (RoomClient's timer keeps pinging from a hidden tab whose loop has stopped).
  */
-export const TARGET_SILENT_MS = 35_000;
+export const TARGET_SILENT_MS = 25_000;
 /** 'unreachable' reports that change the room's state, per socket: a burst, then one per REPORT_REFILL_MS (rt-m2). */
 export const REPORT_BURST = 8;
 export const REPORT_REFILL_MS = 2_000;
@@ -260,7 +263,10 @@ interface Attachment {
   peerId: string;
   playerId: string;
   ready: boolean;
-  /** The last message of this socket (ms; refreshed in the attachment every SEEN_EVERY_MS): the target liveness of decideDrop. */
+  /**
+   * The last frame of this peer's match loop (ms: the admit, 'ready', a 'hashReport'; refreshed in
+   * the attachment every SEEN_EVERY_MS): the target liveness of decideDrop. Pings do not count.
+   */
   seenAt?: number;
 }
 
@@ -527,11 +533,6 @@ export class RoomDO extends DurableObject<Env> {
     if (!att || this.state.cur[att.slot] !== att.gen) return; // replaced / stale socket
     const now = Date.now();
     if (!this.takeToken(ws, now)) return this.kick(ws, 1008, 'rate', now);
-    // Talking: the drop vote sees this socket alive (kept in the attachment across hibernation).
-    if (att.seenAt === undefined || now - att.seenAt >= SEEN_EVERY_MS) {
-      att.seenAt = now;
-      ws.serializeAttachment(att);
-    }
     if (typeof message !== 'string') return; // the signaling protocol is JSON text; binary is ignored
     if (message.length > MAX_FRAME_CHARS) return this.kick(ws, 1009, 'frame size', now);
     let msg: unknown;
@@ -564,6 +565,7 @@ export class RoomDO extends DurableObject<Env> {
           return;
         }
         att.ready = true;
+        att.seenAt = now;
         ws.serializeAttachment(att);
         await this.maybeStart(now);
         return;
@@ -586,6 +588,11 @@ export class RoomDO extends DurableObject<Env> {
         const agree = isUint32(msg.agree) ? msg.agree : 0;
         const disagree = isUint32(msg.disagree) ? msg.disagree : 0;
         this.hashes.set(att.slot, { tick: msg.tick, hash: msg.hash, agree, disagree, at: now });
+        // The match loop runs: the drop vote sees this peer alive (kept in the attachment across hibernation).
+        if (att.seenAt === undefined || now - att.seenAt >= SEEN_EVERY_MS) {
+          att.seenAt = now;
+          ws.serializeAttachment(att);
+        }
         return;
       }
       default:
@@ -1050,7 +1057,7 @@ export class RoomDO extends DurableObject<Env> {
     return true;
   }
 
-  /** The slot's room socket is open and sent something within TARGET_SILENT_MS. */
+  /** The slot's room socket is open and its match loop sent a frame within TARGET_SILENT_MS. */
   private talking(slot: number, now: number): boolean {
     const ws = this.live[slot];
     if (ws === null) return false;
