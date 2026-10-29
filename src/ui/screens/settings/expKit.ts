@@ -8,6 +8,7 @@
  * The switch is the shell's NO │ SÍ.
  */
 import { h } from '../../dom';
+import { t } from '../../../i18n';
 import { onNavRepeat, onNavSide } from '../../nav';
 import type { PageItem, PageKit } from '../../../render/experimentalPage';
 import { setRow, toggleSwitch } from '../../components/rows';
@@ -28,8 +29,9 @@ export function experimentalKit(relayout: () => void, keypad?: (input: HTMLInput
   return {
     line: (className, text) => h('div', { class: className }, text ?? null),
     button: (className, text, onClick) => h('button', { type: 'button', class: className, tabIndex: -1, onclick: onClick }, text),
+    // The page's one field, the preset's name: its label for a screen reader and a TV's keypad.
     textInput: (className, maxLength, onCommit) => {
-      const input = h('input', { type: 'text', class: className, maxLength, spellcheck: false, autocomplete: 'off', enterKeyHint: 'done', 'data-nav': true, 'data-key': 'exp-name' });
+      const input = h('input', { type: 'text', class: className, maxLength, spellcheck: false, autocomplete: 'off', enterKeyHint: 'done', 'data-nav': true, 'data-key': 'exp-name', 'aria-label': t('rules.name') });
       input.addEventListener('change', () => onCommit(input.value));
       return input;
     },
