@@ -1,7 +1,9 @@
 /**
  * Edge Worker: HTTP control plane + WebSocket gate in front of the Durable Objects.
  *
- *   POST /api/guest   { name?, turnstileToken? }        -> GuestSession (24 h HS256 session)
+ *   POST /api/guest   { turnstileToken? }               -> GuestSession (24 h HS256 session). The name is the
+ *                       server's, 'Invitado 4821' from the player id (src/net/guestName.ts); a `name` sent is
+ *                       ignored
  *   POST /api/queue   { mode, kind?, p2pProtocol? }  Bearer session
  *                    -> long-poll <= 25 s: QueueResultP2p (kind 'p2p', the default:
  *                       a RoomDO signaling room, wsUrl ws(s)://host/room/<roomId>) or the phase 1 QueueResult
@@ -88,6 +90,7 @@ import type { RankedCheck } from './accountStore';
 import { normalizeCode } from './LobbyDirectoryDO';
 import { sanitizeLobbyName } from './LobbyDO';
 import { isRegion, REGIONS } from '../../src/net/account';
+import { guestNameOf } from '../../src/net/guestName';
 import type { LobbySummary, LobbyTicketAnswer, PopulationAnswer, RegionId } from '../../src/net/account';
 import { INTERNAL_HEADER, createSession, createTicket, internalSecret, randomHex, verifySession, verifyTicket } from './auth';
 import type { SessionClaims, TicketRole } from './auth';
@@ -378,7 +381,8 @@ async function guest(request: Request, env: Env): Promise<Response> {
   const blocked = await turnstileGate(request, env, body.turnstileToken);
   if (blocked !== null) return blocked;
   const playerId = randomHex(8);
-  const name = sanitizeName(body.name) ?? `Guest-${playerId.slice(0, 4)}`;
+  // The server names every guest ('Invitado 4821', from the id): a `name` in the body is ignored.
+  const name = guestNameOf(playerId);
   const s = await createSession(env.JWT_SECRET, playerId, name);
   const out: GuestSession = { playerId, name, session: s.token, expiresAt: s.expiresAt };
   return json(out);

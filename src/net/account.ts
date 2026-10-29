@@ -87,14 +87,15 @@ export interface AccountIssue {
 
 /**
  * Null when `name` is a valid username: 3-16 chars of ASCII letters, digits, '_', '-', '.', starting
- * with a letter or digit, not reserved, not 'guest-…'. Otherwise what is wrong with it.
+ * with a letter or digit, not reserved, not 'guest…', 'invitado…' (a guest's name is the server's
+ * 'Invitado 4821', src/net/guestName.ts) or 'bot…'. Otherwise what is wrong with it.
  */
 export function usernameIssue(name: unknown): AccountIssue | null {
   if (typeof name !== 'string') return { code: 'usernameMissing' };
   if (name.length < USERNAME_MIN || name.length > USERNAME_MAX) return { code: 'usernameLength', params: { min: USERNAME_MIN, max: USERNAME_MAX } };
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) return { code: 'usernameChars' };
   const k = usernameKey(name);
-  if (RESERVED.has(k) || k.startsWith('guest') || k.startsWith('bot')) return { code: 'usernameReserved' };
+  if (RESERVED.has(k) || k.startsWith('guest') || k.startsWith('invitado') || k.startsWith('bot')) return { code: 'usernameReserved' };
   return null;
 }
 

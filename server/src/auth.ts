@@ -12,6 +12,7 @@
  */
 import { isCarId } from '../../src/game/cosmetics';
 import type { CarId } from '../../src/game/cosmetics';
+import { guestNameOf } from '../../src/net/guestName';
 
 export const SESSION_TTL_SECONDS = 24 * 60 * 60;
 export const TICKET_TTL_SECONDS = 90;
@@ -160,6 +161,9 @@ export async function verifySession(secret: string, token: string, nowMs: number
   // An account's claims only, and only a car the catalog knows (one retired later, or a guest
   // session that carries one, drives the default car): dropped, never a refused session.
   if (c.car !== undefined && !(c.acct === 1 && isCarId(c.car))) delete c.car;
+  // A guest's name is the server's, from its id (src/net/guestName.ts): one a session from before
+  // that rule carries (a name the guest chose) is replaced here, the one place every route reads.
+  if (c.acct !== 1) c.name = guestNameOf(c.sub);
   if (c.since !== undefined && !(c.acct === 1 && typeof c.since === 'number' && Number.isFinite(c.since))) delete c.since;
   return c;
 }
