@@ -202,6 +202,10 @@ class FakeRoom {
     this.sent.push({ type: 'hashReport', tick, hash, agree, disagree });
     return true;
   }
+  requestTurn() {
+    this.sent.push({ type: 'turn' });
+    return true;
+  }
   serverToLocal(ms) {
     return ms - this.offset;
   }
@@ -246,6 +250,10 @@ class FakeMesh {
   }
   signalDropped(slot) {
     this.dropped.push(slot);
+  }
+  setIceServers(list) {
+    this.iceSet = list;
+    return list.some((s) => typeof s.credential === 'string');
   }
   handleSignal() {}
   allConnected() {
@@ -397,10 +405,11 @@ function makeSession() {
   const sim = new FakeSim();
   const game = makeGame(sim);
   const client = new FakeClient();
-  const env = { sim, game, client, room: null, mesh: null, engine: null, t: 5000 };
+  const env = { sim, game, client, room: null, mesh: null, engine: null, t: 5000, hidden: false };
   const session = new P2PSession(game, {
     client,
     now: () => env.t,
+    hidden: () => env.hidden,
     engineFactory: (s, n, humans, me, hooks, opts) => (env.engine = new FakeEngine(s, n, humans, me, hooks, opts)),
     roomFactory: (opts) => (env.room = new FakeRoom(opts)),
     meshFactory: (opts) => (env.mesh = new FakeMesh(opts)),
@@ -787,6 +796,77 @@ test('a dead peer link is reported to the room as unreachable at the current pre
   mesh.onPeerDead(1);
   assert.deepEqual(env.room.sent.at(-1), { type: 'unreachable', slot: 1, atTick: engine.tick });
   assert.equal(session.peersDead, 1);
+});
+
+/** A packet from `slot` acknowledging our inputs up to `ackTick` (the peer's ack: our seat's drop tick is that + 1). */
+function ackFrom(env, slot, ackTick) {
+  const out = new Uint8Array(P.INPUT_HDR + PACKED_INPUT_BYTES);
+  const len = P.encodeP2pInput(out, ackTick + 1, 1, ackTick, ackTick, new Int8Array(PACKED_INPUT_BYTES), 0);
+  env.mesh.onGame(slot, out.subarray(0, len));
+}
+
+/** A started 1v1 with a few hundred ms of play, its frame loop running every ~16 ms. */
+async function playing1v1() {
+  const env = await startedSession(SLOTS_1V1, 0);
+  for (let i = 0; i < 30; i++) {
+    env.t = env.startAtLocal + i * 16 + 1;
+    env.session.advance(0.016);
+  }
+  ackFrom(env, 1, 40);
+  return env;
+}
+
+test('a peer whose own frame loop stalled 3 s and then loses its link gives its own seat up (once), never reports the peer that kept playing', async () => {
+  const env = await playing1v1();
+  const { session, mesh, room } = env;
+  // The loop is held (a hitch, a tab switch): no advance() for 3 s; the peer found us silent and
+  // closed its link, whose close event arrives while we are still stalled.
+  env.t += 3_000;
+  mesh.onPeerDead(1);
+  const reports = room.sent.filter((m) => m.type === 'unreachable');
+  assert.deepEqual(reports, [{ type: 'unreachable', slot: 0, atTick: 41 }], 'our own slot, at the tick the peer acknowledged + 1');
+  // Another dead-link event changes nothing: one self-report.
+  mesh.onPeerDead(1);
+  assert.equal(room.sent.filter((m) => m.type === 'unreachable').length, 1);
+  assert.ok(session.log.lines().some((l) => /peerDead\.self/.test(l)));
+  // The room drops our seat: we leave the match as before.
+  room.onDrop(0, 41);
+  assert.deepEqual(env.game.log.at(-1), ['disconnected', STATUS.droppedMe]);
+});
+
+test('the link dying just after our stall ended (within SELF_STALL_RECENT_MS) is ours too; a stall long ago is not, and neither is a link that dies while we run', async () => {
+  const env = await playing1v1();
+  env.t += 2_500; // stalled, then resumed: the gap is seen by the next frame
+  env.session.advance(0.016);
+  env.t += SESSION.SELF_STALL_RECENT_MS - 500;
+  env.session.advance(0.016);
+  env.mesh.onPeerDead(1);
+  assert.deepEqual(env.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [0]);
+
+  const env2 = await playing1v1();
+  env2.t += 2_500;
+  env2.session.advance(0.016);
+  for (let i = 0; i < 300; i++) {
+    env2.t += 16;
+    env2.session.advance(0.016); // ~5 s of normal frames after the stall
+  }
+  env2.mesh.onPeerDead(1);
+  assert.deepEqual(env2.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [1], 'the peer is reported as before');
+
+  const env3 = await playing1v1();
+  env3.t += 16;
+  env3.session.advance(0.016);
+  env3.mesh.onPeerDead(1);
+  assert.deepEqual(env3.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [1], 'a running loop reports the peer');
+});
+
+test('a hidden page gives its own seat up when it loses a link; a self-report pending when the room socket dies ends the match', async () => {
+  const env = await playing1v1();
+  env.hidden = true;
+  env.mesh.onPeerDead(1);
+  assert.deepEqual(env.room.sent.filter((m) => m.type === 'unreachable').map((m) => m.slot), [0]);
+  env.room.onClose(1006, '');
+  assert.deepEqual(env.game.log.at(-1), ['disconnected', STATUS.lostRoom]);
 });
 
 test('confirmed-timeline hooks: countdown events, kickoff resets with seed + n, goal detection, the whistle ends the session', async () => {
@@ -2136,4 +2216,45 @@ test('a page from before the cars: room slots that carry `car` (src/net/cosmetic
   socket.onmessage({ data: JSON.stringify(welcomeFor(0, slots)) });
   assert.deepEqual(errors, []);
   assert.deepEqual(welcomes[0].slots.map((s) => s.car ?? null), ['tero', null, 'tero', null]);
+});
+
+// ---- TURN on demand (audit cost-2) -----------------------------------------------------------------
+
+test("P2P TURN: the mesh's first ICE trouble asks the room once ({ type: 'turn' }); the room's answer goes to the mesh", async () => {
+  const env = makeSession();
+  env.session.quickMatch('1v1');
+  env.client.queued[0].resolve({ kind: 'p2p', roomId: 'room1', ticket: 'TICKET', wsUrl: '/room/room1' });
+  await flush();
+  env.room.onWelcome(welcomeFor(0, SLOTS_1V1));
+  assert.equal(env.session.state, 'connecting');
+  assert.equal(typeof env.mesh.onIceTrouble, 'function');
+  env.mesh.onIceTrouble(1);
+  env.mesh.onIceTrouble(1);
+  assert.deepEqual(env.room.sent.filter((m) => m.type === 'turn'), [{ type: 'turn' }], 'asked once per room');
+  const list = [{ urls: ['stun:stun.cloudflare.com:3478'] }, { urls: 'turn:t', username: 'u', credential: 'c' }];
+  env.room.onTurn(list);
+  assert.deepEqual(env.mesh.iceSet, list);
+});
+
+test("RoomClient: requestTurn sends { type: 'turn' }; the room's 'turn' answer reaches onTurn (entries without urls dropped)", () => {
+  const sent = [];
+  let socket = null;
+  const client = new RoomClient({
+    now: () => 0,
+    pingIntervalMs: 1e9,
+    webSocketFactory: (url, protocols) => {
+      socket = { url, protocols, binaryType: 'blob', readyState: 0, protocol: '', onopen: null, onmessage: null, onclose: null, onerror: null, send: (d) => sent.push(JSON.parse(d)), close() {} };
+      return socket;
+    },
+  });
+  const got = [];
+  client.onTurn = (l) => got.push(l);
+  client.connect('/room/r1', 'TK');
+  socket.readyState = 1;
+  socket.onopen({});
+  assert.equal(client.requestTurn(), true);
+  assert.deepEqual(sent.at(-1), { type: 'turn' });
+  socket.onmessage({ data: JSON.stringify({ type: 'turn', iceServers: [{ urls: 'turn:x', username: 'u', credential: 'c' }, { nope: 1 }] }) });
+  assert.deepEqual(got, [[{ urls: 'turn:x', username: 'u', credential: 'c' }]]);
+  client.dispose();
 });

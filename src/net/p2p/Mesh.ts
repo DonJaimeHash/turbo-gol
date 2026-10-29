@@ -20,6 +20,12 @@
  *                 armLiveness() was called, i.e. the match started) or after ICE_DEAD_MS in
  *                 iceConnectionState failed / disconnected; one ICE restart is tried first. A dead
  *                 peer fires onPeerDead(slot) once; the room decides the drop (removePeer).
+ *   TURN          on demand (no TURN in the room's welcome): the first peer still not connected
+ *                 TURN_ASK_AFTER_MS after it was added, or whose ICE goes bad, fires
+ *                 onIceTrouble(slot) once; the session asks the room for TURN and hands the answer
+ *                 to setIceServers(list), which (when it has a TURN entry) reconfigures every
+ *                 connection and restarts ICE on the ones not connected yet, with a fresh
+ *                 ICE_DEAD_MS window.
  *   re-offer      the room relays a signal only to a slot that has a socket: an offer sent to a
  *                 peer that has not joined yet (staggered joins) is dropped, and so are its trickle
  *                 candidates. The offering (lower) side keeps its last offer and the candidates
@@ -59,6 +65,8 @@ export const ICE_RESTART_DISCONNECTED_MS = 2000;
 export const STATS_INTERVAL_MS = 1000;
 /** An offer without an answer for this long is re-sent (with its candidates). */
 export const OFFER_RETRY_MS = 2000;
+/** A peer not connected this long after it was added makes the mesh ask for TURN (onIceTrouble); direct links take ~1-2 s. */
+export const TURN_ASK_AFTER_MS = 3000;
 /** Offers (first + re-sends) per joined target before giving up on the timer (reoffer() starts over). */
 export const OFFER_MAX_TRIES = 3;
 
@@ -124,6 +132,8 @@ export interface PeerConnectionLike {
   setRemoteDescription(desc: SessionDescriptionLike): Promise<void>;
   addIceCandidate(candidate?: IceCandidateLike): Promise<void>;
   restartIce(): void;
+  /** New ICE servers (TURN on demand); absent in fakes that do not need it. */
+  setConfiguration?(config: { iceServers: IceServer[] }): void;
   getStats(): Promise<StatsReportLike>;
   close(): void;
 }
@@ -262,13 +272,18 @@ export class Mesh {
   onPeerConnected: ((slot: number) => void) | null = null;
   /** Fired once per peer when its link is given up (liveness / ICE). */
   onPeerDead: ((slot: number) => void) | null = null;
+  /** Fired once per peer that is not connecting well (TURN_ASK_AFTER_MS, or ICE gone bad): time to ask for TURN. */
+  onIceTrouble: ((slot: number) => void) | null = null;
 
   bytesIn = 0;
   bytesOut = 0;
   packetsIn = 0;
   packetsOut = 0;
 
-  private readonly iceServers: IceServer[];
+  private iceServers: IceServer[];
+  /** When each peer was added (the TURN_ASK_AFTER_MS check) and whether its trouble was told already. */
+  private readonly addedAt = new Float64Array(MAX_CARS);
+  private readonly troubled = new Uint8Array(MAX_CARS);
   private readonly signalOut: (to: number, data: SignalData) => void;
   private readonly factory: PeerConnectionFactory;
   private readonly now: () => number;
@@ -413,6 +428,8 @@ export class Mesh {
     this.restarted[i] = 0;
     this.iceBadSince[i] = -1;
     this.lastGameAt[i] = this.now();
+    this.addedAt[i] = this.lastGameAt[i];
+    this.troubled[i] = 0;
     this.rtt[i] = 0;
     this.cand[i] = PEER_CAND_NONE;
     this.offers[i] = null;
@@ -570,11 +587,41 @@ export class Mesh {
         this.markDead(i);
         continue;
       }
+      if (s === PEER_STATE_CONNECTING && now - this.addedAt[i] >= TURN_ASK_AFTER_MS) this.trouble(i);
       if (s === PEER_STATE_CONNECTING && this.offerAt[i] >= 0 && this.answered[i] === 0 && now - this.offerAt[i] >= OFFER_RETRY_MS) {
         this.resendOffer(i, now, 'no answer');
       }
       if (poll) this.pollStats(i, pc);
     }
+  }
+
+  /**
+   * The room's TURN answer: with a TURN entry in it (a credential), every connection takes the new
+   * servers and the ones not connected yet restart ICE with a fresh ICE_DEAD_MS window. A list
+   * without one (no TURN on this server, or refused) changes nothing. True when it was applied.
+   */
+  setIceServers(list: readonly IceServer[]): boolean {
+    if (this.closed || !list.some((s) => typeof s.credential === 'string' && s.credential.length > 0)) return false;
+    this.iceServers = list.slice();
+    const now = this.now();
+    for (let i = 0; i < this.n; i++) {
+      const pc = this.pcs[i];
+      const s = this.state[i];
+      if (pc === null || s === PEER_STATE_DROPPED || s === PEER_STATE_FAILED) continue;
+      try {
+        if (typeof pc.setConfiguration === 'function') pc.setConfiguration({ iceServers: this.iceServers });
+        if (s === PEER_STATE_CONNECTING) {
+          this.restarted[i] = 1;
+          this.iceBadSince[i] = -1;
+          this.addedAt[i] = now;
+          this.log.push('ice.turn', `${this.slots[i]} restart with TURN`);
+          pc.restartIce();
+        }
+      } catch (err) {
+        this.warn(this.slots[i], 'setConfiguration', err);
+      }
+    }
+    return true;
   }
 
   /** Close every connection (leaving the room). */
@@ -735,6 +782,14 @@ export class Mesh {
     if (this.onPeerConnected) this.onPeerConnected(this.slots[i]);
   }
 
+  /** Tell the session once that peer `i` is not connecting well (it asks the room for TURN). */
+  private trouble(i: number): void {
+    if (this.troubled[i] === 1) return;
+    this.troubled[i] = 1;
+    this.log.push('ice.trouble', `slot ${this.slots[i]}`);
+    if (this.onIceTrouble) this.onIceTrouble(this.slots[i]);
+  }
+
   private checkIce(i: number, pc: PeerConnectionLike, now: number): void {
     const s = this.state[i];
     if (s === PEER_STATE_DROPPED || s === PEER_STATE_FAILED) return;
@@ -744,6 +799,7 @@ export class Mesh {
       this.iceBadSince[i] = -1;
       return;
     }
+    this.trouble(i);
     if (this.iceBadSince[i] < 0) this.iceBadSince[i] = now;
     const since = now - this.iceBadSince[i];
     if (since > ICE_DEAD_MS) {

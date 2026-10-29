@@ -411,7 +411,7 @@ test('a two-human p2p room never goes to a node; a custom lobby never asks for a
   assert.equal((await h.join(A, 'p2p')).json.status, 'waiting');
   const r = await h.join(B, 'p2p');
   assert.equal(r.json.kind, 'p2p');
-  const custom = await h.call('/custom', { kind: 'server', mode: '1v1', members: [{ playerId: C, name: 'Carla', team: 0 }], matchLengthSeconds: 1200 });
+  const custom = await h.call('/custom', { kind: 'server', mode: '1v1', members: [{ playerId: C, name: 'Carla', team: 0, guest: false }], matchLengthSeconds: 1200 }); // signed in: a guest's server match is 300 s at most
   assert.equal(custom.status, 200);
   assert.equal(custom.json.results[C].wsUrl.startsWith('/ws/'), true);
   assert.equal(custom.json.results[C].node, undefined);

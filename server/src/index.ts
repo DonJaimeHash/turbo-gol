@@ -437,7 +437,8 @@ async function queue(request: Request, env: Env): Promise<Response> {
     method: 'POST',
     headers,
     // doDisabled: where no node can host now, the matchmaker refuses this queue as above (503).
-    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined, ...seatFields(session, now) }),
+    // guest / ip: the matchmaker's guest caps (one MatchDO match per guest session across the regions, per IPv6 /64).
+    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined, ...seatFields(session, now), ...(session.acct !== 1 ? { guest: true, ip: clientIp(request) } : {}) }),
   });
   if (!res.ok) return new Response(res.body, res);
   let result = (await res.json()) as AnyQueueResult;
@@ -549,7 +550,8 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
   const region = regionOf(request, env, b.region);
   const id = env.LOBBY.newUniqueId();
   const lobbyId = id.toString();
-  const alloc = await lobbyDir(env).fetch('https://lobbies/allocate', { method: 'POST', headers: await internalHeaders(env), body: JSON.stringify({ lobbyId }) });
+  // owner / ip: the directory caps live lobbies per session and per IPv6 /64 (429 too_many_lobbies).
+  const alloc = await lobbyDir(env).fetch('https://lobbies/allocate', { method: 'POST', headers: await internalHeaders(env), body: JSON.stringify({ lobbyId, owner: session.sub, ip: clientIp(request) }) });
   if (!alloc.ok) return new Response(alloc.body, alloc);
   const { code } = (await alloc.json()) as { code: string };
   const u = new URL(request.url);
