@@ -19,8 +19,12 @@ export function pageItemOf(el: Element | null): PageItem | null {
   return el === null ? null : (ITEMS.get(el) ?? null);
 }
 
-/** `relayout`: a row came or went (the focus it had goes back to the screen). */
-export function experimentalKit(relayout: () => void): PageKit {
+/**
+ * `relayout`: a row came or went (the focus it had goes back to the screen). `keypad`: the host's
+ * keypad on a field (a TV: RENAME's one OK opens it), true when it came up; else the field takes
+ * the focus with its text selected, for typing.
+ */
+export function experimentalKit(relayout: () => void, keypad?: (input: HTMLInputElement) => boolean): PageKit {
   return {
     line: (className, text) => h('div', { class: className }, text ?? null),
     button: (className, text, onClick) => h('button', { type: 'button', class: className, tabIndex: -1, onclick: onClick }, text),
@@ -55,5 +59,10 @@ export function experimentalKit(relayout: () => void): PageKit {
       });
     },
     relayout,
+    editText: (input) => {
+      if (keypad?.(input) === true) return;
+      input.focus();
+      input.select();
+    },
   };
 }

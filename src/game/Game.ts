@@ -1074,6 +1074,7 @@ export class Game implements P2PGameHooks {
         el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       },
       refocus: () => this.menu.refocus(),
+      keypad: (field) => this.menu.openKeypad(field),
       signIn: () => this.menu.open('profile'),
       language: () => openLanguagePicker(this.menu),
     });
@@ -1085,7 +1086,8 @@ export class Game implements P2PGameHooks {
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad, ui: this.settings.ui }) : null;
-    this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.onlineActive });
+    // Not over Ajustes (a capture there takes every key): the result waits until it closes.
+    this.rankedResults = new RankedResults({ accounts, menu: this.menu, onScreen: () => this.menu.visible && !this.onlineActive && this.menu.top()?.id !== 'settings' });
     accounts.subscribe(() => this.onAccountChange());
     this.experimental.subscribe(() => this.onExperimentalChange());
     this.experimental.onProblem = (p) => this.notify(experimentalProblemText(p));
@@ -1467,6 +1469,7 @@ export class Game implements P2PGameHooks {
       qualities: CARD_QUALITIES,
       qualityNote: this.renderer.tierReason === 'chosen' ? '' : t('settings.qualityAuto'),
       pending: this.pendingRestart,
+      liveMatch: this.onlineActive,
       experimental: this.experimentalOptions(),
       settings: this.settings,
       input: this.input,
