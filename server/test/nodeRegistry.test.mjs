@@ -1471,3 +1471,55 @@ test("the maintainers' inventory routes: grant, revoke and unfreeze go to Accoun
     `**ALERT** \`${actor}: grant pampero for account ${A} -> 404\``,
   ]);
 });
+
+// ---- the control socket under a flood of anonymous upgrades -----------------------------------------
+
+/** Open /nodes/connect from `ip` (the Worker's x-client-ip) and hand back the socket; nothing is answered yet. */
+async function upgrade(h, ip) {
+  const headers = { [INTERNAL_HEADER]: secret, Upgrade: 'websocket' };
+  if (ip) headers['x-client-ip'] = ip;
+  const res = await h.obj.fetch(new Request('https://nodes/nodes/connect', { headers }));
+  assert.equal(res.upgraded, true);
+  return h.ctx.sockets.at(-1);
+}
+
+/** The node answers the challenge its socket got. */
+async function logIn(h, ws, node) {
+  const challenge = ws.of('challenge')[0];
+  await h.obj.webSocketMessage(ws, JSON.stringify({ t: 'auth', nodeId: node.nodeId, sig: await sign(node.key, authMessage(node.nodeId, challenge.nonce)) }));
+}
+
+test('anonymous upgrades from one network churn their own sockets: a node between its challenge and its login is not pushed out', async () => {
+  const h = await boot(makeEnv());
+  const node = await registerNode(h);
+  const ws = await upgrade(h, '198.51.100.20');
+  answer(h, ws, node);
+  const flood = [];
+  for (let i = 1; i <= 100; i++) flood.push(await upgrade(h, `2001:db8:6:7::${i.toString(16)}`));
+  assert.equal(ws.closed, null, 'the node socket stays open');
+  await logIn(h, ws, node);
+  assert.equal(ws.of('welcome').length, 1, 'logged in after the flood');
+  assert.equal(flood.filter((w) => w.closed === null).length, D.PENDING_PER_ADDRESS, 'one /64 keeps PENDING_PER_ADDRESS sockets at most');
+  assert.deepEqual(flood[0].closed, { code: 1013, reason: 'busy' });
+  assert.ok(D.PENDING_UNKNOWN_MAX + D.PENDING_KNOWN_MAX < 64, 'the pools stay below the control plane cap (MAX_UNAUTHENTICATED)');
+});
+
+test('a node coming back from an address it logged in from keeps a slot, through a deploy, under a flood from many prefixes', async () => {
+  const env = makeEnv();
+  let h = await boot(env);
+  const node = await registerNode(h);
+  const first = await upgrade(h, '198.51.100.21');
+  await logIn(h, first, node);
+  assert.equal(first.of('welcome').length, 1);
+  first.close(1012, 'deploy');
+  h = await boot(env, new FakeCtx(h.ctx.db));
+  for (let i = 0; i < 60; i++) await upgrade(h, `2001:db8:${(0x100 + i).toString(16)}::1`);
+  const back = await upgrade(h, '198.51.100.21');
+  answer(h, back, node);
+  for (let i = 60; i < 160; i++) await upgrade(h, `2001:db8:${(0x100 + i).toString(16)}::1`);
+  assert.equal(back.closed, null, 'the returning node keeps its place');
+  const open = h.ctx.sockets.filter((w) => w.closed === null).length;
+  assert.ok(open <= D.PENDING_UNKNOWN_MAX + 1, `at most the unknown pool and the node (${open})`);
+  await logIn(h, back, node);
+  assert.equal(back.of('welcome').length, 1);
+});

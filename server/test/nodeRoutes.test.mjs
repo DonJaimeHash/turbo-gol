@@ -409,6 +409,24 @@ test('connect: an upgrade only (426), its 101 passed through as the object made 
   assert.equal((await req(env, 'GET', '/nodes/connect', { ip, headers: { Upgrade: 'websocket' } })).status, 429);
 });
 
+test('connect: the object hears the caller address (x-client-ip, a forged one overwritten); the limits are counted on the bindings, per /64 and per /48', async () => {
+  const env = makeEnv();
+  env.NODES.handler = () => new Response(null, { status: 101, webSocket: { fake: true } });
+  const ip = '2001:db8:77:1::9';
+  await req(env, 'GET', '/nodes/connect', { ip, headers: { Upgrade: 'websocket', 'x-client-ip': '1.2.3.4' } });
+  assert.equal(env.NODES.seen.at(-1).headers['x-client-ip'], ip);
+  const keys = [];
+  const refused = makeEnv({
+    RL_30: { limit: async ({ key }) => (keys.push(key), { success: key !== 'nodeConnect:2001:db8:77:2::/64' }) },
+    RL_1200: { limit: async ({ key }) => (keys.push(key), { success: key !== 'nodeConnectWide:2001:db8:78::/48' }) },
+  });
+  assert.notEqual((await req(refused, 'GET', '/nodes/connect', { ip: '2001:db8:77:1::9', headers: { Upgrade: 'websocket' } })).status, 429);
+  assert.equal((await req(refused, 'GET', '/nodes/connect', { ip: '2001:db8:77:2::9', headers: { Upgrade: 'websocket' } })).status, 429, 'over its /64');
+  assert.equal((await req(refused, 'GET', '/nodes/connect', { ip: '2001:db8:78:5::9', headers: { Upgrade: 'websocket' } })).status, 429, 'over its /48');
+  assert.equal(refused.NODES.seen.length, 1, 'the refused ones never reach the object');
+  assert.deepEqual(keys.slice(0, 2), ['nodeConnect:2001:db8:77:1::/64', 'nodeConnectWide:2001:db8:77::/48']);
+});
+
 test('replays: a 64-hex id; the node’s signed headers and the body go through; 413 past 16 MiB before the object; 60 uploads and 60 downloads a minute per address', async () => {
   const env = makeEnv();
   env.NODES.handler = async (r) => new RealResponse(JSON.stringify({ got: (await r.arrayBuffer()).byteLength }), { headers: { 'content-type': 'application/json' } });

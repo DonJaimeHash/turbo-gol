@@ -22,6 +22,7 @@
  *             set for a few hundred players behind it (1,200 a minute on the frequent routes,
  *             120 on the rare ones: signing in, creating a guest), and a route a person calls
  *             often is counted per session or account first.
+ *   wide      IPv4 /24, IPv6 /48 (widePrefix): the node control socket only, whose callers are servers.
  *
  * LIMITS (per minute; `edge` is the binding, i.e. the same count across the location's isolates)
  *
@@ -55,6 +56,8 @@
  *   GET  /api/leaderboard               leaderboardYou   account       60  RL_60    the account's own row: one AccountsDO call (cached 15 s)
  *                                       leaderboardNet   network     1200  RL_1200  the board itself is cached 30 s per isolate
  *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
+ *   GET  /nodes/connect                 nodeConnect      network       30  RL_30    a node's control socket: one per node, reconnects back off
+ *                                       nodeConnectWide  wide        1200  RL_1200  the same, per IPv6 /48 or IPv4 /24
  *
  * Limits kept where they are (in-isolate only, per minute unless stated; the object ones hold
  * across isolates because there is one object):
@@ -63,9 +66,12 @@
  *                      reads, car and claim 30 writes per account; TV start 10, poll 60, confirm 30
  *                      per /64 (tvCodes.ts ipKey), plus tvCodes' own live-code and failed-confirm caps
  *   AccountsDO         the sign-in lockouts per username and address (accountStore.ts)
- *   nodeRoutes.ts      register 5 an hour per /64, replays 60 PUT and 60 GET, status 60 per /64,
- *                      mine 30 and admin 30 per account, tokens 10 a day per account
- *   NodeRegistryDO     register 5 an hour per /64, tokens 10 a day per account
+ *   nodeRoutes.ts      register 5 an hour per /64, replays 60 PUT and 60 GET, status 60, the public
+ *                      replay list 60 and replay view 30 per /64, mine 30 and admin 30 per account,
+ *                      tokens 10 a day per account
+ *   NodeRegistryDO     register 5 an hour per /64, tokens 10 a day per account; control sockets
+ *                      still to log in: 8 per address, 16 per prefix, 40 from unknown addresses and
+ *                      20 from addresses a node logged in from (PENDING_*)
  *
  * A 429 is error 429 'rate_limited' everywhere. The Cloudflare zone may add a WAF rate-limiting
  * rule in front of all this (server/README.md, "Rate limits").
@@ -123,6 +129,8 @@ export const LIMITS = {
   leaderboardYou: { by: 'account', isolate: 60, edge: 'RL_60' },
   leaderboardNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  nodeConnect: { by: 'network', isolate: 30, edge: 'RL_30' },
+  nodeConnectWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
 } as const satisfies Record<string, LimitRule>;
 export type LimitName = keyof typeof LIMITS;
 

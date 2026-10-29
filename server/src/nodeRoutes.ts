@@ -15,8 +15,11 @@
  *                                     Every release route: 1,200 a minute per network (limits.ts nodeReleases)
  *   POST     /nodes/register          RegisterRequest -> the object, with the caller's address (x-client-ip); 413
  *                                     over 4 KB declared (the object reads at most that much of any body)
- *   GET      /nodes/connect           a node's control WebSocket -> the object; its 101 passes through as it is.
- *                                     No Origin check: the object's challenge is the gate
+ *   GET      /nodes/connect           a node's control WebSocket -> the object, with the caller's address
+ *                                     (x-client-ip: the object caps the sockets still to log in per address and
+ *                                     prefix, NodeRegistryDO.ts); its 101 passes through as it is. 30 a minute
+ *                                     per /64 and 1,200 per /48 (limits.ts nodeConnect, nodeConnectWide). No
+ *                                     Origin check: the object's challenge is the gate
  *   PUT|GET  /nodes/replays/<id>      a replay (id: 64 hex), signed by the node -> the object, which checks the
  *                                     signature before it reads the body; 413 over 16 MiB
  *   GET      /nodes/replays           the public replay list (anyone, guests included; src/net/replays.ts):
@@ -60,7 +63,7 @@ import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
 import { NODE_ROUTES, nodesStub } from './nodeApi';
-import { edgeCache } from './limits';
+import { edgeCache, widePrefix } from './limits';
 import type { Limiter } from './limits';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 import { PUBLIC_REPLAY_MAX_BYTES, publicReplay } from './replayIndex';
@@ -91,7 +94,6 @@ const LIMIT_REGISTER_PER_IP = REGISTER_PER_IP_PER_HOUR;
 const LIMIT_TOKENS_PER_ACCOUNT = TOKENS_PER_ACCOUNT_PER_DAY;
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
-const LIMIT_CONNECT_PER_IP = 30;
 /** A node uploads one replay per match: a full VPS ends a few matches a minute. */
 const LIMIT_REPLAY_PUT_PER_IP = 60;
 /** A verifier downloads one replay per job; counted apart from the uploads, which the same node makes. */
@@ -189,8 +191,9 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   }
   if (method === 'GET' && path === '/nodes/connect') {
     if (c.request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'upgrade_required');
-    if (c.limited('ncon:' + who, LIMIT_CONNECT_PER_IP)) return error(429, 'rate_limited');
-    return toRegistry(env, c.request, path);
+    // Counted across the location's isolates: anonymous upgrades must not crowd the object's login slots.
+    if ((await c.limit('nodeConnect', who)) || (await c.limit('nodeConnectWide', widePrefix(c.ip)))) return error(429, 'rate_limited');
+    return toRegistry(env, c.request, path, { 'x-client-ip': c.ip });
   }
   const replay = REPLAY_PATH.exec(path);
   if (replay && method === 'PUT') {

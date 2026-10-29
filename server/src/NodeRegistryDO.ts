@@ -6,7 +6,8 @@
  *
  *   POST /nodes/register         RegisterRequest (at most 4 KB read), x-client-ip -> RegisterAnswer (403 <code> when
  *                                refused); 5 per address per hour, an IPv6 address counted by its /64
- *   GET  /nodes/connect          WebSocket upgrade: a node's control link (Hibernation API)
+ *   GET  /nodes/connect          WebSocket upgrade: a node's control link (Hibernation API), x-client-ip; the
+ *                                sockets still to log in are capped per address, prefix and pool (PENDING_*)
  *   PUT  /nodes/replays/<id>     the hosting node's replay upload, signed (x-node-id / -ts / -sig, x-replay-sha256): the
  *                                signature is checked before the body (up to 16 MiB) is read
  *   GET  /nodes/replays/<id>     the replay, for the verifier node its job went to (signed the same way)
@@ -62,7 +63,7 @@
  * not raise them again, and the object can sleep while such a node stays away.
  */
 import { DurableObject } from 'cloudflare:workers';
-import { ControlPlane, NodeRefused } from '../../nodes/control-plane/controlPlane';
+import { ControlPlane, MAX_UNAUTHENTICATED, NodeRefused } from '../../nodes/control-plane/controlPlane';
 import type { NodeLink, PlaceRequest, Session } from '../../nodes/control-plane/controlPlane';
 import { Ledger } from '../../nodes/control-plane/ledger';
 import { Registry, TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
@@ -77,6 +78,7 @@ import { accountsCall } from './accountRoutes';
 import { checkInternal } from './auth';
 import { carriesPhysics, error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
+import { widePrefix } from './limits';
 import { AlertHook } from './nodeAlerts';
 import type { FetchFn } from './nodeAlerts';
 import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeApi';
@@ -122,6 +124,32 @@ const REASON_MAX = 200;
 const DRAINS_KEY = 'drains_asked';
 /** The meta row of the nodes whose offline ALERT went out (NodeWatch.offlineAlerted). */
 const OFFLINE_KEY = 'offline_alerted';
+/**
+ * Control sockets still to log in (the control plane closes the oldest of all of them past
+ * MAX_UNAUTHENTICATED, which a flood of anonymous upgrades would use to push every node out between
+ * its challenge and its login). The object keeps them below that cap itself, in two pools: the
+ * addresses a node logged in from lately (LOGIN_ADDRS_KEY: a node coming back, after a deploy all of
+ * them at once) and every other address. Past a cap the oldest socket of the same address, of the
+ * same prefix, or of the busiest prefix of the pool is closed (1013 'busy'): a flood churns its own
+ * sockets, and never takes a returning node's place.
+ */
+export const PENDING_PER_ADDRESS = 8;
+export const PENDING_PER_PREFIX = 16;
+export const PENDING_UNKNOWN_MAX = 40;
+export const PENDING_KNOWN_MAX = 20;
+/** The addresses (an IPv4 address, an IPv6 /64) nodes logged in from: at most this many, this long. */
+export const LOGIN_ADDRS_MAX = 256;
+export const LOGIN_ADDR_TTL_MS = 30 * DAY_MS;
+/** Their meta row: [address, last login (ms)] pairs, rewritten at most hourly per address. */
+const LOGIN_ADDRS_KEY = 'login_addrs';
+if (PENDING_UNKNOWN_MAX + PENDING_KNOWN_MAX >= MAX_UNAUTHENTICATED) throw new Error('the pending pools must stay below the control plane cap');
+
+/** Where a socket still to log in came from (x-client-ip), and whether a node logged in from there lately. */
+interface Pending {
+  addr: string;
+  wide: string;
+  known: boolean;
+}
 
 /** NODE_CONTROL_PUBLIC_KEY is the public half of NODE_CONTROL_PRIVATE_KEY: what one signs, the other verifies. */
 export async function controlKeysMatch(privateKey: string, publicKey: string): Promise<boolean> {
@@ -261,6 +289,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private drainAgain = false;
   /** Outbox rows already reported as a day old (once per row and process). */
   private readonly lateRows = new Set<number>();
+  /** The sockets still to log in, oldest first, and where each came from. */
+  private readonly pending = new Map<WebSocket, Pending>();
+  /** The addresses nodes logged in from (limitKey) and when, oldest first; kept in meta. */
+  private loginAddrs = new Map<string, number>();
+  private lastBusyLog = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -315,6 +348,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
       const rows = store.load(Date.now());
       this.drainAsked = drainsOf(store.meta(DRAINS_KEY));
       this.offlineRow = store.meta(OFFLINE_KEY) ?? '[]';
+      this.loginAddrs = loginAddrsOf(store.meta(LOGIN_ADDRS_KEY), Date.now());
       this.watch = new NodeWatch(idsOf(this.offlineRow));
       // Each of the registry's ALERTs is an account's action: a token or a node of a trusted operator.
       const audit = (m: string) => this.audit(m);
@@ -418,6 +452,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
    * stalled link, after its 4408) reaches the control plane, which only counts it for the log.
    */
   private gone(ws: WebSocket): void {
+    this.pending.delete(ws);
     const s = this.sessions.get(ws);
     if (s && !s.closed) this.cp?.onClose(s);
   }
@@ -433,6 +468,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (message.length > MAX_FRAME_CHARS) return this.link(ws).close(1009, 'frame too big');
     // It never throws for what a node sends; a store that fails on a report rejects (no ack: the node sends it again).
     await cp.onMessage(s, message).catch((e: unknown) => this.log(`node message failed: ${String(e)}`));
+    const p = this.pending.get(ws);
+    if (p && s.nodeId !== null && !s.closed) {
+      this.pending.delete(ws);
+      this.loggedInFrom(p.addr);
+    }
     if (s.nodeId !== null && !s.closed && !this.attached.has(ws)) {
       // Logged in: a wake after a hibernation adopts the socket from this, with no new challenge.
       ws.serializeAttachment({ nodeId: s.nodeId });
@@ -657,14 +697,78 @@ export class NodeRegistryDO extends DurableObject<Env> {
 
   private async accept(request: Request, cp: ControlPlane): Promise<Response> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'upgrade_required');
+    // The Worker sets x-client-ip (nodeRoutes.ts); without it the socket counts as one unknown address.
+    const ip = request.headers.get('x-client-ip');
+    const addr = ip ? limitKey(ip) : 'unknown';
+    const where: Pending = { addr, wide: ip ? widePrefix(ip) : 'unknown', known: ip !== null && this.loginAddrs.has(addr) };
+    this.makeRoom(where);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
-    // The challenge goes out now; the socket is a session from here (MAX_UNAUTHENTICATED caps those still to log in).
+    this.pending.set(server, where);
+    // The challenge goes out now; the socket is a session from here (makeRoom kept it under MAX_UNAUTHENTICATED).
     this.sessions.set(server, cp.open(this.link(server)));
     await this.ensureAlarm();
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * Room for one more socket still to log in from `w`: past a cap (PENDING_*), the oldest such socket
+   * of the same address, of the same prefix, or of the busiest prefix of its pool is closed.
+   */
+  private makeRoom(w: Pending): void {
+    const count = (f: (p: Pending) => boolean) => {
+      let n = 0;
+      for (const p of this.pending.values()) if (f(p)) n++;
+      return n;
+    };
+    const closeOldest = (why: string, f: (p: Pending) => boolean) => {
+      for (const [ws, p] of this.pending) {
+        if (!f(p)) continue;
+        const now = Date.now();
+        if (now - this.lastBusyLog >= 60_000) {
+          this.lastBusyLog = now;
+          this.log(`control sockets still to log in: ${why} full, closing the oldest (${this.pending.size} waiting)`);
+        }
+        this.link(ws).close(1013, 'busy');
+        return;
+      }
+    };
+    if (count((p) => p.addr === w.addr) >= PENDING_PER_ADDRESS) closeOldest('one address', (p) => p.addr === w.addr);
+    if (count((p) => p.wide === w.wide) >= PENDING_PER_PREFIX) closeOldest('one prefix', (p) => p.wide === w.wide);
+    if (w.known) {
+      if (count((p) => p.known) >= PENDING_KNOWN_MAX) closeOldest('the returning nodes', (p) => p.known);
+      return;
+    }
+    if (count((p) => !p.known) < PENDING_UNKNOWN_MAX) return;
+    const per = new Map<string, number>();
+    for (const p of this.pending.values()) if (!p.known) per.set(p.wide, (per.get(p.wide) ?? 0) + 1);
+    let busiest = '';
+    let most = 0;
+    for (const [k, n] of per) {
+      if (n > most) {
+        busiest = k;
+        most = n;
+      }
+    }
+    closeOldest('the unknown addresses', (p) => !p.known && p.wide === busiest);
+  }
+
+  /** A node logged in from `addr`: its next sockets from there take the returning nodes' pool (kept in meta, at most hourly per address). */
+  private loggedInFrom(addr: string): void {
+    if (addr === 'unknown') return;
+    const now = Date.now();
+    const last = this.loginAddrs.get(addr);
+    this.loginAddrs.delete(addr);
+    this.loginAddrs.set(addr, now);
+    for (const [k, at] of this.loginAddrs) if (now - at > LOGIN_ADDR_TTL_MS || this.loginAddrs.size > LOGIN_ADDRS_MAX) this.loginAddrs.delete(k);
+    if (last !== undefined && now - last < HOUR_MS) return;
+    try {
+      this.store?.setMeta(LOGIN_ADDRS_KEY, JSON.stringify([...this.loginAddrs]));
+    } catch (e) {
+      this.log(`${LOGIN_ADDRS_KEY} not written: ${String(e)}`);
+    }
   }
 
   private async register(request: Request, cp: ControlPlane, env: NodesEnv): Promise<Response> {
@@ -1035,6 +1139,22 @@ function drainsOf(v: string | null): Map<string, string | null> {
   if (typeof o === 'object' && o !== null) {
     for (const [k, b] of Object.entries(o)) if (b === null || typeof b === 'string') out.set(k, b);
   }
+  return out;
+}
+
+/** The login_addrs meta row ([address, ms] pairs), the ones still within LOGIN_ADDR_TTL_MS, oldest first; empty when it does not read. */
+function loginAddrsOf(v: string | null, now: number): Map<string, number> {
+  const out = new Map<string, number>();
+  let o: unknown = null;
+  try {
+    o = v === null ? null : JSON.parse(v);
+  } catch {
+    /* none */
+  }
+  if (!Array.isArray(o)) return out;
+  const pairs = o.filter((x): x is [string, number] => Array.isArray(x) && typeof x[0] === 'string' && typeof x[1] === 'number' && now - x[1] <= LOGIN_ADDR_TTL_MS);
+  pairs.sort((a, b) => a[1] - b[1]);
+  for (const [k, at] of pairs.slice(-LOGIN_ADDRS_MAX)) out.set(k, at);
   return out;
 }
 
