@@ -67,6 +67,15 @@
  *                                                                                    calls a minute (login makes two)
  *   POST /api/auth/password             password         account       10  RL_10    a PBKDF2 and an AccountsDO write
  *   POST /api/auth/recovery-codes       recoveryCodes    account       10  RL_10    an AccountsDO write
+ *   POST /api/auth/reauth               reauth           account       10  RL_10    PERFIL's "confirm it's you" (sec/account-takeover): a
+ *                                                                                    /me read, a PBKDF2 and an AccountsDO write each
+ *   POST /api/auth/unlink               unlink           account       10  RL_10    an AccountsDO write (sec/account-takeover)
+ *   GET  /api/auth/sessions             sessions         account       30  RL_30    the devices list, one device's sign-out and every
+ *   POST /api/auth/sessions/revoke                                                   device's (sec/account-takeover): one AccountsDO call
+ *   POST /api/auth/sessions/revoke-all                                               each, one count for the three
+ *   POST /api/auth/tv/info              tvInfo           account       30  RL_30    where a TV is before CONFIRMAR (sec/account-takeover):
+ *                                                                                    one AccountsDO call; a wrong code counts as a failed
+ *                                                                                    confirm there too
  *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
  *                                       meNet            network     1200  RL_1200
  *   GET  /api/ranked/result             rankedResult     account       60  RL_60    polled every 1-3 s for two minutes after a ranked match
@@ -153,6 +162,10 @@ export const LIMITS = {
   signInSite: { by: 'site', isolate: 600, edge: 'RL_600' },
   password: { by: 'account', isolate: 10, edge: 'RL_10' },
   recoveryCodes: { by: 'account', isolate: 10, edge: 'RL_10' },
+  reauth: { by: 'account', isolate: 10, edge: 'RL_10' },
+  unlink: { by: 'account', isolate: 10, edge: 'RL_10' },
+  sessions: { by: 'account', isolate: 30, edge: 'RL_30' },
+  tvInfo: { by: 'account', isolate: 30, edge: 'RL_30' },
   me: { by: 'account', isolate: 60, edge: 'RL_60' },
   meNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   rankedResult: { by: 'account', isolate: 60, edge: 'RL_60' },
@@ -186,6 +199,15 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['password'];
       case '/api/auth/recovery-codes':
         return ['recoveryCodes'];
+      case '/api/auth/reauth':
+        return ['reauth'];
+      case '/api/auth/unlink':
+        return ['unlink'];
+      case '/api/auth/sessions/revoke':
+      case '/api/auth/sessions/revoke-all':
+        return ['sessions'];
+      case '/api/auth/tv/info':
+        return ['tvInfo'];
     }
     return [];
   }
@@ -193,6 +215,7 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
   if (path === '/api/me') return ['me', 'meNet'];
   if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
+  if (path === '/api/auth/sessions') return ['sessions'];
   const o = /^\/api\/auth\/oauth\/(?:google|discord)\/(start|callback)$/.exec(path);
   if (o) return [o[1] === 'start' ? 'oauthStart' : 'oauthCallback', 'signInSite'];
   return [];
