@@ -145,14 +145,15 @@ const FIRST = { 'data-fit-give': '1' };
  * The points pill (plan PR 8): "≡ 0 server points" on GARAJE and PERFIL, a guest's 0 too, last
  * before the chip (none in a phone's upright bar: GARAJE's points line). Information only (GARAJE's
  * points card and its guide say the rest), so no focus stop; in a crowded bar its words go first,
- * down to the glyph and the number.
+ * then the whole pill with the other pills' words (3).
  */
 export class PointsPill {
   readonly el: HTMLElement;
   private key = '';
 
   constructor() {
-    this.el = h('span.mn-pill.mn-pill-points', { hidden: true });
+    // Still too crowded without its words (a TV's hint bar, a large interface size), it goes with the others' words.
+    this.el = h('span.mn-pill.mn-pill-points', { hidden: true, ...WORDS });
   }
 
   /** Show `points` (formatted; null: hidden); false (and nothing written) when the pill already shows it. */
