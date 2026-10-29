@@ -71,6 +71,7 @@
     { "name": "RL_30", "namespace_id": "7330", "simple": { "limit": 30, "period": 60 } },
     { "name": "RL_60", "namespace_id": "7360", "simple": { "limit": 60, "period": 60 } },
     { "name": "RL_120", "namespace_id": "7312", "simple": { "limit": 120, "period": 60 } },
+    { "name": "RL_600", "namespace_id": "7313", "simple": { "limit": 600, "period": 60 } },
     { "name": "RL_1200", "namespace_id": "7311", "simple": { "limit": 1200, "period": 60 } }
   ],
   "vars": {

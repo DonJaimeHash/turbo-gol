@@ -91,6 +91,7 @@ export interface Env {
   RL_30?: RateLimit;
   RL_60?: RateLimit;
   RL_120?: RateLimit;
+  RL_600?: RateLimit;
   RL_1200?: RateLimit;
 }
 

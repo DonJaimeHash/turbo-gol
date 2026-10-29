@@ -263,13 +263,78 @@ test('logout and refresh: limited per network before the object (the binding ref
   assert.deepEqual(env.ACCOUNTS.calls, []);
 });
 
+let sites = 0;
+/** A fresh IPv6 /48 (apart from net6's), and the base of a /64 `n` in it. */
+const site48 = () => {
+  const s = `2001:470:${(++sites).toString(16)}`;
+  return (n) => `${s}:${n.toString(16)}`;
+};
+const rand = (enc) => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString(enc);
+
+test('the site of an address: an IPv6 /48; IPv4, IPv4-mapped and local addresses have none (their network rule counts them)', async () => {
+  const { sitePrefix } = await import('../src/limits.ts');
+  assert.equal(sitePrefix('2001:470:abcd:5::1'), '2001:470:abcd::/48');
+  assert.equal(sitePrefix('2001:0470:ABCD:ffff:1:2:3:4'), '2001:470:abcd::/48');
+  assert.equal(sitePrefix('2001:470::1'), '2001:470:0::/48');
+  for (const ip of ['100.64.1.9', '::ffff:100.64.1.9', 'local', '']) assert.equal(sitePrefix(ip), null, ip);
+});
+
+test('logout and refresh: the /64s of one /48 share 1,200 a minute, so rotating them no longer drives the AccountsDO without limit', async () => {
+  for (const path of ['/api/auth/logout', '/api/auth/refresh']) {
+    const env = makeEnv({ RL_1200: fakeBinding(1200) });
+    const net = site48();
+    const st = {};
+    // 50 /64s x 30: each /64 far below its own 1,200; a fresh refresh-token-shaped cookie each time.
+    for (let n = 1; n <= 50; n++) {
+      for (let i = 1; i <= 30; i++) {
+        const res = await req(env, 'POST', path, { ip: `${net(n)}::${i.toString(16)}`, headers: { Cookie: '__Host-tg_rt=' + rand('base64url') } });
+        st[res.status === 429 ? 'limited' : 'served'] = (st[res.status === 429 ? 'limited' : 'served'] ?? 0) + 1;
+      }
+    }
+    assert.deepEqual(st, { served: 1200, limited: 300 }, path);
+    assert.equal(env.ACCOUNTS.calls.length, 1200, path + ': AccountsDO calls');
+    assert.ok(env.RL_1200.keys.includes((path.endsWith('logout') ? 'logoutSite:' : 'refreshSite:') + net(1).split(':').slice(0, 3).join(':') + '::/48'), 'counted by the binding too');
+    // Another /48 is another site.
+    assert.notEqual((await req(env, 'POST', path, { ip: `${site48()(1)}::1`, headers: { Cookie: '__Host-tg_rt=' + rand('base64url') } })).status, 429);
+  }
+});
+
+test('the sign-in routes of one /48 share 600 a minute (login, register, recover, OAuth start and callback together); IPv4 is not counted by the site', async () => {
+  const env = makeEnv({ DISCORD_CLIENT_ID: 'cid', DISCORD_CLIENT_SECRET: 'csecret', RL_120: fakeBinding(120), RL_600: fakeBinding(600) });
+  const net = site48();
+  const key = () => rand('hex');
+  const calls = [
+    (ip) => req(env, 'POST', '/api/auth/login', { ip, body: { username: 'kid' + key().slice(0, 6), password: key() } }),
+    (ip) => req(env, 'GET', '/api/auth/oauth/discord/start', { ip }),
+    (ip) => req(env, 'GET', '/api/auth/oauth/discord/callback?code=x&state=y', { ip }),
+    // These two hash a new password each (PBKDF2): a few per /64 keep the test quick.
+    (ip) => req(env, 'POST', '/api/auth/register', { ip, body: { username: 'kid' + key().slice(0, 6), password: key() } }),
+    (ip) => req(env, 'POST', '/api/auth/recover', { ip, body: { username: 'kid' + key().slice(0, 6), code: 'abcd-efgh-ijkl', password: key() } }),
+  ];
+  let served = 0;
+  let limited = 0;
+  // 10 /64s x 70 (two sign-ups, two recoveries, the rest logins and OAuth): each /64 well below
+  // its own 120 per route.
+  for (let n = 1; n <= 10; n++) {
+    for (let i = 1; i <= 70; i++) {
+      const route = i === 10 || i === 20 ? 3 : i === 30 || i === 40 ? 4 : i % 3;
+      const res = await calls[route](`${net(n)}::${i.toString(16)}`);
+      if (res.status === 429) limited++;
+      else served++;
+    }
+  }
+  assert.deepEqual({ served, limited }, { served: 600, limited: 100 });
+  const school = ip4();
+  for (let i = 0; i < 5; i++) await calls[i](school);
+  assert.ok(!env.RL_600.keys.some((k) => k.includes(school)), 'an IPv4 address has no site');
+});
+
 test("a school behind one IPv4 address: 40 page loads, 20 sign-ins and 10 recoveries in a minute are all served (the table's windows never add to accountRoutes' own)", async () => {
   // accountRoutes.ts keeps main's 'refresh:' / 'login:' / 'recover:' + address in-isolate limits
   // (60, 30, 10); the table's rules of the same name, keyed by the same IPv4 address, must not
   // count into those windows too (that halved them: 30, 15 and 5).
   const env = makeEnv({ RL_120: fakeBinding(120), RL_1200: fakeBinding(1200) });
   const school = ip4();
-  const rand = (enc) => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString(enc);
   const key = () => rand('hex');
   const tally = {};
   const run = async (label, n, path, body) => {

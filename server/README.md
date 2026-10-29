@@ -94,7 +94,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `NODE_TRUSTED_OPERATORS` | secret, optional | the project's account ids, comma-separated: their nodes are trusted (at most 2 each) and only they create node tokens |
 | `NODES_PUBLIC_BASE` | var | the origin the nodes and their installers reach `/nodes/*` at (`https://turbo-gol.com`) |
 | `NODE_ALERT_WEBHOOK` | secret, optional | the webhook URL of a staff-only Discord channel: every `ALERT` line of the node control plane is posted there too (see "Community nodes"); unset = only the logs |
-| `RL_10`, `RL_30`, `RL_60`, `RL_120`, `RL_1200` | Workers Rate Limiting (`ratelimits` in `wrangler.jsonc`) | the counters behind `src/limits.ts`'s table, each named after its limit per 60 s; they count per Cloudflare location across all its isolates (approximately). `namespace_id` must be unique in the Cloudflare account; `wrangler dev` simulates them. Without them only the in-isolate counts apply |
+| `RL_10`, `RL_30`, `RL_60`, `RL_120`, `RL_600`, `RL_1200` | Workers Rate Limiting (`ratelimits` in `wrangler.jsonc`) | the counters behind `src/limits.ts`'s table, each named after its limit per 60 s; they count per Cloudflare location across all its isolates (approximately). `namespace_id` must be unique in the Cloudflare account; `wrangler dev` simulates them. Without them only the in-isolate counts apply |
 | `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws`, `/room`, `/lobby` and `/nodes` it still receives |
 
 ## HTTP / WebSocket API
@@ -390,7 +390,10 @@ one /64), the per-network limits are set for a crowd: 1,200 a minute on the freq
 a new guest. The account routes that call the single AccountsDO are limited before the call
 (`src/index.ts` with `limits.ts` `accountGate`): `/api/me`, `/api/ranked/result` and the leaderboard's
 own row 60 a minute per account (and 1,200 per network), password and recovery codes 10, logout
-and refresh 1,200 per network; logout and refresh never ask the object about a cookie that is not
+and refresh 1,200 per network. An IPv6 address is also counted by its /48 on those anonymous
+routes (one machine can source a whole /48 of /64s): logout and refresh 1,200 a minute each, and
+the five sign-in routes (login, register, recover, OAuth start and callback) 600 together, so a
+/48 gets no more than one /64 already had; IPv4 addresses are not counted by it. Logout and refresh never ask the object about a cookie that is not
 a refresh token's shape, and the leaderboard's own row is cached 15 s per account. Inside
 `src/accountRoutes.ts` main's own in-isolate limits per raw address still run after the gate:
 refresh 60, login 30, register 5, recover 10 and OAuth start 20 a minute. For a crowd behind one

@@ -25,6 +25,12 @@
  *             set for a few hundred players behind it (1,200 a minute on the frequent routes,
  *             120 on the rare ones: signing in, creating a guest), and a route a person calls
  *             often is counted per session or account first.
+ *   site      an IPv6 address's /48 (sitePrefix): one site or one customer's whole allocation,
+ *             which a single machine can source 65,536 /64s from (a tunnel broker's free /48).
+ *             An IPv4 address is not counted by it (null): its network rule already counts the
+ *             whole address, and a /24 would count several schools or CGNAT addresses as one.
+ *             The anonymous routes into the single AccountsDO carry one, so rotating /64s
+ *             gets one machine no more than one /64 already had.
  *   wide      IPv4 /24, IPv6 /48 (widePrefix): the node control socket only, whose callers are servers.
  *
  * LIMITS (per minute; `edge` is the binding, i.e. the same count across the location's isolates)
@@ -43,13 +49,18 @@
  *   GET  /api/lobbies, /api/lobbies/peek lobbyList       network     1200  -        served from a 3 s cache per isolate
  *   GET  /api/population                population       network     1200  -        cached 5 s per isolate; every menu asks every 10 s
  *   POST /api/auth/logout               logout           network     1200  RL_1200  no session: the cookie is the only key (one AccountsDO call)
+ *                                       logoutSite       site        1200  RL_1200
  *   POST /api/auth/refresh              refresh          network     1200  RL_1200  every page load and every hour of an account
+ *                                       refreshSite      site        1200  RL_1200
  *   POST /api/auth/login                login            network      120  RL_120   two AccountsDO calls and a PBKDF2 each
  *   POST /api/auth/register             register         network      120  RL_120
  *   POST /api/auth/recover              recover          network      120  RL_120
  *   GET  /api/auth/oauth/<p>/start      oauthStart       network      120  RL_120
  *   GET  /api/auth/oauth/<p>/callback   oauthCallback    network      120  RL_120   a token request to Google or Discord each (its state is
  *                                                                                    single-use too: firstUse)
+ *     the five above, together          signInSite       site         600  RL_600   one /48's sign-ins: no more than one /64's five rules
+ *                                                                                    add up to (5 x 120), so at most ~1,200 AccountsDO
+ *                                                                                    calls a minute (login makes two)
  *   POST /api/auth/password             password         account       10  RL_10    a PBKDF2 and an AccountsDO write
  *   POST /api/auth/recovery-codes       recoveryCodes    account       10  RL_10    an AccountsDO write
  *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
@@ -96,11 +107,12 @@ export const EDGE_BINDINGS = {
   RL_30: { limit: 30, period: 60 },
   RL_60: { limit: 60, period: 60 },
   RL_120: { limit: 120, period: 60 },
+  RL_600: { limit: 600, period: 60 },
   RL_1200: { limit: 1200, period: 60 },
 } as const;
 export type EdgeBinding = keyof typeof EDGE_BINDINGS;
 
-export type LimitSubject = 'session' | 'account' | 'network' | 'wide';
+export type LimitSubject = 'session' | 'account' | 'network' | 'site' | 'wide';
 
 export interface LimitRule {
   by: LimitSubject;
@@ -125,12 +137,15 @@ export const LIMITS = {
   lobbyList: { by: 'network', isolate: 1200 },
   population: { by: 'network', isolate: 1200 },
   logout: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  logoutSite: { by: 'site', isolate: 1200, edge: 'RL_1200' },
   refresh: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  refreshSite: { by: 'site', isolate: 1200, edge: 'RL_1200' },
   login: { by: 'network', isolate: 120, edge: 'RL_120' },
   register: { by: 'network', isolate: 120, edge: 'RL_120' },
   recover: { by: 'network', isolate: 120, edge: 'RL_120' },
   oauthStart: { by: 'network', isolate: 120, edge: 'RL_120' },
   oauthCallback: { by: 'network', isolate: 120, edge: 'RL_120' },
+  signInSite: { by: 'site', isolate: 600, edge: 'RL_600' },
   password: { by: 'account', isolate: 10, edge: 'RL_10' },
   recoveryCodes: { by: 'account', isolate: 10, edge: 'RL_10' },
   me: { by: 'account', isolate: 60, edge: 'RL_60' },
@@ -153,15 +168,15 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
   if (method === 'POST') {
     switch (path) {
       case '/api/auth/logout':
-        return ['logout'];
+        return ['logout', 'logoutSite'];
       case '/api/auth/refresh':
-        return ['refresh'];
+        return ['refresh', 'refreshSite'];
       case '/api/auth/login':
-        return ['login'];
+        return ['login', 'signInSite'];
       case '/api/auth/register':
-        return ['register'];
+        return ['register', 'signInSite'];
       case '/api/auth/recover':
-        return ['recover'];
+        return ['recover', 'signInSite'];
       case '/api/auth/password':
         return ['password'];
       case '/api/auth/recovery-codes':
@@ -174,7 +189,7 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
   if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
   const o = /^\/api\/auth\/oauth\/(?:google|discord)\/(start|callback)$/.exec(path);
-  if (o) return [o[1] === 'start' ? 'oauthStart' : 'oauthCallback'];
+  if (o) return [o[1] === 'start' ? 'oauthStart' : 'oauthCallback', 'signInSite'];
   return [];
 }
 
@@ -198,9 +213,16 @@ export function widePrefix(ip: string): string {
   return v4 ? `${v4[1]}.${v4[2]}.${v4[3]}.0/24` : ip;
 }
 
+/** The site of an IPv6 address, its /48; null for IPv4 (and IPv4-mapped) addresses and 'local'. */
+export function sitePrefix(ip: string): string | null {
+  const v6 = ipv6Groups(ip);
+  return v6 && v6.length === 8 ? v6.slice(0, 3).join(':') + '::/48' : null;
+}
+
 /** What each kind of rule counts for one request (null: the rule does not apply to it). */
 export interface Subjects {
   network: string;
+  site: string | null;
   wide: string;
   session: string | null;
   account: string | null;
@@ -212,7 +234,7 @@ export function clientIp(request: Request): string {
 }
 
 export function subjectsOf(ip: string, session: SessionClaims | null): Subjects {
-  return { network: limitKey(ip), wide: widePrefix(ip), session: session?.sub ?? null, account: session?.acct === 1 ? session.sub : null };
+  return { network: limitKey(ip), site: sitePrefix(ip), wide: widePrefix(ip), session: session?.sub ?? null, account: session?.acct === 1 ? session.sub : null };
 }
 
 // ---- the counters ----------------------------------------------------------------------------------
