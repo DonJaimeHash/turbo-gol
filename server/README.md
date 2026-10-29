@@ -391,7 +391,12 @@ a new guest. The account routes that call the single AccountsDO are limited befo
 (`src/index.ts` with `limits.ts` `accountGate`): `/api/me`, `/api/ranked/result` and the leaderboard's
 own row 60 a minute per account (and 1,200 per network), password and recovery codes 10, logout
 and refresh 1,200 per network; logout and refresh never ask the object about a cookie that is not
-a refresh token's shape, and the leaderboard's own row is cached 15 s per account. The binding is approximate and per location, not one global count: a determined
+a refresh token's shape, and the leaderboard's own row is cached 15 s per account. Inside
+`src/accountRoutes.ts` main's own in-isolate limits per raw address still run after the gate:
+refresh 60, login 30, register 5, recover 10 and OAuth start 20 a minute. For a crowd behind one
+IPv4 address (a school, a CGNAT) those are the ones that bind, not the 1,200 and 120 of the
+table; over IPv6 each device has its own address and the /64 rules bind. The table counts in
+in-isolate windows of its own, so the two never add up. The binding is approximate and per location, not one global count: a determined
 attacker with many addresses still needs a Cloudflare WAF rate-limiting rule (zone level) or the
 platform's DDoS protection.
 

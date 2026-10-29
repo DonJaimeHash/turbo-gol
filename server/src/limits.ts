@@ -2,9 +2,12 @@
  * Every rate limit of the Worker, in one table (LIMITS below), and the two counters behind it.
  *
  * The counters
- *   in-isolate  a fixed one-minute window per key in this isolate's memory (isolateLimited): the
- *               cheap pre-filter. It costs nothing and stops a flood that lands on one isolate, but
- *               each isolate (and each Cloudflare location) counts on its own.
+ *   in-isolate  a fixed one-minute window per key in this isolate's memory: the cheap pre-filter.
+ *               It costs nothing and stops a flood that lands on one isolate, but each isolate (and
+ *               each Cloudflare location) counts on its own. The table's rules count in windows of
+ *               their own (ruleWindows), apart from the keys the route files count with
+ *               isolateLimited (routeWindows): accountRoutes.ts's 'refresh:' + address and this
+ *               table's refresh rule must never add up in one window.
  *   edge        a Workers Rate Limiting binding (wrangler.jsonc `ratelimits`, named after its limit
  *               per 60 s: RL_10 ... RL_1200). Counted per Cloudflare location across every isolate
  *               there, approximate and eventually consistent (Cloudflare's docs: a burst may pass
@@ -61,8 +64,13 @@
  *
  * Limits kept where they are (in-isolate only, per minute unless stated; the object ones hold
  * across isolates because there is one object):
- *   accountRoutes.ts   register 5, login 30, refresh 60, recover 10, oauth start 20 per raw address;
- *                      rename 5, training 20, experimental 30 writes / 60 reads, items and shop 60
+ *   accountRoutes.ts   register 5, login 30, refresh 60, recover 10, oauth start 20 per raw address
+ *                      (main's limits, unchanged). They still run after this table's gate and are
+ *                      much lower, so for a crowd behind ONE IPv4 address (a school, a CGNAT) they
+ *                      are what binds: 60 page loads (refresh), 30 sign-ins, 5 sign-ups, 10
+ *                      recoveries and 20 OAuth starts a minute per isolate, not the 1,200 and 120
+ *                      above. Over IPv6 each device has its own address, so the /64 rules bind.
+ *                      Also rename 5, training 20, experimental 30 writes / 60 reads, items and shop 60
  *                      reads, car and claim 30 writes per account; TV start 10, poll 60, confirm 30
  *                      per /64 (tvCodes.ts ipKey), plus tvCodes' own live-code and failed-confirm caps
  *   AccountsDO         the sign-in lockouts per username and address (accountStore.ts)
@@ -210,22 +218,35 @@ export function subjectsOf(ip: string, session: SessionClaims | null): Subjects 
 // ---- the counters ----------------------------------------------------------------------------------
 
 const ISOLATE_WINDOW_MS = 60_000;
-/** Windows kept at most; past it the oldest goes (anyone can bring new keys). */
+/** Windows kept at most per set; past it the oldest goes (anyone can bring new keys). */
 const ISOLATE_KEYS_MAX = 50_000;
-const isolateWindows = new Map<string, { n: number; resetAt: number }>();
-let isolateCalls = 0;
 
-/** Fixed-window counter in this isolate: true when `key` was hit more than `max` times in its current window of `windowMs`. */
-export function isolateLimited(key: string, max: number, now: number = Date.now(), windowMs: number = ISOLATE_WINDOW_MS): boolean {
-  if (++isolateCalls % 256 === 0) for (const [k, v] of isolateWindows) if (v.resetAt <= now) isolateWindows.delete(k);
-  const e = isolateWindows.get(key);
+/** One set of fixed-window counters in this isolate's memory. */
+interface Windows {
+  m: Map<string, { n: number; resetAt: number }>;
+  calls: number;
+}
+
+/** The route files' own keys (isolateLimited: accountRoutes.ts, nodeRoutes.ts). */
+const routeWindows: Windows = { m: new Map(), calls: 0 };
+/** LIMITS' rules (limiter): apart, so a route file's key that spells like a rule's never shares its count. */
+const ruleWindows: Windows = { m: new Map(), calls: 0 };
+
+function hit(w: Windows, key: string, max: number, now: number, windowMs: number): boolean {
+  if (++w.calls % 256 === 0) for (const [k, v] of w.m) if (v.resetAt <= now) w.m.delete(k);
+  const e = w.m.get(key);
   if (!e || e.resetAt <= now) {
-    isolateWindows.delete(key);
-    if (isolateWindows.size >= ISOLATE_KEYS_MAX) isolateWindows.delete(isolateWindows.keys().next().value as string);
-    isolateWindows.set(key, { n: 1, resetAt: now + windowMs });
+    w.m.delete(key);
+    if (w.m.size >= ISOLATE_KEYS_MAX) w.m.delete(w.m.keys().next().value as string);
+    w.m.set(key, { n: 1, resetAt: now + windowMs });
     return false;
   }
   return ++e.n > max;
+}
+
+/** Fixed-window counter in this isolate: true when `key` was hit more than `max` times in its current window of `windowMs`. */
+export function isolateLimited(key: string, max: number, now: number = Date.now(), windowMs: number = ISOLATE_WINDOW_MS): boolean {
+  return hit(routeWindows, key, max, now, windowMs);
 }
 
 /** True when the request is over the rule's limit for `subject`; a null subject is never limited. */
@@ -239,7 +260,7 @@ export function limiter(env: Partial<Record<EdgeBinding, RateLimit>>): Limiter {
     if (subject === null) return false;
     const rule: LimitRule = LIMITS[name];
     const key = name + ':' + subject;
-    if (isolateLimited(key, rule.isolate)) return true;
+    if (hit(ruleWindows, key, rule.isolate, Date.now(), ISOLATE_WINDOW_MS)) return true;
     const binding = rule.edge ? env[rule.edge] : undefined;
     if (!binding) return false;
     try {

@@ -263,6 +263,27 @@ test('logout and refresh: limited per network before the object (the binding ref
   assert.deepEqual(env.ACCOUNTS.calls, []);
 });
 
+test("a school behind one IPv4 address: 40 page loads, 20 sign-ins and 10 recoveries in a minute are all served (the table's windows never add to accountRoutes' own)", async () => {
+  // accountRoutes.ts keeps main's 'refresh:' / 'login:' / 'recover:' + address in-isolate limits
+  // (60, 30, 10); the table's rules of the same name, keyed by the same IPv4 address, must not
+  // count into those windows too (that halved them: 30, 15 and 5).
+  const env = makeEnv({ RL_120: fakeBinding(120), RL_1200: fakeBinding(1200) });
+  const school = ip4();
+  const rand = (enc) => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString(enc);
+  const key = () => rand('hex');
+  const tally = {};
+  const run = async (label, n, path, body) => {
+    for (let i = 1; i <= n; i++) {
+      const res = await req(env, 'POST', path, { ip: school, headers: { Cookie: '__Host-tg_rt=' + rand('base64url') }, body: body?.() ?? {} });
+      tally[label] = (tally[label] ?? 0) + (res.status === 429 ? 0 : 1);
+    }
+  };
+  await run('refresh', 40, '/api/auth/refresh');
+  await run('login', 20, '/api/auth/login', () => ({ username: 'kid' + key().slice(0, 6), password: key() }));
+  await run('recover', 10, '/api/auth/recover', () => ({ username: 'kid' + key().slice(0, 6), code: 'abcd-efgh-ijkl', password: key() }));
+  assert.deepEqual(tally, { refresh: 40, login: 20, recover: 10 }, 'served (not 429) of each');
+});
+
 test('GET /api/me and GET /api/ranked/result: 60 a minute per account, the 61st never reaches the object; another account is not affected', async () => {
   for (const path of ['/api/me', '/api/ranked/result?matchId=' + 'cd'.repeat(32)]) {
     const env = makeEnv();
