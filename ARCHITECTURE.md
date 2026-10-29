@@ -633,8 +633,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         (modesModel.ts, pure: tabs, formats, queueNet, botsCountdown from
                         /api/config's botFillMs or P2P_FILL_WAIT_MS, countShown, actionKind;
                         tests/modes.test.mjs), GARAJE (garage.ts, plan PR 8, the owner's drawing:
-                        TU AUTO, PUNTOS DE SERVIDOR (a guest's 0 and SIGN IN, back here on a
-                        sign-in), GANA PUNTOS (the guide: a new tab, or with a pad, a remote or on a
+                        TU AUTO, PUNTOS DE SERVIDOR (a guest's 0 and SIGN IN: PERFIL as a
+                        detour, back here on Back or a sign-in), GANA PUNTOS (the guide: a new tab, or with a pad, a remote or on a
                         TV a sheet with its QR) on the left; the showroom in the stage between
                         (MenuHost.garage.showroom on show, null on hide, measured on a layout
                         change); AUTOS │ ESTADIOS as .mn-tabs, a row per car (components/carRow.ts),

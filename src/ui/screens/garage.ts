@@ -7,8 +7,8 @@
  * points card).
  *
  * Left: TU AUTO (the car driven, its line, "Gratis para todos" for the free one), PUNTOS DE
- * SERVIDOR (the balance; a guest's 0 and SIGN IN, which opens PERFIL and comes back here on a
- * sign-in; a paused account's --warn line) and GANA PUNTOS ALOJANDO UN SERVIDOR COMUNITARIO (the
+ * SERVIDOR (the balance; a guest's 0 and SIGN IN, which opens PERFIL as a detour, Menu.open: Back
+ * or a sign-in comes back here; a paused account's --warn line) and GANA PUNTOS ALOJANDO UN SERVIDOR COMUNITARIO (the
  * hosting guide: a new tab with a mouse, a keyboard or a finger; with a controller, a remote or on
  * a TV a sheet with its QR). Right: the tabs AUTOS │ ESTADIOS (`.mn-tabs`: Q / E, LT / RT, CH± /
  * PgUp / PgDn step them, Menu.stepTabs; focus = selection), the list (a row per car with its
@@ -377,7 +377,7 @@ export function garageScreen(menu: Menu): Screen {
 
   const signIn = (): void => {
     waitSignIn = true;
-    menu.open('profile');
+    menu.open('profile', false, undefined, true);
   };
 
   const equip = (id: CarId): void => {
