@@ -43,7 +43,8 @@
  *             start without it (its ticket is refused from then on); ping -> pong;
  *             turn -> { type: 'turn', iceServers } (cost-2): TURN credentials minted for this
  *             seat on demand (its mesh did not connect), never in the welcome: only with the TURN
- *             secrets set and turn_cf_disabled off, at most TURN_PER_SLOT per seat and
+ *             secrets set and turn_cf_disabled off (read first), one ask per socket every
+ *             TURN_ASK_GAP_MS, TURN_PER_SLOT asks per seat (granted or refused) and
  *             TURN_PER_PLAYER_PER_DAY per player (the region's matchmaker, POST /turn-quota: no
  *             answer = no), ttl = the room's remaining life; kept in the state and revoked when the
  *             seat's socket goes and at the cleanup; refused = { iceServers: [] };
@@ -100,7 +101,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { TURN_MIN_TTL_SECONDS, TURN_PER_SLOT, error, iceServersFor, isMode, json, readJson, revokeTurnCredential, stunOnly, turnConfigured, turnUsernames } from './env';
+import { TURN_ASK_GAP_MS, TURN_MIN_TTL_SECONDS, TURN_PER_SLOT, error, iceServersFor, isMode, json, readJson, revokeTurnCredential, stunOnly, turnConfigured, turnKilled, turnUsernames } from './env';
 import type { GameModeId } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret, randomHex } from './auth';
 import { TICK_RATE, WS_SUBPROTOCOL } from '../../src/net/protocol';
@@ -223,6 +224,8 @@ interface RoomState {
   lastJoinAt: number | null;
   /** TURN credentials minted for the seats (their usernames): revoked when the seat goes and at the cleanup. */
   turn: Array<{ slot: number; user: string }>;
+  /** TURN asks per slot that reached the player's quota (granted or not): TURN_PER_SLOT at most. */
+  turnAsks: number[];
 }
 
 /** What GET /internal/presence answers the matchmaker (RoomDO.presence). */
@@ -397,6 +400,7 @@ function freshState(): RoomState {
     nextGen: 0,
     lastJoinAt: null,
     turn: [],
+    turnAsks: new Array<number>(MAX_CARS).fill(0),
   };
 }
 
@@ -407,6 +411,7 @@ function upgradeState(st: RoomState): RoomState {
   if (typeof st.noShowDone !== 'boolean') st.noShowDone = false;
   if (typeof st.lastJoinAt !== 'number') st.lastJoinAt = null;
   if (!Array.isArray(st.turn)) st.turn = [];
+  if (!Array.isArray(st.turnAsks) || st.turnAsks.length !== MAX_CARS) st.turnAsks = new Array<number>(MAX_CARS).fill(0);
   return st;
 }
 
@@ -441,6 +446,8 @@ export class RoomDO extends DurableObject<Env> {
   private readonly joining = new Uint8Array(MAX_CARS);
   /** A 'turn' request of the slot is being served (its mint is an outgoing fetch): a second one waits for nothing. */
   private readonly turnBusy = new Uint8Array(MAX_CARS);
+  /** When each socket last asked for TURN (TURN_ASK_GAP_MS between two asks; in memory). */
+  private readonly turnAskAt = new WeakMap<WebSocket, number>();
   private cleaned = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -862,9 +869,12 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   /**
-   * A seat asks for TURN (its mesh did not connect): checked (configured, this socket is the
-   * seat's, TURN_PER_SLOT, the player's daily quota at the matchmaker), then minted for the room's
-   * remaining life and recorded for the revoke. Anything refused answers an empty list.
+   * A seat asks for TURN (its mesh did not connect): checked (configured, one ask per socket every
+   * TURN_ASK_GAP_MS, TURN_PER_SLOT asks per seat, the kill flag, then the player's daily quota at
+   * the matchmaker), then minted for the room's remaining life and recorded for the revoke.
+   * Anything refused answers an empty list. Every ask that reaches the quota counts against the
+   * seat, refused or not, so a seat costs the matchmaker TURN_PER_SLOT calls at most; the kill flag
+   * is read first (cached), so while it is on nothing reaches the quota.
    */
   private async onTurn(ws: WebSocket, att: Attachment): Promise<void> {
     const rec = this.record;
@@ -872,9 +882,17 @@ export class RoomDO extends DurableObject<Env> {
     const slot = att.slot;
     const none = (): void => this.send(ws, { type: 'turn', iceServers: [] });
     if (!rec || !turnConfigured(this.env) || this.turnBusy[slot] === 1) return none();
-    if (st.turn.filter((t) => t.slot === slot).length >= TURN_PER_SLOT) return none();
+    const asked = this.turnAskAt.get(ws);
+    const at = Date.now();
+    if (asked !== undefined && at - asked < TURN_ASK_GAP_MS) return none();
+    this.turnAskAt.set(ws, at);
+    if (st.turnAsks[slot] >= TURN_PER_SLOT) return none();
     this.turnBusy[slot] = 1;
     try {
+      if (await turnKilled(this.env)) return none();
+      if (!this.record || this.cleaned || st.cur[slot] !== att.gen) return;
+      st.turnAsks[slot]++;
+      await this.persist();
       if (!(await this.turnQuota(rec, att.playerId))) return none();
       const now = Date.now();
       const ttl = Math.max(TURN_MIN_TTL_SECONDS, Math.ceil((rec.createdAt + ROOM_TTL_MS - now) / 1000));

@@ -370,6 +370,10 @@ test("RoomDO: TURN is minted only when a seat asks for it (never in a welcome), 
     assert.ok(ttl <= (R.ROOM_TTL_MS - 120_000) / 1000 && ttl >= (R.ROOM_TTL_MS - 125_000) / 1000, `ttl = the room's remaining life (${ttl} s)`);
     assert.deepEqual(h.mm.calls.filter((c) => c.path === '/turn-quota').map((c) => c.body.playerId), ['pa'], 'counted for the player at the matchmaker');
     await h.send(a, { type: 'turn' });
+    assert.equal(api.mints().length, 1, 'a second ask within TURN_ASK_GAP_MS gets nothing');
+    advance(E.TURN_ASK_GAP_MS);
+    await h.send(a, { type: 'turn' });
+    advance(E.TURN_ASK_GAP_MS);
     await h.send(a, { type: 'turn' });
     assert.equal(api.mints().length, 2, 'TURN_PER_SLOT: one more, then none');
     assert.deepEqual(a.of('turn').at(-1).iceServers, []);
@@ -414,6 +418,52 @@ test("RoomDO: no TURN without the secrets, with turn_cf_disabled set, or past th
     await quota.send(a2, { type: 'turn' });
     assert.deepEqual(a2.of('turn').at(-1).iceServers, []);
     assert.equal(api.mints().length, 0, 'nothing minted in any of them');
+  } finally {
+    api.restore();
+  }
+});
+
+test("RoomDO: a seat whose quota is refused asks the matchmaker TURN_PER_SLOT times at most, however many 'turn' frames it sends", async () => {
+  const api = fakeTurnApi();
+  try {
+    const h = await makeRoom(ONE_V_ONE, { vars: TURN_VARS, mm: makeMm((path) => (path === '/turn-quota' ? { ok: false } : null)) });
+    const a = await h.join(0);
+    await h.join(1);
+    for (let i = 0; i < 100; i++) await h.send(a, { type: 'turn' }); // a burst
+    const quota = () => h.mm.calls.filter((c) => c.path === '/turn-quota').length;
+    assert.equal(quota(), 1, `a burst of 100 frames: one quota call (${quota()})`);
+    for (let i = 0; i < 100; i++) {
+      advance(E.TURN_ASK_GAP_MS + 1); // spaced past the gap
+      await h.send(a, { type: 'turn' });
+    }
+    assert.equal(quota(), E.TURN_PER_SLOT, `100 spaced frames: TURN_PER_SLOT quota calls in all (${quota()})`);
+    assert.equal(api.mints().length, 0);
+    assert.equal(a.of('turn').length, 200, 'every frame is answered (an empty list)');
+    assert.ok(a.of('turn').every((m) => m.iceServers.length === 0));
+  } finally {
+    api.restore();
+  }
+});
+
+test("RoomDO: with turn_cf_disabled set a 'turn' never reaches the player's quota (the flag is read first)", async () => {
+  const api = fakeTurnApi();
+  try {
+    let reads = 0;
+    const FLAGS = { get: async (k) => (k === 'turn_cf_disabled' ? (reads++, '1') : null) };
+    const h = await makeRoom(ONE_V_ONE, { vars: { ...TURN_VARS, FLAGS } });
+    const a = await h.join(0);
+    for (let i = 0; i < 20; i++) {
+      advance(E.TURN_ASK_GAP_MS + 1);
+      await h.send(a, { type: 'turn' });
+    }
+    assert.equal(h.mm.calls.filter((c) => c.path === '/turn-quota').length, 0, 'no quota unit spent while TURN is off');
+    assert.equal(api.mints().length, 0);
+    assert.ok(reads >= 1, 'the flag was read');
+    // The flag goes off: the seat still has its asks.
+    FLAGS.get = async () => null;
+    advance(E.TURN_ASK_GAP_MS + 1);
+    await h.send(a, { type: 'turn' });
+    assert.equal(api.mints().length, 1, 'TURN back on: minted');
   } finally {
     api.restore();
   }

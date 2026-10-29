@@ -310,8 +310,10 @@ export const STUN_URLS: readonly string[] = ['stun:stun.cloudflare.com:3478'];
 export const TURN_TTL_SECONDS = 600;
 /** The KV flag that turns every TURN mint off (STUN only), no deploy needed. */
 export const TURN_KILL_FLAG = 'turn_cf_disabled';
-/** Credentials a room seat may ask for (one, plus one retry). */
+/** TURN asks a room seat may make (one, plus one retry), whether the quota grants them or not. */
 export const TURN_PER_SLOT = 2;
+/** At most one TURN ask per room socket this often (ms); the client asks once per room. */
+export const TURN_ASK_GAP_MS = 5_000;
 /** Credentials one player may get a day in a region (MatchmakerDO /turn-quota). */
 export const TURN_PER_PLAYER_PER_DAY = 10;
 /** A room's credential lives at least this long (seconds) and never past the room. */
@@ -329,8 +331,8 @@ export function turnConfigured(env: Pick<Env, 'TURN_KEY_ID' | 'TURN_KEY_TOKEN'>)
   return !!env.TURN_KEY_ID && !!env.TURN_KEY_TOKEN;
 }
 
-/** The kill flag (TURN_KILL_FLAG) is set; a KV that cannot be read counts as not set. */
-async function turnKilled(env: { FLAGS?: KVNamespace }): Promise<boolean> {
+/** The kill flag (TURN_KILL_FLAG) is set; a KV that cannot be read counts as not set. Edge-cached 60 s (flag). */
+export async function turnKilled(env: { FLAGS?: KVNamespace }): Promise<boolean> {
   if (!env.FLAGS) return false;
   return flag(env as Pick<Env, 'FLAGS'>, TURN_KILL_FLAG);
 }
