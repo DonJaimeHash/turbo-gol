@@ -736,6 +736,7 @@ export default {
   'account.issue.usernameLength': 'The username must be {min} to {max} characters long',
   'account.issue.usernameChars': 'Use only letters, numbers, "_", "-" or "." (starting with a letter or number)',
   'account.issue.usernameReserved': 'That name is reserved',
+  'account.issue.usernameDomain': 'The username can\'t look like a web address (like "name.com")',
   // PASSWORD_MIN (8)
   'account.issue.passwordShort': { one: 'The password must be at least {count} character', other: 'The password must be at least {count} characters' },
   // PASSWORD_MAX (128)

@@ -531,6 +531,7 @@ export default {
   'account.issue.usernameLength': 'El usuario tiene que tener entre {min} y {max} caracteres',
   'account.issue.usernameChars': 'Usa solo letras, números, "_", "-" o "." (empezando con letra o número)',
   'account.issue.usernameReserved': 'Ese nombre está reservado',
+  'account.issue.usernameDomain': 'El usuario no puede parecer una dirección web (como «nombre.com»)',
   'account.issue.passwordShort': { one: 'La contraseña tiene que tener al menos {count} carácter', other: 'La contraseña tiene que tener al menos {count} caracteres' },
   'account.issue.passwordLong': { one: 'La contraseña puede tener hasta {count} carácter', other: 'La contraseña puede tener hasta {count} caracteres' },
   'account.issue.passwordCommon': 'Esa contraseña es demasiado común',

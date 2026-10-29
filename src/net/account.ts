@@ -73,6 +73,7 @@ export type AccountIssueCode =
   | 'usernameLength'
   | 'usernameChars'
   | 'usernameReserved'
+  | 'usernameDomain'
   | 'passwordShort'
   | 'passwordLong'
   | 'passwordCommon'
@@ -86,14 +87,26 @@ export interface AccountIssue {
 }
 
 /**
+ * A name that reads as a web address: 'www.' first, or a last '.label' of two or more letters
+ * ('tg-verify.com', 'www.x.gg'). Such a name could pass for a link to another site in a lobby, the
+ * leaderboard or a mail. 'jv.77' and 'ana.b' are not refused.
+ */
+export function looksLikeDomain(name: string): boolean {
+  return /^www\./i.test(name) || /\.[a-z]{2,}$/i.test(name);
+}
+
+/**
  * Null when `name` is a valid username: 3-16 chars of ASCII letters, digits, '_', '-', '.', starting
- * with a letter or digit, not reserved, not 'guest…', 'invitado…' (a guest's name is the server's
- * 'Invitado 4821', src/net/guestName.ts) or 'bot…'. Otherwise what is wrong with it.
+ * with a letter or digit, not shaped like a web address (looksLikeDomain), not reserved, not
+ * 'guest…', 'invitado…' (a guest's name is the server's 'Invitado 4821', src/net/guestName.ts) or
+ * 'bot…'. Otherwise what is wrong with it. Checked on sign-up and rename only: a name taken before
+ * a rule existed stays until its owner renames.
  */
 export function usernameIssue(name: unknown): AccountIssue | null {
   if (typeof name !== 'string') return { code: 'usernameMissing' };
   if (name.length < USERNAME_MIN || name.length > USERNAME_MAX) return { code: 'usernameLength', params: { min: USERNAME_MIN, max: USERNAME_MAX } };
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) return { code: 'usernameChars' };
+  if (looksLikeDomain(name)) return { code: 'usernameDomain' };
   const k = usernameKey(name);
   if (RESERVED.has(k) || k.startsWith('guest') || k.startsWith('invitado') || k.startsWith('bot')) return { code: 'usernameReserved' };
   return null;
@@ -116,6 +129,7 @@ const ISSUE_SPANISH: Readonly<Record<AccountIssueCode, string>> = {
   usernameLength: `El usuario tiene que tener entre ${USERNAME_MIN} y ${USERNAME_MAX} caracteres`,
   usernameChars: 'Usa solo letras, números, "_", "-" o "." (empezando con letra o número)',
   usernameReserved: 'Ese nombre está reservado',
+  usernameDomain: 'El usuario no puede parecer una dirección web (como "nombre.com")',
   passwordShort: `La contraseña tiene que tener al menos ${PASSWORD_MIN} caracteres`,
   passwordLong: `La contraseña puede tener hasta ${PASSWORD_MAX} caracteres`,
   passwordCommon: 'Esa contraseña es demasiado común',
@@ -380,10 +394,13 @@ const GAME_SKELETON = wordSkeleton('turbogol');
  * name, src/net/guestName.ts), as the game ('Turbogol', 'Turbo Gol', 'T0rb0g0l', Cyrillic look-alikes)
  * or with a word of the staff ('Soporte', 'Ѕoporte', 'Adm1n', 'Sala oficial'). Folded: accents
  * dropped, Cyrillic and Greek look-alikes as Latin letters, the digit stand-ins mapped. The server's
- * own default title (the host's name) is never checked (server/src/LobbyDO.ts).
+ * own default title (the host's name) is never checked (server/src/LobbyDO.ts). A title holding a
+ * web address ('tg-verify.com', 'www.x.gg', 'https://…', folded the same way) is refused too.
  */
 export function lobbyNameIssue(title: string): 'name_reserved' | null {
   if (/^(?:invitado|guest)\s*\d+$/.test(foldLookalikes(title).trim())) return 'name_reserved';
+  const tokens = foldLookalikes(title).split(/\s+/);
+  if (tokens.some((tok) => tok.includes('://') || looksLikeDomain(tok.replace(/[^\p{L}\p{N}]+$/u, '')))) return 'name_reserved';
   const words = titleWords(title);
   if (words.join('').includes(GAME_SKELETON)) return 'name_reserved';
   if (words.some((w) => STAFF_WORDS.has(w))) return 'name_reserved';
