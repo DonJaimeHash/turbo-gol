@@ -517,6 +517,8 @@ export class Menu {
     host.accounts.subscribe(() => this.refreshChrome());
     // After Input's own listener (the Game creates the Input first): hasGamepad already says so.
     window.addEventListener('gamepadconnected', () => this.onPadChange());
+    // The network back: the region pill asks again now rather than at its next poll.
+    window.addEventListener('online', () => this.populationNow());
     this.loadConfig();
     // The report of what the next frame shows: a fit the last change queued runs first (the check
     // reads the page a fixed pause after a mount, and the frame that would run it can come later:

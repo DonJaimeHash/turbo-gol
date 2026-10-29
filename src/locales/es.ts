@@ -327,6 +327,7 @@ export default {
   'lobby.joinAskCode': '¿Unirte a la sala {code}?',
   'lobby.yourName': 'Tu nombre',
   'lobby.swap': 'Sales de la sala {code}.',
+  'lobby.stayLate': 'La sala {code} siguió sin ti: únete otra vez con su código',
 
   'lost.title': 'Se cortó tu conexión',
   'lost.body': 'El partido sigue sin ti',

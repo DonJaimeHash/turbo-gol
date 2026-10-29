@@ -478,6 +478,8 @@ export default {
   'lobby.yourName': 'Your name',
   // In another lobby already: joining this one leaves it
   'lobby.swap': 'You leave lobby {code}.',
+  // A restart (Super low) took longer than the server keeps a place in the lobby
+  'lobby.stayLate': 'Lobby {code} went on without you: join it again with its code',
 
   // A lost server match (plan PR 12: src/ui/screens/match/lost.ts)
   'lost.title': 'Your connection dropped',

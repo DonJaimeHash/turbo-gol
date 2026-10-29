@@ -1855,9 +1855,10 @@ export class Game implements P2PGameHooks {
       }
     }
     // The Sala this tab is in: the next page joins it again (lobby.ts installLobbyReturn), as the
-    // reload's dropped socket keeps the place (LobbyDO).
+    // reload's dropped socket keeps the place (LobbyDO), and opens it when it was on the stack (the
+    // FINAL's MENÚ goes to Inicio: so does the page after the reload).
     const lobby = this.lobby;
-    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now() });
+    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now(), open: this.menu.stacked('lobby') });
     this.loadingHold = true;
     return this.loading.show(fallback !== null ? fallbackText(fallback) : t('loading.restart')).then(() => {
       window.location.reload();

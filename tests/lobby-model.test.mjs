@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { readFileSync } from 'node:fs';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -140,17 +141,26 @@ test('back to your match: kept while the match can still run, then forgotten', (
   assert.equal(R.readRejoin(now, null), null, 'no storage: nothing');
 });
 
-test("the Sala across the game's own reload: read once, inside the reconnection window", () => {
+test("the Sala across the game's own reload: read once, inside the server's grace; its screen opens unless it was off the stack", () => {
   const s = new MemStore();
   const now = 1_000_000;
   const stay = { code: 'ABC234', password: null, savedAt: now };
   R.saveLobbyStay(stay, s);
-  assert.deepEqual(R.takeLobbyStay(now + 5_000, s), stay);
+  assert.deepEqual(R.takeLobbyStay(now + 5_000, s), { ...stay, open: true }, 'an older record: the Sala opens');
+  R.saveLobbyStay({ ...stay, open: false }, s);
+  assert.equal(R.takeLobbyStay(now + 5_000, s).open, false, "the FINAL's MENÚ: joined again, the menus on Inicio");
+  R.saveLobbyStay(stay, s);
+  R.takeLobbyStay(now + 5_000, s);
   assert.equal(R.takeLobbyStay(now + 5_000, s), null, 'once: the next page does not join it again');
   R.saveLobbyStay({ ...stay, password: 'pw' }, s);
   assert.equal(R.takeLobbyStay(now + 1_000, s).password, 'pw');
   R.saveLobbyStay(stay, s);
-  assert.equal(R.takeLobbyStay(now + R.LOBBY_STAY_MS, s), null, 'too late: the place is gone');
+  assert.equal(R.takeLobbyStay(now + R.LOBBY_STAY_MS, s).late, true, 'too late: the place is gone (the page says so)');
+  // The saved Sala lasts the server's grace, no longer (LobbyDO.ts LOBBY_GRACE_MS: the place and the host role).
+  const lobbyDo = readFileSync(new URL('../server/src/LobbyDO.ts', import.meta.url), 'utf8');
+  const grace = /export const LOBBY_GRACE_MS = ([\d_]+);/.exec(lobbyDo);
+  assert.ok(grace !== null, 'LobbyDO.ts names its grace');
+  assert.equal(R.LOBBY_STAY_MS, Number(grace[1].replace(/_/g, '')), 'the saved Sala and the server grace agree');
   assert.equal(s.getItem(R.LOBBY_STAY_KEY), null);
   s.setItem(R.LOBBY_STAY_KEY, '{bad');
   assert.equal(R.takeLobbyStay(now, s), null);

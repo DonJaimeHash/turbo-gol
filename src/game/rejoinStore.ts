@@ -85,8 +85,12 @@ export function clearRejoin(store: StorageLike | null = session()): void {
 }
 
 export const LOBBY_STAY_KEY = STORAGE_PREFIX + 'lobbyStay';
-/** A Sala's record is joined again this long after the reload at most (LobbyClient's RECONNECT_WINDOW_MS). */
-export const LOBBY_STAY_MS = 90_000;
+/**
+ * A Sala's record is joined again this long after the reload at most: LobbyDO's LOBBY_GRACE_MS (the
+ * server keeps the place and the host role that long; tests/lobby-model.test.mjs pins them equal).
+ * Later the place is gone: the page says so (`late`) instead of joining as somebody new.
+ */
+export const LOBBY_STAY_MS = 40_000;
 
 export interface LobbyStay {
   code: string;
@@ -94,6 +98,10 @@ export interface LobbyStay {
   password: string | null;
   /** Date.now() of the write (just before the reload). */
   savedAt: number;
+  /** The Sala's screen opens after the join (it was on the menus' stack); else the menus stay on Inicio. */
+  open?: boolean;
+  /** Read past LOBBY_STAY_MS: not joined again. */
+  late?: boolean;
 }
 
 export function saveLobbyStay(s: LobbyStay, store: StorageLike | null = session()): void {
@@ -104,7 +112,7 @@ export function saveLobbyStay(s: LobbyStay, store: StorageLike | null = session(
   }
 }
 
-/** The Sala to join again at `now`, read once (the record goes), else null. */
+/** The Sala to join again at `now`, read once (the record goes), `late` past LOBBY_STAY_MS, else null. */
 export function takeLobbyStay(now = Date.now(), store: StorageLike | null = session()): LobbyStay | null {
   if (store === null) return null;
   let v: unknown = null;
@@ -118,8 +126,10 @@ export function takeLobbyStay(now = Date.now(), store: StorageLike | null = sess
   }
   if (v === null || typeof v !== 'object') return null;
   const r = v as LobbyStay;
-  const ok = typeof r.code === 'string' && r.code.length > 0 && (r.password === null || typeof r.password === 'string') && typeof r.savedAt === 'number' && now - r.savedAt >= 0 && now - r.savedAt < LOBBY_STAY_MS;
-  return ok ? { code: r.code, password: r.password, savedAt: r.savedAt } : null;
+  const ok = typeof r.code === 'string' && r.code.length > 0 && (r.password === null || typeof r.password === 'string') && typeof r.savedAt === 'number' && now - r.savedAt >= 0;
+  if (!ok) return null;
+  const stay: LobbyStay = { code: r.code, password: r.password, savedAt: r.savedAt, open: r.open !== false };
+  return now - r.savedAt < LOBBY_STAY_MS ? stay : { ...stay, late: true };
 }
 
 /** The time left to show for `r` at `now` (ms, 0 when unknown). */
