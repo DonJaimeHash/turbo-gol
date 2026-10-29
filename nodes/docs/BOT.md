@@ -8,8 +8,10 @@
    las propuestas por votos y marca las diez primeras con `top-10`. No usa IA, así que no cuesta
    nada.
 3. **Aprobar.** Un mantenedor lee el top 10 y le pone `bot:implementar` a la que quiere.
-4. **Implementar.** `github/workflows/community-bot.yml` despierta a Claude, que implementa la
-   propuesta en una rama, corre las pruebas y el chequeo de tipos, y abre un PR.
+4. **Implementar.** Un workflow despierta a Claude, que implementa la propuesta en una rama y abre
+   un PR; las pruebas y el chequeo de tipos corren aparte. Ese workflow todavía no existe: la
+   plantilla anterior (`github/workflows/community-bot.yml`) se quitó el 29/10/2026 por la
+   auditoría de seguridad (ver "Seguridad").
 5. **Revisar y mergear.** Una persona revisa el PR antes de mergear. Hoy las reglas de `main`
    exigen CI en verde pero 0 aprobaciones (leído el 15/10/2026): la revisión humana es que el
    mantenedor lo lea. Con un segundo mantenedor se puede exigir una aprobación.
@@ -40,10 +42,16 @@ cada versión y el lanzador; los instaladores no se firman, llegan por HTTPS.
 
 - **Quién lo dispara:** solo quien puede poner etiquetas, es decir, quien tiene acceso de
   escritura. La acción además rechaza a usuarios sin ese acceso y a otros bots.
-- **El texto de la propuesta no es confiable.** Alguien puede escribir instrucciones escondidas en
-  una propuesta. Por eso el bot corre con pocas herramientas, sin secretos de deploy en el
-  entorno, con una instrucción de sistema que le prohíbe tocar workflows, claves y código de
-  releases, y siempre detrás de una revisión humana.
+- **El texto de la propuesta no es confiable.** Alguien puede esconder instrucciones en una
+  propuesta, por ejemplo en un comentario HTML (`<!-- ... -->`), que la página del issue no
+  muestra. La plantilla que se quitó leía ese texto con la clave de la API en el entorno, un token
+  con escritura y `npm test` entre sus herramientas: un archivo de prueba escrito por el bot
+  alcanzaba para mandar la clave y el token afuera. Antes de activar un bot, el workflow tiene que
+  cumplir la lista de `github/workflows/README.md`: el modelo no ejecuta nada (ni Bash ni git), las
+  pruebas corren en otro trabajo sin secretos, sin `id-token: write`, solo lo disparan los
+  mantenedores que nombra, el modelo lee un resumen escrito por un mantenedor y no el issue, y la
+  acción va fijada por SHA. `tests/workflows.test.mjs` revisa las plantillas igual que los
+  workflows activos.
 - **CODEOWNERS** para las rutas sensibles: nodos, lanzador, verificador, scripts de releases y
   `.github/`. La plantilla está en `github/CODEOWNERS`. Solo funciona junto con una regla de
   protección de `main` que exija la revisión de los dueños del código, y esa regla necesita un
@@ -55,7 +63,8 @@ cada versión y el lanzador; los instaladores no se firman, llegan por HTTPS.
 ## Costos
 
 - Cada implementación consume tokens de la API y minutos de GitHub Actions.
-- Topes en la plantilla: `--max-turns 40`, 45 minutos por corrida y una corrida a la vez.
+- Topes para el workflow: `--max-turns`, un tiempo máximo por corrida, una corrida a la vez y un
+  límite de gasto en el espacio de trabajo de la clave de la API.
 - El ranking semanal no usa IA.
 - Una autorización por etiqueta de un mantenedor hace que el gasto sea siempre una decisión
   humana.
