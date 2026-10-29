@@ -593,7 +593,9 @@ export class SettingsView {
       const clear = locked
         ? h('span.mn-bind-lock', { title: t('settings.pauseLockedTitle'), 'aria-label': t('settings.pauseLockedTitle') }, icon('lock'))
         : h('button.mn-bind-clear.mn-set-row-ctl', { type: 'button', 'data-nav': true, 'data-key': `unbind-${device}-${r.action}`, 'aria-label': t('settings.unbindTitle', { key: r.label }) }, icon('close'));
-      const row = h('div.mn-bind', { 'data-nav-row': true }, h('span.mn-bind-label', null, r.label), cell, clear);
+      // A row of the list and one of its lines (nav.ts), as the settings' rows are: ◀ ▶ walk its key
+      // and its ✕, past its ends the rail or a bounce, never a control of another line.
+      const row = h('div.mn-bind', { 'data-nav-row': true, 'data-nav-line': true }, h('span.mn-bind-label', null, r.label), cell, clear);
       const bind: BindRow = { action: r.action, device, row, cell };
       cell.addEventListener('click', () => (this.capture === bind ? this.opts?.input.cancelRebind() : this.beginCapture(bind)));
       if (!locked) clear.addEventListener('click', () => this.clearBinding(bind));
@@ -602,7 +604,7 @@ export class SettingsView {
     }
     const layouts = h(
       'div.mn-set-buttons',
-      { 'data-nav-row': true },
+      { 'data-nav-row': true, 'data-nav-line': true },
       this.actionButton(`layout-${device}`, t('settings.defaultLayout'), () => this.resetBindings(device, 'standard')),
       device === 'kbm' ? this.actionButton('layout-kbm-only', t('settings.keyboardOnly'), () => this.resetBindings(device, 'keyboardOnly')) : null,
     );

@@ -31,7 +31,9 @@
  *   row: ▲ to the list's last row, wherever the list is scrolled).
  * - Out of sight (outOfSight): ▲ ▼ from outside a scroller never pick what it has scrolled out of
  *   view (clippedOut), so ▼ from the pinned row under CLASIFICACIÓN's list goes on to the footer,
- *   not up into the list's hidden rows; inside the scroller they walk on into them.
+ *   not up into the list's hidden rows; inside the scroller they walk on into them. ◀ ▶ never pick
+ *   what is out of sight at all, above or below a scroller's view even from inside it
+ *   (sideOutOfSight): a sideways move does not scroll the page to another line.
  * - A zone's floor (`floor`: Ajustes' page): ▼ past its last target bounces, it never crosses down.
  * - The way back (NavPath): the opposite arrow undoes the last move, as a stack (▼ ▼ ▲ ▲ retraces
  *   the path), while that target is still visible and still that way.
@@ -210,6 +212,24 @@ function outOfSight(el: HTMLElement, cur: HTMLElement, stop: HTMLElement): boole
     if ((SCROLLS.test(cs.overflowY) && p.scrollHeight > p.clientHeight) || (SCROLLS.test(cs.overflowX) && p.scrollWidth > p.clientWidth)) {
       return !p.contains(cur) && clippedOut(el.getBoundingClientRect(), p.getBoundingClientRect());
     }
+  }
+  return false;
+}
+
+/**
+ * For ◀ ▶: `el` is out of sight in a scroller it is in (below `stop`, its zone): clipped out of one
+ * the focus `cur` is not in (as outOfSight), or wholly above or below one's view even with the
+ * focus in it. A sideways move never scrolls a page up or down to a control of another line
+ * (Ajustes on a TV: ◀ from a binding row to a slider scrolled out above it).
+ */
+function sideOutOfSight(el: HTMLElement, cur: HTMLElement, stop: HTMLElement): boolean {
+  const b = el.getBoundingClientRect();
+  for (let p = el.parentElement; p !== null && p !== stop; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    const scrollsY = SCROLLS.test(cs.overflowY) && p.scrollHeight > p.clientHeight;
+    if (!scrollsY && !(SCROLLS.test(cs.overflowX) && p.scrollWidth > p.clientWidth)) continue;
+    const v = p.getBoundingClientRect();
+    if (p.contains(cur) ? scrollsY && (b.bottom <= v.top || b.top >= v.bottom) : clippedOut(b, v)) return true;
   }
   return false;
 }
@@ -607,14 +627,15 @@ export class FocusNav {
       const src = members !== null && !horizontal ? rowLeaveBox(unionBox(members.map(box)), from, rowLine) : from;
       // Out of a target that spans the rows beside it: only what lies wholly that way, else the next zone.
       const span = !horizontal && cur.closest('[data-nav-span]') !== null;
-      // ◀ ▶ on a list's line: only what is on that line (past its ends: a side zone, else the bounce).
+      // ◀ ▶ on a list's line: only what is on that line (past its ends: a side zone, else the bounce),
+      // and never what is out of sight (sideOutOfSight).
       // ▲ ▼: nothing a scroller the focus is not in has scrolled out of sight (outOfSight).
       const all = this.targets(zone).filter(
         (e) =>
           e !== cur &&
           (members === null || !members.includes(e)) &&
           (!span || beyondEdge(src, dir, box(e))) &&
-          (horizontal ? line === null || line.contains(e) : !outOfSight(e, cur, zone.el)),
+          (horizontal ? (line === null || line.contains(e)) && !sideOutOfSight(e, cur, zone.el) : !outOfSight(e, cur, zone.el)),
       );
       const i = horizontal ? pickTarget(src, dir, all.map(box)) : pickTarget(lineBox(cur, src), dir, all.map((e) => lineBox(e)));
       if (i >= 0) next = horizontal ? all[i] : this.intoRow(all[i]);
