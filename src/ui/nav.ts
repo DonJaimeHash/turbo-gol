@@ -23,7 +23,13 @@
  *   "below" it because its centre is lower.
  * - A list's lines (`data-nav-line`: a settings row, its label at the left, its control at the
  *   right): ▲ ▼ read every target on one as wide as its line (lineSpan), so the next line is the
- *   one below, whatever width its control has (a narrow switch between two wide sliders).
+ *   one below, whatever width its control has (a narrow switch between two wide sliders). ◀ ▶ stay
+ *   on the line: past its ends they go to a side zone that way (Ajustes' rail, the phone's rail),
+ *   else bounce, never to a control of another line. A row that is a line too (GRÁFICOS' cards)
+ *   is one line however it wraps: ▲ ▼ leave it whole.
+ * - A target's own way (onNavTo): where an arrow goes from it, before the pick (a list's pinned
+ *   row: ▲ to the list's last row, wherever the list is scrolled).
+ * - A zone's floor (`floor`: Ajustes' page): ▼ past its last target bounces, it never crosses down.
  * - The way back (NavPath): the opposite arrow undoes the last move, as a stack (▼ ▼ ▲ ▲ retraces
  *   the path), while that target is still visible and still that way.
  * - Memory (FocusMemory): the last focus per scope (Menu: per screen and per zone), found again by
@@ -60,8 +66,8 @@ const BOUNCE_MS = 120;
 const PATH_MAX = 24;
 
 interface SideHandlers {
-  navLeft?: () => void;
-  navRight?: () => void;
+  navLeft?: () => void | boolean;
+  navRight?: () => void | boolean;
 }
 
 /**
@@ -79,11 +85,24 @@ export function onEditStep(el: HTMLElement, up: () => boolean, down: () => boole
   s.navDown = down;
 }
 
-/** `left` / `right` claim that arrow for `el`; null leaves it to the spatial pick (the board's first and last tab). */
-export function onNavSide(el: HTMLElement, left: (() => void) | null, right: (() => void) | null): void {
+/**
+ * `left` / `right` claim that arrow for `el`; null leaves it to the spatial pick (the board's first
+ * and last tab). A claim that returns false took nothing: the control bounces (a switch that takes A only).
+ */
+export function onNavSide(el: HTMLElement, left: (() => void | boolean) | null, right: (() => void | boolean) | null): void {
   const s = el as HTMLElement & SideHandlers;
   s.navLeft = left ?? undefined;
   s.navRight = right ?? undefined;
+}
+
+interface NavToHandlers {
+  navTo?: Partial<Record<NavDir, () => HTMLElement | null>>;
+}
+
+/** `dir` from `el` goes where `to` says (a visible target of its zone), before the spatial pick; null from `to`: the pick. */
+export function onNavTo(el: HTMLElement, dir: NavDir, to: () => HTMLElement | null): void {
+  const s = el as HTMLElement & NavToHandlers;
+  s.navTo = { ...s.navTo, [dir]: to };
 }
 
 export function isEditable(el: Element | null): boolean {
@@ -377,13 +396,23 @@ function caretStep(el: HTMLElement, d: -1 | 1): void {
 /**
  * A focus zone: an element whose `[data-nav]` targets the arrows move among. `main`: where a
  * screen's or a modal's first focus goes. `side`: beside the others (the rail), crossed with ◀ ▶,
- * never with ▲ ▼.
+ * never with ▲ ▼. `floor`: ▼ past its last target stays in it (a long page's end, not the footer).
  */
 export interface NavZone {
   readonly name: string;
   readonly el: HTMLElement;
   readonly main?: boolean;
   readonly side?: boolean;
+  readonly floor?: boolean;
+}
+
+/**
+ * Where a row is left with ▲ ▼ from (pure): its whole box when it is one line (a short row, or a
+ * row that is a list's line however it wraps), else the focused member's own (a stacked row is
+ * left from its last member: its box would reach back up past it).
+ */
+export function rowLeaveBox(row: NavBox, from: NavBox, isLine: boolean): NavBox {
+  return isLine || row.height <= from.height * 1.5 ? row : from;
 }
 
 export interface FocusNavOptions {
@@ -500,11 +529,20 @@ export class FocusNav {
     const claim = dir === 'left' ? side.navLeft : dir === 'right' ? side.navRight : undefined;
     if (claim) {
       // A held arrow does not spin a choice (a stadium switch reloads the scene); a slider slides.
-      if (!repeat || (cur as HTMLElement & RepeatHandler).navRepeat === true) claim();
+      if ((!repeat || (cur as HTMLElement & RepeatHandler).navRepeat === true) && claim() === false) {
+        this.bounce(cur, dir);
+        return false;
+      }
       return true;
     }
     const zone = this.zoneOf(cur);
     if (zone === null) return false;
+    const to = (cur as HTMLElement & NavToHandlers).navTo?.[dir]?.() ?? null;
+    if (to !== null && to !== cur && this.targets(zone).includes(to)) {
+      this.path.push(cur, to, dir);
+      this.focus(to);
+      return true;
+    }
     const from = box(cur);
     const back = this.path.back(cur, dir);
     if (back !== null && back !== cur && this.targets().includes(back) && pickTarget(from, dir, [box(back)]) === 0) {
@@ -513,13 +551,15 @@ export class FocusNav {
       return true;
     }
     const row = cur.closest('[data-nav-row]');
+    const rowLine = row !== null && row.hasAttribute('data-nav-line');
+    const line = cur.closest('[data-nav-line]');
     const members = row !== null ? this.targets(zone).filter((e) => row.contains(e)) : null;
     let next: HTMLElement | null = null;
     if (members !== null) {
       if (horizontal) {
         const j = rowStep(members.indexOf(cur), members.length, dir);
         if (j >= 0) next = members[j];
-      } else {
+      } else if (!rowLine) {
         // A wrapped or stacked row (a narrow screen): its next line first.
         const others = members.filter((e) => e !== cur);
         const i = pickTarget(from, dir, others.map(box));
@@ -539,17 +579,18 @@ export class FocusNav {
       return true;
     }
     if (next === null) {
-      // Leaving a one-line row up or down: from the row's whole box. A stacked row (a narrow screen)
-      // is left from its last member, as anything else (its box would reach back up past it).
-      const rowBox = members !== null && !horizontal ? unionBox(members.map(box)) : null;
-      const src = rowBox !== null && rowBox.height <= from.height * 1.5 ? rowBox : from;
+      // Leaving a row up or down: from its whole box when it is one line (rowLeaveBox).
+      const src = members !== null && !horizontal ? rowLeaveBox(unionBox(members.map(box)), from, rowLine) : from;
       // Out of a target that spans the rows beside it: only what lies wholly that way, else the next zone.
       const span = !horizontal && cur.closest('[data-nav-span]') !== null;
-      const all = this.targets(zone).filter((e) => e !== cur && (members === null || !members.includes(e)) && (!span || beyondEdge(src, dir, box(e))));
+      // ◀ ▶ on a list's line: only what is on that line (past its ends: a side zone, else the bounce).
+      const all = this.targets(zone).filter(
+        (e) => e !== cur && (members === null || !members.includes(e)) && (!span || beyondEdge(src, dir, box(e))) && (!horizontal || line === null || line.contains(e)),
+      );
       const i = horizontal ? pickTarget(src, dir, all.map(box)) : pickTarget(lineBox(cur, src), dir, all.map((e) => lineBox(e)));
       if (i >= 0) next = horizontal ? all[i] : this.intoRow(all[i]);
     }
-    if (next === null && !repeat) next = horizontal ? this.crossSide(zone, from, dir) : this.crossZone(zone, from, dir);
+    if (next === null && !repeat && !(dir === 'down' && zone.floor === true)) next = horizontal ? this.crossSide(zone, from, dir) : this.crossZone(zone, from, dir);
     if (next === null) {
       this.bounce(cur, dir);
       return false;
