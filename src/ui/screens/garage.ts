@@ -277,8 +277,7 @@ export function garageScreen(menu: Menu): Screen {
   const drawCars = (v: GarageView): void => {
     for (const c of v.cars) rows.get(c.id)?.set(lineText(rowLine(c)), c.state, c.selected);
     const equipped = v.cars.find((c) => c.state === 'equipped') ?? v.cars[0];
-    rows.get(equipped.id)?.el.setAttribute('data-autofocus', '');
-    for (const c of v.cars) if (c.id !== equipped.id) rows.get(c.id)?.el.removeAttribute('data-autofocus');
+    for (const c of v.cars) rows.get(c.id)?.el.toggleAttribute('data-autofocus', c.id === equipped.id);
     yourName.textContent = carName(equipped.id);
     yourFree.hidden = equipped.price > 0;
     yourDesc.textContent = carDescription(equipped.id);
@@ -296,8 +295,10 @@ export function garageScreen(menu: Menu): Screen {
 
   const drawStadiums = (): void => {
     const using = host.theme;
-    for (const [id, row] of stadiumRows) row.set(id === using ? t('garage.stadiumInUse') : '', id === using ? 'inUse' : 'free', id === stadium);
-    stadiumRows.get(using)?.el.setAttribute('data-autofocus', '');
+    for (const [id, row] of stadiumRows) {
+      row.set(id === using ? t('garage.stadiumInUse') : '', id === using ? 'inUse' : 'free', id === stadium);
+      row.el.toggleAttribute('data-autofocus', id === using);
+    }
     detName.textContent = themeName(stadium);
     setChildren(detPrice);
     writeReason(t('garage.stadiumNote'), 'plain');
