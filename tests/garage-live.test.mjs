@@ -72,3 +72,12 @@ test('a phone held sideways: the row picked stays in view, the action names its 
   assert.match(CSS, /html\[data-shell='rail'\] \.mn-gar-act-for \{\s*display: block;/);
   assert.match(CSS, /html\[data-shell='rail'\] \.mn-gar-det-head,\s*html\[data-layout='portrait'\] \.mn-gar-det-head \{\s*display: none;/, 'the head the name stands in for');
 });
+
+test("a TV's CH± from a scrolled list: the other tab's rows start at the top, their pick in view", () => {
+  const render = body(GARAGE, '  function render(): void {');
+  // Both tabs' rows share one scroller (setChildren swaps them): its scroll is reset with the swap...
+  assert.match(render, /if \(list\.firstElementChild !== want\[0\]\.el\) \{\s*setChildren\(list, \.\.\.want\.map\(\(r\) => r\.el\)\);[\s\S]*?list\.scrollTop = 0;\s*revealed = null;\s*\}/);
+  // ...then the row picked (refocused without a scroll) is brought into view below it.
+  const swap = render.indexOf('list.scrollTop = 0');
+  assert.ok(swap < render.indexOf('pickedRow?.el.focus({ preventScroll: true })') && swap < render.indexOf('reveal(pickedRow.el)'));
+});

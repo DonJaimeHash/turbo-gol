@@ -354,7 +354,13 @@ export function garageScreen(menu: Menu): Screen {
     const want = tab === 'cars' ? [...rows.values()] : [...stadiumRows.values()];
     // The other tab's rows: a focus in the list goes to the new list's pick (Q / E, LT / RT from a row).
     const listFocused = list.contains(document.activeElement);
-    if (list.firstElementChild !== want[0].el) setChildren(list, ...want.map((r) => r.el));
+    if (list.firstElementChild !== want[0].el) {
+      setChildren(list, ...want.map((r) => r.el));
+      // Both tabs' rows share the scroller: the new ones start at their top (its scroll was the
+      // other tab's, its first row clipped under the tabs), then their pick comes into view below.
+      list.scrollTop = 0;
+      revealed = null;
+    }
     const actFocused = document.activeElement === detAction;
     drawPoints(v);
     earn.classList.toggle('mn-gar-earn-lime', earnIsLime(v));
