@@ -1296,7 +1296,10 @@ export class Game implements P2PGameHooks {
         const c = await net.config();
         return { regions: REGIONS, autoRegion: c.autoRegion ?? '', oauth: c.oauth ?? [], online: true, botFillMs: c.botFillMs ?? null };
       },
-      prewarmAntiBot: () => net?.prewarmAntiBot(),
+      // A guest's only: an account (or a page that was one: its hint) registers no guest.
+      prewarmAntiBot: () => {
+        if (!game.accounts.signedIn && game.accounts.hintName === null) net?.prewarmAntiBot();
+      },
       guestName: () => (game.online !== null ? game.online.name : t('game.guestName')),
       setGuestName: (name) => {
         if (game.online !== null) game.online.setName(name);
