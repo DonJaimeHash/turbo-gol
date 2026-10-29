@@ -5,8 +5,9 @@
  * MatchDO reports ranked matches; the matchmaker never talks to it (the Worker passes ratings in).
  *
  *   POST /register        { username, pw, recovery, refresh }        -> UserRef | 409 username_taken
- *   POST /auth-begin      { username, ip }                           -> (Credentials | { found: false }) & { slow } | 429 throttled
- *   POST /auth-finish     { userId?, username, ip, ok, refresh? }    -> UserRef (ok) | { ok: false }
+ *   POST /auth-begin      { username, ip, account? }                 -> (Credentials | { found: false }) & { slow } | 429 throttled
+ *   POST /auth-finish     { userId?, username, ip, account?, ok, refresh? } -> UserRef (ok) | { ok: false }
+ *     `account`: the password is checked behind a session of that account (failKeys' 'a:' counter).
  *   POST /refresh         { old, oldFamily?, next }                  -> UserRef | 401 bad_refresh | 401 refresh_reused
  *                                                                     (the family revoked) | 409 refresh_race (two tabs)
  *   POST /refresh-owner   { hash }                                   -> UserRef & { kind, device } | 404
@@ -70,7 +71,9 @@
  * too, and an IPv6 /48 with LOGIN_WIDE_MAX (one free allocation holds 65,536 /64s). A username with
  * LOGIN_USER_SLOW failures from anywhere is slowed down, never locked: auth-begin says `slow` and
  * the Worker then asks every sign-in on it for a solved Turnstile check. Recovery attempts share
- * the same counters. A daily alarm prunes old rows.
+ * the same counters. A password checked behind a session of the account (no Turnstile token to
+ * ask) also counts per account, and that counter locks after LOGIN_FAILS_FREE from any network.
+ * A daily alarm prunes old rows.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
@@ -263,15 +266,20 @@ export class AccountsDO extends DurableObject<Env> {
   /**
    * The counters of a sign-in or a recovery: [the (username, network) pair, the username, the
    * network (ipKey: an IPv4 address or an IPv6 /64), the IPv6 /48]; the pair's first, so a
-   * success clears it (keys[0]).
+   * success clears it (keys[0]). `account`: a password checked behind a session of that account
+   * (a password change, new codes, a rename, a re-authentication) also counts on the account's
+   * own 'a:' counter, which locks like a pair (LOGIN_FAILS_FREE, the doubling delay) whatever the
+   * network: one stolen session guesses no faster than one network, and its lock stops only the
+   * checks behind a session, never the owner's sign-in.
    */
-  private failKeys(username: string, ip: unknown): string[] {
+  private failKeys(username: string, ip: unknown, account?: unknown): string[] {
     const user = usernameKey(username);
     const net = typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? ipKey(ip) : '';
     const keys = ['up:' + user + '|' + net, 'u:' + user];
     if (net !== '') keys.push('ip:' + net);
     const wide = typeof ip === 'string' && ip.includes(':') ? wideKey(ip) : null;
     if (wide !== null) keys.push('w:' + wide);
+    if (typeof account === 'string' && account.length > 0 && account.length <= 64) keys.push('a:' + account);
     return keys;
   }
 
@@ -299,7 +307,7 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/auth-begin': {
         if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
-        const wait = this.throttled(this.failKeys(b.username, b.ip), now);
+        const wait = this.throttled(this.failKeys(b.username, b.ip, b.account), now);
         if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
         const c = s.credentials(b.username);
         const slow = this.slowFor(b.username, now);
@@ -307,7 +315,7 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/auth-finish': {
         if (typeof b.username !== 'string') return error(400, 'bad_request');
-        const keys = this.failKeys(b.username, b.ip);
+        const keys = this.failKeys(b.username, b.ip, b.account);
         const refresh = grantOf(b.refresh);
         if (b.ok !== true || typeof b.userId !== 'string' || refresh === null) {
           this.fail(keys, now);

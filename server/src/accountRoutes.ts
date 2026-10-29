@@ -414,30 +414,39 @@ async function slowDown(c: RouteContext, slow: boolean | undefined, token: unkno
 }
 
 /**
+ * Who checks a password: a sign-in, with its Turnstile token (the slow-down of a username under
+ * attack), or a session of the account itself (a password change, new codes, a rename, a
+ * re-authentication), which has no token: its failures count per account as well (AccountsDO's
+ * 'a:' counter, locked like a pair from any network), so a stolen session cannot guess the old
+ * password at the network caps' rate, and that lock never touches the owner's sign-in.
+ */
+type PasswordChecker = { token: unknown } | { account: string };
+
+/**
  * Look the user up and check the password; a missing user, or one without a password, still costs
  * one hash (no timing oracle) and gets the same answer (bad_credentials: nothing tells an OAuth-only
- * account apart). `human`: a sign-in's Turnstile token (the slow-down of a username under attack);
- * absent for a check behind a Bearer (a password change, a re-authentication), which has none.
+ * account apart).
  */
-async function checkCredentials(c: RouteContext, username: string, clientKey: string, human?: { token: unknown }): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
-  const begin = await accountsJson<{ found: boolean; slow?: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request) });
+async function checkCredentials(c: RouteContext, username: string, clientKey: string, who: PasswordChecker): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
+  const as = 'account' in who ? { account: who.account } : {};
+  const begin = await accountsJson<{ found: boolean; slow?: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request), ...as });
   if (!begin.ok) return { ok: false, res: pass(begin.res) };
   const d = begin.data;
-  if (human !== undefined) {
-    const blocked = await slowDown(c, d.slow, human.token);
+  if ('token' in who) {
+    const blocked = await slowDown(c, d.slow, who.token);
     if (blocked !== null) return { ok: false, res: blocked };
   }
   const refused = { ok: false as const, res: error(401, 'bad_credentials', 'Usuario o contraseña incorrectos') };
   if (!d.found) {
     await serverHash(clientKey, '00'.repeat(16));
-    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false });
+    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, ...as });
     return refused;
   }
   const cred = d as Credentials;
   if (!cred.hash) await serverHash(clientKey, '00'.repeat(16)); // the same time as a wrong password's
   const good = await verifyPassword(clientKey, cred);
   if (!good) {
-    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false });
+    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, ...as });
     return refused;
   }
   if (cred.banned) return { ok: false, res: error(403, 'banned', 'Cuenta suspendida') };
@@ -538,7 +547,7 @@ async function changePassword(c: RouteContext): Promise<Response> {
   if (!me.ok) return pass(me.res);
   if (me.data.hasPassword) {
     if (!isClientKey(b.oldPassword)) return error(400, 'bad_request');
-    const chk = await checkCredentials(c, me.data.name, b.oldPassword);
+    const chk = await checkCredentials(c, me.data.name, b.oldPassword, { account: s.sub });
     if (!chk.ok) return chk.res;
   } else {
     // A first password is a new way in: only a device that just proved the account's provider adds it.
@@ -559,7 +568,7 @@ async function newRecoveryCodes(c: RouteContext): Promise<Response> {
   if (!me.ok) return pass(me.res);
   if (me.data.hasPassword) {
     if (!b || !isClientKey(b.password)) return error(400, 'bad_request');
-    const chk = await checkCredentials(c, me.data.name, b.password);
+    const chk = await checkCredentials(c, me.data.name, b.password, { account: s.sub });
     if (!chk.ok) return chk.res;
   } else {
     // Without a password, the codes would be the way to make one: a fresh session only.
@@ -584,7 +593,7 @@ async function rename(c: RouteContext): Promise<Response> {
   if (me.data.hasPassword) {
     // The stored hash is of clientKey(oldName, password): check it, and store the new name's key.
     if (!isClientKey(b?.password) || !isClientKey(b?.newPassword)) return error(400, 'password_required', 'Ingresa tu contraseña para cambiar el nombre');
-    const chk = await checkCredentials(c, me.data.name, b.password);
+    const chk = await checkCredentials(c, me.data.name, b.password, { account: s.sub });
     if (!chk.ok) return chk.res;
     pw = await newPasswordRecord(b.newPassword);
   }
@@ -972,7 +981,7 @@ async function reauth(c: RouteContext): Promise<Response> {
   const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
   if (!me.ok) return pass(me.res);
   if (!me.data.hasPassword) return error(400, 'no_password', 'Esta cuenta entra con Google o Discord');
-  const chk = await checkCredentials(c, me.data.name, b.password);
+  const chk = await checkCredentials(c, me.data.name, b.password, { account: s.sub });
   if (!chk.ok) return chk.res;
   if (chk.cred.userId !== s.sub) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
   const r = await accountsJson<UserRef>(c.env, '/reauth', { userId: s.sub, hash: await sha256Hex(token) });

@@ -831,3 +831,45 @@ test('auth-5: a username under attack is slowed down, not locked: past 10 failur
   for (let i = 0; i < 10; i++) await login(env, 'fantasma', KEY2, `192.0.2.${150 + i}`);
   assert.equal((await login(env, 'fantasma', KEY2, '198.51.100.9')).json.error, 'turnstile_required');
 });
+
+// ---- review round: the password checks behind a session, the per-username cap, logout ------------
+
+test('auth-5 (review): a password checked behind a stolen session is throttled per account: 400 guesses at the old password from 80 /64s stop after 5, and the owner still signs in', async () => {
+  const { env, obj } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
+  const ana = await passwordAccount(env, obj, 'Robada', '198.18.230.1');
+  const t0 = Date.now();
+  obj.now = () => t0;
+  const cookie = '__Host-tg_rt=' + ana.rt;
+  const tally = {};
+  for (let i = 0; i < 400; i++) {
+    // 80 /64s in 2 /48s, 5 addresses each: no network cap is ever reached.
+    const ip = `2001:db8:${i % 160 < 80 ? 'a' : 'b'}:${(Math.floor(i / 5) % 80).toString(16)}::${(i % 5) + 1}`;
+    const r = await post(env, '/api/auth/password', { ip, bearer: ana.bearer, cookie, body: { oldPassword: (i + 1).toString(16).padStart(64, '0'), password: 'e'.repeat(64) } });
+    const k = r.status + ':' + (r.json?.error ?? 'ok');
+    tally[k] = (tally[k] ?? 0) + 1;
+  }
+  // 5 wrong answers, then refusals: AccountsDO's 'throttled' (and, merged with sec/edge-limits, its
+  // per-account rate limit on this route too: 'rate_limited'), never another password check.
+  assert.equal(tally['401:bad_credentials'], 5, JSON.stringify(tally));
+  assert.equal(Object.entries(tally).filter(([k]) => !k.startsWith('429:') && k !== '401:bad_credentials').length, 0, JSON.stringify(tally));
+  assert.ok(tally['429:throttled'] >= 5, JSON.stringify(tally));
+  // The right old password is refused too while the lock lasts, and nothing changed.
+  const right = await post(env, '/api/auth/password', { ip: '2001:db8:c:1::1', bearer: ana.bearer, cookie, body: { oldPassword: KEY, password: 'e'.repeat(64) } });
+  assert.equal(right.status, 429);
+  // The other checks behind a session share the account's counter.
+  const codes = await post(env, '/api/auth/recovery-codes', { ip: '2001:db8:c:2::1', bearer: ana.bearer, cookie, body: { password: KEY } });
+  assert.deepEqual([codes.status, codes.json.error], [429, 'throttled']);
+  const ren = await post(env, '/api/me/username', { ip: '2001:db8:c:3::1', bearer: ana.bearer, cookie, body: { username: 'Robada2', password: KEY, newPassword: KEY2 } });
+  assert.deepEqual([ren.status, ren.json.error], [429, 'throttled']);
+  // The lock stops only the checks behind a session: the owner signs in from home, with no check to solve.
+  const own = await login(env, 'Robada', KEY, '198.18.230.9');
+  assert.equal(own.status, 200, 'the owner is never locked out of signing in: ' + JSON.stringify(own.json));
+  const re = await post(env, '/api/auth/reauth', { ip: '2001:db8:c:4::1', bearer: ana.bearer, cookie, body: { password: KEY } });
+  assert.deepEqual([re.status, re.json.error], [429, 'throttled'], 'a re-authentication (the way to aat) too');
+  // Then the doubling delay of before: one more guess after 30 s, the next one waits 60 s.
+  obj.now = () => t0 + 31_000;
+  assert.equal((await post(env, '/api/auth/reauth', { ip: '2001:db8:c:5::1', bearer: ana.bearer, cookie, body: { password: KEY2 } })).status, 401);
+  const again = await post(env, '/api/auth/reauth', { ip: '2001:db8:c:6::1', bearer: ana.bearer, cookie, body: { password: KEY } });
+  assert.deepEqual([again.status, again.json.error], [429, 'throttled']);
+  assert.ok(again.json.retryAfterMs > 55_000, 'the next wait is 60 s');
+});
