@@ -51,6 +51,8 @@ export const NODE_ROUTES = {
   leave: '/internal/leave',
   status: '/internal/status',
   health: '/internal/health',
+  /** GET ?before=<ms>: the public replay list; GET /<matchId>: one entry and its sha (replayIndex.ts). */
+  replays: '/internal/replays',
 } as const;
 
 /** POST /internal/place: a match the matchmaker formed (its humans, fixed teams, length). */

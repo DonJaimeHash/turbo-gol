@@ -83,6 +83,8 @@ import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeAp
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
+import { REPLAY_PAGE } from '../../src/net/replays';
+import type { ReplayList } from '../../src/net/replays';
 import { HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz } from './nodeWatch';
 import type { WatchNote } from './nodeWatch';
 
@@ -645,6 +647,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
       if (method === 'POST' && path === NODE_ROUTES.leave) return await this.leave(request, cp);
       if (method === 'GET' && path === NODE_ROUTES.status) return this.matchStatus(url, cp);
       if (method === 'POST' && path === NODE_ROUTES.health) return await this.health(cp);
+      if (method === 'GET' && (path === NODE_ROUTES.replays || path.startsWith(NODE_ROUTES.replays + '/'))) return this.replays(url);
     } catch (e) {
       this.log(`${method} ${path} failed: ${String(e)}`);
       return error(500, 'internal');
@@ -709,6 +712,35 @@ export class NodeRegistryDO extends DurableObject<Env> {
     const bytes = await cp.loadReplayFor(matchId, h.get('x-node-id') ?? '', Number(h.get('x-node-ts')), h.get('x-node-sig') ?? '', h.get('x-replay-sha256') ?? '');
     if (!bytes) return error(404, 'no_replay');
     return new Response(bytes, { headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' } });
+  }
+
+  /**
+   * The public replay index (replayIndex.ts), read only: GET /internal/replays?before=<ms> lists a
+   * page, GET /internal/replays/<matchId> answers one entry with its sha (the Worker serves the bytes).
+   */
+  private replays(url: URL): Response {
+    const store = this.store;
+    if (!store) return error(503, 'nodes_unavailable', UNAVAILABLE);
+    const id = url.pathname.slice(NODE_ROUTES.replays.length + 1);
+    if (id) {
+      if (!/^[0-9a-f]{64}$/.test(id)) return error(404, 'not_found');
+      const e = store.replayEntry(id);
+      return e ? json(e) : error(404, 'no_replay');
+    }
+    const b = Number(url.searchParams.get('before'));
+    const before = Number.isFinite(b) && b > 0 ? b : Number.MAX_SAFE_INTEGER;
+    // One more than a page: whether there is a next one. The cursor is a settle time (`at < before`),
+    // so the rows that share the last kept row's millisecond move to the next page together.
+    const rows = store.replayList(before, REPLAY_PAGE + 1);
+    if (rows.length <= REPLAY_PAGE) return json({ matches: rows, next: null } satisfies ReplayList);
+    let matches = rows.slice(0, REPLAY_PAGE);
+    const lastAt = matches[REPLAY_PAGE - 1].at;
+    if (rows[REPLAY_PAGE].at === lastAt) {
+      const kept = matches.filter((m) => m.at !== lastAt);
+      // A whole page settled in one millisecond cannot happen; keep it rather than loop.
+      if (kept.length > 0) matches = kept;
+    }
+    return json({ matches, next: matches[matches.length - 1].at } satisfies ReplayList);
   }
 
   /** The public list (the reference server's GET /nodes/status): no address, no operator id. */

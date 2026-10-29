@@ -594,3 +594,344 @@ test('end to end: a maintainer lists the nodes through the Worker on a real Node
   const other = await req(env, 'GET', '/nodes/admin/nodes', { headers: { authorization: 'Bearer ' + (await accountToken(PLAYER, 'Jugador')) } });
   assert.equal(other.status, 403);
 });
+
+// ---- the public replays (replayIndex.ts, src/net/replays.ts) ----------------------------------------
+
+const { ReplayWriter, decodeReplay } = await import('../../nodes/shared/replay.ts');
+const { PUBLIC_REPLAY_MAX_BYTES, publicReplay, replayIndexItem } = await import('../src/replayIndex.ts');
+const { sha256Hex } = await import('../../nodes/shared/edcrypto.ts');
+const { NodeStore } = await import('../src/nodeStore.ts');
+
+const BUILD = { version: '0.3.0', protocol: 3, wasmSha256: 'd'.repeat(64) };
+const ACCOUNT_A = 'a1a1a1a1a1a1a1a1';
+const ACCOUNT_B = 'b2b2b2b2b2b2b2b2';
+const hex64 = (c) => c.repeat(64);
+
+/** A small valid TGR1 replay of a 1v1 between two accounts, as a node wrote it (its own names). */
+function tgr(matchId, names = ['nodeA', 'nodeB']) {
+  const w = new ReplayWriter({
+    v: 1,
+    matchId,
+    nodeId: 'feedfacefeedface',
+    build: BUILD,
+    mode: '1v1',
+    region: 'SA',
+    ranked: true,
+    roster: [
+      { slot: 0, team: 0, kind: 'player', name: names[0], playerId: ACCOUNT_A },
+      { slot: 1, team: 1, kind: 'player', name: names[1], playerId: ACCOUNT_B },
+    ],
+    matchLengthSeconds: 180,
+    kickoffSeed: 7,
+    botDifficulty: 'medium',
+    tickRate: 120,
+    checkpointEvery: 120,
+    startedAt: 0,
+  });
+  w.input(1, 0, new Int8Array([1, 0, 0, 0, 0, 0]), 0);
+  w.input(1, 1, new Int8Array([0, 1, 0, 0, 0, 0]), 0);
+  w.hash(120, 12345);
+  w.end({ tick: 200, winner: 1, blue: 1, red: 4, reason: 'rules', forfeitTeam: -1 });
+  return w.finish();
+}
+
+/** A settled MatchEntry, enough for NodeStore.finished and replayIndexItem. */
+function settled(matchId, { doneAt = Date.now(), replaySha = 'e'.repeat(64), ranked = true } = {}) {
+  return {
+    assign: {
+      matchId,
+      mode: '1v1',
+      region: 'SA',
+      ranked,
+      roster: [
+        { slot: 0, team: 0, kind: 'player', name: 'Javier', playerId: ACCOUNT_A },
+        { slot: 1, team: 1, kind: 'player', name: 'Rival', playerId: ACCOUNT_B },
+      ],
+      matchLengthSeconds: 180,
+      kickoffSeed: 7,
+      botDifficulty: 'medium',
+      createdAt: doneAt - 200_000,
+    },
+    nodeId: 'feedfacefeedface',
+    state: 'done',
+    humans: [],
+    leaves: new Set(),
+    leaveAt: new Map(),
+    neverJoined: new Set(),
+    left: new Set(),
+    offered: new Set(),
+    build: BUILD,
+    replaySha,
+    report: { kind: 'ended', matchId, result: { winner: 1, blue: 1, red: 4, endTick: 25_560, endReason: 'rules' } },
+    verdict: null,
+    ledger: null,
+    doneAt,
+  };
+}
+
+const rated = (matchId) => ({ kind: 'rated', matchId, playlist: '1v1', region: 'SA', winner: 1, blue: 1, red: 4, players: [], nodeId: 'feedfacefeedface' });
+
+function memStore(now = () => Date.now()) {
+  const db = new DatabaseSync(':memory:');
+  const sql = {
+    exec(query, ...bindings) {
+      const stmt = db.prepare(query);
+      const rows = /^\s*(SELECT|WITH)/i.test(query) ? stmt.all(...bindings) : (stmt.run(...bindings), []);
+      return { toArray: () => rows.map((r) => ({ ...r })) };
+    },
+  };
+  const store = new NodeStore(sql, (fn) => fn(), () => undefined, now);
+  store.migrate();
+  return store;
+}
+
+test('replay index: rated and unrated matches are listed with the control plane’s names and no account id; void ones and matches without a replay are not', () => {
+  const store = memStore();
+  const t = Date.now();
+  store.finished(settled(hex64('1'), { doneAt: t - 3000 }), rated(hex64('1')));
+  store.finished(settled(hex64('2'), { doneAt: t - 2000, ranked: false }), { kind: 'unrated', matchId: hex64('2'), nodeId: 'n', blue: 2, red: 2, verified: false });
+  store.finished(settled(hex64('3'), { doneAt: t - 1000 }), { kind: 'void', matchId: hex64('3'), nodeId: 'n', ranked: true, reason: 'hash_mismatch', players: [], noShows: [] });
+  store.finished(settled(hex64('4'), { doneAt: t, replaySha: null }), rated(hex64('4')));
+  const list = store.replayList(Number.MAX_SAFE_INTEGER, 30);
+  assert.deepEqual(
+    list.map((m) => [m.matchId[0], m.verified, m.blue, m.red]),
+    [
+      ['2', false, 2, 2],
+      ['1', true, 1, 4],
+    ],
+    'newest first; the tampered (void) match is never listed',
+  );
+  assert.deepEqual(list[1].players, [
+    { team: 0, name: 'Javier', bot: false },
+    { team: 1, name: 'Rival', bot: false },
+  ]);
+  assert.equal(list[1].ticks, 25_560);
+  assert.deepEqual(list[1].build, BUILD);
+  const text = JSON.stringify(list);
+  assert.ok(!text.includes(ACCOUNT_A) && !text.includes(ACCOUNT_B) && !text.includes('feedface'), 'no account id, no node id');
+  assert.deepEqual(store.replayEntry(hex64('1')), { item: list[1], sha: 'e'.repeat(64) });
+  assert.equal(store.replayEntry(hex64('3')), null);
+  assert.deepEqual(
+    store.replayList(t - 2000, 30).map((m) => m.matchId[0]),
+    ['1'],
+    'paged by settle time',
+  );
+});
+
+test('replay index: rows past R2’s 30 days are neither listed nor kept, and a failure never stops the settlement', () => {
+  let now = Date.now();
+  const store = memStore(() => now);
+  store.finished(settled(hex64('a'), { doneAt: now }), rated(hex64('a')));
+  now += 31 * 24 * 60 * 60_000;
+  assert.deepEqual(store.replayList(Number.MAX_SAFE_INTEGER, 30), [], 'expired with its replay');
+  store.finished(settled(hex64('b'), { doneAt: now }), rated(hex64('b')));
+  assert.equal(store.replayEntry(hex64('a')), null, 'pruned at the next write');
+  // A row that cannot be built leaves the match unlisted, and settled all the same.
+  const broken = settled(hex64('c'), { doneAt: now });
+  assert.throws(() => replayIndexItem({ ...broken, assign: { ...broken.assign, roster: null } }, rated(hex64('c'))));
+  const errors = [];
+  const realError = console.error;
+  console.error = (...a) => errors.push(a.join(' '));
+  store.replayRow = () => {
+    throw new Error('disk full');
+  };
+  try {
+    store.finished(broken, rated(hex64('c')));
+  } finally {
+    console.error = realError;
+    delete store.replayRow;
+  }
+  assert.equal(store.replayEntry(hex64('c')), null);
+  assert.equal(store.load(now).matches.filter((m) => m.matchId === hex64('c')).length, 1, 'the settled row was written');
+  assert.equal(errors.length, 1);
+});
+
+test('publicReplay: blanks the account ids and the node id, takes the index’s names and keeps every record byte for byte', () => {
+  const bytes = tgr(hex64('7'), ['<img src=x onerror=alert(1)>', 'nodeB']);
+  const item = replayIndexItem(settled(hex64('7')), rated(hex64('7')));
+  const out = publicReplay(bytes, item);
+  const r = decodeReplay(out);
+  assert.equal(r.header.nodeId, '');
+  assert.deepEqual(
+    r.header.roster.map((e) => [e.name, e.playerId]),
+    [
+      ['Javier', ''],
+      ['Rival', ''],
+    ],
+  );
+  const text = new TextDecoder().decode(out);
+  assert.ok(!text.includes(ACCOUNT_A) && !text.includes('feedface') && !text.includes('onerror'));
+  const orig = decodeReplay(bytes);
+  assert.deepEqual([r.inputCount, [...r.inputData], [...r.hashValues], r.end], [orig.inputCount, [...orig.inputData], [...orig.hashValues], orig.end]);
+  assert.throws(() => publicReplay(new Uint8Array([1, 2, 3, 4, 0, 0, 0, 0]), item), /magic/);
+  assert.throws(() => publicReplay(bytes.subarray(0, 20), item), /header length/);
+});
+
+/** `bytes` with its header JSON replaced by `mutate(header)` (a node writing what it likes). */
+function withHeader(bytes, mutate) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const hlen = dv.getUint32(4, true);
+  const h = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + hlen)));
+  const json = enc.encode(JSON.stringify(mutate(h) ?? h));
+  const out = new Uint8Array(8 + json.length + bytes.length - 8 - hlen);
+  out.set(bytes.subarray(0, 4));
+  new DataView(out.buffer).setUint32(4, json.length, true);
+  out.set(json, 8);
+  out.set(bytes.subarray(8 + hlen), 8 + json.length);
+  return out;
+}
+
+test('publicReplay: the header is rebuilt from an allow-list; whatever else a node wrote is dropped', () => {
+  const item = replayIndexItem(settled(hex64('7')), rated(hex64('7')));
+  const hostile = withHeader(tgr(hex64('7')), (h) => {
+    h.leak = [ACCOUNT_A, ACCOUNT_B];
+    h.region = `SA ${ACCOUNT_A}`;
+    h.build = { ...h.build, version: ACCOUNT_A };
+    h.roster[0].extra = ACCOUNT_A;
+    h['__proto__'] = { polluted: ACCOUNT_A };
+  });
+  const out = publicReplay(hostile, item);
+  const text = new TextDecoder().decode(out);
+  assert.ok(!text.includes(ACCOUNT_A) && !text.includes(ACCOUNT_B), 'no account id survives, wherever the node put it');
+  const r = decodeReplay(out);
+  assert.deepEqual([r.header.region, r.header.build, r.header.matchId, r.header.ranked], ['SA', BUILD, hex64('7'), true], 'identity and build from the control plane');
+  assert.deepEqual(Object.keys(r.header.roster[0]).sort(), ['kind', 'name', 'playerId', 'slot', 'team']);
+  assert.equal({}.polluted, undefined);
+});
+
+test('publicReplay: refuses a roster that is not the control plane’s, odd types, junk records and oversized bytes', () => {
+  const item = replayIndexItem(settled(hex64('7')), rated(hex64('7')));
+  const base = tgr(hex64('7'));
+  const refused = [
+    ['teams swapped', (h) => void ((h.roster[0].team = 1), (h.roster[1].team = 0))],
+    ['a human made a bot', (h) => void (h.roster[1].kind = 'bot')],
+    ['an object for a slot', (h) => void (h.roster[0].slot = { playerId: ACCOUNT_A })],
+    ['an extra car', (h) => void h.roster.push({ slot: 2, team: 1, kind: 'bot', name: 'x' })],
+    ['a string seed', (h) => void (h.kickoffSeed = 'seven')],
+    ['another tick rate', (h) => void (h.tickRate = 60)],
+    ['an unknown difficulty', (h) => void (h.botDifficulty = 'insane')],
+    ['a header that is an array', () => [1, 2, 3]],
+  ];
+  for (const [what, mutate] of refused) assert.throws(() => publicReplay(withHeader(base, mutate), item), Error, what);
+  const junk = new Uint8Array(base.length + 5);
+  junk.set(base);
+  junk.set([9, 0, 0, 0, 0], base.length);
+  assert.throws(() => publicReplay(junk, item), /record/, 'bytes after END');
+  const big = new Uint8Array(PUBLIC_REPLAY_MAX_BYTES + 1);
+  big.set(base);
+  assert.throws(() => publicReplay(big, item), /too large/);
+});
+
+test('replay list paging: matches settled in the same millisecond are never split across pages and lost', async () => {
+  const t = Date.now() - 60_000;
+  const entries = [];
+  // 31 matches: the 29 newest at distinct times, then two at the same millisecond across the page boundary.
+  for (let i = 0; i < 29; i++) entries.push({ id: (100 + i).toString(16).padStart(64, '0'), doneAt: t - i * 1000, bytes: null, sha: 'e'.repeat(64) });
+  entries.push({ id: hex64('b'), doneAt: t - 40_000, bytes: null, sha: 'e'.repeat(64) });
+  entries.push({ id: hex64('c'), doneAt: t - 40_000, bytes: null, sha: 'e'.repeat(64) });
+  const env = await replayWorld(entries);
+  const seen = [];
+  let next = null;
+  let pages = 0;
+  do {
+    // The first page by a cursor too: the isolate's cached first page may be another test's.
+    const page = await jsonOf(await req(env, 'GET', `/nodes/replays?before=${next ?? Date.now() - 1}`));
+    seen.push(...page.matches.map((m) => m.matchId));
+    next = page.next;
+    pages++;
+  } while (next !== null && pages < 5);
+  assert.equal(new Set(seen).size, 31, 'every match once');
+  assert.equal(seen.length, 31, 'none twice');
+  assert.equal(pages, 2);
+});
+
+
+/** A real NodeRegistryDO behind the Worker, its index holding `entries`, their replays in R2. */
+async function replayWorld(entries) {
+  const env = makeEnv();
+  const reg = realRegistry(env);
+  env.NODES.handler = (r) => reg.obj.fetch(r);
+  await reg.obj.ready;
+  for (const { id, doneAt, bytes, sha } of entries) {
+    reg.obj.store.finished(settled(id, { doneAt, replaySha: sha ?? (await sha256Hex(bytes)) }), rated(id));
+    if (bytes) await env.NODE_REPLAYS.put(id, bytes);
+  }
+  return env;
+}
+
+test('GET /nodes/replays: anyone lists the settled matches, newest first, paged; the first page is cached by the isolate', async () => {
+  const t = Date.now();
+  const entries = [];
+  for (let i = 0; i < 32; i++) entries.push({ id: (i + 1).toString(16).padStart(64, '0'), doneAt: t - 100_000 + i * 1000, bytes: null, sha: 'e'.repeat(64) });
+  const env = await replayWorld(entries);
+  const res = await req(env, 'GET', '/nodes/replays');
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('cache-control'), /max-age=30/);
+  const page = await jsonOf(res);
+  assert.equal(page.matches.length, 30);
+  assert.equal(page.matches[0].matchId, entries[31].id);
+  assert.equal(page.next, entries[2].doneAt);
+  const rest = await jsonOf(await req(env, 'GET', `/nodes/replays?before=${page.next}`));
+  assert.deepEqual(
+    rest.matches.map((m) => m.matchId),
+    [entries[1].id, entries[0].id],
+  );
+  assert.equal(rest.next, null);
+  // A junk ?before= is the first page, never an error.
+  assert.equal((await jsonOf(await req(env, 'GET', '/nodes/replays?before=1e9;drop'))).matches.length, 30);
+  const seen = env.NODES.seen.length;
+  await req(env, 'GET', '/nodes/replays');
+  assert.equal(env.NODES.seen.length, seen, 'the first page came from the isolate cache');
+});
+
+test('GET /nodes/replays/<id>/view: the public bytes of a listed match; 404 for an unlisted one, a missing object or bytes that changed', async () => {
+  const good = hex64('a');
+  const swapped = hex64('2');
+  const gone = hex64('3');
+  const env = await replayWorld([
+    { id: good, doneAt: Date.now() - 3000, bytes: tgr(good) },
+    { id: swapped, doneAt: Date.now() - 2000, bytes: tgr(swapped), sha: 'f'.repeat(64) },
+    { id: gone, doneAt: Date.now() - 1000, bytes: null, sha: 'e'.repeat(64) },
+  ]);
+  const res = await req(env, 'GET', `/nodes/replays/${good}/view`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'application/octet-stream');
+  assert.match(res.headers.get('cache-control'), /immutable/);
+  const r = decodeReplay(new Uint8Array(await res.arrayBuffer()));
+  assert.deepEqual(
+    r.header.roster.map((e) => [e.name, e.playerId]),
+    [
+      ['Javier', ''],
+      ['Rival', ''],
+    ],
+  );
+  assert.equal((await req(env, 'GET', `/nodes/replays/${swapped}/view`)).status, 404, 'the R2 object is not the uploaded one');
+  assert.equal((await req(env, 'GET', `/nodes/replays/${gone}/view`)).status, 404, 'expired from R2');
+  assert.equal((await req(env, 'GET', `/nodes/replays/${hex64('9')}/view`)).status, 404, 'never listed (a void match, say)');
+  assert.equal((await req(env, 'GET', `/nodes/replays/${good.toUpperCase()}/view`)).status, 404);
+  assert.equal((await req(env, 'GET', `/nodes/replays/${good}`)).status, 404, 'the verifiers’ route still wants a signed request');
+});
+
+test('GET /nodes/replays/<id>/view is limited per address', async () => {
+  const id = hex64('1');
+  const env = await replayWorld([{ id, doneAt: Date.now(), bytes: tgr(id) }]);
+  const ip = freshIp();
+  let last = 0;
+  for (let i = 0; i < 31; i++) last = (await req(env, 'GET', `/nodes/replays/${id}/view`, { ip })).status;
+  assert.equal(last, 429);
+});
+
+test('without the node settings the replay routes are a 404', async () => {
+  const env = makeEnv({ NODES: undefined });
+  assert.equal((await req(env, 'GET', '/nodes/replays')).status, 404);
+  assert.equal((await req(env, 'GET', `/nodes/replays/${hex64('1')}/view`)).status, 404);
+});
+
+// Last: it fills the isolate's first-page cache, which the list test above must find empty.
+test('GET /nodes/replays: a cursor of 0, from the future or not a number is the cached first page', async () => {
+  const env = await replayWorld([{ id: hex64('d'), doneAt: Date.now() - 1000, bytes: null, sha: 'e'.repeat(64) }]);
+  await req(env, 'GET', '/nodes/replays');
+  const asked = env.NODES.seen.length;
+  for (const q of ['0', String(Date.now() + 86_400_000), 'abc', '-5', '99999999999999999']) assert.equal((await req(env, 'GET', `/nodes/replays?before=${q}`)).status, 200);
+  assert.equal(env.NODES.seen.length, asked, 'none of them reached the object');
+});
