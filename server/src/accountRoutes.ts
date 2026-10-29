@@ -217,7 +217,7 @@ export async function accountSession(env: Env, u: UserRef, nowMs: number = Date.
   const iat = nowSeconds(nowMs);
   const exp = Math.min(iat + ACCOUNT_SESSION_TTL_SECONDS, capExp ?? Infinity);
   const car = u.car ?? DEFAULT_CAR;
-  const claims: SessionClaims = { sub: u.userId, name: u.username, iat, exp, acct: 1 };
+  const claims: SessionClaims = { typ: 's', sub: u.userId, name: u.username, iat, exp, acct: 1 };
   // Absent = the default car on every path (the seats, the rosters): the token carries only another one.
   if (car !== DEFAULT_CAR) claims.car = car;
   if (typeof u.createdAt === 'number' && u.createdAt > 0) claims.since = nowSeconds(u.createdAt);
@@ -618,6 +618,8 @@ function redirect(location: string, cookies: readonly string[] = []): Response {
 }
 
 interface OAuthState {
+  /** 'oa' (auth.ts): an OAuth state is never a session or a ticket, nor they one. */
+  typ: 'oa';
   p: OAuthProvider;
   v: string;
   n: string;
@@ -640,7 +642,7 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
   const verifier = base64urlEncode(randomBytes(32));
   const challenge = base64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(verifier))));
   const nonce = base64urlEncode(randomBytes(16));
-  const state: OAuthState = { p: provider, v: verifier, n: nonce, link, exp: nowSeconds() + OAUTH_TTL_S };
+  const state: OAuthState = { typ: 'oa', p: provider, v: verifier, n: nonce, link, exp: nowSeconds() + OAUTH_TTL_S };
   const cookie = `${OAUTH_COOKIE}=${await signJwt(c.env.JWT_SECRET, state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${OAUTH_TTL_S}`;
   const q = new URLSearchParams({
     client_id: cfg.clientId,
@@ -684,7 +686,7 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
   const raw = cookieOf(c.request, OAUTH_COOKIE);
   const st = raw ? await verifyJwt<OAuthState>(c.env.JWT_SECRET, raw) : null;
   const code = url.searchParams.get('code');
-  if (!st || st.p !== provider || st.n !== url.searchParams.get('state') || !code || code.length > 2048) return fail('bad_state');
+  if (!st || st.typ !== 'oa' || st.p !== provider || st.n !== url.searchParams.get('state') || !code || code.length > 2048) return fail('bad_state');
   const ident = await oauthIdentity(cfg, provider, code, st.v, `${publicOrigin(c.env, c.request)}/api/auth/oauth/${provider}/callback`);
   if (!ident) return fail('provider_error');
   const refreshTok = newRefreshToken();
