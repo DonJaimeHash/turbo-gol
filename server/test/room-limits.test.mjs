@@ -322,3 +322,137 @@ test('RoomDO: a room whose peers connect and say ready within seconds starts as 
   await h.alarm();
   assert.equal(a.readyState, 1, 'started: the match runs to its TTL');
 });
+
+// ---- cost-2: TURN only on demand, revoked, counted, with a kill switch ------------------------------
+
+const E = await import('../src/env.ts');
+
+/** globalThis.fetch as the TURN API: mints `u<n>` credentials, records every call (generate and revoke). */
+function fakeTurnApi() {
+  const real = globalThis.fetch;
+  const calls = [];
+  let n = 0;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    calls.push({ url: u, body: init && init.body ? JSON.parse(init.body) : null });
+    if (u.endsWith('/revoke')) return new RealResponse(null, { status: 204 });
+    n++;
+    return new RealResponse(JSON.stringify({ iceServers: { urls: ['turn:turn.example:3478?transport=udp'], username: 'u' + n, credential: 'c' + n } }), { status: 200 });
+  };
+  return {
+    calls,
+    mints: () => calls.filter((c) => c.url.endsWith('/generate-ice-servers')),
+    revokes: () => calls.filter((c) => c.url.endsWith('/revoke')).map((c) => decodeURIComponent(c.url.split('/credentials/')[1].replace('/revoke', ''))),
+    restore: () => {
+      globalThis.fetch = real;
+    },
+  };
+}
+
+const TURN_VARS = { TURN_KEY_ID: 'key', TURN_KEY_TOKEN: 'tok' };
+const STUN = [{ urls: ['stun:stun.cloudflare.com:3478'] }];
+
+test("RoomDO: TURN is minted only when a seat asks for it (never in a welcome), for the room's remaining life, at most TURN_PER_SLOT per seat", async () => {
+  const api = fakeTurnApi();
+  try {
+    const h = await makeRoom(ONE_V_ONE, { vars: TURN_VARS });
+    const a = await h.join(0);
+    await h.join(1);
+    assert.deepEqual(a.of('room')[0].iceServers, STUN, 'the welcome: STUN only');
+    assert.equal(api.calls.length, 0, 'no TURN API call for the welcomes');
+    advance(120_000);
+    await h.send(a, { type: 'turn' });
+    const got = a.of('turn').at(-1).iceServers;
+    assert.equal(got.length, 2, 'STUN + TURN');
+    assert.equal(got[1].username, 'u1');
+    assert.equal(api.mints().length, 1);
+    const ttl = api.mints()[0].body.ttl;
+    assert.ok(ttl <= (R.ROOM_TTL_MS - 120_000) / 1000 && ttl >= (R.ROOM_TTL_MS - 125_000) / 1000, `ttl = the room's remaining life (${ttl} s)`);
+    assert.deepEqual(h.mm.calls.filter((c) => c.path === '/turn-quota').map((c) => c.body.playerId), ['pa'], 'counted for the player at the matchmaker');
+    await h.send(a, { type: 'turn' });
+    await h.send(a, { type: 'turn' });
+    assert.equal(api.mints().length, 2, 'TURN_PER_SLOT: one more, then none');
+    assert.deepEqual(a.of('turn').at(-1).iceServers, []);
+  } finally {
+    api.restore();
+  }
+});
+
+test("RoomDO: a seat's TURN credentials are revoked when its socket goes, and the room's at its cleanup", async () => {
+  const api = fakeTurnApi();
+  try {
+    const h = await makeRoom(ONE_V_ONE, { vars: TURN_VARS });
+    const a = await h.join(0);
+    const b = await h.join(1);
+    await h.send(a, { type: 'turn' });
+    await h.send(b, { type: 'turn' });
+    await h.room.webSocketClose(a, 1000, '', true);
+    await Promise.all(h.ctx.waits);
+    assert.deepEqual(api.revokes(), ['u1'], "A's credential dies with A's seat");
+    advance(R.ROOM_TTL_MS);
+    await h.alarm(); // the hard TTL: cleanup
+    await Promise.all(h.ctx.waits);
+    assert.deepEqual(api.revokes().sort(), ['u1', 'u2'], "B's at the cleanup");
+  } finally {
+    api.restore();
+  }
+});
+
+test("RoomDO: no TURN without the secrets, with turn_cf_disabled set, or past the player's daily quota: an empty answer, nothing minted", async () => {
+  const api = fakeTurnApi();
+  try {
+    const none = await makeRoom(ONE_V_ONE);
+    const a0 = await none.join(0);
+    await none.send(a0, { type: 'turn' });
+    assert.deepEqual(a0.of('turn').at(-1).iceServers, []);
+    const killed = await makeRoom(ONE_V_ONE, { vars: { ...TURN_VARS, FLAGS: { get: async (k) => (k === 'turn_cf_disabled' ? '1' : null) } } });
+    const a1 = await killed.join(0);
+    await killed.send(a1, { type: 'turn' });
+    assert.deepEqual(a1.of('turn').at(-1).iceServers, [], 'the kill switch: no TURN');
+    const quota = await makeRoom(ONE_V_ONE, { vars: TURN_VARS, mm: makeMm((path) => (path === '/turn-quota' ? { ok: false } : null)) });
+    const a2 = await quota.join(0);
+    await quota.send(a2, { type: 'turn' });
+    assert.deepEqual(a2.of('turn').at(-1).iceServers, []);
+    assert.equal(api.mints().length, 0, 'nothing minted in any of them');
+  } finally {
+    api.restore();
+  }
+});
+
+test('MatchmakerDO /turn-quota: TURN_PER_PLAYER_PER_DAY credentials a player a day, then no; a new day starts over', async () => {
+  const M = await import('../src/MatchmakerDO.ts');
+  const storage = new FakeStorage();
+  storage.list = async ({ prefix }) => new Map([...storage.map].filter(([k]) => k.startsWith(prefix)));
+  storage.getAlarm = async () => storage.alarm;
+  const mm = new M.MatchmakerDO({ storage, blockConcurrencyWhile: (fn) => fn() }, { JWT_SECRET: SECRET });
+  await new Promise((r) => setTimeout(r, 0));
+  let t = 3 * 86_400_000 + 1000;
+  mm.now = () => t;
+  const secret = await internalSecret(SECRET);
+  const ask = async (playerId) => (await (await mm.fetch(new Request('https://matchmaker/turn-quota', { method: 'POST', headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' }, body: JSON.stringify({ playerId }) }))).json()).ok;
+  for (let i = 0; i < E.TURN_PER_PLAYER_PER_DAY; i++) assert.equal(await ask('p1'), true);
+  assert.equal(await ask('p1'), false, 'the day is used up');
+  assert.equal(await ask('p2'), true, 'per player');
+  t += 86_400_000;
+  assert.equal(await ask('p1'), true, 'a new day');
+  await mm.alarm();
+  assert.equal(storage.map.size, 1, "yesterday's rows swept");
+});
+
+test('env: iceServersFor takes a ttl (clamped to 60..1200 s) and the kill flag; revokeTurnCredential posts to .../credentials/<username>/revoke', async () => {
+  const seen = [];
+  const f = async (url, init) => {
+    seen.push({ url: String(url), init });
+    return String(url).endsWith('/revoke') ? new RealResponse(null, { status: 204 }) : new RealResponse(JSON.stringify({ iceServers: { urls: 'turn:x', username: 'uu', credential: 'cc' } }), { status: 200 });
+  };
+  await E.iceServersFor(TURN_VARS, f, 5);
+  await E.iceServersFor(TURN_VARS, f, 99_999);
+  assert.deepEqual(seen.map((s) => JSON.parse(s.init.body).ttl), [60, 1200]);
+  const off = await E.iceServersFor({ ...TURN_VARS, FLAGS: { get: async () => 'on' } }, f);
+  assert.deepEqual(off, STUN);
+  assert.equal(seen.length, 2, 'the kill flag: nothing fetched');
+  assert.equal(await E.revokeTurnCredential({ TURN_KEY_ID: 'k/1', TURN_KEY_TOKEN: 't' }, 'user:1', f), true);
+  assert.equal(seen.at(-1).url, 'https://rtc.live.cloudflare.com/v1/turn/keys/k%2F1/credentials/user%3A1/revoke');
+  assert.equal(seen.at(-1).init.headers.authorization, 'Bearer t');
+  assert.deepEqual(E.turnUsernames([{ urls: 'stun:a' }, { urls: 'turn:b', username: 'x', credential: 'y' }]), ['x']);
+});

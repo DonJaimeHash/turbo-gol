@@ -1036,7 +1036,11 @@ function controlTurn() {
   const waiting = [];
   let holding = false;
   const answer = () => new RealResponse(JSON.stringify({ iceServers: { urls: ['turn:turn.example:3478?transport=udp'], username: 'u', credential: 'c' } }), { status: 200 });
-  globalThis.fetch = () => (holding ? new Promise((resolve) => waiting.push(() => resolve(answer()))) : Promise.resolve(answer()));
+  let calls = 0;
+  globalThis.fetch = () => {
+    calls++;
+    return holding ? new Promise((resolve) => waiting.push(() => resolve(answer()))) : Promise.resolve(answer());
+  };
   return {
     hold() {
       holding = true;
@@ -1046,6 +1050,7 @@ function controlTurn() {
       for (const w of waiting.splice(0)) w();
     },
     pending: () => waiting.length,
+    calls: () => calls,
     restore() {
       globalThis.fetch = real;
     },
@@ -1056,7 +1061,7 @@ const turnEnv = (mmNs) => ({ JWT_SECRET: SECRET, MATCHMAKER: mmNs, TURN_KEY_ID: 
 const forgivesOf = (mm) => mm.releases.filter((x) => x.url === 'https://matchmaker/forgive').map((x) => x.body);
 const releasesOf = (mm) => mm.releases.filter((x) => x.url === 'https://matchmaker/release').map((x) => x.body);
 
-test('RoomDO: an upgrade still waiting for TURN when the no-show grace passes is not a no-show: the start waits, it is admitted (welcome, no drop) and plays', async () => {
+test('RoomDO: the welcome carries STUN only even with TURN configured, and nothing is minted at the upgrade (TURN is asked for per seat: room-limits.test.mjs); a staggered joiner inside the grace plays', async () => {
   const turn = controlTurn();
   try {
     await withClock(8_000_000, async (clock) => {
@@ -1064,30 +1069,14 @@ test('RoomDO: an upgrade still waiting for TURN when the no-show grace passes is
       const h = await makeRoom(PEERS_2V2_FULL, '2v2', turnEnv(mm.ns));
       const t0 = clock.t;
       const [a, b, c] = [await h.join(0), await h.join(1), await h.join(2)];
-      assert.equal(a.of('room')[0].iceServers.length, 2, 'STUN + the minted TURN entry');
-      clock.t = t0 + R.NO_SHOW_MS - 500; // D reaches the room inside the grace; the TURN API is slow
-      turn.hold();
-      const pendingD = h.upgrade(3);
-      await settle();
-      assert.equal(turn.pending(), 1, 'D waits for its TURN credentials');
+      assert.deepEqual(a.of('room')[0].iceServers, [{ urls: ['stun:stun.cloudflare.com:3478'] }], 'STUN only');
+      clock.t = t0 + R.NO_SHOW_MS - 500; // D reaches the room inside the grace
+      const d = await h.join(3);
+      assert.equal(turn.pending() + turn.calls(), 0, 'no TURN API call for any welcome');
       clock.t = t0 + R.NO_SHOW_MS;
       await h.room.alarm();
-      for (const ws of [a, b, c]) assert.deepEqual(ws.of('peerLeft'), [], 'D is joining: not declared a no-show');
-      for (const ws of [a, b, c]) await h.send(ws, { type: 'ready' });
-      assert.equal(a.of('start').length, 0, 'the start waits for the joining slot');
-      turn.release();
-      const rd = await pendingD;
-      assert.equal(rd.upgraded, true, `D admitted (${rd.status})`);
-      const d = h.ctx.sockets.at(-1);
-      const w = d.of('room')[0];
-      assert.equal(w.you.slot, 3);
-      assert.ok(w.slots.every((s) => s.connected && s.left === undefined), 'D sees everyone connected, nobody left');
-      assert.deepEqual(d.of('start'), []);
-      assert.deepEqual(d.of('drop'), []);
-      assert.equal(a.of('peerJoined').at(-1).slot.slot, 3, 'the others learn D joined');
-      const p = await h.internal('/internal/presence?playerId=pd');
-      assert.deepEqual(p.json, { roomId: 'r1', slot: 3, connected: true, everConnected: true, left: false, dropped: false, started: false });
-      await h.send(d, { type: 'ready' });
+      for (const ws of [a, b, c, d]) assert.deepEqual(ws.of('peerLeft'), [], 'nobody declared a no-show');
+      for (const ws of [a, b, c, d]) await h.send(ws, { type: 'ready' });
       for (const ws of [a, b, c, d]) {
         assert.equal(ws.of('start').length, 1, 'start to all four');
         assert.deepEqual(ws.of('drop'), [], 'nobody dropped at tick 0');
@@ -1100,75 +1089,9 @@ test('RoomDO: an upgrade still waiting for TURN when the no-show grace passes is
   }
 });
 
-test('RoomDO: a slot given up while its upgrade waits for TURN (/internal/leave) is refused 403 left when it resumes; it showed up: the leave answer and the start drop name no no-show, no forgive', async () => {
-  const turn = controlTurn();
-  try {
-    await withClock(9_000_000, async () => {
-      const mm = makeMatchmakerNs();
-      const h = await makeRoom(PEERS_2V2_FULL, '2v2', turnEnv(mm.ns));
-      const [a, b, c] = [await h.join(0), await h.join(1), await h.join(2)];
-      const accepted = h.ctx.sockets.length;
-      turn.hold();
-      const pendingD = h.upgrade(3);
-      await settle();
-      const r = await h.internal('/internal/leave', { playerId: 'pd' });
-      assert.deepEqual(r.json, { ok: true, slot: 3, closed: false, everConnected: false, noShow: false }, 'its ticket reached the room: not a no-show');
-      assert.deepEqual(a.of('peerLeft'), [{ type: 'peerLeft', slot: 3, peerId: '' }]);
-      turn.release();
-      const rd = await pendingD;
-      assert.equal(rd.status, 403);
-      assert.equal((await rd.json()).error, 'left', 'given up during the await: refused when it resumes');
-      assert.equal(h.ctx.sockets.length, accepted, 'no socket accepted');
-      assert.equal(a.of('peerJoined').length, 2, 'B and C only');
-      const p = await h.internal('/internal/presence?playerId=pd');
-      assert.equal(p.json.connected, false);
-      assert.equal(p.json.left, true);
-      for (const ws of [a, b, c]) await h.send(ws, { type: 'ready' });
-      for (const ws of [a, b, c]) {
-        assert.equal(ws.of('start').length, 1);
-        assert.deepEqual(ws.of('drop'), [{ type: 'drop', slot: 3, atTick: 0 }]);
-      }
-      await settle();
-      assert.deepEqual(releasesOf(mm), [{ matchId: 'r1', playerIds: ['pd'], closeRoom: false }], 'the start drop frees its lock without naming it a no-show');
-      assert.deepEqual(forgivesOf(mm), [], 'nothing was counted: nothing to forgive');
-    });
-  } finally {
-    turn.restore();
-  }
-});
-
-test('RoomDO: an upgrade that waited for TURN through the grace and then fails is declared a no-show right away (peerLeft, the ready ones start)', async () => {
-  const turn = controlTurn();
-  try {
-    await withClock(10_000_000, async (clock) => {
-      const h = await makeRoom(PEERS_2V2_FULL, '2v2', turnEnv(ENV.MATCHMAKER));
-      const t0 = clock.t;
-      const [a, b, c] = [await h.join(0), await h.join(1), await h.join(2)];
-      for (const ws of [a, b, c]) await h.send(ws, { type: 'ready' });
-      turn.hold();
-      const pendingD = h.upgrade(3);
-      await settle();
-      clock.t = t0 + R.NO_SHOW_MS;
-      await h.room.alarm();
-      assert.deepEqual(a.of('peerLeft'), [], 'joining: waited for');
-      assert.equal(a.of('start').length, 0);
-      const get = h.ctx.storage.get.bind(h.ctx.storage);
-      h.ctx.storage.get = async (k) => {
-        if (String(k).startsWith('jti:')) throw new Error('storage down');
-        return get(k);
-      };
-      turn.release();
-      await assert.rejects(pendingD, /storage down/);
-      for (const ws of [a, b, c]) {
-        assert.deepEqual(ws.of('peerLeft'), [{ type: 'peerLeft', slot: 3, peerId: '' }], 'declared once its upgrade failed');
-        assert.equal(ws.of('start').length, 1, 'the ready ones start');
-        assert.deepEqual(ws.of('drop'), [{ type: 'drop', slot: 3, atTick: 0 }]);
-      }
-    });
-  } finally {
-    turn.restore();
-  }
-});
+// (The two tests of an upgrade given up, or failing, while it waited for its TURN credentials are
+// gone with that wait: the upgrade makes no outgoing fetch any more, so nothing can run between
+// its checks and the accept.)
 
 test('RoomDO: a ticket arriving after its slot was declared a no-show and dropped -> 403 left + one /forgive (the strike of this room is taken back); the cleanup names nobody', async () => {
   await withClock(11_000_000, async (clock) => {

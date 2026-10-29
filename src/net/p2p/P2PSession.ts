@@ -157,6 +157,7 @@ import {
   setStateResponseLen,
   splitStateTrailer,
   stateTrailerBytes,
+  type IceServer,
   type P2pInputPacket,
   type RoomSlot,
   type RoomWelcome,
@@ -378,6 +379,9 @@ export interface RoomLike {
   serverToLocal(serverMs: number): number;
   /** Slow the clock pings down once the match runs (optional). */
   setPingIntervalMs?(ms: number): void;
+  /** Ask for TURN credentials (optional in fakes); the answer comes to onTurn. */
+  requestTurn?(): boolean;
+  onTurn?: ((iceServers: IceServer[]) => void) | null;
   close(code?: number, reason?: string): void;
   dispose(): void;
 }
@@ -388,6 +392,10 @@ export interface MeshLike {
   onCtl: ((slot: number, bytes: Uint8Array) => void) | null;
   onPeerConnected: ((slot: number) => void) | null;
   onPeerDead: ((slot: number) => void) | null;
+  /** A peer is not connecting well: ask for TURN (optional in fakes). */
+  onIceTrouble?: ((slot: number) => void) | null;
+  /** The room's TURN answer (optional in fakes). */
+  setIceServers?(list: readonly IceServer[]): boolean;
   readonly bytesIn: number;
   readonly bytesOut: number;
   addPeer(slot: number): void;
@@ -618,6 +626,8 @@ export class P2PSession {
   private waitText: string | null = null;
   private lastHashReportAt = -1e9;
   private hashReportDue = false;
+  /** This room's 'turn' went out (once per room: the credentials cover every peer link of the seat). */
+  private turnAsked = false;
   private lastConfirmedHash = 0;
   private lastConfirmedHashTick = 0;
   private minorityStreak = 0;
@@ -1439,6 +1449,12 @@ export class P2PSession {
     room.onSignalDropped = (to) => {
       if (this.mesh !== null && this.mesh.signalDropped !== undefined) this.mesh.signalDropped(to);
     };
+    // TURN on demand: the room answers our 'turn' (sent once, on the mesh's first ICE trouble).
+    this.turnAsked = false;
+    room.onTurn = (list) => {
+      const applied = this.mesh !== null && this.mesh.setIceServers !== undefined && this.mesh.setIceServers(list);
+      this.log.push('turn', applied ? `${list.length} servers, ICE restarted` : 'none for us');
+    };
     room.connect(a.wsUrl, a.ticket);
   }
 
@@ -1566,6 +1582,11 @@ export class P2PSession {
     mesh.onGame = (slot, bytes) => this.handleGame(slot, bytes);
     mesh.onCtl = (slot, bytes) => this.handleCtl(slot, bytes);
     mesh.onPeerDead = (slot) => this.handlePeerDead(slot);
+    mesh.onIceTrouble = () => {
+      if (this.turnAsked || this.room === null || this.room.requestTurn === undefined) return;
+      this.turnAsked = true;
+      this.room.requestTurn();
+    };
     this.mesh = mesh;
     for (const s of slots) if (s.kind === 'peer' && s.slot !== this.mySlot && s.connected) mesh.addPeer(s.slot);
     this.fallbackAt = this.now();

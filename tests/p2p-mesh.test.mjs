@@ -106,6 +106,10 @@ class FakePC {
   restartIce() {
     this.restarts++;
   }
+  setConfiguration(config) {
+    this.config = config;
+    this.reconfigured = (this.reconfigured ?? 0) + 1;
+  }
   async getStats() {
     const list = this.report;
     return { forEach: (cb) => list.forEach((e) => cb(e)) };
@@ -643,4 +647,54 @@ test('update() polls getStats once per second and keeps the peer rtt / candidate
   mesh.update();
   await flush();
   assert.ok(Math.abs(mesh.peerRttMs(1) - 50) < 1e-6);
+});
+
+// ---- TURN on demand (audit cost-2): the room's welcome has STUN only --------------------------------
+
+test('TURN: a peer not connected TURN_ASK_AFTER_MS after it was added, or whose ICE goes bad, fires onIceTrouble once', async () => {
+  const { mesh, pcs, setTime, time } = makeMesh(0);
+  const trouble = [];
+  mesh.onIceTrouble = (slot) => trouble.push(slot);
+  mesh.addPeer(1);
+  mesh.addPeer(2);
+  await flush();
+  setTime(time() + M.TURN_ASK_AFTER_MS - 1);
+  mesh.update();
+  assert.deepEqual(trouble, [], 'a direct link takes a second or two');
+  openBoth(pcs.get(1)); // slot 2 connects in time
+  setTime(time() + 1);
+  mesh.update();
+  mesh.update();
+  assert.deepEqual(trouble, [1], 'slot 1 still connecting: once');
+  pcs.get(0).setIce('failed');
+  assert.deepEqual(trouble, [1], 'not twice for the same peer');
+  pcs.get(1).setIce('failed'); // the connected one loses ICE later
+  assert.deepEqual(trouble, [1, 2], 'ICE gone bad: its trouble too');
+});
+
+test('TURN: setIceServers applies only a list with a credential: every connection takes it, the ones still connecting restart ICE with a fresh window', async () => {
+  const { mesh, pcs, setTime, time } = makeMesh(0);
+  const dead = [];
+  mesh.onPeerDead = (slot) => dead.push(slot);
+  mesh.addPeer(1);
+  mesh.addPeer(2);
+  await flush();
+  openBoth(pcs.get(1)); // slot 2 connected
+  const failing = pcs.get(0);
+  failing.setIce('failed'); // slot 1: its one restart goes now
+  assert.equal(failing.restarts, 1);
+  assert.equal(mesh.setIceServers([{ urls: 'stun:stun.example:3478' }]), false, 'STUN only (no TURN on the server): nothing changes');
+  assert.equal(failing.reconfigured, undefined);
+  setTime(time() + ICE_DEAD_MS - 1000);
+  const turn = [{ urls: 'stun:stun.example:3478' }, { urls: ['turn:turn.example:3478?transport=udp'], username: 'u', credential: 'c' }];
+  assert.equal(mesh.setIceServers(turn), true);
+  assert.deepEqual(failing.config, { iceServers: turn });
+  assert.equal(pcs.get(1).reconfigured, 1, 'the connected one takes the servers too');
+  assert.equal(failing.restarts, 2, 'restarted with TURN');
+  assert.equal(pcs.get(1).restarts, 0, 'a connected link is not restarted');
+  failing.setIce('checking');
+  setTime(time() + 2000); // past the old window's ICE_DEAD_MS
+  failing.setIce('disconnected');
+  mesh.update();
+  assert.deepEqual(dead, [], 'a fresh ICE_DEAD_MS window after the TURN restart');
 });

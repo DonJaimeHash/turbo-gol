@@ -18,10 +18,10 @@
  *             'left': its lock may have been freed and the player seated elsewhere; a ticket
  *             outlives the join grace), single-use jti (storage), acceptWebSocket with tags
  *             [peerId, 'slot:<n>'] (a second socket for the same slot replaces the first: 4000
- *             'replaced'), RoomWelcome (+ 'start' and the drops so far when the match already
- *             started), 'peerJoined' to the others. The TURN credential fetch in between opens the
- *             input gate (up to 3 s): meanwhile the slot is `joining` (in memory: the no-show pass
- *             skips it, so the start keeps waiting for it) and the gone check runs again after it.
+ *             'replaced'), RoomWelcome with STUN only (+ 'start' and the drops so far when the
+ *             match already started), 'peerJoined' to the others. The slot is `joining` while
+ *             its upgrade runs (in memory: the no-show pass skips it) and the gone check runs
+ *             again before the accept.
  *             A verified ticket of the slot reaching the room marks it `arrived` (persisted): the
  *             player showed up, so it is never named a no-show; one that arrives after its slot was
  *             given up (a slow join past the grace: 403 'left') also asks the matchmaker to take
@@ -41,6 +41,12 @@
  *             no-show grace passes; no-show: a slot that has not connected NO_SHOW_MS after create
  *             is declared left (alarm): 'peerLeft' { slot, peerId: '' } to the others, which then
  *             start without it (its ticket is refused from then on); ping -> pong;
+ *             turn -> { type: 'turn', iceServers } (cost-2): TURN credentials minted for this
+ *             seat on demand (its mesh did not connect), never in the welcome: only with the TURN
+ *             secrets set and turn_cf_disabled off, at most TURN_PER_SLOT per seat and
+ *             TURN_PER_PLAYER_PER_DAY per player (the region's matchmaker, POST /turn-quota: no
+ *             answer = no), ttl = the room's remaining life; kept in the state and revoked when the
+ *             seat's socket goes and at the cleanup; refused = { iceServers: [] };
  *             unreachable { slot, atTick } (atTick = the first tick the
  *             reporter has no input of that slot for; ignored before the start: a dead link is then
  *             the client's own fallback) -> 'drop' { slot, atTick: min(reported) } when a majority
@@ -68,7 +74,8 @@
  *             is marked left and announced ('peerLeft' with an empty peerId) so the others stop
  *             waiting for it; the answer's `noShow` tells whether the player never showed up (no
  *             socket, no ticket ever reached the room: the matchmaker counts a strike)
- *   cleanup   sockets closed (1000), locks + capacity released at the region matchmaker (the
+ *   cleanup   sockets closed (1000), the TURN credentials minted for the room revoked, locks +
+ *             capacity released at the region matchmaker (the
  *             players that never showed up are named in `noShow`, so the matchmaker can back off
  *             repeat no-shows), storage wiped; hard TTL 20 min after create (alarm); a room that has
  *             not started NOT_READY_MS after its last peer joined (sockets open, nobody ready: a
@@ -93,7 +100,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { error, iceServersFor, isMode, json, readJson } from './env';
+import { TURN_MIN_TTL_SECONDS, TURN_PER_SLOT, error, iceServersFor, isMode, json, readJson, revokeTurnCredential, stunOnly, turnConfigured, turnUsernames } from './env';
 import type { GameModeId } from './env';
 import { INTERNAL_HEADER, checkInternal, internalSecret, randomHex } from './auth';
 import { TICK_RATE, WS_SUBPROTOCOL } from '../../src/net/protocol';
@@ -214,6 +221,8 @@ interface RoomState {
   nextGen: number;
   /** When the last socket was admitted (null: none yet): the NOT_READY_MS cleanup of a room that never starts. */
   lastJoinAt: number | null;
+  /** TURN credentials minted for the seats (their usernames): revoked when the seat goes and at the cleanup. */
+  turn: Array<{ slot: number; user: string }>;
 }
 
 /** What GET /internal/presence answers the matchmaker (RoomDO.presence). */
@@ -387,6 +396,7 @@ function freshState(): RoomState {
     noShowDone: false,
     nextGen: 0,
     lastJoinAt: null,
+    turn: [],
   };
 }
 
@@ -396,6 +406,7 @@ function upgradeState(st: RoomState): RoomState {
   if (!Array.isArray(st.arrived) || st.arrived.length !== MAX_CARS) st.arrived = new Array<boolean>(MAX_CARS).fill(false);
   if (typeof st.noShowDone !== 'boolean') st.noShowDone = false;
   if (typeof st.lastJoinAt !== 'number') st.lastJoinAt = null;
+  if (!Array.isArray(st.turn)) st.turn = [];
   return st;
 }
 
@@ -428,6 +439,8 @@ export class RoomDO extends DurableObject<Env> {
    * no-show pass skips the slot, so a player that reached the room within the grace is waited for.
    */
   private readonly joining = new Uint8Array(MAX_CARS);
+  /** A 'turn' request of the slot is being served (its mint is an outgoing fetch): a second one waits for nothing. */
+  private readonly turnBusy = new Uint8Array(MAX_CARS);
   private cleaned = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -555,6 +568,10 @@ export class RoomDO extends DurableObject<Env> {
       case 'unreachable': {
         if (!isUint32(msg.slot) || !isUint32(msg.atTick)) return;
         await this.onUnreachable(ws, att.slot, msg.slot, msg.atTick, now);
+        return;
+      }
+      case 'turn': {
+        await this.onTurn(ws, att);
         return;
       }
       case 'hashReport': {
@@ -739,18 +756,15 @@ export class RoomDO extends DurableObject<Env> {
     this.joining[slot]++;
     let admitted = false;
     try {
-      // Outgoing fetch (TURN credentials): the input gate is not held meanwhile (the slot is
-      // `joining`: the no-show pass skips it), so the room AND the slot are re-checked afterwards:
-      // /internal/leave (the player's own /api/leave, a stale-lock release) may have given it up.
-      // Minted per socket, never cached (10 min credentials).
-      const iceServers = await iceServersFor(this.env);
+      // No TURN here (cost-2): the welcome carries STUN only, a seat asks for TURN once its ticket
+      // was used ('turn'). The room AND the slot are re-checked all the same.
       if (!this.record || this.cleaned) return error(404, 'no_room');
       if (this.isGone(slot)) return error(403, 'left', 'this slot left the room (single-use seat)');
       // Single use of the ticket, checked last so a transient failure above does not burn it.
       if (await this.ctx.storage.get('jti:' + jti)) return error(403, 'ticket_used');
       await this.ctx.storage.put('jti:' + jti, true);
       admitted = true;
-      return await this.admit(rec, slot, playerId, iceServers);
+      return await this.admit(rec, slot, playerId, stunOnly());
     } finally {
       this.joining[slot]--;
       if (!admitted) await this.afterFailedJoin(slot);
@@ -845,6 +859,77 @@ export class RoomDO extends DurableObject<Env> {
     }
     if (!replaced) this.broadcast({ type: 'peerJoined', slot: this.roomSlot(slot) }, server);
     return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': WS_SUBPROTOCOL } });
+  }
+
+  /**
+   * A seat asks for TURN (its mesh did not connect): checked (configured, this socket is the
+   * seat's, TURN_PER_SLOT, the player's daily quota at the matchmaker), then minted for the room's
+   * remaining life and recorded for the revoke. Anything refused answers an empty list.
+   */
+  private async onTurn(ws: WebSocket, att: Attachment): Promise<void> {
+    const rec = this.record;
+    const st = this.state;
+    const slot = att.slot;
+    const none = (): void => this.send(ws, { type: 'turn', iceServers: [] });
+    if (!rec || !turnConfigured(this.env) || this.turnBusy[slot] === 1) return none();
+    if (st.turn.filter((t) => t.slot === slot).length >= TURN_PER_SLOT) return none();
+    this.turnBusy[slot] = 1;
+    try {
+      if (!(await this.turnQuota(rec, att.playerId))) return none();
+      const now = Date.now();
+      const ttl = Math.max(TURN_MIN_TTL_SECONDS, Math.ceil((rec.createdAt + ROOM_TTL_MS - now) / 1000));
+      const list = await iceServersFor(this.env, fetch, ttl);
+      const users = turnUsernames(list);
+      // Outgoing fetches above: the seat may be gone meanwhile (closed, replaced, the room cleaned).
+      if (!this.record || this.cleaned || st.cur[slot] !== att.gen) {
+        this.revoke(users);
+        return;
+      }
+      if (users.length === 0) return none();
+      for (const user of users) st.turn.push({ slot, user });
+      await this.persist();
+      this.send(ws, { type: 'turn', iceServers: list });
+    } finally {
+      this.turnBusy[slot] = 0;
+    }
+  }
+
+  /** The player's daily TURN quota at the region's matchmaker (POST /turn-quota): true = mint. No answer = no. */
+  private async turnQuota(rec: RoomRecord, playerId: string): Promise<boolean> {
+    const env = this.env;
+    try {
+      const secret = await internalSecret(env.JWT_SECRET);
+      const res = await env.MATCHMAKER.get(env.MATCHMAKER.idFromName('mm:' + rec.region)).fetch('https://matchmaker/turn-quota', {
+        method: 'POST',
+        headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' },
+        body: JSON.stringify({ playerId }),
+      });
+      if (!res.ok) {
+        await res.body?.cancel();
+        return false;
+      }
+      const b = (await res.json()) as { ok?: unknown };
+      return b.ok === true;
+    } catch (e) {
+      console.error('RoomDO: turn quota failed (no TURN)', e);
+      return false;
+    }
+  }
+
+  /** Revoke TURN credentials in the background (best effort). */
+  private revoke(users: readonly string[]): void {
+    if (users.length === 0) return;
+    const env = this.env;
+    this.ctx.waitUntil(Promise.all(users.map((u) => revokeTurnCredential(env, u))).then(() => undefined));
+  }
+
+  /** The slot's TURN credentials out of the state, revoked (the caller persists). */
+  private revokeSlot(slot: number): void {
+    const st = this.state;
+    const mine = st.turn.filter((t) => t.slot === slot);
+    if (mine.length === 0) return;
+    st.turn = st.turn.filter((t) => t.slot !== slot);
+    this.revoke(mine.map((t) => t.user));
   }
 
   // ---- room logic -------------------------------------------------------------------------
@@ -1024,6 +1109,7 @@ export class RoomDO extends DurableObject<Env> {
     st.cur[att.slot] = 0;
     st.closedAt[att.slot] = now;
     st.left[att.slot] = true; // single-use ticket: this slot never comes back
+    this.revokeSlot(att.slot); // its TURN credentials die with the seat
     this.broadcast({ type: 'peerLeft', slot: att.slot, peerId: att.peerId }, null);
     this.release([att.playerId], false);
     if (this.connectedCount() === 0) st.emptyAt = now + EMPTY_MS;
@@ -1057,6 +1143,9 @@ export class RoomDO extends DurableObject<Env> {
       }
     }
     this.live.fill(null);
+    // Every TURN credential of the room dies with it (they would outlive it by their ttl).
+    this.revoke(this.state.turn.map((t) => t.user));
+    this.state.turn = [];
     if (rec) {
       const ids: string[] = [];
       const noShow: string[] = [];

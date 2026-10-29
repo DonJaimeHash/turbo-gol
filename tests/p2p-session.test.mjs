@@ -202,6 +202,10 @@ class FakeRoom {
     this.sent.push({ type: 'hashReport', tick, hash, agree, disagree });
     return true;
   }
+  requestTurn() {
+    this.sent.push({ type: 'turn' });
+    return true;
+  }
   serverToLocal(ms) {
     return ms - this.offset;
   }
@@ -246,6 +250,10 @@ class FakeMesh {
   }
   signalDropped(slot) {
     this.dropped.push(slot);
+  }
+  setIceServers(list) {
+    this.iceSet = list;
+    return list.some((s) => typeof s.credential === 'string');
   }
   handleSignal() {}
   allConnected() {
@@ -2136,4 +2144,45 @@ test('a page from before the cars: room slots that carry `car` (src/net/cosmetic
   socket.onmessage({ data: JSON.stringify(welcomeFor(0, slots)) });
   assert.deepEqual(errors, []);
   assert.deepEqual(welcomes[0].slots.map((s) => s.car ?? null), ['tero', null, 'tero', null]);
+});
+
+// ---- TURN on demand (audit cost-2) -----------------------------------------------------------------
+
+test("P2P TURN: the mesh's first ICE trouble asks the room once ({ type: 'turn' }); the room's answer goes to the mesh", async () => {
+  const env = makeSession();
+  env.session.quickMatch('1v1');
+  env.client.queued[0].resolve({ kind: 'p2p', roomId: 'room1', ticket: 'TICKET', wsUrl: '/room/room1' });
+  await flush();
+  env.room.onWelcome(welcomeFor(0, SLOTS_1V1));
+  assert.equal(env.session.state, 'connecting');
+  assert.equal(typeof env.mesh.onIceTrouble, 'function');
+  env.mesh.onIceTrouble(1);
+  env.mesh.onIceTrouble(1);
+  assert.deepEqual(env.room.sent.filter((m) => m.type === 'turn'), [{ type: 'turn' }], 'asked once per room');
+  const list = [{ urls: ['stun:stun.cloudflare.com:3478'] }, { urls: 'turn:t', username: 'u', credential: 'c' }];
+  env.room.onTurn(list);
+  assert.deepEqual(env.mesh.iceSet, list);
+});
+
+test("RoomClient: requestTurn sends { type: 'turn' }; the room's 'turn' answer reaches onTurn (entries without urls dropped)", () => {
+  const sent = [];
+  let socket = null;
+  const client = new RoomClient({
+    now: () => 0,
+    pingIntervalMs: 1e9,
+    webSocketFactory: (url, protocols) => {
+      socket = { url, protocols, binaryType: 'blob', readyState: 0, protocol: '', onopen: null, onmessage: null, onclose: null, onerror: null, send: (d) => sent.push(JSON.parse(d)), close() {} };
+      return socket;
+    },
+  });
+  const got = [];
+  client.onTurn = (l) => got.push(l);
+  client.connect('/room/r1', 'TK');
+  socket.readyState = 1;
+  socket.onopen({});
+  assert.equal(client.requestTurn(), true);
+  assert.deepEqual(sent.at(-1), { type: 'turn' });
+  socket.onmessage({ data: JSON.stringify({ type: 'turn', iceServers: [{ urls: 'turn:x', username: 'u', credential: 'c' }, { nope: 1 }] }) });
+  assert.deepEqual(got, [[{ urls: 'turn:x', username: 'u', credential: 'c' }]]);
+  client.dispose();
 });

@@ -49,12 +49,17 @@ export interface Env {
   /**
    * Secrets, optional, phase 2 (both or none): a Cloudflare Realtime TURN key (dashboard ->
    * Realtime -> TURN -> create key; `npx wrangler secret put TURN_KEY_ID` / `TURN_KEY_TOKEN`).
-   * When both are set, GET /api/ice and the RoomDO's welcome append 10-minute TURN credentials,
-   * minted per request (nothing cached) through
+   * When both are set, TURN credentials are minted on demand only: a RoomDO peer whose mesh does
+   * not connect asks its room ({ type: 'turn' }, after its ticket was checked), at most
+   * TURN_PER_SLOT per seat and TURN_PER_PLAYER_PER_DAY per player (the region's matchmaker counts),
+   * with a ttl of the room's remaining life; the room revokes them when the seat leaves and at its
+   * cleanup. The welcome carries STUN only. Minted through
    *   POST https://rtc.live.cloudflare.com/v1/turn/keys/{TURN_KEY_ID}/credentials/generate-ice-servers
-   *   Authorization: Bearer TURN_KEY_TOKEN, body { ttl: 600 }
-   * Without them (local dev) peers get STUN only (stun.cloudflare.com:3478), so a pair that needs a
-   * relay cannot connect. Budget (DECISIONS.md): Cloudflare TURN includes 1,000 GB/month.
+   *   Authorization: Bearer TURN_KEY_TOKEN, body { ttl }
+   * and revoked through POST .../credentials/{username}/revoke. The KV flag turn_cf_disabled
+   * (TURN_KILL_FLAG) stops every mint at once (STUN only). Without the secrets (local dev) peers get
+   * STUN only (stun.cloudflare.com:3478), so a pair that needs a relay cannot connect. Budget
+   * (DECISIONS.md): Cloudflare TURN includes 1,000 GB/month.
    */
   TURN_KEY_ID?: string;
   TURN_KEY_TOKEN?: string;
@@ -301,9 +306,34 @@ export function nodesConfigured(env: Env): env is NodesEnv {
 
 /** Always offered: Cloudflare's public STUN. */
 export const STUN_URLS: readonly string[] = ['stun:stun.cloudflare.com:3478'];
+/** The default ttl of a minted credential (GET /api/ice); a room asks for its own remaining life. */
 export const TURN_TTL_SECONDS = 600;
+/** The KV flag that turns every TURN mint off (STUN only), no deploy needed. */
+export const TURN_KILL_FLAG = 'turn_cf_disabled';
+/** Credentials a room seat may ask for (one, plus one retry). */
+export const TURN_PER_SLOT = 2;
+/** Credentials one player may get a day in a region (MatchmakerDO /turn-quota). */
+export const TURN_PER_PLAYER_PER_DAY = 10;
+/** A room's credential lives at least this long (seconds) and never past the room. */
+export const TURN_MIN_TTL_SECONDS = 60;
 const TURN_API = 'https://rtc.live.cloudflare.com/v1/turn/keys/';
 const TURN_TIMEOUT_MS = 3_000;
+
+/** The ICE servers every welcome carries: STUN only (TURN is minted on demand). */
+export function stunOnly(): IceServer[] {
+  return [{ urls: STUN_URLS.slice() }];
+}
+
+/** Both TURN secrets are set. */
+export function turnConfigured(env: Pick<Env, 'TURN_KEY_ID' | 'TURN_KEY_TOKEN'>): boolean {
+  return !!env.TURN_KEY_ID && !!env.TURN_KEY_TOKEN;
+}
+
+/** The kill flag (TURN_KILL_FLAG) is set; a KV that cannot be read counts as not set. */
+async function turnKilled(env: { FLAGS?: KVNamespace }): Promise<boolean> {
+  if (!env.FLAGS) return false;
+  return flag(env as Pick<Env, 'FLAGS'>, TURN_KILL_FLAG);
+}
 
 function asIceServer(v: unknown): IceServer | null {
   if (!v || typeof v !== 'object') return null;
@@ -320,22 +350,25 @@ function asIceServer(v: unknown): IceServer | null {
 
 /**
  * The ICE servers a peer should hand to RTCPeerConnection: STUN always; when TURN_KEY_ID and
- * TURN_KEY_TOKEN are configured, fresh TURN credentials (TURN_TTL_SECONDS) from Cloudflare's TURN
- * API are appended. Minted per call, never cached; a TURN API failure or timeout (3 s) logs and
- * degrades to STUN only. `fetchFn` is injectable for tests.
+ * TURN_KEY_TOKEN are configured and the kill flag (TURN_KILL_FLAG) is not set, fresh TURN
+ * credentials (`ttlSeconds`, TURN_TTL_SECONDS by default) from Cloudflare's TURN API are
+ * appended. Minted per call, never cached: callers mint on demand only (RoomDO 'turn'); a TURN API
+ * failure or timeout (3 s) logs and degrades to STUN only. `fetchFn` is injectable for tests.
  */
-export async function iceServersFor(env: Pick<Env, 'TURN_KEY_ID' | 'TURN_KEY_TOKEN'>, fetchFn: typeof fetch = fetch): Promise<IceServer[]> {
-  const out: IceServer[] = [{ urls: STUN_URLS.slice() }];
+export async function iceServersFor(env: Pick<Env, 'TURN_KEY_ID' | 'TURN_KEY_TOKEN'> & { FLAGS?: KVNamespace }, fetchFn: typeof fetch = fetch, ttlSeconds: number = TURN_TTL_SECONDS): Promise<IceServer[]> {
+  const out: IceServer[] = stunOnly();
   const keyId = env.TURN_KEY_ID;
   const token = env.TURN_KEY_TOKEN;
   if (!keyId || !token) return out;
+  if (await turnKilled(env)) return out;
+  const ttl = Math.max(TURN_MIN_TTL_SECONDS, Math.min(TURN_TTL_SECONDS * 2, Math.floor(ttlSeconds)));
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TURN_TIMEOUT_MS);
   try {
     const res = await fetchFn(TURN_API + encodeURIComponent(keyId) + '/credentials/generate-ice-servers', {
       method: 'POST',
       headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
-      body: JSON.stringify({ ttl: TURN_TTL_SECONDS }),
+      body: JSON.stringify({ ttl }),
       signal: ctrl.signal,
     });
     if (!res.ok) {
@@ -355,4 +388,35 @@ export async function iceServersFor(env: Pick<Env, 'TURN_KEY_ID' | 'TURN_KEY_TOK
     clearTimeout(timer);
   }
   return out;
+}
+
+/** The TURN usernames among `list` (the credentials iceServersFor minted). Pure. */
+export function turnUsernames(list: readonly IceServer[]): string[] {
+  const out: string[] = [];
+  for (const s of list) if (typeof s.username === 'string' && s.username.length > 0 && !out.includes(s.username)) out.push(s.username);
+  return out;
+}
+
+/** Revoke one minted credential (its room is gone, or its seat left). Best effort: false when the API did not take it. */
+export async function revokeTurnCredential(env: Pick<Env, 'TURN_KEY_ID' | 'TURN_KEY_TOKEN'>, username: string, fetchFn: typeof fetch = fetch): Promise<boolean> {
+  const keyId = env.TURN_KEY_ID;
+  const token = env.TURN_KEY_TOKEN;
+  if (!keyId || !token || username.length === 0) return false;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TURN_TIMEOUT_MS);
+  try {
+    const res = await fetchFn(TURN_API + encodeURIComponent(keyId) + '/credentials/' + encodeURIComponent(username) + '/revoke', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + token },
+      signal: ctrl.signal,
+    });
+    await res.body?.cancel();
+    if (!res.ok) console.warn(`TURN revoke: ${res.status}`);
+    return res.ok;
+  } catch (e) {
+    console.warn('TURN revoke failed', e);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }

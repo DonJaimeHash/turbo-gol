@@ -61,6 +61,9 @@
  *                                               join refused 403 'left' past the grace): the strike of that room is
  *                                               taken back; one not counted yet is remembered and skipped when it comes
  *   GET  /stats                              -> queue sizes, locks (nodeLocks: those on node matches), rooms (debug)
+ *   POST /turn-quota { playerId }            -> { ok }: one TURN credential for the player today (a RoomDO's
+ *                                               'turn'), at most TURN_PER_PLAYER_PER_DAY a UTC day in this region
+ *                                               ('turn:<playerId>' in storage; yesterday's rows go with the sweep)
  *   POST /guard   { op, key, max, region, exceptRegion?, matchId?, until? }
  *                                            -> { ok } | { ok: false, matchId, region }: only on the 'guard:<n>'
  *                                               instances (guardShard), never a region's: the guests' MatchDO
@@ -135,7 +138,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, error, flag, isMode, isModeList, isQueueKind, json, limitKey, matchLengthSeconds, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
+import { EXPERIMENTAL_REFUSED, TURN_PER_PLAYER_PER_DAY, carriesPhysics, error, flag, isMode, isModeList, isQueueKind, json, limitKey, matchLengthSeconds, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
 import type { GameModeId, LockKind, NodesMode, QueueKind, RoomKind } from './env';
 import { INTERNAL_HEADER, checkInternal, createTicket, internalSecret } from './auth';
 import type { TicketRole } from './auth';
@@ -763,14 +766,37 @@ export class MatchmakerDO extends DurableObject<Env> {
     if (request.method === 'GET' && url.pathname === '/population') return this.population(now);
     if (request.method === 'POST' && url.pathname === '/custom') return this.custom(request, now);
     if (request.method === 'POST' && url.pathname === '/guard') return this.guard(request, now);
+    if (request.method === 'POST' && url.pathname === '/turn-quota') return this.turnQuota(request, now);
     return error(404, 'not_found');
   }
 
-  /** A guard instance's sweep: holds past their `until` leave storage (the instance arms it at its first hold). */
+  /**
+   * POST /turn-quota { playerId }: one more TURN credential for the player today, or { ok: false }
+   * past TURN_PER_PLAYER_PER_DAY (a UTC day, this region). Persisted (an eviction must not reset it).
+   */
+  private async turnQuota(request: Request, now: number): Promise<Response> {
+    const b = await readJson<{ playerId?: unknown }>(request);
+    if (!b || typeof b.playerId !== 'string' || b.playerId.length === 0 || b.playerId.length > 64) return error(400, 'bad_request');
+    const key = 'turn:' + b.playerId;
+    const day = Math.floor(now / 86_400_000);
+    const cur = await this.ctx.storage.get<{ day: number; n: number }>(key);
+    const n = cur !== undefined && cur.day === day ? cur.n : 0;
+    if (n >= TURN_PER_PLAYER_PER_DAY) return json({ ok: false });
+    await this.ctx.storage.put(key, { day, n: n + 1 });
+    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(now + GUARD_SWEEP_MS);
+    return json({ ok: true });
+  }
+
+  /** The sweep (armed by a guard hold or a TURN quota row): expired holds and past days' TURN counts leave storage. */
   override async alarm(): Promise<void> {
     const now = this.now();
-    const rows = await this.ctx.storage.list<GuardHold[]>({ prefix: 'g:' });
+    const day = Math.floor(now / 86_400_000);
     let live = 0;
+    for (const [k, v] of await this.ctx.storage.list<{ day: number; n: number }>({ prefix: 'turn:' })) {
+      if (!v || v.day !== day) await this.ctx.storage.delete(k);
+      else live++;
+    }
+    const rows = await this.ctx.storage.list<GuardHold[]>({ prefix: 'g:' });
     for (const [k, v] of rows) {
       const keep = Array.isArray(v) ? v.filter((h) => h.until > now) : [];
       if (keep.length === 0) await this.ctx.storage.delete(k);

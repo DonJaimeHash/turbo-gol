@@ -12,7 +12,8 @@
  *                            whose `physics` is missing or not rules this build reads (strict:
  *                            parseLobbyRules) with P2P_ERROR_BAD_PHYSICS; the welcome handed on
  *                            carries the parsed rules (null = standard physics)
- *   senders                  signal(to, data), ready(physicsFp), unreachable(slot, atTick), hashReport(...)
+ *   senders                  signal(to, data), ready(physicsFp), unreachable(slot, atTick), hashReport(...),
+ *                            requestTurn() (the room's 'turn' answer goes to onTurn(iceServers))
  *   log                      every message in / out but ping / pong (signals: type only) goes to
  *                            the P2PLogSink of the options (P2PSession.log)
  *   clock                    a ping every ROOM_PING_INTERVAL_MS (setPingIntervalMs slows it down once
@@ -33,7 +34,7 @@ import { median } from '../ClockSync';
 import { WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../protocol';
 import type { P2PLogSink } from './DebugLog';
 import { signalKind } from './Mesh';
-import { P2P_ERROR_BAD_PHYSICS, P2P_ERROR_RELOAD, P2P_PROTOCOL_VERSION, ROOM_ERROR_SIGNAL_DROPPED, type RoomClientMessage, type RoomServerMessage, type RoomSlot, type RoomWelcome, type SignalData } from './protocol';
+import { P2P_ERROR_BAD_PHYSICS, P2P_ERROR_RELOAD, P2P_PROTOCOL_VERSION, ROOM_ERROR_SIGNAL_DROPPED, type IceServer, type RoomClientMessage, type RoomServerMessage, type RoomSlot, type RoomWelcome, type SignalData } from './protocol';
 import { parseLobbyRules } from '../../game/physicsRules';
 
 export const ROOM_PING_INTERVAL_MS = 2000;
@@ -96,6 +97,8 @@ export class RoomClient {
   onClose: ((code: number, reason: string) => void) | null = null;
   /** The room could not relay our signal to `to` (no socket there yet): not fatal. */
   onSignalDropped: ((to: number) => void) | null = null;
+  /** The answer to requestTurn(): the ICE servers to use from now on ([] = no TURN for us). */
+  onTurn: ((iceServers: IceServer[]) => void) | null = null;
 
   private readonly makeWs: WebSocketFactory;
   private readonly now: () => number;
@@ -180,6 +183,13 @@ export class RoomClient {
     return ok;
   }
 
+  /** Ask the room for TURN credentials (the mesh is not connecting); the answer goes to onTurn. */
+  requestTurn(): boolean {
+    const ok = this.send({ type: 'turn' });
+    this.log.push('room.turn>', ok ? 'asked' : 'NOT sent');
+    return ok;
+  }
+
   hashReport(tick: number, hash: number, agree: number, disagree: number): boolean {
     return this.send({ type: 'hashReport', tick, hash, agree, disagree });
   }
@@ -218,6 +228,7 @@ export class RoomClient {
     this.onError = null;
     this.onClose = null;
     this.onSignalDropped = null;
+    this.onTurn = null;
   }
 
   /** Feed one clock sample (t3 = local receive time of a pong carrying `serverNow`). Public for tests. */
@@ -325,6 +336,12 @@ export class RoomClient {
         this.log.push('room.drop', `slot ${msg.slot} atTick ${msg.atTick}`);
         if (this.onDrop) this.onDrop(msg.slot, msg.atTick);
         return;
+      case 'turn': {
+        const list = Array.isArray(msg.iceServers) ? msg.iceServers.filter((s) => typeof s === 'object' && s !== null && (typeof s.urls === 'string' || Array.isArray(s.urls))) : [];
+        this.log.push('room.turn', `${list.length} servers`);
+        if (this.onTurn) this.onTurn(list);
+        return;
+      }
       case 'pong':
         if (this.coarseOnly) this.resetClock();
         this.addClockSample(msg.t0, msg.now, this.now());
