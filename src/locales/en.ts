@@ -833,6 +833,8 @@ export default {
   'p2p.roomClosed': 'The match room closed',
   // An experimental lobby's match could not connect: there is no server match to fall back to
   'p2p.experimentalFailed': 'Could not connect the players: experimental matches have no server fallback',
+  // A lobby's P2P room that never connected: back in the lobby (never the public queue)
+  'p2p.lobbyFailed': 'Could not connect the players: back to the lobby',
   // The room refused this page: its arena does not run the lobby's rules
   'p2p.physicsMismatch': "Your game could not apply the lobby's rules: reload the page",
 

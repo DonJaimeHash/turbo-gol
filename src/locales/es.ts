@@ -583,6 +583,7 @@ export default {
   'p2p.engine': 'Falló el motor del juego: recarga la página',
   'p2p.roomClosed': 'Se cerró la sala del partido',
   'p2p.experimentalFailed': 'No se pudo conectar a los jugadores: las partidas experimentales no pasan a un servidor',
+  'p2p.lobbyFailed': 'No se pudo conectar a los jugadores: de vuelta en la sala',
   'p2p.physicsMismatch': 'Tu juego no pudo aplicar las reglas de la sala: recarga la página',
 
   // Leaderboard and the Competitive result dialog (src/ui/screens/leaderboard.ts)

@@ -12,7 +12,9 @@
  * joiner never gives up on a peer that is still negotiating), and a room where every other peer
  * actually left before the start ('peerLeft', or `left` in the welcome; a slot that merely has
  * not joined yet is waited for) hand the match over to the phase 1 OnlineSession through
- * Game.p2pHandover. Whenever the session leaves a room it was assigned (fallback, leave, cancel,
+ * Game.p2pHandover. A room a custom lobby assigned (joinAssigned) never does: its members are
+ * friends, not the public queue, so those same paths fail back to the lobby (STATUS.lobbyFailed;
+ * the host starts again). Whenever the session leaves a room it was assigned (fallback, leave, cancel,
  * failure, the final whistle) it also POSTs /api/leave (NetClient.leaveMatch) so the matchmaker
  * frees its one-active-match lock at once instead of waiting for the room socket's close to be
  * processed: the next queue (the fallback's own server queue included) must not answer 409.
@@ -246,6 +248,7 @@ export const STATUS = {
   lostRoom: t('p2p.lostRoom'),
   reload: t('error.queue.reload_required'),
   experimentalFailed: t('p2p.experimentalFailed'),
+  lobbyFailed: t('p2p.lobbyFailed'),
   physicsMismatch: t('p2p.physicsMismatch'),
 } as const;
 
@@ -637,6 +640,8 @@ export class P2PSession {
   private attempt = 0;
   /** This quickMatch already queued again after a room socket closed before its welcome (once). */
   private requeued = false;
+  /** The room was a custom lobby's (joinAssigned): no server fallback, back to the lobby. */
+  private lobbyRoom = false;
 
   constructor(game: P2PGameHooks, opts: P2PSessionOptions) {
     this.game = game;
@@ -748,6 +753,7 @@ export class P2PSession {
   quickMatch(mode: GameMode): void {
     if (this.state !== 'idle') return;
     this.requeued = false;
+    this.lobbyRoom = false;
     this.queueP2p(mode, STATUS.queue, `quickMatch ${mode}`);
   }
 
@@ -759,6 +765,7 @@ export class P2PSession {
   joinAssigned(mode: GameMode, a: P2pAssignment): void {
     if (this.state !== 'idle') return;
     this.requeued = true;
+    this.lobbyRoom = true;
     this.mode = mode;
     this.error = null;
     this.attempt++;
@@ -1815,13 +1822,19 @@ export class P2PSession {
   /**
    * Mesh not complete in time / nobody left: leave the room and let the Game queue a server match.
    * The lock release (teardown -> NetClient.leaveMatch) is awaited by the client's next queue, so
-   * the fallback's server queue cannot be refused with 409 by our own stale room lock.
+   * the fallback's server queue cannot be refused with 409 by our own stale room lock. A lobby's
+   * room never becomes a public Casual match: back to the lobby (fail: Game.p2pFailed).
    */
   private fallback(notice: string): void {
     if (this.rules !== null) {
       // An experimental room never becomes a casual server match: back to the lobby.
       this.log.push('handover.refused', `experimental rules "${this.rules.name}": no server fallback (${notice})`);
       this.fail(STATUS.experimentalFailed);
+      return;
+    }
+    if (this.lobbyRoom) {
+      this.log.push('handover.refused', `lobby room: no public queue (${notice})`);
+      this.fail(STATUS.lobbyFailed);
       return;
     }
     this.log.push('handover', notice);
