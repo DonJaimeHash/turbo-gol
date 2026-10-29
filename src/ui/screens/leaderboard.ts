@@ -12,9 +12,13 @@
  * takes its place. A phone shows the rows as cards (leaderboard.css).
  *
  * Keys (leaderboardModel.ts): ▲ ▼ step the rows (held: the key's and the D-pad's repeat), ◀ ▶ on a
- * row or a tab step the playlist (not past 1v1 or 3v3: the phone's rail is that way), LT / RT (pad)
- * and PgUp / PgDn (keyboard, a TV remote's CH+ / CH−: Menu.onKey gives them as LT / RT) move a page, X (pad X, keyboard X while no search runs, Delete) goes to
- * your row; Q / E step the tabs (Menu.stepTabs). The playlist is remembered (prefs.ts).
+ * row or a tab step the playlist (not past 1v1 or 3v3: a row is a line, nav.ts, so past them the
+ * arrow goes only to the phone's rail, else the row bounces), LT / RT (pad) and PgUp / PgDn
+ * (keyboard, a TV remote's CH+ / CH−: Menu.onKey gives them as LT / RT) move a page, Home / End go
+ * to the first / last row, X (pad X, keyboard X while no search runs, Delete) goes to your row; Q / E
+ * step the tabs (Menu.stepTabs). Your pinned row is the list's end: ▲ and a page up go back into
+ * it from its last row. The playlist is remembered (prefs.ts). A guest's SIGN IN opens PERFIL as a
+ * detour (Menu.open): a sign-in there comes back here.
  * In development (or a VITE_UI_FIT=1 build) window.__board(kind | null) shows sample rows
  * (scripts/ui-fit.mjs).
  */
@@ -27,7 +31,7 @@ import { t, type Key } from '../../i18n';
 import { rankBadge, tierById } from '../badges';
 import { playlistName, tierName } from '../names';
 import type { Menu, MenuCommand, Screen } from '../Menu';
-import { onNavSide } from '../nav';
+import { onNavSide, onNavTo } from '../nav';
 import { icon } from '../components/icons';
 import { glyph } from '../components/glyphs';
 import { screenHead } from './common';
@@ -46,6 +50,8 @@ export function leaderboardScreen(menu: Menu): Screen {
   let seq = 0;
   /** After a playlist switch from the list: the row index to focus once the new one is in (-1: none). */
   let wantRow = -1;
+  /** A guest's SIGN IN opened PERFIL: a sign-in there comes back here. */
+  let waitSignIn = false;
   const touch = (): boolean => document.documentElement.classList.contains('tg-touch');
   const signedIn = (): boolean => sample?.signedIn ?? acc.signedIn;
 
@@ -116,7 +122,7 @@ export function leaderboardScreen(menu: Menu): Screen {
     const words = tier ? tierName(tier) : t('board.unranked');
     const r = h(
       `div.mn-lb-row${you ? '.mn-lb-you' : ''}` as 'div',
-      { role: 'listitem', tabindex: '-1', 'data-nav': true, 'data-key': key, 'aria-label': t('board.rowLabel', { rank: e.rank, name: e.name, tier: words, mmr: e.mmr, games: e.games }) },
+      { role: 'listitem', tabindex: '-1', 'data-nav': true, 'data-nav-line': true, 'data-key': key, 'aria-label': t('board.rowLabel', { rank: e.rank, name: e.name, tier: words, mmr: e.mmr, games: e.games }) },
       h('span.mn-lb-pos', null, `#${e.rank}`),
       h('span.mn-lb-badge', null, rankBadge(tier, 32)),
       h('span.mn-lb-name', null, e.name),
@@ -170,7 +176,10 @@ export function leaderboardScreen(menu: Menu): Screen {
     // You, below the top: your row pinned under the list.
     const below = notice === null && you !== null && yi < 0;
     pinned.hidden = !below;
-    setChildren(pinned, below && you !== null ? row(you, 'board-you', true) : null);
+    const mine = below && you !== null ? row(you, 'board-you', true) : null;
+    // ▲ from it: the list's last row (where a ▼ past that row came from), wherever the list is scrolled.
+    if (mine !== null) onNavTo(mine, 'up', () => list.lastElementChild as HTMLElement | null);
+    setChildren(pinned, mine);
     total.textContent = b !== null && notice === null ? t('board.total', { count: b.total, season: b.season }) : '';
     // Your standing beside the tabs (nothing while loading or after an error).
     const s = standing(signedIn(), you !== null);
@@ -207,6 +216,7 @@ export function leaderboardScreen(menu: Menu): Screen {
       board = null;
       loading = false;
       failed = true;
+      wantRow = -1; // the next load (RETRY, another tab) keeps the focus where it is then
     }
     if (el.isConnected) draw();
   };
@@ -226,13 +236,21 @@ export function leaderboardScreen(menu: Menu): Screen {
     pick(p);
   };
 
-  /** LT / RT, PgUp / PgDn: a page of rows (the focus on none yet: the first). */
+  /** LT / RT, PgUp / PgDn: a page of rows, your pinned row the last one (the focus on none yet: the first). */
   const page = (d: -1 | 1): void => {
-    const rs = [...list.querySelectorAll<HTMLElement>('.mn-lb-row')];
+    const rs = rows();
     if (rs.length === 0) return;
     const n = rowsPerPage(list.clientHeight, rs[0].offsetHeight);
     focusRow(rs[pageStep(rs.indexOf(document.activeElement as HTMLElement), rs.length, n, d)]);
   };
+  // Home / End: the first / last row with the focus on it (the browser would scroll the list alone).
+  el.addEventListener('keydown', (e) => {
+    if ((e.key !== 'Home' && e.key !== 'End') || e.ctrlKey || e.altKey || e.metaKey) return;
+    const rs = rows();
+    if (rs.length === 0) return;
+    e.preventDefault();
+    focusRow(e.key === 'Home' ? rs[0] : rs[rs.length - 1]);
+  });
   const goToMe = (): boolean => {
     const me = el.querySelector<HTMLElement>('.mn-lb-you');
     if (me === null) return false;
@@ -242,7 +260,8 @@ export function leaderboardScreen(menu: Menu): Screen {
   const onStand = (): void => {
     switch (stand.dataset.kind as Standing) {
       case 'guest':
-        menu.open('profile');
+        waitSignIn = true;
+        menu.open('profile', false, undefined, true);
         break;
       case 'placement':
         menu.open('modes', false, 'ranked');
@@ -260,6 +279,13 @@ export function leaderboardScreen(menu: Menu): Screen {
     page(k === 'pageUp' ? -1 : 1);
     return true;
   };
+
+  // A sign-in on PERFIL (the guest's SIGN IN): back here, your standing beside the tabs.
+  acc.subscribe(() => {
+    if (!waitSignIn || !acc.signedIn) return;
+    waitSignIn = false;
+    if (menu.top()?.id === 'profile' && menu.stacked('leaderboard')) menu.back();
+  });
 
   // The samples exist in development and in a VITE_UI_FIT=1 build only (read here: node tests import this module).
   if (import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1') {
@@ -289,7 +315,7 @@ function sampleBoard(kind: 'rows' | 'below' | 'guest'): LeaderboardAnswer {
     const tier = placed[Math.max(0, placed.length - 1 - Math.floor(i / 6))] ?? TIERS[0];
     return { rank: i + 1, name: i === 6 && kind === 'rows' ? 'MiCuenta' : `${names[i % names.length]}${i > 5 ? i : ''}`, mmr: 2400 - i * 9, tier: tier.id, games: 300 - i, wins: 160 - i };
   });
-  const you = kind === 'rows' ? entries[6] : kind === 'below' ? { rank: 140, name: 'MaximilianoGomez', mmr: 1210, tier: TIERS[4]?.id ?? TIERS[0].id, games: 41, wins: 20 } : null;
+  const you = kind === 'rows' ? entries[6] : kind === 'below' ? { rank: 140, name: 'MiCuenta', mmr: 1210, tier: TIERS[4]?.id ?? TIERS[0].id, games: 41, wins: 20 } : null;
   return { playlist: '2v2', season: 1, entries, you, total: 1234 };
 }
 
