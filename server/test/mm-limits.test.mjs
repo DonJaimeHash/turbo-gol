@@ -102,7 +102,11 @@ async function makeWorld() {
             created.push(String(id));
             return new RealResponse('{"ok":true}');
           }
-          if (path === '/internal/status') return alive.get(String(id)) === false ? new RealResponse('{"error":"no_match"}', { status: 404 }) : new RealResponse(JSON.stringify({ matchId: String(id), ended: false, reset: false }));
+          if (path === '/internal/status') {
+            // A MatchDO in another region answers after a round trip (w.statusDelayMs).
+            if (w.statusDelayMs > 0) await new Promise((r) => realSetTimeout(r, w.statusDelayMs));
+            return alive.get(String(id)) === false ? new RealResponse('{"error":"no_match"}', { status: 404 }) : new RealResponse(JSON.stringify({ matchId: String(id), ended: false, reset: false }));
+          }
           return new RealResponse('{"ok":true}');
         },
       }),
@@ -131,7 +135,12 @@ async function makeWorld() {
     });
     return { status: res.status, json: await res.json() };
   };
-  const w = { env, call, alive, created, objs, advance: (ms) => (t += ms), time: () => t };
+  const w = { env, call, alive, created, objs, advance: (ms) => (t += ms), time: () => t, statusDelayMs: 0 };
+  /** One POST /guard straight to the guard instance of `body.key`. */
+  w.guard = async (body) => {
+    const res = await env.MATCHMAKER.get('guard:' + M.guardShard(body.key)).fetch('https://matchmaker/guard', { method: 'POST', headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return res.json();
+  };
   /** A /join of `who` ({ id, guest?, ip? }) in `region`. */
   w.join = (region, who, kind = 'server', extra = {}) => call(region, '/join', { playerId: who.id, name: who.id, mode: '1v1', kind, ...(who.guest ? { guest: true, ip: who.ip ?? '198.51.100.1' } : {}), ...extra });
   /** A lone guest's bot match in `region`: queued, then filled with a bot after BOT_FILL_MS. */
@@ -194,6 +203,42 @@ test('two regions forming for the same guest at once: the guard lets one MatchDO
   const again = await w.join('NA', g);
   assert.equal(again.status, 409);
   assert.equal(again.json.region, 'SA');
+});
+
+test('the guard serializes each key: two holds that race past an old hold being verified with its MatchDO do not both get through', async () => {
+  const w = await makeWorld();
+  w.statusDelayMs = 30; // a cross-region round trip: the verification is an outgoing fetch
+  const key = 'p:racer';
+  const hold = (region, matchId) => w.guard({ op: 'hold', key, max: 1, region, exceptRegion: region, matchId, until: w.time() + 600_000 });
+  assert.deepEqual(await hold('OC', 'm-oc'), { ok: true });
+  w.alive.set('m-oc', false); // the guest quit it
+  w.advance(TRUST_MS + 1);
+  const [na, eu] = await Promise.all([hold('NA', 'm-na'), hold('EU', 'm-eu')]);
+  assert.ok(!(na.ok && eu.ok), `one of them only (NA ${JSON.stringify(na)}, EU ${JSON.stringify(eu)})`);
+  assert.equal([na, eu].filter((a) => a.ok).length, 1, 'and one does get through');
+  // A check racing a hold must not erase it either: the next region is refused.
+  w.advance(TRUST_MS + 1);
+  w.alive.set(na.ok ? 'm-na' : 'm-eu', false);
+  const [, as] = await Promise.all([w.guard({ op: 'check', key, max: 1, region: 'SA', exceptRegion: 'SA' }), hold('AS', 'm-as')]);
+  assert.equal(as.ok, true);
+  const late = await hold('AF', 'm-af');
+  assert.equal(late.ok, false, `the AS hold survived the check (${JSON.stringify(late)})`);
+});
+
+test('two regions forming for the same guest at once while its old match is being verified: one MatchDO only', async () => {
+  const w = await makeWorld();
+  const g = guest('g-race');
+  const oc = await w.botMatch('OC', g);
+  w.alive.set(oc, false); // quit (its release never reached the guard)
+  w.advance(TRUST_MS + 1);
+  w.statusDelayMs = 30;
+  assert.equal((await w.join('NA', g)).json.status, 'waiting');
+  assert.equal((await w.join('EU', g)).json.status, 'waiting');
+  w.advance(M.BOT_FILL_MS);
+  const [na, eu] = await Promise.all([w.join('NA', g), w.join('EU', g)]);
+  const matched = [na, eu].filter((r) => r.json.status === 'matched').length;
+  assert.equal(w.created.length, 2, `the OC match and one more (NA ${JSON.stringify(na.json)}, EU ${JSON.stringify(eu.json)})`);
+  assert.ok(matched <= 1);
 });
 
 test('an IPv6 /64 holds at most 3 guest matches across the regions (429 guest_limit); an IPv4 address shared by a school is never capped', async () => {

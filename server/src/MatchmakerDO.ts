@@ -185,6 +185,8 @@ export const GUARD_TRUST_MS = 10_000;
 const GUARD_SWEEP_MS = 60 * 60_000;
 /** How long the guard waits for an answer before it lets the guest through. */
 const GUARD_TIMEOUT_MS = 2_000;
+/** How long the guard waits for a MatchDO's status before it counts the match as alive. */
+const GUARD_VERIFY_TIMEOUT_MS = 1_500;
 /** A waiter that has not polled for this long is dropped. */
 const STALE_MS = 40_000;
 /** Active-match lock lifetime beyond the regulation length (overtime, reconnections). */
@@ -354,6 +356,17 @@ interface GuardBody {
   exceptRegion?: unknown;
   matchId?: unknown;
   until?: unknown;
+}
+
+/** A validated POST /guard (guardOp). */
+interface GuardOp {
+  op: 'check' | 'hold';
+  max: number;
+  region: string;
+  exceptRegion: string | null;
+  /** 'hold': the match to record (null for a 'check'). */
+  matchId: string | null;
+  until: number;
 }
 
 /** One live MatchDO match a guard key is in. */
@@ -713,6 +726,11 @@ export class MatchmakerDO extends DurableObject<Env> {
   private readonly forgiven = new Map<string, number>();
   private sweepTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly retryAt = new Map<string, number>();
+  /**
+   * The guard's ops in flight per stored key (a 'guard:<n>' instance): each one waits for the one
+   * before it, so a read-modify-write that awaits a MatchDO never interleaves with another one.
+   */
+  private readonly guardTails = new Map<string, Promise<void>>();
   private region = '?';
   /** nodesMode as last read (readNodes), and when; the read in flight, and whether one ever finished. */
   private nodes: NodesMode = 'off';
@@ -1474,12 +1492,33 @@ export class MatchmakerDO extends DurableObject<Env> {
    * older than GUARD_TRUST_MS verified with its MatchDO). At `max` of them: refused with the first.
    * 'hold' then records `matchId` until `until`.
    */
-  private async guard(request: Request, now: number): Promise<Response> {
+  private async guard(request: Request, _now: number): Promise<Response> {
     const b = await readJson<GuardBody>(request);
     if (!b || (b.op !== 'check' && b.op !== 'hold') || typeof b.key !== 'string' || b.key.length === 0 || b.key.length > 80 || typeof b.max !== 'number' || typeof b.region !== 'string') return error(400, 'bad_request');
     if (b.op === 'hold' && (typeof b.matchId !== 'string' || typeof b.until !== 'number')) return error(400, 'bad_request');
+    // One op per key at a time: the verification below is an outgoing fetch (the input gate opens),
+    // and two holds that both read the list before either wrote it would both be let through.
     const storeKey = 'g:' + b.key;
-    const except = typeof b.exceptRegion === 'string' ? b.exceptRegion : null;
+    const before = this.guardTails.get(storeKey) ?? Promise.resolve();
+    let done = (): void => undefined;
+    const mine = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const tail = before.then(() => mine);
+    this.guardTails.set(storeKey, tail);
+    await before;
+    try {
+      const op: GuardOp = { op: b.op, max: b.max, region: b.region, exceptRegion: typeof b.exceptRegion === 'string' ? b.exceptRegion : null, matchId: typeof b.matchId === 'string' ? b.matchId : null, until: typeof b.until === 'number' ? b.until : 0 };
+      return await this.guardOp(op, storeKey, this.now());
+    } finally {
+      done();
+      if (this.guardTails.get(storeKey) === tail) this.guardTails.delete(storeKey);
+    }
+  }
+
+  /** The body of POST /guard for one key, run alone for that key (guard). */
+  private async guardOp(b: GuardOp, storeKey: string, now: number): Promise<Response> {
+    const except = b.exceptRegion;
     const before = (await this.ctx.storage.get<GuardHold[]>(storeKey)) ?? [];
     const kept: GuardHold[] = [];
     const counted: GuardHold[] = [];
@@ -1496,7 +1535,7 @@ export class MatchmakerDO extends DurableObject<Env> {
     }
     let answer: GuardAnswer = { ok: true };
     if (counted.length >= b.max) answer = { ok: false, matchId: counted[0].matchId, region: counted[0].region };
-    else if (b.op === 'hold') kept.push({ matchId: b.matchId as string, region: b.region, until: b.until as number, since: now });
+    else if (b.op === 'hold' && b.matchId !== null) kept.push({ matchId: b.matchId, region: b.region, until: b.until, since: now });
     if (kept.length !== before.length || kept.some((h, i) => h !== before[i])) {
       if (kept.length === 0) await this.ctx.storage.delete(storeKey);
       else {
@@ -1507,12 +1546,22 @@ export class MatchmakerDO extends DurableObject<Env> {
     return json(answer);
   }
 
-  /** The MatchDO `matchId` still runs (not ended, not reset); an error counts as alive, a 404 or a bad id as gone. */
+  /**
+   * The MatchDO `matchId` still runs (not ended, not reset); an error or no answer within
+   * GUARD_VERIFY_TIMEOUT_MS counts as alive, a 404 or a bad id as gone. Bounded: the guard's ops on
+   * one key wait for each other (guard).
+   */
   private async matchAlive(matchId: string): Promise<boolean> {
     const env = this.env;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     try {
       const secret = await internalSecret(env.JWT_SECRET);
-      const res = await env.MATCH.get(env.MATCH.idFromString(matchId)).fetch('https://match/internal/status', { headers: { [INTERNAL_HEADER]: secret } });
+      const ask = env.MATCH.get(env.MATCH.idFromString(matchId)).fetch('https://match/internal/status', { headers: { [INTERNAL_HEADER]: secret } });
+      const late = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), GUARD_VERIFY_TIMEOUT_MS);
+      });
+      const res = await Promise.race([ask, late]);
+      if (res === null) return true;
       if (res.status === 404) {
         await res.body?.cancel();
         return false;
@@ -1527,6 +1576,8 @@ export class MatchmakerDO extends DurableObject<Env> {
       if (e instanceof TypeError || (e instanceof Error && /id/i.test(e.message))) return false;
       console.error('matchmaker: guard verification failed', e);
       return true;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
   }
 
