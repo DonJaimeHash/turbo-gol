@@ -421,3 +421,75 @@ test("LobbyDO: a member's fresh admit (a reload, another tab) does not count as 
   assert.equal((await h.admit('bea')).status, 200, 'one seat of two is taken: bea gets the other');
   assert.equal((await h.admit('caro')).status, 409, 'now it is full');
 });
+
+// ---- authz-6 / rt-6: password guesses -------------------------------------------------------------
+
+async function lockedLobby(password = 'tero2026') {
+  const h = await makeLobby({ name: 'Sala', mode: '3v3', visibility: 'private', net: 'p2p', matchLengthSeconds: 300 });
+  const host = await h.upgrade('host1');
+  await h.send(host, { t: 'settings', settings: {}, password });
+  assert.equal(host.last().hasPassword, true);
+  return { h, host };
+}
+
+test('LobbyDO: password guesses from many fresh sessions are bounded per lobby (10, then one per 30 s): 429 password_locked; the host is told once', async () => {
+  const { h, host } = await lockedLobby();
+  advance(60_000);
+  let compared = 0;
+  let locked = 0;
+  const t0 = clock;
+  for (let i = 0; i < 200; i++) {
+    const r = await h.admit('guess' + i, { password: 'pw' + i }); // a fresh guest session per guess
+    if (r.status === 403) compared++;
+    else if (r.status === 429) {
+      locked++;
+      assert.equal(r.json.error, 'password_locked');
+      assert.ok(r.json.retryAfterMs > 0 && r.json.retryAfterMs <= L.PW_LOBBY_REFILL_MS);
+    }
+    advance(3_000); // 200 guesses over 10 minutes
+  }
+  const allowed = 10 + Math.floor((clock - t0) / 30_000);
+  assert.ok(compared <= allowed, `guesses compared ${compared} <= ${allowed}`);
+  assert.ok(locked >= 200 - allowed);
+  assert.equal(host.of('error').filter((e) => e.code === 'password_attempts').length, 1, 'the host hears it once');
+  // Unlocked again after the window: the right password still opens the lobby.
+  advance(L.PW_LOBBY_REFILL_MS * L.PW_LOBBY_BURST);
+  assert.equal((await h.admit('friend', { password: 'tero2026' })).status, 200);
+});
+
+test('LobbyDO: one player gets 5 wrong guesses per 10 minutes; a friend with the right password is not held up by it; a new password starts the count over', async () => {
+  const { h, host } = await lockedLobby();
+  for (let i = 0; i < 5; i++) assert.equal((await h.admit('grief', { password: 'nope' + i })).status, 403);
+  const r = await h.admit('grief', { password: 'tero2026' });
+  assert.equal(r.status, 429, 'over its count: refused even with the right password');
+  assert.equal(r.json.error, 'password_locked');
+  assert.equal((await h.admit('friend', { password: 'wrong' })).status, 403, 'a typo');
+  assert.equal((await h.admit('friend', { password: 'tero2026' })).status, 200, 'then in');
+  await h.send(host, { t: 'settings', settings: {}, password: 'otra-clave' });
+  assert.equal((await h.admit('grief', { password: 'otra-clave' })).status, 200, 'a new password: the old guesses count no more');
+  advance(L.PW_WINDOW_MS);
+});
+
+test('LobbyDO: a new password needs 4 characters (create 400 short_password, settings error short_password with nothing changed); a lobby made before keeps its short one', async () => {
+  const h = await makeLobby();
+  const host = await h.upgrade('host1');
+  await h.send(host, { t: 'settings', settings: { name: 'Otra sala' }, password: 'abc' });
+  assert.equal(host.of('error').at(-1).code, 'short_password');
+  assert.equal(host.last().settings.name, 'Sala', 'the refused save changed nothing');
+  assert.equal(host.last().hasPassword, false);
+  await h.send(host, { t: 'settings', settings: { name: 'Otra sala' }, password: 'abcd' });
+  assert.equal(host.last().settings.name, 'Otra sala');
+  assert.equal(host.last().hasPassword, true);
+  // POST /internal/create with a short password.
+  const ctx = new FakeLobbyCtx();
+  const lobby = new L.LobbyDO(ctx, { JWT_SECRET: SECRET, MATCHMAKER: h.mm.ns, LOBBY_DIR: h.dir.ns });
+  const secret = await internalSecret(SECRET);
+  const create = (password) =>
+    lobby.fetch(new Request('https://lobby/internal/create', { method: 'POST', headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' }, body: JSON.stringify({ lobbyId: 'L2', code: 'BCDEFG', region: 'SA', socketBase: 'wss://x', settings: { name: 'Sala', mode: '2v2', visibility: 'private', net: 'p2p', matchLengthSeconds: 300 }, password, host: { playerId: 'h2', name: 'Bea', guest: true } }) }));
+  const short = await create('x');
+  assert.equal(short.status, 400);
+  assert.equal((await short.json()).error, 'short_password');
+  // A lobby whose 1-character password was set before the rule: guesses of it are still compared.
+  h.lobby.rec.pwHash = await L.lobbyPasswordHash('L1', 'x');
+  assert.equal((await h.admit('bea', { password: 'x' })).status, 200);
+});

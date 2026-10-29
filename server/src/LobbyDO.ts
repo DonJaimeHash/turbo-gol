@@ -92,6 +92,23 @@ export const START_MIN_MS = 3_000;
 export const START_AGAIN_MS = 5_000;
 export const START_MAX_BACKOFF_MS = 30_000;
 
+/**
+ * Password guesses (authz-6, rt-6). A wrong guess takes a token from the lobby's bucket
+ * (PW_LOBBY_BURST, one back every PW_LOBBY_REFILL_MS) and counts against the guessing player
+ * (PW_PLAYER_MAX per PW_WINDOW_MS); with the bucket empty or the player over its count every
+ * password attempt on the lobby answers 429 'password_locked' (retryAfterMs) before the password
+ * is even looked at, and the host is told once. Persisted with the lobby (a guess wakes it).
+ * A new password needs PW_MIN_LENGTH characters; guesses of 1 to 32 are still compared (a lobby
+ * made before the rule keeps its password).
+ */
+export const PW_LOBBY_BURST = 10;
+export const PW_LOBBY_REFILL_MS = 30_000;
+export const PW_PLAYER_MAX = 5;
+export const PW_WINDOW_MS = 10 * 60_000;
+export const PW_MIN_LENGTH = 4;
+/** Guessing players remembered per lobby (the oldest goes first). */
+const PW_PLAYERS_KEPT = 64;
+
 /** When the next start may go after `fails` refused starts in a row (0: one that formed a match), from `now`. Pure. */
 export function nextStartAt(fails: number, now: number): number {
   if (fails <= 0) return now + START_AGAIN_MS;
@@ -155,6 +172,18 @@ export interface LobbyRecord {
   startNext?: number;
   /** Refused starts in a row (the back-off of nextStartAt). */
   startFails?: number;
+  /** The lobby's password-guess bucket (absent: full). */
+  pwBucket?: { tokens: number; at: number };
+  /** Wrong guesses per player in the current PW_WINDOW_MS window (absent: none). */
+  pwFails?: Array<{ playerId: string; n: number; first: number }>;
+  /** When the host was last told its password is being guessed (once per PW_WINDOW_MS). */
+  pwWarnedAt?: number;
+}
+
+/** The lobby bucket refilled to `now` (PW_LOBBY_BURST, one token per PW_LOBBY_REFILL_MS). Pure. */
+export function pwTokens(b: { tokens: number; at: number } | undefined, now: number): number {
+  if (b === undefined) return PW_LOBBY_BURST;
+  return Math.min(PW_LOBBY_BURST, b.tokens + Math.max(0, now - b.at) / PW_LOBBY_REFILL_MS);
 }
 
 // ---- pure helpers (server/test/lobby.test.mjs) ------------------------------------------------
@@ -203,8 +232,14 @@ export function lobbyPasswordHash(lobbyId: string, pw: string): Promise<string> 
   });
 }
 
+/** A guess worth comparing (1 to 32 characters: lobbies made before PW_MIN_LENGTH keep theirs). */
 function validPassword(v: unknown): v is string {
   return typeof v === 'string' && v.length >= 1 && v.length <= 32;
+}
+
+/** A password a host may set now: PW_MIN_LENGTH to 32 characters. */
+function validNewPassword(v: unknown): v is string {
+  return typeof v === 'string' && v.length >= PW_MIN_LENGTH && v.length <= 32;
 }
 
 /** The lobby's experimental rules (null = standard; a record written before the field: none). */
@@ -304,7 +339,7 @@ export class LobbyDO extends DurableObject<Env> {
     if (typeof settings === 'string') return error(400, settings);
     // The Worker refuses a guest's rules already; checked again here (every door checks).
     if (lobbyPhysics(settings) !== null && b.host.guest === true) return error(403, 'account_required', 'Inicia sesión para crear una sala experimental');
-    if (b.password !== undefined && b.password !== null && !validPassword(b.password)) return error(400, 'bad_password');
+    if (b.password !== undefined && b.password !== null && !validNewPassword(b.password)) return error(400, 'short_password', `La contraseña tiene que tener entre ${PW_MIN_LENGTH} y 32 caracteres`);
     const now = Date.now();
     this.rec = {
       lobbyId: b.lobbyId,
@@ -313,7 +348,7 @@ export class LobbyDO extends DurableObject<Env> {
       socketBase: b.socketBase,
       createdAt: now,
       settings,
-      pwHash: validPassword(b.password) ? await lobbyPasswordHash(b.lobbyId, b.password) : null,
+      pwHash: validNewPassword(b.password) ? await lobbyPasswordHash(b.lobbyId, b.password) : null,
       members: [],
       hostId: '',
       nextMember: 1,
@@ -340,7 +375,13 @@ export class LobbyDO extends DurableObject<Env> {
     const member = rec.members.find((m) => m.playerId === b.playerId);
     if (!member) {
       if (rec.pwHash !== null) {
-        if (!validPassword(b.password) || (await lobbyPasswordHash(rec.lobbyId, b.password)) !== rec.pwHash) return error(403, 'bad_password', 'Contraseña incorrecta');
+        if (!validPassword(b.password)) return error(403, 'bad_password', 'Contraseña incorrecta');
+        const locked = this.passwordLocked(b.playerId, now);
+        if (locked > 0) return json({ error: 'password_locked', message: 'Demasiados intentos con la contraseña de esta sala, espera unos minutos', retryAfterMs: locked }, 429);
+        if ((await lobbyPasswordHash(rec.lobbyId, b.password)) !== rec.pwHash) {
+          await this.wrongPassword(b.playerId, now);
+          return error(403, 'bad_password', 'Contraseña incorrecta');
+        }
       }
       // Pending seats: admits of players who are not members yet (a member's fresh admit, a reload's, holds no extra seat).
       const pending = rec.admits.filter((a) => a.until > now && a.playerId !== b.playerId && !rec.members.some((m) => m.playerId === a.playerId)).length;
@@ -464,13 +505,18 @@ export class LobbyDO extends DurableObject<Env> {
           if (fit === null) return fail('too_many', 'Hay más jugadores que lugares en ese modo');
           for (const m of rec.members) m.team = fit.get(m.id) ?? m.team;
         }
+        // Checked before anything changes: a refused password leaves the settings as they were.
+        if (msg.password !== undefined && msg.password !== null && !validNewPassword(msg.password)) return fail('short_password', `La contraseña tiene que tener entre ${PW_MIN_LENGTH} y 32 caracteres`);
+        const pwHash = msg.password === undefined ? rec.pwHash : msg.password === null ? null : await lobbyPasswordHash(rec.lobbyId, msg.password);
         rec.settings = next;
         // ... and no guest admitted before may still come in (its socket would be refused anyway).
         if (lobbyPhysics(next) !== null) rec.admits = rec.admits.filter((a) => !a.guest);
-        if (msg.password === null) rec.pwHash = null;
-        else if (msg.password !== undefined) {
-          if (!validPassword(msg.password)) return fail('bad_password', 'La contraseña puede tener de 1 a 32 caracteres');
-          rec.pwHash = await lobbyPasswordHash(rec.lobbyId, msg.password);
+        if (pwHash !== rec.pwHash) {
+          // A new password: the guesses at the old one count no more.
+          rec.pwHash = pwHash;
+          delete rec.pwBucket;
+          delete rec.pwFails;
+          delete rec.pwWarnedAt;
         }
         break;
       }
@@ -523,6 +569,36 @@ export class LobbyDO extends DurableObject<Env> {
     }
     if (this.rec !== null && JSON.stringify(this.rec) === before) return;
     await this.afterChange();
+  }
+
+  /** Milliseconds `playerId`'s password attempts stay refused on this lobby (0: it may guess). */
+  private passwordLocked(playerId: string, now: number): number {
+    const rec = this.rec as LobbyRecord;
+    const tokens = pwTokens(rec.pwBucket, now);
+    const lobbyWait = tokens >= 1 ? 0 : Math.ceil((1 - tokens) * PW_LOBBY_REFILL_MS);
+    const mine = rec.pwFails?.find((f) => f.playerId === playerId && now - f.first < PW_WINDOW_MS);
+    const playerWait = mine !== undefined && mine.n >= PW_PLAYER_MAX ? mine.first + PW_WINDOW_MS - now : 0;
+    return Math.max(lobbyWait, playerWait);
+  }
+
+  /** A wrong guess: a token of the lobby's bucket and one more for the player (persisted); the host hears of an empty bucket once. */
+  private async wrongPassword(playerId: string, now: number): Promise<void> {
+    const rec = this.rec as LobbyRecord;
+    const left = pwTokens(rec.pwBucket, now) - 1;
+    rec.pwBucket = { tokens: Math.max(0, left), at: now };
+    const fails = (rec.pwFails ?? []).filter((f) => now - f.first < PW_WINDOW_MS);
+    const mine = fails.find((f) => f.playerId === playerId);
+    if (mine !== undefined) mine.n++;
+    else fails.push({ playerId, n: 1, first: now });
+    rec.pwFails = fails.length > PW_PLAYERS_KEPT ? fails.slice(fails.length - PW_PLAYERS_KEPT) : fails;
+    // The bucket ran dry (the next attempts are refused before the compare): the host hears it once per window.
+    const warn = left < 1 && (rec.pwWarnedAt === undefined || now - rec.pwWarnedAt >= PW_WINDOW_MS);
+    if (warn) rec.pwWarnedAt = now;
+    await this.save();
+    if (warn) {
+      const host = rec.members.find((m) => m.id === rec.hostId);
+      if (host !== undefined) for (const ws of this.ctx.getWebSockets(host.id)) this.send(ws, { t: 'error', code: 'password_attempts', message: 'Alguien está probando contraseñas en tu sala: las entradas con contraseña quedan en pausa unos minutos' });
+    }
   }
 
   /** One frame of `ws`'s budget: 'ok', 'drop' (over it) or 'close' (LOBBY_OVER_BURST dropped). */

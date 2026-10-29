@@ -862,6 +862,9 @@ export default {
   'error.lobby.bad_physics': 'Invalid rules',
   'error.lobby.too_many_lobbies': 'You already have open lobbies: close one before creating another',
   'error.lobby.start_cooldown': 'Wait a few seconds before starting again',
+  'error.lobby.short_password': 'The password needs 4 to 32 characters',
+  'error.lobby.password_locked': 'Too many password attempts on this lobby, wait a few minutes',
+  'error.lobby.password_attempts': 'Someone is trying passwords on your lobby: joining with the password is paused for a few minutes',
   // Matchmaking: Casual and Competitive searches (POST /api/queue, /api/rejoin, the guest session)
   'error.queue.rate_limited': 'Too many attempts, wait a minute',
   'error.queue.account_required': 'Sign in to play Competitive',
