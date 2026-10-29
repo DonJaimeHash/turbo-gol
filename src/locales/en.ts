@@ -295,6 +295,8 @@ export default {
   'friendly.difficulty': 'AI difficulty',
   // Where the match is played (the stadium's setting: harbour, canyon...); purely visual
   'friendly.theme': 'Stadium',
+  // Under the stadium sheet's title (components/stadium.ts): the pick is not for this match only
+  'friendly.themeNote': 'Used in all your matches and behind the menus',
   'friendly.intro': 'A 3-minute offline match against the AI. Your teammates, if any, are bots too.',
   // Starts the friendly match
   'friendly.play': 'PLAY',

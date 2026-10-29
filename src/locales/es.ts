@@ -193,6 +193,7 @@ export default {
   'friendly.mode': 'Modo',
   'friendly.difficulty': 'Dificultad de la IA',
   'friendly.theme': 'Estadio',
+  'friendly.themeNote': 'Se usa en todos tus partidos y de fondo en los menús',
   'friendly.intro': 'Un partido offline de 3 minutos contra la IA. Tus compañeros, si los hay, también son bots.',
   'friendly.play': 'JUGAR',
 
