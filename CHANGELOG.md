@@ -579,8 +579,8 @@ All notable changes to Turbogol are documented here. The format follows
   with live matches kept through a Caddy reload. Replay uploads keep trying for about 75 s, and the
   launcher never starts a release that needs a newer Node.js than the machine has: it logs why, and
   the node does not serve until Node.js is upgraded.
-- Community node docs: the São Paulo VPS guide is the runbook of the real machine (a Hostinger KVM
-  2 in Campinas: access, hardening, DNS and TLS, measurements, install, backups and operations),
+- Community node docs: the São Paulo VPS guide is the runbook of the real machine (access,
+  hardening, DNS and TLS, measurements, install, backups and operations),
   the stage 1 checklist is split into eight PRs with the maintainer's steps, the pre-beta tests
   and the main risks, and stale facts in the other node docs are corrected. The budget shows the
   VPS's real price.
