@@ -236,6 +236,17 @@ Until a node release is published (a fork without nodes, or before the first one
 `npm run deploy -- --nodes-off` (from `server/` as well). If a deploy fails after the channel moved,
 the gate prints how to check which build serves (`npx wrangler deployments status`) before going back.
 
+After `wrangler deploy`, `npm run deploy` checks the live site (`scripts/deploy-check.mjs`): one public
+GET per kind of Durable Object (`/api/config`, `/api/population`, `/api/leaderboard`, `/nodes/status`)
+against `DEPLOY_CHECK_ORIGIN`, else the first `VITE_ORIGINS` entry, else `https://turbo-gol.com`.
+A 403 `forbidden` means an object still runs the code before the deploy: its internal header does not
+match the new Worker's. The same build is then deployed once more, which restarts it, and checked
+again. This happened to the NodeRegistryDO, which keeps the nodes' hibernated sockets, on 2026-10-29.
+Any other failure is printed and the deploy exits 1; `--no-check` skips the check.
+A change to what the Worker and the objects must agree on (the internal secret in `auth.ts`, an internal
+route's body) goes out in two deploys when it can: first accept the old and the new form, then send
+only the new one.
+
 The first deploy of a Worker applies the migrations `v1`-`v4` in order (later deploys apply only new
 tags); `wrangler dev` does the same locally the first time it starts. Custom Domain deploys need a
 token (or `wrangler login`) with Workers Scripts and Workers Routes edit rights and access to the zone.
