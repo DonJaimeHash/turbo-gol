@@ -82,6 +82,8 @@
  *                                       rankedResultNet  network     1200  RL_1200
  *   GET  /api/leaderboard               leaderboardYou   account       60  RL_60    the account's own row: one AccountsDO call (cached 15 s)
  *                                       leaderboardNet   network     1200  RL_1200  the board itself is cached 30 s per isolate
+ *   GET  /nodes/admin/account-stats     accountStats     account       10  RL_10    a maintainer's account counts (nodeRoutes.ts): a few scans
+ *                                                                                    of every account in the AccountsDO each
  *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
  *   GET  /nodes/connect                 nodeConnect      network       30  RL_30    a node's control socket: one per node, reconnects back off
  *                                       nodeConnectWide  wide        1200  RL_1200  the same, per IPv6 /48 or IPv4 /24
@@ -172,6 +174,7 @@ export const LIMITS = {
   rankedResultNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   leaderboardYou: { by: 'account', isolate: 60, edge: 'RL_60' },
   leaderboardNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
+  accountStats: { by: 'account', isolate: 10, edge: 'RL_10' },
   nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   nodeConnect: { by: 'network', isolate: 30, edge: 'RL_30' },
   nodeConnectWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
@@ -180,7 +183,8 @@ export type LimitName = keyof typeof LIMITS;
 
 /**
  * The account routes' rules (accountRoutes.ts), checked by index.ts before the route runs so the
- * single AccountsDO is never asked for a request over its limit. [] for every other route.
+ * single AccountsDO is never asked for a request over its limit; nodeRoutes.ts checks the account
+ * counts' (GET /nodes/admin/account-stats) the same way. [] for every other route.
  */
 export function accountGate(method: string, path: string): readonly LimitName[] {
   if (method === 'POST') {
@@ -216,6 +220,7 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
   if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
   if (path === '/api/auth/sessions') return ['sessions'];
+  if (path === '/nodes/admin/account-stats') return ['accountStats'];
   const o = /^\/api\/auth\/oauth\/(?:google|discord)\/(start|callback)$/.exec(path);
   if (o) return [o[1] === 'start' ? 'oauthStart' : 'oauthCallback', 'signInSite'];
   return [];

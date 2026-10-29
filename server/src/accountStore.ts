@@ -201,6 +201,39 @@ export interface RankedResultInput {
   players: RankedPlayerInput[];
 }
 
+/** An account counts as active when it signed in, renewed a session or played a rated match this recently. */
+export const STATS_ACTIVE_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * GET /nodes/admin/account-stats (AccountStore.accountStats): what the owner needs before choosing
+ * the cutoff for passwords without an email. Counts and booleans only: never an id, a name or an address.
+ */
+export interface AccountStats {
+  /** Every account, suspended ones included, and how many of them are suspended. */
+  total: number;
+  banned: number;
+  /** By their ways in: 'password', 'google', 'discord' joined with '+' ('password+google'), 'none'. Every combination is listed. */
+  byWays: Record<string, number>;
+  /** By the password's format (users.pw_v): '0' none, '1' the legacy key salted with the username, '2' the current key. */
+  byPwV: Record<string, number>;
+  /** With a verified address, and with a provider's unproved address (a hint). */
+  verifiedEmail: number;
+  emailHint: number;
+  /** Signed in, renewed a session or played a rated match in the last 30 days (STATS_ACTIVE_MS). */
+  active30d: number;
+  /**
+   * A password and nothing else: no Google, no Discord, no verified address. What the cutoff would
+   * leave without a way in, and what such accounts hold: rated games, host points, items, nodes
+   * (null when the node settings are absent or the registry did not answer) and any of them
+   * (withAny: without the nodes when they are unknown).
+   */
+  passwordOnly: { total: number; active30d: number; emailHint: number; rated: number; hostPoints: number; items: number; nodes: number | null; withAny: number };
+  /** Accounts that operate a registered community node (null as for nodes). */
+  operators: number | null;
+  /** Each NODE_TRUSTED_OPERATORS account, in that list's order: booleans only. */
+  trusted: Array<{ found: boolean; password: boolean; verifiedEmail: boolean; google: boolean; discord: boolean }>;
+}
+
 export interface RankedCheck {
   banUntil: number;
   ratings: Record<string, { mu: number; sigma: number; mmr: number; games: number }>;
@@ -219,6 +252,11 @@ function addColumn(s: SqlLike, table: string, def: string): void {
 /** A device's id in the list: its family, or for a token from before families its own hash's first half (never the token). */
 function deviceId(r: Row): string {
   return r.family !== null && r.family !== undefined ? str(r.family) : str(r.hash).slice(0, 32);
+}
+
+/** AccountStats.byWays' key of a combination of ways in (1 = has it): 'password+google', 'discord', 'none'. */
+function waysKey(password: number, google: number, discord: number): string {
+  return [password === 1 ? 'password' : '', google === 1 ? 'google' : '', discord === 1 ? 'discord' : ''].filter((w) => w !== '').join('+') || 'none';
 }
 
 function num(v: SqlValue | undefined): number {
@@ -1275,6 +1313,70 @@ export class AccountStore {
       }
       return { revoked: r !== undefined, refunded: r ? round2(num(r.cost)) : 0, items: this.itemIds(userId) };
     });
+  }
+
+  // ---- the owner's counts --------------------------------------------------------------------------
+
+  /**
+   * The account counts (AccountStats): counts and booleans only. `operatorIds`: the accounts that
+   * operate a community node (the NodeRegistryDO's, passed between the objects only), null when
+   * unknown; `trustedIds`: NODE_TRUSTED_OPERATORS in its order. A few scans of the users table: at
+   * 25,000 accounts a few milliseconds, for a maintainer's call.
+   */
+  accountStats(operatorIds: readonly string[] | null, trustedIds: readonly string[], now: number): AccountStats {
+    const since = now - STATS_ACTIVE_MS;
+    const ACTIVE = '(u.last_login > ? OR EXISTS (SELECT 1 FROM refresh r WHERE r.user_id = u.id AND r.created_at > ?) OR EXISTS (SELECT 1 FROM ratings a WHERE a.user_id = u.id AND a.last_played > ?))';
+    const ONLY_PASSWORD = '(u.pw_hash IS NOT NULL AND u.google_sub IS NULL AND u.discord_id IS NULL AND u.email_canon IS NULL)';
+    const RATED = 'EXISTS (SELECT 1 FROM ratings a WHERE a.user_id = u.id AND a.games > 0)';
+    const POINTS = 'EXISTS (SELECT 1 FROM host_credits h WHERE h.user_id = u.id AND h.points > 0)';
+    const ITEMS = 'EXISTS (SELECT 1 FROM host_claims c WHERE c.user_id = u.id)';
+    const one = (q: string, ...b: unknown[]): Row => this.sql.exec(q, ...b).toArray()[0] ?? {};
+    const t = one('SELECT COUNT(*) AS total, SUM(banned = 1) AS banned, SUM(email_canon IS NOT NULL) AS verified, SUM(email_hint_canon IS NOT NULL) AS hint FROM users');
+    const byWays: Record<string, number> = {};
+    for (const p of [1, 0]) for (const g of [1, 0]) for (const d of [1, 0]) byWays[waysKey(p, g, d)] = 0;
+    for (const r of this.sql.exec('SELECT (pw_hash IS NOT NULL) AS p, (google_sub IS NOT NULL) AS g, (discord_id IS NOT NULL) AS d, COUNT(*) AS n FROM users GROUP BY p, g, d').toArray()) {
+      byWays[waysKey(num(r.p), num(r.g), num(r.d))] = num(r.n);
+    }
+    const byPwV: Record<string, number> = { '0': 0, '1': 0, '2': 0 };
+    for (const r of this.sql.exec('SELECT pw_v AS v, COUNT(*) AS n FROM users GROUP BY pw_v').toArray()) byPwV[String(num(r.v))] = num(r.n);
+    const active = one(`SELECT COUNT(*) AS n FROM users u WHERE ${ACTIVE}`, since, since, since);
+    const po = one(
+      `SELECT COUNT(*) AS total, SUM(${ACTIVE}) AS active, SUM(u.email_hint_canon IS NOT NULL) AS hint, SUM(${RATED}) AS rated, SUM(${POINTS}) AS points,
+       SUM(${ITEMS}) AS items, SUM(${RATED} OR ${POINTS} OR ${ITEMS}) AS anyOf FROM users u WHERE ${ONLY_PASSWORD}`,
+      since, since, since,
+    );
+    let operators: number | null = null;
+    let nodes: number | null = null;
+    let nodesOnly = 0;
+    if (operatorIds !== null) {
+      operators = 0;
+      nodes = 0;
+      for (const id of new Set(operatorIds)) {
+        const r = this.sql.exec(`SELECT ${ONLY_PASSWORD} AS po, (${RATED} OR ${POINTS} OR ${ITEMS}) AS other FROM users u WHERE u.id = ?`, id).toArray()[0];
+        if (!r) continue;
+        operators++;
+        if (num(r.po) === 1) {
+          nodes++;
+          if (num(r.other) !== 1) nodesOnly++;
+        }
+      }
+    }
+    const trusted = trustedIds.map((id) => {
+      const r = this.sql.exec('SELECT (pw_hash IS NOT NULL) AS p, (email_canon IS NOT NULL) AS e, (google_sub IS NOT NULL) AS g, (discord_id IS NOT NULL) AS d FROM users WHERE id = ?', id).toArray()[0];
+      return { found: r !== undefined, password: num(r?.p) === 1, verifiedEmail: num(r?.e) === 1, google: num(r?.g) === 1, discord: num(r?.d) === 1 };
+    });
+    return {
+      total: num(t.total),
+      banned: num(t.banned),
+      byWays,
+      byPwV,
+      verifiedEmail: num(t.verified),
+      emailHint: num(t.hint),
+      active30d: num(active.n),
+      passwordOnly: { total: num(po.total), active30d: num(po.active), emailHint: num(po.hint), rated: num(po.rated), hostPoints: num(po.points), items: num(po.items), nodes, withAny: num(po.anyOf) + nodesOnly },
+      operators,
+      trusted,
+    };
   }
 
   /**

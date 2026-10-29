@@ -45,6 +45,12 @@
  *   POST     /nodes/admin/unfreeze    the account (NodeRegistryDO.ts)
  *   GET      /nodes/shop              aliases of GET /api/me/shop and POST /api/me/shop/claim (accountRoutes.ts,
  *   POST     /nodes/shop/claim        AccountsDO): answered with or without the node settings
+ *   GET      /nodes/admin/account-stats  the owner's account counts (AccountsDO, accountStore.ts AccountStats): counts
+ *                                     and booleans only, never an id or an address; behind the maintainer gate (a
+ *                                     trusted account's own session, not a TV's, fresh within MAINTAINER_FRESH_S),
+ *                                     10 a minute per account (limits.ts accountStats), no-store, no CORS. The node
+ *                                     operators' ids come from the object (/internal/operators) and go on to AccountsDO
+ *                                     only; without the node settings the node counts are null
  * The KV flag nodes_off (server/README.md, "Kill switches") stops every route here that would reach
  * the object, and the cron's call: 503 'nodes_off', the object never asked. The releases and the
  * shop aliases go on.
@@ -63,13 +69,14 @@
  * The cron (index.ts scheduled, every 5 minutes) calls nodeHealthCheck: one call to the object,
  * which probes the trusted nodes' /healthz; nothing at all without the node settings.
  */
-import { requireAccount, requireFresh, requirePrimary, shopClaim, shopGet } from './accountRoutes';
+import { accountsCall, requireAccount, requireFresh, requirePrimary, shopClaim, shopGet } from './accountRoutes';
+import { STATS_OPERATORS_MAX, STATS_TRUSTED_MAX } from './AccountsDO';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
-import { JSON_MAX_BYTES, error, flag, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
+import { JSON_MAX_BYTES, error, flag, isHex, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
-import { NODE_ROUTES, nodesStub } from './nodeApi';
-import { edgeCache, widePrefix } from './limits';
+import { NODE_ROUTES, OPERATORS_ROUTE, nodesStub } from './nodeApi';
+import { accountGate, edgeCache, overLimit, subjectsOf, widePrefix } from './limits';
 import type { Limiter } from './limits';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 import { PUBLIC_REPLAY_MAX_BYTES, publicReplay } from './replayIndex';
@@ -193,6 +200,8 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     const s = { env, request: c.request, session: await c.session(), limited: (key: string, max: number) => c.limited(key, max) };
     return method === 'GET' ? shopGet(s) : shopClaim(s);
   }
+  // The account counts live in AccountsDO: a fork without nodes has them too, without the node columns.
+  if (method === 'GET' && path === ACCOUNT_STATS_PATH) return env.JWT_SECRET ? accountStats(c, env) : error(404, 'not_found');
   if (!nodesConfigured(env) || !env.JWT_SECRET) return error(404, 'not_found');
   const who = limitKey(c.ip);
   if (method === 'POST' && path === '/nodes/register') {
@@ -263,6 +272,46 @@ export async function nodeHealthCheck(env: Env): Promise<void> {
     if (!res.ok) console.error(`nodes health check: ${res.status} ${text.slice(0, 200)}`);
   } catch (e) {
     console.error('nodes health check failed', e);
+  }
+}
+
+const ACCOUNT_STATS_PATH = '/nodes/admin/account-stats';
+
+/**
+ * GET /nodes/admin/account-stats: the owner's account counts (accountStore.ts AccountStats), behind
+ * the maintainer gate of every /nodes/admin/* route (a trusted account's own session, not a TV's,
+ * that proved a credential within MAINTAINER_FRESH_S), then its limit. The answer is AccountsDO's,
+ * counts and booleans only; the node operators' ids travel from the object to AccountsDO and never
+ * into it.
+ */
+async function accountStats(c: NodeRouteContext, env: Env): Promise<Response> {
+  const s = requirePrimary({ session: await c.session() });
+  if (s instanceof Response) return s;
+  const trusted = trustedOperatorIds(env);
+  if (!trusted.has(s.sub)) return error(403, 'not_trusted', 'only the project reads the account counts');
+  const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+  if (fresh instanceof Response) return fresh;
+  if ((await overLimit(c.limit, accountGate('GET', ACCOUNT_STATS_PATH), subjectsOf(c.ip, s))) !== null) return error(429, 'rate_limited');
+  const operatorIds = nodesConfigured(env) ? await operatorIdsOf(env) : null;
+  const res = await accountsCall(env, '/account-stats', { operatorIds, trusted: [...trusted].slice(0, STATS_TRUSTED_MAX) });
+  const out = new Response(res.body, res);
+  out.headers.set('cache-control', 'no-store');
+  return out;
+}
+
+/** The object's node operators (/internal/operators), or null when it cannot say (paused, unavailable, more than one body holds). */
+async function operatorIdsOf(env: NodesEnv): Promise<string[] | null> {
+  try {
+    const res = await toRegistry(env, new Request('https://nodes' + OPERATORS_ROUTE, { method: 'GET' }), OPERATORS_ROUTE);
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
+    const b = (await res.json()) as { operators?: unknown };
+    if (!Array.isArray(b.operators) || b.operators.length > STATS_OPERATORS_MAX) return null;
+    return b.operators.filter((id): id is string => isHex(id, 16));
+  } catch {
+    return null;
   }
 }
 

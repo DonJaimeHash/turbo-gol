@@ -83,7 +83,7 @@ import type { Env, NodesEnv } from './env';
 import { widePrefix } from './limits';
 import { AlertHook } from './nodeAlerts';
 import type { FetchFn } from './nodeAlerts';
-import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeApi';
+import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, OPERATORS_ROUTE, REJOIN_STATUS } from './nodeApi';
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
@@ -740,6 +740,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
       if (method === 'GET' && path === '/nodes/status') return this.status(cp);
       if (method === 'POST' && path === '/nodes/tokens') return await this.token(request, cp, env);
       if (method === 'GET' && path === '/nodes/mine') return this.mine(request, cp);
+      // The account counts (nodeRoutes.ts): who operates a node, never an address; the ids go on to AccountsDO only.
+      if (method === 'GET' && path === OPERATORS_ROUTE) return json({ operators: [...new Set(cp.registry.list().map((n) => n.operatorId))] }, 200, { 'cache-control': 'no-store' });
       if (path.startsWith('/nodes/admin/')) return await this.admin(request, cp, path.slice('/nodes/admin/'.length));
       if (method === 'POST' && path === NODE_ROUTES.place) return await this.place(request, cp);
       if (method === 'POST' && path === NODE_ROUTES.rejoin) return await this.rejoin(request, cp);
