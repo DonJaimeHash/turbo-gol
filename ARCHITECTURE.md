@@ -512,8 +512,13 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         on the section tabs (a pointer's focus is not: its click is; LB / RB, Q / E
                         and Esc to JUGAR from the bar keep the focus on the bar); the last focus
                         per screen (FocusMemory by element or
-                        data-key; data-autofocus on a first visit only; never a text field without
-                        a fine pointer); sheets with aria-modal and the rest inert. Back:
+                        data-key; Back, ‹, a crumb or a section come back to it, while Menu.open
+                        of a screen not on top is a new visit that starts on its data-autofocus
+                        or Screen.firstFocus control; ▼ from the bar into a screen with nothing
+                        remembered lands there too; Screen.floor keeps ▼ on a long page; never a
+                        text field without a fine pointer); sheets with aria-modal and the rest
+                        inert. Menu.open's detour stacks a section's root on another root
+                        (CLASIFICACIÓN's SIGN IN: PERFIL). Back:
                         backModel.ts (Esc / B / the back button on JUGAR's root ask to leave too).
                         MenuCommand shortcuts (Q / E, LB / RB, LT / RT, X / Y, Start, pad X /
                         Delete) reach Screen.command first (MODOS takes Q / E, LB / RB and LT / RT
@@ -537,15 +542,21 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         rowStep, left vertically from unionBox), a target as tall as the rows
                         beside it (data-nav-span: Inicio's hero, left ▲ ▼ only for what lies
                         wholly that way, beyondEdge, else the next zone), a list's lines
-                        (data-nav-line: Ajustes' rows, ▲ ▼ read each target as wide as its
-                        line, lineSpan, so a narrow switch between two sliders is next), the way
+                        (data-nav-line: Ajustes' rows, CLASIFICACIÓN's rows, ▲ ▼ read each
+                        target as wide as its line, lineSpan, so a narrow switch between two
+                        sliders is next; ◀ ▶ stay on the line, past its ends a side zone or
+                        the bounce; a row that is a line, GRÁFICOS' cards, is left whole
+                        however it wraps: rowLeaveBox), a zone's floor (▼ past its last target
+                        bounces: Ajustes), a target's own way (onNavTo: the pinned row's ▲), a
+                        side claim that takes nothing (returns false: it bounces), the way
                         back (NavPath), the focus memory (FocusMemory), fields in navigation or editing
                         mode (data-editing), the edge nudge (mn-bounce-*) and heldOver (a key's
                         repeat held over from the match walks no focus and clicks nothing: the
                         pause's held QUIT); FocusNav puts them
                         on the DOM and measures each target where it sits (layoutBox: a focused
                         tile's lift or a nudge taken off, so a lifted tile has no neighbour
-                        "below" on its row)
+                        "below" on its row); tests/nav-rows.test.mjs (pure), tests/nav-focus.test.mjs
+                        (FocusNav's moves on a small fake DOM)
   device.ts             the last input (pad / remote / keyboard / mouse / touch, data-input on
                         <html>), html.tg-tv (no pointer at all, or #tv), the layout class by height
                         and orientation (layoutClass: pc, short, phone, portrait, tablet, tv;
