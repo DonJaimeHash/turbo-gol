@@ -94,6 +94,9 @@ function bucket(files = {}) {
     async put(k, v) {
       objects.set(k, typeof v === 'string' ? enc.encode(v) : new Uint8Array(v));
     },
+    async delete(k) {
+      for (const key of Array.isArray(k) ? k : [k]) objects.delete(key);
+    },
   };
 }
 
@@ -689,10 +692,11 @@ test('end to end: a maintainer lists the nodes through the Worker on a real Node
   assert.equal(other.status, 403);
 });
 
-// ---- the public replays (replayIndex.ts, src/net/replays.ts) ----------------------------------------
+// ---- the public replays (replayIndex.ts, src/net/replays.ts, docs/replays.md) ------------------------
 
 const { ReplayWriter, decodeReplay } = await import('../../nodes/shared/replay.ts');
-const { PUBLIC_REPLAY_MAX_BYTES, publicReplay, replayIndexItem } = await import('../src/replayIndex.ts');
+const RI = await import('../src/replayIndex.ts');
+const { PUBLIC_REPLAY_MAX_BYTES, publicReplay, replayIndexItem } = RI;
 const { sha256Hex } = await import('../../nodes/shared/edcrypto.ts');
 const { NodeStore } = await import('../src/nodeStore.ts');
 
@@ -700,9 +704,14 @@ const BUILD = { version: '0.3.0', protocol: 3, wasmSha256: 'd'.repeat(64) };
 const ACCOUNT_A = 'a1a1a1a1a1a1a1a1';
 const ACCOUNT_B = 'b2b2b2b2b2b2b2b2';
 const hex64 = (c) => c.repeat(64);
+const HOUR = 60 * 60_000;
+const DAY = 24 * HOUR;
+/** Half past an hour that ended 2 to 3 hours ago: served (past the first hour), with half an hour on each side in the same hour. */
+const BASE = Math.floor((Date.now() - 3 * HOUR) / HOUR) * HOUR + HOUR / 2;
+const hourOf = (t) => Math.floor(t / HOUR) * HOUR;
 
-/** A small valid TGR1 replay of a 1v1 between two accounts, as a node wrote it (its own names). */
-function tgr(matchId, names = ['nodeA', 'nodeB']) {
+/** A small valid TGR1 replay of a 1v1 between two accounts, as a node wrote it (its own names, its own start time). */
+function tgr(matchId, names = ['nodeA', 'nodeB'], { startedAt = 0, botDifficulty = 'medium' } = {}) {
   const w = new ReplayWriter({
     v: 1,
     matchId,
@@ -717,10 +726,10 @@ function tgr(matchId, names = ['nodeA', 'nodeB']) {
     ],
     matchLengthSeconds: 180,
     kickoffSeed: 7,
-    botDifficulty: 'medium',
+    botDifficulty,
     tickRate: 120,
     checkpointEvery: 120,
-    startedAt: 0,
+    startedAt,
   });
   w.input(1, 0, new Int8Array([1, 0, 0, 0, 0, 0]), 0);
   w.input(1, 1, new Int8Array([0, 1, 0, 0, 0, 0]), 0);
@@ -729,8 +738,8 @@ function tgr(matchId, names = ['nodeA', 'nodeB']) {
   return w.finish();
 }
 
-/** A settled MatchEntry, enough for NodeStore.finished and replayIndexItem. */
-function settled(matchId, { doneAt = Date.now(), replaySha = 'e'.repeat(64), ranked = true } = {}) {
+/** A settled MatchEntry, enough for NodeStore.finished and replayIndexItem: two accounts, 'Javier' and 'Rival'. */
+function settled(matchId, { doneAt = BASE, replaySha = 'e'.repeat(64), ranked = true, replayBytes = 9818 } = {}) {
   return {
     assign: {
       matchId,
@@ -748,7 +757,10 @@ function settled(matchId, { doneAt = Date.now(), replaySha = 'e'.repeat(64), ran
     },
     nodeId: 'feedfacefeedface',
     state: 'done',
-    humans: [],
+    humans: [
+      { playerId: ACCOUNT_A, name: 'Javier', account: true },
+      { playerId: ACCOUNT_B, name: 'Rival', account: true },
+    ],
     leaves: new Set(),
     leaveAt: new Map(),
     neverJoined: new Set(),
@@ -756,7 +768,7 @@ function settled(matchId, { doneAt = Date.now(), replaySha = 'e'.repeat(64), ran
     offered: new Set(),
     build: BUILD,
     replaySha,
-    report: { kind: 'ended', matchId, result: { winner: 1, blue: 1, red: 4, endTick: 25_560, endReason: 'rules' } },
+    report: { kind: 'ended', matchId, result: { winner: 1, blue: 1, red: 4, endTick: 25_560, endReason: 'rules' }, replaySha256: replaySha, replayBytes },
     verdict: null,
     ledger: null,
     doneAt,
@@ -764,6 +776,7 @@ function settled(matchId, { doneAt = Date.now(), replaySha = 'e'.repeat(64), ran
 }
 
 const rated = (matchId) => ({ kind: 'rated', matchId, playlist: '1v1', region: 'SA', winner: 1, blue: 1, red: 4, players: [], nodeId: 'feedfacefeedface' });
+const unverified = (matchId) => ({ kind: 'unrated', matchId, nodeId: 'n', blue: 2, red: 2, verified: false });
 
 function memStore(now = () => Date.now()) {
   const db = new DatabaseSync(':memory:');
@@ -779,49 +792,154 @@ function memStore(now = () => Date.now()) {
   return store;
 }
 
-test('replay index: rated and unrated matches are listed with the control plane’s names and no account id; void ones and matches without a replay are not', () => {
+/**
+ * AccountsDO as the NodeRegistryDO asks it (POST /replay-hidden): `hidden.ids` and `hidden.names`
+ * are the accounts that hide their names; `calls` records each ask, `down` makes it fail.
+ */
+function accountsNs({ ids = [], names = [] } = {}) {
+  const ns = {
+    calls: [],
+    /** The bodies of the /replay-hidden asks (the outbox's deliveries of the settled matches come here too). */
+    asked: () => ns.calls.filter((c) => c.path === '/replay-hidden').map((c) => c.body),
+    down: false,
+    hidden: { ids: new Set(ids), names: new Set(names) },
+    idFromName: (name) => ({ name }),
+    get: () => ({
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        const body = init?.body ? JSON.parse(init.body) : null;
+        ns.calls.push({ path, body });
+        if (ns.down) return new RealResponse('{"error":"internal"}', { status: 500 });
+        if (path !== '/replay-hidden') return new RealResponse('{"error":"not_found"}', { status: 404 });
+        return new RealResponse(JSON.stringify({ ids: body.ids.filter((i) => ns.hidden.ids.has(i)), names: body.names.filter((n) => ns.hidden.names.has(n)) }), { headers: { 'content-type': 'application/json' } });
+      },
+    }),
+  };
+  return ns;
+}
+
+/** A Cache API stand-in (caches.default): every match, put and delete in `log`, the stored copies in `store`. */
+function fakeCaches() {
+  const store = new Map();
+  const log = [];
+  const k = (key) => String(key?.url ?? key);
+  return {
+    store,
+    log,
+    default: {
+      async match(key) {
+        log.push(['match', k(key)]);
+        const r = store.get(k(key));
+        return r ? r.clone() : undefined;
+      },
+      async put(key, r) {
+        log.push(['put', k(key), r.headers.get('cache-control')]);
+        store.set(k(key), new RealResponse(await r.arrayBuffer(), r));
+      },
+      async delete(key) {
+        log.push(['delete', k(key)]);
+        return store.delete(k(key));
+      },
+    },
+  };
+}
+
+async function withCaches(c, fn) {
+  const real = globalThis.caches;
+  globalThis.caches = c;
+  try {
+    return await fn();
+  } finally {
+    globalThis.caches = real;
+  }
+}
+
+/** A Workers Rate Limiting binding: `limit` per key; `keys` every key it was asked about. */
+function fakeBinding(limit) {
+  const keys = [];
+  const seen = new Map();
+  return {
+    keys,
+    async limit({ key }) {
+      keys.push(key);
+      const n = (seen.get(key) ?? 0) + 1;
+      seen.set(key, n);
+      return { success: n <= limit };
+    },
+  };
+}
+
+/** A real NodeRegistryDO behind the Worker, its index holding `entries`, their replays in R2, AccountsDO's answers from `accounts`. */
+async function replayWorld(entries, { accounts = accountsNs(), over = {} } = {}) {
+  const env = makeEnv({ ACCOUNTS: accounts, ...over });
+  const reg = realRegistry(env);
+  env.NODES.handler = (r) => reg.obj.fetch(r);
+  await reg.obj.ready;
+  for (const { id, doneAt, bytes, sha, outcome } of entries) {
+    reg.obj.store.finished(settled(id, { doneAt, replaySha: sha ?? (await sha256Hex(bytes)) }), (outcome ?? rated)(id));
+    if (bytes) await env.NODE_REPLAYS.put(id, bytes);
+  }
+  return { env, reg, accounts };
+}
+
+test('replay index: rated and unrated matches are listed with the control plane’s names and no account id; void ones, matches without a replay and one its node says is too big are not', () => {
   const store = memStore();
-  const t = Date.now();
-  store.finished(settled(hex64('1'), { doneAt: t - 3000 }), rated(hex64('1')));
-  store.finished(settled(hex64('2'), { doneAt: t - 2000, ranked: false }), { kind: 'unrated', matchId: hex64('2'), nodeId: 'n', blue: 2, red: 2, verified: false });
-  store.finished(settled(hex64('3'), { doneAt: t - 1000 }), { kind: 'void', matchId: hex64('3'), nodeId: 'n', ranked: true, reason: 'hash_mismatch', players: [], noShows: [] });
-  store.finished(settled(hex64('4'), { doneAt: t, replaySha: null }), rated(hex64('4')));
-  const list = store.replayList(Number.MAX_SAFE_INTEGER, 30);
+  store.finished(settled(hex64('1'), { doneAt: BASE - 3000 }), rated(hex64('1')));
+  store.finished(settled(hex64('2'), { doneAt: BASE - 2000, ranked: false }), unverified(hex64('2')));
+  store.finished(settled(hex64('3'), { doneAt: BASE - 1000 }), { kind: 'void', matchId: hex64('3'), nodeId: 'n', ranked: true, reason: 'hash_mismatch', players: [], noShows: [] });
+  store.finished(settled(hex64('4'), { doneAt: BASE, replaySha: null }), rated(hex64('4')));
+  store.finished(settled(hex64('5'), { doneAt: BASE, replayBytes: PUBLIC_REPLAY_MAX_BYTES + 1 }), rated(hex64('5')));
+  const list = store.replayList(null, 30);
   assert.deepEqual(
-    list.map((m) => [m.matchId[0], m.verified, m.blue, m.red]),
+    list.map((r) => [r.item.matchId[0], r.item.verified, r.item.blue, r.item.red]),
     [
       ['2', false, 2, 2],
       ['1', true, 1, 4],
     ],
-    'newest first; the tampered (void) match is never listed',
+    'the tampered (void) match, the one without a replay and the oversized one are never listed',
   );
-  assert.deepEqual(list[1].players, [
+  assert.deepEqual(list[1].item.players, [
     { team: 0, name: 'Javier', bot: false },
     { team: 1, name: 'Rival', bot: false },
   ]);
-  assert.equal(list[1].ticks, 25_560);
-  assert.deepEqual(list[1].build, BUILD);
-  const text = JSON.stringify(list);
+  assert.equal(list[1].item.ticks, 25_560);
+  assert.deepEqual(list[1].item.build, BUILD);
+  assert.deepEqual(list[1].seats, [
+    { slot: 0, playerId: ACCOUNT_A },
+    { slot: 1, playerId: ACCOUNT_B },
+  ], 'the seats stay in the object, beside the row');
+  const text = JSON.stringify(list.map((r) => r.item));
   assert.ok(!text.includes(ACCOUNT_A) && !text.includes(ACCOUNT_B) && !text.includes('feedface'), 'no account id, no node id');
-  assert.deepEqual(store.replayEntry(hex64('1')), { item: list[1], sha: 'e'.repeat(64) });
+  const e = store.replayEntry(hex64('1'));
+  assert.deepEqual([e.item, e.sha], [list[1].item, 'e'.repeat(64)]);
   assert.equal(store.replayEntry(hex64('3')), null);
   assert.deepEqual(
-    store.replayList(t - 2000, 30).map((m) => m.matchId[0]),
+    store.replayList({ hour: Math.floor(BASE / HOUR), matchId: hex64('2') }, 30).map((r) => r.item.matchId[0]),
     ['1'],
-    'paged by settle time',
+    'paged in the public order',
   );
 });
 
-test('replay index: rows past R2’s 30 days are neither listed nor kept, and a failure never stops the settlement', () => {
+test('replay index: a match is served an hour after it settled and never past 30 days, prune or not; the cron prunes', () => {
   let now = Date.now();
   const store = memStore(() => now);
-  store.finished(settled(hex64('a'), { doneAt: now }), rated(hex64('a')));
-  now += 31 * 24 * 60 * 60_000;
-  assert.deepEqual(store.replayList(Number.MAX_SAFE_INTEGER, 30), [], 'expired with its replay');
-  store.finished(settled(hex64('b'), { doneAt: now }), rated(hex64('b')));
-  assert.equal(store.replayEntry(hex64('a')), null, 'pruned at the next write');
-  // A row that cannot be built leaves the match unlisted, and settled all the same.
-  const broken = settled(hex64('c'), { doneAt: now });
+  store.finished(settled(hex64('a'), { doneAt: now - 30 * 60_000 }), rated(hex64('a')));
+  store.finished(settled(hex64('b'), { doneAt: now - 61 * 60_000 }), rated(hex64('b')));
+  assert.deepEqual(store.replayList(null, 30).map((r) => r.item.matchId[0]), ['b'], 'its first hour: not listed');
+  assert.equal(store.replayEntry(hex64('a')), null, 'nor viewable');
+  assert.ok(store.replayEntry(hex64('b')));
+  now += 31 * 60_000;
+  assert.deepEqual(store.replayList(null, 30).map((r) => r.item.matchId[0]).sort(), ['a', 'b']);
+  now += 30 * DAY;
+  assert.deepEqual(store.replayList(null, 30), [], 'past 30 days: not listed');
+  assert.equal(store.replayEntry(hex64('b')), null, 'nor viewable, though no prune ran');
+  assert.deepEqual(store.pruneReplays(now).sort(), [hex64('a'), hex64('b')]);
+  assert.deepEqual(store.pruneReplays(now), []);
+});
+
+test('replay index: a row that cannot be built leaves the match unlisted and settled all the same', () => {
+  const store = memStore();
+  const broken = settled(hex64('c'));
   assert.throws(() => replayIndexItem({ ...broken, assign: { ...broken.assign, roster: null } }, rated(hex64('c'))));
   const errors = [];
   const realError = console.error;
@@ -836,16 +954,17 @@ test('replay index: rows past R2’s 30 days are neither listed nor kept, and a 
     delete store.replayRow;
   }
   assert.equal(store.replayEntry(hex64('c')), null);
-  assert.equal(store.load(now).matches.filter((m) => m.matchId === hex64('c')).length, 1, 'the settled row was written');
+  assert.equal(store.load(Date.now()).matches.filter((m) => m.matchId === hex64('c')).length, 1, 'the settled row was written');
   assert.equal(errors.length, 1);
 });
 
-test('publicReplay: blanks the account ids and the node id, takes the index’s names and keeps every record byte for byte', () => {
-  const bytes = tgr(hex64('7'), ['<img src=x onerror=alert(1)>', 'nodeB']);
+test('publicReplay: blanks the account ids, the node id and the start time, takes the index’s names and keeps every record byte for byte', () => {
+  const bytes = tgr(hex64('7'), ['<img src=x onerror=alert(1)>', 'nodeB'], { startedAt: 1_761_750_123_456 });
   const item = replayIndexItem(settled(hex64('7')), rated(hex64('7')));
   const out = publicReplay(bytes, item);
   const r = decodeReplay(out);
   assert.equal(r.header.nodeId, '');
+  assert.equal(r.header.startedAt, 0, 'a node’s wall clock is not the public’s');
   assert.deepEqual(
     r.header.roster.map((e) => [e.name, e.playerId]),
     [
@@ -854,7 +973,7 @@ test('publicReplay: blanks the account ids and the node id, takes the index’s 
     ],
   );
   const text = new TextDecoder().decode(out);
-  assert.ok(!text.includes(ACCOUNT_A) && !text.includes('feedface') && !text.includes('onerror'));
+  assert.ok(!text.includes(ACCOUNT_A) && !text.includes('feedface') && !text.includes('onerror') && !text.includes('1761750123456'));
   const orig = decodeReplay(bytes);
   assert.deepEqual([r.inputCount, [...r.inputData], [...r.hashValues], r.end], [orig.inputCount, [...orig.inputData], [...orig.hashValues], orig.end]);
   assert.throws(() => publicReplay(new Uint8Array([1, 2, 3, 4, 0, 0, 0, 0]), item), /magic/);
@@ -916,81 +1035,156 @@ test('publicReplay: refuses a roster that is not the control plane’s, odd type
   assert.throws(() => publicReplay(big, item), /too large/);
 });
 
-test('replay list paging: matches settled in the same millisecond are never split across pages and lost', async () => {
-  const t = Date.now() - 60_000;
+test('GET /nodes/replays: only matches settled an hour ago, each at its hour (never the minute), by the hour and then the id (not the exact time); paged by a signed cursor; the first page cached by the isolate', async () => {
   const entries = [];
-  // 31 matches: the 29 newest at distinct times, then two at the same millisecond across the page boundary.
-  for (let i = 0; i < 29; i++) entries.push({ id: (100 + i).toString(16).padStart(64, '0'), doneAt: t - i * 1000, bytes: null, sha: 'e'.repeat(64) });
-  entries.push({ id: hex64('b'), doneAt: t - 40_000, bytes: null, sha: 'e'.repeat(64) });
-  entries.push({ id: hex64('c'), doneAt: t - 40_000, bytes: null, sha: 'e'.repeat(64) });
-  const env = await replayWorld(entries);
-  const seen = [];
-  let next = null;
-  let pages = 0;
-  do {
-    // The first page by a cursor too: the isolate's cached first page may be another test's.
-    const page = await jsonOf(await req(env, 'GET', `/nodes/replays?before=${next ?? Date.now() - 1}`));
-    seen.push(...page.matches.map((m) => m.matchId));
-    next = page.next;
-    pages++;
-  } while (next !== null && pages < 5);
-  assert.equal(new Set(seen).size, 31, 'every match once');
-  assert.equal(seen.length, 31, 'none twice');
-  assert.equal(pages, 2);
-});
-
-
-/** A real NodeRegistryDO behind the Worker, its index holding `entries`, their replays in R2. */
-async function replayWorld(entries) {
-  const env = makeEnv();
-  const reg = realRegistry(env);
-  env.NODES.handler = (r) => reg.obj.fetch(r);
-  await reg.obj.ready;
-  for (const { id, doneAt, bytes, sha } of entries) {
-    reg.obj.store.finished(settled(id, { doneAt, replaySha: sha ?? (await sha256Hex(bytes)) }), rated(id));
-    if (bytes) await env.NODE_REPLAYS.put(id, bytes);
-  }
-  return env;
-}
-
-test('GET /nodes/replays: anyone lists the settled matches, newest first, paged; the first page is cached by the isolate', async () => {
-  const t = Date.now();
-  const entries = [];
-  for (let i = 0; i < 32; i++) entries.push({ id: (i + 1).toString(16).padStart(64, '0'), doneAt: t - 100_000 + i * 1000, bytes: null, sha: 'e'.repeat(64) });
-  const env = await replayWorld(entries);
+  // 32 in one hour, the later settles with the smaller ids (the list must not give their order away); one 30 minutes old.
+  for (let i = 0; i < 32; i++) entries.push({ id: (i + 1).toString(16).padStart(64, '0'), doneAt: BASE - 20 * 60_000 + (32 - i) * 1000, bytes: null, sha: 'e'.repeat(64) });
+  entries.push({ id: hex64('f'), doneAt: Date.now() - 30 * 60_000, bytes: null, sha: 'e'.repeat(64) });
+  const { env } = await replayWorld(entries);
   const res = await req(env, 'GET', '/nodes/replays');
   assert.equal(res.status, 200);
   assert.match(res.headers.get('cache-control'), /max-age=30/);
+  assert.equal(res.headers.get('x-robots-tag'), 'noindex');
   const page = await jsonOf(res);
   assert.equal(page.matches.length, 30);
-  assert.equal(page.matches[0].matchId, entries[31].id);
-  assert.equal(page.next, entries[2].doneAt);
-  const rest = await jsonOf(await req(env, 'GET', `/nodes/replays?before=${page.next}`));
+  assert.ok(!page.matches.some((m) => m.matchId === hex64('f')), 'a match in its first hour is not listed');
+  assert.deepEqual(new Set(page.matches.map((m) => m.at)), new Set([hourOf(BASE)]), 'the hour, never the minute');
+  assert.deepEqual(
+    page.matches.map((m) => m.matchId),
+    entries
+      .slice(0, 32)
+      .map((e) => e.id)
+      .sort()
+      .reverse()
+      .slice(0, 30),
+    'by id within the hour: the largest id settled first',
+  );
+  assert.match(page.next, /^\d{1,10}\.[0-9a-f]{64}\.[0-9a-f]{32}$/, 'an opaque, signed cursor');
+  const rest = await jsonOf(await req(env, 'GET', `/nodes/replays?before=${encodeURIComponent(page.next)}`));
   assert.deepEqual(
     rest.matches.map((m) => m.matchId),
     [entries[1].id, entries[0].id],
   );
   assert.equal(rest.next, null);
-  // A junk ?before= is the first page, never an error.
-  assert.equal((await jsonOf(await req(env, 'GET', '/nodes/replays?before=1e9;drop'))).matches.length, 30);
   const seen = env.NODES.seen.length;
   await req(env, 'GET', '/nodes/replays');
   assert.equal(env.NODES.seen.length, seen, 'the first page came from the isolate cache');
 });
 
-test('GET /nodes/replays/<id>/view: the public bytes of a listed match; 404 for an unlisted one, a missing object or bytes that changed', async () => {
+test('GET /nodes/replays: a forged cursor, a bare settle time (any past ?before= reached the object) or junk is the cached first page, never the object; a signed one is kept at the edge', async () => {
+  const entries = [];
+  for (let i = 0; i < 31; i++) entries.push({ id: (i + 1).toString(16).padStart(64, '0'), doneAt: BASE - i * 1000, bytes: null, sha: 'e'.repeat(64) });
+  const { env } = await replayWorld(entries);
+  const c = fakeCaches();
+  await withCaches(c, async () => {
+    const first = await (await req(env, 'GET', '/nodes/replays')).text();
+    const { next } = JSON.parse(first);
+    const asked = env.NODES.seen.length;
+    const forged = next.slice(0, -1) + (next.endsWith('0') ? '1' : '0');
+    const [hour, id] = next.split('.');
+    for (const q of [forged, `${hour}.${id}`, `${hour}.${hex64('0')}.${'0'.repeat(32)}`, String(Date.now() - 1000), String(BASE), '0', String(Date.now() + DAY), 'abc', '-5', '99999999999999999']) {
+      const res = await req(env, 'GET', `/nodes/replays?before=${encodeURIComponent(q)}`);
+      assert.equal(res.status, 200, q);
+      assert.equal(await res.text(), first, q);
+    }
+    assert.equal(env.NODES.seen.length, asked, 'none of them reached the object');
+    const page = await jsonOf(await req(env, 'GET', `/nodes/replays?before=${encodeURIComponent(next)}`));
+    assert.equal(page.matches.length, 1);
+    assert.equal(env.NODES.seen.length, asked + 1);
+    const put = c.log.find(([op, key]) => op === 'put' && key.includes('/nodes/replays?before='));
+    assert.equal(put[2], 'public, max-age=300', 'a later page is kept 5 minutes at the edge');
+    const again = await req(env, 'GET', `/nodes/replays?before=${encodeURIComponent(next)}`);
+    assert.deepEqual(await jsonOf(again), page);
+    assert.match(again.headers.get('cache-control'), /max-age=30/, 'browsers keep it 30 s');
+    assert.equal(env.NODES.seen.length, asked + 1, 'the second ask came from the edge cache');
+  });
+});
+
+test('hide my name: an account that chose it shows as Jugador N in the list and in the replay, matches listed before it chose too; the others as they are', async () => {
+  const a = hex64('a');
+  const accounts = accountsNs();
+  const { env, reg } = await replayWorld([{ id: a, doneAt: BASE, bytes: tgr(a) }], { accounts });
+  // Listed with both names; then Rival (ACCOUNT_B) turns on "hide my name" in PERFIL.
+  assert.ok(reg.obj.store.replayEntry(a));
+  accounts.hidden.ids.add(ACCOUNT_B);
+  const page = await jsonOf(await req(env, 'GET', '/nodes/replays'));
+  assert.deepEqual(page.matches[0].players.map((p) => p.name), ['Javier', 'Jugador 2']);
+  assert.ok(!JSON.stringify(page).includes('Rival'));
+  const view = await req(env, 'GET', `/nodes/replays/${a}/view`);
+  assert.equal(view.status, 200);
+  const r = decodeReplay(new Uint8Array(await view.arrayBuffer()));
+  assert.deepEqual(
+    r.header.roster.map((e) => [e.name, e.playerId]),
+    [
+      ['Javier', ''],
+      ['Jugador 2', ''],
+    ],
+    'the replay too',
+  );
+  assert.ok(!new TextDecoder().decode(new Uint8Array(await (await req(env, 'GET', `/nodes/replays/${a}/view`)).arrayBuffer())).includes('Rival'));
+  assert.deepEqual(accounts.asked(), [{ ids: [ACCOUNT_A, ACCOUNT_B], names: [] }], 'asked once by id; the answers kept a minute');
+});
+
+test('hide my name: a row listed before the seats were kept is looked up by its names; nobody hides by default', async () => {
+  const a = hex64('a');
+  const b = hex64('b');
+  const accounts = accountsNs({ names: ['Rival'] });
+  const { env, reg } = await replayWorld(
+    [
+      { id: a, doneAt: BASE, bytes: tgr(a) },
+      { id: b, doneAt: BASE - 1000, bytes: tgr(b) },
+    ],
+    { accounts },
+  );
+  reg.obj.store.sql.exec('DELETE FROM replay_players WHERE match_id = ?', a); // a: listed by the build before this one
+  const page = await jsonOf(await req(env, 'GET', '/nodes/replays'));
+  assert.deepEqual(
+    page.matches.map((m) => [m.matchId[0], m.players.map((p) => p.name)]),
+    [
+      ['b', ['Javier', 'Rival']],
+      ['a', ['Javier', 'Jugador 2']],
+    ],
+    'b by its ids (nobody hides them), a by its names',
+  );
+  assert.deepEqual(accounts.asked(), [{ ids: [ACCOUNT_A, ACCOUNT_B], names: ['Javier', 'Rival'] }]);
+});
+
+test('hide my name: while AccountsDO cannot answer, nothing is served (503, never a hidden name), and nothing is cached', async () => {
+  const a = hex64('a');
+  const accounts = accountsNs({ ids: [ACCOUNT_B] });
+  accounts.down = true;
+  const { env } = await replayWorld([{ id: a, doneAt: BASE, bytes: tgr(a) }], { accounts });
+  const c = fakeCaches();
+  await withCaches(c, async () => {
+    const list = await req(env, 'GET', '/nodes/replays');
+    assert.equal(list.status, 503);
+    const view = await req(env, 'GET', `/nodes/replays/${a}/view`);
+    assert.equal(view.status, 503);
+    assert.ok(!(await view.text()).includes('Rival'));
+    assert.deepEqual(c.log.filter(([op]) => op === 'put'), [], 'no copy and no "missing" marker kept');
+    accounts.down = false;
+    assert.deepEqual((await jsonOf(await req(env, 'GET', '/nodes/replays'))).matches[0].players.map((p) => p.name), ['Javier', 'Jugador 2']);
+  });
+});
+
+test('GET /nodes/replays/<id>/view: the public bytes of a served match, kept 3 hours (not immutable), noindex; 404 for an unlisted, a too recent or a missing one', async () => {
   const good = hex64('a');
+  const casual = hex64('c');
+  const recent = hex64('4');
   const swapped = hex64('2');
   const gone = hex64('3');
-  const env = await replayWorld([
-    { id: good, doneAt: Date.now() - 3000, bytes: tgr(good) },
-    { id: swapped, doneAt: Date.now() - 2000, bytes: tgr(swapped), sha: 'f'.repeat(64) },
-    { id: gone, doneAt: Date.now() - 1000, bytes: null, sha: 'e'.repeat(64) },
+  const { env } = await replayWorld([
+    { id: good, doneAt: BASE - 3000, bytes: tgr(good) },
+    { id: casual, doneAt: BASE - 2500, bytes: tgr(casual), outcome: unverified },
+    { id: recent, doneAt: Date.now() - 10 * 60_000, bytes: tgr(recent) },
+    { id: swapped, doneAt: BASE - 2000, bytes: tgr(swapped), sha: 'f'.repeat(64) },
+    { id: gone, doneAt: BASE - 1000, bytes: null, sha: 'e'.repeat(64) },
   ]);
   const res = await req(env, 'GET', `/nodes/replays/${good}/view`);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('content-type'), 'application/octet-stream');
-  assert.match(res.headers.get('cache-control'), /immutable/);
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=10800', 'a delist or a hidden name reaches every copy within 3 hours');
+  assert.equal(res.headers.get('x-robots-tag'), 'noindex');
   const r = decodeReplay(new Uint8Array(await res.arrayBuffer()));
   assert.deepEqual(
     r.header.roster.map((e) => [e.name, e.playerId]),
@@ -999,6 +1193,10 @@ test('GET /nodes/replays/<id>/view: the public bytes of a listed match; 404 for 
       ['Rival', ''],
     ],
   );
+  assert.equal((await req(env, 'GET', `/nodes/replays/${casual}/view`)).status, 200, 'an unsampled casual match too');
+  const early = await req(env, 'GET', `/nodes/replays/${recent}/view`);
+  assert.equal(early.status, 404, 'its first hour: not viewable');
+  assert.equal(early.headers.get('x-robots-tag'), 'noindex');
   assert.equal((await req(env, 'GET', `/nodes/replays/${swapped}/view`)).status, 404, 'the R2 object is not the uploaded one');
   assert.equal((await req(env, 'GET', `/nodes/replays/${gone}/view`)).status, 404, 'expired from R2');
   assert.equal((await req(env, 'GET', `/nodes/replays/${hex64('9')}/view`)).status, 404, 'never listed (a void match, say)');
@@ -1006,13 +1204,157 @@ test('GET /nodes/replays/<id>/view: the public bytes of a listed match; 404 for 
   assert.equal((await req(env, 'GET', `/nodes/replays/${good}`)).status, 404, 'the verifiers’ route still wants a signed request');
 });
 
-test('GET /nodes/replays/<id>/view is limited per address', async () => {
+test('a view the object does not serve is remembered 5 minutes at the edge; a listed one that fails the checks a day, with an ALERT line, its R2 object read once', async () => {
+  const junk = hex64('b');
+  const { env } = await replayWorld([{ id: junk, doneAt: BASE, bytes: tgr(junk, undefined, { botDifficulty: 'x' }) }]);
+  const c = fakeCaches();
+  const errors = [];
+  const realError = console.error;
+  console.error = (...a) => errors.push(a.join(' '));
+  try {
+    await withCaches(c, async () => {
+      const random = hex64('7');
+      assert.equal((await req(env, 'GET', `/nodes/replays/${random}/view`)).status, 404);
+      const asked = env.NODES.seen.length;
+      assert.equal((await req(env, 'GET', `/nodes/replays/${random}/view`)).status, 404);
+      assert.equal(env.NODES.seen.length, asked, 'the second ask came from the edge');
+      assert.ok(c.log.some(([op, key, cc]) => op === 'put' && key.endsWith(random) && cc === 'public, max-age=300'));
+      assert.equal((await req(env, 'GET', `/nodes/replays/${junk}/view`)).status, 404);
+      const reads = env.NODE_REPLAYS.asked.filter((k) => k === junk).length;
+      assert.equal(reads, 1);
+      for (let i = 0; i < 3; i++) assert.equal((await req(env, 'GET', `/nodes/replays/${junk}/view`)).status, 404);
+      assert.equal(env.NODE_REPLAYS.asked.filter((k) => k === junk).length, reads, 'read, hashed and walked once, not at every view');
+      assert.ok(c.log.some(([op, key, cc]) => op === 'put' && key.endsWith(junk) && cc === 'public, max-age=86400'));
+    });
+  } finally {
+    console.error = realError;
+  }
+  assert.equal(errors.filter((e) => e.startsWith(`ALERT replay ${junk}`)).length, 1);
+});
+
+test('the replay routes count, across isolates, only what reaches the object: per network, and per IPv6 /48 for rotated /64s; edge-cache hits are free', async () => {
+  const a = hex64('a');
+  const RL_120 = fakeBinding(2);
+  const RL_600 = fakeBinding(3);
+  const { env } = await replayWorld([{ id: a, doneAt: BASE, bytes: tgr(a) }], { over: { RL_120, RL_600 } });
+  const c = fakeCaches();
+  await withCaches(c, async () => {
+    const ip = freshIp();
+    assert.equal((await req(env, 'GET', `/nodes/replays/${a}/view`, { ip })).status, 200);
+    for (let i = 0; i < 5; i++) assert.equal((await req(env, 'GET', `/nodes/replays/${a}/view`, { ip })).status, 200, 'from the edge cache: not counted');
+    assert.equal((await req(env, 'GET', `/nodes/replays/${hex64('1')}/view`, { ip })).status, 404);
+    const over = await req(env, 'GET', `/nodes/replays/${hex64('2')}/view`, { ip });
+    assert.equal(over.status, 429, 'the third object call from one network in a minute (the binding’s count: every isolate of the location)');
+    assert.deepEqual(RL_600.keys, [], 'an IPv4 address has no site');
+    // One /48, fresh /64s: each /64 is new to replayView, the /48 is not.
+    const statuses = [];
+    for (let i = 1; i <= 4; i++) statuses.push((await req(env, 'GET', `/nodes/replays/${hex64(String(i + 2))}/view`, { ip: `2001:db8:77:${i}::1` })).status);
+    assert.deepEqual(statuses, [404, 404, 404, 429]);
+    assert.ok(RL_600.keys.every((k) => k === 'replaySite:2001:db8:77::/48'));
+  });
+});
+
+test('GET /nodes/replays/<id>/view without a binding: 120 object calls a minute per network in an isolate', async () => {
   const id = hex64('1');
-  const env = await replayWorld([{ id, doneAt: Date.now(), bytes: tgr(id) }]);
+  const { env } = await replayWorld([{ id, doneAt: BASE, bytes: tgr(id) }]);
   const ip = freshIp();
   let last = 0;
-  for (let i = 0; i < 31; i++) last = (await req(env, 'GET', `/nodes/replays/${id}/view`, { ip })).status;
+  for (let i = 0; i < 121; i++) last = (await req(env, 'GET', `/nodes/replays/${id}/view`, { ip })).status;
   assert.equal(last, 429);
+});
+
+test('replay uploads and downloads are counted across isolates too (the binding refuses: no object call)', async () => {
+  const env = makeEnv({ RL_60: fakeBinding(0) });
+  const node = { 'x-node-id': 'f'.repeat(16), 'x-node-ts': '1', 'x-node-sig': 'sig', 'x-replay-sha256': 'c'.repeat(64) };
+  assert.equal((await req(env, 'PUT', '/nodes/replays/' + 'ab'.repeat(32), { headers: node, body: new Uint8Array(10) })).status, 429);
+  assert.equal((await req(env, 'GET', '/nodes/replays/' + 'ab'.repeat(32), { headers: node })).status, 429);
+  assert.equal(env.NODES.seen.length, 0);
+  assert.deepEqual(env.RL_60.keys.map((k) => k.split(':')[0]), ['nodeReplayPut', 'nodeReplayGet']);
+});
+
+test('the kill switch replays_off: the public list and view answer 404, edge-cached copies too, the object never asked; the nodes go on; one KV read per isolate', async () => {
+  const a = hex64('a');
+  const { env } = await replayWorld([{ id: a, doneAt: BASE, bytes: tgr(a) }]);
+  const c = fakeCaches();
+  await withCaches(c, async () => {
+    assert.equal((await req(env, 'GET', `/nodes/replays/${a}/view`)).status, 200);
+    assert.ok(c.store.has(`${ORIGIN}/nodes/replays/${a}/view`), 'a copy at the edge');
+    const reads = [];
+    const off = { ...env, FLAGS: { get: async (name) => (reads.push(name), name === 'replays_off' ? '1' : null) }, NODES: nodesNs(env.NODES.handler) };
+    for (const path of ['/nodes/replays', `/nodes/replays/${a}/view`, `/nodes/replays?before=x`]) {
+      const res = await req(off, 'GET', path);
+      assert.equal(res.status, 404, path);
+      assert.equal(res.headers.get('x-robots-tag'), 'noindex');
+    }
+    assert.equal(off.NODES.seen.length, 0, 'the object never heard of them');
+    assert.deepEqual(reads, ['replays_off'], 'kept by the isolate');
+    assert.equal((await req(off, 'GET', '/nodes/status')).status, 200, 'the nodes go on');
+  });
+});
+
+test('delist: a maintainer with a fresh sign-in takes one match out of the public replays (its row, its R2 object, its edge copies, every location’s with the purge token); nobody else can', async () => {
+  const a = hex64('a');
+  const b = hex64('b');
+  const purges = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    purges.push({ url: String(url), auth: init.headers.authorization, body: JSON.parse(init.body) });
+    return new RealResponse('{"success":true,"result":{"id":"x"}}', { headers: { 'content-type': 'application/json' } });
+  };
+  const { env } = await replayWorld(
+    [
+      { id: a, doneAt: BASE, bytes: tgr(a) },
+      { id: b, doneAt: BASE - 1000, bytes: tgr(b) },
+    ],
+    { over: { CF_ZONE_ID: 'zone123', CF_PURGE_TOKEN: 'purge-token' } },
+  );
+  const c = fakeCaches();
+  const now = Math.floor(Date.now() / 1000);
+  const stale = await signJwt(SECRET, { sub: PROJECT, name: 'Proyecto', iat: now, exp: now + 3600, acct: 1, aat: now - 3600 });
+  const delist = (token, body) => req(env, 'POST', '/nodes/admin/delist', { headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    await withCaches(c, async () => {
+      assert.equal((await req(env, 'GET', `/nodes/replays/${a}/view`)).status, 200);
+      assert.equal((await delist(await accountToken(PLAYER), { matchId: a })).status, 403, 'not a maintainer');
+      const r = await delist(stale, { matchId: a });
+      assert.equal(r.status, 403);
+      assert.equal((await jsonOf(r)).error, 'reauth_required', 'a maintainer’s session an hour after its sign-in');
+      assert.equal(env.NODE_REPLAYS.objects.has(a), true, 'nothing happened yet');
+      const ok = await delist(await accountToken(PROJECT), { matchId: a, reason: 'asked by the player' });
+      assert.equal(ok.status, 200);
+      assert.deepEqual(await jsonOf(ok), { matchId: a, delisted: true, replayDeleted: true, purged: { here: true, everywhere: true } });
+      assert.equal(env.NODE_REPLAYS.objects.has(a), false, 'its R2 object is gone');
+      assert.equal(env.NODE_REPLAYS.objects.has(b), true);
+      assert.ok(c.log.some(([op, key]) => op === 'delete' && key === `${ORIGIN}/nodes/replays/${a}/view`), 'the edge copy here');
+      assert.deepEqual(purges, [{ url: 'https://api.cloudflare.com/client/v4/zones/zone123/purge_cache', auth: 'Bearer purge-token', body: { files: [`${ORIGIN}/nodes/replays/${a}/view`] } }], 'and in every location');
+      assert.equal((await req(env, 'GET', `/nodes/replays/${a}/view`)).status, 404);
+      assert.deepEqual((await jsonOf(await req(env, 'GET', '/nodes/replays'))).matches.map((m) => m.matchId), [b], 'out of the list (this isolate’s first page dropped)');
+      assert.equal((await delist(await accountToken(PROJECT), { matchId: a })).status, 404, 'already gone');
+      assert.equal((await delist(await accountToken(PROJECT), { matchId: 'nope' })).status, 400);
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  // Without the purge settings: this location only.
+  const { env: plain } = await replayWorld([{ id: a, doneAt: BASE, bytes: tgr(a) }]);
+  const res = await req(plain, 'POST', '/nodes/admin/delist', { headers: { authorization: 'Bearer ' + (await accountToken(PROJECT)), 'content-type': 'application/json' }, body: JSON.stringify({ matchId: a }) });
+  assert.deepEqual((await jsonOf(res)).purged, { here: false, everywhere: null });
+});
+
+test('retention: the cron prunes the rows past 30 days and their R2 objects with no new match settling; the others stay', async () => {
+  const old = hex64('a');
+  const fresh = hex64('b');
+  const { env } = await replayWorld([
+    { id: old, doneAt: Date.now() - 31 * DAY, bytes: tgr(old) },
+    { id: fresh, doneAt: BASE, bytes: tgr(fresh) },
+  ]);
+  assert.equal((await req(env, 'GET', `/nodes/replays/${old}/view`)).status, 404, 'never served past 30 days');
+  const waits = [];
+  await worker.scheduled({ cron: '*/5 * * * *', scheduledTime: Date.now() }, env, { waitUntil: (p) => waits.push(p), passThroughOnException() {} });
+  await Promise.all(waits);
+  assert.equal(env.NODE_REPLAYS.objects.has(old), false, 'its R2 object went with its row');
+  assert.equal(env.NODE_REPLAYS.objects.has(fresh), true);
+  assert.equal((await req(env, 'GET', `/nodes/replays/${fresh}/view`)).status, 200);
 });
 
 test('without the node settings the replay routes are a 404', async () => {
@@ -1021,14 +1363,6 @@ test('without the node settings the replay routes are a 404', async () => {
   assert.equal((await req(env, 'GET', `/nodes/replays/${hex64('1')}/view`)).status, 404);
 });
 
-// Last: it fills the isolate's first-page cache, which the list test above must find empty.
-test('GET /nodes/replays: a cursor of 0, from the future or not a number is the cached first page', async () => {
-  const env = await replayWorld([{ id: hex64('d'), doneAt: Date.now() - 1000, bytes: null, sha: 'e'.repeat(64) }]);
-  await req(env, 'GET', '/nodes/replays');
-  const asked = env.NODES.seen.length;
-  for (const q of ['0', String(Date.now() + 86_400_000), 'abc', '-5', '99999999999999999']) assert.equal((await req(env, 'GET', `/nodes/replays?before=${q}`)).status, 200);
-  assert.equal(env.NODES.seen.length, asked, 'none of them reached the object');
-});
 
 test('the kill switch nodes_off: every route that reaches the object answers 503 nodes_off before it, the cron calls nothing; releases and the shop go on', async () => {
   const reads = [];

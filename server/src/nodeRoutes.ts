@@ -21,13 +21,24 @@
  *                                     per /64 and 1,200 per /48 (limits.ts nodeConnect, nodeConnectWide). No
  *                                     Origin check: the object's challenge is the gate
  *   PUT|GET  /nodes/replays/<id>      a replay (id: 64 hex), signed by the node -> the object, which checks the
- *                                     signature before it reads the body; 413 over 16 MiB
- *   GET      /nodes/replays           the public replay list (anyone, guests included; src/net/replays.ts):
- *                                     ?before=<ms> pages it; the first page cached 30 s per isolate; 60 a minute
- *   GET      /nodes/replays/<id>/view a listed match's replay made public (replayIndex.ts: the header rebuilt
- *                                     from the control plane's record, no account or node id), its SHA-256
- *                                     checked against the index; 404 for a void, unlisted or expired match;
- *                                     edge-cached, immutable; 30 a minute
+ *                                     signature before it reads the body; 413 over 16 MiB; 60 a minute each per
+ *                                     network, 1,200 per /24 or /48 (limits.ts nodeReplay*)
+ *   GET      /nodes/replays           the public replay list (anyone, guests included; src/net/replays.ts): the
+ *                                     matches settled 1 hour to 30 days ago, by the hour (rounded) and then by
+ *                                     id; ?before=<cursor> pages it, a cursor this Worker signed (anything else
+ *                                     is the first page); the first page cached 30 s per isolate, a later one 5
+ *                                     minutes in the location's edge cache; replayList / replaySite count only
+ *                                     the pages that reach the object
+ *   GET      /nodes/replays/<id>/view a served match's replay made public (replayIndex.ts: the header rebuilt
+ *                                     from the control plane's record, no account or node id, no start time,
+ *                                     hidden names as 'Jugador N'), its SHA-256 checked against the index;
+ *                                     404 for a void, unlisted, too recent, expired or
+ *                                     delisted match, kept 5 minutes in the edge cache (a day, with an ALERT
+ *                                     line, for a listed one that fails the checks); edge- and browser-cached 3
+ *                                     hours (a delist, a hidden name reach every copy by then); replayView /
+ *                                     replaySite count only the edge-cache misses
+ *     Both carry X-Robots-Tag: noindex, and the KV flag replays_off turns both off (404, cached copies
+ *     too, the object never asked) and nothing else.
  *   POST     /nodes/tokens            { region, name? }, Bearer account session of a NODE_TRUSTED_OPERATORS account
  *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB.
  *                                     Like every maintainer route: never a TV's session (403 tv_session), and one
@@ -42,7 +53,10 @@
  *   POST     /nodes/admin/reprobe     { nodeId };
  *   POST     /nodes/admin/grant       { account, item }, /revoke { account, item }, /unfreeze { account }: an
  *   POST     /nodes/admin/revoke      account's items and wallet in AccountsDO. Every call is an ALERT line naming
- *   POST     /nodes/admin/unfreeze    the account (NodeRegistryDO.ts)
+ *   POST     /nodes/admin/unfreeze    the account (NodeRegistryDO.ts);
+ *   POST     /nodes/admin/delist      { matchId, reason? }: a match out of the public replays (its row and its R2
+ *                                     object), then its view purged here (Cache API) and, with CF_ZONE_ID and
+ *                                     CF_PURGE_TOKEN, in every location (purgeEverywhere)
  *   GET      /nodes/shop              aliases of GET /api/me/shop and POST /api/me/shop/claim (accountRoutes.ts,
  *   POST     /nodes/shop/claim        AccountsDO): answered with or without the node settings
  *   GET      /nodes/admin/account-stats  the owner's account counts (AccountsDO, accountStore.ts AccountStats): counts
@@ -73,14 +87,15 @@ import { accountsCall, requireAccount, requireFresh, requirePrimary, shopClaim, 
 import { STATS_OPERATORS_MAX, STATS_TRUSTED_MAX } from './AccountsDO';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
-import { JSON_MAX_BYTES, error, flag, isHex, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
+import { JSON_MAX_BYTES, error, flag, isHex, json, limitKey, nodesConfigured, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
 import { NODE_ROUTES, OPERATORS_ROUTE, nodesStub } from './nodeApi';
-import { accountGate, edgeCache, overLimit, subjectsOf, widePrefix } from './limits';
-import type { Limiter } from './limits';
+import { accountGate, edgeCache, overLimit, sitePrefix, subjectsOf, widePrefix } from './limits';
+import type { LimitName, Limiter } from './limits';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 import { PUBLIC_REPLAY_MAX_BYTES, publicReplay } from './replayIndex';
 import type { ReplayIndexRow } from './replayIndex';
+import type { ReplayList } from '../../src/net/replays';
 import { sha256Hex } from '../../nodes/shared/edcrypto';
 
 /** What the index.ts router hands over: its rate limiter, the session and its CORS headers. */
@@ -107,10 +122,6 @@ const LIMIT_REGISTER_PER_IP = REGISTER_PER_IP_PER_HOUR;
 const LIMIT_TOKENS_PER_ACCOUNT = TOKENS_PER_ACCOUNT_PER_DAY;
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
-/** A node uploads one replay per match: a full VPS ends a few matches a minute. */
-const LIMIT_REPLAY_PUT_PER_IP = 60;
-/** A verifier downloads one replay per job; counted apart from the uploads, which the same node makes. */
-const LIMIT_REPLAY_GET_PER_IP = 60;
 const LIMIT_STATUS_PER_IP = 60;
 const LIMIT_MINE_PER_ACCOUNT = 30;
 const LIMIT_ADMIN_PER_ACCOUNT = 30;
@@ -120,13 +131,20 @@ const LIMIT_ADMIN_PER_ACCOUNT = 30;
  */
 export const MAINTAINER_FRESH_S = 15 * 60;
 const STATUS_TTL_MS = 10_000;
-/** The public replay list (anyone, guests included): a page per request at most, the first one cached. */
-const LIMIT_REPLAY_LIST_PER_IP = 60;
-/** A public replay: read from R2, hashed and rewritten (replayIndex.ts publicReplay) on an edge-cache miss. */
-const LIMIT_REPLAY_VIEW_PER_IP = 30;
+/** The public replay list's first page, kept by each isolate (and by browsers). */
 const REPLAY_LIST_TTL_MS = 30_000;
+/** A later page (a signed cursor) in the location's edge cache: it changes only as rows age out, a delist or a hidden name. */
+export const REPLAY_PAGE_EDGE_S = 300;
+/** A public replay's copies, in the edge cache and in browsers: a delist or a hidden name reaches every copy within this. */
+export const REPLAY_VIEW_MAX_AGE_S = 3 * 3600;
+/** A view the object does not serve (never listed, its first hour, expired, delisted): kept this long in the edge cache. */
+export const REPLAY_MISSING_S = 300;
+/** A listed replay that fails the public checks (junk a node stored), and a delisted one here: this long. */
+export const REPLAY_BROKEN_S = 86_400;
+/** How long an isolate keeps the KV flag replays_off: one KV read per isolate this often, cache hits included. */
+const REPLAYS_OFF_TTL_MS = 30_000;
 /** The maintainers' routes and the method of each. */
-const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST', grant: 'POST', revoke: 'POST', unfreeze: 'POST' };
+const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST', grant: 'POST', revoke: 'POST', unfreeze: 'POST', delist: 'POST' };
 
 /**
  * A release key: an optional X.Y.Z/ directory, then one file name. Nothing else is ever looked up in
@@ -170,7 +188,8 @@ const TYPES: Record<string, string> = {
 };
 
 let statusCache: { at: number; body: string } | null = null;
-let replayListCache: { at: number; body: string } | null = null;
+/** The replay list's first page per NodeRegistryDO namespace (one per isolate in production, as channelCache keys its bucket). */
+const replayListCache = new WeakMap<object, { at: number; body: string }>();
 
 export async function nodeRoute(c: NodeRouteContext): Promise<Response> {
   const path = c.url.pathname;
@@ -183,9 +202,12 @@ export async function nodeRoute(c: NodeRouteContext): Promise<Response> {
     console.error('nodes route error', e);
     res = error(500, 'internal');
   }
-  if (!cors) return res; // a 101 among them: passed through untouched
+  // The public replays are no search engine's to keep: every answer of theirs says so (replay.html has its meta tag).
+  const robots = path === '/nodes/replays' || REPLAY_VIEW_PATH.test(path);
+  if (!cors && !robots) return res; // a 101 among them: passed through untouched
   const out = new Response(res.body, res);
-  for (const k in c.cors) out.headers.set(k, c.cors[k]);
+  if (cors) for (const k in c.cors) out.headers.set(k, c.cors[k]);
+  if (robots) out.headers.set('x-robots-tag', 'noindex');
   return out;
 }
 
@@ -218,11 +240,12 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   const replay = REPLAY_PATH.exec(path);
   if (replay && method === 'PUT') {
     if (declared(c.request) > REPLAY_MAX_BYTES) return error(413, 'too_large');
-    if (c.limited('nrep:' + who, LIMIT_REPLAY_PUT_PER_IP)) return error(429, 'rate_limited');
+    // Counted across the location's isolates: the object checks the signature, so junk reaches it until then.
+    if ((await c.limit('nodeReplayPut', who)) || (await c.limit('nodeReplayWide', widePrefix(c.ip)))) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path);
   }
   if (replay && method === 'GET') {
-    if (c.limited('nrget:' + who, LIMIT_REPLAY_GET_PER_IP)) return error(429, 'rate_limited');
+    if ((await c.limit('nodeReplayGet', who)) || (await c.limit('nodeReplayWide', widePrefix(c.ip)))) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path);
   }
   if (method === 'POST' && path === '/nodes/tokens') {
@@ -242,9 +265,9 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     return toRegistry(env, c.request, path, operator(s));
   }
   if (method === 'GET' && path === '/nodes/status') return status(c, env, who);
-  if (method === 'GET' && path === '/nodes/replays') return replayList(c, env, who);
+  if (method === 'GET' && path === '/nodes/replays') return replayList(c, env);
   const view = REPLAY_VIEW_PATH.exec(path);
-  if (view && method === 'GET') return replayView(c, env, who, view[1]);
+  if (view && method === 'GET') return replayView(c, env, view[1]);
   const admin = path.startsWith('/nodes/admin/') ? path.slice('/nodes/admin/'.length) : '';
   if (Object.hasOwn(ADMIN_ROUTES, admin) && ADMIN_ROUTES[admin] === method) {
     if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
@@ -254,7 +277,8 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
     if (fresh instanceof Response) return fresh;
     if (c.limited('nadm:' + s.sub, LIMIT_ADMIN_PER_ACCOUNT)) return error(429, 'rate_limited');
-    return toRegistry(env, c.request, path, operator(s));
+    const res = await toRegistry(env, c.request, path, operator(s));
+    return admin === 'delist' && res.ok ? delisted(c, env, res) : res;
   }
   return error(404, 'not_found');
 }
@@ -354,77 +378,249 @@ async function status(c: NodeRouteContext, env: NodesEnv, who: string): Promise<
   return new Response(statusCache.body, { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${STATUS_TTL_MS / 1000}` } });
 }
 
+// ---- the public replays (src/net/replays.ts, docs/replays.md) ----------------------------------------
+
+const enc = new TextEncoder();
+const replaysOffMemo = new WeakMap<object, { at: number; on: boolean }>();
+
 /**
- * GET /nodes/replays[?before=<ms>]: the public replay list (src/net/replays.ts), a page of the
- * object's index. The first page is kept REPLAY_LIST_TTL_MS by each isolate (the object also
- * serves every heartbeat); a later page always asks it, under the per-address limit.
+ * The KV flag replays_off (server/README.md, "Kill switches"): the public list and view only, the
+ * nodes and everything else go on. Kept REPLAYS_OFF_TTL_MS per isolate: it is read before the
+ * caches (a cached copy must stop too), so it must not cost a KV read per request.
  */
-async function replayList(c: NodeRouteContext, env: NodesEnv, who: string): Promise<Response> {
-  if (c.limited('nrl:' + who, LIMIT_REPLAY_LIST_PER_IP)) return error(429, 'rate_limited');
+async function replaysOff(env: NodesEnv, now: number = Date.now()): Promise<boolean> {
+  const m = replaysOffMemo.get(env.FLAGS);
+  if (m && now - m.at < REPLAYS_OFF_TTL_MS) return m.on;
+  const on = await flag(env, 'replays_off');
+  replaysOffMemo.set(env.FLAGS, { at: now, on });
+  return on;
+}
+
+/** The 404 of a replay that is not served; never kept by a browser (it may be listed within the hour). */
+function noReplay(): Response {
+  return error(404, 'no_replay', 'this replay is not available');
+}
+
+/** Over the public replays' limits (limits.ts): `rule` per network, and replaySite per IPv6 /48. Only the requests that reach the object are counted. */
+async function overReplayLimit(c: NodeRouteContext, rule: LimitName): Promise<boolean> {
+  return (await c.limit(rule, limitKey(c.ip))) || (await c.limit('replaySite', sitePrefix(c.ip)));
+}
+
+let cursorKeyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
+
+/** The key that signs the list's cursors: HKDF of JWT_SECRET under a label of its own, never a token's key. */
+function cursorKey(secret: string): Promise<CryptoKey> {
+  if (cursorKeyCache && cursorKeyCache.secret === secret) return cursorKeyCache.key;
+  const key = (async () => {
+    const ikm = await crypto.subtle.importKey('raw', enc.encode(secret), 'HKDF', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('turbogol/hkdf/v2'), info: enc.encode('replay-cursor') }, ikm, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign']);
+  })();
+  cursorKeyCache = { secret, key };
+  return key;
+}
+
+async function cursorMac(secret: string, plain: string): Promise<string> {
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await cursorKey(secret), enc.encode(plain)));
+  let s = '';
+  for (let i = 0; i < 16; i++) s += (mac[i] < 16 ? '0' : '') + mac[i].toString(16);
+  return s;
+}
+
+/** A page's cursor as the public gets it: the object's `<hour>.<matchId>` and its MAC. */
+async function signCursor(secret: string, plain: string): Promise<string> {
+  return `${plain}.${await cursorMac(secret, plain)}`;
+}
+
+const SIGNED_CURSOR = /^(\d{1,10}\.[0-9a-f]{64})\.([0-9a-f]{32})$/;
+
+/** The object's cursor in a signed one, or null for anything this Worker did not sign (the first page then). */
+async function readCursor(secret: string, raw: string | null): Promise<string | null> {
+  const m = SIGNED_CURSOR.exec(raw ?? '');
+  if (!m) return null;
+  const want = await cursorMac(secret, m[1]);
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ m[2].charCodeAt(i);
+  return diff === 0 ? m[1] : null;
+}
+
+/** Keep, under `key` in the location's edge cache, that this view is not served (a 200 marker: any status may be cached so). */
+async function rememberMissing(cache: Cache | null, key: string, seconds: number): Promise<void> {
+  if (!cache) return;
+  try {
+    await cache.put(key, new Response('no_replay', { headers: { 'content-type': 'text/plain', 'cache-control': `public, max-age=${seconds}` } }));
+  } catch {
+    /* the next request asks the object again */
+  }
+}
+
+/** The edge-cache keys of a match's view and of its "not served" marker (never a path the router answers). */
+function viewKeys(c: NodeRouteContext, matchId: string): { view: string; missing: string } {
+  const view = `${c.url.origin}/nodes/replays/${matchId}/view`;
+  return { view, missing: `${c.url.origin}/nodes/_cache/replay-missing/${matchId}` };
+}
+
+/**
+ * GET /nodes/replays[?before=<cursor>]: the public replay list (src/net/replays.ts), a page of the
+ * object's index as the public sees it (NodeRegistryDO replays: settled an hour ago at least, the
+ * time rounded to the hour, hidden names). The first page is kept REPLAY_LIST_TTL_MS by each
+ * isolate; a later one needs a cursor this Worker signed (`next`, HMAC: the object is never asked
+ * about a cursor anyone made up, which reads as the first page) and is kept REPLAY_PAGE_EDGE_S in
+ * the location's edge cache, so the keys that can reach the object are as many as the rows. Only a
+ * page that reaches the object counts against replayList and replaySite.
+ */
+async function replayList(c: NodeRouteContext, env: NodesEnv): Promise<Response> {
+  if (await replaysOff(env)) return error(404, 'not_found', 'the public replays are off');
   const now = Date.now();
   const raw = c.url.searchParams.get('before');
-  // A cursor is a settle time in the past; anything else (junk, 0, the future) is the first page, the cached one.
-  const before = raw !== null && /^\d{1,16}$/.test(raw) && Number(raw) > 0 && Number(raw) < now ? raw : null;
-  const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${REPLAY_LIST_TTL_MS / 1000}`, ...c.cors };
-  if (before === null && replayListCache && now - replayListCache.at <= REPLAY_LIST_TTL_MS) return new Response(replayListCache.body, { headers });
-  const res = await toRegistry(env, new Request(c.request.url, { method: 'GET' }), NODE_ROUTES.replays + (before !== null ? `?before=${before}` : ''));
+  const after = await readCursor(env.JWT_SECRET, raw);
+  const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${REPLAY_LIST_TTL_MS / 1000}` };
+  const first = after === null ? replayListCache.get(env.NODES) : undefined;
+  if (first && now - first.at <= REPLAY_LIST_TTL_MS) return new Response(first.body, { headers });
+  const cache = after !== null ? edgeCache() : null;
+  const key = `${c.url.origin}/nodes/replays?before=${encodeURIComponent(raw ?? '')}`;
+  if (cache) {
+    const hit = await cache.match(key).catch(() => undefined);
+    if (hit) return new Response(hit.body, { headers });
+  }
+  if (await overReplayLimit(c, 'replayList')) return error(429, 'rate_limited');
+  const res = await toRegistry(env, new Request(c.request.url, { method: 'GET' }), NODE_ROUTES.replays + (after !== null ? `?after=${after}` : ''));
   if (!res.ok) {
     await res.body?.cancel();
     return error(503, 'nodes_unavailable');
   }
-  const body = await res.text();
-  if (before === null) replayListCache = { at: now, body };
+  const page = (await res.json()) as ReplayList;
+  const body = JSON.stringify({ matches: page.matches, next: page.next !== null ? await signCursor(env.JWT_SECRET, page.next) : null } satisfies ReplayList);
+  if (after === null) replayListCache.set(env.NODES, { at: now, body });
+  else if (cache) {
+    try {
+      await cache.put(key, new Response(body, { headers: { ...headers, 'cache-control': `public, max-age=${REPLAY_PAGE_EDGE_S}` } }));
+    } catch {
+      /* the next request asks the object again */
+    }
+  }
   return new Response(body, { headers });
 }
 
 /**
- * GET /nodes/replays/<matchId>/view: a listed match's replay, made public (replayIndex.ts
- * publicReplay: the header rebuilt from the control plane's record, no account id, no node id). The
- * bytes come from R2 here, never through the object, and must still be the ones the node uploaded
- * (their SHA-256 is the index's). The answer never changes once listed: it is kept in the edge cache
- * (Cache API: a Worker's own responses are not cached otherwise), so a match watched by many asks
- * neither the object nor R2 again, and a day in any browser.
+ * GET /nodes/replays/<matchId>/view: a served match's replay, made public (replayIndex.ts
+ * publicReplay: the header rebuilt from the control plane's record as the object serves it, no
+ * account id, no node id, no start time, hidden names). The bytes come from R2 here, never through
+ * the object, and must still be the ones the node uploaded (their SHA-256 is the index's). The
+ * answer is kept REPLAY_VIEW_MAX_AGE_S in the location's edge cache (Cache API: a Worker's own
+ * responses are not cached otherwise) and in browsers, so a match watched by many asks neither the
+ * object nor R2 again, and a delist or a hidden name still reaches every copy within hours. A view
+ * the object does not serve is remembered REPLAY_MISSING_S (random ids, a match in its first hour);
+ * a listed one that fails the checks REPLAY_BROKEN_S, with an ALERT line: its up to 4 MiB are read,
+ * hashed and walked once a day per location, not at every view. Only a request past both caches
+ * counts against replayView and replaySite.
  */
-async function replayView(c: NodeRouteContext, env: NodesEnv, who: string, matchId: string): Promise<Response> {
-  if (c.limited('nrv:' + who, LIMIT_REPLAY_VIEW_PER_IP)) return error(429, 'rate_limited');
+async function replayView(c: NodeRouteContext, env: NodesEnv, matchId: string): Promise<Response> {
+  if (await replaysOff(env)) return noReplay();
   const cache = edgeCache();
-  const key = new Request(`${c.url.origin}/nodes/replays/${matchId}/view`, { method: 'GET' });
-  const hit = cache ? await cache.match(key) : undefined;
-  if (hit) return hit;
+  const keys = viewKeys(c, matchId);
+  if (cache) {
+    const hit = await cache.match(keys.view).catch(() => undefined);
+    if (hit) return hit;
+    const gone = await cache.match(keys.missing).catch(() => undefined);
+    if (gone) {
+      void gone.body?.cancel(); // as fromCopy: a copy's body is never waited on
+      return noReplay();
+    }
+  }
+  if (await overReplayLimit(c, 'replayView')) return error(429, 'rate_limited');
   const res = await toRegistry(env, new Request(c.request.url, { method: 'GET' }), `${NODE_ROUTES.replays}/${matchId}`);
   if (!res.ok) {
     await res.body?.cancel();
-    return res.status === 404 ? error(404, 'no_replay') : error(503, 'nodes_unavailable');
+    if (res.status !== 404) return error(503, 'nodes_unavailable');
+    await rememberMissing(cache, keys.missing, REPLAY_MISSING_S);
+    return noReplay();
   }
   const entry = (await res.json()) as ReplayIndexRow;
+  const broken = async (why: string): Promise<Response> => {
+    console.error(`ALERT replay ${matchId} is listed but not served (${why}): its 404 is kept a day here; delist it (POST /nodes/admin/delist)`);
+    await rememberMissing(cache, keys.missing, REPLAY_BROKEN_S);
+    return noReplay();
+  };
   const obj = await env.NODE_REPLAYS.get(matchId);
-  if (!obj) return error(404, 'no_replay');
+  if (!obj) return broken('no R2 object');
   if (obj.size > PUBLIC_REPLAY_MAX_BYTES) {
     await obj.body.cancel();
-    return error(404, 'no_replay');
+    return broken(`${obj.size} bytes`);
   }
   const bytes = new Uint8Array(await obj.arrayBuffer());
-  if ((await sha256Hex(bytes)) !== entry.sha) return error(404, 'no_replay');
+  if ((await sha256Hex(bytes)) !== entry.sha) return broken('not the bytes the node uploaded');
   let out: Uint8Array;
   try {
     out = publicReplay(bytes, entry.item);
-  } catch {
-    return error(404, 'no_replay');
+  } catch (e) {
+    return broken(String(e));
   }
   const headers = {
     'content-type': 'application/octet-stream',
     'content-length': String(out.length),
-    'cache-control': 'public, max-age=86400, immutable',
+    'cache-control': `public, max-age=${REPLAY_VIEW_MAX_AGE_S}`,
     'x-content-type-options': 'nosniff',
+    'x-robots-tag': 'noindex',
   };
   if (cache) {
     try {
-      await cache.put(key, new Response(out.slice(), { headers }));
+      await cache.put(keys.view, new Response(out.slice(), { headers }));
     } catch {
       /* a miss next time */
     }
   }
   return new Response(out, { headers });
+}
+
+/**
+ * After the object delisted a match (POST /nodes/admin/delist): its view purged from this
+ * location's edge cache and remembered as gone here for REPLAY_BROKEN_S, this isolate's first page
+ * dropped, and with CF_ZONE_ID and CF_PURGE_TOKEN the view purged in every location too
+ * (purgeEverywhere). Without them, another location's copy lasts REPLAY_VIEW_MAX_AGE_S at most.
+ */
+async function delisted(c: NodeRouteContext, env: NodesEnv, res: Response): Promise<Response> {
+  const answer = (await res.json()) as { matchId: string };
+  replayListCache.delete(env.NODES);
+  const cache = edgeCache();
+  const keys = viewKeys(c, answer.matchId);
+  let here = false;
+  if (cache) {
+    try {
+      await cache.delete(keys.view);
+      here = true;
+    } catch {
+      /* reported below */
+    }
+    await rememberMissing(cache, keys.missing, REPLAY_BROKEN_S);
+  }
+  const everywhere = await purgeEverywhere(env, keys.view);
+  return json({ ...answer, purged: { here, everywhere } }, 200, { 'cache-control': 'no-store' });
+}
+
+/**
+ * One URL purged from the zone's cache in every Cloudflare location (the API's purge by URL, which
+ * covers Cache API copies). null without CF_ZONE_ID and CF_PURGE_TOKEN, else whether the API said
+ * it was done (5 s at most). Never throws.
+ */
+async function purgeEverywhere(env: NodesEnv, url: string): Promise<boolean | null> {
+  if (!env.CF_ZONE_ID || !env.CF_PURGE_TOKEN) return null;
+  try {
+    const res = await withTimeout(
+      fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(env.CF_ZONE_ID)}/purge_cache`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${env.CF_PURGE_TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ files: [url] }),
+      }),
+      5000,
+    );
+    const body = (await res.json().catch(() => null)) as { success?: unknown } | null;
+    if (res.ok && body?.success === true) return true;
+    console.error(`replay delist: the zone purge of ${url} answered ${res.status}`);
+    return false;
+  } catch (e) {
+    console.error(`replay delist: the zone purge of ${url} failed: ${String(e)}`);
+    return false;
+  }
 }
 
 /**

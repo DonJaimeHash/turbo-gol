@@ -13,13 +13,20 @@ on the same wasm with the same inputs gives the same match. That is how the veri
 ranked result, and it is also how the viewer plays a match: it re-simulates it in the browser.
 
 A 3-minute 1v1 is about 10 KB. The node uploads it to R2 (`NODE_REPLAYS`, key = the 64-hex match id)
-before it reports the end; the bucket's lifecycle rule deletes objects after 30 days.
+before it reports the end. A listed match's object is deleted with its index row after 30 days (the
+cron, below); the bucket's lifecycle rule deletes every other object (voided or never listed
+matches) after 30 days too. It is set by hand, once, and checked with the second command:
+
+```sh
+npx wrangler r2 bucket lifecycle add turbogol-node-replays expire-30d --expire-days 30 --force
+npx wrangler r2 bucket lifecycle list turbogol-node-replays
+```
 
 ## Who can see what
 
 | | Before | Now |
 |---|---|---|
-| List of matches | nobody | anyone, guests included: `GET /nodes/replays` |
+| List of matches | nobody | anyone, guests included, from an hour after each match: `GET /nodes/replays` |
 | Replay bytes | the verifier node (signed request) | anyone: `GET /nodes/replays/<matchId>/view` (the signed verifier route is unchanged) |
 
 Only matches the control plane settled **without voiding them** are listed: rated matches (always
@@ -29,12 +36,43 @@ or served, even though its replay may still be in R2: it may be a tampered recor
 
 ### Privacy
 
+The security audit of #60 (pr60-1 to pr60-7, pr60-m1) and the owner's decisions of 2026-10-29:
+
 - **Names come from the control plane** (`assign.roster`, what the matchmaker placed), never from the
   replay header: a node writes whatever names it likes there and the verifier does not compare them.
 - **No account ids.** An account id is stable across renames, so publishing it would link every
   match an account plays. The list carries none and the served header has every `playerId`
-  blanked (`""` still decodes). The node id is blanked too (`/nodes/status` never shows it either).
-- Names are already public on the leaderboard; the list adds which matches a name played.
+  blanked (`""` still decodes). The node id is blanked too (`/nodes/status` never shows it either),
+  and so is the header's start time (a node may write its wall clock there).
+- **Names show by default; an account can hide its own.** PERFIL > PRIVACIDAD, "Ocultar mi nombre
+  en repeticiones públicas" (off by default; `GET`/`POST /api/me/replay-name`, AccountsDO table
+  `replay_names`). Then its seat reads `Jugador N` (N = the slot + 1; "Player N" on an English page)
+  in the list and in the replay, for the matches listed before it chose too: the index keeps each
+  seat's player id beside the row (`replay_players`, never served) and the NodeRegistryDO asks
+  AccountsDO (`/replay-hidden`) when it serves a row, keeping each answer a minute. A row listed
+  before this table existed is looked up by its names (today's usernames). Guests are already
+  `Invitado NNNN`. While AccountsDO cannot answer, the list and the view answer 503 rather than a
+  name someone hid. A change reaches the list within about a minute and the copies of a replay
+  already watched within 3 hours (their cache life).
+- **No "who is playing now".** A match is listed, and viewable, only an hour after it settled, and
+  the list shows the hour (rounded down), never the minute. Within an hour the order is the match
+  id's, not the settle time's.
+- **30 days, enforced in code.** Nothing settled more than 30 days ago is listed or viewed, whether
+  or not a prune ran; the cron (every 5 minutes) deletes those rows and their R2 objects.
+- **Delist on request.** `POST /nodes/admin/delist { matchId, reason? }`, a maintainer's route with
+  the same gate as the others (a `NODE_TRUSTED_OPERATORS` account, not a TV's session, signed in or
+  re-authenticated in the last 15 minutes): the row, its seats and its R2 object go, the view's
+  copy in the maintainer's Cloudflare location is deleted (and remembered as gone for a day), and,
+  with the `CF_ZONE_ID` var and the `CF_PURGE_TOKEN` secret (a token with only Zone > Cache Purge),
+  every location's copy is purged by URL. Without them another location keeps its copy at most 3
+  hours. Every delist is an ALERT line naming the maintainer.
+- **A switch for the public replays alone.** The KV flag `replays_off` (server/README.md, "Kill
+  switches") answers 404 on the list and the view, cached copies included, and stops nothing else.
+- **Not for search engines.** The list and the view send `X-Robots-Tag: noindex`; `replay.html`
+  has its robots meta tag.
+- The scraping of a public list cannot be undone: what a scraper keeps is out of our hands. The
+  privacy notice (still to write) must say what is published, to whom, for how long and how to
+  hide a name or ask for a delist.
 
 ### Integrity
 
@@ -47,16 +85,23 @@ rewritten; the records after it are copied byte for byte, so the re-simulation i
 **Index** (`server/src/replayIndex.ts`, `server/src/nodeStore.ts`): a `replay_index` table in the
 NodeRegistryDO's SQLite, one row per listed match, written by `NodeStore.finished` right after the
 transaction that settles the match (a failure there only leaves the match unlisted; it never blocks
-a settlement), pruned after 30 days like R2. Matches settled before this deploy are not listed (the
-control plane forgets a finished match after 10 minutes, so there is nothing to backfill from but
-the node-written headers).
+a settlement), with its human seats in `replay_players`, pruned after 30 days by the cron. A match
+whose node reports a replay bigger than the public cap (4 MiB) is not listed. Matches settled
+before the index existed are not listed (the control plane forgets a finished match after 10
+minutes, so there is nothing to backfill from but the node-written headers).
 
 **Routes** (`server/src/nodeRoutes.ts`): the list asks the object once per isolate every 30 s for
-the first page (the object also serves every node heartbeat); later pages ask it for one page. A
-view is answered from the edge cache (Cache API) once someone watched that match; a miss asks the
-object for the indexed row and reads the bytes from R2 in the Worker, never through the object, at
-most 4 MiB (a real match is far smaller; anything bigger is junk a node stored). Per-address limits:
-60 list pages and 30 views a minute.
+the first page (the object also serves every node heartbeat). A later page needs the cursor the
+Worker signed (`next`: the last row's hour and match id, an HMAC under a key derived from
+`JWT_SECRET`); anything else reads as the first page, so a made-up cursor never reaches the object,
+and a page is kept 5 minutes in the location's edge cache. A view is answered from the edge cache
+(Cache API, 3 hours) once someone watched that match; a miss asks the object for the indexed row
+and reads the bytes from R2 in the Worker, never through the object, at most 4 MiB (a real match is
+far smaller; anything bigger is junk a node stored). A view the object does not serve is remembered
+5 minutes at the edge (a random id, a match in its first hour), a listed one that fails the checks
+a day, with an ALERT line in the Worker's log. Limits, counted across the location's isolates
+(`server/src/limits.ts`) and only on what reaches the object: 120 list pages and 120 views a minute
+per network, 600 per IPv6 /48 together.
 
 **Viewer** (`replay.html`, `src/replay/`): a second page of the Vite build, reached from
 PROFILE > ABOUT (same tab; "Back to the game" returns; not shown on a TV yet: the page has no remote
@@ -82,6 +127,9 @@ A match only replays faithfully on the build that played it. The viewer says so 
 Either way the replay still plays, with the notice on screen.
 
 ## Left for later
+
+- The privacy notice (terms of use and privacy policy): what the replays publish, to whom, for how
+  long, how to hide a name and how to ask for a delist.
 
 - TV: remote and controller navigation on the replay page, then the PROFILE link there too.
 

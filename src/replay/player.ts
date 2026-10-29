@@ -46,7 +46,7 @@ import {
 import wasmUrl from '../sim/wasm/rocketsim.wasm?url';
 import { drawsFrame } from '../render/quality';
 import { goalScorer } from '../ui/screens/match/finalModel';
-import { playerName } from '../ui/names';
+import { replayName } from './names';
 import { clockText, el } from './list';
 
 /** Longest frame the loop catches up on (s). */
@@ -208,8 +208,8 @@ export async function startPlayer(o: PlayerOptions): Promise<() => void> {
   const scene = renderer.scene;
   const q = renderer.quality;
   const roster = r.header.roster;
-  /** Each slot's name as shown: a guest's server name ('Invitado 4821') in this page's language. */
-  const shownName = roster.map((e) => playerName(e.name));
+  /** Each slot's name as shown: a guest's server name ('Invitado 4821') and a hidden one ('Jugador 3') in this page's language. */
+  const shownName = roster.map((e) => (e.kind === 'player' ? replayName(e.name) : e.name));
   const endTick = endTickOf(r);
 
   let run = await newRun(r, o.mesh);

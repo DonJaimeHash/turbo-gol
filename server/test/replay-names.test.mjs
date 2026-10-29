@@ -2,7 +2,9 @@
 // 2026-10-29: names show by default, an account may hide its own). The account side on node:sqlite
 // (accountStore.ts replay_names, AccountsDO's /replay-name and /replay-hidden), the Worker's
 // GET / POST /api/me/replay-name with its per-account limit (limits.ts replayName) before the
-// object. 'cloudflare:workers' and MatchDO's wasm are
+// object, and end to end: an account's choice in front of a real AccountsDO and a real
+// NodeRegistryDO turns its name into 'Jugador N' in the public list and replay of a match listed
+// before it chose, and back after the object's minute. 'cloudflare:workers' and MatchDO's wasm are
 // stubbed by the resolve hook (match.test.mjs). Run from server/: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -229,4 +231,83 @@ test('/api/me/replay-name: 30 a minute per account before AccountsDO (limits.ts 
   assert.equal(reached.length, before, 'refused before the object');
   const other = await account(accounts, 'Fede');
   assert.equal((await call(env, 'GET', '/api/me/replay-name', { token: await accountToken(other, 'Fede') })).status, 200);
+});
+
+// ---- end to end ----------------------------------------------------------------------------------
+
+/** A 1v1 replay a node wrote, its two accounts' ids in its roster. */
+function tgr(matchId, ids) {
+  const w = new ReplayWriter({
+    v: 1,
+    matchId,
+    nodeId: 'feedfacefeedface',
+    build: { version: '0.3.0', protocol: 3, wasmSha256: 'd'.repeat(64) },
+    mode: '1v1',
+    region: 'SA',
+    ranked: true,
+    roster: [
+      { slot: 0, team: 0, kind: 'player', name: 'x', playerId: ids[0] },
+      { slot: 1, team: 1, kind: 'player', name: 'y', playerId: ids[1] },
+    ],
+    matchLengthSeconds: 180,
+    kickoffSeed: 7,
+    botDifficulty: 'medium',
+    tickRate: 120,
+    checkpointEvery: 120,
+    startedAt: 0,
+  });
+  w.input(1, 0, new Int8Array([1, 0, 0, 0, 0, 0]), 0);
+  w.hash(120, 1);
+  w.end({ tick: 200, winner: 1, blue: 0, red: 1, reason: 'rules', forfeitTeam: -1 });
+  return w.finish();
+}
+
+function settled(matchId, ids, names, sha) {
+  return {
+    assign: { matchId, mode: '1v1', region: 'SA', ranked: true, roster: ids.map((playerId, slot) => ({ slot, team: slot, kind: 'player', name: names[slot], playerId })), matchLengthSeconds: 180, kickoffSeed: 7, botDifficulty: 'medium', createdAt: BASE - 200_000 },
+    nodeId: 'feedfacefeedface',
+    state: 'done',
+    humans: ids.map((playerId, i) => ({ playerId, name: names[i], account: true })),
+    leaves: new Set(),
+    leaveAt: new Map(),
+    neverJoined: new Set(),
+    left: new Set(),
+    offered: new Set(),
+    build: { version: '0.3.0', protocol: 3, wasmSha256: 'd'.repeat(64) },
+    replaySha: sha,
+    report: { kind: 'ended', matchId, result: { winner: 1, blue: 0, red: 1, endTick: 200, endReason: 'rules' }, replaySha256: sha, replayBytes: 100 },
+    verdict: null,
+    ledger: null,
+    doneAt: BASE,
+  };
+}
+
+test('end to end: an account hides its name in PERFIL and a match listed before shows "Jugador 2" in the list and the replay; showing it again lands within the object’s minute', async () => {
+  const { env, accounts, reg } = await world({ nodes: true });
+  const gaby = await account(accounts, 'Gaby');
+  const hugo = await account(accounts, 'Hugo');
+  const matchId = 'ab'.repeat(32);
+  const bytes = tgr(matchId, [gaby, hugo]);
+  reg.store.finished(settled(matchId, [gaby, hugo], ['Gaby', 'Hugo'], await sha256Hex(bytes)), { kind: 'rated', matchId, playlist: '1v1', region: 'SA', winner: 1, blue: 0, red: 1, players: [], nodeId: 'feedfacefeedface' });
+  await env.NODE_REPLAYS.put(matchId, bytes);
+  // Hugo turns it on after the match was listed.
+  assert.equal((await call(env, 'POST', '/api/me/replay-name', { token: await accountToken(hugo, 'Hugo'), body: { hidden: true } })).status, 200);
+  const list = await call(env, 'GET', '/nodes/replays');
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.json.matches[0].players.map((p) => p.name), ['Gaby', 'Jugador 2']);
+  const view = await worker.fetch(new Request(`${ORIGIN}/nodes/replays/${matchId}/view`, { headers: { 'CF-Connecting-IP': '192.0.2.250' } }), env);
+  assert.equal(view.status, 200);
+  const r = decodeReplay(new Uint8Array(await view.arrayBuffer()));
+  assert.deepEqual(r.header.roster.map((e) => e.name), ['Gaby', 'Jugador 2']);
+  assert.ok(!JSON.stringify(r.header).includes(hugo), 'no account id either');
+  // Hugo shows it again: the object keeps its answer a minute, the isolate its first page 30 s.
+  assert.equal((await call(env, 'POST', '/api/me/replay-name', { token: await accountToken(hugo, 'Hugo'), body: { hidden: false } })).status, 200);
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 61_000;
+    const again = await call(env, 'GET', '/nodes/replays');
+    assert.deepEqual(again.json.matches[0].players.map((p) => p.name), ['Gaby', 'Hugo']);
+  } finally {
+    Date.now = realNow;
+  }
 });

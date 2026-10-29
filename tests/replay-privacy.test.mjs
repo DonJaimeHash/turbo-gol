@@ -1,6 +1,7 @@
 // The public replays' privacy, the browser's side (audit pr60-1; the server's side:
-// server/test/replay-names.test.mjs): PERFIL's switch through AccountClient (GET / POST
-// /api/me/replay-name). This file is the English page (node's default).
+// server/test/nodeRoutes.test.mjs and server/test/replay-names.test.mjs). A hidden name ('Jugador 3'
+// on the wire) and a guest's in this page's language; PERFIL's switch through AccountClient
+// (GET / POST /api/me/replay-name). This file is the English page (node's default).
 // Run: node --test tests/replay-privacy.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,10 +21,39 @@ registerHooks({
 });
 
 const I = await import('../src/i18n.ts');
+const R = await import('../src/net/replays.ts');
+const N = await import('../src/replay/names.ts');
 const AC = await import('../src/net/AccountClient.ts');
 const en = I.LOCALES.en.messages;
 const es = I.LOCALES.es.messages;
 const src = (p) => readFile(new URL(p, import.meta.url), 'utf8');
+
+test('the page is English', () => {
+  assert.equal(I.language(), 'en');
+});
+
+test('a hidden name: "Jugador N" on the wire (the slot + 1), "Player N" on an English page; a guest and anyone else as before', () => {
+  assert.equal(R.hiddenNameOf(0), 'Jugador 1');
+  assert.equal(R.hiddenNameOf(5), 'Jugador 6');
+  assert.equal(R.hiddenNumber('Jugador 3'), '3');
+  for (const not of ['Jugador 0', 'Jugador 9', 'Jugador3', 'jugador 3', 'Jugador  3', 'Ana', 'Invitado 4821', '']) assert.equal(R.hiddenNumber(not), null, not);
+  assert.equal(N.replayName('Jugador 3'), 'Player 3');
+  assert.equal(N.replayName('Invitado 4821'), 'Guest 4821');
+  assert.equal(N.replayName('Ana'), 'Ana');
+  assert.equal(es['replay.hiddenName'], 'Jugador {n}');
+  assert.equal(en['replay.hiddenName'], 'Player {n}');
+});
+
+test('the list says when a match shows up and that its time is rounded; names in the list and the player go through replayName', async () => {
+  assert.match(en['replay.intro'], /an hour after it ends/);
+  assert.match(en['replay.intro'], /rounded to the hour/);
+  assert.match(es['replay.intro'], /una hora después de terminar/);
+  for (const f of ['../src/replay/list.ts', '../src/replay/player.ts']) {
+    const text = await src(f);
+    assert.match(text, /replayName\(/, f);
+    assert.doesNotMatch(text, /playerName\(/, f);
+  }
+});
 
 function res(status, body) {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };

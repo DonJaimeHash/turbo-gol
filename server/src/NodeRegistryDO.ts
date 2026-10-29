@@ -26,10 +26,16 @@
  *   POST /nodes/admin/grant      { account, item }, /revoke { account, item }, /unfreeze { account }: an account's
  *                                items and wallet, passed on to AccountsDO (/host-grant, -revoke, -unfreeze). Each
  *                                call is an ALERT line naming who made it
+ *   POST /nodes/admin/delist     { matchId, reason? }: one match out of the public replays, its row and its R2
+ *                                object (an ALERT too); the Worker purges the view's edge copies
  *   POST /internal/place | /internal/rejoin | /internal/leave, GET /internal/status: the matchmaker's (nodeApi.ts)
  *   POST /internal/health        the cron's (index.ts scheduled, every 5 minutes): /healthz of every trusted wss
  *                                node online, or in service and seen by the object in the last hour, 5 s each
- *                                (nodeWatch.ts healthzTargets)
+ *                                (nodeWatch.ts healthzTargets); and the public replays past 30 days pruned, with
+ *                                their R2 objects
+ *   GET  /internal/replays       the public replay list and one entry of it, as the public sees them (replays():
+ *                                an hour after the settle, rounded to the hour, hidden names as 'Jugador N', asked
+ *                                of AccountsDO /replay-hidden and kept a minute)
  *
  * State (nodeStore.ts, SQLite): the tokens, nodes and matches the control plane writes through,
  * and the outbox of settled matches, written in the transaction that settles each one and
@@ -87,7 +93,11 @@ import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, OPERATORS_ROUTE, REJOIN_STATUS
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
-import { REPLAY_PAGE } from '../../src/net/replays';
+import type { ReplayCursor, ReplayRow } from './nodeStore';
+import { publicItem } from './replayIndex';
+import type { ReplaySeat } from './replayIndex';
+import { GUEST_NAME_RE } from '../../src/net/guestName';
+import { HIDDEN_NAME_RE, REPLAY_PAGE } from '../../src/net/replays';
 import type { ReplayList } from '../../src/net/replays';
 import { HEALTHZ_MAX_BYTES, HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz, probeTargetOk, readJsonCapped } from './nodeWatch';
 import type { WatchNote } from './nodeWatch';
@@ -126,6 +136,14 @@ const LIMIT_PURGE_EVERY = 256;
  */
 const UNAVAILABLE = 'the node control plane is not available right now: try again later';
 const REPLAY_ROUTE = /^\/nodes\/replays\/([0-9a-f]{64})$/;
+/** The public list's internal cursor (the Worker checked its signature): a settle hour and a match id. */
+const REPLAY_CURSOR = /^(\d{1,10})\.([0-9a-f]{64})$/;
+/**
+ * How long the object keeps an account's "hide my name" answer (AccountsDO replay_names): a change
+ * in PERFIL reaches a newly served row this much later at most. Bounded like the limits' windows.
+ */
+export const REPLAY_NAMES_TTL_MS = 60_000;
+const REPLAY_NAMES_MAX = 20_000;
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
 /** What a maintainer may set (pending is the control plane's: a node not proven reachable yet). */
 const ADMIN_STATUSES: readonly NodeStatus[] = ['probation', 'active', 'suspended', 'banned'];
@@ -345,6 +363,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private readonly uploadsBy = new Map<string, number>();
   private uploadBytes = 0;
   replayBudget = REPLAY_INFLIGHT_BYTES;
+  /** AccountsDO's "hide my name" answers ('i:' + player id, 'n:' + a legacy row's name), REPLAY_NAMES_TTL_MS each, oldest first. */
+  private readonly replayNames = new Map<string, { hidden: boolean; at: number }>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -748,7 +768,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
       if (method === 'POST' && path === NODE_ROUTES.leave) return await this.leave(request, cp);
       if (method === 'GET' && path === NODE_ROUTES.status) return this.matchStatus(url, cp);
       if (method === 'POST' && path === NODE_ROUTES.health) return await this.health(cp);
-      if (method === 'GET' && (path === NODE_ROUTES.replays || path.startsWith(NODE_ROUTES.replays + '/'))) return this.replays(url);
+      if (method === 'GET' && (path === NODE_ROUTES.replays || path.startsWith(NODE_ROUTES.replays + '/'))) return await this.replays(url);
     } catch (e) {
       this.log(`${method} ${path} failed: ${String(e)}`);
       return error(500, 'internal');
@@ -947,32 +967,81 @@ export class NodeRegistryDO extends DurableObject<Env> {
   }
 
   /**
-   * The public replay index (replayIndex.ts), read only: GET /internal/replays?before=<ms> lists a
-   * page, GET /internal/replays/<matchId> answers one entry with its sha (the Worker serves the bytes).
+   * The public replay index (replayIndex.ts), read only, each row as the public sees it
+   * (publicItem: its hour, the hidden names as 'Jugador N'): GET /internal/replays[?after=<hour>.<id>]
+   * a page in the public order, `next` the cursor of its last row (the Worker signs it before anyone
+   * sees it); GET /internal/replays/<matchId> one served entry and its sha (the Worker serves the
+   * bytes). 503 while AccountsDO cannot say whose names are hidden: a row is never served with a
+   * name its player hid.
    */
-  private replays(url: URL): Response {
+  private async replays(url: URL): Promise<Response> {
     const store = this.store;
     if (!store) return error(503, 'nodes_unavailable', UNAVAILABLE);
     const id = url.pathname.slice(NODE_ROUTES.replays.length + 1);
     if (id) {
       if (!/^[0-9a-f]{64}$/.test(id)) return error(404, 'not_found');
       const e = store.replayEntry(id);
-      return e ? json(e) : error(404, 'no_replay');
+      if (!e) return error(404, 'no_replay');
+      const hidden = await this.hiddenSlots([e]);
+      if (!hidden) return error(503, 'nodes_unavailable', UNAVAILABLE);
+      return json({ item: publicItem(e.item, hidden[0]), sha: e.sha });
     }
-    const b = Number(url.searchParams.get('before'));
-    const before = Number.isFinite(b) && b > 0 ? b : Number.MAX_SAFE_INTEGER;
-    // One more than a page: whether there is a next one. The cursor is a settle time (`at < before`),
-    // so the rows that share the last kept row's millisecond move to the next page together.
-    const rows = store.replayList(before, REPLAY_PAGE + 1);
-    if (rows.length <= REPLAY_PAGE) return json({ matches: rows, next: null } satisfies ReplayList);
-    let matches = rows.slice(0, REPLAY_PAGE);
-    const lastAt = matches[REPLAY_PAGE - 1].at;
-    if (rows[REPLAY_PAGE].at === lastAt) {
-      const kept = matches.filter((m) => m.at !== lastAt);
-      // A whole page settled in one millisecond cannot happen; keep it rather than loop.
-      if (kept.length > 0) matches = kept;
+    const m = REPLAY_CURSOR.exec(url.searchParams.get('after') ?? '');
+    const cursor: ReplayCursor | null = m ? { hour: Number(m[1]), matchId: m[2] } : null;
+    // One more than a page: whether there is a next one.
+    const rows = store.replayList(cursor, REPLAY_PAGE + 1);
+    const page = rows.slice(0, REPLAY_PAGE);
+    const hidden = await this.hiddenSlots(page);
+    if (!hidden) return error(503, 'nodes_unavailable', UNAVAILABLE);
+    const last = page[page.length - 1];
+    const next = rows.length > REPLAY_PAGE ? `${Math.floor(last.item.at / HOUR_MS)}.${last.item.matchId}` : null;
+    return json({ matches: page.map((r, i) => publicItem(r.item, hidden[i])), next } satisfies ReplayList);
+  }
+
+  /**
+   * The slots of each row whose name is hidden (AccountsDO replay_names, kept REPLAY_NAMES_TTL_MS):
+   * by each seat's player id, or for a legacy row (no seats) by each name that may be an account's.
+   * Null when AccountsDO did not answer.
+   */
+  private async hiddenSlots(rows: readonly ReplayRow[]): Promise<Set<number>[] | null> {
+    const keys = rows.map((r): Array<[number, string]> =>
+      r.seats
+        ? r.seats.map((s: ReplaySeat): [number, string] => [s.slot, 'i:' + s.playerId])
+        : r.item.players.flatMap((p, slot): Array<[number, string]> => (p.bot || GUEST_NAME_RE.test(p.name) || HIDDEN_NAME_RE.test(p.name) ? [] : [[slot, 'n:' + p.name]])),
+    );
+    const now = Date.now();
+    const known = new Map<string, boolean>();
+    const ask = new Set<string>();
+    for (const list of keys) {
+      for (const [, k] of list) {
+        const c = this.replayNames.get(k);
+        if (c && now - c.at <= REPLAY_NAMES_TTL_MS) known.set(k, c.hidden);
+        else ask.add(k);
+      }
     }
-    return json({ matches, next: matches[matches.length - 1].at } satisfies ReplayList);
+    if (ask.size > 0) {
+      const ids = [...ask].filter((k) => k.startsWith('i:')).map((k) => k.slice(2));
+      const names = [...ask].filter((k) => k.startsWith('n:')).map((k) => k.slice(2));
+      let got: { ids?: unknown; names?: unknown };
+      try {
+        const res = await withTimeout(accountsCall(this.env, '/replay-hidden', { ids, names }), this.timeoutMs);
+        if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 120)}`);
+        got = (await res.json()) as { ids?: unknown; names?: unknown };
+      } catch (e) {
+        this.log(`replay names not read from AccountsDO, nothing served: ${String(e)}`);
+        return null;
+      }
+      const hidIds = new Set(Array.isArray(got.ids) ? got.ids : []);
+      const hidNames = new Set(Array.isArray(got.names) ? got.names : []);
+      for (const k of ask) {
+        const hidden = k.startsWith('i:') ? hidIds.has(k.slice(2)) : hidNames.has(k.slice(2));
+        known.set(k, hidden);
+        this.replayNames.delete(k);
+        if (this.replayNames.size >= REPLAY_NAMES_MAX) this.replayNames.delete(this.replayNames.keys().next().value as string);
+        this.replayNames.set(k, { hidden, at: now });
+      }
+    }
+    return keys.map((list) => new Set(list.filter(([, k]) => known.get(k) === true).map(([slot]) => slot)));
   }
 
   /** The public list (the reference server's GET /nodes/status): no address, no operator id. */
@@ -1095,7 +1164,28 @@ export class NodeRegistryDO extends DurableObject<Env> {
       const note = this.watch.health(n, r, expected);
       if (note) this.note([note]);
     }
+    await this.pruneReplays();
     return json({ probed: targets.length, problems });
+  }
+
+  /**
+   * The public replays' retention, on the cron's schedule (every 5 minutes) and not only when a
+   * new match settles: the rows past REPLAY_INDEX_DAYS go, and their R2 objects with them (the
+   * bucket's lifecycle rule stays the net for the rest). Reads already skip such rows. Never throws.
+   */
+  private async pruneReplays(): Promise<number> {
+    const store = this.store;
+    const env = this.cfg;
+    if (!store || !env) return 0;
+    try {
+      const ids = store.pruneReplays(Date.now());
+      for (let i = 0; i < ids.length; i += 1000) await withTimeout(env.NODE_REPLAYS.delete(ids.slice(i, i + 1000)), this.timeoutMs);
+      if (ids.length > 0) this.log(`replay index: ${ids.length} replays past 30 days pruned, with their R2 objects`);
+      return ids.length;
+    } catch (e) {
+      this.log(`replay index prune failed (rows past 30 days are not served anyway): ${String(e)}`);
+      return 0;
+    }
   }
 
   /** The control plane sent this node a drain or an update: written down with the node process it went to. */
@@ -1138,6 +1228,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (request.method !== 'POST') return error(404, 'not_found');
     if (what === 'update') return await this.adminUpdate(cp, actor);
     if (what === 'grant' || what === 'revoke' || what === 'unfreeze') return await this.adminInventory(request, actor, what);
+    if (what === 'delist') return await this.adminDelist(request, actor);
     if (what !== 'status' && what !== 'drain' && what !== 'reprobe') return error(404, 'not_found');
     const b = await readJson<{ nodeId?: unknown; status?: unknown; reason?: unknown }>(request);
     if (!b || !isHex(b.nodeId, 16)) return error(400, 'bad_node_id', 'nodeId: the 16 hex characters of a node');
@@ -1236,6 +1327,37 @@ export class NodeRegistryDO extends DurableObject<Env> {
     const text = await res.text();
     this.audit(`ALERT admin ${actor}: ${what}${item ? ` ${item.id}` : ''} for account ${b.account} -> ${res.status} ${text.slice(0, 120)}`);
     return new Response(text, { status: res.status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
+  }
+
+  /**
+   * POST /nodes/admin/delist { matchId, reason? }: one match out of the public replays at once (a
+   * player's or a parent's request, a node's fabricated match): its replay_index row and seats, and
+   * its R2 object, whatever its age (in its first hour too, before anyone saw it). 404 no_replay
+   * when it is not in the index: a match not settled yet keeps its object (its verifier reads it).
+   * The Worker then purges the view's edge copies (nodeRoutes.ts). An ALERT naming who did it,
+   * every time.
+   */
+  private async adminDelist(request: Request, actor: string): Promise<Response> {
+    const store = this.store;
+    const env = this.cfg;
+    if (!store || !env) return error(503, 'nodes_unavailable', UNAVAILABLE);
+    const b = await readJson<{ matchId?: unknown; reason?: unknown }>(request);
+    if (!b || !isHex(b.matchId, 64)) return error(400, 'bad_match_id', 'matchId: the 64 hex characters of a match');
+    const matchId = b.matchId;
+    const why = reasonOf(b.reason);
+    if (!store.delistReplay(matchId)) {
+      this.audit(`ALERT admin ${actor}: replay ${matchId} not delisted, it is not in the public replays${why ? `: ${why}` : ''}`);
+      return error(404, 'no_replay', 'that match is not in the public replays');
+    }
+    let deleted = true;
+    try {
+      await withTimeout(env.NODE_REPLAYS.delete(matchId), this.timeoutMs);
+    } catch (e) {
+      deleted = false;
+      this.log(`replay ${matchId.slice(0, 8)} not deleted from R2: ${String(e)}`);
+    }
+    this.audit(`ALERT admin ${actor}: replay ${matchId} delisted${deleted ? ', its R2 object deleted' : ', its R2 object NOT deleted (delete it by hand)'}${why ? `: ${why}` : ''}`);
+    return json({ matchId, delisted: true, replayDeleted: deleted }, 200, { 'cache-control': 'no-store' });
   }
 
   /**
