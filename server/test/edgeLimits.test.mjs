@@ -421,6 +421,44 @@ test('password and recovery codes: 10 a minute per account, before the object', 
   }
 });
 
+test("sec/account-takeover's routes (reauth, unlink, the devices, tv/info) are gated per account before the object, across isolates too", async () => {
+  const { accountGate } = await import('../src/limits.ts');
+  assert.deepEqual(accountGate('POST', '/api/auth/reauth'), ['reauth']);
+  assert.deepEqual(accountGate('POST', '/api/auth/unlink'), ['unlink']);
+  for (const [m, path] of [['GET', '/api/auth/sessions'], ['POST', '/api/auth/sessions/revoke'], ['POST', '/api/auth/sessions/revoke-all']]) assert.deepEqual(accountGate(m, path), ['sessions'], path);
+  assert.deepEqual(accountGate('POST', '/api/auth/tv/info'), ['tvInfo']);
+  assert.deepEqual(accountGate('GET', '/api/auth/reauth'), [], 'by method');
+  // Each route alone: its limit, then a 429 with no object call. Whatever a route answers below it
+  // (404 on this branch alone; 400 / 401 / 403 with sec/account-takeover's routes) is no 429.
+  for (const [path, n] of [['/api/auth/reauth', 10], ['/api/auth/unlink', 10], ['/api/auth/tv/info', 30]]) {
+    const env = makeEnv();
+    const bearer = await accountToken();
+    for (let i = 1; i <= n; i++) assert.notEqual((await req(env, 'POST', path, { bearer, body: {} })).status, 429, `${path} #${i}`);
+    const before = env.ACCOUNTS.calls.length;
+    assert.equal((await req(env, 'POST', path, { bearer, body: {} })).status, 429, path);
+    assert.equal(env.ACCOUNTS.calls.length, before, 'no object call over the limit: ' + path);
+    assert.notEqual((await req(env, 'POST', path, { bearer: await accountToken(), body: {} })).status, 429, 'another account');
+  }
+  // The devices list and both sign-outs share one count of 30.
+  const env = makeEnv();
+  const bearer = await accountToken();
+  for (let i = 0; i < 10; i++) {
+    assert.notEqual((await req(env, 'GET', '/api/auth/sessions', { bearer })).status, 429);
+    assert.notEqual((await req(env, 'POST', '/api/auth/sessions/revoke', { bearer, body: {} })).status, 429);
+    assert.notEqual((await req(env, 'POST', '/api/auth/sessions/revoke-all', { bearer })).status, 429);
+  }
+  const before = env.ACCOUNTS.calls.length;
+  assert.equal((await req(env, 'GET', '/api/auth/sessions', { bearer })).status, 429);
+  assert.equal(env.ACCOUNTS.calls.length, before);
+  // Counted by the binding: other isolates' count refuses a fresh isolate's first request.
+  const sub = accountId();
+  const busy = makeEnv({ RL_10: fakeBinding(10, new Map([['reauth:' + sub, 10]])), RL_30: fakeBinding(30, new Map([['tvInfo:' + sub, 30]])) });
+  const b = await accountToken(sub);
+  assert.equal((await req(busy, 'POST', '/api/auth/reauth', { bearer: b, body: {} })).status, 429);
+  assert.equal((await req(busy, 'POST', '/api/auth/tv/info', { bearer: b, body: {} })).status, 429);
+  assert.equal(busy.ACCOUNTS.calls.length, 0);
+});
+
 // ---- OAuth ---------------------------------------------------------------------------------------------
 
 test('the OAuth callback: one state cookie is good for one token request; a replay is bad_state and the provider is not asked again', async () => {
