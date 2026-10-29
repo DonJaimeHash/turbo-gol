@@ -55,6 +55,13 @@
   // Feature flags (matchmaking_off, do_disabled). The id is the official deployment's namespace; forks
   // create their own with `npx wrangler kv namespace create FLAGS` (any id works under wrangler dev).
   "kv_namespaces": [{ "binding": "FLAGS", "id": "61764fc794934a359008a53682efd9c3" }],
+  // Email Service (src/mail.ts, docs/online/MAIL.md): env.EMAIL, which only src/mail.ts touches.
+  // No "remote": true here, ever. A deploy binds the real service either way (wrangler leaves the
+  // flag out of the upload), but under `wrangler dev` "remote": true would send real mail and
+  // need a Cloudflare login; without it wrangler simulates the binding locally (it writes the
+  // message to a file and sends nothing). Live mail also needs the MAIL_LIVE secret and a host
+  // that is not loopback. Forks without Email Service on their domain can remove this entry.
+  "send_email": [{ "name": "EMAIL" }],
   // Community nodes: the replays they upload (re-simulated before a ranked result counts; a 30-day
   // lifecycle rule on the bucket) and the signed releases, installers and channel.json the nodes
   // and their launchers download. Both buckets must exist before a deploy (`npx wrangler r2 bucket create <name>`).
@@ -84,7 +91,15 @@
     // where the nodes and their installers reach /nodes/*. Without the secret (local dev, forks) no
     // match ever goes to a node. NODE_TRUSTED_OPERATORS is a secret too (README, "Community nodes").
     "NODE_CONTROL_PUBLIC_KEY": "MNSk5UH2jV-V35J_ZvfgW3JVyUvXCcgMgHAbvCzFJcI",
-    "NODES_PUBLIC_BASE": "https://turbo-gol.com"
+    "NODES_PUBLIC_BASE": "https://turbo-gol.com",
+    // Mail (docs/online/MAIL.md). MAIL_FROM: the sender on the verified sending domain.
+    // MAIL_LINK_ORIGIN: the origin of every link in a mail (a loopback host uses its own).
+    // EMAIL_DAILY_CAP: the day's mail across all lanes; set it to 80 % of the account's Email
+    // Service quota once the dashboard shows it. MAIL_LIVE and DEV_AUTH never go here: MAIL_LIVE
+    // is a production secret, DEV_AUTH lives in your own .dev.vars (a test checks this file).
+    "MAIL_FROM": "Turbogol <no-reply@turbo-gol.com>",
+    "MAIL_LINK_ORIGIN": "https://turbo-gol.com",
+    "EMAIL_DAILY_CAP": 100
   },
   // Every 5 minutes, index.ts scheduled(): the community nodes' health check (the /healthz of the
   // project's nodes, an ALERT when one fails). One NodeRegistryDO call a run, none without the node
