@@ -79,3 +79,13 @@ test('auth-4: the device list and sign out everywhere (any account), which signs
   assert.equal(calls.at(-1).path, '/api/auth/sessions/revoke-all');
   assert.equal(acc.signedIn, false, 'every device, this one too');
 });
+
+// ---- auth-1: the TV's limited scope as the session carries it ------------------------------------
+
+test('auth-1: an approved TV session keeps its tv flag (PERFIL then shows only its own sign-out); the OAuth refusal has words', async () => {
+  const { acc } = client({});
+  acc.signInWith({ ...SESSION({ tv: true }), state: 'approved' });
+  assert.equal(acc.account.tv, true);
+  assert.equal('state' in acc.account, false, 'only the session is adopted');
+  assert.doesNotMatch(AC.oauthErrorText('tv_session'), /^error\.|Couldn't sign in/);
+});

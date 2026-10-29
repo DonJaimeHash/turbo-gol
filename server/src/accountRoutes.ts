@@ -44,7 +44,13 @@
  *                             | 409 tv_code_used | 429 throttled | 403 banned: the phone binds the code to its
  *                             account, once
  *   POST /api/auth/tv/poll    { code, secret }                  -> { state: 'pending' } | AccountSession & { state:
- *                             'approved' } + refresh cookie (as login) | 410 (a wrong secret too) | 409 | 403 banned
+ *                             'approved', tv: true } + refresh cookie | 410 (a wrong secret too) | 409 | 403 banned
+ *     A TV's session has a limited scope (the refresh row's kind 'tv', the Bearer's tv claim, kept
+ *     through every refresh, 30 days from its start at most): it plays as the account, picks its
+ *     car, its settings and presets, but every route that changes a credential or the account's
+ *     ways in (password, recovery codes, rename, linking, unlinking), redeems points, approves a
+ *     TV, lists or signs out devices, or is a maintainer's (nodeRoutes.ts) answers it 403
+ *     tv_session (requirePrimary).
  *     The device-code pattern (tvCodes.ts in the AccountsDO): the code is 6 of the lobby alphabet and
  *     lives 5 minutes; the secret (32 random bytes) goes only to the TV and only its SHA-256 to the
  *     object, compared in constant time; an approved poll wipes the binding (one use). Limits: start
@@ -392,8 +398,20 @@ export function requireAccount(c: Pick<RouteContext, 'session'>): SessionClaims 
   return c.session;
 }
 
-async function changePassword(c: RouteContext): Promise<Response> {
+/**
+ * An account's session that is not a TV's (requireAccount, then 403 tv_session for the limited
+ * scope of a TV signed in with the phone): every route that changes a credential or a way in,
+ * redeems, approves a TV, handles devices, or is a maintainer's.
+ */
+export function requirePrimary(c: Pick<RouteContext, 'session'>): SessionClaims | Response {
   const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (s.tv === 1) return error(403, 'tv_session', 'Una TV con la sesión del teléfono no puede hacer eso: hazlo en tu teléfono');
+  return s;
+}
+
+async function changePassword(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   const b = await readJson<{ oldPassword?: unknown; password?: unknown }>(c.request);
   if (!b || !isClientKey(b.password)) return error(400, 'bad_request');
@@ -410,7 +428,7 @@ async function changePassword(c: RouteContext): Promise<Response> {
 }
 
 async function newRecoveryCodes(c: RouteContext): Promise<Response> {
-  const s = requireAccount(c);
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   const b = await readJson<{ password?: unknown }>(c.request);
   const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
@@ -426,7 +444,7 @@ async function newRecoveryCodes(c: RouteContext): Promise<Response> {
 }
 
 async function rename(c: RouteContext): Promise<Response> {
-  const s = requireAccount(c);
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('rename:' + s.sub, 5)) return error(429, 'rate_limited');
   const b = await readJson<{ username?: unknown; password?: unknown; newPassword?: unknown }>(c.request);
@@ -457,7 +475,7 @@ const LIMIT_SESSIONS_PER_ACCOUNT = 30;
 
 /** GET /api/auth/sessions: the account's devices (accountStore.ts devices), this one marked. */
 async function sessionsList(c: RouteContext): Promise<Response> {
-  const s = requireAccount(c);
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('ses:' + s.sub, LIMIT_SESSIONS_PER_ACCOUNT)) return error(429, 'rate_limited');
   const token = cookieOf(c.request, REFRESH_COOKIE);
@@ -467,7 +485,7 @@ async function sessionsList(c: RouteContext): Promise<Response> {
 
 /** POST /api/auth/sessions/revoke { id }: one device signed out (this one too, when it is its id: the cookie goes). */
 async function sessionRevoke(c: RouteContext): Promise<Response> {
-  const s = requireAccount(c);
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('ses:' + s.sub, LIMIT_SESSIONS_PER_ACCOUNT)) return error(429, 'rate_limited');
   const b = await readJson<{ id?: unknown }>(c.request);
@@ -480,7 +498,7 @@ async function sessionRevoke(c: RouteContext): Promise<Response> {
  * too. This device included (its cookie cleared): a thief holding one device gains nothing by it.
  */
 async function sessionsRevokeAll(c: RouteContext): Promise<Response> {
-  const s = requireAccount(c);
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('ses:' + s.sub, LIMIT_SESSIONS_PER_ACCOUNT)) return error(429, 'rate_limited');
   const r = await accountsCall(c.env, '/sessions/revoke-all', { userId: s.sub });
@@ -602,7 +620,7 @@ export async function shopGet(c: CosmeticContext): Promise<Response> {
 
 /** POST /api/me/shop/claim { item }: one claim, in AccountsDO's transaction (a retry spends nothing twice). */
 export async function shopClaim(c: CosmeticContext): Promise<Response> {
-  const s = requireAccount(c);
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('cow:' + s.sub, LIMIT_COSMETIC_WRITES)) return error(429, 'rate_limited');
   const b = await readJson<{ item?: unknown; itemId?: unknown }>(c.request);
@@ -720,7 +738,9 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
   if (url.searchParams.get('link') === '1') {
     const token = cookieOf(c.request, REFRESH_COOKIE);
     if (token) {
-      const r = await accountsJson<UserRef>(c.env, '/refresh-owner', { hash: await sha256Hex(token) });
+      const r = await accountsJson<UserRef & { kind: string }>(c.env, '/refresh-owner', { hash: await sha256Hex(token) });
+      // A TV's session never links a provider to the account (its scope is limited).
+      if (r.ok && r.data.kind === 'tv') return redirect('/#auth=error:tv_session');
       if (r.ok) link = r.data.userId;
     }
   }
@@ -797,7 +817,8 @@ async function tvStart(c: RouteContext): Promise<Response> {
 
 async function tvConfirm(c: RouteContext): Promise<Response> {
   if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
-  const s = requireAccount(c);
+  // A TV never approves another TV: its own scope would pass on as a full one otherwise.
+  const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('tvc:' + ipKey(ipOf(c.request)), LIMIT_TV_CONFIRM)) return error(429, 'rate_limited');
   const b = await readJson<{ code?: unknown }>(c.request);
@@ -816,7 +837,8 @@ async function tvPoll(c: RouteContext): Promise<Response> {
   const r = await accountsJson<UserRef | { state: 'pending' }>(c.env, '/tv-poll', { code, secret: await sha256Hex(b.secret), refresh: await grantFor(refreshTok, c.request) });
   if (!r.ok) return noStore(pass(r.res));
   if ('state' in r.data) return noStore(json(r.data));
-  const out: TvPollAnswer = { ...(await accountSession(c.env, r.data)), state: 'approved' };
+  // The TV's limited scope (AccountsDO stores the row as kind 'tv'): the session says it too.
+  const out: TvPollAnswer = { ...(await accountSession(c.env, { ...r.data, tv: true })), state: 'approved' };
   return withCookies(json(out), [refreshCookie(refreshTok)]);
 }
 

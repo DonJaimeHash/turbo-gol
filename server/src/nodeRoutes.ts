@@ -45,7 +45,7 @@
  * The cron (index.ts scheduled, every 5 minutes) calls nodeHealthCheck: one call to the object,
  * which probes the trusted nodes' /healthz; nothing at all without the node settings.
  */
-import { requireAccount, shopClaim, shopGet } from './accountRoutes';
+import { requireAccount, requirePrimary, shopClaim, shopGet } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
@@ -179,7 +179,7 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   }
   if (method === 'POST' && path === '/nodes/tokens') {
     if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
-    const s = requireAccount({ session: await c.session() });
+    const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project creates node tokens for now');
     if (c.limited('ntok:' + s.sub, LIMIT_TOKENS_PER_ACCOUNT, DAY_MS)) return error(429, 'rate_limited');
@@ -195,7 +195,7 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
   const admin = path.startsWith('/nodes/admin/') ? path.slice('/nodes/admin/'.length) : '';
   if (Object.hasOwn(ADMIN_ROUTES, admin) && ADMIN_ROUTES[admin] === method) {
     if (declared(c.request) > JSON_MAX_BYTES) return error(413, 'too_large');
-    const s = requireAccount({ session: await c.session() });
+    const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project maintains the nodes');
     if (c.limited('nadm:' + s.sub, LIMIT_ADMIN_PER_ACCOUNT)) return error(429, 'rate_limited');

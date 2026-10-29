@@ -359,7 +359,8 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'pending') return json({ state: 'pending' });
         if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
         if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
-        const u = s.signedIn(r.userId, { ...refresh, kind: 'web' }, now);
+        // A TV the phone approved: a limited scope (accountStore.ts kind 'tv'), whatever the Worker sent.
+        const u = s.signedIn(r.userId, { ...refresh, kind: 'tv' }, now);
         if (u !== null) return json(u);
         // Suspended after the confirm: the TV says so; deleted meanwhile: the approval went with it.
         return s.credentialsById(r.userId)?.banned === true ? error(403, 'banned', 'Cuenta suspendida') : error(410, 'tv_code_expired', 'El código caducó');

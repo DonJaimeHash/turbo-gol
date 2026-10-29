@@ -90,6 +90,8 @@ export function oauthErrorText(code: string): string {
       return t('auth.oauthDisabled');
     case 'bad_state':
       return t('auth.oauthExpired');
+    case 'tv_session':
+      return t('error.account.tv_session');
     default:
       return t('auth.oauthFailed');
   }

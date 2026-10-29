@@ -682,6 +682,8 @@ export default {
   'profile.deviceSignOut': 'SIGN IT OUT',
   'profile.deviceSignedOut': 'That device is signed out',
   // Sign out on every device, this one too (any account: with Google or Discord as well)
+  // PERFIL on a TV signed in with the phone: its limited scope in words
+  'profile.tvScopeNote': 'This TV signed in with your phone: it plays with your account, but account changes (name, password, linking, redeeming) are made on the phone.',
   'profile.signOutAll': 'SIGN OUT ON EVERY DEVICE',
   'profile.signOutAllTitle': 'Sign out on every device?',
   'profile.signOutAllNote': 'Every device, this one too. Then you sign in again with your account.',
@@ -831,6 +833,8 @@ export default {
   'error.account.tv_code_used': 'That code was already used',
   // The server holds too many TV codes at once
   'error.account.busy': 'Too many codes right now, try again in a minute',
+  // A TV signed in with the phone tried an account change (a credential, a link, redeeming, approving another TV)
+  'error.account.tv_session': "A TV signed in with the phone can't do that: do it on your phone",
   // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
   'error.account.not_owned': 'That car is not yours yet',
   'error.account.bad_car': 'Unknown car',

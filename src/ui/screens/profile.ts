@@ -337,7 +337,16 @@ export function profileScreen(menu: Menu): Screen {
       ),
     );
     const fold = h('div.mn-prof-acct', { id: 'mn-prof-acct', hidden: !accountOpen });
-    setChildren(
+    // A TV signed in with the phone has a limited scope (server/src/accountRoutes.ts requirePrimary):
+    // it plays with the account, the account's changes are the phone's. Only its own sign-out here.
+    const tvScope = sample === null && acc.account?.tv === true;
+    if (tvScope)
+      setChildren(
+        fold,
+        h('p.mn-note', null, t('profile.tvScopeNote')),
+        secondary(t('profile.signOut'), () => void acc.logout().then(() => (menu.toast(t('profile.signedOut'), 'info'), render())), { 'data-key': 'profile-signout' }),
+      );
+    else setChildren(
       fold,
       secondary(t('profile.rename'), () => renameDialog(), { 'data-key': 'profile-rename' }),
       me?.hasPassword !== false ? secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' }) : secondary(t('profile.setPassword'), () => passwordDialog(), { 'data-key': 'profile-password' }),

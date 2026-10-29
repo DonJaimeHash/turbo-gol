@@ -301,3 +301,105 @@ test('auth-4: the device list keeps where a device signed in (request.cf country
   assert.deepEqual([list.json.sessions[0].country, list.json.sessions[0].city], ['AR', 'Córdoba']);
   assert.equal(JSON.stringify(list.json).includes('7303'), false, 'no network number kept');
 });
+
+// ---- auth-1 / tv-1 / client-1 (server side): a TV's session has a limited scope -----------------
+
+/** The community-node settings with a NodeRegistryDO stub that records what reaches it (nodeRoutes.ts). */
+function withNodes(env, trusted) {
+  const seen = [];
+  env.NODES = { idFromName: (n) => ({ n }), get: () => ({ fetch: async (r) => (seen.push(new URL(r.url).pathname), new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } })) }) };
+  Object.assign(env, { NODE_REPLAYS: {}, NODE_RELEASES: {}, NODE_CONTROL_PRIVATE_KEY: 'k', NODE_CONTROL_PUBLIC_KEY: 'k', NODES_PUBLIC_BASE: ORIGIN, NODE_TRUSTED_OPERATORS: trusted });
+  return seen;
+}
+
+/** A TV signed in with the phone through the real routes: the TV's session and refresh cookie. */
+async function tvSignIn(env, phoneBearer, ip) {
+  const st = await post(env, '/api/auth/tv/start', { ip: ip(10) });
+  assert.equal(st.status, 200, 'tv/start ' + JSON.stringify(st.json));
+  const cf = await post(env, '/api/auth/tv/confirm', { ip: ip(11), bearer: phoneBearer, body: { code: st.json.code } });
+  assert.equal(cf.status, 200, 'tv/confirm ' + JSON.stringify(cf.json));
+  const pl = await post(env, '/api/auth/tv/poll', { ip: ip(10), body: { code: st.json.code, secret: st.json.secret } });
+  assert.equal(pl.json.state, 'approved');
+  return { session: pl.json, bearer: pl.json.session, rt: cookieOf(pl, '__Host-tg_rt') };
+}
+
+test('auth-1: a TV signed in with the phone gets a limited scope: the tv claim, kept through every refresh', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  const tv = await tvSignIn(env, ana.bearer, ip);
+  assert.equal(tv.session.tv, true);
+  assert.equal(claims(tv.bearer).tv, 1);
+  assert.equal(claims(tv.bearer).aat, undefined, 'a TV never proved a credential');
+  const r1 = await refresh(env, tv.rt, ip(10));
+  assert.equal(claims(r1.json.session).tv, 1, 'refreshed: still a TV');
+  // Its car pick re-signs the session: the scope stays.
+  obj.store.grant(ana.id, 'pampero', Date.now());
+  const car = await post(env, '/api/me/car', { ip: ip(10), bearer: r1.json.session, body: { car: 'pampero' } });
+  assert.equal(car.status, 200);
+  assert.equal(claims(car.json.session).tv, 1, 'no laundering the scope through /api/me/car');
+  // It plays as the account: its profile answers.
+  assert.equal((await req(env, 'GET', '/api/me', { ip: ip(10), bearer: r1.json.session })).status, 200);
+});
+
+test('auth-1 / auth-11: every credential, linking, redeem, TV-approval, device and maintainer route refuses a TV session (403 tv_session)', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const seen = withNodes(env, null);
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  env.NODE_TRUSTED_OPERATORS = ana.id; // the owner's own account is a maintainer
+  const tv = await tvSignIn(env, ana.bearer, ip);
+  const other = await post(env, '/api/auth/tv/start', { ip: ip(20) });
+  const calls = [
+    ['POST', '/api/auth/password', { password: KEY2, oldPassword: KEY }],
+    ['POST', '/api/auth/recovery-codes', { password: KEY }],
+    ['POST', '/api/me/username', { username: 'Robado', password: KEY, newPassword: KEY2 }],
+    ['POST', '/api/me/shop/claim', { item: 'pampero' }],
+    ['POST', '/nodes/shop/claim', { item: 'pampero' }],
+    ['POST', '/api/auth/tv/confirm', { code: other.json.code }],
+    ['GET', '/api/auth/sessions', undefined],
+    ['POST', '/api/auth/sessions/revoke', { id: 'a'.repeat(32) }],
+    ['POST', '/api/auth/sessions/revoke-all', {}],
+    ['POST', '/nodes/tokens', { region: 'SA' }],
+    ['GET', '/nodes/admin/nodes', undefined],
+    ['POST', '/nodes/admin/grant', { account: ana.id, item: 'pampero' }],
+    ['POST', '/nodes/admin/drain', { nodeId: 'n1', reason: 'x' }],
+  ];
+  for (const [method, path, body] of calls) {
+    const r = await req(env, method, path, { ip: ip(10), bearer: tv.bearer, body });
+    assert.equal(r.status, 403, `${method} ${path}: ${JSON.stringify(r.json)}`);
+    assert.equal(r.json.error, 'tv_session', `${method} ${path}`);
+  }
+  assert.deepEqual(seen, [], 'nothing reached the NodeRegistryDO');
+  assert.equal(obj.store.credentials('Ana').hash !== undefined, true);
+  assert.equal(obj.store.me(ana.id, Date.now()).name, 'Ana', 'not renamed');
+  // The TV's own refresh cookie cannot start a link either (the start reads it).
+  const link = await req(env, 'GET', '/api/auth/oauth/google/start?link=1', { ip: ip(10), cookie: '__Host-tg_rt=' + tv.rt, origin: null });
+  assert.equal(link.location, '/#auth=error:tv_session');
+});
+
+test('auth-1: a TV\'s sign-in lasts 30 days from its start, refreshed or not; approving TVs never signs a browser out', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  const tv = await tvSignIn(env, ana.bearer, ip);
+  const t0 = Date.now();
+  let rt = tv.rt;
+  for (const day of [10, 20, 29]) {
+    obj.now = () => t0 + day * 86_400_000;
+    const r = await refresh(env, rt, ip(10));
+    assert.equal(r.status, 200, `day ${day}`);
+    rt = r.rt;
+  }
+  obj.now = () => t0 + 31 * 86_400_000;
+  assert.equal((await refresh(env, rt, ip(10))).status, 401, 'past 30 days from its start: signed out, however often it refreshed');
+  // Browsers and TVs are counted apart: ten browsers, then six TVs approved, the browsers stay.
+  obj.now = () => Date.now();
+  const browsers = [ana.rt];
+  for (let i = 1; i < 10; i++) browsers.push((await post(env, '/api/auth/login', { ip: ip(30 + i), body: { username: 'Ana', password: KEY } })).headers.get('set-cookie').split(';')[0].split('=')[1]);
+  for (let i = 0; i < 6; i++) await tvSignIn(env, ana.bearer, ips());
+  for (const b of browsers) assert.ok(obj.store.refreshOwner(await A.sha256Hex(b), Date.now()), 'every browser is still signed in');
+  const kinds = obj.store.devices(ana.id, Date.now(), null).map((d) => d.kind);
+  assert.equal(kinds.filter((k) => k === 'tv').length, 5, 'five TVs at most');
+  assert.equal(kinds.filter((k) => k === 'web').length, 10);
+});
