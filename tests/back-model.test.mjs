@@ -112,6 +112,16 @@ test("Competitive's SIGN IN opens PERFIL as a detour: Back comes back to Competi
   assert.deepEqual(B.stackAfterOpen(ranked, 'profile', true), { section: 'profile', stack: ['profile'] });
 });
 
+test("CLASIFICACIÓN's SIGN IN opens PERFIL as a detour from the section's root: Back (or the sign-in) comes back", () => {
+  const board = { section: 'leaderboard', stack: ['leaderboard'] };
+  const st = B.stackAfterOpen(board, 'profile', false, true);
+  assert.deepEqual(st, { section: 'leaderboard', stack: ['leaderboard', 'profile'] }, 'stacked on the board, CLASIFICACIÓN still the section');
+  assert.equal(B.menuBack(menu({ section: st.section, depth: st.stack.length })), 'pop', 'Back pops PERFIL');
+  assert.deepEqual(B.stackAfterOpen(board, 'profile'), { section: 'profile', stack: ['profile'] }, 'without it, a section switch as before');
+  assert.deepEqual(B.stackAfterOpen(board, 'profile', true, true), { section: 'profile', stack: ['profile'] }, 'reset wins');
+  assert.deepEqual(B.stackAfterOpen({ section: 'profile', stack: ['profile'] }, 'profile', false, true), { section: 'profile', stack: ['profile'] }, 'its own section: no detour');
+});
+
 test('sections: five, JUGAR first, each with its root; the stacked screens belong to JUGAR', () => {
   assert.deepEqual(
     S.SECTIONS.map((s) => s.id),
