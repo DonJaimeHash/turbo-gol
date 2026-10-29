@@ -44,9 +44,17 @@
  *             unreachable { slot, atTick } (atTick = the first tick the
  *             reporter has no input of that slot for; ignored before the start: a dead link is then
  *             the client's own fallback) -> 'drop' { slot, atTick: min(reported) } when a majority
- *             of the other live peers (the only other one in 1v1) reported that slot, or when its
- *             own socket closed > 5 s ago (re-checked by an alarm); hashReport -> kept in memory
- *             for /internal/status
+ *             of the other live peers reported that slot, or when its own socket closed > 5 s ago
+ *             (re-checked by an alarm). With one other live peer (1v1, two humans and bots) a lone
+ *             report does not drop a target whose own room socket is open and talking (a message
+ *             within TARGET_SILENT_MS): the room cannot tell which side broke the link, so the
+ *             reporter cannot pick who leaves. When the target reports the reporter as well (a dead
+ *             link both ways, both sockets alive) both are dropped, each at its reported tick; a
+ *             target that goes quiet is dropped by the alarm re-check. A reporter's repeated report
+ *             only ever lowers its tick, and a report that changes nothing writes nothing; at most
+ *             REPORT_BURST reports that change something per socket (one more every
+ *             REPORT_REFILL_MS), the rest are ignored; hashReport -> kept in memory for
+ *             /internal/status
  *   close     'peerLeft' to the others; the player's matchmaker lock is released at once (the lock
  *             lives as long as the signaling socket: a peer that leaves, reloads or falls back to a
  *             Durable Object match can queue again immediately; it cannot rejoin this room: a P2P
@@ -131,6 +139,14 @@ export const MIN_HUMANS = 2;
 export const DROP_LEAD_TICKS = 0;
 /** A slot whose socket closed this long ago is dropped on the first unreachable report. */
 export const CLOSE_GRACE_MS = 5_000;
+/**
+ * A target whose room socket sent nothing for this long counts as silent (the clients ping every
+ * 15 s and report hashes every 10 s during a match): one report then drops it (rt-4).
+ */
+export const TARGET_SILENT_MS = 35_000;
+/** 'unreachable' reports that change the room's state, per socket: a burst, then one per REPORT_REFILL_MS (rt-m2). */
+export const REPORT_BURST = 8;
+export const REPORT_REFILL_MS = 2_000;
 /** Cleanup after the last socket closed / after create with no socket at all (tickets last 90 s). */
 export const EMPTY_MS = 60_000;
 export const UNUSED_MS = 90_000;
@@ -226,7 +242,12 @@ interface Attachment {
   peerId: string;
   playerId: string;
   ready: boolean;
+  /** The last message of this socket (ms; refreshed in the attachment every SEEN_EVERY_MS): the target liveness of decideDrop. */
+  seenAt?: number;
 }
+
+/** How stale the attachment's seenAt may get before a message rewrites it. */
+const SEEN_EVERY_MS = 5_000;
 
 interface HashReport {
   tick: number;
@@ -302,6 +323,8 @@ export interface DropQuery {
   others: readonly number[];
   /** Milliseconds since the target's own socket closed; null while it is connected or never was. */
   closedAgoMs: number | null;
+  /** The target's own room socket is open and talking (TARGET_SILENT_MS): a lone vote is not enough then. Absent = false. */
+  targetLive?: boolean;
   closeGraceMs?: number;
   leadTicks?: number;
 }
@@ -310,7 +333,9 @@ export interface DropQuery {
  * Drop `target` when a majority of `others` reported it unreachable (any single report when the
  * target's socket has been closed for more than the grace), at min(reported atTick) + lead (lead
  * 0: see DROP_LEAD_TICKS). Reports from slots outside `others` (dropped peers, the target itself,
- * bots) do not count.
+ * bots) do not count. A single vote never drops a target that is `targetLive` (its room socket open
+ * and talking): with one other peer that vote is the whole majority, and the reporter would choose
+ * who leaves the match (rt-4; mutualDrop handles a link dead both ways).
  */
 export function decideDrop(q: DropQuery): { atTick: number } | null {
   const grace = q.closeGraceMs ?? CLOSE_GRACE_MS;
@@ -323,8 +348,23 @@ export function decideDrop(q: DropQuery): { atTick: number } | null {
     if (r.atTick < minTick) minTick = r.atTick;
   }
   if (votes === 0) return null;
-  if (votes >= majorityOf(q.others.length) || (q.closedAgoMs !== null && q.closedAgoMs > grace)) return { atTick: minTick + lead };
+  if (q.closedAgoMs !== null && q.closedAgoMs > grace) return { atTick: minTick + lead };
+  if (votes >= majorityOf(q.others.length) && !(votes < 2 && q.targetLive === true)) return { atTick: minTick + lead };
   return null;
+}
+
+/**
+ * Two live peers that each reported the other (the link between them is dead both ways and both
+ * room sockets are alive): the ticks to drop each of them at (min reported + lead), or null. Pure.
+ */
+export function mutualDrop(reports: readonly UnreachableReport[], a: number, b: number, leadTicks: number = DROP_LEAD_TICKS): { a: number; b: number } | null {
+  let aTick = -1;
+  let bTick = -1;
+  for (const r of reports) {
+    if (r.slot === a && r.from === b && (aTick < 0 || r.atTick < aTick)) aTick = r.atTick;
+    if (r.slot === b && r.from === a && (bTick < 0 || r.atTick < bTick)) bTick = r.atTick;
+  }
+  return aTick >= 0 && bTick >= 0 ? { a: aTick + leadTicks, b: bTick + leadTicks } : null;
 }
 
 function freshState(): RoomState {
@@ -371,6 +411,8 @@ export class RoomDO extends DurableObject<Env> {
   private readonly live: Array<WebSocket | null> = new Array<WebSocket | null>(MAX_CARS).fill(null);
   private readonly atts = new WeakMap<WebSocket, Attachment>();
   private readonly buckets = new WeakMap<WebSocket, { tokens: number; at: number }>();
+  /** The 'unreachable' budget per socket (REPORT_BURST, REPORT_REFILL_MS). */
+  private readonly reportBuckets = new WeakMap<WebSocket, { tokens: number; at: number }>();
   private readonly hashes = new Map<number, HashReport>();
   /**
    * Upgrades of each slot past the ownership checks and not finished yet (in memory: a request in
@@ -451,6 +493,11 @@ export class RoomDO extends DurableObject<Env> {
     if (!att || this.state.cur[att.slot] !== att.gen) return; // replaced / stale socket
     const now = Date.now();
     if (!this.takeToken(ws, now)) return this.kick(ws, 1008, 'rate', now);
+    // Talking: the drop vote sees this socket alive (kept in the attachment across hibernation).
+    if (att.seenAt === undefined || now - att.seenAt >= SEEN_EVERY_MS) {
+      att.seenAt = now;
+      ws.serializeAttachment(att);
+    }
     if (typeof message !== 'string') return; // the signaling protocol is JSON text; binary is ignored
     if (message.length > MAX_FRAME_CHARS) return this.kick(ws, 1009, 'frame size', now);
     let msg: unknown;
@@ -493,7 +540,7 @@ export class RoomDO extends DurableObject<Env> {
       }
       case 'unreachable': {
         if (!isUint32(msg.slot) || !isUint32(msg.atTick)) return;
-        await this.onUnreachable(att.slot, msg.slot, msg.atTick, now);
+        await this.onUnreachable(ws, att.slot, msg.slot, msg.atTick, now);
         return;
       }
       case 'hashReport': {
@@ -747,7 +794,7 @@ export class RoomDO extends DurableObject<Env> {
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [peerId, 'slot:' + slot]);
-    const att: Attachment = { slot, gen, peerId, playerId, ready: false };
+    const att: Attachment = { slot, gen, peerId, playerId, ready: false, seenAt: now };
     server.serializeAttachment(att);
     this.atts.set(server, att);
     this.live[slot] = server;
@@ -837,7 +884,7 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
-  private async onUnreachable(from: number, target: number, atTick: number, now: number): Promise<void> {
+  private async onUnreachable(ws: WebSocket, from: number, target: number, atTick: number, now: number): Promise<void> {
     const rec = this.record;
     if (!rec || target === from || target >= rec.slots.length || rec.slots[target].kind !== 'peer') return;
     const st = this.state;
@@ -853,12 +900,44 @@ export class RoomDO extends DurableObject<Env> {
       if (ws !== null) this.send(ws, { type: 'drop', slot: prior.slot, atTick: prior.atTick });
       return;
     }
+    // Only the smallest tick of a reporter matters (the drop goes at the minimum): a repeat that does
+    // not lower it changes nothing and writes nothing (rt-m2); a change takes from the report budget.
     const existing = st.reports.find((r) => r.slot === target && r.from === from);
-    if (existing) existing.atTick = atTick;
-    else st.reports.push({ slot: target, from, atTick });
+    const changes = existing === undefined || atTick < existing.atTick;
+    if (changes) {
+      if (!this.takeReportToken(ws, now)) return;
+      if (existing) existing.atTick = atTick;
+      else st.reports.push({ slot: target, from, atTick });
+    }
+    const checkAt = st.dropCheckAt;
+    const drops = st.dropped.length;
+    // Evaluated on a repeat as well: the target may have gone quiet since.
     this.evaluateDrop(target, now);
+    if (!changes && st.dropped.length === drops && st.dropCheckAt === checkAt) return;
     await this.persist();
-    await this.rearm();
+    if (st.dropCheckAt !== checkAt) await this.rearm();
+  }
+
+  /** One report of `ws`'s 'unreachable' budget (REPORT_BURST, then one per REPORT_REFILL_MS). */
+  private takeReportToken(ws: WebSocket, now: number): boolean {
+    let b = this.reportBuckets.get(ws);
+    if (b === undefined) {
+      b = { tokens: REPORT_BURST, at: now };
+      this.reportBuckets.set(ws, b);
+    }
+    b.tokens = Math.min(REPORT_BURST, b.tokens + Math.max(0, now - b.at) / REPORT_REFILL_MS);
+    b.at = now;
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
+  /** The slot's room socket is open and sent something within TARGET_SILENT_MS. */
+  private talking(slot: number, now: number): boolean {
+    const ws = this.live[slot];
+    if (ws === null) return false;
+    const att = this.attOf(ws);
+    return att !== null && att.seenAt !== undefined && now - att.seenAt < TARGET_SILENT_MS;
   }
 
   /** Apply decideDrop to the reports about `target`; schedules the grace re-check when its socket is closed. */
@@ -869,9 +948,27 @@ export class RoomDO extends DurableObject<Env> {
     const others: number[] = [];
     for (const s of rec.slots) if (s.kind === 'peer' && s.slot !== target && !this.isDropped(s.slot)) others.push(s.slot);
     const closedAgoMs = st.cur[target] === 0 && st.closedAt[target] > 0 ? now - st.closedAt[target] : null;
-    const d = decideDrop({ target, reports: st.reports, others, closedAgoMs });
+    const targetLive = closedAgoMs === null && this.talking(target, now);
+    const d = decideDrop({ target, reports: st.reports, others, closedAgoMs, targetLive });
     if (d) {
       this.dropSlot(target, d.atTick);
+      return;
+    }
+    if (others.length === 1 && targetLive) {
+      // A lone report against a peer that is alive: dropped only if it reports the reporter too
+      // (the link is dead both ways: both go, neither picks), or once it goes quiet (the alarm).
+      const other = others[0];
+      const both = this.talking(other, now) ? mutualDrop(st.reports, target, other) : null;
+      if (both !== null) {
+        this.dropSlot(target, both.a);
+        this.dropSlot(other, both.b);
+        return;
+      }
+      if (st.reports.some((r) => r.slot === target && r.from === other)) {
+        const att = this.attOf(this.live[target] as WebSocket);
+        const at = (att?.seenAt ?? now) + TARGET_SILENT_MS + 50;
+        if (st.dropCheckAt === null || at < st.dropCheckAt) st.dropCheckAt = at;
+      }
       return;
     }
     if (closedAgoMs !== null) {
@@ -903,6 +1000,7 @@ export class RoomDO extends DurableObject<Env> {
     const att = this.attOf(ws);
     this.atts.delete(ws);
     this.buckets.delete(ws);
+    this.reportBuckets.delete(ws);
     const rec = this.record;
     if (!att || !rec || this.cleaned) return;
     const st = this.state;
@@ -1032,7 +1130,7 @@ export class RoomDO extends DurableObject<Env> {
         return null;
       }
       if (!isRecord(raw) || typeof raw.slot !== 'number' || typeof raw.gen !== 'number' || typeof raw.peerId !== 'string' || typeof raw.playerId !== 'string') return null;
-      a = { slot: raw.slot, gen: raw.gen, peerId: raw.peerId, playerId: raw.playerId, ready: raw.ready === true };
+      a = { slot: raw.slot, gen: raw.gen, peerId: raw.peerId, playerId: raw.playerId, ready: raw.ready === true, ...(typeof raw.seenAt === 'number' ? { seenAt: raw.seenAt } : {}) };
       this.atts.set(ws, a);
     }
     return a;
