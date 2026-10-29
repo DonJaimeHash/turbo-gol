@@ -174,6 +174,111 @@ export function isClientKey(v: unknown): v is string {
   return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 }
 
+// ---- email addresses (the sign-in design, section 1.4) ---------------------------------------------
+//
+// The Worker and the client import these same functions, and server/test/accounts-migrate.test.mjs
+// pins a table of vectors: changing a rule later would split one person's address into two
+// accounts, or merge two people's. The Worker always derives the address and its canon from what
+// was typed (I9); no request ever carries a canon.
+
+export const EMAIL_MAX = 254;
+const EMAIL_LOCAL_MAX = 64;
+const EMAIL_LABEL_MAX = 63;
+/** An unquoted local part: RFC 5322 atext and dots, never a leading, trailing or doubled dot. */
+const EMAIL_LOCAL_RE = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/;
+/** One DNS label: letters, digits and '-', never at either end. */
+const EMAIL_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+/** A top-level domain: letters, or an IDN's punycode. */
+const EMAIL_TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
+/** Top-level domains that never receive mail (RFC 2606, RFC 6761). */
+const EMAIL_DEAD_TLDS = new Set(['invalid', 'test', 'example', 'localhost']);
+
+/**
+ * The address as the account keeps it, or null when it is not one we can mail: trimmed, lowercased,
+ * at most EMAIL_MAX characters, exactly one '@'; a local part of 1-64 printable ASCII characters
+ * (atext and single inner dots: no spaces, quotes, '\' or the specials ( ) , : ; < > [ ]); a domain
+ * of ASCII labels (letters, digits, inner '-', at most 63 each) with at least one dot. An IDN must be
+ * typed in punycode (xn--), and the top-level domains invalid, test, example and localhost are refused.
+ */
+export function normalizeEmail(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim().toLowerCase();
+  if (s.length === 0 || s.length > EMAIL_MAX || !/^[\x21-\x7e]+$/.test(s)) return null;
+  const at = s.indexOf('@');
+  if (at < 1 || at !== s.lastIndexOf('@')) return null;
+  const local = s.slice(0, at);
+  const domain = s.slice(at + 1);
+  if (local.length > EMAIL_LOCAL_MAX || !EMAIL_LOCAL_RE.test(local)) return null;
+  const labels = domain.split('.');
+  if (labels.length < 2 || labels.some((l) => l.length === 0 || l.length > EMAIL_LABEL_MAX || !EMAIL_LABEL_RE.test(l))) return null;
+  const tld = labels[labels.length - 1];
+  if (!EMAIL_TLD_RE.test(tld) || EMAIL_DEAD_TLDS.has(tld)) return null;
+  return s;
+}
+
+/**
+ * The canonical key of an address (users.email_canon, the one-account-per-email rule), or null when
+ * `email` is not an address (normalizeEmail): the '+tag' dropped from the local part, googlemail.com
+ * read as gmail.com, and for gmail.com the dots of the local part removed.
+ * 'Ana.Perez+tg@GoogleMail.com' -> 'anaperez@gmail.com'. A local part that starts with '+' keeps it all.
+ */
+export function emailCanon(email: unknown): string | null {
+  const n = normalizeEmail(email);
+  if (n === null) return null;
+  const at = n.indexOf('@');
+  let local = n.slice(0, at);
+  let domain = n.slice(at + 1);
+  const plus = local.indexOf('+');
+  if (plus > 0) local = local.slice(0, plus);
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') local = local.replace(/\./g, '');
+  return local + '@' + domain;
+}
+
+/**
+ * An address with its local part hidden but for its first characters (at most 2, never half of it):
+ * 'ana.perez@gmail.com' -> 'an***@gmail.com'. Only for mail sent to another address (the design's
+ * M6); a screen the person owns shows the full address. '' for something that is not an address.
+ */
+export function maskEmail(email: unknown): string {
+  const n = normalizeEmail(email);
+  if (n === null) return '';
+  const at = n.indexOf('@');
+  const local = n.slice(0, at);
+  return local.slice(0, Math.min(2, Math.floor(local.length / 2))) + '***' + n.slice(at);
+}
+
+/** Common typos of the big providers' domains, and what was meant. */
+const EMAIL_TYPOS: Readonly<Record<string, string>> = {
+  'gmial.com': 'gmail.com',
+  'gmal.com': 'gmail.com',
+  'gmai.com': 'gmail.com',
+  'gamil.com': 'gmail.com',
+  'gnail.com': 'gmail.com',
+  'gmail.con': 'gmail.com',
+  'gmail.co': 'gmail.com',
+  'gmail.cm': 'gmail.com',
+  'hotmial.com': 'hotmail.com',
+  'hotmal.com': 'hotmail.com',
+  'hotmail.con': 'hotmail.com',
+  'outlok.com': 'outlook.com',
+  'outlook.con': 'outlook.com',
+  'yahoo.con': 'yahoo.com',
+  'yaho.com': 'yahoo.com',
+};
+
+/**
+ * The client only (the sign-up form's "Did you mean …?"): the address with a common domain typo
+ * fixed ('ana@gmial.com' -> 'ana@gmail.com'), or null when there is nothing to suggest.
+ */
+export function emailTypo(email: unknown): string | null {
+  const n = normalizeEmail(email);
+  if (n === null) return null;
+  const at = n.indexOf('@');
+  const fix = EMAIL_TYPOS[n.slice(at + 1)];
+  return fix === undefined ? null : n.slice(0, at + 1) + fix;
+}
+
 // ---- API shapes -------------------------------------------------------------------------------
 
 export type OAuthProvider = 'google' | 'discord';
@@ -290,6 +395,23 @@ export interface MeInfo {
    * presets). The client keeps a local copy per account (src/game/experimentalStore.ts).
    */
   experimental: boolean;
+  // The sign-in work (the design's data model): every field below is absent from older servers.
+  /** The account's verified address (normalizeEmail), where its mail goes; null: none. */
+  email?: string | null;
+  /** A provider's address that is not proved (Discord's, or a Google address that is not authoritative): it prefills "confirm your email"; null: none. */
+  emailHint?: string | null;
+  /** The account has a verified address (`email` is set). */
+  emailVerified?: boolean;
+  /** Its password is still the legacy key, salted with the username: the next password sign-in or "confirm it's you" re-keys it. */
+  legacy?: boolean;
+  /** The newest news consent is a grant (news by email, never by default). */
+  news?: boolean;
+  /** A deletion was asked: the account is purged at this time (ms); 0 = none. */
+  deletionAt?: number;
+  /** How many ways in it has: Google, Discord, and a password while it can still sign in with one. */
+  waysIn?: number;
+  /** Only for the project's maintainer accounts (NODE_TRUSTED_OPERATORS): PERFIL's checklist. */
+  maintainer?: { password: boolean; verifiedEmail: boolean; waysIn: number };
 }
 
 /** GET /api/me/experimental (and the base of every experimental write's answer). */
@@ -411,6 +533,16 @@ function wordSkeleton(word: string): string {
     .replace(/./gsu, (ch) => STAND_IN[ch] ?? ch)
     .replace(/rn/g, 'm')
     .replace(/vv/g, 'w');
+}
+
+/**
+ * A username's skeleton (the sign-in design, section 5.2): lowercase, '_' '.' '-' dropped, the
+ * stand-ins mapped (0→o 1→i l→i 3→e 4→a 5→s 7→t 8→b), then rn→m and vv→w. 'Adm1n' and 'admin',
+ * 'lnvitado' and 'invitado', 'Juan_1' and 'Juani' share one. What a name looks like, for the
+ * look-alike checks of names that imitate the project's accounts or the top of a leaderboard.
+ */
+export function nameSkeleton(name: string): string {
+  return wordSkeleton(usernameKey(name).replace(/[_.-]/g, ''));
 }
 
 /** A title's words, folded (letters and digits; spaces and _ . - ! ? # separate them). */

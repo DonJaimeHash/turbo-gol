@@ -66,6 +66,9 @@
  *   POST /host-grant      { userId, item } (a maintainer, through the NodeRegistryDO) -> { granted, items } | 404
  *   POST /host-revoke     { userId, item }                           -> { revoked, refunded, items }
  *   POST /host-unfreeze   { userId }                                 -> { unfrozen }
+ *   POST /account-stats   { operatorIds, trusted } (a maintainer, nodeRoutes.ts) -> AccountStats: counts and
+ *                                                                     booleans only (accountStore.ts accountStats);
+ *                                                                     operatorIds null = unknown (no node settings)
  *
  * Brute force (in memory, per object = global), counted per (username, network) pair: a pair with
  * LOGIN_FAILS_FREE failures in the window is throttled with a doubling delay up to
@@ -123,6 +126,14 @@ const BODY_MAX = 16_384;
  * at 1 in 5 is about 5,400): a /host-credit that says more is junk, refused.
  */
 const HOST_CREDIT_MAX = 100_000;
+/** The most node operators /account-stats takes (the body stays under BODY_MAX); more is answered as unknown upstream. */
+export const STATS_OPERATORS_MAX = 500;
+/** The most NODE_TRUSTED_OPERATORS ids /account-stats reports on. */
+export const STATS_TRUSTED_MAX = 32;
+
+function isIdList(v: unknown, max: number): v is string[] {
+  return Array.isArray(v) && v.length <= max && v.every((id) => isHex(id, 16));
+}
 
 /** A failure counter's window: a day for a username's count of unknown browsers ('ud:'), else LOGIN_WINDOW_MS. */
 function windowOf(key: string): number {
@@ -580,6 +591,10 @@ export class AccountsDO extends DurableObject<Env> {
       case '/host-unfreeze': {
         if (typeof b.userId !== 'string') return error(400, 'bad_request');
         return json({ unfrozen: s.unfreeze(b.userId, now) });
+      }
+      case '/account-stats': {
+        if ((b.operatorIds !== null && !isIdList(b.operatorIds, STATS_OPERATORS_MAX)) || !isIdList(b.trusted, STATS_TRUSTED_MAX)) return error(400, 'bad_request');
+        return json(s.accountStats(b.operatorIds, b.trusted, now));
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');

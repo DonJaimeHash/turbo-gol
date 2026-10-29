@@ -15,6 +15,8 @@
  *                          knows neither the match nor the player in it (the lock is free)
  *   POST /internal/health  the cron's (index.ts scheduled) -> 200 { probed, problems }: the /healthz
  *                          of the trusted wss nodes, each problem an ALERT (nodeWatch.ts)
+ *   GET  /internal/operators  the account counts' (nodeRoutes.ts) -> 200 { operators }: the distinct
+ *                          account ids that operate a registered node, for AccountsDO only
  */
 import type { ControlPlane, LeaveResult, PlaceRequest, Placement, RejoinAnswer } from '../../nodes/control-plane/controlPlane';
 import type { BuildId } from '../../nodes/shared/controlProtocol';
@@ -54,6 +56,9 @@ export const NODE_ROUTES = {
   /** GET ?before=<ms>: the public replay list; GET /<matchId>: one entry and its sha (replayIndex.ts). */
   replays: '/internal/replays',
 } as const;
+
+/** GET: the node operators' account ids, for the owner's account counts only (nodeRoutes.ts accountStats -> AccountsDO). */
+export const OPERATORS_ROUTE = '/internal/operators';
 
 /** POST /internal/place: a match the matchmaker formed (its humans, fixed teams, length). */
 export type PlaceBody = PlaceRequest;
