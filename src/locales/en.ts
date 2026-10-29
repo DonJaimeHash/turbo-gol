@@ -657,6 +657,10 @@ export default {
   'profile.nodeMatches': 'Matches hosted',
   'profile.nodeVersion': 'Version',
   'profile.nodeUpdate': '{version} · update it',
+  // PROFILE's switch for the public replays (replay.html); "Player N" is replay.hiddenName
+  'profile.privacy': 'PRIVACY',
+  'profile.hideReplayName': 'Hide my name in public replays',
+  'profile.hideReplayNameHelp': 'You show as "Player N" in the replay list and in the replays of your community-server matches, the ones already listed too. A copy someone opened before keeps your name for up to 3 hours.',
   'profile.community': 'COMMUNITY',
   // The Discord server speaks English
   'profile.discord': 'Discord (in English)',

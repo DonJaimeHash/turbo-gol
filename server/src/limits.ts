@@ -87,6 +87,7 @@
  *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
  *   GET  /nodes/connect                 nodeConnect      network       30  RL_30    a node's control socket: one per node, reconnects back off
  *                                       nodeConnectWide  wide        1200  RL_1200  the same, per IPv6 /48 or IPv4 /24
+ *   GET|POST /api/me/replay-name        replayName       account       30  RL_30    PERFIL's "hide my name in public replays"
  *
  * Limits kept where they are (in-isolate only, per minute unless stated; the object ones hold
  * across isolates because there is one object):
@@ -178,6 +179,7 @@ export const LIMITS = {
   nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   nodeConnect: { by: 'network', isolate: 30, edge: 'RL_30' },
   nodeConnectWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
+  replayName: { by: 'account', isolate: 30, edge: 'RL_30' },
 } as const satisfies Record<string, LimitRule>;
 export type LimitName = keyof typeof LIMITS;
 
@@ -212,11 +214,14 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['sessions'];
       case '/api/auth/tv/info':
         return ['tvInfo'];
+      case '/api/me/replay-name':
+        return ['replayName'];
     }
     return [];
   }
   if (method !== 'GET') return [];
   if (path === '/api/me') return ['me', 'meNet'];
+  if (path === '/api/me/replay-name') return ['replayName'];
   if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
   if (path === '/api/auth/sessions') return ['sessions'];
