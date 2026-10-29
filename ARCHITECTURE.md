@@ -365,7 +365,7 @@ src/game/
                         offline edits kept dirty, a preset the full account refused waits for room
                         (said once), deletes need the server; nothing for a guest
   cosmetics.ts          the cosmetic cars, pure data with no imports (never in the nodes' bundle):
-                        CarId in menu order, name / description keys, price in host points, status
+                        CarId in menu order, name / description keys, price in server points, status
                         ('soon' until a body exists); every car is a Standard car
   carSelection.ts       the player's car pick (localStorage), only a car the player is entitled to
                         (entitledCars, where the inventory will plug in); the preview gate of
@@ -441,7 +441,11 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         in its grid cell; a mode tile; the slot), plate.ts (who you are · your
                         car), language.ts (the language sheet, Settings › Game's Idioma), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
-                        (mn-picker: a 56 px row with its value and ›, opening a sheet), keypad.ts
+                        (mn-picker: a 56 px row with its value and ›, opening a sheet), hold.ts
+                        (hold to confirm: a pointer, Enter / Space / OK, or a pad's A through
+                        MenuHost.acceptHeld; a release or a repeat after it presses nothing),
+                        carSilhouettes.ts (the five cars' outlines on a 72 x 36 grid), carRow.ts
+                        (GARAJE's list row), keypad.ts
                         (mn-keypad, plan PR 14: the on-screen keys Menu.openKeypad mounts over the
                         sheets when OK / A lands on a field without a fine pointer: A–Z / 0–9 and
                         . - _ @, the case, ⌫, SPACE, DONE, ◀ ▶ along a row (onNavSide, round); DONE
@@ -451,10 +455,11 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         keypadType / keypadShown, tests/tv-signin.test.mjs)
   shell/                sections.ts (the five sections, their roots, stepSection; pure),
                         hints.ts (the hint bar per last input, root or stacked, a screen's own
-                        tabs or not; pure), topbar.ts (wordmark,
+                        tabs or not, a pad's LT RT for a root's own tabs; pure), topbar.ts (wordmark,
                         sections with focus = selection, back + crumbs, chip, Settings), rail.ts
                         (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
-                        About), pills.ts (region / connection, search, update)
+                        About), pills.ts (region / connection, search, update, the server points
+                        on GARAJE and PERFIL)
   keyboard.ts           a phone's keyboard over a form: the visual viewport's shrink (Chrome on
                         Android resizes only that) as --kb-inset on .mn (PERFIL's stage makes that
                         room at its end, a phone's sheet rises above it) and the focused field scrolled above it in its own
@@ -604,8 +609,21 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         the searching panel with "bots join in"
                         (modesModel.ts, pure: tabs, formats, queueNet, botsCountdown from
                         /api/config's botFillMs or P2P_FILL_WAIT_MS, countShown, actionKind;
-                        tests/modes.test.mjs), GARAJE's "coming soon" (garage.ts, until plan PR
-                        8), the Salas (plan PR 12; lobby.ts: CREATE LOBBY AND SHARE, JOIN WITH CODE
+                        tests/modes.test.mjs), GARAJE (garage.ts, plan PR 8, the owner's drawing:
+                        TU AUTO, PUNTOS DE SERVIDOR (a guest's 0 and SIGN IN, back here on a
+                        sign-in), GANA PUNTOS (the guide: a new tab, or with a pad, a remote or on a
+                        TV a sheet with its QR) on the left; the showroom in the stage between
+                        (MenuHost.garage.showroom on show, null on hide, measured on a layout
+                        change); AUTOS │ ESTADIOS as .mn-tabs, a row per car (components/carRow.ts),
+                        the detail card; focus = selection, the preview (MenuHost.garage.preview)
+                        once the focus rested 300 ms, A on the row picked to its action; EQUIPAR
+                        (Garage.equip), CANJEAR's sheet held 700 ms (SheetAction.hold) →
+                        Garage.claim → EQUIPAR AHORA, a locked car's CANJEAR never lime with its
+                        reason, its press explaining; ◀ ▶ cross the stage (onNavSide); ESTADIOS:
+                        the three themes, USAR = MenuHost.setTheme; .mn[data-screen='garage']
+                        drops the shell's backdrop, super low's too; window.__garage samples in dev
+                        / VITE_UI_FIT; garageModel.ts, pure: rowLine, detailView, pointsCard,
+                        earnIsLime, redeemBalance; tests/garage-screen.test.mjs), the Salas (plan PR 12; lobby.ts: CREATE LOBBY AND SHARE, JOIN WITH CODE
                         in a sheet, the join link #sala=ABC234 on a load or a hashchange with its
                         sheet, and the Sala: the code giant, SHARE by device, the teams side by side,
                         a member's sheet Move · Make host · Kick, the action bar START / READY and
