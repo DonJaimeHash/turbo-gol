@@ -1059,12 +1059,17 @@ export class Menu {
 
   /**
    * Where an arrow lands entering `zone`: the stage's control focused last on this screen, else its
-   * first focus (data-autofocus: ▼ from a section tab that switched to it lands where the screen
-   * starts, at any interface size); a bar's active section (or ‹), so ↑ from the stage goes to the
-   * section shown; else the zone's last.
+   * first focus (Screen.firstFocus, data-autofocus: ▼ from a section tab that switched to it lands
+   * where the screen starts, at any interface size; ▶ from Ajustes' rail on its page's first
+   * control); a bar's active section (or ‹), so ↑ from the stage goes to the section shown; else
+   * the zone's last.
    */
   private zoneEntry(zone: NavZone, targets: readonly HTMLElement[]): HTMLElement | null {
-    if (zone.name === 'stage') return this.memory.recall('stage:' + (this.top()?.id ?? ''), targets, navKey) ?? targets.find((e) => e.hasAttribute('data-autofocus')) ?? null;
+    if (zone.name === 'stage') {
+      const top = this.top();
+      const own = top?.firstFocus?.() ?? null;
+      return this.memory.recall('stage:' + (top?.id ?? ''), targets, navKey) ?? (own !== null && targets.includes(own) ? own : null) ?? targets.find((e) => e.hasAttribute('data-autofocus')) ?? null;
+    }
     if (zone.name !== 'bottom') {
       const entry = targets.find((e) => e.hasAttribute('data-nav-entry'));
       if (entry !== undefined) return entry;
