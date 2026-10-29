@@ -194,7 +194,10 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   assert.match(tvCookie, /^__Host-tg_rt=[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43};/, 'a family part and a secret (Security 3)');
   const login = await call(env, '/api/auth/login', { ip: ip(2), body: { username: 'Ana', password: KEY } });
   assert.equal(login.status, 200);
-  assert.equal(cookieFlags(tvCookie), cookieFlags(login.headers.get('set-cookie')), 'the same cookie flags as login');
+  // Login also sets the device cookie (Security 3 review): compare with its refresh cookie.
+  const loginRt = login.headers.getSetCookie().find((c) => c.startsWith('__Host-tg_rt='));
+  assert.equal(cookieFlags(tvCookie), cookieFlags(loginRt), 'the same cookie flags as login');
+  assert.ok(!/__Host-tg_dv=/.test(tvCookie), 'a TV gets no device cookie: it signed in with no password');
   assert.match(cookieFlags(tvCookie), /HttpOnly; Secure; SameSite=Strict/);
   // The TV's refresh cookie is a real session: it refreshes.
   const again = await call(env, '/api/auth/refresh', { ip: ip(0), cookie: tvCookie.split(';')[0] });

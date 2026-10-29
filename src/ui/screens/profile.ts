@@ -61,9 +61,13 @@ const HOST_GUIDE = (): string => `${SOURCE_URL}/blob/main/nodes/${language() ===
 
 const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
 
-/** An account error in the player's words (a throttle with its seconds). */
+/** Longer than any lock of a sign-in (AccountsDO LOGIN_LOCK_MAX_MS): only the daily cap of an account's failures from new browsers. */
+const DAILY_CAP_MS = 15 * 60_000;
+
+/** An account error in the player's words (a throttle with its seconds; the daily cap of new browsers says what to do). */
 export function errText(e: unknown): string {
   if (e instanceof AccountError) {
+    if (e.code === 'throttled' && e.retryAfterMs > DAILY_CAP_MS) return t('profile.retryTomorrow');
     if (e.code === 'throttled' && e.retryAfterMs > 0) return t('profile.retryAfter', { message: e.message, seconds: Math.ceil(e.retryAfterMs / 1000) });
     return e.message;
   }

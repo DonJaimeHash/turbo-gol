@@ -765,7 +765,7 @@ test('auth-8: under wrangler dev a loopback page (Vite on another port) passes; 
 
 // ---- auth-5: sign-in lockout per (username, network), a slow-down rather than a lock, one answer ----
 
-const login = (env, username, password, ip, extra = {}) => post(env, '/api/auth/login', { ip, body: { username, password, ...extra } });
+const login = (env, username, password, ip, extra = {}, cookie) => post(env, '/api/auth/login', { ip, cookie, body: { username, password, ...extra } });
 
 test('auth-5: failures from other networks never lock the owner out: 20 wrong passwords from 20 IPs, the owner signs in from home', async () => {
   const { env, obj } = makeEnv();
@@ -907,4 +907,53 @@ test('auth-4 (review): REFRESH_TOKEN_RE takes every cookie this code mints and e
   for (const bad of ['', 'x', 'a'.repeat(42), 'a'.repeat(44), 'a'.repeat(21) + '.' + 'b'.repeat(43), 'a'.repeat(22) + '.' + 'b'.repeat(42), 'a'.repeat(22) + '!' + 'b'.repeat(43)]) {
     assert.doesNotMatch(bad, A.REFRESH_TOKEN_RE, JSON.stringify(bad));
   }
+});
+
+test('auth-5 (review): a targeted guesser gets 100 failures a day on one username, whatever its networks and solved checks; the owner\'s own browsers still sign in', async () => {
+  const { env, obj } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
+  const ADO = await import('../src/AccountsDO.ts');
+  obj.store.register('blanco', await A.newPasswordRecord(KEY), [await A.recoveryCodeHash('AAAA-BBBB')], 'e'.repeat(64), Date.now());
+  obj.store.register('vecina', await A.newPasswordRecord(KEY), [], 'd'.repeat(64), Date.now());
+  const t0 = Date.now();
+  obj.now = () => t0;
+  // The owner signed in once on two browsers (home, phone): each keeps its device cookie, logout or not.
+  const home = await login(env, 'blanco', KEY, '198.18.240.1');
+  const homeDv = cookieOf(home, '__Host-tg_dv');
+  const phoneDv = cookieOf(await login(env, 'blanco', KEY, '198.18.240.2'), '__Host-tg_dv');
+  assert.equal((await post(env, '/api/auth/logout', { ip: '198.18.240.1', cookie: '__Host-tg_rt=' + cookieOf(home, '__Host-tg_rt') })).status, 200);
+  const otherDv = cookieOf(await login(env, 'vecina', KEY, '198.18.240.3'), '__Host-tg_dv');
+  // 300 guesses with solved checks, each from a fresh /64 of 3 /48s: no network cap is ever reached.
+  const tally = {};
+  for (let i = 0; i < 300; i++) {
+    const ip = `2001:db8:${(0x10 + (i % 3)).toString(16)}:${Math.floor(i / 3).toString(16)}::1`;
+    const r = await login(env, 'blanco', (i + 1).toString(16).padStart(64, '0'), ip, { turnstileToken: 'good-token' });
+    const k = r.status + ':' + (r.json?.error ?? 'ok');
+    tally[k] = (tally[k] ?? 0) + 1;
+  }
+  assert.deepEqual(tally, { '401:bad_credentials': 100, '429:throttled': 200 });
+  assert.equal(ADO.LOGIN_USER_DAY_MAX, 100);
+  assert.match(homeDv, /^[0-9a-f]{16}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+  assert.match(setCookies(home).find((c) => c.startsWith('__Host-tg_dv=')), /HttpOnly; Secure; SameSite=Strict; Max-Age=15552000/);
+  // A right guess from a browser the account does not know is refused too, and so is its recovery.
+  const guess = await login(env, 'blanco', KEY, '2001:db8:20:1::1', { turnstileToken: 'good-token' });
+  assert.deepEqual([guess.status, guess.json.error], [429, 'throttled']);
+  assert.ok(guess.json.retryAfterMs > 23 * 60 * 60_000, 'until the day ends');
+  const rec = await post(env, '/api/auth/recover', { ip: '2001:db8:20:2::1', body: { username: 'blanco', code: 'AAAA-BBBB', password: KEY2, turnstileToken: 'good-token' } });
+  assert.equal(rec.status, 429);
+  // Nor does a forged device cookie, or a good one of another account, open it.
+  const [homeUser, , homeMac] = homeDv.split('.');
+  const forged = homeUser + '.' + 'Z'.repeat(22) + '.' + homeMac; // another device id under the same MAC
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:3::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + forged)).status, 429);
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:4::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + otherDv)).status, 429);
+  // The owner's browsers sign in, from home or from anywhere (one solved check: the username is under attack).
+  const back = await login(env, 'blanco', KEY, '198.18.240.1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + homeDv);
+  assert.equal(back.status, 200, JSON.stringify(back.json));
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:30:1::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + phoneDv)).status, 200);
+  // A stolen device cookie guesses like one pair: 5 failures, then even the right password waits; the owner's other browser does not.
+  for (let i = 0; i < 5; i++) assert.equal((await login(env, 'blanco', KEY2, `2001:db8:40:${i}::1`, { turnstileToken: 'good-token' }, '__Host-tg_dv=' + phoneDv)).status, 401);
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:40:9::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + phoneDv)).status, 429);
+  assert.equal((await login(env, 'blanco', KEY, '198.18.240.1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + cookieOf(back, '__Host-tg_dv'))).status, 200);
+  // The next day an unknown browser may try again.
+  obj.now = () => t0 + ADO.LOGIN_DAY_MS + 1_000;
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:5::1')).status, 200);
 });

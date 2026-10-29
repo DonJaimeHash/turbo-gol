@@ -413,6 +413,7 @@ export default {
   'profile.title': 'Perfil',
   'profile.heading': 'PERFIL',
   'profile.retryAfter': '{message} ({seconds} s)',
+  'profile.retryTomorrow': 'Demasiados intentos en esta cuenta desde dispositivos nuevos. Entra desde un dispositivo que ya usaste o inténtalo mañana.',
   'profile.codesTitle': 'Códigos de recuperación',
   'profile.codesNote': 'Cada código sirve una vez para cambiar la contraseña si la olvidas. No hay recuperación por correo: guárdalos en un lugar seguro.',
   'profile.copy': 'COPIAR',

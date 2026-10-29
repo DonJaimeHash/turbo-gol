@@ -200,3 +200,18 @@ test('auth-5: a sign-in the server slows down (403 turnstile_required) is sent o
   await assert.rejects(banned.login('Ana', 'una contraseña'), (e) => e.code === 'banned');
   assert.equal(c2.length, 1);
 });
+
+test('auth-5 (review): a sign-in refused for the day (the daily cap of new browsers) keeps its wait, and PERFIL says what to do instead of counting seconds', async () => {
+  const DAY = 24 * 60 * 60_000;
+  const { acc } = client({ '/api/auth/login': () => res(429, { error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: DAY - 1000 }) });
+  await assert.rejects(acc.login('Ana', 'una contraseña'), (e) => e.code === 'throttled' && e.retryAfterMs === DAY - 1000);
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
+  assert.match(src, /const DAILY_CAP_MS = 15 \* 60_000;/, 'longer than any lock of a sign-in');
+  assert.match(src, /e\.code === 'throttled' && e\.retryAfterMs > DAILY_CAP_MS\) return t\('profile\.retryTomorrow'\)/);
+  const es = (await import('../src/locales/es.ts')).default;
+  const en = (await import('../src/locales/en.ts')).default;
+  assert.match(es['profile.retryTomorrow'], /dispositivo que ya usaste/);
+  assert.doesNotMatch(es['profile.retryTomorrow'], /\b(usaste vos|probá|entrá|intentá)\b/, 'neutral tú, no voseo');
+  assert.match(en['profile.retryTomorrow'], /device you have used before/);
+});

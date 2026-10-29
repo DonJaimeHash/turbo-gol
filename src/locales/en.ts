@@ -589,6 +589,8 @@ export default {
   'profile.heading': 'PROFILE',
   // A server error and the wait before retrying, in whole seconds (rounded up)
   'profile.retryAfter': '{message} ({seconds} s)',
+  // An account past its daily cap of failed sign-ins from new browsers (server/src/AccountsDO.ts LOGIN_USER_DAY_MAX)
+  'profile.retryTomorrow': 'Too many attempts on this account from new devices. Sign in from a device you have used before, or try again tomorrow.',
   'profile.codesTitle': 'Recovery codes',
   'profile.codesNote': "Each code works once to reset your password if you forget it. There's no email recovery: keep them somewhere safe.",
   'profile.copy': 'COPY',

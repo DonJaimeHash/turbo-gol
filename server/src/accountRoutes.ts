@@ -98,6 +98,11 @@
  * (`since`, seconds: its rewards weight on a community node); the refresh token (32 random bytes, stored as SHA-256) travels only in
  * the `__Host-tg_rt` cookie (HttpOnly, Secure, SameSite=Strict, Path=/, 30 days sliding, rotated on
  * every refresh). SameSite=Strict plus the Origin check below keep other sites from using it.
+ * The device cookie `__Host-tg_dv` (HttpOnly, Secure, SameSite=Strict, 180 days), set at each
+ * password sign-in (login, register, recover): "<userId>.<id>.<HMAC>", the HMAC under a key of its
+ * own (HKDF of JWT_SECRET, never a token signature). It is no credential and logout keeps it: it
+ * only says this browser signed in to that account before, so a username past AccountsDO's daily
+ * cap of failures from unknown browsers still takes this browser's sign-ins (counted per device).
  * OAuth: the state cookie `__Host-tg_oa` (SameSite=Lax: it must survive the provider's redirect back)
  * holds a signed JWT with the PKCE verifier, the state nonce and the account to link, 10 minutes.
  * Providers are enabled by their secrets (GOOGLE_CLIENT_ID / _SECRET, DISCORD_CLIENT_ID / _SECRET);
@@ -106,7 +111,7 @@
  */
 import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './env';
-import { base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
+import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
 import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
@@ -126,7 +131,9 @@ export const REAUTH_WINDOW_S = 10 * 60;
 export const SERVER_KDF_ITERATIONS = 100_000;
 export const REFRESH_COOKIE = '__Host-tg_rt';
 const OAUTH_COOKIE = '__Host-tg_oa';
+const DEVICE_COOKIE = '__Host-tg_dv';
 const REFRESH_MAX_AGE_S = 30 * 24 * 60 * 60;
+const DEVICE_MAX_AGE_S = 180 * 24 * 60 * 60;
 const OAUTH_TTL_S = 600;
 const RECOVERY_CODES = 8;
 /** Crockford base32 without I L O U: unambiguous when typed from a screenshot. */
@@ -277,6 +284,35 @@ function withCookies(res: Response, cookies: readonly string[]): Response {
   return out;
 }
 
+let deviceKeyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
+
+/** The device cookie's HMAC key: HKDF-SHA256 of JWT_SECRET with an info of its own (auth.ts's salt). */
+function deviceKey(secret: string): Promise<CryptoKey> {
+  if (deviceKeyCache && deviceKeyCache.secret === secret) return deviceKeyCache.key;
+  const key = (async () => {
+    const ikm = await crypto.subtle.importKey('raw', enc.encode(secret), 'HKDF', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('turbogol/hkdf/v2'), info: enc.encode('device-cookie') }, ikm, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign', 'verify']);
+  })();
+  deviceKeyCache = { secret, key };
+  return key;
+}
+
+/** Set at a password sign-in: this browser signed in to `userId` (a new device id each time). */
+async function deviceCookie(env: Env, userId: string): Promise<string> {
+  const id = base64urlEncode(randomBytes(16));
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await deviceKey(env.JWT_SECRET), enc.encode(userId + '.' + id)));
+  return `${DEVICE_COOKIE}=${userId}.${id}.${base64urlEncode(mac)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${DEVICE_MAX_AGE_S}`;
+}
+
+/** This browser's device cookie, its MAC checked: the account it signed in to and its id; undefined without a good one. */
+export async function deviceOf(env: Env, request: Request): Promise<{ user: string; id: string } | undefined> {
+  const m = /^([0-9a-f]{16})\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{43})$/.exec(cookieOf(request, DEVICE_COOKIE) ?? '');
+  const mac = m ? base64urlDecode(m[3]) : null;
+  if (!m || !mac) return undefined;
+  const good = await crypto.subtle.verify('HMAC', await deviceKey(env.JWT_SECRET), mac, enc.encode(m[1] + '.' + m[2]));
+  return good ? { user: m[1], id: m[2] } : undefined;
+}
+
 // ---- AccountsDO access --------------------------------------------------------------------------
 
 function accounts(env: Env): DurableObjectStub {
@@ -407,7 +443,7 @@ async function register(c: RouteContext): Promise<Response> {
   });
   if (!r.ok) return pass(r.res);
   const out: RegisterAnswer = { ...(await accountSession(c.env, r.data)), recoveryCodes: codes };
-  return withCookies(json(out), [refreshCookie(refresh)]);
+  return withCookies(json(out), [refreshCookie(refresh), await deviceCookie(c.env, r.data.userId)]);
 }
 
 /**
@@ -437,7 +473,8 @@ type PasswordChecker = { token: unknown } | { account: string };
  * account apart).
  */
 async function checkCredentials(c: RouteContext, username: string, clientKey: string, who: PasswordChecker): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
-  const as = 'account' in who ? { account: who.account } : {};
+  // A sign-in also says whether this browser signed in to the account before (its device cookie).
+  const as = 'account' in who ? { account: who.account } : { device: await deviceOf(c.env, c.request) };
   const begin = await accountsJson<{ found: boolean; slow?: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request), ...as });
   if (!begin.ok) return { ok: false, res: pass(begin.res) };
   const d = begin.data;
@@ -469,9 +506,9 @@ async function login(c: RouteContext): Promise<Response> {
   const chk = await checkCredentials(c, b.username, b.password, { token: b.turnstileToken });
   if (!chk.ok) return chk.res;
   const refresh = newRefreshToken();
-  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', { userId: chk.cred.userId, username: b.username, ip: ipOf(c.request), ok: true, refresh: await grantFor(refresh, c.request) });
+  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', { userId: chk.cred.userId, username: b.username, ip: ipOf(c.request), ok: true, refresh: await grantFor(refresh, c.request), device: await deviceOf(c.env, c.request) });
   if (!fin.ok) return pass(fin.res);
-  return withCookies(json(await accountSession(c.env, fin.data)), [refreshCookie(refresh)]);
+  return withCookies(json(await accountSession(c.env, fin.data)), [refreshCookie(refresh), await deviceCookie(c.env, fin.data.userId)]);
 }
 
 async function refresh(c: RouteContext): Promise<Response> {
@@ -503,7 +540,8 @@ async function recover(c: RouteContext): Promise<Response> {
   const b = await readJson<{ username?: unknown; code?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || typeof b.code !== 'string' || b.code.length > 32 || !isClientKey(b.password)) return error(400, 'bad_request');
   // The same counters and slow-down as a sign-in's (AccountsDO /recover throttles the pair again).
-  const begin = await accountsJson<{ slow?: boolean }>(c.env, '/auth-begin', { username: b.username, ip: ipOf(c.request) });
+  const device = await deviceOf(c.env, c.request);
+  const begin = await accountsJson<{ slow?: boolean }>(c.env, '/auth-begin', { username: b.username, ip: ipOf(c.request), device });
   if (!begin.ok) return pass(begin.res);
   const blocked = await slowDown(c, begin.data.slow, b.turnstileToken);
   if (blocked !== null) return blocked;
@@ -514,9 +552,10 @@ async function recover(c: RouteContext): Promise<Response> {
     pw: await newPasswordRecord(b.password),
     refresh: await grantFor(refreshTok, c.request),
     ip: ipOf(c.request),
+    device,
   });
   if (!r.ok) return pass(r.res);
-  return withCookies(json({ ...(await accountSession(c.env, r.data)), codesLeft: r.data.codesLeft }), [refreshCookie(refreshTok)]);
+  return withCookies(json({ ...(await accountSession(c.env, r.data)), codesLeft: r.data.codesLeft }), [refreshCookie(refreshTok), await deviceCookie(c.env, r.data.userId)]);
 }
 
 /** The session, when it is an account's: 401 without a session, 403 for a guest. Also the /nodes/* operator routes (nodeRoutes.ts). */

@@ -5,9 +5,11 @@
  * MatchDO reports ranked matches; the matchmaker never talks to it (the Worker passes ratings in).
  *
  *   POST /register        { username, pw, recovery, refresh }        -> UserRef | 409 username_taken
- *   POST /auth-begin      { username, ip, account? }                 -> (Credentials | { found: false }) & { slow } | 429 throttled
- *   POST /auth-finish     { userId?, username, ip, account?, ok, refresh? } -> UserRef (ok) | { ok: false }
- *     `account`: the password is checked behind a session of that account (failKeys' 'a:' counter).
+ *   POST /auth-begin      { username, ip, account?, device? }        -> (Credentials | { found: false }) & { slow } | 429 throttled
+ *   POST /auth-finish     { userId?, username, ip, account?, device?, ok, refresh? } -> UserRef (ok) | { ok: false }
+ *     `account`: the password is checked behind a session of that account (the 'a:' counter);
+ *     `device`: { user, id } of this browser's device cookie (accountRoutes.ts deviceOf, its MAC
+ *     checked): it signed in to that account before (the 'd:' counter, not the daily cap).
  *   POST /refresh         { old, oldFamily?, next }                  -> UserRef | 401 bad_refresh | 401 refresh_reused
  *                                                                     (the family revoked) | 409 refresh_race (two tabs)
  *   POST /refresh-owner   { hash }                                   -> UserRef & { kind, device } | 404
@@ -21,7 +23,7 @@
  *   POST /password        { userId, pw, keep?, signOutOthers? }      -> { ok } (other sessions signed out unless
  *                                                                     signOutOthers is false: a first password)
  *   POST /recovery        { userId, hashes }                         -> { ok }
- *   POST /recover         { username, code, pw, refresh, ip }        -> UserRef & { codesLeft } | 401 | 429
+ *   POST /recover         { username, code, pw, refresh, ip, device? } -> UserRef & { codesLeft } | 401 | 429
  *   POST /oauth           { provider, providerId, name, linkTo, refresh, replace? } -> UserRef & { created } | 409
  *                                                                     already_linked (another account's) | 409 provider_set
  *                                                                     (the account has another of it) | 403 no_user (suspended);
@@ -71,10 +73,14 @@
  * network (an IPv4 address or an IPv6 /64: tvCodes.ts ipKey) with LOGIN_IP_MAX failures is throttled
  * too, and an IPv6 /48 with LOGIN_WIDE_MAX (one free allocation holds 65,536 /64s). A username with
  * LOGIN_USER_SLOW failures from anywhere is slowed down, never locked: auth-begin says `slow` and
- * the Worker then asks every sign-in on it for a solved Turnstile check. Recovery attempts share
- * the same counters. A password checked behind a session of the account (no Turnstile token to
- * ask) also counts per account, and that counter locks after LOGIN_FAILS_FREE from any network.
- * A daily alarm prunes old rows.
+ * the Worker then asks every sign-in on it for a solved Turnstile check. Past LOGIN_USER_DAY_MAX
+ * failures in a day from browsers that never signed in to the account, such browsers are refused
+ * on it for the rest of that day: that bounds a targeted guesser whatever its networks and solved
+ * checks. A browser with the account's device cookie (set at each password sign-in) is never
+ * refused by that cap; its own failures count per device and lock like a pair. Recovery attempts
+ * share the same counters. A password checked behind a session of the account (no Turnstile
+ * token to ask) also counts per account, and that counter locks after LOGIN_FAILS_FREE from any
+ * network. A daily alarm prunes old rows.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
@@ -103,6 +109,13 @@ export const LOGIN_IP_MAX = 50;
 export const LOGIN_WIDE_MAX = 300;
 /** Failures on one username from anywhere before its sign-ins need a solved check (never a lock). */
 export const LOGIN_USER_SLOW = 10;
+/**
+ * Failures on one username in LOGIN_DAY_MS from browsers it does not know (no device cookie of
+ * the account, no session of it) before such browsers are refused on it until that day ends:
+ * a targeted guesser gets this many a day, however many networks and solved checks it buys.
+ */
+export const LOGIN_USER_DAY_MAX = 100;
+export const LOGIN_DAY_MS = 24 * 60 * 60_000;
 const PRUNE_EVERY_MS = 24 * 60 * 60_000;
 const BODY_MAX = 16_384;
 /**
@@ -111,15 +124,20 @@ const BODY_MAX = 16_384;
  */
 const HOST_CREDIT_MAX = 100_000;
 
+/** A failure counter's window: a day for a username's count of unknown browsers ('ud:'), else LOGIN_WINDOW_MS. */
+function windowOf(key: string): number {
+  return key.startsWith('ud:') ? LOGIN_DAY_MS : LOGIN_WINDOW_MS;
+}
+
 interface FailEntry {
   count: number;
   first: number;
   lockedUntil: number;
 }
 
-/** Throttle state after one more failure (pure, unit-tested). */
-export function nextFail(prev: FailEntry | undefined, now: number): FailEntry {
-  const e = prev === undefined || now - prev.first > LOGIN_WINDOW_MS ? { count: 0, first: now, lockedUntil: 0 } : { ...prev };
+/** Throttle state after one more failure (pure, unit-tested); `windowMs`: the counter's window. */
+export function nextFail(prev: FailEntry | undefined, now: number, windowMs: number = LOGIN_WINDOW_MS): FailEntry {
+  const e = prev === undefined || now - prev.first > windowMs ? { count: 0, first: now, lockedUntil: 0 } : { ...prev };
   e.count++;
   if (e.count >= LOGIN_FAILS_FREE) e.lockedUntil = now + Math.min(LOGIN_LOCK_MAX_MS, LOGIN_LOCK_BASE_MS * 2 ** (e.count - LOGIN_FAILS_FREE));
   return e;
@@ -194,7 +212,7 @@ export class AccountsDO extends DurableObject<Env> {
 
   override async alarm(): Promise<void> {
     this.store.prune(this.now());
-    for (const [k, e] of this.fails) if (this.now() - e.first > LOGIN_WINDOW_MS && e.lockedUntil <= this.now()) this.fails.delete(k);
+    for (const [k, e] of this.fails) if (this.now() - e.first > windowOf(k) && e.lockedUntil <= this.now()) this.fails.delete(k);
     this.tv.sweep(this.now(), true);
     await this.ctx.storage.setAlarm(Date.now() + PRUNE_EVERY_MS);
   }
@@ -256,32 +274,50 @@ export class AccountsDO extends DurableObject<Env> {
 
   private fail(keys: readonly string[], now: number): void {
     for (const k of keys) {
-      const e = nextFail(this.fails.get(k), now);
+      const e = nextFail(this.fails.get(k), now, windowOf(k));
       // A network gets more room than one pair (a household / campus shares an address); a
-      // username's own count only slows it down (slowFor), it never locks the owner out.
-      if (k.startsWith('u:') || (k.startsWith('ip:') && e.count < LOGIN_IP_MAX) || (k.startsWith('w:') && e.count < LOGIN_WIDE_MAX)) e.lockedUntil = 0;
+      // username's own count only slows it down (slowFor), it never locks the owner out; its
+      // daily count of unknown browsers shuts them out until that day ends.
+      if (k.startsWith('ud:')) e.lockedUntil = e.count >= LOGIN_USER_DAY_MAX ? e.first + LOGIN_DAY_MS : 0;
+      else if (k.startsWith('u:') || (k.startsWith('ip:') && e.count < LOGIN_IP_MAX) || (k.startsWith('w:') && e.count < LOGIN_WIDE_MAX)) e.lockedUntil = 0;
       this.fails.set(k, e);
     }
   }
 
   /**
    * The counters of a sign-in or a recovery: [the (username, network) pair, the username, the
-   * network (ipKey: an IPv4 address or an IPv6 /64), the IPv6 /48]; the pair's first, so a
-   * success clears it (keys[0]). `account`: a password checked behind a session of that account
-   * (a password change, new codes, a rename, a re-authentication) also counts on the account's
-   * own 'a:' counter, which locks like a pair (LOGIN_FAILS_FREE, the doubling delay) whatever the
-   * network: one stolen session guesses no faster than one network, and its lock stops only the
-   * checks behind a session, never the owner's sign-in.
+   * network (ipKey: an IPv4 address or an IPv6 /64), the IPv6 /48, then who tries (knownAs)];
+   * the pair's first, so a success clears it (keys[0]). Who tries: a password checked behind a
+   * session of the account (a password change, new codes, a rename, a re-authentication) counts
+   * on the account's 'a:' counter, and a browser with the account's device cookie on its 'd:'
+   * one; both lock like a pair (LOGIN_FAILS_FREE, the doubling delay) whatever the network, so a
+   * stolen session or device cookie guesses no faster than one network, and neither lock touches
+   * another browser's sign-in. Anyone else counts on the username's daily cap ('ud:').
    */
-  private failKeys(username: string, ip: unknown, account?: unknown): string[] {
+  private failKeys(username: string, ip: unknown, b: Record<string, unknown>): string[] {
     const user = usernameKey(username);
     const net = typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? ipKey(ip) : '';
     const keys = ['up:' + user + '|' + net, 'u:' + user];
     if (net !== '') keys.push('ip:' + net);
     const wide = typeof ip === 'string' && ip.includes(':') ? wideKey(ip) : null;
     if (wide !== null) keys.push('w:' + wide);
-    if (typeof account === 'string' && account.length > 0 && account.length <= 64) keys.push('a:' + account);
+    keys.push(this.knownAs(username, b) ?? 'ud:' + user);
     return keys;
+  }
+
+  /** A session of the account ('a:' + its id) or a browser that signed in to it ('d:' + its device id); null: unknown. */
+  private knownAs(username: string, b: Record<string, unknown>): string | null {
+    if (typeof b.account === 'string' && b.account.length > 0 && b.account.length <= 64) return 'a:' + b.account;
+    const d = b.device as { user?: unknown; id?: unknown } | null | undefined;
+    if (!d || typeof d !== 'object' || typeof d.user !== 'string' || typeof d.id !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(d.id)) return null;
+    return this.store.credentials(username)?.userId === d.user ? 'd:' + d.id : null;
+  }
+
+  /** A success: the pair's counter and this browser's device counter start again (the others run their window). */
+  private cleared(keys: readonly string[]): void {
+    this.fails.delete(keys[0]);
+    const known = keys[keys.length - 1];
+    if (known.startsWith('d:')) this.fails.delete(known);
   }
 
   /** The username has failed LOGIN_USER_SLOW times in the window, from anywhere: its sign-ins need a solved check. */
@@ -308,7 +344,7 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/auth-begin': {
         if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
-        const wait = this.throttled(this.failKeys(b.username, b.ip, b.account), now);
+        const wait = this.throttled(this.failKeys(b.username, b.ip, b), now);
         if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
         const c = s.credentials(b.username);
         const slow = this.slowFor(b.username, now);
@@ -316,7 +352,7 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/auth-finish': {
         if (typeof b.username !== 'string') return error(400, 'bad_request');
-        const keys = this.failKeys(b.username, b.ip, b.account);
+        const keys = this.failKeys(b.username, b.ip, b);
         const refresh = grantOf(b.refresh);
         if (b.ok !== true || typeof b.userId !== 'string' || refresh === null) {
           this.fail(keys, now);
@@ -324,7 +360,7 @@ export class AccountsDO extends DurableObject<Env> {
         }
         const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now);
         if (r === null) return error(403, 'banned');
-        this.fails.delete(keys[0]);
+        this.cleared(keys);
         return json(r);
       }
       case '/refresh': {
@@ -373,7 +409,7 @@ export class AccountsDO extends DurableObject<Env> {
       case '/recover': {
         const refresh = grantOf(b.refresh);
         if (typeof b.username !== 'string' || !isHex(b.code, 64) || !isPw(b.pw) || refresh === null) return error(400, 'bad_request');
-        const keys = this.failKeys(b.username, b.ip);
+        const keys = this.failKeys(b.username, b.ip, b);
         const wait = this.throttled(keys, now);
         if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
         const r = s.recover(b.username, b.code, b.pw, { ...refresh, kind: 'web' }, now);
@@ -381,7 +417,7 @@ export class AccountsDO extends DurableObject<Env> {
           this.fail(keys, now);
           return error(401, 'bad_recovery', 'Usuario o código de recuperación incorrecto');
         }
-        this.fails.delete(keys[0]);
+        this.cleared(keys);
         return json(r);
       }
       case '/oauth': {
