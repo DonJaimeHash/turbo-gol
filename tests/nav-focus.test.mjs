@@ -312,3 +312,48 @@ test("GARAJE: ▶ on a row or on the detail's action (lines) bounces, never up t
   const garage = readFileSync(new URL('../src/ui/screens/garage.ts', import.meta.url), 'utf8');
   assert.match(garage, /h\('button\.mn-btn\.mn-gar-act', \{[^}]*'data-nav-line': true/);
 });
+
+test("GARAJE: ▲ in the list goes to the row above, and from its first row to the tab selected", () => {
+  fakeDom();
+  // A TV at 960 x 540 on ESTADIOS: the two tabs side by side over the list, its first row under both.
+  const tabCars = el(NAVI, R(653, 105, 140, 48));
+  const tabStadiums = el(NAVI, R(801, 105, 140, 48));
+  const tabs = el({ 'data-nav-row': '' }, null, tabCars, tabStadiums);
+  const rows = [165, 229, 293].map((y) => el({ ...NAVI, ...LINE }, R(653, y, 288, 60)));
+  const list = el({}, R(653, 157, 288, 175), ...rows);
+  const page = el({}, R(0, 90, 960, 400), tabs, list);
+  const f = new NAV.FocusNav(() => [{ name: 'stage', el: page, main: true }]);
+  f.focus(rows[0]);
+  f.move('up');
+  assert.equal(focused(), tabCars, 'the spatial pick alone: a tie, AUTOS first (its focus would switch the list to the cars)');
+  // AUTOS scrolled (CH+ back on Condor): Carpincho at the list's top, Pampero half under its edge,
+  // its centre no nearer than the tabs'.
+  const carsTab = el(NAVI, R(653, 105, 140, 48));
+  const stadiumsTab = el(NAVI, R(801, 105, 140, 48));
+  const cars = [37, 99, 165, 229].map((y) => el({ ...NAVI, ...LINE }, R(653, y, 288, 60)));
+  const carList = el({}, R(653, 157, 288, 139), ...cars);
+  carList.scroll = 600;
+  const page2 = el({}, R(0, 90, 960, 400), el({ 'data-nav-row': '' }, null, carsTab, stadiumsTab), carList);
+  const g = new NAV.FocusNav(() => [{ name: 'stage', el: page2, main: true }]);
+  g.focus(cars[2]);
+  g.move('up');
+  assert.ok(focused() === carsTab || focused() === stadiumsTab, 'the spatial pick alone: up to the tabs, past Pampero');
+  // garage.ts updateSides: a row's ▲ is the row before it in the list, the first row's the tab selected.
+  for (const [list_, selected] of [
+    [rows, tabStadiums],
+    [cars, carsTab],
+  ]) {
+    for (const [i, r] of list_.entries()) NAV.onNavTo(r, 'up', () => list_[i - 1] ?? selected);
+  }
+  f.focus(rows[0]);
+  f.move('up');
+  assert.equal(focused(), tabStadiums, 'ESTADIOS stays');
+  f.focus(rows[1]);
+  f.move('up');
+  assert.equal(focused(), rows[0], 'a row under another: the row above');
+  g.focus(cars[2]);
+  g.move('up');
+  assert.equal(focused(), cars[1], 'the row above, half out of sight (FocusNav scrolls it in)');
+  const garage = readFileSync(new URL('../src/ui/screens/garage.ts', import.meta.url), 'utf8');
+  assert.match(garage, /onNavTo\(r\.el, 'up', \(\) => \{\s*if \(r\.el\.parentElement !== list\) return null;\s*const above = r\.el\.previousElementSibling;\s*return above instanceof HTMLElement \? above : \(tabEls\.get\(tab\) \?\? null\);\s*\}\);/, 'every row of both lists');
+});

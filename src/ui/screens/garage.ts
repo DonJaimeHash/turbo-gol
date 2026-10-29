@@ -47,7 +47,7 @@ import type { ThemeId } from '../../render/theme';
 import { SOURCE_URL } from '../../brand';
 import { icon } from '../components/icons';
 import { glyph } from '../components/glyphs';
-import { onNavSide } from '../nav';
+import { onNavSide, onNavTo } from '../nav';
 import { qrSvg } from '../components/qr';
 import { carSilhouette } from '../components/carSilhouettes';
 import { garageRow, type GarageRow } from '../components/carRow';
@@ -183,7 +183,10 @@ export function garageScreen(menu: Menu): Screen {
    * ◀ from the right column crosses the stage to the left column's control (SIGN IN, else GANA
    * PUNTOS), ▶ from there back to the row picked. The rows and the action are lines (nav.ts): ▶
    * from them bounces, never up to the ESTADIOS tab (its focus would switch the list), and without
-   * a left column (a phone) ◀ goes to the rail, else bounces.
+   * a left column (a phone) ◀ goes to the rail, else bounces. ▲ in the list goes to the row above,
+   * wherever the list is scrolled (a row half under its top edge is no nearer than the tabs), and
+   * from its first row to the tab selected: the two tabs tie in the spatial pick (AUTOS first),
+   * and AUTOS' focus would switch ESTADIOS back to the cars.
    */
   const updateSides = (): void => {
     const visible = (e: HTMLElement): boolean => e.getClientRects().length > 0;
@@ -191,7 +194,14 @@ export function garageScreen(menu: Menu): Screen {
     const on = visible(left) && leftOne() !== null;
     const toLeft = on ? () => leftOne()?.focus({ preventScroll: true }) : null;
     const toRow = on ? () => (tab === 'cars' ? rows.get(view().selected.id) : stadiumRows.get(stadium))?.el.focus({ preventScroll: true }) : null;
-    for (const r of [...rows.values(), ...stadiumRows.values()]) onNavSide(r.el, toLeft, null);
+    for (const r of [...rows.values(), ...stadiumRows.values()]) {
+      onNavSide(r.el, toLeft, null);
+      onNavTo(r.el, 'up', () => {
+        if (r.el.parentElement !== list) return null;
+        const above = r.el.previousElementSibling;
+        return above instanceof HTMLElement ? above : (tabEls.get(tab) ?? null);
+      });
+    }
     onNavSide(detAction, toLeft, null);
     onNavSide(earn, null, toRow);
     const b = pointsBody.querySelector<HTMLElement>('[data-nav]');
