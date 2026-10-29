@@ -29,6 +29,9 @@
  *   is one line however it wraps: ▲ ▼ leave it whole.
  * - A target's own way (onNavTo): where an arrow goes from it, before the pick (a list's pinned
  *   row: ▲ to the list's last row, wherever the list is scrolled).
+ * - Out of sight (outOfSight): ▲ ▼ from outside a scroller never pick what it has scrolled out of
+ *   view (clippedOut), so ▼ from the pinned row under CLASIFICACIÓN's list goes on to the footer,
+ *   not up into the list's hidden rows; inside the scroller they walk on into them.
  * - A zone's floor (`floor`: Ajustes' page): ▼ past its last target bounces, it never crosses down.
  * - The way back (NavPath): the opposite arrow undoes the last move, as a stack (▼ ▼ ▲ ▲ retraces
  *   the path), while that target is still visible and still that way.
@@ -188,6 +191,27 @@ export function lineSpan(b: NavBox, line: NavBox): NavBox {
 function lineBox(el: Element, b: NavBox = box(el)): NavBox {
   const line = el.closest('[data-nav-line]');
   return line === null ? b : lineSpan(b, line.getBoundingClientRect());
+}
+
+/** `b` lies wholly outside `view` (a scroller's box): scrolled out of sight. Pure. */
+export function clippedOut(b: NavBox, view: NavBox): boolean {
+  return b.bottom <= view.top || b.top >= view.bottom || b.right <= view.left || b.left >= view.right;
+}
+
+const SCROLLS = /auto|scroll/;
+
+/**
+ * `el` is scrolled out of sight in its closest scroller (overflow auto / scroll, with more to
+ * scroll) below `stop` (its zone), when `cur` is not in that scroller: ▲ ▼ from `cur` skip it.
+ */
+function outOfSight(el: HTMLElement, cur: HTMLElement, stop: HTMLElement): boolean {
+  for (let p = el.parentElement; p !== null && p !== stop; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    if ((SCROLLS.test(cs.overflowY) && p.scrollHeight > p.clientHeight) || (SCROLLS.test(cs.overflowX) && p.scrollWidth > p.clientWidth)) {
+      return !p.contains(cur) && clippedOut(el.getBoundingClientRect(), p.getBoundingClientRect());
+    }
+  }
+  return false;
 }
 
 /**
@@ -584,8 +608,13 @@ export class FocusNav {
       // Out of a target that spans the rows beside it: only what lies wholly that way, else the next zone.
       const span = !horizontal && cur.closest('[data-nav-span]') !== null;
       // ◀ ▶ on a list's line: only what is on that line (past its ends: a side zone, else the bounce).
+      // ▲ ▼: nothing a scroller the focus is not in has scrolled out of sight (outOfSight).
       const all = this.targets(zone).filter(
-        (e) => e !== cur && (members === null || !members.includes(e)) && (!span || beyondEdge(src, dir, box(e))) && (!horizontal || line === null || line.contains(e)),
+        (e) =>
+          e !== cur &&
+          (members === null || !members.includes(e)) &&
+          (!span || beyondEdge(src, dir, box(e))) &&
+          (horizontal ? line === null || line.contains(e) : !outOfSight(e, cur, zone.el)),
       );
       const i = horizontal ? pickTarget(src, dir, all.map(box)) : pickTarget(lineBox(cur, src), dir, all.map((e) => lineBox(e)));
       if (i >= 0) next = horizontal ? all[i] : this.intoRow(all[i]);

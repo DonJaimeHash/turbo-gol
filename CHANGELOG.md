@@ -311,8 +311,9 @@ All notable changes to Turbogol are documented here. The format follows
     instead of where you left it the last time; Back still returns where you were.
   - ▼ from PROFILE in the top bar of a TV lands on SIGN IN WITH YOUR PHONE at every interface size.
   - Leaderboard: ◀ on a 1v1 row keeps your place; from your pinned row ▲ goes to the list's last
-    row and the triggers page from there instead of jumping to #1; Home and End go to the first and
-    last row; "Sign in to see your position" brings you back to the leaderboard once you sign in.
+    row, ▼ to the footer instead of the list's hidden rows, ◀ ▶ keep you on it, and the triggers
+    page from there instead of jumping to #1; Home and End go to the first and last row; "Sign in
+    to see your position" brings you back to the leaderboard once you sign in.
   - RENAME a preset on a TV opens the on-screen keys with one OK.
 - Picking a quality in Settings during an online match keeps it at once, with no 10-second trial,
   so a second loading screen never covers the match. A ranked result waits until Settings closes.

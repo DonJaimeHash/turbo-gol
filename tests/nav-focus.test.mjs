@@ -1,5 +1,6 @@
 // The shared focus code's moves (src/ui/nav.ts FocusNav) on a small fake DOM: a list's lines, a row
-// that is a line, a zone's floor, a target's own way (onNavTo) and a side claim that takes nothing.
+// that is a line, a zone's floor, a target's own way (onNavTo), a side claim that takes nothing and
+// a scrolled list's hidden rows.
 // The geometry is measured from the screens it stands for (Ajustes on a TV, CLASIFICACIÓN on a PC).
 //   node --test tests/nav-focus.test.mjs
 import { test } from 'node:test';
@@ -22,13 +23,15 @@ const NAV = await import('../src/ui/nav.ts');
 
 const R = (left, top, width = 100, height = 40) => ({ left, top, width, height, right: left + width, bottom: top + height });
 
-/** An element as FocusNav reads it: attributes, children, a box (its children's by default), the focus. */
+/** An element as FocusNav reads it: attributes, children, a box (its children's by default), the focus, a scroll. */
 class FakeEl {
   constructor(attrs = {}, rect = null, children = []) {
     this.attrs = { ...attrs };
     this.rect = rect;
     this.children = [];
     this.parent = null;
+    /** overflow-y: auto with this much to scroll (a scroller), else null. */
+    this.scroll = null;
     this.classes = new Set();
     this.classList = { add: (c) => this.classes.add(c), remove: (c) => this.classes.delete(c), contains: (c) => this.classes.has(c) };
     this.isContentEditable = false;
@@ -75,6 +78,21 @@ class FakeEl {
   get offsetWidth() {
     return this.getBoundingClientRect().width;
   }
+  get parentElement() {
+    return this.parent;
+  }
+  get clientHeight() {
+    return this.getBoundingClientRect().height;
+  }
+  get clientWidth() {
+    return this.getBoundingClientRect().width;
+  }
+  get scrollHeight() {
+    return this.scroll ?? this.clientHeight;
+  }
+  get scrollWidth() {
+    return this.clientWidth;
+  }
   get isConnected() {
     return true;
   }
@@ -90,7 +108,7 @@ function fakeDom() {
   globalThis.HTMLTextAreaElement = class {};
   globalThis.document = { activeElement: null };
   globalThis.window = { setTimeout: () => 0, clearTimeout: () => undefined };
-  globalThis.getComputedStyle = () => ({ transform: 'none', translate: 'none' });
+  globalThis.getComputedStyle = (e) => ({ transform: 'none', translate: 'none', overflowX: 'visible', overflowY: e.scroll !== null ? 'auto' : 'visible' });
 }
 const el = (attrs, rect, ...children) => new FakeEl(attrs, rect, children);
 const NAVI = { 'data-nav': '' };
@@ -229,4 +247,33 @@ test('CLASIFICACIÓN: ◀ on a 1v1 row (a line, no playlist before it) bounces i
   assert.ok(bounced(row));
   assert.equal(f.move('right'), true);
   assert.equal(stepped, 1, '▶ still steps the playlist');
+});
+
+test('a scrolled list: ▼ from the pinned row under it goes to the footer, not up into its hidden rows', () => {
+  fakeDom();
+  // CLASIFICACIÓN on a PC, the list scrolled to its top: rows 0-4 in sight, the rest clipped below its fold
+  // (geometrically under the pinned row and the footer).
+  const rows = Array.from({ length: 12 }, (_, i) => el({ ...NAVI, ...LINE }, R(107, 301 + 60 * i, 1152, 56)));
+  const list = el({}, R(107, 300, 1152, 322), ...rows);
+  list.scroll = 6000;
+  const pinned = el({ ...NAVI, ...LINE }, R(107, 634, 1152, 56));
+  const tab = el(NAVI, R(410, 173, 291, 72));
+  const stage = el({}, R(0, 60, 1366, 650), tab, list, pinned);
+  const source = el(NAVI, R(1094, 728, 151, 40));
+  const footer = el({}, R(0, 718, 1366, 50), source);
+  const f = new NAV.FocusNav(() => [
+    { name: 'stage', el: stage, main: true },
+    { name: 'bottom', el: footer },
+  ]);
+  f.focus(pinned);
+  assert.equal(f.move('down'), true);
+  assert.equal(focused(), source, 'the footer, not row 6');
+  f.focus(rows[4]);
+  f.move('down');
+  assert.equal(focused(), rows[5], 'inside the list: on into the row below its fold');
+  f.focus(tab);
+  f.move('down');
+  assert.equal(focused(), rows[0], 'from above: its first row in sight');
+  assert.equal(NAV.clippedOut(R(107, 661, 1152, 56), R(107, 300, 1152, 322)), true);
+  assert.equal(NAV.clippedOut(R(107, 601, 1152, 56), R(107, 300, 1152, 322)), false, 'cut by the fold, still in sight');
 });

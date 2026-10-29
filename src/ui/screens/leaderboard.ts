@@ -17,7 +17,8 @@
  * (keyboard, a TV remote's CH+ / CH−: Menu.onKey gives them as LT / RT) move a page, Home / End go
  * to the first / last row, X (pad X, keyboard X while no search runs, Delete) goes to your row; Q / E
  * step the tabs (Menu.stepTabs). Your pinned row is the list's end: ▲ and a page up go back into
- * it from its last row. The playlist is remembered (prefs.ts). A guest's SIGN IN opens PERFIL as a
+ * it from its last row, ▼ goes on to the footer (nav.ts skips the rows scrolled out of sight), ◀ ▶
+ * land on the other playlist's last row: yours again when it is pinned there too. The playlist is remembered (prefs.ts). A guest's SIGN IN opens PERFIL as a
  * detour (Menu.open): a sign-in there comes back here.
  * In development (or a VITE_UI_FIT=1 build) window.__board(kind | null) shows sample rows
  * (scripts/ui-fit.mjs).
@@ -189,7 +190,7 @@ export function leaderboardScreen(menu: Menu): Screen {
     standKeys.hidden = s !== 'you';
     // The focus: the row asked for (a playlist switch from the list), else back on what had it (the retry, a tab).
     if (wantRow >= 0 && notice === null) {
-      const rs = [...list.children] as HTMLElement[];
+      const rs = rows(); // your pinned row the last: ◀ ▶ from it land on yours when it is pinned again
       focusRow(rs[Math.min(wantRow, rs.length - 1)]);
       wantRow = -1;
     } else if (had !== null && !el.contains(document.activeElement)) menu.refocus();

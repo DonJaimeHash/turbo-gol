@@ -547,7 +547,9 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         sliders is next; ◀ ▶ stay on the line, past its ends a side zone or
                         the bounce; a row that is a line, GRÁFICOS' cards, is left whole
                         however it wraps: rowLeaveBox), a zone's floor (▼ past its last target
-                        bounces: Ajustes), a target's own way (onNavTo: the pinned row's ▲), a
+                        bounces: Ajustes), a target's own way (onNavTo: the pinned row's ▲),
+                        what a scroller the focus is not in has scrolled out of sight (▲ ▼ skip
+                        it: outOfSight, so the pinned row's ▼ goes to the footer), a
                         side claim that takes nothing (returns false: it bounces), the way
                         back (NavPath), the focus memory (FocusMemory), fields in navigation or editing
                         mode (data-editing), the edge nudge (mn-bounce-*) and heldOver (a key's
