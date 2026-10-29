@@ -25,7 +25,7 @@
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
 import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvPollAnswer, TvStartAnswer } from './account';
+import type { AccountIssue, AccountSession, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvPollAnswer, TvStartAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { claimAnswerOf, itemsAnswerOf, shopAnswerOf } from './cosmetics';
 import type { ClaimAnswer, ItemsAnswer, ShopAnswer } from './cosmetics';
@@ -100,6 +100,24 @@ function isSession(v: unknown): v is AccountSession {
   const o = v as Record<string, unknown>;
   return o.kind === 'account' && typeof o.playerId === 'string' && typeof o.name === 'string' && typeof o.session === 'string' && typeof o.expiresAt === 'number';
 }
+
+/** Only an AccountSession's own fields of an answer that carries more (a sign-up's codes, a TV poll's state). */
+function sessionPart(s: AccountSession): AccountSession {
+  const out: AccountSession = { kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt };
+  if (s.car !== undefined) out.car = s.car;
+  if (s.tv === true) out.tv = true;
+  if (typeof s.authAt === 'number' && s.authAt > 0) out.authAt = s.authAt;
+  return out;
+}
+
+function isDevice(v: unknown): v is DeviceSession {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.id === 'string' && (o.kind === 'web' || o.kind === 'tv') && typeof o.signedInAt === 'number' && typeof o.lastUsedAt === 'number' && typeof o.current === 'boolean';
+}
+
+/** The wait before a refresh that another tab won is asked again (its cookie is the new one by then). */
+const REFRESH_RACE_RETRY_MS = 400;
 
 export interface AccountClientOptions {
   apiBase?: string;
@@ -264,6 +282,12 @@ export class AccountClient {
       let res: ResponseLike;
       try {
         res = await this.call('/api/auth/refresh', {});
+        // 409 refresh_race: another tab of this browser rotated the shared cookie a moment ago; the
+        // browser holds the new one now, so asking again succeeds (once: nothing is revoked by it).
+        if (res.status === 409) {
+          await this.sleep(REFRESH_RACE_RETRY_MS);
+          res = await this.call('/api/auth/refresh', {});
+        }
       } catch {
         return this.account; // offline: keep what we have
       }
@@ -332,7 +356,7 @@ export class AccountClient {
     if (token !== null) body.turnstileToken = token;
     const res = await this.call('/api/auth/register', body);
     const r = await this.jsonOrFail<RegisterAnswer>(res);
-    this.adopt({ kind: 'account', playerId: r.playerId, name: r.name, session: r.session, expiresAt: r.expiresAt });
+    this.adopt(sessionPart(r));
     return r;
   }
 
@@ -348,7 +372,7 @@ export class AccountClient {
     if (p !== null) throw issueError(p, 'bad_password');
     const res = await this.call('/api/auth/recover', { username: username.trim(), code, password: await clientPasswordKey(username.trim(), newPassword) });
     const s = await this.jsonOrFail<AccountSession & { codesLeft: number }>(res);
-    this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt });
+    this.adopt(sessionPart(s));
     return s;
   }
 
@@ -358,10 +382,33 @@ export class AccountClient {
     } catch {
       /* the local state goes anyway */
     }
+    this.signedOutHere();
+  }
+
+  private signedOutHere(): void {
     this.account = null;
     this.me = null;
     this.setHint(null);
     this.changed();
+  }
+
+  // ---- signed-in devices (PERFIL) -------------------------------------------------------------
+
+  /** The account's signed-in devices (GET /api/auth/sessions), this browser marked `current`. */
+  async sessions(): Promise<DeviceSession[]> {
+    const r = (await this.ownCall('/api/auth/sessions')) as { sessions?: unknown } | null;
+    return Array.isArray(r?.sessions) ? r.sessions.filter(isDevice) : [];
+  }
+
+  /** Sign another device out (POST /api/auth/sessions/revoke; PERFIL offers it for the others only: this one signs out with logout). */
+  async revokeSession(id: string): Promise<void> {
+    await this.ownCall('/api/auth/sessions/revoke', { id });
+  }
+
+  /** Sign out on every device, this one too (POST /api/auth/sessions/revoke-all): an OAuth-only account's way to end a stolen session. */
+  async signOutEverywhere(): Promise<void> {
+    await this.ownCall('/api/auth/sessions/revoke-all', {});
+    this.signedOutHere();
   }
 
   /** Full-page redirect target of the "Sign in with Google / Discord" buttons (`link`: add it to the signed-in account). */
@@ -384,7 +431,7 @@ export class AccountClient {
 
   /** The approved TV's session (tvPoll), adopted as a sign-in's, with the car it carries. */
   signInWith(s: AccountSession): AccountSession {
-    return this.adopt({ kind: 'account', playerId: s.playerId, name: s.name, session: s.session, expiresAt: s.expiresAt, ...(s.car !== undefined ? { car: s.car } : {}) });
+    return this.adopt(sessionPart(s));
   }
 
   /** The phone (/tv): this account signs the TV showing `code` in (POST /api/auth/tv/confirm). */

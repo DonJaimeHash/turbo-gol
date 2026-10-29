@@ -5,8 +5,9 @@
  * abandons), TEMPORADA (a tile per playlist: rank in words, MMR or the placement left, the record),
  * MI SERVIDOR for a community node operator (GET /nodes/mine: each node, its state in words, its
  * region, the matches it hosted, its version), CUENTA Y SEGURIDAD folded (a disclosure: rename,
- * password, recovery codes, link a provider, sign out), COMUNIDAD (Discord, host a server, the
- * source), ACERCA DE (version, licences, the technical line).
+ * password, recovery codes, link a provider, the signed-in devices (each with where it signed in
+ * and a sign-out of its own), sign out, sign out on every device), COMUNIDAD (Discord, host a
+ * server, the source), ACERCA DE (version, licences, the technical line).
  *
  * A guest, one column for the arrows: on a TV first INICIAR SESIÓN CON EL TELÉFONO (focused: the
  * code and its QR in a sheet, screens/tvSignIn.ts), then CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's
@@ -25,7 +26,7 @@
 import { h, setChildren, copyText, navButton } from '../dom';
 import { AccountError } from '../../net/AccountClient';
 import { PASSWORD_MIN, REGIONS, USERNAME_MAX, USERNAME_MIN, passwordIssue, usernameIssue } from '../../net/account';
-import type { AccountIssue, MeInfo, MyNode, OAuthProvider, PlaylistRating } from '../../net/account';
+import type { AccountIssue, DeviceSession, MeInfo, MyNode, OAuthProvider, PlaylistRating } from '../../net/account';
 import { PROTOCOL_VERSION } from '../../net/protocol';
 import { PROBATION_MATCHES } from '../../../nodes/control-plane/registry';
 import { ratingCard, rankBadge, tierById } from '../badges';
@@ -342,6 +343,7 @@ export function profileScreen(menu: Menu): Screen {
       me?.hasPassword !== false ? secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' }) : secondary(t('profile.setPassword'), () => passwordDialog(), { 'data-key': 'profile-password' }),
       secondary(t('profile.newCodes'), () => codesDialog(), { 'data-key': 'profile-codes' }),
       ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => (window.location.href = acc.oauthUrl(p, true)), { 'data-key': 'profile-link-' + p })),
+      secondary(t('profile.devices'), () => devicesDialog(), { 'data-key': 'profile-devices' }),
       secondary(
         t('profile.signOut'),
         () => {
@@ -352,6 +354,7 @@ export function profileScreen(menu: Menu): Screen {
         },
         { 'data-key': 'profile-signout' },
       ),
+      secondary(t('profile.signOutAll'), () => signOutAllDialog(), { 'data-key': 'profile-signout-all' }),
     );
     const toggle = h(
       'button.mn-picker.mn-prof-fold',
@@ -500,6 +503,68 @@ export function profileScreen(menu: Menu): Screen {
     });
   };
 
+
+  /** One device in words: a browser or a TV, where it signed in, since when and its last use. */
+  const deviceRow = (d: DeviceSession): HTMLElement => {
+    const place = [d.city, d.country].filter((x): x is string => typeof x === 'string' && x.length > 0).join(', ');
+    const what = d.kind === 'tv' ? t('profile.deviceTv') : t('profile.deviceBrowser');
+    return h(
+      'div.mn-prof-device',
+      null,
+      h('p', null, h('b', null, what), place ? ` · ${place}` : '', d.current ? ` · ${t('profile.deviceThis')}` : ''),
+      h('p.mn-note', null, t('profile.deviceWhen', { date: shortDate(d.signedInAt), last: shortDate(d.lastUsedAt) })),
+      d.current
+        ? null
+        : secondary(t('profile.deviceSignOut'), () => {
+            void acc.revokeSession(d.id).then(
+              () => {
+                menu.toast(t('profile.deviceSignedOut'), 'ok');
+                devicesDialog();
+              },
+              (e: unknown) => menu.toast(errText(e), 'error'),
+            );
+          }),
+    );
+  };
+
+  /** DISPOSITIVOS: every device signed in to the account, each one's sign-out (not this one's: SIGN OUT is). */
+  const devicesDialog = (): void => {
+    void acc.sessions().then(
+      (list) =>
+        menu.modal({
+          title: t('profile.devicesTitle'),
+          body: [h('p.mn-note', null, t('profile.devicesNote')), ...list.map(deviceRow)],
+          actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }],
+        }),
+      (e: unknown) => menu.toast(errText(e), 'error'),
+    );
+  };
+
+  /** Sign out on every device, this one too: the way out of a stolen session for any account (no password needed). */
+  const signOutAllDialog = (): void => {
+    menu.modal({
+      title: t('profile.signOutAllTitle'),
+      body: h('p.mn-note', null, t('profile.signOutAllNote')),
+      actions: [
+        {
+          label: t('profile.signOutAllConfirm'),
+          danger: true,
+          onClick: async () => {
+            try {
+              await acc.signOutEverywhere();
+              menu.toast(t('profile.signedOutAll'), 'info');
+              render();
+              return true;
+            } catch (e) {
+              menu.toast(errText(e), 'error');
+              return false;
+            }
+          },
+        },
+        { label: t('profile.cancel'), autofocus: true, onClick: () => true },
+      ],
+    });
+  };
 
   const render = (): void => {
     const who = acc.account?.playerId ?? null;

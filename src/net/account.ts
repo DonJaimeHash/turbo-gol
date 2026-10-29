@@ -180,6 +180,29 @@ export interface AccountSession {
    * while it owns it, else the default car. Absent from servers before cars: the default car.
    */
   car?: CarId;
+  /** A TV signed in with the phone: a limited scope (no credential, link, redeem or device changes there). */
+  tv?: true;
+  /** When this device last proved a credential (ms): a sign-in or a re-authentication. Absent = never (a TV). */
+  authAt?: number;
+}
+
+/** One signed-in device of the account (GET /api/auth/sessions): PERFIL's device list. */
+export interface DeviceSession {
+  /** Opaque: POST /api/auth/sessions/revoke { id }. */
+  id: string;
+  kind: 'web' | 'tv';
+  /** When the device signed in, and when it last renewed its session (ms). */
+  signedInAt: number;
+  lastUsedAt: number;
+  /** Where it signed in (ISO country code, city), when known. */
+  country: string | null;
+  city: string | null;
+  /** This browser. */
+  current: boolean;
+}
+
+export interface SessionsAnswer {
+  sessions: DeviceSession[];
 }
 
 export interface RegisterAnswer extends AccountSession {

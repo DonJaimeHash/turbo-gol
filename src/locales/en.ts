@@ -669,6 +669,24 @@ export default {
   'profile.link': 'LINK {provider}',
   'profile.signOut': 'SIGN OUT',
   'profile.signedOut': 'Signed out',
+  // PERFIL's devices (Security 3): every browser or TV signed in to the account, each one's sign-out
+  'profile.devices': 'DEVICES',
+  'profile.devicesTitle': 'Devices signed in',
+  'profile.devicesNote': "If you don't recognise one, sign it out.",
+  'profile.deviceBrowser': 'Browser',
+  // A TV signed in with the phone (it plays, but changes nothing on the account)
+  'profile.deviceTv': 'TV (with the phone)',
+  // {date}: when the device signed in; {last}: its last use
+  'profile.deviceWhen': 'Since {date} · last used {last}',
+  'profile.deviceThis': 'this device',
+  'profile.deviceSignOut': 'SIGN IT OUT',
+  'profile.deviceSignedOut': 'That device is signed out',
+  // Sign out on every device, this one too (any account: with Google or Discord as well)
+  'profile.signOutAll': 'SIGN OUT ON EVERY DEVICE',
+  'profile.signOutAllTitle': 'Sign out on every device?',
+  'profile.signOutAllNote': 'Every device, this one too. Then you sign in again with your account.',
+  'profile.signOutAllConfirm': 'SIGN OUT EVERYWHERE',
+  'profile.signedOutAll': 'Signed out on every device',
   'profile.renameTitle': 'Change name',
   'profile.renameNote': 'You can change it once every 30 days.',
   'profile.newName': 'New name',

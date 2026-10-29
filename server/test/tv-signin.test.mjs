@@ -187,7 +187,7 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   assert.equal(r.json.name, 'Ana');
   assert.ok(r.json.expiresAt > Date.now());
   const tvCookie = r.headers.get('set-cookie');
-  assert.match(tvCookie, /^__Host-tg_rt=[A-Za-z0-9_-]{43};/);
+  assert.match(tvCookie, /^__Host-tg_rt=[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43};/, 'a family part and a secret (Security 3)');
   const login = await call(env, '/api/auth/login', { ip: ip(2), body: { username: 'Ana', password: KEY } });
   assert.equal(login.status, 200);
   assert.equal(cookieFlags(tvCookie), cookieFlags(login.headers.get('set-cookie')), 'the same cookie flags as login');

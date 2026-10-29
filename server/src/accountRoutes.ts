@@ -4,8 +4,12 @@
  *   POST /api/auth/register   { username, password, turnstileToken? } -> RegisterAnswer + refresh cookie (the same
  *                             Turnstile gate as POST /api/guest when it is on)
  *   POST /api/auth/login      { username, password }            -> AccountSession + refresh cookie
- *   POST /api/auth/refresh    (refresh cookie)                  -> AccountSession (token rotated) | 401
- *   POST /api/auth/logout     (refresh cookie)                  -> { ok } + cookie cleared
+ *   POST /api/auth/refresh    (refresh cookie)                  -> AccountSession (token rotated) | 401 (a copied token:
+ *                             its whole family revoked) | 409 refresh_race (another tab rotated it: retry, cookie kept)
+ *   POST /api/auth/logout     (refresh cookie)                  -> { ok } + cookie cleared (this device)
+ *   GET  /api/auth/sessions   Bearer (account, not a TV) [cookie] -> SessionsAnswer: the signed-in devices
+ *   POST /api/auth/sessions/revoke Bearer { id }                -> { revoked } (that device signed out)
+ *   POST /api/auth/sessions/revoke-all Bearer                   -> { revoked } + cookie cleared (every device, this one too)
  *   POST /api/auth/recover    { username, code, password }      -> AccountSession + { codesLeft } + cookie
  *   POST /api/auth/password   Bearer { oldPassword, password }  -> { ok } (every other device signed out)
  *   POST /api/auth/recovery-codes Bearer { password }           -> { recoveryCodes }
@@ -71,7 +75,7 @@ import { base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, 
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
 import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
-import type { Credentials, PasswordRecord, UserRef } from './accountStore';
+import type { Credentials, PasswordRecord, RefreshGrant, UserRef } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
@@ -151,8 +155,39 @@ export function recoveryCodeHash(code: string): Promise<string> {
   return sha256Hex('turbogol-recovery:' + canon);
 }
 
-function newRefreshToken(): string {
-  return base64urlEncode(randomBytes(32));
+/**
+ * A refresh token: "<family part>.<secret>" (16 and 32 random bytes, base64url). Every token rotated
+ * from one sign-in keeps its family part, so a copy presented after the rotation names the family
+ * it belongs to (familyOf) and AccountsDO revokes the family. A token from before families is the
+ * secret alone; it rotates into a family of its own.
+ */
+function newRefreshToken(familyPart?: string): string {
+  return (familyPart ?? base64urlEncode(randomBytes(16))) + '.' + base64urlEncode(randomBytes(32));
+}
+
+/** A token's family part, or null for a token from before families. */
+function familyPartOf(token: string): string | null {
+  const i = token.indexOf('.');
+  return i > 0 && /^[A-Za-z0-9_-]{16,32}$/.test(token.slice(0, i)) ? token.slice(0, i) : null;
+}
+
+/** The family a token names, as AccountsDO stores it (32 hex: never the family part itself). */
+async function familyOf(token: string): Promise<string | null> {
+  const part = familyPartOf(token);
+  return part === null ? null : (await sha256Hex('turbogol-family:' + part)).slice(0, 32);
+}
+
+/** Where a request comes from, coarsely (request.cf): the device list shows it. */
+function geoOf(request: Request): { country: string | null; city: string | null } {
+  const cf = request.cf;
+  const country = cf && typeof cf.country === 'string' && /^[A-Z]{2}$/.test(cf.country) ? cf.country : null;
+  const city = cf && typeof cf.city === 'string' && cf.city.length > 0 ? cf.city.slice(0, 64) : null;
+  return { country, city };
+}
+
+/** What AccountsDO stores of a new refresh token (accountStore.ts RefreshGrant): never the token. */
+async function grantFor(token: string, request: Request): Promise<RefreshGrant> {
+  return { hash: await sha256Hex(token), family: await familyOf(token), ...geoOf(request) };
 }
 
 // ---- cookies -----------------------------------------------------------------------------------
@@ -221,7 +256,18 @@ export async function accountSession(env: Env, u: UserRef, nowMs: number = Date.
   // Absent = the default car on every path (the seats, the rosters): the token carries only another one.
   if (car !== DEFAULT_CAR) claims.car = car;
   if (typeof u.createdAt === 'number' && u.createdAt > 0) claims.since = nowSeconds(u.createdAt);
-  return { kind: 'account', playerId: u.userId, name: u.username, session: await signJwt(env.JWT_SECRET, claims), expiresAt: exp * 1000, car };
+  // The device's scope (accountStore.ts refresh kind and auth_at): a TV's, or when it last proved a credential.
+  if (u.tv === true) claims.tv = 1;
+  else if (typeof u.authAt === 'number' && u.authAt > 0) claims.aat = nowSeconds(u.authAt);
+  const out: AccountSession = { kind: 'account', playerId: u.userId, name: u.username, session: await signJwt(env.JWT_SECRET, claims), expiresAt: exp * 1000, car };
+  if (claims.tv === 1) out.tv = true;
+  if (claims.aat !== undefined) out.authAt = claims.aat * 1000;
+  return out;
+}
+
+/** The scope a Bearer carries, for a route that re-signs it (a car, a rename): never widened, never dropped. */
+function scopeOf(s: SessionClaims): Pick<UserRef, 'tv' | 'authAt'> {
+  return s.tv === 1 ? { tv: true } : s.aat !== undefined ? { authAt: s.aat * 1000 } : {};
 }
 
 /** A cookie-carrying POST from a page of another origin is refused (SameSite=Strict already blocks most). */
@@ -263,7 +309,7 @@ async function register(c: RouteContext): Promise<Response> {
     username: b.username,
     pw: await newPasswordRecord(b.password),
     recovery: await Promise.all(codes.map(recoveryCodeHash)),
-    refresh: await sha256Hex(refresh),
+    refresh: await grantFor(refresh, c.request),
   });
   if (!r.ok) return pass(r.res);
   const out: RegisterAnswer = { ...(await accountSession(c.env, r.data)), recoveryCodes: codes };
@@ -297,7 +343,7 @@ async function login(c: RouteContext): Promise<Response> {
   const chk = await checkCredentials(c, b.username, b.password);
   if (!chk.ok) return chk.res;
   const refresh = newRefreshToken();
-  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', { userId: chk.cred.userId, username: b.username, ip: ipOf(c.request), ok: true, refresh: await sha256Hex(refresh) });
+  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', { userId: chk.cred.userId, username: b.username, ip: ipOf(c.request), ok: true, refresh: await grantFor(refresh, c.request) });
   if (!fin.ok) return pass(fin.res);
   return withCookies(json(await accountSession(c.env, fin.data)), [refreshCookie(refresh)]);
 }
@@ -307,8 +353,11 @@ async function refresh(c: RouteContext): Promise<Response> {
   if (c.limited('refresh:' + ipOf(c.request), 60)) return error(429, 'rate_limited');
   const token = cookieOf(c.request, REFRESH_COOKIE);
   if (!token || token.length > 128) return withCookies(error(401, 'no_refresh'), []);
-  const next = newRefreshToken();
-  const r = await accountsJson<UserRef>(c.env, '/refresh', { old: await sha256Hex(token), next: await sha256Hex(next) });
+  // The next token keeps this one's family part: a copy of either names the same family.
+  const next = newRefreshToken(familyPartOf(token) ?? undefined);
+  const r = await accountsJson<UserRef>(c.env, '/refresh', { old: await sha256Hex(token), oldFamily: await familyOf(token), next: await grantFor(next, c.request) });
+  // Another tab rotated this very token a moment ago: its cookie is already the new one, keep it.
+  if (!r.ok && r.res.status === 409) return withCookies(pass(r.res), []);
   if (!r.ok) return withCookies(pass(r.res), [clearCookie(REFRESH_COOKIE)]);
   return withCookies(json(await accountSession(c.env, r.data)), [refreshCookie(next)]);
 }
@@ -329,7 +378,7 @@ async function recover(c: RouteContext): Promise<Response> {
     username: b.username,
     code: await recoveryCodeHash(b.code),
     pw: await newPasswordRecord(b.password),
-    refresh: await sha256Hex(refreshTok),
+    refresh: await grantFor(refreshTok, c.request),
     ip: ipOf(c.request),
   });
   if (!r.ok) return pass(r.res);
@@ -399,7 +448,43 @@ async function rename(c: RouteContext): Promise<Response> {
     const token = cookieOf(c.request, REFRESH_COOKIE);
     await accountsCall(c.env, '/password', { userId: s.sub, pw, keep: token ? await sha256Hex(token) : undefined });
   }
-  return json(await accountSession(c.env, r.data));
+  return json(await accountSession(c.env, { ...r.data, ...scopeOf(s) }));
+}
+
+// ---- signed-in devices ------------------------------------------------------------------------------
+
+const LIMIT_SESSIONS_PER_ACCOUNT = 30;
+
+/** GET /api/auth/sessions: the account's devices (accountStore.ts devices), this one marked. */
+async function sessionsList(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('ses:' + s.sub, LIMIT_SESSIONS_PER_ACCOUNT)) return error(429, 'rate_limited');
+  const token = cookieOf(c.request, REFRESH_COOKIE);
+  const current = token && token.length <= 128 ? await sha256Hex(token) : undefined;
+  return noStore(await accountsCall(c.env, '/sessions', { userId: s.sub, current }));
+}
+
+/** POST /api/auth/sessions/revoke { id }: one device signed out (this one too, when it is its id: the cookie goes). */
+async function sessionRevoke(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('ses:' + s.sub, LIMIT_SESSIONS_PER_ACCOUNT)) return error(429, 'rate_limited');
+  const b = await readJson<{ id?: unknown }>(c.request);
+  if (!b || typeof b.id !== 'string' || !/^[0-9a-f]{32}$/.test(b.id)) return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/sessions/revoke', { userId: s.sub, id: b.id }));
+}
+
+/**
+ * POST /api/auth/sessions/revoke-all: PERFIL's sign out on every device, an OAuth-only account's
+ * too. This device included (its cookie cleared): a thief holding one device gains nothing by it.
+ */
+async function sessionsRevokeAll(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.limited('ses:' + s.sub, LIMIT_SESSIONS_PER_ACCOUNT)) return error(429, 'rate_limited');
+  const r = await accountsCall(c.env, '/sessions/revoke-all', { userId: s.sub });
+  return r.ok ? withCookies(pass(r), [clearCookie(REFRESH_COOKIE)]) : pass(r);
 }
 
 const LIMIT_TRAINING_PER_ACCOUNT = 20;
@@ -504,7 +589,7 @@ async function carSet(c: CosmeticContext): Promise<Response> {
   if (!b || !isCarId(b.car)) return error(400, 'bad_car', 'Auto desconocido');
   const r = await accountsJson<UserRef>(c.env, '/car', { userId: s.sub, car: b.car });
   if (!r.ok) return noStore(r.res);
-  return json(await accountSession(c.env, r.data, Date.now(), s.exp), 200, { 'cache-control': 'no-store' });
+  return json(await accountSession(c.env, { ...r.data, ...scopeOf(s) }, Date.now(), s.exp), 200, { 'cache-control': 'no-store' });
 }
 
 /** GET /api/me/shop: the hosts' shop as the account sees it, and its wallet. */
@@ -690,7 +775,7 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
   const ident = await oauthIdentity(cfg, provider, code, st.v, `${publicOrigin(c.env, c.request)}/api/auth/oauth/${provider}/callback`);
   if (!ident) return fail('provider_error');
   const refreshTok = newRefreshToken();
-  const r = await accountsJson<UserRef & { created: boolean }>(c.env, '/oauth', { provider, providerId: ident.id, name: ident.name, linkTo: st.link, refresh: await sha256Hex(refreshTok) });
+  const r = await accountsJson<UserRef & { created: boolean }>(c.env, '/oauth', { provider, providerId: ident.id, name: ident.name, linkTo: st.link, refresh: await grantFor(refreshTok, c.request) });
   if (!r.ok) return fail(r.res.status === 409 ? 'already_linked' : 'account_error');
   return redirect(r.data.created ? '/#auth=new' : st.link ? '/#auth=linked' : '/#auth=ok', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
 }
@@ -728,7 +813,7 @@ async function tvPoll(c: RouteContext): Promise<Response> {
   const code = tvCode(b?.code);
   if (code === null || typeof b?.secret !== 'string' || b.secret.length === 0 || b.secret.length > 128) return error(400, 'bad_request');
   const refreshTok = newRefreshToken();
-  const r = await accountsJson<UserRef | { state: 'pending' }>(c.env, '/tv-poll', { code, secret: await sha256Hex(b.secret), refresh: await sha256Hex(refreshTok) });
+  const r = await accountsJson<UserRef | { state: 'pending' }>(c.env, '/tv-poll', { code, secret: await sha256Hex(b.secret), refresh: await grantFor(refreshTok, c.request) });
   if (!r.ok) return noStore(pass(r.res));
   if ('state' in r.data) return noStore(json(r.data));
   const out: TvPollAnswer = { ...(await accountSession(c.env, r.data)), state: 'approved' };
@@ -757,6 +842,8 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/tv/poll') return tvPoll(c);
     if (p === '/api/me/car') return carSet(c);
     if (p === '/api/me/shop/claim') return shopClaim(c);
+    if (p === '/api/auth/sessions/revoke') return sessionRevoke(c);
+    if (p === '/api/auth/sessions/revoke-all') return sessionsRevokeAll(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);
@@ -765,6 +852,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/me/shop') return shopGet(c);
     if (p === '/api/leaderboard') return leaderboard(c, url);
     if (p === '/api/ranked/result') return rankedResult(c, url);
+    if (p === '/api/auth/sessions') return sessionsList(c);
     const o = /^\/api\/auth\/oauth\/(google|discord)\/(start|callback)$/.exec(p);
     if (o) return o[2] === 'start' ? oauthStart(c, o[1] as OAuthProvider, url) : oauthCallback(c, o[1] as OAuthProvider, url);
   }

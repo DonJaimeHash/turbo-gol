@@ -7,9 +7,15 @@
  *   POST /register        { username, pw, recovery, refresh }        -> UserRef | 409 username_taken
  *   POST /auth-begin      { username, ip }                           -> Credentials | { found: false } | 429 throttled
  *   POST /auth-finish     { userId?, username, ip, ok, refresh? }    -> UserRef (ok) | { ok: false }
- *   POST /refresh         { old, next }                              -> UserRef | 401
- *   POST /refresh-owner   { hash }                                   -> UserRef | 404
- *   POST /logout          { hash }
+ *   POST /refresh         { old, oldFamily?, next }                  -> UserRef | 401 bad_refresh | 401 refresh_reused
+ *                                                                     (the family revoked) | 409 refresh_race (two tabs)
+ *   POST /refresh-owner   { hash }                                   -> UserRef & { kind, device } | 404
+ *   POST /logout          { hash }                                   (that device: its whole family)
+ *   POST /sessions        { userId, current? }                       -> { sessions: DeviceRow[] }
+ *   POST /sessions/revoke { userId, id }                             -> { revoked } (that device's tokens)
+ *   POST /sessions/revoke-all { userId }                             -> { revoked } (every device, this one too)
+ *     `refresh` / `next` in every call that stores one: a RefreshGrant { hash, family?, kind?, country?,
+ *     city? } (accountStore.ts), or the hash alone (a family of its own).
  *   POST /password        { userId, pw, keep? }                      -> { ok } (other sessions signed out)
  *   POST /recovery        { userId, hashes }                         -> { ok }
  *   POST /recover         { username, code, pw, refresh, ip }        -> UserRef & { codesLeft } | 401 | 429
@@ -56,7 +62,7 @@ import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
 import { TvCodes, tvCode } from './tvCodes';
-import type { HostCredit, PasswordRecord, RankedResultInput } from './accountStore';
+import type { HostCredit, PasswordRecord, RankedResultInput, RefreshGrant } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -101,6 +107,19 @@ function isPw(v: unknown): v is PasswordRecord {
   if (!v || typeof v !== 'object') return false;
   const p = v as PasswordRecord;
   return isHex(p.hash, 64) && isHex(p.salt, 32) && Number.isInteger(p.iter) && p.iter >= 10_000 && p.iter <= 10_000_000;
+}
+
+/** A RefreshGrant from a request: the hash alone (hex) or { hash, family?, kind?, country?, city? }; null when malformed. */
+export function grantOf(v: unknown): RefreshGrant | null {
+  if (isHex(v, 64)) return { hash: v };
+  if (!v || typeof v !== 'object') return null;
+  const g = v as Record<string, unknown>;
+  if (!isHex(g.hash, 64)) return null;
+  if (g.family !== undefined && g.family !== null && !isHex(g.family, 32)) return null;
+  if (g.kind !== undefined && g.kind !== 'web' && g.kind !== 'tv') return null;
+  const country = typeof g.country === 'string' && /^[A-Z]{2}$/.test(g.country) ? g.country : null;
+  const city = typeof g.city === 'string' && g.city.length > 0 && g.city.length <= 64 ? g.city : null;
+  return { hash: g.hash, family: typeof g.family === 'string' ? g.family : null, kind: g.kind === 'tv' ? 'tv' : 'web', country, city };
 }
 
 function isHashList(v: unknown, max: number): v is string[] {
@@ -222,8 +241,9 @@ export class AccountsDO extends DurableObject<Env> {
     const s = this.store;
     switch (path) {
       case '/register': {
-        if (typeof b.username !== 'string' || usernameProblem(b.username) !== null || !isPw(b.pw) || !isHashList(b.recovery, 16) || !isHex(b.refresh, 64)) return error(400, 'bad_request');
-        const r = s.register(b.username, b.pw, b.recovery, b.refresh, now);
+        const refresh = grantOf(b.refresh);
+        if (typeof b.username !== 'string' || usernameProblem(b.username) !== null || !isPw(b.pw) || !isHashList(b.recovery, 16) || refresh === null) return error(400, 'bad_request');
+        const r = s.register(b.username, b.pw, b.recovery, { ...refresh, kind: 'web' }, now);
         return r === 'taken' ? error(409, 'username_taken', 'Ese usuario ya existe') : json(r);
       }
       case '/auth-begin': {
@@ -236,19 +256,26 @@ export class AccountsDO extends DurableObject<Env> {
       case '/auth-finish': {
         if (typeof b.username !== 'string') return error(400, 'bad_request');
         const keys = this.failKeys(b.username, b.ip);
-        if (b.ok !== true || typeof b.userId !== 'string' || !isHex(b.refresh, 64)) {
+        const refresh = grantOf(b.refresh);
+        if (b.ok !== true || typeof b.userId !== 'string' || refresh === null) {
           this.fail(keys, now);
           return json({ ok: false });
         }
-        const r = s.signedIn(b.userId, b.refresh, now);
+        const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now);
         if (r === null) return error(403, 'banned');
         this.fails.delete(keys[0]);
         return json(r);
       }
       case '/refresh': {
-        if (!isHex(b.old, 64) || !isHex(b.next, 64)) return error(400, 'bad_request');
-        const r = s.rotateRefresh(b.old, b.next, now);
-        return r ? json(r) : error(401, 'bad_refresh');
+        const next = grantOf(b.next);
+        if (!isHex(b.old, 64) || next === null || (b.oldFamily !== undefined && b.oldFamily !== null && !isHex(b.oldFamily, 32))) return error(400, 'bad_request');
+        const r = s.rotate(b.old, typeof b.oldFamily === 'string' ? b.oldFamily : null, next, now);
+        if (r === 'race') return error(409, 'refresh_race', 'Otra pestaña renovó la sesión');
+        if (r === 'reused') {
+          console.warn('refresh token reused: its family was revoked');
+          return error(401, 'refresh_reused');
+        }
+        return r === 'unknown' ? error(401, 'bad_refresh') : json(r);
       }
       case '/refresh-owner': {
         if (!isHex(b.hash, 64)) return error(400, 'bad_request');
@@ -258,6 +285,18 @@ export class AccountsDO extends DurableObject<Env> {
       case '/logout': {
         if (isHex(b.hash, 64)) s.deleteRefresh(b.hash);
         return json({ ok: true });
+      }
+      case '/sessions': {
+        if (typeof b.userId !== 'string') return error(400, 'bad_request');
+        return json({ sessions: s.devices(b.userId, now, isHex(b.current, 64) ? b.current : null) });
+      }
+      case '/sessions/revoke': {
+        if (typeof b.userId !== 'string' || !isHex(b.id, 32)) return error(400, 'bad_request');
+        return json({ revoked: s.revokeDevice(b.userId, b.id) });
+      }
+      case '/sessions/revoke-all': {
+        if (typeof b.userId !== 'string') return error(400, 'bad_request');
+        return json({ revoked: s.deleteRefreshOf(b.userId) });
       }
       case '/password': {
         if (typeof b.userId !== 'string' || !isPw(b.pw)) return error(400, 'bad_request');
@@ -271,11 +310,12 @@ export class AccountsDO extends DurableObject<Env> {
         return json({ ok: true });
       }
       case '/recover': {
-        if (typeof b.username !== 'string' || !isHex(b.code, 64) || !isPw(b.pw) || !isHex(b.refresh, 64)) return error(400, 'bad_request');
+        const refresh = grantOf(b.refresh);
+        if (typeof b.username !== 'string' || !isHex(b.code, 64) || !isPw(b.pw) || refresh === null) return error(400, 'bad_request');
         const keys = this.failKeys(b.username, b.ip);
         const wait = this.throttled(keys, now);
         if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
-        const r = s.recover(b.username, b.code, b.pw, b.refresh, now);
+        const r = s.recover(b.username, b.code, b.pw, { ...refresh, kind: 'web' }, now);
         if (r === null) {
           this.fail(keys, now);
           return error(401, 'bad_recovery', 'Usuario o código de recuperación incorrecto');
@@ -286,9 +326,10 @@ export class AccountsDO extends DurableObject<Env> {
       case '/oauth': {
         const provider = b.provider as OAuthProvider;
         if (!OAUTH_PROVIDERS.includes(provider) || typeof b.providerId !== 'string' || b.providerId.length === 0 || b.providerId.length > 128) return error(400, 'bad_request');
-        if (typeof b.name !== 'string' || !isHex(b.refresh, 64)) return error(400, 'bad_request');
+        const refresh = grantOf(b.refresh);
+        if (typeof b.name !== 'string' || refresh === null) return error(400, 'bad_request');
         const linkTo = typeof b.linkTo === 'string' ? b.linkTo : null;
-        const r = s.oauth(provider, b.providerId, b.name, linkTo, b.refresh, now);
+        const r = s.oauth(provider, b.providerId, b.name, linkTo, { ...refresh, kind: 'web' }, now);
         if (r === 'already_linked') return error(409, 'already_linked', 'Esa cuenta ya está vinculada a otro usuario');
         if (r === 'no_user') return error(403, 'no_user');
         return json(r);
@@ -312,12 +353,13 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/tv-poll': {
         const code = tvCode(b.code);
-        if (code === null || !isHex(b.secret, 64) || !isHex(b.refresh, 64)) return error(400, 'bad_request');
+        const refresh = grantOf(b.refresh);
+        if (code === null || !isHex(b.secret, 64) || refresh === null) return error(400, 'bad_request');
         const r = this.tv.poll(code, b.secret, now);
         if (r === 'pending') return json({ state: 'pending' });
         if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
         if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
-        const u = s.signedIn(r.userId, b.refresh, now);
+        const u = s.signedIn(r.userId, { ...refresh, kind: 'web' }, now);
         if (u !== null) return json(u);
         // Suspended after the confirm: the TV says so; deleted meanwhile: the approval went with it.
         return s.credentialsById(r.userId)?.banned === true ? error(403, 'banned', 'Cuenta suspendida') : error(410, 'tv_code_expired', 'El código caducó');

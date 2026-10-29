@@ -196,3 +196,108 @@ test('auth-9: an OAuth state cookie says typ oa and a callback refuses a state w
   assert.equal(cb.location, '/#auth=error:bad_state');
 });
 
+
+// ---- auth-4: refresh token families, reuse detection, the device list, sign out everywhere -----
+
+test('auth-4: a copied refresh token used after its rotation revokes the whole family (the thief\'s chain too)', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  assert.match(ana.rt, /^[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/, 'a family part and a secret');
+  const stolen = ana.rt; // a copy (malware, a shared computer) before the owner's next refresh
+  // The thief refreshes first and keeps rotating: its own chain.
+  const t1 = await refresh(env, stolen, ip(1));
+  assert.equal(t1.status, 200);
+  const t2 = await refresh(env, t1.rt, ip(1));
+  assert.equal(t2.status, 200);
+  assert.equal(t2.rt.split('.')[0], stolen.split('.')[0], 'every rotation keeps the family part');
+  // A minute later the owner's browser presents its (now rotated) token: a reuse.
+  const t0 = Date.now();
+  obj.now = () => t0 + 60_000;
+  const owner = await refresh(env, stolen, ip(0));
+  assert.equal(owner.status, 401);
+  assert.equal(owner.json.error, 'refresh_reused');
+  // The family is gone: the thief's latest token no longer refreshes.
+  const thief = await refresh(env, t2.rt, ip(1));
+  assert.equal(thief.status, 401, "the thief's chain is revoked with it");
+});
+
+test('auth-4: two tabs racing on one token: the loser hears 409 refresh_race, its cookie kept, nothing revoked', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  const a = await refresh(env, ana.rt, ip(0));
+  assert.equal(a.status, 200);
+  const b = await refresh(env, ana.rt, ip(0));
+  assert.equal(b.status, 409);
+  assert.equal(b.json.error, 'refresh_race');
+  assert.equal(b.rt, null, 'no Set-Cookie: the browser keeps the one tab A got');
+  assert.equal((await refresh(env, a.rt, ip(0))).status, 200, 'tab A\'s token still works');
+});
+
+test('auth-4: a token from before families still refreshes (no sign-out at the deploy) and joins a family', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const id = obj.store.register('Old', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now()).userId;
+  const legacy = Buffer.from(new Uint8Array(32).fill(7)).toString('base64url'); // 43 chars, no family part
+  obj.store.addRefresh(id, await A.sha256Hex(legacy), Date.now());
+  const r = await refresh(env, legacy, ip(0));
+  assert.equal(r.status, 200);
+  assert.equal(r.json.playerId, id);
+  assert.match(r.rt, /^[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+  assert.equal((await refresh(env, r.rt, ip(0))).status, 200);
+});
+
+test('auth-4: PERFIL\'s devices: each signed-in browser with where it signed in, this one marked; sign one out; sign out everywhere (an OAuth-only account too)', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  // Two browsers of a Discord-only account.
+  const a = await oauth(env, 'discord', 'd-ana', { ip: ip(0) });
+  assert.equal(a.done.location, '/#auth=new');
+  const sa = await refresh(env, a.rt, ip(0));
+  const b = await oauth(env, 'discord', 'd-ana', { ip: ip(1) });
+  const sb = await refresh(env, b.rt, ip(1));
+  assert.equal(sa.json.playerId, sb.json.playerId);
+  // A third one, from Córdoba.
+  const c = await req(env, 'POST', '/api/auth/refresh', { ip: ip(2), body: {}, cookie: '__Host-tg_rt=' + sb.rt });
+  const brt = cookieOf(c, '__Host-tg_rt');
+  const list = await req(env, 'GET', '/api/auth/sessions', { ip: ip(0), bearer: sa.json.session, cookie: '__Host-tg_rt=' + sa.rt });
+  assert.equal(list.status, 200);
+  assert.equal(list.json.sessions.length, 2, 'one row per device, not per token');
+  assert.deepEqual(list.json.sessions.map((d) => d.current).sort(), [false, true]);
+  for (const d of list.json.sessions) {
+    assert.match(d.id, /^[0-9a-f]{32}$/);
+    assert.equal(d.kind, 'web');
+    assert.ok(d.signedInAt > 0 && d.lastUsedAt >= d.signedInAt);
+  }
+  assert.equal(JSON.stringify(list.json).includes(sa.rt), false, 'no token in the list');
+  // Sign the other browser out.
+  const other = list.json.sessions.find((d) => !d.current);
+  const rv = await post(env, '/api/auth/sessions/revoke', { ip: ip(0), bearer: sa.json.session, body: { id: other.id } });
+  assert.equal(rv.status, 200);
+  assert.equal(rv.json.revoked, 1);
+  assert.equal((await refresh(env, brt, ip(1))).status, 401, 'that browser is signed out');
+  // Another account cannot sign this one's devices out.
+  const beto = await passwordAccount(env, obj, 'Beto', ip(3));
+  const mine = list.json.sessions.find((d) => d.current);
+  assert.equal((await post(env, '/api/auth/sessions/revoke', { ip: ip(3), bearer: beto.bearer, body: { id: mine.id } })).json.revoked, 0);
+  // Sign out everywhere, this device too.
+  const all = await post(env, '/api/auth/sessions/revoke-all', { ip: ip(0), bearer: sa.json.session, cookie: '__Host-tg_rt=' + sa.rt });
+  assert.equal(all.status, 200);
+  assert.ok(all.json.revoked >= 1);
+  assert.match(all.headers.get('set-cookie') ?? '', /__Host-tg_rt=;.*Max-Age=0/);
+  assert.equal((await refresh(env, sa.rt, ip(0))).status, 401);
+  // A guest has no devices.
+  const g = await AUTH.createSession(SECRET, '0123456789abcdef', 'Invitado');
+  assert.equal((await req(env, 'GET', '/api/auth/sessions', { ip: ip(4), bearer: g.token })).status, 403);
+});
+
+test('auth-4: the device list keeps where a device signed in (request.cf country and city), coarse', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  obj.store.register('Geo', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
+  const r = await req(env, 'POST', '/api/auth/login', { ip: ip(0), body: { username: 'Geo', password: KEY }, cf: { country: 'AR', city: 'Córdoba', asn: 7303 } });
+  const list = await req(env, 'GET', '/api/auth/sessions', { ip: ip(0), bearer: r.json.session });
+  assert.deepEqual([list.json.sessions[0].country, list.json.sessions[0].city], ['AR', 'Córdoba']);
+  assert.equal(JSON.stringify(list.json).includes('7303'), false, 'no network number kept');
+});
