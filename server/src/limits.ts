@@ -44,6 +44,8 @@
  *   POST /api/auth/register             register         network      120  RL_120
  *   POST /api/auth/recover              recover          network      120  RL_120
  *   GET  /api/auth/oauth/<p>/start      oauthStart       network      120  RL_120
+ *   GET  /api/auth/oauth/<p>/callback   oauthCallback    network      120  RL_120   a token request to Google or Discord each (its state is
+ *                                                                                    single-use too: firstUse)
  *   POST /api/auth/password             password         account       10  RL_10    a PBKDF2 and an AccountsDO write
  *   POST /api/auth/recovery-codes       recoveryCodes    account       10  RL_10    an AccountsDO write
  *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
@@ -110,6 +112,7 @@ export const LIMITS = {
   register: { by: 'network', isolate: 120, edge: 'RL_120' },
   recover: { by: 'network', isolate: 120, edge: 'RL_120' },
   oauthStart: { by: 'network', isolate: 120, edge: 'RL_120' },
+  oauthCallback: { by: 'network', isolate: 120, edge: 'RL_120' },
   password: { by: 'account', isolate: 10, edge: 'RL_10' },
   recoveryCodes: { by: 'account', isolate: 10, edge: 'RL_10' },
   me: { by: 'account', isolate: 60, edge: 'RL_60' },
@@ -149,7 +152,8 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
   if (path === '/api/me') return ['me', 'meNet'];
   if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
-  if (/^\/api\/auth\/oauth\/(?:google|discord)\/start$/.test(path)) return ['oauthStart'];
+  const o = /^\/api\/auth\/oauth\/(?:google|discord)\/(start|callback)$/.exec(path);
+  if (o) return [o[1] === 'start' ? 'oauthStart' : 'oauthCallback'];
   return [];
 }
 
@@ -242,4 +246,44 @@ export function limiter(env: Partial<Record<EdgeBinding, RateLimit>>): Limiter {
 export async function overLimit(limit: Limiter, names: readonly LimitName[], s: Subjects): Promise<LimitName | null> {
   for (const n of names) if (await limit(n, s[LIMITS[n].by])) return n;
   return null;
+}
+
+
+// ---- single use ------------------------------------------------------------------------------------
+
+const USED_MAX = 20_000;
+const used = new Map<string, number>();
+
+/** The Cache API's default cache (per Cloudflare location), or null where there is none (node tests). */
+export function edgeCache(): Cache | null {
+  const c = (globalThis as { caches?: { default?: Cache } }).caches;
+  return c?.default ?? null;
+}
+
+/**
+ * True the first time `scope`/`id` is seen within `ttlMs`, false for a replay. Exact in this
+ * isolate (memory); across the isolates of one Cloudflare location through the Cache API, a marker
+ * under `origin` (best effort: two copies that arrive together may both pass). The OAuth state's
+ * nonce: one state cookie is good for one token request to the provider.
+ */
+export async function firstUse(scope: string, id: string, ttlMs: number, origin: string | null, now: number = Date.now()): Promise<boolean> {
+  const key = scope + ':' + id;
+  const exp = used.get(key);
+  if (exp !== undefined && exp > now) return false;
+  if (used.size >= USED_MAX) {
+    for (const [k, v] of used) if (v <= now) used.delete(k);
+    if (used.size >= USED_MAX) used.delete(used.keys().next().value as string);
+  }
+  used.set(key, now + ttlMs);
+  const cache = edgeCache();
+  if (cache && origin) {
+    const marker = `${origin}/api/_used/${encodeURIComponent(scope)}/${encodeURIComponent(id)}`;
+    try {
+      if (await cache.match(marker)) return false;
+      await cache.put(marker, new Response('1', { headers: { 'cache-control': `max-age=${Math.max(1, Math.ceil(ttlMs / 1000))}` } }));
+    } catch {
+      /* the isolate's own memory still holds it */
+    }
+  }
+  return true;
 }

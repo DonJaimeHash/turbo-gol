@@ -74,6 +74,7 @@ import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../..
 import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, UserRef } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
+import { firstUse } from './limits';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
 import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
@@ -706,6 +707,15 @@ export async function oauthIdentity(cfg: ProviderConfig, provider: OAuthProvider
   return { id: u.id, name: typeof u.global_name === 'string' && u.global_name ? u.global_name : typeof u.username === 'string' ? u.username : 'Player' };
 }
 
+/**
+ * A state cookie is good for one callback (limits.ts firstUse, for the state's whole life): a
+ * replay of it is refused before our client secret goes to the provider again. The callback's
+ * per-network limit is index.ts's (limits.ts accountGate).
+ */
+function oauthStateUnused(c: RouteContext, st: OAuthState): Promise<boolean> {
+  return firstUse('oauth-state', st.n, OAUTH_TTL_S * 1000, new URL(c.request.url).origin);
+}
+
 async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL): Promise<Response> {
   const fail = (code: string): Response => redirect('/#auth=error:' + code, [clearCookie(OAUTH_COOKIE, 'Lax')]);
   const cfg = providerConfig(c.env, provider);
@@ -715,6 +725,7 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
   const st = raw ? await verifyJwt<OAuthState>(c.env.JWT_SECRET, raw) : null;
   const code = url.searchParams.get('code');
   if (!st || st.p !== provider || st.n !== url.searchParams.get('state') || !code || code.length > 2048) return fail('bad_state');
+  if (!(await oauthStateUnused(c, st))) return fail('bad_state');
   const ident = await oauthIdentity(cfg, provider, code, st.v, `${publicOrigin(c.env, c.request)}/api/auth/oauth/${provider}/callback`);
   if (!ident) return fail('provider_error');
   const refreshTok = newRefreshToken();

@@ -309,3 +309,38 @@ test('password and recovery codes: 10 a minute per account, before the object', 
   }
 });
 
+// ---- OAuth ---------------------------------------------------------------------------------------------
+
+test('the OAuth callback: one state cookie is good for one token request; a replay is bad_state and the provider is not asked again', async () => {
+  const env = makeEnv({ DISCORD_CLIENT_ID: 'cid', DISCORD_CLIENT_SECRET: 'csecret' });
+  const ip = ip4();
+  const start = await req(env, 'GET', '/api/auth/oauth/discord/start', { ip });
+  assert.equal(start.status, 302);
+  const state = new URL(start.headers.get('location')).searchParams.get('state');
+  const cookie = /__Host-tg_oa=([^;]+)/.exec(start.headers.get('set-cookie'))[1];
+  const asked = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    return new Response('{"error":"invalid_grant"}', { status: 400 });
+  };
+  const warn = console.warn;
+  console.warn = () => undefined;
+  try {
+    const callback = () => req(env, 'GET', `/api/auth/oauth/discord/callback?code=junk&state=${state}`, { ip, headers: { Cookie: '__Host-tg_oa=' + cookie } });
+    const first = await callback();
+    assert.equal(first.headers.get('location'), '/#auth=error:provider_error');
+    for (let i = 0; i < 5; i++) assert.equal((await callback()).headers.get('location'), '/#auth=error:bad_state');
+  } finally {
+    globalThis.fetch = realFetch;
+    console.warn = warn;
+  }
+  assert.deepEqual(asked, ['https://discord.com/api/v10/oauth2/token'], 'one token request in all');
+});
+
+test('the OAuth callback is limited per network before anything else', async () => {
+  const ip = ip4();
+  const env = makeEnv({ DISCORD_CLIENT_ID: 'cid', DISCORD_CLIENT_SECRET: 'csecret', RL_120: fakeBinding(120, new Map([['oauthCallback:' + ip, 120]])) });
+  const res = await req(env, 'GET', '/api/auth/oauth/discord/callback?code=x&state=y', { ip });
+  assert.equal(res.status, 429);
+});
