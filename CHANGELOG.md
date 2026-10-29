@@ -299,6 +299,34 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- Lobbies: when the players of a lobby's match could not connect to each other, the game put them in
+  the public Casual queue on a server; now they are back in their lobby, which says so, and the host
+  can start again.
+- Lobbies: a lobby's server match you rejoined with REJOIN came back as Casual, so PLAY AGAIN looked
+  for a Casual match; it goes back to the lobby. Leaving a lobby while the game was reconnecting to
+  it now frees your place (and passes the host on) at once instead of 40 seconds later. MAKE HOST is
+  no longer offered for a player who is reconnecting. The lobby's format is remembered for your next
+  CREATE LOBBY AND SHARE as soon as it changes, after a reload too. The region pill no longer says
+  "Offline" for a few seconds after a lobby reconnects.
+- Lobbies and Super low: after the restart you are back in your lobby only while the server still
+  keeps your place (40 seconds, it used to try for 90 and come back as a new player); a slower
+  restart says the lobby went on without you. Leaving a lobby's result with MENU lands on Play after
+  the restart, as the button says.
+- Online: a match that ended while your connection was coming back, or whose server closed it, says
+  "That match is over" instead of "Your connection dropped" with a REJOIN that could not work.
+- Super low: with the restart waiting for a match's result, its main button says RESTART · "Applies
+  Super low · back to Play" (or "back to the lobby") instead of PLAY AGAIN. Switching Super low on or
+  off while a search runs, which the restart would have ended, now asks you to stop searching first.
+- TV remotes: CH+ and CH− work however the remote sends them (Page Up / Page Down without a key code,
+  ChannelUp / ChannelDown, Samsung's own channel keys), and they switch Settings' tabs over the pause
+  too. Page Up and Page Down scroll a long screen that has no tabs.
+- On a phone, a second Go from the keyboard on a name no longer opens the on-screen keys over it.
+- turbo-gol.com/tv/ (with a slash at the end) opens the TV sign-in page instead of a blank one. The
+  code from a /tv link is no longer kept after you cancel or go back, so a reload does not ask again.
+- Signing in a TV: a suspended account is told so on the phone at once, and the TV says it too; a
+  busy server has its own message.
+- The anti-bot check no longer runs ahead for a signed-in account, and no longer logs two warnings in
+  the browser console on every page.
 - When a new version of the game is out and yours is too old to play online, a window says so and
   offers RELOAD NOW (selected), instead of a message that vanished after four seconds; if you say
   NOT NOW, an "UPDATE TO PLAY" pill stays in the top bar until you reload.
@@ -537,6 +565,10 @@ All notable changes to Turbogol are documented here. The format follows
   the home screen now.
 
 ### Security
+- TV sign-in codes: a TV's poll with a wrong secret gets the same answer as an unknown code, so it
+  never tells a live code apart; the limits count only live codes and an IPv6 /64 as one address; a
+  shared address (a phone carrier's, a school's) takes 50 failed confirms before it waits, an account
+  still 10; a code the server lost to a restart says it expired rather than that it does not exist.
 - Static files are served with X-Content-Type-Options, Referrer-Policy, X-Frame-Options and
   Permissions-Policy headers; /.well-known/security.txt points to private vulnerability reporting.
 - Unexpected server errors (API routes and match sockets) no longer echo the exception text.

@@ -334,10 +334,12 @@ src/game/
                         kept for a way back (rejoinStore.ts, sessionStorage) and rejoin() (Menu.rejoin:
                         a failed one's REINTENTAR rejoins again), the failure's outcome
                         (src/net/outcome.ts); the close code in the console and F4's state line only
-  rejoinStore.ts        the server match this tab may join again: matchId, kind, formats, the end of
-                        its regulation time; read by Inicio's hero and the lost sheet. And the Sala
-                        across a reload the game runs itself (Super low's restart: Game.restartOn
-                        saves it, lobby.ts installLobbyReturn joins it again by code and opens it)
+  rejoinStore.ts        the server match this tab may join again: matchId, kind (casual, ranked or a
+                        lobby's), formats, the end of its regulation time; read by Inicio's hero and
+                        the lost sheet. And the Sala across a reload the game runs itself (Super
+                        low's restart: Game.restartOn saves it, lobby.ts installLobbyReturn joins it
+                        again by code and opens it when it was on the stack) for LobbyDO's grace
+                        (LOBBY_STAY_MS = LOBBY_GRACE_MS, a test pins them; later it says it is gone)
   trainingPacks.ts      pure data: the 9 shot packs (shooting / saving / aerial x easy / medium /
                         hard), FREEPLAY_ID, spawn poses
   TrainingSession.ts    pure training state machine: frozen until the first input, per-shot timer
@@ -440,6 +442,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         sections with focus = selection, back + crumbs, chip, Settings), rail.ts
                         (the phone's rail and the upright tab bar), hintbar.ts (hints, source link,
                         About), pills.ts (region / connection, search, update)
+  channelKeys.ts        CH+ / CH− and PgUp / PgDn however a remote sends them (code, key, Tizen's
+                        XF86 keys and keyCodes): Menu.onKey and Ajustes over the pause; pure
   keyboard.ts           a phone's keyboard over a form: the visual viewport's shrink (Chrome on
                         Android resizes only that) as --kb-inset on .mn (PERFIL's stage makes that
                         room at its end, a phone's sheet rises above it) and the focused field scrolled above it in its own
@@ -489,8 +493,9 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         connection with RETRY, the running search on every section (Ajustes is one
                         of them), "UPDATE TO PLAY"), sheets (modal), mn-keypad's layer over them (OK /
                         A on a field without a fine pointer: openKeypad, its own zone, Back closes it
-                        first), the anti-bot sheet (antiBotAsk), CH+ / CH− (PageUp / PageDown,
-                        ChannelUp / ChannelDown) as LT / RT, toasts, the blocking
+                        first), the anti-bot sheet (antiBotAsk), CH+ / CH− (channelKeys.ts: PageUp /
+                        PageDown by code or key, ChannelUp / ChannelDown, Tizen's XF86 keys) as LT /
+                        RT, else a page scroll on a screen without tabs (pageScroll), toasts, the blocking
                         new-version sheet (z 65) on a 426 reload_required, About, the region sheet,
                         shared prefs (prefs.ts), population polling, the 4 Hz tick (1 Hz on super
                         low, DOM written only on change); MenuHost = what the Game provides (search,
@@ -695,7 +700,8 @@ src/net/
     P2PSession.ts       the P2P match inside the frame loop: quickMatch (or joinAssigned: a
                         custom lobby's room; with experimental rules the arena and both BotTeams
                         follow RoomWelcome.physics, 'ready' carries the fingerprint the wasm reads
-                        back, and there is no server fallback: a failure goes back to the lobby)
+                        back; any lobby's room has no server fallback: a mesh that fails goes back
+                        to the lobby, STATUS.lobbyFailed, never the public queue)
                         -> room -> mesh ->
                         ready -> start -> wall-clock ticks (canAdvance: stall hint / timesync
                         skip), engine hooks (seeded BotTeams + Match on the confirmed timeline
@@ -735,8 +741,9 @@ server/                 Cloudflare Workers backend (own package, wrangler; serve
                         records, the experimental switch and presets, login throttle, daily prune;
                         a report or record that carries experimental rules is refused; the TV
                         sign-in codes in memory (tvCodes.ts: 6 of the lobby alphabet, 5 min, one
-                        use, the device secret's hash compared in constant time, 10 failed confirms
-                        per account and per IP in 15 min, 5 live codes per IP)
+                        use, the device secret's hash compared in constant time, a wrong secret
+                        answered as an unknown code, 10 failed confirms per account and 50 per IP in
+                        15 min, 5 live codes per IP and 2,000 in all, an IPv6 /64 as one IP)
   src/accountRoutes.ts  /api/auth/* (register, login, refresh cookie, logout, recover, password,
                         recovery codes, Google / Discord OAuth with PKCE), /api/me, /api/me/training,
                         /api/me/experimental, /api/me/presets (account only, 10 presets, 30 writes a

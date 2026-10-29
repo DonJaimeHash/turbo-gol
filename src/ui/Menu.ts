@@ -1304,17 +1304,24 @@ export class Menu {
   }
 
   /**
-   * PgUp / PgDn (CH±) on a screen with no tabs of its own: the page under the focus (or the stage)
-   * scrolls by most of its height, and a focus left out of view moves to the first control in it
-   * (the last one going up), so the next arrow does not scroll it back. Nothing under a sheet or the keypad.
+   * PgUp / PgDn (CH±) on a screen with no tabs of its own: the page under the focus (else the
+   * screen's longest scroller, else the stage) scrolls by most of its height, and a focus left out
+   * of view moves to the first control in it (the last one going up), so the next arrow does not
+   * scroll it back. Nothing under a sheet or the keypad.
    */
   private pageScroll(d: -1 | 1): void {
-    if (!this.visibleNow || this.modalEl !== null || this.keypad !== null) return;
+    const top = this.top();
+    if (!this.visibleNow || this.modalEl !== null || this.keypad !== null || top === null) return;
+    const scrolls = (el: HTMLElement): boolean => el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY);
     const a = document.activeElement;
     let box: HTMLElement | null = a instanceof HTMLElement && this.stage.contains(a) ? a : null;
-    while (box !== null && box !== this.stage && !(box.scrollHeight > box.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(box).overflowY))) box = box.parentElement;
-    const s = box ?? this.stage;
-    if (s.scrollHeight <= s.clientHeight + 1) return;
+    while (box !== null && box !== this.stage && !scrolls(box)) box = box.parentElement;
+    if (box === null || box === this.stage) {
+      const inner = [...top.el.querySelectorAll<HTMLElement>('*')].filter(scrolls).sort((x, y) => y.scrollHeight - y.clientHeight - (x.scrollHeight - x.clientHeight))[0];
+      box = inner ?? this.stage;
+    }
+    const s = box;
+    if (!scrolls(s) && s.scrollHeight <= s.clientHeight + 1) return;
     s.scrollBy({ top: d * Math.round(s.clientHeight * 0.85) });
     const f = this.nav.current;
     if (f === null || touchMode() || !s.contains(f)) return;
