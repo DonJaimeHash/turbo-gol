@@ -624,3 +624,51 @@ test('authz-1: a password account re-authenticates with its password (POST /api/
   const link = await oauth(env, 'discord', 'd-ana', { query: '?link=1', cookie: '__Host-tg_rt=' + s.rt, ip: ip(0) });
   assert.equal(link.done.location, '/#auth=linked', 'the cookie is fresh too');
 });
+
+// ---- auth-3 / authz-2 / auth-persist-1: a first password and recovery codes need a fresh re-auth ----
+
+test('auth-3: an OAuth-only account\'s 1-hour Bearer alone sets no password and mints no recovery codes (403 reauth_required)', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  // A Discord-only account signed in 11 minutes ago, on two devices; its current Bearer is valid but not fresh.
+  const a = await at(obj, -11 * MIN, () => oauth(env, 'discord', 'd-victim', { ip: ip(0) }));
+  const b = await at(obj, -11 * MIN, () => oauth(env, 'discord', 'd-victim', { ip: ip(1) }));
+  const s = await refresh(env, a.rt, ip(0));
+  const id = s.json.playerId;
+  const pw = await post(env, '/api/auth/password', { ip: ip(2), bearer: s.json.session, body: { password: KEY2 } });
+  assert.equal(pw.status, 403);
+  assert.equal(pw.json.error, 'reauth_required');
+  const rc = await post(env, '/api/auth/recovery-codes', { ip: ip(2), bearer: s.json.session, body: {} });
+  assert.equal(rc.status, 403);
+  assert.equal(rc.json.error, 'reauth_required');
+  assert.equal(obj.store.credentials(userRow(obj, id).username).hash, undefined, 'still no password');
+  assert.deepEqual(JSON.parse(userRow(obj, id).recovery), [], 'no codes');
+  assert.equal((await refresh(env, b.rt, ip(1))).status, 200, 'the other device is still signed in');
+  // A login with the attacker's chosen key: nothing to sign in to.
+  const login = await post(env, '/api/auth/login', { ip: ip(2), body: { username: userRow(obj, id).username, password: KEY2 } });
+  assert.equal(login.status, 401);
+});
+
+test('auth-persist-1: after "confirm it is you" the owner sets a first password and gets codes; the other devices stay signed in', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const other = await oauth(env, 'discord', 'd-ana', { ip: ip(1) });
+  const a = await oauth(env, 'discord', 'd-ana', { ip: ip(0) }); // a fresh sign-in on this browser
+  const s = await refresh(env, a.rt, ip(0));
+  const id = s.json.playerId;
+  const pw = await post(env, '/api/auth/password', { ip: ip(0), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { password: KEY2 } });
+  assert.equal(pw.status, 200);
+  assert.ok(obj.store.credentials(userRow(obj, id).username).hash, 'a password now');
+  const o2 = await refresh(env, other.rt, ip(1));
+  assert.equal(o2.status, 200, 'a first password signs nobody out');
+  const s2 = await refresh(env, s.rt, ip(0));
+  const rc = await post(env, '/api/auth/recovery-codes', { ip: ip(0), bearer: s2.json.session, body: { password: KEY2 } });
+  assert.equal(rc.status, 200);
+  assert.equal(rc.json.recoveryCodes.length, 8);
+  // A password account changes its password with the old one, fresh or not (as before), and that signs the others out.
+  const stale = await AUTH.signJwt(SECRET, { typ: 's', sub: id, name: userRow(obj, id).username, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, acct: 1 });
+  assert.equal((await post(env, '/api/auth/password', { ip: ip(0), bearer: stale, body: { password: KEY } })).status, 400, 'no old password: refused');
+  const ch = await post(env, '/api/auth/password', { ip: ip(0), bearer: stale, cookie: '__Host-tg_rt=' + s2.rt, body: { oldPassword: KEY2, password: KEY } });
+  assert.equal(ch.status, 200);
+  assert.equal((await refresh(env, o2.rt, ip(1))).status, 401, 'a change signs the other devices out');
+});

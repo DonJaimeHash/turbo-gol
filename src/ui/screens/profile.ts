@@ -361,8 +361,9 @@ export function profileScreen(menu: Menu): Screen {
     else setChildren(
       fold,
       secondary(t('profile.rename'), () => renameDialog(), { 'data-key': 'profile-rename' }),
-      me?.hasPassword !== false ? secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' }) : secondary(t('profile.setPassword'), () => passwordDialog(), { 'data-key': 'profile-password' }),
-      secondary(t('profile.newCodes'), () => codesDialog(), { 'data-key': 'profile-codes' }),
+      // Without a password, a first one and new codes are new ways in: "confirm it is you" first (as a link).
+      me?.hasPassword !== false ? secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' }) : secondary(t('profile.setPassword'), () => fresh(passwordDialog), { 'data-key': 'profile-password' }),
+      secondary(t('profile.newCodes'), () => (me?.hasPassword === false ? fresh(codesDialog) : codesDialog()), { 'data-key': 'profile-codes' }),
       ...linked.map(linkedRow),
       // A link needs a credential proved on this browser in the last minutes: confirm it is you first.
       ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true))), { 'data-key': 'profile-link-' + p })),
@@ -466,7 +467,7 @@ export function profileScreen(menu: Menu): Screen {
     const again = field(t('profile.repeatNewPassword'), { type: 'password', autocomplete: 'new-password' });
     menu.modal({
       title: hasPw ? t('profile.changePasswordTitle') : t('profile.setPasswordTitle'),
-      body: [hasPw ? old.el : h('p.mn-note', null, t('profile.setPasswordNote')), next.el, again.el, h('p.mn-note', null, t('profile.othersSignedOut'))],
+      body: [hasPw ? old.el : h('p.mn-note', null, t('profile.setPasswordNote')), next.el, again.el, hasPw ? h('p.mn-note', null, t('profile.othersSignedOut')) : null],
       actions: [
         {
           label: t('profile.save'),

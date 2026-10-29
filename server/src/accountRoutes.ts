@@ -11,8 +11,13 @@
  *   POST /api/auth/sessions/revoke Bearer { id }                -> { revoked } (that device signed out)
  *   POST /api/auth/sessions/revoke-all Bearer                   -> { revoked } + cookie cleared (every device, this one too)
  *   POST /api/auth/recover    { username, code, password }      -> AccountSession + { codesLeft } + cookie
- *   POST /api/auth/password   Bearer { oldPassword, password }  -> { ok } (every other device signed out)
- *   POST /api/auth/recovery-codes Bearer { password }           -> { recoveryCodes }
+ *   POST /api/auth/password   Bearer { oldPassword, password }  -> { ok } (every other device signed out); an
+ *                             account without a password (Google / Discord only) sets its first one with a
+ *                             fresh session instead (403 reauth_required: PERFIL's "confirm it is you"), and
+ *                             its other devices stay signed in
+ *   POST /api/auth/recovery-codes Bearer { password }           -> { recoveryCodes }; without a password: a fresh session
+ *     Neither from a TV's session (403 tv_session). A 1-hour Bearer alone (a leak, a TV, a script)
+ *     no longer turns into a permanent username-and-password way in.
  *   POST /api/me/username     Bearer { username, password?, newPassword? } -> AccountSession (new name in the token);
  *                             a password account sends its key for the OLD name (checked) and for the NEW
  *                             name (stored): the client key is salted with the username
@@ -465,9 +470,14 @@ async function changePassword(c: RouteContext): Promise<Response> {
     if (!isClientKey(b.oldPassword)) return error(400, 'bad_request');
     const chk = await checkCredentials(c, me.data.name, b.oldPassword);
     if (!chk.ok) return chk.res;
+  } else {
+    // A first password is a new way in: only a device that just proved the account's provider adds it.
+    const f = requireFresh(c);
+    if (f instanceof Response) return f;
   }
   const token = cookieOf(c.request, REFRESH_COOKIE);
-  const r = await accountsCall(c.env, '/password', { userId: s.sub, pw: await newPasswordRecord(b.password), keep: token ? await sha256Hex(token) : undefined });
+  // A change signs the other devices out (the old password may have leaked); a first password does not.
+  const r = await accountsCall(c.env, '/password', { userId: s.sub, pw: await newPasswordRecord(b.password), keep: token ? await sha256Hex(token) : undefined, signOutOthers: me.data.hasPassword });
   return r.ok ? json({ ok: true }) : pass(r);
 }
 
@@ -481,6 +491,10 @@ async function newRecoveryCodes(c: RouteContext): Promise<Response> {
     if (!b || !isClientKey(b.password)) return error(400, 'bad_request');
     const chk = await checkCredentials(c, me.data.name, b.password);
     if (!chk.ok) return chk.res;
+  } else {
+    // Without a password, the codes would be the way to make one: a fresh session only.
+    const f = requireFresh(c);
+    if (f instanceof Response) return f;
   }
   const codes = Array.from({ length: RECOVERY_CODES }, newRecoveryCode);
   const r = await accountsCall(c.env, '/recovery', { userId: s.sub, hashes: await Promise.all(codes.map(recoveryCodeHash)) });

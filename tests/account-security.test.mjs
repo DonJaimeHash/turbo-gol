@@ -169,3 +169,16 @@ test('authz-1: a password re-authentication sends the client key with the Bearer
   assert.deepEqual(calls.find((c) => c.path === '/api/auth/unlink').body, { provider: 'google' });
   assert.deepEqual(acc.me.linkedAt, { discord: 5 });
 });
+
+// ---- auth-3 / authz-2 / auth-persist-1: PERFIL asks "confirm it is you" before a first password or codes ----
+
+test('auth-3: PERFIL sends a first password, new codes without a password, a link and an unlink through "confirm it is you"', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
+  assert.match(src, /t\('profile\.setPassword'\), \(\) => fresh\(passwordDialog\)/, 'a first password');
+  assert.match(src, /hasPassword === false \? fresh\(codesDialog\) : codesDialog\(\)/, 'codes without a password');
+  assert.match(src, /fresh\(\(\) => \(window\.location\.href = acc\.oauthUrl\(p, true\)\)\)/, 'a link');
+  assert.match(src, /fresh\(\(\) => \{\s*void acc\.unlink\(p\)/, 'an unlink');
+  assert.match(src, /acc\.oauthUrl\(p, 'reauth'\)/, 'the provider round trip');
+  assert.match(src, /await acc\.reauth\(pass\.input\.value\)/, 'or the password');
+});

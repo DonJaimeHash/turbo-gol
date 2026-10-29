@@ -16,7 +16,8 @@
  *   POST /sessions/revoke-all { userId }                             -> { revoked } (every device, this one too)
  *     `refresh` / `next` in every call that stores one: a RefreshGrant { hash, family?, kind?, country?,
  *     city? } (accountStore.ts), or the hash alone (a family of its own).
- *   POST /password        { userId, pw, keep? }                      -> { ok } (other sessions signed out)
+ *   POST /password        { userId, pw, keep?, signOutOthers? }      -> { ok } (other sessions signed out unless
+ *                                                                     signOutOthers is false: a first password)
  *   POST /recovery        { userId, hashes }                         -> { ok }
  *   POST /recover         { username, code, pw, refresh, ip }        -> UserRef & { codesLeft } | 401 | 429
  *   POST /oauth           { provider, providerId, name, linkTo, refresh, replace? } -> UserRef & { created } | 409
@@ -325,7 +326,7 @@ export class AccountsDO extends DurableObject<Env> {
       case '/password': {
         if (typeof b.userId !== 'string' || !isPw(b.pw)) return error(400, 'bad_request');
         if (!s.setPassword(b.userId, b.pw)) return error(404, 'no_user');
-        s.deleteRefreshOf(b.userId, isHex(b.keep, 64) ? b.keep : undefined);
+        if (b.signOutOthers !== false) s.deleteRefreshOf(b.userId, isHex(b.keep, 64) ? b.keep : undefined);
         return json({ ok: true });
       }
       case '/recovery': {
