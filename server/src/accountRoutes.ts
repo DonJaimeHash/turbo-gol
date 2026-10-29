@@ -79,6 +79,13 @@
  *     failed confirms (wrong, expired or used codes) per account and 50 per IP in 15 minutes; an
  *     IPv6 address counts by its /64 (tvCodes.ts ipKey).
  *
+ * Every POST /api/auth/* (every route that sets, rotates, clears or uses the refresh cookie, or
+ * changes a credential) is refused unless it comes from one of the game's own pages: an Origin
+ * header that is this origin (or PUBLIC_ORIGIN, or VITE_ORIGINS; a loopback page under wrangler
+ * dev), never missing or "null" (403 bad_origin), and, for a route that reads a body,
+ * Content-Type application/json (415 json_required): a cross-site <form> can send neither, so a
+ * login CSRF (a text/plain form signing the browser into another account) cannot happen.
+ *
  * `password` is always the client key (src/net/account.ts clientPasswordKey: PBKDF2 in the browser),
  * never the typed password. The server stores PBKDF2-SHA256(clientKey, random salt, 100,000) — the
  * Workers WebCrypto iteration ceiling — so hashing happens here, in parallel isolates, and the single
@@ -317,6 +324,41 @@ function scopeOf(s: SessionClaims): Pick<UserRef, 'tv' | 'authAt'> {
 function sameOriginOk(request: Request, allowed: (origin: string) => boolean): boolean {
   const origin = request.headers.get('Origin');
   return origin === null || allowed(origin);
+}
+
+/** A loopback host (wrangler dev, the Vite dev server). */
+function isLoopback(origin: string): boolean {
+  try {
+    const h = new URL(origin).hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h.endsWith('.localhost');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * An origin the game's own pages are served from: this request's, PUBLIC_ORIGIN, the VITE_ORIGINS
+ * list (index.ts originAllowed: production's), or, under wrangler dev, a loopback page (Vite on
+ * another port). With VITE_ORIGINS empty, no other origin passes here (originAllowed lets any).
+ */
+function ownOrigin(c: Pick<RouteContext, 'env' | 'request' | 'originAllowed'>, origin: string): boolean {
+  const self = new URL(c.request.url).origin;
+  if (origin === self) return true;
+  if (c.env.PUBLIC_ORIGIN && origin === c.env.PUBLIC_ORIGIN.replace(/\/$/, '')) return true;
+  const listed = (c.env.VITE_ORIGINS ?? '').split(',').some((s) => s.trim().length > 0);
+  return listed ? c.originAllowed(origin) : isLoopback(self) && isLoopback(origin);
+}
+
+/** The POST /api/auth/* routes that read no body (the console line of nodes/docs/VPS-SAO-PAULO.md refreshes with none). */
+const BODYLESS = new Set(['/api/auth/refresh', '/api/auth/logout', '/api/auth/sessions/revoke-all']);
+
+/** The login-CSRF gate of every POST /api/auth/*: null = from one of the game's pages, else the refusal (the header). */
+function crossSiteRefusal(c: RouteContext, path: string): Response | null {
+  const origin = c.request.headers.get('Origin');
+  if (origin === null || origin === 'null' || !ownOrigin(c, origin)) return error(403, 'bad_origin', 'Esta petición no viene de la página del juego');
+  if (BODYLESS.has(path)) return null;
+  const type = (c.request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+  return type === 'application/json' ? null : error(415, 'json_required', 'Se espera JSON');
 }
 
 function ipOf(request: Request): string {
@@ -985,6 +1027,10 @@ async function tvPoll(c: RouteContext): Promise<Response> {
 export async function accountRoute(c: RouteContext, url: URL): Promise<Response | null> {
   const p = url.pathname;
   const m = c.request.method;
+  if (m === 'POST' && p.startsWith('/api/auth/')) {
+    const refused = crossSiteRefusal(c, p);
+    if (refused !== null) return refused;
+  }
   if (m === 'POST') {
     if (p === '/api/auth/register') return register(c);
     if (p === '/api/auth/login') return login(c);

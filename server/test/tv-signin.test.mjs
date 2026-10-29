@@ -163,7 +163,9 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   const { env, obj } = makeEnv();
   const ip = ips();
   const ana = await account(obj, 'Ana');
-  const s = await call(env, '/api/auth/tv/start', { ip: ip(0), origin: null });
+  // Only from the game's page (Security 3: every POST /api/auth/* fails closed without an Origin).
+  assert.equal((await call(env, '/api/auth/tv/start', { ip: ip(0), origin: null })).status, 403);
+  const s = await call(env, '/api/auth/tv/start', { ip: ip(0) });
   assert.equal(s.status, 200);
   assert.equal(s.headers.get('cache-control'), 'no-store');
   const { code, secret, expiresAt, ttlMs, pollMs } = s.json;

@@ -712,3 +712,53 @@ test('auth-11 / econ-2: a maintainer\'s 1-hour Bearer or refresh cookie alone gr
   assert.equal((await req(env, 'GET', '/nodes/admin/nodes', { ip: ip(0), bearer: later })).json.error, 'reauth_required');
 });
 
+// ---- auth-8: login CSRF: every POST /api/auth/* needs the game's Origin, and JSON when it reads a body ----
+
+test('auth-8: a cross-site text/plain form POST to login, register or recover sets no cookie (403 bad_origin; 415 when same-origin but not JSON)', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  obj.store.register('atacante', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
+  // What <form enctype="text/plain"> with name='{"username":"atacante","password":"<key>","x":"' value='"}' sends.
+  const body = `{"username":"atacante","password":"${KEY}","x":"` + '=' + '"}';
+  for (const path of ['/api/auth/login', '/api/auth/register', '/api/auth/recover']) {
+    for (const origin of ['https://evil.example', 'null', null]) {
+      const r = await req(env, 'POST', path, { ip: ip(0), origin, contentType: 'text/plain', body });
+      assert.equal(r.status, 403, `${path} from ${origin}`);
+      assert.equal(r.json.error, 'bad_origin');
+      assert.equal(r.headers.get('set-cookie'), null);
+    }
+    const same = await req(env, 'POST', path, { ip: ip(0), contentType: 'text/plain', body });
+    assert.equal(same.status, 415, `${path}: text/plain from this origin`);
+    assert.equal(same.headers.get('set-cookie'), null);
+  }
+  const ok = await req(env, 'POST', '/api/auth/login', { ip: ip(0), body: JSON.parse(body) });
+  assert.equal(ok.status, 200, 'the game page itself (JSON, its Origin) still signs in');
+});
+
+test('auth-8: every state-changing auth route fails closed without the game\'s Origin; bodyless refresh needs no JSON type (the maintainer console line)', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await passwordAccount(env, obj, 'Ana', ip(0));
+  const paths = ['/api/auth/register', '/api/auth/login', '/api/auth/refresh', '/api/auth/logout', '/api/auth/recover', '/api/auth/password', '/api/auth/recovery-codes', '/api/auth/reauth', '/api/auth/unlink', '/api/auth/sessions/revoke', '/api/auth/sessions/revoke-all', '/api/auth/tv/start', '/api/auth/tv/info', '/api/auth/tv/confirm', '/api/auth/tv/poll'];
+  for (const path of paths) {
+    const r = await req(env, 'POST', path, { ip: ip(1), origin: null, bearer: ana.bearer, cookie: '__Host-tg_rt=' + ana.rt, body: {} });
+    assert.equal(r.status, 403, path);
+    assert.equal(r.json.error, 'bad_origin', path);
+  }
+  const s = await refresh(env, ana.rt, ip(0));
+  assert.equal(s.status, 200, 'nothing above touched the session');
+  // fetch('/api/auth/refresh', { method: 'POST' }) from a tab of the game: no body, no content type.
+  const bare = await req(env, 'POST', '/api/auth/refresh', { ip: ip(0), cookie: '__Host-tg_rt=' + s.rt });
+  assert.equal(bare.status, 200);
+});
+
+test('auth-8: under wrangler dev a loopback page (Vite on another port) passes; with VITE_ORIGINS empty only the Worker\'s own origin does', async () => {
+  const { env, obj } = makeEnv();
+  obj.store.register('Dev', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
+  const at = async (url, origin) => (await worker.fetch(new Request(url, { method: 'POST', headers: { Origin: origin, 'content-type': 'application/json', 'CF-Connecting-IP': '127.0.0.1' }, body: JSON.stringify({ username: 'Dev', password: KEY }) }), env)).status;
+  assert.equal(await at('http://127.0.0.1:8967/api/auth/login', 'http://127.0.0.1:5467'), 200);
+  assert.equal(await at('http://127.0.0.1:8967/api/auth/login', 'https://evil.example'), 403);
+  env.VITE_ORIGINS = '';
+  assert.equal(await at('https://turbo-gol.com/api/auth/login', 'https://evil.example'), 403, 'an empty list lets no stranger in here');
+  assert.equal(await at('https://turbo-gol.com/api/auth/login', 'https://turbo-gol.com'), 200);
+});
