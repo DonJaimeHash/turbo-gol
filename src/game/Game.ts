@@ -1429,6 +1429,7 @@ export class Game implements P2PGameHooks {
         return game.info;
       },
       padConnected: () => game.input.hasGamepad,
+      acceptHeld: () => game.input.acceptHeld,
       // Keyboard only: its preset, saved as Settings › Controls saves it (Input calls applySettings).
       // Only a player with the default bindings is ever asked, so nothing of their own is lost.
       setControlScheme: (s) => {

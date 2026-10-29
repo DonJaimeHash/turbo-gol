@@ -3,11 +3,13 @@
  * and a row of actions, centred on a PC or a TV (560 wide at most, opaque, the --veil behind),
  * rising from the bottom on a phone (90 % of the height at most). Menu.modal makes it modal
  * (aria-modal, the rest inert, Back closes it, the focus goes back to its opener). The first
- * action, or the one marked `autofocus` (CANCEL in a destructive sheet), takes the focus.
+ * action, or the one marked `autofocus` (CANCEL in a destructive sheet), takes the focus; one
+ * marked `hold` is held to confirm (components/hold.ts: GARAJE's redeem).
  * Built on call, nothing at import.
  */
 import { h } from '../dom';
 import type { Child } from '../dom';
+import { holdButton } from './hold';
 
 export interface SheetAction {
   label: string;
@@ -17,6 +19,8 @@ export interface SheetAction {
   danger?: boolean;
   /** Takes the first focus (else the first action). */
   autofocus?: boolean;
+  /** Held to confirm (components/hold.ts: `ms`, and a controller's A read through `held`): onClick runs once full. */
+  hold?: { ms: number; held?: () => boolean };
   /** False keeps the sheet up; anything else closes it. */
   onClick: () => void | boolean | Promise<void | boolean>;
 }
@@ -35,9 +39,7 @@ export interface SheetSpec {
 export function sheetBox(spec: SheetSpec, done: () => void): HTMLElement {
   const actions = h('div.mn-sheet-actions', { 'data-nav-row': true });
   for (const a of spec.actions) {
-    const cls = a.primary ? '.mn-btn-primary' : a.danger ? '.mn-btn-cancel' : '';
-    const b = h(`button.mn-btn${cls}` as 'button', { type: 'button', 'data-nav': true, 'data-autofocus': a.autofocus === true }, a.label);
-    b.addEventListener('click', async () => {
+    const run = async (): Promise<void> => {
       b.disabled = true;
       try {
         const r = await a.onClick();
@@ -45,7 +47,11 @@ export function sheetBox(spec: SheetSpec, done: () => void): HTMLElement {
       } finally {
         b.disabled = false;
       }
-    });
+    };
+    const cls = a.primary ? '.mn-btn-primary' : a.danger ? '.mn-btn-cancel' : '';
+    const b = a.hold !== undefined ? holdButton({ label: a.label, ms: a.hold.ms, held: a.hold.held, onDone: () => void run() }) : h(`button.mn-btn${cls}` as 'button', { type: 'button', 'data-nav': true }, a.label);
+    if (a.autofocus === true) b.dataset.autofocus = 'true';
+    if (a.hold === undefined) b.addEventListener('click', () => void run());
     actions.appendChild(b);
   }
   const body = Array.isArray(spec.body) ? spec.body : [spec.body];

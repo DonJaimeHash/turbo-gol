@@ -256,6 +256,8 @@ export interface MenuHost {
   readonly info: string;
   /** A controller is connected (Input.hasGamepad): a TV without one asks for it before a match. */
   padConnected(): boolean;
+  /** Enter or a controller's A is down now (Input.acceptHeld): a hold to confirm started by A lasts while it is (components/hold.ts). */
+  acceptHeld?(): boolean;
   /** "How will you play?" answered (howPlay.ts): keyboard only applies its preset (saved as Settings › Controls saves it). */
   setControlScheme(s: ControlScheme): void;
   /** Presses made so far count as held (Input.latchEdges): the A that revealed a controller presses nothing more. */
