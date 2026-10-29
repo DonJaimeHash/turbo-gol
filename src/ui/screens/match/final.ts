@@ -111,7 +111,8 @@ export function finalScreen(menu: Menu, source: FinalSource): FinalScreen {
   /** "Casual · 2v2 · Sudamérica", "Amistoso · 2v2 · Normal". */
   const queueLine = (v: FinalView): string => {
     if (v.kind === 'ai') return [t('final.vsAi'), v.mode, difficultyName(menu.host.difficulty)].join(HERO_SEP);
-    if (v.kind === 'lobby') return t('final.backToLobby');
+    // Out of the Sala meanwhile (it closed, a kick, a reload past its return): the button opens the list.
+    if (v.kind === 'lobby') return t(menu.host.lobby.inLobby || sampleKind !== null ? 'final.backToLobby' : 'custom.notInLobby');
     const modes = v.kind === 'ranked' ? menu.prefs.rankedModes : menu.prefs.casualModes;
     const region = regionText(menu.prefs.region);
     return [t(KIND_NAME[v.kind]), ...modes, region].filter((x) => x !== null).join(HERO_SEP);

@@ -265,6 +265,56 @@ test('the start waits for nobody away (member_away); back in, it goes', async ()
   assert.equal(h.mm.calls.filter((c) => c.path === '/custom').length, 1);
 });
 
+test("a member that left the lobby's match with no socket (a reload, a closed tab) gets the grace once somebody is back; then it goes and the lobby opens", async () => {
+  const h = await makeLobby();
+  const host = await h.upgrade('host1');
+  const bea = await h.join('bea');
+  await h.send(host, { t: 'start' });
+  assert.equal(host.last().status, 'in_game');
+  await h.drop(bea); // a reload in the match: the place stays while the match lasts
+  advance(5 * 60_000);
+  await h.alarm();
+  assert.equal(byName(host.last(), 'bea').away, false, 'still playing: no grace');
+  await h.send(host, { t: 'back' }); // the host's FINAL: the match is over
+  let st = host.last();
+  assert.equal(byName(st, 'bea').away, true, 'the grace starts now');
+  assert.equal(st.status, 'in_game', 'still in the match until the grace ends (or she is back)');
+  assert.ok(h.ctx.storage.alarm <= clock + L.LOBBY_GRACE_MS, 'an alarm by the end of the grace');
+  advance(L.LOBBY_GRACE_MS);
+  await h.alarm();
+  st = host.last();
+  assert.deepEqual(st.members.map((m) => m.name), ['Ana'], 'she goes at the end of the grace');
+  assert.equal(st.status, 'open', 'and the lobby opens');
+  await h.send(host, { t: 'start' });
+  assert.equal(h.mm.calls.filter((c) => c.path === '/custom').length, 2, 'INICIAR starts again');
+});
+
+test("back by code within the grace a member still in the match stays; a kick or a socket closed after the others' FINAL opens the lobby", async () => {
+  const h = await makeLobby({ name: 'Sala', mode: '3v3', visibility: 'private', net: 'server', matchLengthSeconds: 300 });
+  const host = await h.upgrade('host1');
+  advance(10);
+  const bea = await h.join('bea');
+  advance(10);
+  const caro = await h.join('caro');
+  advance(10);
+  await h.send(host, { t: 'start' });
+  await h.drop(bea);
+  // bea's next page joins the lobby again (lobby.ts installLobbyReturn): her place, still in the match.
+  await h.admit('bea');
+  const bea2 = await h.upgrade('bea');
+  assert.equal(byName(bea2.last(), 'bea').inGame, true);
+  assert.equal(byName(bea2.last(), 'bea').away, false);
+  await h.send(host, { t: 'back' });
+  assert.equal(byName(host.last(), 'bea').away, false, 'a socket open: no grace');
+  // caro closes her tab after the host's FINAL: away at once (the match is over).
+  await h.drop(caro);
+  assert.equal(byName(host.last(), 'caro').away, true);
+  await h.send(bea2, { t: 'back' });
+  assert.equal(host.last().status, 'in_game', 'caro is still in it');
+  await h.send(host, { t: 'kick', member: byName(host.last(), 'caro').id });
+  assert.equal(host.last().status, 'open', 'kicked: nobody in the match, the lobby opens');
+});
+
 test('the host hands the lobby over and moves a member; only the host; LISTO is shown and cleared by a move and the start', async () => {
   const h = await makeLobby();
   const host = await h.upgrade('host1');

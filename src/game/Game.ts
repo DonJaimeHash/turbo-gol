@@ -1057,11 +1057,15 @@ export class Game implements P2PGameHooks {
     this.lobby = new LobbyClient({ bearer: async () => (await online.client.ensureGuest()).session });
     this.menu = createMenu(this.menuHost(), opts.hudContainer);
     // A join link (#sala=ABC234) on this load or a later hashchange: its sheet once the menus are up.
-    // The Sala a reload of the game's own left (restartOn): joined again, its screen.
+    // The Sala a reload left (the game's own, restartOn, or the player's: pagehide, not a page kept
+    // in the back/forward cache): joined again, its screen.
     // The phone's /tv page (a TV's sign-in), and a code kept across a sign-in's round trip.
     if (typeof window !== 'undefined' && typeof history !== 'undefined') {
       installJoinLink(this.menu);
       installLobbyReturn(this.menu);
+      window.addEventListener('pagehide', (e) => {
+        if (!e.persisted) this.keepLobby();
+      });
       installTvLink(this.menu);
     }
     // The anti-bot check that wants the player: the menus' sheet, CANCEL ends it.
@@ -1864,15 +1868,22 @@ export class Game implements P2PGameHooks {
         /* the reload still starts on the lower tier (its ceiling) */
       }
     }
-    // The Sala this tab is in: the next page joins it again (lobby.ts installLobbyReturn), as the
-    // reload's dropped socket keeps the place (LobbyDO), and opens it when it was on the stack (the
-    // FINAL's MENÚ goes to Inicio: so does the page after the reload).
-    const lobby = this.lobby;
-    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now(), open: this.menu.stacked('lobby') });
+    this.keepLobby();
     this.loadingHold = true;
     return this.loading.show(fallback !== null ? fallbackText(fallback) : t('loading.restart')).then(() => {
       window.location.reload();
     });
+  }
+
+  /**
+   * The Sala this tab is in, for the next page (restartOn, and pagehide: any reload): it joins it
+   * again (lobby.ts installLobbyReturn), as the reload's dropped socket keeps the place (LobbyDO), and
+   * opens it when it was on the stack (the FINAL's MENÚ goes to Inicio: so does the page after the
+   * reload), never over a match under way (Inicio's hero rejoins a server one; its FINAL goes back).
+   */
+  private keepLobby(): void {
+    const lobby = this.lobby;
+    if (lobby.inLobby && lobby.code !== null) saveLobbyStay({ code: lobby.code, password: lobby.password, savedAt: Date.now(), open: this.menu.stacked('lobby') && this.session?.inMatch !== true });
   }
 
   /** The tier the player picked (switch `switchId`) has run through the fallback window: lift a lower ceiling to it. */
