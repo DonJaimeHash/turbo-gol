@@ -70,7 +70,14 @@ hidden (`emailAvailable` is false).
 - **Footer:** `— Turbogol · turbo-gol.com` and "Este correo es automático: no lo respondas." / "This
   is an automatic email: please don't reply." The host is `LINK_ORIGIN`'s.
 - **Values** (names, the masked address) are cleaned of control characters and bidi overrides,
-  and escaped in the html.
+  and escaped in the html. They also never become links: "tg-verify.com" and "www.x.gg" are valid
+  usernames, and mail clients link bare domains, so an attacker's account name would be a live link
+  in a signed mail from turbo-gol.com. A WORD JOINER (U+2060, invisible) goes on both sides of every
+  `.`, `:`, `/`, `\`, `@` and full-width full stop of a value, and the html puts each of those in its
+  own `<span>`. The name reads the same; no client finds a domain or a `www.` or `http://` start in
+  it. The tests check every template with such names for any domain but `LINK_ORIGIN`'s host.
+- **M7's move code** is typed "en el juego, en esa cuenta" / "in the game, on that account", never
+  "there", and the mail says never to share it, as every other code mail does.
 
 ## Language and dates
 

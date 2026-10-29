@@ -58,10 +58,27 @@ export const hrefsIn = (s) => [...s.matchAll(/href="([^"]*)"/g)].map((m) => m[1]
 
 const LINK_KINDS = new Set(['verify', 'email', 'reset', 'undo', 'keep', 'unsub']);
 
-/** Every URL of every rendered mail is `${origin}/account#<kind>=<token>` (or #forgot), with no query. */
+// What a mail client would turn into a link without a scheme: a bare domain (a label, a dot or a
+// full stop IDNA reads as one, then a top-level domain), "www." or a "scheme://" / "//" start. The
+// label before the dot may hold invisible format characters (some linkifiers count them as letters);
+// the top-level domain may not.
+const DOMAIN_LIKE = /[\p{L}\p{N}\p{Cf}_-]+[.\u3002\uFF0E\uFF61]\p{L}{2,}/giu;
+const WWW_OR_SCHEME = /(?<![\p{L}\p{N}])www[.\u3002\uFF0E\uFF61]|[a-z][a-z0-9+.-]*:\/\/|\/\//giu;
+
+/** Every domain-like string or URL start in `s` that is not the link origin's own. */
+export function foreignDomainsIn(s, origin) {
+  const rest = s.split(origin).join(' ').split(new URL(origin).hostname).join(' ');
+  return [...rest.matchAll(DOMAIN_LIKE), ...rest.matchAll(WWW_OR_SCHEME)].map((m) => m[0]);
+}
+
+/**
+ * Every URL of every rendered mail is `${origin}/account#<kind>=<token>` (or #forgot), with no query,
+ * and no subject, text or html holds any other domain a mail client could link.
+ */
 export function assertOwnUrls(rendered, origin) {
   for (const { d, lang, r } of rendered) {
     const at = `${label(d)} ${lang}`;
+    for (const [part, s] of [['subject', r.subject], ['text', r.text], ['html', r.html]]) assert.deepEqual(foreignDomainsIn(s, origin), [], `${at}: a domain in the ${part}`);
     const urls = [...urlsIn(r.text), ...urlsIn(r.html), ...hrefsIn(r.html)];
     if ('token' in d || d.kind === 'password_changed') assert.ok(urls.length > 0, at);
     for (const u of urls) {

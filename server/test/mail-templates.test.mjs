@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AT, ORIGIN, SAMPLES, TOKEN, assertOwnUrls, label, renderAll } from './mailSamples.mjs';
+import { AT, ORIGIN, SAMPLES, TOKEN, assertOwnUrls, foreignDomainsIn, label, renderAll } from './mailSamples.mjs';
 
 const T = await import('../src/mailTemplates.ts');
 const C = await import('../src/mailCaps.ts');
@@ -149,11 +149,58 @@ test('values are cleaned of control characters and escaped in the html', () => {
   const other = 'Beto\r\nBcc: evil@example.com';
   const r = T.renderMail({ kind: 'email_moved', name, other, at: AT, methods: ['discord'] }, { origin: ORIGIN, lang: 'es' });
   assert.ok(!/[\r\n]/.test(r.subject));
-  assert.ok(r.subject.includes('Beto Bcc: evil@example.com'), 'the line break is gone, the words stay as text');
+  assert.ok(r.subject.replaceAll('\u2060', '').includes('Beto Bcc: evil@example.com'), 'the line break is gone, the words stay as text');
   assert.ok(!r.html.includes('<b>') && r.html.includes('&lt;b&gt;&quot;Ana&quot;&amp;&#39;x'));
   assert.ok(r.text.includes(name), 'the text part carries the name as it is');
   const bidi = T.renderMail({ kind: 'reauth_code', name: 'Ana' + String.fromCodePoint(0x202e) + 'evil', code: '123456' }, { origin: ORIGIN, lang: 'en' });
   assert.ok(!bidi.text.includes(String.fromCodePoint(0x202e)) && bidi.text.includes('Hi Ana evil,'));
+});
+
+// Review of PR 2 (major): "tg-verify.com" is a valid username, and mail clients link bare domains.
+// In M7 the attacker's name sat next to the code that moves the victim's address, as a link.
+test('a name or the masked address that reads like a domain or a URL never becomes a link, and still reads the same', () => {
+  const hostile = ['tg-verify.com', 'www.evil.gg', 'Ana.co', 'turbo-gol.com.evil.io', 'a.b.c.d.e.gg', 'http://evil.com/x', '//evil.com', 'evil\u3002com', 'evil\uFF0Ecom', 'pay@evil.io', 'evil.com\\x'];
+  const joinedDot = '\u2060.\u2060';
+  for (const value of hostile) {
+    const rendered = [];
+    for (const s of SAMPLES) {
+      if (!('name' in s || 'other' in s || 'masked' in s)) continue;
+      const d = { ...s, ...('name' in s ? { name: value } : {}), ...('other' in s ? { other: value } : {}), ...('masked' in s ? { masked: 'an***@' + value } : {}) };
+      for (const lang of ['es', 'en']) rendered.push({ d, lang, r: T.renderMail(d, { origin: ORIGIN, lang }) });
+    }
+    assert.ok(rendered.length >= 30, value);
+    assertOwnUrls(rendered, ORIGIN); // no domain but turbo-gol.com in any subject, text or html
+    for (const { d, lang, r } of rendered) {
+      const at = `${label(d)} ${lang} ${value}`;
+      assert.ok(r.text.replaceAll('\u2060', '').includes(value), `${at}: the text shows the name as it is, plus invisible joiners`);
+      assert.ok(r.subject.replaceAll('\u2060', '').length >= 10, at);
+      const plainHtml = r.html.replaceAll('\u2060', '').replace(/<\/?span>/g, '');
+      assert.ok(plainHtml.includes(value.replace(/&/g, '&amp;')), `${at}: the html shows it too`);
+      if (value.includes('.')) {
+        assert.ok(r.text.includes(joinedDot), at);
+        assert.ok(r.html.includes('\u2060<span>.</span>\u2060'), `${at}: each dot of a value in its own span`);
+      }
+    }
+  }
+  // The attack of the review, word for word: the code mail of M7 and the subject of M12.
+  const m7 = T.renderMail({ kind: 'email_in_use', name: 'Ana', other: 'tg-verify.com', variant: 'move', code: '555123', methods: ['username'] }, { origin: ORIGIN, lang: 'en' });
+  assert.ok(!m7.text.includes('tg-verify.com') && m7.text.includes('tg-verify\u2060.\u2060com'));
+  const m12 = T.renderMail({ kind: 'email_moved', name: 'Ana', other: 'tg-verify.com', at: AT, methods: ['username'] }, { origin: ORIGIN, lang: 'es' });
+  assert.deepEqual(foreignDomainsIn(m12.subject, ORIGIN), []);
+  assert.ok(m12.subject.replaceAll('\u2060', '').startsWith('Tu correo pasó a la cuenta tg-verify.com de Turbogol · '));
+  // The copy of the templates never gets joiners, only the values do.
+  for (const { r } of all()) assert.ok(!(r.subject + r.text).replace(/an\*\*\*\u2060@\u2060gmail\u2060\.\u2060com/g, '').includes('\u2060'));
+});
+
+test('M7 "move": the code goes into the game, on that account, and is never shared', () => {
+  const d = { kind: 'email_in_use', name: 'Ana', other: 'Beto', variant: 'move', code: '555123', methods: ['username'] };
+  const es = T.renderMail(d, { origin: ORIGIN, lang: 'es' }).text;
+  const en = T.renderMail(d, { origin: ORIGIN, lang: 'en' }).text;
+  assert.ok(es.includes('quieres usar este correo en Beto, escribe este código en el juego, en esa cuenta:\n\n555123\n'));
+  assert.ok(es.includes('El código caduca en 15 minutos. No compartas el código con nadie: Turbogol nunca te lo va a pedir.'));
+  assert.ok(en.includes('you want this email on Beto, type this code in the game, on that account:\n\n555123\n'));
+  assert.ok(en.includes('The code expires in 15 minutes. Never share the code: Turbogol will never ask you for it.'));
+  assert.doesNotMatch(en, /type this code there/);
 });
 
 test('{methods} and {providers}: in the mail\'s language, joined with "o" / "or"; a notice without providers drops the clause', () => {

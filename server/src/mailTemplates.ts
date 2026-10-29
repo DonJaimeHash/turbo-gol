@@ -11,7 +11,8 @@
  * Rules the tests hold every template to (server/test/mail.test.mjs):
  *   - every URL is built here from `ctx.origin` (mail.ts linkOrigin) and a token, never taken from
  *     the caller, and a token only ever travels in the fragment;
- *   - every value is cleaned of control characters, and escaped in the html;
+ *   - every value is cleaned of control characters, and escaped in the html; a name or the masked
+ *     address that reads like a domain or a URL ("tg-verify.com") never becomes a link (unlinkable);
  *   - no image, tracking, remote font, style sheet or script, and no external link;
  *   - the Spanish is neutral (tú, never voseo) and the copy rules of tests/i18n-copy.test.mjs hold;
  *   - the security notices (mailCaps.ts isNotice) carry both languages, the account's first.
@@ -109,6 +110,23 @@ function clean(v: string, max = 64): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max);
+}
+
+/**
+ * A public name or the masked address as words no mail client can turn into a link. "tg-verify.com"
+ * and "www.x.gg" are valid usernames, and Gmail, Outlook and Apple Mail link bare domains: in M7 the
+ * attacker's name would be a live link in a DKIM-signed mail, right next to the code that moves the
+ * address. So a WORD JOINER (U+2060: invisible, never a line break) goes on both sides of every '.',
+ * ':', '/', '\', '@' and the full stops IDNA reads as '.'. Before it, "www." and "http:" never start a
+ * match; after it, no label is a top-level domain. The name still reads the same; the html also puts
+ * each of those characters in its own <span> (blocksHtml).
+ */
+const JOINER = '\u2060';
+const LINK_PUNCT = /[.:/\\@\u3002\uFF0E\uFF61]/g;
+const JOINED_PUNCT = /\u2060([.:/\\@\u3002\uFF0E\uFF61])\u2060/g;
+
+function unlinkable(v: string): string {
+  return v.replace(LINK_PUNCT, (c) => JOINER + c + JOINER);
 }
 
 function escapeHtml(s: string): string {
@@ -361,7 +379,7 @@ const TEMPLATES: { [K in MailKind]: (d: Extract<MailData, { kind: K }>, x: Tools
     if (x.lang === 'es') {
       const body: Block[] =
         d.variant === 'move'
-          ? [p(`Si las dos cuentas son tuyas y quieres usar este correo en ${d.other}, escribe este código en esa cuenta:`), code(d.code), p(`El correo deja la cuenta ${d.name}, que sigue entrando con ${x.methods(d.methods)}. El código caduca en 15 minutos.`)]
+          ? [p(`Si las dos cuentas son tuyas y quieres usar este correo en ${d.other}, escribe este código en el juego, en esa cuenta:`), code(d.code), p(`El correo deja la cuenta ${d.name}, que sigue entrando con ${x.methods(d.methods)}. El código caduca en 15 minutos. No compartas el código con nadie: Turbogol nunca te lo va a pedir.`)]
           : d.variant === 'only'
             ? [p(`Este correo no puede pasar a otra cuenta: es la única forma de entrar a la cuenta ${d.name}. Si las dos cuentas son tuyas, sigue usando ${d.name}.`)]
             : [p(`Este correo queda reservado unos días para la cuenta ${d.name}, porque el cambio de su correo todavía se puede deshacer.`)];
@@ -372,7 +390,7 @@ const TEMPLATES: { [K in MailKind]: (d: Extract<MailData, { kind: K }>, x: Tools
     }
     const body: Block[] =
       d.variant === 'move'
-        ? [p(`If both accounts are yours and you want this email on ${d.other}, type this code there:`), code(d.code), p(`The email then leaves ${d.name}, which keeps signing in with ${x.methods(d.methods)}. The code expires in 15 minutes.`)]
+        ? [p(`If both accounts are yours and you want this email on ${d.other}, type this code in the game, on that account:`), code(d.code), p(`The email then leaves ${d.name}, which keeps signing in with ${x.methods(d.methods)}. The code expires in 15 minutes. Never share the code: Turbogol will never ask you for it.`)]
         : d.variant === 'only'
           ? [p(`This email can't move to another account: it's the only way into the account ${d.name}. If both accounts are yours, keep using ${d.name}.`)]
           : [p(`This email stays reserved for a few days for the account ${d.name}, because the change of its email can still be undone.`)];
@@ -529,17 +547,22 @@ function blocksHtml(blocks: readonly Block[]): string {
     .map((b) => {
       if (b.t === 'code') return `<p style="${STYLE.code}">${escapeHtml(b.code)}</p>`;
       if (b.t === 'link') return `<p style="${STYLE.p}"><a href="${escapeHtml(b.url)}" style="${STYLE.a}">${escapeHtml(b.label)}</a><br><span style="${STYLE.url}">${escapeHtml(b.url)}</span></p>`;
-      const inner = b.s.map((s) => (typeof s === 'string' ? escapeHtml(s) : `<a href="${escapeHtml(s.url)}" style="${STYLE.a}">${escapeHtml(s.url)}</a>`)).join('');
+      // Only values carry the joiner (unlinkable): their dots, colons and slashes each get a <span>,
+      // so no single text node of the html holds a domain either.
+      const inner = b.s.map((s) => (typeof s === 'string' ? escapeHtml(s).replace(JOINED_PUNCT, `${JOINER}<span>$1</span>${JOINER}`) : `<a href="${escapeHtml(s.url)}" style="${STYLE.a}">${escapeHtml(s.url)}</a>`)).join('');
       return `<p style="${STYLE.p}">${inner}</p>`;
     })
     .join('\n');
 }
 
-/** Every value a template may print, cleaned (control characters, length) and checked (codes, tokens). */
+/**
+ * Every value a template may print, cleaned (control characters, length), made unlinkable (names
+ * and the masked address) and checked (codes, tokens).
+ */
 function cleaned(d: MailData): MailData {
   const out = { ...d } as Record<string, unknown>;
-  for (const k of ['name', 'other']) if (typeof out[k] === 'string') out[k] = clean(out[k] as string);
-  if (typeof out.masked === 'string') out.masked = clean(out.masked as string, 254);
+  for (const k of ['name', 'other']) if (typeof out[k] === 'string') out[k] = unlinkable(clean(out[k] as string));
+  if (typeof out.masked === 'string') out.masked = unlinkable(clean(out.masked as string, 254));
   if (typeof out.code === 'string') out.code = mustCode(out.code as string);
   if (typeof out.token === 'string') out.token = mustToken(out.token as string);
   for (const k of ['name', 'other', 'masked']) if (k in out && !out[k]) throw new Error(`mail: {${k}} is empty`);
