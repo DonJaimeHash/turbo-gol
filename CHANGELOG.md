@@ -7,6 +7,12 @@ All notable changes to Turbogol are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Replays: PROFILE > ABOUT > REPLAYS (not on TVs yet) lists the matches the community servers played in the last
+  30 days, for everyone, guests included, and plays any of them in the browser: the game's own
+  stadium and scorebug, a timeline with the goals, speed from 0.25x to 8x, a broadcast camera and
+  each car's camera. The match is re-simulated from the recording, so the viewer says when a match
+  was played on another version of the game, or from when it stops matching the recording. Only
+  the names the game's servers assigned are shown, never account or server ids (`docs/replays.md`).
 - Four new cars: Pampero (a low, sharp wedge), Carpincho (a round, sturdy off-roader), Cóndor (a long
   jet racer with a tail fin) and Tero (a compact rally hatch), beside the Dune, which stays free
   for everyone. Every car drives the same: same handling, same hitbox, only the look changes, so

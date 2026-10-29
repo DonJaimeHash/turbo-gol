@@ -102,6 +102,8 @@ antes de mandar al sitio. `whoami` y las releases se responden en el Worker; el 
 | `POST /nodes/tokens` | `NodeRegistryDO`, con la sesión de **cuenta**: 401 sin sesión, 403 `account_required` para un invitado y 403 `not_trusted` para una cuenta que no está en `NODE_TRUSTED_OPERATORS`. Responde el token, de un solo uso y una hora, y la línea de instalación de Linux. 413 si declara más de 4 KB |
 | `GET /nodes/mine` | `NodeRegistryDO`, con la sesión de cuenta: los nodos propios |
 | `GET /nodes/status` | `NodeRegistryDO`: la lista pública de nodos, sin direcciones, 10 s en caché |
+| `GET /nodes/replays` | Pública, también para invitados: las partidas que el plano de control cerró sin anularlas, de los últimos 30 días, de la más nueva a la más vieja (`?before=<ms>` pagina). Nombres del plano de control, sin ids de cuenta ni de nodo. La primera página, 30 s en caché por isolate |
+| `GET /nodes/replays/<id>/view` | Pública: la replay de una partida listada, para el visor del navegador (`replay.html`). El Worker la lee de R2, comprueba su SHA-256 contra el índice y rehace el encabezado con el registro del plano de control (`server/src/replayIndex.ts`). 404 si la partida se anuló, no está listada, ya venció o pesa más de 4 MiB. Queda en la caché del borde (Cache API) desde la primera vez que alguien la mira |
 
 Cualquier otra ruta bajo `/nodes/` responde 404, y sin la configuración de los nodos
 (`nodesConfigured`: un fork, el desarrollo local) también todas las que van al DO. Después de la
@@ -111,13 +113,14 @@ y con la sesión de cuenta (los invitados no canjean): `GET /api/me/shop`, `POST
 `GET /api/me/items` (el inventario, para que el juego desbloquee ítems) y `POST /api/me/car` (el
 auto elegido, que firma la sesión), con `GET /nodes/shop` y `POST /nodes/shop/claim` como alias
 (responden también sin la configuración de los nodos). Las rutas `/dev/*` del servidor de
-referencia no existen en el Worker. CORS, solo en `tokens`, `mine`, `status` y la tienda.
+referencia no existen en el Worker. CORS, solo en `tokens`, `mine`, `status`, la tienda y la lista de replays.
 
 Límites, con una IPv6 contada por su /64: `register`, 5 por dirección por hora, y `tokens`, 10 por
 cuenta por día, los lleva el DO, en memoria (un deploy los pone en cero); el Worker los repite por
 isolate para que la basura no llegue al DO. Los demás son solo del Worker, por isolate
 (`rateLimited` en `server/src/index.ts`): `connect`, 30 por dirección por minuto; las subidas y
-las bajadas de replays, 60 cada una; `status`, 60; `mine`, 30 por cuenta.
+las bajadas de replays, 60 cada una; `status`, 60; `mine`, 30 por cuenta; la lista pública de
+replays, 60, y cada replay pública, 30.
 
 ## 3. Matchmaker: el gancho de juego
 

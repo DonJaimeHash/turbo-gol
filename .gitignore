@@ -19,3 +19,6 @@ public/LICENSE.txt
 public/third-party-licenses.txt
 # Local AI-assistant / editor launch configs.
 .claude/
+
+# Replay viewer test files (nodes/scripts/make-test-replay.mjs)
+replays-dev/
