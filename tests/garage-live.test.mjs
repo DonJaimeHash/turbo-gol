@@ -73,6 +73,19 @@ test('a phone held sideways: the row picked stays in view, the action names its 
   assert.match(CSS, /html\[data-shell='rail'\] \.mn-gar-det-head,\s*html\[data-layout='portrait'\] \.mn-gar-det-head \{\s*display: none;/, 'the head the name stands in for');
 });
 
+test('GANA PUNTOS with a controller: the sheet offers no button that cannot open (QR and CERRAR, as on a TV)', () => {
+  // Menu knows the click running is a controller's A (data-input says so only after this frame).
+  assert.match(body(MENU, '  get padPress(): boolean {'), /return this\.padAccept;/);
+  assert.match(MENU, /this\.padAccept = true;\s*try \{\s*this\.nav\.accept\(\);\s*\} finally \{\s*this\.padAccept = false;\s*\}/);
+  assert.match(GARAGE, /const noPopup = \(\): boolean => tv\(\) \|\| menu\.padPress \|\| html\.dataset\.input === 'pad' \|\| html\.dataset\.input === 'remote';/);
+  const guide = body(GARAGE, '  const openGuide = (): void => {');
+  assert.match(guide, /actions: noPopup\(\)\s*\? \[\{ label: t\('outcome\.close'\), primary: true, onClick: \(\) => true \}\]/, 'a pad or a TV: CERRAR alone');
+  assert.match(guide, /if \(menu\.padPress\) return false;\s*window\.open\(url, '_blank', 'noopener'\);/, 'a mouse, a key or a finger: the README in a new tab, noopener');
+  const earn = body(GARAGE, '  const earnClick = (e: MouseEvent): void => {');
+  assert.match(earn, /if \(!noPopup\(\)\) return;\s*e\.preventDefault\(\);\s*openGuide\(\);/, "the card's link opens itself for a mouse or a key");
+  assert.match(GARAGE, /h\(\s*'a\.mn-gar-earn',\s*\{ href: guideUrl\(\), target: '_blank', rel: 'noopener'/);
+});
+
 test("a TV's CH± from a scrolled list: the other tab's rows start at the top, their pick in view", () => {
   const render = body(GARAGE, '  function render(): void {');
   // Both tabs' rows share one scroller (setChildren swaps them): its scroll is reset with the swap...

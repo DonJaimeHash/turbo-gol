@@ -510,19 +510,31 @@ export function garageScreen(menu: Menu): Screen {
     });
   };
 
-  /** How points are earned: the guide's QR (a phone opens it), and on a page with a pointer the guide itself. */
+  /**
+   * No new tab can open from here: a TV, a remote, or a controller (its A carries no user
+   * activation, so window.open is blocked: Menu.padPress for the press running now, data-input
+   * for the input in use).
+   */
+  const noPopup = (): boolean => tv() || menu.padPress || html.dataset.input === 'pad' || html.dataset.input === 'remote';
+
+  /**
+   * How points are earned: the guide's QR (a phone opens it), and with a mouse, a keyboard or a
+   * finger the guide itself in a new tab. With a controller as on a TV: the QR and CERRAR only.
+   */
   const openGuide = (): void => {
     const url = guideUrl();
     closeSheet = menu.modal({
       title: t('garage.guideTitle'),
       body: h('div.mn-gar-guide', null, qrSvg(url, t('garage.guideTitle')), h('div.mn-gar-guide-text', null, h('p', null, t('garage.guideText')), h('p.mn-gar-redeem-note', null, t('garage.guideScan')))),
-      actions: tv()
+      actions: noPopup()
         ? [{ label: t('outcome.close'), primary: true, onClick: () => true }]
         : [
             {
               label: t('garage.guideOpen'),
               primary: true,
               onClick: () => {
+                // A controller picked up with the sheet up: the tab cannot open, the QR stays.
+                if (menu.padPress) return false;
                 window.open(url, '_blank', 'noopener');
               },
             },
@@ -533,8 +545,7 @@ export function garageScreen(menu: Menu): Screen {
 
   /** GANA PUNTOS: the guide in a new tab, or (a TV, a remote, a controller: no pop-up from a pad press) its sheet. */
   const earnClick = (e: MouseEvent): void => {
-    const input = html.dataset.input;
-    if (!tv() && input !== 'pad' && input !== 'remote') return;
+    if (!noPopup()) return;
     e.preventDefault();
     openGuide();
   };

@@ -577,6 +577,14 @@ export class Menu {
     return this.visibleNow;
   }
 
+  /**
+   * The click running now is a controller's A (Menu.action's accept; data-input says so only after
+   * this frame): it carries no user activation, so no pop-up or new tab can open from it.
+   */
+  get padPress(): boolean {
+    return this.padAccept;
+  }
+
   top(): Screen | null {
     return this.stack.at(-1) ?? null;
   }
