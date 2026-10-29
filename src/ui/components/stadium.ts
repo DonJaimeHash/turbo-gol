@@ -5,8 +5,8 @@
  * Game.switchTheme, saved with the prefs); the current one only closes. The theme is the player's
  * render preference: every match and the menus' stage use it. Built on call.
  *
- * `stadiumOptions` and `chooseStadium` are the pure part (tests/stadium-picker.test.mjs), for PR 8's
- * GARAJE › ESTADIOS too.
+ * `stadiumOptions` and `chooseStadium` are the pure part (tests/stadium-picker.test.mjs); GARAJE ›
+ * ESTADIOS lists and applies the stadiums with them too (screens/garage.ts).
  */
 import { h } from '../dom';
 import { icon } from './icons';

@@ -445,7 +445,8 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         car), language.ts (the language sheet, Settings › Game's Idioma), stadium.ts
                         (the stadium sheet, MODOS › CONTRA LA IA's Stadium row: every theme, the
                         current one marked; a pick runs MenuHost.setTheme behind the loading screen;
-                        pure stadiumOptions / chooseStadium, tests/stadium-picker.test.mjs), seg.ts
+                        pure stadiumOptions / chooseStadium, GARAJE › ESTADIOS' too,
+                        tests/stadium-picker.test.mjs), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
                         (mn-picker: a 56 px row with its value and ›, opening a sheet), hold.ts
                         (hold to confirm: a pointer, Enter / Space / OK, or a pad's A through
@@ -642,7 +643,7 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         (Garage.equip), CANJEAR's sheet held 700 ms (SheetAction.hold) →
                         Garage.claim → EQUIPAR AHORA, a locked car's CANJEAR never lime with its
                         reason, its press explaining; ◀ ▶ cross the stage (onNavSide); ESTADIOS:
-                        the three themes, USAR = MenuHost.setTheme; .mn[data-screen='garage']
+                        the three themes, USAR = chooseStadium (components/stadium.ts); .mn[data-screen='garage']
                         drops the shell's backdrop, super low's too; window.__garage samples in dev
                         / VITE_UI_FIT; garageModel.ts, pure: rowLine, detailView, pointsCard,
                         earnIsLime, redeemBalance; tests/garage-screen.test.mjs), the Salas (plan PR 12; lobby.ts: CREATE LOBBY AND SHARE, JOIN WITH CODE

@@ -25,8 +25,9 @@
  * lime, with the reason; its press explains (sign in, the guide, PERFIL's MI SERVIDOR). Points come
  * only from hosting (nodes/docs/RECOMPENSAS.md): never a rate, nothing is paid.
  *
- * ESTADIOS: the stadiums that exist (src/render/theme.ts), the one in use marked; USAR applies one
- * behind the loading screen (MenuHost.setTheme). MODOS' Stadium row opens this tab.
+ * ESTADIOS: the stadiums that exist, the one in use marked, as MODOS' stadium sheet lists them
+ * (components/stadium.ts stadiumOptions); USAR applies one behind the loading screen
+ * (chooseStadium: MenuHost.setTheme), the one in use has none.
  *
  * A preview build (VITE_PREVIEW_CARS=1, carSelection.ts PREVIEW_ALL_CARS): a guest owns every car
  * and the points card says so (garage.ts previewNotice). In development (or a VITE_UI_FIT=1 build)
@@ -42,7 +43,7 @@ import { CARS, type CarId } from '../../game/cosmetics';
 import { garageView, previewNotice, type GarageCarView, type GarageView, type ShowroomFrame } from '../../game/garage';
 import type { ShopAnswer } from '../../net/cosmetics';
 import { PREVIEW_ALL_CARS } from '../../game/carSelection';
-import { THEME_IDS, type ThemeId } from '../../render/theme';
+import type { ThemeId } from '../../render/theme';
 import { SOURCE_URL } from '../../brand';
 import { icon } from '../components/icons';
 import { glyph } from '../components/glyphs';
@@ -50,6 +51,7 @@ import { onNavSide } from '../nav';
 import { qrSvg } from '../components/qr';
 import { carSilhouette } from '../components/carSilhouettes';
 import { garageRow, type GarageRow } from '../components/carRow';
+import { chooseStadium, stadiumOptions } from '../components/stadium';
 import { detailView, earnIsLime, pointsCard, PREVIEW_MS, REDEEM_HOLD_MS, redeemBalance, rowLine, type Line } from './garageModel';
 
 /** How a community server is hosted (the nodes' README, in the page's language when there is one). */
@@ -152,7 +154,7 @@ export function garageScreen(menu: Menu): Screen {
     rows.set(c.id, row);
   }
   const stadiumRows = new Map<ThemeId, GarageRow>();
-  for (const id of THEME_IDS) {
+  for (const { id } of stadiumOptions(host.theme)) {
     const row = garageRow('garage-stadium-' + id, icon('stadium', 'mn-gar-stadium-icon'), themeName(id), (e) => stadiumClick(id, e));
     row.el.addEventListener('focus', () => pickStadium(id));
     stadiumRows.set(id, row);
@@ -294,15 +296,18 @@ export function garageScreen(menu: Menu): Screen {
   };
 
   const drawStadiums = (): void => {
-    const using = host.theme;
-    for (const [id, row] of stadiumRows) {
-      row.set(id === using ? t('garage.stadiumInUse') : '', id === using ? 'inUse' : 'free', id === stadium);
-      row.el.toggleAttribute('data-autofocus', id === using);
+    for (const { id, on } of stadiumOptions(host.theme)) {
+      const row = stadiumRows.get(id);
+      if (row === undefined) continue;
+      row.set(on ? t('garage.stadiumInUse') : '', on ? 'inUse' : 'free', id === stadium);
+      row.el.toggleAttribute('data-autofocus', on);
+      if (on) row.el.setAttribute('aria-current', 'true');
+      else row.el.removeAttribute('aria-current');
     }
     detName.textContent = themeName(stadium);
     setChildren(detPrice);
     writeReason(t('garage.stadiumNote'), 'plain');
-    detAction.hidden = stadium === using;
+    detAction.hidden = stadium === host.theme;
     detAction.textContent = t('garage.stadiumUse');
     detAction.classList.add('mn-btn-primary');
     detAction.classList.remove('mn-gar-act-off');
@@ -342,7 +347,7 @@ export function garageScreen(menu: Menu): Screen {
   // ---- actions ----
   const act = (): void => {
     if (tab === 'stadiums') {
-      if (stadium !== host.theme) host.setTheme(stadium);
+      chooseStadium(host, stadium);
       render();
       return;
     }
