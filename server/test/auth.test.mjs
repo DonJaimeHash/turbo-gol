@@ -137,7 +137,10 @@ test('auth-9: tokens signed before the types keep working for their life (no sig
   const iat = Math.floor(now / 1000);
   const mid = 'c'.repeat(64);
   const legacyGuest = await A.signJwt(SECRET, { sub: '0123456789abcdef', name: 'Ana', iat, exp: iat + A.SESSION_TTL_SECONDS });
-  assert.equal((await A.verifySession(SECRET, legacyGuest, now)).name, 'Ana', 'an untyped 24 h guest session');
+  // Checked by its id: with sec/guest-names a guest's name is the server's ('Invitado NNNN'), whatever the token says.
+  const guest = await A.verifySession(SECRET, legacyGuest, now);
+  assert.equal(guest?.sub, '0123456789abcdef', 'an untyped 24 h guest session');
+  assert.notEqual(guest.acct, 1);
   const legacyAccount = await A.signJwt(SECRET, { sub: '0123456789abcdef', name: 'Ana', iat, exp: iat + 3600, acct: 1, car: 'pampero' });
   assert.equal((await A.verifySession(SECRET, legacyAccount, now)).acct, 1, 'an untyped 1 h account session');
   const legacyTicket = await A.signJwt(SECRET, { sub: '0123456789abcdef', mid, team: 1, slot: 2, role: 'peer', name: 'Ana', iat, exp: iat + 90, jti: 'd'.repeat(32) });
