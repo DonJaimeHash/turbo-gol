@@ -6,6 +6,7 @@
 import { language, t } from '../i18n';
 import type { CarId } from '../game/cosmetics';
 import type { Playlist, RegionId } from '../net/account';
+import { guestNumber } from '../net/guestName';
 import type { Tier } from '../net/rating';
 import type { Difficulty } from '../render/Hud';
 import type { Quality } from '../render/quality';
@@ -25,6 +26,26 @@ export function playlistName(p: Playlist): string {
 
 export function regionName(id: RegionId): string {
   return t(`region.${id}`);
+}
+
+/**
+ * A player's name as the page shows it: a guest's wire name ('Invitado 4821', the server's,
+ * src/net/guestName.ts) in this page's language ('Guest 4821'), any other name as it is.
+ */
+export function playerName(raw: string): string {
+  const n = guestNumber(raw);
+  return n === null ? raw : t('guest.name', { n });
+}
+
+/**
+ * A lobby's title as the page shows it. The server's default title is the host's wire name, so a
+ * title equal to the host's name, or a guest's, reads as custom.defaultName with the host
+ * ('Sala de Invitado 4821', 'Lobby Guest 4821', 'Lobby Ana'); a title a host typed, as it is. No
+ * host known (`''`: nobody in the lobby yet) reads the guest's title's own name.
+ */
+export function lobbyTitle(title: string, host: string): string {
+  if (title !== host && guestNumber(title) === null) return title;
+  return t('custom.defaultName', { name: playerName(host.length > 0 ? host : title) });
 }
 
 export function difficultyName(d: Difficulty): string {

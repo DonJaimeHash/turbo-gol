@@ -66,7 +66,8 @@ export interface LobbyClientOptions {
 }
 
 export interface LobbyCreate {
-  settings: LobbySettings;
+  /** No `name`: the server's default title, the host's name (a guest's `name` is ignored anyway). */
+  settings: Omit<LobbySettings, 'name'> & { name?: string };
   password: string | null;
   region: RegionId | null;
 }

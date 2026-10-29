@@ -94,7 +94,7 @@
 // line ("Reconnecting… (attempt 2/5)", "Back in the match") must stay on screen and unclipped.
 //
 // The TV's typing and sign-in (plan PR 14, 'tv': window.__tvSignIn, screens/tvSignInSamples.ts): mn-keypad
-// over PERFIL's guest name, its password and the code cells' sheet where there is no fine pointer (the
+// over PERFIL's password and the code cells' sheet where there is no fine pointer (the
 // TVs, the phones, the tablet), which fails it off screen, a key under 32 x 24 px or its text cut, no
 // key focused, or a password's text shown; the TV's sign-in sheet (a code, expired) on the TVs; the
 // phone's /tv sheets (sign in first, the code, the question with a long name, a refusal) and the
@@ -136,7 +136,7 @@ const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['h
 // The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
 const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
 // PR 14's samples (window.__tvSignIn): the keypad's where no fine pointer, 'tv*' on a TV, the rest everywhere.
-const TV_KINDS = ['keypad', 'keypad-password', 'keypad-code', 'tv', 'tv-expired', 'tvlink-signin', 'tvlink-code', 'tvlink-ask', 'tvlink-refused', 'antibot'];
+const TV_KINDS = ['keypad-password', 'keypad-code', 'tv', 'tv-expired', 'tvlink-signin', 'tvlink-code', 'tvlink-ask', 'tvlink-refused', 'antibot'];
 /** The keypad on screen, its keys big enough and whole, one focused, a password in dots. */
 const KEYPAD_CHECK = (kind) => `(() => {
   const out = [];

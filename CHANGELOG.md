@@ -620,6 +620,13 @@ All notable changes to Turbogol are documented here. The format follows
   the home screen now.
 
 ### Security
+- Guests no longer choose a name: the server names every guest "Guest 4821" ("Invitado 4821" in
+  Spanish; a new number with each new guest session), so a guest can no longer pass for a
+  registered player, the staff or a bot. PROFILE says which name you play with, and the join link
+  no longer asks for one. A guest's lobby keeps its default title, shown in each player's
+  language; with an account you can name it. Nobody can title a lobby as a guest, as the game or
+  with a staff word ("Soporte", "Admin", look-alike letters included), and usernames can no
+  longer start with "Invitado".
 - TV sign-in codes: a TV's poll with a wrong secret gets the same answer as an unknown code, so it
   never tells a live code apart; the limits count only live codes and an IPv6 /64 as one address; a
   shared address (a phone carrier's, a school's) takes 50 failed confirms before it waits, an account

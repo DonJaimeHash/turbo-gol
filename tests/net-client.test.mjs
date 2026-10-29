@@ -18,7 +18,7 @@ registerHooks({
 const P = await import('../src/net/protocol.ts');
 const { ClockSync, TICK_MS, median } = await import('../src/net/ClockSync.ts');
 const { LossEstimator, RateMeter } = await import('../src/net/NetStats.ts');
-const { NetClient, NetError, RECONNECT_TRIES, resolveWsUrl, sanitizeName, loadGuestRecord, saveGuestRecord, GUEST_STORAGE_KEY, sessionValid, parseServerConfig } =
+const { NetClient, NetError, RECONNECT_TRIES, resolveWsUrl, loadGuestRecord, saveGuestRecord, GUEST_STORAGE_KEY, sessionValid, parseServerConfig } =
   await import('../src/net/NetClient.ts');
 const { getToken, TURNSTILE_TOKEN_TIMEOUT_MS } = await import('../src/net/Turnstile.ts');
 const T = await import('../src/sim/types.ts');
@@ -228,21 +228,23 @@ test('rate meter', () => {
 
 // ---- Guest record / URLs ------------------------------------------------------------------
 
-test('guest record persistence and name sanitising', () => {
+test('guest record persistence: the session only; a stored chosen name is ignored, an old session shows the server name', () => {
   const st = new FakeStorage();
-  const fresh = loadGuestRecord(st);
-  assert.match(fresh.name, /^Guest\d{3}$/);
-  assert.equal(fresh.session, null);
-  saveGuestRecord(st, { name: 'Tomi', session: GUEST });
+  assert.deepEqual(loadGuestRecord(st), { session: null });
+  assert.deepEqual(loadGuestRecord(null), { session: null }, 'no storage: no session, no name');
+  saveGuestRecord(st, { session: GUEST });
+  assert.deepEqual(loadGuestRecord(st), { session: GUEST });
+  assert.deepEqual(JSON.parse(st.getItem(GUEST_STORAGE_KEY)), { session: GUEST }, 'no name stored beside it');
+  // What a page that let guests choose a name left: { name, session } with that name inside the session too.
+  const old = { playerId: '0123456789abcdef', name: 'Admin', session: 'jwt-old', expiresAt: GUEST.expiresAt };
+  st.setItem(GUEST_STORAGE_KEY, JSON.stringify({ name: 'Tomi', session: old }));
   const back = loadGuestRecord(st);
-  assert.equal(back.name, 'Tomi');
-  assert.deepEqual(back.session, GUEST);
-  assert.ok(st.getItem(GUEST_STORAGE_KEY));
+  assert.deepEqual(Object.keys(back), ['session']);
+  assert.equal(back.session.name, 'Invitado ' + (1000 + (0x01234567 % 9000)), "the server's name for that id, as verifySession reads it");
+  assert.equal(back.session.session, 'jwt-old', 'the session itself is kept (no new registration)');
+  assert.equal(new NetClient({ storage: st, fetchFn: async () => { throw new Error('no network'); } }).name, back.session.name);
   st.setItem(GUEST_STORAGE_KEY, '{not json');
-  assert.match(loadGuestRecord(st).name, /^Guest\d{3}$/);
-  assert.equal(sanitizeName('  Ja  vi  '), 'Ja vi');
-  assert.equal(sanitizeName('x'.repeat(40)).length, 16);
-  assert.match(sanitizeName('   '), /^Guest\d{3}$/);
+  assert.deepEqual(loadGuestRecord(st), { session: null });
   assert.equal(sessionValid(GUEST), true);
   assert.equal(sessionValid({ ...GUEST, expiresAt: Math.floor((Date.now() + 3600_000) / 1000) }), true, 'seconds accepted');
   assert.equal(sessionValid({ ...GUEST, expiresAt: Date.now() + 1000 }), false, 'about to expire');
@@ -271,7 +273,7 @@ test('queue: registers the guest, long-polls until matched, reports the waiting 
       return jsonResponse(200, { status: 'matched', matchId: 'm1', ticket: 'tkt', wsUrl: '/ws/m1' });
     },
   });
-  client.setName('Tester');
+  assert.equal(client.name, '', 'no name before the first session');
   const m = await client.queue('1v1', (n) => waiting.push(n));
   assert.deepEqual(m, { matchId: 'm1', ticket: 'tkt', wsUrl: '/ws/m1' });
   assert.deepEqual(waiting, [1, 2]);
@@ -281,9 +283,10 @@ test('queue: registers the guest, long-polls until matched, reports the waiting 
     ['/api/config', '/api/guest', '/api/queue', '/api/queue', '/api/queue'],
   );
   assert.equal(calls[0].init.method, 'GET');
-  assert.deepEqual(calls[1].body, { name: 'Tester' });
+  assert.deepEqual(calls[1].body, {}, 'no name: the server names the guest');
   assert.equal(calls[2].body.mode, '1v1');
   assert.equal(client.guest.playerId, 'p1');
+  assert.equal(client.name, 'Tester', "the server's name");
   assert.equal(client.matchId, 'm1');
 });
 
@@ -325,10 +328,10 @@ test('config: GET /api/config is fetched once per client and cached; a failure i
   await h6.client.ensureGuest();
   assert.deepEqual(await h6.client.config(), { turnstileSiteKey: null, protocol: 0, version: '', region: '' });
   assert.equal(h6.calls.filter((c) => c.url === '/api/config').length, 1);
-  assert.deepEqual(Object.keys(h6.calls[1].body), ['name'], 'no token without a sitekey');
+  assert.deepEqual(Object.keys(h6.calls[1].body), [], 'no token without a sitekey, no name');
   // A stored valid session needs no config at all.
   const st = new FakeStorage();
-  saveGuestRecord(st, { name: 'Tester', session: GUEST });
+  saveGuestRecord(st, { session: GUEST });
   const h5 = makeClient({ '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm', ticket: 't', wsUrl: '/ws/m' }) }, { storage: st });
   await h5.client.queue('1v1');
   assert.deepEqual(
@@ -358,7 +361,6 @@ test('guest: with a sitekey the Turnstile token is obtained in the container and
   );
   const { client, calls } = h;
   client.onTurnstile = (active) => phases.push([active, container.hidden]);
-  client.setName('Tester');
   await client.queue('1v1');
   assert.equal(loads, 1);
   assert.equal(api.rendered.length, 1);
@@ -375,9 +377,9 @@ test('guest: with a sitekey the Turnstile token is obtained in the container and
     [false, true],
   ]);
   const guest = calls.find((c) => c.url === '/api/guest');
-  assert.deepEqual(guest.body, { name: 'Tester', turnstileToken: 'tok-abc' });
-  // The config is cached: a second registration (name change) renders a new widget without a fetch.
-  client.setName('Other');
+  assert.deepEqual(guest.body, { turnstileToken: 'tok-abc' });
+  // The config is cached: a second registration (the session gone) renders a new widget without a fetch.
+  client.guest = null;
   await client.ensureGuest();
   assert.equal(calls.filter((c) => c.url === '/api/config').length, 1);
   assert.equal(api.rendered.length, 2);
@@ -396,10 +398,9 @@ test('guest: no token and no Turnstile load when the sitekey is null', async () 
       },
     },
   );
-  client.setName('Tester');
   await client.ensureGuest();
   assert.equal(loads, 0);
-  assert.deepEqual(calls[1].body, { name: 'Tester' });
+  assert.deepEqual(calls[1].body, {});
   assert.equal('turnstileToken' in calls[1].body, false);
 });
 
@@ -1170,7 +1171,6 @@ function turnstileClient() {
     },
     { turnstileContainer: () => container, turnstileLoader: async () => api },
   );
-  h.client.setName('Tester');
   return { ...h, container, pending, api };
 }
 

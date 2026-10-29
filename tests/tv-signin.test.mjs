@@ -229,7 +229,7 @@ function client(api, t = { now: 1000 }) {
     fetchFn: async (url, init) => {
       calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
       if (url === '/api/config') return res(200, { turnstileSiteKey: 'sk-1', protocol: P.PROTOCOL_VERSION, version: 't', region: 'EZE' });
-      if (url === '/api/guest') return res(200, { playerId: 'p1', name: calls.at(-1).body.name, session: 'jwt', expiresAt: Date.now() + 86_400_000 });
+      if (url === '/api/guest') return res(200, { playerId: 'p1', name: 'Invitado 4821', session: 'jwt', expiresAt: Date.now() + 86_400_000 });
       return res(404, {});
     },
     turnstileContainer: () => ({ hidden: true }),
@@ -250,15 +250,14 @@ test('NetClient: Inicio pre-warms one token, the next registration uses it (no s
   await settle();
   assert.equal(api.rendered, 1);
   assert.deepEqual(phases, [], 'a pre-warm reports nothing');
-  c.setName('Tester');
   await c.ensureGuest();
   assert.equal(api.rendered, 1, 'the registration took the warm token');
-  assert.deepEqual(calls.find((x) => x.url === '/api/guest').body, { name: 'Tester', turnstileToken: 'tok-1' });
+  assert.deepEqual(calls.find((x) => x.url === '/api/guest').body, { turnstileToken: 'tok-1' });
   c.prewarmAntiBot();
   await settle();
   assert.equal(api.rendered, 1, 'a stored guest needs no pre-warm');
-  // A sign-up later: a token of its own (the warm one was used); a stale warm one is not used.
-  c.setName('Other');
+  // A sign-up later (the guest session gone): a token of its own (the warm one was used); a stale warm one is not used.
+  c.guest = null;
   c.prewarmAntiBot();
   await settle();
   assert.equal(api.rendered, 2);
@@ -279,7 +278,6 @@ test('NetClient: a pre-warm that wants a click gives up quietly; the registratio
   await settle();
   assert.equal(api.removed, 1, 'the widget went');
   assert.deepEqual(asks, [], 'nobody was asked');
-  c.setName('Tester');
   const p = c.ensureGuest();
   await settle();
   assert.deepEqual(asks, [true], 'the sheet: the check wants the player');
@@ -287,5 +285,5 @@ test('NetClient: a pre-warm that wants a click gives up quietly; the registratio
   await assert.rejects(p, (e) => e.code === 'cancelled');
   assert.deepEqual(asks, [true, false]);
   interactive = false;
-  assert.equal((await c.ensureGuest()).name, 'Tester', 'the next one goes through');
+  assert.equal((await c.ensureGuest()).name, 'Invitado 4821', 'the next one goes through');
 });

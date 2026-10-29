@@ -10,6 +10,7 @@ import { fetchReplayList } from '../net/replays';
 import type { ReplayBuild, ReplayListItem } from '../net/replays';
 import { ROCKETSIM_WASM_SHA256 } from '../sim/wasm/rocketsim.sha256';
 import { TICK_RATE } from '../sim/types';
+import { playerName } from '../ui/names';
 
 type Child = Node | string | null;
 
@@ -41,7 +42,8 @@ function regionName(r: string): string {
 
 function row(m: ReplayListItem): HTMLElement {
   const team = (n: 0 | 1): HTMLElement => {
-    const names = m.players.filter((p) => p.team === n).map((p) => (p.bot ? `${p.name} (${t('replay.bot')})` : p.name));
+    // A guest's server name ('Invitado 4821') in this page's language.
+    const names = m.players.filter((p) => p.team === n).map((p) => (p.bot ? `${p.name} (${t('replay.bot')})` : playerName(p.name)));
     return el('div.rp-team', null, el(`span.rp-dot.${n === 0 ? 'rp-blue' : 'rp-red'}`), el('span', null, names.join(', ') || '-'));
   };
   const chips: HTMLElement[] = [

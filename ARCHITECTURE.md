@@ -675,7 +675,7 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         AccountClient.myNodes (GET /nodes/mine; none on a fork or local dev),
                         CUENTA Y SEGURIDAD folded, COMUNIDAD, ACERCA DE (the language is Ajustes › JUEGO's);
                         a guest's CREAR CUENTA GRATIS / INICIAR SESIÓN as the screen's .mn-tabs over
-                        their form, the recovery link, the guest name; fields with enterkeyhint
+                        their form, the recovery link, the guest's server name (a line); fields with enterkeyhint
                         and Enter to the next one; the view follows a session that comes or goes;
                         window.__profile samples in dev / VITE_UI_FIT; on a TV a guest's first
                         tile is SIGN IN WITH YOUR PHONE); tvSignIn.ts (plan PR 14: the TV's sheet,
@@ -706,6 +706,9 @@ src/net/
                         used once; a pre-warm wanting a click gives up quietly) and the check that
                         wants the player reported (onAntiBotAsk: Menu.antiBotAsk's sheet, CANCEL =
                         cancelChallenge); fetch / WebSocket / clock / storage injectable (node tests)
+  guestName.ts          a guest's name is the server's: 'Invitado 4821' from the player id (guestNameOf,
+                        shared with the Worker: POST /api/guest, verifySession, LobbyDO); the menus show
+                        it in their language (src/ui/names.ts playerName, lobbyTitle: 'Guest 4821')
   outcome.ts            what a failed online step leaves to do (retry, wait, requeue, reload,
                         gone) and its action's label: Menu.failure's sheet; codes never in a text
   ClockSync.ts          4-timestamp rtt / offset / host-tick estimate (medians over 16 pongs),

@@ -17,19 +17,21 @@ export type SalaSample = 'members' | 'reconnecting' | 'qr' | 'codecells' | 'join
 /**
  * window.__sala(kind | null, members?): the Salas' states with sample data for the layout check
  * (scripts/ui-fit.mjs), set on the LobbyClient's own fields (no server): the Sala with 1 to 6
- * members (long names, every tag; 5 and 6 a 3v3), reconnecting, a TV's QR sheet, the code entry with four cells
- * typed, a join link's sheet as long as it gets (the name field, the swap line), the lobby pill on
+ * members (long names, every tag, a guest's server name read in the page's language: 'Guest 4821'; 5 and 6 a
+ * 3v3), the title the server's default (the host's name), reconnecting, a TV's QR sheet, the code entry with four cells
+ * typed, a join link's sheet as long as it gets (the swap line), the lobby pill on
  * Inicio, the lost connection's sheet. null puts it all back. Nothing in a release build.
  */
 export function installSalaSamples(menu: Menu): void {
   if (!UI_FIT) return;
   const lobby = menu.host.lobby;
-  const names = ['Constantinopla_9', 'Ana', 'Valentina_Rios', 'Leo', 'MaximilianoGomez', 'Bea'];
+  // The third is a guest: its wire name, the server's (src/net/guestName.ts).
+  const names = ['Constantinopla_9', 'Ana', 'Invitado 4821', 'Leo', 'MaximilianoGomez', 'Bea'];
   const sample = (n: number, reconnecting = false): void => {
     const members: LobbyMember[] = names.slice(0, Math.max(1, Math.min(6, n))).map((name, i) => ({ id: 'm' + (i + 1), name, team: (i % 2) as 0 | 1, host: i === 0, guest: i === 2, inGame: false, away: i === 3, ready: i === 1 }));
     lobby.state = {
       code: 'ABC234',
-      settings: { name: t('custom.defaultName', { name: names[0] }).slice(0, 24), mode: n > 4 ? '3v3' : '2v2', visibility: 'private', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS, physics: null },
+      settings: { name: names[0], mode: n > 4 ? '3v3' : '2v2', visibility: 'private', net: 'p2p', matchLengthSeconds: DEFAULT_MATCH_SECONDS, physics: null },
       hasPassword: n === 6,
       region: 'SA',
       members,

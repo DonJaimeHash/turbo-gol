@@ -14,7 +14,7 @@
  * The server enforces all of it (LobbyDO, the matchmaker, RoomDO).
  */
 import { h, setChildren } from '../dom';
-import { LOBBY_LENGTHS, PLAYLISTS } from '../../net/account';
+import { LOBBY_LENGTHS, PLAYLISTS, lobbyNameIssue } from '../../net/account';
 import type { LobbySettings, LobbyState, LobbySummary, Playlist } from '../../net/account';
 import { AccountError } from '../../net/AccountClient';
 import { isStock, parseLobbyRules, sameValues, snapshotOf, type RulesSnapshot } from '../../game/physicsRules';
@@ -22,12 +22,12 @@ import type { ListedPreset } from '../../game/experimentalStore';
 import { t } from '../../i18n';
 import { lobbyRulesLine, presetName } from '../../render/rulesText';
 import type { Menu } from '../Menu';
-import { regionName } from '../names';
+import { lobbyTitle, regionName } from '../names';
 import { icon } from '../components/icons';
 import { picker } from '../components/picker';
 import { slot } from '../components/tile';
 import { cycler, field, secondary } from './common';
-import { createAndShare, joinFlow, openCodeEntry } from './lobby';
+import { createAndShare, joinFlow, openCodeEntry, salaTitle } from './lobby';
 import { rowState } from './lobbyModel';
 import type { RowState } from './lobbyModel';
 
@@ -149,7 +149,7 @@ export function lobbyBrowser(menu: Menu): { el: HTMLElement; show: () => void; t
     return h(
       `button.mn-lobby-row.mn-lobby-${st}` as 'button',
       { type: 'button', 'data-nav': true, 'data-code': l.code, 'data-key': 'lobby-' + l.code, onclick: press },
-      h('span.mn-lobby-name', null, l.locked ? icon('lock') : null, h('span', null, l.name), tag),
+      h('span.mn-lobby-name', null, l.locked ? icon('lock') : null, h('span', null, lobbyTitle(l.name, l.host)), tag),
       h('span.mn-lobby-mode', null, l.mode),
       h('span.mn-lobby-players', null, `${l.players}/${l.max}`),
       h('span.mn-lobby-state', null, slot(t(ROW_STATE[st]), { ink: st === 'open' })),
@@ -244,12 +244,17 @@ function settingsControls(s: LobbySettings, rules: RulesControls | null = null):
  * The host's SETTINGS dialog (the Sala's "…"): name, format, visibility, connection, length, the
  * experimental rules row for an unlocked player, the password. `kept`: the draft (typed name, picked
  * rules) to reopen with, back from EDIT PRESETS. A format change is remembered for the next lobby.
+ * The name field shows the title as the Sala does (names.ts lobbyTitle) and is sent only when it
+ * changed; a guest host sees it read-only (the server never takes a guest's title), with why.
  */
 export function configureLobby(menu: Menu, s: LobbyState, kept?: { draft: LobbySettings; name: string; pick: { id: string | null } }): void {
   const lobby = menu.host.lobby;
   const draft: LobbySettings = kept?.draft ?? { ...s.settings };
   const pick = kept?.pick ?? { id: null };
-  const name = field(t('custom.nameField'), { maxLength: 24, value: kept?.name ?? draft.name });
+  const shown = salaTitle(s);
+  const guestHost = s.members.find((m) => m.id === s.you)?.guest === true;
+  const name = guestHost ? null : field(t('custom.nameField'), { maxLength: 24, value: kept?.name ?? shown });
+  const title = name?.el ?? h('div.mn-field', null, h('span.mn-field-label', null, t('custom.nameField')), h('b', null, shown), h('p.mn-note', null, t('custom.guestTitle')));
   const pw = field(s.hasPassword ? t('custom.newPassword') : t('custom.passwordOptional'), { type: 'password', maxLength: 32 });
   const presets = lobbyPresets(menu);
   const onEdit =
@@ -260,27 +265,34 @@ export function configureLobby(menu: Menu, s: LobbyState, kept?: { draft: LobbyS
           menu.openSettings(() => {
             // The lobby may have gone, or started, while the settings were open.
             const now = lobby.state;
-            if (now !== null && now.status === 'open' && lobby.isHost) configureLobby(menu, now, { draft, name: name.input.value, pick });
+            if (now !== null && now.status === 'open' && lobby.isHost) configureLobby(menu, now, { draft, name: name?.input.value ?? shown, pick });
             else menu.refocus();
           }, { tab: 'experimental' });
         };
   const close = menu.modal({
     title: t('custom.configureTitle'),
-    body: [name.el, ...settingsControls(draft, { presets, onEdit, pick }), pw.el],
+    body: [title, ...settingsControls(draft, { presets, onEdit, pick }), pw.el],
     actions: [
       {
         label: t('custom.save'),
         primary: true,
         onClick: () => {
-          const n = name.input.value.trim();
-          if (n.length < 3) {
-            name.error(t('custom.nameLength'));
-            return false;
+          // The title only when it changed (the server keeps the stored one, a guest's always).
+          const n = name?.input.value.trim() ?? shown;
+          if (name !== null && n !== shown) {
+            if (n.length < 3) {
+              name.error(t('custom.nameLength'));
+              return false;
+            }
+            if (lobbyNameIssue(n) !== null) {
+              name.error(t('error.lobby.name_reserved'));
+              return false;
+            }
           }
-          draft.name = n;
+          const { name: _stored, ...rest } = draft;
           menu.prefs.lobbyMode = draft.mode;
           menu.savePrefs();
-          lobby.updateSettings(draft, pw.input.value.length > 0 ? pw.input.value : s.hasPassword ? null : undefined);
+          lobby.updateSettings(name !== null && n !== shown ? { ...rest, name: n } : rest, pw.input.value.length > 0 ? pw.input.value : s.hasPassword ? null : undefined);
           return true;
         },
       },

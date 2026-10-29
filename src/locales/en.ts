@@ -23,6 +23,9 @@ export default {
   'region.AS': 'Asia',
   'region.OC': 'Oceania',
   'region.AF': 'Africa',
+  // A guest's name: the server names every guest 'Invitado 4821' (src/net/guestName.ts) and each
+  // page shows it in its language (src/ui/names.ts playerName); {n} is its four digits
+  'guest.name': 'Guest {n}',
   'difficulty.easy': 'Easy',
   'difficulty.medium': 'Normal',
   'difficulty.hard': 'Hard',
@@ -199,8 +202,8 @@ export default {
   'home.rejoin': 'BACK TO YOUR MATCH',
   // Under it: {queue} is 'Casual · 2v2', {time} the match time left (m:ss)
   'home.rejoinSub': '{queue} · {time} left',
-  // The player plate: a guest's line, an account's without a placed rank
-  'home.guestRank': 'Guest · Unranked',
+  // The player plate: a guest's line under its name ('Guest 4821'), an account's without a placed rank
+  'home.guestRank': 'No account · Unranked',
   'home.unranked': 'Unranked',
   // The plate's line on a TV, after the rank; {car} is the car's name
   'home.carLine': 'Car: {car}',
@@ -445,8 +448,10 @@ export default {
   'custom.lobbySection': 'LOBBY',
   // Breadcrumb title of the create screen
   'custom.createTitle': 'Create lobby',
-  // Default lobby name; {name} is the player (up to 16 characters). The server keeps only letters, digits, spaces and _ . - ! ? # and at most 24 characters: no apostrophes, quotes, colons, commas or brackets, and at most 8 characters besides {name} (tests/i18n-lobby-name.test.mjs).
+  // Default lobby title, shown for the server's default (the host's name; src/ui/names.ts lobbyTitle); {name} is the host (up to 16 characters, a guest's 'Guest 4821'). Keep it to letters, digits, spaces and _ . - ! ? #, at most 8 characters besides {name}: no apostrophes, quotes, colons, commas or brackets (tests/i18n-lobby-name.test.mjs).
   'custom.defaultName': 'Lobby {name}',
+  // The host's SETTINGS as a guest: the lobby's title cannot be changed, and why
+  'custom.guestTitle': 'With an account you can name your lobby.',
   'custom.tagGuest': 'GUEST',
   'custom.tagInMatch': 'IN MATCH',
   // Host button: remove a player from the lobby
@@ -562,7 +567,6 @@ export default {
   // A join link's sheet; {mode} is 1v1 / 2v2 / 3v3
   'lobby.joinAsk': 'Join lobby {code} · {mode} · {count}/{max}?',
   'lobby.joinAskCode': 'Join lobby {code}?',
-  'lobby.yourName': 'Your name',
   // In another lobby already: joining this one leaves it
   'lobby.swap': 'You leave lobby {code}.',
   // A restart (Super low) took longer than the server keeps a place in the lobby
@@ -626,9 +630,8 @@ export default {
   'profile.resetPassword': 'RESET PASSWORD',
   // count: recovery codes still unused
   'profile.passwordReset': { one: 'Password changed. {count} code left.', other: 'Password changed. {count} codes left.' },
-  'profile.guestName': 'Guest name',
-  'profile.saveName': 'SAVE NAME',
-  'profile.guestNameSaved': 'Guest name saved',
+  // PROFILE as a guest, under the sign-in forms; {name} is its name ('Guest 4821'): the server's, a new one with each guest session
+  'profile.guestLine': "You're playing as {name}, a temporary name. With an account you choose your own.",
   'profile.loading': 'Loading…',
   // date: the sign-up date; providers: how the account signs in, e.g. 'password, Google'
   'profile.since': 'Member since {date} · {providers}',
@@ -828,6 +831,8 @@ export default {
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
   // Generic: the server says what is wrong with the name
   'error.lobby.bad_name': 'The lobby name must be 3 to 24 characters',
+  // The title reads as a guest's name, the game's or its staff's (src/net/account.ts lobbyNameIssue)
+  'error.lobby.name_reserved': 'That lobby name is not allowed',
   // Same text as custom.codeInvalid
   'error.lobby.bad_code': 'The code is 6 letters or numbers',
   'error.lobby.no_lobby': "There's no lobby with that code",
@@ -1734,7 +1739,7 @@ export default {
   'game.welcomeNew': 'Welcome, {name}! You can change your name in your profile.',
   // Toast after linking a Google / Discord login to the signed-in account
   'game.accountLinked': 'Account linked',
-  // Guest name in the menus when the game runs without an online server (online guests get a generated name like Guest123, which is never translated)
+  // Guest name in the menus before the first guest session (and without an online server); online the server names the guest, shown as guest.name ('Guest 4821')
   'game.guestName': 'Guest',
 
   // Error page that replaces the loading screen when the game cannot start (src/main.ts). The error
