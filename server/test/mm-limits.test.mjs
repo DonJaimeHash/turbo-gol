@@ -241,15 +241,50 @@ test('two regions forming for the same guest at once while its old match is bein
   assert.ok(matched <= 1);
 });
 
-test('an IPv6 /64 holds at most 3 guest matches across the regions (429 guest_limit); an IPv4 address shared by a school is never capped', async () => {
+test('an IPv6 /64 holds at most GUEST_MATCHES_PER_NET guest MatchDO matches across the regions (429 guest_limit on a server queue); an IPv4 address shared by a school is never capped', async () => {
   const w = await makeWorld();
-  for (let i = 0; i < 3; i++) await w.botMatch(['SA', 'NA', 'EU'][i], guest('home' + i, `2001:db8:5:6:${i}::1`));
+  const perNet = M.GUEST_MATCHES_PER_NET;
+  assert.ok(perNet >= 10, `a classroom on one IPv6 LAN segment gets at least 10 server matches (${perNet})`);
+  const regions = ['SA', 'NA', 'EU', 'AS', 'OC', 'AF'];
+  for (let i = 0; i < perNet; i++) await w.botMatch(regions[i % regions.length], guest('home' + i, `2001:db8:5:6:${(i + 1).toString(16)}::1`));
   w.advance(TRUST_MS + 1);
-  const r = await w.join('SA', guest('home3', '2001:db8:5:6:ffff::2'));
+  const r = await w.join('SA', guest('home-late', '2001:db8:5:6:ffff::2'));
   assert.equal(r.status, 429);
   assert.equal(r.json.error, 'guest_limit');
   for (let i = 0; i < 8; i++) await w.botMatch('SA', guest('school' + i, '203.0.113.9'));
-  assert.equal(w.created.length, 11);
+  assert.equal(w.created.length, perNet + 8);
+});
+
+test('a /64 at its cap still plays P2P: its guests queue P2P and get a room; a lone one is not refused, it waits for a peer', async () => {
+  const w = await makeWorld();
+  const perNet = M.GUEST_MATCHES_PER_NET;
+  const regions = ['SA', 'NA', 'EU', 'AS', 'OC', 'AF'];
+  for (let i = 0; i < perNet; i++) await w.botMatch(regions[i % regions.length], guest('lan' + i, `2001:db8:7:8:${(i + 1).toString(16)}::1`));
+  w.advance(TRUST_MS + 1);
+  const made = w.created.length;
+  const a = guest('lan-a', '2001:db8:7:8:aa::1');
+  const b = guest('lan-b', '2001:db8:7:8:bb::1');
+  const first = await w.join('NA', a, 'p2p');
+  assert.equal(first.status, 200, `P2P is not a MatchDO: no guest_limit (${JSON.stringify(first.json)})`);
+  assert.equal(first.json.status, 'waiting');
+  const pair = await w.join('NA', b, 'p2p');
+  assert.equal(pair.status, 200, JSON.stringify(pair.json));
+  assert.equal(pair.json.status, 'matched');
+  assert.equal(pair.json.kind, 'p2p');
+  // A lone P2P waiter of that /64: past the fill wait its server path is held back by the /64, so it keeps waiting.
+  const c = guest('lan-c', '2001:db8:7:8:cc::1');
+  assert.equal((await w.join('EU', c, 'p2p')).json.status, 'waiting');
+  w.advance(M.P2P_FILL_WAIT + 1);
+  const alone = await w.join('EU', c, 'p2p');
+  assert.equal(alone.status, 200, JSON.stringify(alone.json));
+  assert.equal(alone.json.status, 'waiting');
+  const again = await w.join('EU', c, 'p2p');
+  assert.equal(again.status, 200, `its next poll is not refused either (${JSON.stringify(again.json)})`);
+  assert.equal(w.created.length, made, 'no MatchDO for the /64 at its cap');
+  // A peer turns up: the room forms with it.
+  const d = await w.join('EU', guest('lan-d', '2001:db8:7:8:dd::1'), 'p2p');
+  assert.equal(d.json.status, 'matched');
+  assert.equal(d.json.kind, 'p2p');
 });
 
 // ---- the regional shares -----------------------------------------------------------------------------

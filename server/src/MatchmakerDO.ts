@@ -105,9 +105,11 @@
  * GUEST_MATCHES_PER_NET (an IPv4 address is never counted: a school or a carrier shares one). The
  * regional locks cannot see the other regions, so a guard (POST /guard on the 'guard:<n>' instances
  * of this class, sharded by key) keeps holds: a new guest waiter is checked (409 active_match with
- * the other match and its region, as the ranked lock answers; 429 guest_limit for the /64), and
+ * the other match and its region, as the ranked lock answers; on a server queue 429 guest_limit
+ * for the /64, which counts MatchDO matches only: a P2P queue is never refused for it), and
  * formMatch takes the hold before it creates the MatchDO (a refused human goes out of that
- * formation, its next join gets the answer). A hold ends with its match: it expires at the lock's
+ * formation, its next join gets the answer; a lone P2P waiter refused for its /64 keeps waiting
+ * for a peer). The guard runs one op per key at a time. A hold ends with its match: it expires at the lock's
  * `until`, and one older than GUARD_TRUST_MS is verified with its MatchDO before it refuses
  * anything. The guard fails open (unreachable: allowed). A custom lobby's server match with a guest
  * member is GUEST_MAX_MATCH_SECONDS at most (400 guest_length).
@@ -175,8 +177,13 @@ export const GUEST_ROOMS_MAX = 10;
 export const GUEST_MAX_MATCH_SECONDS = 300;
 /** Concurrent MatchDO matches of one guest session across every region (the guard). */
 export const GUEST_MATCHES_PER_SESSION = 1;
-/** ... and of one IPv6 /64 (a household of guests). */
-export const GUEST_MATCHES_PER_NET = 3;
+/**
+ * ... and of one IPv6 /64: every device of a LAN segment shares one (SLAAC), so a classroom or a
+ * cafe of guests on IPv6 does; as many as the lobbies a /64 may keep open (MAX_LOBBIES_PER_NET).
+ */
+export const GUEST_MATCHES_PER_NET = 10;
+/** The 429 guest_limit text (a guest's /64 at GUEST_MATCHES_PER_NET; the client shows its own line). */
+const GUEST_LIMIT_TEXT = 'Hay demasiadas partidas de invitados desde tu red: inicia sesión para jugar más';
 /** The guard's instances ('guard:<n>'); a key always lands on the same one. */
 export const GUARD_SHARDS = 16;
 /** A hold this young is trusted without asking its MatchDO (it may be in creation). */
@@ -538,12 +545,15 @@ interface FormOptions {
  */
 class NoRoom extends Error {
   readonly code: 'do_disabled' | 'capacity' | 'left';
-  /** 'left' from the guard: the guests that hold a match in another region (out of this formation). */
+  /** 'left' from the guard: the guests it refused (a match in another region, or their /64 full: out of this formation) ... */
   readonly players: readonly string[];
-  constructor(code: 'do_disabled' | 'capacity' | 'left', players: readonly string[] = []) {
+  /** ... and which of them only for their /64 (a lone P2P waiter keeps waiting for a peer). */
+  readonly netFull: readonly string[];
+  constructor(code: 'do_disabled' | 'capacity' | 'left', players: readonly string[] = [], netFull: readonly string[] = []) {
     super(code);
     this.code = code;
     this.players = players;
+    this.netFull = netFull;
   }
 }
 
@@ -855,7 +865,9 @@ export class MatchmakerDO extends DurableObject<Env> {
     // A guest that is not queued here yet: its MatchDO matches in the other regions first (the
     // guard; I/O, so before the steps below). Ranked is for accounts (AccountsDO locks it).
     if (guest && kind !== 'ranked' && this.findWaiter(playerId) === null && !this.forming.has(playerId)) {
-      const held = await this.guardCheck(playerId, net, now);
+      // The /64 counts MatchDO matches only: a P2P queue makes a RoomDO (a lone P2P waiter's
+      // server path takes its hold at the formation, formMatch).
+      const held = await this.guardCheck(playerId, kind === 'server' ? net : null, now);
       if (held !== null) return held;
     }
     // D9 lets this server / ranked queue wait for a node; where none can host now (nodesHere)
@@ -1465,13 +1477,18 @@ export class MatchmakerDO extends DurableObject<Env> {
     }
     if (net === null) return null;
     const home = await this.guardAsk({ op: 'check', key: 'n:' + net, max: GUEST_MATCHES_PER_NET, region: this.region }, now);
-    if (home !== null && !home.ok) return json({ error: 'guest_limit', message: 'Hay demasiadas partidas de invitados desde tu red: inicia sesión para jugar más', retryAfterMs: 60_000 }, 429);
+    if (home !== null && !home.ok) return json({ error: 'guest_limit', message: GUEST_LIMIT_TEXT, retryAfterMs: 60_000 }, 429);
     return null;
   }
 
-  /** The guard's holds for the guests among `humans` in match `matchId`: the playerIds it refused (none when it cannot answer). */
-  private async guardHold(humans: readonly HumanEntry[], matchId: string, until: number, now: number): Promise<string[]> {
+  /**
+   * The guard's holds for the guests among `humans` in match `matchId`: the playerIds it refused
+   * (none when it cannot answer), and which of them only for their /64 (`net`: no match of theirs
+   * elsewhere, their network is at GUEST_MATCHES_PER_NET).
+   */
+  private async guardHold(humans: readonly HumanEntry[], matchId: string, until: number, now: number): Promise<{ refused: string[]; net: string[] }> {
     const refused: string[] = [];
+    const net: string[] = [];
     for (const h of humans) {
       if (h.guest !== true) continue;
       const mine = await this.guardAsk({ op: 'hold', key: 'p:' + h.playerId, max: GUEST_MATCHES_PER_SESSION, region: this.region, exceptRegion: this.region, matchId, until }, now);
@@ -1481,9 +1498,12 @@ export class MatchmakerDO extends DurableObject<Env> {
       }
       if (h.net === undefined) continue;
       const home = await this.guardAsk({ op: 'hold', key: 'n:' + h.net, max: GUEST_MATCHES_PER_NET, region: this.region, matchId, until }, now);
-      if (home !== null && !home.ok) refused.push(h.playerId);
+      if (home !== null && !home.ok) {
+        refused.push(h.playerId);
+        net.push(h.playerId);
+      }
     }
-    return refused;
+    return { refused, net };
   }
 
   /**
@@ -1692,13 +1712,17 @@ export class MatchmakerDO extends DurableObject<Env> {
       // Put them back (original join times; not one that left) and retry after a backoff: the
       // queue's, except after a leave (the others may form at once) and on a p2p queue, where only
       // its lone human's server path found no room (the queue may still form a room).
-      // A guest the guard refused (a match in another region) is out of the queue: its next join is told.
-      const refused = e instanceof NoRoom ? e.players : [];
+      // A guest the guard refused (a match in another region; on a server queue its /64 full) is out
+      // of the queue: its next join is told. A lone P2P waiter refused for its /64 only stays: it
+      // may still find a peer (a RoomDO), and its server path waits out the back-off.
+      const netWait = e instanceof NoRoom && key.kind === 'p2p' ? e.netFull : [];
+      const refused = e instanceof NoRoom ? e.players.filter((id) => !netWait.includes(id)) : [];
       const back = humans.filter((h) => !this.cancels.has(h.playerId) && !refused.includes(h.playerId));
       for (const h of humans) if (refused.includes(h.playerId)) this.answerWaiting(h);
       this.requeue(back);
       if (!(e instanceof NoRoom) || (e.code !== 'left' && key.kind !== 'p2p')) this.retryAt.set(k, now + RETRY_AFTER_MS);
       else if (e.code !== 'left') for (const h of back) h.noRoomUntil = now + RETRY_AFTER_MS;
+      for (const h of back) if (netWait.includes(h.playerId)) h.noRoomUntil = now + RETRY_AFTER_MS;
       // do_disabled where no node can host now (hosts 0): their next join is refused, so answer now.
       if (e instanceof NoRoom && e.code === 'do_disabled' && !this.nodesHere(ids, now)) for (const h of back) this.answerWaiting(h);
       this.scheduleSweep();
@@ -1755,8 +1779,8 @@ export class MatchmakerDO extends DurableObject<Env> {
     const matchId = id.toString();
     // Guests: one MatchDO match at a time across the regions (the guard), held before it exists.
     if (!opts.ranked) {
-      const refused = await this.guardHold(humans, matchId, until, now);
-      if (refused.length > 0) throw new NoRoom('left', refused);
+      const held = await this.guardHold(humans, matchId, until, now);
+      if (held.refused.length > 0) throw new NoRoom('left', held.refused, held.net);
     }
     const secret = await internalSecret(env.JWT_SECRET);
     const res = await env.MATCH.get(id).fetch('https://match/internal/create', {
