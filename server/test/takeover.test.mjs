@@ -672,3 +672,43 @@ test('auth-persist-1: after "confirm it is you" the owner sets a first password 
   assert.equal(ch.status, 200);
   assert.equal((await refresh(env, o2.rt, ip(1))).status, 401, 'a change signs the other devices out');
 });
+
+// ---- auth-11 / econ-2: the maintainer routes need a fresh primary sign-in, never a TV's ----------
+
+test('auth-11 / econ-2: a maintainer\'s 1-hour Bearer or refresh cookie alone grants nothing: /nodes/tokens and /nodes/admin/* need a sign-in from the last 15 minutes', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const seen = withNodes(env, null);
+  // The project account signed in 20 minutes ago; its cookie still refreshes (a stolen copy would too).
+  const owner = await at(obj, -20 * MIN, () => oauth(env, 'discord', 'd-owner', { ip: ip(0) }));
+  const s = await refresh(env, owner.rt, ip(0));
+  env.NODE_TRUSTED_OPERATORS = s.json.playerId;
+  const calls = [
+    ['POST', '/nodes/tokens', { region: 'SA' }],
+    ['GET', '/nodes/admin/nodes', undefined],
+    ['POST', '/nodes/admin/grant', { account: s.json.playerId, item: 'pampero' }],
+    ['POST', '/nodes/admin/status', { nodeId: 'n1', status: 'banned', reason: 'x' }],
+    ['POST', '/nodes/admin/drain', { nodeId: 'n1', reason: 'x' }],
+    ['POST', '/nodes/admin/unfreeze', { account: s.json.playerId }],
+  ];
+  for (const [method, path, body] of calls) {
+    const r = await req(env, method, path, { ip: ip(0), bearer: s.json.session, body });
+    assert.equal(r.status, 403, `${method} ${path}`);
+    assert.equal(r.json.error, 'reauth_required', `${method} ${path}`);
+  }
+  assert.deepEqual(seen, [], 'nothing reached the NodeRegistryDO');
+  // The maintainer confirms it is them (Discord again), then works.
+  const re = await oauth(env, 'discord', 'd-owner', { query: '?reauth=1', cookie: '__Host-tg_rt=' + s.rt, ip: ip(0) });
+  assert.equal(re.done.location, '/#auth=reauth');
+  const fresh = await refresh(env, re.rt, ip(0));
+  for (const [method, path, body] of calls) assert.equal((await req(env, method, path, { ip: ip(0), bearer: fresh.json.session, body })).status, 200, `${method} ${path} fresh`);
+  assert.equal(seen.length, calls.length);
+  // A non-maintainer still hears not_trusted, fresh or not.
+  const other = await oauth(env, 'discord', 'd-other', { ip: ip(1) });
+  const o = await refresh(env, other.rt, ip(1));
+  assert.equal((await req(env, 'POST', '/nodes/tokens', { ip: ip(1), bearer: o.json.session, body: { region: 'SA' } })).json.error, 'not_trusted');
+  // Twenty minutes after that sign-in, the routes ask again.
+  const later = await AUTH.signJwt(SECRET, { ...claims(fresh.json.session), aat: Math.floor(Date.now() / 1000) - 16 * 60 });
+  assert.equal((await req(env, 'GET', '/nodes/admin/nodes', { ip: ip(0), bearer: later })).json.error, 'reauth_required');
+});
+

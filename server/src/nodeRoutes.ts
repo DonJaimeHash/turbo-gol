@@ -17,7 +17,10 @@
  *   PUT|GET  /nodes/replays/<id>      a replay (id: 64 hex), signed by the node -> the object, which checks the
  *                                     signature before it reads the body; 413 over 16 MiB
  *   POST     /nodes/tokens            { region, name? }, Bearer account session of a NODE_TRUSTED_OPERATORS account
- *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB
+ *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB.
+ *                                     Like every maintainer route: never a TV's session (403 tv_session), and one
+ *                                     whose device proved a credential in the last MAINTAINER_FRESH_S (a sign-in
+ *                                     or PERFIL's "confirm it's you"; else 403 reauth_required)
  *   GET      /nodes/mine              Bearer account session -> the caller's own nodes
  *   GET      /nodes/status            the public list of nodes, cached 10 s
  *   GET      /nodes/admin/nodes       the maintainers' routes, Bearer account session of a NODE_TRUSTED_OPERATORS
@@ -45,7 +48,7 @@
  * The cron (index.ts scheduled, every 5 minutes) calls nodeHealthCheck: one call to the object,
  * which probes the trusted nodes' /healthz; nothing at all without the node settings.
  */
-import { requireAccount, requirePrimary, shopClaim, shopGet } from './accountRoutes';
+import { requireAccount, requireFresh, requirePrimary, shopClaim, shopGet } from './accountRoutes';
 import type { SessionClaims } from './auth';
 import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
@@ -81,6 +84,11 @@ const LIMIT_REPLAY_GET_PER_IP = 60;
 const LIMIT_STATUS_PER_IP = 60;
 const LIMIT_MINE_PER_ACCOUNT = 30;
 const LIMIT_ADMIN_PER_ACCOUNT = 30;
+/**
+ * A maintainer's session must come from a sign-in (or a re-authentication) this recent: a stolen
+ * 1-hour Bearer or refresh cookie alone grants no item, mints no trusted node and drains nothing.
+ */
+export const MAINTAINER_FRESH_S = 15 * 60;
 const STATUS_TTL_MS = 10_000;
 /** The maintainers' routes and the method of each. */
 const ADMIN_ROUTES: Readonly<Record<string, 'GET' | 'POST'>> = { nodes: 'GET', status: 'POST', drain: 'POST', update: 'POST', reprobe: 'POST', grant: 'POST', revoke: 'POST', unfreeze: 'POST' };
@@ -182,6 +190,8 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project creates node tokens for now');
+    const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+    if (fresh instanceof Response) return fresh;
     if (c.limited('ntok:' + s.sub, LIMIT_TOKENS_PER_ACCOUNT, DAY_MS)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, operator(s));
   }
@@ -198,6 +208,8 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project maintains the nodes');
+    const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+    if (fresh instanceof Response) return fresh;
     if (c.limited('nadm:' + s.sub, LIMIT_ADMIN_PER_ACCOUNT)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, operator(s));
   }
