@@ -94,6 +94,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `NODE_TRUSTED_OPERATORS` | secret, optional | the project's account ids, comma-separated: their nodes are trusted (at most 2 each) and only they create node tokens |
 | `NODES_PUBLIC_BASE` | var | the origin the nodes and their installers reach `/nodes/*` at (`https://turbo-gol.com`) |
 | `NODE_ALERT_WEBHOOK` | secret, optional | the webhook URL of a staff-only Discord channel: every `ALERT` line of the node control plane is posted there too (see "Community nodes"); unset = only the logs |
+| `RL_10`, `RL_30`, `RL_60`, `RL_120`, `RL_1200` | Workers Rate Limiting (`ratelimits` in `wrangler.jsonc`) | the counters behind `src/limits.ts`'s table, each named after its limit per 60 s; they count per Cloudflare location across all its isolates (approximately). `namespace_id` must be unique in the Cloudflare account; `wrangler dev` simulates them. Without them only the in-isolate counts apply |
 | `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws`, `/room`, `/lobby` and `/nodes` it still receives |
 
 ## HTTP / WebSocket API
@@ -122,7 +123,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `GET /nodes/shop`, `POST /nodes/shop/claim` | Bearer account session; `{ item }` (or `itemId`) | aliases of `GET /api/me/shop` and `POST /api/me/shop/claim` (the hosts' shop lives in AccountsDO): answered with or without the node settings; 401, 403 `account_required` for a guest |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 
-Rate limit: 20 `POST /api/queue` per playerId per minute (in-memory per isolate, best effort).
+Rate limits: see "Rate limits" below (`src/limits.ts` holds every one in a single table).
 One active match per playerId (lock in the matchmaker, released when the MatchDO shuts down or,
 for a p2p room, when the player's signaling socket closes / its slot is dropped / the room is
 cleaned up; expiring after regulation + 10 min, or the room TTL, as a fallback).
@@ -356,6 +357,20 @@ undoes it), and a change takes a minute or two to land (KV propagation, then the
 cache). `vm_disabled` wins over `nodes_on` (`src/env.ts` `nodesMode`): with it set no new match
 goes to a node. No cron flips any of them on cost: the spend-control cron of
 `docs/online/DECISIONS.md` does not exist, and the only cron is the health check above.
+
+## Rate limits
+
+`src/limits.ts` lists every limit of the Worker in one table: the route, who it counts, the
+in-isolate count and the Workers Rate Limiting binding that counts it across the isolates of a
+Cloudflare location. A person's routes count per session or account (`POST /api/queue` 20 a minute
+per isolate and 60 per location, `/api/rejoin` 10 and 60, `/api/leave` 30 and 60, a lobby 5 and
+10 created, 20 and 60 joins). A route without a session counts per network: an IPv4 address as
+it is, an IPv6 address by its /64, so fresh addresses of one subscriber share one count. Since a
+school or an ISP's CGNAT puts hundreds of players behind one IPv4 address (and a school LAN behind
+one /64), the per-network limits are set for a crowd: 1,200 a minute on the frequent routes, 120 on
+a new guest. The binding is approximate and per location, not one global count: a determined
+attacker with many addresses still needs a Cloudflare WAF rate-limiting rule (zone level) or the
+platform's DDoS protection.
 
 ## Limits and cost notes
 

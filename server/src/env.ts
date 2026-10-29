@@ -82,6 +82,16 @@ export interface Env {
   NODE_ALERT_WEBHOOK?: string;
   /** Var: the public origin the nodes and the installers reach the control plane at (https://turbo-gol.com). */
   NODES_PUBLIC_BASE?: string;
+  /**
+   * Workers Rate Limiting bindings (wrangler.jsonc `ratelimits`), named after their limit per 60 s:
+   * the counters behind limits.ts's table, shared by the isolates of one Cloudflare location.
+   * Optional: without them (tests, a fork) only the in-isolate counts apply.
+   */
+  RL_10?: RateLimit;
+  RL_30?: RateLimit;
+  RL_60?: RateLimit;
+  RL_120?: RateLimit;
+  RL_1200?: RateLimit;
 }
 
 export const SERVER_VERSION = '0.1.0';

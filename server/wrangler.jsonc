@@ -62,6 +62,17 @@
     { "binding": "NODE_REPLAYS", "bucket_name": "turbogol-node-replays" },
     { "binding": "NODE_RELEASES", "bucket_name": "turbogol-node-releases" }
   ],
+  // Workers Rate Limiting: the counters behind src/limits.ts's table, named after their limit per
+  // 60 s (period 10 or 60 only). Each counts per Cloudflare location across all its isolates,
+  // approximately. namespace_id is a positive integer unique in the Cloudflare account: a fork on
+  // an account that already uses one of these ids picks others. `wrangler dev` simulates them.
+  "ratelimits": [
+    { "name": "RL_10", "namespace_id": "7310", "simple": { "limit": 10, "period": 60 } },
+    { "name": "RL_30", "namespace_id": "7330", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_60", "namespace_id": "7360", "simple": { "limit": 60, "period": 60 } },
+    { "name": "RL_120", "namespace_id": "7312", "simple": { "limit": 120, "period": 60 } },
+    { "name": "RL_1200", "namespace_id": "7311", "simple": { "limit": 1200, "period": 60 } }
+  ],
   "vars": {
     "MATCH_LENGTH_SECONDS": 180,
     "REGION_OVERRIDE": "",

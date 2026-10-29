@@ -57,6 +57,7 @@ import { INTERNAL_HEADER, internalSecret } from './auth';
 import { JSON_MAX_BYTES, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import type { Env, NodesEnv } from './env';
 import { NODE_ROUTES, nodesStub } from './nodeApi';
+import type { Limiter } from './limits';
 import { REGISTER_PER_IP_PER_HOUR, REPLAY_MAX_BYTES, TOKENS_PER_ACCOUNT_PER_DAY } from './NodeRegistryDO';
 import { PUBLIC_REPLAY_MAX_BYTES, publicReplay } from './replayIndex';
 import type { ReplayIndexRow } from './replayIndex';
@@ -71,8 +72,10 @@ export interface NodeRouteContext {
   ip: string;
   /** The verified Bearer session, read only by the routes that need one. */
   session: () => Promise<SessionClaims | null>;
-  /** index.ts rateLimited: true = over `max` in the current window (default one minute). */
+  /** limits.ts isolateLimited: true = over `max` in the current window (default one minute), in this isolate. */
   limited: (key: string, max: number, windowMs?: number) => boolean;
+  /** limits.ts limiter: a rule of its table, counted across the location's isolates when the Worker has its binding. */
+  limit: Limiter;
   /** CORS headers for this request (index.ts corsHeaders). */
   cors: Record<string, string>;
 }

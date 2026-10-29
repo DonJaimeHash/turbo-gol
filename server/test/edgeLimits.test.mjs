@@ -109,6 +109,29 @@ const accountId = () => (++accounts).toString(16).padStart(16, 'a');
 const accountToken = (sub = accountId()) => signJwt(SECRET, { sub, name: 'Ana', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, acct: 1 });
 const guestToken = async (sub = accountId()) => (await createSession(SECRET, sub, 'Guest')).token;
 
+// ---- the table -----------------------------------------------------------------------------------
+
+test('every binding the table uses is in wrangler.jsonc with the same limit and period (10 or 60 s), each with its own namespace id', async () => {
+  const { EDGE_BINDINGS, LIMITS } = await import('../src/limits.ts');
+  const jsonc = src('../wrangler.jsonc').replace(/^\s*\/\/.*$/gm, '');
+  const cfg = JSON.parse(jsonc);
+  assert.ok(Array.isArray(cfg.ratelimits), 'wrangler.jsonc declares ratelimits');
+  const byName = new Map(cfg.ratelimits.map((r) => [r.name, r]));
+  for (const [name, b] of Object.entries(EDGE_BINDINGS)) {
+    const r = byName.get(name);
+    assert.ok(r, name + ' is declared');
+    assert.deepEqual(r.simple, { limit: b.limit, period: b.period }, name);
+    assert.ok([10, 60].includes(r.simple.period));
+    assert.match(r.namespace_id, /^[1-9]\d*$/);
+  }
+  assert.equal(new Set(cfg.ratelimits.map((r) => r.namespace_id)).size, cfg.ratelimits.length, 'unique namespace ids');
+  for (const [name, rule] of Object.entries(LIMITS)) {
+    if (rule.edge) assert.ok(EDGE_BINDINGS[rule.edge], name);
+    // A binding can only ever be the stricter count: the pre-filter never stops what the binding would let through.
+    if (rule.edge && rule.by !== 'session' && rule.by !== 'account') assert.equal(rule.isolate, EDGE_BINDINGS[rule.edge].limit, name);
+  }
+});
+
 // ---- GET /api/ice -----------------------------------------------------------------------------------
 
 test('GET /api/ice is gone: a guest session gets a 404, and no TURN credentials are ever minted for it', async () => {
@@ -128,5 +151,74 @@ test('GET /api/ice is gone: a guest session gets a 404, and no TURN credentials 
     globalThis.fetch = realFetch;
   }
   assert.doesNotMatch(src('../src/index.ts'), /\/api\/ice|LIMIT_ICE/);
+});
+
+// ---- per network, across isolates ----------------------------------------------------------------------
+
+test('guests: an IPv6 /64 is one network (fresh addresses in it share one count), counted by the binding too', async () => {
+  const env = makeEnv();
+  const net = net6();
+  let limitedAt = 0;
+  for (let i = 1; i <= 121 && limitedAt === 0; i++) {
+    const res = await req(env, 'POST', '/api/guest', { ip: `${net}:${i.toString(16)}:0:0:1`, body: {} });
+    if (res.status === 429) limitedAt = i;
+    else assert.equal(res.status, 200);
+  }
+  assert.equal(limitedAt, 121, 'the 121st guest of one /64 in a minute, whatever the address in it');
+  const bound = fakeBinding(120);
+  const env2 = makeEnv({ RL_120: bound });
+  const other = net6();
+  await req(env2, 'POST', '/api/guest', { ip: `${other}::5`, body: {} });
+  await req(env2, 'POST', '/api/guest', { ip: `${other}:ffff:ffff:ffff:ffff`, body: {} });
+  const k = other.split(':').slice(0, 4).join(':') + '::/64';
+  assert.deepEqual(bound.keys, ['guest:' + k, 'guest:' + k]);
+});
+
+test('guests: a whole school behind one IPv4 address gets its sessions (100 in a minute)', async () => {
+  const env = makeEnv({ RL_120: fakeBinding(120) });
+  const school = ip4();
+  for (let i = 0; i < 100; i++) assert.equal((await req(env, 'POST', '/api/guest', { ip: school, body: {} })).status, 200, `guest #${i + 1}`);
+});
+
+test('the binding counts what other isolates saw: over it is a 429 even with this isolate fresh; a binding that throws lets the request through', async () => {
+  const ip = ip4();
+  const seen = new Map([['guest:' + ip, 120]]);
+  const env = makeEnv({ RL_120: fakeBinding(120, seen) });
+  const res = await req(env, 'POST', '/api/guest', { ip, body: {} });
+  assert.equal(res.status, 429);
+  assert.equal((await res.json()).error, 'rate_limited');
+  const broken = makeEnv({ RL_120: { limit: async () => { throw new Error('binding down'); } } });
+  const warn = console.warn;
+  console.warn = () => undefined;
+  try {
+    assert.equal((await req(broken, 'POST', '/api/guest', { body: {} })).status, 200);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test('queue: the per-session limit comes before the KV flags, so a refused request reads none', async () => {
+  let reads = 0;
+  const sub = accountId();
+  const token = await guestToken(sub);
+  const env = makeEnv({ FLAGS: { get: async () => (reads++, null) }, RL_60: fakeBinding(60, new Map([['queue:' + sub, 60]])) });
+  const res = await req(env, 'POST', '/api/queue', { bearer: token, body: { mode: '1v1', kind: 'server' } });
+  assert.equal(res.status, 429);
+  assert.equal(reads, 0);
+});
+
+test('rejoin and leave count per session first, and per network only past a crowd (a match of six on one address rejoins freely)', async () => {
+  const env = makeEnv({ RL_60: fakeBinding(60), RL_1200: fakeBinding(1200), MATCH: { idFromString: () => { throw new Error('not one'); } }, ROOM: { idFromString: () => { throw new Error('not one'); } }, MATCHMAKER: { idFromName: (n) => n, get: () => ({ fetch: async () => new Response('{"ok":true}') }) } });
+  const ip = ip4();
+  for (let p = 0; p < 6; p++) {
+    const bearer = await guestToken();
+    for (let i = 0; i < 5; i++) {
+      const r = await req(env, 'POST', '/api/rejoin', { ip, bearer, body: { matchId: 'ab'.repeat(32) } });
+      assert.notEqual(r.status, 429, `player ${p} rejoin ${i}`);
+    }
+    assert.notEqual((await req(env, 'POST', '/api/leave', { ip, bearer, body: {} })).status, 429);
+  }
+  assert.ok(env.RL_60.keys.some((k) => k.startsWith('rejoin:')) && env.RL_1200.keys.some((k) => k === 'rejoinNet:' + ip));
+  assert.ok(env.RL_60.keys.some((k) => k.startsWith('leave:')) && env.RL_1200.keys.some((k) => k === 'leaveNet:' + ip));
 });
 
