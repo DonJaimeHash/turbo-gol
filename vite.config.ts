@@ -17,10 +17,13 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
     // Online mode (docs/online/PHASE1.md, PHASE2.md): the Worker runs under `wrangler dev` (API);
-    // the browser talks to the same origin and Vite forwards the control plane, the match sockets
-    // (/ws, phase 1), the P2P signaling sockets (/room, phase 2) and the lobby sockets (/lobby).
+    // the browser talks to the same origin and Vite forwards the control plane, the community
+    // nodes' routes (/nodes: PERFIL's MI SERVIDOR), the match sockets (/ws, phase 1), the P2P
+    // signaling sockets (/room, phase 2) and the lobby sockets (/lobby).
     proxy: {
       '/api': { target: 'http://' + API, changeOrigin: true },
+      // Not the modules Vite serves from the nodes/ folder itself (PERFIL reads PROBATION_MATCHES there).
+      '^/nodes/(?!.*\\.[cm]?[jt]s(\\?|$))': { target: 'http://' + API, changeOrigin: true },
       '/ws': { target: 'ws://' + API, ws: true, changeOrigin: true },
       '/room': { target: 'ws://' + API, ws: true, changeOrigin: true },
       // Custom-match lobby sockets (LobbyDO).

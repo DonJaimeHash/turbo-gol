@@ -2857,8 +2857,8 @@ export class Game implements P2PGameHooks {
     const th = this.trainingHud;
     if (tr === null || th === null) return;
     th.setPaused(this.paused);
-    // A finger (touch mode) gets the ↺ button's hints; else the keys of the device that is there.
-    const device = this.touch !== null && this.touch.touchMode ? 'touch' : this.input.hasGamepad ? 'pad' : 'kbm';
+    // A finger (touch mode) gets the ↺ button's hints; else the keys of the device that is there (a TV remote: its own two).
+    const device = this.touch !== null && this.touch.touchMode ? 'touch' : this.input.hasGamepad ? 'pad' : this.device?.lastInput === 'remote' ? 'remote' : 'kbm';
     if (device !== this.trainingHintsDevice) {
       this.trainingHintsDevice = device;
       th.setHints(this.trainingHints(device));
@@ -2889,8 +2889,8 @@ export class Game implements P2PGameHooks {
       resetCar: input.getLabel('trainingResetCar', dev),
       boost: input.getLabel('trainingBoost', dev),
       pause: input.getLabel('pause', dev),
-      accept: pad ? 'A' : 'Enter',
-      back: pad ? 'B' : 'Esc',
+      accept: pad ? 'A' : device === 'remote' ? 'OK' : 'Enter',
+      back: pad ? 'B' : device === 'remote' ? '↩' : 'Esc',
       device,
     };
   }

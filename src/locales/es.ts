@@ -1049,6 +1049,7 @@ export default {
   'trainingHud.keyPrevNext': '{prev} / {next}  tiro anterior / siguiente',
   'trainingHud.summaryHint': '{reset}  otra vez   ·   {back}  entrenamiento   ·   {prev} / {next}  elige un tiro',
   'trainingHud.summaryHintPad': '{reset}  otra vez   ·   {back}  entrenamiento',
+  'trainingHud.summaryHintRemote': '{accept}  elige   ·   {back}  entrenamiento',
   'trainingHud.tally': '✓ {hits}  ·  ✕ {misses}',
   'trainingHud.touchResetAll': '{key}  reinicia auto y pelota',
   'trainingHud.touchPausePack': 'Pausa: tiro anterior o siguiente',

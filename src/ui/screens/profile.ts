@@ -27,6 +27,7 @@ import { AccountError } from '../../net/AccountClient';
 import { PASSWORD_MIN, REGIONS, USERNAME_MAX, USERNAME_MIN, passwordIssue, usernameIssue } from '../../net/account';
 import type { AccountIssue, MeInfo, MyNode, OAuthProvider, PlaylistRating } from '../../net/account';
 import { PROTOCOL_VERSION } from '../../net/protocol';
+import { PROBATION_MATCHES } from '../../../nodes/control-plane/registry';
 import { ratingCard, rankBadge, tierById } from '../badges';
 import { regionName } from '../names';
 import type { Menu, Screen } from '../Menu';
@@ -300,7 +301,7 @@ export function profileScreen(menu: Menu): Screen {
   /** MI SERVIDOR: each of the operator's nodes, its state in words. */
   const nodeView = (n: MyNode): HTMLElement => {
     const live = n.online && (n.status === 'active' || n.status === 'probation');
-    const state = h('span.mn-prof-node-state', { 'data-ok': live ? 'true' : 'false' }, h('span.mn-dot'), t(NODE_STATE[n.status], { count: n.counters.probationVerified, total: 20 }), n.online ? '' : ` · ${t('profile.nodeOffline')}`);
+    const state = h('span.mn-prof-node-state', { 'data-ok': live ? 'true' : 'false' }, h('span.mn-dot'), t(NODE_STATE[n.status], { count: n.counters.probationVerified, total: PROBATION_MATCHES }), n.online ? '' : ` · ${t('profile.nodeOffline')}`);
     return h(
       'div.mn-prof-node',
       null,

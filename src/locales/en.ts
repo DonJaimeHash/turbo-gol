@@ -1539,6 +1539,8 @@ export default {
   'trainingHud.summaryHint': '{reset}  again   ·   {back}  training   ·   {prev} / {next}  pick a shot',
   // The same with a controller (its D-pad walks the buttons)
   'trainingHud.summaryHintPad': '{reset}  again   ·   {back}  training',
+  // The same with a TV remote: {accept} is its OK, {back} its Back (↩)
+  'trainingHud.summaryHintRemote': '{accept}  choose   ·   {back}  training',
   // The run's hits and misses under the shot dots
   'trainingHud.tally': '✓ {hits}  ·  ✕ {misses}',
   // The panel's hints on a touch screen
