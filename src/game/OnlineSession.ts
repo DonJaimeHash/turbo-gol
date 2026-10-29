@@ -34,7 +34,11 @@
  * HUD's top-centre line "Reconnecting… (attempt 2/5)", then "Back in the match" for BACK_MS once a
  * Welcome comes; the close code goes to the console only. The match is kept in sessionStorage
  * (rejoinStore.ts) from the first Welcome, so a lost connection or a reload can come back to it
- * (rejoin(): POST /api/rejoin, then the socket as for a new assignment).
+ * (rejoin(): POST /api/rejoin, then the socket as for a new assignment); a custom lobby's match
+ * (joinAssigned `lobby`) is kept as one, so its FINAL goes back to the lobby after a rejoin too.
+ * A match found over is no lost connection: the reconnection's rejoin answering 404 / 410, or the
+ * server closing the socket on purpose (1000: the whistle's close, its end) before this tab heard
+ * 'ended', forget the record and say "That match is over".
  */
 import { TICK_MS, LeadAdjuster, computeLead } from '../net/ClockSync';
 import { assembleInputs, INPUT_MAX_PER_PACKET } from '../net/InputRing';
@@ -119,6 +123,8 @@ export class OnlineSession {
   mode: GameMode = '1v1';
   /** The current match is ranked (queue kind 'ranked'): rated by the server when it ends. */
   ranked = false;
+  /** The current match is a custom lobby's (joinAssigned `lobby`, or a rejoin of one). */
+  private lobbyMatch = false;
   /**
    * The last ranked match that reached its whistle (forfeit included): the menu fetches its rating
    * change (AccountClient.waitRankedResult) and clears this. Survives the teardown.
@@ -202,7 +208,7 @@ export class OnlineSession {
     c.onWelcome = (w) => this.handleWelcome(w);
     c.onSnapshot = (pkt) => this.handleSnapshot(pkt);
     c.onEvent = (e) => this.handleEvent(e);
-    c.onClose = (code, reason, reconnecting) => this.handleClose(code, reason, reconnecting);
+    c.onClose = (code, reason, reconnecting, gone) => this.handleClose(code, reason, reconnecting, gone === true);
     c.onError = (code, message) => this.handleError(code, message);
   }
 
@@ -277,6 +283,7 @@ export class OnlineSession {
     this.matchId = null;
     this.lost = false;
     this.ranked = kind === 'ranked';
+    this.lobbyMatch = false;
     const attempt = ++this.attempt;
     this.client
       .queue(mode, kind, (waiting) => {
@@ -308,13 +315,15 @@ export class OnlineSession {
   }
 
   /**
-   * Join a match the matchmaker already assigned (a P2P queue answered with a server match): skip
-   * the queue and connect. No-op unless idle. `notice` prefixes the status line while connecting.
+   * Join a match the matchmaker already assigned (a P2P queue answered with a server match, a
+   * custom lobby's start: `lobby`): skip the queue and connect. No-op unless idle. `notice`
+   * prefixes the status line while connecting.
    */
-  joinAssigned(mode: GameMode, m: MatchAssignment, notice = ''): void {
+  joinAssigned(mode: GameMode, m: MatchAssignment, notice = '', lobby = false): void {
     if (this.state !== 'idle') return;
     this.mode = mode;
     this.ranked = false;
+    this.lobbyMatch = lobby;
     this.error = null;
     this.notice = notice;
     this.attempt++;
@@ -334,6 +343,7 @@ export class OnlineSession {
     if (this.state !== 'idle') return;
     this.mode = r.modes[0];
     this.ranked = r.kind === 'ranked';
+    this.lobbyMatch = r.kind === 'lobby';
     this.error = null;
     this.notice = '';
     this.state = 'connecting';
@@ -653,7 +663,7 @@ export class OnlineSession {
     this.status = active ? ONLINE_STATUS.verifying : t('online.queue');
   }
 
-  private handleClose(code: number, reason: string, reconnecting: boolean): void {
+  private handleClose(code: number, reason: string, reconnecting: boolean, gone = false): void {
     if (!this.active) return;
     // The code and the reason are for the console (and F4's panel), never the player's text.
     this.lastClose = `${code}${reason.length > 0 ? `: ${reason}` : ''}`;
@@ -664,6 +674,12 @@ export class OnlineSession {
       return;
     }
     if (this.state === 'ended') return; // the whistle already scheduled the menu
+    // Over, not lost: nothing to rejoin (the lost sheet would offer it), the menu says so.
+    if (gone || code === 1000) {
+      clearRejoin();
+      this.disconnect(t('online.matchOver'));
+      return;
+    }
     this.disconnect(t('online.connectionLost'));
   }
 
@@ -706,7 +722,7 @@ export class OnlineSession {
     const id = this.matchId;
     if (id === null || this.state === 'ended') return;
     const now = Date.now();
-    saveRejoin({ matchId: id, kind: this.ranked ? 'ranked' : 'casual', modes: [this.mode], endsAt: secondsLeft === null ? null : now + secondsLeft * 1000, savedAt: now });
+    saveRejoin({ matchId: id, kind: this.ranked ? 'ranked' : this.lobbyMatch ? 'lobby' : 'casual', modes: [this.mode], endsAt: secondsLeft === null ? null : now + secondsLeft * 1000, savedAt: now });
   }
 
   /** The socket died mid-match: the Game shows the menu (which leaves the session, keeping the server lock). */

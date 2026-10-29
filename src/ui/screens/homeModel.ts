@@ -59,7 +59,7 @@ export interface HeroLobby {
 
 /** A server match of this tab still running after a reload or a lost connection (PR 12: rejoinStore.ts). */
 export interface HeroRejoin {
-  kind: 'casual' | 'ranked';
+  kind: 'casual' | 'ranked' | 'lobby';
   modes: GameMode[];
   /** Its time left, ms. */
   leftMs: number;
@@ -102,10 +102,10 @@ export const HERO_SEP_TV = ' - ';
 /**
  * The subtitle's two parts: the queue ("Casual · 2v2", "Competitivo · 1v1 · 3v3") and the region's
  * name (`region`, null when none is known yet: then it is left out). `names`: the kinds' names in
- * the page's language (play.casualTitle, play.rankedTitle). Pure.
+ * the page's language (play.casualTitle, play.rankedTitle; a lobby's match: final.lobby). Pure.
  */
-export function queueParts(kind: 'casual' | 'ranked', modes: readonly GameMode[], region: string | null, names: { casual: string; ranked: string }): { queue: string; region: string | null } {
-  return { queue: [kind === 'ranked' ? names.ranked : names.casual, ...modes].join(HERO_SEP), region };
+export function queueParts(kind: 'casual' | 'ranked' | 'lobby', modes: readonly GameMode[], region: string | null, names: { casual: string; ranked: string; lobby?: string }): { queue: string; region: string | null } {
+  return { queue: [kind === 'ranked' ? names.ranked : kind === 'lobby' && names.lobby !== undefined ? names.lobby : names.casual, ...modes].join(HERO_SEP), region };
 }
 
 /**

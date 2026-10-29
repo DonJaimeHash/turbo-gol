@@ -23,7 +23,8 @@ export const REJOIN_OVERTIME_MS = 90_000;
 
 export interface RejoinRecord {
   matchId: string;
-  kind: 'casual' | 'ranked';
+  /** What the match was: a queue's, or a custom lobby's server match (its FINAL goes back to the lobby). */
+  kind: 'casual' | 'ranked' | 'lobby';
   modes: GameMode[];
   /** Date.now() when its regulation time ends; null when unknown (unlimited, overtime). */
   endsAt: number | null;
@@ -54,7 +55,7 @@ export function readRejoin(now = Date.now(), store: StorageLike | null = session
   const ok =
     r !== null &&
     typeof r.matchId === 'string' &&
-    (r.kind === 'casual' || r.kind === 'ranked') &&
+    (r.kind === 'casual' || r.kind === 'ranked' || r.kind === 'lobby') &&
     Array.isArray(r.modes) &&
     r.modes.length > 0 &&
     typeof r.savedAt === 'number' &&

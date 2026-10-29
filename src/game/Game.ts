@@ -1444,7 +1444,7 @@ export class Game implements P2PGameHooks {
     this.setMode(mode);
     this.menuReturnAt = -1;
     this.setSession(online);
-    online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl });
+    online.joinAssigned(mode, { matchId: q.matchId, ticket: q.ticket, wsUrl: q.wsUrl }, '', true);
   }
 
   /**
@@ -2421,7 +2421,8 @@ export class Game implements P2PGameHooks {
     if (this.session !== null && this.session.busy) this.session.cancel();
     if (online.state !== 'idle') return;
     const region = online.client.region;
-    this.searchReq = { kind: rec.kind, modes: rec.modes.slice(), region: isRegion(region) ? region : null, net: 'server' };
+    // A lobby's match shows as a Casual search while it connects; its FINAL goes back to the lobby.
+    this.searchReq = { kind: rec.kind === 'ranked' ? 'ranked' : 'casual', modes: rec.modes.slice(), region: isRegion(region) ? region : null, net: 'server' };
     this.searchSince = performance.now();
     this.matchKind = rec.kind;
     this.setMode(rec.modes[0]);

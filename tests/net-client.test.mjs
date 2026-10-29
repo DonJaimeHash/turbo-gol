@@ -1071,12 +1071,12 @@ test('reconnect through /api/rejoin on an abnormal close, up to RECONNECT_TRIES 
   const h4 = makeClient({ '/api/guest': () => jsonResponse(200, GUEST), '/api/rejoin': () => jsonResponse(410, { error: 'match_over' }) }, { reconnectDelaysMs: [0] });
   h4.client.matchId = 'm4';
   const c4 = [];
-  h4.client.onClose = (code, reason, r) => c4.push(r);
+  h4.client.onClose = (code, reason, r, gone) => c4.push([r, gone === true]);
   h4.client.connect('/ws/m4', 't');
   h4.sockets[0].open();
   h4.sockets[0].dropped(1006, 'network');
   await settle();
-  assert.deepEqual(c4, [true, false], 'one try, then the end');
+  assert.deepEqual(c4, [[true, false], [false, true]], 'one try, then the end: the match is gone (nothing to rejoin)');
   rejoinAnswer = () => jsonResponse(200, {});
 
   // A clean 1000 never reconnects.

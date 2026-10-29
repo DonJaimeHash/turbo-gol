@@ -88,7 +88,7 @@ export function homeScreen(menu: Menu): Screen {
     const r = id ?? (isRegion(auto) ? auto : null);
     return r === null ? null : regionName(r);
   };
-  const names = { casual: t('play.casualTitle'), ranked: t('play.rankedTitle') };
+  const names = { casual: t('play.casualTitle'), ranked: t('play.rankedTitle'), lobby: t('final.lobby') };
 
   /** The server match this tab may join again (rejoinStore.ts), while no search runs (a rejoin under way is one). */
   const rejoinOf = (searching: boolean): HeroInput['rejoin'] => {
