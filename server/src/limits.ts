@@ -73,7 +73,8 @@
  *                      still to log in: 8 per address, 16 per prefix, 40 from unknown addresses and
  *                      20 from addresses a node logged in from (PENDING_*); per logged-in socket 20
  *                      frames a second (burst 64), per node 30 hellos in 10 minutes and 4 new
- *                      publicUrls an hour (FRAME_*, HELLOS_*, PUBLIC_URL_*)
+ *                      publicUrls an hour (FRAME_*, HELLOS_*, PUBLIC_URL_*); replay uploads one per
+ *                      match and two per node at a time, 48 MiB of bodies in flight (REPLAY_*)
  *
  * A 429 is error 429 'rate_limited' everywhere. The Cloudflare zone may add a WAF rate-limiting
  * rule in front of all this (server/README.md, "Rate limits").

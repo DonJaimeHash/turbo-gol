@@ -1617,3 +1617,106 @@ test('the probe of a publicUrl reads at most 16 KB of its answer', async () => {
   assert.ok(lines.some((l) => l.includes('an answer over 16384 bytes')), lines.join('\n'));
   assert.ok(big.pulls <= 2, `stopped at the cap (${big.pulls} chunks pulled)`);
 });
+
+// ---- replay uploads in the one object ----------------------------------------------------------------
+
+/** A body that hands out `chunks` once `open()` was called; `pulls` counts the chunks taken. */
+function gated(chunks) {
+  let open;
+  const gate = new Promise((r) => (open = r));
+  const g = { pulls: 0, open: () => open() };
+  g.body = new ReadableStream(
+    {
+      async pull(c) {
+        await gate;
+        if (g.pulls >= chunks.length) return c.close();
+        c.enqueue(chunks[g.pulls++]);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return g;
+}
+
+test('replay uploads: one per match at a time (429), two per node; a stored replay answers its retry without a second read, another one 409', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const { node } = await liveNode(h);
+  const ids = [];
+  for (let i = 0; i < 3; i++) ids.push((await call(h, 'POST', '/internal/place', { body: placeBody({ humans: humans('p' + i + 'a', 'p' + i + 'b') }) })).json.placement.matchId);
+  const bytes = new Uint8Array(3000).map((_, i) => i & 0xff);
+  const sha = await sha256Hex(bytes);
+  const put = async (id, body, { digest = sha, length } = {}) =>
+    h.obj.fetch(
+      new Request(`https://nodes/nodes/replays/${id}`, {
+        method: 'PUT',
+        duplex: 'half',
+        body,
+        headers: {
+          [INTERNAL_HEADER]: secret,
+          'x-node-id': node.nodeId,
+          'x-node-ts': String(clock),
+          'x-node-sig': await sign(node.key, replayRequestMessage('PUT', id, digest, clock)),
+          'x-replay-sha256': digest,
+          ...(length !== undefined ? { 'content-length': String(length) } : {}),
+        },
+      }),
+    );
+  const a = gated([bytes]);
+  const first = put(ids[0], a.body, { length: bytes.length });
+  await sleep(5);
+  const again = await within(2000, put(ids[0], gated([bytes]).body, { length: bytes.length }), 'a second upload of the match is answered before its body is read');
+  assert.deepEqual([again.status, (await again.json()).error], [429, 'upload_in_progress'], 'the same match while its upload is read');
+  const b = gated([bytes]);
+  const second = put(ids[1], b.body, { length: bytes.length });
+  await sleep(5);
+  const third = await within(2000, put(ids[2], gated([bytes]).body, { length: bytes.length }), 'a third upload of the node is answered before its body is read');
+  assert.deepEqual([third.status, (await third.json()).error], [429, 'busy'], 'a third upload of one node');
+  a.open();
+  b.open();
+  assert.equal((await first).status, 200);
+  assert.equal((await second).status, 200);
+  assert.deepEqual(env.NODE_REPLAYS.objects.get(ids[0]), bytes);
+  const retry = gated([bytes]);
+  retry.open();
+  const r = await put(ids[0], retry.body, { length: bytes.length });
+  assert.equal(r.status, 200, 'its retry after a lost answer');
+  assert.equal(retry.pulls, 0, 'not read again');
+  const other = new Uint8Array(3000).fill(7);
+  const o = gated([other]);
+  o.open();
+  const r2 = await put(ids[0], o.body, { digest: await sha256Hex(other), length: other.length });
+  assert.deepEqual([r2.status, (await r2.json()).error], [409, 'already_uploaded']);
+  assert.deepEqual(env.NODE_REPLAYS.objects.get(ids[0]), bytes, 'the stored replay stays');
+});
+
+test('replay uploads: a budget of bytes in flight across nodes (503 busy, tried again by the node); a body longer than it declared is refused', async () => {
+  const env = makeEnv();
+  const h = await boot(env);
+  const one = await liveNode(h);
+  const id = (await call(h, 'POST', '/internal/place', { body: placeBody() })).json.placement.matchId;
+  const bytes = new Uint8Array(3000).map((_, i) => (i * 7) & 0xff);
+  const sha = await sha256Hex(bytes);
+  const put = async (body, length) =>
+    h.obj.fetch(
+      new Request(`https://nodes/nodes/replays/${id}`, {
+        method: 'PUT',
+        duplex: 'half',
+        body,
+        headers: { [INTERNAL_HEADER]: secret, 'x-node-id': one.node.nodeId, 'x-node-ts': String(clock), 'x-node-sig': await sign(one.node.key, replayRequestMessage('PUT', id, sha, clock)), 'x-replay-sha256': sha, 'content-length': String(length) },
+      }),
+    );
+  h.obj.replayBudget = 2000;
+  const r = await within(2000, put(gated([bytes]).body, bytes.length), 'an upload over the budget is answered before its body is read');
+  assert.deepEqual([r.status, (await r.json()).error], [503, 'busy'], 'over the budget: tried again later');
+  h.obj.replayBudget = D.REPLAY_INFLIGHT_BYTES;
+  const longer = gated([bytes, bytes]);
+  longer.open();
+  const r2 = await put(longer.body, bytes.length);
+  assert.deepEqual([r2.status, (await r2.json()).error], [400, 'bad_length']);
+  assert.equal(env.NODE_REPLAYS.objects.has(id), false);
+  const ok = gated([bytes.slice(0, 1000), bytes.slice(1000)]);
+  ok.open();
+  assert.equal((await put(ok.body, bytes.length)).status, 200);
+  assert.deepEqual(env.NODE_REPLAYS.objects.get(id), bytes);
+});

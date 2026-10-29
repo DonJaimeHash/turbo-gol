@@ -541,3 +541,24 @@ test('probeTargetOk: a public host only (every IPv4 form the URL parser knows); 
   assert.equal(W.probeTargetOk('https://127.0.0.1:9000/healthz', true), true, 'wrangler dev: a node on this machine');
   assert.equal(W.probeTargetOk('https://10.0.0.1', true), false, 'still never a private one');
 });
+
+test('probeHealthz: at most 16 KB of an answer is read; a private address is never fetched; a redirect is not followed', async () => {
+  const n = rec();
+  let pulls = 0;
+  const f = fakeFetch(async () => {
+    const chunk = new Uint8Array(64 * 1024).fill(32);
+    return new Response(new ReadableStream({ pull(c) { if (pulls++ >= 64) return c.close(); c.enqueue(chunk); } }, { highWaterMark: 0 }));
+  });
+  assert.deepEqual(await W.probeHealthz(n, f), { ok: false, kind: 'answer', detail: 'an answer over 16384 bytes' });
+  assert.ok(pulls <= 2, `stopped at the cap (${pulls})`);
+  const none = fakeFetch(() => new Response('{}'));
+  for (const publicUrl of ['wss://10.0.0.9', 'wss://[fd00::9]', 'wss://127.0.0.1:9443']) {
+    const r = await W.probeHealthz(rec({ publicUrl }), none);
+    assert.deepEqual([r.ok, r.kind], [false, 'network'], publicUrl);
+  }
+  assert.equal(none.calls.length, 0, 'nothing fetched');
+  assert.equal((await W.probeHealthz(rec({ publicUrl: 'wss://127.0.0.1:9443' }), healthzFetch(), 5000, true)).ok, true, 'a loopback node under wrangler dev');
+  const moved = fakeFetch(() => new Response(null, { status: 301, headers: { location: 'https://10.0.0.1/' } }));
+  assert.deepEqual(await W.probeHealthz(n, moved), { ok: false, kind: 'http', detail: 'HTTP 301' });
+  assert.equal(moved.calls[0].init.redirect, 'manual');
+});

@@ -9,7 +9,9 @@
  *   GET  /nodes/connect          WebSocket upgrade: a node's control link (Hibernation API), x-client-ip; the
  *                                sockets still to log in are capped per address, prefix and pool (PENDING_*)
  *   PUT  /nodes/replays/<id>     the hosting node's replay upload, signed (x-node-id / -ts / -sig, x-replay-sha256): the
- *                                signature is checked before the body (up to 16 MiB) is read
+ *                                signature is checked before the body (up to 16 MiB) is read; one upload per match
+ *                                and two per node at a time, 48 MiB of bodies in flight (REPLAY_*); a stored
+ *                                replay's retry answers 200 unread
  *   GET  /nodes/replays/<id>     the replay, for the verifier node its job went to (signed the same way)
  *   GET  /nodes/status           the public list of nodes
  *   POST /nodes/tokens           { region, name? } with x-operator-id / x-operator-name (an account the Worker found in
@@ -98,6 +100,15 @@ export const CHANNEL_KEY = 'channel.json';
 /** A node's control frames are small JSON: anything bigger closes the socket (the reference server's cap). */
 export const MAX_FRAME_CHARS = 256 * 1024;
 export const REPLAY_MAX_BYTES = 16 * 1024 * 1024;
+/**
+ * Replay uploads in the one object every node's heartbeats go through, whose memory is the
+ * isolate's: one upload per match at a time (429 upload_in_progress), REPLAY_UPLOADS_PER_NODE per
+ * node (429 busy), and at most REPLAY_INFLIGHT_BYTES of bodies being read at once (503 busy); the
+ * node tries a 429 and a 5xx again. A body that declares its length is read into one buffer of
+ * that length; one that does not counts as twice the cap (its chunks, then their copy).
+ */
+export const REPLAY_UPLOADS_PER_NODE = 2;
+export const REPLAY_INFLIGHT_BYTES = 48 * 1024 * 1024;
 export const REGISTER_PER_IP_PER_HOUR = 5;
 export const TOKENS_PER_ACCOUNT_PER_DAY = 10;
 const HOUR_MS = 60 * 60_000;
@@ -329,6 +340,11 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private readonly lastHello = new WeakMap<WebSocket, string>();
   /** The object runs on a loopback base (wrangler dev): a node on this machine may be probed. */
   private loopbackOk = false;
+  /** The replay uploads being read: their match ids, how many per node, and the bytes they may take (tests lower the budget). */
+  private readonly uploading = new Set<string>();
+  private readonly uploadsBy = new Map<string, number>();
+  private uploadBytes = 0;
+  replayBudget = REPLAY_INFLIGHT_BYTES;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -892,10 +908,33 @@ export class NodeRegistryDO extends DurableObject<Env> {
     // upload must cost neither the read nor the hash of 16 MiB on the object every heartbeat uses.
     const refused = await cp.replayPutCheck(matchId, nodeId, ts, sig, sha);
     if (refused) return error(refused.status, refused.code);
-    const bytes = await readCapped(request, REPLAY_MAX_BYTES);
-    if (!bytes) return error(413, 'too_large');
-    const r = await cp.storeReplay(matchId, nodeId, ts, sig, sha, bytes);
-    return r.ok ? json({ ok: true }) : error(r.status, r.code);
+    // Stored already: the node's retry after an answer it lost. The same bytes need no second read; others are refused.
+    const stored = cp.matches.get(matchId)?.replaySha;
+    if (stored) {
+      await request.body?.cancel().catch(() => undefined);
+      return stored === sha ? json({ ok: true }) : error(409, 'already_uploaded');
+    }
+    const length = declaredLength(h);
+    if (length !== null && length > REPLAY_MAX_BYTES) return error(413, 'too_large');
+    const cost = length ?? 2 * REPLAY_MAX_BYTES;
+    if (this.uploading.has(matchId)) return error(429, 'upload_in_progress');
+    if ((this.uploadsBy.get(nodeId) ?? 0) >= REPLAY_UPLOADS_PER_NODE) return error(429, 'busy');
+    if (this.uploadBytes + cost > this.replayBudget) return error(503, 'busy');
+    this.uploading.add(matchId);
+    this.uploadsBy.set(nodeId, (this.uploadsBy.get(nodeId) ?? 0) + 1);
+    this.uploadBytes += cost;
+    try {
+      const bytes = length !== null ? await readExactly(request, length) : await readCapped(request, REPLAY_MAX_BYTES);
+      if (!bytes) return length !== null ? error(400, 'bad_length') : error(413, 'too_large');
+      const r = await cp.storeReplay(matchId, nodeId, ts, sig, sha, bytes);
+      return r.ok ? json({ ok: true }) : error(r.status, r.code);
+    } finally {
+      this.uploading.delete(matchId);
+      const n = (this.uploadsBy.get(nodeId) ?? 1) - 1;
+      if (n > 0) this.uploadsBy.set(nodeId, n);
+      else this.uploadsBy.delete(nodeId);
+      this.uploadBytes -= cost;
+    }
   }
 
   private async getReplay(request: Request, cp: ControlPlane, matchId: string): Promise<Response> {
@@ -1046,7 +1085,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
    */
   private async health(cp: ControlPlane): Promise<Response> {
     const targets = healthzTargets(cp.registry.list(), Date.now());
-    const found = await Promise.all(targets.map(async (n) => ({ n, r: await probeHealthz(n, this.fetchFn, this.healthzTimeoutMs) })));
+    const found = await Promise.all(targets.map(async (n) => ({ n, r: await probeHealthz(n, this.fetchFn, this.healthzTimeoutMs, this.loopbackOk) })));
     let problems = 0;
     for (const { n, r } of found) {
       const expected = this.drainExpected(n);
@@ -1204,7 +1243,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
    */
   private async adminReprobe(cp: ControlPlane, actor: string, n: NodeRecord): Promise<Response> {
     if (!n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl) return error(409, 'not_wss', 'only a wss host has a /healthz to probe');
-    const [, healthz] = await Promise.all([n.reachableAt === null ? cp.probe(n.nodeId) : cp.reprobe(n.nodeId), probeHealthz(n, this.fetchFn, this.healthzTimeoutMs)]);
+    const [, healthz] = await Promise.all([n.reachableAt === null ? cp.probe(n.nodeId) : cp.reprobe(n.nodeId), probeHealthz(n, this.fetchFn, this.healthzTimeoutMs, this.loopbackOk)]);
     const reachable = n.reachableAt !== null;
     const found = healthz.ok ? (healthz.draining ? 'ok, draining' : 'ok') : healthz.detail;
     this.audit(`ALERT admin ${actor}: node ${label(n)} probed: ${found}; ${reachable ? 'in' : 'out of'} wss placement`);
@@ -1229,6 +1268,32 @@ function drainsOf(v: string | null): Map<string, string | null> {
     for (const [k, b] of Object.entries(o)) if (b === null || typeof b === 'string') out.set(k, b);
   }
   return out;
+}
+
+/** A request's Content-Length when it states one (digits only), else null. */
+function declaredLength(h: Headers): number | null {
+  const v = h.get('content-length');
+  return v !== null && /^\d{1,12}$/.test(v) ? Number(v) : null;
+}
+
+/** Exactly `length` bytes of the body, read into one buffer; null when it carries more or fewer. */
+async function readExactly(request: Request, length: number): Promise<Uint8Array | null> {
+  const out = new Uint8Array(length);
+  const reader = request.body?.getReader();
+  if (!reader) return length === 0 ? out : null;
+  let at = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value as Uint8Array;
+    if (at + chunk.byteLength > length) {
+      await reader.cancel();
+      return null;
+    }
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return at === length ? out : null;
 }
 
 /** The login_addrs meta row ([address, ms] pairs), the ones still within LOGIN_ADDR_TTL_MS, oldest first; empty when it does not read. */

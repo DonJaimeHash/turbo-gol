@@ -191,14 +191,18 @@ export function healthzTargets(nodes: readonly NodeRecord[], now: number): NodeR
 
 /**
  * GET <publicUrl>/healthz?nonce= as players reach the node (through its TLS), within `timeoutMs`:
- * ok when it answers 200 with ok: true and the nonce signed with the node's key. A failure says
+ * ok when it answers 200 with ok: true and the nonce signed with the node's key. Only a public
+ * target (probeTargetOk) is fetched, a redirect is not followed, and at most HEALTHZ_MAX_BYTES
+ * of the answer is read. A failure says
  * what kind it is; an error that names TLS, SSL or a certificate is a TLS one, any other a network one.
  */
-export async function probeHealthz(n: Pick<NodeRecord, 'nodeId' | 'publicKey' | 'publicUrl'>, fetchFn: FetchFn, timeoutMs: number = HEALTHZ_TIMEOUT_MS): Promise<Healthz> {
+export async function probeHealthz(n: Pick<NodeRecord, 'nodeId' | 'publicKey' | 'publicUrl'>, fetchFn: FetchFn, timeoutMs: number = HEALTHZ_TIMEOUT_MS, allowLoopback = false): Promise<Healthz> {
   const nonce = randomB64(18);
   const ctrl = new AbortController();
+  const url = `${httpsOf(n.publicUrl ?? '')}/healthz?nonce=${nonce}`;
+  if (!probeTargetOk(url, allowLoopback)) return { ok: false, kind: 'network', detail: 'not a public address: not probed' };
   const run = async (): Promise<Healthz> => {
-    const res = await fetchFn(`${httpsOf(n.publicUrl ?? '')}/healthz?nonce=${nonce}`, { signal: ctrl.signal });
+    const res = await fetchFn(url, { signal: ctrl.signal, redirect: 'manual' });
     if (!res.ok) {
       await res.body?.cancel();
       if (res.status === 525 || res.status === 526) return { ok: false, kind: 'tls', detail: `HTTP ${res.status}: the TLS handshake or the certificate was refused` };
@@ -207,9 +211,9 @@ export async function probeHealthz(n: Pick<NodeRecord, 'nodeId' | 'publicKey' | 
     }
     let body: unknown;
     try {
-      body = await res.json();
-    } catch {
-      return { ok: false, kind: 'answer', detail: 'an answer that is not JSON' };
+      body = await readJsonCapped(res, HEALTHZ_MAX_BYTES);
+    } catch (e) {
+      return { ok: false, kind: 'answer', detail: e instanceof SyntaxError ? 'an answer that is not JSON' : `an answer over ${HEALTHZ_MAX_BYTES} bytes` };
     }
     const b = (typeof body === 'object' && body !== null ? body : {}) as { ok?: unknown; nodeId?: unknown; sig?: unknown; draining?: unknown };
     if (b.ok !== true) return { ok: false, kind: 'answer', detail: 'an answer without ok: true' };
