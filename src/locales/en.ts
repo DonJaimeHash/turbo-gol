@@ -721,6 +721,8 @@ export default {
   'error.account.tv_code_wrong': "That code doesn't exist: check it on the TV",
   'error.account.tv_code_expired': 'The code expired: get a new one on the TV',
   'error.account.tv_code_used': 'That code was already used',
+  // The server holds too many TV codes at once
+  'error.account.busy': 'Too many codes right now, try again in a minute',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',

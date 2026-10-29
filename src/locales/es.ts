@@ -511,6 +511,7 @@ export default {
   'error.account.tv_code_wrong': 'Ese código no existe: revísalo en la TV',
   'error.account.tv_code_expired': 'El código caducó: pide uno nuevo en la TV',
   'error.account.tv_code_used': 'Ese código ya se usó',
+  'error.account.busy': 'Demasiados códigos ahora, inténtalo en un minuto',
   'error.lobby.rate_limited': 'Demasiados intentos, espera un minuto',
   'error.lobby.bad_name': 'El nombre de la sala tiene que tener entre 3 y 24 caracteres',
   'error.lobby.bad_code': 'El código tiene 6 letras o números',
