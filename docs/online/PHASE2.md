@@ -22,7 +22,7 @@ src/net/p2p/
 server/src/
   RoomDO.ts          sala de señalización (Hibernation API + setWebSocketAutoResponse): roster, relay de 'signal', ready/start, drop por 'unreachable' (mayoría) o cierre de socket, TTL
   MatchmakerDO.ts    cola kind 'p2p' (humanos 2/4/6; a los 15 s con ≥ 2 humanos arma sala con bots; 1 humano → partido en DO como fase 1); tickets role 'peer'
-  index.ts           GET /room/:roomId (upgrade con ticket role 'peer' → RoomDO), GET /api/ice (iceServers: STUN de Cloudflare + TURN si hay TURN_KEY_ID/TURN_KEY_TOKEN: credenciales de 10 min vía la API de Realtime TURN)
+  index.ts           GET /room/:roomId (upgrade con ticket role 'peer' → RoomDO); los iceServers (STUN de Cloudflare + TURN si hay TURN_KEY_ID/TURN_KEY_TOKEN: credenciales de 10 min vía la API de Realtime TURN) llegan en el welcome de la sala (la ruta GET /api/ice se quitó: ningún cliente la usaba)
 ```
 
 ## Motor de rollback (`Rollback.ts`)

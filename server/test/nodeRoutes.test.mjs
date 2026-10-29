@@ -66,17 +66,24 @@ const CONTROL = await generateEd25519();
 const secret = await internalSecret(SECRET);
 const enc = new TextEncoder();
 
-/** An R2 bucket in memory; `asked` records every key looked up. */
+/**
+ * An R2 bucket in memory; `asked` records every key looked up, `bodies` every body handed out. A
+ * get with `onlyIf` (Headers) whose If-None-Match is the object's ETag answers it without a body, as R2 does.
+ */
 function bucket(files = {}) {
   const objects = new Map(Object.entries(files).map(([k, v]) => [k, typeof v === 'string' ? enc.encode(v) : v]));
   const asked = [];
+  const bodies = [];
   const meta = (k, b) => ({ key: k, size: b.byteLength, httpEtag: `"etag-${k.length}-${b.byteLength}"` });
   return {
     objects,
     asked,
-    async get(k) {
+    bodies,
+    async get(k, opts) {
       asked.push(k);
       const b = objects.get(k);
+      if (b && opts?.onlyIf instanceof Headers && opts.onlyIf.get('if-none-match') === meta(k, b).httpEtag) return meta(k, b);
+      if (b) bodies.push(k);
       return b ? { ...meta(k, b), body: new Blob([b]).stream(), text: async () => new TextDecoder().decode(b), arrayBuffer: async () => b.slice().buffer } : null;
     },
     async head(k) {
@@ -230,7 +237,7 @@ test('releases: only an allowed key reaches the bucket; traversal, listings and 
   assert.equal((await req(env, 'GET', '/nodes/releases/secret')).status, 200, 'a plain root key is allowed (the bucket only holds releases)');
 });
 
-test('the channel: its own route (and channel.json), { stable, minimum } only, never cached; a bad or missing one is refused', async () => {
+test('the channel: its own route (and channel.json), { stable, minimum } only, no-store; a bad or missing one is refused', async () => {
   const env = makeEnv();
   for (const key of ['channel', 'channel.json']) {
     const res = await req(env, 'GET', '/nodes/releases/' + key);
@@ -241,14 +248,82 @@ test('the channel: its own route (and channel.json), { stable, minimum } only, n
   const head = await req(env, 'HEAD', '/nodes/releases/channel');
   assert.equal(head.status, 200);
   assert.equal(await head.text(), '');
+  // Each on a bucket of its own: an isolate keeps the answer of one for CHANNEL_TTL_MS (the next test).
   for (const body of ['{"stable":"0.2.0"}', '{"stable":"0.2","minimum":"0.2.0"}', '{"stable":"0.2.0-rc1","minimum":"0.2.0"}', 'not json', '[]']) {
-    await env.NODE_RELEASES.put('channel.json', body);
-    const res = await req(env, 'GET', '/nodes/releases/channel');
+    const res = await req(makeEnv({ NODE_RELEASES: bucket({ 'channel.json': body }) }), 'GET', '/nodes/releases/channel');
     assert.equal(res.status, 503, body);
     assert.equal((await jsonOf(res)).error, 'bad_channel');
   }
-  env.NODE_RELEASES.objects.delete('channel.json');
-  assert.equal((await req(env, 'GET', '/nodes/releases/channel')).status, 404);
+  assert.equal((await req(makeEnv({ NODE_RELEASES: bucket({}) }), 'GET', '/nodes/releases/channel')).status, 404);
+});
+
+test('the channel is read from R2 once per 30 s per isolate, whoever asks; a new one shows once that passed', async () => {
+  const env = makeEnv();
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    for (let i = 0; i < 20; i++) assert.deepEqual(await jsonOf(await req(env, 'GET', '/nodes/releases/channel')), { stable: '0.2.0', minimum: '0.2.0' });
+    assert.equal(env.NODE_RELEASES.asked.length, 1, 'one R2 read for twenty launchers');
+    await env.NODE_RELEASES.put('channel.json', JSON.stringify({ stable: '0.3.0', minimum: '0.2.0' }));
+    now += 30_001;
+    assert.deepEqual(await jsonOf(await req(env, 'GET', '/nodes/releases/channel')), { stable: '0.3.0', minimum: '0.2.0' });
+    assert.equal(env.NODE_RELEASES.asked.length, 2);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('releases: a version file comes from the edge cache after its first copy (no R2 read), 304 and HEAD from it too; a root file revalidates without a body read', async () => {
+  const store = new Map();
+  const realCaches = globalThis.caches;
+  globalThis.caches = {
+    default: {
+      async match(k) {
+        const r = store.get(String(k));
+        return r ? r.clone() : undefined;
+      },
+      async put(k, r) {
+        store.set(String(k), new RealResponse(await r.arrayBuffer(), r));
+      },
+    },
+  };
+  try {
+    const env = makeEnv();
+    const waits = [];
+    const ctx = { waitUntil: (p) => waits.push(p) };
+    const get = (path, headers = {}, method = 'GET') => worker.fetch(new Request(ORIGIN + path, { method, headers: { 'CF-Connecting-IP': freshIp(), ...headers } }), env, ctx);
+    const first = await get('/nodes/releases/0.2.0/node.mjs');
+    assert.equal(await first.text(), 'export {}');
+    await Promise.all(waits);
+    const etag = first.headers.get('etag');
+    const second = await get('/nodes/releases/0.2.0/node.mjs?x=1');
+    assert.equal(await second.text(), 'export {}');
+    assert.equal(second.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    assert.equal((await get('/nodes/releases/0.2.0/node.mjs', { 'If-None-Match': etag })).status, 304);
+    const head = await get('/nodes/releases/0.2.0/node.mjs', {}, 'HEAD');
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+    assert.deepEqual(env.NODE_RELEASES.asked, ['0.2.0/node.mjs'], 'one R2 read in all');
+    const root = await get('/nodes/releases/launcher.mjs');
+    await root.text();
+    const again = await get('/nodes/releases/launcher.mjs', { 'If-None-Match': root.headers.get('etag') });
+    assert.equal(again.status, 304);
+    assert.deepEqual(env.NODE_RELEASES.bodies, ['0.2.0/node.mjs', 'launcher.mjs'], 'the 304 read no body');
+    assert.equal(store.has(ORIGIN + '/nodes/releases/launcher.mjs'), false, 'a root file is not kept at the edge');
+  } finally {
+    globalThis.caches = realCaches;
+  }
+});
+
+test('releases and the channel: limited per network before R2 (the binding refuses: no bucket read)', async () => {
+  const ip = freshIp();
+  const env = makeEnv({ RL_1200: { limit: async ({ key }) => ({ success: key !== 'nodeReleases:' + ip }) } });
+  for (const path of ['/nodes/releases/channel', '/nodes/releases/0.2.0/node.mjs', '/nodes/releases/install.sh']) {
+    assert.equal((await req(env, 'GET', path, { ip })).status, 429, path);
+  }
+  assert.deepEqual(env.NODE_RELEASES.asked, []);
+  assert.equal((await req(env, 'GET', '/nodes/releases/install.sh')).status, 200, 'another network');
 });
 
 // ---- what is not served ------------------------------------------------------------------------------
@@ -332,6 +407,24 @@ test('connect: an upgrade only (426), its 101 passed through as the object made 
   assert.deepEqual([seen.headers.upgrade, seen.headers['sec-websocket-key'], seen.headers[INTERNAL_HEADER]], ['websocket', 'k', secret]);
   for (let i = 1; i < 30; i++) await req(env, 'GET', '/nodes/connect', { ip, headers: { Upgrade: 'websocket' } });
   assert.equal((await req(env, 'GET', '/nodes/connect', { ip, headers: { Upgrade: 'websocket' } })).status, 429);
+});
+
+test('connect: the object hears the caller address (x-client-ip, a forged one overwritten); the limits are counted on the bindings, per /64 and per /48', async () => {
+  const env = makeEnv();
+  env.NODES.handler = () => new Response(null, { status: 101, webSocket: { fake: true } });
+  const ip = '2001:db8:77:1::9';
+  await req(env, 'GET', '/nodes/connect', { ip, headers: { Upgrade: 'websocket', 'x-client-ip': '1.2.3.4' } });
+  assert.equal(env.NODES.seen.at(-1).headers['x-client-ip'], ip);
+  const keys = [];
+  const refused = makeEnv({
+    RL_30: { limit: async ({ key }) => (keys.push(key), { success: key !== 'nodeConnect:2001:db8:77:2::/64' }) },
+    RL_1200: { limit: async ({ key }) => (keys.push(key), { success: key !== 'nodeConnectWide:2001:db8:78::/48' }) },
+  });
+  assert.notEqual((await req(refused, 'GET', '/nodes/connect', { ip: '2001:db8:77:1::9', headers: { Upgrade: 'websocket' } })).status, 429);
+  assert.equal((await req(refused, 'GET', '/nodes/connect', { ip: '2001:db8:77:2::9', headers: { Upgrade: 'websocket' } })).status, 429, 'over its /64');
+  assert.equal((await req(refused, 'GET', '/nodes/connect', { ip: '2001:db8:78:5::9', headers: { Upgrade: 'websocket' } })).status, 429, 'over its /48');
+  assert.equal(refused.NODES.seen.length, 1, 'the refused ones never reach the object');
+  assert.deepEqual(keys.slice(0, 2), ['nodeConnect:2001:db8:77:1::/64', 'nodeConnectWide:2001:db8:77::/48']);
 });
 
 test('replays: a 64-hex id; the node’s signed headers and the body go through; 413 past 16 MiB before the object; 60 uploads and 60 downloads a minute per address', async () => {
@@ -934,4 +1027,32 @@ test('GET /nodes/replays: a cursor of 0, from the future or not a number is the 
   const asked = env.NODES.seen.length;
   for (const q of ['0', String(Date.now() + 86_400_000), 'abc', '-5', '99999999999999999']) assert.equal((await req(env, 'GET', `/nodes/replays?before=${q}`)).status, 200);
   assert.equal(env.NODES.seen.length, asked, 'none of them reached the object');
+});
+
+test('the kill switch nodes_off: every route that reaches the object answers 503 nodes_off before it, the cron calls nothing; releases and the shop go on', async () => {
+  const reads = [];
+  const env = makeEnv({ FLAGS: { get: async (name) => (reads.push(name), name === 'nodes_off' ? '1' : null) } });
+  const op = { Authorization: 'Bearer ' + (await accountToken(PROJECT)) };
+  const node = { 'x-node-id': 'f'.repeat(16), 'x-node-ts': '1', 'x-node-sig': 'sig', 'x-replay-sha256': 'c'.repeat(64) };
+  const routes = [
+    ['POST', '/nodes/register', { body: '{}' }],
+    ['GET', '/nodes/connect', { headers: { Upgrade: 'websocket' } }],
+    ['PUT', '/nodes/replays/' + 'ab'.repeat(32), { headers: node, body: new Uint8Array(10) }],
+    ['GET', '/nodes/replays/' + 'ab'.repeat(32), { headers: node }],
+    ['POST', '/nodes/tokens', { headers: op, body: '{"region":"SA"}' }],
+    ['GET', '/nodes/mine', { headers: op }],
+    ['GET', '/nodes/admin/nodes', { headers: op }],
+  ];
+  for (const [method, path, o] of routes) {
+    const res = await req(env, method, path, o);
+    assert.equal(res.status, 503, path);
+    assert.equal((await jsonOf(res)).error, 'nodes_off', path);
+  }
+  assert.equal(env.NODES.seen.length, 0, 'the object never heard of them');
+  const waits = [];
+  await worker.scheduled({ cron: '*/5 * * * *', scheduledTime: Date.now() }, env, { waitUntil: (p) => waits.push(p), passThroughOnException() {} });
+  await Promise.all(waits);
+  assert.equal(env.NODES.seen.length, 0, 'nor of the cron');
+  assert.equal((await req(env, 'GET', '/nodes/releases/install.sh')).status, 200, 'the installers go on');
+  assert.ok(reads.every((n) => n === 'nodes_off'));
 });

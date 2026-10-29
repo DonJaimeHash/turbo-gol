@@ -38,8 +38,6 @@
  *                       experimental rules: 403 'account_required' (LobbyDO)
  *   GET  /api/lobbies/peek?code= (no auth)            -> LobbySummary of the lobby with that code (a join
  *                       link's "Join lobby ABC234 · 2v2 · 2/4?"); 404 no_lobby, 410 closed
- *   GET  /api/ice     Bearer session                    -> { iceServers }: Cloudflare STUN always, plus 10-minute TURN
- *                       credentials minted per request when TURN_KEY_ID / TURN_KEY_TOKEN are set (env.ts)
  *   GET  /ws/:matchId   Sec-WebSocket-Protocol: tg1, ticket.<jwt>  -> 101 (ticket verified here,
  *                       claims forwarded to the MatchDO in x-* headers plus the internal header;
  *                       bad tickets never touch a DO)
@@ -61,14 +59,10 @@
  *                       routed to this code (run_worker_first); the asset fallback below covers what
  *                       still arrives.
  *
- * Rate limits (fixed windows, one minute unless a route says otherwise, in-memory per isolate, best
- * effort; 429 'rate_limited'):
- *   /api/guest   10 per client IP (CF-Connecting-IP)        every guest can open a room: bound it
- *   /api/queue   20 per playerId
- *   /api/rejoin  10 per playerId and 30 per client IP      each call mints a ticket (join banner spam)
- *   /api/leave   30 per client IP
- *   /api/ice     30 per playerId                           each call may mint TURN credentials
- *   /nodes/*     see nodeRoutes.ts (the NodeRegistryDO holds the hourly and daily ones)
+ * Rate limits: limits.ts holds every one in a single table (per session, account or network, a
+ * cheap in-isolate count first, then a Workers Rate Limiting binding shared by the isolates of a
+ * Cloudflare location; 429 'rate_limited'). The account routes' limits are checked here, before
+ * accountRoute runs (accountGate), so a request over them never reaches the AccountsDO.
  * Turnstile: outside local dev (wrangler dev on localhost / 127.0.0.1) POST /api/guest requires
  * TURNSTILE_SECRET; a deploy without it answers 503 'turnstile_unconfigured', as does one with the
  * secret but no TURNSTILE_SITEKEY var when the request carries no token (the browser only renders
@@ -82,12 +76,16 @@
  * its p2p queue (server and ranked matches then wait for a node; where none can host now, the
  * matchmaker refuses them itself: doDisabled in its /join). nodes_on (absent: off; '1':
  * everyone; a list of account ids: a canary) lets matches go to community nodes, vm_disabled turns
- * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts).
+ * them off again (env.ts nodesMode; the matchmaker decides per match, MatchmakerDO.ts). nodes_off
+ * stops every /nodes/* route that would reach the NodeRegistryDO (503 before the object; the cron's
+ * call too): the control plane's kill switch. server/README.md lists which flag stops what.
  */
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, iceServersFor, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson, sanitizeName } from './env';
+import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
+import { accountGate, clientIp, isolateLimited, limiter, overLimit, subjectsOf } from './limits';
+import type { LimitName } from './limits';
 import type { RankedCheck } from './accountStore';
 import { normalizeCode } from './LobbyDirectoryDO';
 import { sanitizeLobbyName } from './LobbyDO';
@@ -115,18 +113,6 @@ export { LobbyDO } from './LobbyDO';
 export { LobbyDirectoryDO } from './LobbyDirectoryDO';
 export { NodeRegistryDO } from './NodeRegistryDO';
 
-const LIMIT_WINDOW_MS = 60_000;
-const LIMIT_QUEUE_PER_PLAYER = 20;
-const LIMIT_GUEST_PER_IP = 10;
-const LIMIT_REJOIN_PER_PLAYER = 10;
-const LIMIT_REJOIN_PER_IP = 30;
-const LIMIT_LEAVE_PER_IP = 30;
-const LIMIT_ICE_PER_PLAYER = 30;
-const LIMIT_LOBBY_CREATE_PER_PLAYER = 5;
-const LIMIT_LOBBY_JOIN_PER_PLAYER = 20;
-const LIMIT_LOBBY_LIST_PER_IP = 60;
-const LIMIT_POPULATION_PER_IP = 60;
-
 /** The two WebSocket gates: the ticket role each one accepts and the Durable Object it forwards to. */
 const SOCKET_GATES = {
   '/ws/': { role: 'player', binding: 'MATCH', badId: 'bad_match_id' },
@@ -134,23 +120,13 @@ const SOCKET_GATES = {
   '/lobby/': { role: 'lobby', binding: 'LOBBY', badId: 'bad_lobby_id' },
 } as const satisfies Record<string, { role: TicketRole; binding: 'MATCH' | 'ROOM' | 'LOBBY'; badId: string }>;
 type SocketGate = (typeof SOCKET_GATES)[keyof typeof SOCKET_GATES];
-const rateLimits = new Map<string, { n: number; resetAt: number }>();
-let limitCalls = 0;
 
-/** Fixed-window counter: true when `key` was hit more than `max` times in its current window of `windowMs`. */
-function rateLimited(key: string, max: number, now: number, windowMs: number = LIMIT_WINDOW_MS): boolean {
-  if (++limitCalls % 256 === 0) for (const [k, v] of rateLimits) if (v.resetAt <= now) rateLimits.delete(k);
-  const e = rateLimits.get(key);
-  if (!e || e.resetAt <= now) {
-    rateLimits.set(key, { n: 1, resetAt: now + windowMs });
-    return false;
-  }
-  return ++e.n > max;
-}
-
-/** Cloudflare sets CF-Connecting-IP at the edge (clients cannot forge it); wrangler dev sets it too. */
-function clientIp(request: Request): string {
-  return request.headers.get('CF-Connecting-IP') ?? 'local';
+/**
+ * 429 'rate_limited' when the request is over any of `names` (limits.ts LIMITS: each counted by its
+ * own session, account or network), else null.
+ */
+async function overLimits(request: Request, env: Env, session: SessionClaims | null, names: readonly LimitName[], message?: string): Promise<Response | null> {
+  return (await overLimit(limiter(env), names, subjectsOf(clientIp(request), session))) !== null ? error(429, 'rate_limited', message) : null;
 }
 
 function isLoopbackHost(h: string): boolean {
@@ -378,7 +354,8 @@ function seatFields(session: SessionClaims, nowMs: number): { car?: CarId; accou
 }
 
 async function guest(request: Request, env: Env): Promise<Response> {
-  if (rateLimited('g:' + clientIp(request), LIMIT_GUEST_PER_IP, Date.now())) return error(429, 'rate_limited');
+  const limited = await overLimits(request, env, null, ['guest']);
+  if (limited) return limited;
   const body = (await readJson<{ name?: unknown; turnstileToken?: unknown }>(request)) ?? {};
   const blocked = await turnstileGate(request, env, body.turnstileToken);
   if (blocked !== null) return blocked;
@@ -393,6 +370,9 @@ async function guest(request: Request, env: Env): Promise<Response> {
 async function queue(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
+  // Before the KV flags: a request over its limit costs no KV read.
+  const limited = await overLimits(request, env, session, ['queue']);
+  if (limited) return limited;
   if (await flag(env, 'matchmaking_off')) return error(503, 'matchmaking_off');
   // No new rooms while their sockets would be refused. With the nodes on for this player (D9) a
   // server or ranked queue goes on: its match waits for a node, and no MatchDO is created for it.
@@ -416,7 +396,6 @@ async function queue(request: Request, env: Env): Promise<Response> {
     return json({ error: RELOAD_REQUIRED, message: `this page speaks P2P protocol ${typeof body.p2pProtocol === 'number' ? body.p2pProtocol : 1}, the server ${ROOM_PROTOCOL}: reload the page`, p2pProtocol: ROOM_PROTOCOL }, 426);
   }
   const now = Date.now();
-  if (rateLimited('q:' + session.sub, LIMIT_QUEUE_PER_PLAYER, now)) return error(429, 'rate_limited');
   const { stub, region } = matchmakerOf(request, env, body.region);
   let ratings: RankedCheck['ratings'] | undefined;
   if (kind === 'ranked') {
@@ -461,7 +440,8 @@ const POPULATION_TTL_MS = 5_000;
 
 /** GET /api/population?region=: queue sizes of that region's matchmaker plus its public lobbies (cached 5 s per region per isolate). */
 async function population(request: Request, env: Env, url: URL): Promise<Response> {
-  if (rateLimited('pop:' + clientIp(request), LIMIT_POPULATION_PER_IP, Date.now())) return error(429, 'rate_limited');
+  const limited = await overLimits(request, env, null, ['population']);
+  if (limited) return limited;
   const region = regionOf(request, env, url.searchParams.get('region') ?? undefined);
   const now = Date.now();
   let c = populationCache.get(region);
@@ -487,7 +467,8 @@ const lobbyListCache = new Map<string, { at: number; data: LobbySummary[] }>();
 const LOBBY_LIST_TTL_MS = 3_000;
 
 async function listLobbies(request: Request, env: Env, url: URL): Promise<Response> {
-  if (rateLimited('ll:' + clientIp(request), LIMIT_LOBBY_LIST_PER_IP, Date.now())) return error(429, 'rate_limited');
+  const limited = await overLimits(request, env, null, ['lobbyList']);
+  if (limited) return limited;
   const region = regionOf(request, env, url.searchParams.get('region') ?? undefined);
   const now = Date.now();
   let c = lobbyListCache.get(region);
@@ -507,10 +488,12 @@ async function lobbyTicket(request: Request, env: Env, session: SessionClaims, l
 
 /**
  * GET /api/lobbies/peek?code=: the summary of the lobby a join link names (public or private: the
- * code is what a private lobby shares), before the player joins. Rate-limited like the list.
+ * code is what a private lobby shares), before the player joins. Not cached, so it has its own
+ * limit (limits.ts lobbyPeek), far below the cached list's.
  */
 async function peekLobby(request: Request, env: Env, url: URL): Promise<Response> {
-  if (rateLimited('ll:' + clientIp(request), LIMIT_LOBBY_LIST_PER_IP, Date.now())) return error(429, 'rate_limited');
+  const limited = await overLimits(request, env, null, ['lobbyPeek']);
+  if (limited) return limited;
   const code = normalizeCode(url.searchParams.get('code'));
   if (code === null) return error(400, 'bad_code', 'El código tiene 6 letras o números');
   const r = await lobbyDir(env).fetch('https://lobbies/resolve?code=' + code, { headers: await internalHeaders(env) });
@@ -535,8 +518,9 @@ async function peekLobby(request: Request, env: Env, url: URL): Promise<Response
 async function createLobby(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
+  const limited = await overLimits(request, env, session, ['lobbyCreate', 'lobbyCreateNet'], 'Creaste demasiadas salas, espera un minuto');
+  if (limited) return limited;
   if (await flag(env, 'matchmaking_off')) return error(503, 'matchmaking_off');
-  if (rateLimited('lc:' + session.sub, LIMIT_LOBBY_CREATE_PER_PLAYER, Date.now())) return error(429, 'rate_limited', 'Creaste demasiadas salas, espera un minuto');
   const b = await readJson<{ name?: unknown; password?: unknown; mode?: unknown; visibility?: unknown; net?: unknown; matchLengthSeconds?: unknown; physics?: unknown; region?: unknown }>(request);
   if (!b) return error(400, 'bad_request');
   if (b.region !== undefined && !isRegion(b.region)) return error(400, 'bad_region');
@@ -576,9 +560,8 @@ async function createLobby(request: Request, env: Env): Promise<Response> {
 async function joinLobby(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
-  if (rateLimited('lj:' + session.sub, LIMIT_LOBBY_JOIN_PER_PLAYER, Date.now()) || rateLimited('ljip:' + clientIp(request), LIMIT_LOBBY_JOIN_PER_PLAYER * 3, Date.now())) {
-    return error(429, 'rate_limited', 'Demasiados intentos, espera un minuto');
-  }
+  const limited = await overLimits(request, env, session, ['lobbyJoin', 'lobbyJoinNet'], 'Demasiados intentos, espera un minuto');
+  if (limited) return limited;
   const b = await readJson<{ code?: unknown; password?: unknown }>(request);
   const code = normalizeCode(b?.code);
   if (!b || code === null) return error(400, 'bad_code', 'El código tiene 6 letras o números');
@@ -600,21 +583,11 @@ async function joinLobby(request: Request, env: Env): Promise<Response> {
   return json(await lobbyTicket(request, env, session, lobbyId, code));
 }
 
-/** GET /api/ice: what to hand RTCPeerConnection (see env.ts: STUN always, TURN when configured; minted per call). */
-async function ice(request: Request, env: Env): Promise<Response> {
-  const session = await bearerSession(request, env);
-  if (!session) return error(401, 'unauthorized');
-  if (rateLimited('i:' + session.sub, LIMIT_ICE_PER_PLAYER, Date.now())) return error(429, 'rate_limited');
-  return json({ iceServers: await iceServersFor(env) }, 200, { 'cache-control': 'no-store' });
-}
-
 async function rejoin(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
-  const now = Date.now();
-  if (rateLimited('r:' + session.sub, LIMIT_REJOIN_PER_PLAYER, now) || rateLimited('rip:' + clientIp(request), LIMIT_REJOIN_PER_IP, now)) {
-    return error(429, 'rate_limited');
-  }
+  const limited = await overLimits(request, env, session, ['rejoin', 'rejoinNet']);
+  if (limited) return limited;
   const body = await readJson<{ matchId?: unknown; region?: unknown }>(request);
   if (!body || !isHex(body.matchId, 64)) return error(400, 'bad_match_id');
   let id: DurableObjectId;
@@ -707,7 +680,8 @@ function isRoomId(env: Env, id: string): boolean {
 async function leave(request: Request, env: Env): Promise<Response> {
   const session = await bearerSession(request, env);
   if (!session) return error(401, 'unauthorized');
-  if (rateLimited('l:' + clientIp(request), LIMIT_LEAVE_PER_IP, Date.now())) return error(429, 'rate_limited');
+  const limited = await overLimits(request, env, session, ['leave', 'leaveNet']);
+  if (limited) return limited;
   const body = (await readJson<{ matchId?: unknown; region?: unknown; connected?: unknown }>(request)) ?? {};
   const { stub, region } = matchmakerOf(request, env, body.region);
   const res = await stub.fetch('https://matchmaker/leave', {
@@ -767,7 +741,7 @@ async function websocket(request: Request, env: Env, gate: SocketGate, matchId: 
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     for (const prefix of ['/ws/', '/room/', '/lobby/'] as const) {
@@ -783,8 +757,11 @@ export default {
         url,
         ip: clientIp(request),
         session: () => (env.JWT_SECRET ? bearerSession(request, env) : Promise.resolve(null)),
-        limited: (key, max, windowMs) => rateLimited(key, max, Date.now(), windowMs),
+        limited: (key, max, windowMs) => isolateLimited(key, max, Date.now(), windowMs),
+        limit: limiter(env),
         cors: corsHeaders(request, env),
+        // Absent where the caller passes no context (the tests): nothing then outlives the answer.
+        waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined,
       });
     }
     // ---- the game (Workers Assets): everything outside /api, /ws, /room, /lobby and /nodes ----
@@ -800,19 +777,24 @@ export default {
     let res: Response;
     try {
       const acct = path.startsWith('/api/auth/') || path === '/api/me' || path.startsWith('/api/me/') || path === '/api/leaderboard' || path === '/api/ranked/result';
-      const routed = acct
-        ? await accountRoute(
+      let routed: Response | null = null;
+      if (acct) {
+        const session = await bearerSession(request, env);
+        // The account routes' limits (limits.ts accountGate), before any AccountsDO call.
+        routed =
+          (await overLimits(request, env, session, accountGate(request.method, path))) ??
+          (await accountRoute(
             {
               env,
               request,
-              session: await bearerSession(request, env),
+              session,
               originAllowed: (o) => originAllowed(request, env, o),
               antiBot: (token) => turnstileGate(request, env, token),
-              limited: (key, max) => rateLimited(key, max, Date.now()),
+              limited: (key, max) => isolateLimited(key, max, Date.now()),
             },
             url,
-          )
-        : null;
+          ));
+      }
       if (routed !== null) res = routed;
       else if (request.method === 'GET' && path === '/api/population') res = await population(request, env, url);
       else if (request.method === 'GET' && path === '/api/lobbies') res = await listLobbies(request, env, url);
@@ -823,7 +805,6 @@ export default {
       else if (request.method === 'POST' && path === '/api/queue') res = await queue(request, env);
       else if (request.method === 'POST' && path === '/api/rejoin') res = await rejoin(request, env);
       else if (request.method === 'POST' && path === '/api/leave') res = await leave(request, env);
-      else if (request.method === 'GET' && path === '/api/ice') res = await ice(request, env);
       else res = error(404, 'not_found');
     } catch (e) {
       console.error('api error', e);

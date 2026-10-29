@@ -155,11 +155,11 @@ check(!c.events.some((e) => e.type === 'playerLeft'), `no playerLeft broadcast f
   check(first429 === 11, `the 11th /api/rejoin of the minute -> 429 (first 429 at #${first429})`);
 }
 
-// ---- 5. /api/guest rate limit per IP (10 / min) -------------------------------------------------
+// ---- 5. /api/guest rate limit per network (120 / min: a whole class behind one address still gets in)
 {
   let okCount = 0;
   let first429At = -1;
-  for (let i = 1; i <= 12; i++) {
+  for (let i = 1; i <= 125; i++) {
     const g = await api('/api/guest', { name: `Flood ${i}` });
     if (g.status === 200) okCount++;
     else if (g.status === 429) {
@@ -167,7 +167,7 @@ check(!c.events.some((e) => e.type === 'playerLeft'), `no playerLeft broadcast f
       break;
     } else check(false, `guest #${i} -> ${g.status}`);
   }
-  check(first429At > 0 && first429At <= 11, `guest registrations limited: ${okCount} ok, 429 at #${first429At} (10 / min per IP incl. the earlier ones)`);
+  check(first429At > 100 && first429At <= 121, `guest registrations limited: ${okCount} ok, 429 at #${first429At} (120 / min per network incl. the earlier ones)`);
 }
 
 c.ws.close(1000, 'done');

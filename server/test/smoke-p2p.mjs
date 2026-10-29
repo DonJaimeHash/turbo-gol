@@ -9,7 +9,7 @@
 // --skip-fallback (skip the 15 s lone-human test).
 //
 // Flow: health -> guest A, guest B -> both POST /api/queue { mode: '1v1', kind: 'p2p', p2pProtocol: P2P_PROTOCOL } at once -> both
-// matched with kind 'p2p', the same roomId and a wsUrl ending in /room/<id> -> GET /api/ice (STUN) ->
+// matched with kind 'p2p', the same roomId and a wsUrl ending in /room/<id> -> GET /api/ice is gone (404) ->
 // both open the room socket with ['tg1', 'ticket.<jwt>'] -> each gets a RoomWelcome (protocol 2, 2 peer
 // slots, same seed, distinct 'you', iceServers with Cloudflare STUN) and B sees A's 'peerJoined' ->
 // a reused ticket is refused -> A signals B (fake offer) and B receives it with from = A's slot ->
@@ -269,14 +269,9 @@ check(typeof qa.json.wsUrl === 'string' && qa.json.wsUrl.endsWith('/room/' + roo
 const again = await api('/api/queue', { mode: '1v1', kind: 'p2p', p2pProtocol: P2P_PROTOCOL }, sessionA);
 check(again.status === 409 && again.json?.error === 'active_match' && again.json?.matchId === roomId && again.json?.kind === 'p2p', `queue again while the room is alive -> ${again.status} ${again.json?.error} kind ${again.json?.kind}`);
 
-// ---- 3. /api/ice ----------------------------------------------------------------------------------
-const iceNoAuth = await api('/api/ice');
-check(iceNoAuth.status === 401, `GET /api/ice without a session -> ${iceNoAuth.status}`);
+// ---- 3. no /api/ice: the room welcome carries the ICE servers (checked below) ---------------------------
 const ice = await api('/api/ice', undefined, sessionA);
-const stunOk = Array.isArray(ice.json?.iceServers) && ice.json.iceServers.some((s) => [].concat(s.urls).includes('stun:stun.cloudflare.com:3478'));
-check(ice.status === 200 && stunOk, `GET /api/ice -> ${ice.status} ${ice.text.slice(0, 160)}`);
-const hasTurn = Array.isArray(ice.json?.iceServers) && ice.json.iceServers.some((s) => [].concat(s.urls).some((u) => /^turns?:/.test(u)));
-log(`TURN credentials ${hasTurn ? 'present (TURN_KEY_ID / TURN_KEY_TOKEN configured)' : 'absent (STUN only: no TURN secrets)'}`);
+check(ice.status === 404, `GET /api/ice is gone -> ${ice.status}`);
 
 // ---- 4. room sockets + welcome ----------------------------------------------------------------------
 const wsTarget = resolveWs(qa.json.wsUrl);

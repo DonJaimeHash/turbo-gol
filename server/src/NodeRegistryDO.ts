@@ -6,9 +6,12 @@
  *
  *   POST /nodes/register         RegisterRequest (at most 4 KB read), x-client-ip -> RegisterAnswer (403 <code> when
  *                                refused); 5 per address per hour, an IPv6 address counted by its /64
- *   GET  /nodes/connect          WebSocket upgrade: a node's control link (Hibernation API)
+ *   GET  /nodes/connect          WebSocket upgrade: a node's control link (Hibernation API), x-client-ip; the
+ *                                sockets still to log in are capped per address, prefix and pool (PENDING_*)
  *   PUT  /nodes/replays/<id>     the hosting node's replay upload, signed (x-node-id / -ts / -sig, x-replay-sha256): the
- *                                signature is checked before the body (up to 16 MiB) is read
+ *                                signature is checked before the body (up to 16 MiB) is read; one upload per match
+ *                                and two per node at a time, 48 MiB of bodies in flight (REPLAY_*); a stored
+ *                                replay's retry answers 200 unread
  *   GET  /nodes/replays/<id>     the replay, for the verifier node its job went to (signed the same way)
  *   GET  /nodes/status           the public list of nodes
  *   POST /nodes/tokens           { region, name? } with x-operator-id / x-operator-name (an account the Worker found in
@@ -62,7 +65,7 @@
  * not raise them again, and the object can sleep while such a node stays away.
  */
 import { DurableObject } from 'cloudflare:workers';
-import { ControlPlane, NodeRefused } from '../../nodes/control-plane/controlPlane';
+import { ControlPlane, MAX_UNAUTHENTICATED, NodeRefused } from '../../nodes/control-plane/controlPlane';
 import type { NodeLink, PlaceRequest, Session } from '../../nodes/control-plane/controlPlane';
 import { Ledger } from '../../nodes/control-plane/ledger';
 import { Registry, TOKEN_TTL_MS } from '../../nodes/control-plane/registry';
@@ -77,6 +80,7 @@ import { accountsCall } from './accountRoutes';
 import { checkInternal } from './auth';
 import { carriesPhysics, error, isHex, isMode, json, limitKey, nodesConfigured, readCapped, readJson, sanitizeName, trustedOperatorIds, withTimeout } from './env';
 import type { Env, NodesEnv } from './env';
+import { widePrefix } from './limits';
 import { AlertHook } from './nodeAlerts';
 import type { FetchFn } from './nodeAlerts';
 import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, REJOIN_STATUS } from './nodeApi';
@@ -85,7 +89,7 @@ import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
 import { REPLAY_PAGE } from '../../src/net/replays';
 import type { ReplayList } from '../../src/net/replays';
-import { HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz } from './nodeWatch';
+import { HEALTHZ_MAX_BYTES, HEALTHZ_TIMEOUT_MS, NodeWatch, channelOf, healthzTargets, label, probeHealthz, probeTargetOk, readJsonCapped } from './nodeWatch';
 import type { WatchNote } from './nodeWatch';
 
 /** The alarm's period while anything needs it. */
@@ -96,6 +100,15 @@ export const CHANNEL_KEY = 'channel.json';
 /** A node's control frames are small JSON: anything bigger closes the socket (the reference server's cap). */
 export const MAX_FRAME_CHARS = 256 * 1024;
 export const REPLAY_MAX_BYTES = 16 * 1024 * 1024;
+/**
+ * Replay uploads in the one object every node's heartbeats go through, whose memory is the
+ * isolate's: one upload per match at a time (429 upload_in_progress), REPLAY_UPLOADS_PER_NODE per
+ * node (429 busy), and at most REPLAY_INFLIGHT_BYTES of bodies being read at once (503 busy); the
+ * node tries a 429 and a 5xx again. A body that declares its length is read into one buffer of
+ * that length; one that does not counts as twice the cap (its chunks, then their copy).
+ */
+export const REPLAY_UPLOADS_PER_NODE = 2;
+export const REPLAY_INFLIGHT_BYTES = 48 * 1024 * 1024;
 export const REGISTER_PER_IP_PER_HOUR = 5;
 export const TOKENS_PER_ACCOUNT_PER_DAY = 10;
 const HOUR_MS = 60 * 60_000;
@@ -122,6 +135,62 @@ const REASON_MAX = 200;
 const DRAINS_KEY = 'drains_asked';
 /** The meta row of the nodes whose offline ALERT went out (NodeWatch.offlineAlerted). */
 const OFFLINE_KEY = 'offline_alerted';
+/**
+ * Control sockets still to log in (the control plane closes the oldest of all of them past
+ * MAX_UNAUTHENTICATED, which a flood of anonymous upgrades would use to push every node out between
+ * its challenge and its login). The object keeps them below that cap itself, in two pools: the
+ * addresses a node logged in from lately (LOGIN_ADDRS_KEY: a node coming back, after a deploy all of
+ * them at once) and every other address. Past a cap the oldest socket of the same address, of the
+ * same prefix, or of the busiest prefix of the pool is closed (1013 'busy'): a flood churns its own
+ * sockets, and never takes a returning node's place.
+ */
+export const PENDING_PER_ADDRESS = 8;
+export const PENDING_PER_PREFIX = 16;
+export const PENDING_UNKNOWN_MAX = 40;
+export const PENDING_KNOWN_MAX = 20;
+/** The addresses (an IPv4 address, an IPv6 /64) nodes logged in from: at most this many, this long. */
+export const LOGIN_ADDRS_MAX = 256;
+export const LOGIN_ADDR_TTL_MS = 30 * DAY_MS;
+/** Their meta row: [address, last login (ms)] pairs, rewritten at most hourly per address. */
+const LOGIN_ADDRS_KEY = 'login_addrs';
+if (PENDING_UNKNOWN_MAX + PENDING_KNOWN_MAX >= MAX_UNAUTHENTICATED) throw new Error('the pending pools must stay below the control plane cap');
+
+/**
+ * A node's control socket, throttled here before the control plane sees a frame: a token bucket of
+ * FRAME_BURST frames refilled at FRAME_RATE a second (a node sends a heartbeat every few seconds;
+ * a reconnect sends its hello, a heartbeat and its unacknowledged reports at once). Past it the
+ * socket is closed (1008). Each hello rewrites the node's row and may start a probe of the URL it
+ * names: the same hello again is dropped, a node gets HELLOS_PER_WINDOW hellos in HELLO_WINDOW_MS
+ * (its sockets together) and PUBLIC_URL_CHANGES_PER_HOUR new publicUrls; past either the socket is
+ * closed (1008). A banned node's socket is closed (4403) at its next frame, and at once when a
+ * maintainer bans it.
+ */
+export const FRAME_BURST = 64;
+export const FRAME_RATE = 20;
+export const HELLOS_PER_WINDOW = 30;
+export const HELLO_WINDOW_MS = 10 * 60_000;
+export const PUBLIC_URL_CHANGES_PER_HOUR = 4;
+
+/** The hello in a frame, or null: a frame that names no hello is not parsed (one that might hide it behind an escape is). */
+function helloIn(message: string): { publicUrl: unknown } | null {
+  if (!message.includes('hello') && !message.includes('\\u')) return null;
+  let m: unknown;
+  try {
+    m = JSON.parse(message);
+  } catch {
+    return null; // the control plane closes it (bad json)
+  }
+  if (typeof m !== 'object' || m === null || (m as { t?: unknown }).t !== 'hello') return null;
+  const d = (m as { data?: unknown }).data;
+  return { publicUrl: typeof d === 'object' && d !== null ? (d as { publicUrl?: unknown }).publicUrl : undefined };
+}
+
+/** Where a socket still to log in came from (x-client-ip), and whether a node logged in from there lately. */
+interface Pending {
+  addr: string;
+  wide: string;
+  known: boolean;
+}
 
 /** NODE_CONTROL_PUBLIC_KEY is the public half of NODE_CONTROL_PRIVATE_KEY: what one signs, the other verifies. */
 export async function controlKeysMatch(privateKey: string, publicKey: string): Promise<boolean> {
@@ -261,6 +330,21 @@ export class NodeRegistryDO extends DurableObject<Env> {
   private drainAgain = false;
   /** Outbox rows already reported as a day old (once per row and process). */
   private readonly lateRows = new Set<number>();
+  /** The sockets still to log in, oldest first, and where each came from. */
+  private readonly pending = new Map<WebSocket, Pending>();
+  /** The addresses nodes logged in from (limitKey) and when, oldest first; kept in meta. */
+  private loginAddrs = new Map<string, number>();
+  private lastBusyLog = 0;
+  /** Each socket's frame budget (FRAME_BURST, FRAME_RATE) and the last hello it carried. */
+  private readonly frames = new WeakMap<WebSocket, { tokens: number; at: number }>();
+  private readonly lastHello = new WeakMap<WebSocket, string>();
+  /** The object runs on a loopback base (wrangler dev): a node on this machine may be probed. */
+  private loopbackOk = false;
+  /** The replay uploads being read: their match ids, how many per node, and the bytes they may take (tests lower the budget). */
+  private readonly uploading = new Set<string>();
+  private readonly uploadsBy = new Map<string, number>();
+  private uploadBytes = 0;
+  replayBudget = REPLAY_INFLIGHT_BYTES;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -310,11 +394,14 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!this.keyOk) this.log('ALERT NODE_CONTROL_PUBLIC_KEY is not the public half of NODE_CONTROL_PRIVATE_KEY: no placement, registration or rejoin until they match');
     await this.refreshChannel();
     const base = env.NODES_PUBLIC_BASE.replace(/\/+$/, '');
+    const baseHost = new URL(base).hostname;
+    this.loopbackOk = baseHost === 'localhost' || baseHost === '127.0.0.1' || baseHost === '[::1]' || baseHost.endsWith('.localhost');
     try {
       store.migrate();
       const rows = store.load(Date.now());
       this.drainAsked = drainsOf(store.meta(DRAINS_KEY));
       this.offlineRow = store.meta(OFFLINE_KEY) ?? '[]';
+      this.loginAddrs = loginAddrsOf(store.meta(LOGIN_ADDRS_KEY), Date.now());
       this.watch = new NodeWatch(idsOf(this.offlineRow));
       // Each of the registry's ALERTs is an account's action: a token or a node of a trusted operator.
       const audit = (m: string) => this.audit(m);
@@ -345,8 +432,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
             return o ? new Uint8Array(await o.arrayBuffer()) : null;
           },
         },
-        // Its reachability probes, through the object's fetch like the cron's.
-        fetchJson: async (u) => (await this.fetchFn(u, { signal: AbortSignal.timeout(HEALTHZ_TIMEOUT_MS) })).json(),
+        // Its reachability probes, through the object's fetch like the cron's: a public target only, 5 s, no redirect, at most HEALTHZ_MAX_BYTES read.
+        fetchJson: (u) => this.probeJson(u),
         store,
         now: () => Date.now(),
         log,
@@ -418,6 +505,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
    * stalled link, after its 4408) reaches the control plane, which only counts it for the log.
    */
   private gone(ws: WebSocket): void {
+    this.pending.delete(ws);
     const s = this.sessions.get(ws);
     if (s && !s.closed) this.cp?.onClose(s);
   }
@@ -431,8 +519,19 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!cp || !s) return this.link(ws).close(4401, 'log in again');
     if (typeof message !== 'string') return this.link(ws).close(1003, 'text only');
     if (message.length > MAX_FRAME_CHARS) return this.link(ws).close(1009, 'frame too big');
+    if (!this.frameAllowed(ws)) return this.link(ws).close(1008, 'too many messages');
+    if (s.nodeId !== null && !s.closed) {
+      const refused = this.helloRefused(ws, s.nodeId, cp, message);
+      if (refused === 'drop') return;
+      if (refused !== null) return this.link(ws).close(refused.code, refused.reason);
+    }
     // It never throws for what a node sends; a store that fails on a report rejects (no ack: the node sends it again).
     await cp.onMessage(s, message).catch((e: unknown) => this.log(`node message failed: ${String(e)}`));
+    const p = this.pending.get(ws);
+    if (p && s.nodeId !== null && !s.closed) {
+      this.pending.delete(ws);
+      this.loggedInFrom(p.addr);
+    }
     if (s.nodeId !== null && !s.closed && !this.attached.has(ws)) {
       // Logged in: a wake after a hibernation adopts the socket from this, with no new challenge.
       ws.serializeAttachment({ nodeId: s.nodeId });
@@ -657,14 +756,122 @@ export class NodeRegistryDO extends DurableObject<Env> {
 
   private async accept(request: Request, cp: ControlPlane): Promise<Response> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'upgrade_required');
+    // The Worker sets x-client-ip (nodeRoutes.ts); without it the socket counts as one unknown address.
+    const ip = request.headers.get('x-client-ip');
+    const addr = ip ? limitKey(ip) : 'unknown';
+    const where: Pending = { addr, wide: ip ? widePrefix(ip) : 'unknown', known: ip !== null && this.loginAddrs.has(addr) };
+    this.makeRoom(where);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     this.ctx.acceptWebSocket(server);
-    // The challenge goes out now; the socket is a session from here (MAX_UNAUTHENTICATED caps those still to log in).
+    this.pending.set(server, where);
+    // The challenge goes out now; the socket is a session from here (makeRoom kept it under MAX_UNAUTHENTICATED).
     this.sessions.set(server, cp.open(this.link(server)));
     await this.ensureAlarm();
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** One more frame of this socket's budget (FRAME_BURST, refilled at FRAME_RATE a second); false once it is spent. */
+  private frameAllowed(ws: WebSocket): boolean {
+    const now = Date.now();
+    const b = this.frames.get(ws) ?? { tokens: FRAME_BURST, at: now };
+    b.tokens = Math.min(FRAME_BURST, b.tokens + (Math.max(0, now - b.at) / 1000) * FRAME_RATE);
+    b.at = now;
+    this.frames.set(ws, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
+  /**
+   * A logged-in socket's frame before the control plane takes it: a banned node's socket closes
+   * (4403); the same hello again is dropped; a node past its hellos or its publicUrl changes closes
+   * (1008). null: the frame goes on.
+   */
+  private helloRefused(ws: WebSocket, nodeId: string, cp: ControlPlane, message: string): 'drop' | { code: number; reason: string } | null {
+    const n = cp.registry.node(nodeId);
+    if (n?.status === 'banned') return { code: 4403, reason: 'banned' };
+    const hello = helloIn(message);
+    if (!hello) return null;
+    if (this.lastHello.get(ws) === message) return 'drop';
+    if (this.limited('hello:' + nodeId, HELLOS_PER_WINDOW, HELLO_WINDOW_MS)) return { code: 1008, reason: 'too many hellos' };
+    const url = typeof hello.publicUrl === 'string' ? hello.publicUrl.replace(/\/$/, '') : null;
+    if (n && n.transports.includes('wss') && url !== null && url !== n.publicUrl && this.limited('url:' + nodeId, PUBLIC_URL_CHANGES_PER_HOUR, HOUR_MS)) {
+      return { code: 1008, reason: 'too many address changes' };
+    }
+    this.lastHello.set(ws, message);
+    return null;
+  }
+
+  /** The control plane's probe of a node's publicUrl (GET <it>/healthz?nonce=): what probeTargetOk allows, 5 s, no redirect, a capped read. */
+  private async probeJson(u: string): Promise<unknown> {
+    if (!probeTargetOk(u, this.loopbackOk)) throw new Error('refused target (not a public address)');
+    const res = await this.fetchFn(u, { signal: AbortSignal.timeout(HEALTHZ_TIMEOUT_MS), redirect: 'manual' });
+    return readJsonCapped(res, HEALTHZ_MAX_BYTES);
+  }
+
+  /** Close the live control sockets of a node (a ban). */
+  private closeNode(nodeId: string, code: number, reason: string): void {
+    for (const ws of this.ctx.getWebSockets()) if (this.sessions.get(ws)?.nodeId === nodeId) this.link(ws).close(code, reason);
+  }
+
+  /**
+   * Room for one more socket still to log in from `w`: past a cap (PENDING_*), the oldest such socket
+   * of the same address, of the same prefix, or of the busiest prefix of its pool is closed.
+   */
+  private makeRoom(w: Pending): void {
+    const count = (f: (p: Pending) => boolean) => {
+      let n = 0;
+      for (const p of this.pending.values()) if (f(p)) n++;
+      return n;
+    };
+    const closeOldest = (why: string, f: (p: Pending) => boolean) => {
+      for (const [ws, p] of this.pending) {
+        if (!f(p)) continue;
+        const now = Date.now();
+        if (now - this.lastBusyLog >= 60_000) {
+          this.lastBusyLog = now;
+          this.log(`control sockets still to log in: ${why} full, closing the oldest (${this.pending.size} waiting)`);
+        }
+        this.link(ws).close(1013, 'busy');
+        return;
+      }
+    };
+    if (count((p) => p.addr === w.addr) >= PENDING_PER_ADDRESS) closeOldest('one address', (p) => p.addr === w.addr);
+    if (count((p) => p.wide === w.wide) >= PENDING_PER_PREFIX) closeOldest('one prefix', (p) => p.wide === w.wide);
+    if (w.known) {
+      if (count((p) => p.known) >= PENDING_KNOWN_MAX) closeOldest('the returning nodes', (p) => p.known);
+      return;
+    }
+    if (count((p) => !p.known) < PENDING_UNKNOWN_MAX) return;
+    const per = new Map<string, number>();
+    for (const p of this.pending.values()) if (!p.known) per.set(p.wide, (per.get(p.wide) ?? 0) + 1);
+    let busiest = '';
+    let most = 0;
+    for (const [k, n] of per) {
+      if (n > most) {
+        busiest = k;
+        most = n;
+      }
+    }
+    closeOldest('the unknown addresses', (p) => !p.known && p.wide === busiest);
+  }
+
+  /** A node logged in from `addr`: its next sockets from there take the returning nodes' pool (kept in meta, at most hourly per address). */
+  private loggedInFrom(addr: string): void {
+    if (addr === 'unknown') return;
+    const now = Date.now();
+    const last = this.loginAddrs.get(addr);
+    this.loginAddrs.delete(addr);
+    this.loginAddrs.set(addr, now);
+    for (const [k, at] of this.loginAddrs) if (now - at > LOGIN_ADDR_TTL_MS || this.loginAddrs.size > LOGIN_ADDRS_MAX) this.loginAddrs.delete(k);
+    if (last !== undefined && now - last < HOUR_MS) return;
+    try {
+      this.store?.setMeta(LOGIN_ADDRS_KEY, JSON.stringify([...this.loginAddrs]));
+    } catch (e) {
+      this.log(`${LOGIN_ADDRS_KEY} not written: ${String(e)}`);
+    }
   }
 
   private async register(request: Request, cp: ControlPlane, env: NodesEnv): Promise<Response> {
@@ -701,10 +908,33 @@ export class NodeRegistryDO extends DurableObject<Env> {
     // upload must cost neither the read nor the hash of 16 MiB on the object every heartbeat uses.
     const refused = await cp.replayPutCheck(matchId, nodeId, ts, sig, sha);
     if (refused) return error(refused.status, refused.code);
-    const bytes = await readCapped(request, REPLAY_MAX_BYTES);
-    if (!bytes) return error(413, 'too_large');
-    const r = await cp.storeReplay(matchId, nodeId, ts, sig, sha, bytes);
-    return r.ok ? json({ ok: true }) : error(r.status, r.code);
+    // Stored already: the node's retry after an answer it lost. The same bytes need no second read; others are refused.
+    const stored = cp.matches.get(matchId)?.replaySha;
+    if (stored) {
+      await request.body?.cancel().catch(() => undefined);
+      return stored === sha ? json({ ok: true }) : error(409, 'already_uploaded');
+    }
+    const length = declaredLength(h);
+    if (length !== null && length > REPLAY_MAX_BYTES) return error(413, 'too_large');
+    const cost = length ?? 2 * REPLAY_MAX_BYTES;
+    if (this.uploading.has(matchId)) return error(429, 'upload_in_progress');
+    if ((this.uploadsBy.get(nodeId) ?? 0) >= REPLAY_UPLOADS_PER_NODE) return error(429, 'busy');
+    if (this.uploadBytes + cost > this.replayBudget) return error(503, 'busy');
+    this.uploading.add(matchId);
+    this.uploadsBy.set(nodeId, (this.uploadsBy.get(nodeId) ?? 0) + 1);
+    this.uploadBytes += cost;
+    try {
+      const bytes = length !== null ? await readExactly(request, length) : await readCapped(request, REPLAY_MAX_BYTES);
+      if (!bytes) return length !== null ? error(400, 'bad_length') : error(413, 'too_large');
+      const r = await cp.storeReplay(matchId, nodeId, ts, sig, sha, bytes);
+      return r.ok ? json({ ok: true }) : error(r.status, r.code);
+    } finally {
+      this.uploading.delete(matchId);
+      const n = (this.uploadsBy.get(nodeId) ?? 1) - 1;
+      if (n > 0) this.uploadsBy.set(nodeId, n);
+      else this.uploadsBy.delete(nodeId);
+      this.uploadBytes -= cost;
+    }
   }
 
   private async getReplay(request: Request, cp: ControlPlane, matchId: string): Promise<Response> {
@@ -855,7 +1085,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
    */
   private async health(cp: ControlPlane): Promise<Response> {
     const targets = healthzTargets(cp.registry.list(), Date.now());
-    const found = await Promise.all(targets.map(async (n) => ({ n, r: await probeHealthz(n, this.fetchFn, this.healthzTimeoutMs) })));
+    const found = await Promise.all(targets.map(async (n) => ({ n, r: await probeHealthz(n, this.fetchFn, this.healthzTimeoutMs, this.loopbackOk) })));
     let problems = 0;
     for (const { n, r } of found) {
       const expected = this.drainExpected(n);
@@ -949,6 +1179,8 @@ export class NodeRegistryDO extends DurableObject<Env> {
     if (!ADMIN_STATUSES.includes(status as NodeStatus)) return error(400, 'bad_status', `status: ${ADMIN_STATUSES.join(', ')}`);
     const was = n.status;
     cp.setStatus(n.nodeId, status as NodeStatus, reason);
+    // The node was told (a 'status' message); a banned one's socket goes now, not at its next login.
+    if (n.status === 'banned') this.closeNode(n.nodeId, 4403, 'banned');
     this.audit(`ALERT admin ${actor}: node ${label(n)} ${was} -> ${n.status}${was === n.status ? ' (no change)' : ''}${reason ? `: ${reason}` : ''}`);
     this.watch.statusSet(n);
     this.keepOffline();
@@ -1011,7 +1243,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
    */
   private async adminReprobe(cp: ControlPlane, actor: string, n: NodeRecord): Promise<Response> {
     if (!n.roles.includes('host') || !n.transports.includes('wss') || !n.publicUrl) return error(409, 'not_wss', 'only a wss host has a /healthz to probe');
-    const [, healthz] = await Promise.all([n.reachableAt === null ? cp.probe(n.nodeId) : cp.reprobe(n.nodeId), probeHealthz(n, this.fetchFn, this.healthzTimeoutMs)]);
+    const [, healthz] = await Promise.all([n.reachableAt === null ? cp.probe(n.nodeId) : cp.reprobe(n.nodeId), probeHealthz(n, this.fetchFn, this.healthzTimeoutMs, this.loopbackOk)]);
     const reachable = n.reachableAt !== null;
     const found = healthz.ok ? (healthz.draining ? 'ok, draining' : 'ok') : healthz.detail;
     this.audit(`ALERT admin ${actor}: node ${label(n)} probed: ${found}; ${reachable ? 'in' : 'out of'} wss placement`);
@@ -1035,6 +1267,48 @@ function drainsOf(v: string | null): Map<string, string | null> {
   if (typeof o === 'object' && o !== null) {
     for (const [k, b] of Object.entries(o)) if (b === null || typeof b === 'string') out.set(k, b);
   }
+  return out;
+}
+
+/** A request's Content-Length when it states one (digits only), else null. */
+function declaredLength(h: Headers): number | null {
+  const v = h.get('content-length');
+  return v !== null && /^\d{1,12}$/.test(v) ? Number(v) : null;
+}
+
+/** Exactly `length` bytes of the body, read into one buffer; null when it carries more or fewer. */
+async function readExactly(request: Request, length: number): Promise<Uint8Array | null> {
+  const out = new Uint8Array(length);
+  const reader = request.body?.getReader();
+  if (!reader) return length === 0 ? out : null;
+  let at = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value as Uint8Array;
+    if (at + chunk.byteLength > length) {
+      await reader.cancel();
+      return null;
+    }
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return at === length ? out : null;
+}
+
+/** The login_addrs meta row ([address, ms] pairs), the ones still within LOGIN_ADDR_TTL_MS, oldest first; empty when it does not read. */
+function loginAddrsOf(v: string | null, now: number): Map<string, number> {
+  const out = new Map<string, number>();
+  let o: unknown = null;
+  try {
+    o = v === null ? null : JSON.parse(v);
+  } catch {
+    /* none */
+  }
+  if (!Array.isArray(o)) return out;
+  const pairs = o.filter((x): x is [string, number] => Array.isArray(x) && typeof x[0] === 'string' && typeof x[1] === 'number' && now - x[1] <= LOGIN_ADDR_TTL_MS);
+  pairs.sort((a, b) => a[1] - b[1]);
+  for (const [k, at] of pairs.slice(-LOGIN_ADDRS_MAX)) out.set(k, at);
   return out;
 }
 
