@@ -46,7 +46,11 @@
  *                                       lobbyCreateNet   network     1200  RL_1200
  *   POST /api/lobbies/join              lobbyJoin        session       20  RL_60    a password guess each
  *                                       lobbyJoinNet     network     1200  RL_1200
- *   GET  /api/lobbies, /api/lobbies/peek lobbyList       network     1200  -        served from a 3 s cache per isolate
+ *   GET  /api/lobbies                   lobbyList        network     1200  -        served from a 3 s cache per isolate (one directory call per
+ *                                                                                    region and isolate every 3 s)
+ *   GET  /api/lobbies/peek              lobbyPeek        network      120  RL_120   not cached: a LobbyDirectoryDO resolve (and a LobbyDO peek)
+ *                                                                                    each; one per join link opened, and a 429 only drops the
+ *                                                                                    summary (the sheet asks with the code alone)
  *   GET  /api/population                population       network     1200  -        cached 5 s per isolate; every menu asks every 10 s
  *   POST /api/auth/logout               logout           network     1200  RL_1200  no session: the cookie is the only key (one AccountsDO call)
  *                                       logoutSite       site        1200  RL_1200
@@ -135,6 +139,7 @@ export const LIMITS = {
   lobbyJoin: { by: 'session', isolate: 20, edge: 'RL_60' },
   lobbyJoinNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   lobbyList: { by: 'network', isolate: 1200 },
+  lobbyPeek: { by: 'network', isolate: 120, edge: 'RL_120' },
   population: { by: 'network', isolate: 1200 },
   logout: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   logoutSite: { by: 'site', isolate: 1200, edge: 'RL_1200' },

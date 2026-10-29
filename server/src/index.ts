@@ -481,10 +481,11 @@ async function lobbyTicket(request: Request, env: Env, session: SessionClaims, l
 
 /**
  * GET /api/lobbies/peek?code=: the summary of the lobby a join link names (public or private: the
- * code is what a private lobby shares), before the player joins. Rate-limited like the list.
+ * code is what a private lobby shares), before the player joins. Not cached, so it has its own
+ * limit (limits.ts lobbyPeek), far below the cached list's.
  */
 async function peekLobby(request: Request, env: Env, url: URL): Promise<Response> {
-  const limited = await overLimits(request, env, null, ['lobbyList']);
+  const limited = await overLimits(request, env, null, ['lobbyPeek']);
   if (limited) return limited;
   const code = normalizeCode(url.searchParams.get('code'));
   if (code === null) return error(400, 'bad_code', 'El código tiene 6 letras o números');

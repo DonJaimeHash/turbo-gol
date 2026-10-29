@@ -3,9 +3,11 @@
 // network (an IPv6 /64 as one network, an IPv4 address shared by a whole school still served),
 // the Workers Rate Limiting binding consulted after the in-isolate count (a fake one stands for the
 // other isolates of the location; one that throws lets the request through), the queue limit
-// before any KV read, the account routes limited before the single AccountsDO (a fake that counts
-// its calls), logout and refresh with a cookie no refresh token has, the leaderboard's own row
-// cached, the OAuth callback's state used once, and GET /api/ice gone.
+// before any KV read, the lobby peek before the single LobbyDirectoryDO, the account routes limited
+// before the single AccountsDO (a fake that counts its calls; an IPv6 /48 counted as one site on the
+// anonymous ones, and accountRoutes' own per-address windows kept apart from the table's), logout
+// and refresh with a cookie no refresh token has, the leaderboard's own row cached, the OAuth
+// callback's state used once, and GET /api/ice gone.
 // 'cloudflare:workers' and MatchDO's wasm are stubbed by the resolve hook (match.test.mjs).
 // Run from server/: npm test
 import { test } from 'node:test';
@@ -220,6 +222,30 @@ test('rejoin and leave count per session first, and per network only past a crow
   }
   assert.ok(env.RL_60.keys.some((k) => k.startsWith('rejoin:')) && env.RL_1200.keys.some((k) => k === 'rejoinNet:' + ip));
   assert.ok(env.RL_60.keys.some((k) => k.startsWith('leave:')) && env.RL_1200.keys.some((k) => k === 'leaveNet:' + ip));
+});
+
+test("lobby peek: one network reaches the LobbyDirectoryDO at most 120 times a minute, counted across isolates by the binding (it is not cached like the list)", async () => {
+  let dirCalls = 0;
+  const LOBBY_DIR = { idFromName: (n) => ({ n }), get: () => ({ fetch: async () => (dirCalls++, new Response(JSON.stringify({ error: 'no_lobby' }), { status: 404 })) }) };
+  const bound = fakeBinding(120);
+  const env = makeEnv({ LOBBY_DIR, RL_120: bound });
+  const ip = ip4();
+  const st = {};
+  for (let i = 0; i < 300; i++) {
+    const res = await req(env, 'GET', '/api/lobbies/peek?code=ABC234', { ip });
+    st[res.status] = (st[res.status] ?? 0) + 1;
+  }
+  assert.deepEqual(st, { 404: 120, 429: 180 }, 'a class opening join links is served; a flood stops at 120');
+  assert.equal(dirCalls, 120);
+  assert.equal(bound.keys[0], 'lobbyPeek:' + ip);
+  // What the location's other isolates counted is enforced too, before the directory.
+  const other = ip4();
+  const env2 = makeEnv({ LOBBY_DIR, RL_120: fakeBinding(120, new Map([['lobbyPeek:' + other, 120]])) });
+  dirCalls = 0;
+  assert.equal((await req(env2, 'GET', '/api/lobbies/peek?code=ABC234', { ip: other })).status, 429);
+  assert.equal(dirCalls, 0);
+  // The list keeps its own, higher rule (it is cached 3 s per region).
+  assert.notEqual((await req(env, 'GET', '/api/lobbies?region=SA', { ip })).status, 429);
 });
 
 // ---- the account routes, before the AccountsDO ---------------------------------------------------------
