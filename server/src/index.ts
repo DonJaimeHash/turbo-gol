@@ -431,7 +431,8 @@ async function queue(request: Request, env: Env): Promise<Response> {
     method: 'POST',
     headers,
     // doDisabled: where no node can host now, the matchmaker refuses this queue as above (503).
-    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined, ...seatFields(session, now) }),
+    // guest / ip: the matchmaker's guest caps (one MatchDO match per guest session across the regions, per IPv6 /64).
+    body: JSON.stringify({ playerId: session.sub, name: session.name, modes, kind, ratings, doDisabled: doDisabled ? true : undefined, ...seatFields(session, now), ...(session.acct !== 1 ? { guest: true, ip: clientIp(request) } : {}) }),
   });
   if (!res.ok) return new Response(res.body, res);
   let result = (await res.json()) as AnyQueueResult;

@@ -89,6 +89,12 @@ export const PUBLISH_MIN_MS = 5_000;
  * START_MAX_BACKOFF_MS; a start inside the wait answers 'start_cooldown'.
  */
 export const START_MIN_MS = 3_000;
+/**
+ * A server match (net 'server', or a lone member's) with a guest in it lasts at most this long
+ * (mirrors MatchmakerDO GUEST_MAX_MATCH_SECONDS, which refuses it too: 400 guest_length): a guest
+ * cannot hold a MatchDO for 600 s or an unlimited match.
+ */
+export const GUEST_SERVER_MAX_SECONDS = 300;
 export const START_AGAIN_MS = 5_000;
 export const START_MAX_BACKOFF_MS = 30_000;
 
@@ -540,6 +546,10 @@ export class LobbyDO extends DurableObject<Env> {
           if (rec.settings.net !== 'p2p' || rec.members.length < 2) return fail('experimental_p2p_only', 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores');
         }
         if (Date.now() < (rec.startNext ?? 0)) return fail('start_cooldown', 'Espera unos segundos antes de volver a iniciar');
+        const length = rec.settings.matchLengthSeconds;
+        if ((rec.settings.net === 'server' || rec.members.length < 2) && rec.members.some((m) => m.guest) && (length === 0 || length > GUEST_SERVER_MAX_SECONDS)) {
+          return fail('guest_length', 'Las partidas en servidor con invitados duran hasta 5 minutos: elige una duración más corta');
+        }
         await this.start(ws);
         return;
       }

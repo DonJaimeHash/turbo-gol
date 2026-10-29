@@ -862,6 +862,7 @@ export default {
   'error.lobby.bad_physics': 'Invalid rules',
   'error.lobby.too_many_lobbies': 'You already have open lobbies: close one before creating another',
   'error.lobby.start_cooldown': 'Wait a few seconds before starting again',
+  'error.lobby.guest_length': 'Server matches with guests last up to 5 minutes: pick a shorter length or sign in',
   'error.lobby.short_password': 'The password needs 4 to 32 characters',
   'error.lobby.password_locked': 'Too many password attempts on this lobby, wait a few minutes',
   'error.lobby.password_attempts': 'Someone is trying passwords on your lobby: joining with the password is paused for a few minutes',
@@ -875,6 +876,7 @@ export default {
   // {time}: what is left of the lock, in the page language ('5 min', '43 sec'). The player was placed in P2P matches and never joined them
   'error.queue.no_show': 'P2P matches locked for {time}: you skipped several matches you were placed in (server matches still work)',
   'error.queue.capacity': 'All servers are busy, try again in a minute',
+  'error.queue.guest_limit': 'Too many guest matches from your network: sign in to play more',
   // The page is older than the server (after an update)
   'error.queue.reload_required': "There's a new version of the game: reload the page",
   // The server switched matchmaking off

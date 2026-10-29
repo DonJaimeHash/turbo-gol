@@ -493,3 +493,24 @@ test('LobbyDO: a new password needs 4 characters (create 400 short_password, set
   h.lobby.rec.pwHash = await L.lobbyPasswordHash('L1', 'x');
   assert.equal((await h.admit('bea', { password: 'x' })).status, 200);
 });
+
+// ---- rt-3 / cost-6: a guest's server lobby match is 5 minutes at most ------------------------------
+
+test("LobbyDO: a server start with a guest in the lobby and 600 s or unlimited answers guest_length without reaching the matchmaker; 300 s goes; P2P with two humans keeps any length", async () => {
+  for (const len of [600, 0]) {
+    const h = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'private', net: 'server', matchLengthSeconds: len });
+    const host = await h.upgrade('host1');
+    await h.send(host, { t: 'start' });
+    assert.equal(host.of('error').at(-1).code, 'guest_length', `length ${len}`);
+    assert.equal(h.customs(), 0);
+  }
+  const ok = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'private', net: 'server', matchLengthSeconds: 300 });
+  const host = await ok.upgrade('host1');
+  await ok.send(host, { t: 'start' });
+  assert.equal(ok.customs(), 1);
+  const p2p = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'private', net: 'p2p', matchLengthSeconds: 0 });
+  const h2 = await p2p.upgrade('host1');
+  await p2p.join('bea');
+  await p2p.send(h2, { t: 'start' });
+  assert.equal(p2p.customs(), 1, 'a P2P room runs on the players: any length');
+});
