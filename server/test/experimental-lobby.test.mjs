@@ -344,7 +344,14 @@ test('LobbyDO (cosmetic cars): each start reads the signed-in members\' cars aga
   answer = () => new RealResponse('{}', { status: 500 });
   await h.post('/internal/admit', { playerId: 'acct2', name: 'Beto', guest: false, car: 'pampero' });
   await h.upgrade('acct2');
-  await h.send(host, { t: 'start' });
+  // The next match starts at least START_AGAIN_MS after the last one (LobbyDO's start throttle).
+  const realNow = Date.now;
+  Date.now = () => realNow() + L.START_AGAIN_MS;
+  try {
+    await h.send(host, { t: 'start' });
+  } finally {
+    Date.now = realNow;
+  }
   assert.deepEqual(custom(1), [['host1', null], ['acct2', 'pampero'], ['guest3', null], ['acct4', null]], 'a 500: the admits\' cars');
 });
 

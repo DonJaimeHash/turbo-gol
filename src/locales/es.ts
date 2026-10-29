@@ -612,6 +612,7 @@ export default {
   'error.lobby.experimental_p2p_only': 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores',
   'error.lobby.bad_physics': 'Reglas inválidas',
   'error.lobby.too_many_lobbies': 'Ya tienes salas abiertas: cierra una antes de crear otra',
+  'error.lobby.start_cooldown': 'Espera unos segundos antes de volver a iniciar',
   'error.queue.rate_limited': 'Demasiados intentos, espera un minuto',
   'error.queue.account_required': 'Inicia sesión para jugar Competitivo',
   'error.queue.ranked_ban': 'Competitivo bloqueado por abandonar partidas: {time}',

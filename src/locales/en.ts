@@ -861,6 +861,7 @@ export default {
   'error.lobby.experimental_p2p_only': 'Experimental rules need a P2P match with at least 2 players',
   'error.lobby.bad_physics': 'Invalid rules',
   'error.lobby.too_many_lobbies': 'You already have open lobbies: close one before creating another',
+  'error.lobby.start_cooldown': 'Wait a few seconds before starting again',
   // Matchmaking: Casual and Competitive searches (POST /api/queue, /api/rejoin, the guest session)
   'error.queue.rate_limited': 'Too many attempts, wait a minute',
   'error.queue.account_required': 'Sign in to play Competitive',

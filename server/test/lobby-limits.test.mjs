@@ -342,3 +342,55 @@ test('Worker: POST /api/lobbies hands the directory the session and the address,
   assert.equal(r.status, 429);
   assert.equal((await r.json()).error, 'too_many_lobbies');
 });
+
+// ---- rt-m1: INICIAR is throttled per lobby --------------------------------------------------------
+
+test('LobbyDO: a host repeating INICIAR against a refusing matchmaker reaches it a handful of times a minute (3, 6, 12, 24, 30 s back-off), not once per frame', async () => {
+  const h = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'private', net: 'server', matchLengthSeconds: 300 });
+  const host = await h.upgrade('host1');
+  let busy = true;
+  const realGet = h.mm.ns.get;
+  h.mm.ns.get = (id) => ({
+    fetch: async (url, init) => {
+      if (!busy) return realGet(id).fetch(url, init);
+      h.mm.calls.push({ path: new URL(url).pathname, body: JSON.parse(init.body) });
+      return new RealResponse(JSON.stringify({ error: 'member_busy', playerId: 'host1', message: 'Ana todavía está en otra partida' }), { status: 409 });
+    },
+  });
+  // 4 frames a second for a minute: under the socket budget, so only the start throttle bounds it.
+  for (let i = 0; i < 240; i++) {
+    await h.send(host, { t: 'start' });
+    advance(250);
+  }
+  assert.equal(host.readyState, 1, 'within the socket budget: not closed');
+  assert.ok(h.customs() <= 6, `/custom calls bounded (${h.customs()})`);
+  assert.ok(host.of('error').some((e) => e.code === 'start_cooldown'), 'the host is told to wait');
+  // The member is free again: once the wait is over the next INICIAR goes through.
+  busy = false;
+  advance(30_000);
+  await h.send(host, { t: 'start' });
+  assert.equal(host.last().status, 'in_game', 'started');
+});
+
+test('LobbyDO: normal starts are never throttled: a refused start (capacity) can be retried 3 s later; after FINAL the next match starts', async () => {
+  const h = await makeLobby();
+  const host = await h.upgrade('host1');
+  const bea = await h.join('bea');
+  let full = true;
+  const realGet = h.mm.ns.get;
+  h.mm.ns.get = (id) => ({
+    fetch: async (url, init) => (full ? new RealResponse(JSON.stringify({ error: 'capacity', message: 'all rooms are busy' }), { status: 503 }) : realGet(id).fetch(url, init)),
+  });
+  await h.send(host, { t: 'start' });
+  assert.equal(host.of('error').at(-1).code, 'capacity');
+  full = false;
+  advance(3_000); // REINTENTAR
+  await h.send(host, { t: 'start' });
+  assert.equal(host.last().status, 'in_game');
+  advance(4 * 60_000); // the match
+  await h.send(host, { t: 'back' });
+  await h.send(bea, { t: 'back' });
+  await h.send(host, { t: 'start' });
+  assert.equal(host.last().status, 'in_game', 'the next match');
+  assert.equal(host.of('error').filter((e) => e.code === 'start_cooldown').length, 0);
+});

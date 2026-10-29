@@ -82,6 +82,21 @@ export const LOBBY_OVER_BURST = 40;
 const LOBBY_OVER_REFILL_PER_MS = 1 / 1000;
 /** The directory row is upserted at most this often; a change in between goes out with the next alarm (alarmBy). */
 export const PUBLISH_MIN_MS = 5_000;
+/**
+ * INICIAR at most this often (each one reaches the region's matchmaker, a lock check of every busy
+ * member and, with a signed-in member, AccountsDO): START_MIN_MS after any start, START_AGAIN_MS
+ * after one that formed a match, and after a refused one a wait that doubles (3, 6, 12 s) up to
+ * START_MAX_BACKOFF_MS; a start inside the wait answers 'start_cooldown'.
+ */
+export const START_MIN_MS = 3_000;
+export const START_AGAIN_MS = 5_000;
+export const START_MAX_BACKOFF_MS = 30_000;
+
+/** When the next start may go after `fails` refused starts in a row (0: one that formed a match), from `now`. Pure. */
+export function nextStartAt(fails: number, now: number): number {
+  if (fails <= 0) return now + START_AGAIN_MS;
+  return now + Math.min(START_MAX_BACKOFF_MS, START_MIN_MS * 2 ** (fails - 1));
+}
 /** How long a member whose socket dropped keeps its place (and the host role): plan PR 12, 30 to 45 s. */
 export const LOBBY_GRACE_MS = 40_000;
 
@@ -136,6 +151,10 @@ export interface LobbyRecord {
   admits: AdmitRec[];
   kicked: string[];
   lastSocketAt: number;
+  /** No start before this (START_MIN_MS, nextStartAt; absent in records of older builds = now). */
+  startNext?: number;
+  /** Refused starts in a row (the back-off of nextStartAt). */
+  startFails?: number;
 }
 
 // ---- pure helpers (server/test/lobby.test.mjs) ------------------------------------------------
@@ -470,6 +489,7 @@ export class LobbyDO extends DurableObject<Env> {
           if (rec.members.some((m) => m.guest)) return fail('guests_present', 'Hay invitados en la sala: deben iniciar sesión o salir');
           if (rec.settings.net !== 'p2p' || rec.members.length < 2) return fail('experimental_p2p_only', 'Las reglas experimentales necesitan una partida P2P con al menos 2 jugadores');
         }
+        if (Date.now() < (rec.startNext ?? 0)) return fail('start_cooldown', 'Espera unos segundos antes de volver a iniciar');
         await this.start(ws);
         return;
       }
@@ -663,6 +683,7 @@ export class LobbyDO extends DurableObject<Env> {
   private async start(hostWs: WebSocket): Promise<void> {
     const rec = this.rec as LobbyRecord;
     rec.status = 'starting';
+    rec.startNext = Date.now() + START_MIN_MS;
     this.broadcastState();
     const env = this.env;
     const fresh = await this.equippedCars(rec.members);
@@ -698,6 +719,8 @@ export class LobbyDO extends DurableObject<Env> {
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
       rec.status = 'open';
+      rec.startFails = (rec.startFails ?? 0) + 1;
+      rec.startNext = nextStartAt(rec.startFails, Date.now());
       this.send(hostWs, { t: 'error', code: body.error ?? 'start_failed', message: body.message ?? 'No se pudo iniciar la partida, inténtalo de nuevo' });
       await this.afterChange();
       return;
@@ -706,6 +729,8 @@ export class LobbyDO extends DurableObject<Env> {
     const now = Date.now();
     rec.status = 'in_game';
     rec.statusAt = now;
+    rec.startFails = 0;
+    rec.startNext = nextStartAt(0, now);
     for (const m of rec.members) {
       m.ready = false;
       const r = results[m.playerId];
