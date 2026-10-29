@@ -424,7 +424,10 @@ src/ui/                 the front-end menus: the Tablero shell (styles/shell.css
                         length, polite / assertive), glyphs.ts (drawn pad / key / remote buttons),
                         tile.ts (the hero: one button whose parts are rebuilt per state, ✕ CANCEL
                         in its grid cell; a mode tile; the slot), plate.ts (who you are · your
-                        car), language.ts (the language sheet, Settings › Game's Idioma), seg.ts
+                        car), language.ts (the language sheet, Settings › Game's Idioma), stadium.ts
+                        (the stadium sheet, MODOS › CONTRA LA IA's Stadium row: every theme, the
+                        current one marked; a pick runs MenuHost.setTheme behind the loading screen;
+                        pure stadiumOptions / chooseStadium, tests/stadium-picker.test.mjs), seg.ts
                         (mn-seg: two to four options in a row, ◀ ▶ walk, A picks), picker.ts
                         (mn-picker: a 56 px row with its value and ›, opening a sheet), keypad.ts
                         (mn-keypad, plan PR 14: the on-screen keys Menu.openKeypad mounts over the

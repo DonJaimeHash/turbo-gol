@@ -299,6 +299,9 @@ All notable changes to Turbogol are documented here. The format follows
   menu opens Settings in the middle of a match or training.
 
 ### Fixed
+- You can choose the stadium again. In MODES › VS AI, Stadium opened an empty GARAGE; now it opens
+  the list of stadiums (Night harbour, Red canyon, Alpine valley) with yours marked. Pick one with
+  a click, a tap, Enter, A or OK: it is saved and used in all your matches and behind the menus.
 - When a new version of the game is out and yours is too old to play online, a window says so and
   offers RELOAD NOW (selected), instead of a message that vanished after four seconds; if you say
   NOT NOW, an "UPDATE TO PLAY" pill stays in the top bar until you reload.
