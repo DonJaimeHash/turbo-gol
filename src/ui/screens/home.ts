@@ -33,7 +33,7 @@ import { heroTile, modeTile, slot } from '../components/tile';
 import type { HeroSub, HeroView } from '../components/tile';
 import { plate as createPlate } from '../components/plate';
 import { rankBadge, tierById } from '../badges';
-import { carName, regionName, tierName } from '../names';
+import { carName, playerName, regionName, tierName } from '../names';
 import { HERO_SEP, HERO_SEP_TV, heroQueue, heroState, plateRank, queueParts, subParts } from './homeModel';
 import type { HeroInput, HeroKind, HeroState, QueuePick } from './homeModel';
 
@@ -181,7 +181,7 @@ export function homeScreen(menu: Menu): Screen {
   /** The plate, on a change of who and which rank (true when it was written). */
   const renderPlate = (): boolean => {
     const signed = acc.signedIn && acc.account !== null;
-    const name = signed && acc.account !== null ? acc.account.name : host.guestName();
+    const name = signed && acc.account !== null ? acc.account.name : playerName(host.guestName());
     const best = signed ? plateRank(acc.me) : null;
     // GARAJE · the car driven (an equip, a sign-in that brings the account's car).
     const car = carName(host.garage.store.equipped);

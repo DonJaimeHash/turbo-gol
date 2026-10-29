@@ -128,6 +128,7 @@ import { fnv1a32 } from '../protocol';
 import type { ClockMode } from '../../render/Hud';
 import { duration, language, t } from '../../i18n';
 import { P2PLog } from './DebugLog';
+import { playerName } from '../../ui/names';
 import { Mesh, assembleGamePacket, type MeshOptions } from './Mesh';
 import {
   HASH_LEN,
@@ -681,12 +682,9 @@ export class P2PSession {
     return this.rules !== null;
   }
 
+  /** The guest's name (the server's wire form; '' before the first session). */
   get name(): string {
     return this.client.name;
-  }
-
-  setName(name: string): void {
-    this.client.setName(name);
   }
 
   get statusText(): string | null {
@@ -1488,7 +1486,7 @@ export class P2PSession {
     this.peerHash.fill(0);
     for (let i = 0; i < slots.length; i++) {
       const s = slots[i];
-      this.names[i] = s.name;
+      this.names[i] = playerName(s.name); // shown: the wait line, the peer panel, a dropped player's line
       this.teamOf[i] = s.team;
       this.isBot[i] = s.kind === 'bot' ? 1 : 0;
       this.isPeer[i] = s.kind === 'peer' ? 1 : 0;

@@ -39,7 +39,7 @@
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
-import { PLAYLISTS, usernameKey } from '../../src/net/account';
+import { looksLikeDomain, PLAYLISTS, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
 import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { TrainingRecords } from '../../src/game/trainingRecords';
@@ -158,6 +158,7 @@ export function usernameFromDisplay(display: string): string {
     .replace(/^[^A-Za-z0-9]+/, '')
     .replace(/[_.-]+$/, '');
   s = s.slice(0, 16);
+  if (looksLikeDomain(s)) s = s.replace(/\./g, '_'); // a Discord name 'tg-verify.com' never becomes a web-address username
   const k = s.toLowerCase();
   if (k.startsWith('guest') || k.startsWith('bot') || k === 'admin') s = 'P' + s.slice(0, 15);
   while (s.length < 3) s += String(Math.floor(Math.random() * 10));

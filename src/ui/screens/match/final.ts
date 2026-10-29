@@ -21,7 +21,7 @@ import type { Menu, Screen } from '../../Menu';
 import { icon } from '../../components/icons';
 import { slot } from '../../components/tile';
 import { rankBadge, tierById } from '../../badges';
-import { difficultyName, regionName, tierName } from '../../names';
+import { difficultyName, playerName, regionName, tierName } from '../../names';
 import { cancelledKey } from '../leaderboard';
 import { HERO_SEP } from '../homeModel';
 import { againAction, changeTab, finalOutcome, finalRows, pickMvp, rankCard } from './finalModel';
@@ -314,7 +314,7 @@ function sampleView(kind: FinalKind): FinalView {
   const mode: GameMode = ai ? '3v3' : '2v2';
   const players = ai
     ? [p('Constantinopla_9', 0, 2, true), bot(1, 0), bot(2, 0), bot(3, 1, 2), bot(4, 1), bot(5, 1)]
-    : [p('Constantinopla_9', 0, kind === 'casual' ? 0 : 2, true), p('Ana', 0, 1), p('Leo', 1, kind === 'casual' ? 2 : 1), p('Valentina_Rios', 1, 0)];
+    : [p('Constantinopla_9', 0, kind === 'casual' ? 0 : 2, true), p('Ana', 0, 1), p(playerName('Invitado 4821'), 1, kind === 'casual' ? 2 : 1), p('Valentina_Rios', 1, 0)];
   const goals = (team: 0 | 1): number => players.filter((x) => x.team === team).reduce((s, x) => s + x.goals, 0);
   const blue = goals(0);
   const red = goals(1);

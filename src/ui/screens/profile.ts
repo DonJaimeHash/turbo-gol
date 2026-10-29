@@ -11,7 +11,8 @@
  * A guest, one column for the arrows: on a TV first INICIAR SESIÓN CON EL TELÉFONO (focused: the
  * code and its QR in a sheet, screens/tvSignIn.ts), then CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's
  * two tabs (`.mn-tabs`, a nav row: Q / E step them, the hint bar says so), then the tab's form
- * ("Forgot your password?" under the sign-in form is a link to the recovery form), the guest name. Fields say what a
+ * ("Forgot your password?" under the sign-in form is a link to the recovery form), then the line with
+ * the guest's name (the server's, temporary: a guest never chooses or changes it). Fields say what a
  * phone keyboard's Enter does (enterkeyhint: next, then go / done) and Enter does it (onEnter); the
  * Menu keeps the focused field above a phone's keyboard (keyboard.ts). A sign-in here from
  * Competitive's SIGN IN goes back there (modes.ts: the return with intent). Passwords go through
@@ -29,7 +30,7 @@ import type { AccountIssue, MeInfo, MyNode, OAuthProvider, PlaylistRating } from
 import { PROTOCOL_VERSION } from '../../net/protocol';
 import { PROBATION_MATCHES } from '../../../nodes/control-plane/registry';
 import { ratingCard, rankBadge, tierById } from '../badges';
-import { regionName } from '../names';
+import { playerName, regionName } from '../names';
 import type { Menu, Screen } from '../Menu';
 import { field, primary, screenHead, secondary, section } from './common';
 import { finePointer } from '../device';
@@ -273,22 +274,14 @@ export function profileScreen(menu: Menu): Screen {
         )
       : null;
     const form = tab === 'login' ? loginForm() : tab === 'register' ? registerForm() : recoverForm();
-    const name = field(t('profile.guestName'), { maxLength: 16, value: menu.host.guestName(), enterkeyhint: 'done' });
-    const saveName = (): void => {
-      menu.host.setGuestName(name.input.value);
-      name.input.value = menu.host.guestName();
-      menu.refreshChrome();
-      menu.toast(t('profile.guestNameSaved'), 'ok');
-    };
-    onEnter([name.input], saveName);
     return h(
       'div.mn-prof-guest',
       null,
       phone,
       h('div.mn-tabs.mn-prof-tabs', { role: 'tablist', 'aria-label': t('profile.heading'), 'data-nav-row': true }, hero, signIn),
       h('div.mn-prof-form', null, form),
-      // A row for the arrows: ▶ from the name is SAVE NAME, not the wide button of the form above (a TV's remote).
-      h('div.mn-prof-guestname', { 'data-nav-row': true }, name.el, secondary(t('profile.saveName'), saveName, { 'data-key': 'profile-save-name' })),
+      // The server's name for this guest, temporary (a new guest session brings a new one).
+      h('p.mn-note.mn-prof-guestline', null, t('profile.guestLine', { name: playerName(menu.host.guestName()) })),
     );
   };
 

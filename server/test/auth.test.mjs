@@ -45,7 +45,7 @@ test('session: sign / verify round trip, 24 h expiry', async () => {
   const c = await A.verifySession(SECRET, token, now + 1000);
   assert.ok(c);
   assert.equal(c.sub, '0123456789abcdef');
-  assert.equal(c.name, 'Alice');
+  assert.equal(c.name, 'Invitado 9743', "a guest's name is the server's, from its id (guest-names.test.mjs)");
   assert.equal(c.exp - c.iat, A.SESSION_TTL_SECONDS);
   // expired
   assert.equal(await A.verifySession(SECRET, token, now + (A.SESSION_TTL_SECONDS + 1) * 1000), null);

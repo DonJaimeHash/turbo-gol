@@ -103,18 +103,6 @@
   margin-top: 0.5rem;
 }
 
-.mn-prof-guestname {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.75rem;
-}
-
-.mn-prof-guestname .mn-field {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-}
-
 /* A field takes the column's width, never its own (an input's intrinsic width on a 390 px phone). */
 .mn-profile .mn-input {
   min-width: 0;

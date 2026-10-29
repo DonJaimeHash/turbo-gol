@@ -74,7 +74,7 @@ import { channelStep } from './channelKeys';
 import type { KeypadView } from './components/keypad';
 import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
-import { formatPoints, regionName, tierName } from './names';
+import { formatPoints, playerName, regionName, tierName } from './names';
 import { t } from '../i18n';
 import type { Key } from '../i18n';
 import type { AccountClient } from '../net/AccountClient';
@@ -197,9 +197,11 @@ export interface MenuHost {
   config(): Promise<MenuConfig>;
   /** Solve the anti-bot check ahead (Inicio shown: NetClient.prewarmAntiBot). */
   prewarmAntiBot?(): void;
-  /** The guest name (online as a guest) and its setter. */
+  /**
+   * The guest's name: the server's wire form ('Invitado 4821', shown through names.ts playerName), or
+   * game.guestName before the first guest session. A guest never chooses or changes it.
+   */
   guestName(): string;
-  setGuestName(name: string): void;
   /** A Bearer for API calls (account or guest). */
   bearer(): Promise<string>;
   readonly mode: GameMode;
@@ -231,8 +233,6 @@ export interface MenuHost {
   rejoinable(): RejoinRecord | null;
   /** Join it again (POST /api/rejoin; Inicio's BACK TO YOUR MATCH, a lost connection's REJOIN). */
   rejoinMatch(): void;
-  /** A guest that never played online in this browser (no session yet): a join link asks for a name. */
-  firstOnline(): boolean;
   /**
    * The settings screen (the Hud's: controls, camera, gameplay, audio, graphics, experimental),
    * on `opts.tab` when given; `onClose` when it is left. The menus call it through Menu.openSettings.
@@ -1461,8 +1461,9 @@ export class Menu {
         setChildren(chip, h('span.mn-chip-avatar', null, rankBadge(bestTier, 30)), h('span.mn-chip-text', null, h('b', null, acc.account.name), h('small', null, best ? bestTier && tierName(bestTier) : t('menu.account'))));
         chip.setAttribute('aria-label', acc.account.name + '. ' + t('nav.profile'));
       } else {
-        setChildren(chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, this.host.guestName()), h('small', null, t('menu.guestSignIn'))));
-        chip.setAttribute('aria-label', this.host.guestName() + '. ' + t('menu.guestSignIn'));
+        const guest = playerName(this.host.guestName());
+        setChildren(chip, h('span.mn-chip-avatar', null, '?'), h('span.mn-chip-text', null, h('b', null, guest), h('small', null, t('menu.guestSignIn'))));
+        chip.setAttribute('aria-label', guest + '. ' + t('menu.guestSignIn'));
       }
     }
     if (this.regionPill.set(this.regionState())) changed = true;
