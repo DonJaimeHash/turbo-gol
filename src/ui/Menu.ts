@@ -70,6 +70,7 @@ import { installKeyboardInset } from './keyboard';
 import type { NavDir, NavZone } from './nav';
 import { finePointer, resetPageZoom, tapGuarded } from './device';
 import { keypadBox, keypadSpec, keypadWrite } from './components/keypad';
+import { channelStep } from './channelKeys';
 import type { KeypadView } from './components/keypad';
 import type { InputKind } from './device';
 import { rankBadge, tierById } from './badges';
@@ -517,6 +518,8 @@ export class Menu {
     host.accounts.subscribe(() => this.refreshChrome());
     // After Input's own listener (the Game creates the Input first): hasGamepad already says so.
     window.addEventListener('gamepadconnected', () => this.onPadChange());
+    // The network back: the region pill asks again now rather than at its next poll.
+    window.addEventListener('online', () => this.populationNow());
     this.loadConfig();
     // The report of what the next frame shows: a fit the last change queued runs first (the check
     // reads the page a fixed pause after a mount, and the frame that would run it can come later:
@@ -1140,7 +1143,8 @@ export class Menu {
     }
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (!this.openKeypad(el)) setEditing(el, true);
+      // A phone's soft keyboard (touch mode: its Go is this Enter) types on: no keypad over it.
+      if (touchMode() || !this.openKeypad(el)) setEditing(el, true);
       this.keyDone = e;
     } else if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') setEditing(el, true);
   }
@@ -1164,14 +1168,14 @@ export class Menu {
     const field = isEditable(active); // a text field's keys are its own, but for the arrows in navigation mode
     const editing = field && isEditing(active);
     const plain = !e.ctrlKey && !e.metaKey;
-    // A remote's CH+ / CH− (PageUp / PageDown on most TV browsers, ChannelUp / ChannelDown on
-    // others) and a keyboard's PgUp / PgDn are the pad's LT / RT: the board pages, a screen's own
-    // tabs step. Not over a field; held, they repeat (the board's pages).
-    const channel = e.key === 'ChannelUp' || e.code === 'PageUp' ? -1 : e.key === 'ChannelDown' || e.code === 'PageDown' ? 1 : 0;
+    // A remote's CH+ / CH− (channelKeys.ts: however the remote names them) and a keyboard's PgUp /
+    // PgDn are the pad's LT / RT: the board pages, a screen's own tabs step; a screen without tabs
+    // scrolls its page. Not over a field; held, they repeat (the board's pages).
+    const channel = channelStep(e);
     if (channel !== 0) {
       if (field || !plain) return;
       e.preventDefault();
-      if (!heldOver(e, this.keysDown)) this.command(channel < 0 ? 'tabPrev' : 'tabNext', true);
+      if (!heldOver(e, this.keysDown) && !this.command(channel < 0 ? 'tabPrev' : 'tabNext', true)) this.pageScroll(channel);
       return;
     }
     let dir: NavDir | null = null;
@@ -1297,6 +1301,39 @@ export class Menu {
     const picked = top.el.querySelector<HTMLElement>('.mn-tabs .mn-tab-on');
     if (onTabs && picked !== null && !touchMode()) this.nav.focus(picked);
     return true;
+  }
+
+  /**
+   * PgUp / PgDn (CH±) on a screen with no tabs of its own: the page under the focus (else the
+   * screen's longest scroller, else the stage) scrolls by most of its height, and a focus left out
+   * of view moves to the first control in it (the last one going up), so the next arrow does not
+   * scroll it back. Nothing under a sheet or the keypad.
+   */
+  private pageScroll(d: -1 | 1): void {
+    const top = this.top();
+    if (!this.visibleNow || this.modalEl !== null || this.keypad !== null || top === null) return;
+    const scrolls = (el: HTMLElement): boolean => el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY);
+    const a = document.activeElement;
+    let box: HTMLElement | null = a instanceof HTMLElement && this.stage.contains(a) ? a : null;
+    while (box !== null && box !== this.stage && !scrolls(box)) box = box.parentElement;
+    if (box === null || box === this.stage) {
+      const inner = [...top.el.querySelectorAll<HTMLElement>('*')].filter(scrolls).sort((x, y) => y.scrollHeight - y.clientHeight - (x.scrollHeight - x.clientHeight))[0];
+      box = inner ?? this.stage;
+    }
+    const s = box;
+    if (!scrolls(s) && s.scrollHeight <= s.clientHeight + 1) return;
+    s.scrollBy({ top: d * Math.round(s.clientHeight * 0.85) });
+    const f = this.nav.current;
+    if (f === null || touchMode() || !s.contains(f)) return;
+    const r = s.getBoundingClientRect();
+    const inView = (el: HTMLElement): boolean => {
+      const b = el.getBoundingClientRect();
+      return b.height > 0 && b.top >= r.top && b.bottom <= r.bottom;
+    };
+    if (inView(f)) return;
+    const shown = this.nav.targets().filter((el) => s.contains(el) && inView(el));
+    const next = d > 0 ? shown[0] : shown[shown.length - 1];
+    if (next !== undefined) this.nav.focus(next);
   }
 
   /** Cancel the running search (pad Y, keyboard X, the pill's ✕; over Settings too). False when none runs. */

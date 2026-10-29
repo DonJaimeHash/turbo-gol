@@ -4,12 +4,13 @@
  * rows, pressed states and focus ring apply. A bar with ‹ and AJUSTES (online the live scorebug is
  * raised into its right end: html.tg-set-live, styles/screens/settings.css), then the rail and the
  * page. Its own FocusNav (the bar, the rail as a side zone, the page), the keys while it is up (the
- * arrows, Esc / Backspace Back, Q / E the tabs, Delete clears), the controller's edges from the
+ * arrows, Esc / Backspace Back, Q / E and CH± / PgUp / PgDn the tabs, Delete clears), the controller's edges from the
  * Game (action). Back: a field being edited stops, then the view's own steps (a capture, the page
  * to its tab), then it closes back to the pause dock. Online the match goes on under it.
  */
 import { h, navButton } from '../../dom';
 import { FocusNav, isEditable, isEditing, setEditing, type NavDir } from '../../nav';
+import { channelStep } from '../../channelKeys';
 import { t } from '../../../i18n';
 import { icon } from '../../components/icons';
 import type { SettingsTab } from './model';
@@ -121,6 +122,14 @@ export class SettingsOverlay {
     const a = document.activeElement;
     const field = isEditable(a);
     const editing = field && isEditing(a);
+    // CH± / PgUp / PgDn: the tabs, as in the menus (and as Q / E here).
+    const channel = channelStep(e);
+    if (channel !== 0) {
+      if (field) return;
+      e.preventDefault();
+      if (!e.repeat) this.view.command(channel < 0 ? 'tabPrev' : 'tabNext');
+      return;
+    }
     let dir: NavDir | null = null;
     switch (e.code) {
       case 'ArrowUp':

@@ -29,14 +29,16 @@
  *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | /#auth=error:<code>
  *   POST /api/auth/tv/start   (no session)                      -> TvStartAnswer: a TV signing in with the phone
  *   POST /api/auth/tv/confirm Bearer (account) { code }         -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
- *                             | 409 tv_code_used | 429 throttled: the phone binds the code to its account, once
+ *                             | 409 tv_code_used | 429 throttled | 403 banned: the phone binds the code to its
+ *                             account, once
  *   POST /api/auth/tv/poll    { code, secret }                  -> { state: 'pending' } | AccountSession & { state:
- *                             'approved' } + refresh cookie (as login) | 410 | 409 | 403 bad_secret
+ *                             'approved' } + refresh cookie (as login) | 410 (a wrong secret too) | 409 | 403 banned
  *     The device-code pattern (tvCodes.ts in the AccountsDO): the code is 6 of the lobby alphabet and
  *     lives 5 minutes; the secret (32 random bytes) goes only to the TV and only its SHA-256 to the
  *     object, compared in constant time; an approved poll wipes the binding (one use). Limits: start
  *     10 a minute per IP (and 5 live codes per IP), poll 60, confirm 30 a minute per IP plus 10
- *     failed confirms (wrong, expired or used codes) per account and per IP in 15 minutes.
+ *     failed confirms (wrong, expired or used codes) per account and 50 per IP in 15 minutes; an
+ *     IPv6 address counts by its /64 (tvCodes.ts ipKey).
  *
  * `password` is always the client key (src/net/account.ts clientPasswordKey: PBKDF2 in the browser),
  * never the typed password. The server stores PBKDF2-SHA256(clientKey, random salt, 100,000) — the
@@ -60,7 +62,7 @@ import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
 import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, UserRef } from './accountStore';
-import { TV_POLL_MS, tvCode } from './tvCodes';
+import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 
 export const ACCOUNT_SESSION_TTL_SECONDS = 60 * 60;
@@ -623,7 +625,7 @@ const LIMIT_TV_POLL = 60;
 const LIMIT_TV_CONFIRM = 30;
 
 async function tvStart(c: RouteContext): Promise<Response> {
-  if (c.limited('tvs:' + ipOf(c.request), LIMIT_TV_START)) return error(429, 'rate_limited');
+  if (c.limited('tvs:' + ipKey(ipOf(c.request)), LIMIT_TV_START)) return error(429, 'rate_limited');
   const secret = base64urlEncode(randomBytes(32));
   const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-start', { ip: ipOf(c.request), secret: await sha256Hex(secret) });
   if (!r.ok) return pass(r.res);
@@ -635,7 +637,7 @@ async function tvConfirm(c: RouteContext): Promise<Response> {
   if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
   const s = requireAccount(c);
   if (s instanceof Response) return s;
-  if (c.limited('tvc:' + ipOf(c.request), LIMIT_TV_CONFIRM)) return error(429, 'rate_limited');
+  if (c.limited('tvc:' + ipKey(ipOf(c.request)), LIMIT_TV_CONFIRM)) return error(429, 'rate_limited');
   const b = await readJson<{ code?: unknown }>(c.request);
   const code = tvCode(b?.code);
   if (code === null) return error(400, 'bad_request');
@@ -644,7 +646,7 @@ async function tvConfirm(c: RouteContext): Promise<Response> {
 
 async function tvPoll(c: RouteContext): Promise<Response> {
   if (!sameOriginOk(c.request, c.originAllowed)) return error(403, 'bad_origin');
-  if (c.limited('tvp:' + ipOf(c.request), LIMIT_TV_POLL)) return error(429, 'rate_limited');
+  if (c.limited('tvp:' + ipKey(ipOf(c.request)), LIMIT_TV_POLL)) return error(429, 'rate_limited');
   const b = await readJson<{ code?: unknown; secret?: unknown }>(c.request);
   const code = tvCode(b?.code);
   if (code === null || typeof b?.secret !== 'string' || b.secret.length === 0 || b.secret.length > 128) return error(400, 'bad_request');

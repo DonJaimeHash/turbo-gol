@@ -10,11 +10,12 @@
  * the opener kept).
  *
  * The phone (installTvLink): the /tv page is the game with these sheets over Inicio. The path goes
- * back to / at once (a reload is the game), the code is kept in sessionStorage for 5 minutes, so a
- * sign-in on PERFIL (or Google's round trip) comes back to it. Signed out: "Sign in on this phone
- * first" with INICIAR SESIÓN (PERFIL); signed in: the code cells when the link had no code, then
- * "Sign in on the TV as {name}?" with the code big, CONFIRMAR / CANCELAR: nothing is granted before
- * CONFIRMAR. A refusal says why in words (wrong, expired, used, too many tries) with OTRO CÓDIGO.
+ * back to / at once (a reload is the game). Signed out: "Sign in on this phone first" with INICIAR
+ * SESIÓN (PERFIL): only then is the code kept in sessionStorage (5 minutes), so the sign-in (or
+ * Google's round trip) comes back to it; CANCELAR or Back there forgets it. Signed in: the code
+ * cells when the link had no code, then "Sign in on the TV as {name}?" with the code big, CONFIRMAR
+ * / CANCELAR: nothing is granted before CONFIRMAR. A refusal says why in words (wrong, expired,
+ * used, too many tries, a suspended account) with OTRO CÓDIGO when another code can help.
  * In development (or a VITE_UI_FIT=1 build) window.__tvSignIn shows each sheet with sample data
  * (screens/tvSignInSamples.ts, scripts/ui-fit.mjs).
  */
@@ -113,8 +114,12 @@ export function openTvSignIn(menu: Menu): void {
             }
           } catch (e) {
             if (epoch !== at) return;
-            if (e instanceof AccountError && (e.code === 'tv_code_expired' || e.code === 'tv_code_used')) {
+            if (e instanceof AccountError && (e.code === 'tv_code_expired' || e.code === 'tv_code_used' || e.code === 'bad_secret')) {
               show({ kind: 'expired' });
+              return;
+            }
+            if (e instanceof AccountError && e.code === 'banned') {
+              show({ kind: 'failed', error: errText(e) });
               return;
             }
             // Offline, a refusal of the moment (429): the next poll asks again.
@@ -159,15 +164,28 @@ function kept(): string | null {
   }
 }
 
-/** Signed out: sign in on this phone first (PERFIL; the code waits). */
-export function signInFirstSheet(menu: Menu): void {
+/** Signed out: sign in on this phone first (PERFIL; the code waits, kept for the round trip). CANCELAR or Back: `drop`. */
+export function signInFirstSheet(menu: Menu, code: string, drop: () => void): void {
+  let signIn = false;
   menu.modal({
     title: t('tvlink.title'),
     body: h('p', null, t('tvlink.signInFirst')),
     actions: [
-      { label: t('tvlink.signIn'), primary: true, onClick: () => (queueMicrotask(() => menu.open('profile')), true) },
-      { label: t('tvlink.cancel'), onClick: () => (forget(), true) },
+      {
+        label: t('tvlink.signIn'),
+        primary: true,
+        onClick: () => {
+          signIn = true;
+          keep(code);
+          queueMicrotask(() => menu.open('profile'));
+          return true;
+        },
+      },
+      { label: t('tvlink.cancel'), onClick: () => true },
     ],
+    onClose: () => {
+      if (!signIn) drop();
+    },
   });
 }
 
@@ -226,9 +244,9 @@ export function askSheet(menu: Menu, name: string, code: string, confirm: () => 
   });
 }
 
-/** A refused confirm, in words: another code for a wrong / expired / used one, else close (too many tries). */
+/** A refused confirm, in words: another code for a wrong / expired / used one, else close (too many tries, a suspended account). */
 export function refusedSheet(menu: Menu, e: unknown, again: () => void): void {
-  const other = !(e instanceof AccountError) || e.code !== 'throttled';
+  const other = !(e instanceof AccountError) || (e.code !== 'throttled' && e.code !== 'banned');
   menu.modal({
     title: errText(e),
     body: [],
@@ -254,9 +272,14 @@ export function installTvLink(menu: Menu): void {
     if (!acc.signedIn) await acc.restore().catch(() => null);
     if (!acc.signedIn) {
       waiting = code;
-      signInFirstSheet(menu);
+      signInFirstSheet(menu, code, () => {
+        waiting = null;
+        forget();
+      });
       return;
     }
+    // Signed in: nothing waits for a round trip any more (a reload does not bring the sheet back).
+    forget();
     const ask = (c: string): void =>
       askSheet(
         menu,
@@ -279,7 +302,7 @@ export function installTvLink(menu: Menu): void {
   if (isTvPath(location.pathname)) {
     code = tvHashCode(location.hash) ?? '';
     history.replaceState(history.state, '', '/' + location.search + withoutTvCode(location.hash));
-    keep(code);
-  } else code = kept(); // back from Google's or Discord's sign-in
+    forget();
+  } else code = kept(); // back from PERFIL's sign-in by Google or Discord
   if (code !== null) void run(code);
 }

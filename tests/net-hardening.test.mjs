@@ -179,7 +179,7 @@ class FakeSim {
  * `welcome` adds fields to the Welcome (hostColo 'node:<name>': a community node); `prepare(client)`
  * runs before the queue (an account's sessionProvider).
  */
-async function playingSession(routes = {}, { connecting = false, welcome = {}, prepare = null } = {}) {
+async function playingSession(routes = {}, { connecting = false, welcome = {}, prepare = null, lobby = false } = {}) {
   const h = makeClient({
     '/api/guest': () => jsonResponse(200, GUEST),
     '/api/queue': () => jsonResponse(200, { status: 'matched', matchId: 'm1', ticket: 'tkt', wsUrl: '/ws/m1' }),
@@ -205,7 +205,8 @@ async function playingSession(routes = {}, { connecting = false, welcome = {}, p
   };
   const session = new OnlineSession(game, { client: h.client, now: h.now });
   if (prepare !== null) prepare(h.client);
-  session.quickMatch('1v1');
+  if (lobby) session.joinAssigned('1v1', { matchId: 'm1', ticket: 'tkt', wsUrl: '/ws/m1' }, '', true);
+  else session.quickMatch('1v1');
   for (let i = 0; i < 10 && h.sockets.length === 0; i++) await new Promise((r) => setTimeout(r, 0));
   assert.equal(session.state, 'connecting');
   const ws = h.sockets[0];
@@ -564,4 +565,69 @@ test('OnlineSession on a Durable Object: no early renewal and a refused quit is 
   await flush();
   assert.equal(s.issued(), 1);
   assert.deepEqual(s.auths, ['Bearer jwt-a1']);
+});
+
+// ---- a match found over, a lobby's match rejoined (PR 17) -----------------------------------
+
+/** sessionStorage for rejoinStore.ts (node has none): a Map behind the Storage methods. */
+function withSessionStorage() {
+  const m = new Map();
+  globalThis.sessionStorage = { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => void m.set(k, String(v)), removeItem: (k) => void m.delete(k) };
+  return () => {
+    const raw = m.get('turbogol.rejoin');
+    return raw === undefined ? null : JSON.parse(raw);
+  };
+}
+
+test("OnlineSession: a lobby's server match is kept as one (its rejoin comes back as the lobby's); the server's 1000 close before 'ended' is the match over, not a lost connection", async () => {
+  const record = withSessionStorage();
+  try {
+    const s = await playingSession({}, { lobby: true });
+    s.ws.deliver(encodeJson(MsgType.Event, { type: 'clock', seconds: 200, tick: 10 }));
+    assert.equal(record()?.kind, 'lobby', 'the record names the lobby');
+    let disconnected = null;
+    s.game.onOnlineDisconnected = (msg) => (disconnected = msg);
+    s.ws.dropped(1000, 'ended');
+    await flush();
+    assert.equal(disconnected, (await import('../src/i18n.ts')).t('online.matchOver'), 'the match is over');
+    assert.equal(record(), null, 'nothing to rejoin');
+    // A queue's match: kept as casual, and an abnormal close is still a lost connection.
+    const q = await playingSession();
+    q.ws.deliver(encodeJson(MsgType.Event, { type: 'clock', seconds: 200, tick: 10 }));
+    assert.equal(record()?.kind, 'casual');
+    const r = q.session.rejoinable;
+    assert.equal(r.kind, 'casual');
+  } finally {
+    delete globalThis.sessionStorage;
+  }
+});
+
+test('OnlineSession: an automatic reconnection whose rejoin finds the match over (404 / 410) forgets the record and says so', async () => {
+  const record = withSessionStorage();
+  try {
+    const { t } = await import('../src/i18n.ts');
+    for (const status of [404, 410]) {
+      const s = await playingSession({ '/api/rejoin': () => jsonResponse(status, { error: status === 404 ? 'no_match' : 'match_over' }) });
+      s.ws.deliver(encodeJson(MsgType.Event, { type: 'clock', seconds: 200, tick: 10 }));
+      assert.equal(record()?.kind, 'casual');
+      let disconnected = null;
+      s.game.onOnlineDisconnected = (msg) => (disconnected = msg);
+      s.ws.dropped(1006, 'network');
+      for (let i = 0; i < 20 && disconnected === null; i++) await flush();
+      assert.equal(disconnected, t('online.matchOver'), `${status}: over, not lost`);
+      assert.equal(record(), null, `${status}: the record went`);
+      assert.equal(s.session.rejoinable, null, `${status}: no VOLVER A ENTRAR`);
+    }
+    // A rejoin refused for a moment (503) is still a lost connection, the record kept.
+    const s = await playingSession({ '/api/rejoin': () => jsonResponse(503, { error: 'unavailable' }) });
+    s.ws.deliver(encodeJson(MsgType.Event, { type: 'clock', seconds: 200, tick: 10 }));
+    let disconnected = null;
+    s.game.onOnlineDisconnected = (msg) => (disconnected = msg);
+    s.ws.dropped(1006, 'network');
+    for (let i = 0; i < 40 && disconnected === null; i++) await flush();
+    assert.equal(disconnected, t('online.connectionLost'));
+    assert.notEqual(record(), null, 'kept: VOLVER A ENTRAR');
+  } finally {
+    delete globalThis.sessionStorage;
+  }
 });

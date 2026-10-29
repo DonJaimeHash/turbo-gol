@@ -253,10 +253,14 @@ export function installJoinLink(menu: Menu): void {
 }
 
 /**
- * Back into the Sala a reload the game ran itself left (Super low's restart: Game.restartOn saves it,
- * rejoinStore.ts takeLobbyStay): joined again by code once the menus are up, as a dropped socket's
- * reconnection does (LobbyDO admits the member again as it was, host included, so nobody else
- * notices more than RECONNECTING), then its screen. A Sala that is gone meanwhile says why.
+ * Back into the Sala a reload left (the player's, Super low's restart: Game.keepLobby saves it on
+ * pagehide, rejoinStore.ts takeLobbyStay): joined again by code once the menus are up, as a dropped
+ * socket's reconnection does (LobbyDO admits the member again as it was, host included, so nobody
+ * else notices more than RECONNECTING), then its screen when the Sala was on the stack (else Inicio,
+ * the lobby pill showing it: the FINAL's MENÚ, a match under way that Inicio's hero rejoins). A Sala
+ * that is gone meanwhile says why. A reload slower than the server's grace still joins (the code and
+ * the password open it, maybe as somebody new: it says the host may have changed), as the dropped
+ * socket's tries do for RECONNECT_WINDOW_MS; past that the page says the Sala went on without it.
  */
 export function installLobbyReturn(menu: Menu): void {
   const stay = takeLobbyStay();
@@ -268,8 +272,15 @@ export function installLobbyReturn(menu: Menu): void {
     }
     const lobby = menu.host.lobby;
     if (lobby.inLobby) return; // a join link's sheet got there first
+    if (stay.gone === true) {
+      menu.toast(t('lobby.stayLate', { code: spacedCode(stay.code) }), 'info');
+      return;
+    }
     lobby.join(stay.code, stay.password).then(
-      () => menu.open('lobby'),
+      () => {
+        if (stay.late === true) menu.toast(t('lobby.stayBack', { code: spacedCode(stay.code) }), 'info');
+        if (stay.open !== false) menu.open('lobby');
+      },
       (e: unknown) => menu.toast(errText(e), 'error'),
     );
   };
@@ -401,7 +412,7 @@ export function lobbyScreen(menu: Menu): Screen {
     });
   };
 
-  /** A member's sheet: Move (the host for anyone, a member for itself), Make host and Kick (the host, another member). */
+  /** A member's sheet: Move (the host for anyone, a member for itself), Make host (not while it is away) and Kick (the host, another member). */
   const openMember = (m: LobbyMember): void => {
     const s = state();
     if (s === null) return;
@@ -414,7 +425,7 @@ export function lobbyScreen(menu: Menu): Screen {
       actions.push({ label: t('lobby.moveTo', { team: t(TEAM_KEY[other]) }), primary: true, onClick: () => (mine ? lobby.setTeam(other) : lobby.move(m.id, other)) });
     }
     if (host && !mine) {
-      actions.push({ label: t('lobby.makeHost'), onClick: () => lobby.makeHost(m.id) });
+      if (m.away !== true) actions.push({ label: t('lobby.makeHost'), onClick: () => lobby.makeHost(m.id) });
       actions.push({
         label: t('lobby.kick'),
         danger: true,
@@ -497,10 +508,16 @@ export function lobbyScreen(menu: Menu): Screen {
   };
 
   lobby.onState = (s) => {
-    menu.prefs.lobbyMode = s.settings.mode; // the next CREATE LOBBY AND SHARE takes it
+    // The next CREATE LOBBY AND SHARE takes it, after a reload too.
+    if (menu.prefs.lobbyMode !== s.settings.mode) {
+      menu.prefs.lobbyMode = s.settings.mode;
+      menu.savePrefs();
+    }
     if (shown) render();
   };
   lobby.onStatus = () => {
+    // Back from a reconnection: the network is too, so the region pill asks again now.
+    if (!lobby.reconnecting) menu.populationNow();
     if (shown) render();
   };
   lobby.onMatch = (r) => menu.host.playLobbyMatch(r);

@@ -93,7 +93,7 @@ export class LobbyClient {
   state: LobbyState | null = null;
   lobbyId: string | null = null;
   code: string | null = null;
-  /** The password typed to join / create (kept so a reload-free rejoin works). */
+  /** The password typed to join / create, or the host's new one (kept so a rejoin, a reload's too, works). */
   password: string | null = null;
 
   onState: ((s: LobbyState) => void) | null = null;
@@ -429,6 +429,8 @@ export class LobbyClient {
   }
 
   updateSettings(settings: Partial<LobbySettings>, password?: string | null): void {
+    // The host's new password opens the lobby again after a reload past the grace (rejoinStore.ts LobbyStay).
+    if (password !== undefined) this.password = password;
     this.send(password === undefined ? { t: 'settings', settings } : { t: 'settings', settings, password });
   }
 
@@ -459,10 +461,14 @@ export class LobbyClient {
     this.send({ t: 'back' });
   }
 
-  /** Leave the lobby for good (closes the socket). Silent: no onClosed. */
+  /**
+   * Leave the lobby for good (closes the socket). Silent: no onClosed. A socket still connecting (a
+   * reconnection's try, a join's) is let go to say the leave once it opens, so the server frees the
+   * place and hands the host on now rather than after its grace.
+   */
   leave(): void {
     if (!this.ws) {
-      // Reconnecting: no socket to say it on; the server's grace removes the place.
+      // Reconnecting between tries: no socket to say it on; the server's grace removes the place.
       this.stopRetry();
       this.status = 'idle';
       this.state = null;
@@ -470,7 +476,21 @@ export class LobbyClient {
       this.code = null;
       return;
     }
-    this.send({ t: 'leave' });
+    if (this.status === 'open') this.send({ t: 'leave' });
+    else {
+      const ws = this.ws;
+      this.ws = null;
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onopen = () => {
+        try {
+          ws.send(JSON.stringify({ t: 'leave' } satisfies LobbyClientMsg));
+          ws.close(1000, 'bye');
+        } catch {
+          /* closed */
+        }
+      };
+    }
     const cb = this.onClosed;
     this.onClosed = null;
     this.finish('left');

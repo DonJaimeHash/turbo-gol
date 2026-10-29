@@ -102,7 +102,9 @@ export function loadTurnstile(): Promise<TurnstileApi> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      delete globals()[ONLOAD_CALLBACK];
+      // Left as a function: api.js loads its own versioned script and calls it after this resolved
+      // (deleted, Cloudflare warned "Unable to find onload callback" twice on every page).
+      globals()[ONLOAD_CALLBACK] = () => undefined;
       if (api !== null) {
         resolve(api);
         return;
