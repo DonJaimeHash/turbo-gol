@@ -851,7 +851,7 @@ test('the lanes: a full signup lane (60 %) and the automatic pause stop sign-up 
 
 // ---- the routes that go, and the rename ------------------------------------------------------------------
 
-test('register, recovery-codes and the old password route answer 410 gone, to anyone; a rename is Bearer only (a legacy key asks level 2 first; a protected look-alike is refused with a suggestion)', async () => {
+test('register, recovery-codes and the old password route answer 410 gone, to anyone; an email account renames with a Bearer alone (a legacy key asks level 2 first; a protected look-alike is refused with a suggestion)', async () => {
   const { env, obj, outbox } = makeEnv();
   const ip = ips();
   const acc = await signUp(env, outbox, 'renombra@x.com', ip(0), { username: 'Renombra' });
@@ -875,4 +875,47 @@ test('register, recovery-codes and the old password route answer 410 gone, to an
   const legacy = storeAccount(obj, 'Vieja');
   const lr = await post(env, '/api/me/username', { ip: ip(3), bearer: await bearerOf(legacy, 'Vieja'), body: { username: 'VieJa2' } });
   assert.deepEqual([lr.status, lr.json.error, lr.json.level], [403, 'reauth_required', 2]);
+});
+
+test("rename (review): an account whose password signs in by its username needs fresh(2): a stolen Bearer past the window is 403 reauth_required and the owner's name still signs in; a fresh sign-in or \"confirm it's you\" renames; email and provider accounts rename with a Bearer alone", async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const rec = await A.newPasswordRecord(KEY, 2, {});
+  const login = (username, i) => post(env, '/api/auth/login', { ip: ip(i), body: { username, password: KEY, passwordV2: KEY } });
+  const rename = (bearer, username, extra = {}) => post(env, '/api/me/username', { ip: '203.0.113.200', bearer, body: { username }, ...extra });
+  const nowS = Math.floor(Date.now() / 1000);
+  // A pw_v 2 password and no verified email: every legacy account re-keyed at a sign-in since PR 4.
+  const ana = storeAccount(obj, 'AnaVieja', { pw: rec });
+  assert.equal(row(obj, ana).pw_v, 2);
+  const own = await login('AnaVieja', 0);
+  assert.equal(own.status, 200, JSON.stringify(own.json));
+  // A thief's copies of the owner's 1-hour Bearer: 11 minutes after its sign-in (a refresh keeps the
+  // sign-in's aat), one with no proof at all (a family from before levels) and one at level 1.
+  for (const extra of [{ aal: 2, aat: nowS - 11 * 60 }, {}, { aal: 1, aat: nowS }]) {
+    const r = await rename(await bearerOf(ana, 'AnaVieja', extra), 'Robado');
+    assert.deepEqual([r.status, r.json.error, r.json.level], [403, 'reauth_required', 2], JSON.stringify(extra));
+  }
+  assert.deepEqual([row(obj, ana).username, row(obj, ana).renamed_at], ['AnaVieja', 0], 'not renamed, no 30-day wait started');
+  assert.equal((await login('AnaVieja', 1)).status, 200, "the owner's own name still signs in");
+  // The owner, just signed in with the password (aal 2, aat now), renames, and the new name signs in.
+  const ren = await rename(own.json.session, 'AnaNueva');
+  assert.deepEqual([ren.status, ren.json.name], [200, 'AnaNueva'], JSON.stringify(ren.json));
+  assert.equal((await login('AnaNueva', 2)).status, 200);
+  // Past the window, "confirm it's you" with the password (POST /api/auth/reauth) makes it fresh.
+  const beto = storeAccount(obj, 'BetoViejo', { pw: await A.newPasswordRecord(KEY, 2, {}) });
+  const b0 = await login('BetoViejo', 3);
+  const cookie = '__Host-tg_rt=' + cookieOf(b0.raw, '__Host-tg_rt');
+  const stale = await bearerOf(beto, 'BetoViejo', { aal: 2, aat: nowS - 11 * 60 });
+  assert.equal((await rename(stale, 'BetoNuevo')).json.error, 'reauth_required');
+  const re = await post(env, '/api/auth/reauth', { ip: ip(3), bearer: stale, cookie, body: { password: KEY } });
+  assert.equal(re.status, 200, JSON.stringify(re.json));
+  assert.equal((await rename(re.json.session, 'BetoNuevo')).status, 200);
+  // Its name is no way in for an account with a verified email (it signs in by email) or one without
+  // a password (a provider): a Bearer alone, even with no proof in it.
+  const mail = storeAccount(obj, 'ConMail', { email: 'conmail@x.com', pw: await A.newPasswordRecord(KEY, 2, {}) });
+  assert.equal((await rename(await bearerOf(mail, 'ConMail'), 'ConMail2')).status, 200);
+  const disco = storeAccount(obj, 'Disco', { discord: '4242', pw: null });
+  assert.equal((await rename(await bearerOf(disco, 'Disco'), 'Disco2')).status, 200);
+  // A TV still never renames.
+  assert.equal((await rename(await bearerOf(beto, 'BetoNuevo', { aal: 2, aat: nowS, tv: 1 }), 'BetoTV')).json.error, 'tv_session');
 });

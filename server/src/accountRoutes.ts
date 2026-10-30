@@ -18,7 +18,8 @@
  *   POST /api/auth/recover    { username, code, passwordV2, turnstileToken } -> AccountSession + { codesLeft } + cookie
  *   POST /api/me/username     Bearer { username } -> AccountSession (new name in the token) | 409 username_taken /
  *                             name_lookalike { suggest } | 403 reauth_required { level: 2 } for a legacy password
- *                             (salted with the name: "confirm it's you" re-keys it first). Not from a TV.
+ *                             (salted with the name: "confirm it's you" re-keys it first), and without fresh(2)
+ *                             for a password that signs in by the username (no verified email). Not from a TV.
  *   GET  /api/me              Bearer (account)                  -> MeInfo
  *   POST /api/me/training     Bearer (account) { records }      -> { records }: the training records of
  *                             src/game/trainingRecords.ts merged into the account (best per pack, the
@@ -793,10 +794,16 @@ export function requirePrimary(c: Pick<RouteContext, 'session'>): SessionClaims 
 }
 
 /**
- * POST /api/me/username { username, lang? }: a full Bearer, nothing more (design §2.15, §5.3): the
- * name salts no password any more. An account whose password is still the legacy key (salted with
- * the name it has) is asked to confirm it is them first, 403 reauth_required { level: 2 }: the
- * client's "confirm it's you" with its password re-keys it (POST /api/auth/reauth), then it renames.
+ * POST /api/me/username { username, lang? }: the name salts no password any more (design §2.15,
+ * §5.3). An account that signs in by email or with a provider renames with a full Bearer, nothing
+ * more: its name is no way in. An account whose password is still the legacy key (salted with the
+ * name it has) is asked to confirm it is them first, 403 reauth_required { level: 2 }: the client's
+ * "confirm it's you" with its password re-keys it (POST /api/auth/reauth), then it renames. So is an
+ * account whose password signs in by its username (a password and no verified email, the legacy
+ * sign-in /api/auth/login and its recovery): there the name is the only sign-in name it has, so a
+ * rename by a stolen Bearer would lock the owner out of it for RENAME_EVERY_MS and free the name
+ * for someone else. It needs fresh(2), as changing an email does (R6): a typed password in the last
+ * REAUTH_WINDOW_S, which a sign-in or "confirm it's you" gives.
  * A taken name or a look-alike of a protected account is 409 with a free `suggest`.
  */
 async function rename(c: RouteContext): Promise<Response> {
@@ -806,9 +813,13 @@ async function rename(c: RouteContext): Promise<Response> {
   const b = await readJson<{ username?: unknown; lang?: unknown }>(c.request);
   const problem = usernameProblem(b?.username);
   if (problem !== null) return error(400, 'bad_username', problem);
-  const me = await accountsJson<{ name: string; legacy?: boolean }>(c.env, '/me?userId=' + encodeURIComponent(s.sub));
+  const me = await accountsJson<{ name: string; hasPassword?: boolean; emailVerified?: boolean; legacy?: boolean }>(c.env, '/me?userId=' + encodeURIComponent(s.sub));
   if (!me.ok) return pass(me.res);
   if (me.data.legacy === true) return reauthRequired(2);
+  if (me.data.hasPassword === true && me.data.emailVerified !== true) {
+    const fresh = requireFresh(c, 2);
+    if (fresh instanceof Response) return fresh;
+  }
   const r = await accountsJson<UserRef>(c.env, '/rename', { userId: s.sub, username: b?.username, lang: langOf(b?.lang) });
   if (!r.ok) return pass(r.res);
   return json(await accountSession(c.env, { ...r.data, ...scopeOf(s) }));
