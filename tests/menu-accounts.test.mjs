@@ -1483,3 +1483,14 @@ test("PERFIL (sign-in PR 9): the grace sheet right after a username's sign-in, t
   assert.match(lang, /menu\.host\.accounts\.noteLanguageChoice\(code \?\? systemLanguage\(\)\);\s*setLanguage\(code\);/);
 });
 
+test('PR 8 follow-ups in the styles: the email keypad\'s last row (0-9 and +) is one row of 11 keys, never a sixth row past a phone\'s 390 px; Edge\'s own reveal eye is hidden beside MOSTRAR', async () => {
+  const css = await readFile(new URL('../src/ui/styles/components.css', import.meta.url), 'utf8');
+  const rows = K.keypadRows('email');
+  assert.equal(rows.at(-1).length, 11, 'the digits and +');
+  for (const r of rows.slice(0, -1)) assert.ok(r.length <= 10, r);
+  const m = /\.mn-keypad\[data-kind='email'\] > \.mn-keypad-row:nth-last-child\(2\) \{\s*grid-template-columns: repeat\((\d+), minmax\(0, 1fr\)\);/.exec(css);
+  assert.ok(m, "the email keypad's last character row has a grid of its own");
+  assert.equal(Number(m[1]), rows.at(-1).length);
+  const profile = await readFile(new URL('../src/ui/styles/screens/profile.css', import.meta.url), 'utf8');
+  assert.match(profile, /\.mn-input::-ms-reveal \{\s*display: none;\s*\}/);
+});

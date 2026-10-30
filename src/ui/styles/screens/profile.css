@@ -394,6 +394,11 @@ html[data-layout='portrait'] .mn-prof-form {
   padding-inline: 0.875rem;
 }
 
+/* Edge's own reveal eye (::-ms-reveal) beside MOSTRAR: one way to show a password, the game's. */
+.mn-input::-ms-reveal {
+  display: none;
+}
+
 .mn-field-hint {
   color: var(--text-2);
   font-size: var(--t-small);
