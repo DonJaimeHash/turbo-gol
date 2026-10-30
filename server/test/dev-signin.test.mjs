@@ -392,6 +392,16 @@ test('makeAccount (helpers/accounts.mjs): an account through a provider, no pass
   assert.throws(() => makeAccount(store, 'Caro', { email: 'beto.r@example.org' }), /email taken/);
 });
 
+test("the DEV form's name rule is the server's, and PERFIL asks for it only from a page on this machine", () => {
+  const src = readFileSync(join(ROOT, 'src', 'ui', 'screens', 'profile.ts'), 'utf8');
+  const m = /const DEV_NAME = (\/.+\/);/.exec(src);
+  assert.ok(m, 'profile.ts DEV_NAME');
+  assert.equal(m[1], String(STORE.DEV_NAME_RE));
+  assert.match(src, /if \(!loopbackPage\(\)\) return null;/);
+  assert.match(src, /acc\.devSignInOffered\(\)\.then\(/);
+  assert.match(src, /secondary\('ENTRAR \(DEV\)'/);
+});
+
 /** wrangler.jsonc without its comments and trailing commas. */
 function readJsonc(file) {
   const s = readFileSync(file, 'utf8');

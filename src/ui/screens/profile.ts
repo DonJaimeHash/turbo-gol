@@ -62,6 +62,15 @@ const HOST_GUIDE = (): string => `${SOURCE_URL}/blob/main/nodes/${language() ===
 
 const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
 
+/** A dev sign-in name (server/src/accountStore.ts DEV_NAME_RE, the same rule: a test pins it). */
+const DEV_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+
+/** A page served from this machine (Vite or wrangler dev): only there does PERFIL ask whether the dev sign-in is open. */
+function loopbackPage(): boolean {
+  const host = typeof location === 'undefined' ? '' : location.hostname;
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
+}
+
 /** Longer than any lock of a sign-in (AccountsDO LOGIN_LOCK_MAX_MS): only the daily cap of an account's failures from new browsers. */
 const DAILY_CAP_MS = 15 * 60_000;
 
@@ -245,6 +254,43 @@ export function profileScreen(menu: Menu): Screen {
   };
 
   /**
+   * ENTRAR (DEV) (the sign-in design's §3.15): a name and the dev-only sign-in, shown where GET
+   * /api/config says its gate is open (DEV_AUTH=1 on a loopback Worker), which only a page served
+   * from this machine asks. Its labels are dev-only, outside the locales. Filled in place when the
+   * answer comes, so a half-typed form above it stays as it is; hidden until then (no grid gap).
+   */
+  const devBox = (): HTMLElement | null => {
+    if (!loopbackPage()) return null;
+    const box = h('div.mn-prof-dev', { hidden: true });
+    void acc.devSignInOffered().then(
+      (open) => {
+        if (!open || !box.isConnected) return;
+        const name = field('DEV', { maxLength: 32, placeholder: 'ana', enterkeyhint: 'go' });
+        const go = async (): Promise<void> => {
+          name.error(null);
+          if (!DEV_NAME.test(name.input.value.trim())) {
+            name.error('1-32: A-Z a-z 0-9 _ -');
+            return;
+          }
+          try {
+            await acc.devSignIn(name.input.value);
+            menu.toast(t('profile.hello', { name: acc.account?.name ?? '' }), 'ok');
+            void acc.fetchMe();
+            render();
+          } catch (e) {
+            name.error(errText(e));
+          }
+        };
+        onEnter([name.input], () => void go());
+        setChildren(box, h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, name.el, secondary('ENTRAR (DEV)', () => void go(), { 'data-key': 'profile-dev' })));
+        box.hidden = false;
+      },
+      () => undefined,
+    );
+    return box;
+  };
+
+  /**
    * A guest's form: the tab's, its first field focused for typing where there is a fine pointer (a
    * touch screen's tap shows the keyboard; a TV's OK on the field, reached with ▼, opens mn-keypad).
    */
@@ -285,6 +331,7 @@ export function profileScreen(menu: Menu): Screen {
       phone,
       h('div.mn-tabs.mn-prof-tabs', { role: 'tablist', 'aria-label': t('profile.heading'), 'data-nav-row': true }, hero, signIn),
       h('div.mn-prof-form', null, form),
+      devBox(),
       // The server's name for this guest, temporary (a new guest session brings a new one).
       h('p.mn-note.mn-prof-guestline', null, t('profile.guestLine', { name: playerName(menu.host.guestName()) })),
     );
