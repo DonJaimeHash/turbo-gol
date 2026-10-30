@@ -657,6 +657,10 @@ export default {
   'profile.nodeMatches': 'Matches hosted',
   'profile.nodeVersion': 'Version',
   'profile.nodeUpdate': '{version} · update it',
+  // PROFILE's switch for the public replays (replay.html); "Player N" is replay.hiddenName
+  'profile.privacy': 'PRIVACY',
+  'profile.hideReplayName': 'Hide my name in public replays',
+  'profile.hideReplayNameHelp': 'You show as "Player N" in the replay list and in the replays of your community-server matches, the ones already listed too. A copy someone opened before keeps your name for up to 3 hours.',
   'profile.community': 'COMMUNITY',
   // The Discord server speaks English
   'profile.discord': 'Discord (in English)',
@@ -1833,7 +1837,13 @@ export default {
   'profile.replays': 'Replays',
   'replay.title': 'Replays',
   'replay.heading': 'REPLAYS',
-  'replay.intro': 'Matches played on the community servers in the last 30 days.',
+  'replay.intro': 'Matches played on the community servers in the last 30 days. A match shows up one to two hours after it ends, together with the other matches of the same hour, its time rounded to the hour.',
+  // A player who hides their name in public replays (PROFILE): {n} is their seat in the match, 1-6
+  'replay.hiddenName': 'Player {n}',
+  // Over the replay of a match no other server re-simulated (casual matches are checked by sample)
+  'replay.unverifiedNotice': 'Not verified: only the community server that hosted this match vouches for it. No other server checked it.',
+  // Over a replay opened from a file on the device
+  'replay.localNotice': 'A local file: it does not come from this server, and nobody checked it.',
   'replay.back': 'Back to the game',
   'replay.loading': 'Loading…',
   'replay.empty': 'No replays yet. Play a match on a community server and it shows up here.',
