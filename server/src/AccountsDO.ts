@@ -126,6 +126,21 @@
  *                                                                     budget with /pending-create)
  *   POST /code-resend     { attempt, ip, userId? }                   -> { resendAt, resendsLeft, mail } | 410 | 429 | 503
  *   POST /mail-failed     { kind, lane }                             -> { paused, alert } (the signup lane's automatic pause)
+ *   Adding and changing the email, and the cutoff (sign-in PR 9, the design's §2.6, §2.9, §3.10):
+ *   POST /me-email        { userId, email, attempt, lang?, ip }      -> { resendAt, to, mail } | 400 bad_email / same_email
+ *                                                                     | 409 email_locked { until } | 429 | 503 (one row for any
+ *                                                                     address: M5, M7 "move" with its code, or a decoy, I6)
+ *   POST /me-email-verify { userId, attempt, code, keep?, providers?, lang? } -> MeInfo & { mail } | 400 code_wrong | 410
+ *                                                                     | 409 email_taken / move_refused
+ *   POST /email-confirm   { token, keep?, providers?, lang? }        -> { ok, name, email, mail } | 410 link_invalid | 409
+ *   POST /email-undo-peek { token }                                  -> { name, email } | 410 link_invalid
+ *   POST /email-undo      { token, pw, refresh }                     -> UserRef (level 2) | 410 link_invalid
+ *   POST /me-prefs        { userId, lang, tz }                       -> { ok } | 400 bad_prefs
+ *   GET  /legacy                                                     -> { phase, until }: LEGACY_PASSWORD_UNTIL's phase and
+ *                                                                     cutoff (meta.legacy_seen + 30 days at least); after
+ *                                                                     it /auth-begin (a username, no session) and /recover
+ *                                                                     answer 410 legacy_closed, and the daily alarm sends M10
+ *                                                                     in its last 7 days
  *   POST /account-stats   { operatorIds, trusted } (a maintainer, nodeRoutes.ts) -> AccountStats: counts and
  *                                                                     booleans only (accountStore.ts accountStats);
  *                                                                     operatorIds null = unknown (no node settings)
@@ -162,17 +177,18 @@ import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey, trustedOperatorIds } from './env';
 import { base64urlEncode, checkInternal } from './auth';
 import { AccountStore, DEV_NAME_PROBLEM } from './accountStore';
-import { CODE_TRIES } from './accountStore';
-import type { MailOrder, MailProfile, MailTokenRow } from './accountStore';
-import { FAILURES, MAIL_CAPS, RESEND, alertAfterFailures, dailyCap, laneAllows, mailDay, networkCap, pauseAfterFailures, takeSlot } from './mailCaps';
+import { CODE_TRIES, LEGACY_CLOSED, LEGACY_REMIND_MS, legacyDateOf } from './accountStore';
+import type { EmailApplied, LegacyState, MailOrder, MailProfile, MailTokenRow } from './accountStore';
+import { FAILURES, MAIL_CAPS, RESEND, alertAfterFailures, dailyCap, laneAllows, mailDay, mailKilled, networkCap, pauseAfterFailures, takeSlot } from './mailCaps';
 import type { MailLane, MailWindow, WindowCap } from './mailCaps';
-import { mailLang } from './mailTemplates';
-import type { MailLang } from './mailTemplates';
+import { mailLang, renderMail } from './mailTemplates';
+import type { MailLang, Provider } from './mailTemplates';
+import { chooseMailer, composeMail, deliver, linkOrigin } from './mail';
 import { TvCodes, tvCode } from './tvCodes';
 import type { TvWhere } from './tvCodes';
 import { sitePrefix } from './limits';
 import type { Credentials, HostCredit, LinkPendingResult, PasswordRecord, PendingIdent, PendingIdentity, ProviderEmail, ProviderTrust, RankedResultInput, RefreshGrant, ThrottleEntry } from './accountStore';
-import { emailCanon, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameKey, usernameProblem } from '../../src/net/account';
+import { emailCanon, isPlaylist, maskEmail, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import type { OAuthProvider, Playlist } from '../../src/net/account';
@@ -414,6 +430,17 @@ const CODE_RE = /^[0-9]{6}$/;
 /** A sign-up's codes, a "confirm it's you" code and an add or change of the email count their failures apart: a stranger's sign-up guesses never stop an owner's codes. */
 const CODE_CLASS: Readonly<Record<string, string>> = { signup: 'cfs', reauth: 'cfr', add_email: 'cfe', change_email: 'cfe' };
 
+/** M10s the daily alarm sends at most (the account lane's share of the day bounds it before that). */
+export const LEGACY_REMINDERS_PER_ALARM = 200;
+
+/** LEGACY_PASSWORD_UNTIL (sign-in PR 9, §3.10): a wrangler var, absent until the owner sets the cutoff. */
+type LegacyEnv = { LEGACY_PASSWORD_UNTIL?: string };
+
+/** 410 legacy_closed { until }: usernames no longer sign in (the cutoff passed), answered with no lookup. */
+function legacyClosed(until: number | null): Response {
+  return json({ ...LEGACY_CLOSED, until }, 410);
+}
+
 function codeExpired(): Response {
   return error(410, 'code_expired', 'El código caducó. Pide otro.');
 }
@@ -512,7 +539,74 @@ export class AccountsDO extends DurableObject<Env> {
     this.store.prune(this.now());
     this.store.rebuildProtectedSkeletons([...trustedOperatorIds(this.env)]);
     this.tv.sweep(this.now(), true);
+    try {
+      await this.legacyAlarm(this.now());
+    } catch {
+      console.warn('legacy reminders failed');
+    }
     await this.ctx.storage.setAlarm(Date.now() + PRUNE_EVERY_MS);
+  }
+
+  /**
+   * The username sign-in's phase now (§3.10): 'none' while LEGACY_PASSWORD_UNTIL is unset (no date),
+   * else 'grace' until the cutoff (its date at 12:00 UTC, never before 30 days after this object first
+   * saw a value: accountStore.ts legacyCutoff) and 'closed' from then on.
+   */
+  legacy(now: number): LegacyState {
+    const date = legacyDateOf((this.env as LegacyEnv).LEGACY_PASSWORD_UNTIL);
+    if (date === null) return { phase: 'none', until: null };
+    const until = this.store.legacyCutoff(date, now);
+    return { phase: now >= until ? 'closed' : 'grace', until };
+  }
+
+  /**
+   * The daily alarm's part of the cutoff: with no date, the floor's start is forgotten; in the last
+   * LEGACY_REMIND_MS before it, M10 (§4.4) to every account whose password is still the legacy key and
+   * that has a verified address, once per account and cutoff, with a reset link (30 minutes), in the
+   * account lane under each address's cap. Sent from here (no request: the alarm), only through the
+   * live mailer of a deploy (mail.ts chooseMailer, for MAIL_LINK_ORIGIN's host): off it, nothing is
+   * written or sent. What the lane leaves for tomorrow goes then.
+   */
+  async legacyAlarm(now: number): Promise<number> {
+    const L = this.legacy(now);
+    if (L.until === null) {
+      this.store.forgetLegacySeen();
+      return 0;
+    }
+    if (L.phase !== 'grace' || L.until - now > LEGACY_REMIND_MS) return 0;
+    const origin = (this.env.MAIL_LINK_ORIGIN ?? '').trim();
+    let request: Request;
+    try {
+      request = new Request(origin + '/');
+    } catch {
+      return 0;
+    }
+    const link = linkOrigin(request, this.env);
+    const mailer = chooseMailer(request, this.env, []);
+    if (link === null || !mailer.live || (await mailKilled(this.env))) return 0;
+    let sent = 0;
+    for (const userId of this.store.legacyReminderTargets(L.until, LEGACY_REMINDERS_PER_ALARM)) {
+      const p0 = this.store.mailProfile(userId);
+      if (p0 === null || p0.canon === null) continue;
+      const reset = await this.newReset();
+      const to = await this.throttleKey('to', p0.canon);
+      // ---- one step from here ----
+      const p = this.store.mailProfile(userId);
+      if (p === null || p.email === null || p.canon !== p0.canon || p.banned) continue;
+      if (this.laneRefusal('account', now) !== null) break;
+      if (this.takeCaps([{ key: to, cap: MAIL_CAPS.recipient, code: 'email_rate_limited' }], now) !== null) continue;
+      this.addReset(p, reset.nonce, reset.hash, now);
+      this.store.markReminded(userId, L.until, now);
+      this.store.mailDayCount(mailDay(now), 'account', 'sent');
+      const order: MailOrder = { to: p.email, lang: mailLang(p.lang, null), ...(p.tz ? { tz: p.tz } : {}), data: { kind: 'legacy_reminder', name: p.name, at: L.until, token: reset.token } };
+      try {
+        await deliver(mailer, composeMail(order.to, renderMail(order.data, { origin: link, lang: order.lang, ...(order.tz ? { tz: order.tz } : {}) })));
+        sent++;
+      } catch {
+        console.warn('mail_failed kind=legacy_reminder err=render');
+      }
+    }
+    return sent;
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -537,9 +631,12 @@ export class AccountsDO extends DurableObject<Env> {
         // This code stores a password record's pw_v and pw_kid as the Worker made them (accountRoutes.ts storeEnv).
         return json({ ok: true });
       case '/me': {
-        const me = this.store.me(p.get('userId') ?? '', now);
+        const me = this.store.me(p.get('userId') ?? '', now, this.legacy(now).phase === 'closed');
         return me ? json(me) : error(404, 'no_user');
       }
+      case '/legacy':
+        // The username sign-in's phase and cutoff (§3.10): the Worker's /api/config asks once per isolate and value.
+        return json(this.legacy(now));
       case '/ranked-result':
         return json(this.store.rankedResultFor(p.get('matchId') ?? '', p.get('userId') ?? '', now));
       case '/leaderboard': {
@@ -832,8 +929,216 @@ export class AccountsDO extends DurableObject<Env> {
         return this.reauthCode(b, now);
       case '/reauth-code-verify':
         return this.reauthCodeVerify(b, now);
+      // Adding and changing the email (sign-in PR 9).
+      case '/me-email':
+        return this.meEmail(b, now);
+      case '/me-email-verify':
+        return this.meEmailVerify(b, now);
+      case '/email-confirm':
+        return this.emailConfirm(b, now);
+      case '/email-undo-peek':
+        return this.emailUndoPeek(b, now);
+      case '/email-undo':
+        return this.emailUndo(b, now);
+      case '/me-prefs':
+        return this.mePrefs(b);
     }
     return null;
+  }
+
+  // ---- adding and changing the email (sign-in PR 9: the design's §2.6, §3.6, §4.4 M5 to M7, M12) -------
+
+  /**
+   * The row and the mail of an add or a change aimed at `canon` (§2.6's table), chosen from the
+   * canon's state now, for `userId`'s request: free, a hint (anyone's) or this account's own held old
+   * canon: a real row and M5 with the code to the typed address; claimed by another account that keeps
+   * a way in without it (a linked provider): a real row with `moveFrom`, and M7 "move" with the code
+   * to that account's own address; claimed by an account with no other way in: a decoy, M7 "only";
+   * held for another account's undo: a decoy, M7 "held"; a suspended owner: a decoy and no mail. The
+   * requester's answer is the same in every case (I6). `code` and `token`: the row's own (its nonce).
+   */
+  private emailPlan(userId: string, canon: string, typed: string, requestLang: string | null, now: number, code: string, token: string): { real: boolean; moveFrom: string | null; mail: MailOrder | null } {
+    const me = this.store.mailProfile(userId);
+    if (me === null) return { real: false, moveFrom: null, mail: null };
+    const st = this.store.canonState(canon, now);
+    // Its own address already (a resend after the link applied it): nothing to prove, nothing to mail.
+    if (st.kind === 'claimed' && st.userId === userId) return { real: false, moveFrom: null, mail: null };
+    if (st.kind === 'free' || st.kind === 'hint' || (st.kind === 'held' && st.userId === userId)) {
+      return { real: true, moveFrom: null, mail: { to: typed, lang: mailLang(me.lang, requestLang), data: { kind: 'verify_email', name: me.name, code, token } } };
+    }
+    const other = this.store.mailProfile(st.kind === 'claimed' || st.kind === 'held' ? st.userId : '');
+    if (other === null || other.banned) return { real: false, moveFrom: null, mail: null };
+    const lang = mailLang(other.lang, requestLang);
+    if (st.kind === 'held') return { real: false, moveFrom: null, mail: { to: st.email, lang, data: { kind: 'email_in_use', name: other.name, other: me.name, variant: 'held' } } };
+    if (other.email === null) return { real: false, moveFrom: null, mail: null };
+    const source = this.store.moveSource(other.userId);
+    if (source === null) return { real: false, moveFrom: null, mail: { to: other.email, lang, data: { kind: 'email_in_use', name: other.name, other: me.name, variant: 'only' } } };
+    return { real: true, moveFrom: other.userId, mail: { to: other.email, lang, ...(other.tz ? { tz: other.tz } : {}), data: { kind: 'email_in_use', name: other.name, other: me.name, variant: 'move', code, methods: source.ways } } };
+  }
+
+  /**
+   * POST /me-email { userId, email, attempt, lang?, ip } -> { resendAt, to, mail } (§2.6): the account's
+   * new address, proved by a code to it (M5) or, when another account holds it, by that mailbox's M7
+   * (a move code, or a notice). One row for any address (a decoy where no code may go), the account's
+   * older add / change rows superseded, the recipient's and the account's caps and the account lane
+   * counted the same either way (I6). 400 bad_email / same_email, 409 email_locked { until }, 403 banned,
+   * 429, 503.
+   */
+  private async meEmail(b: Record<string, unknown>, now: number): Promise<Response> {
+    const email = normalizeEmail(b.email);
+    const canon = emailCanon(b.email);
+    if (email === null || canon === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+    if (typeof b.userId !== 'string' || typeof b.attempt !== 'string' || !B64_43.test(b.attempt)) return error(400, 'bad_request');
+    if (this.store.emailOwner(b.userId) === null) return error(404, 'no_user');
+    const requestLang = typeof b.lang === 'string' ? b.lang : null;
+    const nonce = randomHex(16);
+    const { token, code } = await this.mailSecrets(nonce);
+    const hashes = { link: await sha256Hex(token), attempt: await sha256Hex(b.attempt), code: await codeHashOf(b.attempt, code), decoy: await sha256Hex('decoy|' + randomHex(32)) };
+    const caps: Array<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }> = [
+      { key: await this.throttleKey('to', canon), cap: MAIL_CAPS.recipient, code: 'email_rate_limited' },
+      { key: await this.throttleKey('ma', b.userId), cap: MAIL_CAPS.account, code: 'email_rate_limited' },
+    ];
+    // ---- one step from here: no await ----
+    const owner = this.store.emailOwner(b.userId);
+    if (owner === null) return error(404, 'no_user');
+    if (owner.banned) return error(403, 'banned', 'Cuenta suspendida');
+    if (owner.canon === canon) return error(400, 'same_email', 'Ese ya es tu correo.');
+    if (owner.lockedUntil > now) return json({ error: 'email_locked', message: 'Tu correo se restauró hace poco. Puedes cambiarlo otra vez en unos días.', until: owner.lockedUntil }, 409);
+    const lane = this.laneRefusal('account', now);
+    if (lane !== null) return lane;
+    const capped = this.takeCaps(caps, now);
+    if (capped !== null) return capped;
+    const plan = this.emailPlan(b.userId, canon, email, requestLang, now, code, token);
+    // A newer request supersedes the account's older ones (§1.6).
+    this.store.killMailTokens({ userId: b.userId }, ['add_email', 'change_email'], now);
+    const lang = mailLang(owner.lang, requestLang);
+    this.store.addMailToken(
+      { hash: hashes.link, nonce, purpose: owner.canon === null ? 'add_email' : 'change_email', userId: b.userId, email, canon, attemptHash: hashes.attempt, codeHash: plan.real ? hashes.code : hashes.decoy, codeExpiresAt: now + CODE_TTL_MS, payload: { lang, ...(plan.moveFrom !== null ? { moveFrom: plan.moveFrom } : {}) }, expiresAt: now + SIGNUP_LINK_TTL_MS },
+      now,
+    );
+    this.store.mailDayCount(mailDay(now), 'account', 'sent');
+    return json({ resendAt: now + RESEND.gapMs, to: email, mail: plan.mail });
+  }
+
+  /** The undo row's secrets (M6's link), made before a handler's one step (a change needs them). */
+  private async newUndo(): Promise<{ nonce: string; hash: string; token: string }> {
+    return this.newReset();
+  }
+
+  /**
+   * What an applied add, change or move mails (§2.6), each in the notice lane under its account's own
+   * cap of notices: a change, M6 to the old address with the undo link (both languages; the new one
+   * masked); a move, M12 to the address, naming both accounts (the one that lost it signs in with its
+   * providers). An add mails nothing more: its code was the proof.
+   */
+  private appliedMail(a: EmailApplied, undoToken: string, keys: { me: string; from: string | null }, providers: readonly Provider[], requestLang: unknown, now: number): MailOrder[] {
+    const out: MailOrder[] = [];
+    const me = this.store.mailProfile(a.userId);
+    if (me === null) return out;
+    // A change (a move of an account that had an address too): M6 to the old address, with the undo.
+    if (a.old !== null) {
+      const order = this.notice({ ...me, email: a.old.email }, keys.me, { kind: 'email_changed', name: me.name, masked: maskEmail(a.email), at: now, token: undoToken, providers }, requestLang, now);
+      if (order !== null) out.push(order);
+    }
+    if (a.kind === 'move' && a.from !== null && keys.from !== null) {
+      const from = this.store.mailProfile(a.from);
+      const source = this.store.moveSource(a.from);
+      if (from !== null) {
+        const order = this.notice({ ...from, email: a.email }, keys.from, { kind: 'email_moved', name: from.name, other: me.name, at: now, methods: source?.ways ?? [] }, requestLang, now);
+        if (order !== null) out.push(order);
+      }
+    }
+    return out;
+  }
+
+  /** The providers this deployment signs in with, as a request names them (M6's {providers}). */
+  private providersOf(v: unknown): Provider[] {
+    return Array.isArray(v) ? (['google', 'discord'] as const).filter((p) => v.includes(p)) : [];
+  }
+
+  /** applyEmail's refusals as answers (§2.6). */
+  private appliedRefusal(r: 'expired' | 'taken' | 'move_refused' | 'no_user', byToken: boolean): Response {
+    if (r === 'taken') return error(409, 'email_taken', 'Ese correo ya tiene una cuenta. Entra con ella.');
+    if (r === 'move_refused') return error(409, 'move_refused', 'Ese correo es la única forma de entrar a otra cuenta. Revisa el mensaje que te enviamos.');
+    if (r === 'no_user') return error(403, 'banned', 'Cuenta suspendida');
+    return byToken ? linkInvalid() : codeExpired();
+  }
+
+  /**
+   * POST /me-email-verify { userId, attempt, code, keep?, providers?, lang? } -> MeInfo & { mail } (§2.6):
+   * the code of the account's own attempt (5 tries, the address's failed codes counted apart from a
+   * sign-up's), then the add, the change or the move in one transaction (applyEmail). 400 code_wrong
+   * { triesLeft }, 410 code_expired, 409 email_taken (a race) / move_refused (the other account lost
+   * its other way in meanwhile).
+   */
+  private async meEmailVerify(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.userId !== 'string' || typeof b.attempt !== 'string' || !B64_43.test(b.attempt) || typeof b.code !== 'string' || !CODE_RE.test(b.code)) return error(400, 'bad_request');
+    const first = this.store.mailToken('attempt', await sha256Hex(b.attempt));
+    if (first === null || (first.purpose !== 'add_email' && first.purpose !== 'change_email') || first.userId !== b.userId) return codeExpired();
+    const undo = await this.newUndo();
+    const moveFrom = typeof first.payload.moveFrom === 'string' ? first.payload.moveFrom : null;
+    const keys = { me: await this.noticeKey(b.userId), from: moveFrom !== null ? await this.noticeKey(moveFrom) : null };
+    const v = await this.codeCheck(first.purpose, b.attempt, b.code, b.userId, now);
+    // ---- one step from here (codeCheck's own, then the transaction) ----
+    if (v instanceof Response) return v;
+    const r = this.store.applyEmail(v.row.hash, isHex(b.keep, 64) ? b.keep : null, undo, now);
+    if (typeof r === 'string') return this.appliedRefusal(r, false);
+    const mail = this.appliedMail(r, undo.token, keys, this.providersOf(b.providers), b.lang, now);
+    return json({ ...this.store.me(b.userId, now, this.legacy(now).phase === 'closed'), mail });
+  }
+
+  /**
+   * POST /email-confirm { token, keep?, providers?, lang? } -> { ok, name, email, mail } (§2.6): the
+   * mailed link of an add or a change (M5), opened on any device: no session needed, the link is the
+   * mailbox's proof and the row names its account. 410 link_invalid; 409 email_taken / move_refused.
+   */
+  private async emailConfirm(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.token !== 'string' || !B64_43.test(b.token)) return linkInvalid();
+    const first = this.store.mailToken('hash', await sha256Hex(b.token));
+    if (first === null || (first.purpose !== 'add_email' && first.purpose !== 'change_email') || first.userId === null) return linkInvalid();
+    const undo = await this.newUndo();
+    const moveFrom = typeof first.payload.moveFrom === 'string' ? first.payload.moveFrom : null;
+    const keys = { me: await this.noticeKey(first.userId), from: moveFrom !== null ? await this.noticeKey(moveFrom) : null };
+    // ---- one step from here ----
+    const r = this.store.applyEmail(first.hash, isHex(b.keep, 64) ? b.keep : null, undo, now);
+    if (typeof r === 'string') return this.appliedRefusal(r, true);
+    return json({ ok: true, name: r.name, email: r.email, mail: this.appliedMail(r, undo.token, keys, this.providersOf(b.providers), b.lang, now) });
+  }
+
+  /** POST /email-undo-peek { token } -> { name, email } | 410 link_invalid: whom the undo sheet is for (the address it brings back). Consumes nothing. */
+  private async emailUndoPeek(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.token !== 'string' || !B64_43.test(b.token)) return linkInvalid();
+    const r = this.store.undoRow(await sha256Hex(b.token), now);
+    const p = r === null ? null : this.store.mailProfile(r.userId as string);
+    if (r === null || p === null || p.banned) return linkInvalid();
+    return json({ name: p.name, email: r.email });
+  }
+
+  /**
+   * POST /email-undo { token, pw, refresh } -> UserRef (level 2, method 'reset') | 410 link_invalid
+   * (§2.6): M6's link gives the account back to its old address (accountStore.ts undoEmail: a new
+   * password, every device signed out, providers linked in the last 7 days unlinked, the email locked
+   * for 7 days, every pending row dead). The old address's throttles start again.
+   */
+  private async emailUndo(b: Record<string, unknown>, now: number): Promise<Response> {
+    const refresh = grantOf(b.refresh);
+    if (refresh === null || !isPw(b.pw) || typeof b.token !== 'string' || !B64_43.test(b.token)) return error(400, 'bad_request');
+    const hash = await sha256Hex(b.token);
+    const first = this.store.undoRow(hash, now);
+    if (first === null) return linkInvalid();
+    const clear = [await this.throttleKey('e', first.canon)];
+    // ---- one step from here ----
+    const r = this.store.undoEmail(hash, b.pw, { ...refresh, kind: 'web' }, now);
+    if (r === null) return linkInvalid();
+    this.store.throttleClear(clear);
+    return json(r);
+  }
+
+  /** POST /me-prefs { userId, lang, tz } -> { ok } (§2.9): the language and zone of the account's mail ('' zone: none). */
+  private mePrefs(b: Record<string, unknown>): Response {
+    const lang = langField(b.lang);
+    if (typeof b.userId !== 'string' || lang === '' || typeof b.tz !== 'string' || (b.tz !== '' && tzField(b.tz) === '')) return error(400, 'bad_prefs', 'Idioma o zona horaria inválidos');
+    return this.store.setPrefs(b.userId, lang, b.tz) ? json({ ok: true }) : error(404, 'no_user');
   }
 
   /**
@@ -1153,7 +1458,8 @@ export class AccountsDO extends DurableObject<Env> {
     if (typeof b.attempt !== 'string' || !B64_43.test(b.attempt)) return codeExpired();
     const userId = typeof b.userId === 'string' ? b.userId : null;
     const first = this.store.mailToken('attempt', await sha256Hex(b.attempt));
-    if (first === null || (first.purpose !== 'signup' && first.purpose !== 'reauth') || (first.purpose !== 'signup' && first.userId !== userId)) return codeExpired();
+    const own = first !== null && (first.purpose === 'reauth' || first.purpose === 'add_email' || first.purpose === 'change_email');
+    if (first === null || (first.purpose !== 'signup' && !own) || (first.purpose !== 'signup' && first.userId !== userId)) return codeExpired();
     const { token, code } = await this.mailSecrets(first.nonce);
     const codeHash = await codeHashOf(b.attempt, code);
     const reset = await this.newReset();
@@ -1176,18 +1482,26 @@ export class AccountsDO extends DurableObject<Env> {
     if (capped !== null) return capped;
     let mail: MailOrder | null;
     let real = true;
+    let payload: Record<string, unknown> = {};
     const lang = mailLang(null, typeof row.payload.lang === 'string' ? row.payload.lang : null);
     if (anonymous) {
       const st = this.store.canonState(row.canon, now).kind;
       real = st === 'free' || st === 'hint';
       mail = this.signupMail(row.canon, { email: row.email, lang, token, code, reset }, now);
-    } else {
+    } else if (row.purpose === 'reauth') {
       const p = this.store.mailProfile(row.userId as string);
       mail = p === null ? null : { to: row.email, lang: mailLang(p.lang, lang), data: { kind: 'reauth_code', name: p.name, code } };
+    } else {
+      // An add or a change: its mail chosen again from the canon's state now (a move code, a notice, M5).
+      const plan = this.emailPlan(row.userId as string, row.canon, row.email, lang, now, code, token);
+      real = plan.real;
+      mail = plan.mail;
+      // A move the canon's owner allows now; one it no longer allows keeps its mark (the verify then says move_refused).
+      if (plan.moveFrom !== null) payload = { moveFrom: plan.moveFrom };
     }
     // A decoy whose address is free now (its account went), or a code of a rotated key: the row takes the code this mail carries.
     const ttl = row.purpose === 'reauth' ? REAUTH_CODE_TTL_MS : CODE_TTL_MS;
-    this.store.resentMailToken(row, real && row.codeHash !== codeHash ? codeHash : null, Math.min(now + ttl, row.createdAt + CODE_MAX_MS), now);
+    this.store.resentMailToken(row, real && row.codeHash !== codeHash ? codeHash : null, Math.min(now + ttl, row.createdAt + CODE_MAX_MS), now, payload);
     this.store.mailDayCount(mailDay(now), laneName, 'sent');
     return json({ resendAt: now + RESEND.gapMs, resendsLeft: RESEND.max - row.resends - 1, mail });
   }
@@ -1232,6 +1546,12 @@ export class AccountsDO extends DurableObject<Env> {
       case '/auth-begin': {
         const who = subjectOf(b);
         if (who === null) return error(400, 'bad_request');
+        // After the cutoff a username signs in nowhere (§3.10; the Worker answers it first): only a
+        // session's own check of its password (`account`: "confirm it's you", which re-keys) goes on.
+        if ('username' in who && b.account === undefined) {
+          const L = this.legacy(now);
+          if (L.phase === 'closed') return legacyClosed(L.until);
+        }
         const { keys } = await this.checkKeys(who, b.ip, b);
         const wait = this.throttled(keys, now);
         if (wait > 0) return throttledAnswer(wait);
@@ -1312,6 +1632,8 @@ export class AccountsDO extends DurableObject<Env> {
       case '/recover': {
         const refresh = grantOf(b.refresh);
         if (typeof b.username !== 'string' || b.username.length > 64 || !isHex(b.code, 64) || !isPw(b.pw) || refresh === null) return error(400, 'bad_request');
+        const L = this.legacy(now);
+        if (L.phase === 'closed') return legacyClosed(L.until);
         const { keys, clear } = await this.checkKeys({ username: b.username }, b.ip, b);
         const wait = this.throttled(keys, now);
         if (wait > 0) return throttledAnswer(wait);
@@ -1403,7 +1725,7 @@ export class AccountsDO extends DurableObject<Env> {
         const provider = b.provider as OAuthProvider;
         if (typeof b.userId !== 'string' || !OAUTH_PROVIDERS.includes(provider)) return error(400, 'bad_request');
         const level = b.level === 1 || b.level === 2 ? b.level : 0;
-        const r = s.unlink(b.userId, provider, level);
+        const r = s.unlink(b.userId, provider, level, this.legacy(now).phase === 'closed');
         if (r === 'level2') return json({ error: 'reauth_required', message: 'Confirma que eres tú: vuelve a entrar con tu cuenta', level: 2 }, 403);
         if (r === 'last_method') return error(409, 'last_method', 'Es tu única forma de entrar: vincula otra antes');
         if (r === 'not_linked') return error(404, 'not_linked', 'Esa cuenta no está vinculada');

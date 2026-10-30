@@ -90,6 +90,11 @@
  *   POST /api/me/password(/link)        authAcct         account       10  RL_10    a PBKDF2, or a mail, and an AccountsDO write
  *   POST /api/auth/reauth/code(/verify) authAcct, and    account       10  RL_10    "confirm it's you" by a code from the
  *                                       authMail/Code    network      120  RL_120   account's mailbox
+ *   POST /api/me/email(/verify)         authAcct, and    account       10  RL_10    an add or a change of the email (sign-in
+ *                                       authMail/Code    network      120  RL_120   PR 9): a mail, or a code checked
+ *   POST /api/auth/email/confirm, email/undo(/peek)  authCode  network  120  RL_120  the mailed links of an add, a change
+ *                                                                                    and its undo (and signInSite's /48)
+ *   POST /api/me/prefs                  authAcct         account       10  RL_10    the mail's language and zone (Idioma)
  *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
  *                                       meNet            network     1200  RL_1200
  *   GET  /api/ranked/result             rankedResult     account       60  RL_60    polled every 1-3 s for two minutes after a ranked match
@@ -268,6 +273,17 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['authAcct', 'authMail'];
       case '/api/auth/reauth/code/verify':
         return ['authAcct', 'authCode'];
+      // Adding and changing the email, and the mail's language (sign-in PR 9; the design's §2.16).
+      case '/api/me/email':
+        return ['authAcct', 'authMail'];
+      case '/api/me/email/verify':
+        return ['authAcct', 'authCode'];
+      case '/api/auth/email/confirm':
+      case '/api/auth/email/undo/peek':
+      case '/api/auth/email/undo':
+        return ['authCode', 'signInSite'];
+      case '/api/me/prefs':
+        return ['authAcct'];
       case '/api/auth/password':
         return ['password'];
       case '/api/auth/recovery-codes':
