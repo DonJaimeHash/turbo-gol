@@ -108,16 +108,19 @@ export interface WindowCap {
 
 /**
  * The durable caps (design section 2.16). A network is limitKey's (env.ts): an IPv6 /64, or an
- * IPv4 address, which gets 20 times more because a school, a LAN party or a carrier's CGNAT puts
- * many players behind one; the fine work is done per address and per account.
+ * IPv4 address. Both get a crowd's numbers: a school, a LAN party or a carrier's CGNAT puts many
+ * players behind one IPv4 address, and a dual-stack school or LAN is one /64 (SLAAC), which is
+ * what Cloudflare sees there. The section's 10 an hour for a /64 stopped a class of 25 at its
+ * 11th sign-up and bound no attacker, who rotates /64s inside its /48; what binds is per address,
+ * per account, Turnstile and the day's lanes.
  */
 export const MAIL_CAPS = {
   /** Mail to one address (its canon), every kind except the notices. */
   recipient: { hour: 5, day: 10 },
   /** Security notices to one account, counted on their own. */
   notice: { day: 5 },
-  /** Mail started by anonymous routes, per network. */
-  networkV6: { hour: 10, day: 30 },
+  /** Mail started by anonymous routes, per network: an IPv6 /64 as an IPv4 address. */
+  networkV6: { hour: 200, day: 600 },
   networkV4: { hour: 200, day: 600 },
   /** Mail started by /api/me/* and reauth, per account. */
   account: { day: 10 },

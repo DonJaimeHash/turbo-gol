@@ -420,26 +420,26 @@ test('signup/finish: a reserved name is name_reserved and a protected look-alike
   assert.equal(ok.status, 200, 'the same code still works: nothing was consumed; ' + JSON.stringify(ok.json));
 });
 
-test('signup/finish: new accounts per network: 10 a day for an IPv6 /64; the same IPv4 address takes 20 (a school), far from its 200', async () => {
-  const { env, outbox } = makeEnv();
-  // Each mail from a /64 of its own (the mail caps are apart); every finish from one /64.
-  const home = (i) => `2001:db8:77:1::${i + 1}`;
-  for (let i = 0; i < 10; i++) {
-    const s = await start(env, `v6-${i}@x.com`, `2001:db8:77:${i + 10}::1`);
-    assert.equal((await finish(env, { attempt: s.json.attempt, code: codeIn(outbox.at(-1)) }, home(i))).status, 200);
-  }
-  const s = await start(env, 'v6-10@x.com', '2001:db8:77:99::1');
-  assert.equal(s.status, 200);
-  const f = await finish(env, { attempt: s.json.attempt, code: codeIn(outbox.at(-1)) }, home(10));
+test('signup/finish (review): a dual-stack school on one IPv6 /64 signs up a class of 25, as one IPv4 address does; a /64 has the IPv4 cap, 200 new accounts a day', async () => {
+  const { env, obj, outbox } = makeEnv({ EMAIL_DAILY_CAP: '1000' });
+  assert.deepEqual(ADO.NEW_ACCOUNTS, { v6: { day: 200 }, v4: { day: 200 } });
+  // 25 students, 25 addresses of one /64 (SLAAC): every mail, every code, every account.
+  for (let i = 0; i < 25; i++) await signUp(env, outbox, `alumno${i}@x.com`, `2001:db8:77:1::${(i + 1).toString(16)}`);
+  for (let i = 0; i < 25; i++) await signUp(env, outbox, `aula-${i}@x.com`, '203.0.113.77');
+  // The cap is still there, at an IPv4 address's number: a /64 with 199 accounts today takes one more.
+  const key = await obj.throttleKey('na', '2001:db8:77:2::/64');
+  obj.store.mailWindowsWrite(new Map([[key, { hour_at: Date.now(), hour_n: 0, day_at: Date.now(), day_n: 199 }]]));
+  await signUp(env, outbox, 'el200@x.com', '2001:db8:77:2::1');
+  const s = await start(env, 'el201@x.com', '2001:db8:77:2::2');
+  const f = await finish(env, { attempt: s.json.attempt, code: codeIn(outbox.at(-1)) }, '2001:db8:77:2::2');
   assert.deepEqual([f.status, f.json.error], [429, 'rate_limited']);
   assert.ok(f.json.retryAfterMs > 23 * 60 * MIN);
-  for (let i = 0; i < 20; i++) await signUp(env, outbox, `aula-${i}@x.com`, '203.0.113.77');
 });
 
 // ---- caps, lanes, the kill flag ------------------------------------------------------------------------
 
-test('mail caps: one address takes 5 mails an hour (all kinds alike, resends too); an IPv6 /64 10 anonymous mails an hour, an IPv4 address 200; refusals count nothing', async () => {
-  const { env, outbox } = makeEnv();
+test('mail caps: one address takes 5 mails an hour (all kinds alike, resends too); an IPv6 /64 and an IPv4 address 200 anonymous mails an hour each (a school on either); refusals count nothing', async () => {
+  const { env, obj, outbox } = makeEnv({ EMAIL_DAILY_CAP: '1000' });
   const ip = ips();
   const tally = [];
   for (let i = 0; i < 7; i++) tally.push((await start(env, 'bomba@x.com', ip(i))).status);
@@ -447,10 +447,17 @@ test('mail caps: one address takes 5 mails an hour (all kinds alike, resends too
   assert.equal(outbox.filter((m) => m.to === 'bomba@x.com').length, 5);
   const r = await start(env, 'bomba@x.com', ip(9));
   assert.equal(r.json.error, 'email_rate_limited');
-  const net = [];
-  for (let i = 0; i < 12; i++) net.push((await start(env, `red${i}@x.com`, `2001:db8:78:2::${i + 1}`)).status);
-  assert.deepEqual(net, [200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 429, 429]);
-  for (let i = 0; i < 40; i++) assert.equal((await start(env, `escuela${i}@x.com`, '203.0.113.78')).status, 200, 'a school behind one IPv4 address');
+  for (let i = 0; i < 30; i++) assert.equal((await start(env, `red${i}@x.com`, `2001:db8:78:2::${(i + 1).toString(16)}`)).status, 200, 'a dual-stack school on one /64');
+  for (let i = 0; i < 30; i++) assert.equal((await start(env, `escuela${i}@x.com`, '203.0.113.78')).status, 200, 'a school behind one IPv4 address');
+  // At 199 this hour, a /64 takes one more mail and then waits for the hour; forgot counts on the same window.
+  const key = await obj.throttleKey('mn', '2001:db8:78:3::/64');
+  obj.store.mailWindowsWrite(new Map([[key, { hour_at: Date.now(), hour_n: 199, day_at: Date.now(), day_n: 199 }]]));
+  assert.equal((await start(env, 'red-200@x.com', '2001:db8:78:3::1')).status, 200);
+  const full = await start(env, 'red-201@x.com', '2001:db8:78:3::2');
+  assert.deepEqual([full.status, full.json.error], [429, 'rate_limited']);
+  assert.ok(full.json.retryAfterMs > 59 * MIN);
+  const fg = await post(env, '/api/auth/forgot', { ip: '2001:db8:78:3::3', body: { email: 'red-202@x.com', lang: 'en' } });
+  assert.deepEqual([fg.status, fg.json.error], [429, 'rate_limited']);
 });
 
 test('the signup lane stops at 60 % of EMAIL_DAILY_CAP, the same for every address; the kill flag gives 503 email_paused everywhere and auth.email false', async () => {

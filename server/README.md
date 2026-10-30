@@ -415,7 +415,7 @@ own row 60 a minute per account (and 1,200 per network), the password routes and
 10, logout and refresh 1,200 per network; the email routes 120 a minute per network (`authMail`,
 `authCode`), the sign-ins 120 (`login`). The limits that bind for mail, codes and passwords are
 the AccountsDO's own, durable and exact (`src/AccountsDO.ts`, docs/online/MAIL.md): per address,
-per network (an IPv4 address 20 times an IPv6 /64's), per account, and the day's mail lanes. An IPv6 address is also counted by its /48 on those anonymous
+per network (an IPv4 address and an IPv6 /64 alike: 200 mails an hour and 600 a day, 200 new accounts a day), per account, and the day's mail lanes. An IPv6 address is also counted by its /48 on those anonymous
 routes (one machine can source a whole /48 of /64s): logout and refresh 1,200 a minute each, and
 the sign-in routes (the email sign-in and sign-up, forgot, reset, login, recover, OAuth start and
 callback) 600 together, so a

@@ -328,8 +328,13 @@ export const RESET_TTL_MS = 30 * 60_000;
 export const CODE_FAILS_PER_CANON = 10;
 /** "Confirm it's you" codes an account may ask for in 24 hours. */
 export const REAUTH_CODES_PER_DAY = 5;
-/** New accounts per network in 24 hours (section 2.2): an IPv6 /64, or an IPv4 address, 20 times more (CGNAT, schools). */
-export const NEW_ACCOUNTS: Readonly<{ v6: WindowCap; v4: WindowCap }> = { v6: { day: 10 }, v4: { day: 200 } };
+/**
+ * New accounts per network in 24 hours (section 2.2): an IPv6 /64 as an IPv4 address (a carrier's
+ * CGNAT or a school shares one address, and a dual-stack school or LAN is one /64), not the
+ * section's 10 for a /64, which a class signing up on its first day passed. Each account also
+ * needs a mailbox of its own, proved by a code.
+ */
+export const NEW_ACCOUNTS: Readonly<{ v6: WindowCap; v4: WindowCap }> = { v6: { day: 200 }, v4: { day: 200 } };
 
 /** The codes of one address: CODE_FAILS_PER_CANON failures in a day, then a day's pause (auth_throttle). */
 const CODE_FAIL_RULE: ThrottleRule = { windowMs: LOGIN_DAY_MS, free: CODE_FAILS_PER_CANON, baseMs: LOGIN_DAY_MS, maxMs: LOGIN_DAY_MS };
