@@ -1361,6 +1361,26 @@ const typeCode = (input, code) => {
   input.dispatch('input');
 };
 
+test('PR 8 follow-up: the phone\'s "sign in first" sheet offers CREATE AN ACCOUNT WITH EMAIL, which opens PERFIL\'s sign-up (the TV\'s wait kept)', async () => {
+  const TV = await import('../src/ui/screens/tvSignIn.ts');
+  await withDom(async () => {
+    const acc = { providerStarted: () => undefined, oauthUrl: () => '', signupAttempt: () => null };
+    const menu = sheetMenu(acc);
+    const opened = [];
+    menu.open = (id) => opened.push(id);
+    let dropped = 0;
+    TV.signInFirstSheet(menu, () => dropped++);
+    const labels = menu.sheet.all().filter((e) => e.tagName === 'BUTTON').map((e) => e.textContent);
+    assert.deepEqual(labels.slice(0, 3), ['SIGN IN WITH DISCORD', 'CREATE AN ACCOUNT WITH EMAIL', 'SIGN IN']);
+    menu.sheet.all().find((e) => e.tagName === 'BUTTON' && e.textContent === 'CREATE AN ACCOUNT WITH EMAIL').click();
+    await settle();
+    assert.deepEqual(opened, ['profile']);
+    assert.equal(dropped, 0, "the TV's wait is kept: the account it makes brings the code entry back");
+  });
+  const src = await readFile(new URL('../src/ui/screens/tvSignIn.ts', import.meta.url), 'utf8');
+  assert.match(fnOf(src, 'signInFirstSheet'), /label: t\('tvlink\.createEmail'\),[\s\S]{0,200}openProfileTab\(menu, 'register', null\)/, "PERFIL's sign-up tab");
+});
+
 test("an add or a change (§3.6): ENVIAR CÓDIGO asks the server, the code sheet checks the sixth digit, the toast says what changed; reauth_required hands over to \"confirm it's you\" at the server's level", async () => {
   const L = await linksModule();
   await withDom(async () => {

@@ -769,6 +769,8 @@ export default {
   'tvlink.cancel': 'CANCEL',
   'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',
   'tvlink.signIn': 'SIGN IN',
+  // "Sign in first": no account yet, make one with an email here (PROFILE's sign-up)
+  'tvlink.createEmail': 'CREATE AN ACCOUNT WITH EMAIL',
   // "Sign in on this phone first": a provider's button right there (its name in capitals); also the match sheet's
   'tvlink.signInWith': 'SIGN IN WITH {provider}',
   'tvlink.done': 'Done: the TV signs in in a moment',

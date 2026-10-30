@@ -551,6 +551,7 @@ export default {
   'tvlink.cancel': 'CANCELAR',
   'tvlink.signInFirst': 'Primero inicia sesión en este teléfono; después confirma la TV.',
   'tvlink.signIn': 'INICIAR SESIÓN',
+  'tvlink.createEmail': 'CREAR CUENTA CON CORREO',
   'tvlink.signInWith': 'ENTRAR CON {provider}',
   'tvlink.done': 'Listo: la TV entra en unos segundos',
   'tvlink.otherCode': 'OTRO CÓDIGO',
