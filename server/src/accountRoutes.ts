@@ -107,6 +107,7 @@
  * Workers WebCrypto iteration ceiling — (users.pw_kid 'p1'), or without the HMAC where the secret
  * is not set (pw_kid ''), and re-hashes a record of another pepper at its next sign-in. Hashing
  * happens here, in parallel isolates, and the single AccountsDO only stores and compares rows.
+ * Nothing logs a request body or a password field (server/test/no-secret-logs.test.mjs checks it).
  *
  * Tokens: an account session is the same HS256 session as a guest's (index.ts bearerSession) with
  * `acct: 1` and a 1 h life, the car the account drives (`car`, only when it is not the default one:
@@ -1201,7 +1202,8 @@ export async function oauthIdentity(cfg: ProviderConfig, provider: OAuthProvider
   const form = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, code_verifier: verifier, client_id: cfg.clientId, client_secret: cfg.clientSecret });
   const tr = await fetchFn(cfg.token, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form });
   if (!tr.ok) {
-    console.warn(`oauth ${provider}: token ${tr.status} ${(await tr.text()).slice(0, 200)}`);
+    // The status only: nothing of a provider's answer reaches a log line (the design's §1.5 guard 2).
+    console.warn(`oauth ${provider}: token ${tr.status}`);
     return null;
   }
   const tok = (await tr.json()) as { access_token?: unknown };
