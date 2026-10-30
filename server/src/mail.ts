@@ -272,7 +272,7 @@ export function isDevAuth(request: Request, env: Pick<Env, 'DEV_AUTH'>): boolean
 /**
  * GET /api/dev/mail: the stub's outbox, newest first, with links and codes, so local runs and
  * agents can finish a flow. 404 `not_found` whenever the gate is closed, the same answer as any
- * unknown route. (The router mounts it with the first route that sends mail.)
+ * unknown route. Mounted by accountRoutes.ts devRoute, beside the dev sign-in (POST /api/dev/signin).
  */
 export function devMailResponse(request: Request, env: Pick<Env, 'DEV_AUTH'>, outbox: readonly OutboxEntry[] = OUTBOX): Response {
   if (request.method !== 'GET' || !isDevAuth(request, env)) return error(404, 'not_found');

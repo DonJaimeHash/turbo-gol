@@ -43,8 +43,11 @@
  *                       bad tickets never touch a DO)
  *   GET  /room/:roomId  same gate with a role 'peer' ticket whose mid is the room id -> RoomDO (phase 2 signaling)
  *   GET  /api/config  -> { turnstileSiteKey: TURNSTILE_SITEKEY | null, protocol, version, region: cf.colo | 'local',
- *                        autoRegion, regions, oauth, accounts, botFillMs: the server queue's bot fill (BOT_FILL_MS) }
+ *                        autoRegion, regions, oauth, accounts, botFillMs: the server queue's bot fill (BOT_FILL_MS),
+ *                        auth: { devSignIn: the dev-only sign-in is open (mail.ts isDevAuth) } }
  *                        (no auth; the client fetches it once per page load before its first POST /api/guest)
+ *   POST /api/dev/signin, GET /api/dev/mail  the dev-only sign-in and the stub mailer's outbox (accountRoutes.ts
+ *                       devRoute): only with DEV_AUTH=1 on a loopback host, else 404 as any unknown route
  *   GET  /api/health, GET /api/time
  *   GET  /api/where     -> { edgeColo, country, city?, asn?, ip }: the Cloudflare colo that served the
  *                       request (request.cf), the client address masked to /24 (IPv6: /48); for the
@@ -84,6 +87,7 @@ import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
+import { isDevAuth } from './mail';
 import { accountGate, clientIp, isolateLimited, limiter, overLimit, subjectsOf } from './limits';
 import type { LimitName } from './limits';
 import type { RankedCheck } from './accountStore';
@@ -219,7 +223,7 @@ async function internalHeaders(env: Env, region?: string): Promise<Record<string
 function serverConfig(
   request: Request,
   env: Env,
-): { turnstileSiteKey: string | null; protocol: number; version: string; region: string; autoRegion: string; regions: typeof REGIONS; oauth: string[]; accounts: boolean; botFillMs: number } {
+): { turnstileSiteKey: string | null; protocol: number; version: string; region: string; autoRegion: string; regions: typeof REGIONS; oauth: string[]; accounts: boolean; botFillMs: number; auth: { devSignIn: boolean } } {
   const cf = request.cf;
   const colo = cf && typeof cf.colo === 'string' ? cf.colo : '';
   return {
@@ -233,6 +237,8 @@ function serverConfig(
     accounts: true,
     // When a server queue fills with bots: the menus count it down (MODOS' searching panel).
     botFillMs: BOT_FILL_MS,
+    // The sign-in design's §2.1: devSignIn = the dev-only sign-in's gate passes (mail.ts isDevAuth), PERFIL's ENTRAR (DEV).
+    auth: { devSignIn: isDevAuth(request, env) },
   };
 }
 
@@ -777,8 +783,11 @@ export default {
     let res: Response;
     try {
       const acct = path.startsWith('/api/auth/') || path === '/api/me' || path.startsWith('/api/me/') || path === '/api/leaderboard' || path === '/api/ranked/result';
+      // The dev-only routes (accountRoutes.ts devRoute) exist only behind their gate: closed, they are
+      // an unknown route (404), never counted by a limit and never near the AccountsDO.
+      const dev = path.startsWith('/api/dev/') && isDevAuth(request, env);
       let routed: Response | null = null;
-      if (acct) {
+      if (acct || dev) {
         const session = await bearerSession(request, env);
         // The account routes' limits (limits.ts accountGate), before any AccountsDO call.
         routed =

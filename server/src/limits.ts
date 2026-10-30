@@ -84,6 +84,9 @@
  *                                       leaderboardNet   network     1200  RL_1200  the board itself is cached 30 s per isolate
  *   GET  /nodes/admin/account-stats     accountStats     account       10  RL_10    a maintainer's account counts (nodeRoutes.ts): a few scans
  *                                                                                    of every account in the AccountsDO each
+ *   POST /api/dev/signin                dev              network      120  RL_120   the dev-only sign-in and the stub's outbox (accountRoutes.ts
+ *   GET  /api/dev/mail                                                               devRoute): counted only while their gate is open (DEV_AUTH=1
+ *                                                                                    on a loopback host); closed, they are an unknown route
  *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
  *   GET  /nodes/connect                 nodeConnect      network       30  RL_30    a node's control socket: one per node, reconnects back off
  *                                       nodeConnectWide  wide        1200  RL_1200  the same, per IPv6 /48 or IPv4 /24
@@ -175,6 +178,7 @@ export const LIMITS = {
   leaderboardYou: { by: 'account', isolate: 60, edge: 'RL_60' },
   leaderboardNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   accountStats: { by: 'account', isolate: 10, edge: 'RL_10' },
+  dev: { by: 'network', isolate: 120, edge: 'RL_120' },
   nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   nodeConnect: { by: 'network', isolate: 30, edge: 'RL_30' },
   nodeConnectWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
@@ -212,6 +216,8 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['sessions'];
       case '/api/auth/tv/info':
         return ['tvInfo'];
+      case '/api/dev/signin':
+        return ['dev'];
     }
     return [];
   }
@@ -221,6 +227,7 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
   if (path === '/api/auth/sessions') return ['sessions'];
   if (path === '/nodes/admin/account-stats') return ['accountStats'];
+  if (path === '/api/dev/mail') return ['dev'];
   const o = /^\/api\/auth\/oauth\/(?:google|discord)\/(start|callback)$/.exec(path);
   if (o) return [o[1] === 'start' ? 'oauthStart' : 'oauthCallback', 'signInSite'];
   return [];
