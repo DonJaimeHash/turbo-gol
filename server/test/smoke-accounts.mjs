@@ -1,11 +1,14 @@
 // End-to-end smoke of accounts, ranked and custom lobbies against a running Worker (Node 24, no
-// browser). LOCAL DEV ONLY: it registers throwaway accounts (smk_<random>) in the target's AccountsDO.
-//   cd server && npm run dev            (wrangler dev on 8787, another terminal)
+// browser). LOCAL DEV ONLY: it signs up throwaway accounts (smk_<random>) in the target's AccountsDO.
+//   cd server && npm run dev            (wrangler dev on 8787, another terminal, DEV_AUTH=1 in your
+//                                        own .dev.vars: the codes come from the stub's outbox)
 //   node server/test/smoke-accounts.mjs [--api=http://127.0.0.1:8787]
 //
 // Flow:
-//   config (accounts on, OAuth providers listed) -> register A and B (recovery codes, refresh cookie)
-//   -> wrong password 401 -> login -> refresh rotates the cookie (the old one is refused) -> /api/me
+//   config (accounts on, OAuth providers listed, auth.email) -> register is gone (410) -> A and B
+//   sign up by email (the code from GET /api/dev/mail, checked, then finished: session, refresh
+//   cookie) -> the same address again answers the same and mails M2 -> wrong password 401 -> email
+//   sign-in -> refresh rotates the cookie (the old one is refused) -> /api/me
 //   -> a guest cannot queue ranked (403) -> A and B queue ranked 1v1 together (multi-playlist body)
 //   -> both matched into the SAME server match with `ranked: true` -> both sockets Ready -> the match
 //   starts -> A quits (POST /api/leave { matchId }) = forfeit -> /api/ranked/result: B 'win', A 'loss'
@@ -16,7 +19,8 @@
 //   or join it, the casual and ranked queues refuse rules, the list tags it, a server match with the
 //   rules is refused, every room welcome carries them, a ready with the stock fingerprint is refused
 //   with physics_mismatch, the rules fingerprint on both starts the match, nothing is rated) ->
-//   recovery code resets B's password -> logout: the refresh cookie no longer works.
+//   forgot -> the reset link from the outbox resets B's password (the old one no longer signs in) ->
+//   a rename by Bearer alone -> logout: the refresh cookie no longer works.
 // Exit 0 = pass, 1 = a check failed.
 import { registerHooks } from 'node:module';
 
@@ -95,25 +99,42 @@ const cfg = await api('/api/config');
 check(cfg.status === 200 && cfg.json.accounts === true && Array.isArray(cfg.json.oauth) && Array.isArray(cfg.json.regions), 'config: accounts, oauth list, regions', { oauth: cfg.json?.oauth, autoRegion: cfg.json?.autoRegion });
 const region = 'SA';
 
-const keyA = await ACC.clientPasswordKey(userA, passA);
-const regA = await api('/api/auth/register', { body: { username: userA, password: keyA }, cookies: jarA });
-check(regA.status === 200 && regA.json.kind === 'account' && regA.json.recoveryCodes.length === 8 && jarA.get('__Host-tg_rt'), 'register A (session, 8 recovery codes, refresh cookie)', regA.status);
-const keyB = await ACC.clientPasswordKey(userB, passB);
-const regB = await api('/api/auth/register', { body: { username: userB, password: keyB }, cookies: jarB });
-check(regB.status === 200, 'register B', regB.status);
-const dup = await api('/api/auth/register', { body: { username: userA.toUpperCase(), password: keyA } });
-check(dup.status === 409 && dup.json.error === 'username_taken', 'same username (other case) -> 409', dup.status);
-const bad = await api('/api/auth/login', { body: { username: userA, password: await ACC.clientPasswordKey(userA, 'wrong password') } });
+// Sign-in PR 7: accounts are made by email. The stub mailer keeps what it "sent" for GET /api/dev/mail.
+check(cfg.json?.auth?.email === true, 'config: auth.email (the stub delivers on loopback)', cfg.json?.auth);
+const gone = await api('/api/auth/register', { body: { username: userA, passwordV2: 'a'.repeat(64) } });
+check(gone.status === 410 && gone.json?.error === 'gone', 'register is gone (410)', gone.status);
+const mailA = userA + '@example.com';
+const mailB = userB + '@example.com';
+async function outboxFor(to, kind) {
+  const r = await api('/api/dev/mail');
+  return r.json?.messages?.find((m) => m.to === to && (kind === undefined || m.kind === kind)) ?? null;
+}
+async function emailSignUp(email, username, password, cookies) {
+  const s = await api('/api/auth/signup/start', { body: { email, lang: 'es' } });
+  const m = s.status === 200 ? await outboxFor(email, 'verify_signup') : null;
+  const ck = m ? await api('/api/auth/signup/check', { body: { attempt: s.json.attempt, code: m.code } }) : null;
+  const f = ck?.status === 200 ? await api('/api/auth/signup/finish', { body: { attempt: s.json.attempt, code: m.code, username, password: await ACC.passwordKey(password), lang: 'es' }, cookies }) : null;
+  return { s, m, ck, f, json: f?.json ?? {} };
+}
+const keyA = await ACC.passwordKey(passA);
+const regA = await emailSignUp(mailA, userA, passA, jarA);
+check(regA.f?.status === 200 && regA.json.kind === 'account' && jarA.get('__Host-tg_rt'), 'email sign-up A: the code from the outbox, checked, finished (session, refresh cookie)', { start: regA.s.status, mail: !!regA.m, check: regA.ck?.status, finish: regA.f?.status ?? regA.s.json });
+const regB = await emailSignUp(mailB, userB, passB, jarB);
+check(regB.f?.status === 200, 'email sign-up B', regB.f?.status);
+const dup = await api('/api/auth/signup/start', { body: { email: mailA.toUpperCase() } });
+check(dup.status === 200 && (await outboxFor(mailA, 'signup_exists')) !== null, 'the same address again: the same answer, and M2 to the account', dup.status);
+const bad = await api('/api/auth/signin', { body: { email: mailA, password: await ACC.passwordKey('wrong password') } });
 check(bad.status === 401 && bad.json.error === 'bad_credentials', 'wrong password -> 401', bad.status);
-const login = await api('/api/auth/login', { body: { username: userA.toUpperCase(), password: keyA }, cookies: jarA });
-check(login.status === 200 && login.json.playerId === regA.json.playerId, 'login (case-insensitive username)', login.status);
+const login = await api('/api/auth/signin', { body: { email: mailA.toUpperCase(), password: keyA }, cookies: jarA });
+check(login.status === 200 && login.json.playerId === regA.json.playerId, 'email sign-in (any case)', login.status);
 const oldCookie = jarA.get('__Host-tg_rt');
 const ref = await api('/api/auth/refresh', { method: 'POST', cookies: jarA });
 check(ref.status === 200 && ref.json.session && jarA.get('__Host-tg_rt') !== oldCookie, 'refresh rotates the cookie', ref.status);
 const stale = jar();
 stale.set('__Host-tg_rt', oldCookie);
 const ref2 = await api('/api/auth/refresh', { method: 'POST', cookies: stale });
-check(ref2.status === 401, 'the rotated-out refresh token is refused', ref2.status);
+// A copy within the race window of two tabs (30 s) is 409 refresh_race; later it revokes its family (401).
+check(ref2.status === 401 || ref2.status === 409, 'the rotated-out refresh token is refused', ref2.status);
 let tokA = ref.json.session;
 const tokB = regB.json.session;
 const me = await api('/api/me', { token: tokA });
@@ -340,27 +361,25 @@ if (ex.status === 200) {
   await waitFor(() => xa.closed !== null && xb.closed !== null);
 }
 
-// ---- recovery / logout -----------------------------------------------------------------------------
-const newKeyB = await ACC.clientPasswordKey(userB, 'brand new pass ' + rnd());
-const rec = await api('/api/auth/recover', { body: { username: userB, code: regB.json.recoveryCodes[0], password: newKeyB }, cookies: jarB });
-check(rec.status === 200 && rec.json.codesLeft === 7, 'recovery code resets B', rec.json?.codesLeft);
-const oldLogin = await api('/api/auth/login', { body: { username: userB, password: keyB } });
-check(oldLogin.status === 401, 'old password no longer works', oldLogin.status);
-// Rename re-keys the password (the client key is salted with the username).
+// ---- forgot and reset (sign-in PR 7) / a rename by Bearer / logout ----------------------------------
+const fg = await api('/api/auth/forgot', { body: { email: mailB } });
+const resetMail = fg.status === 200 ? await outboxFor(mailB, 'reset') : null;
+const resetToken = resetMail?.link ? /#reset=([A-Za-z0-9_-]+)/.exec(resetMail.link)?.[1] : undefined;
+check(fg.status === 200 && fg.json.ok === true && !!resetToken, 'forgot: { ok }, and the reset link in the outbox', fg.status);
+const peek = await api('/api/auth/reset/peek', { body: { token: resetToken } });
+check(peek.status === 200 && peek.json.name === userB && peek.json.hasPassword === true, 'reset/peek: whose link it is', peek.json);
 const newPassB = 'brand new pass ' + rnd();
-const recKeyB = await ACC.clientPasswordKey(userB, newPassB);
-const recB = await api('/api/auth/recover', { body: { username: userB, code: regB.json.recoveryCodes[1], password: recKeyB }, cookies: jarB });
+const rec = await api('/api/auth/reset', { body: { token: resetToken, password: await ACC.passwordKey(newPassB) }, cookies: jarB });
+check(rec.status === 200 && rec.json.playerId === regB.json.playerId, 'reset: the new password, this browser signed in', rec.status);
+const again = await api('/api/auth/reset', { body: { token: resetToken, password: await ACC.passwordKey(newPassB) } });
+check(again.status === 410, 'a reset link works once', again.status);
+const oldLogin = await api('/api/auth/signin', { body: { email: mailB, password: await ACC.passwordKey(passB) } });
+check(oldLogin.status === 401, 'old password no longer works', oldLogin.status);
 const renamed = userB.replace('smk_', 'smr_');
-const rn = await api('/api/me/username', {
-  body: { username: renamed, password: recKeyB, newPassword: await ACC.clientPasswordKey(renamed, newPassB) },
-  token: recB.json?.session,
-  cookies: jarB,
-});
-check(rn.status === 200 && rn.json.name === renamed, 'rename (password re-keyed)', rn.status);
-const loginNew = await api('/api/auth/login', { body: { username: renamed, password: await ACC.clientPasswordKey(renamed, newPassB) } });
-check(loginNew.status === 200 && loginNew.json.playerId === regB.json.playerId, 'login with the new name and the same password', loginNew.status);
-const loginOld = await api('/api/auth/login', { body: { username: userB, password: recKeyB } });
-check(loginOld.status === 401, 'the old name is gone', loginOld.status);
+const rn = await api('/api/me/username', { body: { username: renamed }, token: rec.json?.session, cookies: jarB });
+check(rn.status === 200 && rn.json.name === renamed, 'rename by Bearer alone (the name salts no password)', rn.status);
+const loginNew = await api('/api/auth/signin', { body: { email: mailB, password: await ACC.passwordKey(newPassB) } });
+check(loginNew.status === 200 && loginNew.json.playerId === regB.json.playerId && loginNew.json.name === renamed, 'email sign-in: the new name, the new password', loginNew.status);
 const lo = await api('/api/auth/logout', { method: 'POST', cookies: jarA });
 check(lo.status === 200 && !jarA.get('__Host-tg_rt'), 'logout clears the cookie', lo.status);
 const after = jar();

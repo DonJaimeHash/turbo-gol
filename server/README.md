@@ -32,7 +32,8 @@ server/
                         and the cron's /healthz probe
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
   src/mail.ts           the mailer (docs/online/MAIL.md): chooseMailer (live only with EMAIL, MAIL_LIVE=1 and a host
-                        that is not loopback; the stub otherwise), linkOrigin, deliver, the dev outbox. Nothing calls it yet
+                        that is not loopback; the stub otherwise), linkOrigin, deliver, the dev outbox. The email
+                        accounts' routes (accountRoutes.ts) send through it, after they answer (waitUntil)
   src/mailTemplates.ts  every mail (M1-M12) in es and en, text and html; src/mailCaps.ts: lanes, caps, the kill flag
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
@@ -85,13 +86,13 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | Name | Where | Meaning |
 |---|---|---|
 | `JWT_SECRET` | secret (`.dev.vars` locally) | signs sessions, tickets and the Worker<->DO internal header |
-| `TURNSTILE_SECRET` | secret, required on a deploy | when set, `POST /api/guest` and `POST /api/auth/register` require a valid Turnstile token (outside local dev a missing secret answers 503 `turnstile_unconfigured`) |
+| `TURNSTILE_SECRET` | secret, required on a deploy | when set, `POST /api/guest`, the sign-ins (`/api/auth/signin`, the legacy `login` and `recover`), `POST /api/auth/signup/start`, `POST /api/auth/forgot` and `POST /api/auth/tv/start` require a valid Turnstile token (outside local dev a missing secret answers 503 `turnstile_unconfigured`) |
 | `TURNSTILE_SITEKEY` | var (public), paired with the secret | the widget sitekey, handed to the browser by `GET /api/config`; empty = no widget (local dev) |
-| `EMAIL` | `send_email` binding (Email Service) | the mailer's (`src/mail.ts`, the only file that reads it; [docs/online/MAIL.md](../docs/online/MAIL.md)). No `"remote": true`: `wrangler dev` then simulates it locally (a file, no mail, no login), and a deploy binds the real service. Nothing calls it yet |
-| `MAIL_LIVE` | secret, production only | `1` lets `chooseMailer` send real mail, with `EMAIL` and on a host that is not loopback (so never under `wrangler dev`); unset = the stub, which sends nothing. Never in `wrangler.jsonc`, `.dev.vars` or `.env` (a test checks the committed files) |
+| `EMAIL` | `send_email` binding (Email Service) | the mailer's (`src/mail.ts`, the only file that reads it; [docs/online/MAIL.md](../docs/online/MAIL.md)). No `"remote": true`: `wrangler dev` then simulates it locally (a file, no mail, no login), and a deploy binds the real service. The email routes send through it once `MAIL_LIVE` is set |
+| `MAIL_LIVE` | secret, production only | `1` lets `chooseMailer` send real mail, with `EMAIL` and on a host that is not loopback (so never under `wrangler dev`); unset = the stub, which sends nothing, and the email routes (sign-up, forgot, a password link, "confirm it's you" by code) answer 503 `email_unconfigured` while `/api/config` says `auth.email: false`. Never in `wrangler.jsonc`, `.dev.vars` or `.env` (a test checks the committed files) |
 | `MAIL_FROM`, `MAIL_LINK_ORIGIN` | vars | the sender (`Turbogol <no-reply@turbo-gol.com>`) and the origin of every link in a mail (`https://turbo-gol.com`; a loopback host uses its own) |
 | `EMAIL_DAILY_CAP` | var | the day's mail across all lanes (default 100): sign-up mail stops at 60 %, account mail at 90 %, notices at 100 %. Set it to 80 % of the Email Service quota |
-| `DEV_AUTH` | your own `.dev.vars` only | `1` opens the stub's outbox (`GET /api/dev/mail`, once mounted) on a loopback host; closed anywhere else whatever its value |
+| `DEV_AUTH` | your own `.dev.vars` only | `1` opens the stub's outbox (`GET /api/dev/mail`: the codes and links the stub "sent") on a loopback host; closed anywhere else whatever its value (404, as any unknown route) |
 | `email_off` | KV `FLAGS` key | `1` / `true` / `on` stops every mail lane, no deploy (see docs/online/MAIL.md) |
 | `VITE_ORIGINS` | var, optional | comma-separated allowed browser origins for CORS and WebSocket `Origin`; empty = any (`*`). Under `wrangler dev` (the Worker reached on a loopback host) a loopback page origin such as the Vite dev server on any port is always accepted, so the committed production list does not block local play |
 | `MATCH_LENGTH_SECONDS` | var | regulation length (300) |
@@ -204,7 +205,7 @@ its first deploy (local dev works with any of them):
 | `wrangler.jsonc` -> `vars.VITE_ORIGINS` | `https://<your-host>` (comma-separated if several): the origins allowed for CORS / WebSocket `Origin`; empty = any |
 | secrets `GOOGLE_CLIENT_ID` / `_SECRET`, `DISCORD_CLIENT_ID` / `_SECRET` | optional OAuth sign-in (docs/online/ACCOUNTS.md) |
 | secret `JWT_SECRET` | a long random string (`openssl rand -hex 32`) |
-| secret `TURNSTILE_SECRET` | the Turnstile **secret** of the same widget; required: without it `POST /api/guest` and `POST /api/auth/register` answer 503 outside local dev |
+| secret `TURNSTILE_SECRET` | the Turnstile **secret** of the same widget; required: without it `POST /api/guest` and every route that asks for a token (the sign-ins, the email sign-up, forgot, the TV start) answer 503 outside local dev |
 | secrets `TURN_KEY_ID`, `TURN_KEY_TOKEN` | optional (phase 2): a Realtime TURN key (dashboard -> Realtime -> TURN); without them P2P pairs that need a relay cannot connect (STUN only) |
 | `wrangler.jsonc` -> `r2_buckets`, `vars.NODE_CONTROL_PUBLIC_KEY`, `vars.NODES_PUBLIC_BASE` | community nodes (see "Community nodes"): your bucket names, your control key's public half and your origin; a deploy fails while a bound bucket does not exist, so a fork that runs no nodes may drop the two buckets |
 | `wrangler.jsonc` -> `triggers` | the nodes' health check every 5 minutes; without the node settings a run does nothing, so a fork may keep it or drop it |
@@ -410,14 +411,18 @@ school or an ISP's CGNAT puts hundreds of players behind one IPv4 address (and a
 one /64), the per-network limits are set for a crowd: 1,200 a minute on the frequent routes, 120 on
 a new guest. The account routes that call the single AccountsDO are limited before the call
 (`src/index.ts` with `limits.ts` `accountGate`): `/api/me`, `/api/ranked/result` and the leaderboard's
-own row 60 a minute per account (and 1,200 per network), password and recovery codes 10, logout
-and refresh 1,200 per network. An IPv6 address is also counted by its /48 on those anonymous
+own row 60 a minute per account (and 1,200 per network), the password routes and "confirm it's you"
+10, logout and refresh 1,200 per network; the email routes 120 a minute per network (`authMail`,
+`authCode`), the sign-ins 120 (`login`). The limits that bind for mail, codes and passwords are
+the AccountsDO's own, durable and exact (`src/AccountsDO.ts`, docs/online/MAIL.md): per address,
+per network (an IPv4 address 20 times an IPv6 /64's), per account, and the day's mail lanes. An IPv6 address is also counted by its /48 on those anonymous
 routes (one machine can source a whole /48 of /64s): logout and refresh 1,200 a minute each, and
-the five sign-in routes (login, register, recover, OAuth start and callback) 600 together, so a
+the sign-in routes (the email sign-in and sign-up, forgot, reset, login, recover, OAuth start and
+callback) 600 together, so a
 /48 gets no more than one /64 already had; IPv4 addresses are not counted by it. Logout and refresh never ask the object about a cookie that is not
 a refresh token's shape, and the leaderboard's own row is cached 15 s per account. Inside
 `src/accountRoutes.ts` main's own in-isolate limits per raw address still run after the gate:
-refresh 60, login 30, register 5, recover 10 and OAuth start 20 a minute. For a crowd behind one
+refresh 60, login 30, recover 10 and OAuth start 20 a minute (the email routes add none). For a crowd behind one
 IPv4 address (a school, a CGNAT) those are the ones that bind, not the 1,200 and 120 of the
 table; over IPv6 each device has its own address and the /64 rules bind. The table counts in
 in-isolate windows of its own, so the two never add up. The binding is approximate and per location, not one global count: a determined
