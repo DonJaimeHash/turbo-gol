@@ -160,12 +160,21 @@ su - <usuario de pruebas> -c 'cd ~/turbo-gol/nodes && node --expose-gc --import 
 ## Instalar el nodo
 
 El token lo genera el mantenedor justo antes (M11), en la consola de una pestaña de turbo-gol.com
-con la sesión de la cuenta del proyecto iniciada. La línea refresca la sesión, que trae el Bearer
-en `session` (`server/src/accountRoutes.ts:182`); tiene que correr en esa pestaña porque la cookie
-es SameSite=Strict (`:263-272`). Después pide el token:
+con la sesión de la cuenta del proyecto iniciada.
+
+1. **Primero confirma que eres tú.** `POST /nodes/tokens` pide una contraseña escrita en los
+   últimos 15 minutos (nivel 2, `MAINTAINER_FRESH_S` en `server/src/nodeRoutes.ts`): entra con el
+   correo y la contraseña, o en PERFIL › CUENTA DEL PROYECTO pulsa CONFIRMAR CON LA CONTRASEÑA y
+   escríbela. Discord no alcanza, y un código por correo tampoco: esta cuenta confirma con su
+   contraseña. Si no, el token responde 403 `reauth_required`. Cada entrada y cada confirmación
+   manda un `ALERT` al canal del equipo.
+2. **Después, en esa misma pestaña, pide el token.** La línea refresca la sesión, que trae el
+   Bearer en `session` (`accountSession` en `server/src/accountRoutes.ts`) y conserva el nivel de la
+   confirmación. Tiene que correr en esa pestaña porque la cookie es SameSite=Strict
+   (`refreshCookie`), y manda el `Origin` de la página, que las rutas `/api/auth/*` exigen:
 
 ```js
-const s = await (await fetch('/api/auth/refresh', { method: 'POST' })).json(); await (await fetch('/nodes/tokens', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + s.session }, body: JSON.stringify({ region: 'SA', name: 'sao-paulo-1' }) })).json()
+const s = await (await fetch('/api/auth/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json(); await (await fetch('/nodes/tokens', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + s.session }, body: JSON.stringify({ region: 'SA', name: 'sao-paulo-1' }) })).json()
 ```
 
 El token vence en una hora y sirve una sola vez (`control-plane/registry.ts:28`). Después, como

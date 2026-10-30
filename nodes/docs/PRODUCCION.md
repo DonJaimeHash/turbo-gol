@@ -367,14 +367,14 @@ quedan en el log.
 | M2 | **Hecho.** Aprobar los cambios de sshd y ufw | — | El endurecimiento |
 | M3 | **Hecho.** DNS de `sp1.turbo-gol.com`: A y AAAA, solo DNS | — | El certificado y la instalación |
 | M16 | Confirmar las propuestas de "Decisiones pendientes del mantenedor" (D1 a D20). El precio real del VPS ya está en `docs/online/DECISIONS.md` ([4]) | Antes del deploy de [6] | [5], [6] |
-| M4 | **Hecho (19/10/2026)**: la cuenta del proyecto existe y entra con Discord, así que su seguridad es la de esa cuenta de Discord (verificación en dos pasos). Su id va al secreto `NODE_TRUSTED_OPERATORS` (M7), no al repo. **Falta:** dos cuentas de prueba que nunca registren nodos | Antes del canary | M7, las pruebas de [6], el canary |
+| M4 | **Hecho (19/10/2026)**: la cuenta del proyecto existe y entra con Discord, así que su seguridad es la de esa cuenta de Discord (verificación en dos pasos). Desde el PR 10 de la entrada tiene además contraseña (30/10/2026), el buzón del proyecto y un `ALERT` por cada entrada (ver "La cuenta del proyecto" en los riesgos). Su id va al secreto `NODE_TRUSTED_OPERATORS` (M7), no al repo. **Falta:** dos cuentas de prueba que nunca registren nodos | Antes del canary | M7, las pruebas de [6], el canary |
 | M5 | **Hecho (19/10/2026)**: las claves de control y de releases de producción, generadas fuera de `nodes/.keys/` (que sigue siendo de desarrollo) y respaldadas en el gestor de contraseñas. La pública de releases va a P12 (`nodes/release-key.pub`) y la de control a `NODE_CONTROL_PUBLIC_KEY` (P19); las privadas, a M6 y M7, y después se borran del disco | — | P12, el deploy de [6] |
 | M6 | **Hecho (20/10/2026)**: los entornos `releases` (secreto `TGN_RELEASE_PRIVATE_KEY`) y `releases-r2` (secreto `CLOUDFLARE_R2_TOKEN`, un token solo de R2, y la variable `CLOUDFLARE_ACCOUNT_ID`), los dos solo desde tags `node-v*`, sin bypass de administrador y con DonJaimeHash como revisor | — | P14, las releases |
 | M7 | **Hecho (20/10/2026)**: los buckets `turbogol-node-replays` (sus objetos vencen a los 30 días) y `turbogol-node-releases`, y los secretos `NODE_CONTROL_PRIVATE_KEY` y `NODE_TRUSTED_OPERATORS`, cargados con `wrangler versions secret put` | — | P19, P20 |
 | M8 | **Hecho (20/10/2026)**: el token de deploy tiene acceso a R2; [3] a [8] se desplegaron juntos con `npm run deploy -- --nodes-off` (versión `6cde682b`) | — | La instalación |
 | M9 | **Hecho (20/10/2026)**: el tag `node-v0.2.0` en `138bca9`, con las dos aprobaciones (firma y subida) | — | M10 | **Hecho (20/10/2026)**: `npm run deploy` escribió el canal en 0.2.0/0.2.0 (versión `588ad3a3`) | — | M11 | **Hecho (20/10/2026)**: el token, desde una sesión de la cuenta del proyecto | — | La instalación |
 | M10 | El primer deploy que escribe el canal (P21): `npm run deploy` (`--nodes-off` ya no hace falta, y tampoco lo frena) escribe el canal en 0.2.0/0.2.0 y despliega. Comprobar con los comandos del paso 4 de "Antes de instalar el nodo", en `VPS-SAO-PAULO.md` | Después de M9, a una hora tranquila | M11 |
-| M11 | El token de registro, con la línea de consola de "Instalar el nodo" en `VPS-SAO-PAULO.md`, desde una pestaña de turbo-gol.com con la sesión de la cuenta del proyecto: refresca la sesión y hace `POST /nodes/tokens` con `{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer. Pegarlo en la línea de instalación: vale una hora y una sola vez | Justo antes de instalar | La instalación |
+| M11 | El token de registro, con la línea de consola de "Instalar el nodo" en `VPS-SAO-PAULO.md`, desde una pestaña de turbo-gol.com con la sesión de la cuenta del proyecto, después de confirmar con la contraseña en PERFIL (vale 15 minutos): refresca la sesión y hace `POST /nodes/tokens` con `{ "region": "SA", "name": "sao-paulo-1" }` y el Bearer. Pegarlo en la línea de instalación: vale una hora y una sola vez | Justo antes de instalar | La instalación |
 | M12 | **Hecho (20/10/2026)**: `node.json` copiado a la carpeta privada de la PC del mantenedor, para pasarlo al gestor de contraseñas. Falta, si se quiere, una instantánea del VPS en el panel del proveedor | — | — |
 | M13 | **Hecho (20/10/2026)**: el canal `#node-alerts` de Discord, solo del equipo (creado desde `private/discord`), y su webhook en el secreto `NODE_ALERT_WEBHOOK` | — | El canary |
 | M14 | **Hecho (20/10/2026)**: [7] y [8] desplegados con el flag apagado | — | El canary |
@@ -420,11 +420,18 @@ aviso.
 - **Instaladores sin firma.** El token de R2 puede cambiar los scripts que las instalaciones nuevas
   corren como root: va en su propio entorno (`releases-r2`), con la misma aprobación que la clave
   de firma, y la subida solo acepta los instaladores de `nodes/install/` con la clave del repo.
-- **La cuenta del proyecto.** Con su contraseña se crea un nodo de confianza: entra activo
+- **La cuenta del proyecto.** Con una sesión suya se crea un nodo de confianza: entra activo
   (`control-plane/registry.ts:371-372`), verifica sus propias ranked
   (`control-plane/scheduler.ts:96`) y sus cancelaciones cuentan como las informa
-  (`control-plane/controlPlane.ts:859-861`). Contraseña fuerte y única, un `ALERT` por cada
-  token y cada registro (P24) y un tope de 2 nodos para esa cuenta (P20).
+  (`control-plane/controlPlane.ts:859-861`). Entra con su correo y su contraseña, o con un
+  proveedor vinculado, y sus rutas de tokens y de mantenimiento piden una contraseña reciente:
+  escrita en los últimos 15 minutos, al entrar o con CONFIRMAR CON LA CONTRASEÑA en PERFIL
+  (Discord no alcanza, y un código por correo tampoco). Contraseña fuerte y única, el buzón del proyecto
+  (`proyecto@turbo-gol.com`) y no uno personal, y la cuenta conserva su contraseña y al menos dos
+  formas de entrar (no se puede desvincular por debajo de eso) y no se puede borrar. Un `ALERT`
+  por cada inicio de sesión y cada confirmación con contraseña, con el método y el país (nunca la
+  IP ni el correo), otro por cada token y cada registro (P24), y un tope de 2 nodos para esa
+  cuenta (P20).
 - **Un solo DO para todo.** Quien juega en un nodo conoce el id de la partida y el del nodo. Sin
   topes, subidas de replays o conexiones sin autenticar pueden trabar el DO, y con 60 s sin
   heartbeats se anulan partidas en curso (P19, P20).
