@@ -1078,6 +1078,8 @@ export default {
   'error.account.provider_set': 'Your account already has another account of that provider: unlink it first',
   // Unlinking the only way left to sign in
   'error.account.last_method': "It's your only way to sign in: link another one first",
+  // Unlinking from the project's maintainer account (NODE_TRUSTED_OPERATORS) what it must keep: its password and one more way in
+  'error.account.maintainer_two_ways': 'The project account needs its password and at least one other way to sign in.',
   'error.account.not_linked': "That account isn't linked",
   // A sign-in, sign-up or recovery whose anti-bot check (Turnstile) failed
   'error.account.turnstile_failed': 'Anti-bot check failed, try again',

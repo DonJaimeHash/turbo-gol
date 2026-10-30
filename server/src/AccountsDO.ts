@@ -68,6 +68,8 @@
  *   POST /unlink          { userId, provider, level }                -> { ok } | 409 last_method | 404 not_linked | 403
  *                                                                     reauth_required { level: 2 } (one way in would be
  *                                                                     left and the session is below the account's ceiling)
+ *                                                                     | 409 maintainer_two_ways (a NODE_TRUSTED_OPERATORS
+ *                                                                     account keeps its password and two ways in, §3.12)
  *   POST /rename          { userId, username, lang? }                -> UserRef | 409 username_taken { suggest } | 409
  *                                                                     name_lookalike { suggest } (the skeleton of a protected
  *                                                                     account: accountStore.ts protected_skel) | 429 too_soon
@@ -523,6 +525,8 @@ export class AccountsDO extends DurableObject<Env> {
   readonly tv = new TvCodes();
   /** The clock (tests inject their own). */
   now: () => number = () => Date.now();
+  /** NODE_TRUSTED_OPERATORS as the store last heard it (setMaintainers); null: not yet. */
+  private trustedSeen: string | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -612,6 +616,11 @@ export class AccountsDO extends DurableObject<Env> {
   override async fetch(request: Request): Promise<Response> {
     if (!this.env.JWT_SECRET) return error(500, 'no_secret');
     if (!(await checkInternal(this.env.JWT_SECRET, request))) return error(403, 'forbidden');
+    // The maintainer accounts' rules (§3.12) follow the secret as this request sees it (a change is a restart anyway).
+    if (this.trustedSeen !== (this.env.NODE_TRUSTED_OPERATORS ?? '')) {
+      this.trustedSeen = this.env.NODE_TRUSTED_OPERATORS ?? '';
+      this.store.setMaintainers(trustedOperatorIds(this.env));
+    }
     const url = new URL(request.url);
     const now = this.now();
     try {
@@ -1757,6 +1766,7 @@ export class AccountsDO extends DurableObject<Env> {
         const r = s.unlink(b.userId, provider, level, this.legacy(now).phase === 'closed');
         if (r === 'level2') return json({ error: 'reauth_required', message: 'Confirma que eres tú: vuelve a entrar con tu cuenta', level: 2 }, 403);
         if (r === 'last_method') return error(409, 'last_method', 'Es tu única forma de entrar: vincula otra antes');
+        if (r === 'maintainer_two_ways') return error(409, 'maintainer_two_ways', 'La cuenta del proyecto necesita su contraseña y al menos otra forma de entrar.');
         if (r === 'not_linked') return error(404, 'not_linked', 'Esa cuenta no está vinculada');
         if (r === 'no_user') return error(404, 'no_user');
         return json({ ok: true });

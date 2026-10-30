@@ -755,6 +755,7 @@ export default {
   'error.account.reauth_mismatch': 'Esa no es la cuenta con la que entras',
   'error.account.provider_set': 'Tu cuenta ya tiene otra cuenta de ese proveedor: desvincúlala primero',
   'error.account.last_method': 'Es tu única forma de entrar: vincula otra antes',
+  'error.account.maintainer_two_ways': 'La cuenta del proyecto necesita su contraseña y al menos otra forma de entrar.',
   'error.account.not_linked': 'Esa cuenta no está vinculada',
   'error.account.turnstile_failed': 'Falló la verificación anti-bots, inténtalo de nuevo',
   'error.account.not_owned': 'Ese auto todavía no es tuyo',
