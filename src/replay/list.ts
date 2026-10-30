@@ -1,7 +1,8 @@
 /**
  * The replay list (replay.html without ?id): the matches the community servers played in the
- * last 30 days (src/net/replays.ts), newest first, a page at a time. Every text goes in as
- * textContent: names come from players.
+ * last 30 days (src/net/replays.ts), newest hour first, a page at a time; each shows the hour it
+ * ended in (the server rounds it), never the minute. Every text goes in as textContent: names
+ * come from players (a hidden one, 'Jugador N', in this page's language: names.ts).
  */
 import { t } from '../i18n';
 import type { Key } from '../i18n';
@@ -10,7 +11,7 @@ import { fetchReplayList } from '../net/replays';
 import type { ReplayBuild, ReplayListItem } from '../net/replays';
 import { ROCKETSIM_WASM_SHA256 } from '../sim/wasm/rocketsim.sha256';
 import { TICK_RATE } from '../sim/types';
-import { playerName } from '../ui/names';
+import { replayName } from './names';
 
 type Child = Node | string | null;
 
@@ -42,8 +43,8 @@ function regionName(r: string): string {
 
 function row(m: ReplayListItem): HTMLElement {
   const team = (n: 0 | 1): HTMLElement => {
-    // A guest's server name ('Invitado 4821') in this page's language.
-    const names = m.players.filter((p) => p.team === n).map((p) => (p.bot ? `${p.name} (${t('replay.bot')})` : playerName(p.name)));
+    // A guest's server name ('Invitado 4821') and a hidden one ('Jugador 3') in this page's language.
+    const names = m.players.filter((p) => p.team === n).map((p) => (p.bot ? `${p.name} (${t('replay.bot')})` : replayName(p.name)));
     return el('div.rp-team', null, el(`span.rp-dot.${n === 0 ? 'rp-blue' : 'rp-red'}`), el('span', null, names.join(', ') || '-'));
   };
   const chips: HTMLElement[] = [
@@ -85,9 +86,9 @@ export function showList(root: HTMLElement, openFile: (f: File) => void): void {
     ),
   );
 
-  let next: number | null = null;
+  let next: string | null = null;
   let busy = false;
-  const load = async (before: number | null): Promise<void> => {
+  const load = async (before: string | null): Promise<void> => {
     if (busy) return;
     busy = true;
     more.setAttribute('disabled', '');

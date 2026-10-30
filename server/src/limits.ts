@@ -87,6 +87,17 @@
  *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
  *   GET  /nodes/connect                 nodeConnect      network       30  RL_30    a node's control socket: one per node, reconnects back off
  *                                       nodeConnectWide  wide        1200  RL_1200  the same, per IPv6 /48 or IPv4 /24
+ *   PUT  /nodes/replays/<id>            nodeReplayPut    network       60  RL_60    a node's upload, one per match (the object checks the
+ *                                                                                    signature: anyone may send junk until then)
+ *   GET  /nodes/replays/<id>            nodeReplayGet    network       60  RL_60    a verifier's download, one per job
+ *     the two above, together           nodeReplayWide   wide        1200  RL_1200
+ *   GET  /nodes/replays                 replayList       network      120  RL_120   the public replay list (anyone): only a page that
+ *                                                                                    reaches the NodeRegistryDO counts (not the isolate's
+ *                                                                                    first page, not an edge-cached page)
+ *   GET  /nodes/replays/<id>/view       replayView       network      120  RL_120   a public replay: only an edge-cache miss counts (a
+ *                                                                                    class watching the same match asks the object once)
+ *     the two above, together           replaySite       site         600  RL_600   one /48's: rotating /64s gets no more object calls
+ *   GET|POST /api/me/replay-name        replayName       account       30  RL_30    PERFIL's "hide my name in public replays"
  *
  * Limits kept where they are (in-isolate only, per minute unless stated; the object ones hold
  * across isolates because there is one object):
@@ -100,8 +111,7 @@
  *                      reads, car and claim 30 writes per account; TV start 10, poll 60, confirm 30
  *                      per /64 (tvCodes.ts ipKey), plus tvCodes' own live-code and failed-confirm caps
  *   AccountsDO         the sign-in lockouts per username and address (accountStore.ts)
- *   nodeRoutes.ts      register 5 an hour per /64, replays 60 PUT and 60 GET, status 60, the public
- *                      replay list 60 and replay view 30 per /64, mine 30 and admin 30 per account,
+ *   nodeRoutes.ts      register 5 an hour per /64, status 60, mine 30 and admin 30 per account,
  *                      tokens 10 a day per account
  *   NodeRegistryDO     register 5 an hour per /64, tokens 10 a day per account; control sockets
  *                      still to log in: 8 per address, 16 per prefix, 40 from unknown addresses and
@@ -178,6 +188,13 @@ export const LIMITS = {
   nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   nodeConnect: { by: 'network', isolate: 30, edge: 'RL_30' },
   nodeConnectWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
+  nodeReplayPut: { by: 'network', isolate: 60, edge: 'RL_60' },
+  nodeReplayGet: { by: 'network', isolate: 60, edge: 'RL_60' },
+  nodeReplayWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
+  replayList: { by: 'network', isolate: 120, edge: 'RL_120' },
+  replayView: { by: 'network', isolate: 120, edge: 'RL_120' },
+  replaySite: { by: 'site', isolate: 600, edge: 'RL_600' },
+  replayName: { by: 'account', isolate: 30, edge: 'RL_30' },
 } as const satisfies Record<string, LimitRule>;
 export type LimitName = keyof typeof LIMITS;
 
@@ -212,11 +229,14 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['sessions'];
       case '/api/auth/tv/info':
         return ['tvInfo'];
+      case '/api/me/replay-name':
+        return ['replayName'];
     }
     return [];
   }
   if (method !== 'GET') return [];
   if (path === '/api/me') return ['me', 'meNet'];
+  if (path === '/api/me/replay-name') return ['replayName'];
   if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
   if (path === '/api/auth/sessions') return ['sessions'];

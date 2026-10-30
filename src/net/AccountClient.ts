@@ -644,6 +644,18 @@ export class AccountClient {
     return this.experimentalCall('/api/me/presets/delete', { id });
   }
 
+  // ---- public replays (src/net/replays.ts) ------------------------------------------------------
+
+  /** Whether this account's name is hidden in the public replays (GET /api/me/replay-name; default false). */
+  async replayNameHidden(): Promise<boolean> {
+    return ((await this.ownCall('/api/me/replay-name')) as { hidden?: unknown } | null)?.hidden === true;
+  }
+
+  /** PERFIL's switch: hide the name ('Jugador N') in the public replays or show it again; resolves the server's state after it. */
+  async setReplayNameHidden(hidden: boolean): Promise<boolean> {
+    return ((await this.ownCall('/api/me/replay-name', { hidden })) as { hidden?: unknown } | null)?.hidden === true;
+  }
+
   // ---- cars and the hosts' shop (src/game/garage.ts; the answers: src/net/cosmetics.ts) ----------
 
   /** The account's items, the car it drives online and every car it may drive (GET /api/me/items). */

@@ -6,8 +6,10 @@
  * Safe before pretty: the replay is decoded and validated (decodeReplay) before anything runs, every
  * name goes in as text, and the viewer says when the match was played on another build (another
  * wasm or protocol than this page's) and, after running the whole match once, from when the
- * re-simulation stops matching the recording's checkpoints. Only the WebGPU renderer and the wasm
- * are created for a replay, never for the list.
+ * re-simulation stops matching the recording's checkpoints. It says "Checked against the
+ * recording" only for a match a verifier re-simulated (the view's x-replay-verified): otherwise
+ * that the server only has its node's word, or that a local file is one (names.ts replayNotice).
+ * Only the WebGPU renderer and the wasm are created for a replay, never for the list.
  *
  * Under `npm run dev` only, ?file=<path> plays a file the dev server serves (nodes/scripts/make-test-replay.mjs).
  */
@@ -16,7 +18,7 @@ import { TTL_AFTER_MATCH_SECONDS, UNLIMITED_CAP_SECONDS } from '../../nodes/shar
 import type { Replay } from '../../nodes/shared/replay';
 import { STORAGE_PREFIX } from '../brand';
 import { t } from '../i18n';
-import { replayUrl } from '../net/replays';
+import { fetchReplayView } from '../net/replays';
 import { parseQuality } from '../render/quality';
 import type { Quality } from '../render/quality';
 import { Renderer } from '../render/Renderer';
@@ -24,6 +26,8 @@ import { buildArenaMesh } from '../sim/arenaMesh';
 import { TICK_RATE } from '../sim/types';
 import { LoadingOverlay } from '../ui/LoadingOverlay';
 import { clockText, el, sameBuild, showList } from './list';
+import { replayNotice } from './names';
+import type { ReplaySource } from './names';
 import { endTickOf, scan, startPlayer } from './player';
 
 const $ = (id: string): HTMLElement => {
@@ -78,32 +82,36 @@ function fail(message: string, detail?: unknown): void {
   void overlay.hide();
 }
 
-function notice(text: string, ok: boolean): void {
+/** The notice over the replay: green and gone after 4 s, a warning that stays (hideMs null), or one gone after hideMs. */
+function notice(text: string, ok: boolean, hideMs: number | null = ok ? 4000 : null): void {
   const n = $('notice');
   n.textContent = text;
   n.classList.toggle('rp-ok', ok);
   n.classList.remove('rp-hidden');
-  if (ok) setTimeout(() => n.classList.add('rp-hidden'), 4000);
+  if (hideMs !== null) setTimeout(() => n.classList.add('rp-hidden'), hideMs);
 }
 
-async function play(source: () => Promise<Uint8Array | null>): Promise<void> {
+/** A replay's bytes and where they came from (the server's view, with its verified flag, or a file). */
+type Loaded = { bytes: Uint8Array; from: ReplaySource };
+
+async function play(source: () => Promise<Loaded | null>): Promise<void> {
   document.title = `${t('replay.title')} · Turbogol`;
   $('list').classList.add('rp-hidden');
   await overlay.show(t('replay.preparing'));
-  let bytes: Uint8Array | null;
+  let loaded: Loaded | null;
   try {
-    bytes = await source();
+    loaded = await source();
   } catch (e) {
     fail(t('replay.error'), e);
     return;
   }
-  if (bytes === null) {
+  if (loaded === null) {
     fail(t('replay.notFound'));
     return;
   }
   let r: Replay;
   try {
-    r = decodeReplay(bytes);
+    r = decodeReplay(loaded.bytes);
   } catch (e) {
     fail(t('replay.bad'), e);
     return;
@@ -132,17 +140,21 @@ async function play(source: () => Promise<Uint8Array | null>): Promise<void> {
     return;
   }
   await overlay.hide();
-  const other = !sameBuild(r.header.build);
-  if (result.divergedAt >= 0) notice(t('replay.diverged', { time: clockText(result.divergedAt) }), false);
-  else if (other) notice(t('replay.buildWarning'), false);
-  else if (result.checked > 0 && endTickOf(r) > 0) notice(t('replay.checked'), true);
+  const n = replayNotice({ divergedAt: result.divergedAt, otherBuild: !sameBuild(r.header.build), checked: result.checked, endTick: endTickOf(r), source: loaded.from, time: clockText(Math.max(0, result.divergedAt)) });
+  if (n !== null) notice(t(n.key, n.params), n.ok, n.hideMs);
 }
 
-async function fetchBytes(url: string): Promise<Uint8Array | null> {
+/** A file the dev server serves (?file=): a local file to the notice, never the server's. */
+async function fetchFile(url: string): Promise<Loaded | null> {
   const res = await fetch(url);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return new Uint8Array(await res.arrayBuffer());
+  return { bytes: new Uint8Array(await res.arrayBuffer()), from: { kind: 'file' } };
+}
+
+async function fetchServed(matchId: string): Promise<Loaded | null> {
+  const v = await fetchReplayView(matchId);
+  return v === null ? null : { bytes: v.bytes, from: { kind: 'server', verified: v.verified } };
 }
 
 function boot(): void {
@@ -160,14 +172,14 @@ function boot(): void {
     }
   }
   if (id !== null && MATCH_ID.test(id)) {
-    void play(() => fetchBytes(replayUrl(id))).catch((e: unknown) => fail(t('replay.error'), e));
+    void play(() => fetchServed(id)).catch((e: unknown) => fail(t('replay.error'), e));
   } else if (file !== null) {
     const path = file;
-    void play(() => fetchBytes(path)).catch((e: unknown) => fail(t('replay.error'), e));
+    void play(() => fetchFile(path)).catch((e: unknown) => fail(t('replay.error'), e));
   } else {
     const list = $('list');
     list.classList.remove('rp-hidden');
-    showList(list, (f) => void play(async () => new Uint8Array(await f.arrayBuffer())).catch((e: unknown) => fail(t('replay.error'), e)));
+    showList(list, (f) => void play(async () => ({ bytes: new Uint8Array(await f.arrayBuffer()), from: { kind: 'file' } })).catch((e: unknown) => fail(t('replay.error'), e)));
     void overlay.hide();
   }
 }
