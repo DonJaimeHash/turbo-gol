@@ -153,3 +153,9 @@ test('the deletion codes have their text in both languages (neutral Spanish), an
   }
   assert.doesNotMatch(Object.values({ a: es['error.account.bad_confirm'], b: es['error.account.deletion_pending'] }).join(' '), /escribí|tenés|podés/i);
 });
+
+test('a Discord or Google return with /#auth=error:deletion_pending says the deletion is pending, not a generic failure', () => {
+  assert.deepEqual(AC.parseAuthHash('#auth=error:deletion_pending'), { kind: 'error', code: 'deletion_pending' });
+  assert.equal(AC.oauthErrorText('deletion_pending'), en['error.account.deletion_pending']);
+  assert.notEqual(AC.oauthErrorText('deletion_pending'), en['auth.oauthFailed']);
+});

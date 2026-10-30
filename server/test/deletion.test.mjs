@@ -14,6 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 const WASM_STUB = 'data:text/javascript,export const createHostArena = () => { throw new Error("no wasm in this test"); };';
@@ -115,6 +116,8 @@ function makeEnv(extra = {}) {
     GOOGLE_CLIENT_SECRET: 'gsec',
     DISCORD_CLIENT_ID: 'did',
     DISCORD_CLIENT_SECRET: 'dsec',
+    // The route is open here (env.ts DELETION_OPEN; "0" in wrangler.jsonc until the terms of service).
+    DELETION_OPEN: '1',
     ...liveMail(outbox),
     ...extra,
   };
@@ -314,6 +317,33 @@ test('deletion: DELETE_GRACE (env.ts deleteGraceMs) takes whole days from 1 to 6
   const a = await signedInAccount(env, obj, 'Ana', 'ana@example.com', ip(0));
   const r = await del(env, a.session, 'Ana', ip(0));
   assert.ok(Math.abs(r.json.purgeAt - (Date.now() + 3 * DAY)) < 5_000);
+});
+
+test('deletion: closed until the terms of service (DELETION_OPEN, "0" in wrangler.jsonc): POST /api/me/delete answers 404 not_found as an unknown route and changes nothing; the way back stays live; "1" opens it', async () => {
+  const { env, obj, outbox } = makeEnv({ DELETION_OPEN: undefined });
+  const ip = ips();
+  const a = await signedInAccount(env, obj, 'Ana', 'ana@example.com', ip(0));
+  const closed = await del(env, a.session, 'Ana', ip(0));
+  assert.deepEqual([closed.status, closed.json.error], [404, 'not_found']);
+  const unknown = await post(env, '/api/me/no-such-route', { ip: ip(0), bearer: a.session });
+  assert.deepEqual([unknown.status, unknown.json.error], [404, 'not_found'], 'the same answer as a route that does not exist');
+  assert.equal(row(obj, a.id).delete_purge_at, 0, 'not pending');
+  assert.ok(count(obj, 'SELECT COUNT(*) AS n FROM refresh WHERE user_id = ?', a.id) > 0, 'still signed in');
+  assert.equal(count(obj, "SELECT COUNT(*) AS n FROM consents WHERE user_id = ? AND source = 'deletion'", a.id), 0);
+  assert.equal(outbox.length, 0, 'no M9');
+  assert.equal((await signin(env, 'ana@example.com', ip(0))).status, 200, 'signs in as ever');
+  env.DELETION_OPEN = '1';
+  const open = await del(env, a.session, 'Ana', ip(0));
+  assert.equal(open.status, 200, JSON.stringify(open.json));
+  assert.ok(row(obj, a.id).delete_purge_at > 0);
+  // Closed again (a rollback of the var): a deletion already pending can still be called off.
+  env.DELETION_OPEN = '0';
+  const c = await post(env, '/api/auth/delete/cancel', { ip: ip(0), body: { token: linkIn(outbox.at(-1), 'keep') } });
+  assert.equal(c.status, 200, JSON.stringify(c.json));
+  assert.equal(row(obj, a.id).delete_purge_at, 0);
+  // The switch: only '1' opens it, and the committed wrangler.jsonc keeps production closed.
+  for (const v of [undefined, '', '0', 'true', 1, ' 1 ', '1']) assert.equal(ENV.deletionOpen({ DELETION_OPEN: v }), v === '1' || v === ' 1 ' || v === 1, String(v));
+  assert.match(readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8'), /\n\s*"DELETION_OPEN": "0"\s*\n/, 'production keeps it closed');
 });
 
 test("deletion: M9 counts in the account's own caps (§2.16: 5 notices a day, 10 /api/me/* mails), taken before anything changes; a loop of requests and cancels with one Bearer stops at the 6th, and the day's notice lane stays for everyone else", async () => {

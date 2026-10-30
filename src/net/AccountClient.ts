@@ -231,6 +231,7 @@ export function oauthErrorText(code: string): string {
       return t('auth.pendingExpired');
     case 'wrong_account':
     case 'email_has_account':
+    case 'deletion_pending':
       return t(`error.account.${code}`);
     default:
       return t('auth.oauthFailed');

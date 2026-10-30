@@ -157,7 +157,7 @@
  * origin = PUBLIC_ORIGIN when set, else the request's own.
  */
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson, trustedOperatorIds } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, deletionOpen, error, json, readJson, trustedOperatorIds } from './env';
 import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameProblem } from '../../src/net/account';
@@ -2154,7 +2154,9 @@ async function mePrefs(c: RouteContext): Promise<Response> {
 //                                 { level } (fresh(2), capped by the account's ceiling: a Discord-only account
 //                                 without an email deletes at level 1) / tv_session / banned | 409
 //                                 maintainer_account (NODE_TRUSTED_OPERATORS) / deletion_pending { purgeAt } |
-//                                 429 / 503 when M9 cannot go (nothing changes)
+//                                 429 / 503 when M9 cannot go or the account's caps are full (nothing changes).
+//                                 Closed (404 not_found, as an unknown route) unless DELETION_OPEN=1 (env.ts):
+//                                 it opens with the terms of service and the screens that call a deletion off.
 //   POST /api/auth/delete/cancel  { token } -> { ok } | 410 link_invalid: M9's link calls the deletion off
 //   Until the purge (DELETE_GRACE days, 14), signin and login answer 409 deletion_pending { purgeAt } after
 //   the right password, and the OAuth callback /#auth=error:deletion_pending; sent again with
@@ -2163,6 +2165,8 @@ async function mePrefs(c: RouteContext): Promise<Response> {
 
 /** POST /api/me/delete { confirm, lang? } (§2.10): the AccountsDO decides the level the account needs (its ceiling) and every refusal. */
 async function meDelete(c: RouteContext): Promise<Response> {
+  // Until the terms of service and their screens (env.ts DELETION_OPEN): the answer of a route that does not exist.
+  if (!deletionOpen(c.env)) return error(404, 'not_found');
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
   const b = await readJson<{ confirm?: unknown; lang?: unknown }>(c.request);

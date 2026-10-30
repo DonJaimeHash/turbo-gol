@@ -56,6 +56,14 @@ export interface Env {
    * whole number from 1 to 60.
    */
   DELETE_GRACE?: string | number;
+  /**
+   * Var: '1' opens POST /api/me/delete (sign-in PR 12; deletionOpen). Anything else ("0" in
+   * wrangler.jsonc) answers it 404 not_found, as before the route existed, until the terms of service
+   * ship with PERFIL's button and the screens that call a deletion off (M9's keep sheet, the
+   * deletion_pending prompt). The cancel route, the sign-in branches and the purge stay live: with no
+   * request, they have nothing to do.
+   */
+  DELETION_OPEN?: string;
   /** `.dev.vars` only: '1' opens the dev-only routes (the dev sign-in, the stub's outbox) on a loopback host, never elsewhere. */
   DEV_AUTH?: string;
   FLAGS: KVNamespace;
@@ -169,6 +177,11 @@ export function deleteGraceMs(env: Pick<Env, 'DELETE_GRACE'>): number {
   const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\s*\d{1,2}\s*$/.test(raw) ? Number(raw) : NaN;
   const days = Number.isInteger(n) && n >= 1 && n <= 60 ? n : DELETE_GRACE_DEFAULT_DAYS;
   return days * 24 * 60 * 60_000;
+}
+
+/** DELETION_OPEN is '1': POST /api/me/delete takes requests (else 404 not_found). */
+export function deletionOpen(env: Pick<Env, 'DELETION_OPEN'>): boolean {
+  return String(env.DELETION_OPEN ?? '').trim() === '1';
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
