@@ -286,11 +286,12 @@ test('pepper: a record of before it (pw_kid \'\') is re-hashed at its next sign-
   assert.deepEqual([row(obj, leo.id).pw_v, row(obj, leo.id).pw_kid], [2, 'p1'], 'a legacy record: re-keyed and peppered in one step');
 });
 
-test('pepper: the dummy stage (an unknown username, an account without a password, a wrong one) runs exactly a real record\'s stage: one HMAC of the key with the pepper, one PBKDF2 at 100,000 over 16 bytes', async () => {
+test('pepper: the dummy stage (an unknown username, an account without a password, a wrong one) runs exactly a real record\'s stage: the HMAC of the key with the pepper and PBKDF2 at 100,000 over 16 bytes, twice for a proof with both keys whatever the record', async () => {
   const { env, obj } = makeEnv({ PASSWORD_PEPPER: PEPPER });
   const ip = ips();
   const k = await keysOf('Real');
   obj.store.register('Real', await A.newPasswordRecord(k.v2, 2, env), [], H('1'), Date.now());
+  obj.store.register('Viejo', await A.newPasswordRecord(k.v1, 1, env), [], H('2'), Date.now());
   const o = await oauth(env, 'discord', 'd-solo', { ip: ip(9) });
   const oauthName = (await refresh(env, o.rt, ip(9))).json.name;
   const stored = obj.store.credentials('Real');
@@ -315,7 +316,8 @@ test('pepper: the dummy stage (an unknown username, an account without a passwor
       return seen.filter((s) => s !== 'pbkdf2:200000:0');
     };
     const real = await stage('Real');
-    assert.deepEqual(real, ['hmac(key)', 'pbkdf2:100000:16'], 'a wrong password on a real record');
+    assert.deepEqual(real, ['hmac(key)', 'pbkdf2:100000:16', 'hmac(key)', 'pbkdf2:100000:16'], 'a wrong password on a real record: its check, then a second stage (both keys came)');
+    assert.deepEqual(await stage('Viejo'), real, 'a legacy record: both keys checked');
     assert.deepEqual(await stage('nadie-existe'), real, 'an unknown username');
     assert.deepEqual(await stage(oauthName), real, 'an account without a password');
   } finally {
@@ -556,4 +558,37 @@ test('a TV\'s /api/me leaves out the email and the hint; the phone\'s keeps them
   assert.equal(onTv.json.name, 'Ana', 'the rest as before');
   const onPhone = await req(env, 'GET', '/api/me', { ip: ip(0), bearer: phone.json.session });
   assert.deepEqual([onPhone.json.email, onPhone.json.emailHint], ['ana@example.org', 'ana@discord.example']);
+});
+
+// ---- the minutes of a deploy (an object or an isolate still on the code of before) ----------------
+
+test('deploy window: a current key an AccountsDO of before stored as legacy (pw_v 1) still signs in and is relabelled; a Worker of before is understood both ways', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  // An AccountsDO still on the code of before labels every password it stores pw_v 1, a current key too.
+  const k = await keysOf('Nueva');
+  const id = obj.store.register('Nueva', await A.newPasswordRecord(k.v2, 2), [], H('4'), Date.now()).userId;
+  obj.store.sql.exec('UPDATE users SET pw_v = 1 WHERE id = ?', id);
+  const r = await login(env, { username: 'Nueva', password: k.v1, passwordV2: k.v2 }, ip(0));
+  assert.equal(r.status, 200, 'its owner signs in: ' + JSON.stringify(r.json));
+  assert.equal(row(obj, id).pw_v, 2, 'and the sign-in stores it under its right label');
+  assert.equal((await login(env, { username: 'Nueva', password: k.v1 }, ip(1))).status, 401, 'from then on as any current record');
+  // The answer of an AccountsDO of before has no pwV: its hashes are all legacy.
+  const leg = await legacyAccount(obj, 'Antiguo');
+  const oldShape = (name) => {
+    const c = obj.store.credentials(name);
+    delete c.pwV;
+    delete c.v;
+    delete c.emailVerified;
+    return c;
+  };
+  assert.equal(await A.provePassword({}, oldShape('Antiguo'), { v1: leg.v1, v2: leg.v2 }), true, 'a legacy hash, checked with the legacy key');
+  // A Worker of before sends no `proved` and never a re-key: its sign-in still goes through; a re-key never comes without one.
+  const headers = { [AUTH.INTERNAL_HEADER]: await AUTH.internalSecret(SECRET), 'content-type': 'application/json' };
+  const finish = (extra) => obj.fetch(new Request('https://accounts/auth-finish', { method: 'POST', headers, body: JSON.stringify({ userId: leg.id, username: 'Antiguo', ip: '198.19.250.1', ok: true, refresh: H('9'), ...extra }) }));
+  assert.equal((await finish({})).status, 200, 'a body of before: signed in as then');
+  const before = row(obj, leg.id).pw_hash;
+  const sneaky = await finish({ refresh: H('8'), rekey: await A.newPasswordRecord(WRONG, 2) });
+  assert.equal(sneaky.status, 401, 'a re-key without the hash it proved is refused');
+  assert.deepEqual([row(obj, leg.id).pw_hash, row(obj, leg.id).pw_v], [before, 1], 'and stores nothing');
 });

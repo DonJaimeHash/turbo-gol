@@ -13,8 +13,9 @@
  *     `device`: { user, id } of this browser's device cookie (accountRoutes.ts deviceOf, its MAC
  *     checked): it signed in to that account before (the 'd:' counter, not the username's cap).
  *     `proved`: the hash the Worker checked the password against, which must still be the stored
- *     one; `rekey`: the password stored again with it (the legacy key re-keyed to the current one,
- *     or re-hashed with the current pepper), in the sign-in's transaction.
+ *     one (a body without it, from a Worker of before in the minutes of a deploy, stores nothing);
+ *     `rekey`: the password stored again with it (the legacy key re-keyed to the current one, or
+ *     re-hashed with the current pepper), in the sign-in's transaction.
  *   POST /refresh         { old, oldFamily?, next }                  -> UserRef | 401 bad_refresh | 401 refresh_reused
  *                                                                     (the family revoked) | 409 refresh_race (two tabs)
  *   POST /refresh-owner   { hash }                                   -> UserRef & { kind, device } | 404
@@ -218,6 +219,16 @@ function isPw(v: unknown): v is PasswordRecord {
  */
 function oauthLevel(v: unknown): 0 | 1 {
   return v === 1 ? 1 : 0;
+}
+
+/**
+ * The password a sign-in or a re-authentication proved is still the stored one (`stored`): the
+ * body's `proved` names the hash the Worker checked. A re-key needs it; without one, a body from a
+ * Worker of before `proved` (the minutes of a deploy) passes as it did then, and stores nothing.
+ */
+function provedStill(b: Record<string, unknown>, stored: string | null, rekey: PasswordRecord | null): boolean {
+  if (b.proved === undefined) return rekey === null;
+  return typeof b.proved === 'string' && b.proved === stored;
 }
 
 /** A body's optional `rekey`: null when absent, undefined when malformed. */
@@ -446,7 +457,7 @@ export class AccountsDO extends DurableObject<Env> {
         }
         // The hash the Worker checked must still be the account's: a password changed meanwhile wins,
         // and a re-key never writes an older password back over it.
-        if (typeof b.proved !== 'string' || s.passwordHash(b.userId) !== b.proved) {
+        if (!provedStill(b, s.passwordHash(b.userId), rekey)) {
           this.fail(keys, now);
           return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
         }
@@ -547,7 +558,7 @@ export class AccountsDO extends DurableObject<Env> {
         const rekey = rekeyOf(b.rekey);
         if (typeof b.userId !== 'string' || !isHex(b.hash, 64) || rekey === undefined) return error(400, 'bad_request');
         const pa = await this.throttleKey('pa', b.userId);
-        if (typeof b.proved !== 'string' || s.passwordHash(b.userId) !== b.proved) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
+        if (!provedStill(b, s.passwordHash(b.userId), rekey)) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
         const r = s.markFresh(b.userId, b.hash, now, rekey);
         if (r === null) return error(401, 'no_refresh');
         s.throttleClear([pa]);

@@ -283,14 +283,34 @@ export interface PasswordProof {
   v2?: string;
 }
 
-/** The proof checks against the account's stored password (the dummy stage when it has none, or the proof lacks its key). */
+/** The record's client key version: an AccountsDO still on the code of before (the minutes of a deploy) names none, and all its hashes are legacy. */
+function pwVOf(cred: Credentials): number {
+  return typeof cred.pwV === 'number' ? cred.pwV : cred.hash ? 1 : 0;
+}
+
+/**
+ * The proof checks against the account's stored password (the dummy stage when it has none, or the
+ * proof lacks its key). A failure of a proof that carries both keys pays a second stage, so the
+ * time is the same whatever the record: for a legacy record it is a real check of the current key.
+ * That one passes only for a current key stored under pw_v 1, which an AccountsDO still on the
+ * code of before writes in the minutes of a deploy (its sign-up, recovery and password change label
+ * every record legacy): its owner still signs in, and the sign-in re-keys it under the right label.
+ */
 export async function provePassword(env: PepperEnv, cred: Credentials, proof: PasswordProof): Promise<boolean> {
-  const key = cred.pwV === 2 ? proof.v2 : cred.pwV === 1 ? proof.v1 : undefined;
+  const pwV = pwVOf(cred);
+  const key = pwV === 2 ? proof.v2 : pwV === 1 ? proof.v1 : undefined;
+  const both = proof.v1 !== undefined && proof.v2 !== undefined;
+  const filler = proof.v2 ?? proof.v1 ?? DUMMY_SALT + DUMMY_SALT;
   if (!cred.hash || key === undefined) {
-    await dummyStage(proof.v2 ?? proof.v1 ?? DUMMY_SALT + DUMMY_SALT, env);
+    await dummyStage(filler, env);
+    if (both) await dummyStage(filler, env);
     return false;
   }
-  return verifyPassword(key, cred, env);
+  if (await verifyPassword(key, cred, env)) return true;
+  if (!both) return false;
+  if (pwV === 1) return verifyPassword(proof.v2 as string, cred, env);
+  await dummyStage(filler, env);
+  return false;
 }
 
 /**
@@ -299,10 +319,11 @@ export async function provePassword(env: PepperEnv, cred: Credentials, proof: Pa
  * deployment's is re-hashed with it (pw_kid '' once PASSWORD_PEPPER is set).
  */
 export async function rekeyFor(env: PepperEnv, cred: Credentials, proof: PasswordProof): Promise<PasswordRecord | null> {
-  if (cred.pwV === 1 && proof.v2 !== undefined) return newPasswordRecord(proof.v2, 2, env);
+  const pwV = pwVOf(cred);
+  if (pwV === 1 && proof.v2 !== undefined) return newPasswordRecord(proof.v2, 2, env);
   if ((cred.kid ?? '') === currentKid(env)) return null;
-  const key = cred.pwV === 2 ? proof.v2 : proof.v1;
-  return key === undefined ? null : newPasswordRecord(key, cred.pwV === 2 ? 2 : 1, env);
+  const key = pwV === 2 ? proof.v2 : proof.v1;
+  return key === undefined ? null : newPasswordRecord(key, pwV === 2 ? 2 : 1, env);
 }
 
 /** 'XXXX-XXXX' (40 bits each). */
@@ -612,7 +633,8 @@ async function checkPassword(c: RouteContext, username: string, proof: PasswordP
     return { ok: false, res: error(401, 'bad_credentials', BAD_CREDENTIALS) };
   };
   if (!begin.data.found) {
-    await dummyStage(proof.v2 ?? proof.v1 ?? DUMMY_SALT + DUMMY_SALT, c.env);
+    // The stages of an account without a password: the same time as any refusal.
+    await provePassword(c.env, { userId: '', username, banned: false, pwV: 0, emailVerified: false }, proof);
     return failed();
   }
   const cred = begin.data as Credentials;
@@ -828,7 +850,7 @@ async function rename(c: RouteContext): Promise<Response> {
     const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
     if (!chk.ok) return chk.res;
     proved = chk.cred.hash;
-    legacy = chk.cred.pwV === 1;
+    legacy = pwVOf(chk.cred) === 1;
     if (legacy) {
       if (proof.v2 === undefined && !isClientKey(b?.newPassword)) return passwordRequired();
       pw = proof.v2 !== undefined ? await newPasswordRecord(proof.v2, 2, c.env) : await newPasswordRecord(b?.newPassword as string, 1, c.env);
@@ -1290,7 +1312,7 @@ async function reauth(c: RouteContext): Promise<Response> {
   if (!chk.ok) return chk.res;
   if (chk.cred.userId !== s.sub) return error(401, 'bad_credentials', BAD_CREDENTIALS);
   // Only a proof that carried both keys can re-key: alone, `password` may be a page's legacy key.
-  const rekey = await rekeyFor(c.env, chk.cred, both ? proof : chk.cred.pwV === 2 ? { v2: b.password } : { v1: b.password });
+  const rekey = await rekeyFor(c.env, chk.cred, both ? proof : pwVOf(chk.cred) === 2 ? { v2: b.password } : { v1: b.password });
   const r = await accountsJson<UserRef>(c.env, '/reauth', { userId: s.sub, hash: await sha256Hex(token), proved: chk.cred.hash, ...(rekey !== null ? { rekey } : {}) });
   if (!r.ok) return pass(r.res);
   return json(await accountSession(c.env, r.data), 200, { 'cache-control': 'no-store' });
