@@ -64,7 +64,10 @@
  *   auth_throttle    durable failure counters; mail_rate, mail_day: the mail caps and the day's lanes
  *   deleted_ids      ids of purged accounts: freshId never hands one out again (nodes are keyed by it)
  *   sanction_marks   a ban or abandon penalty that outlives a purge; protected_skel: names to protect
- *   meta             schema_version (absent = 1), legacy_seen
+ *   meta             schema_version (absent = 1), legacy_seen (when LEGACY_PASSWORD_UNTIL was first seen)
+ *   legacy_reminders M10 went to this account for this cutoff (sign-in PR 9)
+ * Sign-in PR 9 writes the email of an account (applyEmail: an add, a change with its 7-day undo and
+ * hold, a move from another account) and takes a change back (undoEmail).
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
@@ -173,8 +176,58 @@ export interface NewMailToken {
   attemptHash: string | null;
   codeHash: string | null;
   codeExpiresAt: number;
-  payload: { lang?: string };
+  /** `moveFrom`: an add or a change aimed at another account's address, which keeps a way in without it (the move, §3.6). */
+  payload: { lang?: string; moveFrom?: string };
   expiresAt: number;
+}
+
+// ---- adding and changing the email, and the legacy cutoff (sign-in PR 9: §2.6, §3.6, §3.10) -----------
+
+/** How long an email change's undo lasts (M6's link), and its hold of the old canon (email_holds). */
+export const EMAIL_UNDO_MS = 7 * DAY_MS;
+/** After an undo, the email cannot change again for this long (email_locked_until). */
+export const EMAIL_LOCK_MS = 7 * DAY_MS;
+/** A provider linked this recently goes at an undo (whoever changed the email may have linked it). */
+export const UNDO_UNLINK_MS = 7 * DAY_MS;
+/** The legacy cutoff's floor: at least this long after the server first sees LEGACY_PASSWORD_UNTIL (§3.10). */
+export const LEGACY_FLOOR_MS = 30 * DAY_MS;
+/** M10, the reminder of the cutoff, goes this long before it. */
+export const LEGACY_REMIND_MS = 7 * DAY_MS;
+
+/**
+ * LEGACY_PASSWORD_UNTIL (a wrangler var, an ISO date such as '2027-01-15') as a time: that day at
+ * 12:00 UTC, the same date in the Americas and in Spain; null when absent or not a real date (the
+ * phase is then 'none': usernames keep signing in, with no date).
+ */
+export function legacyDateOf(v: unknown): number | null {
+  if (typeof v !== 'string') return null;
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/.exec(v);
+  if (m === null) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = Date.UTC(y, mo - 1, d, 12);
+  const back = new Date(t);
+  return back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d ? t : null;
+}
+
+/** 410 legacy_closed's body (with its `until`): usernames no longer sign in, answered with no lookup (§3.16). */
+export const LEGACY_CLOSED = { error: 'legacy_closed', message: 'Ya no se puede entrar con usuario. Si tu cuenta tiene correo, entra con el correo y tu contraseña.' } as const;
+
+/** The username sign-in's phase (GET /api/config auth.legacy, §2.1) and its cutoff (ms), null while no date is set. */
+export interface LegacyState {
+  phase: 'none' | 'grace' | 'closed';
+  until: number | null;
+}
+
+/** What an applied add, change or move did (applyEmail), for the mail after it. */
+export interface EmailApplied {
+  userId: string;
+  name: string;
+  kind: 'add' | 'change' | 'move';
+  email: string;
+  /** A change: the address it replaced (M6 goes there, with the undo), held for EMAIL_UNDO_MS. */
+  old: { email: string; canon: string } | null;
+  /** A move: the account that lost the address (M12 names it; it keeps its sessions and providers). */
+  from: string | null;
 }
 
 /** What a mail to or about an account needs (mailTemplates.ts {name}, {methods}, the language and the zone). */
@@ -579,6 +632,8 @@ export class AccountStore {
     s.exec('CREATE TABLE IF NOT EXISTS loadout (user_id TEXT PRIMARY KEY, car TEXT NOT NULL, updated_at INTEGER NOT NULL)');
     s.exec('CREATE TABLE IF NOT EXISTS replay_names (user_id TEXT PRIMARY KEY, hidden INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
     this.migrateTo2();
+    // Sign-in PR 9: M10 went to this account for this cutoff (the alarm sends it once per account and cutoff). Additive.
+    s.exec('CREATE TABLE IF NOT EXISTS legacy_reminders (user_id TEXT PRIMARY KEY, cutoff INTEGER NOT NULL, at INTEGER NOT NULL)');
   }
 
   /** meta.schema_version: 1 when absent (a database from before the sign-in work, or a new one). */
@@ -1013,13 +1068,15 @@ export class AccountStore {
    * by the account's ceiling (ceilingOf), so no account is locked out of it: 'level2' when the
    * session is below what it needs. Leaving two or more needs level 1, which the route checks.
    */
-  unlink(userId: string, provider: OAuthProvider, level: 0 | 1 | 2 = 2): 'ok' | 'last_method' | 'not_linked' | 'no_user' | 'level2' {
+  unlink(userId: string, provider: OAuthProvider, level: 0 | 1 | 2 = 2, legacyClosed = false): 'ok' | 'last_method' | 'not_linked' | 'no_user' | 'level2' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1) return 'no_user' as const;
       if (u[col] === null || u[col] === undefined) return 'not_linked' as const;
-      const ways = [u.pw_hash, u.google_sub, u.discord_id].filter((v) => v !== null && v !== undefined).length;
+      // A password is a way in by email (a verified address), or by the username until the cutoff (§2.8, §3.10).
+      const password = u.pw_hash !== null && u.pw_hash !== undefined && ((u.email_canon !== null && u.email_canon !== undefined) || !legacyClosed);
+      const ways = [password ? 1 : null, u.google_sub, u.discord_id].filter((v) => v !== null && v !== undefined).length;
       if (ways <= 1) return 'last_method' as const;
       if (ways - 1 === 1 && level < Math.min(2, this.ceilingOf(u))) return 'level2' as const;
       this.sql.exec(`UPDATE users SET ${col} = NULL, ${provider}_linked_at = NULL WHERE id = ?`, userId);
@@ -1332,7 +1389,7 @@ export class AccountStore {
       const g: RefreshGrant = typeof refresh === 'string' ? { hash: refresh } : refresh;
       this.addRefresh(str(u.id), { ...g, kind: 'web' }, now);
       this.sql.exec("UPDATE refresh SET auth_lvl = 2, method = 'dev' WHERE hash = ?", g.hash);
-      return { ...this.refOf(u), authAt: now, created };
+      return { ...this.refOf(u), authAt: now, authLvl: 2 as const, created };
     });
   }
 
@@ -1944,11 +2001,15 @@ export class AccountStore {
     return n;
   }
 
-  /** A resend: one more, the code's new life, and its hash when the row's mail now carries a code (a decoy turned real, a rotated key). */
-  resentMailToken(row: MailTokenRow, codeHash: string | null, codeExpiresAt: number, now: number): void {
+  /**
+   * A resend: one more, the code's new life, and its hash when the row's mail now carries a code (a
+   * decoy turned real, a rotated key). `payload`: fields the resend sets again (an email row's
+   * `moveFrom`, chosen again from its canon's state; undefined drops it).
+   */
+  resentMailToken(row: MailTokenRow, codeHash: string | null, codeExpiresAt: number, now: number, payload: Record<string, unknown> = {}): void {
     this.sql.exec(
       'UPDATE mail_tokens SET resends = resends + 1, code_expires_at = ?, code_hash = COALESCE(?, code_hash), payload = ? WHERE hash = ?',
-      codeExpiresAt, codeHash, JSON.stringify({ ...row.payload, sentAt: now }), row.hash,
+      codeExpiresAt, codeHash, JSON.stringify({ ...row.payload, ...payload, sentAt: now }), row.hash,
     );
   }
 
@@ -2118,6 +2179,180 @@ export class AccountStore {
       this.killMailTokens({ canon: row.canon }, ['signup'], now, row.hash, id);
       return { userId: id, username: a.username, car: DEFAULT_CAR, createdAt: now, authAt: now, authLvl: 2 as const, email };
     });
+  }
+
+  // ---- adding and changing the email (sign-in PR 9: the design's §2.6, §3.6) ------------------------
+
+  /** The providers linked to an account (its ways in besides the password and the email). */
+  private providersOf(u: Row): OAuthProvider[] {
+    const out: OAuthProvider[] = [];
+    if (u.google_sub !== null && u.google_sub !== undefined) out.push('google');
+    if (u.discord_id !== null && u.discord_id !== undefined) out.push('discord');
+    return out;
+  }
+
+  /**
+   * What POST /api/me/email needs of the account before it writes a row: its verified address (an
+   * add when there is none, a change otherwise), whether it may change now (email_locked_until, set
+   * by an undo), suspended or not, its name and language; null for no account.
+   */
+  emailOwner(userId: string): { name: string; canon: string | null; lockedUntil: number; banned: boolean; lang: string } | null {
+    const u = this.userById(userId);
+    if (u === null) return null;
+    return { name: str(u.username), canon: u.email_canon === null || u.email_canon === undefined ? null : str(u.email_canon), lockedUntil: num(u.email_locked_until), banned: num(u.banned) === 1, lang: str(u.lang) };
+  }
+
+  /**
+   * Another account that claimed `canon` may give it up to a move (§3.6): it keeps a way in without
+   * the address (a linked provider) and is not suspended. Its name and its ways in after the move
+   * (its providers: what M7 and M12 say it keeps signing in with).
+   */
+  moveSource(userId: string): { name: string; ways: OAuthProvider[] } | null {
+    const u = this.userById(userId);
+    if (u === null || num(u.banned) === 1) return null;
+    const ways = this.providersOf(u);
+    return ways.length > 0 ? { name: str(u.username), ways } : null;
+  }
+
+  /**
+   * An add, a change or a move, proved by the new mailbox (a code typed in the browser that asked, or
+   * the mailed link), in one transaction (§2.6): the canon checked again (claimed by another account
+   * it is a race, 'taken', unless the row asked to move it from that very account and it still keeps
+   * a way in without it; 'move_refused' otherwise; held for another account's undo, 'taken'); then the
+   * address, its proof 'mail', this account's hint and every other account's hint of that canon gone,
+   * the account's other add / change / reset / reauth rows dead and the row used. A change also holds
+   * the old canon for EMAIL_UNDO_MS (email_holds), stores the undo row for the old address
+   * (`undo`: its nonce and hash, M6's link) and signs out every other refresh family of the account
+   * (`keep`: the caller's token, kept). A move first empties the other account's address and kills
+   * its mailed rows; it keeps its sessions and its providers.
+   */
+  applyEmail(rowHash: string, keep: string | null, undo: { nonce: string; hash: string }, now: number): EmailApplied | 'expired' | 'taken' | 'move_refused' | 'no_user' {
+    return this.tx(() => {
+      const r = this.mailToken('hash', rowHash);
+      if (r === null || (r.purpose !== 'add_email' && r.purpose !== 'change_email') || r.usedAt > 0 || now >= r.expiresAt || r.userId === null || r.canon === '') return 'expired' as const;
+      const u = this.userById(r.userId);
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
+      const id = str(u.id);
+      const moveFrom = typeof r.payload.moveFrom === 'string' ? r.payload.moveFrom : null;
+      const st = this.canonState(r.canon, now);
+      let from: string | null = null;
+      if (st.kind === 'claimed' && st.userId === id) return 'expired' as const;
+      if (st.kind === 'claimed') {
+        if (moveFrom !== st.userId) return 'taken' as const;
+        if (this.moveSource(st.userId) === null) return 'move_refused' as const;
+        from = st.userId;
+      }
+      if (st.kind === 'held' && st.userId !== id) return 'taken' as const;
+      if (from !== null) {
+        this.sql.exec("UPDATE users SET email = NULL, email_canon = NULL, email_verified_at = 0, email_proof = '' WHERE id = ?", from);
+        this.killMailTokens({ userId: from }, ['reset', 'add_email', 'change_email', 'reauth'], now);
+      }
+      const old = u.email_canon !== null && u.email_canon !== undefined && u.email !== null && u.email !== undefined ? { email: str(u.email), canon: str(u.email_canon) } : null;
+      this.claimIn(id, r.email, r.canon, 'mail', now);
+      // Its own hold of this canon (an undo window of before) is over: the account holds it now.
+      this.sql.exec('DELETE FROM email_holds WHERE canon = ?', r.canon);
+      const email = r.email;
+      this.useMailToken(r.hash, id, now);
+      this.killMailTokens({ userId: id }, ['add_email', 'change_email', 'reset', 'reauth'], now);
+      if (old !== null) {
+        this.sql.exec('INSERT OR REPLACE INTO email_holds (canon, user_id, email, until) VALUES (?, ?, ?, ?)', old.canon, id, old.email, now + EMAIL_UNDO_MS);
+        this.addMailToken({ hash: undo.hash, nonce: undo.nonce, purpose: 'undo_email', userId: id, email: old.email, canon: old.canon, attemptHash: null, codeHash: null, codeExpiresAt: 0, payload: {}, expiresAt: now + EMAIL_UNDO_MS }, now);
+        // Moving the recovery root signs the other devices out (the caller's stays).
+        this.deleteRefreshOf(id, keep ?? undefined);
+      }
+      return { userId: id, name: str(u.username), kind: from !== null ? ('move' as const) : old !== null ? ('change' as const) : ('add' as const), email, old, from };
+    });
+  }
+
+  /** A live undo row of an account (M6's link), or null (unknown, used, expired: one answer). */
+  undoRow(hash: string, now: number): MailTokenRow | null {
+    const r = this.mailToken('hash', hash);
+    return r === null || r.purpose !== 'undo_email' || r.usedAt > 0 || now >= r.expiresAt || r.userId === null || r.canon === '' ? null : r;
+  }
+
+  /**
+   * POST /api/auth/email/undo (§2.6), one transaction: the old address comes back from its hold
+   * (the hold goes), the password becomes `pw` (pw_v 2), every refresh family goes and one starts for
+   * this browser (level 2, method 'reset': a mailbox proof that sets a password), every provider
+   * linked in the last UNDO_UNLINK_MS goes, the email is locked for EMAIL_LOCK_MS and every pending
+   * row of the account dies, this one used. Of the undo rows, only those of the changes after this
+   * one die (with their holds): the earliest change's undo wins. An older one stays live, so whoever
+   * changed the email twice cannot cancel the owner's link with the undo of their own second change.
+   * Null when the row is no longer live, the account is gone or suspended, or (only a database
+   * edited by hand could) another account holds that canon.
+   */
+  undoEmail(rowHash: string, pw: PasswordRecord, refresh: RefreshGrant, now: number): UserRef | null {
+    return this.tx(() => {
+      const r = this.undoRow(rowHash, now);
+      if (r === null) return null;
+      const u = this.userById(r.userId as string);
+      if (u === null || num(u.banned) === 1) return null;
+      const id = str(u.id);
+      if (this.canonTaken(r.canon, id)) return null;
+      this.claimIn(id, r.email, r.canon, 'mail', now);
+      this.sql.exec('DELETE FROM email_holds WHERE canon = ? AND user_id = ?', r.canon, id);
+      this.setPassword(id, pw);
+      for (const p of ['google', 'discord'] as const) {
+        const col = providerCol(p);
+        this.sql.exec(`UPDATE users SET ${col} = NULL, ${p}_linked_at = NULL WHERE id = ? AND ${p}_linked_at IS NOT NULL AND ${p}_linked_at > ?`, id, now - UNDO_UNLINK_MS);
+      }
+      this.sql.exec('UPDATE users SET email_locked_until = ?, last_login = ? WHERE id = ?', now + EMAIL_LOCK_MS, now, id);
+      this.deleteRefreshOf(id);
+      this.addRefresh(id, refresh, now, now, now, null, { lvl: 2, method: 'reset' });
+      const later = this.sql.exec(
+        "SELECT hash FROM mail_tokens WHERE user_id = ? AND purpose = 'undo_email' AND used_at = 0 AND (created_at > ? OR (created_at = ? AND rowid > (SELECT rowid FROM mail_tokens WHERE hash = ?)))",
+        id, r.createdAt, r.createdAt, r.hash,
+      ).toArray();
+      this.useMailToken(r.hash, id, now);
+      this.killMailTokens({ userId: id }, ['reset', 'add_email', 'change_email', 'reauth'], now);
+      for (const x of later) this.useMailToken(str(x.hash), id, now);
+      // A hold lives only for a live undo: the later changes' holds go, an older undo keeps its own.
+      this.sql.exec("DELETE FROM email_holds WHERE user_id = ? AND canon NOT IN (SELECT email_canon FROM mail_tokens WHERE user_id = ? AND purpose = 'undo_email' AND used_at = 0)", id, id);
+      return { ...this.refOf(u), authAt: now, authLvl: 2 as const };
+    });
+  }
+
+  /** POST /api/me/prefs (§2.9): the language and the time zone of the account's mail. False: no account. */
+  setPrefs(userId: string, lang: 'es' | 'en', tz: string): boolean {
+    if (this.userById(userId) === null) return false;
+    this.sql.exec('UPDATE users SET lang = ?, tz = ? WHERE id = ?', lang, tz, userId);
+    return true;
+  }
+
+  // ---- the legacy cutoff (§3.10): meta.legacy_seen and M10 -------------------------------------------
+
+  /**
+   * The cutoff for passwords without a verified email, for LEGACY_PASSWORD_UNTIL's date `date` (its
+   * 12:00 UTC): the first time a value is seen, meta.legacy_seen = now, and the cutoff is never
+   * before legacy_seen + LEGACY_FLOOR_MS. A later date extends the grace; an earlier one stops at
+   * that floor.
+   */
+  legacyCutoff(date: number, now: number): number {
+    this.sql.exec("INSERT OR IGNORE INTO meta (k, v) VALUES ('legacy_seen', ?)", String(now));
+    const seen = Number(str(this.sql.exec("SELECT v FROM meta WHERE k = 'legacy_seen'").toArray()[0]?.v));
+    return Math.max(date, (Number.isFinite(seen) ? seen : now) + LEGACY_FLOOR_MS);
+  }
+
+  /** The var is unset (the daily alarm saw none): the floor's start is forgotten, so a value set again later gives its full 30 days. */
+  forgetLegacySeen(): void {
+    this.sql.exec("DELETE FROM meta WHERE k = 'legacy_seen'");
+  }
+
+  /**
+   * M10's recipients for `cutoff` (§3.10 step 6): an account whose password is still the legacy key
+   * and that already has a verified address, not suspended, not reminded of this cutoff yet; at most
+   * `limit`, oldest first.
+   */
+  legacyReminderTargets(cutoff: number, limit: number): string[] {
+    return this.sql
+      .exec('SELECT u.id AS id FROM users u WHERE u.pw_v = ? AND u.email_canon IS NOT NULL AND u.banned = 0 AND NOT EXISTS (SELECT 1 FROM legacy_reminders l WHERE l.user_id = u.id AND l.cutoff = ?) ORDER BY u.created_at, u.id LIMIT ?', PW_V_LEGACY, cutoff, limit)
+      .toArray()
+      .map((r) => str(r.id));
+  }
+
+  /** M10 went to `userId` for `cutoff`. */
+  markReminded(userId: string, cutoff: number, now: number): void {
+    this.sql.exec('INSERT OR REPLACE INTO legacy_reminders (user_id, cutoff, at) VALUES (?, ?, ?)', userId, cutoff, now);
   }
 
   // ---- the owner's counts --------------------------------------------------------------------------

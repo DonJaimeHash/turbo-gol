@@ -156,9 +156,9 @@ import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson, trustedOpe
 import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameProblem } from '../../src/net/account';
-import type { AccountSession, CodeResendAnswer, CodeStartAnswer, LeaderboardAnswer, OAuthProvider, PasswordLinkAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
-import type { Credentials, PasswordRecord, PendingIdent, PendingIdentity, ProviderEmail, ProviderTrust, RefreshGrant, UserRef } from './accountStore';
-import { DEV_NAME_PROBLEM, devSubOf } from './accountStore';
+import type { AccountSession, CodeResendAnswer, CodeStartAnswer, EmailConfirmAnswer, LeaderboardAnswer, OAuthProvider, PasswordLinkAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
+import type { Credentials, LegacyState, PasswordRecord, PendingIdent, PendingIdentity, ProviderEmail, ProviderTrust, RefreshGrant, UserRef } from './accountStore';
+import { DEV_NAME_PROBLEM, LEGACY_CLOSED, devSubOf, legacyDateOf } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { firstUse } from './limits';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -698,6 +698,9 @@ async function checkPassword(c: RouteContext, subject: string | { email: string 
  */
 async function login(c: RouteContext): Promise<Response> {
   if (c.limited('login:' + ipOf(c.request), 30)) return error(429, 'rate_limited');
+  // After the cutoff (sign-in PR 9, §3.10): 410 for everyone, before any check or lookup.
+  const closed = await legacyGate(c);
+  if (closed !== null) return closed;
   const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown; linkPending?: unknown }>(c.request);
   const proof = proofOf(b?.password, b?.passwordV2);
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || (proof.v1 === undefined && proof.v2 === undefined)) return error(400, 'bad_request');
@@ -773,6 +776,8 @@ async function logout(c: RouteContext): Promise<Response> {
  */
 async function recover(c: RouteContext): Promise<Response> {
   if (c.limited('recover:' + ipOf(c.request), 10)) return error(429, 'rate_limited');
+  const closed = await legacyGate(c);
+  if (closed !== null) return closed;
   const b = await readJson<{ username?: unknown; code?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown }>(c.request);
   const nk = newKeyOf(b?.passwordV2, b?.password);
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || typeof b.code !== 'string' || b.code.length > 32 || nk === null) return error(400, 'bad_request');
@@ -1905,6 +1910,155 @@ async function reauthCodeVerify(c: RouteContext): Promise<Response> {
   return json(await accountSession(c.env, r.data), 200, NO_STORE);
 }
 
+// ---- adding and changing the email, preferences, the cutoff (sign-in PR 9: §2.1, §2.6, §2.9, §3.10) ----
+//
+//   POST /api/me/email            Bearer { email, lang } -> { attempt, resendAt, to }: the same answer for any
+//                                 address (I6; M5 with the code, or M7 to an address another account holds) |
+//                                 400 bad_email / same_email | 403 reauth_required { level } (an add fresh(1), a
+//                                 change fresh(2); a legacy key first re-keyed: level 2) | 409 email_locked
+//                                 { until } | 429 | 503. Not from a TV.
+//   POST /api/me/email/verify     Bearer (+ cookie) { attempt, code } -> MeInfo: the add, the change (M6 with the
+//                                 7-day undo to the old address, which is held; the other devices signed out) or
+//                                 the move (M12) | 400 code_wrong | 410 code_expired | 409 email_taken / move_refused |
+//                                 429 / 503 when M6 or M12 could not go (mail off, the day's notice lane full):
+//                                 then nothing changes, so no change ever applies without its undo link
+//   POST /api/auth/email/confirm  { token } -> { ok, name, email }: the same by the mailed link, from any device
+//   POST /api/auth/email/undo/peek { token } -> { name, email }: whom M6's undo is for (consumes nothing)
+//   POST /api/auth/email/undo     { token, password } -> AccountSession + cookies (level 2): the old address back,
+//                                 a new password, every device signed out, providers linked in the last 7 days
+//                                 unlinked, the email locked for 7 days | 400 bad_password | 410 link_invalid
+//   POST /api/me/prefs            Bearer { lang, tz } -> { ok }: the language and zone of the account's mail (Idioma
+//                                 while signed in) | 400 bad_prefs. Not from a TV (it never sets the language).
+//   GET  /api/config auth.legacy  { phase, until } (legacyConfig below): 'none' while LEGACY_PASSWORD_UNTIL is unset,
+//                                 'grace' before its cutoff, 'closed' after it, when login and recover answer 410
+//                                 legacy_closed { until } with no lookup
+
+/** LEGACY_PASSWORD_UNTIL: a var (an ISO date), absent until the owner sets the cutoff (§3.10). Not in env.ts: this file reads it. */
+type LegacyEnv = Env & { LEGACY_PASSWORD_UNTIL?: string };
+
+/** The cutoff this isolate has heard of, by the var's value (it changes only with a deploy, the cutoff only with the var). */
+let legacyCache: { value: string; until: number } | null = null;
+
+/**
+ * GET /api/config's auth.legacy (§2.1): with LEGACY_PASSWORD_UNTIL unset, { phase: 'none', until: null }
+ * and no AccountsDO call; with a date, the cutoff the AccountsDO keeps (its date at 12:00 UTC, never
+ * before 30 days after it first saw a value), asked once per isolate and value, and the phase from
+ * this clock. An object that cannot answer: 'grace' with the var's own date, asked again next time.
+ */
+export async function legacyConfig(env: Env, now: number = Date.now()): Promise<LegacyState> {
+  const value = (env as LegacyEnv).LEGACY_PASSWORD_UNTIL;
+  const date = legacyDateOf(value);
+  if (date === null || typeof value !== 'string') return { phase: 'none', until: null };
+  let until = legacyCache !== null && legacyCache.value === value ? legacyCache.until : null;
+  if (until === null) {
+    const r = await accountsJson<LegacyState>(env, '/legacy').catch(() => null);
+    if (r === null || !r.ok || typeof r.data.until !== 'number') return { phase: now >= date ? 'closed' : 'grace', until: date };
+    until = r.data.until;
+    legacyCache = { value, until };
+  }
+  return { phase: now >= until ? 'closed' : 'grace', until };
+}
+
+/** login's and recover's first step: after the cutoff, 410 legacy_closed { until } for every request, with no lookup. */
+async function legacyGate(c: RouteContext): Promise<Response | null> {
+  const L = await legacyConfig(c.env);
+  return L.phase === 'closed' ? json({ ...LEGACY_CLOSED, until: L.until }, 410) : null;
+}
+
+/** POST /api/me/email (§2.6): an add (fresh(1)) or a change (fresh(2)) of the account's address, proved by a code to it. */
+async function meEmail(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ email?: unknown; lang?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  if (normalizeEmail(b.email) === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+  const me = await accountsJson<{ emailVerified?: boolean; legacy?: boolean }>(c.env, '/me?userId=' + encodeURIComponent(s.sub));
+  if (!me.ok) return pass(me.res);
+  // A password still salted with the name is re-keyed first ("confirm it's you" with it): an address
+  // never sits beside a key no route signs in with (§3.10 step 8: reauth works at any time).
+  if (me.data.legacy === true) return reauthRequired(2);
+  // An add needs fresh(1), a change fresh(2) (R6); an account that has an address has a level-2 proof.
+  const fresh = requireFresh(c, me.data.emailVerified === true ? 2 : 1);
+  if (fresh instanceof Response) return fresh;
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const attempt = base64urlEncode(randomBytes(32));
+  const r = await accountsJson<{ resendAt: number; to: string; mail?: MailOrder | null }>(c.env, '/me-email', { userId: s.sub, email: b.email, attempt, lang: langOf(b.lang), ip: ipOf(c.request) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ attempt, resendAt: r.data.resendAt, to: r.data.to } satisfies CodeStartAnswer, 200, NO_STORE);
+}
+
+/** The mails an applied add, change or move asks for (M6, M12), after the answer. */
+function sendMails(c: RouteContext, orders: unknown): void {
+  if (Array.isArray(orders)) for (const o of orders) sendMail(c, o as MailOrder);
+}
+
+/** The refresh cookie's hash, when there is one: a change keeps this device signed in, and only it. */
+async function keepOf(c: RouteContext): Promise<string | undefined> {
+  const token = cookieOf(c.request, REFRESH_COOKIE);
+  return token && token.length <= 128 ? sha256Hex(token) : undefined;
+}
+
+/** POST /api/me/email/verify: the code of the account's own attempt, then the add, the change or the move. */
+async function meEmailVerify(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ attempt?: unknown; code?: unknown; lang?: unknown }>(c.request);
+  const proof = proofBody(b);
+  if (proof === null || 'token' in proof) return error(400, 'bad_request');
+  const mailOff = (await mailRefusal(c)) !== null;
+  const r = await accountsJson<Record<string, unknown> & { mail?: unknown }>(c.env, '/me-email-verify', { userId: s.sub, attempt: proof.attempt, code: proof.code, keep: await keepOf(c), providers: enabledProviders(c.env), lang: langOf(b?.lang), mailOff });
+  if (!r.ok) return noStore(r.res);
+  const { mail, ...me } = r.data;
+  sendMails(c, mail);
+  return json(me, 200, NO_STORE);
+}
+
+/** POST /api/auth/email/confirm: the mailed link of an add or a change, from any device (no session: the link proves the mailbox). */
+async function emailConfirm(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ token?: unknown; lang?: unknown }>(c.request);
+  const token = tokenOf(b);
+  if (token === null) return error(400, 'bad_request');
+  const mailOff = (await mailRefusal(c)) !== null;
+  const r = await accountsJson<{ ok: true; name: string; email: string; mail?: unknown }>(c.env, '/email-confirm', { token, keep: await keepOf(c), providers: enabledProviders(c.env), lang: langOf(b?.lang), mailOff });
+  if (!r.ok) return noStore(r.res);
+  sendMails(c, r.data.mail);
+  return json({ ok: true, name: r.data.name, email: r.data.email } satisfies EmailConfirmAnswer, 200, NO_STORE);
+}
+
+/** POST /api/auth/email/undo/peek: whom the undo sheet is for. Consumes nothing. */
+async function emailUndoPeek(c: RouteContext): Promise<Response> {
+  const token = tokenOf(await readJson<{ token?: unknown }>(c.request));
+  if (token === null) return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/email-undo-peek', { token }));
+}
+
+/** POST /api/auth/email/undo: M6's link, checked first (a dead one costs no PBKDF2), then the account back on its old address. */
+async function emailUndo(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ token?: unknown; password?: unknown }>(c.request);
+  const token = tokenOf(b);
+  if (!b || token === null) return error(400, 'bad_request');
+  if (!isClientKey(b.password)) return error(400, 'bad_password', 'Contraseña inválida');
+  const peek = await accountsCall(c.env, '/email-undo-peek', { token });
+  if (!peek.ok) return noStore(peek);
+  await peek.text().catch(() => '');
+  const refreshTok = newRefreshToken();
+  const r = await accountsJson<UserRef>(c.env, '/email-undo', { token, pw: await newPasswordRecord(b.password, 2, await storeEnv(c.env)), refresh: await grantFor(refreshTok, c.request) });
+  if (!r.ok) return noStore(r.res);
+  return withCookies(json(await accountSession(c.env, r.data)), [refreshCookie(refreshTok), await deviceCookie(c.env, r.data.userId)]);
+}
+
+/** POST /api/me/prefs { lang, tz } (§2.9): Idioma while signed in, never from a TV. */
+async function mePrefs(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ lang?: unknown; tz?: unknown }>(c.request);
+  const tz = typeof b?.tz === 'string' ? b.tz : '';
+  if (!b || (b.lang !== 'es' && b.lang !== 'en') || (tz !== '' && timeZoneOf(tz) === '')) return error(400, 'bad_prefs', 'Idioma o zona horaria inválidos');
+  return noStore(await accountsCall(c.env, '/me-prefs', { userId: s.sub, lang: b.lang, tz }));
+}
+
 /** The routes sign-in PR 7 retires (design §2.15): a page of before is told to reload. */
 function gone(path: string): Response {
   const message = path === '/api/auth/register' ? 'Actualiza la página: ahora las cuentas se crean con un correo.' : 'Actualiza la página: esto ahora se hace desde PERFIL con tu correo.';
@@ -2079,6 +2233,13 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/me/password/link') return mePasswordLink(c);
     if (p === '/api/auth/reauth/code') return reauthCode(c);
     if (p === '/api/auth/reauth/code/verify') return reauthCodeVerify(c);
+    // Adding and changing the email, and the mail's language (sign-in PR 9).
+    if (p === '/api/me/email') return meEmail(c);
+    if (p === '/api/me/email/verify') return meEmailVerify(c);
+    if (p === '/api/auth/email/confirm') return emailConfirm(c);
+    if (p === '/api/auth/email/undo/peek') return emailUndoPeek(c);
+    if (p === '/api/auth/email/undo') return emailUndo(c);
+    if (p === '/api/me/prefs') return mePrefs(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);

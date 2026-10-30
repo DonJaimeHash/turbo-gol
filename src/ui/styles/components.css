@@ -459,6 +459,11 @@ html[data-layout='portrait'] .mn-sheet {
   grid-template-columns: repeat(8, minmax(0, 1fr));
 }
 
+/* An address's last row (0-9 and +) holds 11 keys: one row of 11, never a sixth row past a phone's height. */
+.mn-keypad[data-kind='email'] > .mn-keypad-row:nth-last-child(2) {
+  grid-template-columns: repeat(11, minmax(0, 1fr));
+}
+
 .mn-keypad-row.mn-keypad-actions {
   grid-template-columns: 2fr 2fr 3fr 3fr;
   margin-top: 0.25rem;

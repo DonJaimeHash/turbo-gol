@@ -438,6 +438,19 @@ export interface PasswordLinkAnswer {
   sentTo: string;
 }
 
+/** POST /api/auth/email/confirm (sign-in PR 9): the mailed link of an add or a change took: the account's name and its address now. */
+export interface EmailConfirmAnswer {
+  ok: true;
+  name: string;
+  email: string;
+}
+
+/** POST /api/auth/email/undo/peek: whom an email change's undo link is for, and the address it brings back. */
+export interface UndoPeekAnswer {
+  name: string;
+  email: string;
+}
+
 export interface RegisterAnswer extends AccountSession {
   /** Shown once: each one resets the password (POST /api/auth/recover) when it is forgotten. */
   recoveryCodes: string[];

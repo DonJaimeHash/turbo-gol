@@ -191,6 +191,9 @@ test('open on loopback: 200, an AccountSession and the refresh cookie; the accou
   assert.equal(claims.sub, r.json.playerId);
   assert.ok(claims.aat * 1000 >= t0 - 1000, 'aat: now');
   assert.ok(r.json.authAt >= t0 - 1000);
+  // Signed as its family is stored (sign-in PR 9): level 2, so a dev account can change its email at once.
+  assert.equal(claims.aal, 2, 'aal: the level its family has');
+  assert.equal(r.json.authLvl, 2);
   // I1: the address is the dev identity's own, proved by the dev sign-in, never a typed one.
   const u = userRow(db, r.json.playerId);
   assert.equal(u.dev_sub, 'ana');
@@ -332,8 +335,9 @@ test('GET /api/config: auth.devSignIn is true only where the gate passes', async
     const { env } = makeEnv(over);
     const r = await call(env, base, '/api/config', { method: 'GET', origin });
     assert.equal(r.status, 200);
-    // Beside sign-in PR 7's auth.email (the flows that send mail), which the dev gate does not decide.
-    assert.deepEqual(Object.keys(r.json.auth).sort(), ['devSignIn', 'email'], `${JSON.stringify(over)} ${base} ${origin}`);
+    // Beside sign-in PR 7's auth.email (the flows that send mail) and PR 9's auth.legacy (the cutoff), which the dev gate does not decide.
+    assert.deepEqual(Object.keys(r.json.auth).sort(), ['devSignIn', 'email', 'legacy'], `${JSON.stringify(over)} ${base} ${origin}`);
+    assert.deepEqual(r.json.auth.legacy, { phase: 'none', until: null }, 'no LEGACY_PASSWORD_UNTIL: no cutoff');
     assert.equal(r.json.auth.devSignIn, want, `${JSON.stringify(over)} ${base} ${origin}`);
     assert.equal(typeof r.json.auth.email, 'boolean');
   }

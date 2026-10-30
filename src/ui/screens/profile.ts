@@ -42,9 +42,10 @@ import { AccountError } from '../../net/AccountClient';
 import type { AuthConfig } from '../../net/AccountClient';
 import { REGIONS, USERNAME_MAX, emailTypo, normalizeEmail, passwordIssue, usernameIssue } from '../../net/account';
 import type { AccountIssue, DeviceSession, MeInfo, MyNode, OAuthProvider, PlaylistRating } from '../../net/account';
-import { signInRoute } from '../../net/emailAuth';
+import { emailNudge, signInRoute } from '../../net/emailAuth';
 import type { StoredAttempt } from '../../net/emailAuth';
-import { authErrText, emailProviders, googleHidden, keypadTyping, mailOffText, newPasswordFields, openForgotSheet, openReauthCodeSheet, passwordManagerUser, providersLine, sheetEnter, signupFinishFields, welcome } from './accountLinks';
+import { authErrText, cutoffDay, emailProviders, emailSheet, googleHidden, graceSheet, graceText, keypadTyping, mailOffText, newPasswordFields, openForgotSheet, openReauthCodeSheet, passwordManagerUser, providersLine, sheetEnter, signupFinishFields, startEmailCode, welcome } from './accountLinks';
+import type { EmailHooks } from './accountLinks';
 import { PROTOCOL_VERSION } from '../../net/protocol';
 import { PROBATION_MATCHES } from '../../../nodes/control-plane/registry';
 import { ratingCard, rankBadge, tierById } from '../badges';
@@ -233,9 +234,10 @@ export function profileScreen(menu: Menu): Screen {
   const loadAuthConfig = (): void => {
     if (authCfg !== null) return;
     void acc.authConfig().then((c) => {
-      const changed = c.email !== mailOn() || c.legacy !== legacyPhase();
+      const changed = c.email !== mailOn() || c.legacy !== legacyPhase() || c.legacyUntil !== null;
       authCfg = c;
-      if (changed && el.isConnected && !acc.signedIn && sample === null && !typed) render();
+      // A guest's half-typed form is never redrawn; an account's view has nothing typed (its banner, its rows).
+      if (changed && el.isConnected && sample === null && (acc.signedIn || !typed)) render();
     });
   };
 
@@ -310,7 +312,10 @@ export function profileScreen(menu: Menu): Screen {
         else await acc.legacySignIn(route.username, pass.input.value);
         acc.dropSignupAttempt();
         menu.toast(t('profile.hello', { name: acc.account?.name ?? '' }), 'ok');
-        void acc.fetchMe();
+        // A username's sign-in (§3.10 step 3): the sheet that asks for an email, not only the banner.
+        void acc.fetchMe().then((me) => {
+          if (route.kind === 'legacy' && me !== null && emailNudge(me, acc.account?.tv === true) !== null) openGrace(me);
+        }, () => undefined);
         render();
       } catch (e) {
         pass.error(authErrText(menu, e));
@@ -705,6 +710,7 @@ export function profileScreen(menu: Menu): Screen {
       ),
     );
     const fold = h('div.mn-prof-acct', { id: 'mn-prof-acct', hidden: !accountOpen });
+    const usernameUntil = me !== null && me.hasPassword && me.emailVerified !== true && legacyPhase() === 'grace' && (authCfg?.legacyUntil ?? null) !== null ? h('p.mn-note', null, t('profile.usernameUntil', { date: cutoffDay(authCfg?.legacyUntil as number) })) : null;
     // A TV signed in with the phone has a limited scope (server/src/accountRoutes.ts requirePrimary):
     // it plays with the account, the account's changes are the phone's. Only its own sign-out here.
     const tvScope = sample === null && acc.account?.tv === true;
@@ -717,7 +723,9 @@ export function profileScreen(menu: Menu): Screen {
     else setChildren(
       fold,
       secondary(t('profile.rename'), () => renameDialog(), { 'data-key': 'profile-rename' }),
+      emailRow(me),
       passwordRow(me),
+      usernameUntil,
       ...linked.map(linkedRow),
       // A link needs a credential proved on this browser in the last minutes: confirm it is you first.
       ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true))), { 'data-key': 'profile-link-' + p })),
@@ -783,7 +791,7 @@ export function profileScreen(menu: Menu): Screen {
     return h(
       'div.mn-prof-account',
       null,
-      h('div.mn-prof-col', null, id, section(t('profile.season', { season: me?.season ?? 1 }), ranks(me)), server),
+      h('div.mn-prof-col', null, graceBanner(me), id, section(t('profile.season', { season: me?.season ?? 1 }), ranks(me)), server),
       h(
         'div.mn-prof-col',
         null,
@@ -811,6 +819,110 @@ export function profileScreen(menu: Menu): Screen {
       h('a.mn-btn.mn-prof-link', { href: './third-party-licenses.txt', target: '_blank', rel: 'noopener', 'data-nav': true, 'data-key': 'profile-licenses' }, icon('info'), h('span', null, t('menu.licenses'))),
     ),
   );
+
+  // ---- the email of an account (sign-in PR 9: the design's §3.6, §3.9, §3.10) ------------------------
+
+  /** The banner folded (it can be folded, never dismissed: it stays until the account has a verified email). */
+  let graceOpen = true;
+
+  /** The configured providers the account has not linked (VINCULAR on the banner and the grace sheet). */
+  const unlinked = (me: MeInfo): OAuthProvider[] => emailProviders(menu).filter((p) => !me.providers.includes(p));
+
+  /** VINCULAR {provider}: once this browser is fresh(1) (a link adds a way in), the provider's page. */
+  const linkProvider = (p: OAuthProvider): void => fresh(() => (window.location.href = acc.oauthUrl(p, true)), 1);
+
+  /**
+   * The Correo row (§3.9): "{email}" with CAMBIAR CORREO, "Sin correo" with AGREGAR CORREO, or
+   * "{hint} · sin confirmar" with CONFIRMAR CORREO; with the mail off, why not.
+   */
+  const emailRow = (me: MeInfo | null): HTMLElement | null => {
+    if (me === null || me.email === undefined) return null;
+    const email = me.emailVerified === true && typeof me.email === 'string' ? me.email : null;
+    const hint = email === null && typeof me.emailHint === 'string' && me.emailHint.length > 0 ? me.emailHint : null;
+    const mode = email !== null ? 'change' : hint !== null ? 'confirm' : 'add';
+    const label = mode === 'change' ? t('profile.emailChangeBtn') : mode === 'confirm' ? t('profile.emailConfirmBtn') : t('profile.emailAddBtn');
+    return h(
+      'div.mn-prof-device',
+      null,
+      h('p', null, email ?? (hint !== null ? t('profile.emailHintRow', { email: hint }) : t('profile.emailNone'))),
+      mailOn() ? secondary(label, () => emailDialog(mode), { 'data-key': 'profile-email' }) : h('p.mn-note', null, mailOffText(menu)),
+    );
+  };
+
+  /**
+   * AGREGAR, CAMBIAR or CONFIRMAR (§3.6 steps 2 to 4): "confirm it's you" first when this browser is
+   * not fresh enough (1 to add or confirm, 2 to change; a password of before is re-keyed by itself
+   * first, level 2), then the address and its code. `direct`: the banner's ENVIAR CÓDIGO for a hint,
+   * the code straight away. A provider's round trip comes back to it (the marker keepResume).
+   */
+  const emailDialog = (mode: 'add' | 'change' | 'confirm', direct = false): void => {
+    const me = acc.me;
+    const change = mode === 'change';
+    const legacy = me?.legacy === true;
+    const hooks: EmailHooks = { change, reauth: (level) => fresh(() => emailDialog(mode, direct), level, true, 'email:' + mode) };
+    const hint = typeof me?.emailHint === 'string' ? me.emailHint : '';
+    const open = (): void => {
+      if (legacy) void acc.fetchMe().catch(() => undefined); // re-keyed by "confirm it's you": the row knows it
+      if (direct && hint.length > 0) {
+        void startEmailCode(menu, hint, hooks).then((err) => (err !== null ? menu.toast(err, 'error') : undefined));
+        return;
+      }
+      emailSheet(menu, change ? t('auth.emailChangeTitle') : mode === 'confirm' ? t('auth.emailConfirmTitle') : t('auth.emailAddTitle'), mode === 'confirm' ? hint : '', hooks);
+    };
+    fresh(open, change || legacy ? 2 : 1, legacy, 'email:' + mode);
+  };
+
+  /** Right after a username's sign-in (§3.10 step 3): "Agrega tu correo", its date while there is one. */
+  const openGrace = (me: MeInfo): void => {
+    graceSheet(menu, {
+      until: authCfg?.legacyUntil ?? null,
+      closed: legacyPhase() === 'closed',
+      prefill: typeof me.emailHint === 'string' ? me.emailHint : '',
+      link: unlinked(me),
+      hooks: { change: false, reauth: (level) => fresh(() => openGrace(me), level, true, 'email:add') },
+      goLink: linkProvider,
+    });
+  };
+
+  /**
+   * PERFIL's banner (§3.10 step 4, §3.8 step 5): until the account has a verified email. A password
+   * that signs in by its username: "Agrega tu correo" with its date (or none), AGREGAR CORREO and
+   * VINCULAR for each configured provider not linked; a provider's hint: "Confirma tu correo {email}"
+   * with ENVIAR CÓDIGO. Its first button takes PERFIL's first focus. Folded by its title, never gone.
+   * A TV shows its scope note instead (accountView's tvScope).
+   */
+  const graceBanner = (me: MeInfo | null): HTMLElement | null => {
+    if (sample !== null && sample.me?.emailVerified !== false) return null;
+    const nudge = emailNudge(me, acc.account?.tv === true && sample === null);
+    if (me === null || nudge === null) return null;
+    const title = nudge === 'confirm' ? t('auth.confirmEmailBanner', { email: me.emailHint ?? '' }) : t('auth.graceTitle');
+    const text = me.hasPassword ? h('p.mn-note', null, graceText(authCfg?.legacyUntil ?? null, legacyPhase() === 'closed')) : null;
+    const buttons = mailOn()
+      ? [nudge === 'confirm' ? secondary(t('auth.sendCode'), () => emailDialog('confirm', true), { 'data-key': 'profile-grace-email', 'data-autofocus': true }) : secondary(t('profile.emailAddBtn'), () => emailDialog('add'), { 'data-key': 'profile-grace-email', 'data-autofocus': true })]
+      : [h('p.mn-note', null, mailOffText(menu))];
+    const links = nudge === 'add' ? unlinked(me).map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => linkProvider(p), { 'data-key': 'profile-grace-link-' + p })) : [];
+    const body = h('div.mn-prof-acct.mn-prof-grace-body', { id: 'mn-prof-grace', hidden: !graceOpen }, text, ...buttons, ...links);
+    const head = h(
+      'button.mn-picker.mn-prof-fold',
+      {
+        type: 'button',
+        'data-nav': true,
+        'data-key': 'profile-grace',
+        'aria-expanded': String(graceOpen),
+        'aria-controls': 'mn-prof-grace',
+        onclick: () => {
+          graceOpen = !graceOpen;
+          body.hidden = !graceOpen;
+          head.setAttribute('aria-expanded', String(graceOpen));
+          menu.refit();
+        },
+      },
+      icon('info'),
+      h('span.mn-picker-label', null, title),
+      icon('next', 'mn-prof-fold-chev'),
+    );
+    return h('section.mn-section.mn-prof-security.mn-prof-grace', null, head, body);
+  };
 
   /** A rename that went through: the toast and the account's view. */
   const renamed = (): void => {
@@ -870,6 +982,7 @@ export function profileScreen(menu: Menu): Screen {
   const passwordRow = (me: MeInfo | null): HTMLElement => {
     if (me?.hasPassword !== false) return secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' });
     if (me.emailVerified !== true || typeof me.email !== 'string' || me.email.length === 0) return h('p.mn-note.mn-prof-pwnote', null, t('auth.addEmailFirst'));
+    // (the Correo row above it has AGREGAR CORREO)
     const btn = secondary(
       t('profile.createPassword'),
       () =>
@@ -939,7 +1052,7 @@ export function profileScreen(menu: Menu): Screen {
    * address (POST /api/auth/reauth/code); a press on a provider's page is level 1, and the sheet says
    * so. A password of before (me.legacy) is only re-keyed by itself: no code then.
    */
-  const fresh = (go: () => void, level: 1 | 2 = 1, force = false): void => {
+  const fresh = (go: () => void, level: 1 | 2 = 1, force = false, resume: string | null = null): void => {
     if (!force && acc.fresh(level)) {
       go();
       return;
@@ -955,7 +1068,7 @@ export function profileScreen(menu: Menu): Screen {
     const byCode: HTMLButtonElement | null = mailbox !== null ? secondary(t('auth.reauthCode', { email: mailbox }), () => byCode !== null && void busyWhile(byCode, () => openReauthCodeSheet(menu, go)), { 'data-key': 'profile-reauth-code' }) : null;
     menu.modal({
       title: t('profile.reauthTitle'),
-      body: [h('p.mn-note', null, t('profile.reauthNote')), notEnough, ...offered.map((p) => secondary(t('profile.reauthWith', { provider: PROVIDER_NAMES[p] }), () => (window.location.href = acc.oauthUrl(p, 'reauth')), { 'data-key': 'profile-reauth-' + p })), byCode, withPassword ? pass.el : null],
+      body: [h('p.mn-note', null, t('profile.reauthNote')), notEnough, ...offered.map((p) => secondary(t('profile.reauthWith', { provider: PROVIDER_NAMES[p] }), () => (acc.keepResume(resume), (window.location.href = acc.oauthUrl(p, 'reauth'))), { 'data-key': 'profile-reauth-' + p })), byCode, withPassword ? pass.el : null],
       actions: [
         ...(withPassword
           ? [
@@ -1122,8 +1235,8 @@ export function profileScreen(menu: Menu): Screen {
 
   // The samples exist in development and in a VITE_UI_FIT=1 build only (read here: node tests import this module).
   if (import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1') {
-    (window as unknown as { __profile: (kind: 'account' | 'operator' | null) => void }).__profile = (kind) => {
-      sample = kind === null ? null : sampleAccount(kind === 'operator');
+    (window as unknown as { __profile: (kind: 'account' | 'operator' | 'grace' | null) => void }).__profile = (kind) => {
+      sample = kind === null ? null : sampleAccount(kind);
       render();
     };
   }
@@ -1168,7 +1281,13 @@ export function profileScreen(menu: Menu): Screen {
       firstShow = false;
       render();
       if (acc.signedIn) {
-        void acc.fetchMe().then(render, () => undefined);
+        loadAuthConfig();
+        // Back from a provider's "confirm it's you" that an email change asked for (§3.6 step 2).
+        const resume = acc.takeResume();
+        void acc.fetchMe().then(() => {
+          render();
+          if (resume !== null && acc.signedIn) emailDialog(resume.slice('email:'.length) as 'add' | 'change' | 'confirm');
+        }, () => undefined);
         loadNodes();
         loadReplayName();
       }
@@ -1196,8 +1315,12 @@ export function profileScreen(menu: Menu): Screen {
   };
 }
 
-/** Sample data for the layout check (window.__profile): a long name, three playlists, two nodes for an operator. */
-function sampleAccount(operator: boolean): AccountData {
+/**
+ * Sample data for the layout check (window.__profile): a long name, three playlists, two nodes for an
+ * operator; 'grace' (sign-in PR 9): a password of before with no email, PERFIL's banner up.
+ */
+function sampleAccount(kind: 'account' | 'operator' | 'grace'): AccountData {
+  const operator = kind === 'operator';
   const r = (playlist: PlaylistRating['playlist'], tier: string | null, placementLeft: number): PlaylistRating => ({ playlist, mmr: 1480, tier, games: 52, wins: 30, losses: 22, placementLeft, peakMmr: 1520 });
   const me: MeInfo = {
     playerId: 'sample',
@@ -1213,6 +1336,7 @@ function sampleAccount(operator: boolean): AccountData {
     abandons24h: 1,
     season: 1,
     experimental: false,
+    ...(kind === 'grace' ? { providers: ['password'] as MeInfo['providers'], email: null, emailHint: null, emailVerified: false, legacy: true } : {}),
   };
   const node = (name: string, status: MyNode['status'], online: boolean): MyNode => ({ nodeId: 'n-' + name, name, region: 'SA', status, statusReason: status === 'suspended' ? 'Too many lost matches this week' : null, suspendedUntil: null, online, counters: { verified: 318, probationVerified: 12 }, version: '1.4.2', compatible: status !== 'suspended' });
   return { name: me.name, me, nodes: operator ? [node('Buenos-Aires-VPS-largo', 'active', true), node('Casa-PC', 'suspended', false)] : [] };

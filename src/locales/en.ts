@@ -670,6 +670,14 @@ export default {
   // A provider on the account and when it was linked ({date}); without a date: linked before it was kept
   'profile.linkedOn': '{provider} · linked on {date}',
   'profile.linkedWith': '{provider} · linked',
+  // Account and security's Email row (sign-in PR 9): the address, none, or a provider's not confirmed yet
+  'profile.emailNone': 'No email',
+  'profile.emailHintRow': '{email} · not confirmed',
+  'profile.emailChangeBtn': 'CHANGE EMAIL',
+  'profile.emailAddBtn': 'ADD EMAIL',
+  'profile.emailConfirmBtn': 'CONFIRM EMAIL',
+  // While usernames still sign in, with the day they stop
+  'profile.usernameUntil': 'You can sign in with your username until {date}',
   'profile.unlink': 'UNLINK {provider}',
   'profile.unlinkTitle': 'Unlink {provider}?',
   'profile.unlinkNote': "You won't be able to sign in to this account with {provider} any more.",
@@ -761,6 +769,8 @@ export default {
   'tvlink.cancel': 'CANCEL',
   'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',
   'tvlink.signIn': 'SIGN IN',
+  // "Sign in first": no account yet, make one with an email here (PROFILE's sign-up)
+  'tvlink.createEmail': 'CREATE AN ACCOUNT WITH EMAIL',
   // "Sign in on this phone first": a provider's button right there (its name in capitals); also the match sheet's
   'tvlink.signInWith': 'SIGN IN WITH {provider}',
   'tvlink.done': 'Done: the TV signs in in a moment',
@@ -862,6 +872,42 @@ export default {
   // "Confirm it's you" by a code to the account's own email
   'auth.reauthCode': 'SEND A CODE TO {email}',
   'auth.reauthCodeTitle': 'Type the code',
+  // Adding and changing the email, the grace period (sign-in PR 9: profile.ts, accountLinks.ts)
+  // The sheet's title: an account without an email adds one, one with an email changes it; CONFIRM: a provider's address not confirmed yet
+  'auth.emailAddTitle': 'Add email',
+  'auth.emailChangeTitle': 'Change email',
+  'auth.emailConfirmTitle': 'Confirm email',
+  'auth.emailNew': 'New email',
+  'auth.emailChangeNote': "We'll send a code to the new email and a notice to the current one.",
+  'auth.emailAddNote': "We'll send a code to confirm it.",
+  'auth.sendCode': 'SEND CODE',
+  // Under the code field: an address another account holds gets a mail that explains it (a move code, or why not)
+  'auth.emailCodeNote': 'If that email belongs to another account, the email tells you what to do.',
+  // The toasts once the code took: a change signs the other devices out; an add says how the account signs in now
+  'auth.emailChanged': 'Email changed. Your other devices were signed out.',
+  'auth.emailAddedPassword': 'Done: you now sign in with {email} and the same password.',
+  'auth.emailAdded': "Done: {email} is now this account's email.",
+  // Right after a sign-in with a username, and PROFILE's banner: {date} is the day usernames stop signing in
+  'auth.graceTitle': 'Add your email',
+  'auth.graceDate': "Add an email by {date}. After that you can't sign in with a username. Your password stays the same.",
+  'auth.graceNoDate': "Add an email: soon you won't be able to sign in with a username. Your password stays the same.",
+  'auth.graceClosed': "Usernames no longer sign in: add an email now so you don't lose this account.",
+  'auth.graceLater': 'LATER',
+  // PROFILE's banner for a provider's address not confirmed yet
+  'auth.confirmEmailBanner': 'Confirm your email {email}',
+  // /account#email=: the link of an add or a change, opened from the email
+  'auth.emailLinkTitle': 'Confirm email',
+  'auth.emailLinkNote': 'Use this email on your Turbogol account.',
+  'auth.emailLinkConfirm': 'CONFIRM EMAIL',
+  'auth.emailLinkDoneTitle': 'Email confirmed',
+  'auth.emailLinkDone': 'Done: {email} is now the email of the account {name}.',
+  // /account#undo=: the old address's link after an email change ("this wasn't me")
+  'auth.undoTitle': 'Recover your account',
+  'auth.undoNote': 'Your account goes back to {email}. Choose a new password: every device is signed out.',
+  'auth.undoDoneTitle': 'Account recovered',
+  'auth.undoDone': 'Your account is back on {email}. Every device was signed out.',
+  // Forgot your password? on the sheets after Google or Discord: what to do once the new password is saved
+  'auth.forgotPendingNote': 'Once the new password is saved, sign in with {provider} again: we ask you to sign in to your account and link it.',
 
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Choose a username',
@@ -1050,6 +1096,11 @@ export default {
   'error.account.email_has_account': 'That email already belongs to a Turbogol account: sign in with it to link.',
   'error.account.already_linked': 'That account is already linked to another user',
   'error.account.no_pending': 'That sign-in expired: sign in again',
+  // Adding and changing the email (sign-in PR 9)
+  'error.account.same_email': 'That is already your email.',
+  'error.account.email_locked': 'Your email was just restored. You can change it again in a few days.',
+  'error.account.move_refused': "That email is another account's only way in. Check the email we sent you.",
+  'error.account.bad_prefs': 'Invalid language or time zone',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',

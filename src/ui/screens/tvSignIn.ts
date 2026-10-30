@@ -37,7 +37,7 @@ import { qrSvg } from '../components/qr';
 import { codeCells } from '../components/codecells';
 import { CODE_LENGTH, spacedCode } from './lobbyModel';
 import { TV_RENEWS, isTvPath, pendingMarker, renewDelay, timeLeft, tvContinuation, tvDeadline, tvLink, tvPlace, tvShortLink, withoutTvCode } from './tvSignInModel';
-import { errText } from './profile';
+import { errText, openProfileTab } from './profile';
 import { emailProviders, providerName } from './accountLinks';
 import { STORAGE_PREFIX } from '../../brand';
 import { t } from '../../i18n';
@@ -234,6 +234,16 @@ export function signInFirstSheet(menu: Menu, drop: () => void): void {
           return false;
         },
       })),
+      // No account yet (§3.11 step 3): PERFIL's sign-up with an email; the account it makes brings the code entry back.
+      {
+        label: t('tvlink.createEmail'),
+        onClick: () => {
+          signIn = true;
+          keep();
+          queueMicrotask(() => openProfileTab(menu, 'register', null));
+          return true;
+        },
+      },
       {
         label: t('tvlink.signIn'),
         primary: providers.length === 0,
