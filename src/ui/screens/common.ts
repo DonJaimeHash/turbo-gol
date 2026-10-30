@@ -9,6 +9,9 @@ import { REGIONS } from '../../net/account';
 import type { RegionId } from '../../net/account';
 import type { Menu } from '../Menu';
 import { regionName } from '../names';
+import { onKeypad } from '../components/keypad';
+import type { KeypadKind } from '../components/keypad';
+import { CODE_LENGTH, cleanCode } from '../../net/emailAuth';
 import { t } from '../../i18n';
 
 export interface CycleOption<T> {
@@ -39,11 +42,43 @@ export function cycler<T>(label: string, options: readonly CycleOption<T>[], get
   return { el: h('div.mn-row', null, h('span.mn-row-label', null, label), btn), refresh };
 }
 
+/** field()'s options (the sign-in PR 8 ones: hint, inputmode, readOnly, keypad, reveal). */
+export interface FieldOptions {
+  type?: string;
+  placeholder?: string;
+  autocomplete?: string;
+  maxLength?: number;
+  value?: string;
+  enterkeyhint?: 'next' | 'go' | 'done';
+  /** A line under the field that says what it is for (aria-describedby). */
+  hint?: string;
+  /** The phone keyboard to show ('email': '@' on it; 'numeric': digits). */
+  inputmode?: 'email' | 'numeric' | 'text';
+  readOnly?: boolean;
+  /** mn-keypad's keys for it where there is no fine pointer (components/keypad.ts): 'email' has + and @, 'digits' 0-9. */
+  keypad?: KeypadKind;
+  /** A password's MOSTRAR / SHOW beside it (aria-pressed): the field shows its text while pressed. */
+  reveal?: boolean;
+}
+
+/** A labelled field: its input, its error line (null clears it), and `note` for a line that is no error (a code accepted). */
+export interface Field {
+  el: HTMLElement;
+  input: HTMLInputElement;
+  error: (msg: string | null) => void;
+  note: (msg: string | null) => void;
+}
+
+let fieldIds = 0;
+
 /**
- * A labelled text field with an error line under it. `enterkeyhint`: what a phone keyboard's Enter
- * says ('next' on a form's fields but the last, 'go' / 'done' on that one: profile.ts onEnter).
+ * A labelled text field with an error line under it, a polite live region that names the field
+ * (aria-describedby: its hint, then its error; aria-invalid while it shows one). `enterkeyhint`:
+ * what a phone keyboard's Enter says ('next' on a form's fields but the last, 'go' / 'done' on that
+ * one: profile.ts onEnter).
  */
-export function field(label: string, opts: { type?: string; placeholder?: string; autocomplete?: string; maxLength?: number; value?: string; enterkeyhint?: 'next' | 'go' | 'done' } = {}): { el: HTMLElement; input: HTMLInputElement; error: (msg: string | null) => void } {
+export function field(label: string, opts: FieldOptions = {}): Field {
+  const id = `mn-field-${++fieldIds}`;
   const input = h('input.mn-input', {
     type: opts.type ?? 'text',
     placeholder: opts.placeholder ?? '',
@@ -52,19 +87,65 @@ export function field(label: string, opts: { type?: string; placeholder?: string
     value: opts.value ?? '',
     spellcheck: false,
     enterKeyHint: opts.enterkeyhint,
-    'data-nav': true,
+    inputMode: opts.inputmode,
+    readOnly: opts.readOnly === true,
+    'data-nav': opts.readOnly === true ? undefined : true,
   });
-  const err = h('div.mn-field-error', { hidden: true });
-  const el = h('label.mn-field', null, h('span.mn-field-label', null, label), input, err);
-  return {
-    el,
-    input,
-    error: (msg) => {
-      err.hidden = msg === null;
-      err.textContent = msg ?? '';
-      el.classList.toggle('mn-field-bad', msg !== null);
-    },
+  if (opts.keypad !== undefined) onKeypad(input, { kind: opts.keypad });
+  const hint = opts.hint !== undefined ? h('div.mn-field-hint', { id: id + '-hint' }, opts.hint) : null;
+  const err = h('div.mn-field-error', { id: id + '-err', hidden: true, 'aria-live': 'polite' });
+  const describe = (): void => {
+    const ids = [hint !== null ? hint.id : null, err.hidden ? null : err.id].filter((x): x is string => x !== null);
+    if (ids.length > 0) input.setAttribute('aria-describedby', ids.join(' '));
+    else input.removeAttribute('aria-describedby');
   };
+  describe();
+  const show = opts.reveal === true ? revealButton(input) : null;
+  const box = show !== null ? h('span.mn-field-row', null, input, show) : input;
+  const el = h('label.mn-field', null, h('span.mn-field-label', null, label), box, hint, err);
+  const line = (msg: string | null, bad: boolean): void => {
+    err.hidden = msg === null;
+    err.textContent = msg ?? '';
+    err.classList.toggle('mn-field-ok', msg !== null && !bad);
+    el.classList.toggle('mn-field-bad', msg !== null && bad);
+    if (msg !== null && bad) input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+    describe();
+  };
+  return { el, input, error: (msg) => line(msg, true), note: (msg) => line(msg, false) };
+}
+
+/** MOSTRAR / SHOW: the password field `input` shows its text while pressed (aria-pressed), and its dots again on a second press. */
+export function revealButton(input: HTMLInputElement): HTMLButtonElement {
+  const b = h('button.mn-btn.mn-field-show', { type: 'button', 'data-nav': true, 'aria-pressed': 'false' }, t('auth.show'));
+  b.addEventListener('click', (e) => {
+    e.preventDefault(); // inside a <label>: no click on the field
+    const on = input.type === 'password';
+    input.type = on ? 'text' : 'password';
+    b.setAttribute('aria-pressed', String(on));
+  });
+  return b;
+}
+
+/**
+ * The 6-digit code of a mail (the sign-in design's §3.0): one field, `inputmode=numeric`,
+ * `autocomplete=one-time-code` (a phone offers the code from its mail), the label read out as
+ * "6-digit code"; a paste's spaces and dashes are dropped (emailAuth.ts cleanCode) and the sixth
+ * digit calls `full`. mn-keypad's digits where there is no fine pointer.
+ */
+export function codeField(full: (code: string) => void): Field {
+  const f = field(t('auth.codeLabel'), { autocomplete: 'one-time-code', inputmode: 'numeric', maxLength: 16, enterkeyhint: 'go', keypad: 'digits' });
+  f.input.classList.add('mn-code-input');
+  f.input.setAttribute('aria-label', t('auth.codeLabel'));
+  f.input.setAttribute('pattern', '[0-9]*');
+  let last = '';
+  f.input.addEventListener('input', () => {
+    const code = cleanCode(f.input.value);
+    if (code !== f.input.value) f.input.value = code;
+    if (code.length === CODE_LENGTH && code !== last) full(code);
+    last = code;
+  });
+  return f;
 }
 
 /** The region cycler (Auto + every region); changing it re-polls the population. */

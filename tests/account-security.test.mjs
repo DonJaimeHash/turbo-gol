@@ -183,13 +183,16 @@ test('authz-1: a password re-authentication sends the client key with the Bearer
   assert.deepEqual(acc.me.linkedAt, { discord: 5 });
 });
 
-// ---- auth-3 / authz-2 / auth-persist-1: PERFIL asks "confirm it is you" before a first password or codes ----
+// ---- auth-3 / authz-2 / auth-persist-1: a first password only from the mailbox (sign-in PR 8); links behind "confirm it is you" ----
 
-test('auth-3: PERFIL sends a first password, new codes without a password, a link and an unlink through "confirm it is you"', async () => {
+test('auth-3: PERFIL never sets a first password or mints codes from a Bearer: CREAR CONTRASEÑA mails a link to the verified address; a link and an unlink go through "confirm it is you"', async () => {
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
-  assert.match(src, /t\('profile\.setPassword'\), \(\) => fresh\(passwordDialog\)/, 'a first password');
-  assert.match(src, /hasPassword === false \? fresh\(codesDialog\) : codesDialog\(\)/, 'codes without a password');
+  assert.match(src, /t\('profile\.createPassword'\)[\s\S]{0,200}acc\.passwordLink\(\)/, "a first password: a link to the account's own mailbox");
+  assert.match(src, /me\.emailVerified !== true[\s\S]{0,120}t\('auth\.addEmailFirst'\)/, 'without a verified address: add one first');
+  assert.doesNotMatch(src, /newRecoveryCodes|codesDialog|showRecoveryCodes/, 'no recovery codes are minted any more');
+  const ac = await readFile(new URL('../src/net/AccountClient.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(ac, /\/api\/auth\/(?:register|recovery-codes|password)'/, 'the routes PR 7 retired (410) are never called');
   assert.match(src, /fresh\(\(\) => \(window\.location\.href = acc\.oauthUrl\(p, true\)\)\)/, 'a link');
   assert.match(src, /fresh\(\(\) => \{\s*void acc\.unlink\(p\)/, 'an unlink');
   assert.match(src, /acc\.oauthUrl\(p, 'reauth'\)/, 'the provider round trip');
@@ -204,26 +207,26 @@ test('auth-5 (sign-in PR 4): login and recover send a solved anti-bot token ever
     { '/api/auth/login': (body) => (body.turnstileToken === 'tok-2' ? res(200, SESSION()) : res(403, { error: 'turnstile_failed' })) },
     { antiBot: async () => 'tok-' + ++tokens },
   );
-  const s = await acc.login('Ana', 'una contraseña');
+  const s = await acc.legacySignIn('Ana', 'una contraseña');
   assert.equal(s.name, 'Ana');
   assert.deepEqual(calls.map((c) => c.body.turnstileToken), ['tok-1', 'tok-2'], 'one token per request, a new one for the retry');
   const { acc: banned, calls: c2 } = client({ '/api/auth/login': () => res(403, { error: 'banned' }) }, { antiBot: async () => 'tok' });
-  await assert.rejects(banned.login('Ana', 'una contraseña'), (e) => e.code === 'banned');
+  await assert.rejects(banned.legacySignIn('Ana', 'una contraseña'), (e) => e.code === 'banned');
   assert.equal(c2.length, 1);
   const { acc: twice, calls: c3 } = client({ '/api/auth/login': () => res(403, { error: 'turnstile_failed' }) }, { antiBot: async () => 'tok' });
-  await assert.rejects(twice.login('Ana', 'una contraseña'), (e) => e.code === 'turnstile_failed' && !/^error\./.test(e.message));
+  await assert.rejects(twice.legacySignIn('Ana', 'una contraseña'), (e) => e.code === 'turnstile_failed' && !/^error\./.test(e.message));
   assert.equal(c3.length, 2, 'once more, never a loop');
   const { acc: rec, calls: c4 } = client({ '/api/auth/recover': () => res(200, { ...SESSION(), codesLeft: 7 }) }, { antiBot: async () => 'tok-r' });
   await rec.recover('Ana', 'AAAA-BBBB', 'una contraseña nueva');
   assert.equal(c4[0].body.turnstileToken, 'tok-r');
   const { acc: broken } = client({}, { antiBot: async () => Promise.reject(new Error('widget')) });
-  await assert.rejects(broken.login('Ana', 'una contraseña'), (e) => e.code === 'turnstile_failed');
+  await assert.rejects(broken.legacySignIn('Ana', 'una contraseña'), (e) => e.code === 'turnstile_failed' && e.status === 0, 'the check never ran here (PERFIL says: allow the site, or use a provider)');
 });
 
 test('auth-5 (sign-in PR 4): a username paused for new browsers (30 minutes to an hour) keeps its wait, and PERFIL says what to do in minutes instead of counting seconds', async () => {
   const WAIT = 30 * 60_000 - 1000;
   const { acc } = client({ '/api/auth/login': () => res(429, { error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: WAIT }) });
-  const e = await acc.login('Ana', 'una contraseña').then(() => null, (err) => err);
+  const e = await acc.legacySignIn('Ana', 'una contraseña').then(() => null, (err) => err);
   assert.ok(e.code === 'throttled' && e.retryAfterMs === WAIT);
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
@@ -237,30 +240,26 @@ test('auth-5 (sign-in PR 4): a username paused for new browsers (30 minutes to a
   assert.equal(es['profile.retryTomorrow'], undefined, 'no pause lasts until tomorrow any more');
 });
 
-test('sign-in PR 4: login sends both keys of the typed password (the legacy one re-keys it), sign-up and recovery the current key only, every proof both; a session of before levels is never fresh', async () => {
+test('sign-in PR 4 and 8: the username sign-in sends both keys of the typed password (the legacy one re-keys it); a password change proves the current one by both and stores the current key; a rename sends no password; a session of before levels is never fresh', async () => {
   const ACC = await import('../src/net/account.ts');
   const { acc, calls } = client({
     '/api/auth/login': () => res(200, SESSION({ authAt: Date.now() })),
-    '/api/auth/register': () => res(200, { ...SESSION(), recoveryCodes: [] }),
-    '/api/auth/password': () => res(200, { ok: true }),
-    '/api/auth/recovery-codes': () => res(200, { recoveryCodes: [] }),
+    '/api/me/password': () => res(200, { ok: true }),
     '/api/me/username': () => res(200, SESSION({ name: 'Ana2' })),
     '/api/me': () => res(200, { playerId: 'abcdef0123456789', name: 'Ana2', providers: ['password'], hasPassword: true }),
   });
-  await acc.login(' Ana ', 'una contraseña');
+  await acc.legacySignIn(' Ana ', 'una contraseña');
   const [legacy, current] = [await ACC.legacyPasswordKey('Ana', 'una contraseña'), await ACC.passwordKey('una contraseña')];
   assert.deepEqual(calls[0].body, { username: 'Ana', password: legacy, passwordV2: current });
   assert.notEqual(legacy, current);
   assert.equal(await ACC.passwordKey('una contraseña'), await ACC.passwordKey('una contraseña'.normalize('NFD')), 'NFKC first');
   assert.equal(acc.fresh(), false, 'an authAt without a level (a session of before levels) is level 0');
-  await acc.register('Beto', 'otra clave larga');
-  assert.deepEqual(calls.at(-1).body, { username: 'Beto', passwordV2: await ACC.passwordKey('otra clave larga') });
   await acc.changePassword('una contraseña', 'otra clave larga');
-  assert.deepEqual(calls.at(-1).body, { passwordV2: await ACC.passwordKey('otra clave larga'), oldPassword: await ACC.legacyPasswordKey(acc.account.name, 'una contraseña'), oldPasswordV2: current });
-  await acc.newRecoveryCodes('una contraseña');
-  assert.deepEqual(Object.keys(calls.at(-1).body).sort(), ['password', 'passwordV2']);
-  await acc.rename('Ana2', 'una contraseña');
-  assert.deepEqual(Object.keys(calls.find((c) => c.path === '/api/me/username').body).sort(), ['password', 'passwordV2', 'username'], 'no new-name key: the current key has no name in it');
+  assert.equal(calls.at(-1).path, '/api/me/password');
+  assert.deepEqual(calls.at(-1).body, { current, legacy: await ACC.legacyPasswordKey(acc.account.name, 'una contraseña'), password: await ACC.passwordKey('otra clave larga'), lang: 'en' });
+  assert.equal(calls.at(-1).headers.authorization, 'Bearer jwt-ana');
+  await acc.rename('Ana2');
+  assert.deepEqual(calls.find((c) => c.path === '/api/me/username').body, { username: 'Ana2', lang: 'en' }, 'the Bearer only: the name salts no password any more');
   for (const c of calls) for (const v of Object.values(c.body ?? {})) assert.notEqual(v, 'una contraseña', 'never the typed password');
 });
 
@@ -272,7 +271,7 @@ test('sign-in PR 4: "confirm it\'s you" asks for the level the server names; at 
   assert.equal(e.level, 2, 'the level comes with the refusal');
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
-  assert.match(src, /const fresh = \(go: \(\) => void, level: 1 \| 2 = 1\): void => \{\s*if \(acc\.fresh\(level\)\)/, 'the sheet is for a level');
+  assert.match(src, /const fresh = \(go: \(\) => void, level: 1 \| 2 = 1, force = false\): void => \{\s*if \(!force && acc\.fresh\(level\)\)/, 'the sheet is for a level');
   assert.match(src, /const offered = level === 1 \? own : \[\];/, 'no provider at level 2');
   assert.match(src, /e\.code === 'reauth_required' && e\.level > level \? unlinkNow\(p, 2\)/, 'an unlink asked for level 2 asks again, once');
   const es = (await import('../src/locales/es.ts')).default;

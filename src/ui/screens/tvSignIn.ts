@@ -13,8 +13,10 @@
  *
  * The phone (installTvLink): the /tv page is the game with these sheets over Inicio. The path goes
  * back to / at once (a reload is the game). It waits for its turn (Game.ts urlSheets: an OAuth
- * result and its confirm sheet first). Signed out: "Sign in on this phone first" with ENTRAR CON
- * {provider} and INICIAR SESIÓN (PERFIL); a marker { at } waits in sessionStorage (30 minutes, never
+ * result and its confirm sheet first, then a mailed link's sheets or a sign-up's code step).
+ * Signed out: "Sign in on this phone first" with ENTRAR CON {provider} and INICIAR SESIÓN
+ * (PERFIL), none while a sign-up waits for its mailed code (PERFIL's code step is up, and the
+ * account it makes brings the code entry); a marker { at } waits in sessionStorage (30 minutes, never
  * the code), so any sign-in (a provider's round trip, the confirm sheet, PERFIL) comes back to the
  * code entry; CANCELAR or Back there forgets it. Signed in: the code
  * cells, always empty: the code the TV in front of you shows is typed, never taken from the link
@@ -36,8 +38,7 @@ import { codeCells } from '../components/codecells';
 import { CODE_LENGTH, spacedCode } from './lobbyModel';
 import { TV_RENEWS, isTvPath, pendingMarker, renewDelay, timeLeft, tvContinuation, tvDeadline, tvLink, tvPlace, tvShortLink, withoutTvCode } from './tvSignInModel';
 import { errText } from './profile';
-import { providerName } from './accountLinks';
-import type { OAuthProvider } from '../../net/account';
+import { emailProviders, providerName } from './accountLinks';
 import { STORAGE_PREFIX } from '../../brand';
 import { t } from '../../i18n';
 
@@ -215,7 +216,8 @@ function kept(): boolean {
 export function signInFirstSheet(menu: Menu, drop: () => void): void {
   let signIn = false;
   const acc = menu.host.accounts;
-  const providers = ((menu.cfg?.oauth ?? []) as OAuthProvider[]).filter((p) => p === 'google' || p === 'discord');
+  // The configured ones, Google left out inside another app's browser (§3.0), as PERFIL's.
+  const providers = emailProviders(menu);
   menu.modal({
     title: t('tvlink.title'),
     body: h('p', null, t('tvlink.signInFirst')),
@@ -226,6 +228,8 @@ export function signInFirstSheet(menu: Menu, drop: () => void): void {
         onClick: () => {
           signIn = true;
           keep();
+          // "Continue as … · {provider}" once its round trip signs this phone in (as PERFIL's buttons).
+          acc.providerStarted(p);
           window.location.href = acc.oauthUrl(p);
           return false;
         },
@@ -368,6 +372,9 @@ export function installTvLink(menu: Menu, turn: () => Promise<void> = () => Prom
     },
     signInFirst: (dropped) => {
       keep();
+      // A sign-up waiting for its mailed code (PERFIL's code step, which the arbiter's 'account'
+      // step brought back): no sheet over it; the account it makes brings the code entry.
+      if (acc.signupAttempt() !== null) return;
       signInFirstSheet(menu, () => {
         dropped();
         forget();

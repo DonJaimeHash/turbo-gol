@@ -94,11 +94,13 @@
 // line ("Reconnecting… (attempt 2/5)", "Back in the match") must stay on screen and unclipped.
 //
 // The TV's typing and sign-in (plan PR 14, 'tv': window.__tvSignIn, screens/tvSignInSamples.ts): mn-keypad
-// over PERFIL's password and the code cells' sheet where there is no fine pointer (the
-// TVs, the phones, the tablet), which fails it off screen, a key under 32 x 24 px or its text cut, no
-// key focused, or a password's text shown; the TV's sign-in sheet (a code, expired) on the TVs; the
-// phone's /tv sheets (sign in first, the code, the question with a long name, a refusal) and the
-// anti-bot sheet everywhere.
+// over a locked lobby's password, the code cells' sheet, an address (the forgot sheet: + and @) and a
+// mailed code's digits where there is no fine pointer (the TVs, the phones, the tablet), which fails it
+// off screen, a key under 32 x 24 px or its text cut, no key focused, or a password's text shown; the
+// TV's sign-in sheet (a code, expired) on the TVs; the phone's /tv sheets (sign in first, the code, the
+// question with a long name, a refusal) and the anti-bot sheet everywhere. The email accounts (sign-in
+// PR 8): PERFIL's code step with a sample attempt (not on a TV, whose PERFIL has no form), the forgot,
+// reset and verify sheets with a long name and address everywhere.
 //
 // Exit 1 when the shell overflows anywhere, or Inicio fails a check (CI's ui-fit job runs it as
 // information until plan PR 6).
@@ -136,7 +138,7 @@ const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['h
 // The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
 const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
 // PR 14's samples (window.__tvSignIn): the keypad's where no fine pointer, 'tv*' on a TV, the rest everywhere.
-const TV_KINDS = ['keypad-password', 'keypad-code', 'tv', 'tv-expired', 'tvlink-signin', 'tvlink-code', 'tvlink-ask', 'tvlink-refused', 'antibot'];
+const TV_KINDS = ['keypad-password', 'keypad-code', 'keypad-email', 'keypad-digits', 'tv', 'tv-expired', 'tvlink-signin', 'tvlink-code', 'tvlink-ask', 'tvlink-refused', 'antibot', 'signup-code', 'forgot', 'reset', 'verify'];
 /** The keypad on screen, its keys big enough and whole, one focused, a password in dots. */
 const KEYPAD_CHECK = (kind) => `(() => {
   const out = [];
@@ -529,7 +531,7 @@ try {
         return;
       }
       if (screen === 'tv') {
-        const kinds = input !== own ? [] : TV_KINDS.filter((k) => (k.startsWith('keypad') ? size.tv || size.mobile : k === 'tv' || k === 'tv-expired' ? size.tv : true));
+        const kinds = input !== own ? [] : TV_KINDS.filter((k) => (k.startsWith('keypad') ? size.tv || size.mobile : k === 'tv' || k === 'tv-expired' ? size.tv : k === 'signup-code' ? !size.tv : true));
         for (const kind of kinds) {
           await page.eval(`(window.__tvSignIn(${JSON.stringify(kind)}), true)`);
           await sleep(400);

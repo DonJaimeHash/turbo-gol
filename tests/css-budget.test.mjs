@@ -246,9 +246,13 @@ test('the focus ring is outline + pseudo-element + a spread-only ring that super
 // 162,009 B), the cap that plus about 0.6 KB. Security 3 adds PERFIL's rows of linked providers and
 // of DISPOSITIVOS (profile.css .mn-prof-device, 0.2 KB; 162,186 B on main alone) and the guest
 // names drop PERFIL's guest-name field (0.1 KB): 162,308 B with all three, under the same cap.
+// Sign-in PR 8 adds the email accounts' forms (profile.css: a password's MOSTRAR beside it, a
+// field's hint and accepted line, the code field, CREAR CUENTA drawn off before the code, the
+// address a password manager saves kept out of sight, the code step's links, about 0.8 KB):
+// 163,071 B (main 162,308 B), the cap that plus about 0.6 KB.
 // It steps down to 70 KB once PR 15 deletes menu.css. Raising it is the owner's call, recorded in
 // the PR.
-const CSS_BUDGET = 162_850;
+const CSS_BUDGET = 163_650;
 
 test(`the CSS stays within ${(CSS_BUDGET / 1024).toFixed(1)} KB minified`, () => {
   let total = 0;

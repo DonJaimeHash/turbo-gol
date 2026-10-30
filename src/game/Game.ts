@@ -191,6 +191,7 @@ import { UrlSheets, takeDetour } from '../ui/screens/accountLinksModel';
 import { installTvSamples } from '../ui/screens/tvSignInSamples';
 import { installSalaSamples } from '../ui/screens/lobbySamples';
 import { openLostSheet } from '../ui/screens/match/lost';
+import { installAccountLinks } from '../ui/screens/accountLinks';
 import { REGIONS, isPlaylist, isRegion } from '../net/account';
 import type { RegionId } from '../net/account';
 import { isNodeHost, type QueueResult } from '../net/protocol';
@@ -854,10 +855,11 @@ export class Game implements P2PGameHooks {
   readonly accounts: AccountClient;
   /**
    * The one arbiter of URL-driven sheets (the sign-in design's §3.0): the OAuth result (#auth=…, its
-   * confirm sheet), then the phone's /tv, each after the one before is done (a join link, #sala=…,
+   * confirm sheet), then a mailed link (/account#verify=…, #reset=…, #forgot, or a sign-up waiting
+   * for its code), then the phone's /tv, each after the one before is done (a join link, #sala=…,
    * waits for no sheet at all: lobby.ts installJoinLink).
    */
-  private readonly urlSheets = new UrlSheets(['auth', 'tv'] as const);
+  private readonly urlSheets = new UrlSheets(['auth', 'account', 'tv'] as const);
   /** Training records: this browser for a guest, the account (server + local copy) when signed in. */
   readonly trainingStore: TrainingStore;
   /** Settings > Experimental: the account's switch and physics presets (server + local copy); nothing for a guest. */
@@ -1168,6 +1170,12 @@ export class Game implements P2PGameHooks {
     installFinalSample(this.menu);
     installSalaSamples(this.menu);
     installTvSamples(this.menu);
+    // A mailed link (/account#verify=… / #reset=…, sign-in PR 8) or a sign-up waiting for its code:
+    // the URL cleared now, its sheet in the arbiter's 'account' turn (after the account's restore
+    // below and any confirm sheet), the phone's /tv once its sheets are over.
+    void installAccountLinks(this.menu, () => this.urlSheets.turn('account'))
+      .catch((err: unknown) => console.warn('[accounts] link failed', err))
+      .finally(() => this.urlSheets.done('account'));
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad, ui: this.settings.ui }) : null;

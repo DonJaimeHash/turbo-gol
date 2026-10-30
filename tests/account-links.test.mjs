@@ -234,3 +234,50 @@ test('AccountClient: "I have one" signs in with linkPending and says what was li
   assert.deepEqual(await acc.tvRenew('ABC234', 's'.repeat(43)), { code: 'DEF567', expiresAt: 1, ttlMs: 240_000 });
   assert.deepEqual(srv.calls.at(-1), { path: '/api/auth/tv/renew', body: { code: 'ABC234', secret: 's'.repeat(43) } });
 });
+
+// ---- the merge with sign-in PR 8: "I have one" with an email account; "continue as" through the confirm step ----
+
+test('AccountClient: "I have one" with an address signs in by email with linkPending (POST /api/auth/signin), says what was linked or why not; a username\'s bad_credentials reads "username"', async () => {
+  const srv = fakeServer({
+    '/api/auth/signin': (b) => res(200, { ...SESSION({ name: 'Ana', authLvl: 2 }), ...(b.email === 'ana@example.com' ? { linked: ['discord'] } : { linkError: 'wrong_account' }) }),
+    '/api/auth/login': () => res(401, { error: 'bad_credentials', message: 'Usuario o contraseña incorrectos' }),
+  });
+  const store = memStorage();
+  const acc = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: store, session: memStorage(), antiBot: async () => 'tok' });
+  const a = await acc.signInAndLink(' Ana@Example.com ', 'una contraseña larga');
+  assert.deepEqual([a.session.name, a.linked, a.linkError], ['Ana', ['discord'], null]);
+  assert.equal(acc.account.name, 'Ana', 'adopted');
+  const body = srv.calls[0].body;
+  assert.equal(srv.calls[0].path, '/api/auth/signin');
+  assert.deepEqual(Object.keys(body).sort(), ['email', 'linkPending', 'password', 'turnstileToken']);
+  assert.equal(body.email, 'ana@example.com');
+  assert.equal(body.linkPending, true);
+  assert.equal(body.password, await ACC.passwordKey('una contraseña larga'), 'the current key only, never the password');
+  assert.deepEqual(acc.lastSignIn(), { name: 'Ana', method: 'email' }, '"continue as" says email');
+  const b = await acc.signInAndLink('otra@example.com', 'una contraseña larga');
+  assert.deepEqual([b.linked, b.linkError], [[], 'wrong_account']);
+  await assert.rejects(acc.signInAndLink('ana', 'x'), (e) => e.code === 'bad_email');
+  await assert.rejects(acc.signInAndLink('ana@example.com', ''), (e) => e.code === 'empty');
+  assert.equal(srv.calls.length, 2, 'refused here: no request');
+  const legacy = await acc.loginAndLink('Ana', 'una contraseña larga').catch((e) => e);
+  assert.deepEqual([legacy.code, legacy.message], ['bad_credentials', 'Wrong username or password'], 'the username branch says so (bad_credentials reads "email" since sign-in PR 8)');
+});
+
+test('AccountClient: a provider button pressed, then the confirm sheet\'s CREAR: "continue as" offers that provider; a password sign-in on "I have one" forgets the mark', async () => {
+  const session = memStorage();
+  const storage = memStorage();
+  const srv = fakeServer({
+    '/api/auth/pending/create': (b) => res(200, SESSION({ name: b.username })),
+    '/api/auth/signin': () => res(200, { ...SESSION({ name: 'Ana' }), linked: ['discord'] }),
+    '/api/auth/refresh': () => res(200, SESSION({ name: 'Ana' })),
+  });
+  const acc = new AC.AccountClient({ fetchFn: srv.fetchFn, storage, session, antiBot: async () => 'tok' });
+  acc.providerStarted('discord');
+  await acc.createAccount('Nadia', { news: false, lang: 'es', tz: '' });
+  assert.deepEqual(acc.lastSignIn(), { name: 'Nadia', method: 'discord' });
+  acc.providerStarted('discord');
+  await acc.signInAndLink('ana@example.com', 'una contraseña larga');
+  assert.deepEqual(acc.lastSignIn(), { name: 'Ana', method: 'email' });
+  await acc.restore();
+  assert.deepEqual(acc.lastSignIn(), { name: 'Ana', method: 'email' }, 'a later refresh does not turn it into the provider');
+});

@@ -61,6 +61,19 @@ other committed file: a test fails if one sets it) and restart `npm run dev`. PE
 links. Both answer 404 unless `DEV_AUTH=1` and the Worker is reached on a loopback host
 (127.0.0.1, localhost) from no page or a loopback one, so they never work on a deploy.
 
+Email accounts work locally too, with the stub mailer and no mail sent. In PERFIL, **CREAR CUENTA
+GRATIS** takes an address (any you like: nothing is delivered), and its 6-digit code is in `GET
+/api/dev/mail` (`code`); its `link` (`http://localhost:5173/account#verify=…`, your page's own
+origin) opens the same finish on another tab. **¿Olvidaste tu contraseña?** puts an
+`/account#reset=…` link there the same way. The page clears a link's token from the address bar at
+once and keeps it in sessionStorage only until its request settles; the sign-up's attempt id stays
+in sessionStorage for 30 minutes, so a reload comes back to the code step. Nothing of it goes to
+localStorage but "continue as" (`turbogol.lastSignIn`: a name and how it signed in, never an
+address). The code's and the forms' pure parts are `src/net/emailAuth.ts`; their tests are
+`tests/account-client.test.mjs` and `tests/menu-accounts.test.mjs`, and the layout check's samples
+are `window.__tvSignIn('signup-code' | 'forgot' | 'reset' | 'verify' | 'keypad-email' |
+'keypad-digits')` (scripts/ui-fit.mjs).
+
 One exception, on your own network: with `TG_LAN=1` (above), Vite forwards the network's requests to
 the Worker on 127.0.0.1, so with `DEV_AUTH=1` the Worker cannot tell them from yours. A page opened on
 another device is still refused, by its Origin, but any script on the network (a curl, which sends no

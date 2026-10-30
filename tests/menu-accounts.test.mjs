@@ -5,6 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -15,6 +17,14 @@ registerHooks({
       if (relative && err && err.code === 'ERR_MODULE_NOT_FOUND' && !/\.[a-z]+$/i.test(specifier)) return nextResolve(specifier + '.ts', context);
       throw err;
     }
+  },
+  // The screens import package.json as Vite does (no `with { type: 'json' }`): its version, as a module.
+  load(url, context, nextLoad) {
+    if (url.endsWith('/package.json') && context.importAttributes?.type !== 'json') {
+      const { version } = JSON.parse(readFileSync(fileURLToPath(url), 'utf8'));
+      return { format: 'module', shortCircuit: true, source: `export const version = ${JSON.stringify(version)}; export default { version: ${JSON.stringify(version)} };` };
+    }
+    return nextLoad(url, context);
   },
 });
 
@@ -70,7 +80,7 @@ function fakeServer(handlers) {
 
 const SESSION = (name, expiresAt) => ({ kind: 'account', playerId: 'abcdef0123456789', name, session: 'jwt-' + name, expiresAt });
 
-test('AccountClient: login sends the client key (never the password), adopts the session, keeps a hint; logout clears both', async () => {
+test('AccountClient: the username sign-in sends the client key (never the password), adopts the session, keeps a hint; logout clears both', async () => {
   const srv = fakeServer({
     '/api/auth/login': (b) => res(200, SESSION('Tomi', Date.now() + 3600_000)),
     '/api/auth/logout': () => res(200, { ok: true }),
@@ -79,7 +89,7 @@ test('AccountClient: login sends the client key (never the password), adopts the
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage });
   let changes = 0;
   a.subscribe(() => changes++);
-  await a.login('Tomi', 'correct horse battery');
+  await a.legacySignIn('Tomi', 'correct horse battery');
   const sent = srv.calls[0].body;
   assert.equal(sent.username, 'Tomi');
   assert.notEqual(sent.password, 'correct horse battery');
@@ -90,24 +100,28 @@ test('AccountClient: login sends the client key (never the password), adopts the
   await a.logout();
   assert.equal(a.signedIn, false);
   assert.equal(a.hintName, null);
-  await assert.rejects(a.login('', ''), (e) => e instanceof AC.AccountError && e.code === 'empty');
+  await assert.rejects(a.legacySignIn('', ''), (e) => e instanceof AC.AccountError && e.code === 'empty');
 });
 
-test("AccountClient: server errors become AccountError with the code and the player's text for it; register validates first and sends the anti-bot token", async () => {
+test("AccountClient: server errors become AccountError with the code and the player's text for it (one bad_credentials, a text per form); the sign-up checks the name and the password first", async () => {
   const srv = fakeServer({
     '/api/auth/login': () => res(401, { error: 'bad_credentials', message: 'Usuario o contraseña incorrectos' }),
-    '/api/auth/register': (b) => (b.turnstileToken === 'tok' ? res(200, { ...SESSION(b.username, Date.now() + 3600_000), recoveryCodes: ['AAAA-BBBB'] }) : res(403, { error: 'turnstile_failed' })),
+    '/api/auth/signin': () => res(401, { error: 'bad_credentials', message: 'Correo o contraseña incorrectos' }),
+    '/api/auth/signup/finish': (b) => res(200, SESSION(b.username, Date.now() + 3600_000)),
   });
-  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, antiBot: async () => 'tok' });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, session: null, antiBot: async () => 'tok' });
   // The client's text for the code (English outside a browser; src/locales/es.ts has the server's Spanish).
-  await assert.rejects(a.login('x', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Wrong username or password');
-  await assert.rejects(a.register('ab', 'a fine password'), (e) => e.code === 'bad_username' && e.message === 'The username must be 3 to 16 characters long');
-  await assert.rejects(a.register('Mariana', 'short'), (e) => e.code === 'bad_password' && e.message === 'The password must be at least 8 characters');
-  const n = srv.calls.length;
-  assert.equal(n, 1, 'invalid input never reaches the server');
-  const r = await a.register('Mariana', 'a fine password');
-  assert.deepEqual(r.recoveryCodes, ['AAAA-BBBB']);
-  assert.equal(srv.calls.at(-1).body.turnstileToken, 'tok');
+  await assert.rejects(a.legacySignIn('x', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Wrong username or password');
+  await assert.rejects(a.signIn('x@example.com', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Wrong email or password');
+  const proof = { attempt: 'a'.repeat(43), code: '123456' };
+  await assert.rejects(a.signupFinish(proof, { username: 'ab', password: 'a fine password', news: false, email: 'mariana@example.com' }), (e) => e.code === 'bad_username' && e.message === 'The username must be 3 to 16 characters long');
+  await assert.rejects(a.signupFinish(proof, { username: 'Mariana', password: 'short', news: false, email: 'mariana@example.com' }), (e) => e.code === 'bad_password' && e.message === 'The password must be at least 8 characters');
+  await assert.rejects(a.signupFinish(proof, { username: 'Mariana', password: 'my mariana box', news: false, email: 'mariana@example.com' }), (e) => e.code === 'bad_password' && e.message === "The password can't contain your username");
+  await assert.rejects(a.signupFinish(proof, { username: 'Juana', password: 'mariana.perez22', news: false, email: 'Mariana.Perez+tg@gmail.com' }), (e) => e.code === 'bad_password' && e.message === "The password can't contain your email");
+  assert.equal(srv.calls.length, 2, 'invalid input never reaches the server');
+  const s = await a.signupFinish(proof, { username: 'Mariana', password: 'a fine password', news: true, email: 'mariana@example.com' });
+  assert.equal(s.name, 'Mariana');
+  assert.equal(srv.calls.at(-1).body.turnstileToken, undefined, 'the finish carries the mailbox proof, no anti-bot token');
   assert.equal(a.account.name, 'Mariana');
 });
 
@@ -115,7 +129,7 @@ test("AccountClient: a code without a server text still gets the client's text; 
   let answer = res(429, { error: 'rate_limited', message: 'rate_limited' });
   const srv = fakeServer({ '/api/auth/login': () => answer });
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
-  const rejects = (check) => assert.rejects(a.login('Tomi', 'a fine password'), (e) => e instanceof AC.AccountError && check(e));
+  const rejects = (check) => assert.rejects(a.legacySignIn('Tomi', 'a fine password'), (e) => e instanceof AC.AccountError && check(e));
   await rejects((e) => e.code === 'rate_limited' && e.status === 429 && e.message === 'Too many attempts, wait a minute');
   answer = res(429, { error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: 5000 });
   await rejects((e) => e.code === 'throttled' && e.retryAfterMs === 5000 && e.message === 'Too many attempts, wait a moment');
@@ -514,7 +528,7 @@ test('AccountClient.subscribe: every listener hears each change, an unsubscribed
       throw new Error('boom');
     });
     const off = a.subscribe(() => heard.push('game'));
-    await a.login('Tomi', 'correct horse battery');
+    await a.legacySignIn('Tomi', 'correct horse battery');
     assert.deepEqual(heard, ['menu', 'game']);
     off();
     await a.logout();
@@ -532,7 +546,7 @@ test('the account hint keeps { name, id }; a hint from before the id reads as no
     '/api/auth/logout': () => res(200, { ok: true }),
   });
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage });
-  await a.login('Tomi', 'correct horse battery');
+  await a.legacySignIn('Tomi', 'correct horse battery');
   assert.deepEqual(JSON.parse(storage.getItem(AC.ACCOUNT_HINT_KEY)), { name: 'Tomi', id: 'abcdef0123456789' });
   assert.deepEqual(AC.readAccountHint(storage), { name: 'Tomi', id: 'abcdef0123456789' });
   assert.equal(a.hintId, 'abcdef0123456789');
@@ -682,6 +696,659 @@ test("AccountClient cars and the hosts' shop: Bearer, paths and bodies; a car pi
   a.account = null;
   srv.calls.length = 0;
   const odd = new AC.AccountClient({ fetchFn: fakeServer({ '/api/auth/login': () => res(200, { ...SESSION('Tomi', Date.now() + 3600_000), car: 'batmobile' }) }).fetchFn, storage: null });
-  await odd.login('Tomi', 'correct horse battery');
+  await odd.legacySignIn('Tomi', 'correct horse battery');
   assert.equal('car' in odd.account, false);
+});
+
+// ---- sign-in PR 8: PERFIL's email forms (src/ui/screens/profile.ts, accountLinks.ts, common.ts) -------------
+//
+// The fields run on a small fake DOM (enough for src/ui/dom.ts h()); the screens, which need the
+// browser, are read as source, as the tests above read profile.ts.
+
+/** A fake element: attributes, properties, children, listeners, classList. */
+class FakeEl {
+  constructor(tag) {
+    this.tagName = tag.toUpperCase();
+    this.attrs = new Map();
+    this.children = [];
+    this.listeners = new Map();
+    this.className = '';
+    this.text = '';
+    this.dataset = {};
+    this.classList = {
+      add: (c) => (this.className = [...new Set([...this.className.split(' ').filter(Boolean), c])].join(' ')),
+      remove: (c) => (this.className = this.className.split(' ').filter((x) => x && x !== c).join(' ')),
+      toggle: (c, on) => ((on ?? !this.classList.contains(c)) ? this.classList.add(c) : this.classList.remove(c)),
+      contains: (c) => this.className.split(' ').includes(c),
+    };
+  }
+  setAttribute(k, v) {
+    this.attrs.set(k, String(v));
+  }
+  getAttribute(k) {
+    return this.attrs.has(k) ? this.attrs.get(k) : null;
+  }
+  removeAttribute(k) {
+    this.attrs.delete(k);
+  }
+  hasAttribute(k) {
+    return this.attrs.has(k);
+  }
+  appendChild(c) {
+    this.children.push(c);
+    if (c instanceof FakeEl) c.parentNode = this;
+    return c;
+  }
+  addEventListener(type, fn) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(fn);
+  }
+  dispatch(type, init = {}) {
+    const e = { type, target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...init };
+    for (const fn of this.listeners.get(type) ?? []) fn(e);
+    return e;
+  }
+  /** A button's click() (none while disabled, as a browser's), an input's focus() (document.activeElement). */
+  click() {
+    if (this.disabled !== true) this.dispatch('click');
+  }
+  focus() {
+    globalThis.document.activeElement = this;
+  }
+  /** One compound of classes and a tag ('button.mn-btn-primary', '.mn-sheet'). */
+  is(compound) {
+    const [tag, ...classes] = compound.split('.');
+    return (tag === '' || this.tagName === tag.toUpperCase()) && classes.every((c) => this.classList.contains(c));
+  }
+  closest(sel) {
+    for (let e = this; e; e = e.parentNode) if (e.is(sel)) return e;
+    return null;
+  }
+  /** Descendant selectors of compounds ('.mn-sheet-actions .mn-btn-primary'). */
+  querySelector(sel) {
+    const parts = sel.trim().split(/\s+/);
+    const last = parts.pop();
+    const within = (e) => {
+      const up = [];
+      for (let a = e.parentNode; a; a = a === this ? null : a.parentNode) up.push(a);
+      return up;
+    };
+    return (
+      this.all()
+        .slice(1)
+        .find((e) => {
+          if (!e.is(last)) return false;
+          const up = within(e);
+          let at = 0;
+          for (let i = parts.length - 1; i >= 0; i--) {
+            while (at < up.length && !up[at].is(parts[i])) at++;
+            if (at === up.length) return false;
+            at++;
+          }
+          return true;
+        }) ?? null
+    );
+  }
+  set textContent(v) {
+    this.text = String(v);
+    this.children = [];
+  }
+  get textContent() {
+    return this.text + this.children.map((c) => c.textContent ?? '').join('');
+  }
+  /** Every element under this one, this one first. */
+  all() {
+    return [this, ...this.children.filter((c) => c instanceof FakeEl).flatMap((c) => c.all())];
+  }
+}
+
+const withDom = async (fn) => {
+  const before = globalThis.document;
+  globalThis.document = { createElement: (tag) => new FakeEl(tag), createTextNode: (t) => ({ textContent: String(t) }), documentElement: new FakeEl('html'), getElementById: () => null };
+  try {
+    return await fn();
+  } finally {
+    globalThis.document = before;
+  }
+};
+
+const C = await import('../src/ui/screens/common.ts');
+const K = await import('../src/ui/components/keypad.ts');
+const { readFile } = await import('node:fs/promises');
+const PROFILE = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
+const LINKS = await readFile(new URL('../src/ui/screens/accountLinks.ts', import.meta.url), 'utf8');
+/** One `const name = …` function of a screen's source, up to the next one at its indent. */
+const fnOf = (src, name) => {
+  const m = new RegExp(`\\n( *)(?:export )?(?:async )?(?:const|function) ${name}\\b`).exec(src);
+  assert.ok(m, name);
+  const rest = src.slice(m.index + 1);
+  const next = rest.slice(1).search(new RegExp(`\\n${m[1]}(?:/\\*\\*|//|(?:export )?(?:async )?(?:const|function|let) )`));
+  return next < 0 ? rest : rest.slice(0, next + 1);
+};
+
+test('field(): its hint and its error name the input (aria-describedby), the error sets aria-invalid in a polite live line; a note is no error', async () => {
+  await withDom(() => {
+    const f = C.field('Email', { type: 'email', autocomplete: 'email', inputmode: 'email', hint: 'We send a code.', keypad: 'email' });
+    const [hint, err] = f.el.all().filter((e) => e.className === 'mn-field-hint' || e.className.startsWith('mn-field-error'));
+    assert.equal(f.input.autocomplete, 'email');
+    assert.equal(f.input.inputMode, 'email');
+    assert.equal(K.keypadSpec(f.input).kind, 'email', "mn-keypad's address keys where there is no fine pointer");
+    assert.equal(f.input.getAttribute('aria-describedby'), hint.id);
+    assert.equal(err.getAttribute('aria-live'), 'polite');
+    f.error('Check the email');
+    assert.equal(f.input.getAttribute('aria-invalid'), 'true');
+    assert.equal(f.input.getAttribute('aria-describedby'), `${hint.id} ${err.id}`);
+    assert.equal(err.hidden, false);
+    f.note('Code accepted');
+    assert.equal(f.input.getAttribute('aria-invalid'), null, 'a note is no error');
+    assert.ok(err.classList.contains('mn-field-ok'));
+    f.error(null);
+    assert.equal(err.hidden, true);
+    assert.equal(f.input.getAttribute('aria-describedby'), hint.id);
+    const ro = C.field('Email', { readOnly: true, value: 'ana@example.com' });
+    assert.equal(ro.input.readOnly, true);
+    assert.equal(ro.input.getAttribute('data-nav'), null, 'a read-only field is no stop for the arrows');
+  });
+});
+
+test('MOSTRAR / SHOW beside a password: aria-pressed, the text shown while pressed, dots again on a second press', async () => {
+  await withDom(() => {
+    const f = C.field('Password', { type: 'password', autocomplete: 'current-password', reveal: true });
+    const show = f.el.all().find((e) => e.className.includes('mn-field-show'));
+    assert.ok(show, 'the button');
+    assert.equal(show.textContent, 'SHOW');
+    assert.equal(show.getAttribute('aria-pressed'), 'false');
+    assert.equal(show.getAttribute('data-nav'), '', 'the arrows reach it');
+    assert.equal(show.dispatch('click').defaultPrevented, true, 'inside the label: no click on the field');
+    assert.equal(f.input.type, 'text');
+    assert.equal(show.getAttribute('aria-pressed'), 'true');
+    show.dispatch('click');
+    assert.equal(f.input.type, 'password');
+    assert.equal(show.getAttribute('aria-pressed'), 'false');
+  });
+});
+
+test("the code field: one input, numeric, one-time-code, read out as '6-digit code'; a paste's spaces and dashes go and the sixth digit checks it, once", async () => {
+  await withDom(() => {
+    const got = [];
+    const f = C.codeField((c) => got.push(c));
+    assert.equal(f.input.autocomplete, 'one-time-code');
+    assert.equal(f.input.inputMode, 'numeric');
+    assert.equal(f.input.getAttribute('aria-label'), '6-digit code');
+    assert.ok(f.input.maxLength >= 7, 'a pasted "123 456" is not cut before it is cleaned');
+    assert.equal(K.keypadSpec(f.input).kind, 'digits');
+    f.input.value = '12';
+    f.input.dispatch('input');
+    assert.deepEqual(got, []);
+    f.input.value = '123 - 456';
+    f.input.dispatch('input');
+    assert.equal(f.input.value, '123456');
+    assert.deepEqual(got, ['123456']);
+    f.input.dispatch('input');
+    assert.deepEqual(got, ['123456'], 'the same six digits are checked once');
+    f.input.value = '12345';
+    f.input.dispatch('input');
+    f.input.value = '123457';
+    f.input.dispatch('input');
+    assert.deepEqual(got, ['123456', '123457'], 'a retyped code checks again');
+  });
+});
+
+test("mn-keypad's digits (a mailed code: six, 0-9) and email (lower case, + and @, no space) kinds", () => {
+  assert.deepEqual(K.keypadRows('digits'), ['123', '456', '789', '0']);
+  assert.deepEqual(K.keypadActions('digits'), ['delete', 'done']);
+  let v = '';
+  for (const k of ['1', 'a', '2', '3', '4', '5', '6', '7']) v = K.keypadType(v, k, 'digits', 16);
+  assert.equal(v, '123456', 'digits only, six at most');
+  const rows = K.keypadRows('email').join('');
+  for (const ch of ['+', '@', '.', '-', '_']) assert.ok(rows.includes(ch), ch);
+  assert.equal(rows, rows.toLowerCase());
+  assert.deepEqual(K.keypadActions('email'), ['delete', 'done'], 'no case, no space');
+  v = '';
+  for (const k of ['A', 'n', 'a', '+', 't', 'g', '@', 'x', '.', 'c', 'o', 'space', ' ']) v = K.keypadType(v, k, 'email', 254);
+  assert.equal(v, 'ana+tg@x.co');
+});
+
+test("PERFIL's sign-in routes on '@': an address by email, a username by the legacy sign-in, and after the cutoff legacy_closed and CREAR CUENTA NUEVA with no request", () => {
+  const login = fnOf(PROFILE, 'loginForm');
+  assert.match(login, /const route = signInRoute\(user\.input\.value, legacyPhase\(\)\);/);
+  const closed = login.indexOf("if (route.kind === 'closed')");
+  assert.ok(closed > 0 && closed < login.indexOf('await acc.'), 'the cutoff answers before any request');
+  assert.match(login.slice(closed, login.indexOf('try {', closed)), /user\.error\(legacyClosedText\(\)\);\s*newAccount\.hidden = false;\s*return;/);
+  assert.match(login, /if \(route\.kind === 'email'\) await acc\.signIn\(route\.email, pass\.input\.value\);\s*else await acc\.legacySignIn\(route\.username, pass\.input\.value\);/);
+  assert.match(login, /route\.kind === 'legacy' \? t\('auth\.badLegacyHint'\) : providers\.length > 0 \? t\('auth\.badCredentialsHint', \{ providers \}\) : null/, "bad_credentials' hint by branch");
+  assert.match(login, /field\(closed \? t\('auth\.email'\) : t\('auth\.identity'\)/, '"Email or username" while usernames sign in');
+});
+
+test('PERFIL creates an account on one screen: the code, the name, the password, the news switch, CREAR CUENTA, REENVIAR, another email, YA TENGO CUENTA', () => {
+  const code = fnOf(PROFILE, 'signupCodeForm');
+  for (const part of ['codeField(', 'signupFinishFields(menu, a.email', "primary(t('profile.createAccount')", "'aria-disabled': 'true'", "t('auth.otherEmail')", "t('auth.haveAccount')", "t('auth.notThere')", 'resendTick = paint']) assert.ok(code.includes(part), part);
+  assert.match(code, /acc\.signupCheck\(\{ attempt: a\.attempt, code: c \}\)/, 'the sixth digit checks it');
+  assert.match(code, /resend\.disabled = left > 0;/, 'REENVIAR is off (the arrows skip it) until its minute');
+  assert.match(code, /if \(waited && left <= 0\) live\.textContent = t\('auth\.resendReady'\);/, 'said once when it turns on');
+  const finish = fnOf(LINKS, 'signupFinishFields');
+  assert.match(finish, /toggleSwitch\('auth-news', t\('auth\.signupNews'\), \(\) => news/);
+  assert.match(finish, /let news = false;/, 'the news switch starts at NO');
+  assert.match(finish, /if \(e\.detail\.suggest !== undefined\) name\.input\.value = e\.detail\.suggest;/, "a refused name: the server's free one in the field");
+  const email = fnOf(PROFILE, 'signupEmailForm');
+  assert.match(email, /if \(kept === null \|\| kept\.email !== address\)/, 'Back then CONTINUAR with the same address: the same code, no new mail');
+});
+
+test('the autocomplete attributes: username and current-password to sign in; email to sign up; nickname for the name; the address as a read-only username before every new-password', () => {
+  const login = fnOf(PROFILE, 'loginForm');
+  assert.match(login, /autocomplete: 'username'/);
+  assert.match(login, /autocomplete: 'current-password', maxLength: 128, enterkeyhint: 'go', reveal: true/);
+  assert.match(fnOf(PROFILE, 'signupEmailForm'), /type: 'email', autocomplete: 'email'/);
+  const finish = fnOf(LINKS, 'signupFinishFields');
+  assert.match(finish, /autocomplete: 'nickname'/);
+  const pw = fnOf(LINKS, 'newPasswordFields');
+  assert.match(pw, /autocomplete: 'new-password'/);
+  assert.match(pw, /nodes: \[\.\.\.\(user !== null \? \[user\] : \[\]\), pass\.el/, 'the username first');
+  assert.match(fnOf(LINKS, 'passwordManagerUser'), /autocomplete: 'username', readOnly: true, value, tabindex: '-1', 'aria-hidden': 'true'/);
+  assert.match(fnOf(PROFILE, 'passwordDialog'), /body: \[passwordManagerUser\(who\), old\.el, \.\.\.pw\.nodes/);
+  assert.match(fnOf(LINKS, 'resetSheet'), /newPasswordFields\(who\.email, t\('profile\.newPassword'\)\)/);
+});
+
+test('the code step comes back after a reload: PERFIL opens on it while sessionStorage keeps the attempt, and the page brings PERFIL up for it', () => {
+  assert.match(PROFILE, /else if \(!acc\.signedIn && firstShow && acc\.signupAttempt\(\) !== null\) \{\s*tab = 'register';\s*step = 'code';/);
+  assert.match(fnOf(PROFILE, 'guestView'), /const kept = tab === 'register' && step === 'code' \? acc\.signupAttempt\(\) : null;/);
+  const install = fnOf(LINKS, 'installAccountLinks');
+  assert.match(install, /if \(acc\.signupAttempt\(\) !== null && !acc\.signedIn\) \{\s*await sheetsReady\(menu\);\s*if \(!acc\.signedIn && acc\.signupAttempt\(\) !== null\) openProfileTab\(menu, 'register', null\);/);
+});
+
+test("a mailed link's token leaves the URL at once and is kept until its POST settles; the sheet waits for the menus", () => {
+  const install = fnOf(LINKS, 'installAccountLinks');
+  const firstAwait = install.indexOf('await ');
+  for (const step of ['parseAccountLink(location.pathname, location.hash)', "history.replaceState(history.state, '', '/' + location.search)", 'acc.keepPendingLink(fromUrl)', 'acc.pendingLink()']) {
+    const at = install.indexOf(step);
+    assert.ok(at > 0 && at < firstAwait, step + ' before the first wait');
+  }
+  assert.match(fnOf(LINKS, 'openAccountLink'), /^[\s\S]*?await sheetsReady\(menu\);/, 'the menus up, no other sheet');
+});
+
+test('Back, B or Esc steps back: the code step to the address (the attempt kept), the recovery form to the sign-in; else PERFIL goes', () => {
+  const back = /back: \(\) => \{([\s\S]*?)\n {4}\},\n/.exec(PROFILE);
+  assert.ok(back, 'the screen handles Back');
+  assert.match(back[1], /if \(tab === 'register' && step === 'code'\) \{\s*step = 'email';[\s\S]*?return true;/);
+  assert.match(back[1], /if \(tab === 'recover'\) \{\s*tab = 'login';[\s\S]*?return true;/);
+  assert.doesNotMatch(back[1], /dropSignupAttempt/, 'the attempt stays: CONTINUAR with the same address comes back to its code');
+  assert.match(back[1], /return false;\s*$/);
+});
+
+test('a TV makes no account and types no email: its PERFIL is the phone tile and "create one on your phone"', () => {
+  const guest = fnOf(PROFILE, 'guestView');
+  const tvBranch = guest.slice(guest.indexOf('if (tv())'), guest.indexOf('loadAuthConfig();'));
+  assert.match(tvBranch, /openTvSignIn\(menu\)/);
+  assert.match(tvBranch, /t\('profile\.tvNoAccount'\)/);
+  assert.doesNotMatch(tvBranch, /Form\(\)|field\(|oauthButtons/, 'no form and no provider button on a TV');
+});
+
+// ---- sign-in PR 8's review: the mail caps' text, the code step on a pad, Enter, storage off ---------------
+
+/** accountLinks.ts itself (its sheets and texts run on the fake DOM; profile.ts's package.json comes through the load hook). */
+const linksModule = () => import('../src/ui/screens/accountLinks.ts');
+
+test("email_rate_limited (spec §4.7): a full sign-up lane claims no earlier mail and offers a guest the providers; a signed-in account only waits", async () => {
+  const L = await linksModule();
+  // The Worker's one answer for a full lane and a full address alike (AccountsDO capAnswer).
+  const srv = fakeServer({ '/api/auth/signup/start': () => res(429, { error: 'email_rate_limited', message: 'Ya te enviamos varios correos. Espera un rato antes de pedir otro.', retryAfterMs: 58_719_872 }) });
+  const acc = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: memStorage(), session: memStorage(), antiBot: async () => 'tok' });
+  const e = await acc.signupStart('first.time@example.com').then(() => null, (x) => x);
+  assert.equal(e?.code, 'email_rate_limited');
+  const menu = (oauth, signedIn = false) => ({ cfg: { oauth }, host: { accounts: { signedIn } } });
+  const guest = L.authErrText(menu(['discord']), e);
+  assert.doesNotMatch(guest, /already sent|several/i, 'a first-time player was never mailed');
+  assert.equal(guest, "We can't send more emails right now. Try again later, or sign in with Discord.");
+  assert.equal(L.authErrText(menu(['google', 'discord']), e), "We can't send more emails right now. Try again later, or sign in with Google or Discord.");
+  assert.equal(L.authErrText(menu([]), e), "We can't send more emails right now. Try again later.", 'the variant without providers');
+  assert.equal(L.authErrText(menu(['discord'], true), e), "We can't send more emails right now. Try again later.", "an account's own code: no sign-in to offer");
+  const ES = (await import('../src/locales/es.ts')).default;
+  assert.equal(ES['auth.mailCapProviders'], 'Ahora no podemos enviar más correos. Inténtalo más tarde o entra con {providers}.');
+  assert.equal(ES['auth.mailCap'], 'Ahora no podemos enviar más correos. Inténtalo más tarde.');
+});
+
+test("a pad or a remote is never put on a field by script: after CONTINUAR the code is reached with the arrows (navigation mode: A opens the digits keypad)", () => {
+  // FocusNav (nav.ts install): a focus that is no arrow's puts a field in editing mode, where A opens no keypad (Menu.action).
+  assert.match(PROFILE, /const typesHere = \(\): boolean => !touch\(\) && finePointer\(\);/, "pickTab's rule: a fine pointer, untouched");
+  assert.match(fnOf(PROFILE, 'signupEmailForm'), /if \(typesHere\(\)\) body\.querySelector<HTMLElement>\('\.mn-code-input'\)\?\.focus\(\);/, 'CONTINUAR: the code field only for a fine pointer');
+  assert.match(fnOf(PROFILE, 'signupCodeForm'), /if \(typesHere\(\)\) code\.input\.focus\(\);\s*else menu\.refocus\(\);/, "REENVIAR's minute: the menus' refocus for a pad");
+  assert.match(fnOf(PROFILE, 'lastButton'), /if \(touch\(\) \|\| finePointer\(\)\) identity\.focus\(\);\s*else menu\.openKeypad\(identity\);/, '"continue as · email" with a pad: its keypad');
+  // Every other script focus in PERFIL: a keyboard's own Enter (onEnter's next field), or one of the guarded ones above.
+  for (const line of PROFILE.split('\n').filter((l) => /\.focus\(\)/.test(l))) assert.match(line, /typesHere\(\)|^\s*next\.focus\(\);|^\s*if \(touch\(\) \|\| finePointer\(\)\) identity\.focus\(\);/, line.trim());
+});
+
+const SHEET = await import('../src/ui/components/sheet.ts');
+
+/** A Menu for accountLinks' sheets: modal() mounts the real sheet (components/sheet.ts), toast() records. */
+function sheetMenu(accounts, oauth = ['discord']) {
+  const m = { cfg: { oauth }, sheet: null, closed: 0, toasts: [], host: { accounts, guestName: () => 'Guest4821' } };
+  m.toast = (text, kind) => m.toasts.push([kind, text]);
+  m.modal = (spec) => {
+    const close = () => {
+      m.closed++;
+      m.sheet = null;
+      spec.onClose?.();
+    };
+    m.sheet = SHEET.sheetBox(spec, close);
+    return close;
+  };
+  m.refocus = () => undefined;
+  return m;
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+const enter = (input) => input.dispatch('keydown', { key: 'Enter' });
+
+test("Enter in the verify link's sheet: the name, then the password, then CREAR CUENTA, once (a phone keyboard's Siguiente / Ir)", async () => {
+  const L = await linksModule();
+  await withDom(async () => {
+    let finishes = 0;
+    let answer = null;
+    const acc = {
+      account: null,
+      signedIn: false,
+      keepPendingLink: () => undefined,
+      fetchMe: async () => undefined,
+      signupFinish: (proof, f) => {
+        finishes++;
+        assert.deepEqual(proof, { token: 'T'.repeat(43) });
+        assert.equal(f.password, 'una clave bastante larga');
+        return new Promise((r) => (answer = () => r(SESSION(f.username, Date.now() + 3_600_000))));
+      },
+    };
+    const menu = sheetMenu(acc);
+    L.verifySheet(menu, 'T'.repeat(43), 'ana@example.com');
+    const inputs = menu.sheet.all().filter((e) => e.tagName === 'INPUT');
+    const name = inputs.find((e) => e.autocomplete === 'nickname');
+    const pass = inputs.find((e) => e.autocomplete === 'new-password');
+    assert.equal(name.enterKeyHint, 'next');
+    assert.equal(pass.enterKeyHint, 'go');
+    pass.value = 'una clave bastante larga';
+    const e1 = enter(name);
+    assert.equal(e1.defaultPrevented, true);
+    assert.equal(globalThis.document.activeElement, pass, 'Siguiente: the password');
+    assert.equal(finishes, 0);
+    enter(pass);
+    assert.equal(finishes, 1, 'Ir: CREAR CUENTA');
+    enter(pass);
+    assert.equal(finishes, 1, 'a second Enter while it runs is the same press (the sheet disabled its button)');
+    answer();
+    await settle();
+    assert.equal(menu.closed, 1, 'signed in: the sheet closes');
+    assert.match(menu.toasts.at(-1)[1], /^Welcome, Player\d{4}!$/);
+    // An Enter the menus took (OK on a field in navigation mode starts editing) is no submit.
+    L.verifySheet(menu, 'T'.repeat(43), 'ana@example.com');
+    const again = menu.sheet.all().find((e) => e.tagName === 'INPUT' && e.autocomplete === 'new-password');
+    again.dispatch('keydown', { key: 'Enter', defaultPrevented: true });
+    assert.equal(finishes, 1);
+  });
+});
+
+test("Enter in the reset link's sheet: the password, its repeat where the keypad shows dots, then GUARDAR Y ENTRAR, once", async () => {
+  const L = await linksModule();
+  await withDom(async () => {
+    const win = globalThis.window;
+    // No fine pointer and no finger (a TV, a phone's pad): the keypad's dots, so a repeat field.
+    globalThis.window = { matchMedia: () => ({ matches: false }) };
+    try {
+      const resets = [];
+      const acc = { account: null, keepPendingLink: () => undefined, fetchMe: async () => undefined, resetPassword: async (token, password) => void resets.push([token, password]) };
+      const menu = sheetMenu(acc);
+      L.resetSheet(menu, 'R'.repeat(43), { name: 'Ana', email: 'ana@example.com', hasPassword: true });
+      const [pass, repeat] = menu.sheet.all().filter((e) => e.tagName === 'INPUT' && e.autocomplete === 'new-password');
+      assert.ok(repeat, 'the repeat field');
+      assert.deepEqual([pass.enterKeyHint, repeat.enterKeyHint], ['next', 'go']);
+      pass.value = repeat.value = 'otra clave bastante larga';
+      enter(pass);
+      assert.equal(globalThis.document.activeElement, repeat);
+      assert.equal(resets.length, 0);
+      enter(repeat);
+      enter(repeat);
+      await settle();
+      assert.deepEqual(resets, [['R'.repeat(43), 'otra clave bastante larga']], 'saved once');
+      assert.equal(menu.closed, 1);
+    } finally {
+      globalThis.window = win;
+    }
+  });
+});
+
+test("Enter on PERFIL's code step and in CAMBIAR CONTRASEÑA: the fields in order, the last one submits as its button does", () => {
+  const code = fnOf(PROFILE, 'signupCodeForm');
+  assert.match(code, /const submit = \(\): void => void busyWhile\(create, async \(\) => void \(await fields\.create\(\)\)\);\s*const create = primary\(t\('profile\.createAccount'\), submit,/);
+  assert.match(code, /onEnter\(fields\.inputs, submit\);/, 'the name, the password (its repeat), then CREAR CUENTA');
+  assert.match(fnOf(LINKS, 'signupFinishFields'), /inputs: \[name\.input, \.\.\.pw\.inputs\]/);
+  assert.match(fnOf(PROFILE, 'passwordDialog'), /sheetEnter\(\[old\.input, \.\.\.pw\.inputs\]\);/);
+  assert.match(fnOf(LINKS, 'verifySheet'), /sheetEnter\(fields\.inputs\);/);
+  assert.match(fnOf(LINKS, 'resetSheet'), /sheetEnter\(pw\.inputs\);/);
+});
+
+// ---- the merge with sign-in PR 6: "Entra con tu cuenta" by email, the arbiter's 'account' step ---------------
+
+const MODEL = await import('../src/ui/screens/accountLinksModel.ts');
+
+/** A Menu whose modal() replaces the sheet up as Menu.modal does (the old one's onClose runs), the menus up. */
+function replacingMenu(accounts, oauth = ['discord']) {
+  const m = { cfg: { oauth }, visible: true, sheet: null, spec: null, closer: null, toasts: [], host: { accounts, guestName: () => 'Guest4821' } };
+  Object.defineProperty(m, 'modalOpen', { get: () => m.sheet !== null });
+  m.toast = (text, kind) => m.toasts.push([kind, text]);
+  m.modal = (spec) => {
+    m.closer?.();
+    let up = true;
+    const close = () => {
+      if (!up) return;
+      up = false;
+      if (m.closer === close) {
+        m.sheet = null;
+        m.spec = null;
+        m.closer = null;
+      }
+      spec.onClose?.();
+    };
+    m.closer = close;
+    m.spec = spec;
+    m.sheet = SHEET.sheetBox(spec, close);
+    return close;
+  };
+  m.refocus = () => undefined;
+  return m;
+}
+const button = (menu, label) => menu.sheet?.all().find((e) => e.tagName === 'BUTTON' && e.textContent === label) ?? null;
+const PENDING = { provider: 'discord', email: 'ana@example.com', trust: 'asserted', second: null, match: null };
+
+/** The confirm step's account calls, recorded; `signIn(branch)` answers both sign-ins when given. */
+function pendingAccounts({ legacy = 'none', info = PENDING, signIn = null } = {}) {
+  const calls = [];
+  const linked = (name) => ({ session: SESSION(name, Date.now() + 3_600_000), linked: ['discord'], linkError: null });
+  return {
+    account: null,
+    signedIn: false,
+    hintName: null,
+    calls,
+    authConfig: async () => ({ email: true, devSignIn: false, legacy, legacyUntil: null }),
+    pending: async () => info,
+    cancelPending: async () => void calls.push(['cancelPending']),
+    fetchMe: async () => undefined,
+    providerStarted: () => undefined,
+    oauthUrl: (p, f) => `/api/auth/oauth/${p}/start?${f}=1`,
+    signInAndLink: async (email, password) => (calls.push(['signInAndLink', email, password]), signIn ? signIn('email') : linked('Ana')),
+    loginAndLink: async (username, password) => (calls.push(['loginAndLink', username, password]), signIn ? signIn('legacy') : linked(username)),
+  };
+}
+
+/** confirmPending up to "Entra con tu cuenta" (through SÍ, YA TENGO UNA, or the match sheet's password way). */
+async function haveOne(acc, oauth = ['discord'], way = 'YES, I HAVE ONE') {
+  const L = await linksModule();
+  const menu = replacingMenu(acc, oauth);
+  const outcome = L.confirmPending(menu);
+  for (let i = 0; i < 50 && button(menu, way) === null; i++) await settle();
+  button(menu, way).click();
+  await settle();
+  assert.equal(menu.spec.title, 'Sign in to your account');
+  const inputs = menu.sheet.all().filter((e) => e.tagName === 'INPUT');
+  const user = inputs.find((e) => e.autocomplete === 'username');
+  const pass = inputs.find((e) => e.autocomplete === 'current-password');
+  const label = menu.sheet.all().find((e) => e.is('span.mn-field-label')).textContent;
+  return { menu, outcome, user, pass, label };
+}
+
+test("\"Entra con tu cuenta\" (PR 6's \"I have one\") is PERFIL's one field routed on '@': an address signs in by email with linkPending (an email account takes the identity), a username by the legacy sign-in", async () => {
+  await withDom(async () => {
+    // An address: POST /api/auth/signin with linkPending (AccountClient.signInAndLink), never the username sign-in.
+    const acc = pendingAccounts();
+    const s = await haveOne(acc);
+    assert.equal(s.label, 'Email or username', "\"Correo o usuario\", as PERFIL's sign-in");
+    assert.equal(s.user.inputMode, 'email');
+    assert.equal(s.user.enterKeyHint, 'next');
+    assert.ok(s.menu.sheet.all().some((e) => e.tagName === 'BUTTON' && e.getAttribute('aria-pressed') !== null), 'MOSTRAR beside the password');
+    s.user.value = ' Ana@Example.com ';
+    s.pass.value = 'una clave bastante larga';
+    enter(s.user);
+    assert.equal(globalThis.document.activeElement, s.pass, 'Siguiente: the password');
+    enter(s.pass);
+    assert.equal(await s.outcome, 'signedIn');
+    assert.deepEqual(acc.calls, [['signInAndLink', 'ana@example.com', 'una clave bastante larga']]);
+    assert.deepEqual(s.menu.toasts.at(-1), ['ok', 'Discord is now linked to your account']);
+    assert.equal(s.menu.sheet, null, 'the sheet closed, the pending identity not cancelled');
+
+    // A username of before: the legacy sign-in, with linkPending (AccountClient.loginAndLink).
+    const old = pendingAccounts();
+    const u = await haveOne(old);
+    u.user.value = 'Ana';
+    u.pass.value = 'una clave bastante larga';
+    button(u.menu, 'SIGN IN').click();
+    assert.equal(await u.outcome, 'signedIn');
+    assert.deepEqual(old.calls, [['loginAndLink', 'Ana', 'una clave bastante larga']]);
+
+    // After the cutoff (sign-in PR 9): "Email", and a username gets legacy_closed with no request.
+    const closed = pendingAccounts({ legacy: 'closed' });
+    const c = await haveOne(closed);
+    assert.equal(c.label, 'Email');
+    c.user.value = 'Ana';
+    c.pass.value = 'una clave bastante larga';
+    button(c.menu, 'SIGN IN').click();
+    await settle();
+    assert.deepEqual(closed.calls, [], 'no request');
+    assert.match(c.menu.sheet.textContent, /You can't sign in with a username anymore/);
+    // Something with an '@' that is no address: no request either.
+    c.user.value = 'ana@';
+    button(c.menu, 'SIGN IN').click();
+    await settle();
+    assert.deepEqual(closed.calls, []);
+  });
+});
+
+test("\"Entra con tu cuenta\": one bad_credentials, the text and hint of its branch; the match sheet's password way is prefilled with the address its account claimed", async () => {
+  await withDom(async () => {
+    const wrong = (branch) => Promise.reject(new AC.AccountError(branch === 'email' ? 'Wrong email or password' : 'Wrong username or password', 401, 'bad_credentials'));
+    const acc = pendingAccounts({ signIn: wrong });
+    const s = await haveOne(acc, ['google', 'discord']);
+    s.user.value = 'ana@example.com';
+    s.pass.value = 'otra clave cualquiera';
+    button(s.menu, 'SIGN IN').click();
+    await settle();
+    await settle();
+    assert.match(s.menu.sheet.textContent, /Wrong email or password/);
+    assert.match(s.menu.sheet.textContent, /Created your account with Google\? Use that button\./, 'the other provider, never the pending one');
+    s.user.value = 'Ana';
+    button(s.menu, 'SIGN IN').click();
+    await settle();
+    await settle();
+    assert.match(s.menu.sheet.textContent, /Wrong username or password[\s\S]*If you already added an email to your account, sign in with it\./);
+    assert.ok(button(s.menu, 'SIGN IN WITH GOOGLE'), 'the other provider (start?pend=1)');
+
+    // The match (one email, one account): its claimed address, which signs in by email; a hint: the name.
+    const match = { ...PENDING, match: { name: 'Ana', methods: ['password'], via: 'email', email: 'ana@example.com' } };
+    const m = await haveOne(pendingAccounts({ info: match }), ['discord'], 'SIGN IN WITH PASSWORD');
+    assert.equal(m.user.value, 'ana@example.com');
+    const hinted = { ...PENDING, match: { name: 'Ana', methods: ['password'], via: 'hint', email: 'ana@example.com' } };
+    const n = await haveOne(pendingAccounts({ info: hinted }), ['discord'], 'SIGN IN WITH PASSWORD');
+    assert.equal(n.user.value, 'Ana', 'a hint: the account of before signs in by its name');
+  });
+});
+
+test("the arbiter's 'account' step: an /account#reset link waits while #auth=confirm asks, even with no sheet up; the phone's /tv waits for the reset sheet to close", async () => {
+  const L = await linksModule();
+  const keep = { location: globalThis.location, history: globalThis.history };
+  const token = 'R'.repeat(43);
+  globalThis.location = { pathname: '/account', hash: '#reset=' + token, search: '' };
+  const urls = [];
+  globalThis.history = {
+    state: null,
+    replaceState: (_s, _t, url) => {
+      urls.push(url);
+      globalThis.location.pathname = '/';
+      globalThis.location.hash = '';
+    },
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let menu = null;
+  try {
+    await withDom(async () => {
+      let kept = null;
+      const peeks = [];
+      const acc = {
+        account: null,
+        signedIn: false,
+        keepPendingLink: (l) => (kept = l),
+        pendingLink: () => kept,
+        sessionForQueue: async () => null,
+        signupAttempt: () => null,
+        resetPeek: async (t) => (peeks.push(t), { name: 'Ana', email: 'ana@example.com', hasPassword: true }),
+        fetchMe: async () => undefined,
+        authConfig: async () => ({ email: true, devSignIn: false, legacy: 'none', legacyUntil: null }),
+      };
+      menu = replacingMenu(acc);
+      const u = new MODEL.UrlSheets(['auth', 'account', 'tv']);
+      const order = [];
+      void u.turn('tv').then(() => order.push('tv'));
+      const install = L.installAccountLinks(menu, () => u.turn('account')).then(() => {
+        order.push('account');
+        u.done('account');
+      });
+      assert.deepEqual(urls, ['/'], 'the token left the URL at once');
+      assert.deepEqual(kept, { kind: 'reset', token });
+      // The confirm step before its sheet is up (POST /api/auth/pending on its way), then its sheet, then its answer.
+      await wait(450);
+      assert.deepEqual(peeks, [], 'no sheet over the confirm step, even while no sheet is up');
+      const closeConfirm = menu.modal({ title: 'Already have a Turbogol account?', body: [], actions: [] });
+      await wait(250);
+      closeConfirm();
+      await wait(250);
+      assert.deepEqual(peeks, [], 'the confirm sheet closed, its step not done yet (a restore after it)');
+      u.done('auth');
+      for (let i = 0; i < 50 && menu.spec?.title !== 'New password'; i++) await wait(50);
+      assert.deepEqual(peeks, [token], 'its turn: reset/peek, then the sheet');
+      assert.equal(menu.spec.title, 'New password');
+      await wait(450);
+      assert.deepEqual(order, [], "the phone's /tv waits while the reset sheet is up");
+      button(menu, 'CANCEL').click();
+      await install;
+      await settle();
+      assert.deepEqual(order, ['account', 'tv']);
+      assert.equal(kept, null, 'closed: the next load does not bring it back');
+    });
+  } finally {
+    // A failed check leaves no sheet up (its wait would keep the run alive).
+    for (let i = 0; i < 5 && menu?.closer; i++) menu.closer();
+    globalThis.location = keep.location;
+    globalThis.history = keep.history;
+  }
+});
+
+test("Game.ts runs the mailed links in the arbiter: 'auth', then 'account', then 'tv'", async () => {
+  const game = await readFile(new URL('../src/game/Game.ts', import.meta.url), 'utf8');
+  assert.match(game, /new UrlSheets\(\['auth', 'account', 'tv'\] as const\)/);
+  assert.match(game, /installAccountLinks\(this\.menu, \(\) => this\.urlSheets\.turn\('account'\)\)[\s\S]{0,160}\.finally\(\(\) => this\.urlSheets\.done\('account'\)\)/);
+  assert.match(game, /installTvLink\(this\.menu, \(\) => this\.urlSheets\.turn\('tv'\)\)/);
+  assert.match(fnOf(LINKS, 'installAccountLinks'), /await turn\(\);[\s\S]*await openAccountLink\(menu, link\);\s*return sheetsClosed\(menu\);/, 'done once its sheets are over');
+});
+
+test("the phone's /tv after the 'account' step: no \"sign in first\" over PERFIL's code step (the account it makes brings the code entry); its provider buttons are PERFIL's (Google hidden in another app's browser, \"continue as\" learns them)", async () => {
+  const tv = await readFile(new URL('../src/ui/screens/tvSignIn.ts', import.meta.url), 'utf8');
+  assert.match(tv, /signInFirst: \(dropped\) => \{\s*keep\(\);[\s\S]{0,260}if \(acc\.signupAttempt\(\) !== null\) return;\s*signInFirstSheet\(/);
+  const first = fnOf(tv, 'signInFirstSheet');
+  assert.match(first, /const providers = emailProviders\(menu\);/);
+  assert.match(first, /acc\.providerStarted\(p\);\s*window\.location\.href = acc\.oauthUrl\(p\);/);
+  // The confirm step's own round trips (start?pend=1) too.
+  assert.match(fnOf(LINKS, 'goPend'), /acc\.providerStarted\(p\);\s*window\.location\.href = acc\.oauthUrl\(p, 'pend'\);/);
 });
