@@ -5,9 +5,11 @@
  * (components/qr.ts: the /tv link with the code in the hash) and "Go to turbo-gol.com/tv with your
  * account signed in and enter this code", the time left; it polls (AccountClient.tvPoll) while it is
  * up and, approved, closes and signs in (signInWith after the close: the return with intent of
- * modes.ts, Ajustes' EXPERIMENTAL, runs on the change). Expired (or used), the sheet says so with
- * NUEVO CÓDIGO; CANCELAR is always there. Each state is a sheet of its own (Menu.modal replaces it,
- * the opener kept).
+ * modes.ts, Ajustes' EXPERIMENTAL, runs on the change). 20 s before its code ends it renews it
+ * (AccountClient.tvRenew: a new code, the same secret, up to 6 times, about 28 minutes in all), in
+ * the same sheet; then, expired (or used), the sheet says so with NUEVO CÓDIGO; CANCELAR is always
+ * there. Each state is a sheet of its own (Menu.modal replaces it, the opener kept). Its start never
+ * asks the player for a Turnstile press a remote cannot give (AccountClient.tvStart).
  *
  * The phone (installTvLink): the /tv page is the game with these sheets over Inicio. The path goes
  * back to / at once (a reload is the game). It waits for its turn (Game.ts urlSheets: an OAuth
@@ -32,7 +34,7 @@ import type { SheetSpec } from '../components/sheet';
 import { qrSvg } from '../components/qr';
 import { codeCells } from '../components/codecells';
 import { CODE_LENGTH, spacedCode } from './lobbyModel';
-import { isTvPath, pendingMarker, timeLeft, tvContinuation, tvDeadline, tvLink, tvPlace, tvShortLink, withoutTvCode } from './tvSignInModel';
+import { TV_RENEWS, isTvPath, pendingMarker, renewDelay, timeLeft, tvContinuation, tvDeadline, tvLink, tvPlace, tvShortLink, withoutTvCode } from './tvSignInModel';
 import { errText } from './profile';
 import { providerName } from './accountLinks';
 import type { OAuthProvider } from '../../net/account';
@@ -48,27 +50,33 @@ export type TvSheet = { kind: 'starting' } | { kind: 'code'; s: TvStartAnswer; u
 /**
  * The TV's sheet of `state` (`sample`: no server, nothing polled: the layout check). `again`: NUEVO
  * CÓDIGO; `onClose`: the sheet went (CANCELAR, Back, the menus hiding), not replaced by the next state.
+ * `setCode`: a renewed code shown in the same sheet (its QR too), the focus left where it is.
  */
-export function tvSheet(menu: Menu, state: TvSheet, again: () => void, onClose: () => void): { left: HTMLElement | null; close: () => void } {
+export function tvSheet(menu: Menu, state: TvSheet, again: () => void, onClose: () => void): { left: HTMLElement | null; close: () => void; setCode: (code: string) => void } {
   const cancel = { label: t('tvsign.cancel'), onClick: () => true };
   const fresh = { label: t('tvsign.newCode'), primary: true, onClick: () => (queueMicrotask(again), false) };
   let left: HTMLElement | null = null;
   let body: HTMLElement;
+  let setCode = (_code: string): void => undefined;
   if (state.kind === 'code') {
-    const link = tvLink(location.origin, state.s.code);
     left = h('span.mn-tvsign-left', null, t('tvsign.expiresIn', { time: timeLeft(state.until, performance.now()) }));
-    body = h(
-      'div.mn-sala-qr.mn-tvsign',
-      null,
-      qrSvg(link, t('tvsign.qr')),
-      h('div.mn-sala-qr-text', null, h('b.mn-sala-qr-code', null, spacedCode(state.s.code)), h('span.mn-tvsign-line', null, t('tvsign.line', { link: tvShortLink(location.origin) })), left),
-    );
+    const codeEl = h('b.mn-sala-qr-code', null, spacedCode(state.s.code));
+    let qr = qrSvg(tvLink(location.origin, state.s.code), t('tvsign.qr'));
+    body = h('div.mn-sala-qr.mn-tvsign', null, qr, h('div.mn-sala-qr-text', null, codeEl, h('span.mn-tvsign-line', null, t('tvsign.line', { link: tvShortLink(location.origin) })), left));
+    setCode = (code) => {
+      codeEl.textContent = spacedCode(code);
+      const next = qrSvg(tvLink(location.origin, code), t('tvsign.qr'));
+      if (qr !== null && next !== null) {
+        qr.replaceWith(next);
+        qr = next;
+      }
+    };
   } else {
     const text = state.kind === 'starting' ? t('tvsign.starting') : state.kind === 'expired' ? t('tvsign.expired') : state.error;
     body = h('p.mn-tvsign-state', null, text);
   }
   const spec: SheetSpec = { title: t('tvsign.title'), body, actions: state.kind === 'expired' || state.kind === 'failed' ? [fresh, cancel] : [cancel], onClose };
-  return { left, close: menu.modal(spec) };
+  return { left, close: menu.modal(spec), setCode };
 }
 
 /** PERFIL's tile on a TV: the sheet, a code from the server, polled until the phone answers. */
@@ -78,11 +86,13 @@ export function openTvSignIn(menu: Menu): void {
   let epoch = 0;
   let timer = 0;
   let tick = 0;
+  let renewTimer = 0;
   const stop = (): void => {
     window.clearTimeout(timer);
     window.clearInterval(tick);
+    window.clearTimeout(renewTimer);
   };
-  const show = (state: TvSheet): { left: HTMLElement | null; close: () => void } => {
+  const show = (state: TvSheet): { left: HTMLElement | null; close: () => void; setCode: (code: string) => void } => {
     stop();
     const mine = ++epoch;
     return tvSheet(menu, state, start, () => {
@@ -97,18 +107,41 @@ export function openTvSignIn(menu: Menu): void {
     acc.tvStart().then(
       (s) => {
         if (epoch !== mine) return;
-        const until = tvDeadline(s.ttlMs, performance.now());
-        const { left, close } = show({ kind: 'code', s, until });
+        // The code shown and when it ends: a renewal (POST /api/auth/tv/renew, 20 s before the end)
+        // swaps both in the same sheet, so the TV shows a live code for about 28 minutes.
+        let code = s.code;
+        let until = tvDeadline(s.ttlMs, performance.now());
+        let renewals = 0;
+        const { left, close, setCode } = show({ kind: 'code', s, until });
         const at = epoch;
         tick = window.setInterval(() => {
           const now = performance.now();
           if (now >= until) show({ kind: 'expired' });
           else if (left !== null) left.textContent = t('tvsign.expiresIn', { time: timeLeft(until, now) });
         }, 1000);
+        const renew = async (): Promise<void> => {
+          if (epoch !== at || renewals >= TV_RENEWS) return;
+          try {
+            const n = await acc.tvRenew(code, s.secret);
+            if (epoch !== at) return;
+            renewals++;
+            code = n.code;
+            until = tvDeadline(n.ttlMs, performance.now());
+            setCode(code);
+            if (left !== null) left.textContent = t('tvsign.expiresIn', { time: timeLeft(until, performance.now()) });
+          } catch {
+            // tv_code_used: the phone confirmed this code, the poll takes it; anything else: the code
+            // ends by itself and NUEVO CÓDIGO is there.
+            return;
+          }
+          if (renewals < TV_RENEWS) renewTimer = window.setTimeout(() => void renew(), renewDelay(until, performance.now()));
+        };
+        renewTimer = window.setTimeout(() => void renew(), renewDelay(until, performance.now()));
         const poll = async (): Promise<void> => {
           if (epoch !== at) return;
+          const polled = code;
           try {
-            const r = await acc.tvPoll(s.code, s.secret);
+            const r = await acc.tvPoll(polled, s.secret);
             if (epoch !== at) return;
             if (r.state === 'approved') {
               epoch++;
@@ -121,7 +154,8 @@ export function openTvSignIn(menu: Menu): void {
             }
           } catch (e) {
             if (epoch !== at) return;
-            if (e instanceof AccountError && (e.code === 'tv_code_expired' || e.code === 'tv_code_used' || e.code === 'bad_secret')) {
+            // A code renewed while this poll was on its way is not over: the next poll asks for the new one.
+            if (e instanceof AccountError && (e.code === 'tv_code_expired' || e.code === 'tv_code_used' || e.code === 'bad_secret') && polled === code) {
               show({ kind: 'expired' });
               return;
             }

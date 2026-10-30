@@ -103,6 +103,13 @@ export interface LinkedSignIn {
   linkError: string | null;
 }
 
+/** POST /api/auth/tv/renew: the TV's next code (the same secret), its end on the server's clock and its life from now. */
+export interface TvRenewAnswer {
+  code: string;
+  expiresAt: number;
+  ttlMs: number;
+}
+
 /** What the confirm step sends with CREAR: the news switch, and the language and time zone of the account's mail. */
 export interface CreateOptions {
   news: boolean;
@@ -196,6 +203,12 @@ export interface AccountClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** A Turnstile token for every anonymous account request (sign-up, sign-in, recovery, a TV's start) when the server wants one (NetClient.antiBotToken), null = none. */
   antiBot?: () => Promise<string | null>;
+  /**
+   * The same check, never asking the player (NetClient.antiBotToken's `quiet`): it rejects when it
+   * wants a press or cannot load. A TV's start uses it (a remote cannot answer the challenge), and
+   * without a token the server counts the code under tighter caps. Absent: `antiBot`.
+   */
+  antiBotQuiet?: () => Promise<string | null>;
 }
 
 /** waitRankedResult options. */
@@ -244,9 +257,11 @@ export class AccountClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private refreshing: Promise<AccountSession | null> | null = null;
   private readonly antiBot: () => Promise<string | null>;
+  private readonly antiBotQuiet: () => Promise<string | null>;
 
   constructor(opts: AccountClientOptions = {}) {
     this.antiBot = opts.antiBot ?? (() => Promise.resolve(null));
+    this.antiBotQuiet = opts.antiBotQuiet ?? this.antiBot;
     this.apiBase = opts.apiBase ?? '';
     this.fetchFn = opts.fetchFn ?? ((url, init) => fetch(url, { ...init, credentials: 'same-origin' } as RequestInit) as unknown as Promise<ResponseLike>);
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
@@ -564,13 +579,32 @@ export class AccountClient {
    * after the anti-bot check (NetClient.antiBotToken: a token per code when the server wants one).
    */
   async tvStart(): Promise<TvStartAnswer> {
+    // Never the sheet that asks the player: a remote cannot answer Cloudflare's challenge (the live
+    // check's TV). A check that wants a press, or cannot load, sends no token, and the server counts
+    // that code under tighter caps of its own (server/src/tvCodes.ts TV_OPEN_*).
     let token: string | null;
     try {
-      token = await this.antiBot();
+      token = await this.antiBotQuiet();
     } catch {
-      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
+      token = null;
     }
-    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', token !== null ? { turnstileToken: token } : {}));
+    const res = await this.call('/api/auth/tv/start', token !== null ? { turnstileToken: token } : {});
+    if (res.status !== 403 || token === null) return this.jsonOrFail<TvStartAnswer>(res);
+    // A token the server refused (a warmed one that died): once more without one.
+    const data: unknown = await res.json().catch(() => null);
+    if ((data as { error?: unknown } | null)?.error !== 'turnstile_failed') return this.fail({ ok: false, status: 403, json: async () => data, text: async () => JSON.stringify(data) });
+    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', {}));
+  }
+
+  /**
+   * A TV, 20 s before its code ends (POST /api/auth/tv/renew): the next code, bound to the same
+   * secret. Rejects tv_code_used (the phone confirmed this one: keep polling it), tv_code_expired
+   * (gone, or the renewals used up) and busy (the network's caps).
+   */
+  async tvRenew(code: string, secret: string): Promise<TvRenewAnswer> {
+    const r = await this.jsonOrFail<TvRenewAnswer>(await this.call('/api/auth/tv/renew', { code, secret }));
+    if (typeof r?.code !== 'string' || typeof r.ttlMs !== 'number') throw new AccountError(t('error.server'), 200, 'protocol');
+    return r;
   }
 
   /** The phone (/tv), before it confirms: where the TV showing `code` is (POST /api/auth/tv/info). */

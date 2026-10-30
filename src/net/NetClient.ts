@@ -706,11 +706,13 @@ export class NetClient {
 
   /**
    * A Turnstile token when the server asks for one (its config has a sitekey), else null: account
-   * registration (AccountClient) goes through the same anti-bot check as guests.
+   * registration (AccountClient) goes through the same anti-bot check as guests. `quiet`: never ask
+   * the player (a TV's remote cannot answer Cloudflare's challenge): a check that wants a press
+   * rejects at once, as the pre-warm's does, and the caller goes on without a token.
    */
-  async antiBotToken(signal?: AbortSignal): Promise<string | null> {
+  async antiBotToken(signal?: AbortSignal, quiet = false): Promise<string | null> {
     const siteKey = (await this.config()).turnstileSiteKey;
-    return siteKey === null ? null : this.exclusive(signal, () => this.challenge(siteKey, signal));
+    return siteKey === null ? null : this.exclusive(signal, () => this.challenge(siteKey, signal, quiet));
   }
 
   /**

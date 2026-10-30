@@ -1,7 +1,7 @@
 /**
  * The pure part of the TV's sign-in with the phone (screens/tvSignIn.ts; tests/tv-signin.test.mjs):
- * the /tv page's link and how its code rides in the hash, the countdown, the marker kept across a
- * sign-in's round trip, and the phone's continuation after it. No DOM.
+ * the /tv page's link and how its code rides in the hash, the countdown and the TV's renewals, the
+ * marker kept across a sign-in's round trip, and the phone's continuation after it. No DOM.
  */
 import { CODE_ALPHABET, CODE_LENGTH } from './lobbyModel';
 import type { TvInfoAnswer } from '../../net/account';
@@ -60,6 +60,11 @@ export const PENDING_MS = 30 * 60_000;
 /** The longest life a TV counts down for one code (the server's is 4 minutes). */
 export const CODE_LIFE_MAX_MS = 5 * 60_000;
 
+/** The TV asks for its next code this long before the shown one ends (POST /api/auth/tv/renew). */
+export const RENEW_BEFORE_MS = 20_000;
+/** Renewals per start (server/src/tvCodes.ts TV_RENEWS_MAX): then NUEVO CÓDIGO. */
+export const TV_RENEWS = 6;
+
 /**
  * When a TV's code ends on the TV's own clock (`now`: performance.now()): its life from the start
  * answer (`ttlMs`), at most a code's life. Never the server's `expiresAt` against Date.now(): a TV
@@ -70,6 +75,10 @@ export function tvDeadline(ttlMs: number, now: number): number {
   return now + Math.max(0, Math.min(Number.isFinite(ttlMs) ? ttlMs : CODE_LIFE_MAX_MS, CODE_LIFE_MAX_MS));
 }
 
+/** How long until the TV renews a code that ends at `until` (both on `now`'s clock): 20 s before, at once when that is past. */
+export function renewDelay(until: number, now: number): number {
+  return Math.max(0, until - RENEW_BEFORE_MS - now);
+}
 
 /**
  * Where the TV is, as the phone's sheet says it before CONFIRMAR: "Córdoba, AR · Telecom" (city,

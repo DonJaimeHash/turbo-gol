@@ -1,7 +1,7 @@
 // Sign-in PR 6, the client parts without a browser: the arbiter of URL-driven sheets and the phone's
 // /tv continuation (it survives #auth=confirm in either order of the sheets), the MODOS / GARAJE
 // detour kept across a provider's round trip, the confirm sheet's name, and AccountClient's confirm
-// step (pending, create, cancel, the sign-in with linkPending, the start flags).
+// step (pending, create, cancel, the sign-in with linkPending, the start flags, the TV's renewal).
 // The server side: server/test/oauth-email.test.mjs. Run: node --test tests/account-links.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -114,6 +114,13 @@ test('the TV continuation: the confirm sheet closed without an account: "sign in
   assert.deepEqual(p.shown, ['signInFirst', 'code']);
 });
 
+test('the TV renews 20 s before its code ends, at once when that is past; six renewals', () => {
+  assert.equal(M.renewDelay(100_000, 0), 80_000);
+  assert.equal(M.renewDelay(10_000, 0), 0);
+  assert.equal(M.RENEW_BEFORE_MS, 20_000);
+  assert.equal(M.TV_RENEWS, 6);
+});
+
 // ---- the detour ----------------------------------------------------------------------------------
 
 function memStorage() {
@@ -197,8 +204,8 @@ test('AccountClient: pending (404: none), CREAR with a solved check, the name, n
   assert.equal(await none.pending(), null);
 });
 
-test('AccountClient: "I have one" signs in with linkPending and says what was linked, or why not; the start flags', async () => {
-  const srv = fakeServer({ '/api/auth/login': (b) => res(200, { ...SESSION({ name: b.username }), ...(b.username === 'Ana' ? { linked: ['discord'] } : { linkError: 'wrong_account' }) }) });
+test('AccountClient: "I have one" signs in with linkPending and says what was linked, or why not; the start flags; the TV\'s renewal', async () => {
+  const srv = fakeServer({ '/api/auth/login': (b) => res(200, { ...SESSION({ name: b.username }), ...(b.username === 'Ana' ? { linked: ['discord'] } : { linkError: 'wrong_account' }) }), '/api/auth/tv/renew': () => res(200, { code: 'DEF567', expiresAt: 1, ttlMs: 240_000 }) });
   const acc = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, antiBot: async () => 'tok' });
   const a = await acc.loginAndLink('Ana', 'una contraseña larga');
   assert.deepEqual([a.session.name, a.linked, a.linkError], ['Ana', ['discord'], null]);
@@ -211,4 +218,6 @@ test('AccountClient: "I have one" signs in with linkPending and says what was li
   assert.equal(acc.oauthUrl('discord', 'pend'), '/api/auth/oauth/discord/start?pend=1');
   assert.equal(acc.oauthUrl('discord', 'reauth', 'google'), '/api/auth/oauth/discord/start?reauth=1&then=link:google');
   assert.equal(acc.oauthUrl('google'), '/api/auth/oauth/google/start');
+  assert.deepEqual(await acc.tvRenew('ABC234', 's'.repeat(43)), { code: 'DEF567', expiresAt: 1, ttlMs: 240_000 });
+  assert.deepEqual(srv.calls.at(-1), { path: '/api/auth/tv/renew', body: { code: 'ABC234', secret: 's'.repeat(43) } });
 });

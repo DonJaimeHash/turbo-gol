@@ -1120,7 +1120,8 @@ export class Game implements P2PGameHooks {
     });
 
     // Accounts: a signed-in player queues / joins lobbies under the account (NetClient asks first).
-    const accounts = new AccountClient({ antiBot: () => online.client.antiBotToken() });
+    // antiBotQuiet: a TV's start never asks for a press its remote cannot give (AccountClient.tvStart).
+    const accounts = new AccountClient({ antiBot: () => online.client.antiBotToken(), antiBotQuiet: () => online.client.antiBotToken(undefined, true) });
     this.accounts = accounts;
     online.client.sessionProvider = (minValidMs) => accounts.sessionForQueue(minValidMs);
     online.client.onSessionRejected = () => accounts.sessionRejected();
