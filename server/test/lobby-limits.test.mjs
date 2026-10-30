@@ -528,7 +528,7 @@ async function directoryReads(d) {
     const res = await d.dir.fetch(new Request('https://lobbies' + path, { headers: { [INTERNAL_HEADER]: secret } }));
     return { status: res.status, json: await res.json() };
   };
-  return { list: async () => (await get('/list?region=SA')).json.lobbies, resolve: (code) => get('/resolve?code=' + code) };
+  return { list: async () => (await get('/list?region=SA')).json.lobbies, count: async () => (await get('/count?region=SA')).json.count, resolve: (code) => get('/resolve?code=' + code) };
 }
 
 test('LobbyDO + LobbyDirectoryDO: a new public lobby is listed with its host and 1 player as soon as the host is in, never with 0 players and no host; later changes keep the window', async () => {
@@ -643,4 +643,54 @@ test('LobbyDO: INICIAR right after FINAL is never start_cooldown (the shortest m
   await h.send(host, { t: 'start' });
   assert.equal(host.last().status, 'in_game', 'once the wait is over it starts');
   assert.equal(h.customs(), 3);
+});
+
+test('LobbyDO + LobbyDirectoryDO: a public lobby whose host never connects (created through the API) is neither listed nor counted in the population, from create until it closes idle', async () => {
+  const d = await makeDirectory();
+  const reads = await directoryReads(d);
+  const h = await makeLobby(undefined, (path, body) => d.post(path, body).then((r) => r.json));
+  const seen = async () => `${(await reads.list()).map((l) => `${l.code} ${l.players}/${l.max} '${l.host}'`).join(', ') || 'not listed'}; count ${await reads.count()}`;
+  const timeline = [await seen()];
+  assert.equal((await reads.resolve('ABCDEF')).status, 200, 'its code resolves (an invite still comes in)');
+  // Its heartbeats (ALARM_MS) until the idle close (no socket ever): the row stays fresh, never listed.
+  for (let i = 0; i < 5 && !h.lobby.closed; i++) {
+    advance(h.ctx.storage.alarm - clock);
+    await h.alarm();
+    if (!h.lobby.closed) timeline.push(await seen());
+  }
+  assert.ok(h.lobby.closed, 'closed idle');
+  assert.ok(timeline.length >= 3, `the heartbeats before the close (${timeline.length})`);
+  assert.deepEqual([...new Set(timeline)], ['not listed; count 0'], 'never a row with 0 players and no host, never in the population');
+  assert.equal((await reads.resolve('ABCDEF')).status, 404, 'closed: its code is freed');
+});
+
+test("LobbyDO + LobbyDirectoryDO: the game's own lobby (CREATE LOBBY AND SHARE creates it private, SETTINGS makes it public) is first listed with its host and 1 player, within PUBLISH_MIN_MS of SAVE", async () => {
+  const d = await makeDirectory();
+  const reads = await directoryReads(d);
+  // As src/ui/screens/lobby.ts createAndShare: private, no name (the host's), P2P, the default length.
+  const h = await makeLobby({ mode: '2v2', visibility: 'private', net: 'p2p', matchLengthSeconds: 180 }, (path, body) => d.post(path, body).then((r) => r.json));
+  let save = null;
+  const first = [];
+  const look = async () => {
+    for (const l of await reads.list()) {
+      assert.ok(l.players > 0 && l.host !== '', `never listed with 0 players or no host: ${l.players}/${l.max} '${l.host}'`);
+      if (first.length === 0) first.push({ ms: save === null ? null : clock - save, row: `${l.players}/${l.max} '${l.host}'` });
+    }
+  };
+  await look();
+  const host = await h.upgrade('host1');
+  await look();
+  advance(3_000); // the host opens "..." > SETTINGS, picks Public, SAVE
+  save = clock;
+  await h.send(host, { t: 'settings', settings: { visibility: 'public' } });
+  assert.equal(host.last().settings.visibility, 'public');
+  await look();
+  for (let i = 0; i < 3 && first.length === 0; i++) {
+    advance(h.ctx.storage.alarm - clock);
+    await h.alarm();
+    await look();
+  }
+  assert.deepEqual(first.map((f) => f.row), ["1/4 'Ana'"], 'first listed with its host and 1 player');
+  assert.ok(first[0].ms !== null && first[0].ms <= L.PUBLISH_MIN_MS, `listed within the window after SAVE (${first[0].ms} ms)`);
+  assert.equal(await reads.count(), 1, 'and counted');
 });

@@ -944,10 +944,13 @@ export class LobbyDO extends DurableObject<Env> {
    *
    * A lobby nobody is in (create, before its host's socket; the last member gone while an admit is
    * pending) is sent unlisted: no public row with 0 players and no host, and none in the population
-   * count (its code still resolves: the row exists since /allocate). Such a row waits for the window
-   * like any other but starts none, so the host's row, a few milliseconds after create, goes out at
-   * once instead of 5 s later with the alarm (plus the Worker's 3 s list cache). No flood repeats it:
-   * a lobby with no member has no socket to send frames, and each new member takes a join.
+   * count, for as long as it lasts (a host that never connects: until the idle close). Its code still
+   * resolves: the row exists since /allocate. Such a row waits for the window like any other but
+   * starts none, so the host's row, a few milliseconds after create, goes out at once instead of 5 s
+   * later with the alarm (plus the Worker's 3 s list cache). No flood repeats it: a lobby with no
+   * member has no socket to send frames, and each new member takes a join. (The game's own CREATE
+   * LOBBY AND SHARE creates its lobby private, and SETTINGS makes it public later: the host's row
+   * going out at once matters to a lobby created public through the API.)
    */
   private async publish(heartbeat = false): Promise<void> {
     const rec = this.rec;
