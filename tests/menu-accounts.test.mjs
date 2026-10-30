@@ -5,6 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -15,6 +17,14 @@ registerHooks({
       if (relative && err && err.code === 'ERR_MODULE_NOT_FOUND' && !/\.[a-z]+$/i.test(specifier)) return nextResolve(specifier + '.ts', context);
       throw err;
     }
+  },
+  // The screens import package.json as Vite does (no `with { type: 'json' }`): its version, as a module.
+  load(url, context, nextLoad) {
+    if (url.endsWith('/package.json') && context.importAttributes?.type !== 'json') {
+      const { version } = JSON.parse(readFileSync(fileURLToPath(url), 'utf8'));
+      return { format: 'module', shortCircuit: true, source: `export const version = ${JSON.stringify(version)}; export default { version: ${JSON.stringify(version)} };` };
+    }
+    return nextLoad(url, context);
   },
 });
 
@@ -928,4 +938,28 @@ test('a TV makes no account and types no email: its PERFIL is the phone tile and
   assert.match(tvBranch, /openTvSignIn\(menu\)/);
   assert.match(tvBranch, /t\('profile\.tvNoAccount'\)/);
   assert.doesNotMatch(tvBranch, /Form\(\)|field\(|oauthButtons/, 'no form and no provider button on a TV');
+});
+
+// ---- sign-in PR 8's review: the mail caps' text, the code step on a pad, Enter, storage off ---------------
+
+/** accountLinks.ts itself (its sheets and texts run on the fake DOM; profile.ts's package.json comes through the load hook). */
+const linksModule = () => import('../src/ui/screens/accountLinks.ts');
+
+test("email_rate_limited (spec §4.7): a full sign-up lane claims no earlier mail and offers a guest the providers; a signed-in account only waits", async () => {
+  const L = await linksModule();
+  // The Worker's one answer for a full lane and a full address alike (AccountsDO capAnswer).
+  const srv = fakeServer({ '/api/auth/signup/start': () => res(429, { error: 'email_rate_limited', message: 'Ya te enviamos varios correos. Espera un rato antes de pedir otro.', retryAfterMs: 58_719_872 }) });
+  const acc = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: memStorage(), session: memStorage(), antiBot: async () => 'tok' });
+  const e = await acc.signupStart('first.time@example.com').then(() => null, (x) => x);
+  assert.equal(e?.code, 'email_rate_limited');
+  const menu = (oauth, signedIn = false) => ({ cfg: { oauth }, host: { accounts: { signedIn } } });
+  const guest = L.authErrText(menu(['discord']), e);
+  assert.doesNotMatch(guest, /already sent|several/i, 'a first-time player was never mailed');
+  assert.equal(guest, "We can't send more emails right now. Try again later, or sign in with Discord.");
+  assert.equal(L.authErrText(menu(['google', 'discord']), e), "We can't send more emails right now. Try again later, or sign in with Google or Discord.");
+  assert.equal(L.authErrText(menu([]), e), "We can't send more emails right now. Try again later.", 'the variant without providers');
+  assert.equal(L.authErrText(menu(['discord'], true), e), "We can't send more emails right now. Try again later.", "an account's own code: no sign-in to offer");
+  const ES = (await import('../src/locales/es.ts')).default;
+  assert.equal(ES['auth.mailCapProviders'], 'Ahora no podemos enviar más correos. Inténtalo más tarde o entra con {providers}.');
+  assert.equal(ES['auth.mailCap'], 'Ahora no podemos enviar más correos. Inténtalo más tarde.');
 });

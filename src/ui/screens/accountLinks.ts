@@ -62,17 +62,28 @@ function site(): string {
 }
 
 /**
- * An email form's error in the player's words (profile.ts errText), with what the design's §3.0
- * and §3.7 add: the anti-bot check that never ran here (a blocker) says to allow the site or use a
- * provider; mail that cannot go now says to try later or use a provider.
+ * An email form's error in the player's words (profile.ts errText), with what the design's §3.0,
+ * §3.7 and §4.7 add: the anti-bot check that never ran here (a blocker) says to allow the site or
+ * use a provider; mail that cannot go now says to try later or use a provider.
  */
 export function authErrText(menu: Menu, e: unknown): string {
   if (e instanceof AccountError) {
     const providers = providersLine(menu);
     if (e.code === 'turnstile_failed' && e.status === 0) return providers.length > 0 ? t('auth.antiBotBlocked', { site: site(), providers }) : t('auth.antiBotBlockedNoProviders', { site: site() });
     if ((e.code === 'email_paused' || e.code === 'email_unconfigured') && providers.length > 0) return t('auth.emailPausedProviders', { providers });
+    if (e.code === 'email_rate_limited') return mailCapText(menu, providers);
   }
   return errText(e);
+}
+
+/**
+ * email_rate_limited (§4.7): one answer, the same for every address, whether this address had its
+ * mails or the day's sign-up lane is full (a first-time player then). So it claims no earlier
+ * mail and, to a guest, names the providers that still sign in; a signed-in account (its own code)
+ * only waits.
+ */
+function mailCapText(menu: Menu, providers: string): string {
+  return providers.length > 0 && !menu.host.accounts.signedIn ? t('auth.mailCapProviders', { providers }) : t('auth.mailCap');
 }
 
 /** The mail is off (GET /api/config auth.email false): what the forms that send mail say instead. */

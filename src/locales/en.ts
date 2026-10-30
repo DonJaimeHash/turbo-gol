@@ -790,6 +790,9 @@ export default {
   'auth.antiBotBlockedNoProviders': "The anti-bot check couldn't load. Allow {site} in your blocker.",
   // The server cannot send mail now (paused, or not set up)
   'auth.emailPausedProviders': "We can't send emails right now. Try again in a few minutes, or sign in with {providers}.",
+  // A mail cap is full (this address's, or the day's for every sign-up): no claim of earlier mails
+  'auth.mailCap': "We can't send more emails right now. Try again later.",
+  'auth.mailCapProviders': "We can't send more emails right now. Try again later, or sign in with {providers}.",
   // The code step: the code and the finish on one screen
   'auth.codeSent': 'We sent a code to {email}.',
   // The code field's label, also read out by a screen reader

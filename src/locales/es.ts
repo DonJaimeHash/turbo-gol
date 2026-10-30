@@ -563,6 +563,8 @@ export default {
   'auth.antiBotBlocked': 'No se pudo cargar la verificación anti-bots. Permite {site} en tu bloqueador o entra con {providers}.',
   'auth.antiBotBlockedNoProviders': 'No se pudo cargar la verificación anti-bots. Permite {site} en tu bloqueador.',
   'auth.emailPausedProviders': 'Ahora no podemos enviar correos. Inténtalo en unos minutos o entra con {providers}.',
+  'auth.mailCap': 'Ahora no podemos enviar más correos. Inténtalo más tarde.',
+  'auth.mailCapProviders': 'Ahora no podemos enviar más correos. Inténtalo más tarde o entra con {providers}.',
   'auth.codeSent': 'Te enviamos un código a {email}.',
   'auth.codeLabel': 'Código de 6 dígitos',
   'auth.codeOk': 'Código correcto',
