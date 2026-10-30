@@ -3,7 +3,7 @@
  * is in `typ` and every verify checks it, so one kind never passes as another:
  *
  *   session  { typ: 's', sub, name, iat, exp }                    24 h, Bearer for /api/*; an account's
- *            (accountRoutes.ts, 1 h) adds { acct: 1, car?, since?, tv?, aat? }
+ *            (accountRoutes.ts, 1 h) adds { acct: 1, car?, since?, tv?, aat?, aal? }
  *   ticket   { typ: 't', sub, mid, team, slot, role, name, iat, exp, jti }  90 s, one WebSocket upgrade;
  *            role 'player' -> /ws/<mid> (MatchDO, phase 1), role 'peer' -> /room/<mid> (RoomDO, phase 2)
  *   OAuth state (accountRoutes.ts) { typ: 'oa', p, v, n, ... }     10 min, the __Host-tg_oa cookie
@@ -56,6 +56,13 @@ export interface SessionClaims {
    * account's session that is not a TV's.
    */
   aat?: number;
+  /**
+   * The level of that proof (the sign-in design's R6; accountStore.ts refresh.auth_lvl): 2 a typed
+   * password (a sign-in, a recovery, "confirm it's you"), 1 a press on the provider's own page
+   * (Google's account chooser, Discord's Authorize). Absent = 0, nothing proved: a TV, or a family
+   * from before levels. Kept only beside `aat`, so never on a TV's or a guest's session.
+   */
+  aal?: 1 | 2;
 }
 
 /** 'player': a seat in a MatchDO match (phase 1); 'peer': a seat in a RoomDO signaling room (phase 2); 'lobby': a custom lobby's socket (LobbyDO). */
@@ -204,6 +211,8 @@ export async function verifySession(secret: string, token: string, nowMs: number
   // The TV's scope belongs to an account's session; a fresh sign-in never to a TV's or a guest's.
   if (c.tv !== undefined && !(c.acct === 1 && c.tv === 1)) delete c.tv;
   if (c.aat !== undefined && !(c.acct === 1 && c.tv !== 1 && typeof c.aat === 'number' && Number.isFinite(c.aat))) delete c.aat;
+  // A level says how the proof at aat was made: none without that proof, and only 1 or 2 (I10).
+  if (c.aal !== undefined && !(c.aat !== undefined && (c.aal === 1 || c.aal === 2))) delete c.aal;
   return c;
 }
 

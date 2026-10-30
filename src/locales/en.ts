@@ -593,8 +593,8 @@ export default {
   'profile.heading': 'PROFILE',
   // A server error and the wait before retrying, in whole seconds (rounded up)
   'profile.retryAfter': '{message} ({seconds} s)',
-  // An account past its daily cap of failed sign-ins from new browsers (server/src/AccountsDO.ts LOGIN_USER_DAY_MAX)
-  'profile.retryTomorrow': 'Too many attempts on this account from new devices. Sign in from a device you have used before, or try again tomorrow.',
+  // A username's password sign-in paused after many failures from new browsers (server/src/AccountsDO.ts LOGIN_USER_DAY_MAX): 30 to 60 minutes, rounded up
+  'profile.retryNewDevice': 'Too many attempts on this account from new devices. Sign in from a device you have used before, or wait {minutes} min.',
   'profile.codesTitle': 'Recovery codes',
   'profile.codesNote': "Each code works once to reset your password if you forget it. There's no email recovery: keep them somewhere safe.",
   'profile.copy': 'COPY',
@@ -689,6 +689,8 @@ export default {
   'profile.reauthNote': 'To change how you sign in, sign in again with one of your methods.',
   'profile.reauthWith': 'SIGN IN WITH {provider}',
   'profile.reauthConfirm': 'CONFIRM',
+  // "Confirm it's you" for a change that needs the password (unlinking down to one way in): {providers} is the linked ones, "Discord" or "Google or Discord"
+  'profile.reauthPasswordOnly': "{providers} isn't enough for this: use your password.",
   // Back in PERFIL after confirming: the change can be made now
   'profile.reauthDone': 'Done: you can make the change now',
   'profile.signOut': 'SIGN OUT',
@@ -876,8 +878,8 @@ export default {
   // Unlinking the only way left to sign in
   'error.account.last_method': "It's your only way to sign in: link another one first",
   'error.account.not_linked': "That account isn't linked",
-  // Many failed sign-ins on this username from anywhere: the next one needs the anti-bot check
-  'error.account.turnstile_required': "Confirm you're not a robot to go on",
+  // A sign-in, sign-up or recovery whose anti-bot check (Turnstile) failed
+  'error.account.turnstile_failed': 'Anti-bot check failed, try again',
   // The garage (src/ui/screens/garage.ts): equipping a car the account does not own, or no car
   'error.account.not_owned': 'That car is not yours yet',
   'error.account.bad_car': 'Unknown car',

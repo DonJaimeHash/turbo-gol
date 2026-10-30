@@ -244,9 +244,12 @@ async function req(env, method, path, { bearer, ip = freshIp() } = {}) {
 }
 
 const nowS = () => Math.floor(Date.now() / 1000);
-/** An account session; `aat`: when its device last proved a credential (seconds), `tv`: a TV's. */
-const accountToken = (sub, { aat = nowS(), tv = false, name = 'Proyecto' } = {}) =>
-  signJwt(SECRET, { sub, name, iat: nowS(), exp: nowS() + 3600, acct: 1, ...(aat === null ? {} : { aat }), ...(tv ? { tv: 1 } : {}) });
+/**
+ * An account session; `aat`: when its device last proved a credential (seconds), `aal`: that proof's
+ * level (2 a typed password; null: none, a session from before levels), `tv`: a TV's.
+ */
+const accountToken = (sub, { aat = nowS(), aal = 2, tv = false, name = 'Proyecto' } = {}) =>
+  signJwt(SECRET, { sub, name, iat: nowS(), exp: nowS() + 3600, acct: 1, ...(aat === null ? {} : { aat }), ...(aal === null ? {} : { aal }), ...(tv ? { tv: 1 } : {}) });
 
 /** Every leaf of the answer: a count, a boolean or null; never a string. */
 function leaves(v, path = '') {
@@ -265,6 +268,9 @@ test('the gate: no session 401, a guest, another account, a TV of the project an
     [await accountToken(f.project, { tv: true }), 403, 'tv_session'],
     [await accountToken(f.project, { aat: stale }), 403, 'reauth_required'],
     [await accountToken(f.project, { aat: null }), 403, 'reauth_required'],
+    // Sign-in PR 4: level 2 (a typed password); a press on Discord's page is level 1, a family of before levels 0.
+    [await accountToken(f.project, { aal: 1 }), 403, 'reauth_required'],
+    [await accountToken(f.project, { aal: null }), 403, 'reauth_required'],
   ];
   const before = calls.length;
   for (const [bearer, status, code] of cases) {

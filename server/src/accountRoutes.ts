@@ -1,9 +1,11 @@
 /**
  * Worker routes for registered accounts (the guest flow stays in index.ts):
  *
- *   POST /api/auth/register   { username, password, turnstileToken? } -> RegisterAnswer + refresh cookie (the same
+ *   POST /api/auth/register   { username, passwordV2, turnstileToken? } -> RegisterAnswer + refresh cookie (the same
  *                             Turnstile gate as POST /api/guest when it is on)
- *   POST /api/auth/login      { username, password }            -> AccountSession + refresh cookie
+ *   POST /api/auth/login      { username, password, passwordV2, turnstileToken } -> AccountSession + refresh cookie
+ *                             (level 2) | 401 bad_credentials for every refusal (an account with a verified email
+ *                             too: it signs in by email) | 403 turnstile_failed | 429 throttled { retryAfterMs }
  *   POST /api/auth/refresh    (refresh cookie)                  -> AccountSession (token rotated) | 401 (a copied token:
  *                             its whole family revoked) | 409 refresh_race (another tab rotated it: retry, cookie kept)
  *   POST /api/auth/logout     (refresh cookie)                  -> { ok } + cookie cleared (this device: its whole
@@ -11,17 +13,17 @@
  *   GET  /api/auth/sessions   Bearer (account, not a TV) [cookie] -> SessionsAnswer: the signed-in devices
  *   POST /api/auth/sessions/revoke Bearer { id }                -> { revoked } (that device signed out)
  *   POST /api/auth/sessions/revoke-all Bearer                   -> { revoked } + cookie cleared (every device, this one too)
- *   POST /api/auth/recover    { username, code, password }      -> AccountSession + { codesLeft } + cookie
- *   POST /api/auth/password   Bearer { oldPassword, password }  -> { ok } (every other device signed out); an
+ *   POST /api/auth/recover    { username, code, passwordV2, turnstileToken } -> AccountSession + { codesLeft } + cookie
+ *   POST /api/auth/password   Bearer { oldPassword, oldPasswordV2, passwordV2 } -> { ok } (every other device signed out); an
  *                             account without a password (Google / Discord only) sets its first one with a
  *                             fresh session instead (403 reauth_required: PERFIL's "confirm it is you"), and
  *                             its other devices stay signed in
  *   POST /api/auth/recovery-codes Bearer { password }           -> { recoveryCodes }; without a password: a fresh session
  *     Neither from a TV's session (403 tv_session). A 1-hour Bearer alone (a leak, a TV, a script)
  *     no longer turns into a permanent username-and-password way in.
- *   POST /api/me/username     Bearer { username, password?, newPassword? } -> AccountSession (new name in the token);
- *                             a password account sends its key for the OLD name (checked) and for the NEW
- *                             name (stored): the client key is salted with the username
+ *   POST /api/me/username     Bearer { username, password?, passwordV2? } -> AccountSession (new name in the token);
+ *                             a password account proves its password (the legacy key of the OLD name, and the
+ *                             current key, which no name salts: a legacy record is re-keyed to it)
  *   GET  /api/me              Bearer (account)                  -> MeInfo
  *   POST /api/me/training     Bearer (account) { records }      -> { records }: the training records of
  *                             src/game/trainingRecords.ts merged into the account (best per pack, the
@@ -56,10 +58,18 @@
  *     on the account (another identity: /#auth=error:reauth_mismatch, nothing signed in or made)
  *     and moves this browser's credential proof to now. Either way this browser's old token goes
  *     and the callback's new one takes its place.
- *   POST /api/auth/reauth     Bearer { password } (refresh cookie) -> AccountSession: the password re-proved, the
- *                             cookie's credential proof now (a password account's re-authentication)
- *   POST /api/auth/unlink     Bearer (fresh) { provider }       -> { ok } | 409 last_method (the only way in left) |
- *                             404 not_linked | 403 reauth_required
+ *   POST /api/auth/reauth     Bearer { legacy, password } (refresh cookie) -> AccountSession: the password re-proved
+ *                             (a legacy record re-keyed), the cookie's credential proof now at level 2
+ *   POST /api/auth/unlink     Bearer (fresh(1)) { provider }    -> { ok } | 409 last_method (the only way in left) |
+ *                             404 not_linked | 403 reauth_required { level } (level 2 when one way in would be left)
+ *
+ * Levels (the sign-in design's R6). Each credential event gives the device's refresh family a
+ * level, stored with it (accountStore.ts refresh.auth_lvl, method) and signed into the session as
+ * `aal` beside `aat`: 2 a typed password (register, login, recover, reauth), 1 a press on the
+ * provider's page (Google's account chooser, Discord's prompt=consent), 0 nothing (a TV, a family
+ * from before levels). A refresh keeps it and never raises it. requireFresh(c, level) asks for
+ * it: a link, a first password and new codes without one need 1; an unlink 1, or 2 when one way
+ * in would be left; the maintainer routes (nodeRoutes.ts) always 2, which only a password gives.
  *   POST /api/auth/tv/start   { turnstileToken? } (no session)  -> TvStartAnswer: a TV signing in with the phone (the
  *                             Turnstile gate as POST /api/guest; 503 busy when its network holds too many codes)
  *   POST /api/auth/tv/info    Bearer (account) { code }         -> TvInfoAnswer: where that TV is (request.cf at its
@@ -90,10 +100,17 @@
  * Content-Type application/json (415 json_required): a cross-site <form> can send neither, so a
  * login CSRF (a text/plain form signing the browser into another account) cannot happen.
  *
- * `password` is always the client key (src/net/account.ts clientPasswordKey: PBKDF2 in the browser),
- * never the typed password. The server stores PBKDF2-SHA256(clientKey, random salt, 100,000) — the
- * Workers WebCrypto iteration ceiling — so hashing happens here, in parallel isolates, and the single
- * AccountsDO only stores and compares rows.
+ * A password field is always a client key (PBKDF2 in the browser), never the typed password: the
+ * current key (src/net/account.ts passwordKey, one fixed salt: `passwordV2`, and `password` in
+ * reauth) or the legacy one (legacyPasswordKey, salted with the username: `password` elsewhere,
+ * `legacy` in reauth), which every successful proof re-keys to the current one (users.pw_v 1 -> 2).
+ * A page of before the current key sends only the legacy one, which is never stored as current. The
+ * server stores PBKDF2-SHA256(HMAC-SHA256(PASSWORD_PEPPER, clientKey), random salt, 100,000) — the
+ * Workers WebCrypto iteration ceiling — (users.pw_kid 'p1'), or without the HMAC where the secret
+ * is not set, or for a legacy key, or while the AccountsDO cannot keep the label (pw_kid ''; storeEnv),
+ * and re-hashes a current record of another pepper at its next sign-in. Hashing
+ * happens here, in parallel isolates, and the single AccountsDO only stores and compares rows.
+ * Nothing logs a request body or a password field (server/test/no-secret-logs.test.mjs checks it).
  *
  * Tokens: an account session is the same HS256 session as a guest's (index.ts bearerSession) with
  * `acct: 1` and a 1 h life, the car the account drives (`car`, only when it is not the default one:
@@ -169,16 +186,80 @@ export async function sha256Hex(s: string): Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s))));
 }
 
-/** PBKDF2-SHA256 of the client key (hex) with `saltHex`: the stored password hash. */
-export async function serverHash(clientKey: string, saltHex: string, iter: number = SERVER_KDF_ITERATIONS): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', fromHex(clientKey), 'PBKDF2', false, ['deriveBits']);
+/** users.pw_kid of a record hashed with PASSWORD_PEPPER (the first pepper; a leak would add 'p2'). */
+export const PEPPER_KID = 'p1';
+/** The shortest PASSWORD_PEPPER taken: 32 random bytes are 64 characters in hex, 44 in base64. */
+export const PEPPER_MIN_LENGTH = 32;
+/** The salt of the dummy server stage: 16 bytes, as a real record's. */
+const DUMMY_SALT = '00'.repeat(16);
+
+type PepperEnv = Partial<Pick<Env, 'PASSWORD_PEPPER'>>;
+
+let pepperWarned = false;
+
+/** The pepper id new records get here: PEPPER_KID with a PASSWORD_PEPPER of PEPPER_MIN_LENGTH or more, else '' (a fork, dev, tests). */
+export function currentKid(env: PepperEnv): '' | typeof PEPPER_KID {
+  const p = env.PASSWORD_PEPPER;
+  if (typeof p !== 'string' || p.length === 0) return '';
+  if (p.length >= PEPPER_MIN_LENGTH) return PEPPER_KID;
+  if (!pepperWarned) {
+    pepperWarned = true;
+    console.warn(`PASSWORD_PEPPER is shorter than ${PEPPER_MIN_LENGTH} characters: not used (no pepper)`);
+  }
+  return '';
+}
+
+/** The pepper of a record's `kid`: null for none (''), undefined when that pepper is not set here (the record cannot be checked). */
+function pepperFor(env: PepperEnv, kid: string): string | null | undefined {
+  if (kid === '') return null;
+  return kid === PEPPER_KID && currentKid(env) === PEPPER_KID ? (env.PASSWORD_PEPPER as string) : undefined;
+}
+
+const pepperKeys = new Map<string, Promise<CryptoKey>>();
+
+function pepperKey(pepper: string): Promise<CryptoKey> {
+  let k = pepperKeys.get(pepper);
+  if (!k) {
+    k = crypto.subtle.importKey('raw', enc.encode(pepper), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    pepperKeys.clear(); // one pepper per deployment
+    pepperKeys.set(pepper, k);
+  }
+  return k;
+}
+
+/**
+ * The server stage of a password (the design's §1.5): PBKDF2-SHA256 of the client key (hex) with
+ * `saltHex`, and with a pepper, of HMAC-SHA256(pepper, client key) instead. The stored hash.
+ */
+export async function serverHash(clientKey: string, saltHex: string, iter: number = SERVER_KDF_ITERATIONS, pepper: string | null = null): Promise<string> {
+  const input = pepper === null ? fromHex(clientKey) : new Uint8Array(await crypto.subtle.sign('HMAC', await pepperKey(pepper), fromHex(clientKey)));
+  const key = await crypto.subtle.importKey('raw', input, 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: fromHex(saltHex), iterations: iter }, key, 256);
   return hex(new Uint8Array(bits));
 }
 
-export async function newPasswordRecord(clientKey: string): Promise<PasswordRecord> {
+/**
+ * A record to store for `clientKey`: `v` 1 for the legacy key (account.ts legacyPasswordKey), 2 for
+ * the current one (passwordKey). A current record gets this deployment's pepper when it has one
+ * (pw_kid 'p1'); a legacy one never does (pw_kid ''), so every build agrees on what it is: a build
+ * of before (a rollback) writes unpeppered legacy records and leaves pw_kid as it was, and
+ * provePassword reads a legacy record without a pepper whatever its pw_kid says. The routes that
+ * store one take their env from storeEnv: no pepper until the AccountsDO keeps a record's labels.
+ */
+export async function newPasswordRecord(clientKey: string, v: 1 | 2 = 1, env: PepperEnv = {}): Promise<PasswordRecord> {
   const salt = hex(randomBytes(16));
-  return { hash: await serverHash(clientKey, salt), salt, iter: SERVER_KDF_ITERATIONS };
+  const kid = v === 2 ? currentKid(env) : '';
+  return { hash: await serverHash(clientKey, salt, SERVER_KDF_ITERATIONS, kid === '' ? null : (env.PASSWORD_PEPPER as string)), salt, iter: SERVER_KDF_ITERATIONS, v, kid };
+}
+
+/**
+ * The server stage an unknown username, an account without the asked password, or a key that is
+ * missing still pays: the pepper's HMAC when there is one and PBKDF2 at SERVER_KDF_ITERATIONS over
+ * a 16-byte salt, exactly a new record's parameters, so the time tells nothing (I6).
+ */
+export async function dummyStage(clientKey: string, env: PepperEnv = {}): Promise<void> {
+  const kid = currentKid(env);
+  await serverHash(clientKey, DUMMY_SALT, SERVER_KDF_ITERATIONS, kid === '' ? null : (env.PASSWORD_PEPPER as string));
 }
 
 function constantTimeEqualHex(a: string, b: string): boolean {
@@ -188,9 +269,86 @@ function constantTimeEqualHex(a: string, b: string): boolean {
   return d === 0;
 }
 
-export async function verifyPassword(clientKey: string, c: Pick<Credentials, 'hash' | 'salt' | 'iter'>): Promise<boolean> {
+/** The client key against a stored record, with the record's own pepper (its kid); false when that pepper is not set here. */
+export async function verifyPassword(clientKey: string, c: Pick<Credentials, 'hash' | 'salt' | 'iter' | 'kid'>, env: PepperEnv = {}): Promise<boolean> {
   if (!c.hash || !c.salt || !c.iter) return false;
-  return constantTimeEqualHex(await serverHash(clientKey, c.salt, c.iter), c.hash);
+  const pepper = pepperFor(env, c.kid ?? '');
+  if (pepper === undefined) {
+    console.error(`password check: a record of pepper ${c.kid} and no such PASSWORD_PEPPER here`);
+    await dummyStage(clientKey, env);
+    return false;
+  }
+  return constantTimeEqualHex(await serverHash(clientKey, c.salt, c.iter, pepper), c.hash);
+}
+
+/**
+ * A password as the client proved it: `v1` its legacy key (salted with the username), `v2` its
+ * current key. A check reads the one the stored record holds (Credentials.pwV).
+ */
+export interface PasswordProof {
+  v1?: string;
+  v2?: string;
+}
+
+/** The record's client key version: an AccountsDO still on the code of before (the minutes of a deploy) names none, and all its hashes are legacy. */
+function pwVOf(cred: Credentials): number {
+  return typeof cred.pwV === 'number' ? cred.pwV : cred.hash ? 1 : 0;
+}
+
+/**
+ * The proof checks against the account's stored password (the dummy stage when it has none, or the
+ * proof lacks its key). A failure of a proof that carries both keys pays a second stage, so the
+ * time is the same whatever the record: for a legacy record it is a real check of the current key.
+ * That one passes only for a current key stored under pw_v 1, which an AccountsDO still on the
+ * code of before writes in the minutes of a deploy (its sign-up, recovery and password change label
+ * every record legacy, and storeEnv sends it none with a pepper): its owner still signs in, and the
+ * sign-in re-keys it under the right label. A legacy record is read without a pepper, both stages:
+ * none is ever written with one, and a build of before (a rollback) leaves a stale pw_kid on it.
+ */
+export async function provePassword(env: PepperEnv, cred: Credentials, proof: PasswordProof): Promise<boolean> {
+  const pwV = pwVOf(cred);
+  const key = pwV === 2 ? proof.v2 : pwV === 1 ? proof.v1 : undefined;
+  const both = proof.v1 !== undefined && proof.v2 !== undefined;
+  const filler = proof.v2 ?? proof.v1 ?? DUMMY_SALT + DUMMY_SALT;
+  if (!cred.hash || key === undefined) {
+    await dummyStage(filler, env);
+    if (both) await dummyStage(filler, env);
+    return false;
+  }
+  const rec = pwV === 1 ? { ...cred, kid: '' } : cred;
+  if (await verifyPassword(key, rec, env)) return true;
+  if (!both) return false;
+  if (pwV === 1) return verifyPassword(proof.v2 as string, rec, env);
+  await dummyStage(filler, env);
+  return false;
+}
+
+/**
+ * After a successful proof, what to store again, or null: a legacy record becomes the current
+ * key's when the proof carries it (the re-key, §3.10), and a current record of another pepper than
+ * this deployment's is re-hashed with it (pw_kid '' once PASSWORD_PEPPER is set). A legacy record
+ * without the current key in the proof stays as it is (never peppered).
+ */
+export async function rekeyFor(env: PepperEnv, cred: Credentials, proof: PasswordProof): Promise<PasswordRecord | null> {
+  if (proof.v2 === undefined) return null;
+  if (pwVOf(cred) === 1) return newPasswordRecord(proof.v2, 2, env);
+  return (cred.kid ?? '') === currentKid(env) ? null : newPasswordRecord(proof.v2, 2, env);
+}
+
+/**
+ * The env a route makes a record to store with (a sign-up, a recovery, a password change, a
+ * rename's re-key): this deployment's, its pepper with it, when the AccountsDO has just said that
+ * it keeps a record's labels (GET /pw-labels, this code's); {} otherwise. An object on the code of
+ * before (the minutes of a deploy, the #71 case, or of a rollback) stores every record as pw_v 1 and
+ * pw_kid '', so a record it gets is made without the pepper: that '' is then true, and
+ * provePassword's second stage reads the current key it calls legacy. Either order of deploying
+ * this code and setting PASSWORD_PEPPER is safe. Asked at every such write (they are rare): a yes
+ * kept for longer could outlive the object's code in a rollback.
+ */
+async function storeEnv(env: Env): Promise<PepperEnv> {
+  const r = await accountsCall(env, '/pw-labels');
+  await r.text().catch(() => '');
+  return r.ok ? env : {};
 }
 
 /** 'XXXX-XXXX' (40 bits each). */
@@ -355,18 +513,23 @@ export async function accountSession(env: Env, u: UserRef, nowMs: number = Date.
   // Absent = the default car on every path (the seats, the rosters): the token carries only another one.
   if (car !== DEFAULT_CAR) claims.car = car;
   if (typeof u.createdAt === 'number' && u.createdAt > 0) claims.since = nowSeconds(u.createdAt);
-  // The device's scope (accountStore.ts refresh kind and auth_at): a TV's, or when it last proved a credential.
+  // The device's scope (accountStore.ts refresh kind, auth_at and auth_lvl): a TV's, or when it last
+  // proved a credential and at what level (R6; 0 is no aal at all).
   if (u.tv === true) claims.tv = 1;
-  else if (typeof u.authAt === 'number' && u.authAt > 0) claims.aat = nowSeconds(u.authAt);
+  else if (typeof u.authAt === 'number' && u.authAt > 0) {
+    claims.aat = nowSeconds(u.authAt);
+    if (u.authLvl === 1 || u.authLvl === 2) claims.aal = u.authLvl;
+  }
   const out: AccountSession = { kind: 'account', playerId: u.userId, name: u.username, session: await signJwt(env.JWT_SECRET, claims), expiresAt: exp * 1000, car };
   if (claims.tv === 1) out.tv = true;
   if (claims.aat !== undefined) out.authAt = claims.aat * 1000;
+  if (claims.aal !== undefined) out.authLvl = claims.aal;
   return out;
 }
 
 /** The scope a Bearer carries, for a route that re-signs it (a car, a rename): never widened, never dropped. */
-function scopeOf(s: SessionClaims): Pick<UserRef, 'tv' | 'authAt'> {
-  return s.tv === 1 ? { tv: true } : s.aat !== undefined ? { authAt: s.aat * 1000 } : {};
+function scopeOf(s: SessionClaims): Pick<UserRef, 'tv' | 'authAt' | 'authLvl'> {
+  return s.tv === 1 ? { tv: true } : s.aat !== undefined ? { authAt: s.aat * 1000, authLvl: s.aal ?? 0 } : {};
 }
 
 /** A cookie-carrying POST from a page of another origin is refused (SameSite=Strict already blocks most). */
@@ -428,20 +591,36 @@ export interface RouteContext {
   antiBot: (token: unknown) => Promise<Response | null>;
 }
 
+/**
+ * A request's new password: `passwordV2` (the current client key, stored as pw_v 2) or, from a
+ * page of before it, `legacy` (the legacy key, pw_v 1). Never the other way round: a page that
+ * predates the current key sends no `passwordV2`, so a legacy key is never stored as a current one.
+ */
+function newKeyOf(passwordV2: unknown, legacy: unknown): { key: string; v: 1 | 2 } | null {
+  if (isClientKey(passwordV2)) return { key: passwordV2, v: 2 };
+  return isClientKey(legacy) ? { key: legacy, v: 1 } : null;
+}
+
+/** A proof's keys from a body's fields (each only when it is a client key's shape). */
+function proofOf(v1: unknown, v2: unknown): PasswordProof {
+  return { ...(isClientKey(v1) ? { v1 } : {}), ...(isClientKey(v2) ? { v2 } : {}) };
+}
+
 async function register(c: RouteContext): Promise<Response> {
   if (c.limited('reg:' + ipOf(c.request), 5)) return error(429, 'rate_limited', 'Demasiados registros desde tu red, inténtalo más tarde');
-  const b = await readJson<{ username?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
+  const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown }>(c.request);
   if (!b) return error(400, 'bad_request');
   const blocked = await c.antiBot(b.turnstileToken);
   if (blocked !== null) return blocked;
   const problem = usernameProblem(b.username);
   if (problem !== null) return error(400, 'bad_username', problem);
-  if (!isClientKey(b.password)) return error(400, 'bad_password', 'Contraseña inválida');
+  const nk = newKeyOf(b.passwordV2, b.password);
+  if (nk === null) return error(400, 'bad_password', 'Contraseña inválida');
   const codes = Array.from({ length: RECOVERY_CODES }, newRecoveryCode);
   const refresh = newRefreshToken();
   const r = await accountsJson<UserRef>(c.env, '/register', {
     username: b.username,
-    pw: await newPasswordRecord(b.password),
+    pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)),
     recovery: await Promise.all(codes.map(recoveryCodeHash)),
     refresh: await grantFor(refresh, c.request),
   });
@@ -451,66 +630,82 @@ async function register(c: RouteContext): Promise<Response> {
 }
 
 /**
- * A username under attack (AccountsDO auth-begin's `slow`: many failures on it from anywhere) is
- * slowed down, never locked: each sign-in on it needs a solved Turnstile check. Null = go on; else
- * the refusal (403 turnstile_required asks the client for one). Where the gate is off (local dev,
- * TURNSTILE_DISABLED) nothing can be asked, and the per-network counters are what remains.
+ * Who checks a password: a sign-in (anonymous: it has already passed Turnstile, and AccountsDO
+ * counts it on the username, the network and this browser's device cookie), or a session of the
+ * account itself (a password change, new codes, a rename, a re-authentication), whose failures count
+ * only per account (AccountsDO's 'pa:' counter, locked like a pair from any network): a stolen
+ * session cannot guess the old password at the network caps' rate, and that lock never touches the
+ * owner's sign-in.
  */
-async function slowDown(c: RouteContext, slow: boolean | undefined, token: unknown): Promise<Response | null> {
-  if (slow !== true) return null;
-  if (token === undefined) return (await c.antiBot(undefined)) === null ? null : error(403, 'turnstile_required', 'Confirma que no eres un robot para seguir');
-  return c.antiBot(token);
-}
+type PasswordChecker = { signIn: true } | { account: string };
+
+const BAD_CREDENTIALS = 'Usuario o contraseña incorrectos';
 
 /**
- * Who checks a password: a sign-in, with its Turnstile token (the slow-down of a username under
- * attack), or a session of the account itself (a password change, new codes, a rename, a
- * re-authentication), which has no token: its failures count per account as well (AccountsDO's
- * 'a:' counter, locked like a pair from any network), so a stolen session cannot guess the old
- * password at the network caps' rate, and that lock never touches the owner's sign-in.
+ * Look the user up and check the proof against its stored password. Every refusal is the same 401
+ * bad_credentials after the same server stage (an unknown username, a wrong password, an account
+ * without a password or without the key the proof lacks: nothing tells an OAuth-only account
+ * apart, audit auth-5). `legacyOnly`: the username sign-in and its recovery, which refuse an
+ * account with a verified email (it signs in by email: the design's downgrade rule (a)).
  */
-type PasswordChecker = { token: unknown } | { account: string };
-
-/**
- * Look the user up and check the password; a missing user, or one without a password, still costs
- * one hash (no timing oracle) and gets the same answer (bad_credentials: nothing tells an OAuth-only
- * account apart).
- */
-async function checkCredentials(c: RouteContext, username: string, clientKey: string, who: PasswordChecker): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
+async function checkPassword(c: RouteContext, username: string, proof: PasswordProof, who: PasswordChecker, legacyOnly = false): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
   // A sign-in also says whether this browser signed in to the account before (its device cookie).
   const as = 'account' in who ? { account: who.account } : { device: await deviceOf(c.env, c.request) };
-  const begin = await accountsJson<{ found: boolean; slow?: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request), ...as });
+  // `charge`: this check counts as a failure as it starts, in the step that tests the locks, so a
+  // burst of requests in flight at once gets no more checks than the counters let through; a
+  // success gives it back (`charged` at the finish).
+  const begin = await accountsJson<{ found: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request), ...as, charge: true });
   if (!begin.ok) return { ok: false, res: pass(begin.res) };
-  const d = begin.data;
-  if ('token' in who) {
-    const blocked = await slowDown(c, d.slow, who.token);
-    if (blocked !== null) return { ok: false, res: blocked };
+  const failed = async (): Promise<{ ok: false; res: Response }> => {
+    // Counted at the begin already; an AccountsDO of before (the minutes of a deploy) counts it here.
+    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, charged: true, ...as });
+    return { ok: false, res: error(401, 'bad_credentials', BAD_CREDENTIALS) };
+  };
+  // An unknown username, and an account with a verified email at the username routes (it signs in by
+  // email): its password is never checked here, so neither the answer nor the time says whether it
+  // was right. The stages of an account without a password: the same time as any refusal.
+  const cred = begin.data as Credentials;
+  if (!begin.data.found || (legacyOnly && cred.emailVerified)) {
+    await provePassword(c.env, { userId: '', username, banned: false, pwV: 0, emailVerified: false }, proof);
+    return failed();
   }
-  const refused = { ok: false as const, res: error(401, 'bad_credentials', 'Usuario o contraseña incorrectos') };
-  if (!d.found) {
-    await serverHash(clientKey, '00'.repeat(16));
-    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, ...as });
-    return refused;
-  }
-  const cred = d as Credentials;
-  if (!cred.hash) await serverHash(clientKey, '00'.repeat(16)); // the same time as a wrong password's
-  const good = await verifyPassword(clientKey, cred);
-  if (!good) {
-    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, ...as });
-    return refused;
-  }
+  if (!(await provePassword(c.env, cred, proof))) return failed();
   if (cred.banned) return { ok: false, res: error(403, 'banned', 'Cuenta suspendida') };
+  // A session's own check proved the password: its charge goes back now (a sign-in's at its finish).
+  if ('account' in who) await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: true, charged: true, ...as });
   return { ok: true, cred };
 }
 
+/**
+ * POST /api/auth/login: the legacy sign-in, a username and both keys of the typed password
+ * (`password` the legacy key, `passwordV2` the current one) and a solved Turnstile check, every
+ * time. A legacy record is checked with the legacy key and re-keyed to the current one in the
+ * sign-in's transaction; a current one is checked with `passwordV2`. Level 2, method 'legacy'.
+ */
 async function login(c: RouteContext): Promise<Response> {
   if (c.limited('login:' + ipOf(c.request), 30)) return error(429, 'rate_limited');
-  const b = await readJson<{ username?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
-  if (!b || typeof b.username !== 'string' || b.username.length > 64 || !isClientKey(b.password)) return error(400, 'bad_request');
-  const chk = await checkCredentials(c, b.username, b.password, { token: b.turnstileToken });
+  const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown }>(c.request);
+  const proof = proofOf(b?.password, b?.passwordV2);
+  if (!b || typeof b.username !== 'string' || b.username.length > 64 || (proof.v1 === undefined && proof.v2 === undefined)) return error(400, 'bad_request');
+  // Before the AccountsDO hears of it (R3): a page from before the check sends no token and reloads.
+  const blocked = await c.antiBot(b.turnstileToken);
+  if (blocked !== null) return blocked;
+  const chk = await checkPassword(c, b.username, proof, { signIn: true }, true);
   if (!chk.ok) return chk.res;
+  // This deployment's env, not storeEnv's: an AccountsDO of before ignores a sign-in's `rekey`.
+  const rekey = await rekeyFor(c.env, chk.cred, proof);
   const refresh = newRefreshToken();
-  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', { userId: chk.cred.userId, username: b.username, ip: ipOf(c.request), ok: true, refresh: await grantFor(refresh, c.request), device: await deviceOf(c.env, c.request) });
+  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', {
+    userId: chk.cred.userId,
+    username: b.username,
+    ip: ipOf(c.request),
+    ok: true,
+    refresh: await grantFor(refresh, c.request),
+    device: await deviceOf(c.env, c.request),
+    proved: chk.cred.hash,
+    charged: true,
+    ...(rekey !== null ? { rekey } : {}),
+  });
   if (!fin.ok) return pass(fin.res);
   return withCookies(json(await accountSession(c.env, fin.data)), [refreshCookie(refresh), await deviceCookie(c.env, fin.data.userId)]);
 }
@@ -539,21 +734,28 @@ async function logout(c: RouteContext): Promise<Response> {
   return withCookies(json({ ok: true }), [clearCookie(REFRESH_COOKIE)]);
 }
 
+/**
+ * POST /api/auth/recover: the legacy recovery code, a new password (`passwordV2`, stored as the
+ * current key; `password`, the legacy key, only from a page of before it) and a solved Turnstile
+ * check, every time. Never for an account with a verified email (AccountsDO answers it as a wrong
+ * code). Level 2, method 'reset'.
+ */
 async function recover(c: RouteContext): Promise<Response> {
   if (c.limited('recover:' + ipOf(c.request), 10)) return error(429, 'rate_limited');
-  const b = await readJson<{ username?: unknown; code?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
-  if (!b || typeof b.username !== 'string' || b.username.length > 64 || typeof b.code !== 'string' || b.code.length > 32 || !isClientKey(b.password)) return error(400, 'bad_request');
-  // The same counters and slow-down as a sign-in's (AccountsDO /recover throttles the pair again).
-  const device = await deviceOf(c.env, c.request);
-  const begin = await accountsJson<{ slow?: boolean }>(c.env, '/auth-begin', { username: b.username, ip: ipOf(c.request), device });
-  if (!begin.ok) return pass(begin.res);
-  const blocked = await slowDown(c, begin.data.slow, b.turnstileToken);
+  const b = await readJson<{ username?: unknown; code?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown }>(c.request);
+  const nk = newKeyOf(b?.passwordV2, b?.password);
+  if (!b || typeof b.username !== 'string' || b.username.length > 64 || typeof b.code !== 'string' || b.code.length > 32 || nk === null) return error(400, 'bad_request');
+  const blocked = await c.antiBot(b.turnstileToken);
   if (blocked !== null) return blocked;
+  // The same counters as a sign-in's, only asked here (no charge): AccountsDO /recover tests and counts them in one step.
+  const device = await deviceOf(c.env, c.request);
+  const begin = await accountsJson<unknown>(c.env, '/auth-begin', { username: b.username, ip: ipOf(c.request), device });
+  if (!begin.ok) return pass(begin.res);
   const refreshTok = newRefreshToken();
   const r = await accountsJson<UserRef & { codesLeft: number }>(c.env, '/recover', {
     username: b.username,
     code: await recoveryCodeHash(b.code),
-    pw: await newPasswordRecord(b.password),
+    pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)),
     refresh: await grantFor(refreshTok, c.request),
     ip: ipOf(c.request),
     device,
@@ -569,15 +771,26 @@ export function requireAccount(c: Pick<RouteContext, 'session'>): SessionClaims 
   return c.session;
 }
 
+/** A credential proof's level (R6): 1 a press on the provider's own page, 2 a typed password. */
+export type AuthLevel = 1 | 2;
+
+/** 403 reauth_required, naming the level asked for: PERFIL's "confirm it's you" offers only what reaches it. */
+export function reauthRequired(level: AuthLevel): Response {
+  return json({ error: 'reauth_required', message: 'Confirma que eres tú: vuelve a entrar con tu cuenta', level }, 403);
+}
+
 /**
- * An account's session, not a TV's, whose device proved a credential (a sign-in or a
- * re-authentication: the aat claim) within `windowS`: otherwise 403 reauth_required, and PERFIL
- * asks the player to confirm it is them first.
+ * fresh(level) of the sign-in design's R6: an account's session, not a TV's, whose device proved a
+ * credential (a sign-in or a re-authentication: the aat claim) within `windowS`, at `level` or above
+ * (the aal claim; none = 0, so a TV, a silent provider sign-in and a family from before levels are
+ * never fresh). Otherwise 403 reauth_required { level }, and PERFIL asks the player to confirm it is
+ * them first. A route that needs level 2 of an account that cannot reach it (no password) asks for
+ * level 1 instead: the AccountsDO knows the ceiling (accountStore.ts ceilingOf).
  */
-export function requireFresh(c: Pick<RouteContext, 'session'>, windowS: number = REAUTH_WINDOW_S, nowS: number = nowSeconds()): SessionClaims | Response {
+export function requireFresh(c: Pick<RouteContext, 'session'>, level: AuthLevel, windowS: number = REAUTH_WINDOW_S, nowS: number = nowSeconds()): SessionClaims | Response {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
-  if (typeof s.aat !== 'number' || nowS - s.aat > windowS || s.aat > nowS + 60) return error(403, 'reauth_required', 'Confirma que eres tú: vuelve a entrar con tu cuenta');
+  if (typeof s.aat !== 'number' || nowS - s.aat > windowS || s.aat > nowS + 60 || (s.aal ?? 0) < level) return reauthRequired(level);
   return s;
 }
 
@@ -593,41 +806,52 @@ export function requirePrimary(c: Pick<RouteContext, 'session'>): SessionClaims 
   return s;
 }
 
+/**
+ * POST /api/auth/password { oldPassword, oldPasswordV2, passwordV2 }: the old password proved by
+ * whichever key its record holds (the legacy `oldPassword`, the current `oldPasswordV2`), the new
+ * one stored as the current key (`password`, the legacy key, only from a page of before it). An
+ * account without a password sets a first one from a session at level 1 (a new way in, R6).
+ */
 async function changePassword(c: RouteContext): Promise<Response> {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
-  const b = await readJson<{ oldPassword?: unknown; password?: unknown }>(c.request);
-  if (!b || !isClientKey(b.password)) return error(400, 'bad_request');
+  const b = await readJson<{ oldPassword?: unknown; oldPasswordV2?: unknown; password?: unknown; passwordV2?: unknown }>(c.request);
+  const nk = newKeyOf(b?.passwordV2, b?.password);
+  if (!b || nk === null) return error(400, 'bad_request');
   const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
   if (!me.ok) return pass(me.res);
+  let proved: string | undefined;
   if (me.data.hasPassword) {
-    if (!isClientKey(b.oldPassword)) return error(400, 'bad_request');
-    const chk = await checkCredentials(c, me.data.name, b.oldPassword, { account: s.sub });
+    const proof = proofOf(b.oldPassword, b.oldPasswordV2);
+    if (proof.v1 === undefined && proof.v2 === undefined) return error(400, 'bad_request');
+    const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
     if (!chk.ok) return chk.res;
+    proved = chk.cred.hash;
   } else {
     // A first password is a new way in: only a device that just proved the account's provider adds it.
-    const f = requireFresh(c);
+    const f = requireFresh(c, 1);
     if (f instanceof Response) return f;
   }
   const token = cookieOf(c.request, REFRESH_COOKIE);
   // A change signs the other devices out (the old password may have leaked); a first password does not.
-  const r = await accountsCall(c.env, '/password', { userId: s.sub, pw: await newPasswordRecord(b.password), keep: token ? await sha256Hex(token) : undefined, signOutOthers: me.data.hasPassword });
+  const r = await accountsCall(c.env, '/password', { userId: s.sub, pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)), keep: token ? await sha256Hex(token) : undefined, signOutOthers: me.data.hasPassword, ...(proved !== undefined ? { proved } : {}) });
   return r.ok ? json({ ok: true }) : pass(r);
 }
 
 async function newRecoveryCodes(c: RouteContext): Promise<Response> {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
-  const b = await readJson<{ password?: unknown }>(c.request);
+  const b = await readJson<{ password?: unknown; passwordV2?: unknown }>(c.request);
   const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
   if (!me.ok) return pass(me.res);
   if (me.data.hasPassword) {
-    if (!b || !isClientKey(b.password)) return error(400, 'bad_request');
-    const chk = await checkCredentials(c, me.data.name, b.password, { account: s.sub });
+    const proof = proofOf(b?.password, b?.passwordV2);
+    if (proof.v1 === undefined && proof.v2 === undefined) return error(400, 'bad_request');
+    const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
     if (!chk.ok) return chk.res;
   } else {
-    // Without a password, the codes would be the way to make one: a fresh session only.
-    const f = requireFresh(c);
+    // Without a password, the codes would be the way to make one: a session at level 1 only.
+    const f = requireFresh(c, 1);
     if (f instanceof Response) return f;
   }
   const codes = Array.from({ length: RECOVERY_CODES }, newRecoveryCode);
@@ -635,28 +859,43 @@ async function newRecoveryCodes(c: RouteContext): Promise<Response> {
   return r.ok ? json({ recoveryCodes: codes }) : pass(r);
 }
 
+/**
+ * POST /api/me/username { username, password, passwordV2 }: a password account confirms with its
+ * password. A legacy record is salted with the old name, so it cannot stay: it is re-keyed to the
+ * current key (`passwordV2`, the same for any name), or, from a page of before it, replaced by the
+ * legacy key of the new name (`newPassword`). A current record needs nothing stored.
+ */
 async function rename(c: RouteContext): Promise<Response> {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('rename:' + s.sub, 5)) return error(429, 'rate_limited');
-  const b = await readJson<{ username?: unknown; password?: unknown; newPassword?: unknown }>(c.request);
+  const b = await readJson<{ username?: unknown; password?: unknown; newPassword?: unknown; passwordV2?: unknown }>(c.request);
   const problem = usernameProblem(b?.username);
   if (problem !== null) return error(400, 'bad_username', problem);
   const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
   if (!me.ok) return pass(me.res);
   let pw: PasswordRecord | null = null;
+  let proved: string | undefined;
+  let legacy = false;
   if (me.data.hasPassword) {
-    // The stored hash is of clientKey(oldName, password): check it, and store the new name's key.
-    if (!isClientKey(b?.password) || !isClientKey(b?.newPassword)) return error(400, 'password_required', 'Ingresa tu contraseña para cambiar el nombre');
-    const chk = await checkCredentials(c, me.data.name, b.password, { account: s.sub });
+    const proof = proofOf(b?.password, b?.passwordV2);
+    const passwordRequired = (): Response => error(400, 'password_required', 'Ingresa tu contraseña para cambiar el nombre');
+    if (proof.v1 === undefined && proof.v2 === undefined) return passwordRequired();
+    const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
     if (!chk.ok) return chk.res;
-    pw = await newPasswordRecord(b.newPassword);
+    proved = chk.cred.hash;
+    legacy = pwVOf(chk.cred) === 1;
+    if (legacy) {
+      if (proof.v2 === undefined && !isClientKey(b?.newPassword)) return passwordRequired();
+      pw = proof.v2 !== undefined ? await newPasswordRecord(proof.v2, 2, await storeEnv(c.env)) : await newPasswordRecord(b?.newPassword as string, 1);
+    } else pw = await rekeyFor(await storeEnv(c.env), chk.cred, proof);
   }
   const r = await accountsJson<UserRef>(c.env, '/rename', { userId: s.sub, username: b?.username });
   if (!r.ok) return pass(r.res);
   if (pw !== null) {
     const token = cookieOf(c.request, REFRESH_COOKIE);
-    await accountsCall(c.env, '/password', { userId: s.sub, pw, keep: token ? await sha256Hex(token) : undefined });
+    // The legacy re-key signs the other devices out, as every rename of a password account did; a re-hash with the pepper does not.
+    await accountsCall(c.env, '/password', { userId: s.sub, pw, keep: token ? await sha256Hex(token) : undefined, signOutOthers: legacy, proved });
   }
   return json(await accountSession(c.env, { ...r.data, ...scopeOf(s) }));
 }
@@ -837,10 +1076,19 @@ export async function shopClaim(c: CosmeticContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/shop/claim', { userId: s.sub, item }));
 }
 
+/** MeInfo's fields a TV's session never gets (the design's §3.11): the account's address and a provider's. */
+const TV_HIDDEN = ['email', 'emailHint'] as const;
+
 async function me(c: RouteContext): Promise<Response> {
   const s = requireAccount(c);
   if (s instanceof Response) return s;
   const r = await accountsCall(c.env, '/me?userId=' + encodeURIComponent(s.sub));
+  if (s.tv === 1 && r.ok) {
+    // A TV plays as the account in a living room: its screen shows no address.
+    const info = (await r.json()) as Record<string, unknown>;
+    for (const k of TV_HIDDEN) delete info[k];
+    return json(info, 200, { 'cache-control': 'no-store' });
+  }
   const out = pass(r);
   out.headers.set('cache-control', 'no-store');
   return out;
@@ -963,8 +1211,19 @@ interface OAuthState {
   re?: string;
   /** The device that asked (accountStore.ts devices id): its token is replaced by the callback's. */
   dev?: string;
+  /**
+   * The level the identity proves (R6), from the prompt this start asked for: 1 for Google's
+   * account chooser and Discord's Authorize (prompt=consent). Absent (a state from before levels): 0.
+   */
+  lvl?: 1;
   exp: number;
 }
+
+/** The provider's prompt for a start, and the level a press on it proves (R6): a person must press there, script on our origin cannot. */
+const OAUTH_PROMPT: Readonly<Record<OAuthProvider, { prompt: string; lvl: 1 }>> = {
+  google: { prompt: 'select_account', lvl: 1 },
+  discord: { prompt: 'consent', lvl: 1 },
+};
 
 async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): Promise<Response> {
   const cfg = providerConfig(c.env, provider);
@@ -982,7 +1241,8 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
     if (r === null || !r.ok) return redirect('/#auth=error:link_expired');
     if (r.data.kind === 'tv') return redirect('/#auth=error:tv_session');
     const authAt = typeof r.data.authAt === 'number' ? r.data.authAt : 0;
-    if (mode === 'link' && (authAt <= 0 || Date.now() - authAt > REAUTH_WINDOW_S * 1000)) return redirect('/#auth=error:reauth_required');
+    // A link adds a way in: fresh(1) (R6), so a silent sign-in, a refresh of before levels or a TV never links.
+    if (mode === 'link' && (authAt <= 0 || Date.now() - authAt > REAUTH_WINDOW_S * 1000 || (r.data.authLvl ?? 0) < 1)) return redirect('/#auth=error:reauth_required');
     if (mode === 'link') link = r.data.userId;
     else re = r.data.userId;
     dev = r.data.device;
@@ -990,7 +1250,8 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
   const verifier = base64urlEncode(randomBytes(32));
   const challenge = base64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(verifier))));
   const nonce = base64urlEncode(randomBytes(16));
-  const state: OAuthState = { typ: 'oa', p: provider, v: verifier, n: nonce, link, ...(re !== undefined ? { re } : {}), ...(dev !== undefined ? { dev } : {}), exp: nowSeconds() + OAUTH_TTL_S };
+  const asked = OAUTH_PROMPT[provider];
+  const state: OAuthState = { typ: 'oa', p: provider, v: verifier, n: nonce, link, ...(re !== undefined ? { re } : {}), ...(dev !== undefined ? { dev } : {}), lvl: asked.lvl, exp: nowSeconds() + OAUTH_TTL_S };
   const cookie = `${OAUTH_COOKIE}=${await signJwt(c.env.JWT_SECRET, state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${OAUTH_TTL_S}`;
   const q = new URLSearchParams({
     client_id: cfg.clientId,
@@ -1001,7 +1262,9 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
     code_challenge: challenge,
     code_challenge_method: 'S256',
   });
-  if (provider === 'google') q.set('prompt', 'select_account');
+  // Every start (a sign-in, a link, "confirm it's you") asks for a press on the provider's page:
+  // Discord's prompt=consent never lets an earlier authorization answer silently (level 1, not 0).
+  q.set('prompt', asked.prompt);
   return redirect(`${cfg.authorize}?${q.toString()}`, [cookie]);
 }
 
@@ -1010,7 +1273,8 @@ export async function oauthIdentity(cfg: ProviderConfig, provider: OAuthProvider
   const form = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, code_verifier: verifier, client_id: cfg.clientId, client_secret: cfg.clientSecret });
   const tr = await fetchFn(cfg.token, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form });
   if (!tr.ok) {
-    console.warn(`oauth ${provider}: token ${tr.status} ${(await tr.text()).slice(0, 200)}`);
+    // The status only: nothing of a provider's answer reaches a log line (the design's §1.5 guard 2).
+    console.warn(`oauth ${provider}: token ${tr.status}`);
     return null;
   }
   const tok = (await tr.json()) as { access_token?: unknown };
@@ -1049,12 +1313,14 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
   if (!ident) return fail('provider_error');
   const refreshTok = newRefreshToken();
   const refresh = await grantFor(refreshTok, c.request);
+  // The level the start's prompt proves (R6); a state from before levels proves none.
+  const lvl = st.lvl === 1 ? 1 : 0;
   if (typeof st.re === 'string') {
-    const r = await accountsJson<UserRef>(c.env, '/oauth-reauth', { provider, providerId: ident.id, userId: st.re, refresh, replace: st.dev });
+    const r = await accountsJson<UserRef>(c.env, '/oauth-reauth', { provider, providerId: ident.id, userId: st.re, refresh, replace: st.dev, lvl });
     if (!r.ok) return fail(await codeOf(r.res, 'account_error'));
     return redirect('/#auth=reauth', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
   }
-  const r = await accountsJson<UserRef & { created: boolean }>(c.env, '/oauth', { provider, providerId: ident.id, name: ident.name, linkTo: st.link, refresh, ...(st.link !== null ? { replace: st.dev } : {}) });
+  const r = await accountsJson<UserRef & { created: boolean }>(c.env, '/oauth', { provider, providerId: ident.id, name: ident.name, linkTo: st.link, refresh, lvl, ...(st.link !== null ? { replace: st.dev } : {}) });
   if (!r.ok) return fail(await codeOf(r.res, 'account_error'));
   return redirect(r.data.created ? '/#auth=new' : st.link ? '/#auth=linked' : '/#auth=ok', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
 }
@@ -1070,37 +1336,49 @@ async function codeOf(res: Response, fallback: string): Promise<string> {
 }
 
 /**
- * POST /api/auth/reauth { password }: a password account confirms it is them (PERFIL, before a
- * link, an unlink or a maintainer's work): the password checked as a sign-in's (the same throttles),
- * then this browser's token proves a credential now and the session says so (aat).
+ * POST /api/auth/reauth { legacy, password }: a password account confirms it is them (PERFIL, before
+ * a link, an unlink or a maintainer's work), with no time limit (it is "confirm it's you", not a way
+ * in). `password` is the current key and `legacy` the legacy one: a legacy record is checked with
+ * `legacy` and re-keyed to `password` in the same transaction; a current one is checked with
+ * `password`. Without `legacy` (a page of before it), `password` is checked as the record's own
+ * key and nothing is re-keyed. The failures count per account (AccountsDO 'pa:'). Then this
+ * browser's token proves a credential now at level 2 and the session says so (aat, aal).
  */
 async function reauth(c: RouteContext): Promise<Response> {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('reauth:' + s.sub, 10)) return error(429, 'rate_limited');
-  const b = await readJson<{ password?: unknown }>(c.request);
+  const b = await readJson<{ password?: unknown; legacy?: unknown }>(c.request);
   if (!b || !isClientKey(b.password)) return error(400, 'bad_request');
   const token = cookieOf(c.request, REFRESH_COOKIE);
   if (!token || token.length > 128) return error(401, 'no_refresh');
   const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
   if (!me.ok) return pass(me.res);
   if (!me.data.hasPassword) return error(400, 'no_password', 'Esta cuenta entra con Google o Discord');
-  const chk = await checkCredentials(c, me.data.name, b.password, { account: s.sub });
+  const both = isClientKey(b.legacy);
+  const proof: PasswordProof = both ? { v1: b.legacy as string, v2: b.password } : { v1: b.password, v2: b.password };
+  const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
   if (!chk.ok) return chk.res;
-  if (chk.cred.userId !== s.sub) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
-  const r = await accountsJson<UserRef>(c.env, '/reauth', { userId: s.sub, hash: await sha256Hex(token) });
+  if (chk.cred.userId !== s.sub) return error(401, 'bad_credentials', BAD_CREDENTIALS);
+  // Only a proof that carried both keys can re-key: alone, `password` may be a page's legacy key.
+  const rekey = await rekeyFor(c.env, chk.cred, both ? proof : pwVOf(chk.cred) === 2 ? { v2: b.password } : { v1: b.password });
+  const r = await accountsJson<UserRef>(c.env, '/reauth', { userId: s.sub, hash: await sha256Hex(token), proved: chk.cred.hash, ...(rekey !== null ? { rekey } : {}) });
   if (!r.ok) return pass(r.res);
   return json(await accountSession(c.env, r.data), 200, { 'cache-control': 'no-store' });
 }
 
-/** POST /api/auth/unlink { provider }: one provider off the account, never its last way in. */
+/**
+ * POST /api/auth/unlink { provider }: one provider off the account, never its last way in. It needs
+ * fresh(1); leaving exactly one way in needs fresh(2), capped by the account's ceiling, which the
+ * AccountsDO decides (403 reauth_required { level: 2 }).
+ */
 async function unlink(c: RouteContext): Promise<Response> {
-  const s = requireFresh(c);
+  const s = requireFresh(c, 1);
   if (s instanceof Response) return s;
   if (c.limited('unlink:' + s.sub, 10)) return error(429, 'rate_limited');
   const b = await readJson<{ provider?: unknown }>(c.request);
   if (!b || !OAUTH_PROVIDERS.includes(b.provider as OAuthProvider)) return error(400, 'bad_request');
-  return noStore(await accountsCall(c.env, '/unlink', { userId: s.sub, provider: b.provider }));
+  return noStore(await accountsCall(c.env, '/unlink', { userId: s.sub, provider: b.provider, level: s.aal ?? 0 }));
 }
 
 // ---- TV sign-in with the phone ------------------------------------------------------------------

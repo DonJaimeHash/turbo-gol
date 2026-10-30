@@ -1,6 +1,8 @@
 /**
  * Browser side of registered accounts (server/src/accountRoutes.ts): sign-up / sign-in with a
- * username and password (the password is turned into clientPasswordKey here and never sent),
+ * username and password (the password is turned into client keys here and never sent: the current
+ * passwordKey, and the legacyPasswordKey of before wherever a stored legacy password is proved, so
+ * the server re-keys it), each anonymous request with a solved Turnstile check (antiBot),
  * Google / Discord sign-in (a full-page redirect; the server answers back to `/#auth=<result>`),
  * the short Bearer session (1 h) refreshed from the HttpOnly refresh cookie, the profile (/api/me:
  * ratings per playlist, ranked ban, the experimental switch), the leaderboard, the rating change of
@@ -24,7 +26,7 @@
  *
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
-import { clientPasswordKey, passwordIssue, usernameIssue } from './account';
+import { legacyPasswordKey, passwordIssue, passwordKey, usernameIssue } from './account';
 import type { AccountIssue, AccountSession, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from './account';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { claimAnswerOf, itemsAnswerOf, shopAnswerOf } from './cosmetics';
@@ -53,13 +55,16 @@ export class AccountError extends Error {
   /** The server's `error` code ('bad_credentials', 'username_taken', 'throttled', ...) or a local one. */
   readonly code: string;
   readonly retryAfterMs: number;
+  /** reauth_required's level (the sign-in design's R6): 1 a provider or the password, 2 the password only; 0 otherwise. */
+  readonly level: 0 | 1 | 2;
 
-  constructor(message: string, status: number, code: string, retryAfterMs = 0) {
+  constructor(message: string, status: number, code: string, retryAfterMs = 0, level: 0 | 1 | 2 = 0) {
     super(message);
     this.name = 'AccountError';
     this.status = status;
     this.code = code;
     this.retryAfterMs = retryAfterMs;
+    this.level = level;
   }
 }
 
@@ -73,6 +78,12 @@ export type AuthHashResult = { kind: 'ok' | 'new' | 'linked' | 'reauth' } | { ki
 
 /** How long after a credential proof (a sign-in, a re-authentication) the client counts it fresh: a little under the server's 10 minutes. */
 export const FRESH_MS = 9 * 60_000;
+
+/** Both client keys of one typed password: the legacy one of `username` (proves a password of before) and the current one. */
+async function bothKeys(username: string, password: string): Promise<{ legacy: string; current: string }> {
+  const [legacy, current] = await Promise.all([legacyPasswordKey(username, password), passwordKey(password)]);
+  return { legacy, current };
+}
 
 export function parseAuthHash(hash: string): AuthHashResult | null {
   const m = /(?:^#|&)auth=([a-z]+)(?::([a-z_]+))?/.exec(hash);
@@ -120,6 +131,7 @@ function sessionPart(s: AccountSession): AccountSession {
   if (s.car !== undefined) out.car = s.car;
   if (s.tv === true) out.tv = true;
   if (typeof s.authAt === 'number' && s.authAt > 0) out.authAt = s.authAt;
+  if (out.authAt !== undefined && (s.authLvl === 1 || s.authLvl === 2)) out.authLvl = s.authLvl;
   return out;
 }
 
@@ -140,7 +152,7 @@ export interface AccountClientOptions {
   now?: () => number;
   /** The wait between two polls of waitRankedResult (setTimeout by default; tests move a fake `now`). */
   sleep?: (ms: number) => Promise<void>;
-  /** A Turnstile token for registration when the server wants one (NetClient.antiBotToken), null = none. */
+  /** A Turnstile token for every anonymous account request (sign-up, sign-in, recovery, a TV's start) when the server wants one (NetClient.antiBotToken), null = none. */
   antiBot?: () => Promise<string | null>;
 }
 
@@ -263,18 +275,20 @@ export class AccountClient {
     let code = 'http';
     let serverMessage = '';
     let retry = 0;
+    let level: 0 | 1 | 2 = 0;
     try {
-      const b = (await res.json()) as { error?: unknown; message?: unknown; retryAfterMs?: unknown };
+      const b = (await res.json()) as { error?: unknown; message?: unknown; retryAfterMs?: unknown; level?: unknown };
       if (typeof b.error === 'string') code = b.error;
       if (typeof b.message === 'string' && b.message !== b.error) serverMessage = b.message;
       if (typeof b.retryAfterMs === 'number') retry = b.retryAfterMs;
+      if (b.level === 1 || b.level === 2) level = b.level;
     } catch {
       /* no JSON body */
     }
     // A code without a server text (a sign-in rate_limited...) still gets its own text when the client has one.
     const message = serverText('account', code, serverMessage) || t('error.server');
     if (message === t('error.server')) console.warn(`account: answered ${res.status} ${code}`);
-    throw new AccountError(message, res.status, code, retry);
+    throw new AccountError(message, res.status, code, retry, code === 'reauth_required' ? level || 1 : 0);
   }
 
   private async jsonOrFail<T>(res: ResponseLike): Promise<T> {
@@ -359,44 +373,46 @@ export class AccountClient {
     if (u !== null) throw issueError(u, 'bad_username');
     const p = passwordIssue(password, username);
     if (p !== null) throw issueError(p, 'bad_password');
-    let token: string | null;
-    try {
-      token = await this.antiBot();
-    } catch {
-      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
-    }
-    const body: Record<string, string> = { username, password: await clientPasswordKey(username, password) };
-    if (token !== null) body.turnstileToken = token;
-    const res = await this.call('/api/auth/register', body);
+    const res = await this.callAnonymous('/api/auth/register', { username, passwordV2: await passwordKey(password) });
     const r = await this.jsonOrFail<RegisterAnswer>(res);
     this.adopt(sessionPart(r));
     return r;
   }
 
-  /**
-   * POST `path` with `body`; when the server slows a username under attack down (403
-   * turnstile_required), once more with a solved anti-bot token (NetClient.antiBotToken).
-   */
-  private async callHuman(path: string, body: Record<string, unknown>): Promise<ResponseLike> {
-    const res = await this.call(path, body);
-    if (res.status !== 403) return res;
-    // Read once, handed on as read: the caller's jsonOrFail reads it again.
-    const data: unknown = await res.json().catch(() => null);
-    const read: ResponseLike = { ok: res.ok, status: res.status, json: async () => data, text: async () => JSON.stringify(data) };
-    if ((data as { error?: unknown } | null)?.error !== 'turnstile_required') return read;
-    let token: string | null;
+  /** A solved anti-bot check (NetClient.antiBotToken), null when the server asks for none; a failed one rejects. */
+  private async antiBotToken(): Promise<string | null> {
     try {
-      token = await this.antiBot();
+      return await this.antiBot();
     } catch {
       throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
     }
-    if (token === null) return read;
-    return this.call(path, { ...body, turnstileToken: token });
   }
 
+  /**
+   * POST an anonymous account request (sign-up, sign-in, recovery) with a solved anti-bot token,
+   * every time (the server's R3). A 403 turnstile_failed is a warmed token that died (300 s) or was
+   * spent: it is sent once more with a new one, silently; any other answer is the caller's.
+   */
+  private async callAnonymous(path: string, body: Record<string, unknown>): Promise<ResponseLike> {
+    const token = await this.antiBotToken();
+    const res = await this.call(path, token !== null ? { ...body, turnstileToken: token } : body);
+    if (res.status !== 403 || token === null) return res;
+    // Read once, handed on as read: the caller's jsonOrFail reads it again.
+    const data: unknown = await res.json().catch(() => null);
+    const read: ResponseLike = { ok: res.ok, status: res.status, json: async () => data, text: async () => JSON.stringify(data) };
+    if ((data as { error?: unknown } | null)?.error !== 'turnstile_failed') return read;
+    const again = await this.antiBotToken();
+    return again === null ? read : this.call(path, { ...body, turnstileToken: again });
+  }
+
+  /**
+   * The username sign-in: both keys of the typed password (a stored legacy password is checked with
+   * the legacy key and re-keyed by the server to the current one), and a solved anti-bot check.
+   */
   async login(username: string, password: string): Promise<AccountSession> {
     if (username.trim().length === 0 || password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
-    const res = await this.callHuman('/api/auth/login', { username: username.trim(), password: await clientPasswordKey(username.trim(), password) });
+    const keys = await bothKeys(username.trim(), password);
+    const res = await this.callAnonymous('/api/auth/login', { username: username.trim(), password: keys.legacy, passwordV2: keys.current });
     const s = await this.jsonOrFail<AccountSession>(res);
     return this.adopt(sessionPart(s));
   }
@@ -404,7 +420,7 @@ export class AccountClient {
   async recover(username: string, code: string, newPassword: string): Promise<AccountSession & { codesLeft: number }> {
     const p = passwordIssue(newPassword, username);
     if (p !== null) throw issueError(p, 'bad_password');
-    const res = await this.callHuman('/api/auth/recover', { username: username.trim(), code, password: await clientPasswordKey(username.trim(), newPassword) });
+    const res = await this.callAnonymous('/api/auth/recover', { username: username.trim(), code, passwordV2: await passwordKey(newPassword) });
     const s = await this.jsonOrFail<AccountSession & { codesLeft: number }>(res);
     this.adopt(sessionPart(s));
     return s;
@@ -498,20 +514,25 @@ export class AccountClient {
   }
 
   /**
-   * This browser proved a credential a few minutes ago (a sign-in or a re-authentication: the
-   * session's authAt), so a link, an unlink, a first password or a maintainer's work goes straight
-   * through; false for a TV (its scope never allows them) and when it is too old.
+   * This browser proved a credential a few minutes ago at `level` or above (a sign-in or a
+   * re-authentication: the session's authAt and authLvl, R6), so a link, an unlink, a first
+   * password or a maintainer's work goes straight through; false for a TV (its scope never allows
+   * them), for a proof below `level` (a session of before levels has none) and when it is too old.
    */
-  fresh(): boolean {
+  fresh(level: 1 | 2 = 1): boolean {
     const a = this.account;
-    return a !== null && a.tv !== true && typeof a.authAt === 'number' && this.now() - a.authAt < FRESH_MS;
+    return a !== null && a.tv !== true && typeof a.authAt === 'number' && this.now() - a.authAt < FRESH_MS && (a.authLvl ?? 0) >= level;
   }
 
-  /** A password account confirms it is them (POST /api/auth/reauth): the session comes back fresh. */
+  /**
+   * A password account confirms it is them (POST /api/auth/reauth): the session comes back fresh at
+   * level 2. Both keys: a password of before is re-keyed by the server on the way.
+   */
   async reauth(password: string): Promise<AccountSession> {
     const name = this.account?.name ?? '';
     if (password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
-    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth', { password: await clientPasswordKey(name, password) }, await this.bearer()));
+    const keys = await bothKeys(name, password);
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth', { legacy: keys.legacy, password: keys.current }, await this.bearer()));
     if (!isSession(s) || s.playerId !== this.account?.playerId) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
     return this.adopt(sessionPart(s));
   }
@@ -528,35 +549,46 @@ export class AccountClient {
     return s.session;
   }
 
+  /** The old password proved by both keys (the server reads the one its record holds); the new one stored as the current key. */
   async changePassword(oldPassword: string | null, newPassword: string): Promise<void> {
     const name = this.account?.name ?? '';
     const p = passwordIssue(newPassword, name);
     if (p !== null) throw issueError(p, 'bad_password');
-    const body: Record<string, string> = { password: await clientPasswordKey(name, newPassword) };
-    if (oldPassword !== null) body.oldPassword = await clientPasswordKey(name, oldPassword);
+    const body: Record<string, string> = { passwordV2: await passwordKey(newPassword) };
+    if (oldPassword !== null) {
+      const old = await bothKeys(name, oldPassword);
+      body.oldPassword = old.legacy;
+      body.oldPasswordV2 = old.current;
+    }
     await this.jsonOrFail(await this.call('/api/auth/password', body, await this.bearer()));
   }
 
   async newRecoveryCodes(password: string | null): Promise<string[]> {
     const name = this.account?.name ?? '';
     const body: Record<string, string> = {};
-    if (password !== null) body.password = await clientPasswordKey(name, password);
+    if (password !== null) {
+      const keys = await bothKeys(name, password);
+      body.password = keys.legacy;
+      body.passwordV2 = keys.current;
+    }
     const r = await this.jsonOrFail<{ recoveryCodes: string[] }>(await this.call('/api/auth/recovery-codes', body, await this.bearer()));
     return r.recoveryCodes;
   }
 
   /**
-   * Change the username (once per 30 days). The client key is salted with the username, so a
-   * password account gives its password: the server checks the key of the old name and stores the
-   * key of the new one (other devices are signed out). An OAuth-only account passes null.
+   * Change the username (once per 30 days). A password account gives its password: both keys, the
+   * legacy one of the old name (a password of before is salted with it) and the current one, which
+   * no name salts, so the server re-keys a legacy password and the new name needs nothing (other
+   * devices are signed out when it re-keys). An OAuth-only account passes null.
    */
   async rename(username: string, password: string | null): Promise<AccountSession> {
     const u = usernameIssue(username);
     if (u !== null) throw issueError(u, 'bad_username');
     const body: Record<string, string> = { username };
     if (password !== null) {
-      body.password = await clientPasswordKey(this.account?.name ?? '', password);
-      body.newPassword = await clientPasswordKey(username, password);
+      const keys = await bothKeys(this.account?.name ?? '', password);
+      body.password = keys.legacy;
+      body.passwordV2 = keys.current;
     }
     const s = await this.jsonOrFail<AccountSession>(await this.call('/api/me/username', body, await this.bearer()));
     this.adopt(s);
