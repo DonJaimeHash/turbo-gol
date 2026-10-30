@@ -562,6 +562,10 @@ export default {
   'antibot.bodyTv': 'Cloudflare pide una verificación que el control remoto no puede responder. Cancela e inténtalo en un rato.',
   'antibot.cancel': 'CANCELAR',
 
+  // Cuentas con correo (sign-in PR 8: src/ui/screens/profile.ts y accountLinks.ts)
+  'auth.codeLabel': 'Código de 6 dígitos',
+  'auth.show': 'MOSTRAR',
+
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Elige un nombre de usuario',
   'account.issue.usernameLength': 'El usuario tiene que tener entre {min} y {max} caracteres',

@@ -778,6 +778,14 @@ export default {
   'antibot.bodyTv': "Cloudflare asks for a check a remote can't answer. Cancel and try again in a while.",
   'antibot.cancel': 'CANCEL',
 
+  // Email accounts (sign-in PR 8: src/ui/screens/profile.ts and accountLinks.ts). {providers} is the
+  // configured sign-in providers ('Discord', 'Google or Discord'); each text that names them has a
+  // variant without them, for a server with none. {email} is an address the player typed or proved.
+  // The code field's label, also read out by a screen reader
+  'auth.codeLabel': '6-digit code',
+  // Beside a password field: shows what was typed while pressed
+  'auth.show': 'SHOW',
+
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Choose a username',
   // USERNAME_MIN / USERNAME_MAX (3, 16)

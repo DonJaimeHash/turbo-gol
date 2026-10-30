@@ -11,6 +11,9 @@
  * - 'text': A–Z, 0–9 and . - _ @ (usernames: account.ts usernameIssue; passwords need the case).
  * - 'code': the lobby alphabet only (lobbyModel.ts CODE_ALPHABET), capitals, six at most (the code
  *   cells: components/codecells.ts registers it with onKeypad).
+ * - 'digits': 0-9 laid out as a phone's pad, six at most (a mailed code: screens/common.ts codeField).
+ * - 'email': an address in lower case (addresses ignore case): a-z, 0-9 and . - _ + @, so
+ *   'ana+tg@…' can be typed with a controller; no space (sign-in PR 8: the sign-up and sign-in fields).
  * A password field shows dots, never its text (nor in a label or a hint). The field's maxLength holds.
  * The pure part (keypadRows, keypadType, keypadShown) is unit-tested (tests/tv-signin.test.mjs);
  * keypadBox builds the DOM on call.
@@ -21,35 +24,45 @@ import { icon } from './icons';
 import { CODE_ALPHABET, CODE_LENGTH } from '../screens/lobbyModel';
 import { t } from '../../i18n';
 
-export type KeypadKind = 'text' | 'code';
+export type KeypadKind = 'text' | 'code' | 'digits' | 'email';
 
 /** A key of the bottom row (the characters are their own keys). */
 export type KeypadAction = 'case' | 'delete' | 'space' | 'done';
 
 const TEXT_ROWS = ['ABCDEFGHIJ', 'KLMNOPQRST', 'UVWXYZ.-_@', '1234567890'];
 const CODE_ROWS = [0, 8, 16, 24].map((i) => CODE_ALPHABET.slice(i, i + 8));
+const DIGIT_ROWS = ['123', '456', '789', '0'];
+const EMAIL_ROWS = ['abcdefghij', 'klmnopqrst', 'uvwxyz@.-_', '1234567890+'];
+/** The digits kind's length: a mailed code's (src/net/emailAuth.ts CODE_LENGTH). */
+const DIGITS_MAX = 6;
+/** What an address may hold besides letters and digits (an unquoted local part's atext, the domain's '.' and '-'). */
+const EMAIL_CHARS = /^[a-z0-9.\-_+@!#$%&'*/=?^`{|}~]$/;
 
 /** The character rows of `kind` (capitals; `lower`: the letters in lower case). Pure. */
 export function keypadRows(kind: KeypadKind, lower = false): string[] {
-  const rows = kind === 'code' ? CODE_ROWS : TEXT_ROWS;
+  const rows = kind === 'code' ? CODE_ROWS : kind === 'digits' ? DIGIT_ROWS : kind === 'email' ? EMAIL_ROWS : TEXT_ROWS;
   return lower && kind === 'text' ? rows.map((r) => r.toLowerCase()) : [...rows];
 }
 
-/** The bottom row of `kind`: no case and no space for a code. Pure. */
+/** The bottom row of `kind`: no case and no space for a code, the digits or an address. Pure. */
 export function keypadActions(kind: KeypadKind): KeypadAction[] {
-  return kind === 'code' ? ['delete', 'done'] : ['case', 'delete', 'space', 'done'];
+  return kind === 'text' ? ['case', 'delete', 'space', 'done'] : ['delete', 'done'];
 }
 
 /**
- * `value` after typing `key` (a character, or 'delete' / 'space'): `max` characters at most, and for
- * a code only its alphabet (in capitals). Pure.
+ * `value` after typing `key` (a character, or 'delete' / 'space'): `max` characters at most; for a
+ * code only its alphabet (in capitals), for the digits 0-9 (six at most), for an address its
+ * characters in lower case and no space. Pure.
  */
 export function keypadType(value: string, key: string, kind: KeypadKind, max: number): string {
   if (key === 'delete') return [...value].slice(0, -1).join('');
-  const ch = key === 'space' ? ' ' : kind === 'code' ? key.toUpperCase() : key;
-  if ([...ch].length !== 1 || [...value].length >= (kind === 'code' ? Math.min(max, CODE_LENGTH) : max)) return value;
-  if (kind === 'code' ? !CODE_ALPHABET.includes(ch) : ch === ' ' && value.length === 0) return value; // no leading space
-  return value + ch;
+  const ch = key === 'space' ? ' ' : kind === 'code' ? key.toUpperCase() : kind === 'email' ? key.toLowerCase() : key;
+  const cap = kind === 'code' ? Math.min(max, CODE_LENGTH) : kind === 'digits' ? Math.min(max, DIGITS_MAX) : max;
+  if ([...ch].length !== 1 || [...value].length >= cap) return value;
+  if (kind === 'code') return CODE_ALPHABET.includes(ch) ? value + ch : value;
+  if (kind === 'digits') return /^[0-9]$/.test(ch) ? value + ch : value;
+  if (kind === 'email') return EMAIL_CHARS.test(ch) ? value + ch : value;
+  return ch === ' ' && value.length === 0 ? value : value + ch; // no leading space
 }
 
 /** What the keypad shows of `value`: dots for a password. Pure. */

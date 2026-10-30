@@ -685,3 +685,157 @@ test("AccountClient cars and the hosts' shop: Bearer, paths and bodies; a car pi
   await odd.login('Tomi', 'correct horse battery');
   assert.equal('car' in odd.account, false);
 });
+
+// ---- sign-in PR 8: the fields of the email forms (src/ui/screens/common.ts) and mn-keypad's kinds -----------
+//
+// The fields run on a small fake DOM (enough for src/ui/dom.ts h()).
+
+/** A fake element: attributes, properties, children, listeners, classList. */
+class FakeEl {
+  constructor(tag) {
+    this.tagName = tag.toUpperCase();
+    this.attrs = new Map();
+    this.children = [];
+    this.listeners = new Map();
+    this.className = '';
+    this.text = '';
+    this.classList = {
+      add: (c) => (this.className = [...new Set([...this.className.split(' ').filter(Boolean), c])].join(' ')),
+      remove: (c) => (this.className = this.className.split(' ').filter((x) => x && x !== c).join(' ')),
+      toggle: (c, on) => ((on ?? !this.classList.contains(c)) ? this.classList.add(c) : this.classList.remove(c)),
+      contains: (c) => this.className.split(' ').includes(c),
+    };
+  }
+  setAttribute(k, v) {
+    this.attrs.set(k, String(v));
+  }
+  getAttribute(k) {
+    return this.attrs.has(k) ? this.attrs.get(k) : null;
+  }
+  removeAttribute(k) {
+    this.attrs.delete(k);
+  }
+  hasAttribute(k) {
+    return this.attrs.has(k);
+  }
+  appendChild(c) {
+    this.children.push(c);
+    return c;
+  }
+  addEventListener(type, fn) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(fn);
+  }
+  dispatch(type) {
+    const e = { type, target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    for (const fn of this.listeners.get(type) ?? []) fn(e);
+    return e;
+  }
+  set textContent(v) {
+    this.text = String(v);
+    this.children = [];
+  }
+  get textContent() {
+    return this.text + this.children.map((c) => c.textContent ?? '').join('');
+  }
+  /** Every element under this one, this one first. */
+  all() {
+    return [this, ...this.children.filter((c) => c instanceof FakeEl).flatMap((c) => c.all())];
+  }
+}
+
+const withDom = async (fn) => {
+  const before = globalThis.document;
+  globalThis.document = { createElement: (tag) => new FakeEl(tag), createTextNode: (t) => ({ textContent: String(t) }), documentElement: new FakeEl('html') };
+  try {
+    return await fn();
+  } finally {
+    globalThis.document = before;
+  }
+};
+
+const C = await import('../src/ui/screens/common.ts');
+const K = await import('../src/ui/components/keypad.ts');
+
+test('field(): its hint and its error name the input (aria-describedby), the error sets aria-invalid in a polite live line; a note is no error', async () => {
+  await withDom(() => {
+    const f = C.field('Email', { type: 'email', autocomplete: 'email', inputmode: 'email', hint: 'We send a code.', keypad: 'email' });
+    const [hint, err] = f.el.all().filter((e) => e.className === 'mn-field-hint' || e.className.startsWith('mn-field-error'));
+    assert.equal(f.input.autocomplete, 'email');
+    assert.equal(f.input.inputMode, 'email');
+    assert.equal(K.keypadSpec(f.input).kind, 'email', "mn-keypad's address keys where there is no fine pointer");
+    assert.equal(f.input.getAttribute('aria-describedby'), hint.id);
+    assert.equal(err.getAttribute('aria-live'), 'polite');
+    f.error('Check the email');
+    assert.equal(f.input.getAttribute('aria-invalid'), 'true');
+    assert.equal(f.input.getAttribute('aria-describedby'), `${hint.id} ${err.id}`);
+    assert.equal(err.hidden, false);
+    f.note('Code accepted');
+    assert.equal(f.input.getAttribute('aria-invalid'), null, 'a note is no error');
+    assert.ok(err.classList.contains('mn-field-ok'));
+    f.error(null);
+    assert.equal(err.hidden, true);
+    assert.equal(f.input.getAttribute('aria-describedby'), hint.id);
+    const ro = C.field('Email', { readOnly: true, value: 'ana@example.com' });
+    assert.equal(ro.input.readOnly, true);
+    assert.equal(ro.input.getAttribute('data-nav'), null, 'a read-only field is no stop for the arrows');
+  });
+});
+
+test('MOSTRAR / SHOW beside a password: aria-pressed, the text shown while pressed, dots again on a second press', async () => {
+  await withDom(() => {
+    const f = C.field('Password', { type: 'password', autocomplete: 'current-password', reveal: true });
+    const show = f.el.all().find((e) => e.className.includes('mn-field-show'));
+    assert.ok(show, 'the button');
+    assert.equal(show.textContent, 'SHOW');
+    assert.equal(show.getAttribute('aria-pressed'), 'false');
+    assert.equal(show.getAttribute('data-nav'), '', 'the arrows reach it');
+    assert.equal(show.dispatch('click').defaultPrevented, true, 'inside the label: no click on the field');
+    assert.equal(f.input.type, 'text');
+    assert.equal(show.getAttribute('aria-pressed'), 'true');
+    show.dispatch('click');
+    assert.equal(f.input.type, 'password');
+    assert.equal(show.getAttribute('aria-pressed'), 'false');
+  });
+});
+
+test("the code field: one input, numeric, one-time-code, read out as '6-digit code'; a paste's spaces and dashes go and the sixth digit checks it, once", async () => {
+  await withDom(() => {
+    const got = [];
+    const f = C.codeField((c) => got.push(c));
+    assert.equal(f.input.autocomplete, 'one-time-code');
+    assert.equal(f.input.inputMode, 'numeric');
+    assert.equal(f.input.getAttribute('aria-label'), '6-digit code');
+    assert.ok(f.input.maxLength >= 7, 'a pasted "123 456" is not cut before it is cleaned');
+    assert.equal(K.keypadSpec(f.input).kind, 'digits');
+    f.input.value = '12';
+    f.input.dispatch('input');
+    assert.deepEqual(got, []);
+    f.input.value = '123 - 456';
+    f.input.dispatch('input');
+    assert.equal(f.input.value, '123456');
+    assert.deepEqual(got, ['123456']);
+    f.input.dispatch('input');
+    assert.deepEqual(got, ['123456'], 'the same six digits are checked once');
+    f.input.value = '12345';
+    f.input.dispatch('input');
+    f.input.value = '123457';
+    f.input.dispatch('input');
+    assert.deepEqual(got, ['123456', '123457'], 'a retyped code checks again');
+  });
+});
+
+test("mn-keypad's digits (a mailed code: six, 0-9) and email (lower case, + and @, no space) kinds", () => {
+  assert.deepEqual(K.keypadRows('digits'), ['123', '456', '789', '0']);
+  assert.deepEqual(K.keypadActions('digits'), ['delete', 'done']);
+  let v = '';
+  for (const k of ['1', 'a', '2', '3', '4', '5', '6', '7']) v = K.keypadType(v, k, 'digits', 16);
+  assert.equal(v, '123456', 'digits only, six at most');
+  const rows = K.keypadRows('email').join('');
+  for (const ch of ['+', '@', '.', '-', '_']) assert.ok(rows.includes(ch), ch);
+  assert.equal(rows, rows.toLowerCase());
+  assert.deepEqual(K.keypadActions('email'), ['delete', 'done'], 'no case, no space');
+  v = '';
+  for (const k of ['A', 'n', 'a', '+', 't', 'g', '@', 'x', '.', 'c', 'o', 'space', ' ']) v = K.keypadType(v, k, 'email', 254);
+  assert.equal(v, 'ana+tg@x.co');
+});
