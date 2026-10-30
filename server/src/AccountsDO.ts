@@ -40,13 +40,28 @@
  *   POST /recover         { username, code, pw, refresh, ip, device? } -> UserRef & { codesLeft } (level 2, method
  *                                                                     'reset') | 401 (an account with a verified email
  *                                                                     too) | 429
- *   POST /oauth           { provider, providerId, name, linkTo, refresh, replace?, lvl } -> UserRef & { created } | 409
- *                                                                     already_linked (another account's) | 409 provider_set
+ *   POST /oauth           { provider, providerId, email, trust, linkTo, refresh, replace?, lvl, pending? } -> UserRef
+ *                                                                     (& { linked } | { linkError } with `pending`) |
+ *                                                                     { pending: true } (nobody has it: nothing is made) |
+ *                                                                     409 already_linked (another account's) | 409 provider_set
  *                                                                     (the account has another of it) | 403 no_user (suspended);
  *                                                                     `replace`: the device that asked (its tokens go: the
  *                                                                     browser takes the new one), gone meanwhile = 401 link_expired
  *     `lvl`: the level of the press on the provider's page (R6: 1 for Google's account chooser and
- *     Discord's Authorize, 0 for a start from before levels), at most 1 here
+ *     Discord's Authorize, 0 for a start from before levels), at most 1 here. `email`, `trust`: the
+ *     provider's address and how far it vouches for it (accountRoutes.ts providerTrust), which an
+ *     account without a verified one takes as its email or its hint. `pending`: the identity pending
+ *     in this browser ("I already have one", pend=1), linked to the account that signs in.
+ *   POST /pending-match   { pending }                                -> { match: { name, methods, via, email } | null }
+ *   POST /pending-create  { pending, username, refresh, ip, lvl, lang?, tz?, news? } -> UserRef | 400 bad_username /
+ *                                                                     name_reserved { suggest } | 409 username_taken /
+ *                                                                     name_lookalike { suggest } | 409 email_has_account |
+ *                                                                     409 already_linked | 429 rate_limited (the network's
+ *                                                                     new accounts: NEW_ACCOUNTS, one budget with
+ *                                                                     /signup-finish)
+ *     The confirm step (the sign-in design's §2.7): `pending` is the Worker's signed pending cookie,
+ *     { p, id, email, trust, p2? }. /auth-finish takes it too (linkPending: the legacy sign-in's and
+ *     the email sign-in's), and so does /reset.
  *   POST /oauth-reauth    { provider, providerId, userId, refresh, replace, lvl } -> UserRef | 409 reauth_mismatch
  *   POST /reauth          { userId, hash, proved, rekey? }           -> UserRef (that token proves a credential now, at
  *                                                                     level 2) | 401
@@ -75,8 +90,13 @@
  *   POST /replay-name/set { userId, hidden }                         -> { hidden } | 404
  *   POST /replay-hidden   { ids, names } (the NodeRegistryDO)        -> { ids, names }: those of an account that hides
  *                                                                     its name in the public replays (256 each at most)
- *   POST /tv-start        { ip, secret, where? }                     -> { code, expiresAt } | 503 busy (the table, or the
- *                                                                     caller's /48 or /24, is full)
+ *   POST /tv-start        { ip, secret, where?, checked? }           -> { code, expiresAt } | 503 busy (the table, or the
+ *                                                                     caller's /48 or /24, is full; `checked` false: started
+ *                                                                     without a solved check, tvCodes.ts TV_OPEN_* too)
+ *   POST /tv-renew        { code, secret, ip, where? }               -> { code, expiresAt } (a new code, the same secret;
+ *                                                                     a code renewed already: that one again) | 409
+ *                                                                     tv_code_used | 409 tv_renew_early (more than its
+ *                                                                     last minute left) | 410 tv_code_expired | 503 busy
  *   POST /tv-info         { code, userId, username, ip, phone? }     -> TvInfo (where the TV is, the phone's network and
  *                                                                     country beside it) | the refusals of /tv-confirm
  *   POST /tv-confirm      { code, userId, username, ip }             -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
@@ -102,6 +122,8 @@
  *                                                                     | 503 email_paused (one row for any address, I6)
  *   POST /signup-check    { attempt, code } | { token }              -> { email } | 400 code_wrong | 410 | 409 already_created
  *   POST /signup-finish   proof, { username, pw, news, lang, tz, terms?, refresh, ip } -> UserRef & { email } | 400 | 409 | 410 | 429
+ *                                                                     (429: the network's new accounts, NEW_ACCOUNTS, one
+ *                                                                     budget with /pending-create)
  *   POST /code-resend     { attempt, ip, userId? }                   -> { resendAt, resendsLeft, mail } | 410 | 429 | 503
  *   POST /mail-failed     { kind, lane }                             -> { paused, alert } (the signup lane's automatic pause)
  *   POST /account-stats   { operatorIds, trusted } (a maintainer, nodeRoutes.ts) -> AccountStats: counts and
@@ -149,7 +171,7 @@ import type { MailLang } from './mailTemplates';
 import { TvCodes, tvCode } from './tvCodes';
 import type { TvWhere } from './tvCodes';
 import { sitePrefix } from './limits';
-import type { Credentials, HostCredit, PasswordRecord, RankedResultInput, RefreshGrant, ThrottleEntry } from './accountStore';
+import type { Credentials, HostCredit, LinkPendingResult, PasswordRecord, PendingIdent, PendingIdentity, ProviderEmail, ProviderTrust, RankedResultInput, RefreshGrant, ThrottleEntry } from './accountStore';
 import { emailCanon, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -276,6 +298,37 @@ function provedStill(b: Record<string, unknown>, stored: string | null, rekey: P
   return typeof b.proved === 'string' && b.proved === stored;
 }
 
+// ---- the confirm step's identities (the Worker reads them from the provider and its signed pending cookie) ----
+
+const TRUSTS: readonly ProviderTrust[] = ['auth', 'asserted', 'none'];
+
+/** A provider's address and trust as the Worker sent them; anything malformed is no address. */
+function foundOf(v: Record<string, unknown> | null | undefined): ProviderEmail {
+  const email = v && typeof v.email === 'string' && v.email.length > 0 && v.email.length <= 254 ? v.email : null;
+  const trust = v && TRUSTS.includes(v.trust as ProviderTrust) ? (v.trust as ProviderTrust) : 'none';
+  return email === null ? { email: null, trust: 'none' } : { email, trust };
+}
+
+function identOf(v: unknown): PendingIdent | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  if (!OAUTH_PROVIDERS.includes(o.p as OAuthProvider) || typeof o.id !== 'string' || o.id.length === 0 || o.id.length > 128) return null;
+  return { p: o.p as OAuthProvider, id: o.id, ...foundOf(o) };
+}
+
+/** A pending identity (and its second one) from a body: null when absent or malformed. */
+export function pendingOf(v: unknown): PendingIdentity | null {
+  const first = identOf(v);
+  if (first === null) return null;
+  const p2 = identOf((v as Record<string, unknown>).p2);
+  return p2 !== null && p2.p !== first.p ? { ...first, p2 } : first;
+}
+
+/** What a sign-in answers about the pending identity it was asked to link: the providers it linked, or why not. */
+function linkAnswer(r: LinkPendingResult, pend: PendingIdentity): { linked: OAuthProvider[] } | { linkError: Exclude<LinkPendingResult, 'linked'> } {
+  return r === 'linked' ? { linked: [pend.p, ...(pend.p2 ? [pend.p2.p] : [])] } : { linkError: r };
+}
+
 /** Who a password check names: the legacy username, or the email sign-in's address by its canon (derived here from what was typed, I9). */
 type SignInSubject = { username: string } | { canon: string };
 
@@ -338,12 +391,20 @@ export const CODE_FAILS_PER_CANON = 10;
 /** "Confirm it's you" codes an account may ask for in 24 hours. */
 export const REAUTH_CODES_PER_DAY = 5;
 /**
- * New accounts per network in 24 hours (section 2.2): an IPv6 /64 as an IPv4 address (a carrier's
- * CGNAT or a school shares one address, and a dual-stack school or LAN is one /64), not the
- * section's 10 for a /64, which a class signing up on its first day passed. Each account also
- * needs a mailbox of its own, proved by a code.
+ * New accounts per network in 24 hours (sections 2.2 and 2.7): an IPv6 /64 as an IPv4 address (a
+ * carrier's CGNAT or a school shares one address, and a dual-stack school or LAN is one /64), not
+ * the section's 10 for a /64, which a class signing up on its first day passed. One budget for
+ * every way an account is made: an email sign-up (/signup-finish, which also needs a mailbox of
+ * its own, proved by a code) and the OAuth confirm step's CREAR (/pending-create, a provider
+ * identity of its own and a solved check) take from the same counters (newAccountCaps), so a
+ * network gets NEW_ACCOUNTS a day in all, never that many of each.
  */
 export const NEW_ACCOUNTS: Readonly<{ v6: WindowCap; v4: WindowCap }> = { v6: { day: 200 }, v4: { day: 200 } };
+/**
+ * ... and per IPv6 /48 (65,536 /64s, one free allocation), which a single /64 cannot reach alone:
+ * rotating /64s inside one allocation gains little. Both ways in count here too.
+ */
+export const NEW_ACCOUNTS_SITE: WindowCap = { day: 300 };
 
 /** The codes of one address: CODE_FAILS_PER_CANON failures in a day, then a day's pause (auth_throttle). */
 const CODE_FAIL_RULE: ThrottleRule = { windowMs: LOGIN_DAY_MS, free: CODE_FAILS_PER_CANON, baseMs: LOGIN_DAY_MS, maxMs: LOGIN_DAY_MS };
@@ -612,6 +673,42 @@ export class AccountsDO extends DurableObject<Env> {
     this.store.throttleClear(gone);
   }
 
+  /**
+   * The new-account counters of a request's address, one budget for every way an account is made
+   * (/signup-finish and /pending-create alike): mail_rate 'na:' its network (env.ts limitKey: an
+   * IPv4 address or an IPv6 /64, NEW_ACCOUNTS) and 'ns:' an IPv6 address's /48 (NEW_ACCOUNTS_SITE).
+   * None without an address.
+   */
+  private async newAccountCaps(ip: unknown): Promise<Array<{ key: string; cap: WindowCap }>> {
+    const net = netOf(ip);
+    if (net === '') return [];
+    const out = [{ key: await this.throttleKey('na', net), cap: net.endsWith('::/64') ? NEW_ACCOUNTS.v6 : NEW_ACCOUNTS.v4 }];
+    const site = sitePrefix(ip as string);
+    if (site !== null) out.push({ key: await this.throttleKey('ns', site), cap: NEW_ACCOUNTS_SITE });
+    return out;
+  }
+
+  /**
+   * One slot of each new-account counter, or the 429 of the first full one. Nothing is written here:
+   * the caller writes the rows once the account exists (newAccountTaken), in the same step, so a
+   * refused create (a taken name, a wrong code, a race) counts nothing.
+   */
+  private newAccountSlots(caps: ReadonlyArray<{ key: string; cap: WindowCap }>, now: number): Map<string, MailWindow> | Response {
+    const cur = this.store.mailWindows(caps.map((c) => c.key));
+    const rows = new Map<string, MailWindow>();
+    for (const c of caps) {
+      const r = takeSlot(cur.get(c.key) ?? null, c.cap, now);
+      if (!r.ok) return json({ error: 'rate_limited', message: 'Demasiadas cuentas nuevas desde tu red hoy: inténtalo mañana', retryAfterMs: Math.max(0, Math.ceil(windowWait(r.row, c.cap, now))) }, 429);
+      rows.set(c.key, r.row);
+    }
+    return rows;
+  }
+
+  /** The account exists: its slots of newAccountSlots count now. */
+  private newAccountTaken(rows: ReadonlyMap<string, MailWindow>): void {
+    if (rows.size > 0) this.store.mailWindowsWrite(rows);
+  }
+
   // ---- email accounts (sign-in PR 7) ------------------------------------------------------------
   //
   // Every secret a mail carries derives from its row's nonce (section 1.6): the link token is
@@ -801,10 +898,11 @@ export class AccountsDO extends DurableObject<Env> {
   }
 
   /**
-   * POST /reset { token, pw, refresh, ip, lang? } -> UserRef & { mail } (level 2, method 'reset') | 410
-   * link_invalid | 403 banned, in one transaction: the password stored (pw_v 2), every refresh
-   * family revoked and one started for this browser, every reset, email and reauth row of the
-   * account dead, the throttles of its address cleared (this network's pair too), then M4.
+   * POST /reset { token, pw, refresh, ip, lang?, pending? } -> UserRef & { mail } (& { linked } |
+   * { linkError } with `pending`) (level 2, method 'reset') | 410 link_invalid | 403 banned, in one
+   * transaction: the password stored (pw_v 2), every refresh family revoked and one started for this
+   * browser, every reset, email and reauth row of the account dead, the throttles of its address
+   * cleared (this network's pair too), then M4; then the pending identity linked (linkPending).
    */
   private async reset(b: Record<string, unknown>, now: number): Promise<Response> {
     const refresh = grantOf(b.refresh);
@@ -821,7 +919,10 @@ export class AccountsDO extends DurableObject<Env> {
     if (r === null) return linkInvalid();
     this.store.throttleClear(clear);
     const mail = this.notice(this.store.mailProfile(r.userId), nt, { kind: 'password_changed', name: r.username, at: now }, b.lang, now);
-    return json({ ...r, mail });
+    // linkPending (section 2.4): the reset proved this account's mailbox; the identity pending in
+    // this browser goes on it under §3.8's rules (only the account its address leads to, if any).
+    const pend = pendingOf(b.pending);
+    return json({ ...r, mail, ...(pend !== null ? linkAnswer(this.store.linkPending(r.userId, pend, now), pend) : {}) });
   }
 
   /**
@@ -1011,18 +1112,16 @@ export class AccountsDO extends DurableObject<Env> {
     if (first === null || first.purpose !== 'signup') return byToken ? linkInvalid() : codeExpired();
     const codeHash = byToken ? null : await codeHashOf(b.attempt as string, b.code as string);
     const failKey = byToken || first.canon === '' ? null : await this.throttleKey('cfs', first.canon);
-    const net = netOf(b.ip);
-    const netKey = net === '' ? null : await this.throttleKey('na', net);
+    const caps = await this.newAccountCaps(b.ip);
     const lang = langField(b.lang);
     const terms = typeof b.terms === 'string' && /^[a-z0-9._-]{1,32}$/.test(b.terms) ? b.terms : null;
     // ---- one step from here ----
     const failKeys = failKey === null ? [] : [{ key: failKey, rule: CODE_FAIL_RULE }];
     const wait = this.throttled(failKeys, now);
     if (wait > 0) return throttledAnswer(wait);
-    const netCap = net.endsWith('::/64') ? NEW_ACCOUNTS.v6 : NEW_ACCOUNTS.v4;
-    const netRow = netKey === null ? null : (this.store.mailWindows([netKey]).get(netKey) ?? null);
-    const netSlot = netKey === null ? null : takeSlot(netRow, netCap, now);
-    if (netSlot !== null && !netSlot.ok) return capAnswer('rate_limited', windowWait(netSlot.row, netCap, now));
+    // The network's new accounts: one budget with the OAuth confirm step's (/pending-create).
+    const slots = this.newAccountSlots(caps, now);
+    if (slots instanceof Response) return slots;
     const issue = usernameIssue(b.username);
     const name = b.username;
     const r = this.store.finishSignup({ row: first, codeHash }, { username: name, pw: b.pw, lang, tz: tzField(b.tz), news: b.news === true, terms, refresh: { ...refresh, kind: 'web' } }, now, issue === null ? 'ok' : issue.code === 'usernameReserved' ? 'reserved' : 'bad');
@@ -1039,7 +1138,7 @@ export class AccountsDO extends DurableObject<Env> {
       this.fail(failKeys, now);
       return r.triesLeft > 0 ? codeWrong(r.triesLeft) : codeExpired();
     }
-    if (netSlot !== null && netKey !== null) this.store.mailWindowsWrite(new Map([[netKey, netSlot.row]]));
+    this.newAccountTaken(slots);
     return json(r);
   }
 
@@ -1174,7 +1273,9 @@ export class AccountsDO extends DurableObject<Env> {
         s.throttleClear(clear);
         // The network's and the /48's counters keep failures only: this check's charge goes back.
         if (charged) this.refund(keys.filter((k) => !clear.includes(k.key)));
-        return json(r);
+        // linkPending: the identity pending in this browser goes on this account, in the same step (§3.8).
+        const pend = pendingOf(b.pending);
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now), pend) } : r);
       }
       case '/refresh': {
         const next = grantOf(b.next);
@@ -1226,16 +1327,53 @@ export class AccountsDO extends DurableObject<Env> {
         const provider = b.provider as OAuthProvider;
         if (!OAUTH_PROVIDERS.includes(provider) || typeof b.providerId !== 'string' || b.providerId.length === 0 || b.providerId.length > 128) return error(400, 'bad_request');
         const refresh = grantOf(b.refresh);
-        if (typeof b.name !== 'string' || refresh === null) return error(400, 'bad_request');
+        if (refresh === null) return error(400, 'bad_request');
         const linkTo = typeof b.linkTo === 'string' ? b.linkTo : null;
         // A link comes from a device that is still signed in (PERFIL's): signed out meanwhile, nothing links.
         const replace = typeof b.replace === 'string' && /^[0-9a-f]{32}$/.test(b.replace) ? b.replace : null;
         if (linkTo !== null && (replace === null || !s.devices(linkTo, now, null).some((d) => d.id === replace && d.kind === 'web'))) return error(401, 'link_expired');
-        const r = s.oauth(provider, b.providerId, b.name, linkTo, { ...refresh, kind: 'web' }, now, oauthLevel(b.lvl));
+        const r = s.oauth(provider, b.providerId, linkTo, { ...refresh, kind: 'web' }, now, oauthLevel(b.lvl), foundOf(b));
+        // Nobody has this identity: nothing is made (I3); the Worker's confirm step asks first.
+        if (r === 'pending') return json({ pending: true });
         if (r === 'already_linked') return error(409, 'already_linked', 'Esa cuenta ya está vinculada a otro usuario');
         if (r === 'provider_set') return error(409, 'provider_set', 'Tu cuenta ya tiene otra cuenta de ese proveedor: desvincúlala primero');
         if (r === 'no_user') return error(403, 'no_user');
         if (linkTo !== null && replace !== null) s.revokeDevice(linkTo, replace);
+        // "I already have one" (pend=1): the identity pending in this browser goes on the account it signed in to.
+        const pend = linkTo === null ? pendingOf(b.pending) : null;
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now), pend) } : r);
+      }
+      case '/pending-match': {
+        const pend = pendingOf(b.pending);
+        if (pend === null) return error(400, 'bad_request');
+        const m = s.pendingMatch(pend, now);
+        return json({ match: m === null ? null : { name: m.name, methods: m.methods, via: m.via, email: m.email } });
+      }
+      case '/pending-create': {
+        const pend = pendingOf(b.pending);
+        const refresh = grantOf(b.refresh);
+        if (pend === null || refresh === null || typeof b.username !== 'string' || b.username.length > 64 || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
+        const caps = await this.newAccountCaps(b.ip);
+        // ---- one step from here ----
+        // New accounts per network and per IPv6 /48 in a day (durable), one budget with /signup-finish:
+        // checked first, counted only once the account exists.
+        const slots = this.newAccountSlots(caps, now);
+        if (slots instanceof Response) return slots;
+        const lang = langField(b.lang);
+        const sl = lang === '' ? 'en' : lang;
+        const name = b.username;
+        // The name rules of an email sign-up (section 5.2): the skeleton's reserved words, then (in
+        // the store's transaction) a taken name and a look-alike of a protected account. Each refusal
+        // offers a free `suggest` and consumes nothing: the pending identity stays for another try.
+        const issue = usernameIssue(name);
+        if (issue !== null && issue.code === 'usernameReserved') return json({ error: 'name_reserved', message: 'Ese nombre está reservado', suggest: s.suggestName(name, sl) }, 400);
+        if (issue !== null) return error(400, 'bad_username', usernameProblem(name) ?? 'Nombre inválido');
+        const r = s.createFromPending(pend, name, { ...refresh, kind: 'web' }, now, { lvl: oauthLevel(b.lvl), lang, tz: tzField(b.tz), news: b.news === true });
+        if (r === 'username_taken') return json({ error: 'username_taken', message: 'Ese nombre ya está en uso', suggest: s.suggestName(name, sl) }, 409);
+        if (r === 'lookalike') return json({ error: 'name_lookalike', message: 'Ese nombre se parece mucho a otro', suggest: s.suggestName(name, sl) }, 409);
+        if (r === 'email_has_account') return error(409, 'email_has_account', 'Ese correo ya es de una cuenta de Turbogol: entra con ella para vincular');
+        if (r === 'already_linked') return error(409, 'already_linked', 'Esa cuenta ya está vinculada a otro usuario');
+        this.newAccountTaken(slots);
         return json(r);
       }
       case '/oauth-reauth': {
@@ -1274,9 +1412,20 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/tv-start': {
         if (!isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
-        const r = this.tv.start(b.ip, b.secret, now, whereOf(b.where));
+        // `checked` false: started without a solved check (a remote cannot answer one): the TV_OPEN_* caps count it too.
+        const r = this.tv.start(b.ip, b.secret, now, whereOf(b.where), b.checked !== false);
         if (r === 'busy') return error(503, 'busy', 'Demasiados códigos desde tu red, inténtalo en unos minutos');
         return r === 'full' ? error(503, 'busy', 'Demasiados códigos ahora, inténtalo en un minuto') : json(r);
+      }
+      case '/tv-renew': {
+        const code = tvCode(b.code);
+        if (code === null || !isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
+        const r = this.tv.renew(code, b.secret, b.ip, now, whereOf(b.where));
+        if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
+        if (r === 'early') return error(409, 'tv_renew_early', 'Ese código aún no termina');
+        if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
+        if (r === 'busy' || r === 'full') return error(503, 'busy', 'Demasiados códigos desde tu red, inténtalo en unos minutos');
+        return json(r);
       }
       case '/tv-info': {
         const code = tvCode(b.code);

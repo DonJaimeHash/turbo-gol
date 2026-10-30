@@ -1,7 +1,11 @@
 /**
- * Email accounts' sheets and the pages their mails link to (sign-in PR 8: the sign-in design's §3.1
- * to §3.4, §3.7 and §4.3; the routes are PR 7's). PERFIL (profile.ts) builds its guest forms with
- * these parts; a mailed link opens its sheet here.
+ * The account sheets that come from the URL, and the parts PERFIL's email forms share (the sign-in
+ * design's §3.1 to §3.4, §3.7, §3.8 and §4.3). Each URL sheet takes its turn through the Game's one
+ * arbiter (Game.ts urlSheets: `#auth=…`, then `/account#…`, then the phone's `/tv`), so two of them
+ * never open over each other.
+ *
+ * Email accounts (sign-in PR 8; the routes are PR 7's). PERFIL (profile.ts) builds its guest forms
+ * with these parts; a mailed link opens its sheet here:
  *
  *   /account#verify=<token>  the sign-up's link, opened anywhere: POST signup/check { token } (it
  *                            consumes nothing), then the finish sheet ("Correo confirmado: {email}",
@@ -12,27 +16,54 @@
  *   /account#forgot          the forgot sheet
  *   email, undo, keep, unsub sign-in PR 9, 12 and 13: this page says the link is not valid here
  *
- * On load (installAccountLinks, after the restore) the link is read from the path and the fragment,
- * its token kept in sessionStorage (AccountClient.keepPendingLink, until its POST settles: a slow
- * first load can try again), the URL cleared with history.replaceState, and the sheet waits until
- * the menus are up with no other sheet. Nothing is consumed until the sheet's button. A tab the
- * browser reloaded while its sign-up waited for the code comes back to PERFIL's code step.
+ * On load (installAccountLinks, the arbiter's 'account' step) the link is read from the path and
+ * the fragment, its token kept in sessionStorage (AccountClient.keepPendingLink, until its POST
+ * settles: a slow first load can try again) and the URL cleared with history.replaceState, at once;
+ * the sheet then waits for its turn (after the OAuth result and its confirm sheet, which settle the
+ * account's restore) and for the menus up with no other sheet. Nothing is consumed until the
+ * sheet's button. A tab the browser reloaded while its sign-up waited for the code comes back to
+ * PERFIL's code step.
+ *
+ * Back from Google or Discord (sign-in PR 6), opened by the arbiter's 'auth' step (Game.ts
+ * restoreAccount) on `#auth=confirm`: an identity no Turbogol account owns. Nothing exists yet, and
+ * nothing is made without the player's word (I3).
+ *
+ *   loading  "Un momento…" while POST /api/auth/pending answers (no restore() first: a new person
+ *            has no account to restore)
+ *   confirm  no match: "¿Ya tienes cuenta en Turbogol?", the provider's account (and its address
+ *            when it gave a verified one), the in-game name (Jugador4821: the guest's digits, never
+ *            the provider's name or the address; no autofocus, so a stray A opens no keypad) and
+ *            the news switch at NO; NO, CREAR MI CUENTA (first, focused: a solved check, then
+ *            POST /api/auth/pending/create) and SÍ, YA TENGO UNA
+ *   match    the address is an account's (claimed or as a hint): "Este correo ya tiene una cuenta",
+ *            one button per way into that account (its password: the sign-in below, prefilled with
+ *            its address, or its name; its providers: start?pend=1), CANCELAR; creating is refused
+ *            (one email, one account)
+ *   have one "Entra con tu cuenta": PERFIL's one field, "Correo o usuario", routed on '@' (an
+ *            address: POST /api/auth/signin; a username of before: POST /api/auth/login), both
+ *            with linkPending (the identity goes on the account it signs in to, the match only
+ *            when there is one), and ENTRAR CON {the other provider} (pend=1)
+ *
+ * After a create the game never opens PERFIL: the arbiter's next step comes. The flow resolves
+ * 'created', 'signedIn' or 'closed' (a provider button leaves the page instead).
  */
 import { h } from '../dom';
-import { AccountError } from '../../net/AccountClient';
-import type { CodeProof } from '../../net/AccountClient';
+import { AccountError, oauthErrorText } from '../../net/AccountClient';
+import type { CodeProof, PendingInfo } from '../../net/AccountClient';
 import { USERNAME_MAX, normalizeEmail, usernameIssue } from '../../net/account';
 import type { AccountSession, OAuthProvider, ResetPeekAnswer } from '../../net/account';
 import { guestNumber } from '../../net/guestName';
-import { inAppBrowser, isAccountPath, parseAccountLink, providersText, signupNamePrefill } from '../../net/emailAuth';
-import type { AccountLink } from '../../net/emailAuth';
+import { inAppBrowser, isAccountPath, parseAccountLink, providersText, signInRoute, signupNamePrefill } from '../../net/emailAuth';
+import type { AccountLink, LegacyPhase } from '../../net/emailAuth';
 import type { Menu } from '../Menu';
+import type { SheetAction } from '../components/sheet';
 import { setRow, toggleSwitch } from '../components/rows';
 import { finePointer } from '../device';
 import { codeField, field } from './common';
 import type { Field } from './common';
 import { errText, openProfileTab } from './profile';
-import { t } from '../../i18n';
+import { namePrefill } from './accountLinksModel';
+import { language, t } from '../../i18n';
 
 // ---- shared by PERFIL's forms and the sheets -------------------------------------------------------
 
@@ -101,7 +132,7 @@ export function keypadTyping(): boolean {
 }
 
 /** The in-game name a new account starts with: 'Jugador' and the guest's digits (emailAuth.ts signupNamePrefill). */
-function namePrefill(menu: Menu): string {
+function signupName(menu: Menu): string {
   return signupNamePrefill(t('auth.signupNameWord'), guestNumber(menu.host.guestName()), (n) => usernameIssue(n) === null);
 }
 
@@ -175,7 +206,7 @@ export interface FinishHooks {
  */
 export function signupFinishFields(menu: Menu, email: string, hooks: FinishHooks): { nodes: HTMLElement[]; name: Field; inputs: HTMLInputElement[]; create: () => Promise<boolean> } {
   const acc = menu.host.accounts;
-  const name = field(t('auth.signupName'), { autocomplete: 'nickname', maxLength: USERNAME_MAX, value: namePrefill(menu), hint: t('auth.signupNameHint'), enterkeyhint: 'next' });
+  const name = field(t('auth.signupName'), { autocomplete: 'nickname', maxLength: USERNAME_MAX, value: signupName(menu), hint: t('auth.signupNameHint'), enterkeyhint: 'next' });
   const pw = newPasswordFields(email, t('profile.password'));
   let news = false;
   const newsSwitch = toggleSwitch('auth-news', t('auth.signupNews'), () => news, (v) => (news = v));
@@ -475,11 +506,17 @@ export async function openReauthCodeSheet(menu: Menu, then: () => void): Promise
   });
 }
 
+
 // ---- the page's link, on load ----------------------------------------------------------------------------
 
 /** The menus up and no other sheet (a join link's, the TV's), as the other URL sheets wait. */
 async function sheetsReady(menu: Menu): Promise<void> {
-  while (!menu.visible || menu.modalOpen) await new Promise((r) => setTimeout(r, 300));
+  while (!menu.visible || menu.modalOpen) await new Promise((r) => setTimeout(r, 200));
+}
+
+/** No sheet is up any more: the ones a link opened, and those they opened in turn, are over. */
+async function sheetsClosed(menu: Menu): Promise<void> {
+  while (menu.modalOpen) await new Promise((r) => setTimeout(r, 200));
 }
 
 /** Open the sheet of `link` (the menus up, no other sheet). */
@@ -495,26 +532,331 @@ export async function openAccountLink(menu: Menu, link: AccountLink): Promise<vo
 }
 
 /**
- * On page load (Game.ts, once): a mailed link in the URL (or one a slow first load kept in
- * sessionStorage) opens its sheet once the menus are up, after the account's restore; the URL is
- * cleared at once (the token never stays in the address bar or the history). Without a link, a
- * sign-up that waits for its code (sessionStorage, 30 minutes) brings PERFIL's code step back.
- * Resolves once the link's sheet is open (or there was nothing to do).
+ * On page load (Game.ts, once: the arbiter's 'account' step, `turn`): a mailed link in the URL (or
+ * one a slow first load kept in sessionStorage) opens its sheet once the steps before it are done
+ * (the OAuth result and its confirm sheet, and with them the account's restore) and the menus are
+ * up; the URL is cleared at once (the token never stays in the address bar or the history).
+ * Without a link, a sign-up that waits for its code (sessionStorage, 30 minutes) brings PERFIL's
+ * code step back. Resolves once the link's sheets are over (or there was nothing to do), so the
+ * next step (the phone's /tv) never opens over them.
  */
-export async function installAccountLinks(menu: Menu): Promise<void> {
+export async function installAccountLinks(menu: Menu, turn: () => Promise<void> = () => Promise.resolve()): Promise<void> {
   if (typeof location === 'undefined' || typeof history === 'undefined') return;
   const acc = menu.host.accounts;
   const fromUrl = parseAccountLink(location.pathname, location.hash);
   if (isAccountPath(location.pathname)) history.replaceState(history.state, '', '/' + location.search);
   if (fromUrl !== null) acc.keepPendingLink(fromUrl);
   const link = fromUrl ?? acc.pendingLink();
-  // The Game's restore starts later in its constructor: once it has, it settles first (the sheets
-  // know who is signed in).
-  await Promise.resolve();
+  // Its turn: after #auth=… (an /account#reset link kept while the confirm sheet asks waits for it).
+  await turn();
+  // The Game's restore, if one is still on its way, settles first (the sheets know who is signed in).
   await acc.sessionForQueue().catch(() => null);
-  if (link !== null) return openAccountLink(menu, link);
+  if (link !== null) {
+    await openAccountLink(menu, link);
+    return sheetsClosed(menu);
+  }
   if (acc.signupAttempt() !== null && !acc.signedIn) {
     await sheetsReady(menu);
     if (!acc.signedIn && acc.signupAttempt() !== null) openProfileTab(menu, 'register', null);
   }
+}
+
+// ---- back from Google or Discord: the confirm step (§3.8, sign-in PR 6) -------------------------------
+
+/** How the flow ended. */
+export type PendingOutcome = 'created' | 'signedIn' | 'closed';
+
+const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
+
+/** A provider's name as the sheets write it. */
+export function providerName(p: OAuthProvider): string {
+  return PROVIDER_NAMES[p];
+}
+
+/** A provider's round trip from these sheets (start?pend=1): "continue as" learns it once it signs in. */
+function goPend(menu: Menu, p: OAuthProvider): void {
+  const acc = menu.host.accounts;
+  acc.providerStarted(p);
+  window.location.href = acc.oauthUrl(p, 'pend');
+}
+
+/** The player's IANA time zone for the dates of its mail ('' when the browser says none). */
+function timeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** A paragraph that describes its sheet (aria-describedby once it is up). */
+function describe(text: string): HTMLElement {
+  return h('p.mn-note.mn-confirm-desc', { id: 'mn-confirm-desc' }, text);
+}
+
+function linkDescription(): void {
+  const d = document.getElementById('mn-confirm-desc');
+  d?.closest('[role="dialog"]')?.setAttribute('aria-describedby', d.id);
+}
+
+/**
+ * `#auth=confirm` came back (or `#auth=error:no_account`, the pending identity kept): the loading
+ * sheet, then the confirm or the match sheet. Resolves once the flow is over.
+ */
+export async function confirmPending(menu: Menu): Promise<PendingOutcome> {
+  await sheetsReady(menu);
+  return new Promise<PendingOutcome>((resolve) => {
+    let over = false;
+    const end = (o: PendingOutcome): void => {
+      if (over) return;
+      over = true;
+      resolve(o);
+    };
+    let loaded = false;
+    const closeLoading = menu.modal({
+      title: t('auth.confirmLoading'),
+      body: h('p.mn-note', null, t('auth.confirmLoadingText')),
+      actions: [{ label: t('auth.cancel'), onClick: () => (void menu.host.accounts.cancelPending(), true) }],
+      onClose: () => {
+        if (!loaded) end('closed');
+      },
+    });
+    void load(menu, end, () => {
+      loaded = true;
+      return closeLoading;
+    });
+  });
+}
+
+/**
+ * POST /api/auth/pending (and the username sign-in's phase for "I have one": GET /api/config,
+ * once per page), then the sheet for its answer, which replaces the one up. `took`: that sheet is
+ * done with (its closer, for an answer that opens no other).
+ */
+async function load(menu: Menu, end: (o: PendingOutcome) => void, took: () => () => void): Promise<void> {
+  const acc = menu.host.accounts;
+  const cfg = acc.authConfig();
+  let info: PendingInfo | null = null;
+  let failed: unknown = null;
+  try {
+    info = await acc.pending();
+  } catch (e) {
+    failed = e;
+  }
+  const legacy = (await cfg).legacy;
+  const close = took();
+  if (info === null) {
+    close();
+    menu.toast(failed !== null ? errText(failed) : t('auth.pendingExpired'), 'error');
+    end('closed');
+    return;
+  }
+  if (info.match !== null) matchSheet(menu, info, legacy, end);
+  else confirmSheet(menu, info, legacy, end);
+}
+
+/** No account uses this identity, and its address leads to none: create one, or sign in to one and link. */
+function confirmSheet(menu: Menu, info: PendingInfo, legacy: LegacyPhase, end: (o: PendingOutcome) => void): void {
+  const acc = menu.host.accounts;
+  const p = providerName(info.provider);
+  let handed = false;
+  const name = field(t('auth.gameName'), { autocomplete: 'nickname', maxLength: USERNAME_MAX, value: namePrefill(t('auth.nameWord'), guestNumber(menu.host.guestName())), hint: t('auth.gameNameHint'), enterkeyhint: 'done' });
+  let news = false;
+  const sw = toggleSwitch('auth-news', t('auth.news'), () => news, (v) => (news = v));
+  const create: SheetAction = {
+    label: t('auth.create'),
+    primary: true,
+    // The first focus, before the name field: a stray A or Enter opens no keypad and types nothing.
+    autofocus: true,
+    onClick: async () => {
+      name.error(null);
+      const username = name.input.value.trim();
+      const issue = usernameIssue(username);
+      if (issue !== null) {
+        name.error(t(`account.issue.${issue.code}`, issue.params));
+        return false;
+      }
+      try {
+        const s = await acc.createAccount(username, { news, lang: language(), tz: timeZone() });
+        handed = true;
+        menu.toast(t('game.welcomeNew', { name: s.name }), 'ok');
+        void acc.fetchMe().catch(() => undefined);
+        end('created');
+        return true;
+      } catch (e) {
+        // A taken name, a look-alike of a protected account or a reserved word: the server's free one goes in the field.
+        if (e instanceof AccountError && (e.code === 'username_taken' || e.code === 'name_lookalike' || e.code === 'name_reserved') && e.suggest !== null) {
+          name.input.value = e.suggest;
+          name.error(e.message);
+          return false;
+        }
+        if (e instanceof AccountError && e.code === 'email_has_account') {
+          // A race: the address got an account meanwhile. The match sheet says what to do.
+          handed = true;
+          void load(menu, end, () => close);
+          return false;
+        }
+        if (e instanceof AccountError && (e.code === 'no_pending' || e.code === 'already_linked')) {
+          menu.toast(e.code === 'no_pending' ? t('auth.pendingExpired') : errText(e), 'error');
+          return true;
+        }
+        name.error(errText(e));
+        return false;
+      }
+    },
+  };
+  const haveOne: SheetAction = {
+    label: t('auth.haveOne'),
+    onClick: () => {
+      handed = true;
+      haveOneSheet(menu, info, null, legacy, end, () => confirmSheet(menu, info, legacy, end));
+      return false;
+    },
+  };
+  const close = menu.modal({
+    title: t('auth.confirmTitle'),
+    body: [
+      describe(info.email !== null ? t('auth.confirmNone', { provider: p, email: info.email }) : t('auth.confirmNoneNoEmail', { provider: p })),
+      info.second !== null ? h('p.mn-note', null, t('auth.confirmSecond', { provider: providerName(info.second) })) : null,
+      info.trust === 'none' ? h('p.mn-note', null, t('auth.confirmNoEmail', { provider: p })) : null,
+      name.el,
+      setRow(t('auth.news'), sw.el),
+    ],
+    actions: [create, haveOne],
+    onClose: () => {
+      if (handed) return;
+      void acc.cancelPending();
+      end('closed');
+    },
+  });
+  linkDescription();
+}
+
+/** The address is an account's: that account signs in and links; no second account. */
+function matchSheet(menu: Menu, info: PendingInfo, legacy: LegacyPhase, end: (o: PendingOutcome) => void): void {
+  const acc = menu.host.accounts;
+  const m = info.match;
+  if (m === null) return confirmSheet(menu, info, legacy, end);
+  const p = providerName(info.provider);
+  let handed = false;
+  const ways: SheetAction[] = [];
+  if (m.methods.includes('password')) {
+    ways.push({
+      label: t('auth.matchPassword'),
+      onClick: () => {
+        handed = true;
+        // The address it claimed signs in by email; a hint (an account of before) by its name.
+        haveOneSheet(menu, info, m.via === 'email' ? m.email : m.name, legacy, end, () => matchSheet(menu, info, legacy, end));
+        return false;
+      },
+    });
+  }
+  for (const w of m.methods) {
+    if (w === 'password' || !emailProviders(menu).includes(w)) continue;
+    ways.push({
+      label: t('tvlink.signInWith', { provider: providerName(w).toUpperCase() }),
+      onClick: () => {
+        handed = true;
+        goPend(menu, w);
+        return false;
+      },
+    });
+  }
+  if (ways.length > 0) ways[0].primary = true;
+  menu.modal({
+    title: t('auth.matchTitle'),
+    body: [describe(t('auth.matchBody', { email: m.email, name: m.name, provider: p })), info.trust === 'asserted' ? h('p.mn-note', null, t('auth.matchNotYours', { provider: p })) : null],
+    actions: [...ways, { label: t('auth.cancel'), onClick: () => true }],
+    onClose: () => {
+      if (handed) return;
+      void acc.cancelPending();
+      end('closed');
+    },
+  });
+  linkDescription();
+}
+
+/**
+ * "I already have one" ("Entra con tu cuenta"): sign in to that account here and the identity is
+ * linked to it, or with the other provider (start?pend=1). PERFIL's one field for an address or a
+ * username of before (§3.3, emailAuth.ts signInRoute): an '@' signs in by email (POST
+ * /api/auth/signin), anything else by the legacy sign-in while it lasts (POST /api/auth/login),
+ * both with linkPending; after the cutoff (`legacy` 'closed') a username gets legacy_closed with no
+ * request. `prefill`: the match's address (or its name); without one, this browser's last name.
+ * VOLVER: `back` (the sheet before).
+ */
+function haveOneSheet(menu: Menu, info: PendingInfo, prefill: string | null, legacy: LegacyPhase, end: (o: PendingOutcome) => void, back: () => void): void {
+  const acc = menu.host.accounts;
+  const p = providerName(info.provider);
+  let handed = false;
+  const closed = legacy === 'closed';
+  const user = field(closed ? t('auth.email') : t('auth.identity'), { autocomplete: 'username', maxLength: 254, value: prefill ?? acc.hintName ?? '', enterkeyhint: 'next', inputmode: 'email', keypad: 'email' });
+  const pass = field(t('profile.password'), { type: 'password', autocomplete: 'current-password', maxLength: 128, enterkeyhint: 'go', reveal: true });
+  const hint = h('p.mn-note.mn-prof-hint', { hidden: true });
+  const others = emailProviders(menu).filter((o) => o !== info.provider && o !== info.second);
+  const othersText = providersText(others, t('profile.or'));
+  menu.modal({
+    title: t('auth.haveOneTitle'),
+    body: [describe(t('auth.haveOneLine', { provider: p })), user.el, pass.el, hint],
+    actions: [
+      {
+        label: t('profile.signIn'),
+        primary: true,
+        onClick: async () => {
+          user.error(null);
+          pass.error(null);
+          hint.hidden = true;
+          const route = signInRoute(user.input.value, legacy);
+          if (route.kind === 'empty') return (user.error(t('auth.emptyIdentity')), false);
+          if (route.kind === 'bad_email') return (user.error(t('error.account.bad_email')), false);
+          if (route.kind === 'closed') return (user.error(othersText.length > 0 ? `${t('error.account.legacy_closed')} ${t('auth.legacyClosedProviders', { providers: othersText })}` : t('error.account.legacy_closed')), false);
+          try {
+            const r = route.kind === 'email' ? await acc.signInAndLink(route.email, pass.input.value) : await acc.loginAndLink(route.username, pass.input.value);
+            handed = true;
+            menu.toast(r.linked.length > 0 ? t('auth.linkedProvider', { provider: r.linked.map(providerName).join(' · ') }) : `${t('profile.hello', { name: r.session.name })}. ${oauthErrorText(r.linkError ?? 'no_pending')}`, r.linked.length > 0 ? 'ok' : 'error');
+            void acc.fetchMe().catch(() => undefined);
+            end('signedIn');
+            return true;
+          } catch (e) {
+            pass.error(authErrText(menu, e));
+            // One bad_credentials, a hint per branch (as PERFIL's sign-in).
+            if (e instanceof AccountError && e.code === 'bad_credentials') {
+              const text = route.kind === 'legacy' ? t('auth.badLegacyHint') : othersText.length > 0 ? t('auth.badCredentialsHint', { providers: othersText }) : null;
+              if (text !== null) {
+                hint.textContent = text;
+                hint.hidden = false;
+              }
+            }
+            return false;
+          }
+        },
+      },
+      ...others.map(
+        (o): SheetAction => ({
+          label: t('tvlink.signInWith', { provider: providerName(o).toUpperCase() }),
+          onClick: () => {
+            handed = true;
+            goPend(menu, o);
+            return false;
+          },
+        }),
+      ),
+      {
+        label: t('auth.back'),
+        onClick: () => {
+          handed = true;
+          back();
+          return false;
+        },
+      },
+    ],
+    onClose: () => {
+      if (handed) return;
+      void acc.cancelPending();
+      end('closed');
+    },
+  });
+  // Enter (a phone keyboard's Siguiente / Ir): the password, then ENTRAR, once.
+  sheetEnter([user.input, pass.input]);
+  linkDescription();
 }

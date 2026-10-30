@@ -714,6 +714,7 @@ class FakeEl {
     this.listeners = new Map();
     this.className = '';
     this.text = '';
+    this.dataset = {};
     this.classList = {
       add: (c) => (this.className = [...new Set([...this.className.split(' ').filter(Boolean), c])].join(' ')),
       remove: (c) => (this.className = this.className.split(' ').filter((x) => x && x !== c).join(' ')),
@@ -803,7 +804,7 @@ class FakeEl {
 
 const withDom = async (fn) => {
   const before = globalThis.document;
-  globalThis.document = { createElement: (tag) => new FakeEl(tag), createTextNode: (t) => ({ textContent: String(t) }), documentElement: new FakeEl('html') };
+  globalThis.document = { createElement: (tag) => new FakeEl(tag), createTextNode: (t) => ({ textContent: String(t) }), documentElement: new FakeEl('html'), getElementById: () => null };
   try {
     return await fn();
   } finally {
@@ -1119,4 +1120,235 @@ test("Enter on PERFIL's code step and in CAMBIAR CONTRASEÑA: the fields in orde
   assert.match(fnOf(PROFILE, 'passwordDialog'), /sheetEnter\(\[old\.input, \.\.\.pw\.inputs\]\);/);
   assert.match(fnOf(LINKS, 'verifySheet'), /sheetEnter\(fields\.inputs\);/);
   assert.match(fnOf(LINKS, 'resetSheet'), /sheetEnter\(pw\.inputs\);/);
+});
+
+// ---- the merge with sign-in PR 6: "Entra con tu cuenta" by email, the arbiter's 'account' step ---------------
+
+const MODEL = await import('../src/ui/screens/accountLinksModel.ts');
+
+/** A Menu whose modal() replaces the sheet up as Menu.modal does (the old one's onClose runs), the menus up. */
+function replacingMenu(accounts, oauth = ['discord']) {
+  const m = { cfg: { oauth }, visible: true, sheet: null, spec: null, closer: null, toasts: [], host: { accounts, guestName: () => 'Guest4821' } };
+  Object.defineProperty(m, 'modalOpen', { get: () => m.sheet !== null });
+  m.toast = (text, kind) => m.toasts.push([kind, text]);
+  m.modal = (spec) => {
+    m.closer?.();
+    let up = true;
+    const close = () => {
+      if (!up) return;
+      up = false;
+      if (m.closer === close) {
+        m.sheet = null;
+        m.spec = null;
+        m.closer = null;
+      }
+      spec.onClose?.();
+    };
+    m.closer = close;
+    m.spec = spec;
+    m.sheet = SHEET.sheetBox(spec, close);
+    return close;
+  };
+  m.refocus = () => undefined;
+  return m;
+}
+const button = (menu, label) => menu.sheet?.all().find((e) => e.tagName === 'BUTTON' && e.textContent === label) ?? null;
+const PENDING = { provider: 'discord', email: 'ana@example.com', trust: 'asserted', second: null, match: null };
+
+/** The confirm step's account calls, recorded; `signIn(branch)` answers both sign-ins when given. */
+function pendingAccounts({ legacy = 'none', info = PENDING, signIn = null } = {}) {
+  const calls = [];
+  const linked = (name) => ({ session: SESSION(name, Date.now() + 3_600_000), linked: ['discord'], linkError: null });
+  return {
+    account: null,
+    signedIn: false,
+    hintName: null,
+    calls,
+    authConfig: async () => ({ email: true, devSignIn: false, legacy, legacyUntil: null }),
+    pending: async () => info,
+    cancelPending: async () => void calls.push(['cancelPending']),
+    fetchMe: async () => undefined,
+    providerStarted: () => undefined,
+    oauthUrl: (p, f) => `/api/auth/oauth/${p}/start?${f}=1`,
+    signInAndLink: async (email, password) => (calls.push(['signInAndLink', email, password]), signIn ? signIn('email') : linked('Ana')),
+    loginAndLink: async (username, password) => (calls.push(['loginAndLink', username, password]), signIn ? signIn('legacy') : linked(username)),
+  };
+}
+
+/** confirmPending up to "Entra con tu cuenta" (through SÍ, YA TENGO UNA, or the match sheet's password way). */
+async function haveOne(acc, oauth = ['discord'], way = 'YES, I HAVE ONE') {
+  const L = await linksModule();
+  const menu = replacingMenu(acc, oauth);
+  const outcome = L.confirmPending(menu);
+  for (let i = 0; i < 50 && button(menu, way) === null; i++) await settle();
+  button(menu, way).click();
+  await settle();
+  assert.equal(menu.spec.title, 'Sign in to your account');
+  const inputs = menu.sheet.all().filter((e) => e.tagName === 'INPUT');
+  const user = inputs.find((e) => e.autocomplete === 'username');
+  const pass = inputs.find((e) => e.autocomplete === 'current-password');
+  const label = menu.sheet.all().find((e) => e.is('span.mn-field-label')).textContent;
+  return { menu, outcome, user, pass, label };
+}
+
+test("\"Entra con tu cuenta\" (PR 6's \"I have one\") is PERFIL's one field routed on '@': an address signs in by email with linkPending (an email account takes the identity), a username by the legacy sign-in", async () => {
+  await withDom(async () => {
+    // An address: POST /api/auth/signin with linkPending (AccountClient.signInAndLink), never the username sign-in.
+    const acc = pendingAccounts();
+    const s = await haveOne(acc);
+    assert.equal(s.label, 'Email or username', "\"Correo o usuario\", as PERFIL's sign-in");
+    assert.equal(s.user.inputMode, 'email');
+    assert.equal(s.user.enterKeyHint, 'next');
+    assert.ok(s.menu.sheet.all().some((e) => e.tagName === 'BUTTON' && e.getAttribute('aria-pressed') !== null), 'MOSTRAR beside the password');
+    s.user.value = ' Ana@Example.com ';
+    s.pass.value = 'una clave bastante larga';
+    enter(s.user);
+    assert.equal(globalThis.document.activeElement, s.pass, 'Siguiente: the password');
+    enter(s.pass);
+    assert.equal(await s.outcome, 'signedIn');
+    assert.deepEqual(acc.calls, [['signInAndLink', 'ana@example.com', 'una clave bastante larga']]);
+    assert.deepEqual(s.menu.toasts.at(-1), ['ok', 'Discord is now linked to your account']);
+    assert.equal(s.menu.sheet, null, 'the sheet closed, the pending identity not cancelled');
+
+    // A username of before: the legacy sign-in, with linkPending (AccountClient.loginAndLink).
+    const old = pendingAccounts();
+    const u = await haveOne(old);
+    u.user.value = 'Ana';
+    u.pass.value = 'una clave bastante larga';
+    button(u.menu, 'SIGN IN').click();
+    assert.equal(await u.outcome, 'signedIn');
+    assert.deepEqual(old.calls, [['loginAndLink', 'Ana', 'una clave bastante larga']]);
+
+    // After the cutoff (sign-in PR 9): "Email", and a username gets legacy_closed with no request.
+    const closed = pendingAccounts({ legacy: 'closed' });
+    const c = await haveOne(closed);
+    assert.equal(c.label, 'Email');
+    c.user.value = 'Ana';
+    c.pass.value = 'una clave bastante larga';
+    button(c.menu, 'SIGN IN').click();
+    await settle();
+    assert.deepEqual(closed.calls, [], 'no request');
+    assert.match(c.menu.sheet.textContent, /You can't sign in with a username anymore/);
+    // Something with an '@' that is no address: no request either.
+    c.user.value = 'ana@';
+    button(c.menu, 'SIGN IN').click();
+    await settle();
+    assert.deepEqual(closed.calls, []);
+  });
+});
+
+test("\"Entra con tu cuenta\": one bad_credentials, the text and hint of its branch; the match sheet's password way is prefilled with the address its account claimed", async () => {
+  await withDom(async () => {
+    const wrong = (branch) => Promise.reject(new AC.AccountError(branch === 'email' ? 'Wrong email or password' : 'Wrong username or password', 401, 'bad_credentials'));
+    const acc = pendingAccounts({ signIn: wrong });
+    const s = await haveOne(acc, ['google', 'discord']);
+    s.user.value = 'ana@example.com';
+    s.pass.value = 'otra clave cualquiera';
+    button(s.menu, 'SIGN IN').click();
+    await settle();
+    await settle();
+    assert.match(s.menu.sheet.textContent, /Wrong email or password/);
+    assert.match(s.menu.sheet.textContent, /Created your account with Google\? Use that button\./, 'the other provider, never the pending one');
+    s.user.value = 'Ana';
+    button(s.menu, 'SIGN IN').click();
+    await settle();
+    await settle();
+    assert.match(s.menu.sheet.textContent, /Wrong username or password[\s\S]*If you already added an email to your account, sign in with it\./);
+    assert.ok(button(s.menu, 'SIGN IN WITH GOOGLE'), 'the other provider (start?pend=1)');
+
+    // The match (one email, one account): its claimed address, which signs in by email; a hint: the name.
+    const match = { ...PENDING, match: { name: 'Ana', methods: ['password'], via: 'email', email: 'ana@example.com' } };
+    const m = await haveOne(pendingAccounts({ info: match }), ['discord'], 'SIGN IN WITH PASSWORD');
+    assert.equal(m.user.value, 'ana@example.com');
+    const hinted = { ...PENDING, match: { name: 'Ana', methods: ['password'], via: 'hint', email: 'ana@example.com' } };
+    const n = await haveOne(pendingAccounts({ info: hinted }), ['discord'], 'SIGN IN WITH PASSWORD');
+    assert.equal(n.user.value, 'Ana', 'a hint: the account of before signs in by its name');
+  });
+});
+
+test("the arbiter's 'account' step: an /account#reset link waits while #auth=confirm asks, even with no sheet up; the phone's /tv waits for the reset sheet to close", async () => {
+  const L = await linksModule();
+  const keep = { location: globalThis.location, history: globalThis.history };
+  const token = 'R'.repeat(43);
+  globalThis.location = { pathname: '/account', hash: '#reset=' + token, search: '' };
+  const urls = [];
+  globalThis.history = {
+    state: null,
+    replaceState: (_s, _t, url) => {
+      urls.push(url);
+      globalThis.location.pathname = '/';
+      globalThis.location.hash = '';
+    },
+  };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let menu = null;
+  try {
+    await withDom(async () => {
+      let kept = null;
+      const peeks = [];
+      const acc = {
+        account: null,
+        signedIn: false,
+        keepPendingLink: (l) => (kept = l),
+        pendingLink: () => kept,
+        sessionForQueue: async () => null,
+        signupAttempt: () => null,
+        resetPeek: async (t) => (peeks.push(t), { name: 'Ana', email: 'ana@example.com', hasPassword: true }),
+        fetchMe: async () => undefined,
+        authConfig: async () => ({ email: true, devSignIn: false, legacy: 'none', legacyUntil: null }),
+      };
+      menu = replacingMenu(acc);
+      const u = new MODEL.UrlSheets(['auth', 'account', 'tv']);
+      const order = [];
+      void u.turn('tv').then(() => order.push('tv'));
+      const install = L.installAccountLinks(menu, () => u.turn('account')).then(() => {
+        order.push('account');
+        u.done('account');
+      });
+      assert.deepEqual(urls, ['/'], 'the token left the URL at once');
+      assert.deepEqual(kept, { kind: 'reset', token });
+      // The confirm step before its sheet is up (POST /api/auth/pending on its way), then its sheet, then its answer.
+      await wait(450);
+      assert.deepEqual(peeks, [], 'no sheet over the confirm step, even while no sheet is up');
+      const closeConfirm = menu.modal({ title: 'Already have a Turbogol account?', body: [], actions: [] });
+      await wait(250);
+      closeConfirm();
+      await wait(250);
+      assert.deepEqual(peeks, [], 'the confirm sheet closed, its step not done yet (a restore after it)');
+      u.done('auth');
+      for (let i = 0; i < 50 && menu.spec?.title !== 'New password'; i++) await wait(50);
+      assert.deepEqual(peeks, [token], 'its turn: reset/peek, then the sheet');
+      assert.equal(menu.spec.title, 'New password');
+      await wait(450);
+      assert.deepEqual(order, [], "the phone's /tv waits while the reset sheet is up");
+      button(menu, 'CANCEL').click();
+      await install;
+      await settle();
+      assert.deepEqual(order, ['account', 'tv']);
+      assert.equal(kept, null, 'closed: the next load does not bring it back');
+    });
+  } finally {
+    // A failed check leaves no sheet up (its wait would keep the run alive).
+    for (let i = 0; i < 5 && menu?.closer; i++) menu.closer();
+    globalThis.location = keep.location;
+    globalThis.history = keep.history;
+  }
+});
+
+test("Game.ts runs the mailed links in the arbiter: 'auth', then 'account', then 'tv'", async () => {
+  const game = await readFile(new URL('../src/game/Game.ts', import.meta.url), 'utf8');
+  assert.match(game, /new UrlSheets\(\['auth', 'account', 'tv'\] as const\)/);
+  assert.match(game, /installAccountLinks\(this\.menu, \(\) => this\.urlSheets\.turn\('account'\)\)[\s\S]{0,160}\.finally\(\(\) => this\.urlSheets\.done\('account'\)\)/);
+  assert.match(game, /installTvLink\(this\.menu, \(\) => this\.urlSheets\.turn\('tv'\)\)/);
+  assert.match(fnOf(LINKS, 'installAccountLinks'), /await turn\(\);[\s\S]*await openAccountLink\(menu, link\);\s*return sheetsClosed\(menu\);/, 'done once its sheets are over');
+});
+
+test("the phone's /tv after the 'account' step: no \"sign in first\" over PERFIL's code step (the account it makes brings the code entry); its provider buttons are PERFIL's (Google hidden in another app's browser, \"continue as\" learns them)", async () => {
+  const tv = await readFile(new URL('../src/ui/screens/tvSignIn.ts', import.meta.url), 'utf8');
+  assert.match(tv, /signInFirst: \(dropped\) => \{\s*keep\(\);[\s\S]{0,260}if \(acc\.signupAttempt\(\) !== null\) return;\s*signInFirstSheet\(/);
+  const first = fnOf(tv, 'signInFirstSheet');
+  assert.match(first, /const providers = emailProviders\(menu\);/);
+  assert.match(first, /acc\.providerStarted\(p\);\s*window\.location\.href = acc\.oauthUrl\(p\);/);
+  // The confirm step's own round trips (start?pend=1) too.
+  assert.match(fnOf(LINKS, 'goPend'), /acc\.providerStarted\(p\);\s*window\.location\.href = acc\.oauthUrl\(p, 'pend'\);/);
 });

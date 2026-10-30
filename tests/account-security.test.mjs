@@ -93,7 +93,7 @@ test('auth-1: an approved TV session keeps its tv flag (PERFIL then shows only i
 
 // ---- auth-1 / client-1 / tv-1: the phone types the code and sees where the TV is; the TV solves the check ----
 
-test('auth-1: the TV\'s start sends the anti-bot token (one per code), a failed check says so', async () => {
+test('auth-1: the TV\'s start sends the anti-bot token (one per code); a check that wants a press or fails starts without one (the live check: a remote cannot answer it)', async () => {
   let n = 0;
   const { acc, calls } = client(
     { '/api/auth/tv/start': () => res(200, { code: 'ABC234', secret: 's'.repeat(43), expiresAt: Date.now() + 240_000, ttlMs: 240_000, pollMs: 3000 }) },
@@ -102,8 +102,17 @@ test('auth-1: the TV\'s start sends the anti-bot token (one per code), a failed 
   await acc.tvStart();
   await acc.tvStart();
   assert.deepEqual(calls.map((c) => c.body), [{ turnstileToken: 'tok-1' }, { turnstileToken: 'tok-2' }]);
-  const { acc: broken } = client({}, { antiBot: async () => Promise.reject(new Error('widget')) });
-  await assert.rejects(broken.tvStart(), (e) => e.code === 'turnstile_failed');
+  const start = () => res(200, { code: 'ABC234', secret: 's'.repeat(43), expiresAt: Date.now() + 240_000, ttlMs: 240_000, pollMs: 3000 });
+  const { acc: broken, calls: c2 } = client({ '/api/auth/tv/start': start }, { antiBot: async () => Promise.reject(new Error('widget')) });
+  assert.equal((await broken.tvStart()).code, 'ABC234');
+  assert.deepEqual(c2.map((c) => c.body), [{}], 'no token: the server counts the code under its tighter caps');
+  // The quiet check is the TV's (never the sheet that asks the player); a token the server refused: once more without one.
+  let asked = 0;
+  let n2 = 0;
+  const { acc: tv, calls: c3 } = client({ '/api/auth/tv/start': (b) => (b.turnstileToken ? res(403, { error: 'turnstile_failed' }) : start()) }, { antiBot: async () => (asked++, 'loud'), antiBotQuiet: async () => 'quiet-' + ++n2 });
+  assert.equal((await tv.tvStart()).code, 'ABC234');
+  assert.deepEqual(c3.map((c) => c.body), [{ turnstileToken: 'quiet-1' }, {}]);
+  assert.equal(asked, 0, 'the check that asks the player is never used for a TV');
 });
 
 test('auth-1: the phone asks where the TV is with its Bearer (POST /api/auth/tv/info), and words it', async () => {

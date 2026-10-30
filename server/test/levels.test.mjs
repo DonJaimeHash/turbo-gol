@@ -155,13 +155,19 @@ async function req(env, method, path, { ip = '198.19.0.1', origin = ORIGIN, bear
 const post = (env, path, o = {}) => req(env, 'POST', path, { body: {}, ...o });
 const login = (env, body, ip, cookie) => post(env, '/api/auth/login', { ip, cookie, body });
 
-async function oauth(env, provider, who, { query = '', cookie, ip = '198.19.201.1' } = {}) {
+async function oauth(env, provider, who, { query = '', cookie, noCreate = false, ip = '198.19.201.1' } = {}) {
   identity[provider] = provider === 'google' ? { sub: who, given_name: 'Ana' } : { id: who, username: who };
   const start = await req(env, 'GET', `/api/auth/oauth/${provider}/start${query}`, { ip, cookie, origin: null });
   if (start.status !== 302 || !start.location.startsWith('https://')) return { start, done: null };
   const state = cookieOf(start.raw, '__Host-tg_oa');
   const nonce = new URL(start.location).searchParams.get('state');
   const done = await req(env, 'GET', `/api/auth/oauth/${provider}/callback?code=x&state=${nonce}`, { ip, cookie: '__Host-tg_oa=' + state, origin: null });
+  // Sign-in PR 6: an identity nobody owns makes no account; the confirm sheet's CREAR does (a name of the test's own).
+  if (done.location === '/#auth=confirm' && !noCreate) {
+    const pend = cookieOf(done.raw, '__Host-tg_pend');
+    const made = await req(env, 'POST', '/api/auth/pending/create', { ip, cookie: '__Host-tg_pend=' + pend, body: { username: 'u' + who.replace(/[^A-Za-z0-9]/g, '').slice(0, 14) } });
+    return { start, done, made, created: made.status === 200, rt: cookieOf(made.raw, '__Host-tg_rt') };
+  }
   return { start, done, rt: cookieOf(done.raw, '__Host-tg_rt') };
 }
 

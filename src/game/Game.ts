@@ -186,6 +186,8 @@ import { lobbyRulesLine, presetName } from '../render/rulesText';
 import { LobbyClient } from '../net/LobbyClient';
 import { installJoinLink, installLobbyReturn } from '../ui/screens/lobby';
 import { installTvLink } from '../ui/screens/tvSignIn';
+import { confirmPending } from '../ui/screens/accountLinks';
+import { UrlSheets, takeDetour } from '../ui/screens/accountLinksModel';
 import { installTvSamples } from '../ui/screens/tvSignInSamples';
 import { installSalaSamples } from '../ui/screens/lobbySamples';
 import { openLostSheet } from '../ui/screens/match/lost';
@@ -851,6 +853,13 @@ export class Game implements P2PGameHooks {
   readonly menu: Menu;
   /** Registered accounts (ranked, profile); the guest flow stays in NetClient. */
   readonly accounts: AccountClient;
+  /**
+   * The one arbiter of URL-driven sheets (the sign-in design's §3.0): the OAuth result (#auth=…, its
+   * confirm sheet), then a mailed link (/account#verify=…, #reset=…, #forgot, or a sign-up waiting
+   * for its code), then the phone's /tv, each after the one before is done (a join link, #sala=…,
+   * waits for no sheet at all: lobby.ts installJoinLink).
+   */
+  private readonly urlSheets = new UrlSheets(['auth', 'account', 'tv'] as const);
   /** Training records: this browser for a guest, the account (server + local copy) when signed in. */
   readonly trainingStore: TrainingStore;
   /** Settings > Experimental: the account's switch and physics presets (server + local copy); nothing for a guest. */
@@ -1113,7 +1122,8 @@ export class Game implements P2PGameHooks {
     });
 
     // Accounts: a signed-in player queues / joins lobbies under the account (NetClient asks first).
-    const accounts = new AccountClient({ antiBot: () => online.client.antiBotToken() });
+    // antiBotQuiet: a TV's start never asks for a press its remote cannot give (AccountClient.tvStart).
+    const accounts = new AccountClient({ antiBot: () => online.client.antiBotToken(), antiBotQuiet: () => online.client.antiBotToken(undefined, true) });
     this.accounts = accounts;
     online.client.sessionProvider = (minValidMs) => accounts.sessionForQueue(minValidMs);
     online.client.onSessionRejected = () => accounts.sessionRejected();
@@ -1139,7 +1149,7 @@ export class Game implements P2PGameHooks {
       window.addEventListener('pagehide', (e) => {
         if (!e.persisted) this.keepLobby();
       });
-      installTvLink(this.menu);
+      installTvLink(this.menu, () => this.urlSheets.turn('tv'));
     }
     // The anti-bot check that wants the player: the menus' sheet, CANCEL ends it.
     online.client.onAntiBotAsk = (asking) => this.menu.antiBotAsk(asking, () => online.client.cancelChallenge());
@@ -1161,8 +1171,11 @@ export class Game implements P2PGameHooks {
     installSalaSamples(this.menu);
     installTvSamples(this.menu);
     // A mailed link (/account#verify=… / #reset=…, sign-in PR 8) or a sign-up waiting for its code:
-    // its sheet once the menus are up, after the account's restore below.
-    void installAccountLinks(this.menu).catch((err: unknown) => console.warn('[accounts] link failed', err));
+    // the URL cleared now, its sheet in the arbiter's 'account' turn (after the account's restore
+    // below and any confirm sheet), the phone's /tv once its sheets are over.
+    void installAccountLinks(this.menu, () => this.urlSheets.turn('account'))
+      .catch((err: unknown) => console.warn('[accounts] link failed', err))
+      .finally(() => this.urlSheets.done('account'));
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad, ui: this.settings.ui }) : null;
@@ -1171,30 +1184,49 @@ export class Game implements P2PGameHooks {
     accounts.subscribe(() => this.onAccountChange());
     this.experimental.subscribe(() => this.onExperimentalChange());
     this.experimental.onProblem = (p) => this.notify(experimentalProblemText(p));
-    this.restoreAccount();
+    void this.restoreAccount()
+      .catch((err: unknown) => console.warn('[accounts] restore failed', err))
+      .finally(() => this.urlSheets.done('auth'));
 
     (window as unknown as { __game: Game }).__game = this;
   }
 
   /**
-   * Bring back the signed-in account (refresh cookie) on page load: when this browser was signed in
-   * before, or when the URL carries an OAuth result (#auth=...), which is then shown and cleared.
+   * The arbiter's first step (urlSheets 'auth'), on page load: an OAuth result in the URL (#auth=...,
+   * shown and cleared), or the account this browser was signed in to (refresh cookie). An identity
+   * no account owns (#auth=confirm, or error:no_account with its pending identity kept) opens the
+   * confirm step first (accountLinks.ts), with no restore before it. A sign-in that came back from a
+   * provider returns to MODOS or GARAJE when their SIGN IN sent the player (the detour). After a
+   * create the game never opens PERFIL. Resolves once its sheets are done.
    */
-  private restoreAccount(): void {
+  private async restoreAccount(): Promise<void> {
     const hash = typeof location !== 'undefined' ? location.hash : '';
     const auth = parseAuthHash(hash);
     if (auth !== null) history.replaceState(null, '', location.pathname + location.search);
-    if (auth === null && this.accounts.hintName === null) return;
-    void this.accounts.restore().then((a) => {
-      if (auth === null) return;
+    // Kept only for a provider's round trip: any other page load forgets it.
+    const detour = takeDetour();
+    if (auth?.kind === 'confirm' || (auth?.kind === 'error' && auth.code === 'no_account')) {
       if (auth.kind === 'error') this.menu.toast(oauthErrorText(auth.code), 'error');
-      else if (a !== null) {
-        this.menu.toast(auth.kind === 'new' ? t('game.welcomeNew', { name: a.name }) : auth.kind === 'linked' ? t('game.accountLinked') : auth.kind === 'reauth' ? t('profile.reauthDone') : t('profile.hello', { name: a.name }), 'ok');
-        // A re-authentication came back: to PERFIL, where the change it was for waits.
-        if (auth.kind === 'new' || auth.kind === 'reauth') this.menu.open('profile');
+      const outcome = await confirmPending(this.menu);
+      // Nothing made, nothing signed in: the account this browser had, if any.
+      if (outcome === 'closed' && this.accounts.hintName !== null) await this.accounts.restore();
+    } else {
+      if (auth === null && this.accounts.hintName === null) return;
+      const a = await this.accounts.restore();
+      if (auth !== null) {
+        if (auth.kind === 'error') this.menu.toast(oauthErrorText(auth.code), 'error');
+        else if (a !== null) {
+          const hello = auth.kind === 'new' ? t('game.welcomeNew', { name: a.name }) : auth.kind === 'linked' ? t('game.accountLinked') : auth.kind === 'reauth' ? t('profile.reauthDone') : t('profile.hello', { name: a.name });
+          // Signed in, the identity pending in this browser not linked: the reason with the hello.
+          const linkError = auth.kind === 'ok' && auth.linkError !== undefined ? ` ${oauthErrorText(auth.linkError)}` : '';
+          this.menu.toast(hello + linkError, linkError === '' ? 'ok' : 'error');
+          // A re-authentication came back: to PERFIL, where the change it was for waits.
+          if (auth.kind === 'reauth') this.menu.open('profile');
+        }
       }
       void this.accounts.fetchMe().catch(() => undefined);
-    });
+    }
+    if (auth !== null && auth.kind !== 'reauth' && detour !== null && this.accounts.signedIn) this.menu.open(detour.screen, false, detour.tab);
   }
 
   // ---- experimental features (Settings > Experimental) -----------------------------------------

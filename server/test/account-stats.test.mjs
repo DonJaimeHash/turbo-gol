@@ -98,8 +98,9 @@ function fixture(store, db) {
     secrets.push(id, name);
     return id;
   };
+  // An OAuth account is made by the confirm step (createFromPending), a link by oauth (sign-in PR 6).
   const oauth = (p, pid, name, linkTo = null) => {
-    const r = store.oauth(p, pid, name, linkTo, H('e'), NOW - 100 * DAY);
+    const r = linkTo === null ? store.createFromPending({ p, id: pid, email: null, trust: 'none' }, name, H('e'), NOW - 100 * DAY) : store.oauth(p, pid, linkTo, H('e'), NOW - 100 * DAY);
     secrets.push(r.userId, r.username, pid);
     return r.userId;
   };

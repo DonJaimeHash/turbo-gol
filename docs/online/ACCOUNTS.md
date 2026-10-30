@@ -50,7 +50,7 @@ botón no aparece.
 
 **Google** (console.cloud.google.com → APIs & Services):
 1. En *OAuth consent screen*, tipo External, completá nombre y email de soporte. El scope es
-   `openid profile`: no se pide el email.
+   `openid email`: se pide el correo, nunca el nombre.
 2. En *Credentials → Create credentials → OAuth client ID*, tipo Web application.
 3. Authorized redirect URI: `https://turbo-gol.com/api/auth/oauth/google/callback`.
 4. Copiá el Client ID y el Client secret.
@@ -58,7 +58,7 @@ botón no aparece.
 **Discord** (discord.com/developers/applications):
 1. *New Application* → OAuth2.
 2. Redirect: `https://turbo-gol.com/api/auth/oauth/discord/callback`.
-3. Copiá el Client ID y el Client Secret (con *Reset Secret*). El scope es `identify`.
+3. Copiá el Client ID y el Client Secret (con *Reset Secret*). El scope es `identify email`.
 
 Después cargalos como secretos del Worker (cada comando pide el valor):
 
@@ -73,9 +73,11 @@ npx wrangler secret put DISCORD_CLIENT_SECRET
 Para probarlo en local, crea un cliente OAuth de desarrollo aparte, con la URL de retorno
 `http://localhost:5173/api/auth/oauth/<proveedor>/callback`, y pon su Client ID y su Client Secret
 en `server/.dev.vars` junto con `PUBLIC_ORIGIN=http://localhost:5173`. Nunca pongas ahí los valores
-de producción: `.dev.vars` es texto plano en la PC. Una cuenta nueva por OAuth
-toma el nombre del proveedor (por ejemplo `Ana` o `Ana42` si ya existe) y se puede renombrar una
-vez desde el Perfil.
+de producción: `.dev.vars` es texto plano en la PC. El retorno de OAuth no crea ninguna cuenta: el
+juego pregunta primero «¿Ya tienes cuenta en Turbogol?», y la cuenta nueva usa el nombre que escribe
+el jugador, nunca el del proveedor (con las reglas de nombres del registro por correo). Un correo
+confirmado que ya es de una cuenta lleva a entrar con ella y vincular el proveedor: un correo, una
+cuenta.
 
 ### Entrada de desarrollo (local y forks)
 

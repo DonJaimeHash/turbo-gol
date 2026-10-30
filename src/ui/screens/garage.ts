@@ -53,6 +53,7 @@ import { carSilhouette } from '../components/carSilhouettes';
 import { garageRow, type GarageRow } from '../components/carRow';
 import { chooseStadium, stadiumOptions } from '../components/stadium';
 import { detailView, earnIsLime, pointsCard, PREVIEW_MS, REDEEM_HOLD_MS, redeemBalance, revealDelta, rowLine, type Line } from './garageModel';
+import { dropDetour, keepDetour } from './accountLinksModel';
 
 /** How a community server is hosted (the nodes' README, in the page's language when there is one). */
 function guideUrl(): string {
@@ -423,6 +424,8 @@ export function garageScreen(menu: Menu): Screen {
 
   const signIn = (): void => {
     waitSignIn = true;
+    // Kept across a provider's round trip too (sessionStorage): the sign-in comes back here.
+    keepDetour({ screen: 'garage' });
     menu.open('profile', false, undefined, true);
   };
 
@@ -555,6 +558,7 @@ export function garageScreen(menu: Menu): Screen {
   host.accounts.subscribe(() => {
     if (!waitSignIn || !host.accounts.signedIn) return;
     waitSignIn = false;
+    dropDetour();
     if (menu.top()?.id === 'profile') menu.backTo('garage');
   });
 
@@ -606,6 +610,7 @@ export function garageScreen(menu: Menu): Screen {
       if (askedTab !== null) tab = askedTab;
       askedTab = null;
       waitSignIn = false;
+      dropDetour();
       previewed = null;
       revealed = null; // the pick in view again (the list kept its scroll while away)
       unsubscribe?.();

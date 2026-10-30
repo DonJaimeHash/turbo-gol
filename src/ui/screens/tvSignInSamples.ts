@@ -104,7 +104,7 @@ export function installTvSamples(menu: Menu): void {
         return;
       case 'tvlink-signin':
         menu.open('home', true);
-        signInFirstSheet(menu, 'ABC234', noop);
+        signInFirstSheet(menu, noop);
         return;
       case 'tvlink-code':
         menu.open('home', true);
