@@ -33,6 +33,9 @@
  *                                node online, or in service and seen by the object in the last hour, 5 s each
  *                                (nodeWatch.ts healthzTargets); and the public replays past 30 days pruned, with
  *                                their R2 objects
+ *   POST /internal/operator-deleted { userId }  AccountsDO's purge of an account (sign-in PR 12): every node of
+ *                                it banned (told, its socket closed 4403) -> { ok, banned }; an ALERT when there
+ *                                were any; 409 trusted for a NODE_TRUSTED_OPERATORS id (never deleted)
  *   GET  /internal/replays       the public replay list and one entry of it, as the public sees them (replays():
  *                                an hour after the settle, rounded to the hour, hidden names as 'Jugador N', asked
  *                                of AccountsDO /replay-hidden and kept a minute)
@@ -89,7 +92,7 @@ import type { Env, NodesEnv } from './env';
 import { widePrefix } from './limits';
 import { AlertHook } from './nodeAlerts';
 import type { FetchFn } from './nodeAlerts';
-import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, OPERATORS_ROUTE, REJOIN_STATUS } from './nodeApi';
+import { CLIENT_BUILD, LEAVE_STATUS, NODE_ROUTES, OPERATOR_DELETED_ROUTE, OPERATORS_ROUTE, REJOIN_STATUS } from './nodeApi';
 import type { LeaveAnswer, LeaveRefusal, PlaceAnswer, RejoinTicket, StatusAnswer } from './nodeApi';
 import { DELIVERY_TIMEOUT_MS, deliverCall } from './nodeOutcome';
 import { NodeStore } from './nodeStore';
@@ -762,6 +765,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
       if (method === 'GET' && path === '/nodes/mine') return this.mine(request, cp);
       // The account counts (nodeRoutes.ts): who operates a node, never an address; the ids go on to AccountsDO only.
       if (method === 'GET' && path === OPERATORS_ROUTE) return json({ operators: [...new Set(cp.registry.list().map((n) => n.operatorId))] }, 200, { 'cache-control': 'no-store' });
+      if (method === 'POST' && path === OPERATOR_DELETED_ROUTE) return await this.operatorDeleted(request, cp);
       if (path.startsWith('/nodes/admin/')) return await this.admin(request, cp, path.slice('/nodes/admin/'.length));
       if (method === 'POST' && path === NODE_ROUTES.place) return await this.place(request, cp);
       if (method === 'POST' && path === NODE_ROUTES.rejoin) return await this.rejoin(request, cp);
@@ -1279,6 +1283,37 @@ export class NodeRegistryDO extends DurableObject<Env> {
     this.keepOffline();
     if (this.busy()) await this.ensureAlarm();
     return json({ nodeId: n.nodeId, name: n.name, status: n.status, was });
+  }
+
+  /**
+   * POST /internal/operator-deleted { userId } (AccountsDO's purge, sign-in PR 12, the design's §3.13
+   * step 5): the account is gone and nodes are keyed by its id, so each of its nodes is banned as a
+   * maintainer's ban does it (told, its socket closed 4403) and an ALERT counts them. Idempotent: a
+   * banned node stays as it is, and the call is made again until it is answered. A
+   * NODE_TRUSTED_OPERATORS id (the project's account is never deleted) changes nothing: 409 trusted.
+   */
+  private async operatorDeleted(request: Request, cp: ControlPlane): Promise<Response> {
+    const b = await readJson<{ userId?: unknown }>(request);
+    if (!b || !isHex(b.userId, 16)) return error(400, 'bad_request');
+    const id = b.userId;
+    if (cp.registry.isTrusted(id)) {
+      this.audit(`ALERT operator ${id} reported deleted, but it is a trusted operator: nothing banned`);
+      return error(409, 'trusted', 'a trusted operator is never deleted');
+    }
+    let banned = 0;
+    for (const n of cp.registry.byOperator(id)) {
+      if (n.status === 'banned') continue;
+      cp.setStatus(n.nodeId, 'banned', 'operator account deleted');
+      this.closeNode(n.nodeId, 4403, 'banned');
+      this.watch.statusSet(n);
+      banned++;
+    }
+    if (banned > 0) {
+      this.audit(`ALERT operator ${id} deleted their account: ${banned} node${banned === 1 ? '' : 's'} banned`);
+      this.keepOffline();
+      if (this.busy()) await this.ensureAlarm();
+    }
+    return json({ ok: true, banned }, 200, { 'cache-control': 'no-store' });
   }
 
   /**
