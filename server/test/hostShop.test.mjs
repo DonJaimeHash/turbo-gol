@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { makeAccount } from './helpers/accounts.mjs';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 const WASM_STUB = 'data:text/javascript,export const createHostArena = () => { throw new Error("no wasm in this test"); };';
@@ -42,7 +43,6 @@ const { CAR_IDS, DEFAULT_CAR } = await import('../../src/game/cosmetics.ts');
 const SECRET = 'host-shop-test-secret';
 const ORIGIN = 'https://turbo-gol.com';
 const H = (c) => c.repeat(64).slice(0, 64);
-const PW = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
 const NOW = 1_800_000_000_000;
 const DAY = 24 * 60 * 60_000;
 const NODE = 'a1b2c3d4e5f60718';
@@ -106,7 +106,7 @@ const credit = (store, userId, points, verified = true, at = NOW) => store.hostC
 
 test('AccountStore: a fresh account drives the default car; every sign-in path hands its session the car and the creation time', () => {
   const { store } = makeStore();
-  const reg = store.register('Ana', PW, [], H('1'), NOW);
+  const reg = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') });
   assert.equal(reg.car, DEFAULT_CAR);
   assert.equal(reg.createdAt, NOW);
   const id = reg.userId;
@@ -130,7 +130,7 @@ test('AccountStore: a fresh account drives the default car; every sign-in path h
 
 test('AccountStore: a car is driven only while it is owned: picked after a grant, given up on a revoke', () => {
   const { store, db } = makeStore();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
   assert.equal(store.setCar(a, 'tero', NOW), 'not_owned');
   assert.equal(store.setCar('ffffffffffffffff', DEFAULT_CAR, NOW), 'no_user');
   assert.deepEqual(store.grant(a, 'tero', NOW), { granted: true, items: ['tero'] }, 'a grant takes any status: the body may still be to come');
@@ -157,9 +157,9 @@ test('AccountStore: a car is driven only while it is owned: picked after a grant
 
 test('AccountsDO /equipped (a lobby\'s start): the car each account drives now; an unknown or banned account is left out; at most a 3v3\'s ids', async () => {
   const { env, store, db } = makeEnv();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
-  const b = store.register('Beto', PW, [], H('2'), NOW).userId;
-  const c = store.register('Caro', PW, [], H('3'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
+  const b = makeAccount(store, 'Beto', { now: NOW, refresh: H('2') }).userId;
+  const c = makeAccount(store, 'Caro', { now: NOW, refresh: H('3') }).userId;
   store.grant(a, 'tero', NOW);
   store.setCar(a, 'tero', NOW);
   store.grant(b, 'condor', NOW);
@@ -178,8 +178,8 @@ test('AccountsDO /equipped (a lobby\'s start): the car each account drives now; 
 
 test('AccountStore wallet: one credit per match, a claim spends its cost once, the balance never goes below 0, nothing of it is pruned', async () => {
   const { store, db } = makeStore();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
-  const b = store.register('Beto', PW, [], H('2'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
+  const b = makeAccount(store, 'Beto', { now: NOW, refresh: H('2') }).userId;
   assert.deepEqual(store.wallet(a), { earned: 0, spent: 0, balance: 0, frozen: null });
   // The free host badge needs one verified hosted match that served someone else: one the operator
   // played alone on their node (verified, 0 points) counts for nothing (ledger.ts countsAsHosted).
@@ -221,7 +221,7 @@ test('AccountStore wallet: one credit per match, a claim spends its cost once, t
 
 test('AccountStore freeze: a failed verification pauses claims until a maintainer unfreezes; the outbox delivering it again after that freezes nothing', async () => {
   const { store } = makeStore();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
   credit(store, a, 2000);
   assert.equal(store.hostFreeze(a, 'verification_failed:m1', NOW + 10), true);
   assert.equal(store.frozen(a), 'verification_failed:m1');
@@ -239,7 +239,7 @@ test('AccountStore freeze: a failed verification pauses claims until a maintaine
     assert.equal(store.shop(a).wallet.frozen, 'verification_failed:m3');
   });
   // A maintainer's clock behind the event's: still cleared.
-  const b = store.register('Beto', PW, [], H('2'), NOW).userId;
+  const b = makeAccount(store, 'Beto', { now: NOW, refresh: H('2') }).userId;
   store.hostFreeze(b, 'verification_failed:m4', NOW + 100);
   assert.equal(store.unfreeze(b, NOW + 50), true);
   assert.equal(store.frozen(b), null);
@@ -247,7 +247,7 @@ test('AccountStore freeze: a failed verification pauses claims until a maintaine
 
 test('AccountStore shop: the catalog as the account sees it (claimable first), owned items flagged, the default car never listed', async () => {
   const { store } = makeStore();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
   credit(store, a, 1500);
   await withStatus('tero', 'available', async () => {
     await withStatus('pampero', 'soon', () => {
@@ -366,7 +366,7 @@ test('Worker: the inventory and shop routes need an account: 401 without a sessi
 
 test('Worker: items, then a car picked: 409 until it is owned, then a fresh session that carries it; uncached; the default car takes it out of the token', async () => {
   const { env, store } = makeEnv();
-  const id = store.register('Ana', PW, [], H('1'), Date.now()).userId;
+  const id = makeAccount(store, 'Ana', { now: Date.now(), refresh: H('1') }).userId;
   const token = await accountToken(id);
   let r = await call(env, 'GET', '/api/me/items', { token });
   assert.equal(r.status, 200);
@@ -391,7 +391,7 @@ test('Worker: items, then a car picked: 409 until it is owned, then a fresh sess
 
 test('Worker: a car pick re-signs the session without extending it (a token 60 s from expiry stays so); a banned account can neither pick nor claim', async () => {
   const { env, store, db } = makeEnv();
-  const id = store.register('Ana', PW, [], H('1'), Date.now()).userId;
+  const id = makeAccount(store, 'Ana', { now: Date.now(), refresh: H('1') }).userId;
   const exp = Math.floor(Date.now() / 1000) + 60;
   const token = await accountToken(id, { exp });
   store.grant(id, 'tero', Date.now());
@@ -410,7 +410,7 @@ test('Worker: a car pick re-signs the session without extending it (a token 60 s
 
 test('Worker: the shop and a claim round trip (a retry spends nothing twice); /nodes/shop answers the same without the node settings; refusals keep their codes', async () => {
   const { env, store } = makeEnv();
-  const id = store.register('Ana', PW, [], H('1'), Date.now()).userId;
+  const id = makeAccount(store, 'Ana', { now: Date.now(), refresh: H('1') }).userId;
   const token = await accountToken(id);
   credit(store, id, 1600);
   await withStatus('pampero', 'available', async () => {
@@ -445,7 +445,7 @@ test('Worker: the shop and a claim round trip (a retry spends nothing twice); /n
 
 test('Worker: picking a car and claiming share a write budget per account and minute (429 rate_limited)', async () => {
   const { env, store } = makeEnv();
-  const id = store.register('Carla', PW, [], H('1'), Date.now()).userId;
+  const id = makeAccount(store, 'Carla', { now: Date.now(), refresh: H('1') }).userId;
   const token = await accountToken(id);
   let limitedAt = 0;
   for (let i = 1; i <= LIMIT_COSMETIC_WRITES + 1; i++) {
@@ -492,7 +492,7 @@ test('Worker: a lobby\'s host and each admitted member take the car of their ses
 
 test('every catalog car can be granted, picked and seated: the session carries each one', async () => {
   const { store } = makeStore();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
   for (const id of CAR_IDS) {
     if (id !== DEFAULT_CAR) store.grant(a, id, NOW);
     const ref = store.setCar(a, id, NOW);

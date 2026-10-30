@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { makeAccount } from './helpers/accounts.mjs';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 const WASM_STUB = 'data:text/javascript,export const createHostArena = () => { throw new Error("no wasm in this test"); };';
@@ -38,7 +39,6 @@ const R = await import('../../src/game/physicsRules.ts');
 const SECRET = 'experimental-test-secret';
 const ORIGIN = 'https://turbo-gol.com';
 const H = (c) => c.repeat(64).slice(0, 64);
-const PW = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
 const NOW = 1_800_000_000_000;
 
 /** node:sqlite behind ctx.storage.sql (exec(...).toArray()) and transactionSync. */
@@ -78,8 +78,8 @@ const preset = (n, values = {}) => ({ id: n.toString(16).padStart(12, '0'), name
 
 test('AccountStore: the switch defaults off, is set per account and shows in MeInfo', () => {
   const { store } = makeStore();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
-  const b = store.register('Beto', PW, [], H('2'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
+  const b = makeAccount(store, 'Beto', { now: NOW, refresh: H('2') }).userId;
   assert.deepEqual(store.experimental(a), { enabled: false, presets: [] });
   assert.equal(store.me(a, NOW).experimental, false);
   assert.deepEqual(store.setExperimental(a, true, NOW), { enabled: true, presets: [] });
@@ -93,8 +93,8 @@ test('AccountStore: the switch defaults off, is set per account and shows in MeI
 
 test('AccountStore presets: upsert, rename, the server stamp, oldest first, delete, 11th refused, per account', () => {
   const { store, db } = makeStore();
-  const a = store.register('Ana', PW, [], H('1'), NOW).userId;
-  const b = store.register('Beto', PW, [], H('2'), NOW).userId;
+  const a = makeAccount(store, 'Ana', { now: NOW, refresh: H('1') }).userId;
+  const b = makeAccount(store, 'Beto', { now: NOW, refresh: H('2') }).userId;
   let r = store.upsertPreset(a, preset(1, { gravity: 50 }), NOW);
   assert.deepEqual(r.presets, [{ id: '000000000001', name: 'Rules 1', values: { gravity: 50 }, updatedAt: NOW }]);
   store.upsertPreset(a, preset(2), NOW + 5);
@@ -166,7 +166,7 @@ test('Worker: every experimental route needs an account: 401 without a session, 
 
 test('Worker: the switch and the presets round trip, uncached; MeInfo carries the switch', async () => {
   const { env, obj } = makeEnv();
-  const id = obj.store.register('Ana', PW, [], H('1'), Date.now()).userId;
+  const id = makeAccount(obj.store, 'Ana', { now: Date.now(), refresh: H('1') }).userId;
   const token = await accountToken(id);
   let r = await call(env, 'GET', '/api/me/experimental', { token });
   assert.equal(r.status, 200);
@@ -189,7 +189,7 @@ test('Worker: the switch and the presets round trip, uncached; MeInfo carries th
 
 test('Worker: bad bodies get 400 (bad_request / bad_preset), the 11th preset 409 too_many, a body over 4 KB is refused', async () => {
   const { env, obj } = makeEnv();
-  const id = obj.store.register('Beto', PW, [], H('1'), Date.now()).userId;
+  const id = makeAccount(obj.store, 'Beto', { now: Date.now(), refresh: H('1') }).userId;
   const token = await accountToken(id, 'Beto');
   const post = (path, body) => call(env, 'POST', path, { token, body });
   assert.equal((await post('/api/me/experimental', { enabled: 'yes' })).status, 400);
@@ -220,8 +220,8 @@ test('Worker: bad bodies get 400 (bad_request / bad_preset), the 11th preset 409
 
 test('Worker: writes are limited per account and minute (429 rate_limited); another account is not', async () => {
   const { env, obj } = makeEnv();
-  const id = obj.store.register('Carla', PW, [], H('1'), Date.now()).userId;
-  const other = obj.store.register('Dani', PW, [], H('2'), Date.now()).userId;
+  const id = makeAccount(obj.store, 'Carla', { now: Date.now(), refresh: H('1') }).userId;
+  const other = makeAccount(obj.store, 'Dani', { now: Date.now(), refresh: H('2') }).userId;
   const token = await accountToken(id, 'Carla');
   let limitedAt = 0;
   for (let i = 1; i <= LIMIT_EXPERIMENTAL_WRITES + 2; i++) {

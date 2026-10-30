@@ -77,6 +77,30 @@ de producción: `.dev.vars` es texto plano en la PC. Una cuenta nueva por OAuth
 toma el nombre del proveedor (por ejemplo `Ana` o `Ana42` si ya existe) y se puede renombrar una
 vez desde el Perfil.
 
+### Entrada de desarrollo (local y forks)
+
+Para trabajar sin secretos de proveedores hay una entrada solo de desarrollo. Agrega la línea
+`DEV_AUTH=1` a tu propio `server/.dev.vars` (nunca a `wrangler.jsonc` ni a otro archivo del repo: una
+prueba falla si alguno la tiene) y reinicia `wrangler dev`. El Perfil muestra **ENTRAR (DEV)** con un
+campo de nombre: cada nombre entra a su propia cuenta local, que se crea la primera vez, con el
+correo `<nombre>@dev.invalid` ya confirmado y sin contraseña. `POST /api/dev/signin { "name" }` hace
+lo mismo desde un script, y `GET /api/dev/mail` lista lo que el simulador de correo "mandó", con sus
+códigos y enlaces.
+
+Las dos rutas responden 404, como una ruta que no existe, salvo con `DEV_AUTH=1`, el Worker en un host
+local (127.0.0.1, localhost) y una petición sin Origin o desde una página local. En producción el host
+es `turbo-gol.com`, así que no funcionan aunque alguien cargara la variable. Un fork publicado en su
+propio dominio no puede crear cuentas hasta tener Email Service en ese dominio o una aplicación de
+Discord o Google propia.
+
+Una excepción, en tu propia red: con `TG_LAN=1` (Vite abierto a la red para probar en un teléfono o
+una TV), Vite reenvía al Worker en 127.0.0.1 las peticiones que llegan de la red, así que con
+`DEV_AUTH=1` el Worker no las distingue de las tuyas. Una página abierta en otro dispositivo sigue
+rechazada por su Origin, pero cualquier script en la red (un curl, que no manda Origin, o uno que
+falsifica un Origin local) puede usar `POST /api/dev/signin` con cualquier nombre y leer
+`GET /api/dev/mail`, con sus códigos y enlaces. Solo llega a tu base de datos local. No combines
+`TG_LAN=1` con `DEV_AUTH=1` en una red en la que no confíes.
+
 ## Ranked
 
 | Tema | Decisión |
@@ -141,5 +165,6 @@ vez desde el Perfil.
 | `tests/rating.test.mjs` | Reproduce el vector de referencia de openskill.js; reglas de abandono; rangos |
 | `server/test/accounts.test.mjs` | `AccountStore` sobre node:sqlite (registro, refresh, recuperación, OAuth, renombre, ranked idempotente, bloqueos, clasificación), crypto, throttle, OAuth con fetch falso, matchmaking ranked, helpers de salas |
 | `tests/menu-accounts.test.mjs` | Navegación espacial, AccountClient y LobbyClient con red falsa |
-| `server/test/smoke-accounts.mjs` | Contra `wrangler dev`: registro, login, refresh rotativo, ranked con forfeit y MMR, bloqueo, población, salas con contraseña e inicio P2P, recuperación, renombre y logout. Solo en local: crea cuentas descartables |
+| `server/test/dev-signin.test.mjs` | La entrada de desarrollo: 404 igual que una ruta desconocida sin `DEV_AUTH` o fuera de un host local, 200 en local, la cuenta con `<nombre>@dev.invalid` confirmado, `auth.devSignIn` en `/api/config`, y que ningún archivo del repo fije `DEV_AUTH` |
+| `server/test/smoke-accounts.mjs` | Contra `wrangler dev` con `DEV_AUTH=1`: entrada de desarrollo, refresh rotativo, ranked con forfeit y MMR, bloqueo, población, salas con contraseña e inicio P2P, renombre y logout. Solo en local: crea cuentas descartables |
 | Navegador (pane, `wrangler dev` + Vite) | Casual con banner y caída a servidor, vuelta al menú, registro con códigos, Competitivo con rangos, sala creada e iniciada con vuelta a la sala, entrenamiento desde el menú, y ranked completo contra un rival de prueba que abandona: el modal mostró VICTORIA y la clasificación 1/5 |

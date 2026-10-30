@@ -50,7 +50,7 @@ export interface Env {
   MAIL_LINK_ORIGIN?: string;
   /** Var: the day's mail across every lane (src/mailCaps.ts); 100 when unset or not a positive integer. */
   EMAIL_DAILY_CAP?: string | number;
-  /** `.dev.vars` only: '1' opens the dev-only routes (the stub's outbox) on a loopback host, never elsewhere. */
+  /** `.dev.vars` only: '1' opens the dev-only routes (the dev sign-in, the stub's outbox) on a loopback host, never elsewhere. */
   DEV_AUTH?: string;
   FLAGS: KVNamespace;
   /** Workers Assets (wrangler.jsonc `assets`): the Vite build in ../dist, served for every path outside /api, /ws, /room and /lobby. */

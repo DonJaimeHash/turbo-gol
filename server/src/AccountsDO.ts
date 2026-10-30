@@ -99,6 +99,9 @@
  *   POST /account-stats   { operatorIds, trusted } (a maintainer, nodeRoutes.ts) -> AccountStats: counts and
  *                                                                     booleans only (accountStore.ts accountStats);
  *                                                                     operatorIds null = unknown (no node settings)
+ *   POST /dev-signin      { name, refresh }                          -> UserRef & { created } (accountStore.ts devSignIn) |
+ *                                                                     400 bad_name | 403 banned; 404 unless DEV_AUTH is '1'
+ *                                                                     (the Worker's gate: mail.ts isDevAuth)
  *
  * Brute force: durable counters in SQLite (accountStore.ts auth_throttle), exact and global, so a
  * restart or an eviction forgets none and memory never grows with them. Each key is a kind and an
@@ -128,7 +131,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey } from './env';
 import { checkInternal } from './auth';
-import { AccountStore } from './accountStore';
+import { AccountStore, DEV_NAME_PROBLEM } from './accountStore';
 import { TvCodes, tvCode } from './tvCodes';
 import type { TvWhere } from './tvCodes';
 import { sitePrefix } from './limits';
@@ -782,6 +785,18 @@ export class AccountsDO extends DurableObject<Env> {
       case '/account-stats': {
         if ((b.operatorIds !== null && !isIdList(b.operatorIds, STATS_OPERATORS_MAX)) || !isIdList(b.trusted, STATS_TRUSTED_MAX)) return error(400, 'bad_request');
         return json(s.accountStats(b.operatorIds, b.trusted, now));
+      }
+      case '/dev-signin': {
+        // The Worker reaches this only through mail.ts isDevAuth (a loopback host); the object
+        // refuses it too wherever DEV_AUTH is not '1', as an unknown path (production never sets it).
+        if (this.env.DEV_AUTH !== '1') return error(404, 'not_found');
+        const refresh = grantOf(b.refresh);
+        if (typeof b.name !== 'string' || refresh === null) return error(400, 'bad_request');
+        const r = s.devSignIn(b.name, { ...refresh, kind: 'web' }, now);
+        if (r === 'bad_name') return error(400, 'bad_name', DEV_NAME_PROBLEM);
+        if (r === 'banned') return error(403, 'banned', 'Cuenta suspendida');
+        if (r === 'taken') return error(409, 'email_taken');
+        return json(r);
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');
