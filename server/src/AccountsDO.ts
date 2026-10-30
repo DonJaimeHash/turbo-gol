@@ -57,6 +57,9 @@
  *                                                                     left and the session is below the account's ceiling)
  *   POST /rename          { userId, username }                       -> UserRef | 409 taken | 429 too_soon
  *   GET  /me?userId=                                                 -> MeInfo | 404
+ *   GET  /pw-labels                                                  -> { ok } (this code keeps a password record's
+ *                                                                     pw_v and pw_kid: the Worker peppers a record only
+ *                                                                     then; an object of before answers 404)
  *   POST /ranked-check    { userId, playlists }                      -> RankedCheck
  *   POST /ranked-lock     { matchId, region, userIds, until }
  *   POST /ranked-result   RankedResultInput                          -> { ok, applied }
@@ -340,6 +343,9 @@ export class AccountsDO extends DurableObject<Env> {
   private get(url: URL, now: number): Response {
     const p = url.searchParams;
     switch (url.pathname) {
+      case '/pw-labels':
+        // This code stores a password record's pw_v and pw_kid as the Worker made them (accountRoutes.ts storeEnv).
+        return json({ ok: true });
       case '/me': {
         const me = this.store.me(p.get('userId') ?? '', now);
         return me ? json(me) : error(404, 'no_user');

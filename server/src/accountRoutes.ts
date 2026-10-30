@@ -105,7 +105,8 @@
  * A page of before the current key sends only the legacy one, which is never stored as current. The
  * server stores PBKDF2-SHA256(HMAC-SHA256(PASSWORD_PEPPER, clientKey), random salt, 100,000) — the
  * Workers WebCrypto iteration ceiling — (users.pw_kid 'p1'), or without the HMAC where the secret
- * is not set (pw_kid ''), and re-hashes a record of another pepper at its next sign-in. Hashing
+ * is not set, or for a legacy key, or while the AccountsDO cannot keep the label (pw_kid ''; storeEnv),
+ * and re-hashes a current record of another pepper at its next sign-in. Hashing
  * happens here, in parallel isolates, and the single AccountsDO only stores and compares rows.
  * Nothing logs a request body or a password field (server/test/no-secret-logs.test.mjs checks it).
  *
@@ -237,11 +238,15 @@ export async function serverHash(clientKey: string, saltHex: string, iter: numbe
 
 /**
  * A record to store for `clientKey`: `v` 1 for the legacy key (account.ts legacyPasswordKey), 2 for
- * the current one (passwordKey); with this deployment's pepper when it has one (pw_kid 'p1').
+ * the current one (passwordKey). A current record gets this deployment's pepper when it has one
+ * (pw_kid 'p1'); a legacy one never does (pw_kid ''), so every build agrees on what it is: a build
+ * of before (a rollback) writes unpeppered legacy records and leaves pw_kid as it was, and
+ * provePassword reads a legacy record without a pepper whatever its pw_kid says. The routes that
+ * store one take their env from storeEnv: no pepper until the AccountsDO keeps a record's labels.
  */
 export async function newPasswordRecord(clientKey: string, v: 1 | 2 = 1, env: PepperEnv = {}): Promise<PasswordRecord> {
   const salt = hex(randomBytes(16));
-  const kid = currentKid(env);
+  const kid = v === 2 ? currentKid(env) : '';
   return { hash: await serverHash(clientKey, salt, SERVER_KDF_ITERATIONS, kid === '' ? null : (env.PASSWORD_PEPPER as string)), salt, iter: SERVER_KDF_ITERATIONS, v, kid };
 }
 
@@ -294,7 +299,9 @@ function pwVOf(cred: Credentials): number {
  * time is the same whatever the record: for a legacy record it is a real check of the current key.
  * That one passes only for a current key stored under pw_v 1, which an AccountsDO still on the
  * code of before writes in the minutes of a deploy (its sign-up, recovery and password change label
- * every record legacy): its owner still signs in, and the sign-in re-keys it under the right label.
+ * every record legacy, and storeEnv sends it none with a pepper): its owner still signs in, and the
+ * sign-in re-keys it under the right label. A legacy record is read without a pepper, both stages:
+ * none is ever written with one, and a build of before (a rollback) leaves a stale pw_kid on it.
  */
 export async function provePassword(env: PepperEnv, cred: Credentials, proof: PasswordProof): Promise<boolean> {
   const pwV = pwVOf(cred);
@@ -306,24 +313,40 @@ export async function provePassword(env: PepperEnv, cred: Credentials, proof: Pa
     if (both) await dummyStage(filler, env);
     return false;
   }
-  if (await verifyPassword(key, cred, env)) return true;
+  const rec = pwV === 1 ? { ...cred, kid: '' } : cred;
+  if (await verifyPassword(key, rec, env)) return true;
   if (!both) return false;
-  if (pwV === 1) return verifyPassword(proof.v2 as string, cred, env);
+  if (pwV === 1) return verifyPassword(proof.v2 as string, rec, env);
   await dummyStage(filler, env);
   return false;
 }
 
 /**
  * After a successful proof, what to store again, or null: a legacy record becomes the current
- * key's when the proof carries it (the re-key, §3.10), and a record of another pepper than this
- * deployment's is re-hashed with it (pw_kid '' once PASSWORD_PEPPER is set).
+ * key's when the proof carries it (the re-key, §3.10), and a current record of another pepper than
+ * this deployment's is re-hashed with it (pw_kid '' once PASSWORD_PEPPER is set). A legacy record
+ * without the current key in the proof stays as it is (never peppered).
  */
 export async function rekeyFor(env: PepperEnv, cred: Credentials, proof: PasswordProof): Promise<PasswordRecord | null> {
-  const pwV = pwVOf(cred);
-  if (pwV === 1 && proof.v2 !== undefined) return newPasswordRecord(proof.v2, 2, env);
-  if ((cred.kid ?? '') === currentKid(env)) return null;
-  const key = pwV === 2 ? proof.v2 : proof.v1;
-  return key === undefined ? null : newPasswordRecord(key, pwV === 2 ? 2 : 1, env);
+  if (proof.v2 === undefined) return null;
+  if (pwVOf(cred) === 1) return newPasswordRecord(proof.v2, 2, env);
+  return (cred.kid ?? '') === currentKid(env) ? null : newPasswordRecord(proof.v2, 2, env);
+}
+
+/**
+ * The env a route makes a record to store with (a sign-up, a recovery, a password change, a
+ * rename's re-key): this deployment's, its pepper with it, when the AccountsDO has just said that
+ * it keeps a record's labels (GET /pw-labels, this code's); {} otherwise. An object on the code of
+ * before (the minutes of a deploy, the #71 case, or of a rollback) stores every record as pw_v 1 and
+ * pw_kid '', so a record it gets is made without the pepper: that '' is then true, and
+ * provePassword's second stage reads the current key it calls legacy. Either order of deploying
+ * this code and setting PASSWORD_PEPPER is safe. Asked at every such write (they are rare): a yes
+ * kept for longer could outlive the object's code in a rollback.
+ */
+async function storeEnv(env: Env): Promise<PepperEnv> {
+  const r = await accountsCall(env, '/pw-labels');
+  await r.text().catch(() => '');
+  return r.ok ? env : {};
 }
 
 /** 'XXXX-XXXX' (40 bits each). */
@@ -595,7 +618,7 @@ async function register(c: RouteContext): Promise<Response> {
   const refresh = newRefreshToken();
   const r = await accountsJson<UserRef>(c.env, '/register', {
     username: b.username,
-    pw: await newPasswordRecord(nk.key, nk.v, c.env),
+    pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)),
     recovery: await Promise.all(codes.map(recoveryCodeHash)),
     refresh: await grantFor(refresh, c.request),
   });
@@ -667,6 +690,7 @@ async function login(c: RouteContext): Promise<Response> {
   if (blocked !== null) return blocked;
   const chk = await checkPassword(c, b.username, proof, { signIn: true }, true);
   if (!chk.ok) return chk.res;
+  // This deployment's env, not storeEnv's: an AccountsDO of before ignores a sign-in's `rekey`.
   const rekey = await rekeyFor(c.env, chk.cred, proof);
   const refresh = newRefreshToken();
   const fin = await accountsJson<UserRef>(c.env, '/auth-finish', {
@@ -729,7 +753,7 @@ async function recover(c: RouteContext): Promise<Response> {
   const r = await accountsJson<UserRef & { codesLeft: number }>(c.env, '/recover', {
     username: b.username,
     code: await recoveryCodeHash(b.code),
-    pw: await newPasswordRecord(nk.key, nk.v, c.env),
+    pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)),
     refresh: await grantFor(refreshTok, c.request),
     ip: ipOf(c.request),
     device,
@@ -808,7 +832,7 @@ async function changePassword(c: RouteContext): Promise<Response> {
   }
   const token = cookieOf(c.request, REFRESH_COOKIE);
   // A change signs the other devices out (the old password may have leaked); a first password does not.
-  const r = await accountsCall(c.env, '/password', { userId: s.sub, pw: await newPasswordRecord(nk.key, nk.v, c.env), keep: token ? await sha256Hex(token) : undefined, signOutOthers: me.data.hasPassword, ...(proved !== undefined ? { proved } : {}) });
+  const r = await accountsCall(c.env, '/password', { userId: s.sub, pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)), keep: token ? await sha256Hex(token) : undefined, signOutOthers: me.data.hasPassword, ...(proved !== undefined ? { proved } : {}) });
   return r.ok ? json({ ok: true }) : pass(r);
 }
 
@@ -861,8 +885,8 @@ async function rename(c: RouteContext): Promise<Response> {
     legacy = pwVOf(chk.cred) === 1;
     if (legacy) {
       if (proof.v2 === undefined && !isClientKey(b?.newPassword)) return passwordRequired();
-      pw = proof.v2 !== undefined ? await newPasswordRecord(proof.v2, 2, c.env) : await newPasswordRecord(b?.newPassword as string, 1, c.env);
-    } else pw = await rekeyFor(c.env, chk.cred, proof);
+      pw = proof.v2 !== undefined ? await newPasswordRecord(proof.v2, 2, await storeEnv(c.env)) : await newPasswordRecord(b?.newPassword as string, 1);
+    } else pw = await rekeyFor(await storeEnv(c.env), chk.cred, proof);
   }
   const r = await accountsJson<UserRef>(c.env, '/rename', { userId: s.sub, username: b?.username });
   if (!r.ok) return pass(r.res);

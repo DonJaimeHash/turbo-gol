@@ -62,7 +62,7 @@ export interface Env {
   /**
    * Secret, optional: the password pepper (accountRoutes.ts serverHash), 32 random bytes as text
    * (`openssl rand -hex 32`), at least 32 characters. Set once and never rotated or removed: every
-   * password stored after it (users.pw_kid 'p1') checks only with it. Unset (a fork, dev, tests):
+   * current-key password stored after it (users.pw_kid 'p1') checks only with it. Unset (a fork, dev, tests):
    * no pepper (pw_kid ''), and each such password is re-hashed with it at its next sign-in.
    */
   PASSWORD_PEPPER?: string;
