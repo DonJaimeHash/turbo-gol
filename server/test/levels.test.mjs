@@ -286,12 +286,16 @@ test('pepper: a record of before it (pw_kid \'\') is re-hashed at its next sign-
   assert.deepEqual([row(obj, leo.id).pw_v, row(obj, leo.id).pw_kid], [2, 'p1'], 'a legacy record: re-keyed and peppered in one step');
 });
 
-test('pepper: the dummy stage (an unknown username, an account without a password, a wrong one) runs exactly a real record\'s stage: the HMAC of the key with the pepper and PBKDF2 at 100,000 over 16 bytes, twice for a proof with both keys whatever the record', async () => {
+test('pepper: the dummy stage (an unknown username, an account without a password, a wrong one, an account with a verified email even with its right password) runs exactly a real record\'s stage: the HMAC of the key with the pepper and PBKDF2 at 100,000 over 16 bytes, twice for a proof with both keys whatever the record', async () => {
   const { env, obj } = makeEnv({ PASSWORD_PEPPER: PEPPER });
   const ip = ips();
   const k = await keysOf('Real');
   obj.store.register('Real', await A.newPasswordRecord(k.v2, 2, env), [], H('1'), Date.now());
   obj.store.register('Viejo', await A.newPasswordRecord(k.v1, 1, env), [], H('2'), Date.now());
+  // An account with a verified email signs in by email: the username route never checks its password.
+  const vera = await keysOf('Vera');
+  const veraId = obj.store.register('Vera', await A.newPasswordRecord(vera.v1, 1, env), [], H('3'), Date.now()).userId;
+  assert.equal(obj.store.claimEmail(veraId, 'vera@example.org', 'mail', Date.now()), 'ok');
   const o = await oauth(env, 'discord', 'd-solo', { ip: ip(9) });
   const oauthName = (await refresh(env, o.rt, ip(9))).json.name;
   const stored = obj.store.credentials('Real');
@@ -305,13 +309,13 @@ test('pepper: the dummy stage (an unknown username, an account without a passwor
     return derive.call(this, alg, key, len);
   };
   subtle.sign = async function (alg, key, data) {
-    if (hex(data) === WRONG) seen.push('hmac(key)');
+    if ([WRONG, vera.v1, vera.v2].includes(hex(data))) seen.push('hmac(key)');
     return sign.call(this, alg, key, data);
   };
   try {
-    const stage = async (username) => {
+    const stage = async (username, keys = { password: WRONG, passwordV2: WRONG }) => {
       seen = [];
-      const r = await login(env, { username, password: WRONG, passwordV2: WRONG }, ip(seen.length));
+      const r = await login(env, { username, ...keys }, ip(seen.length));
       assert.deepEqual([r.status, r.json.error], [401, 'bad_credentials'], username);
       return seen.filter((s) => s !== 'pbkdf2:200000:0');
     };
@@ -320,6 +324,8 @@ test('pepper: the dummy stage (an unknown username, an account without a passwor
     assert.deepEqual(await stage('Viejo'), real, 'a legacy record: both keys checked');
     assert.deepEqual(await stage('nadie-existe'), real, 'an unknown username');
     assert.deepEqual(await stage(oauthName), real, 'an account without a password');
+    assert.deepEqual(await stage('Vera', { password: vera.v1, passwordV2: vera.v2 }), real, 'a verified email and its right password: no check, the same two stages (review)');
+    assert.deepEqual(await stage('Vera'), real, 'and a wrong one');
   } finally {
     subtle.deriveBits = derive;
     subtle.sign = sign;

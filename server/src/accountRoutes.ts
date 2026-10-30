@@ -636,14 +636,15 @@ async function checkPassword(c: RouteContext, username: string, proof: PasswordP
     await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, charged: true, ...as });
     return { ok: false, res: error(401, 'bad_credentials', BAD_CREDENTIALS) };
   };
-  if (!begin.data.found) {
-    // The stages of an account without a password: the same time as any refusal.
+  // An unknown username, and an account with a verified email at the username routes (it signs in by
+  // email): its password is never checked here, so neither the answer nor the time says whether it
+  // was right. The stages of an account without a password: the same time as any refusal.
+  const cred = begin.data as Credentials;
+  if (!begin.data.found || (legacyOnly && cred.emailVerified)) {
     await provePassword(c.env, { userId: '', username, banned: false, pwV: 0, emailVerified: false }, proof);
     return failed();
   }
-  const cred = begin.data as Credentials;
-  const good = await provePassword(c.env, cred, proof);
-  if (!good || (legacyOnly && cred.emailVerified)) return failed();
+  if (!(await provePassword(c.env, cred, proof))) return failed();
   if (cred.banned) return { ok: false, res: error(403, 'banned', 'Cuenta suspendida') };
   // A session's own check proved the password: its charge goes back now (a sign-in's at its finish).
   if ('account' in who) await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: true, charged: true, ...as });
