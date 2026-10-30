@@ -626,10 +626,14 @@ const BAD_CREDENTIALS = 'Usuario o contraseña incorrectos';
 async function checkPassword(c: RouteContext, username: string, proof: PasswordProof, who: PasswordChecker, legacyOnly = false): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
   // A sign-in also says whether this browser signed in to the account before (its device cookie).
   const as = 'account' in who ? { account: who.account } : { device: await deviceOf(c.env, c.request) };
-  const begin = await accountsJson<{ found: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request), ...as });
+  // `charge`: this check counts as a failure as it starts, in the step that tests the locks, so a
+  // burst of requests in flight at once gets no more checks than the counters let through; a
+  // success gives it back (`charged` at the finish).
+  const begin = await accountsJson<{ found: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request), ...as, charge: true });
   if (!begin.ok) return { ok: false, res: pass(begin.res) };
   const failed = async (): Promise<{ ok: false; res: Response }> => {
-    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, ...as });
+    // Counted at the begin already; an AccountsDO of before (the minutes of a deploy) counts it here.
+    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, charged: true, ...as });
     return { ok: false, res: error(401, 'bad_credentials', BAD_CREDENTIALS) };
   };
   if (!begin.data.found) {
@@ -641,6 +645,8 @@ async function checkPassword(c: RouteContext, username: string, proof: PasswordP
   const good = await provePassword(c.env, cred, proof);
   if (!good || (legacyOnly && cred.emailVerified)) return failed();
   if (cred.banned) return { ok: false, res: error(403, 'banned', 'Cuenta suspendida') };
+  // A session's own check proved the password: its charge goes back now (a sign-in's at its finish).
+  if ('account' in who) await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: true, charged: true, ...as });
   return { ok: true, cred };
 }
 
@@ -670,6 +676,7 @@ async function login(c: RouteContext): Promise<Response> {
     refresh: await grantFor(refresh, c.request),
     device: await deviceOf(c.env, c.request),
     proved: chk.cred.hash,
+    charged: true,
     ...(rekey !== null ? { rekey } : {}),
   });
   if (!fin.ok) return pass(fin.res);
@@ -713,7 +720,7 @@ async function recover(c: RouteContext): Promise<Response> {
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || typeof b.code !== 'string' || b.code.length > 32 || nk === null) return error(400, 'bad_request');
   const blocked = await c.antiBot(b.turnstileToken);
   if (blocked !== null) return blocked;
-  // The same counters as a sign-in's (AccountsDO /recover checks and counts them again).
+  // The same counters as a sign-in's, only asked here (no charge): AccountsDO /recover tests and counts them in one step.
   const device = await deviceOf(c.env, c.request);
   const begin = await accountsJson<unknown>(c.env, '/auth-begin', { username: b.username, ip: ipOf(c.request), device });
   if (!begin.ok) return pass(begin.res);

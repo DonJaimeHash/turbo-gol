@@ -5,10 +5,19 @@
  * MatchDO reports ranked matches; the matchmaker never talks to it (the Worker passes ratings in).
  *
  *   POST /register        { username, pw, recovery, refresh }        -> UserRef | 409 username_taken
- *   POST /auth-begin      { username, ip, account?, device? }        -> Credentials | { found: false } | 429 throttled
- *   POST /auth-finish     { username, ip, account?, device?, ok: false } -> { ok: false } (one failure counted)
- *                         { userId, username, ip, device?, ok: true, refresh, proved, rekey? } -> UserRef (signed in
- *                         at level 2, method 'legacy') | 401 bad_credentials (the password changed meanwhile)
+ *   POST /auth-begin      { username, ip, account?, device?, charge? } -> Credentials | { found: false } | 429 throttled
+ *   POST /auth-finish     { username, ip, account?, device?, ok: false, charged? } -> { ok: false } (one failure
+ *                         counted, unless the begin charged it)
+ *                         { username, ip, account, ok: true, charged } -> { ok: true } (a password proved behind
+ *                         a session: its 'pa:' counter starts again)
+ *                         { userId, username, ip, device?, ok: true, refresh, proved, rekey?, charged? } -> UserRef
+ *                         (signed in at level 2, method 'legacy') | 401 bad_credentials (the password changed meanwhile)
+ *     `charge`: the Worker is about to check a password, and that check counts as a failure now, in
+ *     the same synchronous step as the test of the locks: requests in flight at once never get more
+ *     checks than a counter lets through (a burst). `charged` at the finish: so counted already; a
+ *     success clears the pair's and who's counters and gives the network's and the /48's back. A
+ *     Worker of before (the minutes of a deploy) sends neither, and its failure counts at the finish.
+ *     The Worker's recovery only asks (no charge): /recover tests and counts in one step itself.
  *     `account`: the password is checked behind a session of that account (the 'pa:' counter);
  *     `device`: { user, id } of this browser's device cookie (accountRoutes.ts deviceOf, its MAC
  *     checked): it signed in to that account before (the 'd:' counter, not the username's cap).
@@ -99,7 +108,9 @@
  *                        password sign-in pauses for 15 minutes, doubling to an hour (OAuth still works);
  *                        a browser with the account's device cookie (set at each password sign-in)
  *                        counts on its own 'd:' counter instead, which locks like a pair
- * A success clears the pair, the username and the device's counters. A password checked behind a
+ * Each check counts as it starts (/auth-begin `charge`, in the step that tests the locks), so checks
+ * in flight at once never pass a cap; a success gives the network's and the /48's charge back, and
+ * clears the pair, the username and the device's counters. A password checked behind a
  * session of the account (no Turnstile token to ask) counts only per account ('pa:'), locked like a
  * pair from any network. The daily alarm prunes the rows that are over (accountStore.ts prune).
  */
@@ -378,11 +389,11 @@ export class AccountsDO extends DurableObject<Env> {
    * a browser with the account's device cookie on its 'd:' counter, anyone else on the username's.
    * Async (the HMACs) and done before any read, so the reads and writes after it stay atomic.
    */
-  private async checkKeys(username: string, ip: unknown, b: Record<string, unknown>): Promise<{ keys: ThrottleKey[]; clear: string[] }> {
+  private async checkKeys(username: string, ip: unknown, b: Record<string, unknown>): Promise<{ keys: ThrottleKey[]; clear: string[]; account: boolean }> {
     const R = THROTTLE_RULES;
     if (typeof b.account === 'string' && b.account.length > 0 && b.account.length <= 64) {
       const pa = await this.throttleKey('pa', b.account);
-      return { keys: [{ key: pa, rule: R.pair }], clear: [pa] };
+      return { keys: [{ key: pa, rule: R.pair }], clear: [pa], account: true };
     }
     const user = usernameKey(username);
     const addr = typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? ip : '';
@@ -397,7 +408,7 @@ export class AccountsDO extends DurableObject<Env> {
     if (site !== null) keys.push({ key: await this.throttleKey('w', site), rule: R.site });
     const clear = [pair, who];
     if (known !== null) clear.push(await this.throttleKey('u', user));
-    return { keys, clear };
+    return { keys, clear, account: false };
   }
 
   /** This browser's device id when its device cookie is one of the account `username` names (it signed in there before); null otherwise. */
@@ -422,6 +433,25 @@ export class AccountsDO extends DurableObject<Env> {
     this.store.throttleWrite(next);
   }
 
+  /**
+   * A charged check that proved the password: one failure taken back from each of `keys` (a
+   * network's, a /48's), and a lock its count no longer reaches with it, so successful sign-ins
+   * never use up a school's budget.
+   */
+  private refund(keys: readonly ThrottleKey[]): void {
+    const rows = this.store.throttleRows(keys.map((k) => k.key));
+    const next = new Map<string, ThrottleEntry>();
+    const gone: string[] = [];
+    for (const k of keys) {
+      const e = rows.get(k.key);
+      if (e === undefined) continue;
+      if (e.count <= 1) gone.push(k.key);
+      else next.set(k.key, { count: e.count - 1, first: e.first, lockedUntil: e.count - 1 < k.rule.free ? 0 : e.lockedUntil });
+    }
+    this.store.throttleWrite(next);
+    this.store.throttleClear(gone);
+  }
+
   private async post(path: string, request: Request, now: number): Promise<Response> {
     const b = await body<Record<string, unknown>>(request);
     if (!b) return error(400, 'bad_request');
@@ -443,27 +473,43 @@ export class AccountsDO extends DurableObject<Env> {
         const { keys } = await this.checkKeys(b.username, b.ip, b);
         const wait = this.throttled(keys, now);
         if (wait > 0) return throttledAnswer(wait);
+        // The check the Worker is about to make counts now, in this synchronous step with the test
+        // above: a burst of requests in flight at once gets no more checks than the counters allow.
+        if (b.charge === true) this.fail(keys, now);
         const c = s.credentials(b.username);
         return json(c === null ? { found: false } : { found: true, ...c });
       }
       case '/auth-finish': {
         if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
-        const { keys, clear } = await this.checkKeys(b.username, b.ip, b);
+        const { keys, clear, account } = await this.checkKeys(b.username, b.ip, b);
+        // Charged at /auth-begin: the failure is counted already (a Worker of before charges nothing).
+        const charged = b.charged === true;
+        const failure = (): void => {
+          if (!charged) this.fail(keys, now);
+        };
+        if (account) {
+          // A password proved behind a session of the account: its counter starts again. Never a sign-in.
+          if (b.ok === true) s.throttleClear(clear);
+          else failure();
+          return json({ ok: b.ok === true });
+        }
         const refresh = grantOf(b.refresh);
         const rekey = rekeyOf(b.rekey);
         if (b.ok !== true || typeof b.userId !== 'string' || refresh === null || rekey === undefined) {
-          this.fail(keys, now);
+          failure();
           return json({ ok: false });
         }
         // The hash the Worker checked must still be the account's: a password changed meanwhile wins,
         // and a re-key never writes an older password back over it.
         if (!provedStill(b, s.passwordHash(b.userId), rekey)) {
-          this.fail(keys, now);
+          failure();
           return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
         }
         const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now, { lvl: 2, method: 'legacy' }, rekey);
         if (r === null) return error(403, 'banned');
         s.throttleClear(clear);
+        // The network's and the /48's counters keep failures only: this check's charge goes back.
+        if (charged) this.refund(keys.filter((k) => !clear.includes(k.key)));
         return json(r);
       }
       case '/refresh': {

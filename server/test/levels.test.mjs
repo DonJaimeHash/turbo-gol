@@ -379,6 +379,39 @@ test('throttles: an IPv4 address gets 600 failures and an IPv6 /64 30 before the
   assert.equal(await doFail(obj, 'alumno-tarde', '203.0.113.9'), 401, 'the pause ends after 15 minutes');
 });
 
+const tallyOf = (rs) => rs.reduce((t, r) => ((t[`${r.status}:${r.json?.error ?? 'ok'}`] = (t[`${r.status}:${r.json?.error ?? 'ok'}`] ?? 0) + 1), t), {});
+
+test('throttles (review): each check counts as it starts, so a burst in flight at once gets no more than a counter lets through: one pair 5, one username 50, a session\'s own checks 5; a success gives its network\'s charge back', async () => {
+  const { env, obj } = makeEnv();
+  // 25 guesses at once on one (username, network) pair: its 5 free failures are checked, not one more.
+  await legacyAccount(obj, 'Pareja');
+  const pair = await Promise.all(Array.from({ length: 25 }, () => login(env, { username: 'Pareja', password: WRONG, passwordV2: WRONG }, '100.65.0.1')));
+  assert.deepEqual(tallyOf(pair), { '401:bad_credentials': 5, '429:throttled': 20 });
+  // 80 at once on one username, each from a network of its own: the username's 50 a day.
+  await legacyAccount(obj, 'Blanco');
+  const user = await Promise.all(Array.from({ length: 80 }, (_, i) => login(env, { username: 'Blanco', password: WRONG, passwordV2: WRONG }, `100.66.0.${i + 1}`)));
+  assert.deepEqual(tallyOf(user), { '401:bad_credentials': 50, '429:throttled': 30 });
+  // 10 at once behind a stolen session (the old password of a password change): the account's 5.
+  const ana = await legacyAccount(obj, 'Robada');
+  const s = await login(env, { username: 'Robada', password: ana.v1, passwordV2: ana.v2 }, '100.68.0.1');
+  assert.equal(s.status, 200);
+  const cookie = '__Host-tg_rt=' + cookieOf(s.raw, '__Host-tg_rt');
+  const pa = await Promise.all(Array.from({ length: 10 }, (_, i) => post(env, '/api/auth/password', { ip: `100.68.1.${i + 1}`, bearer: s.json.session, cookie, body: { oldPasswordV2: WRONG, passwordV2: H('5') } })));
+  assert.deepEqual(tallyOf(pa), { '401:bad_credentials': 5, '429:throttled': 5 });
+  // Straight at the object: begins that charge, none finished yet, on one key.
+  const headers = { [AUTH.INTERNAL_HEADER]: await AUTH.internalSecret(SECRET), 'content-type': 'application/json' };
+  const begin = () => obj.fetch(new Request('https://accounts/auth-begin', { method: 'POST', headers, body: JSON.stringify({ username: 'nadie', ip: '100.67.0.1', charge: true }) }));
+  const begun = await Promise.all(Array.from({ length: 12 }, begin));
+  assert.equal(begun.filter((r) => r.status === 200).length, 5, 'rule.free begins pass, then the lock');
+  // A success gives the network's charge back: a school address with 599 failures (each on a name
+  // of its own) lets its players sign in, and its 600th failure is still the one that pauses it.
+  for (let i = 0; i < 599; i++) assert.equal(await doFail(obj, 'typo' + i, '203.0.113.60'), 401);
+  const alumna = await legacyAccount(obj, 'Alumna');
+  for (let i = 0; i < 3; i++) assert.equal((await login(env, { username: 'Alumna', password: alumna.v1, passwordV2: alumna.v2 }, '203.0.113.60')).status, 200, 'sign-in ' + i);
+  assert.equal(await doFail(obj, 'typo-600', '203.0.113.60'), 401, 'the 600th failure');
+  assert.equal(await doFail(obj, 'typo-601', '203.0.113.60'), 429, 'then the pause');
+});
+
 // ---- request rules ------------------------------------------------------------------------------
 
 test('request rules: login and recover need a solved Turnstile check every time, before the AccountsDO hears of them', async () => {
