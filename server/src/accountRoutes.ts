@@ -85,7 +85,9 @@
  * TV, a family from before levels). A refresh keeps it and never raises it. requireFresh(c, level)
  * asks for it: a link needs 1; an unlink 1, or 2 when one way in would be left; the maintainer
  * routes (nodeRoutes.ts) always 2, which a maintainer reaches with its password only (reauth/code
- * refuses NODE_TRUSTED_OPERATORS).
+ * refuses NODE_TRUSTED_OPERATORS). Every primary sign-in of such an account (login, signin, recover,
+ * reset, the email undo, a provider's callback) and every level-2 re-authentication of it posts an
+ * ALERT line to the staff channel, with the method and the country only (maintainerAlert, §3.12).
  *   POST /api/auth/tv/start   { turnstileToken? } (no session)  -> TvStartAnswer: a TV signing in with the phone (the
  *                             Turnstile gate as POST /api/guest; 503 busy when its network holds too many codes)
  *   POST /api/auth/tv/info    Bearer (account) { code }         -> TvInfoAnswer: where that TV is (request.cf at its
@@ -167,6 +169,7 @@ import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
 import { composeMail, deliver, devMailResponse, isDevAuth, isLocalDev, linkOrigin } from './mail';
 import type { Mailer, MailMessage } from './mail';
 import { FAILURES, mailKilled } from './mailCaps';
+import { AlertHook } from './nodeAlerts';
 import { renderMail } from './mailTemplates';
 import type { MailOrder } from './accountStore';
 
@@ -729,6 +732,7 @@ async function login(c: RouteContext): Promise<Response> {
     ...(pending !== null ? { pending: pendingBody(pending) } : {}),
   });
   if (!fin.ok) return pass(fin.res);
+  maintainerAlert(c, fin.data, 'legacy');
   return signedInAnswer(c, fin.data, [refreshCookie(refresh), await deviceCookie(c.env, fin.data.userId)], linking, pending);
 }
 
@@ -797,6 +801,7 @@ async function recover(c: RouteContext): Promise<Response> {
     device,
   });
   if (!r.ok) return pass(r.res);
+  maintainerAlert(c, r.data, 'recover');
   return withCookies(json({ ...(await accountSession(c.env, r.data)), codesLeft: r.data.codesLeft }), [refreshCookie(refreshTok), await deviceCookie(c.env, r.data.userId)]);
 }
 
@@ -840,6 +845,43 @@ export function requirePrimary(c: Pick<RouteContext, 'session'>): SessionClaims 
   if (s instanceof Response) return s;
   if (s.tv === 1) return error(403, 'tv_session', 'Una TV con la sesión del teléfono no puede hacer eso: hazlo en tu teléfono');
   return s;
+}
+
+/** How a maintainer account proved itself, in its ALERT line's words: the method only, never an address. */
+const MAINTAINER_PROOF = {
+  password: 'signed in with its email and password',
+  legacy: 'signed in with its username and password',
+  recover: 'signed in with a recovery code',
+  reset: 'signed in with a password reset link',
+  undo: "signed in with an email change's undo link",
+  google: 'signed in with Google',
+  discord: 'signed in with Discord',
+  reauth: 'confirmed it is them with its password (level 2)',
+  reauthCode: 'confirmed it is them with a code by email (level 2)',
+} as const;
+export type MaintainerProof = keyof typeof MAINTAINER_PROOF;
+
+/**
+ * Every primary sign-in of a NODE_TRUSTED_OPERATORS account, and every level-2 re-authentication of
+ * one (the sign-in design's §3.12): an ALERT line in the Worker's log and on the staff channel
+ * (NODE_ALERT_WEBHOOK, nodeAlerts.ts AlertHook.audit: each one posted, none merged with another or
+ * left out by a limit), after the answer (waitUntil). It names the account, the method and the
+ * country of the request (request.cf), and never an IP or an email, so a project session in the
+ * wrong hands shows on the channel when it starts. A TV is no primary sign-in (it never reaches a
+ * maintainer route). True when the account is one of them.
+ */
+export function maintainerAlert(c: Pick<RouteContext, 'env' | 'request' | 'waitUntil'>, who: Pick<UserRef, 'userId' | 'username'>, proof: MaintainerProof): boolean {
+  if (!trustedOperatorIds(c.env).has(who.userId)) return false;
+  const line = `ALERT maintainer ${who.username} (${who.userId}) ${MAINTAINER_PROOF[proof]}, from ${geoOf(c.request).country ?? 'an unknown country'}`;
+  console.log(`[accounts] ${line}`);
+  const hook = new AlertHook({
+    url: c.env.NODE_ALERT_WEBHOOK,
+    waitUntil: c.waitUntil ?? ((p) => void p.catch(() => undefined)),
+    fetch: (url, init) => fetch(url, init),
+    log: (m) => console.warn(`[accounts] ${m}`),
+  });
+  hook.audit(line);
+  return true;
 }
 
 /**
@@ -1392,6 +1434,7 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
   }
   const cookies = [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)];
   if (st.link !== null) return redirect('/#auth=linked', cookies);
+  maintainerAlert(c, r.data, provider);
   if (pending === null) return redirect('/#auth=ok', cookies);
   // Signed in either way (§3.8): the pending identity linked, or the reason it was not.
   cookies.push(clearCookie(PENDING_COOKIE, 'Lax'));
@@ -1556,6 +1599,7 @@ async function reauth(c: RouteContext): Promise<Response> {
   const rekey = await rekeyFor(c.env, chk.cred, both ? proof : pwVOf(chk.cred) === 2 ? { v2: b.password } : { v1: b.password });
   const r = await accountsJson<UserRef>(c.env, '/reauth', { userId: s.sub, hash: await sha256Hex(token), proved: chk.cred.hash, ...(rekey !== null ? { rekey } : {}) });
   if (!r.ok) return pass(r.res);
+  maintainerAlert(c, r.data, 'reauth');
   return json(await accountSession(c.env, r.data), 200, { 'cache-control': 'no-store' });
 }
 
@@ -1775,6 +1819,7 @@ async function signin(c: RouteContext): Promise<Response> {
     ...(pending !== null ? { pending: pendingBody(pending) } : {}),
   });
   if (!fin.ok) return pass(fin.res);
+  maintainerAlert(c, fin.data, 'password');
   return signedInAnswer(c, fin.data, [refreshCookie(refreshTok), await deviceCookie(c.env, fin.data.userId)], linking, pending);
 }
 
@@ -1833,6 +1878,7 @@ async function reset(c: RouteContext): Promise<Response> {
   if (!r.ok) return noStore(r.res);
   sendMail(c, r.data.mail);
   const { mail: _mail, ...ref } = r.data;
+  maintainerAlert(c, ref, 'reset');
   return signedInAnswer(c, ref, [refreshCookie(refreshTok), await deviceCookie(c.env, ref.userId)], linking, pending);
 }
 
@@ -1907,6 +1953,7 @@ async function reauthCodeVerify(c: RouteContext): Promise<Response> {
   if (!token || token.length > 128) return error(401, 'no_refresh');
   const r = await accountsJson<UserRef>(c.env, '/reauth-code-verify', { userId: s.sub, attempt: proof.attempt, code: proof.code, hash: await sha256Hex(token) });
   if (!r.ok) return noStore(r.res);
+  maintainerAlert(c, r.data, 'reauthCode');
   return json(await accountSession(c.env, r.data), 200, NO_STORE);
 }
 
@@ -2046,6 +2093,7 @@ async function emailUndo(c: RouteContext): Promise<Response> {
   const refreshTok = newRefreshToken();
   const r = await accountsJson<UserRef>(c.env, '/email-undo', { token, pw: await newPasswordRecord(b.password, 2, await storeEnv(c.env)), refresh: await grantFor(refreshTok, c.request) });
   if (!r.ok) return noStore(r.res);
+  maintainerAlert(c, r.data, 'undo');
   return withCookies(json(await accountSession(c.env, r.data)), [refreshCookie(refreshTok), await deviceCookie(c.env, r.data.userId)]);
 }
 

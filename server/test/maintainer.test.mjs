@@ -271,3 +271,134 @@ test('maintainer: the store refuses to delete a NODE_TRUSTED_OPERATORS account (
   assert.equal(obj.store.deletionRefusal(project), null);
   assert.equal(obj.store.deletionRefusal(ana), 'maintainer_account');
 });
+
+// ---- the ALERT on every sign-in and level-2 re-authentication (§3.12) ------------------------------
+
+const AUTH = await import('../src/auth.ts');
+const nowS = () => Math.floor(Date.now() / 1000);
+/** The ALERT posts since `from` (their text). */
+const alertsSince = (from) => posts.slice(from).map((p) => p.content);
+/** A mail's link token of `kind` (its text part). */
+const linkIn = (m, kind) => new RegExp(`/account#${kind}=([A-Za-z0-9_-]+)`).exec(m.text)?.[1] ?? null;
+
+test('maintainer: one ALERT per sign-in of a project account (email, username, recovery code, reset link, Discord, Google), with the method and the country and never the IP, the address or the city; nothing for anyone else, a refused password or a refresh', async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', google: 'g-proyecto', discord: 'd-proyecto' });
+  // A second project account, of before: a username and a recovery code, no address.
+  const code = A.newRecoveryCode();
+  const old = obj.store.register('Viejo', await A.newPasswordRecord(KEY, 2), [await A.recoveryCodeHash(code)], 'e'.repeat(64), Date.now()).userId;
+  await account(obj, 'Ana', { email: 'ana@example.com', discord: 'd-ana' });
+  env.NODE_TRUSTED_OPERATORS = `${project},${old}`;
+  const one = async (what, run, method) => {
+    const from = posts.length;
+    const r = await run();
+    const got = alertsSince(from);
+    assert.equal(got.length, 1, `${what}: one ALERT, got ${JSON.stringify(got)}`);
+    assert.match(got[0], /^\*\*ALERT\*\* `maintainer (Proyecto|Viejo) \([0-9a-f]{16}\) signed in with /, what);
+    assert.ok(got[0].includes(method), `${what}: ${got[0]}`);
+    assert.ok(got[0].endsWith('from AR`'), `${what}: the country`);
+    for (const secret of ['198.18.', 'proyecto@example.com', '@', 'Córdoba']) assert.ok(!got[0].includes(secret), `${what}: no ${secret} in ${got[0]}`);
+    assert.deepEqual(posts.at(-1).allowed_mentions, { parse: [] }, 'no mention');
+    return r;
+  };
+  const none = async (what, run) => {
+    const from = posts.length;
+    const r = await run();
+    assert.deepEqual(alertsSince(from), [], what);
+    return r;
+  };
+  const s = await one('email', () => signin(env, 'proyecto@example.com', ip(0)), 'with its email and password');
+  assert.equal(s.status, 200);
+  await one('username', () => post(env, '/api/auth/login', { ip: ip(1), body: { username: 'Viejo', passwordV2: KEY, ...TOK } }), 'with its username and password');
+  const rec = await one('recovery code', () => post(env, '/api/auth/recover', { ip: ip(2), body: { username: 'Viejo', code, passwordV2: KEY, ...TOK } }), 'with a recovery code');
+  assert.equal(rec.status, 200, JSON.stringify(rec.json));
+  assert.equal((await post(env, '/api/auth/forgot', { ip: ip(3), body: { email: 'proyecto@example.com', lang: 'en', ...TOK } })).status, 200);
+  const token = linkIn(outbox.at(-1), 'reset');
+  assert.ok(token, 'M3 carries a reset link');
+  const reset = await one('reset link', () => post(env, '/api/auth/reset', { ip: ip(3), body: { token, password: KEY } }), 'with a password reset link');
+  assert.equal(reset.status, 200, JSON.stringify(reset.json));
+  const d = await one('Discord', () => oauth(env, 'discord', 'd-proyecto', { ip: ip(4) }), 'with Discord');
+  assert.equal(d.done.location, '/#auth=ok');
+  const g = await one('Google', () => oauth(env, 'google', 'g-proyecto', { ip: ip(5) }), 'with Google');
+  assert.equal(g.done.location, '/#auth=ok');
+  // Nothing for another account, a wrong password, or a refresh (no credential proved).
+  await none('another account', () => signin(env, 'ana@example.com', ip(6)));
+  const bad = await none('a wrong password', () => signin(env, 'proyecto@example.com', ip(7), 'e'.repeat(64)));
+  assert.equal(bad.status, 401);
+  assert.equal((await none('a refresh', () => refresh(env, d.rt, ip(4)))).status, 200);
+  // Without the webhook: the sign-in stands, the line stays in the Worker's log only, without an address either.
+  const lines = [];
+  const log = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try {
+    await none('no webhook', () => signin({ ...env, NODE_ALERT_WEBHOOK: undefined }, 'proyecto@example.com', ip(8)));
+  } finally {
+    console.log = log;
+  }
+  const ours = lines.filter((l) => l.includes('ALERT maintainer'));
+  assert.equal(ours.length, 1, JSON.stringify(lines));
+  assert.match(ours[0], /^\[accounts\] ALERT maintainer Proyecto \([0-9a-f]{16}\) signed in with its email and password, from AR$/);
+  // An unknown country is said so, not guessed.
+  const from = posts.length;
+  await req(env, 'POST', '/api/auth/signin', { ip: ip(9), body: { email: 'proyecto@example.com', password: KEY, ...TOK }, cf: null });
+  assert.deepEqual(alertsSince(from).map((c) => c.endsWith('from an unknown country`')), [true]);
+});
+
+test('maintainer: a level-2 re-authentication posts its ALERT (the password, "confirm it is you"); a provider\'s level-1 re-authentication and a TV signed in with the phone do not', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', discord: 'd-proyecto' });
+  env.NODE_TRUSTED_OPERATORS = project;
+  const o = await oauth(env, 'discord', 'd-proyecto', { ip: ip(0) });
+  const s = await refresh(env, o.rt, ip(0));
+  // Discord's "confirm it's you": level 1, no ALERT (it reaches no maintainer route).
+  let from = posts.length;
+  const re1 = await oauth(env, 'discord', 'd-proyecto', { ip: ip(0), query: '?reauth=1', cookie: '__Host-tg_rt=' + s.rt });
+  assert.equal(re1.done.location, '/#auth=reauth');
+  assert.deepEqual(alertsSince(from), []);
+  const s1 = await refresh(env, re1.rt, ip(0));
+  // The password: level 2, one ALERT.
+  from = posts.length;
+  const re2 = await post(env, '/api/auth/reauth', { ip: ip(0), bearer: s1.json.session, cookie: '__Host-tg_rt=' + s1.rt, body: { password: KEY } });
+  assert.equal(re2.status, 200, JSON.stringify(re2.json));
+  const got = alertsSince(from);
+  assert.equal(got.length, 1);
+  assert.match(got[0], /^\*\*ALERT\*\* `maintainer Proyecto \([0-9a-f]{16}\) confirmed it is them with its password \(level 2\), from AR`$/);
+  // A refused password re-authentication: nothing.
+  from = posts.length;
+  assert.equal((await post(env, '/api/auth/reauth', { ip: ip(0), bearer: s1.json.session, cookie: '__Host-tg_rt=' + s1.rt, body: { password: 'e'.repeat(64) } })).status, 401);
+  assert.deepEqual(alertsSince(from), []);
+  // A TV the phone signs in: not a primary sign-in (its scope never reaches a maintainer route).
+  from = posts.length;
+  const st = await post(env, '/api/auth/tv/start', { ip: ip(1) });
+  assert.equal(st.status, 200, JSON.stringify(st.json));
+  assert.equal((await post(env, '/api/auth/tv/confirm', { ip: ip(0), bearer: re2.json.session, body: { code: st.json.code } })).status, 200);
+  const tv = await post(env, '/api/auth/tv/poll', { ip: ip(1), body: { code: st.json.code, secret: st.json.secret } });
+  assert.equal(tv.json.state, 'approved');
+  assert.deepEqual(alertsSince(from), []);
+});
+
+// ---- the maintainer routes' gate (PR 4's, kept: §3.12 "what the code enforces") --------------------
+
+test('maintainer: /nodes/tokens and /nodes/admin/* refuse a level-1 or stale session (403 reauth_required { level: 2 }) and a TV (403 tv_session), and take level 2 from a password', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  env.NODES = { idFromName: (n) => ({ n }), get: () => ({ fetch: async () => new Response('{"ok":true,"operators":[]}', { headers: { 'content-type': 'application/json' } }) }) };
+  Object.assign(env, { NODE_REPLAYS: {}, NODE_RELEASES: {}, NODE_CONTROL_PRIVATE_KEY: 'k', NODE_CONTROL_PUBLIC_KEY: 'k', NODES_PUBLIC_BASE: ORIGIN });
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', discord: 'd-proyecto' });
+  env.NODE_TRUSTED_OPERATORS = project;
+  const routes = [['GET', '/nodes/admin/nodes'], ['GET', '/nodes/admin/account-stats'], ['POST', '/nodes/tokens']];
+  const ask = (session) => Promise.all(routes.map(([m, p]) => req(env, m, p, { ip: ip(0), bearer: session, body: m === 'POST' ? { region: 'SA' } : undefined })));
+  const session = (extra) => AUTH.signJwt(SECRET, { typ: 's', sub: project, name: 'Proyecto', iat: nowS(), exp: nowS() + 600, acct: 1, ...extra });
+  // Discord's press: level 1.
+  const viaDiscord = await refresh(env, (await oauth(env, 'discord', 'd-proyecto', { ip: ip(0) })).rt, ip(0));
+  for (const r of await ask(viaDiscord.json.session)) assert.deepEqual([r.status, r.json.error, r.json.level], [403, 'reauth_required', 2]);
+  // A password 16 minutes ago: stale (MAINTAINER_FRESH_S is 15 minutes).
+  for (const r of await ask(await session({ aat: nowS() - 16 * 60, aal: 2 }))) assert.deepEqual([r.status, r.json.error, r.json.level], [403, 'reauth_required', 2]);
+  // A TV's session, whatever its level.
+  for (const r of await ask(await session({ aat: nowS(), aal: 2, tv: 1 }))) assert.deepEqual([r.status, r.json.error], [403, 'tv_session']);
+  // A password sign-in: level 2, now.
+  const s = await signin(env, 'proyecto@example.com', ip(1));
+  for (const r of await ask(s.json.session)) assert.equal(r.status, 200, JSON.stringify(r.json));
+});
