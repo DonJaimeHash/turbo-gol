@@ -10,9 +10,11 @@
  * the opener kept).
  *
  * The phone (installTvLink): the /tv page is the game with these sheets over Inicio. The path goes
- * back to / at once (a reload is the game). Signed out: "Sign in on this phone first" with INICIAR
- * SESIÓN (PERFIL): only then is the code kept in sessionStorage (5 minutes), so the sign-in (or
- * Google's round trip) comes back to it; CANCELAR or Back there forgets it. Signed in: the code
+ * back to / at once (a reload is the game). It waits for its turn (Game.ts urlSheets: an OAuth
+ * result and its confirm sheet first). Signed out: "Sign in on this phone first" with ENTRAR CON
+ * {provider} and INICIAR SESIÓN (PERFIL); a marker { at } waits in sessionStorage (30 minutes, never
+ * the code), so any sign-in (a provider's round trip, the confirm sheet, PERFIL) comes back to the
+ * code entry; CANCELAR or Back there forgets it. Signed in: the code
  * cells, always empty: the code the TV in front of you shows is typed, never taken from the link
  * (Security 3: a link, or a QR, can come from anyone, and one tap on it would sign their TV in).
  * Then "Sign in on the TV as {name}?" with the code big, where that TV is (country, city and
@@ -30,8 +32,10 @@ import type { SheetSpec } from '../components/sheet';
 import { qrSvg } from '../components/qr';
 import { codeCells } from '../components/codecells';
 import { CODE_LENGTH, spacedCode } from './lobbyModel';
-import { isTvPath, pendingCode, timeLeft, tvDeadline, tvHashCode, tvLink, tvPlace, tvShortLink, withoutTvCode } from './tvSignInModel';
+import { isTvPath, pendingMarker, timeLeft, tvContinuation, tvDeadline, tvLink, tvPlace, tvShortLink, withoutTvCode } from './tvSignInModel';
 import { errText } from './profile';
+import { providerName } from './accountLinks';
+import type { OAuthProvider } from '../../net/account';
 import { STORAGE_PREFIX } from '../../brand';
 import { t } from '../../i18n';
 
@@ -143,11 +147,12 @@ export function openTvSignIn(menu: Menu): void {
 
 const PENDING_KEY = STORAGE_PREFIX + 'tvcode';
 
-function keep(code: string): void {
+/** "A TV waits for this phone" (sessionStorage { at }, 30 minutes): never the code, which is typed (A6). */
+function keep(): void {
   try {
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ code, at: Date.now() }));
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ at: Date.now() }));
   } catch {
-    /* private mode: the code lasts this page */
+    /* private mode: the wait lasts this page */
   }
 }
 
@@ -159,27 +164,44 @@ function forget(): void {
   }
 }
 
-function kept(): string | null {
+function kept(): boolean {
   try {
-    return pendingCode(sessionStorage.getItem(PENDING_KEY), Date.now());
+    return pendingMarker(sessionStorage.getItem(PENDING_KEY), Date.now());
   } catch {
-    return null;
+    return false;
   }
 }
 
-/** Signed out: sign in on this phone first (PERFIL; the code waits, kept for the round trip). CANCELAR or Back: `drop`. */
-export function signInFirstSheet(menu: Menu, code: string, drop: () => void): void {
+/**
+ * Signed out: sign in on this phone first, right here (the design's §3.11 step 3): ENTRAR CON
+ * {provider} for each configured provider (a round trip, the confirm sheet when the account is
+ * new) or INICIAR SESIÓN (PERFIL). The marker waits for whichever comes back. CANCELAR or Back:
+ * `drop`.
+ */
+export function signInFirstSheet(menu: Menu, drop: () => void): void {
   let signIn = false;
+  const acc = menu.host.accounts;
+  const providers = ((menu.cfg?.oauth ?? []) as OAuthProvider[]).filter((p) => p === 'google' || p === 'discord');
   menu.modal({
     title: t('tvlink.title'),
     body: h('p', null, t('tvlink.signInFirst')),
     actions: [
-      {
-        label: t('tvlink.signIn'),
-        primary: true,
+      ...providers.map((p, i) => ({
+        label: t('tvlink.signInWith', { provider: providerName(p).toUpperCase() }),
+        primary: i === 0,
         onClick: () => {
           signIn = true;
-          keep(code);
+          keep();
+          window.location.href = acc.oauthUrl(p);
+          return false;
+        },
+      })),
+      {
+        label: t('tvlink.signIn'),
+        primary: providers.length === 0,
+        onClick: () => {
+          signIn = true;
+          keep();
           queueMicrotask(() => menu.open('profile'));
           return true;
         },
@@ -275,49 +297,48 @@ export function refusedSheet(menu: Menu, e: unknown, again: () => void): void {
 }
 
 /**
- * The /tv page (and its code kept across a sign-in): the sheets above once the menus are up, after
- * the account's restore. Installed once by the Game.
+ * The /tv page (and the marker kept across a sign-in): the sheets above once the menus are up, in
+ * the arbiter's turn (`turn`, Game.ts urlSheets: an OAuth result and its confirm sheet first), after
+ * the account's restore (tvSignInModel.ts tvContinuation). Installed once by the Game.
  */
-export function installTvLink(menu: Menu): void {
+export function installTvLink(menu: Menu, turn: () => Promise<void> = () => Promise.resolve()): void {
   const acc = menu.host.accounts;
-  let waiting: string | null = null;
-  const run = async (code: string): Promise<void> => {
+  let start: boolean;
+  if (isTvPath(location.pathname)) {
+    // The link's code is dropped: it only brought the phone here (A6).
+    history.replaceState(history.state, '', '/' + location.search + withoutTvCode(location.hash));
+    start = true;
+  } else start = kept(); // back from a sign-in: a provider's round trip, the confirm sheet, PERFIL
+  if (!start) return;
+  const ask = (c: string): void => {
+    void acc.tvInfo(c).then(
+      (info) => askSheet(menu, acc.account?.name ?? '', c, info, () => acc.tvConfirm(c), again),
+      again,
+    );
+  };
+  const again = (e: unknown): void => refusedSheet(menu, e, () => codeSheet(menu, '', ask));
+  tvContinuation({
+    turn,
     // The menus up, no other sheet (a join link's): as installJoinLink waits.
-    while (!menu.visible || menu.modalOpen) await new Promise((r) => setTimeout(r, 400));
-    if (!acc.signedIn) await acc.restore().catch(() => null);
-    if (!acc.signedIn) {
-      waiting = code;
-      signInFirstSheet(menu, code, () => {
-        waiting = null;
+    ready: async () => {
+      while (!menu.visible || menu.modalOpen) await new Promise((r) => setTimeout(r, 400));
+    },
+    signedIn: () => acc.signedIn,
+    restore: () => acc.restore(),
+    codeEntry: () => {
+      // Signed in: nothing waits for a round trip any more (a reload does not bring the sheet back).
+      forget();
+      // The code is typed, never the link's: whoever sent the link (or the QR) picked its code, and
+      // only the TV in front of the player shows the right one.
+      codeSheet(menu, '', ask);
+    },
+    signInFirst: (dropped) => {
+      keep();
+      signInFirstSheet(menu, () => {
+        dropped();
         forget();
       });
-      return;
-    }
-    // Signed in: nothing waits for a round trip any more (a reload does not bring the sheet back).
-    forget();
-    const again = (e: unknown): void => refusedSheet(menu, e, () => codeSheet(menu, '', ask));
-    const ask = (c: string): void => {
-      void acc.tvInfo(c).then(
-        (info) => askSheet(menu, acc.account?.name ?? '', c, info, () => acc.tvConfirm(c), again),
-        again,
-      );
-    };
-    // The code is typed, never the link's: whoever sent the link (or the QR) picked its code, and
-    // only the TV in front of the player shows the right one (the link's code only brought them here).
-    codeSheet(menu, '', ask);
-  };
-  // Signed in on PERFIL while the code waited: back to it.
-  acc.subscribe(() => {
-    if (waiting === null || !acc.signedIn) return;
-    const code = waiting;
-    waiting = null;
-    void run(code);
+    },
+    subscribe: (fn) => void acc.subscribe(fn),
   });
-  let code: string | null;
-  if (isTvPath(location.pathname)) {
-    code = tvHashCode(location.hash) ?? '';
-    history.replaceState(history.state, '', '/' + location.search + withoutTvCode(location.hash));
-    forget();
-  } else code = kept(); // back from PERFIL's sign-in by Google or Discord
-  if (code !== null) void run(code);
 }

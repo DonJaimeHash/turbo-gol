@@ -89,16 +89,17 @@ test('/tv: the link carries the code in the hash only; a flag is no code; the ha
   assert.equal(M.withoutTvCode('#superlow'), '#superlow');
 });
 
-test('/tv: the countdown; a code kept for 5 minutes across a sign-in (an empty one: the page without a code)', () => {
+test('/tv: the countdown; the marker kept for 30 minutes across a sign-in, { at } only (the code is always typed)', () => {
   assert.equal(M.timeLeft(300_000, 0), '5:00');
   assert.equal(M.timeLeft(61_500, 0), '1:02');
   assert.equal(M.timeLeft(9_000, 0), '0:09');
   assert.equal(M.timeLeft(0, 5), '0:00');
   const at = 1_000_000;
-  assert.equal(M.pendingCode(JSON.stringify({ code: 'ABC234', at }), at + 1000), 'ABC234');
-  assert.equal(M.pendingCode(JSON.stringify({ code: '', at }), at + 1000), '');
-  assert.equal(M.pendingCode(JSON.stringify({ code: 'ABC234', at }), at + M.PENDING_MS + 1), null, 'stale');
-  for (const raw of [null, '{', '"x"', JSON.stringify({ code: 'ABCO23', at }), JSON.stringify({ code: 5, at }), JSON.stringify({ code: 'ABC234', at: at + 5000 })]) assert.equal(M.pendingCode(raw, at), null, String(raw));
+  assert.equal(M.PENDING_MS, 30 * 60_000, 'a sign-in, a provider round trip, the confirm sheet, while the TV renews its code');
+  assert.equal(M.pendingMarker(JSON.stringify({ at }), at + 1000), true);
+  assert.equal(M.pendingMarker(JSON.stringify({ code: 'ABC234', at }), at + 1000), true, 'a marker of before still waits (its code is never read)');
+  assert.equal(M.pendingMarker(JSON.stringify({ at }), at + M.PENDING_MS + 1), false, 'stale');
+  for (const raw of [null, '{', '"x"', JSON.stringify({ at: 'x' }), JSON.stringify({ at: at + 5000 })]) assert.equal(M.pendingMarker(raw, at), false, String(raw));
 });
 
 test('/tv: a TV whose clock is minutes off the server still gets its code\'s whole life (counted on its own clock from ttlMs)', () => {
@@ -112,9 +113,9 @@ test('/tv: a TV whose clock is minutes off the server still gets its code\'s who
   assert.equal(M.timeLeft(until, t0), '5:00');
   assert.equal(M.timeLeft(until, t0 + 299_000), '0:01');
   assert.ok(t0 + 299_999 < until && t0 + 300_000 >= until);
-  assert.equal(M.tvDeadline(3_600_000, 0), M.PENDING_MS, 'never longer than a code\'s life');
+  assert.equal(M.tvDeadline(3_600_000, 0), M.CODE_LIFE_MAX_MS, 'never longer than a code\'s life');
   assert.equal(M.tvDeadline(-5, 0), 0);
-  assert.equal(M.tvDeadline(Number.NaN, 0), M.PENDING_MS);
+  assert.equal(M.tvDeadline(Number.NaN, 0), M.CODE_LIFE_MAX_MS);
 });
 
 test('AccountClient: tvStart, tvPoll pending then approved (adopted only by signInWith), tvConfirm with the Bearer', async () => {

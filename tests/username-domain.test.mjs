@@ -51,8 +51,10 @@ test('the refusal has its text in both languages', () => {
   }
 });
 
-test('an OAuth display name never becomes a web-address username', () => {
-  const src = readFileSync(new URL('../server/src/accountStore.ts', import.meta.url), 'utf8');
-  const body = src.slice(src.indexOf('export function usernameFromDisplay'));
-  assert.match(body.slice(0, body.indexOf('\n}\n')), /looksLikeDomain\(s\)\) s = s\.replace\(\/\\\.\/g, '_'\)/);
+test('an OAuth display name never becomes a username (sign-in PR 6): no name is derived, and the confirm step checks the name the player typed with these rules', () => {
+  const store = readFileSync(new URL('../server/src/accountStore.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(store, /usernameFromDisplay/);
+  const routes = readFileSync(new URL('../server/src/accountRoutes.ts', import.meta.url), 'utf8');
+  const create = routes.slice(routes.indexOf('async function pendingCreate'));
+  assert.match(create.slice(0, create.indexOf('\n}\n')), /usernameProblem\(b\.username\)/);
 });

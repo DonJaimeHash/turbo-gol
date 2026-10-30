@@ -53,6 +53,7 @@ import { createAndShare } from './lobby';
 import { spacedCode } from './lobbyModel';
 import { FORMATS, MODE_TABS, NET_PICKS, actionKind, botsCountdown, botsSegments, countShown, formatOf, isModeTab, modesOf, queueNet, stepTab } from './modesModel';
 import type { ActionKind, Format, ModeTab, NetPick } from './modesModel';
+import { dropDetour, keepDetour } from './accountLinksModel';
 
 /** The bots countdown's bar (as drawn). */
 const SEGMENTS = 18;
@@ -233,6 +234,8 @@ export function modesScreen(menu: Menu): Screen {
         break;
       case 'signIn':
         waitSignIn = true;
+        // Kept across a provider's round trip too (sessionStorage): the sign-in comes back to this tab.
+        keepDetour({ screen: 'modes', tab });
         menu.open('profile');
         return;
       case 'banned':
@@ -436,6 +439,7 @@ export function modesScreen(menu: Menu): Screen {
   acc.subscribe(() => {
     if (!waitSignIn || !acc.signedIn) return;
     waitSignIn = false;
+    dropDetour();
     if (menu.top()?.id === 'profile') menu.back();
   });
 
@@ -455,6 +459,8 @@ export function modesScreen(menu: Menu): Screen {
     },
     show: () => {
       shown = true;
+      // Back here (from PERFIL, or the sign-in's return): no detour waits any more.
+      dropDetour();
       aiMode = host.mode;
       aiDifficulty = host.difficulty;
       lastTab = null;

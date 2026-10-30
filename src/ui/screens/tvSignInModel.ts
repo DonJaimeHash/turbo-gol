@@ -1,7 +1,7 @@
 /**
  * The pure part of the TV's sign-in with the phone (screens/tvSignIn.ts; tests/tv-signin.test.mjs):
- * the /tv page's link and how its code rides in the hash, the countdown, the code kept across a
- * sign-in's round trip. No DOM.
+ * the /tv page's link and how its code rides in the hash, the countdown, the marker kept across a
+ * sign-in's round trip, and the phone's continuation after it. No DOM.
  */
 import { CODE_ALPHABET, CODE_LENGTH } from './lobbyModel';
 import type { TvInfoAnswer } from '../../net/account';
@@ -50,8 +50,15 @@ export function timeLeft(until: number, now: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/** A code kept for after a sign-in (sessionStorage, JSON { code, at }) lasts this long, a TV code's life. */
-export const PENDING_MS = 5 * 60_000;
+/**
+ * The phone's "a TV is waiting" marker (sessionStorage, JSON { at }: never the code, which is always
+ * typed, A6) lasts this long: a sign-in on the phone, a provider's round trip, the confirm sheet,
+ * and an account created with email while the TV renews its code (about 28 minutes).
+ */
+export const PENDING_MS = 30 * 60_000;
+
+/** The longest life a TV counts down for one code (the server's is 4 minutes). */
+export const CODE_LIFE_MAX_MS = 5 * 60_000;
 
 /**
  * When a TV's code ends on the TV's own clock (`now`: performance.now()): its life from the start
@@ -60,8 +67,9 @@ export const PENDING_MS = 5 * 60_000;
  * tv_code_expired stays the authority.
  */
 export function tvDeadline(ttlMs: number, now: number): number {
-  return now + Math.max(0, Math.min(Number.isFinite(ttlMs) ? ttlMs : PENDING_MS, PENDING_MS));
+  return now + Math.max(0, Math.min(Number.isFinite(ttlMs) ? ttlMs : CODE_LIFE_MAX_MS, CODE_LIFE_MAX_MS));
 }
+
 
 /**
  * Where the TV is, as the phone's sheet says it before CONFIRMAR: "Córdoba, AR · Telecom" (city,
@@ -76,14 +84,60 @@ export function tvPlace(where: TvInfoAnswer['where']): string | null {
   return parts.length > 0 ? parts.join(' · ').replace(/[.]+$/, '') : null;
 }
 
-/** The kept code ('' = the page was open without one), null when there is none or it is stale. */
-export function pendingCode(raw: string | null, now: number): string | null {
-  if (raw === null) return null;
+/** A live marker ({ at } within PENDING_MS): a TV waits for this phone's sign-in. A marker of before (it held the code) counts too, its code never read. */
+export function pendingMarker(raw: string | null, now: number): boolean {
+  if (raw === null) return false;
   try {
-    const v = JSON.parse(raw) as { code?: unknown; at?: unknown };
-    if (typeof v.code !== 'string' || typeof v.at !== 'number' || now - v.at > PENDING_MS || now < v.at) return null;
-    return v.code === '' || tvHashCode(v.code) !== null ? v.code : null;
+    const v = JSON.parse(raw) as { at?: unknown };
+    return typeof v.at === 'number' && now - v.at <= PENDING_MS && now >= v.at;
   } catch {
-    return null;
+    return false;
   }
+}
+
+/** What the phone's /tv continuation needs (tvSignIn.ts installTvLink wires the menus and the account in). */
+export interface TvContinuationDeps {
+  /** The arbiter's turn (Game.ts urlSheets): the OAuth result and its confirm sheet go first. */
+  turn: () => Promise<void>;
+  /** The menus are up and no sheet is (a join link's, an anti-bot one). */
+  ready: () => Promise<void>;
+  signedIn: () => boolean;
+  /** The account from the refresh cookie, when the page has not restored it yet. */
+  restore: () => Promise<unknown>;
+  /** Signed in: the code entry (typed, never the link's). */
+  codeEntry: () => void;
+  /** Signed out: "sign in first"; `dropped` when it closes without a sign-in (CANCELAR, Back). */
+  signInFirst: (dropped: () => void) => void;
+  /** Every account change (a sign-in on PERFIL, the confirm sheet's CREAR, a provider's round trip). */
+  subscribe: (fn: () => void) => void;
+}
+
+/**
+ * The phone's /tv continuation, in order and once (the design's §3.11 step 3): after the steps
+ * before it (the arbiter), signed in → the code entry; signed out → "sign in first", and the next
+ * sign-in, however it happens, → the code entry. An account change while the steps before it run
+ * (the confirm sheet creating the account) starts nothing: the turn brings the code entry.
+ */
+export function tvContinuation(d: TvContinuationDeps): void {
+  let waiting = false;
+  const run = async (): Promise<void> => {
+    await d.turn();
+    await d.ready();
+    if (!d.signedIn()) await d.restore().catch(() => null);
+    if (!d.signedIn()) {
+      waiting = true;
+      d.signInFirst(() => {
+        waiting = false;
+      });
+      return;
+    }
+    waiting = false;
+    d.codeEntry();
+  };
+  d.subscribe(() => {
+    if (!waiting || !d.signedIn()) return;
+    waiting = false;
+    void run();
+  });
+  void run();
 }
