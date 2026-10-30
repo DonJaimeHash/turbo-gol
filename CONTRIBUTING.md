@@ -61,6 +61,13 @@ other committed file: a test fails if one sets it) and restart `npm run dev`. PE
 links. Both answer 404 unless `DEV_AUTH=1` and the Worker is reached on a loopback host
 (127.0.0.1, localhost) from no page or a loopback one, so they never work on a deploy.
 
+One exception, on your own network: with `TG_LAN=1` (above), Vite forwards the network's requests to
+the Worker on 127.0.0.1, so with `DEV_AUTH=1` the Worker cannot tell them from yours. A page opened on
+another device is still refused, by its Origin, but any script on the network (a curl, which sends no
+Origin, or one that forges a loopback Origin) can `POST /api/dev/signin` with any name and read
+`GET /api/dev/mail`, codes and links included. It only reaches your local database. Do not combine
+`TG_LAN=1` with `DEV_AUTH=1` on a network you do not trust.
+
 A deployed fork therefore has no way to create accounts until it brings one of its own: Cloudflare
 Email Service on its own domain (`MAIL_LIVE`, `MAIL_FROM` and `MAIL_LINK_ORIGIN`, once the email
 accounts ship), or a Discord or Google OAuth application of its own ([docs/online/ACCOUNTS.md](docs/online/ACCOUNTS.md)).

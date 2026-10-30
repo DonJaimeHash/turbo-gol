@@ -93,6 +93,14 @@ es `turbo-gol.com`, así que no funcionan aunque alguien cargara la variable. Un
 propio dominio no puede crear cuentas hasta tener Email Service en ese dominio o una aplicación de
 Discord o Google propia.
 
+Una excepción, en tu propia red: con `TG_LAN=1` (Vite abierto a la red para probar en un teléfono o
+una TV), Vite reenvía al Worker en 127.0.0.1 las peticiones que llegan de la red, así que con
+`DEV_AUTH=1` el Worker no las distingue de las tuyas. Una página abierta en otro dispositivo sigue
+rechazada por su Origin, pero cualquier script en la red (un curl, que no manda Origin, o uno que
+falsifica un Origin local) puede usar `POST /api/dev/signin` con cualquier nombre y leer
+`GET /api/dev/mail`, con sus códigos y enlaces. Solo llega a tu base de datos local. No combines
+`TG_LAN=1` con `DEV_AUTH=1` en una red en la que no confíes.
+
 ## Ranked
 
 | Tema | Decisión |

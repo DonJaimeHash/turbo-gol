@@ -8,6 +8,7 @@
 //     'dev' (the design's I1), its family at level 2 with method 'dev';
 //   - GET /api/config says auth.devSignIn only where the gate passes;
 //   - the AccountsDO refuses the path without DEV_AUTH too; no committed file sets DEV_AUTH;
+//   - TG_LAN=1's known limit (a LAN script passes through the Vite proxy) is what the docs say;
 //   - the fixture helper (helpers/accounts.mjs makeAccount) makes accounts without a password.
 // 'cloudflare:workers' and MatchDO's wasm are stubbed by the resolve hook. Run from server/: npm test
 import { test } from 'node:test';
@@ -225,6 +226,31 @@ test('open: no Origin (a curl or an agent on this machine) and any loopback page
     const r = await call(env, base, '/api/dev/signin', { body: { name: 'beto' }, origin });
     assert.equal(r.status, 200, `${base} ${origin}: ${r.text}`);
   }
+});
+
+test("TG_LAN=1 (the design's known limit, §3.15): a script on the LAN gets in through the Vite proxy, a LAN page does not, and the docs say so", async () => {
+  // A request from another device to `TG_LAN=1 npm run dev`, as the Worker receives it: Vite's proxy
+  // (changeOrigin, no xfwd) rewrites Host to 127.0.0.1:<API port> and forwards the Origin as sent.
+  const { env } = makeEnv({ DEV_AUTH: '1' });
+  for (const [what, origin, status] of [
+    ['a script on the LAN (no Origin)', undefined, 200],
+    ['a script on the LAN (a forged loopback Origin)', 'http://127.0.0.1:5173', 200],
+    ['a page opened on another device (its LAN Origin)', 'http://192.168.1.20:5173', 404],
+  ]) {
+    assert.equal((await call(env, LOCAL, '/api/dev/signin', { body: { name: 'lan' }, origin })).status, status, what);
+    assert.equal((await call(env, LOCAL, '/api/dev/mail', { method: 'GET', origin })).status, status, `${what}: the outbox`);
+  }
+  // The Worker cannot tell them apart, so the docs warn against TG_LAN=1 with DEV_AUTH=1 (if a change
+  // ever closes the gate to them, the checks above fail first: then update these paragraphs).
+  const paragraphs = (file) => readFileSync(join(ROOT, file), 'utf8').split(/\r?\n\s*\r?\n/);
+  const warns = (p) => ['TG_LAN=1', 'DEV_AUTH=1', '/api/dev/signin', '/api/dev/mail'].every((s) => p.includes(s));
+  assert.ok(paragraphs('CONTRIBUTING.md').some(warns), 'CONTRIBUTING.md: one paragraph on TG_LAN=1 with the dev routes');
+  const es = readFileSync(join(ROOT, 'docs', 'online', 'ACCOUNTS.md'), 'utf8');
+  const at = es.indexOf('### Entrada de desarrollo');
+  assert.ok(at >= 0, 'docs/online/ACCOUNTS.md: its dev sign-in section');
+  const end = es.indexOf('\n## ', at);
+  const devSection = es.slice(at, end < 0 ? undefined : end);
+  assert.ok(devSection.split(/\r?\n\s*\r?\n/).some(warns), 'docs/online/ACCOUNTS.md: the same, in its dev sign-in section');
 });
 
 test('open: the same name (any case) is the same account; a name that is no free username gets Dev and digits; a bad name is 400 before the object', async () => {
