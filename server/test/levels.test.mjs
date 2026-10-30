@@ -43,7 +43,7 @@ globalThis.fetch = async (url, init) => {
   throw new Error('BLOCKED network call in a test: ' + u);
 };
 
-const { AccountsDO, LOGIN_NET4_MAX, LOGIN_NET6_MAX, LOGIN_NET_PAUSE_MS } = await import('../src/AccountsDO.ts');
+const { AccountsDO, LOGIN_NET4_MAX, LOGIN_NET6_MAX, LOGIN_NET_PAUSE_MS, LOGIN_WIDE_MAX } = await import('../src/AccountsDO.ts');
 const A = await import('../src/accountRoutes.ts');
 const AUTH = await import('../src/auth.ts');
 const ACC = await import('../../src/net/account.ts');
@@ -362,9 +362,10 @@ async function doFail(obj, username, ip) {
   return 401;
 }
 
-test('throttles: an IPv4 address gets 600 failures and an IPv6 /64 30 before the network pause (15 minutes); a school behind one IPv4 address is not paused by a classroom of typos', async () => {
+test('throttles: an IPv4 address gets 600 failures and an IPv6 /64 the 300 of its /48 before the network pause (15 minutes); a school behind one IPv4 address is not paused by a classroom of typos', async () => {
   const { obj } = makeEnv();
-  assert.deepEqual([LOGIN_NET4_MAX, LOGIN_NET6_MAX, LOGIN_NET_PAUSE_MS], [600, 30, 15 * 60_000], 'the design\'s §2.3 caps');
+  // The design's §2.3 caps, but a /64 counts as an IPv4 address (the review: a dual-stack school is one /64), so its /48's 300 binds first.
+  assert.deepEqual([LOGIN_NET4_MAX, LOGIN_NET6_MAX, LOGIN_WIDE_MAX, LOGIN_NET_PAUSE_MS], [600, 600, 300, 15 * 60_000]);
   const t0 = Date.now();
   obj.now = () => t0;
   const tally4 = {};
@@ -374,15 +375,38 @@ test('throttles: an IPv4 address gets 600 failures and an IPv6 /64 30 before the
   }
   assert.deepEqual(tally4, { 401: 600, 429: 1 }, 'IPv4: 600 failures, then the pause');
   const tally6 = {};
-  for (let i = 0; i < 31; i++) {
+  for (let i = 0; i < 301; i++) {
     const s = await doFail(obj, 'vecino' + i, `2001:db8:77:1::${(i + 1).toString(16)}`); // every address of one /64
     tally6[s] = (tally6[s] ?? 0) + 1;
   }
-  assert.deepEqual(tally6, { 401: 30, 429: 1 }, 'IPv6: 30 failures across the /64, then the pause');
-  assert.equal(await doFail(obj, 'otro', '2001:db8:77:2::1'), 401, 'the next /64 is not paused');
+  assert.deepEqual(tally6, { 401: 300, 429: 1 }, 'IPv6: 300 failures across the /64, then the pause');
+  assert.equal(await doFail(obj, 'otro', '2001:db8:77:2::1'), 429, 'its /48 with it: rotating /64s gains nothing');
+  assert.equal(await doFail(obj, 'otro1', '2001:db8:78:1::1'), 401, 'another /48 is not paused');
   assert.equal(await doFail(obj, 'otro2', '203.0.113.10'), 401, 'nor the next IPv4 address');
   obj.now = () => t0 + LOGIN_NET_PAUSE_MS + 1_000;
   assert.equal(await doFail(obj, 'alumno-tarde', '203.0.113.9'), 401, 'the pause ends after 15 minutes');
+});
+
+test('throttles (review): a dual-stack school is one /64: a classroom\'s typos never pause the others\' password sign-in, and a browser that signed in before is never stopped by a network\'s or a /48\'s pause', async () => {
+  const { env, obj } = makeEnv();
+  const at = (i) => `2001:db8:77:1::${(i + 1).toString(16)}`;
+  const ana = await legacyAccount(obj, 'Escuela38');
+  const right = { password: ana.v1, passwordV2: ana.v2 };
+  // One school computer signed in to Ana's account before: it holds the account's device cookie.
+  const before = await login(env, { username: 'Escuela38', ...right }, at(200));
+  assert.equal(before.status, 200);
+  const dv = '__Host-tg_dv=' + cookieOf(before.raw, '__Host-tg_dv');
+  // 60 typos and wrong names from 60 addresses of the school's /64 (twice the design's 30).
+  for (let i = 0; i < 60; i++) assert.equal(await doFail(obj, 'alumno' + i, at(i)), 401, 'typo ' + i);
+  assert.equal((await login(env, { username: 'Escuela38', ...right }, at(100))).status, 200, 'a right password on a computer the account does not know');
+  // A sprayer in the same /48 takes it to its 300: browsers the account does not know wait...
+  for (let i = 0; i < 300; i++) await doFail(obj, 'spray' + i, `2001:db8:77:${((i % 50) + 2).toString(16)}::1`);
+  const fresh = await login(env, { username: 'Escuela38', ...right }, at(101));
+  assert.deepEqual([fresh.status, fresh.json.error], [429, 'throttled'], 'a browser the account does not know waits for the /48');
+  // ...but the one that signed in before does not, and its typos count on its own counter only.
+  assert.equal((await login(env, { username: 'Escuela38', ...right }, at(102), dv)).status, 200, "the account's own browser signs in");
+  for (let i = 0; i < 5; i++) assert.equal((await login(env, { username: 'Escuela38', password: WRONG, passwordV2: WRONG }, `2001:db8:77:99::${i + 1}`, dv)).status, 401);
+  assert.equal((await login(env, { username: 'Escuela38', ...right }, at(103), dv)).status, 429, "then its own 'd:' counter waits, like a pair");
 });
 
 const tallyOf = (rs) => rs.reduce((t, r) => ((t[`${r.status}:${r.json?.error ?? 'ok'}`] = (t[`${r.status}:${r.json?.error ?? 'ok'}`] ?? 0) + 1), t), {});

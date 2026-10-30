@@ -100,14 +100,17 @@
  * (I6). A sign-in or a recovery (every one also needs a solved Turnstile check, accountRoutes.ts):
  *   (username, network)  LOGIN_FAILS_FREE failures, then waits of 30 s doubling to LOGIN_LOCK_MAX_MS:
  *                        failures from elsewhere never lock the owner out of their own account
- *   network              an IPv6 /64: LOGIN_NET6_MAX failures in 15 minutes; an IPv4 address, 20 times
- *                        that (LOGIN_NET4_MAX: a carrier's CGNAT, a school, a LAN party share one): then
- *                        a LOGIN_NET_PAUSE_MS pause for that network; an IPv6 /48 (65,536 /64s, one free
- *                        allocation) LOGIN_WIDE_MAX, the same pause
+ *   network              an IPv4 address or an IPv6 /64, from browsers the account does not know:
+ *                        LOGIN_NET4_MAX / LOGIN_NET6_MAX failures in 15 minutes (a carrier's CGNAT, a
+ *                        school, a LAN party share one address, and a dual-stack school or LAN is one
+ *                        /64), then a LOGIN_NET_PAUSE_MS pause for that network; an IPv6 /48 (65,536
+ *                        /64s, one free allocation) LOGIN_WIDE_MAX, the same pause, which a single /64
+ *                        reaches first: rotating /64s inside one allocation gains nothing
  *   username             from browsers it does not know: LOGIN_USER_DAY_MAX failures in a day, then its
- *                        password sign-in pauses for 15 minutes, doubling to an hour (OAuth still works);
- *                        a browser with the account's device cookie (set at each password sign-in)
- *                        counts on its own 'd:' counter instead, which locks like a pair
+ *                        password sign-in pauses for 15 minutes, doubling to an hour (OAuth still works)
+ *   known browser        a browser with the account's device cookie (set at each password sign-in)
+ *                        counts on its own 'd:' counter instead of the username's, which locks like a
+ *                        pair, and on its pair; never on a network or a /48, whose pause never stops it
  * Each check counts as it starts (/auth-begin `charge`, in the step that tests the locks), so checks
  * in flight at once never pass a cap; a success gives the network's and the /48's charge back, and
  * clears the pair, the username and the device's counters. A password checked behind a
@@ -136,10 +139,15 @@ const EQUIPPED_MAX = 6;
 export const LOGIN_FAILS_FREE = 5;
 const LOGIN_LOCK_BASE_MS = 30_000;
 export const LOGIN_LOCK_MAX_MS = 15 * 60_000;
-/** Failures per IPv6 /64 (one household or LAN) in LOGIN_WINDOW_MS before the network pauses. */
-export const LOGIN_NET6_MAX = 30;
-/** Failures per IPv4 address in LOGIN_WINDOW_MS before it pauses: 20 times a /64's, since a carrier's CGNAT or a school shares one. */
+/** Failures per IPv4 address in LOGIN_WINDOW_MS before it pauses: a carrier's CGNAT, a school or a LAN party shares one. */
 export const LOGIN_NET4_MAX = 600;
+/**
+ * Failures per IPv6 /64 in LOGIN_WINDOW_MS before it pauses: an IPv4 address's (the review of
+ * sign-in PR 4; the design's §2.3 said 30). A dual-stack school or LAN party is one /64 (SLAAC), and
+ * 30 typos of a classroom would pause everyone's password sign-in in it. Its /48's LOGIN_WIDE_MAX
+ * still binds first, so one /64 gets that many.
+ */
+export const LOGIN_NET6_MAX = LOGIN_NET4_MAX;
 /** Failures per IPv6 /48 in LOGIN_WINDOW_MS before it pauses. */
 export const LOGIN_WIDE_MAX = 300;
 /** How long a network (or a /48) over its cap pauses password sign-in. */
@@ -384,9 +392,9 @@ export class AccountsDO extends DurableObject<Env> {
    * The counters of one password check (the header comment), and the ones a success clears. A
    * password checked behind a session of the account (`account`: a password change, new codes, a
    * rename, a re-authentication) counts only on that account's 'pa:' counter. A sign-in or a
-   * recovery counts on its (username, network) pair, its network (env.ts limitKey: an IPv4 address
-   * or an IPv6 /64, with the IPv4 cap for an IPv4 one) and an IPv6 address's /48, plus who tries:
-   * a browser with the account's device cookie on its 'd:' counter, anyone else on the username's.
+   * recovery counts on its (username, network) pair and who tries: a browser with the account's
+   * device cookie on its 'd:' counter and nothing more, anyone else on the username's, its network
+   * (env.ts limitKey: an IPv4 address or an IPv6 /64) and an IPv6 address's /48.
    * Async (the HMACs) and done before any read, so the reads and writes after it stay atomic.
    */
   private async checkKeys(username: string, ip: unknown, b: Record<string, unknown>): Promise<{ keys: ThrottleKey[]; clear: string[]; account: boolean }> {
@@ -404,8 +412,13 @@ export class AccountsDO extends DurableObject<Env> {
     const pair = await this.throttleKey('up', user + '|' + net);
     const who = known !== null ? await this.throttleKey('d', known) : await this.throttleKey('u', user);
     const keys: ThrottleKey[] = [{ key: pair, rule: R.pair }, { key: who, rule: known !== null ? R.pair : R.user }];
-    if (net !== '') keys.push({ key: await this.throttleKey('ip', net), rule: v6 ? R.net6 : R.net4 });
-    if (site !== null) keys.push({ key: await this.throttleKey('w', site), rule: R.site });
+    // A known browser proved this account's password here before: its 'd:' counter bounds it, so a
+    // network's or a /48's pause (a classroom's typos, a sprayer next door) never stops it, and its
+    // own typos never count toward one.
+    if (known === null) {
+      if (net !== '') keys.push({ key: await this.throttleKey('ip', net), rule: v6 ? R.net6 : R.net4 });
+      if (site !== null) keys.push({ key: await this.throttleKey('w', site), rule: R.site });
+    }
     const clear = [pair, who];
     if (known !== null) clear.push(await this.throttleKey('u', user));
     return { keys, clear, account: false };

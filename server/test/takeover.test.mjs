@@ -801,18 +801,17 @@ test('auth-5: one (username, network) pair is throttled after 5 failures; the sa
   assert.equal((await login(env, 'pareja', KEY, '203.0.113.78')).status, 200);
 });
 
-test('auth-5: an IPv6 /64 counts as one network (30 failures across its addresses, then paused), and a /48 as one block (300)', async () => {
+test('auth-5: an IPv6 /64 counts as one network, with an IPv4 address\'s cap (a classroom\'s 60 typos pause nobody), and a /48 as one block (300)', async () => {
   const { env, obj } = makeEnv();
   const ADO = await import('../src/AccountsDO.ts');
-  // Sign-in PR 4 (the design's §2.3): 30 per /64, 20 times that per IPv4 address (levels.test.mjs).
-  assert.equal(ADO.LOGIN_NET6_MAX, 30);
+  // Sign-in PR 4's review: a dual-stack school is one /64, so it gets an IPv4 address's 600 and its /48's 300 binds first (levels.test.mjs).
+  assert.equal(ADO.LOGIN_NET6_MAX, ADO.LOGIN_NET4_MAX);
   assert.equal(ADO.LOGIN_WIDE_MAX, 300);
   obj.store.register('objetivo', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
-  // A sprayer: one guess for each of 30 usernames, each from a fresh address of one /64.
-  for (let i = 0; i < 30; i++) assert.equal((await login(env, 'user' + i, KEY2, `2001:db8:5:6::${(i + 1).toString(16)}`)).status, 401);
+  // A classroom: one wrong guess for each of 60 usernames, each from a fresh address of one /64.
+  for (let i = 0; i < 60; i++) assert.equal((await login(env, 'user' + i, KEY2, `2001:db8:5:6::${(i + 1).toString(16)}`)).status, 401);
   const r = await login(env, 'objetivo', KEY, '2001:db8:5:6::ffff');
-  assert.equal(r.status, 429, 'the /64 is one network');
-  assert.equal((await login(env, 'objetivo', KEY, '2001:db8:5:7::1')).status, 200, 'the next /64 is not');
+  assert.equal(r.status, 200, 'the /64 is not paused by 60: ' + JSON.stringify(r.json));
   // The /48: 300 failures across its /64s.
   for (let i = 0; i < 300; i++) await login(env, 'u' + i, KEY2, `2001:db8:9:${i.toString(16)}::1`);
   assert.equal((await login(env, 'objetivo', KEY, '2001:db8:9:ffff::1')).status, 429, 'the /48 is one block');
