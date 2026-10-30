@@ -1,23 +1,30 @@
 // End-to-end smoke of accounts, ranked and custom lobbies against a running Worker (Node 24, no
-// browser). LOCAL DEV ONLY: it registers throwaway accounts (smk_<random>) in the target's AccountsDO.
-//   cd server && npm run dev            (wrangler dev on 8787, another terminal)
+// browser), around the dev-only sign-in (the sign-in design's §3.15). LOCAL DEV ONLY: it signs in
+// throwaway accounts (smk_<random>) in the target's AccountsDO, and the target must have the dev
+// sign-in open, which only a loopback Worker with DEV_AUTH=1 has:
+//   add the line DEV_AUTH=1 to your own server/.dev.vars (never committed; CONTRIBUTING.md)
+//   cd server && npm run dev               (wrangler dev on 8787, another terminal)
 //   node server/test/smoke-accounts.mjs [--api=http://127.0.0.1:8787]
 //
 // Flow:
-//   config (accounts on, OAuth providers listed) -> register A and B (recovery codes, refresh cookie)
-//   -> wrong password 401 -> login -> refresh rotates the cookie (the old one is refused) -> /api/me
-//   -> a guest cannot queue ranked (403) -> A and B queue ranked 1v1 together (multi-playlist body)
-//   -> both matched into the SAME server match with `ranked: true` -> both sockets Ready -> the match
-//   starts -> A quits (POST /api/leave { matchId }) = forfeit -> /api/ranked/result: B 'win', A 'loss'
-//   + left + a ban, A's next ranked queue 429 'ranked_ban' -> population endpoint -> A creates a
-//   public lobby with a password -> B sees it in the list (locked) -> wrong password 403 -> joins ->
-//   both lobby sockets get the state (two members, A host) -> B switches team -> A starts -> both get
-//   their P2P room result -> both leave the room locks -> an experimental lobby (a guest cannot create
-//   or join it, the casual and ranked queues refuse rules, the list tags it, a server match with the
-//   rules is refused, every room welcome carries them, a ready with the stock fingerprint is refused
-//   with physics_mismatch, the rules fingerprint on both starts the match, nothing is rated) ->
-//   recovery code resets B's password -> logout: the refresh cookie no longer works.
-// Exit 0 = pass, 1 = a check failed.
+//   config (accounts on, OAuth providers listed, auth.devSignIn) -> the stub's outbox (GET
+//   /api/dev/mail) -> dev sign-in A and B (session, refresh cookie, <name>@dev.invalid verified in
+//   /api/me) -> the same name again is the same account, a bad name 400 -> refresh rotates the cookie
+//   (the old one is refused) -> a guest cannot queue ranked (403) -> A and B queue ranked 1v1
+//   together (multi-playlist body) -> both matched into the SAME server match with `ranked: true` ->
+//   both sockets Ready -> the match starts -> A quits (POST /api/leave { matchId }) = forfeit ->
+//   /api/ranked/result: B 'win', A 'loss' + left + a ban, A's next ranked queue 429 'ranked_ban' ->
+//   population endpoint -> A creates a public lobby with a password -> B sees it in the list (locked)
+//   -> wrong password 403 -> joins -> both lobby sockets get the state (two members, A host) -> B
+//   switches team -> A starts -> both get their P2P room result -> both leave the room locks -> an
+//   experimental lobby (a guest cannot create or join it, the casual and ranked queues refuse rules,
+//   the list tags it, a server match with the rules is refused, every room welcome carries them, a
+//   ready with the stock fingerprint is refused with physics_mismatch, the rules fingerprint on both
+//   starts the match, nothing is rated) -> B renames with its Bearer (no password to re-key) and its
+//   dev name still signs in to it -> the devices list -> logout: the refresh cookie no longer works.
+// The username-and-password flows (register, login, recovery codes) are covered by the unit tests
+// (accounts.test.mjs, takeover.test.mjs): the email accounts replace them.
+// Exit 0 = pass, 1 = a check failed, 2 = the dev sign-in is not open on the target.
 import { registerHooks } from 'node:module';
 
 registerHooks({
@@ -34,7 +41,6 @@ registerHooks({
 
 const argv = process.argv.slice(2);
 const API = (argv.find((a) => a.startsWith('--api='))?.slice(6) ?? process.env.API ?? 'http://127.0.0.1:8787').replace(/\/$/, '');
-const ACC = await import('../../src/net/account.ts');
 const P = await import('../../src/net/protocol.ts');
 const P2 = await import('../../src/net/p2p/protocol.ts');
 const MUT = await import('../../src/sim/mutators.ts');
@@ -85,39 +91,41 @@ async function api(path, { body, token, cookies, method } = {}) {
 const rnd = () => Math.random().toString(36).slice(2, 8);
 const userA = 'smk_' + rnd();
 const userB = 'smk_' + rnd();
-const passA = 'smoke pass ' + rnd();
-const passB = 'smoke pass ' + rnd();
 const jarA = jar();
 const jarB = jar();
 
-// ---- config / register / login / refresh ---------------------------------------------------------
+// ---- config / dev sign-in / refresh --------------------------------------------------------------
 const cfg = await api('/api/config');
 check(cfg.status === 200 && cfg.json.accounts === true && Array.isArray(cfg.json.oauth) && Array.isArray(cfg.json.regions), 'config: accounts, oauth list, regions', { oauth: cfg.json?.oauth, autoRegion: cfg.json?.autoRegion });
+if (!check(cfg.json?.auth?.devSignIn === true, 'config: auth.devSignIn (DEV_AUTH=1 on this loopback Worker)', cfg.json?.auth)) {
+  console.log('The dev sign-in is closed on ' + API + ': put DEV_AUTH=1 in your own server/.dev.vars and restart wrangler dev (CONTRIBUTING.md).');
+  process.exit(2);
+}
 const region = 'SA';
+const outbox = await api('/api/dev/mail');
+check(outbox.status === 200 && Array.isArray(outbox.json?.messages), "GET /api/dev/mail: the stub mailer's outbox", outbox.status);
 
-const keyA = await ACC.clientPasswordKey(userA, passA);
-const regA = await api('/api/auth/register', { body: { username: userA, password: keyA }, cookies: jarA });
-check(regA.status === 200 && regA.json.kind === 'account' && regA.json.recoveryCodes.length === 8 && jarA.get('__Host-tg_rt'), 'register A (session, 8 recovery codes, refresh cookie)', regA.status);
-const keyB = await ACC.clientPasswordKey(userB, passB);
-const regB = await api('/api/auth/register', { body: { username: userB, password: keyB }, cookies: jarB });
-check(regB.status === 200, 'register B', regB.status);
-const dup = await api('/api/auth/register', { body: { username: userA.toUpperCase(), password: keyA } });
-check(dup.status === 409 && dup.json.error === 'username_taken', 'same username (other case) -> 409', dup.status);
-const bad = await api('/api/auth/login', { body: { username: userA, password: await ACC.clientPasswordKey(userA, 'wrong password') } });
-check(bad.status === 401 && bad.json.error === 'bad_credentials', 'wrong password -> 401', bad.status);
-const login = await api('/api/auth/login', { body: { username: userA.toUpperCase(), password: keyA }, cookies: jarA });
-check(login.status === 200 && login.json.playerId === regA.json.playerId, 'login (case-insensitive username)', login.status);
+const devA = await api('/api/dev/signin', { body: { name: userA }, cookies: jarA });
+check(devA.status === 200 && devA.json.kind === 'account' && devA.json.name === userA && jarA.get('__Host-tg_rt'), 'dev sign-in A (session, refresh cookie, its name)', devA.status);
+const devB = await api('/api/dev/signin', { body: { name: userB }, cookies: jarB });
+check(devB.status === 200 && devB.json.name === userB, 'dev sign-in B', devB.status);
+const devA2 = await api('/api/dev/signin', { body: { name: userA.toUpperCase() } });
+check(devA2.status === 200 && devA2.json.playerId === devA.json?.playerId, 'the same dev name (other case) is the same account', devA2.status);
+const badName = await api('/api/dev/signin', { body: { name: 'not a name' } });
+check(badName.status === 400 && badName.json?.error === 'bad_name', 'a bad dev name -> 400 bad_name', badName.status);
 const oldCookie = jarA.get('__Host-tg_rt');
 const ref = await api('/api/auth/refresh', { method: 'POST', cookies: jarA });
 check(ref.status === 200 && ref.json.session && jarA.get('__Host-tg_rt') !== oldCookie, 'refresh rotates the cookie', ref.status);
 const stale = jar();
 stale.set('__Host-tg_rt', oldCookie);
 const ref2 = await api('/api/auth/refresh', { method: 'POST', cookies: stale });
-check(ref2.status === 401, 'the rotated-out refresh token is refused', ref2.status);
+// Within REFRESH_RACE_MS (30 s) of its rotation the old token is a second tab: 409, nothing revoked.
+check(ref2.status === 409 && ref2.json?.error === 'refresh_race', 'the rotated-out token just after: refresh_race (another tab), refused', ref2.status);
 let tokA = ref.json.session;
-const tokB = regB.json.session;
+const tokB = devB.json.session;
 const me = await api('/api/me', { token: tokA });
 check(me.status === 200 && me.json.name === userA && me.json.ratings.length === 3 && me.json.ratings[0].placementLeft === 5, 'GET /api/me', me.json?.ratings?.[0]);
+check(me.json?.email === userA + '@dev.invalid' && me.json.emailVerified === true && me.json.hasPassword === false, 'the dev account: <name>@dev.invalid, verified, no password', { email: me.json?.email, verified: me.json?.emailVerified });
 
 // ---- training records ----------------------------------------------------------------------------
 const tr1 = await api('/api/me/training', { body: { records: { 'shooting-easy': { best: 6, shots: 8, completedAt: 1000 }, 'bad id!': { best: 1, shots: 1 } } }, token: tokA });
@@ -323,15 +331,21 @@ if (ex.status === 200) {
     xa.ws.send(JSON.stringify({ t: 'start' }));
     check(await waitFor(() => xa.matches.length > 1 && xb.matches.length > 1, 8000), 'start again');
     const r2 = [xa.matches[1], xb.matches[1]];
-    const [sa, sb] = [await openRoom(r2[0]), await openRoom(r2[1])];
-    check(await waitFor(() => sa.of('room').length > 0 && sb.of('room').length > 0), 'both welcomes again');
-    sa.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
-    sb.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
-    check(await waitFor(() => sa.of('start').length > 0 && sb.of('start').length > 0), 'the rules fingerprint on both: the match starts', { a: sa.of('start')[0]?.startAt, b: sb.of('start')[0]?.startAt });
-    sa.ws.close();
-    sb.ws.close();
-    await api('/api/leave', { body: { matchId: r2[0].roomId, region }, token: tokA });
-    await api('/api/leave', { body: { matchId: r2[1].roomId, region }, token: tokB });
+    // As round 1: without both room results ('start again' failed, and counted) there is no socket
+    // to open. Skipped, not fatal, so the steps after the lobbies (rename, devices, logout) still run.
+    if (r2[0]?.kind === 'p2p' && r2[1]?.kind === 'p2p') {
+      const [sa, sb] = [await openRoom(r2[0]), await openRoom(r2[1])];
+      check(await waitFor(() => sa.of('room').length > 0 && sb.of('room').length > 0), 'both welcomes again');
+      sa.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+      sb.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+      check(await waitFor(() => sa.of('start').length > 0 && sb.of('start').length > 0), 'the rules fingerprint on both: the match starts', { a: sa.of('start')[0]?.startAt, b: sb.of('start')[0]?.startAt });
+      sa.ws.close();
+      sb.ws.close();
+      await api('/api/leave', { body: { matchId: r2[0].roomId, region }, token: tokA });
+      await api('/api/leave', { body: { matchId: r2[1].roomId, region }, token: tokB });
+    } else {
+      console.log('SKIP the second room (no P2P room result for both): its welcomes and its start are not checked', { a: r2[0]?.kind, b: r2[1]?.kind });
+    }
   }
   const meAfter = await api('/api/me', { token: tokA });
   check(meAfter.json?.ratings?.[0]?.games === 1, 'nothing rated: A still has only the ranked game', meAfter.json?.ratings?.[0]?.games);
@@ -340,33 +354,22 @@ if (ex.status === 200) {
   await waitFor(() => xa.closed !== null && xb.closed !== null);
 }
 
-// ---- recovery / logout -----------------------------------------------------------------------------
-const newKeyB = await ACC.clientPasswordKey(userB, 'brand new pass ' + rnd());
-const rec = await api('/api/auth/recover', { body: { username: userB, code: regB.json.recoveryCodes[0], password: newKeyB }, cookies: jarB });
-check(rec.status === 200 && rec.json.codesLeft === 7, 'recovery code resets B', rec.json?.codesLeft);
-const oldLogin = await api('/api/auth/login', { body: { username: userB, password: keyB } });
-check(oldLogin.status === 401, 'old password no longer works', oldLogin.status);
-// Rename re-keys the password (the client key is salted with the username).
-const newPassB = 'brand new pass ' + rnd();
-const recKeyB = await ACC.clientPasswordKey(userB, newPassB);
-const recB = await api('/api/auth/recover', { body: { username: userB, code: regB.json.recoveryCodes[1], password: recKeyB }, cookies: jarB });
+// ---- rename / devices / logout ---------------------------------------------------------------------
+// A dev account has no password: its Bearer renames it, and its dev name still signs in to it.
 const renamed = userB.replace('smk_', 'smr_');
-const rn = await api('/api/me/username', {
-  body: { username: renamed, password: recKeyB, newPassword: await ACC.clientPasswordKey(renamed, newPassB) },
-  token: recB.json?.session,
-  cookies: jarB,
-});
-check(rn.status === 200 && rn.json.name === renamed, 'rename (password re-keyed)', rn.status);
-const loginNew = await api('/api/auth/login', { body: { username: renamed, password: await ACC.clientPasswordKey(renamed, newPassB) } });
-check(loginNew.status === 200 && loginNew.json.playerId === regB.json.playerId, 'login with the new name and the same password', loginNew.status);
-const loginOld = await api('/api/auth/login', { body: { username: userB, password: recKeyB } });
-check(loginOld.status === 401, 'the old name is gone', loginOld.status);
+const rn = await api('/api/me/username', { body: { username: renamed }, token: tokB, cookies: jarB });
+check(rn.status === 200 && rn.json.name === renamed, 'rename B with its Bearer', rn.status);
+const devB2 = await api('/api/dev/signin', { body: { name: userB } });
+check(devB2.status === 200 && devB2.json.playerId === devB.json?.playerId && devB2.json.name === renamed, 'its dev name signs in to the renamed account', devB2.json?.name);
+const devices = await api('/api/auth/sessions', { token: devB2.json?.session });
+check(devices.status === 200 && Array.isArray(devices.json?.sessions) && devices.json.sessions.length >= 2, 'the devices list (one family per dev sign-in)', devices.json?.sessions?.length);
+const liveA = jarA.get('__Host-tg_rt');
 const lo = await api('/api/auth/logout', { method: 'POST', cookies: jarA });
 check(lo.status === 200 && !jarA.get('__Host-tg_rt'), 'logout clears the cookie', lo.status);
 const after = jar();
-after.set('__Host-tg_rt', ref.json ? oldCookie : '');
+after.set('__Host-tg_rt', liveA ?? '');
 const ref3 = await api('/api/auth/refresh', { method: 'POST', cookies: after });
-check(ref3.status === 401, 'refresh after logout refused', ref3.status);
+check(ref3.status === 401, 'refresh after logout refused (the cookie it had)', ref3.status);
 
 console.log(failed === 0 ? 'ALL OK' : `${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

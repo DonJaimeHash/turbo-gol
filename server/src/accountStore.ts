@@ -68,7 +68,7 @@
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
-import { emailCanon, looksLikeDomain, normalizeEmail, PLAYLISTS, usernameKey } from '../../src/net/account';
+import { emailCanon, looksLikeDomain, normalizeEmail, PLAYLISTS, usernameIssue, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
 import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { TrainingRecords } from '../../src/game/trainingRecords';
@@ -342,6 +342,20 @@ export function usernameFromDisplay(display: string): string {
   if (k.startsWith('guest') || k.startsWith('bot') || k === 'admin') s = 'P' + s.slice(0, 15);
   while (s.length < 3) s += String(Math.floor(Math.random() * 10));
   return s;
+}
+
+/** The dev sign-in's address domain (RFC 2606: .invalid never routes, and normalizeEmail refuses it, so no flow mails it). */
+export const DEV_EMAIL_DOMAIN = 'dev.invalid';
+/** A dev sign-in name: 1-32 ASCII letters, digits, '_' or '-', starting with a letter or digit (the local part of its address). */
+export const DEV_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+/** The 400 bad_name message of the dev sign-in (the Worker's messages are Spanish; the DEV form checks DEV_NAME_RE first). */
+export const DEV_NAME_PROBLEM = 'Usa de 1 a 32 letras, números, "_" o "-"';
+
+/** The dev identity (users.dev_sub) of a name typed at ENTRAR (DEV): its lower case, or null when it is not one (DEV_NAME_RE). */
+export function devSubOf(name: unknown): string | null {
+  if (typeof name !== 'string') return null;
+  const s = name.trim();
+  return DEV_NAME_RE.test(s) ? s.toLowerCase() : null;
 }
 
 export class AccountStore {
@@ -925,6 +939,46 @@ export class AccountStore {
       if (claimed || this.sql.exec('SELECT 1 AS x FROM email_holds WHERE canon = ?', canon).toArray().length > 0) return 'claimed' as const;
       this.sql.exec('UPDATE users SET email_hint = ?, email_hint_canon = ?, email_hint_from = ? WHERE id = ?', address, canon, from, userId);
       return 'ok' as const;
+    });
+  }
+
+  /**
+   * The dev-only sign-in (the design's §3.15: POST /api/dev/signin, open only with DEV_AUTH=1 on a
+   * loopback host): the account whose dev_sub is devSubOf(name), made at its first use. Its address
+   * is <dev_sub>@dev.invalid, verified, proof 'dev' (I1: no typed address, and .invalid never
+   * routes); its username `name` when that is a valid username nobody has, else 'Dev' and digits.
+   * This device's family proves a credential now, at level 2 with method 'dev' (the design's R6).
+   * 'bad_name' (devSubOf), 'banned', or 'taken' when another account holds the address (only a
+   * database edited by hand could).
+   */
+  devSignIn(name: string, refresh: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'bad_name' | 'banned' | 'taken' {
+    const sub = devSubOf(name);
+    if (sub === null) return 'bad_name';
+    const typed = name.trim();
+    const email = sub + '@' + DEV_EMAIL_DOMAIN;
+    return this.tx(() => {
+      let u = this.sql.exec('SELECT * FROM users WHERE dev_sub = ?', sub).toArray()[0] ?? null;
+      const created = u === null;
+      if (u === null) {
+        if (this.canonTaken(email, '')) return 'taken' as const;
+        let username = usernameIssue(typed) === null ? typed : '';
+        for (let n = 0; username === '' || this.usernameTaken(username); n++) username = 'Dev' + String(Math.floor(Math.random() * (n < 20 ? 10_000 : 10_000_000)));
+        const id = this.freshId();
+        this.sql.exec(
+          "INSERT INTO users (id, username, ukey, dev_sub, email, email_canon, email_verified_at, email_proof, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, 'dev', ?, ?)",
+          id, username, usernameKey(username), sub, email, email, now, now, now,
+        );
+        // A claim of a canon clears every other account's hint of it (the design's §1.1).
+        this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", email, id);
+        u = this.userById(id) as Row;
+      } else {
+        if (num(u.banned) === 1) return 'banned' as const;
+        this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, str(u.id));
+      }
+      const g: RefreshGrant = typeof refresh === 'string' ? { hash: refresh } : refresh;
+      this.addRefresh(str(u.id), { ...g, kind: 'web' }, now);
+      this.sql.exec("UPDATE refresh SET auth_lvl = 2, method = 'dev' WHERE hash = ?", g.hash);
+      return { ...this.refOf(u), authAt: now, created };
     });
   }
 

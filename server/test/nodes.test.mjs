@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { makeAccount } from './helpers/accounts.mjs';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 registerHooks({
@@ -379,7 +380,6 @@ test('deliverCall: a row for no known object sends nothing and is dropped with a
 // ---- nodeOutcome.ts against a real AccountsDO ----------------------------------------------------
 
 const H = (c) => c.repeat(64).slice(0, 64);
-const PW = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
 
 /** An AccountsDO on node:sqlite, its store, and an ACCOUNTS namespace that reaches it. */
 function makeAccounts() {
@@ -416,7 +416,7 @@ function makeAccounts() {
 
 test('outcome calls reach a real AccountsDO: a rated match is rated once, a ranked void abandons its no-shows, a second delivery is done and changes nothing', async () => {
   const { store, ACCOUNTS } = makeAccounts();
-  const ids = ['ana', 'beto', 'caro', 'dani'].map((n, i) => store.register(n, PW, [], H(String(i)), NOW).userId);
+  const ids = ['ana', 'beto', 'caro', 'dani'].map((n, i) => makeAccount(store, n, { now: NOW, refresh: H(String(i)) }).userId);
   const releases = [];
   const MATCHMAKER = { idFromName: (name) => ({ name }), get: (id) => ({ fetch: async (_url, init) => (releases.push([id.name, JSON.parse(init.body)]), ok()) }) };
   const env = { JWT_SECRET: SECRET, ACCOUNTS, MATCHMAKER };
