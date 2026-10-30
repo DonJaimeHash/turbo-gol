@@ -86,6 +86,14 @@
  * binds a marked key (a sign-up, a claim, an add or a move of the email, a link, the confirm step's
  * create) gets what is left of the sanction (applyMarksIn), and is not told.
  *   deleted_nodes    purged ids whose nodes the NodeRegistryDO has not banned yet (the alarm asks again)
+ *
+ * The news consent (sign-in PR 13, the design's §2.11 and §3.14; no news is sent yet): the consent
+ * log only grows and its newest news row is the state. The switch at sign-up and at the confirm
+ * step's create writes a grant only when it is on; PERFIL's switch writes a change (setNews: a grant
+ * needs a verified address); a deletion request writes a withdrawal. Every grant mints the account's
+ * unsub_id when it has none: 16 random bytes that carry nothing of the account, the one value a
+ * mail may put in a URL query (RFC 8058's one-click). unsubscribe() withdraws the news of that id's
+ * account and gives it a new id, so an older mail's link does nothing.
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
@@ -162,6 +170,24 @@ export const ALREADY_CREATED_MS = 10 * 60_000;
 /** consents.version of the news opt-in (section 3.14). */
 export const NEWS_CONSENT_VERSION = 'news-v1';
 
+// ---- the news consent and unsubscribing (sign-in PR 13: §2.11, §3.14) ------------------------------
+
+/**
+ * consents.source: the switch at email sign-up and at the OAuth confirm step's create, PERFIL's
+ * switch (POST /api/me/consent), the mail's unsubscribe (POST /api/news/unsubscribe) and a
+ * deletion request (sign-in PR 12).
+ */
+export type ConsentSource = 'signup' | 'oauth_signup' | 'perfil' | 'unsubscribe' | 'deletion';
+/** users.unsub_id: 16 random bytes as base64url, no padding (randomToken). It carries nothing of the account (review point S-L1). */
+export const UNSUB_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+/** What POST /api/me/consent answers: the newest row of each kind wins (news granted; the terms version granted, null for none). */
+export interface ConsentState {
+  news: boolean;
+  terms: string | null;
+}
+/** Why PERFIL's news switch writes nothing (newsBlock): a grant needs a verified address and no deletion pending. */
+export type NewsRefusal = 'no_user' | 'email_required' | 'deletion_pending';
+
 /** A mail_tokens row (section 1.3): hashes only, and the address while the row lives. */
 export interface MailTokenRow {
   hash: string;
@@ -221,7 +247,7 @@ export const CANCEL_AGAIN_MS = 10 * 60_000;
 /** The most abandons a mark puts back on a new account. */
 const MARK_ABANDONS_MAX = 50;
 /** consents.source of the news withdrawal a deletion request writes. */
-export const DELETION_CONSENT_SOURCE = 'deletion';
+export const DELETION_CONSENT_SOURCE: ConsentSource = 'deletion';
 
 /** A sanction mark's kind (sanction_marks.key, §1.3): 'e' an email canon (its own, its hint's, a held one), 'g' a Google sub, 'd' a Discord id. */
 export type MarkKind = 'e' | 'g' | 'd';
@@ -740,7 +766,7 @@ export class AccountStore {
       const purgeAt = now + graceMs;
       this.sql.exec('UPDATE users SET delete_requested_at = ?, delete_purge_at = ? WHERE id = ?', now, purgeAt, userId);
       this.deleteRefreshOf(userId);
-      this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', ?, 0, ?, ?)", userId, NEWS_CONSENT_VERSION, DELETION_CONSENT_SOURCE, now);
+      this.consentIn(userId, 'news', NEWS_CONSENT_VERSION, false, DELETION_CONSENT_SOURCE, now);
       this.killMailTokens({ userId }, ['reset', 'add_email', 'change_email', 'reauth', 'cancel_delete'], now);
       const p = this.mailProfile(userId) as MailProfile;
       if (cancel !== null && p.email !== null && p.canon !== null) {
@@ -972,6 +998,8 @@ export class AccountStore {
     s.exec('CREATE TABLE IF NOT EXISTS legacy_reminders (user_id TEXT PRIMARY KEY, cutoff INTEGER NOT NULL, at INTEGER NOT NULL)');
     // Sign-in PR 12: purged ids the NodeRegistryDO has not answered for yet (their nodes to ban; the alarm tries again). Additive.
     s.exec('CREATE TABLE IF NOT EXISTS deleted_nodes (id TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+    // Sign-in PR 13: every news grant has its unsubscribe id, the sign-ups of before too. Additive.
+    this.mintMissingUnsubIds();
   }
 
   /** meta.schema_version: 1 when absent (a database from before the sign-in work, or a new one). */
@@ -1630,10 +1658,7 @@ export class AccountStore {
       const best = idents.find((i) => i.trust === 'auth' && this.trustedCanon(i) !== null) ?? idents.find((i) => i.trust === 'asserted' && this.trustedCanon(i) !== null);
       const claimed = best !== undefined ? this.fillEmailIn(id, best, best.p, now) : null;
       this.applyMarksIn(id, [...idents.map((i) => markOf(opts.marks, providerMark(i.p), i.id)), markOf(opts.marks, 'e', claimed)], now);
-      if (opts.news === true) {
-        this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', ?, 1, 'oauth_signup', ?)", id, NEWS_CONSENT_VERSION, now);
-        this.sql.exec('UPDATE users SET unsub_id = ? WHERE id = ? AND unsub_id IS NULL', randomToken(), id);
-      }
+      if (opts.news === true) this.consentIn(id, 'news', NEWS_CONSENT_VERSION, true, 'oauth_signup', now);
       this.addRefresh(id, refreshHash, now, now, now, null, { lvl, method: pend.p });
       return { userId: id, username, car: DEFAULT_CAR, createdAt: now, authAt: now, authLvl: lvl };
     });
@@ -1804,8 +1829,102 @@ export class AccountStore {
 
   /** The newest news consent of the account is a grant (consents: append-only, the newest row per kind counts). */
   private newsGranted(userId: string): boolean {
-    const r = this.sql.exec("SELECT granted FROM consents WHERE user_id = ? AND kind = 'news' ORDER BY id DESC LIMIT 1", userId).toArray()[0];
-    return r !== undefined && num(r.granted) === 1;
+    return this.newestConsent(userId, 'news')?.granted === true;
+  }
+
+  // ---- the news consent and unsubscribing (sign-in PR 13: the design's §2.11, §3.14) --------------
+
+  /** The newest consent row of `kind` (the one that counts), null when the account has none. */
+  private newestConsent(userId: string, kind: 'news' | 'terms'): { granted: boolean; version: string } | null {
+    const r = this.sql.exec('SELECT granted, version FROM consents WHERE user_id = ? AND kind = ? ORDER BY id DESC LIMIT 1', userId, kind).toArray()[0];
+    return r === undefined ? null : { granted: num(r.granted) === 1, version: str(r.version) };
+  }
+
+  /**
+   * One row of the consent log, inside the caller's transaction (the log only grows: nothing ever
+   * updates or deletes a row but the purge). A news grant mints the account's unsubscribe id when it
+   * has none (§2.11), so every account that may get news has one.
+   */
+  private consentIn(userId: string, kind: 'news' | 'terms', version: string, granted: boolean, source: ConsentSource, now: number): void {
+    this.sql.exec('INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, ?, ?, ?, ?, ?)', userId, kind, version, granted ? 1 : 0, source, now);
+    if (kind === 'news' && granted) this.sql.exec('UPDATE users SET unsub_id = ? WHERE id = ? AND unsub_id IS NULL', randomToken(), userId);
+  }
+
+  /**
+   * An unsubscribe id for every account that granted the news and has none: the sign-ups of before
+   * this build (signup/finish wrote the grant only), and any a rolled-back build writes. At each
+   * start it reads only the consent rows after the last one it read (meta.unsub_scan; an id is never
+   * set back to NULL), in one transaction with that mark.
+   */
+  private mintMissingUnsubIds(): void {
+    const mark = this.sql.exec("SELECT v FROM meta WHERE k = 'unsub_scan'").toArray()[0];
+    const from = mark ? Number(str(mark.v)) || 0 : 0;
+    const top = num(this.sql.exec('SELECT COALESCE(MAX(id), 0) AS m FROM consents').toArray()[0]?.m);
+    if (top <= from) return;
+    this.tx(() => {
+      const ids = this.sql.exec("SELECT DISTINCT c.user_id AS id FROM consents c JOIN users u ON u.id = c.user_id WHERE c.id > ? AND c.id <= ? AND c.kind = 'news' AND c.granted = 1 AND u.unsub_id IS NULL", from, top).toArray();
+      for (const r of ids) this.sql.exec('UPDATE users SET unsub_id = ? WHERE id = ? AND unsub_id IS NULL', randomToken(), str(r.id));
+      this.sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('unsub_scan', ?)", String(top));
+    });
+  }
+
+  /** POST /api/me/consent's answer: the news (the newest news row is a grant) and the terms version granted (null: none). */
+  consentState(userId: string): ConsentState {
+    const terms = this.newestConsent(userId, 'terms');
+    return { news: this.newsGranted(userId), terms: terms !== null && terms.granted ? terms.version : null };
+  }
+
+  /**
+   * What PERFIL's news switch would do (POST /api/me/consent, §2.11), nothing written: a grant
+   * needs a verified address ('email_required': news only ever goes to one) and no deletion pending
+   * (its request withdrew the news, and the Bearer it leaves alive for up to an hour cannot turn it
+   * back on); a withdrawal is always taken. 'same': the newest news row already says it (a
+   * withdrawal of an account that never granted, a grant of the current version again), and no row
+   * is written; 'write' otherwise.
+   */
+  newsBlock(userId: string, granted: boolean): NewsRefusal | 'same' | 'write' {
+    const u = this.userById(userId);
+    if (u === null) return 'no_user';
+    if (granted) {
+      const verified = u.email_canon !== null && u.email_canon !== undefined && u.email !== null && u.email !== undefined;
+      if (!verified) return 'email_required';
+      if (this.pendingDeletion(u)) return 'deletion_pending';
+    }
+    const last = this.newestConsent(userId, 'news');
+    const on = last !== null && last.granted;
+    return on === granted && (!granted || last?.version === NEWS_CONSENT_VERSION) ? 'same' : 'write';
+  }
+
+  /**
+   * PERFIL's switch (§2.11, §3.14 step 2), one transaction, newsBlock asked again inside it: a
+   * 'perfil' row when the state changes (a grant mints the unsubscribe id when there is none);
+   * the account's consents after it.
+   */
+  setNews(userId: string, granted: boolean, now: number): ConsentState | NewsRefusal {
+    return this.tx(() => {
+      const why = this.newsBlock(userId, granted);
+      if (why === 'no_user' || why === 'email_required' || why === 'deletion_pending') return why;
+      if (why === 'write') this.consentIn(userId, 'news', NEWS_CONSENT_VERSION, granted, 'perfil', now);
+      return this.consentState(userId);
+    });
+  }
+
+  /**
+   * The mail's unsubscribe (POST /api/news/unsubscribe, §2.11), one transaction: the account whose
+   * unsub_id this is gets a news withdrawal (source 'unsubscribe') and a new random id, so the link
+   * of an older mail does nothing any more. False for an id no account holds (nothing changes; the
+   * route answers the same).
+   */
+  unsubscribe(unsubId: string, now: number): boolean {
+    if (!UNSUB_ID_RE.test(unsubId)) return false;
+    return this.tx(() => {
+      const r = this.sql.exec('SELECT id FROM users WHERE unsub_id = ?', unsubId).toArray()[0];
+      if (r === undefined) return false;
+      const id = str(r.id);
+      this.consentIn(id, 'news', NEWS_CONSENT_VERSION, false, 'unsubscribe', now);
+      this.sql.exec('UPDATE users SET unsub_id = ? WHERE id = ?', randomToken(), id);
+      return true;
+    });
   }
 
   /**
@@ -2555,8 +2674,9 @@ export class AccountStore {
       );
       this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", row.canon, id);
       this.applyMarksIn(id, [markOf(marks, 'e', row.canon)], now);
-      if (a.news) this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', ?, 1, 'signup', ?)", id, NEWS_CONSENT_VERSION, now);
-      if (a.terms !== null) this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'terms', ?, 1, 'signup', ?)", id, a.terms, now);
+      // The news grant mints the account's unsubscribe id too (§2.11), as the OAuth create's does.
+      if (a.news) this.consentIn(id, 'news', NEWS_CONSENT_VERSION, true, 'signup', now);
+      if (a.terms !== null) this.consentIn(id, 'terms', a.terms, true, 'signup', now);
       this.addRefresh(id, a.refresh, now, now, now, null, { lvl: 2, method: 'password' });
       const email = row.email;
       this.useMailToken(row.hash, id, now);

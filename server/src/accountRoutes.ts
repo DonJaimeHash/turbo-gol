@@ -125,7 +125,10 @@
  * header that is this origin (or PUBLIC_ORIGIN, or VITE_ORIGINS; a loopback page under wrangler
  * dev), never missing or "null" (403 bad_origin), and, for a route that reads a body,
  * Content-Type application/json (415 json_required): a cross-site <form> can send neither, so a
- * login CSRF (a text/plain form signing the browser into another account) cannot happen.
+ * login CSRF (a text/plain form signing the browser into another account) cannot happen. POST
+ * /api/me/consent and the page's form of POST /api/news/unsubscribe ask the same. The one POST that
+ * takes a form with no Origin is RFC 8058's one-click unsubscribe (sign-in PR 13, below): it
+ * carries no cookie or Bearer, and can only withdraw the news consent of the id in its URL.
  *
  * A password field is always a client key (PBKDF2 in the browser), never the typed password: the
  * current key (src/net/account.ts passwordKey, one fixed salt: `passwordV2`, and `password` in
@@ -157,13 +160,13 @@
  * origin = PUBLIC_ORIGIN when set, else the request's own.
  */
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, deletionOpen, error, json, readJson, trustedOperatorIds } from './env';
+import { EXPERIMENTAL_REFUSED, JSON_MAX_BYTES, carriesPhysics, deletionOpen, error, json, readCapped, readJson, trustedOperatorIds } from './env';
 import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameProblem } from '../../src/net/account';
 import type { AccountSession, CodeResendAnswer, CodeStartAnswer, EmailConfirmAnswer, LeaderboardAnswer, OAuthProvider, PasswordLinkAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, LegacyState, PasswordRecord, PendingIdent, PendingIdentity, ProviderEmail, ProviderTrust, RefreshGrant, UserRef } from './accountStore';
-import { DEV_NAME_PROBLEM, LEGACY_CLOSED, devSubOf, legacyDateOf } from './accountStore';
+import { DEV_NAME_PROBLEM, LEGACY_CLOSED, UNSUB_ID_RE, devSubOf, legacyDateOf } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { firstUse } from './limits';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -2192,6 +2195,76 @@ async function deleteCancel(c: RouteContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/delete-cancel', { token }));
 }
 
+// ---- the news consent and unsubscribing (sign-in PR 13: §2.11, §3.14; no news is sent yet) ----------
+//
+//   POST /api/me/consent          Bearer (account, not a TV) { kind: 'news', granted } -> { news, terms } | 400
+//                                 bad_consent | 403 tv_session | 409 email_required (a grant needs a verified address)
+//                                 / deletion_pending { purgeAt } | 429. PERFIL's switch, the game's Origin and JSON (R1).
+//   POST /api/news/unsubscribe    two forms, one answer, { ok: true } for any id (an unknown or spent one too), so
+//                                 ids cannot be tested; that id's account gets a news withdrawal and a new id:
+//                                 1. the page's (/account#unsub=<id>): JSON { u }, the game's Origin (R1);
+//                                 2. RFC 8058's one-click, the mail provider's POST: ?u=<id> with the body
+//                                    List-Unsubscribe=One-Click (application/x-www-form-urlencoded, or
+//                                    multipart/form-data), no Origin needed. The one route that reads a value from
+//                                    the query (R8) and takes a form: it can only withdraw the news consent, and
+//                                    the id carries nothing of the account (16 random bytes, rotated on use).
+//                                 Outside /api/auth/*, so the login-CSRF gate (crossSiteRefusal) does not run
+//                                 before it: its JSON form asks for it itself.
+
+/** POST /api/me/consent { kind: 'news', granted } (§2.11): a full Bearer (not a TV's); the AccountsDO decides every refusal. */
+async function meConsent(c: RouteContext): Promise<Response> {
+  const refused = crossSiteRefusal(c, '/api/me/consent');
+  if (refused !== null) return refused;
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ kind?: unknown; granted?: unknown }>(c.request);
+  if (!b || b.kind !== 'news' || typeof b.granted !== 'boolean') return error(400, 'bad_consent', 'Consentimiento inválido');
+  return noStore(await accountsCall(c.env, '/me-consent', { userId: s.sub, kind: 'news', granted: b.granted }));
+}
+
+/** The media type of a request's body, lower case, without its parameters. */
+function bodyType(request: Request): string {
+  return (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+}
+
+/** The one-click form's body (RFC 8058 §3.1): List-Unsubscribe=One-Click, as either form encoding, at most 4 KB. */
+async function oneClickBody(request: Request, type: string): Promise<boolean> {
+  const bytes = await readCapped(request, JSON_MAX_BYTES);
+  if (bytes === null) return false;
+  try {
+    if (type === 'application/x-www-form-urlencoded') return new URLSearchParams(new TextDecoder().decode(bytes)).get('List-Unsubscribe') === 'One-Click';
+    const form = await new Response(bytes, { headers: { 'content-type': request.headers.get('content-type') ?? '' } }).formData();
+    return form.get('List-Unsubscribe') === 'One-Click';
+  } catch {
+    return false;
+  }
+}
+
+/** POST /api/news/unsubscribe (§2.11): the page's JSON form or RFC 8058's one-click; the same answer for any id. */
+async function newsUnsubscribe(c: RouteContext, url: URL): Promise<Response> {
+  const type = bodyType(c.request);
+  let u: unknown;
+  if (type === 'application/x-www-form-urlencoded' || type === 'multipart/form-data') {
+    // The one-click: no cookie, no Bearer, often no Origin (the mail provider's servers send it).
+    if (!(await oneClickBody(c.request, type))) return error(400, 'bad_request', 'Se espera List-Unsubscribe=One-Click');
+    u = url.searchParams.get('u');
+  } else {
+    // The page's: every other POST's rule (R1). Its id is in the body, never in the query (R8).
+    const refused = crossSiteRefusal(c, '/api/news/unsubscribe');
+    if (refused !== null) return refused;
+    const b = await readJson<{ u?: unknown }>(c.request);
+    if (!b) return error(400, 'bad_request');
+    u = b.u;
+  }
+  // A malformed id is answered as an unknown one, without the AccountsDO.
+  if (typeof u === 'string' && UNSUB_ID_RE.test(u)) {
+    const r = await accountsCall(c.env, '/news-unsubscribe', { u });
+    if (!r.ok) return noStore(r);
+    await r.text().catch(() => '');
+  }
+  return json({ ok: true }, 200, NO_STORE);
+}
+
 /** The routes sign-in PR 7 retires (design §2.15): a page of before is told to reload. */
 function gone(path: string): Response {
   const message = path === '/api/auth/register' ? 'Actualiza la página: ahora las cuentas se crean con un correo.' : 'Actualiza la página: esto ahora se hace desde PERFIL con tu correo.';
@@ -2376,6 +2449,9 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     // Account deletion (sign-in PR 12).
     if (p === '/api/me/delete') return meDelete(c);
     if (p === '/api/auth/delete/cancel') return deleteCancel(c);
+    // The news consent and unsubscribing (sign-in PR 13).
+    if (p === '/api/me/consent') return meConsent(c);
+    if (p === '/api/news/unsubscribe') return newsUnsubscribe(c, url);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);

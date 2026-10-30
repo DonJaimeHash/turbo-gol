@@ -1341,6 +1341,29 @@ export class AccountClient {
     return r.purgeAt;
   }
 
+  /**
+   * PERFIL's "News by email" switch (§2.11, §3.14): POST /api/me/consent { kind: 'news', granted }
+   * with the Bearer; resolves the server's state after it, which this account's MeInfo keeps too
+   * (in place: only that switch reads it, so nothing redraws). Refusals: email_required (a grant
+   * needs a verified address), tv_session, deletion_pending, rate_limited.
+   */
+  async setNews(granted: boolean): Promise<boolean> {
+    const owner = this.account?.playerId ?? null;
+    const r = (await this.ownCall('/api/me/consent', { kind: 'news', granted })) as { news?: unknown } | null;
+    const news = r?.news === true;
+    if (this.me !== null && this.me.playerId === owner) this.me.news = news;
+    return news;
+  }
+
+  /**
+   * A news mail's footer link (/account#unsub=<id>): POST /api/news/unsubscribe { u }, the page's
+   * form (the mail's one-click goes from the mail provider to the server). The server answers ok
+   * for any id, so the kept link is spent either way; no session needed.
+   */
+  async unsubscribeNews(id: string): Promise<void> {
+    await this.settleLink({ token: id }, true, async () => this.jsonOrFail<{ ok: true }>(await this.call('/api/news/unsubscribe', { u: id })));
+  }
+
   /** M9's link (/account#keep=<token>): POST /api/auth/delete/cancel { token } calls the deletion off; link_invalid when it cannot any more. */
   async cancelDeletion(token: string): Promise<void> {
     await this.settleLink({ token }, true, async () => this.jsonOrFail<{ ok: true }>(await this.call('/api/auth/delete/cancel', { token })));

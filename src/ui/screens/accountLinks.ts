@@ -14,7 +14,11 @@
  *   /account#reset=<token>   forgot's link: POST reset/peek, then the password sheet (GUARDAR Y
  *                            ENTRAR: every other device signed out, this one signed in)
  *   /account#forgot          the forgot sheet
- *   email, undo, keep, unsub sign-in PR 9, 12 and 13: this page says the link is not valid here
+ *   /account#email=, #undo=  sign-in PR 9: the add or change's link, and its undo
+ *   /account#unsub=<id>      a news mail's footer link (sign-in PR 13): DARME DE BAJA (POST
+ *                            news/unsubscribe { u }), then "Done: we won't send you news anymore."
+ *   keep                     sign-in PR 12's cancel link: this page says the link is not valid here
+ *                            until the terms of service bring its sheet
  *
  * On load (installAccountLinks, the arbiter's 'account' step) the link is read from the path and
  * the fragment, its token kept in sessionStorage (AccountClient.keepPendingLink, until its POST
@@ -741,6 +745,46 @@ export function openEmailLinkSheet(menu: Menu, token: string): void {
   });
 }
 
+/**
+ * /account#unsub=<id> (§3.14 step 3): a news mail's footer link, from any device, signed in or not.
+ * Nothing changes until DARME DE BAJA (a mail scanner's visit does nothing); then "Done: we won't
+ * send you news anymore." The server answers the same for any id (unknown, or spent by an earlier
+ * press: it rotates on use), so ids cannot be tested and the sheet always says done. A signed-in
+ * account reads its /api/me again (its PERFIL switch, when the link was its own).
+ */
+export function openUnsubSheet(menu: Menu, id: string): void {
+  const acc = menu.host.accounts;
+  const err = h('p.mn-field-error', { hidden: true, 'aria-live': 'polite' });
+  menu.modal({
+    title: t('auth.unsubTitle'),
+    body: [h('p.mn-note', null, t('auth.unsubNote')), err],
+    actions: [
+      {
+        label: t('auth.unsubConfirm'),
+        primary: true,
+        onClick: async () => {
+          err.hidden = true;
+          try {
+            await acc.unsubscribeNews(id);
+          } catch (e) {
+            err.textContent = authErrText(menu, e);
+            err.hidden = false;
+            return false;
+          }
+          queueMicrotask(() => {
+            menu.modal({ title: t('auth.unsubTitle'), body: h('p', null, t('auth.unsubDone')), actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }] });
+            if (acc.signedIn) void acc.fetchMe().catch(() => undefined);
+          });
+          return true;
+        },
+      },
+      { label: t('profile.cancel'), onClick: () => true },
+    ],
+    // Closed (CANCELAR, Back, a sheet over it): the next page load does not bring it back; the mail's link still works.
+    onClose: () => acc.keepPendingLink(null),
+  });
+}
+
 /** /account#undo=<token> (§3.6 step 6): whom it is for (undo/peek), then "Recupera tu cuenta". */
 export async function openUndoSheet(menu: Menu, token: string): Promise<void> {
   const acc = menu.host.accounts;
@@ -817,7 +861,8 @@ export async function openAccountLink(menu: Menu, link: AccountLink): Promise<vo
   if (link.kind === 'reset') return openResetSheet(menu, link.token);
   if (link.kind === 'email') return openEmailLinkSheet(menu, link.token);
   if (link.kind === 'undo') return openUndoSheet(menu, link.token);
-  // keep, unsub: sign-in PR 12 and 13 bring their sheets.
+  if (link.kind === 'unsub') return openUnsubSheet(menu, link.token);
+  // keep: its sheet comes with the terms of service (sign-in PR 12's route is closed until then).
   menu.host.accounts.keepPendingLink(null);
   menu.toast(t('error.account.link_invalid'), 'error');
 }

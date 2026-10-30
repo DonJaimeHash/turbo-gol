@@ -653,6 +653,9 @@ export default {
   'profile.privacy': 'PRIVACY',
   'profile.hideReplayName': 'Hide my name in public replays',
   'profile.hideReplayNameHelp': 'You show as "Player N" in the replay list and in the replays of your community-server matches, the ones already listed too. A copy someone opened before keeps your name for up to 3 hours.',
+  // PROFILE's news consent switch, shown only with a verified email (off unless the player opted in)
+  'profile.news': 'News by email',
+  'profile.newsHelp': 'Only Turbogol news, never third parties. Unsubscribe any time.',
   'profile.community': 'COMMUNITY',
   // The Discord server speaks English
   'profile.discord': 'Discord (in English)',
@@ -922,6 +925,11 @@ export default {
   'auth.undoDone': 'Your account is back on {email}. Every device was signed out.',
   // Forgot your password? on the sheets after Google or Discord: what to do once the new password is saved
   'auth.forgotPendingNote': 'Once the new password is saved, sign in with {provider} again: we ask you to sign in to your account and link it.',
+  // /account#unsub=: a news mail's footer link; nothing changes until UNSUBSCRIBE
+  'auth.unsubTitle': 'News by email',
+  'auth.unsubNote': 'Stop getting Turbogol news by email? Your account stays as it is.',
+  'auth.unsubConfirm': 'UNSUBSCRIBE',
+  'auth.unsubDone': "Done: we won't send you news anymore.",
 
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Choose a username',
