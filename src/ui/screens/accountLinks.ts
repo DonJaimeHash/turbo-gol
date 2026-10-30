@@ -259,8 +259,10 @@ export function welcome(menu: Menu, s: AccountSession): void {
 /**
  * ¿Olvidaste tu contraseña?: the address (prefilled from the sign-in field), ENVIAR ENLACE, then the
  * same answer for any address (I6). With the mail off, it says so (and names the providers).
+ * `after`: a line for where the player goes once the password is saved (the confirm step's sheets:
+ * sign in with the provider again, then with the new password, which links it).
  */
-export function openForgotSheet(menu: Menu, prefill: string, mailOn: boolean): void {
+export function openForgotSheet(menu: Menu, prefill: string, mailOn: boolean, after: string | null = null): void {
   if (!mailOn) {
     menu.modal({ title: t('profile.forgot'), body: h('p.mn-note', null, mailOffText(menu)), actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }] });
     return;
@@ -281,7 +283,7 @@ export function openForgotSheet(menu: Menu, prefill: string, mailOn: boolean): v
       return false;
     }
     // The answer's sheet replaces this one (an Enter in the field, or ENVIAR ENLACE).
-    queueMicrotask(() => menu.modal({ title: t('auth.checkMail'), body: h('p', null, t('auth.forgotSent', { email: address })), actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }] }));
+    queueMicrotask(() => menu.modal({ title: t('auth.checkMail'), body: [h('p', null, t('auth.forgotSent', { email: address })), after !== null ? h('p.mn-note', null, after) : null], actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }] }));
     return true;
   };
   // Busy once: a second press (or Enter) while the first is on its way would cost a mail.
@@ -297,7 +299,7 @@ export function openForgotSheet(menu: Menu, prefill: string, mailOn: boolean): v
   };
   menu.modal({
     title: t('profile.forgot'),
-    body: [h('p.mn-note', null, t('auth.forgotNote')), email.el],
+    body: [h('p.mn-note', null, t('auth.forgotNote')), email.el, after !== null ? h('p.mn-note', null, after) : null],
     actions: [
       { label: t('auth.sendLink'), primary: true, onClick: sendOnce },
       { label: t('profile.cancel'), onClick: () => true },
@@ -862,6 +864,24 @@ export function providerName(p: OAuthProvider): string {
   return PROVIDER_NAMES[p];
 }
 
+/**
+ * ¿Olvidaste tu contraseña? on the confirm step's sheets (§3.8): the confirm flow ends (its pending
+ * identity goes: no reset links it), and the forgot sheet opens for `prefill`, saying what comes
+ * after: sign in with the provider again, which finds the account, then with the new password,
+ * which links it. `close`: the sheet up, closed first.
+ */
+function pendingForgot(menu: Menu, provider: string, prefill: string, close: () => void): HTMLButtonElement {
+  return navButton(
+    'mn-link mn-prof-forgot',
+    t('profile.forgot'),
+    () => {
+      close();
+      void menu.host.accounts.authConfig().then((c) => openForgotSheet(menu, prefill, c.email, t('auth.forgotPendingNote', { provider })));
+    },
+    { 'data-key': 'auth-pending-forgot' },
+  );
+}
+
 /** A provider's round trip from these sheets (start?pend=1): "continue as" learns it once it signs in. */
 function goPend(menu: Menu, p: OAuthProvider): void {
   const acc = menu.host.accounts;
@@ -1002,6 +1022,8 @@ function confirmSheet(menu: Menu, info: PendingInfo, legacy: LegacyPhase, end: (
       return false;
     },
   };
+  // Forgot the password of the account they have (§3.8): the forgot sheet for the provider's address.
+  const forgot = pendingForgot(menu, p, info.email ?? '', () => close());
   const close = menu.modal({
     title: t('auth.confirmTitle'),
     body: [
@@ -1010,6 +1032,7 @@ function confirmSheet(menu: Menu, info: PendingInfo, legacy: LegacyPhase, end: (
       info.trust === 'none' ? h('p.mn-note', null, t('auth.confirmNoEmail', { provider: p })) : null,
       name.el,
       setRow(t('auth.news'), sw.el),
+      forgot,
     ],
     actions: [create, haveOne],
     onClose: () => {
@@ -1052,9 +1075,11 @@ function matchSheet(menu: Menu, info: PendingInfo, legacy: LegacyPhase, end: (o:
     });
   }
   if (ways.length > 0) ways[0].primary = true;
-  menu.modal({
+  // Only when the match claimed that address (§3.8): its reset goes to it. A hint's account is mailed nothing.
+  const forgot = m.via === 'email' ? pendingForgot(menu, p, m.email, () => close()) : null;
+  const close = menu.modal({
     title: t('auth.matchTitle'),
-    body: [describe(t('auth.matchBody', { email: m.email, name: m.name, provider: p })), info.trust === 'asserted' ? h('p.mn-note', null, t('auth.matchNotYours', { provider: p })) : null],
+    body: [describe(t('auth.matchBody', { email: m.email, name: m.name, provider: p })), info.trust === 'asserted' ? h('p.mn-note', null, t('auth.matchNotYours', { provider: p })) : null, forgot],
     actions: [...ways, { label: t('auth.cancel'), onClick: () => true }],
     onClose: () => {
       if (handed) return;
@@ -1084,9 +1109,20 @@ function haveOneSheet(menu: Menu, info: PendingInfo, prefill: string | null, leg
   const hint = h('p.mn-note.mn-prof-hint', { hidden: true });
   const others = emailProviders(menu).filter((o) => o !== info.provider && o !== info.second);
   const othersText = providersText(others, t('profile.or'));
-  menu.modal({
+  // The forgot sheet for the address typed (a username: the address is asked there).
+  const forgot = navButton(
+    'mn-link mn-prof-forgot',
+    t('profile.forgot'),
+    () => {
+      const typed = user.input.value.trim();
+      close();
+      void acc.authConfig().then((c) => openForgotSheet(menu, typed.includes('@') ? typed : '', c.email, t('auth.forgotPendingNote', { provider: p })));
+    },
+    { 'data-key': 'auth-pending-forgot' },
+  );
+  const close = menu.modal({
     title: t('auth.haveOneTitle'),
-    body: [describe(t('auth.haveOneLine', { provider: p })), user.el, pass.el, hint],
+    body: [describe(t('auth.haveOneLine', { provider: p })), user.el, pass.el, hint, forgot],
     actions: [
       {
         label: t('profile.signIn'),

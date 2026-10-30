@@ -906,6 +906,8 @@ export default {
   'auth.undoNote': 'Your account goes back to {email}. Choose a new password: every device is signed out.',
   'auth.undoDoneTitle': 'Account recovered',
   'auth.undoDone': 'Your account is back on {email}. Every device was signed out.',
+  // Forgot your password? on the sheets after Google or Discord: what to do once the new password is saved
+  'auth.forgotPendingNote': 'Once the new password is saved, sign in with {provider} again: we ask you to sign in to your account and link it.',
 
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Choose a username',

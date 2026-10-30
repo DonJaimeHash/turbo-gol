@@ -647,6 +647,7 @@ export default {
   'auth.undoNote': 'Tu cuenta vuelve a {email}. Elige una contraseña nueva: se cierra la sesión en todos los dispositivos.',
   'auth.undoDoneTitle': 'Cuenta recuperada',
   'auth.undoDone': 'Tu cuenta volvió a {email}. Cerramos la sesión en todos los dispositivos.',
+  'auth.forgotPendingNote': 'Después de guardar la contraseña nueva, vuelve a entrar con {provider}: te pedimos entrar con tu cuenta y la vinculamos.',
 
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Elige un nombre de usuario',

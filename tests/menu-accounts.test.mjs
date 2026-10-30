@@ -1361,6 +1361,41 @@ const typeCode = (input, code) => {
   input.dispatch('input');
 };
 
+test("PR 8 follow-up: \"¿Olvidaste tu contraseña?\" on the confirm, match and \"Entra con tu cuenta\" sheets opens the forgot sheet for the address (the confirm flow ends, its pending identity goes) and says to sign in with the provider again after", async () => {
+  await withDom(async () => {
+    const L = await linksModule();
+    // The confirm sheet (no match): the provider's address prefilled.
+    const acc = pendingAccounts();
+    const menu = replacingMenu(acc);
+    const outcome = L.confirmPending(menu);
+    for (let i = 0; i < 50 && button(menu, 'Forgot your password?') === null; i++) await settle();
+    button(menu, 'Forgot your password?').click();
+    for (let i = 0; i < 20 && menu.spec?.title !== 'Forgot your password?'; i++) await settle();
+    assert.equal(await outcome, 'closed', 'the confirm flow is over');
+    assert.deepEqual(acc.calls, [['cancelPending']], 'its pending identity goes: a reset links nothing');
+    assert.equal(menu.spec.title, 'Forgot your password?');
+    assert.equal(inputsOf(menu).find((e) => e.type === 'email').value, 'ana@example.com');
+    assert.match(menu.sheet.textContent, /Once the new password is saved, sign in with Discord again/);
+    // The match sheet: only when its account claimed the address.
+    const claimed = pendingAccounts({ info: { ...PENDING, match: { name: 'Ana', methods: ['password'], via: 'email', email: 'ana@example.com' } } });
+    const m1 = replacingMenu(claimed);
+    void L.confirmPending(m1);
+    for (let i = 0; i < 50 && m1.spec?.title !== 'This email already has an account'; i++) await settle();
+    assert.ok(button(m1, 'Forgot your password?'), 'a claimed address: its reset goes there');
+    const hinted = pendingAccounts({ info: { ...PENDING, match: { name: 'Ana', methods: ['password'], via: 'hint', email: 'ana@example.com' } } });
+    const m2 = replacingMenu(hinted);
+    void L.confirmPending(m2);
+    for (let i = 0; i < 50 && m2.spec?.title !== 'This email already has an account'; i++) await settle();
+    assert.equal(button(m2, 'Forgot your password?'), null, 'a hint: no reset would reach it');
+    // "Entra con tu cuenta": the address typed.
+    const s = await haveOne(pendingAccounts());
+    s.user.value = 'Bea@Example.com';
+    button(s.menu, 'Forgot your password?').click();
+    for (let i = 0; i < 20 && s.menu.spec?.title !== 'Forgot your password?'; i++) await settle();
+    assert.equal(inputsOf(s.menu).find((e) => e.type === 'email').value, 'bea@example.com');
+  });
+});
+
 test('PR 8 follow-up: the phone\'s "sign in first" sheet offers CREATE AN ACCOUNT WITH EMAIL, which opens PERFIL\'s sign-up (the TV\'s wait kept)', async () => {
   const TV = await import('../src/ui/screens/tvSignIn.ts');
   await withDom(async () => {
