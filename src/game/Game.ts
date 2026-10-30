@@ -1206,6 +1206,8 @@ export class Game implements P2PGameHooks {
     if (auth !== null) history.replaceState(null, '', location.pathname + location.search);
     // Kept only for a provider's round trip: any other page load forgets it.
     const detour = takeDetour();
+    // A provider's round trip that signed nobody in: "continue as" learns nothing from it (its mark goes).
+    if (auth?.kind === 'error' && auth.code !== 'no_account') this.accounts.providerAbandoned();
     if (auth?.kind === 'confirm' || (auth?.kind === 'error' && auth.code === 'no_account')) {
       if (auth.kind === 'error') this.menu.toast(oauthErrorText(auth.code), 'error');
       const outcome = await confirmPending(this.menu);

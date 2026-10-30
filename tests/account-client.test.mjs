@@ -592,6 +592,23 @@ test('the Idioma choice while signed in: kept across the reload, then POST /api/
   assert.equal(other.getItem('turbogol.auth.lang'), null);
 });
 
+test('the provider mark (PR 8 follow-up): a round trip that signs nobody in (the confirm sheet\'s CANCELAR, Back, an #auth=error) forgets it, so a later restore never says "Continue as … · Discord"', async () => {
+  const session = memStorage();
+  const { acc } = client({ '/api/auth/pending/cancel': () => res(200, { ok: true }), '/api/auth/refresh': () => res(200, SESSION({ name: 'Bea' })) }, { session });
+  acc.providerStarted('discord');
+  await acc.cancelPending();
+  assert.equal(session.getItem('turbogol.auth.provider'), null, 'CANCELAR: the mark goes');
+  await acc.restore();
+  assert.equal(acc.lastSignIn(), null, 'the restore that follows learns no provider');
+  acc.providerStarted('google');
+  acc.providerAbandoned();
+  assert.equal(session.getItem('turbogol.auth.provider'), null, 'an #auth=error back: the mark goes');
+  // The Game forgets it when a round trip comes back with an error (not no_account: its pending identity is kept).
+  const { readFile } = await import('node:fs/promises');
+  const game = await readFile(new URL('../src/game/Game.ts', import.meta.url), 'utf8');
+  assert.match(game, /if \(auth\?\.kind === 'error' && auth\.code !== 'no_account'\) this\.accounts\.providerAbandoned\(\);/);
+});
+
 test('keepResume / takeResume: only a marker of the dialog crosses a provider round trip, once, for 10 minutes', () => {
   const c = client({});
   c.acc.keepResume('email:change');

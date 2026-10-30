@@ -610,6 +610,7 @@ export class AccountClient {
    * never learns a provider from it). Never rejects.
    */
   async cancelPending(): Promise<void> {
+    this.providerAbandoned();
     try {
       await this.call('/api/auth/pending/cancel', {});
     } catch {
@@ -1427,6 +1428,19 @@ export class AccountClient {
       this.sessionStore.setItem(PROVIDER_TRY_KEY, JSON.stringify({ p, at: this.now() }));
     } catch {
       /* storage off: no "continue as" */
+    }
+  }
+
+  /**
+   * A provider's round trip that signed nobody in (the confirm sheet cancelled, a refusal or an error
+   * back in #auth=error:…): its mark goes, so a later restore of another sign-in never names that
+   * provider in "continue as".
+   */
+  providerAbandoned(): void {
+    try {
+      this.sessionStore.removeItem(PROVIDER_TRY_KEY);
+    } catch {
+      /* storage off: there is no mark */
     }
   }
 
