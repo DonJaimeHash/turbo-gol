@@ -397,6 +397,47 @@ export interface SessionsAnswer {
   sessions: DeviceSession[];
 }
 
+// ---- the email accounts (sign-in PR 7: server/src/accountRoutes.ts "email accounts") ------------------
+//
+// Every code and link answer is the same for any address (I6). `attempt` binds a code to the browser
+// that started (keep it in sessionStorage, never localStorage: I5). A refused name's 409 carries a
+// free `suggest`. Errors are { error, message } with these codes: bad_email, code_wrong { triesLeft },
+// code_expired, link_invalid, already_created { email }, email_taken, name_reserved / username_taken /
+// name_lookalike { suggest }, email_rate_limited / rate_limited { retryAfterMs }, email_paused,
+// email_unconfigured, email_required, no_password, password_required, gone.
+
+/** POST /api/auth/signup/start; POST /api/auth/reauth/code adds `to` (the account's own address). */
+export interface CodeStartAnswer {
+  attempt: string;
+  /** When REENVIAR may be pressed (server ms). */
+  resendAt: number;
+  codeLength?: 6;
+  to?: string;
+}
+
+/** POST /api/auth/signup/check: the address the code or the link proves. */
+export interface SignupCheckAnswer {
+  email: string;
+}
+
+/** POST /api/auth/code/resend: the same code and link went again. */
+export interface CodeResendAnswer {
+  resendAt: number;
+  resendsLeft: number;
+}
+
+/** POST /api/auth/reset/peek: who a reset link is for ("create" when the account has no password). */
+export interface ResetPeekAnswer {
+  name: string;
+  email: string;
+  hasPassword: boolean;
+}
+
+/** POST /api/me/password/link: where the link went. */
+export interface PasswordLinkAnswer {
+  sentTo: string;
+}
+
 export interface RegisterAnswer extends AccountSession {
   /** Shown once: each one resets the password (POST /api/auth/recover) when it is forgotten. */
   recoveryCodes: string[];

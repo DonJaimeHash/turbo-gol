@@ -4,8 +4,10 @@
  * Worker routes in accountRoutes.ts do the hashing / cookies / OAuth and call these endpoints; the
  * MatchDO reports ranked matches; the matchmaker never talks to it (the Worker passes ratings in).
  *
- *   POST /register        { username, pw, recovery, refresh }        -> UserRef | 409 username_taken
- *   POST /auth-begin      { username, ip, account?, device?, charge? } -> Credentials | { found: false } | 429 throttled
+ *   (POST /register, /password and /recovery went with sign-in PR 7: accounts are made by email
+ *   (/signup-finish), a password changes by /me-password or /reset, and no recovery code is minted.)
+ *   POST /auth-begin      { username | email, ip, account?, device?, charge? } -> Credentials | { found: false } | 429
+ *                         throttled (`email`: the email sign-in, the account and its counters by the typed canon)
  *   POST /auth-finish     { username, ip, account?, device?, ok: false, charged? } -> { ok: false } (one failure
  *                         counted, unless the begin charged it)
  *                         { username, ip, account, ok: true, charged } -> { ok: true } (a password proved behind
@@ -35,10 +37,6 @@
  *   POST /sessions/revoke-all { userId }                             -> { revoked } (every device, this one too)
  *     `refresh` / `next` in every call that stores one: a RefreshGrant { hash, family?, kind?, country?,
  *     city? } (accountStore.ts), or the hash alone (a family of its own).
- *   POST /password        { userId, pw, keep?, signOutOthers?, proved? } -> { ok } (other sessions signed out unless
- *                                                                     signOutOthers is false: a first password) | 401
- *                                                                     bad_credentials (`proved` is no longer the hash)
- *   POST /recovery        { userId, hashes }                         -> { ok }
  *   POST /recover         { username, code, pw, refresh, ip, device? } -> UserRef & { codesLeft } (level 2, method
  *                                                                     'reset') | 401 (an account with a verified email
  *                                                                     too) | 429
@@ -144,7 +142,7 @@ import type { MailLang } from './mailTemplates';
 import { TvCodes, tvCode } from './tvCodes';
 import type { TvWhere } from './tvCodes';
 import { sitePrefix } from './limits';
-import type { HostCredit, PasswordRecord, RankedResultInput, RefreshGrant, ThrottleEntry } from './accountStore';
+import type { Credentials, HostCredit, PasswordRecord, RankedResultInput, RefreshGrant, ThrottleEntry } from './accountStore';
 import { emailCanon, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -269,6 +267,17 @@ function provedStill(b: Record<string, unknown>, stored: string | null, rekey: P
   return typeof b.proved === 'string' && b.proved === stored;
 }
 
+/** Who a password check names: the legacy username, or the email sign-in's address by its canon (derived here from what was typed, I9). */
+type SignInSubject = { username: string } | { canon: string };
+
+function subjectOf(b: Record<string, unknown>): SignInSubject | null {
+  if (typeof b.email === 'string') {
+    const canon = b.email.length <= 254 ? emailCanon(b.email) : null;
+    return canon === null ? null : { canon };
+  }
+  return typeof b.username === 'string' && b.username.length <= 64 ? { username: b.username } : null;
+}
+
 /** A body's optional `rekey`: null when absent, undefined when malformed. */
 function rekeyOf(v: unknown): PasswordRecord | null | undefined {
   if (v === undefined || v === null) return null;
@@ -303,9 +312,6 @@ export function whereOf(v: unknown): TvWhere | null {
   };
 }
 
-function isHashList(v: unknown, max: number): v is string[] {
-  return Array.isArray(v) && v.length <= max && v.every((h) => isHex(h, 64));
-}
 
 // ---- email accounts (sign-in PR 7): the lives, caps and answers of the mailed proofs ------------
 
@@ -512,20 +518,23 @@ export class AccountsDO extends DurableObject<Env> {
    * (env.ts limitKey: an IPv4 address or an IPv6 /64) and an IPv6 address's /48.
    * Async (the HMACs) and done before any read, so the reads and writes after it stay atomic.
    */
-  private async checkKeys(username: string, ip: unknown, b: Record<string, unknown>): Promise<{ keys: ThrottleKey[]; clear: string[]; account: boolean }> {
+  private async checkKeys(subject: SignInSubject, ip: unknown, b: Record<string, unknown>): Promise<{ keys: ThrottleKey[]; clear: string[]; account: boolean }> {
     const R = THROTTLE_RULES;
     if (typeof b.account === 'string' && b.account.length > 0 && b.account.length <= 64) {
       const pa = await this.throttleKey('pa', b.account);
       return { keys: [{ key: pa, rule: R.pair }], clear: [pa], account: true };
     }
-    const user = usernameKey(username);
+    // The email sign-in (sign-in PR 7) counts the typed canon as the legacy path counts the username,
+    // on counters of its own; the network's and the /48's are one budget for both.
+    const byEmail = 'canon' in subject;
+    const user = byEmail ? subject.canon : usernameKey(subject.username);
     const addr = typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? ip : '';
     const net = addr === '' ? '' : limitKey(addr);
     const v6 = addr.includes(':') && !addr.includes('.');
     const site = v6 ? sitePrefix(addr) : null;
-    const known = this.knownDevice(username, b);
-    const pair = await this.throttleKey('up', user + '|' + net);
-    const who = known !== null ? await this.throttleKey('d', known) : await this.throttleKey('u', user);
+    const known = this.knownDevice(subject, b);
+    const pair = await this.throttleKey(byEmail ? 'ep' : 'up', user + '|' + net);
+    const who = known !== null ? await this.throttleKey('d', known) : await this.throttleKey(byEmail ? 'e' : 'u', user);
     const keys: ThrottleKey[] = [{ key: pair, rule: R.pair }, { key: who, rule: known !== null ? R.pair : R.user }];
     // A known browser proved this account's password here before: its 'd:' counter bounds it, so a
     // network's or a /48's pause (a classroom's typos, a sprayer next door) never stops it, and its
@@ -535,15 +544,20 @@ export class AccountsDO extends DurableObject<Env> {
       if (site !== null) keys.push({ key: await this.throttleKey('w', site), rule: R.site });
     }
     const clear = [pair, who];
-    if (known !== null) clear.push(await this.throttleKey('u', user));
+    if (known !== null) clear.push(await this.throttleKey(byEmail ? 'e' : 'u', user));
     return { keys, clear, account: false };
   }
 
-  /** This browser's device id when its device cookie is one of the account `username` names (it signed in there before); null otherwise. */
-  private knownDevice(username: string, b: Record<string, unknown>): string | null {
+  /** The account a sign-in's subject names: by its username, or by the canon of its verified address. */
+  private credentialsOf(subject: SignInSubject): Credentials | null {
+    return 'canon' in subject ? this.store.credentialsByCanon(subject.canon) : this.store.credentials(subject.username);
+  }
+
+  /** This browser's device id when its device cookie is one of the account `subject` names (it signed in there before); null otherwise. */
+  private knownDevice(subject: SignInSubject, b: Record<string, unknown>): string | null {
     const d = b.device as { user?: unknown; id?: unknown } | null | undefined;
     if (!d || typeof d !== 'object' || typeof d.user !== 'string' || typeof d.id !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(d.id)) return null;
-    return this.store.credentials(username)?.userId === d.user ? d.id : null;
+    return this.credentialsOf(subject)?.userId === d.user ? d.id : null;
   }
 
   /** The longest wait any of `keys` is locked for at `now` (0: none). */
@@ -689,8 +703,203 @@ export class AccountsDO extends DurableObject<Env> {
         return this.codeResend(b, now);
       case '/mail-failed':
         return this.mailFailed(b, now);
+      case '/forgot':
+        return this.forgot(b, now);
+      case '/reset-peek':
+        return this.resetPeek(b, now);
+      case '/reset':
+        return this.reset(b, now);
+      case '/me-password':
+        return this.mePassword(b, now);
+      case '/password-link':
+        return this.passwordLink(b, now);
+      case '/reauth-code':
+        return this.reauthCode(b, now);
+      case '/reauth-code-verify':
+        return this.reauthCodeVerify(b, now);
     }
     return null;
+  }
+
+  /**
+   * A security notice about something that already happened (M4 and the others: the notice lane,
+   * both languages), within the account's own cap of notices a day and the lane's share; null when
+   * either is full (the change stands, the notice is skipped) or the account has no address.
+   */
+  private async noticeKey(userId: string): Promise<string> {
+    return this.throttleKey('nt', userId);
+  }
+
+  private notice(p: MailProfile | null, key: string, data: MailOrder['data'], requestLang: unknown, now: number): MailOrder | null {
+    if (p === null || p.email === null) return null;
+    if (this.laneRefusal('notice', now) !== null || this.takeCaps([{ key, cap: MAIL_CAPS.notice, code: 'email_rate_limited' }], now) !== null) return null;
+    this.store.mailDayCount(mailDay(now), 'notice', 'sent');
+    return { to: p.email, lang: mailLang(p.lang, typeof requestLang === 'string' ? requestLang : null), ...(p.tz ? { tz: p.tz } : {}), data };
+  }
+
+  /**
+   * POST /forgot { email, lang?, ip } -> { ok, mail } (section 2.4): with an account that claimed that
+   * canon, a reset row and M3 ("reset" with a password, "create" without) to its own address. Never
+   * a hint, never a stranger: then nothing is mailed, but the recipient's and the network's caps and
+   * the account lane's room count as if a mail had gone (I6).
+   */
+  private async forgot(b: Record<string, unknown>, now: number): Promise<Response> {
+    const email = normalizeEmail(b.email);
+    const canon = emailCanon(b.email);
+    if (email === null || canon === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+    const net = netOf(b.ip);
+    const reset = await this.newReset();
+    const caps: Array<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }> = [{ key: await this.throttleKey('to', canon), cap: MAIL_CAPS.recipient, code: 'email_rate_limited' }];
+    if (net !== '') caps.push({ key: await this.throttleKey('mn', net), cap: networkCap(net), code: 'rate_limited' });
+    // ---- one step from here ----
+    const lane = this.laneRefusal('account', now);
+    if (lane !== null) return lane;
+    const capped = this.takeCaps(caps, now);
+    if (capped !== null) return capped;
+    const st = this.store.canonState(canon, now);
+    const p = st.kind === 'claimed' ? this.store.mailProfile(st.userId) : null;
+    if (p === null || p.email === null || p.banned) return json({ ok: true, mail: null });
+    this.addReset(p, reset.nonce, reset.hash, now);
+    this.store.mailDayCount(mailDay(now), 'account', 'sent');
+    const lang = mailLang(p.lang, typeof b.lang === 'string' ? b.lang : null);
+    const data: MailOrder['data'] = p.hasPassword ? { kind: 'reset', name: p.name, variant: 'reset', token: reset.token } : { kind: 'reset', name: p.name, variant: 'create', methods: p.ways, token: reset.token };
+    return json({ ok: true, mail: { to: p.email, lang, data } satisfies MailOrder });
+  }
+
+  /** A live reset row of `token` and its account, or null (unknown, expired, used, superseded: all one answer). */
+  private async resetRow(token: unknown, now: number): Promise<{ row: MailTokenRow; p: MailProfile } | null> {
+    if (typeof token !== 'string' || !B64_43.test(token)) return null;
+    const row = this.store.mailToken('hash', await sha256Hex(token));
+    if (row === null || row.purpose !== 'reset' || row.usedAt > 0 || now >= row.expiresAt || row.userId === null) return null;
+    const p = this.store.mailProfile(row.userId);
+    return p === null ? null : { row, p };
+  }
+
+  /** POST /reset-peek { token } -> { name, email, hasPassword } | 410 link_invalid: what the reset sheet shows. Consumes nothing. */
+  private async resetPeek(b: Record<string, unknown>, now: number): Promise<Response> {
+    const r = await this.resetRow(b.token, now);
+    if (r === null) return linkInvalid();
+    return json({ name: r.p.name, email: r.p.email ?? r.row.email, hasPassword: r.p.hasPassword });
+  }
+
+  /**
+   * POST /reset { token, pw, refresh, ip, lang? } -> UserRef & { mail } (level 2, method 'reset') | 410
+   * link_invalid | 403 banned, in one transaction: the password stored (pw_v 2), every refresh
+   * family revoked and one started for this browser, every reset, email and reauth row of the
+   * account dead, the throttles of its address cleared (this network's pair too), then M4.
+   */
+  private async reset(b: Record<string, unknown>, now: number): Promise<Response> {
+    const refresh = grantOf(b.refresh);
+    if (refresh === null || !isPw(b.pw)) return error(400, 'bad_request');
+    const first = await this.resetRow(b.token, now);
+    if (first === null) return linkInvalid();
+    const clear = first.p.canon === null ? [] : [await this.throttleKey('e', first.p.canon), await this.throttleKey('ep', first.p.canon + '|' + netOf(b.ip))];
+    const nt = await this.noticeKey(first.p.userId);
+    // ---- one step from here ----
+    const row = this.store.mailToken('hash', first.row.hash);
+    if (row === null || row.usedAt > 0 || now >= row.expiresAt) return linkInvalid();
+    if (first.p.banned) return error(403, 'banned', 'Cuenta suspendida');
+    const r = this.store.resetPassword(row, b.pw, { ...refresh, kind: 'web' }, now);
+    if (r === null) return linkInvalid();
+    this.store.throttleClear(clear);
+    const mail = this.notice(this.store.mailProfile(r.userId), nt, { kind: 'password_changed', name: r.username, at: now }, b.lang, now);
+    return json({ ...r, mail });
+  }
+
+  /**
+   * POST /me-password { userId, pw, keep, proved } -> { ok, mail } (section 2.5): the password the
+   * Worker checked (`proved`, which must still be the stored one) replaced by the new current key,
+   * every other refresh family signed out (`keep`: this device's), every reset and reauth row dead,
+   * then M4. 401 bad_credentials when the password changed meanwhile.
+   */
+  private async mePassword(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.userId !== 'string' || !isPw(b.pw) || typeof b.proved !== 'string') return error(400, 'bad_request');
+    const nt = await this.noticeKey(b.userId);
+    // ---- one step from here ----
+    const s = this.store;
+    if (s.passwordHash(b.userId) !== b.proved) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
+    if (!s.changePassword(b.userId, b.pw, isHex(b.keep, 64) ? b.keep : null, now)) return error(404, 'no_user');
+    const p = s.mailProfile(b.userId);
+    return json({ ok: true, mail: this.notice(p, nt, { kind: 'password_changed', name: p?.name ?? '', at: now }, b.lang, now) });
+  }
+
+  /**
+   * POST /password-link { userId, lang? } -> { sentTo, mail } | 409 email_required (section 2.5):
+   * "create a password" (or a new one) by a reset link to the account's own address, M3, in the
+   * account lane: the Bearer never sets a password by itself (I4; audit auth-3, P6).
+   */
+  private async passwordLink(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.userId !== 'string') return error(400, 'bad_request');
+    const p0 = this.store.mailProfile(b.userId);
+    if (p0 === null) return error(404, 'no_user');
+    if (p0.email === null || p0.canon === null) return error(409, 'email_required', 'Agrega un correo para crear una contraseña.');
+    const reset = await this.newReset();
+    const caps: Array<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }> = [
+      { key: await this.throttleKey('to', p0.canon), cap: MAIL_CAPS.recipient, code: 'email_rate_limited' },
+      { key: await this.throttleKey('ma', b.userId), cap: MAIL_CAPS.account, code: 'email_rate_limited' },
+    ];
+    // ---- one step from here ----
+    const p = this.store.mailProfile(b.userId);
+    if (p === null || p.email !== p0.email || p.email === null) return error(409, 'email_required', 'Agrega un correo para crear una contraseña.');
+    if (p.banned) return error(403, 'banned', 'Cuenta suspendida');
+    const lane = this.laneRefusal('account', now);
+    if (lane !== null) return lane;
+    const capped = this.takeCaps(caps, now);
+    if (capped !== null) return capped;
+    this.addReset(p, reset.nonce, reset.hash, now);
+    this.store.mailDayCount(mailDay(now), 'account', 'sent');
+    const lang = mailLang(p.lang, typeof b.lang === 'string' ? b.lang : null);
+    const data: MailOrder['data'] = p.hasPassword ? { kind: 'reset', name: p.name, variant: 'reset', token: reset.token } : { kind: 'reset', name: p.name, variant: 'create', methods: p.ways, token: reset.token };
+    return json({ sentTo: p.email, mail: { to: p.email, lang, data } satisfies MailOrder });
+  }
+
+  /**
+   * POST /reauth-code { userId, attempt, lang? } -> { resendAt, to, mail } | 409 email_required
+   * (section 2.3): "confirm it's you" by a code from the account's own mailbox (M11, 10 minutes,
+   * no link), REAUTH_CODES_PER_DAY a day, the account's mail caps; a newer one supersedes it.
+   */
+  private async reauthCode(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.userId !== 'string' || typeof b.attempt !== 'string' || !B64_43.test(b.attempt)) return error(400, 'bad_request');
+    const p0 = this.store.mailProfile(b.userId);
+    if (p0 === null) return error(404, 'no_user');
+    if (p0.email === null || p0.canon === null) return error(409, 'email_required', 'Esta cuenta no tiene un correo confirmado');
+    const nonce = randomHex(16);
+    const { token, code } = await this.mailSecrets(nonce);
+    const hashes = { row: await sha256Hex(token), attempt: await sha256Hex(b.attempt), code: await codeHashOf(b.attempt, code) };
+    const caps: Array<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }> = [
+      { key: await this.throttleKey('to', p0.canon), cap: MAIL_CAPS.recipient, code: 'email_rate_limited' },
+      { key: await this.throttleKey('ma', b.userId), cap: MAIL_CAPS.account, code: 'email_rate_limited' },
+      { key: await this.throttleKey('rc', b.userId), cap: { day: REAUTH_CODES_PER_DAY }, code: 'email_rate_limited' },
+    ];
+    // ---- one step from here ----
+    const p = this.store.mailProfile(b.userId);
+    if (p === null || p.email === null || p.canon !== p0.canon) return error(409, 'email_required', 'Esta cuenta no tiene un correo confirmado');
+    if (p.banned) return error(403, 'banned', 'Cuenta suspendida');
+    const lane = this.laneRefusal('account', now);
+    if (lane !== null) return lane;
+    const capped = this.takeCaps(caps, now);
+    if (capped !== null) return capped;
+    const lang = mailLang(p.lang, typeof b.lang === 'string' ? b.lang : null);
+    this.store.killMailTokens({ userId: p.userId }, ['reauth'], now);
+    // The row's key is its (never mailed) link token's hash: a reauth code has no link.
+    this.store.addMailToken({ hash: hashes.row, nonce, purpose: 'reauth', userId: p.userId, email: p.email, canon: p.canon as string, attemptHash: hashes.attempt, codeHash: hashes.code, codeExpiresAt: now + REAUTH_CODE_TTL_MS, payload: { lang }, expiresAt: now + CODE_MAX_MS }, now);
+    this.store.mailDayCount(mailDay(now), 'account', 'sent');
+    return json({ resendAt: now + RESEND.gapMs, to: p.email, mail: { to: p.email, lang, data: { kind: 'reauth_code', name: p.name, code } } satisfies MailOrder });
+  }
+
+  /**
+   * POST /reauth-code-verify { userId, attempt, code, hash } -> UserRef (this browser's token, `hash`,
+   * proves a credential now at level 2: a mailbox code, R6) | 400 code_wrong | 410 code_expired | 401
+   * no_refresh. 5 tries per code; the code is used once.
+   */
+  private async reauthCodeVerify(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.userId !== 'string' || !isHex(b.hash, 64) || typeof b.attempt !== 'string' || !B64_43.test(b.attempt) || typeof b.code !== 'string' || !CODE_RE.test(b.code)) return error(400, 'bad_request');
+    const v = await this.codeCheck('reauth', b.attempt, b.code, b.userId, now);
+    if (v instanceof Response) return v;
+    const r = this.store.markFresh(b.userId, b.hash, now);
+    if (r === null) return error(401, 'no_refresh');
+    this.store.useMailToken(v.row.hash, b.userId, now);
+    return json(r);
   }
 
   /**
@@ -903,26 +1112,22 @@ export class AccountsDO extends DurableObject<Env> {
     if (email !== null) return email;
     const s = this.store;
     switch (path) {
-      case '/register': {
-        const refresh = grantOf(b.refresh);
-        if (typeof b.username !== 'string' || usernameProblem(b.username) !== null || !isPw(b.pw) || !isHashList(b.recovery, 16) || refresh === null) return error(400, 'bad_request');
-        const r = s.register(b.username, b.pw, b.recovery, { ...refresh, kind: 'web' }, now);
-        return r === 'taken' ? error(409, 'username_taken', 'Ese usuario ya existe') : json(r);
-      }
       case '/auth-begin': {
-        if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
-        const { keys } = await this.checkKeys(b.username, b.ip, b);
+        const who = subjectOf(b);
+        if (who === null) return error(400, 'bad_request');
+        const { keys } = await this.checkKeys(who, b.ip, b);
         const wait = this.throttled(keys, now);
         if (wait > 0) return throttledAnswer(wait);
         // The check the Worker is about to make counts now, in this synchronous step with the test
         // above: a burst of requests in flight at once gets no more checks than the counters allow.
         if (b.charge === true) this.fail(keys, now);
-        const c = s.credentials(b.username);
+        const c = this.credentialsOf(who);
         return json(c === null ? { found: false } : { found: true, ...c });
       }
       case '/auth-finish': {
-        if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
-        const { keys, clear, account } = await this.checkKeys(b.username, b.ip, b);
+        const who = subjectOf(b);
+        if (who === null) return error(400, 'bad_request');
+        const { keys, clear, account } = await this.checkKeys(who, b.ip, b);
         // Charged at /auth-begin: the failure is counted already (a Worker of before charges nothing).
         const charged = b.charged === true;
         const failure = (): void => {
@@ -944,9 +1149,9 @@ export class AccountsDO extends DurableObject<Env> {
         // and a re-key never writes an older password back over it.
         if (!provedStill(b, s.passwordHash(b.userId), rekey)) {
           failure();
-          return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
+          return error(401, 'bad_credentials', 'canon' in who ? 'Correo o contraseña incorrectos' : 'Usuario o contraseña incorrectos');
         }
-        const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now, { lvl: 2, method: 'legacy' }, rekey);
+        const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now, { lvl: 2, method: 'canon' in who ? 'password' : 'legacy' }, rekey);
         if (r === null) return error(403, 'banned');
         s.throttleClear(clear);
         // The network's and the /48's counters keep failures only: this check's charge goes back.
@@ -985,23 +1190,10 @@ export class AccountsDO extends DurableObject<Env> {
         if (typeof b.userId !== 'string') return error(400, 'bad_request');
         return json({ revoked: s.deleteRefreshOf(b.userId) });
       }
-      case '/password': {
-        if (typeof b.userId !== 'string' || !isPw(b.pw)) return error(400, 'bad_request');
-        // A change that proved the old password: that password must still be the account's.
-        if (typeof b.proved === 'string' && s.passwordHash(b.userId) !== b.proved) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
-        if (!s.setPassword(b.userId, b.pw)) return error(404, 'no_user');
-        if (b.signOutOthers !== false) s.deleteRefreshOf(b.userId, isHex(b.keep, 64) ? b.keep : undefined);
-        return json({ ok: true });
-      }
-      case '/recovery': {
-        if (typeof b.userId !== 'string' || !isHashList(b.hashes, 16)) return error(400, 'bad_request');
-        s.setRecovery(b.userId, b.hashes);
-        return json({ ok: true });
-      }
       case '/recover': {
         const refresh = grantOf(b.refresh);
         if (typeof b.username !== 'string' || b.username.length > 64 || !isHex(b.code, 64) || !isPw(b.pw) || refresh === null) return error(400, 'bad_request');
-        const { keys, clear } = await this.checkKeys(b.username, b.ip, b);
+        const { keys, clear } = await this.checkKeys({ username: b.username }, b.ip, b);
         const wait = this.throttled(keys, now);
         if (wait > 0) return throttledAnswer(wait);
         const r = s.recover(b.username, b.code, b.pw, { ...refresh, kind: 'web' }, now);

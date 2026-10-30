@@ -657,6 +657,12 @@ export class AccountStore {
     return out;
   }
 
+  /** The credentials of the account whose verified address has `canon` (the email sign-in), or null. */
+  credentialsByCanon(canon: string): Credentials | null {
+    const u = this.sql.exec('SELECT username FROM users WHERE email_canon = ?', canon).toArray()[0];
+    return u ? this.credentials(str(u.username)) : null;
+  }
+
   credentialsById(userId: string): Credentials | null {
     const u = this.userById(userId);
     return u === null ? null : this.credentials(str(u.username));
@@ -935,11 +941,12 @@ export class AccountStore {
 
   /**
    * The highest level the account can reach (R6's ceiling) with the proofs this build takes: 2 with
-   * a password (a v1 or v2 key: "confirm it's you" takes either), else 1, a press on a provider's
-   * page. A verified email (a code by mail) and Google's forced login join it with their routes.
+   * a password (a v1 or v2 key: "confirm it's you" takes either) or a verified address (a code from
+   * its mailbox, sign-in PR 7), else 1, a press on a provider's page. Google's forced login joins it
+   * with the Google PR.
    */
   private ceilingOf(u: Row): 1 | 2 {
-    return u.pw_hash !== null && u.pw_hash !== undefined ? 2 : 1;
+    return (u.pw_hash !== null && u.pw_hash !== undefined) || (u.email_canon !== null && u.email_canon !== undefined) ? 2 : 1;
   }
 
   /**
@@ -1734,6 +1741,42 @@ export class AccountStore {
     this.sql.exec('INSERT OR IGNORE INTO mail_day (day, lane) VALUES (?, ?)', day, lane);
     if (what === 'sent') this.sql.exec('UPDATE mail_day SET sent = sent + 1 WHERE day = ? AND lane = ?', day, lane);
     else this.sql.exec('UPDATE mail_day SET failed = failed + 1, paused_until = MAX(paused_until, ?) WHERE day = ? AND lane = ?', pausedUntil, day, lane);
+  }
+
+  /**
+   * reset (section 2.4), one transaction: the reset row's account gets the password (pw_v 2), every
+   * refresh family goes and one starts for this browser (level 2, method 'reset'), the row is used
+   * and every reset, add_email, change_email and reauth row of the account dies. Null when the row
+   * is no longer a live reset, or the account is gone or suspended.
+   */
+  resetPassword(row: MailTokenRow, pw: PasswordRecord, refresh: RefreshGrant, now: number): UserRef | null {
+    return this.tx(() => {
+      const r = this.mailToken('hash', row.hash);
+      if (r === null || r.purpose !== 'reset' || r.usedAt > 0 || now >= r.expiresAt || r.userId === null) return null;
+      const u = this.userById(r.userId);
+      if (u === null || num(u.banned) === 1) return null;
+      const id = str(u.id);
+      this.setPassword(id, pw);
+      this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
+      this.deleteRefreshOf(id);
+      this.addRefresh(id, refresh, now, now, now, null, { lvl: 2, method: 'reset' });
+      this.useMailToken(r.hash, id, now);
+      this.killMailTokens({ userId: id }, ['reset', 'add_email', 'change_email', 'reauth'], now);
+      return { ...this.refOf(u), authAt: now, authLvl: 2 as const };
+    });
+  }
+
+  /**
+   * POST /api/me/password (section 2.5), one transaction: the new password, every other refresh
+   * family signed out (`keep`: the caller's token), every reset and reauth row dead. False: no account.
+   */
+  changePassword(userId: string, pw: PasswordRecord, keep: string | null, now: number): boolean {
+    return this.tx(() => {
+      if (!this.setPassword(userId, pw)) return false;
+      this.deleteRefreshOf(userId, keep ?? undefined);
+      this.killMailTokens({ userId }, ['reset', 'reauth'], now);
+      return true;
+    });
   }
 
   /**

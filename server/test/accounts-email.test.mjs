@@ -547,3 +547,325 @@ test('every link of a mail is MAIL_LINK_ORIGIN\'s, the token in the fragment, wh
   assert.equal(outbox[0].from.email, 'no-reply@turbo-gol.com');
   assert.equal(outbox[0].headers['Auto-Submitted'], 'auto-generated');
 });
+
+// ---- sign-in -----------------------------------------------------------------------------------------
+
+const AUTH = await import('../src/auth.ts');
+const signin = (env, email, password, ip, cookie) => post(env, '/api/auth/signin', { ip, cookie, body: { email, password } });
+const bearerOf = (sub, name, extra = {}) => AUTH.signJwt(SECRET, { typ: 's', sub, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, acct: 1, ...extra });
+
+/** One charged failure straight at the object (the counters only, no PBKDF2): what a wrong password counts. */
+async function doFail(obj, subject, ip) {
+  const headers = { [AUTH.INTERNAL_HEADER]: await AUTH.internalSecret(SECRET), 'content-type': 'application/json' };
+  const r = await obj.fetch(new Request('https://accounts/auth-begin', { method: 'POST', headers, body: JSON.stringify({ ...subject, ip, charge: true }) }));
+  return r.status === 200 ? 401 : r.status;
+}
+
+test('signin: an unknown address, a wrong password, a legacy key not re-keyed and an OAuth-only account get one answer after one server stage at the real parameters; the right password signs in at level 2 (method password); banned only after it', async () => {
+  const { env, obj, outbox } = makeEnv({ PASSWORD_PEPPER: PEPPER });
+  const ip = ips();
+  const real = await signUp(env, outbox, 'Real.Cuenta@gmail.com', ip(0), { username: 'Real' });
+  const legacy = storeAccount(obj, 'Vieja', { pw: await A.newPasswordRecord(await ACC.legacyPasswordKey('Vieja', PW), 1), email: 'vieja@x.com' });
+  storeAccount(obj, 'Solo', { pw: null, discord: 'd-solo', email: 'solo@x.com' });
+  const subtle = crypto.subtle;
+  const [derive, sign] = [subtle.deriveBits, subtle.sign];
+  const hex = (b) => Buffer.from(b instanceof ArrayBuffer ? new Uint8Array(b) : new Uint8Array(b.buffer, b.byteOffset, b.byteLength)).toString('hex');
+  let seen = [];
+  subtle.deriveBits = async function (alg, key, len) {
+    if (alg.name === 'PBKDF2') seen.push(`pbkdf2:${alg.iterations}:${new Uint8Array(alg.salt).byteLength}`);
+    return derive.call(this, alg, key, len);
+  };
+  subtle.sign = async function (alg, key, data) {
+    if ([WRONG, KEY].includes(hex(data))) seen.push('hmac(key)');
+    return sign.call(this, alg, key, data);
+  };
+  const answers = [];
+  try {
+    for (const [email, key] of [['nadie@x.com', WRONG], ['real.cuenta@gmail.com', WRONG], ['vieja@x.com', KEY], ['solo@x.com', KEY]]) {
+      seen = [];
+      const r = await signin(env, email, key, ip(answers.length + 1));
+      answers.push({ status: r.status, json: r.json, seen });
+    }
+  } finally {
+    subtle.deriveBits = derive;
+    subtle.sign = sign;
+  }
+  for (const a of answers) {
+    assert.deepEqual([a.status, a.json], [401, { error: 'bad_credentials', message: 'Correo o contraseña incorrectos' }]);
+    assert.deepEqual(a.seen, ['hmac(key)', 'pbkdf2:100000:16'], "the pepper and one PBKDF2 at a real record's parameters");
+  }
+  assert.equal(row(obj, legacy).pw_v, 1, 'a legacy key signs in by its username, never here');
+  // The right password, by any spelling of the address's canon.
+  const ok = await signin(env, 'realcuenta+tg@GoogleMail.com', KEY, ip(8));
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  assert.equal(ok.json.playerId, real.json.playerId);
+  assert.equal(claims(ok.json.session).aal, 2);
+  assert.ok(cookieOf(ok.raw, '__Host-tg_dv'));
+  const fams = obj.store.sql.exec('SELECT method, auth_lvl FROM refresh WHERE user_id = ? ORDER BY created_at', real.json.playerId).toArray();
+  assert.deepEqual(fams.at(-1), { method: 'password', auth_lvl: 2 });
+  // Suspended: said only after the right password.
+  obj.store.sql.exec('UPDATE users SET banned = 1 WHERE id = ?', real.json.playerId);
+  assert.equal((await signin(env, 'real.cuenta@gmail.com', WRONG, ip(9))).status, 401);
+  assert.equal((await signin(env, 'real.cuenta@gmail.com', KEY, ip(9))).json.error, 'banned');
+  assert.equal((await post(env, '/api/auth/signin', { ip: ip(9), body: { email: 'x@x.com', password: 'corta' } })).status, 400);
+});
+
+test('signin needs Turnstile every time, before the AccountsDO hears of it', async () => {
+  const { env, obj, calls } = makeEnv(TURNSTILE_ON);
+  const ip = ips();
+  storeAccount(obj, 'Ts', { pw: await A.newPasswordRecord(KEY, 2), email: 'ts@x.com' });
+  for (const extra of [{}, { turnstileToken: 'bad-token' }]) {
+    const r = await post(env, '/api/auth/signin', { ip: ip(0), body: { email: 'ts@x.com', password: KEY, ...extra } });
+    assert.deepEqual([r.status, r.json.error], [403, 'turnstile_failed']);
+  }
+  assert.equal(calls.filter((p) => p.startsWith('/auth')).length, 0);
+  assert.equal((await post(env, '/api/auth/signin', { ip: ip(0), body: { email: 'ts@x.com', password: KEY, ...TOK } })).status, 200);
+});
+
+test("signin throttles (auth/levels' THROTTLE_RULES, keyed by the typed canon): the pair 5, the canon 50 a day from unknown browsers, the network 600 in 15 minutes for IPv4 and for an IPv6 /64 (its /48's 300 binds first), one budget with the username sign-in; the account's own browser is never paused", async () => {
+  const { env, obj } = makeEnv();
+  storeAccount(obj, 'Blanco', { pw: await A.newPasswordRecord(KEY, 2), email: 'blanco@x.com' });
+  // The account's own browser (its device cookie, from an earlier sign-in).
+  const own = await signin(env, 'blanco@x.com', KEY, '100.70.9.1');
+  const dv = '__Host-tg_dv=' + cookieOf(own.raw, '__Host-tg_dv');
+  // The pair: one address from one network.
+  const pair = [];
+  for (let i = 0; i < 7; i++) pair.push((await signin(env, 'blanco@x.com', WRONG, '100.70.0.1')).status);
+  assert.deepEqual(pair, [401, 401, 401, 401, 401, 429, 429]);
+  // The canon: 50 failures a day from browsers it does not know, wherever they come from (5 came above).
+  for (let i = 0; i < 45; i++) assert.equal(await doFail(obj, { email: 'Blanco@x.com' }, `100.71.${i}.1`), 401);
+  const paused = await signin(env, 'blanco@x.com', KEY, '100.72.0.1');
+  assert.deepEqual([paused.status, paused.json.error], [429, 'throttled'], 'the right password too, from an unknown browser');
+  assert.equal((await signin(env, 'blanco@x.com', KEY, '100.72.0.2', dv)).status, 200, 'its own browser still signs in');
+  // The network: a school's IPv4 address shares 600 failures between the email and the username sign-ins.
+  for (let i = 0; i < 599; i++) assert.equal(await doFail(obj, i % 2 ? { email: `typo${i}@x.com` } : { username: `typo${i}` }, '203.0.113.90'), 401);
+  storeAccount(obj, 'Alumna', { pw: await A.newPasswordRecord(KEY, 2), email: 'alumna@x.com' });
+  assert.equal((await signin(env, 'alumna@x.com', KEY, '203.0.113.90')).status, 200, 'a success gives its charge back');
+  assert.equal(await doFail(obj, { email: 'typo-600@x.com' }, '203.0.113.90'), 401, 'the 600th failure');
+  assert.equal(await doFail(obj, { username: 'typo-601' }, '203.0.113.90'), 429, 'then the pause, for both paths');
+  // IPv6: one /64 has an IPv4 address's 600, and its /48's 300 binds first.
+  for (let i = 0; i < 300; i++) assert.equal(await doFail(obj, { email: `v6-${i}@x.com` }, `2001:db8:90:${i % 40}::1`), 401);
+  assert.equal(await doFail(obj, { email: 'v6-x@x.com' }, '2001:db8:90:99::1'), 429, 'the /48 pauses');
+});
+
+// ---- forgot and reset ----------------------------------------------------------------------------------
+
+const forgot = (env, email, ip) => post(env, '/api/auth/forgot', { ip, body: { email, lang: 'en' } });
+
+test('forgot: the same answer either way; M3 ("reset" or "create") only to an account that claimed the address, never to a stranger, a hint or a held address; the caps count both alike', async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const withPw = storeAccount(obj, 'ConClave', { pw: await A.newPasswordRecord(KEY, 2), email: 'con@x.com' });
+  storeAccount(obj, 'SinClave', { pw: null, discord: 'd-sin', email: 'sin@x.com' });
+  const hinted = storeAccount(obj, 'Pista', { pw: null, discord: 'd-pista' });
+  obj.store.setEmailHint(hinted, 'pista@x.com', 'discord');
+  obj.store.sql.exec('INSERT INTO email_holds (canon, user_id, email, until) VALUES (?, ?, ?, ?)', 'vieja@x.com', withPw, 'vieja@x.com', Date.now() + 7 * 24 * 60 * MIN);
+  const answers = [];
+  for (const email of ['con@x.com', 'SIN@x.com', 'nadie@x.com', 'pista@x.com', 'vieja@x.com']) answers.push(await forgot(env, email, ip(answers.length)));
+  for (const a of answers) assert.deepEqual([a.status, a.json], [200, { ok: true }]);
+  assert.deepEqual(outbox.map((m) => m.to), ['con@x.com', 'sin@x.com']);
+  assert.equal(outbox[0].subject, 'Choose a new Turbogol password', "the request's language for an account without one");
+  assert.equal(outbox[1].subject, 'Create a Turbogol password');
+  assert.match(outbox[1].text, /You sign in with Discord/);
+  assert.equal(linkIn(outbox[0]).kind, 'reset');
+  // A stranger's address fills its caps as an account's does: 5 an hour, then the same 429.
+  const tallies = { nadie: [], con: [] };
+  for (let i = 0; i < 5; i++) {
+    tallies.nadie.push((await forgot(env, 'nadie@x.com', ip(10 + i))).status);
+    tallies.con.push((await forgot(env, 'con@x.com', ip(20 + i))).status);
+  }
+  assert.deepEqual(tallies, { nadie: [200, 200, 200, 200, 429], con: [200, 200, 200, 200, 429] });
+});
+
+test("reset works once: the password stored (level 2, method reset), every family revoked, the other tokens dead, the address's throttles cleared, M4 in both languages; a newer link supersedes an older one; one victim is never locked out by a stranger", async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const acc = await signUp(env, outbox, 'victima@x.com', ip(0), { username: 'Victima', lang: 'en' });
+  const other = await signin(env, 'victima@x.com', KEY, ip(1));
+  // A "confirm it's you" code pending on the account: the reset kills it.
+  const code = await post(env, '/api/auth/reauth/code', { ip: ip(1), bearer: other.json.session, body: {} });
+  assert.equal(code.status, 200, JSON.stringify(code.json));
+  const m11 = outbox.at(-1);
+  // A stranger pauses the address's password sign-in (50 failures a day from browsers it does not know).
+  for (let i = 0; i < 50; i++) await doFail(obj, { email: 'victima@x.com' }, `100.80.${i}.1`);
+  assert.equal((await signin(env, 'victima@x.com', KEY, ip(2))).status, 429);
+  // Two forgots: the newer link supersedes the older.
+  assert.equal((await forgot(env, 'victima@x.com', ip(3))).status, 200);
+  const old = linkIn(outbox.at(-1)).token;
+  assert.equal((await forgot(env, 'victima@x.com', ip(4))).status, 200);
+  const token = linkIn(outbox.at(-1)).token;
+  assert.equal((await post(env, '/api/auth/reset/peek', { ip: ip(5), body: { token: old } })).status, 410, 'superseded');
+  const peek = await post(env, '/api/auth/reset/peek', { ip: ip(5), body: { token } });
+  assert.deepEqual(peek.json, { name: 'Victima', email: 'victima@x.com', hasPassword: true });
+  assert.equal((await post(env, '/api/auth/reset/peek', { ip: ip(5), body: { token } })).status, 200, 'a peek consumes nothing');
+  const NEW = await ACC.passwordKey('la clave nueva de verdad');
+  const r = await post(env, '/api/auth/reset', { ip: ip(5), body: { token, password: NEW } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.playerId, acc.json.playerId);
+  assert.equal(claims(r.json.session).aal, 2);
+  assert.deepEqual(obj.store.sql.exec('SELECT method, auth_lvl FROM refresh WHERE user_id = ?', acc.json.playerId).toArray(), [{ method: 'reset', auth_lvl: 2 }], 'one family: this browser');
+  assert.equal((await post(env, '/api/auth/refresh', { ip: ip(1), cookie: '__Host-tg_rt=' + cookieOf(other.raw, '__Host-tg_rt') })).status, 401, 'every other device signed out');
+  assert.equal((await post(env, '/api/auth/reset', { ip: ip(5), body: { token, password: NEW } })).status, 410, 'once');
+  const dead = await post(env, '/api/auth/reauth/code/verify', { ip: ip(5), bearer: r.json.session, cookie: '__Host-tg_rt=' + cookieOf(r.raw, '__Host-tg_rt'), body: { attempt: code.json.attempt, code: codeIn(m11) } });
+  assert.deepEqual([dead.status, dead.json.error], [410, 'code_expired'], 'the reauth code died with the reset');
+  const m4 = outbox.at(-1);
+  assert.equal(m4.to, 'victima@x.com');
+  assert.equal(m4.subject, 'Your Turbogol password changed · Tu contraseña de Turbogol cambió', "both languages, the account's first");
+  assert.match(m4.text, /https:\/\/turbo-gol\.com\/account#forgot/);
+  // The stranger's pause went with the reset: the new password signs in at once, the old one never.
+  assert.equal((await signin(env, 'victima@x.com', NEW, ip(2))).status, 200);
+  assert.equal((await signin(env, 'victima@x.com', KEY, ip(6))).status, 401);
+  assert.equal((await post(env, '/api/auth/reset', { ip: ip(6), body: { token: 'Z'.repeat(43), password: NEW } })).json.error, 'link_invalid');
+});
+
+// ---- the password behind a session, and "confirm it's you" by a code ----------------------------------
+
+test('me/password: the current password changes it (the other devices out, M4, the reset links dead); a wrong one counts per account; me/password/link mails a "create" link and never sets a password', async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const a = await signUp(env, outbox, 'clave@x.com', ip(0), { username: 'Clave' });
+  const b = await signin(env, 'clave@x.com', KEY, ip(1));
+  await forgot(env, 'clave@x.com', ip(2));
+  const pending = linkIn(outbox.at(-1)).token;
+  const cookie = '__Host-tg_rt=' + a.rt;
+  const NEW = await ACC.passwordKey('otra clave muy larga');
+  const tally = [];
+  for (let i = 0; i < 6; i++) tally.push((await post(env, '/api/me/password', { ip: ip(3), bearer: a.json.session, cookie, body: { current: WRONG, password: NEW } })).status);
+  assert.deepEqual(tally, [401, 401, 401, 401, 401, 429], "the account's 'pa:' counter");
+  obj.store.throttleClear(obj.store.sql.exec("SELECT key FROM auth_throttle WHERE key LIKE 'pa:%'").toArray().map((x) => x.key));
+  assert.equal((await post(env, '/api/me/password', { ip: ip(3), bearer: a.json.session, body: { current: KEY, password: NEW } })).json.error, 'no_refresh');
+  const ok = await post(env, '/api/me/password', { ip: ip(3), bearer: a.json.session, cookie, body: { current: KEY, password: NEW } });
+  assert.deepEqual([ok.status, ok.json], [200, { ok: true }]);
+  assert.equal(outbox.at(-1).subject, 'Tu contraseña de Turbogol cambió · Your Turbogol password changed');
+  assert.equal((await post(env, '/api/auth/refresh', { ip: ip(1), cookie: '__Host-tg_rt=' + cookieOf(b.raw, '__Host-tg_rt') })).status, 401);
+  assert.equal((await post(env, '/api/auth/refresh', { ip: ip(0), cookie })).status, 200, 'this device stays');
+  assert.equal((await post(env, '/api/auth/reset/peek', { ip: ip(3), body: { token: pending } })).status, 410, 'a change kills the reset links');
+  assert.equal((await signin(env, 'clave@x.com', NEW, ip(4))).status, 200);
+  // The link: an account without a password gets "create"; the Bearer alone sets nothing.
+  const solo = storeAccount(obj, 'SinClave', { pw: null, discord: 'd-sin', email: 'sin@x.com' });
+  const link = await post(env, '/api/me/password/link', { ip: ip(5), bearer: await bearerOf(solo, 'SinClave'), body: {} });
+  assert.deepEqual([link.status, link.json], [200, { sentTo: 'sin@x.com' }]);
+  assert.match(outbox.at(-1).subject, /Crea una contraseña para Turbogol|Create a Turbogol password/);
+  assert.equal(row(obj, solo).pw_hash, null);
+  assert.equal((await post(env, '/api/me/password/link', { ip: ip(5), bearer: await bearerOf(solo, 'SinClave', { tv: 1 }), body: {} })).json.error, 'tv_session');
+});
+
+test("reauth/code: a code from the account's own mailbox raises this browser to level 2 (M11, 5 tries, bound to the account); 5 a day; a maintainer confirms with its password; no address, 409", async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const acc = await signUp(env, outbox, 'confirma@x.com', ip(0), { username: 'Confirma' });
+  // A device of before levels (auth_lvl 0): its session carries no level.
+  const tok = 'y'.repeat(43);
+  obj.store.sql.exec("INSERT INTO refresh (hash, user_id, created_at, expires_at, kind, auth_at, family_at) VALUES (?, ?, ?, ?, 'web', ?, ?)", await A.sha256Hex(tok), acc.json.playerId, Date.now(), Date.now() + 86_400_000, Date.now() - 60_000, Date.now() - 60_000);
+  const s = await post(env, '/api/auth/refresh', { ip: ip(1), cookie: '__Host-tg_rt=' + tok });
+  const rt = cookieOf(s.raw, '__Host-tg_rt');
+  assert.equal(claims(s.json.session).aal, undefined);
+  const c = await post(env, '/api/auth/reauth/code', { ip: ip(1), bearer: s.json.session, body: {} });
+  assert.equal(c.status, 200, JSON.stringify(c.json));
+  assert.deepEqual(Object.keys(c.json).sort(), ['attempt', 'resendAt', 'to']);
+  assert.equal(c.json.to, 'confirma@x.com');
+  const m11 = outbox.at(-1);
+  assert.match(m11.subject, /^\d{6} es tu código para confirmar que eres tú$/);
+  assert.equal(linkIn(m11), null, 'no link');
+  const code = codeIn(m11);
+  const verify = (body, bearer = s.json.session) => post(env, '/api/auth/reauth/code/verify', { ip: ip(1), bearer, cookie: '__Host-tg_rt=' + rt, body });
+  // Another account's Bearer cannot use this attempt.
+  const other = await signUp(env, outbox, 'otro@x.com', ip(2), { username: 'Otro' });
+  assert.equal((await verify({ attempt: c.json.attempt, code }, other.json.session)).json.error, 'code_expired');
+  assert.equal((await verify({ attempt: c.json.attempt, code: code === '000000' ? '111111' : '000000' })).json.triesLeft, 4);
+  const ok = await verify({ attempt: c.json.attempt, code });
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  assert.equal(claims(ok.json.session).aal, 2);
+  assert.deepEqual(obj.store.sql.exec('SELECT auth_lvl FROM refresh WHERE hash = ?', await A.sha256Hex(rt)).toArray()[0], { auth_lvl: 2 });
+  assert.equal((await verify({ attempt: c.json.attempt, code })).json.error, 'code_expired', 'once');
+  // Five a day per account (one was used above); an hour on, so the address's 5 an hour (M1 counted) is not what refuses.
+  const t0 = Date.now() + 61 * MIN;
+  obj.now = () => t0;
+  const t = [];
+  for (let i = 0; i < 5; i++) t.push((await post(env, '/api/auth/reauth/code', { ip: ip(3 + i), bearer: s.json.session, body: {} })).status);
+  assert.deepEqual(t, [200, 200, 200, 200, 429]);
+  // Its resend needs its own Bearer.
+  const attempt = (await post(env, '/api/auth/reauth/code', { ip: ip(9), bearer: other.json.session, body: {} })).json.attempt;
+  const before = outbox.length;
+  obj.now = () => t0 + 61_000;
+  assert.equal((await post(env, '/api/auth/code/resend', { ip: ip(9), body: { attempt } })).json.error, 'code_expired', 'no Bearer');
+  assert.equal((await post(env, '/api/auth/code/resend', { ip: ip(9), bearer: s.json.session, body: { attempt } })).json.error, 'code_expired', "another account's");
+  assert.equal((await post(env, '/api/auth/code/resend', { ip: ip(9), bearer: other.json.session, body: { attempt } })).status, 200);
+  assert.equal(outbox.length, before + 1);
+  assert.equal(codeIn(outbox.at(-1)), codeIn(outbox[before - 1]), 'the same code');
+  // The project's maintainer confirms with its password: the maintainer routes' level 2 stays a typed password's.
+  env.NODE_TRUSTED_OPERATORS = acc.json.playerId;
+  assert.equal((await post(env, '/api/auth/reauth/code', { ip: ip(10), bearer: s.json.session, body: {} })).json.error, 'password_required');
+  delete env.NODE_TRUSTED_OPERATORS;
+  const noMail = storeAccount(obj, 'SinCorreo', { pw: null, discord: 'd-nada' });
+  assert.equal((await post(env, '/api/auth/reauth/code', { ip: ip(11), bearer: await bearerOf(noMail, 'SinCorreo'), body: {} })).json.error, 'email_required');
+});
+
+test('the ceiling (R6): a verified address reaches level 2 by a code, so unlinking down to one way in asks for level 2 of an account without a password', () => {
+  const { obj } = makeEnv();
+  const id = storeAccount(obj, 'DosVias', { pw: null, discord: 'd-dos', email: 'dos@x.com' });
+  obj.store.sql.exec("UPDATE users SET google_sub = 'g-dos' WHERE id = ?", id);
+  assert.equal(obj.store.unlink(id, 'google', 1), 'level2', 'one way would be left, and the mailbox gives level 2');
+  assert.equal(obj.store.unlink(id, 'google', 2), 'ok');
+  const sin = storeAccount(obj, 'SinCorreo', { pw: null, discord: 'd-sc' });
+  obj.store.sql.exec("UPDATE users SET google_sub = 'g-sc' WHERE id = ?", sin);
+  assert.equal(obj.store.unlink(sin, 'google', 1), 'ok', 'without an address its ceiling stays 1');
+});
+
+// ---- lanes -----------------------------------------------------------------------------------------------
+
+test('the lanes: a full signup lane (60 %) and the automatic pause stop sign-up mail only; resets still go', async () => {
+  let failing = false;
+  const { env, obj, outbox } = makeEnv({ EMAIL_DAILY_CAP: '10' }, { fail: () => failing });
+  const ip = ips();
+  storeAccount(obj, 'Duena', { pw: await A.newPasswordRecord(KEY, 2), email: 'duena@x.com' });
+  for (let i = 0; i < 6; i++) assert.equal((await start(env, `s${i}@x.com`, ip(i))).status, 200);
+  assert.equal((await start(env, 's6@x.com', ip(6))).json.error, 'email_rate_limited');
+  assert.equal((await forgot(env, 'duena@x.com', ip(7))).status, 200);
+  assert.equal(outbox.at(-1).to, 'duena@x.com', 'the account lane goes on to 90 %');
+  // The pause: 10 failed sends of the signup lane in 10 minutes (a day of its own and a higher cap: the lanes have room).
+  const day = Date.UTC(2031, 0, 2, 12);
+  obj.now = () => day;
+  env.EMAIL_DAILY_CAP = '100';
+  failing = true;
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (let i = 0; i < 10; i++) await start(env, `p${i}@x.com`, ip(20 + i));
+  } finally {
+    console.warn = warn;
+  }
+  failing = false;
+  const sent = outbox.length;
+  assert.equal((await start(env, 'p10@x.com', ip(31))).json.error, 'email_paused');
+  assert.equal((await forgot(env, 'duena@x.com', ip(32))).status, 200);
+  assert.equal(outbox.length, sent + 1, 'the reset went');
+});
+
+// ---- the routes that go, and the rename ------------------------------------------------------------------
+
+test('register, recovery-codes and the old password route answer 410 gone, to anyone; a rename is Bearer only (a legacy key asks level 2 first; a protected look-alike is refused with a suggestion)', async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const acc = await signUp(env, outbox, 'renombra@x.com', ip(0), { username: 'Renombra' });
+  for (const path of ['/api/auth/register', '/api/auth/recovery-codes', '/api/auth/password']) {
+    for (const bearer of [undefined, acc.json.session]) {
+      const r = await post(env, path, { ip: ip(1), bearer, body: { username: 'Nueva', password: KEY, passwordV2: KEY } });
+      assert.deepEqual([r.status, r.json.error], [410, 'gone'], path);
+    }
+  }
+  assert.match((await post(env, '/api/auth/register', { ip: ip(1), body: {} })).json.message, /ahora las cuentas se crean con un correo/);
+  assert.equal(obj.store.sql.exec('SELECT COUNT(*) AS n FROM users').toArray()[0].n, 1);
+  const owner = storeAccount(obj, 'Proyecto', { email: 'p@x.com' });
+  obj.store.rebuildProtectedSkeletons([owner]);
+  const look = await post(env, '/api/me/username', { ip: ip(2), bearer: acc.json.session, body: { username: 'Pr0yect0' } });
+  assert.deepEqual([look.status, look.json.error], [409, 'name_lookalike']);
+  assert.equal(ACC.usernameIssue(look.json.suggest), null);
+  const taken = await post(env, '/api/me/username', { ip: ip(2), bearer: acc.json.session, body: { username: 'proyecto' } });
+  assert.deepEqual([taken.status, taken.json.error, typeof taken.json.suggest], [409, 'username_taken', 'string']);
+  const ok = await post(env, '/api/me/username', { ip: ip(2), bearer: acc.json.session, body: { username: 'Renombrada' } });
+  assert.deepEqual([ok.status, ok.json.name], [200, 'Renombrada'], 'no password asked');
+  const legacy = storeAccount(obj, 'Vieja');
+  const lr = await post(env, '/api/me/username', { ip: ip(3), bearer: await bearerOf(legacy, 'Vieja'), body: { username: 'VieJa2' } });
+  assert.deepEqual([lr.status, lr.json.error, lr.json.level], [403, 'reauth_required', 2]);
+});
