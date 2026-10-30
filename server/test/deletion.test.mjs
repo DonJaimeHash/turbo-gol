@@ -706,6 +706,45 @@ test('the purge never deletes the project account: a deletion it got before it w
   assert.ok(lines.some((l) => l.includes('never deleted')), lines.join('\n'));
 });
 
+test('the purge never deletes the project account even when the alarm is the first event after a restart (the deploy that trusts it, or an eviction): the list reaches the store at start and on every alarm', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const p = await requested(env, obj, 'Proyecto', 'proyecto@example.com', ip(0));
+  const other = await requested(env, obj, 'Otra', 'otra@example.com', ip(1));
+  // The owner adds the id to NODE_TRUSTED_OPERATORS: a deploy, so a fresh object over the same storage, and no request before its alarm.
+  const fresh = new AccountsDO(obj.ctx, { ...env, NODE_TRUSTED_OPERATORS: p.id });
+  fresh.now = () => Math.max(p.purgeAt, other.purgeAt) + 1;
+  const warn = console.warn;
+  const log = console.log;
+  const lines = [];
+  console.warn = (m) => lines.push(String(m));
+  console.log = (m) => lines.push(String(m));
+  try {
+    await fresh.alarm();
+  } finally {
+    console.warn = warn;
+    console.log = log;
+  }
+  assert.equal(row(fresh, p.id)?.delete_purge_at, 0, 'its deletion is called off, never purged');
+  assert.equal(fresh.store.isDeleted(p.id), false);
+  assert.ok(lines.some((l) => l.includes('never deleted')), lines.join('\n'));
+  assert.equal(fresh.store.isDeleted(other.id), true, 'the other due account is purged as usual');
+  // The same with the alarm alone (an object whose start told it nothing yet, then a list that changed).
+  const q = await requested(env, obj, 'Proyecto2', 'proyecto2@example.com', ip(2));
+  const env3 = { ...env, NODE_TRUSTED_OPERATORS: '' };
+  const later = new AccountsDO(obj.ctx, env3);
+  env3.NODE_TRUSTED_OPERATORS = q.id;
+  later.now = () => q.purgeAt + 1;
+  console.warn = () => {};
+  try {
+    await later.alarm();
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(row(later, q.id)?.delete_purge_at, 0);
+  assert.equal(later.store.isDeleted(q.id), false);
+});
+
 // ---- after the purge (§3.13 steps 4 and 5) -----------------------------------------------------------------
 
 /** A sanctioned account (a queue ban for 2 hours, 3 abandons in the window) purged at `at`: what it had. */

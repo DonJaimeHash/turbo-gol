@@ -575,6 +575,8 @@ export class AccountsDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.store = new AccountStore(ctx.storage.sql, (fn) => ctx.storage.transactionSync(fn));
+    // Before any event: an alarm can be the first one after a deploy or an eviction (purgeAccount's guard reads the list).
+    this.syncMaintainers();
     void ctx.blockConcurrencyWhile(async () => {
       this.store.migrate();
       // The names a new one may not imitate (section 5.2): the trusted list is a var, so it changes only with a deploy, which restarts this object.
@@ -589,6 +591,7 @@ export class AccountsDO extends DurableObject<Env> {
    * ids (tellNodes). With more due, the alarm comes back in PURGE_AGAIN_MS for the purge alone.
    */
   override async alarm(): Promise<void> {
+    this.syncMaintainers();
     const now = this.now();
     const last = this.store.lastPrune();
     const daily = now - last >= PRUNE_EVERY_MS - PURGE_AGAIN_MS;
@@ -726,14 +729,22 @@ export class AccountsDO extends DurableObject<Env> {
     return sent;
   }
 
+  /**
+   * The maintainer accounts' rules (§3.12) follow NODE_TRUSTED_OPERATORS as this object sees it now
+   * (a change is a deploy, so a restart anyway): told to the store at start, on every request and
+   * on every alarm, so the purge's guard (accountStore.ts purgeAccount) never runs on an empty list.
+   */
+  private syncMaintainers(): void {
+    const seen = this.env.NODE_TRUSTED_OPERATORS ?? '';
+    if (this.trustedSeen === seen) return;
+    this.trustedSeen = seen;
+    this.store.setMaintainers(trustedOperatorIds(this.env));
+  }
+
   override async fetch(request: Request): Promise<Response> {
     if (!this.env.JWT_SECRET) return error(500, 'no_secret');
     if (!(await checkInternal(this.env.JWT_SECRET, request))) return error(403, 'forbidden');
-    // The maintainer accounts' rules (§3.12) follow the secret as this request sees it (a change is a restart anyway).
-    if (this.trustedSeen !== (this.env.NODE_TRUSTED_OPERATORS ?? '')) {
-      this.trustedSeen = this.env.NODE_TRUSTED_OPERATORS ?? '';
-      this.store.setMaintainers(trustedOperatorIds(this.env));
-    }
+    this.syncMaintainers();
     const url = new URL(request.url);
     const now = this.now();
     try {
