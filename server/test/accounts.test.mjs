@@ -118,26 +118,30 @@ test('recovery codes: one use each, password replaced, every session signed out'
   assert.equal(store.recover('bob', H('x'), pw2, H('3'), NOW), null, 'used up');
 });
 
-test('oauth: sign-up with a unique derived name, sign-in again, link, already linked elsewhere', () => {
+test('oauth: an identity nobody owns makes no account (pending); the confirm step makes it with a name the player chose; sign-in again, link, already linked elsewhere', () => {
   const { store } = makeStore();
   store.register('Jose_Perez', PW, [], H('1'), NOW);
-  const g = store.oauth('google', 'g-123', 'José Pérez', null, H('2'), NOW);
-  assert.equal(g.created, true);
-  assert.notEqual(g.username.toLowerCase(), 'jose_perez', 'taken name gets a suffix');
-  assert.match(g.username, /^Jose_Perez\d+$|^Jose_Pere\d+$|^Jose_Per\d+$/);
-  const again = store.oauth('google', 'g-123', 'whatever', null, H('3'), NOW);
+  const count = () => store.sql.exec('SELECT COUNT(*) AS n FROM users').toArray()[0].n;
+  assert.equal(store.oauth('google', 'g-123', null, H('2'), NOW), 'pending', 'the callback creates nothing (I3)');
+  assert.equal(count(), 1);
+  const pend = { p: 'google', id: 'g-123', email: null, trust: 'none' };
+  assert.equal(store.createFromPending(pend, 'jose_perez', H('2'), NOW), 'username_taken', 'the name is unique (case-insensitive)');
+  const suggest = store.suggestName('Jose_Perez', 'es');
+  assert.equal(ACC.usernameProblem(suggest), null);
+  assert.equal(store.usernameTaken(suggest), false);
+  const g = store.createFromPending(pend, 'Ana_G', H('2'), NOW);
+  assert.equal(g.username, 'Ana_G');
+  const again = store.oauth('google', 'g-123', null, H('3'), NOW);
   assert.equal(again.userId, g.userId);
-  assert.equal(again.created, false);
+  assert.equal(store.createFromPending(pend, 'Otra', H('4'), NOW), 'already_linked', 'the identity has an owner now');
   const me = store.me(g.userId, NOW);
   assert.deepEqual(me.providers, ['google']);
   assert.equal(me.hasPassword, false);
   const alice = store.register('alice', PW, [], H('4'), NOW);
-  assert.equal(store.oauth('discord', 'd-9', 'x', alice.userId, H('5'), NOW).userId, alice.userId);
+  assert.equal(store.oauth('discord', 'd-9', alice.userId, H('5'), NOW).userId, alice.userId);
   assert.deepEqual(store.me(alice.userId, NOW).providers, ['password', 'discord']);
-  assert.equal(store.oauth('google', 'g-123', 'x', alice.userId, H('6'), NOW), 'already_linked');
-  assert.equal(S.usernameFromDisplay('  Ñandú  Feliz!! '), 'Nandu_Feliz');
-  assert.equal(S.usernameFromDisplay('x').length, 3);
-  assert.equal(ACC.usernameProblem(S.usernameFromDisplay('Guest Person')), null, 'never a reserved prefix');
+  assert.equal(store.oauth('google', 'g-123', alice.userId, H('6'), NOW), 'already_linked');
+  assert.equal(S.usernameFromDisplay, undefined, 'no username is ever derived from a provider name');
 });
 
 test('rename: taken, once per 30 days', () => {
@@ -320,33 +324,37 @@ test('login throttle: free failures, then a doubling lock capped at 15 min; a ne
   assert.equal(ADO.nextFail(e, NOW + 16 * 60_000).count, 1);
 });
 
-test('oauthIdentity: code exchange with PKCE + client secret, then the user endpoint (Google sub, Discord id)', async () => {
+test('oauthIdentity: code exchange with PKCE + client secret, then the user endpoint (Google sub, Discord id): the id and the address, never a name', async () => {
   const calls = [];
   // Discord API v10 user object (pomelo usernames: discriminator "0", global_name nullable).
   let discordUser = { id: '80351110224678912', username: 'ana_d', discriminator: '0', global_name: null, avatar: null };
+  let googleUser = { sub: 'g1', name: 'Ana Gómez', given_name: 'Ana' };
   const fake = async (url, init) => {
     calls.push({ url, init });
     if (url.includes('token')) return new Response(JSON.stringify({ access_token: 'AT' }), { status: 200 });
-    if (url.includes('googleapis')) return new Response(JSON.stringify({ sub: 'g1', name: 'Ana Gómez', given_name: 'Ana' }), { status: 200 });
+    if (url.includes('googleapis')) return new Response(JSON.stringify(googleUser), { status: 200 });
     return new Response(JSON.stringify(discordUser), { status: 200 });
   };
   const env = { GOOGLE_CLIENT_ID: 'gid', GOOGLE_CLIENT_SECRET: 'gs', DISCORD_CLIENT_ID: 'did', DISCORD_CLIENT_SECRET: 'ds' };
   assert.deepEqual(A.enabledProviders(env), ['google', 'discord']);
   assert.deepEqual(A.enabledProviders({ GOOGLE_CLIENT_ID: 'x' }), [], 'a half-configured provider stays off');
+  assert.equal(A.providerConfig(env, 'google').scope, 'openid email');
+  assert.equal(A.providerConfig(env, 'discord').scope, 'identify email');
   const g = await A.oauthIdentity(A.providerConfig(env, 'google'), 'google', 'CODE', 'VERIFIER', 'https://x/cb', fake);
-  assert.deepEqual(g, { id: 'g1', name: 'Ana' });
+  assert.deepEqual(g, { id: 'g1', email: null, trust: 'none' });
   const form = new URLSearchParams(calls[0].init.body);
   assert.equal(form.get('code_verifier'), 'VERIFIER');
   assert.equal(form.get('client_secret'), 'gs');
   assert.equal(form.get('redirect_uri'), 'https://x/cb');
   assert.equal(calls[1].init.headers.authorization, 'Bearer AT');
   const d = await A.oauthIdentity(A.providerConfig(env, 'discord'), 'discord', 'C', 'V', 'https://x/cb', fake);
-  assert.deepEqual(d, { id: '80351110224678912', name: 'ana_d' });
+  assert.deepEqual(d, { id: '80351110224678912', email: null, trust: 'none' });
   assert.equal(calls[2].url, 'https://discord.com/api/v10/oauth2/token', 'versioned API, not the unversioned (v6) default');
   assert.equal(calls[3].url, 'https://discord.com/api/v10/users/@me');
-  discordUser = { ...discordUser, global_name: 'Ana D.' };
-  const named = await A.oauthIdentity(A.providerConfig(env, 'discord'), 'discord', 'C', 'V', 'https://x/cb', fake);
-  assert.deepEqual(named, { id: '80351110224678912', name: 'Ana D.' }, 'the display name wins over the username');
+  discordUser = { ...discordUser, global_name: 'Ana D.', email: 'Ana.D@Example.org', verified: true };
+  assert.deepEqual(await A.oauthIdentity(A.providerConfig(env, 'discord'), 'discord', 'C', 'V', 'https://x/cb', fake), { id: '80351110224678912', email: 'ana.d@example.org', trust: 'asserted' });
+  googleUser = { ...googleUser, email: 'ana@gmail.com', email_verified: true };
+  assert.deepEqual(await A.oauthIdentity(A.providerConfig(env, 'google'), 'google', 'C', 'V', 'u', fake), { id: 'g1', email: 'ana@gmail.com', trust: 'asserted' });
   const bad = await A.oauthIdentity(A.providerConfig(env, 'google'), 'google', 'C', 'V', 'u', async () => new Response('no', { status: 400 }));
   assert.equal(bad, null);
 });

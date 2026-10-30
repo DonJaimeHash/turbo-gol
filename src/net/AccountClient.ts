@@ -57,24 +57,72 @@ export class AccountError extends Error {
   readonly retryAfterMs: number;
   /** reauth_required's level (the sign-in design's R6): 1 a provider or the password, 2 the password only; 0 otherwise. */
   readonly level: 0 | 1 | 2;
+  /** username_taken's free name near the one asked for (the confirm step's 409), null otherwise. */
+  readonly suggest: string | null;
 
-  constructor(message: string, status: number, code: string, retryAfterMs = 0, level: 0 | 1 | 2 = 0) {
+  constructor(message: string, status: number, code: string, retryAfterMs = 0, level: 0 | 1 | 2 = 0, suggest: string | null = null) {
     super(message);
     this.name = 'AccountError';
     this.status = status;
     this.code = code;
     this.retryAfterMs = retryAfterMs;
     this.level = level;
+    this.suggest = suggest;
   }
 }
+
+/** The confirm step's refusals of a name that carry a free `suggest` (POST /api/auth/pending/create, the email sign-up's rules), and their text. */
+const NAME_REFUSALS: ReadonlyMap<string, 'auth.nameTaken' | 'auth.nameLookalike' | 'auth.nameReserved'> = new Map([
+  ['username_taken', 'auth.nameTaken'],
+  ['name_lookalike', 'auth.nameLookalike'],
+  ['name_reserved', 'auth.nameReserved'],
+] as const);
 
 /** A username / password the client refuses before any request (the same rules as the server). */
 function issueError(issue: AccountIssue, code: 'bad_username' | 'bad_password'): AccountError {
   return new AccountError(t(`account.issue.${issue.code}`, issue.params), 400, code);
 }
 
-/** What `#auth=...` in the URL says after an OAuth round trip (consumed once); 'reauth': PERFIL's "confirm it is you" came back. */
-export type AuthHashResult = { kind: 'ok' | 'new' | 'linked' | 'reauth' } | { kind: 'error'; code: string };
+/**
+ * What `#auth=...` in the URL says after an OAuth round trip (consumed once): 'ok' signed in (with
+ * `linkError`: the identity pending in this browser was not linked, and why), 'linked', 'reauth'
+ * (PERFIL's "confirm it is you" came back), 'confirm' (an identity no account owns: the confirm
+ * sheet asks first, accountLinks.ts), 'new' only from a server of before the confirm step.
+ */
+export type AuthHashResult = { kind: 'ok'; linkError?: string } | { kind: 'new' | 'linked' | 'reauth' | 'confirm' } | { kind: 'error'; code: string };
+
+/** POST /api/auth/pending: the identity a provider proved in this browser that no account owns, as the confirm sheet shows it. */
+export interface PendingInfo {
+  provider: OAuthProvider;
+  /** The provider's verified address (null: none, or never verified: trust 'none'). */
+  email: string | null;
+  trust: 'auth' | 'asserted' | 'none';
+  /** A second identity proved after it ("I have one" with the other provider, which had no account either). */
+  second: OAuthProvider | null;
+  /** The account that address leads to: it signs in and links, never a second account. */
+  match: { name: string; methods: Array<'password' | OAuthProvider>; via: 'email' | 'hint'; email: string } | null;
+}
+
+/** A sign-in sent with linkPending: the session, and the providers linked to it, or why not. */
+export interface LinkedSignIn {
+  session: AccountSession;
+  linked: OAuthProvider[];
+  linkError: string | null;
+}
+
+/** POST /api/auth/tv/renew: the TV's next code (the same secret), its end on the server's clock and its life from now. */
+export interface TvRenewAnswer {
+  code: string;
+  expiresAt: number;
+  ttlMs: number;
+}
+
+/** What the confirm step sends with CREAR: the news switch, and the language and time zone of the account's mail. */
+export interface CreateOptions {
+  news: boolean;
+  lang: string;
+  tz: string;
+}
 
 /** How long after a credential proof (a sign-in, a re-authentication) the client counts it fresh: a little under the server's 10 minutes. */
 export const FRESH_MS = 9 * 60_000;
@@ -88,7 +136,8 @@ async function bothKeys(username: string, password: string): Promise<{ legacy: s
 export function parseAuthHash(hash: string): AuthHashResult | null {
   const m = /(?:^#|&)auth=([a-z]+)(?::([a-z_]+))?/.exec(hash);
   if (!m) return null;
-  if (m[1] === 'ok' || m[1] === 'new' || m[1] === 'linked' || m[1] === 'reauth') return { kind: m[1] };
+  if (m[1] === 'ok') return m[2] !== undefined ? { kind: 'ok', linkError: m[2] } : { kind: 'ok' };
+  if (m[1] === 'new' || m[1] === 'linked' || m[1] === 'reauth' || m[1] === 'confirm') return { kind: m[1] };
   if (m[1] === 'error') return { kind: 'error', code: m[2] ?? 'unknown' };
   return null;
 }
@@ -114,6 +163,13 @@ export function oauthErrorText(code: string): string {
       return t('error.account.reauth_mismatch');
     case 'link_expired':
       return t('auth.oauthLinkExpired');
+    case 'no_account':
+      return t('auth.noAccount');
+    case 'no_pending':
+      return t('auth.pendingExpired');
+    case 'wrong_account':
+    case 'email_has_account':
+      return t(`error.account.${code}`);
     default:
       return t('auth.oauthFailed');
   }
@@ -154,6 +210,12 @@ export interface AccountClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** A Turnstile token for every anonymous account request (sign-up, sign-in, recovery, a TV's start) when the server wants one (NetClient.antiBotToken), null = none. */
   antiBot?: () => Promise<string | null>;
+  /**
+   * The same check, never asking the player (NetClient.antiBotToken's `quiet`): it rejects when it
+   * wants a press or cannot load. A TV's start uses it (a remote cannot answer the challenge), and
+   * without a token the server counts the code under tighter caps. Absent: `antiBot`.
+   */
+  antiBotQuiet?: () => Promise<string | null>;
 }
 
 /** waitRankedResult options. */
@@ -204,9 +266,11 @@ export class AccountClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private refreshing: Promise<AccountSession | null> | null = null;
   private readonly antiBot: () => Promise<string | null>;
+  private readonly antiBotQuiet: () => Promise<string | null>;
 
   constructor(opts: AccountClientOptions = {}) {
     this.antiBot = opts.antiBot ?? (() => Promise.resolve(null));
+    this.antiBotQuiet = opts.antiBotQuiet ?? this.antiBot;
     this.apiBase = opts.apiBase ?? '';
     this.fetchFn = opts.fetchFn ?? ((url, init) => fetch(url, { ...init, credentials: 'same-origin' } as RequestInit) as unknown as Promise<ResponseLike>);
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
@@ -419,6 +483,61 @@ export class AccountClient {
     return this.adopt(sessionPart(s));
   }
 
+  // ---- the confirm step: an identity no account owns (server/src/accountRoutes.ts pendingInfo) ----
+
+  /** The identity pending in this browser (POST /api/auth/pending), null when there is none any more (404: its 30 minutes, another tab). */
+  async pending(): Promise<PendingInfo | null> {
+    const res = await this.call('/api/auth/pending', {});
+    if (res.status === 404) return null;
+    return this.jsonOrFail<PendingInfo>(res);
+  }
+
+  /**
+   * The confirm sheet's CREAR (POST /api/auth/pending/create): the account, with the name the player
+   * chose and the pending identity (and its second one), after a solved anti-bot check. Refusals
+   * reject with their code: username_taken, name_lookalike and name_reserved (the email sign-up's
+   * name rules; each with its `suggest`, a free name the sheet puts in the field), email_has_account,
+   * already_linked, no_pending.
+   */
+  async createAccount(username: string, opts: CreateOptions): Promise<AccountSession> {
+    const u = usernameIssue(username);
+    if (u !== null) throw issueError(u, 'bad_username');
+    const res = await this.callAnonymous('/api/auth/pending/create', { username, news: opts.news, lang: opts.lang, tz: opts.tz });
+    if (res.status === 409 || res.status === 400) {
+      const b = (await res.json().catch(() => null)) as { error?: unknown; suggest?: unknown } | null;
+      const read: ResponseLike = { ok: false, status: res.status, json: async () => b, text: async () => JSON.stringify(b) };
+      const named = NAME_REFUSALS.get(typeof b?.error === 'string' ? b.error : '');
+      if (named !== undefined && typeof b?.suggest === 'string') throw new AccountError(t(named, { name: b.suggest }), res.status, b.error as string, 0, 0, b.suggest);
+      return this.fail(read);
+    }
+    const s = await this.jsonOrFail<AccountSession>(res);
+    return this.adopt(sessionPart(s));
+  }
+
+  /** The confirm sheet's CANCELAR (POST /api/auth/pending/cancel): the pending identity goes. Never rejects. */
+  async cancelPending(): Promise<void> {
+    try {
+      await this.call('/api/auth/pending/cancel', {});
+    } catch {
+      /* it ends in 30 minutes anyway */
+    }
+  }
+
+  /**
+   * "I already have one": the username sign-in with linkPending, so the identity pending in this
+   * browser goes on that account (only the one its address leads to, when it leads to one). The
+   * sign-in stands either way: `linkError` says why nothing was linked.
+   */
+  async loginAndLink(username: string, password: string): Promise<LinkedSignIn> {
+    if (username.trim().length === 0 || password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
+    const keys = await bothKeys(username.trim(), password);
+    const res = await this.callAnonymous('/api/auth/login', { username: username.trim(), password: keys.legacy, passwordV2: keys.current, linkPending: true });
+    const s = await this.jsonOrFail<AccountSession & { linked?: unknown; linkError?: unknown }>(res);
+    const linked = Array.isArray(s.linked) ? s.linked.filter((p): p is OAuthProvider => p === 'google' || p === 'discord') : [];
+    const linkError = linked.length === 0 ? (typeof s.linkError === 'string' ? s.linkError : 'no_pending') : null;
+    return { session: this.adopt(sessionPart(s)), linked, linkError };
+  }
+
   async recover(username: string, code: string, newPassword: string): Promise<AccountSession & { codesLeft: number }> {
     const p = passwordIssue(newPassword, username);
     if (p !== null) throw issueError(p, 'bad_password');
@@ -471,13 +590,33 @@ export class AccountClient {
    * after the anti-bot check (NetClient.antiBotToken: a token per code when the server wants one).
    */
   async tvStart(): Promise<TvStartAnswer> {
+    // Never the sheet that asks the player: a remote cannot answer Cloudflare's challenge (the live
+    // check's TV). A check that wants a press, or cannot load, sends no token, and the server counts
+    // that code under tighter caps of its own (server/src/tvCodes.ts TV_OPEN_*).
     let token: string | null;
     try {
-      token = await this.antiBot();
+      token = await this.antiBotQuiet();
     } catch {
-      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
+      token = null;
     }
-    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', token !== null ? { turnstileToken: token } : {}));
+    const res = await this.call('/api/auth/tv/start', token !== null ? { turnstileToken: token } : {});
+    if (res.status !== 403 || token === null) return this.jsonOrFail<TvStartAnswer>(res);
+    // A token the server refused (a warmed one that died): once more without one.
+    const data: unknown = await res.json().catch(() => null);
+    if ((data as { error?: unknown } | null)?.error !== 'turnstile_failed') return this.fail({ ok: false, status: 403, json: async () => data, text: async () => JSON.stringify(data) });
+    return this.jsonOrFail<TvStartAnswer>(await this.call('/api/auth/tv/start', {}));
+  }
+
+  /**
+   * A TV, 20 s before its code ends (POST /api/auth/tv/renew): the next code, bound to the same
+   * secret. Rejects tv_code_used (the phone confirmed this one: keep polling it), tv_code_expired
+   * (gone, or the renewals used up), tv_renew_early (more than the code's last minute left: the
+   * server renews a code once, in its last minute) and busy (the network's caps).
+   */
+  async tvRenew(code: string, secret: string): Promise<TvRenewAnswer> {
+    const r = await this.jsonOrFail<TvRenewAnswer>(await this.call('/api/auth/tv/renew', { code, secret }));
+    if (typeof r?.code !== 'string' || typeof r.ttlMs !== 'number') throw new AccountError(t('error.server'), 200, 'protocol');
+    return r;
   }
 
   /** The phone (/tv), before it confirms: where the TV showing `code` is (POST /api/auth/tv/info). */
@@ -537,11 +676,13 @@ export class AccountClient {
 
   /**
    * Full-page redirect target of the provider buttons: a sign-in, `link` (PERFIL's VINCULAR, true
-   * or 'link': this browser must have proved a credential in the last minutes, see fresh) or
-   * 'reauth' (PERFIL's "confirm it is you" with a provider already on the account).
+   * or 'link': this browser must have proved a credential in the last minutes, see fresh),
+   * 'reauth' (PERFIL's "confirm it is you" with a provider already on the account; `then`: go
+   * straight on to linking that provider) or 'pend' (the confirm sheet's "I already have one": the
+   * identity pending in this browser goes on the account it signs in to).
    */
-  oauthUrl(provider: OAuthProvider, link: boolean | 'link' | 'reauth' = false): string {
-    const q = link === 'reauth' ? '?reauth=1' : link ? '?link=1' : '';
+  oauthUrl(provider: OAuthProvider, link: boolean | 'link' | 'reauth' | 'pend' = false, then?: OAuthProvider): string {
+    const q = link === 'reauth' ? '?reauth=1' + (then !== undefined ? '&then=link:' + then : '') : link === 'pend' ? '?pend=1' : link ? '?link=1' : '';
     return `${this.apiBase}/api/auth/oauth/${provider}/start${q}`;
   }
 

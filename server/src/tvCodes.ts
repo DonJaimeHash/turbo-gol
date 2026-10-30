@@ -13,7 +13,15 @@
  *                                               (counted as a confirm: a wrong code is a failure)
  *   confirm(code, user, ip, now)                the phone's account: binds the code once
  *   poll(code, secretHash, now)                 the TV: pending, expired (a wrong secret too), or the
- *                                               account it was approved for (then wiped: one use)
+ *                                               account it was approved for (then wiped: one use); a
+ *                                               code renewed from one the phone confirmed takes that
+ *                                               approval (`prev`)
+ *   renew(code, secretHash, ip, now, where?)    the TV, 20 s before its code ends: a new code bound to
+ *                                               the same secret (the old one lives to its own end), at
+ *                                               most TV_RENEWS_MAX per start, under a start's caps; a
+ *                                               code is renewed once, in its last TV_RENEW_WINDOW_MS (a
+ *                                               repeat answers the same new code), so one start makes
+ *                                               TV_RENEWS_MAX + 1 codes in all and holds two at most
  *
  * Limits: TV_CODES_PER_IP live codes per IPv6 /64 and TV_CODES_PER_IPV4 per IPv4 address (a new one
  * replaces the oldest: a TV asking for NUEVO CÓDIGO again and again; an IPv4 address may be a
@@ -29,6 +37,12 @@
  * code stays as a tombstone (no secret, no account), and an expired one TV_KEEP_MS longer, so a
  * replay says "used" and a late phone "expired", not "wrong"; those rows go on every call, at most
  * every SWEEP_EVERY_MS, and on the object's alarm, and past TV_ROWS_MAX the oldest go first.
+ *
+ * A code started without a solved check (`checked` false: a TV whose check wants a press a remote
+ * cannot give, or that cannot load it; accountRoutes.ts tvStart) also counts under tighter caps of
+ * its own: TV_OPEN_PER_IP per IPv6 /64, TV_OPEN_PER_IPV4 per IPv4 address, TV_OPEN_PER_48 and
+ * TV_OPEN_PER_24 per block, TV_OPEN_MAX in all. A script that skips the check gets those few codes
+ * per network and a tenth of the table at most; a TV that solves it is never stopped by them.
  *
  * The codes live in memory: an eviction or a deploy drops them. For a code's life after the object
  * woke (`wokeAt`), a code it does not know may be one it lost, so it is "expired", not "wrong". A
@@ -56,6 +70,23 @@ export const TV_CODES_PER_24 = 100;
 export const TV_CODES_MAX = 20_000;
 /** Rows kept in all (live codes and the tombstones of expired or used ones). */
 export const TV_ROWS_MAX = 2 * TV_CODES_MAX;
+/** Renewals per start (POST /api/auth/tv/renew): a code's life seven times over, about 28 minutes in all. */
+export const TV_RENEWS_MAX = 6;
+/**
+ * A code is renewed only in its last minute (the TV asks 20 s before its end, tvSignInModel.ts
+ * RENEW_BEFORE_MS, so a slow TV's request has 40 s more): one start then holds two live codes at
+ * most, the old one in its last minute and the new one.
+ */
+export const TV_RENEW_WINDOW_MS = 60_000;
+/** Codes started without a solved check, live ones per IPv6 /64: one TV, its renewal's overlap, and one more. */
+export const TV_OPEN_PER_IP = 3;
+/** ... per IPv4 address (a carrier's NAT puts many homes behind one). */
+export const TV_OPEN_PER_IPV4 = 10;
+/** ... per IPv6 /48 and per IPv4 /24. */
+export const TV_OPEN_PER_48 = 6;
+export const TV_OPEN_PER_24 = 30;
+/** ... in all: a tenth of the table, so the codes of TVs that solve the check always have room. */
+export const TV_OPEN_MAX = 2_000;
 export const TV_CONFIRM_FAILS = 10;
 export const TV_CONFIRM_IP_FAILS = 50;
 export const TV_FAIL_WINDOW_MS = 15 * 60_000;
@@ -88,6 +119,18 @@ interface TvEntry {
   where: TvWhere | null;
   user: TvUser | null;
   used: boolean;
+  /** Started after a solved check (false: under the TV_OPEN_* caps too). */
+  checked: boolean;
+  /** How many renewals led to this code (0: a start's). */
+  renewals: number;
+  /** The code this one renewed: a confirm of it, in its last seconds, reaches this code's poll. */
+  prev: string | null;
+  /**
+   * The code that renewed this one. A code is renewed once: a repeat (a TV whose answer was lost)
+   * gets that same code back, so a start is one chain of TV_RENEWS_MAX + 1 codes at most, wherever
+   * its renewals come from, never a tree.
+   */
+  next: string | null;
 }
 
 /** TvCodes.info: where the TV is, and how it relates to the phone asking. */
@@ -109,6 +152,7 @@ export type TvStart = { code: string; expiresAt: number } | 'full' | 'busy';
 export type TvConfirm = 'ok' | 'wrong' | 'expired' | 'used' | { throttled: number };
 export type TvAsk = TvInfo | 'wrong' | 'expired' | 'used' | { throttled: number };
 export type TvPoll = 'pending' | 'expired' | 'used' | TvUser;
+export type TvRenew = { code: string; expiresAt: number } | 'used' | 'expired' | 'early' | 'busy' | 'full';
 
 /** Equal hex strings, in time that does not depend on where they differ. */
 export function sameHex(a: string, b: string): boolean {
@@ -154,6 +198,8 @@ export class TvCodes {
   private readonly byIp = new Map<string, Set<string>>();
   private readonly byWide = new Map<string, Set<string>>();
   private readonly fails = new Map<string, TvFails>();
+  /** The codes started without a solved check (live ones and their tombstones, dropped with them). */
+  private readonly open = new Set<string>();
   private sweptAt = -Infinity;
   /** When the object woke (its first call): codes from before may have been lost. */
   wokeAt: number | null = null;
@@ -182,6 +228,7 @@ export class TvCodes {
     const e = this.codes.get(code);
     if (e === undefined) return;
     this.codes.delete(code);
+    this.open.delete(code);
     for (const [index, key] of [[this.byIp, 'ip:' + e.ip], [this.byWide, 'w:' + e.wide]] as const) {
       const set = index.get(key);
       set?.delete(code);
@@ -207,18 +254,48 @@ export class TvCodes {
     return this.liveCount;
   }
 
-  start(rawIp: string, secretHash: string, now: number, where: TvWhere | null = null): TvStart {
-    this.sweep(now);
-    const ip = ipKey(rawIp);
-    const v6 = rawIp.includes(':');
-    const wide = wideKey(rawIp);
-    const mine = this.liveOf(this.byIp.get('ip:' + ip), now);
-    if (mine.length >= (v6 ? TV_CODES_PER_IP : TV_CODES_PER_IPV4)) {
-      this.drop(mine[0]); // the oldest: one live code for another
+  /** The live codes started without a solved check, in all (at most TV_OPEN_MAX plus their tombstones to walk). */
+  private openTotal(now: number): number {
+    let n = 0;
+    for (const k of this.open) {
+      const e = this.codes.get(k);
+      if (e !== undefined && !e.used && e.expiresAt > now) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Whether one more live code may come from this network (A7's caps, and for a code without a
+   * solved check the TV_OPEN_* ones too). At the network's own cap a start gives its oldest code
+   * for the new one (`replace`: a TV asking again and again, of the same kind for an unchecked one);
+   * a renewal never takes another TV's, it is 'busy'. `except`: the code a renewal replaces (live
+   * until its end), counted by none of the caps.
+   */
+  private admit(ip: string, wide: string | null, v6: boolean, now: number, checked: boolean, replace: boolean, except: string | null): 'ok' | 'busy' | 'full' {
+    const live = (set: Set<string> | undefined): string[] => this.liveOf(set, now).filter((k) => k !== except);
+    const unchecked = (keys: string[]): string[] => keys.filter((k) => this.codes.get(k)?.checked === false);
+    const mine = live(this.byIp.get('ip:' + ip));
+    const mineOpen = checked ? [] : unchecked(mine);
+    const oldest = !checked && mineOpen.length >= (v6 ? TV_OPEN_PER_IP : TV_OPEN_PER_IPV4) ? mineOpen[0] : mine.length >= (v6 ? TV_CODES_PER_IP : TV_CODES_PER_IPV4) ? mine[0] : null;
+    if (oldest !== null) {
+      if (!replace) return 'busy';
+      this.drop(oldest); // the oldest: one live code for another
       this.liveCount--;
-    } else if (wide !== null && this.liveOf(this.byWide.get('w:' + wide), now).length >= (v6 ? TV_CODES_PER_48 : TV_CODES_PER_24)) return 'busy';
+      return 'ok';
+    }
+    if (wide !== null) {
+      const block = live(this.byWide.get('w:' + wide));
+      if (block.length >= (v6 ? TV_CODES_PER_48 : TV_CODES_PER_24)) return 'busy';
+      if (!checked && unchecked(block).length >= (v6 ? TV_OPEN_PER_48 : TV_OPEN_PER_24)) return 'busy';
+    }
     // Only a table that holds as many rows as the cap can hold as many live codes: count them then.
-    else if (this.codes.size >= TV_CODES_MAX && this.liveTotal(now) >= TV_CODES_MAX) return 'full';
+    if (this.codes.size >= TV_CODES_MAX && this.liveTotal(now) >= TV_CODES_MAX) return 'full';
+    if (!checked && this.open.size >= TV_OPEN_MAX && this.openTotal(now) >= TV_OPEN_MAX) return 'full';
+    return 'ok';
+  }
+
+  /** A new live code bound to `secretHash` (a start's, or a renewal's), past the rows' cap; 'full' when the table holds only live codes. */
+  private mint(secretHash: string, ip: string, wide: string | null, v6: boolean, now: number, where: TvWhere | null, checked: boolean, renewals: number, prev: string | null): { code: string; expiresAt: number } | 'full' {
     // Past the rows' cap the oldest tombstones go (a late phone then hears "wrong"): only live codes fill it.
     for (const [k, e] of this.codes) {
       if (this.codes.size < TV_ROWS_MAX) break;
@@ -232,14 +309,62 @@ export class TvCodes {
       for (let i = 0; i < TV_CODE_LENGTH; i++) code += TV_CODE_ALPHABET[b[i] & 31]; // 32 letters: uniform
     } while (this.codes.has(code));
     const expiresAt = now + TV_CODE_TTL_MS;
-    this.codes.set(code, { secretHash, ip, wide, v6, expiresAt, createdAt: now, where, user: null, used: false });
+    this.codes.set(code, { secretHash, ip, wide, v6, expiresAt, createdAt: now, where, user: null, used: false, checked, renewals, prev, next: null });
     this.liveCount++;
+    if (!checked) this.open.add(code);
     for (const [index, key] of [[this.byIp, 'ip:' + ip], [this.byWide, 'w:' + wide]] as const) {
       let set = index.get(key);
       if (set === undefined) index.set(key, (set = new Set()));
       set.add(code);
     }
     return { code, expiresAt };
+  }
+
+  /** `checked` false: the Worker asked no solved check for it (accountRoutes.ts tvStart), so the TV_OPEN_* caps count it too. */
+  start(rawIp: string, secretHash: string, now: number, where: TvWhere | null = null, checked = true): TvStart {
+    this.sweep(now);
+    const ip = ipKey(rawIp);
+    const v6 = rawIp.includes(':');
+    const wide = wideKey(rawIp);
+    const a = this.admit(ip, wide, v6, now, checked, true, null);
+    if (a !== 'ok') return a;
+    return this.mint(secretHash, ip, wide, v6, now, where, checked, 0, null);
+  }
+
+  /**
+   * The TV's code is about to end: a new one bound to the same secret, from the TV's network now,
+   * under a start's caps (never another TV's code for it: 'busy'), the old one live to its own end.
+   * 'used' when the phone confirmed the old one already (the TV polls it instead); 'expired' for a
+   * code gone or past its end, a wrong secret (as an unknown code), and past TV_RENEWS_MAX; 'early'
+   * while the code has more than TV_RENEW_WINDOW_MS left. A code renewed already answers its new
+   * code again (or 'used' / 'expired' once that one is over), never a second one: one solved check
+   * buys one chain, so filling the table still costs a check per live code.
+   */
+  renew(oldCode: string, secretHash: string, rawIp: string, now: number, where: TvWhere | null = null): TvRenew {
+    this.sweep(now);
+    const e = this.codes.get(oldCode);
+    if (e === undefined || (e.expiresAt <= now && !e.used)) return 'expired';
+    if (e.used) return 'used';
+    if (!sameHex(e.secretHash, secretHash)) return 'expired';
+    if (e.user !== null) return 'used';
+    if (e.next !== null) {
+      // Renewed already: the same new code (a retry whose answer was lost). `prev` tells it from a
+      // code of another TV that took the same letters after the new one went.
+      const n = this.codes.get(e.next);
+      if (n === undefined || n.prev !== oldCode) return 'expired';
+      if (n.used || n.user !== null) return 'used';
+      return n.expiresAt > now ? { code: e.next, expiresAt: n.expiresAt } : 'expired';
+    }
+    if (e.renewals >= TV_RENEWS_MAX) return 'expired';
+    if (e.expiresAt - now > TV_RENEW_WINDOW_MS) return 'early';
+    const ip = ipKey(rawIp);
+    const v6 = rawIp.includes(':');
+    const wide = wideKey(rawIp);
+    const a = this.admit(ip, wide, v6, now, e.checked, false, oldCode);
+    if (a !== 'ok') return a;
+    const m = this.mint(e.secretHash, ip, wide, v6, now, where ?? e.where, e.checked, e.renewals + 1, oldCode);
+    if (m !== 'full') e.next = m.code;
+    return m;
   }
 
   /** The failure counters of a confirm by `user` from `ip`. */
@@ -301,12 +426,17 @@ export class TvCodes {
     if (e === undefined || (e.expiresAt <= now && !e.used)) return 'expired';
     if (e.used) return 'used';
     if (!sameHex(e.secretHash, secretHash)) return 'expired'; // as an unknown code: nothing tells a live one
-    if (e.user === null) return 'pending';
-    const user = e.user;
-    e.user = null;
-    e.secretHash = '';
-    e.used = true;
-    this.liveCount--; // a tombstone now
+    // The code this one renewed, confirmed in its last seconds by a phone that read it then.
+    const p = e.user === null && e.prev !== null ? this.codes.get(e.prev) : undefined;
+    const from = e.user !== null ? e : p !== undefined && !p.used && p.user !== null && p.expiresAt > now && sameHex(p.secretHash, secretHash) ? p : null;
+    if (from === null) return 'pending';
+    const user = from.user as TvUser;
+    for (const x of from === e ? [e] : [e, from]) {
+      x.user = null;
+      x.secretHash = '';
+      x.used = true;
+      this.liveCount--; // a tombstone now
+    }
     return user;
   }
 

@@ -770,6 +770,8 @@ export default {
   'tvlink.cancel': 'CANCEL',
   'tvlink.signInFirst': 'Sign in on this phone first, then confirm the TV.',
   'tvlink.signIn': 'SIGN IN',
+  // "Sign in on this phone first": a provider's button right there (its name in capitals); also the match sheet's
+  'tvlink.signInWith': 'SIGN IN WITH {provider}',
   'tvlink.done': 'Done: the TV signs in in a moment',
   'tvlink.otherCode': 'ANOTHER CODE',
   // The anti-bot check wants an interaction (Turnstile): a sheet with the reason; CANCEL stops it
@@ -813,6 +815,53 @@ export default {
   'auth.empty': 'Enter your username and password',
   // An account action was attempted with no signed-in session
   'auth.signInFirst': 'Sign in first',
+
+  // The confirm step after Google or Discord (src/ui/screens/accountLinks.ts): an identity no Turbogol
+  // account uses yet; nothing is created before CREATE. {provider}: Google or Discord
+  // While the sheet asks the server what it knows of that identity
+  'auth.confirmLoading': 'One moment…',
+  'auth.confirmLoadingText': 'Looking for your account…',
+  // The sheet's title: the question it asks
+  'auth.confirmTitle': 'Already have a Turbogol account?',
+  // {email}: the address the provider gave, confirmed there
+  'auth.confirmNone': 'No Turbogol account uses your {provider} account ({email}).',
+  'auth.confirmNoneNoEmail': 'No Turbogol account uses your {provider} account.',
+  // "I have one" with the other provider, which has no account either
+  'auth.confirmSecond': 'That {provider} account has no Turbogol account either.',
+  'auth.confirmNoEmail': 'Your {provider} account has no confirmed email.',
+  // The public name the player picks (never the provider's)
+  'auth.gameName': 'In-game name',
+  'auth.gameNameHint': "Everyone sees it. Don't use your real name.",
+  // The suggested name: this word and four digits (Player4821)
+  'auth.nameWord': 'Player',
+  // The news switch, off by default
+  'auth.news': 'Send me Turbogol news by email (optional)',
+  // The answer "no" to the title's question: it creates the account
+  'auth.create': 'NO, CREATE MY ACCOUNT',
+  'auth.haveOne': 'YES, I HAVE ONE',
+  // "I have one": sign in to that account, and the provider is linked to it
+  'auth.haveOneTitle': 'Sign in to your account',
+  'auth.haveOneLine': "Sign in to your account and we'll link {provider} to it.",
+  // The provider's confirmed address already belongs to an account: one email, one account
+  'auth.matchTitle': 'This email already has an account',
+  // {name}: that account's public name
+  'auth.matchBody': '{email} belongs to the account {name}. Sign in with it to link {provider}, so you keep a single account.',
+  'auth.matchNotYours': 'Is that email no longer yours? Change it in {provider}, or create your account with another email.',
+  'auth.matchPassword': 'SIGN IN WITH PASSWORD',
+  'auth.cancel': 'CANCEL',
+  'auth.back': 'BACK',
+  // The name is taken; {name}: a free one the server suggests, put into the field
+  'auth.nameTaken': 'That name is taken. Try {name}.',
+  // The name reads as a protected account's (the project's, a leaderboard top player's); {name}: a free one the server suggests
+  'auth.nameLookalike': "That name looks too much like another account's. Try {name}.",
+  // The name is reserved (the game's, its staff's); {name}: a free one the server suggests
+  'auth.nameReserved': 'That name is reserved. Try {name}.',
+  // Toast: the provider (or both) went onto the account the player signed in to
+  'auth.linkedProvider': '{provider} is now linked to your account',
+  // #auth=error:no_account: "I have one" with the same provider, which has no account
+  'auth.noAccount': 'That account has no Turbogol account either: sign in with another one or create yours.',
+  // The pending identity is gone (30 minutes, or another tab used it)
+  'auth.pendingExpired': 'That sign-in expired: sign in again.',
 
   // Lobby client errors (src/net/LobbyClient.ts)
   // Custom lobby socket closed: the host removed this player
@@ -891,6 +940,11 @@ export default {
   'error.account.frozen': 'Redeeming is paused until a maintainer reviews your server',
   'error.account.insufficient': 'Not enough server points',
   'error.account.requires_matches': 'Your server needs a verified match first',
+  // The confirm step's refusals (POST /api/auth/pending/create, a sign-in with linkPending)
+  'error.account.wrong_account': 'This email belongs to another Turbogol account. Sign in with that one to link.',
+  'error.account.email_has_account': 'That email already belongs to a Turbogol account: sign in with it to link.',
+  'error.account.already_linked': 'That account is already linked to another user',
+  'error.account.no_pending': 'That sign-in expired: sign in again',
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
@@ -1808,7 +1862,7 @@ export default {
   // Menu toast after a drawn match; {result} as in game.resultWin
   'game.resultDraw': 'Draw  ·  {result}',
   // Toast after creating an account with Google / Discord; {name} is the new account name. The profile opens right after
-  'game.welcomeNew': 'Welcome, {name}! You can change your name in your profile.',
+  'game.welcomeNew': 'Welcome, {name}!',
   // Toast after linking a Google / Discord login to the signed-in account
   'game.accountLinked': 'Account linked',
   // Guest name in the menus before the first guest session (and without an online server); online the server names the guest, shown as guest.name ('Guest 4821')

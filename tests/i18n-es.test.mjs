@@ -145,7 +145,8 @@ test('match banners and toasts: the Spanish Game.ts wrote before the translation
   assert.equal(I.t('game.botTakeover'), 'Su auto pasa a la IA');
   assert.equal(I.t('game.resultWin', { team: I.t('game.teamBlue'), result: '2 – 1' }), 'Ganó Azul  ·  2 – 1');
   assert.equal(I.t('game.resultDraw', { result: '1 – 1' }), 'Empate  ·  1 – 1');
-  assert.equal(I.t('game.welcomeNew', { name: 'Pepe' }), '¡Te damos la bienvenida, Pepe! Puedes cambiar tu nombre en el perfil.');
+  // The player chose the name on the confirm sheet (sign-in PR 6): nothing to change in the profile.
+  assert.equal(I.t('game.welcomeNew', { name: 'Pepe' }), '¡Te damos la bienvenida, Pepe!');
   assert.equal(I.t('game.accountLinked'), 'Cuenta vinculada');
   assert.equal(I.t('profile.hello', { name: 'Pepe' }), 'Hola, Pepe');
   assert.equal(I.t('game.guestName'), 'Invitado');

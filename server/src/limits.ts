@@ -81,8 +81,10 @@
  *   POST /api/auth/signup/start         authMail         network      120  RL_120   a mail each (Turnstile too)
  *   POST /api/auth/forgot, code/resend                                               the same rule
  *   POST /api/auth/signup/check         authCode         network      120  RL_120   a code or a link checked: one AccountsDO call
- *   POST /api/auth/signup/finish                                                     (a new account: the design's authCreate,
- *   POST /api/auth/reset/peek, reset                                                 kept on this rule's numbers until PR 6 adds it)
+ *   POST /api/auth/reset/peek, reset
+ *   POST /api/auth/signup/finish        authCreate       network      120  RL_120   a new account (the rule of the OAuth confirm step's
+ *                                                                                    CREAR below; AccountsDO's durable cap of new accounts
+ *                                                                                    per network is one budget for both)
  *   POST /api/auth/signin               login            network      120  RL_120   the email sign-in: two AccountsDO calls and a PBKDF2
  *     every one above, and the five      signInSite       site         600  RL_600   sign-in routes, share one /48's 600
  *   POST /api/me/password(/link)        authAcct         account       10  RL_10    a PBKDF2, or a mail, and an AccountsDO write
@@ -94,6 +96,10 @@
  *                                       rankedResultNet  network     1200  RL_1200
  *   GET  /api/leaderboard               leaderboardYou   account       60  RL_60    the account's own row: one AccountsDO call (cached 15 s)
  *                                       leaderboardNet   network     1200  RL_1200  the board itself is cached 30 s per isolate
+ *   POST /api/auth/pending              authCreate       network      120  RL_120   the OAuth confirm step (the sign-in design's §2.16): what the
+ *   POST /api/auth/pending/create                                                   sheet shows, CREAR (Turnstile, and AccountsDO's durable cap of
+ *   POST /api/auth/pending/cancel                                                   new accounts per network) and CANCELAR, one count for the three
+ *   POST /api/auth/tv/renew             tvRenew          network       60  RL_60    a TV's next code, once per code's life (no check: its secret)
  *   GET  /nodes/admin/account-stats     accountStats     account       10  RL_10    a maintainer's account counts (nodeRoutes.ts): a few scans
  *                                                                                    of every account in the AccountsDO each
  *   POST /api/dev/signin                dev              network      120  RL_120   the dev-only sign-in and the stub's outbox (accountRoutes.ts
@@ -216,6 +222,10 @@ export const LIMITS = {
   replayView: { by: 'network', isolate: 120, edge: 'RL_120' },
   replaySite: { by: 'site', isolate: 600, edge: 'RL_600' },
   replayName: { by: 'account', isolate: 30, edge: 'RL_30' },
+  // Every way an account is made (the email sign-up's finish, the OAuth confirm step) and the TV's
+  // renewals (sign-in PR 6; the design's section 2.16).
+  authCreate: { by: 'network', isolate: 120, edge: 'RL_120' },
+  tvRenew: { by: 'network', isolate: 60, edge: 'RL_60' },
 } as const satisfies Record<string, LimitRule>;
 export type LimitName = keyof typeof LIMITS;
 
@@ -243,10 +253,12 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
       case '/api/auth/code/resend':
         return ['authMail', 'signInSite'];
       case '/api/auth/signup/check':
-      case '/api/auth/signup/finish':
       case '/api/auth/reset/peek':
       case '/api/auth/reset':
         return ['authCode', 'signInSite'];
+      // A new account, by email or by the OAuth confirm step (pending/create, below): authCreate (section 2.16).
+      case '/api/auth/signup/finish':
+        return ['authCreate', 'signInSite'];
       case '/api/auth/signin':
         return ['login', 'signInSite'];
       case '/api/me/password':
@@ -269,6 +281,13 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['sessions'];
       case '/api/auth/tv/info':
         return ['tvInfo'];
+      // The OAuth confirm step and the TV's renewals (sign-in PR 6).
+      case '/api/auth/pending':
+      case '/api/auth/pending/create':
+      case '/api/auth/pending/cancel':
+        return ['authCreate'];
+      case '/api/auth/tv/renew':
+        return ['tvRenew'];
       case '/api/dev/signin':
         return ['dev'];
       case '/api/me/replay-name':

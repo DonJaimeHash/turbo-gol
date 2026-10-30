@@ -155,7 +155,8 @@ holds the numbers and the rules:
   address and per IPv6 /64 alike (schools, LAN parties and carriers' CGNAT put many players behind
   one IPv4 address, and a dual-stack school or LAN is one /64); mail started by an account, 10 a
   day; resends, one a minute and three per attempt, each with the same code and link. New accounts:
-  200 a day per IPv4 address or IPv6 /64.
+  200 a day per IPv4 address or IPv6 /64 and 300 per IPv6 /48, one budget with the OAuth confirm
+  step's CREAR (an email sign-up and a Google or Discord account count alike).
 - **Failures.** A route sends after it has answered (`ctx.waitUntil`). A failed send logs
   `mail_failed kind=<kind> lane=<lane> err=<code>`, with no address, link or code, and is not
   retried (a retry would mail a second code). Ten failures in ten minutes pause the sign-up lane for

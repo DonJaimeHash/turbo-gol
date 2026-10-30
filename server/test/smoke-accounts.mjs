@@ -15,7 +15,10 @@
 //   checked, then finished: session, refresh cookie, a verified address and a password) -> the same
 //   address again answers the same and mails M2 -> wrong password 401 -> email sign-in -> forgot ->
 //   the reset link from the outbox resets C's password (once; the old one no longer signs in) -> a
-//   rename by Bearer alone -> a guest cannot queue ranked (403) -> A and B queue ranked 1v1
+//   rename by Bearer alone -> the OAuth confirm step's routes without a pending identity (sign-in
+//   PR 6: 404 no_pending, cancel), the email sign-in with linkPending and none (no_pending), a TV
+//   that starts without a Turnstile token and renews too early (409) or with a wrong secret (410)
+//   -> a guest cannot queue ranked (403) -> A and B queue ranked 1v1
 //   together (multi-playlist body) -> both matched into the SAME server match with `ranked: true` ->
 //   both sockets Ready -> the match starts -> A quits (POST /api/leave { matchId }) = forfeit ->
 //   /api/ranked/result: B 'win', A 'loss' + left + a ban, A's next ranked queue 429 'ranked_ban' ->
@@ -191,6 +194,26 @@ const rnC = await api('/api/me/username', { body: { username: renamedC }, token:
 check(rnC.status === 200 && rnC.json.name === renamedC, 'rename an email account by Bearer alone (the name salts no password)', rnC.status);
 const loginNew = await api('/api/auth/signin', { body: { email: mailC, password: await ACC.passwordKey(newPassC) } });
 check(loginNew.status === 200 && loginNew.json.playerId === regC.json.playerId && loginNew.json.name === renamedC, 'email sign-in: the new name, the new password', loginNew.status);
+
+// ---- the OAuth confirm step and the TV's renewal (sign-in PR 6) ----------------------------------
+// No provider answers a local Worker, so a first Google or Discord sign-in (the pending cookie, the
+// confirm sheet's CREAR, linkPending with a match) is the unit tests' (oauth-email.test.mjs). Here:
+// the confirm routes without a pending identity, linkPending on the email sign-in without one, and
+// a TV that starts without a Turnstile token and asks to renew its code too early.
+const noPend = await api('/api/auth/pending', { body: {} });
+check(noPend.status === 404 && noPend.json?.error === 'no_pending', 'POST /api/auth/pending without a pending identity -> 404 no_pending', noPend.status);
+const noCreate = await api('/api/auth/pending/create', { body: { username: 'smk_' + rnd() } });
+check(noCreate.status === 404 && noCreate.json?.error === 'no_pending', 'pending/create without one creates nothing (404 no_pending)', noCreate.status);
+const cancelPend = await api('/api/auth/pending/cancel', { body: {} });
+check(cancelPend.status === 200 && cancelPend.json?.ok === true, 'pending/cancel -> { ok }', cancelPend.status);
+const linkNone = await api('/api/auth/signin', { body: { email: mailC, password: await ACC.passwordKey(newPassC), linkPending: true } });
+check(linkNone.status === 200 && linkNone.json.playerId === regC.json.playerId && linkNone.json.linkError === 'no_pending', 'email sign-in with linkPending and no pending identity: signed in, linkError no_pending', { status: linkNone.status, linkError: linkNone.json?.linkError });
+const tvS = await api('/api/auth/tv/start', { body: {} });
+check(tvS.status === 200 && /^[A-Z2-9]{6}$/.test(tvS.json?.code ?? '') && typeof tvS.json?.secret === 'string', 'a TV starts without a Turnstile token (a remote cannot answer one)', tvS.status);
+const tvEarly = await api('/api/auth/tv/renew', { body: { code: tvS.json?.code, secret: tvS.json?.secret } });
+check(tvEarly.status === 409 && tvEarly.json?.error === 'tv_renew_early', 'tv/renew right after the start -> 409 tv_renew_early (once per code, in its last minute)', tvEarly.status);
+const tvWrong = await api('/api/auth/tv/renew', { body: { code: tvS.json?.code, secret: 'x'.repeat(43) } });
+check(tvWrong.status === 410, 'tv/renew with a wrong secret -> 410, as an unknown code', tvWrong.status);
 
 // ---- training records ----------------------------------------------------------------------------
 const tr1 = await api('/api/me/training', { body: { records: { 'shooting-easy': { best: 6, shots: 8, completedAt: 1000 }, 'bad id!': { best: 1, shots: 1 } } }, token: tokA });

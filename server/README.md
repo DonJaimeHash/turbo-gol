@@ -417,9 +417,11 @@ a new guest. The account routes that call the single AccountsDO are limited befo
 (`src/index.ts` with `limits.ts` `accountGate`): `/api/me`, `/api/ranked/result` and the leaderboard's
 own row 60 a minute per account (and 1,200 per network), the password routes and "confirm it's you"
 10, logout and refresh 1,200 per network; the email routes 120 a minute per network (`authMail`,
-`authCode`), the sign-ins 120 (`login`). The limits that bind for mail, codes and passwords are
+`authCode`), a new account (the email sign-up's finish and the OAuth confirm step, `authCreate`) 120,
+a TV's code renewal 60 (`tvRenew`), the sign-ins 120 (`login`). The limits that bind for mail, codes and passwords are
 the AccountsDO's own, durable and exact (`src/AccountsDO.ts`, docs/online/MAIL.md): per address,
-per network (an IPv4 address and an IPv6 /64 alike: 200 mails an hour and 600 a day, 200 new accounts a day), per account, and the day's mail lanes. An IPv6 address is also counted by its /48 on those anonymous
+per network (an IPv4 address and an IPv6 /64 alike: 200 mails an hour and 600 a day, 200 new accounts a day, and 300 new
+accounts a day per IPv6 /48; the new accounts are one budget for the email sign-up and the OAuth confirm step), per account, and the day's mail lanes. An IPv6 address is also counted by its /48 on those anonymous
 routes (one machine can source a whole /48 of /64s): logout and refresh 1,200 a minute each, and
 the sign-in routes (the email sign-in and sign-up, forgot, reset, login, recover, OAuth start and
 callback) 600 together, so a
