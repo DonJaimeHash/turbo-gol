@@ -68,6 +68,12 @@
  *   legacy_reminders M10 went to this account for this cutoff (sign-in PR 9)
  * Sign-in PR 9 writes the email of an account (applyEmail: an add, a change with its 7-day undo and
  * hold, a move from another account) and takes a change back (undoEmail).
+ *
+ * The project's maintainer accounts (sign-in PR 10, the design's §3.12): the AccountsDO hands the
+ * NODE_TRUSTED_OPERATORS ids in (setMaintainers). Such an account gets PERFIL's checklist in me()
+ * (`maintainer`), keeps its password and at least two ways in through every unlink (unlink
+ * 'maintainer_two_ways'), and is never deleted: deletionRefusal answers 'maintainer_account', which
+ * the deletion (sign-in PR 12) asks first.
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
@@ -572,10 +578,34 @@ export function devSubOf(name: unknown): string | null {
 export class AccountStore {
   private readonly sql: SqlLike;
   private readonly tx: <T>(fn: () => T) => T;
+  /** The project's maintainer accounts (NODE_TRUSTED_OPERATORS, setMaintainers): none until the AccountsDO says. */
+  private maintainerIds: ReadonlySet<string> = new Set();
 
   constructor(sql: SqlLike, tx: <T>(fn: () => T) => T) {
     this.sql = sql;
     this.tx = tx;
+  }
+
+  /** NODE_TRUSTED_OPERATORS as the AccountsDO reads it (env.ts trustedOperatorIds): §3.12's accounts. */
+  setMaintainers(ids: Iterable<string>): void {
+    this.maintainerIds = new Set(ids);
+  }
+
+  /** `userId` is one of the project's maintainer accounts. */
+  isMaintainer(userId: string): boolean {
+    return this.maintainerIds.has(userId);
+  }
+
+  /**
+   * Why the account may not ask for its deletion (§2.10, §3.12), before anything is written:
+   * 'maintainer_account' for a NODE_TRUSTED_OPERATORS account (the project's account is never
+   * deleted: the trusted nodes, their verdicts and the list itself hang on its id), 'no_user' for
+   * none, null otherwise. The deletion (sign-in PR 12, POST /api/me/delete) asks it first, in its
+   * transaction, and answers 409 maintainer_account.
+   */
+  deletionRefusal(userId: string): 'maintainer_account' | 'no_user' | null {
+    if (this.maintainerIds.has(userId)) return 'maintainer_account';
+    return this.userById(userId) === null ? 'no_user' : null;
   }
 
   migrate(): void {
@@ -1067,17 +1097,21 @@ export class AccountStore {
    * `level`: the caller's session level (fresh). Leaving exactly one way in needs level 2, capped
    * by the account's ceiling (ceilingOf), so no account is locked out of it: 'level2' when the
    * session is below what it needs. Leaving two or more needs level 1, which the route checks.
+   * A maintainer account (§2.8, §3.12) keeps its password and at least two ways in: an unlink that
+   * would leave less is 'maintainer_two_ways', before any level is asked.
    */
-  unlink(userId: string, provider: OAuthProvider, level: 0 | 1 | 2 = 2, legacyClosed = false): 'ok' | 'last_method' | 'not_linked' | 'no_user' | 'level2' {
+  unlink(userId: string, provider: OAuthProvider, level: 0 | 1 | 2 = 2, legacyClosed = false): 'ok' | 'last_method' | 'maintainer_two_ways' | 'not_linked' | 'no_user' | 'level2' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1) return 'no_user' as const;
       if (u[col] === null || u[col] === undefined) return 'not_linked' as const;
       // A password is a way in by email (a verified address), or by the username until the cutoff (§2.8, §3.10).
-      const password = u.pw_hash !== null && u.pw_hash !== undefined && ((u.email_canon !== null && u.email_canon !== undefined) || !legacyClosed);
+      const hasPassword = u.pw_hash !== null && u.pw_hash !== undefined;
+      const password = hasPassword && ((u.email_canon !== null && u.email_canon !== undefined) || !legacyClosed);
       const ways = [password ? 1 : null, u.google_sub, u.discord_id].filter((v) => v !== null && v !== undefined).length;
       if (ways <= 1) return 'last_method' as const;
+      if (this.maintainerIds.has(userId) && (!hasPassword || ways - 1 < 2)) return 'maintainer_two_ways' as const;
       if (ways - 1 === 1 && level < Math.min(2, this.ceilingOf(u))) return 'level2' as const;
       this.sql.exec(`UPDATE users SET ${col} = NULL, ${provider}_linked_at = NULL WHERE id = ?`, userId);
       return 'ok' as const;
@@ -1456,6 +1490,7 @@ export class AccountStore {
     if (providers.includes('discord') && num(u.discord_linked_at) > 0) linkedAt.discord = num(u.discord_linked_at);
     const email = u.email_canon !== null && u.email_canon !== undefined && u.email !== null && u.email !== undefined ? str(u.email) : null;
     const passwordCounts = providers.includes('password') && (email !== null || !legacyClosed);
+    const waysIn = providers.filter((p) => p !== 'password').length + (passwordCounts ? 1 : 0);
     return {
       linkedAt,
       playerId: userId,
@@ -1475,7 +1510,9 @@ export class AccountStore {
       legacy: num(u.pw_v) === PW_V_LEGACY,
       news: this.newsGranted(userId),
       deletionAt: num(u.delete_purge_at),
-      waysIn: providers.filter((p) => p !== 'password').length + (passwordCounts ? 1 : 0),
+      waysIn,
+      // PERFIL's checklist (§3.12 step 5), for the project's maintainer accounts only: booleans and a count.
+      ...(this.maintainerIds.has(userId) ? { maintainer: { password: providers.includes('password'), verifiedEmail: email !== null, waysIn } } : {}),
     };
   }
 

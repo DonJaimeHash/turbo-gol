@@ -127,6 +127,28 @@ function issueText(issue: AccountIssue | null): string | null {
   return issue === null ? null : t(`account.issue.${issue.code}`, issue.params);
 }
 
+/**
+ * CUENTA DEL PROYECTO's lines (the sign-in design's §3.12 step 5), from /api/me's `maintainer`, which
+ * the server sends to the project's maintainer accounts (NODE_TRUSTED_OPERATORS) only: a password, a
+ * verified email and at least two ways in, each in words and whether it is done.
+ */
+export function maintainerChecks(m: NonNullable<MeInfo['maintainer']>): Array<{ text: string; ok: boolean }> {
+  return [
+    { ok: m.password, text: t(m.password ? 'profile.maintainerPassword' : 'profile.maintainerNoPassword') },
+    { ok: m.verifiedEmail, text: t(m.verifiedEmail ? 'profile.maintainerEmail' : 'profile.maintainerNoEmail') },
+    { ok: m.waysIn >= 2, text: t('profile.maintainerWays', { count: m.waysIn }) },
+  ];
+}
+
+/**
+ * An unlink the server takes (accountStore.ts unlink): any account's, or the project account's while
+ * it keeps its password and two ways in after it (409 maintainer_two_ways otherwise: PERFIL says so
+ * without asking for the password first).
+ */
+export function unlinkKeepsMaintainer(me: MeInfo): boolean {
+  return me.maintainer === undefined || (me.maintainer.password && me.maintainer.waysIn - 1 >= 2);
+}
+
 /** 'email, Google': how the account signs in (translated): its password by its address, or by its username of before. */
 function providerList(me: MeInfo): string {
   return me.providers.map((p) => (p === 'password' ? t(me.emailVerified === true ? 'profile.providerEmail' : 'profile.providerUsername') : PROVIDER_NAMES[p])).join(', ');
@@ -691,9 +713,17 @@ export function profileScreen(menu: Menu): Screen {
         'div.mn-prof-device',
         null,
         h('p', null, typeof at === 'number' ? t('profile.linkedOn', { provider: PROVIDER_NAMES[p], date: shortDate(at) }) : t('profile.linkedWith', { provider: PROVIDER_NAMES[p] })),
-        ways > 1 ? secondary(t('profile.unlink', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => unlinkDialog(p), { 'data-key': 'profile-unlink-' + p }) : null,
+        ways > 1 ? secondary(t('profile.unlink', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => (me === null || unlinkKeepsMaintainer(me) ? unlinkDialog(p) : menu.toast(t('error.account.maintainer_two_ways'), 'error')), { 'data-key': 'profile-unlink-' + p }) : null,
       );
     };
+    // CUENTA DEL PROYECTO (§3.12): the project account's checklist, a dot per line (green when done). Not on a TV (its changes are the phone's).
+    // With its password, CONFIRMAR CON LA CONTRASEÑA: the level 2 the node token and maintenance routes ask for (nodes/docs/VPS-SAO-PAULO.md's console line).
+    const project = me?.maintainer;
+    const confirm = project?.password === true ? h('div.mn-prof-device', null, h('p.mn-prof-node-reason', null, t('profile.maintainerConfirmNote')), secondary(t('profile.maintainerConfirm'), () => fresh(() => menu.toast(t('profile.maintainerConfirmed'), 'ok'), 2, true), { 'data-key': 'profile-maintainer-confirm' })) : null;
+    const projectChecks =
+      project !== undefined && !(sample === null && acc.account?.tv === true)
+        ? section(t('profile.maintainerTitle'), h('div.mn-prof-node', null, h('p.mn-prof-node-reason', null, t('profile.maintainerNote')), ...maintainerChecks(project).map((c) => h('span.mn-prof-node-state', { 'data-ok': c.ok ? 'true' : 'false' }, h('span.mn-dot'), c.text)), confirm))
+        : null;
     const abandons = (m: MeInfo): string =>
       banLeft > 0 ? t('profile.abandonsBanned', { count: m.abandons24h, minutes: Math.ceil(banLeft / 60000) }) : t('profile.abandons', { count: m.abandons24h });
     const top = best(me);
@@ -795,6 +825,7 @@ export function profileScreen(menu: Menu): Screen {
       h(
         'div.mn-prof-col',
         null,
+        projectChecks,
         h('section.mn-section.mn-prof-security', null, toggle, fold),
         privacy,
         section(
@@ -1062,7 +1093,8 @@ export function profileScreen(menu: Menu): Screen {
     const offered = level === 1 ? own : [];
     const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password', maxLength: 128 });
     const withPassword = me?.hasPassword === true;
-    const mailbox = me?.emailVerified === true && typeof me.email === 'string' && me.email.length > 0 && me.legacy !== true ? me.email : null;
+    // No code for the project's account: it confirms with its password (the server refuses it the code: 403 password_required).
+    const mailbox = me?.emailVerified === true && typeof me.email === 'string' && me.email.length > 0 && me.legacy !== true && me.maintainer === undefined ? me.email : null;
     const ownNames = own.map((p) => PROVIDER_NAMES[p]).join(` ${t('profile.or')} `);
     const notEnough = level === 2 && own.length > 0 ? h('p.mn-note', null, mailbox !== null ? t('profile.reauthPasswordOrCode', { providers: ownNames }) : t('profile.reauthPasswordOnly', { providers: ownNames })) : null;
     const byCode: HTMLButtonElement | null = mailbox !== null ? secondary(t('auth.reauthCode', { email: mailbox }), () => byCode !== null && void busyWhile(byCode, () => openReauthCodeSheet(menu, go)), { 'data-key': 'profile-reauth-code' }) : null;
@@ -1337,6 +1369,8 @@ function sampleAccount(kind: 'account' | 'operator' | 'grace'): AccountData {
     season: 1,
     experimental: false,
     ...(kind === 'grace' ? { providers: ['password'] as MeInfo['providers'], email: null, emailHint: null, emailVerified: false, legacy: true } : {}),
+    // The operator's sample is the project's account too: CUENTA DEL PROYECTO with a line still to do.
+    ...(operator ? { maintainer: { password: true, verifiedEmail: true, waysIn: 1 } } : {}),
   };
   const node = (name: string, status: MyNode['status'], online: boolean): MyNode => ({ nodeId: 'n-' + name, name, region: 'SA', status, statusReason: status === 'suspended' ? 'Too many lost matches this week' : null, suspendedUntil: null, online, counters: { verified: 318, probationVerified: 12 }, version: '1.4.2', compatible: status !== 'suspended' });
   return { name: me.name, me, nodes: operator ? [node('Buenos-Aires-VPS-largo', 'active', true), node('Casa-PC', 'suspended', false)] : [] };

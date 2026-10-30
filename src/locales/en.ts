@@ -683,6 +683,20 @@ export default {
   'profile.unlinkNote': "You won't be able to sign in to this account with {provider} any more.",
   'profile.unlinkConfirm': 'UNLINK',
   'profile.unlinked': '{provider} unlinked',
+  // CUENTA DEL PROYECTO: the checklist PERFIL shows only on the project's maintainer account (NODE_TRUSTED_OPERATORS),
+  // one line per requirement, each with a dot (green when done)
+  'profile.maintainerTitle': 'PROJECT ACCOUNT',
+  'profile.maintainerNote': 'The project account needs its password, a verified email and at least two ways to sign in.',
+  'profile.maintainerPassword': 'Password: set',
+  'profile.maintainerNoPassword': 'Password: missing',
+  'profile.maintainerEmail': 'Verified email: set',
+  'profile.maintainerNoEmail': 'Verified email: missing',
+  // {count}: its ways to sign in now (Google, Discord, and the password while it can sign in with it)
+  'profile.maintainerWays': 'Ways to sign in: {count} of at least 2',
+  // Its button for the node token and the maintenance routes, which need the password typed in the last 15 minutes
+  'profile.maintainerConfirmNote': 'Node tokens and the maintenance tools need your password from the last 15 minutes.',
+  'profile.maintainerConfirm': 'CONFIRM WITH THE PASSWORD',
+  'profile.maintainerConfirmed': 'Done: for 15 minutes you can create node tokens and use the maintenance tools',
   // "Confirm it's you" before a change to how the account signs in (linking, unlinking, a first password)
   'profile.reauthTitle': "Confirm it's you",
   'profile.reauthNote': 'To change how you sign in, sign in again with one of your methods.',
@@ -1078,6 +1092,8 @@ export default {
   'error.account.provider_set': 'Your account already has another account of that provider: unlink it first',
   // Unlinking the only way left to sign in
   'error.account.last_method': "It's your only way to sign in: link another one first",
+  // Unlinking from the project's maintainer account (NODE_TRUSTED_OPERATORS) what it must keep: its password and one more way in
+  'error.account.maintainer_two_ways': 'The project account needs its password and at least one other way to sign in.',
   'error.account.not_linked': "That account isn't linked",
   // A sign-in, sign-up or recovery whose anti-bot check (Turnstile) failed
   'error.account.turnstile_failed': 'Anti-bot check failed, try again',
