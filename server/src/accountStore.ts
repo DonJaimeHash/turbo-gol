@@ -1490,6 +1490,7 @@ export class AccountStore {
     if (providers.includes('discord') && num(u.discord_linked_at) > 0) linkedAt.discord = num(u.discord_linked_at);
     const email = u.email_canon !== null && u.email_canon !== undefined && u.email !== null && u.email !== undefined ? str(u.email) : null;
     const passwordCounts = providers.includes('password') && (email !== null || !legacyClosed);
+    const waysIn = providers.filter((p) => p !== 'password').length + (passwordCounts ? 1 : 0);
     return {
       linkedAt,
       playerId: userId,
@@ -1509,7 +1510,9 @@ export class AccountStore {
       legacy: num(u.pw_v) === PW_V_LEGACY,
       news: this.newsGranted(userId),
       deletionAt: num(u.delete_purge_at),
-      waysIn: providers.filter((p) => p !== 'password').length + (passwordCounts ? 1 : 0),
+      waysIn,
+      // PERFIL's checklist (§3.12 step 5), for the project's maintainer accounts only: booleans and a count.
+      ...(this.maintainerIds.has(userId) ? { maintainer: { password: providers.includes('password'), verifiedEmail: email !== null, waysIn } } : {}),
     };
   }
 

@@ -272,6 +272,31 @@ test('maintainer: the store refuses to delete a NODE_TRUSTED_OPERATORS account (
   assert.equal(obj.store.deletionRefusal(ana), 'maintainer_account');
 });
 
+// ---- PERFIL's checklist: /api/me `maintainer` (§3.12 step 5) --------------------------------------
+
+test('maintainer: /api/me carries { password, verifiedEmail, waysIn } for a project account only, as the owner\'s steps fill it in', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  // The project account as it is today: a password of before, no email, nothing linked.
+  const project = obj.store.register('Proyecto', await A.newPasswordRecord(await ACC.legacyPasswordKey('Proyecto', PW), 1), [], 'd'.repeat(64), Date.now()).userId;
+  await account(obj, 'Ana', { email: 'ana@example.com', discord: 'd-ana' });
+  env.NODE_TRUSTED_OPERATORS = project;
+  const me = async (session) => (await req(env, 'GET', '/api/me', { ip: ip(0), bearer: session })).json;
+  const s = await post(env, '/api/auth/login', { ip: ip(0), body: { username: 'Proyecto', password: await ACC.legacyPasswordKey('Proyecto', PW), passwordV2: KEY, ...TOK } });
+  assert.equal(s.status, 200, JSON.stringify(s.json));
+  assert.deepEqual((await me(s.json.session)).maintainer, { password: true, verifiedEmail: false, waysIn: 1 }, 'before the steps: the password alone');
+  // AGREGAR CORREO (the project mailbox), then Discord: what the checklist asks for.
+  assert.equal(obj.store.claimEmail(project, 'proyecto@example.com', 'mail', Date.now()), 'ok');
+  assert.deepEqual((await me(s.json.session)).maintainer, { password: true, verifiedEmail: true, waysIn: 1 });
+  obj.store.sql.exec("UPDATE users SET discord_id = 'd-proyecto', discord_linked_at = ? WHERE id = ?", Date.now(), project);
+  assert.deepEqual((await me(s.json.session)).maintainer, { password: true, verifiedEmail: true, waysIn: 2 }, 'ready');
+  // Anyone else: no such field at all.
+  const a = await signin(env, 'ana@example.com', ip(1));
+  const mine = await me(a.json.session);
+  assert.equal(mine.name, 'Ana');
+  assert.equal('maintainer' in mine, false);
+});
+
 // ---- the ALERT on every sign-in and level-2 re-authentication (§3.12) ------------------------------
 
 const AUTH = await import('../src/auth.ts');

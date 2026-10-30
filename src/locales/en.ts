@@ -683,6 +683,16 @@ export default {
   'profile.unlinkNote': "You won't be able to sign in to this account with {provider} any more.",
   'profile.unlinkConfirm': 'UNLINK',
   'profile.unlinked': '{provider} unlinked',
+  // CUENTA DEL PROYECTO: the checklist PERFIL shows only on the project's maintainer account (NODE_TRUSTED_OPERATORS),
+  // one line per requirement, each with a dot (green when done)
+  'profile.maintainerTitle': 'PROJECT ACCOUNT',
+  'profile.maintainerNote': 'The project account needs its password, a verified email and at least two ways to sign in.',
+  'profile.maintainerPassword': 'Password: set',
+  'profile.maintainerNoPassword': 'Password: missing',
+  'profile.maintainerEmail': 'Verified email: set',
+  'profile.maintainerNoEmail': 'Verified email: missing',
+  // {count}: its ways to sign in now (Google, Discord, and the password while it can sign in with it)
+  'profile.maintainerWays': 'Ways to sign in: {count} of at least 2',
   // "Confirm it's you" before a change to how the account signs in (linking, unlinking, a first password)
   'profile.reauthTitle': "Confirm it's you",
   'profile.reauthNote': 'To change how you sign in, sign in again with one of your methods.',
