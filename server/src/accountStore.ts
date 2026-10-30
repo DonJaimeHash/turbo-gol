@@ -2275,8 +2275,11 @@ export class AccountStore {
    * (the hold goes), the password becomes `pw` (pw_v 2), every refresh family goes and one starts for
    * this browser (level 2, method 'reset': a mailbox proof that sets a password), every provider
    * linked in the last UNDO_UNLINK_MS goes, the email is locked for EMAIL_LOCK_MS and every pending
-   * row of the account dies, this one used. Null when the row is no longer live, the account is gone
-   * or suspended, or (only a database edited by hand could) another account holds that canon.
+   * row of the account dies, this one used. Of the undo rows, only those of the changes after this
+   * one die (with their holds): the earliest change's undo wins. An older one stays live, so whoever
+   * changed the email twice cannot cancel the owner's link with the undo of their own second change.
+   * Null when the row is no longer live, the account is gone or suspended, or (only a database
+   * edited by hand could) another account holds that canon.
    */
   undoEmail(rowHash: string, pw: PasswordRecord, refresh: RefreshGrant, now: number): UserRef | null {
     return this.tx(() => {
@@ -2296,8 +2299,15 @@ export class AccountStore {
       this.sql.exec('UPDATE users SET email_locked_until = ?, last_login = ? WHERE id = ?', now + EMAIL_LOCK_MS, now, id);
       this.deleteRefreshOf(id);
       this.addRefresh(id, refresh, now, now, now, null, { lvl: 2, method: 'reset' });
+      const later = this.sql.exec(
+        "SELECT hash FROM mail_tokens WHERE user_id = ? AND purpose = 'undo_email' AND used_at = 0 AND (created_at > ? OR (created_at = ? AND rowid > (SELECT rowid FROM mail_tokens WHERE hash = ?)))",
+        id, r.createdAt, r.createdAt, r.hash,
+      ).toArray();
       this.useMailToken(r.hash, id, now);
-      this.killMailTokens({ userId: id }, ['reset', 'add_email', 'change_email', 'reauth', 'undo_email'], now);
+      this.killMailTokens({ userId: id }, ['reset', 'add_email', 'change_email', 'reauth'], now);
+      for (const x of later) this.useMailToken(str(x.hash), id, now);
+      // A hold lives only for a live undo: the later changes' holds go, an older undo keeps its own.
+      this.sql.exec("DELETE FROM email_holds WHERE user_id = ? AND canon NOT IN (SELECT email_canon FROM mail_tokens WHERE user_id = ? AND purpose = 'undo_email' AND used_at = 0)", id, id);
       return { ...this.refOf(u), authAt: now, authLvl: 2 as const };
     });
   }

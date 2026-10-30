@@ -62,7 +62,9 @@ todavía no lo confirmaste.
    - se cierra la sesión en tus otros dispositivos.
 4. **Si no fuiste tú:** abre el enlace del aviso. Tu cuenta vuelve al correo anterior, eliges una
    contraseña nueva, se cierra la sesión en todos los dispositivos y se desvinculan Google o Discord
-   si se vincularon en esos 7 días. Después el correo no se puede cambiar por 7 días.
+   si se vincularon en esos 7 días. Después el correo no se puede cambiar por 7 días. Si alguien lo
+   cambió más de una vez, el enlace que llegó a tu correo sigue sirviendo aunque se haya usado otro
+   después: deshace también los cambios posteriores.
 
 Si el correo nuevo ya es de otra cuenta, ese buzón recibe un mensaje en vez del código. Si esa otra
 cuenta también es tuya y entra con Discord o Google, el mensaje trae un código para pasar el correo

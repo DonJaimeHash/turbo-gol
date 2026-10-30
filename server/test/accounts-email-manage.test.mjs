@@ -292,6 +292,71 @@ test('the hold: for the 7 days a sign-up with the old address gets M2 "held" and
   assert.match(outbox.at(-1).subject, /^\d{6} es tu código de Turbogol$/, "M1: the address is nobody's");
 });
 
+/** Changes the account's email to `to` by its code, and answers M6 (the undo to the address it left). */
+async function changeTo(env, outbox, a, to, ip) {
+  const ask = await askEmail(env, a.json.session, to, ip);
+  assert.equal(ask.status, 200, JSON.stringify(ask.json));
+  const ok = await verifyEmail(env, a.json.session, ask.json.attempt, codeIn(outbox.at(-1)), ip, '__Host-tg_rt=' + a.rt);
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  const m6 = outbox.at(-1);
+  assert.equal(linkIn(m6)?.kind, 'undo', 'M6: ' + m6.subject);
+  return m6;
+}
+const holdCount = (obj) => obj.store.sql.exec('SELECT COUNT(*) AS n FROM email_holds').toArray()[0].n;
+
+test("two changes (the review of PR 9): the undo of the second does not cancel the first's; the owner's link still restores the address, a new password, every device out, the thief's Discord unlinked", async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const a = await signUp(env, outbox, 'duena@x.com', ip(0), { username: 'Duena_Dos' });
+  // Whoever has the password (level 2) changes the email twice: U1 goes to the owner, U2 to the thief's first address.
+  const m6a = await changeTo(env, outbox, a, 'ladron1@x.com', ip(0));
+  assert.equal(m6a.to, 'duena@x.com');
+  const m6b = await changeTo(env, outbox, a, 'ladron2@x.com', ip(0));
+  assert.equal(m6b.to, 'ladron1@x.com');
+  const U1 = linkIn(m6a).token;
+  const U2 = linkIn(m6b).token;
+  assert.equal(holdCount(obj), 2, 'both old addresses held');
+  // The thief undoes its own second change: back to its first address, its own password, the email locked.
+  const THIEF = await ACC.passwordKey('la contraseña del ladrón');
+  const u2 = await post(env, '/api/auth/email/undo', { ip: ip(1), body: { token: U2, password: THIEF } });
+  assert.equal(u2.status, 200, JSON.stringify(u2.json));
+  assert.equal(row(obj, a.json.playerId).email, 'ladron1@x.com');
+  const thiefRt = cookieOf(u2.raw, '__Host-tg_rt');
+  // Then it links its Discord (a way back in that the owner's undo must take away).
+  obj.store.sql.exec('UPDATE users SET discord_id = ?, discord_linked_at = ? WHERE id = ?', 'd-ladron', Date.now(), a.json.playerId);
+  // The owner's link still works.
+  const peek = await post(env, '/api/auth/email/undo/peek', { ip: ip(2), body: { token: U1 } });
+  assert.deepEqual([peek.status, peek.json], [200, { name: 'Duena_Dos', email: 'duena@x.com' }], "the owner's undo (U1) is still live");
+  assert.equal(obj.store.sql.exec('SELECT COUNT(*) AS n FROM email_holds WHERE canon = ?', 'duena@x.com').toArray()[0].n, 1, "the owner's address still held");
+  const OWNER = await ACC.passwordKey('la contraseña nueva de la dueña');
+  const u1 = await post(env, '/api/auth/email/undo', { ip: ip(2), body: { token: U1, password: OWNER } });
+  assert.equal(u1.status, 200, JSON.stringify(u1.json));
+  const u = row(obj, a.json.playerId);
+  assert.deepEqual([u.email, u.email_canon, u.discord_id], ['duena@x.com', 'duena@x.com', null], "the owner's address back, the thief's Discord gone");
+  assert.equal((await refresh(env, thiefRt, ip(1))).status, 401, "the thief's new family is revoked");
+  assert.equal((await signin(env, 'duena@x.com', OWNER, ip(3))).status, 200, "the owner's new password");
+  assert.equal((await signin(env, 'ladron1@x.com', THIEF, ip(4))).status, 401, "the thief's address and password no longer");
+  assert.equal(holdCount(obj), 0);
+  assert.equal((await post(env, '/api/auth/email/undo/peek', { ip: ip(2), body: { token: U1 } })).status, 410, 'used once');
+});
+
+test('two changes, the first undo used first: it wins, the later undo dies with its hold (the address it held is free again)', async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const a = await signUp(env, outbox, 'primera@x.com', ip(0), { username: 'Duena_Tres' });
+  const U1 = linkIn(await changeTo(env, outbox, a, 'segunda@x.com', ip(0))).token;
+  const U2 = linkIn(await changeTo(env, outbox, a, 'tercera@x.com', ip(0))).token;
+  const NEW = await ACC.passwordKey('otra contraseña bien larga');
+  assert.equal((await post(env, '/api/auth/email/undo', { ip: ip(1), body: { token: U1, password: NEW } })).status, 200);
+  assert.equal(row(obj, a.json.playerId).email, 'primera@x.com');
+  assert.equal((await post(env, '/api/auth/email/undo/peek', { ip: ip(1), body: { token: U2 } })).status, 410, 'the later undo is dead');
+  assert.equal((await post(env, '/api/auth/email/undo', { ip: ip(1), body: { token: U2, password: NEW } })).status, 410);
+  assert.equal(row(obj, a.json.playerId).email, 'primera@x.com', 'and changes nothing');
+  assert.equal(holdCount(obj), 0, "the later change's hold went with its undo");
+  await start(env, 'segunda@x.com', ip(2));
+  assert.match(outbox.at(-1).subject, /^\d{6} es tu código de Turbogol$/, "M1: the address is nobody's");
+});
+
 // ---- in use: another account's address, the move -------------------------------------------------------
 
 test('in use: an address another account claimed gives the same answer and M7; a move works when that account keeps a way in (M12, it keeps its Discord), is a decoy when it has none, and move_refused when it lost it meanwhile', async () => {
