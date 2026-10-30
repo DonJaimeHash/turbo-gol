@@ -74,6 +74,18 @@
  * (`maintainer`), keeps its password and at least two ways in through every unlink (unlink
  * 'maintainer_two_ways'), and is never deleted: deletionRefusal answers 'maintainer_account', which
  * the deletion (sign-in PR 12) asks first.
+ *
+ * Account deletion (sign-in PR 12, the design's §2.10 and §3.13): requestDeletion sets the purge date
+ * (DELETE_GRACE ahead), revokes every refresh family and withdraws the news consent; until then
+ * every sign-in answers 'deletion_pending' unless it asks to call the deletion off (signedIn, oauth),
+ * and M9's link calls it off too (cancelDeletionByToken). The AccountsDO's alarm purges what is due,
+ * one transaction per account (purgeAccount): the sanction marks first (a ban, a live ranked lock or
+ * abandons that still weigh leave HMAC'd keys of its canons and provider ids, until the sanction
+ * ends, a year at most), then every row of the account, then its tombstone (deleted_ids, never
+ * handed out again; deleted_nodes until the NodeRegistryDO banned its nodes). A later account that
+ * binds a marked key (a sign-up, a claim, an add or a move of the email, a link, the confirm step's
+ * create) gets what is left of the sanction (applyMarksIn), and is not told.
+ *   deleted_nodes    purged ids whose nodes the NodeRegistryDO has not banned yet (the alarm asks again)
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
@@ -199,6 +211,77 @@ export const UNDO_UNLINK_MS = 7 * DAY_MS;
 export const LEGACY_FLOOR_MS = 30 * DAY_MS;
 /** M10, the reminder of the cutoff, goes this long before it. */
 export const LEGACY_REMIND_MS = 7 * DAY_MS;
+
+// ---- account deletion (sign-in PR 12: §2.10, §3.13) ------------------------------------------------
+
+/** The longest a sanction mark outlives a purge (the owner's answer to §9 Q3: until the sanction ends, a year at most). */
+export const SANCTION_MARK_MAX_MS = 365 * DAY_MS;
+/** M9's link POSTed again this soon after it called the deletion off (a lost answer on a slow network) answers ok again. */
+export const CANCEL_AGAIN_MS = 10 * 60_000;
+/** The most abandons a mark puts back on a new account. */
+const MARK_ABANDONS_MAX = 50;
+/** consents.source of the news withdrawal a deletion request writes. */
+export const DELETION_CONSENT_SOURCE = 'deletion';
+
+/** A sanction mark's kind (sanction_marks.key, §1.3): 'e' an email canon (its own, its hint's, a held one), 'g' a Google sub, 'd' a Discord id. */
+export type MarkKind = 'e' | 'g' | 'd';
+/**
+ * The marks' keys of the values a write may bind or a purge marks (markSlot(kind, value) -> the
+ * stored key, kind ':' HMAC): the AccountsDO makes them before its synchronous step (an HMAC is
+ * async), and the store reads them inside its transaction.
+ */
+export type MarkKeys = ReadonlyMap<string, string>;
+
+/** A value's slot in MarkKeys. */
+export function markSlot(kind: MarkKind, value: string): string {
+  return kind + '|' + value;
+}
+
+function markOf(marks: MarkKeys | undefined, kind: MarkKind, value: string | null | undefined): string | undefined {
+  return marks === undefined || typeof value !== 'string' || value === '' ? undefined : marks.get(markSlot(kind, value));
+}
+
+/** One account the purge is due for, and the values its marks are made of (the AccountsDO HMACs them first). */
+export interface PurgeCandidate {
+  userId: string;
+  values: Array<[MarkKind, string]>;
+}
+
+/**
+ * One purge's outcome: 'purged' (with the marks written), 'not_due' (called off meanwhile), 'gone'
+ * (purged already), 'retry' (a value changed since its keys were made: next run), 'maintainer' (the
+ * project's account: never deleted, its deletion called off).
+ */
+export type PurgeResult = 'purged' | 'not_due' | 'gone' | 'retry' | 'maintainer';
+
+/** Why POST /api/me/delete is refused (deletionBlock), in the order the answers go. */
+export type DeletionRefusal = 'no_user' | 'maintainer_account' | 'banned' | 'deletion_pending' | 'bad_confirm' | { level: 1 | 2 };
+
+/**
+ * What a purge deletes besides the users row and the mail tokens (§3.13 step 2), each by user_id:
+ * the design's list, and the rows born after it (replay_names, legacy_reminders, the name's
+ * protected skeleton). Nothing of another account: every statement names this id.
+ */
+const PURGE_TABLES = [
+  'refresh',
+  'ratings',
+  'ranked_players',
+  'abandons',
+  'bans',
+  'ranked_locks',
+  'training',
+  'experimental',
+  'presets',
+  'loadout',
+  'host_credits',
+  'host_claims',
+  'host_freeze',
+  'consents',
+  'email_holds',
+  'replay_names',
+  'legacy_reminders',
+  'protected_skel',
+] as const;
 
 /**
  * LEGACY_PASSWORD_UNTIL (a wrangler var, an ISO date such as '2027-01-15') as a time: that day at
@@ -554,6 +637,11 @@ function providerCol(p: OAuthProvider): 'google_sub' | 'discord_id' {
   return p === 'google' ? 'google_sub' : 'discord_id';
 }
 
+/** A provider id's sanction mark kind. */
+export function providerMark(p: OAuthProvider): MarkKind {
+  return p === 'google' ? 'g' : 'd';
+}
+
 /** A pending identity and its second one, each provider once (the first kept). */
 function pendingIdents(pend: PendingIdentity): PendingIdent[] {
   const out: PendingIdent[] = [{ p: pend.p, id: pend.id, email: pend.email, trust: pend.trust }];
@@ -606,6 +694,224 @@ export class AccountStore {
   deletionRefusal(userId: string): 'maintainer_account' | 'no_user' | null {
     if (this.maintainerIds.has(userId)) return 'maintainer_account';
     return this.userById(userId) === null ? 'no_user' : null;
+  }
+
+  // ---- account deletion (sign-in PR 12: §2.10, §3.13) ----------------------------------------------
+
+  /** When the account's pending deletion purges it (users.delete_purge_at); 0 for none, or no account. */
+  deletionAt(userId: string): number {
+    const u = this.userById(userId);
+    return u === null ? 0 : num(u.delete_purge_at);
+  }
+
+  private pendingDeletion(u: Row): boolean {
+    return num(u.delete_purge_at) > 0;
+  }
+
+  /**
+   * Why POST /api/me/delete is refused now (§2.10), in the order the answers go: no account, the
+   * project's account (deletionRefusal), a suspended one, one pending already; then a session below
+   * what the account can reach (fresh(2) capped by its ceiling, R6: { level }), then the name typed
+   * wrong (as usernameKey compares names: case and width aside). Null: it may go.
+   */
+  deletionBlock(userId: string, confirm: unknown, level: 0 | 1 | 2): DeletionRefusal | null {
+    const why = this.deletionRefusal(userId);
+    if (why !== null) return why;
+    const u = this.userById(userId) as Row;
+    if (num(u.banned) === 1) return 'banned';
+    if (this.pendingDeletion(u)) return 'deletion_pending';
+    const need = Math.min(2, this.ceilingOf(u)) as 1 | 2;
+    if (level < need) return { level: need };
+    if (typeof confirm !== 'string' || confirm.length > USERNAME_MAX * 2 || usernameKey(confirm.trim()) !== str(u.ukey)) return 'bad_confirm';
+    return null;
+  }
+
+  /**
+   * POST /api/me/delete's writes (§2.10), one transaction, deletionBlock asked again inside it: the
+   * purge date (now + graceMs), every refresh family revoked (this device's too), a news withdrawal
+   * in the consent log, every live reset, email, reauth and cancel row dead (an undo of an email
+   * change stays: it is the owner's way back), and with a verified address the cancel row
+   * (`cancel`: its nonce and hash, M9's link), alive until the purge.
+   */
+  requestDeletion(userId: string, confirm: unknown, level: 0 | 1 | 2, now: number, graceMs: number, cancel: { nonce: string; hash: string } | null): { purgeAt: number; email: string | null } | DeletionRefusal {
+    return this.tx(() => {
+      const why = this.deletionBlock(userId, confirm, level);
+      if (why !== null) return why;
+      const purgeAt = now + graceMs;
+      this.sql.exec('UPDATE users SET delete_requested_at = ?, delete_purge_at = ? WHERE id = ?', now, purgeAt, userId);
+      this.deleteRefreshOf(userId);
+      this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', ?, 0, ?, ?)", userId, NEWS_CONSENT_VERSION, DELETION_CONSENT_SOURCE, now);
+      this.killMailTokens({ userId }, ['reset', 'add_email', 'change_email', 'reauth', 'cancel_delete'], now);
+      const p = this.mailProfile(userId) as MailProfile;
+      if (cancel !== null && p.email !== null && p.canon !== null) {
+        this.addMailToken({ hash: cancel.hash, nonce: cancel.nonce, purpose: 'cancel_delete', userId, email: p.email, canon: p.canon, attemptHash: null, codeHash: null, codeExpiresAt: 0, payload: {}, expiresAt: purgeAt }, now);
+      }
+      return { purgeAt, email: p.email };
+    });
+  }
+
+  /** A pending deletion called off, inside the caller's transaction: the dates cleared, its cancel rows used (by the account). */
+  private cancelIn(userId: string, now: number): void {
+    this.sql.exec('UPDATE users SET delete_requested_at = 0, delete_purge_at = 0 WHERE id = ?', userId);
+    this.killMailTokens({ userId }, ['cancel_delete'], now, null, userId);
+  }
+
+  /**
+   * POST /api/auth/delete/cancel (§2.10): M9's link calls the deletion off. Its row is a live
+   * cancel_delete of an account still pending: the deletion goes, every cancel row of it is used.
+   * The same link again within CANCEL_AGAIN_MS of that, once nothing is pending, is the account's
+   * id again (a lost answer). Null otherwise: unknown, used, expired, superseded by a later request,
+   * purged (one answer).
+   */
+  cancelDeletionByToken(hash: string, now: number): string | null {
+    return this.tx(() => {
+      const r = this.mailToken('hash', hash);
+      if (r === null || r.purpose !== 'cancel_delete' || r.userId === null) return null;
+      const u = this.userById(r.userId);
+      if (u === null) return null;
+      if (r.usedAt > 0) return r.usedBy === r.userId && now - r.usedAt < CANCEL_AGAIN_MS && !this.pendingDeletion(u) ? r.userId : null;
+      if (now >= r.expiresAt || !this.pendingDeletion(u)) return null;
+      this.cancelIn(r.userId, now);
+      return r.userId;
+    });
+  }
+
+  /** The values a purge marks (§3.13 step 1): the account's email canon, its hint's and the ones its undos hold, its Google sub and its Discord id. */
+  private markValues(u: Row): Array<[MarkKind, string]> {
+    const out: Array<[MarkKind, string]> = [];
+    const has = (v: SqlValue | undefined): v is string => v !== null && v !== undefined && str(v) !== '';
+    for (const c of [u.email_canon, u.email_hint_canon]) if (has(c)) out.push(['e', str(c)]);
+    for (const r of this.sql.exec('SELECT canon FROM email_holds WHERE user_id = ?', str(u.id)).toArray()) if (has(r.canon)) out.push(['e', str(r.canon)]);
+    if (has(u.google_sub)) out.push(['g', str(u.google_sub)]);
+    if (has(u.discord_id)) out.push(['d', str(u.discord_id)]);
+    return out;
+  }
+
+  /** The accounts whose purge is due at `now` (users_purge's index), the earliest first, at most `limit`, with what their marks are made of. */
+  purgeCandidates(now: number, limit: number): PurgeCandidate[] {
+    return this.sql
+      .exec('SELECT * FROM users WHERE delete_purge_at > 0 AND delete_purge_at <= ? ORDER BY delete_purge_at, id LIMIT ?', now, limit)
+      .toArray()
+      .map((u) => ({ userId: str(u.id), values: this.markValues(u) }));
+  }
+
+  /**
+   * The sanction in force on the account at `now` (§3.13 step 1): a ban (bans.until, or users.banned
+   * for a year), a live ranked lock, and the abandons that still weigh on the next ban (the last one
+   * of the window plus ABANDON_WINDOW_MS); `until` the latest, each at most SANCTION_MARK_MAX_MS away.
+   */
+  private sanctionOf(u: Row, now: number): { until: number; ban: number; lock: number; abandons: number } {
+    const id = str(u.id);
+    const cap = now + SANCTION_MARK_MAX_MS;
+    const ban = num(u.banned) === 1 ? cap : Math.min(cap, this.banUntil(id, now));
+    const l = this.sql.exec('SELECT until FROM ranked_locks WHERE user_id = ?', id).toArray()[0];
+    const lock = l && num(l.until) > now ? Math.min(cap, num(l.until)) : 0;
+    const a = this.sql.exec('SELECT COUNT(*) AS n, MAX(at) AS last FROM abandons WHERE user_id = ? AND at > ?', id, now - ABANDON_WINDOW_MS).toArray()[0];
+    const abandons = Math.min(MARK_ABANDONS_MAX, num(a?.n));
+    const weighs = abandons > 0 ? Math.min(cap, num(a?.last) + ABANDON_WINDOW_MS) : 0;
+    return { until: Math.max(ban, lock, weighs), ban, lock, abandons };
+  }
+
+  /**
+   * One account's purge (§3.13), one transaction: still due (a deletion called off meanwhile is
+   * 'not_due'), never the project's account ('maintainer': its deletion is called off), and `keys`
+   * holding the key of every value it has now ('retry' otherwise: a value changed since they were
+   * made). Then, with a sanction in force, a sanction_marks row per key (a mark already there keeps
+   * the later end of each); then every row of the account (PURGE_TABLES, users, its mail tokens);
+   * then its tombstone. Idempotent: a purged account is 'gone', and nothing of another one is read
+   * or written but the marks it shares a key with.
+   */
+  purgeAccount(userId: string, keys: MarkKeys, now: number): { result: PurgeResult; marks: number } {
+    return this.tx(() => {
+      const u = this.userById(userId);
+      if (u === null) return { result: 'gone' as const, marks: 0 };
+      const at = num(u.delete_purge_at);
+      if (at <= 0 || at > now) return { result: 'not_due' as const, marks: 0 };
+      if (this.maintainerIds.has(userId)) {
+        this.cancelIn(userId, now);
+        return { result: 'maintainer' as const, marks: 0 };
+      }
+      const k = this.markValues(u).map(([kind, v]) => keys.get(markSlot(kind, v)));
+      if (k.some((x) => x === undefined)) return { result: 'retry' as const, marks: 0 };
+      let marks = 0;
+      const s = this.sanctionOf(u, now);
+      if (s.until > now) {
+        for (const key of new Set(k as string[])) {
+          // A mark of this key still in force keeps the later of each end; one past its end is replaced (SET reads the old row).
+          this.sql.exec(
+            `INSERT INTO sanction_marks (key, until, ban_until, lock_until, abandons, at) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT (key) DO UPDATE SET
+               ban_until = CASE WHEN until > excluded.at THEN MAX(ban_until, excluded.ban_until) ELSE excluded.ban_until END,
+               lock_until = CASE WHEN until > excluded.at THEN MAX(lock_until, excluded.lock_until) ELSE excluded.lock_until END,
+               abandons = CASE WHEN until > excluded.at THEN MAX(abandons, excluded.abandons) ELSE excluded.abandons END,
+               until = MAX(until, excluded.until), at = excluded.at`,
+            key, s.until, s.ban, s.lock, s.abandons, now,
+          );
+          marks++;
+        }
+      }
+      for (const table of PURGE_TABLES) this.sql.exec(`DELETE FROM ${table} WHERE user_id = ?`, userId);
+      // Its mailed proofs: its own rows, and the sign-up rows it was made from (used_by).
+      this.sql.exec('DELETE FROM mail_tokens WHERE user_id = ? OR used_by = ?', userId, userId);
+      this.sql.exec('DELETE FROM users WHERE id = ?', userId);
+      this.sql.exec('INSERT OR IGNORE INTO deleted_ids (id, at) VALUES (?, ?)', userId, now);
+      this.sql.exec('INSERT OR IGNORE INTO deleted_nodes (id, at) VALUES (?, ?)', userId, now);
+      return { result: 'purged' as const, marks };
+    });
+  }
+
+  /** `id` is a purged account's (deleted_ids). */
+  isDeleted(id: string): boolean {
+    return this.sql.exec('SELECT 1 AS x FROM deleted_ids WHERE id = ?', id).toArray().length > 0;
+  }
+
+  /** Purged ids whose nodes the NodeRegistryDO has not answered for yet (/operator-deleted: deleted_nodes), the oldest first. */
+  deletedUntold(limit: number): string[] {
+    return this.sql
+      .exec('SELECT id FROM deleted_nodes ORDER BY at, id LIMIT ?', limit)
+      .toArray()
+      .map((r) => str(r.id));
+  }
+
+  /** The NodeRegistryDO answered for `id`'s nodes (or there are no nodes to tell): its row goes. */
+  nodesTold(id: string): void {
+    this.sql.exec('DELETE FROM deleted_nodes WHERE id = ?', id);
+  }
+
+  /**
+   * §3.13 step 4, inside the caller's transaction, after it bound the values whose marks' keys are
+   * `keys`: a mark in force puts what is left of its sanction on the account, and nobody is told.
+   * Its ban and its ranked lock become a queue ban to the later of them (bans, never shortened); its
+   * abandons go back into the window, weighing until the mark ends and at most a window from now,
+   * once per mark (their match_id names it). How many marks matched.
+   */
+  private applyMarksIn(userId: string, keys: ReadonlyArray<string | undefined>, now: number): number {
+    let n = 0;
+    for (const key of new Set(keys.filter((k): k is string => typeof k === 'string'))) {
+      const m = this.sql.exec('SELECT * FROM sanction_marks WHERE key = ? AND until > ?', key, now).toArray()[0];
+      if (!m) continue;
+      n++;
+      const until = num(m.until);
+      const queue = Math.min(until, Math.max(num(m.ban_until), num(m.lock_until)));
+      if (queue > now && queue > this.banUntil(userId, now)) this.sql.exec('INSERT OR REPLACE INTO bans (user_id, until) VALUES (?, ?)', userId, queue);
+      const abandons = Math.min(MARK_ABANDONS_MAX, num(m.abandons));
+      const tag = 'mark:' + key;
+      if (abandons > 0 && this.sql.exec('SELECT 1 AS x FROM abandons WHERE user_id = ? AND match_id = ? LIMIT 1', userId, tag).toArray().length === 0) {
+        const at = Math.min(until, now + ABANDON_WINDOW_MS) - ABANDON_WINDOW_MS;
+        for (let i = 0; i < abandons; i++) this.sql.exec('INSERT INTO abandons (user_id, at, match_id) VALUES (?, ?, ?)', userId, at, tag);
+      }
+    }
+    return n;
+  }
+
+  /** When the daily part of the alarm last ran (meta.prune_at), 0 for never. */
+  lastPrune(): number {
+    const v = Number(str(this.sql.exec("SELECT v FROM meta WHERE k = 'prune_at'").toArray()[0]?.v));
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+
+  setLastPrune(now: number): void {
+    this.sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('prune_at', ?)", String(now));
   }
 
   migrate(): void {
@@ -664,6 +970,8 @@ export class AccountStore {
     this.migrateTo2();
     // Sign-in PR 9: M10 went to this account for this cutoff (the alarm sends it once per account and cutoff). Additive.
     s.exec('CREATE TABLE IF NOT EXISTS legacy_reminders (user_id TEXT PRIMARY KEY, cutoff INTEGER NOT NULL, at INTEGER NOT NULL)');
+    // Sign-in PR 12: purged ids the NodeRegistryDO has not answered for yet (their nodes to ban; the alarm tries again). Additive.
+    s.exec('CREATE TABLE IF NOT EXISTS deleted_nodes (id TEXT PRIMARY KEY, at INTEGER NOT NULL)');
   }
 
   /** meta.schema_version: 1 when absent (a database from before the sign-in work, or a new one). */
@@ -820,15 +1128,21 @@ export class AccountStore {
    * A successful sign-in: last_login and a new refresh token at the level and method of `proof`
    * (`kind` 'tv': a TV the phone approved, which proved no credential: level 0, method 'tv').
    * `rekey`: the password the sign-in proved, stored again in the same transaction (a legacy key
-   * re-keyed to the current one, or a record re-hashed with the current pepper).
+   * re-keyed to the current one, or a record re-hashed with the current pepper). An account whose
+   * deletion is pending (§2.10) is 'deletion_pending', nothing written, unless the sign-in asks to
+   * call it off (`cancelDeletion`, never a TV's): then the deletion goes and it signs in.
    */
-  signedIn(userId: string, refreshHash: string | RefreshGrant, now: number, proof: SignInProof = NO_PROOF, rekey: PasswordRecord | null = null): UserRef | null {
+  signedIn(userId: string, refreshHash: string | RefreshGrant, now: number, proof: SignInProof = NO_PROOF, rekey: PasswordRecord | null = null, cancelDeletion = false): UserRef | 'deletion_pending' | null {
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1) return null;
+      const tv = typeof refreshHash !== 'string' && refreshHash.kind === 'tv';
+      if (this.pendingDeletion(u)) {
+        if (tv || !cancelDeletion) return 'deletion_pending' as const;
+        this.cancelIn(userId, now);
+      }
       this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, userId);
       if (rekey !== null) this.setPassword(userId, rekey);
-      const tv = typeof refreshHash !== 'string' && refreshHash.kind === 'tv';
       const p: SignInProof = tv ? { lvl: 0, method: 'tv' } : proof;
       this.addRefresh(userId, refreshHash, now, tv ? 0 : now, now, null, p);
       return { ...this.refOf(u), ...(tv ? { tv: true } : { authAt: now, authLvl: p.lvl }) };
@@ -882,7 +1196,8 @@ export class AccountStore {
       this.sql.exec('DELETE FROM refresh WHERE hash = ?', oldHash);
       if (num(r.expires_at) <= now) return 'unknown' as const;
       const u = this.userById(str(r.user_id));
-      if (u === null || num(u.banned) === 1) return 'unknown' as const;
+      // A pending deletion revoked every family (requestDeletion): one that turns up anyway signs nobody in.
+      if (u === null || num(u.banned) === 1 || this.pendingDeletion(u)) return 'unknown' as const;
       const g: RefreshGrant = typeof next === 'string' ? { hash: next } : next;
       const had = r.family !== null && r.family !== undefined;
       // A family's token always rotates into the same family (the Worker keeps its family part).
@@ -904,7 +1219,7 @@ export class AccountStore {
     const r = this.sql.exec('SELECT * FROM refresh WHERE hash = ?', hash).toArray()[0];
     if (!r || num(r.expires_at) <= now) return null;
     const u = this.userById(str(r.user_id));
-    if (u === null || num(u.banned) === 1) return null;
+    if (u === null || num(u.banned) === 1 || this.pendingDeletion(u)) return null;
     const kind: SessionKind = str(r.kind) === 'tv' ? 'tv' : 'web';
     return { ...this.refOf(u), kind, device: deviceId(r), ...(kind === 'tv' ? { tv: true } : { authAt: num(r.auth_at), authLvl: num(r.auth_at) > 0 ? levelOf(r.auth_lvl) : 0 }) };
   }
@@ -991,9 +1306,11 @@ export class AccountStore {
    * Password reset with a recovery code (the legacy path): the code (its hash) is consumed, the
    * password replaced and every session signed out; a new refresh token for this browser, at level
    * 2. Null when the user / code do not match, and for an account with a verified email, which
-   * resets by email instead (the design's downgrade rule (a)).
+   * resets by email instead (the design's downgrade rule (a)). With a deletion pending the password
+   * is set and nothing signs in (`deletionPending`: the purge date, §2.4's rule for a reset): the
+   * person signs in with it and calls the deletion off.
    */
-  recover(username: string, codeHash: string, pw: PasswordRecord, refreshHash: string | RefreshGrant, now: number): (UserRef & { codesLeft: number }) | null {
+  recover(username: string, codeHash: string, pw: PasswordRecord, refreshHash: string | RefreshGrant, now: number): (UserRef & { codesLeft: number; deletionPending?: number }) | null {
     return this.tx(() => {
       const u = this.userByKey(usernameKey(username));
       if (u === null || num(u.banned) === 1) return null;
@@ -1005,6 +1322,7 @@ export class AccountStore {
       const id = str(u.id);
       this.sql.exec('UPDATE users SET recovery = ?, pw_hash = ?, pw_salt = ?, pw_iter = ?, pw_v = ?, pw_kid = ?, last_login = ? WHERE id = ?', JSON.stringify(codes), pw.hash, pw.salt, pw.iter, pwVOf(pw), pw.kid ?? '', now, id);
       this.deleteRefreshOf(id);
+      if (this.pendingDeletion(u)) return { ...this.refOf(u), codesLeft: codes.length, deletionPending: num(u.delete_purge_at) };
       this.addRefresh(id, refreshHash, now, now, now, null, { lvl: 2, method: 'reset' });
       return { ...this.refOf(u), authAt: now, authLvl: 2 as const, codesLeft: codes.length };
     });
@@ -1019,28 +1337,36 @@ export class AccountStore {
    * identity (R6; the Worker knows the prompt it asked for), the new token's; its method is the
    * provider. `found`: the provider's address, which an account without a verified one takes as
    * its email (auth) or its hint (asserted) in the same transaction (§3.8 step 6). No name is read.
+   * `opts.marks`: the marks' keys of the identity and of the address (§3.13 step 4: a link, a claim);
+   * `opts.cancelDeletion`: the start's cancelDel=1 (§2.10), else an owner whose deletion is pending
+   * is 'deletion_pending' and nothing signs in. A pending account links nothing ('no_user').
    */
-  oauth(provider: OAuthProvider, providerId: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number, lvl: 0 | 1 | 2 = 0, found: ProviderEmail = NO_EMAIL): UserRef | 'pending' | 'already_linked' | 'provider_set' | 'no_user' {
+  oauth(provider: OAuthProvider, providerId: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number, lvl: 0 | 1 | 2 = 0, found: ProviderEmail = NO_EMAIL, opts: { marks?: MarkKeys; cancelDeletion?: boolean } = {}): UserRef | 'pending' | 'already_linked' | 'provider_set' | 'no_user' | 'deletion_pending' {
     const col = providerCol(provider);
     const proof: SignInProof = { lvl, method: provider };
     return this.tx(() => {
-      const owner = this.sql.exec(`SELECT id, username, banned, created_at FROM users WHERE ${col} = ?`, providerId).toArray()[0];
+      const owner = this.sql.exec(`SELECT id, username, banned, created_at, delete_purge_at FROM users WHERE ${col} = ?`, providerId).toArray()[0];
       if (linkTo !== null) {
         const me = this.userById(linkTo);
-        if (me === null || num(me.banned) === 1) return 'no_user' as const;
+        if (me === null || num(me.banned) === 1 || this.pendingDeletion(me)) return 'no_user' as const;
         if (owner && str(owner.id) !== linkTo) return 'already_linked' as const;
         const current = me[col];
         if (current !== null && current !== undefined && str(current) !== providerId) return 'provider_set' as const;
         if (current === null || current === undefined) this.sql.exec(`UPDATE users SET ${col} = ?, ${provider}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, providerId, now, linkTo);
-        this.fillEmailIn(linkTo, found, provider, now);
+        const claimed = this.fillEmailIn(linkTo, found, provider, now);
+        this.applyMarksIn(linkTo, [markOf(opts.marks, providerMark(provider), providerId), markOf(opts.marks, 'e', claimed)], now);
         this.addRefresh(linkTo, refreshHash, now, now, now, null, proof);
         return { ...this.refOf(me), authAt: now, authLvl: lvl };
       }
       if (!owner) return 'pending' as const;
       if (num(owner.banned) === 1) return 'no_user' as const;
       const id = str(owner.id);
+      if (num(owner.delete_purge_at) > 0) {
+        if (opts.cancelDeletion !== true) return 'deletion_pending' as const;
+        this.cancelIn(id, now);
+      }
       this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
-      this.fillEmailIn(id, found, provider, now);
+      this.applyMarksIn(id, [markOf(opts.marks, 'e', this.fillEmailIn(id, found, provider, now))], now);
       this.addRefresh(id, refreshHash, now, now, now, null, proof);
       return { ...this.refOf(owner), authAt: now, authLvl: lvl };
     });
@@ -1156,8 +1482,9 @@ export class AccountStore {
    * was typed (I9). 'taken' when another account claims that canon or holds it for an undo (I2; the
    * partial UNIQUE index stands behind this). In the same transaction the account's own hint goes,
    * and so does every other account's hint of that canon (a hint never points at a claimed address).
+   * `marks`: that canon's mark key (§3.13 step 4).
    */
-  claimEmail(userId: string, email: string, proof: EmailProof, now: number): 'ok' | 'taken' | 'bad_email' | 'no_user' {
+  claimEmail(userId: string, email: string, proof: EmailProof, now: number, marks?: MarkKeys): 'ok' | 'taken' | 'bad_email' | 'no_user' {
     const address = normalizeEmail(email);
     const canon = emailCanon(email);
     if (address === null || canon === null) return 'bad_email';
@@ -1165,6 +1492,7 @@ export class AccountStore {
       if (this.userById(userId) === null) return 'no_user' as const;
       if (this.canonTaken(canon, userId)) return 'taken' as const;
       this.claimIn(userId, address, canon, proof, now);
+      this.applyMarksIn(userId, [markOf(marks, 'e', canon)], now);
       return 'ok' as const;
     });
   }
@@ -1254,19 +1582,22 @@ export class AccountStore {
    * provider's. 'auth' with the canon free claims it (email_proof 'google'; every other hint of it
    * goes); 'asserted' with the canon claimed by nobody and held by nobody sets the account's hint,
    * or replaces it (a provider address that changed); anything else changes nothing. An account's
-   * verified address is its own and never follows a provider.
+   * verified address is its own and never follows a provider. The canon it claimed, else null (its
+   * sanction mark is the caller's to apply).
    */
-  private fillEmailIn(userId: string, found: ProviderEmail, from: OAuthProvider, now: number): void {
+  private fillEmailIn(userId: string, found: ProviderEmail, from: OAuthProvider, now: number): string | null {
     const u = this.userById(userId);
-    if (u === null || (u.email_canon !== null && u.email_canon !== undefined)) return;
+    if (u === null || (u.email_canon !== null && u.email_canon !== undefined)) return null;
     const c = this.trustedCanon(found);
-    if (c === null) return;
+    if (c === null) return null;
     if (found.trust === 'auth') {
-      if (!this.canonTaken(c.canon, userId)) this.claimIn(userId, c.address, c.canon, 'google', now);
-      return;
+      if (this.canonTaken(c.canon, userId)) return null;
+      this.claimIn(userId, c.address, c.canon, 'google', now);
+      return c.canon;
     }
-    if (this.canonClaimed(c.canon, now)) return;
+    if (this.canonClaimed(c.canon, now)) return null;
     this.sql.exec('UPDATE users SET email_hint = ?, email_hint_canon = ?, email_hint_from = ? WHERE id = ?', c.address, c.canon, from, userId);
+    return null;
   }
 
   /**
@@ -1279,9 +1610,9 @@ export class AccountStore {
    * identity got an owner meanwhile ('already_linked'), and when the address leads to an account,
    * a race included ('email_has_account': that account signs in and links). `lvl`: the callback's
    * level; the family's method is the provider. `news`: the news switch, a consent row only when it
-   * is on.
+   * is on. `marks`: the identities' and their addresses' mark keys (§3.13 step 4).
    */
-  createFromPending(pend: PendingIdentity, username: string, refreshHash: string | RefreshGrant, now: number, opts: { lvl?: 0 | 1 | 2; lang?: string; tz?: string; news?: boolean } = {}): UserRef | 'username_taken' | 'lookalike' | 'email_has_account' | 'already_linked' {
+  createFromPending(pend: PendingIdentity, username: string, refreshHash: string | RefreshGrant, now: number, opts: { lvl?: 0 | 1 | 2; lang?: string; tz?: string; news?: boolean; marks?: MarkKeys } = {}): UserRef | 'username_taken' | 'lookalike' | 'email_has_account' | 'already_linked' {
     const idents = pendingIdents(pend);
     const lvl = opts.lvl ?? 0;
     return this.tx(() => {
@@ -1297,7 +1628,8 @@ export class AccountStore {
         id, username, usernameKey(username), google?.id ?? null, google ? now : null, discord?.id ?? null, discord ? now : null, opts.lang ?? '', opts.tz ?? '', now, now,
       );
       const best = idents.find((i) => i.trust === 'auth' && this.trustedCanon(i) !== null) ?? idents.find((i) => i.trust === 'asserted' && this.trustedCanon(i) !== null);
-      if (best !== undefined) this.fillEmailIn(id, best, best.p, now);
+      const claimed = best !== undefined ? this.fillEmailIn(id, best, best.p, now) : null;
+      this.applyMarksIn(id, [...idents.map((i) => markOf(opts.marks, providerMark(i.p), i.id)), markOf(opts.marks, 'e', claimed)], now);
       if (opts.news === true) {
         this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', ?, 1, 'oauth_signup', ?)", id, NEWS_CONSENT_VERSION, now);
         this.sql.exec('UPDATE users SET unsub_id = ? WHERE id = ? AND unsub_id IS NULL', randomToken(), id);
@@ -1312,13 +1644,14 @@ export class AccountStore {
    * pending identity (and its second one) go on that account when the address leads nowhere else
    * ('wrong_account': it leads to another account, which must sign in instead), the account's slot
    * for each provider is free ('provider_set') and no account owns either identity
-   * ('already_linked'). All or nothing; then the address fills the email in (step 6).
+   * ('already_linked'). All or nothing; then the address fills the email in (step 6). `marks`: the
+   * identities' and their addresses' mark keys (§3.13 step 4). A pending deletion links nothing.
    */
-  linkPending(userId: string, pend: PendingIdentity, now: number): LinkPendingResult {
+  linkPending(userId: string, pend: PendingIdentity, now: number, marks?: MarkKeys): LinkPendingResult {
     const idents = pendingIdents(pend);
     return this.tx(() => {
       const u = this.userById(userId);
-      if (u === null || num(u.banned) === 1) return 'no_user' as const;
+      if (u === null || num(u.banned) === 1 || this.pendingDeletion(u)) return 'no_user' as const;
       const match = this.pendingMatch(pend, now);
       if (match !== null && match.userId !== userId) return 'wrong_account' as const;
       for (const i of idents) {
@@ -1330,7 +1663,8 @@ export class AccountStore {
       for (const i of idents) {
         const col = providerCol(i.p);
         this.sql.exec(`UPDATE users SET ${col} = ?, ${i.p}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, i.id, now, userId);
-        this.fillEmailIn(userId, i, i.p, now);
+        const claimed = this.fillEmailIn(userId, i, i.p, now);
+        this.applyMarksIn(userId, [markOf(marks, providerMark(i.p), i.id), markOf(marks, 'e', claimed)], now);
       }
       return 'linked' as const;
     });
@@ -1358,7 +1692,7 @@ export class AccountStore {
       }
       for (const p of PLAYLISTS) {
         const top = this.sql
-          .exec('SELECT u.id AS id, u.username AS name FROM ratings r JOIN users u ON u.id = r.user_id WHERE r.playlist = ? AND r.season = ? AND r.games >= ? AND u.banned = 0 ORDER BY r.mu DESC LIMIT ?', p, SEASON, PLACEMENT_MATCHES, PROTECTED_TOP)
+          .exec('SELECT u.id AS id, u.username AS name FROM ratings r JOIN users u ON u.id = r.user_id WHERE r.playlist = ? AND r.season = ? AND r.games >= ? AND u.banned = 0 AND u.delete_purge_at = 0 ORDER BY r.mu DESC LIMIT ?', p, SEASON, PLACEMENT_MATCHES, PROTECTED_TOP)
           .toArray();
         for (const r of top) add(str(r.id), str(r.name), 'top:' + p);
       }
@@ -1393,10 +1727,10 @@ export class AccountStore {
    * is <dev_sub>@dev.invalid, verified, proof 'dev' (I1: no typed address, and .invalid never
    * routes); its username `name` when that is a valid username nobody has, else 'Dev' and digits.
    * This device's family proves a credential now, at level 2 with method 'dev' (the design's R6).
-   * 'bad_name' (devSubOf), 'banned', or 'taken' when another account holds the address (only a
-   * database edited by hand could).
+   * 'bad_name' (devSubOf), 'banned', 'deletion_pending' (§2.10), or 'taken' when another account
+   * holds the address (only a database edited by hand could).
    */
-  devSignIn(name: string, refresh: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'bad_name' | 'banned' | 'taken' {
+  devSignIn(name: string, refresh: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'bad_name' | 'banned' | 'taken' | 'deletion_pending' {
     const sub = devSubOf(name);
     if (sub === null) return 'bad_name';
     const typed = name.trim();
@@ -1418,6 +1752,7 @@ export class AccountStore {
         u = this.userById(id) as Row;
       } else {
         if (num(u.banned) === 1) return 'banned' as const;
+        if (this.pendingDeletion(u)) return 'deletion_pending' as const;
         this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, str(u.id));
       }
       const g: RefreshGrant = typeof refresh === 'string' ? { hash: refresh } : refresh;
@@ -1635,7 +1970,7 @@ export class AccountStore {
     const rows = this.sql
       .exec(
         `SELECT u.username AS name, r.mu AS mu, r.games AS games, r.wins AS wins FROM ratings r JOIN users u ON u.id = r.user_id
-         WHERE r.playlist = ? AND r.season = ? AND r.games >= ? AND u.banned = 0 ORDER BY r.mu DESC LIMIT ?`,
+         WHERE r.playlist = ? AND r.season = ? AND r.games >= ? AND u.banned = 0 AND u.delete_purge_at = 0 ORDER BY r.mu DESC LIMIT ?`,
         playlist, SEASON, PLACEMENT_MATCHES, n,
       )
       .toArray();
@@ -1791,10 +2126,11 @@ export class AccountStore {
   /**
    * POST /replay-hidden (the NodeRegistryDO, serving replay rows): which of `ids` (player ids: an
    * account's, or a guest's, which never has a row) and of `names` (a legacy row's names, looked up
-   * as usernames today) belong to an account that hides its name.
+   * as usernames today) belong to an account that hides its name. A purged account's id is always
+   * hidden (deleted_ids): its name leaves the public replays with it, before their 30 days are up.
    */
   replayHidden(ids: readonly string[], names: readonly string[]): { ids: string[]; names: string[] } {
-    const hidIds = ids.filter((id) => this.replayNameHidden(id));
+    const hidIds = ids.filter((id) => this.replayNameHidden(id) || this.isDeleted(id));
     const hidNames = names.filter((n) => {
       const u = this.userByKey(usernameKey(n));
       return u !== null && this.replayNameHidden(str(u.id));
@@ -1910,9 +2246,13 @@ export class AccountStore {
     });
   }
 
-  /** POST /host-credit (the outbox of a settled node match): recorded once per match id; false when it already was. */
+  /**
+   * POST /host-credit (the outbox of a settled node match): recorded once per match id; false when it
+   * already was, and for a purged account (its outbox rows of after the purge leave nothing behind).
+   */
   hostCredit(c: HostCredit): boolean {
     return this.tx(() => {
+      if (this.isDeleted(c.userId)) return false;
       if (this.sql.exec('SELECT 1 AS x FROM host_credits WHERE match_id = ?', c.matchId).toArray().length > 0) return false;
       this.sql.exec('INSERT INTO host_credits (match_id, user_id, node_id, points, verified, at) VALUES (?, ?, ?, ?, ?, ?)', c.matchId, c.userId, c.nodeId, round2(c.points), c.verified ? 1 : 0, c.at);
       return true;
@@ -1922,10 +2262,11 @@ export class AccountStore {
   /**
    * POST /host-freeze (a failed verification on a node of the account, at `at`): claims pause. A
    * freeze in force keeps its first reason; an event from before the last unfreeze (the outbox
-   * delivering it again) changes nothing. True when it froze the wallet.
+   * delivering it again) changes nothing, and so does one for a purged account. True when it froze the wallet.
    */
   hostFreeze(userId: string, reason: string, at: number): boolean {
     return this.tx(() => {
+      if (this.isDeleted(userId)) return false;
       const r = this.sql.exec('SELECT at, cleared_at FROM host_freeze WHERE user_id = ?', userId).toArray()[0];
       if (r && (num(r.at) > num(r.cleared_at) || at <= num(r.cleared_at))) return false;
       this.sql.exec(
@@ -2123,9 +2464,11 @@ export class AccountStore {
    * reset (section 2.4), one transaction: the reset row's account gets the password (pw_v 2), every
    * refresh family goes and one starts for this browser (level 2, method 'reset'), the row is used
    * and every reset, add_email, change_email and reauth row of the account dies. Null when the row
-   * is no longer a live reset, or the account is gone or suspended.
+   * is no longer a live reset, or the account is gone or suspended. With a deletion pending (§2.4)
+   * the password is set and nothing signs in (`deletionPending`: the purge date): the person signs
+   * in with it and calls the deletion off.
    */
-  resetPassword(row: MailTokenRow, pw: PasswordRecord, refresh: RefreshGrant, now: number): UserRef | null {
+  resetPassword(row: MailTokenRow, pw: PasswordRecord, refresh: RefreshGrant, now: number): (UserRef & { deletionPending?: number }) | null {
     return this.tx(() => {
       const r = this.mailToken('hash', row.hash);
       if (r === null || r.purpose !== 'reset' || r.usedAt > 0 || now >= r.expiresAt || r.userId === null) return null;
@@ -2135,10 +2478,11 @@ export class AccountStore {
       this.setPassword(id, pw);
       this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
       this.deleteRefreshOf(id);
-      this.addRefresh(id, refresh, now, now, now, null, { lvl: 2, method: 'reset' });
+      const pending = this.pendingDeletion(u);
+      if (!pending) this.addRefresh(id, refresh, now, now, now, null, { lvl: 2, method: 'reset' });
       this.useMailToken(r.hash, id, now);
       this.killMailTokens({ userId: id }, ['reset', 'add_email', 'change_email', 'reauth'], now);
-      return { ...this.refOf(u), authAt: now, authLvl: 2 as const };
+      return pending ? { ...this.refOf(u), deletionPending: num(u.delete_purge_at) } : { ...this.refOf(u), authAt: now, authLvl: 2 as const };
     });
   }
 
@@ -2172,14 +2516,16 @@ export class AccountStore {
    * pw_v 2), every other account's hint of that canon cleared, the consents, a refresh family at
    * level 2 (method 'password'), and every sign-up row of the canon used (`used_by` the new account:
    * another attempt's finish then answers already_created). A proof that already made an account in
-   * the last ALREADY_CREATED_MS answers 'already_created' with that account's address.
+   * the last ALREADY_CREATED_MS answers 'already_created' with that account's address. `marks`: the
+   * canon's mark key (§3.13 step 4: what is left of a purged account's sanction comes back).
    */
   finishSignup(
     proof: { row: MailTokenRow; codeHash: string | null },
     a: { username: string; pw: PasswordRecord; lang: string; tz: string; news: boolean; terms: string | null; refresh: RefreshGrant },
     now: number,
     name: 'ok' | 'reserved' | 'bad' = 'ok',
-  ): (UserRef & { email: string }) | 'expired' | 'invalid' | { triesLeft: number } | { already: string } | 'bad_username' | 'name_reserved' | 'username_taken' | 'lookalike' | 'email_taken' {
+    marks?: MarkKeys,
+  ):(UserRef & { email: string }) | 'expired' | 'invalid' | { triesLeft: number } | { already: string } | 'bad_username' | 'name_reserved' | 'username_taken' | 'lookalike' | 'email_taken' {
     return this.tx(() => {
       const row = this.mailToken('hash', proof.row.hash);
       if (row === null || row.purpose !== 'signup') return proof.codeHash === null ? ('invalid' as const) : ('expired' as const);
@@ -2208,6 +2554,7 @@ export class AccountStore {
         id, a.username, usernameKey(a.username), a.pw.hash, a.pw.salt, a.pw.iter, PW_V_CURRENT, a.pw.kid ?? '', row.email, row.canon, now, a.lang, a.tz, now, now,
       );
       this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", row.canon, id);
+      this.applyMarksIn(id, [markOf(marks, 'e', row.canon)], now);
       if (a.news) this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', ?, 1, 'signup', ?)", id, NEWS_CONSENT_VERSION, now);
       if (a.terms !== null) this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'terms', ?, 1, 'signup', ?)", id, a.terms, now);
       this.addRefresh(id, a.refresh, now, now, now, null, { lvl: 2, method: 'password' });
@@ -2261,9 +2608,9 @@ export class AccountStore {
    * the old canon for EMAIL_UNDO_MS (email_holds), stores the undo row for the old address
    * (`undo`: its nonce and hash, M6's link) and signs out every other refresh family of the account
    * (`keep`: the caller's token, kept). A move first empties the other account's address and kills
-   * its mailed rows; it keeps its sessions and its providers.
+   * its mailed rows; it keeps its sessions and its providers. `marks`: the canon's mark key (§3.13 step 4).
    */
-  applyEmail(rowHash: string, keep: string | null, undo: { nonce: string; hash: string }, now: number): EmailApplied | 'expired' | 'taken' | 'move_refused' | 'no_user' {
+  applyEmail(rowHash: string, keep: string | null, undo: { nonce: string; hash: string }, now: number, marks?: MarkKeys): EmailApplied | 'expired' | 'taken' | 'move_refused' | 'no_user' {
     return this.tx(() => {
       const r = this.mailToken('hash', rowHash);
       if (r === null || (r.purpose !== 'add_email' && r.purpose !== 'change_email') || r.usedAt > 0 || now >= r.expiresAt || r.userId === null || r.canon === '') return 'expired' as const;
@@ -2286,6 +2633,7 @@ export class AccountStore {
       }
       const old = u.email_canon !== null && u.email_canon !== undefined && u.email !== null && u.email !== undefined ? { email: str(u.email), canon: str(u.email_canon) } : null;
       this.claimIn(id, r.email, r.canon, 'mail', now);
+      this.applyMarksIn(id, [markOf(marks, 'e', r.canon)], now);
       // Its own hold of this canon (an undo window of before) is over: the account holds it now.
       this.sql.exec('DELETE FROM email_holds WHERE canon = ?', r.canon);
       const email = r.email;
@@ -2316,9 +2664,11 @@ export class AccountStore {
    * one die (with their holds): the earliest change's undo wins. An older one stays live, so whoever
    * changed the email twice cannot cancel the owner's link with the undo of their own second change.
    * Null when the row is no longer live, the account is gone or suspended, or (only a database
-   * edited by hand could) another account holds that canon.
+   * edited by hand could) another account holds that canon. With a deletion pending, all of it but
+   * the new family (`deletionPending`: the purge date, as a reset): the owner signs in with the new
+   * password and calls the deletion off.
    */
-  undoEmail(rowHash: string, pw: PasswordRecord, refresh: RefreshGrant, now: number): UserRef | null {
+  undoEmail(rowHash: string, pw: PasswordRecord, refresh: RefreshGrant, now: number): (UserRef & { deletionPending?: number }) | null {
     return this.tx(() => {
       const r = this.undoRow(rowHash, now);
       if (r === null) return null;
@@ -2335,7 +2685,8 @@ export class AccountStore {
       }
       this.sql.exec('UPDATE users SET email_locked_until = ?, last_login = ? WHERE id = ?', now + EMAIL_LOCK_MS, now, id);
       this.deleteRefreshOf(id);
-      this.addRefresh(id, refresh, now, now, now, null, { lvl: 2, method: 'reset' });
+      const pending = this.pendingDeletion(u);
+      if (!pending) this.addRefresh(id, refresh, now, now, now, null, { lvl: 2, method: 'reset' });
       const later = this.sql.exec(
         "SELECT hash FROM mail_tokens WHERE user_id = ? AND purpose = 'undo_email' AND used_at = 0 AND (created_at > ? OR (created_at = ? AND rowid > (SELECT rowid FROM mail_tokens WHERE hash = ?)))",
         id, r.createdAt, r.createdAt, r.hash,
@@ -2345,7 +2696,7 @@ export class AccountStore {
       for (const x of later) this.useMailToken(str(x.hash), id, now);
       // A hold lives only for a live undo: the later changes' holds go, an older undo keeps its own.
       this.sql.exec("DELETE FROM email_holds WHERE user_id = ? AND canon NOT IN (SELECT email_canon FROM mail_tokens WHERE user_id = ? AND purpose = 'undo_email' AND used_at = 0)", id, id);
-      return { ...this.refOf(u), authAt: now, authLvl: 2 as const };
+      return pending ? { ...this.refOf(u), deletionPending: num(u.delete_purge_at) } : { ...this.refOf(u), authAt: now, authLvl: 2 as const };
     });
   }
 

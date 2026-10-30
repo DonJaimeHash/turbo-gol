@@ -50,6 +50,20 @@ export interface Env {
   MAIL_LINK_ORIGIN?: string;
   /** Var: the day's mail across every lane (src/mailCaps.ts); 100 when unset or not a positive integer. */
   EMAIL_DAILY_CAP?: string | number;
+  /**
+   * Var: the days between POST /api/me/delete and the purge, while the deletion can be called off
+   * (sign-in PR 12, the design's §2.10; deleteGraceMs). 14, the owner's answer, when unset or not a
+   * whole number from 1 to 60.
+   */
+  DELETE_GRACE?: string | number;
+  /**
+   * Var: '1' opens POST /api/me/delete (sign-in PR 12; deletionOpen). Anything else ("0" in
+   * wrangler.jsonc) answers it 404 not_found, as before the route existed, until the terms of service
+   * ship with PERFIL's button and the screens that call a deletion off (M9's keep sheet, the
+   * deletion_pending prompt). The cancel route, the sign-in branches and the purge stay live: with no
+   * request, they have nothing to do.
+   */
+  DELETION_OPEN?: string;
   /** `.dev.vars` only: '1' opens the dev-only routes (the dev sign-in, the stub's outbox) on a loopback host, never elsewhere. */
   DEV_AUTH?: string;
   FLAGS: KVNamespace;
@@ -152,6 +166,22 @@ export const SERVER_VERSION = '0.1.0';
 export function matchLengthSeconds(env: Env): number {
   const n = Number(env.MATCH_LENGTH_SECONDS);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_MATCH_SECONDS;
+}
+
+/** DELETE_GRACE's default, in days (the owner's answer to the design's §9 Q1). */
+export const DELETE_GRACE_DEFAULT_DAYS = 14;
+
+/** DELETE_GRACE in ms: whole days from 1 to 60, else DELETE_GRACE_DEFAULT_DAYS. */
+export function deleteGraceMs(env: Pick<Env, 'DELETE_GRACE'>): number {
+  const raw = env.DELETE_GRACE;
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\s*\d{1,2}\s*$/.test(raw) ? Number(raw) : NaN;
+  const days = Number.isInteger(n) && n >= 1 && n <= 60 ? n : DELETE_GRACE_DEFAULT_DAYS;
+  return days * 24 * 60 * 60_000;
+}
+
+/** DELETION_OPEN is '1': POST /api/me/delete takes requests (else 404 not_found). */
+export function deletionOpen(env: Pick<Env, 'DELETION_OPEN'>): boolean {
+  return String(env.DELETION_OPEN ?? '').trim() === '1';
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };

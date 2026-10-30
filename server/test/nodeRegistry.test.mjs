@@ -1590,6 +1590,36 @@ test('a ban closes the node live socket at once (4403), after telling it; a fram
   assert.deepEqual(other.ws.closed, { code: 4403, reason: 'banned' });
 });
 
+test('a purged operator account (AccountsDO, sign-in PR 12: POST /internal/operator-deleted): each of its nodes banned, told, its socket closed (4403), one ALERT; again changes nothing; a trusted operator 409, its nodes kept', async () => {
+  const OP = 'c0ffee0123456789';
+  const env = makeEnv({ NODE_TRUSTED_OPERATORS: `${PROJECT},${OP}` });
+  const h = await boot(env);
+  const mine = await liveNode(h, { op: OP, ip: '203.0.113.21', publicUrl: 'wss://op1.turbo-gol.test' });
+  const project = await liveNode(h, { ip: '203.0.113.22', publicUrl: 'wss://op2.turbo-gol.test' });
+  // The account left the project's list (a deploy: the same sockets and database), then it was deleted.
+  h.obj = new D.NodeRegistryDO(h.ctx, { ...env, NODE_TRUSTED_OPERATORS: PROJECT });
+  h.obj.alertSleep = () => Promise.resolve();
+  await h.obj.ready;
+  assert.deepEqual((await call(h, 'POST', '/internal/operator-deleted', { body: { userId: 'nope' } })).status, 400);
+  const from = alerts().length;
+  const r = await call(h, 'POST', '/internal/operator-deleted', { body: { userId: OP } });
+  assert.deepEqual([r.status, r.json], [200, { ok: true, banned: 1 }]);
+  assert.equal(h.obj.cp.registry.node(mine.node.nodeId).status, 'banned');
+  assert.equal(mine.ws.of('status').at(-1)?.status, 'banned', 'told first');
+  assert.deepEqual(mine.ws.closed, { code: 4403, reason: 'banned' });
+  assert.equal(alerts().slice(from).filter((l) => l.includes(`operator ${OP} deleted their account: 1 node banned`)).length, 1);
+  const again = await call(h, 'POST', '/internal/operator-deleted', { body: { userId: OP } });
+  assert.deepEqual(again.json, { ok: true, banned: 0 });
+  // The project's account is never deleted: nothing is banned for it.
+  const t = await call(h, 'POST', '/internal/operator-deleted', { body: { userId: PROJECT } });
+  assert.deepEqual([t.status, t.json.error], [409, 'trusted']);
+  assert.equal(h.obj.cp.registry.node(project.node.nodeId).status, 'active');
+  assert.equal(project.ws.closed, null);
+  // Internal only, as every route: no header, no answer.
+  const res = await h.obj.fetch(new Request('https://nodes/internal/operator-deleted', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: PROJECT }) }));
+  assert.equal(res.status, 403);
+});
+
 test('frames: a node steady traffic never trips the budget; a flood on one socket closes it (1008) once its burst is spent', async () => {
   const h = await boot(makeEnv());
   const { ws } = await liveNode(h);

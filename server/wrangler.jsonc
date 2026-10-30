@@ -111,7 +111,14 @@
     // is a production secret, DEV_AUTH lives in your own .dev.vars (a test checks this file).
     "MAIL_FROM": "Turbogol <no-reply@turbo-gol.com>",
     "MAIL_LINK_ORIGIN": "https://turbo-gol.com",
-    "EMAIL_DAILY_CAP": 100
+    "EMAIL_DAILY_CAP": 100,
+    // Account deletion (sign-in PR 12): the days POST /api/me/delete leaves to call it off before the
+    // daily alarm purges the account (env.ts deleteGraceMs; 14, the owner's answer, from 1 to 60).
+    "DELETE_GRACE": 14,
+    // "1" opens POST /api/me/delete; anything else answers it 404 (env.ts deletionOpen). It stays "0"
+    // until the terms of service ship with PERFIL's button and the screens that call a deletion off.
+    // To try deletion locally, set DELETION_OPEN=1 in your own .dev.vars.
+    "DELETION_OPEN": "0"
   },
   // Every 5 minutes, index.ts scheduled(): the community nodes' health check (the /healthz of the
   // project's nodes, an ALERT when one fails). One NodeRegistryDO call a run, none without the node

@@ -5,11 +5,12 @@
  *   /api/me/password and its link) are listed with their section below ("email accounts").
  *   POST /api/auth/register, /api/auth/recovery-codes, /api/auth/password -> 410 gone (sign-in PR 7):
  *                             accounts are made by email, and a Bearer alone never adds a way in (I4)
- *   POST /api/auth/login      { username, password, passwordV2, turnstileToken, linkPending? } -> AccountSession +
- *                             refresh cookie (level 2; with linkPending & { linked } | { linkError }: the identity
- *                             pending in this browser linked, or why not) | 401 bad_credentials for every refusal (an
- *                             account with a verified email too: it signs in by email) | 403 turnstile_failed | 429
- *                             throttled { retryAfterMs }
+ *   POST /api/auth/login      { username, password, passwordV2, turnstileToken, linkPending?, cancelDeletion? } ->
+ *                             AccountSession + refresh cookie (level 2; with linkPending & { linked } | { linkError }:
+ *                             the identity pending in this browser linked, or why not) | 401 bad_credentials for every
+ *                             refusal (an account with a verified email too: it signs in by email) | 403
+ *                             turnstile_failed | 409 deletion_pending { purgeAt } (the right password; cancelDeletion
+ *                             calls the deletion off, sign-in PR 12) | 429 throttled { retryAfterMs }
  *   POST /api/auth/refresh    (refresh cookie)                  -> AccountSession (token rotated) | 401 (a copied token:
  *                             its whole family revoked) | 409 refresh_race (another tab rotated it: retry, cookie kept)
  *   POST /api/auth/logout     (refresh cookie)                  -> { ok } + cookie cleared (this device: its whole
@@ -46,8 +47,10 @@
  *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist; an
  *                             account's own row 15 s per account)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
- *   GET  /api/auth/oauth/:provider/start[?link=1 | ?reauth=1[&then=link:<p>] | ?pend=1] -> 302 to Google / Discord
- *                             (state + PKCE; scopes: the id and the address, never a name)
+ *   GET  /api/auth/oauth/:provider/start[?link=1 | ?reauth=1[&then=link:<p>] | ?pend=1 | ?cancelDel=1] -> 302 to Google /
+ *                             Discord (state + PKCE; scopes: the id and the address, never a name; cancelDel: an
+ *                             account whose deletion is pending signs in and calls it off, else its callback is
+ *                             /#auth=error:deletion_pending, sign-in PR 12)
  *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | linked | reauth | confirm |
  *                             ok:<linkError> | error:<code>
  *     The callback never creates an account (the sign-in design's I3): an identity nobody owns goes
@@ -154,7 +157,7 @@
  * origin = PUBLIC_ORIGIN when set, else the request's own.
  */
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson, trustedOperatorIds } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, deletionOpen, error, json, readJson, trustedOperatorIds } from './env';
 import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameProblem } from '../../src/net/account';
@@ -704,7 +707,7 @@ async function login(c: RouteContext): Promise<Response> {
   // After the cutoff (sign-in PR 9, §3.10): 410 for everyone, before any check or lookup.
   const closed = await legacyGate(c);
   if (closed !== null) return closed;
-  const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown; linkPending?: unknown }>(c.request);
+  const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown; linkPending?: unknown; cancelDeletion?: unknown }>(c.request);
   const proof = proofOf(b?.password, b?.passwordV2);
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || (proof.v1 === undefined && proof.v2 === undefined)) return error(400, 'bad_request');
   // Before the AccountsDO hears of it (R3): a page from before the check sends no token and reloads.
@@ -730,6 +733,8 @@ async function login(c: RouteContext): Promise<Response> {
     charged: true,
     ...(rekey !== null ? { rekey } : {}),
     ...(pending !== null ? { pending: pendingBody(pending) } : {}),
+    // A deletion pending answers 409 deletion_pending { purgeAt }; this flag, sent again after the question, calls it off (§2.10).
+    ...(b.cancelDeletion === true ? { cancelDeletion: true } : {}),
   });
   if (!fin.ok) return pass(fin.res);
   maintainerAlert(c, fin.data, 'legacy');
@@ -831,8 +836,14 @@ export function reauthRequired(level: AuthLevel): Response {
 export function requireFresh(c: Pick<RouteContext, 'session'>, level: AuthLevel, windowS: number = REAUTH_WINDOW_S, nowS: number = nowSeconds()): SessionClaims | Response {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
-  if (typeof s.aat !== 'number' || nowS - s.aat > windowS || s.aat > nowS + 60 || (s.aal ?? 0) < level) return reauthRequired(level);
+  if (freshLevel(s, windowS, nowS) < level) return reauthRequired(level);
   return s;
+}
+
+/** The level a session is fresh at (R6): its aal while its aat is within `windowS`, else 0 (requireFresh's rule; a route whose need the AccountsDO decides passes it on). */
+export function freshLevel(s: SessionClaims, windowS: number = REAUTH_WINDOW_S, nowS: number = nowSeconds()): 0 | 1 | 2 {
+  if (s.tv === 1 || typeof s.aat !== 'number' || nowS - s.aat > windowS || s.aat > nowS + 60) return 0;
+  return s.aal === 1 || s.aal === 2 ? s.aal : 0;
 }
 
 /**
@@ -1239,6 +1250,8 @@ interface OAuthState {
   then?: OAuthProvider;
   /** A silent Discord sign-in (DISCORD_SILENT, prompt=none, level 0): a callback that needs consent starts once more with prompt=consent. */
   sil?: 1;
+  /** cancelDel=1 (§2.10): the sign-in after "cancel the deletion?"; an owner whose deletion is pending signs in and calls it off. */
+  cancelDel?: 1;
   exp: number;
 }
 
@@ -1299,6 +1312,7 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
   const mode = url.searchParams.get('link') === '1' ? 'link' : url.searchParams.get('reauth') === '1' ? 'reauth' : 'signin';
   // The flags of §2.7, none a secret: pend=1 (a sign-in from the confirm sheet), then=link:<p> (after a re-authentication).
   const pend = mode === 'signin' && url.searchParams.get('pend') === '1';
+  const cancelDel = mode === 'signin' && url.searchParams.get('cancelDel') === '1';
   const thenOf = /^link:(google|discord)$/.exec(url.searchParams.get('then') ?? '');
   const then = mode === 'reauth' && thenOf !== null && providerConfig(c.env, thenOf[1] as OAuthProvider) !== null ? (thenOf[1] as OAuthProvider) : undefined;
   if (mode !== 'signin') {
@@ -1315,8 +1329,9 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
     else re = r.data.userId;
     dev = r.data.device;
   }
-  const silent = provider === 'discord' && mode === 'signin' && !pend && (c.env as OAuthEnv).DISCORD_SILENT === '1';
-  return authorizeRedirect(c, provider, cfg, { link, ...(re !== undefined ? { re } : {}), ...(dev !== undefined ? { dev } : {}), ...(pend ? { pend: 1 as const } : {}), ...(then !== undefined ? { then } : {}) }, silent);
+  // Calling a deletion off takes a press on the provider's page too (never a silent start).
+  const silent = provider === 'discord' && mode === 'signin' && !pend && !cancelDel && (c.env as OAuthEnv).DISCORD_SILENT === '1';
+  return authorizeRedirect(c, provider, cfg, { link, ...(re !== undefined ? { re } : {}), ...(dev !== undefined ? { dev } : {}), ...(pend ? { pend: 1 as const } : {}), ...(then !== undefined ? { then } : {}), ...(cancelDel ? { cancelDel: 1 as const } : {}) }, silent);
 }
 
 /** A provider identity as the callback reads it (§2.7): the id, the address and how far the provider vouches for it. Never a name. */
@@ -1422,6 +1437,8 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
     lvl,
     ...(st.link !== null ? { replace: st.dev } : {}),
     ...(pending !== null ? { pending: pendingBody(pending) } : {}),
+    // An owner whose deletion is pending: /#auth=error:deletion_pending, unless this start was cancelDel=1 (§2.10).
+    ...(st.cancelDel === 1 ? { cancelDeletion: true } : {}),
   });
   if (!r.ok) return fail(await codeOf(r.res, 'account_error'));
   if (r.data.pending === true) {
@@ -1564,7 +1581,7 @@ function pendingCancel(): Response {
 async function codeOf(res: Response, fallback: string): Promise<string> {
   try {
     const b = (await res.json()) as { error?: unknown };
-    return typeof b.error === 'string' && ['already_linked', 'provider_set', 'reauth_mismatch', 'link_expired'].includes(b.error) ? b.error : fallback;
+    return typeof b.error === 'string' && ['already_linked', 'provider_set', 'reauth_mismatch', 'link_expired', 'deletion_pending'].includes(b.error) ? b.error : fallback;
   } catch {
     return fallback;
   }
@@ -1685,6 +1702,26 @@ function sendMail(c: RouteContext, order: MailOrder | null | undefined): void {
   else void sent;
 }
 
+/**
+ * A refusal of the AccountsDO as the client gets it, never with a mail order in it: a 409
+ * deletion_pending of a reset (the password set, nothing signed in, §2.4) carries its M4, which goes
+ * out here, after the answer, as any other.
+ */
+async function withoutMail(c: RouteContext, res: Response): Promise<Response> {
+  const text = await res.text().catch(() => '');
+  let b: Record<string, unknown> | null = null;
+  try {
+    const v = JSON.parse(text) as unknown;
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) b = v as Record<string, unknown>;
+  } catch {
+    /* not JSON: passed on as it is */
+  }
+  if (b === null || !('mail' in b)) return noStore(new Response(text, res));
+  const { mail, ...rest } = b;
+  sendMail(c, mail as MailOrder | null);
+  return json(rest, res.status, NO_STORE);
+}
+
 /** A proof in a body: a link's token, or an attempt and its code (a pasted code's spaces and dashes dropped). */
 function proofBody(b: { attempt?: unknown; code?: unknown; token?: unknown } | null): { token: string } | { attempt: string; code: string } | null {
   if (!b) return null;
@@ -1764,12 +1801,13 @@ async function codeResend(c: RouteContext): Promise<Response> {
   return json({ resendAt: r.data.resendAt, resendsLeft: r.data.resendsLeft } satisfies CodeResendAnswer, 200, NO_STORE);
 }
 
-//   POST /api/auth/signin         { email, password, turnstileToken, linkPending? } -> AccountSession + refresh and
-//                                 device cookies (level 2, method 'password'; with linkPending & { linked } |
+//   POST /api/auth/signin         { email, password, turnstileToken, linkPending?, cancelDeletion? } -> AccountSession +
+//                                 refresh and device cookies (level 2, method 'password'; with linkPending & { linked } |
 //                                 { linkError }, as the legacy login) | 401 bad_credentials (an unknown address, a
 //                                 wrong password, no current password, a legacy one not re-keyed: one answer, one
-//                                 server stage) | 403 turnstile_failed / banned (after the right password) | 429
-//                                 throttled { retryAfterMs }
+//                                 server stage) | 403 turnstile_failed / banned (after the right password) | 409
+//                                 deletion_pending { purgeAt } (after the right password; cancelDeletion calls the
+//                                 deletion off and signs in, sign-in PR 12) | 429 throttled { retryAfterMs }
 //   POST /api/auth/forgot         { email, lang?, turnstileToken }           -> { ok: true } always (M3 only to an account
 //                                 that claimed that address) | 403 | 429 | 503
 //   POST /api/auth/reset/peek     { token }                                  -> { name, email, hasPassword } | 410 link_invalid
@@ -1793,7 +1831,7 @@ async function codeResend(c: RouteContext): Promise<Response> {
  * sign-in's step (only the account its address leads to, when it leads to one).
  */
 async function signin(c: RouteContext): Promise<Response> {
-  const b = await readJson<{ email?: unknown; password?: unknown; turnstileToken?: unknown; linkPending?: unknown }>(c.request);
+  const b = await readJson<{ email?: unknown; password?: unknown; turnstileToken?: unknown; linkPending?: unknown; cancelDeletion?: unknown }>(c.request);
   if (!b || typeof b.email !== 'string' || b.email.length > 254 || !isClientKey(b.password)) return error(400, 'bad_request');
   if (normalizeEmail(b.email) === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
   const blocked = await c.antiBot(b.turnstileToken);
@@ -1817,6 +1855,7 @@ async function signin(c: RouteContext): Promise<Response> {
     charged: true,
     ...(rekey !== null ? { rekey } : {}),
     ...(pending !== null ? { pending: pendingBody(pending) } : {}),
+    ...(b.cancelDeletion === true ? { cancelDeletion: true } : {}),
   });
   if (!fin.ok) return pass(fin.res);
   maintainerAlert(c, fin.data, 'password');
@@ -1875,7 +1914,7 @@ async function reset(c: RouteContext): Promise<Response> {
     lang: langOf(b.lang),
     ...(pending !== null ? { pending: pendingBody(pending) } : {}),
   });
-  if (!r.ok) return noStore(r.res);
+  if (!r.ok) return withoutMail(c, r.res);
   sendMail(c, r.data.mail);
   const { mail: _mail, ...ref } = r.data;
   maintainerAlert(c, ref, 'reset');
@@ -2107,6 +2146,52 @@ async function mePrefs(c: RouteContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/me-prefs', { userId: s.sub, lang: b.lang, tz }));
 }
 
+// ---- account deletion (sign-in PR 12: §2.10, §3.13; no button until the terms) ----------------------
+//
+//   POST /api/me/delete           Bearer { confirm: <the username, typed>, lang? } -> { purgeAt } + the refresh
+//                                 cookie cleared (every device signed out, this one too; M9 with its cancel link
+//                                 to a verified address, both languages) | 400 bad_confirm | 403 reauth_required
+//                                 { level } (fresh(2), capped by the account's ceiling: a Discord-only account
+//                                 without an email deletes at level 1) / tv_session / banned | 409
+//                                 maintainer_account (NODE_TRUSTED_OPERATORS) / deletion_pending { purgeAt } |
+//                                 429 / 503 when M9 cannot go or the account's caps are full (nothing changes).
+//                                 Closed (404 not_found, as an unknown route) unless DELETION_OPEN=1 (env.ts):
+//                                 it opens with the terms of service and the screens that call a deletion off.
+//   POST /api/auth/delete/cancel  { token } -> { ok } | 410 link_invalid: M9's link calls the deletion off
+//   Until the purge (DELETE_GRACE days, 14), signin and login answer 409 deletion_pending { purgeAt } after
+//   the right password, and the OAuth callback /#auth=error:deletion_pending; sent again with
+//   cancelDeletion: true (cancelDel=1 on the OAuth start) they call it off and sign in. reset, the email
+//   undo and recover set the password and answer the same 409, with no session.
+
+/** POST /api/me/delete { confirm, lang? } (§2.10): the AccountsDO decides the level the account needs (its ceiling) and every refusal. */
+async function meDelete(c: RouteContext): Promise<Response> {
+  // Until the terms of service and their screens (env.ts DELETION_OPEN): the answer of a route that does not exist.
+  if (!deletionOpen(c.env)) return error(404, 'not_found');
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ confirm?: unknown; lang?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  const mailOff = (await mailRefusal(c)) !== null;
+  const r = await accountsJson<{ purgeAt: number; mail?: MailOrder | null }>(c.env, '/me-delete', {
+    userId: s.sub,
+    confirm: typeof b.confirm === 'string' ? b.confirm.slice(0, 128) : null,
+    level: freshLevel(s),
+    mailOff,
+    lang: langOf(b.lang),
+  });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  // Every family was revoked, this device's too: its cookie goes (its Bearer ends within the hour).
+  return withCookies(json({ purgeAt: r.data.purgeAt }, 200, NO_STORE), [clearCookie(REFRESH_COOKIE)]);
+}
+
+/** POST /api/auth/delete/cancel { token }: M9's link, from any device (no session: the link proves the mailbox). */
+async function deleteCancel(c: RouteContext): Promise<Response> {
+  const token = tokenOf(await readJson<{ token?: unknown }>(c.request));
+  if (token === null) return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/delete-cancel', { token }));
+}
+
 /** The routes sign-in PR 7 retires (design §2.15): a page of before is told to reload. */
 function gone(path: string): Response {
   const message = path === '/api/auth/register' ? 'Actualiza la página: ahora las cuentas se crean con un correo.' : 'Actualiza la página: esto ahora se hace desde PERFIL con tu correo.';
@@ -2288,6 +2373,9 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/email/undo/peek') return emailUndoPeek(c);
     if (p === '/api/auth/email/undo') return emailUndo(c);
     if (p === '/api/me/prefs') return mePrefs(c);
+    // Account deletion (sign-in PR 12).
+    if (p === '/api/me/delete') return meDelete(c);
+    if (p === '/api/auth/delete/cancel') return deleteCancel(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);
