@@ -3,11 +3,13 @@
  * Worker (server/src/accountRoutes.ts, AccountsDO, LobbyDO), plus the client-side password
  * pre-hash both sides must agree on. Pure (WebCrypto only), node-importable.
  *
- * Passwords never leave the browser: the client derives `clientPasswordKey` (PBKDF2-SHA256,
- * CLIENT_KDF_ITERATIONS, salted with the normalised username) and sends that hex string; the
- * server stores PBKDF2 of it again with a random salt (100,000 iterations, the Workers WebCrypto
- * ceiling). An offline attacker of a leaked table pays both stages per guess, and a key seen in
- * transit or in a log is useless on any other site.
+ * Passwords never leave the browser: the client derives `passwordKey` (PBKDF2-SHA256,
+ * CLIENT_KDF_ITERATIONS, one fixed salt: the sign-in design's v2 key) and sends that hex string;
+ * the server stores PBKDF2 of it again with a random salt (100,000 iterations, the Workers WebCrypto
+ * ceiling) over an HMAC with its pepper. An offline attacker of a leaked table pays both stages per
+ * guess and needs the pepper, and a key seen in transit or in a log is useless on any other site.
+ * The legacy key (`legacyPasswordKey`, salted with the normalised username) only proves a password
+ * of before: every proof also sends the current key, and the server re-keys the account to it.
  */
 
 import type { RulesSnapshot, StoredPreset } from '../game/physicsRules';
@@ -15,6 +17,12 @@ import type { CarId } from '../game/cosmetics';
 
 export const CLIENT_KDF_ITERATIONS = 200_000;
 const CLIENT_KDF_SALT_PREFIX = 'turbogol/account/v1/';
+/**
+ * The current key's salt: fixed on purpose (§1.5), so the key does not depend on the username or
+ * the email, and a rename, an email change or a reset needs no re-key. Changing it would sign
+ * nobody in again: never change it.
+ */
+export const CLIENT_KDF_SALT_V2 = 'turbogol/account/v2';
 
 /** Game playlists (team size). Casual and ranked use the same three. */
 export type Playlist = '1v1' | '2v2' | '3v3';
@@ -155,20 +163,34 @@ function hex(bytes: Uint8Array): string {
   return s;
 }
 
-/**
- * The value sent as `password` to /api/auth/*: PBKDF2-SHA256(password, prefix + usernameKey,
- * CLIENT_KDF_ITERATIONS) as 64 hex chars. ~0.1-0.3 s in a browser.
- */
-export async function clientPasswordKey(username: string, password: string): Promise<string> {
+/** PBKDF2-SHA256(NFKC(password), salt, CLIENT_KDF_ITERATIONS) as 64 hex chars. ~0.1-0.3 s in a browser. */
+async function clientKdf(password: string, salt: string): Promise<string> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey('raw', enc.encode(password.normalize('NFKC')), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(CLIENT_KDF_SALT_PREFIX + usernameKey(username)), iterations: CLIENT_KDF_ITERATIONS },
-    key,
-    256,
-  );
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations: CLIENT_KDF_ITERATIONS }, key, 256);
   return hex(new Uint8Array(bits));
 }
+
+/**
+ * The current client key (the sign-in design's v2, users.pw_v 2): PBKDF2-SHA256(NFKC(password),
+ * CLIENT_KDF_SALT_V2, CLIENT_KDF_ITERATIONS). What every request that sets a password stores.
+ */
+export function passwordKey(password: string): Promise<string> {
+  return clientKdf(password, CLIENT_KDF_SALT_V2);
+}
+
+/**
+ * The legacy client key (users.pw_v 1): PBKDF2-SHA256(NFKC(password), 'turbogol/account/v1/' +
+ * usernameKey, CLIENT_KDF_ITERATIONS). Only to prove a password set before the current key (the
+ * legacy sign-in, its recovery, "confirm it's you", a password change or a rename of such an
+ * account), always sent with passwordKey of the same password so the server re-keys it.
+ */
+export function legacyPasswordKey(username: string, password: string): Promise<string> {
+  return clientKdf(password, CLIENT_KDF_SALT_PREFIX + usernameKey(username));
+}
+
+/** legacyPasswordKey's name of before (the server's tests and scripts still call it so). */
+export const clientPasswordKey = legacyPasswordKey;
 
 export function isClientKey(v: unknown): v is string {
   return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
@@ -304,6 +326,11 @@ export interface AccountSession {
   tv?: true;
   /** When this device last proved a credential (ms): a sign-in or a re-authentication. Absent = never (a TV). */
   authAt?: number;
+  /**
+   * That proof's level (the session's aal, the sign-in design's R6): 2 a typed password, 1 a press
+   * on the provider's page. Absent = 0, nothing proved: the routes that need a level ask first.
+   */
+  authLvl?: 1 | 2;
 }
 
 /** One signed-in device of the account (GET /api/auth/sessions): PERFIL's device list. */

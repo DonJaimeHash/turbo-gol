@@ -142,10 +142,10 @@ async function req(env, method, path, { ip = '198.18.0.1', origin = ORIGIN, bear
 }
 const post = (env, path, o = {}) => req(env, 'POST', path, { body: {}, ...o });
 
-/** A password account signed in through the real login route: its Bearer and refresh cookie. */
-async function passwordAccount(env, obj, name, ip = '198.18.200.1') {
+/** A password account signed in through the real login route: its Bearer and refresh cookie. `extra`: more of the body (a Turnstile token where the check is on). */
+async function passwordAccount(env, obj, name, ip = '198.18.200.1', extra = {}) {
   const id = obj.store.register(name, await A.newPasswordRecord(KEY), [], 'f'.repeat(63) + String(name.length % 10), Date.now()).userId;
-  const r = await post(env, '/api/auth/login', { ip, body: { username: name, password: KEY } });
+  const r = await post(env, '/api/auth/login', { ip, body: { username: name, password: KEY, ...extra } });
   assert.equal(r.status, 200, 'login ' + JSON.stringify(r.json));
   return { id, bearer: r.json.session, rt: cookieOf(r, '__Host-tg_rt'), session: r.json };
 }
@@ -675,12 +675,13 @@ test('auth-persist-1: after "confirm it is you" the owner sets a first password 
 
 // ---- auth-11 / econ-2: the maintainer routes need a fresh primary sign-in, never a TV's ----------
 
-test('auth-11 / econ-2: a maintainer\'s 1-hour Bearer or refresh cookie alone grants nothing: /nodes/tokens and /nodes/admin/* need a sign-in from the last 15 minutes', async () => {
+test('auth-11 / econ-2: a maintainer\'s 1-hour Bearer or refresh cookie alone grants nothing: /nodes/tokens and /nodes/admin/* need a password proof (level 2) from the last 15 minutes; Discord\'s press (level 1) is not enough', async () => {
   const { env, obj } = makeEnv();
   const ip = ips();
   const seen = withNodes(env, null);
-  // The project account signed in 20 minutes ago; its cookie still refreshes (a stolen copy would too).
-  const owner = await at(obj, -20 * MIN, () => oauth(env, 'discord', 'd-owner', { ip: ip(0) }));
+  // The project account (a password, and Discord linked) signed in 20 minutes ago; its cookie still refreshes (a stolen copy would too).
+  const owner = await at(obj, -20 * MIN, () => passwordAccount(env, obj, 'Proyecto', ip(0)));
+  obj.store.sql.exec("UPDATE users SET discord_id = 'd-owner' WHERE id = ?", owner.id);
   const s = await refresh(env, owner.rt, ip(0));
   env.NODE_TRUSTED_OPERATORS = s.json.playerId;
   const calls = [
@@ -697,10 +698,21 @@ test('auth-11 / econ-2: a maintainer\'s 1-hour Bearer or refresh cookie alone gr
     assert.equal(r.json.error, 'reauth_required', `${method} ${path}`);
   }
   assert.deepEqual(seen, [], 'nothing reached the NodeRegistryDO');
-  // The maintainer confirms it is them (Discord again), then works.
+  // Confirming with Discord (a press on discord.com: level 1, which a phished or silent provider sign-in gives) is refused.
   const re = await oauth(env, 'discord', 'd-owner', { query: '?reauth=1', cookie: '__Host-tg_rt=' + s.rt, ip: ip(0) });
   assert.equal(re.done.location, '/#auth=reauth');
-  const fresh = await refresh(env, re.rt, ip(0));
+  const viaDiscord = await refresh(env, re.rt, ip(0));
+  assert.equal(claims(viaDiscord.json.session).aal, 1);
+  for (const [method, path, body] of calls) {
+    const r = await req(env, method, path, { ip: ip(0), bearer: viaDiscord.json.session, body });
+    assert.deepEqual([r.status, r.json.error, r.json.level], [403, 'reauth_required', 2], `${method} ${path} at level 1`);
+  }
+  assert.deepEqual(seen, [], 'still nothing reached it');
+  // The maintainer confirms it is them with the password (level 2), then works.
+  const pw = await post(env, '/api/auth/reauth', { ip: ip(0), bearer: viaDiscord.json.session, cookie: '__Host-tg_rt=' + viaDiscord.rt, body: { password: KEY } });
+  assert.equal(pw.status, 200, JSON.stringify(pw.json));
+  const fresh = await refresh(env, viaDiscord.rt, ip(0));
+  assert.equal(claims(fresh.json.session).aal, 2);
   for (const [method, path, body] of calls) assert.equal((await req(env, method, path, { ip: ip(0), bearer: fresh.json.session, body })).status, 200, `${method} ${path} fresh`);
   assert.equal(seen.length, calls.length);
   // A non-maintainer still hears not_trusted, fresh or not.
@@ -789,14 +801,15 @@ test('auth-5: one (username, network) pair is throttled after 5 failures; the sa
   assert.equal((await login(env, 'pareja', KEY, '203.0.113.78')).status, 200);
 });
 
-test('auth-5: an IPv6 /64 counts as one network (50 failures across its addresses, then throttled), and a /48 as one block (300)', async () => {
+test('auth-5: an IPv6 /64 counts as one network (30 failures across its addresses, then paused), and a /48 as one block (300)', async () => {
   const { env, obj } = makeEnv();
   const ADO = await import('../src/AccountsDO.ts');
-  assert.equal(ADO.LOGIN_IP_MAX, 50);
+  // Sign-in PR 4 (the design's §2.3): 30 per /64, 20 times that per IPv4 address (levels.test.mjs).
+  assert.equal(ADO.LOGIN_NET6_MAX, 30);
   assert.equal(ADO.LOGIN_WIDE_MAX, 300);
   obj.store.register('objetivo', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
-  // A sprayer: one guess for each of 50 usernames, each from a fresh address of one /64.
-  for (let i = 0; i < 50; i++) assert.equal((await login(env, 'user' + i, KEY2, `2001:db8:5:6::${(i + 1).toString(16)}`)).status, 401);
+  // A sprayer: one guess for each of 30 usernames, each from a fresh address of one /64.
+  for (let i = 0; i < 30; i++) assert.equal((await login(env, 'user' + i, KEY2, `2001:db8:5:6::${(i + 1).toString(16)}`)).status, 401);
   const r = await login(env, 'objetivo', KEY, '2001:db8:5:6::ffff');
   assert.equal(r.status, 429, 'the /64 is one network');
   assert.equal((await login(env, 'objetivo', KEY, '2001:db8:5:7::1')).status, 200, 'the next /64 is not');
@@ -816,27 +829,14 @@ test('auth-5: one answer: an OAuth-only account\'s username and a wrong password
   assert.deepEqual([a.json], [b.json], 'the same body as an unknown username');
 });
 
-test('auth-5: a username under attack is slowed down, not locked: past 10 failures from anywhere, each sign-in on it needs a solved Turnstile check', async () => {
-  const { env, obj } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
-  obj.store.register('famosa', await A.newPasswordRecord(KEY), [], 'e'.repeat(64), Date.now());
-  assert.equal((await login(env, 'famosa', KEY, '198.51.100.9')).status, 200, 'no check while nobody attacks it');
-  for (let i = 0; i < 10; i++) await login(env, 'famosa', KEY2, `192.0.2.${100 + i}`);
-  const noToken = await login(env, 'famosa', KEY, '198.51.100.9');
-  assert.equal(noToken.status, 403);
-  assert.equal(noToken.json.error, 'turnstile_required');
-  assert.equal((await login(env, 'famosa', KEY, '198.51.100.9', { turnstileToken: 'bad-token' })).status, 403);
-  const ok = await login(env, 'famosa', KEY, '198.51.100.9', { turnstileToken: 'good-token' });
-  assert.equal(ok.status, 200, 'the owner solves it once and is in');
-  // An unknown username past 10 failures says the same (nothing tells it apart).
-  for (let i = 0; i < 10; i++) await login(env, 'fantasma', KEY2, `192.0.2.${150 + i}`);
-  assert.equal((await login(env, 'fantasma', KEY2, '198.51.100.9')).json.error, 'turnstile_required');
-});
+// The slow-down of a username under attack (403 turnstile_required past 10 failures) is gone with
+// sign-in PR 4: every sign-in and recovery needs a solved Turnstile check (levels.test.mjs).
 
 // ---- review round: the password checks behind a session, the per-username cap, logout ------------
 
 test('auth-5 (review): a password checked behind a stolen session is throttled per account: 400 guesses at the old password from 80 /64s stop after 5, and the owner still signs in', async () => {
   const { env, obj } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
-  const ana = await passwordAccount(env, obj, 'Robada', '198.18.230.1');
+  const ana = await passwordAccount(env, obj, 'Robada', '198.18.230.1', { turnstileToken: 'good-token' });
   const t0 = Date.now();
   obj.now = () => t0;
   const cookie = '__Host-tg_rt=' + ana.rt;
@@ -861,8 +861,8 @@ test('auth-5 (review): a password checked behind a stolen session is throttled p
   assert.deepEqual([codes.status, codes.json.error], [429, 'throttled']);
   const ren = await post(env, '/api/me/username', { ip: '2001:db8:c:3::1', bearer: ana.bearer, cookie, body: { username: 'Robada2', password: KEY, newPassword: KEY2 } });
   assert.deepEqual([ren.status, ren.json.error], [429, 'throttled']);
-  // The lock stops only the checks behind a session: the owner signs in from home, with no check to solve.
-  const own = await login(env, 'Robada', KEY, '198.18.230.9');
+  // The lock stops only the checks behind a session: the owner signs in from home (with the anti-bot check every sign-in has).
+  const own = await login(env, 'Robada', KEY, '198.18.230.9', { turnstileToken: 'good-token' });
   assert.equal(own.status, 200, 'the owner is never locked out of signing in: ' + JSON.stringify(own.json));
   const re = await post(env, '/api/auth/reauth', { ip: '2001:db8:c:4::1', bearer: ana.bearer, cookie, body: { password: KEY } });
   assert.deepEqual([re.status, re.json.error], [429, 'throttled'], 'a re-authentication (the way to aat) too');
@@ -909,51 +909,59 @@ test('auth-4 (review): REFRESH_TOKEN_RE takes every cookie this code mints and e
   }
 });
 
-test('auth-5 (review): a targeted guesser gets 100 failures a day on one username, whatever its networks and solved checks; the owner\'s own browsers still sign in', async () => {
+test('auth-5 (review): a targeted guesser gets 50 failures a day on one username, whatever its networks and solved checks, then pauses of 15 minutes doubling to an hour; the owner\'s own browsers still sign in', async () => {
   const { env, obj } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
   const ADO = await import('../src/AccountsDO.ts');
+  const tok = { turnstileToken: 'good-token' };
   obj.store.register('blanco', await A.newPasswordRecord(KEY), [await A.recoveryCodeHash('AAAA-BBBB')], 'e'.repeat(64), Date.now());
   obj.store.register('vecina', await A.newPasswordRecord(KEY), [], 'd'.repeat(64), Date.now());
   const t0 = Date.now();
   obj.now = () => t0;
   // The owner signed in once on two browsers (home, phone): each keeps its device cookie, logout or not.
-  const home = await login(env, 'blanco', KEY, '198.18.240.1');
+  const home = await login(env, 'blanco', KEY, '198.18.240.1', tok);
   const homeDv = cookieOf(home, '__Host-tg_dv');
-  const phoneDv = cookieOf(await login(env, 'blanco', KEY, '198.18.240.2'), '__Host-tg_dv');
+  const phoneDv = cookieOf(await login(env, 'blanco', KEY, '198.18.240.2', tok), '__Host-tg_dv');
   assert.equal((await post(env, '/api/auth/logout', { ip: '198.18.240.1', cookie: '__Host-tg_rt=' + cookieOf(home, '__Host-tg_rt') })).status, 200);
-  const otherDv = cookieOf(await login(env, 'vecina', KEY, '198.18.240.3'), '__Host-tg_dv');
+  const otherDv = cookieOf(await login(env, 'vecina', KEY, '198.18.240.3', tok), '__Host-tg_dv');
   // 300 guesses with solved checks, each from a fresh /64 of 3 /48s: no network cap is ever reached.
   const tally = {};
   for (let i = 0; i < 300; i++) {
     const ip = `2001:db8:${(0x10 + (i % 3)).toString(16)}:${Math.floor(i / 3).toString(16)}::1`;
-    const r = await login(env, 'blanco', (i + 1).toString(16).padStart(64, '0'), ip, { turnstileToken: 'good-token' });
+    const r = await login(env, 'blanco', (i + 1).toString(16).padStart(64, '0'), ip, tok);
     const k = r.status + ':' + (r.json?.error ?? 'ok');
     tally[k] = (tally[k] ?? 0) + 1;
   }
-  assert.deepEqual(tally, { '401:bad_credentials': 100, '429:throttled': 200 });
-  assert.equal(ADO.LOGIN_USER_DAY_MAX, 100);
+  // Sign-in PR 4 (the design's §2.3): 50 a day, then a pause (it was 100, then the rest of the day).
+  assert.deepEqual(tally, { '401:bad_credentials': 50, '429:throttled': 250 });
+  assert.equal(ADO.LOGIN_USER_DAY_MAX, 50);
   assert.match(homeDv, /^[0-9a-f]{16}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
   assert.match(setCookies(home).find((c) => c.startsWith('__Host-tg_dv=')), /HttpOnly; Secure; SameSite=Strict; Max-Age=15552000/);
   // A right guess from a browser the account does not know is refused too, and so is its recovery.
-  const guess = await login(env, 'blanco', KEY, '2001:db8:20:1::1', { turnstileToken: 'good-token' });
+  const guess = await login(env, 'blanco', KEY, '2001:db8:20:1::1', tok);
   assert.deepEqual([guess.status, guess.json.error], [429, 'throttled']);
-  assert.ok(guess.json.retryAfterMs > 23 * 60 * 60_000, 'until the day ends');
-  const rec = await post(env, '/api/auth/recover', { ip: '2001:db8:20:2::1', body: { username: 'blanco', code: 'AAAA-BBBB', password: KEY2, turnstileToken: 'good-token' } });
+  assert.ok(guess.json.retryAfterMs > 14 * 60_000 && guess.json.retryAfterMs <= 15 * 60_000, 'a 15-minute pause: ' + guess.json.retryAfterMs);
+  const rec = await post(env, '/api/auth/recover', { ip: '2001:db8:20:2::1', body: { username: 'blanco', code: 'AAAA-BBBB', password: KEY2, ...tok } });
   assert.equal(rec.status, 429);
   // Nor does a forged device cookie, or a good one of another account, open it.
   const [homeUser, , homeMac] = homeDv.split('.');
   const forged = homeUser + '.' + 'Z'.repeat(22) + '.' + homeMac; // another device id under the same MAC
-  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:3::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + forged)).status, 429);
-  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:4::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + otherDv)).status, 429);
-  // The owner's browsers sign in, from home or from anywhere (one solved check: the username is under attack).
-  const back = await login(env, 'blanco', KEY, '198.18.240.1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + homeDv);
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:3::1', tok, '__Host-tg_dv=' + forged)).status, 429);
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:4::1', tok, '__Host-tg_dv=' + otherDv)).status, 429);
+  // The pause over, one more failure pauses it for twice as long, up to an hour.
+  obj.now = () => t0 + 15 * 60_000 + 1_000;
+  assert.equal((await login(env, 'blanco', KEY2, '2001:db8:20:6::1', tok)).status, 401);
+  const twice = await login(env, 'blanco', KEY, '2001:db8:20:7::1', tok);
+  assert.ok(twice.status === 429 && twice.json.retryAfterMs > 29 * 60_000 && twice.json.retryAfterMs <= 30 * 60_000, JSON.stringify(twice.json));
+  // The owner's browsers sign in, from home or from anywhere.
+  const back = await login(env, 'blanco', KEY, '198.18.240.1', tok, '__Host-tg_dv=' + homeDv);
   assert.equal(back.status, 200, JSON.stringify(back.json));
-  assert.equal((await login(env, 'blanco', KEY, '2001:db8:30:1::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + phoneDv)).status, 200);
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:30:1::1', tok, '__Host-tg_dv=' + phoneDv)).status, 200);
   // A stolen device cookie guesses like one pair: 5 failures, then even the right password waits; the owner's other browser does not.
-  for (let i = 0; i < 5; i++) assert.equal((await login(env, 'blanco', KEY2, `2001:db8:40:${i}::1`, { turnstileToken: 'good-token' }, '__Host-tg_dv=' + phoneDv)).status, 401);
-  assert.equal((await login(env, 'blanco', KEY, '2001:db8:40:9::1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + phoneDv)).status, 429);
-  assert.equal((await login(env, 'blanco', KEY, '198.18.240.1', { turnstileToken: 'good-token' }, '__Host-tg_dv=' + cookieOf(back, '__Host-tg_dv'))).status, 200);
-  // The next day an unknown browser may try again.
+  for (let i = 0; i < 5; i++) assert.equal((await login(env, 'blanco', KEY2, `2001:db8:40:${i}::1`, tok, '__Host-tg_dv=' + phoneDv)).status, 401);
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:40:9::1', tok, '__Host-tg_dv=' + phoneDv)).status, 429);
+  assert.equal((await login(env, 'blanco', KEY, '198.18.240.1', tok, '__Host-tg_dv=' + cookieOf(back, '__Host-tg_dv'))).status, 200);
+  // The owner's success cleared the username's count: an unknown browser may try again, and the next day too.
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:8::1', tok)).status, 200);
   obj.now = () => t0 + ADO.LOGIN_DAY_MS + 1_000;
-  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:5::1')).status, 200);
+  assert.equal((await login(env, 'blanco', KEY, '2001:db8:20:5::1', tok)).status, 200);
 });

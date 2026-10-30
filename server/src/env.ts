@@ -59,6 +59,13 @@ export interface Env {
   REGION_OVERRIDE: string;
   /** Secret. Signs sessions, tickets and the internal Worker <-> DO header. */
   JWT_SECRET: string;
+  /**
+   * Secret, optional: the password pepper (accountRoutes.ts serverHash), 32 random bytes as text
+   * (`openssl rand -hex 32`), at least 32 characters. Set once and never rotated or removed: every
+   * password stored after it (users.pw_kid 'p1') checks only with it. Unset (a fork, dev, tests):
+   * no pepper (pw_kid ''), and each such password is re-hashed with it at its next sign-in.
+   */
+  PASSWORD_PEPPER?: string;
   /** Secret, optional: when set, POST /api/guest requires a valid Turnstile token. */
   TURNSTILE_SECRET?: string;
   /**

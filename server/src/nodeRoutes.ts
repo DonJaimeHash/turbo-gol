@@ -31,8 +31,9 @@
  *   POST     /nodes/tokens            { region, name? }, Bearer account session of a NODE_TRUSTED_OPERATORS account
  *                                     -> a one-time registration token and the Linux install line; 413 over 4 KB.
  *                                     Like every maintainer route: never a TV's session (403 tv_session), and one
- *                                     whose device proved a credential in the last MAINTAINER_FRESH_S (a sign-in
- *                                     or PERFIL's "confirm it's you"; else 403 reauth_required)
+ *                                     whose device proved a credential at level 2 (a typed password: a sign-in or
+ *                                     PERFIL's "confirm it's you"; a provider's press is level 1) in the last
+ *                                     MAINTAINER_FRESH_S; else 403 reauth_required { level: 2 }
  *   GET      /nodes/mine              Bearer account session -> the caller's own nodes
  *   GET      /nodes/status            the public list of nodes, cached 10 s
  *   GET      /nodes/admin/nodes       the maintainers' routes, Bearer account session of a NODE_TRUSTED_OPERATORS
@@ -47,7 +48,7 @@
  *   POST     /nodes/shop/claim        AccountsDO): answered with or without the node settings
  *   GET      /nodes/admin/account-stats  the owner's account counts (AccountsDO, accountStore.ts AccountStats): counts
  *                                     and booleans only, never an id or an address; behind the maintainer gate (a
- *                                     trusted account's own session, not a TV's, fresh within MAINTAINER_FRESH_S),
+ *                                     trusted account's own session, not a TV's, at level 2 within MAINTAINER_FRESH_S),
  *                                     10 a minute per account (limits.ts accountStats), no-store, no CORS. The node
  *                                     operators' ids come from the object (/internal/operators) and go on to AccountsDO
  *                                     only; without the node settings the node counts are null
@@ -115,8 +116,10 @@ const LIMIT_STATUS_PER_IP = 60;
 const LIMIT_MINE_PER_ACCOUNT = 30;
 const LIMIT_ADMIN_PER_ACCOUNT = 30;
 /**
- * A maintainer's session must come from a sign-in (or a re-authentication) this recent: a stolen
- * 1-hour Bearer or refresh cookie alone grants no item, mints no trusted node and drains nothing.
+ * A maintainer's session must come from a password proof (a sign-in or a re-authentication, level 2
+ * of the sign-in design's R6) this recent: a stolen 1-hour Bearer or refresh cookie alone, a TV, or a
+ * press on Discord's page (level 1, which a phished or silent provider sign-in can give) grants no
+ * item, mints no trusted node and drains nothing.
  */
 export const MAINTAINER_FRESH_S = 15 * 60;
 const STATUS_TTL_MS = 10_000;
@@ -230,7 +233,7 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project creates node tokens for now');
-    const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+    const fresh = requireFresh({ session: s }, 2, MAINTAINER_FRESH_S);
     if (fresh instanceof Response) return fresh;
     if (c.limited('ntok:' + s.sub, LIMIT_TOKENS_PER_ACCOUNT, DAY_MS)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, operator(s));
@@ -251,7 +254,7 @@ async function route(c: NodeRouteContext, path: string): Promise<Response> {
     const s = requirePrimary({ session: await c.session() });
     if (s instanceof Response) return s;
     if (!trustedOperatorIds(env).has(s.sub)) return error(403, 'not_trusted', 'only the project maintains the nodes');
-    const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+    const fresh = requireFresh({ session: s }, 2, MAINTAINER_FRESH_S);
     if (fresh instanceof Response) return fresh;
     if (c.limited('nadm:' + s.sub, LIMIT_ADMIN_PER_ACCOUNT)) return error(429, 'rate_limited');
     return toRegistry(env, c.request, path, operator(s));
@@ -280,7 +283,7 @@ const ACCOUNT_STATS_PATH = '/nodes/admin/account-stats';
 /**
  * GET /nodes/admin/account-stats: the owner's account counts (accountStore.ts AccountStats), behind
  * the maintainer gate of every /nodes/admin/* route (a trusted account's own session, not a TV's,
- * that proved a credential within MAINTAINER_FRESH_S), then its limit. The answer is AccountsDO's,
+ * that proved a password, level 2, within MAINTAINER_FRESH_S), then its limit. The answer is AccountsDO's,
  * counts and booleans only; the node operators' ids travel from the object to AccountsDO and never
  * into it.
  */
@@ -289,7 +292,7 @@ async function accountStats(c: NodeRouteContext, env: Env): Promise<Response> {
   if (s instanceof Response) return s;
   const trusted = trustedOperatorIds(env);
   if (!trusted.has(s.sub)) return error(403, 'not_trusted', 'only the project reads the account counts');
-  const fresh = requireFresh({ session: s }, MAINTAINER_FRESH_S);
+  const fresh = requireFresh({ session: s }, 2, MAINTAINER_FRESH_S);
   if (fresh instanceof Response) return fresh;
   if ((await overLimit(c.limit, accountGate('GET', ACCOUNT_STATS_PATH), subjectsOf(c.ip, s))) !== null) return error(429, 'rate_limited');
   const operatorIds = nodesConfigured(env) ? await operatorIdsOf(env) : null;
