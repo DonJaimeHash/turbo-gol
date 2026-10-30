@@ -519,6 +519,8 @@ test("LobbyDO: a server start with a guest in the lobby and 600 s or unlimited a
 
 // ---- regressions of the limits above (fix/lobby-directory) ----------------------------------------
 
+const ACC = await import('../../src/net/account.ts');
+
 /** The public list and a code lookup of a real LobbyDirectoryDO (makeDirectory). */
 async function directoryReads(d) {
   const secret = await internalSecret(SECRET);
@@ -611,4 +613,34 @@ test('LobbyDO: the first row going out at once opens no flood path: the host rol
   assert.equal(ana.readyState, 1, 'within the socket budget');
   assert.equal(bea.readyState, 1);
   assert.ok(h.upserts() - ups0 <= 60_000 / L.PUBLISH_MIN_MS + 1, `directory upserts bounded (${h.upserts() - ups0})`);
+});
+
+test('LobbyDO: INICIAR right after FINAL is never start_cooldown (the shortest match outlasts START_AGAIN_MS); a round aborted inside it is told to wait, then starts', async () => {
+  const shortest = Math.min(...ACC.LOBBY_LENGTHS.filter((s) => s > 0)) * 1000;
+  assert.ok(shortest > L.START_AGAIN_MS, 'every lobby length outlasts the wait after a start');
+  const h = await makeLobby({ name: 'Sala', mode: '1v1', visibility: 'private', net: 'p2p', matchLengthSeconds: shortest / 1000 });
+  const host = await h.upgrade('host1');
+  const bea = await h.join('bea');
+  await h.send(host, { t: 'start' });
+  assert.equal(host.last().status, 'in_game');
+  advance(shortest); // the match (the countdown only adds to it); FINAL
+  await h.send(host, { t: 'back' });
+  await h.send(bea, { t: 'back' });
+  await h.send(host, { t: 'start' }); // INICIAR at once
+  assert.equal(host.last().status, 'in_game', 'the next match starts');
+  assert.equal(h.customs(), 2);
+  assert.equal(host.of('error').filter((e) => e.code === 'start_cooldown').length, 0);
+  // A round that ends inside START_AGAIN_MS (a peer refused at its ready, everybody back at once): the
+  // start that formed it holds the next one (rt-m1); a refused INICIAR is not counted as a failure.
+  advance(1_000);
+  await h.send(host, { t: 'back' });
+  await h.send(bea, { t: 'back' });
+  await h.send(host, { t: 'start' });
+  assert.equal(host.of('error').at(-1).code, 'start_cooldown');
+  assert.equal(h.customs(), 2, 'the matchmaker is not reached');
+  assert.equal(host.last().status, 'open');
+  advance(L.START_AGAIN_MS - 1_000);
+  await h.send(host, { t: 'start' });
+  assert.equal(host.last().status, 'in_game', 'once the wait is over it starts');
+  assert.equal(h.customs(), 3);
 });
