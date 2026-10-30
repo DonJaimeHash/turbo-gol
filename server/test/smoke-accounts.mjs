@@ -331,15 +331,21 @@ if (ex.status === 200) {
     xa.ws.send(JSON.stringify({ t: 'start' }));
     check(await waitFor(() => xa.matches.length > 1 && xb.matches.length > 1, 8000), 'start again');
     const r2 = [xa.matches[1], xb.matches[1]];
-    const [sa, sb] = [await openRoom(r2[0]), await openRoom(r2[1])];
-    check(await waitFor(() => sa.of('room').length > 0 && sb.of('room').length > 0), 'both welcomes again');
-    sa.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
-    sb.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
-    check(await waitFor(() => sa.of('start').length > 0 && sb.of('start').length > 0), 'the rules fingerprint on both: the match starts', { a: sa.of('start')[0]?.startAt, b: sb.of('start')[0]?.startAt });
-    sa.ws.close();
-    sb.ws.close();
-    await api('/api/leave', { body: { matchId: r2[0].roomId, region }, token: tokA });
-    await api('/api/leave', { body: { matchId: r2[1].roomId, region }, token: tokB });
+    // As round 1: without both room results ('start again' failed, and counted) there is no socket
+    // to open. Skipped, not fatal, so the steps after the lobbies (rename, devices, logout) still run.
+    if (r2[0]?.kind === 'p2p' && r2[1]?.kind === 'p2p') {
+      const [sa, sb] = [await openRoom(r2[0]), await openRoom(r2[1])];
+      check(await waitFor(() => sa.of('room').length > 0 && sb.of('room').length > 0), 'both welcomes again');
+      sa.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+      sb.ws.send(JSON.stringify({ type: 'ready', physicsFp: RULES_FP }));
+      check(await waitFor(() => sa.of('start').length > 0 && sb.of('start').length > 0), 'the rules fingerprint on both: the match starts', { a: sa.of('start')[0]?.startAt, b: sb.of('start')[0]?.startAt });
+      sa.ws.close();
+      sb.ws.close();
+      await api('/api/leave', { body: { matchId: r2[0].roomId, region }, token: tokA });
+      await api('/api/leave', { body: { matchId: r2[1].roomId, region }, token: tokB });
+    } else {
+      console.log('SKIP the second room (no P2P room result for both): its welcomes and its start are not checked', { a: r2[0]?.kind, b: r2[1]?.kind });
+    }
   }
   const meAfter = await api('/api/me', { token: tokA });
   check(meAfter.json?.ratings?.[0]?.games === 1, 'nothing rated: A still has only the ranked game', meAfter.json?.ratings?.[0]?.games);
