@@ -327,9 +327,18 @@ if (ex.status === 200) {
     xa.ws.send(JSON.stringify({ t: 'back' }));
     xb.ws.send(JSON.stringify({ t: 'back' }));
     check(await waitFor(() => xa.states.at(-1)?.status === 'open'), 'back in the lobby');
-    // Round 2: both arenas run the rules: the room starts.
+    // Round 2: both arenas run the rules: the room starts. Round 1 began a moment ago (its ready was
+    // refused at once), and INICIAR waits START_AGAIN_MS (5 s) after a start that formed a match
+    // (rt-m1): the host is told start_cooldown and presses it again once the wait is over. A real
+    // match outlasts the wait, so INICIAR after FINAL is never refused (server/test/lobby-limits.test.mjs).
     xa.ws.send(JSON.stringify({ t: 'start' }));
-    check(await waitFor(() => xa.matches.length > 1 && xb.matches.length > 1, 8000), 'start again');
+    if ((await waitFor(() => xa.matches.length > 1 || xa.errors.some((e) => e.code === 'start_cooldown'), 4000)) && xa.matches.length < 2) {
+      check(true, 'start again within 5 s of the last start: start_cooldown');
+      await new Promise((r) => setTimeout(r, 5_500));
+      xa.ws.send(JSON.stringify({ t: 'start' }));
+    }
+    const again = await waitFor(() => xa.matches.length > 1 && xb.matches.length > 1, 8000);
+    check(again, 'start again', again ? undefined : xa.errors.at(-1)?.code);
     const r2 = [xa.matches[1], xb.matches[1]];
     // As round 1: without both room results ('start again' failed, and counted) there is no socket
     // to open. Skipped, not fatal, so the steps after the lobbies (rename, devices, logout) still run.
