@@ -55,7 +55,9 @@
  *   POST /unlink          { userId, provider, level }                -> { ok } | 409 last_method | 404 not_linked | 403
  *                                                                     reauth_required { level: 2 } (one way in would be
  *                                                                     left and the session is below the account's ceiling)
- *   POST /rename          { userId, username }                       -> UserRef | 409 taken | 429 too_soon
+ *   POST /rename          { userId, username, lang? }                -> UserRef | 409 username_taken { suggest } | 409
+ *                                                                     name_lookalike { suggest } (the skeleton of a protected
+ *                                                                     account: accountStore.ts protected_skel) | 429 too_soon
  *   GET  /me?userId=                                                 -> MeInfo | 404
  *   GET  /pw-labels                                                  -> { ok } (this code keeps a password record's
  *                                                                     pw_v and pw_kid: the Worker peppers a record only
@@ -122,7 +124,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey, trustedOperatorIds } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
 import { TvCodes, tvCode } from './tvCodes';
@@ -315,12 +317,15 @@ export class AccountsDO extends DurableObject<Env> {
     this.store = new AccountStore(ctx.storage.sql, (fn) => ctx.storage.transactionSync(fn));
     void ctx.blockConcurrencyWhile(async () => {
       this.store.migrate();
+      // The names a new one may not imitate (section 5.2): the trusted list is a var, so it changes only with a deploy, which restarts this object.
+      this.store.rebuildProtectedSkeletons([...trustedOperatorIds(env)]);
       if ((await ctx.storage.getAlarm()) === null) await ctx.storage.setAlarm(Date.now() + PRUNE_EVERY_MS);
     });
   }
 
   override async alarm(): Promise<void> {
     this.store.prune(this.now());
+    this.store.rebuildProtectedSkeletons([...trustedOperatorIds(this.env)]);
     this.tv.sweep(this.now(), true);
     await this.ctx.storage.setAlarm(Date.now() + PRUNE_EVERY_MS);
   }
@@ -686,7 +691,10 @@ export class AccountsDO extends DurableObject<Env> {
       case '/rename': {
         if (typeof b.userId !== 'string' || typeof b.username !== 'string' || usernameProblem(b.username) !== null) return error(400, 'bad_request');
         const r = s.rename(b.userId, b.username, now);
-        if (r === 'taken') return error(409, 'username_taken', 'Ese usuario ya existe');
+        // A refused name gets one that is free right now (section 5.1), in the account's language when it has one.
+        const lang = b.lang === 'es' ? 'es' : 'en';
+        if (r === 'taken') return json({ error: 'username_taken', message: 'Ese usuario ya existe', suggest: s.suggestName(b.username, lang, b.userId) }, 409);
+        if (r === 'lookalike') return json({ error: 'name_lookalike', message: 'Ese nombre se parece mucho a otro', suggest: s.suggestName(b.username, lang, b.userId) }, 409);
         if (r === 'too_soon') return error(429, 'rename_too_soon', 'Puedes cambiar el nombre una vez cada 30 días');
         if (r === 'no_user') return error(404, 'no_user');
         return json(r);

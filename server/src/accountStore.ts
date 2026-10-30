@@ -65,7 +65,7 @@
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
-import { emailCanon, looksLikeDomain, normalizeEmail, PLAYLISTS, usernameKey } from '../../src/net/account';
+import { emailCanon, looksLikeDomain, nameSkeleton, normalizeEmail, PLAYLISTS, USERNAME_MAX, usernameIssue, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
 import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { TrainingRecords } from '../../src/game/trainingRecords';
@@ -121,6 +121,8 @@ export const THROTTLE_KEEP_MS = DAY_MS;
 export const MAIL_RATE_KEEP_MS = DAY_MS;
 /** mail_day rows (one per UTC day and lane) are kept this many days. */
 export const MAIL_DAY_KEEP_DAYS = 30;
+/** How many of each playlist's leaderboard a new name may not imitate (protected_skel, section 5.2). */
+export const PROTECTED_TOP = 50;
 
 /** How an account's address was proved (users.email_proof): a code or link of ours, Google as authoritative, or the dev sign-in. */
 export type EmailProof = 'mail' | 'google' | 'dev';
@@ -924,14 +926,66 @@ export class AccountStore {
     });
   }
 
+  // ---- names a new one may not imitate (the sign-in design, section 5.2) -------------------------
+
+  /**
+   * protected_skel again from scratch: the skeletons (account.ts nameSkeleton) of the project's
+   * accounts (`trustedIds`, NODE_TRUSTED_OPERATORS) and of the top PROTECTED_TOP of each playlist's
+   * leaderboard. The AccountsDO runs it at every start (a change of the trusted list is a deploy) and
+   * with the daily prune. How many rows it wrote.
+   */
+  rebuildProtectedSkeletons(trustedIds: readonly string[]): number {
+    return this.tx(() => {
+      this.sql.exec('DELETE FROM protected_skel');
+      let n = 0;
+      const add = (id: string, name: string, why: string): void => {
+        this.sql.exec('INSERT OR IGNORE INTO protected_skel (skel, user_id, why) VALUES (?, ?, ?)', nameSkeleton(name), id, why);
+        n++;
+      };
+      for (const id of trustedIds) {
+        const u = this.userById(id);
+        if (u !== null) add(id, str(u.username), 'trusted');
+      }
+      for (const p of PLAYLISTS) {
+        const top = this.sql
+          .exec('SELECT u.id AS id, u.username AS name FROM ratings r JOIN users u ON u.id = r.user_id WHERE r.playlist = ? AND r.season = ? AND r.games >= ? AND u.banned = 0 ORDER BY r.mu DESC LIMIT ?', p, SEASON, PLACEMENT_MATCHES, PROTECTED_TOP)
+          .toArray();
+        for (const r of top) add(str(r.id), str(r.name), 'top:' + p);
+      }
+      return n;
+    });
+  }
+
+  /** `name` has the skeleton of a protected account other than `selfId` (an account is never refused its own). */
+  isLookalike(name: string, selfId: string | null): boolean {
+    return this.sql.exec('SELECT 1 AS x FROM protected_skel WHERE skel = ? AND user_id != ?', nameSkeleton(name), selfId ?? '').toArray().length > 0;
+  }
+
+  /**
+   * What a refused name's 409 offers (`suggest`, section 5.1): the same word with four new digits,
+   * valid, free and no look-alike at this moment ('Ana' -> 'Ana4821'); a reserved or invalid name
+   * gets 'Jugador' or 'Player' with digits instead.
+   */
+  suggestName(base: string, lang: 'es' | 'en', selfId: string | null = null): string {
+    const word0 = typeof base === 'string' ? base.replace(/[0-9]+$/, '').slice(0, USERNAME_MAX - 4) : '';
+    const usable = word0.length > 0 && usernameIssue(word0 + '1000') === null;
+    const word = usable ? word0 : lang === 'es' ? 'Jugador' : 'Player';
+    for (let i = 0; i < 40; i++) {
+      const name = word + String(1000 + Math.floor(Math.random() * 9000));
+      if (usernameIssue(name) === null && !this.usernameTaken(name) && !this.isLookalike(name, selfId)) return name;
+    }
+    return (lang === 'es' ? 'Jugador' : 'Player') + String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
+  }
+
   /** Change the username (once per RENAME_EVERY_MS; a fresh OAuth account may rename at once). */
-  rename(userId: string, username: string, now: number): UserRef | 'taken' | 'too_soon' | 'no_user' {
+  rename(userId: string, username: string, now: number): UserRef | 'taken' | 'lookalike' | 'too_soon' | 'no_user' {
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null) return 'no_user' as const;
       if (num(u.renamed_at) + RENAME_EVERY_MS > now) return 'too_soon' as const;
       const other = this.userByKey(usernameKey(username));
       if (other !== null && str(other.id) !== userId) return 'taken' as const;
+      if (this.isLookalike(username, userId)) return 'lookalike' as const;
       this.sql.exec('UPDATE users SET username = ?, ukey = ?, renamed_at = ? WHERE id = ?', username, usernameKey(username), now, userId);
       return { ...this.refOf(u), username };
     });
