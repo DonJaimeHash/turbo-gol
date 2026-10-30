@@ -94,7 +94,8 @@
  *   POST /api/auth/tv/poll    { code, secret }                  -> { state: 'pending' } | AccountSession & { state:
  *                             'approved', tv: true } + refresh cookie | 410 (a wrong secret too) | 409 | 403 banned
  *   POST /api/auth/tv/renew   { code, secret }                  -> { code, expiresAt, ttlMs }: the TV's next code, 20 s
- *                             before this one ends (6 per start) | 409 tv_code_used | 410 tv_code_expired | 503 busy
+ *                             before this one ends (once per code, in its last minute; 6 per start) | 409
+ *                             tv_code_used | 409 tv_renew_early | 410 tv_code_expired | 503 busy
  *     A TV's session has a limited scope (the refresh row's kind 'tv', the Bearer's tv claim, kept
  *     through every refresh, 30 days from its start at most): it plays as the account, picks its
  *     car, its settings and presets, but every route that changes a credential or the account's
@@ -1643,8 +1644,11 @@ async function tvStart(c: RouteContext): Promise<Response> {
  * POST /api/auth/tv/renew { code, secret } (§2.14): the TV, 20 s before its code ends, gets a new
  * one bound to the same secret, so it shows a live code for about 28 minutes and nobody presses
  * NUEVO CÓDIGO. No check (a TV cannot answer one again): the secret is the proof, and each renewal
- * counts toward the start's caps, at most 6 per start. 409 tv_code_used: the phone confirmed the old
- * code (the TV polls it); 410 tv_code_expired: gone, or the renewals used up; 503 busy: the caps.
+ * counts toward the start's caps, at most 6 per start. A code is renewed once, in its last minute (a
+ * repeat answers the same new code), so one solved check is one chain, never a tree of codes
+ * (tvCodes.ts renew). 409 tv_code_used: the phone confirmed the old code (the TV polls it); 409
+ * tv_renew_early: more than its last minute left; 410 tv_code_expired: gone, or the renewals used
+ * up; 503 busy: the caps.
  */
 async function tvRenew(c: RouteContext): Promise<Response> {
   if (c.limited('tvr:' + ipKey(ipOf(c.request)), LIMIT_TV_RENEW)) return error(429, 'rate_limited');

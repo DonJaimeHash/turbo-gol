@@ -599,7 +599,8 @@ export class AccountClient {
   /**
    * A TV, 20 s before its code ends (POST /api/auth/tv/renew): the next code, bound to the same
    * secret. Rejects tv_code_used (the phone confirmed this one: keep polling it), tv_code_expired
-   * (gone, or the renewals used up) and busy (the network's caps).
+   * (gone, or the renewals used up), tv_renew_early (more than the code's last minute left: the
+   * server renews a code once, in its last minute) and busy (the network's caps).
    */
   async tvRenew(code: string, secret: string): Promise<TvRenewAnswer> {
     const r = await this.jsonOrFail<TvRenewAnswer>(await this.call('/api/auth/tv/renew', { code, secret }));

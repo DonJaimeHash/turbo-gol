@@ -87,8 +87,10 @@
  *   POST /tv-start        { ip, secret, where?, checked? }           -> { code, expiresAt } | 503 busy (the table, or the
  *                                                                     caller's /48 or /24, is full; `checked` false: started
  *                                                                     without a solved check, tvCodes.ts TV_OPEN_* too)
- *   POST /tv-renew        { code, secret, ip, where? }               -> { code, expiresAt } (a new code, the same secret) |
- *                                                                     409 tv_code_used | 410 tv_code_expired | 503 busy
+ *   POST /tv-renew        { code, secret, ip, where? }               -> { code, expiresAt } (a new code, the same secret;
+ *                                                                     a code renewed already: that one again) | 409
+ *                                                                     tv_code_used | 409 tv_renew_early (more than its
+ *                                                                     last minute left) | 410 tv_code_expired | 503 busy
  *   POST /tv-info         { code, userId, username, ip, phone? }     -> TvInfo (where the TV is, the phone's network and
  *                                                                     country beside it) | the refusals of /tv-confirm
  *   POST /tv-confirm      { code, userId, username, ip }             -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
@@ -761,6 +763,7 @@ export class AccountsDO extends DurableObject<Env> {
         if (code === null || !isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
         const r = this.tv.renew(code, b.secret, b.ip, now, whereOf(b.where));
         if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
+        if (r === 'early') return error(409, 'tv_renew_early', 'Ese código aún no termina');
         if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
         if (r === 'busy' || r === 'full') return error(503, 'busy', 'Demasiados códigos desde tu red, inténtalo en unos minutos');
         return json(r);

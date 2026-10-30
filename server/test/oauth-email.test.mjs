@@ -544,13 +544,18 @@ test('DISCORD_SILENT=1: a plain Discord sign-in asks prompt=none (level 0); cons
 test('tv/renew: a new code bound to the same secret, the old one live to its end; a confirm of the old one in its last seconds reaches the TV; at most 6 renewals; a wrong secret is an unknown code; a confirmed code is 409', async () => {
   const { env, obj } = makeEnv();
   const ip = ips();
+  // The object's clock: the TV renews 20 s before its code ends (tvSignInModel.ts RENEW_BEFORE_MS).
+  let clock = Date.now();
+  obj.now = () => clock;
   const st = await post(env, '/api/auth/tv/start', { ip: ip(0) });
   assert.equal(st.status, 200);
+  clock = st.json.expiresAt - 20_000;
   const r = await post(env, '/api/auth/tv/renew', { ip: ip(0), body: { code: st.json.code, secret: st.json.secret } });
   assert.equal(r.status, 200, JSON.stringify(r.json));
   assert.match(r.json.code, /^[A-Z2-9]{6}$/);
   assert.notEqual(r.json.code, st.json.code);
-  assert.ok(r.json.ttlMs > TV.TV_CODE_TTL_MS - 5000 && r.json.ttlMs <= TV.TV_CODE_TTL_MS);
+  assert.equal(r.json.expiresAt, clock + TV.TV_CODE_TTL_MS, 'a whole new life');
+  assert.ok(Math.abs(r.json.ttlMs - (r.json.expiresAt - Date.now())) < 5000);
   assert.equal((await post(env, '/api/auth/tv/poll', { ip: ip(0), body: { code: r.json.code, secret: st.json.secret } })).json.state, 'pending');
   // The phone types the old code (still on the screen it read): the TV, polling the new one, is approved.
   const phone = await legacyAccount(obj, 'Telefono');
@@ -562,11 +567,15 @@ test('tv/renew: a new code bound to the same secret, the old one live to its end
   // Six renewals, then the code is over.
   const t = await post(env, '/api/auth/tv/start', { ip: ip(2) });
   let code = t.json.code;
+  let ends = t.json.expiresAt;
   for (let i = 0; i < TV.TV_RENEWS_MAX; i++) {
+    clock = ends - 20_000;
     const n = await post(env, '/api/auth/tv/renew', { ip: ip(2), body: { code, secret: t.json.secret } });
     assert.equal(n.status, 200, `renewal ${i + 1}`);
     code = n.json.code;
+    ends = n.json.expiresAt;
   }
+  clock = ends - 20_000;
   assert.deepEqual([(await post(env, '/api/auth/tv/renew', { ip: ip(2), body: { code, secret: t.json.secret } })).json.error], ['tv_code_expired']);
   assert.equal((await post(env, '/api/auth/tv/renew', { ip: ip(2), body: { code, secret: 'x'.repeat(43) } })).status, 410, 'a wrong secret');
   // A confirmed code: the TV polls it instead.
@@ -579,7 +588,8 @@ test('tv/renew counts toward the start\'s caps and never takes another TV\'s cod
   const { env, obj } = makeEnv();
   const starts = [];
   for (let i = 0; i < TV.TV_CODES_PER_48; i++) starts.push((await post(env, '/api/auth/tv/start', { ip: `2001:db8:61:${i.toString(16)}::1` })).json);
-  const one = await post(env, '/api/auth/tv/renew', { ip: '2001:db8:61:0::1', body: { code: starts[0].code, secret: starts[0].secret } });
+  obj.now = () => Date.now() + TV.TV_CODE_TTL_MS - 20_000; // the TVs renew 20 s before their codes end
+  const one =await post(env, '/api/auth/tv/renew', { ip: '2001:db8:61:0::1', body: { code: starts[0].code, secret: starts[0].secret } });
   assert.equal(one.status, 200);
   const two = await post(env, '/api/auth/tv/renew', { ip: '2001:db8:61:1::1', body: { code: starts[1].code, secret: starts[1].secret } });
   assert.deepEqual([two.status, two.json.error], [503, 'busy']);
@@ -597,13 +607,104 @@ test('tv/renew counts toward the start\'s caps and never takes another TV\'s cod
   assert.equal(typeof t.renew(codes[1], h(1), '2001:db8:62:1::1', T0 + TV.TV_CODE_TTL_MS + 1), 'object');
 });
 
+// The review of PR 6: renewing the same code again minted another live code each time (one solved
+// check filled a network's whole cap, and from many networks a tenth of the table). A code is
+// renewed once, in its last minute, and a repeat answers the same new code.
+/** The live codes bound to `secret` in a TvCodes, at `now`. */
+const liveFor = (t, secret, now) => [...t.codes.values()].filter((e) => e.secretHash === secret && !e.used && e.expiresAt > now).length;
+
+test('tv/renew renews a code once: the same code renewed again, from its own address or from 40 other networks, answers the same new code; before its last minute it is refused; one start then holds two live codes', () => {
+  const t = new TV.TvCodes();
+  const T0 = 5_000_000;
+  const secret = 'ab'.repeat(32);
+  const s = t.start('203.0.113.7', secret, T0);
+  assert.equal(t.renew(s.code, secret, '203.0.113.7', T0 + 1000), 'early', 'right after the start');
+  assert.equal(t.renew(s.code, secret, '203.0.113.7', s.expiresAt - TV.TV_RENEW_WINDOW_MS - 1), 'early', 'before its last minute');
+  assert.ok(TV.TV_RENEW_WINDOW_MS >= 3 * 20_000, 'the TV asks 20 s before the end: a slow one has room');
+  const at = s.expiresAt - 20_000;
+  const first = t.renew(s.code, secret, '203.0.113.7', at);
+  assert.equal(typeof first, 'object');
+  for (let i = 0; i < 25; i++) assert.deepEqual(t.renew(s.code, secret, '203.0.113.7', at + i), first, `a repeat from the same address (${i})`);
+  for (let n = 0; n < 40; n++) assert.deepEqual(t.renew(s.code, secret, `2001:db8:${(0x100 + n).toString(16)}::1`, at + 100 + n), first, `a repeat from another network (${n})`);
+  assert.equal(liveFor(t, secret, at + 200), 2, 'the old code (to its end) and one new one');
+  assert.equal(t.size, 2, 'nothing else in the table');
+  // The old code ends: a repeat now is over, and still mints nothing.
+  assert.equal(t.renew(s.code, secret, '203.0.113.7', s.expiresAt), 'expired');
+  assert.equal(t.size, 2);
+});
+
+test('tv/renew: one start is one chain, never a tree: every code it ever held, renewed again and again from three networks, right away and in the last seconds, makes TV_RENEWS_MAX + 1 codes in all and two live at once', () => {
+  const t = new TV.TvCodes();
+  const secret = 'cd'.repeat(32);
+  let now = 7_000_000;
+  const s = t.start('198.51.100.9', secret, now);
+  const held = new Map([[s.code, s.expiresAt]]);
+  const nets = ['198.51.100.9', '2001:db8:aa::1', '192.0.2.77'];
+  let most = 1;
+  for (let round = 0; round < 3 * TV.TV_RENEWS_MAX; round++) {
+    for (const when of [now + 1, Math.max(...held.values()) - 20_000]) {
+      now = Math.max(now, when);
+      for (const c of [...held.keys()]) for (const ip of nets) for (let k = 0; k < 3; k++) {
+        const r = t.renew(c, secret, ip, now);
+        if (typeof r === 'object') held.set(r.code, r.expiresAt);
+      }
+      most = Math.max(most, liveFor(t, secret, now));
+    }
+  }
+  assert.equal(held.size, TV.TV_RENEWS_MAX + 1, 'the start and its six renewals');
+  assert.equal(most, 2);
+  assert.equal(t.renew([...held.keys()].at(-1), secret, nets[0], Math.max(...held.values()) - 20_000), 'expired', 'the renewals are used up');
+});
+
+test('tv/renew: a repeat never answers another TV\'s code that took the new one\'s letters after it went', () => {
+  const queue = [];
+  const t = new TV.TvCodes((n) => queue.shift() ?? crypto.getRandomValues(new Uint8Array(n)));
+  const letters = (k) => new Uint8Array(TV.TV_CODE_LENGTH).fill(k);
+  const T0 = 9_000_000;
+  const mine = 'ee'.repeat(32);
+  queue.push(letters(0));
+  const s = t.start('203.0.113.50', mine, T0);
+  assert.equal(s.code, 'AAAAAA');
+  queue.push(letters(1));
+  const at = s.expiresAt - 20_000;
+  assert.deepEqual(t.renew(s.code, mine, '2001:db8:400:1::1', at), { code: 'BBBBBB', expiresAt: at + TV.TV_CODE_TTL_MS });
+  // Its /64 asks NUEVO CÓDIGO again and again: the new code is the oldest there and goes.
+  for (let k = 2; k < 2 + TV.TV_CODES_PER_IP; k++) {
+    queue.push(letters(k));
+    assert.equal(typeof t.start('2001:db8:400:1::2', 'f'.repeat(64), at + k), 'object');
+  }
+  assert.equal(t.codes.has('BBBBBB'), false);
+  queue.push(letters(1));
+  assert.equal(t.start('198.51.100.200', '1'.repeat(64), at + 100).code, 'BBBBBB', "another TV's code, the same letters");
+  assert.equal(t.renew(s.code, mine, '203.0.113.50', at + 200), 'expired');
+});
+
+test('tv/renew through the Worker: at once after the start it is 409 tv_renew_early; in the last seconds the same code renewed 25 times from one address and once from each of 40 /48s gives one new code', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const st = await post(env, '/api/auth/tv/start', { ip: ip(0) });
+  assert.equal(st.status, 200);
+  const early = await post(env, '/api/auth/tv/renew', { ip: ip(0), body: { code: st.json.code, secret: st.json.secret } });
+  assert.deepEqual([early.status, early.json.error], [409, 'tv_renew_early']);
+  obj.now = () => st.json.expiresAt - 20_000;
+  const answers = [];
+  for (let i = 0; i < 25; i++) answers.push(await post(env, '/api/auth/tv/renew', { ip: ip(0), body: { code: st.json.code, secret: st.json.secret } }));
+  for (let n = 0; n < 40; n++) answers.push(await post(env, '/api/auth/tv/renew', { ip: `2001:db8:${(0x300 + n).toString(16)}::1`, body: { code: st.json.code, secret: st.json.secret } }));
+  assert.deepEqual([...new Set(answers.map((a) => a.status))], [200]);
+  assert.equal(new Set(answers.map((a) => a.json.code)).size, 1, 'one new code');
+  assert.equal(obj.tv.size, 2, 'the start and its one renewal');
+  assert.equal((await post(env, '/api/auth/tv/poll', { ip: ip(0), body: { code: answers[0].json.code, secret: st.json.secret } })).json.state, 'pending');
+});
+
 test('the live check\'s TV: a remote cannot answer Turnstile\'s challenge, so tv/start without a token gets a code under tighter caps; a script that skips the check gets a few per network and a tenth of the table; a TV that solves it is never stopped by them', async () => {
   const { env, obj } = makeEnv(TURNSTILE_ON);
   const st = await post(env, '/api/auth/tv/start', { ip: '198.51.100.40', body: {} });
   assert.equal(st.status, 200, 'a TV with only a remote still gets its code: ' + JSON.stringify(st.json));
   assert.match(st.json.code, /^[A-Z2-9]{6}$/);
-  // The renewal of an unchecked code stays unchecked.
+  // The renewal of an unchecked code (20 s before its end, on the object's clock) stays unchecked.
+  obj.now = () => Date.now() + TV.TV_CODE_TTL_MS - 20_000;
   const rn = await post(env, '/api/auth/tv/renew', { ip: '198.51.100.40', body: { code: st.json.code, secret: st.json.secret } });
+  obj.now = () => Date.now();
   assert.equal(rn.status, 200);
   assert.equal(obj.tv.codes.get(rn.json.code).checked, false);
   // A failed token is still refused (it is not the TV's fallback).
