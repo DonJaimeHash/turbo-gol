@@ -68,12 +68,20 @@ test('PERFIL shows CUENTA DEL PROYECTO only with /api/me\'s maintainer, first in
   const view = PROFILE.slice(PROFILE.indexOf('const accountView = '), PROFILE.indexOf('/** ACERCA DE, under either view. */'));
   assert.match(view, /const project = me\?\.maintainer;/);
   assert.match(view, /project !== undefined && !\(sample === null && acc\.account\?\.tv === true\)/, 'not on a TV signed in with the phone');
-  assert.match(view, /section\(t\('profile\.maintainerTitle'\), h\('div\.mn-prof-node', null, h\('p\.mn-prof-node-reason', null, t\('profile\.maintainerNote'\)\), \.\.\.maintainerChecks\(project\)\.map\(\(c\) => h\('span\.mn-prof-node-state', \{ 'data-ok': c\.ok \? 'true' : 'false' \}, h\('span\.mn-dot'\), c\.text\)\)\)\)/);
+  assert.match(view, /section\(t\('profile\.maintainerTitle'\), h\('div\.mn-prof-node', null, h\('p\.mn-prof-node-reason', null, t\('profile\.maintainerNote'\)\), \.\.\.maintainerChecks\(project\)\.map\(\(c\) => h\('span\.mn-prof-node-state', \{ 'data-ok': c\.ok \? 'true' : 'false' \}, h\('span\.mn-dot'\), c\.text\)\), confirm\)\)/);
   assert.match(view, /'div\.mn-prof-col',\s*null,\s*projectChecks,\s*h\('section\.mn-section\.mn-prof-security'/, 'above CUENTA Y SEGURIDAD');
 });
 
+test('CONFIRMAR CON LA CONTRASEÑA: the project account reaches level 2 in PERFIL with its password (the node token\'s console line comes after it), and "confirm it is you" never offers it a code by email (the server refuses it: password_required)', () => {
+  const view = PROFILE.slice(PROFILE.indexOf('const accountView = '), PROFILE.indexOf('/** ACERCA DE, under either view. */'));
+  assert.match(view, /const confirm = project\?\.password === true \? h\('div\.mn-prof-device', null, h\('p\.mn-prof-node-reason', null, t\('profile\.maintainerConfirmNote'\)\), secondary\(t\('profile\.maintainerConfirm'\), \(\) => fresh\(\(\) => menu\.toast\(t\('profile\.maintainerConfirmed'\), 'ok'\), 2, true\)/, 'level 2, asked every time (force)');
+  assert.match(view, /c\.text\)\), confirm\)\)/, 'inside the checklist tile');
+  const fresh = PROFILE.slice(PROFILE.indexOf('const fresh = '), PROFILE.indexOf('const unlinkNow = '));
+  assert.match(fresh, /const mailbox = me\?\.emailVerified === true && typeof me\.email === 'string' && me\.email\.length > 0 && me\.legacy !== true && me\.maintainer === undefined \? me\.email : null;/);
+});
+
 test('the texts in both languages: Spanish with tú, the refusal as the server words it', () => {
-  const keys = ['profile.maintainerTitle', 'profile.maintainerNote', 'profile.maintainerPassword', 'profile.maintainerNoPassword', 'profile.maintainerEmail', 'profile.maintainerNoEmail', 'profile.maintainerWays', 'error.account.maintainer_two_ways'];
+  const keys = ['profile.maintainerTitle', 'profile.maintainerNote', 'profile.maintainerPassword', 'profile.maintainerNoPassword', 'profile.maintainerEmail', 'profile.maintainerNoEmail', 'profile.maintainerWays', 'profile.maintainerConfirmNote', 'profile.maintainerConfirm', 'profile.maintainerConfirmed', 'error.account.maintainer_two_ways'];
   for (const k of keys) {
     assert.equal(typeof en[k], 'string', k);
     assert.equal(typeof es[k], 'string', k);

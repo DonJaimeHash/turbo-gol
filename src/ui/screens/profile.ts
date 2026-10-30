@@ -717,10 +717,12 @@ export function profileScreen(menu: Menu): Screen {
       );
     };
     // CUENTA DEL PROYECTO (§3.12): the project account's checklist, a dot per line (green when done). Not on a TV (its changes are the phone's).
+    // With its password, CONFIRMAR CON LA CONTRASEÑA: the level 2 the node token and maintenance routes ask for (nodes/docs/VPS-SAO-PAULO.md's console line).
     const project = me?.maintainer;
+    const confirm = project?.password === true ? h('div.mn-prof-device', null, h('p.mn-prof-node-reason', null, t('profile.maintainerConfirmNote')), secondary(t('profile.maintainerConfirm'), () => fresh(() => menu.toast(t('profile.maintainerConfirmed'), 'ok'), 2, true), { 'data-key': 'profile-maintainer-confirm' })) : null;
     const projectChecks =
       project !== undefined && !(sample === null && acc.account?.tv === true)
-        ? section(t('profile.maintainerTitle'), h('div.mn-prof-node', null, h('p.mn-prof-node-reason', null, t('profile.maintainerNote')), ...maintainerChecks(project).map((c) => h('span.mn-prof-node-state', { 'data-ok': c.ok ? 'true' : 'false' }, h('span.mn-dot'), c.text))))
+        ? section(t('profile.maintainerTitle'), h('div.mn-prof-node', null, h('p.mn-prof-node-reason', null, t('profile.maintainerNote')), ...maintainerChecks(project).map((c) => h('span.mn-prof-node-state', { 'data-ok': c.ok ? 'true' : 'false' }, h('span.mn-dot'), c.text)), confirm))
         : null;
     const abandons = (m: MeInfo): string =>
       banLeft > 0 ? t('profile.abandonsBanned', { count: m.abandons24h, minutes: Math.ceil(banLeft / 60000) }) : t('profile.abandons', { count: m.abandons24h });
@@ -1091,7 +1093,8 @@ export function profileScreen(menu: Menu): Screen {
     const offered = level === 1 ? own : [];
     const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password', maxLength: 128 });
     const withPassword = me?.hasPassword === true;
-    const mailbox = me?.emailVerified === true && typeof me.email === 'string' && me.email.length > 0 && me.legacy !== true ? me.email : null;
+    // No code for the project's account: it confirms with its password (the server refuses it the code: 403 password_required).
+    const mailbox = me?.emailVerified === true && typeof me.email === 'string' && me.email.length > 0 && me.legacy !== true && me.maintainer === undefined ? me.email : null;
     const ownNames = own.map((p) => PROVIDER_NAMES[p]).join(` ${t('profile.or')} `);
     const notEnough = level === 2 && own.length > 0 ? h('p.mn-note', null, mailbox !== null ? t('profile.reauthPasswordOrCode', { providers: ownNames }) : t('profile.reauthPasswordOnly', { providers: ownNames })) : null;
     const byCode: HTMLButtonElement | null = mailbox !== null ? secondary(t('auth.reauthCode', { email: mailbox }), () => byCode !== null && void busyWhile(byCode, () => openReauthCodeSheet(menu, go)), { 'data-key': 'profile-reauth-code' }) : null;

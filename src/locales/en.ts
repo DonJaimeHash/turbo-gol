@@ -693,6 +693,10 @@ export default {
   'profile.maintainerNoEmail': 'Verified email: missing',
   // {count}: its ways to sign in now (Google, Discord, and the password while it can sign in with it)
   'profile.maintainerWays': 'Ways to sign in: {count} of at least 2',
+  // Its button for the node token and the maintenance routes, which need the password typed in the last 15 minutes
+  'profile.maintainerConfirmNote': 'Node tokens and the maintenance tools need your password from the last 15 minutes.',
+  'profile.maintainerConfirm': 'CONFIRM WITH THE PASSWORD',
+  'profile.maintainerConfirmed': 'Done: for 15 minutes you can create node tokens and use the maintenance tools',
   // "Confirm it's you" before a change to how the account signs in (linking, unlinking, a first password)
   'profile.reauthTitle': "Confirm it's you",
   'profile.reauthNote': 'To change how you sign in, sign in again with one of your methods.',
