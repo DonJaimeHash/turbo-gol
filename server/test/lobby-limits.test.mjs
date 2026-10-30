@@ -164,10 +164,11 @@ function fakeNs(handler) {
 
 const jti = () => Array.from({ length: 32 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
 
-async function makeLobby(settings = { name: 'Sala', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 }) {
+/** `dirHandler`: what the directory answers (default: ok), e.g. a real LobbyDirectoryDO's answer. */
+async function makeLobby(settings = { name: 'Sala', mode: '2v2', visibility: 'public', net: 'p2p', matchLengthSeconds: 300 }, dirHandler = () => ({ ok: true })) {
   const ctx = new FakeLobbyCtx();
   const mm = fakeNs((path, body) => (path === '/custom' ? { results: Object.fromEntries(body.members.map((m) => [m.playerId, { status: 'matched', kind: 'p2p', roomId: 'r', ticket: 't', wsUrl: '/room/r' }])) } : { ok: true }));
-  const dir = fakeNs(() => ({ ok: true }));
+  const dir = fakeNs(dirHandler);
   const lobby = new L.LobbyDO(ctx, { JWT_SECRET: SECRET, MATCHMAKER: mm.ns, LOBBY_DIR: dir.ns });
   const secret = await internalSecret(SECRET);
   const req = async (method, path, body) => {
@@ -514,4 +515,100 @@ test("LobbyDO: a server start with a guest in the lobby and 600 s or unlimited a
   await p2p.join('bea');
   await p2p.send(h2, { t: 'start' });
   assert.equal(p2p.customs(), 1, 'a P2P room runs on the players: any length');
+});
+
+// ---- regressions of the limits above (fix/lobby-directory) ----------------------------------------
+
+/** The public list and a code lookup of a real LobbyDirectoryDO (makeDirectory). */
+async function directoryReads(d) {
+  const secret = await internalSecret(SECRET);
+  const get = async (path) => {
+    const res = await d.dir.fetch(new Request('https://lobbies' + path, { headers: { [INTERNAL_HEADER]: secret } }));
+    return { status: res.status, json: await res.json() };
+  };
+  return { list: async () => (await get('/list?region=SA')).json.lobbies, resolve: (code) => get('/resolve?code=' + code) };
+}
+
+test('LobbyDO + LobbyDirectoryDO: a new public lobby is listed with its host and 1 player as soon as the host is in, never with 0 players and no host; later changes keep the window', async () => {
+  const d = await makeDirectory();
+  const reads = await directoryReads(d);
+  const h = await makeLobby(undefined, (path, body) => d.post(path, body).then((r) => r.json));
+  // Created, the host's socket not in yet: not listed (nor counted), but its code already resolves.
+  assert.deepEqual((await reads.list()).map((l) => `${l.code} ${l.players}/${l.max} '${l.host}'`), [], 'no row with 0 players and no host');
+  assert.equal((await reads.resolve('ABCDEF')).json.lobbyId, 'L1');
+  // The host's socket, a moment later: its row goes out at once, without the alarm.
+  const host = await h.upgrade('host1');
+  let row = (await reads.list()).find((l) => l.code === 'ABCDEF');
+  assert.ok(row, 'listed');
+  assert.equal(row.players, 1);
+  assert.equal(row.host, 'Ana');
+  assert.equal(row.max, 4);
+  // A join inside the window still waits for it (PUBLISH_MIN_MS, rt-1), and the alarm sends it.
+  advance(1_000);
+  await h.join('bea');
+  assert.equal((await reads.list()).find((l) => l.code === 'ABCDEF').players, 1, 'held back');
+  assert.ok(h.ctx.storage.alarm <= clock + L.PUBLISH_MIN_MS, 'the alarm is armed for the end of the window');
+  advance(h.ctx.storage.alarm - clock);
+  await h.alarm();
+  row = (await reads.list()).find((l) => l.code === 'ABCDEF');
+  assert.equal(row.players, 2);
+  // The last member gone while an admit is pending: unlisted (by the end of the window), the code still resolving.
+  await h.admit('caro');
+  advance(L.PUBLISH_MIN_MS);
+  for (const ws of h.ctx.getWebSockets()) await h.send(ws, { t: 'leave' });
+  assert.equal(h.lobby.rec.members.length, 0);
+  assert.equal(host.readyState, 3);
+  advance(h.ctx.storage.alarm - clock);
+  await h.alarm();
+  assert.equal((await reads.list()).find((l) => l.code === 'ABCDEF'), undefined, 'nobody in it: not listed');
+  assert.equal((await reads.resolve('ABCDEF')).status, 200, 'caro can still come in by code');
+});
+
+test('LobbyDO: a change that lands while the heartbeat upsert is on its way is published by the end of the window, not 60 s later with the next heartbeat', async () => {
+  const h = await makeLobby();
+  await h.upgrade('host1');
+  const bea = await h.join('bea');
+  advance(60_000);
+  // The heartbeat's directory call: while it is out, bea leaves (another event runs in between, as
+  // the object's input gate lets in while it waits on a fetch).
+  let during = () => h.send(bea, { t: 'leave' });
+  const realGet = h.dir.ns.get;
+  h.dir.ns.get = (id) => ({
+    fetch: async (url, init) => {
+      const res = await realGet(id).fetch(url, init);
+      const f = during;
+      during = null;
+      if (f !== null) await f();
+      return res;
+    },
+  });
+  h.ctx.storage.alarm = null; // as on Cloudflare: the alarm that fired is gone while its handler runs
+  await h.alarm();
+  const ups = () => h.dir.calls.filter((c) => c.path === '/upsert');
+  assert.equal(ups().at(-1).body.summary.players, 2, 'the heartbeat carried the row from before the leave');
+  assert.equal(h.lobby.rec.members.length, 1);
+  const wait = h.ctx.storage.alarm - clock;
+  assert.ok(wait <= L.PUBLISH_MIN_MS, `the alarm comes back for the held row within the window (${wait} ms)`);
+  advance(wait);
+  await h.alarm();
+  assert.equal(ups().at(-1).body.summary.players, 1, 'the leave is in the directory');
+});
+
+test('LobbyDO: the first row going out at once opens no flood path: the host role passed back and forth for a minute is published at most once per PUBLISH_MIN_MS', async () => {
+  const h = await makeLobby();
+  const ana = await h.upgrade('host1');
+  const bea = await h.join('bea');
+  advance(10_000);
+  const ups0 = h.upserts();
+  const id = { ana: ana.last().you, bea: bea.last().you };
+  let cur = 'ana';
+  for (let i = 0; i < 240; i++) {
+    const next = cur === 'ana' ? 'bea' : 'ana';
+    await h.send(cur === 'ana' ? ana : bea, { t: 'host', member: id[next] }); // a real change each time: the row's host
+    cur = next;
+    advance(250);
+  }
+  assert.equal(ana.readyState, 1, 'within the socket budget');
+  assert.equal(bea.readyState, 1);
+  assert.ok(h.upserts() - ups0 <= 60_000 / L.PUBLISH_MIN_MS + 1, `directory upserts bounded (${h.upserts() - ups0})`);
 });
