@@ -94,6 +94,14 @@
  *   POST /host-grant      { userId, item } (a maintainer, through the NodeRegistryDO) -> { granted, items } | 404
  *   POST /host-revoke     { userId, item }                           -> { revoked, refunded, items }
  *   POST /host-unfreeze   { userId }                                 -> { unfrozen }
+ *   The email accounts (sign-in PR 7; emailPost): each answer's `mail` is what the Worker sends after
+ *   it answers (R7), never shown to a client; the caps and lanes are mail_rate's and mail_day's.
+ *   POST /signup-start    { email, attempt, lang?, ip }              -> { resendAt, codeLength, mail } | 400 bad_email | 429
+ *                                                                     | 503 email_paused (one row for any address, I6)
+ *   POST /signup-check    { attempt, code } | { token }              -> { email } | 400 code_wrong | 410 | 409 already_created
+ *   POST /signup-finish   proof, { username, pw, news, lang, tz, terms?, refresh, ip } -> UserRef & { email } | 400 | 409 | 410 | 429
+ *   POST /code-resend     { attempt, ip, userId? }                   -> { resendAt, resendsLeft, mail } | 410 | 429 | 503
+ *   POST /mail-failed     { kind, lane }                             -> { paused, alert } (the signup lane's automatic pause)
  *   POST /account-stats   { operatorIds, trusted } (a maintainer, nodeRoutes.ts) -> AccountStats: counts and
  *                                                                     booleans only (accountStore.ts accountStats);
  *                                                                     operatorIds null = unknown (no node settings)
@@ -125,13 +133,19 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey, trustedOperatorIds } from './env';
-import { checkInternal } from './auth';
+import { base64urlEncode, checkInternal } from './auth';
 import { AccountStore } from './accountStore';
+import { CODE_TRIES } from './accountStore';
+import type { MailOrder, MailProfile, MailTokenRow } from './accountStore';
+import { FAILURES, MAIL_CAPS, RESEND, alertAfterFailures, dailyCap, laneAllows, mailDay, networkCap, pauseAfterFailures, takeSlot } from './mailCaps';
+import type { MailLane, MailWindow, WindowCap } from './mailCaps';
+import { mailLang } from './mailTemplates';
+import type { MailLang } from './mailTemplates';
 import { TvCodes, tvCode } from './tvCodes';
 import type { TvWhere } from './tvCodes';
 import { sitePrefix } from './limits';
 import type { HostCredit, PasswordRecord, RankedResultInput, RefreshGrant, ThrottleEntry } from './accountStore';
-import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
+import { emailCanon, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameIssue, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import type { OAuthProvider, Playlist } from '../../src/net/account';
@@ -291,6 +305,96 @@ export function whereOf(v: unknown): TvWhere | null {
 
 function isHashList(v: unknown, max: number): v is string[] {
   return Array.isArray(v) && v.length <= max && v.every((h) => isHex(h, 64));
+}
+
+// ---- email accounts (sign-in PR 7): the lives, caps and answers of the mailed proofs ------------
+
+/** A code's life after each mail of it (a resend moves it), and its longest from the start (section 1.6). */
+export const CODE_TTL_MS = 15 * 60_000;
+export const CODE_MAX_MS = 60 * 60_000;
+/** A "confirm it's you" code (M11). */
+export const REAUTH_CODE_TTL_MS = 10 * 60_000;
+/** A sign-up link (M1). */
+export const SIGNUP_LINK_TTL_MS = 24 * 60 * 60_000;
+/** A reset link (M2, M3): 30 minutes, one use. */
+export const RESET_TTL_MS = 30 * 60_000;
+/** Failed codes per address (its canon) in 24 hours; past them its codes are refused for a day, its links still work. */
+export const CODE_FAILS_PER_CANON = 10;
+/** "Confirm it's you" codes an account may ask for in 24 hours. */
+export const REAUTH_CODES_PER_DAY = 5;
+/** New accounts per network in 24 hours (section 2.2): an IPv6 /64, or an IPv4 address, 20 times more (CGNAT, schools). */
+export const NEW_ACCOUNTS: Readonly<{ v6: WindowCap; v4: WindowCap }> = { v6: { day: 10 }, v4: { day: 200 } };
+
+/** The codes of one address: CODE_FAILS_PER_CANON failures in a day, then a day's pause (auth_throttle). */
+const CODE_FAIL_RULE: ThrottleRule = { windowMs: LOGIN_DAY_MS, free: CODE_FAILS_PER_CANON, baseMs: LOGIN_DAY_MS, maxMs: LOGIN_DAY_MS };
+/** An attempt id (32 random bytes the starting browser holds) and a link token (32 bytes): base64url. */
+const B64_43 = /^[A-Za-z0-9_-]{43}$/;
+const CODE_RE = /^[0-9]{6}$/;
+/** A sign-up's codes, a "confirm it's you" code and an add or change of the email count their failures apart: a stranger's sign-up guesses never stop an owner's codes. */
+const CODE_CLASS: Readonly<Record<string, string>> = { signup: 'cfs', reauth: 'cfr', add_email: 'cfe', change_email: 'cfe' };
+
+function codeExpired(): Response {
+  return error(410, 'code_expired', 'El código caducó. Pide otro.');
+}
+
+function linkInvalid(): Response {
+  return error(410, 'link_invalid', 'El enlace caducó o ya se usó');
+}
+
+/** A finish that came back after it made the account (a lost answer, another tab): sign in with this address. */
+function alreadyCreated(email: string): Response {
+  return json({ error: 'already_created', message: 'Tu cuenta ya está creada: inicia sesión.', email }, 409);
+}
+
+function codeWrong(triesLeft: number): Response {
+  return json({ error: 'code_wrong', message: 'Ese código no es correcto', triesLeft }, 400);
+}
+
+/** The 429 of a full cap: how long until it has room (`email_rate_limited` for an address, an account or the day's lane; `rate_limited` for a network). */
+function capAnswer(code: 'email_rate_limited' | 'rate_limited', waitMs: number): Response {
+  const message = code === 'email_rate_limited' ? 'Ya te enviamos varios correos. Espera un rato antes de pedir otro.' : 'Demasiados pedidos desde tu red, inténtalo más tarde';
+  return json({ error: code, message, retryAfterMs: Math.max(0, Math.ceil(waitMs)) }, 429);
+}
+
+/** How long until a full window of `cap` has room again. */
+function windowWait(w: MailWindow, cap: WindowCap, now: number): number {
+  if (cap.hour !== undefined && w.hour_n >= cap.hour) return w.hour_at + 3_600_000 - now;
+  return w.day_at + LOGIN_DAY_MS - now;
+}
+
+/** The network a request counts in (env.ts limitKey: an IPv4 address, an IPv6 /64), '' without an address. */
+function netOf(ip: unknown): string {
+  return typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? limitKey(ip) : '';
+}
+
+function randomHex(n: number): string {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  let s = '';
+  for (let i = 0; i < n; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+  return s;
+}
+
+async function sha256Hex(s: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)));
+  let h = '';
+  for (let i = 0; i < d.length; i++) h += (d[i] < 16 ? '0' : '') + d[i].toString(16);
+  return h;
+}
+
+/** A row's code hash (section 1.6): bound to the attempt, so a copy of the database cannot test a code without the browser's id. */
+function codeHashOf(attempt: string, code: string): Promise<string> {
+  return sha256Hex('code|' + attempt + '|' + code);
+}
+
+/** An account's language for its mail ('' when it never chose: the request's then), as a sign-up stores it. */
+function langField(v: unknown): '' | MailLang {
+  return v === 'es' || v === 'en' ? v : '';
+}
+
+/** An IANA zone as a sign-up stores it (mailTemplates.ts checks it again before it prints a date), '' otherwise. */
+function tzField(v: unknown): string {
+  return typeof v === 'string' && v.length <= 64 && /^[A-Za-z][A-Za-z0-9_+\-/]*$/.test(v) ? v : '';
 }
 
 async function body<T>(request: Request): Promise<T | null> {
@@ -476,6 +580,317 @@ export class AccountsDO extends DurableObject<Env> {
     this.store.throttleClear(gone);
   }
 
+  // ---- email accounts (sign-in PR 7) ------------------------------------------------------------
+  //
+  // Every secret a mail carries derives from its row's nonce (section 1.6): the link token is
+  // base64url(HMAC(K_mail, 'link|' + nonce)) and the code 6 uniform digits of HMAC(K_mail, 'code|' +
+  // nonce), K_mail = HKDF(JWT_SECRET, 'turbogol/hkdf/v2', 'mail'). So a resend mails the same code
+  // and link again, and the row stores only hashes. The HMACs come before any read of a handler, so
+  // its reads and writes run in one step (no await between them).
+
+  private mailKeyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
+
+  private mailKey(): Promise<CryptoKey> {
+    const secret = this.env.JWT_SECRET;
+    if (this.mailKeyCache !== null && this.mailKeyCache.secret === secret) return this.mailKeyCache.key;
+    const key = (async () => {
+      const ikm = await crypto.subtle.importKey('raw', enc.encode(secret), 'HKDF', false, ['deriveKey']);
+      return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('turbogol/hkdf/v2'), info: enc.encode('mail') }, ikm, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign']);
+    })();
+    this.mailKeyCache = { secret, key };
+    return key;
+  }
+
+  /** The link token (43 base64url) and the 6-digit code of a row's nonce (rejection sampling: every code equally likely). */
+  async mailSecrets(nonce: string): Promise<{ token: string; code: string }> {
+    const key = await this.mailKey();
+    const token = base64urlEncode(new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode('link|' + nonce))));
+    const LIMIT = Math.floor(2 ** 32 / 1e6) * 1e6;
+    for (let round = 0; ; round++) {
+      const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode('code|' + nonce + (round > 0 ? '|' + round : ''))));
+      for (let i = 0; i + 4 <= mac.length; i += 4) {
+        const n = mac[i] * 2 ** 24 + mac[i + 1] * 2 ** 16 + mac[i + 2] * 2 ** 8 + mac[i + 3];
+        if (n < LIMIT) return { token, code: String(n % 1e6).padStart(6, '0') };
+      }
+    }
+  }
+
+  /**
+   * The day's lane may carry one more mail (section 4.7): not paused (the signup lane's automatic
+   * pause) and below its share of EMAIL_DAILY_CAP; else its refusal, the same for every address.
+   */
+  private laneRefusal(lane: MailLane, now: number): Response | null {
+    const day = this.store.mailDay(mailDay(now));
+    if (lane === 'signup' && day.signup.pausedUntil > now) return error(503, 'email_paused', 'Ahora no podemos enviar correos. Inténtalo en unos minutos.');
+    const total = day.signup.sent + day.account.sent + day.notice.sent;
+    if (laneAllows(lane, total, dailyCap(this.env))) return null;
+    const tomorrow = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate() + 1);
+    return capAnswer('email_rate_limited', tomorrow - now);
+  }
+
+  /** One slot of every cap, or none (a refusal counts nothing): the first full one answers how long to wait. */
+  private takeCaps(caps: ReadonlyArray<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }>, now: number): Response | null {
+    const rows = this.store.mailWindows(caps.map((c) => c.key));
+    const next = new Map<string, MailWindow>();
+    for (const c of caps) {
+      const r = takeSlot(rows.get(c.key) ?? null, c.cap, now);
+      if (!r.ok) return capAnswer(c.code, windowWait(r.row, c.cap, now));
+      next.set(c.key, r.row);
+    }
+    this.store.mailWindowsWrite(next);
+    return null;
+  }
+
+  /** A reset row for the account (M2's and M3's link: 30 minutes, one use), superseding its older ones. */
+  private addReset(p: MailProfile, nonce: string, hash: string, now: number): void {
+    this.store.killMailTokens({ userId: p.userId }, ['reset'], now);
+    this.store.addMailToken({ hash, nonce, purpose: 'reset', userId: p.userId, email: p.email ?? '', canon: p.canon ?? '', attemptHash: null, codeHash: null, codeExpiresAt: 0, payload: {}, expiresAt: now + RESET_TTL_MS }, now);
+  }
+
+  /**
+   * The mail of a sign-up's row, chosen from its canon's state now (section 2.2): M1 with the code
+   * to a free address (its "hint" variant when an account carries it as a provider's hint); M2 to
+   * the account that claimed it, with a reset link; M2 "held" to the address an undo holds. Only
+   * the mail differs: the caller's answer is the same in every case (I6).
+   */
+  private signupMail(canon: string, m: { email: string; lang: MailLang; token: string; code: string; reset: { nonce: string; hash: string; token: string } }, now: number): MailOrder | null {
+    const st = this.store.canonState(canon, now);
+    if (st.kind === 'free') return { to: m.email, lang: m.lang, data: { kind: 'verify_signup', code: m.code, token: m.token } };
+    if (st.kind === 'hint') return { to: m.email, lang: m.lang, data: { kind: 'verify_signup', code: m.code, token: m.token, hint: st.from } };
+    const p = this.store.mailProfile(st.userId);
+    if (p === null) return null;
+    const lang = mailLang(p.lang, m.lang);
+    if (st.kind === 'held') return { to: st.email, lang, data: { kind: 'signup_exists', name: p.name, variant: 'held', methods: p.ways } };
+    if (p.email === null) return null;
+    this.addReset(p, m.reset.nonce, m.reset.hash, now);
+    return { to: p.email, lang, ...(p.tz ? { tz: p.tz } : {}), data: { kind: 'signup_exists', name: p.name, variant: 'reset', methods: p.ways, token: m.reset.token } };
+  }
+
+  /** A fresh reset row's nonce, token and hash (made before a handler reads anything). */
+  private async newReset(): Promise<{ nonce: string; hash: string; token: string }> {
+    const nonce = randomHex(16);
+    const { token } = await this.mailSecrets(nonce);
+    return { nonce, token, hash: await sha256Hex(token) };
+  }
+
+  /**
+   * The email routes of the AccountsDO (the Worker's accountRoutes.ts calls them), or null for any
+   * other path. `mail` in an answer is for the Worker to send after it answers (R7), never for a client.
+   */
+  private async emailPost(path: string, b: Record<string, unknown>, now: number): Promise<Response | null> {
+    switch (path) {
+      case '/signup-start':
+        return this.signupStart(b, now);
+      case '/signup-check':
+        return this.signupCheck(b, now);
+      case '/signup-finish':
+        return this.signupFinish(b, now);
+      case '/code-resend':
+        return this.codeResend(b, now);
+      case '/mail-failed':
+        return this.mailFailed(b, now);
+    }
+    return null;
+  }
+
+  /**
+   * POST /signup-start { email, attempt, lang?, ip } -> { resendAt, codeLength, mail } | 429 | 503: one
+   * row for any address (a decoy, with a random code hash, when the canon is claimed or held), the
+   * recipient's and the network's caps and the signup lane counted the same either way (I6).
+   */
+  private async signupStart(b: Record<string, unknown>, now: number): Promise<Response> {
+    const email = normalizeEmail(b.email);
+    const canon = emailCanon(b.email);
+    if (email === null || canon === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+    if (typeof b.attempt !== 'string' || !B64_43.test(b.attempt)) return error(400, 'bad_request');
+    const lang = mailLang(null, typeof b.lang === 'string' ? b.lang : null);
+    const net = netOf(b.ip);
+    const nonce = randomHex(16);
+    const { token, code } = await this.mailSecrets(nonce);
+    const reset = await this.newReset();
+    const hashes = { link: await sha256Hex(token), attempt: await sha256Hex(b.attempt), code: await codeHashOf(b.attempt, code), decoy: await sha256Hex('decoy|' + randomHex(32)) };
+    const caps: Array<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }> = [{ key: await this.throttleKey('to', canon), cap: MAIL_CAPS.recipient, code: 'email_rate_limited' }];
+    if (net !== '') caps.push({ key: await this.throttleKey('mn', net), cap: networkCap(net), code: 'rate_limited' as const });
+    // ---- one step from here: no await ----
+    const lane = this.laneRefusal('signup', now);
+    if (lane !== null) return lane;
+    const capped = this.takeCaps(caps, now);
+    if (capped !== null) return capped;
+    const st = this.store.canonState(canon, now);
+    const real = st.kind === 'free' || st.kind === 'hint';
+    this.store.addMailToken({ hash: hashes.link, nonce, purpose: 'signup', userId: null, email, canon, attemptHash: hashes.attempt, codeHash: real ? hashes.code : hashes.decoy, codeExpiresAt: now + CODE_TTL_MS, payload: { lang }, expiresAt: now + SIGNUP_LINK_TTL_MS }, now);
+    const mail = this.signupMail(canon, { email, lang, token, code, reset }, now);
+    this.store.mailDayCount(mailDay(now), 'signup', 'sent');
+    return json({ resendAt: now + RESEND.gapMs, codeLength: 6, mail });
+  }
+
+  /**
+   * A code typed for an attempt of `purpose` (and of the account `userId`, for an account's own
+   * codes): its row when right; else code_wrong { triesLeft }, code_expired (the last try, a used or
+   * dead row) or 429 throttled when the address had CODE_FAILS_PER_CANON failures today. Every
+   * failure counts on the row and on the address (its canon, per class of code). Consumes nothing.
+   */
+  private async codeCheck(purpose: string, attempt: string, code: string, userId: string | null, now: number): Promise<{ row: MailTokenRow; codeHash: string } | Response> {
+    const first = this.store.mailToken('attempt', await sha256Hex(attempt));
+    if (first === null || first.purpose !== purpose || (purpose !== 'signup' && first.userId !== userId)) return codeExpired();
+    const codeHash = await codeHashOf(attempt, code);
+    const failKey = first.canon === '' ? null : await this.throttleKey(CODE_CLASS[purpose] ?? 'cfx', first.canon);
+    // ---- one step from here ----
+    const row = this.store.mailToken('hash', first.hash);
+    if (row === null) return codeExpired();
+    const keys = failKey === null ? [] : [{ key: failKey, rule: CODE_FAIL_RULE }];
+    const wait = this.throttled(keys, now);
+    if (wait > 0) return throttledAnswer(wait);
+    const v = this.store.codeVerdict(row, codeHash, now);
+    if (v === 'ok') return { row, codeHash };
+    if (v === 'expired') return codeExpired();
+    this.fail(keys, now);
+    return v.triesLeft > 0 ? codeWrong(v.triesLeft) : codeExpired();
+  }
+
+  /**
+   * POST /signup-check { attempt, code } | { token } -> { email } (the address the proof is for) |
+   * 400 code_wrong | 410 | 409 already_created { email } (the proof made an account in the last 10
+   * minutes: the Worker asks this before it hashes a finish's password, so a junk finish costs no
+   * PBKDF2).
+   */
+  private async signupCheck(b: Record<string, unknown>, now: number): Promise<Response> {
+    const byToken = typeof b.token === 'string';
+    if (byToken ? !B64_43.test(b.token as string) : typeof b.attempt !== 'string' || !B64_43.test(b.attempt) || typeof b.code !== 'string' || !CODE_RE.test(b.code)) return byToken ? linkInvalid() : error(400, 'bad_request');
+    const first = byToken ? this.store.mailToken('hash', await sha256Hex(b.token as string)) : this.store.mailToken('attempt', await sha256Hex(b.attempt as string));
+    if (first === null || first.purpose !== 'signup') return byToken ? linkInvalid() : codeExpired();
+    if (first.usedAt > 0) {
+      const already = this.store.alreadyCreated(first, byToken ? null : await codeHashOf(b.attempt as string, b.code as string), now);
+      if (already !== null) return alreadyCreated(already);
+      return byToken ? linkInvalid() : codeExpired();
+    }
+    if (byToken) return now >= first.expiresAt ? linkInvalid() : json({ email: first.email });
+    const v = await this.codeCheck('signup', b.attempt as string, b.code as string, null, now);
+    return v instanceof Response ? v : json({ email: v.row.email });
+  }
+
+  /**
+   * POST /signup-finish { attempt, code } | { token }, { username, pw, news, lang, tz, terms?, refresh,
+   * ip } -> UserRef & { email } (level 2, method 'password') | 400 bad_username / name_reserved
+   * { suggest } | 409 username_taken / name_lookalike { suggest }, email_taken, already_created
+   * { email } | 410 | 429 (the network's new accounts, or the address's failed codes).
+   */
+  private async signupFinish(b: Record<string, unknown>, now: number): Promise<Response> {
+    const refresh = grantOf(b.refresh);
+    if (refresh === null || !isPw(b.pw) || typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
+    const byToken = typeof b.token === 'string';
+    if (byToken ? !B64_43.test(b.token as string) : typeof b.attempt !== 'string' || !B64_43.test(b.attempt) || typeof b.code !== 'string' || !CODE_RE.test(b.code)) return byToken ? linkInvalid() : error(400, 'bad_request');
+    const first = byToken ? this.store.mailToken('hash', await sha256Hex(b.token as string)) : this.store.mailToken('attempt', await sha256Hex(b.attempt as string));
+    if (first === null || first.purpose !== 'signup') return byToken ? linkInvalid() : codeExpired();
+    const codeHash = byToken ? null : await codeHashOf(b.attempt as string, b.code as string);
+    const failKey = byToken || first.canon === '' ? null : await this.throttleKey('cfs', first.canon);
+    const net = netOf(b.ip);
+    const netKey = net === '' ? null : await this.throttleKey('na', net);
+    const lang = langField(b.lang);
+    const terms = typeof b.terms === 'string' && /^[a-z0-9._-]{1,32}$/.test(b.terms) ? b.terms : null;
+    // ---- one step from here ----
+    const failKeys = failKey === null ? [] : [{ key: failKey, rule: CODE_FAIL_RULE }];
+    const wait = this.throttled(failKeys, now);
+    if (wait > 0) return throttledAnswer(wait);
+    const netCap = net.endsWith('::/64') ? NEW_ACCOUNTS.v6 : NEW_ACCOUNTS.v4;
+    const netRow = netKey === null ? null : (this.store.mailWindows([netKey]).get(netKey) ?? null);
+    const netSlot = netKey === null ? null : takeSlot(netRow, netCap, now);
+    if (netSlot !== null && !netSlot.ok) return capAnswer('rate_limited', windowWait(netSlot.row, netCap, now));
+    const issue = usernameIssue(b.username);
+    const name = b.username;
+    const r = this.store.finishSignup({ row: first, codeHash }, { username: name, pw: b.pw, lang, tz: tzField(b.tz), news: b.news === true, terms, refresh: { ...refresh, kind: 'web' } }, now, issue === null ? 'ok' : issue.code === 'usernameReserved' ? 'reserved' : 'bad');
+    const sl = lang === '' ? 'en' : lang;
+    if (r === 'expired') return codeExpired();
+    if (r === 'invalid') return linkInvalid();
+    if (r === 'bad_username') return error(400, 'bad_username', usernameProblem(name) ?? 'Nombre inválido');
+    if (r === 'name_reserved') return json({ error: 'name_reserved', message: 'Ese nombre está reservado', suggest: this.store.suggestName(name, sl) }, 400);
+    if (r === 'username_taken') return json({ error: 'username_taken', message: 'Ese nombre ya está en uso', suggest: this.store.suggestName(name, sl) }, 409);
+    if (r === 'lookalike') return json({ error: 'name_lookalike', message: 'Ese nombre se parece mucho a otro', suggest: this.store.suggestName(name, sl) }, 409);
+    if (r === 'email_taken') return error(409, 'email_taken', 'Ese correo ya tiene una cuenta');
+    if ('already' in r) return alreadyCreated(r.already);
+    if ('triesLeft' in r) {
+      this.fail(failKeys, now);
+      return r.triesLeft > 0 ? codeWrong(r.triesLeft) : codeExpired();
+    }
+    if (netSlot !== null && netKey !== null) this.store.mailWindowsWrite(new Map([[netKey, netSlot.row]]));
+    return json(r);
+  }
+
+  /**
+   * POST /code-resend { attempt, ip, userId? } -> { resendAt, resendsLeft, mail } (section 2.2): the
+   * same code and link again, the code's life moved to CODE_TTL_MS from now (at most CODE_MAX_MS
+   * from the start), the tries kept; 1 a minute and RESEND.max per attempt, under the recipient's
+   * caps. A sign-up's mail is chosen again from its canon's state. An account's own code (reauth)
+   * resends only for that account.
+   */
+  private async codeResend(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.attempt !== 'string' || !B64_43.test(b.attempt)) return codeExpired();
+    const userId = typeof b.userId === 'string' ? b.userId : null;
+    const first = this.store.mailToken('attempt', await sha256Hex(b.attempt));
+    if (first === null || (first.purpose !== 'signup' && first.purpose !== 'reauth') || (first.purpose !== 'signup' && first.userId !== userId)) return codeExpired();
+    const { token, code } = await this.mailSecrets(first.nonce);
+    const codeHash = await codeHashOf(b.attempt, code);
+    const reset = await this.newReset();
+    const anonymous = first.purpose === 'signup';
+    const net = netOf(b.ip);
+    const caps: Array<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }> = [];
+    if (first.canon !== '') caps.push({ key: await this.throttleKey('to', first.canon), cap: MAIL_CAPS.recipient, code: 'email_rate_limited' });
+    if (anonymous && net !== '') caps.push({ key: await this.throttleKey('mn', net), cap: networkCap(net), code: 'rate_limited' });
+    if (!anonymous && first.userId !== null) caps.push({ key: await this.throttleKey('ma', first.userId), cap: MAIL_CAPS.account, code: 'email_rate_limited' });
+    // ---- one step from here ----
+    const row = this.store.mailToken('hash', first.hash);
+    if (row === null || row.usedAt > 0 || now >= row.expiresAt || row.codeTries >= CODE_TRIES || now >= row.createdAt + CODE_MAX_MS) return codeExpired();
+    if (row.resends >= RESEND.max) return capAnswer('email_rate_limited', row.expiresAt - now);
+    const sentAt = typeof row.payload.sentAt === 'number' ? row.payload.sentAt : row.createdAt;
+    if (now - sentAt < RESEND.gapMs) return capAnswer('email_rate_limited', sentAt + RESEND.gapMs - now);
+    const laneName: MailLane = anonymous ? 'signup' : 'account';
+    const lane = this.laneRefusal(laneName, now);
+    if (lane !== null) return lane;
+    const capped = this.takeCaps(caps, now);
+    if (capped !== null) return capped;
+    let mail: MailOrder | null;
+    let real = true;
+    const lang = mailLang(null, typeof row.payload.lang === 'string' ? row.payload.lang : null);
+    if (anonymous) {
+      const st = this.store.canonState(row.canon, now).kind;
+      real = st === 'free' || st === 'hint';
+      mail = this.signupMail(row.canon, { email: row.email, lang, token, code, reset }, now);
+    } else {
+      const p = this.store.mailProfile(row.userId as string);
+      mail = p === null ? null : { to: row.email, lang: mailLang(p.lang, lang), data: { kind: 'reauth_code', name: p.name, code } };
+    }
+    // A decoy whose address is free now (its account went), or a code of a rotated key: the row takes the code this mail carries.
+    const ttl = row.purpose === 'reauth' ? REAUTH_CODE_TTL_MS : CODE_TTL_MS;
+    this.store.resentMailToken(row, real && row.codeHash !== codeHash ? codeHash : null, Math.min(now + ttl, row.createdAt + CODE_MAX_MS), now);
+    this.store.mailDayCount(mailDay(now), laneName, 'sent');
+    return json({ resendAt: now + RESEND.gapMs, resendsLeft: RESEND.max - row.resends - 1, mail });
+  }
+
+  /**
+   * POST /mail-failed { kind, lane } (the Worker's deliver failed: section 4.6) -> { paused, alert }:
+   * the lane's failures of the day; FAILURES.failures in FAILURES.windowMs pause the signup lane
+   * (503 email_paused for everyone), and the other lanes, which never pause, raise one alert per
+   * FAILURES.alertEveryMs instead.
+   */
+  private mailFailed(b: Record<string, unknown>, now: number): Response {
+    const lane = b.lane;
+    if (lane !== 'signup' && lane !== 'account' && lane !== 'notice') return error(400, 'bad_request');
+    // The lane's window (no address in it): hour_* counts the last FAILURES.windowMs, day_at the last alert.
+    const key = 'fail:' + lane;
+    const w: MailWindow = this.store.mailWindows([key]).get(key) ?? { hour_at: now, hour_n: 0, day_at: 0, day_n: 0 };
+    if (now - w.hour_at >= FAILURES.windowMs || now < w.hour_at) {
+      w.hour_at = now;
+      w.hour_n = 0;
+    }
+    w.hour_n++;
+    const pausedUntil = pauseAfterFailures(lane, w.hour_n, now);
+    const alert = alertAfterFailures(lane, w.hour_n, w.day_at, now);
+    if (alert) w.day_at = now;
+    this.store.mailWindowsWrite(new Map([[key, w]]));
+    this.store.mailDayCount(mailDay(now), lane, 'failed', pausedUntil);
+    return json({ ok: true, paused: pausedUntil > 0, alert });
+  }
+
   private async post(path: string, request: Request, now: number): Promise<Response> {
     const b = await body<Record<string, unknown>>(request);
     if (!b) return error(400, 'bad_request');
@@ -484,6 +899,8 @@ export class AccountsDO extends DurableObject<Env> {
     if ((path === '/ranked-result' || path === '/ranked-cancel' || path === '/ranked-lock' || path === '/training') && carriesPhysics(b)) {
       return error(400, EXPERIMENTAL_REFUSED, 'a match with experimental rules records nothing');
     }
+    const email = await this.emailPost(path, b, now);
+    if (email !== null) return email;
     const s = this.store;
     switch (path) {
       case '/register': {

@@ -131,7 +131,7 @@ import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './env';
 import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
-import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
+import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
 import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, RefreshGrant, UserRef } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
@@ -139,6 +139,11 @@ import { firstUse } from './limits';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
 import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
+import { composeMail, deliver, isLocalDev, linkOrigin } from './mail';
+import type { Mailer, MailMessage } from './mail';
+import { FAILURES, mailKilled } from './mailCaps';
+import { renderMail } from './mailTemplates';
+import type { MailOrder } from './accountStore';
 
 export const ACCOUNT_SESSION_TTL_SECONDS = 60 * 60;
 /**
@@ -587,6 +592,10 @@ export interface RouteContext {
   limited: (key: string, max: number) => boolean;
   /** The Turnstile gate (index.ts): null = pass, else the refusal. Guards account creation like guest creation. */
   antiBot: (token: unknown) => Promise<Response | null>;
+  /** The request's ctx.waitUntil (index.ts): a mail goes out after the answer (R7). Absent (tests): the send still runs. */
+  waitUntil?: (p: Promise<unknown>) => void;
+  /** mail.ts chooseMailer's for this request (the stub off production): the email routes refuse with 503 without one. */
+  mailer?: Mailer;
 }
 
 /**
@@ -1364,6 +1373,153 @@ async function unlink(c: RouteContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/unlink', { userId: s.sub, provider: b.provider, level: s.aal ?? 0 }));
 }
 
+// ---- email accounts (sign-in PR 7: the design's sections 2.2 to 2.5) -----------------------------
+//
+//   POST /api/auth/signup/start   { email, lang?, turnstileToken }          -> { attempt, resendAt, codeLength: 6 }
+//                                 (the same for any address: M1, M1 "hint" or M2 goes to the mailbox) | 400
+//                                 bad_email | 403 turnstile_failed | 429 rate_limited / email_rate_limited
+//                                 { retryAfterMs } | 503 email_paused / email_unconfigured
+//   POST /api/auth/signup/check   { attempt, code } | { token }             -> { email } | 400 code_wrong { triesLeft }
+//                                 | 410 code_expired / link_invalid | 409 already_created { email }; consumes nothing
+//   POST /api/auth/signup/finish  { attempt, code } | { token }, { username, password, news?, lang?, tz?,
+//                                 acceptTerms? } -> AccountSession + refresh and device cookies (level 2, method
+//                                 'password') | 400 bad_username / bad_password / name_reserved { suggest } | 409
+//                                 username_taken / name_lookalike { suggest }, email_taken, already_created { email }
+//                                 | 410 | 429
+//   POST /api/auth/code/resend    { attempt } (a reauth code: its account's Bearer) -> { resendAt, resendsLeft }:
+//                                 the same code and link again | 410 code_expired | 429 email_rate_limited | 503
+//
+// `attempt` is 32 random bytes only the starting browser holds (sessionStorage, 30 minutes): a code
+// works only with it. Tokens and codes travel in bodies only, never a query (R8, I5). The Worker
+// derives the address and its canon from what was typed (I9); a body's canon, trust or verified
+// field is never read. Mail goes out after the answer (R7), through mail.ts, whose stub captures
+// everything off production: live mail needs MAIL_LIVE=1 on a host that is not loopback.
+
+/** The request's language for its mail (the account's wins once it has one). */
+function langOf(v: unknown): 'es' | 'en' | undefined {
+  return v === 'es' || v === 'en' ? v : undefined;
+}
+
+const NO_STORE = { 'cache-control': 'no-store' };
+
+/**
+ * The email routes' 503 before anything is counted: the kill flag (KV email_off) is set
+ * (email_paused), or this deployment cannot deliver: no link origin (MAIL_LINK_ORIGIN off
+ * loopback) or a deploy whose mailer is the stub (MAIL_LIVE unset): email_unconfigured. The same
+ * for every address. /api/config's auth.email says it beforehand (mail.ts emailAvailable).
+ */
+async function mailRefusal(c: RouteContext): Promise<Response | null> {
+  if (await mailKilled(c.env)) return error(503, 'email_paused', 'Ahora no podemos enviar correos. Inténtalo en unos minutos.');
+  const deliverable = c.mailer !== undefined && (c.mailer.live || isLocalDev(c.request));
+  if (linkOrigin(c.request, c.env) === null || !deliverable) return error(503, 'email_unconfigured', 'Este servidor todavía no envía correos');
+  return null;
+}
+
+/**
+ * Send what the AccountsDO ordered, once this request has answered (R7: waitUntil; without a
+ * context, the node tests, it runs all the same). Every URL comes from linkOrigin, never from the
+ * request's Host. A failed send logs its kind and lane only (mail.ts deliver) and counts in its lane
+ * (/mail-failed), which may pause the signup lane or raise an alert line.
+ */
+function sendMail(c: RouteContext, order: MailOrder | null | undefined): void {
+  if (!order) return;
+  const origin = linkOrigin(c.request, c.env);
+  const mailer = c.mailer;
+  if (origin === null || mailer === undefined) return;
+  let msg: MailMessage;
+  try {
+    msg = composeMail(order.to, renderMail(order.data, { origin, lang: order.lang, ...(order.tz ? { tz: order.tz } : {}) }));
+  } catch {
+    console.warn(`mail_failed kind=${order.data.kind} err=render`);
+    return;
+  }
+  const sent = deliver(mailer, msg, async (kind, lane) => {
+    const r = await accountsJson<{ alert?: boolean }>(c.env, '/mail-failed', { kind, lane });
+    if (r.ok && r.data.alert === true) console.warn(`ALERT mail_failures lane=${lane}: ${FAILURES.failures} failed sends in 10 minutes`);
+  });
+  if (c.waitUntil) c.waitUntil(sent);
+  else void sent;
+}
+
+/** A proof in a body: a link's token, or an attempt and its code (a pasted code's spaces and dashes dropped). */
+function proofBody(b: { attempt?: unknown; code?: unknown; token?: unknown } | null): { token: string } | { attempt: string; code: string } | null {
+  if (!b) return null;
+  if (typeof b.token === 'string') return b.token.length <= 128 ? { token: b.token } : null;
+  if (typeof b.attempt !== 'string' || b.attempt.length > 64 || (typeof b.code !== 'string' && typeof b.code !== 'number')) return null;
+  const code = String(b.code).replace(/[\s-]/g, '');
+  return code.length <= 16 ? { attempt: b.attempt, code } : null;
+}
+
+/** POST /api/auth/signup/start: the address checked, then the anti-bot check, then the AccountsDO's caps and row. */
+async function signupStart(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ email?: unknown; lang?: unknown; turnstileToken?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  if (normalizeEmail(b.email) === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const blocked = await c.antiBot(b.turnstileToken);
+  if (blocked !== null) return blocked;
+  const attempt = base64urlEncode(randomBytes(32));
+  const r = await accountsJson<{ resendAt: number; codeLength: number; mail?: MailOrder | null }>(c.env, '/signup-start', { email: b.email, lang: langOf(b.lang), attempt, ip: ipOf(c.request) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ attempt, resendAt: r.data.resendAt, codeLength: r.data.codeLength }, 200, NO_STORE);
+}
+
+/** POST /api/auth/signup/check: the client asks at the sixth digit, so a wrong code shows at once. */
+async function signupCheck(c: RouteContext): Promise<Response> {
+  const proof = proofBody(await readJson<{ attempt?: unknown; code?: unknown; token?: unknown }>(c.request));
+  if (proof === null) return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/signup-check', proof));
+}
+
+/**
+ * POST /api/auth/signup/finish: the proof checked first (a cheap AccountsDO call: a junk finish
+ * costs no PBKDF2), then the password's server stage, then the account in one transaction there.
+ */
+async function signupFinish(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ attempt?: unknown; code?: unknown; token?: unknown; username?: unknown; password?: unknown; news?: unknown; lang?: unknown; tz?: unknown; acceptTerms?: unknown }>(c.request);
+  const proof = proofBody(b);
+  if (!b || proof === null) return error(400, 'bad_request');
+  if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_username', usernameProblem(b.username) ?? 'Elige un nombre de usuario');
+  if (!isClientKey(b.password)) return error(400, 'bad_password', 'Contraseña inválida');
+  const pre = await accountsCall(c.env, '/signup-check', proof);
+  if (!pre.ok) return noStore(pre);
+  await pre.text().catch(() => '');
+  const refreshTok = newRefreshToken();
+  const r = await accountsJson<UserRef>(c.env, '/signup-finish', {
+    ...proof,
+    username: b.username,
+    pw: await newPasswordRecord(b.password, 2, await storeEnv(c.env)),
+    news: b.news === true,
+    lang: langOf(b.lang),
+    tz: b.tz,
+    terms: b.acceptTerms,
+    refresh: await grantFor(refreshTok, c.request),
+    ip: ipOf(c.request),
+  });
+  if (!r.ok) return noStore(r.res);
+  return withCookies(json(await accountSession(c.env, r.data)), [refreshCookie(refreshTok), await deviceCookie(c.env, r.data.userId)]);
+}
+
+/**
+ * POST /api/auth/code/resend { attempt }: a sign-up's needs nothing more (the attempt id is the
+ * browser's); an account's own code (reauth) only its full Bearer, which the AccountsDO matches to
+ * the row's account.
+ */
+async function codeResend(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ attempt?: unknown }>(c.request);
+  if (!b || typeof b.attempt !== 'string' || b.attempt.length > 64) return error(400, 'bad_request');
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const s = c.session;
+  const userId = s !== null && s.acct === 1 && s.tv !== 1 ? s.sub : undefined;
+  const r = await accountsJson<{ resendAt: number; resendsLeft: number; mail?: MailOrder | null }>(c.env, '/code-resend', { attempt: b.attempt, ip: ipOf(c.request), ...(userId !== undefined ? { userId } : {}) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ resendAt: r.data.resendAt, resendsLeft: r.data.resendsLeft }, 200, NO_STORE);
+}
+
 // ---- TV sign-in with the phone ------------------------------------------------------------------
 
 const LIMIT_TV_START = 10;
@@ -1456,6 +1612,11 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/reauth') return reauth(c);
     if (p === '/api/auth/unlink') return unlink(c);
     if (p === '/api/auth/sessions/revoke-all') return sessionsRevokeAll(c);
+    // The email accounts (sign-in PR 7).
+    if (p === '/api/auth/signup/start') return signupStart(c);
+    if (p === '/api/auth/signup/check') return signupCheck(c);
+    if (p === '/api/auth/signup/finish') return signupFinish(c);
+    if (p === '/api/auth/code/resend') return codeResend(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);

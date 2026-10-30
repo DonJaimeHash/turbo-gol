@@ -76,6 +76,18 @@
  *   POST /api/auth/tv/info              tvInfo           account       30  RL_30    where a TV is before CONFIRMAR (sec/account-takeover):
  *                                                                                    one AccountsDO call; a wrong code counts as a failed
  *                                                                                    confirm there too
+ *   The email accounts (sign-in PR 7; the design's §2.16). Pre-filters only: the limits that bind are
+ *   the AccountsDO's, durable and exact (per address, network, account and the day's mail lanes):
+ *   POST /api/auth/signup/start         authMail         network      120  RL_120   a mail each (Turnstile too)
+ *   POST /api/auth/forgot, code/resend                                               the same rule
+ *   POST /api/auth/signup/check         authCode         network      120  RL_120   a code or a link checked: one AccountsDO call
+ *   POST /api/auth/signup/finish                                                     (a new account: the design's authCreate,
+ *   POST /api/auth/reset/peek, reset                                                 kept on this rule's numbers until PR 6 adds it)
+ *   POST /api/auth/signin               login            network      120  RL_120   the email sign-in: two AccountsDO calls and a PBKDF2
+ *     every one above, and the five      signInSite       site         600  RL_600   sign-in routes, share one /48's 600
+ *   POST /api/me/password(/link)        authAcct         account       10  RL_10    a PBKDF2, or a mail, and an AccountsDO write
+ *   POST /api/auth/reauth/code(/verify) authAcct, and    account       10  RL_10    "confirm it's you" by a code from the
+ *                                       authMail/Code    network      120  RL_120   account's mailbox
  *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
  *                                       meNet            network     1200  RL_1200
  *   GET  /api/ranked/result             rankedResult     account       60  RL_60    polled every 1-3 s for two minutes after a ranked match
@@ -170,6 +182,9 @@ export const LIMITS = {
   unlink: { by: 'account', isolate: 10, edge: 'RL_10' },
   sessions: { by: 'account', isolate: 30, edge: 'RL_30' },
   tvInfo: { by: 'account', isolate: 30, edge: 'RL_30' },
+  authMail: { by: 'network', isolate: 120, edge: 'RL_120' },
+  authCode: { by: 'network', isolate: 120, edge: 'RL_120' },
+  authAcct: { by: 'account', isolate: 10, edge: 'RL_10' },
   me: { by: 'account', isolate: 60, edge: 'RL_60' },
   meNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   rankedResult: { by: 'account', isolate: 60, edge: 'RL_60' },
@@ -201,6 +216,25 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['register', 'signInSite'];
       case '/api/auth/recover':
         return ['recover', 'signInSite'];
+      // The email accounts (sign-in PR 7).
+      case '/api/auth/signup/start':
+      case '/api/auth/forgot':
+      case '/api/auth/code/resend':
+        return ['authMail', 'signInSite'];
+      case '/api/auth/signup/check':
+      case '/api/auth/signup/finish':
+      case '/api/auth/reset/peek':
+      case '/api/auth/reset':
+        return ['authCode', 'signInSite'];
+      case '/api/auth/signin':
+        return ['login', 'signInSite'];
+      case '/api/me/password':
+      case '/api/me/password/link':
+        return ['authAcct'];
+      case '/api/auth/reauth/code':
+        return ['authAcct', 'authMail'];
+      case '/api/auth/reauth/code/verify':
+        return ['authAcct', 'authCode'];
       case '/api/auth/password':
         return ['password'];
       case '/api/auth/recovery-codes':

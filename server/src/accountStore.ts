@@ -78,6 +78,8 @@ import { CATALOG, catalogItem, catalogView, claimBlock, round2 } from '../../nod
 import type { ClaimState } from '../../nodes/control-plane/shop';
 import { entitledCarsOf } from '../../src/net/cosmetics';
 import type { ClaimAnswer, ClaimRefusal, ItemsAnswer, ShopAnswer, Wallet } from '../../src/net/cosmetics';
+import type { MailLane, MailWindow } from './mailCaps';
+import type { MailData, MailLang, WayIn } from './mailTemplates';
 
 export type SqlValue = ArrayBuffer | string | number | null;
 export type Row = Record<string, SqlValue>;
@@ -126,6 +128,115 @@ export const PROTECTED_TOP = 50;
 
 /** How an account's address was proved (users.email_proof): a code or link of ours, Google as authoritative, or the dev sign-in. */
 export type EmailProof = 'mail' | 'google' | 'dev';
+
+/** What a mailed proof is for (mail_tokens.purpose, section 1.6). */
+export type MailPurpose = 'signup' | 'add_email' | 'change_email' | 'reset' | 'undo_email' | 'cancel_delete' | 'reauth';
+/** Wrong codes an attempt takes: the last one is code_expired (section 1.6). */
+export const CODE_TRIES = 5;
+/** A finish that comes back this soon after the one that made the account answers already_created (section 2.2). */
+export const ALREADY_CREATED_MS = 10 * 60_000;
+/** consents.version of the news opt-in (section 3.14). */
+export const NEWS_CONSENT_VERSION = 'news-v1';
+
+/** A mail_tokens row (section 1.3): hashes only, and the address while the row lives. */
+export interface MailTokenRow {
+  hash: string;
+  nonce: string;
+  purpose: MailPurpose;
+  userId: string | null;
+  email: string;
+  canon: string;
+  attemptHash: string | null;
+  codeHash: string | null;
+  codeExpiresAt: number;
+  codeTries: number;
+  resends: number;
+  /** { lang?, sentAt? }: '{}' once used. */
+  payload: { lang?: string; sentAt?: number; [k: string]: unknown };
+  createdAt: number;
+  expiresAt: number;
+  usedAt: number;
+  usedBy: string | null;
+}
+
+/** A row to store (addMailToken). */
+export interface NewMailToken {
+  hash: string;
+  nonce: string;
+  purpose: MailPurpose;
+  userId: string | null;
+  email: string;
+  canon: string;
+  attemptHash: string | null;
+  codeHash: string | null;
+  codeExpiresAt: number;
+  payload: { lang?: string };
+  expiresAt: number;
+}
+
+/** What a mail to or about an account needs (mailTemplates.ts {name}, {methods}, the language and the zone). */
+export interface MailProfile {
+  userId: string;
+  name: string;
+  /** The verified address, where its mail goes; null: none. */
+  email: string | null;
+  canon: string | null;
+  lang: string;
+  tz: string;
+  hasPassword: boolean;
+  pwV: number;
+  ways: WayIn[];
+  banned: boolean;
+}
+
+/**
+ * A mail the AccountsDO asks the Worker to send once it has answered (R7: in waitUntil): one
+ * recipient, its language and zone, and what the template needs (mailTemplates.ts renders it with
+ * the request's link origin, mail.ts sends it). It never reaches a client.
+ */
+export interface MailOrder {
+  to: string;
+  lang: MailLang;
+  tz?: string;
+  data: MailData;
+}
+
+function mailTokenOf(r: Row): MailTokenRow {
+  let payload: MailTokenRow['payload'] = {};
+  try {
+    const p = JSON.parse(str(r.payload) || '{}') as unknown;
+    if (p && typeof p === 'object' && !Array.isArray(p)) payload = p as MailTokenRow['payload'];
+  } catch {
+    /* a broken payload reads as none */
+  }
+  const opt = (v: SqlValue | undefined): string | null => (v === null || v === undefined ? null : str(v));
+  return {
+    hash: str(r.hash),
+    nonce: str(r.nonce),
+    purpose: str(r.purpose) as MailPurpose,
+    userId: opt(r.user_id),
+    email: str(r.email),
+    canon: str(r.email_canon),
+    attemptHash: opt(r.attempt_hash),
+    codeHash: opt(r.code_hash),
+    codeExpiresAt: num(r.code_expires_at),
+    codeTries: num(r.code_tries),
+    resends: num(r.resends),
+    payload,
+    createdAt: num(r.created_at),
+    expiresAt: num(r.expires_at),
+    usedAt: num(r.used_at),
+    usedBy: opt(r.used_by),
+  };
+}
+
+/** Two hex hashes are equal, in a time that does not depend on where they differ. */
+function sameHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
 
 export interface PasswordRecord {
   hash: string;
@@ -1483,6 +1594,208 @@ export class AccountStore {
         this.sql.exec('DELETE FROM loadout WHERE user_id = ? AND car = ?', userId, itemId);
       }
       return { revoked: r !== undefined, refunded: r ? round2(num(r.cost)) : 0, items: this.itemIds(userId) };
+    });
+  }
+
+  // ---- email accounts (sign-in PR 7: the design's sections 1.3, 1.6, 2.2 to 2.5, 4.6 and 4.7) ------
+  //
+  // The AccountsDO derives every secret (the link token and the code, from a row's nonce under a key
+  // of JWT_SECRET: AccountsDO.ts mailSecrets) and hashes what it stores; these methods only read and
+  // write rows, synchronously, so a handler that calls them without an await in between is atomic.
+
+  /** A mail_tokens row by the hash of its link token, or the newest one of an attempt (the hash of its id). */
+  mailToken(by: 'hash' | 'attempt', value: string): MailTokenRow | null {
+    const r =
+      by === 'hash'
+        ? this.sql.exec('SELECT * FROM mail_tokens WHERE hash = ?', value).toArray()[0]
+        : this.sql.exec('SELECT * FROM mail_tokens WHERE attempt_hash = ? ORDER BY created_at DESC LIMIT 1', value).toArray()[0];
+    return r ? mailTokenOf(r) : null;
+  }
+
+  /** Store a mailed proof (its hashes only; a decoy's code hash is random, section 1.6). */
+  addMailToken(t: NewMailToken, now: number): void {
+    this.sql.exec(
+      'INSERT INTO mail_tokens (hash, nonce, purpose, user_id, email, email_canon, attempt_hash, code_hash, code_expires_at, payload, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      t.hash, t.nonce, t.purpose, t.userId, t.email, t.canon, t.attemptHash, t.codeHash, t.codeExpiresAt, JSON.stringify({ ...t.payload, sentAt: now }), now, t.expiresAt,
+    );
+  }
+
+  /**
+   * A code typed for `row` (`codeHash`: SHA-256 of 'code|' + attempt + '|' + code): 'ok', or a wrong
+   * one counted on the row ({ triesLeft }: 0 for the CODE_TRIES-th, which the answer calls expired),
+   * or 'expired' (used, past its life, out of tries). Consumes nothing.
+   */
+  codeVerdict(row: MailTokenRow, codeHash: string, now: number): 'ok' | 'expired' | { triesLeft: number } {
+    if (row.usedAt > 0 || now >= row.expiresAt || now >= row.codeExpiresAt || row.codeTries >= CODE_TRIES || row.codeHash === null) return 'expired';
+    if (sameHex(row.codeHash, codeHash)) return 'ok';
+    const tries = row.codeTries + 1;
+    this.sql.exec('UPDATE mail_tokens SET code_tries = ? WHERE hash = ?', tries, row.hash);
+    return { triesLeft: Math.max(0, CODE_TRIES - tries) };
+  }
+
+  /** The row is used: its address, canon and payload blanked (section 1.3); `usedBy` the account it made or changed. */
+  useMailToken(hash: string, usedBy: string | null, now: number): void {
+    this.sql.exec("UPDATE mail_tokens SET used_at = ?, used_by = ?, email = '', email_canon = '', payload = '{}' WHERE hash = ? AND used_at = 0", now, usedBy, hash);
+  }
+
+  /**
+   * Every live row of `purposes` of an account (or of a canon) used, but `except`: a newer one
+   * supersedes them, a password change kills them. `usedBy` goes on them (a sign-up's other attempts
+   * then answer already_created). How many went.
+   */
+  killMailTokens(by: { userId: string } | { canon: string }, purposes: readonly MailPurpose[], now: number, except: string | null = null, usedBy: string | null = null): number {
+    let n = 0;
+    for (const p of purposes) {
+      const rows =
+        'userId' in by
+          ? this.sql.exec('SELECT hash FROM mail_tokens WHERE user_id = ? AND purpose = ? AND used_at = 0', by.userId, p).toArray()
+          : this.sql.exec('SELECT hash FROM mail_tokens WHERE email_canon = ? AND purpose = ? AND used_at = 0', by.canon, p).toArray();
+      for (const r of rows) {
+        if (str(r.hash) === except) continue;
+        this.useMailToken(str(r.hash), usedBy, now);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /** A resend: one more, the code's new life, and its hash when the row's mail now carries a code (a decoy turned real, a rotated key). */
+  resentMailToken(row: MailTokenRow, codeHash: string | null, codeExpiresAt: number, now: number): void {
+    this.sql.exec(
+      'UPDATE mail_tokens SET resends = resends + 1, code_expires_at = ?, code_hash = COALESCE(?, code_hash), payload = ? WHERE hash = ?',
+      codeExpiresAt, codeHash, JSON.stringify({ ...row.payload, sentAt: now }), row.hash,
+    );
+  }
+
+  /**
+   * Who holds `canon` right now (I2): an account that claimed it, an undo's hold (email_holds) for
+   * an account, a hint some account carries (only a hint: the canon is free), or nobody.
+   */
+  canonState(canon: string, now: number): { kind: 'claimed'; userId: string } | { kind: 'held'; userId: string; email: string } | { kind: 'hint'; from: OAuthProvider } | { kind: 'free' } {
+    const owner = this.sql.exec('SELECT id FROM users WHERE email_canon = ?', canon).toArray()[0];
+    if (owner) return { kind: 'claimed', userId: str(owner.id) };
+    const hold = this.sql.exec('SELECT user_id, email FROM email_holds WHERE canon = ? AND until > ?', canon, now).toArray()[0];
+    if (hold) return { kind: 'held', userId: str(hold.user_id), email: str(hold.email) };
+    const hint = this.sql.exec('SELECT email_hint_from FROM users WHERE email_hint_canon = ? LIMIT 1', canon).toArray()[0];
+    const from = hint ? str(hint.email_hint_from) : '';
+    return from === 'google' || from === 'discord' ? { kind: 'hint', from } : { kind: 'free' };
+  }
+
+  /** What a mail to or about the account needs (the templates' {name}, {methods}, its language and zone), or null. */
+  mailProfile(userId: string): MailProfile | null {
+    const u = this.userById(userId);
+    if (u === null) return null;
+    const email = u.email_canon !== null && u.email_canon !== undefined && u.email !== null && u.email !== undefined ? str(u.email) : null;
+    const hasPassword = u.pw_hash !== null && u.pw_hash !== undefined;
+    const ways: MailProfile['ways'] = [];
+    // The password signs in by email with a current key once there is an email, by the username
+    // while there is none (the legacy path, which refuses an account with one: a legacy key beside a
+    // verified email signs in nowhere until a reset).
+    if (hasPassword && email === null) ways.push('username');
+    else if (hasPassword && num(u.pw_v) === PW_V_CURRENT) ways.push('email');
+    if (u.google_sub !== null && u.google_sub !== undefined) ways.push('google');
+    if (u.discord_id !== null && u.discord_id !== undefined) ways.push('discord');
+    if (ways.length === 0) ways.push('email');
+    return { userId, name: str(u.username), email, canon: email === null ? null : str(u.email_canon), lang: str(u.lang), tz: str(u.tz), hasPassword, pwV: num(u.pw_v), ways, banned: num(u.banned) === 1 };
+  }
+
+  // The mail caps (mail_rate: fixed hour and day windows per HMAC'd key; mailCaps.ts takeSlot) and
+  // the day's lanes (mail_day).
+
+  mailWindows(keys: readonly string[]): Map<string, MailWindow> {
+    const out = new Map<string, MailWindow>();
+    for (const k of keys) {
+      const r = this.sql.exec('SELECT hour_at, hour_n, day_at, day_n FROM mail_rate WHERE key = ?', k).toArray()[0];
+      if (r) out.set(k, { hour_at: num(r.hour_at), hour_n: num(r.hour_n), day_at: num(r.day_at), day_n: num(r.day_n) });
+    }
+    return out;
+  }
+
+  mailWindowsWrite(rows: ReadonlyMap<string, MailWindow>): void {
+    for (const [k, w] of rows) this.sql.exec('INSERT OR REPLACE INTO mail_rate (key, hour_at, hour_n, day_at, day_n) VALUES (?, ?, ?, ?, ?)', k, w.hour_at, w.hour_n, w.day_at, w.day_n);
+  }
+
+  /** The day's mail_day rows by lane (absent lanes: nothing sent, nothing failed, no pause). */
+  mailDay(day: string): Record<MailLane, { sent: number; failed: number; pausedUntil: number }> {
+    const out: Record<MailLane, { sent: number; failed: number; pausedUntil: number }> = {
+      signup: { sent: 0, failed: 0, pausedUntil: 0 },
+      account: { sent: 0, failed: 0, pausedUntil: 0 },
+      notice: { sent: 0, failed: 0, pausedUntil: 0 },
+    };
+    for (const r of this.sql.exec('SELECT lane, sent, failed, paused_until FROM mail_day WHERE day = ?', day).toArray()) {
+      const lane = str(r.lane) as MailLane;
+      if (lane in out) out[lane] = { sent: num(r.sent), failed: num(r.failed), pausedUntil: num(r.paused_until) };
+    }
+    return out;
+  }
+
+  /** One more mail sent (or failed) in the day's lane; `pausedUntil` when the lane pauses (mailCaps.ts pauseAfterFailures). */
+  mailDayCount(day: string, lane: MailLane, what: 'sent' | 'failed', pausedUntil = 0): void {
+    this.sql.exec('INSERT OR IGNORE INTO mail_day (day, lane) VALUES (?, ?)', day, lane);
+    if (what === 'sent') this.sql.exec('UPDATE mail_day SET sent = sent + 1 WHERE day = ? AND lane = ?', day, lane);
+    else this.sql.exec('UPDATE mail_day SET failed = failed + 1, paused_until = MAX(paused_until, ?) WHERE day = ? AND lane = ?', pausedUntil, day, lane);
+  }
+
+  /**
+   * The address of the account a used sign-up row made in the last ALREADY_CREATED_MS, when the
+   * proof is its own (the same code for the attempt, or its link: `codeHash` null); null otherwise.
+   */
+  alreadyCreated(row: MailTokenRow, codeHash: string | null, now: number): string | null {
+    if (row.usedAt <= 0 || row.usedBy === null || now - row.usedAt >= ALREADY_CREATED_MS) return null;
+    if (codeHash !== null && (row.codeHash === null || !sameHex(row.codeHash, codeHash))) return null;
+    return this.mailProfile(row.usedBy)?.email ?? null;
+  }
+
+  /**
+   * signup/finish (section 2.2), one transaction: the proof checked again (`proof`: the row and the
+   * hash of the typed code, or the link alone), the name free and no look-alike, the canon free of
+   * an account and a hold (I2); then the account with its verified address (email_proof 'mail',
+   * pw_v 2), every other account's hint of that canon cleared, the consents, a refresh family at
+   * level 2 (method 'password'), and every sign-up row of the canon used (`used_by` the new account:
+   * another attempt's finish then answers already_created). A proof that already made an account in
+   * the last ALREADY_CREATED_MS answers 'already_created' with that account's address.
+   */
+  finishSignup(
+    proof: { row: MailTokenRow; codeHash: string | null },
+    a: { username: string; pw: PasswordRecord; lang: string; tz: string; news: boolean; terms: string | null; refresh: RefreshGrant },
+    now: number,
+    name: 'ok' | 'reserved' | 'bad' = 'ok',
+  ): (UserRef & { email: string }) | 'expired' | 'invalid' | { triesLeft: number } | { already: string } | 'bad_username' | 'name_reserved' | 'username_taken' | 'lookalike' | 'email_taken' {
+    return this.tx(() => {
+      const row = this.mailToken('hash', proof.row.hash);
+      if (row === null || row.purpose !== 'signup') return proof.codeHash === null ? ('invalid' as const) : ('expired' as const);
+      const byCode = proof.codeHash !== null;
+      if (row.usedAt > 0) {
+        const already = this.alreadyCreated(row, proof.codeHash, now);
+        if (already !== null) return { already };
+        return byCode ? ('expired' as const) : ('invalid' as const);
+      }
+      if (now >= row.expiresAt) return byCode ? ('expired' as const) : ('invalid' as const);
+      if (byCode) {
+        const v = this.codeVerdict(row, proof.codeHash as string, now);
+        if (v !== 'ok') return v;
+      }
+      // The name after the proof: a refused one consumes nothing, and the person tries another.
+      if (name === 'bad') return 'bad_username' as const;
+      if (name === 'reserved') return 'name_reserved' as const;
+      if (this.usernameTaken(a.username)) return 'username_taken' as const;
+      if (this.isLookalike(a.username, null)) return 'lookalike' as const;
+      const st = this.canonState(row.canon, now);
+      if (st.kind === 'claimed' || st.kind === 'held') return 'email_taken' as const;
+      const id = this.freshId();
+      this.sql.exec(
+        `INSERT INTO users (id, username, ukey, pw_hash, pw_salt, pw_iter, pw_v, pw_kid, email, email_canon, email_verified_at, email_proof, lang, tz, created_at, last_login)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mail', ?, ?, ?, ?)`,
+        id, a.username, usernameKey(a.username), a.pw.hash, a.pw.salt, a.pw.iter, PW_V_CURRENT, a.pw.kid ?? '', row.email, row.canon, now, a.lang, a.tz, now, now,
+      );
+      this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", row.canon, id);
+      if (a.news) this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', ?, 1, 'signup', ?)", id, NEWS_CONSENT_VERSION, now);
+      if (a.terms !== null) this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'terms', ?, 1, 'signup', ?)", id, a.terms, now);
+      this.addRefresh(id, a.refresh, now, now, now, null, { lvl: 2, method: 'password' });
+      const email = row.email;
+      this.useMailToken(row.hash, id, now);
+      this.killMailTokens({ canon: row.canon }, ['signup'], now, row.hash, id);
+      return { userId: id, username: a.username, car: DEFAULT_CAR, createdAt: now, authAt: now, authLvl: 2 as const, email };
     });
   }
 

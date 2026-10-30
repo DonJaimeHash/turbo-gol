@@ -100,6 +100,7 @@ import { RELOAD_REQUIRED, ROOM_PROTOCOL } from './RoomDO';
 import { nodeHealthCheck, nodeRoute } from './nodeRoutes';
 import { NODE_ROUTES, askNodes, rejoinTicketOf, replyCode } from './nodeApi';
 import type { NodesReply } from './nodeApi';
+import { chooseMailer, devMailResponse, emailAvailable } from './mail';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../../src/net/protocol';
 import type { GuestSession, QueueResult } from '../../src/net/protocol';
 import type { CosmeticQueueResult } from '../../src/net/cosmetics';
@@ -770,9 +771,18 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (path === '/api/health') return withCors(json({ ok: true, version: SERVER_VERSION, protocol: PROTOCOL_VERSION }), cors);
     if (path === '/api/time') return withCors(json({ now: Date.now() }), cors);
-    if (path === '/api/config') return withCors(json(serverConfig(request, env), 200, { 'cache-control': 'no-store' }), cors);
+    if (path === '/api/config') {
+      // auth.email (the sign-in design's §2.1): the flows that send mail may show. Merged into
+      // serverConfig's own auth (sign-in PR 5 puts devSignIn there), never replacing it.
+      const cfg: Record<string, unknown> = serverConfig(request, env);
+      const auth = { ...(cfg.auth as Record<string, unknown> | undefined), email: await emailAvailable(request, env) };
+      return withCors(json({ ...cfg, auth }, 200, { 'cache-control': 'no-store' }), cors);
+    }
     // ---- /api/where (edge colo / country / masked ip; no secret needed) ----
     if (path === '/api/where') return withCors(where(request), cors);
+    // The stub mailer's outbox (mail.ts devMailResponse): DEV_AUTH=1 on a loopback host only, else
+    // the 404 of any unknown route. (Sign-in PR 5 mounts it beside its dev sign-in too: keep one.)
+    if (path === '/api/dev/mail') return withCors(devMailResponse(request, env), cors);
     if (!env.JWT_SECRET) return withCors(error(500, 'no_secret', 'JWT_SECRET is not configured (server/.dev.vars or wrangler secret put)'), cors);
     let res: Response;
     try {
@@ -791,6 +801,9 @@ export default {
               originAllowed: (o) => originAllowed(request, env, o),
               antiBot: (token) => turnstileGate(request, env, token),
               limited: (key, max) => isolateLimited(key, max, Date.now()),
+              // The email routes' mail: after the answer (R7), through the stub off production.
+              waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined,
+              mailer: chooseMailer(request, env),
             },
             url,
           ));
