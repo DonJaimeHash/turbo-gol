@@ -5,11 +5,26 @@
  * MatchDO reports ranked matches; the matchmaker never talks to it (the Worker passes ratings in).
  *
  *   POST /register        { username, pw, recovery, refresh }        -> UserRef | 409 username_taken
- *   POST /auth-begin      { username, ip, account?, device? }        -> (Credentials | { found: false }) & { slow } | 429 throttled
- *   POST /auth-finish     { userId?, username, ip, account?, device?, ok, refresh? } -> UserRef (ok) | { ok: false }
- *     `account`: the password is checked behind a session of that account (the 'a:' counter);
+ *   POST /auth-begin      { username, ip, account?, device?, charge? } -> Credentials | { found: false } | 429 throttled
+ *   POST /auth-finish     { username, ip, account?, device?, ok: false, charged? } -> { ok: false } (one failure
+ *                         counted, unless the begin charged it)
+ *                         { username, ip, account, ok: true, charged } -> { ok: true } (a password proved behind
+ *                         a session: its 'pa:' counter starts again)
+ *                         { userId, username, ip, device?, ok: true, refresh, proved, rekey?, charged? } -> UserRef
+ *                         (signed in at level 2, method 'legacy') | 401 bad_credentials (the password changed meanwhile)
+ *     `charge`: the Worker is about to check a password, and that check counts as a failure now, in
+ *     the same synchronous step as the test of the locks: requests in flight at once never get more
+ *     checks than a counter lets through (a burst). `charged` at the finish: so counted already; a
+ *     success clears the pair's and who's counters and gives the network's and the /48's back. A
+ *     Worker of before (the minutes of a deploy) sends neither, and its failure counts at the finish.
+ *     The Worker's recovery only asks (no charge): /recover tests and counts in one step itself.
+ *     `account`: the password is checked behind a session of that account (the 'pa:' counter);
  *     `device`: { user, id } of this browser's device cookie (accountRoutes.ts deviceOf, its MAC
- *     checked): it signed in to that account before (the 'd:' counter, not the daily cap).
+ *     checked): it signed in to that account before (the 'd:' counter, not the username's cap).
+ *     `proved`: the hash the Worker checked the password against, which must still be the stored
+ *     one (a body without it, from a Worker of before in the minutes of a deploy, stores nothing);
+ *     `rekey`: the password stored again with it (the legacy key re-keyed to the current one, or
+ *     re-hashed with the current pepper), in the sign-in's transaction.
  *   POST /refresh         { old, oldFamily?, next }                  -> UserRef | 401 bad_refresh | 401 refresh_reused
  *                                                                     (the family revoked) | 409 refresh_race (two tabs)
  *   POST /refresh-owner   { hash }                                   -> UserRef & { kind, device } | 404
@@ -20,20 +35,31 @@
  *   POST /sessions/revoke-all { userId }                             -> { revoked } (every device, this one too)
  *     `refresh` / `next` in every call that stores one: a RefreshGrant { hash, family?, kind?, country?,
  *     city? } (accountStore.ts), or the hash alone (a family of its own).
- *   POST /password        { userId, pw, keep?, signOutOthers? }      -> { ok } (other sessions signed out unless
- *                                                                     signOutOthers is false: a first password)
+ *   POST /password        { userId, pw, keep?, signOutOthers?, proved? } -> { ok } (other sessions signed out unless
+ *                                                                     signOutOthers is false: a first password) | 401
+ *                                                                     bad_credentials (`proved` is no longer the hash)
  *   POST /recovery        { userId, hashes }                         -> { ok }
- *   POST /recover         { username, code, pw, refresh, ip, device? } -> UserRef & { codesLeft } | 401 | 429
- *   POST /oauth           { provider, providerId, name, linkTo, refresh, replace? } -> UserRef & { created } | 409
+ *   POST /recover         { username, code, pw, refresh, ip, device? } -> UserRef & { codesLeft } (level 2, method
+ *                                                                     'reset') | 401 (an account with a verified email
+ *                                                                     too) | 429
+ *   POST /oauth           { provider, providerId, name, linkTo, refresh, replace?, lvl } -> UserRef & { created } | 409
  *                                                                     already_linked (another account's) | 409 provider_set
  *                                                                     (the account has another of it) | 403 no_user (suspended);
  *                                                                     `replace`: the device that asked (its tokens go: the
  *                                                                     browser takes the new one), gone meanwhile = 401 link_expired
- *   POST /oauth-reauth    { provider, providerId, userId, refresh, replace } -> UserRef | 409 reauth_mismatch
- *   POST /reauth          { userId, hash }                           -> UserRef (that token proves a credential now) | 401
- *   POST /unlink          { userId, provider }                       -> { ok } | 409 last_method | 404 not_linked
+ *     `lvl`: the level of the press on the provider's page (R6: 1 for Google's account chooser and
+ *     Discord's Authorize, 0 for a start from before levels), at most 1 here
+ *   POST /oauth-reauth    { provider, providerId, userId, refresh, replace, lvl } -> UserRef | 409 reauth_mismatch
+ *   POST /reauth          { userId, hash, proved, rekey? }           -> UserRef (that token proves a credential now, at
+ *                                                                     level 2) | 401
+ *   POST /unlink          { userId, provider, level }                -> { ok } | 409 last_method | 404 not_linked | 403
+ *                                                                     reauth_required { level: 2 } (one way in would be
+ *                                                                     left and the session is below the account's ceiling)
  *   POST /rename          { userId, username }                       -> UserRef | 409 taken | 429 too_soon
  *   GET  /me?userId=                                                 -> MeInfo | 404
+ *   GET  /pw-labels                                                  -> { ok } (this code keeps a password record's
+ *                                                                     pw_v and pw_kid: the Worker peppers a record only
+ *                                                                     then; an object of before answers 404)
  *   POST /ranked-check    { userId, playlists }                      -> RankedCheck
  *   POST /ranked-lock     { matchId, region, userIds, until }
  *   POST /ranked-result   RankedResultInput                          -> { ok, applied }
@@ -74,29 +100,39 @@
  *                                                                     booleans only (accountStore.ts accountStats);
  *                                                                     operatorIds null = unknown (no node settings)
  *
- * Brute force (in memory, per object = global), counted per (username, network) pair: a pair with
- * LOGIN_FAILS_FREE failures in the window is throttled with a doubling delay up to
- * LOGIN_LOCK_MAX_MS, so failures from elsewhere never lock the owner out of their own account. A
- * network (an IPv4 address or an IPv6 /64: tvCodes.ts ipKey) with LOGIN_IP_MAX failures is throttled
- * too, and an IPv6 /48 with LOGIN_WIDE_MAX (one free allocation holds 65,536 /64s). A username with
- * LOGIN_USER_SLOW failures from anywhere is slowed down, never locked: auth-begin says `slow` and
- * the Worker then asks every sign-in on it for a solved Turnstile check. Past LOGIN_USER_DAY_MAX
- * failures in a day from browsers that never signed in to the account, such browsers are refused
- * on it for the rest of that day: that bounds a targeted guesser whatever its networks and solved
- * checks. A browser with the account's device cookie (set at each password sign-in) is never
- * refused by that cap; its own failures count per device and lock like a pair. Recovery attempts
- * share the same counters. A password checked behind a session of the account (no Turnstile
- * token to ask) also counts per account, and that counter locks after LOGIN_FAILS_FREE from any
- * network. A daily alarm prunes old rows.
+ * Brute force: durable counters in SQLite (accountStore.ts auth_throttle), exact and global, so a
+ * restart or an eviction forgets none and memory never grows with them. Each key is a kind and an
+ * HMAC of its value under a key of its own (HKDF of JWT_SECRET, info 'limits'): the table holds no
+ * username or address. Every counter counts the typed username whether or not an account has it
+ * (I6). A sign-in or a recovery (every one also needs a solved Turnstile check, accountRoutes.ts):
+ *   (username, network)  LOGIN_FAILS_FREE failures, then waits of 30 s doubling to LOGIN_LOCK_MAX_MS:
+ *                        failures from elsewhere never lock the owner out of their own account
+ *   network              an IPv4 address or an IPv6 /64, from browsers the account does not know:
+ *                        LOGIN_NET4_MAX / LOGIN_NET6_MAX failures in 15 minutes (a carrier's CGNAT, a
+ *                        school, a LAN party share one address, and a dual-stack school or LAN is one
+ *                        /64), then a LOGIN_NET_PAUSE_MS pause for that network; an IPv6 /48 (65,536
+ *                        /64s, one free allocation) LOGIN_WIDE_MAX, the same pause, which a single /64
+ *                        reaches first: rotating /64s inside one allocation gains nothing
+ *   username             from browsers it does not know: LOGIN_USER_DAY_MAX failures in a day, then its
+ *                        password sign-in pauses for 15 minutes, doubling to an hour (OAuth still works)
+ *   known browser        a browser with the account's device cookie (set at each password sign-in)
+ *                        counts on its own 'd:' counter instead of the username's, which locks like a
+ *                        pair, and on its pair; never on a network or a /48, whose pause never stops it
+ * Each check counts as it starts (/auth-begin `charge`, in the step that tests the locks), so checks
+ * in flight at once never pass a cap; a success gives the network's and the /48's charge back, and
+ * clears the pair, the username and the device's counters. A password checked behind a
+ * session of the account (no Turnstile token to ask) counts only per account ('pa:'), locked like a
+ * pair from any network. The daily alarm prunes the rows that are over (accountStore.ts prune).
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey } from './env';
 import { checkInternal } from './auth';
 import { AccountStore } from './accountStore';
-import { TvCodes, ipKey, tvCode, wideKey } from './tvCodes';
+import { TvCodes, tvCode } from './tvCodes';
 import type { TvWhere } from './tvCodes';
-import type { HostCredit, PasswordRecord, RankedResultInput, RefreshGrant } from './accountStore';
+import { sitePrefix } from './limits';
+import type { HostCredit, PasswordRecord, RankedResultInput, RefreshGrant, ThrottleEntry } from './accountStore';
 import { isPlaylist, OAUTH_PROVIDERS, usernameKey, usernameProblem } from '../../src/net/account';
 import { parseTrainingRecords } from '../../src/game/trainingRecords';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -112,19 +148,53 @@ const REPLAY_HIDDEN_MAX = 256;
 export const LOGIN_FAILS_FREE = 5;
 const LOGIN_LOCK_BASE_MS = 30_000;
 export const LOGIN_LOCK_MAX_MS = 15 * 60_000;
-/** Failures per network (an IPv4 address, shared by a household or a campus, or an IPv6 /64) before it is throttled. */
-export const LOGIN_IP_MAX = 50;
-/** Failures per IPv6 /48 before it is throttled. */
+/** Failures per IPv4 address in LOGIN_WINDOW_MS before it pauses: a carrier's CGNAT, a school or a LAN party shares one. */
+export const LOGIN_NET4_MAX = 600;
+/**
+ * Failures per IPv6 /64 in LOGIN_WINDOW_MS before it pauses: an IPv4 address's (the review of
+ * sign-in PR 4; the design's §2.3 said 30). A dual-stack school or LAN party is one /64 (SLAAC), and
+ * 30 typos of a classroom would pause everyone's password sign-in in it. Its /48's LOGIN_WIDE_MAX
+ * still binds first, so one /64 gets that many.
+ */
+export const LOGIN_NET6_MAX = LOGIN_NET4_MAX;
+/** Failures per IPv6 /48 in LOGIN_WINDOW_MS before it pauses. */
 export const LOGIN_WIDE_MAX = 300;
-/** Failures on one username from anywhere before its sign-ins need a solved check (never a lock). */
-export const LOGIN_USER_SLOW = 10;
+/** How long a network (or a /48) over its cap pauses password sign-in. */
+export const LOGIN_NET_PAUSE_MS = 15 * 60_000;
 /**
  * Failures on one username in LOGIN_DAY_MS from browsers it does not know (no device cookie of
- * the account, no session of it) before such browsers are refused on it until that day ends:
- * a targeted guesser gets this many a day, however many networks and solved checks it buys.
+ * the account, no session of it) before its password sign-in pauses for LOGIN_USER_PAUSE_MS,
+ * doubling up to LOGIN_USER_PAUSE_MAX_MS: a targeted guesser gets about this many a day, however
+ * many networks and solved checks it buys, and nobody locks an owner out for good.
  */
-export const LOGIN_USER_DAY_MAX = 100;
+export const LOGIN_USER_DAY_MAX = 50;
 export const LOGIN_DAY_MS = 24 * 60 * 60_000;
+export const LOGIN_USER_PAUSE_MS = 15 * 60_000;
+export const LOGIN_USER_PAUSE_MAX_MS = 60 * 60_000;
+
+/** One counter's policy: its window, the failures it lets through, then a wait of baseMs doubling to maxMs. */
+export interface ThrottleRule {
+  windowMs: number;
+  free: number;
+  baseMs: number;
+  maxMs: number;
+}
+
+/** The counters of the header comment. */
+export const THROTTLE_RULES = {
+  /** A (username, network) pair, a known browser ('d:'), a session's own checks ('pa:'). */
+  pair: { windowMs: LOGIN_WINDOW_MS, free: LOGIN_FAILS_FREE, baseMs: LOGIN_LOCK_BASE_MS, maxMs: LOGIN_LOCK_MAX_MS },
+  user: { windowMs: LOGIN_DAY_MS, free: LOGIN_USER_DAY_MAX, baseMs: LOGIN_USER_PAUSE_MS, maxMs: LOGIN_USER_PAUSE_MAX_MS },
+  net4: { windowMs: LOGIN_WINDOW_MS, free: LOGIN_NET4_MAX, baseMs: LOGIN_NET_PAUSE_MS, maxMs: LOGIN_NET_PAUSE_MS },
+  net6: { windowMs: LOGIN_WINDOW_MS, free: LOGIN_NET6_MAX, baseMs: LOGIN_NET_PAUSE_MS, maxMs: LOGIN_NET_PAUSE_MS },
+  site: { windowMs: LOGIN_WINDOW_MS, free: LOGIN_WIDE_MAX, baseMs: LOGIN_NET_PAUSE_MS, maxMs: LOGIN_NET_PAUSE_MS },
+} as const satisfies Record<string, ThrottleRule>;
+
+/** A counter of one sign-in: its stored key (kind ':' HMAC) and its policy. */
+interface ThrottleKey {
+  key: string;
+  rule: ThrottleRule;
+}
 const PRUNE_EVERY_MS = 24 * 60 * 60_000;
 const BODY_MAX = 16_384;
 /**
@@ -141,23 +211,21 @@ function isIdList(v: unknown, max: number): v is string[] {
   return Array.isArray(v) && v.length <= max && v.every((id) => isHex(id, 16));
 }
 
-/** A failure counter's window: a day for a username's count of unknown browsers ('ud:'), else LOGIN_WINDOW_MS. */
-function windowOf(key: string): number {
-  return key.startsWith('ud:') ? LOGIN_DAY_MS : LOGIN_WINDOW_MS;
-}
-
-interface FailEntry {
-  count: number;
-  first: number;
-  lockedUntil: number;
-}
-
-/** Throttle state after one more failure (pure, unit-tested); `windowMs`: the counter's window. */
-export function nextFail(prev: FailEntry | undefined, now: number, windowMs: number = LOGIN_WINDOW_MS): FailEntry {
-  const e = prev === undefined || now - prev.first > windowMs ? { count: 0, first: now, lockedUntil: 0 } : { ...prev };
+/**
+ * A counter after one more failure (pure, unit-tested): a new window once `rule.windowMs` passed
+ * since its first failure; from the `rule.free`-th failure on, locked for `rule.baseMs` doubling with
+ * each further one up to `rule.maxMs`.
+ */
+export function nextFail(prev: ThrottleEntry | undefined, now: number, rule: ThrottleRule = THROTTLE_RULES.pair): ThrottleEntry {
+  const e = prev === undefined || now - prev.first > rule.windowMs ? { count: 0, first: now, lockedUntil: 0 } : { ...prev };
   e.count++;
-  if (e.count >= LOGIN_FAILS_FREE) e.lockedUntil = now + Math.min(LOGIN_LOCK_MAX_MS, LOGIN_LOCK_BASE_MS * 2 ** (e.count - LOGIN_FAILS_FREE));
+  if (e.count >= rule.free) e.lockedUntil = now + Math.min(rule.maxMs, rule.baseMs * 2 ** (e.count - rule.free));
   return e;
+}
+
+/** The 429 of a counter that is locked: how long to wait. */
+function throttledAnswer(waitMs: number): Response {
+  return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: waitMs }, 429);
 }
 
 function isHex(v: unknown, len: number): v is string {
@@ -167,8 +235,37 @@ function isHex(v: unknown, len: number): v is string {
 function isPw(v: unknown): v is PasswordRecord {
   if (!v || typeof v !== 'object') return false;
   const p = v as PasswordRecord;
+  if (p.v !== undefined && p.v !== 1 && p.v !== 2) return false;
+  if (p.kid !== undefined && !(typeof p.kid === 'string' && /^(?:p[0-9]{1,3})?$/.test(p.kid))) return false;
   return isHex(p.hash, 64) && isHex(p.salt, 32) && Number.isInteger(p.iter) && p.iter >= 10_000 && p.iter <= 10_000_000;
 }
+
+/**
+ * The level an OAuth sign-in, link or re-authentication carries (R6): what the Worker's start asked
+ * the provider for, at most 1 in this build (a press on the provider's page; Google's forced
+ * password, level 2, comes with its own change). Anything else is 0.
+ */
+function oauthLevel(v: unknown): 0 | 1 {
+  return v === 1 ? 1 : 0;
+}
+
+/**
+ * The password a sign-in or a re-authentication proved is still the stored one (`stored`): the
+ * body's `proved` names the hash the Worker checked. A re-key needs it; without one, a body from a
+ * Worker of before `proved` (the minutes of a deploy) passes as it did then, and stores nothing.
+ */
+function provedStill(b: Record<string, unknown>, stored: string | null, rekey: PasswordRecord | null): boolean {
+  if (b.proved === undefined) return rekey === null;
+  return typeof b.proved === 'string' && b.proved === stored;
+}
+
+/** A body's optional `rekey`: null when absent, undefined when malformed. */
+function rekeyOf(v: unknown): PasswordRecord | null | undefined {
+  if (v === undefined || v === null) return null;
+  return isPw(v) ? v : undefined;
+}
+
+const enc = new TextEncoder();
 
 /** A RefreshGrant from a request: the hash alone (hex) or { hash, family?, kind?, country?, city? }; null when malformed. */
 export function grantOf(v: unknown): RefreshGrant | null {
@@ -212,7 +309,8 @@ async function body<T>(request: Request): Promise<T | null> {
 
 export class AccountsDO extends DurableObject<Env> {
   private readonly store: AccountStore;
-  private readonly fails = new Map<string, FailEntry>();
+  /** The throttle keys' HMAC key (limitsKey), per JWT_SECRET. */
+  private limits: { secret: string; key: Promise<CryptoKey> } | null = null;
   /** The TV sign-in codes (tvCodes.ts): minutes long, so memory is enough. */
   readonly tv = new TvCodes();
   /** The clock (tests inject their own). */
@@ -229,7 +327,6 @@ export class AccountsDO extends DurableObject<Env> {
 
   override async alarm(): Promise<void> {
     this.store.prune(this.now());
-    for (const [k, e] of this.fails) if (this.now() - e.first > windowOf(k) && e.lockedUntil <= this.now()) this.fails.delete(k);
     this.tv.sweep(this.now(), true);
     await this.ctx.storage.setAlarm(Date.now() + PRUNE_EVERY_MS);
   }
@@ -252,6 +349,9 @@ export class AccountsDO extends DurableObject<Env> {
   private get(url: URL, now: number): Response {
     const p = url.searchParams;
     switch (url.pathname) {
+      case '/pw-labels':
+        // This code stores a password record's pw_v and pw_kid as the Worker made them (accountRoutes.ts storeEnv).
+        return json({ ok: true });
       case '/me': {
         const me = this.store.me(p.get('userId') ?? '', now);
         return me ? json(me) : error(404, 'no_user');
@@ -284,67 +384,101 @@ export class AccountsDO extends DurableObject<Env> {
     return error(404, 'not_found');
   }
 
-  private throttled(keys: readonly string[], now: number): number {
-    let wait = 0;
-    for (const k of keys) {
-      const e = this.fails.get(k);
-      if (e && e.lockedUntil > now) wait = Math.max(wait, e.lockedUntil - now);
-    }
-    return wait;
+  /** HKDF-SHA256(JWT_SECRET, 'turbogol/hkdf/v2', 'limits') as an HMAC key: the throttle keys' (the design's §1.3). */
+  private limitsKey(): Promise<CryptoKey> {
+    const secret = this.env.JWT_SECRET;
+    if (this.limits !== null && this.limits.secret === secret) return this.limits.key;
+    const key = (async () => {
+      const ikm = await crypto.subtle.importKey('raw', enc.encode(secret), 'HKDF', false, ['deriveKey']);
+      return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('turbogol/hkdf/v2'), info: enc.encode('limits') }, ikm, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign']);
+    })();
+    this.limits = { secret, key };
+    return key;
   }
 
-  private fail(keys: readonly string[], now: number): void {
-    for (const k of keys) {
-      const e = nextFail(this.fails.get(k), now, windowOf(k));
-      // A network gets more room than one pair (a household / campus shares an address); a
-      // username's own count only slows it down (slowFor), it never locks the owner out; its
-      // daily count of unknown browsers shuts them out until that day ends.
-      if (k.startsWith('ud:')) e.lockedUntil = e.count >= LOGIN_USER_DAY_MAX ? e.first + LOGIN_DAY_MS : 0;
-      else if (k.startsWith('u:') || (k.startsWith('ip:') && e.count < LOGIN_IP_MAX) || (k.startsWith('w:') && e.count < LOGIN_WIDE_MAX)) e.lockedUntil = 0;
-      this.fails.set(k, e);
-    }
+  /** A counter's stored key: its kind, ':' and 32 hex of HMAC(kind + '|' + value) (no username or address at rest). */
+  private async throttleKey(kind: string, value: string): Promise<string> {
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await this.limitsKey(), enc.encode(kind + '|' + value)));
+    let h = '';
+    for (let i = 0; i < 16; i++) h += (mac[i] < 16 ? '0' : '') + mac[i].toString(16);
+    return kind + ':' + h;
   }
 
   /**
-   * The counters of a sign-in or a recovery: [the (username, network) pair, the username, the
-   * network (ipKey: an IPv4 address or an IPv6 /64), the IPv6 /48, then who tries (knownAs)];
-   * the pair's first, so a success clears it (keys[0]). Who tries: a password checked behind a
-   * session of the account (a password change, new codes, a rename, a re-authentication) counts
-   * on the account's 'a:' counter, and a browser with the account's device cookie on its 'd:'
-   * one; both lock like a pair (LOGIN_FAILS_FREE, the doubling delay) whatever the network, so a
-   * stolen session or device cookie guesses no faster than one network, and neither lock touches
-   * another browser's sign-in. Anyone else counts on the username's daily cap ('ud:').
+   * The counters of one password check (the header comment), and the ones a success clears. A
+   * password checked behind a session of the account (`account`: a password change, new codes, a
+   * rename, a re-authentication) counts only on that account's 'pa:' counter. A sign-in or a
+   * recovery counts on its (username, network) pair and who tries: a browser with the account's
+   * device cookie on its 'd:' counter and nothing more, anyone else on the username's, its network
+   * (env.ts limitKey: an IPv4 address or an IPv6 /64) and an IPv6 address's /48.
+   * Async (the HMACs) and done before any read, so the reads and writes after it stay atomic.
    */
-  private failKeys(username: string, ip: unknown, b: Record<string, unknown>): string[] {
+  private async checkKeys(username: string, ip: unknown, b: Record<string, unknown>): Promise<{ keys: ThrottleKey[]; clear: string[]; account: boolean }> {
+    const R = THROTTLE_RULES;
+    if (typeof b.account === 'string' && b.account.length > 0 && b.account.length <= 64) {
+      const pa = await this.throttleKey('pa', b.account);
+      return { keys: [{ key: pa, rule: R.pair }], clear: [pa], account: true };
+    }
     const user = usernameKey(username);
-    const net = typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? ipKey(ip) : '';
-    const keys = ['up:' + user + '|' + net, 'u:' + user];
-    if (net !== '') keys.push('ip:' + net);
-    const wide = typeof ip === 'string' && ip.includes(':') ? wideKey(ip) : null;
-    if (wide !== null) keys.push('w:' + wide);
-    keys.push(this.knownAs(username, b) ?? 'ud:' + user);
-    return keys;
+    const addr = typeof ip === 'string' && ip.length > 0 && ip.length < 64 ? ip : '';
+    const net = addr === '' ? '' : limitKey(addr);
+    const v6 = addr.includes(':') && !addr.includes('.');
+    const site = v6 ? sitePrefix(addr) : null;
+    const known = this.knownDevice(username, b);
+    const pair = await this.throttleKey('up', user + '|' + net);
+    const who = known !== null ? await this.throttleKey('d', known) : await this.throttleKey('u', user);
+    const keys: ThrottleKey[] = [{ key: pair, rule: R.pair }, { key: who, rule: known !== null ? R.pair : R.user }];
+    // A known browser proved this account's password here before: its 'd:' counter bounds it, so a
+    // network's or a /48's pause (a classroom's typos, a sprayer next door) never stops it, and its
+    // own typos never count toward one.
+    if (known === null) {
+      if (net !== '') keys.push({ key: await this.throttleKey('ip', net), rule: v6 ? R.net6 : R.net4 });
+      if (site !== null) keys.push({ key: await this.throttleKey('w', site), rule: R.site });
+    }
+    const clear = [pair, who];
+    if (known !== null) clear.push(await this.throttleKey('u', user));
+    return { keys, clear, account: false };
   }
 
-  /** A session of the account ('a:' + its id) or a browser that signed in to it ('d:' + its device id); null: unknown. */
-  private knownAs(username: string, b: Record<string, unknown>): string | null {
-    if (typeof b.account === 'string' && b.account.length > 0 && b.account.length <= 64) return 'a:' + b.account;
+  /** This browser's device id when its device cookie is one of the account `username` names (it signed in there before); null otherwise. */
+  private knownDevice(username: string, b: Record<string, unknown>): string | null {
     const d = b.device as { user?: unknown; id?: unknown } | null | undefined;
     if (!d || typeof d !== 'object' || typeof d.user !== 'string' || typeof d.id !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(d.id)) return null;
-    return this.store.credentials(username)?.userId === d.user ? 'd:' + d.id : null;
+    return this.store.credentials(username)?.userId === d.user ? d.id : null;
   }
 
-  /** A success: the pair's counter and this browser's device counter start again (the others run their window). */
-  private cleared(keys: readonly string[]): void {
-    this.fails.delete(keys[0]);
-    const known = keys[keys.length - 1];
-    if (known.startsWith('d:')) this.fails.delete(known);
+  /** The longest wait any of `keys` is locked for at `now` (0: none). */
+  private throttled(keys: readonly ThrottleKey[], now: number): number {
+    let wait = 0;
+    for (const e of this.store.throttleRows(keys.map((k) => k.key)).values()) if (e.lockedUntil > now) wait = Math.max(wait, e.lockedUntil - now);
+    return wait;
   }
 
-  /** The username has failed LOGIN_USER_SLOW times in the window, from anywhere: its sign-ins need a solved check. */
-  private slowFor(username: string, now: number): boolean {
-    const e = this.fails.get('u:' + usernameKey(username));
-    return e !== undefined && now - e.first <= LOGIN_WINDOW_MS && e.count >= LOGIN_USER_SLOW;
+  /** One failure on every counter of `keys` (one transaction). */
+  private fail(keys: readonly ThrottleKey[], now: number): void {
+    const rows = this.store.throttleRows(keys.map((k) => k.key));
+    const next = new Map<string, ThrottleEntry>();
+    for (const k of keys) next.set(k.key, nextFail(rows.get(k.key), now, k.rule));
+    this.store.throttleWrite(next);
+  }
+
+  /**
+   * A charged check that proved the password: one failure taken back from each of `keys` (a
+   * network's, a /48's), and a lock its count no longer reaches with it, so successful sign-ins
+   * never use up a school's budget.
+   */
+  private refund(keys: readonly ThrottleKey[]): void {
+    const rows = this.store.throttleRows(keys.map((k) => k.key));
+    const next = new Map<string, ThrottleEntry>();
+    const gone: string[] = [];
+    for (const k of keys) {
+      const e = rows.get(k.key);
+      if (e === undefined) continue;
+      if (e.count <= 1) gone.push(k.key);
+      else next.set(k.key, { count: e.count - 1, first: e.first, lockedUntil: e.count - 1 < k.rule.free ? 0 : e.lockedUntil });
+    }
+    this.store.throttleWrite(next);
+    this.store.throttleClear(gone);
   }
 
   private async post(path: string, request: Request, now: number): Promise<Response> {
@@ -365,23 +499,46 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/auth-begin': {
         if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
-        const wait = this.throttled(this.failKeys(b.username, b.ip, b), now);
-        if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
+        const { keys } = await this.checkKeys(b.username, b.ip, b);
+        const wait = this.throttled(keys, now);
+        if (wait > 0) return throttledAnswer(wait);
+        // The check the Worker is about to make counts now, in this synchronous step with the test
+        // above: a burst of requests in flight at once gets no more checks than the counters allow.
+        if (b.charge === true) this.fail(keys, now);
         const c = s.credentials(b.username);
-        const slow = this.slowFor(b.username, now);
-        return json(c === null ? { found: false, slow } : { found: true, ...c, slow });
+        return json(c === null ? { found: false } : { found: true, ...c });
       }
       case '/auth-finish': {
-        if (typeof b.username !== 'string') return error(400, 'bad_request');
-        const keys = this.failKeys(b.username, b.ip, b);
+        if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_request');
+        const { keys, clear, account } = await this.checkKeys(b.username, b.ip, b);
+        // Charged at /auth-begin: the failure is counted already (a Worker of before charges nothing).
+        const charged = b.charged === true;
+        const failure = (): void => {
+          if (!charged) this.fail(keys, now);
+        };
+        if (account) {
+          // A password proved behind a session of the account: its counter starts again. Never a sign-in.
+          if (b.ok === true) s.throttleClear(clear);
+          else failure();
+          return json({ ok: b.ok === true });
+        }
         const refresh = grantOf(b.refresh);
-        if (b.ok !== true || typeof b.userId !== 'string' || refresh === null) {
-          this.fail(keys, now);
+        const rekey = rekeyOf(b.rekey);
+        if (b.ok !== true || typeof b.userId !== 'string' || refresh === null || rekey === undefined) {
+          failure();
           return json({ ok: false });
         }
-        const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now);
+        // The hash the Worker checked must still be the account's: a password changed meanwhile wins,
+        // and a re-key never writes an older password back over it.
+        if (!provedStill(b, s.passwordHash(b.userId), rekey)) {
+          failure();
+          return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
+        }
+        const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now, { lvl: 2, method: 'legacy' }, rekey);
         if (r === null) return error(403, 'banned');
-        this.cleared(keys);
+        s.throttleClear(clear);
+        // The network's and the /48's counters keep failures only: this check's charge goes back.
+        if (charged) this.refund(keys.filter((k) => !clear.includes(k.key)));
         return json(r);
       }
       case '/refresh': {
@@ -418,6 +575,8 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/password': {
         if (typeof b.userId !== 'string' || !isPw(b.pw)) return error(400, 'bad_request');
+        // A change that proved the old password: that password must still be the account's.
+        if (typeof b.proved === 'string' && s.passwordHash(b.userId) !== b.proved) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
         if (!s.setPassword(b.userId, b.pw)) return error(404, 'no_user');
         if (b.signOutOthers !== false) s.deleteRefreshOf(b.userId, isHex(b.keep, 64) ? b.keep : undefined);
         return json({ ok: true });
@@ -429,16 +588,16 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/recover': {
         const refresh = grantOf(b.refresh);
-        if (typeof b.username !== 'string' || !isHex(b.code, 64) || !isPw(b.pw) || refresh === null) return error(400, 'bad_request');
-        const keys = this.failKeys(b.username, b.ip, b);
+        if (typeof b.username !== 'string' || b.username.length > 64 || !isHex(b.code, 64) || !isPw(b.pw) || refresh === null) return error(400, 'bad_request');
+        const { keys, clear } = await this.checkKeys(b.username, b.ip, b);
         const wait = this.throttled(keys, now);
-        if (wait > 0) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: wait }, 429);
+        if (wait > 0) return throttledAnswer(wait);
         const r = s.recover(b.username, b.code, b.pw, { ...refresh, kind: 'web' }, now);
         if (r === null) {
           this.fail(keys, now);
           return error(401, 'bad_recovery', 'Usuario o código de recuperación incorrecto');
         }
-        this.cleared(keys);
+        s.throttleClear(clear);
         return json(r);
       }
       case '/oauth': {
@@ -450,7 +609,7 @@ export class AccountsDO extends DurableObject<Env> {
         // A link comes from a device that is still signed in (PERFIL's): signed out meanwhile, nothing links.
         const replace = typeof b.replace === 'string' && /^[0-9a-f]{32}$/.test(b.replace) ? b.replace : null;
         if (linkTo !== null && (replace === null || !s.devices(linkTo, now, null).some((d) => d.id === replace && d.kind === 'web'))) return error(401, 'link_expired');
-        const r = s.oauth(provider, b.providerId, b.name, linkTo, { ...refresh, kind: 'web' }, now);
+        const r = s.oauth(provider, b.providerId, b.name, linkTo, { ...refresh, kind: 'web' }, now, oauthLevel(b.lvl));
         if (r === 'already_linked') return error(409, 'already_linked', 'Esa cuenta ya está vinculada a otro usuario');
         if (r === 'provider_set') return error(409, 'provider_set', 'Tu cuenta ya tiene otra cuenta de ese proveedor: desvincúlala primero');
         if (r === 'no_user') return error(403, 'no_user');
@@ -463,21 +622,29 @@ export class AccountsDO extends DurableObject<Env> {
         if (!OAUTH_PROVIDERS.includes(provider) || typeof b.providerId !== 'string' || b.providerId.length === 0 || b.providerId.length > 128) return error(400, 'bad_request');
         if (typeof b.userId !== 'string' || refresh === null || !isHex(b.replace, 32)) return error(400, 'bad_request');
         if (!s.devices(b.userId, now, null).some((d) => d.id === b.replace && d.kind === 'web')) return error(401, 'link_expired');
-        const r = s.oauthReauth(provider, b.providerId, b.userId, { ...refresh, kind: 'web' }, now);
+        const r = s.oauthReauth(provider, b.providerId, b.userId, { ...refresh, kind: 'web' }, now, oauthLevel(b.lvl));
         if (r === 'mismatch') return error(409, 'reauth_mismatch', 'Esa no es la cuenta con la que entras');
         if (r === 'no_user') return error(403, 'no_user');
         s.revokeDevice(b.userId, b.replace);
         return json(r);
       }
       case '/reauth': {
-        if (typeof b.userId !== 'string' || !isHex(b.hash, 64)) return error(400, 'bad_request');
-        const r = s.markFresh(b.userId, b.hash, now);
-        return r === null ? error(401, 'no_refresh') : json(r);
+        // The password was checked by the Worker against `proved`, which must still be the hash.
+        const rekey = rekeyOf(b.rekey);
+        if (typeof b.userId !== 'string' || !isHex(b.hash, 64) || rekey === undefined) return error(400, 'bad_request');
+        const pa = await this.throttleKey('pa', b.userId);
+        if (!provedStill(b, s.passwordHash(b.userId), rekey)) return error(401, 'bad_credentials', 'Usuario o contraseña incorrectos');
+        const r = s.markFresh(b.userId, b.hash, now, rekey);
+        if (r === null) return error(401, 'no_refresh');
+        s.throttleClear([pa]);
+        return json(r);
       }
       case '/unlink': {
         const provider = b.provider as OAuthProvider;
         if (typeof b.userId !== 'string' || !OAUTH_PROVIDERS.includes(provider)) return error(400, 'bad_request');
-        const r = s.unlink(b.userId, provider);
+        const level = b.level === 1 || b.level === 2 ? b.level : 0;
+        const r = s.unlink(b.userId, provider, level);
+        if (r === 'level2') return json({ error: 'reauth_required', message: 'Confirma que eres tú: vuelve a entrar con tu cuenta', level: 2 }, 403);
         if (r === 'last_method') return error(409, 'last_method', 'Es tu única forma de entrar: vincula otra antes');
         if (r === 'not_linked') return error(404, 'not_linked', 'Esa cuenta no está vinculada');
         if (r === 'no_user') return error(404, 'no_user');

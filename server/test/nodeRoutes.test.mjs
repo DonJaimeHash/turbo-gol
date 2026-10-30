@@ -159,8 +159,8 @@ async function jsonOf(res) {
   return JSON.parse(await res.text());
 }
 
-// aat: signed in just now (Security 3: the maintainer routes need a fresh sign-in; takeover.test.mjs).
-const accountToken = (sub, name = 'Proyecto') => signJwt(SECRET, { sub, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, acct: 1, aat: Math.floor(Date.now() / 1000) });
+// aat: signed in just now, aal 2: with a password (the maintainer routes need a fresh password proof; takeover.test.mjs, levels.test.mjs).
+const accountToken = (sub, name = 'Proyecto') => signJwt(SECRET, { sub, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, acct: 1, aat: Math.floor(Date.now() / 1000), aal: 2 });
 
 // ---- whoami, releases, channel -------------------------------------------------------------------
 

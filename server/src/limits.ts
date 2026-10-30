@@ -110,7 +110,9 @@
  *                      Also rename 5, training 20, experimental 30 writes / 60 reads, items and shop 60
  *                      reads, car and claim 30 writes per account; TV start 10, poll 60, confirm 30
  *                      per /64 (tvCodes.ts ipKey), plus tvCodes' own live-code and failed-confirm caps
- *   AccountsDO         the sign-in lockouts per username and address (accountStore.ts)
+ *   AccountsDO         the sign-in throttles, durable in its SQLite (auth_throttle): per (username,
+ *                      network), per username, per network (IPv4 address and IPv6 /64 alike: 600
+ *                      failures in 15 minutes) and per /48; see AccountsDO.ts THROTTLE_RULES
  *   nodeRoutes.ts      register 5 an hour per /64, status 60, mine 30 and admin 30 per account,
  *                      tokens 10 a day per account
  *   NodeRegistryDO     register 5 an hour per /64, tokens 10 a day per account; control sockets
