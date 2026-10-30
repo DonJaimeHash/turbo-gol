@@ -189,6 +189,7 @@ import { installTvLink } from '../ui/screens/tvSignIn';
 import { installTvSamples } from '../ui/screens/tvSignInSamples';
 import { installSalaSamples } from '../ui/screens/lobbySamples';
 import { openLostSheet } from '../ui/screens/match/lost';
+import { installAccountLinks } from '../ui/screens/accountLinks';
 import { REGIONS, isPlaylist, isRegion } from '../net/account';
 import type { RegionId } from '../net/account';
 import { isNodeHost, type QueueResult } from '../net/protocol';
@@ -1159,6 +1160,9 @@ export class Game implements P2PGameHooks {
     installFinalSample(this.menu);
     installSalaSamples(this.menu);
     installTvSamples(this.menu);
+    // A mailed link (/account#verify=… / #reset=…, sign-in PR 8) or a sign-up waiting for its code:
+    // its sheet once the menus are up, after the account's restore below.
+    void installAccountLinks(this.menu).catch((err: unknown) => console.warn('[accounts] link failed', err));
     this.found = new MatchFound(opts.hudContainer);
     this.backGuard = typeof window !== 'undefined' && typeof history !== 'undefined' ? new BackGuard(window, () => this.onSystemBack()) : null;
     this.device = typeof window !== 'undefined' && typeof document !== 'undefined' ? installDevice({ tvFlag: pageFlags().tv, padConnected: () => this.input.hasGamepad, ui: this.settings.ui }) : null;

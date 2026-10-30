@@ -5,35 +5,52 @@
  * abandons), TEMPORADA (a tile per playlist: rank in words, MMR or the placement left, the record),
  * MI SERVIDOR for a community node operator (GET /nodes/mine: each node, its state in words, its
  * region, the matches it hosted, its version), CUENTA Y SEGURIDAD folded (a disclosure: rename,
- * password, recovery codes, link a provider, the signed-in devices (each with where it signed in
- * and a sign-out of its own), sign out, sign out on every device), COMUNIDAD (Discord, host a
- * server, the source), ACERCA DE (version, licences, the technical line).
+ * the password (CAMBIAR with the current one; CREAR by a link to the account's own mailbox, or "add
+ * an email first"), link a provider, the signed-in devices (each with where it signed in and a
+ * sign-out of its own), sign out, sign out on every device), COMUNIDAD (Discord, host a server, the
+ * source), ACERCA DE (version, licences, the technical line).
  *
- * A guest, one column for the arrows: on a TV first INICIAR SESIÓN CON EL TELÉFONO (focused: the
- * code and its QR in a sheet, screens/tvSignIn.ts), then CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's
- * two tabs (`.mn-tabs`, a nav row: Q / E step them, the hint bar says so), then the tab's form
- * ("Forgot your password?" under the sign-in form is a link to the recovery form), then the line with
- * the guest's name (the server's, temporary: a guest never chooses or changes it). Fields say what a
- * phone keyboard's Enter does (enterkeyhint: next, then go / done) and Enter does it (onEnter); the
- * Menu keeps the focused field above a phone's keyboard (keyboard.ts). A sign-in here from
- * Competitive's SIGN IN goes back there (modes.ts: the return with intent). Passwords go through
- * AccountClient (hashed in the browser before they leave). Usernames and passwords are checked here
- * first (usernameIssue / passwordIssue, the same rules AccountClient and the server apply) so the
- * form shows the reason in the player's language. Both views end with ACERCA DE (the language is
- * Settings › Game's Idioma, PR 11).
+ * A guest (email accounts, sign-in PR 8: the sign-in design's §3.0 to §3.7), one column for the
+ * arrows: CREAR CUENTA GRATIS (the hero) and INICIAR SESIÓN, the screen's two tabs (`.mn-tabs`, a nav
+ * row: Q / E step them, the hint bar says so), then the tab's form, then the line with the guest's
+ * name (the server's, temporary: a guest never chooses or changes it).
+ * - CREAR CUENTA: the address and CONTINUAR (a mailed 6-digit code, the attempt kept in
+ *   sessionStorage), then on one screen the code (it checks itself at the sixth digit), the in-game
+ *   name, the password with MOSTRAR, the news switch and CREAR CUENTA, with REENVIAR after a minute,
+ *   "use another email" and YA TENGO CUENTA. Back, B or Esc goes back a step; PERFIL brings the code
+ *   step back after a reload. The provider buttons and, while usernames still sign in, the way to
+ *   sign in with one and add an email.
+ * - INICIAR SESIÓN: "continue as" the last way this device signed in, one field for an address or a
+ *   username of before (an '@' signs in by email; without one the legacy sign-in, until its cutoff:
+ *   then no request), the password with MOSTRAR, ENTRAR, ¿Olvidaste tu contraseña? (an address: the
+ *   forgot sheet; a username: the recovery code form of before), the providers.
+ * On a TV only INICIAR SESIÓN CON EL TELÉFONO (focused: the code and its QR in a sheet,
+ * screens/tvSignIn.ts): accounts are made and email sign-ins typed on the phone (§3.11). Fields say
+ * what a phone keyboard's Enter does (enterkeyhint: next, then go / done) and Enter does it
+ * (onEnter); the Menu keeps the focused field above a phone's keyboard (keyboard.ts). A sign-in here
+ * from Competitive's SIGN IN goes back there (modes.ts: the return with intent). Passwords go through
+ * AccountClient (hashed in the browser before they leave). Names and passwords are checked here first
+ * (usernameIssue / passwordIssue, the same rules AccountClient and the server apply) so the form
+ * shows the reason in the player's language. The forms that send mail follow GET /api/config's
+ * auth.email (AccountClient.authConfig). Both views end with ACERCA DE (the language is Settings ›
+ * Game's Idioma, PR 11). The mailed links' sheets are accountLinks.ts.
  * In development (or a VITE_UI_FIT=1 build) window.__profile(kind | null) shows an account's or an
  * operator's sample (scripts/ui-fit.mjs).
  */
-import { h, setChildren, copyText, navButton } from '../dom';
+import { h, setChildren, navButton } from '../dom';
 import { AccountError } from '../../net/AccountClient';
-import { PASSWORD_MIN, REGIONS, USERNAME_MAX, USERNAME_MIN, passwordIssue, usernameIssue } from '../../net/account';
+import type { AuthConfig } from '../../net/AccountClient';
+import { REGIONS, USERNAME_MAX, emailTypo, normalizeEmail, passwordIssue, usernameIssue } from '../../net/account';
 import type { AccountIssue, DeviceSession, MeInfo, MyNode, OAuthProvider, PlaylistRating } from '../../net/account';
+import { signInRoute } from '../../net/emailAuth';
+import type { StoredAttempt } from '../../net/emailAuth';
+import { authErrText, emailProviders, googleHidden, keypadTyping, mailOffText, newPasswordFields, openForgotSheet, openReauthCodeSheet, passwordManagerUser, providersLine, signupFinishFields, welcome } from './accountLinks';
 import { PROTOCOL_VERSION } from '../../net/protocol';
 import { PROBATION_MATCHES } from '../../../nodes/control-plane/registry';
 import { ratingCard, rankBadge, tierById } from '../badges';
 import { playerName, regionName } from '../names';
 import type { Menu, Screen } from '../Menu';
-import { field, primary, screenHead, secondary, section } from './common';
+import { codeField, field, primary, screenHead, secondary, section } from './common';
 import { finePointer } from '../device';
 import { icon } from '../components/icons';
 import type { IconName } from '../components/icons';
@@ -109,9 +126,9 @@ function issueText(issue: AccountIssue | null): string | null {
   return issue === null ? null : t(`account.issue.${issue.code}`, issue.params);
 }
 
-/** 'password, Google': how the account signs in (translated). */
+/** 'email, Google': how the account signs in (translated): its password by its address, or by its username of before. */
 function providerList(me: MeInfo): string {
-  return me.providers.map((p) => (p === 'password' ? t('profile.providerPassword') : PROVIDER_NAMES[p])).join(', ');
+  return me.providers.map((p) => (p === 'password' ? t(me.emailVerified === true ? 'profile.providerEmail' : 'profile.providerUsername') : PROVIDER_NAMES[p])).join(', ');
 }
 
 /**
@@ -129,17 +146,19 @@ function shortDate(ms: number): string {
   }
 }
 
-/** Show recovery codes once, with a copy button; resolves when the player confirms. */
-export function showRecoveryCodes(menu: Menu, codes: string[], intro: string): void {
-  menu.modal({
-    title: t('profile.codesTitle'),
-    dismissable: false,
-    body: [h('p', null, intro), h('div.mn-codes', null, ...codes.map((c) => h('code', null, c))), h('p.mn-note', null, t('profile.codesNote'))],
-    actions: [
-      { label: t('profile.copy'), onClick: async () => (menu.toast((await copyText(codes.join('\n'))) ? t('profile.codesCopied') : t('profile.copyFailed'), 'ok'), false) },
-      { label: t('profile.codesSaved'), primary: true, onClick: () => true },
-    ],
-  });
+/** A guest's tab: the sign-in, the sign-up, the recovery code form of before (until the cutoff). */
+type GuestTab = 'login' | 'register' | 'recover';
+
+/** Where the next PERFIL visit starts (openProfileTab): a tab, and the address for its field. */
+let profileIntent: { tab: 'login' | 'register'; email: string | null } | null = null;
+
+/**
+ * Open PERFIL on a guest's tab (a mailed link's sheet: "your account exists, sign in", "ask for
+ * another code"), the sign-in field prefilled with `email`.
+ */
+export function openProfileTab(menu: Menu, tab: 'login' | 'register', email: string | null): void {
+  profileIntent = { tab, email };
+  menu.open('profile');
 }
 
 
@@ -160,8 +179,6 @@ function onEnter(inputs: HTMLInputElement[], go: () => void): void {
     }),
   );
 }
-
-type GuestTab = 'login' | 'register' | 'recover';
 
 /** What the account view shows: the session's, or window.__profile's sample. */
 interface AccountData {
@@ -185,79 +202,315 @@ export function profileScreen(menu: Menu): Screen {
   let accountOpen = false;
   let sample: AccountData | null = null;
 
+  // ---- a guest: the email accounts' forms (sign-in PR 8) ------------------------------------------
+
+  /** GET /api/config's auth (AccountClient.authConfig), null until it comes: meanwhile the forms assume mail goes and usernames sign in. */
+  let authCfg: AuthConfig | null = null;
+  /** A guest's field was typed in: the config's answer never redraws a form under the player's fingers. */
+  let typed = false;
+  /** CREAR CUENTA's step: the address, then (with an attempt kept) the code and the finish on one screen. */
+  let step: 'email' | 'code' = 'email';
+  /** What CREAR CUENTA's field shows (kept across a Back from the code step, and "use another email"). */
+  let signupEmail = '';
+  /** What the sign-in field starts with once (YA TENGO CUENTA, an account that exists already). */
+  let loginPrefill: string | null = null;
+  /** The username the recovery form starts with ("Forgot your password?" with a username typed). */
+  let recoverPrefill: string | null = null;
+  /** The code step's REENVIAR countdown (the screen's tick runs it). */
+  let resendTick: (() => void) | null = null;
+  /** The first visit of this page: a sign-up that waits for its code comes back to its step. */
+  let firstShow = true;
+
+  const mailOn = (): boolean => authCfg?.email !== false;
+  const legacyPhase = (): AuthConfig['legacy'] => authCfg?.legacy ?? 'none';
+  const loadAuthConfig = (): void => {
+    if (authCfg !== null) return;
+    void acc.authConfig().then((c) => {
+      const changed = c.email !== mailOn() || c.legacy !== legacyPhase();
+      authCfg = c;
+      if (changed && el.isConnected && !acc.signedIn && sample === null && !typed) render();
+    });
+  };
+
+  /** A provider's round trip: this device remembers it for "continue as" once it comes back signed in. */
+  const goProvider = (p: OAuthProvider): void => {
+    acc.providerStarted(p);
+    window.location.href = acc.oauthUrl(p);
+  };
+
+  /** "o" and Entrar con {provider} for each configured one (Google hidden inside another app's browser, which says why). */
   const oauthButtons = (): HTMLElement | null => {
-    const list = (menu.cfg?.oauth ?? []) as OAuthProvider[];
-    if (list.length === 0) return null;
+    const list = emailProviders(menu);
+    const note = googleHidden(menu) ? h('p.mn-note', null, t('auth.inAppGoogle', { site: location.hostname })) : null;
+    if (list.length === 0 && note === null) return null;
     return h(
       'div.mn-oauth',
       null,
       h('div.mn-or', null, t('profile.or')),
-      ...list.map((p) => navButton(`mn-btn mn-oauth-${p}`, t('profile.signInWith', { provider: PROVIDER_NAMES[p] }), () => (window.location.href = acc.oauthUrl(p)))),
+      ...list.map((p) => navButton(`mn-btn mn-oauth-${p}`, t('profile.signInWith', { provider: PROVIDER_NAMES[p] }), () => goProvider(p))),
+      note,
     );
   };
 
+  /** "Continuar como {name} · {method}": the last way this device signed in (a provider's button; for email it focuses the field). */
+  const lastButton = (identity: HTMLInputElement): HTMLElement | null => {
+    const last = acc.lastSignIn();
+    if (last === null) return null;
+    const provider = last.method === 'email' ? null : last.method;
+    if (provider !== null && !emailProviders(menu).includes(provider)) return null;
+    const method = provider !== null ? PROVIDER_NAMES[provider] : t('auth.methodEmail');
+    return secondary(t('auth.continueAs', { name: last.name, method }), () => (provider !== null ? goProvider(provider) : identity.focus()), { 'data-key': 'profile-continue' });
+  };
+
+  /** Usernames no longer sign in (the cutoff, sign-in PR 9): what to do instead, and the providers when there are some. */
+  const legacyClosedText = (): string => {
+    const providers = providersLine(menu);
+    return providers.length > 0 ? `${t('error.account.legacy_closed')} ${t('auth.legacyClosedProviders', { providers })}` : t('error.account.legacy_closed');
+  };
+
+  /**
+   * INICIAR SESIÓN (§3.3): one field for an address or a username of before. An '@' signs in by
+   * email; without one, the legacy sign-in while it lasts, and after the cutoff legacy_closed with
+   * no request and CREAR CUENTA NUEVA. bad_credentials says which, with its hint under it.
+   */
   const loginForm = (): HTMLElement => {
-    const user = field(t('profile.username'), { autocomplete: 'username', maxLength: 64, value: acc.hintName ?? '', enterkeyhint: 'next' });
-    const pass = field(t('profile.password'), { type: 'password', autocomplete: 'current-password', maxLength: 128, enterkeyhint: 'go' });
+    const closed = legacyPhase() === 'closed';
+    const user = field(closed ? t('auth.email') : t('auth.identity'), { autocomplete: 'username', maxLength: 254, value: loginPrefill ?? '', enterkeyhint: 'next', inputmode: 'email', keypad: 'email' });
+    loginPrefill = null;
+    const pass = field(t('profile.password'), { type: 'password', autocomplete: 'current-password', maxLength: 128, enterkeyhint: 'go', reveal: true });
+    const hint = h('p.mn-note.mn-prof-hint', { hidden: true });
+    const newAccount = secondary(t('auth.newAccount'), () => pickTab('register'), { 'data-key': 'profile-new-account', hidden: true });
     const go = async (): Promise<void> => {
+      user.error(null);
       pass.error(null);
+      hint.hidden = true;
+      newAccount.hidden = true;
+      const route = signInRoute(user.input.value, legacyPhase());
+      if (route.kind === 'empty') return user.error(t('auth.emptyIdentity'));
+      if (route.kind === 'bad_email') return user.error(t('error.account.bad_email'));
+      if (route.kind === 'closed') {
+        user.error(legacyClosedText());
+        newAccount.hidden = false;
+        return;
+      }
       try {
-        await acc.login(user.input.value, pass.input.value);
+        if (route.kind === 'email') await acc.signIn(route.email, pass.input.value);
+        else await acc.legacySignIn(route.username, pass.input.value);
+        acc.dropSignupAttempt();
         menu.toast(t('profile.hello', { name: acc.account?.name ?? '' }), 'ok');
         void acc.fetchMe();
         render();
       } catch (e) {
-        pass.error(errText(e));
+        pass.error(authErrText(menu, e));
+        if (e instanceof AccountError && e.code === 'bad_credentials') {
+          const providers = providersLine(menu);
+          const text = route.kind === 'legacy' ? t('auth.badLegacyHint') : providers.length > 0 ? t('auth.badCredentialsHint', { providers }) : null;
+          if (text !== null) {
+            hint.textContent = text;
+            hint.hidden = false;
+          }
+        }
       }
     };
     const btn = primary(t('profile.signIn'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
     onEnter([user.input, pass.input], () => void busyWhile(btn, go));
-    const forgot = navButton('mn-link mn-prof-forgot', t('profile.forgot'), () => pickTab('recover'), { 'data-key': 'profile-forgot' });
-    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, user.el, pass.el, btn, forgot, oauthButtons());
+    // An address (or nothing): the forgot sheet, prefilled. A username of before: its recovery code form.
+    const forgot = navButton(
+      'mn-link mn-prof-forgot',
+      t('profile.forgot'),
+      () => {
+        const v = user.input.value.trim();
+        if (v.length > 0 && !v.includes('@') && legacyPhase() !== 'closed') {
+          recoverPrefill = v;
+          pickTab('recover');
+        } else openForgotSheet(menu, v.includes('@') ? v : '', mailOn());
+      },
+      { 'data-key': 'profile-forgot' },
+    );
+    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, lastButton(user.input), user.el, pass.el, btn, hint, newAccount, forgot, oauthButtons());
   };
 
-  const registerForm = (): HTMLElement => {
-    const user = field(t('profile.username'), { autocomplete: 'username', maxLength: USERNAME_MAX, placeholder: t('profile.usernameHint', { min: USERNAME_MIN, max: USERNAME_MAX }), enterkeyhint: 'next' });
-    const pass = field(t('profile.password'), { type: 'password', autocomplete: 'new-password', maxLength: 128, placeholder: t('profile.passwordHint', { count: PASSWORD_MIN }), enterkeyhint: 'next' });
-    const pass2 = field(t('profile.repeatPassword'), { type: 'password', autocomplete: 'new-password', maxLength: 128, enterkeyhint: 'go' });
+  /**
+   * CREAR CUENTA, its first step (§3.1 steps 1 to 3): the address ("Did you mean …?" for a common
+   * typo), CONTINUAR (the anti-bot check, POST signup/start), the providers, and while usernames
+   * sign in the way to sign in with one. With the mail off it says so instead.
+   */
+  const signupEmailForm = (): HTMLElement => {
+    const providers = providersLine(menu);
+    const legacyLine = legacyPhase() !== 'closed' ? navButton('mn-link mn-prof-legacy', t('auth.legacyHint'), () => pickTab('login'), { 'data-key': 'profile-legacy' }) : null;
+    const providersHint = providers.length > 0 ? h('p.mn-note', null, t('auth.providersHint', { providers })) : null;
+    if (!mailOn()) return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, h('p.mn-note', null, mailOffText(menu)), oauthButtons(), legacyLine);
+    const email = field(t('auth.email'), { type: 'email', autocomplete: 'email', maxLength: 254, value: signupEmail, enterkeyhint: 'go', inputmode: 'email', keypad: 'email', hint: t('auth.signupNote') });
+    const typo = h('div.mn-prof-typo');
+    const showTypo = (): void => {
+      const fix = emailTypo(email.input.value);
+      setChildren(typo, fix === null ? null : navButton('mn-link', t('auth.typo', { email: fix }), () => ((email.input.value = fix), showTypo()), { 'data-key': 'profile-typo' }));
+    };
+    email.input.addEventListener('input', showTypo);
+    showTypo();
     const go = async (): Promise<void> => {
-      user.error(null);
-      pass.error(null);
-      pass2.error(null);
-      if (pass.input.value !== pass2.input.value) {
-        pass2.error(t('profile.passwordsDiffer'));
-        return;
+      email.error(null);
+      const address = normalizeEmail(email.input.value);
+      if (address === null) return email.error(t('error.account.bad_email'));
+      signupEmail = address;
+      // Back from the code step, then CONTINUAR with the same address: the same code, no new mail.
+      const kept = acc.signupAttempt();
+      if (kept === null || kept.email !== address) {
+        try {
+          await acc.signupStart(address);
+        } catch (e) {
+          return email.error(authErrText(menu, e));
+        }
       }
-      const username = user.input.value.trim();
-      const userIssue = issueText(usernameIssue(username));
-      if (userIssue !== null) {
-        user.error(userIssue);
-        return;
-      }
-      const passIssue = issueText(passwordIssue(pass.input.value, username));
-      if (passIssue !== null) {
-        pass.error(passIssue);
-        return;
-      }
+      step = 'code';
+      typed = false;
+      render();
+      if (!touch()) body.querySelector<HTMLElement>('.mn-code-input')?.focus();
+    };
+    const btn = primary(t('auth.continue'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
+    onEnter([email.input], () => void busyWhile(btn, go));
+    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, email.el, typo, btn, oauthButtons(), providersHint, legacyLine);
+  };
+
+  /** Its account exists (already_created, email_taken): the sign-in tab with the address, and why. */
+  const accountExists = (email: string, message: string): void => {
+    acc.dropSignupAttempt();
+    step = 'email';
+    loginPrefill = email;
+    menu.toast(message, 'info');
+    pickTab('login');
+  };
+
+  /**
+   * CREAR CUENTA's code step and its finish on one screen (§3.1 step 4, §3.2, §3.7): the code (it
+   * checks itself at the sixth digit; a dead one offers PEDIR OTRO), the in-game name, the password
+   * with MOSTRAR, the news switch, CREAR CUENTA (once the code is accepted; the name and the
+   * password can be typed while the mail comes), REENVIAR after its minute (3 per attempt; the live
+   * region says once when it is back), "use another email", YA TENGO CUENTA.
+   */
+  const signupCodeForm = (a: StoredAttempt): HTMLElement => {
+    let proved: string | null = null;
+    const createErr = h('p.mn-field-error', { hidden: true, 'aria-live': 'polite' });
+    const live = h('p.mn-prof-live', { 'aria-live': 'polite' });
+    const restart = async (): Promise<void> => {
       try {
-        const r = await acc.register(username, pass.input.value);
+        await acc.signupStart(a.email);
+        typed = false;
         render();
-        showRecoveryCodes(menu, r.recoveryCodes, t('profile.registered', { name: r.name }));
-        void acc.fetchMe();
       } catch (e) {
-        if (e instanceof AccountError && (e.code === 'bad_username' || e.code === 'username_taken')) user.error(errText(e));
-        else pass.error(errText(e));
+        code.error(authErrText(menu, e));
       }
     };
-    const btn = primary(t('profile.createAccount'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
-    onEnter([user.input, pass.input, pass2.input], () => void busyWhile(btn, go));
-    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, user.el, pass.el, pass2.el, btn, oauthButtons());
+    const again = secondary(t('auth.askAgain'), () => void busyWhile(again, restart), { 'data-key': 'profile-ask-again', hidden: true });
+    const code = codeField((c) => {
+      code.error(null);
+      void acc.signupCheck({ attempt: a.attempt, code: c }).then(
+        () => {
+          proved = c;
+          code.note(t('auth.codeOk'));
+          create.removeAttribute('aria-disabled');
+        },
+        (e: unknown) => {
+          proved = null;
+          if (e instanceof AccountError && e.code === 'already_created') return accountExists(e.detail.email ?? a.email, e.message);
+          code.error(authErrText(menu, e));
+          if (e instanceof AccountError && e.code === 'code_expired') again.hidden = false;
+          else code.input.select();
+        },
+      );
+    });
+    const fields = signupFinishFields(menu, a.email, {
+      proof: () => (proved !== null ? { attempt: a.attempt, code: proved } : null),
+      codeFirst: () => code.error(t('auth.codeFirst')),
+      done: (s) => {
+        step = 'email';
+        signupEmail = '';
+        welcome(menu, s);
+        render();
+      },
+      dead: (e) => {
+        if (e.code === 'already_created' || e.code === 'email_taken') return accountExists(e.detail.email ?? a.email, e.message);
+        proved = null;
+        create.setAttribute('aria-disabled', 'true');
+        code.error(e.message);
+        again.hidden = false;
+      },
+      error: (msg) => {
+        createErr.hidden = msg === null;
+        createErr.textContent = msg ?? '';
+      },
+    });
+    const create = primary(t('profile.createAccount'), () => void busyWhile(create, async () => void (await fields.create())), { 'data-key': 'profile-create', 'aria-disabled': 'true' });
+    // REENVIAR: disabled (the arrows skip it) until its minute is over, then once more per press.
+    let readyAt = a.resendAt;
+    let resendsLeft = 3;
+    let waited = Date.now() < readyAt;
+    const resendErr = h('p.mn-field-error', { hidden: true, 'aria-live': 'polite' });
+    const resend = secondary('', () => void busyWhile(resend, doResend), { 'data-key': 'profile-resend' });
+    const paint = (): void => {
+      const left = readyAt - Date.now();
+      const label = left > 0 ? t('auth.resendIn', { seconds: Math.ceil(left / 1000) }) : t('auth.resend');
+      if (resend.textContent !== label) resend.textContent = label;
+      const wasFocused = document.activeElement === resend;
+      resend.disabled = left > 0;
+      resend.hidden = resendsLeft <= 0;
+      // A press that started the next minute: the focus goes to the code, never to nothing.
+      if (wasFocused && (resend.disabled || resend.hidden) && !touch()) code.input.focus();
+      if (waited && left <= 0) live.textContent = t('auth.resendReady');
+      waited = left > 0;
+    };
+    const doResend = async (): Promise<void> => {
+      resendErr.hidden = true;
+      try {
+        const r = await acc.codeResend(a.attempt);
+        readyAt = r.resendAt;
+        resendsLeft = r.resendsLeft;
+        live.textContent = '';
+        menu.toast(t('auth.resent'), 'ok');
+      } catch (e) {
+        resendErr.textContent = authErrText(menu, e);
+        resendErr.hidden = false;
+        if (e instanceof AccountError && e.code === 'code_expired') again.hidden = false;
+      }
+      paint();
+    };
+    paint();
+    resendTick = paint;
+    const other = navButton(
+      'mn-link',
+      t('auth.otherEmail'),
+      () => {
+        acc.dropSignupAttempt();
+        step = 'email';
+        typed = false;
+        render();
+      },
+      { 'data-key': 'profile-other-email' },
+    );
+    const have = secondary(t('auth.haveAccount'), () => ((loginPrefill = a.email), pickTab('login')), { 'data-key': 'profile-have-account' });
+    return h(
+      'form.mn-form.mn-prof-code',
+      { onsubmit: (e: Event) => e.preventDefault() },
+      h('p.mn-prof-sent', null, t('auth.codeSent', { email: a.email })),
+      code.el,
+      again,
+      ...fields.nodes,
+      create,
+      createErr,
+      h('div.mn-prof-code-links', null, resend, other),
+      resendErr,
+      have,
+      h('p.mn-note', null, t('auth.notThere')),
+      live,
+    );
   };
 
+  /** The recovery code form of before (a username and its code, until the cutoff). */
   const recoverForm = (): HTMLElement => {
-    const user = field(t('profile.username'), { autocomplete: 'username', maxLength: 64, value: acc.hintName ?? '', enterkeyhint: 'next' });
+    const user = field(t('profile.username'), { autocomplete: 'username', maxLength: 64, value: recoverPrefill ?? acc.hintName ?? '', enterkeyhint: 'next' });
+    recoverPrefill = null;
     const code = field(t('profile.recoveryCode'), { placeholder: 'XXXX-XXXX', maxLength: 16, enterkeyhint: 'next' });
-    const pass = field(t('profile.newPassword'), { type: 'password', autocomplete: 'new-password', maxLength: 128, enterkeyhint: 'go' });
+    const pass = field(t('profile.newPassword'), { type: 'password', autocomplete: 'new-password', maxLength: 128, enterkeyhint: 'go', reveal: true });
     const go = async (): Promise<void> => {
       pass.error(null);
       const passIssue = issueText(passwordIssue(pass.input.value, user.input.value)); // the arguments AccountClient.recover checks
@@ -271,7 +524,7 @@ export function profileScreen(menu: Menu): Screen {
         void acc.fetchMe();
         render();
       } catch (e) {
-        pass.error(errText(e));
+        pass.error(authErrText(menu, e));
       }
     };
     const btn = primary(t('profile.resetPassword'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
@@ -318,18 +571,41 @@ export function profileScreen(menu: Menu): Screen {
 
   /**
    * A guest's form: the tab's, its first field focused for typing where there is a fine pointer (a
-   * touch screen's tap shows the keyboard; a TV's OK on the field, reached with ▼, opens mn-keypad).
+   * touch screen's tap shows the keyboard; a remote's OK on the field, reached with ▼, opens mn-keypad).
    */
   const pickTab = (id: GuestTab): void => {
     tab = id;
+    typed = false;
     render();
-    if (!touch() && finePointer()) body.querySelector<HTMLElement>('.mn-form .mn-input')?.focus();
+    if (!touch() && finePointer()) body.querySelector<HTMLElement>('.mn-form .mn-input:not([readonly])')?.focus();
   };
 
+  /** The server's name for this guest, temporary (a new guest session brings a new one). */
+  const guestLine = (): HTMLElement => h('p.mn-note.mn-prof-guestline', null, t('profile.guestLine', { name: playerName(menu.host.guestName()) }));
+
   const guestView = (): HTMLElement => {
+    resendTick = null;
+    // A TV: no typing at all, the phone signs it in and makes its account (§3.11).
+    if (tv())
+      return h(
+        'div.mn-prof-guest',
+        null,
+        h(
+          'button.mn-prof-phone',
+          { type: 'button', 'data-nav': true, 'data-key': 'profile-phone', 'data-autofocus': true, onclick: () => openTvSignIn(menu) },
+          icon('touch', 'mn-mtile-icon'),
+          h('span.mn-prof-phone-text', null, h('span.mn-prof-phone-title', { 'data-fit': '16' }, t('tvsign.tile')), h('span.mn-prof-phone-sub', null, t('tvsign.tileSub'))),
+        ),
+        h('p.mn-note', null, t('profile.tvNoAccount')),
+        devBox(),
+        guestLine(),
+      );
+    loadAuthConfig();
+    const kept = tab === 'register' && step === 'code' ? acc.signupAttempt() : null;
+    if (kept === null) step = 'email';
     const hero = h(
       `button.mn-tab.mn-prof-hero${tab === 'register' ? '.mn-tab-on' : ''}` as 'button',
-      { type: 'button', role: 'tab', 'aria-selected': String(tab === 'register'), 'data-nav': true, 'data-key': 'profile-tab-register', 'data-autofocus': !tv(), onclick: () => pickTab('register') },
+      { type: 'button', role: 'tab', 'aria-selected': String(tab === 'register'), 'data-nav': true, 'data-key': 'profile-tab-register', 'data-autofocus': true, onclick: () => pickTab('register') },
       h('span.mn-tile-top', null, icon('profile', 'mn-mtile-icon'), slot(t('profile.registerSlot'), { ink: true })),
       h('span.mn-prof-hero-title', { 'data-fit': '20' }, t('profile.registerFree')),
       h('span.mn-mtab-mark', { 'aria-hidden': 'true' }),
@@ -341,27 +617,17 @@ export function profileScreen(menu: Menu): Screen {
       h('span.mn-prof-signin-title', { 'data-fit': '16' }, t('profile.tabSignIn')),
       h('span.mn-mtab-mark', { 'aria-hidden': 'true' }),
     );
-    // A TV: no typing at all, the phone signs it in (the keypad still serves the forms below).
-    const phone = tv()
-      ? h(
-          'button.mn-prof-phone',
-          { type: 'button', 'data-nav': true, 'data-key': 'profile-phone', 'data-autofocus': true, onclick: () => openTvSignIn(menu) },
-          icon('touch', 'mn-mtile-icon'),
-          h('span.mn-prof-phone-text', null, h('span.mn-prof-phone-title', { 'data-fit': '16' }, t('tvsign.tile')), h('span.mn-prof-phone-sub', null, t('tvsign.tileSub'))),
-        )
-      : null;
-    const form = tab === 'login' ? loginForm() : tab === 'register' ? registerForm() : recoverForm();
+    const form = tab === 'login' ? loginForm() : tab === 'register' ? (kept !== null ? signupCodeForm(kept) : signupEmailForm()) : recoverForm();
     return h(
       'div.mn-prof-guest',
-      null,
-      phone,
+      { oninput: () => (typed = true) },
       h('div.mn-tabs.mn-prof-tabs', { role: 'tablist', 'aria-label': t('profile.heading'), 'data-nav-row': true }, hero, signIn),
       h('div.mn-prof-form', null, form),
       devBox(),
-      // The server's name for this guest, temporary (a new guest session brings a new one).
-      h('p.mn-note.mn-prof-guestline', null, t('profile.guestLine', { name: playerName(menu.host.guestName()) })),
+      guestLine(),
     );
   };
+
 
   /** A season tile per playlist (badges.ts ratingCard), in the order the server lists them. */
   const ranks = (me: MeInfo | null): HTMLElement => h('div.mn-prof-ranks', null, ...(me ? me.ratings.map((r) => ratingCard(r)) : [h('p.mn-lb-note', null, t('profile.loading'))]));
@@ -431,9 +697,7 @@ export function profileScreen(menu: Menu): Screen {
     else setChildren(
       fold,
       secondary(t('profile.rename'), () => renameDialog(), { 'data-key': 'profile-rename' }),
-      // Without a password, a first one and new codes are new ways in: "confirm it is you" first (as a link).
-      me?.hasPassword !== false ? secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' }) : secondary(t('profile.setPassword'), () => fresh(passwordDialog), { 'data-key': 'profile-password' }),
-      secondary(t('profile.newCodes'), () => (me?.hasPassword === false ? fresh(codesDialog) : codesDialog()), { 'data-key': 'profile-codes' }),
+      passwordRow(me),
       ...linked.map(linkedRow),
       // A link needs a credential proved on this browser in the last minutes: confirm it is you first.
       ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true))), { 'data-key': 'profile-link-' + p })),
@@ -528,20 +792,29 @@ export function profileScreen(menu: Menu): Screen {
     ),
   );
 
+  /** A rename that went through: the toast and the account's view. */
+  const renamed = (): void => {
+    menu.toast(t('profile.renamed'), 'ok');
+    render();
+  };
+
+  /**
+   * CAMBIAR NOMBRE (sign-in PR 7: the Bearer, no password). An account whose password is still the
+   * legacy key, or that signs in by its username and proved nothing lately, is answered 403
+   * reauth_required { level: 2 }: "confirm it's you" (its password, which re-keys a legacy one), then
+   * the same name once more. A taken name or a look-alike puts the server's free one in the field.
+   */
   const renameDialog = (): void => {
-    const hasPw = acc.me?.hasPassword !== false;
-    const user = field(t('profile.newName'), { maxLength: USERNAME_MAX, value: acc.account?.name ?? '' });
-    const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password' });
+    const user = field(t('profile.newName'), { maxLength: USERNAME_MAX, value: acc.account?.name ?? '', autocomplete: 'nickname' });
     menu.modal({
       title: t('profile.renameTitle'),
-      body: [h('p.mn-note', null, t('profile.renameNote')), user.el, hasPw ? pass.el : null],
+      body: [h('p.mn-note', null, t('profile.renameNote')), user.el],
       actions: [
         {
           label: t('profile.renameConfirm'),
           primary: true,
           onClick: async () => {
             user.error(null);
-            pass.error(null);
             const username = user.input.value.trim();
             const userIssue = issueText(usernameIssue(username));
             if (userIssue !== null) {
@@ -549,12 +822,17 @@ export function profileScreen(menu: Menu): Screen {
               return false;
             }
             try {
-              await acc.rename(username, hasPw ? pass.input.value : null);
-              menu.toast(t('profile.renamed'), 'ok');
-              render();
+              await acc.rename(username);
+              renamed();
               return true;
             } catch (e) {
-              (hasPw ? pass : user).error(errText(e));
+              if (e instanceof AccountError && e.code === 'reauth_required') {
+                // The server just refused: ask, whatever this browser's own clock says (a legacy key needs the password itself).
+                queueMicrotask(() => fresh(() => void acc.rename(username).then(renamed, (err: unknown) => menu.toast(errText(err), 'error')), e.level === 2 ? 2 : 1, true));
+                return true;
+              }
+              if (e instanceof AccountError && e.detail.suggest !== undefined) user.input.value = e.detail.suggest;
+              user.error(errText(e));
               return false;
             }
           },
@@ -564,38 +842,64 @@ export function profileScreen(menu: Menu): Screen {
     });
   };
 
+  /**
+   * The Contraseña row (§3.5): CAMBIAR CONTRASEÑA with one; without one, CREAR CONTRASEÑA mails a
+   * link to the account's own verified address (a Bearer alone never sets a first password, I4),
+   * and an account without that address is told to add one first (PR 9 adds the email).
+   */
+  const passwordRow = (me: MeInfo | null): HTMLElement => {
+    if (me?.hasPassword !== false) return secondary(t('profile.changePassword'), () => passwordDialog(), { 'data-key': 'profile-password' });
+    if (me.emailVerified !== true || typeof me.email !== 'string' || me.email.length === 0) return h('p.mn-note.mn-prof-pwnote', null, t('auth.addEmailFirst'));
+    const btn = secondary(
+      t('profile.createPassword'),
+      () =>
+        void busyWhile(btn, async () => {
+          try {
+            const to = await acc.passwordLink();
+            menu.modal({ title: t('auth.checkMail'), body: h('p', null, t('auth.passwordLinkSent', { email: to })), actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }] });
+          } catch (e) {
+            menu.toast(authErrText(menu, e), 'error');
+          }
+        }),
+      { 'data-key': 'profile-password' },
+    );
+    return btn;
+  };
+
+  /**
+   * CAMBIAR CONTRASEÑA (§3.5 step 2, POST /api/me/password): the account's address as the
+   * read-only username a password manager saves, the current password, the new one with MOSTRAR
+   * (its repeat where the keypad shows dots). The other devices are signed out.
+   */
   const passwordDialog = (): void => {
-    const hasPw = acc.me?.hasPassword !== false;
-    const old = field(t('profile.currentPassword'), { type: 'password', autocomplete: 'current-password' });
-    const next = field(t('profile.newPassword'), { type: 'password', autocomplete: 'new-password' });
-    const again = field(t('profile.repeatNewPassword'), { type: 'password', autocomplete: 'new-password' });
+    const who = acc.me?.email ?? acc.account?.name ?? '';
+    const reveal = !keypadTyping();
+    const old = field(t('profile.currentPassword'), { type: 'password', autocomplete: 'current-password', maxLength: 128, reveal });
+    const pw = newPasswordFields(who, t('profile.newPassword'), false);
     menu.modal({
-      title: hasPw ? t('profile.changePasswordTitle') : t('profile.setPasswordTitle'),
-      body: [hasPw ? old.el : h('p.mn-note', null, t('profile.setPasswordNote')), next.el, again.el, hasPw ? h('p.mn-note', null, t('profile.othersSignedOut')) : null],
+      title: t('profile.changePasswordTitle'),
+      body: [passwordManagerUser(who), old.el, ...pw.nodes, h('p.mn-note', null, t('profile.othersSignedOut'))],
       actions: [
         {
           label: t('profile.save'),
           primary: true,
           onClick: async () => {
             old.error(null);
-            next.error(null);
-            again.error(null);
-            if (next.input.value !== again.input.value) {
-              again.error(t('profile.noMatch'));
-              return false;
-            }
-            const passIssue = issueText(passwordIssue(next.input.value, acc.account?.name ?? '')); // the arguments AccountClient.changePassword checks
+            pw.pass.error(null);
+            const next = pw.check();
+            if (next === null) return false;
+            const passIssue = issueText(passwordIssue(next, { username: acc.account?.name ?? '', email: acc.me?.email ?? undefined })); // the arguments AccountClient.changePassword checks
             if (passIssue !== null) {
-              next.error(passIssue);
+              pw.pass.error(passIssue);
               return false;
             }
             try {
-              await acc.changePassword(hasPw ? old.input.value : null, next.input.value);
+              await acc.changePassword(old.input.value, next);
               menu.toast(t('profile.passwordUpdated'), 'ok');
               void acc.fetchMe().then(() => render());
               return true;
             } catch (e) {
-              (e instanceof AccountError && e.code === 'bad_credentials' ? old : next).error(errText(e));
+              (e instanceof AccountError && e.code === 'bad_credentials' ? old : pw.pass).error(authErrText(menu, e));
               return false;
             }
           },
@@ -604,55 +908,33 @@ export function profileScreen(menu: Menu): Screen {
       ],
     });
   };
-
-  const codesDialog = (): void => {
-    const hasPw = acc.me?.hasPassword !== false;
-    const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password' });
-    menu.modal({
-      title: t('profile.newCodesTitle'),
-      body: [h('p.mn-note', null, t('profile.newCodesNote')), hasPw ? pass.el : null],
-      actions: [
-        {
-          label: t('profile.generate'),
-          primary: true,
-          onClick: async () => {
-            try {
-              const codes = await acc.newRecoveryCodes(hasPw ? pass.input.value : null);
-              showRecoveryCodes(menu, codes, t('profile.newCodesIntro'));
-              return false; // the codes dialog replaced this one
-            } catch (e) {
-              pass.error(errText(e));
-              return false;
-            }
-          },
-        },
-        { label: t('profile.cancel'), onClick: () => true },
-      ],
-    });
-  };
-
 
   /**
    * Run `go` once this browser proved a credential at `level` in the last minutes (AccountClient.fresh,
-   * the server's R6): at once when it did, else after "confirm it is you" with what reaches that
-   * level. Level 1: a provider already on the account (a round trip that comes back to PERFIL, then
-   * the player taps again) or the password here. Level 2 (the server's reauth_required { level: 2 }):
-   * the password only, since a press on a provider's page is level 1, and the sheet says so.
+   * the server's R6): at once when it did (unless `force`: the server just asked), else after
+   * "confirm it is you" with what reaches that level. Level 1: a provider already on the account (a
+   * round trip that comes back to PERFIL, then the player taps again) or the password here. Level 2
+   * (the server's reauth_required { level: 2 }): the password, or a code to the account's verified
+   * address (POST /api/auth/reauth/code); a press on a provider's page is level 1, and the sheet says
+   * so. A password of before (me.legacy) is only re-keyed by itself: no code then.
    */
-  const fresh = (go: () => void, level: 1 | 2 = 1): void => {
-    if (acc.fresh(level)) {
+  const fresh = (go: () => void, level: 1 | 2 = 1, force = false): void => {
+    if (!force && acc.fresh(level)) {
       go();
       return;
     }
     const me = acc.me;
     const own = (me?.providers ?? []).filter((p): p is OAuthProvider => p !== 'password' && ((menu.cfg?.oauth ?? []) as string[]).includes(p));
     const offered = level === 1 ? own : [];
-    const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password' });
+    const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password', maxLength: 128 });
     const withPassword = me?.hasPassword === true;
-    const notEnough = level === 2 && own.length > 0 ? h('p.mn-note', null, t('profile.reauthPasswordOnly', { providers: own.map((p) => PROVIDER_NAMES[p]).join(` ${t('profile.or')} `) })) : null;
+    const mailbox = me?.emailVerified === true && typeof me.email === 'string' && me.email.length > 0 && me.legacy !== true ? me.email : null;
+    const ownNames = own.map((p) => PROVIDER_NAMES[p]).join(` ${t('profile.or')} `);
+    const notEnough = level === 2 && own.length > 0 ? h('p.mn-note', null, mailbox !== null ? t('profile.reauthPasswordOrCode', { providers: ownNames }) : t('profile.reauthPasswordOnly', { providers: ownNames })) : null;
+    const byCode: HTMLButtonElement | null = mailbox !== null ? secondary(t('auth.reauthCode', { email: mailbox }), () => byCode !== null && void busyWhile(byCode, () => openReauthCodeSheet(menu, go)), { 'data-key': 'profile-reauth-code' }) : null;
     menu.modal({
       title: t('profile.reauthTitle'),
-      body: [h('p.mn-note', null, t('profile.reauthNote')), notEnough, ...offered.map((p) => secondary(t('profile.reauthWith', { provider: PROVIDER_NAMES[p] }), () => (window.location.href = acc.oauthUrl(p, 'reauth')), { 'data-key': 'profile-reauth-' + p })), withPassword ? pass.el : null],
+      body: [h('p.mn-note', null, t('profile.reauthNote')), notEnough, ...offered.map((p) => secondary(t('profile.reauthWith', { provider: PROVIDER_NAMES[p] }), () => (window.location.href = acc.oauthUrl(p, 'reauth')), { 'data-key': 'profile-reauth-' + p })), byCode, withPassword ? pass.el : null],
       actions: [
         ...(withPassword
           ? [
@@ -677,6 +959,7 @@ export function profileScreen(menu: Menu): Screen {
       ],
     });
   };
+
 
   /**
    * Take `p` off the account after "confirm it is you" at `level`: 1 first, and 2 when the server
@@ -778,6 +1061,7 @@ export function profileScreen(menu: Menu): Screen {
     const who = acc.account?.playerId ?? null;
     shownFor = who;
     shownMe = acc.me;
+    resendTick = null; // the code step's own, when it is drawn again below
     const view =
       sample !== null
         ? accountView(sample)
@@ -847,12 +1131,46 @@ export function profileScreen(menu: Menu): Screen {
     title: t('profile.title'),
     el,
     show: () => {
+      // A mailed link's sheet sent the player here (openProfileTab), or this page's first visit
+      // finds a sign-up waiting for its code (a phone tab the browser reloaded): that step.
+      const intent = profileIntent;
+      profileIntent = null;
+      if (!acc.signedIn && intent !== null) {
+        tab = intent.tab;
+        loginPrefill = intent.email;
+        step = intent.tab === 'register' && acc.signupAttempt() !== null ? 'code' : 'email';
+        typed = false;
+      } else if (!acc.signedIn && firstShow && acc.signupAttempt() !== null) {
+        tab = 'register';
+        step = 'code';
+      }
+      firstShow = false;
       render();
       if (acc.signedIn) {
         void acc.fetchMe().then(render, () => undefined);
         loadNodes();
         loadReplayName();
       }
+    },
+    tick: () => resendTick?.(),
+    // Back, B or Esc on the code step goes to the address, and from the recovery form to the sign-in
+    // (§3.0); the attempt stays kept, so CONTINUAR with the same address comes back to its code.
+    back: () => {
+      if (acc.signedIn || sample !== null || tv()) return false;
+      if (tab === 'register' && step === 'code') {
+        step = 'email';
+        signupEmail = acc.signupAttempt()?.email ?? signupEmail;
+        typed = false;
+        render();
+        return true;
+      }
+      if (tab === 'recover') {
+        tab = 'login';
+        typed = false;
+        render();
+        return true;
+      }
+      return false;
     },
   };
 }
@@ -866,6 +1184,8 @@ function sampleAccount(operator: boolean): AccountData {
     createdAt: Date.UTC(2026, 3, 4),
     providers: ['password', 'google'],
     hasPassword: true,
+    email: 'maximiliano.gomez@example.com',
+    emailVerified: true,
     renameAt: 0,
     ratings: [r('1v1', 'diamond-3', 0), r('2v2', 'platinum-1', 0), r('3v3', null, 3)],
     rankedBanUntil: 0,

@@ -162,7 +162,7 @@ test('AccountClient: a refused confirm says why in words (wrong, expired, used, 
   };
   for (const [code, answer] of Object.entries(answers)) {
     const acc = new AccountClient({ storage: null, fetchFn: async (url) => (url === '/api/auth/login' ? res(200, { kind: 'account', playerId: 'u1', name: 'Ana', session: 'jwt', expiresAt: Date.now() + 3_600_000 }) : answer) });
-    await acc.login('Ana', 'password-ok-1');
+    await acc.legacySignIn('Ana', 'password-ok-1');
     await assert.rejects(acc.tvConfirm('ABC234'), (e) => e.code === code && e.message.length > 0 && !/^error\./.test(e.message), code);
   }
 });

@@ -1,8 +1,10 @@
 /**
- * Browser side of registered accounts (server/src/accountRoutes.ts): sign-up / sign-in with a
- * username and password (the password is turned into client keys here and never sent: the current
- * passwordKey, and the legacyPasswordKey of before wherever a stored legacy password is proved, so
- * the server re-keys it), each anonymous request with a solved Turnstile check (antiBot),
+ * Browser side of registered accounts (server/src/accountRoutes.ts): email accounts (sign-in PR 8:
+ * a sign-up proved by a mailed code or link, the email sign-in, forgot and reset, the password by
+ * its owner: the section "email accounts" at the end of the class), the legacy sign-in with a
+ * username and its recovery code (a password is turned into client keys here and never sent: the
+ * current passwordKey, and the legacyPasswordKey of before wherever a stored legacy password is
+ * proved, so the server re-keys it), each anonymous request with a solved Turnstile check (antiBot),
  * Google / Discord sign-in (a full-page redirect; the server answers back to `/#auth=<result>`),
  * the short Bearer session (1 h) refreshed from the HttpOnly refresh cookie, the profile (/api/me:
  * ratings per playlist, ranked ban, the experimental switch), the leaderboard, the rating change of
@@ -26,8 +28,10 @@
  *
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
-import { legacyPasswordKey, passwordIssue, passwordKey, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, Playlist, RankedResultAnswer, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from './account';
+import { legacyPasswordKey, normalizeEmail, passwordIssue, passwordKey, usernameIssue } from './account';
+import type { AccountIssue, AccountSession, CodeResendAnswer, CodeStartAnswer, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, PasswordLinkAnswer, Playlist, RankedResultAnswer, ResetPeekAnswer, SignupCheckAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from './account';
+import { DEAD_LINK_CODES, keepAttempt, keepLastSignIn, keepLink, localResendAt, readAttempt, readLastSignIn, readLink } from './emailAuth';
+import type { AccountLink, LastSignIn, LegacyPhase, StoredAttempt } from './emailAuth';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { claimAnswerOf, itemsAnswerOf, shopAnswerOf } from './cosmetics';
 import type { ClaimAnswer, ItemsAnswer, ShopAnswer } from './cosmetics';
@@ -37,7 +41,7 @@ import { MAX_PRESETS, parsePresetList } from '../game/physicsRules';
 import type { StoredPreset } from '../game/physicsRules';
 import { parseTrainingRecords } from '../game/trainingRecords';
 import type { TrainingRecords } from '../game/trainingRecords';
-import { serverText, t } from '../i18n';
+import { language, serverText, t } from '../i18n';
 
 export const ACCOUNT_HINT_KEY = STORAGE_PREFIX + 'account';
 /** Refresh when less than this is left on the Bearer session. */
@@ -50,7 +54,50 @@ const REFRESH_MARGIN_MS = 2 * 60_000;
 const NODE_RESULT_EVERY_MS = 3000;
 const NODE_RESULT_MAX_WAIT_MS = 120_000;
 
+/** The fields of a refusal besides its code (the email routes of sign-in PR 7). */
+export interface AccountErrorDetail {
+  /** code_wrong: the tries this code has left. */
+  triesLeft?: number;
+  /** username_taken, name_lookalike, name_reserved: a free name near the one asked for (the form puts it in the field). */
+  suggest?: string;
+  /** already_created: the address whose account exists (the sign-in tab opens with it). */
+  email?: string;
+}
+
+/** A refusal's detail from its body (each field only when it has its shape). */
+function detailOf(b: { triesLeft?: unknown; suggest?: unknown; email?: unknown }): AccountErrorDetail {
+  const d: AccountErrorDetail = {};
+  if (typeof b.triesLeft === 'number' && Number.isInteger(b.triesLeft) && b.triesLeft >= 0) d.triesLeft = b.triesLeft;
+  if (typeof b.suggest === 'string' && usernameIssue(b.suggest) === null) d.suggest = b.suggest;
+  if (typeof b.email === 'string' && normalizeEmail(b.email) !== null) d.email = b.email;
+  return d;
+}
+
+/** The player's text for a refusal whose detail it names (the tries left, the free name), null for the code's own text. */
+function detailText(code: string, d: AccountErrorDetail): string | null {
+  if (code === 'code_wrong' && d.triesLeft !== undefined) return t('auth.codeWrong', { count: d.triesLeft });
+  if (d.suggest === undefined) return null;
+  if (code === 'username_taken') return t('auth.signupNameTaken', { name: d.suggest });
+  if (code === 'name_lookalike') return t('account.issue.usernameLookalike', { name: d.suggest });
+  if (code === 'name_reserved') return t('auth.signupNameReserved', { name: d.suggest });
+  return null;
+}
+
+/**
+ * `e` with the text of where it was asked when its code is `code` (one code, a text per form: the
+ * server's bad_credentials reads "username" on the legacy sign-in, "password" on a session's own
+ * check); anything else as it is.
+ */
+function withText(e: unknown, code: string, text: string): unknown {
+  if (!(e instanceof AccountError) || e.code !== code) return e;
+  const out = new AccountError(text, e.status, e.code, e.retryAfterMs, e.level);
+  out.detail = e.detail;
+  return out;
+}
+
 export class AccountError extends Error {
+  /** What a refusal carried besides its code (sign-in PR 8, AccountClient.fail): AccountErrorDetail. */
+  detail: AccountErrorDetail = {};
   readonly status: number;
   /** The server's `error` code ('bad_credentials', 'username_taken', 'throttled', ...) or a local one. */
   readonly code: string;
@@ -145,6 +192,8 @@ function isDevice(v: unknown): v is DeviceSession {
 const REFRESH_RACE_RETRY_MS = 400;
 
 export interface AccountClientOptions {
+  /** sessionStorage (a sign-up's attempt, a mailed link's token: src/net/emailAuth.ts); null disables it (tests). */
+  session?: StorageLike | null;
   apiBase?: string;
   fetchFn?: FetchLike;
   /** null disables the hint (tests). */
@@ -187,6 +236,27 @@ export function readAccountHint(storage: Pick<StorageLike, 'getItem'> | null): A
   }
 }
 
+/**
+ * What GET /api/config's `auth` says about signing in (the sign-in design's §2.1), each false or
+ * 'none' from a server without it: `email` the flows that send mail may show (sign-up, forgot, a
+ * first password: sign-in PR 7's mailer, its kill flag off), `devSignIn` the dev-only sign-in
+ * (§3.15), `legacy` the username sign-in's phase and its cutoff (sign-in PR 9).
+ */
+export interface AuthConfig {
+  email: boolean;
+  devSignIn: boolean;
+  legacy: LegacyPhase;
+  legacyUntil: number | null;
+}
+
+/** A sign-up's proof of the mailbox: the code typed in the browser that started it, or the mailed link's token. */
+export type CodeProof = { attempt: string; code: string } | { token: string };
+
+/** The sessionStorage marker of a provider button pressed on this device ("Continue as Ana · Discord" once it comes back). */
+const PROVIDER_TRY_KEY = STORAGE_PREFIX + 'auth.provider';
+/** That marker counts this long: a provider's round trip. */
+const PROVIDER_TRY_MS = 10 * 60_000;
+
 export class AccountClient {
   /** The signed-in account's Bearer session, null for a guest. */
   account: AccountSession | null = null;
@@ -194,8 +264,10 @@ export class AccountClient {
   me: MeInfo | null = null;
   /** Sign-in / sign-out / rename / profile refresh: every `subscribe`r is called (the menus redraw, the Game re-checks). */
   private readonly listeners = new Set<() => void>();
-  /** devSignInOffered's one GET /api/config, once asked. */
-  private devOffered: Promise<boolean> | null = null;
+  /** authConfig's one GET /api/config (devSignInOffered's too), once asked. */
+  private authCfg: Promise<AuthConfig> | null = null;
+  /** sessionStorage: the sign-up's attempt and a mailed link's token (src/net/emailAuth.ts). */
+  private readonly sessionStore: StorageLike | null;
 
   private readonly apiBase: string;
   private readonly fetchFn: FetchLike;
@@ -212,6 +284,7 @@ export class AccountClient {
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
     this.now = opts.now ?? Date.now;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.sessionStore = opts.session === undefined ? defaultSessionStorage() : opts.session;
   }
 
   get signedIn(): boolean {
@@ -278,19 +351,23 @@ export class AccountClient {
     let serverMessage = '';
     let retry = 0;
     let level: 0 | 1 | 2 = 0;
+    let detail: AccountErrorDetail = {};
     try {
-      const b = (await res.json()) as { error?: unknown; message?: unknown; retryAfterMs?: unknown; level?: unknown };
+      const b = (await res.json()) as { error?: unknown; message?: unknown; retryAfterMs?: unknown; level?: unknown; triesLeft?: unknown; suggest?: unknown; email?: unknown };
       if (typeof b.error === 'string') code = b.error;
       if (typeof b.message === 'string' && b.message !== b.error) serverMessage = b.message;
       if (typeof b.retryAfterMs === 'number') retry = b.retryAfterMs;
       if (b.level === 1 || b.level === 2) level = b.level;
+      detail = detailOf(b);
     } catch {
       /* no JSON body */
     }
     // A code without a server text (a sign-in rate_limited...) still gets its own text when the client has one.
-    const message = serverText('account', code, serverMessage) || t('error.server');
+    const message = detailText(code, detail) ?? (serverText('account', code, serverMessage) || t('error.server'));
     if (message === t('error.server')) console.warn(`account: answered ${res.status} ${code}`);
-    throw new AccountError(message, res.status, code, retry, code === 'reauth_required' ? level || 1 : 0);
+    const err = new AccountError(message, res.status, code, retry, code === 'reauth_required' ? level || 1 : 0);
+    err.detail = detail;
+    throw err;
   }
 
   private async jsonOrFail<T>(res: ResponseLike): Promise<T> {
@@ -330,6 +407,7 @@ export class AccountClient {
       }
       if (!res.ok) return this.account;
       const s = await res.json();
+      if (isSession(s)) this.providerReturned(s.name);
       return isSession(s) ? this.adopt(s) : null;
     })();
     this.refreshing = p;
@@ -370,23 +448,17 @@ export class AccountClient {
     return this.refresh();
   }
 
-  async register(username: string, password: string): Promise<RegisterAnswer> {
-    const u = usernameIssue(username);
-    if (u !== null) throw issueError(u, 'bad_username');
-    const p = passwordIssue(password, username);
-    if (p !== null) throw issueError(p, 'bad_password');
-    const res = await this.callAnonymous('/api/auth/register', { username, passwordV2: await passwordKey(password) });
-    const r = await this.jsonOrFail<RegisterAnswer>(res);
-    this.adopt(sessionPart(r));
-    return r;
-  }
-
-  /** A solved anti-bot check (NetClient.antiBotToken), null when the server asks for none; a failed one rejects. */
+  /**
+   * A solved anti-bot check (NetClient.antiBotToken), null when the server asks for none. One that
+   * could not run here (a blocker kept its script out, the challenge failed) rejects turnstile_failed
+   * with status 0, which PERFIL words as "allow the site in your blocker, or use a provider"; the
+   * server's own refusal of a token is a 403.
+   */
   private async antiBotToken(): Promise<string | null> {
     try {
       return await this.antiBot();
     } catch {
-      throw new AccountError(t('auth.antiBotFailed'), 403, 'turnstile_failed');
+      throw new AccountError(t('auth.antiBotFailed'), 0, 'turnstile_failed');
     }
   }
 
@@ -408,14 +480,16 @@ export class AccountClient {
   }
 
   /**
-   * The username sign-in: both keys of the typed password (a stored legacy password is checked with
-   * the legacy key and re-keyed by the server to the current one), and a solved anti-bot check.
+   * The username sign-in of before (POST /api/auth/login, until the cutoff of sign-in PR 9): both
+   * keys of the typed password (a stored legacy password is checked with the legacy key and re-keyed
+   * by the server to the current one), and a solved anti-bot check. PERFIL sends a typed value
+   * without '@' here (emailAuth.ts signInRoute); bad_credentials says "username" here.
    */
-  async login(username: string, password: string): Promise<AccountSession> {
+  async legacySignIn(username: string, password: string): Promise<AccountSession> {
     if (username.trim().length === 0 || password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
     const keys = await bothKeys(username.trim(), password);
     const res = await this.callAnonymous('/api/auth/login', { username: username.trim(), password: keys.legacy, passwordV2: keys.current });
-    const s = await this.jsonOrFail<AccountSession>(res);
+    const s = await this.jsonOrFail<AccountSession>(res).catch((e: unknown) => Promise.reject(withText(e, 'bad_credentials', t('auth.badLegacyCredentials'))));
     return this.adopt(sessionPart(s));
   }
 
@@ -513,19 +587,7 @@ export class AccountClient {
    * this machine), so a deployed page never spends a request on it. False when the config fails.
    */
   devSignInOffered(): Promise<boolean> {
-    if (this.devOffered === null) {
-      this.devOffered = (async () => {
-        try {
-          const res = await this.call('/api/config');
-          if (!res.ok) return false;
-          const c = (await res.json()) as { auth?: { devSignIn?: unknown } } | null;
-          return c?.auth?.devSignIn === true;
-        } catch {
-          return false;
-        }
-      })();
-    }
-    return this.devOffered;
+    return this.authConfig().then((c) => c.devSignIn);
   }
 
   /** POST /api/dev/signin { name }: the account of that dev name (made at its first use), adopted as a sign-in's. */
@@ -564,7 +626,7 @@ export class AccountClient {
     const name = this.account?.name ?? '';
     if (password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
     const keys = await bothKeys(name, password);
-    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth', { legacy: keys.legacy, password: keys.current }, await this.bearer()));
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth', { legacy: keys.legacy, password: keys.current }, await this.bearer())).catch((e: unknown) => Promise.reject(withText(e, 'bad_credentials', t('profile.wrongPassword'))));
     if (!isSession(s) || s.playerId !== this.account?.playerId) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
     return this.adopt(sessionPart(s));
   }
@@ -581,48 +643,38 @@ export class AccountClient {
     return s.session;
   }
 
-  /** The old password proved by both keys (the server reads the one its record holds); the new one stored as the current key. */
-  async changePassword(oldPassword: string | null, newPassword: string): Promise<void> {
+  /**
+   * CAMBIAR CONTRASEÑA (POST /api/me/password { current, legacy, password, lang }): the current
+   * password proves it, by both keys (the server reads the one its record holds: `legacy` for a
+   * password of before, salted with the name, `current` otherwise); the new one is stored as the
+   * current key. The other devices are signed out, this one stays; M4 is mailed. A first password
+   * is never set here: it comes from the account's mailbox (passwordLink, I4).
+   */
+  async changePassword(current: string, next: string): Promise<void> {
     const name = this.account?.name ?? '';
-    const p = passwordIssue(newPassword, name);
+    if (current.length === 0) throw new AccountError(t('profile.wrongPassword'), 400, 'bad_credentials');
+    const p = passwordIssue(next, { username: name, email: this.me?.email ?? undefined });
     if (p !== null) throw issueError(p, 'bad_password');
-    const body: Record<string, string> = { passwordV2: await passwordKey(newPassword) };
-    if (oldPassword !== null) {
-      const old = await bothKeys(name, oldPassword);
-      body.oldPassword = old.legacy;
-      body.oldPasswordV2 = old.current;
-    }
-    await this.jsonOrFail(await this.call('/api/auth/password', body, await this.bearer()));
-  }
-
-  async newRecoveryCodes(password: string | null): Promise<string[]> {
-    const name = this.account?.name ?? '';
-    const body: Record<string, string> = {};
-    if (password !== null) {
-      const keys = await bothKeys(name, password);
-      body.password = keys.legacy;
-      body.passwordV2 = keys.current;
-    }
-    const r = await this.jsonOrFail<{ recoveryCodes: string[] }>(await this.call('/api/auth/recovery-codes', body, await this.bearer()));
-    return r.recoveryCodes;
+    const [old, key] = await Promise.all([bothKeys(name, current), passwordKey(next)]);
+    const res = await this.call('/api/me/password', { current: old.current, legacy: old.legacy, password: key, lang: language() }, await this.bearer());
+    await this.jsonOrFail(res).catch((e: unknown) => Promise.reject(withText(e, 'bad_credentials', t('profile.wrongPassword'))));
   }
 
   /**
-   * Change the username (once per 30 days). A password account gives its password: both keys, the
-   * legacy one of the old name (a password of before is salted with it) and the current one, which
-   * no name salts, so the server re-keys a legacy password and the new name needs nothing (other
-   * devices are signed out when it re-keys). An OAuth-only account passes null.
+   * Change the username (once per 30 days), POST /api/me/username { username, lang } with the Bearer
+   * (sign-in PR 7: the name salts no password any more). An account whose password is still the
+   * legacy key, or that signs in by its username and proved no password in the last minutes, is
+   * refused 403 reauth_required { level: 2 }: PERFIL then asks "confirm it's you" (its password
+   * re-keys it) and renames again. A taken name or a look-alike rejects with a free `detail.suggest`.
    */
-  async rename(username: string, password: string | null): Promise<AccountSession> {
+  async rename(username: string): Promise<AccountSession> {
     const u = usernameIssue(username);
     if (u !== null) throw issueError(u, 'bad_username');
-    const body: Record<string, string> = { username };
-    if (password !== null) {
-      const keys = await bothKeys(this.account?.name ?? '', password);
-      body.password = keys.legacy;
-      body.passwordV2 = keys.current;
-    }
-    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/me/username', body, await this.bearer()));
+    const before = this.account?.name;
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/me/username', { username, lang: language() }, await this.bearer()));
+    // "Continue as …" follows the new name.
+    const last = this.lastSignIn();
+    if (last !== null && last.name === before && typeof s?.name === 'string') this.rememberSignIn(s.name, last.method);
     this.adopt(s);
     await this.fetchMe();
     return s;
@@ -817,11 +869,281 @@ export class AccountClient {
     }
     return last;
   }
+
+  // ---- email accounts (sign-in PR 8: PR 7's routes, server/src/accountRoutes.ts "email accounts") ----
+  //
+  // A sign-up proves the mailbox before the account exists: signupStart mails a 6-digit code (and a
+  // link) and keeps the attempt in sessionStorage (emailAuth.ts: 30 minutes, so the code step comes
+  // back after a reload), signupCheck answers at the sixth digit (it consumes nothing), signupFinish
+  // makes the account with its name and password, signed in at level 2. A mailed link's token is
+  // kept from the moment the page took it out of the URL until its POST settles (emailAuth.ts
+  // DEAD_LINK_CODES). Every anonymous POST carries a solved anti-bot check (callAnonymous, with its
+  // silent retry); passwords leave as their key only.
+
+  /**
+   * GET /api/config's `auth` (AuthConfig), asked once per page and only by a caller that wants it
+   * (PERFIL's guest view, the dev sign-in). A server that answered anything else counts as none of
+   * them; no network is asked again next time.
+   */
+  authConfig(): Promise<AuthConfig> {
+    if (this.authCfg !== null) return this.authCfg;
+    const none: AuthConfig = { email: false, devSignIn: false, legacy: 'none', legacyUntil: null };
+    let offline = false;
+    const p = (async (): Promise<AuthConfig> => {
+      let res: ResponseLike;
+      try {
+        res = await this.call('/api/config');
+      } catch {
+        offline = true;
+        return none;
+      }
+      if (!res.ok) return none;
+      try {
+        const c = (await res.json()) as { auth?: { email?: unknown; devSignIn?: unknown; legacy?: { phase?: unknown; until?: unknown } } } | null;
+        const a = c?.auth;
+        const phase = a?.legacy?.phase;
+        const until = a?.legacy?.until;
+        return { email: a?.email === true, devSignIn: a?.devSignIn === true, legacy: phase === 'grace' || phase === 'closed' ? phase : 'none', legacyUntil: typeof until === 'number' && Number.isFinite(until) ? until : null };
+      } catch {
+        return none;
+      }
+    })();
+    this.authCfg = p;
+    // Offline: the next caller asks again.
+    void p.then(() => {
+      if (offline && this.authCfg === p) this.authCfg = null;
+    });
+    return p;
+  }
+
+  /** The sign-up this browser started and has not finished (sessionStorage, 30 minutes), null when none. */
+  signupAttempt(): StoredAttempt | null {
+    return readAttempt(this.sessionStore, this.now());
+  }
+
+  /** "Use another email", a dead code: the attempt goes. */
+  dropSignupAttempt(): void {
+    keepAttempt(this.sessionStore, null);
+  }
+
+  /**
+   * CONTINUAR (POST /api/auth/signup/start { email, lang }): the same answer for any address (a new
+   * one gets the code, one with an account a mail that says how to sign in, I6). The attempt is kept
+   * (signupAttempt), its resendAt on this browser's clock. An address that is none rejects bad_email
+   * before any request.
+   */
+  async signupStart(email: string): Promise<StoredAttempt> {
+    const address = normalizeEmail(email);
+    if (address === null) throw new AccountError(t('error.account.bad_email'), 400, 'bad_email');
+    const r = await this.jsonOrFail<CodeStartAnswer>(await this.callAnonymous('/api/auth/signup/start', { email: address, lang: language() }));
+    if (typeof r?.attempt !== 'string' || typeof r.resendAt !== 'number') throw new AccountError(t('error.server'), 200, 'protocol');
+    const now = this.now();
+    const a: StoredAttempt = { attempt: r.attempt, purpose: 'signup', email: address, resendAt: localResendAt(r.resendAt, now), at: now };
+    keepAttempt(this.sessionStore, a);
+    return a;
+  }
+
+  /**
+   * The sixth digit, or a mailed link (POST /api/auth/signup/check): the address the proof is for.
+   * Consumes nothing. Rejects code_wrong (detail.triesLeft), code_expired, link_invalid and
+   * already_created (detail.email: that sign-up made its account in the last minutes).
+   */
+  async signupCheck(proof: CodeProof): Promise<string> {
+    const r = await this.settleLink(proof, false, async () => this.jsonOrFail<SignupCheckAnswer>(await this.call('/api/auth/signup/check', proofBody(proof))));
+    if (typeof r?.email !== 'string') throw new AccountError(t('error.server'), 200, 'protocol');
+    return r.email;
+  }
+
+  /**
+   * CREAR CUENTA (POST /api/auth/signup/finish): the proof, the in-game name, the password's key, the
+   * news switch, the language and time zone of the account's mail. The name and the password are
+   * checked here first (the rules the server applies). Signed in at level 2; the attempt goes, and
+   * this device remembers an email sign-in. Name refusals reject with detail.suggest (the form puts
+   * it in the field); the proof is never spent by them.
+   */
+  async signupFinish(proof: CodeProof, f: { username: string; password: string; news: boolean; email: string }): Promise<AccountSession> {
+    const u = usernameIssue(f.username);
+    if (u !== null) throw issueError(u, 'bad_username');
+    const p = passwordIssue(f.password, { username: f.username, email: f.email });
+    if (p !== null) throw issueError(p, 'bad_password');
+    const body = { ...proofBody(proof), username: f.username, password: await passwordKey(f.password), news: f.news, lang: language(), tz: timeZone() };
+    const s = await this.settleLink(proof, true, async () => this.jsonOrFail<AccountSession>(await this.call('/api/auth/signup/finish', body)));
+    if (!isSession(s)) throw new AccountError(t('error.server'), 200, 'protocol');
+    keepAttempt(this.sessionStore, null);
+    this.rememberSignIn(s.name, 'email');
+    return this.adopt(sessionPart(s));
+  }
+
+  /**
+   * REENVIAR (POST /api/auth/code/resend { attempt }): the same code and link again (whichever mail
+   * comes first works). `reauth`: an account's own code ("confirm it's you"), which needs its Bearer.
+   * Resolves the next resendAt on this browser's clock and the resends left (3 per attempt).
+   */
+  async codeResend(attempt: string, reauth = false): Promise<CodeResendAnswer> {
+    const r = await this.jsonOrFail<CodeResendAnswer>(await this.call('/api/auth/code/resend', { attempt }, reauth ? await this.bearer() : undefined));
+    const resendAt = localResendAt(typeof r?.resendAt === 'number' ? r.resendAt : 0, this.now());
+    const kept = this.signupAttempt();
+    if (kept !== null && kept.attempt === attempt) keepAttempt(this.sessionStore, { ...kept, resendAt });
+    return { resendAt, resendsLeft: typeof r?.resendsLeft === 'number' ? r.resendsLeft : 0 };
+  }
+
+  /**
+   * ENTRAR with an address (POST /api/auth/signin { email, password }): the current key only (a
+   * password of before signs in by its username, and re-keys there). One bad_credentials for an
+   * unknown address and a wrong password alike (I6). Level 2; this device remembers it.
+   */
+  async signIn(email: string, password: string): Promise<AccountSession> {
+    const address = normalizeEmail(email);
+    if (address === null) throw new AccountError(t('error.account.bad_email'), 400, 'bad_email');
+    if (password.length === 0) throw new AccountError(t('auth.emptyPassword'), 400, 'empty');
+    const s = await this.jsonOrFail<AccountSession>(await this.callAnonymous('/api/auth/signin', { email: address, password: await passwordKey(password) }));
+    if (!isSession(s)) throw new AccountError(t('error.server'), 200, 'protocol');
+    this.rememberSignIn(s.name, 'email');
+    return this.adopt(sessionPart(s));
+  }
+
+  /** ENVIAR ENLACE (POST /api/auth/forgot { email, lang }): always ok for an address (a link goes only to an account that claimed it, I6). */
+  async forgot(email: string): Promise<void> {
+    const address = normalizeEmail(email);
+    if (address === null) throw new AccountError(t('error.account.bad_email'), 400, 'bad_email');
+    await this.jsonOrFail<{ ok: true }>(await this.callAnonymous('/api/auth/forgot', { email: address, lang: language() }));
+  }
+
+  /** A reset link's sheet (POST /api/auth/reset/peek { token }): who it is for. Consumes nothing; a dead link rejects link_invalid (and goes from storage). */
+  async resetPeek(token: string): Promise<ResetPeekAnswer> {
+    const r = await this.settleLink({ token }, false, async () => this.jsonOrFail<ResetPeekAnswer>(await this.call('/api/auth/reset/peek', { token })));
+    if (typeof r?.name !== 'string' || typeof r.email !== 'string') throw new AccountError(t('error.server'), 200, 'protocol');
+    return { name: r.name, email: r.email, hasPassword: r.hasPassword === true };
+  }
+
+  /**
+   * GUARDAR Y ENTRAR (POST /api/auth/reset { token, password, lang }): the password stored, every
+   * other device signed out, this browser signed in (level 2). `who`: the peek's answer, whose name
+   * and address the password may not hold. A refresh still on its way (a page load) settles first:
+   * its old cookie must not come back after the reset revoked it.
+   */
+  async resetPassword(token: string, password: string, who: Pick<ResetPeekAnswer, 'name' | 'email'>): Promise<AccountSession> {
+    const p = passwordIssue(password, { username: who.name, email: who.email });
+    if (p !== null) throw issueError(p, 'bad_password');
+    const key = await passwordKey(password);
+    if (this.refreshing !== null) await this.refreshing.catch(() => null);
+    const s = await this.settleLink({ token }, true, async () => this.jsonOrFail<AccountSession>(await this.call('/api/auth/reset', { token, password: key, lang: language() })));
+    if (!isSession(s)) throw new AccountError(t('error.server'), 200, 'protocol');
+    this.rememberSignIn(s.name, 'email');
+    return this.adopt(sessionPart(s));
+  }
+
+  /** CREAR CONTRASEÑA (POST /api/me/password/link): a link to the account's own verified address, which it resolves (409 email_required without one). */
+  async passwordLink(): Promise<string> {
+    const r = (await this.ownCall('/api/me/password/link', { lang: language() })) as Partial<PasswordLinkAnswer> | null;
+    return typeof r?.sentTo === 'string' ? r.sentTo : (this.me?.email ?? '');
+  }
+
+  /**
+   * "Confirm it's you" by a code to the account's own mailbox (POST /api/auth/reauth/code): its
+   * attempt (kept by the sheet only), when REENVIAR may be pressed on this clock, and where it went.
+   * A maintainer account is refused password_required: it confirms with its password.
+   */
+  async reauthCodeStart(): Promise<{ attempt: string; resendAt: number; to: string }> {
+    const r = await this.jsonOrFail<CodeStartAnswer>(await this.call('/api/auth/reauth/code', { lang: language() }, await this.bearer()));
+    if (typeof r?.attempt !== 'string') throw new AccountError(t('error.server'), 200, 'protocol');
+    return { attempt: r.attempt, resendAt: localResendAt(typeof r.resendAt === 'number' ? r.resendAt : 0, this.now()), to: typeof r.to === 'string' ? r.to : (this.me?.email ?? '') };
+  }
+
+  /** The code of reauthCodeStart (POST /api/auth/reauth/code/verify): this browser's session comes back at level 2. */
+  async reauthCodeVerify(attempt: string, code: string): Promise<AccountSession> {
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth/code/verify', { attempt, code }, await this.bearer()));
+    if (!isSession(s) || s.playerId !== this.account?.playerId) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
+    return this.adopt(sessionPart(s));
+  }
+
+  /** A mailed link the page took out of its URL and has not settled (sessionStorage), null when none. */
+  pendingLink(): AccountLink | null {
+    return readLink(this.sessionStore, this.now());
+  }
+
+  /** Keep `link` until its POST settles (null: forget it). */
+  keepPendingLink(link: AccountLink | null): void {
+    keepLink(this.sessionStore, link, this.now());
+  }
+
+  /**
+   * Run a request that may carry a link's token and settle the kept token by its answer: spent when
+   * it succeeds and `spends`, or when the server says the link is dead (emailAuth.ts
+   * DEAD_LINK_CODES); kept otherwise (a refused name, no network: the same link can go again).
+   */
+  private async settleLink<T>(proof: CodeProof, spends: boolean, run: () => Promise<T>): Promise<T> {
+    const token = 'token' in proof ? proof.token : null;
+    const drop = (): void => {
+      if (token !== null && this.pendingLink()?.token === token) this.keepPendingLink(null);
+    };
+    try {
+      const r = await run();
+      if (spends) drop();
+      return r;
+    } catch (e) {
+      if (e instanceof AccountError && DEAD_LINK_CODES.has(e.code)) drop();
+      throw e;
+    }
+  }
+
+  /** How this device last signed in (localStorage), for "Continue as Ana · Discord"; null when never or unreadable. */
+  lastSignIn(): LastSignIn | null {
+    return readLastSignIn(this.storage);
+  }
+
+  private rememberSignIn(name: string, method: LastSignIn['method']): void {
+    keepLastSignIn(this.storage, { name, method });
+  }
+
+  /** A provider button is pressed (before the redirect): once its round trip signs this browser in, the sign-in tab offers it first. */
+  providerStarted(p: OAuthProvider): void {
+    try {
+      this.sessionStore?.setItem(PROVIDER_TRY_KEY, JSON.stringify({ p, at: this.now() }));
+    } catch {
+      /* storage off: no "continue as" */
+    }
+  }
+
+  /** A restore signed `name` in: right after a provider's round trip, this device remembers that provider. */
+  private providerReturned(name: string): void {
+    try {
+      const raw = this.sessionStore?.getItem(PROVIDER_TRY_KEY) ?? null;
+      if (raw === null) return;
+      this.sessionStore?.removeItem(PROVIDER_TRY_KEY);
+      const v = JSON.parse(raw) as { p?: unknown; at?: unknown };
+      if ((v.p === 'google' || v.p === 'discord') && typeof v.at === 'number' && this.now() - v.at < PROVIDER_TRY_MS) this.rememberSignIn(name, v.p);
+    } catch {
+      /* storage off or malformed: nothing remembered */
+    }
+  }
+}
+
+/** A proof as the routes read it (the code's spaces and dashes go on the server too). */
+function proofBody(proof: CodeProof): Record<string, string> {
+  return 'token' in proof ? { token: proof.token } : { attempt: proof.attempt, code: proof.code };
+}
+
+/** The player's IANA time zone for the dates of the account's mail ('' when the browser names none). */
+function timeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+  } catch {
+    return '';
+  }
 }
 
 function defaultStorage(): StorageLike | null {
   try {
     return typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultSessionStorage(): StorageLike | null {
+  try {
+    return typeof window !== 'undefined' && window.sessionStorage ? window.sessionStorage : null;
   } catch {
     return null;
   }

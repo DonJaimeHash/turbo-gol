@@ -49,7 +49,7 @@ test('serverText: the Spanish server message for the codes it details, else the 
   assert.equal(I.serverText('account', 'bad_username', 'Elige un nombre de usuario'), 'Elige un nombre de usuario');
   assert.equal(I.serverText('lobby', 'bad_name', 'Configuración inválida'), 'Configuración inválida');
   assert.equal(I.serverText('lobby', 'not_host', 'Solo el anfitrión inicia la partida'), 'Solo el anfitrión inicia la partida');
-  assert.equal(I.serverText('account', 'bad_credentials', 'otro texto'), 'Usuario o contraseña incorrectos', 'not a detail code: es.ts');
+  assert.equal(I.serverText('account', 'bad_credentials', 'otro texto'), 'Correo o contraseña incorrectos', 'not a detail code: es.ts (the email sign-in; the username one says it in AccountClient.legacySignIn)');
   assert.equal(I.serverText('lobby', 'bad_mode', 'Configuración inválida'), 'Configuración inválida', 'no client text: the server message');
 });
 
@@ -58,7 +58,7 @@ test('AccountClient: a bare code gets its es.ts text, else the generic one (`|| 
     [bare(429, 'rate_limited'), 'Demasiados intentos, espera un minuto'],
     [msg(429, 'rate_limited', 'Demasiados registros desde tu red, inténtalo más tarde'), 'Demasiados registros desde tu red, inténtalo más tarde'],
     [msg(400, 'bad_username', 'El usuario tiene que tener entre 3 y 16 caracteres'), 'El usuario tiene que tener entre 3 y 16 caracteres'],
-    [msg(401, 'bad_credentials', 'Usuario o contraseña incorrectos'), 'Usuario o contraseña incorrectos'],
+    [msg(401, 'bad_credentials', 'Usuario o contraseña incorrectos'), 'Usuario o contraseña incorrectos'], // the username sign-in's own text (sign-in PR 8)
     [msg(429, 'throttled', 'Demasiados intentos, espera un momento', { retryAfterMs: 5000 }), 'Demasiados intentos, espera un momento'],
     [msg(503, 'turnstile_unconfigured', 'TURNSTILE_SECRET must be set outside local dev'), 'TURNSTILE_SECRET must be set outside local dev'],
     [bare(400, 'bad_request'), 'Error del servidor'],
@@ -67,7 +67,7 @@ test('AccountClient: a bare code gets its es.ts text, else the generic one (`|| 
   ];
   for (const [answer, want] of cases) {
     const a = new AC.AccountClient({ fetchFn: async () => answer, storage: null });
-    const e = await a.login('Tomi', 'a fine password').then(() => null, (err) => err);
+    const e = await a.legacySignIn('Tomi', 'a fine password').then(() => null, (err) => err);
     assert.ok(e instanceof AC.AccountError);
     assert.equal(e.message, want);
   }
@@ -145,7 +145,8 @@ test('match banners and toasts: the Spanish Game.ts wrote before the translation
   assert.equal(I.t('game.botTakeover'), 'Su auto pasa a la IA');
   assert.equal(I.t('game.resultWin', { team: I.t('game.teamBlue'), result: '2 – 1' }), 'Ganó Azul  ·  2 – 1');
   assert.equal(I.t('game.resultDraw', { result: '1 – 1' }), 'Empate  ·  1 – 1');
-  assert.equal(I.t('game.welcomeNew', { name: 'Pepe' }), '¡Te damos la bienvenida, Pepe! Puedes cambiar tu nombre en el perfil.');
+  // The player chose the name on the confirm sheet (sign-in PR 6): nothing to change in the profile.
+  assert.equal(I.t('game.welcomeNew', { name: 'Pepe' }), '¡Te damos la bienvenida, Pepe!');
   assert.equal(I.t('game.accountLinked'), 'Cuenta vinculada');
   assert.equal(I.t('profile.hello', { name: 'Pepe' }), 'Hola, Pepe');
   assert.equal(I.t('game.guestName'), 'Invitado');

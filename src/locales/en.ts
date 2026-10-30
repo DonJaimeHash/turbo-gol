@@ -595,18 +595,12 @@ export default {
   'profile.retryAfter': '{message} ({seconds} s)',
   // A username's password sign-in paused after many failures from new browsers (server/src/AccountsDO.ts LOGIN_USER_DAY_MAX): 30 to 60 minutes, rounded up
   'profile.retryNewDevice': 'Too many attempts on this account from new devices. Sign in from a device you have used before, or wait {minutes} min.',
-  'profile.codesTitle': 'Recovery codes',
-  'profile.codesNote': "Each code works once to reset your password if you forget it. There's no email recovery: keep them somewhere safe.",
-  'profile.copy': 'COPY',
-  'profile.codesCopied': 'Codes copied',
-  'profile.copyFailed': "Couldn't copy",
-  'profile.codesSaved': "I'VE SAVED THEM",
   'profile.tabSignIn': 'SIGN IN',
   'profile.tabRegister': 'CREATE ACCOUNT',
   'profile.tabRecover': 'RECOVER',
-  // A guest's hero (it opens the sign-up form) and its tag
+  // A guest's hero (it opens the sign-up form) and its tag: about how long a sign-up takes (a mail's round trip)
   'profile.registerFree': 'CREATE A FREE ACCOUNT',
-  'profile.registerSlot': '30 s',
+  'profile.registerSlot': '1 min',
   // The link under the sign-in form
   'profile.forgot': 'Forgot your password?',
   // Separator above the Google / Discord buttons
@@ -618,14 +612,11 @@ export default {
   'profile.signIn': 'SIGN IN',
   // Toast after signing in (password, Google or Discord: also src/game/Game.ts); {name} is the account name
   'profile.hello': 'Hi, {name}',
-  // Placeholder of the username field: length and allowed characters
-  'profile.usernameHint': '{min} to {max}: letters, numbers, _ - .',
   // Placeholder of the password field (PASSWORD_MIN, 8)
   'profile.passwordHint': { one: 'At least {count} character', other: 'At least {count} characters' },
   'profile.repeatPassword': 'Repeat password',
   'profile.passwordsDiffer': "The passwords don't match",
   'profile.createAccount': 'CREATE ACCOUNT',
-  'profile.registered': 'All set, {name}! Your account is ready. These are your recovery codes:',
   'profile.recoveryCode': 'Recovery code',
   'profile.newPassword': 'New password',
   // Button of the recover form (with a recovery code)
@@ -637,8 +628,9 @@ export default {
   'profile.loading': 'Loading…',
   // date: the sign-up date; providers: how the account signs in, e.g. 'password, Google'
   'profile.since': 'Member since {date} · {providers}',
-  // Sign-in method in the providers list, lower case
-  'profile.providerPassword': 'password',
+  // Sign-in method in the providers list, lower case: a password with the account's verified email, or with its username (an account of before)
+  'profile.providerEmail': 'email',
+  'profile.providerUsername': 'username',
   'profile.abandons': 'Matches abandoned in 24 h: {count}',
   // {minutes} is the time left on the Competitive lock, in whole minutes (rounded up)
   'profile.abandonsBanned': 'Matches abandoned in 24 h: {count} · Competitive locked for {minutes} min',
@@ -671,9 +663,8 @@ export default {
   'profile.version': '{game} {version} · protocol {protocol}',
   'profile.rename': 'CHANGE NAME',
   'profile.changePassword': 'CHANGE PASSWORD',
-  // For an account that signs in only with Google / Discord
-  'profile.setPassword': 'SET PASSWORD',
-  'profile.newCodes': 'NEW RECOVERY CODES',
+  // An account without a password (Google / Discord): a link to its verified email creates one
+  'profile.createPassword': 'CREATE A PASSWORD',
   // provider: GOOGLE or DISCORD (upper case)
   'profile.link': 'LINK {provider}',
   // A provider on the account and when it was linked ({date}); without a date: linked before it was kept
@@ -691,6 +682,8 @@ export default {
   'profile.reauthConfirm': 'CONFIRM',
   // "Confirm it's you" for a change that needs the password (unlinking down to one way in): {providers} is the linked ones, "Discord" or "Google or Discord"
   'profile.reauthPasswordOnly': "{providers} isn't enough for this: use your password.",
+  // The same, for an account that can also get a code at its verified email
+  'profile.reauthPasswordOrCode': "{providers} isn't enough for this: use your password or a code by email.",
   // Back in PERFIL after confirming: the change can be made now
   'profile.reauthDone': 'Done: you can make the change now',
   'profile.signOut': 'SIGN OUT',
@@ -723,18 +716,16 @@ export default {
   'profile.renamed': 'Name changed',
   'profile.cancel': 'CANCEL',
   'profile.changePasswordTitle': 'Change password',
-  'profile.setPasswordTitle': 'Set a password',
-  'profile.setPasswordNote': 'With a password you can also sign in with your username.',
   'profile.currentPassword': 'Current password',
   'profile.repeatNewPassword': 'Repeat new password',
   'profile.othersSignedOut': 'Your other devices will be signed out.',
   'profile.save': 'SAVE',
   'profile.noMatch': "They don't match",
   'profile.passwordUpdated': 'Password updated',
-  'profile.newCodesTitle': 'New recovery codes',
-  'profile.newCodesNote': 'Your old codes will stop working.',
-  'profile.generate': 'GENERATE',
-  'profile.newCodesIntro': 'Your new codes:',
+  // A password typed to confirm it is you, or the current one when changing it, is wrong
+  'profile.wrongPassword': 'Wrong password',
+  // PROFILE as a guest on a TV, under SIGN IN WITH YOUR PHONE: accounts are made on the phone
+  'profile.tvNoAccount': 'No account? Create one free on your phone.',
 
   // mn-keypad (src/ui/components/keypad.ts): the on-screen keys of a TV remote or a controller.
   // The case and delete keys are drawn (abc / ABC, an arrow): these name them for a screen reader
@@ -781,10 +772,91 @@ export default {
   // Email accounts (sign-in PR 8: src/ui/screens/profile.ts and accountLinks.ts). {providers} is the
   // configured sign-in providers ('Discord', 'Google or Discord'); each text that names them has a
   // variant without them, for a server with none. {email} is an address the player typed or proved.
+  // CREATE ACCOUNT's first step: the email field, its note, the button
+  'auth.email': 'Email',
+  'auth.signupNote': "We'll send you a code to confirm your email.",
+  'auth.continue': 'CONTINUE',
+  // A button under the email field when its domain looks like a typo ('gmial.com')
+  'auth.typo': 'Did you mean {email}?',
+  'auth.providersHint': 'Already have an account with {providers}? Use that button: no need for another.',
+  // While accounts of before still sign in with a username (it opens the SIGN IN tab)
+  'auth.legacyHint': 'Have an account with a username? Sign in with it and add your email.',
+  // A mailed sign-up link opened while this browser is signed in to another account
+  'auth.signOutNote': "You'll be signed out of {name}.",
+  // Inside another app's browser (Discord, Instagram...), where Google refuses to sign in; {site} is this page's host
+  'auth.inAppGoogle': 'Open {site} in your browser to sign in with Google.',
+  // The anti-bot check's script could not load or run here (an ad blocker); {site} is this page's host
+  'auth.antiBotBlocked': "The anti-bot check couldn't load. Allow {site} in your blocker, or sign in with {providers}.",
+  'auth.antiBotBlockedNoProviders': "The anti-bot check couldn't load. Allow {site} in your blocker.",
+  // The server cannot send mail now (paused, or not set up)
+  'auth.emailPausedProviders': "We can't send emails right now. Try again in a few minutes, or sign in with {providers}.",
+  // The code step: the code and the finish on one screen
+  'auth.codeSent': 'We sent a code to {email}.',
   // The code field's label, also read out by a screen reader
   'auth.codeLabel': '6-digit code',
+  'auth.codeOk': 'Code accepted',
+  // count: the tries this code has left
+  'auth.codeWrong': { one: 'Wrong code. {count} try left.', other: 'Wrong code. {count} tries left.' },
+  // CREATE ACCOUNT pressed before the code was accepted
+  'auth.codeFirst': 'Type the 6-digit code first.',
+  // The sign-up's link opened (maybe on another device): instead of the code field
+  'auth.linkOk': 'Email confirmed: {email}',
+  'auth.signupName': 'In-game name',
+  'auth.signupNameHint': "Everyone sees it. Don't use your real name.",
+  // The first part of the name a new account is offered ('Player4821')
+  'auth.signupNameWord': 'Player',
+  'auth.signupNews': 'Send me Turbogol news by email (optional)',
+  // {name}: a free name the server suggests, put in the field
+  'auth.signupNameTaken': 'That name is taken. Try {name}.',
+  'auth.signupNameReserved': 'That name is reserved. Try {name}.',
+  // The resend button while it waits, in whole seconds, then ready
+  'auth.resendIn': 'RESEND IN {seconds} S',
+  'auth.resend': 'RESEND',
+  // Said once by a screen reader when RESEND turns on
+  'auth.resendReady': 'You can ask for another code now.',
+  'auth.resent': 'We sent the same code again.',
+  'auth.otherEmail': 'Use another email',
+  'auth.haveAccount': 'I HAVE AN ACCOUNT',
+  'auth.notThere': 'Not there? Check spam. If this email already has an account, the email says how to sign in.',
+  // A dead code or link: start again with a new one
+  'auth.askAgain': 'ASK AGAIN',
   // Beside a password field: shows what was typed while pressed
   'auth.show': 'SHOW',
+  // SIGN IN: one field for an email, or the username of an account of before
+  'auth.identity': 'Email or username',
+  // The sign-in tab's first button: the last way this device signed in; {method} is 'email', 'Google' or 'Discord'
+  'auth.continueAs': 'Continue as {name} · {method}',
+  'auth.methodEmail': 'email',
+  'auth.emptyIdentity': 'Enter your email or username',
+  'auth.emptyPassword': 'Enter your password',
+  // Under a wrong email or password
+  'auth.badCredentialsHint': 'Created your account with {providers}? Use that button.',
+  // A wrong username or password (the username sign-in of before)
+  'auth.badLegacyCredentials': 'Wrong username or password',
+  'auth.badLegacyHint': 'If you already added an email to your account, sign in with it.',
+  // After error.account.legacy_closed, when there are providers
+  'auth.legacyClosedProviders': 'If you linked {providers}, use that button.',
+  'auth.newAccount': 'CREATE A NEW ACCOUNT',
+  // Forgot your password?
+  'auth.forgotNote': "Enter your account's email and we'll send you a link to choose a new password.",
+  'auth.sendLink': 'SEND LINK',
+  // The title of a sheet that says a mail is on its way
+  'auth.checkMail': 'Check your email',
+  'auth.forgotSent': 'If {email} has an account, a link is on its way. Check spam.',
+  // The reset link's sheet ('Create a password' for an account without one); {name} is the account's name
+  'auth.resetTitle': 'New password',
+  'auth.resetCreateTitle': 'Create a password',
+  'auth.resetFor': 'For the account {name} ({email})',
+  'auth.resetSave': 'SAVE AND SIGN IN',
+  'auth.resetDone': 'Password saved. Your other devices were signed out.',
+  'auth.resetElsewhere': 'If you play in another browser, sign in there with your email and the new password.',
+  'auth.resetDeadLink': 'This link expired or was already used. If you already saved the password, sign in; otherwise ask for a new one.',
+  // PROFILE's CREATE A PASSWORD sent its link
+  'auth.passwordLinkSent': 'We sent a link to {email} to create your password.',
+  'auth.addEmailFirst': 'Add an email to create a password.',
+  // "Confirm it's you" by a code to the account's own email
+  'auth.reauthCode': 'SEND A CODE TO {email}',
+  'auth.reauthCodeTitle': 'Type the code',
 
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Choose a username',
@@ -801,6 +873,8 @@ export default {
   'account.issue.passwordHasUsername': "The password can't contain your username",
   'account.issue.passwordHasEmail': "The password can't contain your email",
   'account.issue.passwordRepeated': "The password can't be a single repeated character",
+  // A new name too close to a protected account's (the server's name_lookalike); {name} is a free one it suggests
+  'account.issue.usernameLookalike': 'That name is too close to another. Try {name}.',
 
   // Account client errors (src/net/AccountClient.ts)
   // OAuth (Google / Discord) round trip came back with #auth=error:cancelled; menu toast
@@ -855,17 +929,37 @@ export default {
   // Generic: the server says which username rule failed
   'error.account.bad_username': 'Invalid username',
   'error.account.bad_password': 'Invalid password',
-  'error.account.bad_credentials': 'Wrong username or password',
+  // A wrong email or password (the sign-in by email; the username one says auth.badLegacyCredentials)
+  'error.account.bad_credentials': 'Wrong email or password',
   // The account was created with Google / Discord and has no password
   'error.account.no_password': 'This account signs in with Google or Discord',
   'error.account.banned': 'Account suspended',
   'error.account.account_required': 'You need an account (not a guest)',
-  // Renaming an account that has a password
-  'error.account.password_required': 'Enter your password to change your name',
-  'error.account.username_taken': 'That username is taken',
+  // The project's maintainer account confirms it is them with its password, never a code by email
+  'error.account.password_required': 'This account confirms it is you with its password',
+  'error.account.username_taken': 'That name is taken',
   // Too many failed sign-ins; the profile screen adds the seconds left (profile.retryAfter)
   'error.account.throttled': 'Too many attempts, wait a moment',
   'error.account.bad_recovery': 'Wrong username or recovery code',
+  // Email accounts (sign-in PR 7's routes)
+  'error.account.bad_email': "Check the email: it doesn't look valid",
+  // A wrong code without its tries left (auth.codeWrong says them)
+  'error.account.code_wrong': 'Wrong code',
+  'error.account.code_expired': 'The code expired. Ask for a new one.',
+  'error.account.link_invalid': 'This link expired or was already used. Ask for a new one.',
+  // Another sign-up took that email a moment ago
+  'error.account.email_taken': 'That email already has an account. Sign in with it.',
+  'error.account.already_created': 'Your account is already created: sign in.',
+  'error.account.email_rate_limited': 'We already sent you several emails. Wait a while before asking for another.',
+  'error.account.email_paused': "We can't send emails right now. Try again in a few minutes.",
+  'error.account.email_unconfigured': "We can't send emails right now. Try again in a few minutes.",
+  'error.account.email_required': 'Add an email to your account first.',
+  // Usernames no longer sign in (the cutoff); auth.legacyClosedProviders follows when there are providers
+  'error.account.legacy_closed': "You can't sign in with a username anymore. If your account has an email, sign in with it and your password.",
+  // A page of before called a route accounts no longer use (register, recovery codes)
+  'error.account.gone': 'Reload the page: accounts are now created with an email.',
+  'error.account.name_lookalike': 'That name is too close to another',
+  'error.account.name_reserved': 'That name is reserved',
   'error.account.rename_too_soon': 'You can change your name once every 30 days',
   // Physics presets (Settings > Experimental): the account already holds 10
   'error.account.too_many': '10 presets at most: delete one first',
@@ -1816,7 +1910,7 @@ export default {
   // Menu toast after a drawn match; {result} as in game.resultWin
   'game.resultDraw': 'Draw  ·  {result}',
   // Toast after creating an account with Google / Discord; {name} is the new account name. The profile opens right after
-  'game.welcomeNew': 'Welcome, {name}! You can change your name in your profile.',
+  'game.welcomeNew': 'Welcome, {name}!',
   // Toast after linking a Google / Discord login to the signed-in account
   'game.accountLinked': 'Account linked',
   // Guest name in the menus before the first guest session (and without an online server); online the server names the guest, shown as guest.name ('Guest 4821')

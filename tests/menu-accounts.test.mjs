@@ -70,7 +70,7 @@ function fakeServer(handlers) {
 
 const SESSION = (name, expiresAt) => ({ kind: 'account', playerId: 'abcdef0123456789', name, session: 'jwt-' + name, expiresAt });
 
-test('AccountClient: login sends the client key (never the password), adopts the session, keeps a hint; logout clears both', async () => {
+test('AccountClient: the username sign-in sends the client key (never the password), adopts the session, keeps a hint; logout clears both', async () => {
   const srv = fakeServer({
     '/api/auth/login': (b) => res(200, SESSION('Tomi', Date.now() + 3600_000)),
     '/api/auth/logout': () => res(200, { ok: true }),
@@ -79,7 +79,7 @@ test('AccountClient: login sends the client key (never the password), adopts the
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage });
   let changes = 0;
   a.subscribe(() => changes++);
-  await a.login('Tomi', 'correct horse battery');
+  await a.legacySignIn('Tomi', 'correct horse battery');
   const sent = srv.calls[0].body;
   assert.equal(sent.username, 'Tomi');
   assert.notEqual(sent.password, 'correct horse battery');
@@ -90,24 +90,28 @@ test('AccountClient: login sends the client key (never the password), adopts the
   await a.logout();
   assert.equal(a.signedIn, false);
   assert.equal(a.hintName, null);
-  await assert.rejects(a.login('', ''), (e) => e instanceof AC.AccountError && e.code === 'empty');
+  await assert.rejects(a.legacySignIn('', ''), (e) => e instanceof AC.AccountError && e.code === 'empty');
 });
 
-test("AccountClient: server errors become AccountError with the code and the player's text for it; register validates first and sends the anti-bot token", async () => {
+test("AccountClient: server errors become AccountError with the code and the player's text for it (one bad_credentials, a text per form); the sign-up checks the name and the password first", async () => {
   const srv = fakeServer({
     '/api/auth/login': () => res(401, { error: 'bad_credentials', message: 'Usuario o contraseña incorrectos' }),
-    '/api/auth/register': (b) => (b.turnstileToken === 'tok' ? res(200, { ...SESSION(b.username, Date.now() + 3600_000), recoveryCodes: ['AAAA-BBBB'] }) : res(403, { error: 'turnstile_failed' })),
+    '/api/auth/signin': () => res(401, { error: 'bad_credentials', message: 'Correo o contraseña incorrectos' }),
+    '/api/auth/signup/finish': (b) => res(200, SESSION(b.username, Date.now() + 3600_000)),
   });
-  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, antiBot: async () => 'tok' });
+  const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null, session: null, antiBot: async () => 'tok' });
   // The client's text for the code (English outside a browser; src/locales/es.ts has the server's Spanish).
-  await assert.rejects(a.login('x', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Wrong username or password');
-  await assert.rejects(a.register('ab', 'a fine password'), (e) => e.code === 'bad_username' && e.message === 'The username must be 3 to 16 characters long');
-  await assert.rejects(a.register('Mariana', 'short'), (e) => e.code === 'bad_password' && e.message === 'The password must be at least 8 characters');
-  const n = srv.calls.length;
-  assert.equal(n, 1, 'invalid input never reaches the server');
-  const r = await a.register('Mariana', 'a fine password');
-  assert.deepEqual(r.recoveryCodes, ['AAAA-BBBB']);
-  assert.equal(srv.calls.at(-1).body.turnstileToken, 'tok');
+  await assert.rejects(a.legacySignIn('x', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Wrong username or password');
+  await assert.rejects(a.signIn('x@example.com', 'y'), (e) => e instanceof AC.AccountError && e.status === 401 && e.code === 'bad_credentials' && e.message === 'Wrong email or password');
+  const proof = { attempt: 'a'.repeat(43), code: '123456' };
+  await assert.rejects(a.signupFinish(proof, { username: 'ab', password: 'a fine password', news: false, email: 'mariana@example.com' }), (e) => e.code === 'bad_username' && e.message === 'The username must be 3 to 16 characters long');
+  await assert.rejects(a.signupFinish(proof, { username: 'Mariana', password: 'short', news: false, email: 'mariana@example.com' }), (e) => e.code === 'bad_password' && e.message === 'The password must be at least 8 characters');
+  await assert.rejects(a.signupFinish(proof, { username: 'Mariana', password: 'my mariana box', news: false, email: 'mariana@example.com' }), (e) => e.code === 'bad_password' && e.message === "The password can't contain your username");
+  await assert.rejects(a.signupFinish(proof, { username: 'Juana', password: 'mariana.perez22', news: false, email: 'Mariana.Perez+tg@gmail.com' }), (e) => e.code === 'bad_password' && e.message === "The password can't contain your email");
+  assert.equal(srv.calls.length, 2, 'invalid input never reaches the server');
+  const s = await a.signupFinish(proof, { username: 'Mariana', password: 'a fine password', news: true, email: 'mariana@example.com' });
+  assert.equal(s.name, 'Mariana');
+  assert.equal(srv.calls.at(-1).body.turnstileToken, undefined, 'the finish carries the mailbox proof, no anti-bot token');
   assert.equal(a.account.name, 'Mariana');
 });
 
@@ -115,7 +119,7 @@ test("AccountClient: a code without a server text still gets the client's text; 
   let answer = res(429, { error: 'rate_limited', message: 'rate_limited' });
   const srv = fakeServer({ '/api/auth/login': () => answer });
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage: null });
-  const rejects = (check) => assert.rejects(a.login('Tomi', 'a fine password'), (e) => e instanceof AC.AccountError && check(e));
+  const rejects = (check) => assert.rejects(a.legacySignIn('Tomi', 'a fine password'), (e) => e instanceof AC.AccountError && check(e));
   await rejects((e) => e.code === 'rate_limited' && e.status === 429 && e.message === 'Too many attempts, wait a minute');
   answer = res(429, { error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: 5000 });
   await rejects((e) => e.code === 'throttled' && e.retryAfterMs === 5000 && e.message === 'Too many attempts, wait a moment');
@@ -514,7 +518,7 @@ test('AccountClient.subscribe: every listener hears each change, an unsubscribed
       throw new Error('boom');
     });
     const off = a.subscribe(() => heard.push('game'));
-    await a.login('Tomi', 'correct horse battery');
+    await a.legacySignIn('Tomi', 'correct horse battery');
     assert.deepEqual(heard, ['menu', 'game']);
     off();
     await a.logout();
@@ -532,7 +536,7 @@ test('the account hint keeps { name, id }; a hint from before the id reads as no
     '/api/auth/logout': () => res(200, { ok: true }),
   });
   const a = new AC.AccountClient({ fetchFn: srv.fetchFn, storage });
-  await a.login('Tomi', 'correct horse battery');
+  await a.legacySignIn('Tomi', 'correct horse battery');
   assert.deepEqual(JSON.parse(storage.getItem(AC.ACCOUNT_HINT_KEY)), { name: 'Tomi', id: 'abcdef0123456789' });
   assert.deepEqual(AC.readAccountHint(storage), { name: 'Tomi', id: 'abcdef0123456789' });
   assert.equal(a.hintId, 'abcdef0123456789');
@@ -682,13 +686,14 @@ test("AccountClient cars and the hosts' shop: Bearer, paths and bodies; a car pi
   a.account = null;
   srv.calls.length = 0;
   const odd = new AC.AccountClient({ fetchFn: fakeServer({ '/api/auth/login': () => res(200, { ...SESSION('Tomi', Date.now() + 3600_000), car: 'batmobile' }) }).fetchFn, storage: null });
-  await odd.login('Tomi', 'correct horse battery');
+  await odd.legacySignIn('Tomi', 'correct horse battery');
   assert.equal('car' in odd.account, false);
 });
 
-// ---- sign-in PR 8: the fields of the email forms (src/ui/screens/common.ts) and mn-keypad's kinds -----------
+// ---- sign-in PR 8: PERFIL's email forms (src/ui/screens/profile.ts, accountLinks.ts, common.ts) -------------
 //
-// The fields run on a small fake DOM (enough for src/ui/dom.ts h()).
+// The fields run on a small fake DOM (enough for src/ui/dom.ts h()); the screens, which need the
+// browser, are read as source, as the tests above read profile.ts.
 
 /** A fake element: attributes, properties, children, listeners, classList. */
 class FakeEl {
@@ -756,6 +761,17 @@ const withDom = async (fn) => {
 
 const C = await import('../src/ui/screens/common.ts');
 const K = await import('../src/ui/components/keypad.ts');
+const { readFile } = await import('node:fs/promises');
+const PROFILE = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
+const LINKS = await readFile(new URL('../src/ui/screens/accountLinks.ts', import.meta.url), 'utf8');
+/** One `const name = …` function of a screen's source, up to the next one at its indent. */
+const fnOf = (src, name) => {
+  const m = new RegExp(`\\n( *)(?:export )?(?:async )?(?:const|function) ${name}\\b`).exec(src);
+  assert.ok(m, name);
+  const rest = src.slice(m.index + 1);
+  const next = rest.slice(1).search(new RegExp(`\\n${m[1]}(?:/\\*\\*|//|(?:export )?(?:async )?(?:const|function|let) )`));
+  return next < 0 ? rest : rest.slice(0, next + 1);
+};
 
 test('field(): its hint and its error name the input (aria-describedby), the error sets aria-invalid in a polite live line; a note is no error', async () => {
   await withDom(() => {
@@ -838,4 +854,78 @@ test("mn-keypad's digits (a mailed code: six, 0-9) and email (lower case, + and 
   v = '';
   for (const k of ['A', 'n', 'a', '+', 't', 'g', '@', 'x', '.', 'c', 'o', 'space', ' ']) v = K.keypadType(v, k, 'email', 254);
   assert.equal(v, 'ana+tg@x.co');
+});
+
+test("PERFIL's sign-in routes on '@': an address by email, a username by the legacy sign-in, and after the cutoff legacy_closed and CREAR CUENTA NUEVA with no request", () => {
+  const login = fnOf(PROFILE, 'loginForm');
+  assert.match(login, /const route = signInRoute\(user\.input\.value, legacyPhase\(\)\);/);
+  const closed = login.indexOf("if (route.kind === 'closed')");
+  assert.ok(closed > 0 && closed < login.indexOf('await acc.'), 'the cutoff answers before any request');
+  assert.match(login.slice(closed, login.indexOf('try {', closed)), /user\.error\(legacyClosedText\(\)\);\s*newAccount\.hidden = false;\s*return;/);
+  assert.match(login, /if \(route\.kind === 'email'\) await acc\.signIn\(route\.email, pass\.input\.value\);\s*else await acc\.legacySignIn\(route\.username, pass\.input\.value\);/);
+  assert.match(login, /route\.kind === 'legacy' \? t\('auth\.badLegacyHint'\) : providers\.length > 0 \? t\('auth\.badCredentialsHint', \{ providers \}\) : null/, "bad_credentials' hint by branch");
+  assert.match(login, /field\(closed \? t\('auth\.email'\) : t\('auth\.identity'\)/, '"Email or username" while usernames sign in');
+});
+
+test('PERFIL creates an account on one screen: the code, the name, the password, the news switch, CREAR CUENTA, REENVIAR, another email, YA TENGO CUENTA', () => {
+  const code = fnOf(PROFILE, 'signupCodeForm');
+  for (const part of ['codeField(', 'signupFinishFields(menu, a.email', "primary(t('profile.createAccount')", "'aria-disabled': 'true'", "t('auth.otherEmail')", "t('auth.haveAccount')", "t('auth.notThere')", 'resendTick = paint']) assert.ok(code.includes(part), part);
+  assert.match(code, /acc\.signupCheck\(\{ attempt: a\.attempt, code: c \}\)/, 'the sixth digit checks it');
+  assert.match(code, /resend\.disabled = left > 0;/, 'REENVIAR is off (the arrows skip it) until its minute');
+  assert.match(code, /if \(waited && left <= 0\) live\.textContent = t\('auth\.resendReady'\);/, 'said once when it turns on');
+  const finish = fnOf(LINKS, 'signupFinishFields');
+  assert.match(finish, /toggleSwitch\('auth-news', t\('auth\.signupNews'\), \(\) => news/);
+  assert.match(finish, /let news = false;/, 'the news switch starts at NO');
+  assert.match(finish, /if \(e\.detail\.suggest !== undefined\) name\.input\.value = e\.detail\.suggest;/, "a refused name: the server's free one in the field");
+  const email = fnOf(PROFILE, 'signupEmailForm');
+  assert.match(email, /if \(kept === null \|\| kept\.email !== address\)/, 'Back then CONTINUAR with the same address: the same code, no new mail');
+});
+
+test('the autocomplete attributes: username and current-password to sign in; email to sign up; nickname for the name; the address as a read-only username before every new-password', () => {
+  const login = fnOf(PROFILE, 'loginForm');
+  assert.match(login, /autocomplete: 'username'/);
+  assert.match(login, /autocomplete: 'current-password', maxLength: 128, enterkeyhint: 'go', reveal: true/);
+  assert.match(fnOf(PROFILE, 'signupEmailForm'), /type: 'email', autocomplete: 'email'/);
+  const finish = fnOf(LINKS, 'signupFinishFields');
+  assert.match(finish, /autocomplete: 'nickname'/);
+  const pw = fnOf(LINKS, 'newPasswordFields');
+  assert.match(pw, /autocomplete: 'new-password'/);
+  assert.match(pw, /nodes: \[\.\.\.\(user !== null \? \[user\] : \[\]\), pass\.el/, 'the username first');
+  assert.match(fnOf(LINKS, 'passwordManagerUser'), /autocomplete: 'username', readOnly: true, value, tabindex: '-1', 'aria-hidden': 'true'/);
+  assert.match(fnOf(PROFILE, 'passwordDialog'), /body: \[passwordManagerUser\(who\), old\.el, \.\.\.pw\.nodes/);
+  assert.match(fnOf(LINKS, 'resetSheet'), /newPasswordFields\(who\.email, t\('profile\.newPassword'\)\)/);
+});
+
+test('the code step comes back after a reload: PERFIL opens on it while sessionStorage keeps the attempt, and the page brings PERFIL up for it', () => {
+  assert.match(PROFILE, /else if \(!acc\.signedIn && firstShow && acc\.signupAttempt\(\) !== null\) \{\s*tab = 'register';\s*step = 'code';/);
+  assert.match(fnOf(PROFILE, 'guestView'), /const kept = tab === 'register' && step === 'code' \? acc\.signupAttempt\(\) : null;/);
+  const install = fnOf(LINKS, 'installAccountLinks');
+  assert.match(install, /if \(acc\.signupAttempt\(\) !== null && !acc\.signedIn\) \{\s*await sheetsReady\(menu\);\s*if \(!acc\.signedIn && acc\.signupAttempt\(\) !== null\) openProfileTab\(menu, 'register', null\);/);
+});
+
+test("a mailed link's token leaves the URL at once and is kept until its POST settles; the sheet waits for the menus", () => {
+  const install = fnOf(LINKS, 'installAccountLinks');
+  const firstAwait = install.indexOf('await ');
+  for (const step of ['parseAccountLink(location.pathname, location.hash)', "history.replaceState(history.state, '', '/' + location.search)", 'acc.keepPendingLink(fromUrl)', 'acc.pendingLink()']) {
+    const at = install.indexOf(step);
+    assert.ok(at > 0 && at < firstAwait, step + ' before the first wait');
+  }
+  assert.match(fnOf(LINKS, 'openAccountLink'), /^[\s\S]*?await sheetsReady\(menu\);/, 'the menus up, no other sheet');
+});
+
+test('Back, B or Esc steps back: the code step to the address (the attempt kept), the recovery form to the sign-in; else PERFIL goes', () => {
+  const back = /back: \(\) => \{([\s\S]*?)\n {4}\},\n/.exec(PROFILE);
+  assert.ok(back, 'the screen handles Back');
+  assert.match(back[1], /if \(tab === 'register' && step === 'code'\) \{\s*step = 'email';[\s\S]*?return true;/);
+  assert.match(back[1], /if \(tab === 'recover'\) \{\s*tab = 'login';[\s\S]*?return true;/);
+  assert.doesNotMatch(back[1], /dropSignupAttempt/, 'the attempt stays: CONTINUAR with the same address comes back to its code');
+  assert.match(back[1], /return false;\s*$/);
+});
+
+test('a TV makes no account and types no email: its PERFIL is the phone tile and "create one on your phone"', () => {
+  const guest = fnOf(PROFILE, 'guestView');
+  const tvBranch = guest.slice(guest.indexOf('if (tv())'), guest.indexOf('loadAuthConfig();'));
+  assert.match(tvBranch, /openTvSignIn\(menu\)/);
+  assert.match(tvBranch, /t\('profile\.tvNoAccount'\)/);
+  assert.doesNotMatch(tvBranch, /Form\(\)|field\(|oauthButtons/, 'no form and no provider button on a TV');
 });

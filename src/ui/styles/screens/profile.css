@@ -375,3 +375,76 @@ html[data-layout='portrait'] .mn-prof-form {
   margin: 0.25rem 0 0.75rem;
   color: var(--text);
 }
+
+/* ---- Email accounts (sign-in PR 8: profile.ts, accountLinks.ts, common.ts field / codeField) ----- */
+/* A password and its MOSTRAR side by side; the field's hint and its accepted line (the error line's place). */
+.mn-field-row {
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.mn-field-row > .mn-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.mn-btn.mn-field-show {
+  flex: none;
+  padding-inline: 0.875rem;
+}
+
+.mn-field-hint {
+  color: var(--text-2);
+  font-size: var(--t-small);
+}
+
+.mn-field-error.mn-field-ok {
+  color: var(--ok);
+}
+
+/* The mailed code: one wide field, its digits spaced. */
+.mn-input.mn-code-input {
+  font-family: var(--font-mono);
+  letter-spacing: 0.3em;
+}
+
+/* CREAR CUENTA before the code is accepted: focusable (a remote keeps its place), drawn off. */
+.mn-btn[aria-disabled='true'] {
+  opacity: 0.55;
+}
+
+/* The address a password manager saves with the password: in the form, out of sight. */
+.mn-pm-user,
+.mn-prof-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.mn-prof-sent,
+.mn-prof-ok,
+.mn-prof-hint,
+.mn-prof-pwnote {
+  margin: 0 0 0.75rem;
+}
+
+.mn-prof-ok {
+  color: var(--ok);
+}
+
+.mn-prof-code-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.mn-prof-code .mn-set-row,
+.mn-sheet .mn-set-row {
+  margin-block: 0.25rem 0.5rem;
+}
