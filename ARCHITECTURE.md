@@ -720,8 +720,12 @@ src/net/
                         with decay / snap), counters (rollbacks, desyncs, resyncs, mispredictions)
   NetStats.ts           loss estimate from snapshot tick gaps, rate meters, NetStatsView (phase 1
                         fields + the P2P per-peer rows)
-  account.ts            accounts / ranked / lobby JSON contract shared with server/, username and
-                        password rules, clientPasswordKey (PBKDF2 in the browser), regions
+  account.ts            accounts / ranked / lobby JSON contract shared with server/, username rules
+                        (reserved names by skeleton, nameSkeleton) and password rules (passwordIssue),
+                        the email helpers (normalizeEmail, emailCanon, maskEmail), passwordKey (the
+                        v2 key, PBKDF2 in the browser over one fixed salt: the server stores PBKDF2 of
+                        it again over an HMAC with its PASSWORD_PEPPER) and legacyPasswordKey (the
+                        v1 key salted with the username, only to prove an old password), regions
   rating.ts             Weng-Lin (OpenSkill) Bradley-Terry team rating, abandon rules, tiers,
                         placement, MMR scale, abandon ban ladder (shared with server/)
   cosmetics.ts          the cars online (never in the nodes' bundle): a seat's car on the wire as

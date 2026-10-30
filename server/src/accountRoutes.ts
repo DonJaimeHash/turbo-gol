@@ -1,8 +1,10 @@
 /**
  * Worker routes for registered accounts (the guest flow stays in index.ts):
  *
- *   POST /api/auth/register   { username, passwordV2, turnstileToken? } -> RegisterAnswer + refresh cookie (the same
- *                             Turnstile gate as POST /api/guest when it is on)
+ *   The email accounts (sign-in PR 7: signup/*, code/resend, signin, forgot, reset/*, reauth/code*,
+ *   /api/me/password and its link) are listed with their section below ("email accounts").
+ *   POST /api/auth/register, /api/auth/recovery-codes, /api/auth/password -> 410 gone (sign-in PR 7):
+ *                             accounts are made by email, and a Bearer alone never adds a way in (I4)
  *   POST /api/auth/login      { username, password, passwordV2, turnstileToken } -> AccountSession + refresh cookie
  *                             (level 2) | 401 bad_credentials for every refusal (an account with a verified email
  *                             too: it signs in by email) | 403 turnstile_failed | 429 throttled { retryAfterMs }
@@ -14,16 +16,10 @@
  *   POST /api/auth/sessions/revoke Bearer { id }                -> { revoked } (that device signed out)
  *   POST /api/auth/sessions/revoke-all Bearer                   -> { revoked } + cookie cleared (every device, this one too)
  *   POST /api/auth/recover    { username, code, passwordV2, turnstileToken } -> AccountSession + { codesLeft } + cookie
- *   POST /api/auth/password   Bearer { oldPassword, oldPasswordV2, passwordV2 } -> { ok } (every other device signed out); an
- *                             account without a password (Google / Discord only) sets its first one with a
- *                             fresh session instead (403 reauth_required: PERFIL's "confirm it is you"), and
- *                             its other devices stay signed in
- *   POST /api/auth/recovery-codes Bearer { password }           -> { recoveryCodes }; without a password: a fresh session
- *     Neither from a TV's session (403 tv_session). A 1-hour Bearer alone (a leak, a TV, a script)
- *     no longer turns into a permanent username-and-password way in.
- *   POST /api/me/username     Bearer { username, password?, passwordV2? } -> AccountSession (new name in the token);
- *                             a password account proves its password (the legacy key of the OLD name, and the
- *                             current key, which no name salts: a legacy record is re-keyed to it)
+ *   POST /api/me/username     Bearer { username } -> AccountSession (new name in the token) | 409 username_taken /
+ *                             name_lookalike { suggest } | 403 reauth_required { level: 2 } for a legacy password
+ *                             (salted with the name: "confirm it's you" re-keys it first), and without fresh(2)
+ *                             for a password that signs in by the username (no verified email). Not from a TV.
  *   GET  /api/me              Bearer (account)                  -> MeInfo
  *   POST /api/me/training     Bearer (account) { records }      -> { records }: the training records of
  *                             src/game/trainingRecords.ts merged into the account (best per pack, the
@@ -65,11 +61,13 @@
  *
  * Levels (the sign-in design's R6). Each credential event gives the device's refresh family a
  * level, stored with it (accountStore.ts refresh.auth_lvl, method) and signed into the session as
- * `aal` beside `aat`: 2 a typed password (register, login, recover, reauth), 1 a press on the
- * provider's page (Google's account chooser, Discord's prompt=consent), 0 nothing (a TV, a family
- * from before levels). A refresh keeps it and never raises it. requireFresh(c, level) asks for
- * it: a link, a first password and new codes without one need 1; an unlink 1, or 2 when one way
- * in would be left; the maintainer routes (nodeRoutes.ts) always 2, which only a password gives.
+ * `aal` beside `aat`: 2 a typed password (signin, login, recover, reauth) or a mailbox proof that
+ * sets one (signup/finish, reset) or a code from the account's mailbox (reauth/code/verify), 1 a
+ * press on the provider's page (Google's account chooser, Discord's prompt=consent), 0 nothing (a
+ * TV, a family from before levels). A refresh keeps it and never raises it. requireFresh(c, level)
+ * asks for it: a link needs 1; an unlink 1, or 2 when one way in would be left; the maintainer
+ * routes (nodeRoutes.ts) always 2, which a maintainer reaches with its password only (reauth/code
+ * refuses NODE_TRUSTED_OPERATORS).
  *   POST /api/auth/tv/start   { turnstileToken? } (no session)  -> TvStartAnswer: a TV signing in with the phone (the
  *                             Turnstile gate as POST /api/guest; 503 busy when its network holds too many codes)
  *   POST /api/auth/tv/info    Bearer (account) { code }         -> TvInfoAnswer: where that TV is (request.cf at its
@@ -122,7 +120,7 @@
  * the `__Host-tg_rt` cookie (HttpOnly, Secure, SameSite=Strict, Path=/, 30 days sliding, rotated on
  * every refresh). SameSite=Strict plus the Origin check below keep other sites from using it.
  * The device cookie `__Host-tg_dv` (HttpOnly, Secure, SameSite=Strict, 180 days), set at each
- * password sign-in (login, register, recover): "<userId>.<id>.<HMAC>", the HMAC under a key of its
+ * password sign-in (signin, signup/finish, reset, login, recover): "<userId>.<id>.<HMAC>", the HMAC under a key of its
  * own (HKDF of JWT_SECRET, never a token signature). It is no credential and logout keeps it: it
  * only says this browser signed in to that account before, so a username past AccountsDO's daily
  * cap of failures from unknown browsers still takes this browser's sign-ins (counted per device).
@@ -133,19 +131,23 @@
  * origin = PUBLIC_ORIGIN when set, else the request's own.
  */
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson, trustedOperatorIds } from './env';
 import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
-import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
-import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
+import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
+import type { AccountSession, CodeResendAnswer, CodeStartAnswer, LeaderboardAnswer, OAuthProvider, PasswordLinkAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, RefreshGrant, UserRef } from './accountStore';
 import { DEV_NAME_PROBLEM, devSubOf } from './accountStore';
-import { devMailResponse, isDevAuth } from './mail';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { firstUse } from './limits';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
 import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
+import { composeMail, deliver, devMailResponse, isDevAuth, isLocalDev, linkOrigin } from './mail';
+import type { Mailer, MailMessage } from './mail';
+import { FAILURES, mailKilled } from './mailCaps';
+import { renderMail } from './mailTemplates';
+import type { MailOrder } from './accountStore';
 
 export const ACCOUNT_SESSION_TTL_SECONDS = 60 * 60;
 /**
@@ -161,7 +163,6 @@ const DEVICE_COOKIE = '__Host-tg_dv';
 const REFRESH_MAX_AGE_S = 30 * 24 * 60 * 60;
 const DEVICE_MAX_AGE_S = 180 * 24 * 60 * 60;
 const OAUTH_TTL_S = 600;
-const RECOVERY_CODES = 8;
 /** Crockford base32 without I L O U: unambiguous when typed from a screenshot. */
 const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -594,6 +595,10 @@ export interface RouteContext {
   limited: (key: string, max: number) => boolean;
   /** The Turnstile gate (index.ts): null = pass, else the refusal. Guards account creation like guest creation. */
   antiBot: (token: unknown) => Promise<Response | null>;
+  /** The request's ctx.waitUntil (index.ts): a mail goes out after the answer (R7). Absent (tests): the send still runs. */
+  waitUntil?: (p: Promise<unknown>) => void;
+  /** mail.ts chooseMailer's for this request (the stub off production): the email routes refuse with 503 without one. */
+  mailer?: Mailer;
 }
 
 /**
@@ -611,29 +616,6 @@ function proofOf(v1: unknown, v2: unknown): PasswordProof {
   return { ...(isClientKey(v1) ? { v1 } : {}), ...(isClientKey(v2) ? { v2 } : {}) };
 }
 
-async function register(c: RouteContext): Promise<Response> {
-  if (c.limited('reg:' + ipOf(c.request), 5)) return error(429, 'rate_limited', 'Demasiados registros desde tu red, inténtalo más tarde');
-  const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown }>(c.request);
-  if (!b) return error(400, 'bad_request');
-  const blocked = await c.antiBot(b.turnstileToken);
-  if (blocked !== null) return blocked;
-  const problem = usernameProblem(b.username);
-  if (problem !== null) return error(400, 'bad_username', problem);
-  const nk = newKeyOf(b.passwordV2, b.password);
-  if (nk === null) return error(400, 'bad_password', 'Contraseña inválida');
-  const codes = Array.from({ length: RECOVERY_CODES }, newRecoveryCode);
-  const refresh = newRefreshToken();
-  const r = await accountsJson<UserRef>(c.env, '/register', {
-    username: b.username,
-    pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)),
-    recovery: await Promise.all(codes.map(recoveryCodeHash)),
-    refresh: await grantFor(refresh, c.request),
-  });
-  if (!r.ok) return pass(r.res);
-  const out: RegisterAnswer = { ...(await accountSession(c.env, r.data)), recoveryCodes: codes };
-  return withCookies(json(out), [refreshCookie(refresh), await deviceCookie(c.env, r.data.userId)]);
-}
-
 /**
  * Who checks a password: a sign-in (anonymous: it has already passed Turnstile, and AccountsDO
  * counts it on the username, the network and this browser's device cookie), or a session of the
@@ -645,6 +627,7 @@ async function register(c: RouteContext): Promise<Response> {
 type PasswordChecker = { signIn: true } | { account: string };
 
 const BAD_CREDENTIALS = 'Usuario o contraseña incorrectos';
+const BAD_EMAIL_CREDENTIALS = 'Correo o contraseña incorrectos';
 
 /**
  * Look the user up and check the proof against its stored password. Every refusal is the same 401
@@ -653,18 +636,23 @@ const BAD_CREDENTIALS = 'Usuario o contraseña incorrectos';
  * apart, audit auth-5). `legacyOnly`: the username sign-in and its recovery, which refuse an
  * account with a verified email (it signs in by email: the design's downgrade rule (a)).
  */
-async function checkPassword(c: RouteContext, username: string, proof: PasswordProof, who: PasswordChecker, legacyOnly = false): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
+async function checkPassword(c: RouteContext, subject: string | { email: string }, proof: PasswordProof, who: PasswordChecker, legacyOnly = false): Promise<{ ok: true; cred: Credentials } | { ok: false; res: Response }> {
+  // The email sign-in (sign-in PR 7) names the account by the typed address (the AccountsDO derives
+  // its canon and counts it as the legacy path counts the username); the legacy paths by its name.
+  const named = typeof subject === 'string' ? { username: subject } : { email: subject.email };
+  const username = typeof subject === 'string' ? subject : '';
+  const refusal = typeof subject === 'string' ? BAD_CREDENTIALS : BAD_EMAIL_CREDENTIALS;
   // A sign-in also says whether this browser signed in to the account before (its device cookie).
   const as = 'account' in who ? { account: who.account } : { device: await deviceOf(c.env, c.request) };
   // `charge`: this check counts as a failure as it starts, in the step that tests the locks, so a
   // burst of requests in flight at once gets no more checks than the counters let through; a
   // success gives it back (`charged` at the finish).
-  const begin = await accountsJson<{ found: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { username, ip: ipOf(c.request), ...as, charge: true });
+  const begin = await accountsJson<{ found: boolean } & Partial<Credentials>>(c.env, '/auth-begin', { ...named, ip: ipOf(c.request), ...as, charge: true });
   if (!begin.ok) return { ok: false, res: pass(begin.res) };
   const failed = async (): Promise<{ ok: false; res: Response }> => {
     // Counted at the begin already; an AccountsDO of before (the minutes of a deploy) counts it here.
-    await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: false, charged: true, ...as });
-    return { ok: false, res: error(401, 'bad_credentials', BAD_CREDENTIALS) };
+    await accountsCall(c.env, '/auth-finish', { ...named, ip: ipOf(c.request), ok: false, charged: true, ...as });
+    return { ok: false, res: error(401, 'bad_credentials', refusal) };
   };
   // An unknown username, and an account with a verified email at the username routes (it signs in by
   // email): its password is never checked here, so neither the answer nor the time says whether it
@@ -677,7 +665,7 @@ async function checkPassword(c: RouteContext, username: string, proof: PasswordP
   if (!(await provePassword(c.env, cred, proof))) return failed();
   if (cred.banned) return { ok: false, res: error(403, 'banned', 'Cuenta suspendida') };
   // A session's own check proved the password: its charge goes back now (a sign-in's at its finish).
-  if ('account' in who) await accountsCall(c.env, '/auth-finish', { username, ip: ipOf(c.request), ok: true, charged: true, ...as });
+  if ('account' in who) await accountsCall(c.env, '/auth-finish', { ...named, ip: ipOf(c.request), ok: true, charged: true, ...as });
   return { ok: true, cred };
 }
 
@@ -812,96 +800,34 @@ export function requirePrimary(c: Pick<RouteContext, 'session'>): SessionClaims 
 }
 
 /**
- * POST /api/auth/password { oldPassword, oldPasswordV2, passwordV2 }: the old password proved by
- * whichever key its record holds (the legacy `oldPassword`, the current `oldPasswordV2`), the new
- * one stored as the current key (`password`, the legacy key, only from a page of before it). An
- * account without a password sets a first one from a session at level 1 (a new way in, R6).
- */
-async function changePassword(c: RouteContext): Promise<Response> {
-  const s = requirePrimary(c);
-  if (s instanceof Response) return s;
-  const b = await readJson<{ oldPassword?: unknown; oldPasswordV2?: unknown; password?: unknown; passwordV2?: unknown }>(c.request);
-  const nk = newKeyOf(b?.passwordV2, b?.password);
-  if (!b || nk === null) return error(400, 'bad_request');
-  const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
-  if (!me.ok) return pass(me.res);
-  let proved: string | undefined;
-  if (me.data.hasPassword) {
-    const proof = proofOf(b.oldPassword, b.oldPasswordV2);
-    if (proof.v1 === undefined && proof.v2 === undefined) return error(400, 'bad_request');
-    const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
-    if (!chk.ok) return chk.res;
-    proved = chk.cred.hash;
-  } else {
-    // A first password is a new way in: only a device that just proved the account's provider adds it.
-    const f = requireFresh(c, 1);
-    if (f instanceof Response) return f;
-  }
-  const token = cookieOf(c.request, REFRESH_COOKIE);
-  // A change signs the other devices out (the old password may have leaked); a first password does not.
-  const r = await accountsCall(c.env, '/password', { userId: s.sub, pw: await newPasswordRecord(nk.key, nk.v, await storeEnv(c.env)), keep: token ? await sha256Hex(token) : undefined, signOutOthers: me.data.hasPassword, ...(proved !== undefined ? { proved } : {}) });
-  return r.ok ? json({ ok: true }) : pass(r);
-}
-
-async function newRecoveryCodes(c: RouteContext): Promise<Response> {
-  const s = requirePrimary(c);
-  if (s instanceof Response) return s;
-  const b = await readJson<{ password?: unknown; passwordV2?: unknown }>(c.request);
-  const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
-  if (!me.ok) return pass(me.res);
-  if (me.data.hasPassword) {
-    const proof = proofOf(b?.password, b?.passwordV2);
-    if (proof.v1 === undefined && proof.v2 === undefined) return error(400, 'bad_request');
-    const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
-    if (!chk.ok) return chk.res;
-  } else {
-    // Without a password, the codes would be the way to make one: a session at level 1 only.
-    const f = requireFresh(c, 1);
-    if (f instanceof Response) return f;
-  }
-  const codes = Array.from({ length: RECOVERY_CODES }, newRecoveryCode);
-  const r = await accountsCall(c.env, '/recovery', { userId: s.sub, hashes: await Promise.all(codes.map(recoveryCodeHash)) });
-  return r.ok ? json({ recoveryCodes: codes }) : pass(r);
-}
-
-/**
- * POST /api/me/username { username, password, passwordV2 }: a password account confirms with its
- * password. A legacy record is salted with the old name, so it cannot stay: it is re-keyed to the
- * current key (`passwordV2`, the same for any name), or, from a page of before it, replaced by the
- * legacy key of the new name (`newPassword`). A current record needs nothing stored.
+ * POST /api/me/username { username, lang? }: the name salts no password any more (design §2.15,
+ * §5.3). An account that signs in by email or with a provider renames with a full Bearer, nothing
+ * more: its name is no way in. An account whose password is still the legacy key (salted with the
+ * name it has) is asked to confirm it is them first, 403 reauth_required { level: 2 }: the client's
+ * "confirm it's you" with its password re-keys it (POST /api/auth/reauth), then it renames. So is an
+ * account whose password signs in by its username (a password and no verified email, the legacy
+ * sign-in /api/auth/login and its recovery): there the name is the only sign-in name it has, so a
+ * rename by a stolen Bearer would lock the owner out of it for RENAME_EVERY_MS and free the name
+ * for someone else. It needs fresh(2), as changing an email does (R6): a typed password in the last
+ * REAUTH_WINDOW_S, which a sign-in or "confirm it's you" gives.
+ * A taken name or a look-alike of a protected account is 409 with a free `suggest`.
  */
 async function rename(c: RouteContext): Promise<Response> {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
   if (c.limited('rename:' + s.sub, 5)) return error(429, 'rate_limited');
-  const b = await readJson<{ username?: unknown; password?: unknown; newPassword?: unknown; passwordV2?: unknown }>(c.request);
+  const b = await readJson<{ username?: unknown; lang?: unknown }>(c.request);
   const problem = usernameProblem(b?.username);
   if (problem !== null) return error(400, 'bad_username', problem);
-  const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + s.sub);
+  const me = await accountsJson<{ name: string; hasPassword?: boolean; emailVerified?: boolean; legacy?: boolean }>(c.env, '/me?userId=' + encodeURIComponent(s.sub));
   if (!me.ok) return pass(me.res);
-  let pw: PasswordRecord | null = null;
-  let proved: string | undefined;
-  let legacy = false;
-  if (me.data.hasPassword) {
-    const proof = proofOf(b?.password, b?.passwordV2);
-    const passwordRequired = (): Response => error(400, 'password_required', 'Ingresa tu contraseña para cambiar el nombre');
-    if (proof.v1 === undefined && proof.v2 === undefined) return passwordRequired();
-    const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
-    if (!chk.ok) return chk.res;
-    proved = chk.cred.hash;
-    legacy = pwVOf(chk.cred) === 1;
-    if (legacy) {
-      if (proof.v2 === undefined && !isClientKey(b?.newPassword)) return passwordRequired();
-      pw = proof.v2 !== undefined ? await newPasswordRecord(proof.v2, 2, await storeEnv(c.env)) : await newPasswordRecord(b?.newPassword as string, 1);
-    } else pw = await rekeyFor(await storeEnv(c.env), chk.cred, proof);
+  if (me.data.legacy === true) return reauthRequired(2);
+  if (me.data.hasPassword === true && me.data.emailVerified !== true) {
+    const fresh = requireFresh(c, 2);
+    if (fresh instanceof Response) return fresh;
   }
-  const r = await accountsJson<UserRef>(c.env, '/rename', { userId: s.sub, username: b?.username });
+  const r = await accountsJson<UserRef>(c.env, '/rename', { userId: s.sub, username: b?.username, lang: langOf(b?.lang) });
   if (!r.ok) return pass(r.res);
-  if (pw !== null) {
-    const token = cookieOf(c.request, REFRESH_COOKIE);
-    // The legacy re-key signs the other devices out, as every rename of a password account did; a re-hash with the pepper does not.
-    await accountsCall(c.env, '/password', { userId: s.sub, pw, keep: token ? await sha256Hex(token) : undefined, signOutOthers: legacy, proved });
-  }
   return json(await accountSession(c.env, { ...r.data, ...scopeOf(s) }));
 }
 
@@ -1386,6 +1312,325 @@ async function unlink(c: RouteContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/unlink', { userId: s.sub, provider: b.provider, level: s.aal ?? 0 }));
 }
 
+// ---- email accounts (sign-in PR 7: the design's sections 2.2 to 2.5) -----------------------------
+//
+//   POST /api/auth/signup/start   { email, lang?, turnstileToken }          -> { attempt, resendAt, codeLength: 6 }
+//                                 (the same for any address: M1, M1 "hint" or M2 goes to the mailbox) | 400
+//                                 bad_email | 403 turnstile_failed | 429 rate_limited / email_rate_limited
+//                                 { retryAfterMs } | 503 email_paused / email_unconfigured
+//   POST /api/auth/signup/check   { attempt, code } | { token }             -> { email } | 400 code_wrong { triesLeft }
+//                                 | 410 code_expired / link_invalid | 409 already_created { email }; consumes nothing
+//   POST /api/auth/signup/finish  { attempt, code } | { token }, { username, password, news?, lang?, tz?,
+//                                 acceptTerms? } -> AccountSession + refresh and device cookies (level 2, method
+//                                 'password') | 400 bad_username / bad_password / name_reserved { suggest } | 409
+//                                 username_taken / name_lookalike { suggest }, email_taken, already_created { email }
+//                                 | 410 | 429
+//   POST /api/auth/code/resend    { attempt } (a reauth code: its account's Bearer) -> { resendAt, resendsLeft }:
+//                                 the same code and link again | 410 code_expired | 429 email_rate_limited | 503
+//
+// `attempt` is 32 random bytes only the starting browser holds (sessionStorage, 30 minutes): a code
+// works only with it. Tokens and codes travel in bodies only, never a query (R8, I5). The Worker
+// derives the address and its canon from what was typed (I9); a body's canon, trust or verified
+// field is never read. Mail goes out after the answer (R7), through mail.ts, whose stub captures
+// everything off production: live mail needs MAIL_LIVE=1 on a host that is not loopback.
+
+/** The request's language for its mail (the account's wins once it has one). */
+function langOf(v: unknown): 'es' | 'en' | undefined {
+  return v === 'es' || v === 'en' ? v : undefined;
+}
+
+const NO_STORE = { 'cache-control': 'no-store' };
+
+/**
+ * The email routes' 503 before anything is counted: the kill flag (KV email_off) is set
+ * (email_paused), or this deployment cannot deliver: no link origin (MAIL_LINK_ORIGIN off
+ * loopback) or a deploy whose mailer is the stub (MAIL_LIVE unset): email_unconfigured. The same
+ * for every address. /api/config's auth.email says it beforehand (mail.ts emailAvailable).
+ */
+async function mailRefusal(c: RouteContext): Promise<Response | null> {
+  if (await mailKilled(c.env)) return error(503, 'email_paused', 'Ahora no podemos enviar correos. Inténtalo en unos minutos.');
+  const deliverable = c.mailer !== undefined && (c.mailer.live || isLocalDev(c.request));
+  if (linkOrigin(c.request, c.env) === null || !deliverable) return error(503, 'email_unconfigured', 'Este servidor todavía no envía correos');
+  return null;
+}
+
+/**
+ * Send what the AccountsDO ordered, once this request has answered (R7: waitUntil; without a
+ * context, the node tests, it runs all the same). Every URL comes from linkOrigin, never from the
+ * request's Host. A failed send logs its kind and lane only (mail.ts deliver) and counts in its lane
+ * (/mail-failed), which may pause the signup lane or raise an alert line.
+ */
+function sendMail(c: RouteContext, order: MailOrder | null | undefined): void {
+  if (!order) return;
+  const origin = linkOrigin(c.request, c.env);
+  const mailer = c.mailer;
+  if (origin === null || mailer === undefined) return;
+  let msg: MailMessage;
+  try {
+    msg = composeMail(order.to, renderMail(order.data, { origin, lang: order.lang, ...(order.tz ? { tz: order.tz } : {}) }));
+  } catch {
+    console.warn(`mail_failed kind=${order.data.kind} err=render`);
+    return;
+  }
+  const sent = deliver(mailer, msg, async (kind, lane) => {
+    const r = await accountsJson<{ alert?: boolean }>(c.env, '/mail-failed', { kind, lane });
+    if (r.ok && r.data.alert === true) console.warn(`ALERT mail_failures lane=${lane}: ${FAILURES.failures} failed sends in 10 minutes`);
+  });
+  if (c.waitUntil) c.waitUntil(sent);
+  else void sent;
+}
+
+/** A proof in a body: a link's token, or an attempt and its code (a pasted code's spaces and dashes dropped). */
+function proofBody(b: { attempt?: unknown; code?: unknown; token?: unknown } | null): { token: string } | { attempt: string; code: string } | null {
+  if (!b) return null;
+  if (typeof b.token === 'string') return b.token.length <= 128 ? { token: b.token } : null;
+  if (typeof b.attempt !== 'string' || b.attempt.length > 64 || (typeof b.code !== 'string' && typeof b.code !== 'number')) return null;
+  const code = String(b.code).replace(/[\s-]/g, '');
+  return code.length <= 16 ? { attempt: b.attempt, code } : null;
+}
+
+/** POST /api/auth/signup/start: the address checked, then the anti-bot check, then the AccountsDO's caps and row. */
+async function signupStart(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ email?: unknown; lang?: unknown; turnstileToken?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  if (normalizeEmail(b.email) === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const blocked = await c.antiBot(b.turnstileToken);
+  if (blocked !== null) return blocked;
+  const attempt = base64urlEncode(randomBytes(32));
+  const r = await accountsJson<{ resendAt: number; codeLength: number; mail?: MailOrder | null }>(c.env, '/signup-start', { email: b.email, lang: langOf(b.lang), attempt, ip: ipOf(c.request) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ attempt, resendAt: r.data.resendAt, codeLength: 6 } satisfies CodeStartAnswer, 200, NO_STORE);
+}
+
+/** POST /api/auth/signup/check: the client asks at the sixth digit, so a wrong code shows at once. */
+async function signupCheck(c: RouteContext): Promise<Response> {
+  const proof = proofBody(await readJson<{ attempt?: unknown; code?: unknown; token?: unknown }>(c.request));
+  if (proof === null) return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/signup-check', proof));
+}
+
+/**
+ * POST /api/auth/signup/finish: the proof checked first (a cheap AccountsDO call: a junk finish
+ * costs no PBKDF2), then the password's server stage, then the account in one transaction there.
+ */
+async function signupFinish(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ attempt?: unknown; code?: unknown; token?: unknown; username?: unknown; password?: unknown; news?: unknown; lang?: unknown; tz?: unknown; acceptTerms?: unknown }>(c.request);
+  const proof = proofBody(b);
+  if (!b || proof === null) return error(400, 'bad_request');
+  if (typeof b.username !== 'string' || b.username.length > 64) return error(400, 'bad_username', usernameProblem(b.username) ?? 'Elige un nombre de usuario');
+  if (!isClientKey(b.password)) return error(400, 'bad_password', 'Contraseña inválida');
+  const pre = await accountsCall(c.env, '/signup-check', proof);
+  if (!pre.ok) return noStore(pre);
+  await pre.text().catch(() => '');
+  const refreshTok = newRefreshToken();
+  const r = await accountsJson<UserRef>(c.env, '/signup-finish', {
+    ...proof,
+    username: b.username,
+    pw: await newPasswordRecord(b.password, 2, await storeEnv(c.env)),
+    news: b.news === true,
+    lang: langOf(b.lang),
+    tz: b.tz,
+    terms: b.acceptTerms,
+    refresh: await grantFor(refreshTok, c.request),
+    ip: ipOf(c.request),
+  });
+  if (!r.ok) return noStore(r.res);
+  return withCookies(json(await accountSession(c.env, r.data)), [refreshCookie(refreshTok), await deviceCookie(c.env, r.data.userId)]);
+}
+
+/**
+ * POST /api/auth/code/resend { attempt }: a sign-up's needs nothing more (the attempt id is the
+ * browser's); an account's own code (reauth) only its full Bearer, which the AccountsDO matches to
+ * the row's account.
+ */
+async function codeResend(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ attempt?: unknown }>(c.request);
+  if (!b || typeof b.attempt !== 'string' || b.attempt.length > 64) return error(400, 'bad_request');
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const s = c.session;
+  const userId = s !== null && s.acct === 1 && s.tv !== 1 ? s.sub : undefined;
+  const r = await accountsJson<{ resendAt: number; resendsLeft: number; mail?: MailOrder | null }>(c.env, '/code-resend', { attempt: b.attempt, ip: ipOf(c.request), ...(userId !== undefined ? { userId } : {}) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ resendAt: r.data.resendAt, resendsLeft: r.data.resendsLeft } satisfies CodeResendAnswer, 200, NO_STORE);
+}
+
+//   POST /api/auth/signin         { email, password, turnstileToken }        -> AccountSession + refresh and device
+//                                 cookies (level 2, method 'password') | 401 bad_credentials (an unknown address, a
+//                                 wrong password, no current password, a legacy one not re-keyed: one answer, one
+//                                 server stage) | 403 turnstile_failed / banned (after the right password) | 429
+//                                 throttled { retryAfterMs }
+//   POST /api/auth/forgot         { email, lang?, turnstileToken }           -> { ok: true } always (M3 only to an account
+//                                 that claimed that address) | 403 | 429 | 503
+//   POST /api/auth/reset/peek     { token }                                  -> { name, email, hasPassword } | 410 link_invalid
+//   POST /api/auth/reset          { token, password }                        -> AccountSession + cookies (level 2, method
+//                                 'reset'; every other device signed out; M4) | 400 bad_password | 410 | 403 banned
+//   POST /api/me/password         Bearer + cookie { current | legacy, password } -> { ok } (the other devices signed out;
+//                                 M4) | 401 bad_credentials | 409 no_password | 429 throttled (per account, 'pa:')
+//   POST /api/me/password/link    Bearer {}                                  -> { sentTo }: a reset link to the account's own
+//                                 address (M3 "create" without a password) | 409 email_required | 429 | 503
+//   POST /api/auth/reauth/code    Bearer {}                                  -> { attempt, resendAt, to }: M11 | 409
+//                                 email_required | 403 password_required (a maintainer confirms with its password)
+//   POST /api/auth/reauth/code/verify Bearer + cookie { attempt, code }      -> AccountSession (level 2) | 400 | 410
+//   POST /api/auth/register, /api/auth/recovery-codes, /api/auth/password    -> 410 gone (P6, auth-3: a Bearer alone never
+//                                 adds a way in, I4)
+
+/** POST /api/auth/signin: the email sign-in. Its throttles are the legacy sign-in's (AccountsDO.ts THROTTLE_RULES), keyed by the typed canon. */
+async function signin(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ email?: unknown; password?: unknown; turnstileToken?: unknown }>(c.request);
+  if (!b || typeof b.email !== 'string' || b.email.length > 254 || !isClientKey(b.password)) return error(400, 'bad_request');
+  if (normalizeEmail(b.email) === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+  const blocked = await c.antiBot(b.turnstileToken);
+  if (blocked !== null) return blocked;
+  // Only the current key: an account whose password is still the legacy one signs in by its username (and re-keys there).
+  const proof: PasswordProof = { v2: b.password };
+  const chk = await checkPassword(c, { email: b.email }, proof, { signIn: true });
+  if (!chk.ok) return chk.res;
+  const rekey = await rekeyFor(c.env, chk.cred, proof);
+  const refreshTok = newRefreshToken();
+  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', {
+    userId: chk.cred.userId,
+    email: b.email,
+    ip: ipOf(c.request),
+    ok: true,
+    refresh: await grantFor(refreshTok, c.request),
+    device: await deviceOf(c.env, c.request),
+    proved: chk.cred.hash,
+    charged: true,
+    ...(rekey !== null ? { rekey } : {}),
+  });
+  if (!fin.ok) return pass(fin.res);
+  return withCookies(json(await accountSession(c.env, fin.data)), [refreshCookie(refreshTok), await deviceCookie(c.env, fin.data.userId)]);
+}
+
+/** POST /api/auth/forgot: always { ok: true } (I6); the mail, when there is one, after the answer. */
+async function forgot(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ email?: unknown; lang?: unknown; turnstileToken?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  if (normalizeEmail(b.email) === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const blocked = await c.antiBot(b.turnstileToken);
+  if (blocked !== null) return blocked;
+  const r = await accountsJson<{ mail?: MailOrder | null }>(c.env, '/forgot', { email: b.email, lang: langOf(b.lang), ip: ipOf(c.request) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ ok: true }, 200, NO_STORE);
+}
+
+/** A reset link's token from a body (the 43 base64url of a mail; the AccountsDO answers anything else as link_invalid). */
+function tokenOf(b: { token?: unknown } | null): string | null {
+  return b && typeof b.token === 'string' && b.token.length <= 128 ? b.token : null;
+}
+
+/** POST /api/auth/reset/peek: who the link is for, before the password sheet. Consumes nothing. */
+async function resetPeek(c: RouteContext): Promise<Response> {
+  const token = tokenOf(await readJson<{ token?: unknown }>(c.request));
+  if (token === null) return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/reset-peek', { token }));
+}
+
+/** POST /api/auth/reset: the link checked first (a dead one costs no PBKDF2), then the password stored and this browser signed in. */
+async function reset(c: RouteContext): Promise<Response> {
+  const b = await readJson<{ token?: unknown; password?: unknown; lang?: unknown }>(c.request);
+  const token = tokenOf(b);
+  if (!b || token === null) return error(400, 'bad_request');
+  if (!isClientKey(b.password)) return error(400, 'bad_password', 'Contraseña inválida');
+  const peek = await accountsCall(c.env, '/reset-peek', { token });
+  if (!peek.ok) return noStore(peek);
+  await peek.text().catch(() => '');
+  const refreshTok = newRefreshToken();
+  const r = await accountsJson<UserRef & { mail?: MailOrder | null }>(c.env, '/reset', { token, pw: await newPasswordRecord(b.password, 2, await storeEnv(c.env)), refresh: await grantFor(refreshTok, c.request), ip: ipOf(c.request), lang: langOf(b.lang) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  const { mail: _mail, ...ref } = r.data;
+  return withCookies(json(await accountSession(c.env, ref)), [refreshCookie(refreshTok), await deviceCookie(c.env, ref.userId)]);
+}
+
+/**
+ * POST /api/me/password { current | legacy, password }: the current password itself proves it (no
+ * freshness), by the key its record holds (`legacy` for pw_v 1, `current` for 2; both may come),
+ * counted per account ('pa:'). The new one is always the current key. This device stays signed in.
+ */
+async function mePassword(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ current?: unknown; legacy?: unknown; password?: unknown; lang?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  if (!isClientKey(b.password)) return error(400, 'bad_password', 'Contraseña inválida');
+  const token = cookieOf(c.request, REFRESH_COOKIE);
+  if (!token || token.length > 128) return error(401, 'no_refresh');
+  const me = await accountsJson<{ name: string; hasPassword: boolean }>(c.env, '/me?userId=' + encodeURIComponent(s.sub));
+  if (!me.ok) return pass(me.res);
+  if (!me.data.hasPassword) return error(409, 'no_password', 'Esta cuenta no tiene contraseña: créala con un enlace a tu correo');
+  const proof = proofOf(b.legacy, b.current);
+  if (proof.v1 === undefined && proof.v2 === undefined) return error(400, 'bad_request');
+  const chk = await checkPassword(c, me.data.name, proof, { account: s.sub });
+  if (!chk.ok) return chk.res;
+  if (chk.cred.userId !== s.sub || chk.cred.hash === undefined) return error(401, 'bad_credentials', BAD_CREDENTIALS);
+  const r = await accountsJson<{ mail?: MailOrder | null }>(c.env, '/me-password', { userId: s.sub, pw: await newPasswordRecord(b.password, 2, await storeEnv(c.env)), keep: await sha256Hex(token), proved: chk.cred.hash, lang: langOf(b.lang) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ ok: true }, 200, NO_STORE);
+}
+
+/** POST /api/me/password/link: a link to the account's own mailbox; the Bearer itself never sets a password (I4). */
+async function mePasswordLink(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ lang?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const r = await accountsJson<{ sentTo: string; mail?: MailOrder | null }>(c.env, '/password-link', { userId: s.sub, lang: langOf(b.lang) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ sentTo: r.data.sentTo } satisfies PasswordLinkAnswer, 200, NO_STORE);
+}
+
+/**
+ * POST /api/auth/reauth/code: "confirm it's you" by a code from the account's own mailbox (level 2,
+ * R6). The project's maintainer accounts (NODE_TRUSTED_OPERATORS) confirm with their password
+ * instead: the maintainer routes' level 2 comes from a typed password (design §3.12).
+ */
+async function reauthCode(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const b = await readJson<{ lang?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  if (trustedOperatorIds(c.env).has(s.sub)) return error(403, 'password_required', 'Esta cuenta confirma que eres tú con su contraseña');
+  const off = await mailRefusal(c);
+  if (off !== null) return off;
+  const attempt = base64urlEncode(randomBytes(32));
+  const r = await accountsJson<{ resendAt: number; to: string; mail?: MailOrder | null }>(c.env, '/reauth-code', { userId: s.sub, attempt, lang: langOf(b.lang) });
+  if (!r.ok) return noStore(r.res);
+  sendMail(c, r.data.mail);
+  return json({ attempt, resendAt: r.data.resendAt, to: r.data.to } satisfies CodeStartAnswer, 200, NO_STORE);
+}
+
+/** POST /api/auth/reauth/code/verify: the code proves the mailbox; this browser's token moves to level 2 now. */
+async function reauthCodeVerify(c: RouteContext): Promise<Response> {
+  const s = requirePrimary(c);
+  if (s instanceof Response) return s;
+  const proof = proofBody(await readJson<{ attempt?: unknown; code?: unknown }>(c.request));
+  if (proof === null || 'token' in proof) return error(400, 'bad_request');
+  const token = cookieOf(c.request, REFRESH_COOKIE);
+  if (!token || token.length > 128) return error(401, 'no_refresh');
+  const r = await accountsJson<UserRef>(c.env, '/reauth-code-verify', { userId: s.sub, attempt: proof.attempt, code: proof.code, hash: await sha256Hex(token) });
+  if (!r.ok) return noStore(r.res);
+  return json(await accountSession(c.env, r.data), 200, NO_STORE);
+}
+
+/** The routes sign-in PR 7 retires (design §2.15): a page of before is told to reload. */
+function gone(path: string): Response {
+  const message = path === '/api/auth/register' ? 'Actualiza la página: ahora las cuentas se crean con un correo.' : 'Actualiza la página: esto ahora se hace desde PERFIL con tu correo.';
+  return error(410, 'gone', message);
+}
+
 // ---- TV sign-in with the phone ------------------------------------------------------------------
 
 const LIMIT_TV_START = 10;
@@ -1482,13 +1727,11 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (refused !== null) return refused;
   }
   if (m === 'POST') {
-    if (p === '/api/auth/register') return register(c);
+    if (p === '/api/auth/register' || p === '/api/auth/recovery-codes' || p === '/api/auth/password') return gone(p);
     if (p === '/api/auth/login') return login(c);
     if (p === '/api/auth/refresh') return refresh(c);
     if (p === '/api/auth/logout') return logout(c);
     if (p === '/api/auth/recover') return recover(c);
-    if (p === '/api/auth/password') return changePassword(c);
-    if (p === '/api/auth/recovery-codes') return newRecoveryCodes(c);
     if (p === '/api/me/username') return rename(c);
     if (p === '/api/me/training') return training(c);
     if (p === '/api/me/experimental') return experimentalSet(c);
@@ -1505,6 +1748,19 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/reauth') return reauth(c);
     if (p === '/api/auth/unlink') return unlink(c);
     if (p === '/api/auth/sessions/revoke-all') return sessionsRevokeAll(c);
+    // The email accounts (sign-in PR 7).
+    if (p === '/api/auth/signup/start') return signupStart(c);
+    if (p === '/api/auth/signup/check') return signupCheck(c);
+    if (p === '/api/auth/signup/finish') return signupFinish(c);
+    if (p === '/api/auth/code/resend') return codeResend(c);
+    if (p === '/api/auth/signin') return signin(c);
+    if (p === '/api/auth/forgot') return forgot(c);
+    if (p === '/api/auth/reset/peek') return resetPeek(c);
+    if (p === '/api/auth/reset') return reset(c);
+    if (p === '/api/me/password') return mePassword(c);
+    if (p === '/api/me/password/link') return mePasswordLink(c);
+    if (p === '/api/auth/reauth/code') return reauthCode(c);
+    if (p === '/api/auth/reauth/code/verify') return reauthCodeVerify(c);
   }
   if (m === 'GET') {
     if (p === '/api/me') return me(c);

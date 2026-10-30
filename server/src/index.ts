@@ -44,7 +44,8 @@
  *   GET  /room/:roomId  same gate with a role 'peer' ticket whose mid is the room id -> RoomDO (phase 2 signaling)
  *   GET  /api/config  -> { turnstileSiteKey: TURNSTILE_SITEKEY | null, protocol, version, region: cf.colo | 'local',
  *                        autoRegion, regions, oauth, accounts, botFillMs: the server queue's bot fill (BOT_FILL_MS),
- *                        auth: { devSignIn: the dev-only sign-in is open (mail.ts isDevAuth) } }
+ *                        auth: { devSignIn: the dev-only sign-in is open (mail.ts isDevAuth), email: the
+ *                        flows that send mail may show (mail.ts emailAvailable) } }
  *                        (no auth; the client fetches it once per page load before its first POST /api/guest)
  *   POST /api/dev/signin, GET /api/dev/mail  the dev-only sign-in and the stub mailer's outbox (accountRoutes.ts
  *                       devRoute): only with DEV_AUTH=1 on a loopback host, else 404 as any unknown route
@@ -87,7 +88,6 @@ import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, SERVER_VERSION, carriesPhysics, error, flag, isHex, isMode, isModeList, isQueueKind, json, nodesAllowed, nodesConfigured, nodesMode, readJson } from './env';
 import type { GameModeId } from './env';
 import { accountRoute, accountsCall, enabledProviders } from './accountRoutes';
-import { isDevAuth } from './mail';
 import { accountGate, clientIp, isolateLimited, limiter, overLimit, subjectsOf } from './limits';
 import type { LimitName } from './limits';
 import type { RankedCheck } from './accountStore';
@@ -104,6 +104,7 @@ import { RELOAD_REQUIRED, ROOM_PROTOCOL } from './RoomDO';
 import { nodeHealthCheck, nodeRoute } from './nodeRoutes';
 import { NODE_ROUTES, askNodes, rejoinTicketOf, replyCode } from './nodeApi';
 import type { NodesReply } from './nodeApi';
+import { chooseMailer, emailAvailable, isDevAuth } from './mail';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL, WS_TICKET_PREFIX } from '../../src/net/protocol';
 import type { GuestSession, QueueResult } from '../../src/net/protocol';
 import type { CosmeticQueueResult } from '../../src/net/cosmetics';
@@ -776,7 +777,13 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (path === '/api/health') return withCors(json({ ok: true, version: SERVER_VERSION, protocol: PROTOCOL_VERSION }), cors);
     if (path === '/api/time') return withCors(json({ now: Date.now() }), cors);
-    if (path === '/api/config') return withCors(json(serverConfig(request, env), 200, { 'cache-control': 'no-store' }), cors);
+    if (path === '/api/config') {
+      // auth.email (the sign-in design's §2.1): the flows that send mail may show. Merged into
+      // serverConfig's own auth (sign-in PR 5 puts devSignIn there), never replacing it.
+      const cfg: Record<string, unknown> = serverConfig(request, env);
+      const auth = { ...(cfg.auth as Record<string, unknown> | undefined), email: await emailAvailable(request, env) };
+      return withCors(json({ ...cfg, auth }, 200, { 'cache-control': 'no-store' }), cors);
+    }
     // ---- /api/where (edge colo / country / masked ip; no secret needed) ----
     if (path === '/api/where') return withCors(where(request), cors);
     if (!env.JWT_SECRET) return withCors(error(500, 'no_secret', 'JWT_SECRET is not configured (server/.dev.vars or wrangler secret put)'), cors);
@@ -800,6 +807,9 @@ export default {
               originAllowed: (o) => originAllowed(request, env, o),
               antiBot: (token) => turnstileGate(request, env, token),
               limited: (key, max) => isolateLimited(key, max, Date.now()),
+              // The email routes' mail: after the answer (R7), through the stub off production.
+              waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined,
+              mailer: chooseMailer(request, env),
             },
             url,
           ));

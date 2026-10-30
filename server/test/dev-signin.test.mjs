@@ -332,7 +332,10 @@ test('GET /api/config: auth.devSignIn is true only where the gate passes', async
     const { env } = makeEnv(over);
     const r = await call(env, base, '/api/config', { method: 'GET', origin });
     assert.equal(r.status, 200);
-    assert.deepEqual(r.json.auth, { devSignIn: want }, `${JSON.stringify(over)} ${base} ${origin}`);
+    // Beside sign-in PR 7's auth.email (the flows that send mail), which the dev gate does not decide.
+    assert.deepEqual(Object.keys(r.json.auth).sort(), ['devSignIn', 'email'], `${JSON.stringify(over)} ${base} ${origin}`);
+    assert.equal(r.json.auth.devSignIn, want, `${JSON.stringify(over)} ${base} ${origin}`);
+    assert.equal(typeof r.json.auth.email, 'boolean');
   }
 });
 

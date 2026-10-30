@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { makeAccount } from './helpers/accounts.mjs';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 const WASM_STUB = 'data:text/javascript,export const createHostArena = () => { throw new Error("no wasm in this test"); };';
@@ -45,7 +46,6 @@ console.log = (...args) => {
 const { AccountStore } = await import('../src/accountStore.ts');
 const { AccountsDO } = await import('../src/AccountsDO.ts');
 const { NodeRegistryDO } = await import('../src/NodeRegistryDO.ts');
-const A = await import('../src/accountRoutes.ts');
 const worker = (await import('../src/index.ts')).default;
 const { signJwt, createSession, INTERNAL_HEADER, internalSecret } = await import('../src/auth.ts');
 const { generateEd25519, sha256Hex } = await import('../../nodes/shared/edcrypto.ts');
@@ -54,7 +54,6 @@ const { ReplayWriter, decodeReplay } = await import('../../nodes/shared/replay.t
 const SECRET = 'replay-names-test-secret';
 const ORIGIN = 'https://turbo-gol.com';
 const H = (c) => c.repeat(64).slice(0, 64);
-const KEY = 'c'.repeat(64);
 const HOUR = 60 * 60_000;
 const BASE = Math.floor((Date.now() - 3 * HOUR) / HOUR) * HOUR + HOUR / 2;
 const CONTROL = await generateEd25519();
@@ -140,8 +139,9 @@ async function world({ nodes = false } = {}) {
   return { env, accounts, reached, reg };
 }
 
+/** An account without a password (helpers/accounts.mjs makeAccount: a provider identity), in a real AccountsDO. */
 async function account(obj, name) {
-  return obj.store.register(name, await A.newPasswordRecord(KEY), [], H(name[0].toLowerCase()), Date.now()).userId;
+  return makeAccount(obj.store, name, { refresh: H(name[0].toLowerCase()) }).userId;
 }
 
 const accountToken = (sub, name) => signJwt(SECRET, { sub, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, acct: 1 });
@@ -169,9 +169,8 @@ test('accountStore: a name shows by default; an account hides it and shows it ag
   const store = new AccountStore(sqlOn(db), txOn(db));
   store.migrate();
   store.migrate(); // idempotent: one CREATE TABLE IF NOT EXISTS
-  const pw = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
-  const ana = store.register('Ana', pw, [], H('1'), 1).userId;
-  const beto = store.register('Beto', pw, [], H('2'), 1).userId;
+  const ana = makeAccount(store, 'Ana', { now: 1, refresh: H('1') }).userId;
+  const beto = makeAccount(store, 'Beto', { now: 1, refresh: H('2') }).userId;
   assert.deepEqual(store.replayName(ana), { hidden: false }, 'shown by default');
   assert.equal(store.replayName('ffffffffffffffff'), 'no_user');
   assert.equal(store.setReplayName('ffffffffffffffff', true, 2), 'no_user');
@@ -188,9 +187,8 @@ test('accountStore: a database already at schema version 2 (production after #72
   const db = new DatabaseSync(':memory:');
   new AccountStore(sqlOn(db), txOn(db)).migrate();
   db.exec('DROP TABLE replay_names');
-  const pw = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
   const before = new AccountStore(sqlOn(db), txOn(db));
-  const ana = before.register('Ana', pw, [], H('1'), 1).userId;
+  const ana = makeAccount(before, 'Ana', { now: 1, refresh: H('1') }).userId;
   assert.equal(before.schemaVersion(), 2);
   // This build starts on it: migrateTo2 returns early (version 2), and the table is there all the same.
   const store = new AccountStore(sqlOn(db), txOn(db));

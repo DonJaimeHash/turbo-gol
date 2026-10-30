@@ -69,8 +69,8 @@ test('takeSlot: fixed hour and day windows; a refusal counts nothing', () => {
   assert.deepEqual(C.RESEND, { gapMs: 60_000, max: 3 });
 });
 
-test('network caps: an IPv4 address gets 20 times an IPv6 /64, so a classroom behind one address still gets its mail', () => {
-  assert.deepEqual(C.networkCap('2001:db8:1:2::/64'), { hour: 10, day: 30 });
+test('network caps: an IPv6 /64 gets an IPv4 address\'s numbers, so a classroom behind one address or one dual-stack /64 still gets its mail', () => {
+  assert.deepEqual(C.networkCap('2001:db8:1:2::/64'), { hour: 200, day: 600 }, 'a dual-stack school or LAN is one /64 (SLAAC)');
   assert.deepEqual(C.networkCap('203.0.113.7'), { hour: 200, day: 600 });
   assert.deepEqual(C.networkCap('local'), { hour: 200, day: 600 }, "wrangler dev's 'local' counts as one IPv4 address");
   let v4 = null;

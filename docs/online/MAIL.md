@@ -3,8 +3,13 @@
 How the Worker sends mail: the mailer, its stub, the templates, the caps and the kill flag. It is
 the groundwork for email accounts (sign-up by code, forgot password, security notices).
 
-**Nothing sends mail yet.** No route calls the mailer. The routes that do come with the email
-accounts, and each one goes through `chooseMailer`, so the rules below already hold for them.
+**Who sends it.** The email accounts' routes (`server/src/accountRoutes.ts`, "email accounts":
+sign-up, resend, forgot, reset, the password link, "confirm it's you" by code, and the notice
+after a password change). The AccountsDO counts the caps and lanes and says which mail goes; the
+Worker renders it and sends it through `chooseMailer` after it has answered (`waitUntil`). Live
+mail stays off until `MAIL_LIVE=1` is set on the deploy: until then those routes answer 503
+`email_unconfigured`, `/api/config` says `auth.email: false`, and under `wrangler dev` the stub keeps
+every message for `GET /api/dev/mail`.
 
 | File | What it holds |
 |---|---|
@@ -146,10 +151,11 @@ holds the numbers and the rules:
 
   A flood of sign-ups can only use up sign-up mail: resets, codes and notices still go.
 - **Per address, network and account:** mail to one address, 5 an hour and 10 a day (notices apart:
-  5 a day per account); mail started by anonymous routes, per IPv6 /64 10 an hour and 30 a day, per
-  IPv4 address 200 and 600 (schools, LAN parties and carriers' CGNAT put many players behind one
-  address); mail started by an account, 10 a day; resends, one a minute and three per attempt, each
-  with the same code and link.
+  5 a day per account); mail started by anonymous routes, 200 an hour and 600 a day per IPv4
+  address and per IPv6 /64 alike (schools, LAN parties and carriers' CGNAT put many players behind
+  one IPv4 address, and a dual-stack school or LAN is one /64); mail started by an account, 10 a
+  day; resends, one a minute and three per attempt, each with the same code and link. New accounts:
+  200 a day per IPv4 address or IPv6 /64.
 - **Failures.** A route sends after it has answered (`ctx.waitUntil`). A failed send logs
   `mail_failed kind=<kind> lane=<lane> err=<code>`, with no address, link or code, and is not
   retried (a retry would mail a second code). Ten failures in ten minutes pause the sign-up lane for

@@ -791,6 +791,7 @@ export default {
   'account.issue.passwordLong': { one: 'The password can be at most {count} character', other: 'The password can be at most {count} characters' },
   'account.issue.passwordCommon': 'That password is too common',
   'account.issue.passwordHasUsername': "The password can't contain your username",
+  'account.issue.passwordHasEmail': "The password can't contain your email",
   'account.issue.passwordRepeated': "The password can't be a single repeated character",
 
   // Account client errors (src/net/AccountClient.ts)

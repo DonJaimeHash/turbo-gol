@@ -10,7 +10,12 @@
 //   config (accounts on, OAuth providers listed, auth.devSignIn) -> the stub's outbox (GET
 //   /api/dev/mail) -> dev sign-in A and B (session, refresh cookie, <name>@dev.invalid verified in
 //   /api/me) -> the same name again is the same account, a bad name 400 -> refresh rotates the cookie
-//   (the old one is refused) -> a guest cannot queue ranked (403) -> A and B queue ranked 1v1
+//   (the old one is refused) -> email accounts (sign-in PR 7, auth.email): the retired register,
+//   recovery-codes and password routes answer 410 -> C signs up by email (the code from the outbox,
+//   checked, then finished: session, refresh cookie, a verified address and a password) -> the same
+//   address again answers the same and mails M2 -> wrong password 401 -> email sign-in -> forgot ->
+//   the reset link from the outbox resets C's password (once; the old one no longer signs in) -> a
+//   rename by Bearer alone -> a guest cannot queue ranked (403) -> A and B queue ranked 1v1
 //   together (multi-playlist body) -> both matched into the SAME server match with `ranked: true` ->
 //   both sockets Ready -> the match starts -> A quits (POST /api/leave { matchId }) = forfeit ->
 //   /api/ranked/result: B 'win', A 'loss' + left + a ban, A's next ranked queue 429 'ranked_ban' ->
@@ -22,8 +27,8 @@
 //   ready with the stock fingerprint is refused with physics_mismatch, the rules fingerprint on both
 //   starts the match, nothing is rated) -> B renames with its Bearer (no password to re-key) and its
 //   dev name still signs in to it -> the devices list -> logout: the refresh cookie no longer works.
-// The username-and-password flows (register, login, recovery codes) are covered by the unit tests
-// (accounts.test.mjs, takeover.test.mjs): the email accounts replace them.
+// The username-and-password flows of before (login, recover) are covered by the unit tests
+// (accounts.test.mjs, takeover.test.mjs): the email accounts replace them, and register is gone.
 // Exit 0 = pass, 1 = a check failed, 2 = the dev sign-in is not open on the target.
 import { registerHooks } from 'node:module';
 
@@ -41,6 +46,7 @@ registerHooks({
 
 const argv = process.argv.slice(2);
 const API = (argv.find((a) => a.startsWith('--api='))?.slice(6) ?? process.env.API ?? 'http://127.0.0.1:8787').replace(/\/$/, '');
+const ACC = await import('../../src/net/account.ts');
 const P = await import('../../src/net/protocol.ts');
 const P2 = await import('../../src/net/p2p/protocol.ts');
 const MUT = await import('../../src/sim/mutators.ts');
@@ -126,6 +132,65 @@ const tokB = devB.json.session;
 const me = await api('/api/me', { token: tokA });
 check(me.status === 200 && me.json.name === userA && me.json.ratings.length === 3 && me.json.ratings[0].placementLeft === 5, 'GET /api/me', me.json?.ratings?.[0]);
 check(me.json?.email === userA + '@dev.invalid' && me.json.emailVerified === true && me.json.hasPassword === false, 'the dev account: <name>@dev.invalid, verified, no password', { email: me.json?.email, verified: me.json?.emailVerified });
+
+// ---- email accounts (sign-in PR 7): the retired routes, sign-up, sign-in, forgot and reset ------
+// Accounts are made by email. The stub mailer keeps what it "sent" for GET /api/dev/mail; it sends
+// after the answer (R7), so a message may land a moment later.
+check(cfg.json?.auth?.email === true, 'config: auth.email (the stub delivers on loopback)', cfg.json?.auth);
+const gone = await api('/api/auth/register', { body: { username: 'smk_' + rnd(), passwordV2: 'a'.repeat(64) } });
+check(gone.status === 410 && gone.json?.error === 'gone', 'register is gone (410)', gone.status);
+for (const path of ['/api/auth/recovery-codes', '/api/auth/password']) {
+  const r = await api(path, { body: { password: 'a'.repeat(64) }, token: tokA, cookies: jarA });
+  check(r.status === 410 && r.json?.error === 'gone', path + ' is gone (410), even behind a Bearer', r.status);
+}
+async function outboxFor(to, kind) {
+  for (let i = 0; i < 30; i++) {
+    const r = await api('/api/dev/mail');
+    const m = r.json?.messages?.find((x) => x.to === to && (kind === undefined || x.kind === kind)) ?? null;
+    if (m !== null) return m;
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  return null;
+}
+async function emailSignUp(email, username, password, cookies) {
+  const s = await api('/api/auth/signup/start', { body: { email, lang: 'es' } });
+  const m = s.status === 200 ? await outboxFor(email, 'verify_signup') : null;
+  const ck = m ? await api('/api/auth/signup/check', { body: { attempt: s.json.attempt, code: m.code } }) : null;
+  const f = ck?.status === 200 ? await api('/api/auth/signup/finish', { body: { attempt: s.json.attempt, code: m.code, username, password: await ACC.passwordKey(password), lang: 'es' }, cookies }) : null;
+  return { s, m, ck, f, json: f?.json ?? {} };
+}
+const userC = 'smk_' + rnd();
+const passC = 'smoke pass ' + rnd();
+const mailC = userC + '@example.com';
+const jarC = jar();
+const regC = await emailSignUp(mailC, userC, passC, jarC);
+check(regC.f?.status === 200 && regC.json.kind === 'account' && regC.json.name === userC && jarC.get('__Host-tg_rt'), 'email sign-up C: the code from the outbox, checked, finished (session, refresh cookie)', { start: regC.s.status, mail: !!regC.m, check: regC.ck?.status, finish: regC.f?.status ?? regC.s.json });
+const meC = await api('/api/me', { token: regC.json.session });
+check(meC.status === 200 && meC.json.email === mailC && meC.json.emailVerified === true && meC.json.hasPassword === true, 'the email account: its address, verified, a password', { email: meC.json?.email, verified: meC.json?.emailVerified, hasPassword: meC.json?.hasPassword });
+const dup = await api('/api/auth/signup/start', { body: { email: mailC.toUpperCase() } });
+check(dup.status === 200 && (await outboxFor(mailC, 'signup_exists')) !== null, 'the same address again: the same answer, and M2 to the account', dup.status);
+const bad = await api('/api/auth/signin', { body: { email: mailC, password: await ACC.passwordKey('wrong password') } });
+check(bad.status === 401 && bad.json?.error === 'bad_credentials', 'wrong password -> 401', bad.status);
+const login = await api('/api/auth/signin', { body: { email: mailC.toUpperCase(), password: await ACC.passwordKey(passC) }, cookies: jarC });
+check(login.status === 200 && login.json.playerId === regC.json.playerId, 'email sign-in (any case)', login.status);
+const fg = await api('/api/auth/forgot', { body: { email: mailC } });
+const resetMail = fg.status === 200 ? await outboxFor(mailC, 'reset') : null;
+const resetToken = resetMail?.link ? /#reset=([A-Za-z0-9_-]+)/.exec(resetMail.link)?.[1] : undefined;
+check(fg.status === 200 && fg.json.ok === true && !!resetToken, 'forgot: { ok }, and the reset link in the outbox', fg.status);
+const peek = await api('/api/auth/reset/peek', { body: { token: resetToken } });
+check(peek.status === 200 && peek.json.name === userC && peek.json.hasPassword === true, 'reset/peek: whose link it is', peek.json);
+const newPassC = 'brand new pass ' + rnd();
+const rec = await api('/api/auth/reset', { body: { token: resetToken, password: await ACC.passwordKey(newPassC) }, cookies: jarC });
+check(rec.status === 200 && rec.json.playerId === regC.json.playerId, 'reset: the new password, this browser signed in', rec.status);
+const again = await api('/api/auth/reset', { body: { token: resetToken, password: await ACC.passwordKey(newPassC) } });
+check(again.status === 410, 'a reset link works once', again.status);
+const oldLogin = await api('/api/auth/signin', { body: { email: mailC, password: await ACC.passwordKey(passC) } });
+check(oldLogin.status === 401, 'old password no longer works', oldLogin.status);
+const renamedC = userC.replace('smk_', 'smr_');
+const rnC = await api('/api/me/username', { body: { username: renamedC }, token: rec.json?.session, cookies: jarC });
+check(rnC.status === 200 && rnC.json.name === renamedC, 'rename an email account by Bearer alone (the name salts no password)', rnC.status);
+const loginNew = await api('/api/auth/signin', { body: { email: mailC, password: await ACC.passwordKey(newPassC) } });
+check(loginNew.status === 200 && loginNew.json.playerId === regC.json.playerId && loginNew.json.name === renamedC, 'email sign-in: the new name, the new password', loginNew.status);
 
 // ---- training records ----------------------------------------------------------------------------
 const tr1 = await api('/api/me/training', { body: { records: { 'shooting-easy': { best: 6, shots: 8, completedAt: 1000 }, 'bad id!': { best: 1, shots: 1 } } }, token: tokA });
