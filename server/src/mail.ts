@@ -89,10 +89,11 @@ export function linkOrigin(request: Request, env: Pick<Env, 'MAIL_LINK_ORIGIN'>)
  * One address and nothing else: no list, no display name, no header-breaking character. Mail is
  * always one recipient per message (no CC, no BCC), so nobody's address is shown to anyone else.
  * The full rules (normalizeEmail) are the account code's; this only refuses what could add a second
- * recipient or a header.
+ * recipient or a header. One rule with them: every address normalizeEmail takes passes here, the
+ * apostrophe of o'brien@x.ie included (RFC 5322 atext; server/test/address-rule.test.mjs checks both).
  */
 export function isOneRecipient(to: unknown): to is string {
-  return typeof to === 'string' && to.length <= 254 && /^[^\s@<>,;:"'()[\]\\]+@[^\s@<>,;:"'()[\]\\]+\.[^\s@<>,;:"'()[\]\\]+$/.test(to) && !/[\p{Cc}]/u.test(to);
+  return typeof to === 'string' && to.length <= 254 && /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"'()[\]\\]+\.[^\s@<>,;:"'()[\]\\]+$/.test(to) && !/[\p{Cc}]/u.test(to);
 }
 
 function randomRef(): string {
