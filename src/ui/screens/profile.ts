@@ -38,6 +38,7 @@ import { finePointer } from '../device';
 import { icon } from '../components/icons';
 import type { IconName } from '../components/icons';
 import { slot } from '../components/tile';
+import { setRow, toggleSwitch } from '../components/rows';
 import { language, t } from '../../i18n';
 import type { Key } from '../../i18n';
 import { DISCORD_URL, GAME_NAME, SOURCE_URL } from '../../brand';
@@ -61,6 +62,15 @@ const nodeRegion = (id: string): string => {
 const HOST_GUIDE = (): string => `${SOURCE_URL}/blob/main/nodes/${language() === 'es' ? 'README.es.md' : 'README.md'}`;
 
 const PROVIDER_NAMES: Readonly<Record<OAuthProvider, string>> = { google: 'Google', discord: 'Discord' };
+
+/** A dev sign-in name (server/src/accountStore.ts DEV_NAME_RE, the same rule: a test pins it). */
+const DEV_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+
+/** A page served from this machine (Vite or wrangler dev): only there does PERFIL ask whether the dev sign-in is open. */
+function loopbackPage(): boolean {
+  const host = typeof location === 'undefined' ? '' : location.hostname;
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
+}
 
 /**
  * The longest lock of a (username, network) pair and the pause of a network (AccountsDO
@@ -168,6 +178,9 @@ export function profileScreen(menu: Menu): Screen {
   let tab: GuestTab = 'login';
   /** The signed-in account's community nodes (GET /nodes/mine), by account. */
   let nodes: { who: string; list: MyNode[] } | null = null;
+  /** PRIVACIDAD's switch (GET /api/me/replay-name), by account: null until it is read; the switch on screen. */
+  let replayHidden: { who: string; hidden: boolean } | null = null;
+  let replaySwitch: { refresh(): void } | null = null;
   /** CUENTA Y SEGURIDAD unfolded. */
   let accountOpen = false;
   let sample: AccountData | null = null;
@@ -267,6 +280,43 @@ export function profileScreen(menu: Menu): Screen {
   };
 
   /**
+   * ENTRAR (DEV) (the sign-in design's §3.15): a name and the dev-only sign-in, shown where GET
+   * /api/config says its gate is open (DEV_AUTH=1 on a loopback Worker), which only a page served
+   * from this machine asks. Its labels are dev-only, outside the locales. Filled in place when the
+   * answer comes, so a half-typed form above it stays as it is; hidden until then (no grid gap).
+   */
+  const devBox = (): HTMLElement | null => {
+    if (!loopbackPage()) return null;
+    const box = h('div.mn-prof-dev', { hidden: true });
+    void acc.devSignInOffered().then(
+      (open) => {
+        if (!open || !box.isConnected) return;
+        const name = field('DEV', { maxLength: 32, placeholder: 'ana', enterkeyhint: 'go' });
+        const go = async (): Promise<void> => {
+          name.error(null);
+          if (!DEV_NAME.test(name.input.value.trim())) {
+            name.error('1-32: A-Z a-z 0-9 _ -');
+            return;
+          }
+          try {
+            await acc.devSignIn(name.input.value);
+            menu.toast(t('profile.hello', { name: acc.account?.name ?? '' }), 'ok');
+            void acc.fetchMe();
+            render();
+          } catch (e) {
+            name.error(errText(e));
+          }
+        };
+        onEnter([name.input], () => void go());
+        setChildren(box, h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, name.el, secondary('ENTRAR (DEV)', () => void go(), { 'data-key': 'profile-dev' })));
+        box.hidden = false;
+      },
+      () => undefined,
+    );
+    return box;
+  };
+
+  /**
    * A guest's form: the tab's, its first field focused for typing where there is a fine pointer (a
    * touch screen's tap shows the keyboard; a TV's OK on the field, reached with ▼, opens mn-keypad).
    */
@@ -307,6 +357,7 @@ export function profileScreen(menu: Menu): Screen {
       phone,
       h('div.mn-tabs.mn-prof-tabs', { role: 'tablist', 'aria-label': t('profile.heading'), 'data-nav-row': true }, hero, signIn),
       h('div.mn-prof-form', null, form),
+      devBox(),
       // The server's name for this guest, temporary (a new guest session brings a new one).
       h('p.mn-note.mn-prof-guestline', null, t('profile.guestLine', { name: playerName(menu.host.guestName()) })),
     );
@@ -419,6 +470,32 @@ export function profileScreen(menu: Menu): Screen {
       icon('next', 'mn-prof-fold-chev'),
     );
     const server = v.nodes.length > 0 ? section(t('profile.myServer'), h('div.mn-prof-nodes', null, ...v.nodes.map(nodeView))) : null;
+    // PRIVACIDAD: the public replays show 'Jugador N' for this account (src/net/replays.ts), the
+    // matches already listed too. Off by default; a TV signed in with the phone may change it too.
+    const who = sample !== null ? 'sample' : (acc.account?.playerId ?? '');
+    const hideSwitch = toggleSwitch(
+      'profile-replay-name',
+      t('profile.hideReplayName'),
+      () => replayHidden !== null && replayHidden.who === who && replayHidden.hidden,
+      (on) => {
+        const was = replayHidden !== null && replayHidden.who === who && replayHidden.hidden;
+        replayHidden = { who, hidden: on };
+        if (sample !== null) return;
+        void acc.setReplayNameHidden(on).then(
+          (hidden) => {
+            if (replayHidden?.who === who) replayHidden = { who, hidden };
+            hideSwitch.refresh();
+          },
+          (e: unknown) => {
+            if (replayHidden?.who === who) replayHidden = { who, hidden: was };
+            hideSwitch.refresh();
+            menu.toast(errText(e), 'error');
+          },
+        );
+      },
+    );
+    replaySwitch = hideSwitch;
+    const privacy = section(t('profile.privacy'), setRow(t('profile.hideReplayName'), hideSwitch.el, t('profile.hideReplayNameHelp')));
     return h(
       'div.mn-prof-account',
       null,
@@ -427,6 +504,7 @@ export function profileScreen(menu: Menu): Screen {
         'div.mn-prof-col',
         null,
         h('section.mn-section.mn-prof-security', null, toggle, fold),
+        privacy,
         section(
           t('profile.community'),
           h('div.mn-prof-links', null, link(DISCORD_URL, 'friends', t('profile.discord'), 'profile-discord'), link(HOST_GUIDE(), 'server', t('profile.hostServer'), 'profile-host'), link(SOURCE_URL, 'code', t('profile.source'), 'profile-source')),
@@ -724,6 +802,19 @@ export function profileScreen(menu: Menu): Screen {
     );
   };
 
+  /** PRIVACIDAD's switch as the server has it, once per visit (offline: it reads NO until the next one). */
+  const loadReplayName = (): void => {
+    const who = acc.account?.playerId ?? null;
+    if (who === null) return;
+    void acc.replayNameHidden().then(
+      (hidden) => {
+        replayHidden = { who, hidden };
+        replaySwitch?.refresh();
+      },
+      () => undefined,
+    );
+  };
+
   // The samples exist in development and in a VITE_UI_FIT=1 build only (read here: node tests import this module).
   if (import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1') {
     (window as unknown as { __profile: (kind: 'account' | 'operator' | null) => void }).__profile = (kind) => {
@@ -745,7 +836,10 @@ export function profileScreen(menu: Menu): Screen {
     const signedIn = who !== shownFor && who !== null;
     if (el.isConnected) {
       render();
-      if (signedIn) loadNodes();
+      if (signedIn) {
+        loadNodes();
+        loadReplayName();
+      }
     }
   });
   return {
@@ -757,6 +851,7 @@ export function profileScreen(menu: Menu): Screen {
       if (acc.signedIn) {
         void acc.fetchMe().then(render, () => undefined);
         loadNodes();
+        loadReplayName();
       }
     },
   };

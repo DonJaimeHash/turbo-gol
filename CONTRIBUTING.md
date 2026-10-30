@@ -52,6 +52,27 @@ by wrangler, and the Worker's mailer is a stub on any loopback host. Never add `
 binding, and never put `MAIL_LIVE` in `.dev.vars` or `.env` (wrangler loads both): it is a production
 secret. See [docs/online/MAIL.md](docs/online/MAIL.md).
 
+Accounts work locally without any provider secret, through a dev-only sign-in. Add the line
+`DEV_AUTH=1` to your own `server/.dev.vars` (never to `wrangler.jsonc`, `.dev.vars.example` or any
+other committed file: a test fails if one sets it) and restart `npm run dev`. PERFIL then shows
+**ENTRAR (DEV)** with a name field: a name signs in to its own local account, made the first time
+(`<name>@dev.invalid`, verified). Scripts and agents use the same routes: `POST /api/dev/signin
+{ "name": "ana" }`, and `GET /api/dev/mail` lists what the stub mailer "sent", with its codes and
+links. Both answer 404 unless `DEV_AUTH=1` and the Worker is reached on a loopback host
+(127.0.0.1, localhost) from no page or a loopback one, so they never work on a deploy.
+
+One exception, on your own network: with `TG_LAN=1` (above), Vite forwards the network's requests to
+the Worker on 127.0.0.1, so with `DEV_AUTH=1` the Worker cannot tell them from yours. A page opened on
+another device is still refused, by its Origin, but any script on the network (a curl, which sends no
+Origin, or one that forges a loopback Origin) can `POST /api/dev/signin` with any name and read
+`GET /api/dev/mail`, codes and links included. It only reaches your local database. Do not combine
+`TG_LAN=1` with `DEV_AUTH=1` on a network you do not trust.
+
+A deployed fork therefore has no way to create accounts until it brings one of its own: Cloudflare
+Email Service on its own domain (`MAIL_LIVE`, `MAIL_FROM` and `MAIL_LINK_ORIGIN`, once the email
+accounts ship), or a Discord or Google OAuth application of its own ([docs/online/ACCOUNTS.md](docs/online/ACCOUNTS.md)).
+Guests, Casual, lobbies and training work without either.
+
 The physics engine is prebuilt (`src/sim/wasm/rocketsim.wasm` is committed). You only need the
 Emscripten SDK if you change the C++ wrapper or the physics library: see `native/README.md`.
 
@@ -109,7 +130,8 @@ cd server && npm run typecheck && npm test     # backend: types + unit tests
 ```
 
 Online changes should also pass the end-to-end smokes against `wrangler dev`
-(`node server/test/smoke.mjs`, `smoke-p2p.mjs`, `smoke-accounts.mjs`).
+(`node server/test/smoke.mjs`, `smoke-p2p.mjs`, `smoke-accounts.mjs`; the accounts smoke signs in
+through the dev sign-in, so it needs `DEV_AUTH=1` in your `server/.dev.vars`).
 
 Pull request checklist:
 

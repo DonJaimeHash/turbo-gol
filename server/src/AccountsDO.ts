@@ -71,6 +71,10 @@
  *   POST /experimental/set { userId, enabled }                       -> ExperimentalAnswer | 404
  *   POST /presets/upsert  { userId, preset }                         -> ExperimentalAnswer | 400 bad_preset | 409 too_many | 404
  *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
+ *   GET  /replay-name?userId=                                        -> { hidden } | 404 (PERFIL's "hide my name")
+ *   POST /replay-name/set { userId, hidden }                         -> { hidden } | 404
+ *   POST /replay-hidden   { ids, names } (the NodeRegistryDO)        -> { ids, names }: those of an account that hides
+ *                                                                     its name in the public replays (256 each at most)
  *   POST /tv-start        { ip, secret, where? }                     -> { code, expiresAt } | 503 busy (the table, or the
  *                                                                     caller's /48 or /24, is full)
  *   POST /tv-info         { code, userId, username, ip, phone? }     -> TvInfo (where the TV is, the phone's network and
@@ -103,6 +107,9 @@
  *   POST /account-stats   { operatorIds, trusted } (a maintainer, nodeRoutes.ts) -> AccountStats: counts and
  *                                                                     booleans only (accountStore.ts accountStats);
  *                                                                     operatorIds null = unknown (no node settings)
+ *   POST /dev-signin      { name, refresh }                          -> UserRef & { created } (accountStore.ts devSignIn) |
+ *                                                                     400 bad_name | 403 banned; 404 unless DEV_AUTH is '1'
+ *                                                                     (the Worker's gate: mail.ts isDevAuth)
  *
  * Brute force: durable counters in SQLite (accountStore.ts auth_throttle), exact and global, so a
  * restart or an eviction forgets none and memory never grows with them. Each key is a kind and an
@@ -132,7 +139,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey, trustedOperatorIds } from './env';
 import { base64urlEncode, checkInternal } from './auth';
-import { AccountStore } from './accountStore';
+import { AccountStore, DEV_NAME_PROBLEM } from './accountStore';
 import { CODE_TRIES } from './accountStore';
 import type { MailOrder, MailProfile, MailTokenRow } from './accountStore';
 import { FAILURES, MAIL_CAPS, RESEND, alertAfterFailures, dailyCap, laneAllows, mailDay, networkCap, pauseAfterFailures, takeSlot } from './mailCaps';
@@ -153,6 +160,8 @@ import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
 const LOGIN_WINDOW_MS = 15 * 60_000;
 /** The most accounts one /equipped asks for (a lobby's members: a 3v3). */
 const EQUIPPED_MAX = 6;
+/** /replay-hidden: a page of the public replays at most (31 rows of 8 seats), ids and names each. */
+const REPLAY_HIDDEN_MAX = 256;
 export const LOGIN_FAILS_FREE = 5;
 const LOGIN_LOCK_BASE_MS = 30_000;
 export const LOGIN_LOCK_MAX_MS = 15 * 60_000;
@@ -488,6 +497,10 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/shop': {
         const r = this.store.shop(p.get('userId') ?? '');
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/replay-name': {
+        const r = this.store.replayName(p.get('userId') ?? '');
         return r === 'no_user' ? error(404, 'no_user') : json(r);
       }
     }
@@ -1332,6 +1345,16 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'too_many') return error(409, 'too_many');
         return r === 'no_user' ? error(404, 'no_user') : json(r);
       }
+      case '/replay-name/set': {
+        if (typeof b.userId !== 'string' || typeof b.hidden !== 'boolean') return error(400, 'bad_request');
+        const r = s.setReplayName(b.userId, b.hidden, now);
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/replay-hidden': {
+        const list = (v: unknown): v is string[] => Array.isArray(v) && v.length <= REPLAY_HIDDEN_MAX && v.every((x) => typeof x === 'string' && x.length <= 64);
+        if (!list(b.ids) || !list(b.names)) return error(400, 'bad_request');
+        return json(s.replayHidden(b.ids, b.names));
+      }
       case '/presets/delete': {
         if (typeof b.userId !== 'string') return error(400, 'bad_request');
         if (typeof b.id !== 'string' || !PRESET_ID_RE.test(b.id)) return error(400, 'bad_preset');
@@ -1384,6 +1407,18 @@ export class AccountsDO extends DurableObject<Env> {
       case '/account-stats': {
         if ((b.operatorIds !== null && !isIdList(b.operatorIds, STATS_OPERATORS_MAX)) || !isIdList(b.trusted, STATS_TRUSTED_MAX)) return error(400, 'bad_request');
         return json(s.accountStats(b.operatorIds, b.trusted, now));
+      }
+      case '/dev-signin': {
+        // The Worker reaches this only through mail.ts isDevAuth (a loopback host); the object
+        // refuses it too wherever DEV_AUTH is not '1', as an unknown path (production never sets it).
+        if (this.env.DEV_AUTH !== '1') return error(404, 'not_found');
+        const refresh = grantOf(b.refresh);
+        if (typeof b.name !== 'string' || refresh === null) return error(400, 'bad_request');
+        const r = s.devSignIn(b.name, { ...refresh, kind: 'web' }, now);
+        if (r === 'bad_name') return error(400, 'bad_name', DEV_NAME_PROBLEM);
+        if (r === 'banned') return error(403, 'banned', 'Cuenta suspendida');
+        if (r === 'taken') return error(409, 'email_taken');
+        return json(r);
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');

@@ -31,6 +31,8 @@
  *                             src/game/physicsRules.ts, MAX_PRESETS per account, one per request (a whole
  *                             list would overrun the 4 KB body), last write wins (the server's updatedAt);
  *                             30 writes and 60 reads a minute per account; a guest gets 403 account_required
+ *   GET  /api/me/replay-name  Bearer (account)                  -> { hidden }: PERFIL's "hide my name in public replays"
+ *   POST /api/me/replay-name  Bearer (account) { hidden }       -> { hidden } (default off); 30 a minute per account
  *   GET  /api/me/items        Bearer (account)                  -> ItemsAnswer { items, car, cars } (src/net/cosmetics.ts)
  *   POST /api/me/car          Bearer (account) { car }          -> AccountSession with that car (the default
  *                             car, or one the account owns: 409 not_owned; 400 bad_car): its next seats drive it
@@ -88,6 +90,9 @@
  *     10 a minute per IP (and 5 live codes per IP), poll 60, confirm 30 a minute per IP plus 10
  *     failed confirms (wrong, expired or used codes) per account and 50 per IP in 15 minutes; an
  *     IPv6 address counts by its /64 (tvCodes.ts ipKey).
+ *   POST /api/dev/signin      { name }                          -> AccountSession + refresh cookie, and
+ *   GET  /api/dev/mail                                          -> the stub mailer's outbox: local work only,
+ *                             404 not_found unless DEV_AUTH=1 on a loopback host (devRoute below)
  *
  * Every POST /api/auth/* (every route that sets, rotates, clears or uses the refresh cookie, or
  * changes a credential) is refused unless it comes from one of the game's own pages: an Origin
@@ -132,12 +137,13 @@ import type { SessionClaims } from './auth';
 import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
 import type { AccountSession, CodeResendAnswer, CodeStartAnswer, LeaderboardAnswer, OAuthProvider, PasswordLinkAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
 import type { Credentials, PasswordRecord, RefreshGrant, UserRef } from './accountStore';
+import { DEV_NAME_PROBLEM, devSubOf } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { firstUse } from './limits';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
 import { DEFAULT_CAR, isCarId } from '../../src/game/cosmetics';
 import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
-import { composeMail, deliver, isLocalDev, linkOrigin } from './mail';
+import { composeMail, deliver, devMailResponse, isDevAuth, isLocalDev, linkOrigin } from './mail';
 import type { Mailer, MailMessage } from './mail';
 import { FAILURES, mailKilled } from './mailCaps';
 import { renderMail } from './mailTemplates';
@@ -921,6 +927,21 @@ async function presetUpsert(c: RouteContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/presets/upsert', { userId: s.sub, preset }));
 }
 
+/**
+ * GET /api/me/replay-name, POST /api/me/replay-name { hidden }: PERFIL's "hide my name in public
+ * replays" (src/net/replays.ts; default off: the name shows). Limited per account by limits.ts
+ * (replayName), before AccountsDO. The public rows read it at each serve (the NodeRegistryDO keeps
+ * an answer a minute), the matches already listed too.
+ */
+async function replayName(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.request.method === 'GET') return noStore(await accountsCall(c.env, '/replay-name?userId=' + encodeURIComponent(s.sub)));
+  const b = await readJson<{ hidden?: unknown }>(c.request);
+  if (!b || typeof b.hidden !== 'boolean') return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/replay-name/set', { userId: s.sub, hidden: b.hidden }));
+}
+
 /** POST /api/me/presets/delete { id }. */
 async function presetDelete(c: RouteContext): Promise<Response> {
   const s = requireAccount(c);
@@ -1671,10 +1692,36 @@ async function tvPoll(c: RouteContext): Promise<Response> {
   return withCookies(json(out), [refreshCookie(refreshTok)]);
 }
 
+// ---- dev only (the sign-in design's §2.12 and §3.15) -----------------------------------------------
+
+/**
+ * The dev-only routes, for local work and for forks without provider secrets. They open only
+ * behind mail.ts isDevAuth: DEV_AUTH=1 (in your own server/.dev.vars), a loopback request host
+ * (wrangler dev; production's is turbo-gol.com) and no Origin or a loopback one. Closed, each one
+ * answers 404 not_found, the answer of any unknown route (index.ts does not even route them here
+ * then, so a closed one is never counted by a limit either).
+ *   POST /api/dev/signin { name } -> AccountSession + refresh cookie: the account of that dev name,
+ *        made at its first use (accountStore.ts devSignIn: <name>@dev.invalid, verified; level 2,
+ *        method 'dev'); 400 bad_name (1-32 of A-Z a-z 0-9 _ -); 403 banned
+ *   GET  /api/dev/mail -> { messages }: what the stub mailer "sent", newest first (mail.ts devMailResponse)
+ */
+async function devRoute(c: RouteContext, p: string, m: string): Promise<Response> {
+  if (m === 'GET' && p === '/api/dev/mail') return devMailResponse(c.request, c.env);
+  if (m !== 'POST' || p !== '/api/dev/signin' || !isDevAuth(c.request, c.env)) return error(404, 'not_found');
+  if ((c.request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase() !== 'application/json') return error(415, 'json_required', 'Se espera JSON');
+  const b = await readJson<{ name?: unknown }>(c.request);
+  if (!b || devSubOf(b.name) === null) return error(400, 'bad_name', DEV_NAME_PROBLEM);
+  const refreshTok = newRefreshToken();
+  const r = await accountsJson<UserRef>(c.env, '/dev-signin', { name: b.name, refresh: await grantFor(refreshTok, c.request) });
+  if (!r.ok) return pass(r.res);
+  return withCookies(json(await accountSession(c.env, r.data)), [refreshCookie(refreshTok)]);
+}
+
 /** Dispatch; null when the path is not an account route. */
 export async function accountRoute(c: RouteContext, url: URL): Promise<Response | null> {
   const p = url.pathname;
   const m = c.request.method;
+  if (p.startsWith('/api/dev/')) return devRoute(c, p, m);
   if (m === 'POST' && p.startsWith('/api/auth/')) {
     const refused = crossSiteRefusal(c, p);
     if (refused !== null) return refused;
@@ -1690,6 +1737,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/me/experimental') return experimentalSet(c);
     if (p === '/api/me/presets') return presetUpsert(c);
     if (p === '/api/me/presets/delete') return presetDelete(c);
+    if (p === '/api/me/replay-name') return replayName(c);
     if (p === '/api/auth/tv/start') return tvStart(c);
     if (p === '/api/auth/tv/info') return tvInfo(c);
     if (p === '/api/auth/tv/confirm') return tvConfirm(c);
@@ -1717,6 +1765,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
   if (m === 'GET') {
     if (p === '/api/me') return me(c);
     if (p === '/api/me/experimental') return experimentalGet(c);
+    if (p === '/api/me/replay-name') return replayName(c);
     if (p === '/api/me/items') return itemsGet(c);
     if (p === '/api/me/shop') return shopGet(c);
     if (p === '/api/leaderboard') return leaderboard(c, url);

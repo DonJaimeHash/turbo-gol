@@ -31,6 +31,9 @@
  *   experimental     user -> Settings > Experimental's switch (src/game/experimentalStore.ts)
  *   presets          (user, preset) -> one physics preset: its name and canonical values as JSON
  *                    (src/game/physicsRules.ts), MAX_PRESETS per account, last write wins
+ *   replay_names     user -> PERFIL's "hide my name in public replays" (src/net/replays.ts): no row is
+ *                    the default, the name shown; the NodeRegistryDO asks (/replay-hidden) when it
+ *                    serves a replay row, so the choice reaches the matches listed before it too
  *
  * The hosts' shop (nodes/control-plane/shop.ts: its catalog and its claim rule, one source with the
  * reference server; nodes/docs/RECOMPENSAS.md: points come only from hosting a community node, are
@@ -454,6 +457,20 @@ export function usernameFromDisplay(display: string): string {
   return s;
 }
 
+/** The dev sign-in's address domain (RFC 2606: .invalid never routes, and normalizeEmail refuses it, so no flow mails it). */
+export const DEV_EMAIL_DOMAIN = 'dev.invalid';
+/** A dev sign-in name: 1-32 ASCII letters, digits, '_' or '-', starting with a letter or digit (the local part of its address). */
+export const DEV_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+/** The 400 bad_name message of the dev sign-in (the Worker's messages are Spanish; the DEV form checks DEV_NAME_RE first). */
+export const DEV_NAME_PROBLEM = 'Usa de 1 a 32 letras, números, "_" o "-"';
+
+/** The dev identity (users.dev_sub) of a name typed at ENTRAR (DEV): its lower case, or null when it is not one (DEV_NAME_RE). */
+export function devSubOf(name: unknown): string | null {
+  if (typeof name !== 'string') return null;
+  const s = name.trim();
+  return DEV_NAME_RE.test(s) ? s.toLowerCase() : null;
+}
+
 export class AccountStore {
   private readonly sql: SqlLike;
   private readonly tx: <T>(fn: () => T) => T;
@@ -515,6 +532,7 @@ export class AccountStore {
       PRIMARY KEY (user_id, item_id))`);
     s.exec('CREATE TABLE IF NOT EXISTS host_freeze (user_id TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, cleared_at INTEGER NOT NULL DEFAULT 0)');
     s.exec('CREATE TABLE IF NOT EXISTS loadout (user_id TEXT PRIMARY KEY, car TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+    s.exec('CREATE TABLE IF NOT EXISTS replay_names (user_id TEXT PRIMARY KEY, hidden INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
     this.migrateTo2();
   }
 
@@ -1095,6 +1113,46 @@ export class AccountStore {
     return (lang === 'es' ? 'Jugador' : 'Player') + String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
   }
 
+  /**
+   * The dev-only sign-in (the design's §3.15: POST /api/dev/signin, open only with DEV_AUTH=1 on a
+   * loopback host): the account whose dev_sub is devSubOf(name), made at its first use. Its address
+   * is <dev_sub>@dev.invalid, verified, proof 'dev' (I1: no typed address, and .invalid never
+   * routes); its username `name` when that is a valid username nobody has, else 'Dev' and digits.
+   * This device's family proves a credential now, at level 2 with method 'dev' (the design's R6).
+   * 'bad_name' (devSubOf), 'banned', or 'taken' when another account holds the address (only a
+   * database edited by hand could).
+   */
+  devSignIn(name: string, refresh: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'bad_name' | 'banned' | 'taken' {
+    const sub = devSubOf(name);
+    if (sub === null) return 'bad_name';
+    const typed = name.trim();
+    const email = sub + '@' + DEV_EMAIL_DOMAIN;
+    return this.tx(() => {
+      let u = this.sql.exec('SELECT * FROM users WHERE dev_sub = ?', sub).toArray()[0] ?? null;
+      const created = u === null;
+      if (u === null) {
+        if (this.canonTaken(email, '')) return 'taken' as const;
+        let username = usernameIssue(typed) === null ? typed : '';
+        for (let n = 0; username === '' || this.usernameTaken(username); n++) username = 'Dev' + String(Math.floor(Math.random() * (n < 20 ? 10_000 : 10_000_000)));
+        const id = this.freshId();
+        this.sql.exec(
+          "INSERT INTO users (id, username, ukey, dev_sub, email, email_canon, email_verified_at, email_proof, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, 'dev', ?, ?)",
+          id, username, usernameKey(username), sub, email, email, now, now, now,
+        );
+        // A claim of a canon clears every other account's hint of it (the design's §1.1).
+        this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", email, id);
+        u = this.userById(id) as Row;
+      } else {
+        if (num(u.banned) === 1) return 'banned' as const;
+        this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, str(u.id));
+      }
+      const g: RefreshGrant = typeof refresh === 'string' ? { hash: refresh } : refresh;
+      this.addRefresh(str(u.id), { ...g, kind: 'web' }, now);
+      this.sql.exec("UPDATE refresh SET auth_lvl = 2, method = 'dev' WHERE hash = ?", g.hash);
+      return { ...this.refOf(u), authAt: now, created };
+    });
+  }
+
   /** Change the username (once per RENAME_EVERY_MS; a fresh OAuth account may rename at once). */
   rename(userId: string, username: string, now: number): UserRef | 'taken' | 'lookalike' | 'too_soon' | 'no_user' {
     return this.tx(() => {
@@ -1428,6 +1486,43 @@ export class AccountStore {
       this.sql.exec('DELETE FROM presets WHERE user_id = ? AND preset_id = ?', userId, presetId);
       return { enabled: this.experimentalEnabled(userId), presets: this.presets(userId) };
     });
+  }
+
+  // ---- public replays (src/net/replays.ts) --------------------------------------------------------
+
+  private replayNameHidden(userId: string): boolean {
+    return num(this.sql.exec('SELECT hidden FROM replay_names WHERE user_id = ?', userId).toArray()[0]?.hidden) === 1;
+  }
+
+  /** GET /api/me/replay-name: whether the account's name is hidden in the public replays (default: shown). */
+  replayName(userId: string): { hidden: boolean } | 'no_user' {
+    if (this.userById(userId) === null) return 'no_user';
+    return { hidden: this.replayNameHidden(userId) };
+  }
+
+  setReplayName(userId: string, hidden: boolean, now: number): { hidden: boolean } | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      this.sql.exec(
+        'INSERT INTO replay_names (user_id, hidden, updated_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET hidden = excluded.hidden, updated_at = excluded.updated_at',
+        userId, hidden ? 1 : 0, now,
+      );
+      return { hidden };
+    });
+  }
+
+  /**
+   * POST /replay-hidden (the NodeRegistryDO, serving replay rows): which of `ids` (player ids: an
+   * account's, or a guest's, which never has a row) and of `names` (a legacy row's names, looked up
+   * as usernames today) belong to an account that hides its name.
+   */
+  replayHidden(ids: readonly string[], names: readonly string[]): { ids: string[]; names: string[] } {
+    const hidIds = ids.filter((id) => this.replayNameHidden(id));
+    const hidNames = names.filter((n) => {
+      const u = this.userByKey(usernameKey(n));
+      return u !== null && this.replayNameHidden(str(u.id));
+    });
+    return { ids: hidIds, names: hidNames };
   }
 
   // ---- cars and the hosts' shop -------------------------------------------------------------------

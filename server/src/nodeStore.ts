@@ -20,6 +20,13 @@
  *   ledger_notes  the repeat decay's notes of matches that earned nothing by themselves, kept 24 h
  *   replay_index  the public replay list (replayIndex.ts): one row per settled, not voided match
  *                 with a replay, written with the match it settles; kept as long as R2 keeps replays
+ *                 (REPLAY_INDEX_DAYS: pruned with their R2 objects by the cron's health call) and
+ *                 served by whole settle hours (replayServedSpan): the matches of hour H from H + 2 h,
+ *                 1 to 2 hours after each settled, until H + 30 days
+ *   replay_players each listed match's human seats and their player ids (replayIndex.ts replaySeats),
+ *                 never served: whose name a served row hides ('Jugador N', AccountsDO replay_names).
+ *                 A row listed before this table has no seats (a legacy row): its names are looked up
+ *                 by name instead (NodeRegistryDO)
  * Ledger.restore reads the three back at every start (ledgerSnapshot): a deploy keeps the decay,
  * the leaderboard and the summaries. The points themselves go to the operator's account (AccountsDO
  * host_credits, through the outbox), which keeps them for good.
@@ -34,11 +41,27 @@ import type { NodeRecord, TokenRecord } from '../../nodes/control-plane/registry
 import type { SqlLike } from './accountStore';
 import { outcomeCalls } from './nodeOutcome';
 import type { OutcomeCall } from './nodeOutcome';
-import { REPLAY_INDEX_DAYS, replayIndexItem } from './replayIndex';
-import type { ReplayIndexRow } from './replayIndex';
+import { HOUR_MS, REPLAY_INDEX_DAYS, replayIndexItem, replayServedSpan, replaySeats } from './replayIndex';
+import type { ReplayIndexRow, ReplaySeat } from './replayIndex';
 import type { ReplayListItem } from '../../src/net/replays';
 
 const DAY_MS = 24 * 60 * 60_000;
+/** A row's settle hour in SQL (integer division: `at` is an INTEGER), the expression replay_index_hour indexes. */
+const REPLAY_HOUR_SQL = `(at / ${HOUR_MS})`;
+/** Rows one prune deletes at most (the cron's, every 5 minutes): bounded work on the object's thread. */
+const REPLAY_PRUNE_MAX = 2000;
+
+/** A served row as the object reads it: the stored item and its human seats (null: a row from before replay_players). */
+export interface ReplayRow {
+  item: ReplayListItem;
+  seats: ReplaySeat[] | null;
+}
+
+/** Where a page of the public list starts: after this row in the public order (its settle hour, then its id). */
+export interface ReplayCursor {
+  hour: number;
+  matchId: string;
+}
 
 /** A note's player ids ([] when the row does not read). */
 function playersOf(v: string): string[] {
@@ -97,6 +120,10 @@ export class NodeStore implements RegistryStore, MatchStore {
     s.exec('CREATE INDEX IF NOT EXISTS ledger_notes_at ON ledger_notes (at)');
     s.exec('CREATE TABLE IF NOT EXISTS replay_index (match_id TEXT PRIMARY KEY, at INTEGER NOT NULL, sha TEXT NOT NULL, data TEXT NOT NULL)');
     s.exec('CREATE INDEX IF NOT EXISTS replay_index_at ON replay_index (at)');
+    // The public order: the settle hour (what the list shows), then the match id, so nothing orders
+    // the matches of one hour by their exact times.
+    s.exec(`CREATE INDEX IF NOT EXISTS replay_index_hour ON replay_index (${REPLAY_HOUR_SQL}, match_id)`);
+    s.exec('CREATE TABLE IF NOT EXISTS replay_players (match_id TEXT NOT NULL, slot INTEGER NOT NULL, player_id TEXT NOT NULL, PRIMARY KEY (match_id, slot))');
     const v = s.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'state_version'").toArray()[0]?.v;
     if (v === undefined) {
       s.exec("INSERT INTO meta (k, v) VALUES ('state_version', ?)", String(STATE_VERSION));
@@ -211,7 +238,7 @@ export class NodeStore implements RegistryStore, MatchStore {
     // Outside the settling transaction and never thrown: a row that fails only leaves the match unlisted.
     try {
       const listed = replayIndexItem(m, o);
-      if (listed && m.replaySha) this.replayRow(listed, m.replaySha, now);
+      if (listed && m.replaySha) this.replayRow(listed, m.replaySha, replaySeats(m));
     } catch (e) {
       console.error(`replay index ${m.assign.matchId}: ${String(e)}`);
     }
@@ -220,24 +247,81 @@ export class NodeStore implements RegistryStore, MatchStore {
 
   // ---- the public replay index -------------------------------------------------------------
 
-  private replayRow(item: ReplayListItem, sha: string, now: number): void {
-    this.sql.exec('INSERT INTO replay_index (match_id, at, sha, data) VALUES (?, ?, ?, ?) ON CONFLICT(match_id) DO NOTHING', item.matchId, item.at, sha, JSON.stringify(item));
-    this.sql.exec('DELETE FROM replay_index WHERE at < ?', now - REPLAY_INDEX_DAYS * DAY_MS);
+  private replayRow(item: ReplayListItem, sha: string, seats: readonly ReplaySeat[]): void {
+    this.tx(() => {
+      this.sql.exec('INSERT INTO replay_index (match_id, at, sha, data) VALUES (?, ?, ?, ?) ON CONFLICT(match_id) DO NOTHING', item.matchId, item.at, sha, JSON.stringify(item));
+      for (const p of seats) this.sql.exec('INSERT INTO replay_players (match_id, slot, player_id) VALUES (?, ?, ?) ON CONFLICT(match_id, slot) DO NOTHING', item.matchId, p.slot, p.playerId);
+    });
   }
 
-  /** The listed matches settled before `before` (ms), newest first, at most `limit`; rows R2 no longer keeps are left out. */
-  replayList(before: number, limit: number): ReplayListItem[] {
-    const since = this.now() - REPLAY_INDEX_DAYS * DAY_MS;
-    return this.sql
-      .exec<{ data: string }>('SELECT data FROM replay_index WHERE at < ? AND at >= ? ORDER BY at DESC, match_id DESC LIMIT ?', before, since, limit)
+  /** The rows past REPLAY_INDEX_DAYS go (the oldest `max`), with their seats. Returns their match ids: their R2 objects go too (NodeRegistryDO). */
+  pruneReplays(now: number, max: number = REPLAY_PRUNE_MAX): string[] {
+    const ids = this.sql
+      .exec<{ match_id: string }>('SELECT match_id FROM replay_index WHERE at < ? ORDER BY at LIMIT ?', now - REPLAY_INDEX_DAYS * DAY_MS, max)
       .toArray()
-      .map((r) => JSON.parse(r.data) as ReplayListItem);
+      .map((r) => r.match_id);
+    if (ids.length === 0) return [];
+    this.tx(() => {
+      for (const id of ids) {
+        this.sql.exec('DELETE FROM replay_players WHERE match_id = ?', id);
+        this.sql.exec('DELETE FROM replay_index WHERE match_id = ?', id);
+      }
+    });
+    return ids;
   }
 
-  /** One listed match and its replay's SHA-256, or null. */
-  replayEntry(matchId: string): ReplayIndexRow | null {
-    const r = this.sql.exec<{ sha: string; data: string }>('SELECT sha, data FROM replay_index WHERE match_id = ?', matchId).toArray()[0];
-    return r ? { item: JSON.parse(r.data) as ReplayListItem, sha: r.sha } : null;
+  /**
+   * The served rows (replayServedSpan: whole settle hours, released 1 to 2 hours after they settled,
+   * gone before 30 days) in the public order, after `cursor` (null: from the newest), at most
+   * `limit`, each with its seats.
+   */
+  replayList(cursor: ReplayCursor | null, limit: number): ReplayRow[] {
+    const { newest, oldest } = replayServedSpan(this.now());
+    const span = [newest, oldest];
+    // `+at`: the time window is a filter, never the index, so SQLite walks replay_index_hour in order and
+    // stops at `limit` (with replay_index_at it sorted the whole window: 0.1 ms against 300 ms for
+    // 300,000 rows). The cursor's hour is the index's range; a row-value or an OR form would scan from the top.
+    const order = `ORDER BY ${REPLAY_HOUR_SQL} DESC, match_id DESC LIMIT ?`;
+    const rows = cursor
+      ? this.sql
+          .exec<{ data: string }>(`SELECT data FROM replay_index WHERE +at < ? AND +at >= ? AND ${REPLAY_HOUR_SQL} <= ? AND NOT (${REPLAY_HOUR_SQL} = ? AND match_id >= ?) ${order}`, ...span, cursor.hour, cursor.hour, cursor.matchId, limit)
+          .toArray()
+      : this.sql.exec<{ data: string }>(`SELECT data FROM replay_index WHERE +at < ? AND +at >= ? ${order}`, ...span, limit).toArray();
+    const items = rows.map((r) => JSON.parse(r.data) as ReplayListItem);
+    const seats = this.seatsOf(items.map((i) => i.matchId));
+    return items.map((item) => ({ item, seats: seats.get(item.matchId) ?? null }));
+  }
+
+  /** The seats of each of `matchIds` that has any. */
+  private seatsOf(matchIds: readonly string[]): Map<string, ReplaySeat[]> {
+    const out = new Map<string, ReplaySeat[]>();
+    if (matchIds.length === 0) return out;
+    const marks = matchIds.map(() => '?').join(', ');
+    for (const r of this.sql.exec<{ match_id: string; slot: number; player_id: string }>(`SELECT match_id, slot, player_id FROM replay_players WHERE match_id IN (${marks}) ORDER BY match_id, slot`, ...matchIds).toArray()) {
+      const list = out.get(r.match_id) ?? [];
+      list.push({ slot: Number(r.slot), playerId: r.player_id });
+      out.set(r.match_id, list);
+    }
+    return out;
+  }
+
+  /** One served match (in replayList's window, replayServedSpan), its replay's SHA-256 and its seats, or null. */
+  replayEntry(matchId: string): (ReplayIndexRow & { seats: ReplaySeat[] | null }) | null {
+    const { newest, oldest } = replayServedSpan(this.now());
+    const r = this.sql
+      .exec<{ sha: string; data: string }>('SELECT sha, data FROM replay_index WHERE match_id = ? AND at < ? AND at >= ?', matchId, newest, oldest)
+      .toArray()[0];
+    return r ? { item: JSON.parse(r.data) as ReplayListItem, sha: r.sha, seats: this.seatsOf([matchId]).get(matchId) ?? null } : null;
+  }
+
+  /** A maintainer's delist (NodeRegistryDO adminDelist): the row and its seats go, whatever its age. True when there was a row. */
+  delistReplay(matchId: string): boolean {
+    const had = this.sql.exec('SELECT 1 AS x FROM replay_index WHERE match_id = ?', matchId).toArray().length > 0;
+    this.tx(() => {
+      this.sql.exec('DELETE FROM replay_players WHERE match_id = ?', matchId);
+      this.sql.exec('DELETE FROM replay_index WHERE match_id = ?', matchId);
+    });
+    return had;
   }
 
   drop(matchId: string): void {

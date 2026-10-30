@@ -194,6 +194,8 @@ export class AccountClient {
   me: MeInfo | null = null;
   /** Sign-in / sign-out / rename / profile refresh: every `subscribe`r is called (the menus redraw, the Game re-checks). */
   private readonly listeners = new Set<() => void>();
+  /** devSignInOffered's one GET /api/config, once asked. */
+  private devOffered: Promise<boolean> | null = null;
 
   private readonly apiBase: string;
   private readonly fetchFn: FetchLike;
@@ -503,6 +505,36 @@ export class AccountClient {
     await this.jsonOrFail<{ ok: true }>(await this.call('/api/auth/tv/confirm', { code }, await this.bearer()));
   }
 
+  // ---- the dev-only sign-in (the sign-in design's §3.15; local work and forks) ---------------------
+
+  /**
+   * GET /api/config says the dev sign-in is open (`auth.devSignIn`: DEV_AUTH=1 on a loopback
+   * Worker). Asked once per page, and only by a caller that wants it (PERFIL on a page served from
+   * this machine), so a deployed page never spends a request on it. False when the config fails.
+   */
+  devSignInOffered(): Promise<boolean> {
+    if (this.devOffered === null) {
+      this.devOffered = (async () => {
+        try {
+          const res = await this.call('/api/config');
+          if (!res.ok) return false;
+          const c = (await res.json()) as { auth?: { devSignIn?: unknown } } | null;
+          return c?.auth?.devSignIn === true;
+        } catch {
+          return false;
+        }
+      })();
+    }
+    return this.devOffered;
+  }
+
+  /** POST /api/dev/signin { name }: the account of that dev name (made at its first use), adopted as a sign-in's. */
+  async devSignIn(name: string): Promise<AccountSession> {
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/dev/signin', { name: name.trim() }));
+    if (!isSession(s)) throw new AccountError(t('error.server'), 200, 'protocol');
+    return this.adopt(sessionPart(s));
+  }
+
   /**
    * Full-page redirect target of the provider buttons: a sign-in, `link` (PERFIL's VINCULAR, true
    * or 'link': this browser must have proved a credential in the last minutes, see fresh) or
@@ -674,6 +706,18 @@ export class AccountClient {
 
   deletePreset(id: string): Promise<ExperimentalAnswer> {
     return this.experimentalCall('/api/me/presets/delete', { id });
+  }
+
+  // ---- public replays (src/net/replays.ts) ------------------------------------------------------
+
+  /** Whether this account's name is hidden in the public replays (GET /api/me/replay-name; default false). */
+  async replayNameHidden(): Promise<boolean> {
+    return ((await this.ownCall('/api/me/replay-name')) as { hidden?: unknown } | null)?.hidden === true;
+  }
+
+  /** PERFIL's switch: hide the name ('Jugador N') in the public replays or show it again; resolves the server's state after it. */
+  async setReplayNameHidden(hidden: boolean): Promise<boolean> {
+    return ((await this.ownCall('/api/me/replay-name', { hidden })) as { hidden?: unknown } | null)?.hidden === true;
   }
 
   // ---- cars and the hosts' shop (src/game/garage.ts; the answers: src/net/cosmetics.ts) ----------

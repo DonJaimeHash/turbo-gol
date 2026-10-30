@@ -50,7 +50,7 @@ export interface Env {
   MAIL_LINK_ORIGIN?: string;
   /** Var: the day's mail across every lane (src/mailCaps.ts); 100 when unset or not a positive integer. */
   EMAIL_DAILY_CAP?: string | number;
-  /** `.dev.vars` only: '1' opens the dev-only routes (the stub's outbox) on a loopback host, never elsewhere. */
+  /** `.dev.vars` only: '1' opens the dev-only routes (the dev sign-in, the stub's outbox) on a loopback host, never elsewhere. */
   DEV_AUTH?: string;
   FLAGS: KVNamespace;
   /** Workers Assets (wrangler.jsonc `assets`): the Vite build in ../dist, served for every path outside /api, /ws, /room and /lobby. */
@@ -123,6 +123,13 @@ export interface Env {
   NODE_ALERT_WEBHOOK?: string;
   /** Var: the public origin the nodes and the installers reach the control plane at (https://turbo-gol.com). */
   NODES_PUBLIC_BASE?: string;
+  /**
+   * Var and secret, optional: the zone id and an API token with only "Cache Purge" on it. With both,
+   * a maintainer's replay delist (nodeRoutes.ts) also purges the view's copies in every Cloudflare
+   * location; without them only the location the maintainer reaches, the others in 3 hours.
+   */
+  CF_ZONE_ID?: string;
+  CF_PURGE_TOKEN?: string;
   /**
    * Workers Rate Limiting bindings (wrangler.jsonc `ratelimits`), named after their limit per 60 s:
    * the counters behind limits.ts's table, shared by the isolates of one Cloudflare location.

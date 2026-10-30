@@ -1,23 +1,53 @@
 /**
  * The public replay index (src/net/replays.ts): one row per settled, not voided community-node
- * match with a replay, written by NodeStore.finished in the transaction that settles it, and the
- * header rewrite that makes a stored replay public.
+ * match with a replay, written by NodeStore.finished right after the transaction that settles it,
+ * the public form of a row (publicItem), and the header rewrite that makes a stored replay public.
  *
  * What a viewer gets is safe to give anyone: the names, teams and score come from the control
  * plane's record (assign.roster, the outcome), never from the node's replay header (a node writes
  * whatever names it likes there; verify.ts does not compare them). Account ids and the node id are
  * never listed and are blanked from the served header: an account id is stable across renames, so
- * publishing it would link every match an account plays.
+ * publishing it would link every match an account plays. The ids stay in the object (nodeStore.ts
+ * replay_players, from replaySeats) for one thing: the names of the accounts that hide theirs
+ * (PERFIL; AccountsDO replay_names) become 'Jugador N' when a row is served (publicItem), so a
+ * choice reaches the matches listed before it too.
+ *
+ * Privacy by time: matches are released by settle hour, a whole hour at a time, 1 to 2 hours after
+ * they settled (REPLAY_LIST_DELAY_MS, replayServedSpan), each with its time rounded down to the
+ * hour, and they go a whole hour at a time too, before REPLAY_INDEX_DAYS: a list that refreshes
+ * every 30 s would otherwise say who is playing right now, and a row that appeared (or went) on its
+ * own would give its exact settle time to anyone polling.
  */
 import type { MatchEntry, MatchOutcome } from '../../nodes/control-plane/controlPlane';
+import { hiddenNameOf } from '../../src/net/replays';
 import type { ReplayListItem } from '../../src/net/replays';
 
-/** R2's lifecycle rule (wrangler.jsonc): a replay lives 30 days, its row the same. */
+/** R2's lifecycle rule (docs/replays.md): a replay lives 30 days, its row the same; nothing older is served. */
 export const REPLAY_INDEX_DAYS = 30;
+export const HOUR_MS = 60 * 60_000;
+/** A settled match is served (listed, viewed) at least this long after it settled, with the rest of its hour. */
+export const REPLAY_LIST_DELAY_MS = HOUR_MS;
+const DAY_MS = 24 * HOUR_MS;
 
-/** The row of a settled match, or null when it is not listed (void, or no replay). */
+/**
+ * The served window at `now`: a row is served when oldest <= at < newest. Both edges are whole
+ * hours, so the matches of one settle hour appear together and go together, and polling the list
+ * (or a view) says no more than the rounded `at` does. Every match of hour H appears at H + 2 h
+ * (1 to 2 hours after it settled; an edge at each row's settle + 1 h gave anyone polling every 30 s
+ * each match's exact end) and goes right after H + REPLAY_INDEX_DAYS (never served past 30 days).
+ */
+export function replayServedSpan(now: number): { newest: number; oldest: number } {
+  return {
+    newest: Math.floor((now - REPLAY_LIST_DELAY_MS) / HOUR_MS) * HOUR_MS,
+    oldest: Math.ceil((now - REPLAY_INDEX_DAYS * DAY_MS) / HOUR_MS) * HOUR_MS,
+  };
+}
+
+/** The row of a settled match, or null when it is not listed (void, no replay, or a replay too big to serve). */
 export function replayIndexItem(m: MatchEntry, o: MatchOutcome): ReplayListItem | null {
   if (o.kind === 'void' || !m.replaySha) return null;
+  // The node's own count: a bigger one could never be served (replayView refuses it unread), so it is not listed.
+  if (m.report?.kind === 'ended' && m.report.replayBytes > PUBLIC_REPLAY_MAX_BYTES) return null;
   const a = m.assign;
   return {
     matchId: a.matchId,
@@ -31,6 +61,35 @@ export function replayIndexItem(m: MatchEntry, o: MatchOutcome): ReplayListItem 
     ticks: m.verdict?.ticks ?? (m.report?.kind === 'ended' ? m.report.result.endTick : 0),
     players: a.roster.map((e) => ({ team: e.team, name: e.name, bot: e.kind === 'bot' })),
     build: { version: m.build.version, protocol: m.build.protocol, wasmSha256: m.build.wasmSha256 },
+  };
+}
+
+/** A human seat of a listed match, kept in the object only: whose choice to ask AccountsDO for (a guest's id finds none). */
+export interface ReplaySeat {
+  slot: number;
+  /** The session's id: an account's or a guest's. */
+  playerId: string;
+}
+
+/** The human seats of a settled match that carry a player id (bots have none). */
+export function replaySeats(m: MatchEntry): ReplaySeat[] {
+  const out: ReplaySeat[] = [];
+  m.assign.roster.forEach((e, slot) => {
+    if (e.kind === 'player' && typeof e.playerId === 'string' && e.playerId !== '') out.push({ slot, playerId: e.playerId });
+  });
+  return out;
+}
+
+/**
+ * A stored row as the public sees it: the time rounded down to the hour, and the name of each
+ * slot in `hidden` replaced by 'Jugador N'. A new object: the stored one is never changed.
+ */
+export function publicItem(item: ReplayListItem, hidden: ReadonlySet<number>): ReplayListItem {
+  return {
+    ...item,
+    at: Math.floor(item.at / HOUR_MS) * HOUR_MS,
+    players: item.players.map((p, slot) => (!p.bot && hidden.has(slot) ? { ...p, name: hiddenNameOf(slot) } : { ...p })),
+    build: { ...item.build },
   };
 }
 
@@ -93,7 +152,8 @@ function checkRecords(bytes: Uint8Array, from: number, slots: number): void {
  * match's identity, mode, region, ranked flag and build are the control plane's (`item`); the
  * simulation settings (length, seed, bots, timings, checkpoints) are the node's, type-checked; the
  * roster must be the control plane's one slot for slot (same teams, same humans and bots), with its
- * names and no account id (an empty playerId still decodes); the node id is blank. Anything else a
+ * names (`item` as publicItem made it: a hidden one is 'Jugador N') and no account id (an empty
+ * playerId still decodes); the node id is blank and the start time 0. Anything else a
  * node wrote is dropped. The records after the header are checked (checkRecords) and kept byte for
  * byte, so the simulation is the recorded one. Throws on anything that does not read or agree.
  */
@@ -131,7 +191,8 @@ export function publicReplay(bytes: Uint8Array, item: ReplayListItem): Uint8Arra
     botDifficulty: h.botDifficulty,
     tickRate: num(h.tickRate, 'tickRate', 120, 120),
     checkpointEvery: num(h.checkpointEvery, 'checkpointEvery', 1, 1_000_000, true),
-    startedAt: typeof h.startedAt === 'number' && Number.isFinite(h.startedAt) ? h.startedAt : 0,
+    // When it started is not the public's (a node may write the wall clock): the list says the hour.
+    startedAt: 0,
   };
   for (const k of ['kickoffCountdownSeconds', 'goalPauseSeconds'] as const) if (h[k] !== undefined) header[k] = num(h[k], k, 0, 30);
   checkRecords(bytes, 8 + hlen, roster.length);

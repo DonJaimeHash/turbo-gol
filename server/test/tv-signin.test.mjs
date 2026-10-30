@@ -1,6 +1,6 @@
 // The TV's sign-in with the phone (plan PR 14): tvCodes.ts on its own (codes, the per-IP and global
 // caps, the failure counters), then the Worker's POST /api/auth/tv/start | confirm | poll in front of
-// a real AccountsDO (node:sqlite): the whole flow and its session as login gives it, one use (a
+// a real AccountsDO (node:sqlite): the whole flow and its session as a sign-in gives it, one use (a
 // replayed poll and a second confirm), expiry at 5 minutes, a wrong device secret, an account only,
 // the Origin check, brute force against the attempt limits, the rate limits. 'cloudflare:workers'
 // and MatchDO's wasm are stubbed. Run from server/: npm test
@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { makeAccount } from './helpers/accounts.mjs';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 const WASM_STUB = 'data:text/javascript,export const createHostArena = () => { throw new Error("no wasm in this test"); };';
@@ -30,7 +31,6 @@ registerHooks({
 
 const TV = await import('../src/tvCodes.ts');
 const { AccountsDO } = await import('../src/AccountsDO.ts');
-const A = await import('../src/accountRoutes.ts');
 const worker = (await import('../src/index.ts')).default;
 const { signJwt, createSession } = await import('../src/auth.ts');
 const LOBBY = await import('../../src/ui/screens/lobbyModel.ts');
@@ -38,7 +38,6 @@ const LOBBY = await import('../../src/ui/screens/lobbyModel.ts');
 const SECRET = 'tv-signin-test-secret';
 const ORIGIN = 'https://turbo-gol.com';
 const H = (c) => c.repeat(64).slice(0, 64);
-const KEY = 'c'.repeat(64); // a client key (src/net/account.ts clientPasswordKey's shape)
 
 function sqlOn(db) {
   return {
@@ -98,7 +97,7 @@ async function call(env, path, { ip, token, body, origin = ORIGIN, cookie } = {}
 const accountToken = (sub, name) => signJwt(SECRET, { sub, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, acct: 1 });
 
 async function account(obj, name) {
-  const id = obj.store.register(name, await A.newPasswordRecord(KEY), [], H(name[0].toLowerCase() === 'a' ? '1' : '2'), Date.now()).userId;
+  const id = makeAccount(obj.store, name, { refresh: H(name[0].toLowerCase() === 'a' ? '1' : '2') }).userId;
   return { id, token: await accountToken(id, name) };
 }
 
@@ -159,7 +158,7 @@ test('tvCodes: parse, constant-time compare, sweep of expired codes and finished
 
 // ---- the Worker in front of a real AccountsDO ---------------------------------------------
 
-test('Worker: start, pending, confirm, approved: the session and the refresh cookie as login gives them; the code is one use', async () => {
+test('Worker: start, pending, confirm, approved: the session and the refresh cookie as a sign-in gives them; the code is one use', async () => {
   const { env, obj } = makeEnv();
   const ip = ips();
   const ana = await account(obj, 'Ana');
@@ -192,17 +191,14 @@ test('Worker: start, pending, confirm, approved: the session and the refresh coo
   assert.ok(r.json.expiresAt > Date.now());
   const tvCookie = r.headers.get('set-cookie');
   assert.match(tvCookie, /^__Host-tg_rt=[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43};/, 'a family part and a secret (Security 3)');
-  const login = await call(env, '/api/auth/login', { ip: ip(2), body: { username: 'Ana', password: KEY } });
-  assert.equal(login.status, 200);
-  // Login also sets the device cookie (Security 3 review): compare with its refresh cookie.
-  const loginRt = login.headers.getSetCookie().find((c) => c.startsWith('__Host-tg_rt='));
-  assert.equal(cookieFlags(tvCookie), cookieFlags(loginRt), 'the same cookie flags as login');
-  assert.ok(!/__Host-tg_dv=/.test(tvCookie), 'a TV gets no device cookie: it signed in with no password');
-  assert.match(cookieFlags(tvCookie), /HttpOnly; Secure; SameSite=Strict/);
-  // The TV's refresh cookie is a real session: it refreshes.
+  // The refresh cookie every sign-in sets (accountRoutes.ts refreshCookie: login's, a provider's, a refresh's).
+  assert.equal(cookieFlags(tvCookie), '; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000', 'the same cookie flags as a sign-in');
+  assert.ok(!/__Host-tg_dv=/.test(r.headers.getSetCookie().join(' ')), 'a TV gets no device cookie: it signed in with no password');
+  // The TV's refresh cookie is a real session: it refreshes, into the same cookie.
   const again = await call(env, '/api/auth/refresh', { ip: ip(0), cookie: tvCookie.split(';')[0] });
   assert.equal(again.status, 200);
   assert.equal(again.json.playerId, ana.id);
+  assert.equal(cookieFlags(again.headers.get('set-cookie')), cookieFlags(tvCookie));
   // Replays: the poll and the confirm both say used.
   r = await call(env, '/api/auth/tv/poll', { ip: ip(0), body: { code, secret } });
   assert.equal(r.status, 409);
